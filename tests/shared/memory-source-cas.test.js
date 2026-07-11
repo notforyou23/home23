@@ -71,8 +71,9 @@ async function fixture(t, {
   const operationId = `brop_cas_${ownerAgent}_${operationType}`;
   const pinned = await provider.pin(canonicalRoot, operationId);
   const operationRoot = path.join(
-    home23Root, 'instances', requesterAgent, 'runtime', 'brain-operations', operationId,
+    home23Root, 'instances', requesterAgent, 'runtime', 'brain-operations', 'operations', operationId,
   );
+  await fsp.mkdir(operationRoot, { recursive: true });
   const status = statusTransform({
     operationId,
     requesterAgent,

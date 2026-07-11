@@ -294,8 +294,10 @@ async function compareAndSwapSourceRevision(brainDir, update = {}) {
     });
   } catch (error) {
     // A completed callback is the logical commit point. Cancellation or lock
-    // cleanup failure observed afterward cannot turn that commit into failure.
-    if (completedOutcome) return completedOutcome;
+    // observer failure after proved release cannot turn that commit into
+    // failure. Ownership, identity, or release failures still fail closed so
+    // recovery reconciles the durable claim and committed bytes explicitly.
+    if (completedOutcome && error?.sourceLockReleased === true) return completedOutcome;
     throw error;
   }
 }

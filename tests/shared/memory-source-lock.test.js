@@ -202,3 +202,19 @@ for (const malformedOwner of [null, '{not-json}\n']) {
     assert.equal(await fsp.access(fx.lockDir).then(() => true).catch(() => false), true);
   });
 }
+
+test('failure after final lock publication removes only the exact owned lock', async (t) => {
+  const fx = await fixture(t);
+  const injected = new Error('post-publication observer failed');
+  await assert.rejects(
+    () => withMemorySourceLock(fx.brainDir, {
+      lockRoot: fx.lockRoot,
+      _testHooks: {
+        async afterFinalDirectoryRename() { throw injected; },
+      },
+    }, async () => assert.fail('callback must not run after publication setup fails')),
+    (error) => error === injected,
+  );
+  assert.deepEqual(await fsp.readdir(fx.lockRoot), []);
+  await withMemorySourceLock(fx.brainDir, { lockRoot: fx.lockRoot }, async () => {});
+});

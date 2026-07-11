@@ -200,7 +200,8 @@ function abortableDelay(ms, signal) {
 }
 
 function validateOperationId(operationId) {
-  if (typeof operationId !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(operationId)) {
+  if (typeof operationId !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(operationId)
+      || operationId === '.' || operationId === '..') {
     throw memorySourceError('invalid_request', 'safe operation id required');
   }
   return operationId;
@@ -210,7 +211,8 @@ function durableBrainOperationRoot(home23Root, requesterAgent, operationId) {
   if (typeof home23Root !== 'string' || !path.isAbsolute(home23Root)
       || path.normalize(home23Root) !== home23Root || home23Root.includes('\0')
       || typeof requesterAgent !== 'string'
-      || !/^[A-Za-z0-9_.-]+$/.test(requesterAgent)) {
+      || !/^[A-Za-z0-9_.-]+$/.test(requesterAgent)
+      || requesterAgent === '.' || requesterAgent === '..') {
     throw memorySourceError('invalid_request', 'trusted durable operation root required');
   }
   validateOperationId(operationId);
@@ -234,10 +236,52 @@ function coordinatorPinPath(operationRoot) {
 }
 
 async function writeAtomicJson(filePath, value) {
-  await fsp.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await fsp.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
-  await fsp.rename(tmp, filePath);
+  const directory = path.dirname(filePath);
+  await fsp.mkdir(directory, { recursive: true, mode: 0o700 });
+  const temporaryPath = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  let temporaryIdentity = null;
+  let handle = null;
+  let published = false;
+  try {
+    handle = await fsp.open(
+      temporaryPath,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL
+        | (fs.constants.O_NOFOLLOW || 0),
+      0o600,
+    );
+    const opened = await handle.stat();
+    if (!opened.isFile()) {
+      throw memorySourceError('invalid_memory_source', 'coordinator pin temp is not regular', {
+        retryable: false,
+      });
+    }
+    temporaryIdentity = sourceLockIdentity(opened);
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    const beforeRename = await fsp.lstat(temporaryPath);
+    if (beforeRename.isSymbolicLink() || !beforeRename.isFile()
+        || !sameSourceLockIdentity(beforeRename, temporaryIdentity)) {
+      throw memorySourceError('invalid_memory_source', 'coordinator pin temp identity changed', {
+        retryable: false,
+      });
+    }
+    await fsp.rename(temporaryPath, filePath);
+    published = true;
+    await fsyncSourceLockDirectory(directory);
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    if (!published && temporaryIdentity) {
+      const stat = await sourceLockLstatOptional(temporaryPath).catch(() => null);
+      if (stat && !stat.isSymbolicLink() && stat.isFile()
+          && sameSourceLockIdentity(stat, temporaryIdentity)) {
+        await fsp.unlink(temporaryPath).catch(() => {});
+        await fsyncSourceLockDirectory(directory).catch(() => {});
+      }
+    }
+    throw error;
+  }
 }
 
 async function readCoordinatorRecord(operationRoot) {
@@ -473,12 +517,30 @@ async function pinOperationSource({
           || !validateCoordinatorProtectedRecord(record)) {
         throw memorySourceError('source_pin_conflict', 'source pin conflict');
       }
-      await resolvePinnedPhysicalRoot({
+      const existingPhysicalRoot = await resolvePinnedPhysicalRoot({
         record,
         operationRoot: root,
         descriptor: record.descriptor,
       });
-      return Object.freeze({ descriptor: record.descriptor, digest: record.digest });
+      throwIfAborted(signal);
+      const opened = await openRecordedProtectedFiles(existingPhysicalRoot, record, { signal });
+      try {
+        throwIfAborted(signal);
+        if (record.sourceFingerprint
+            && !await verifyLegacySourceFingerprint(canonical, record.sourceFingerprint)) {
+          throw memorySourceError(
+            'source_changed',
+            'legacy source changed after coordinator pin publication',
+            { retryable: true },
+          );
+        }
+        throwIfAborted(signal);
+        await recheckProtectedFiles(opened.openedFiles, record.protectedFileIdentities);
+        throwIfAborted(signal);
+        return Object.freeze({ descriptor: record.descriptor, digest: record.digest });
+      } finally {
+        await closeProtectedFiles(opened.openedFiles);
+      }
     }
     let manifest = await readManifest(canonical);
     let physicalRoot = canonical;
@@ -568,10 +630,223 @@ function validateProcessIdentity(value) {
   return identity;
 }
 
+async function currentProcessPinOwnerIdentity() {
+  const exact = await inspectCurrentSourceLockIdentity();
+  if (exact && exact !== false) return exact;
+  return Object.freeze({
+    bootToken: `unverifiable-boot:${SOURCE_LOCK_FALLBACK_IDENTITY}`,
+    processStartToken: `unverifiable-start:${SOURCE_LOCK_FALLBACK_IDENTITY}`,
+  });
+}
+
+async function defaultIsProcessPinAlive(record) {
+  if (!record || Array.isArray(record) || typeof record !== 'object'
+      || !Number.isSafeInteger(record.pid) || record.pid <= 0
+      || !boundedIdentityToken(record.bootToken)
+      || !boundedIdentityToken(record.processStartToken)) {
+    return null;
+  }
+  try {
+    process.kill(record.pid, 0);
+  } catch (error) {
+    if (error.code === 'ESRCH') return false;
+    if (error.code !== 'EPERM') return null;
+  }
+  if (sourceLockOwnerHasFallbackIdentity(record)) return null;
+  const exact = record.pid === process.pid
+    ? await inspectCurrentSourceLockIdentity()
+    : await inspectSourceLockProcessIdentity(record.pid);
+  if (exact === false) return false;
+  if (exact === null) return null;
+  return exact.bootToken === record.bootToken
+    && exact.processStartToken === record.processStartToken;
+}
+
+function trustedLockRootForOperation(operationRoot) {
+  const operationContainer = path.dirname(operationRoot);
+  const brainOperationsRoot = path.basename(operationContainer) === 'operations'
+    ? path.dirname(operationContainer)
+    : operationContainer;
+  const runtimeRoot = path.dirname(brainOperationsRoot);
+  const agentRoot = path.dirname(runtimeRoot);
+  const instancesRoot = path.dirname(agentRoot);
+  const home23Root = path.dirname(instancesRoot);
+  if (path.basename(brainOperationsRoot) !== 'brain-operations'
+      || path.basename(runtimeRoot) !== 'runtime'
+      || path.basename(instancesRoot) !== 'instances'
+      || !/^[A-Za-z0-9_.-]+$/.test(path.basename(agentRoot))) {
+    throw memorySourceError('invalid_request', 'trusted source lock root cannot be derived');
+  }
+  return path.join(home23Root, 'runtime', 'brain-source-locks');
+}
+
 const processPinReferences = new Map();
 
+function operationPathIdentity(stat) {
+  return Object.freeze({ dev: String(stat.dev), ino: String(stat.ino) });
+}
+
+function sameOperationPathIdentity(stat, identity) {
+  return Boolean(stat && identity
+    && String(stat.dev) === identity.dev
+    && String(stat.ino) === identity.ino);
+}
+
+async function operationPathLstatOptional(candidate) {
+  return fsp.lstat(candidate).catch((error) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+}
+
+async function captureExactOperationDirectory(directory, label, { optional = false } = {}) {
+  const stat = await operationPathLstatOptional(directory);
+  if (stat === null && optional) return null;
+  if (stat === null || stat.isSymbolicLink() || !stat.isDirectory()
+      || await fsp.realpath(directory).catch(() => null) !== directory) {
+    throw memorySourceError('invalid_memory_source', `${label} is not an exact directory`, {
+      retryable: false,
+    });
+  }
+  return operationPathIdentity(stat);
+}
+
+async function assertExactOperationDirectory(directory, identity, label) {
+  const stat = await operationPathLstatOptional(directory);
+  if (stat === null || stat.isSymbolicLink() || !stat.isDirectory()
+      || !sameOperationPathIdentity(stat, identity)
+      || await fsp.realpath(directory).catch(() => null) !== directory) {
+    throw memorySourceError('invalid_memory_source', `${label} identity changed`, {
+      retryable: false,
+    });
+  }
+}
+
+async function ensureExactOperationChildDirectory(parent, parentIdentity, child, label) {
+  await assertExactOperationDirectory(parent, parentIdentity, `${label} parent`);
+  try {
+    await fsp.mkdir(child, { recursive: false, mode: 0o700 });
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+  }
+  const identity = await captureExactOperationDirectory(child, label);
+  await assertExactOperationDirectory(parent, parentIdentity, `${label} parent`);
+  return identity;
+}
+
+async function captureExactOperationFile(filePath, label) {
+  const stat = await operationPathLstatOptional(filePath);
+  if (stat === null || stat.isSymbolicLink() || !stat.isFile()) {
+    throw memorySourceError('invalid_memory_source', `${label} is not an exact regular file`, {
+      retryable: false,
+    });
+  }
+  return operationPathIdentity(stat);
+}
+
+async function captureProcessPinConfinement(pinFile, { operationIdentity = null } = {}) {
+  const pinDir = path.dirname(pinFile);
+  const pinsRoot = path.dirname(pinDir);
+  const operationRoot = path.dirname(pinsRoot);
+  const exactOperationIdentity = operationIdentity
+    || await captureExactOperationDirectory(operationRoot, 'process-pin operation root');
+  const pinsIdentity = await captureExactOperationDirectory(pinsRoot, 'process-pin root');
+  const pinDirIdentity = await captureExactOperationDirectory(pinDir, 'process-pin owner root');
+  const pinFileIdentity = await captureExactOperationFile(pinFile, 'process pin');
+  await assertExactOperationDirectory(
+    operationRoot,
+    exactOperationIdentity,
+    'process-pin operation root',
+  );
+  return Object.freeze({
+    operationRoot,
+    operationIdentity: exactOperationIdentity,
+    pinsRoot,
+    pinsIdentity,
+    pinDir,
+    pinDirIdentity,
+    pinFile,
+    pinFileIdentity,
+  });
+}
+
+async function assertProcessPinConfinement(confinement) {
+  await assertExactOperationDirectory(
+    confinement.operationRoot,
+    confinement.operationIdentity,
+    'process-pin operation root',
+  );
+  await assertExactOperationDirectory(
+    confinement.pinsRoot,
+    confinement.pinsIdentity,
+    'process-pin root',
+  );
+  await assertExactOperationDirectory(
+    confinement.pinDir,
+    confinement.pinDirIdentity,
+    'process-pin owner root',
+  );
+}
+
+async function removeExactProcessPin(confinement) {
+  await assertProcessPinConfinement(confinement);
+  const stat = await operationPathLstatOptional(confinement.pinFile);
+  if (stat !== null) {
+    if (stat.isSymbolicLink() || !stat.isFile()
+        || !sameOperationPathIdentity(stat, confinement.pinFileIdentity)) {
+      throw memorySourceError('invalid_memory_source', 'process pin identity changed', {
+        retryable: false,
+      });
+    }
+    await fsp.unlink(confinement.pinFile);
+    await fsyncSourceLockDirectory(confinement.pinDir);
+  }
+  await assertProcessPinConfinement(confinement);
+  try {
+    await fsp.rmdir(confinement.pinDir);
+  } catch (error) {
+    if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(error.code)) throw error;
+  }
+  await fsyncSourceLockDirectory(confinement.pinsRoot);
+  await assertExactOperationDirectory(
+    confinement.operationRoot,
+    confinement.operationIdentity,
+    'process-pin operation root',
+  );
+  await assertExactOperationDirectory(
+    confinement.pinsRoot,
+    confinement.pinsIdentity,
+    'process-pin root',
+  );
+}
+
+const PROCESS_PIN_RECORD_KEYS = Object.freeze([
+  'version',
+  'operationId',
+  'requesterAgent',
+  'canonicalRoot',
+  'generation',
+  'revision',
+  'digest',
+  'protectedFiles',
+  'committedBytes',
+  'pid',
+  'processIdentity',
+  'bootToken',
+  'processStartToken',
+  'createdAt',
+  'heartbeatAt',
+]);
+
+function validProcessPinTimestamp(value) {
+  return typeof value === 'string' && !Number.isNaN(Date.parse(value));
+}
+
 function processPinRecordMatches(actual, expected) {
-  return actual?.version === 1
+  return actual && !Array.isArray(actual) && typeof actual === 'object'
+    && Reflect.ownKeys(actual).length === PROCESS_PIN_RECORD_KEYS.length
+    && PROCESS_PIN_RECORD_KEYS.every((key) => Object.hasOwn(actual, key))
+    && actual.version === 1
     && actual.operationId === expected.operationId
     && actual.requesterAgent === expected.requesterAgent
     && actual.canonicalRoot === expected.canonicalRoot
@@ -579,40 +854,102 @@ function processPinRecordMatches(actual, expected) {
     && actual.revision === expected.revision
     && actual.digest === expected.digest
     && actual.pid === expected.pid
-    && actual.processIdentity === expected.processIdentity;
+    && actual.processIdentity === expected.processIdentity
+    && actual.bootToken === expected.bootToken
+    && actual.processStartToken === expected.processStartToken
+    && Array.isArray(actual.protectedFiles)
+    && canonicalJson(actual.protectedFiles) === canonicalJson(expected.protectedFiles)
+    && actual.committedBytes === expected.committedBytes
+    && validProcessPinTimestamp(actual.createdAt)
+    && validProcessPinTimestamp(actual.heartbeatAt)
+    && Date.parse(actual.heartbeatAt) >= Date.parse(actual.createdAt);
 }
 
-async function writeProcessPinExclusive(pinFile, record) {
-  await fsp.mkdir(path.dirname(pinFile), { recursive: true, mode: 0o700 });
+function nextProcessPinTimestamp(previous, now = Date.now()) {
+  const prior = previous && validProcessPinTimestamp(previous)
+    ? Date.parse(previous)
+    : -1;
+  return new Date(Math.max(now, prior + 1)).toISOString();
+}
+
+async function readExistingProcessPin(operationRoot, pinFile) {
+  const stat = await operationPathLstatOptional(pinFile);
+  if (stat === null) return null;
+  let opened = null;
   try {
-    await fsp.writeFile(pinFile, `${JSON.stringify(record, null, 2)}\n`, {
-      mode: 0o600,
-      flag: 'wx',
+    opened = await openConfinedRegularFile(operationRoot, pinFile, {
+      flags: fs.constants.O_RDONLY,
     });
-  } catch (error) {
-    if (error.code !== 'EEXIST') throw error;
-    let existing;
-    try {
-      existing = JSON.parse(await fsp.readFile(pinFile, 'utf8'));
-    } catch (cause) {
-      throw memorySourceError('source_pin_conflict', 'existing process pin is unreadable', {
-        cause,
-        retryable: true,
-      });
-    }
-    if (!processPinRecordMatches(existing, record)) {
-      throw memorySourceError('source_pin_conflict', 'existing process pin identity conflicts', {
-        retryable: true,
-      });
-    }
+    return JSON.parse((await readOpenedFile(opened, {
+      maxBytes: MAX_OPERATION_STATUS_BYTES,
+    })).toString('utf8'));
+  } catch (cause) {
+    throw memorySourceError('source_pin_conflict', 'existing process pin is unreadable', {
+      cause,
+      retryable: true,
+    });
+  } finally {
+    await opened?.handle.close().catch(() => {});
   }
 }
 
-async function acquireProcessPin(pinFile, pinDir, record) {
+async function writeProcessPinExclusive(pinFile, pinDir, record, { beforePublish } = {}) {
+  const pinsRoot = path.dirname(pinDir);
+  const operationRoot = path.dirname(pinsRoot);
+  const operationIdentity = await captureExactOperationDirectory(
+    operationRoot,
+    'process-pin operation root',
+  );
+  const pinsIdentity = await ensureExactOperationChildDirectory(
+    operationRoot,
+    operationIdentity,
+    pinsRoot,
+    'process-pin root',
+  );
+  await fsyncSourceLockDirectory(operationRoot);
+  await ensureExactOperationChildDirectory(
+    pinsRoot,
+    pinsIdentity,
+    pinDir,
+    'process-pin owner root',
+  );
+  await fsyncSourceLockDirectory(pinsRoot);
+  const existing = await readExistingProcessPin(operationRoot, pinFile);
+  if (existing && !processPinRecordMatches(existing, record)) {
+    throw memorySourceError('source_pin_conflict', 'existing process pin identity conflicts', {
+      retryable: true,
+    });
+  }
+  const createdAt = existing?.createdAt || nextProcessPinTimestamp(null);
+  const next = Object.freeze({
+    ...record,
+    createdAt,
+    heartbeatAt: nextProcessPinTimestamp(existing?.heartbeatAt || createdAt),
+  });
+  await beforePublish?.({
+    operationRoot,
+    pinFile,
+    pinDir,
+    existing: existing !== null,
+    record: next,
+  });
+  await writeAtomicJson(pinFile, next);
+  const confinement = await captureProcessPinConfinement(pinFile, { operationIdentity });
+  await assertProcessPinConfinement(confinement);
+  return Object.freeze({ confinement, record: next });
+}
+
+async function acquireProcessPin(pinFile, pinDir, record, options = {}) {
   let entry = processPinReferences.get(pinFile);
   if (entry) {
     entry.references += 1;
     try {
+      entry.ready = entry.ready.then(() => writeProcessPinExclusive(
+        pinFile,
+        pinDir,
+        record,
+        options,
+      ));
       await entry.ready;
     } catch (error) {
       entry.references -= 1;
@@ -621,7 +958,7 @@ async function acquireProcessPin(pinFile, pinDir, record) {
   } else {
     entry = { references: 1, ready: null };
     processPinReferences.set(pinFile, entry);
-    entry.ready = writeProcessPinExclusive(pinFile, record);
+    entry.ready = writeProcessPinExclusive(pinFile, pinDir, record, options);
     try {
       await entry.ready;
     } catch (error) {
@@ -637,8 +974,8 @@ async function acquireProcessPin(pinFile, pinDir, record) {
     entry.references -= 1;
     if (entry.references > 0) return;
     processPinReferences.delete(pinFile);
-    await fsp.rm(pinFile, { force: true }).catch(() => {});
-    await fsp.rmdir(pinDir).catch(() => {});
+    const published = await entry.ready;
+    await removeExactProcessPin(published.confinement);
   };
 }
 
@@ -840,7 +1177,8 @@ async function openPinnedSource(descriptor, expectations = {}) {
   }
   const operationId = validateOperationId(expectations.operationId);
   if (typeof expectations.requesterAgent !== 'string'
-      || !/^[A-Za-z0-9_.-]+$/.test(expectations.requesterAgent)) {
+      || !/^[A-Za-z0-9_.-]+$/.test(expectations.requesterAgent)
+      || expectations.requesterAgent === '.' || expectations.requesterAgent === '..') {
     throw memorySourceError('invalid_request', 'safe requester required');
   }
   const operationRoot = await assertOperationRoot(expectations.operationRoot);
@@ -864,61 +1202,106 @@ async function openPinnedSource(descriptor, expectations = {}) {
       && expectations.expectedRevision !== descriptor.cutoffRevision) {
     throw memorySourceError('source_changed', 'revision mismatch', { retryable: true });
   }
-  const record = await readCoordinatorRecord(operationRoot).catch((error) => {
-    if (error.code === 'ENOENT') {
-      throw memorySourceError('source_changed', 'coordinator pin missing', { retryable: true });
-    }
-    throw error;
-  });
-  if (record.version !== 1
-      || record.operationId !== operationId
-      || record.requesterAgent !== expectations.requesterAgent
-      || record.digest !== expectedDigest
-      || record.canonicalRoot !== descriptor.canonicalRoot
-      || !descriptorMatchesDigest(record.descriptor, record.digest)
-      || !descriptorsMatch(record.descriptor, descriptor)
-      || !validateCoordinatorProtectedRecord(record)) {
-    throw memorySourceError('source_changed', 'coordinator pin mismatch', { retryable: true });
-  }
-  const physicalRoot = await resolvePinnedPhysicalRoot({
-    record,
-    operationRoot,
-    descriptor,
-  });
   const processPinIdentity = validateProcessIdentity(expectations.processIdentity);
   const pinDir = path.join(operationRoot, 'pins', processPinIdentity);
   const pinFile = path.join(pinDir, `${canonicalRootHash(descriptor.canonicalRoot)}.json`);
-  const releaseProcessPin = await acquireProcessPin(pinFile, pinDir, {
-    version: 1,
-    operationId,
-    requesterAgent: record.requesterAgent,
-    canonicalRoot: descriptor.canonicalRoot,
-    generation: descriptor.generation,
-    revision: descriptor.cutoffRevision,
-    digest: expectedDigest,
-    pid: process.pid,
-    processIdentity: processPinIdentity,
-    createdAt: new Date().toISOString(),
-  });
-  let source;
+  const lockRoot = expectations[TRUSTED_PROVIDER_CONTEXT]?.lockRoot
+    || trustedLockRootForOperation(operationRoot);
+  const processHooks = expectations._testHooks || {};
+  if (!processHooks || Array.isArray(processHooks) || typeof processHooks !== 'object'
+      || Object.values(processHooks).some((hook) => typeof hook !== 'function')) {
+    throw memorySourceError('invalid_request', 'invalid process pin test hooks');
+  }
+  let record = null;
+  let source = null;
   let openedFiles = null;
+  let releaseProcessPinUnderLock = null;
   try {
-    const opened = await openRecordedProtectedFiles(physicalRoot, record, {
+    await withMemorySourceLock(descriptor.canonicalRoot, {
+      lockRoot,
       signal: expectations.signal,
-    });
-    openedFiles = opened.openedFiles;
-    source = await openMemorySource(physicalRoot, {
-      ...expectations,
-      pinnedManifest: opened.manifest,
-      logicalCanonicalRoot: descriptor.canonicalRoot,
-      legacySourceFingerprint: record.sourceFingerprint || null,
-      [PINNED_OPENED_FILES]: openedFiles,
+    }, async () => {
+      throwIfAborted(expectations.signal);
+      record = await readCoordinatorRecord(operationRoot).catch((error) => {
+        if (error.code === 'ENOENT') {
+          throw memorySourceError('source_changed', 'coordinator pin missing', { retryable: true });
+        }
+        throw error;
+      });
+      if (record.version !== 1
+          || record.operationId !== operationId
+          || record.requesterAgent !== expectations.requesterAgent
+          || record.digest !== expectedDigest
+          || record.canonicalRoot !== descriptor.canonicalRoot
+          || !descriptorMatchesDigest(record.descriptor, record.digest)
+          || !descriptorsMatch(record.descriptor, descriptor)
+          || !validateCoordinatorProtectedRecord(record)) {
+        throw memorySourceError('source_changed', 'coordinator pin mismatch', { retryable: true });
+      }
+      const physicalRoot = await resolvePinnedPhysicalRoot({
+        record,
+        operationRoot,
+        descriptor,
+      });
+      throwIfAborted(expectations.signal);
+      const opened = await openRecordedProtectedFiles(physicalRoot, record, {
+        signal: expectations.signal,
+      });
+      openedFiles = opened.openedFiles;
+      const processOwner = await currentProcessPinOwnerIdentity();
+      throwIfAborted(expectations.signal);
+      await processHooks.beforeProcessPinPublish?.({
+        operationRoot,
+        pinFile,
+        descriptor,
+      });
+      throwIfAborted(expectations.signal);
+      releaseProcessPinUnderLock = await acquireProcessPin(pinFile, pinDir, {
+        version: 1,
+        operationId,
+        requesterAgent: record.requesterAgent,
+        canonicalRoot: descriptor.canonicalRoot,
+        generation: descriptor.generation,
+        revision: descriptor.cutoffRevision,
+        digest: expectedDigest,
+        protectedFiles: [...record.protectedFiles],
+        committedBytes: record.committedBytes,
+        pid: process.pid,
+        processIdentity: processPinIdentity,
+        bootToken: processOwner.bootToken,
+        processStartToken: processOwner.processStartToken,
+      });
+      try {
+        source = await openMemorySource(physicalRoot, {
+          ...expectations,
+          pinnedManifest: opened.manifest,
+          logicalCanonicalRoot: descriptor.canonicalRoot,
+          legacySourceFingerprint: record.sourceFingerprint || null,
+          [PINNED_OPENED_FILES]: openedFiles,
+        });
+      } catch (error) {
+        await closeProtectedFiles(openedFiles);
+        openedFiles = null;
+        await releaseProcessPinUnderLock();
+        releaseProcessPinUnderLock = null;
+        throw error;
+      }
     });
   } catch (error) {
-    await closeProtectedFiles(openedFiles);
-    await releaseProcessPin();
+    await source?.close?.().catch(() => {});
+    await closeProtectedFiles(openedFiles).catch(() => {});
+    if (releaseProcessPinUnderLock) {
+      await withMemorySourceLock(descriptor.canonicalRoot, { lockRoot }, async () => {
+        await releaseProcessPinUnderLock();
+      }).catch(() => {});
+    }
     throw error;
   }
+  const releaseProcessPin = async () => withMemorySourceLock(
+    descriptor.canonicalRoot,
+    { lockRoot },
+    async () => releaseProcessPinUnderLock(),
+  );
   const closeSource = source.close.bind(source);
   const mutation = attachPinnedSourceMutation(source, {
     descriptor,
@@ -1226,6 +1609,21 @@ async function withMemorySourceLock(canonicalRoot, options = {}, callback) {
   }
 
   async function acquire() {
+    async function cleanupUnpublishedCandidate(candidateDir, candidateIdentity, files) {
+      if (!candidateIdentity) return;
+      const removed = await removeExactSourceLockDirectory(
+        candidateDir,
+        candidateIdentity,
+        files,
+      );
+      if (!removed) {
+        throw memorySourceError('invalid_memory_source', 'source lock candidate cleanup changed', {
+          retryable: false,
+        });
+      }
+      await fsyncSourceLockDirectory(root);
+    }
+
     for (;;) {
       throwIfAborted(signal);
       await assertStableLockRoot();
@@ -1310,7 +1708,7 @@ async function withMemorySourceLock(canonicalRoot, options = {}, callback) {
         });
         await assertStableLockRoot();
         if (await sourceLockLstatOptional(lockDir) !== null) {
-          await removeExactSourceLockDirectory(
+          await cleanupUnpublishedCandidate(
             candidateDir,
             candidateIdentity,
             new Map([['owner.json', ownerIdentity]]),
@@ -1322,7 +1720,7 @@ async function withMemorySourceLock(canonicalRoot, options = {}, callback) {
           await fsp.rename(candidateDir, lockDir);
         } catch (error) {
           if (!['EEXIST', 'ENOTEMPTY'].includes(error.code)) throw error;
-          await removeExactSourceLockDirectory(
+          await cleanupUnpublishedCandidate(
             candidateDir,
             candidateIdentity,
             new Map([['owner.json', ownerIdentity]]),
@@ -1346,11 +1744,31 @@ async function withMemorySourceLock(canonicalRoot, options = {}, callback) {
         return Object.freeze({ lockIdentity: candidateIdentity, ownerIdentity });
       } catch (error) {
         await ownerHandle?.close().catch(() => {});
-        if (!published && candidateIdentity) {
-          const files = new Map();
-          if (ownerTemporaryIdentity) files.set(ownerTemporaryName, ownerTemporaryIdentity);
-          if (ownerIdentity) files.set('owner.json', ownerIdentity);
-          await removeExactSourceLockDirectory(candidateDir, candidateIdentity, files).catch(() => {});
+        try {
+          if (!published && candidateIdentity) {
+            const files = new Map();
+            if (ownerTemporaryIdentity) files.set(ownerTemporaryName, ownerTemporaryIdentity);
+            if (ownerIdentity) files.set('owner.json', ownerIdentity);
+            await cleanupUnpublishedCandidate(candidateDir, candidateIdentity, files);
+          } else if (published && candidateIdentity && ownerIdentity) {
+            if (!await quarantinePublishedLock(
+              candidateIdentity,
+              ownerIdentity,
+              'failed-publication',
+            )) {
+              throw memorySourceError(
+                'invalid_memory_source',
+                'published source lock cleanup changed',
+                { retryable: false },
+              );
+            }
+          }
+        } catch (cleanupError) {
+          throw memorySourceError('invalid_memory_source', 'source lock cleanup failed closed', {
+            retryable: false,
+            cause: cleanupError,
+            acquisitionCause: error,
+          });
         }
         throw error;
       }
@@ -1386,10 +1804,22 @@ async function withMemorySourceLock(canonicalRoot, options = {}, callback) {
         retryable: false,
       });
     }
-    await _testHooks.afterLockReleased?.({
-      canonicalRoot: canonical,
-      lockDir,
-    });
+    try {
+      await _testHooks.afterLockReleased?.({
+        canonicalRoot: canonical,
+        lockDir,
+      });
+    } catch (cause) {
+      throw memorySourceError(
+        'invalid_memory_source',
+        'source lock post-release observer failed',
+        {
+          retryable: false,
+          sourceLockReleased: true,
+          cause,
+        },
+      );
+    }
   }
 }
 
@@ -1460,38 +1890,129 @@ async function discoverOperationPinFiles(home23Root) {
 
 async function pruneStalePins(home23Root, {
   getOperationState = async () => null,
-  isProcessAlive = async () => true,
+  isProcessAlive = defaultIsProcessPinAlive,
 } = {}) {
   const discovered = await discoverOperationPinFiles(home23Root);
   const removed = [];
   for (const file of discovered) {
     if (file.kind !== 'process') continue;
-    const record = JSON.parse(await fsp.readFile(file.path, 'utf8').catch(() => '{}'));
+    const confinement = await captureProcessPinConfinement(file.path);
+    const opened = await openConfinedRegularFile(
+      confinement.operationRoot,
+      confinement.pinFile,
+      { flags: fs.constants.O_RDONLY },
+    );
+    let record;
+    try {
+      record = JSON.parse((await readOpenedFile(opened, {
+        maxBytes: MAX_OPERATION_STATUS_BYTES,
+      })).toString('utf8'));
+      await assertOpenedFilePathIdentity(opened, portableFileIdentity(opened.stat));
+    } finally {
+      await opened.handle.close().catch(() => {});
+    }
     const alive = await isProcessAlive(record);
     const state = await getOperationState(file.operationId);
     const terminal = state === null
       || ['complete', 'partial', 'failed', 'cancelled', 'interrupted'].includes(state);
-    if (!alive && terminal) {
-      await fsp.rm(file.path, { force: true });
-      await fsp.rmdir(path.dirname(file.path)).catch(() => {});
+    if (alive === false && terminal) {
+      await removeExactProcessPin(confinement);
       removed.push(file.path);
     }
   }
   return removed;
 }
 
+async function removeExactOperationRegularFile(operationRoot, operationIdentity, filePath, label) {
+  await assertExactOperationDirectory(operationRoot, operationIdentity, 'operation root');
+  const stat = await operationPathLstatOptional(filePath);
+  if (stat === null) return false;
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw memorySourceError('invalid_memory_source', `${label} is not a regular file`, {
+      retryable: false,
+    });
+  }
+  const identity = operationPathIdentity(stat);
+  await assertExactOperationDirectory(operationRoot, operationIdentity, 'operation root');
+  const latest = await operationPathLstatOptional(filePath);
+  if (latest === null || latest.isSymbolicLink() || !latest.isFile()
+      || !sameOperationPathIdentity(latest, identity)) {
+    throw memorySourceError('invalid_memory_source', `${label} identity changed`, {
+      retryable: false,
+    });
+  }
+  await fsp.unlink(filePath);
+  await assertExactOperationDirectory(operationRoot, operationIdentity, 'operation root');
+  return true;
+}
+
+async function removeExactOperationDirectoryTree(operationRoot, operationIdentity, directory, label) {
+  await assertExactOperationDirectory(operationRoot, operationIdentity, 'operation root');
+  const stat = await operationPathLstatOptional(directory);
+  if (stat === null) return false;
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw memorySourceError('invalid_memory_source', `${label} is not a directory`, {
+      retryable: false,
+    });
+  }
+  const identity = operationPathIdentity(stat);
+  const quarantine = path.join(
+    operationRoot,
+    `.source-release-${path.basename(directory)}-${process.pid}-${crypto.randomUUID()}`,
+  );
+  await assertExactOperationDirectory(operationRoot, operationIdentity, 'operation root');
+  await fsp.rename(directory, quarantine);
+  const moved = await operationPathLstatOptional(quarantine);
+  if (moved === null || moved.isSymbolicLink() || !moved.isDirectory()
+      || !sameOperationPathIdentity(moved, identity)) {
+    throw memorySourceError('invalid_memory_source', `${label} identity changed`, {
+      retryable: false,
+    });
+  }
+  await assertExactOperationDirectory(operationRoot, operationIdentity, 'operation root');
+  await fsp.rm(quarantine, { recursive: true, force: false });
+  await assertExactOperationDirectory(operationRoot, operationIdentity, 'operation root');
+  return true;
+}
+
 async function releaseOperationSource({ home23Root, requesterAgent, operationId }) {
-  const operationRoot = durableBrainOperationRoot(home23Root, requesterAgent, operationId);
+  const canonicalHome23Root = await fsp.realpath(home23Root);
+  const operationRoot = durableBrainOperationRoot(
+    canonicalHome23Root,
+    requesterAgent,
+    operationId,
+  );
+  const operationIdentity = await captureExactOperationDirectory(
+    operationRoot,
+    'operation root',
+    { optional: true },
+  );
+  if (operationIdentity === null) return;
   const pinsRoot = path.join(operationRoot, 'pins');
+  await removeExactOperationRegularFile(
+    operationRoot,
+    operationIdentity,
+    coordinatorPinPath(operationRoot),
+    'coordinator source pin',
+  );
+  await removeExactOperationDirectoryTree(
+    operationRoot,
+    operationIdentity,
+    pinsRoot,
+    'process pins root',
+  );
+  await removeExactOperationDirectoryTree(
+    operationRoot,
+    operationIdentity,
+    path.join(operationRoot, 'source-projections'),
+    'source projections root',
+  );
   for (const pinFile of processPinReferences.keys()) {
     const relative = path.relative(pinsRoot, pinFile);
     if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
       processPinReferences.delete(pinFile);
     }
   }
-  await fsp.rm(coordinatorPinPath(operationRoot), { force: true }).catch(() => {});
-  await fsp.rm(pinsRoot, { recursive: true, force: true }).catch(() => {});
-  await fsp.rm(path.join(operationRoot, 'source-projections'), { recursive: true, force: true }).catch(() => {});
 }
 
 function createMemorySourcePinProvider({ home23Root, requesterAgent }) {

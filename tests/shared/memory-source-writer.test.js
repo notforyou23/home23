@@ -249,13 +249,41 @@ test('a source-lock release error cannot erase a completed CAS callback outcome'
   assert.equal(result.committed, true);
 });
 
+test('a completed CAS callback cannot hide source-lock ownership loss before release', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const source = await openMemorySource(dir);
+  const descriptor = source.descriptor;
+  await source.close();
+  let callbackCompleted = false;
+
+  await assert.rejects(compareAndSwapSourceRevision(dir, {
+    lockRoot,
+    expectedGeneration: descriptor.generation,
+    expectedRevision: descriptor.cutoffRevision,
+    expectedDigest: sourceDescriptorDigest(descriptor),
+    async commit() {
+      const entries = await fsp.readdir(lockRoot, { withFileTypes: true });
+      const published = entries.filter((entry) => entry.isDirectory()
+        && !entry.name.includes('.candidate-') && !entry.name.includes('.release-'));
+      assert.equal(published.length, 1);
+      await fsp.rm(path.join(lockRoot, published[0].name), { recursive: true, force: false });
+      callbackCompleted = true;
+      return { published: true };
+    },
+  }), (error) => error?.code === 'invalid_memory_source'
+    && error?.sourceLockReleased !== true);
+  assert.equal(callbackCompleted, true);
+});
+
 test('retirement preserves files named by an active reader pin', async () => {
   const { dir, lockRoot } = await createCommittedFixture();
   const home23Root = await tempDir('home23-memory-source-writer-home-');
   const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'ada' });
   const operationId = 'brop_writer_pin';
   const pinnedDescriptor = await provider.pin(dir, operationId);
-  const operationRoot = path.join(home23Root, 'instances', 'ada', 'runtime', 'brain-operations', operationId);
+  const operationRoot = path.join(
+    home23Root, 'instances', 'ada', 'runtime', 'brain-operations', 'operations', operationId,
+  );
   const scratchQuota = await createOperationScratchQuota({ operationRoot });
   const pinned = await openPinnedSource(pinnedDescriptor.descriptor, {
     expectedDigest: pinnedDescriptor.digest,

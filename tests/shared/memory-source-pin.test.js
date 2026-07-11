@@ -12,6 +12,8 @@ const {
   durableBrainOperationRoot,
   openPinnedSource,
   pinOperationSource,
+  pruneStalePins,
+  retireUnpinnedSources,
   sourceDescriptorDigest,
   writeJsonlGzAtomic,
 } = require('../../shared/memory-source');
@@ -88,6 +90,16 @@ async function collect(iterator) {
   const rows = [];
   for await (const row of iterator) rows.push(row);
   return rows;
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 function durableOperationRoot(home23Root, requesterAgent, operationId) {
@@ -284,6 +296,103 @@ const protectedReplacementCases = [
 ];
 
 for (const [role, file] of protectedReplacementCases) {
+  test(`identical coordinator pin retry rejects a replaced ${role} identity`, async (t) => {
+    const home23Root = await tempDir('home23-memory-source-pin-retry-home-');
+    const brain = await writeManifestBrain();
+    const operationId = `brop_retry_replace_${role.replace('-', '_')}`;
+    const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+    t.after(() => Promise.all([
+      fsp.rm(home23Root, { recursive: true, force: true }),
+      fsp.rm(brain, { recursive: true, force: true }),
+    ]));
+    await provider.pin(brain, operationId);
+    const recordPath = path.join(
+      durableOperationRoot(home23Root, 'jerry', operationId),
+      'coordinator-source-pin.json',
+    );
+    const recordBefore = await fsp.readFile(recordPath);
+    const target = path.join(brain, file);
+    const displaced = `${target}.retry-displaced`;
+    await fsp.rename(target, displaced);
+    await fsp.copyFile(displaced, target);
+
+    await assert.rejects(() => provider.pin(brain, operationId), {
+      code: 'source_changed',
+      retryable: true,
+    });
+    assert.deepEqual(await fsp.readFile(recordPath), recordBefore);
+  });
+}
+
+test('coordinator pin publication fsyncs its file and operation-root directory', async (t) => {
+  const home23Root = await fsp.realpath(await tempDir('home23-memory-source-pin-fsync-home-'));
+  const brain = await writeManifestBrain();
+  const operationId = 'brop_coordinator_fsync';
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+  const originalOpen = fsp.open;
+  const synced = [];
+  t.after(async () => {
+    fsp.open = originalOpen;
+    await Promise.all([
+      fsp.rm(home23Root, { recursive: true, force: true }),
+      fsp.rm(brain, { recursive: true, force: true }),
+    ]);
+  });
+  fsp.open = async (filePath, ...args) => {
+    const handle = await originalOpen.call(fsp, filePath, ...args);
+    return new Proxy(handle, {
+      get(target, property) {
+        if (property === 'sync') {
+          return async () => {
+            synced.push(String(filePath));
+            return target.sync();
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  };
+
+  await provider.pin(brain, operationId);
+  assert.equal(synced.some((entry) =>
+    entry.startsWith(path.join(operationRoot, 'coordinator-source-pin.json.'))
+      && entry.endsWith('.tmp')), true);
+  assert.equal(synced.includes(operationRoot), true);
+});
+
+test('failed coordinator rename removes only its owned temporary file', async (t) => {
+  const home23Root = await fsp.realpath(await tempDir('home23-memory-source-pin-temp-home-'));
+  const brain = await writeManifestBrain();
+  const operationId = 'brop_coordinator_temp_cleanup';
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
+  const recordPath = path.join(operationRoot, 'coordinator-source-pin.json');
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+  const originalRename = fsp.rename;
+  t.after(async () => {
+    fsp.rename = originalRename;
+    await Promise.all([
+      fsp.rm(home23Root, { recursive: true, force: true }),
+      fsp.rm(brain, { recursive: true, force: true }),
+    ]);
+  });
+  fsp.rename = async (source, destination) => {
+    if (destination === recordPath) {
+      throw Object.assign(new Error('injected coordinator rename failure'), { code: 'EIO' });
+    }
+    return originalRename.call(fsp, source, destination);
+  };
+
+  await assert.rejects(() => provider.pin(brain, operationId), { code: 'EIO' });
+  assert.deepEqual(
+    (await fsp.readdir(operationRoot)).filter((name) =>
+      name.startsWith('coordinator-source-pin.json.') && name.endsWith('.tmp')),
+    [],
+  );
+});
+
+for (const [role, file] of protectedReplacementCases) {
   test(`openPinnedSource rejects an inode replacement of the pinned ${role} file`, async () => {
     const home23Root = await tempDir('home23-memory-source-pin-replacement-home-');
     const brain = await writeManifestBrain();
@@ -469,9 +578,41 @@ test('openPinnedSource binds a safe PID-plus-start process identity and rolls ba
     `${path.basename((await fsp.readdir(path.join(operationRoot, 'pins', processIdentity)))[0])}`,
   );
   const processRecord = JSON.parse(await fsp.readFile(processPin, 'utf8'));
-  assert.equal(processRecord.processIdentity, processIdentity);
   await source.release();
-
+  assert.deepEqual(Object.keys(processRecord).sort(), [
+    'bootToken',
+    'canonicalRoot',
+    'committedBytes',
+    'createdAt',
+    'digest',
+    'generation',
+    'heartbeatAt',
+    'operationId',
+    'pid',
+    'processIdentity',
+    'processStartToken',
+    'protectedFiles',
+    'requesterAgent',
+    'revision',
+    'version',
+  ]);
+  assert.equal(processRecord.processIdentity, processIdentity);
+  assert.deepEqual(processRecord.protectedFiles, [
+    'nodes.gz',
+    'edges.gz',
+    'delta.jsonl',
+    'ann.index',
+    'ann.meta.json',
+  ]);
+  assert.equal(processRecord.committedBytes, 0);
+  assert.equal(processRecord.pid, process.pid);
+  assert.equal(typeof processRecord.bootToken, 'string');
+  assert.notEqual(processRecord.bootToken.length, 0);
+  assert.equal(typeof processRecord.processStartToken, 'string');
+  assert.notEqual(processRecord.processStartToken.length, 0);
+  assert.equal(Number.isNaN(Date.parse(processRecord.createdAt)), false);
+  assert.equal(Number.isNaN(Date.parse(processRecord.heartbeatAt)), false);
+  assert.equal(Date.parse(processRecord.heartbeatAt) >= Date.parse(processRecord.createdAt), true);
   await assert.rejects(
     () => openPinnedSource(pinned.descriptor, { ...exact, processIdentity: '../escape' }),
     { code: 'invalid_request' },
@@ -511,25 +652,191 @@ test('same-process concurrent opens retain the shared pin until the last release
     scratchQuota,
     processIdentity,
   };
-  const [first, second] = await Promise.all([
-    openPinnedSource(pinned.descriptor, exact),
-    openPinnedSource(pinned.descriptor, exact),
-  ]);
+  const first = await openPinnedSource(pinned.descriptor, exact);
   const pinDir = path.join(operationRoot, 'pins', processIdentity);
   const [pinName] = await fsp.readdir(pinDir);
   const pinFile = path.join(pinDir, pinName);
+  const initialRecord = JSON.parse(await fsp.readFile(pinFile, 'utf8'));
+  const second = await openPinnedSource(pinned.descriptor, exact);
+  try {
+    const heartbeatRecord = JSON.parse(await fsp.readFile(pinFile, 'utf8'));
+    assert.equal(heartbeatRecord.createdAt, initialRecord.createdAt);
+    assert.equal(
+      Date.parse(heartbeatRecord.heartbeatAt) > Date.parse(initialRecord.heartbeatAt),
+      true,
+    );
 
-  await first.release();
-  assert.equal(await fsp.access(pinFile).then(() => true).catch(() => false), true);
-  assert.deepEqual((await collect(second.iterateNodes())).map((node) => node.concept), [
-    'pin canary',
-  ]);
-  await first.release();
-  assert.equal(await fsp.access(pinFile).then(() => true).catch(() => false), true);
+    await first.release();
+    assert.equal(await fsp.access(pinFile).then(() => true).catch(() => false), true);
+    assert.deepEqual((await collect(second.iterateNodes())).map((node) => node.concept), [
+      'pin canary',
+    ]);
+    await first.release();
+    assert.equal(await fsp.access(pinFile).then(() => true).catch(() => false), true);
 
-  await second.release();
-  assert.equal(await fsp.access(pinFile).then(() => true).catch(() => false), false);
+    await second.release();
+    assert.equal(await fsp.access(pinFile).then(() => true).catch(() => false), false);
+  } finally {
+    await first.release().catch(() => {});
+    await second.release().catch(() => {});
+  }
   await scratchQuota.close();
+});
+
+test('process pin publication heartbeat and removal are atomically fsynced', async (t) => {
+  const home23Root = await fsp.realpath(await tempDir('home23-process-pin-fsync-home-'));
+  const brain = await writeManifestBrain();
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+  const operationId = 'brop_process_pin_fsync';
+  const pinned = await provider.pin(brain, operationId);
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
+  const quota = await createOperationScratchQuota({ operationRoot });
+  const processIdentity = 'cosmo-process-fsync';
+  const pinDir = path.join(operationRoot, 'pins', processIdentity);
+  const pinsRoot = path.dirname(pinDir);
+  const originalOpen = fsp.open;
+  const synced = [];
+  t.after(async () => {
+    fsp.open = originalOpen;
+    await provider.releaseOperationPins(operationId).catch(() => {});
+    await quota.close();
+    await Promise.all([
+      fsp.rm(home23Root, { recursive: true, force: true }),
+      fsp.rm(brain, { recursive: true, force: true }),
+    ]);
+  });
+  fsp.open = async (filePath, ...args) => {
+    const handle = await originalOpen.call(fsp, filePath, ...args);
+    return new Proxy(handle, {
+      get(target, property) {
+        if (property === 'sync') {
+          return async () => {
+            synced.push(String(filePath));
+            return target.sync();
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  };
+
+  const source = await provider.openPinnedSource(pinned.descriptor, {
+    operationId,
+    scratchQuota: quota,
+    processIdentity,
+    expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
+    expectedRevision: pinned.descriptor.cutoffRevision,
+    expectedDigest: pinned.digest,
+  });
+  try {
+    const processTemps = (await fsp.readdir(pinDir)).filter((name) => name.endsWith('.tmp'));
+    assert.deepEqual(processTemps, []);
+    assert.equal(synced.some((entry) => entry.startsWith(pinDir) && entry.endsWith('.tmp')), true);
+    assert.equal(synced.includes(pinDir), true);
+    await source.release();
+    assert.equal(synced.includes(pinsRoot), true);
+  } finally {
+    await source.release().catch(() => {});
+  }
+});
+
+test('pinned opener holds the external source lock through process-pin publication', async (t) => {
+  const home23Root = await fsp.realpath(await tempDir('home23-process-pin-order-home-'));
+  const brain = await writeManifestBrain();
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+  const operationId = 'brop_process_pin_lock_order';
+  const pinned = await provider.pin(brain, operationId);
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
+  const quota = await createOperationScratchQuota({ operationRoot });
+  const entered = deferred();
+  const release = deferred();
+  let source = null;
+  let opening = null;
+  t.after(async () => {
+    release.resolve();
+    if (!source && opening) source = await opening.catch(() => null);
+    await source?.release().catch(() => {});
+    await provider.releaseOperationPins(operationId).catch(() => {});
+    await quota.close();
+    await Promise.all([
+      fsp.rm(home23Root, { recursive: true, force: true }),
+      fsp.rm(brain, { recursive: true, force: true }),
+    ]);
+  });
+
+  opening = provider.openPinnedSource(pinned.descriptor, {
+    operationId,
+    scratchQuota: quota,
+    processIdentity: 'cosmo-process-order',
+    expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
+    expectedRevision: pinned.descriptor.cutoffRevision,
+    expectedDigest: pinned.digest,
+    _testHooks: {
+      async beforeProcessPinPublish() {
+        entered.resolve();
+        await release.promise;
+      },
+    },
+  });
+  await Promise.race([
+    entered.promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('process pin hook not reached')), 100)),
+  ]);
+  let retirementFinished = false;
+  const retirement = retireUnpinnedSources(brain, {
+    home23Root,
+    lockRoot: path.join(home23Root, 'runtime', 'brain-source-locks'),
+  }).then((result) => {
+    retirementFinished = true;
+    return result;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(retirementFinished, false);
+  release.resolve();
+  source = await opening;
+  await retirement;
+});
+
+test('default stale-pin pruning rejects PID reuse with a different process-start token', async (t) => {
+  const home23Root = await fsp.realpath(await tempDir('home23-process-pin-reuse-home-'));
+  const brain = await writeManifestBrain();
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+  const operationId = 'brop_process_pin_pid_reuse';
+  const pinned = await provider.pin(brain, operationId);
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
+  const quota = await createOperationScratchQuota({ operationRoot });
+  const source = await provider.openPinnedSource(pinned.descriptor, {
+    operationId,
+    scratchQuota: quota,
+    processIdentity: 'cosmo-process-reuse',
+    expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
+    expectedRevision: pinned.descriptor.cutoffRevision,
+    expectedDigest: pinned.digest,
+  });
+  t.after(async () => {
+    await source.close().catch(() => {});
+    await provider.releaseOperationPins(operationId).catch(() => {});
+    await quota.close();
+    await Promise.all([
+      fsp.rm(home23Root, { recursive: true, force: true }),
+      fsp.rm(brain, { recursive: true, force: true }),
+    ]);
+  });
+  const pinDir = path.join(operationRoot, 'pins', 'cosmo-process-reuse');
+  const [pinName] = await fsp.readdir(pinDir);
+  const pinFile = path.join(pinDir, pinName);
+  const record = JSON.parse(await fsp.readFile(pinFile, 'utf8'));
+  await fsp.writeFile(pinFile, `${JSON.stringify({
+    ...record,
+    processStartToken: `${record.processStartToken}-reused`,
+  })}\n`);
+
+  const removed = await pruneStalePins(home23Root, {
+    getOperationState: async () => 'interrupted',
+  });
+  assert.deepEqual(removed, [await fsp.realpath(pinFile).catch(() => pinFile)]);
+  assert.equal(await fsp.access(pinFile).then(() => true).catch(() => false), false);
 });
 
 test('native operation pin reads its exact revision after the live manifest advances', async () => {
@@ -728,4 +1035,111 @@ test('stale process pruning treats partial operations as terminal', async () => 
 
   assert.deepEqual(removed, [canonicalPinFile]);
   assert.equal(await fsp.access(pinFile).then(() => true).catch(() => false), false);
+});
+
+test('terminal source release rejects a symlinked operation root without deleting outside data', async (t) => {
+  const home23Root = await fsp.realpath(await tempDir('home23-memory-source-release-confined-'));
+  const outside = await fsp.realpath(await tempDir('home23-memory-source-release-outside-'));
+  t.after(() => Promise.all([
+    fsp.rm(home23Root, { recursive: true, force: true }),
+    fsp.rm(outside, { recursive: true, force: true }),
+  ]));
+  const operationId = 'brop_symlink_release';
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
+  const operationsRoot = path.dirname(operationRoot);
+  await fsp.mkdir(operationsRoot, { recursive: true });
+  for (const relative of [
+    'coordinator-source-pin.json',
+    path.join('pins', 'canary'),
+    path.join('source-projections', 'canary'),
+  ]) {
+    const target = path.join(outside, relative);
+    await fsp.mkdir(path.dirname(target), { recursive: true });
+    await fsp.writeFile(target, `${relative}\n`);
+  }
+  await fsp.symlink(outside, operationRoot, 'dir');
+  const { releaseOperationSource } = require('../../shared/memory-source');
+
+  await assert.rejects(
+    releaseOperationSource({ home23Root, requesterAgent: 'jerry', operationId }),
+    { code: 'invalid_memory_source' },
+  );
+  for (const relative of [
+    'coordinator-source-pin.json',
+    path.join('pins', 'canary'),
+    path.join('source-projections', 'canary'),
+  ]) {
+    assert.equal(await fsp.readFile(path.join(outside, relative), 'utf8'), `${relative}\n`);
+  }
+});
+
+test('process-pin release rejects an operation-root swap without deleting the replacement target', async (t) => {
+  const home23Root = await fsp.realpath(await tempDir('home23-memory-source-process-release-'));
+  const outside = await fsp.realpath(await tempDir('home23-memory-source-process-outside-'));
+  const brain = await writeManifestBrain();
+  t.after(() => Promise.all([
+    fsp.rm(home23Root, { recursive: true, force: true }),
+    fsp.rm(outside, { recursive: true, force: true }),
+    fsp.rm(brain, { recursive: true, force: true }),
+  ]));
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+  const operationId = 'brop_process_release_swap';
+  const pinned = await provider.pin(brain, operationId);
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
+  const scratchQuota = await createOperationScratchQuota({ operationRoot });
+  const source = await provider.openPinnedSource(pinned.descriptor, {
+    operationId,
+    scratchQuota,
+    expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
+    expectedRevision: pinned.descriptor.cutoffRevision,
+    expectedDigest: pinned.digest,
+  });
+  const processIdentity = (await fsp.readdir(path.join(operationRoot, 'pins')))[0];
+  const pinName = (await fsp.readdir(path.join(operationRoot, 'pins', processIdentity)))[0];
+  const outsidePin = path.join(outside, 'pins', processIdentity, pinName);
+  await fsp.mkdir(path.dirname(outsidePin), { recursive: true });
+  await fsp.writeFile(outsidePin, 'outside process pin must survive\n');
+  const displaced = `${operationRoot}.displaced`;
+  await fsp.rename(operationRoot, displaced);
+  await fsp.symlink(outside, operationRoot, 'dir');
+
+  await assert.rejects(source.release(), { code: 'invalid_memory_source' });
+  assert.equal(await fsp.readFile(outsidePin, 'utf8'), 'outside process pin must survive\n');
+  try {
+    await scratchQuota.close();
+  } catch {}
+});
+
+test('stale-pin pruning rejects an operation-root swap without deleting the replacement target', async (t) => {
+  const home23Root = await fsp.realpath(await tempDir('home23-memory-source-prune-confined-'));
+  const outside = await fsp.realpath(await tempDir('home23-memory-source-prune-outside-'));
+  t.after(() => Promise.all([
+    fsp.rm(home23Root, { recursive: true, force: true }),
+    fsp.rm(outside, { recursive: true, force: true }),
+  ]));
+  const operationId = 'brop_prune_swap';
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
+  const processIdentity = 'dead-process';
+  const pinName = `${'e'.repeat(64)}.json`;
+  const pinFile = path.join(operationRoot, 'pins', processIdentity, pinName);
+  await fsp.mkdir(path.dirname(pinFile), { recursive: true });
+  await fsp.writeFile(pinFile, '{"pid":999994}\n');
+  const outsidePin = path.join(outside, 'pins', processIdentity, pinName);
+  await fsp.mkdir(path.dirname(outsidePin), { recursive: true });
+  await fsp.writeFile(outsidePin, 'outside stale pin must survive\n');
+  const displaced = `${operationRoot}.displaced`;
+  let swapped = false;
+  const { pruneStalePins } = require('../../shared/memory-source');
+
+  await assert.rejects(pruneStalePins(home23Root, {
+    async isProcessAlive() {
+      await fsp.rename(operationRoot, displaced);
+      await fsp.symlink(outside, operationRoot, 'dir');
+      swapped = true;
+      return false;
+    },
+    async getOperationState() { return 'interrupted'; },
+  }), { code: 'invalid_memory_source' });
+  assert.equal(swapped, true);
+  assert.equal(await fsp.readFile(outsidePin, 'utf8'), 'outside stale pin must survive\n');
 });
