@@ -106,6 +106,7 @@ test('read-only proof streams the exact live brain through the production source
   assert.match(result.streamed.edgeLogicalSha256, /^[a-f0-9]{64}$/);
   assert.equal(result.streamed.resources.peakHeapUsedMiB > 0, true);
   assert.equal(result.fullMaterializerUsed, false);
+  assert.equal(result.streamed.freshness, 'known');
   assert.deepEqual(result.expected, { nodes: 2, edges: 1 });
   assert.equal(result.unchanged, true);
   assert.deepEqual(result.before, result.after);
@@ -125,6 +126,9 @@ test('read-only proof supports the production-selected legacy sidecar generation
   assert.equal(result.streamed.nodes, 2);
   assert.equal(result.streamed.edges, 1);
   assert.equal(result.streamed.implementation, 'legacy-resident-sidecar-projection');
+  assert.equal(result.streamed.sourceHealth, 'degraded');
+  assert.equal(result.streamed.freshness, 'unknown');
+  assert.equal(result.streamed.matchOutcome, 'matches');
   assert.equal(result.fullMaterializerUsed, false);
   assert.deepEqual(result.before, result.after);
   assert.deepEqual(await fs.readdir(state.tempRoot), []);

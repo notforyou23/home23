@@ -257,6 +257,8 @@ async function streamLogicalSource({
         largestEdgeBytes,
         canaryMatches,
         sourceHealth: evidence.sourceHealth,
+        freshness: evidence.freshness,
+        matchOutcome: evidence.matchOutcome,
         implementation: evidence.implementation,
         resources: tracker.summary(),
       },
