@@ -2562,6 +2562,87 @@ Operations Reliability rollout.
 
 ---
 
+## Patch 54 — Atomic memory mutation and persistence parity
+
+**Vendored production files touched:**
+- `cosmo23/engine/src/cluster/cluster-aware-memory.js`
+- `cosmo23/engine/src/cluster/memory-merger.js`
+- `cosmo23/engine/src/core/orchestrator.js`
+- `cosmo23/engine/src/ingestion/ingestion-manifest.js`
+- `cosmo23/engine/src/memory/network-memory.js`
+- `cosmo23/engine/src/memory/summarizer.js`
+
+**Vendored and Home23 parity coverage:**
+- `cosmo23/engine/tests/multi-instance/cluster-memory-sync.test.js`
+- `cosmo23/engine/tests/single-instance/cluster-memory-regression.test.js`
+- `cosmo23/engine/tests/unit/cluster-aware-memory.test.js`
+- `cosmo23/engine/tests/unit/ingestion-manifest.test.js`
+- `cosmo23/engine/tests/unit/memory-summarizer-mutation-api.test.js`
+- `cosmo23/engine/tests/unit/orchestrator-consolidation-honesty.test.js`
+- `tests/cosmo23/cluster-aware-memory-persistence.test.cjs`
+- `tests/cosmo23/cluster-snapshot-merger-parity.test.cjs`
+- the matching root-engine persistence, merger, ingestion, recluster,
+  orchestrator, and summarizer tests
+
+**Shared integration companion:**
+`shared/memory-source/legacy-snapshot.cjs` now uses the shared
+quota-backpressured JSONL writer and bounded cluster counter, reserves exact
+manifest growth before zero-growth publication, and reconciles an externally
+owned scratch quota after a failed attempt is removed. This code serves both
+root and vendored legacy-source projections; it is not a second COSMO fork.
+
+**Problem:** Network-memory callers could mutate live node, edge, access,
+embedding, cluster, and consolidation state without advancing the persistence
+generation. Delta capture could then mark a graph clean even though an
+intervening mutation existed. Import, merge, and legacy load paths also lost
+record extensions or typed identities, reserved non-durable cluster IDs,
+rewired string endpoints through numeric coercion, or partially mutated maps
+before discovering malformed/accessor-backed input. A crash or retry could
+therefore publish incomplete memory truth or echo a peer's imported diff.
+
+**Fix — one mutation boundary:** Root and vendored `NetworkMemory` now expose
+the same synchronous persistence barrier and generation CAS. Accepted node,
+edge, access, activation, embedding, topology, decay, pruning, import, and
+removal mutations invalidate the current clean generation exactly once; read-
+only and rejected work does not. The barrier rejects async callbacks before
+invocation, contains returned thenables, and captures a deep detached frozen
+revision without invoking record accessors. Orchestrator, ingestion,
+reclustering, and summarization callers use those APIs instead of writing maps
+directly. Consolidation stamps the stored summary and exact source lineage
+atomically, revalidates source identities after provider work, and removes only
+the source records that still match.
+
+**Fix — exact graph and cluster identity:** Imports preserve exact numeric and
+string IDs, enumerable record extensions, executable timestamps, and typed edge
+endpoints. Allocation floors advance only from accepted live or tombstoned
+identities and probe occupied counter collisions without inventing cluster
+state. Cluster projections and diff merges inspect descriptors before values,
+reject accessors, redirected operations, duplicate/ambiguous identities, and
+non-scalar members, then apply a fully detached validated diff atomically.
+Imported peer changes suppress outbound echo. Tombstones win set/delete
+overlap, node removal cascades incident edge tombstones, and merge round-trips
+preserve full node/edge extensions.
+
+**Fix — durable save/load compatibility:** Change-only saves no longer clone
+the full graph merely to publish a delta. Legacy save/load remains barrier-
+backed, in-place, clean-on-success, and dirty-safe on failure. Its authoritative
+cluster envelope must be complete and exact; forged membership, duplicate IDs,
+ambiguous omitted endpoints, wrapper payloads, and descriptor hazards fail
+before mutation. Empty clusters and exact typed IDs survive a valid reload.
+Failed legacy research projection attempts remove their owned bytes and restore
+scratch-quota accounting even when the quota signal is already aborted.
+
+**Focused verification (offline only):** On frozen branch commit `11c1994`, the
+combined persistence, cluster-merger, mutation-callsite, ingestion,
+reclustering, consolidation, and legacy-load slice passed 148/148. The exact
+prerequisite matrices then passed A 367/367, B 178/178, and C 244/244 with no
+failure, cancellation, or skip. The abort-independent projection cleanup also
+passed its 8/8 legacy-research suite and the broader writer/counter/resident/
+scratch-quota matrix passed 72/72. These receipts do not claim live engine
+restart or Jerry/Forrest acceptance; those remain guarded rollout work.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -2887,3 +2968,10 @@ Operations Reliability rollout.
   saves publish recoverable manifest generations, and early source iteration
   quiesces before an owned file handle closes. This records offline focused
   verification only; live rollout acceptance remains pending.
+- **2026-07-11** — Patch 54 put root and vendored memory mutation, cluster
+  merge, consolidation, and legacy save/load paths behind the same atomic
+  persistence contract. Exact typed identities, extensions, tombstones,
+  generations, source lineage, and failed-projection quota accounting now
+  survive save, import, merge, retry, and reload without partial publication or
+  outbound echo. Offline A/B/C and focused persistence matrices are green;
+  live rollout acceptance remains pending.
