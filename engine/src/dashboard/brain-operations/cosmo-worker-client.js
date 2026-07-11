@@ -12,7 +12,7 @@ const DEFAULT_SOURCE_OPERATION_TYPES = Object.freeze([
 ]);
 
 function clientError(code, message = code, options = {}) {
-  return Object.assign(new Error(message), {
+  return Object.assign(new Error(message, options.cause ? { cause: options.cause } : undefined), {
     code,
     retryable: options.retryable === true,
     statusCode: options.statusCode,
@@ -139,7 +139,7 @@ function createCosmoBrainOperationWorkerClient({
       accept: 'application/json',
       authorization: `Bearer ${assertCapability(capability)}`,
     };
-    const options = { method, headers };
+    const options = { method, headers, redirect: 'error' };
     if (body !== undefined) {
       const encoded = JSON.stringify(body);
       if (Buffer.byteLength(encoded, 'utf8') > maxJsonBytes) {
@@ -193,6 +193,7 @@ function createCosmoBrainOperationWorkerClient({
             accept: 'application/x-ndjson',
             authorization: `Bearer ${assertCapability(capability)}`,
           },
+          redirect: 'error',
           signal,
         });
       } catch (error) {
@@ -237,7 +238,11 @@ function createCosmoBrainOperationWorkerClient({
         buffered += decoder.decode();
       } catch (error) {
         if (signal.aborted) throw signal.reason;
-        throw error;
+        if (typeof error?.code === 'string') throw error;
+        throw clientError('worker_event_invalid', 'COSMO worker event stream is invalid', {
+          retryable: true,
+          cause: error,
+        });
       }
       if (buffered.trim()) {
         throw clientError('worker_event_invalid', 'COSMO worker event stream ended mid-frame', {
