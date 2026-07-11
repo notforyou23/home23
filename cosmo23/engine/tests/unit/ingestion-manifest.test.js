@@ -24,6 +24,12 @@ describe('IngestionManifest', () => {
         const id = nodeIdCounter++;
         return { id, concept, tag, embedding };
       }),
+      patchNode: sinon.stub().callsFake((nodeId, patch, options = {}) => {
+        const node = options.expectedNode;
+        if (!node || node.id !== nodeId) return null;
+        Object.assign(node, patch);
+        return node;
+      }),
       addEdge: sinon.stub(),
       removeNode: sinon.stub(),
       cosineSimilarity: sinon.stub().returns(0.3),
@@ -99,6 +105,8 @@ describe('IngestionManifest', () => {
 
       expect(mockEmbeddingFn.calledOnce).to.be.true;
       expect(mockMemory.addNode.calledOnce).to.be.true;
+      expect(mockMemory.patchNode.calledOnce).to.be.true;
+      expect(mockMemory.patchNode.firstCall.args[1].metadata.source).to.equal('document-feeder');
       expect(manifest._pending.length).to.equal(0);
       expect(manifest._manifest['/test/file.md']).to.exist;
       expect(manifest._manifest['/test/file.md'].hash).to.equal('hash123');

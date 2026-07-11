@@ -28,6 +28,12 @@ describe('DocumentFeeder — integration', function () {
         mockMemory.nodes.set(id, node);
         return node;
       }),
+      patchNode: sinon.stub().callsFake((nodeId, patch, options = {}) => {
+        const node = mockMemory.nodes.get(nodeId);
+        if (!node || (options.expectedNode && options.expectedNode !== node)) return null;
+        Object.assign(node, patch);
+        return node;
+      }),
       addEdge: sinon.stub(),
       removeNode: sinon.stub().callsFake((id) => {
         mockMemory.nodes.delete(id);

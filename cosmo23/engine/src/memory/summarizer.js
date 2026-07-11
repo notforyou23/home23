@@ -127,18 +127,37 @@ Preserve specific facts. Be information-dense. Every sentence should teach somet
         const consolidated = await this.createConsolidatedMemoryGPT5(cluster);
         
         if (consolidated) {
+          if (typeof memoryNetwork.patchNodes !== 'function') {
+            throw new Error('memory_node_patch_api_required');
+          }
+          // Provider work yields. Publish only when every exact source identity
+          // is still current; the check and batch mutation below are synchronous.
+          const sourceStillCurrent = cluster.every((node) => memoryNetwork.nodes.get(node.id) === node);
+          if (!sourceStillCurrent) {
+            this.logger?.warn?.('Memory consolidation discarded after source changed', {
+              sourceCount: cluster.length,
+            });
+            continue;
+          }
+          const patched = memoryNetwork.patchNodes(cluster.map((node) => ({
+            nodeId: node.id,
+            expectedNode: node,
+            patch: { consolidatedAt: consolidationTimestamp },
+          })));
+          if (Number(patched?.updated || 0) !== cluster.length) {
+            this.logger?.warn?.('Memory consolidation discarded after incomplete source commit', {
+              sourceCount: cluster.length,
+              updated: Number(patched?.updated || 0),
+            });
+            continue;
+          }
+
           consolidations.push({
             consolidated: consolidated.content,
             reasoning: consolidated.reasoning,
             sourceNodes: cluster.map(n => n.id),
             model: consolidated.model
           });
-
-          // Mark source nodes as consolidated to prevent re-processing
-          // This is critical for forked/merged runs
-          for (const node of cluster) {
-            node.consolidatedAt = consolidationTimestamp;
-          }
 
           this.logger?.info('Memories consolidated (GPT-5.2)', {
             sourceCount: cluster.length,
@@ -356,31 +375,11 @@ The result should be a standalone insight valuable to someone who never saw the 
       toRemove.push(id);
     }
 
-    // Actually remove the garbage nodes
-    for (const id of toRemove) {
-      memoryNetwork.nodes.delete(id);
-
-      // Clean up edges properly for both numeric and string IDs
-      const edgesToRemove = [];
-      for (const [edgeKey, edge] of memoryNetwork.edges) {
-        let source, target;
-        if (edge.source !== undefined && edge.target !== undefined) {
-          source = edge.source;
-          target = edge.target;
-        } else {
-          const parts = edgeKey.split('->');
-          source = isNaN(parts[0]) ? parts[0] : Number(parts[0]);
-          target = isNaN(parts[1]) ? parts[1] : Number(parts[1]);
-        }
-
-        if (source == id || target == id) {
-          edgesToRemove.push(edgeKey);
-        }
+    if (toRemove.length > 0) {
+      if (typeof memoryNetwork.removeNodes !== 'function') {
+        throw new Error('memory_node_remove_api_required');
       }
-
-      for (const edgeKey of edgesToRemove) {
-        memoryNetwork.edges.delete(edgeKey);
-      }
+      memoryNetwork.removeNodes(toRemove);
     }
 
     if (toRemove.length > 0 || this.logger?.level === 'debug') {
@@ -482,4 +481,3 @@ The result should be a standalone insight valuable to someone who never saw the 
 }
 
 module.exports = { MemorySummarizer };
-
