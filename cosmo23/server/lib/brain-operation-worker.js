@@ -31,6 +31,7 @@ const MAX_ACTIVE_PROVIDER_CALLS = 4096;
 const MAX_PARAMETERS_BYTES = 64 * 1024;
 const MAX_RESULT_BYTES = 64 * 1024;
 const MAX_TOMBSTONES = 100_000;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const CAPABILITY_FIELDS = Object.freeze([
   'requesterAgent', 'targetDomain', 'targetBrainId', 'targetRunId',
   'targetRequesterAgent', 'canonicalRoot', 'accessMode', 'operationType',
@@ -329,6 +330,12 @@ class BrainOperationWorker {
     this.monotonicNow = typeof options.clock?.monotonicNow === 'function'
       ? options.clock.monotonicNow
       : this.now;
+    const timers = options.timers || globalThis;
+    if (typeof timers.setTimeout !== 'function' || typeof timers.clearTimeout !== 'function') {
+      throw workerError('worker_configuration_invalid');
+    }
+    this.setTimeout = (callback, delay) => timers.setTimeout(callback, delay);
+    this.clearTimeout = (timer) => timers.clearTimeout(timer);
     const processStartIdentity = options.processStartIdentity
       || `${process.pid}:${Math.floor(Date.now() - process.uptime() * 1000)}`;
     this.processIdentity = options.processIdentity || createProcessPinIdentity({
@@ -391,6 +398,56 @@ class BrainOperationWorker {
       throw workerError('invalid_request');
     }
     return request;
+  }
+
+  _assertDeadlineOpen(request) {
+    const now = this.now();
+    if (!Number.isFinite(now)) throw workerError('worker_clock_invalid');
+    const hardDeadlineAt = Date.parse(request.operationControl.hardDeadlineAt);
+    if (hardDeadlineAt <= now) {
+      throw workerError('operation_timeout', 'operation hard deadline elapsed', {
+        retryable: false,
+        statusCode: 504,
+      });
+    }
+    return hardDeadlineAt;
+  }
+
+  _armHardDeadline(controller, hardDeadlineAt) {
+    let timer = null;
+    let active = true;
+    const abortAtDeadline = () => {
+      timer = null;
+      if (!active || controller.signal.aborted) return;
+      const now = this.now();
+      if (!Number.isFinite(now)) {
+        controller.abort(workerError('worker_clock_invalid'));
+        return;
+      }
+      const remaining = hardDeadlineAt - now;
+      if (remaining > 0) {
+        timer = this.setTimeout(abortAtDeadline, Math.min(remaining, MAX_TIMER_DELAY_MS));
+        timer?.unref?.();
+        return;
+      }
+      controller.abort(workerError('operation_timeout', 'operation hard deadline elapsed', {
+        retryable: false,
+        statusCode: 504,
+      }));
+    };
+    const remaining = hardDeadlineAt - this.now();
+    if (!Number.isFinite(remaining) || remaining <= 0) {
+      abortAtDeadline();
+    } else {
+      timer = this.setTimeout(abortAtDeadline, Math.min(remaining, MAX_TIMER_DELAY_MS));
+      timer?.unref?.();
+    }
+    return () => {
+      if (!active) return;
+      active = false;
+      if (timer !== null) this.clearTimeout(timer);
+      timer = null;
+    };
   }
 
   _verifyCapabilityForPath(capability, operationId) {
@@ -482,6 +539,8 @@ class BrainOperationWorker {
       if (now < expiresAt) continue;
       record.controller = null;
       record.context = null;
+      record.clearDeadline?.();
+      record.clearDeadline = null;
       record.result = null;
       record.events.length = 0;
       record.eventBytes = 0;
@@ -735,14 +794,25 @@ class BrainOperationWorker {
       }
     } catch (error) {
       if (record.controller.signal.aborted) {
-        const interrupted = record.controller.signal.reason?.code === 'worker_stopped';
-        envelope = Object.freeze({
-          state: interrupted ? 'interrupted' : 'cancelled',
-          result: null,
-          resultArtifact: null,
-          error: null,
-          sourceEvidence: null,
-        });
+        const reason = record.controller.signal.reason;
+        if (reason?.code === 'operation_timeout' || reason?.code === 'worker_clock_invalid') {
+          envelope = Object.freeze({
+            state: 'failed',
+            result: null,
+            resultArtifact: null,
+            error: normalizeExecutorError(reason),
+            sourceEvidence: null,
+          });
+        } else {
+          const interrupted = reason?.code === 'worker_stopped';
+          envelope = Object.freeze({
+            state: interrupted ? 'interrupted' : 'cancelled',
+            result: null,
+            resultArtifact: null,
+            error: null,
+            sourceEvidence: null,
+          });
+        }
       } else {
         envelope = Object.freeze({
           state: 'failed',
@@ -758,6 +828,8 @@ class BrainOperationWorker {
     record.state = envelope.state;
     record.phase = 'terminal';
     record.terminalAt = this.now();
+    record.clearDeadline?.();
+    record.clearDeadline = null;
     record.eventSequence += 1;
     this._pushEvent(record, Object.freeze({
       type: 'terminal',
@@ -810,12 +882,18 @@ class BrainOperationWorker {
   }
 
   async _createRecord(request, policy, executor, fingerprint) {
+    const hardDeadlineAt = this._assertDeadlineOpen(request);
     const controller = new AbortController();
+    const clearDeadline = this._armHardDeadline(controller, hardDeadlineAt);
+    const throwIfAborted = () => {
+      if (controller.signal.aborted) throw controller.signal.reason;
+    };
     let scratchQuota = null;
     let sourcePin = null;
     let cleanupPromise = null;
     const cleanupUnpublished = () => {
       cleanupPromise ||= (async () => {
+        clearDeadline();
         try {
           await sourcePin?.release?.();
         } finally {
@@ -826,6 +904,7 @@ class BrainOperationWorker {
     };
     try {
       const { operationRoot, scratchDir } = await this._prepareScratch(request);
+      throwIfAborted();
       if (this.stopped) throw workerError('worker_stopped');
       if (policy.requiresSourcePin) {
         scratchQuota = await this.scratchQuotaFactory({
@@ -837,6 +916,7 @@ class BrainOperationWorker {
         if (!scratchQuota || typeof scratchQuota.close !== 'function') {
           throw workerError('source_unavailable');
         }
+        throwIfAborted();
         if (this.stopped) throw workerError('worker_stopped');
         sourcePin = await this.sourcePins.openPinnedSource(request.sourcePinDescriptor, {
           expectedCanonicalRoot: request.target.canonicalRoot,
@@ -852,6 +932,7 @@ class BrainOperationWorker {
           identity: capabilityBindings(request),
           signal: controller.signal,
         });
+        throwIfAborted();
         if (!sourcePin || typeof sourcePin.release !== 'function'
             || !Number.isSafeInteger(sourcePin.revision)
             || sourcePin.revision !== request.sourcePinDescriptor.cutoffRevision
@@ -904,6 +985,7 @@ class BrainOperationWorker {
         runPromise: null,
         terminalAt: null,
         resultObservedAt: null,
+        clearDeadline,
       };
       this.records.set(request.operationId, record);
       record.runPromise = Promise.resolve().then(() => this._run(record, executor));
@@ -919,7 +1001,9 @@ class BrainOperationWorker {
     this._gc();
     const request = this._normalizeRequest(operationId, rawRequest);
     this._verifyCapability(capability, request);
+    this._assertDeadlineOpen(request);
     const { target, policy } = await this._resolveAndAuthorize(request);
+    this._assertDeadlineOpen(request);
     request.target = target;
     const fingerprint = requestFingerprint(request);
     return this._withStartLock(operationId, async () => {
@@ -931,6 +1015,7 @@ class BrainOperationWorker {
       }
       if (this.tombstones.has(operationId)) throw workerError('worker_not_found');
       if (this.stopped) throw workerError('worker_stopped');
+      this._assertDeadlineOpen(request);
       const executor = this.executors.get(request.operationType);
       if (!executor) throw workerError('executor_unavailable');
       const record = await this._createRecord(request, policy, executor, fingerprint);
@@ -1015,6 +1100,8 @@ class BrainOperationWorker {
       if (!TERMINAL_STATES.has(record.state) && !record.controller.signal.aborted) {
         record.controller.abort(workerError('worker_stopped'));
       }
+      record.clearDeadline?.();
+      record.clearDeadline = null;
       this._notify(record);
     }
     await Promise.allSettled([...this.inflightStarts]);

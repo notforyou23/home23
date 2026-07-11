@@ -325,11 +325,3 @@ skills:
     defaults:
       quick: true
       saveMarkdown: true
-
-query:
-  defaultModel: claude-opus-4-8
-  defaultMode: full
-  enablePGSByDefault: false
-  pgsSweepModel: MiniMax-M3
-  pgsSynthModel: claude-opus-4-8
-  pgsDepth: 0.25

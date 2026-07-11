@@ -49,6 +49,7 @@ function errorStatus(error) {
   if (['capability_mismatch', 'access_denied'].includes(code)) return 403;
   if (['worker_not_found', 'target_not_found'].includes(code)) return 404;
   if (['worker_operation_conflict', 'worker_result_unavailable'].includes(code)) return 409;
+  if (code === 'operation_timeout') return 504;
   if (['executor_unavailable', 'source_unavailable'].includes(code)) return 503;
   if (['invalid_request', 'operation_id_invalid', 'source_pin_invalid',
     'worker_event_cursor_invalid'].includes(code)) return 400;

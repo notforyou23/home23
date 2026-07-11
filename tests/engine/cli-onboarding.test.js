@@ -11,6 +11,21 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const TEST_NODE_MODULES = dirname(dirname(require.resolve('js-yaml/package.json')));
 
+test('public home config example parses with exact query provider-model pairs', () => {
+  const example = yaml.load(readFileSync(join(process.cwd(), 'config', 'home.yaml.example'), 'utf8'));
+  assert.deepEqual(example.query, {
+    defaultProvider: 'anthropic',
+    defaultModel: 'claude-opus-4-8',
+    defaultMode: 'full',
+    enablePGSByDefault: false,
+    pgsSweepProvider: 'minimax',
+    pgsSweepModel: 'MiniMax-M3',
+    pgsSynthProvider: 'anthropic',
+    pgsSynthModel: 'claude-opus-4-8',
+    pgsDepth: 0.25,
+  });
+});
+
 function makeHome23Root() {
   const root = mkdtempSync(join(tmpdir(), 'home23-cli-onboarding-'));
   mkdirSync(join(root, 'config'), { recursive: true });

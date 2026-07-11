@@ -225,6 +225,37 @@ function makeClock() {
   return clock;
 }
 
+function makeTimers(clock) {
+  let nextId = 0;
+  const pending = new Map();
+  const timers = {
+    setTimeout(callback, delay) {
+      const handle = {
+        id: ++nextId,
+        unref() {},
+      };
+      pending.set(handle.id, { callback, dueAt: clock.wall + delay });
+      return handle;
+    },
+    clearTimeout(handle) {
+      pending.delete(handle?.id);
+    },
+    advance(milliseconds) {
+      clock.advance(milliseconds);
+      while (true) {
+        const due = [...pending.entries()]
+          .filter(([, entry]) => entry.dueAt <= clock.wall)
+          .sort((left, right) => left[1].dueAt - right[1].dueAt)[0];
+        if (!due) break;
+        pending.delete(due[0]);
+        due[1].callback();
+      }
+    },
+    get size() { return pending.size; },
+  };
+  return timers;
+}
+
 async function tempDir(prefix) {
   return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
 }
@@ -279,6 +310,7 @@ async function makeFixture(t, overrides = {}) {
     scratchQuotaFactory,
     executors: overrides.executors || new Map(),
     clock,
+    timers: overrides.timers,
     processStartIdentity: 'test-process-start',
     randomBytes: (size) => Buffer.alloc(size, 7),
   });
@@ -314,6 +346,52 @@ test('worker helpers derive stable trusted process and operation identities', ()
   assert.throws(() => createProcessPinIdentity({ pid: 0, processStartIdentity: 'x' }), typed('source_unavailable'));
   assert.equal(operationRootFromScratch('/tmp/op/scratch'), '/tmp/op');
   assert.throws(() => operationRootFromScratch('/tmp/op/not-scratch'), typed('invalid_request'));
+});
+
+test('expired deadlines fail before target resolution, scratch, or source pinning', async (t) => {
+  const fixture = await makeFixture(t, {
+    executors: new Map([['query', async () => {
+      throw new Error('executor must not run');
+    }]]),
+  });
+  const request = requestFor({ id: operationId('t') });
+  request.operationControl.hardDeadlineAt = new Date(fixture.clock.wall - 1).toISOString();
+  await assert.rejects(
+    () => fixture.worker.start(request.operationId, fixture.token(request), request),
+    typed('operation_timeout'),
+  );
+  assert.deepEqual(fixture.counters, {
+    resolve: 0, open: 0, release: 0, quota: 0, quotaClose: 0,
+  });
+});
+
+test('worker hard deadline aborts a live executor and reports a typed failed result', async (t) => {
+  const clock = makeClock();
+  const timers = makeTimers(clock);
+  const fixture = await makeFixture(t, {
+    clock,
+    timers,
+    executors: new Map([['query', async ({ signal }) => {
+      await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+      throw signal.reason;
+    }]]),
+  });
+  const request = requestFor({ id: operationId('u'), now: clock.wall });
+  request.operationControl.hardDeadlineAt = new Date(clock.wall + 1_000).toISOString();
+  const started = await fixture.worker.start(request.operationId, fixture.token(request), request);
+  assert.equal(started.state, 'running');
+  assert.equal(timers.size, 1);
+
+  timers.advance(1_001);
+  const terminal = await terminalStatus(fixture, request);
+  assert.equal(terminal.state, 'failed');
+  const result = await fixture.worker.result(request.operationId, fixture.token(request));
+  assert.equal(result.state, 'failed');
+  assert.equal(result.error.code, 'operation_timeout');
+  assert.equal(result.error.retryable, false);
+  assert.equal(timers.size, 0);
+  assert.equal(fixture.counters.release, 1);
+  assert.equal(fixture.counters.quotaClose, 1);
 });
 
 test('32 equivalent starts create one worker, one process pin, and one executor', async (t) => {
