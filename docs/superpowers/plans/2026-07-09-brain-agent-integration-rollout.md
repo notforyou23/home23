@@ -5917,7 +5917,9 @@ Do not attach an `EXIT` trap that deletes `FORREST_CONFIG_BACKUP`. Any failure
 after the ignored config mutation and before preparation/restart acceptance must
 stop under the strict shell settings above and retain that mode-0600 external
 backup for operator recovery. Keep the exported path and digest until the sole
-guarded deletion in Step 12; no earlier success or failure path removes it.
+guarded retention verification in Step 12. No automated success or failure path
+deletes it; the operator removes it only after the final pushed acceptance is
+confirmed from the durable receipt.
 
 Back up the ignored ecosystem file without exposing secrets, then exercise the idempotent existing-install migration supplied by the authority plan:
 
@@ -6720,7 +6722,7 @@ Create `docs/receipts/2026-07-09-brain-tools-hardening.md` with these concrete h
 ## Final Git status, commit, and push
 ```
 
-Populate every section with the exact commands, timestamps, operation IDs, result states, watermarks, per-process fresh metric windows, PIDs, restart counts, authority tags, and outputs observed in Steps 0B-10b. Include `EXPECTED_LIVE_TREE == ACTUAL_LIVE_TREE`, either the clean fast-forward index-transition proof or combined deployment original-index hashes, receipt run ID, final artifact-manifest digest when available, and exact Plan A-C group totals. The lifecycle section must reproduce each exact Step 10b command and observed result, name every negative error code, and list the detach, reattach terminal, cancel, restart-reconcile, and zero-result operation IDs with their identity-manifest group. State `not run` or the typed external blocker for any unavailable provider check; never infer a pass. If PGS used isolated control, say explicitly that live-provider large PGS did not pass. In the final Git section record the exact Step 0B implementation commit and remote readback; do not predict the later status/receipt commit hashes.
+Populate every section with the exact commands, timestamps, operation IDs, result states, watermarks, per-process fresh metric windows, PIDs, restart counts, authority tags, and outputs observed in Steps 0B-10b. Include `EXPECTED_LIVE_TREE == ACTUAL_LIVE_TREE`, either the clean fast-forward index-transition proof or combined deployment original-index hashes, receipt run ID, final artifact-manifest digest when available, and exact Plan A-C group totals. The lifecycle section must reproduce each exact Step 10b command and observed result, name every negative error code, and list the detach, reattach terminal, cancel, restart-reconcile, and zero-result operation IDs with their identity-manifest group. State `not run` or the typed external blocker for any unavailable provider check; never infer a pass. If PGS used isolated control, say explicitly that live-provider large PGS did not pass. In the final Git section record the exact Step 0B implementation commit and remote readback; do not predict the later status/receipt commit hashes. For the retained private Forrest recovery backup, the tracked receipt records only `live/forrest-config-backup-retention.json`, `live/forrest-config-backup-retention-readback.json`, the backup basename, and its SHA-256. Never copy the absolute external backup path or any config bytes into a tracked file.
 
 - [ ] **Step 12: Re-run final verification after writing the receipt**
 
@@ -6758,204 +6760,156 @@ test -n "${FORREST_CONFIG_BACKUP:-}"
 test -n "${FORREST_CONFIG_BACKUP_SHA256:-}"
 node - "$FORREST_CONFIG_BACKUP" "$SYSTEM_TMPDIR" "$RECEIPT_RUN_ID" \
   "$FORREST_CONFIG_BACKUP_SHA256" \
-  "$LIVE_RECEIPT_DIR/forrest-config-backup-cleanup.json" <<'NODE'
+  "$LIVE_RECEIPT_DIR/forrest-config-backup-retention.json" \
+  "$LIVE_RECEIPT_DIR" <<'NODE'
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const [file, temporaryRoot, receiptRunId, expectedSha256, output] = process.argv.slice(2);
-const expectedPath = path.join(temporaryRoot, `home23-forrest-config-${receiptRunId}.yaml`);
-if (file !== expectedPath || path.dirname(file) !== temporaryRoot
-    || fs.realpathSync(temporaryRoot) !== temporaryRoot
-    || fs.realpathSync(path.dirname(file)) !== temporaryRoot
-    || fs.realpathSync(path.dirname(output)) !== path.dirname(output)
-    || path.basename(output) !== 'forrest-config-backup-cleanup.json'
+const [file, temporaryRoot, receiptRunId, expectedSha256, output, receiptRoot] =
+  process.argv.slice(2);
+const MAX_BACKUP_BYTES = 16 * 1024 * 1024;
+const canonicalTemporaryRoot = fs.realpathSync(temporaryRoot);
+const canonicalReceiptRoot = fs.realpathSync(receiptRoot);
+const expectedPath = path.join(
+  canonicalTemporaryRoot,
+  `home23-forrest-config-${receiptRunId}.yaml`,
+);
+if (temporaryRoot !== canonicalTemporaryRoot
+    || receiptRoot !== canonicalReceiptRoot
+    || file !== expectedPath
+    || output !== path.join(canonicalReceiptRoot, 'forrest-config-backup-retention.json')
+    || fs.realpathSync(path.dirname(file)) !== canonicalTemporaryRoot
+    || fs.realpathSync(path.dirname(output)) !== canonicalReceiptRoot
     || !/^[a-f0-9]{64}$/.test(expectedSha256)) {
-  throw new Error('forrest_config_backup_cleanup_authority_invalid');
+  throw new Error('forrest_config_backup_retention_authority_invalid');
 }
-const lstatOrNull = (candidate) => {
-  try { return fs.lstatSync(candidate, { bigint: true }); }
-  catch (error) {
-    if (error.code === 'ENOENT') return null;
-    throw error;
-  }
-};
+const sameIdentity = (left, right) => left && right
+  && left.dev === right.dev && left.ino === right.ino;
 const syncDirectory = (directory) => {
   const handle = fs.openSync(directory, fs.constants.O_RDONLY);
   try { fs.fsyncSync(handle); } finally { fs.closeSync(handle); }
 };
-const sameIdentity = (left, right) => left && right
-  && left.dev === right.dev && left.ino === right.ino;
-const recovery = `${file}.cleanup-recovery`;
-if (lstatOrNull(recovery) !== null) {
-  throw new Error('forrest_config_backup_cleanup_recovery_exists');
-}
-const descriptor = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+const readOpened = (descriptor, size) => {
+  const bytes = Buffer.alloc(size);
+  let offset = 0;
+  while (offset < size) {
+    const count = fs.readSync(descriptor, bytes, offset, size - offset, offset);
+    if (count === 0) throw new Error('forrest_config_backup_short_read');
+    offset += count;
+  }
+  return bytes;
+};
+const inspectBackup = () => {
+  const descriptor = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  try {
+    const opened = fs.fstatSync(descriptor, { bigint: true });
+    const named = fs.lstatSync(file, { bigint: true });
+    if (!opened.isFile() || named.isSymbolicLink() || !sameIdentity(opened, named)
+        || fs.realpathSync(file) !== file
+        || (opened.mode & 0o777n) !== 0o600n || opened.nlink !== 1n
+        || (typeof process.getuid === 'function' && opened.uid !== BigInt(process.getuid()))
+        || opened.size < 1n || opened.size > BigInt(MAX_BACKUP_BYTES)) {
+      throw new Error('forrest_config_backup_retention_identity_invalid');
+    }
+    const bytes = readOpened(descriptor, Number(opened.size));
+    const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+    if (sha256 !== expectedSha256) {
+      throw new Error('forrest_config_backup_retention_digest_mismatch');
+    }
+    const finalNamed = fs.lstatSync(file, { bigint: true });
+    if (!sameIdentity(opened, finalNamed) || finalNamed.nlink !== 1n) {
+      throw new Error('forrest_config_backup_retention_changed_concurrently');
+    }
+    return {
+      dev: opened.dev,
+      ino: opened.ino,
+      size: Number(opened.size),
+      sha256,
+    };
+  } finally {
+    fs.closeSync(descriptor);
+  }
+};
+const before = inspectBackup();
+const record = {
+  schemaVersion: 1,
+  receiptRunId,
+  authority: 'live',
+  backupDisposition: 'retained-private-recovery',
+  backupRetained: true,
+  automaticDeletion: false,
+  retentionPolicy: 'operator-removes-only-after-final-acceptance',
+  temporaryRoot: canonicalTemporaryRoot,
+  backupPath: file,
+  backupBasename: path.basename(file),
+  backupSha256: before.sha256,
+  backupBytes: before.size,
+  backupMode: '0600',
+  verifiedAt: new Date().toISOString(),
+};
+const encoded = Buffer.from(`${JSON.stringify(record, null, 2)}\n`);
 let outputDescriptor;
-let outputIdentity;
-let opened;
-let backupBytes;
-let recoveryLinked = false;
-let originalRemoved = false;
-let receiptFinalized = false;
+let outputIdentity = null;
 try {
-  opened = fs.fstatSync(descriptor, { bigint: true });
-  const current = fs.lstatSync(file, { bigint: true });
-  if (!opened.isFile() || current.isSymbolicLink() || current.dev !== opened.dev
-      || current.ino !== opened.ino || (opened.mode & 0o777n) !== 0o600n
-      || opened.nlink !== 1n) {
-    throw new Error('forrest_config_backup_cleanup_identity_invalid');
-  }
-  backupBytes = fs.readFileSync(descriptor);
-  const actualSha256 = crypto.createHash('sha256').update(backupBytes).digest('hex');
-  if (actualSha256 !== expectedSha256) {
-    throw new Error('forrest_config_backup_cleanup_digest_mismatch');
-  }
-  const finalIdentity = fs.lstatSync(file, { bigint: true });
-  if (finalIdentity.dev !== opened.dev || finalIdentity.ino !== opened.ino) {
-    throw new Error('forrest_config_backup_cleanup_changed_concurrently');
-  }
-
   outputDescriptor = fs.openSync(
     output,
-    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL
+      | fs.constants.O_NOFOLLOW,
     0o600,
   );
   outputIdentity = fs.fstatSync(outputDescriptor, { bigint: true });
-  const prepared = `${JSON.stringify({
-    schemaVersion: 1,
-    receiptRunId,
-    authority: 'live',
-    cleanupState: 'prepared',
-    backupBasename: path.basename(file),
-    backupSha256: expectedSha256,
-    backupRemoved: false,
-    recoveryRemoved: false,
-  }, null, 2)}\n`;
-  fs.writeFileSync(outputDescriptor, prepared, 'utf8');
+  fs.writeFileSync(outputDescriptor, encoded);
   fs.fsyncSync(outputDescriptor);
-  syncDirectory(path.dirname(output));
+  fs.closeSync(outputDescriptor);
+  outputDescriptor = undefined;
+  syncDirectory(canonicalReceiptRoot);
 
-  fs.linkSync(file, recovery);
-  recoveryLinked = true;
-  const recoveryIdentity = fs.lstatSync(recovery, { bigint: true });
-  const linkedOriginal = fs.lstatSync(file, { bigint: true });
-  if (!sameIdentity(recoveryIdentity, opened) || !sameIdentity(linkedOriginal, opened)
-      || recoveryIdentity.nlink !== 2n || linkedOriginal.nlink !== 2n) {
-    throw new Error('forrest_config_backup_cleanup_recovery_invalid');
+  const after = inspectBackup();
+  if (before.dev !== after.dev || before.ino !== after.ino
+      || before.size !== after.size || before.sha256 !== after.sha256) {
+    throw new Error('forrest_config_backup_retention_changed_concurrently');
   }
-  syncDirectory(temporaryRoot);
-
-  fs.unlinkSync(file);
-  originalRemoved = true;
-  syncDirectory(temporaryRoot);
-
-  const completed = Buffer.from(`${JSON.stringify({
-    schemaVersion: 1,
-    receiptRunId,
-    authority: 'live',
-    cleanupState: 'complete',
-    backupBasename: path.basename(file),
-    backupSha256: expectedSha256,
-    backupRemoved: true,
-    recoveryRemoved: true,
-  }, null, 2)}\n`);
-  fs.ftruncateSync(outputDescriptor, 0);
-  const written = fs.writeSync(outputDescriptor, completed, 0, completed.length, 0);
-  if (written !== completed.length) {
-    throw new Error('forrest_config_backup_cleanup_receipt_short_write');
-  }
-  fs.fsyncSync(outputDescriptor);
-  syncDirectory(path.dirname(output));
-  receiptFinalized = true;
-
-  const finalRecovery = fs.lstatSync(recovery, { bigint: true });
-  if (!sameIdentity(finalRecovery, opened)) {
-    throw new Error('forrest_config_backup_cleanup_recovery_changed');
-  }
-  fs.unlinkSync(recovery);
-  recoveryLinked = false;
-  syncDirectory(temporaryRoot);
-  if (lstatOrNull(file) !== null || lstatOrNull(recovery) !== null) {
-    throw new Error('forrest_config_backup_cleanup_failed');
+  const receiptDescriptor = fs.openSync(
+    output,
+    fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+  );
+  try {
+    const receiptStat = fs.fstatSync(receiptDescriptor, { bigint: true });
+    const receiptNamed = fs.lstatSync(output, { bigint: true });
+    if (!receiptStat.isFile() || receiptNamed.isSymbolicLink()
+        || !sameIdentity(receiptStat, receiptNamed)
+        || !sameIdentity(receiptStat, outputIdentity)
+        || (receiptStat.mode & 0o777n) !== 0o600n || receiptStat.nlink !== 1n
+        || receiptStat.size !== BigInt(encoded.length)
+        || fs.realpathSync(output) !== output
+        || !readOpened(receiptDescriptor, encoded.length).equals(encoded)
+        || !sameIdentity(fs.lstatSync(output, { bigint: true }), receiptStat)) {
+      throw new Error('forrest_config_backup_retention_receipt_invalid');
+    }
+  } finally {
+    fs.closeSync(receiptDescriptor);
   }
 } catch (error) {
-  let rollbackError = null;
   try {
-    let current = lstatOrNull(file);
-    if (originalRemoved && current === null) {
-      const recoveryIdentity = lstatOrNull(recovery);
-      if (sameIdentity(recoveryIdentity, opened)) {
-        fs.linkSync(recovery, file);
-      } else {
-        const restored = fs.openSync(
-          file,
-          fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL
-            | fs.constants.O_NOFOLLOW,
-          Number(opened.mode & 0o777n),
-        );
-        try {
-          fs.writeFileSync(restored, backupBytes);
-          fs.fsyncSync(restored);
-        } finally {
-          fs.closeSync(restored);
-        }
-      }
-      syncDirectory(temporaryRoot);
-      current = fs.lstatSync(file, { bigint: true });
-    }
-    if (current !== null) {
-      const restoredDescriptor = fs.openSync(
-        file,
-        fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
-      );
-      let restoredBytes;
-      try {
-        const restoredIdentity = fs.fstatSync(restoredDescriptor, { bigint: true });
-        if (!current.isFile() || current.isSymbolicLink()
-            || !sameIdentity(current, restoredIdentity)
-            || (current.mode & 0o777n) !== 0o600n) {
-          throw new Error('forrest_config_backup_cleanup_rollback_invalid');
-        }
-        restoredBytes = fs.readFileSync(restoredDescriptor);
-      } finally {
-        fs.closeSync(restoredDescriptor);
-      }
-      if (crypto.createHash('sha256').update(restoredBytes).digest('hex')
-          !== expectedSha256) {
-        throw new Error('forrest_config_backup_cleanup_rollback_invalid');
-      }
-    }
-    const recoveryIdentity = lstatOrNull(recovery);
-    if (recoveryIdentity !== null && sameIdentity(recoveryIdentity, opened)) {
-      fs.unlinkSync(recovery);
-      recoveryLinked = false;
-      syncDirectory(temporaryRoot);
-    }
-  } catch (rollbackFailure) {
-    rollbackError = rollbackFailure;
-  }
-  try {
-    const currentOutput = lstatOrNull(output);
-    if (sameIdentity(currentOutput, outputIdentity)) {
+    const current = fs.lstatSync(output, { bigint: true });
+    if (sameIdentity(current, outputIdentity)) {
       fs.unlinkSync(output);
-      syncDirectory(path.dirname(output));
+      syncDirectory(canonicalReceiptRoot);
     }
-  } catch (receiptCleanupFailure) {
-    rollbackError ||= receiptCleanupFailure;
+  } catch (cleanupError) {
+    if (cleanupError.code !== 'ENOENT') error.receiptCleanupError = cleanupError;
   }
-  error.rollbackError = rollbackError;
-  error.receiptFinalized = receiptFinalized;
-  error.recoveryRetained = recoveryLinked;
   throw error;
 } finally {
   if (outputDescriptor !== undefined) fs.closeSync(outputDescriptor);
-  fs.closeSync(descriptor);
 }
 NODE
-unset FORREST_CONFIG_BACKUP FORREST_CONFIG_BACKUP_SHA256
+test -f "$FORREST_CONFIG_BACKUP"
+test "$(shasum -a 256 "$FORREST_CONFIG_BACKUP" | awk 'NR == 1 { print $1 }')" = \
+  "$FORREST_CONFIG_BACKUP_SHA256"
 ```
 
-The helper must back up the exact dump bytes/mode before invoking `pm2 save`, compare the **full** live/dump tables, and refuse any unrelated drift before mutation. `PM2_CONFIGURED` contains all seven always-configured names plus exactly the enabled MCP rows present once in the regenerated ecosystem. Post-save it requires every expected process exactly once/online with the normalized ecosystem identity, the new dump equal to the frozen live table, unchanged unrelated normalized rows, no duplicate/stopped/errored entry, and unchanged live PIDs/restart counts across the save. A failed postcondition restores the backup atomically and blocks completion; never leave a partially verified resurrection file. Only after that successful live rollout does the guarded cleanup verify the external Forrest-config backup's canonical parent, exact generated name, regular-file identity, single-link mode, captured bytes, and digest. It exclusively creates and fsyncs a prepared cleanup receipt before mutation, creates and fsyncs a same-inode recovery link, and only then removes the original name. The final receipt is written and fsynced through that already-owned descriptor before the recovery link is removed. Any later write, fsync, identity, or recovery-removal failure restores the original name from the same inode when available or from the still-open validated bytes, removes only the exact owned prepared receipt, and blocks completion with a recoverable mode-0600 backup. The secret-free completed cleanup receipt must exist before the final artifact seal.
+The helper must back up the exact dump bytes/mode before invoking `pm2 save`, compare the **full** live/dump tables, and refuse any unrelated drift before mutation. `PM2_CONFIGURED` contains all seven always-configured names plus exactly the enabled MCP rows present once in the regenerated ecosystem. Post-save it requires every expected process exactly once/online with the normalized ecosystem identity, the new dump equal to the frozen live table, unchanged unrelated normalized rows, no duplicate/stopped/errored entry, and unchanged live PIDs/restart counts across the save. A failed postcondition restores the backup atomically and blocks completion; never leave a partially verified resurrection file. After successful save, the retention verifier proves the external Forrest-config backup's canonical parent, exact generated name, regular-file identity, single-link mode, owner, bounded size, captured bytes, and digest before and after creating a mode-0600 receipt. It never renames, links, truncates, or deletes the backup. The receipt records the exact retained path and the explicit policy `operator-removes-only-after-final-acceptance`; any validation or receipt-write failure removes only its exact owned receipt and leaves the backup untouched. Recheck the exported path, mode, owner, size, and digest immediately before the final artifact seal. Keep the absolute recovery path only in the ignored runtime retention/readback receipts. The tracked closeout names those receipt paths relative to the ignored run root plus the backup basename and digest, never the absolute recovery path; the operator reads the local runtime receipt before removing the backup after final pushed acceptance.
 
 - [ ] **Step 13: Commit, push, and read back the verified live receipt before changing status**
 
@@ -7000,6 +6954,186 @@ Expected: the implemented status first exists only after live evidence, final ve
 Append `STATUS_PUSH_COMMIT` plus its remote equality proof. Because this changes the receipt again, repeat the full A-C arrays, Plan D focused suites, build, `npm test`, contracts, all six helper tests, diff/portability checks, and authority-link/readback validation after the addendum is present. Save every post-addendum TAP/hash beneath the dedicated receipt run. When—and only when—no further run artifact remains to be written, build the one immutable artifact manifest and verify it through the read-only CLI mode:
 
 ```bash
+test -n "${FORREST_CONFIG_BACKUP:-}"
+test -n "${FORREST_CONFIG_BACKUP_SHA256:-}"
+test -n "${SYSTEM_TMPDIR:-}"
+test -n "${RECEIPT_RUN_ID:-}"
+test -n "${RECEIPT_RUN_DIR:-}"
+test -n "${LIVE_RECEIPT_DIR:-}"
+node - "$LIVE_RECEIPT_DIR/forrest-config-backup-retention.json" \
+  "$LIVE_RECEIPT_DIR/forrest-config-backup-retention-readback.json" <<'NODE'
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const [receiptPath, output] = process.argv.slice(2);
+const requiredEnvironment = [
+  'FORREST_CONFIG_BACKUP',
+  'FORREST_CONFIG_BACKUP_SHA256',
+  'SYSTEM_TMPDIR',
+  'RECEIPT_RUN_ID',
+  'RECEIPT_RUN_DIR',
+  'LIVE_RECEIPT_DIR',
+];
+if (requiredEnvironment.some((name) => typeof process.env[name] !== 'string'
+    || process.env[name].length === 0)) {
+  throw new Error('forrest_config_backup_retention_environment_invalid');
+}
+const sameIdentity = (left, right) => left && right
+  && left.dev === right.dev && left.ino === right.ino;
+const syncDirectory = (directory) => {
+  const handle = fs.openSync(directory, fs.constants.O_RDONLY);
+  try { fs.fsyncSync(handle); } finally { fs.closeSync(handle); }
+};
+const readOpened = (descriptor, size) => {
+  const bytes = Buffer.alloc(size);
+  let offset = 0;
+  while (offset < size) {
+    const count = fs.readSync(descriptor, bytes, offset, size - offset, offset);
+    if (count === 0) throw new Error('forrest_config_backup_retention_short_read');
+    offset += count;
+  }
+  return bytes;
+};
+const readBoundedReceipt = () => {
+  const descriptor = fs.openSync(
+    receiptPath,
+    fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+  );
+  try {
+    const opened = fs.fstatSync(descriptor, { bigint: true });
+    const named = fs.lstatSync(receiptPath, { bigint: true });
+    if (!opened.isFile() || named.isSymbolicLink() || !sameIdentity(opened, named)
+        || opened.nlink !== 1n || (opened.mode & 0o777n) !== 0o600n
+        || opened.size < 1n || opened.size > 64n * 1024n
+        || fs.realpathSync(receiptPath) !== receiptPath) {
+      throw new Error('forrest_config_backup_retention_receipt_invalid');
+    }
+    const bytes = readOpened(descriptor, Number(opened.size));
+    const finalOpened = fs.fstatSync(descriptor, { bigint: true });
+    const finalNamed = fs.lstatSync(receiptPath, { bigint: true });
+    if (!sameIdentity(finalOpened, opened) || finalOpened.size !== opened.size
+        || !sameIdentity(finalNamed, opened) || finalNamed.nlink !== 1n) {
+      throw new Error('forrest_config_backup_retention_receipt_changed');
+    }
+    return {
+      value: JSON.parse(bytes.toString('utf8')),
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+    };
+  } finally {
+    fs.closeSync(descriptor);
+  }
+};
+const retentionReceipt = readBoundedReceipt();
+const receipt = retentionReceipt.value;
+const canonicalTemporaryRoot = fs.realpathSync(process.env.SYSTEM_TMPDIR);
+const canonicalReceiptRunRoot = fs.realpathSync(process.env.RECEIPT_RUN_DIR);
+const canonicalReceiptRoot = fs.realpathSync(process.env.LIVE_RECEIPT_DIR);
+const expectedBackupPath = path.join(
+  canonicalTemporaryRoot,
+  `home23-forrest-config-${process.env.RECEIPT_RUN_ID}.yaml`,
+);
+if (process.env.SYSTEM_TMPDIR !== canonicalTemporaryRoot
+    || process.env.RECEIPT_RUN_DIR !== canonicalReceiptRunRoot
+    || process.env.LIVE_RECEIPT_DIR !== canonicalReceiptRoot
+    || path.dirname(canonicalReceiptRoot) !== canonicalReceiptRunRoot
+    || receiptPath !== path.join(
+      canonicalReceiptRoot,
+      'forrest-config-backup-retention.json',
+    )
+    || output !== path.join(
+      canonicalReceiptRoot,
+      'forrest-config-backup-retention-readback.json',
+    )
+    || process.env.FORREST_CONFIG_BACKUP !== expectedBackupPath
+    || !/^[a-f0-9]{64}$/.test(process.env.FORREST_CONFIG_BACKUP_SHA256)
+    || receipt.schemaVersion !== 1
+    || receipt.receiptRunId !== process.env.RECEIPT_RUN_ID
+    || receipt.authority !== 'live'
+    || receipt.backupDisposition !== 'retained-private-recovery'
+    || receipt.backupRetained !== true
+    || receipt.automaticDeletion !== false
+    || receipt.retentionPolicy !== 'operator-removes-only-after-final-acceptance'
+    || receipt.temporaryRoot !== canonicalTemporaryRoot
+    || receipt.backupPath !== expectedBackupPath
+    || receipt.backupBasename !== path.basename(expectedBackupPath)
+    || receipt.backupSha256 !== process.env.FORREST_CONFIG_BACKUP_SHA256
+    || receipt.backupMode !== '0600'
+    || !Number.isSafeInteger(receipt.backupBytes) || receipt.backupBytes < 1
+    || receipt.backupBytes > 16 * 1024 * 1024
+    || typeof receipt.verifiedAt !== 'string'
+    || Number.isNaN(Date.parse(receipt.verifiedAt))) {
+  throw new Error('forrest_config_backup_retention_receipt_invalid');
+}
+const descriptor = fs.openSync(
+  receipt.backupPath,
+  fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+);
+let opened;
+let bytes;
+try {
+  opened = fs.fstatSync(descriptor, { bigint: true });
+  const named = fs.lstatSync(receipt.backupPath, { bigint: true });
+  if (!opened.isFile() || named.isSymbolicLink() || !sameIdentity(opened, named)
+      || opened.size !== BigInt(receipt.backupBytes)
+      || (opened.mode & 0o777n) !== 0o600n || opened.nlink !== 1n
+      || (typeof process.getuid === 'function' && opened.uid !== BigInt(process.getuid()))
+      || fs.realpathSync(receipt.backupPath) !== receipt.backupPath) {
+    throw new Error('forrest_config_backup_retention_readback_failed');
+  }
+  bytes = readOpened(descriptor, receipt.backupBytes);
+  const finalOpened = fs.fstatSync(descriptor, { bigint: true });
+  const finalNamed = fs.lstatSync(receipt.backupPath, { bigint: true });
+  if (!finalOpened.isFile() || finalNamed.isSymbolicLink()
+      || !sameIdentity(finalOpened, opened) || finalOpened.size !== opened.size
+      || !sameIdentity(finalNamed, opened) || finalNamed.size !== opened.size
+      || (finalNamed.mode & 0o777n) !== 0o600n || finalNamed.nlink !== 1n
+      || (typeof process.getuid === 'function' && finalNamed.uid !== BigInt(process.getuid()))
+      || fs.realpathSync(receipt.backupPath) !== receipt.backupPath
+      || crypto.createHash('sha256').update(bytes).digest('hex')
+        !== process.env.FORREST_CONFIG_BACKUP_SHA256) {
+    throw new Error('forrest_config_backup_retention_readback_failed');
+  }
+} finally {
+  fs.closeSync(descriptor);
+}
+(async () => {
+  const { receiptContext, writeJsonReceipt } =
+    await import('./scripts/lib/brain-acceptance-common.mjs');
+  const context = await receiptContext({
+    'receipt-run-dir': process.env.RECEIPT_RUN_DIR,
+    'receipt-run-id': process.env.RECEIPT_RUN_ID,
+    authority: 'live',
+  }, process.env);
+  await writeJsonReceipt(context, output, {
+    helper: 'forrest-config-backup-retention',
+    scenario: 'final-readback',
+    receiptKind: 'retained-backup-readback',
+    protectedResultRead: false,
+    backupDisposition: receipt.backupDisposition,
+    backupRetained: true,
+    automaticDeletion: false,
+    retentionPolicy: receipt.retentionPolicy,
+    backupPath: receipt.backupPath,
+    backupBasename: receipt.backupBasename,
+    backupSha256: receipt.backupSha256,
+    backupBytes: receipt.backupBytes,
+    backupMode: receipt.backupMode,
+    backupDev: String(opened.dev),
+    backupIno: String(opened.ino),
+    retentionReceiptBasename: path.basename(receiptPath),
+    retentionReceiptSha256: retentionReceipt.sha256,
+    verifiedAt: new Date().toISOString(),
+  });
+  syncDirectory(canonicalReceiptRoot);
+})().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
+NODE
+test -f "$LIVE_RECEIPT_DIR/forrest-config-backup-retention-readback.json"
+test -f "$FORREST_CONFIG_BACKUP"
+test "$(shasum -a 256 "$FORREST_CONFIG_BACKUP" | awk 'NR == 1 { print $1 }')" = \
+  "$FORREST_CONFIG_BACKUP_SHA256"
 node scripts/live-brain-tools-smoke.mjs --scenario verify-receipts \
   --build-artifact-manifest --smoke-root "$RECEIPT_RUN_DIR" \
   --output "$RECEIPT_RUN_DIR/artifact-manifest.json"
