@@ -210,7 +210,7 @@ class IngestionManifest {
           }
 
           // Attach feeder metadata to the node
-          node.metadata = {
+          const metadata = {
             source: 'document-feeder',
             sourcePath: item.sourcePath,
             chunkKey: item.sourcePath,
@@ -227,14 +227,28 @@ class IngestionManifest {
             // Classification
             docFamily: item.docFamily || null
           };
+          if (typeof this.memory.patchNode !== 'function') {
+            throw new Error('memory_node_patch_api_required');
+          }
+          const patchedNode = this.memory.patchNode(node.id, { metadata }, {
+            expectedNode: node,
+          });
+          if (!patchedNode) {
+            this.logger?.warn?.('Memory node changed before feeder metadata commit', {
+              filePath: item.filePath,
+              chunkIndex: item.chunkIndex,
+              nodeId: node.id,
+            });
+            continue;
+          }
 
           const key = `${item.filePath}:${item.chunkIndex}`;
-          nodeIdMap.set(key, node.id);
+          nodeIdMap.set(key, patchedNode.id);
 
           if (!fileNodeIds.has(item.filePath)) {
             fileNodeIds.set(item.filePath, []);
           }
-          fileNodeIds.get(item.filePath).push(node.id);
+          fileNodeIds.get(item.filePath).push(patchedNode.id);
         }
 
         // Phase 4: Create structural edges from relationships

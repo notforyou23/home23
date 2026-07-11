@@ -7,7 +7,7 @@ const { ClusterAwareMemory } = require('../../src/cluster/cluster-aware-memory')
 const { NetworkMemory } = require('../../src/memory/network-memory');
 
 const loadConfig = () => {
-  const configPath = path.join(__dirname, '../../src/config.yaml');
+  const configPath = path.join(__dirname, '../../src/config.test-quantum.yaml');
   return yaml.load(fs.readFileSync(configPath, 'utf8'));
 };
 
@@ -46,6 +46,7 @@ describe('ClusterAwareMemory', () => {
     const node = await memory.addNode('Test concept for cluster-aware wrapper', 'test');
 
     expect(node).to.exist;
+    expect(node).to.equal(memory.nodes.get(node.id));
     expect(memory.nodes.size).to.equal(1);
     expect(memory.__cluster).to.equal(cluster);
     expect(cluster.isClusterEnabled()).to.equal(false);
@@ -177,6 +178,7 @@ describe('ClusterAwareMemory', () => {
     cluster.setClusterEnabled(true);
     cluster.startCycleTracking();
     cluster.startCycleTracking(); // ensure clean slate
+    const beforeMerge = memory.capturePersistenceSnapshot();
 
     await cluster.fetchMergedState(11);
 
@@ -187,9 +189,15 @@ describe('ClusterAwareMemory', () => {
     expect(cluster.trackedNodes.size).to.equal(0);
     expect(cluster.trackedEdges.size).to.equal(0);
     expect(cluster.trackedClusters.size).to.equal(0);
+    expect(memory.persistenceGeneration).to.be.greaterThan(beforeMerge.generation);
+    expect(memory.markPersistenceCleanIfGeneration(beforeMerge.generation)).to.equal(false);
+    expect(memory.dirtyNodeIds.has(9001)).to.equal(true);
+    expect(memory.dirtyEdgeKeys.has('9001->9002')).to.equal(true);
 
     cluster.startCycleTracking();
     const mergedNode = memory.nodes.get(9001);
+    expect(mergedNode.created).to.be.instanceOf(Date);
+    expect(mergedNode.accessed).to.be.instanceOf(Date);
     mergedNode.weight = 0.9;
     expect(cluster.trackedNodes.has(9001)).to.be.true;
   });

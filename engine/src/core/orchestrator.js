@@ -7097,6 +7097,7 @@ class Orchestrator {
           const feederNodes = existingState.memory.nodes.filter(n => !ourIds.has(n.id));
           if (feederNodes.length > 0) {
             state.memory.nodes.push(...feederNodes);
+            let newEdges = [];
             // Also merge edges referencing feeder nodes
             if (existingState.memory.edges) {
               const feederNodeIds = new Set(feederNodes.map(n => n.id));
@@ -7104,20 +7105,23 @@ class Orchestrator {
                 e => feederNodeIds.has(e.from) || feederNodeIds.has(e.to)
               );
               const ourEdgeKeys = new Set((state.memory.edges || []).map(e => `${e.from}-${e.to}`));
-              const newEdges = feederEdges.filter(e => !ourEdgeKeys.has(`${e.from}-${e.to}`));
+              newEdges = feederEdges.filter(e => !ourEdgeKeys.has(`${e.from}-${e.to}`));
               if (newEdges.length > 0) {
                 state.memory.edges = [...(state.memory.edges || []), ...newEdges];
               }
             }
             // Import into live memory so subsequent cycles see the new nodes
-            for (const node of feederNodes) {
-              const nodeRecord = this.memory.normalizeNodeRecord
-                ? this.memory.normalizeNodeRecord(node)
-                : node;
-              this.memory.nodes.set(node.id, nodeRecord);
+            if (typeof this.memory.importGraphChanges !== 'function') {
+              throw new Error('memory_graph_import_api_required');
             }
+            const imported = this.memory.importGraphChanges({
+              nodes: feederNodes,
+              edges: newEdges,
+            });
             this.logger.info('Merged feeder nodes into state', {
               feederNodes: feederNodes.length,
+              importedNodes: imported.importedNodes,
+              importedEdges: imported.importedEdges,
               totalNodes: state.memory.nodes.length
             });
           }
@@ -7903,12 +7907,23 @@ class Orchestrator {
       try {
         const embedding = await this.memory.embed(node.concept);
         if (embedding) {
-          node.embedding = this.memory.normalizeEmbedding
+          const normalizedEmbedding = this.memory.normalizeEmbedding
             ? this.memory.normalizeEmbedding(embedding)
             : embedding;
-          node.embedding_status = 'embedded';
-          this.memory.markNodeDirty?.(node.id);
-          done++;
+          const current = this.memory.nodes.get(id);
+          if (current !== node || current.embedding) {
+            skipped++;
+          } else {
+            if (typeof this.memory.patchNode !== 'function') {
+              throw new Error('memory_node_patch_api_required');
+            }
+            const updated = this.memory.patchNode(node.id, {
+              embedding: normalizedEmbedding,
+              embedding_status: 'embedded',
+            }, { expectedNode: node });
+            if (updated) done++;
+            else skipped++;
+          }
         } else {
           failed++;
         }

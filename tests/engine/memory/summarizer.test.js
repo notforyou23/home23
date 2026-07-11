@@ -25,6 +25,37 @@ function makeLogger() {
   return logger;
 }
 
+function attachMutationApi(memoryNetwork) {
+  memoryNetwork.mutationCalls = { patchNodes: 0, patchNode: 0, removeNodes: 0 };
+  memoryNetwork.patchNodes = (entries) => {
+    memoryNetwork.mutationCalls.patchNodes += 1;
+    const nodes = [];
+    for (const entry of entries) {
+      const stored = memoryNetwork.nodes.get(entry.nodeId);
+      if (!stored || (entry.expectedNode && stored !== entry.expectedNode)) continue;
+      Object.assign(stored, entry.patch);
+      nodes.push(stored);
+    }
+    return { updated: nodes.length, nodes };
+  };
+  memoryNetwork.patchNode = (nodeId, patch, options = {}) => {
+    memoryNetwork.mutationCalls.patchNode += 1;
+    const stored = memoryNetwork.nodes.get(nodeId);
+    if (!stored || (options.expectedNode && stored !== options.expectedNode)) return null;
+    Object.assign(stored, patch);
+    return stored;
+  };
+  memoryNetwork.removeNodes = (nodeIds) => {
+    memoryNetwork.mutationCalls.removeNodes += 1;
+    let removedNodes = 0;
+    for (const nodeId of nodeIds) {
+      if (memoryNetwork.nodes.delete(nodeId)) removedNodes += 1;
+    }
+    return { removedNodes, removedEdges: 0 };
+  };
+  return memoryNetwork;
+}
+
 test('createConsolidatedMemoryGPT5 caps large clusters before sending model prompt', async () => {
   process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'test-key';
   const logger = makeLogger();
@@ -79,7 +110,7 @@ test('consolidateMemories limits cluster work per run and records deferral', asy
     }))
   );
   const nodes = clusters.flat();
-  const memoryNetwork = { nodes: new Map(nodes.map((node) => [node.id, node])) };
+  const memoryNetwork = attachMutationApi({ nodes: new Map(nodes.map((node) => [node.id, node])) });
   const attempted = [];
 
   summarizer.clusterSimilarMemories = async () => clusters;
@@ -94,6 +125,7 @@ test('consolidateMemories limits cluster work per run and records deferral', asy
   assert.deepEqual(attempted, ['cluster-0-node-0', 'cluster-1-node-0']);
   assert.ok(nodes.slice(0, 6).every((node) => node.consolidatedAt));
   assert.ok(nodes.slice(6).every((node) => !node.consolidatedAt));
+  assert.equal(memoryNetwork.mutationCalls.patchNodes, 2);
   assert.equal(summarizer.consolidationHistory.at(-1).eligibleClusters, 5);
   assert.equal(summarizer.consolidationHistory.at(-1).attemptedClusters, 2);
   assert.equal(summarizer.consolidationHistory.at(-1).deferredClusters, 3);
@@ -122,7 +154,7 @@ test('consolidateMemories dry-runs source compost without deleting sources', asy
     })),
   ];
   const nodes = clusters.flat();
-  const memoryNetwork = { nodes: new Map(nodes.map((node) => [node.id, node])) };
+  const memoryNetwork = attachMutationApi({ nodes: new Map(nodes.map((node) => [node.id, node])) });
 
   summarizer.clusterSimilarMemories = async () => clusters;
   summarizer.createConsolidatedMemoryGPT5 = async (cluster) => ({
@@ -140,6 +172,8 @@ test('consolidateMemories dry-runs source compost without deleting sources', asy
   assert.equal(result[0].compost.wouldRemoveSourceNodes, 5);
   assert.equal(result[1].compost.wouldRemoveSourceNodes, 5);
   assert.equal(memoryNetwork.nodes.size, 10);
+  assert.equal(memoryNetwork.mutationCalls.patchNodes, 2);
+  assert.equal(memoryNetwork.mutationCalls.removeNodes, 0);
   assert.equal(summarizer.consolidationHistory.at(-1).compostDryRun.wouldRemoveSourceNodes, 10);
   assert.equal(summarizer.consolidationHistory.at(-1).compostDryRun.clusters, 2);
 });
@@ -151,18 +185,16 @@ test('finalizeConsolidationCompost applies removal only after summary provenance
   const removed = [];
   const sourceNodes = ['source-1', 'source-2', 'source-3'];
   const summaryNode = { id: 'summary-1', concept: '[CONSOLIDATED] source summary', tag: 'consolidated', metadata: {} };
-  const memoryNetwork = {
+  const memoryNetwork = attachMutationApi({
     nodes: new Map([
       ...sourceNodes.map((id) => [id, { id, concept: id, tag: 'reasoning' }]),
       [summaryNode.id, summaryNode],
     ]),
-    removeNode(id) {
-      removed.push(id);
-      return this.nodes.delete(id);
-    },
-    markNodeDirty(id) {
-      this.dirtyNodeId = id;
-    },
+  });
+  const originalRemoveNodes = memoryNetwork.removeNodes;
+  memoryNetwork.removeNodes = (nodeIds) => {
+    removed.push(...nodeIds);
+    return originalRemoveNodes(nodeIds);
   };
   const consolidation = {
     sourceNodes,
@@ -181,5 +213,7 @@ test('finalizeConsolidationCompost applies removal only after summary provenance
   assert.equal(memoryNetwork.nodes.has(summaryNode.id), true);
   assert.deepEqual(summaryNode.metadata.consolidationProvenance.sourceNodes, sourceNodes);
   assert.equal(summaryNode.metadata.consolidationProvenance.compostedSourceCount, 3);
-  assert.equal(memoryNetwork.dirtyNodeId, summaryNode.id);
+  assert.equal(summaryNode.metadata.consolidationProvenance.model, null);
+  assert.equal(memoryNetwork.mutationCalls.patchNode, 1);
+  assert.equal(memoryNetwork.mutationCalls.removeNodes, 1);
 });

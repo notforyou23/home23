@@ -131,27 +131,25 @@ class ClusterAwareMemory {
     const originalClear = map.clear.bind(map);
 
     map.set = (key, value) => {
-      const numericKey = Number(key);
-      const instrumented = this.instrumentNodeValue(numericKey, value);
+      const instrumented = this.instrumentNodeValue(key, value);
       const result = originalSet(key, instrumented);
       if (!this.suppressTracking) {
-        this.recordNodeMutation(numericKey);
+        this.recordNodeMutation(key);
       }
       return result;
     };
 
     map.delete = (key) => {
-      const numericKey = Number(key);
       const existed = map.has(key);
       const result = originalDelete(key);
       if (existed && !this.suppressTracking) {
-        this.recordNodeDeletion(numericKey);
+        this.recordNodeDeletion(key);
       }
       return result;
     };
 
     map.clear = () => {
-      const keys = Array.from(map.keys()).map(Number);
+      const keys = Array.from(map.keys());
       const result = originalClear();
       if (!this.suppressTracking) {
         for (const key of keys) {
@@ -164,7 +162,7 @@ class ClusterAwareMemory {
     map.__clusterInstrumented = true;
 
     for (const [key, value] of Array.from(map.entries())) {
-      originalSet(key, this.instrumentNodeValue(Number(key), value));
+      originalSet(key, this.instrumentNodeValue(key, value));
     }
   }
 
@@ -382,21 +380,19 @@ class ClusterAwareMemory {
   }
 
   recordNodeMutation(nodeId) {
-    if (Number.isNaN(nodeId)) return;
+    if (nodeId === undefined || nodeId === null || (typeof nodeId === 'number' && Number.isNaN(nodeId))) return;
     if (this.suppressTracking) return;
-    const numericId = Number(nodeId);
-    this.trackedNodes.add(numericId);
-    this.deletedNodes.delete(numericId);
+    this.trackedNodes.add(nodeId);
+    this.deletedNodes.delete(nodeId);
     this.versionClock += 1;
     this.lastDiffTimestamp = Date.now();
   }
 
   recordNodeDeletion(nodeId) {
-    if (Number.isNaN(nodeId)) return;
+    if (nodeId === undefined || nodeId === null || (typeof nodeId === 'number' && Number.isNaN(nodeId))) return;
     if (this.suppressTracking) return;
-    const numericId = Number(nodeId);
-    this.trackedNodes.delete(numericId);
-    this.deletedNodes.add(numericId);
+    this.trackedNodes.delete(nodeId);
+    this.deletedNodes.add(nodeId);
     this.versionClock += 1;
     this.lastDiffTimestamp = Date.now();
   }
@@ -455,7 +451,13 @@ class ClusterAwareMemory {
     const stored = this.localMemory.edges?.get(edgeKey);
     if (!stored) return null;
     const edge = this.unwrapEdge(stored);
-    const [source, target] = edgeKey.split('->').map(Number);
+    let source = edge.source;
+    let target = edge.target;
+    if (source === undefined || target === undefined) {
+      const parts = edgeKey.split('->');
+      source = Number.isNaN(Number(parts[0])) ? parts[0] : Number(parts[0]);
+      target = Number.isNaN(Number(parts[1])) ? parts[1] : Number(parts[1]);
+    }
     return {
       id: edgeKey,
       source,
@@ -583,93 +585,43 @@ class ClusterAwareMemory {
     const edgeDeletes = Array.isArray(deletes?.edgeKeys) ? deletes.edgeKeys : [];
     const clusterDeletes = Array.isArray(deletes?.clusterIds) ? deletes.clusterIds : [];
 
-    this.withSuppressedTracking(() => {
-      for (const nodeData of nodeSets) {
-        this.applyNodeSnapshot(nodeData);
-      }
-
-      for (const edgeData of edgeSets) {
-        // CRITICAL FIX: Use string-safe sort for merged runs with string IDs
-        const edgeKey = edgeData.id || [edgeData.source, edgeData.target].sort((a, b) => {
-          const strA = String(a);
-          const strB = String(b);
-          return strA.localeCompare(strB);
-        }).join('->');
-        this.applyEdgeSnapshot(edgeKey, edgeData);
-      }
-
-      for (const clusterData of clusterSets) {
-        this.applyClusterSnapshot(clusterData);
-      }
-
-      for (const nodeId of nodeDeletes) {
-        // CRITICAL FIX: Don't convert to Number (breaks string IDs from merged runs)
-        // Use nodeId as-is (works with both numeric and string)
-        Map.prototype.delete.call(this.localMemory.nodes, nodeId);
-        for (const clusterSet of this.localMemory.clusters.values()) {
-          clusterSet.delete(nodeId);
-        }
-      }
-
-      for (const edgeKey of edgeDeletes) {
-        Map.prototype.delete.call(this.localMemory.edges, edgeKey);
-      }
-
-      for (const clusterId of clusterDeletes) {
-        // CRITICAL FIX: Don't convert to Number (preserve type)
-        Map.prototype.delete.call(this.localMemory.clusters, clusterId);
-      }
-    });
+    if (typeof this.localMemory.importGraphChanges !== 'function') {
+      throw new Error('memory_graph_import_api_required');
+    }
+    return this.withSuppressedTracking(() => this.localMemory.importGraphChanges({
+      nodes: nodeSets,
+      edges: edgeSets,
+      clusters: clusterSets,
+      nodeDeletes,
+      edgeDeletes,
+      clusterDeletes,
+    }));
   }
 
   applyNodeSnapshot(data) {
     if (!data || data.id === undefined || data.id === null) return;
-
-    const nodeId = Number(data.id);
-    const node = {
-      id: nodeId,
-      concept: data.concept,
-      summary: data.summary,
-      keyPhrase: data.keyPhrase,
-      tag: data.tag,
-      embedding: data.embedding ? Array.from(data.embedding) : null,
-      weight: data.weight ?? 1.0,
-      activation: data.activation ?? 0,
-      cluster: data.cluster ?? null,
-      accessCount: data.accessCount ?? 0,
-      created: data.created ? new Date(data.created) : new Date(),
-      accessed: data.accessed ? new Date(data.accessed) : new Date()
-    };
-
-    Map.prototype.set.call(this.localMemory.nodes, nodeId, this.instrumentNodeValue(nodeId, node));
-
-    if (typeof this.localMemory.nextNodeId === 'number' && nodeId >= this.localMemory.nextNodeId) {
-      this.localMemory.nextNodeId = nodeId + 1;
+    if (typeof this.localMemory.importGraphChanges !== 'function') {
+      throw new Error('memory_graph_import_api_required');
     }
+    return this.withSuppressedTracking(() => this.localMemory.importGraphChanges({ nodes: [data] }));
   }
 
   applyEdgeSnapshot(edgeKey, data) {
     if (!edgeKey) return;
-    const edge = {
-      weight: data.weight ?? 0.1,
-      type: data.type || 'associative',
-      created: data.created ? new Date(data.created) : new Date(),
-      accessed: data.accessed ? new Date(data.accessed) : new Date()
-    };
-
-    Map.prototype.set.call(this.localMemory.edges, edgeKey, this.instrumentEdgeValue(edgeKey, edge));
+    if (typeof this.localMemory.importGraphChanges !== 'function') {
+      throw new Error('memory_graph_import_api_required');
+    }
+    return this.withSuppressedTracking(() => this.localMemory.importGraphChanges({
+      edges: [[edgeKey, data]],
+    }));
   }
 
   applyClusterSnapshot(data) {
     if (!data || data.id === undefined || data.id === null) return;
-    const clusterId = Number(data.id);
-    const nodeIds = Array.isArray(data.nodes) ? data.nodes : [];
-    const set = this.instrumentClusterSet(clusterId, new Set(nodeIds));
-    Map.prototype.set.call(this.localMemory.clusters, clusterId, set);
-
-    if (typeof this.localMemory.nextClusterId === 'number' && clusterId >= this.localMemory.nextClusterId) {
-      this.localMemory.nextClusterId = clusterId + 1;
+    if (typeof this.localMemory.importGraphChanges !== 'function') {
+      throw new Error('memory_graph_import_api_required');
     }
+    return this.withSuppressedTracking(() => this.localMemory.importGraphChanges({ clusters: [data] }));
   }
 
   async waitSyncGate() {

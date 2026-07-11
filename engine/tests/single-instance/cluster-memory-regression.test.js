@@ -13,7 +13,7 @@ const { ClusterAwareMemory } = require('../../src/cluster/cluster-aware-memory')
 const { NetworkMemory } = require('../../src/memory/network-memory');
 
 const loadConfig = () => {
-  const configPath = path.join(__dirname, '../../src/config.yaml');
+  const configPath = path.join(__dirname, '../../src/config.test-quantum.yaml');
   return yaml.load(fs.readFileSync(configPath, 'utf8'));
 };
 

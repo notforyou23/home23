@@ -217,6 +217,106 @@ test('same-ID repeated accepted access mutations advance generation despite stab
   assert.equal(mem.nodes.get(node.id).accessCount, 2);
 });
 
+test('explicit high IDs advance allocation and generated IDs skip occupied records atomically', async () => {
+  const mem = memory();
+  const explicit = await addIsolatedNode(mem, 42, [1, 0, 0]);
+  const generated = await mem.addNode('generated after explicit', 'test', [0, 1, 0]);
+  const collision = await mem.addNode({
+    id: 42,
+    concept: 'explicit collision must allocate safely',
+    tag: 'test',
+  }, 'test', [0, 0, 1]);
+
+  assert.equal(explicit.id, 42);
+  assert.equal(generated.id, 43);
+  assert.equal(collision.id, 44);
+  assert.equal(mem.nextNodeId, 45);
+  assert.equal(mem.nodes.size, 3);
+  assert.equal(mem.nodes.get(42).concept, 'node 42');
+  assert.deepEqual([...mem.dirtyNodeIds], [42, 43, 44]);
+  assert.equal(mem.persistenceGeneration, 3);
+});
+
+test('node patch options cannot redirect the target or replace the requested patch', async () => {
+  const mem = memory();
+  const first = await addIsolatedNode(mem, 'n1', [1, 0]);
+  const second = await addIsolatedNode(mem, 'n2', [0, 1]);
+  mem.markPersistenceClean();
+  const generation = mem.persistenceGeneration;
+
+  const updated = mem.patchNode(first.id, { concept: 'updated first' }, {
+    nodeId: second.id,
+    patch: { concept: 'redirected second' },
+  });
+
+  assert.equal(updated, first);
+  assert.equal(first.concept, 'updated first');
+  assert.equal(second.concept, 'node n2');
+  assert.equal(mem.persistenceGeneration, generation + 1);
+  assert.deepEqual([...mem.dirtyNodeIds], [first.id]);
+});
+
+test('graph import keeps node and cluster indexes consistent when snapshots replace membership', () => {
+  const mem = memory();
+  mem.importGraphChanges({
+    nodes: [
+      { id: 'n1', concept: 'first', cluster: 1 },
+      { id: 'n2', concept: 'second', cluster: 2 },
+    ],
+    clusters: [
+      { id: 1, nodes: ['n1'] },
+      { id: 2, nodes: ['n2'] },
+    ],
+  });
+  mem.markPersistenceClean();
+
+  mem.importGraphChanges({
+    nodes: [{ id: 'n1', concept: 'first moved', cluster: 2 }],
+    clusters: [{ id: 2, nodes: ['n1', 'n2'] }],
+  });
+
+  assert.equal(mem.nodes.get('n1').cluster, 2);
+  assert.equal(mem.clusters.get(1)?.has('n1') || false, false);
+  assert.deepEqual([...mem.clusters.get(2)].sort(), ['n1', 'n2']);
+
+  mem.importGraphChanges({ clusters: [{ id: 2, nodes: ['n2'] }] });
+
+  assert.equal(mem.nodes.get('n1').cluster, null);
+  assert.deepEqual([...mem.clusters.get(2)], ['n2']);
+});
+
+test('graph import rejects accessor-backed pair records without invoking accessors', () => {
+  const mem = memory();
+  let getterCalls = 0;
+  const record = {};
+  Object.defineProperty(record, 'concept', {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return 'unsafe';
+    },
+  });
+
+  assert.throws(
+    () => mem.importGraphChanges({ nodes: [['n1', record]] }),
+    /persistence_record_accessor_not_allowed/,
+  );
+  assert.equal(getterCalls, 0);
+  assert.equal(mem.persistenceGeneration, 0);
+});
+
+test('graph import derives next numeric IDs without spreading the whole graph onto the stack', () => {
+  const mem = memory();
+  for (let id = 1; id <= 150_000; id += 1) {
+    mem.nodes.set(id, { id, concept: `node ${id}`, cluster: null });
+  }
+
+  assert.doesNotThrow(() => mem.importGraphChanges({
+    nodes: [{ id: 150_001, concept: 'last node', cluster: null }],
+  }));
+  assert.equal(mem.nextNodeId, 150_002);
+});
+
 test('embedding regeneration is an accepted node update behind the barrier', async () => {
   const mem = memory();
   const node = await addIsolatedNode(mem, 'n1', null);
@@ -455,4 +555,212 @@ test('persistence barrier rejects re-entry and Promise-returning callbacks', () 
     /persistence_barrier_reentry/,
   );
   assert.equal(mem.persistenceBarrierActive, false);
+});
+
+test('persistence barrier rejects AsyncFunction before invocation and contains returned thenables', async () => {
+  const mem = memory();
+  let asyncStarted = false;
+  assert.throws(
+    () => mem.withPersistenceBarrier(async () => {
+      asyncStarted = true;
+      await Promise.resolve();
+    }),
+    /persistence_barrier_async_callback/,
+  );
+  assert.equal(asyncStarted, false);
+
+  let escapedMutation = false;
+  assert.throws(
+    () => mem.withPersistenceBarrier(() => Promise.resolve().then(() => {
+      try {
+        mem._advancePersistenceGenerationUnsafe();
+        escapedMutation = true;
+      } catch {
+        // The continuation runs only after the barrier has closed.
+      }
+    })),
+    /persistence_barrier_async_callback/,
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(escapedMutation, false);
+  assert.equal(mem.persistenceGeneration, 0);
+  assert.equal(mem.persistenceBarrierActive, false);
+});
+
+test('full and changes-only snapshots preserve enumerable edge extensions', () => {
+  const mem = memory();
+  mem.importGraphChanges({
+    nodes: [
+      { id: 'a', concept: 'alpha', cluster: null },
+      { id: 'b', concept: 'beta', cluster: null },
+    ],
+    edges: [{
+      source: 'a',
+      target: 'b',
+      weight: 0.4,
+      type: 'evidence',
+      metadata: { source: 'call-site-regression' },
+      confidence: 0.87,
+    }],
+  });
+
+  const full = mem.capturePersistenceSnapshot();
+  const changes = mem.capturePersistenceChangesSnapshot();
+  assert.equal(full.fullView.edges[0].confidence, 0.87);
+  assert.equal(full.fullView.edges[0].metadata.source, 'call-site-regression');
+  assert.equal(changes.changes.edges[0].confidence, 0.87);
+  assert.equal(changes.changes.edges[0].metadata.source, 'call-site-regression');
+});
+
+test('changes-only capture rejects accessors without invoking their getter', async () => {
+  const mem = memory();
+  const node = await addIsolatedNode(mem, 'n1', [1, 0]);
+  let getterCalls = 0;
+  Object.defineProperty(node, 'lateBound', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return 'unsafe';
+    },
+  });
+
+  assert.throws(
+    () => mem.capturePersistenceChangesSnapshot(),
+    /persistence_record_accessor_not_allowed/,
+  );
+  assert.equal(getterCalls, 0);
+  assert.equal(mem.persistenceBarrierActive, false);
+});
+
+test('descriptor clone preserves own __proto__ data without prototype pollution', async () => {
+  const mem = memory();
+  const metadata = Object.create(null);
+  Object.defineProperty(metadata, '__proto__', {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: { polluted: true },
+  });
+  await mem.addNode({ id: 'safe', concept: 'safe metadata', metadata }, 'test', [1, 0]);
+
+  const snapshot = mem.capturePersistenceSnapshot();
+  const captured = snapshot.fullView.nodes.find((node) => node.id === 'safe').metadata;
+  assert.equal(Object.getPrototypeOf(captured), null);
+  assert.equal(Object.prototype.hasOwnProperty.call(captured, '__proto__'), true);
+  assert.equal(captured.__proto__.polluted, true);
+  assert.equal({}.polluted, undefined);
+});
+
+test('graph import validates tuple records descriptor-first and rejects non-plain ingress', () => {
+  const mem = memory();
+  let getterCalls = 0;
+  const accessorNode = {};
+  Object.defineProperty(accessorNode, 'concept', {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return 'must not run';
+    },
+  });
+  assert.throws(
+    () => mem.importGraphChanges({ nodes: [['safe-id', accessorNode]] }),
+    /persistence_record_accessor_not_allowed/,
+  );
+  assert.equal(getterCalls, 0);
+
+  class CustomRecord {
+    constructor() {
+      this.id = 'custom';
+      this.concept = 'custom prototype';
+    }
+  }
+  assert.throws(
+    () => mem.importGraphChanges({ nodes: [new CustomRecord()] }),
+    /persistence_record_plain_json_required/,
+  );
+  assert.equal(mem.persistenceGeneration, 0);
+});
+
+test('every production call-site mutation invalidates a stale persistence clean CAS', async () => {
+  const mem = memory();
+  const first = await addIsolatedNode(mem, 'n1', [1, 0], { cluster: 7 });
+  const second = await addIsolatedNode(mem, 'n2', [0, 1], { cluster: null });
+  mem.markPersistenceClean();
+
+  const assertInvalidatesStaleClean = (label, mutate) => {
+    const snapshot = mem.capturePersistenceSnapshot();
+    const generation = mem.persistenceGeneration;
+    const result = mutate();
+    assert.ok(mem.persistenceGeneration > generation, `${label}: generation did not advance`);
+    assert.equal(mem.markPersistenceCleanIfGeneration(snapshot.generation), false, `${label}: stale clean succeeded`);
+    assert.equal(mem.markPersistenceCleanIfGeneration(mem.persistenceGeneration), true, `${label}: current clean failed`);
+    return result;
+  };
+
+  assertInvalidatesStaleClean('orchestrator background embedding / ingestion metadata patch', () => (
+    mem.patchNode(first.id, { metadata: { source: 'background-and-ingestion' } }, { expectedNode: first })
+  ));
+  assertInvalidatesStaleClean('summarizer consolidatedAt batch patch', () => mem.patchNodes([{
+    nodeId: second.id,
+    expectedNode: second,
+    patch: { consolidatedAt: '2026-07-11T00:00:00.000Z' },
+  }]));
+  assertInvalidatesStaleClean('orchestrator feeder import', () => mem.importGraphChanges({
+    nodes: [{ id: 'feeder', concept: 'feeder import', cluster: null }],
+  }));
+  assertInvalidatesStaleClean('recluster plan', () => mem.applyReclusterPlan({
+    existingAssignments: [{ nodeId: 'feeder', cluster: 7 }],
+    newClusterGroups: [],
+  }));
+  assertInvalidatesStaleClean('cluster merged graph import', () => mem.importGraphChanges({
+    nodes: [{ id: 'merged', concept: 'merged import', cluster: 9 }],
+    clusters: [{ id: 9, nodes: ['merged'] }],
+  }));
+  assertInvalidatesStaleClean('summarizer garbage collection batch remove', () => mem.removeNodes(['feeder']));
+});
+
+test('graph imports reconcile cluster indexes exactly and tombstones win set-delete overlap', () => {
+  const mem = memory();
+  mem.importGraphChanges({
+    nodes: [
+      { id: 'move', concept: 'move me', cluster: 1 },
+      { id: 'removed', concept: 'remove membership', cluster: 1 },
+      { id: 'deleted', concept: 'delete wins', cluster: null },
+    ],
+    clusters: [{ id: 1, nodes: ['move', 'removed'] }],
+  });
+  mem.markPersistenceClean();
+
+  mem.importGraphChanges({
+    nodes: [
+      { id: 'move', concept: 'move me', cluster: 2 },
+      { id: 'deleted', concept: 'must not survive', cluster: 2 },
+    ],
+    clusters: [
+      { id: 1, nodes: [] },
+      { id: 2, nodes: ['move', 'deleted'] },
+    ],
+    nodeDeletes: ['deleted'],
+  });
+
+  assert.equal(mem.nodes.get('move').cluster, 2);
+  assert.equal(mem.clusters.get(1)?.has('move') || false, false);
+  assert.equal(mem.nodes.get('removed').cluster, null);
+  assert.equal(mem.clusters.get(2).has('move'), true);
+  assert.equal(mem.nodes.has('deleted'), false);
+  assert.equal(mem.deletedNodeIds.has('deleted'), true);
+});
+
+test('large graph next-id scan stays bounded without argument spreading', () => {
+  const mem = memory();
+  for (let id = 1; id <= 100_500; id += 1) {
+    Map.prototype.set.call(mem.nodes, id, { id, concept: `node ${id}`, cluster: null });
+  }
+  mem.nextNodeId = 1;
+
+  assert.doesNotThrow(() => mem.importGraphChanges({
+    nodes: [{ id: 100_501, concept: 'last node', cluster: null }],
+  }));
+  assert.equal(mem.nextNodeId, 100_502);
 });

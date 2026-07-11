@@ -60,6 +60,7 @@ test('COSMO read-only query does not mutate access metadata', async () => {
     id: 'n1', concept: 'canary', embedding: [1, 0], activation: 0,
     weight: 0.2, accessCount: 0, created: accessed, accessed,
   });
+  const generation = memory.persistenceGeneration;
 
   const result = await memory.query('canary', 1, { markAccess: false });
 
@@ -67,4 +68,28 @@ test('COSMO read-only query does not mutate access metadata', async () => {
   assert.equal(memory.nodes.get('n1').accessCount, 0);
   assert.equal(memory.nodes.get('n1').accessed, accessed);
   assert.equal(memory.nodes.get('n1').weight, 0.2);
+  assert.equal(memory.nodes.get('n1').activation, 0);
+  assert.equal(memory.persistenceGeneration, generation);
+  assert.deepEqual([...memory.dirtyNodeIds], []);
+});
+
+test('COSMO own-brain query publishes activation and access through the persistence CAS', async () => {
+  const memory = createMemory(() => ({ embeddings: { create: async () => ({ data: [] }) } }));
+  memory.embed = async () => [1, 0];
+  const accessed = new Date('2026-01-01T00:00:00.000Z');
+  memory.nodes.set('n1', {
+    id: 'n1', concept: 'canary', embedding: [1, 0], activation: 0,
+    weight: 0.2, accessCount: 0, created: accessed, accessed,
+  });
+  const stale = memory.capturePersistenceSnapshot();
+
+  const result = await memory.query('canary', 1);
+
+  assert.equal(result.length, 1);
+  assert.equal(memory.nodes.get('n1').activation, 1);
+  assert.equal(memory.nodes.get('n1').accessCount, 1);
+  assert.ok(Math.abs(memory.nodes.get('n1').weight - 0.3) < Number.EPSILON);
+  assert.ok(memory.persistenceGeneration > stale.generation);
+  assert.equal(memory.dirtyNodeIds.has('n1'), true);
+  assert.equal(memory.markPersistenceCleanIfGeneration(stale.generation), false);
 });

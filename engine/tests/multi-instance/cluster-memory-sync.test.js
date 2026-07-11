@@ -62,7 +62,7 @@ const createClusterMemory = (instanceId, config, logger) => {
 
 describe('Multi-Instance Memory Sync', () => {
   it('propagates node writes between instances via merged state', async () => {
-    const configPath = path.join(__dirname, '../../src/config.yaml');
+    const configPath = path.join(__dirname, '../../src/config.test-quantum.yaml');
     const config = yaml.load(fs.readFileSync(configPath, 'utf8'));
     const logger = createLogger();
     const stateStore = new InMemoryStateStore();

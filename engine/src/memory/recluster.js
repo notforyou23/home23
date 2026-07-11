@@ -147,36 +147,10 @@ function planMemoryRecluster(memory, options = {}) {
 
 function applyMemoryRecluster(memory, plan) {
   if (!memory?.nodes || !plan) return { assignedToExisting: 0, createdClusters: 0, assignedToNewClusters: 0 };
-  if (!(memory.clusters instanceof Map)) memory.clusters = new Map();
-
-  let assignedToExisting = 0;
-  for (const assignment of plan.existingAssignments || []) {
-    const node = memory.nodes.get(assignment.nodeId);
-    if (!node) continue;
-    node.cluster = assignment.cluster;
-    if (!memory.clusters.has(assignment.cluster)) memory.clusters.set(assignment.cluster, new Set());
-    memory.clusters.get(assignment.cluster).add(assignment.nodeId);
-    if (typeof memory.markNodeDirty === 'function') memory.markNodeDirty(assignment.nodeId);
-    assignedToExisting++;
+  if (typeof memory.applyReclusterPlan !== 'function') {
+    throw new Error('memory_recluster_mutation_api_required');
   }
-
-  let createdClusters = 0;
-  let assignedToNewClusters = 0;
-  for (const group of plan.newClusterGroups || []) {
-    const clusterId = memory.nextClusterId++;
-    memory.clusters.set(clusterId, new Set());
-    createdClusters++;
-    for (const nodeId of group) {
-      const node = memory.nodes.get(nodeId);
-      if (!node || node.cluster !== null && node.cluster !== undefined) continue;
-      node.cluster = clusterId;
-      memory.clusters.get(clusterId).add(nodeId);
-      if (typeof memory.markNodeDirty === 'function') memory.markNodeDirty(nodeId);
-      assignedToNewClusters++;
-    }
-  }
-
-  return { assignedToExisting, createdClusters, assignedToNewClusters };
+  return memory.applyReclusterPlan(plan);
 }
 
 module.exports = {

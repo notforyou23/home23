@@ -3,26 +3,50 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
+const Module = require('node:module');
+const originalLoad = Module._load;
+Module._load = function patchedLoad(request, parent, isMain) {
+  if (request === 'openai') return class OpenAI {};
+  if (request === 'dotenv') return { config() {} };
+  if (request.endsWith('/core/openai-client') || request === '../core/openai-client') {
+    return { getOpenAIClient: () => null, getEmbeddingClient: () => null };
+  }
+  if (request === 'tiktoken') {
+    return { encoding_for_model: () => ({ encode: () => [], free() {} }) };
+  }
+  return originalLoad.call(this, request, parent, isMain);
+};
 const { applyMemoryRecluster, planMemoryRecluster } = require('../../../engine/src/memory/recluster.js');
+const { NetworkMemory } = require('../../../engine/src/memory/network-memory.js');
+Module._load = originalLoad;
 
 function makeMemory() {
-  const memory = {
+  const memory = new NetworkMemory({
+    embedding: {},
+    coordinator: {},
+    smallWorld: { maxBridgesPerNode: 40 },
     config: { spreading: { bridgeTraversalFactor: 0.2 } },
-    nodes: new Map(),
-    edges: new Map(),
-    clusters: new Map([[7, new Set(['a'])]]),
+    spreading: { bridgeTraversalFactor: 0.2, maxDepth: 2, activationThreshold: 0.01, decayFactor: 0.8 },
+    hebbian: { enabled: false, reinforcementStrength: 0.1 },
+    decay: { baseFactor: 0.95, minimumWeight: 0.01, decayInterval: 300, exemptTags: [] },
+  }, { info() {}, warn() {}, error() {}, debug() {} });
+  memory.importGraphChanges({
+    nodes: [
+      { id: 'a', concept: 'clustered anchor', cluster: 7 },
+      { id: 'b', concept: 'unclustered neighbor', cluster: null },
+      { id: 'c', concept: 'component one', cluster: null },
+      { id: 'd', concept: 'component two', cluster: null },
+      { id: 'e', concept: 'component three', cluster: null },
+    ],
+    edges: [
+      { source: 'a', target: 'b', weight: 0.9, type: 'semantic' },
+      { source: 'c', target: 'd', weight: 0.8, type: 'semantic' },
+      { source: 'd', target: 'e', weight: 0.8, type: 'semantic' },
+    ],
+    clusters: [{ id: 7, nodes: ['a'] }],
     nextClusterId: 8,
-    dirty: new Set(),
-    markNodeDirty(id) { this.dirty.add(id); },
-  };
-  memory.nodes.set('a', { id: 'a', concept: 'clustered anchor', cluster: 7 });
-  memory.nodes.set('b', { id: 'b', concept: 'unclustered neighbor', cluster: null });
-  memory.nodes.set('c', { id: 'c', concept: 'component one', cluster: null });
-  memory.nodes.set('d', { id: 'd', concept: 'component two', cluster: null });
-  memory.nodes.set('e', { id: 'e', concept: 'component three', cluster: null });
-  memory.edges.set('a->b', { source: 'a', target: 'b', weight: 0.9, type: 'semantic' });
-  memory.edges.set('c->d', { source: 'c', target: 'd', weight: 0.8, type: 'semantic' });
-  memory.edges.set('d->e', { source: 'd', target: 'e', weight: 0.8, type: 'semantic' });
+  });
+  memory.markPersistenceClean();
   return memory;
 }
 
@@ -41,6 +65,12 @@ test('planMemoryRecluster reports existing-cluster and new-component assignments
 test('applyMemoryRecluster mutates live graph and marks assigned nodes dirty', () => {
   const memory = makeMemory();
   const plan = planMemoryRecluster(memory);
+  const originalApply = memory.applyReclusterPlan.bind(memory);
+  let applyCalls = 0;
+  memory.applyReclusterPlan = (candidate) => {
+    applyCalls += 1;
+    return originalApply(candidate);
+  };
   const applied = applyMemoryRecluster(memory, plan);
 
   assert.deepEqual(applied, {
@@ -48,9 +78,10 @@ test('applyMemoryRecluster mutates live graph and marks assigned nodes dirty', (
     createdClusters: 1,
     assignedToNewClusters: 3,
   });
+  assert.equal(applyCalls, 1);
   assert.equal(memory.nodes.get('b').cluster, 7);
   assert.equal(memory.nodes.get('c').cluster, 8);
   assert.equal(memory.nodes.get('d').cluster, 8);
   assert.equal(memory.nodes.get('e').cluster, 8);
-  assert.deepEqual([...memory.dirty].sort(), ['b', 'c', 'd', 'e']);
+  assert.deepEqual([...memory.dirtyNodeIds].sort(), ['b', 'c', 'd', 'e']);
 });

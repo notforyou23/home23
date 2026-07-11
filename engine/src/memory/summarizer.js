@@ -142,6 +142,33 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
         const consolidated = await this.createConsolidatedMemoryGPT5(cluster);
         
         if (consolidated) {
+          if (typeof memoryNetwork.patchNodes !== 'function') {
+            throw new Error('memory_node_patch_api_required');
+          }
+          // Provider work yields. Require the exact source identities to remain
+          // current before publishing either the consolidated marker or result.
+          // The following check and patch are synchronous, so no other turn can
+          // replace a node between them.
+          const sourceStillCurrent = cluster.every((node) => memoryNetwork.nodes.get(node.id) === node);
+          if (!sourceStillCurrent) {
+            this.logger?.warn?.('Memory consolidation discarded after source changed', {
+              sourceCount: cluster.length,
+            });
+            continue;
+          }
+          const patched = memoryNetwork.patchNodes(cluster.map((node) => ({
+            nodeId: node.id,
+            expectedNode: node,
+            patch: { consolidatedAt: consolidationTimestamp },
+          })));
+          if (Number(patched?.updated || 0) !== cluster.length) {
+            this.logger?.warn?.('Memory consolidation discarded after incomplete source commit', {
+              sourceCount: cluster.length,
+              updated: Number(patched?.updated || 0),
+            });
+            continue;
+          }
+
           const compost = this.buildCompostPlan(cluster, compostMode);
           if (compost.mode === 'dry-run') {
             compostDryRun.wouldRemoveSourceNodes += compost.wouldRemoveSourceNodes;
@@ -155,12 +182,6 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
             model: consolidated.model,
             compost
           });
-
-          // Mark source nodes as consolidated to prevent re-processing
-          // This is critical for forked/merged runs
-          for (const node of cluster) {
-            node.consolidatedAt = consolidationTimestamp;
-          }
 
           this.logger?.info('Memories consolidated (GPT-5.5)', {
             sourceCount: cluster.length,
@@ -213,8 +234,7 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
   buildCompostPlan(cluster, mode) {
     const sourceNodes = cluster
       .map(node => node?.id)
-      .filter(id => id !== undefined && id !== null)
-      .map(String);
+      .filter(id => id !== undefined && id !== null);
     const activeMode = mode === 'apply' ? 'ready' : mode;
     return {
       mode: activeMode,
@@ -226,9 +246,11 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
   finalizeConsolidationCompost(memoryNetwork, consolidation, options = {}) {
     const mode = String(options.mode || consolidation?.compost?.mode || 'off').toLowerCase();
     const sourceNodes = Array.isArray(consolidation?.sourceNodes)
-      ? consolidation.sourceNodes.map(String)
-      : (Array.isArray(consolidation?.compost?.sourceNodes) ? consolidation.compost.sourceNodes.map(String) : []);
-    const summaryNodeId = options.summaryNodeId != null ? String(options.summaryNodeId) : null;
+      ? consolidation.sourceNodes.filter((id) => id !== undefined && id !== null)
+      : (Array.isArray(consolidation?.compost?.sourceNodes)
+        ? consolidation.compost.sourceNodes.filter((id) => id !== undefined && id !== null)
+        : []);
+    const summaryNodeId = options.summaryNodeId ?? null;
 
     if (!sourceNodes.length || mode === 'off') {
       return { mode: 'off', removedSourceNodes: 0, skippedSourceNodes: sourceNodes.length };
@@ -279,32 +301,66 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
       };
     }
 
-    summaryNode.metadata = {
+    const pendingMetadata = {
       ...(summaryNode.metadata || {}),
       consolidationProvenance: {
         sourceNodes,
-        compostedSourceCount: sourceNodes.length,
-        compostedAt: new Date().toISOString(),
+        plannedSourceCount: sourceNodes.length,
+        compostedSourceNodes: [],
+        compostedSourceCount: 0,
+        compostStatus: 'pending',
         confirmedDryRunAt: options.confirmedDryRunAt,
         model: consolidation?.model || null
       }
     };
-    if (typeof memoryNetwork.markNodeDirty === 'function') {
-      memoryNetwork.markNodeDirty(summaryNodeId);
+    if (typeof memoryNetwork.patchNode !== 'function') {
+      throw new Error('memory_node_patch_api_required');
+    }
+    const updatedSummaryNode = memoryNetwork.patchNode(summaryNodeId, { metadata: pendingMetadata }, {
+      expectedNode: summaryNode,
+    });
+    if (!updatedSummaryNode) {
+      return {
+        mode: 'blocked',
+        reason: 'summary_node_changed',
+        removedSourceNodes: 0,
+        skippedSourceNodes: sourceNodes.length
+      };
     }
 
-    let removed = 0;
-    let skipped = 0;
-    for (const sourceNodeId of sourceNodes) {
-      if (sourceNodeId === summaryNodeId) {
-        skipped++;
-        continue;
-      }
-      if (typeof memoryNetwork.removeNode === 'function' && memoryNetwork.removeNode(sourceNodeId)) {
-        removed++;
-      } else {
-        skipped++;
-      }
+    if (typeof memoryNetwork.removeNodes !== 'function') {
+      throw new Error('memory_node_remove_api_required');
+    }
+    const removableSourceNodes = Array.from(new Set(
+      sourceNodes.filter((sourceNodeId) => sourceNodeId !== summaryNodeId),
+    ));
+    const presentBefore = removableSourceNodes.filter((sourceNodeId) => memoryNetwork.nodes.has(sourceNodeId));
+    memoryNetwork.removeNodes(removableSourceNodes);
+    const removedSourceNodes = presentBefore.filter((sourceNodeId) => !memoryNetwork.nodes.has(sourceNodeId));
+    const removed = removedSourceNodes.length;
+    const skipped = sourceNodes.length - removed;
+    const finalMetadata = {
+      ...(updatedSummaryNode.metadata || pendingMetadata),
+      consolidationProvenance: {
+        ...pendingMetadata.consolidationProvenance,
+        compostedSourceNodes: removedSourceNodes,
+        compostedSourceCount: removed,
+        skippedSourceCount: skipped,
+        compostStatus: skipped > 0 ? 'complete_with_skips' : 'complete',
+        compostedAt: new Date().toISOString(),
+      },
+    };
+    const finalizedSummaryNode = memoryNetwork.patchNode(summaryNodeId, { metadata: finalMetadata }, {
+      expectedNode: updatedSummaryNode,
+    });
+    if (!finalizedSummaryNode) {
+      return {
+        mode: 'partial',
+        reason: 'provenance_finalize_failed',
+        removedSourceNodes: removed,
+        skippedSourceNodes: skipped,
+        summaryNodeId,
+      };
     }
 
     this.logger?.info?.('Consolidation compost applied', {
@@ -512,34 +568,11 @@ the specific instances.`,
       }
     }
 
-    for (const id of toRemove) {
-      memoryNetwork.nodes.delete(id);
-      
-      // CRITICAL FIX: Clean up edges properly for both numeric and string IDs
-      // Use explicit source/target from edge object (not string matching)
-      const edgesToRemove = [];
-      for (const [edgeKey, edge] of memoryNetwork.edges) {
-        // Use edge.source/target if available, otherwise parse key
-        let source, target;
-        if (edge.source !== undefined && edge.target !== undefined) {
-          source = edge.source;
-          target = edge.target;
-        } else {
-          // Legacy: parse from key
-          const parts = edgeKey.split('->');
-          source = isNaN(parts[0]) ? parts[0] : Number(parts[0]);
-          target = isNaN(parts[1]) ? parts[1] : Number(parts[1]);
-        }
-        
-        // Use loose equality to handle numeric/string comparison
-        if (source == id || target == id) {
-          edgesToRemove.push(edgeKey);
-        }
+    if (toRemove.length > 0) {
+      if (typeof memoryNetwork.removeNodes !== 'function') {
+        throw new Error('memory_node_remove_api_required');
       }
-      
-      for (const edgeKey of edgesToRemove) {
-        memoryNetwork.edges.delete(edgeKey);
-      }
+      memoryNetwork.removeNodes(toRemove);
     }
 
     this.logger?.info('Memory garbage collection (GPT-5.5)', {

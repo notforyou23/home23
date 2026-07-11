@@ -22,21 +22,64 @@ function deepCloneJsonRecord(value, seen = new Set(), arrayElement = false) {
     return arrayElement ? null : undefined;
   }
   if (value instanceof Date) return Date.prototype.toISOString.call(value);
-  if (ArrayBuffer.isView(value)) return Array.from(value, (item) => deepCloneJsonRecord(item, seen, true));
+  if (ArrayBuffer.isView(value)) {
+    const clone = new Array(value.length);
+    for (let index = 0; index < value.length; index += 1) {
+      clone[index] = deepCloneJsonRecord(value[index], seen, true);
+    }
+    return clone;
+  }
   if (seen.has(value)) throw new TypeError('persistence_record_cycle_not_allowed');
+  const prototype = Object.getPrototypeOf(value);
+  if (Array.isArray(value)) {
+    if (prototype !== Array.prototype) {
+      throw new TypeError('persistence_record_plain_json_required');
+    }
+  } else if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError('persistence_record_plain_json_required');
+  }
   seen.add(value);
   try {
     if (Array.isArray(value)) {
-      return value.map((item) => deepCloneJsonRecord(item, seen, true));
+      const clone = new Array(value.length);
+      for (let index = 0; index < value.length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (!descriptor) continue;
+        if (descriptor.get || descriptor.set) {
+          throw new TypeError('persistence_record_accessor_not_allowed');
+        }
+        Object.defineProperty(clone, String(index), {
+          configurable: true,
+          enumerable: true,
+          writable: true,
+          value: deepCloneJsonRecord(descriptor.value, seen, true),
+        });
+      }
+      return clone;
     }
-    const clone = {};
-    for (const key of Object.keys(value)) {
+    const clone = Object.create(null);
+    for (const key of Reflect.ownKeys(value)) {
+      if (typeof key === 'symbol') {
+        const symbolDescriptor = Object.getOwnPropertyDescriptor(value, key);
+        if (symbolDescriptor?.enumerable) {
+          throw new TypeError('persistence_record_symbol_key_not_allowed');
+        }
+        continue;
+      }
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor?.enumerable) continue;
       if (!descriptor || descriptor.get || descriptor.set) {
         throw new TypeError('persistence_record_accessor_not_allowed');
       }
       const child = deepCloneJsonRecord(descriptor.value, seen, false);
-      if (child !== undefined) clone[key] = child;
+      if (child !== undefined) {
+        Object.defineProperty(clone, key, {
+          configurable: true,
+          enumerable: true,
+          writable: true,
+          value: child,
+        });
+      }
     }
     return clone;
   } finally {
@@ -68,21 +111,62 @@ function serializeNodePersistenceRecord(node) {
 }
 
 function serializeEdgePersistenceRecord(key, edge) {
-  let source = edge.source;
-  let target = edge.target;
+  const clone = deepCloneJsonRecord(edge);
+  if (!clone || typeof clone !== 'object' || Array.isArray(clone)) {
+    throw new TypeError('persistence_edge_record_required');
+  }
+  let source = clone.source;
+  let target = clone.target;
   if (source === undefined || target === undefined) {
     const parts = key.split('->');
     source = Number.isNaN(Number(parts[0])) ? parts[0] : Number(parts[0]);
     target = Number.isNaN(Number(parts[1])) ? parts[1] : Number(parts[1]);
   }
-  return {
-    source,
-    target,
-    weight: edge.weight,
-    type: edge.type,
-    created: edge.created,
-    accessed: edge.accessed,
-  };
+  Object.defineProperty(clone, 'source', {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: source,
+  });
+  Object.defineProperty(clone, 'target', {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: target,
+  });
+  return clone;
+}
+
+function jsonPersistenceValuesEqual(left, right) {
+  if (Object.is(left, right)) return true;
+  try {
+    return JSON.stringify(deepCloneJsonRecord(left)) === JSON.stringify(deepCloneJsonRecord(right));
+  } catch {
+    return false;
+  }
+}
+
+function isThenableWithoutInvocation(value) {
+  if (!value || (typeof value !== 'object' && typeof value !== 'function')) return false;
+  let cursor = value;
+  while (cursor) {
+    const descriptor = Object.getOwnPropertyDescriptor(cursor, 'then');
+    if (descriptor) {
+      return Boolean(descriptor.get || descriptor.set || typeof descriptor.value === 'function');
+    }
+    cursor = Object.getPrototypeOf(cursor);
+  }
+  return false;
+}
+
+function nextSafeIntegerAfter(iterable, current) {
+  let next = current;
+  for (const value of iterable) {
+    if (Number.isSafeInteger(value) && value >= next && value < Number.MAX_SAFE_INTEGER) {
+      next = value + 1;
+    }
+  }
+  return next;
 }
 
 /**
@@ -457,16 +541,45 @@ class NetworkMemory {
     // dirty/tombstone state, and every corresponding generation advance.
     const initialConnections = this.findInitialConnections(node);
     const edgeTimestamp = new Date();
+    let storedNode = null;
     this.withPersistenceBarrier(() => {
       if (requestedNodeId !== undefined && requestedNodeId !== null && !this.nodes.has(requestedNodeId)) {
         node.id = requestedNodeId;
+        if (
+          Number.isSafeInteger(requestedNodeId)
+          && requestedNodeId >= this.nextNodeId
+          && requestedNodeId < Number.MAX_SAFE_INTEGER
+        ) {
+          this.nextNodeId = requestedNodeId + 1;
+        } else if (
+          typeof requestedNodeId === 'string'
+          && this.nodeIdFormat === 'string'
+          && this.nodeIdPrefix
+          && requestedNodeId.startsWith(`${this.nodeIdPrefix}_`)
+        ) {
+          const suffix = Number(requestedNodeId.slice(this.nodeIdPrefix.length + 1));
+          if (Number.isSafeInteger(suffix) && suffix >= this.nextNodeId && suffix < Number.MAX_SAFE_INTEGER) {
+            this.nextNodeId = suffix + 1;
+          }
+        }
       } else if (this.nodeIdFormat === 'string' && this.nodeIdPrefix) {
-        node.id = `${this.nodeIdPrefix}_${this.nextNodeId++}`;
+        do {
+          if (!Number.isSafeInteger(this.nextNodeId) || this.nextNodeId >= Number.MAX_SAFE_INTEGER) {
+            throw new Error('node_id_space_exhausted');
+          }
+          node.id = `${this.nodeIdPrefix}_${this.nextNodeId++}`;
+        } while (this.nodes.has(node.id));
       } else {
-        node.id = this.nextNodeId++;
+        do {
+          if (!Number.isSafeInteger(this.nextNodeId) || this.nextNodeId >= Number.MAX_SAFE_INTEGER) {
+            throw new Error('node_id_space_exhausted');
+          }
+          node.id = this.nextNodeId++;
+        } while (this.nodes.has(node.id));
       }
 
       this.nodes.set(node.id, node);
+      storedNode = this.nodes.get(node.id);
       this._markNodeDirtyUnsafe(node.id);
       for (const { id, similarity } of initialConnections) {
         this._upsertEdgeUnsafe(node.id, id, similarity * 0.5, 'associative', {
@@ -477,12 +590,12 @@ class NetworkMemory {
       this._assignToClusterUnsafe(node.id);
     });
     
-    this.logger?.debug('Node added to network', { 
-      id: node.id, 
+    this.logger?.debug('Node added to network', {
+      id: storedNode.id,
       concept: conceptText.substring(0, 50),
-      cluster: node.cluster 
+      cluster: storedNode.cluster
     });
-    return node;
+    return storedNode;
   }
 
   /**
@@ -491,25 +604,24 @@ class NetworkMemory {
    */
   removeNode(nodeId) {
     if (!this.nodes.has(nodeId)) return false;
-    return this.withPersistenceBarrier(() => {
-      if (!this.nodes.has(nodeId)) return false;
-      this.nodes.delete(nodeId);
-      this.dirtyNodeIds.delete(nodeId);
-      this.deletedNodeIds.add(nodeId);
-      this._advancePersistenceGenerationUnsafe();
+    return Boolean(this.withPersistenceBarrier(() => this._removeNodeUnsafe(nodeId)));
+  }
 
-      // Node removal and every cascading edge deletion share the same outer
-      // barrier, but each accepted record deletion advances the generation.
-      for (const [key, edge] of this.edges) {
-        if (edge.from === nodeId || edge.to === nodeId || edge.source === nodeId || edge.target === nodeId) {
-          this._deleteEdgeKeyUnsafe(key);
-        }
+  removeNodes(nodeIds) {
+    const ids = Array.from(new Set(nodeIds || []));
+    if (!ids.some((nodeId) => this.nodes.has(nodeId))) {
+      return { removedNodes: 0, removedEdges: 0 };
+    }
+    return this.withPersistenceBarrier(() => {
+      let removedNodes = 0;
+      let removedEdges = 0;
+      for (const nodeId of ids) {
+        const result = this._removeNodeUnsafe(nodeId);
+        if (!result) continue;
+        removedNodes += 1;
+        removedEdges += result.removedEdges;
       }
-      for (const [clusterId, members] of this.clusters) {
-        members.delete(nodeId);
-        if (members.size === 0) this.clusters.delete(clusterId);
-      }
-      return true;
+      return { removedNodes, removedEdges };
     });
   }
 
@@ -576,6 +688,416 @@ class NetworkMemory {
     }
   }
 
+  _prepareNodePatch(patch) {
+    const prepared = deepCloneJsonRecord(patch);
+    if (!prepared || typeof prepared !== 'object' || Array.isArray(prepared)) {
+      throw new TypeError('node_patch_plain_object_required');
+    }
+    for (const forbidden of ['id', '__proto__', 'prototype', 'constructor']) {
+      if (Object.prototype.hasOwnProperty.call(prepared, forbidden)) {
+        throw new TypeError(`node_patch_forbidden_key:${forbidden}`);
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(prepared, 'embedding')) {
+      prepared.embedding = this.normalizeEmbedding(prepared.embedding);
+    }
+    for (const timestampField of ['created', 'accessed']) {
+      if (!Object.prototype.hasOwnProperty.call(prepared, timestampField)) continue;
+      const timestamp = new Date(prepared[timestampField]);
+      if (Number.isNaN(timestamp.getTime())) {
+        throw new TypeError(`node_patch_invalid_timestamp:${timestampField}`);
+      }
+      prepared[timestampField] = timestamp;
+    }
+    return prepared;
+  }
+
+  _dataPropertyValue(record, key) {
+    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    if (!descriptor) return undefined;
+    if (descriptor.get || descriptor.set) {
+      throw new TypeError('persistence_record_accessor_not_allowed');
+    }
+    return descriptor.value;
+  }
+
+  patchNode(nodeId, patch, options = {}) {
+    const stored = this.nodes.get(nodeId);
+    if (!stored || (options.expectedNode && stored !== options.expectedNode)) return null;
+    const expected = options.expected === undefined ? null : deepCloneJsonRecord(options.expected);
+    for (const key of expected ? Reflect.ownKeys(expected) : []) {
+      if (!jsonPersistenceValuesEqual(this._dataPropertyValue(stored, key), expected[key])) return null;
+    }
+    const preparedPatch = this._prepareNodePatch(patch);
+    const isNoOp = Reflect.ownKeys(preparedPatch).every((key) => (
+      jsonPersistenceValuesEqual(this._dataPropertyValue(stored, key), preparedPatch[key])
+    ));
+    if (isNoOp) return stored;
+    const result = this.patchNodes([{ ...options, nodeId, patch }]);
+    return result.nodes[0] || null;
+  }
+
+  patchNodes(entries) {
+    const preparedEntries = [];
+    for (const entry of Array.from(entries || [])) {
+      if (!entry || entry.nodeId === undefined || entry.nodeId === null) continue;
+      const stored = this.nodes.get(entry.nodeId);
+      if (!stored || (entry.expectedNode && stored !== entry.expectedNode)) continue;
+      const expected = entry.expected === undefined
+        ? null
+        : deepCloneJsonRecord(entry.expected);
+      if (expected && (typeof expected !== 'object' || Array.isArray(expected))) {
+        throw new TypeError('node_patch_expected_plain_object_required');
+      }
+      let expectedMatches = true;
+      for (const key of expected ? Reflect.ownKeys(expected) : []) {
+        if (!jsonPersistenceValuesEqual(this._dataPropertyValue(stored, key), expected[key])) {
+          expectedMatches = false;
+          break;
+        }
+      }
+      if (!expectedMatches) continue;
+
+      const patch = this._prepareNodePatch(entry.patch);
+      const updates = [];
+      for (const key of Reflect.ownKeys(patch)) {
+        const value = patch[key];
+        if (!jsonPersistenceValuesEqual(this._dataPropertyValue(stored, key), value)) {
+          updates.push([key, value]);
+        }
+      }
+      if (updates.length === 0) continue;
+      preparedEntries.push({
+        nodeId: entry.nodeId,
+        stored,
+        expected,
+        updates,
+      });
+    }
+
+    if (preparedEntries.length === 0) return { updated: 0, nodes: [] };
+    return this.withPersistenceBarrier(() => {
+      const nodes = [];
+      for (const entry of preparedEntries) {
+        if (this.nodes.get(entry.nodeId) !== entry.stored) continue;
+        for (const [key, value] of entry.updates) {
+          entry.stored[key] = value;
+        }
+        this._markNodeDirtyUnsafe(entry.nodeId);
+        nodes.push(this.nodes.get(entry.nodeId));
+      }
+      return { updated: nodes.length, nodes };
+    });
+  }
+
+  importGraphChanges(changes = {}) {
+    const nodeRecords = new Map();
+    for (const rawNode of Array.from(changes.nodes || [])) {
+      const clonedInput = deepCloneJsonRecord(rawNode);
+      const isTuple = Array.isArray(clonedInput) && clonedInput.length === 2;
+      const node = isTuple ? clonedInput[1] : clonedInput;
+      if (!node || typeof node !== 'object' || Array.isArray(node)) continue;
+      const nodeId = isTuple ? clonedInput[0] : node.id;
+      if (nodeId === undefined || nodeId === null) continue;
+      if (isTuple) {
+        Object.defineProperty(node, 'id', {
+          configurable: true,
+          enumerable: true,
+          writable: true,
+          value: nodeId,
+        });
+      }
+      if (Object.prototype.hasOwnProperty.call(node, 'embedding')) {
+        node.embedding = this.normalizeEmbedding(node.embedding);
+      }
+      for (const timestampField of ['created', 'accessed']) {
+        if (!Object.prototype.hasOwnProperty.call(node, timestampField) || !node[timestampField]) continue;
+        const timestamp = new Date(node[timestampField]);
+        if (!Number.isNaN(timestamp.getTime())) node[timestampField] = timestamp;
+      }
+      nodeRecords.set(nodeId, node);
+    }
+
+    const edgeRecords = new Map();
+    for (const rawEdge of Array.from(changes.edges || [])) {
+      const clonedInput = deepCloneJsonRecord(rawEdge);
+      const isTuple = Array.isArray(clonedInput) && clonedInput.length === 2;
+      let edgeKey = isTuple ? clonedInput[0] : clonedInput?.id;
+      const edge = isTuple ? clonedInput[1] : clonedInput;
+      if (!edge || typeof edge !== 'object' || Array.isArray(edge)) continue;
+      for (const timestampField of ['created', 'accessed']) {
+        if (!Object.prototype.hasOwnProperty.call(edge, timestampField) || !edge[timestampField]) continue;
+        const timestamp = new Date(edge[timestampField]);
+        if (!Number.isNaN(timestamp.getTime())) edge[timestampField] = timestamp;
+      }
+      let endpointA = edge.source ?? edge.from;
+      let endpointB = edge.target ?? edge.to;
+      if ((endpointA === undefined || endpointB === undefined) && edgeKey) {
+        const parts = String(edgeKey).split('->');
+        endpointA = Number.isNaN(Number(parts[0])) ? parts[0] : Number(parts[0]);
+        endpointB = Number.isNaN(Number(parts[1])) ? parts[1] : Number(parts[1]);
+      }
+      if (endpointA === undefined || endpointB === undefined || endpointA === endpointB) continue;
+      const sorted = [endpointA, endpointB].sort((a, b) => String(a).localeCompare(String(b)));
+      edgeKey = sorted.join('->');
+      edge.source = sorted[0];
+      edge.target = sorted[1];
+      delete edge.id;
+      edgeRecords.set(edgeKey, edge);
+    }
+
+    const clusterRecords = new Map();
+    for (const rawCluster of Array.from(changes.clusters || [])) {
+      const clonedInput = deepCloneJsonRecord(rawCluster);
+      const isTuple = Array.isArray(clonedInput) && clonedInput.length === 2;
+      const clusterId = isTuple ? clonedInput[0] : clonedInput?.id;
+      const members = isTuple ? clonedInput[1] : clonedInput?.nodes;
+      if (clusterId === undefined || clusterId === null || !members) continue;
+      clusterRecords.set(clusterId, new Set(Array.from(members)));
+    }
+
+    const nodeDeletes = Array.from(new Set(changes.nodeDeletes || changes.removedNodeIds || []));
+    const edgeDeletes = Array.from(new Set(changes.edgeDeletes || changes.removedEdgeKeys || []));
+    const clusterDeletes = Array.from(new Set(changes.clusterDeletes || changes.removedClusterIds || []));
+
+    const preparedNodes = Array.from(nodeRecords, ([nodeId, node]) => ({
+      nodeId,
+      node,
+      existing: this.nodes.get(nodeId),
+    })).filter(({ nodeId, node, existing }) => (
+      !nodeDeletes.includes(nodeId) && (!existing || !jsonPersistenceValuesEqual(existing, node))
+    ));
+    const preparedEdges = Array.from(edgeRecords, ([edgeKey, edge]) => ({
+      edgeKey,
+      edge,
+      existing: this.edges.get(edgeKey),
+    })).filter(({ edgeKey, edge, existing }) => (
+      !edgeDeletes.includes(edgeKey) && (!existing || !jsonPersistenceValuesEqual(existing, edge))
+    ));
+    const preparedClusters = Array.from(clusterRecords, ([clusterId, members]) => ({
+      clusterId,
+      members,
+      existing: this.clusters.get(clusterId),
+    })).filter(({ clusterId, members, existing }) => {
+      if (clusterDeletes.includes(clusterId)) return false;
+      if (!(existing instanceof Set) || existing.size !== members.size) return true;
+      return Array.from(members).some((nodeId) => (
+        !existing.has(nodeId) || this.nodes.get(nodeId)?.cluster != clusterId
+      ));
+    });
+
+    const hasRequestedDeletes = nodeDeletes.some((nodeId) => this.nodes.has(nodeId))
+      || edgeDeletes.some((edgeKey) => this.edges.has(edgeKey))
+      || clusterDeletes.some((clusterId) => this.clusters.has(clusterId));
+    if (
+      preparedNodes.length === 0
+      && preparedEdges.length === 0
+      && preparedClusters.length === 0
+      && !hasRequestedDeletes
+    ) {
+      return {
+        importedNodes: 0,
+        importedEdges: 0,
+        importedClusters: 0,
+        removedNodes: 0,
+        removedEdges: 0,
+        removedClusters: 0,
+      };
+    }
+
+    return this.withPersistenceBarrier(() => {
+      let importedNodes = 0;
+      let importedEdges = 0;
+      let importedClusters = 0;
+      let removedNodes = 0;
+      let removedEdges = 0;
+      let removedClusters = 0;
+
+      for (const nodeId of nodeDeletes) {
+        const removed = this._removeNodeUnsafe(nodeId);
+        if (!removed) continue;
+        removedNodes += 1;
+        removedEdges += removed.removedEdges;
+      }
+      for (const edgeKey of edgeDeletes) {
+        if (this._deleteEdgeKeyUnsafe(edgeKey)) removedEdges += 1;
+      }
+      for (const clusterId of clusterDeletes) {
+        const members = this.clusters.get(clusterId);
+        if (!members || !this.clusters.delete(clusterId)) continue;
+        removedClusters += 1;
+        let recordedNodeMutation = false;
+        for (const nodeId of members) {
+          const node = this.nodes.get(nodeId);
+          if (!node || node.cluster != clusterId) continue;
+          node.cluster = null;
+          this._markNodeDirtyUnsafe(nodeId);
+          recordedNodeMutation = true;
+        }
+        if (!recordedNodeMutation) this._advancePersistenceGenerationUnsafe();
+      }
+
+      for (const prepared of preparedNodes) {
+        const current = this.nodes.get(prepared.nodeId);
+        const previousCluster = current?.cluster;
+        if (
+          previousCluster !== null
+          && previousCluster !== undefined
+          && previousCluster !== prepared.node.cluster
+        ) {
+          const previousMembers = this.clusters.get(previousCluster);
+          previousMembers?.delete(prepared.nodeId);
+          if (previousMembers?.size === 0) this.clusters.delete(previousCluster);
+        }
+        this.nodes.set(prepared.nodeId, prepared.node);
+        this._markNodeDirtyUnsafe(prepared.nodeId);
+        if (prepared.node.cluster !== null && prepared.node.cluster !== undefined) {
+          if (!this.clusters.has(prepared.node.cluster)) this.clusters.set(prepared.node.cluster, new Set());
+          this.clusters.get(prepared.node.cluster).add(prepared.nodeId);
+        }
+        importedNodes += 1;
+      }
+
+      for (const prepared of preparedEdges) {
+        if (!this.nodes.has(prepared.edge.source) || !this.nodes.has(prepared.edge.target)) continue;
+        this.edges.set(prepared.edgeKey, prepared.edge);
+        this._markEdgeDirtyUnsafe(prepared.edgeKey);
+        importedEdges += 1;
+      }
+
+      for (const prepared of preparedClusters) {
+        const current = this.clusters.get(prepared.clusterId);
+        const validMembers = new Set(
+          Array.from(prepared.members).filter((nodeId) => this.nodes.has(nodeId)),
+        );
+        const removedMembers = current instanceof Set
+          ? Array.from(current).filter((nodeId) => !validMembers.has(nodeId))
+          : [];
+        this.clusters.set(prepared.clusterId, validMembers);
+        let recordedNodeMutation = false;
+        for (const nodeId of removedMembers) {
+          const node = this.nodes.get(nodeId);
+          if (!node || node.cluster != prepared.clusterId) continue;
+          node.cluster = null;
+          this._markNodeDirtyUnsafe(nodeId);
+          recordedNodeMutation = true;
+        }
+        for (const nodeId of validMembers) {
+          const node = this.nodes.get(nodeId);
+          if (node.cluster == prepared.clusterId) continue;
+          const previousCluster = node.cluster;
+          if (previousCluster !== null && previousCluster !== undefined) {
+            const previousMembers = this.clusters.get(previousCluster);
+            previousMembers?.delete(nodeId);
+            if (previousMembers?.size === 0) this.clusters.delete(previousCluster);
+          }
+          node.cluster = prepared.clusterId;
+          this._markNodeDirtyUnsafe(nodeId);
+          recordedNodeMutation = true;
+        }
+        if (!recordedNodeMutation) this._advancePersistenceGenerationUnsafe();
+        importedClusters += 1;
+      }
+
+      const requestedNextNodeId = Number.isSafeInteger(changes.nextNodeId)
+        ? changes.nextNodeId
+        : nextSafeIntegerAfter(this.nodes.keys(), this.nextNodeId);
+      if (Number.isSafeInteger(requestedNextNodeId) && requestedNextNodeId > this.nextNodeId) {
+        this.nextNodeId = requestedNextNodeId;
+        this._advancePersistenceGenerationUnsafe();
+      }
+      const requestedNextClusterId = Number.isSafeInteger(changes.nextClusterId)
+        ? changes.nextClusterId
+        : nextSafeIntegerAfter(this.clusters.keys(), this.nextClusterId);
+      if (Number.isSafeInteger(requestedNextClusterId) && requestedNextClusterId > this.nextClusterId) {
+        this.nextClusterId = requestedNextClusterId;
+        this._advancePersistenceGenerationUnsafe();
+      }
+
+      return {
+        importedNodes,
+        importedEdges,
+        importedClusters,
+        removedNodes,
+        removedEdges,
+        removedClusters,
+      };
+    });
+  }
+
+  applyReclusterPlan(plan) {
+    if (!plan || typeof plan !== 'object') {
+      return { assignedToExisting: 0, createdClusters: 0, assignedToNewClusters: 0 };
+    }
+    const existingAssignments = Array.from(plan.existingAssignments || [])
+      .map((assignment) => ({
+        nodeId: assignment?.nodeId,
+        clusterId: assignment?.cluster,
+      }))
+      .filter(({ nodeId, clusterId }) => (
+        nodeId !== undefined && nodeId !== null && clusterId !== undefined && clusterId !== null
+      ));
+    const newClusterGroups = Array.from(plan.newClusterGroups || [])
+      .map((group) => Array.from(new Set(group || [])))
+      .filter((group) => group.length > 0);
+    const hasAcceptedNode = existingAssignments.some(({ nodeId, clusterId }) => {
+      const node = this.nodes.get(nodeId);
+      return node && node.cluster !== clusterId;
+    }) || newClusterGroups.some((group) => group.some((nodeId) => {
+      const node = this.nodes.get(nodeId);
+      return node && (node.cluster === null || node.cluster === undefined);
+    }));
+    if (!hasAcceptedNode) {
+      return { assignedToExisting: 0, createdClusters: 0, assignedToNewClusters: 0 };
+    }
+
+    return this.withPersistenceBarrier(() => {
+      let assignedToExisting = 0;
+      let createdClusters = 0;
+      let assignedToNewClusters = 0;
+      for (const { nodeId, clusterId } of existingAssignments) {
+        const node = this.nodes.get(nodeId);
+        if (!node || node.cluster === clusterId) continue;
+        this._moveNodeToClusterUnsafe(nodeId, clusterId);
+        assignedToExisting += 1;
+      }
+      for (const group of newClusterGroups) {
+        const accepted = group.filter((nodeId) => {
+          const node = this.nodes.get(nodeId);
+          return node && (node.cluster === null || node.cluster === undefined);
+        });
+        if (accepted.length === 0) continue;
+        const clusterId = this.nextClusterId;
+        this.nextClusterId += 1;
+        this.clusters.set(clusterId, new Set());
+        this._advancePersistenceGenerationUnsafe();
+        createdClusters += 1;
+        for (const nodeId of accepted) {
+          this._moveNodeToClusterUnsafe(nodeId, clusterId);
+          assignedToNewClusters += 1;
+        }
+      }
+      return { assignedToExisting, createdClusters, assignedToNewClusters };
+    });
+  }
+
+  _moveNodeToClusterUnsafe(nodeId, clusterId) {
+    this._requirePersistenceBarrierUnsafe();
+    const node = this.nodes.get(nodeId);
+    if (!node || node.cluster === clusterId) return false;
+    const previousCluster = node.cluster;
+    if (previousCluster !== null && previousCluster !== undefined) {
+      const members = this.clusters.get(previousCluster);
+      members?.delete(nodeId);
+      if (members?.size === 0) this.clusters.delete(previousCluster);
+    }
+    if (!this.clusters.has(clusterId)) this.clusters.set(clusterId, new Set());
+    this.clusters.get(clusterId).add(nodeId);
+    node.cluster = clusterId;
+    this._markNodeDirtyUnsafe(nodeId);
+    return true;
+  }
+
   markNodeDirty(nodeId) {
     if (!this.nodes.has(nodeId)) return false;
     return this.withPersistenceBarrier(() => {
@@ -634,6 +1156,34 @@ class NetworkMemory {
     this.dirtyEdgeKeys.add(edgeKey);
     this.deletedEdgeKeys.delete(edgeKey);
     this._advancePersistenceGenerationUnsafe();
+  }
+
+  _removeNodeUnsafe(nodeId) {
+    this._requirePersistenceBarrierUnsafe();
+    if (!this.nodes.has(nodeId)) return null;
+    this.nodes.delete(nodeId);
+    this.dirtyNodeIds.delete(nodeId);
+    this.deletedNodeIds.add(nodeId);
+    this._advancePersistenceGenerationUnsafe();
+
+    let removedEdges = 0;
+    for (const [key, edge] of this.edges) {
+      let source = edge?.source ?? edge?.from;
+      let target = edge?.target ?? edge?.to;
+      if (source === undefined || target === undefined) {
+        const parts = String(key).split('->');
+        source = Number.isNaN(Number(parts[0])) ? parts[0] : Number(parts[0]);
+        target = Number.isNaN(Number(parts[1])) ? parts[1] : Number(parts[1]);
+      }
+      if (source == nodeId || target == nodeId) {
+        if (this._deleteEdgeKeyUnsafe(key)) removedEdges += 1;
+      }
+    }
+    for (const [clusterId, members] of this.clusters) {
+      members.delete(nodeId);
+      if (members.size === 0) this.clusters.delete(clusterId);
+    }
+    return { nodeId, removedEdges };
   }
 
   _deleteEdgeKeyUnsafe(edgeKey) {
@@ -703,13 +1253,23 @@ class NetworkMemory {
   }
 
   withPersistenceBarrier(callback) {
+    if (typeof callback !== 'function') {
+      throw new TypeError('persistence_barrier_callback_required');
+    }
+    if (Object.prototype.toString.call(callback) === '[object AsyncFunction]') {
+      throw new Error('persistence_barrier_async_callback');
+    }
+    return this._runPersistenceBarrier(callback);
+  }
+
+  _runPersistenceBarrier(callback) {
     if (this.persistenceBarrierActive) {
       throw new Error('persistence_barrier_reentry');
     }
     this.persistenceBarrierActive = true;
     try {
       const result = callback();
-      if (result && typeof result.then === 'function') {
+      if (isThenableWithoutInvocation(result)) {
         throw new Error('persistence_barrier_async_callback');
       }
       return result;
@@ -730,35 +1290,10 @@ class NetworkMemory {
   }
 
   _getPersistenceChangesUnsafe() {
-    const serializeNode = (node) => ({
-      id: node.id,
-      concept: node.concept,
-      tag: node.tag,
-      embedding: isVectorLike(node.embedding) ? Array.from(node.embedding) : node.embedding,
-      embedding_status: node.embedding_status,
-      weight: node.weight,
-      activation: node.activation,
-      cluster: node.cluster,
-      accessCount: node.accessCount,
-      created: node.created,
-      accessed: node.accessed,
-      type: node.type,
-      tags: node.tags,
-      metadata: node.metadata,
-      source_class: node.source_class,
-      salienceWeight: node.salienceWeight,
-      provenance: node.provenance,
-      asserted_at: node.asserted_at,
-      asserted_cycle: node.asserted_cycle,
-      superseded_by: node.superseded_by,
-      confidence_decay: node.confidence_decay,
-      status: node.status,
-      consolidatedAt: node.consolidatedAt
-    });
     const nodes = Array.from(this.dirtyNodeIds)
       .map((id) => this.nodes.get(id))
       .filter(Boolean)
-      .map(serializeNode);
+      .map((node) => serializeNodePersistenceRecord(node));
     const edges = Array.from(this.dirtyEdgeKeys)
       .map((key) => {
         const edge = this.edges.get(key);
@@ -800,7 +1335,7 @@ class NetworkMemory {
       const nodes = Array.from(this.nodes.values())
         .map((node) => serializeNodePersistenceRecord(node));
       const edges = Array.from(this.edges.entries())
-        .map(([key, edge]) => serializeEdgePersistenceRecord(key, deepCloneJsonRecord(edge)));
+        .map(([key, edge]) => serializeEdgePersistenceRecord(key, edge));
       const changes = deepCloneJsonRecord(this._getPersistenceChangesUnsafe());
       return deepFreezeJson({
         generation: this.persistenceGeneration,
