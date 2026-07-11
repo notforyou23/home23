@@ -388,6 +388,7 @@ class DashboardServer {
     const { createOperationScratchQuota } = require('../../../shared/memory-source');
     const { createDashboardSynthesisOperationRuntime } =
       require('./brain-operations/synthesis-operation-runtime.js');
+    const { readCommittedSynthesisState } = require('../synthesis/synthesis-agent.js');
     const { createResearchRunTargetResolver } =
       require('./brain-operations/research-run-target-resolver.js');
     const home23Root = this.getHome23Root();
@@ -557,9 +558,7 @@ class DashboardServer {
         if (!providerOperationRuntime) throw providerOperationError;
         return providerOperationRuntime.resolve(input);
       },
-      readSynthesisState: synthesisOperationRuntime
-        ? () => synthesisOperationRuntime.readState()
-        : null,
+      readSynthesisState: () => readCommittedSynthesisState({ brainDir: this.logsDir }),
       capabilityKey: process.env.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY || null,
       exporter,
     });
