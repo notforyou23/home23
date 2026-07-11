@@ -542,6 +542,8 @@ export class BrainOperationsClient {
       this.options.onActivity?.({
         source: 'brain_operation',
         operationId,
+        type: event.type,
+        eventSequence: event.eventSequence,
         sequence: event.eventSequence,
         state: event.state ?? status.state,
         phase: eventPhase,

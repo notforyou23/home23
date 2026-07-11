@@ -33,6 +33,15 @@ export const SCENARIOS = Object.freeze([
   'verify-receipts',
 ]);
 const TERMINAL = new Set(['complete', 'partial', 'failed', 'cancelled', 'interrupted']);
+const PROVIDER_OPERATION_TYPES = new Set(['query', 'pgs', 'research_compile', 'synthesis']);
+const ACTIVITY_TYPES = new Set([
+  'progress', 'progress_update', 'token', 'token_estimate',
+  'phase', 'terminal', 'state', 'heartbeat', 'provider_selected',
+  'provider_activity', 'provider_call_terminal', 'result_ready',
+  'source_pin_attached', 'worker_assigned',
+]);
+const SWEEP_RECEIPT_MAX_COUNT = 10_000;
+const SWEEP_EXCERPT_CHARACTERS = 512;
 
 export async function loadProductionModules() {
   try {
@@ -112,12 +121,44 @@ function evidenceRevision(evidence) {
 function resultProjection(result) {
   const answer = typeof result?.answer === 'string' ? result.answer : null;
   const sweepOutputs = Array.isArray(result?.sweepOutputs) ? result.sweepOutputs : null;
+  if (sweepOutputs && sweepOutputs.length > SWEEP_RECEIPT_MAX_COUNT) {
+    throw typedError('pgs_receipt_too_large');
+  }
+  const projectedSweeps = sweepOutputs?.map((sweep) => {
+    if (!sweep || typeof sweep !== 'object' || Array.isArray(sweep)
+        || !['workUnitId', 'partitionId', 'provider', 'model', 'output']
+          .every((key) => typeof sweep[key] === 'string' && sweep[key].trim())) {
+      throw typedError('pgs_receipt_invalid');
+    }
+    const output = sweep.output;
+    return {
+      workUnitId: sweep.workUnitId,
+      partitionId: sweep.partitionId,
+      provider: sweep.provider,
+      model: sweep.model,
+      outputBytes: Buffer.byteLength(output, 'utf8'),
+      outputSha256: sha256Bytes(Buffer.from(output)),
+      outputExcerpt: output.slice(0, SWEEP_EXCERPT_CHARACTERS),
+    };
+  }) ?? null;
+  const pgs = result?.metadata?.pgs;
+  const metadata = pgs && typeof pgs === 'object' && !Array.isArray(pgs)
+    ? {
+      pgs: {
+        successfulSweeps: Number.isSafeInteger(pgs.successfulSweeps)
+          ? pgs.successfulSweeps : null,
+        retryablePartitions: Array.isArray(pgs.retryablePartitions)
+          ? pgs.retryablePartitions.map(String).slice(0, SWEEP_RECEIPT_MAX_COUNT) : [],
+      },
+    }
+    : null;
   return {
     answerPresent: Boolean(answer && answer.trim()),
     answerBytes: answer ? Buffer.byteLength(answer, 'utf8') : 0,
     answerSha256: answer ? sha256Bytes(Buffer.from(answer)) : null,
     sweepOutputCount: sweepOutputs?.length ?? null,
-    metadata: result?.metadata && typeof result.metadata === 'object' ? result.metadata : null,
+    sweepOutputs: projectedSweeps,
+    metadata,
   };
 }
 
@@ -137,7 +178,13 @@ function authorityFields(context, values, baseUrl) {
   return { authorizedEndpoint: null, isolatedStore: path.resolve(store) };
 }
 
-function terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, extras = {} }) {
+function terminalReceipt({
+  context, values, baseUrl, callerAgent, scenario, terminal, activityLog = [], extras = {},
+}) {
+  const providerTerminalValidated = PROVIDER_OPERATION_TYPES.has(terminal.operationType)
+    ? activityLog.some((activity) => activity?.operationId === terminal.operationId
+      && activity?.type === 'provider_call_terminal')
+    : null;
   return {
     helper: 'live-brain-tools-smoke',
     scenario,
@@ -151,10 +198,16 @@ function terminalReceipt({ context, values, baseUrl, callerAgent, scenario, term
     target: terminal.target,
     resultHandle: terminal.resultHandle,
     resultArtifact: terminal.resultArtifact,
+    sourcePinDescriptor: terminal.sourcePinDescriptor ?? null,
+    sourcePinDigest: terminal.sourcePinDigest ?? null,
     sourceEvidence: terminal.sourceEvidence,
     sourceHealth: terminal.sourceEvidence?.sourceHealth ?? null,
     matchOutcome: terminal.sourceEvidence?.matchOutcome ?? null,
     sourceRevision: evidenceRevision(terminal.sourceEvidence),
+    authoritativeNodeCount: Number.isSafeInteger(
+      Number(terminal.sourceEvidence?.authoritativeTotals?.nodes),
+    ) ? Number(terminal.sourceEvidence.authoritativeTotals.nodes) : null,
+    providerTerminalValidated,
     error: terminal.error,
     result: resultProjection(terminal.result),
     ...extras,
@@ -245,7 +298,7 @@ function deriveCanaryQuery(node) {
 
 async function discoverCanary({ client, selector, signal }) {
   const target = await client.resolveTarget(selector);
-  const graph = await client.graph({ ...(selector ? { target: selector } : {}), nodeLimit: 100, edgeLimit: 0 }, signal);
+  const graph = await client.graph({ ...(selector ? { target: selector } : {}), nodeLimit: 100, edgeLimit: 1 }, signal);
   const candidates = nodesFromGraph(graph).filter((node) => node?.id != null);
   for (const node of candidates) {
     const query = deriveCanaryQuery(node);
@@ -358,17 +411,20 @@ export async function flushActivity(context, output, activities, callerAgent, sc
   for (const activity of activities) {
     const previous = previousByOperation.get(activity.operationId) ?? -1;
     if (typeof activity.operationId !== 'string' || !activity.operationId
-        || !Number.isSafeInteger(activity.sequence) || activity.sequence <= previous) {
+        || !ACTIVITY_TYPES.has(activity.type)
+        || !Number.isSafeInteger(activity.eventSequence)
+        || activity.eventSequence <= previous) {
       throw typedError('operation_event_out_of_order');
     }
-    previousByOperation.set(activity.operationId, activity.sequence);
+    previousByOperation.set(activity.operationId, activity.eventSequence);
     await appendJsonlReceipt(context, output, {
       helper: 'live-brain-tools-smoke',
       scenario,
       receiptKind: 'operation-event',
       requesterAgent: callerAgent,
       operationId: activity.operationId,
-      sequence: activity.sequence,
+      type: activity.type,
+      eventSequence: activity.eventSequence,
       state: activity.state,
       phase: activity.phase,
       eventUpdatedAt: activity.updatedAt,
@@ -587,6 +643,7 @@ export async function executeScenario({
   callerAgent,
   signal,
   fetchImpl = fetch,
+  activityLog = [],
 } = {}) {
   const selector = targetSelector(values);
   if (scenario === 'discover-canary') {
@@ -597,7 +654,7 @@ export async function executeScenario({
       throw typedError('canary_source_revision_mismatch');
     }
     return terminalReceipt({
-      context, values, baseUrl, callerAgent, scenario, terminal,
+      context, values, baseUrl, callerAgent, scenario, terminal, activityLog,
       extras: {
         query: discovered.query,
         nodeId: discovered.nodeId,
@@ -615,7 +672,7 @@ export async function executeScenario({
     const canary = await canaryFromReceipt(values, context, callerAgent);
     const parity = await verifyMcpParity({ client, baseUrl, canary, signal, fetchImpl });
     const terminal = await protectedTerminal(client, parity.dashboard.operationId, signal);
-    return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, extras: {
+    return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, activityLog, extras: {
       mcpParity: true, nodeId: parity.nodeId, sourceRevision: parity.sourceRevision,
     } });
   }
@@ -639,7 +696,7 @@ export async function executeScenario({
         || Number(evidence.authoritativeTotals?.nodes ?? evidence.authoritativeTotal) <= 0) {
       throw typedError('zero_result_not_proven');
     }
-    return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, extras: {
+    return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, activityLog, extras: {
       sourceHealth: evidence.sourceHealth,
       matchOutcome: evidence.matchOutcome,
       completeCoverage: evidence.completeCoverage,
@@ -648,10 +705,10 @@ export async function executeScenario({
   }
   if (scenario === 'graph') {
     const nodeLimit = integer(values, 'node-limit', { defaultValue: 250, min: 1, max: 2000 });
-    const edgeLimit = integer(values, 'edge-limit', { defaultValue: Math.min(nodeLimit * 4, 8000), min: 0, max: 8000 });
+    const edgeLimit = integer(values, 'edge-limit', { defaultValue: Math.min(nodeLimit * 4, 8000), min: 1, max: 8000 });
     const graph = await client.graph({ ...(selector ? { target: selector } : {}), nodeLimit, edgeLimit }, signal);
     const terminal = await protectedTerminal(client, graph.operationId, signal);
-    return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, extras: {
+    return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, activityLog, extras: {
       returnedTotals: terminal.sourceEvidence?.returnedTotals || {
         nodes: nodesFromGraph(graph).length, edges: Array.isArray(graph.edges) ? graph.edges.length : 0,
       },
@@ -695,7 +752,7 @@ export async function executeScenario({
     }
     const reattached = await client.resumeOperation(initial.operationId, signal);
     const terminal = await protectedTerminal(client, initial.operationId, signal);
-    return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, extras: {
+    return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, activityLog, extras: {
       detachedState: detached.state, reattachedTerminal: TERMINAL.has(reattached.state),
     } });
   }
@@ -704,7 +761,7 @@ export async function executeScenario({
     await client.cancel(initial.operationId, signal);
     const terminal = await protectedTerminal(client, initial.operationId, signal);
     if (terminal.state !== 'cancelled') throw typedError('cancel_not_terminal');
-    return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, extras: {
+    return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, activityLog, extras: {
       providerAbortObserved: terminal.error?.code === 'cancelled'
         || terminal.result?.providerAbortObserved === true,
     } });
@@ -729,7 +786,7 @@ export async function executeScenario({
       ? await protectedTerminal(client, operation.operationId, signal)
       : await client.reattachSynthesis(operation.operationId, signal);
     const protectedRead = await protectedTerminal(client, operation.operationId, signal);
-    return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal: protectedRead, extras: {
+    return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal: protectedRead, activityLog, extras: {
       reattachedTerminal: TERMINAL.has(terminal.state),
       generationMarker: protectedRead.result?.generationMarker ?? null,
     } });
@@ -759,7 +816,7 @@ export async function executeScenario({
     if (!operationId) throw typedError('operation_id_missing');
     const terminal = await protectedTerminal(client, operationId, signal);
     assertCanaryEvidence(terminal, canary);
-    return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal });
+    return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, activityLog });
   }
 
   if (['own', 'direct-query', 'sibling', 'completed-research', 'pgs', 'large-pgs-isolated'].includes(scenario)) {
@@ -814,7 +871,7 @@ export async function executeScenario({
         throw typedError('synthetic_source_mismatch');
       }
     }
-    return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, extras: {
+    return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, activityLog, extras: {
       canaryNodeId: canary.nodeId,
       canarySourceRevision: canary.sourceRevision,
       authoritativeNodes: Number.isFinite(authoritativeNodes) ? authoritativeNodes : null,
@@ -885,7 +942,8 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }));
   const controller = new AbortController();
   const row = await executeScenario({
-    scenario, modules, client, values, context, baseUrl, callerAgent, signal: controller.signal,
+    scenario, modules, client, values, context, baseUrl, callerAgent,
+    signal: controller.signal, activityLog: activities,
   });
   const sseOutputRaw = one(values, 'sse-output');
   if (sseOutputRaw) await flushActivity(

@@ -1894,7 +1894,10 @@ test('real coordinator and router detach then reopen the same attachment ID acro
 test('progress, phase, and terminal notifications never masquerade as operation records', async () => {
   const operationId = 'brop_HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH';
   const sse = controlledStream();
-  const activities: Array<{ sequence: number; state: string; phase: string | null; updatedAt: string }> = [];
+  const activities: Array<{
+    type: string; eventSequence: number; sequence: number;
+    state: string; phase: string | null; updatedAt: string;
+  }> = [];
   let statusReads = 0;
   let resultReads = 0;
   let terminalAvailable = false;
@@ -1903,6 +1906,8 @@ test('progress, phase, and terminal notifications never masquerade as operation 
     baseUrl: 'http://fixture',
     callerAgent: 'jerry',
     onActivity: (activity) => activities.push({
+      type: activity.type,
+      eventSequence: activity.eventSequence,
       sequence: activity.sequence,
       state: activity.state,
       phase: activity.phase,
@@ -1947,8 +1952,8 @@ test('progress, phase, and terminal notifications never masquerade as operation 
   assert.equal(statusReads, 1, 'terminal notification requires authenticated status');
   assert.equal(resultReads, 1);
   assert.deepEqual(activities, [
-    { sequence: 1, state: 'queued', phase: 'provider', updatedAt: '2026-07-10T12:00:01.000Z' },
-    { sequence: 2, state: 'running', phase: 'synthesizing', updatedAt: '2026-07-10T12:00:02.000Z' },
-    { sequence: 3, state: 'complete', phase: 'done', updatedAt: '2026-07-10T12:00:03.000Z' },
+    { type: 'progress', eventSequence: 1, sequence: 1, state: 'queued', phase: 'provider', updatedAt: '2026-07-10T12:00:01.000Z' },
+    { type: 'phase', eventSequence: 2, sequence: 2, state: 'running', phase: 'synthesizing', updatedAt: '2026-07-10T12:00:02.000Z' },
+    { type: 'terminal', eventSequence: 3, sequence: 3, state: 'complete', phase: 'done', updatedAt: '2026-07-10T12:00:03.000Z' },
   ]);
 });

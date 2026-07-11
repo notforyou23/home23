@@ -29,10 +29,6 @@ test('lists exact requester-owned nonterminal stores with production reader', as
   assert.deepEqual(result.requesters, ['jerry']);
   assert.equal(result.count, 0);
   assert.deepEqual(result.operations, []);
-  await assert.rejects(
-    listBrainOperations({ home23Root: state.home23Root, state: 'all' }),
-    (error) => error.code === 'state_invalid',
-  );
 });
 
 test('stdout is a complete canonical receipt even when no output file is requested', async (t) => {
@@ -55,4 +51,47 @@ test('stdout is a complete canonical receipt even when no output file is request
   assert.match(row.startedAt, /^\d{4}-/);
   assert.match(row.completedAt, /^\d{4}-/);
   assert.match(row.artifactSha256, /^[a-f0-9]{64}$/);
+});
+
+test('lists every requester through the exact nonterminal operator command', async (t) => {
+  const { listBrainOperations } = await import('../../scripts/list-brain-operations.mjs');
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'home23-list-operations-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const calls = [];
+  const operations = [
+    { requesterAgent: 'jerry', operationId: 'op-a', state: 'queued' },
+    { requesterAgent: 'forrest', operationId: 'op-b', state: 'running' },
+  ];
+  const result = await listBrainOperations({
+    home23Root: root,
+    commandRunner: async (...args) => {
+      calls.push(args);
+      return {
+        checkedAt: '2026-07-10T00:00:00.000Z',
+        requesters: ['forrest', 'jerry'],
+        count: operations.length,
+        operations,
+      };
+    },
+  });
+  assert.deepEqual(calls, [[root, ['list', '--state', 'nonterminal', '--all-requesters']]]);
+  assert.equal(result.count, 2);
+  assert.deepEqual(result.operations, operations);
+});
+
+test('rejects broad states, terminal rows, and inconsistent store counts', async (t) => {
+  const { listBrainOperations } = await import('../../scripts/list-brain-operations.mjs');
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'home23-list-operations-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await assert.rejects(listBrainOperations({
+    home23Root: root, state: 'all', commandRunner: async () => { throw new Error('must not run'); },
+  }), (error) => error.code === 'state_invalid');
+  for (const result of [
+    { checkedAt: 'now', requesters: ['jerry'], count: 1, operations: [{ state: 'complete' }] },
+    { checkedAt: 'now', requesters: ['jerry'], count: 2, operations: [{ state: 'running' }] },
+  ]) {
+    await assert.rejects(listBrainOperations({
+      home23Root: root, commandRunner: async () => result,
+    }), (error) => error.code === 'brain_operations_store_invalid');
+  }
 });

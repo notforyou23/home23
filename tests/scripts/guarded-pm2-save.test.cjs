@@ -59,6 +59,23 @@ test('normalizes flattened dump.pm2 rows identically to live jlist rows', async 
   );
 });
 
+test('realistic dump rows without runtime PIDs compare safely while live PID is frozen separately', async () => {
+  const { comparePreSaveTables, normalizePm2Table } = await import('../../scripts/guarded-pm2-save.mjs');
+  const persisted = dumpRow('unrelated-service');
+  delete persisted.pid;
+  const live = normalizePm2Table([liveRow('unrelated-service')]);
+  const dump = normalizePm2Table([persisted]);
+  assert.equal(dump.get('unrelated-service').pid, null);
+  assert.doesNotThrow(() => comparePreSaveTables(live, dump, new Set()));
+  const reorderedArgs = normalizePm2Table([dumpRow('unrelated-service', {
+    pid: undefined, args: ['second', 'first'],
+  })]);
+  assert.throws(
+    () => comparePreSaveTables(live, reorderedArgs, new Set()),
+    (error) => error.code === 'pm2_unrelated_drift',
+  );
+});
+
 test('dry run writes a mode-0600 byte backup and never invokes pm2 save', async (t) => {
   const { guardedPm2Save } = await import('../../scripts/guarded-pm2-save.mjs');
   const state = await fixture();

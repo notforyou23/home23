@@ -51,6 +51,9 @@ export interface CanonicalBrainOperationTarget {
 export interface OperationActivity {
   source: 'brain_operation';
   operationId: string;
+  type: BrainOperationNotification['type'];
+  eventSequence: number;
+  /** @deprecated Use eventSequence in durable receipts. */
   sequence: number;
   state: BrainOperationState;
   phase: string | null;

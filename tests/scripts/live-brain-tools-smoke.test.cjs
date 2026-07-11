@@ -190,6 +190,8 @@ test('large pinned PGS partial retains canonical null-answer sweep outputs and e
   const partial = operation({
     operationType: 'pgs',
     state: 'partial',
+    sourcePinDescriptor: { version: 1, sourceRevision: 7, digest: 'pin-descriptor' },
+    sourcePinDigest: `sha256:${'b'.repeat(64)}`,
     result: {
       answer: null,
       sweepOutputs,
@@ -212,12 +214,49 @@ test('large pinned PGS partial retains canonical null-answer sweep outputs and e
     },
     context: state.context, baseUrl: 'http://fixture', callerAgent: 'jerry',
     signal: new AbortController().signal,
+    activityLog: [{
+      operationId: partial.operationId,
+      type: 'provider_call_terminal',
+      eventSequence: 9,
+    }],
   });
   assert.equal(row.state, 'partial');
   assert.equal(row.result.answerPresent, false);
   assert.equal(row.result.sweepOutputCount, 128);
+  assert.equal(row.result.sweepOutputs.length, 128);
+  assert.match(row.result.sweepOutputs[0].outputSha256, /^[a-f0-9]{64}$/);
+  assert.equal(row.result.metadata.pgs.successfulSweeps, 128);
   assert.equal(row.sourceRevision, 7);
+  assert.equal(row.providerTerminalValidated, true);
+  assert.equal(row.authoritativeNodeCount, 140_086);
+  assert.equal(row.sourcePinDescriptor.sourceRevision, 7);
+  assert.match(row.sourcePinDigest, /^sha256:[a-f0-9]{64}$/);
   assert.equal(row.liveProviderLargePgsGatePassed, true);
+});
+
+test('SSE receipts preserve production event type and monotonic eventSequence', async (t) => {
+  const { flushActivity } = await import('../../scripts/live-brain-tools-smoke.mjs');
+  const state = await fixture();
+  t.after(() => fs.rm(state.root, { recursive: true, force: true }));
+  const output = path.join(state.context.receiptRunDir, 'pgs-events.jsonl');
+  await flushActivity(state.context, output, [
+    {
+      source: 'brain_operation', operationId: 'op_pgs_events', type: 'progress',
+      eventSequence: 1, sequence: 1, state: 'running', phase: 'sweep',
+      updatedAt: '2026-07-10T00:00:01.000Z', lastProviderActivityAt: null,
+    },
+    {
+      source: 'brain_operation', operationId: 'op_pgs_events', type: 'heartbeat',
+      eventSequence: 2, sequence: 2, state: 'running', phase: 'synthesize',
+      updatedAt: '2026-07-10T00:00:02.000Z', lastProviderActivityAt: '2026-07-10T00:00:02.000Z',
+    },
+  ], 'jerry', 'pgs', 'live');
+  const rows = (await fs.readFile(output, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(rows.map(({ type, eventSequence }) => ({ type, eventSequence })), [
+    { type: 'progress', eventSequence: 1 },
+    { type: 'heartbeat', eventSequence: 2 },
+  ]);
+  assert.equal(rows.some((row) => Object.hasOwn(row, 'sequence')), false);
 });
 
 test('authoritative canary discovery precedes query and typed failures remain failures', async (t) => {
@@ -226,10 +265,15 @@ test('authoritative canary discovery precedes query and typed failures remain fa
   const state = await fixture();
   t.after(() => fs.rm(state.root, { recursive: true, force: true }));
   const calls = [];
+  let graphRequest;
   const searchTerminal = operation({ operationId: 'op_search_0001', operationType: 'search' });
   const client = {
     async resolveTarget() { calls.push('resolve'); return { id: 'brain-jerry', ownerAgent: 'jerry' }; },
-    async graph() { calls.push('graph'); return { nodes: [{ id: 'n-canary', concept: 'authoritative canary phrase' }] }; },
+    async graph(request) {
+      calls.push('graph');
+      graphRequest = request;
+      return { nodes: [{ id: 'n-canary', concept: 'authoritative canary phrase' }] };
+    },
     async search() {
       calls.push('search');
       return { operationId: searchTerminal.operationId, results: [{ id: 'n-canary' }], sourceEvidence: searchTerminal.sourceEvidence };
@@ -241,6 +285,7 @@ test('authoritative canary discovery precedes query and typed failures remain fa
     baseUrl: 'http://fixture', callerAgent: 'jerry', signal: new AbortController().signal,
   });
   assert.deepEqual(calls, ['resolve', 'graph', 'search', 'protected-result']);
+  assert.equal(graphRequest.edgeLimit, 1);
   assert.equal(discovered.nodeId, 'n-canary');
   assert.equal(discovered.sourceRevision, 7);
 
@@ -276,6 +321,7 @@ test('isolated synthesis reconnect and MCP disabled/unreachable outcomes are typ
   assert.equal(reattached, 1);
   assert.equal(synthesis.state, 'complete');
   assert.equal(synthesis.generationMarker, 'generation-7');
+  assert.equal(synthesis.providerTerminalValidated, false);
 
   const disabled = await executeScenario({
     scenario: 'mcp-unavailable', modules: {}, client: {},
