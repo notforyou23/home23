@@ -7,7 +7,10 @@ const zlib = require('node:zlib');
 const crypto = require('node:crypto');
 const { StringDecoder } = require('node:string_decoder');
 const { createQuotaBackpressuredJsonlGzipWriter } = require('./jsonl.cjs');
-const { createOperationScratchQuota } = require('./scratch-quota.cjs');
+const {
+  createOperationScratchQuota,
+  getOperationScratchQuotaCleanup,
+} = require('./scratch-quota.cjs');
 const { readManifest, writeManifestAtomic, fsyncDirectory } = require('./manifest.cjs');
 const {
   assertOpenedFilePathIdentity,
@@ -399,6 +402,14 @@ async function projectLegacyResearchSnapshot({
   }
   const ownsQuota = !scratchQuota;
   const quota = scratchQuota || await createOperationScratchQuota({ operationRoot });
+  let cleanupQuota = quota;
+  try {
+    cleanupQuota = getOperationScratchQuotaCleanup(quota);
+  } catch (error) {
+    // Test/compatibility wrappers do not carry the private cleanup capability.
+    // Their normal authority remains usable while its originating signal is live.
+    if (error?.code !== 'invalid_request') throw error;
+  }
   try {
     const root = quota.operationRoot;
     const projectionsRoot = path.join(root, 'source-projections');
@@ -576,6 +587,11 @@ async function projectLegacyResearchSnapshot({
         await nodes?.cleanup?.().catch(() => {});
         await edges?.cleanup?.().catch(() => {});
         await removeOwnedProjectionAttempt(attemptRoot, attemptIdentity).catch(() => {});
+        // A finished shared writer owns its published path and intentionally
+        // makes cleanup a no-op. If a later source check or metadata step fails,
+        // removing the enclosing attempt therefore needs one aggregate rescan
+        // so an externally owned quota does not retain bytes that no longer exist.
+        await cleanupQuota.reconcile().catch(() => {});
         rethrowAbort(error, signal);
         if (error?.code === 'source_changed') {
           lastMismatch = error;

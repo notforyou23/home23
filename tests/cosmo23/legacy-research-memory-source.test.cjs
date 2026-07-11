@@ -7,6 +7,7 @@ const path = require('node:path');
 const zlib = require('node:zlib');
 
 const {
+  LEDGER_NAME,
   createOperationScratchQuota,
   openMemorySource,
   projectLegacyResearchSnapshot,
@@ -352,4 +353,48 @@ test('abort from the final research source-recheck hook publishes no projection'
     await fsp.readdir(path.join(operationRoot, 'source-projections')).catch(() => []),
     [],
   );
+});
+
+test('post-writer abort removes its attempt and reconciles an external scratch quota', async (t) => {
+  const { dir, file } = await writeFixture({ gzip: true });
+  const operationRoot = await tempDir('home23-legacy-snapshot-quota-cleanup-');
+  const controller = new AbortController();
+  const quota = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes: 16 * 1024 * 1024,
+    signal: controller.signal,
+  });
+  await quota.reconcile();
+  const baselineUsedBytes = quota.usedBytes;
+  const reason = Object.assign(new Error('forced post-writer abort'), {
+    name: 'AbortError',
+    code: 'cancelled',
+  });
+  t.after(async () => {
+    quota.close();
+    await fsp.rm(operationRoot, { recursive: true, force: true });
+    await fsp.rm(dir, { recursive: true, force: true });
+  });
+
+  await assert.rejects(() => projectLegacyResearchSnapshot({
+    canonicalRoot: dir,
+    stateFile: file,
+    operationRoot,
+    operationId: 'op-legacy-quota-cleanup',
+    requesterAgent: 'jerry',
+    scratchQuota: quota,
+    signal: controller.signal,
+    _testHooks: {
+      async beforeSourceRecheck() { controller.abort(reason); },
+    },
+  }), (error) => error === reason);
+
+  assert.deepEqual(
+    await fsp.readdir(path.join(operationRoot, 'source-projections')),
+    [],
+  );
+  const ledger = JSON.parse(await fsp.readFile(path.join(operationRoot, LEDGER_NAME), 'utf8'));
+  assert.equal(ledger.actualPrivateBytes, 0);
+  assert.deepEqual(ledger.reservations, {});
+  assert.equal(quota.usedBytes, baselineUsedBytes);
 });
