@@ -9,7 +9,6 @@ const {
   readJsonl,
 } = require('./jsonl.cjs');
 const {
-  findLegacyResidentSidecars,
   fsyncDirectory,
   readManifest,
   writeManifestAtomic,
@@ -18,7 +17,9 @@ const { createBoundedOverlayStore } = require('./overlay-store.cjs');
 const { createOperationScratchQuota } = require('./scratch-quota.cjs');
 const {
   assertStableOpenedFile,
+  assertOpenedFilePathIdentity,
   openConfinedRegularFile,
+  portableFileIdentity,
   readConfinedFile,
 } = require('./confined-file.cjs');
 const {
@@ -29,6 +30,7 @@ const {
   sourceDescriptorDigest,
   throwIfAborted,
 } = require('./contracts.cjs');
+const { OPENED_JSONL_FILE } = require('./private-capabilities.cjs');
 
 const MAX_ATTEMPTS = 3;
 const MAX_CLUSTER_KEYS = 1_000_000;
@@ -112,37 +114,74 @@ function fingerprintDigest(fingerprint) {
   return crypto.createHash('sha256').update(JSON.stringify(fingerprint)).digest('hex');
 }
 
-async function fingerprintLegacyResident(canonicalRoot) {
-  const targetRoot = await fsp.realpath(canonicalRoot);
-  const files = await findLegacyResidentSidecars(targetRoot);
-  if (!files) {
-    throw memorySourceError('source_unavailable', 'legacy resident sidecars are unavailable', {
-      retryable: true,
+async function closeLegacyResidentFiles(openedFiles) {
+  if (!(openedFiles instanceof Map)) return;
+  await Promise.all([...new Set(openedFiles.values())].map(async (opened) => {
+    await opened.handle.close().catch((error) => {
+      if (error?.code !== 'EBADF') throw error;
     });
+  }));
+}
+
+async function revalidateLegacyResidentFiles(openedFiles) {
+  for (const opened of openedFiles.values()) {
+    await assertStableOpenedFile(opened);
+    await assertOpenedFilePathIdentity(opened, portableFileIdentity(opened.stat));
   }
-  const describe = async (filePath, optional = false) => {
-    try {
-      const canonical = await fsp.realpath(filePath);
-      if (canonical !== filePath || !canonical.startsWith(`${targetRoot}${path.sep}`)) {
-        throw memorySourceError('invalid_memory_source', 'legacy sidecar path escaped target');
-      }
-      const stat = await fsp.stat(filePath, { bigint: true });
-      if (!stat.isFile()) throw memorySourceError('invalid_memory_source', 'legacy sidecar is not regular');
-      return Object.freeze({ basename: path.basename(filePath), stat: statFingerprint(stat) });
-    } catch (error) {
-      if (optional && error.code === 'ENOENT') return null;
-      throw error;
+}
+
+async function openLegacyResidentFiles(canonicalRoot, { signal } = {}) {
+  const targetRoot = await fsp.realpath(canonicalRoot);
+  const openedFiles = new Map();
+  try {
+    for (const [role, basename, optional] of [
+      ['nodes', 'memory-nodes.jsonl.gz', false],
+      ['edges', 'memory-edges.jsonl.gz', false],
+      ['delta', 'memory-delta.jsonl', true],
+    ]) {
+      const opened = await openConfinedRegularFile(
+        targetRoot,
+        path.join(targetRoot, basename),
+        { flags: fs.constants.O_RDONLY, optional, signal },
+      );
+      if (opened) openedFiles.set(role, opened);
     }
-  };
-  return Object.freeze({
-    version: 1,
-    canonicalRoot: targetRoot,
-    files: Object.freeze({
-      nodes: await describe(files.nodes),
-      edges: await describe(files.edges),
-      delta: await describe(files.delta, true),
-    }),
-  });
+    if (!openedFiles.has('nodes') || !openedFiles.has('edges')) {
+      throw memorySourceError('source_unavailable', 'legacy resident sidecars are unavailable', {
+        retryable: true,
+      });
+    }
+    const describe = (role) => {
+      const opened = openedFiles.get(role);
+      return opened ? Object.freeze({
+        basename: path.basename(opened.path),
+        stat: statFingerprint(opened.stat),
+      }) : null;
+    };
+    const fingerprint = Object.freeze({
+      version: 1,
+      canonicalRoot: targetRoot,
+      files: Object.freeze({
+        nodes: describe('nodes'),
+        edges: describe('edges'),
+        delta: describe('delta'),
+      }),
+    });
+    await revalidateLegacyResidentFiles(openedFiles);
+    return Object.freeze({ targetRoot, fingerprint, openedFiles });
+  } catch (error) {
+    await closeLegacyResidentFiles(openedFiles).catch(() => {});
+    throw error;
+  }
+}
+
+async function fingerprintLegacyResident(canonicalRoot) {
+  const opened = await openLegacyResidentFiles(canonicalRoot);
+  try {
+    return opened.fingerprint;
+  } finally {
+    await closeLegacyResidentFiles(opened.openedFiles);
+  }
 }
 
 async function verifyLegacySourceFingerprint(canonicalRoot, expected) {
@@ -351,7 +390,7 @@ async function removeOwnedAttempt(attemptRoot, identity) {
   await fsp.rm(attemptRoot, { recursive: true, force: false });
 }
 
-async function loadLegacyDelta({ targetRoot, fingerprint, overlay, signal }) {
+async function loadLegacyDelta({ targetRoot, fingerprint, openedFiles, overlay, signal }) {
   const delta = fingerprint.files.delta;
   if (!delta || Number(delta.stat.size) === 0) return;
   const byteLimit = Number(delta.stat.size);
@@ -362,6 +401,7 @@ async function loadLegacyDelta({ targetRoot, fingerprint, overlay, signal }) {
     });
   }
   for await (const entry of readJsonl(path.join(targetRoot, delta.basename), {
+    [OPENED_JSONL_FILE]: openedFiles.get('delta'),
     confinedRoot: targetRoot,
     byteLimit,
     requireCompletePrefix: true,
@@ -373,9 +413,12 @@ async function loadLegacyDelta({ targetRoot, fingerprint, overlay, signal }) {
   }
 }
 
-function logicalNodeRecords({ targetRoot, fingerprint, overlay, signal, clusters }) {
+function logicalNodeRecords({
+  targetRoot, fingerprint, openedFiles, overlay, signal, clusters,
+}) {
   return (async function* nodes() {
     for await (const record of readJsonl(path.join(targetRoot, fingerprint.files.nodes.basename), {
+      [OPENED_JSONL_FILE]: openedFiles.get('nodes'),
       gzip: true,
       confinedRoot: targetRoot,
       expectedInputBytes: Number(fingerprint.files.nodes.stat.size),
@@ -402,11 +445,12 @@ function logicalNodeRecords({ targetRoot, fingerprint, overlay, signal, clusters
   })();
 }
 
-function logicalEdgeRecords({ targetRoot, fingerprint, overlay, signal }) {
+function logicalEdgeRecords({ targetRoot, fingerprint, openedFiles, overlay, signal }) {
   return (async function* edges() {
     const eligible = (record) => !overlay.hasRemovedNode(record.source)
       && !overlay.hasRemovedNode(record.target);
     for await (const record of readJsonl(path.join(targetRoot, fingerprint.files.edges.basename), {
+      [OPENED_JSONL_FILE]: openedFiles.get('edges'),
       gzip: true,
       confinedRoot: targetRoot,
       expectedInputBytes: Number(fingerprint.files.edges.stat.size),
@@ -546,97 +590,119 @@ async function projectLegacyResidentSidecars({
   try {
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       throwIfAborted(signal);
-      const before = await fingerprintLegacyResident(targetRoot);
-      const digest = fingerprintDigest(before);
-      const generation = `legacy-${digest.slice(0, 20)}`;
-      const revision = safeRevisionFromDigest(digest);
-      const projectionRoot = path.join(projectionsRoot, generation);
-      const published = await readPublishedProjection(projectionRoot, targetRoot, before);
-      if (published) return published;
-
-      const attemptRoot = path.join(projectionsRoot, `.attempt-${process.pid}-${crypto.randomUUID()}`);
-      await fsp.mkdir(attemptRoot, { recursive: false, mode: 0o700 });
-      const attemptIdentity = await fsp.lstat(attemptRoot);
-      const overlay = await createBoundedOverlayStore({
-        operationRoot: quota.operationRoot,
-        scratchQuota: quota,
-        signal,
-        maxMemoryBytes: maxOverlayMemoryBytes,
-        maxDiskBytes: maxOverlayDiskBytes,
-      });
-      let nodesWriter = null;
-      let edgesWriter = null;
+      const stableSource = await openLegacyResidentFiles(targetRoot, { signal });
       try {
-        await loadLegacyDelta({ targetRoot, fingerprint: before, overlay, signal });
-        const clusters = createBoundedClusterCounter();
-        nodesWriter = await createQuotaBackpressuredJsonlGzipWriter(
-          path.join(attemptRoot, 'memory-nodes.base.jsonl.gz'),
-          { operationRoot: quota.operationRoot, scratchQuota: quota, signal },
+        const before = stableSource.fingerprint;
+        const digest = fingerprintDigest(before);
+        const generation = `legacy-${digest.slice(0, 20)}`;
+        const revision = safeRevisionFromDigest(digest);
+        const projectionRoot = path.join(projectionsRoot, generation);
+        const published = await readPublishedProjection(projectionRoot, targetRoot, before);
+        if (published) {
+          await revalidateLegacyResidentFiles(stableSource.openedFiles);
+          return published;
+        }
+
+        const attemptRoot = path.join(
+          projectionsRoot,
+          `.attempt-${process.pid}-${crypto.randomUUID()}`,
         );
-        const nodes = await nodesWriter.writeAll(logicalNodeRecords({
-          targetRoot, fingerprint: before, overlay, signal, clusters,
-        }));
-        edgesWriter = await createQuotaBackpressuredJsonlGzipWriter(
-          path.join(attemptRoot, 'memory-edges.base.jsonl.gz'),
-          { operationRoot: quota.operationRoot, scratchQuota: quota, signal },
-        );
-        const edges = await edgesWriter.writeAll(logicalEdgeRecords({
-          targetRoot, fingerprint: before, overlay, signal,
-        }));
-        await overlay.close();
-        await _testHooks.beforeFingerprintVerification?.({ attempt, targetRoot, attemptRoot });
-        const after = await fingerprintLegacyResident(targetRoot);
-        if (!sameSourceFingerprint(before, after)) {
-          lastChanged = memorySourceError(
-            'source_changed',
-            'legacy resident sidecars changed during projection',
-            { retryable: true },
+        await fsp.mkdir(attemptRoot, { recursive: false, mode: 0o700 });
+        const attemptIdentity = await fsp.lstat(attemptRoot);
+        const overlay = await createBoundedOverlayStore({
+          operationRoot: quota.operationRoot,
+          scratchQuota: quota,
+          signal,
+          maxMemoryBytes: maxOverlayMemoryBytes,
+          maxDiskBytes: maxOverlayDiskBytes,
+        });
+        let nodesWriter = null;
+        let edgesWriter = null;
+        try {
+          await loadLegacyDelta({
+            targetRoot,
+            fingerprint: before,
+            openedFiles: stableSource.openedFiles,
+            overlay,
+            signal,
+          });
+          const clusters = createBoundedClusterCounter();
+          nodesWriter = await createQuotaBackpressuredJsonlGzipWriter(
+            path.join(attemptRoot, 'memory-nodes.base.jsonl.gz'),
+            { operationRoot: quota.operationRoot, scratchQuota: quota, signal },
           );
-          await nodesWriter.cleanup();
-          await edgesWriter.cleanup();
-          await removeOwnedAttempt(attemptRoot, attemptIdentity);
-          await quota.reconcile();
+          const nodes = await nodesWriter.writeAll(logicalNodeRecords({
+            targetRoot,
+            fingerprint: before,
+            openedFiles: stableSource.openedFiles,
+            overlay,
+            signal,
+            clusters,
+          }));
+          edgesWriter = await createQuotaBackpressuredJsonlGzipWriter(
+            path.join(attemptRoot, 'memory-edges.base.jsonl.gz'),
+            { operationRoot: quota.operationRoot, scratchQuota: quota, signal },
+          );
+          const edges = await edgesWriter.writeAll(logicalEdgeRecords({
+            targetRoot,
+            fingerprint: before,
+            openedFiles: stableSource.openedFiles,
+            overlay,
+            signal,
+          }));
+          await overlay.close();
+          await _testHooks.beforeFingerprintVerification?.({ attempt, targetRoot, attemptRoot });
+          await revalidateLegacyResidentFiles(stableSource.openedFiles);
+          const manifest = await publishMetadata({
+            attemptRoot,
+            quota,
+            generation,
+            revision,
+            nodes,
+            edges,
+            clusterCount: clusters.size,
+            sourceFingerprint: before,
+          });
+          await revalidateLegacyResidentFiles(stableSource.openedFiles);
+          try {
+            await fsp.rename(attemptRoot, projectionRoot);
+            await fsyncDirectory(projectionsRoot);
+          } catch (error) {
+            if (!['EEXIST', 'ENOTEMPTY'].includes(error.code)) throw error;
+            const winner = await readPublishedProjection(projectionRoot, targetRoot, before);
+            if (!winner) {
+              throw memorySourceError('invalid_memory_source', 'projection publication conflict');
+            }
+            await nodesWriter.cleanup();
+            await edgesWriter.cleanup();
+            await removeOwnedAttempt(attemptRoot, attemptIdentity);
+            await quota.reconcile();
+            await revalidateLegacyResidentFiles(stableSource.openedFiles);
+            return winner;
+          }
+          return projectionResult({
+            targetRoot,
+            projectionRoot,
+            manifest,
+            sourceFingerprint: before,
+          });
+        } catch (error) {
+          await overlay.close().catch(() => {});
+          await nodesWriter?.cleanup?.().catch(() => {});
+          await edgesWriter?.cleanup?.().catch(() => {});
+          await removeOwnedAttempt(attemptRoot, attemptIdentity).catch(() => {});
+          await quota.reconcile().catch(() => {});
+          throw error;
+        }
+      } catch (error) {
+        rethrowAbort(error, signal);
+        if (error?.code === 'source_changed') {
+          lastChanged = error;
           continue;
         }
-        const manifest = await publishMetadata({
-          attemptRoot,
-          quota,
-          generation,
-          revision,
-          nodes,
-          edges,
-          clusterCount: clusters.size,
-          sourceFingerprint: before,
-        });
-        try {
-          await fsp.rename(attemptRoot, projectionRoot);
-          await fsyncDirectory(projectionsRoot);
-        } catch (error) {
-          if (!['EEXIST', 'ENOTEMPTY'].includes(error.code)) throw error;
-          const winner = await readPublishedProjection(projectionRoot, targetRoot, before);
-          if (!winner) {
-            throw memorySourceError('invalid_memory_source', 'projection publication conflict');
-          }
-          await nodesWriter.cleanup();
-          await edgesWriter.cleanup();
-          await removeOwnedAttempt(attemptRoot, attemptIdentity);
-          await quota.reconcile();
-          return winner;
-        }
-        return projectionResult({
-          targetRoot,
-          projectionRoot,
-          manifest,
-          sourceFingerprint: before,
-        });
-      } catch (error) {
-        await overlay.close().catch(() => {});
-        await nodesWriter?.cleanup?.().catch(() => {});
-        await edgesWriter?.cleanup?.().catch(() => {});
-        await removeOwnedAttempt(attemptRoot, attemptIdentity).catch(() => {});
-        await quota.reconcile().catch(() => {});
-        rethrowAbort(error, signal);
         throw error;
+      } finally {
+        await closeLegacyResidentFiles(stableSource.openedFiles);
       }
     }
     throw lastChanged || memorySourceError(

@@ -24,6 +24,21 @@ function fileIdentity(stat) {
   };
 }
 
+function portableFileIdentity(stat) {
+  return Object.freeze({
+    dev: String(stat.dev),
+    ino: String(stat.ino),
+    size: String(stat.size),
+  });
+}
+
+function samePortableIdentity(stat, expected) {
+  return Boolean(stat && expected
+    && String(stat.dev) === expected.dev
+    && String(stat.ino) === expected.ino
+    && String(stat.size) === expected.size);
+}
+
 function ensureNoFollowAvailable() {
   if (!Number.isInteger(fs.constants.O_NOFOLLOW)) {
     throw memorySourceError('invalid_memory_source', 'O_NOFOLLOW unavailable', {
@@ -123,6 +138,81 @@ async function assertStableOpenedFile(opened) {
   }
 }
 
+async function assertStableOpenedFileContent(opened) {
+  const current = await opened.handle.stat({ bigint: true });
+  if (!current.isFile()
+      || current.dev !== opened.identity.dev
+      || current.ino !== opened.identity.ino
+      || current.size !== opened.identity.size
+      || current.mtimeNs !== opened.identity.mtimeNs) {
+    throw memorySourceError('source_changed', 'source changed while reading', { retryable: true });
+  }
+}
+
+async function assertOpenedFilePathIdentity(opened, expected = portableFileIdentity(opened.stat)) {
+  let handleStat;
+  let pathStat;
+  try {
+    [handleStat, pathStat] = await Promise.all([
+      opened.handle.stat({ bigint: true }),
+      fsp.lstat(opened.path, { bigint: true }),
+    ]);
+  } catch (cause) {
+    throw memorySourceError('source_changed', 'source pathname changed', {
+      cause,
+      retryable: true,
+    });
+  }
+  if (!handleStat.isFile() || !pathStat.isFile() || pathStat.isSymbolicLink()
+      || !samePortableIdentity(handleStat, expected)
+      || !samePortableIdentity(pathStat, expected)) {
+    throw memorySourceError('source_changed', 'source pathname identity changed', {
+      retryable: true,
+    });
+  }
+  return handleStat;
+}
+
+async function readOpenedFile(opened, { maxBytes } = {}) {
+  let stat;
+  try {
+    stat = await opened.handle.stat({ bigint: true });
+  } catch (cause) {
+    throw memorySourceError('source_changed', 'opened source is unavailable', {
+      cause,
+      retryable: true,
+    });
+  }
+  const size = Number(stat.size);
+  if (!Number.isSafeInteger(size) || size < 0) {
+    throw memorySourceError('source_unavailable', 'opened source size is invalid', {
+      retryable: true,
+    });
+  }
+  if (maxBytes !== undefined
+      && (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || size > maxBytes)) {
+    throw memorySourceError('result_too_large', 'file limit exceeded', {
+      status: 413,
+      retryable: false,
+      limitKind: 'input',
+      limit: maxBytes,
+    });
+  }
+  const bytes = Buffer.allocUnsafe(size);
+  let offset = 0;
+  while (offset < size) {
+    const { bytesRead } = await opened.handle.read(bytes, offset, size - offset, offset);
+    if (bytesRead <= 0) {
+      throw memorySourceError('source_changed', 'opened source was truncated', {
+        retryable: true,
+      });
+    }
+    offset += bytesRead;
+  }
+  await assertStableOpenedFileContent(opened);
+  return bytes;
+}
+
 async function assertStableOpenedFilePrefix(opened, { bytes, sha256 }) {
   if (!Number.isSafeInteger(bytes) || bytes < 0 || !/^[a-f0-9]{64}$/.test(sha256 || '')) {
     throw memorySourceError('invalid_request', 'valid opened-file prefix required');
@@ -180,7 +270,11 @@ async function readConfinedFile(root, filePath, options = {}) {
 
 module.exports = {
   openConfinedRegularFile,
+  portableFileIdentity,
   assertStableOpenedFile,
+  assertStableOpenedFileContent,
+  assertOpenedFilePathIdentity,
   assertStableOpenedFilePrefix,
+  readOpenedFile,
   readConfinedFile,
 };

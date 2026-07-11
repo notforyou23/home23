@@ -343,6 +343,40 @@ test('default ANN loading derives files from the pinned target source, not reque
   }
 });
 
+test('default ANN loading consumes anchored handles without reopening target pathnames', async () => {
+  const targetDir = await createBrain({ nodes: [{ id: 'target', concept: 'target canary' }] });
+  const pathsRead = [];
+  const stableRoles = [];
+  class FakeIndex {
+    readIndexSync(filePath) { pathsRead.push(filePath); }
+    setEf() {}
+  }
+  const views = {
+    'ann-index': {
+      path: '/dev/fd/73',
+      async assertStable() { stableRoles.push('ann-index'); },
+    },
+    'ann-meta': {
+      path: '/dev/fd/74',
+      async readFile({ maxBytes }) {
+        assert.equal(maxBytes, 16 * 1024 * 1024);
+        return Buffer.from(JSON.stringify({ dimension: 2, labels: [] }));
+      },
+      async assertStable() { stableRoles.push('ann-meta'); },
+    },
+  };
+  const loadAnn = createDefaultLoadAnn({
+    hnswlibLoader: () => ({ HierarchicalNSW: FakeIndex }),
+  });
+  const loaded = await loadAnn({
+    descriptor: { canonicalRoot: await fsp.realpath(targetDir) },
+    getAnchoredFile(role) { return views[role] || null; },
+  }, { indexFile: 'ann.index', metaFile: 'ann.meta.json' });
+  assert.equal(loaded.dimension, 2);
+  assert.deepEqual(pathsRead, ['/dev/fd/73']);
+  assert.deepEqual(stableRoles.sort(), ['ann-index', 'ann-meta']);
+});
+
 test('search cancellation is never converted into embedding fallback or source unavailable', async () => {
   const controller = new AbortController();
   let recordsConsumed = 0;

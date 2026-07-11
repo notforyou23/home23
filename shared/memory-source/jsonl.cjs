@@ -16,9 +16,11 @@ const {
 const {
   openConfinedRegularFile,
   assertStableOpenedFile,
+  assertStableOpenedFileContent,
   assertStableOpenedFilePrefix,
 } = require('./confined-file.cjs');
 const { getOperationScratchQuotaCleanup } = require('./scratch-quota.cjs');
+const { OPENED_JSONL_FILE } = require('./private-capabilities.cjs');
 
 function limitError(limitKind, limit) {
   return memorySourceError('result_too_large', `memory source ${limitKind} limit exceeded`, {
@@ -742,28 +744,50 @@ async function createQuotaBackpressuredJsonlGzipWriter(filePath, options = {}) {
 async function* readJsonl(filePath, options = {}) {
   throwIfAborted(options.signal);
   const confinedRoot = options.confinedRoot || path.dirname(filePath);
-  const opened = await openConfinedRegularFile(confinedRoot, filePath, {
-    flags: fs.constants.O_RDONLY,
-    maxBytes: options.maxInputBytes,
-    signal: options.signal,
-  });
+  const borrowed = options[OPENED_JSONL_FILE] !== undefined;
+  if (borrowed && (!options[OPENED_JSONL_FILE]
+      || options[OPENED_JSONL_FILE].path !== filePath
+      || typeof options[OPENED_JSONL_FILE].handle?.stat !== 'function')) {
+    throw memorySourceError('invalid_request', 'exact opened JSONL file required');
+  }
+  const opened = borrowed
+    ? options[OPENED_JSONL_FILE]
+    : await openConfinedRegularFile(confinedRoot, filePath, {
+      flags: fs.constants.O_RDONLY,
+      maxBytes: options.maxInputBytes,
+      signal: options.signal,
+    });
+  const closeOpened = async () => {
+    if (!borrowed) await opened.handle.close();
+  };
   const stat = opened.stat;
+  if (options.maxInputBytes !== undefined
+      && (!Number.isSafeInteger(options.maxInputBytes) || options.maxInputBytes < 0
+        || Number(stat.size) > options.maxInputBytes)) {
+    await closeOpened();
+    throw memorySourceError('result_too_large', 'file limit exceeded', {
+      status: 413,
+      retryable: false,
+      limitKind: 'input',
+      limit: options.maxInputBytes,
+    });
+  }
   if (options.expectedInputBytes !== undefined
       && (!Number.isSafeInteger(options.expectedInputBytes)
         || options.expectedInputBytes < 0
         || Number(stat.size) !== options.expectedInputBytes)) {
-    await opened.handle.close();
+    await closeOpened();
     throw memorySourceError('source_unavailable', 'authoritative JSONL size mismatch', {
       retryable: true,
     });
   }
   const inputBytes = options.byteLimit === undefined ? Number(stat.size) : options.byteLimit;
   if (!Number.isSafeInteger(inputBytes) || inputBytes < 0) {
-    await opened.handle.close();
+    await closeOpened();
     throw memorySourceError('invalid_request', 'invalid JSONL byte limit');
   }
   if (inputBytes > Number(stat.size)) {
-    await opened.handle.close();
+    await closeOpened();
     throw memorySourceError('source_unavailable', 'committed JSONL prefix is truncated', {
       retryable: true,
     });
@@ -782,10 +806,12 @@ async function* readJsonl(filePath, options = {}) {
         bytes: 0,
         sha256: prefixHash.digest('hex'),
       });
+    } else if (borrowed) {
+      await assertStableOpenedFileContent(opened);
     } else {
       await assertStableOpenedFile(opened);
     }
-    await opened.handle.close();
+    await closeOpened();
     if (options.gzip) {
       throw memorySourceError('source_unavailable', 'gzip base is empty', { retryable: true });
     }
@@ -888,6 +914,8 @@ async function* readJsonl(filePath, options = {}) {
         bytes: inputBytes,
         sha256: prefixHash.digest('hex'),
       });
+    } else if (borrowed) {
+      await assertStableOpenedFileContent(opened);
     } else {
       await assertStableOpenedFile(opened);
     }
@@ -905,9 +933,11 @@ async function* readJsonl(filePath, options = {}) {
       decoded.destroy();
       input.destroy();
     }
-    await opened.handle.close().catch((error) => {
-      if (error?.code !== 'EBADF') throw error;
-    });
+    if (!borrowed) {
+      await opened.handle.close().catch((error) => {
+        if (error?.code !== 'EBADF') throw error;
+      });
+    }
   }
 }
 

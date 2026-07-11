@@ -6,14 +6,34 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
-const { readManifest, validateManifest } = require('./manifest.cjs');
-const { createDescriptor, openMemorySource } = require('./reader.cjs');
-const { projectLegacyResidentSidecars } = require('./legacy-projection.cjs');
-const { readConfinedFile } = require('./confined-file.cjs');
+const {
+  MANIFEST_FILE,
+  MAX_MANIFEST_BYTES,
+  readManifest,
+  validateManifest,
+} = require('./manifest.cjs');
+const {
+  createDescriptor,
+  openMemorySource,
+} = require('./reader.cjs');
+const { PINNED_OPENED_FILES } = require('./private-capabilities.cjs');
+const {
+  projectLegacyResidentSidecars,
+  verifyLegacySourceFingerprint,
+} = require('./legacy-projection.cjs');
+const {
+  openConfinedRegularFile,
+  portableFileIdentity,
+  assertStableOpenedFile,
+  assertOpenedFilePathIdentity,
+  readOpenedFile,
+  readConfinedFile,
+} = require('./confined-file.cjs');
 const {
   canonicalJson,
   sourceDescriptorDigest,
   memorySourceError,
+  rethrowAbort,
   throwIfAborted,
 } = require('./contracts.cjs');
 const { assertOperationRoot, createOperationScratchQuota } = require('./scratch-quota.cjs');
@@ -244,6 +264,165 @@ function descriptorsMatch(left, right) {
   }
 }
 
+function protectedFileSpecs(manifest) {
+  return [
+    { role: 'manifest', file: MANIFEST_FILE },
+    { role: 'nodes', file: manifest.activeBase.nodes.file },
+    { role: 'edges', file: manifest.activeBase.edges.file },
+    { role: 'delta', file: manifest.activeDelta.file },
+    ...(manifest.ann.indexFile
+      ? [{ role: 'ann-index', file: manifest.ann.indexFile }] : []),
+    ...(manifest.ann.metaFile
+      ? [{ role: 'ann-meta', file: manifest.ann.metaFile }] : []),
+  ];
+}
+
+async function closeProtectedFiles(openedFiles) {
+  await Promise.all([...new Set(openedFiles?.values() || [])].map(async (opened) => {
+    await opened.handle.close().catch((error) => {
+      if (error?.code !== 'EBADF') throw error;
+    });
+  }));
+}
+
+async function readManifestFromOpened(opened) {
+  let manifest;
+  try {
+    const bytes = await readOpenedFile(opened, { maxBytes: MAX_MANIFEST_BYTES });
+    manifest = validateManifest(JSON.parse(bytes.toString('utf8')));
+  } catch (error) {
+    if (error?.code) throw error;
+    throw memorySourceError('source_unavailable', 'memory manifest unavailable', {
+      cause: error,
+      retryable: true,
+    });
+  }
+  return manifest;
+}
+
+async function recheckProtectedFiles(openedFiles, identities) {
+  for (const identity of identities) {
+    const opened = openedFiles.get(identity.role);
+    await assertStableOpenedFile(opened);
+    await assertOpenedFilePathIdentity(opened, identity);
+  }
+}
+
+async function captureProtectedFiles(physicalRoot, expectedManifest, { signal } = {}) {
+  const openedFiles = new Map();
+  try {
+    const manifestOpened = await openConfinedRegularFile(
+      physicalRoot,
+      path.join(physicalRoot, MANIFEST_FILE),
+      { flags: fs.constants.O_RDONLY, maxBytes: MAX_MANIFEST_BYTES, signal },
+    );
+    openedFiles.set('manifest', manifestOpened);
+    const manifest = await readManifestFromOpened(manifestOpened);
+    if (!descriptorsMatch(manifest, expectedManifest)) {
+      throw memorySourceError('source_changed', 'manifest changed while pinning', {
+        retryable: true,
+      });
+    }
+    for (const spec of protectedFileSpecs(manifest).slice(1)) {
+      const opened = await openConfinedRegularFile(
+        physicalRoot,
+        path.join(physicalRoot, spec.file),
+        { flags: fs.constants.O_RDONLY, signal },
+      );
+      openedFiles.set(spec.role, opened);
+    }
+    if (Number(openedFiles.get('nodes').stat.size) !== manifest.activeBase.nodes.bytes
+        || Number(openedFiles.get('edges').stat.size) !== manifest.activeBase.edges.bytes
+        || Number(openedFiles.get('delta').stat.size) < manifest.activeDelta.committedBytes) {
+      throw memorySourceError('source_changed', 'manifest file sizes changed while pinning', {
+        retryable: true,
+      });
+    }
+    const identities = protectedFileSpecs(manifest).map(({ role, file }) => ({
+      role,
+      file,
+      ...portableFileIdentity(openedFiles.get(role).stat),
+    }));
+    await recheckProtectedFiles(openedFiles, identities);
+    return { manifest, identities, openedFiles };
+  } catch (error) {
+    await closeProtectedFiles(openedFiles);
+    throw error;
+  }
+}
+
+function validateProtectedIdentity(value, spec) {
+  return value && !Array.isArray(value) && typeof value === 'object'
+    && Reflect.ownKeys(value).length === 5
+    && value.role === spec.role
+    && value.file === spec.file
+    && /^(0|[1-9][0-9]*)$/.test(value.dev)
+    && /^(0|[1-9][0-9]*)$/.test(value.ino)
+    && /^(0|[1-9][0-9]*)$/.test(value.size);
+}
+
+function validateCoordinatorProtectedRecord(record) {
+  let manifest;
+  try {
+    manifest = validateManifest(record.pinnedManifest);
+  } catch {
+    return null;
+  }
+  const specs = protectedFileSpecs(manifest);
+  if (!Array.isArray(record.protectedFileIdentities)
+      || record.protectedFileIdentities.length !== specs.length
+      || record.protectedFileIdentities.some((identity, index) =>
+        !validateProtectedIdentity(identity, specs[index]))
+      || !Array.isArray(record.protectedFiles)
+      || canonicalJson(record.protectedFiles) !== canonicalJson(specs.slice(1).map(({ file }) => file))
+      || record.committedBytes !== manifest.activeDelta.committedBytes
+      || !descriptorsMatch(createDescriptor(record.canonicalRoot, manifest), record.descriptor)) {
+    return null;
+  }
+  return manifest;
+}
+
+async function openRecordedProtectedFiles(physicalRoot, record, { signal } = {}) {
+  const manifest = validateCoordinatorProtectedRecord(record);
+  if (!manifest) {
+    throw memorySourceError('source_changed', 'coordinator protected-file record is invalid', {
+      retryable: true,
+    });
+  }
+  const openedFiles = new Map();
+  try {
+    for (const identity of record.protectedFileIdentities) {
+      const opened = await openConfinedRegularFile(
+        physicalRoot,
+        path.join(physicalRoot, identity.file),
+        {
+          flags: fs.constants.O_RDONLY,
+          ...(identity.role === 'manifest' ? { maxBytes: MAX_MANIFEST_BYTES } : {}),
+          signal,
+        },
+      );
+      openedFiles.set(identity.role, opened);
+      await assertOpenedFilePathIdentity(opened, identity);
+    }
+    const openedManifest = await readManifestFromOpened(openedFiles.get('manifest'));
+    if (!descriptorsMatch(openedManifest, manifest)) {
+      throw memorySourceError('source_changed', 'pinned manifest contents changed', {
+        retryable: true,
+      });
+    }
+    await recheckProtectedFiles(openedFiles, record.protectedFileIdentities);
+    return { manifest, openedFiles };
+  } catch (error) {
+    await closeProtectedFiles(openedFiles);
+    rethrowAbort(error, signal);
+    if (error?.code === 'source_changed') throw error;
+    throw memorySourceError('source_changed', 'pinned protected file changed', {
+      cause: error,
+      retryable: true,
+    });
+  }
+}
+
 async function pinOperationSource({
   canonicalRoot,
   operationRoot,
@@ -252,8 +431,13 @@ async function pinOperationSource({
   lockRoot,
   scratchQuota,
   signal,
+  _testHooks = {},
 }) {
   validateOperationId(operationId);
+  if (!_testHooks || Array.isArray(_testHooks) || typeof _testHooks !== 'object'
+      || Object.values(_testHooks).some((hook) => typeof hook !== 'function')) {
+    throw memorySourceError('invalid_request', 'invalid source pin test hooks');
+  }
   const canonical = await fsp.realpath(canonicalRoot);
   const root = await assertOperationRoot(operationRoot);
   return withMemorySourceLock(canonical, { lockRoot }, async () => {
@@ -266,18 +450,21 @@ async function pinOperationSource({
       const record = JSON.parse(existing);
       if (record.canonicalRoot !== canonical || record.operationId !== operationId
           || record.requesterAgent !== requesterAgent
-          || !descriptorMatchesDigest(record.descriptor, record.digest)) {
+          || !descriptorMatchesDigest(record.descriptor, record.digest)
+          || !validateCoordinatorProtectedRecord(record)) {
         throw memorySourceError('source_pin_conflict', 'source pin conflict');
       }
+      await resolvePinnedPhysicalRoot({
+        record,
+        operationRoot: root,
+        descriptor: record.descriptor,
+      });
       return Object.freeze({ descriptor: record.descriptor, digest: record.digest });
     }
     let manifest = await readManifest(canonical);
-    let descriptor;
     let physicalRoot = canonical;
     let sourceFingerprint = null;
-    if (manifest) {
-      descriptor = createDescriptor(canonical, manifest);
-    } else {
+    if (!manifest) {
       if (!scratchQuota || scratchQuota.operationRoot !== root) {
         throw memorySourceError(
           'source_operation_required',
@@ -292,35 +479,49 @@ async function pinOperationSource({
         signal,
       });
       manifest = projected.manifest;
-      descriptor = projected.descriptor;
       physicalRoot = projected.projectionRoot;
       sourceFingerprint = projected.sourceFingerprint;
     }
     throwIfAborted(signal);
-    const digest = sourceDescriptorDigest(descriptor);
     const physical = await inspectPhysicalRoot(physicalRoot);
-    const record = {
-      version: 1,
-      operationId,
-      requesterAgent,
-      canonicalRoot: canonical,
-      descriptor,
-      digest,
-      protectedFiles: [
-        manifest.activeBase.nodes.file,
-        manifest.activeBase.edges.file,
-        manifest.activeDelta.file,
-        manifest.ann.indexFile,
-        manifest.ann.metaFile,
-      ].filter(Boolean),
-      committedBytes: manifest.activeDelta.committedBytes,
-      physicalRoot,
-      physicalRootIdentity: physicalIdentity(physical.stat),
-      projectionRoot: sourceFingerprint ? physicalRoot : null,
-      sourceFingerprint,
-    };
-    await writeAtomicJson(coordinatorPinPath(root), record);
-    return Object.freeze({ descriptor, digest });
+    const captured = await captureProtectedFiles(physicalRoot, manifest, { signal });
+    try {
+      const descriptor = createDescriptor(canonical, captured.manifest);
+      const digest = sourceDescriptorDigest(descriptor);
+      const record = {
+        version: 1,
+        operationId,
+        requesterAgent,
+        canonicalRoot: canonical,
+        descriptor,
+        digest,
+        pinnedManifest: captured.manifest,
+        protectedFiles: captured.identities.slice(1).map(({ file }) => file),
+        protectedFileIdentities: captured.identities,
+        committedBytes: captured.manifest.activeDelta.committedBytes,
+        physicalRoot,
+        physicalRootIdentity: physicalIdentity(physical.stat),
+        projectionRoot: sourceFingerprint ? physicalRoot : null,
+        sourceFingerprint,
+      };
+      await _testHooks.beforeCoordinatorPublish?.({
+        canonicalRoot: canonical,
+        physicalRoot,
+        manifest: captured.manifest,
+      });
+      throwIfAborted(signal);
+      await recheckProtectedFiles(captured.openedFiles, captured.identities);
+      if (sourceFingerprint
+          && !await verifyLegacySourceFingerprint(canonical, sourceFingerprint)) {
+        throw memorySourceError('source_changed', 'legacy source changed before pin publication', {
+          retryable: true,
+        });
+      }
+      await writeAtomicJson(coordinatorPinPath(root), record);
+      return Object.freeze({ descriptor, digest });
+    } finally {
+      await closeProtectedFiles(captured.openedFiles);
+    }
   });
 }
 
@@ -420,35 +621,6 @@ async function acquireProcessPin(pinFile, pinDir, record) {
     await fsp.rm(pinFile, { force: true }).catch(() => {});
     await fsp.rmdir(pinDir).catch(() => {});
   };
-}
-
-function pinnedManifestFromDescriptor(descriptor) {
-  const actualKeys = Object.keys(descriptor || {}).sort();
-  const expectedKeys = [
-    'activeBase',
-    'activeDelta',
-    'baseRevision',
-    'canonicalRoot',
-    'cutoffRevision',
-    'generation',
-    'summary',
-    'version',
-  ];
-  if (actualKeys.length !== expectedKeys.length
-      || actualKeys.some((key, index) => key !== expectedKeys[index])) {
-    throw memorySourceError('source_changed', 'descriptor shape mismatch', { retryable: true });
-  }
-  return validateManifest({
-    formatVersion: 1,
-    generation: descriptor.generation,
-    baseRevision: descriptor.baseRevision,
-    currentRevision: descriptor.cutoffRevision,
-    activeDeltaEpoch: descriptor.activeDelta?.epoch,
-    activeBase: descriptor.activeBase,
-    activeDelta: descriptor.activeDelta,
-    ann: { indexFile: null, metaFile: null, builtFromRevision: null },
-    summary: descriptor.summary,
-  });
 }
 
 function isConfinedOrEqual(root, candidate) {
@@ -662,7 +834,6 @@ async function openPinnedSource(descriptor, expectations = {}) {
   if (!expectations.scratchQuota || expectations.scratchQuota.operationRoot !== operationRoot) {
     throw memorySourceError('invalid_request', 'scratch quota for exact operation root required');
   }
-  const pinnedManifest = pinnedManifestFromDescriptor(descriptor);
   const expectedDigest = expectations.expectedDigest;
   if (typeof expectedDigest !== 'string') {
     throw memorySourceError('source_changed', 'expected descriptor digest required', {
@@ -692,7 +863,8 @@ async function openPinnedSource(descriptor, expectations = {}) {
       || record.digest !== expectedDigest
       || record.canonicalRoot !== descriptor.canonicalRoot
       || !descriptorMatchesDigest(record.descriptor, record.digest)
-      || !descriptorsMatch(record.descriptor, descriptor)) {
+      || !descriptorsMatch(record.descriptor, descriptor)
+      || !validateCoordinatorProtectedRecord(record)) {
     throw memorySourceError('source_changed', 'coordinator pin mismatch', { retryable: true });
   }
   const physicalRoot = await resolvePinnedPhysicalRoot({
@@ -716,14 +888,21 @@ async function openPinnedSource(descriptor, expectations = {}) {
     createdAt: new Date().toISOString(),
   });
   let source;
+  let openedFiles = null;
   try {
+    const opened = await openRecordedProtectedFiles(physicalRoot, record, {
+      signal: expectations.signal,
+    });
+    openedFiles = opened.openedFiles;
     source = await openMemorySource(physicalRoot, {
       ...expectations,
-      pinnedManifest,
+      pinnedManifest: opened.manifest,
       logicalCanonicalRoot: descriptor.canonicalRoot,
       legacySourceFingerprint: record.sourceFingerprint || null,
+      [PINNED_OPENED_FILES]: openedFiles,
     });
   } catch (error) {
+    await closeProtectedFiles(openedFiles);
     await releaseProcessPin();
     throw error;
   }

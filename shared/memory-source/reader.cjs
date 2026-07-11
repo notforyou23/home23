@@ -28,6 +28,14 @@ const {
   rethrowAbort,
   isTypedMemorySourceError,
 } = require('./contracts.cjs');
+const {
+  assertStableOpenedFileContent,
+  readOpenedFile,
+} = require('./confined-file.cjs');
+const {
+  OPENED_JSONL_FILE,
+  PINNED_OPENED_FILES,
+} = require('./private-capabilities.cjs');
 
 function normalizeOptionalTag(tag) {
   if (tag === null || tag === undefined || tag === '') return null;
@@ -49,6 +57,36 @@ function activeFiles(manifest) {
     manifest.ann.indexFile,
     manifest.ann.metaFile,
   ].filter(Boolean);
+}
+
+async function closeOpenedFiles(openedFiles) {
+  if (!(openedFiles instanceof Map)) return;
+  await Promise.all([...new Set(openedFiles.values())].map(async (opened) => {
+    await opened?.handle?.close().catch((error) => {
+      if (error?.code !== 'EBADF') throw error;
+    });
+  }));
+}
+
+function anchoredFdPath(fd) {
+  if (!Number.isInteger(fd) || fd < 0) return null;
+  if (process.platform === 'darwin') return `/dev/fd/${fd}`;
+  if (process.platform === 'linux') return `/proc/self/fd/${fd}`;
+  return null;
+}
+
+function anchoredFileView(opened) {
+  if (!opened) return null;
+  return Object.freeze({
+    path: anchoredFdPath(opened.handle.fd),
+    size: Number(opened.stat.size),
+    async readFile({ maxBytes } = {}) {
+      return readOpenedFile(opened, { maxBytes });
+    },
+    async assertStable() {
+      await assertStableOpenedFileContent(opened);
+    },
+  });
 }
 
 function createDescriptor(canonicalRoot, manifest) {
@@ -159,6 +197,7 @@ async function loadOverlay(canonicalRoot, manifest, options) {
       confinedRoot: canonicalRoot,
       requireCompletePrefix: true,
       allowTrailingBytes: true,
+      [OPENED_JSONL_FILE]: options[PINNED_OPENED_FILES]?.get('delta'),
       signal: options.signal,
     })) {
       throwIfAborted(options.signal);
@@ -197,7 +236,15 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
   const logicalRoot = options.logicalCanonicalRoot || canonicalRoot;
   const legacyProjection = options.legacySourceFingerprint || null;
   const descriptor = createDescriptor(logicalRoot, manifest);
-  const { overlay, appliedRecords } = await loadOverlay(canonicalRoot, manifest, options);
+  const openedFiles = options[PINNED_OPENED_FILES] || null;
+  let overlay;
+  let appliedRecords;
+  try {
+    ({ overlay, appliedRecords } = await loadOverlay(canonicalRoot, manifest, options));
+  } catch (error) {
+    await closeOpenedFiles(openedFiles);
+    throw error;
+  }
   const identity = evidenceIdentity(logicalRoot, options);
   const evidenceBase = {
     implementation: legacyProjection ? 'legacy-resident-sidecar-projection' : 'manifest-v1',
@@ -226,6 +273,7 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
         confinedRoot: canonicalRoot,
         expectedInputBytes: manifest.activeBase.nodes.bytes,
         expectedRecordCount: manifest.activeBase.nodes.count,
+        [OPENED_JSONL_FILE]: openedFiles?.get('nodes'),
         signal: options.signal,
       })) {
         throwIfAborted(options.signal);
@@ -254,6 +302,7 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
         confinedRoot: canonicalRoot,
         expectedInputBytes: manifest.activeBase.edges.bytes,
         expectedRecordCount: manifest.activeBase.edges.count,
+        [OPENED_JSONL_FILE]: openedFiles?.get('edges'),
         signal: options.signal,
       })) {
         throwIfAborted(options.signal);
@@ -282,6 +331,7 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
     physicalFiles: activeFiles(manifest).map((file) => path.join(physicalRoot, file)),
     maxBreakdownKeys: 0,
     getMutationBoundaries() { return enumerateMemoryMutationBoundaries(logicalRoot); },
+    getAnchoredFile(role) { return anchoredFileView(openedFiles?.get(role)); },
     getEvidence(input = {}) {
       return createEvidence({
         ...evidenceBase,
@@ -366,7 +416,10 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
     },
     async compareAndSwap() { throw memorySourceError('invalid_request', 'writer not available'); },
     async release() { await this.close(); },
-    async close() { await overlay.close(); },
+    async close() {
+      await overlay.close();
+      await closeOpenedFiles(openedFiles);
+    },
   };
   Object.defineProperty(source, 'evidence', { get() { return source.getEvidence(); } });
   return source;
@@ -374,11 +427,13 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
 
 async function openMemorySource(brainDir, options = {}) {
   throwIfAborted(options.signal);
-  const canonicalRoot = await fsp.realpath(brainDir);
-  const manifest = options.pinnedManifest
-    ? validateManifest(options.pinnedManifest)
-    : await readManifest(canonicalRoot);
+  const openedFiles = options[PINNED_OPENED_FILES] || null;
+  let canonicalRoot = null;
   try {
+    canonicalRoot = await fsp.realpath(brainDir);
+    const manifest = options.pinnedManifest
+      ? validateManifest(options.pinnedManifest)
+      : await readManifest(canonicalRoot);
     if (manifest) return await openManifestSource(canonicalRoot, manifest, options);
     const selection = await resolveMemorySourceSelection(canonicalRoot);
     if (selection.authority === 'legacy-resident-sidecars') {
@@ -403,8 +458,11 @@ async function openMemorySource(brainDir, options = {}) {
         legacySourceFingerprint: projected.sourceFingerprint,
       });
     }
+    await closeOpenedFiles(openedFiles);
     return unavailableSource(canonicalRoot, ['source_missing'], options);
   } catch (error) {
+    await closeOpenedFiles(openedFiles);
+    if (canonicalRoot === null) throw error;
     rethrowAbort(error, options.signal);
     if (isTypedMemorySourceError(error)) {
       if (error.code === 'source_unavailable' || error.code === 'invalid_memory_source') {

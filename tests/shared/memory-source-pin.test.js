@@ -10,9 +10,11 @@ const {
   createMemorySourcePinProvider,
   createOperationScratchQuota,
   openPinnedSource,
+  pinOperationSource,
   sourceDescriptorDigest,
   writeJsonlGzAtomic,
 } = require('../../shared/memory-source');
+const { createDefaultLoadAnn } = require('../../engine/src/dashboard/memory-search');
 
 async function tempDir(prefix) {
   return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -23,6 +25,8 @@ async function writeManifestBrain() {
   const nodes = await writeJsonlGzAtomic(path.join(brain, 'nodes.gz'), [{ id: 1, concept: 'pin canary' }]);
   const edges = await writeJsonlGzAtomic(path.join(brain, 'edges.gz'), []);
   await fsp.writeFile(path.join(brain, 'delta.jsonl'), '');
+  await fsp.writeFile(path.join(brain, 'ann.index'), 'ann-index-canary\n');
+  await fsp.writeFile(path.join(brain, 'ann.meta.json'), '{"dimension":1}\n');
   await fsp.writeFile(path.join(brain, 'memory-manifest.json'), `${JSON.stringify({
     formatVersion: 1,
     generation: 'g1',
@@ -41,7 +45,7 @@ async function writeManifestBrain() {
       count: 0,
       committedBytes: 0,
     },
-    ann: { indexFile: null, metaFile: null, builtFromRevision: 2 },
+    ann: { indexFile: 'ann.index', metaFile: 'ann.meta.json', builtFromRevision: 2 },
     summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
   }, null, 2)}\n`);
   return brain;
@@ -97,7 +101,103 @@ test('pin provider returns exactly descriptor and digest and persists private co
   const record = JSON.parse(await fsp.readFile(recordPath, 'utf8'));
   assert.equal(record.physicalRoot, await fsp.realpath(brain));
   assert.equal(record.digest, result.digest);
+  assert.deepEqual(record.pinnedManifest, JSON.parse(
+    await fsp.readFile(path.join(brain, 'memory-manifest.json'), 'utf8'),
+  ));
+  assert.deepEqual(record.protectedFileIdentities.map(({ role, file }) => ({ role, file })), [
+    { role: 'manifest', file: 'memory-manifest.json' },
+    { role: 'nodes', file: 'nodes.gz' },
+    { role: 'edges', file: 'edges.gz' },
+    { role: 'delta', file: 'delta.jsonl' },
+    { role: 'ann-index', file: 'ann.index' },
+    { role: 'ann-meta', file: 'ann.meta.json' },
+  ]);
+  for (const identity of record.protectedFileIdentities) {
+    const stat = await fsp.lstat(path.join(brain, identity.file), { bigint: true });
+    assert.deepEqual(
+      { dev: identity.dev, ino: identity.ino, size: identity.size },
+      { dev: String(stat.dev), ino: String(stat.ino), size: String(stat.size) },
+    );
+  }
   assert.deepEqual(await provider.pin(brain, 'brop_test_pin'), result);
+});
+
+const protectedReplacementCases = [
+  ['manifest', 'memory-manifest.json'],
+  ['nodes', 'nodes.gz'],
+  ['edges', 'edges.gz'],
+  ['delta', 'delta.jsonl'],
+  ['ann-index', 'ann.index'],
+  ['ann-meta', 'ann.meta.json'],
+];
+
+for (const [role, file] of protectedReplacementCases) {
+  test(`openPinnedSource rejects an inode replacement of the pinned ${role} file`, async () => {
+    const home23Root = await tempDir('home23-memory-source-pin-replacement-home-');
+    const brain = await writeManifestBrain();
+    const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+    const operationId = `brop_test_replace_${role.replace('-', '_')}`;
+    const pinned = await provider.pin(brain, operationId);
+    const operationRoot = path.join(
+      home23Root, 'instances', 'jerry', 'runtime', 'brain-operations', operationId,
+    );
+    const scratchQuota = await createOperationScratchQuota({ operationRoot });
+    const target = path.join(brain, file);
+    const displaced = `${target}.displaced`;
+    await fsp.rename(target, displaced);
+    await fsp.copyFile(displaced, target);
+    let source = null;
+    try {
+      await assert.rejects(async () => {
+        source = await provider.openPinnedSource(pinned.descriptor, {
+          operationId,
+          scratchQuota,
+          expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
+          expectedRevision: pinned.descriptor.cutoffRevision,
+          expectedDigest: pinned.digest,
+        });
+        return source;
+      }, { code: 'source_changed' });
+    } finally {
+      await source?.release();
+      await scratchQuota.close();
+    }
+  });
+}
+
+test('pinOperationSource rechecks captured file identities before coordinator publication', async () => {
+  const home23Root = await tempDir('home23-memory-source-pin-race-home-');
+  const brain = await writeManifestBrain();
+  const operationId = 'brop_test_pin_capture_race';
+  const operationRoot = path.join(
+    home23Root, 'instances', 'jerry', 'runtime', 'brain-operations', operationId,
+  );
+  const scratchQuota = await createOperationScratchQuota({ operationRoot });
+  const target = path.join(brain, 'nodes.gz');
+  try {
+    await assert.rejects(() => pinOperationSource({
+      canonicalRoot: brain,
+      operationRoot,
+      operationId,
+      requesterAgent: 'jerry',
+      lockRoot: path.join(home23Root, 'runtime', 'brain-source-locks'),
+      scratchQuota,
+      _testHooks: {
+        async beforeCoordinatorPublish() {
+          const displaced = `${target}.displaced`;
+          await fsp.rename(target, displaced);
+          await fsp.copyFile(displaced, target);
+        },
+      },
+    }), { code: 'source_changed' });
+    assert.equal(
+      await fsp.access(path.join(operationRoot, 'coordinator-source-pin.json'))
+        .then(() => true).catch(() => false),
+      false,
+    );
+  } finally {
+    await scratchQuota.close();
+  }
 });
 
 test('openPinnedSource validates coordinator record and writes a separate process pin', async () => {
@@ -125,6 +225,77 @@ test('openPinnedSource validates coordinator record and writes a separate proces
   assert.equal(await fsp.access(path.join(operationRoot, 'coordinator-source-pin.json')).then(() => true), true);
   assert.equal(await fsp.access(pinRoot).then(() => true).catch(() => false), true);
   scratchQuota.close();
+});
+
+test('an opened pinned source reads its anchored base handle after pathname replacement', async () => {
+  const home23Root = await tempDir('home23-memory-source-pin-anchored-home-');
+  const brain = await writeManifestBrain();
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+  const operationId = 'brop_test_anchored_base';
+  const pinned = await provider.pin(brain, operationId);
+  const operationRoot = path.join(
+    home23Root, 'instances', 'jerry', 'runtime', 'brain-operations', operationId,
+  );
+  const scratchQuota = await createOperationScratchQuota({ operationRoot });
+  const source = await provider.openPinnedSource(pinned.descriptor, {
+    operationId,
+    scratchQuota,
+    expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
+    expectedRevision: pinned.descriptor.cutoffRevision,
+    expectedDigest: pinned.digest,
+  });
+  try {
+    const nodesPath = path.join(brain, 'nodes.gz');
+    await fsp.rename(nodesPath, `${nodesPath}.displaced`);
+    await fsp.writeFile(nodesPath, 'replacement is not the pinned gzip');
+    assert.deepEqual((await collect(source.iterateNodes())).map((node) => node.concept), [
+      'pin canary',
+    ]);
+  } finally {
+    await source.release();
+    await scratchQuota.close();
+  }
+});
+
+test('ANN loading uses anchored index and metadata handles after pathname replacement', async () => {
+  const home23Root = await tempDir('home23-memory-source-pin-ann-home-');
+  const brain = await writeManifestBrain();
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+  const operationId = 'brop_test_anchored_ann';
+  const pinned = await provider.pin(brain, operationId);
+  const operationRoot = path.join(
+    home23Root, 'instances', 'jerry', 'runtime', 'brain-operations', operationId,
+  );
+  const scratchQuota = await createOperationScratchQuota({ operationRoot });
+  const source = await provider.openPinnedSource(pinned.descriptor, {
+    operationId,
+    scratchQuota,
+    expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
+    expectedRevision: pinned.descriptor.cutoffRevision,
+    expectedDigest: pinned.digest,
+  });
+  const pathsRead = [];
+  class FakeIndex {
+    readIndexSync(filePath) { pathsRead.push(filePath); }
+    setEf() {}
+  }
+  try {
+    for (const file of ['ann.index', 'ann.meta.json']) {
+      const target = path.join(brain, file);
+      await fsp.rename(target, `${target}.displaced`);
+      await fsp.writeFile(target, 'replacement must not be loaded');
+    }
+    const ann = await createDefaultLoadAnn({
+      hnswlibLoader: () => ({ HierarchicalNSW: FakeIndex }),
+    })(source, source.manifest.ann);
+    assert.equal(ann.dimension, 1);
+    assert.equal(pathsRead.length, 1);
+    assert.match(pathsRead[0], /^\/(dev\/fd|proc\/self\/fd)\/[0-9]+$/);
+    assert.notEqual(pathsRead[0], path.join(brain, 'ann.index'));
+  } finally {
+    await source.release();
+    await scratchQuota.close();
+  }
 });
 
 test('openPinnedSource binds a safe PID-plus-start process identity and rolls back failed opens', async () => {
@@ -225,7 +396,6 @@ test('native operation pin reads its exact revision after the live manifest adva
   const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
   const operationId = 'brop_test_native_revision';
   const pinned = await provider.pin(brain, operationId);
-  await advanceManifestBrain(brain);
 
   const operationRoot = path.join(
     home23Root,
@@ -245,6 +415,7 @@ test('native operation pin reads its exact revision after the live manifest adva
     expectedDigest: pinned.digest,
   });
   try {
+    await advanceManifestBrain(brain);
     assert.equal(source.revision, pinned.descriptor.cutoffRevision);
     assert.equal(source.manifest.generation, pinned.descriptor.generation);
     assert.deepEqual((await collect(source.iterateNodes())).map((node) => node.concept), [

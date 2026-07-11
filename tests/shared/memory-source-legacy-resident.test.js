@@ -297,6 +297,44 @@ test('projection retries a source change and removes abandoned attempts', async 
   }
 });
 
+test('projection retries an inode replacement instead of reopening the pathname', async () => {
+  const targetRoot = await makeLegacyFixture();
+  const operationRoot = await tempDir('home23-legacy-resident-inode-retry-');
+  const quota = await createOperationScratchQuota({ operationRoot, maxBytes: 64 * 1024 * 1024 });
+  const nodesPath = path.join(targetRoot, 'memory-nodes.jsonl.gz');
+  let calls = 0;
+  try {
+    const projected = await projectLegacyResidentSidecars({
+      canonicalRoot: targetRoot,
+      operationRoot,
+      scratchQuota: quota,
+      maxAttempts: 3,
+      _testHooks: {
+        async beforeFingerprintVerification() {
+          calls += 1;
+          if (calls === 1) {
+            const displaced = `${nodesPath}.displaced`;
+            await fsp.rename(nodesPath, displaced);
+            await fsp.copyFile(displaced, nodesPath);
+          }
+        },
+      },
+    });
+    assert.equal(calls, 2);
+    const current = await fsp.stat(nodesPath, { bigint: true });
+    assert.equal(projected.sourceFingerprint.files.nodes.stat.ino, String(current.ino));
+    assert.deepEqual(projected.descriptor.summary, {
+      nodeCount: 2,
+      edgeCount: 1,
+      clusterCount: 1,
+    });
+  } finally {
+    await quota.close();
+    await fsp.rm(operationRoot, { recursive: true, force: true });
+    await fsp.rm(targetRoot, { recursive: true, force: true });
+  }
+});
+
 test('legacy coordinator pin retains its immutable projection after the target advances', async () => {
   const home23Root = await tempDir('home23-legacy-pin-home-');
   const targetRoot = await makeLegacyFixture();
@@ -316,6 +354,7 @@ test('legacy coordinator pin retains its immutable projection after the target a
     assert.equal(pinned.descriptor.summary.nodeCount, 2);
     await fsp.appendFile(path.join(targetRoot, 'memory-delta.jsonl'),
       `${JSON.stringify({ op: 'upsert_node', record: { id: 'after-pin', concept: 'later' } })}\n`);
+    assert.deepEqual(await provider.pin(targetRoot, operationId), pinned);
 
     const quota = await createOperationScratchQuota({ operationRoot });
     const source = await provider.openPinnedSource(pinned.descriptor, {

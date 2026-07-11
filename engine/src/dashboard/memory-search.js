@@ -213,6 +213,14 @@ function createDefaultLoadAnn({ hnswlibLoader = () => require('hnswlib-node') } 
         retryable: true,
       });
     }
+    const anchoredIndex = source?.getAnchoredFile?.('ann-index') || null;
+    const anchoredMeta = source?.getAnchoredFile?.('ann-meta') || null;
+    if (Boolean(anchoredIndex) !== Boolean(anchoredMeta)) {
+      throw memorySourceError('source_changed', 'ANN pinned handles are incomplete', {
+        status: 503,
+        retryable: true,
+      });
+    }
     const root = await fs.realpath(canonicalRoot);
     const resolveRegular = async (basename, label) => {
       if (typeof basename !== 'string' || path.basename(basename) !== basename
@@ -233,17 +241,41 @@ function createDefaultLoadAnn({ hnswlibLoader = () => require('hnswlib-node') } 
       }
       return { filePath, stat };
     };
-    const [{ filePath: indexPath }, { filePath: metaPath, stat: metaStat }] = await Promise.all([
-      resolveRegular(annMeta.indexFile, 'ANN index'),
-      resolveRegular(annMeta.metaFile, 'ANN metadata'),
-    ]);
-    if (metaStat.size > 16 * 1024 * 1024) {
+    let indexPath;
+    let metaBytes;
+    if (anchoredIndex && anchoredMeta) {
+      if (typeof anchoredIndex.path !== 'string' || anchoredIndex.path.length === 0
+          || typeof anchoredMeta.readFile !== 'function'
+          || typeof anchoredIndex.assertStable !== 'function'
+          || typeof anchoredMeta.assertStable !== 'function') {
+        throw memorySourceError('source_changed', 'ANN pinned handles are unavailable', {
+          status: 503,
+          retryable: true,
+        });
+      }
+      indexPath = anchoredIndex.path;
+      metaBytes = await anchoredMeta.readFile({ maxBytes: 16 * 1024 * 1024 });
+    } else {
+      const [{ filePath }, { filePath: metaPath, stat: metaStat }] = await Promise.all([
+        resolveRegular(annMeta.indexFile, 'ANN index'),
+        resolveRegular(annMeta.metaFile, 'ANN metadata'),
+      ]);
+      indexPath = filePath;
+      if (metaStat.size > 16 * 1024 * 1024) {
+        throw memorySourceError('result_too_large', 'ANN metadata exceeds byte limit', {
+          status: 413,
+          retryable: false,
+        });
+      }
+      metaBytes = await fs.readFile(metaPath);
+    }
+    if (metaBytes.length > 16 * 1024 * 1024) {
       throw memorySourceError('result_too_large', 'ANN metadata exceeds byte limit', {
         status: 413,
         retryable: false,
       });
     }
-    const meta = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+    const meta = JSON.parse(metaBytes.toString('utf8'));
     throwIfAborted(signal);
     const dimension = meta.dimension || meta.dim;
     if (!Number.isSafeInteger(dimension) || dimension < 1 || dimension > MAX_EMBEDDING_DIMENSIONS) {
@@ -255,6 +287,9 @@ function createDefaultLoadAnn({ hnswlibLoader = () => require('hnswlib-node') } 
     const hnswlib = hnswlibLoader();
     const index = new hnswlib.HierarchicalNSW('cosine', dimension);
     index.readIndexSync(indexPath);
+    if (anchoredIndex) {
+      await Promise.all([anchoredIndex.assertStable(), anchoredMeta.assertStable()]);
+    }
     index.setEf(Math.max(100, meta.efConstruction || 100));
     throwIfAborted(signal);
     return {

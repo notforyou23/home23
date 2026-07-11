@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { copyFileSync, renameSync } from 'node:fs';
 import { promises as fsp } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -112,6 +113,32 @@ test('uncommitted appended bytes are ignored and truncated by the next append', 
   const source = await openMemorySource(dir);
   assert.deepEqual(await concepts(source), ['new committed canary', 'old committed canary']);
   await source.close();
+});
+
+test('append rejects a delta pathname replacement before manifest publication', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const manifestBefore = await readManifest(dir);
+  const deltaPath = path.join(dir, manifestBefore.activeDelta.file);
+  await assert.rejects(() => appendMemoryRevision(dir, {
+    nodes: [{ id: 'raced', concept: 'must not publish' }],
+  }, {
+    lockRoot,
+    summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+    _testHooks: {
+      beforeManifestRename() {
+        const displaced = `${deltaPath}.displaced`;
+        renameSync(deltaPath, displaced);
+        copyFileSync(displaced, deltaPath);
+      },
+    },
+  }), { code: 'source_changed' });
+  const manifestAfter = await readManifest(dir);
+  assert.equal(manifestAfter.generation, manifestBefore.generation);
+  assert.equal(manifestAfter.currentRevision, manifestBefore.currentRevision);
+  assert.equal(
+    manifestAfter.activeDelta.committedBytes,
+    manifestBefore.activeDelta.committedBytes,
+  );
 });
 
 test('delta records carry one epoch and strictly increasing sequence and revision', async () => {

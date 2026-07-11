@@ -6,7 +6,11 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { writeJsonlGzAtomic, limitError } = require('./jsonl.cjs');
 const { readManifest, writeManifestAtomic, fsyncDirectory } = require('./manifest.cjs');
-const { openConfinedRegularFile } = require('./confined-file.cjs');
+const {
+  openConfinedRegularFile,
+  portableFileIdentity,
+  assertOpenedFilePathIdentity,
+} = require('./confined-file.cjs');
 const { withMemorySourceLock, discoverOperationPinFiles } = require('./pins.cjs');
 const {
   memorySourceError,
@@ -14,8 +18,9 @@ const {
   throwIfAborted,
 } = require('./contracts.cjs');
 
-function inject(options, point) {
+async function inject(options, point) {
   if (options.faultAt === point) throw new Error(`injected:${point}`);
+  await options._testHooks?.[point]?.();
 }
 
 function cloneJson(value) {
@@ -69,6 +74,24 @@ function countChanges(changes) {
     + changes.removedNodeIds.length + changes.removedEdgeKeys.length;
 }
 
+async function writeAllAt(handle, bytes, position) {
+  let written = 0;
+  while (written < bytes.length) {
+    const result = await handle.write(
+      bytes,
+      written,
+      bytes.length - written,
+      position + written,
+    );
+    if (!Number.isInteger(result.bytesWritten) || result.bytesWritten <= 0) {
+      throw memorySourceError('source_unavailable', 'delta write made no progress', {
+        retryable: true,
+      });
+    }
+    written += result.bytesWritten;
+  }
+}
+
 async function appendMemoryRevision(brainDir, changes, options = {}) {
   const capturedChanges = normalizeCapturedChanges(changes);
   const capturedSummary = options.summary ? validateScalarSummaryOnly(options.summary) : null;
@@ -81,6 +104,7 @@ async function appendMemoryRevision(brainDir, changes, options = {}) {
     const opened = await openConfinedRegularFile(brainDir, deltaPath, {
       flags: fs.constants.O_RDWR,
     });
+    const openedIdentity = portableFileIdentity(opened.stat);
     let revision = manifest.currentRevision;
     let sequence = manifest.activeDelta.count;
     let offset = committedBytes;
@@ -88,6 +112,7 @@ async function appendMemoryRevision(brainDir, changes, options = {}) {
       if (Number(opened.stat.size) < committedBytes) {
         throw memorySourceError('source_unavailable', 'committed delta is truncated', { retryable: true });
       }
+      await assertOpenedFilePathIdentity(opened, openedIdentity);
       await opened.handle.truncate(committedBytes);
       for (const record of changeRecords(capturedChanges)) {
         revision += 1;
@@ -98,37 +123,46 @@ async function appendMemoryRevision(brainDir, changes, options = {}) {
           revision,
           ...record,
         })}\n`);
-        await opened.handle.write(encoded, 0, encoded.length, offset);
+        await writeAllAt(opened.handle, encoded, offset);
         offset += encoded.length;
       }
       await opened.handle.sync();
+      await inject(options, 'afterDeltaFsync');
+      const bytes = offset;
+      const committedStat = await opened.handle.stat({ bigint: true });
+      if (Number(committedStat.size) !== bytes) {
+        throw memorySourceError('source_changed', 'delta committed size changed', {
+          retryable: true,
+        });
+      }
+      const committedIdentity = portableFileIdentity(committedStat);
+      await assertOpenedFilePathIdentity(opened, committedIdentity);
+      const next = {
+        ...manifest,
+        currentRevision: revision,
+        activeDelta: {
+          ...manifest.activeDelta,
+          toRevision: revision,
+          count: sequence,
+          committedBytes: bytes,
+        },
+        summary: capturedSummary || manifest.summary,
+      };
+      await inject(options, 'beforeManifestRename');
+      await assertOpenedFilePathIdentity(opened, committedIdentity);
+      await writeManifestAtomic(brainDir, next);
+      const recordCount = countChanges(capturedChanges);
+      return Object.freeze({
+        epoch: next.activeDeltaEpoch,
+        fromRevision: manifest.currentRevision + (recordCount ? 1 : 0),
+        toRevision: revision,
+        count: recordCount,
+        bytes,
+        manifest: next,
+      });
     } finally {
       await opened.handle.close();
     }
-    inject(options, 'afterDeltaFsync');
-    const bytes = (await fsp.stat(deltaPath)).size;
-    const next = {
-      ...manifest,
-      currentRevision: revision,
-      activeDelta: {
-        ...manifest.activeDelta,
-        toRevision: revision,
-        count: sequence,
-        committedBytes: bytes,
-      },
-      summary: capturedSummary || manifest.summary,
-    };
-    inject(options, 'beforeManifestRename');
-    await writeManifestAtomic(brainDir, next);
-    const recordCount = countChanges(capturedChanges);
-    return Object.freeze({
-      epoch: next.activeDeltaEpoch,
-      fromRevision: manifest.currentRevision + (recordCount ? 1 : 0),
-      toRevision: revision,
-      count: recordCount,
-      bytes,
-      manifest: next,
-    });
   });
 }
 
@@ -167,7 +201,7 @@ async function rewriteMemoryBase(brainDir, capturedView, options = {}) {
     await deltaHandle.sync();
     await deltaHandle.close();
     await fsyncDirectory(brainDir);
-    inject(options, 'afterBaseFiles');
+    await inject(options, 'afterBaseFiles');
     const manifest = {
       formatVersion: 1,
       generation,
@@ -189,7 +223,7 @@ async function rewriteMemoryBase(brainDir, capturedView, options = {}) {
       ann: { indexFile: null, metaFile: null, builtFromRevision: null },
       summary: view.summary,
     };
-    inject(options, 'beforeManifestRename');
+    await inject(options, 'beforeManifestRename');
     await writeManifestAtomic(brainDir, manifest);
     return Object.freeze({ baseRevision, deltaEpoch: epoch, nodes, edges, manifest });
   });

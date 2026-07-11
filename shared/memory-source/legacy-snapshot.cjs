@@ -9,6 +9,12 @@ const { once } = require('node:events');
 const { StringDecoder } = require('node:string_decoder');
 const { createOperationScratchQuota } = require('./scratch-quota.cjs');
 const { writeManifestAtomic, fsyncDirectory } = require('./manifest.cjs');
+const {
+  assertOpenedFilePathIdentity,
+  assertStableOpenedFile,
+  openConfinedRegularFile,
+  portableFileIdentity,
+} = require('./confined-file.cjs');
 const { memorySourceError, rethrowAbort, throwIfAborted } = require('./contracts.cjs');
 
 function fingerprint(stat) {
@@ -19,10 +25,6 @@ function fingerprint(stat) {
     mtimeNs: String(stat.mtimeNs),
     ctimeNs: String(stat.ctimeNs),
   };
-}
-
-function sameFingerprint(left, right) {
-  return ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].every((key) => left[key] === right[key]);
 }
 
 function quoteKey(key) {
@@ -187,8 +189,24 @@ function createGzipJsonlWriter(filePath, { scratchQuota, signal } = {}) {
   return { write, finish, cleanup };
 }
 
-async function streamSnapshot({ stateFile, signal, maxDecompressedBytes, maxRecordBytes, onRecord }) {
-  const input = fs.createReadStream(stateFile);
+async function streamSnapshot({
+  stateFile,
+  openedFile,
+  signal,
+  maxDecompressedBytes,
+  maxRecordBytes,
+  onRecord,
+}) {
+  const inputBytes = Number(openedFile.stat.size);
+  if (!Number.isSafeInteger(inputBytes) || inputBytes <= 0) {
+    throw memorySourceError('source_unavailable', 'legacy snapshot is empty', { retryable: true });
+  }
+  const input = fs.createReadStream(null, {
+    fd: openedFile.handle.fd,
+    autoClose: false,
+    start: 0,
+    end: inputBytes - 1,
+  });
   const decoded = stateFile.endsWith('.gz') ? input.pipe(zlib.createGunzip()) : input;
   const hash = crypto.createHash('sha256');
   const extractor = createArrayExtractor({ maxRecordBytes, signal, onRecord });
@@ -232,14 +250,23 @@ async function projectLegacyResearchSnapshot({
   maxDecompressedBytes = 2 * 1024 * 1024 * 1024,
   maxRecordBytes = 16 * 1024 * 1024,
   maxAttempts = 3,
+  _testHooks = {},
 } = {}) {
   throwIfAborted(signal);
   if (!operationId || !requesterAgent) {
     throw memorySourceError('invalid_request', 'operation identity required');
   }
   const targetRoot = await fsp.realpath(canonicalRoot);
-  const sourceFile = await fsp.realpath(stateFile);
-  if (!sourceFile.startsWith(`${targetRoot}${path.sep}`)) {
+  if (typeof stateFile !== 'string' || !path.isAbsolute(stateFile)
+      || stateFile.includes('\0') || path.normalize(stateFile) !== stateFile) {
+    throw memorySourceError('invalid_request', 'absolute normalized state file required');
+  }
+  const sourceFile = path.join(
+    await fsp.realpath(path.dirname(stateFile)),
+    path.basename(stateFile),
+  );
+  const crossing = path.relative(targetRoot, sourceFile);
+  if (!crossing || crossing.startsWith('..') || path.isAbsolute(crossing)) {
     throw memorySourceError('invalid_request', 'state file must be inside canonical root');
   }
   const quota = scratchQuota || await createOperationScratchQuota({ operationRoot });
@@ -249,19 +276,27 @@ async function projectLegacyResearchSnapshot({
   let lastMismatch = null;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     throwIfAborted(signal);
-    const before = fingerprint(await fsp.stat(sourceFile, { bigint: true }));
-    const attemptRoot = path.join(projectionsRoot, `attempt-${process.pid}-${Date.now()}-${attempt}`);
-    await fsp.mkdir(attemptRoot, { recursive: false, mode: 0o700 });
-    const nodesPath = path.join(attemptRoot, 'memory-nodes.tmp.jsonl.gz');
-    const edgesPath = path.join(attemptRoot, 'memory-edges.tmp.jsonl.gz');
-    const nodes = createGzipJsonlWriter(nodesPath, { scratchQuota: quota, signal });
-    const edges = createGzipJsonlWriter(edgesPath, { scratchQuota: quota, signal });
-    let nodeCount = 0;
-    let edgeCount = 0;
-    const clusters = new Set();
+    const openedSource = await openConfinedRegularFile(targetRoot, sourceFile, {
+      flags: fs.constants.O_RDONLY,
+      signal,
+    });
+    let attemptRoot = null;
+    let nodes = null;
+    let edges = null;
     try {
+      const before = fingerprint(openedSource.stat);
+      attemptRoot = path.join(projectionsRoot, `attempt-${process.pid}-${Date.now()}-${attempt}`);
+      await fsp.mkdir(attemptRoot, { recursive: false, mode: 0o700 });
+      const nodesPath = path.join(attemptRoot, 'memory-nodes.tmp.jsonl.gz');
+      const edgesPath = path.join(attemptRoot, 'memory-edges.tmp.jsonl.gz');
+      nodes = createGzipJsonlWriter(nodesPath, { scratchQuota: quota, signal });
+      edges = createGzipJsonlWriter(edgesPath, { scratchQuota: quota, signal });
+      let nodeCount = 0;
+      let edgeCount = 0;
+      const clusters = new Set();
       const streamed = await streamSnapshot({
         stateFile: sourceFile,
+        openedFile: openedSource,
         signal,
         maxDecompressedBytes,
         maxRecordBytes,
@@ -278,14 +313,9 @@ async function projectLegacyResearchSnapshot({
       });
       const nodeFile = await nodes.finish();
       const edgeFile = await edges.finish();
-      const after = fingerprint(await fsp.stat(sourceFile, { bigint: true }));
-      if (!sameFingerprint(before, after)) {
-        lastMismatch = memorySourceError('source_changed', 'legacy snapshot changed during projection', {
-          retryable: true,
-        });
-        await fsp.rm(attemptRoot, { recursive: true, force: true });
-        continue;
-      }
+      await _testHooks.beforeSourceRecheck?.({ attempt, targetRoot, stateFile: sourceFile });
+      await assertStableOpenedFile(openedSource);
+      await assertOpenedFilePathIdentity(openedSource, portableFileIdentity(openedSource.stat));
       const revision = Number.parseInt(streamed.sha256.slice(0, 13), 16);
       const generation = `legacy-${streamed.sha256.slice(0, 20)}`;
       const projectionRoot = path.join(projectionsRoot, generation);
@@ -342,11 +372,19 @@ async function projectLegacyResearchSnapshot({
         }),
       });
     } catch (error) {
-      await nodes.cleanup().catch(() => {});
-      await edges.cleanup().catch(() => {});
-      await fsp.rm(attemptRoot, { recursive: true, force: true }).catch(() => {});
+      await nodes?.cleanup?.().catch(() => {});
+      await edges?.cleanup?.().catch(() => {});
+      if (attemptRoot) {
+        await fsp.rm(attemptRoot, { recursive: true, force: true }).catch(() => {});
+      }
       rethrowAbort(error, signal);
+      if (error?.code === 'source_changed') {
+        lastMismatch = error;
+        continue;
+      }
       throw error;
+    } finally {
+      await openedSource.handle.close().catch(() => {});
     }
   }
   throw lastMismatch || memorySourceError('source_changed', 'legacy snapshot changed during projection', {

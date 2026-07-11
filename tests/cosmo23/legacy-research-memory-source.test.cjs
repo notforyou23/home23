@@ -147,3 +147,35 @@ test('aborting legacy projection preserves AbortError and stops before manifest 
   );
   assert.equal(await fsp.access(path.join(operationRoot, 'source-projections')).then(() => true).catch(() => false), false);
 });
+
+test('legacy research projection retries a replaced state pathname from a new no-follow handle', async () => {
+  const { dir, file } = await writeFixture({ gzip: true });
+  const operationRoot = await tempDir('home23-legacy-snapshot-inode-operation-');
+  let rechecks = 0;
+  const projected = await projectLegacyResearchSnapshot({
+    canonicalRoot: dir,
+    stateFile: file,
+    operationRoot,
+    operationId: 'op-legacy-inode-race',
+    requesterAgent: 'jerry',
+    maxAttempts: 3,
+    _testHooks: {
+      async beforeSourceRecheck() {
+        rechecks += 1;
+        if (rechecks === 1) {
+          const displaced = `${file}.displaced`;
+          await fsp.rename(file, displaced);
+          await fsp.copyFile(displaced, file);
+        }
+      },
+    },
+  });
+  assert.equal(rechecks, 2);
+  const current = await fsp.stat(file, { bigint: true });
+  assert.equal(projected.sourceFingerprint.ino, String(current.ino));
+  assert.deepEqual(projected.descriptor.summary, {
+    nodeCount: 2,
+    edgeCount: 1,
+    clusterCount: 1,
+  });
+});
