@@ -2,6 +2,7 @@
 
 import { execFile as execFileCallback } from 'node:child_process';
 import fsp from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import {
@@ -17,6 +18,7 @@ import {
 } from './lib/brain-acceptance-common.mjs';
 
 const execFile = promisify(execFileCallback);
+const require = createRequire(import.meta.url);
 
 export const APPROVED_BRAIN_PROCESS_NAMES = Object.freeze([
   'home23-cosmo23',
@@ -30,12 +32,20 @@ export const APPROVED_BRAIN_PROCESS_NAMES = Object.freeze([
   'home23-forrest-mcp',
 ]);
 const APPROVED_ALLOWLIST = new Set(APPROVED_BRAIN_PROCESS_NAMES);
+const REQUIRED_CONFIGURED_PROCESS_NAMES = Object.freeze(APPROVED_BRAIN_PROCESS_NAMES.slice(0, 7));
 const APPROVED_ENV_ADDITION = 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY';
 
 function orderedStrings(value) {
   if (value == null) return [];
   const entries = Array.isArray(value) ? value : [value];
   return entries.map((entry) => String(entry));
+}
+
+function normalizeExecMode(value) {
+  const mode = String(value ?? 'fork_mode');
+  if (mode === 'fork') return 'fork_mode';
+  if (mode === 'cluster') return 'cluster_mode';
+  return mode;
 }
 
 function envKeys(row) {
@@ -91,11 +101,56 @@ export function normalizePm2Row(row) {
     script: String(environment.pm_exec_path ?? row?.script ?? ''),
     cwd: String(environment.pm_cwd ?? row?.cwd ?? ''),
     namespace: String(environment.namespace ?? row?.namespace ?? 'default'),
-    execMode: String(environment.exec_mode ?? row?.execMode ?? ''),
+    execMode: normalizeExecMode(environment.exec_mode ?? row?.execMode ?? ''),
     instances,
     args: orderedStrings(environment.args ?? row?.args),
     envKeys: envKeys(row),
   });
+}
+
+export function normalizeEcosystemRow(row, baseDir = process.cwd()) {
+  const name = row?.name;
+  if (typeof name !== 'string' || !APPROVED_ALLOWLIST.has(name)) {
+    throw typedError('pm2_ecosystem_row_invalid', String(name || 'unnamed'));
+  }
+  const cwdValue = row?.cwd ?? baseDir;
+  const scriptValue = row?.script;
+  if (typeof cwdValue !== 'string' || !cwdValue
+      || typeof scriptValue !== 'string' || !scriptValue
+      || /[\0\r\n]/.test(cwdValue) || /[\0\r\n]/.test(scriptValue)) {
+    throw typedError('pm2_ecosystem_row_invalid', name);
+  }
+  const cwd = path.resolve(baseDir, cwdValue);
+  const script = path.isAbsolute(scriptValue)
+    ? path.normalize(scriptValue)
+    : path.resolve(cwd, scriptValue);
+  const instances = Number(row?.instances ?? 1);
+  if (!Number.isSafeInteger(instances) || instances < 1) {
+    throw typedError('pm2_ecosystem_row_invalid', name);
+  }
+  return Object.freeze({
+    name,
+    script,
+    cwd,
+    namespace: String(row?.namespace ?? 'default'),
+    execMode: normalizeExecMode(row?.exec_mode ?? row?.execMode ?? 'fork_mode'),
+    instances,
+    args: orderedStrings(row?.args),
+  });
+}
+
+export function normalizeEcosystemTable(rows, baseDir = process.cwd()) {
+  if (!Array.isArray(rows)) throw typedError('pm2_ecosystem_invalid');
+  const table = new Map();
+  for (const row of rows) {
+    if (!APPROVED_ALLOWLIST.has(row?.name)) continue;
+    const normalized = normalizeEcosystemRow(row, baseDir);
+    if (table.has(normalized.name)) {
+      throw typedError('pm2_ecosystem_duplicate_process', normalized.name);
+    }
+    table.set(normalized.name, normalized);
+  }
+  return table;
 }
 
 export function normalizePm2Table(rows, label = 'PM2 table') {
@@ -137,6 +192,22 @@ function equalAllowlistedIdentity(left, right) {
   return equalRow(stableLeft, stableRight);
 }
 
+function processIdentity(row) {
+  return {
+    name: row.name,
+    script: row.script,
+    cwd: row.cwd,
+    namespace: row.namespace,
+    execMode: row.execMode,
+    instances: row.instances,
+    args: row.args,
+  };
+}
+
+function equalEcosystemIdentity(live, expected) {
+  return equalRow(processIdentity(live), expected);
+}
+
 function assertPlannedAllowlistedDelta(live, dump, name) {
   if (!equalAllowlistedIdentity(live, dump)) {
     throw typedError('pm2_allowlisted_identity_drift', name);
@@ -155,12 +226,19 @@ function assertPlannedAllowlistedDelta(live, dump, name) {
   }
 }
 
-export function comparePreSaveTables(live, dump, allowChanged) {
+export function comparePreSaveTables(live, dump, allowChanged, ecosystemIdentities = new Map()) {
   const names = new Set([...live.keys(), ...dump.keys()]);
   for (const name of names) {
     if (!live.has(name)) throw typedError('pm2_table_drift', name);
     if (!dump.has(name)) {
-      if (allowChanged.has(name)) continue;
+      if (allowChanged.has(name)) {
+        const expected = ecosystemIdentities.get(name);
+        if (!expected) throw typedError('pm2_ecosystem_identity_missing', name);
+        if (!equalEcosystemIdentity(live.get(name), expected)) {
+          throw typedError('pm2_ecosystem_identity_mismatch', name);
+        }
+        continue;
+      }
       throw typedError('pm2_table_drift', name);
     }
     const liveRow = live.get(name);
@@ -169,6 +247,26 @@ export function comparePreSaveTables(live, dump, allowChanged) {
       throw typedError('pm2_unrelated_drift', name);
     }
     if (allowChanged.has(name)) assertPlannedAllowlistedDelta(liveRow, dumpRow, name);
+  }
+}
+
+function assertExpectedConfiguredAuthority(expectedConfigured, ecosystemIdentities) {
+  if (!Array.isArray(expectedConfigured) || expectedConfigured.length === 0
+      || new Set(expectedConfigured).size !== expectedConfigured.length
+      || expectedConfigured.some((name) => !APPROVED_ALLOWLIST.has(name))
+      || REQUIRED_CONFIGURED_PROCESS_NAMES.some((name) => !expectedConfigured.includes(name))) {
+    throw typedError('pm2_expected_configured_invalid');
+  }
+  const expected = new Set(expectedConfigured);
+  if (expected.size !== ecosystemIdentities.size
+      || [...expected].some((name) => !ecosystemIdentities.has(name))) {
+    throw typedError('pm2_expected_configured_mismatch');
+  }
+}
+
+function assertExpectedConfiguredPresent(table, expectedConfigured, label) {
+  for (const name of expectedConfigured) {
+    if (!table.has(name)) throw typedError('pm2_expected_process_missing', `${label}:${name}`);
   }
 }
 
@@ -207,6 +305,19 @@ async function defaultSave() {
   await execFile('pm2', ['save'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
 }
 
+function loadEcosystemApps(ecosystemPath) {
+  let resolved;
+  try {
+    resolved = require.resolve(ecosystemPath);
+    delete require.cache[resolved];
+    const document = require(resolved);
+    if (!document || !Array.isArray(document.apps)) throw new Error('apps missing');
+    return document.apps;
+  } catch (error) {
+    throw typedError('pm2_ecosystem_invalid', ecosystemPath, { cause: error });
+  }
+}
+
 async function readDumpDocument(dumpPath) {
   const bytes = await fsp.readFile(dumpPath);
   let document;
@@ -233,6 +344,9 @@ async function restoreDumpAtomic(dumpPath, bytes, mode) {
 export async function guardedPm2Save({
   dumpPath,
   allowChanged = [],
+  expectedConfigured,
+  ecosystemApps,
+  ecosystemBaseDir = process.cwd(),
   backupPath,
   apply = false,
   listProcesses = defaultListProcesses,
@@ -246,6 +360,8 @@ export async function guardedPm2Save({
   }
   const allow = new Set(allowChanged);
   assertApprovedAllowlist(allowChanged);
+  const ecosystemIdentities = normalizeEcosystemTable(ecosystemApps, ecosystemBaseDir);
+  assertExpectedConfiguredAuthority(expectedConfigured, ecosystemIdentities);
   const original = await readDump(dumpPath).catch((error) => {
     if (error.code === 'ENOENT') throw typedError('pm2_dump_missing');
     throw error;
@@ -260,7 +376,8 @@ export async function guardedPm2Save({
   }
   const liveBefore = normalizePm2Table(await listProcesses(), 'live PM2 table');
   const dumpBefore = normalizePm2Table(original.document, 'dump PM2 table');
-  comparePreSaveTables(liveBefore, dumpBefore, allow);
+  assertExpectedConfiguredPresent(liveBefore, expectedConfigured, 'live');
+  comparePreSaveTables(liveBefore, dumpBefore, allow, ecosystemIdentities);
   const result = {
     ok: true,
     applied: false,
@@ -270,6 +387,8 @@ export async function guardedPm2Save({
     originalMode: original.mode.toString(8).padStart(4, '0'),
     originalSha256: sha256Bytes(original.bytes),
     allowChanged: [...allow].sort(),
+    expectedConfigured: [...expectedConfigured].sort(),
+    ecosystemIdentity: tableRows(ecosystemIdentities),
     liveTable: tableRows(liveBefore),
     dumpTableBefore: tableRows(dumpBefore),
     dumpTableAfter: null,
@@ -285,6 +404,7 @@ export async function guardedPm2Save({
     assertFrozenLive(liveBefore, liveAfter);
     const post = await readDump(dumpPath);
     const dumpAfter = normalizePm2Table(post.document, 'post-save dump PM2 table');
+    assertExpectedConfiguredPresent(dumpAfter, expectedConfigured, 'post-save-dump');
     assertDumpEqualsLive(liveBefore, dumpAfter);
     result.applied = true;
     result.dumpTableAfter = tableRows(dumpAfter);
@@ -318,7 +438,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   const { values } = parseCli(argv);
   const context = await receiptContext(values, env);
   const dumpPath = path.resolve(one(values, 'dump', { required: true }));
+  const ecosystemPath = path.resolve(one(values, 'ecosystem', { required: true }));
   const allowChanged = String(one(values, 'allow-changed', { required: true }))
+    .split(',').map((value) => value.trim()).filter(Boolean);
+  const expectedConfigured = String(one(values, 'expected-configured', { required: true }))
     .split(',').map((value) => value.trim()).filter(Boolean);
   const backupName = `pm2-dump-backup-${sha256Bytes(Buffer.from(`${context.receiptRunId}:${dumpPath}`)).slice(0, 16)}.pm2`;
   const backupPath = path.join(context.receiptRunDir, 'backups', backupName);
@@ -328,6 +451,9 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   const result = await guardedPm2Save({
     dumpPath,
     allowChanged,
+    expectedConfigured,
+    ecosystemApps: loadEcosystemApps(ecosystemPath),
+    ecosystemBaseDir: path.dirname(ecosystemPath),
     backupPath,
     apply,
   });
