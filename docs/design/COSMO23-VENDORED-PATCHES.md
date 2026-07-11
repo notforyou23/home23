@@ -2214,12 +2214,25 @@ tests/cosmo23/codex-unified-client-request.test.cjs`.
 
 ---
 
-## Patch 50 — Durable research-run operation adapter (foundation slice)
+## Patch 50 — Durable research operation backend
 
 **Files touched:**
 - `cosmo23/server/lib/research-run-operation-adapter.js`
+- `cosmo23/server/lib/research-run-metadata.js`
+- `cosmo23/server/lib/research-pinned-source-reader.js`
+- `cosmo23/server/lib/research-requester-output-writer.js`
+- `cosmo23/server/lib/research-compile-provider-adapter.js`
+- `cosmo23/server/lib/research-operation-executors.js`
+- `cosmo23/server/config/model-catalog.js`
+- `cosmo23/lib/brain-provider-client-registry.js`
+- `cosmo23/server/providers/registry.js`
 - `cosmo23/server/index.js`
 - `tests/cosmo23/research-run-operation-adapter.test.cjs`
+- `tests/cosmo23/research-run-metadata.test.cjs`
+- `tests/cosmo23/research-pinned-source-reader.test.cjs`
+- `tests/cosmo23/research-requester-output-writer.test.cjs`
+- `tests/cosmo23/research-compile-provider-adapter.test.cjs`
+- `tests/cosmo23/research-operation-executors.test.cjs`
 
 **Problem:** The durable brain-operation backend could not safely drive COSMO
 research runs through the real launcher. The legacy HTTP routes accepted
@@ -2243,17 +2256,22 @@ back to another active run's global logs.
 
 `server/index.js` now exposes `launchPreparedResearch(brain,payload,req)`, the
 single config/runtime-link/metadata/process-start path used by both the legacy
-`/api/launch` flow and the durable adapter. This slice does not add a parallel
-launcher. Full Patch 50 executor/worker registration remains in the later
-research-operation integration slice and must inject the canonical metadata
-reader/writer plus requester workspace resolver explicitly.
+`/api/launch` flow and the durable adapter; there is no parallel launcher. The
+protected worker registers exactly `research_launch`, `research_continue`,
+`research_stop`, `research_watch`, `research_intelligence`, and
+`research_compile`. Run selectors are re-read from owner-scoped canonical
+metadata. Intelligence reads only the pinned completed source and never mutates
+agency or the target brain. Compile uses the exact configured provider/model
+pair, writes only through a prevalidated requester-workspace capability, and
+cannot be relabeled as a public query operation.
 
-**Verification:** `tests/cosmo23/research-run-operation-adapter.test.cjs`
-covers server-derived roots, symlink/escape refusal, write-before-spawn ordering,
-trusted launch defaults, durable active/failed/continue/stop transitions,
-process-exit detection, stop cancellation truth, active-context mismatch,
-bounded cursor/filter behavior, exact-run log isolation, fresh canonical owner
-resolution, and deterministic concurrent mutation conflicts.
+**Verification:** `node --test --test-concurrency=1` over the six research
+backend tests above, plus the server activation and dashboard owned-run target
+tests, passed 56/56 on 2026-07-10. The coverage includes server-derived roots,
+symlink/escape refusal, write-before-spawn ordering, durable lifecycle
+transitions, exact provider selection, bounded pinned reads, requester-only
+atomic output, stop cancellation truth, exact-run cursor isolation, and
+deterministic concurrent mutation conflicts.
 
 ---
 
@@ -2283,11 +2301,17 @@ state remains separate and is constrained to an 8 MiB compressed / 32 MiB
 decompressed read, so it cannot reintroduce sidecar hydration or an unbounded
 legacy snapshot parse. The COSMO constructor still accepts its legacy positional
 `ClusterStateStore` while also supporting named source context.
+Production `AgentExecutor` call sites now construct that context from the exact
+resident or explicitly owned-run root and fail source-unavailable when it is
+missing. Evidence retains requester, target, brain, catalog, kind, source type,
+access mode, and operation identity. Recent thought/dream reads use the shared
+bounded reverse JSONL tail instead of whole-file hydration.
 
 **Verification:** `node --test --test-concurrency=1
-tests/engine/agents/mcp-bridge-memory.test.js` passes 9 parity, source-failure,
-limit, cancellation, authority, and constructor-compatibility tests across both
-engine copies.
+tests/engine/agents/mcp-bridge-memory.test.js` passes 11 parity, source-failure,
+limit, cancellation, authority, evidence-identity, bounded-tail, and
+constructor-compatibility tests across both engine copies. The executor context
+suites pass 9/9 across resident, unavailable, cross-layout, and owned-run paths.
 
 ---
 
