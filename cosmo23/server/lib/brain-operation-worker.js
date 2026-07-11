@@ -1092,8 +1092,10 @@ class BrainOperationWorker {
       const event = record.events.find((candidate) => candidate.eventSequence > cursor);
       if (record.eventSequence > cursor
           && (!event || event.eventSequence > cursor + 1)) {
-        const oldestSequence = event?.eventSequence ?? record.eventSequence;
-        const latestSequence = record.eventSequence;
+        const oldestSequence = cursor + 1;
+        const latestSequence = event
+          ? event.eventSequence - 1
+          : record.eventSequence;
         yield Object.freeze({
           type: 'event_gap',
           operationId,

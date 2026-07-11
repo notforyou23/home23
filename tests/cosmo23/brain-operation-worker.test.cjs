@@ -1034,6 +1034,7 @@ test('provider activity is coalesced without evicting its selected and terminal 
   const request = requestFor({ id: operationId('p') });
   await fixture.worker.start(request.operationId, fixture.token(request), request);
   await eventually(() => assert.equal(typeof report, 'function'));
+  let status;
   try {
     report({ type: 'provider_selected', providerCallId: 'long-call', providerStallMs: 10_000 });
     for (let index = 0; index < WORKER_EVENT_MAX_COUNT + 128; index += 1) {
@@ -1048,8 +1049,20 @@ test('provider activity is coalesced without evicting its selected and terminal 
     assert.equal(providerEvents[1].providerChunk, WORKER_EVENT_MAX_COUNT + 127);
   } finally {
     gate.resolve();
-    await terminalStatus(fixture, request);
+    status = await terminalStatus(fixture, request);
   }
+  const controller = new AbortController();
+  const streamed = [];
+  for await (const event of fixture.worker.events(request.operationId, fixture.token(request), {
+    afterSequence: 0, signal: controller.signal,
+  })) streamed.push(event);
+  const gapIndex = streamed.findIndex((event) => event.type === 'event_gap');
+  const terminalIndex = streamed.findIndex((event) => event.type === 'provider_call_terminal');
+  assert.equal(gapIndex >= 0, true);
+  assert.equal(terminalIndex > gapIndex, true);
+  assert.equal(streamed[gapIndex].eventSequence, streamed[gapIndex].latestSequence);
+  assert.equal(streamed[terminalIndex].eventSequence, streamed[gapIndex].latestSequence + 2);
+  assert.equal(streamed.at(-1).eventSequence, status.eventSequence);
 });
 
 test('event storage is count/byte bounded and exposes an authenticated resumable gap', async (t) => {
@@ -1098,9 +1111,12 @@ test('event storage is count/byte bounded and exposes an authenticated resumable
   assert.ok(gap);
   assert.equal(gap.operationId, request.operationId);
   assert.equal(gap.oldestSequence > 0, true);
-  assert.equal(gap.latestSequence, status.eventSequence);
+  assert.equal(gap.latestSequence < status.eventSequence, true);
+  assert.equal(gap.eventSequence, gap.latestSequence);
   assert.equal(gap.currentStatus.eventSequence >= gap.latestSequence, true);
   assert.equal(gap.currentStatus.phase, 'bulk-finished');
+  const retained = await iterator.next();
+  assert.equal(retained.value.eventSequence, gap.latestSequence + 1);
   controller.abort();
   await fixture.worker.cancel(request.operationId, fixture.token(request));
   gate.resolve();
