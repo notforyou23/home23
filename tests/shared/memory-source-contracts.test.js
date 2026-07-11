@@ -23,6 +23,9 @@ const {
   normalizeKeywordTokens,
   enrichEvidenceIdentity,
   readJsonl,
+  MAX_MEMORY_SOURCE_BYTES,
+  assertMemorySourceInputSelection,
+  resolveMemorySourceReadLimits,
   writeJsonlGzAtomic,
 } = require('../../shared/memory-source');
 
@@ -48,6 +51,49 @@ async function writeHighlyCompressibleJsonlRecord({ conceptBytes }) {
   await writeFile(out, await gzipBytes(Buffer.from(payload, 'utf8')));
   return out;
 }
+
+test('source read limits have one finite eight-gibibyte hard maximum and quota-derived defaults', () => {
+  const hardMax = 8 * 1024 * 1024 * 1024;
+  assert.equal(MAX_MEMORY_SOURCE_BYTES, hardMax);
+  assert.equal(typeof resolveMemorySourceReadLimits, 'function');
+  assert.deepEqual(resolveMemorySourceReadLimits(), {
+    maxInputBytes: hardMax,
+    maxDecompressedBytes: hardMax,
+  });
+  assert.deepEqual(resolveMemorySourceReadLimits({ quotaMaxBytes: 4096 }), {
+    maxInputBytes: 4096,
+    maxDecompressedBytes: 4096,
+  });
+  assert.deepEqual(resolveMemorySourceReadLimits({
+    quotaMaxBytes: hardMax * 2,
+  }), {
+    maxInputBytes: hardMax,
+    maxDecompressedBytes: hardMax,
+  });
+  assert.deepEqual(resolveMemorySourceReadLimits({
+    quotaMaxBytes: 4096,
+    maxInputBytes: 8192,
+    maxDecompressedBytes: 16_384,
+  }), {
+    maxInputBytes: 8192,
+    maxDecompressedBytes: 16_384,
+  });
+  for (const input of [
+    { maxInputBytes: hardMax + 1 },
+    { maxDecompressedBytes: hardMax + 1 },
+    { quotaMaxBytes: 0 },
+    { quotaMaxBytes: 1.5 },
+    { quotaMaxBytes: Number.MAX_SAFE_INTEGER + 1 },
+  ]) {
+    assert.throws(() => resolveMemorySourceReadLimits(input), { code: 'invalid_request' });
+  }
+  assert.equal(assertMemorySourceInputSelection(4096, 4096), 4096);
+  assert.throws(
+    () => assertMemorySourceInputSelection(4097, 4096),
+    (error) => error?.code === 'result_too_large'
+      && error?.limitKind === 'input' && error?.limit === 4096,
+  );
+});
 
 test('normalizes revisions and graph identifiers without conflating invalid values', () => {
   assert.equal(normalizeRevision('17'), 17);

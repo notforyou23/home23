@@ -7,6 +7,7 @@ import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const {
+  createOperationScratchQuota,
   openMemorySource,
   readJsonl,
   writeJsonlGzAtomic,
@@ -121,6 +122,100 @@ test('projects base plus ordered delta upserts and tombstones at one pinned revi
   await source.close();
 });
 
+test('manifest delta loading uses bounded durable batches instead of one quota cycle per record', async () => {
+  const entryCount = 32;
+  const delta = Array.from({ length: entryCount }, (_, index) => ({
+    epoch: 'e3',
+    sequence: index + 1,
+    revision: index + 3,
+    op: 'upsert_node',
+    record: { id: `batched-${index}`, concept: `value-${index}` },
+  }));
+  const { dir } = await createManifestFixture({
+    nodes: [],
+    edges: [],
+    delta,
+    baseRevision: 2,
+    currentRevision: entryCount + 2,
+    summary: { nodeCount: entryCount, edgeCount: 0, clusterCount: 0 },
+  });
+  const operationRoot = await tempDir();
+  let ledgerPublishes = 0;
+  const scratchQuota = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes: 32 * 1024 * 1024,
+    _testHooks: {
+      async afterLedgerPublish() {
+        ledgerPublishes += 1;
+      },
+    },
+  });
+  let source = null;
+  try {
+    source = await openMemorySource(dir, {
+      operationRoot,
+      scratchQuota,
+      maxOverlayMemoryBytes: 0,
+      maxOverlayDiskBytes: 16 * 1024 * 1024,
+    });
+
+    assert.equal(ledgerPublishes, 7);
+    assert.equal(source.revision, entryCount + 2);
+    assert.deepEqual(
+      (await collect(source.iterateNodes())).map((node) => node.id),
+      Array.from({ length: entryCount }, (_, index) => `batched-${index}`).sort(),
+    );
+  } finally {
+    await source?.close();
+    scratchQuota.close();
+    await fsp.rm(operationRoot, { recursive: true, force: true });
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('manifest delta loading obeys compressed-input and decoded-stream limits', async (t) => {
+  const delta = [{
+    epoch: 'e3',
+    sequence: 1,
+    revision: 3,
+    op: 'upsert_node',
+    record: { id: 'bounded-delta', concept: 'x'.repeat(1024) },
+  }];
+  const { dir } = await createManifestFixture({
+    nodes: [],
+    edges: [],
+    delta,
+    baseRevision: 2,
+    currentRevision: 3,
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 0 },
+  });
+  try {
+    for (const scenario of [
+      {
+        name: 'input',
+        options: { maxInputBytes: 64, maxDecompressedBytes: 8 * 1024 },
+        limitKind: 'input',
+      },
+      {
+        name: 'decoded',
+        options: { maxInputBytes: 8 * 1024, maxDecompressedBytes: 64 },
+        limitKind: 'decompressed',
+      },
+    ]) {
+      await t.test(scenario.name, async () => {
+        await assert.rejects(
+          () => openMemorySource(dir, scenario.options),
+          (error) => error?.code === 'result_too_large'
+            && error?.limitKind === scenario.limitKind
+            && error?.limit === 64,
+        );
+      });
+    }
+  } finally {
+    await fsp.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('edge overlay emits one last-write-wins row for a replaced base edge', async () => {
   const { dir } = await createManifestFixture({
     nodes: [{ id: 'n1' }, { id: 'n2' }],
@@ -155,7 +250,7 @@ test('edge overlay emits one last-write-wins row for a replaced base edge', asyn
   }
 });
 
-test('ignores bytes beyond the committed delta cutoff', async () => {
+test('ignores appended bytes beyond a committed delta prefix at its exact input cap', async () => {
   const { dir, manifest } = await createManifestFixture({
     nodes: [{ id: 1, concept: 'base' }],
     edges: [],
@@ -174,7 +269,15 @@ test('ignores bytes beyond the committed delta cutoff', async () => {
   manifest.activeDelta.count = 1;
   manifest.activeDelta.committedBytes = Buffer.byteLength(committed);
   await fsp.writeFile(path.join(dir, 'memory-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-  const source = await openMemorySource(dir);
+  assert.equal(
+    (await fsp.stat(path.join(dir, 'memory-delta.e3.jsonl'))).size
+      > manifest.activeDelta.committedBytes,
+    true,
+  );
+  const source = await openMemorySource(dir, {
+    maxInputBytes: manifest.activeDelta.committedBytes,
+    maxDecompressedBytes: manifest.activeDelta.committedBytes,
+  });
   const nodes = await collect(source.iterateNodes());
   assert.deepEqual(nodes.map((node) => node.concept), ['committed']);
   await source.close();

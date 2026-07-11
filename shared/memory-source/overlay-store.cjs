@@ -23,6 +23,10 @@ const DEFAULT_RECORD_BYTES = 16 * 1024 * 1024;
 const ENTRY_OVERHEAD_BYTES = 32;
 const SQLITE_MUTATION_HEADROOM = 128 * 1024;
 const MAX_PENDING_ENTRIES = 1024;
+const MAX_DISK_BATCH_ENTRIES = 256;
+const DEFAULT_BATCH_BYTES = 1024 * 1024;
+const exactEncodedEntries = new WeakMap();
+const boundedOverlayStores = new WeakSet();
 
 function limitError(message) {
   return memorySourceError('result_too_large', message, {
@@ -64,49 +68,98 @@ function retainedEntryBytes(key, record) {
 
 function deepFreezeJson(value) {
   if (value === null || typeof value !== 'object') return value;
-  const pending = [value];
   const seen = new Set();
-  while (pending.length > 0) {
-    const candidate = pending.pop();
-    if (seen.has(candidate)) continue;
-    seen.add(candidate);
-    for (const key of Reflect.ownKeys(candidate)) {
-      const nested = candidate[key];
-      if (nested !== null && typeof nested === 'object') pending.push(nested);
+  const stack = [];
+  function* ownObjectValues(candidate) {
+    for (const key in candidate) {
+      if (Object.prototype.hasOwnProperty.call(candidate, key)) yield candidate[key];
     }
+  }
+  function descend(candidate) {
+    if (candidate === null || typeof candidate !== 'object' || seen.has(candidate)) return;
+    seen.add(candidate);
     Object.freeze(candidate);
+    stack.push(Array.isArray(candidate)
+      ? { array: candidate, index: 0 }
+      : { iterator: ownObjectValues(candidate) });
+  }
+  descend(value);
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    let nested;
+    if (frame.array) {
+      if (frame.index >= frame.array.length) {
+        stack.pop();
+        continue;
+      }
+      nested = frame.array[frame.index];
+      frame.index += 1;
+    } else {
+      const next = frame.iterator.next();
+      if (next.done) {
+        stack.pop();
+        continue;
+      }
+      nested = next.value;
+    }
+    descend(nested);
   }
   return value;
 }
 
-function normalizeEdgeKey(value) {
+function normalizeEdgeKey(value, maxKeyBytes = DEFAULT_RECORD_BYTES) {
   if (typeof value === 'string') {
-    if (!value || Buffer.byteLength(value, 'utf8') > 16 * 1024) {
+    if (!value || Buffer.byteLength(value, 'utf8') > maxKeyBytes) {
       throw memorySourceError('source_unavailable', 'invalid edge key', { retryable: true });
     }
     return value;
   }
-  const source = normalizeId(value?.source ?? value?.from);
-  const target = normalizeId(value?.target ?? value?.to);
+  const source = normalizeBoundedId(value?.source ?? value?.from, 'edge source', maxKeyBytes);
+  const target = normalizeBoundedId(value?.target ?? value?.to, 'edge target', maxKeyBytes);
   if (!source || !target) {
     throw memorySourceError('source_unavailable', 'invalid edge delta', { retryable: true });
   }
-  return edgeKeyFor({ source, target });
-}
-
-function normalizeNodeRecord(record) {
-  const id = normalizeId(record?.id);
-  if (!id) throw memorySourceError('source_unavailable', 'invalid node delta', { retryable: true });
-  return deepFreezeJson({ ...record, id });
-}
-
-function normalizeEdgeRecord(record) {
-  const source = normalizeId(record?.source ?? record?.from);
-  const target = normalizeId(record?.target ?? record?.to);
-  if (!source || !target) {
-    throw memorySourceError('source_unavailable', 'invalid edge delta', { retryable: true });
+  const key = edgeKeyFor({ source, target });
+  if (Buffer.byteLength(key, 'utf8') > maxKeyBytes) {
+    throw memorySourceError('source_unavailable', 'invalid edge key', { retryable: true });
   }
-  return deepFreezeJson({ ...record, source, target });
+  return key;
+}
+
+function normalizeBoundedId(value, label, maxKeyBytes = DEFAULT_RECORD_BYTES) {
+  const id = normalizeId(value);
+  if (!id || Buffer.byteLength(id, 'utf8') > maxKeyBytes) {
+    throw memorySourceError('source_unavailable', `invalid ${label}`, { retryable: true });
+  }
+  return id;
+}
+
+function normalizePrivateRecordObject(record, label) {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) {
+    throw memorySourceError('source_unavailable', `invalid ${label}`, { retryable: true });
+  }
+  return record;
+}
+
+function normalizeNodeRecord(record, maxKeyBytes = DEFAULT_RECORD_BYTES) {
+  const privateRecord = normalizePrivateRecordObject(record, 'node delta');
+  privateRecord.id = normalizeBoundedId(privateRecord.id, 'node delta', maxKeyBytes);
+  return deepFreezeJson(privateRecord);
+}
+
+function normalizeEdgeRecord(record, maxKeyBytes = DEFAULT_RECORD_BYTES) {
+  const privateRecord = normalizePrivateRecordObject(record, 'edge delta');
+  privateRecord.source = normalizeBoundedId(
+    privateRecord.source ?? privateRecord.from,
+    'edge source',
+    maxKeyBytes,
+  );
+  privateRecord.target = normalizeBoundedId(
+    privateRecord.target ?? privateRecord.to,
+    'edge target',
+    maxKeyBytes,
+  );
+  return deepFreezeJson(privateRecord);
 }
 
 function sortedKeys(mapOrSet) {
@@ -135,6 +188,11 @@ async function createBoundedOverlayStore(options = {}) {
   const maxMemoryBytes = boundedLimit(options.maxMemoryBytes, DEFAULT_MEMORY_BYTES, { allowZero: true });
   const maxDiskBytes = boundedLimit(options.maxDiskBytes, DEFAULT_DISK_BYTES);
   const maxRecordBytes = boundedLimit(options.maxRecordBytes, DEFAULT_RECORD_BYTES);
+  const maxAggregateBatchBytes = Math.min(maxRecordBytes, DEFAULT_BATCH_BYTES);
+  const maxDiskBatchEntries = Math.max(1, Math.min(
+    MAX_DISK_BATCH_ENTRIES,
+    Math.floor((maxDiskBytes - 1) / SQLITE_MUTATION_HEADROOM),
+  ));
   const nodes = new Map();
   const edges = new Map();
   const removedNodes = new Set();
@@ -178,7 +236,10 @@ async function createBoundedOverlayStore(options = {}) {
       }
       operationRoot = scratchQuota.operationRoot;
     } else {
-      scratchQuota = await createOperationScratchQuota({ operationRoot: options.operationRoot });
+      scratchQuota = await createOperationScratchQuota({
+        operationRoot: options.operationRoot,
+        signal: options.signal,
+      });
       ownsScratchQuota = true;
       operationRoot = scratchQuota.operationRoot;
     }
@@ -253,25 +314,96 @@ async function createBoundedOverlayStore(options = {}) {
     // unbounded number of detached graphs while an earlier mutation is slow.
     const detached = JSON.parse(encoded.text);
     if (detached?.op === 'upsert_node') {
-      const record = normalizeNodeRecord(detached.record);
+      const record = normalizeNodeRecord(detached.record, maxRecordBytes);
       return { kind: 'node', key: record.id, record, tombstone: false };
     }
     if (detached?.op === 'remove_node') {
-      const key = normalizeId(detached.id);
-      if (!key) {
-        throw memorySourceError('source_unavailable', 'invalid node tombstone', { retryable: true });
-      }
+      const key = normalizeBoundedId(detached.id, 'node tombstone', maxRecordBytes);
       return { kind: 'node', key, record: undefined, tombstone: true };
     }
     if (detached?.op === 'upsert_edge') {
-      const record = normalizeEdgeRecord(detached.record);
-      return { kind: 'edge', key: normalizeEdgeKey(record), record, tombstone: false };
+      const record = normalizeEdgeRecord(detached.record, maxRecordBytes);
+      return {
+        kind: 'edge',
+        key: normalizeEdgeKey(record, maxRecordBytes),
+        record,
+        tombstone: false,
+      };
     }
     if (detached?.op === 'remove_edge') {
       const candidate = detached.key ?? detached.record ?? detached;
-      return { kind: 'edge', key: normalizeEdgeKey(candidate), record: undefined, tombstone: true };
+      return {
+        kind: 'edge',
+        key: normalizeEdgeKey(candidate, maxRecordBytes),
+        record: undefined,
+        tombstone: true,
+      };
     }
     throw memorySourceError('source_unavailable', 'unknown delta operation', { retryable: true });
+  }
+
+  function admitBatch(entries) {
+    if (!Array.isArray(entries)) {
+      throw memorySourceError('invalid_request', 'overlay batch must be an array');
+    }
+    if (entries.length === 0) {
+      throw memorySourceError('invalid_request', 'overlay batch must not be empty');
+    }
+    if (entries.length > MAX_DISK_BATCH_ENTRIES) {
+      throw limitError('overlay batch entry limit exceeded');
+    }
+    const encodedBatches = [];
+    let encodedEntries = [];
+    let batchBytes = 0;
+    let serializedBytes = 0;
+    function flushEncodedBatch() {
+      if (encodedEntries.length === 0) return;
+      encodedBatches.push(Object.freeze({
+        encodedEntries: Object.freeze(encodedEntries),
+        serializedBytes: batchBytes,
+      }));
+      encodedEntries = [];
+      batchBytes = 0;
+    }
+    for (const entry of entries) {
+      const exactEncoded = entry !== null
+          && (typeof entry === 'object' || typeof entry === 'function')
+        ? exactEncodedEntries.get(entry)
+        : undefined;
+      const encoded = exactEncoded || Object.freeze(jsonBytes(entry, 'delta record'));
+      if (encoded.bytes > maxRecordBytes) throw limitError('overlay record limit exceeded');
+      serializedBytes += encoded.bytes;
+      if (!Number.isSafeInteger(serializedBytes) || serializedBytes > maxRecordBytes) {
+        throw limitError('overlay batch admission limit exceeded');
+      }
+      if (encodedEntries.length > 0
+          && (encodedEntries.length >= maxDiskBatchEntries
+            || batchBytes + encoded.bytes > maxAggregateBatchBytes)) {
+        flushEncodedBatch();
+      }
+      encodedEntries.push(encoded);
+      batchBytes += encoded.bytes;
+      if (encodedEntries.length >= maxDiskBatchEntries
+          || batchBytes >= maxAggregateBatchBytes) {
+        flushEncodedBatch();
+      }
+    }
+    flushEncodedBatch();
+    const projectedEntries = pendingAdmissionEntries + entries.length;
+    const projectedBytes = pendingAdmissionBytes + serializedBytes;
+    if (!Number.isSafeInteger(projectedEntries) || projectedEntries > MAX_PENDING_ENTRIES) {
+      throw limitError('overlay pending entry limit exceeded');
+    }
+    if (!Number.isSafeInteger(projectedBytes) || projectedBytes > maxRecordBytes) {
+      throw limitError('overlay pending admission limit exceeded');
+    }
+    pendingAdmissionEntries = projectedEntries;
+    pendingAdmissionBytes = projectedBytes;
+    return Object.freeze({
+      encodedBatches: Object.freeze(encodedBatches),
+      entryCount: entries.length,
+      serializedBytes,
+    });
   }
 
   function checkCancelled(signal) {
@@ -374,9 +506,14 @@ async function createBoundedOverlayStore(options = {}) {
     return total;
   }
 
-  async function reserveDiskMutation(logicalBytes, rollbackBytes = 0) {
-    checkCancelled();
-    const allowance = logicalBytes + rollbackBytes + SQLITE_MUTATION_HEADROOM;
+  async function reserveDiskMutation(
+    logicalBytes,
+    rollbackBytes = 0,
+    mutationHeadroomBytes = SQLITE_MUTATION_HEADROOM,
+    signal,
+  ) {
+    checkCancelled(signal);
+    const allowance = logicalBytes + rollbackBytes + mutationHeadroomBytes;
     const required = diskActualBytes + allowance;
     if (!Number.isSafeInteger(allowance) || !Number.isSafeInteger(required)
         || required > maxDiskBytes) {
@@ -406,7 +543,7 @@ async function createBoundedOverlayStore(options = {}) {
     await scratchQuota.release(allowance, quotaKind);
     diskReservedBytes = mutationReservedBytes;
     diskReservationSettlementStates = [mutationReservedBytes];
-    checkCancelled();
+    checkCancelled(signal);
     return allowance;
   }
 
@@ -453,7 +590,7 @@ async function createBoundedOverlayStore(options = {}) {
   }
 
   function prepareStatements() {
-    statements = Object.freeze({
+    const prepared = {
       upsertNode: db.prepare(`
         INSERT INTO nodes (key, tombstone, record)
         VALUES (?, 0, ?)
@@ -492,49 +629,201 @@ async function createBoundedOverlayStore(options = {}) {
       edgeStoredBytes: db.prepare('SELECT length(CAST(record AS BLOB)) AS bytes FROM edges WHERE key = ?'),
       nodeUpserts: db.prepare('SELECT record FROM nodes WHERE tombstone = 0 ORDER BY key'),
       edgeUpserts: db.prepare('SELECT source, target, record FROM edges WHERE tombstone = 0 ORDER BY key'),
+    };
+    prepared.mutateBatch = db.transaction((normalizedEntries, signal) => {
+      for (let index = 0; index < normalizedEntries.length; index += 1) {
+        const normalized = normalizedEntries[index];
+        checkCancelled(signal);
+        const recordJson = normalized.record === undefined
+          ? null
+          : jsonBytes(normalized.record).text;
+        if (normalized.kind === 'node') {
+          if (normalized.tombstone) prepared.removeNode.run(normalized.key);
+          else prepared.upsertNode.run(normalized.key, recordJson);
+        } else if (normalized.tombstone) {
+          prepared.removeEdge.run(normalized.key);
+        } else {
+          prepared.upsertEdge.run(
+            normalized.key,
+            normalized.record.source,
+            normalized.record.target,
+            recordJson,
+          );
+        }
+        const hookResult = hooks.afterDiskStatement?.({ normalized, index });
+        if (hookResult && typeof hookResult.then === 'function') {
+          throw memorySourceError(
+            'invalid_request',
+            'afterDiskStatement test hook must be synchronous',
+          );
+        }
+        checkCancelled(signal);
+      }
     });
+    statements = Object.freeze(prepared);
   }
 
-  async function writeDiskState(normalized) {
-    checkCancelled();
-    await inspectArtifacts();
-    const recordJson = normalized.record === undefined ? null : jsonBytes(normalized.record).text;
-    const logicalBytes = retainedEntryBytes(normalized.key, normalized.record);
-    const prior = normalized.kind === 'node'
-      ? statements.nodeStoredBytes.get(normalized.key)
-      : statements.edgeStoredBytes.get(normalized.key);
-    const priorActual = diskActualBytes;
-    const allowance = await reserveDiskMutation(logicalBytes, Number(prior?.bytes || 0));
-    await hooks.beforeDiskMutation?.({ overlayRoot, databasePath, normalized });
-    await inspectArtifacts();
-    checkCancelled();
-    if (normalized.kind === 'node') {
-      if (normalized.tombstone) statements.removeNode.run(normalized.key);
-      else statements.upsertNode.run(normalized.key, recordJson);
-    } else if (normalized.tombstone) {
-      statements.removeEdge.run(normalized.key);
-    } else {
-      statements.upsertEdge.run(
-        normalized.key,
-        normalized.record.source,
-        normalized.record.target,
-        recordJson,
-      );
+  function diskBatchGrowth(normalizedEntries) {
+    let logicalBytes = 0;
+    let rollbackBytes = 0;
+    const priorKeys = new Set();
+    for (const normalized of normalizedEntries) {
+      const entryBytes = retainedEntryBytes(normalized.key, normalized.record);
+      logicalBytes += entryBytes;
+      if (!Number.isSafeInteger(logicalBytes)) {
+        throw limitError('overlay batch accounting overflow');
+      }
+      const priorKey = `${normalized.kind}\0${normalized.key}`;
+      if (priorKeys.has(priorKey)) continue;
+      priorKeys.add(priorKey);
+      const prior = normalized.kind === 'node'
+        ? statements.nodeStoredBytes.get(normalized.key)
+        : statements.edgeStoredBytes.get(normalized.key);
+      rollbackBytes += Number(prior?.bytes || 0);
+      if (!Number.isSafeInteger(rollbackBytes)) {
+        throw limitError('overlay batch accounting overflow');
+      }
     }
-    checkCancelled();
+    const mutationHeadroomBytes = priorKeys.size * SQLITE_MUTATION_HEADROOM;
+    if (!Number.isSafeInteger(mutationHeadroomBytes)) {
+      throw limitError('overlay batch reservation overflow');
+    }
+    return { logicalBytes, rollbackBytes, mutationHeadroomBytes };
+  }
+
+  function projectedDiskRequirement(normalizedEntries) {
+    const growth = diskBatchGrowth(normalizedEntries);
+    const allowance = growth.logicalBytes + growth.rollbackBytes + growth.mutationHeadroomBytes;
+    const required = diskActualBytes + allowance;
+    return {
+      growth,
+      allowance,
+      required,
+      fits: Number.isSafeInteger(allowance)
+        && Number.isSafeInteger(required)
+        && required <= maxDiskBytes,
+    };
+  }
+
+  async function writeDiskBatch(normalizedEntries, { signal, serializedBytes } = {}) {
+    if (normalizedEntries.length === 0) return;
+    checkCancelled(signal);
+    await inspectArtifacts();
+    const projection = projectedDiskRequirement(normalizedEntries);
+    if (!projection.fits && normalizedEntries.length > 1) {
+      let low = 1;
+      let high = normalizedEntries.length - 1;
+      let fittingPrefix = 0;
+      while (low <= high) {
+        const middle = Math.floor((low + high) / 2);
+        if (projectedDiskRequirement(normalizedEntries.slice(0, middle)).fits) {
+          fittingPrefix = middle;
+          low = middle + 1;
+        } else {
+          high = middle - 1;
+        }
+      }
+      if (fittingPrefix > 0) {
+        await writeDiskBatch(normalizedEntries.slice(0, fittingPrefix), { signal });
+        await writeDiskBatch(normalizedEntries.slice(fittingPrefix), { signal });
+        return;
+      }
+    }
+    const { growth } = projection;
+    const priorActual = diskActualBytes;
+    const allowance = await reserveDiskMutation(
+      growth.logicalBytes,
+      growth.rollbackBytes,
+      growth.mutationHeadroomBytes,
+      signal,
+    );
+    if (hooks.beforeDiskMutation) {
+      for (const normalized of normalizedEntries) {
+        checkCancelled(signal);
+        await hooks.beforeDiskMutation({ overlayRoot, databasePath, normalized });
+        await inspectArtifacts();
+        checkCancelled(signal);
+      }
+    } else {
+      for (const _normalized of normalizedEntries) checkCancelled(signal);
+    }
+    await inspectArtifacts();
+    checkCancelled(signal);
+    try {
+      statements.mutateBatch(normalizedEntries, signal);
+    } catch (error) {
+      await hooks.afterDiskRollback?.({
+        overlayRoot,
+        databasePath,
+        normalizedEntries,
+        error,
+      });
+      await inspectArtifacts();
+      throw error;
+    }
+    await hooks.afterDiskCommit?.({
+      overlayRoot,
+      databasePath,
+      normalizedEntries,
+      entryCount: normalizedEntries.length,
+    });
+    await inspectArtifacts();
+    checkCancelled(signal);
     await refreshDiskAccounting({ priorActual, allowance });
     await settleDiskReservation(allowance);
     await assertDatabaseStable();
+    await hooks.afterDiskTransaction?.({
+      overlayRoot,
+      databasePath,
+      entryCount: normalizedEntries.length,
+      serializedBytes: serializedBytes ?? growth.logicalBytes,
+    });
+    await assertDatabaseStable();
+    checkCancelled(signal);
   }
 
-  async function spillMemoryState() {
+  async function writeDiskState(normalized) {
+    await writeDiskBatch([normalized]);
+  }
+
+  async function writeDiskSequence(normalizedEntries, { signal } = {}) {
+    let batch = [];
+    let batchBytes = 0;
+    async function flush() {
+      if (batch.length === 0) return;
+      const current = batch;
+      const currentBytes = batchBytes;
+      batch = [];
+      batchBytes = 0;
+      await writeDiskBatch(current, { signal, serializedBytes: currentBytes });
+    }
+    for (const normalized of normalizedEntries) {
+      checkCancelled(signal);
+      const entryBytes = retainedEntryBytes(normalized.key, normalized.record);
+      if (batch.length > 0 && batchBytes + entryBytes > maxAggregateBatchBytes) await flush();
+      batch.push(normalized);
+      batchBytes += entryBytes;
+      if (!Number.isSafeInteger(batchBytes)) throw limitError('overlay batch accounting overflow');
+      if (batch.length >= maxDiskBatchEntries || batchBytes >= maxAggregateBatchBytes) await flush();
+    }
+    await flush();
+  }
+
+  async function spillMemoryState({ signal } = {}) {
     if (spilled) return;
+    checkCancelled(signal);
     await createPrivateOverlayDirectory();
+    checkCancelled(signal);
     const priorActual = diskActualBytes;
-    const allowance = await reserveDiskMutation(0);
+    const allowance = await reserveDiskMutation(
+      0,
+      0,
+      SQLITE_MUTATION_HEADROOM,
+      signal,
+    );
     await hooks.beforeDatabaseCreate?.({ operationRoot, overlayRoot, databasePath });
     await assertOverlayRootStable();
-    checkCancelled();
+    checkCancelled(signal);
     try {
       databaseAnchor = await fsp.open(
         databasePath,
@@ -555,7 +844,7 @@ async function createBoundedOverlayStore(options = {}) {
     await databaseAnchor.sync();
     await hooks.beforeDatabaseOpen?.({ operationRoot, overlayRoot, databasePath });
     await assertDatabaseStable();
-    checkCancelled();
+    checkCancelled(signal);
     db = new Database(databasePath, { fileMustExist: true });
     await assertDatabaseStable();
     const journalMode = db.pragma('journal_mode = DELETE', { simple: true });
@@ -590,22 +879,21 @@ async function createBoundedOverlayStore(options = {}) {
     await settleDiskReservation(allowance);
     await assertDatabaseStable();
 
-    for (const [key, record] of nodes) {
-      checkCancelled();
-      await writeDiskState({ kind: 'node', key, record, tombstone: false });
+    function* retainedEntries() {
+      for (const [key, record] of nodes) {
+        yield { kind: 'node', key, record, tombstone: false };
+      }
+      for (const key of removedNodes) {
+        yield { kind: 'node', key, record: undefined, tombstone: true };
+      }
+      for (const [key, record] of edges) {
+        yield { kind: 'edge', key, record, tombstone: false };
+      }
+      for (const key of removedEdges) {
+        yield { kind: 'edge', key, record: undefined, tombstone: true };
+      }
     }
-    for (const key of removedNodes) {
-      checkCancelled();
-      await writeDiskState({ kind: 'node', key, record: undefined, tombstone: true });
-    }
-    for (const [key, record] of edges) {
-      checkCancelled();
-      await writeDiskState({ kind: 'edge', key, record, tombstone: false });
-    }
-    for (const key of removedEdges) {
-      checkCancelled();
-      await writeDiskState({ kind: 'edge', key, record: undefined, tombstone: true });
-    }
+    await writeDiskSequence(retainedEntries(), { signal });
     nodes.clear();
     edges.clear();
     removedNodes.clear();
@@ -619,7 +907,7 @@ async function createBoundedOverlayStore(options = {}) {
   }
 
   function memoryEdge(value) {
-    const record = edges.get(normalizeEdgeKey(value));
+    const record = edges.get(normalizeEdgeKey(value, maxRecordBytes));
     if (!record || removedNodes.has(record.source) || removedNodes.has(record.target)) return undefined;
     return record;
   }
@@ -637,7 +925,7 @@ async function createBoundedOverlayStore(options = {}) {
   }
 
   function diskEdge(value) {
-    const row = statements.edge.get(normalizeEdgeKey(value));
+    const row = statements.edge.get(normalizeEdgeKey(value, maxRecordBytes));
     if (!row || diskNodeRemoved(row.source) || diskNodeRemoved(row.target)) return undefined;
     return parseStoredRecord(row);
   }
@@ -768,14 +1056,39 @@ async function createBoundedOverlayStore(options = {}) {
     return result;
   }
 
-  async function failMutation(error) {
+  async function failMutation(error, signal) {
     closed = true;
     if (db && databaseAnchor) {
       await inspectArtifacts({ adoptNew: true }).catch(() => {});
     }
     await cleanupStore().catch(() => {});
+    rethrowAbort(error, signal);
     rethrowAbort(error, options.signal);
     throw error;
+  }
+
+  async function applyNormalizedBatch(normalizedEntries, { signal, serializedBytes } = {}) {
+    checkCancelled(signal);
+    if (spilled) {
+      await writeDiskBatch(normalizedEntries, { signal, serializedBytes });
+      return;
+    }
+    let diskStart = normalizedEntries.length;
+    for (let index = 0; index < normalizedEntries.length; index += 1) {
+      checkCancelled(signal);
+      if (!applyMemory(normalizedEntries[index])) {
+        diskStart = index;
+        break;
+      }
+    }
+    if (diskStart === normalizedEntries.length) return;
+    if (!options.operationRoot) {
+      throw memorySourceError('source_operation_required', 'operation root required for large overlay', {
+        retryable: false,
+      });
+    }
+    await spillMemoryState({ signal });
+    await writeDiskBatch(normalizedEntries.slice(diskStart), { signal });
   }
 
   async function applyAdmitted(encoded) {
@@ -822,8 +1135,55 @@ async function createBoundedOverlayStore(options = {}) {
     }
   }
 
+  async function applyAdmittedBatch(admitted, signal) {
+    try {
+      return await enqueueMutation(async () => {
+        try {
+          assertOpen(signal);
+        } catch (error) {
+          return failMutation(error, signal);
+        }
+        let appliedBatches = 0;
+        for (const encodedBatch of admitted.encodedBatches) {
+          let normalizedEntries;
+          try {
+            normalizedEntries = encodedBatch.encodedEntries.map(normalizeEntry);
+          } catch (error) {
+            if (appliedBatches === 0) throw error;
+            return failMutation(error, signal);
+          }
+          try {
+            await applyNormalizedBatch(normalizedEntries, {
+              signal,
+              serializedBytes: encodedBatch.serializedBytes,
+            });
+            appliedBatches += 1;
+          } catch (error) {
+            return failMutation(error, signal);
+          }
+        }
+      });
+    } finally {
+      pendingAdmissionEntries -= admitted.entryCount;
+      pendingAdmissionBytes -= admitted.serializedBytes;
+    }
+  }
+
+  function applyBatch(entries, { signal } = {}) {
+    try {
+      assertOpen(signal);
+      // Detach the complete bounded array before it can be retained by the
+      // mutation queue. Caller mutation after this synchronous boundary cannot
+      // alter queued work or expand its admitted memory.
+      return applyAdmittedBatch(admitBatch(entries), signal);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
   const api = {
     apply: applyEntry,
+    applyBatch,
     node(id) {
       assertOpen();
       return spilled ? diskNode(id) : memoryNode(id);
@@ -838,7 +1198,7 @@ async function createBoundedOverlayStore(options = {}) {
     },
     hasRemovedEdge(value) {
       assertOpen();
-      const key = normalizeEdgeKey(value);
+      const key = normalizeEdgeKey(value, maxRecordBytes);
       return spilled ? statements.removedEdge.get(key) !== undefined : removedEdges.has(key);
     },
     hasNodeUpsert(id) {
@@ -848,7 +1208,7 @@ async function createBoundedOverlayStore(options = {}) {
     },
     hasEdgeUpsert(value) {
       assertOpen();
-      const key = normalizeEdgeKey(value);
+      const key = normalizeEdgeKey(value, maxRecordBytes);
       return spilled ? statements.edgeUpsert.get(key) !== undefined : edges.has(key);
     },
     upsertedNodes() { return iterateNodesSync(); },
@@ -891,6 +1251,24 @@ async function createBoundedOverlayStore(options = {}) {
     get maxDiskBytes() { return maxDiskBytes; },
     close: closeStore,
   };
+  Object.defineProperties(api, {
+    maxBatchEntries: {
+      enumerable: true,
+      configurable: false,
+      get() { return maxDiskBatchEntries; },
+    },
+    maxBatchBytes: {
+      enumerable: true,
+      configurable: false,
+      get() { return maxAggregateBatchBytes; },
+    },
+    maxRecordBytes: {
+      enumerable: true,
+      configurable: false,
+      get() { return maxRecordBytes; },
+    },
+  });
+  boundedOverlayStores.add(api);
   return api;
 }
 
@@ -898,7 +1276,63 @@ async function createEmptyOverlayStore() {
   return createBoundedOverlayStore({ maxMemoryBytes: Number.MAX_SAFE_INTEGER });
 }
 
+async function applyOverlayEntriesInBatches(overlay, entries, { signal } = {}) {
+  const isAsyncIterable = typeof entries?.[Symbol.asyncIterator] === 'function';
+  const maxRecordBytes = Number.isSafeInteger(overlay?.maxRecordBytes)
+    ? overlay.maxRecordBytes
+    : overlay?.maxBatchBytes;
+  if (!overlay || typeof overlay.applyBatch !== 'function'
+      || !Number.isSafeInteger(overlay.maxBatchEntries) || overlay.maxBatchEntries < 1
+      || !Number.isSafeInteger(overlay.maxBatchBytes) || overlay.maxBatchBytes < 1
+      || !Number.isSafeInteger(maxRecordBytes) || maxRecordBytes < overlay.maxBatchBytes
+      || !isAsyncIterable) {
+    throw memorySourceError('invalid_request', 'bounded async overlay batch stream required');
+  }
+  let batch = [];
+  let batchBytes = 0;
+  const flush = async () => {
+    if (batch.length === 0) return;
+    const current = batch;
+    batch = [];
+    batchBytes = 0;
+    await overlay.applyBatch(current, { signal });
+  };
+  for await (const entry of entries) {
+    throwIfAborted(signal);
+    const encoded = jsonBytes(entry, 'delta record');
+    const entryBytes = encoded.bytes;
+    if (entryBytes > maxRecordBytes) {
+      throw limitError('overlay record limit exceeded');
+    }
+    const projectedBytes = batchBytes + entryBytes;
+    if (!Number.isSafeInteger(projectedBytes)) {
+      throw limitError('overlay batch accounting overflow');
+    }
+    if (batch.length > 0
+        && (batch.length >= overlay.maxBatchEntries
+          || projectedBytes > overlay.maxBatchBytes)) {
+      await flush();
+    }
+    // Keep only the exact bounded JSON measured above. This prevents hidden
+    // caller-owned graphs or stateful toJSON/getters from crossing the async
+    // batch boundary or changing between measurement and admission.
+    if (boundedOverlayStores.has(overlay)) {
+      const wrapper = Object.freeze({});
+      exactEncodedEntries.set(wrapper, Object.freeze(encoded));
+      batch.push(wrapper);
+    } else {
+      batch.push(JSON.parse(encoded.text));
+    }
+    batchBytes += entryBytes;
+    if (batch.length >= overlay.maxBatchEntries || batchBytes >= overlay.maxBatchBytes) {
+      await flush();
+    }
+  }
+  await flush();
+}
+
 module.exports = {
+  applyOverlayEntriesInBatches,
   createBoundedOverlayStore,
   createEmptyOverlayStore,
 };

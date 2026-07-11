@@ -40,9 +40,10 @@ async function withEphemeralMemorySource({
   if (!crossing || (!crossing.startsWith('..') && !path.isAbsolute(crossing))) {
     throw memorySourceError('invalid_request', 'operation root must not cross target');
   }
-  const scratchQuota = await createOperationScratchQuota({ operationRoot });
+  let scratchQuota = null;
   let source = null;
   try {
+    scratchQuota = await createOperationScratchQuota({ operationRoot, signal });
     const effectiveIdentity = Object.freeze({ ...identity, canonicalRoot: canonicalBrain, operationId });
     source = await openMemorySource(canonicalBrain, {
       operationId,
@@ -62,7 +63,7 @@ async function withEphemeralMemorySource({
     });
   } finally {
     await source?.close?.().catch(() => {});
-    scratchQuota.close();
+    scratchQuota?.close();
     await fsp.rm(operationRoot, { recursive: true, force: true }).catch(() => {});
   }
 }
