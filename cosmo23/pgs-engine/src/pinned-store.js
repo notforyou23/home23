@@ -7,6 +7,9 @@ const crypto = require('node:crypto');
 
 const { PGS_OPERATION_LIMITS } = require('../../lib/brain-operation-limits');
 const { sourceDescriptorDigest } = require('../../../shared/memory-source/contracts.cjs');
+const {
+  getOperationScratchQuotaCleanup,
+} = require('../../../shared/memory-source/scratch-quota.cjs');
 
 const SCHEMA_VERSION = 1;
 
@@ -269,6 +272,7 @@ async function openPinnedPGSStore({
   const databasePath = path.join(projectionRoot, 'projection.sqlite');
   const Database = requireDatabase();
   const expectedBinding = bindingMetadata({ sourceRevision, descriptorDigest, limits, sweepPair });
+  const scratchQuotaCleanup = getOperationScratchQuotaCleanup(scratchQuota);
   let db = null;
   let abortListener = null;
   let reused = false;
@@ -286,16 +290,16 @@ async function openPinnedPGSStore({
     await fsp.rm(projectionRoot, { recursive: true, force: true });
   }
 
-  async function checkpoint() {
-    throwIfAborted(signal);
+  async function checkpoint({ cleanup = false } = {}) {
+    if (!cleanup) throwIfAborted(signal);
     db.pragma('wal_checkpoint(PASSIVE)');
-    await scratchQuota.reconcile();
+    await (cleanup ? scratchQuotaCleanup.reconcile() : scratchQuota.reconcile());
     const bytes = await treeBytes(scratch);
     if (bytes > limits.maxScratchBytes) {
       throw typed('result_too_large', 'PGS scratch quota exceeded');
     }
     await assertFreeSpace(scratch, limits.minFreeScratchBytes, statfsImpl);
-    throwIfAborted(signal);
+    if (!cleanup) throwIfAborted(signal);
   }
 
   try {
@@ -590,7 +594,7 @@ async function openPinnedPGSStore({
       }
       return db.prepare('SELECT * FROM work_units WHERE work_unit_id = ?').get(workUnitId);
     },
-    commitSuccessfulSweeps(outputs) {
+    async commitSuccessfulSweeps(outputs) {
       assertOpen();
       if (!Array.isArray(outputs)) throw typed('invalid_request', 'PGS sweep outputs must be an array');
       let totalBytes = 0;
@@ -645,6 +649,11 @@ async function openPinnedPGSStore({
           }
         }
       })();
+      // This path is deliberately cleanup-capable: a sibling provider call may
+      // have triggered cancellation after useful sweeps completed. Persist the
+      // successful retry boundary and reconcile quota without consulting the
+      // now-aborted execution signal.
+      await checkpoint({ cleanup: true });
     },
     recordRetryableFailure(workUnitId, error) {
       assertOpen();

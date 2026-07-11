@@ -133,15 +133,15 @@ test('persists successful work idempotently and leaves failed work pending', asy
   store.beginWorkUnitAttempt(second, {
     attemptId: 'attempt-2', provider: 'minimax', model: 'MiniMax-M3',
   });
-  store.commitSuccessfulSweeps([{ workUnitId: first, output: 'durable finding' }]);
-  store.commitSuccessfulSweeps([{ workUnitId: first, output: 'durable finding' }]);
+  await store.commitSuccessfulSweeps([{ workUnitId: first, output: 'durable finding' }]);
+  await store.commitSuccessfulSweeps([{ workUnitId: first, output: 'durable finding' }]);
   store.recordRetryableFailure(second, Object.assign(new Error('retry'), { code: 'provider_failed' }));
 
   assert.deepEqual(store.listSuccessfulSweeps().map(row => row.output), ['durable finding']);
   assert.equal(store.countPendingWorkUnits(), store.stats.workUnitCount - 1);
   assert.equal(store.listRetryablePartitions().length > 0, true);
-  assert.throws(
-    () => store.commitSuccessfulSweeps([{ workUnitId: first, output: 'changed' }]),
+  await assert.rejects(
+    store.commitSuccessfulSweeps([{ workUnitId: first, output: 'changed' }]),
     error => error.code === 'pgs_state_conflict',
   );
 });

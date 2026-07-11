@@ -24,9 +24,10 @@ function catalog() {
   };
 }
 
-function sourcePin() {
+function sourcePin({ nodeCount = 12 } = {}) {
   let releases = 0;
-  const nodes = Array.from({ length: 12 }, (_, index) => ({
+  const edgeCount = Math.max(0, nodeCount - 1);
+  const nodes = Array.from({ length: nodeCount }, (_, index) => ({
     id: `n${index}`,
     clusterId: `cluster-${index % 2}`,
     content: `pinned evidence ${index}`,
@@ -39,10 +40,10 @@ function sourcePin() {
       generation: 'g5',
       baseRevision: 5,
       cutoffRevision: 5,
-      summary: { nodeCount: nodes.length, edgeCount: 11, clusterCount: 2 },
+      summary: { nodeCount: nodes.length, edgeCount, clusterCount: nodeCount ? 2 : 0 },
       activeBase: {
         nodes: { file: 'nodes.gz', count: nodes.length, bytes: 1 },
-        edges: { file: 'edges.gz', count: 11, bytes: 1 },
+        edges: { file: 'edges.gz', count: edgeCount, bytes: 1 },
       },
       activeDelta: {
         epoch: 'e1', file: 'delta', fromRevision: 6, toRevision: 5,
@@ -56,7 +57,7 @@ function sourcePin() {
       }
     },
     async *iterateEdges({ signal } = {}) {
-      for (let index = 0; index < 11; index += 1) {
+      for (let index = 0; index < edgeCount; index += 1) {
         if (signal?.aborted) throw signal.reason;
         yield { source: `n${index}`, target: `n${index + 1}`, type: 'next' };
       }
@@ -174,6 +175,9 @@ test('pinned PGS keeps provider roles exact and returns machine-readable durable
   assert.equal(envelope.result.metadata.pgs.successfulSweeps, 6);
   assert.equal(envelope.result.metadata.pgs.pendingWorkUnits, 0);
   assert.equal(envelope.result.metadata.pgs.selectedWorkUnits, 6);
+  assert.deepEqual(envelope.result.metadata.pgs.sourceTotals, {
+    nodes: 12, edges: 11, workUnits: 6,
+  });
   assert.deepEqual(envelope.result.metadata.pgs.retryablePartitions, []);
   assert.equal(envelope.result.sourceEvidence.deltaWatermark.revision, 5);
   assert.equal(envelope.resultArtifact, null);
@@ -189,6 +193,24 @@ test('pinned PGS keeps provider roles exact and returns machine-readable durable
 
   const receipts = await fs.readdir(path.join(scratch.scratchDir, 'pgs-receipts'));
   assert.equal(receipts.length, 1);
+});
+
+test('empty pinned source fails honestly without provider work', async t => {
+  const scratch = await scratchFixture(t);
+  const pin = sourcePin({ nodeCount: 0 });
+  const fixture = makeEngine();
+
+  const envelope = await fixture.engine.runPinnedOperation(options(pin, scratch));
+
+  assert.equal(envelope.state, 'failed');
+  assert.equal(envelope.error.code, 'source_empty');
+  assert.equal(envelope.error.retryable, false);
+  assert.deepEqual(envelope.result.sweepOutputs, []);
+  assert.deepEqual(envelope.result.metadata.pgs.sourceTotals, {
+    nodes: 0, edges: 0, workUnits: 0,
+  });
+  assert.equal(fixture.calls.length, 0);
+  assert.equal(pin.releaseCount(), 0);
 });
 
 test('fractional run is honestly partial and a retry executes only pending work', async t => {

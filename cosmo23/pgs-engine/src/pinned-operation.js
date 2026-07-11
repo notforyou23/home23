@@ -254,11 +254,11 @@ async function runPinnedOperation(engine, options = {}) {
       const settled = await Promise.allSettled(ids.map(sweep));
       settled.forEach(row => { if (row.status === 'fulfilled') uncommitted.push(row.value); });
       if (signal?.aborted) {
-        if (uncommitted.length) store.commitSuccessfulSweeps(uncommitted);
+        if (uncommitted.length) await store.commitSuccessfulSweeps(uncommitted);
         uncommitted.length = 0;
         throw signal.reason;
       }
-      if (uncommitted.length) store.commitSuccessfulSweeps(uncommitted);
+      if (uncommitted.length) await store.commitSuccessfulSweeps(uncommitted);
       uncommitted.length = 0;
       settled.forEach((row, index) => {
         if (row.status === 'rejected') store.recordRetryableFailure(ids[index], row.reason);
@@ -289,8 +289,24 @@ async function runPinnedOperation(engine, options = {}) {
       sweepFraction,
       selectedWorkUnits: selected.length,
       pendingWorkUnits,
+      sourceTotals: {
+        nodes: store.stats.nodeCount,
+        edges: store.stats.edgeCount,
+        workUnits: store.stats.workUnitCount,
+      },
     } };
     const baseResult = { answer: null, sweepOutputs, metadata, sourceEvidence };
+    if (store.stats.workUnitCount === 0) {
+      return {
+        state: 'failed', result: baseResult,
+        error: {
+          code: 'source_empty',
+          message: 'Pinned PGS source contains no eligible work units',
+          retryable: false,
+        },
+        resultArtifact: null, sourceEvidence,
+      };
+    }
     if (!sweepOutputs.length && selected.length) {
       return {
         state: 'failed', result: baseResult,
@@ -347,7 +363,7 @@ async function runPinnedOperation(engine, options = {}) {
     }
   } catch (error) {
     if (signal?.aborted || error === signal?.reason) {
-      if (uncommitted.length) store.commitSuccessfulSweeps(uncommitted);
+      if (uncommitted.length) await store.commitSuccessfulSweeps(uncommitted);
       uncommitted.length = 0;
       throw signal.reason;
     }
