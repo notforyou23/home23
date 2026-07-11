@@ -160,6 +160,7 @@ function sendBrainSourceError(res, error) {
   const status = Number(error?.status) || (error?.code === 'invalid_request' ? 400
     : error?.code === 'result_too_large' ? 413
       : error?.code === 'source_changed' ? 409
+        : error?.code === 'source_unavailable' ? 503
         : 500);
   return res.status(status).json({
     ok: false,
@@ -169,6 +170,33 @@ function sendBrainSourceError(res, error) {
       message: error.message,
       retryable: error.retryable === true,
     },
+  });
+}
+
+function registerLegacyMemoryGraphRoute(app, service) {
+  app.get('/api/memory', async (req, res) => {
+    const controller = requestAbortController(req, res);
+    try {
+      rejectCallerIdentity(req.query || {});
+      const result = await service.graph({
+        ...pickGraphParameters(req.query),
+        signal: controller.signal,
+      });
+      const meta = result.meta || {};
+      return res.json({
+        nodes: result.nodes || [],
+        edges: result.edges || [],
+        clusters: result.clusters ?? null,
+        totalNodes: meta.authoritativeNodeCount ?? null,
+        totalEdges: meta.authoritativeEdgeCount ?? null,
+        _liveJournalCount: 0,
+        bounded: true,
+        meta,
+        evidence: result.evidence || null,
+      });
+    } catch (error) {
+      return sendBrainSourceError(res, error);
+    }
   });
 }
 
@@ -232,6 +260,7 @@ module.exports = {
   createBrainSourceService,
   pickGraphParameters,
   registerResidentBrainSourceRoutes,
+  registerLegacyMemoryGraphRoute,
   rejectCallerIdentity,
   requestAbortController,
   sendBrainSourceError,

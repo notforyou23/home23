@@ -25,6 +25,7 @@ const { createMemorySearchService } = require('./memory-search');
 const {
   createBrainSourceRouter,
   createBrainSourceService,
+  registerLegacyMemoryGraphRoute,
   requestAbortController,
 } = require('./brain-source-api');
 const {
@@ -6919,46 +6920,10 @@ Be specific, actionable, and maintain research continuity.`;
       }
     });
 
-    // API: Get memory network (includes live journals)
-    this.app.get('/api/memory', async (req, res) => {
-      try {
-        let state = { memory: { nodes: [], edges: [] } };
-        try {
-          state = await this.loadState();
-        } catch (stateError) {
-          // Fresh run without state.json.gz yet - use empty baseline
-          console.log('[/api/memory] No state file yet, using journals only');
-        }
-        
-        const baselineNodes = state.memory?.nodes || [];
-        const baselineEdges = state.memory?.edges || [];
-
-        // NEW: Load and merge live journals (works even on fresh runs)
-        const liveJournals = await this.loadLiveJournalsForRun(this.logsDir);
-        const mergedNodes = this.mergeNodesWithJournals(baselineNodes, liveJournals);
-
-        // Strip embedding vectors before serializing. With a sidecar-loaded
-        // brain, mergedNodes can exceed V8's ~536MB max string length once
-        // embeddings (~3KB/node × 30k nodes) are stringified. Consumers of
-        // /api/memory (UI graph, MCP brain_memory_graph) don't need the raw
-        // vectors; search uses /api/memory/search which keeps them server-side.
-        const slimNodes = mergedNodes.map(n => {
-          if (n && n.embedding) {
-            const { embedding: _drop, ...rest } = n;
-            return rest;
-          }
-          return n;
-        });
-
-        res.json({
-          nodes: slimNodes,
-          edges: baselineEdges,
-          _liveJournalCount: slimNodes.filter(n => n._liveJournal).length
-        });
-      } catch (error) {
-        res.json({ error: error.message, nodes: [], edges: [] });
-      }
-    });
+    // Compatibility route: preserve the familiar endpoint while serving only
+    // a bounded canonical-source projection. Full graph export is a durable
+    // protected operation; this route must never hydrate the legacy sidecars.
+    registerLegacyMemoryGraphRoute(this.app, this.brainSourceService);
 
     // Semantic/keyword memory search over the canonical logical memory source.
     const pickSearchParameters = (input = {}) => ({
