@@ -3,9 +3,16 @@
 const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 
-const { openPinnedPGSStore, lowerLimits } = require('./pinned-store');
+const {
+  captureOperationScratchBoundary,
+  closeScratchBoundary,
+  ensureExactScratchChild,
+  openPinnedPGSStore,
+  lowerLimits,
+  verifyScratchBoundary,
+} = require('./pinned-store');
 const {
   ProviderCompletionError,
   assertProviderResultIdentity,
@@ -75,10 +82,96 @@ function normalizeFailure(error) {
   };
 }
 
-async function writeSuccessReceipt({ engine, scratchDir, attemptId, result, signal, scratchQuota }) {
+function sameIdentity(stat, expected) {
+  return Boolean(stat && expected && stat.dev === expected.dev && stat.ino === expected.ino);
+}
+
+function receiptPathError(message, cause) {
+  const error = typed('invalid_request', message);
+  if (cause) error.cause = cause;
+  return error;
+}
+
+async function optionalLstat(filePath) {
+  return fsp.lstat(filePath, { bigint: true }).catch((error) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+}
+
+async function assertExactReceiptFile(filePath, identity, boundary, { size } = {}) {
+  await verifyScratchBoundary(boundary);
+  let stat;
+  try {
+    stat = await fsp.lstat(filePath, { bigint: true });
+  } catch (error) {
+    throw receiptPathError('PGS receipt artifact is unavailable', error);
+  }
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n
+      || !sameIdentity(stat, identity)
+      || (size !== undefined && stat.size !== BigInt(size))) {
+    throw receiptPathError('PGS receipt artifact identity changed');
+  }
+  return stat;
+}
+
+async function removeExactReceiptFile(filePath, identity, boundary) {
+  await verifyScratchBoundary(boundary);
+  const stat = await optionalLstat(filePath);
+  if (stat === null) return false;
+  if (!stat.isFile() || stat.isSymbolicLink() || !sameIdentity(stat, identity)) {
+    throw receiptPathError('PGS receipt cleanup identity changed');
+  }
+  const latest = await fsp.lstat(filePath, { bigint: true });
+  if (!latest.isFile() || latest.isSymbolicLink() || !sameIdentity(latest, identity)) {
+    throw receiptPathError('PGS receipt cleanup identity changed');
+  }
+  await fsp.unlink(filePath);
+  await verifyScratchBoundary(boundary);
+  return true;
+}
+
+async function verifyReceiptReadback(filePath, identity, bytes, boundary) {
+  await assertExactReceiptFile(filePath, identity, boundary, { size: bytes.length });
+  let handle;
+  try {
+    handle = await fsp.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile() || opened.nlink !== 1n || opened.size !== BigInt(bytes.length)
+        || !sameIdentity(opened, identity)) {
+      throw receiptPathError('PGS receipt readback identity changed');
+    }
+    const expected = createHash('sha256').update(bytes).digest('hex');
+    const actual = createHash('sha256');
+    const chunk = Buffer.allocUnsafe(64 * 1024);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(chunk, 0, Math.min(chunk.length, bytes.length - offset), offset);
+      if (bytesRead <= 0) throw receiptPathError('PGS receipt readback ended early');
+      actual.update(chunk.subarray(0, bytesRead));
+      offset += bytesRead;
+    }
+    if (actual.digest('hex') !== expected) {
+      throw receiptPathError('PGS receipt readback content changed');
+    }
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+  await assertExactReceiptFile(filePath, identity, boundary, { size: bytes.length });
+}
+
+async function writeSuccessReceipt({
+  engine, attemptId, result, signal, scratchQuota,
+  receiptBoundary, receiptDirectory,
+}) {
   throwIfAborted(signal);
-  const root = path.join(scratchDir, 'pgs-receipts');
-  await fsp.mkdir(root, { recursive: true, mode: 0o700 });
+  const scratchCapture = receiptBoundary.directories[1];
+  const directory = receiptDirectory || await ensureExactScratchChild(
+    receiptBoundary,
+    scratchCapture,
+    'pgs-receipts',
+  );
+  const root = directory.path;
   const destination = path.join(root, `${attemptId}.json`);
   const temporary = `${destination}.${randomUUID()}.tmp`;
   const bytes = Buffer.from(`${JSON.stringify({
@@ -87,27 +180,55 @@ async function writeSuccessReceipt({ engine, scratchDir, attemptId, result, sign
     completedAt: new Date(engine.operationClock.now()).toISOString(),
     result,
   })}\n`, 'utf8');
-  let handle;
+  let handle = null;
+  let temporaryIdentity = null;
+  let renamed = false;
   try {
+    await verifyScratchBoundary(receiptBoundary);
+    if (await optionalLstat(destination) !== null) {
+      throw receiptPathError('PGS receipt already exists');
+    }
+    if (!Number.isInteger(fs.constants.O_NOFOLLOW)) {
+      throw receiptPathError('PGS receipt requires no-follow file creation');
+    }
     handle = await fsp.open(
       temporary,
       fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL
-        | (fs.constants.O_NOFOLLOW || 0),
+        | fs.constants.O_NOFOLLOW,
       0o600,
     );
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile() || opened.nlink !== 1n) {
+      throw receiptPathError('PGS receipt temporary is not a private regular file');
+    }
+    temporaryIdentity = Object.freeze({ dev: opened.dev, ino: opened.ino });
+    await assertExactReceiptFile(temporary, temporaryIdentity, receiptBoundary, { size: 0 });
     await handle.writeFile(bytes);
     await handle.sync();
-    await handle.close();
-    handle = null;
+    await assertExactReceiptFile(temporary, temporaryIdentity, receiptBoundary, { size: bytes.length });
     await scratchQuota.reconcile();
     throwIfAborted(signal);
+    await verifyScratchBoundary(receiptBoundary);
+    if (await optionalLstat(destination) !== null) {
+      throw receiptPathError('PGS receipt appeared before publication');
+    }
+    await handle.close();
+    handle = null;
     await fsp.rename(temporary, destination);
-    const directory = await fsp.open(root, fs.constants.O_RDONLY);
-    try { await directory.sync(); } finally { await directory.close(); }
+    renamed = true;
+    await assertExactReceiptFile(destination, temporaryIdentity, receiptBoundary, { size: bytes.length });
+    fs.fsyncSync(directory.fd);
+    await verifyReceiptReadback(destination, temporaryIdentity, bytes, receiptBoundary);
   } catch (error) {
     await handle?.close().catch(() => {});
-    await fsp.rm(temporary, { force: true }).catch(() => {});
+    if (temporaryIdentity) {
+      const cleanupPath = renamed ? destination : temporary;
+      await removeExactReceiptFile(cleanupPath, temporaryIdentity, receiptBoundary).catch(() => {});
+      try { fs.fsyncSync(directory.fd); } catch {}
+      await scratchQuota.reconcile().catch(() => {});
+    }
     if (signal?.aborted) throw signal.reason;
+    if (error?.code === 'invalid_request') throw error;
     throw error;
   }
 }
@@ -173,10 +294,24 @@ async function runPinnedOperation(engine, options = {}) {
   const sourceEvidence = typeof sourcePin.getEvidence === 'function'
     ? sourcePin.getEvidence({ route: 'pinned-pgs' })
     : sourcePin.evidence || null;
-  const store = await (engine.openPinnedPGSStore || openPinnedPGSStore)({
-    sourcePin, scratchDir, scratchQuota, pgsSweep: sweepPair, signal, limits,
-    statfsImpl: options.statfsImpl, clock: engine.operationClock,
-  });
+  const receiptBoundary = await captureOperationScratchBoundary(scratchDir, scratchQuota);
+  let receiptDirectory;
+  let store;
+  try {
+    receiptDirectory = await ensureExactScratchChild(
+      receiptBoundary,
+      receiptBoundary.directories[1],
+      'pgs-receipts',
+      { create: false },
+    );
+    store = await (engine.openPinnedPGSStore || openPinnedPGSStore)({
+      sourcePin, scratchDir, scratchQuota, pgsSweep: sweepPair, signal, limits,
+      statfsImpl: options.statfsImpl, clock: engine.operationClock,
+    });
+  } catch (error) {
+    closeScratchBoundary(receiptBoundary);
+    throw error;
+  }
   const validateCompletion = engine.requireCompleteProviderResult || requireCompleteProviderResult;
   const attemptId = `attempt-${randomUUID()}`;
   const pending = store.snapshotPendingWorkUnits({ attemptId, limit: limits.maxSelectedWorkUnits });
@@ -342,7 +477,10 @@ async function runPinnedOperation(engine, options = {}) {
       const result = { ...baseResult, answer };
       assertBytes(result, limits.maxResultBytes, 'PGS result');
       if (!partial) {
-        await writeSuccessReceipt({ engine, scratchDir, attemptId, result, signal, scratchQuota });
+        await writeSuccessReceipt({
+          engine, attemptId, result, signal, scratchQuota,
+          receiptBoundary, receiptDirectory,
+        });
       }
       return {
         state: partial ? 'partial' : 'complete',
@@ -374,6 +512,7 @@ async function runPinnedOperation(engine, options = {}) {
     throw error;
   } finally {
     store.close();
+    closeScratchBoundary(receiptBoundary);
   }
 }
 

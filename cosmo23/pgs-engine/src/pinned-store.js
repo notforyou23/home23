@@ -13,6 +13,7 @@ const {
 
 const SCHEMA_VERSION = 1;
 const MAX_METADATA_VALUE_BYTES = 128 * 1024;
+const MAX_LIST_SCALAR_BYTES = 4 * 1024;
 const METADATA_KEYS = Object.freeze([
   'completeProjection',
   'descriptorDigest',
@@ -947,8 +948,8 @@ async function openPinnedPGSStore({
     async commitSuccessfulSweeps(outputs) {
       assertOpen();
       if (!Array.isArray(outputs)) throw typed('invalid_request', 'PGS sweep outputs must be an array');
-      let totalBytes = 0;
-      const normalized = outputs.map(row => {
+      const normalizedByWorkUnit = new Map();
+      for (const row of outputs) {
         if (!row || typeof row !== 'object' || Array.isArray(row)) {
           throw typed('invalid_request', 'PGS sweep output is invalid');
         }
@@ -957,14 +958,31 @@ async function openPinnedPGSStore({
         if (!output || bytes > limits.maxSweepOutputBytes) {
           throw typed('result_too_large', 'PGS sweep output exceeds the byte limit');
         }
-        totalBytes += bytes;
-        if (totalBytes > limits.maxTotalSweepOutputBytes) {
-          throw typed('result_too_large', 'PGS sweep outputs exceed the aggregate byte limit');
+        const prior = normalizedByWorkUnit.get(row.workUnitId);
+        if (prior && prior.output !== output) {
+          throw typed('pgs_state_conflict', 'PGS sweep output conflicts within the commit');
         }
-        return { ...row, output };
-      });
+        if (!prior) {
+          normalizedByWorkUnit.set(row.workUnitId, {
+            ...row, output, outputBytes: bytes, outputJson: JSON.stringify({ output }),
+          });
+        }
+      }
+      const normalized = [...normalizedByWorkUnit.values()];
+      const maximumOutputJsonBytes = (limits.maxSweepOutputBytes * 6)
+        + Buffer.byteLength(JSON.stringify({ output: '' }), 'utf8');
       const getUnit = db.prepare('SELECT * FROM work_units WHERE work_unit_id = ?');
-      const getSuccess = db.prepare('SELECT * FROM successful_sweeps WHERE work_unit_id = ?');
+      const getSuccess = db.prepare(`
+        SELECT provider, model,
+          substr(CAST(output_json AS BLOB), 1, ?) AS output_json,
+          length(CAST(output_json AS BLOB)) AS output_json_bytes
+        FROM successful_sweeps WHERE work_unit_id = ?
+      `);
+      const existingOutputs = db.prepare(`
+        SELECT substr(CAST(output_json AS BLOB), 1, ?) AS output_json,
+          length(CAST(output_json AS BLOB)) AS output_json_bytes
+        FROM successful_sweeps ORDER BY work_unit_id
+      `);
       const insert = db.prepare(`
         INSERT INTO successful_sweeps(
           work_unit_id, partition_id, provider, model, output_json, completed_at
@@ -975,14 +993,45 @@ async function openPinnedPGSStore({
         WHERE work_unit_id = ? AND state = 'pending'
       `);
       db.transaction(() => {
+        let durableOutputBytes = 0;
+        for (const existing of existingOutputs.iterate(maximumOutputJsonBytes + 1)) {
+          if (!Number.isSafeInteger(existing.output_json_bytes)
+              || existing.output_json_bytes < 1
+              || existing.output_json_bytes > maximumOutputJsonBytes
+              || !Buffer.isBuffer(existing.output_json)) {
+            throw typed('pgs_projection_invalid', 'Stored PGS sweep output exceeds its byte limit');
+          }
+          let parsed;
+          try { parsed = JSON.parse(existing.output_json.toString('utf8')); } catch (cause) {
+            throw typed('pgs_projection_invalid', 'Stored PGS sweep output is invalid', false, { cause });
+          }
+          if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object'
+              || Object.keys(parsed).join('\0') !== 'output'
+              || typeof parsed.output !== 'string' || !parsed.output) {
+            throw typed('pgs_projection_invalid', 'Stored PGS sweep output is invalid');
+          }
+          const outputBytes = Buffer.byteLength(parsed.output, 'utf8');
+          if (outputBytes > limits.maxSweepOutputBytes) {
+            throw typed('pgs_projection_invalid', 'Stored PGS sweep output exceeds its byte limit');
+          }
+          durableOutputBytes += outputBytes;
+          if (durableOutputBytes > limits.maxTotalSweepOutputBytes) {
+            throw typed('result_too_large', 'PGS sweep outputs exceed the aggregate byte limit');
+          }
+        }
         for (const row of normalized) {
           const unit = getUnit.get(row.workUnitId);
           if (!unit) throw typed('pgs_state_conflict', 'Unknown PGS work unit');
-          const outputJson = JSON.stringify({ output: row.output });
-          const prior = getSuccess.get(row.workUnitId);
+          const prior = getSuccess.get(maximumOutputJsonBytes + 1, row.workUnitId);
           if (prior) {
+            if (!Number.isSafeInteger(prior.output_json_bytes)
+                || prior.output_json_bytes < 1
+                || prior.output_json_bytes > maximumOutputJsonBytes
+                || !Buffer.isBuffer(prior.output_json)) {
+              throw typed('pgs_projection_invalid', 'Stored PGS sweep output is invalid');
+            }
             if (prior.provider !== sweepPair.provider || prior.model !== sweepPair.model
-                || prior.output_json !== outputJson) {
+                || prior.output_json.toString('utf8') !== row.outputJson) {
               throw typed('pgs_state_conflict', 'PGS sweep output conflicts with durable state');
             }
             continue;
@@ -990,9 +1039,13 @@ async function openPinnedPGSStore({
           if (unit.state !== 'pending') {
             throw typed('pgs_state_conflict', 'PGS work unit is not pending');
           }
+          durableOutputBytes += row.outputBytes;
+          if (durableOutputBytes > limits.maxTotalSweepOutputBytes) {
+            throw typed('result_too_large', 'PGS sweep outputs exceed the aggregate byte limit');
+          }
           insert.run(
             row.workUnitId, unit.partition_id, sweepPair.provider, sweepPair.model,
-            outputJson, row.completedAt || new Date(clock.now()).toISOString(),
+            row.outputJson, row.completedAt || new Date(clock.now()).toISOString(),
           );
           if (completeUnit.run(row.workUnitId).changes !== 1) {
             throw typed('pgs_state_conflict', 'PGS work unit completion raced');
@@ -1020,24 +1073,95 @@ async function openPinnedPGSStore({
     },
     listSuccessfulSweeps() {
       assertOpen();
-      return db.prepare(`
-        SELECT work_unit_id, partition_id, provider, model, output_json, completed_at
+      const maximumOutputJsonBytes = (limits.maxSweepOutputBytes * 6)
+        + Buffer.byteLength(JSON.stringify({ output: '' }), 'utf8');
+      const rows = [];
+      let totalOutputBytes = 0;
+      let totalResultBytes = 2;
+      const query = db.prepare(`
+        SELECT
+          substr(CAST(work_unit_id AS BLOB), 1, ${MAX_LIST_SCALAR_BYTES + 1}) AS work_unit_id,
+          length(CAST(work_unit_id AS BLOB)) AS work_unit_id_bytes,
+          substr(CAST(partition_id AS BLOB), 1, ${MAX_LIST_SCALAR_BYTES + 1}) AS partition_id,
+          length(CAST(partition_id AS BLOB)) AS partition_id_bytes,
+          substr(CAST(provider AS BLOB), 1, ${MAX_LIST_SCALAR_BYTES + 1}) AS provider,
+          length(CAST(provider AS BLOB)) AS provider_bytes,
+          substr(CAST(model AS BLOB), 1, ${MAX_LIST_SCALAR_BYTES + 1}) AS model,
+          length(CAST(model AS BLOB)) AS model_bytes,
+          substr(CAST(output_json AS BLOB), 1, ?) AS output_json,
+          length(CAST(output_json AS BLOB)) AS output_json_bytes,
+          substr(CAST(completed_at AS BLOB), 1, ${MAX_LIST_SCALAR_BYTES + 1}) AS completed_at,
+          length(CAST(completed_at AS BLOB)) AS completed_at_bytes
         FROM successful_sweeps ORDER BY work_unit_id
-      `).all().map(row => ({
-        workUnitId: row.work_unit_id,
-        partitionId: row.partition_id,
-        provider: row.provider,
-        model: row.model,
-        output: JSON.parse(row.output_json).output,
-        completedAt: row.completed_at,
-      }));
+      `);
+      for (const row of query.iterate(maximumOutputJsonBytes + 1)) {
+        for (const field of ['work_unit_id', 'partition_id', 'provider', 'model', 'completed_at']) {
+          if (!Number.isSafeInteger(row[`${field}_bytes`]) || row[`${field}_bytes`] < 1
+              || row[`${field}_bytes`] > MAX_LIST_SCALAR_BYTES
+              || !Buffer.isBuffer(row[field])) {
+            throw typed('pgs_projection_invalid', 'PGS sweep listing identity is invalid');
+          }
+        }
+        if (!Number.isSafeInteger(row.output_json_bytes) || row.output_json_bytes < 1
+            || row.output_json_bytes > maximumOutputJsonBytes
+            || !Buffer.isBuffer(row.output_json)) {
+          throw typed('result_too_large', 'PGS sweep output exceeds the byte limit');
+        }
+        let parsed;
+        try { parsed = JSON.parse(row.output_json.toString('utf8')); } catch (cause) {
+          throw typed('pgs_projection_invalid', 'PGS sweep output is invalid', false, { cause });
+        }
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object'
+            || Object.keys(parsed).join('\0') !== 'output'
+            || typeof parsed.output !== 'string' || !parsed.output
+            || Buffer.byteLength(parsed.output, 'utf8') > limits.maxSweepOutputBytes) {
+          throw typed('pgs_projection_invalid', 'PGS sweep output is invalid');
+        }
+        totalOutputBytes += Buffer.byteLength(parsed.output, 'utf8');
+        if (totalOutputBytes > limits.maxTotalSweepOutputBytes) {
+          throw typed('result_too_large', 'PGS sweep outputs exceed the aggregate byte limit');
+        }
+        const normalized = {
+          workUnitId: row.work_unit_id.toString('utf8'),
+          partitionId: row.partition_id.toString('utf8'),
+          provider: row.provider.toString('utf8'),
+          model: row.model.toString('utf8'),
+          output: parsed.output,
+          completedAt: row.completed_at.toString('utf8'),
+        };
+        totalResultBytes += Buffer.byteLength(JSON.stringify(normalized), 'utf8') + 1;
+        if (totalResultBytes > limits.maxResultBytes) {
+          throw typed('result_too_large', 'PGS sweep listing exceeds the result byte limit');
+        }
+        rows.push(normalized);
+      }
+      return rows;
     },
     listRetryablePartitions() {
       assertOpen();
-      return db.prepare(`
-        SELECT DISTINCT partition_id FROM work_units
+      const partitions = [];
+      let totalResultBytes = 2;
+      const query = db.prepare(`
+        SELECT DISTINCT
+          substr(CAST(partition_id AS BLOB), 1, ${MAX_LIST_SCALAR_BYTES + 1}) AS partition_id,
+          length(CAST(partition_id AS BLOB)) AS partition_id_bytes
+        FROM work_units
         WHERE state = 'pending' ORDER BY partition_id
-      `).all().map(row => row.partition_id);
+      `);
+      for (const row of query.iterate()) {
+        if (!Number.isSafeInteger(row.partition_id_bytes) || row.partition_id_bytes < 1
+            || row.partition_id_bytes > MAX_LIST_SCALAR_BYTES
+            || !Buffer.isBuffer(row.partition_id)) {
+          throw typed('pgs_projection_invalid', 'PGS retry partition identity is invalid');
+        }
+        const partitionId = row.partition_id.toString('utf8');
+        totalResultBytes += Buffer.byteLength(JSON.stringify(partitionId), 'utf8') + 1;
+        if (totalResultBytes > limits.maxResultBytes) {
+          throw typed('result_too_large', 'PGS retry partitions exceed the result byte limit');
+        }
+        partitions.push(partitionId);
+      }
+      return partitions;
     },
     countPendingWorkUnits() {
       assertOpen();

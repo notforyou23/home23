@@ -204,6 +204,74 @@ test('persists successful work idempotently and leaves failed work pending', asy
   );
 });
 
+test('caps cumulative durable sweep output before every retry commit', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const store = await openPinnedPGSStore({
+    sourcePin: syntheticSource({ nodeCount: 2, edgeCount: 0 }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    signal: new AbortController().signal,
+    limits: {
+      ...limits,
+      maxNodesPerWorkUnit: 1,
+      maxSweepOutputBytes: 64,
+      maxTotalSweepOutputBytes: 64,
+    },
+  });
+  t.after(() => store.close());
+
+  const [first, second] = store.snapshotPendingWorkUnits({
+    attemptId: 'attempt-cumulative-cap',
+    limit: 2,
+  });
+  for (const workUnitId of [first, second]) {
+    store.beginWorkUnitAttempt(workUnitId, {
+      attemptId: 'attempt-cumulative-cap',
+      provider: 'minimax',
+      model: 'MiniMax-M3',
+    });
+  }
+  const escapedOutput = '"\n'.repeat(20);
+  assert.equal(Buffer.byteLength(escapedOutput, 'utf8'), 40);
+  assert.equal(Buffer.byteLength(JSON.stringify({ output: escapedOutput }), 'utf8') > 64, true);
+  await store.commitSuccessfulSweeps([{ workUnitId: first, output: escapedOutput }]);
+  await store.commitSuccessfulSweeps([
+    { workUnitId: first, output: escapedOutput },
+    { workUnitId: first, output: escapedOutput },
+  ]);
+  await assert.rejects(
+    store.commitSuccessfulSweeps([{ workUnitId: second, output: 'y'.repeat(40) }]),
+    error => error.code === 'result_too_large',
+  );
+  assert.deepEqual(store.listSuccessfulSweeps().map(row => ({
+    workUnitId: row.workUnitId,
+    output: row.output,
+  })), [{ workUnitId: first, output: escapedOutput }]);
+  assert.equal(store.countPendingWorkUnits(), 1);
+});
+
+test('durable sweep and retry listings stream rows through explicit byte bounds', () => {
+  const source = require('node:fs').readFileSync(
+    path.resolve(__dirname, '../../cosmo23/pgs-engine/src/pinned-store.js'),
+    'utf8',
+  );
+  const successful = source.slice(
+    source.indexOf('    listSuccessfulSweeps()'),
+    source.indexOf('    listRetryablePartitions()', source.indexOf('    listSuccessfulSweeps()')),
+  );
+  const retryable = source.slice(
+    source.indexOf('    listRetryablePartitions()'),
+    source.indexOf('    countPendingWorkUnits()', source.indexOf('    listRetryablePartitions()')),
+  );
+  for (const body of [successful, retryable]) {
+    assert.match(body, /\.iterate\s*\(/);
+    assert.doesNotMatch(body, /\.all\s*\(/);
+  }
+  assert.match(successful, /maxTotalSweepOutputBytes/);
+  assert.match(retryable, /maxResultBytes/);
+});
+
 test('reuses only an exact source revision, limits, and sweep pair', async t => {
   const { scratchDir, quota } = await fixture(t);
   const options = {

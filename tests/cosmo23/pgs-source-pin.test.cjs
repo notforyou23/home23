@@ -159,6 +159,32 @@ function options(pin, scratch, extra = {}) {
   };
 }
 
+function singleWorkStore() {
+  let committed = false;
+  return {
+    stats: { nodeCount: 1, edgeCount: 0, workUnitCount: 1 },
+    snapshotPendingWorkUnits() { return ['p-c-one-u0000']; },
+    beginWorkUnitAttempt() {},
+    loadWorkUnit() {
+      return {
+        workUnitId: 'p-c-one-u0000', partitionId: 'c-one',
+        nodes: [{ id: 'n1', content: 'one' }], edges: [],
+      };
+    },
+    async commitSuccessfulSweeps() { committed = true; },
+    listSuccessfulSweeps() {
+      return committed ? [{
+        workUnitId: 'p-c-one-u0000', partitionId: 'c-one',
+        provider: 'sweep', model: 'shared-model', output: 'finding',
+      }] : [];
+    },
+    listRetryablePartitions() { return []; },
+    countPendingWorkUnits() { return committed ? 0 : 1; },
+    recordRetryableFailure() {},
+    close() {},
+  };
+}
+
 test('pinned PGS keeps provider roles exact and returns machine-readable durable sweeps', async t => {
   const scratch = await scratchFixture(t);
   const pin = sourcePin();
@@ -193,6 +219,61 @@ test('pinned PGS keeps provider roles exact and returns machine-readable durable
 
   const receipts = await fs.readdir(path.join(scratch.scratchDir, 'pgs-receipts'));
   assert.equal(receipts.length, 1);
+  const receiptPath = path.join(scratch.scratchDir, 'pgs-receipts', receipts[0]);
+  const receiptStat = await fs.lstat(receiptPath);
+  assert.equal(receiptStat.isFile(), true);
+  assert.equal(receiptStat.isSymbolicLink(), false);
+  assert.equal(receiptStat.nlink, 1);
+  const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  assert.match(receipt.attemptId, /^attempt-/);
+  assert.equal(receipt.result.answer, 'final pinned synthesis');
+});
+
+test('pinned PGS rejects a redirected receipt directory before provider work', async t => {
+  const scratch = await scratchFixture(t);
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'home23-pgs-receipt-outside-'));
+  t.after(() => fs.rm(outside, { recursive: true, force: true }));
+  await fs.symlink(outside, path.join(scratch.scratchDir, 'pgs-receipts'));
+  const fixture = makeEngine();
+  fixture.engine.openPinnedPGSStore = async () => singleWorkStore();
+
+  await assert.rejects(
+    () => fixture.engine.runPinnedOperation(options(sourcePin({ nodeCount: 1 }), scratch)),
+    { code: 'invalid_request' },
+  );
+  assert.equal(fixture.calls.length, 0);
+  assert.deepEqual(await fs.readdir(outside), []);
+});
+
+test('pinned PGS removes only its exact receipt temporary on cancellation', async t => {
+  const scratch = await scratchFixture(t);
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('cancel receipt publication'), { code: 'cancelled' });
+  let reconciles = 0;
+  const quota = {
+    operationRoot: scratch.quota.operationRoot,
+    async assertOperationRoot(candidate) {
+      return scratch.quota.assertOperationRoot(candidate);
+    },
+    async reconcile() {
+      reconciles += 1;
+      if (reconciles === 1) controller.abort(reason);
+      return scratch.quota.reconcile();
+    },
+  };
+  const fixture = makeEngine();
+  fixture.engine.openPinnedPGSStore = async () => singleWorkStore();
+
+  await assert.rejects(
+    () => fixture.engine.runPinnedOperation({
+      ...options(sourcePin({ nodeCount: 1 }), scratch),
+      scratchQuota: quota,
+      signal: controller.signal,
+    }),
+    error => error === reason,
+  );
+  assert.equal(reconciles >= 2, true);
+  assert.deepEqual(await fs.readdir(path.join(scratch.scratchDir, 'pgs-receipts')), []);
 });
 
 test('empty pinned source fails honestly without provider work', async t => {
