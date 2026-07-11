@@ -424,6 +424,17 @@ class BrainOperationStore {
     }
   }
 
+  async _statusFileIdentity(operationId) {
+    try {
+      const stat = await fsp.lstat(this._statusPath(operationId), { bigint: true });
+      if (!stat.isFile() || stat.isSymbolicLink()) throw operationError('operation_corrupt');
+      return fileIdentity(stat);
+    } catch (error) {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    }
+  }
+
   async _inject(stage, details = {}) {
     return this.crashInjector(stage, details);
   }
@@ -792,7 +803,7 @@ class BrainOperationStore {
     return record;
   }
 
-  async _readPrivateRecord(operationId) {
+  async _readPrivateRecord(operationId, attempt = 0) {
     assertOperationId(operationId);
     const operationDirectory = this._operationDirectory(operationId);
     const statusFile = this._statusPath(operationId);
@@ -806,6 +817,8 @@ class BrainOperationStore {
       if (error.cause?.code === 'ENOENT') throw operationError('operation_not_found', error);
       throw error;
     }
+    const identityBefore = await this._statusFileIdentity(operationId);
+    if (identityBefore === null) throw operationError('operation_not_found');
     let bytes;
     try {
       bytes = await this._readSecureRegularFile(
@@ -815,9 +828,20 @@ class BrainOperationStore {
         'operation_not_found',
       );
     } catch (error) {
+      if (error.code === 'operation_corrupt') {
+        const identityAfterFailure = await this._statusFileIdentity(operationId);
+        if (!sameFileIdentity(identityBefore, identityAfterFailure) && attempt < 7) {
+          return this._readPrivateRecord(operationId, attempt + 1);
+        }
+      }
       throw error;
     }
     await this._verifyDirectoryIdentities(ancestorIdentities, 'operation_corrupt');
+    const identityAfter = await this._statusFileIdentity(operationId);
+    if (!sameFileIdentity(identityBefore, identityAfter)) {
+      if (attempt >= 7) throw operationError('operation_corrupt');
+      return this._readPrivateRecord(operationId, attempt + 1);
+    }
     let record;
     try {
       record = JSON.parse(bytes.toString('utf8'));

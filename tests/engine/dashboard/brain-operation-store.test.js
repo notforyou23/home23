@@ -2088,6 +2088,30 @@ test('event sequence remains monotonic across concurrent appends and reload', as
   assert.equal((await reloaded.get(record.operationId)).eventSequence, 64);
 });
 
+test('status reads retry an atomic replacement instead of reporting transient corruption', async (t) => {
+  const fixture = makeFixture(t);
+  const { record } = await createOne(fixture, { requestId: 'status-read-replacement-race' });
+  const originalRead = fixture.store._readSecureRegularFile.bind(fixture.store);
+  let replaced = false;
+  fixture.store._readSecureRegularFile = async (filePath, ...args) => {
+    if (!replaced && filePath === fixture.store._statusPath(record.operationId)) {
+      replaced = true;
+      await fixture.store.appendEvent(record.operationId, {
+        type: 'progress', stage: 'replacement-race',
+      });
+      throw Object.assign(new Error('status path was atomically replaced'), {
+        code: 'operation_corrupt',
+      });
+    }
+    return originalRead(filePath, ...args);
+  };
+
+  const reloaded = await fixture.store.get(record.operationId);
+  assert.equal(replaced, true);
+  assert.equal(reloaded.eventSequence, 1);
+  assert.equal(reloaded.lastProgressAt, new Date(INITIAL_NOW).toISOString());
+});
+
 test('event count and byte ceilings compact independently while retaining material terminal evidence', async (t) => {
   const countFixture = makeFixture(t, { eventMaxCount: 6, eventMaxBytes: 1024 * 1024 });
   const countOperation = await createOne(countFixture, { requestId: 'event-count-bound' });
