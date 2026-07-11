@@ -381,6 +381,7 @@ test('keyword search applies the advertised exact tag filter and reports filtere
   const result = await source.searchKeyword({ query: 'shared canary', topK: 10, tag: 'alpha' });
   assert.deepEqual(result.results, [{ id: '1', concept: 'shared canary', tag: 'alpha' }]);
   assert.equal(result.filtered, 1);
+  assert.equal(result.evidence.filteredTotal, 1);
   assert.deepEqual(result.evidence.filters, { tag: 'alpha' });
   assert.deepEqual(result.evidence.limits, { topK: 10 });
   await assert.rejects(

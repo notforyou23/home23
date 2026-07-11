@@ -344,6 +344,7 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
           sourceHealth,
           authoritativeTotal: manifest.summary.nodeCount,
           returnedTotal: input.returnedTotals?.nodes || 0,
+          filteredTotal: input.filteredTotal || 0,
           completeCoverage: input.completeCoverage === true,
         }),
       });

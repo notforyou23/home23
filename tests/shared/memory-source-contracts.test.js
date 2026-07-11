@@ -123,6 +123,7 @@ test('creates a complete additive evidence envelope with canonical identity', ()
     filters: { tag: 'conversation' },
     limits: { topK: 5 },
     completeCoverage: true,
+    filteredTotal: 3,
     authoritativeTotals: { nodes: 20, edges: 30 },
     returnedTotals: { nodes: 2, edges: 0 },
   });
@@ -131,6 +132,7 @@ test('creates a complete additive evidence envelope with canonical identity', ()
   assert.equal(evidence.indexWatermark.fresh, true);
   assert.deepEqual(evidence.filters, { tag: 'conversation' });
   assert.equal(evidence.completeCoverage, true);
+  assert.equal(evidence.filteredTotal, 3);
   assert.equal(evidence.identity.requesterAgent, 'ada');
   assert.equal(evidence.identity.targetAgent, 'jerry');
   assert.equal(evidence.identity.catalogRevision, 'catalog-17');

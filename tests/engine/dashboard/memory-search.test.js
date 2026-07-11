@@ -284,6 +284,28 @@ test('keyword fallback applies exact tags instead of merely claiming the filter'
   );
 });
 
+test('healthy complete tag-filtered zero reports filtered evidence instead of no match', async () => {
+  const dir = await createBrain({
+    nodes: [
+      { id: 'beta-1', concept: 'filtered route canary', tag: 'beta' },
+      { id: 'beta-2', concept: 'filtered route canary', tag: 'beta' },
+    ],
+  });
+  const result = await sourceSearch({
+    dir,
+    query: 'filtered route canary',
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => null,
+    request: { tag: 'alpha' },
+  });
+
+  assert.deepEqual(result.results, []);
+  assert.equal(result.evidence.sourceHealth, 'healthy');
+  assert.equal(result.evidence.completeCoverage, true);
+  assert.equal(result.evidence.filteredTotal, 2);
+  assert.equal(result.evidence.matchOutcome, 'filtered');
+});
+
 test('default embedding transport forwards the exact AbortSignal', async () => {
   const controller = new AbortController();
   let receivedSignal = null;

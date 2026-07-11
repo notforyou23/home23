@@ -209,6 +209,9 @@ function createEvidence(input = {}) {
     authoritativeTotals: input.authoritativeTotals || { nodes: null, edges: null },
     returnedTotals: input.returnedTotals || { nodes: 0, edges: 0 },
     completeCoverage: input.completeCoverage === true,
+    filteredTotal: Number.isSafeInteger(input.filteredTotal) && input.filteredTotal >= 0
+      ? input.filteredTotal
+      : 0,
     mutationBoundaries: Object.freeze([...(input.mutationBoundaries || [])]),
     sourceHealth: input.sourceHealth || SOURCE_HEALTH.UNAVAILABLE,
     matchOutcome: input.matchOutcome || MATCH_OUTCOME.UNKNOWN,
