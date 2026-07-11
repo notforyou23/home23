@@ -299,9 +299,11 @@ const worker = new BrainOperationWorker({
 ### Task 1: Normalize Provider Completion and Model Capabilities
 
 **Files:**
+- Modify: `package.json`
 - Create: `cosmo23/lib/provider-completion.js`
 - Modify: `cosmo23/server/config/model-catalog.js:3-330`
 - Create: `tests/cosmo23/provider-completion.test.cjs`
+- Create: `tests/cosmo23/query-engine-provider-routing.test.cjs`
 - Modify: `tests/cosmo23/query-engine-runtime.test.cjs`
 
 **Interfaces:**
@@ -484,7 +486,19 @@ node --test --test-concurrency=1 \
   tests/cosmo23/query-engine-runtime.test.cjs
 ```
 
+The command above is intentionally independent of COSMO's package-local SDKs.
+Provision the standalone package dependencies, then run the required aggregate
+that also includes the QueryEngine routing regressions:
+
+```bash
+npm --prefix cosmo23 ci
+npm run test:brain-provider-task1
+```
+
 Expected: FAIL with `Cannot find module '../../cosmo23/lib/provider-completion'`; after that module exists but before the catalog change, the capability test must fail because `maxOutputTokens` is undefined.
+The required aggregate must also execute
+`tests/cosmo23/query-engine-provider-routing.test.cjs`; Task 1 is not green if
+that dependency-provisioned routing suite is skipped.
 
 - [ ] **Step 3: Implement the normalized completion module**
 
@@ -675,9 +689,11 @@ Normalize provider entries on both built-in load and saved custom-catalog load, 
 
 - [ ] **Step 4: Run the focused suite and verify green**
 
-Run the Step 2 command again.
+Run both Step 2 test commands again.
 
-Expected: all provider-completion and query-runtime tests PASS.
+Expected: the dependency-independent provider-completion/query-runtime command
+passes, and `npm run test:brain-provider-task1` passes with the routing test file
+included.
 
 - [ ] **Step 5: Commit only the Task 1 paths**
 

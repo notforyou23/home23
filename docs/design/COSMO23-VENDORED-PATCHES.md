@@ -1050,6 +1050,7 @@ model while preserving normal Sonnet request shape, including SDK shapes where
 **Files touched:**
 - `cosmo23/lib/query-engine.js`
 - `cosmo23/lib/anthropic-client.js`
+- `tests/cosmo23/query-engine-provider-routing.test.cjs`
 
 **Problem:** the Home23/COSMO catalog default query model is `MiniMax-M3`, but
 the historical `QueryEngine.resolveQueryRuntime()` only had explicit branches
@@ -1073,9 +1074,12 @@ defaults and only force the chat-safe `quick` mode.
 is configured; missing credentials now fail clearly instead of silently routing
 to OpenAI.
 
-**Verification:** `tests/cosmo23/query-engine-runtime.test.cjs` proves
+**Verification:** after provisioning the declared standalone dependencies with
+`npm --prefix cosmo23 ci`, `npm run test:brain-provider-task1` includes
+`tests/cosmo23/query-engine-provider-routing.test.cjs`, which proves
 `MiniMax-M3` resolves to the MiniMax query client and fails clearly when that
-client is absent.
+client is absent. The required aggregate also preserves the Codex input-item
+regression.
 
 ---
 

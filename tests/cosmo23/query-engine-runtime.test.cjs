@@ -68,11 +68,12 @@ test('capability lookup uses provider plus model rather than model alone', () =>
 
 test('custom models under built-in providers require source-declared capabilities', () => {
   const customModel = { id: 'custom-openai-model', kind: 'chat' };
+  const embeddingModel = { id: 'text-embedding-3-small', kind: 'embedding' };
   const catalog = providers => ({ version: 1, providers });
 
   assertCatalogError(
     () => normalizeModelCatalog(catalog({
-      openai: { models: [customModel] },
+      openai: { models: [customModel, embeddingModel] },
     })),
     'model_capability_invalid',
   );
@@ -80,7 +81,7 @@ test('custom models under built-in providers require source-declared capabilitie
     () => normalizeModelCatalog(catalog({
       openai: {
         executionDefaults: { maxOutputTokens: 4096 },
-        models: [customModel],
+        models: [customModel, embeddingModel],
       },
     })),
     'model_capability_invalid',
@@ -93,7 +94,7 @@ test('custom models under built-in providers require source-declared capabilitie
         providerStallMs: 120000,
         transport: 'responses',
       },
-      models: [customModel],
+      models: [customModel, embeddingModel],
     },
   }));
   assert.deepEqual(
@@ -108,7 +109,7 @@ test('custom models under built-in providers require source-declared capabilitie
         maxOutputTokens: 2048,
         providerStallMs: 60000,
         transport: 'responses',
-      }],
+      }, embeddingModel],
     },
   }));
   assert.deepEqual(
@@ -117,7 +118,7 @@ test('custom models under built-in providers require source-declared capabilitie
   );
 
   const legacy = normalizeModelCatalog(catalog({
-    openai: { models: [{ id: 'gpt-5.4-mini', kind: 'chat' }] },
+    openai: { models: [{ id: 'gpt-5.4-mini', kind: 'chat' }, embeddingModel] },
   }));
   assert.deepEqual(
     getModelCapabilities(legacy, 'openai', 'gpt-5.4-mini'),
@@ -265,6 +266,47 @@ test('valid custom providers survive an atomic save and reload', t => {
   );
 });
 
+test('embedding defaults preserve an exact custom pair across save and reload when model IDs overlap', t => {
+  const { catalogPath } = useTemporaryCatalog(t, 'model-catalog-custom-embedding-pair-');
+  const sharedEmbedding = { id: 'shared-embedding', kind: 'embedding' };
+  const expectedDefaults = {
+    provider: 'acme',
+    model: 'shared-embedding',
+    dimensions: 768,
+  };
+  const saved = saveModelCatalogSync({
+    version: 1,
+    providers: {
+      openai: { models: [sharedEmbedding] },
+      acme: { models: [sharedEmbedding] },
+    },
+    defaults: { embeddings: expectedDefaults },
+  });
+
+  assert.deepEqual(saved.defaults.embeddings, expectedDefaults);
+  assert.deepEqual(loadModelCatalogSync().defaults.embeddings, expectedDefaults);
+  assert.equal(fs.existsSync(catalogPath), true);
+});
+
+test('embedding defaults reject an absent provider and model pair', () => {
+  assertCatalogError(
+    () => normalizeModelCatalog({
+      version: 1,
+      providers: {
+        acme: { models: [{ id: 'acme-embedding', kind: 'embedding' }] },
+      },
+      defaults: {
+        embeddings: {
+          provider: 'acme',
+          model: 'text-embedding-3-small',
+          dimensions: 512,
+        },
+      },
+    }),
+    'model_catalog_invalid',
+  );
+});
+
 test('generated built-in execution defaults stay non-declared across save and reload', t => {
   useTemporaryCatalog(t, 'model-catalog-default-provenance-');
   saveModelCatalogSync({ version: 1, providers: {
@@ -275,7 +317,7 @@ test('generated built-in execution defaults stay non-declared across save and re
         maxOutputTokens: 2048,
         providerStallMs: 60000,
         transport: 'responses',
-      }],
+      }, { id: 'text-embedding-3-small', kind: 'embedding' }],
     },
   } });
 
@@ -376,6 +418,80 @@ test('present malformed nested defaults fail closed on normalization and load', 
     );
     assert.equal(fs.existsSync(catalogPath), true, name);
   }
+});
+
+for (const [section, fields] of [
+  ['launch', ['primary', 'fast', 'strategic']],
+  ['embeddings', ['provider', 'model']],
+  ['local', ['primary', 'fast', 'embeddings']],
+]) {
+  for (const field of fields) {
+    test(`present malformed defaults.${section}.${field} values fail closed`, t => {
+      const { catalogPath } = useTemporaryCatalog(
+        t,
+        `model-catalog-invalid-${section}-${field}-`,
+      );
+      const invalidValues = [null, [], {}, 42, true, '', '   '];
+      if (section === 'launch') invalidValues.push('missing-chat-model');
+      for (const value of invalidValues) {
+        const invalid = {
+          version: 1,
+          providers: {},
+          defaults: { [section]: { [field]: value } },
+        };
+        assertCatalogError(
+          () => normalizeModelCatalog(invalid),
+          'model_catalog_invalid',
+        );
+        fs.writeFileSync(catalogPath, JSON.stringify(invalid));
+        assertCatalogError(
+          () => loadModelCatalogSync(),
+          'model_catalog_invalid',
+        );
+      }
+    });
+  }
+}
+
+test('present malformed defaults.embeddings.dimensions values fail closed', t => {
+  const { catalogPath } = useTemporaryCatalog(t, 'model-catalog-invalid-embedding-dimensions-');
+  for (const value of [
+    null,
+    '512',
+    '512px',
+    [],
+    {},
+    0,
+    -1,
+    1.5,
+    Number.MAX_SAFE_INTEGER + 1,
+  ]) {
+    const invalid = {
+      version: 1,
+      providers: {},
+      defaults: { embeddings: { dimensions: value } },
+    };
+    assertCatalogError(
+      () => normalizeModelCatalog(invalid),
+      'model_catalog_invalid',
+    );
+    fs.writeFileSync(catalogPath, JSON.stringify(invalid));
+    assertCatalogError(
+      () => loadModelCatalogSync(),
+      'model_catalog_invalid',
+    );
+  }
+});
+
+test('absent nested default leaves inherit built-in values', () => {
+  const expected = normalizeModelCatalog().defaults;
+  const actual = normalizeModelCatalog({
+    version: 1,
+    providers: {},
+    defaults: { launch: {}, embeddings: {}, local: {} },
+  }).defaults;
+
+  assert.deepEqual(actual, expected);
 });
 
 test('an absent catalog alone receives built-in defaults', t => {

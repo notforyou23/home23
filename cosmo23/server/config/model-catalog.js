@@ -223,6 +223,27 @@ function validateCatalogStructure(input) {
         throw modelCatalogError(`Model catalog defaults.${section} must be an object`);
       }
     }
+    for (const [section, fields] of [
+      ['launch', ['primary', 'fast', 'strategic']],
+      ['embeddings', ['provider', 'model']],
+      ['local', ['primary', 'fast', 'embeddings']],
+    ]) {
+      const defaults = input.defaults[section];
+      if (!isPlainRecord(defaults)) continue;
+      for (const field of fields) {
+        if (hasOwn(defaults, field)
+            && (typeof defaults[field] !== 'string' || !defaults[field].trim())) {
+          throw modelCatalogError(`Model catalog defaults.${section}.${field} must be a nonempty string`);
+        }
+      }
+    }
+    const embeddingDefaults = input.defaults.embeddings;
+    if (isPlainRecord(embeddingDefaults)
+        && hasOwn(embeddingDefaults, 'dimensions')
+        && (!Number.isSafeInteger(embeddingDefaults.dimensions)
+          || embeddingDefaults.dimensions <= 0)) {
+      throw modelCatalogError('Model catalog defaults.embeddings.dimensions must be a positive safe integer');
+    }
   }
 
   for (const [providerId, provider] of Object.entries(input.providers)) {
@@ -521,11 +542,44 @@ function resolveDefaultModel(requestedId, fallbackId, catalog, kind = 'chat') {
   return models[0]?.id || null;
 }
 
+function requireDefaultModelPair(providerId, modelId, catalog, kind) {
+  const model = flattenCatalogModels(catalog, { kind }).find(entry => (
+    entry.provider === providerId && entry.id === modelId
+  ));
+  if (!model) {
+    throw modelCatalogError(`Model catalog default pair ${providerId}/${modelId} is absent`);
+  }
+  return { provider: model.provider, model: model.id };
+}
+
+function resolveNestedDefaultModel(defaults, field, fallbackId, catalog, kind) {
+  if (!hasOwn(defaults, field)) {
+    return resolveDefaultModel(null, fallbackId, catalog, kind);
+  }
+  const requestedId = defaults[field].trim();
+  const exists = flattenCatalogModels(catalog, { kind })
+    .some(model => model.id === requestedId);
+  if (!exists) {
+    throw modelCatalogError(`Model catalog defaults.${field} model ${requestedId} is absent`);
+  }
+  return requestedId;
+}
+
 function normalizeModelCatalog(input) {
   const base = deepClone(BUILTIN_MODEL_CATALOG);
   const source = arguments.length === 0 ? {} : validateCatalogStructure(input);
-  const requestedEmbeddingModel = source.defaults?.embeddings?.model;
-  const requestedEmbeddingDimensions = Number.parseInt(source.defaults?.embeddings?.dimensions, 10);
+  const sourceLaunchDefaults = source.defaults?.launch || {};
+  const sourceEmbeddingDefaults = source.defaults?.embeddings || {};
+  const sourceLocalDefaults = source.defaults?.local || {};
+  const requestedEmbeddingProvider = hasOwn(sourceEmbeddingDefaults, 'provider')
+    ? sourceEmbeddingDefaults.provider.trim()
+    : base.defaults.embeddings.provider;
+  const requestedEmbeddingModel = hasOwn(sourceEmbeddingDefaults, 'model')
+    ? sourceEmbeddingDefaults.model.trim()
+    : base.defaults.embeddings.model;
+  const requestedEmbeddingDimensions = hasOwn(sourceEmbeddingDefaults, 'dimensions')
+    ? sourceEmbeddingDefaults.dimensions
+    : base.defaults.embeddings.dimensions;
 
   const catalog = {
     version: Number.parseInt(source.version || base.version, 10) || base.version,
@@ -539,16 +593,20 @@ function normalizeModelCatalog(input) {
         strategic: null
       },
       embeddings: {
-        provider: base.defaults.embeddings.provider,
-        model: base.defaults.embeddings.model,
-        dimensions: Number.isFinite(requestedEmbeddingDimensions) && requestedEmbeddingDimensions > 0
-          ? requestedEmbeddingDimensions
-          : base.defaults.embeddings.dimensions
+        provider: requestedEmbeddingProvider,
+        model: requestedEmbeddingModel,
+        dimensions: requestedEmbeddingDimensions
       },
       local: {
-        primary: String(source.defaults?.local?.primary || base.defaults.local.primary),
-        fast: String(source.defaults?.local?.fast || base.defaults.local.fast),
-        embeddings: String(source.defaults?.local?.embeddings || base.defaults.local.embeddings)
+        primary: hasOwn(sourceLocalDefaults, 'primary')
+          ? sourceLocalDefaults.primary.trim()
+          : base.defaults.local.primary,
+        fast: hasOwn(sourceLocalDefaults, 'fast')
+          ? sourceLocalDefaults.fast.trim()
+          : base.defaults.local.fast,
+        embeddings: hasOwn(sourceLocalDefaults, 'embeddings')
+          ? sourceLocalDefaults.embeddings.trim()
+          : base.defaults.local.embeddings
       }
     }
   };
@@ -565,12 +623,15 @@ function normalizeModelCatalog(input) {
     );
   }
 
-  catalog.defaults.embeddings.model = resolveDefaultModel(
-    requestedEmbeddingModel,
-    base.defaults.embeddings.model,
-    catalog,
-    'embedding'
-  ) || base.defaults.embeddings.model;
+  Object.assign(
+    catalog.defaults.embeddings,
+    requireDefaultModelPair(
+      requestedEmbeddingProvider,
+      requestedEmbeddingModel,
+      catalog,
+      'embedding',
+    ),
+  );
 
   catalog.defaults.queryModel = resolveDefaultModel(
     source.defaults?.queryModel,
@@ -584,20 +645,23 @@ function normalizeModelCatalog(input) {
     catalog,
     'chat'
   );
-  catalog.defaults.launch.primary = resolveDefaultModel(
-    source.defaults?.launch?.primary,
+  catalog.defaults.launch.primary = resolveNestedDefaultModel(
+    sourceLaunchDefaults,
+    'primary',
     base.defaults.launch.primary,
     catalog,
     'chat'
   );
-  catalog.defaults.launch.fast = resolveDefaultModel(
-    source.defaults?.launch?.fast,
+  catalog.defaults.launch.fast = resolveNestedDefaultModel(
+    sourceLaunchDefaults,
+    'fast',
     base.defaults.launch.fast,
     catalog,
     'chat'
   );
-  catalog.defaults.launch.strategic = resolveDefaultModel(
-    source.defaults?.launch?.strategic,
+  catalog.defaults.launch.strategic = resolveNestedDefaultModel(
+    sourceLaunchDefaults,
+    'strategic',
     base.defaults.launch.strategic,
     catalog,
     'chat'
