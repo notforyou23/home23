@@ -1740,7 +1740,7 @@ STYLE:
   }
 
   _emitOperationEvent(event, options) {
-    const sink = options.onEvent || this.operationEventSink;
+    const sink = options.reportEvent || options.onEvent || this.operationEventSink;
     if (typeof sink === 'function') sink(Object.freeze(event));
   }
 
@@ -1926,7 +1926,7 @@ STYLE:
       pgsSynth: options.pgsSynth,
       pgsConfig: options.pgsConfig || {},
       signal,
-      reportEvent: options.onEvent || this.operationEventSink,
+      reportEvent: options.reportEvent || options.onEvent || this.operationEventSink,
       onChunk: options.onChunk || null,
       accessMode: options.accessMode || 'read-only',
       mutationPolicy: options.mutationPolicy || 'read-only',

@@ -145,6 +145,18 @@ test('operation query uses only the pinned iterator and exact provider pair', as
   ]);
 });
 
+test('operation query reports provider lifecycle through the canonical reportEvent seam', async () => {
+  const { engine, events: fallbackEvents } = fixture();
+  const operationEvents = [];
+  await engine.executeQuery('alpha canary', operationOptions(sourcePin(), {
+    reportEvent: event => operationEvents.push(event),
+  }));
+  assert.deepEqual(operationEvents.map(event => event.type), [
+    'provider_selected', 'provider_activity', 'provider_call_terminal',
+  ]);
+  assert.deepEqual(fallbackEvents, []);
+});
+
 test('operation-mode construction and enhanced query never touch a target path', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'home23-query-operation-'));
   const forbidden = path.join(root, 'target-must-not-exist');
@@ -291,6 +303,7 @@ test('operation PGS selection delegates only to the pinned package path', async 
   });
   const pin = sourcePin();
   const signal = new AbortController().signal;
+  const reportEvent = () => {};
   const result = await engine.executeEnhancedQuery('pgs query', {
     operationType: 'pgs',
     enablePGS: true,
@@ -300,6 +313,7 @@ test('operation PGS selection delegates only to the pinned package path', async 
     pgsSweep: { provider: 'alpha', model: 'answer-model' },
     pgsSynth: { provider: 'alpha', model: 'answer-model' },
     pgsConfig: { sweepFraction: 0.5 },
+    reportEvent,
     signal,
   });
 
@@ -307,6 +321,7 @@ test('operation PGS selection delegates only to the pinned package path', async 
   assert.equal(forwarded.length, 1);
   assert.equal(forwarded[0].sourcePin, pin);
   assert.equal(forwarded[0].signal, signal);
+  assert.equal(forwarded[0].reportEvent, reportEvent);
   assert.deepEqual(forwarded[0].pgsConfig, { sweepFraction: 0.5 });
   assert.equal(pin.releaseCount(), 0);
 });
