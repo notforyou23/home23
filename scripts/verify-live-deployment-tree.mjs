@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFile as execFileCallback } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -18,6 +18,42 @@ import {
 } from './lib/brain-acceptance-common.mjs';
 
 const execFile = promisify(execFileCallback);
+const AUDIT_KEY_FILE = 'audit-key';
+const AUDIT_AUTHORITY_FILE = 'audit-authority.json';
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function authenticatedValue(key, value) {
+  return {
+    ...value,
+    auditMac: createHmac('sha256', key).update(stableJson(value)).digest('hex'),
+  };
+}
+
+function verifyAuthenticatedValue(key, value, code) {
+  if (!value || Array.isArray(value) || typeof value !== 'object'
+      || typeof value.auditMac !== 'string' || !/^[a-f0-9]{64}$/.test(value.auditMac)) {
+    throw typedError(code);
+  }
+  const { auditMac, ...payload } = value;
+  const expected = createHmac('sha256', key).update(stableJson(payload)).digest('hex');
+  if (auditMac !== expected) throw typedError(code);
+  return payload;
+}
+
+function directoryIdentity(directory, stat) {
+  return {
+    path: directory,
+    dev: stat.dev.toString(),
+    ino: stat.ino.toString(),
+  };
+}
 
 async function git(cwd, args, options = {}) {
   try {
@@ -170,7 +206,7 @@ async function syncDirectory(directory) {
   try { await handle.sync(); } finally { await handle.close(); }
 }
 
-async function writePreAuthorityFile(auditDir, relative, bytes) {
+async function writePreAuthorityFile(auditDir, relative, bytes, { createNew = false } = {}) {
   const target = path.join(auditDir, relative);
   if (!isInsideOrEqual(auditDir, target) || target === auditDir) {
     throw typedError('deployment_output_invalid');
@@ -195,10 +231,20 @@ async function writePreAuthorityFile(auditDir, relative, bytes) {
       if (error.code === 'ENOENT') return null;
       throw error;
     });
+    if (existing && createNew) throw typedError('audit_output_collision', relative);
     if (existing && (!existing.isFile() || existing.isSymbolicLink())) {
       throw typedError('deployment_output_invalid');
     }
-    await fsp.rename(temporary, target);
+    if (createNew) {
+      try { await fsp.link(temporary, target); }
+      catch (error) {
+        if (error.code === 'EEXIST') throw typedError('audit_output_collision', relative);
+        throw error;
+      }
+      await fsp.rm(temporary);
+    } else {
+      await fsp.rename(temporary, target);
+    }
     await syncDirectory(canonicalParent);
   } catch (error) {
     await fsp.rm(temporary, { force: true }).catch(() => {});
@@ -207,22 +253,133 @@ async function writePreAuthorityFile(auditDir, relative, bytes) {
   return target;
 }
 
-async function writePreAuthorityJson(auditDir, relative, value) {
-  await writePreAuthorityFile(auditDir, relative, `${JSON.stringify(value, null, 2)}\n`);
+async function writePreAuthorityJson(auditDir, relative, value, options) {
+  await writePreAuthorityFile(auditDir, relative, `${JSON.stringify(value, null, 2)}\n`, options);
   return value;
 }
 
-async function writeState(auditDir, state) {
-  return writePreAuthorityJson(auditDir, 'deployment-state.json', {
+async function initializeAuditAuthority(audit, live, base, feature) {
+  const existing = await fsp.readdir(audit.path);
+  if (existing.length !== 0) throw typedError('audit_output_collision', existing.sort().join(','));
+  const key = randomBytes(32);
+  await writePreAuthorityFile(audit.path, AUDIT_KEY_FILE, key, { createNew: true });
+  const [auditStat, liveStat] = await Promise.all([
+    fsp.lstat(audit.path, { bigint: true }),
+    fsp.lstat(live.path, { bigint: true }),
+  ]);
+  const payload = {
+    schemaVersion: 1,
+    auditId: randomUUID(),
+    audit: directoryIdentity(audit.path, auditStat),
+    live: directoryIdentity(live.path, liveStat),
+    base,
+    feature,
+    keySha256: sha256Bytes(key),
+    createdAt: new Date().toISOString(),
+  };
+  await writePreAuthorityJson(
+    audit.path,
+    AUDIT_AUTHORITY_FILE,
+    authenticatedValue(key, payload),
+    { createNew: true },
+  );
+  return { key, authority: payload };
+}
+
+async function loadAuditAuthority(audit) {
+  let key;
+  let raw;
+  try {
+    const keyPath = path.join(audit.path, AUDIT_KEY_FILE);
+    const keyStat = await fsp.lstat(keyPath);
+    if (!keyStat.isFile() || keyStat.isSymbolicLink() || (keyStat.mode & 0o777) !== 0o600) {
+      throw typedError('deployment_audit_identity_changed');
+    }
+    key = await fsp.readFile(keyPath);
+    if (key.length !== 32) throw typedError('deployment_audit_identity_changed');
+    raw = await readJson(path.join(audit.path, AUDIT_AUTHORITY_FILE));
+  } catch (error) {
+    if (error?.code === 'deployment_audit_identity_changed') throw error;
+    throw typedError('deployment_audit_identity_changed', 'deployment audit authority unavailable', {
+      cause: error,
+    });
+  }
+  let authority;
+  try { authority = verifyAuthenticatedValue(key, raw, 'deployment_audit_identity_changed'); }
+  catch (error) { throw error; }
+  const [auditStat, liveStat] = await Promise.all([
+    fsp.lstat(audit.path, { bigint: true }),
+    fsp.lstat(authority.live?.path, { bigint: true }),
+  ]).catch((error) => {
+    throw typedError('deployment_audit_identity_changed', 'deployment authority path unavailable', {
+      cause: error,
+    });
+  });
+  if (authority.keySha256 !== sha256Bytes(key)
+      || authority.audit?.path !== audit.path
+      || authority.audit.dev !== auditStat.dev.toString()
+      || authority.audit.ino !== auditStat.ino.toString()
+      || authority.live?.dev !== liveStat.dev.toString()
+      || authority.live?.ino !== liveStat.ino.toString()
+      || await fsp.realpath(authority.live.path) !== authority.live.path) {
+    throw typedError('deployment_audit_identity_changed');
+  }
+  return { key, authority };
+}
+
+function stateFile(phase) {
+  return `deployment-state.${phase}.json`;
+}
+
+async function writeState(auditDir, key, state) {
+  const record = authenticatedValue(key, {
     helper: 'verify-live-deployment-tree',
     artifact: 'state',
     preAuthority: true,
     ...state,
   });
+  await writePreAuthorityJson(auditDir, stateFile(state.phase), record, { createNew: true });
+  await writePreAuthorityJson(auditDir, 'deployment-state.json', record);
+  return record;
 }
 
-async function readState(auditDir) {
-  return readJson(path.join(auditDir, 'deployment-state.json'));
+async function readState(auditDir, key, phase) {
+  let raw;
+  try { raw = await readJson(path.join(auditDir, stateFile(phase))); }
+  catch (error) {
+    throw typedError('deployment_state_auth_failed', 'deployment state unavailable', { cause: error });
+  }
+  return verifyAuthenticatedValue(key, raw, 'deployment_state_auth_failed');
+}
+
+async function writeRows(auditDir, key, auditId, rows) {
+  const encoded = rows.map((row) => JSON.stringify(authenticatedValue(key, {
+    ...row,
+    auditId,
+  }))).join('\n') + (rows.length ? '\n' : '');
+  await writePreAuthorityFile(auditDir, 'three-way.jsonl', encoded, { createNew: true });
+  return { count: rows.length, sha256: sha256Bytes(Buffer.from(encoded)) };
+}
+
+async function verifyRows(auditDir, key, auditId, expected) {
+  let bytes;
+  try { bytes = await fsp.readFile(path.join(auditDir, 'three-way.jsonl')); }
+  catch (error) { throw typedError('deployment_rows_auth_failed', 'deployment rows unavailable', { cause: error }); }
+  if (sha256Bytes(bytes) !== expected.sha256) throw typedError('deployment_rows_auth_failed');
+  const lines = bytes.toString('utf8').split('\n').filter(Boolean);
+  if (lines.length !== expected.count) throw typedError('deployment_rows_auth_failed');
+  const seen = new Set();
+  for (const line of lines) {
+    let raw;
+    try { raw = JSON.parse(line); } catch (error) {
+      throw typedError('deployment_rows_auth_failed', 'deployment row JSON invalid', { cause: error });
+    }
+    const row = verifyAuthenticatedValue(key, raw, 'deployment_rows_auth_failed');
+    if (row.auditId !== auditId || typeof row.path !== 'string' || seen.has(row.path)) {
+      throw typedError('deployment_rows_auth_failed');
+    }
+    seen.add(row.path);
+  }
 }
 
 export async function prepareDeploymentTree({ base, feature, liveRoot, auditDir } = {}) {
@@ -233,6 +390,7 @@ export async function prepareDeploymentTree({ base, feature, liveRoot, auditDir 
   }
   const baseCommit = await resolveCommit(live.path, base, 'base');
   const featureCommit = await resolveCommit(live.path, feature, 'feature');
+  const auditAuth = await initializeAuditAuthority(audit, live, baseCommit, featureCommit);
   const baseEntries = await treeEntries(live.path, baseCommit);
   const featureEntries = await treeEntries(live.path, featureCommit);
   const tracked = new Set(splitNull(await git(live.path, ['ls-files', '-z'], { encoding: null })));
@@ -244,8 +402,8 @@ export async function prepareDeploymentTree({ base, feature, liveRoot, auditDir 
     if (baseEntries.has(candidate) || featureEntries.has(candidate)) paths.add(candidate);
   }
   const expectedRoot = path.join(audit.path, 'expected', 'files');
-  await fsp.rm(path.join(audit.path, 'expected'), { recursive: true, force: true });
   await fsp.mkdir(expectedRoot, { recursive: true, mode: 0o700 });
+  const expectedRootStat = await fsp.lstat(expectedRoot, { bigint: true });
   const threeWayRows = [];
   const expectedManifest = [];
   const expectedAbsent = [];
@@ -288,7 +446,18 @@ export async function prepareDeploymentTree({ base, feature, liveRoot, auditDir 
     if (!merged && resolution === 'conflict') conflicts.push(filePath);
     if (merged) {
       await materializeBlob(expectedRoot, filePath, merged);
-      expectedManifest.push({ path: filePath, mode: merged.mode, sha256: hashBlob(merged) });
+      const materialized = path.join(expectedRoot, filePath);
+      const stat = await fsp.lstat(materialized, { bigint: true });
+      expectedManifest.push({
+        path: filePath,
+        mode: merged.mode,
+        sha256: hashBlob(merged),
+        dev: stat.dev.toString(),
+        ino: stat.ino.toString(),
+        size: Number(stat.size),
+        mtimeNs: stat.mtimeNs.toString(),
+        ctimeNs: stat.ctimeNs.toString(),
+      });
     } else if (resolution !== 'conflict') {
       expectedAbsent.push(filePath);
     }
@@ -296,14 +465,22 @@ export async function prepareDeploymentTree({ base, feature, liveRoot, auditDir 
   const indexPath = await gitPath(live.path, 'index');
   const indexHash = await fileHashOrAbsent(indexPath);
   const unrelatedUntracked = await untrackedInventory(live.path, new Set(expectedManifest.map((row) => row.path)));
+  const rowsIdentity = await writeRows(
+    audit.path,
+    auditAuth.key,
+    auditAuth.authority.auditId,
+    threeWayRows,
+  );
   const state = {
     schemaVersion: 1,
     phase: 'prepared',
+    auditId: auditAuth.authority.auditId,
     base: baseCommit,
     feature: featureCommit,
     liveRoot: live.path,
     auditDir: audit.path,
     expectedRoot,
+    expectedRootIdentity: directoryIdentity(expectedRoot, expectedRootStat),
     expectedManifest,
     expectedAbsent,
     conflicts,
@@ -312,13 +489,9 @@ export async function prepareDeploymentTree({ base, feature, liveRoot, auditDir 
     unrelatedUntracked,
     expectedTree: null,
     actualTree: null,
+    threeWayRows: rowsIdentity,
   };
-  await writePreAuthorityFile(
-    audit.path,
-    'three-way.jsonl',
-    threeWayRows.map((row) => JSON.stringify(row)).join('\n') + (threeWayRows.length ? '\n' : ''),
-  );
-  await writeState(audit.path, state);
+  await writeState(audit.path, auditAuth.key, state);
   await writePreAuthorityJson(audit.path, 'deployment-tree.json', {
     helper: 'verify-live-deployment-tree',
     mode: 'prepare',
@@ -332,12 +505,18 @@ export async function prepareDeploymentTree({ base, feature, liveRoot, auditDir 
 
 async function externalTreeOid(auditDir, filesRoot, label) {
   const repository = path.join(auditDir, `tree-repository-${label}`);
-  await fsp.rm(repository, { recursive: true, force: true });
-  await fsp.mkdir(repository, { recursive: true, mode: 0o700 });
+  try { await fsp.mkdir(repository, { recursive: false, mode: 0o700 }); }
+  catch (error) {
+    if (error.code === 'EEXIST') throw typedError('audit_output_collision', path.basename(repository));
+    throw error;
+  }
   await git(repository, ['init', '--quiet']);
   const gitDirectory = path.join(repository, '.git');
   const env = { ...process.env, GIT_INDEX_FILE: path.join(auditDir, `${label}.index`) };
-  await fsp.rm(env.GIT_INDEX_FILE, { force: true });
+  if (await fsp.lstat(env.GIT_INDEX_FILE).then(() => true, (error) => {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  })) throw typedError('audit_output_collision', path.basename(env.GIT_INDEX_FILE));
   await git(repository, [
     `--git-dir=${gitDirectory}`, `--work-tree=${filesRoot}`, 'add', '-A', '--', '.',
   ], { env });
@@ -348,20 +527,82 @@ async function externalTreeOid(auditDir, filesRoot, label) {
 
 function stateCore(state) {
   const fields = [
-    'schemaVersion', 'base', 'feature', 'liveRoot', 'auditDir', 'expectedRoot',
+    'schemaVersion', 'auditId', 'base', 'feature', 'liveRoot', 'auditDir', 'expectedRoot',
+    'expectedRootIdentity', 'threeWayRows',
     'expectedManifest', 'expectedAbsent', 'conflicts', 'liveIndexPath', 'liveIndexSha256',
     'unrelatedUntracked', 'expectedTree', 'actualTree',
   ];
   return Object.fromEntries(fields.map((field) => [field, state[field]]));
 }
 
+async function verifyExpectedTreeFiles(state) {
+  let rootStat;
+  try { rootStat = await fsp.lstat(state.expectedRoot, { bigint: true }); }
+  catch (error) { throw typedError('expected_tree_changed', 'expected root unavailable', { cause: error }); }
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()
+      || state.expectedRootIdentity?.path !== state.expectedRoot
+      || state.expectedRootIdentity.dev !== rootStat.dev.toString()
+      || state.expectedRootIdentity.ino !== rootStat.ino.toString()
+      || await fsp.realpath(state.expectedRoot) !== state.expectedRoot) {
+    throw typedError('expected_tree_changed');
+  }
+  const expectedPaths = new Set();
+  for (const entry of state.expectedManifest || []) {
+    if (!entry || typeof entry.path !== 'string' || expectedPaths.has(entry.path)) {
+      throw typedError('expected_tree_changed');
+    }
+    expectedPaths.add(entry.path);
+    const file = path.join(state.expectedRoot, entry.path);
+    if (!isInsideOrEqual(state.expectedRoot, file)) throw typedError('expected_tree_changed');
+    let stat;
+    try { stat = await fsp.lstat(file, { bigint: true }); }
+    catch (error) { throw typedError('expected_tree_changed', entry.path, { cause: error }); }
+    const blob = stat.isSymbolicLink()
+      ? { mode: '120000', bytes: Buffer.from(await fsp.readlink(file)) }
+      : stat.isFile()
+        ? { mode: (Number(stat.mode) & 0o111) ? '100755' : '100644', bytes: await fsp.readFile(file) }
+        : null;
+    if (!blob || blob.mode !== entry.mode || hashBlob(blob) !== entry.sha256
+        || stat.dev.toString() !== entry.dev || stat.ino.toString() !== entry.ino
+        || Number(stat.size) !== entry.size || stat.mtimeNs.toString() !== entry.mtimeNs
+        || stat.ctimeNs.toString() !== entry.ctimeNs) {
+      throw typedError('expected_tree_changed', entry.path);
+    }
+  }
+  const actualPaths = [];
+  async function walk(directory, relative = '') {
+    for (const name of await fsp.readdir(directory)) {
+      const absolute = path.join(directory, name);
+      const childRelative = relative ? path.join(relative, name) : name;
+      const stat = await fsp.lstat(absolute);
+      if (stat.isDirectory() && !stat.isSymbolicLink()) await walk(absolute, childRelative);
+      else actualPaths.push(childRelative);
+    }
+  }
+  await walk(state.expectedRoot);
+  actualPaths.sort();
+  if (JSON.stringify(actualPaths) !== JSON.stringify([...expectedPaths].sort())) {
+    throw typedError('expected_tree_changed');
+  }
+}
+
 export async function sealDeploymentTree({ auditDir } = {}) {
   const audit = await canonicalDirectory(auditDir, 'deployment audit directory');
-  const state = await readState(audit.path);
+  const auditAuth = await loadAuditAuthority(audit);
+  const state = await readState(audit.path, auditAuth.key, 'prepared');
   if (state.phase !== 'prepared' || state.conflicts?.length) throw typedError('deployment_tree_not_prepared');
+  if (state.auditId !== auditAuth.authority.auditId
+      || state.base !== auditAuth.authority.base
+      || state.feature !== auditAuth.authority.feature
+      || state.liveRoot !== auditAuth.authority.live.path
+      || state.auditDir !== audit.path) {
+    throw typedError('deployment_state_auth_failed');
+  }
+  await verifyRows(audit.path, auditAuth.key, state.auditId, state.threeWayRows);
+  await verifyExpectedTreeFiles(state);
   const expectedTree = await externalTreeOid(audit.path, state.expectedRoot, 'expected');
   const next = { ...stateCore(state), phase: 'sealed', expectedTree, actualTree: null };
-  await writeState(audit.path, next);
+  await writeState(audit.path, auditAuth.key, next);
   await writePreAuthorityJson(audit.path, 'deployment-tree.json', {
     helper: 'verify-live-deployment-tree', mode: 'seal', preAuthority: true, ok: true, ...next,
   });
@@ -370,7 +611,10 @@ export async function sealDeploymentTree({ auditDir } = {}) {
 
 async function materializeActual(state, auditDir) {
   const root = path.join(auditDir, 'actual', 'files');
-  await fsp.rm(path.join(auditDir, 'actual'), { recursive: true, force: true });
+  if (await fsp.lstat(path.join(auditDir, 'actual')).then(() => true, (error) => {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  })) throw typedError('audit_output_collision', 'actual');
   await fsp.mkdir(root, { recursive: true, mode: 0o700 });
   for (const expected of state.expectedManifest) {
     const blob = await workingBlob(state.liveRoot, expected.path);
@@ -388,8 +632,18 @@ async function materializeActual(state, auditDir) {
 
 export async function verifyDeploymentTree({ auditDir } = {}) {
   const audit = await canonicalDirectory(auditDir, 'deployment audit directory');
-  const state = await readState(audit.path);
+  const auditAuth = await loadAuditAuthority(audit);
+  const state = await readState(audit.path, auditAuth.key, 'sealed');
   if (state.phase !== 'sealed' || !state.expectedTree) throw typedError('deployment_tree_not_sealed');
+  if (state.auditId !== auditAuth.authority.auditId
+      || state.base !== auditAuth.authority.base
+      || state.feature !== auditAuth.authority.feature
+      || state.liveRoot !== auditAuth.authority.live.path
+      || state.auditDir !== audit.path) {
+    throw typedError('deployment_state_auth_failed');
+  }
+  await verifyRows(audit.path, auditAuth.key, state.auditId, state.threeWayRows);
+  await verifyExpectedTreeFiles(state);
   const currentIndexHash = await fileHashOrAbsent(state.liveIndexPath);
   if (currentIndexHash !== state.liveIndexSha256) throw typedError('live_index_changed');
   const currentUntracked = await untrackedInventory(
@@ -403,7 +657,7 @@ export async function verifyDeploymentTree({ auditDir } = {}) {
   const actualTree = await externalTreeOid(audit.path, actualRoot, 'actual');
   if (actualTree !== state.expectedTree) throw typedError('live_tree_oid_mismatch');
   const next = { ...stateCore(state), phase: 'verified', actualTree };
-  await writeState(audit.path, next);
+  await writeState(audit.path, auditAuth.key, next);
   await writePreAuthorityJson(audit.path, 'deployment-tree.json', {
     helper: 'verify-live-deployment-tree', mode: 'verify', preAuthority: true, ok: true,
     indexUnchanged: true, unrelatedUntrackedUnchanged: true, ...next,

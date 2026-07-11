@@ -221,3 +221,69 @@ test('conflicts block sealing and one-byte or unrelated-untracked drift blocks v
     auditDir: untracked.auditDir, context: untracked.context,
   }), (error) => error.code === 'unrelated_untracked_changed');
 });
+
+test('pre-authority prepare works in an external audit without receipt environment', async (t) => {
+  const { prepareDeploymentTree } = await import('../../scripts/verify-live-deployment-tree.mjs');
+  const state = await fixture();
+  t.after(() => fs.rm(state.root, { recursive: true, force: true }));
+  const externalAudit = path.join(state.root, 'pre-authority-audit');
+  const prepared = await prepareDeploymentTree({
+    base: state.base,
+    feature: state.feature,
+    liveRoot: state.liveRoot,
+    auditDir: externalAudit,
+  });
+  assert.equal(prepared.auditDir, externalAudit);
+  assert.equal(await fs.realpath(externalAudit), externalAudit);
+  assert.equal((await fs.stat(path.join(externalAudit, 'audit-key'))).mode & 0o777, 0o600);
+  assert.equal((await fs.stat(path.join(externalAudit, 'audit-authority.json'))).mode & 0o777, 0o600);
+});
+
+test('authenticated state, row, expected-file, and audit identities survive every phase or fail closed', async (t) => {
+  const { prepareDeploymentTree, sealDeploymentTree } = await import('../../scripts/verify-live-deployment-tree.mjs');
+  for (const [label, mutate, expectedCode] of [
+    ['state', async (state) => {
+      const file = path.join(state.auditDir, 'deployment-state.prepared.json');
+      const value = JSON.parse(await fs.readFile(file, 'utf8'));
+      value.base = '0'.repeat(40);
+      await fs.writeFile(file, JSON.stringify(value));
+    }, 'deployment_state_auth_failed'],
+    ['row', async (state) => {
+      const file = path.join(state.auditDir, 'three-way.jsonl');
+      await fs.appendFile(file, '{}\n');
+    }, 'deployment_rows_auth_failed'],
+    ['expected-file', async (state, prepared) => {
+      const entry = prepared.expectedManifest.find((row) => row.mode !== '120000');
+      await fs.appendFile(path.join(prepared.expectedRoot, entry.path), 'tamper');
+    }, 'expected_tree_changed'],
+    ['audit-identity', async (state) => {
+      const original = state.auditDir;
+      const moved = `${original}.moved`;
+      await fs.rename(original, moved);
+      await fs.mkdir(original);
+      await fs.cp(moved, original, { recursive: true });
+    }, 'deployment_audit_identity_changed'],
+  ]) {
+    const state = await fixture();
+    t.after(() => fs.rm(state.root, { recursive: true, force: true }));
+    const prepared = await prepareDeploymentTree(state);
+    await mutate(state, prepared);
+    await assert.rejects(
+      sealDeploymentTree({ auditDir: state.auditDir, context: state.context }),
+      (error) => error.code === expectedCode,
+      label,
+    );
+  }
+});
+
+test('prepare refuses colliding audit outputs without deleting them', async (t) => {
+  const { prepareDeploymentTree } = await import('../../scripts/verify-live-deployment-tree.mjs');
+  const state = await fixture();
+  t.after(() => fs.rm(state.root, { recursive: true, force: true }));
+  await fs.mkdir(state.auditDir, { recursive: true });
+  const collision = path.join(state.auditDir, 'expected');
+  await fs.mkdir(collision);
+  await fs.writeFile(path.join(collision, 'operator.txt'), 'preserve me\n');
+  await assert.rejects(prepareDeploymentTree(state), (error) => error.code === 'audit_output_collision');
+  assert.equal(await fs.readFile(path.join(collision, 'operator.txt'), 'utf8'), 'preserve me\n');
+});
