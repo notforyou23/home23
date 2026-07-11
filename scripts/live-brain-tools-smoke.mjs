@@ -46,6 +46,11 @@ export const SCENARIOS = Object.freeze([
 ]);
 const TERMINAL = new Set(['complete', 'partial', 'failed', 'cancelled', 'interrupted']);
 const PROVIDER_OPERATION_TYPES = new Set(['query', 'pgs', 'research_compile', 'synthesis']);
+const PROVIDER_TERMINAL_IDENTITIES = new Map([
+  ['query', { phase: 'query', providerCallId: 'query' }],
+  ['research_compile', { phase: 'research_compile', providerCallId: 'research_compile' }],
+  ['synthesis', { phase: 'synthesis', providerCallId: 'synthesis' }],
+]);
 const PROVIDER_TERMINAL_OUTCOMES = new Set([
   'complete', 'partial', 'failed', 'cancelled', 'aborted',
 ]);
@@ -367,7 +372,7 @@ export function createActivityCollector({
 }
 
 function providerTerminalEventValid(evidence, terminal, { retained = false } = {}) {
-  return evidence
+  const structurallyValid = evidence
     && (retained
       ? evidence.evidenceSource === 'durable-operation-store'
       : evidence.type === 'provider_call_terminal')
@@ -382,6 +387,11 @@ function providerTerminalEventValid(evidence, terminal, { retained = false } = {
     && (evidence.partitionId === undefined
       || (typeof evidence.partitionId === 'string' && Boolean(evidence.partitionId.trim())))
     && PROVIDER_TERMINAL_OUTCOMES.has(evidence.outcome);
+  if (!structurallyValid) return false;
+  const expectedIdentity = PROVIDER_TERMINAL_IDENTITIES.get(terminal.operationType);
+  return !expectedIdentity
+    || (evidence.phase === expectedIdentity.phase
+      && evidence.providerCallId === expectedIdentity.providerCallId);
 }
 
 function dedupeProviderTerminalEvents(events) {
@@ -421,6 +431,15 @@ function pgsProviderTerminalCoverage(terminal, events) {
       || !Number.isSafeInteger(successfulSweeps)
       || successfulSweeps !== sweeps.length) {
     return false;
+  }
+  const workUnitPartitions = new Map();
+  for (const sweep of sweeps) {
+    if (!sweep || typeof sweep.workUnitId !== 'string' || !sweep.workUnitId
+        || typeof sweep.partitionId !== 'string' || !sweep.partitionId
+        || workUnitPartitions.has(sweep.workUnitId)) {
+      return false;
+    }
+    workUnitPartitions.set(sweep.workUnitId, sweep.partitionId);
   }
   const sweepsCovered = sweeps.every((sweep) => sweep
     && typeof sweep.workUnitId === 'string' && sweep.workUnitId
@@ -698,23 +717,11 @@ function usefulProtectedResult(terminal) {
   return terminal?.state === 'complete' && nonemptyAnswer(terminal?.result);
 }
 
-function assertCanaryBoundUsefulResult(terminal, canary, activityLog = []) {
+function assertCanaryBoundUsefulResult(terminal, canary) {
   const revision = evidenceRevision(terminal?.sourceEvidence);
   assertTerminalBrainIdentity(terminal, canary?.selectedBrain, 'canary_target_mismatch');
   if (revision !== canary.sourceRevision) throw typedError('canary_source_revision_mismatch');
-  try {
-    assertPositiveSourceEvidence(terminal?.sourceEvidence);
-  } catch (error) {
-    const evidence = terminal?.sourceEvidence;
-    const providerProof = providerTerminalProof(terminal, activityLog, null);
-    if (evidence?.sourceHealth !== 'degraded' || evidence.freshness !== 'unknown'
-        || !Number.isSafeInteger(Number(evidence.authoritativeTotals?.nodes))
-        || Number(evidence.authoritativeTotals.nodes) <= 0
-        || !usefulProtectedResult(terminal)
-        || providerProof.validated !== true) {
-      throw error;
-    }
-  }
+  assertPositiveSourceEvidence(terminal?.sourceEvidence);
   if (!usefulProtectedResult(terminal)) throw typedError('operation_success_required');
 }
 

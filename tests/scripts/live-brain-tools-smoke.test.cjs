@@ -313,7 +313,7 @@ test('large pinned PGS partial retains canonical null-answer sweep outputs and e
       outcome: 'failed',
     }),
   ];
-  const degradedRow = await executeScenario({
+  await assert.rejects(executeScenario({
     scenario: 'pgs', modules,
     client: {
       async query() { return degradedPartial; },
@@ -329,10 +329,48 @@ test('large pinned PGS partial retains canonical null-answer sweep outputs and e
     context: state.context, baseUrl: 'http://fixture', callerAgent: 'jerry',
     signal: new AbortController().signal,
     activityLog: degradedEvents,
+  }), (error) => error.code === 'source_evidence_not_useful');
+
+  const duplicateSweepPartial = operation({
+    ...partial,
+    operationId: 'op_pgs_duplicate_sweep_0001',
+    result: {
+      answer: null,
+      sweepOutputs: [degradedSweep, { ...degradedSweep, output: 'duplicate receipt row' }],
+      metadata: { pgs: { successfulSweeps: 2, retryablePartitions: ['retry-duplicate'] } },
+    },
   });
-  assert.equal(degradedRow.state, 'partial');
-  assert.equal(degradedRow.sourceHealth, 'degraded');
-  assert.equal(degradedRow.providerTerminalValidated, true);
+  await assert.rejects(executeScenario({
+    scenario: 'pgs', modules,
+    client: {
+      async query() { return duplicateSweepPartial; },
+      async inspectOperation() { return duplicateSweepPartial; },
+    },
+    values: {
+      'canary-receipt': canary,
+      'target-brain': 'brain-jerry',
+      'require-authoritative-nodes': '100000',
+      'pgs-sweep-selection': JSON.stringify({ provider: 'fixture-provider', model: 'fixture-model' }),
+      'pgs-synth-selection': JSON.stringify({ provider: 'fixture-provider', model: 'fixture-model' }),
+    },
+    context: state.context, baseUrl: 'http://fixture', callerAgent: 'jerry',
+    signal: new AbortController().signal,
+    activityLog: [
+      providerTerminal(duplicateSweepPartial, {
+        eventSequence: 1,
+        phase: 'pgs_sweep',
+        providerCallId: `pgs:${degradedSweep.workUnitId}`,
+        workUnitId: degradedSweep.workUnitId,
+        partitionId: degradedSweep.partitionId,
+      }),
+      providerTerminal(duplicateSweepPartial, {
+        eventSequence: 2,
+        phase: 'pgs_synthesis',
+        providerCallId: 'pgs:synthesis',
+        outcome: 'failed',
+      }),
+    ],
+  }), (error) => error.code === 'provider_terminal_unproven');
 
   await assert.rejects(executeScenario({
     scenario: 'pgs', modules,
@@ -616,26 +654,42 @@ test('HTTP, receipt, and memory evidence readers remain bounded before parse', a
   assert.equal(summary.samples.length, summary.retainedSamples);
 });
 
-test('COSMO authority rejection keeps its hard deadline when the caller signal is non-expiring', async () => {
+test('COSMO authority rejection keeps an independent hard deadline for status, result, and cancel', async () => {
   const { proveCosmoAuthorityRejection } = await import('../../scripts/live-brain-tools-smoke.mjs');
-  const started = Date.now();
-  await assert.rejects(
-    proveCosmoAuthorityRejection({
-      baseUrl: 'http://127.0.0.1:43210',
-      operationId: 'brop_' + 'a'.repeat(32),
-      signal: new AbortController().signal,
-      timeoutMs: 10,
-      fetchImpl: async (_url, init) => new Promise((resolve, reject) => {
-        if (init.signal.aborted) {
-          reject(init.signal.reason);
-          return;
-        }
-        init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+  for (const hungAction of ['status', 'result', 'cancel']) {
+    const observed = [];
+    const started = Date.now();
+    await assert.rejects(
+      proveCosmoAuthorityRejection({
+        baseUrl: 'http://127.0.0.1:43210',
+        operationId: 'brop_' + 'a'.repeat(32),
+        signal: new AbortController().signal,
+        timeoutMs: 10,
+        fetchImpl: async (url, init) => {
+          const action = new URL(url).pathname.split('/').at(-1);
+          observed.push(action);
+          if (action !== hungAction) {
+            return new Response(JSON.stringify({
+              success: false,
+              error: { code: 'capability_invalid' },
+            }), { status: 401, headers: { 'content-type': 'application/json' } });
+          }
+          return new Promise((resolve, reject) => {
+            if (init.signal.aborted) {
+              reject(init.signal.reason);
+              return;
+            }
+            init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+          });
+        },
       }),
-    }),
-    (error) => error.code === 'cosmo_authority_rejection_unproven',
-  );
-  assert.ok(Date.now() - started < 1_000);
+      (error) => error.code === 'cosmo_authority_rejection_unproven'
+        && error.message.includes(hungAction),
+    );
+    assert.deepEqual(observed, ['status', 'result', 'cancel'].slice(0, observed.length));
+    assert.equal(observed.at(-1), hungAction);
+    assert.ok(Date.now() - started < 1_000);
+  }
 });
 
 test('fixture cleanup owns signals, aborts work, removes handlers, and stops once', async () => {
@@ -797,6 +851,44 @@ test('authoritative canary discovery precedes query and typed failures remain fa
   });
   assert.equal(consumed.canaryNodeId, 'n-canary');
   assert.equal(consumed.canarySourceRevision, 7);
+
+  const degradedProviderProse = operation({
+    operationId: 'op_query_degraded_prose_0001',
+    sourceEvidence: {
+      sourceHealth: 'degraded', freshness: 'unknown', matchOutcome: 'unknown',
+      deltaWatermark: { revision: 7 },
+      authoritativeTotals: { nodes: 140_086, edges: 456_709 },
+      returnedTotals: { nodes: 0, edges: 0 },
+      selectedBrain: 'brain-jerry',
+    },
+    result: { answer: 'provider prose that is not exact source-match evidence' },
+  });
+  await assert.rejects(executeScenario({
+    scenario: 'direct-query', modules,
+    client: {
+      async query() { return degradedProviderProse; },
+      async inspectOperation() { return degradedProviderProse; },
+    },
+    values: { 'canary-receipt': consumedCanary }, context: state.context,
+    baseUrl: 'http://fixture', callerAgent: 'jerry', signal: new AbortController().signal,
+    activityLog: [providerTerminal(degradedProviderProse)],
+  }), (error) => error.code === 'source_evidence_not_useful');
+
+  for (const invalidIdentity of [
+    { phase: 'synthesis', providerCallId: 'query' },
+    { phase: 'query', providerCallId: 'synthesis' },
+  ]) {
+    await assert.rejects(executeScenario({
+      scenario: 'direct-query', modules,
+      client: {
+        async query() { return queryTerminal; },
+        async inspectOperation() { return queryTerminal; },
+      },
+      values: { 'canary-receipt': consumedCanary }, context: state.context,
+      baseUrl: 'http://fixture', callerAgent: 'jerry', signal: new AbortController().signal,
+      activityLog: [providerTerminal(queryTerminal, invalidIdentity)],
+    }), (error) => error.code === 'provider_terminal_unproven');
+  }
 
   const canary = await canaryReceipt(state);
   await assert.rejects(executeScenario({
