@@ -11,6 +11,7 @@ const UUIDS = Object.freeze({
   jerry: '11111111-1111-4111-8111-111111111111',
   forrest: '22222222-2222-4222-8222-222222222222',
 });
+const CAPTURED_CREATED_AT = '2026-07-11T11:59:00.000Z';
 
 function owner(pid = 424242) {
   return {
@@ -141,6 +142,34 @@ function safeChecks(overrides = {}) {
   };
 }
 
+function capturedAuthority(preflight, overrides = {}) {
+  return {
+    capturedManifest: preflight.manifest,
+    capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
+    approvalToken: preflight.approvalToken,
+    ...overrides,
+  };
+}
+
+async function writeCapturedPreflightReceipt(module, state, preflight, {
+  basename = `captured-${crypto.randomUUID()}.json`,
+  ...overrides
+} = {}) {
+  const receiptPath = path.join(state.outer, 'captured-receipts', basename);
+  const writeReceipt = await module.createCleanupReceiptWriter(receiptPath, state.homeRoot);
+  const receipt = await writeReceipt({
+    schemaVersion: 1,
+    kind: 'home23-orphan-brain-projection-cleanup',
+    status: 'dry_run',
+    createdAt: CAPTURED_CREATED_AT,
+    ...preflight,
+    ...overrides,
+  });
+  return { receiptPath, receipt };
+}
+
 async function digestPath(filePath) {
   const bytes = await fsp.readFile(filePath);
   return crypto.createHash('sha256').update(bytes).digest('hex');
@@ -169,7 +198,9 @@ test('dry run selects only exact immediate dashboard-source UUID roots', async (
 
   assert.equal(result.status, 'dry_run');
   assert.match(result.manifestSha256, /^[a-f0-9]{64}$/);
-  assert.equal(result.approvalToken, `APPLY-ORPHAN-BRAIN-PROJECTIONS:${result.manifestSha256}`);
+  assert.match(result.approvalScopeSha256, /^[a-f0-9]{64}$/);
+  assert.equal(result.approvalToken,
+    `APPLY-ORPHAN-BRAIN-PROJECTIONS:${result.approvalScopeSha256}`);
   assert.deepEqual(result.manifest.agents.map((entry) => entry.agent), ['forrest', 'jerry']);
   assert.deepEqual(
     result.manifest.agents.flatMap((entry) => entry.eligible.map((item) => item.name)).sort(),
@@ -412,6 +443,8 @@ test('an unaccounted listener blocks preflight and listener state is rechecked b
     receiptPath: state.receiptPath,
     capturedManifest: preflight.manifest,
     capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
     approvalToken: preflight.approvalToken,
     ...checks,
   });
@@ -439,6 +472,8 @@ test('a listener appearing after candidate hashing blocks the immediately pendin
     receiptPath: state.receiptPath,
     capturedManifest: preflight.manifest,
     capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
     approvalToken: preflight.approvalToken,
     ...checks,
     _testHooks: {
@@ -488,6 +523,8 @@ test('an explicitly protected listener is manifest-bound and cannot change ident
     receiptPath: state.receiptPath,
     capturedManifest: preflight.manifest,
     capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
     approvalToken: preflight.approvalToken,
     ...checks,
     _testHooks: {
@@ -496,6 +533,41 @@ test('an explicitly protected listener is manifest-bound and cannot change ident
   });
   assert.equal(result.status, 'partial');
   assert.ok(result.results.every((entry) => entry.error.code === 'cleanup_listener_inventory_changed'));
+});
+
+test('a protected listener identity change before apply requires a new approval', async (t) => {
+  const { applyOrphanBrainProjectionCleanup, preflightOrphanBrainProjections } = await import(SCRIPT);
+  const state = await createFixture();
+  t.after(() => fsp.rm(state.outer, { recursive: true, force: true }));
+  let replacement = false;
+  const checks = safeChecks({
+    protectedPorts: [5013],
+    inspectListeners: async () => [{
+      port: 5013,
+      pid: 3214,
+      command: 'protected-service',
+    }],
+    inspectListenerProcess: async () => ({
+      bootToken: 'boot-test',
+      processStartToken: replacement ? 'replacement-start' : 'protected-start',
+    }),
+  });
+  const preflight = await preflightOrphanBrainProjections({ homeRoot: state.homeRoot, ...checks });
+  replacement = true;
+
+  await assert.rejects(applyOrphanBrainProjectionCleanup({
+    homeRoot: state.homeRoot,
+    receiptPath: state.receiptPath,
+    capturedManifest: preflight.manifest,
+    capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
+    approvalToken: preflight.approvalToken,
+    ...checks,
+  }), (error) => error.code === 'cleanup_approval_scope_drift');
+  assert.equal((await fsp.lstat(state.candidates.jerry)).isDirectory(), true);
+  assert.equal((await fsp.lstat(state.candidates.forrest)).isDirectory(), true);
+  await assert.rejects(fsp.lstat(state.receiptPath), { code: 'ENOENT' });
 });
 
 test('apply requires the captured manifest and its explicit digest-bound token', async (t) => {
@@ -514,6 +586,8 @@ test('apply requires the captured manifest and its explicit digest-bound token',
     receiptPath: state.receiptPath,
     capturedManifest: preflight.manifest,
     capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
     approvalToken: 'yes',
     ...safeChecks(),
   }), (error) => error.code === 'cleanup_approval_token_invalid');
@@ -529,6 +603,8 @@ test('apply requires the captured manifest and its explicit digest-bound token',
     receiptPath: state.receiptPath,
     capturedManifest: preflight.manifest,
     capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
     approvalToken: preflight.approvalToken,
     ...safeChecks({ agents: ['jerry'], ports: [5001] }),
   }), (error) => error.code === 'cleanup_manifest_arguments_mismatch');
@@ -547,6 +623,8 @@ test('apply requires bounded explicit approval actor, text, and timestamp and re
     receiptPath: state.receiptPath,
     capturedManifest: preflight.manifest,
     capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
     approvalToken: preflight.approvalToken,
     ...checks,
     approvalActor: undefined,
@@ -557,6 +635,8 @@ test('apply requires bounded explicit approval actor, text, and timestamp and re
     receiptPath: state.receiptPath,
     capturedManifest: preflight.manifest,
     capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
     approvalToken: preflight.approvalToken,
     ...checks,
   });
@@ -567,33 +647,115 @@ test('apply requires bounded explicit approval actor, text, and timestamp and re
   });
 });
 
-test('captured dry-run receipts are mode-bound, identity-bound, and checksum-verified', async (t) => {
-  const { loadCapturedCleanupManifestReceipt } = await import(SCRIPT);
-  const state = await createFixture({ candidates: false });
+test('direct apply requires captured approval-scope and dry-run time authority before any checker', async (t) => {
+  const { applyOrphanBrainProjectionCleanup, preflightOrphanBrainProjections } = await import(SCRIPT);
+  const state = await createFixture();
   t.after(() => fsp.rm(state.outer, { recursive: true, force: true }));
-  const receipt = {
-    schemaVersion: 1,
-    kind: 'home23-orphan-brain-projection-cleanup',
-    status: 'dry_run',
-    manifest: { schemaVersion: 1 },
-    manifestSha256: 'a'.repeat(64),
+  const checks = safeChecks();
+  const preflight = await preflightOrphanBrainProjections({ homeRoot: state.homeRoot, ...checks });
+  const checkerTrap = async () => {
+    throw Object.assign(new Error('must reject before fresh preflight'), {
+      code: 'unexpected_fresh_preflight',
+    });
   };
-  const bodyBytes = Buffer.from(`${JSON.stringify(receipt)}\n`);
-  const complete = {
-    ...receipt,
-    receiptSha256: crypto.createHash('sha256').update(bodyBytes).digest('hex'),
+
+  await assert.rejects(applyOrphanBrainProjectionCleanup({
+    homeRoot: state.homeRoot,
+    receiptPath: state.receiptPath,
+    ...capturedAuthority(preflight, { capturedApprovalScopeSha256: undefined }),
+    ...checks,
+    getPm2States: checkerTrap,
+  }), (error) => error.code === 'cleanup_approval_scope_digest_invalid');
+  await assert.rejects(applyOrphanBrainProjectionCleanup({
+    homeRoot: state.homeRoot,
+    receiptPath: state.receiptPath,
+    ...capturedAuthority(preflight, { capturedCreatedAt: undefined }),
+    ...checks,
+    getPm2States: checkerTrap,
+  }), (error) => error.code === 'cleanup_approval_record_invalid');
+  assert.equal((await fsp.lstat(state.candidates.jerry)).isDirectory(), true);
+  await assert.rejects(fsp.lstat(state.receiptPath), { code: 'ENOENT' });
+});
+
+test('approval actor and timestamps are canonical, control-free, and postdate dry-run authority', async (t) => {
+  const { applyOrphanBrainProjectionCleanup, preflightOrphanBrainProjections } = await import(SCRIPT);
+  const state = await createFixture();
+  t.after(() => fsp.rm(state.outer, { recursive: true, force: true }));
+  const checks = safeChecks();
+  const preflight = await preflightOrphanBrainProjections({ homeRoot: state.homeRoot, ...checks });
+  const checkerTrap = async () => {
+    throw Object.assign(new Error('must reject before fresh preflight'), {
+      code: 'unexpected_fresh_preflight',
+    });
   };
-  const receiptPath = path.join(state.outer, 'captured.json');
-  await fsp.writeFile(receiptPath, `${JSON.stringify(complete)}\n`, { mode: 0o600 });
-  assert.deepEqual(await loadCapturedCleanupManifestReceipt(receiptPath), complete);
+  const invalidApprovals = [
+    { approvalActor: '   ' },
+    { approvalActor: 'jtr\toperator' },
+    { approvalAt: 'July 11, 2026' },
+    { approvalAt: '2026-07-11T11:58:59.999Z' },
+    { capturedCreatedAt: '2026-07-11' },
+  ];
+  for (const invalid of invalidApprovals) {
+    await assert.rejects(applyOrphanBrainProjectionCleanup({
+      homeRoot: state.homeRoot,
+      receiptPath: state.receiptPath,
+      ...capturedAuthority(preflight, invalid),
+      ...checks,
+      ...invalid,
+      getPm2States: checkerTrap,
+    }), (error) => error.code === 'cleanup_approval_record_invalid');
+  }
+  assert.equal((await fsp.lstat(state.candidates.jerry)).isDirectory(), true);
+  await assert.rejects(fsp.lstat(state.receiptPath), { code: 'ENOENT' });
+});
+
+test('captured receipt requires its canonical approval-scope digest, token, and creation time', async (t) => {
+  const module = await import(SCRIPT);
+  const state = await createFixture();
+  t.after(() => fsp.rm(state.outer, { recursive: true, force: true }));
+  const preflight = await module.preflightOrphanBrainProjections({
+    homeRoot: state.homeRoot,
+    ...safeChecks(),
+  });
+  const valid = await writeCapturedPreflightReceipt(module, state, preflight);
+  assert.deepEqual(await module.loadCapturedCleanupManifestReceipt(valid.receiptPath), valid.receipt);
+
+  const invalidReceipts = [
+    { approvalScopeSha256: undefined },
+    { approvalScopeSha256: 'f'.repeat(64) },
+    { approvalToken: 'APPLY-ORPHAN-BRAIN-PROJECTIONS:' + 'e'.repeat(64) },
+    { createdAt: undefined },
+    { createdAt: '2026-07-11' },
+  ];
+  for (const overrides of invalidReceipts) {
+    const invalid = await writeCapturedPreflightReceipt(module, state, preflight, overrides);
+    await assert.rejects(module.loadCapturedCleanupManifestReceipt(invalid.receiptPath),
+      (error) => ['cleanup_approval_scope_digest_invalid', 'cleanup_approval_token_invalid',
+        'cleanup_manifest_required']
+        .includes(error.code));
+  }
+});
+
+test('captured dry-run receipts are mode-bound, identity-bound, and checksum-verified', async (t) => {
+  const module = await import(SCRIPT);
+  const state = await createFixture();
+  t.after(() => fsp.rm(state.outer, { recursive: true, force: true }));
+  const preflight = await module.preflightOrphanBrainProjections({
+    homeRoot: state.homeRoot,
+    ...safeChecks(),
+  });
+  const { receiptPath, receipt: complete } = await writeCapturedPreflightReceipt(
+    module, state, preflight, { basename: 'captured.json' },
+  );
+  assert.deepEqual(await module.loadCapturedCleanupManifestReceipt(receiptPath), complete);
 
   await fsp.chmod(receiptPath, 0o644);
-  await assert.rejects(loadCapturedCleanupManifestReceipt(receiptPath),
+  await assert.rejects(module.loadCapturedCleanupManifestReceipt(receiptPath),
     (error) => error.code === 'cleanup_manifest_required');
   await fsp.chmod(receiptPath, 0o600);
   const tampered = { ...complete, manifestSha256: 'b'.repeat(64) };
   await fsp.writeFile(receiptPath, `${JSON.stringify(tampered)}\n`, { mode: 0o600 });
-  await assert.rejects(loadCapturedCleanupManifestReceipt(receiptPath),
+  await assert.rejects(module.loadCapturedCleanupManifestReceipt(receiptPath),
     (error) => error.code === 'cleanup_manifest_checksum_invalid');
 });
 
@@ -654,6 +816,8 @@ test('apply writes in-progress receipt before mutation, removes exact roots, and
     receiptPath: state.receiptPath,
     capturedManifest: preflight.manifest,
     capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
     approvalToken: preflight.approvalToken,
     ...safeChecks(),
     _testHooks: {
@@ -705,6 +869,8 @@ test('apply receipt carries candidate bytes, statfs delta, explicit boundaries, 
     receiptPath: state.receiptPath,
     capturedManifest: preflight.manifest,
     capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
     approvalToken: preflight.approvalToken,
     ...checks,
   });
@@ -723,9 +889,137 @@ test('apply receipt carries candidate bytes, statfs delta, explicit boundaries, 
   assert.equal(result.finalRuntime.listeners.status, 'passed');
   assert.equal(result.finalRuntime.openFileDescriptors.status, 'passed');
   assert.equal(result.finalRuntime.openFileDescriptors.entries.length, 2);
+  assert.match(result.approvalScopeSha256, /^[a-f0-9]{64}$/);
+  assert.match(result.applyPreflightManifestSha256, /^[a-f0-9]{64}$/);
+  assert.equal(result.mutationAudit.status, 'passed');
+  assert.ok(result.mutationAudit.events.length >= 8);
+  assert.deepEqual(result.concurrentContentDrift, []);
 });
 
-test('apply refuses manifest drift before any quarantine rename', async (t) => {
+test('candidate mutation audit records intent and one exact terminal outcome for every mutation', async (t) => {
+  const { applyOrphanBrainProjectionCleanup, preflightOrphanBrainProjections } = await import(SCRIPT);
+  const state = await createFixture();
+  t.after(() => fsp.rm(state.outer, { recursive: true, force: true }));
+  const checks = safeChecks();
+  const preflight = await preflightOrphanBrainProjections({ homeRoot: state.homeRoot, ...checks });
+
+  const result = await applyOrphanBrainProjectionCleanup({
+    homeRoot: state.homeRoot,
+    receiptPath: state.receiptPath,
+    ...capturedAuthority(preflight),
+    ...checks,
+  });
+
+  assert.equal(result.mutationAudit.kind, 'home23-candidate-quarantine-mutation-audit');
+  assert.equal(result.mutationAudit.scope, 'candidate-and-quarantine-paths-only');
+  assert.equal(result.receiptPublicationEvidence.kind,
+    'home23-identity-bound-cleanup-receipt-publication');
+  const actions = [
+    'quarantine_container_created',
+    'candidate_quarantined',
+    'candidate_removed',
+    'quarantine_container_removed',
+  ];
+  for (const candidate of result.results) {
+    for (const action of actions) {
+      const events = result.mutationAudit.events.filter((event) =>
+        event.agent === candidate.agent && event.action === action);
+      assert.equal(events.length, 2, `${candidate.agent}/${action} has intent plus outcome`);
+      assert.equal(events[0].phase, 'intent');
+      assert.equal(events[1].phase, 'outcome');
+      assert.equal(events[1].outcome, 'completed');
+      assert.equal(events[0].attemptId, events[1].attemptId);
+    }
+  }
+});
+
+test('candidate mutation audit records failed and unknown outcomes without false completion', async (t) => {
+  const module = await import(SCRIPT);
+  const failedState = await createFixture();
+  t.after(() => fsp.rm(failedState.outer, { recursive: true, force: true }));
+  const checks = safeChecks();
+  const failedPreflight = await module.preflightOrphanBrainProjections({
+    homeRoot: failedState.homeRoot,
+    ...checks,
+  });
+  const failed = await module.applyOrphanBrainProjectionCleanup({
+    homeRoot: failedState.homeRoot,
+    receiptPath: failedState.receiptPath,
+    ...capturedAuthority(failedPreflight),
+    ...checks,
+    _testHooks: {
+      beforeCandidateMutation: async ({ action, agent }) => {
+        if (action === 'candidate_quarantined' && agent === 'forrest') {
+          throw Object.assign(new Error('blocked before rename call'), {
+            code: 'before_mutation_test_failure',
+          });
+        }
+      },
+    },
+  });
+  assert.equal(failed.status, 'partial');
+  const failedOutcome = failed.mutationAudit.events.find((event) =>
+    event.agent === 'forrest' && event.action === 'candidate_quarantined'
+      && event.phase === 'outcome');
+  assert.equal(failedOutcome.outcome, 'failed');
+  assert.equal(failed.results.find((entry) => entry.agent === 'forrest').status, 'not_removed');
+
+  const unknownState = await createFixture();
+  t.after(() => fsp.rm(unknownState.outer, { recursive: true, force: true }));
+  const unknownPreflight = await module.preflightOrphanBrainProjections({
+    homeRoot: unknownState.homeRoot,
+    ...checks,
+  });
+  const unknown = await module.applyOrphanBrainProjectionCleanup({
+    homeRoot: unknownState.homeRoot,
+    receiptPath: unknownState.receiptPath,
+    ...capturedAuthority(unknownPreflight),
+    ...checks,
+    _testHooks: {
+      afterCandidateMutationCall: async ({ action, agent }) => {
+        if (action === 'candidate_removed' && agent === 'forrest') {
+          throw Object.assign(new Error('post-call state unavailable'), {
+            code: 'after_mutation_call_test_failure',
+          });
+        }
+      },
+    },
+  });
+  assert.equal(unknown.status, 'partial');
+  const unknownOutcome = unknown.mutationAudit.events.find((event) =>
+    event.agent === 'forrest' && event.action === 'candidate_removed'
+      && event.phase === 'outcome');
+  assert.equal(unknownOutcome.outcome, 'unknown');
+  assert.equal(unknown.results.find((entry) => entry.agent === 'forrest').status,
+    'removed_postcondition_failed');
+});
+
+test('apply body cannot bypass audited candidate mutation wrappers', async () => {
+  const source = await fsp.readFile(path.resolve(__dirname, '../../scripts/cleanup-orphan-brain-projections.mjs'),
+    'utf8');
+  const applyStart = source.indexOf('export async function applyOrphanBrainProjectionCleanup');
+  const applyEnd = source.indexOf('async function readDarwinProcessIdentity', applyStart);
+  assert.ok(applyStart >= 0 && applyEnd > applyStart);
+  const applyBody = source.slice(applyStart, applyEnd);
+  assert.doesNotMatch(applyBody, /\bfsp\.(?:mkdir|rename|rm|rmdir)\s*\(/);
+  for (const wrapper of [
+    'auditQuarantineContainerCreate',
+    'auditCandidateRename',
+    'auditCandidateRemove',
+    'auditQuarantineContainerRemove',
+  ]) assert.match(applyBody, new RegExp(`\\b${wrapper}\\s*\\(`));
+});
+
+test('CLI dry-run summary exposes the checksum-bound approval time authority', async () => {
+  const source = await fsp.readFile(path.resolve(__dirname,
+    '../../scripts/cleanup-orphan-brain-projections.mjs'), 'utf8');
+  const dryRunBranch = source.slice(source.indexOf('if (!args.apply)'),
+    source.indexOf('const captured = await loadCapturedCleanupManifestReceipt'));
+  assert.match(dryRunBranch, /createdAt:\s*receipt\.createdAt/);
+  assert.match(dryRunBranch, /approvalScopeSha256:\s*receipt\.approvalScopeSha256/);
+});
+
+test('apply refuses approved candidate drift before any quarantine rename', async (t) => {
   const { applyOrphanBrainProjectionCleanup, preflightOrphanBrainProjections } = await import(SCRIPT);
   const state = await createFixture();
   t.after(() => fsp.rm(state.outer, { recursive: true, force: true }));
@@ -747,11 +1041,351 @@ test('apply refuses manifest drift before any quarantine rename', async (t) => {
     receiptPath: state.receiptPath,
     capturedManifest: preflight.manifest,
     capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
     approvalToken: preflight.approvalToken,
     ...safeChecks(),
-  }), (error) => error.code === 'cleanup_manifest_drift');
+  }), (error) => error.code === 'cleanup_approval_scope_drift');
   assert.equal((await fsp.lstat(state.candidates.jerry)).isDirectory(), true);
   assert.equal((await fsp.lstat(state.candidates.forrest)).isDirectory(), true);
+});
+
+test('pre-apply brain and ordinary nonselected content drift refreshes the apply baseline', async (t) => {
+  const { applyOrphanBrainProjectionCleanup, preflightOrphanBrainProjections } = await import(SCRIPT);
+  const state = await createFixture();
+  t.after(() => fsp.rm(state.outer, { recursive: true, force: true }));
+  const checks = safeChecks();
+  const preflight = await preflightOrphanBrainProjections({ homeRoot: state.homeRoot, ...checks });
+  const brainPath = path.join(state.homeRoot, 'instances', 'jerry', 'brain', 'memory-nodes.jsonl');
+  const operationPath = path.join(state.homeRoot, 'instances', 'jerry', 'runtime',
+    'brain-operations', 'operations', 'durable-op', 'status.json');
+  await fsp.appendFile(brainPath, 'legitimate-brain-update\n');
+  await fsp.appendFile(operationPath, 'legitimate-operation-update\n');
+  const freshBrainDigest = await digestPath(brainPath);
+  const freshOperationDigest = await digestPath(operationPath);
+
+  const result = await applyOrphanBrainProjectionCleanup({
+    homeRoot: state.homeRoot,
+    receiptPath: state.receiptPath,
+    capturedManifest: preflight.manifest,
+    capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
+    approvalToken: preflight.approvalToken,
+    ...checks,
+  });
+
+  assert.equal(result.status, 'completed');
+  assert.notEqual(result.applyPreflightManifestSha256, preflight.manifestSha256);
+  assert.equal(result.approvalScopeSha256, preflight.approvalScopeSha256);
+  assert.deepEqual(result.concurrentContentDrift, []);
+  assert.equal(await digestPath(brainPath), freshBrainDigest);
+  assert.equal(await digestPath(operationPath), freshOperationDigest);
+  assert.ok(result.preservedBoundaries.every((entry) => entry.contentUnchanged === true));
+});
+
+test('excluded candidate bytes and nonselected membership remain approval-bound', async (t) => {
+  const { applyOrphanBrainProjectionCleanup, preflightOrphanBrainProjections } = await import(SCRIPT);
+  const state = await createFixture({ jerry: { lockCandidate: 'zero' } });
+  t.after(() => fsp.rm(state.outer, { recursive: true, force: true }));
+  const checks = safeChecks();
+  const preflight = await preflightOrphanBrainProjections({ homeRoot: state.homeRoot, ...checks });
+  await fsp.appendFile(path.join(state.candidates.jerry, '.scratch-quota.json'), ' ');
+
+  await assert.rejects(applyOrphanBrainProjectionCleanup({
+    homeRoot: state.homeRoot,
+    receiptPath: state.receiptPath,
+    capturedManifest: preflight.manifest,
+    capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
+    approvalToken: preflight.approvalToken,
+    ...checks,
+  }), (error) => error.code === 'cleanup_approval_scope_drift');
+  assert.equal((await fsp.lstat(state.candidates.forrest)).isDirectory(), true);
+
+  const second = await createFixture();
+  t.after(() => fsp.rm(second.outer, { recursive: true, force: true }));
+  const secondPreflight = await preflightOrphanBrainProjections({
+    homeRoot: second.homeRoot,
+    ...checks,
+  });
+  const newProtectedRoot = path.join(second.homeRoot, 'instances', 'jerry', 'runtime',
+    'brain-operations', 'new-protected-root');
+  await fsp.mkdir(newProtectedRoot, { mode: 0o700 });
+  await fsp.writeFile(path.join(newProtectedRoot, 'state.json'), '{}\n', { mode: 0o600 });
+
+  await assert.rejects(applyOrphanBrainProjectionCleanup({
+    homeRoot: second.homeRoot,
+    receiptPath: second.receiptPath,
+    capturedManifest: secondPreflight.manifest,
+    capturedManifestSha256: secondPreflight.manifestSha256,
+    capturedApprovalScopeSha256: secondPreflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
+    approvalToken: secondPreflight.approvalToken,
+    ...checks,
+  }), (error) => error.code === 'cleanup_approval_scope_drift');
+  assert.equal((await fsp.lstat(second.candidates.jerry)).isDirectory(), true);
+});
+
+test('same-byte excluded and ordinary nonselected root replacements require new approval', async (t) => {
+  const { applyOrphanBrainProjectionCleanup, preflightOrphanBrainProjections } = await import(SCRIPT);
+  const checks = safeChecks();
+
+  const excludedState = await createFixture({ jerry: { lockCandidate: 'zero' } });
+  t.after(() => fsp.rm(excludedState.outer, { recursive: true, force: true }));
+  const excludedPreflight = await preflightOrphanBrainProjections({
+    homeRoot: excludedState.homeRoot,
+    ...checks,
+  });
+  const excludedBackup = path.join(excludedState.outer, 'excluded-root-backup');
+  await fsp.rename(excludedState.candidates.jerry, excludedBackup);
+  await fsp.cp(excludedBackup, excludedState.candidates.jerry, { recursive: true });
+  await assert.rejects(applyOrphanBrainProjectionCleanup({
+    homeRoot: excludedState.homeRoot,
+    receiptPath: excludedState.receiptPath,
+    ...capturedAuthority(excludedPreflight),
+    ...checks,
+  }), (error) => error.code === 'cleanup_approval_scope_drift');
+
+  const protectedState = await createFixture();
+  t.after(() => fsp.rm(protectedState.outer, { recursive: true, force: true }));
+  const protectedPreflight = await preflightOrphanBrainProjections({
+    homeRoot: protectedState.homeRoot,
+    ...checks,
+  });
+  const operationsPath = path.join(protectedState.homeRoot, 'instances', 'jerry', 'runtime',
+    'brain-operations', 'operations');
+  const operationsBackup = path.join(protectedState.outer, 'operations-root-backup');
+  await fsp.rename(operationsPath, operationsBackup);
+  await fsp.cp(operationsBackup, operationsPath, { recursive: true });
+  await assert.rejects(applyOrphanBrainProjectionCleanup({
+    homeRoot: protectedState.homeRoot,
+    receiptPath: protectedState.receiptPath,
+    ...capturedAuthority(protectedPreflight),
+    ...checks,
+  }), (error) => error.code === 'cleanup_approval_scope_drift');
+});
+
+test('eligibility classification and same-union PM2 port-binding drift require new approval', async (t) => {
+  const { applyOrphanBrainProjectionCleanup, preflightOrphanBrainProjections } = await import(SCRIPT);
+
+  const classificationState = await createFixture();
+  t.after(() => fsp.rm(classificationState.outer, { recursive: true, force: true }));
+  let ownerAlive = false;
+  const classificationChecks = safeChecks({
+    inspectProcessOwner: async () => (ownerAlive ? 'alive' : 'absent'),
+    inspectPid: async () => (ownerAlive ? 'alive' : 'absent'),
+  });
+  const classificationPreflight = await preflightOrphanBrainProjections({
+    homeRoot: classificationState.homeRoot,
+    ...classificationChecks,
+  });
+  ownerAlive = true;
+  await assert.rejects(applyOrphanBrainProjectionCleanup({
+    homeRoot: classificationState.homeRoot,
+    receiptPath: classificationState.receiptPath,
+    ...capturedAuthority(classificationPreflight),
+    ...classificationChecks,
+  }), (error) => error.code === 'cleanup_approval_scope_drift');
+
+  const portState = await createFixture();
+  t.after(() => fsp.rm(portState.outer, { recursive: true, force: true }));
+  let swapBindings = false;
+  const portChecks = safeChecks({
+    getPm2States: async () => {
+      const rows = stoppedPm2();
+      if (swapBindings) {
+        for (const row of rows.filter((entry) => entry.name.startsWith('home23-jerry'))) {
+          row.pm2_env.env.REALTIME_PORT = '5011';
+        }
+        for (const row of rows.filter((entry) => entry.name.startsWith('home23-forrest'))) {
+          row.pm2_env.env.REALTIME_PORT = '5001';
+        }
+      }
+      return rows;
+    },
+  });
+  const portPreflight = await preflightOrphanBrainProjections({
+    homeRoot: portState.homeRoot,
+    ...portChecks,
+  });
+  swapBindings = true;
+  await assert.rejects(applyOrphanBrainProjectionCleanup({
+    homeRoot: portState.homeRoot,
+    receiptPath: portState.receiptPath,
+    ...capturedAuthority(portPreflight),
+    ...portChecks,
+  }), (error) => error.code === 'cleanup_approval_scope_drift');
+});
+
+test('PM2 authority drift between approval and apply refuses mutation', async (t) => {
+  const { applyOrphanBrainProjectionCleanup, preflightOrphanBrainProjections } = await import(SCRIPT);
+  const state = await createFixture();
+  t.after(() => fsp.rm(state.outer, { recursive: true, force: true }));
+  let changed = false;
+  const checks = safeChecks({
+    getPm2States: async () => {
+      const rows = stoppedPm2();
+      if (changed) {
+        rows.find((entry) => entry.name === 'home23-jerry-dash').status = 'online';
+        rows.find((entry) => entry.name === 'home23-jerry-dash').pid = 991;
+      }
+      return rows;
+    },
+  });
+  const preflight = await preflightOrphanBrainProjections({ homeRoot: state.homeRoot, ...checks });
+  changed = true;
+
+  await assert.rejects(applyOrphanBrainProjectionCleanup({
+    homeRoot: state.homeRoot,
+    receiptPath: state.receiptPath,
+    capturedManifest: preflight.manifest,
+    capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
+    approvalToken: preflight.approvalToken,
+    ...checks,
+  }), (error) => error.code === 'cleanup_pm2_not_stopped');
+  assert.equal((await fsp.lstat(state.candidates.jerry)).isDirectory(), true);
+  await assert.rejects(fsp.lstat(state.receiptPath), { code: 'ENOENT' });
+});
+
+test('brain root identity drift between approval and apply refuses mutation', async (t) => {
+  const { applyOrphanBrainProjectionCleanup, preflightOrphanBrainProjections } = await import(SCRIPT);
+  const state = await createFixture();
+  t.after(() => fsp.rm(state.outer, { recursive: true, force: true }));
+  const checks = safeChecks();
+  const preflight = await preflightOrphanBrainProjections({ homeRoot: state.homeRoot, ...checks });
+  const brainRoot = path.join(state.homeRoot, 'instances', 'jerry', 'brain');
+  const oldBrainRoot = `${brainRoot}.old`;
+  await fsp.rename(brainRoot, oldBrainRoot);
+  await fsp.mkdir(brainRoot, { mode: 0o700 });
+  await fsp.writeFile(path.join(brainRoot, 'memory-nodes.jsonl'), 'jerry-brain\n', { mode: 0o600 });
+
+  await assert.rejects(applyOrphanBrainProjectionCleanup({
+    homeRoot: state.homeRoot,
+    receiptPath: state.receiptPath,
+    capturedManifest: preflight.manifest,
+    capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
+    approvalToken: preflight.approvalToken,
+    ...checks,
+  }), (error) => error.code === 'cleanup_approval_scope_drift');
+  assert.equal((await fsp.lstat(state.candidates.jerry)).isDirectory(), true);
+});
+
+test('during-apply protected content drift is completed, recorded, and never called unchanged', async (t) => {
+  const { applyOrphanBrainProjectionCleanup, preflightOrphanBrainProjections } = await import(SCRIPT);
+  const state = await createFixture();
+  t.after(() => fsp.rm(state.outer, { recursive: true, force: true }));
+  const checks = safeChecks();
+  const preflight = await preflightOrphanBrainProjections({ homeRoot: state.homeRoot, ...checks });
+  const brainPath = path.join(state.homeRoot, 'instances', 'jerry', 'brain', 'memory-nodes.jsonl');
+  let changed = false;
+
+  const result = await applyOrphanBrainProjectionCleanup({
+    homeRoot: state.homeRoot,
+    receiptPath: state.receiptPath,
+    capturedManifest: preflight.manifest,
+    capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
+    approvalToken: preflight.approvalToken,
+    ...checks,
+    _testHooks: {
+      afterQuarantineRemoval: async () => {
+        if (changed) return;
+        changed = true;
+        await fsp.appendFile(brainPath, 'legitimate-concurrent-update\n');
+      },
+    },
+  });
+
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(result.boundaryDrift, []);
+  assert.deepEqual(result.concurrentContentDrift, ['jerry:brain']);
+  const brainBoundary = result.preservedBoundaries.find((entry) =>
+    entry.agent === 'jerry' && entry.kind === 'brain');
+  assert.equal(brainBoundary.identityUnchanged, true);
+  assert.equal(brainBoundary.contentUnchanged, false);
+  assert.equal(brainBoundary.unchanged, false);
+  assert.equal(result.mutationAudit.status, 'passed');
+  assert.ok(result.mutationAudit.events.every((entry) =>
+    !entry.path?.startsWith(path.join(state.homeRoot, 'instances', 'jerry', 'brain'))));
+});
+
+test('during-apply protected root identity drift remains partial', async (t) => {
+  const { applyOrphanBrainProjectionCleanup, preflightOrphanBrainProjections } = await import(SCRIPT);
+  const state = await createFixture();
+  t.after(() => fsp.rm(state.outer, { recursive: true, force: true }));
+  const checks = safeChecks();
+  const preflight = await preflightOrphanBrainProjections({ homeRoot: state.homeRoot, ...checks });
+  const brainRoot = path.join(state.homeRoot, 'instances', 'jerry', 'brain');
+  let changed = false;
+
+  const result = await applyOrphanBrainProjectionCleanup({
+    homeRoot: state.homeRoot,
+    receiptPath: state.receiptPath,
+    capturedManifest: preflight.manifest,
+    capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
+    approvalToken: preflight.approvalToken,
+    ...checks,
+    _testHooks: {
+      afterQuarantineRemoval: async () => {
+        if (changed) return;
+        changed = true;
+        await fsp.rename(brainRoot, `${brainRoot}.replaced-during-cleanup`);
+        await fsp.mkdir(brainRoot, { mode: 0o700 });
+        await fsp.writeFile(path.join(brainRoot, 'memory-nodes.jsonl'), 'replacement\n', {
+          mode: 0o600,
+        });
+      },
+    },
+  });
+
+  assert.equal(result.status, 'partial');
+  assert.ok(result.boundaryDrift.includes('jerry:brain'));
+  assert.equal(result.mutationAudit.status, 'passed');
+});
+
+test('a replacement created at an already removed approved path is protected membership drift', async (t) => {
+  const { applyOrphanBrainProjectionCleanup, preflightOrphanBrainProjections } = await import(SCRIPT);
+  const state = await createFixture();
+  t.after(() => fsp.rm(state.outer, { recursive: true, force: true }));
+  const checks = safeChecks();
+  const preflight = await preflightOrphanBrainProjections({ homeRoot: state.homeRoot, ...checks });
+  let replaced = false;
+
+  const result = await applyOrphanBrainProjectionCleanup({
+    homeRoot: state.homeRoot,
+    receiptPath: state.receiptPath,
+    capturedManifest: preflight.manifest,
+    capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
+    approvalToken: preflight.approvalToken,
+    ...checks,
+    _testHooks: {
+      afterQuarantineRemoval: async ({ agent, originalPath }) => {
+        if (agent !== 'forrest' || replaced) return;
+        replaced = true;
+        await fsp.mkdir(originalPath, { mode: 0o700 });
+        await fsp.writeFile(path.join(originalPath, 'replacement.txt'), 'external replacement\n', {
+          mode: 0o600,
+        });
+      },
+    },
+  });
+
+  assert.equal(result.status, 'partial');
+  assert.ok(result.boundaryDrift.includes('forrest:nonselected_membership'));
+  assert.ok(result.protectedMembership.find((entry) => entry.agent === 'forrest')
+    .after.includes(path.basename(state.candidates.forrest)));
+  assert.equal(result.mutationAudit.status, 'passed');
 });
 
 test('post-rename identity drift is retained in quarantine and recorded as partial', async (t) => {
@@ -771,6 +1405,8 @@ test('post-rename identity drift is retained in quarantine and recorded as parti
     receiptPath: state.receiptPath,
     capturedManifest: preflight.manifest,
     capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
     approvalToken: preflight.approvalToken,
     ...safeChecks(),
     _testHooks: {
@@ -808,6 +1444,8 @@ test('exclusive quarantine container refuses a child destination race without ov
     receiptPath: state.receiptPath,
     capturedManifest: preflight.manifest,
     capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
     approvalToken: preflight.approvalToken,
     ...checks,
     _testHooks: {
@@ -840,6 +1478,8 @@ test('a failure after confirmed removal is reported as removed postcondition fai
     receiptPath: state.receiptPath,
     capturedManifest: preflight.manifest,
     capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
     approvalToken: preflight.approvalToken,
     ...checks,
     _testHooks: {
@@ -872,6 +1512,8 @@ test('a post-removal receipt failure leaves a durable pending intent instead of 
     receiptPath: state.receiptPath,
     capturedManifest: preflight.manifest,
     capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
     approvalToken: preflight.approvalToken,
     ...checks,
     _testHooks: {
@@ -910,6 +1552,8 @@ test('final runtime gate records a listener that appears after the last removal'
     receiptPath: state.receiptPath,
     capturedManifest: preflight.manifest,
     capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
     approvalToken: preflight.approvalToken,
     ...checks,
     _testHooks: {
@@ -938,6 +1582,8 @@ test('final FD gate treats an unreadable remaining candidate as unknown, never a
     receiptPath: state.receiptPath,
     capturedManifest: preflight.manifest,
     capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
     approvalToken: preflight.approvalToken,
     ...checks,
     _testHooks: {
@@ -968,6 +1614,8 @@ test('an unreadable quarantine is never reported as removed', async (t) => {
     receiptPath: state.receiptPath,
     capturedManifest: preflight.manifest,
     capturedManifestSha256: preflight.manifestSha256,
+    capturedApprovalScopeSha256: preflight.approvalScopeSha256,
+    capturedCreatedAt: CAPTURED_CREATED_AT,
     approvalToken: preflight.approvalToken,
     ...checks,
     _testHooks: {
@@ -985,4 +1633,22 @@ test('an unreadable quarantine is never reported as removed', async (t) => {
   assert.equal(result.candidateBytes.removed.count, 1);
   await fsp.chmod(unreadableContainer, 0o700);
   assert.equal((await fsp.lstat(forrest.quarantinePath)).isDirectory(), true);
+});
+
+test('Plan D uses approval-scope authority and structural drift truth everywhere', async () => {
+  const plan = await fsp.readFile(path.resolve(__dirname,
+    '../../docs/superpowers/plans/2026-07-09-brain-agent-integration-rollout.md'), 'utf8');
+  assert.doesNotMatch(plan,
+    /APPLY-ORPHAN-BRAIN-PROJECTIONS:<manifestSha256>/);
+  assert.doesNotMatch(plan,
+    /approvalToken !== `APPLY-ORPHAN-BRAIN-PROJECTIONS:\$\{receipt\.manifestSha256\}`/);
+  assert.doesNotMatch(plan, /reruns an identical preflight/);
+  assert.doesNotMatch(plan, /boundaryDrift:\[\]/);
+  assert.doesNotMatch(plan, /zero boundary drift/i);
+  assert.doesNotMatch(plan, /Every brain\/nonselected digest is unchanged/);
+  assert.doesNotMatch(plan, /brain\/nonselected before\/after hashes remain equal/);
+  assert.match(plan, /approvalScopeSha256/);
+  assert.match(plan, /concurrentContentDrift/);
+  assert.match(plan, /zero structural scope drift/i);
+  assert.match(plan, /identity.*membership.*intact/i);
 });

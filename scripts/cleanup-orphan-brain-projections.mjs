@@ -625,14 +625,29 @@ function requestedAgents(value) {
   return [...new Set(value)].sort((left, right) => left.localeCompare(right));
 }
 
-function validateApprovalRecord({ approvalActor, approvalText, approvalAt }) {
-  if (typeof approvalActor !== 'string' || approvalActor.length === 0
-      || Buffer.byteLength(approvalActor, 'utf8') > 256 || /[\0\r\n]/.test(approvalActor)
+function canonicalUtcIso(value) {
+  if (typeof value !== 'string') return null;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return null;
+  try {
+    return new Date(parsed).toISOString() === value ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function validateApprovalRecord({ approvalActor, approvalText, approvalAt, capturedCreatedAt }) {
+  const approvedAtMs = canonicalUtcIso(approvalAt);
+  const capturedCreatedAtMs = canonicalUtcIso(capturedCreatedAt);
+  if (typeof approvalActor !== 'string' || approvalActor.trim().length === 0
+      || approvalActor !== approvalActor.trim()
+      || Buffer.byteLength(approvalActor, 'utf8') > 256 || /[\u0000-\u001f\u007f]/.test(approvalActor)
       || typeof approvalText !== 'string' || approvalText.trim().length === 0
       || Buffer.byteLength(approvalText, 'utf8') > 4096 || approvalText.includes('\0')
-      || typeof approvalAt !== 'string' || Number.isNaN(Date.parse(approvalAt))) {
+      || approvedAtMs === null || capturedCreatedAtMs === null
+      || approvedAtMs < capturedCreatedAtMs) {
     throw cleanupError('cleanup_approval_record_invalid',
-      'explicit bounded approval actor, text, and timestamp are required');
+      'explicit bounded approval actor/text and canonical post-preflight UTC timestamps are required');
   }
   return Object.freeze({ actor: approvalActor, text: approvalText, approvedAt: approvalAt });
 }
@@ -765,6 +780,79 @@ async function captureAgentManifest({
   });
 }
 
+function candidateApprovalRecord(candidate, classification, nonselectedByName) {
+  const boundary = nonselectedByName.get(candidate.name);
+  const identity = candidate.identity || boundary?.identity;
+  const treeSha256 = candidate.treeSha256 || boundary?.treeSha256;
+  const entryCount = candidate.entryCount ?? boundary?.entryCount;
+  const logicalBytes = candidate.logicalBytes ?? boundary?.tree?.logicalBytes;
+  const allocatedBytes = candidate.allocatedBytes ?? boundary?.tree?.allocatedBytes;
+  if (!identity || typeof treeSha256 !== 'string' || !Number.isSafeInteger(entryCount)
+      || typeof logicalBytes !== 'string' || typeof allocatedBytes !== 'string') {
+    throw cleanupError('cleanup_manifest_required',
+      `${candidate?.path || candidate?.name || 'candidate'} has no approval-bound tree authority`);
+  }
+  return Object.freeze({
+    classification,
+    agent: candidate.agent,
+    name: candidate.name,
+    path: candidate.path,
+    identity,
+    treeSha256,
+    entryCount,
+    logicalBytes,
+    allocatedBytes,
+    owners: candidate.owners || null,
+    reasons: classification === 'excluded' ? candidate.reasons : [],
+    errorCode: classification === 'excluded' ? (candidate.error?.code || null) : null,
+  });
+}
+
+function approvalScopeForManifest(manifest) {
+  try {
+    const agentScopes = manifest.agents.map((agent) => {
+      const nonselectedByName = new Map(agent.nonselected.map((entry) => [entry.name, entry]));
+      return Object.freeze({
+        agent: agent.agent,
+        brain: Object.freeze({ path: agent.brain.path, identity: agent.brain.identity }),
+        operationsRoot: agent.operationsRoot,
+        eligible: agent.eligible.map((candidate) =>
+          candidateApprovalRecord(candidate, 'eligible', nonselectedByName)),
+        excluded: agent.excluded.map((candidate) =>
+          candidateApprovalRecord(candidate, 'excluded', nonselectedByName)),
+        nonselected: agent.nonselected.map((entry) => Object.freeze({
+          name: entry.name,
+          path: entry.path,
+          identity: entry.identity,
+        })),
+      });
+    });
+    return Object.freeze({
+      schemaVersion: 1,
+      kind: 'home23-orphan-brain-projection-approval-scope',
+      homeRoot: manifest.homeRoot,
+      homeRootIdentity: manifest.homeRootIdentity,
+      selectedAgents: manifest.selectedAgents,
+      ports: manifest.ports,
+      protectedPorts: manifest.protectedPorts,
+      agents: agentScopes,
+      pm2: manifest.pm2,
+      pm2PortBindings: manifest.pm2PortBindings,
+      listeners: manifest.listeners,
+      candidateBytes: manifest.candidateBytes,
+    });
+  } catch (error) {
+    if (error?.code) throw error;
+    throw cleanupError('cleanup_manifest_required', 'captured manifest has no valid approval scope', {
+      cause: error,
+    });
+  }
+}
+
+function approvalScopeDigest(manifest) {
+  return manifestDigest(approvalScopeForManifest(manifest));
+}
+
 function validateCheckers(options) {
   for (const name of [
     'getPm2States', 'inspectProcessOwner', 'inspectPid', 'checkOpenFileDescriptors',
@@ -818,12 +906,14 @@ export async function preflightOrphanBrainProjections(options = {}) {
     candidateBytes: sumCandidateBytes(agentManifests.flatMap((entry) => entry.eligible)),
   });
   const manifestSha256 = manifestDigest(manifest);
+  const approvalScopeSha256 = approvalScopeDigest(manifest);
   const filesystem = normalizeFilesystemStats(await options.getFilesystemStats(home.path));
   return Object.freeze({
     status: 'dry_run',
     manifest,
     manifestSha256,
-    approvalToken: `APPLY-ORPHAN-BRAIN-PROJECTIONS:${manifestSha256}`,
+    approvalScopeSha256,
+    approvalToken: `APPLY-ORPHAN-BRAIN-PROJECTIONS:${approvalScopeSha256}`,
     filesystem,
   });
 }
@@ -1006,22 +1096,336 @@ function boundaryReceipt(value) {
   });
 }
 
-async function verifyPreservedBoundaries(capturedManifest) {
-  const drift = [];
+function samePathOrNested(candidatePath, rootPath) {
+  const relative = path.relative(rootPath, candidatePath);
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative));
+}
+
+function createMutationAudit(applyManifest) {
+  return {
+    kind: 'home23-candidate-quarantine-mutation-audit',
+    scope: 'candidate-and-quarantine-paths-only',
+    status: 'passed',
+    policy: 'exact-approved-candidate-and-exclusive-same-parent-quarantine-only',
+    approvedCandidates: applyManifest.agents.flatMap((agent) => agent.eligible.map((candidate) => ({
+      agent: agent.agent,
+      path: candidate.path,
+      identity: candidate.identity,
+    }))),
+    protectedRoots: applyManifest.agents.flatMap((agent) => [
+      { agent: agent.agent, kind: 'brain', name: 'brain', path: agent.brain.path,
+        identity: agent.brain.identity },
+      ...agent.nonselected.map((entry) => ({
+        agent: agent.agent, kind: 'nonselected', name: entry.name, path: entry.path,
+        identity: entry.identity,
+      })),
+    ]),
+    events: [],
+    violations: [],
+  };
+}
+
+function assertMutationScope(mutationAudit, {
+  agent,
+  candidate,
+  operationsRoot,
+  quarantineContainer,
+  quarantinePath,
+}) {
+  const violations = [];
+  if (path.dirname(candidate.path) !== operationsRoot
+      || path.dirname(quarantineContainer) !== operationsRoot
+      || path.dirname(quarantinePath) !== quarantineContainer
+      || path.basename(quarantinePath) !== candidate.name
+      || !path.basename(quarantineContainer).startsWith('.orphan-projection-quarantine-')) {
+    violations.push('mutation path is outside the exact candidate/quarantine layout');
+  }
+  const approved = mutationAudit.approvedCandidates.find((entry) =>
+    entry.agent === agent && entry.path === candidate.path
+      && canonicalJson(entry.identity) === canonicalJson(candidate.identity));
+  if (!approved) violations.push('candidate is not in the apply-approved identity set');
+  for (const mutationPath of [candidate.path, quarantineContainer, quarantinePath]) {
+    for (const protectedRoot of mutationAudit.protectedRoots) {
+      if (samePathOrNested(mutationPath, protectedRoot.path)
+          || samePathOrNested(protectedRoot.path, mutationPath)) {
+        violations.push(`${mutationPath} overlaps protected ${protectedRoot.path}`);
+      }
+    }
+  }
+  if (violations.length > 0) {
+    const violation = Object.freeze({
+      agent,
+      candidatePath: candidate.path,
+      quarantineContainer,
+      quarantinePath,
+      reasons: [...new Set(violations)].sort((left, right) => left.localeCompare(right)),
+    });
+    mutationAudit.status = 'failed';
+    mutationAudit.violations.push(violation);
+    throw cleanupError('cleanup_mutation_scope_violation',
+      `refusing mutation outside the approved cleanup scope for ${candidate.path}`);
+  }
+}
+
+function recordMutation(mutationAudit, event) {
+  mutationAudit.events.push(Object.freeze(event));
+}
+
+function mutationAuditError(error) {
+  return Object.freeze({
+    code: error?.code || 'cleanup_mutation_failed',
+    message: error?.message || String(error),
+  });
+}
+
+async function runAuditedCandidateMutation({
+  mutationAudit,
+  action,
+  agent,
+  path: mutationPath,
+  destinationPath = null,
+  expectedIdentity = null,
+  hooks,
+  mutate,
+  verify,
+}) {
+  const attemptId = crypto.randomUUID();
+  const authority = Object.freeze({
+    attemptId,
+    action,
+    agent,
+    path: mutationPath,
+    destinationPath,
+    expectedIdentity,
+  });
+  recordMutation(mutationAudit, { ...authority, phase: 'intent' });
+  let callStarted = false;
+  let callCompleted = false;
+  try {
+    await hooks.beforeCandidateMutation?.(authority);
+    callStarted = true;
+    await mutate();
+    callCompleted = true;
+    await hooks.afterCandidateMutationCall?.(authority);
+    const proof = await verify();
+    recordMutation(mutationAudit, {
+      ...authority,
+      phase: 'outcome',
+      outcome: 'completed',
+      proof: proof || null,
+    });
+    return proof;
+  } catch (error) {
+    recordMutation(mutationAudit, {
+      ...authority,
+      phase: 'outcome',
+      outcome: !callStarted ? 'failed' : 'unknown',
+      callCompleted,
+      error: mutationAuditError(error),
+    });
+    throw error;
+  }
+}
+
+async function auditQuarantineContainerCreate({
+  mutationAudit,
+  candidate,
+  operationsRoot,
+  quarantineContainer,
+  hooks,
+}) {
+  const proof = await runAuditedCandidateMutation({
+    mutationAudit,
+    action: 'quarantine_container_created',
+    agent: candidate.agent,
+    path: quarantineContainer,
+    hooks,
+    mutate: () => fsp.mkdir(quarantineContainer, { mode: 0o700 }),
+    verify: async () => {
+      const stat = await lstatBig(quarantineContainer);
+      if (!stat.isDirectory() || stat.isSymbolicLink()
+          || Number(stat.mode & 0o777n) !== 0o700
+          || String(stat.uid) !== String(process.geteuid?.() ?? process.getuid())) {
+        throw cleanupError('cleanup_quarantine_container_invalid',
+          `${quarantineContainer} is not an exact private directory`);
+      }
+      await fsyncDirectory(operationsRoot);
+      return Object.freeze({ identity: identityOf(stat) });
+    },
+  });
+  return proof.identity;
+}
+
+async function auditCandidateRename({
+  mutationAudit,
+  candidate,
+  operationsRoot,
+  quarantineContainer,
+  quarantineContainerIdentity,
+  quarantinePath,
+  hooks,
+}) {
+  return runAuditedCandidateMutation({
+    mutationAudit,
+    action: 'candidate_quarantined',
+    agent: candidate.agent,
+    path: candidate.path,
+    destinationPath: quarantinePath,
+    expectedIdentity: candidate.identity,
+    hooks,
+    mutate: () => fsp.rename(candidate.path, quarantinePath),
+    verify: async () => {
+      await fsyncDirectory(operationsRoot);
+      await fsyncDirectory(quarantineContainer);
+      await assertCanonicalDirectory(quarantineContainer, {
+        label: `${candidate.agent} quarantine container after rename`,
+        requiredMode: 0o700,
+        expected: quarantineContainerIdentity,
+      });
+      const original = await lstatOptional(candidate.path);
+      const quarantined = await lstatBig(quarantinePath);
+      if (original !== null || !sameAuthority(quarantined, candidate.identity)
+          || !quarantined.isDirectory() || quarantined.isSymbolicLink()) {
+        throw cleanupError('cleanup_quarantine_identity_changed',
+          `${quarantinePath} identity is wrong after rename`);
+      }
+      return Object.freeze({ identity: identityOf(quarantined), originalAbsent: true });
+    },
+  });
+}
+
+async function auditCandidateRemove({
+  mutationAudit,
+  candidate,
+  quarantineContainer,
+  quarantinePath,
+  hooks,
+}) {
+  return runAuditedCandidateMutation({
+    mutationAudit,
+    action: 'candidate_removed',
+    agent: candidate.agent,
+    path: quarantinePath,
+    expectedIdentity: candidate.identity,
+    hooks,
+    mutate: () => fsp.rm(quarantinePath, { recursive: true, force: false }),
+    verify: async () => {
+      if (await lstatOptional(quarantinePath) !== null) {
+        throw cleanupError('cleanup_remove_incomplete', `${quarantinePath} still exists`);
+      }
+      await fsyncDirectory(quarantineContainer);
+      return Object.freeze({ pathAbsent: true });
+    },
+  });
+}
+
+async function auditQuarantineContainerRemove({
+  mutationAudit,
+  candidate,
+  operationsRoot,
+  quarantineContainer,
+  quarantineContainerIdentity,
+  hooks,
+}) {
+  return runAuditedCandidateMutation({
+    mutationAudit,
+    action: 'quarantine_container_removed',
+    agent: candidate.agent,
+    path: quarantineContainer,
+    expectedIdentity: quarantineContainerIdentity,
+    hooks,
+    mutate: () => fsp.rmdir(quarantineContainer),
+    verify: async () => {
+      if (await lstatOptional(quarantineContainer) !== null) {
+        throw cleanupError('cleanup_quarantine_container_not_removed',
+          `${quarantineContainer} still exists`);
+      }
+      await fsyncDirectory(operationsRoot);
+      return Object.freeze({ pathAbsent: true });
+    },
+  });
+}
+
+function compareBoundary(agentName, kind, name, before, after, scopeDrift, contentDrift) {
+  const identityUnchanged = canonicalJson(after.identity) === canonicalJson(before.identity);
+  const contentUnchanged = after.treeSha256 === before.treeSha256;
+  const label = `${agentName}:${kind === 'brain' ? 'brain' : name}`;
+  if (!identityUnchanged) scopeDrift.push(label);
+  else if (!contentUnchanged) contentDrift.push(label);
+  return Object.freeze({
+    agent: agentName,
+    kind,
+    name,
+    before: boundaryReceipt(before),
+    after: boundaryReceipt(after),
+    identityUnchanged,
+    contentUnchanged,
+    unchanged: identityUnchanged && contentUnchanged,
+  });
+}
+
+async function verifyPreservedBoundaries(applyManifest, results, mutationAudit) {
+  const scopeDrift = [];
+  const concurrentContentDrift = [];
   const boundaries = [];
-  for (const agent of capturedManifest.agents) {
+  const memberships = [];
+  for (const agent of applyManifest.agents) {
+    const beforeProtectedNames = agent.nonselected.map((entry) => entry.name)
+      .sort((left, right) => left.localeCompare(right));
+    let afterProtectedNames = null;
+    try {
+      await assertCanonicalDirectory(agent.operationsRoot.path, {
+        label: `${agent.agent} brain operations after cleanup`,
+        expected: agent.operationsRoot.identity,
+      });
+      const namesAfterCleanup = await fsp.readdir(agent.operationsRoot.path);
+      const approvedNamesToIgnore = new Set();
+      for (const candidate of agent.eligible) {
+        if (!namesAfterCleanup.includes(candidate.name)) continue;
+        const result = results.find((entry) => entry.agent === agent.agent
+          && entry.name === candidate.name);
+        if (result?.status !== 'not_removed') continue;
+        const retained = await lstatOptional(candidate.path);
+        if (retained && sameAuthority(retained, candidate.identity)
+            && retained.isDirectory() && !retained.isSymbolicLink()) {
+          approvedNamesToIgnore.add(candidate.name);
+        }
+      }
+      const quarantineNames = new Set(mutationAudit.events
+        .filter((entry) => entry.agent === agent.agent
+          && entry.action === 'quarantine_container_created'
+          && entry.phase === 'outcome' && entry.outcome === 'completed')
+        .map((entry) => path.basename(entry.path)));
+      afterProtectedNames = namesAfterCleanup
+        .filter((name) => !approvedNamesToIgnore.has(name) && !quarantineNames.has(name))
+        .sort((left, right) => left.localeCompare(right));
+      if (canonicalJson(afterProtectedNames) !== canonicalJson(beforeProtectedNames)) {
+        scopeDrift.push(`${agent.agent}:nonselected_membership`);
+      }
+    } catch (error) {
+      scopeDrift.push(`${agent.agent}:operations_root`);
+      memberships.push(Object.freeze({
+        agent: agent.agent,
+        before: beforeProtectedNames,
+        after: null,
+        unchanged: false,
+        error: errorReceipt(error),
+      }));
+    }
+    if (afterProtectedNames !== null) {
+      memberships.push(Object.freeze({
+        agent: agent.agent,
+        before: beforeProtectedNames,
+        after: afterProtectedNames,
+        unchanged: canonicalJson(afterProtectedNames) === canonicalJson(beforeProtectedNames),
+      }));
+    }
     const brainBefore = boundaryReceipt(agent.brain);
     try {
       const brain = await captureBoundary(agent.brain.path, `${agent.agent} brain after cleanup`);
-      const brainAfter = boundaryReceipt(brain);
-      const unchanged = brain.treeSha256 === agent.brain.treeSha256
-        && canonicalJson(brain.identity) === canonicalJson(agent.brain.identity);
-      boundaries.push(Object.freeze({
-        agent: agent.agent, kind: 'brain', name: 'brain', before: brainBefore, after: brainAfter, unchanged,
-      }));
-      if (!unchanged) {
-        drift.push(`${agent.agent}:brain`);
-      }
+      boundaries.push(compareBoundary(agent.agent, 'brain', 'brain', agent.brain, brain,
+        scopeDrift, concurrentContentDrift));
     } catch (error) {
       boundaries.push(Object.freeze({
         agent: agent.agent,
@@ -1029,30 +1433,20 @@ async function verifyPreservedBoundaries(capturedManifest) {
         name: 'brain',
         before: brainBefore,
         after: null,
+        identityUnchanged: false,
+        contentUnchanged: false,
         unchanged: false,
         error: { code: error?.code || 'boundary_read_failed', message: error?.message || String(error) },
       }));
-      drift.push(`${agent.agent}:brain`);
+      scopeDrift.push(`${agent.agent}:brain`);
     }
     for (const sibling of agent.nonselected) {
       const siblingBefore = boundaryReceipt(sibling);
       try {
         const after = await captureBoundary(sibling.path,
           `${agent.agent} nonselected ${sibling.name} after cleanup`);
-        const siblingAfter = boundaryReceipt(after);
-        const unchanged = after.treeSha256 === sibling.treeSha256
-          && canonicalJson(after.identity) === canonicalJson(sibling.identity);
-        boundaries.push(Object.freeze({
-          agent: agent.agent,
-          kind: 'nonselected',
-          name: sibling.name,
-          before: siblingBefore,
-          after: siblingAfter,
-          unchanged,
-        }));
-        if (!unchanged) {
-          drift.push(`${agent.agent}:${sibling.name}`);
-        }
+        boundaries.push(compareBoundary(agent.agent, 'nonselected', sibling.name, sibling, after,
+          scopeDrift, concurrentContentDrift));
       } catch (error) {
         boundaries.push(Object.freeze({
           agent: agent.agent,
@@ -1060,14 +1454,22 @@ async function verifyPreservedBoundaries(capturedManifest) {
           name: sibling.name,
           before: siblingBefore,
           after: null,
+          identityUnchanged: false,
+          contentUnchanged: false,
           unchanged: false,
           error: { code: error?.code || 'boundary_read_failed', message: error?.message || String(error) },
         }));
-        drift.push(`${agent.agent}:${sibling.name}`);
+        scopeDrift.push(`${agent.agent}:${sibling.name}`);
       }
     }
   }
-  return Object.freeze({ drift, boundaries });
+  return Object.freeze({
+    scopeDrift: [...new Set(scopeDrift)].sort((left, right) => left.localeCompare(right)),
+    concurrentContentDrift: [...new Set(concurrentContentDrift)]
+      .sort((left, right) => left.localeCompare(right)),
+    boundaries,
+    memberships,
+  });
 }
 
 function errorReceipt(error) {
@@ -1190,9 +1592,17 @@ export async function applyOrphanBrainProjectionCleanup(options = {}) {
     throw cleanupError('cleanup_manifest_arguments_mismatch',
       'explicit agents and ports do not match the captured manifest');
   }
-  const expectedToken = `APPLY-ORPHAN-BRAIN-PROJECTIONS:${capturedDigest}`;
+  const capturedApprovalScopeSha256 = approvalScopeDigest(options.capturedManifest);
+  if (typeof options.capturedApprovalScopeSha256 !== 'string'
+      || !/^[a-f0-9]{64}$/.test(options.capturedApprovalScopeSha256)
+      || options.capturedApprovalScopeSha256 !== capturedApprovalScopeSha256) {
+    throw cleanupError('cleanup_approval_scope_digest_invalid',
+      'captured approval-scope digest does not match the manifest');
+  }
+  const expectedToken = `APPLY-ORPHAN-BRAIN-PROJECTIONS:${capturedApprovalScopeSha256}`;
   if (options.approvalToken !== expectedToken) {
-    throw cleanupError('cleanup_approval_token_invalid', 'approval token does not match captured manifest');
+    throw cleanupError('cleanup_approval_token_invalid',
+      'approval token does not match the captured deletion scope');
   }
   const approval = validateApprovalRecord(options);
   const fresh = await preflightOrphanBrainProjections({
@@ -1201,12 +1611,16 @@ export async function applyOrphanBrainProjectionCleanup(options = {}) {
     ports: options.capturedManifest.ports,
     protectedPorts: options.capturedManifest.protectedPorts,
   });
-  if (fresh.manifestSha256 !== capturedDigest) {
-    throw cleanupError('cleanup_manifest_drift', 'filesystem or safety state changed after preflight', {
+  if (fresh.approvalScopeSha256 !== capturedApprovalScopeSha256) {
+    throw cleanupError('cleanup_approval_scope_drift',
+      'approved candidates, exclusions, roots, PM2, ports, or listener authority changed', {
+      capturedApprovalScopeSha256,
+      currentApprovalScopeSha256: fresh.approvalScopeSha256,
       capturedManifestSha256: capturedDigest,
       currentManifestSha256: fresh.manifestSha256,
     });
   }
+  const applyManifest = fresh.manifest;
   const writeReceipt = await createCleanupReceiptWriter(options.receiptPath, home.path);
   const hooks = options._testHooks || {};
   if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)
@@ -1214,15 +1628,25 @@ export async function applyOrphanBrainProjectionCleanup(options = {}) {
     throw cleanupError('cleanup_test_hooks_invalid', 'cleanup test hooks are invalid');
   }
   const results = [];
-  const eligibleCandidates = options.capturedManifest.agents.flatMap((agent) => agent.eligible);
-  const selectedCandidateBytes = options.capturedManifest.candidateBytes
+  const mutationAudit = createMutationAudit(applyManifest);
+  const eligibleCandidates = applyManifest.agents.flatMap((agent) => agent.eligible);
+  const selectedCandidateBytes = applyManifest.candidateBytes
     || sumCandidateBytes(eligibleCandidates);
+  const receiptPublicationEvidence = Object.freeze({
+    kind: 'home23-identity-bound-cleanup-receipt-publication',
+    scope: 'receipt-path-only',
+    receiptPath: options.receiptPath,
+    maxBytes: CLEANUP_RECEIPT_MAX_BYTES,
+    policy: 'mode-0600-bounded-write-fsync-identity-and-byte-readback',
+  });
   const receipt = {
     schemaVersion: 1,
     kind: 'home23-orphan-brain-projection-cleanup',
     status: 'in_progress',
     homeRoot: home.path,
     manifestSha256: capturedDigest,
+    approvalScopeSha256: capturedApprovalScopeSha256,
+    applyPreflightManifestSha256: fresh.manifestSha256,
     approvalToken: expectedToken,
     approval,
     filesystemBefore: fresh.filesystem,
@@ -1232,20 +1656,23 @@ export async function applyOrphanBrainProjectionCleanup(options = {}) {
     },
     startedAt: new Date().toISOString(),
     completedAt: null,
-    exclusions: options.capturedManifest.agents.flatMap((agent) => agent.excluded.map((entry) => ({
+    exclusions: applyManifest.agents.flatMap((agent) => agent.excluded.map((entry) => ({
       agent: agent.agent,
       name: entry.name,
       path: entry.path,
       reasons: entry.reasons,
     }))),
     results,
+    mutationAudit,
+    receiptPublicationEvidence,
     boundaryDrift: [],
+    concurrentContentDrift: [],
   };
   await writeReceipt(receipt);
   await hooks.beforeFirstMutation?.({ receiptPath: options.receiptPath });
 
   let partial = false;
-  for (const agent of options.capturedManifest.agents) {
+  for (const agent of applyManifest.agents) {
     for (const candidate of agent.eligible) {
       let quarantineContainer = null;
       let quarantineContainerIdentity = null;
@@ -1282,27 +1709,31 @@ export async function applyOrphanBrainProjectionCleanup(options = {}) {
         // recursive hash and immediately before the identity check + rename.
         await assertCandidateSafety(candidate, {
           ...options,
-          agents: options.capturedManifest.selectedAgents,
-          ports: options.capturedManifest.ports,
-          protectedPorts: options.capturedManifest.protectedPorts,
-          expectedListeners: options.capturedManifest.listeners,
+          agents: applyManifest.selectedAgents,
+          ports: applyManifest.ports,
+          protectedPorts: applyManifest.protectedPorts,
+          expectedListeners: applyManifest.listeners,
         });
         await assertCanonicalDirectory(agent.operationsRoot.path, {
           label: `${agent.agent} brain operations`, expected: agent.operationsRoot.identity,
         });
         quarantineContainer = path.join(agent.operationsRoot.path,
-          `.orphan-projection-quarantine-${capturedDigest.slice(0, 16)}-${crypto.randomUUID()}`);
-        await fsp.mkdir(quarantineContainer, { mode: 0o700 });
-        const containerStat = await lstatBig(quarantineContainer);
-        if (!containerStat.isDirectory() || containerStat.isSymbolicLink()
-            || Number(containerStat.mode & 0o777n) !== 0o700
-            || String(containerStat.uid) !== String(process.geteuid?.() ?? process.getuid())) {
-          throw cleanupError('cleanup_quarantine_container_invalid',
-            `${quarantineContainer} is not an exact private directory`);
-        }
-        quarantineContainerIdentity = identityOf(containerStat);
+          `.orphan-projection-quarantine-${capturedApprovalScopeSha256.slice(0, 16)}-${crypto.randomUUID()}`);
         quarantinePath = path.join(quarantineContainer, candidate.name);
-        await fsyncDirectory(agent.operationsRoot.path);
+        assertMutationScope(mutationAudit, {
+          agent: candidate.agent,
+          candidate,
+          operationsRoot: agent.operationsRoot.path,
+          quarantineContainer,
+          quarantinePath,
+        });
+        quarantineContainerIdentity = await auditQuarantineContainerCreate({
+          mutationAudit,
+          candidate,
+          operationsRoot: agent.operationsRoot.path,
+          quarantineContainer,
+          hooks,
+        });
         await hooks.afterQuarantineContainerCreated?.({
           agent: candidate.agent,
           originalPath: candidate.path,
@@ -1324,14 +1755,15 @@ export async function applyOrphanBrainProjectionCleanup(options = {}) {
             || !immediatelyBefore.isDirectory() || immediatelyBefore.isSymbolicLink()) {
           throw cleanupError('cleanup_candidate_changed', `${candidate.path} changed before quarantine`);
         }
-        await fsp.rename(candidate.path, quarantinePath);
-        await fsyncDirectory(agent.operationsRoot.path);
-        await fsyncDirectory(quarantineContainer);
-        const quarantined = await lstatBig(quarantinePath);
-        if (!sameAuthority(quarantined, candidate.identity)
-            || !quarantined.isDirectory() || quarantined.isSymbolicLink()) {
-          throw cleanupError('cleanup_quarantine_identity_changed', `${quarantinePath} identity is wrong`);
-        }
+        await auditCandidateRename({
+          mutationAudit,
+          candidate,
+          operationsRoot: agent.operationsRoot.path,
+          quarantineContainer,
+          quarantineContainerIdentity,
+          quarantinePath,
+          hooks,
+        });
         await hooks.afterQuarantineRename?.({
           agent: candidate.agent,
           originalPath: candidate.path,
@@ -1347,21 +1779,24 @@ export async function applyOrphanBrainProjectionCleanup(options = {}) {
         }
         await assertCandidateSafety({ ...candidate, path: quarantinePath }, {
           ...options,
-          agents: options.capturedManifest.selectedAgents,
-          ports: options.capturedManifest.ports,
-          protectedPorts: options.capturedManifest.protectedPorts,
-          expectedListeners: options.capturedManifest.listeners,
+          agents: applyManifest.selectedAgents,
+          ports: applyManifest.ports,
+          protectedPorts: applyManifest.protectedPorts,
+          expectedListeners: applyManifest.listeners,
         });
         const exactBeforeRemove = await lstatBig(quarantinePath);
         if (!sameAuthority(exactBeforeRemove, candidate.identity)
             || !exactBeforeRemove.isDirectory() || exactBeforeRemove.isSymbolicLink()) {
           throw cleanupError('cleanup_quarantine_identity_changed', `${quarantinePath} changed before remove`);
         }
-        await fsp.rm(quarantinePath, { recursive: true, force: false });
-        removalConfirmed = await lstatOptional(quarantinePath) === null;
-        if (!removalConfirmed) {
-          throw cleanupError('cleanup_remove_incomplete', `${quarantinePath} still exists`);
-        }
+        await auditCandidateRemove({
+          mutationAudit,
+          candidate,
+          quarantineContainer,
+          quarantinePath,
+          hooks,
+        });
+        removalConfirmed = true;
         await hooks.afterQuarantineRemoval?.({
           agent: candidate.agent,
           originalPath: candidate.path,
@@ -1378,8 +1813,14 @@ export async function applyOrphanBrainProjectionCleanup(options = {}) {
           throw cleanupError('cleanup_quarantine_container_not_empty',
             `${quarantineContainer} retained unexpected entries`);
         }
-        await fsp.rmdir(quarantineContainer);
-        await fsyncDirectory(agent.operationsRoot.path);
+        await auditQuarantineContainerRemove({
+          mutationAudit,
+          candidate,
+          operationsRoot: agent.operationsRoot.path,
+          quarantineContainer,
+          quarantineContainerIdentity,
+          hooks,
+        });
         Object.assign(resultRecord, {
           quarantineContainer,
           quarantinePath,
@@ -1421,10 +1862,10 @@ export async function applyOrphanBrainProjectionCleanup(options = {}) {
       await writeReceipt({ ...receipt, results, status: 'in_progress' });
     }
   }
-  const preserved = await verifyPreservedBoundaries(options.capturedManifest);
-  if (preserved.drift.length > 0) partial = true;
+  const preserved = await verifyPreservedBoundaries(applyManifest, results, mutationAudit);
+  if (preserved.scopeDrift.length > 0 || mutationAudit.status !== 'passed') partial = true;
   await hooks.beforeFinalRuntimeGates?.();
-  const finalRuntime = await captureFinalRuntimeGates(options.capturedManifest, results, options);
+  const finalRuntime = await captureFinalRuntimeGates(applyManifest, results, options);
   if (Object.values(finalRuntime).some((entry) => entry.status !== 'passed')) partial = true;
   let filesystemAfter = null;
   let filesystemError = null;
@@ -1454,7 +1895,10 @@ export async function applyOrphanBrainProjectionCleanup(options = {}) {
     filesystemError,
     filesystemAvailableDeltaBytes,
     preservedBoundaries: preserved.boundaries,
-    boundaryDrift: preserved.drift,
+    protectedMembership: preserved.memberships,
+    boundaryDrift: preserved.scopeDrift,
+    concurrentContentDrift: preserved.concurrentContentDrift,
+    mutationAudit,
     finalRuntime,
   };
   const finalReceipt = await writeReceipt(finalBody);
@@ -1680,6 +2124,23 @@ export async function loadCapturedCleanupManifestReceipt(filePath) {
   if (receiptSha256 !== expectedChecksum) {
     throw cleanupError('cleanup_manifest_checksum_invalid', 'captured receipt checksum does not match');
   }
+  validateCapturedManifest(parsed.manifest, parsed.manifestSha256, parsed.manifest.homeRoot);
+  const computedApprovalScopeSha256 = approvalScopeDigest(parsed.manifest);
+  if (typeof parsed.approvalScopeSha256 !== 'string'
+      || !/^[a-f0-9]{64}$/.test(parsed.approvalScopeSha256)
+      || parsed.approvalScopeSha256 !== computedApprovalScopeSha256) {
+    throw cleanupError('cleanup_approval_scope_digest_invalid',
+      'captured receipt approval-scope digest does not match its manifest');
+  }
+  if (parsed.approvalToken
+      !== `APPLY-ORPHAN-BRAIN-PROJECTIONS:${computedApprovalScopeSha256}`) {
+    throw cleanupError('cleanup_approval_token_invalid',
+      'captured receipt approval token does not match its approval scope');
+  }
+  if (canonicalUtcIso(parsed.createdAt) === null) {
+    throw cleanupError('cleanup_manifest_required',
+      'captured receipt requires a canonical UTC createdAt');
+  }
   return parsed;
 }
 
@@ -1727,7 +2188,9 @@ async function main() {
       status: receipt.status,
       receiptPath: args.receipt,
       manifestSha256: receipt.manifestSha256,
+      approvalScopeSha256: receipt.approvalScopeSha256,
       approvalToken: receipt.approvalToken,
+      createdAt: receipt.createdAt,
     })}\n`);
     return;
   }
@@ -1740,6 +2203,8 @@ async function main() {
     receiptPath: args.receipt,
     capturedManifest: captured.manifest,
     capturedManifestSha256: captured.manifestSha256,
+    capturedApprovalScopeSha256: captured.approvalScopeSha256,
+    capturedCreatedAt: captured.createdAt,
     approvalToken: args['approval-token'],
     approvalActor: args['approval-actor'],
     approvalText: args['approval-text'],
@@ -1750,6 +2215,7 @@ async function main() {
     status: result.status,
     receiptPath: args.receipt,
     manifestSha256: result.manifestSha256,
+    approvalScopeSha256: result.approvalScopeSha256,
     results: result.results,
   })}\n`);
 }
