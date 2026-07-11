@@ -38,7 +38,7 @@ const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DEFAULT_HEARTBEAT_MS = 10_000;
 const DEFAULT_EVENT_SILENCE_MS = 60_000;
-const DEFAULT_STOP_TIMEOUT_MS = 5_000;
+const DEFAULT_STOP_TIMEOUT_MS = 180_000;
 const CAPABILITY_TTL_MS = 60_000;
 const MAX_ACTIVE_PROVIDER_CALLS = 4096;
 const PROVIDER_OPERATION_TYPES = new Set(['query', 'pgs', 'synthesis', 'research_compile']);
@@ -470,6 +470,7 @@ class BrainOperationCoordinator {
     this.operationQueues = new Map();
     this.runtimes = new Map();
     this.stopped = false;
+    this.stopPromise = null;
   }
 
   async _enqueue(operationId, callback) {
@@ -2220,8 +2221,13 @@ class BrainOperationCoordinator {
     }
   }
 
-  async stop() {
-    if (this.stopped) return;
+  stop() {
+    if (this.stopPromise) return this.stopPromise;
+    this.stopPromise = this._stop();
+    return this.stopPromise;
+  }
+
+  async _stop() {
     this.stopped = true;
     const pumps = [];
     for (const [operationId, runtime] of this.runtimes) {
@@ -2233,8 +2239,10 @@ class BrainOperationCoordinator {
     try {
       await Promise.race([
         Promise.allSettled(pumps),
-        new Promise((resolve) => {
-          timer = globalThis.setTimeout(resolve, this.stopTimeoutMs);
+        new Promise((resolve, reject) => {
+          timer = globalThis.setTimeout(() => {
+            reject(coordinatorError('coordinator_stop_timeout'));
+          }, this.stopTimeoutMs);
         }),
       ]);
     } finally {
@@ -2267,5 +2275,6 @@ module.exports = {
   DEFAULT_EVENT_SILENCE_MS,
   DEFAULT_EXECUTION_DEADLINES_MS,
   DEFAULT_HEARTBEAT_MS,
+  DEFAULT_STOP_TIMEOUT_MS,
   enrichSourceEvidence,
 };

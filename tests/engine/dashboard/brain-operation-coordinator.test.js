@@ -21,6 +21,7 @@ const {
 const {
   BrainOperationCoordinator,
   DEFAULT_EXECUTION_DEADLINES_MS,
+  DEFAULT_STOP_TIMEOUT_MS,
   enrichSourceEvidence,
 } = require('../../../engine/src/dashboard/brain-operations/coordinator.js');
 const {
@@ -597,6 +598,7 @@ function makeFixture(t, overrides = {}) {
       heartbeatMs: 10_000,
       eventSilenceMs: 60_000,
       workerControlTimeoutMs: overrides.workerControlTimeoutMs,
+      stopTimeoutMs: overrides.stopTimeoutMs,
       executionDeadlineMsByType: {
         search: 60_000,
         graph: 60_000,
@@ -691,6 +693,7 @@ test('default execution deadlines preserve two-hour and eight-hour server bounds
   assert.equal(DEFAULT_EXECUTION_DEADLINES_MS.research_stop, 2 * 60 * 60 * 1000);
   assert.equal(DEFAULT_EXECUTION_DEADLINES_MS.pgs, 8 * 60 * 60 * 1000);
   assert.equal(DEFAULT_EXECUTION_DEADLINES_MS.synthesis, 8 * 60 * 60 * 1000);
+  assert.equal(DEFAULT_STOP_TIMEOUT_MS, 180_000);
 });
 
 test('resolveTargetContext is fresh, deeply frozen, exact, and side-effect free', async (t) => {
@@ -1071,6 +1074,49 @@ test('graceful stop waits for terminal source-pin release before dropping runtim
   const terminal = await fixture.store.get(operation.operationId);
   assert.equal(terminal.state, 'complete');
   assert.match(terminal.sourcePinReleasedAt, /^2026-07-10T/);
+});
+
+test('graceful stop fails visibly when source-pin release exceeds its shutdown budget', async (t) => {
+  const releaseEntered = deferred();
+  const releaseGate = deferred();
+  t.after(() => releaseGate.resolve());
+  const sourcePins = {
+    async pin(canonicalRoot) {
+      const descriptor = validDescriptor(canonicalRoot);
+      return { descriptor, digest: descriptorDigest(descriptor) };
+    },
+    async openPinnedSource(descriptor) { return pinnedSourceHandle(descriptor); },
+    async releaseOperationPins() {
+      releaseEntered.resolve();
+      await releaseGate.promise;
+    },
+  };
+  const fixture = makeFixture(t, { sourcePins, stopTimeoutMs: 20 });
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'stop-reports-source-pin-release-timeout',
+  }));
+  fixture.worker.finish(operation.operationId, {
+    state: 'complete',
+    result: { answer: 'release remains pending' },
+    error: null,
+    sourceEvidence: null,
+  });
+  await releaseEntered.promise;
+
+  await assert.rejects(
+    fixture.coordinator.stop(),
+    typedCode('coordinator_stop_timeout'),
+  );
+  await assert.rejects(
+    fixture.coordinator.stop(),
+    typedCode('coordinator_stop_timeout'),
+  );
+
+  releaseGate.resolve();
+  await eventually(async () => {
+    const terminal = await fixture.store.get(operation.operationId);
+    assert.match(terminal.sourcePinReleasedAt, /^2026-07-10T/);
+  });
 });
 
 test('terminal closure drains durable provider evidence for a slow pull attachment', async (t) => {

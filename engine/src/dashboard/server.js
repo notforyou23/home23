@@ -11410,7 +11410,7 @@ You are empowered to explore and understand. The user trusts you to discover the
         const emergencyExit = setTimeout(() => {
           console.error('[DashboardServer] shutdown timed out; forcing process exit');
           process.exit(1);
-        }, Math.max(this._serverCloseTimeoutMs + 2000, 3000));
+        }, this._shutdownEmergencyTimeoutMs());
         emergencyExit.unref?.();
         this.stop(signal)
           .then(() => {
@@ -11424,6 +11424,17 @@ You are empowered to explore and understand. The user trusts you to discover the
           });
       });
     }
+  }
+
+  _shutdownEmergencyTimeoutMs() {
+    const coordinatorTimeoutMs = Number(this.brainOperationsCoordinator?.stopTimeoutMs || 0);
+    const boundedCoordinatorTimeoutMs = Number.isFinite(coordinatorTimeoutMs)
+      && coordinatorTimeoutMs > 0 ? coordinatorTimeoutMs : 0;
+    return Math.max(
+      boundedCoordinatorTimeoutMs + this._serverCloseTimeoutMs + 5_000,
+      this._serverCloseTimeoutMs + 2_000,
+      3_000,
+    );
   }
 
   async stop(reason = 'manual') {

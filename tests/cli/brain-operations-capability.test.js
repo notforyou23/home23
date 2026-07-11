@@ -164,9 +164,9 @@ test('generated ecosystem isolates one shared capability to dashboards and COSMO
     }
     assert.equal(apps.get('home23-jerry')?.kill_timeout, 210_000);
     assert.equal(apps.get('home23-forrest')?.kill_timeout, 210_000);
-    assert.equal(apps.get('home23-jerry-dash')?.kill_timeout, 10_000);
-    assert.equal(apps.get('home23-forrest-dash')?.kill_timeout, 10_000);
-    assert.match(source, /const DASHBOARD_KILL_TIMEOUT_MS = 10000;/);
+    assert.equal(apps.get('home23-jerry-dash')?.kill_timeout, 210_000);
+    assert.equal(apps.get('home23-forrest-dash')?.kill_timeout, 210_000);
+    assert.match(source, /const DASHBOARD_KILL_TIMEOUT_MS = 210000;/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

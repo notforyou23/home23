@@ -33,3 +33,10 @@ test('dashboard stops coordinator pumps before its local worker registry', async
   await server.stopBrainOperations();
   assert.deepEqual(calls, ['coordinator', 'worker']);
 });
+
+test('dashboard emergency shutdown budget exceeds coordinator cleanup plus HTTP close', () => {
+  const server = Object.create(DashboardServer.prototype);
+  server.brainOperationsCoordinator = { stopTimeoutMs: 180_000 };
+  server._serverCloseTimeoutMs = 5_000;
+  assert.equal(server._shutdownEmergencyTimeoutMs(), 190_000);
+});
