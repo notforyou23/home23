@@ -1028,6 +1028,122 @@ test('terminal state is broadcast to a surviving attachment before durable closu
   assert.equal(closed.reason, 'operation_terminal');
 });
 
+test('terminal closure drains durable provider evidence for a slow pull attachment', async (t) => {
+  const fixture = makeFixture(t);
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'terminal-drains-provider-evidence',
+  }));
+  await waitForState(fixture, operation.operationId, 'running');
+  const running = await fixture.store.get(operation.operationId);
+  const attachment = await fixture.coordinator.attach(operation.operationId, {
+    attachmentId: 'slow-terminal-evidence',
+    afterSequence: running.eventSequence,
+  });
+  fixture.worker.emit(operation.operationId, {
+    type: 'provider_selected',
+    providerCallId: 'query',
+    providerStallMs: 5_000,
+  });
+  let slowSubscriber;
+  await eventually(() => {
+    const subscriber = fixture.coordinator.runtimes
+      .get(operation.operationId).attachments.get('slow-terminal-evidence');
+    assert.equal(subscriber.queue.length, 1);
+    assert.equal(subscriber.queue[0].type, 'provider_selected');
+    slowSubscriber = subscriber;
+  });
+  fixture.worker.emit(operation.operationId, {
+    type: 'provider_activity',
+    providerCallId: 'query',
+  });
+  fixture.worker.emit(operation.operationId, {
+    type: 'provider_call_terminal',
+    providerCallId: 'query',
+  });
+  fixture.worker.finish(operation.operationId, {
+    state: 'complete',
+    result: { answer: 'terminal evidence result' },
+    error: null,
+    sourceEvidence: null,
+  });
+  await waitForState(fixture, operation.operationId, 'complete');
+  await attachment.done;
+  assert.deepEqual(
+    slowSubscriber.queue.map((event) => event.type),
+    ['provider_selected'],
+  );
+
+  const events = [];
+  for (;;) {
+    const event = await attachment.nextEvent();
+    if (event === null) break;
+    events.push(event);
+  }
+  assert.deepEqual(events.filter(event => event.type.startsWith('provider_')).map(event => event.type), [
+    'provider_selected', 'provider_activity', 'provider_call_terminal',
+  ]);
+  assert.equal(events.at(-1).type, 'state');
+  assert.equal(events.at(-1).state, 'complete');
+});
+
+test('late terminal attachment replays the retained journal read-only and closes cleanly', async (t) => {
+  const fixture = makeFixture(t);
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'late-terminal-journal-replay',
+  }));
+  fixture.worker.emit(operation.operationId, {
+    type: 'provider_selected',
+    providerCallId: 'query',
+    providerStallMs: 5_000,
+  });
+  fixture.worker.emit(operation.operationId, {
+    type: 'provider_activity',
+    providerCallId: 'query',
+  });
+  fixture.worker.emit(operation.operationId, {
+    type: 'provider_call_terminal',
+    providerCallId: 'query',
+  });
+  fixture.worker.finish(operation.operationId, {
+    state: 'complete',
+    result: { answer: 'late replay result' },
+    error: null,
+    sourceEvidence: null,
+  });
+  await waitForState(fixture, operation.operationId, 'complete');
+  await eventually(async () => {
+    assert.match((await fixture.store.get(operation.operationId)).sourcePinReleasedAt,
+      /^\d{4}-\d{2}-\d{2}T/);
+  });
+  const before = await fixture.store.get(operation.operationId);
+
+  const attachment = await fixture.coordinator.attach(operation.operationId, {
+    attachmentId: 'late-terminal-replay',
+    afterSequence: 0,
+  });
+  const events = [];
+  for (;;) {
+    const event = await attachment.nextEvent();
+    if (event === null) break;
+    events.push(event);
+  }
+  const closed = await attachment.done;
+
+  assert.equal(events.some((event) => event.type === 'provider_call_terminal'
+    && event.providerCallId === 'query'), true);
+  assert.equal(events.at(-1).type, 'state');
+  assert.equal(events.at(-1).state, 'complete');
+  assert.equal(closed.state, 'closed');
+  assert.equal(closed.reason, 'operation_terminal');
+  const after = await fixture.store.get(operation.operationId);
+  assert.equal(after.recordVersion, before.recordVersion);
+  assert.equal(after.eventSequence, before.eventSequence);
+  await assert.rejects(
+    () => fixture.store.getAttachment(operation.operationId, 'late-terminal-replay'),
+    typedCode('attachment_not_found'),
+  );
+});
+
 test('authenticated Query progress survives terminal finalization as lastProgressAt', async (t) => {
   const fixture = makeFixture(t);
   const operation = await fixture.coordinator.start(request({
@@ -1394,6 +1510,12 @@ test('a delayed reconnect status cannot rearm provider timers after cancellation
 test('worker event gaps record evidence, authenticate status, and resume future events', async (t) => {
   const fixture = makeFixture(t);
   const operation = await fixture.coordinator.start(request());
+  const current = await fixture.store.get(operation.operationId);
+  const attachment = await fixture.coordinator.attach(operation.operationId, {
+    attachmentId: 'worker-gap-evidence',
+    afterSequence: current.eventSequence,
+  });
+  const nextEvent = attachment.nextEvent();
   fixture.worker.emit(operation.operationId, {
     type: 'event_gap',
     eventSequence: 7,
@@ -1403,7 +1525,10 @@ test('worker event gaps record evidence, authenticate status, and resume future 
   });
   await eventually(async () => {
     const events = await fixture.store.readEvents(operation.operationId, 0);
-    assert.equal(events.some(({ type }) => type === 'event_gap'), true);
+    assert.equal(events.some((event) => event.type === 'heartbeat'
+      && event.workerOldestSequence === 4
+      && event.workerLatestSequence === 7), true);
+    assert.equal(events.some(({ type }) => type === 'event_gap'), false);
   });
   const statusCalls = fixture.worker.statusCalls.length;
   fixture.worker.emit(operation.operationId, { type: 'progress', eventSequence: 8, completed: 8 });
@@ -1411,8 +1536,18 @@ test('worker event gaps record evidence, authenticate status, and resume future 
     const events = await fixture.store.readEvents(operation.operationId, 0);
     assert.equal(events.some((event) => event.workerEventSequence === 8), true);
   });
+  const recovered = await nextEvent;
+  assert.equal(recovered.type, 'heartbeat');
+  assert.equal(recovered.workerLatestSequence, 7);
+  const streamed = await attachment.nextEvent();
+  assert.equal(streamed.type, 'progress');
+  assert.equal(streamed.workerEventSequence, 8);
   assert.equal(fixture.worker.statusCalls.length >= statusCalls, true);
   assert.equal((await fixture.store.get(operation.operationId)).state, 'running');
+  await fixture.coordinator.detach(operation.operationId, {
+    attachmentId: 'worker-gap-evidence',
+    reason: 'test_complete',
+  });
 });
 
 test('COSMO client and worker adapter preserve compacted Query gaps through terminal recovery', async (t) => {
@@ -1497,8 +1632,11 @@ test('COSMO client and worker adapter preserve compacted Query gaps through term
   assert.equal(eventStreamCalls, 1);
   assert.equal(statusCalls >= 2, true);
   const events = await fixture.store.readEvents(operation.operationId, 0);
-  assert.equal(events.some((event) => event.type === 'event_gap'
+  assert.equal(events.some((event) => event.type === 'heartbeat'
+    && event.workerOldestSequence === 5
+    && event.workerLatestSequence === 5
     && event.workerEventSequence === 7), true);
+  assert.equal(events.some((event) => event.type === 'event_gap'), false);
   assert.equal(events.some((event) => event.type === 'provider_call_terminal'
     && event.workerEventSequence === 6), true);
 });

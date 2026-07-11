@@ -1092,6 +1092,7 @@ class BrainOperationCoordinator {
       signalHandler: null,
       signal: null,
       cursor: afterSequence,
+      terminalReplayThrough: null,
     };
     runtime.attachments.set(attachmentId, subscriber);
     return {
@@ -1102,8 +1103,102 @@ class BrainOperationCoordinator {
     };
   }
 
+  _terminalReplayAttachment(record, input, rows) {
+    const events = [];
+    let cursor = input.afterSequence ?? 0;
+    for (const row of rows) {
+      let event;
+      let nextCursor;
+      if (row.type === 'event_gap' && Number.isSafeInteger(row.sequence)) {
+        // A worker-gap evidence marker is durable coordinator journal truth,
+        // not a dashboard transport gap. Advance past it without exposing a
+        // malformed cross-sequence-domain gap to the requester stream.
+        if (row.sequence > cursor) cursor = row.sequence;
+        continue;
+      }
+      if (row.type === 'event_gap') {
+        if (!Number.isSafeInteger(row.latestSequence) || row.latestSequence < cursor) {
+          throw coordinatorError('event_stream_invalid');
+        }
+        event = Object.freeze({ ...row, eventSequence: row.latestSequence });
+        nextCursor = row.latestSequence;
+      } else {
+        if (!Number.isSafeInteger(row.sequence)) throw coordinatorError('event_stream_invalid');
+        if (row.sequence <= cursor) continue;
+        event = Object.freeze({ ...row, eventSequence: row.sequence });
+        nextCursor = row.sequence;
+      }
+      cursor = nextCursor;
+      events.push(event);
+    }
+    const closedAt = record.completedAt || record.updatedAt;
+    const outcome = Object.freeze({
+      attachmentId: input.attachmentId,
+      operationId: record.operationId,
+      requesterAgent: record.requesterAgent,
+      state: 'closed',
+      openedAt: closedAt,
+      updatedAt: closedAt,
+      detachedAt: null,
+      closedAt,
+      reason: 'operation_terminal',
+    });
+    const finished = deferredPromise();
+    let signalHandler = null;
+    const close = () => {
+      if (input.signal && signalHandler) input.signal.removeEventListener('abort', signalHandler);
+      signalHandler = null;
+      finished.resolve(outcome);
+    };
+    if (input.signal) {
+      signalHandler = () => {
+        events.length = 0;
+        close();
+      };
+      if (input.signal.aborted) signalHandler();
+      else input.signal.addEventListener('abort', signalHandler, { once: true });
+    }
+    if (input.onEvent) {
+      for (const event of events.splice(0)) {
+        try { input.onEvent(event); } catch {}
+      }
+      close();
+    } else if (events.length === 0) {
+      close();
+    }
+    return {
+      ...outcome,
+      done: finished.promise,
+      nextEvent: async () => {
+        if (input.signal?.aborted || events.length === 0) {
+          close();
+          return null;
+        }
+        const event = events.shift();
+        if (events.length === 0) close();
+        return event;
+      },
+      _subscriber: null,
+    };
+  }
+
   async _nextAttachmentEvent(runtime, subscriber) {
+    if (subscriber.signal?.aborted) {
+      subscriber.queue.length = 0;
+      return null;
+    }
     if (subscriber.queue.length > 0) return subscriber.queue.shift();
+    if (Number.isSafeInteger(subscriber.terminalReplayThrough)) {
+      while (subscriber.cursor < subscriber.terminalReplayThrough) {
+        if (subscriber.signal?.aborted) return null;
+        const before = subscriber.cursor;
+        const rows = await this.store.readEvents(runtime.operationId, subscriber.cursor);
+        this._deliverRowsToSubscriber(subscriber, rows);
+        if (subscriber.queue.length > 0) return subscriber.queue.shift();
+        if (subscriber.cursor <= before) throw coordinatorError('event_stream_invalid');
+      }
+      return null;
+    }
     if (subscriber.finished.settled) return null;
     if (subscriber.waiting.length > 0) throw coordinatorError('attachment_read_pending');
     let resolvePending;
@@ -1141,6 +1236,10 @@ class BrainOperationCoordinator {
     const result = await this._enqueue(operationId, async () => {
       const record = await this.store.get(operationId);
       if (record.requesterAgent !== this.requesterAgent) throw coordinatorError('access_denied');
+      if (TERMINAL_STATES.has(record.state)) {
+        const replay = await this.store.readEvents(operationId, afterSequence);
+        return this._terminalReplayAttachment(record, input, replay);
+      }
       const runtime = this._ensureRuntime(record);
       if (runtime.attachments.has(input.attachmentId)) {
         throw coordinatorError('attachment_already_attached');
@@ -1157,7 +1256,7 @@ class BrainOperationCoordinator {
       this._deliverRowsToSubscriber(attached._subscriber, replay);
       return attached;
     });
-    if (input.signal) {
+    if (input.signal && result._subscriber) {
       result._subscriber.signal = input.signal;
       result._subscriber.signalHandler = () => {
         this.detach(operationId, {
@@ -1210,12 +1309,20 @@ class BrainOperationCoordinator {
     for (const row of rows) {
       let event;
       let nextCursor;
-      if (row.type === 'event_gap' && !Number.isSafeInteger(row.sequence)) {
+      if (row.type === 'event_gap' && Number.isSafeInteger(row.sequence)) {
+        if (row.sequence > subscriber.cursor) subscriber.cursor = row.sequence;
+        continue;
+      }
+      if (row.type === 'event_gap') {
+        if (!Number.isSafeInteger(row.oldestSequence)
+            || !Number.isSafeInteger(row.latestSequence)
+            || row.oldestSequence > row.latestSequence) {
+          throw coordinatorError('event_stream_invalid');
+        }
+        if (row.oldestSequence <= subscriber.cursor) continue;
         event = Object.freeze({
           ...row,
-          eventSequence: Number.isSafeInteger(row.latestSequence)
-            ? row.latestSequence
-            : subscriber.cursor,
+          eventSequence: row.latestSequence,
         });
         nextCursor = event.eventSequence;
       } else {
@@ -1355,7 +1462,11 @@ class BrainOperationCoordinator {
       });
       const before = record.eventSequence;
       await this.store.appendEvent(operationId, {
-        type: 'event_gap',
+        // The COSMO stream had a gap, but the requester-facing durable journal
+        // remains contiguous. Publish the authenticated status recovery as a
+        // heartbeat so clients do not mistake worker-local sequence loss for a
+        // requester journal gap and skip later provider/terminal evidence.
+        type: 'heartbeat',
         workerOldestSequence: rawEvent.oldestSequence,
         workerLatestSequence: rawEvent.latestSequence,
         workerEventSequence: workerRecord.eventSequence,
@@ -1848,6 +1959,7 @@ class BrainOperationCoordinator {
   async _closeRuntimeAttachments(record, runtime) {
     if (!runtime) return;
     for (const [attachmentId, subscriber] of runtime.attachments) {
+      subscriber.terminalReplayThrough = record.eventSequence;
       let attachment = null;
       try {
         attachment = await this.store.closeAttachment(record.operationId, attachmentId, 'operation_terminal');
