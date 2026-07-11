@@ -418,6 +418,66 @@ test('shared operation abort still permits exact overlay cleanup and quota recon
   scratchQuota.close();
 });
 
+test('cleanup settlement is idempotent after ledger publish throws post-commit', async () => {
+  const operationRoot = await tempDir();
+  const operationAbort = new AbortController();
+  let failCleanupPublish = false;
+  let injectedFailures = 0;
+  const scratchQuota = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes: 4 * 1024 * 1024,
+    signal: operationAbort.signal,
+    _testHooks: {
+      async afterLedgerPublish() {
+        if (!failCleanupPublish) return;
+        failCleanupPublish = false;
+        injectedFailures += 1;
+        throw Object.assign(new Error('post-commit ledger fsync failure'), { code: 'EIO' });
+      },
+    },
+  });
+  let privateDirectory = null;
+  const store = await createBoundedOverlayStore({
+    operationRoot,
+    scratchQuota,
+    signal: operationAbort.signal,
+    maxMemoryBytes: 0,
+    maxDiskBytes: 2 * 1024 * 1024,
+    _testHooks: {
+      async afterPrivateDirectoryCreate({ overlayRoot }) {
+        privateDirectory = overlayRoot;
+      },
+      async beforeDiskMutation() {
+        failCleanupPublish = true;
+        operationAbort.abort(Object.assign(new Error('stop before SQLite mutation'), {
+          name: 'AbortError',
+        }));
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => store.apply(node('post-commit-cleanup', 'x'.repeat(1024))),
+    { name: 'AbortError' },
+  );
+  assert.equal(injectedFailures, 1);
+  assert.notEqual(privateDirectory, null);
+
+  await store.close();
+  await store.close();
+  await assert.rejects(() => fsp.lstat(privateDirectory), { code: 'ENOENT' });
+  const ledger = JSON.parse(await fsp.readFile(
+    path.join(operationRoot, '.scratch-quota.json'),
+    'utf8',
+  ));
+  const reservedBytes = Object.values(ledger.reservations)
+    .flatMap((entry) => Object.values(entry.kinds))
+    .reduce((sum, bytes) => sum + bytes, 0);
+  assert.equal(ledger.actualPrivateBytes, 0);
+  assert.equal(reservedBytes, 0);
+  scratchQuota.close();
+});
+
 test('serializes concurrent threshold-crossing apply calls and spills exactly once', async () => {
   const operationRoot = await tempDir();
   const scratchQuota = await createOperationScratchQuota({
@@ -506,6 +566,60 @@ test('bounds pending serialized admission while the first near-max mutation is b
   assert.equal(store.diskBytes <= store.maxDiskBytes, true);
   await store.close();
   scratchQuota.close();
+});
+
+test('bounds tiny pending entry count while an earlier disk mutation is blocked', async () => {
+  const operationRoot = await tempDir();
+  const scratchQuota = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes: 8 * 1024 * 1024,
+  });
+  const operationAbort = new AbortController();
+  let releaseFirst;
+  let markFirstBlocked;
+  const firstBlocked = new Promise((resolve) => { markFirstBlocked = resolve; });
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  const store = await createBoundedOverlayStore({
+    operationRoot,
+    scratchQuota,
+    signal: operationAbort.signal,
+    maxMemoryBytes: 0,
+    maxDiskBytes: 4 * 1024 * 1024,
+    _testHooks: {
+      async beforeDiskMutation({ normalized }) {
+        if (normalized.key !== 'blocked-first') return;
+        markFirstBlocked();
+        await firstGate;
+      },
+    },
+  });
+  const first = store.apply(node('blocked-first', 'first'));
+  await firstBlocked;
+
+  const queued = Array.from({ length: 5000 }, (_, index) =>
+    store.apply(node(`tiny-${index}`, 'x')).then(
+      () => null,
+      (error) => error,
+    ));
+  await new Promise((resolve) => setImmediate(resolve));
+  const immediateRejections = (await Promise.all(queued.map(async (outcome) =>
+    Promise.race([
+      outcome,
+      new Promise((resolve) => setImmediate(() => resolve(null))),
+    ])))).filter(Boolean);
+
+  try {
+    assert.equal(immediateRejections.length > 0, true);
+    assert.equal(immediateRejections.every((error) => error.code === 'result_too_large'), true);
+  } finally {
+    operationAbort.abort(Object.assign(new Error('stop queued overlay mutations'), {
+      name: 'AbortError',
+    }));
+    releaseFirst();
+    await Promise.allSettled([first, ...queued]);
+    await store.close();
+    scratchQuota.close();
+  }
 });
 
 test('directory replacement fails closed, preserves the replacement, and retains accounting until retry cleanup', async () => {

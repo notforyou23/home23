@@ -20,6 +20,17 @@ async function exists(filePath) {
   return fsp.access(filePath).then(() => true).catch(() => false);
 }
 
+async function regularFileBytes(directory) {
+  let total = 0;
+  const entries = await fsp.readdir(directory, { withFileTypes: true });
+  for (const entry of entries) {
+    const filePath = path.join(directory, entry.name);
+    if (entry.isDirectory()) total += await regularFileBytes(filePath);
+    else if (entry.isFile()) total += (await fsp.stat(filePath)).size;
+  }
+  return total;
+}
+
 async function runChild(script, args = []) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ['-e', script, ...args], {
@@ -165,6 +176,78 @@ test('reconcile reclaims only proven-dead reservations and retains live-handle a
   assert.equal(Object.values(afterLiveReconcile.reservations)[0].kinds['live-worker'], 4096);
   live.close();
   observer.close();
+});
+
+test('missing Linux boot identity cannot reclaim a reservation owned by a live PID', async () => {
+  const operationRoot = await tempDir();
+  const modulePath = path.resolve('shared/memory-source/scratch-quota.cjs');
+  const childScript = String.raw`
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const originalReadFile = fs.promises.readFile;
+    let bootIdentityUnavailable = false;
+    function processStat(pid, startToken) {
+      return pid + ' (home23-test) ' + ['S', ...Array(18).fill('0'), startToken].join(' ');
+    }
+    fs.promises.readFile = async function (filePath, ...args) {
+      const target = String(filePath);
+      if (target === '/proc/sys/kernel/random/boot_id') {
+        if (bootIdentityUnavailable) {
+          const error = new Error('boot identity unavailable');
+          error.code = 'ENOENT';
+          throw error;
+        }
+        return 'test-boot-id\n';
+      }
+      if (target === '/proc/' + process.pid + '/stat') {
+        return processStat(process.pid, 'self-start-token');
+      }
+      if (target === '/proc/' + process.ppid + '/stat') {
+        return processStat(process.ppid, 'live-parent-start-token');
+      }
+      return originalReadFile.call(this, filePath, ...args);
+    };
+    const { createOperationScratchQuota } = require(process.argv[1]);
+    (async () => {
+      const owner = await createOperationScratchQuota({
+        operationRoot: process.argv[2],
+        maxBytes: 512 * 1024,
+      });
+      await owner.claim(4096, 'live-owner-with-unknown-boot');
+      owner.close();
+
+      const ledgerPath = path.join(process.argv[2], '.scratch-quota.json');
+      const ledger = JSON.parse(await originalReadFile(ledgerPath, 'utf8'));
+      const reservation = Object.values(ledger.reservations)[0];
+      reservation.owner.pid = process.ppid;
+      reservation.owner.bootToken = 'test-boot-id';
+      reservation.owner.processStartToken = 'live-parent-start-token';
+      ledger.usedBytes += 4096;
+      await fs.promises.writeFile(ledgerPath, JSON.stringify(ledger) + '\n', { mode: 0o600 });
+
+      bootIdentityUnavailable = true;
+      const observer = await createOperationScratchQuota({
+        operationRoot: process.argv[2],
+        maxBytes: 512 * 1024,
+      });
+      const observed = JSON.parse(await originalReadFile(ledgerPath, 'utf8'));
+      const reservations = Object.values(observed.reservations);
+      process.stdout.write(JSON.stringify({
+        reservationCount: reservations.length,
+        ownerPid: reservations[0]?.owner?.pid,
+        bytes: reservations[0]?.kinds?.['live-owner-with-unknown-boot'] || 0,
+      }));
+      observer.close();
+    })().catch((error) => { console.error(error); process.exitCode = 1; });
+  `;
+  const child = await runChild(childScript, [modulePath, operationRoot]);
+  assert.equal(child.code, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout), {
+    reservationCount: 1,
+    ownerPid: process.pid,
+    bytes: 4096,
+  });
 });
 
 test('retains fallback ownership when a later exact observer sees the same live PID', async () => {
@@ -452,6 +535,76 @@ test('counts orphan bytes and new reservations additively before permitting retr
   quota.close();
 });
 
+test('blocked lock contention materializes at most one candidate within the hard quota', async () => {
+  const operationRoot = await tempDir();
+  const maxBytes = 3000;
+  let blockOwnerPublish = false;
+  let markOwnerBlocked;
+  let releaseOwnerPublish;
+  const ownerBlocked = new Promise((resolve) => { markOwnerBlocked = resolve; });
+  const ownerGate = new Promise((resolve) => { releaseOwnerPublish = resolve; });
+  const owner = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes,
+    lockRetryMs: 1,
+    _testHooks: {
+      async beforeLedgerPublish() {
+        if (!blockOwnerPublish) return;
+        markOwnerBlocked();
+        await ownerGate;
+      },
+    },
+  });
+  blockOwnerPublish = true;
+  const heldTransaction = owner.reconcile();
+  await ownerBlocked;
+
+  const contenderAbort = new AbortController();
+  let releaseContenders;
+  const contenderGate = new Promise((resolve) => { releaseContenders = resolve; });
+  const arrived = new Set();
+  let markAllArrived;
+  const allArrived = new Promise((resolve) => { markAllArrived = resolve; });
+  function markArrived(index) {
+    arrived.add(index);
+    if (arrived.size === 10) markAllArrived();
+  }
+  const contenders = Array.from({ length: 10 }, (_, index) =>
+    createOperationScratchQuota({
+      operationRoot,
+      maxBytes,
+      signal: contenderAbort.signal,
+      lockRetryMs: 1,
+      _testHooks: {
+        async afterLockCandidateSynced() {
+          markArrived(index);
+          await contenderGate;
+        },
+        async beforeLockRetry() {
+          markArrived(index);
+        },
+      },
+    }));
+
+  try {
+    await allArrived;
+    const rootEntries = await fsp.readdir(operationRoot);
+    const candidates = rootEntries.filter((name) =>
+      name.startsWith('.scratch-quota.lock.candidate-'));
+    assert.equal(candidates.length <= 1, true);
+    assert.equal(await regularFileBytes(operationRoot) <= maxBytes, true);
+  } finally {
+    contenderAbort.abort(Object.assign(new Error('stop blocked contenders'), {
+      name: 'AbortError',
+    }));
+    releaseContenders();
+    await Promise.allSettled(contenders);
+    releaseOwnerPublish();
+    await heldTransaction;
+    owner.close();
+  }
+});
+
 test('retries normal lock turnover under repeated high concurrency', async () => {
   const operationRoot = await tempDir();
   const maxBytes = 8 * 1024 * 1024;
@@ -521,7 +674,7 @@ test('sustained stale-lock turnover observes retry delay and timeout', async () 
   }), { code: 'source_busy', retryable: true });
 
   assert.equal(turnoverAttempts, 3);
-  assert.equal(retryCalls, 1);
+  assert.equal(retryCalls, 2);
   assert.equal(Date.now() - startedAt >= 10, true);
 });
 

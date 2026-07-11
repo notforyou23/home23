@@ -120,12 +120,16 @@ async function readLinuxProcessIdentity(pid) {
   let bootToken;
   let statText;
   try {
-    [bootToken, statText] = await Promise.all([
-      fsp.readFile('/proc/sys/kernel/random/boot_id', 'utf8'),
-      fsp.readFile(`/proc/${pid}/stat`, 'utf8'),
-    ]);
+    statText = await fsp.readFile(`/proc/${pid}/stat`, 'utf8');
   } catch (error) {
     if (error.code === 'ENOENT' || error.code === 'ESRCH') return false;
+    return null;
+  }
+  try {
+    bootToken = await fsp.readFile('/proc/sys/kernel/random/boot_id', 'utf8');
+  } catch {
+    // Only absence of the PID-specific proc record proves death. A missing or
+    // unreadable system boot identity makes exact comparison unavailable.
     return null;
   }
   const closeParen = statText.lastIndexOf(')');
@@ -667,6 +671,8 @@ async function createOperationScratchQuota({
   async function acquireLock({ cleanup = false } = {}) {
     const startedAt = clock.now();
     let recoveredStaleLock = false;
+    let recoveredStaleCandidate = false;
+    const candidatePath = path.join(root, `${LOCK_NAME}.candidate-serialized`);
     async function waitForRetry() {
       const elapsedMs = clock.now() - startedAt;
       if (elapsedMs >= lockTimeoutMs) {
@@ -689,10 +695,86 @@ async function createOperationScratchQuota({
     if (Buffer.byteLength(record, 'utf8') > MAX_LOCK_BYTES) {
       throw memorySourceError('invalid_request', 'scratch lock record is too large');
     }
+
+    async function inspectOccupiedPath(filePath, {
+      label,
+      incompleteIsRetryable = false,
+    }) {
+      const current = await readBoundedRegularFile(filePath, MAX_LOCK_BYTES, {
+        optional: true,
+        turnoverIsRetryable: true,
+        assertParent: assertStableOperationRoot,
+      }).catch((readError) => {
+        if (readError.code === 'ENOENT' || readError[LOCK_TURNOVER]) return null;
+        throw readError;
+      });
+      if (current === null) return false;
+      let lockRecord;
+      try {
+        lockRecord = JSON.parse(current.text);
+        if (lockRecord?.version !== 1 || lockRecord.operationRoot !== root
+            || lockRecord.maxBytes !== maxBytes
+            || !Number.isSafeInteger(lockRecord.acquiredAt) || lockRecord.acquiredAt < 0) {
+          throw memorySourceError('invalid_memory_source', `scratch ${label} identity mismatch`, {
+            retryable: false,
+          });
+        }
+        validateProcessOwner(lockRecord.owner);
+      } catch (error) {
+        if (incompleteIsRetryable) {
+          await waitForRetry();
+          return true;
+        }
+        if (error.code === 'invalid_memory_source') throw error;
+        throw memorySourceError('invalid_memory_source', `scratch ${label} is malformed`, {
+          retryable: false,
+          cause: error,
+        });
+      }
+      const ownerAlive = await inspectOwnerLiveness(lockRecord.owner);
+      if (ownerAlive !== false) {
+        await waitForRetry();
+        return true;
+      }
+      await assertStableOperationRoot();
+      const latest = await fsp.lstat(filePath).catch((statError) => {
+        if (statError.code === 'ENOENT') return null;
+        throw statError;
+      });
+      if (latest === null) {
+        await waitForRetry();
+        return true;
+      }
+      if (latest.isSymbolicLink() || !latest.isFile()) {
+        throw memorySourceError('invalid_memory_source', `scratch ${label} changed type`, {
+          retryable: false,
+        });
+      }
+      // The old owner was proven dead, but a different contender may have
+      // replaced the path after our read. Remove only the inspected inode.
+      if (latest.dev !== current.dev || latest.ino !== current.ino) {
+        await waitForRetry();
+        return true;
+      }
+      await fsp.unlink(filePath);
+      await assertStableOperationRoot();
+      await fsyncDirectory(root);
+      await assertStableOperationRoot();
+      const alreadyRecovered = label === 'lock'
+        ? recoveredStaleLock
+        : recoveredStaleCandidate;
+      if (label === 'lock') recoveredStaleLock = true;
+      else recoveredStaleCandidate = true;
+      if (alreadyRecovered) await waitForRetry();
+      return true;
+    }
+
     for (;;) {
       assertOpen({ cleanup });
       await assertStableOperationRoot();
-      const candidatePath = path.join(root, `${LOCK_NAME}.candidate-${process.pid}-${randomUUID()}`);
+      // A live published lock is inspected before candidate materialization.
+      // Blocked contenders therefore do not each create quota-external files.
+      if (await inspectOccupiedPath(lockPath, { label: 'lock' })) continue;
       let candidateHandle;
       let candidateIdentity = null;
       try {
@@ -714,6 +796,7 @@ async function createOperationScratchQuota({
         await candidateHandle.close();
         candidateHandle = null;
         await hooks.afterLockCandidateSynced?.({ operationRoot: root, candidatePath });
+        assertOpen({ cleanup });
         await assertStableOperationRoot();
         const candidate = await fsp.lstat(candidatePath);
         if (candidate.isSymbolicLink() || !candidate.isFile()
@@ -725,7 +808,19 @@ async function createOperationScratchQuota({
         // Publishing a hard link is an atomic no-replace lock acquisition. A
         // contender therefore sees either no lock or the complete fsynced
         // owner record, never the zero-byte window created by open('wx').
-        await fsp.link(candidatePath, lockPath);
+        try {
+          await fsp.link(candidatePath, lockPath);
+        } catch (error) {
+          if (error.code !== 'EEXIST') throw error;
+          if (!await removeExactOwnedPath(candidatePath, candidateIdentity)) {
+            throw memorySourceError('invalid_memory_source', 'scratch lock candidate cleanup changed', {
+              retryable: false,
+            });
+          }
+          candidateIdentity = null;
+          await inspectOccupiedPath(lockPath, { label: 'lock' });
+          continue;
+        }
         await assertStableOperationRoot();
         const publishedLock = await fsp.lstat(lockPath);
         if (publishedLock.isSymbolicLink() || !publishedLock.isFile()
@@ -761,74 +856,14 @@ async function createOperationScratchQuota({
       } catch (error) {
         await candidateHandle?.close().catch(() => {});
         await removeExactOwnedPath(candidatePath, candidateIdentity).catch(() => {});
-        if (error.code !== 'EEXIST') throw error;
-        const current = await readBoundedRegularFile(lockPath, MAX_LOCK_BYTES, {
-          turnoverIsRetryable: true,
-          assertParent: assertStableOperationRoot,
-        }).catch((readError) => {
-          if (readError.code === 'ENOENT' || readError[LOCK_TURNOVER]) return null;
-          throw readError;
-        });
-        if (current === null) {
-          await waitForRetry();
+        if (error.code === 'EEXIST') {
+          await inspectOccupiedPath(candidatePath, {
+            label: 'lock candidate',
+            incompleteIsRetryable: true,
+          });
           continue;
         }
-        let lockRecord;
-        try {
-          lockRecord = JSON.parse(current.text);
-        } catch (parseError) {
-          throw memorySourceError('invalid_memory_source', 'scratch lock is malformed', {
-            retryable: false,
-            cause: parseError,
-          });
-        }
-        if (lockRecord?.version !== 1 || lockRecord.operationRoot !== root
-            || lockRecord.maxBytes !== maxBytes
-            || !Number.isSafeInteger(lockRecord.acquiredAt) || lockRecord.acquiredAt < 0) {
-          throw memorySourceError('invalid_memory_source', 'scratch lock identity mismatch', {
-            retryable: false,
-          });
-        }
-        validateProcessOwner(lockRecord.owner);
-        const ownerAlive = await inspectOwnerLiveness(lockRecord.owner);
-        if (ownerAlive === false) {
-          await assertStableOperationRoot();
-          const latest = await fsp.lstat(lockPath).catch((statError) => {
-            if (statError.code === 'ENOENT') return null;
-            throw statError;
-          });
-          if (latest === null) {
-            await waitForRetry();
-            continue;
-          }
-          if (latest.isSymbolicLink() || !latest.isFile()) {
-            throw memorySourceError('invalid_memory_source', 'scratch lock changed type', {
-              retryable: false,
-            });
-          }
-          // The old owner was proven dead, but it is still possible that a
-          // different contender replaced the path after our read. Remove only
-          // the exact inode whose owner record was inspected.
-          if (latest.dev !== current.dev || latest.ino !== current.ino) {
-            await waitForRetry();
-            continue;
-          }
-          await fsp.unlink(lockPath);
-          await assertStableOperationRoot();
-          await fsyncDirectory(root);
-          await assertStableOperationRoot();
-          if (!recoveredStaleLock) {
-            // A single exact stale owner recovery preserves the historical
-            // immediate acquisition path. Seeing another owner before the next
-            // atomic link is sustained turnover and must use the normal
-            // timeout/delay budget below.
-            recoveredStaleLock = true;
-            continue;
-          }
-          await waitForRetry();
-          continue;
-        }
-        await waitForRetry();
+        throw error;
       }
     }
   }
@@ -972,6 +1007,27 @@ async function createOperationScratchQuota({
     }, { reconcile: true, cleanup });
   }
 
+  async function settleExactReservation(bytes, kind) {
+    assertOpen({ cleanup: true });
+    validateBytes(bytes, 'settlement');
+    validateKind(kind);
+    return transact(async (ledger) => {
+      if (bytes === 0) return ledger;
+      const reservation = ledger.reservations[handleId];
+      const outstanding = reservation?.kinds?.[kind] || 0;
+      // A prior attempt may have atomically published this exact removal and
+      // then failed while fsyncing/reporting completion. Absence of the
+      // unforgeable handle+kind reservation confirms that durable settlement.
+      if (outstanding === 0) return ledger;
+      if (outstanding !== bytes) {
+        throw memorySourceError('invalid_request', 'scratch settlement does not match kind accounting');
+      }
+      delete reservation.kinds[kind];
+      if (Object.keys(reservation.kinds).length === 0) delete ledger.reservations[handleId];
+      return ledger;
+    }, { reconcile: true, cleanup: true });
+  }
+
   async function reconcileUsage({ cleanup = false } = {}) {
     assertOpen({ cleanup });
     return transact(async (ledger) => ledger, { reconcile: true, cleanup });
@@ -1017,6 +1073,9 @@ async function createOperationScratchQuota({
     },
     release(bytes, kind) {
       return releaseReservation(bytes, kind, { cleanup: true });
+    },
+    settle(bytes, kind) {
+      return settleExactReservation(bytes, kind);
     },
     reconcile() {
       return reconcileUsage({ cleanup: true });

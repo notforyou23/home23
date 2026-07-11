@@ -22,6 +22,7 @@ const DEFAULT_DISK_BYTES = 2 * 1024 * 1024 * 1024;
 const DEFAULT_RECORD_BYTES = 16 * 1024 * 1024;
 const ENTRY_OVERHEAD_BYTES = 32;
 const SQLITE_MUTATION_HEADROOM = 128 * 1024;
+const MAX_PENDING_ENTRIES = 1024;
 
 function limitError(message) {
   return memorySourceError('result_too_large', message, {
@@ -156,6 +157,7 @@ async function createBoundedOverlayStore(options = {}) {
   let cleanupComplete = false;
   let mutationTail = Promise.resolve();
   let pendingAdmissionBytes = 0;
+  let pendingAdmissionEntries = 0;
   let scratchQuota = options.scratchQuota || null;
   let scratchQuotaCleanup = null;
   let ownsScratchQuota = false;
@@ -231,11 +233,15 @@ async function createBoundedOverlayStore(options = {}) {
   function admitEntry(entry) {
     const encoded = jsonBytes(entry, 'delta record');
     if (encoded.bytes > maxRecordBytes) throw limitError('overlay record limit exceeded');
+    if (pendingAdmissionEntries >= MAX_PENDING_ENTRIES) {
+      throw limitError('overlay pending entry limit exceeded');
+    }
     const projected = pendingAdmissionBytes + encoded.bytes;
     if (!Number.isSafeInteger(projected) || projected > maxRecordBytes) {
       throw limitError('overlay pending admission limit exceeded');
     }
     pendingAdmissionBytes = projected;
+    pendingAdmissionEntries += 1;
     return encoded;
   }
 
@@ -698,7 +704,7 @@ async function createBoundedOverlayStore(options = {}) {
     if (scratchQuota) {
       if (diskReservedBytes > 0) {
         const reserved = diskReservedBytes;
-        await scratchQuotaCleanup.release(reserved, quotaKind);
+        await scratchQuotaCleanup.settle(reserved, quotaKind);
         diskReservedBytes = 0;
       } else {
         await scratchQuotaCleanup.reconcile();
@@ -774,6 +780,7 @@ async function createBoundedOverlayStore(options = {}) {
       });
     } finally {
       pendingAdmissionBytes -= encoded.bytes;
+      pendingAdmissionEntries -= 1;
     }
   }
 
