@@ -152,3 +152,55 @@ test('engine MCP loopback rejects an oversized JSON-RPC body before tool delegat
   });
   assert.equal(dispatches, 0);
 });
+
+test('engine MCP defaults to IPv4 loopback and rejects every non-loopback host before listen', async (t) => {
+  const originalHost = process.env.MCP_HTTP_HOST;
+  delete process.env.MCP_HTTP_HOST;
+  t.after(() => {
+    if (originalHost === undefined) delete process.env.MCP_HTTP_HOST;
+    else process.env.MCP_HTTP_HOST = originalHost;
+  });
+  const server = startMcpHttpServer({
+    port: 0,
+    log: false,
+    readiness: fixedReadiness({
+      ok: true,
+      protocolVersion: '2025-03-26',
+      sourceHealth: 'healthy',
+    }),
+    memoryTools: completeMemoryTools(),
+  });
+  await once(server, 'listening');
+  t.after(() => close(server));
+  assert.equal(server.address().address, '127.0.0.1');
+
+  for (const host of ['0.0.0.0', '::', 'localhost', 'example.com']) {
+    assert.throws(
+      () => startMcpHttpServer({ host, port: 0, log: false }),
+      (error) => error?.code === 'invalid_mcp_host',
+      host,
+    );
+  }
+});
+
+test('engine MCP health returns 503 for unavailable canonical source evidence', async (t) => {
+  const unavailable = {
+    ok: false,
+    protocolVersion: '2025-03-26',
+    sourceHealth: 'unavailable',
+    error: { code: 'source_unavailable' },
+  };
+  const server = startMcpHttpServer({
+    host: '127.0.0.1',
+    port: 0,
+    log: false,
+    readiness: fixedReadiness(unavailable),
+    memoryTools: completeMemoryTools(),
+  });
+  await once(server, 'listening');
+  t.after(() => close(server));
+
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/health`);
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), unavailable);
+});

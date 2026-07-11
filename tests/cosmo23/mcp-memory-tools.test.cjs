@@ -2,6 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -10,9 +12,48 @@ const {
   createDefaultMcpMemoryTools,
 } = require('../../shared/memory-source/mcp-http-runtime.cjs');
 const {
+  enumerateMemoryMutationBoundaries,
   readManifest,
   rewriteMemoryBase,
 } = require('../../shared/memory-source');
+
+async function inventoryTree(root) {
+  const rows = [];
+  async function walk(current) {
+    const stat = await fsp.lstat(current, { bigint: true });
+    const row = {
+      path: path.relative(root, current) || '.',
+      type: stat.isDirectory() ? 'directory' : stat.isSymbolicLink() ? 'symlink' : 'file',
+      dev: String(stat.dev),
+      ino: String(stat.ino),
+      mode: String(stat.mode),
+      nlink: String(stat.nlink),
+      size: String(stat.size),
+      mtimeNs: String(stat.mtimeNs),
+      ctimeNs: String(stat.ctimeNs),
+    };
+    if (stat.isFile()) {
+      row.sha256 = crypto.createHash('sha256').update(await fsp.readFile(current)).digest('hex');
+    } else if (stat.isSymbolicLink()) {
+      row.target = await fsp.readlink(current);
+    }
+    rows.push(row);
+    if (!stat.isDirectory()) return;
+    const names = await fsp.readdir(current);
+    names.sort((left, right) => left.localeCompare(right));
+    for (const name of names) await walk(path.join(current, name));
+  }
+  await walk(root);
+  return rows;
+}
+
+async function inventoryBoundaries(brainDir) {
+  const rows = [];
+  for (const boundary of enumerateMemoryMutationBoundaries(brainDir)) {
+    rows.push({ kind: boundary.kind, path: boundary.path, tree: await inventoryTree(boundary.path) });
+  }
+  return rows;
+}
 
 async function createCanonicalBrain(t, { nodes = [], edges = [] } = {}) {
   const home23Root = await fsp.realpath(await fsp.mkdtemp(
@@ -24,6 +65,11 @@ async function createCanonicalBrain(t, { nodes = [], edges = [] } = {}) {
     fsp.mkdir(brainDir, { recursive: true }),
     fsp.mkdir(lockRoot, { recursive: true }),
   ]);
+  for (const relative of ['pgs-sessions', 'sessions', 'cache', 'exports', 'agency']) {
+    const directory = path.join(brainDir, relative);
+    await fsp.mkdir(directory, { recursive: true });
+    await fsp.writeFile(path.join(directory, 'read-only-canary.bin'), `${relative}\0canary\n`);
+  }
   await rewriteMemoryBase(brainDir, {
     nodes,
     edges,
@@ -136,4 +182,37 @@ test('COSMO MCP reports healthy zero only with complete canonical-source evidenc
       assert.equal(result.evidence.identity.catalogRevision, 'local-self');
     });
   }
+});
+
+test('COSMO MCP reads preserve every canonical target mutation boundary byte-for-byte', async (t) => {
+  const fixture = await createCanonicalBrain(t, {
+    nodes: [
+      { id: 'readonly-canary', concept: 'read only MCP canary', tag: 'proof' },
+      { id: 'readonly-support', concept: 'supporting result', tag: 'proof' },
+    ],
+    edges: [{ source: 'readonly-canary', target: 'readonly-support', weight: 0.7 }],
+  });
+  const boundaries = enumerateMemoryMutationBoundaries(fixture.brainDir);
+  assert.deepEqual(boundaries.map(({ kind }) => kind), [
+    'agency', 'brain', 'cache', 'export', 'pgs', 'run', 'session',
+  ]);
+  assert.equal(new Set(boundaries.map(({ kind }) => kind)).size, 7);
+  const before = await inventoryBoundaries(fixture.brainDir);
+  const tools = createTools(fixture, 'cosmo-readonly');
+
+  const readiness = await tools.checkReadiness();
+  const search = await tools.queryMemory({ query: 'read only MCP canary', limit: 5 });
+  const statistics = await tools.getMemoryStatistics();
+  const graph = await tools.getMemoryGraph({ nodeLimit: 2, edgeLimit: 2 });
+
+  assert.equal(readiness.ok, true);
+  assert.equal(search.ok, true);
+  assert.equal(statistics.ok, true);
+  assert.equal(graph.evidence.sourceHealth, 'healthy');
+  assert.equal(graph.nodes.length, 2);
+  assert.equal(graph.edges.length, 1);
+  assert.equal(search.evidence.identity.accessMode, 'own');
+  assert.equal(search.evidence.identity.canonicalRoot, fixture.brainDir);
+  assert.deepEqual(await inventoryBoundaries(fixture.brainDir), before);
+  assert.equal(fs.existsSync(path.join(fixture.brainDir, 'runtime')), false);
 });

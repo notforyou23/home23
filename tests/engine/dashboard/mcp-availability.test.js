@@ -70,3 +70,55 @@ test('configured enabled MCP becomes available only from the exact loopback heal
     reason: null,
   });
 });
+
+test('disabled MCP never probes and unhealthy canonical source never advertises an endpoint', async () => {
+  let probes = 0;
+  const fetchImpl = async () => {
+    probes += 1;
+    return new Response(JSON.stringify({
+      ok: false,
+      protocolVersion: '2025-03-26',
+      sourceHealth: 'unavailable',
+    }), { status: 503, headers: { 'content-type': 'application/json' } });
+  };
+
+  assert.deepEqual(await probeMcpAvailability({
+    enabled: false,
+    port: 5003,
+    fetchImpl,
+  }), {
+    available: false,
+    endpoint: null,
+    reason: 'mcp_disabled',
+  });
+  assert.equal(probes, 0);
+
+  const unavailable = await probeMcpAvailability({
+    enabled: true,
+    port: 5003,
+    fetchImpl,
+  });
+  assert.equal(probes, 1);
+  assert.deepEqual(unavailable, {
+    available: false,
+    endpoint: null,
+    reason: 'mcp_unhealthy',
+  });
+});
+
+test('HTTP-success health with unavailable source fails closed as source unavailable', async () => {
+  const result = await probeMcpAvailability({
+    enabled: true,
+    port: 5003,
+    fetchImpl: async () => new Response(JSON.stringify({
+      ok: false,
+      protocolVersion: '2025-03-26',
+      sourceHealth: 'unavailable',
+    }), { status: 200, headers: { 'content-type': 'application/json' } }),
+  });
+  assert.deepEqual(result, {
+    available: false,
+    endpoint: null,
+    reason: 'mcp_source_unavailable',
+  });
+});
