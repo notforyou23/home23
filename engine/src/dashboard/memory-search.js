@@ -248,6 +248,13 @@ function createDefaultLoadAnn({ hnswlibLoader = () => require('hnswlib-node') } 
     let indexPath;
     let metaBytes;
     if (anchoredIndex && anchoredMeta) {
+      if (anchoredIndex.path === null || anchoredIndex.path === undefined) {
+        throw memorySourceError(
+          'ann_descriptor_unsupported',
+          'ANN descriptor paths are unsupported by this runtime',
+          { status: 503, retryable: false },
+        );
+      }
       if (typeof anchoredIndex.path !== 'string' || anchoredIndex.path.length === 0
           || typeof anchoredMeta.readFile !== 'function'
           || typeof anchoredIndex.assertStable !== 'function'
@@ -290,7 +297,18 @@ function createDefaultLoadAnn({ hnswlibLoader = () => require('hnswlib-node') } 
     }
     const hnswlib = hnswlibLoader();
     const index = new hnswlib.HierarchicalNSW('cosine', dimension);
-    index.readIndexSync(indexPath);
+    try {
+      index.readIndexSync(indexPath);
+    } catch (error) {
+      if (anchoredIndex && ['ENOSYS', 'ENOTSUP', 'EOPNOTSUPP'].includes(error?.code)) {
+        throw memorySourceError(
+          'ann_descriptor_unsupported',
+          'ANN library cannot read an anchored descriptor path',
+          { status: 503, retryable: false, cause: error },
+        );
+      }
+      throw error;
+    }
     if (anchoredIndex) {
       await Promise.all([anchoredIndex.assertStable(), anchoredMeta.assertStable()]);
     }
@@ -388,7 +406,18 @@ function createMemorySearchService({
     });
     let semanticRoute = 'none';
     if (queryEmbedding && annFresh) {
-      const ann = await loadAnn(source, manifest.ann, { signal });
+      let ann = null;
+      try {
+        ann = await loadAnn(source, manifest.ann, { signal });
+      } catch (error) {
+        rethrowAbort(error, signal);
+        if (error?.code !== 'ann_descriptor_unsupported') throw error;
+        fallback = {
+          route: 'logical-source-scan',
+          reason: 'ann_descriptor_unsupported',
+          completeness: 'complete',
+        };
+      }
       if (ann && Number(ann.dimension || ann.dim) === queryEmbedding.length) {
         semanticRoute = 'semantic-ann';
         for (const hit of annSearchRows(ann, queryEmbedding, candidateLimit)) {
@@ -405,7 +434,7 @@ function createMemorySearchService({
             retrievalMode: 'semantic-ann',
           });
         }
-      } else {
+      } else if (!fallback) {
         fallback = { route: 'logical-keyword-scan', reason: 'embedding_dimension_mismatch', completeness: 'complete' };
       }
     } else if (queryEmbedding && !annFresh) {
@@ -416,7 +445,8 @@ function createMemorySearchService({
       };
     }
 
-    if (queryEmbedding && (!annFresh || fallback?.reason === 'embedding_dimension_mismatch')) {
+    if (queryEmbedding && (!annFresh
+        || ['embedding_dimension_mismatch', 'ann_descriptor_unsupported'].includes(fallback?.reason))) {
       semanticRoute = 'semantic-scan';
       for await (const node of source.iterateNodes({ signal })) {
         throwIfAborted(signal);

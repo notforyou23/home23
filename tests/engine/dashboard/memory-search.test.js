@@ -377,6 +377,71 @@ test('default ANN loading consumes anchored handles without reopening target pat
   assert.deepEqual(stableRoles.sort(), ['ann-index', 'ann-meta']);
 });
 
+test('unsupported ANN descriptor paths degrade to a complete logical semantic scan', async () => {
+  const targetDir = await createBrain({
+    nodes: [{ id: 'portable', concept: 'portable descriptor canary', embedding: [1, 0] }],
+  });
+  const source = {
+    descriptor: { canonicalRoot: await fsp.realpath(targetDir) },
+    manifest: {
+      formatVersion: 1,
+      currentRevision: 3,
+      ann: { indexFile: 'ann.index', metaFile: 'ann.meta.json', builtFromRevision: 3 },
+    },
+    async summarize() { return { nodes: 1, edges: 0, clusters: 1 }; },
+    async *iterateNodes() {
+      yield { id: 'portable', concept: 'portable descriptor canary', embedding: [1, 0] };
+    },
+    async searchKeyword() { return { results: [] }; },
+    getAnchoredFile(role) {
+      if (role === 'ann-index') {
+        return { path: null, async assertStable() {} };
+      }
+      if (role === 'ann-meta') {
+        return {
+          async readFile() {
+            return Buffer.from(JSON.stringify({ dimension: 2, labels: [] }));
+          },
+          async assertStable() {},
+        };
+      }
+      return null;
+    },
+    getEvidence(input = {}) {
+      return {
+        sourceHealth: input.sourceHealth || 'healthy',
+        matchOutcome: input.matchOutcome || 'unknown',
+        indexWatermark: { fresh: true, builtFromRevision: 3 },
+      };
+    },
+  };
+  const service = createMemorySearchService({
+    brainDir: targetDir,
+    embedQuery: async () => [1, 0],
+    loadAnn: createDefaultLoadAnn({
+      hnswlibLoader: () => assert.fail('unsupported descriptor path must not load ANN'),
+    }),
+    logger: { warn() {} },
+  });
+
+  const result = await service.search({
+    sourcePin: source,
+    identity: { operationId: 'portable-ann', requesterAgent: 'jerry' },
+    query: 'portable descriptor canary',
+    topK: 5,
+    minSimilarity: 0.1,
+    noiseFloor: 0.1,
+  });
+  assert.deepEqual(result.results.map((row) => row.id), ['portable']);
+  assert.equal(result.results[0].retrievalMode, 'semantic-scan');
+  assert.equal(result.evidence.sourceHealth, 'degraded');
+  assert.deepEqual(result.evidence.fallback, {
+    route: 'logical-source-scan',
+    reason: 'ann_descriptor_unsupported',
+    completeness: 'complete',
+  });
+});
+
 test('search cancellation is never converted into embedding fallback or source unavailable', async () => {
   const controller = new AbortController();
   let recordsConsumed = 0;
