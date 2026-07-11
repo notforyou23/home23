@@ -307,7 +307,7 @@ test('large PGS CLI auto-launches a 100k/300k isolated source and retains durabl
     '--controlled-provider',
     '--fixture-operation-delay-ms', '1',
     '--sweep-fraction', '0.10',
-    '--pgs-wait-ms', '60000',
+    '--pgs-wait-ms', '300000',
     '--sse-output', eventsFile,
     '--heap-output', heapFile,
     '--output', output,

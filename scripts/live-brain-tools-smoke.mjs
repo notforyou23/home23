@@ -232,6 +232,14 @@ function resultProjection(result) {
 }
 
 async function protectedTerminal(client, operationId, signal) {
+  const status = await client.inspectOperation(operationId, 'status', signal);
+  if (!status || !TERMINAL.has(status.state)) {
+    throw typedError('operation_not_terminal', JSON.stringify({
+      operationId,
+      state: status?.state ?? null,
+      attachmentState: status?.attachmentState ?? null,
+    }));
+  }
   const terminal = await client.inspectOperation(operationId, 'result', signal);
   if (!terminal || !TERMINAL.has(terminal.state)) throw typedError('operation_not_terminal');
   return terminal;
@@ -2514,6 +2522,13 @@ async function resumeIsolatedOperationToTerminal(client, operationId, signal, ti
 }
 
 async function readAttachmentEvidence(fixture, operationId) {
+  const { BrainOperationStore } = require(
+    '../engine/src/dashboard/brain-operations/operation-store.js'
+  );
+  const store = new BrainOperationStore({
+    root: fixture.operationsRoot,
+    requesterAgent: fixture.agent,
+  });
   const directory = path.join(fixture.operationsRoot, 'operations', operationId, 'attachments');
   const names = [];
   const handle = await fsp.opendir(directory);
@@ -2529,7 +2544,8 @@ async function readAttachmentEvidence(fixture, operationId) {
   names.sort();
   const rows = [];
   for (const name of names) {
-    const row = await readJson(path.join(directory, name), { maxBytes: 1024 * 1024 });
+    const attachmentId = name.slice(0, -'.json'.length);
+    const row = await store.getAttachment(operationId, attachmentId);
     if (row.operationId !== operationId || row.requesterAgent !== fixture.agent
         || !['attached', 'detached', 'closed'].includes(row.state)) {
       throw typedError('isolated_attachment_evidence_invalid');
@@ -3155,7 +3171,7 @@ async function executeIsolatedLifecycleScenario({
     const terminal = await protectedTerminal(survivorClient, initial.operationId, signal);
     const terminalAttachments = await readAttachmentEvidence(fixture, initial.operationId);
     if (terminalAttachments.detached !== 1 || terminalAttachments.closed < 1) {
-      throw typedError('surviving_attachment_not_proven');
+      throw typedError('surviving_attachment_not_proven', JSON.stringify(terminalAttachments));
     }
     return terminalReceipt({
       context, values, baseUrl: fixture.baseUrl, callerAgent, scenario, terminal,

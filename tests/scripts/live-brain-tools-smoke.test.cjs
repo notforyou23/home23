@@ -921,13 +921,18 @@ test('authoritative canary discovery precedes query and typed failures remain fa
       calls.push('search');
       return { operationId: searchTerminal.operationId, results: [{ id: 'n-canary' }], sourceEvidence: searchTerminal.sourceEvidence };
     },
-    async inspectOperation() { calls.push('protected-result'); return searchTerminal; },
+    async inspectOperation(_operationId, action) {
+      calls.push(`protected-${action}`);
+      return searchTerminal;
+    },
   };
   const discovered = await executeScenario({
     scenario: 'discover-canary', modules, client, values: {}, context: state.context,
     baseUrl: 'http://fixture', callerAgent: 'jerry', signal: new AbortController().signal,
   });
-  assert.deepEqual(calls, ['resolve', 'graph', 'search', 'protected-result']);
+  assert.deepEqual(calls, [
+    'resolve', 'graph', 'search', 'protected-status', 'protected-result',
+  ]);
   assert.equal(graphRequest.edgeLimit, 1);
   assert.equal(discovered.nodeId, 'n-canary');
   assert.equal(discovered.sourceRevision, 7);
