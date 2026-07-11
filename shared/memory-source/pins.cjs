@@ -788,6 +788,23 @@ async function assertProcessPinConfinement(confinement) {
   );
 }
 
+async function readConfinedProcessPinRecord(confinement) {
+  const opened = await openConfinedRegularFile(
+    confinement.operationRoot,
+    confinement.pinFile,
+    { flags: fs.constants.O_RDONLY },
+  );
+  try {
+    const record = JSON.parse((await readOpenedFile(opened, {
+      maxBytes: MAX_OPERATION_STATUS_BYTES,
+    })).toString('utf8'));
+    await assertOpenedFilePathIdentity(opened, portableFileIdentity(opened.stat));
+    return record;
+  } finally {
+    await opened.handle.close().catch(() => {});
+  }
+}
+
 async function removeExactProcessPin(confinement) {
   await assertProcessPinConfinement(confinement);
   const stat = await operationPathLstatOptional(confinement.pinFile);
@@ -1892,32 +1909,39 @@ async function pruneStalePins(home23Root, {
   getOperationState = async () => null,
   isProcessAlive = defaultIsProcessPinAlive,
 } = {}) {
-  const discovered = await discoverOperationPinFiles(home23Root);
+  const canonicalHome23Root = await fsp.realpath(home23Root);
+  const lockRoot = path.join(canonicalHome23Root, 'runtime', 'brain-source-locks');
+  const discovered = await discoverOperationPinFiles(canonicalHome23Root);
   const removed = [];
   for (const file of discovered) {
     if (file.kind !== 'process') continue;
     const confinement = await captureProcessPinConfinement(file.path);
-    const opened = await openConfinedRegularFile(
-      confinement.operationRoot,
-      confinement.pinFile,
-      { flags: fs.constants.O_RDONLY },
-    );
-    let record;
-    try {
-      record = JSON.parse((await readOpenedFile(opened, {
-        maxBytes: MAX_OPERATION_STATUS_BYTES,
-      })).toString('utf8'));
-      await assertOpenedFilePathIdentity(opened, portableFileIdentity(opened.stat));
-    } finally {
-      await opened.handle.close().catch(() => {});
-    }
-    const alive = await isProcessAlive(record);
-    const state = await getOperationState(file.operationId);
-    const terminal = state === null
-      || ['complete', 'partial', 'failed', 'cancelled', 'interrupted'].includes(state);
-    if (alive === false && terminal) {
-      await removeExactProcessPin(confinement);
-      removed.push(file.path);
+    const record = await readConfinedProcessPinRecord(confinement);
+    const sourceRoot = typeof record?.canonicalRoot === 'string'
+      && path.isAbsolute(record.canonicalRoot)
+      && path.normalize(record.canonicalRoot) === record.canonicalRoot
+      && await fsp.realpath(record.canonicalRoot).catch(() => null) === record.canonicalRoot
+      ? record.canonicalRoot
+      : null;
+    const inspectAndRemove = async () => {
+      const currentConfinement = await captureProcessPinConfinement(file.path);
+      const current = await readConfinedProcessPinRecord(currentConfinement);
+      if (canonicalJson(current) !== canonicalJson(record)) return;
+      const alive = await isProcessAlive(current);
+      const state = await getOperationState(file.operationId);
+      const terminal = state === null
+        || ['complete', 'partial', 'failed', 'cancelled', 'interrupted'].includes(state);
+      if (alive === false && terminal) {
+        await removeExactProcessPin(currentConfinement);
+        removed.push(file.path);
+      }
+    };
+    if (sourceRoot) {
+      await withMemorySourceLock(sourceRoot, { lockRoot }, inspectAndRemove);
+    } else {
+      // Legacy incomplete records cannot identify a source lock. They are
+      // migration-only and retain the exact operation-root confinement checks.
+      await inspectAndRemove();
     }
   }
   return removed;
@@ -1942,6 +1966,7 @@ async function removeExactOperationRegularFile(operationRoot, operationIdentity,
     });
   }
   await fsp.unlink(filePath);
+  await fsyncSourceLockDirectory(operationRoot);
   await assertExactOperationDirectory(operationRoot, operationIdentity, 'operation root');
   return true;
 }
@@ -1962,6 +1987,7 @@ async function removeExactOperationDirectoryTree(operationRoot, operationIdentit
   );
   await assertExactOperationDirectory(operationRoot, operationIdentity, 'operation root');
   await fsp.rename(directory, quarantine);
+  await fsyncSourceLockDirectory(operationRoot);
   const moved = await operationPathLstatOptional(quarantine);
   if (moved === null || moved.isSymbolicLink() || !moved.isDirectory()
       || !sameOperationPathIdentity(moved, identity)) {
@@ -1971,6 +1997,7 @@ async function removeExactOperationDirectoryTree(operationRoot, operationIdentit
   }
   await assertExactOperationDirectory(operationRoot, operationIdentity, 'operation root');
   await fsp.rm(quarantine, { recursive: true, force: false });
+  await fsyncSourceLockDirectory(operationRoot);
   await assertExactOperationDirectory(operationRoot, operationIdentity, 'operation root');
   return true;
 }
@@ -1989,29 +2016,48 @@ async function releaseOperationSource({ home23Root, requesterAgent, operationId 
   );
   if (operationIdentity === null) return;
   const pinsRoot = path.join(operationRoot, 'pins');
-  await removeExactOperationRegularFile(
-    operationRoot,
-    operationIdentity,
-    coordinatorPinPath(operationRoot),
-    'coordinator source pin',
-  );
-  await removeExactOperationDirectoryTree(
-    operationRoot,
-    operationIdentity,
-    pinsRoot,
-    'process pins root',
-  );
-  await removeExactOperationDirectoryTree(
-    operationRoot,
-    operationIdentity,
-    path.join(operationRoot, 'source-projections'),
-    'source projections root',
-  );
-  for (const pinFile of processPinReferences.keys()) {
-    const relative = path.relative(pinsRoot, pinFile);
-    if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
-      processPinReferences.delete(pinFile);
+  const coordinator = await readCoordinatorRecord(operationRoot).catch((error) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  const sourceRoot = typeof coordinator?.canonicalRoot === 'string'
+    && path.isAbsolute(coordinator.canonicalRoot)
+    && path.normalize(coordinator.canonicalRoot) === coordinator.canonicalRoot
+    && await fsp.realpath(coordinator.canonicalRoot).catch(() => null) === coordinator.canonicalRoot
+    ? coordinator.canonicalRoot
+    : null;
+  const cleanup = async () => {
+    await removeExactOperationRegularFile(
+      operationRoot,
+      operationIdentity,
+      coordinatorPinPath(operationRoot),
+      'coordinator source pin',
+    );
+    await removeExactOperationDirectoryTree(
+      operationRoot,
+      operationIdentity,
+      pinsRoot,
+      'process pins root',
+    );
+    await removeExactOperationDirectoryTree(
+      operationRoot,
+      operationIdentity,
+      path.join(operationRoot, 'source-projections'),
+      'source projections root',
+    );
+    for (const pinFile of processPinReferences.keys()) {
+      const relative = path.relative(pinsRoot, pinFile);
+      if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+        processPinReferences.delete(pinFile);
+      }
     }
+  };
+  if (sourceRoot) {
+    await withMemorySourceLock(sourceRoot, {
+      lockRoot: path.join(canonicalHome23Root, 'runtime', 'brain-source-locks'),
+    }, cleanup);
+  } else {
+    await cleanup();
   }
 }
 

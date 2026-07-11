@@ -195,7 +195,7 @@ Each record contains:
 - Typed error and retryability.
 - Source evidence.
 
-Canonical records live under instances/<requester>/runtime/brain-operations/<operationId>/, which is ignored installation state. Each directory holds an atomic status record, bounded event journal, result or result handle, worker references, and requester-owned scratch data. Records are written by temp-file plus rename under a per-operation lock and carry a monotonically increasing record version and event sequence.
+Canonical durable records live under instances/<requester>/runtime/brain-operations/operations/<operationId>/, which is ignored installation state. `instances/<requester>/runtime/brain-operations/` is the BrainOperationStore root; standalone or compatibility memory-source contexts may use separate flat sibling directories but are not durable store records. Each durable operation directory holds an atomic status record, bounded event journal, result or result handle, worker references, and requester-owned scratch data. Records are written by temp-file plus rename under a per-operation lock and carry a monotonically increasing record version and event sequence.
 
 The operation store is a reliability and logical-authority boundary inside one
 local Home23 installation, not an operating-system sandbox against another

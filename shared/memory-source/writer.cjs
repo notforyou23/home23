@@ -323,11 +323,6 @@ async function retireUnpinnedSources(brainDir, options = {}) {
       const record = JSON.parse(await fsp.readFile(filePath, 'utf8').catch(() => '{}'));
       if (record.canonicalRoot !== await fsp.realpath(brainDir)) continue;
       for (const file of record.files || record.protectedFiles || []) protectedFiles.add(file);
-      if (record.generation) {
-        for (const name of await fsp.readdir(brainDir)) {
-          if (name.includes(record.generation)) protectedFiles.add(name);
-        }
-      }
     }
     const retired = [];
     const retained = [];
