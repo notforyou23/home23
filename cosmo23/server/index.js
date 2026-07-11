@@ -728,6 +728,52 @@ async function startProcessesForRun(runPath) {
   await processManager.startCOSMO();
 }
 
+// HOME23 PATCH 50 — the durable research-run adapter prepares an exact owned
+// run before launching it. Keep all config/runtime/metadata/process work in
+// this one function so operation launches and POST /api/launch cannot drift.
+async function launchPreparedResearch(brain, payload, req) {
+  const request = req || { headers: {}, secure: false, hostname: 'localhost' };
+  const setupConfig = await readSetupConfig();
+  const launchSettings = serializeLaunchSettings(payload, setupConfig);
+  processManager.clearLogs();
+  processManager.recordLog('Launcher', 'info', `Preparing run ${brain.name}`);
+
+  await ensureRuntimeLink(brain.name);
+  process.env.COSMO_RUNTIME_PATH = path.join(LOCAL_RUNS_PATH, brain.name);
+  await configGenerator.writeConfig(launchSettings);
+  await configGenerator.writeMetadata(brain.path, launchSettings, false);
+  await writeRuntimeMetadata(brain.path, payload, launchSettings);
+  processManager.recordLog('Launcher', 'info', `Runtime linked to ${brain.path}`);
+  await startProcessesForRun(brain.path);
+
+  activeContext = {
+    runName: brain.name,
+    runPath: brain.path,
+    brainId: brain.id || brain.routeKey,
+    topic: payload.topic || brain.topic || brain.name,
+    explorationMode: launchSettings.exploration_mode,
+    executionMode: launchSettings.execution_mode,
+    effectiveExecutionMode: launchSettings.effective_execution_mode,
+    startedAt: new Date().toISOString(),
+    wsUrl: getWsUrl(request)
+  };
+  processManager.recordLog('Launcher', 'info', `Run ${brain.name} started`);
+
+  return {
+    success: true,
+    runName: brain.name,
+    brainId: activeContext.brainId,
+    brainPath: brain.path,
+    brainSourceType: brain.sourceType,
+    isContinuation: brain.hasState,
+    cycles: Number.parseInt(launchSettings.max_cycles, 10),
+    executionMode: launchSettings.execution_mode,
+    effectiveExecutionMode: launchSettings.effective_execution_mode,
+    wsUrl: activeContext.wsUrl,
+    dashboardUrl: `http://localhost:${DASHBOARD_PORT}`
+  };
+}
+
 async function launchResearch(payload, req) {
   if (activeContext || isLaunching) {
     const error = new Error(`COSMO is already running${activeContext ? ` ${activeContext.runName}` : ''}`);
@@ -738,45 +784,7 @@ async function launchResearch(payload, req) {
 
   try {
     const brain = await ensureLocalBrainForLaunch(payload);
-    const setupConfig = await readSetupConfig();
-    const launchSettings = serializeLaunchSettings(payload, setupConfig);
-    processManager.clearLogs();
-    processManager.recordLog('Launcher', 'info', `Preparing run ${brain.name}`);
-
-    await ensureRuntimeLink(brain.name);
-    process.env.COSMO_RUNTIME_PATH = path.join(LOCAL_RUNS_PATH, brain.name);
-    await configGenerator.writeConfig(launchSettings);
-    await configGenerator.writeMetadata(brain.path, launchSettings, false);
-    await writeRuntimeMetadata(brain.path, payload, launchSettings);
-    processManager.recordLog('Launcher', 'info', `Runtime linked to ${brain.path}`);
-    await startProcessesForRun(brain.path);
-
-    activeContext = {
-      runName: brain.name,
-      runPath: brain.path,
-      brainId: brain.id || brain.routeKey,
-      topic: payload.topic || brain.topic || brain.name,
-      explorationMode: launchSettings.exploration_mode,
-      executionMode: launchSettings.execution_mode,
-      effectiveExecutionMode: launchSettings.effective_execution_mode,
-      startedAt: new Date().toISOString(),
-      wsUrl: getWsUrl(req)
-    };
-    processManager.recordLog('Launcher', 'info', `Run ${brain.name} started`);
-
-    return {
-      success: true,
-      runName: brain.name,
-      brainId: activeContext.brainId,
-      brainPath: brain.path,
-      brainSourceType: brain.sourceType,
-      isContinuation: brain.hasState,
-      cycles: Number.parseInt(launchSettings.max_cycles, 10),
-      executionMode: launchSettings.execution_mode,
-      effectiveExecutionMode: launchSettings.effective_execution_mode,
-      wsUrl: activeContext.wsUrl,
-      dashboardUrl: `http://localhost:${DASHBOARD_PORT}`
-    };
+    return await launchPreparedResearch(brain, payload, req);
   } finally {
     isLaunching = false;
   }
@@ -2452,12 +2460,23 @@ app.get('/', (_req, res) => {
   res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
 });
 
-app.listen(PORT, async () => {
-  await applyStoredConfig();
-  await fsp.mkdir(LOCAL_RUNS_PATH, { recursive: true });
-  const repairSummary = await repairAllRunMetadata(LOCAL_RUNS_PATH, console);
-  console.log(`[cosmo_2.3] http://localhost:${PORT}`);
-  console.log(`[cosmo_2.3] local config: ${getConfigPath()}`);
-  console.log(`[cosmo_2.3] reference runs: ${getReferenceRunsPaths().join(', ') || 'none'}`);
-  console.log(`[cosmo_2.3] run metadata repair: ${repairSummary.repaired}/${repairSummary.scanned} repaired`);
-});
+function startServer() {
+  return app.listen(PORT, async () => {
+    await applyStoredConfig();
+    await fsp.mkdir(LOCAL_RUNS_PATH, { recursive: true });
+    const repairSummary = await repairAllRunMetadata(LOCAL_RUNS_PATH, console);
+    console.log(`[cosmo_2.3] http://localhost:${PORT}`);
+    console.log(`[cosmo_2.3] local config: ${getConfigPath()}`);
+    console.log(`[cosmo_2.3] reference runs: ${getReferenceRunsPaths().join(', ') || 'none'}`);
+    console.log(`[cosmo_2.3] run metadata repair: ${repairSummary.repaired}/${repairSummary.scanned} repaired`);
+  });
+}
+
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = {
+  launchPreparedResearch,
+  startServer,
+};

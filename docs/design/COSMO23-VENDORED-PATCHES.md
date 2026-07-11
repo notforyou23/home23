@@ -2180,6 +2180,49 @@ tests/cosmo23/codex-unified-client-request.test.cjs`.
 
 ---
 
+## Patch 50 — Durable research-run operation adapter (foundation slice)
+
+**Files touched:**
+- `cosmo23/server/lib/research-run-operation-adapter.js`
+- `cosmo23/server/index.js`
+- `tests/cosmo23/research-run-operation-adapter.test.cjs`
+
+**Problem:** The durable brain-operation backend could not safely drive COSMO
+research runs through the real launcher. The legacy HTTP routes accepted
+caller-provided run roots/owners, kept lifecycle truth mainly in process-local
+`activeContext`, cleared that context even when stop failed, and exposed one
+global process log buffer. A long stop, cancellation, concurrent mutation, or
+different active run could therefore produce a false stopped result, duplicate
+spawn, stale metadata write, or logs from the wrong run.
+
+**Fix:** Added an owner-scoped adapter over the existing `RunManager` and
+`ProcessManager` methods. It derives
+`instances/<requester>/workspace/research-runs/<runId>` server-side, rejects
+path escapes and symlinked components, persists and reloads canonical run
+metadata around every lifecycle transition, and uses a nonblocking per-run lock
+for launch/continue/stop mutations. Continue is limited to
+`paused|failed|completed`; stop requires the exact active run, writes
+`stopping` before `stopAll()`, waits for `getStatus()` to prove every child is
+down, and writes `stopped` before clearing active context. Cancellation never
+claims stopped. Watch maintains a bounded per-run cursor ring and never falls
+back to another active run's global logs.
+
+`server/index.js` now exposes `launchPreparedResearch(brain,payload,req)`, the
+single config/runtime-link/metadata/process-start path used by both the legacy
+`/api/launch` flow and the durable adapter. This slice does not add a parallel
+launcher. Full Patch 50 executor/worker registration remains in the later
+research-operation integration slice and must inject the canonical metadata
+reader/writer plus requester workspace resolver explicitly.
+
+**Verification:** `tests/cosmo23/research-run-operation-adapter.test.cjs`
+covers server-derived roots, symlink/escape refusal, write-before-spawn ordering,
+trusted launch defaults, durable active/failed/continue/stop transitions,
+process-exit detection, stop cancellation truth, active-context mismatch,
+bounded cursor/filter behavior, exact-run log isolation, fresh canonical owner
+resolution, and deterministic concurrent mutation conflicts.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -2463,3 +2506,9 @@ tests/cosmo23/codex-unified-client-request.test.cjs`.
   of `home23-cosmo23`, and the completed-run query now reports two extracted
   Archive records, nine forum/blog candidates, Legion of Mary present, and zero
   invalid JSON files.
+- **2026-07-10** — Patch 50 foundation added the concrete durable
+  research-run adapter and extracted one prepared-run launcher from
+  `server/index.js`. Owner/run paths and lifecycle transitions are now
+  server-derived, exact, durable, cancellable without false stop claims, and
+  protected by a per-run mutation lock; executor/worker registration follows in
+  the remaining Task 5 integration slices.
