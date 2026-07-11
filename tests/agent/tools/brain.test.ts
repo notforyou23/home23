@@ -219,6 +219,29 @@ test('brain_query_export rejects target instead of silently ignoring it', async 
   assert.match(result.content, /invalid_request/);
 });
 
+test('brain_query_export preserves the bounded server export receipt in tool metadata', async () => {
+  const receipt = {
+    exportHandle: 'brexp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    relativePath: 'workspace/brain-exports/canary.md',
+    bytes: 123,
+    sha256: 'a'.repeat(64),
+    sourceOperationId: 'brop_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    sourceResultHandleHash: null,
+    format: 'markdown',
+    canonicalEvidence: true,
+  };
+  const result = await brainQueryExportTool.execute({
+    operationId: receipt.sourceOperationId,
+    format: 'markdown',
+  }, makeCtx({ brainOperations: {
+    exportResult: async () => receipt,
+  } }));
+
+  assert.equal(result.is_error, undefined);
+  assert.deepEqual(result.metadata, receipt);
+  assert.match(result.content, /workspace\/brain-exports\/canary\.md/);
+});
+
 test('canonical export rejects caller metadata instead of altering durable provenance', async () => {
   let downstreamCalls = 0;
   const result = await brainQueryExportTool.execute({
@@ -262,6 +285,38 @@ test('canonical and ad-hoc export branches preserve their distinct authority con
     metadata: { note: 'context', canonicalEvidence: false },
   });
   assert.equal(adHoc.is_error, undefined);
+});
+
+test('canonical export exposes only the bounded public export receipt in tool metadata', async () => {
+  const receipt = {
+    exportHandle: `brexp_${'e'.repeat(32)}`,
+    relativePath: 'workspace/brain-exports/result.md',
+    bytes: 42,
+    sha256: 'a'.repeat(64),
+    sourceOperationId: `brop_${'b'.repeat(32)}`,
+    sourceResultHandleHash: 'c'.repeat(64),
+    format: 'markdown',
+    canonicalEvidence: true,
+    internalPath: '/must/not/escape',
+  };
+  const result = await brainQueryExportTool.execute({
+    operationId: receipt.sourceOperationId,
+    format: 'markdown',
+  }, makeCtx({ brainOperations: {
+    exportResult: async () => receipt,
+  } }));
+
+  assert.deepEqual(result.metadata, {
+    exportHandle: receipt.exportHandle,
+    relativePath: receipt.relativePath,
+    bytes: receipt.bytes,
+    sha256: receipt.sha256,
+    sourceOperationId: receipt.sourceOperationId,
+    sourceResultHandleHash: receipt.sourceResultHandleHash,
+    format: receipt.format,
+    canonicalEvidence: true,
+  });
+  assert.equal(Object.hasOwn(result.metadata || {}, 'internalPath'), false);
 });
 
 test('typed coordinator failure is an error and never an empty-brain claim', async () => {

@@ -150,6 +150,23 @@ function boundedJson(label: string, value: Record<string, unknown>): ToolResult 
   };
 }
 
+function boundedExportReceipt(value: Record<string, unknown>): ToolResult {
+  const rendered = boundedJson('brain_query_export', value);
+  return {
+    ...rendered,
+    metadata: {
+      exportHandle: value.exportHandle,
+      relativePath: value.relativePath,
+      bytes: value.bytes,
+      sha256: value.sha256,
+      sourceOperationId: value.sourceOperationId,
+      sourceResultHandleHash: value.sourceResultHandleHash,
+      format: value.format,
+      canonicalEvidence: value.canonicalEvidence,
+    },
+  };
+}
+
 function operationControlResult(
   action: string,
   value: BrainOperationRecord | BrainOperationResultEnvelope,
@@ -332,7 +349,7 @@ async function executeBrainExport(
         format,
         metadata: { ...(metadata || {}), canonicalEvidence: false },
       }, turn.signal);
-    return boundedJson('brain_query_export', value);
+    return boundedExportReceipt(value);
   } catch (error) {
     return toolFailure('brain_query_export', error);
   }
