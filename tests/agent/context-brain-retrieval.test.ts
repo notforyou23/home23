@@ -80,11 +80,11 @@ test('concurrent context retrieval keeps per-turn clients, signals, and cancella
       results: [{ id: 'turn-one-only', concept: 'turn-one-only', similarity: 0.9 }],
       sourceEvidence: { sourceHealth: 'healthy', matchOutcome: 'matches' },
     });
-    const [first, second] = await Promise.all(pending);
+    await assert.rejects(pending[0]!, (error) => error === reason);
+    const second = await pending[1]!;
     assert.equal(calls[0]!.signal, controllers[0]!.signal);
     assert.equal(calls[1]!.signal, controllers[1]!.signal);
     assert.notEqual(calls[0]!.signal, calls[1]!.signal);
-    assert.match(first.block, /turn_cancelled|cancel turn zero/);
     assert.match(second.block, /turn-one-only/);
     assert.equal(controllers[1]!.signal.aborted, false);
   } finally {
