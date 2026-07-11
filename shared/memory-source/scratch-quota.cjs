@@ -1089,6 +1089,10 @@ async function createOperationScratchQuota({
     return transact(async (ledger) => ledger, { reconcile: true, cleanup });
   }
 
+  // Run trusted operation-private filesystem growth while this quota owns the
+  // exact-root lock. The materializer must call checkpoint immediately after
+  // each peak growth point if it can later shrink before returning; the final
+  // checkpoint is mandatory and performed here regardless of callback result.
   async function withPhysicalGrowth(maxGrowthBytes, kind, materializer) {
     assertOpen();
     validateBytes(maxGrowthBytes, 'materialization limit');
