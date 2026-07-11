@@ -230,6 +230,35 @@ class ProviderRegistry {
   }
 
   /**
+   * Return only the explicitly named provider when the canonical catalog says
+   * that provider owns the exact model. This deliberately bypasses the legacy
+   * model-only map and heuristic fallback used by getProvider().
+   */
+  getExact(providerId, modelId) {
+    if (typeof providerId !== 'string' || !providerId.trim()
+        || typeof modelId !== 'string' || !modelId.trim()) {
+      throw Object.assign(new Error('Provider and model are required'), {
+        code: 'provider_model_mismatch', retryable: false,
+      });
+    }
+    const provider = this.providers.get(providerId);
+    const catalogOwnsPair = listCatalogModels(loadModelCatalogSync(), {
+      providers: [providerId],
+      kind: 'chat',
+    }).some((entry) => entry.id === modelId && entry.provider === providerId);
+    const adapterOwnsPair = provider
+      && (provider.supportsModel?.(modelId) === true
+        || provider.getAvailableModels?.().includes(modelId));
+    if (!catalogOwnsPair || !adapterOwnsPair) {
+      throw Object.assign(new Error(`Provider/model mismatch: ${providerId}/${modelId}`), {
+        code: provider ? 'provider_model_mismatch' : 'provider_unavailable',
+        retryable: !provider,
+      });
+    }
+    return provider;
+  }
+
+  /**
    * Get the provider for a model
    * @param {string} modelId - Model identifier (e.g., 'claude-sonnet-4-20250514' or 'anthropic/claude-sonnet-4')
    * @returns {ProviderAdapter|undefined}

@@ -228,6 +228,7 @@ function createBrainProviderClientRegistry({
 
   return Object.freeze({
     get: assertPairAvailable,
+    getExact: assertPairAvailable,
     has: (provider, model) => clients.has(pairKey(provider, model)),
     availability: (provider, model) => {
       getModelCapabilities(catalog, provider, model);

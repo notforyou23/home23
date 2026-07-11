@@ -86,6 +86,8 @@ test('registry keys clients by exact provider and model without model-only fallb
   });
   assert.equal(registry.get('alpha', 'shared'), alpha);
   assert.equal(registry.get('beta', 'shared'), beta);
+  assert.equal(registry.getExact('alpha', 'shared'), alpha);
+  assert.equal(registry.getExact('beta', 'shared'), beta);
   assert.notEqual(registry.get('alpha', 'shared'), registry.get('beta', 'shared'));
   assert.equal(registry.has('custom', 'custom-model'), false);
   assert.deepEqual(registry.availability('custom', 'custom-model'), {

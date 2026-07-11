@@ -830,6 +830,38 @@ function getEmbeddingConfig(catalog = null) {
   return deepClone(defaults.embeddings || BUILTIN_MODEL_CATALOG.defaults.embeddings);
 }
 
+/**
+ * Resolve one explicitly configured provider/model assignment without model
+ * inference or fallback. Research compilation uses this at the protected
+ * worker boundary so two providers may safely expose the same model label.
+ */
+function resolveExactConfiguredPair(catalog, configuredAgents, assignmentKey) {
+  if (!isPlainRecord(configuredAgents)
+      || typeof assignmentKey !== 'string'
+      || !assignmentKey.trim()
+      || !hasOwn(configuredAgents, assignmentKey)) {
+    throw Object.assign(new Error(`Missing exact model assignment: ${String(assignmentKey)}`), {
+      code: 'model_assignment_invalid',
+      retryable: false,
+    });
+  }
+  const assignment = configuredAgents[assignmentKey];
+  if (!isPlainRecord(assignment)
+      || typeof assignment.provider !== 'string'
+      || !assignment.provider.trim()
+      || typeof assignment.model !== 'string'
+      || !assignment.model.trim()) {
+    throw Object.assign(new Error(`Invalid exact model assignment: ${assignmentKey}`), {
+      code: 'model_assignment_invalid',
+      retryable: false,
+    });
+  }
+  const provider = assignment.provider.trim();
+  const model = assignment.model.trim();
+  getModelCapabilities(catalog, provider, model);
+  return Object.freeze({ provider, model });
+}
+
 module.exports = {
   BUILTIN_EXECUTION_DEFAULTS,
   BUILTIN_MODEL_CATALOG,
@@ -846,5 +878,6 @@ module.exports = {
   listCatalogModels,
   inferProviderFromModel,
   getCatalogDefaults,
-  getEmbeddingConfig
+  getEmbeddingConfig,
+  resolveExactConfiguredPair,
 };
