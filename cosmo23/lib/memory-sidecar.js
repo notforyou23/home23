@@ -12,10 +12,225 @@ const path = require('path');
 const zlib = require('zlib');
 const readline = require('readline');
 const { openCosmoMemorySource } = require('./memory-source-adapter');
+const {
+  MATCH_OUTCOME,
+  SOURCE_HEALTH,
+  createEvidence,
+  rewriteMemoryBase,
+} = require('../../shared/memory-source');
 
 const NODES_FILE = 'memory-nodes.jsonl.gz';
 const EDGES_FILE = 'memory-edges.jsonl.gz';
 const SNAPSHOT_FILE = 'brain-snapshot.json';
+const DEFAULT_LOCK_ROOT = path.resolve(__dirname, '..', '..', 'runtime', 'brain-source-locks');
+
+function jsonCapture(value) {
+  const encoded = JSON.stringify(value, (_key, candidate) => (
+    ArrayBuffer.isView(candidate) && !(candidate instanceof DataView)
+      ? Array.from(candidate)
+      : candidate
+  ));
+  if (encoded === undefined) throw new TypeError('research state must be JSON serializable');
+  return JSON.parse(encoded);
+}
+
+function deepFreeze(value) {
+  if (!value || typeof value !== 'object') return value;
+  const pending = [value];
+  const seen = new Set();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || typeof current !== 'object' || seen.has(current)) continue;
+    seen.add(current);
+    for (const child of Object.values(current)) {
+      if (child && typeof child === 'object') pending.push(child);
+    }
+    Object.freeze(current);
+  }
+  return value;
+}
+
+function normalizeResearchGraph(memory) {
+  const graph = typeof memory?.exportGraph === 'function' ? memory.exportGraph() : memory;
+  const captured = jsonCapture(graph);
+  if (!captured || !Array.isArray(captured.nodes) || !Array.isArray(captured.edges)) {
+    throw new TypeError('research memory must contain node and edge arrays');
+  }
+  if (captured.clusters !== undefined && !Array.isArray(captured.clusters)) {
+    throw new TypeError('research memory clusters must be an array when present');
+  }
+  if (!Array.isArray(captured.clusters)) captured.clusters = [];
+  return deepFreeze(captured);
+}
+
+function captureResearchState(state) {
+  const captured = jsonCapture(state);
+  if (!captured || typeof captured !== 'object' || Array.isArray(captured)) {
+    throw new TypeError('research state object required');
+  }
+  captured.memory = normalizeResearchGraph(captured.memory);
+  return deepFreeze(captured);
+}
+
+function researchSummary(memory) {
+  return Object.freeze({
+    nodeCount: memory.nodes.length,
+    edgeCount: memory.edges.length,
+    clusterCount: memory.clusters.length,
+  });
+}
+
+function researchEvidence(manifest, summary) {
+  return deepFreeze(createEvidence({
+    route: 'research-memory-persistence',
+    implementation: 'manifest-v1',
+    baseRevision: manifest.baseRevision,
+    baseFile: manifest.activeBase.nodes.file,
+    deltaRevision: manifest.currentRevision,
+    deltaEpoch: manifest.activeDeltaEpoch,
+    deltaApplied: manifest.activeDelta.count,
+    annBuiltFromRevision: manifest.ann?.builtFromRevision,
+    annFresh: manifest.ann?.builtFromRevision === manifest.currentRevision,
+    authoritativeTotals: { nodes: summary.nodeCount, edges: summary.edgeCount },
+    returnedTotals: { nodes: summary.nodeCount, edges: summary.edgeCount },
+    completeCoverage: true,
+    sourceHealth: SOURCE_HEALTH.HEALTHY,
+    matchOutcome: summary.nodeCount > 0 || summary.edgeCount > 0
+      ? MATCH_OUTCOME.MATCHES
+      : MATCH_OUTCOME.CORPUS_EMPTY,
+    freshness: 'known',
+  }));
+}
+
+function degradedResearchEvidence(summary, error) {
+  return deepFreeze(createEvidence({
+    route: 'research-memory-persistence',
+    implementation: 'inline-recovery',
+    authoritativeTotals: { nodes: summary.nodeCount, edges: summary.edgeCount },
+    returnedTotals: { nodes: summary.nodeCount, edges: summary.edgeCount },
+    completeCoverage: true,
+    sourceHealth: SOURCE_HEALTH.DEGRADED,
+    matchOutcome: summary.nodeCount > 0 || summary.edgeCount > 0
+      ? MATCH_OUTCOME.MATCHES
+      : MATCH_OUTCOME.CORPUS_EMPTY,
+    freshness: 'unknown',
+    diagnostics: [{
+      code: error?.code || 'manifest_persistence_failed',
+      message: String(error?.message || 'research memory manifest persistence failed'),
+    }],
+  }));
+}
+
+function memoryShell(memory, summary) {
+  const shell = {};
+  for (const [key, value] of Object.entries(memory)) {
+    if (key === 'nodes' || key === 'edges' || key === 'clusters') continue;
+    if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) shell[key] = value;
+  }
+  return deepFreeze({
+    ...shell,
+    nodes: [],
+    edges: [],
+    clusters: [],
+    ...summary,
+  });
+}
+
+async function persistCapturedResearchMemory(runDir, capturedMemory, options = {}) {
+  const lockRoot = options.lockRoot || DEFAULT_LOCK_ROOT;
+  await fs.promises.mkdir(runDir, { recursive: true });
+  await fs.promises.mkdir(lockRoot, { recursive: true, mode: 0o700 });
+  const summary = researchSummary(capturedMemory);
+  const committed = await rewriteMemoryBase(runDir, {
+    nodes: capturedMemory.nodes,
+    edges: capturedMemory.edges,
+    summary,
+  }, {
+    ...(options.writerOptions || {}),
+    lockRoot,
+  });
+  const manifest = committed.manifest;
+  if (!Number.isSafeInteger(manifest?.baseRevision)
+      || !Number.isSafeInteger(manifest?.currentRevision)) {
+    throw new Error('research memory manifest did not commit numeric revisions');
+  }
+  return Object.freeze({
+    manifest,
+    revision: manifest.currentRevision,
+    summary,
+    evidence: researchEvidence(manifest, summary),
+    capturedMemory,
+  });
+}
+
+/**
+ * Capture a research graph synchronously, then publish its immutable manifest
+ * generation. The capture deliberately happens before this async function's
+ * first await so a writer wait cannot blend two live graph generations.
+ */
+async function persistResearchMemoryRevision(runDir, memory, options = {}) {
+  const capturedMemory = normalizeResearchGraph(memory);
+  return persistCapturedResearchMemory(runDir, capturedMemory, options);
+}
+
+/**
+ * Persist one captured state generation. A failed manifest commit falls back
+ * to the complete captured inline graph; an empty shell is never written until
+ * the manifest is durable.
+ */
+async function persistResearchState(runDir, state, options = {}) {
+  const capturedState = captureResearchState(state);
+  const capturedMemory = capturedState.memory;
+  const summary = researchSummary(capturedMemory);
+  if (typeof options.saveState !== 'function') {
+    throw new TypeError('research state save callback required');
+  }
+
+  let committed;
+  try {
+    committed = await persistCapturedResearchMemory(runDir, capturedMemory, options);
+  } catch (error) {
+    const evidence = degradedResearchEvidence(summary, error);
+    const recoverableState = deepFreeze({
+      ...capturedState,
+      memory: capturedMemory,
+      memorySource: 'inline',
+      memorySourceRevision: null,
+      memorySourceEvidence: evidence,
+    });
+    const saveResult = await options.saveState(recoverableState);
+    options.logger?.warn?.('Research memory manifest persistence degraded to inline state', {
+      code: error?.code || 'manifest_persistence_failed',
+      error: error?.message || String(error),
+      nodes: summary.nodeCount,
+      edges: summary.edgeCount,
+    });
+    return Object.freeze({
+      degraded: true,
+      manifest: null,
+      revision: null,
+      evidence,
+      saveResult,
+      error,
+    });
+  }
+
+  const shellState = deepFreeze({
+    ...capturedState,
+    memory: memoryShell(capturedMemory, summary),
+    memorySource: 'manifest',
+    memorySourceRevision: committed.revision,
+    memorySourceEvidence: committed.evidence,
+  });
+  const saveResult = await options.saveState(shellState);
+  return Object.freeze({
+    degraded: false,
+    manifest: committed.manifest,
+    revision: committed.revision,
+    evidence: committed.evidence,
+    saveResult,
+  });
+}
 
 function nodesPath(brainDir) {
   return path.join(brainDir, NODES_FILE);
@@ -162,5 +377,7 @@ module.exports = {
   readBrainSnapshot,
   readJsonlGz,
   readMemorySidecars,
-  hydrateStateMemory
+  hydrateStateMemory,
+  persistResearchMemoryRevision,
+  persistResearchState,
 };

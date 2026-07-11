@@ -17,6 +17,7 @@ const path = require('path');
 const zlib = require('zlib');
 const crypto = require('crypto');
 const { promisify } = require('util');
+const { persistResearchState } = require('../../../lib/memory-sidecar');
 
 const gzip = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
@@ -1984,10 +1985,18 @@ class MergeEngine {
     // Create directory
     await fs.mkdir(outputDir, { recursive: true });
 
-    // Save compressed state
+    // Publish the immutable memory generation before writing its compressed
+    // shell. A manifest failure preserves the complete captured inline graph.
     const statePath = path.join(outputDir, 'state.json');
-    await saveCompressedState(statePath, mergedState);
+    const persistence = await persistResearchState(outputDir, mergedState, {
+      lockRoot: this.options.memorySourceLockRoot,
+      logger: this.logger,
+      saveState: (capturedState) => saveCompressedState(statePath, capturedState),
+    });
     this.logger.success(`Saved merged state to ${outputName}/state.json.gz`);
+    if (persistence.degraded) {
+      this.logger.warn(`Saved ${outputName} with inline recovery memory after manifest failure`);
+    }
 
     // Save metadata
     const metadata = {

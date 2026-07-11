@@ -26,6 +26,7 @@ const { AgentRouter } = require('../system/agent-routing');
 const { MemoryGovernor } = require('../system/memory-governor');
 const { RunCommitmentGovernor } = require('./run-commitment-governor');
 const { UnifiedClient } = require('./unified-client');
+const { persistResearchState } = require('../../../lib/memory-sidecar');
 
 // EXECUTIVE RING: Executive function layer (dlPFC)
 const { ExecutiveCoordinator } = require('../coordinator/executive-coordinator');
@@ -8038,16 +8039,25 @@ OUTPUT FORMAT (JSON ONLY):
         }
       }
 
-      // Save with compression (reduces 118MB → ~6-10MB)
-      const saveResult = await StateCompression.saveCompressed(statePath, state, {
-        compress: true,
-        pretty: false  // Compact JSON for better compression
+      // Publish the immutable memory generation before replacing the compressed
+      // graph with its small manifest-backed shell. Manifest failure degrades
+      // to the complete captured inline state, never a truncated shell.
+      const persistence = await persistResearchState(this.logsDir, state, {
+        lockRoot: this.config?.memorySource?.lockRoot,
+        logger: this.logger,
+        saveState: (capturedState) => StateCompression.saveCompressed(statePath, capturedState, {
+          compress: true,
+          pretty: false  // Compact JSON for better compression
+        }),
       });
+      const saveResult = persistence.saveResult;
       
       this.logger.info('State saved (GPT-5.2)', {
         cycle: this.cycleCount,
         nodesWithEmbeddings,
         totalNodes,
+        memorySource: persistence.degraded ? 'inline' : 'manifest',
+        memorySourceRevision: persistence.revision,
         compressed: saveResult.compressed,
         size: `${(saveResult.size / (1024 * 1024)).toFixed(2)}MB`,
         ...(saveResult.ratio && { compressionRatio: saveResult.ratio })
