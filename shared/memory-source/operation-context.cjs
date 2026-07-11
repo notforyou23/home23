@@ -8,7 +8,8 @@ const { createOperationScratchQuota } = require('./scratch-quota.cjs');
 const { memorySourceError } = require('./contracts.cjs');
 
 function safeSegment(value, label) {
-  if (typeof value !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(value)) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(value)
+      || value === '.' || value === '..') {
     throw memorySourceError('invalid_request', `safe ${label} required`);
   }
   return value;

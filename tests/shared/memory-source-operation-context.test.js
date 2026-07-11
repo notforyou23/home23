@@ -68,6 +68,33 @@ test('withEphemeralMemorySource derives operation roots, opens source, and remov
   assert.equal(await fsp.access(brainDir).then(() => true).catch(() => false), true);
 });
 
+test('local source contexts reject dot-segment requester and generated path components', async () => {
+  const home23Root = await tempDir('home23-memory-source-context-safe-home-');
+  const brainDir = await writeManifestBrain();
+  for (const requesterAgent of ['.', '..']) {
+    await assert.rejects(withEphemeralMemorySource({
+      brainDir,
+      home23Root,
+      requesterAgent,
+      uuid: () => 'abc123',
+    }, async () => null), { code: 'invalid_request' });
+    assert.throws(() => createInstalledLocalSourceContext({
+      home23Root,
+      requesterAgent,
+      brainDir,
+    }), { code: 'invalid_request' });
+  }
+  for (const [prefix, uuid] of [['.', 'abc123'], ['local', '..']]) {
+    await assert.rejects(withEphemeralMemorySource({
+      brainDir,
+      home23Root,
+      requesterAgent: 'jerry',
+      prefix,
+      uuid: () => uuid,
+    }, async () => null), { code: 'invalid_request' });
+  }
+});
+
 test('createInstalledLocalSourceContext rejects public selectors and resolves exact canonical root', async () => {
   const home23Root = await tempDir('home23-memory-source-context-home-');
   const brainDir = await writeManifestBrain();
