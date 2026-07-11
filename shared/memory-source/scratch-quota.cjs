@@ -672,6 +672,7 @@ async function createOperationScratchQuota({
     const startedAt = clock.now();
     let recoveredStaleLock = false;
     let recoveredStaleCandidate = false;
+    let incompleteCandidateIdentity = null;
     const candidatePath = path.join(root, `${LOCK_NAME}.candidate-serialized`);
     async function waitForRetry() {
       const elapsedMs = clock.now() - startedAt;
@@ -709,6 +710,50 @@ async function createOperationScratchQuota({
         throw readError;
       });
       if (current === null) return false;
+
+      async function removeInspectedPath() {
+        await assertStableOperationRoot();
+        const latest = await fsp.lstat(filePath).catch((statError) => {
+          if (statError.code === 'ENOENT') return null;
+          throw statError;
+        });
+        if (latest === null) {
+          await waitForRetry();
+          return false;
+        }
+        if (latest.isSymbolicLink() || !latest.isFile()) {
+          throw memorySourceError('invalid_memory_source', `scratch ${label} changed type`, {
+            retryable: false,
+          });
+        }
+        // The pathname may have turned over after our bounded read. Remove
+        // only the exact inode that was inspected.
+        if (latest.dev !== current.dev || latest.ino !== current.ino) {
+          await waitForRetry();
+          return false;
+        }
+        try {
+          await fsp.unlink(filePath);
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+          await waitForRetry();
+          return false;
+        }
+        await assertStableOperationRoot();
+        await fsyncDirectory(root);
+        await assertStableOperationRoot();
+        return true;
+      }
+
+      async function recordRecovery() {
+        const alreadyRecovered = label === 'lock'
+          ? recoveredStaleLock
+          : recoveredStaleCandidate;
+        if (label === 'lock') recoveredStaleLock = true;
+        else recoveredStaleCandidate = true;
+        if (alreadyRecovered) await waitForRetry();
+      }
+
       let lockRecord;
       try {
         lockRecord = JSON.parse(current.text);
@@ -722,7 +767,19 @@ async function createOperationScratchQuota({
         validateProcessOwner(lockRecord.owner);
       } catch (error) {
         if (incompleteIsRetryable) {
-          await waitForRetry();
+          const unchanged = incompleteCandidateIdentity !== null
+            && sameIdentity(current, incompleteCandidateIdentity);
+          incompleteCandidateIdentity = identityOf(current);
+          if (!unchanged) {
+            await waitForRetry();
+            return true;
+          }
+          // A candidate is unpublished and therefore conveys no lock
+          // authority. Removing its exact pathname is safe even if an old
+          // writer still holds the inode open: that writer's later identity
+          // check cannot publish through the replacement pathname.
+          if (await removeInspectedPath()) await recordRecovery();
+          incompleteCandidateIdentity = null;
           return true;
         }
         if (error.code === 'invalid_memory_source') throw error;
@@ -731,41 +788,15 @@ async function createOperationScratchQuota({
           cause: error,
         });
       }
+      if (incompleteIsRetryable) incompleteCandidateIdentity = null;
       const ownerAlive = await inspectOwnerLiveness(lockRecord.owner);
       if (ownerAlive !== false) {
         await waitForRetry();
         return true;
       }
-      await assertStableOperationRoot();
-      const latest = await fsp.lstat(filePath).catch((statError) => {
-        if (statError.code === 'ENOENT') return null;
-        throw statError;
-      });
-      if (latest === null) {
-        await waitForRetry();
-        return true;
-      }
-      if (latest.isSymbolicLink() || !latest.isFile()) {
-        throw memorySourceError('invalid_memory_source', `scratch ${label} changed type`, {
-          retryable: false,
-        });
-      }
       // The old owner was proven dead, but a different contender may have
       // replaced the path after our read. Remove only the inspected inode.
-      if (latest.dev !== current.dev || latest.ino !== current.ino) {
-        await waitForRetry();
-        return true;
-      }
-      await fsp.unlink(filePath);
-      await assertStableOperationRoot();
-      await fsyncDirectory(root);
-      await assertStableOperationRoot();
-      const alreadyRecovered = label === 'lock'
-        ? recoveredStaleLock
-        : recoveredStaleCandidate;
-      if (label === 'lock') recoveredStaleLock = true;
-      else recoveredStaleCandidate = true;
-      if (alreadyRecovered) await waitForRetry();
+      if (await removeInspectedPath()) await recordRecovery();
       return true;
     }
 
@@ -798,9 +829,17 @@ async function createOperationScratchQuota({
         await hooks.afterLockCandidateSynced?.({ operationRoot: root, candidatePath });
         assertOpen({ cleanup });
         await assertStableOperationRoot();
-        const candidate = await fsp.lstat(candidatePath);
-        if (candidate.isSymbolicLink() || !candidate.isFile()
-            || !sameIdentity(candidate, candidateIdentity)) {
+        const candidate = await fsp.lstat(candidatePath).catch((error) => {
+          if (error.code === 'ENOENT') return null;
+          throw error;
+        });
+        if (candidate === null || (candidate.isFile()
+            && !sameIdentity(candidate, candidateIdentity))) {
+          const turnover = new Error('scratch lock candidate turned over');
+          turnover[LOCK_TURNOVER] = true;
+          throw turnover;
+        }
+        if (candidate.isSymbolicLink() || !candidate.isFile()) {
           throw memorySourceError('invalid_memory_source', 'scratch lock candidate changed', {
             retryable: false,
           });
@@ -811,6 +850,12 @@ async function createOperationScratchQuota({
         try {
           await fsp.link(candidatePath, lockPath);
         } catch (error) {
+          if (error.code === 'ENOENT') {
+            await assertStableOperationRoot();
+            const turnover = new Error('scratch lock candidate turned over before publish');
+            turnover[LOCK_TURNOVER] = true;
+            throw turnover;
+          }
           if (error.code !== 'EEXIST') throw error;
           if (!await removeExactOwnedPath(candidatePath, candidateIdentity)) {
             throw memorySourceError('invalid_memory_source', 'scratch lock candidate cleanup changed', {
@@ -861,6 +906,10 @@ async function createOperationScratchQuota({
             label: 'lock candidate',
             incompleteIsRetryable: true,
           });
+          continue;
+        }
+        if (error[LOCK_TURNOVER]) {
+          await waitForRetry();
           continue;
         }
         throw error;
@@ -1007,25 +1056,32 @@ async function createOperationScratchQuota({
     }, { reconcile: true, cleanup });
   }
 
-  async function settleExactReservation(bytes, kind) {
+  async function settleExpectedReservation(expectedBytes, kind) {
     assertOpen({ cleanup: true });
-    validateBytes(bytes, 'settlement');
+    if (!Array.isArray(expectedBytes) || expectedBytes.length < 1 || expectedBytes.length > 4) {
+      throw memorySourceError('invalid_request', 'invalid scratch settlement states');
+    }
+    const expected = [...new Set(expectedBytes.map((bytes) =>
+      validateBytes(bytes, 'settlement')))];
     validateKind(kind);
     return transact(async (ledger) => {
-      if (bytes === 0) return ledger;
       const reservation = ledger.reservations[handleId];
       const outstanding = reservation?.kinds?.[kind] || 0;
       // A prior attempt may have atomically published this exact removal and
       // then failed while fsyncing/reporting completion. Absence of the
       // unforgeable handle+kind reservation confirms that durable settlement.
       if (outstanding === 0) return ledger;
-      if (outstanding !== bytes) {
+      if (!expected.includes(outstanding)) {
         throw memorySourceError('invalid_request', 'scratch settlement does not match kind accounting');
       }
       delete reservation.kinds[kind];
       if (Object.keys(reservation.kinds).length === 0) delete ledger.reservations[handleId];
       return ledger;
     }, { reconcile: true, cleanup: true });
+  }
+
+  async function settleExactReservation(bytes, kind) {
+    return settleExpectedReservation([bytes], kind);
   }
 
   async function reconcileUsage({ cleanup = false } = {}) {
@@ -1076,6 +1132,9 @@ async function createOperationScratchQuota({
     },
     settle(bytes, kind) {
       return settleExactReservation(bytes, kind);
+    },
+    settleExpected(expectedBytes, kind) {
+      return settleExpectedReservation(expectedBytes, kind);
     },
     reconcile() {
       return reconcileUsage({ cleanup: true });

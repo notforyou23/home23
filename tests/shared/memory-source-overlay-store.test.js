@@ -478,6 +478,54 @@ test('cleanup settlement is idempotent after ledger publish throws post-commit',
   scratchQuota.close();
 });
 
+test('partial preflight release cleans either durable reservation state after post-commit failure', async () => {
+  const operationRoot = await tempDir();
+  let publishCount = 0;
+  let injectedFailures = 0;
+  const scratchQuota = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes: 4 * 1024 * 1024,
+    _testHooks: {
+      async afterLedgerPublish() {
+        publishCount += 1;
+        // Construction publishes once, the overlay preflight claim publishes
+        // second, and its partial release publishes third.
+        if (publishCount !== 3) return;
+        injectedFailures += 1;
+        throw Object.assign(new Error('partial preflight release post-commit failure'), {
+          code: 'EIO',
+        });
+      },
+    },
+  });
+  const store = await createBoundedOverlayStore({
+    operationRoot,
+    scratchQuota,
+    maxMemoryBytes: 0,
+    maxDiskBytes: 2 * 1024 * 1024,
+  });
+
+  await assert.rejects(
+    () => store.apply(node('partial-preflight-release', 'x'.repeat(1024))),
+    /partial preflight release post-commit failure/,
+  );
+  assert.equal(injectedFailures, 1);
+
+  await store.close();
+  await store.close();
+  assert.deepEqual(await overlayFiles(operationRoot), []);
+  const ledger = JSON.parse(await fsp.readFile(
+    path.join(operationRoot, '.scratch-quota.json'),
+    'utf8',
+  ));
+  const reservedBytes = Object.values(ledger.reservations)
+    .flatMap((entry) => Object.values(entry.kinds))
+    .reduce((sum, bytes) => sum + bytes, 0);
+  assert.equal(ledger.actualPrivateBytes, 0);
+  assert.equal(reservedBytes, 0);
+  scratchQuota.close();
+});
+
 test('serializes concurrent threshold-crossing apply calls and spills exactly once', async () => {
   const operationRoot = await tempDir();
   const scratchQuota = await createOperationScratchQuota({

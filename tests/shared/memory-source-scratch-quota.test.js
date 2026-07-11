@@ -605,6 +605,31 @@ test('blocked lock contention materializes at most one candidate within the hard
   }
 });
 
+test('recovers zero-byte and truncated unpublished serialized lock candidates', async () => {
+  for (const [label, contents] of [
+    ['zero-byte', ''],
+    ['truncated', '{"version":1,"operationRoot":'],
+  ]) {
+    const operationRoot = await tempDir();
+    const candidatePath = path.join(
+      operationRoot,
+      '.scratch-quota.lock.candidate-serialized',
+    );
+    await fsp.writeFile(candidatePath, contents, { mode: 0o600 });
+
+    const quota = await createOperationScratchQuota({
+      operationRoot,
+      maxBytes: 256 * 1024,
+      lockRetryMs: 1,
+      lockTimeoutMs: 50,
+    });
+    assert.equal(await exists(candidatePath), false, label);
+    assert.equal(await quota.claim(1024, `recovered-${label}`) <= quota.maxBytes, true);
+    await quota.release(1024, `recovered-${label}`);
+    quota.close();
+  }
+});
+
 test('retries normal lock turnover under repeated high concurrency', async () => {
   const operationRoot = await tempDir();
   const maxBytes = 8 * 1024 * 1024;

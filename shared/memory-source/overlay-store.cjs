@@ -155,6 +155,7 @@ async function createBoundedOverlayStore(options = {}) {
   let databaseIdentity = null;
   let cleanupFilesComplete = false;
   let cleanupComplete = false;
+  let diskReservationSettlementStates = [];
   let mutationTail = Promise.resolve();
   let pendingAdmissionBytes = 0;
   let pendingAdmissionEntries = 0;
@@ -388,19 +389,40 @@ async function createBoundedOverlayStore(options = {}) {
     // then release half before mutation: at every point, including a crash
     // between SQLite growth and settlement, actual + outstanding reservation
     // remains below the already-proven peak.
+    const priorReservedBytes = diskReservedBytes;
+    const preflightReservedBytes = priorReservedBytes + preflightBytes;
+    if (!Number.isSafeInteger(preflightReservedBytes)) {
+      throw limitError('overlay reservation overflow');
+    }
+    // Record both possible durable states before each ledger transition. If a
+    // publish succeeds and its later fsync/reporting step throws, cleanup can
+    // remove only one of these exact store-owned values.
+    diskReservationSettlementStates = [priorReservedBytes, preflightReservedBytes];
+    diskReservedBytes = preflightReservedBytes;
     await scratchQuota.claim(preflightBytes, quotaKind);
-    diskReservedBytes += preflightBytes;
-    if (!Number.isSafeInteger(diskReservedBytes)) throw limitError('overlay reservation overflow');
+    diskReservationSettlementStates = [preflightReservedBytes];
+    const mutationReservedBytes = preflightReservedBytes - allowance;
+    diskReservationSettlementStates = [preflightReservedBytes, mutationReservedBytes];
     await scratchQuota.release(allowance, quotaKind);
-    diskReservedBytes -= allowance;
+    diskReservedBytes = mutationReservedBytes;
+    diskReservationSettlementStates = [mutationReservedBytes];
     checkCancelled();
     return allowance;
   }
 
   async function settleDiskReservation(bytes) {
     if (bytes <= 0) return;
+    const priorReservedBytes = diskReservedBytes;
+    const settledReservedBytes = priorReservedBytes - bytes;
+    if (!Number.isSafeInteger(settledReservedBytes) || settledReservedBytes < 0) {
+      throw limitError('overlay reservation settlement overflow');
+    }
+    diskReservationSettlementStates = [priorReservedBytes, settledReservedBytes];
     await scratchQuota.release(bytes, quotaKind);
-    diskReservedBytes -= bytes;
+    diskReservedBytes = settledReservedBytes;
+    diskReservationSettlementStates = settledReservedBytes > 0
+      ? [settledReservedBytes]
+      : [];
   }
 
   async function refreshDiskAccounting({ priorActual, allowance }) {
@@ -702,10 +724,14 @@ async function createBoundedOverlayStore(options = {}) {
 
     await removeExactOwnedArtifacts();
     if (scratchQuota) {
-      if (diskReservedBytes > 0) {
-        const reserved = diskReservedBytes;
-        await scratchQuotaCleanup.settle(reserved, quotaKind);
+      const settlementStates = [...new Set([
+        ...diskReservationSettlementStates,
+        diskReservedBytes,
+      ])];
+      if (settlementStates.some((bytes) => bytes > 0)) {
+        await scratchQuotaCleanup.settleExpected(settlementStates, quotaKind);
         diskReservedBytes = 0;
+        diskReservationSettlementStates = [];
       } else {
         await scratchQuotaCleanup.reconcile();
       }
