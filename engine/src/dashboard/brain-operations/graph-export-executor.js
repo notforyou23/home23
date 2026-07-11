@@ -35,6 +35,25 @@ function assertNoForbiddenParameters(parameters = {}) {
   }
 }
 
+function assertExactPinnedSource(context) {
+  const sourcePin = context.sourcePin;
+  const descriptor = sourcePin?.descriptor;
+  if (!sourcePin
+      || !descriptor
+      || descriptor.canonicalRoot !== context.target?.canonicalRoot
+      || !Number.isSafeInteger(descriptor.cutoffRevision)
+      || descriptor.cutoffRevision < 0
+      || !Number.isSafeInteger(sourcePin.revision)
+      || sourcePin.revision !== descriptor.cutoffRevision
+      || typeof sourcePin.getEvidence !== 'function'
+      || typeof sourcePin.iterateNodes !== 'function'
+      || typeof sourcePin.iterateEdges !== 'function') {
+    throw memorySourceError('source_changed', 'source pin does not match target revision', {
+      retryable: true,
+    });
+  }
+}
+
 async function writeLine(stream, line, signal) {
   throwIfAborted(signal);
   if (stream.write(line)) return;
@@ -275,9 +294,7 @@ function createGraphExportExecutor({ home23Root } = {}) {
   return async function graphExportExecutor(context) {
     throwIfAborted(context.signal);
     assertNoForbiddenParameters(context.parameters || {});
-    if (!context.sourcePin || context.sourcePin.descriptor?.canonicalRoot !== context.target?.canonicalRoot) {
-      throw memorySourceError('source_changed', 'source pin does not match target', { retryable: true });
-    }
+    assertExactPinnedSource(context);
     const scratch = await trustedScratch(context, home23Root);
     const { resultsDir, directories } = scratch;
     const base = path.join(resultsDir, `graph-${context.operationId}.jsonl`);
