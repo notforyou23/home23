@@ -4,6 +4,13 @@ const { EventEmitter } = require('node:events');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const { setTimeout: delay } = require('node:timers/promises');
+
+const FIXTURE_METRIC_SEMANTICS = Object.freeze({
+  v8HeapUsedBytes: 'request-time-sample',
+  rssBytes: 'request-time-sample',
+  processMaxRssBytes: 'process-lifetime-high-water',
+});
 
 function operation(overrides = {}) {
   const state = overrides.state || 'complete';
@@ -109,6 +116,49 @@ async function fixture(authority = 'live') {
       hostname: 'fixture-host',
       startedAt: '2026-07-10T00:00:00.000Z',
     },
+  };
+}
+
+async function writeFixtureMetric(file, {
+  role,
+  pid,
+  updatedAt,
+  restartCount = 0,
+} = {}) {
+  const temporary = `${file}.${process.pid}.${Date.now()}.${Math.random()}.tmp`;
+  await fs.writeFile(temporary, `${JSON.stringify({
+    schemaVersion: 2,
+    role,
+    pid,
+    restartCount,
+    v8HeapUsedMiB: 32,
+    rssMiB: 64,
+    processMaxRssMiB: 96,
+    semantics: FIXTURE_METRIC_SEMANTICS,
+    updatedAt,
+  })}\n`, { flag: 'wx' });
+  await fs.rename(temporary, file);
+}
+
+function attachmentEvidence({
+  detachedId = 'attachment-a',
+  survivorId = 'attachment-b',
+  detachedState = 'detached',
+  detachedReason = 'transport_disconnect',
+  survivorState = 'attached',
+  survivorReason = survivorState === 'closed' ? 'operation_terminal' : null,
+} = {}) {
+  const entries = [
+    { attachmentId: detachedId, state: detachedState, reason: detachedReason },
+    { attachmentId: survivorId, state: survivorState, reason: survivorReason },
+  ].sort((left, right) => left.attachmentId.localeCompare(right.attachmentId));
+  return {
+    total: entries.length,
+    attached: entries.filter((entry) => entry.state === 'attached').length,
+    detached: entries.filter((entry) => entry.state === 'detached').length,
+    closed: entries.filter((entry) => entry.state === 'closed').length,
+    attachmentIds: entries.map((entry) => entry.attachmentId),
+    entries,
   };
 }
 
@@ -749,6 +799,289 @@ test('HTTP, receipt, and memory evidence readers remain bounded before parse', a
   assert.equal(summary.maxSampledRssGrowthMiB, 60);
   assert.equal(summary.processMaxRssGrowthMiB, 9);
   assert.equal(summary.samples.length, summary.retainedSamples);
+});
+
+test('isolated metric sampler proves advancing recovery and rejects frozen or malformed metrics', async (t) => {
+  const { startIsolatedMetricSampler } = await import('../../scripts/live-brain-tools-smoke.mjs');
+
+  async function setupMetricFixture(name) {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), `home23-${name}-`)));
+    const metricFiles = {
+      dashboard: path.join(root, 'dashboard.json'),
+      cosmo: path.join(root, 'cosmo.json'),
+    };
+    const pids = { dashboard: 41_001, cosmo: 41_002 };
+    const fixtureState = { root, metrics: metricFiles, pids };
+    const writePair = async (updatedAt, overrides = {}) => {
+      await Promise.all(['dashboard', 'cosmo'].map((role) => writeFixtureMetric(
+        metricFiles[role],
+        {
+          role,
+          pid: overrides[role]?.pid ?? pids[role],
+          restartCount: overrides[role]?.restartCount ?? 0,
+          updatedAt,
+        },
+      )));
+    };
+    await writePair(new Date().toISOString());
+    return { fixtureState, writePair };
+  }
+
+  await t.test('transient stale metrics must recover with three new samples per role', async (t) => {
+    const { fixtureState, writePair } = await setupMetricFixture('metric-recovery');
+    t.after(() => fs.rm(fixtureState.root, { recursive: true, force: true }));
+    const sampler = startIsolatedMetricSampler(fixtureState, {
+      intervalMs: 5,
+      initialFreshWaitMs: 500,
+      finalFreshWaitMs: 1_000,
+    });
+    await sampler.ready;
+    await writePair(new Date(Date.now() - 10_000).toISOString());
+    await delay(30);
+
+    let keepWriting = true;
+    const writer = (async () => {
+      let sequence = 0;
+      while (keepWriting && sequence < 20) {
+        await delay(15);
+        sequence += 1;
+        await writePair(new Date(Date.now() + sequence).toISOString());
+      }
+    })();
+    const evidence = await sampler.stop();
+    keepWriting = false;
+    await writer;
+
+    assert.ok(evidence.staleCaptureCount > 0);
+    for (const role of ['dashboard', 'cosmo']) {
+      assert.equal(evidence.finalSamples[role].length, 3);
+      const timestamps = evidence.finalSamples[role].map(Date.parse);
+      assert.ok(timestamps.every((value, index) => index === 0 || value > timestamps[index - 1]));
+    }
+  });
+
+  await t.test('one refreshed but frozen timestamp cannot satisfy final proof', async (t) => {
+    const { fixtureState, writePair } = await setupMetricFixture('metric-frozen');
+    t.after(() => fs.rm(fixtureState.root, { recursive: true, force: true }));
+    const sampler = startIsolatedMetricSampler(fixtureState, {
+      intervalMs: 5,
+      initialFreshWaitMs: 500,
+      finalFreshWaitMs: 150,
+    });
+    await sampler.ready;
+    const oneRefresh = delay(15).then(() => writePair(new Date(Date.now() + 1).toISOString()));
+    await assert.rejects(
+      sampler.stop(),
+      (error) => error.code === 'isolated_fixture_metric_stale',
+    );
+    await oneRefresh;
+  });
+
+  await t.test('malformed process identity remains an immediate hard failure', async (t) => {
+    const { fixtureState, writePair } = await setupMetricFixture('metric-malformed');
+    t.after(() => fs.rm(fixtureState.root, { recursive: true, force: true }));
+    const sampler = startIsolatedMetricSampler(fixtureState, {
+      intervalMs: 5,
+      initialFreshWaitMs: 500,
+      finalFreshWaitMs: 500,
+    });
+    await sampler.ready;
+    await writePair(new Date(Date.now() + 1).toISOString(), {
+      dashboard: { pid: fixtureState.pids.dashboard + 1 },
+    });
+    await assert.rejects(
+      sampler.stop(),
+      (error) => error.code === 'isolated_fixture_metric_invalid',
+    );
+  });
+});
+
+test('surviving attachment proof waits only for the exact durable terminal transition', async (t) => {
+  const { waitForSurvivingAttachmentClosure } = await import(
+    '../../scripts/live-brain-tools-smoke.mjs'
+  );
+  const initialEvidence = attachmentEvidence();
+  const terminalEvidence = attachmentEvidence({ survivorState: 'closed' });
+
+  function rejectAfter(promise, milliseconds, message) {
+    let timer;
+    const watchdog = new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), milliseconds);
+    });
+    return Promise.race([promise, watchdog]).finally(() => clearTimeout(timer));
+  }
+
+  function cancellableDeadlineWait() {
+    let signal = null;
+    let released = false;
+    return {
+      get signal() { return signal; },
+      get released() { return released; },
+      wait: async (_milliseconds, candidateSignal) => new Promise((resolve, reject) => {
+        signal = candidateSignal;
+        const abort = () => {
+          candidateSignal.removeEventListener('abort', abort);
+          released = true;
+          reject(candidateSignal.reason);
+        };
+        candidateSignal.addEventListener('abort', abort, { once: true });
+        if (candidateSignal.aborted) abort();
+      }),
+    };
+  }
+
+  await t.test('an attached survivor may become exactly closed after terminal publication', async () => {
+    const callerAbortInitial = attachmentEvidence({ detachedReason: 'caller_abort' });
+    const evidenceSequence = [
+      attachmentEvidence({ detachedReason: 'caller_abort' }),
+      attachmentEvidence({ detachedReason: 'caller_abort', survivorState: 'closed' }),
+    ];
+    let elapsed = 0;
+    const terminal = await waitForSurvivingAttachmentClosure({
+      initialEvidence: callerAbortInitial,
+      readEvidence: async () => evidenceSequence.shift(),
+      timeoutMs: 100,
+      pollMs: 5,
+      now: () => elapsed,
+      wait: async (ms) => { elapsed += ms; },
+    });
+    assert.deepEqual(terminal, attachmentEvidence({
+      detachedReason: 'caller_abort',
+      survivorState: 'closed',
+    }));
+  });
+
+  await t.test('abort during an evidence read wins over a late terminal snapshot', async () => {
+    const controller = new AbortController();
+    const reason = Object.assign(new Error('operator_stop'), { code: 'operator_stop' });
+    const deadlineWait = cancellableDeadlineWait();
+    await assert.rejects(
+      waitForSurvivingAttachmentClosure({
+        initialEvidence,
+        signal: controller.signal,
+        readEvidence: async () => {
+          controller.abort(reason);
+          return terminalEvidence;
+        },
+        deadlineWait: deadlineWait.wait,
+      }),
+      (error) => error === reason,
+    );
+    assert.equal(deadlineWait.released, true);
+    assert.equal(require('node:events').getEventListeners(controller.signal, 'abort').length, 0);
+    assert.equal(require('node:events').getEventListeners(deadlineWait.signal, 'abort').length, 0);
+  });
+
+  await t.test('deadline crossing during an evidence read rejects a late terminal snapshot', async () => {
+    let elapsed = 0;
+    const deadlineWait = cancellableDeadlineWait();
+    await assert.rejects(
+      waitForSurvivingAttachmentClosure({
+        initialEvidence,
+        readEvidence: async () => {
+          elapsed = 11;
+          return terminalEvidence;
+        },
+        timeoutMs: 10,
+        now: () => elapsed,
+        deadlineWait: deadlineWait.wait,
+      }),
+      (error) => error.code === 'surviving_attachment_not_proven',
+    );
+    assert.equal(deadlineWait.released, true);
+    assert.equal(require('node:events').getEventListeners(deadlineWait.signal, 'abort').length, 0);
+  });
+
+  await t.test('a never-settling evidence read is independently preempted', async (t) => {
+    await t.test('by caller abort', async () => {
+      const controller = new AbortController();
+      const reason = Object.assign(new Error('operator_stop'), { code: 'operator_stop' });
+      let settleStarted;
+      const started = new Promise((resolve) => { settleStarted = resolve; });
+      const pending = waitForSurvivingAttachmentClosure({
+        initialEvidence,
+        signal: controller.signal,
+        timeoutMs: 1_000,
+        readEvidence: async () => {
+          settleStarted();
+          return new Promise(() => {});
+        },
+      });
+      await started;
+      controller.abort(reason);
+      await assert.rejects(
+        rejectAfter(pending, 100, 'abort did not preempt evidence read'),
+        (error) => error === reason,
+      );
+      assert.equal(require('node:events').getEventListeners(controller.signal, 'abort').length, 0);
+    });
+
+    await t.test('by its own deadline', async () => {
+      let deadlineSignal = null;
+      const pending = waitForSurvivingAttachmentClosure({
+        initialEvidence,
+        timeoutMs: 10,
+        now: () => 0,
+        deadlineWait: async (_milliseconds, signal) => {
+          deadlineSignal = signal;
+        },
+        readEvidence: async () => new Promise(() => {}),
+      });
+      await assert.rejects(
+        rejectAfter(pending, 100, 'deadline did not preempt evidence read'),
+        (error) => error.code === 'surviving_attachment_not_proven',
+      );
+      assert.equal(deadlineSignal.aborted, true);
+      assert.equal(require('node:events').getEventListeners(deadlineSignal, 'abort').length, 0);
+    });
+  });
+
+  await t.test('a perpetually attached survivor fails with the last coherent snapshot', async () => {
+    let elapsed = 0;
+    await assert.rejects(
+      waitForSurvivingAttachmentClosure({
+        initialEvidence,
+        readEvidence: async () => attachmentEvidence(),
+        timeoutMs: 20,
+        pollMs: 5,
+        now: () => elapsed,
+        wait: async (ms) => { elapsed += ms; },
+      }),
+      (error) => error.code === 'surviving_attachment_not_proven'
+        && error.message.includes('"attached":1'),
+    );
+  });
+
+  await t.test('identity, count, state, and reason drift fail immediately', async () => {
+    const invalidSnapshots = [
+      attachmentEvidence({ survivorId: 'replacement-attachment' }),
+      { ...attachmentEvidence(), total: 3 },
+      attachmentEvidence({ survivorState: 'detached', survivorReason: 'transport_disconnect' }),
+      attachmentEvidence({ survivorState: 'closed', survivorReason: 'wrong-reason' }),
+      attachmentEvidence({ detachedState: 'closed', detachedReason: 'operation_terminal' }),
+    ];
+    for (const invalid of invalidSnapshots) {
+      await assert.rejects(
+        waitForSurvivingAttachmentClosure({
+          initialEvidence,
+          readEvidence: async () => invalid,
+          timeoutMs: 100,
+          pollMs: 5,
+        }),
+        (error) => error.code === 'surviving_attachment_evidence_invalid',
+      );
+    }
+    const readFailure = Object.assign(new Error('attachment_corrupt'), {
+      code: 'attachment_corrupt',
+    });
+    await assert.rejects(
+      waitForSurvivingAttachmentClosure({
+        initialEvidence,
+        readEvidence: async () => { throw readFailure; },
+      }),
+      (error) => error === readFailure,
+    );
+  });
 });
 
 test('COSMO authority rejection keeps an independent hard deadline for status, result, and cancel', async () => {

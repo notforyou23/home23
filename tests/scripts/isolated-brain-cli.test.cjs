@@ -382,8 +382,18 @@ test('exact lifecycle CLIs auto-launch isolated production processes and retain 
     attached: detached.concurrentAttachments.attached,
     detached: detached.concurrentAttachments.detached,
   }, { total: 2, attached: 1, detached: 1 });
-  assert.equal(detached.terminalAttachments.detached, 1);
-  assert.ok(detached.terminalAttachments.closed >= 1);
+  assert.deepEqual({
+    total: detached.terminalAttachments.total,
+    attached: detached.terminalAttachments.attached,
+    detached: detached.terminalAttachments.detached,
+    closed: detached.terminalAttachments.closed,
+  }, { total: 2, attached: 0, detached: 1, closed: 1 });
+  const terminalSurvivor = detached.terminalAttachments.entries.find((entry) =>
+    entry.state === 'closed');
+  const terminalDetached = detached.terminalAttachments.entries.find((entry) =>
+    entry.state === 'detached');
+  assert.equal(terminalSurvivor?.reason, 'operation_terminal');
+  assert.ok(['caller_abort', 'transport_disconnect'].includes(terminalDetached?.reason));
   const detachEvents = await readRows(detachEventsFile);
   assert.equal(new Set(detachEvents.map((event) =>
     `${event.operationId}:${event.eventSequence}`)).size, detachEvents.length);

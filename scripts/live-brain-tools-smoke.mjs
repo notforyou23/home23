@@ -2566,6 +2566,118 @@ async function readAttachmentEvidence(fixture, operationId) {
   };
 }
 
+function attachmentEvidenceEntry(evidence, attachmentId) {
+  return evidence.entries.find((entry) => entry.attachmentId === attachmentId) ?? null;
+}
+
+function assertAttachmentEvidenceShape(evidence) {
+  if (!evidence || evidence.total !== 2
+      || !Array.isArray(evidence.attachmentIds) || evidence.attachmentIds.length !== 2
+      || new Set(evidence.attachmentIds).size !== 2
+      || !Array.isArray(evidence.entries) || evidence.entries.length !== 2
+      || evidence.attached + evidence.detached + evidence.closed !== 2
+      || evidence.entries.some((entry) => !entry
+        || !evidence.attachmentIds.includes(entry.attachmentId)
+        || !['attached', 'detached', 'closed'].includes(entry.state))) {
+    throw typedError('surviving_attachment_evidence_invalid');
+  }
+  const counted = {
+    attached: evidence.entries.filter((entry) => entry.state === 'attached').length,
+    detached: evidence.entries.filter((entry) => entry.state === 'detached').length,
+    closed: evidence.entries.filter((entry) => entry.state === 'closed').length,
+  };
+  if (counted.attached !== evidence.attached
+      || counted.detached !== evidence.detached
+      || counted.closed !== evidence.closed) {
+    throw typedError('surviving_attachment_evidence_invalid');
+  }
+}
+
+export async function waitForSurvivingAttachmentClosure({
+  initialEvidence,
+  readEvidence,
+  signal = null,
+  timeoutMs = 10_000,
+  pollMs = 25,
+  now = Date.now,
+  wait = sleep,
+  deadlineWait = sleep,
+} = {}) {
+  if (typeof readEvidence !== 'function' || typeof now !== 'function'
+      || typeof wait !== 'function' || typeof deadlineWait !== 'function'
+      || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1
+      || !Number.isSafeInteger(pollMs) || pollMs < 1) {
+    throw typedError('surviving_attachment_wait_invalid');
+  }
+  assertAttachmentEvidenceShape(initialEvidence);
+  const detachedEntry = initialEvidence.entries.find((entry) => entry.state === 'detached');
+  const survivorEntry = initialEvidence.entries.find((entry) => entry.state === 'attached');
+  if (initialEvidence.attached !== 1 || initialEvidence.detached !== 1
+      || initialEvidence.closed !== 0
+      || !['caller_abort', 'transport_disconnect'].includes(detachedEntry?.reason)
+      || survivorEntry?.reason !== null) {
+    throw typedError('surviving_attachment_evidence_invalid');
+  }
+  const expectedIds = [...initialEvidence.attachmentIds];
+  const deadline = now() + timeoutMs;
+  let lastEvidence = initialEvidence;
+  const deadlineController = new AbortController();
+  const releasedDeadline = typedError('surviving_attachment_deadline_released');
+  const never = new Promise(() => {});
+  let removeCallerAbort = () => {};
+  const callerAbort = signal ? new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+    removeCallerAbort = () => signal.removeEventListener('abort', abort);
+    if (signal.aborted) abort();
+  }) : never;
+  const timeout = Promise.resolve(deadlineWait(
+    Math.max(1, timeoutMs),
+    deadlineController.signal,
+  )).then(() => {
+    throw typedError('surviving_attachment_not_proven', JSON.stringify(lastEvidence));
+  }).catch((error) => {
+    if (deadlineController.signal.aborted && error === deadlineController.signal.reason) return never;
+    throw error;
+  });
+  const beforeDeadline = (promise) => Promise.race([callerAbort, timeout, promise]);
+  try {
+    while (now() < deadline) {
+      if (signal?.aborted) throw signal.reason;
+      const evidence = await beforeDeadline(Promise.resolve().then(readEvidence));
+      if (signal?.aborted) throw signal.reason;
+      if (now() >= deadline) {
+        throw typedError('surviving_attachment_not_proven', JSON.stringify(lastEvidence));
+      }
+      assertAttachmentEvidenceShape(evidence);
+      if (!isDeepStrictEqual(evidence.attachmentIds, expectedIds)) {
+        throw typedError('surviving_attachment_evidence_invalid');
+      }
+      const detached = attachmentEvidenceEntry(evidence, detachedEntry.attachmentId);
+      const survivor = attachmentEvidenceEntry(evidence, survivorEntry.attachmentId);
+      if (detached?.state !== 'detached' || detached.reason !== detachedEntry.reason
+          || !survivor
+          || (survivor.state === 'attached' && survivor.reason !== null)
+          || (survivor.state === 'closed' && survivor.reason !== 'operation_terminal')
+          || !['attached', 'closed'].includes(survivor.state)) {
+        throw typedError('surviving_attachment_evidence_invalid');
+      }
+      lastEvidence = evidence;
+      if (evidence.total === 2 && evidence.attached === 0
+          && evidence.detached === 1 && evidence.closed === 1
+          && survivor.state === 'closed') {
+        return evidence;
+      }
+      if (now() >= deadline) break;
+      await beforeDeadline(wait(pollMs, signal));
+    }
+    throw typedError('surviving_attachment_not_proven', JSON.stringify(lastEvidence));
+  } finally {
+    removeCallerAbort();
+    deadlineController.abort(releasedDeadline);
+  }
+}
+
 async function readRetainedProviderTerminalEvidence(fixture, operationId) {
   const { BrainOperationStore } = require(
     '../engine/src/dashboard/brain-operations/operation-store.js'
@@ -2853,6 +2965,9 @@ export function createBoundedMetricAccumulator({
         throw typedError('isolated_fixture_metric_invalid', role);
       }
       if (last?.updatedAt === row.updatedAt) return false;
+      if (last && Date.parse(row.updatedAt) < Date.parse(last.updatedAt)) {
+        throw typedError('isolated_fixture_metric_timestamp_regressed', role);
+      }
       if (last && row.processMaxRssMiB < last.processMaxRssMiB) {
         throw typedError('rss_high_water_regressed', role);
       }
@@ -2905,14 +3020,25 @@ export function createBoundedMetricAccumulator({
   });
 }
 
-function startIsolatedMetricSampler(fixture, { intervalMs = 100 } = {}) {
+export function startIsolatedMetricSampler(fixture, {
+  intervalMs = 100,
+  initialFreshWaitMs = 10_000,
+  finalFreshWaitMs = 30_000,
+} = {}) {
+  if (!Number.isSafeInteger(intervalMs) || intervalMs < 1
+      || !Number.isSafeInteger(initialFreshWaitMs) || initialFreshWaitMs < 1
+      || !Number.isSafeInteger(finalFreshWaitMs) || finalFreshWaitMs < 1) {
+    throw typedError('isolated_fixture_metric_sampler_invalid');
+  }
   const roles = ['dashboard', 'cosmo'];
   const accumulators = new Map(roles.map((role) => [role, createBoundedMetricAccumulator({
     role,
     expectedPid: fixture.pids[role],
   })]));
   const samplerController = new AbortController();
+  const lastAcceptedUpdatedAtMs = new Map(roles.map((role) => [role, -Infinity]));
   let failure = null;
+  let staleCaptureCount = 0;
   let settleReady;
   let rejectReady;
   const ready = new Promise((resolve, reject) => {
@@ -2934,24 +3060,42 @@ function startIsolatedMetricSampler(fixture, { intervalMs = 100 } = {}) {
     throw lastError;
   }
 
-  async function capture({ forceRetain = false } = {}) {
-    const capturedAtMs = Date.now();
+  async function capture({
+    forceRetain = false,
+    waitForFreshMs = 0,
+    deadlineMs = Date.now() + waitForFreshMs,
+    requireAdvance = false,
+  } = {}) {
+    const captured = new Map();
     for (const role of roles) {
-      const metric = await readMetric(
-        role,
-        forceRetain ? null : samplerController.signal,
-      );
-      const updatedAtMs = Date.parse(metric.updatedAt);
-      if (metric.schemaVersion !== 2 || metric.role !== role
-          || metric.pid !== fixture.pids[role]
-          || metric.restartCount !== 0
-          || JSON.stringify(metric.semantics) !== JSON.stringify(METRIC_SEMANTICS)
-          || !Number.isFinite(updatedAtMs)
-          || updatedAtMs > capturedAtMs + 1_000
-          || capturedAtMs - updatedAtMs > 5_000) {
-        throw typedError('isolated_fixture_metric_invalid', role);
+      let metric;
+      let capturedAtMs;
+      let updatedAtMs;
+      while (true) {
+        metric = await readMetric(
+          role,
+          forceRetain ? null : samplerController.signal,
+        );
+        capturedAtMs = Date.now();
+        updatedAtMs = Date.parse(metric.updatedAt);
+        if (metric.schemaVersion !== 2 || metric.role !== role
+            || metric.pid !== fixture.pids[role]
+            || metric.restartCount !== 0
+            || JSON.stringify(metric.semantics) !== JSON.stringify(METRIC_SEMANTICS)
+            || !Number.isFinite(updatedAtMs)) {
+          throw typedError('isolated_fixture_metric_invalid', role);
+        }
+        const fresh = updatedAtMs <= capturedAtMs + 1_000
+          && capturedAtMs - updatedAtMs <= 5_000;
+        const advancing = updatedAtMs > lastAcceptedUpdatedAtMs.get(role);
+        if (fresh && (!requireAdvance || advancing)) break;
+        staleCaptureCount += 1;
+        if (Date.now() >= deadlineMs) {
+          throw typedError('isolated_fixture_metric_stale', role);
+        }
+        await sleep(50, forceRetain ? null : samplerController.signal);
       }
-      accumulators.get(role).add({
+      const added = accumulators.get(role).add({
         role,
         capturedAt: new Date(capturedAtMs).toISOString(),
         updatedAt: metric.updatedAt,
@@ -2961,12 +3105,18 @@ function startIsolatedMetricSampler(fixture, { intervalMs = 100 } = {}) {
         rssMiB: metric.rssMiB,
         processMaxRssMiB: metric.processMaxRssMiB,
       }, { forceRetain });
+      if (requireAdvance && !added) {
+        throw typedError('isolated_fixture_metric_not_advancing', role);
+      }
+      if (added) lastAcceptedUpdatedAtMs.set(role, updatedAtMs);
+      captured.set(role, Object.freeze({ updatedAt: metric.updatedAt, updatedAtMs, added }));
     }
+    return captured;
   }
 
   const task = (async () => {
     try {
-      await capture();
+      await capture({ waitForFreshMs: initialFreshWaitMs });
       settleReady();
     } catch (error) {
       failure ||= error;
@@ -2979,6 +3129,7 @@ function startIsolatedMetricSampler(fixture, { intervalMs = 100 } = {}) {
         await capture();
       } catch (error) {
         if (samplerController.signal.aborted) break;
+        if (error?.code === 'isolated_fixture_metric_stale') continue;
         failure ||= error;
         break;
       }
@@ -2990,7 +3141,25 @@ function startIsolatedMetricSampler(fixture, { intervalMs = 100 } = {}) {
     async stop() {
       samplerController.abort(typedError('metric_sampler_stopped'));
       await task;
-      try { await capture({ forceRetain: true }); } catch (error) { failure ||= error; }
+      if (failure) throw failure;
+      const finalDeadlineMs = Date.now() + finalFreshWaitMs;
+      const finalSamples = Object.fromEntries(roles.map((role) => [role, []]));
+      for (let index = 0; index < 3; index += 1) {
+        try {
+          const captured = await capture({
+            forceRetain: true,
+            deadlineMs: finalDeadlineMs,
+            requireAdvance: true,
+          });
+          for (const role of roles) {
+            finalSamples[role].push(captured.get(role).updatedAt);
+          }
+        } catch (error) {
+          failure ||= error;
+          break;
+        }
+        if (index < 2) await sleep(Math.max(50, intervalMs), null);
+      }
       if (failure) throw failure;
       const targets = roles.map((role) => accumulators.get(role).summary());
       if (targets.some((target) => target.pidChanged || target.restartDelta !== 0
@@ -3008,6 +3177,8 @@ function startIsolatedMetricSampler(fixture, { intervalMs = 100 } = {}) {
         },
         maxHeapGrowthMiB: MEMORY_GROWTH_LIMIT_MIB,
         maxRssGrowthMiB: MEMORY_GROWTH_LIMIT_MIB,
+        staleCaptureCount,
+        finalSamples,
         maxProcessMaxRssGrowthMiB: MEMORY_GROWTH_LIMIT_MIB,
         maxRetainedSamplesPerRole: MAX_METRIC_SAMPLES_PER_ROLE,
         targets,
@@ -3169,10 +3340,11 @@ async function executeIsolatedLifecycleScenario({
       signal,
     );
     const terminal = await protectedTerminal(survivorClient, initial.operationId, signal);
-    const terminalAttachments = await readAttachmentEvidence(fixture, initial.operationId);
-    if (terminalAttachments.detached !== 1 || terminalAttachments.closed < 1) {
-      throw typedError('surviving_attachment_not_proven', JSON.stringify(terminalAttachments));
-    }
+    const terminalAttachments = await waitForSurvivingAttachmentClosure({
+      initialEvidence: concurrentAttachments,
+      readEvidence: () => readAttachmentEvidence(fixture, initial.operationId),
+      signal,
+    });
     return terminalReceipt({
       context, values, baseUrl: fixture.baseUrl, callerAgent, scenario, terminal,
       activityLog: activities,
