@@ -3,7 +3,7 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { existsSync, readFileSync } from 'node:fs';
+import { constants as fsConstants, existsSync, readFileSync } from 'node:fs';
 import fsp from 'node:fs/promises';
 import http from 'node:http';
 import { createRequire } from 'node:module';
@@ -117,6 +117,14 @@ const {
 
 const CHILD_READY_TIMEOUT_MS = 30_000;
 const CHILD_STOP_TIMEOUT_MS = 10_000;
+const FIXTURE_HTTP_RESPONSE_MAX_BYTES = 1024 * 1024;
+const FIXTURE_OWNER_MAX_BYTES = 16 * 1024;
+const FIXTURE_OWNER_FILE = 'fixture-owner.json';
+const FIXTURE_OWNER_FIELDS = Object.freeze([
+  'schemaVersion', 'receiptRunId', 'authority', 'implementationCommit',
+  'hostname', 'receiptStartedAt', 'canonicalRoot', 'basename', 'dev', 'ino',
+  'createdAt', 'provenanceSeal',
+]);
 const INTERNAL_ROLE = new Set(['cosmo', 'dashboard', 'mcp']);
 const OWNED_CHILDREN = new WeakMap();
 const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -130,6 +138,74 @@ const METRIC_SEMANTICS = Object.freeze({
   processMaxRssBytes: 'process-lifetime-high-water',
 });
 let observedProcessMaxRssMiB = 0;
+
+function exactKeys(value, expected) {
+  return value && !Array.isArray(value) && typeof value === 'object'
+    && Reflect.ownKeys(value).length === expected.length
+    && expected.every((key) => Object.hasOwn(value, key));
+}
+
+function fixtureOwnerPayload(fixture, context, createdAt) {
+  return {
+    schemaVersion: 2,
+    receiptRunId: context.receiptRunId,
+    authority: context.authority,
+    implementationCommit: context.implementationCommit ?? null,
+    hostname: context.hostname ?? null,
+    receiptStartedAt: context.startedAt ?? null,
+    canonicalRoot: fixture.path,
+    basename: path.basename(fixture.path),
+    dev: fixture.dev,
+    ino: fixture.ino,
+    createdAt,
+  };
+}
+
+function sealFixtureOwner(payload) {
+  return `sha256:${createHash('sha256').update(canonicalJson(payload), 'utf8').digest('hex')}`;
+}
+
+export async function readBoundedFixtureJsonResponse(response, {
+  maxBytes = FIXTURE_HTTP_RESPONSE_MAX_BYTES,
+} = {}) {
+  if (!response || !response.body || typeof response.body.getReader !== 'function'
+      || !Number.isSafeInteger(maxBytes) || maxBytes < 1
+      || maxBytes > FIXTURE_HTTP_RESPONSE_MAX_BYTES) {
+    throw typedError('fixture_response_invalid');
+  }
+  const advertised = response.headers?.get?.('content-length');
+  if (advertised !== null && advertised !== undefined && advertised !== '') {
+    const length = Number(advertised);
+    if (!Number.isSafeInteger(length) || length < 0 || length > maxBytes) {
+      await response.body.cancel().catch(() => {});
+      throw typedError('fixture_response_too_large');
+    }
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!(value instanceof Uint8Array)) throw typedError('fixture_response_invalid');
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw typedError('fixture_response_too_large');
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks, total).toString('utf8'));
+  } catch (error) {
+    if (error?.code === 'fixture_response_too_large') throw error;
+    throw typedError('fixture_response_invalid', 'fixture response is not valid JSON', { cause: error });
+  }
+}
 
 function boundaries(root, kind = 'resident') {
   const brainRoot = kind === 'research' ? path.join(root, 'brain') : root;
@@ -739,11 +815,20 @@ async function runDashboardChild(config) {
       limits: { stopTimeoutMs: 250 },
     });
     await next.reconcile();
+    const compatibilityRouter = express.Router();
+    registerSynthesisCompatibilityRoutes({
+      app: compatibilityRouter,
+      requesterAgent: config.agent,
+      synthesisRuntime,
+      coordinator: next,
+      store,
+    });
     return {
       coordinator: next,
       store,
       reader,
       exporter,
+      compatibilityRouter,
       router: createBrainOperationsRouter({
         requesterAgent: config.agent,
         coordinator: next,
@@ -784,15 +869,10 @@ async function runDashboardChild(config) {
       response.status(500).json({ error: { code: error.code || 'fixture_restart_failed' } });
     }
   });
+  app.use((request, response, next) =>
+    active.compatibilityRouter(request, response, next));
   app.use('/home23/api/brain-operations', (request, response, next) =>
     active.router(request, response, next));
-  registerSynthesisCompatibilityRoutes({
-    app,
-    requesterAgent: config.agent,
-    synthesisRuntime,
-    coordinator: active.coordinator,
-    store: active.store,
-  });
   const server = http.createServer(app);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -1088,28 +1168,119 @@ async function stopChild(child) {
   return { pid: child.pid, signal: result.signal, code: result.code, exited: true };
 }
 
+async function readFixtureOwner(ownerFile) {
+  let handle;
+  try {
+    handle = await fsp.open(ownerFile, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw typedError('isolated_fixture_ownership_mismatch', undefined, { cause: error });
+  }
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n
+        || before.size < 2n || before.size > BigInt(FIXTURE_OWNER_MAX_BYTES)
+        || Number(before.mode & 0o777n) !== 0o400) {
+      throw typedError('isolated_fixture_ownership_mismatch');
+    }
+    const text = await handle.readFile('utf8');
+    const after = await handle.stat({ bigint: true });
+    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
+        || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) {
+      throw typedError('isolated_fixture_ownership_mismatch');
+    }
+    try {
+      return JSON.parse(text);
+    } catch (error) {
+      throw typedError('isolated_fixture_ownership_mismatch', undefined, { cause: error });
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+async function syncDirectory(directory) {
+  const handle = await fsp.open(directory, fsConstants.O_RDONLY);
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function removeCreatedOwner(ownerFile, identity) {
+  const current = await fsp.lstat(ownerFile, { bigint: true }).catch(() => null);
+  if (current && current.dev === identity.dev && current.ino === identity.ino) {
+    await fsp.unlink(ownerFile).catch(() => {});
+  }
+}
+
 async function assertFixtureOwnership(fixture, context) {
   const stat = await fsp.lstat(fixture.path, { bigint: true });
-  const ownerFile = path.join(fixture.path, 'fixture-owner.json');
-  let owner = await readJson(ownerFile).catch((error) => {
-    if (error.code === 'ENOENT') return null;
-    throw error;
-  });
-  if (!owner) {
-    owner = {
-      schemaVersion: 1,
-      receiptRunId: context.receiptRunId,
-      authority: context.authority,
-      basename: path.basename(fixture.path),
-      dev: stat.dev.toString(),
-      ino: stat.ino.toString(),
-      createdAt: new Date().toISOString(),
-    };
-    await fsp.writeFile(ownerFile, `${JSON.stringify(owner, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
+  if (!stat.isDirectory() || stat.isSymbolicLink()
+      || stat.dev.toString() !== fixture.dev || stat.ino.toString() !== fixture.ino) {
+    throw typedError('isolated_fixture_ownership_mismatch');
   }
-  if (owner.receiptRunId !== context.receiptRunId || owner.authority !== 'isolated-controlled'
-      || owner.basename !== path.basename(fixture.path)
-      || owner.dev !== stat.dev.toString() || owner.ino !== stat.ino.toString()) {
+  const ownerFile = path.join(fixture.path, FIXTURE_OWNER_FILE);
+  let owner = await readFixtureOwner(ownerFile);
+  if (!owner) {
+    const entries = await fsp.readdir(fixture.path);
+    if (entries.length !== 0) throw typedError('isolated_fixture_ownerless_nonempty');
+    const payload = fixtureOwnerPayload(fixture, context, new Date().toISOString());
+    owner = { ...payload, provenanceSeal: sealFixtureOwner(payload) };
+    let handle;
+    let identity = null;
+    try {
+      handle = await fsp.open(
+        ownerFile,
+        fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+        0o400,
+      );
+      await handle.writeFile(`${canonicalJson(owner)}\n`, 'utf8');
+      await handle.sync();
+      identity = await handle.stat({ bigint: true });
+    } catch (error) {
+      if (error.code === 'EEXIST') {
+        throw typedError('isolated_fixture_ownership_mismatch', undefined, { cause: error });
+      }
+      throw error;
+    } finally {
+      await handle?.close();
+    }
+    const publishedEntries = await fsp.readdir(fixture.path);
+    if (publishedEntries.length !== 1 || publishedEntries[0] !== FIXTURE_OWNER_FILE) {
+      await removeCreatedOwner(ownerFile, identity);
+      throw typedError('isolated_fixture_ownerless_nonempty');
+    }
+    await syncDirectory(fixture.path);
+  }
+  if (!exactKeys(owner, FIXTURE_OWNER_FIELDS)
+      || typeof owner.createdAt !== 'string'
+      || !Number.isFinite(Date.parse(owner.createdAt))
+      || (owner.implementationCommit !== null
+        && (typeof owner.implementationCommit !== 'string'
+          || Buffer.byteLength(owner.implementationCommit, 'utf8') > 128))
+      || (owner.hostname !== null
+        && (typeof owner.hostname !== 'string'
+          || Buffer.byteLength(owner.hostname, 'utf8') > 255))
+      || (owner.receiptStartedAt !== null
+        && (typeof owner.receiptStartedAt !== 'string'
+          || !Number.isFinite(Date.parse(owner.receiptStartedAt))))
+      || typeof owner.provenanceSeal !== 'string'
+      || !/^sha256:[a-f0-9]{64}$/.test(owner.provenanceSeal)) {
+    throw typedError('isolated_fixture_ownership_mismatch');
+  }
+  const expected = fixtureOwnerPayload(fixture, {
+    receiptRunId: context.receiptRunId,
+    authority: context.authority,
+    implementationCommit: owner.implementationCommit,
+    hostname: owner.hostname,
+    startedAt: owner.receiptStartedAt,
+  }, owner.createdAt);
+  const actual = { ...owner };
+  delete actual.provenanceSeal;
+  if (canonicalJson(actual) !== canonicalJson(expected)
+      || owner.provenanceSeal !== sealFixtureOwner(expected)) {
     throw typedError('isolated_fixture_ownership_mismatch');
   }
   return owner;
@@ -1282,11 +1453,29 @@ export async function startIsolatedFixture({
       cosmoConfigFile,
       mcpConfigFile,
       dashboardConfigFile,
-      async restartDashboard() {
+      async restartDashboard({ readyTimeoutMs = CHILD_READY_TIMEOUT_MS } = {}) {
+        if (!Number.isSafeInteger(readyTimeoutMs) || readyTimeoutMs < 25
+            || readyTimeoutMs > CHILD_READY_TIMEOUT_MS) {
+          throw typedError('isolated_fixture_configuration_invalid');
+        }
         const stopped = await stopChild(this.children.dashboard);
         await fsp.rm(dashboardReady, { force: true });
         const next = spawnChild(dashboardConfigFile, 'dashboard');
-        const ready = await waitReady(dashboardReady, next);
+        let ready;
+        try {
+          ready = await waitReady(dashboardReady, next, readyTimeoutMs);
+        } catch (error) {
+          try {
+            await stopChild(next);
+          } catch (cleanupError) {
+            throw typedError('isolated_child_cleanup_failed', undefined, {
+              cause: error,
+              cleanupCause: cleanupError,
+              childPid: next.pid,
+            });
+          }
+          throw error;
+        }
         this.children.dashboard = next;
         this.pids.dashboard = next.pid;
         this.ports.dashboard = ready.port;
@@ -1299,7 +1488,7 @@ export async function startIsolatedFixture({
           headers: { 'content-type': 'application/json' },
           body: '{}',
         });
-        const value = await response.json();
+        const value = await readBoundedFixtureJsonResponse(response);
         if (!response.ok || value?.ok !== true) {
           throw typedError(value?.error?.code || 'fixture_restart_failed');
         }
@@ -1311,15 +1500,15 @@ export async function startIsolatedFixture({
           fetch(`${this.cosmoBaseUrl}/telemetry`),
         ]);
         return {
-          dashboard: await dashboardResponse.json(),
-          cosmo: await cosmoResponse.json(),
+          dashboard: await readBoundedFixtureJsonResponse(dashboardResponse),
+          cosmo: await readBoundedFixtureJsonResponse(cosmoResponse),
         };
       },
       async operationTelemetry(operationId) {
         const response = await fetch(
           `${this.cosmoBaseUrl}/fixture/operations/${encodeURIComponent(operationId)}`,
         );
-        const value = await response.json();
+        const value = await readBoundedFixtureJsonResponse(response);
         if (!response.ok) throw typedError(value?.error?.code || 'fixture_telemetry_failed');
         return value;
       },

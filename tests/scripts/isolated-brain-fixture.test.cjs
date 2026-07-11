@@ -61,6 +61,33 @@ async function awaitProviderStart(fixture, baseline) {
   });
 }
 
+async function awaitJson(file) {
+  for (let attempt = 0; attempt < 1_000; attempt += 1) {
+    try {
+      return JSON.parse(await fs.readFile(file, 'utf8'));
+    } catch (error) {
+      if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw Object.assign(new Error(`fixture JSON did not appear: ${file}`), {
+    code: 'fixture_file_timeout',
+  });
+}
+
+async function assertPidExited(pid) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      assert.equal(error.code, 'ESRCH');
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail(`fixture child ${pid} remained alive`);
+}
+
 test('isolated stop refuses child handles not created by the fixture launcher', async () => {
   const { stopIsolatedFixture } = await import('../../scripts/lib/isolated-brain-fixture.mjs');
   await assert.rejects(stopIsolatedFixture({
@@ -72,6 +99,21 @@ test('isolated stop refuses child handles not created by the fixture launcher', 
   }), (error) => error.code === 'isolated_child_not_owned');
 });
 
+test('isolated fixture bounds HTTP response bytes before JSON parsing', async () => {
+  const {
+    readBoundedFixtureJsonResponse,
+  } = await import('../../scripts/lib/isolated-brain-fixture.mjs');
+  assert.deepEqual(await readBoundedFixtureJsonResponse(new Response('{"ok":true}'), {
+    maxBytes: 32,
+  }), { ok: true });
+  await assert.rejects(readBoundedFixtureJsonResponse(new Response(JSON.stringify({
+    payload: 'x'.repeat(128),
+  })), { maxBytes: 32 }), (error) => error.code === 'fixture_response_too_large');
+  await assert.rejects(readBoundedFixtureJsonResponse(new Response('{broken'), {
+    maxBytes: 32,
+  }), (error) => error.code === 'fixture_response_invalid');
+});
+
 test('isolated launcher refuses the repository as a fixture root before creating runtime state', async (t) => {
   const { startIsolatedFixture } = await import('../../scripts/lib/isolated-brain-fixture.mjs');
   const state = await receiptFixture();
@@ -80,6 +122,28 @@ test('isolated launcher refuses the repository as a fixture root before creating
     fixtureRoot: process.cwd(),
     context: state.context,
   }), (error) => error.code === 'isolated_fixture_live_root_refused');
+});
+
+test('isolated launcher never adopts an ownerless non-empty fixture root', async (t) => {
+  const { startIsolatedFixture } = await import('../../scripts/lib/isolated-brain-fixture.mjs');
+  const state = await receiptFixture();
+  const isolatedRoot = await fs.realpath(await fs.mkdtemp(
+    path.join(os.tmpdir(), 'home23-ownerless-fixture-'),
+  ));
+  t.after(() => Promise.all([
+    fs.rm(state.root, { recursive: true, force: true }),
+    fs.rm(isolatedRoot, { recursive: true, force: true }),
+  ]));
+  await fs.writeFile(path.join(isolatedRoot, 'unrelated-user-state.txt'), 'preserve me\n');
+
+  await assert.rejects(startIsolatedFixture({
+    fixtureRoot: isolatedRoot,
+    context: state.context,
+  }), (error) => error.code === 'isolated_fixture_ownerless_nonempty');
+  assert.equal(await fs.readFile(path.join(isolatedRoot, 'unrelated-user-state.txt'), 'utf8'), 'preserve me\n');
+  await assert.rejects(fs.stat(path.join(isolatedRoot, 'fixture-owner.json')), {
+    code: 'ENOENT',
+  });
 });
 
 test('isolated launcher exposes distinct own, sibling, completed-research, and MCP sources', async (t) => {
@@ -235,6 +299,86 @@ test('isolated launcher exposes distinct own, sibling, completed-research, and M
   assert.equal(mcpResult.evidence.sourceHealth, 'healthy');
   assert.equal(mcpResult.evidence.identity.brainId, own.id);
   assert.ok(mcpResult.results.some((result) => String(result.id) === '1'));
+
+  const firstOwner = launched.owner;
+  assert.equal(firstOwner.schemaVersion, 2);
+  assert.match(firstOwner.provenanceSeal, /^sha256:[a-f0-9]{64}$/);
+  await stopIsolatedFixture(launched);
+  launched = await startIsolatedFixture({
+    fixtureRoot: isolatedRoot,
+    context: { ...state.context, startedAt: '2026-07-10T00:00:01.000Z' },
+    agent: 'source-fixture',
+    nodeCount: 12,
+    edgeCount: 11,
+    operationDelayMs: 5,
+  });
+  assert.deepEqual(launched.owner, firstOwner);
+  await stopIsolatedFixture(launched);
+  launched = null;
+  await assert.rejects(startIsolatedFixture({
+    fixtureRoot: isolatedRoot,
+    context: { ...state.context, receiptRunId: 'different-isolated-production-fixture' },
+    agent: 'source-fixture',
+    nodeCount: 12,
+    edgeCount: 11,
+    operationDelayMs: 5,
+  }), (error) => error.code === 'isolated_fixture_ownership_mismatch');
+  const ownerFile = path.join(isolatedRoot, 'fixture-owner.json');
+  const tampered = JSON.parse(await fs.readFile(ownerFile, 'utf8'));
+  await fs.chmod(ownerFile, 0o600);
+  await fs.writeFile(ownerFile, `${JSON.stringify({ ...tampered, hostname: 'tampered-host' })}\n`);
+  await fs.chmod(ownerFile, 0o400);
+  await assert.rejects(startIsolatedFixture({
+    fixtureRoot: isolatedRoot,
+    context: state.context,
+    agent: 'source-fixture',
+    nodeCount: 12,
+    edgeCount: 11,
+    operationDelayMs: 5,
+  }), (error) => error.code === 'isolated_fixture_ownership_mismatch');
+});
+
+test('failed dashboard readiness stops only the newly spawned owned child', async (t) => {
+  const {
+    startIsolatedFixture,
+    stopIsolatedFixture,
+  } = await import('../../scripts/lib/isolated-brain-fixture.mjs');
+  const state = await receiptFixture();
+  const isolatedRoot = await fs.realpath(await fs.mkdtemp(
+    path.join(os.tmpdir(), 'home23-restart-cleanup-fixture-'),
+  ));
+  let launched;
+  t.after(async () => {
+    if (launched) await stopIsolatedFixture(launched).catch(() => {});
+    await Promise.all([
+      fs.rm(state.root, { recursive: true, force: true }),
+      fs.rm(isolatedRoot, { recursive: true, force: true }),
+    ]);
+  });
+  launched = await startIsolatedFixture({
+    fixtureRoot: isolatedRoot,
+    context: state.context,
+    agent: 'restart-cleanup-fixture',
+    operationDelayMs: 5,
+  });
+  const stoppedPid = launched.pids.dashboard;
+  const redirectedReady = path.join(launched.runtimeRoot, 'redirected-dashboard.ready.json');
+  const config = JSON.parse(await fs.readFile(launched.dashboardConfigFile, 'utf8'));
+  await fs.writeFile(launched.dashboardConfigFile, `${JSON.stringify({
+    ...config,
+    readyFile: redirectedReady,
+  })}\n`);
+
+  const restart = assert.rejects(
+    launched.restartDashboard({ readyTimeoutMs: 3_000 }),
+    (error) => error.code === 'isolated_child_ready_timeout',
+  );
+  const replacement = await awaitJson(redirectedReady);
+  assert.notEqual(replacement.pid, stoppedPid);
+  await restart;
+  await assertPidExited(stoppedPid);
+  await assertPidExited(replacement.pid);
+  assert.equal(launched.pids.dashboard, stoppedPid);
 });
 
 test('isolated launcher exercises production query, pinned PGS, and lifecycle recovery', async (t) => {
@@ -381,6 +525,28 @@ test('isolated launcher exercises production query, pinned PGS, and lifecycle re
   const resumed = await reloaded.resumeOperation(restartStart.operationId);
   assert.equal((await awaitTerminal(reloaded, resumed)).state, 'complete');
   assert.equal((await reloaded.inspectOperation(terminal.operationId, 'result')).state, 'complete');
+
+  const coordinatorRestart = await launched.restartCoordinator();
+  assert.equal(coordinatorRestart.coordinatorRestarts, 1);
+  const synthesisResponse = await fetch(`${launched.baseUrl}/api/synthesis/run`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ trigger: 'fixture-route-rebind' }),
+  });
+  const synthesisStart = await synthesisResponse.json();
+  assert.equal(synthesisResponse.status, 202, JSON.stringify(synthesisStart));
+  const synthesis = await awaitTerminal(reloaded, synthesisStart);
+  assert.equal(synthesis.state, 'complete', JSON.stringify(synthesis));
+  const synthesisStateResponse = await fetch(
+    `${launched.baseUrl}/api/synthesis/state?generationMarker=${encodeURIComponent(
+      synthesis.result.generationMarker,
+    )}`,
+  );
+  const synthesisState = await synthesisStateResponse.json();
+  assert.equal(synthesisStateResponse.status, 200, JSON.stringify(synthesisState));
+  assert.equal(synthesisState.latestOperation.operationId, synthesis.operationId);
+  assert.equal(synthesisState.currentGenerationMarker, synthesis.result.generationMarker);
+  assert.equal(synthesisState.markerStatus, 'matched');
 
   const stopped = await stopIsolatedFixture(launched);
   assert.equal(stopped.retainedStore, launched.operationsRoot);
