@@ -2,6 +2,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const Module = require('node:module');
 
 const originalLoad = Module._load;
@@ -86,6 +89,14 @@ function createVariantMemory(implementation, instanceId, stateStore = null) {
     clusterEnabled: Boolean(stateStore),
   });
   return { base, cluster, memory: cluster.getInterface(), logger };
+}
+
+function createBareVariantMemory(implementation) {
+  const logger = { info() {}, warn() {}, error() {}, debug() {} };
+  const memory = new implementation.NetworkMemory(memoryConfig(), logger);
+  memory.tokenizer = null;
+  memory.embed = async () => [0.1, 0.2, 0.3];
+  return memory;
 }
 
 test('COSMO addNode returns the stored cluster-instrumented identity', async () => {
@@ -383,6 +394,128 @@ for (const implementation of IMPLEMENTATIONS) {
     assert.equal(base.nextNodeId, 51);
     assert.equal(base.nextClusterId, 21);
     assert.equal(base.persistenceGeneration, stableGeneration);
+
+    base.importGraphChanges({
+      nodes: [{ id: 60, concept: 'new accepted identity', embedding: [0, 1, 0], cluster: 25 }],
+      clusters: [{ id: 25, nodes: [60] }],
+      nextNodeId: 500,
+      nextClusterId: 300,
+    });
+    assert.equal(base.nextNodeId, 61);
+    assert.equal(base.nextClusterId, 26);
+    assert.equal(base.dirtyNodeIds.has(60), true);
+  });
+
+  test(`${implementation.name} legacy save/load is barrier-backed, clean, in-place, and dirty-safe`, async (t) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-network-load-'));
+    const filepath = path.join(directory, 'network.json');
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+
+    const source = createBareVariantMemory(implementation);
+    source.importGraphChanges({
+      nodes: [
+        {
+          id: 7, concept: 'saved source', embedding: [1, 0, 0], cluster: 6,
+          created: '2026-07-10T00:00:00.000Z', accessed: '2026-07-11T00:00:00.000Z',
+        },
+        {
+          id: 8, concept: 'saved peer', embedding: [0, 1, 0], cluster: 6,
+          created: '2026-07-10T00:00:00.000Z', accessed: '2026-07-11T00:00:00.000Z',
+        },
+      ],
+      edges: [{
+        source: 7, target: 8, weight: 0.6, type: 'evidence',
+        created: '2026-07-10T00:00:00.000Z', accessed: '2026-07-11T00:00:00.000Z',
+      }],
+      clusters: [{ id: 6, nodes: [7, 8] }],
+    });
+    assert.deepEqual(await source.save(filepath), { saved: true, nodes: 2, edges: 1 });
+
+    const target = createBareVariantMemory(implementation);
+    const mapIdentities = { nodes: target.nodes, edges: target.edges, clusters: target.clusters };
+    const staleGeneration = target.persistenceGeneration;
+    const loaded = await target.load(filepath);
+
+    assert.equal(loaded.loaded, true);
+    assert.equal(target.nodes, mapIdentities.nodes);
+    assert.equal(target.edges, mapIdentities.edges);
+    assert.equal(target.clusters, mapIdentities.clusters);
+    assert.equal(target.nodes.get(7).created instanceof Date, true);
+    assert.equal(target.edges.get('7->8').accessed instanceof Date, true);
+    assert.deepEqual([...target.clusters.get(6)], [7, 8]);
+    assert.equal(target.persistenceGeneration, staleGeneration + 1);
+    assert.equal(target.markPersistenceCleanIfGeneration(staleGeneration), false);
+    assert.deepEqual([...target.dirtyNodeIds], []);
+    assert.deepEqual([...target.dirtyEdgeKeys], []);
+    assert.deepEqual([...target.deletedNodeIds], []);
+    assert.deepEqual([...target.deletedEdgeKeys], []);
+    const loadedSnapshot = target.capturePersistenceSnapshot();
+    assert.equal(loadedSnapshot.fullView.nodes.length, 2);
+    assert.equal(loadedSnapshot.fullView.edges.length, 1);
+
+    const stableGeneration = target.persistenceGeneration;
+    const unchanged = await target.load(filepath);
+    assert.deepEqual(unchanged, {
+      loaded: false,
+      reason: 'unchanged',
+      generation: stableGeneration,
+    });
+    assert.equal(target.persistenceGeneration, stableGeneration);
+
+    target.importGraphChanges({
+      nodes: [{ id: 9, concept: 'uncommitted live node', embedding: [0, 0, 1], cluster: null }],
+    });
+    await assert.rejects(target.load(filepath), /network_load_dirty_state/);
+    assert.equal(target.nodes.has(9), true);
+    const beforeOverride = target.persistenceGeneration;
+    const replaced = await target.load(filepath, { allowDirtyReplacement: true });
+    assert.equal(replaced.loaded, true);
+    assert.equal(target.persistenceGeneration, beforeOverride + 1);
+    assert.equal(target.nodes.has(9), false);
+    assert.deepEqual([...target.dirtyNodeIds], []);
+
+    const wrapped = createVariantMemory(implementation, `${implementation.name}-load-wrapper`, {
+      async getMergedState() { return null; },
+      async submitDiff() {},
+    });
+    await assert.rejects(
+      wrapped.base.load(filepath),
+      /network_load_cluster_wrapper_active/,
+    );
+    assert.equal(wrapped.base.nodes.size, 0);
+  });
+
+  test(`${implementation.name} tombstone-only imports persist node identity without inventing cluster state`, async () => {
+    const { base } = createVariantMemory(implementation, `${implementation.name}-tombstone-floor`);
+    base.markPersistenceCleanIfGeneration(base.persistenceGeneration);
+    const generation = base.persistenceGeneration;
+
+    const imported = base.importGraphChanges({
+      nodeDeletes: [500],
+      clusterDeletes: [700],
+    });
+
+    assert.deepEqual(imported, {
+      importedNodes: 0,
+      importedEdges: 0,
+      importedClusters: 0,
+      removedNodes: 0,
+      removedEdges: 0,
+      removedClusters: 0,
+    });
+    assert.equal(base.nextNodeId, 501);
+    assert.equal(base.nextClusterId, 1);
+    assert.equal(base.persistenceGeneration, generation + 1);
+    assert.deepEqual(base.capturePersistenceSnapshot().changes.removedNodeIds, [500]);
+    assert.equal(base.markPersistenceCleanIfGeneration(generation), false);
+
+    const created = await base.addNode(
+      'new identity after tombstone-only import',
+      'research',
+      [0.1, 0.2, 0.3],
+    );
+    assert.equal(created.id, 501);
+    assert.equal(created.cluster, 1);
   });
 
   test(`${implementation.name} cluster allocation probes only occupied counter collisions`, () => {

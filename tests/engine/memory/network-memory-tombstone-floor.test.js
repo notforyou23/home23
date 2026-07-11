@@ -35,7 +35,7 @@ for (const [name, NetworkMemory] of [
   ['root', RootNetworkMemory],
   ['COSMO', CosmoNetworkMemory],
 ]) {
-  test(`${name} tombstone-only imports reserve numeric node and cluster allocation floors`, async () => {
+  test(`${name} tombstone-only imports persist node identity without inventing cluster state`, async () => {
     const memory = new NetworkMemory(config(), {
       info() {}, warn() {}, error() {}, debug() {},
     });
@@ -55,8 +55,9 @@ for (const [name, NetworkMemory] of [
       removedClusters: 0,
     });
     assert.equal(memory.nextNodeId, 501);
-    assert.equal(memory.nextClusterId, 701);
-    assert.ok(memory.persistenceGeneration >= generation + 2);
+    assert.equal(memory.nextClusterId, 1);
+    assert.equal(memory.persistenceGeneration, generation + 1);
+    assert.deepEqual(memory.capturePersistenceSnapshot().changes.removedNodeIds, [500]);
     assert.equal(memory.markPersistenceCleanIfGeneration(generation), false);
 
     const created = await memory.addNode(
@@ -65,6 +66,6 @@ for (const [name, NetworkMemory] of [
       [0.1, 0.2, 0.3],
     );
     assert.equal(created.id, 501);
-    assert.equal(created.cluster, 701);
+    assert.equal(created.cluster, 1);
   });
 }
