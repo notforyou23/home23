@@ -377,7 +377,41 @@ function providerTerminalEventValid(evidence, terminal, { retained = false } = {
     && typeof evidence.provider === 'string' && Boolean(evidence.provider.trim())
     && typeof evidence.model === 'string' && Boolean(evidence.model.trim())
     && typeof evidence.providerCallId === 'string' && Boolean(evidence.providerCallId.trim())
+    && (evidence.workUnitId === undefined
+      || (typeof evidence.workUnitId === 'string' && Boolean(evidence.workUnitId.trim())))
+    && (evidence.partitionId === undefined
+      || (typeof evidence.partitionId === 'string' && Boolean(evidence.partitionId.trim())))
     && PROVIDER_TERMINAL_OUTCOMES.has(evidence.outcome);
+}
+
+function dedupeProviderTerminalEvents(events) {
+  const byCall = new Map();
+  const bySequence = new Map();
+  const unique = [];
+  for (const event of events) {
+    const signature = JSON.stringify({
+      operationId: event.operationId,
+      eventSequence: event.eventSequence,
+      phase: event.phase,
+      provider: event.provider,
+      model: event.model,
+      providerCallId: event.providerCallId,
+      outcome: event.outcome,
+      workUnitId: event.workUnitId ?? null,
+      partitionId: event.partitionId ?? null,
+    });
+    const priorCall = byCall.get(event.providerCallId);
+    const priorSequence = bySequence.get(event.eventSequence);
+    if ((priorCall !== undefined && priorCall !== signature)
+        || (priorSequence !== undefined && priorSequence !== signature)) {
+      return null;
+    }
+    if (priorCall === signature) continue;
+    byCall.set(event.providerCallId, signature);
+    bySequence.set(event.eventSequence, signature);
+    unique.push(event);
+  }
+  return unique;
 }
 
 function pgsProviderTerminalCoverage(terminal, events) {
@@ -430,9 +464,15 @@ function providerTerminalProof(terminal, activityLog, retainedEvidence) {
     return covered;
   };
   const retainedEvents = retainedProvided ? [retainedEvidence] : [];
-  const streamedValidated = coversTerminal(streamedRaw);
-  const retainedValidated = coversTerminal(retainedEvents);
-  const combinedValidated = coversTerminal([...streamedRaw, ...retainedEvents]);
+  const streamedEvents = dedupeProviderTerminalEvents(streamedRaw);
+  const uniqueRetainedEvents = dedupeProviderTerminalEvents(retainedEvents);
+  const combinedEvents = dedupeProviderTerminalEvents([...streamedRaw, ...retainedEvents]);
+  if (streamedEvents === null || uniqueRetainedEvents === null || combinedEvents === null) {
+    return { validated: false, source: null };
+  }
+  const streamedValidated = coversTerminal(streamedEvents);
+  const retainedValidated = coversTerminal(uniqueRetainedEvents);
+  const combinedValidated = coversTerminal(combinedEvents);
   return {
     validated: combinedValidated,
     source: streamedValidated ? 'operation-stream'
@@ -624,11 +664,58 @@ function assertCompleteTerminal(terminal, {
 
 function assertCanaryEvidence(terminal, canary) {
   const revision = evidenceRevision(terminal?.sourceEvidence);
-  assertPositiveSourceEvidence(terminal?.sourceEvidence);
   if (revision !== canary.sourceRevision) {
     throw typedError('canary_source_revision_mismatch');
   }
   assertTerminalBrainIdentity(terminal, canary?.selectedBrain, 'canary_target_mismatch');
+  assertPositiveSourceEvidence(terminal?.sourceEvidence);
+}
+
+function nonemptyAnswer(result) {
+  const answer = result?.answer ?? result?.text ?? result?.content;
+  return typeof answer === 'string' && Boolean(answer.trim());
+}
+
+function usefulPgsResult(terminal) {
+  if (terminal?.state === 'complete') return nonemptyAnswer(terminal.result);
+  const sweeps = terminal?.result?.sweepOutputs;
+  const successfulSweeps = terminal?.result?.metadata?.pgs?.successfulSweeps;
+  return terminal?.state === 'partial'
+    && Array.isArray(sweeps) && sweeps.length > 0
+    && Number.isSafeInteger(successfulSweeps)
+    && successfulSweeps === sweeps.length
+    && sweeps.every((sweep) => sweep
+      && typeof sweep.output === 'string' && Boolean(sweep.output.trim()));
+}
+
+function usefulProtectedResult(terminal) {
+  if (terminal?.operationType === 'pgs') return usefulPgsResult(terminal);
+  if (terminal?.operationType === 'research_compile') {
+    return terminal.state === 'complete'
+      && typeof terminal.result?.relativePath === 'string'
+      && Boolean(terminal.result.relativePath.trim());
+  }
+  return terminal?.state === 'complete' && nonemptyAnswer(terminal?.result);
+}
+
+function assertCanaryBoundUsefulResult(terminal, canary, activityLog = []) {
+  const revision = evidenceRevision(terminal?.sourceEvidence);
+  assertTerminalBrainIdentity(terminal, canary?.selectedBrain, 'canary_target_mismatch');
+  if (revision !== canary.sourceRevision) throw typedError('canary_source_revision_mismatch');
+  try {
+    assertPositiveSourceEvidence(terminal?.sourceEvidence);
+  } catch (error) {
+    const evidence = terminal?.sourceEvidence;
+    const providerProof = providerTerminalProof(terminal, activityLog, null);
+    if (evidence?.sourceHealth !== 'degraded' || evidence.freshness !== 'unknown'
+        || !Number.isSafeInteger(Number(evidence.authoritativeTotals?.nodes))
+        || Number(evidence.authoritativeTotals.nodes) <= 0
+        || !usefulProtectedResult(terminal)
+        || providerProof.validated !== true) {
+      throw error;
+    }
+  }
+  if (!usefulProtectedResult(terminal)) throw typedError('operation_success_required');
 }
 
 function nodesFromGraph(value) {
@@ -1433,7 +1520,7 @@ async function collectReceiptOperationInventory(root, excluded) {
   return operations;
 }
 
-function cosmoAuthorityEndpoint(baseUrl, operationId) {
+function cosmoAuthorityEndpoints(baseUrl, operationId) {
   let parsed;
   try { parsed = new URL(baseUrl); }
   catch (error) {
@@ -1446,37 +1533,67 @@ function cosmoAuthorityEndpoint(baseUrl, operationId) {
       || parsed.search || parsed.hash || (parsed.pathname !== '/' && parsed.pathname !== '')) {
     throw typedError('cosmo_base_url_invalid');
   }
-  return `${parsed.origin}/api/internal/brain-operations/${operationId}/status`;
+  const root = `${parsed.origin}/api/internal/brain-operations/${operationId}`;
+  return [
+    { action: 'status', endpoint: `${root}/status`, method: 'GET' },
+    { action: 'result', endpoint: `${root}/result`, method: 'GET' },
+    { action: 'cancel', endpoint: `${root}/cancel`, method: 'POST' },
+  ];
 }
 
-async function proveCosmoAuthorityRejection({ baseUrl, operationId, signal, fetchImpl }) {
-  const endpoint = cosmoAuthorityEndpoint(baseUrl, operationId);
-  let response;
-  let body;
-  try {
-    response = await fetchImpl(endpoint, {
-      method: 'GET',
-      headers: { accept: 'application/json' },
-      redirect: 'error',
-      signal: signal || AbortSignal.timeout(10_000),
-    });
-    body = await readResponseJsonBounded(response, {
-      maxBytes: 256 * 1024,
-      errorCode: 'cosmo_authority_rejection_unproven',
-    });
-  } catch (error) {
-    if (error?.code === 'cosmo_authority_rejection_unproven') throw error;
-    throw typedError('cosmo_authority_rejection_unproven', undefined, { cause: error });
-  }
-  if (response.ok || response.status !== 401 || body?.success !== false
-      || body?.error?.code !== 'capability_invalid') {
+export async function proveCosmoAuthorityRejection({
+  baseUrl,
+  operationId,
+  signal,
+  fetchImpl,
+  timeoutMs = 10_000,
+}) {
+  const endpoints = cosmoAuthorityEndpoints(baseUrl, operationId);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
     throw typedError('cosmo_authority_rejection_unproven');
+  }
+  const probes = [];
+  for (const probe of endpoints) {
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    const requestSignal = signal
+      ? AbortSignal.any([signal, timeoutSignal])
+      : timeoutSignal;
+    let response;
+    let body;
+    try {
+      response = await fetchImpl(probe.endpoint, {
+        method: probe.method,
+        headers: {
+          accept: 'application/json',
+          ...(probe.method === 'POST' ? { 'content-type': 'application/json' } : {}),
+        },
+        ...(probe.method === 'POST' ? { body: '{}' } : {}),
+        redirect: 'error',
+        signal: requestSignal,
+      });
+      body = await readResponseJsonBounded(response, {
+        maxBytes: 256 * 1024,
+        errorCode: 'cosmo_authority_rejection_unproven',
+      });
+    } catch (error) {
+      if (error?.code === 'cosmo_authority_rejection_unproven') throw error;
+      throw typedError('cosmo_authority_rejection_unproven', probe.action, { cause: error });
+    }
+    if (response.ok || response.status !== 401 || body?.success !== false
+        || body?.error?.code !== 'capability_invalid') {
+      throw typedError('cosmo_authority_rejection_unproven', probe.action);
+    }
+    probes.push({
+      action: probe.action,
+      endpoint: probe.endpoint,
+      method: probe.method,
+      status: response.status,
+      code: body.error.code,
+    });
   }
   return {
     operationId,
-    endpoint,
-    status: response.status,
-    code: body.error.code,
+    probes,
   };
 }
 
@@ -2206,7 +2323,7 @@ export async function executeScenario({
     const operationId = toolResult.metadata?.operationId;
     if (!operationId) throw typedError('operation_id_missing');
     const terminal = await protectedTerminal(client, operationId, signal);
-    assertCanaryEvidence(terminal, canary);
+    assertCanaryBoundUsefulResult(terminal, canary, activityLog);
     return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, activityLog });
   }
 
@@ -2216,7 +2333,7 @@ export async function executeScenario({
       : await canaryFromReceipt(values, context, callerAgent);
     if (!canary?.query || !canary?.nodeId
         || !Number.isSafeInteger(canary?.sourceRevision)
-        || canary?.sourceHealth !== 'healthy') {
+        || !['healthy', 'degraded'].includes(canary?.sourceHealth)) {
       throw typedError('canary_receipt_invalid');
     }
     if (scenario === 'large-pgs-isolated') {
@@ -2253,7 +2370,7 @@ export async function executeScenario({
     const operationId = toolResult.metadata?.operationId;
     if (!operationId) throw typedError('operation_id_missing');
     const terminal = await protectedTerminal(client, operationId, signal);
-    assertCanaryEvidence(terminal, canary);
+    assertCanaryBoundUsefulResult(terminal, canary, activityLog);
     const requiredNodes = integer(values, 'require-authoritative-nodes', { min: 1 });
     const authoritativeNodes = Number(terminal.sourceEvidence?.authoritativeTotals?.nodes);
     if (scenario === 'pgs' && (requiredNodes === undefined

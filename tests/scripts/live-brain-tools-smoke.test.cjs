@@ -108,9 +108,17 @@ async function fixture(authority = 'live') {
   };
 }
 
-async function canaryReceipt(state, authority = state.context.authority) {
+async function canaryReceipt(state, authority = state.context.authority, overrides = {}) {
   const { canonicalReceiptRow } = await import('../../scripts/lib/brain-acceptance-common.mjs');
-  const file = path.join(state.context.receiptRunDir, `canary-${authority}.json`);
+  const suffix = overrides.sourceHealth === 'degraded' ? '-degraded' : '';
+  const file = path.join(state.context.receiptRunDir, `canary-${authority}${suffix}.json`);
+  const sourceEvidence = overrides.sourceEvidence ?? {
+    sourceHealth: 'healthy', matchOutcome: 'matches',
+    deltaWatermark: { revision: 7 },
+    authoritativeTotals: { nodes: 140_086, edges: 456_709 },
+    returnedTotals: { nodes: 1, edges: 0 },
+    selectedBrain: 'brain-jerry',
+  };
   const row = canonicalReceiptRow({ ...state.context, authority }, {
     helper: 'live-brain-tools-smoke',
     scenario: 'discover-canary',
@@ -125,15 +133,9 @@ async function canaryReceipt(state, authority = state.context.authority) {
     query: 'authoritative canary',
     nodeId: 'n-canary',
     sourceRevision: 7,
-    sourceHealth: 'healthy',
+    sourceHealth: overrides.sourceHealth ?? sourceEvidence.sourceHealth,
     selectedBrain: 'brain-jerry',
-    sourceEvidence: {
-      sourceHealth: 'healthy', matchOutcome: 'matches',
-      deltaWatermark: { revision: 7 },
-      authoritativeTotals: { nodes: 140_086, edges: 456_709 },
-      returnedTotals: { nodes: 1, edges: 0 },
-      selectedBrain: 'brain-jerry',
-    },
+    sourceEvidence,
   });
   await fs.writeFile(file, `${JSON.stringify(row)}\n`);
   return file;
@@ -266,6 +268,92 @@ test('large pinned PGS partial retains canonical null-answer sweep outputs and e
   assert.equal(row.sourcePinDescriptor.sourceRevision, 7);
   assert.match(row.sourcePinDigest, /^sha256:[a-f0-9]{64}$/);
   assert.equal(row.liveProviderLargePgsGatePassed, true);
+
+  const degradedCanary = await canaryReceipt(state, state.context.authority, {
+    sourceHealth: 'degraded',
+    sourceEvidence: {
+      sourceHealth: 'degraded', freshness: 'unknown', matchOutcome: 'matches',
+      deltaWatermark: { revision: 7 },
+      authoritativeTotals: { nodes: 140_086, edges: 456_709 },
+      returnedTotals: { nodes: 1, edges: 0 },
+      selectedBrain: 'brain-jerry',
+    },
+  });
+  const [degradedSweep] = sweepOutputs;
+  const degradedPartial = operation({
+    ...partial,
+    operationId: 'op_pgs_degraded_pinned_0001',
+    sourceEvidence: {
+      sourceHealth: 'degraded', freshness: 'unknown', matchOutcome: 'unknown',
+      deltaWatermark: { revision: 7 },
+      authoritativeTotals: { nodes: 140_086, edges: 456_709 },
+      returnedTotals: { nodes: 0, edges: 0 },
+      selectedBrain: 'brain-jerry',
+    },
+    result: {
+      answer: null,
+      sweepOutputs: [degradedSweep],
+      metadata: { pgs: { successfulSweeps: 1, retryablePartitions: ['retry-legacy'] } },
+    },
+  });
+  const degradedEvents = [
+    providerTerminal(degradedPartial, {
+      eventSequence: 1,
+      phase: 'pgs_sweep',
+      providerCallId: `pgs:${degradedSweep.workUnitId}`,
+      workUnitId: degradedSweep.workUnitId,
+      partitionId: degradedSweep.partitionId,
+      provider: degradedSweep.provider,
+      model: degradedSweep.model,
+    }),
+    providerTerminal(degradedPartial, {
+      eventSequence: 2,
+      phase: 'pgs_synthesis',
+      providerCallId: 'pgs:synthesis',
+      outcome: 'failed',
+    }),
+  ];
+  const degradedRow = await executeScenario({
+    scenario: 'pgs', modules,
+    client: {
+      async query() { return degradedPartial; },
+      async inspectOperation() { return degradedPartial; },
+    },
+    values: {
+      'canary-receipt': degradedCanary,
+      'target-brain': 'brain-jerry',
+      'require-authoritative-nodes': '100000',
+      'pgs-sweep-selection': JSON.stringify({ provider: 'fixture-provider', model: 'fixture-model' }),
+      'pgs-synth-selection': JSON.stringify({ provider: 'fixture-provider', model: 'fixture-model' }),
+    },
+    context: state.context, baseUrl: 'http://fixture', callerAgent: 'jerry',
+    signal: new AbortController().signal,
+    activityLog: degradedEvents,
+  });
+  assert.equal(degradedRow.state, 'partial');
+  assert.equal(degradedRow.sourceHealth, 'degraded');
+  assert.equal(degradedRow.providerTerminalValidated, true);
+
+  await assert.rejects(executeScenario({
+    scenario: 'pgs', modules,
+    client: {
+      async query() { return { ...degradedPartial, sourceEvidence: {
+        ...degradedPartial.sourceEvidence, deltaWatermark: { revision: 8 },
+      } }; },
+      async inspectOperation() { return { ...degradedPartial, sourceEvidence: {
+        ...degradedPartial.sourceEvidence, deltaWatermark: { revision: 8 },
+      } }; },
+    },
+    values: {
+      'canary-receipt': degradedCanary,
+      'target-brain': 'brain-jerry',
+      'require-authoritative-nodes': '100000',
+    },
+    context: state.context, baseUrl: 'http://fixture', callerAgent: 'jerry',
+    signal: new AbortController().signal,
+    activityLog: degradedEvents,
+  }), (error) => error.code === 'canary_source_revision_mismatch');
+
   await assert.rejects(executeScenario({
     scenario: 'pgs', modules, client,
     values: {
@@ -528,6 +616,28 @@ test('HTTP, receipt, and memory evidence readers remain bounded before parse', a
   assert.equal(summary.samples.length, summary.retainedSamples);
 });
 
+test('COSMO authority rejection keeps its hard deadline when the caller signal is non-expiring', async () => {
+  const { proveCosmoAuthorityRejection } = await import('../../scripts/live-brain-tools-smoke.mjs');
+  const started = Date.now();
+  await assert.rejects(
+    proveCosmoAuthorityRejection({
+      baseUrl: 'http://127.0.0.1:43210',
+      operationId: 'brop_' + 'a'.repeat(32),
+      signal: new AbortController().signal,
+      timeoutMs: 10,
+      fetchImpl: async (_url, init) => new Promise((resolve, reject) => {
+        if (init.signal.aborted) {
+          reject(init.signal.reason);
+          return;
+        }
+        init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+      }),
+    }),
+    (error) => error.code === 'cosmo_authority_rejection_unproven',
+  );
+  assert.ok(Date.now() - started < 1_000);
+});
+
 test('fixture cleanup owns signals, aborts work, removes handlers, and stops once', async () => {
   const { createBoundedFixtureCleanup } = await import('../../scripts/live-brain-tools-smoke.mjs');
   const signalTarget = new EventEmitter();
@@ -695,6 +805,22 @@ test('authoritative canary discovery precedes query and typed failures remain fa
     values: { 'canary-receipt': canary }, context: state.context,
     baseUrl: 'http://fixture', callerAgent: 'jerry', signal: new AbortController().signal,
   }), (error) => error.code === 'operation_timeout');
+
+  const failed = operation({
+    operationId: 'op_query_failed_after_canary_0001',
+    state: 'failed',
+    result: null,
+    error: { code: 'provider_failed', message: 'fixture failure', retryable: true },
+  });
+  await assert.rejects(executeScenario({
+    scenario: 'direct-query', modules,
+    client: {
+      async query() { return failed; },
+      async inspectOperation() { return failed; },
+    },
+    values: { 'canary-receipt': canary }, context: state.context,
+    baseUrl: 'http://fixture', callerAgent: 'jerry', signal: new AbortController().signal,
+  }), (error) => error.toolResult?.is_error === true && /provider_failed/.test(error.message));
 });
 
 test('positive reads require complete exact targets while zero-result requires healthy coverage', async (t) => {
@@ -958,6 +1084,30 @@ test('isolated synthesis reconnect and MCP disabled/unreachable outcomes are typ
   assert.equal(synthesis.generationMarker, 'generation-7');
   assert.equal(synthesis.providerTerminalValidated, true);
   assert.equal(synthesis.lastProgressAt, completed.lastProgressAt);
+  await assert.rejects(executeScenario({
+    scenario: 'synthesis-reconnect', modules: {},
+    client: {
+      async synthesize() { return operation({ ...completed, state: 'running', result: null }); },
+      async reattachSynthesis() { return completed; },
+      async inspectOperation() { return completed; },
+    },
+    values, context: state.context, baseUrl: 'http://isolated', callerAgent: 'jerry',
+    signal: new AbortController().signal,
+    activityLog: [
+      providerTerminal(completed, {
+        eventSequence: 7,
+        phase: 'synthesis',
+        providerCallId: 'synthesis',
+        outcome: 'complete',
+      }),
+      providerTerminal(completed, {
+        eventSequence: 8,
+        phase: 'synthesis',
+        providerCallId: 'synthesis',
+        outcome: 'failed',
+      }),
+    ],
+  }), (error) => error.code === 'provider_terminal_unproven');
 
   const disabled = await executeScenario({
     scenario: 'mcp-unavailable', modules: {}, client: {},

@@ -679,12 +679,22 @@ test('strict identity manifest rereads live and retained-store operations withou
   assert.equal(verified.isolatedWrongRequesterReads[0].code, 'access_denied');
   assert.deepEqual(verified.cosmoAuthorityRejection, {
     operationId: jerry.operationId,
-    endpoint: `${cosmoUrl}/api/internal/brain-operations/${jerry.operationId}/status`,
-    status: 401,
-    code: 'capability_invalid',
+    probes: [
+      { action: 'status', method: 'GET',
+        endpoint: `${cosmoUrl}/api/internal/brain-operations/${jerry.operationId}/status`,
+        status: 401, code: 'capability_invalid' },
+      { action: 'result', method: 'GET',
+        endpoint: `${cosmoUrl}/api/internal/brain-operations/${jerry.operationId}/result`,
+        status: 401, code: 'capability_invalid' },
+      { action: 'cancel', method: 'POST',
+        endpoint: `${cosmoUrl}/api/internal/brain-operations/${jerry.operationId}/cancel`,
+        status: 401, code: 'capability_invalid' },
+    ],
   });
-  assert.equal(cosmoRequests.length, 1);
-  assert.equal(Object.hasOwn(cosmoRequests[0].init.headers, 'authorization'), false);
+  assert.equal(cosmoRequests.length, 3);
+  assert.deepEqual(cosmoRequests.map((request) => request.init.method), ['GET', 'GET', 'POST']);
+  assert.equal(cosmoRequests.every((request) =>
+    Object.hasOwn(request.init.headers, 'authorization') === false), true);
   assert.equal(calls.some((call) => call.operationId === isolated.record.operationId), false);
   await assert.rejects(smoke.verifyReceiptManifest({
     manifestPath,
