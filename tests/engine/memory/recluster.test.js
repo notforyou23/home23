@@ -85,3 +85,36 @@ test('applyMemoryRecluster mutates live graph and marks assigned nodes dirty', (
   assert.equal(memory.nodes.get('e').cluster, 8);
   assert.deepEqual([...memory.dirtyNodeIds].sort(), ['b', 'c', 'd', 'e']);
 });
+
+test('stale imported cluster counters never overwrite an occupied cluster', () => {
+  const memory = new NetworkMemory({
+    embedding: {},
+    coordinator: {},
+    smallWorld: { maxBridgesPerNode: 40 },
+    spreading: { maxDepth: 2, activationThreshold: 0.01, decayFactor: 0.8 },
+    hebbian: { enabled: false, reinforcementStrength: 0.1 },
+    decay: { baseFactor: 0.95, minimumWeight: 0.01, decayInterval: 300, exemptTags: [] },
+  }, { info() {}, warn() {}, error() {}, debug() {} });
+  memory.importGraphChanges({
+    nodes: [
+      { id: 'occupied', concept: 'existing member', cluster: 1 },
+      { id: 'candidate', concept: 'new member', cluster: null },
+    ],
+    clusters: [{ id: 1, nodes: ['occupied'] }],
+    nextClusterId: 1,
+  });
+
+  assert.equal(memory.nextClusterId, 2);
+  const result = memory.applyReclusterPlan({ newClusterGroups: [['candidate']] });
+
+  assert.deepEqual(result, {
+    assignedToExisting: 0,
+    createdClusters: 1,
+    assignedToNewClusters: 1,
+  });
+  assert.deepEqual([...memory.clusters.get(1)], ['occupied']);
+  assert.deepEqual([...memory.clusters.get(2)], ['candidate']);
+  assert.equal(memory.nodes.get('occupied').cluster, 1);
+  assert.equal(memory.nodes.get('candidate').cluster, 2);
+  assert.equal(memory.nextClusterId, 3);
+});

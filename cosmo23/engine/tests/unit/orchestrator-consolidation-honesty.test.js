@@ -51,7 +51,7 @@ describe('Orchestrator consolidation publication honesty', () => {
     markerCommit.onCall(0).returns({
       committed: false,
       mode: 'partial',
-      reason: 'source_marker_commit_incomplete',
+      reason: 'consolidation_lineage_commit_incomplete',
       updatedSourceNodes: 0,
       skippedSourceNodes: 1,
     });
@@ -78,7 +78,7 @@ describe('Orchestrator consolidation publication honesty', () => {
     const completion = log.entries.find((entry) => entry.message === 'Consolidation complete (GPT-5.2)');
     expect(completion?.data).to.deep.equal({ created: 1, skipped: 2 });
     expect(log.entries.some((entry) => entry.data?.reason === 'summary_node_creation_failed')).to.equal(true);
-    expect(log.entries.some((entry) => entry.data?.reason === 'source_marker_commit_incomplete')).to.equal(true);
+    expect(log.entries.some((entry) => entry.data?.reason === 'consolidation_lineage_commit_incomplete')).to.equal(true);
   });
 
   it('blocks and logs a replacement race after summary storage', async () => {
@@ -133,7 +133,7 @@ describe('Orchestrator consolidation publication honesty', () => {
         nodes.set(summary.id, summary);
         return summary;
       }),
-      patchNodes: sinon.stub().returns({ updated: 2, nodes: sources.slice(0, 2) }),
+      patchNodes: sinon.stub().returns({ updated: 3, nodes: [] }),
     };
     const orchestrator = Object.create(Orchestrator.prototype);
     Object.assign(orchestrator, {
@@ -150,10 +150,10 @@ describe('Orchestrator consolidation publication honesty', () => {
     expect(publication).to.include({
       published: false,
       mode: 'partial',
-      reason: 'source_marker_commit_incomplete',
+      reason: 'consolidation_lineage_commit_incomplete',
       summaryNodeId: 'stored-summary',
     });
-    expect(log.entries.some((entry) => entry.data?.reason === 'source_marker_commit_incomplete')).to.equal(true);
+    expect(log.entries.some((entry) => entry.data?.reason === 'consolidation_lineage_commit_incomplete')).to.equal(true);
   });
 
   it('does not log deep-sleep consolidation success when summary storage returns null', async () => {

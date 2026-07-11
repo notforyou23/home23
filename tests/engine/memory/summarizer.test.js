@@ -121,8 +121,18 @@ test('consolidateMemories limits cluster work per run and records deferral', asy
 
   const result = await summarizer.consolidateMemories(memoryNetwork);
 
-  for (const candidate of result) {
-    assert.equal(summarizer.commitConsolidationSources(memoryNetwork, candidate).committed, true);
+  for (const [index, candidate] of result.entries()) {
+    const summaryNode = {
+      id: `summary-${index}`,
+      concept: candidate.consolidated,
+      tag: 'consolidated',
+    };
+    memoryNetwork.nodes.set(summaryNode.id, summaryNode);
+    assert.equal(
+      summarizer.commitConsolidationSources(memoryNetwork, candidate, summaryNode).committed,
+      true,
+    );
+    assert.equal(summaryNode.consolidatedAt, candidate.consolidationTimestamp);
   }
 
   assert.equal(result.length, 2);
@@ -171,15 +181,25 @@ test('consolidateMemories dry-runs source compost without deleting sources', asy
     compostSources: 'dry-run',
   });
 
-  for (const candidate of result) {
-    assert.equal(summarizer.commitConsolidationSources(memoryNetwork, candidate).committed, true);
+  for (const [index, candidate] of result.entries()) {
+    const summaryNode = {
+      id: `summary-${index}`,
+      concept: candidate.consolidated,
+      tag: 'consolidated',
+    };
+    memoryNetwork.nodes.set(summaryNode.id, summaryNode);
+    assert.equal(
+      summarizer.commitConsolidationSources(memoryNetwork, candidate, summaryNode).committed,
+      true,
+    );
+    assert.equal(summaryNode.consolidatedAt, candidate.consolidationTimestamp);
   }
 
   assert.equal(result.length, 2);
   assert.equal(result[0].compost.mode, 'dry-run');
   assert.equal(result[0].compost.wouldRemoveSourceNodes, 5);
   assert.equal(result[1].compost.wouldRemoveSourceNodes, 5);
-  assert.equal(memoryNetwork.nodes.size, 10);
+  assert.equal(memoryNetwork.nodes.size, 12);
   assert.equal(memoryNetwork.mutationCalls.patchNodes, 2);
   assert.equal(memoryNetwork.mutationCalls.removeNodes, 0);
   assert.equal(summarizer.consolidationHistory.at(-1).compostDryRun.wouldRemoveSourceNodes, 10);
@@ -253,7 +273,7 @@ test('consolidateMemories discards provider output when a source identity change
   assert.ok(logger.entries.some((entry) => entry.message === 'Memory consolidation discarded after source changed'));
 });
 
-test('consolidation source markers are deferred until a stored summary is ready', async () => {
+test('consolidation lineage markers atomically stamp the stored summary and exact sources', async () => {
   process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'test-key';
   const logger = makeLogger();
   const summarizer = new MemorySummarizer({}, logger, {});
@@ -277,11 +297,20 @@ test('consolidation source markers are deferred until a stored summary is ready'
   assert.equal(memoryNetwork.mutationCalls.patchNodes, 0);
   assert.ok(cluster.every((node) => !node.consolidatedAt));
 
-  const committed = summarizer.commitConsolidationSources(memoryNetwork, candidate);
+  const summaryNode = {
+    id: 'deferred-summary',
+    concept: candidate.consolidated,
+    tag: 'consolidated',
+  };
+  memoryNetwork.nodes.set(summaryNode.id, summaryNode);
+  const committed = summarizer.commitConsolidationSources(memoryNetwork, candidate, summaryNode);
 
   assert.equal(committed.committed, true);
+  assert.equal(committed.updatedSummaryNodes, 1);
+  assert.equal(committed.updatedSourceNodes, cluster.length);
   assert.equal(memoryNetwork.mutationCalls.patchNodes, 1);
-  assert.ok(cluster.every((node) => typeof node.consolidatedAt === 'string'));
+  assert.equal(summaryNode.consolidatedAt, candidate.consolidationTimestamp);
+  assert.ok(cluster.every((node) => node.consolidatedAt === summaryNode.consolidatedAt));
 });
 
 test('compost provenance records only source nodes actually removed and preserves numeric IDs', () => {

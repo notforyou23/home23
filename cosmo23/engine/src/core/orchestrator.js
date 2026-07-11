@@ -3875,6 +3875,7 @@ class Orchestrator {
     const sourceCommit = this.summarizer.commitConsolidationSources(
       this.memory,
       consolidation,
+      summaryNode,
     );
     if (!sourceCommit?.committed) {
       const reason = sourceCommit?.reason || 'source_marker_commit_failed';

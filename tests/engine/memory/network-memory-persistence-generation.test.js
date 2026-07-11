@@ -513,6 +513,21 @@ test('capture rejects record accessors without invoking them while the barrier i
   assert.equal(mem.persistenceBarrierActive, false);
 });
 
+test('node patches reject structural cluster changes without corrupting membership indexes', async () => {
+  const mem = memory();
+  const node = await addIsolatedNode(mem, 'n1', [1, 0]);
+  const originalCluster = node.cluster;
+  const originalMembers = [...mem.clusters.get(originalCluster)];
+
+  assert.throws(
+    () => mem.patchNode(node.id, { cluster: originalCluster + 100 }),
+    /node_patch_forbidden_key:cluster/,
+  );
+  assert.equal(mem.nodes.get(node.id).cluster, originalCluster);
+  assert.deepEqual([...mem.clusters.get(originalCluster)], originalMembers);
+  assert.equal(mem.clusters.has(originalCluster + 100), false);
+});
+
 test('generation CAS preserves every dirty and tombstone set after an intervening mutation', async () => {
   const mem = memory();
   const first = await addIsolatedNode(mem, 'n1', [1, 0]);

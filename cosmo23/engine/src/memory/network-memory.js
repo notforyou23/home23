@@ -1,4 +1,5 @@
 const { getOpenAIClient } = require('../core/openai-client');
+const fs = require('node:fs');
 const { ExtractiveSummarizer } = require('../utils/extractive-summarizer');
 const { classifyContent } = require('../core/validation');
 
@@ -99,6 +100,52 @@ function nextSafeIntegerAfter(iterable, current) {
     }
   }
   return next;
+}
+
+function deepFreezePersistenceValue(value) {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) deepFreezePersistenceValue(child);
+  return Object.freeze(value);
+}
+
+function serializeEdgePersistenceRecord(edgeKey, edge) {
+  const clone = clonePersistenceValue(edge);
+  if (!clone || typeof clone !== 'object' || Array.isArray(clone)) {
+    throw new TypeError('persistence_edge_record_required');
+  }
+  let source = clone.source;
+  let target = clone.target;
+  if (source === undefined || target === undefined) {
+    const parts = String(edgeKey).split('->');
+    source = Number.isNaN(Number(parts[0])) ? parts[0] : Number(parts[0]);
+    target = Number.isNaN(Number(parts[1])) ? parts[1] : Number(parts[1]);
+  }
+  Object.defineProperty(clone, 'source', {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: source,
+  });
+  Object.defineProperty(clone, 'target', {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: target,
+  });
+  return clone;
+}
+
+function summarizePersistenceView(nodes, edges) {
+  const clusters = new Set(
+    nodes
+      .map((node) => node.cluster)
+      .filter((cluster) => cluster !== null && cluster !== undefined),
+  );
+  return {
+    nodeCount: nodes.length,
+    edgeCount: edges.length,
+    clusterCount: clusters.size,
+  };
 }
 
 /**
@@ -459,9 +506,19 @@ class NetworkMemory {
     let storedNode = null;
     this.withPersistenceBarrier(() => {
       if (this.nodeIdFormat === 'string' && this.nodeIdPrefix) {
-        node.id = `${this.nodeIdPrefix}_${this.nextNodeId++}`;
+        do {
+          if (!Number.isSafeInteger(this.nextNodeId) || this.nextNodeId >= Number.MAX_SAFE_INTEGER) {
+            throw new Error('node_id_space_exhausted');
+          }
+          node.id = `${this.nodeIdPrefix}_${this.nextNodeId++}`;
+        } while (this.nodes.has(node.id));
       } else {
-        node.id = this.nextNodeId++;
+        do {
+          if (!Number.isSafeInteger(this.nextNodeId) || this.nextNodeId >= Number.MAX_SAFE_INTEGER) {
+            throw new Error('node_id_space_exhausted');
+          }
+          node.id = this.nextNodeId++;
+        } while (this.nodes.has(node.id));
       }
       this.nodes.set(node.id, node);
       storedNode = this.nodes.get(node.id);
@@ -606,6 +663,107 @@ class NetworkMemory {
       this.logger?.debug?.('Bridge cap enforced', eviction);
     }
     return result.edgeKey;
+  }
+
+  _prepareNodePatch(patch) {
+    const prepared = clonePersistenceValue(patch);
+    if (!prepared || typeof prepared !== 'object' || Array.isArray(prepared)) {
+      throw new TypeError('node_patch_plain_object_required');
+    }
+    for (const forbidden of ['id', 'cluster', '__proto__', 'prototype', 'constructor']) {
+      if (Object.prototype.hasOwnProperty.call(prepared, forbidden)) {
+        throw new TypeError(`node_patch_forbidden_key:${forbidden}`);
+      }
+    }
+    for (const timestampField of ['created', 'accessed']) {
+      if (!Object.prototype.hasOwnProperty.call(prepared, timestampField)) continue;
+      const timestamp = new Date(prepared[timestampField]);
+      if (Number.isNaN(timestamp.getTime())) {
+        throw new TypeError(`node_patch_invalid_timestamp:${timestampField}`);
+      }
+      prepared[timestampField] = timestamp;
+    }
+    return prepared;
+  }
+
+  _dataPropertyValue(record, key) {
+    const descriptor = Object.getOwnPropertyDescriptor(record, key);
+    if (!descriptor) return undefined;
+    if (descriptor.get || descriptor.set) {
+      throw new TypeError('persistence_record_accessor_not_allowed');
+    }
+    return descriptor.value;
+  }
+
+  patchNode(nodeId, patch, options = {}) {
+    const stored = this.nodes.get(nodeId);
+    if (!stored || (options.expectedNode && stored !== options.expectedNode)) return null;
+    const expected = options.expected === undefined ? null : clonePersistenceValue(options.expected);
+    if (expected && (typeof expected !== 'object' || Array.isArray(expected))) {
+      throw new TypeError('node_patch_expected_plain_object_required');
+    }
+    for (const key of expected ? Reflect.ownKeys(expected) : []) {
+      if (!persistenceValuesEqual(this._dataPropertyValue(stored, key), expected[key])) return null;
+    }
+    const preparedPatch = this._prepareNodePatch(patch);
+    const isNoOp = Reflect.ownKeys(preparedPatch).every((key) => (
+      persistenceValuesEqual(this._dataPropertyValue(stored, key), preparedPatch[key])
+    ));
+    if (isNoOp) return stored;
+    const result = this.patchNodes([{ ...options, nodeId, patch }]);
+    return result.nodes[0] || null;
+  }
+
+  patchNodes(entries) {
+    const preparedEntries = [];
+    for (const entry of Array.from(entries || [])) {
+      if (!entry || entry.nodeId === undefined || entry.nodeId === null) continue;
+      const stored = this.nodes.get(entry.nodeId);
+      if (!stored || (entry.expectedNode && stored !== entry.expectedNode)) continue;
+      const expected = entry.expected === undefined
+        ? null
+        : clonePersistenceValue(entry.expected);
+      if (expected && (typeof expected !== 'object' || Array.isArray(expected))) {
+        throw new TypeError('node_patch_expected_plain_object_required');
+      }
+      let expectedMatches = true;
+      for (const key of expected ? Reflect.ownKeys(expected) : []) {
+        if (!persistenceValuesEqual(this._dataPropertyValue(stored, key), expected[key])) {
+          expectedMatches = false;
+          break;
+        }
+      }
+      if (!expectedMatches) continue;
+
+      const patch = this._prepareNodePatch(entry.patch);
+      const updates = [];
+      for (const key of Reflect.ownKeys(patch)) {
+        const value = patch[key];
+        if (!persistenceValuesEqual(this._dataPropertyValue(stored, key), value)) {
+          updates.push([key, value]);
+        }
+      }
+      if (updates.length === 0) continue;
+      preparedEntries.push({
+        nodeId: entry.nodeId,
+        stored,
+        updates,
+      });
+    }
+
+    if (preparedEntries.length === 0) return { updated: 0, nodes: [] };
+    return this.withPersistenceBarrier(() => {
+      const nodes = [];
+      for (const entry of preparedEntries) {
+        if (this.nodes.get(entry.nodeId) !== entry.stored) continue;
+        for (const [key, value] of entry.updates) {
+          entry.stored[key] = value;
+        }
+        this._markNodeDirtyUnsafe(entry.nodeId);
+        nodes.push(this.nodes.get(entry.nodeId));
+      }
+      return { updated: nodes.length, nodes };
+    });
   }
 
   withPersistenceBarrier(callback) {
@@ -829,7 +987,22 @@ class NetworkMemory {
     const hasDeletes = nodeDeletes.some((nodeId) => this.nodes.has(nodeId))
       || edgeDeletes.some((edgeKey) => this.edges.has(edgeKey))
       || clusterDeletes.some((clusterId) => this.clusters.has(clusterId));
-    if (!hasDeletes && preparedNodes.length === 0 && preparedEdges.length === 0 && preparedClusters.length === 0) {
+    let derivedNextNodeId = nextSafeIntegerAfter(this.nodes.keys(), this.nextNodeId);
+    derivedNextNodeId = nextSafeIntegerAfter(nodeRecords.keys(), derivedNextNodeId);
+    let derivedNextClusterId = nextSafeIntegerAfter(this.clusters.keys(), this.nextClusterId);
+    derivedNextClusterId = nextSafeIntegerAfter(clusterRecords.keys(), derivedNextClusterId);
+    for (const node of nodeRecords.values()) {
+      const clusterId = node.cluster;
+      if (Number.isSafeInteger(clusterId)
+          && clusterId >= derivedNextClusterId
+          && clusterId < Number.MAX_SAFE_INTEGER) {
+        derivedNextClusterId = clusterId + 1;
+      }
+    }
+    const targetNextNodeId = Math.max(this.nextNodeId, derivedNextNodeId);
+    const targetNextClusterId = Math.max(this.nextClusterId, derivedNextClusterId);
+    if (!hasDeletes && preparedNodes.length === 0 && preparedEdges.length === 0
+        && preparedClusters.length === 0) {
       return { importedNodes: 0, importedEdges: 0, importedClusters: 0, removedNodes: 0, removedEdges: 0, removedClusters: 0 };
     }
 
@@ -916,28 +1089,133 @@ class NetworkMemory {
         if (!marked) this._advancePersistenceGenerationUnsafe();
         importedClusters += 1;
       }
-      const nextNodeId = nextSafeIntegerAfter(this.nodes.keys(), this.nextNodeId);
-      if (nextNodeId > this.nextNodeId) {
-        this.nextNodeId = nextNodeId;
-        this._advancePersistenceGenerationUnsafe();
+      if (preparedNodes.length > 0 && targetNextNodeId > this.nextNodeId) {
+        this.nextNodeId = targetNextNodeId;
       }
-      const nextClusterId = nextSafeIntegerAfter(this.clusters.keys(), this.nextClusterId);
-      if (nextClusterId > this.nextClusterId) {
-        this.nextClusterId = nextClusterId;
-        this._advancePersistenceGenerationUnsafe();
+      if ((preparedNodes.length > 0 || preparedClusters.length > 0)
+          && targetNextClusterId > this.nextClusterId) {
+        this.nextClusterId = targetNextClusterId;
       }
       return { importedNodes, importedEdges, importedClusters, removedNodes, removedEdges, removedClusters };
     });
   }
 
-  capturePersistenceSnapshot() {
-    return this.withPersistenceBarrier(() => ({
-      generation: this.persistenceGeneration,
-      dirtyNodeIds: Array.from(this.dirtyNodeIds),
-      dirtyEdgeKeys: Array.from(this.dirtyEdgeKeys),
-      deletedNodeIds: Array.from(this.deletedNodeIds),
-      deletedEdgeKeys: Array.from(this.deletedEdgeKeys),
+  applyReclusterPlan(plan) {
+    if (!plan || typeof plan !== 'object') {
+      return { assignedToExisting: 0, createdClusters: 0, assignedToNewClusters: 0 };
+    }
+    const existingAssignments = Array.from(plan.existingAssignments || [])
+      .map((assignment) => ({
+        nodeId: assignment?.nodeId,
+        clusterId: assignment?.cluster,
+      }))
+      .filter(({ nodeId, clusterId }) => (
+        nodeId !== undefined && nodeId !== null && clusterId !== undefined && clusterId !== null
+      ));
+    const newClusterGroups = Array.from(plan.newClusterGroups || [])
+      .map((group) => Array.from(new Set(group || [])))
+      .filter((group) => group.length > 0);
+    const hasAcceptedNode = existingAssignments.some(({ nodeId, clusterId }) => {
+      const node = this.nodes.get(nodeId);
+      return node && node.cluster !== clusterId;
+    }) || newClusterGroups.some((group) => group.some((nodeId) => {
+      const node = this.nodes.get(nodeId);
+      return node && (node.cluster === null || node.cluster === undefined);
     }));
+    if (!hasAcceptedNode) {
+      return { assignedToExisting: 0, createdClusters: 0, assignedToNewClusters: 0 };
+    }
+
+    return this.withPersistenceBarrier(() => {
+      let assignedToExisting = 0;
+      let createdClusters = 0;
+      let assignedToNewClusters = 0;
+      for (const { nodeId, clusterId } of existingAssignments) {
+        const node = this.nodes.get(nodeId);
+        if (!node || node.cluster === clusterId) continue;
+        this._moveNodeToClusterUnsafe(nodeId, clusterId);
+        assignedToExisting += 1;
+      }
+      for (const group of newClusterGroups) {
+        const accepted = group.filter((nodeId) => {
+          const node = this.nodes.get(nodeId);
+          return node && (node.cluster === null || node.cluster === undefined);
+        });
+        if (accepted.length === 0) continue;
+        const clusterId = this._allocateClusterIdUnsafe();
+        this.clusters.set(clusterId, new Set());
+        this._advancePersistenceGenerationUnsafe();
+        createdClusters += 1;
+        for (const nodeId of accepted) {
+          this._moveNodeToClusterUnsafe(nodeId, clusterId);
+          assignedToNewClusters += 1;
+        }
+      }
+      return { assignedToExisting, createdClusters, assignedToNewClusters };
+    });
+  }
+
+  _moveNodeToClusterUnsafe(nodeId, clusterId) {
+    this._requirePersistenceBarrierUnsafe();
+    const node = this.nodes.get(nodeId);
+    if (!node || node.cluster === clusterId) return false;
+    const previousCluster = node.cluster;
+    if (previousCluster !== null && previousCluster !== undefined) {
+      const members = this.clusters.get(previousCluster);
+      members?.delete(nodeId);
+      if (members?.size === 0) this.clusters.delete(previousCluster);
+    }
+    if (!this.clusters.has(clusterId)) this.clusters.set(clusterId, new Set());
+    this.clusters.get(clusterId).add(nodeId);
+    node.cluster = clusterId;
+    this._markNodeDirtyUnsafe(nodeId);
+    return true;
+  }
+
+  _allocateClusterIdUnsafe() {
+    this._requirePersistenceBarrierUnsafe();
+    let clusterId = this.nextClusterId;
+    if (!Number.isSafeInteger(clusterId) || clusterId < 1 || clusterId >= Number.MAX_SAFE_INTEGER) {
+      throw new Error('cluster_id_space_exhausted');
+    }
+    while (this.clusters.has(clusterId)) {
+      clusterId += 1;
+      if (!Number.isSafeInteger(clusterId) || clusterId >= Number.MAX_SAFE_INTEGER) {
+        throw new Error('cluster_id_space_exhausted');
+      }
+    }
+    this.nextClusterId = clusterId + 1;
+    return clusterId;
+  }
+
+  capturePersistenceSnapshot() {
+    return this.withPersistenceBarrier(() => {
+      const nodes = Array.from(this.nodes.values())
+        .map((node) => clonePersistenceValue(node));
+      const edges = Array.from(this.edges.entries())
+        .map(([edgeKey, edge]) => serializeEdgePersistenceRecord(edgeKey, edge));
+      const changes = {
+        nodes: Array.from(this.dirtyNodeIds)
+          .map((nodeId) => this.nodes.get(nodeId))
+          .filter(Boolean)
+          .map((node) => clonePersistenceValue(node)),
+        edges: Array.from(this.dirtyEdgeKeys)
+          .map((edgeKey) => {
+            const edge = this.edges.get(edgeKey);
+            return edge ? serializeEdgePersistenceRecord(edgeKey, edge) : null;
+          })
+          .filter(Boolean),
+        removedNodeIds: Array.from(this.deletedNodeIds),
+        removedEdgeKeys: Array.from(this.deletedEdgeKeys),
+        revision: this.persistenceRevision,
+      };
+      return deepFreezePersistenceValue({
+        generation: this.persistenceGeneration,
+        changes,
+        fullView: { nodes, edges },
+        summary: summarizePersistenceView(nodes, edges),
+      });
+    });
   }
 
   markPersistenceCleanIfGeneration(expectedGeneration) {
@@ -958,6 +1236,24 @@ class NetworkMemory {
   removeNode(nodeId) {
     if (!this.nodes.has(nodeId)) return false;
     return Boolean(this.withPersistenceBarrier(() => this._removeNodeUnsafe(nodeId)));
+  }
+
+  removeNodes(nodeIds) {
+    const ids = Array.from(new Set(nodeIds || []));
+    if (!ids.some((nodeId) => this.nodes.has(nodeId))) {
+      return { removedNodes: 0, removedEdges: 0 };
+    }
+    return this.withPersistenceBarrier(() => {
+      let removedNodes = 0;
+      let removedEdges = 0;
+      for (const nodeId of ids) {
+        const result = this._removeNodeUnsafe(nodeId);
+        if (!result) continue;
+        removedNodes += 1;
+        removedEdges += result.removedEdges;
+      }
+      return { removedNodes, removedEdges };
+    });
   }
 
   /**
@@ -1468,7 +1764,7 @@ class NetworkMemory {
     const assignment = this.withPersistenceBarrier(() => {
       if (!this.nodes.has(nodeId)) return null;
       const result = this._assignToClusterUnsafe(nodeId);
-      if (result?.changed) this._markNodeDirtyUnsafe(nodeId);
+      if (result?.changed || result?.indexChanged) this._markNodeDirtyUnsafe(nodeId);
       return result;
     });
     if (assignment?.createdMissingCluster) {
@@ -1510,27 +1806,35 @@ class NetworkMemory {
     const previousCluster = node.cluster;
     let clusterId;
     let createdMissingCluster = false;
+    let indexChanged = false;
     if (clusterScores.size > 0) {
       clusterId = Array.from(clusterScores.entries())
         .sort((a, b) => b[1] - a[1])[0][0];
       if (!this.clusters.has(clusterId)) {
         this.clusters.set(clusterId, new Set());
         createdMissingCluster = true;
+        indexChanged = true;
       }
     } else {
-      clusterId = this.nextClusterId;
-      this.nextClusterId += 1;
+      clusterId = this._allocateClusterIdUnsafe();
       this.clusters.set(clusterId, new Set());
+      indexChanged = true;
     }
     if (previousCluster !== null && previousCluster !== undefined && previousCluster !== clusterId) {
       const previousMembers = this.clusters.get(previousCluster);
       previousMembers?.delete(nodeId);
       if (previousMembers?.size === 0) this.clusters.delete(previousCluster);
     }
-    node.cluster = clusterId;
-    this.clusters.get(clusterId).add(nodeId);
+    const changed = previousCluster !== clusterId;
+    if (changed) node.cluster = clusterId;
+    const members = this.clusters.get(clusterId);
+    if (!members.has(nodeId)) {
+      members.add(nodeId);
+      indexChanged = true;
+    }
     return {
-      changed: previousCluster !== clusterId,
+      changed,
+      indexChanged,
       clusterId,
       createdMissingCluster,
     };
@@ -1644,9 +1948,16 @@ class NetworkMemory {
     
     for (const [edgeKey, edge] of edgesToProcess) {
       // Only rewire local/associative edges, skip existing bridges
-      if (edge.type === 'bridge') continue;
+      if (!edge || edge.type === 'bridge') continue;
       
-      const [nodeA, nodeB] = edgeKey.split('->').map(Number);
+      let nodeA = edge.source ?? edge.from;
+      let nodeB = edge.target ?? edge.to;
+      if (nodeA === undefined || nodeB === undefined) {
+        const parts = String(edgeKey).split('->');
+        nodeA = Number.isNaN(Number(parts[0])) ? parts[0] : Number(parts[0]);
+        nodeB = Number.isNaN(Number(parts[1])) ? parts[1] : Number(parts[1]);
+      }
+      if (!this.nodes.has(nodeA) || !this.nodes.has(nodeB)) continue;
       
       // Skip if nodes are in different clusters (already a cross-cluster link)
       const clusterA = this.nodes.get(nodeA)?.cluster;
@@ -1655,9 +1966,6 @@ class NetworkMemory {
       
       // Decide whether to rewire this edge
       if (Math.random() < p) {
-        // Remove the current edge
-        this.removeEdge(nodeA, nodeB);
-        
         // Find a new target node C for A to connect to
         // Requirements: C != A, no existing edge A-C, preferably different cluster
         let nodeC = null;
@@ -1690,6 +1998,8 @@ class NetworkMemory {
         
         // If we found a valid target, create the new bridge
         if (nodeC !== null) {
+          // Do not remove the original until a valid replacement is known.
+          this.removeEdge(nodeA, nodeB);
           const newWeight = Math.min(0.3, edge.weight); // Moderate weight for new connections
           this.addEdge(nodeA, nodeC, newWeight, 'bridge');
           rewired++;
@@ -1700,9 +2010,6 @@ class NetworkMemory {
             oldCluster: clusterB,
             newCluster: this.nodes.get(nodeC)?.cluster
           });
-        } else {
-          // Couldn't find valid target, restore original edge
-          this.addEdge(nodeA, nodeB, edge.weight, edge.type);
         }
       }
     }

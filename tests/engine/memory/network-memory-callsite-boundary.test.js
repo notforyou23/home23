@@ -51,6 +51,29 @@ test('recluster, summarizer, and ingestion callers expose no raw NetworkMemory w
   const ingestion = read('engine/src/ingestion/ingestion-manifest.js');
   assert.match(ingestion, /this\.memory\.patchNode\(/);
   assert.doesNotMatch(ingestion, /\bnode\.metadata\s*=/);
+
+  const cosmoSummarizer = read('cosmo23/engine/src/memory/summarizer.js');
+  assert.match(cosmoSummarizer, /memoryNetwork\.patchNodes\(/);
+  assert.match(cosmoSummarizer, /memoryNetwork\.removeNodes\(/);
+  assert.doesNotMatch(cosmoSummarizer, /memoryNetwork\.(?:nodes|edges|clusters)\.(?:set|delete|clear)\(/);
+  assert.doesNotMatch(cosmoSummarizer, /\bnode\.consolidatedAt\s*=/);
+
+  const cosmoIngestion = read('cosmo23/engine/src/ingestion/ingestion-manifest.js');
+  assert.match(cosmoIngestion, /this\.memory\.patchNode\(/);
+  assert.doesNotMatch(cosmoIngestion, /\bnode\.metadata\s*=/);
+});
+
+test('root and COSMO topology writers preserve typed edge endpoints', () => {
+  for (const relativePath of [
+    'engine/src/memory/network-memory.js',
+    'cosmo23/engine/src/memory/network-memory.js',
+  ]) {
+    const source = read(relativePath);
+    const rewire = sliceBetween(source, 'async rewireSmallWorld(p)', 'Apply decay to unused nodes');
+    assert.match(rewire, /edge(?:\.|\?\.)source/);
+    assert.match(rewire, /edge(?:\.|\?\.)target/);
+    assert.doesNotMatch(rewire, /split\(['"]->['"]\)\.map\(Number\)/);
+  }
 });
 
 test('root and COSMO cluster merge paths use one suppressed graph import without raw map bypasses', () => {

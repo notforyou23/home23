@@ -23,7 +23,7 @@ function node(id, overrides = {}) {
 describe('MemorySummarizer mutation API boundary', () => {
   afterEach(() => sinon.restore());
 
-  it('defers then commits consolidation markers through one exact-identity patchNodes call', async () => {
+  it('defers then commits summary and source lineage through one exact-identity patchNodes call', async () => {
     const summarizer = new MemorySummarizer({}, logger(), {});
     const nodes = Array.from({ length: 10 }, (_, index) => node(`node-${index}`));
     const memoryNetwork = {
@@ -55,16 +55,30 @@ describe('MemorySummarizer mutation API boundary', () => {
     expect(candidate.consolidationTimestamp).to.be.a('string');
     expect(Number.isFinite(Date.parse(candidate.consolidationTimestamp))).to.equal(true);
 
-    const sourceCommit = summarizer.commitConsolidationSources(memoryNetwork, candidate);
+    const summaryNode = node('summary-1', { tag: 'consolidated' });
+    memoryNetwork.nodes.set(summaryNode.id, summaryNode);
+    const sourceCommit = summarizer.commitConsolidationSources(
+      memoryNetwork,
+      candidate,
+      summaryNode,
+    );
     expect(sourceCommit.committed).to.equal(true);
     expect(sourceCommit.consolidatedAt).to.equal(candidate.consolidationTimestamp);
+    expect(sourceCommit.updatedSummaryNodes).to.equal(1);
     expect(memoryNetwork.patchNodes.calledOnce).to.equal(true);
     const entries = memoryNetwork.patchNodes.firstCall.args[0];
-    expect(entries).to.have.length(3);
+    expect(entries).to.have.length(4);
+    expect(entries[0]).to.deep.include({
+      nodeId: summaryNode.id,
+      expectedNode: summaryNode,
+    });
+    expect(entries[0].patch.consolidatedAt).to.equal(candidate.consolidationTimestamp);
     for (let index = 0; index < entries.length; index += 1) {
-      expect(entries[index].nodeId).to.equal(cluster[index].id);
-      expect(entries[index].expectedNode).to.equal(cluster[index]);
       expect(entries[index].patch.consolidatedAt).to.equal(candidate.consolidationTimestamp);
+    }
+    for (let index = 0; index < cluster.length; index += 1) {
+      expect(entries[index + 1].nodeId).to.equal(cluster[index].id);
+      expect(entries[index + 1].expectedNode).to.equal(cluster[index]);
     }
   });
 
@@ -106,7 +120,13 @@ describe('MemorySummarizer mutation API boundary', () => {
     const replacement = node(cluster[0].id, { concept: 'replacement source' });
     memoryNetwork.nodes.set(replacement.id, replacement);
 
-    const committed = summarizer.commitConsolidationSources(memoryNetwork, candidate);
+    const summaryNode = node('summary-race', { tag: 'consolidated' });
+    memoryNetwork.nodes.set(summaryNode.id, summaryNode);
+    const committed = summarizer.commitConsolidationSources(
+      memoryNetwork,
+      candidate,
+      summaryNode,
+    );
 
     expect(committed).to.include({
       committed: false,
@@ -124,9 +144,16 @@ describe('MemorySummarizer mutation API boundary', () => {
   it('reports an incomplete marker commit without claiming success', () => {
     const summarizer = new MemorySummarizer({}, logger(), {});
     const sources = [node('source-a'), node('source-b'), node('source-c')];
+    const summaryNode = node('summary-incomplete', { tag: 'consolidated' });
     const memoryNetwork = {
-      nodes: new Map(sources.map((entry) => [entry.id, entry])),
-      patchNodes: sinon.stub().returns({ updated: 2, nodes: sources.slice(0, 2) }),
+      nodes: new Map([
+        ...sources.map((entry) => [entry.id, entry]),
+        [summaryNode.id, summaryNode],
+      ]),
+      patchNodes: sinon.stub().returns({
+        updated: 3,
+        nodes: [summaryNode, ...sources.slice(0, 2)],
+      }),
     };
     const candidate = {
       sourceNodes: sources.map((entry) => entry.id),
@@ -138,12 +165,17 @@ describe('MemorySummarizer mutation API boundary', () => {
       value: '2026-07-11T12:00:00.000Z',
     });
 
-    const committed = summarizer.commitConsolidationSources(memoryNetwork, candidate);
+    const committed = summarizer.commitConsolidationSources(
+      memoryNetwork,
+      candidate,
+      summaryNode,
+    );
 
     expect(committed).to.include({
       committed: false,
       mode: 'partial',
-      reason: 'source_marker_commit_incomplete',
+      reason: 'consolidation_lineage_commit_incomplete',
+      updatedSummaryNodes: 1,
       updatedSourceNodes: 2,
       skippedSourceNodes: 1,
     });

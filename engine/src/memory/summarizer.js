@@ -244,7 +244,7 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
     };
   }
 
-  commitConsolidationSources(memoryNetwork, consolidation) {
+  commitConsolidationSources(memoryNetwork, consolidation, summaryNode) {
     const sourceNodes = Array.from(new Set(
       Array.isArray(consolidation?.sourceNodes)
         ? consolidation.sourceNodes.filter((id) => id !== undefined && id !== null)
@@ -260,6 +260,38 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
         reason: sourceNodes.length
           ? 'source_identity_tokens_missing'
           : 'source_nodes_missing',
+        updatedSourceNodes: 0,
+        skippedSourceNodes: sourceNodes.length,
+      };
+    }
+
+    const summaryNodeId = summaryNode?.id;
+    if (summaryNodeId === undefined || summaryNodeId === null) {
+      return {
+        committed: false,
+        mode: 'blocked',
+        reason: 'summary_node_missing',
+        updatedSummaryNodes: 0,
+        updatedSourceNodes: 0,
+        skippedSourceNodes: sourceNodes.length,
+      };
+    }
+    if (sourceNodes.some((sourceNodeId) => Object.is(sourceNodeId, summaryNodeId))) {
+      return {
+        committed: false,
+        mode: 'blocked',
+        reason: 'summary_source_identity_collision',
+        updatedSummaryNodes: 0,
+        updatedSourceNodes: 0,
+        skippedSourceNodes: sourceNodes.length,
+      };
+    }
+    if (memoryNetwork?.nodes?.get?.(summaryNodeId) !== summaryNode) {
+      return {
+        committed: false,
+        mode: 'partial',
+        reason: 'summary_identity_changed',
+        updatedSummaryNodes: 0,
         updatedSourceNodes: 0,
         skippedSourceNodes: sourceNodes.length,
       };
@@ -287,17 +319,30 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
       && !Number.isNaN(new Date(consolidation.consolidationTimestamp).getTime())
       ? consolidation.consolidationTimestamp
       : new Date().toISOString();
-    const patched = memoryNetwork.patchNodes(sourceNodes.map((sourceNodeId) => ({
-      nodeId: sourceNodeId,
-      expectedNode: sourceIdentityTokens.get(sourceNodeId),
-      patch: { consolidatedAt: consolidationTimestamp },
-    })));
-    const updatedSourceNodes = Number(patched?.updated || 0);
-    if (updatedSourceNodes !== sourceNodes.length) {
+    const patched = memoryNetwork.patchNodes([
+      {
+        nodeId: summaryNodeId,
+        expectedNode: summaryNode,
+        patch: { consolidatedAt: consolidationTimestamp },
+      },
+      ...sourceNodes.map((sourceNodeId) => ({
+        nodeId: sourceNodeId,
+        expectedNode: sourceIdentityTokens.get(sourceNodeId),
+        patch: { consolidatedAt: consolidationTimestamp },
+      })),
+    ]);
+    const updatedLineageNodes = Number(patched?.updated || 0);
+    const updatedSummaryNodes = Array.isArray(patched?.nodes)
+      && patched.nodes.some((node) => node === summaryNode)
+      ? 1
+      : 0;
+    const updatedSourceNodes = Math.max(0, updatedLineageNodes - updatedSummaryNodes);
+    if (updatedLineageNodes !== sourceNodes.length + 1) {
       return {
         committed: false,
         mode: 'partial',
-        reason: 'source_marker_commit_incomplete',
+        reason: 'consolidation_lineage_commit_incomplete',
+        updatedSummaryNodes,
         updatedSourceNodes,
         skippedSourceNodes: sourceNodes.length - updatedSourceNodes,
       };
@@ -305,6 +350,7 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
     return {
       committed: true,
       mode: 'apply',
+      updatedSummaryNodes: 1,
       updatedSourceNodes,
       skippedSourceNodes: 0,
       consolidatedAt: consolidationTimestamp,

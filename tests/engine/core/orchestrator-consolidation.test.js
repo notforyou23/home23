@@ -7,6 +7,7 @@ const { Orchestrator } = require('../../../engine/src/core/orchestrator.js');
 const { Orchestrator: CosmoOrchestrator } = require('../../../cosmo23/engine/src/core/orchestrator.js');
 const { MemorySummarizer } = require('../../../engine/src/memory/summarizer.js');
 const { MemorySummarizer: CosmoMemorySummarizer } = require('../../../cosmo23/engine/src/memory/summarizer.js');
+const { planConsolidationBacklogCompost } = require('../../../engine/src/memory/consolidation-backlog.js');
 
 function makeLogger() {
   const entries = [];
@@ -59,7 +60,7 @@ function publicationMemory(sources, events) {
       return summary;
     },
     patchNodes(entries) {
-      events.push('sources:commit');
+      events.push('lineage:commit');
       const updated = [];
       for (const entry of entries) {
         const stored = nodes.get(entry.nodeId);
@@ -114,14 +115,22 @@ for (const mode of ['off', 'dry-run', 'apply']) {
 
     assert.equal(publication.published, true);
     assert.equal(publication.mode, mode);
-    assert.deepEqual(events.slice(0, 2), ['summary:add', 'sources:commit']);
+    assert.deepEqual(events.slice(0, 2), ['summary:add', 'lineage:commit']);
     if (mode === 'apply') {
       assert.ok(sources.every((node) => !memory.nodes.has(node.id)));
     } else {
+      const summary = memory.nodes.get('stored-summary');
+      assert.equal(typeof summary.consolidatedAt, 'string');
+      assert.equal(Number.isFinite(Date.parse(summary.consolidatedAt)), true);
       assert.ok(sources.every((node) => (
-        typeof memory.nodes.get(node.id).consolidatedAt === 'string'
-        && Number.isFinite(Date.parse(memory.nodes.get(node.id).consolidatedAt))
+        memory.nodes.get(node.id).consolidatedAt === summary.consolidatedAt
       )));
+      const backlog = planConsolidationBacklogCompost(memory);
+      assert.equal(backlog.removableGroups, 1);
+      assert.equal(backlog.removableSourceNodes, sources.length);
+      assert.equal(backlog.orphanSourceGroups, 0);
+      assert.deepEqual(backlog.groups[0].summaryIds, ['stored-summary']);
+      assert.deepEqual(backlog.groups[0].sourceIds, sources.map((node) => node.id));
     }
   });
 }
