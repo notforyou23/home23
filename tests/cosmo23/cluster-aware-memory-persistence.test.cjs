@@ -343,7 +343,7 @@ for (const implementation of IMPLEMENTATIONS) {
     assert.equal(base.markPersistenceCleanIfGeneration(staleGeneration), false);
   });
 
-  test(`${implementation.name} graph import advances allocation counters monotonically without record mutations`, () => {
+  test(`${implementation.name} graph import derives allocation floors only from accepted records`, () => {
     const { base } = createVariantMemory(implementation, `${implementation.name}-counter-import`);
     base.nextNodeId = 1;
     base.nextClusterId = 1;
@@ -368,21 +368,20 @@ for (const implementation of IMPLEMENTATIONS) {
       removedEdges: 0,
       removedClusters: 0,
     });
-    assert.equal(base.nextNodeId, 500);
-    assert.equal(base.nextClusterId, 300);
-    assert.equal(base.persistenceGeneration, generation + 2);
-    assert.equal(base.markPersistenceCleanIfGeneration(generation), false);
+    assert.equal(base.nextNodeId, 51);
+    assert.equal(base.nextClusterId, 21);
+    assert.equal(base.persistenceGeneration, generation);
+    assert.equal(base.markPersistenceCleanIfGeneration(generation), true);
 
-    base.markPersistenceCleanIfGeneration(base.persistenceGeneration);
     const stableGeneration = base.persistenceGeneration;
     base.importGraphChanges({
       nodes: [{ id: 50, concept: 'high present identity', embedding: [1, 0, 0], cluster: 20 }],
       clusters: [{ id: 20, nodes: [50] }],
-      nextNodeId: 3,
-      nextClusterId: 3,
+      nextNodeId: 500,
+      nextClusterId: 300,
     });
-    assert.equal(base.nextNodeId, 500);
-    assert.equal(base.nextClusterId, 300);
+    assert.equal(base.nextNodeId, 51);
+    assert.equal(base.nextClusterId, 21);
     assert.equal(base.persistenceGeneration, stableGeneration);
   });
 

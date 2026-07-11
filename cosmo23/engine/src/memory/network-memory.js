@@ -989,8 +989,10 @@ class NetworkMemory {
       || clusterDeletes.some((clusterId) => this.clusters.has(clusterId));
     let derivedNextNodeId = nextSafeIntegerAfter(this.nodes.keys(), this.nextNodeId);
     derivedNextNodeId = nextSafeIntegerAfter(nodeRecords.keys(), derivedNextNodeId);
+    derivedNextNodeId = nextSafeIntegerAfter(nodeDeletes, derivedNextNodeId);
     let derivedNextClusterId = nextSafeIntegerAfter(this.clusters.keys(), this.nextClusterId);
     derivedNextClusterId = nextSafeIntegerAfter(clusterRecords.keys(), derivedNextClusterId);
+    derivedNextClusterId = nextSafeIntegerAfter(clusterDeletes, derivedNextClusterId);
     for (const node of nodeRecords.values()) {
       const clusterId = node.cluster;
       if (Number.isSafeInteger(clusterId)
@@ -1001,8 +1003,10 @@ class NetworkMemory {
     }
     const targetNextNodeId = Math.max(this.nextNodeId, derivedNextNodeId);
     const targetNextClusterId = Math.max(this.nextClusterId, derivedNextClusterId);
+    const hasCounterAdvance = targetNextNodeId > this.nextNodeId
+      || targetNextClusterId > this.nextClusterId;
     if (!hasDeletes && preparedNodes.length === 0 && preparedEdges.length === 0
-        && preparedClusters.length === 0) {
+        && preparedClusters.length === 0 && !hasCounterAdvance) {
       return { importedNodes: 0, importedEdges: 0, importedClusters: 0, removedNodes: 0, removedEdges: 0, removedClusters: 0 };
     }
 
@@ -1089,12 +1093,13 @@ class NetworkMemory {
         if (!marked) this._advancePersistenceGenerationUnsafe();
         importedClusters += 1;
       }
-      if (preparedNodes.length > 0 && targetNextNodeId > this.nextNodeId) {
+      if (targetNextNodeId > this.nextNodeId) {
         this.nextNodeId = targetNextNodeId;
+        this._advancePersistenceGenerationUnsafe();
       }
-      if ((preparedNodes.length > 0 || preparedClusters.length > 0)
-          && targetNextClusterId > this.nextClusterId) {
+      if (targetNextClusterId > this.nextClusterId) {
         this.nextClusterId = targetNextClusterId;
+        this._advancePersistenceGenerationUnsafe();
       }
       return { importedNodes, importedEdges, importedClusters, removedNodes, removedEdges, removedClusters };
     });
