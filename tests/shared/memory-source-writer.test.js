@@ -166,6 +166,43 @@ test('derived-state compare-and-swap rejects a newer source revision', async () 
   await pinned.close();
 });
 
+test('derived-state CAS rolls back when cancellation arrives during lock release', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const source = await openMemorySource(dir);
+  const descriptor = source.descriptor;
+  await source.close();
+  const derivedPath = path.join(dir, 'derived-state.txt');
+  const prior = 'prior-state\n';
+  await fsp.writeFile(derivedPath, prior);
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('cancelled-after-commit'), {
+    name: 'AbortError',
+    code: 'cancelled',
+  });
+  let rollbackCalls = 0;
+
+  await assert.rejects(() => compareAndSwapSourceRevision(dir, {
+    lockRoot,
+    expectedGeneration: descriptor.generation,
+    expectedRevision: descriptor.cutoffRevision,
+    expectedDigest: sourceDescriptorDigest(descriptor),
+    signal: controller.signal,
+    async commit() {
+      await fsp.writeFile(derivedPath, 'prospective-state\n');
+      setImmediate(() => controller.abort(reason));
+      return { published: true };
+    },
+    async rollback() {
+      rollbackCalls += 1;
+      assert.equal(await fsp.readFile(derivedPath, 'utf8'), 'prospective-state\n');
+      await fsp.writeFile(derivedPath, prior);
+    },
+  }), (error) => error === reason);
+
+  assert.equal(rollbackCalls, 1);
+  assert.equal(await fsp.readFile(derivedPath, 'utf8'), prior);
+});
+
 test('retirement preserves files named by an active reader pin', async () => {
   const { dir, lockRoot } = await createCommittedFixture();
   const home23Root = await tempDir('home23-memory-source-writer-home-');

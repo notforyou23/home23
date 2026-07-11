@@ -16,6 +16,9 @@ const {
   extractJsonObject,
   readCommittedSynthesisState,
 } = require('../../../engine/src/synthesis/synthesis-agent.js');
+const {
+  writeFileDurable,
+} = require('../../../engine/src/utils/durable-write.js');
 
 const OPERATION_ID = `brop_${'A'.repeat(32)}`;
 const GENERATED_AT_MS = Date.parse('2026-07-10T12:00:00.000Z');
@@ -115,6 +118,7 @@ async function fixture(t, options = {}) {
     limits: options.limits || {},
     hooks: options.hooks || {},
     clock: { now: () => GENERATED_AT_MS },
+    durableWriter: options.durableWriter,
   });
   return {
     root,
@@ -238,6 +242,41 @@ test('exact cancellation identity is preserved at source, provider, JSON, and CA
       assert.equal(await fsp.access(path.join(fx.brainDir, 'brain-state.json')).then(() => true).catch(() => false), false);
     }
   }
+});
+
+test('cancellation after the durable state rename restores the prior marker byte-identically', async (t) => {
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('cancelled-during-state-publication'), {
+    name: 'AbortError',
+    code: 'cancelled',
+  });
+  const fx = await fixture(t, {
+    durableWriter: async (filePath, content, options) => {
+      const lifecycle = options.lifecycle;
+      return writeFileDurable(filePath, content, {
+        ...options,
+        lifecycle: {
+          ...lifecycle,
+          async afterRename(context) {
+            controller.abort(reason);
+            await lifecycle.afterRename(context);
+          },
+        },
+      });
+    },
+  });
+  const prior = '{"generationMarker":"prior-byte-exact"}\n';
+  const statePath = path.join(fx.brainDir, 'brain-state.json');
+  await fsp.writeFile(statePath, prior);
+
+  await assert.rejects(() => fx.agent.runOperation({
+    operationId: OPERATION_ID,
+    sourcePin: fx.sourcePin,
+    signal: controller.signal,
+  }), (error) => error === reason);
+
+  assert.equal(await fsp.readFile(statePath, 'utf8'), prior);
+  assert.equal((await fsp.readdir(fx.brainDir)).some((name) => name.includes('.tmp-')), false);
 });
 
 test('oversized workspace input fails before allocation/provider work and symlinks fail closed', async (t) => {

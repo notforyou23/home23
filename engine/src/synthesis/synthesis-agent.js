@@ -21,6 +21,7 @@ const {
   SYNTHESIS_OPERATION_LIMITS,
 } = require('../../../cosmo23/lib/brain-operation-limits.js');
 const {
+  fsyncDirectory,
   writeFileDurable,
 } = require('../utils/durable-write.js');
 
@@ -353,6 +354,62 @@ async function readCommittedSynthesisState({
   }
 }
 
+async function readSynthesisStateBytes({ brainDir, statePath, maxBytes, signal = null }) {
+  const opened = await openConfinedRegularFile(brainDir, statePath, {
+    optional: true,
+    maxBytes,
+    signal,
+  });
+  if (opened === null) return null;
+  try {
+    const bytes = await opened.handle.readFile(signal ? { signal } : undefined);
+    throwIfAborted(signal);
+    await assertStableOpenedFile(opened);
+    throwIfAborted(signal);
+    return Buffer.from(bytes);
+  } finally {
+    await opened.handle.close().catch(() => {});
+  }
+}
+
+async function restoreSynthesisState({
+  brainDir,
+  statePath,
+  previousBytes,
+  publishedBytes,
+  maxBytes,
+}) {
+  const current = await readSynthesisStateBytes({
+    brainDir,
+    statePath,
+    maxBytes,
+  });
+  if (current === null || !current.equals(publishedBytes)) {
+    throw typed('synthesis_rollback_failed', 'Published synthesis state changed before rollback');
+  }
+  if (previousBytes === null) {
+    const stat = await fsp.lstat(statePath);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw typed('synthesis_rollback_failed', 'Published synthesis state is not removable');
+    }
+    await fsp.unlink(statePath);
+    await fsyncDirectory(path.dirname(statePath), { strict: true });
+    return;
+  }
+  await writeFileDurable(statePath, previousBytes, {
+    mode: 0o600,
+    strictDirectorySync: true,
+  });
+  const restored = await readSynthesisStateBytes({
+    brainDir,
+    statePath,
+    maxBytes,
+  });
+  if (restored === null || !restored.equals(previousBytes)) {
+    throw typed('synthesis_rollback_failed', 'Prior synthesis state was not restored');
+  }
+}
+
 class SynthesisAgent {
   constructor({
     brainDir,
@@ -647,16 +704,62 @@ class SynthesisAgent {
 
     await this._checkpoint('beforeCompareAndSwap', { signal, sourcePin, brainState });
     throwIfAborted(signal);
+    const publishedBytes = Buffer.from(serialized, 'utf8');
+    let previousBytes = null;
+    let published = false;
+    const rollback = async () => {
+      if (!published) return;
+      try {
+        await restoreSynthesisState({
+          brainDir: this.brainDir,
+          statePath: this.statePath,
+          previousBytes,
+          publishedBytes,
+          maxBytes: this.limits.maxBrainStateBytes,
+        });
+        published = false;
+      } catch (cause) {
+        if (cause?.code === 'synthesis_rollback_failed') throw cause;
+        throw typed('synthesis_rollback_failed', 'Synthesis state rollback failed', false, { cause });
+      }
+    };
     const committed = await sourcePin.compareAndSwap(async () => {
       throwIfAborted(signal);
       await this._checkpoint('insideCompareAndSwap', { signal, sourcePin, brainState });
       throwIfAborted(signal);
-      return this.durableWriter(this.statePath, serialized, { encoding: 'utf8', mode: 0o600 });
-    });
+      previousBytes = await readSynthesisStateBytes({
+        brainDir: this.brainDir,
+        statePath: this.statePath,
+        maxBytes: this.limits.maxBrainStateBytes,
+        signal,
+      });
+      throwIfAborted(signal);
+      try {
+        const receipt = await this.durableWriter(this.statePath, serialized, {
+          encoding: 'utf8',
+          mode: 0o600,
+          strictDirectorySync: true,
+          lifecycle: {
+            beforeRename: () => throwIfAborted(signal),
+            afterRename: () => {
+              published = true;
+              throwIfAborted(signal);
+            },
+            afterDirectorySync: () => throwIfAborted(signal),
+          },
+        });
+        published = true;
+        throwIfAborted(signal);
+        return receipt;
+      } catch (error) {
+        if (published) await rollback();
+        if (signal?.aborted) throw signal.reason || error;
+        throw error;
+      }
+    }, { rollback });
     if (!committed || committed.committed !== true) {
       throw typed('source_changed', 'Pinned source changed before synthesis commit', true);
     }
-    throwIfAborted(signal);
 
     return Object.freeze({
       generationMarker,

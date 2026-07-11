@@ -143,7 +143,6 @@ function createSynthesisWorker({ agent, selection } = {}) {
         signal: context.signal || null,
         onEvent: context.reportEvent || null,
       }), context, fixedSelection);
-      if (context.signal?.aborted) throw context.signal.reason;
       return {
         state: 'complete',
         result,

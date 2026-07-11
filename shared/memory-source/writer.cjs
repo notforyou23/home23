@@ -224,11 +224,15 @@ async function compareAndSwapSourceRevision(brainDir, update = {}) {
       || typeof update.expectedDigest !== 'string'
       || !/^sha256:[a-f0-9]{64}$/.test(update.expectedDigest)
       || typeof update.commit !== 'function'
-      || (update.authorize !== undefined && typeof update.authorize !== 'function')) {
+      || (update.authorize !== undefined && typeof update.authorize !== 'function')
+      || (update.rollback !== undefined && typeof update.rollback !== 'function')) {
     throw memorySourceError('invalid_request', 'exact source CAS contract required');
   }
   throwIfAborted(update.signal);
-  return withMemorySourceLock(brainDir, { lockRoot: update.lockRoot }, async () => {
+  const result = await withMemorySourceLock(brainDir, {
+    lockRoot: update.lockRoot,
+    signal: update.signal,
+  }, async () => {
     throwIfAborted(update.signal);
     const manifest = await readManifest(brainDir);
     const descriptor = manifest ? {
@@ -248,9 +252,37 @@ async function compareAndSwapSourceRevision(brainDir, update = {}) {
     }
     if (update.authorize) await update.authorize();
     throwIfAborted(update.signal);
-    const value = await update.commit();
+    let value;
+    let commitReturned = false;
+    try {
+      value = await update.commit();
+      commitReturned = true;
+      throwIfAborted(update.signal);
+    } catch (error) {
+      if (commitReturned && update.rollback) {
+        await update.rollback(value).catch((cause) => {
+          throw memorySourceError('source_rollback_failed', 'source CAS rollback failed', {
+            cause,
+            retryable: false,
+          });
+        });
+      }
+      throw error;
+    }
     return { committed: true, manifest, value };
   });
+  if (result.committed === true && update.signal?.aborted && update.rollback) {
+    await withMemorySourceLock(brainDir, { lockRoot: update.lockRoot }, async () => {
+      await update.rollback(result.value);
+    }).catch((cause) => {
+      throw memorySourceError('source_rollback_failed', 'source CAS rollback failed', {
+        cause,
+        retryable: false,
+      });
+    });
+    throw update.signal.reason || memorySourceError('cancelled', 'source CAS cancelled');
+  }
+  return result;
 }
 
 async function retireUnpinnedSources(brainDir, options = {}) {
