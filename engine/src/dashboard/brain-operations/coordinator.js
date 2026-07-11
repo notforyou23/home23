@@ -781,6 +781,8 @@ class BrainOperationCoordinator {
             message: 'operation execution deadline elapsed',
             retryable: true,
             cancelWorker: true,
+            cancelAfterTerminal: true,
+            deferIfSynthesisClaimed: true,
           });
         });
       } catch (error) {
@@ -1748,8 +1750,8 @@ class BrainOperationCoordinator {
     if (relation === 'match') {
       return this._completeClaimedSynthesisLocked(record, claim);
     }
-    if (allowPending) return this.store.get(record.operationId);
     if (relation === 'missing' || relation === 'prior') {
+      if (allowPending) return this.store.get(record.operationId);
       if (preserveMissing) return null;
       return this._failLocked(record.operationId, {
         state: 'interrupted',
@@ -1785,7 +1787,10 @@ class BrainOperationCoordinator {
     let record = await this.store.get(operationId);
     if (TERMINAL_STATES.has(record.state)) return record;
     if (!options.skipClaimReconcile) {
-      const claimed = await this._reconcileClaimedSynthesisLocked(record, { preserveMissing: true });
+      const claimed = await this._reconcileClaimedSynthesisLocked(record, {
+        preserveMissing: true,
+        allowPending: options.deferIfSynthesisClaimed === true,
+      });
       if (claimed !== null) return claimed;
     }
     if (options.cancelWorker && !options.cancelAfterTerminal) {
@@ -1807,10 +1812,13 @@ class BrainOperationCoordinator {
         phase: 'terminal',
         error,
         sourceEvidence: record.sourceEvidence,
+        ...(options.deferIfSynthesisClaimed === true
+          ? { requireNoSynthesisCompletionClaim: true }
+          : {}),
       });
     } catch (transitionError) {
       record = await this.store.get(operationId).catch(() => null);
-      if (options.state === 'cancelled'
+      if ((options.state === 'cancelled' || options.deferIfSynthesisClaimed === true)
           && record
           && !TERMINAL_STATES.has(record.state)
           && ['version_conflict', 'synthesis_completion_claimed'].includes(transitionError?.code)) {
