@@ -150,6 +150,31 @@ test('brain_memory_graph delegates bounded node and edge limits without fetching
   assert.match(result.content, /139000/);
 });
 
+test('attachment-shaped empty tags are omitted for search and graph while invalid tags stay strict', async () => {
+  let searchRequest: Record<string, unknown> | null = null;
+  let graphRequest: Record<string, unknown> | null = null;
+  const ctx = makeCtx({ brainOperations: {
+    search: async (value: Record<string, unknown>) => {
+      searchRequest = value;
+      return { results: [], operationId: 'op-empty-tag-search' };
+    },
+    graph: async (value: Record<string, unknown>) => {
+      graphRequest = value;
+      return { nodes: [], edges: [] };
+    },
+  } });
+
+  assert.equal((await brainSearchTool.execute({ query: 'brain', tag: '' }, ctx)).is_error, undefined);
+  assert.equal((await brainMemoryGraphTool.execute({ tag: '' }, ctx)).is_error, undefined);
+  assert.equal(Object.hasOwn(searchRequest || {}, 'tag'), false);
+  assert.equal(Object.hasOwn(graphRequest || {}, 'tag'), false);
+
+  for (const tag of ['   ', 23, 'x'.repeat(257)]) {
+    assert.equal((await brainSearchTool.execute({ query: 'brain', tag }, makeCtx())).is_error, true);
+    assert.equal((await brainMemoryGraphTool.execute({ tag }, makeCtx())).is_error, true);
+  }
+});
+
 test('brain_memory_graph full export is a durable requester-owned graph_export operation', async () => {
   let exported: Record<string, unknown> | null = null;
   const operation = completeOperation('op-graph-export', '', { format: 'jsonl' });
@@ -317,6 +342,7 @@ test('canonical export exposes only the bounded public export receipt in tool me
     canonicalEvidence: true,
   });
   assert.equal(Object.hasOwn(result.metadata || {}, 'internalPath'), false);
+  assert.doesNotMatch(result.content, /internalPath|must\/not\/escape/);
 });
 
 test('typed coordinator failure is an error and never an empty-brain claim', async () => {

@@ -115,6 +115,12 @@ function priorContextWhenPresent(
   };
 }
 
+function optionalTagWhenPresent(input: Record<string, unknown>): string | undefined {
+  if (!hasOwn(input, 'tag')) return undefined;
+  if (input.tag === '') return undefined;
+  return parsedWhenPresent(input, 'tag', (value) => optionalBoundedText(value, 'tag', 256));
+}
+
 function runtime(ctx: ToolContext): NonNullable<ToolContext['turnRuntime']> {
   if (!ctx.turnRuntime) {
     throw Object.assign(new Error('turn_runtime_unavailable'), { code: 'turn_runtime_unavailable' });
@@ -151,19 +157,20 @@ function boundedJson(label: string, value: Record<string, unknown>): ToolResult 
 }
 
 function boundedExportReceipt(value: Record<string, unknown>): ToolResult {
-  const rendered = boundedJson('brain_query_export', value);
+  const receipt = {
+    exportHandle: value.exportHandle,
+    relativePath: value.relativePath,
+    bytes: value.bytes,
+    sha256: value.sha256,
+    sourceOperationId: value.sourceOperationId,
+    sourceResultHandleHash: value.sourceResultHandleHash,
+    format: value.format,
+    canonicalEvidence: value.canonicalEvidence,
+  };
+  const rendered = boundedJson('brain_query_export', receipt);
   return {
     ...rendered,
-    metadata: {
-      exportHandle: value.exportHandle,
-      relativePath: value.relativePath,
-      bytes: value.bytes,
-      sha256: value.sha256,
-      sourceOperationId: value.sourceOperationId,
-      sourceResultHandleHash: value.sourceResultHandleHash,
-      format: value.format,
-      canonicalEvidence: value.canonicalEvidence,
-    },
+    metadata: receipt,
   };
 }
 
@@ -231,8 +238,7 @@ async function executeBrainSearch(
     const target = targetFrom(input);
     const topK = parsedWhenPresent(input, 'limit', (value) =>
       optionalFiniteInteger(value, 'limit', 1, 100)) ?? 10;
-    const tag = parsedWhenPresent(input, 'tag', (value) =>
-      optionalBoundedText(value, 'tag', 256));
+    const tag = optionalTagWhenPresent(input);
     const value = await turn.brainOperations.search({
       ...(target ? { target } : {}),
       query: requiredToolText(input, 'query', 12_000),
@@ -390,8 +396,7 @@ async function executeBrainGraph(
     if (hasOwn(input, 'format')) throw invalidRequest();
     const nodeLimit = parsedWhenPresent(input, 'topN', (value) =>
       optionalFiniteInteger(value, 'topN', 1, 100)) ?? 25;
-    const tag = parsedWhenPresent(input, 'tag', (value) =>
-      optionalBoundedText(value, 'tag', 256));
+    const tag = optionalTagWhenPresent(input);
     const value = await turn.brainOperations.graph({
       ...(target ? { target } : {}),
       nodeLimit,
