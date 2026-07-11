@@ -583,7 +583,7 @@ export class AgentLoop {
         for (const [selectedTurnId, ac] of selected) {
           if (!ac) continue;
           if (!selectedTurnId.startsWith('raw:')) {
-            this.terminalTurnOverrides.set(this.turnKey(chatId, selectedTurnId), {
+            this.setTerminalTurnOverrideOnce(chatId, selectedTurnId, {
               status: 'stopped',
               stop_reason: 'operator_stop',
             });
@@ -602,7 +602,7 @@ export class AgentLoop {
     for (const [activeChatId, runs] of [...this.activeRuns.entries()]) {
       for (const [activeTurnId, ac] of [...runs.entries()]) {
         if (!activeTurnId.startsWith('raw:')) {
-          this.terminalTurnOverrides.set(this.turnKey(activeChatId, activeTurnId), {
+          this.setTerminalTurnOverrideOnce(activeChatId, activeTurnId, {
             status: 'stopped',
             stop_reason: 'operator_stop',
           });
@@ -617,6 +617,15 @@ export class AgentLoop {
 
   private turnKey(chatId: string, turnId: string): string {
     return `${chatId}\u0000${turnId}`;
+  }
+
+  private setTerminalTurnOverrideOnce(
+    chatId: string,
+    turnId: string,
+    override: TerminalTurnOverride,
+  ): void {
+    const key = this.turnKey(chatId, turnId);
+    if (!this.terminalTurnOverrides.has(key)) this.terminalTurnOverrides.set(key, override);
   }
 
   private registerActiveRun(chatId: string, turnId: string, ac: AbortController): void {
@@ -746,7 +755,7 @@ export class AgentLoop {
       const label = hard ? 'hard' : 'inactivity';
       const error_message = `turn ${label} timeout after ${timeoutMs}ms`;
       console.warn(`[loop] turn ${turnId} ${label} deadline reached — aborting`);
-      this.terminalTurnOverrides.set(this.turnKey(chatId, turnId), {
+      this.setTerminalTurnOverrideOnce(chatId, turnId, {
         status: 'timeout',
         stop_reason: code,
         error_code: code,

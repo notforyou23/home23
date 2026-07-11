@@ -544,6 +544,60 @@ test('operator stop cannot be overwritten by a lease deadline while shutdown unw
   }
 });
 
+test('a hard deadline cannot be downgraded by a later operator stop', async () => {
+  const root = join(tmpdir(), `chat-turn-deadline-stop-race-${process.pid}-${Math.random()}`);
+  const { agent, history } = makeAgent(root);
+  const clock = installManualClock(agent);
+  let release!: () => void;
+  const released = new Promise<void>(resolve => { release = resolve; });
+  let response: Promise<unknown> | null = null;
+
+  try {
+    (agent as any).run = async (
+      _chatId: string,
+      _userText: string,
+      _media: unknown,
+      _onEvent: unknown,
+      _modelRuntime: unknown,
+      turnRuntime: TurnRuntimeContext,
+    ) => {
+      await new Promise<void>(resolve => {
+        turnRuntime.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      await released;
+      return {
+        text: 'Late normal result.', model: 'gpt-5.5', toolCallCount: 0, durationMs: 30,
+      };
+    };
+
+    const started = await agent.runWithTurn('deadline-stop-race-chat', 'hello', {
+      inactivityMs: 100,
+      hardDurationMs: 30,
+      firstTokenTimeoutMs: 1_000,
+    });
+    response = started.response;
+    response.catch(() => {});
+    await flushMicrotasks();
+
+    clock.advance(30);
+    const stopped = agent.stop('deadline-stop-race-chat', started.turnId);
+    assert.equal(stopped.stopped, true);
+    release();
+
+    await assert.rejects(response, /turn hard timeout after 30ms/);
+    const status = new TurnStore(history).statusForTurn(
+      'deadline-stop-race-chat', started.turnId,
+    );
+    assert.equal(status?.status, 'timeout');
+    assert.equal(status?.stop_reason, 'turn_hard_timeout');
+    assert.equal(status?.error_code, 'turn_hard_timeout');
+  } finally {
+    release?.();
+    if (response) await response.catch(() => {});
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('OpenAI transport receives the exact turn cancellation signal', async () => {
   const root = join(tmpdir(), `chat-turn-provider-signal-${process.pid}-${Math.random()}`);
   const { agent } = makeAgent(root);
