@@ -33,8 +33,12 @@ const {
   loadModelCatalogSync,
   getCatalogDefaults,
   getEmbeddingConfig,
+  getModelCapabilities,
   inferProviderFromModel
 } = require('../server/config/model-catalog');
+const { requireCompleteProviderResult } = require('./provider-completion');
+const { projectPinnedQuery } = require('./pinned-query-projection');
+const { QUERY_OPERATION_LIMITS } = require('./brain-operation-limits');
 
 const CLUSTER_SNAPSHOT_DEFAULT_TTL = Number.parseInt(
   process.env.COSMO_CLUSTER_SNAPSHOT_TTL || '4000',
@@ -157,6 +161,54 @@ function hashCachePart(value) {
     .slice(0, 16);
 }
 
+function operationError(code, message, retryable = false) {
+  return Object.assign(new Error(message), { code, retryable });
+}
+
+function operationThrowIfAborted(signal) {
+  if (signal?.aborted) throw signal.reason;
+}
+
+function utf8Bytes(value) {
+  return Buffer.byteLength(typeof value === 'string' ? value : JSON.stringify(value), 'utf8');
+}
+
+function exactProviderPair(options, catalog) {
+  const pair = options.modelSelection || {
+    provider: options.provider ?? options.explicitProvider,
+    model: options.model,
+  };
+  if (!pair || typeof pair !== 'object' || Array.isArray(pair)) {
+    throw operationError('provider_model_mismatch', 'Exact provider and model are required');
+  }
+  const keys = Object.keys(pair).sort();
+  if (keys.length !== 2 || keys[0] !== 'model' || keys[1] !== 'provider') {
+    throw operationError('provider_model_mismatch', 'Exact provider and model are required');
+  }
+  const provider = typeof pair.provider === 'string' ? pair.provider.trim() : '';
+  const model = typeof pair.model === 'string' ? pair.model.trim() : '';
+  if (!model) {
+    throw operationError('provider_model_mismatch', 'Exact provider and model are required');
+  }
+  if (!provider) {
+    // Preserve the catalog's typed ambiguity signal, but never infer a unique
+    // provider: operation execution is exact-pair only.
+    getModelCapabilities(catalog, null, model);
+    throw operationError('provider_model_mismatch', 'Exact provider and model are required');
+  }
+  return { provider, model };
+}
+
+function safeProviderEventAt(value) {
+  if (typeof value !== 'string' || value.length > 64) return null;
+  return Number.isFinite(Date.parse(value)) ? value : null;
+}
+
+function safeProviderEventType(value) {
+  if (typeof value !== 'string' || !value.trim()) return 'activity';
+  return value.trim().slice(0, 128);
+}
+
 class QueryEngine {
   static buildQueryCacheKey({
     stateHash,
@@ -182,7 +234,24 @@ class QueryEngine {
     }];
   }
 
-  constructor(runtimeDir, openaiKey) {
+  constructor(runtimeDir, openaiKey, deps = {}) {
+    if (runtimeDir && typeof runtimeDir === 'object' && !Array.isArray(runtimeDir)) {
+      deps = runtimeDir;
+      runtimeDir = null;
+      openaiKey = null;
+    }
+    if (deps.operationMode === true || (!runtimeDir && deps.providerRegistry)) {
+      this.operationMode = true;
+      this.providerRegistry = deps.providerRegistry;
+      this.modelCatalog = deps.modelCatalog;
+      this.operationLimits = deps.limits || {};
+      this.projectPinnedQuery = deps.projectPinnedQuery || projectPinnedQuery;
+      this.requireCompleteProviderResult = deps.requireCompleteProviderResult
+        || requireCompleteProviderResult;
+      this.operationEventSink = deps.onEvent || null;
+      return;
+    }
+    this.operationMode = false;
     this.runtimeDir = runtimeDir;
     this.stateFile = path.join(runtimeDir, 'state.json.gz');
     this.thoughtsFile = path.join(runtimeDir, 'thoughts.jsonl');
@@ -1669,6 +1738,165 @@ STYLE:
     };
   }
 
+  _emitOperationEvent(event, options) {
+    const sink = options.onEvent || this.operationEventSink;
+    if (typeof sink === 'function') sink(Object.freeze(event));
+  }
+
+  async executePinnedQuery(query, options = {}) {
+    const signal = options.signal || null;
+    operationThrowIfAborted(signal);
+    if (typeof query !== 'string' || !query.trim()) {
+      throw operationError('invalid_request', 'Query is required');
+    }
+    const sourcePin = options.sourcePin;
+    if (!sourcePin) {
+      throw operationError('source_pin_required', 'Pinned source is required');
+    }
+    const catalog = options.modelCatalog || this.modelCatalog;
+    if (!catalog?.providers) {
+      throw operationError('model_catalog_invalid', 'Canonical model catalog is required');
+    }
+    const registry = options.providerRegistry || this.providerRegistry;
+    if (!registry || typeof registry.get !== 'function') {
+      throw operationError('provider_unavailable', 'Provider registry is unavailable', true);
+    }
+    const { provider, model } = exactProviderPair(options, catalog);
+    const capabilities = getModelCapabilities(catalog, provider, model);
+    operationThrowIfAborted(signal);
+    const client = registry.get(provider, model);
+    if (!client || typeof client.generate !== 'function') {
+      throw operationError('provider_unavailable', `Provider unavailable: ${provider}/${model}`, true);
+    }
+    if (client.providerId && client.providerId !== provider) {
+      throw operationError('provider_model_mismatch', 'Provider client identity mismatch');
+    }
+
+    const projection = await this.projectPinnedQuery({
+      sourcePin,
+      query,
+      signal,
+      limits: options.limits || this.operationLimits || {},
+    });
+    operationThrowIfAborted(signal);
+
+    const mode = typeof options.mode === 'string' && options.mode.trim()
+      ? options.mode.trim()
+      : 'normal';
+    const priorContext = options.priorContext && typeof options.priorContext === 'object'
+      ? {
+        query: String(options.priorContext.query || ''),
+        answer: String(options.priorContext.answer || ''),
+      }
+      : null;
+    const promptPayload = {
+      query,
+      mode,
+      priorContext,
+      source: {
+        revision: projection.sourceRevision,
+        summary: projection.summary,
+        nodes: projection.nodes,
+        edges: projection.edges,
+      },
+    };
+    const input = JSON.stringify(promptPayload);
+    const instructions = [
+      'Answer from the pinned Home23 brain evidence supplied in the input.',
+      'Distinguish evidence from inference and do not claim coverage beyond the pinned source.',
+      'Return a direct, useful answer to the query.',
+    ].join(' ');
+    const promptBytes = utf8Bytes(instructions) + utf8Bytes(input);
+    const maxPromptBytes = Number.isSafeInteger((options.limits || {}).maxPromptBytes)
+      ? options.limits.maxPromptBytes
+      : QUERY_OPERATION_LIMITS.maxPromptBytes;
+    if (maxPromptBytes <= 0 || maxPromptBytes > QUERY_OPERATION_LIMITS.maxPromptBytes) {
+      throw operationError('invalid_request', 'Invalid query prompt limit');
+    }
+    if (promptBytes > maxPromptBytes) {
+      throw operationError('result_too_large', 'Query prompt exceeds the byte limit');
+    }
+
+    const baseEvent = {
+      phase: 'query',
+      provider,
+      model,
+      providerStallMs: capabilities.providerStallMs,
+      providerCallId: 'query',
+    };
+    this._emitOperationEvent({ type: 'provider_selected', ...baseEvent }, options);
+    let outcome = 'failed';
+    try {
+      const response = await client.generate({
+        provider,
+        model,
+        instructions,
+        input,
+        maxOutputTokens: capabilities.maxOutputTokens,
+        signal,
+        onChunk: options.onChunk || null,
+        onProviderActivity: (event = {}) => {
+          operationThrowIfAborted(signal);
+          this._emitOperationEvent({
+            type: 'provider_activity',
+            phase: 'query',
+            provider,
+            model,
+            providerCallId: 'query',
+            providerEventType: safeProviderEventType(event.type),
+            providerEventAt: safeProviderEventAt(event.at),
+          }, options);
+        },
+      });
+      operationThrowIfAborted(signal);
+      const complete = this.requireCompleteProviderResult(response);
+      operationThrowIfAborted(signal);
+      const answer = String(complete.content || '').trim();
+      if (!answer) {
+        throw operationError('provider_incomplete', 'Provider returned no answer', true);
+      }
+      const result = {
+        answer,
+        metadata: {
+          provider,
+          model,
+          mode,
+          promptBytes,
+          projection: projection.stats,
+        },
+        sourceEvidence: projection.sourceEvidence,
+        resultArtifact: null,
+      };
+      const maxResultBytes = Number.isSafeInteger((options.limits || {}).maxResultBytes)
+        ? options.limits.maxResultBytes
+        : QUERY_OPERATION_LIMITS.maxResultBytes;
+      if (maxResultBytes <= 0 || maxResultBytes > QUERY_OPERATION_LIMITS.maxResultBytes) {
+        throw operationError('invalid_request', 'Invalid query result limit');
+      }
+      if (utf8Bytes(result) > maxResultBytes) {
+        throw operationError('result_too_large', 'Query result exceeds the byte limit');
+      }
+      operationThrowIfAborted(signal);
+      outcome = 'complete';
+      return result;
+    } catch (error) {
+      if (signal?.aborted) {
+        outcome = 'cancelled';
+        throw signal.reason;
+      }
+      throw error;
+    } finally {
+      this._emitOperationEvent({
+        type: 'provider_call_terminal',
+        phase: 'query',
+        provider,
+        model,
+        providerCallId: 'query',
+        outcome,
+      }, options);
+    }
+  }
+
   /**
    * Execute query using GPT-5.2 Responses API
    *
@@ -1684,6 +1912,9 @@ STYLE:
    * - Coverage improved: 10% → 15% on 20K node brains (GPT-5.2)
    */
   async executeQuery(query, options = {}) {
+    if (this.operationMode || options.sourcePin) {
+      return this.executePinnedQuery(query, options);
+    }
     const startTime = Date.now(); // Performance tracking
 
     const {
@@ -4330,6 +4561,9 @@ This is STRATEGIC BRAINSTORMING informed by research insights. Be bold, creative
    * Execute query with file access and action support
    */
   async executeEnhancedQuery(query, options = {}) {
+    if (this.operationMode || options.sourcePin) {
+      return this.executePinnedQuery(query, options);
+    }
     const {
       model = 'gpt-5.2',
       mode = 'normal',
