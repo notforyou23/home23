@@ -260,8 +260,9 @@ async function readConfinedFile(root, filePath, options = {}) {
   const opened = await openConfinedRegularFile(root, filePath, options);
   if (opened === null) return null;
   try {
-    const bytes = await opened.handle.readFile();
+    const bytes = await readOpenedFile(opened, { maxBytes: options.maxBytes });
     await assertStableOpenedFile(opened);
+    await assertOpenedFilePathIdentity(opened, portableFileIdentity(opened.stat));
     return bytes;
   } finally {
     await opened.handle.close().catch(() => {});

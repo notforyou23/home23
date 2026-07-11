@@ -11,7 +11,11 @@ const {
   portableFileIdentity,
   assertOpenedFilePathIdentity,
 } = require('./confined-file.cjs');
-const { withMemorySourceLock, discoverOperationPinFiles } = require('./pins.cjs');
+const {
+  withMemorySourceLock,
+  discoverOperationPinFiles,
+  readDiscoveredOperationPinRecord,
+} = require('./pins.cjs');
 const {
   memorySourceError,
   sourceDescriptorDigest,
@@ -318,9 +322,7 @@ async function retireUnpinnedSources(brainDir, options = {}) {
       manifest.ann.metaFile,
     ].filter(Boolean));
     for (const entry of pinEntries) {
-      const filePath = typeof entry === 'string' ? entry : entry.path;
-      if (!filePath) continue;
-      const record = JSON.parse(await fsp.readFile(filePath, 'utf8').catch(() => '{}'));
+      const record = await readDiscoveredOperationPinRecord(entry);
       if (record.canonicalRoot !== await fsp.realpath(brainDir)) continue;
       for (const file of record.files || record.protectedFiles || []) protectedFiles.add(file);
     }

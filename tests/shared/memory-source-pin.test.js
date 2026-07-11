@@ -114,6 +114,48 @@ function durableOperationRoot(home23Root, requesterAgent, operationId) {
   );
 }
 
+async function createCoordinatorReadFixture(t, suffix) {
+  const home23Root = await fsp.realpath(await tempDir(`home23-coordinator-read-${suffix}-home-`));
+  const brain = await writeManifestBrain();
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+  const operationId = `brop_coordinator_read_${suffix}`;
+  const pinned = await provider.pin(brain, operationId);
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
+  const recordPath = path.join(operationRoot, 'coordinator-source-pin.json');
+  t.after(() => Promise.all([
+    fsp.rm(home23Root, { recursive: true, force: true }),
+    fsp.rm(brain, { recursive: true, force: true }),
+  ]));
+  return {
+    home23Root,
+    brain,
+    provider,
+    operationId,
+    operationRoot,
+    recordPath,
+    pinned,
+  };
+}
+
+async function oversizeCoordinatorRecord(recordPath) {
+  const record = JSON.parse(await fsp.readFile(recordPath, 'utf8'));
+  await fsp.writeFile(recordPath, `${JSON.stringify({
+    ...record,
+    padding: 'x'.repeat((1024 * 1024) + 1),
+  })}\n`);
+}
+
+async function symlinkCoordinatorRecord(t, recordPath, { valid = true } = {}) {
+  const outsideRoot = await tempDir('home23-coordinator-read-outside-');
+  const outsidePath = path.join(outsideRoot, 'coordinator-source-pin.json');
+  const bytes = valid ? await fsp.readFile(recordPath) : Buffer.from('{not-json\n');
+  await fsp.writeFile(outsidePath, bytes);
+  await fsp.unlink(recordPath);
+  await fsp.symlink(outsidePath, recordPath);
+  t.after(() => fsp.rm(outsideRoot, { recursive: true, force: true }));
+  return { outsidePath, bytes };
+}
+
 function residentTarget(canonicalRoot, requesterAgent = 'jerry') {
   return {
     domain: 'brain',
@@ -284,6 +326,120 @@ test('pin provider returns exactly descriptor and digest and persists private co
     );
   }
   assert.deepEqual(await provider.pin(brain, 'brop_test_pin'), result);
+});
+
+test('coordinator pin retry rejects an oversized durable record', async (t) => {
+  const fixture = await createCoordinatorReadFixture(t, 'retry_oversized');
+  const scratchQuota = await createOperationScratchQuota({
+    operationRoot: fixture.operationRoot,
+  });
+  t.after(() => scratchQuota.close());
+  await oversizeCoordinatorRecord(fixture.recordPath);
+
+  await assert.rejects(
+    () => pinOperationSource({
+      canonicalRoot: fixture.brain,
+      operationRoot: fixture.operationRoot,
+      operationId: fixture.operationId,
+      requesterAgent: 'jerry',
+      lockRoot: path.join(fixture.home23Root, 'runtime', 'brain-source-locks'),
+      scratchQuota,
+    }),
+    { code: 'source_pin_conflict', retryable: true },
+  );
+});
+
+test('coordinator pin retry never follows a durable-record symlink', async (t) => {
+  const fixture = await createCoordinatorReadFixture(t, 'retry_symlink');
+  const scratchQuota = await createOperationScratchQuota({
+    operationRoot: fixture.operationRoot,
+  });
+  t.after(() => scratchQuota.close());
+  const outside = await symlinkCoordinatorRecord(t, fixture.recordPath);
+
+  await assert.rejects(
+    () => pinOperationSource({
+      canonicalRoot: fixture.brain,
+      operationRoot: fixture.operationRoot,
+      operationId: fixture.operationId,
+      requesterAgent: 'jerry',
+      lockRoot: path.join(fixture.home23Root, 'runtime', 'brain-source-locks'),
+      scratchQuota,
+    }),
+    { code: 'source_pin_conflict', retryable: true },
+  );
+  assert.deepEqual(await fsp.readFile(outside.outsidePath), outside.bytes);
+});
+
+test('pinned opener rejects an oversized coordinator record as changed source truth', async (t) => {
+  const fixture = await createCoordinatorReadFixture(t, 'open_oversized');
+  const scratchQuota = await createOperationScratchQuota({
+    operationRoot: fixture.operationRoot,
+  });
+  let source = null;
+  t.after(() => scratchQuota.close());
+  await oversizeCoordinatorRecord(fixture.recordPath);
+
+  try {
+    await assert.rejects(async () => {
+      source = await fixture.provider.openPinnedSource(fixture.pinned.descriptor, {
+        operationId: fixture.operationId,
+        scratchQuota,
+        expectedCanonicalRoot: fixture.pinned.descriptor.canonicalRoot,
+        expectedRevision: fixture.pinned.descriptor.cutoffRevision,
+        expectedDigest: fixture.pinned.digest,
+      });
+    }, { code: 'source_changed', retryable: true });
+  } finally {
+    await source?.release().catch(() => {});
+  }
+});
+
+test('pinned opener never follows a coordinator-record symlink', async (t) => {
+  const fixture = await createCoordinatorReadFixture(t, 'open_symlink');
+  const scratchQuota = await createOperationScratchQuota({
+    operationRoot: fixture.operationRoot,
+  });
+  const outside = await symlinkCoordinatorRecord(t, fixture.recordPath);
+  let source = null;
+  t.after(() => scratchQuota.close());
+
+  try {
+    await assert.rejects(async () => {
+      source = await fixture.provider.openPinnedSource(fixture.pinned.descriptor, {
+        operationId: fixture.operationId,
+        scratchQuota,
+        expectedCanonicalRoot: fixture.pinned.descriptor.canonicalRoot,
+        expectedRevision: fixture.pinned.descriptor.cutoffRevision,
+        expectedDigest: fixture.pinned.digest,
+      });
+    }, { code: 'source_changed', retryable: true });
+  } finally {
+    await source?.release().catch(() => {});
+  }
+  assert.deepEqual(await fsp.readFile(outside.outsidePath), outside.bytes);
+});
+
+test('terminal release rejects an oversized coordinator record before cleanup', async (t) => {
+  const fixture = await createCoordinatorReadFixture(t, 'release_oversized');
+  await oversizeCoordinatorRecord(fixture.recordPath);
+
+  await assert.rejects(
+    () => fixture.provider.releaseOperationPins(fixture.operationId),
+    { code: 'result_too_large', retryable: false },
+  );
+  assert.equal(await fsp.lstat(fixture.recordPath).then((stat) => stat.isFile()), true);
+});
+
+test('terminal release rejects a coordinator-record symlink before reading its target', async (t) => {
+  const fixture = await createCoordinatorReadFixture(t, 'release_symlink');
+  const outside = await symlinkCoordinatorRecord(t, fixture.recordPath, { valid: false });
+
+  await assert.rejects(
+    () => fixture.provider.releaseOperationPins(fixture.operationId),
+    { code: 'invalid_memory_source', retryable: false },
+  );
+  assert.deepEqual(await fsp.readFile(outside.outsidePath), outside.bytes);
 });
 
 const protectedReplacementCases = [

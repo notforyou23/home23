@@ -284,8 +284,49 @@ async function writeAtomicJson(filePath, value) {
   }
 }
 
-async function readCoordinatorRecord(operationRoot) {
-  return JSON.parse(await fsp.readFile(coordinatorPinPath(operationRoot), 'utf8'));
+async function readBoundedOperationJson(operationRoot, filePath, {
+  optional = false,
+  signal,
+  label = 'operation record',
+} = {}) {
+  const operationIdentity = await captureExactOperationDirectory(
+    operationRoot,
+    `${label} operation root`,
+  );
+  const bytes = await readConfinedFile(operationRoot, filePath, {
+    maxBytes: MAX_OPERATION_STATUS_BYTES,
+    optional,
+    signal,
+  });
+  await assertExactOperationDirectory(
+    operationRoot,
+    operationIdentity,
+    `${label} operation root`,
+  );
+  if (bytes === null) return null;
+  let record;
+  try {
+    record = JSON.parse(bytes.toString('utf8'));
+  } catch (cause) {
+    throw memorySourceError('invalid_memory_source', `${label} is unreadable`, {
+      cause,
+      retryable: false,
+    });
+  }
+  await assertExactOperationDirectory(
+    operationRoot,
+    operationIdentity,
+    `${label} operation root`,
+  );
+  return record;
+}
+
+async function readCoordinatorRecord(operationRoot, options = {}) {
+  return readBoundedOperationJson(
+    operationRoot,
+    coordinatorPinPath(operationRoot),
+    { ...options, label: 'coordinator source pin' },
+  );
 }
 
 function physicalIdentity(stat) {
@@ -505,12 +546,17 @@ async function pinOperationSource({
   const root = await assertOperationRoot(operationRoot);
   return withMemorySourceLock(canonical, { lockRoot }, async () => {
     throwIfAborted(signal);
-    const existing = await fsp.readFile(coordinatorPinPath(root), 'utf8').catch((error) => {
-      if (error.code === 'ENOENT') return null;
-      throw error;
-    });
-    if (existing !== null) {
-      const record = JSON.parse(existing);
+    let record;
+    try {
+      record = await readCoordinatorRecord(root, { optional: true, signal });
+    } catch (cause) {
+      rethrowAbort(cause, signal);
+      throw memorySourceError('source_pin_conflict', 'existing source pin is unreadable', {
+        cause,
+        retryable: true,
+      });
+    }
+    if (record !== null) {
       if (record.canonicalRoot !== canonical || record.operationId !== operationId
           || record.requesterAgent !== requesterAgent
           || !descriptorMatchesDigest(record.descriptor, record.digest)
@@ -525,15 +571,6 @@ async function pinOperationSource({
       throwIfAborted(signal);
       const opened = await openRecordedProtectedFiles(existingPhysicalRoot, record, { signal });
       try {
-        throwIfAborted(signal);
-        if (record.sourceFingerprint
-            && !await verifyLegacySourceFingerprint(canonical, record.sourceFingerprint)) {
-          throw memorySourceError(
-            'source_changed',
-            'legacy source changed after coordinator pin publication',
-            { retryable: true },
-          );
-        }
         throwIfAborted(signal);
         await recheckProtectedFiles(opened.openedFiles, record.protectedFileIdentities);
         throwIfAborted(signal);
@@ -1239,12 +1276,21 @@ async function openPinnedSource(descriptor, expectations = {}) {
       signal: expectations.signal,
     }, async () => {
       throwIfAborted(expectations.signal);
-      record = await readCoordinatorRecord(operationRoot).catch((error) => {
-        if (error.code === 'ENOENT') {
-          throw memorySourceError('source_changed', 'coordinator pin missing', { retryable: true });
-        }
-        throw error;
-      });
+      try {
+        record = await readCoordinatorRecord(operationRoot, {
+          optional: true,
+          signal: expectations.signal,
+        });
+      } catch (cause) {
+        rethrowAbort(cause, expectations.signal);
+        throw memorySourceError('source_changed', 'coordinator pin is unreadable', {
+          cause,
+          retryable: true,
+        });
+      }
+      if (record === null) {
+        throw memorySourceError('source_changed', 'coordinator pin missing', { retryable: true });
+      }
       if (record.version !== 1
           || record.operationId !== operationId
           || record.requesterAgent !== expectations.requesterAgent
@@ -1905,6 +1951,33 @@ async function discoverOperationPinFiles(home23Root) {
   return results.sort((a, b) => a.path.localeCompare(b.path));
 }
 
+async function readDiscoveredOperationPinRecord(entry) {
+  const filePath = typeof entry === 'string' ? entry : entry?.path;
+  if (typeof filePath !== 'string' || !path.isAbsolute(filePath)
+      || path.normalize(filePath) !== filePath || filePath.includes('\0')) {
+    throw memorySourceError('invalid_request', 'exact operation pin path required');
+  }
+  if (typeof entry === 'string') {
+    return readBoundedOperationJson(path.dirname(filePath), filePath, {
+      label: 'injected operation pin',
+    });
+  }
+  if (!entry || Array.isArray(entry) || typeof entry !== 'object') {
+    throw memorySourceError('invalid_request', 'discovered operation pin required');
+  }
+  if (entry.kind === 'coordinator') {
+    if (path.basename(filePath) !== 'coordinator-source-pin.json') {
+      throw memorySourceError('invalid_request', 'exact coordinator pin path required');
+    }
+    return readCoordinatorRecord(path.dirname(filePath));
+  }
+  if (entry.kind === 'process') {
+    const confinement = await captureProcessPinConfinement(filePath);
+    return readConfinedProcessPinRecord(confinement);
+  }
+  throw memorySourceError('invalid_request', 'known operation pin kind required');
+}
+
 async function pruneStalePins(home23Root, {
   getOperationState = async () => null,
   isProcessAlive = defaultIsProcessPinAlive,
@@ -2016,10 +2089,7 @@ async function releaseOperationSource({ home23Root, requesterAgent, operationId 
   );
   if (operationIdentity === null) return;
   const pinsRoot = path.join(operationRoot, 'pins');
-  const coordinator = await readCoordinatorRecord(operationRoot).catch((error) => {
-    if (error.code === 'ENOENT') return null;
-    throw error;
-  });
+  const coordinator = await readCoordinatorRecord(operationRoot, { optional: true });
   const sourceRoot = typeof coordinator?.canonicalRoot === 'string'
     && path.isAbsolute(coordinator.canonicalRoot)
     && path.normalize(coordinator.canonicalRoot) === coordinator.canonicalRoot
@@ -2114,6 +2184,7 @@ module.exports = {
   openPinnedSource,
   createMemorySourcePinProvider,
   discoverOperationPinFiles,
+  readDiscoveredOperationPinRecord,
   pruneStalePins,
   releaseOperationSource,
 };

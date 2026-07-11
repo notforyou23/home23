@@ -304,3 +304,38 @@ test('retirement preserves files named by an active reader pin', async () => {
   assert.equal(releasedResult.retired.includes(oldNodeFile), true);
   scratchQuota.close();
 });
+
+test('retirement fails closed on an oversized discovered pin record', async (t) => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const home23Root = await tempDir('home23-memory-source-writer-oversized-pin-home-');
+  const staleFile = 'memory-nodes.base-stale.jsonl.gz';
+  const stalePath = path.join(dir, staleFile);
+  const operationRoot = path.join(
+    home23Root,
+    'instances',
+    'ada',
+    'runtime',
+    'brain-operations',
+    'operations',
+    'brop_oversized_retirement_pin',
+  );
+  const pinPath = path.join(operationRoot, 'coordinator-source-pin.json');
+  await fsp.mkdir(operationRoot, { recursive: true });
+  await fsp.writeFile(stalePath, 'stale generation canary\n');
+  await fsp.writeFile(pinPath, `${JSON.stringify({
+    canonicalRoot: await fsp.realpath(dir),
+    protectedFiles: [staleFile],
+    padding: 'x'.repeat((1024 * 1024) + 1),
+  })}\n`);
+  const before = await fsp.readFile(stalePath);
+  t.after(() => Promise.all([
+    fsp.rm(dir, { recursive: true, force: true }),
+    fsp.rm(home23Root, { recursive: true, force: true }),
+  ]));
+
+  await assert.rejects(
+    () => retireUnpinnedSources(dir, { home23Root, lockRoot }),
+    { code: 'result_too_large', retryable: false },
+  );
+  assert.deepEqual(await fsp.readFile(stalePath), before);
+});
