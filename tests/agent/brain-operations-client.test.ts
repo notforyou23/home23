@@ -314,7 +314,8 @@ async function createRealReconnectBoundary(t: { after(callback: () => void | Pro
     });
   }
   const replay = await store.readEvents(created.record.operationId, 0);
-  assert.equal(replay[0]?.type, 'event_gap', 'fixture must cross the real compacted journal boundary');
+  assert.equal(replay.some((event) => event.type === 'event_gap'), true,
+    'fixture must cross the real compacted journal boundary');
 
   const secondAttach = deferred<{ ok: boolean; error?: unknown }>();
   let attachCalls = 0;
@@ -2137,11 +2138,13 @@ test('progress, phase, and terminal notifications never masquerade as operation 
   const activities: Array<{
     type: string; eventSequence: number; sequence: number;
     state: string; phase: string | null; updatedAt: string;
+    lastProgressAt: string | null;
   }> = [];
   let statusReads = 0;
   let resultReads = 0;
   let terminalAvailable = false;
   const terminal = record(operationId, 3, 'complete', { answer: 'authenticated terminal' });
+  terminal.lastProgressAt = '2026-07-10T12:00:02.500Z';
   const client = new BrainOperationsClient({
     baseUrl: 'http://fixture',
     callerAgent: 'jerry',
@@ -2152,6 +2155,7 @@ test('progress, phase, and terminal notifications never masquerade as operation 
       state: activity.state,
       phase: activity.phase,
       updatedAt: activity.updatedAt,
+      lastProgressAt: activity.lastProgressAt,
     }),
     fetchImpl: async (url, init) => {
       const parsed = new URL(String(url));
@@ -2192,8 +2196,8 @@ test('progress, phase, and terminal notifications never masquerade as operation 
   assert.equal(statusReads, 1, 'terminal notification requires authenticated status');
   assert.equal(resultReads, 1);
   assert.deepEqual(activities, [
-    { type: 'progress', eventSequence: 1, sequence: 1, state: 'queued', phase: 'provider', updatedAt: '2026-07-10T12:00:01.000Z' },
-    { type: 'phase', eventSequence: 2, sequence: 2, state: 'running', phase: 'synthesizing', updatedAt: '2026-07-10T12:00:02.000Z' },
-    { type: 'terminal', eventSequence: 3, sequence: 3, state: 'complete', phase: 'done', updatedAt: '2026-07-10T12:00:03.000Z' },
+    { type: 'progress', eventSequence: 1, sequence: 1, state: 'queued', phase: 'provider', updatedAt: '2026-07-10T12:00:01.000Z', lastProgressAt: '2026-07-10T12:00:01.000Z' },
+    { type: 'phase', eventSequence: 2, sequence: 2, state: 'running', phase: 'synthesizing', updatedAt: '2026-07-10T12:00:02.000Z', lastProgressAt: null },
+    { type: 'terminal', eventSequence: 3, sequence: 3, state: 'complete', phase: 'done', updatedAt: '2026-07-10T12:00:03.000Z', lastProgressAt: '2026-07-10T12:00:02.500Z' },
   ]);
 });

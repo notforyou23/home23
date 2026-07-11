@@ -539,6 +539,11 @@ export class BrainOperationsClient {
         : event.type === 'provider_activity' && event.at
           ? event.at
           : status.lastProviderActivityAt;
+      const progressActivity = event.lastProgressAt !== undefined
+        ? event.lastProgressAt
+        : (event.type === 'progress' || event.type === 'progress_update') && event.at
+          ? event.at
+          : status.lastProgressAt ?? null;
       this.options.onActivity?.({
         source: 'brain_operation',
         operationId,
@@ -549,6 +554,7 @@ export class BrainOperationsClient {
         phase: eventPhase,
         updatedAt: eventUpdatedAt,
         lastProviderActivityAt: providerActivity,
+        lastProgressAt: progressActivity,
       });
     };
     const pauseBeforeReconnect = (): Promise<void> => new Promise((resolve, reject) => {

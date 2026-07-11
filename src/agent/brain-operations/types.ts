@@ -59,6 +59,7 @@ export interface OperationActivity {
   phase: string | null;
   updatedAt: string;
   lastProviderActivityAt: string | null;
+  lastProgressAt: string | null;
 }
 
 export interface BrainOperationRecord {
