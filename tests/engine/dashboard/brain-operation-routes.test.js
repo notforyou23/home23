@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs, { readFileSync } from 'node:fs';
 import http from 'node:http';
+import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -12,6 +13,7 @@ const express = require('express');
 const {
   createBrainOperationsPlaceholderRouter,
   createBrainOperationsRouter,
+  writeSseFrame,
 } = require('../../../engine/src/dashboard/brain-operations/router.js');
 const {
   BrainOperationStore,
@@ -130,8 +132,16 @@ function fakes(overrides = {}) {
       detach: async (operationId, input) => { calls.push(['detach', operationId, input]); return { state: 'detached', ...input }; },
       attach: async (operationId, input) => {
         calls.push(['attach', operationId, input.attachmentId]);
-        input.onEvent({ type: 'progress', operationId, sequence: 2, eventSequence: 2 });
-        return { done: Promise.resolve() };
+        assert.equal(input.onEvent, undefined);
+        let delivered = false;
+        return {
+          done: Promise.resolve(),
+          async nextEvent() {
+            if (delivered) return null;
+            delivered = true;
+            return { type: 'progress', operationId, sequence: 2, eventSequence: 2 };
+          },
+        };
       },
     },
     reader: {
@@ -620,6 +630,32 @@ test('events require an attachment and stream canonical resumable SSE', async ()
     assert.match(body, /event: progress/);
     assert.match(body, /"operationId":"brop_/);
   });
+});
+
+test('SSE frame writer waits for drain and releases promptly on cancellation', async () => {
+  class SlowResponse extends EventEmitter {
+    constructor() {
+      super();
+      this.writableEnded = false;
+      this.destroyed = false;
+      this.writes = [];
+    }
+    write(frame) { this.writes.push(frame); return false; }
+  }
+  const response = new SlowResponse();
+  const controller = new AbortController();
+  let settled = false;
+  const writing = writeSseFrame(response, 'data: one\n\n', controller.signal)
+    .then((value) => { settled = true; return value; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  response.emit('drain');
+  assert.equal(await writing, true);
+
+  const cancelled = writeSseFrame(response, 'data: two\n\n', controller.signal);
+  controller.abort(new Error('stop'));
+  assert.equal(await cancelled, false);
+  assert.deepEqual(response.writes, ['data: one\n\n', 'data: two\n\n']);
 });
 
 test('events authenticates the durable attachment before committing SSE headers', async () => {

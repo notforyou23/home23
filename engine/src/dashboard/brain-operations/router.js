@@ -80,6 +80,28 @@ function sendError(res, error) {
   });
 }
 
+function waitForSseDrain(res, signal) {
+  if (signal?.aborted || res.writableEnded || res.destroyed) return Promise.resolve();
+  if (typeof res.once !== 'function') throw routeError('event_stream_backpressure_unavailable');
+  return new Promise((resolve) => {
+    const settled = () => {
+      res.off?.('drain', settled);
+      res.off?.('close', settled);
+      signal?.removeEventListener('abort', settled);
+      resolve();
+    };
+    res.once('drain', settled);
+    res.once('close', settled);
+    signal?.addEventListener('abort', settled, { once: true });
+  });
+}
+
+async function writeSseFrame(res, frame, signal) {
+  if (signal?.aborted || res.writableEnded || res.destroyed) return false;
+  if (!res.write(frame)) await waitForSseDrain(res, signal);
+  return !(signal?.aborted || res.writableEnded || res.destroyed);
+}
+
 function exactObject(value, allowedKeys, code = 'invalid_request') {
   if (!value || Array.isArray(value) || typeof value !== 'object') throw routeError(code);
   const allowed = new Set(allowedKeys);
@@ -428,8 +450,6 @@ function createBrainOperationsRouter(options = {}) {
     const attachmentId = assertIdentifier(req.query.attachmentId, 'attachmentId');
     const controller = new AbortController();
     res.on('close', () => controller.abort(routeError('attachment_closed')));
-    let streamReady = false;
-    const pendingFrames = [];
     const formatEvent = (event) => {
       const sequence = event?.sequence ?? event?.eventSequence;
       if (!Number.isSafeInteger(sequence) || sequence < 0) throw routeError('event_stream_invalid');
@@ -440,20 +460,18 @@ function createBrainOperationsRouter(options = {}) {
       attachmentId,
       afterSequence: after,
       signal: controller.signal,
-      onEvent(event) {
-        if (res.writableEnded) return;
-        const frame = formatEvent(event);
-        if (!streamReady) pendingFrames.push(frame);
-        else res.write(frame);
-      },
+      onEvent: undefined,
     });
+    if (typeof attachment.nextEvent !== 'function') throw routeError('event_stream_invalid');
     res.status(200);
     res.setHeader('content-type', 'text/event-stream; charset=utf-8');
     res.setHeader('cache-control', 'no-store');
     res.flushHeaders?.();
-    streamReady = true;
-    for (const frame of pendingFrames) res.write(frame);
-    await attachment.done;
+    while (!controller.signal.aborted) {
+      const event = await attachment.nextEvent();
+      if (event === null) break;
+      if (!await writeSseFrame(res, formatEvent(event), controller.signal)) break;
+    }
     if (!res.writableEnded) res.end();
   }));
 
@@ -540,4 +558,5 @@ module.exports = {
   createBrainOperationsPlaceholderRouter,
   createBrainOperationsRouter,
   routeError,
+  writeSseFrame,
 };
