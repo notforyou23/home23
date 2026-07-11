@@ -43,6 +43,7 @@ function errorStatus(error) {
     return error.statusCode;
   }
   const code = error?.code;
+  if (code === 'request_too_large') return 413;
   if (['capability_invalid', 'capability_expired', 'capability_replay',
     'capability_nonce_capacity'].includes(code)) return 401;
   if (['capability_mismatch', 'access_denied'].includes(code)) return 403;
@@ -52,6 +53,16 @@ function errorStatus(error) {
   if (['invalid_request', 'operation_id_invalid', 'source_pin_invalid',
     'worker_event_cursor_invalid'].includes(code)) return 400;
   return 500;
+}
+
+function boundedJson(limit) {
+  const parser = express.json({ limit, strict: true });
+  return (req, res, next) => parser(req, res, (error) => {
+    if (!error) return next();
+    return sendError(res, routeError(
+      error.type === 'entity.too.large' ? 'request_too_large' : 'invalid_request',
+    ));
+  });
 }
 
 function sendError(res, error) {
@@ -174,17 +185,26 @@ function createBrainOperationRouteHandlers({ worker } = {}) {
 function createBrainOperationRoutes(options) {
   const handlers = createBrainOperationRouteHandlers(options);
   const router = express.Router();
-  router.post('/api/internal/brain-operations/:id/start', handlers.start);
+  router.post(
+    '/api/internal/brain-operations/:id/start',
+    boundedJson('2mb'),
+    handlers.start,
+  );
   router.get('/api/internal/brain-operations/:id/status', handlers.status);
   router.get('/api/internal/brain-operations/:id/events', handlers.events);
   router.get('/api/internal/brain-operations/:id/result', handlers.result);
-  router.post('/api/internal/brain-operations/:id/cancel', handlers.cancel);
+  router.post(
+    '/api/internal/brain-operations/:id/cancel',
+    boundedJson('256kb'),
+    handlers.cancel,
+  );
   return router;
 }
 
 module.exports = {
   assertLoopbackRequest,
   bearerCapability,
+  boundedJson,
   createBrainOperationRouteHandlers,
   createBrainOperationRoutes,
   errorStatus,

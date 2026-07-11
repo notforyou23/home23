@@ -1187,6 +1187,7 @@ async function prepareLegacyResearchPin({ home23Root, targetRoot, operationId: i
   });
   await quota.close();
   const digest = sourceDescriptorDigest(projected.descriptor);
+  const physical = await fsp.lstat(projected.projectionRoot, { bigint: true });
   await fsp.writeFile(coordinatorPinPath(operationRoot), `${JSON.stringify({
     version: 1,
     operationId: id,
@@ -1201,7 +1202,9 @@ async function prepareLegacyResearchPin({ home23Root, targetRoot, operationId: i
     ],
     committedBytes: projected.manifest.activeDelta.committedBytes,
     physicalRoot: projected.projectionRoot,
-    sourceFingerprint: null,
+    physicalRootIdentity: { dev: String(physical.dev), ino: String(physical.ino) },
+    projectionRoot: projected.projectionRoot,
+    sourceFingerprint: projected.sourceFingerprint,
   }, null, 2)}\n`);
   return { descriptor: projected.descriptor, digest };
 }
