@@ -18,6 +18,8 @@ const PROCESS_STARTED_AT = Date.now() - Math.floor(process.uptime() * 1000);
 const execFileAsync = promisify(execFile);
 const FALLBACK_PROCESS_TOKEN = `unverifiable:${process.pid}:${PROCESS_STARTED_AT}:${randomUUID()}`;
 const LOCK_TURNOVER = Symbol('scratch-lock-turnover');
+const PRIVATE_SCAN_RETRY = Symbol('scratch-private-scan-retry');
+const MAX_PRIVATE_SCAN_ATTEMPTS = 256;
 const cleanupCapabilities = new WeakMap();
 
 function quotaExceeded(message) {
@@ -444,6 +446,11 @@ async function scanPrivateBytes(operationRoot, {
   hooks,
 } = {}) {
   let total = 0;
+  function transientEntryChange(error) {
+    const retry = new Error('scratch entry changed during scan', { cause: error });
+    retry[PRIVATE_SCAN_RETRY] = true;
+    return retry;
+  }
   async function walk(directory, directoryIdentity, isRoot = false) {
     throwIfAborted(signal);
     await assertStableOperationRoot?.();
@@ -476,6 +483,7 @@ async function scanPrivateBytes(operationRoot, {
         if (error.code === 'ENOENT' && isRoot && name.startsWith(`${LOCK_NAME}.candidate-`)) {
           return null;
         }
+        if (error.code === 'ENOENT') throw transientEntryChange(error);
         throw error;
       });
       if (stat === null) continue;
@@ -485,7 +493,11 @@ async function scanPrivateBytes(operationRoot, {
         });
       }
       if (stat.isDirectory()) {
-        await walk(filePath, identityOf(stat), false);
+        await walk(filePath, identityOf(stat), false).catch((error) => {
+          if (error?.[PRIVATE_SCAN_RETRY]) throw error;
+          if (error?.code === 'ENOENT') throw transientEntryChange(error);
+          throw error;
+        });
       } else if (stat.isFile()) {
         const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
         let handle;
@@ -497,6 +509,7 @@ async function scanPrivateBytes(operationRoot, {
               vanishedLockCandidate = true;
               return null;
             }
+            if (error.code === 'ENOENT') throw transientEntryChange(error);
             throw error;
           });
           if (vanishedLockCandidate) continue;
@@ -522,13 +535,30 @@ async function scanPrivateBytes(operationRoot, {
     if (after.isSymbolicLink() || !after.isDirectory()
         || !sameIdentity(after, directoryIdentity)) {
       throw memorySourceError('invalid_memory_source', 'scratch directory changed after scan', {
-        retryable: false,
+      retryable: false,
       });
     }
   }
-  await walk(operationRoot, rootIdentity, true);
-  await assertStableOperationRoot?.();
-  return total;
+  let lastTransient = null;
+  for (let attempt = 0; attempt < MAX_PRIVATE_SCAN_ATTEMPTS; attempt += 1) {
+    total = 0;
+    try {
+      await walk(operationRoot, rootIdentity, true);
+      await assertStableOperationRoot?.();
+      return total;
+    } catch (error) {
+      if (!error?.[PRIVATE_SCAN_RETRY]) throw error;
+      lastTransient = error;
+      if (attempt + 1 < MAX_PRIVATE_SCAN_ATTEMPTS) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+    }
+  }
+  throw memorySourceError(
+    'source_busy',
+    'operation scratch changed continuously during quota scan',
+    { retryable: true, cause: lastTransient },
+  );
 }
 
 async function createOperationScratchQuota({

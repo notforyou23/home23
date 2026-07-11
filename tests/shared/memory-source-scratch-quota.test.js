@@ -844,6 +844,43 @@ test('metadata publishing and scans fail closed across deterministic operation-r
   scanQuota.close();
 });
 
+test('reconcile retries a disappearing attempt entry and counts its atomic replacement', async () => {
+  const operationRoot = await tempDir();
+  const attemptRoot = path.join(operationRoot, '.attempt-race');
+  const temporary = path.join(attemptRoot, 'memory-manifest.json.tmp');
+  const published = path.join(attemptRoot, 'memory-manifest.json');
+  const contents = 'durable projection manifest\n';
+  await fsp.mkdir(attemptRoot, { mode: 0o700 });
+  await fsp.writeFile(temporary, contents, { mode: 0o600 });
+  const canonicalAttemptRoot = await fsp.realpath(attemptRoot);
+
+  let publishDuringScan = false;
+  let scans = 0;
+  const quota = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes: 512 * 1024,
+    _testHooks: {
+      async afterScanDirectoryRead(directory) {
+        if (!publishDuringScan || directory !== canonicalAttemptRoot) return;
+        publishDuringScan = false;
+        scans += 1;
+        await fsp.rename(temporary, published);
+      },
+    },
+  });
+
+  publishDuringScan = true;
+  assert.equal(await quota.reconcile() <= quota.maxBytes, true);
+  assert.equal(scans, 1);
+  const ledger = JSON.parse(await fsp.readFile(
+    path.join(operationRoot, '.scratch-quota.json'),
+    'utf8',
+  ));
+  assert.equal(ledger.actualPrivateBytes, Buffer.byteLength(contents));
+  quota.close();
+  await fsp.rm(operationRoot, { recursive: true, force: true });
+});
+
 test('withPhysicalGrowth serializes bounded growth across concurrent quota handles', async () => {
   const operationRoot = await tempDir();
   const dataRoot = path.join(operationRoot, 'projection');
