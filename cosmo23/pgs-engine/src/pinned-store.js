@@ -1189,11 +1189,17 @@ async function openPinnedPGSStore({
       closed = true;
       if (abortListener) signal?.removeEventListener('abort', abortListener);
       abortListener = null;
-      if (db?.open) db.close();
-      db = null;
-      closeRegularFileCapture(databaseAnchor);
-      databaseAnchor = null;
-      closeScratchBoundary(boundary);
+      try {
+        if (db?.open) db.close();
+      } finally {
+        db = null;
+        try {
+          closeRegularFileCapture(databaseAnchor);
+        } finally {
+          databaseAnchor = null;
+          closeScratchBoundary(boundary);
+        }
+      }
     },
   };
   return Object.freeze(api);

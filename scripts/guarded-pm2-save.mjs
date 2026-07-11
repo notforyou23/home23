@@ -696,31 +696,38 @@ function normalizeExecMode(value) {
   return mode;
 }
 
+const PM2_PROCESS_METADATA_KEYS = new Set([
+  'name', 'namespace', 'status', 'pm_id', 'pm_pid', 'pid', 'pm_uptime', 'created_at',
+  'restart_time', 'unstable_restarts', 'exit_code', 'node_version', 'version',
+  'pm_exec_path', 'pm_cwd', 'exec_mode', 'instances', 'args', 'node_args', 'interpreter',
+  'exec_interpreter', 'autorestart', 'autostart', 'watch', 'merge_logs', 'out_file',
+  'error_file', 'pm_out_log_path', 'pm_err_log_path', 'pm_log_path', 'kill_retry_time',
+  'vizion', 'treekill', 'windowsHide', 'username', 'uid', 'gid', 'cwd', 'script',
+  'axm_dynamic', 'axm_options', 'axm_monitor', 'axm_actions', 'env', 'filter_env',
+  'envKeys', 'unique_id', 'prev_restart_delay', 'restart_delay', 'max_memory_restart',
+  'cron_restart', 'exp_backoff_restart_delay', 'stop_exit_codes', 'source_map_support',
+  'instance_var', 'increment_var', 'automation', 'km_link', 'pmx', 'log_type',
+  'pmx_module', 'module_name', 'module_conf',
+  'log_date_format', 'combine_logs', 'time', 'wait_ready', 'listen_timeout',
+  'kill_timeout', 'shutdown_with_message', 'namespace_id', 'from_chokidar',
+]);
+
+function isPm2ProcessMetadataKey(key) {
+  return PM2_PROCESS_METADATA_KEYS.has(key) || /^PM2_/.test(key);
+}
+
 function envKeys(row) {
   const keys = new Set();
   for (const container of [row?.env, row?.pm2_env?.env]) {
     if (!container || typeof container !== 'object' || Array.isArray(container)) continue;
-    for (const key of Object.keys(container)) keys.add(key);
+    for (const key of Object.keys(container)) {
+      if (!isPm2ProcessMetadataKey(key)) keys.add(key);
+    }
   }
   const flattened = row?.pm2_env || row;
-  const pm2Metadata = new Set([
-    'name', 'namespace', 'status', 'pm_id', 'pm_pid', 'pid', 'pm_uptime', 'created_at',
-    'restart_time', 'unstable_restarts', 'exit_code', 'node_version', 'version',
-    'pm_exec_path', 'pm_cwd', 'exec_mode', 'instances', 'args', 'node_args', 'interpreter',
-    'exec_interpreter', 'autorestart', 'autostart', 'watch', 'merge_logs', 'out_file',
-    'error_file', 'pm_out_log_path', 'pm_err_log_path', 'pm_log_path', 'kill_retry_time',
-    'vizion', 'treekill', 'windowsHide', 'username', 'uid', 'gid', 'cwd', 'script',
-    'axm_dynamic', 'axm_options', 'axm_monitor', 'axm_actions', 'env', 'filter_env',
-    'envKeys', 'unique_id', 'prev_restart_delay', 'restart_delay', 'max_memory_restart',
-    'cron_restart', 'exp_backoff_restart_delay', 'stop_exit_codes', 'source_map_support',
-    'instance_var', 'increment_var', 'automation', 'km_link', 'pmx', 'log_type',
-    'pmx_module', 'module_name', 'module_conf',
-    'log_date_format', 'combine_logs', 'time', 'wait_ready', 'listen_timeout',
-    'kill_timeout', 'shutdown_with_message', 'namespace_id', 'from_chokidar',
-  ]);
   if (flattened && typeof flattened === 'object' && !Array.isArray(flattened)) {
     for (const key of Object.keys(flattened)) {
-      if (!pm2Metadata.has(key)) keys.add(key);
+      if (!isPm2ProcessMetadataKey(key)) keys.add(key);
     }
   }
   return [...keys].sort((left, right) => left.localeCompare(right));
@@ -852,6 +859,7 @@ export function normalizeEcosystemRow(row, baseDir = process.cwd()) {
     args: orderedStrings(row?.args),
     interpreter: String(row?.interpreter ?? row?.exec_interpreter ?? 'node'),
     nodeArgs: orderedNodeArguments(row?.node_args ?? row?.nodeArgs),
+    envKeys: envKeys({ env: row?.env }),
   }), row, { ecosystem: true });
 }
 
@@ -903,7 +911,12 @@ function equalRow(left, right) {
 }
 
 function dumpComparableLiveRow(live, dump) {
-  return dump.pid === null ? { ...live, pid: null } : live;
+  // Saved PM2 dumps omit the live PID but may retain the process start time
+  // from the last save. That timestamp is historical, not current runtime
+  // identity. The guarded transaction freezes current PID and uptime across
+  // its own pre/post listings, so ignore both stale runtime fields only for
+  // this pid-less dump comparison.
+  return dump.pid === null ? { ...live, pid: null, uptime: dump.uptime } : live;
 }
 
 function equalLiveAndDumpRow(live, dump) {
@@ -985,19 +998,33 @@ export function assertRestartBaselineMonotonic(liveRows, baselineRows, allowChan
 }
 
 function equalEcosystemIdentity(live, expected) {
-  return equalRow(processIdentity(live), expected)
+  return equalRow(processIdentity(live), processIdentity(expected))
     && equalPrivateEnvironmentIdentity(live, expected);
 }
 
-function assertPlannedAllowlistedDelta(live, dump, name) {
-  if (!equalAllowlistedIdentity(live, dump)) {
+function assertPlannedAllowlistedDelta(live, dump, name, expected = null) {
+  if (expected && !equalEcosystemIdentity(live, expected)) {
+    throw typedError('pm2_ecosystem_identity_mismatch', name);
+  }
+  if (!expected && !equalAllowlistedIdentity(live, dump)) {
     throw typedError('pm2_allowlisted_identity_drift', name);
   }
-  if (live.restartCount < dump.restartCount) {
+  if (!expected && live.restartCount < dump.restartCount) {
     throw typedError('pm2_allowlisted_delta_invalid', name);
   }
   const liveKeys = new Set(live.envKeys);
   const dumpKeys = new Set(dump.envKeys);
+  if (expected) {
+    const configuredKeys = new Set(expected.envKeys || []);
+    if ([...configuredKeys].some((key) => !liveKeys.has(key))) {
+      throw typedError('pm2_allowlisted_delta_invalid', name);
+    }
+    const added = [...liveKeys].filter((key) => !dumpKeys.has(key));
+    if (added.some((key) => !configuredKeys.has(key))) {
+      throw typedError('pm2_allowlisted_delta_invalid', name);
+    }
+    return;
+  }
   if ([...dumpKeys].some((key) => !liveKeys.has(key))) {
     throw typedError('pm2_allowlisted_delta_invalid', name);
   }
@@ -1041,7 +1068,14 @@ export function comparePreSaveTables(live, dump, allowChanged, ecosystemIdentiti
         throw typedError('pm2_unrelated_drift', name);
       }
     }
-    if (allowChanged.has(name)) assertPlannedAllowlistedDelta(liveRow, dumpRow, name);
+    if (allowChanged.has(name)) {
+      assertPlannedAllowlistedDelta(
+        liveRow,
+        dumpRow,
+        name,
+        ecosystemIdentities.get(name) || null,
+      );
+    }
   }
   return unrelatedRestartBaselines.sort((left, right) => left.name.localeCompare(right.name));
 }

@@ -2,10 +2,16 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fsSync = require('node:fs');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const { createRequire } = require('node:module');
 const Database = require('better-sqlite3');
+const pinnedStoreRequire = createRequire(require.resolve(
+  '../../cosmo23/pgs-engine/src/pinned-store',
+));
+const PinnedStoreDatabase = pinnedStoreRequire('better-sqlite3');
 
 const {
   createOperationScratchQuota,
@@ -124,6 +130,38 @@ test('streams a revision-bound projection and creates deterministic bounded work
   assert.equal(unit.nodes.length <= 25, true);
   assert.equal(unit.stats.contextChars <= 4096, true);
   assert.match(unit.workUnitId, /^p-c-cluster-[0-2]-u\d{4}$/);
+});
+
+test('store close releases anchored handles when SQLite close throws', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const store = await openPinnedPGSStore({
+    sourcePin: syntheticSource({ nodeCount: 1, edgeCount: 0 }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    signal: new AbortController().signal,
+    limits,
+  });
+  const marker = Object.assign(new Error('sqlite close failed'), { code: 'sqlite_close_failed' });
+  const originalDatabaseClose = PinnedStoreDatabase.prototype.close;
+  const originalCloseSync = fsSync.closeSync;
+  let closedAnchorHandles = 0;
+  PinnedStoreDatabase.prototype.close = function closeThenThrow(...args) {
+    originalDatabaseClose.apply(this, args);
+    throw marker;
+  };
+  fsSync.closeSync = function instrumentedCloseSync(...args) {
+    closedAnchorHandles += 1;
+    return originalCloseSync.apply(this, args);
+  };
+
+  try {
+    assert.throws(() => store.close(), error => error === marker);
+  } finally {
+    PinnedStoreDatabase.prototype.close = originalDatabaseClose;
+    fsSync.closeSync = originalCloseSync;
+  }
+  assert.equal(closedAnchorHandles > 0, true);
 });
 
 test('rejects a symlinked PGS directory without touching its outside target', async t => {

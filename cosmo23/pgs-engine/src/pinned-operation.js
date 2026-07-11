@@ -375,6 +375,11 @@ async function runPinnedOperation(engine, options = {}) {
   const emit = event => {
     if (typeof reportEvent === 'function') reportEvent(Object.freeze(event));
   };
+  emit({
+    type: 'progress',
+    phase: 'pgs_projection',
+    stage: 'projection_started',
+  });
   const receiptBoundary = await captureOperationScratchBoundary(scratchDir, scratchQuota);
   let receiptDirectory;
   let store;
@@ -405,6 +410,14 @@ async function runPinnedOperation(engine, options = {}) {
         completeCoverage: true,
       })
       : sourcePin.evidence || null;
+    emit({
+      type: 'progress',
+      phase: 'pgs_projection',
+      stage: 'projection_complete',
+      nodeCount: returnedTotals.nodes,
+      edgeCount: returnedTotals.edges,
+      workUnitCount: store.stats?.workUnitCount,
+    });
   } catch (error) {
     try {
       store?.close();
@@ -413,12 +426,22 @@ async function runPinnedOperation(engine, options = {}) {
     }
     throw error;
   }
-  const validateCompletion = engine.requireCompleteProviderResult || requireCompleteProviderResult;
-  const attemptId = `attempt-${randomUUID()}`;
-  const pending = store.snapshotPendingWorkUnits({ attemptId, limit: limits.maxSelectedWorkUnits });
-  const selectedCount = pending.length ? Math.max(1, Math.ceil(pending.length * sweepFraction)) : 0;
-  const selected = pending.slice(0, selectedCount);
   const uncommitted = [];
+  try {
+    const validateCompletion = engine.requireCompleteProviderResult || requireCompleteProviderResult;
+    const attemptId = `attempt-${randomUUID()}`;
+    const totalPendingWorkUnits = store.countPendingWorkUnits();
+    const pending = store.snapshotPendingWorkUnits({ attemptId, limit: limits.maxSelectedWorkUnits });
+    const selectedCount = pending.length ? Math.max(1, Math.ceil(pending.length * sweepFraction)) : 0;
+    const selected = pending.slice(0, selectedCount);
+    emit({
+      type: 'progress',
+      phase: 'pgs_sweep',
+      stage: 'work_selected',
+      selectedWorkUnits: selected.length,
+      candidateWorkUnits: pending.length,
+      pendingWorkUnits: totalPendingWorkUnits,
+    });
 
   async function providerCall({
     phase,
@@ -513,7 +536,6 @@ async function runPinnedOperation(engine, options = {}) {
     return { workUnitId, output };
   }
 
-  try {
     for (let offset = 0; offset < selected.length; offset += concurrency) {
       throwIfAborted(signal);
       const ids = selected.slice(offset, offset + concurrency);
@@ -551,6 +573,13 @@ async function runPinnedOperation(engine, options = {}) {
       }
     }
     const pendingWorkUnits = store.countPendingWorkUnits();
+    emit({
+      type: 'progress',
+      phase: 'pgs_sweep',
+      stage: 'sweep_complete',
+      successfulSweeps: sweepOutputs.length,
+      pendingWorkUnits,
+    });
     const metadata = { pgs: {
       successfulSweeps: sweepOutputs.length,
       retryablePartitions: store.listRetryablePartitions(),
@@ -585,6 +614,12 @@ async function runPinnedOperation(engine, options = {}) {
 
     let answer;
     try {
+      emit({
+        type: 'progress',
+        phase: 'pgs_synthesis',
+        stage: 'synthesis_started',
+        sweepOutputs: sweepOutputs.length,
+      });
       const synthesisInput = buildSynthesisInput(
         query,
         sweepOutputs,
@@ -601,6 +636,12 @@ async function runPinnedOperation(engine, options = {}) {
       answer = String(completion.content || '').trim();
       if (!answer) throw typed('provider_incomplete', 'PGS synthesis returned no content', true);
       assertBytes(answer, limits.maxSynthesisOutputBytes, 'PGS synthesis output');
+      emit({
+        type: 'progress',
+        phase: 'pgs_synthesis',
+        stage: 'synthesis_complete',
+        answerBytes: utf8Bytes(answer),
+      });
     } catch (error) {
       if (signal?.aborted) throw signal.reason;
       if (!sweepOutputs.length || !canReturnUsefulSynthesisPartial(error)) throw error;
@@ -638,8 +679,11 @@ async function runPinnedOperation(engine, options = {}) {
     }
     throw error;
   } finally {
-    store.close();
-    closeScratchBoundary(receiptBoundary);
+    try {
+      store.close();
+    } finally {
+      closeScratchBoundary(receiptBoundary);
+    }
   }
 }
 

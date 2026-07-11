@@ -995,8 +995,27 @@ function resultsFromSearch(value) {
 
 function deriveCanaryQuery(node) {
   const concept = typeof node?.concept === 'string' ? node.concept.trim() : '';
-  const tokens = concept.split(/\s+/).filter((token) => token.length >= 5 && token.length <= 64);
-  const query = tokens.slice(0, 4).join(' ') || String(node?.id || '').trim();
+  const tokens = concept.split(/\s+/).filter((token) => token.length >= 5 && token.length <= 96);
+  const ranked = tokens
+    .map((token, index) => ({
+      token,
+      index,
+      score: Math.min(token.length, 64)
+        + (token.includes('_') ? 100 : 0)
+        + (/[/:@]/.test(token) ? 10 : 0),
+    }));
+  const numeric = ranked.filter(({ token }) => /\d/.test(token)).slice(0, 2);
+  const signature = ranked
+    .filter(({ token }) => token.includes('_') || token.length >= 24)
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, 4);
+  const selectedIndexes = new Set([...numeric, ...signature].map(({ index }) => index));
+  const distinctive = ranked
+    .filter(({ index }) => selectedIndexes.has(index))
+    .sort((left, right) => left.index - right.index)
+    .map(({ token }) => token);
+  const query = distinctive.join(' ') || tokens.slice(0, 12).join(' ')
+    || String(node?.id || '').trim();
   if (!query) throw typedError('canary_unavailable');
   return query.slice(0, 256);
 }
@@ -1054,9 +1073,16 @@ async function discoverCanary({ client, selector, signal }) {
   const candidates = nodesFromGraph(graph).filter((node) => node?.id != null);
   for (const node of candidates) {
     const query = deriveCanaryQuery(node);
+    const tagCandidate = typeof node?.tag === 'string' ? node.tag.trim() : '';
+    const tag = tagCandidate && tagCandidate.length <= 256 ? tagCandidate : null;
     const searchOutcome = await awaitShortResult(
       client,
-      await client.search({ ...(selector ? { target: selector } : {}), query, topK: 20 }, signal),
+      await client.search({
+        ...(selector ? { target: selector } : {}),
+        query,
+        topK: 20,
+        ...(tag ? { tag } : {}),
+      }, signal),
       signal,
     );
     operationTerminals.push(searchOutcome.terminal);

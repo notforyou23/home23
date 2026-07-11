@@ -312,11 +312,28 @@ test('normalized process identity includes uptime interpreter and node arguments
   assert.deepEqual(normalized.nodeArgs, ['--max-old-space-size=2048']);
 });
 
+test('PM2 runtime metadata nested in process env is not treated as application env', async () => {
+  const { normalizePm2Row } = await import('../../scripts/guarded-pm2-save.mjs');
+  const normalized = normalizePm2Row(liveRow('home23-jerry-dash', {
+    env: {
+      HOME23_MODE: 'test',
+      unique_id: 'pm2-generated-id',
+      cwd: '/apps',
+      max_memory_restart: 1024,
+      PM2_DISCRETE_MODE: 'true',
+    },
+  }));
+
+  assert.deepEqual(normalized.envKeys, ['HOME23_MODE']);
+});
+
 test('realistic dump rows without runtime PIDs compare safely while live PID is frozen separately', async () => {
   const { comparePreSaveTables, normalizePm2Table } = await import('../../scripts/guarded-pm2-save.mjs');
   const persisted = dumpRow('unrelated-service');
   delete persisted.pid;
-  const live = normalizePm2Table([liveRow('unrelated-service')]);
+  const live = normalizePm2Table([liveRow('unrelated-service', {
+    pm_uptime: persisted.pm_uptime + 60_000,
+  })]);
   const dump = normalizePm2Table([persisted]);
   assert.equal(dump.get('unrelated-service').pid, null);
   assert.doesNotThrow(() => comparePreSaveTables(live, dump, new Set()));
@@ -769,6 +786,90 @@ test('allowlisted rows permit only PID, restart, and environment-key drift', asy
       new Set(['home23-jerry-dash']),
     ),
     (error) => error.code === 'pm2_allowlisted_delta_invalid',
+  );
+});
+
+test('configured allowlisted recreation accepts ecosystem env additions and stale env removal', async () => {
+  const {
+    comparePreSaveTables,
+    normalizeEcosystemTable,
+    normalizePm2Table,
+  } = await import('../../scripts/guarded-pm2-save.mjs');
+  const name = 'home23-jerry-dash';
+  const expectedEnvironment = {
+    HOME23_MODE: 'test',
+    HOME23_MCP_AVAILABLE: 'true',
+  };
+  const ecosystem = normalizeEcosystemTable([
+    ecosystemApp(name, { env: expectedEnvironment }),
+  ]);
+  const live = normalizePm2Table([liveRow(name, {
+    env: expectedEnvironment,
+  })]);
+  const dump = normalizePm2Table([dumpRow(name, {
+    env: {
+      HOME23_MODE: 'test',
+      STALE_PRE_RECREATION_ENV: 'remove-me',
+    },
+  })]);
+
+  assert.doesNotThrow(
+    () => comparePreSaveTables(live, dump, new Set([name]), ecosystem),
+  );
+
+  const unexpected = normalizePm2Table([liveRow(name, {
+    env: {
+      ...expectedEnvironment,
+      UNDECLARED_ENV_ADDITION: 'refuse-me',
+    },
+  })]);
+  assert.throws(
+    () => comparePreSaveTables(unexpected, dump, new Set([name]), ecosystem),
+    (error) => error.code === 'pm2_allowlisted_delta_invalid',
+  );
+});
+
+test('configured allowlisted recreation accepts a restart counter reset', async () => {
+  const {
+    comparePreSaveTables,
+    normalizeEcosystemTable,
+    normalizePm2Table,
+  } = await import('../../scripts/guarded-pm2-save.mjs');
+  const name = 'home23-forrest';
+  const ecosystem = normalizeEcosystemTable([ecosystemApp(name)]);
+  const live = normalizePm2Table([liveRow(name, { restart_time: 1 })]);
+  const dump = normalizePm2Table([dumpRow(name, { restart_time: 21 })]);
+
+  assert.doesNotThrow(
+    () => comparePreSaveTables(live, dump, new Set([name]), ecosystem),
+  );
+  assert.throws(
+    () => comparePreSaveTables(live, dump, new Set([name])),
+    (error) => error.code === 'pm2_allowlisted_delta_invalid',
+  );
+});
+
+test('configured allowlisted recreation accepts an exact ecosystem script transition', async () => {
+  const {
+    comparePreSaveTables,
+    normalizeEcosystemTable,
+    normalizePm2Table,
+  } = await import('../../scripts/guarded-pm2-save.mjs');
+  const name = 'home23-jerry-harness';
+  const ecosystem = normalizeEcosystemTable([
+    ecosystemApp(name, { script: 'home.js' }),
+  ]);
+  const live = normalizePm2Table([liveRow(name, {
+    pm_exec_path: '/apps/home.js',
+    restart_time: 0,
+  })]);
+  const dump = normalizePm2Table([dumpRow(name, {
+    pm_exec_path: '/apps/home-jerry.js',
+    restart_time: 151,
+  })]);
+
+  assert.doesNotThrow(
+    () => comparePreSaveTables(live, dump, new Set([name]), ecosystem),
   );
 });
 

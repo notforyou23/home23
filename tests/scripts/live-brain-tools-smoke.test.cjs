@@ -1597,7 +1597,15 @@ test('authoritative canary discovery precedes query and typed failures remain fa
     operationId: 'op_graph_canary_0001',
     operationType: 'graph',
     result: {
-      nodes: [{ id: 'n-canary', concept: 'authoritative canary phrase' }],
+      nodes: [{
+        id: 'n-canary',
+        tag: 'state_snapshot',
+        concept: '[STATE_SNAPSHOT] RECENT.md as of cycle 42518.\n\n'
+          + '_Generated: 2026-07-10T14:14:06.710Z.\n'
+          + 'Shared status markers disk_free_ok journal_freshness '
+          + 'jerry_harness_cron_jobs_healthy retrieval_health_ok.\n'
+          + 'Distinctive proof marker jerry_create_file_tool_writes_to_disk.',
+      }],
       edges: [],
     },
   });
@@ -1605,6 +1613,7 @@ test('authoritative canary discovery precedes query and typed failures remain fa
     operationId: 'op_search_0001', operationType: 'search',
     result: { results: [{ id: 'n-canary' }] },
   });
+  let searchRequest;
   const client = {
     async resolveTarget() {
       calls.push('resolve');
@@ -1623,8 +1632,9 @@ test('authoritative canary discovery precedes query and typed failures remain fa
         sourceEvidence: graphTerminal.sourceEvidence,
       };
     },
-    async search() {
+    async search(request) {
       calls.push('search');
+      searchRequest = request;
       return {
         operationId: searchTerminal.operationId,
         state: searchTerminal.state,
@@ -1650,6 +1660,10 @@ test('authoritative canary discovery precedes query and typed failures remain fa
     `protected-${searchTerminal.operationId}-result`,
   ]);
   assert.equal(graphRequest.edgeLimit, 1);
+  assert.equal(searchRequest.tag, 'state_snapshot');
+  assert.match(searchRequest.query, /42518/);
+  assert.match(searchRequest.query, /2026-07-10T14:14:06\.710Z/);
+  assert.match(searchRequest.query, /jerry_create_file_tool_writes_to_disk/);
   assert.equal(discovered.nodeId, 'n-canary');
   assert.equal(discovered.sourceRevision, 7);
   assert.deepEqual(
@@ -1955,6 +1969,76 @@ test('canary discovery receipts every search attempt and accepts null owners onl
     values: {}, context: state.context, baseUrl: 'http://fixture', callerAgent: 'jerry',
     signal: new AbortController().signal,
   }), (error) => error.code === 'canary_target_invalid');
+});
+
+test('canary discovery forwards a 256-character tag and omits an oversized tag', async (t) => {
+  const { executeScenario } = await import('../../scripts/live-brain-tools-smoke.mjs');
+  const state = await fixture();
+  t.after(() => fs.rm(state.root, { recursive: true, force: true }));
+  const allowedTag = 'a'.repeat(256);
+  const oversizedTag = 'b'.repeat(257);
+  const graphTerminal = operation({
+    operationId: 'op_graph_tag_boundary_0001',
+    operationType: 'graph',
+    result: {
+      nodes: [
+        { id: 'first', tag: allowedTag, concept: 'first authoritative candidate phrase' },
+        { id: 'second', tag: oversizedTag, concept: 'second authoritative candidate phrase' },
+      ],
+      edges: [],
+    },
+  });
+  const firstSearch = operation({
+    operationId: 'op_search_tag_boundary_first_0001',
+    operationType: 'search',
+    result: { results: [] },
+  });
+  const secondSearch = operation({
+    operationId: 'op_search_tag_boundary_second_0001',
+    operationType: 'search',
+    result: { results: [{ id: 'second' }] },
+  });
+  const terminals = new Map([
+    [graphTerminal.operationId, graphTerminal],
+    [firstSearch.operationId, firstSearch],
+    [secondSearch.operationId, secondSearch],
+  ]);
+  const searchRequests = [];
+  let searchIndex = 0;
+  const discovered = await executeScenario({
+    scenario: 'discover-canary', modules: {},
+    client: {
+      async resolveTarget() {
+        return {
+          id: 'brain-jerry', ownerAgent: 'jerry', kind: 'resident', lifecycle: 'resident',
+        };
+      },
+      async graph() {
+        return {
+          operationId: graphTerminal.operationId, state: 'complete',
+          ...graphTerminal.result, sourceEvidence: graphTerminal.sourceEvidence,
+        };
+      },
+      async search(request) {
+        searchRequests.push(request);
+        if (request.tag !== undefined && request.tag.length > 256) {
+          throw Object.assign(new Error('invalid_request'), { code: 'invalid_request' });
+        }
+        const terminal = [firstSearch, secondSearch][searchIndex++];
+        return {
+          operationId: terminal.operationId, state: 'complete',
+          ...terminal.result, sourceEvidence: terminal.sourceEvidence,
+        };
+      },
+      async inspectOperation(operationId) { return terminals.get(operationId); },
+    },
+    values: {}, context: state.context,
+    baseUrl: 'http://fixture', callerAgent: 'jerry', signal: new AbortController().signal,
+  });
+
+  assert.equal(searchRequests[0].tag, allowedTag);
+  assert.equal(Object.hasOwn(searchRequests[1], 'tag'), false);
+  assert.equal(discovered.nodeId, 'second');
 });
 
 test('own scenario emits one protected terminal receipt for each unique tool operation', async (t) => {

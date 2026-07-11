@@ -41,6 +41,7 @@ const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DEFAULT_HEARTBEAT_MS = 10_000;
 const DEFAULT_EVENT_SILENCE_MS = 60_000;
+const DEFAULT_WORKER_START_TIMEOUT_MS = 30 * MINUTE_MS;
 const DEFAULT_STOP_TIMEOUT_MS = 180_000;
 const CAPABILITY_TTL_MS = 60_000;
 const MAX_ACTIVE_PROVIDER_CALLS = 4096;
@@ -453,6 +454,8 @@ class BrainOperationCoordinator {
     this.eventSilenceMs = options.limits?.eventSilenceMs ?? DEFAULT_EVENT_SILENCE_MS;
     this.workerControlTimeoutMs = options.limits?.workerControlTimeoutMs
       ?? DEFAULT_EVENT_SILENCE_MS;
+    this.workerStartTimeoutMs = options.limits?.workerStartTimeoutMs
+      ?? DEFAULT_WORKER_START_TIMEOUT_MS;
     this.stopTimeoutMs = options.limits?.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
     this.executionDeadlineMsByType = Object.freeze({
       ...DEFAULT_EXECUTION_DEADLINES_MS,
@@ -461,6 +464,7 @@ class BrainOperationCoordinator {
     if (!Number.isFinite(this.heartbeatMs) || this.heartbeatMs <= 0
         || !Number.isFinite(this.eventSilenceMs) || this.eventSilenceMs <= 0
         || !Number.isFinite(this.workerControlTimeoutMs) || this.workerControlTimeoutMs <= 0
+        || !Number.isFinite(this.workerStartTimeoutMs) || this.workerStartTimeoutMs <= 0
         || !Number.isFinite(this.stopTimeoutMs) || this.stopTimeoutMs <= 0) {
       throw coordinatorError('coordinator_configuration_invalid');
     }
@@ -643,7 +647,7 @@ class BrainOperationCoordinator {
     return issueCapability(this.capabilityKey, claims);
   }
 
-  async _boundedWorkerControl(callback) {
+  async _boundedWorkerControl(callback, timeoutMs = this.workerControlTimeoutMs) {
     let timer = null;
     try {
       return await new Promise((resolve, reject) => {
@@ -656,7 +660,7 @@ class BrainOperationCoordinator {
         };
         timer = this.setTimeout(() => {
           finish(reject, coordinatorError('worker_control_timeout'));
-        }, this.workerControlTimeoutMs);
+        }, timeoutMs);
         Promise.resolve()
           .then(callback)
           .then((value) => finish(resolve, value), (error) => finish(reject, error));
@@ -711,6 +715,7 @@ class BrainOperationCoordinator {
         silenceTimer: null,
         streamController: null,
         pumpPromise: null,
+        workerStartPromise: null,
         workerCursor: 0,
         providerSnapshotThrough: null,
         providerCalls: new Map(),
@@ -948,15 +953,37 @@ class BrainOperationCoordinator {
   }
 
   async _startWorker(record) {
-    const workerRecord = await this._requestWorkerStart(record);
-    return this._publishStartedWorkerLocked(record, workerRecord);
+    return this._trackWorkerStart(record, async () => {
+      const workerRecord = await this._requestWorkerStart(record);
+      return this._publishStartedWorkerLocked(record, workerRecord);
+    });
+  }
+
+  _trackWorkerStart(record, callback) {
+    const runtime = this.runtimes.get(record.operationId);
+    if (!runtime) throw coordinatorError('coordinator_stopped');
+    const settlement = Promise.resolve().then(callback);
+    runtime.workerStartPromise = settlement;
+    const clear = () => {
+      if (runtime.workerStartPromise === settlement) runtime.workerStartPromise = null;
+    };
+    settlement.then(clear, clear);
+    return settlement;
   }
 
   async _requestWorkerStart(record) {
     const context = await this._buildWorkerContext(record);
+    const runtime = this.runtimes.get(record.operationId);
+    if (!runtime || runtime.stopped || this.stopped) {
+      throw coordinatorError('coordinator_stopped');
+    }
     const capability = this._issueCapability(record, 'start');
+    const starting = this._boundedWorkerControl(
+        () => this.worker.start(context, capability),
+        this.workerStartTimeoutMs,
+      );
     return validateWorkerRecord(
-      await this._boundedWorkerControl(() => this.worker.start(context, capability)),
+      await starting,
       { operationId: record.operationId, operationType: record.operationType },
     );
   }
@@ -966,6 +993,10 @@ class BrainOperationCoordinator {
     if (TERMINAL_STATES.has(current.state)) {
       void this._cancelWorker(current).catch(() => {});
       return current;
+    }
+    if (this.stopped) {
+      await this._cancelWorker(current).catch(() => {});
+      return this.store.get(current.operationId);
     }
     const existingWorker = await this.store.getWorker(record.operationId);
     if (existingWorker === null) current = await this._persistWorkerReference(current, workerRecord);
@@ -1061,36 +1092,40 @@ class BrainOperationCoordinator {
     if (TERMINAL_STATES.has(record.state)) return record;
     if (this.stopped) return record;
 
-    let workerRecord;
-    try {
-      workerRecord = await this._requestWorkerStart(record);
-    } catch (error) {
-      return this._enqueue(record.operationId, async () => {
-        const current = await this.store.get(record.operationId);
-        if (TERMINAL_STATES.has(current.state)) return current;
-        try {
-          const recovered = await this._probeUncertainStartLocked(current);
-          if (recovered) return recovered;
-        } catch (probeError) {
-          if (probeError?.code !== 'worker_not_found') {
-            // A status transport/authentication failure cannot prove that the
-            // worker is absent. Leave queued durable truth for reconciliation.
-            throw error;
+    return this._trackWorkerStart(record, async () => {
+      let workerRecord;
+      try {
+        workerRecord = await this._requestWorkerStart(record);
+      } catch (error) {
+        return this._enqueue(record.operationId, async () => {
+          const current = await this.store.get(record.operationId);
+          if (TERMINAL_STATES.has(current.state)) return current;
+          try {
+            const recovered = await this._probeUncertainStartLocked(current);
+            if (recovered) return recovered;
+          } catch (probeError) {
+            if (probeError?.code !== 'worker_not_found') {
+              // A status transport/authentication failure cannot prove that the
+              // worker is absent. Leave queued durable truth for reconciliation.
+              throw error;
+            }
           }
-        }
-        const persistedWorker = await this.store.getWorker(record.operationId).catch(() => null);
-        await this._failLocked(record.operationId, {
-          state: 'failed',
-          code: sanitizeErrorCode(error?.code, 'worker_start_failed'),
-          message: error?.message || 'worker start failed',
-          retryable: error?.retryable !== false,
-          cancelWorker: persistedWorker !== null,
+          await this._failLocked(record.operationId, {
+            state: 'failed',
+            code: sanitizeErrorCode(error?.code, 'worker_start_failed'),
+            message: error?.message || 'worker start failed',
+            retryable: error?.retryable !== false,
+            // Remote workers register pending starts before long source-open
+            // work. A start timeout can therefore be cancellable even though no
+            // worker reference has reached the requester store yet.
+            cancelWorker: true,
+          });
+          throw error;
         });
-        throw error;
-      });
-    }
-    return this._enqueue(record.operationId, () =>
-      this._publishStartedWorkerLocked(record, workerRecord));
+      }
+      return this._enqueue(record.operationId, () =>
+        this._publishStartedWorkerLocked(record, workerRecord));
+    });
   }
 
   async status(operationId) {
@@ -1626,7 +1661,15 @@ class BrainOperationCoordinator {
         await this._enqueue(operationId, () => this._finalizeFromWorkerLocked(operationId, status));
         return;
       }
-      await this._enqueue(operationId, () => this._rearmProviderCallsLocked(current, status.activeProviderCalls, runtime));
+      await this._enqueue(operationId, async () => {
+        await this._rearmProviderCallsLocked(current, status.activeProviderCalls, runtime);
+        // A silence-recovery status can already cover provider events that the
+        // aborted stream never delivered. Replaying those rows on reconnect is
+        // evidence recovery, not a second provider selection.
+        runtime.providerSnapshotThrough = status.eventSequence > runtime.workerCursor
+          ? status.eventSequence
+          : null;
+      });
     }
   }
 
@@ -2297,16 +2340,23 @@ class BrainOperationCoordinator {
 
   async _stop() {
     this.stopped = true;
-    const pumps = [];
+    const settlements = [];
     for (const [operationId, runtime] of this.runtimes) {
-      if (runtime.pumpPromise) pumps.push(runtime.pumpPromise);
+      if (runtime.pumpPromise) settlements.push(runtime.pumpPromise);
+      if (runtime.workerStartPromise) {
+        settlements.push(runtime.workerStartPromise);
+        settlements.push((async () => {
+          const record = await this.store.get(operationId);
+          await this._cancelWorker(record);
+        })());
+      }
       this._stopRuntime(operationId);
     }
-    if (pumps.length === 0) return;
+    if (settlements.length === 0) return;
     let timer = null;
     try {
       await Promise.race([
-        Promise.allSettled(pumps),
+        Promise.allSettled(settlements),
         new Promise((resolve, reject) => {
           timer = globalThis.setTimeout(() => {
             reject(coordinatorError('coordinator_stop_timeout'));
@@ -2344,5 +2394,6 @@ module.exports = {
   DEFAULT_EXECUTION_DEADLINES_MS,
   DEFAULT_HEARTBEAT_MS,
   DEFAULT_STOP_TIMEOUT_MS,
+  DEFAULT_WORKER_START_TIMEOUT_MS,
   enrichSourceEvidence,
 };

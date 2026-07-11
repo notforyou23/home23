@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fsSync = require('node:fs');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -331,9 +332,22 @@ test('pinned PGS keeps provider roles exact and returns machine-readable durable
     limits.maxSynthesisOutputBytes);
   assert.equal(events.filter(event => event.type === 'provider_selected').length, 7);
   assert.equal(events.filter(event => event.type === 'provider_call_terminal').length, 7);
+  assert.deepEqual(events.filter(event => event.type === 'progress').map(event => event.stage), [
+    'projection_started',
+    'projection_complete',
+    'work_selected',
+    'sweep_complete',
+    'synthesis_started',
+    'synthesis_complete',
+  ]);
+  const selectionProgress = events.find(event => event.stage === 'work_selected');
+  assert.equal(selectionProgress.candidateWorkUnits, 6);
+  assert.equal(selectionProgress.pendingWorkUnits, 6);
   assert.equal(events.every(event => event.type !== 'response.output_text.delta'), true);
-  assert.equal(events.find(event => event.phase === 'pgs_sweep').provider, 'sweep');
-  assert.equal(events.find(event => event.phase === 'pgs_synthesis').provider, 'synth');
+  assert.equal(events.find(event =>
+    event.type === 'provider_selected' && event.phase === 'pgs_sweep').provider, 'sweep');
+  assert.equal(events.find(event =>
+    event.type === 'provider_selected' && event.phase === 'pgs_synthesis').provider, 'synth');
 
   const receipts = await fs.readdir(path.join(scratch.scratchDir, 'pgs-receipts'));
   assert.equal(receipts.length, 1);
@@ -345,6 +359,95 @@ test('pinned PGS keeps provider roles exact and returns machine-readable durable
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.match(receipt.attemptId, /^attempt-/);
   assert.equal(receipt.result.answer, 'final pinned synthesis');
+});
+
+test('PGS work selection telemetry reports total pending beyond its bounded candidate snapshot', async t => {
+  const scratch = await scratchFixture(t);
+  const fixture = makeEngine();
+  const events = [];
+  const candidateIds = Array.from({ length: 256 }, (_, index) => `p-c-one-u${String(index).padStart(4, '0')}`);
+  let committed = [];
+  fixture.engine.openPinnedPGSStore = async () => ({
+    stats: { nodeCount: 1_000, edgeCount: 0, workUnitCount: 1_000 },
+    snapshotPendingWorkUnits({ limit }) { return candidateIds.slice(0, limit); },
+    beginWorkUnitAttempt() {},
+    loadWorkUnit(workUnitId) {
+      return {
+        workUnitId, partitionId: 'c-one',
+        nodes: [{ id: workUnitId, content: 'bounded candidate evidence' }], edges: [],
+      };
+    },
+    async commitSuccessfulSweeps(rows) {
+      committed = rows.map(row => ({
+        ...row, partitionId: 'c-one', provider: 'sweep', model: 'shared-model',
+      }));
+    },
+    listSuccessfulSweeps() { return committed; },
+    listRetryablePartitions() { return ['c-one']; },
+    countPendingWorkUnits() { return committed.length ? 999 : 1_000; },
+    recordRetryableFailure() {},
+    close() {},
+  });
+
+  const envelope = await fixture.engine.runPinnedOperation({
+    ...options(sourcePin({ nodeCount: 1_000 }), scratch, {
+      reportEvent: event => events.push(event),
+      pgsConfig: { sweepFraction: 0.001 },
+    }),
+    limits: { ...limits, maxSelectedWorkUnits: 256 },
+  });
+
+  assert.equal(envelope.state, 'partial');
+  const selected = events.find(event => event.stage === 'work_selected');
+  assert.equal(selected.candidateWorkUnits, 256);
+  assert.equal(selected.selectedWorkUnits, 1);
+  assert.equal(selected.pendingWorkUnits, 1_000);
+  assert.equal(envelope.result.metadata.pgs.pendingWorkUnits, 999);
+});
+
+test('PGS closes an opened store when work-selection progress reporting throws', async t => {
+  const scratch = await scratchFixture(t);
+  const fixture = makeEngine();
+  const store = singleWorkStore();
+  let closed = false;
+  store.close = () => { closed = true; };
+  fixture.engine.openPinnedPGSStore = async () => store;
+  const marker = Object.assign(new Error('progress sink failed'), { code: 'worker_event_invalid' });
+
+  await assert.rejects(
+    fixture.engine.runPinnedOperation(options(sourcePin({ nodeCount: 1 }), scratch, {
+      reportEvent(event) {
+        if (event.stage === 'work_selected') throw marker;
+      },
+    })),
+    error => error === marker,
+  );
+  assert.equal(closed, true);
+});
+
+test('PGS closes its receipt boundary when store cleanup throws', async t => {
+  const scratch = await scratchFixture(t);
+  const fixture = makeEngine();
+  const store = singleWorkStore();
+  const marker = Object.assign(new Error('store cleanup failed'), { code: 'pgs_cleanup_failed' });
+  store.close = () => { throw marker; };
+  fixture.engine.openPinnedPGSStore = async () => store;
+  const originalCloseSync = fsSync.closeSync;
+  let closedBoundaryHandles = 0;
+  fsSync.closeSync = function instrumentedCloseSync(...args) {
+    closedBoundaryHandles += 1;
+    return originalCloseSync.apply(this, args);
+  };
+
+  try {
+    await assert.rejects(
+      fixture.engine.runPinnedOperation(options(sourcePin({ nodeCount: 1 }), scratch)),
+      error => error === marker,
+    );
+  } finally {
+    fsSync.closeSync = originalCloseSync;
+  }
+  assert.equal(closedBoundaryHandles > 0, true);
 });
 
 test('PGS bounds exact gpt-5.4-mini and gpt-5.5 inputs by decoded UTF-8 bytes', async t => {
