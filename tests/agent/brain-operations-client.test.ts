@@ -17,7 +17,7 @@ import {
 } from '../helpers/brain-operation-record.js';
 import type {
   BrainCatalogEntry, BrainOperationEvent, BrainOperationEventGap, BrainOperationNotification,
-  BrainOperationRecord,
+  BrainOperationRecord, BrainOperationResult,
 } from '../../src/agent/brain-operations/types.js';
 
 const OPAQUE_RESULT_HANDLE = 'brres_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
@@ -894,10 +894,80 @@ test('explicit operator cancellation posts cancel and returns cancelled', async 
   assert.equal(cancelCalls, 1);
 });
 
-test('SSE connect/header deadline detaches a durable operation after a bounded status read', async () => {
+test('one SSE connect timeout status-checks and reconnects while the durable query is running', async () => {
+  const clock = new ManualClock();
+  const firstConnectStarted = deferred<void>();
+  const neverFirstHeaders = deferred<Response>();
+  const second = controlledStream();
+  let connectAttempts = 0;
+  let detachCalls = 0;
+  let terminal = false;
+  let settled: BrainOperationResult | null = null;
+  const running = record('op-connect-retry', 1, 'running');
+  const complete = record('op-connect-retry', 2, 'complete', { answer: 'reattached after headers' });
+  const fetchImpl: typeof fetch = async (url, init) => {
+    const parsed = new URL(String(url));
+    if (init?.method === 'POST' && parsed.pathname.endsWith('/detach')) {
+      detachCalls += 1;
+      return new Response(JSON.stringify(running), { status: 200 });
+    }
+    if (init?.method === 'POST') {
+      return new Response(JSON.stringify(record('op-connect-retry', 0, 'queued')), { status: 200 });
+    }
+    if (parsed.pathname.endsWith('/events')) {
+      connectAttempts += 1;
+      if (connectAttempts === 1) {
+        firstConnectStarted.resolve(undefined);
+        return neverFirstHeaders.promise;
+      }
+      return new Response(second.body, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }
+    if (parsed.pathname.endsWith('/result')) {
+      return new Response(JSON.stringify(resultEnvelope(complete)), { status: 200 });
+    }
+    if (parsed.pathname.endsWith('/op-connect-retry')) {
+      return new Response(JSON.stringify(terminal ? complete : running), { status: 200 });
+    }
+    return new Response('', { status: 404 });
+  };
+  const client = new BrainOperationsClient({
+    baseUrl: 'http://fixture', callerAgent: 'jerry', fetchImpl,
+    connectMs: 10, statusReadMs: 10, queryWaitMs: 100, reconnectDelayMs: 1,
+    now: clock.now, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
+  });
+  const pending = client.query({ query: 'connect retry' }).then((value) => {
+    settled = value;
+    return value;
+  });
+  await firstConnectStarted.promise;
+  clock.advance(11);
+  for (let step = 0; step < 8 && connectAttempts < 2; step += 1) {
+    await flushMicrotasks();
+    clock.advance(2);
+  }
+  await flushMicrotasks();
+
+  assert.equal(connectAttempts, 2, 'a healthy running status must reconnect instead of detach');
+  assert.equal(settled, null);
+  await second.opened;
+  terminal = true;
+  second.frame(complete);
+  second.close();
+  const result = await pending;
+  assert.equal(result.state, 'complete');
+  assert.equal(result.result?.answer, 'reattached after headers');
+  assert.equal(detachCalls, 0);
+});
+
+test('SSE connect/header deadline detaches only when the bounded status read also times out', async () => {
   const clock = new ManualClock();
   const neverHeaders = deferred<Response>();
+  const neverStatus = deferred<Response>();
   const connectStarted = deferred<void>();
+  const statusStarted = deferred<void>();
   let detachCalls = 0;
   const fetchImpl: typeof fetch = async (url, init) => {
     const parsed = new URL(String(url));
@@ -913,7 +983,8 @@ test('SSE connect/header deadline detaches a durable operation after a bounded s
       return neverHeaders.promise;
     }
     if (parsed.pathname.endsWith('/op-connect')) {
-      return new Response(JSON.stringify(record('op-connect', 1, 'running')), { status: 200 });
+      statusStarted.resolve(undefined);
+      return neverStatus.promise;
     }
     return new Response('', { status: 404 });
   };
@@ -925,10 +996,12 @@ test('SSE connect/header deadline detaches a durable operation after a bounded s
   const pending = client.query({ query: 'connect deadline' });
   await connectStarted.promise;
   clock.advance(11);
+  await statusStarted.promise;
+  clock.advance(11);
   await flushMicrotasks();
   const result = await pending;
   assert.equal(result.attachmentState, 'detached');
-  assert.equal(result.state, 'running');
+  assert.equal(result.state, 'queued');
   assert.equal(detachCalls, 1);
 });
 

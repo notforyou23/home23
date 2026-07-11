@@ -654,23 +654,6 @@ export class BrainOperationsClient {
           const recoverable = !typed.httpStatus || typed.httpStatus >= 500
             || ['operation_connect_timeout', 'source_unavailable'].includes(typed.code || '');
           if (!recoverable) return detachLast(typed.code || 'event_transport_error');
-          if (typed.code === 'operation_connect_timeout') {
-            let status: BrainOperationRecord | null = null;
-            try {
-              status = await this.getOperation(operationId, attachmentSignal);
-            } catch {
-              if (attachmentSignal.aborted) return handleAbort();
-            }
-            if (status) {
-              if (!Number.isSafeInteger(status.eventSequence) || status.eventSequence < after) {
-                return detachLast('operation_status_regressed');
-              }
-              last = status;
-              after = status.eventSequence;
-              if (TERMINAL.has(status.state)) return canonicalTerminal(status);
-            }
-            return detachLast('connect_or_header_timeout');
-          }
           const terminalOrDetached = await statusOrDetach('connect_or_header_timeout');
           if (terminalOrDetached) return terminalOrDetached;
           continue;
