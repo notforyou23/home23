@@ -3,9 +3,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
 const { gzipSync } = require('node:zlib');
 
 const { rewriteMemoryBase } = require('../../shared/memory-source');
+const execFileAsync = promisify(execFile);
 
 test('streaming hash metadata accepts Jerry-sized files above 1 GiB without allocating them', async () => {
   const { resolveHashByteCount } = await import('../../scripts/lib/brain-acceptance-common.mjs');
@@ -16,6 +19,24 @@ test('streaming hash metadata accepts Jerry-sized files above 1 GiB without allo
     () => resolveHashByteCount(9n * 1024n * 1024n * 1024n),
     (error) => error.code === 'file_too_large',
   );
+});
+
+test('100k-node/300k-edge persistence proof stays streaming under a 96 MiB old-space child cap', async () => {
+  const probe = path.join(__dirname, 'verify-brain-persistence-heap-probe.cjs');
+  const { stdout, stderr } = await execFileAsync(process.execPath, [
+    '--max-old-space-size=96',
+    probe,
+  ], {
+    cwd: path.resolve(__dirname, '../..'),
+    timeout: 120_000,
+    maxBuffer: 1024 * 1024,
+  });
+  assert.equal(stderr, '');
+  const result = JSON.parse(stdout.trim());
+  assert.equal(result.nodes, 100_000);
+  assert.equal(result.edges, 300_000);
+  assert.equal(result.resources.peakHeapUsedMiB <= 80, true);
+  assert.equal(result.resources.v8HeapLimitMiB < 320, true);
 });
 
 async function fixture() {
@@ -47,7 +68,9 @@ async function legacyFixture() {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'home23-persistence-legacy-')));
   const home23Root = path.join(root, 'home23');
   const brainDir = path.join(home23Root, 'instances', 'jerry', 'brain');
+  const tempRoot = path.join(root, 'external-clones');
   await fs.mkdir(brainDir, { recursive: true });
+  await fs.mkdir(tempRoot);
   await fs.writeFile(path.join(brainDir, 'memory-nodes.jsonl.gz'), gzipSync([
     JSON.stringify({ id: 'legacy-n1', concept: 'legacy canary', cluster: 'legacy' }),
     JSON.stringify({ id: 'legacy-n2', concept: 'legacy evidence', cluster: 'legacy' }),
@@ -61,31 +84,33 @@ async function legacyFixture() {
     nodeCount: 2, edgeCount: 1, currentRevision: 0, generation: 'legacy-g0',
     savedAt: new Date().toISOString(),
   })}\n`);
-  return { root, home23Root, brainDir };
+  return { root, home23Root, brainDir, tempRoot };
 }
 
-test('read-only proof invokes the production loader against the exact live brain and proves counts and bytes', async (t) => {
+test('read-only proof streams the exact live brain through the production source reader and proves counts and bytes', async (t) => {
   const { verifyReadOnlyPersistence } = await import('../../scripts/verify-brain-persistence.mjs');
-  const { loadMemoryRevision } = require('../../engine/src/core/memory-persistence.js');
   const state = await fixture();
   t.after(() => fs.rm(state.root, { recursive: true, force: true }));
-  const calls = [];
   const result = await verifyReadOnlyPersistence({
     home23Root: state.home23Root,
     agent: 'jerry',
     brainDir: state.brainDir,
-    loader: async (...args) => {
-      calls.push(args[0]);
-      return loadMemoryRevision(...args);
-    },
+    tempRoot: state.tempRoot,
   });
-  assert.deepEqual(calls, [state.brainDir]);
+  assert.equal(result.mode, 'read-only-stream');
   assert.equal(result.selectedAuthority, 'manifest-v1');
-  assert.deepEqual(result.loaded, { nodes: 2, edges: 1, revision: state.manifest.currentRevision });
+  assert.equal(result.streamed.nodes, 2);
+  assert.equal(result.streamed.edges, 1);
+  assert.equal(result.streamed.revision, state.manifest.currentRevision);
+  assert.match(result.streamed.nodeLogicalSha256, /^[a-f0-9]{64}$/);
+  assert.match(result.streamed.edgeLogicalSha256, /^[a-f0-9]{64}$/);
+  assert.equal(result.streamed.resources.peakHeapUsedMiB > 0, true);
+  assert.equal(result.fullMaterializerUsed, false);
   assert.deepEqual(result.expected, { nodes: 2, edges: 1 });
   assert.equal(result.unchanged, true);
   assert.deepEqual(result.before, result.after);
   assert.ok(result.before.some((row) => row.role === 'delta' && row.committedBytes === 0));
+  assert.deepEqual(await fs.readdir(state.tempRoot), []);
 });
 
 test('read-only proof supports the production-selected legacy sidecar generation', async (t) => {
@@ -94,11 +119,15 @@ test('read-only proof supports the production-selected legacy sidecar generation
   t.after(() => fs.rm(state.root, { recursive: true, force: true }));
   const result = await verifyReadOnlyPersistence({
     home23Root: state.home23Root, agent: 'jerry', brainDir: state.brainDir,
+    tempRoot: state.tempRoot,
   });
   assert.equal(result.selectedAuthority, 'legacy-resident-sidecars');
-  assert.deepEqual(result.loaded.nodes, 2);
-  assert.deepEqual(result.loaded.edges, 1);
+  assert.equal(result.streamed.nodes, 2);
+  assert.equal(result.streamed.edges, 1);
+  assert.equal(result.streamed.implementation, 'legacy-resident-sidecar-projection');
+  assert.equal(result.fullMaterializerUsed, false);
   assert.deepEqual(result.before, result.after);
+  assert.deepEqual(await fs.readdir(state.tempRoot), []);
 });
 
 test('missing, stale, zero, or disagreeing snapshot evidence fails closed', async (t) => {
@@ -106,6 +135,9 @@ test('missing, stale, zero, or disagreeing snapshot evidence fails closed', asyn
   for (const [label, snapshot, code] of [
     ['missing', null, 'snapshot_counts_invalid'],
     ['stale', { nodeCount: 2, edgeCount: 1, currentRevision: 999 }, 'snapshot_stale'],
+    ['missing revision', 'missing-revision', 'snapshot_stale'],
+    ['missing generation', 'missing-generation', 'snapshot_stale'],
+    ['wrong generation', 'wrong-generation', 'snapshot_stale'],
     ['zero', { nodeCount: 0, edgeCount: 0 }, 'snapshot_counts_invalid'],
     ['disagreeing', { nodeCount: 3, edgeCount: 1 }, 'persistence_count_mismatch'],
   ]) {
@@ -113,24 +145,43 @@ test('missing, stale, zero, or disagreeing snapshot evidence fails closed', asyn
     t.after(() => fs.rm(state.root, { recursive: true, force: true }));
     const snapshotPath = path.join(state.brainDir, 'brain-snapshot.json');
     if (snapshot === null) await fs.rm(snapshotPath);
-    else await fs.writeFile(snapshotPath, `${JSON.stringify(snapshot)}\n`);
+    else {
+      const value = snapshot === 'missing-revision'
+        ? { nodeCount: 2, edgeCount: 1, generation: state.manifest.generation }
+        : snapshot === 'missing-generation'
+          ? { nodeCount: 2, edgeCount: 1, currentRevision: state.manifest.currentRevision }
+          : snapshot === 'wrong-generation'
+            ? {
+              nodeCount: 2, edgeCount: 1,
+              currentRevision: state.manifest.currentRevision,
+              generation: 'wrong-generation',
+            }
+            : label === 'disagreeing'
+              ? {
+                ...snapshot,
+                currentRevision: state.manifest.currentRevision,
+                generation: state.manifest.generation,
+              }
+            : snapshot;
+      await fs.writeFile(snapshotPath, `${JSON.stringify(value)}\n`);
+    }
     await assert.rejects(verifyReadOnlyPersistence({
       home23Root: state.home23Root, agent: 'jerry', brainDir: state.brainDir,
+      tempRoot: state.tempRoot,
     }), (error) => error.code === code, label);
   }
 });
 
-test('a revision, file-set, or byte change during load is source_changed_concurrently', async (t) => {
+test('a revision, file-set, or byte change during streaming is source_changed_concurrently', async (t) => {
   const { verifyReadOnlyPersistence } = await import('../../scripts/verify-brain-persistence.mjs');
-  const { loadMemoryRevision } = require('../../engine/src/core/memory-persistence.js');
   const state = await fixture();
   t.after(() => fs.rm(state.root, { recursive: true, force: true }));
   await assert.rejects(verifyReadOnlyPersistence({
     home23Root: state.home23Root,
     agent: 'jerry',
     brainDir: state.brainDir,
-    loader: loadMemoryRevision,
-    afterLoad: async () => {
+    tempRoot: state.tempRoot,
+    afterStream: async () => {
       await fs.appendFile(path.join(state.brainDir, 'brain-snapshot.json'), ' ');
     },
   }), (error) => error.code === 'source_changed_concurrently');
@@ -146,24 +197,23 @@ test('temp-save writes only an external unpredictable clone, reloads it, and gua
     brainDir: state.brainDir,
     tempRoot: state.tempRoot,
   });
-  assert.equal(result.mode, 'temp-save-clone');
+  assert.equal(result.mode, 'temp-save-clone-safe');
   assert.equal(result.cloneRemoved, true);
   assert.equal(path.dirname(result.writeBrainDir), state.tempRoot);
   assert.match(path.basename(result.writeBrainDir), /^brain-save-clone-/);
   assert.equal(result.writeBrainDir.startsWith(`${state.home23Root}${path.sep}`), false);
   assert.deepEqual(await fs.readdir(state.tempRoot), []);
-  assert.equal(result.clone.loaded.nodes, 2);
+  assert.equal(result.clone.loaded.nodes, 3);
   assert.equal(result.clone.loaded.edges, 1);
-  assert.equal(result.clone.persistedRevision, result.clone.reloadedRevision);
-  assert.equal(result.clone.manifestRevision, result.clone.reloadedRevision);
-  assert.equal(Number.isSafeInteger(result.clone.snapshotRevision), true);
-  assert.equal(typeof result.clone.snapshotGeneration, 'string');
-  assert.equal(typeof result.clone.manifestGeneration, 'string');
-  assert.equal(
-    result.clone.snapshotMatchesManifest,
-    result.clone.snapshotRevision === result.clone.manifestRevision
-      && result.clone.snapshotGeneration === result.clone.manifestGeneration,
-  );
+  assert.equal(result.clone.persistedMode, 'delta');
+  assert.equal(result.clone.canaryMatches, 1);
+  assert.equal(result.clone.fullMaterializerUsed, false);
+  assert.equal(result.clone.copiedFiles.every((row) => row.sourceSha256 === row.destinationSha256), true);
+  assert.equal(result.boundedForceFull.persistedMode, 'full');
+  assert.deepEqual(result.boundedForceFull.loaded, { nodes: 2, edges: 1 });
+  assert.equal(result.boundedForceFull.persistedRevision, result.boundedForceFull.reloadedRevision);
+  assert.equal(result.liveForceFull.attempted, false);
+  assert.match(result.liveForceFull.reason, /prohibited/);
   assert.deepEqual(result.before, result.after);
 });
 

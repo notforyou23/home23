@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
+import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import { constants as fsConstants } from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import v8 from 'node:v8';
 import {
   canonicalDirectory,
   failCli,
@@ -20,6 +22,8 @@ import {
 
 const require = createRequire(import.meta.url);
 const {
+  createOperationScratchQuota,
+  openMemorySource,
   resolveMemorySourceSelection,
 } = require('../shared/memory-source/index.cjs');
 const {
@@ -27,11 +31,59 @@ const {
   persistMemoryRevision,
 } = require('../engine/src/core/memory-persistence.js');
 
+const DEFAULT_MAX_HEAP_USED_MIB = 768;
+const DEFAULT_MAX_RSS_MIB = 2_048;
+const MIB = 1024 * 1024;
+
 function safeAgent(value) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(value)) {
     throw typedError('agent_invalid');
   }
   return value;
+}
+
+function positiveLimit(value, fallback, label) {
+  const parsed = value === undefined || value === null || value === '' ? fallback : Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) throw typedError('resource_limit_invalid', label);
+  return parsed;
+}
+
+function createResourceTracker({
+  maxHeapUsedMiB = DEFAULT_MAX_HEAP_USED_MIB,
+  maxRssMiB = DEFAULT_MAX_RSS_MIB,
+} = {}) {
+  const heapLimit = positiveLimit(maxHeapUsedMiB, DEFAULT_MAX_HEAP_USED_MIB, 'maxHeapUsedMiB');
+  const rssLimit = positiveLimit(maxRssMiB, DEFAULT_MAX_RSS_MIB, 'maxRssMiB');
+  let peakHeapUsedBytes = 0;
+  let peakRssBytes = 0;
+  let samples = 0;
+  function sample() {
+    const usage = process.memoryUsage();
+    peakHeapUsedBytes = Math.max(peakHeapUsedBytes, usage.heapUsed);
+    peakRssBytes = Math.max(peakRssBytes, usage.rss);
+    samples += 1;
+    if (usage.heapUsed > heapLimit * MIB) {
+      throw typedError('heap_budget_exceeded', `${Math.ceil(usage.heapUsed / MIB)} MiB`);
+    }
+    if (usage.rss > rssLimit * MIB) {
+      throw typedError('rss_budget_exceeded', `${Math.ceil(usage.rss / MIB)} MiB`);
+    }
+  }
+  sample();
+  return {
+    sample,
+    summary() {
+      sample();
+      return {
+        samples,
+        peakHeapUsedMiB: Number((peakHeapUsedBytes / MIB).toFixed(3)),
+        peakRssMiB: Number((peakRssBytes / MIB).toFixed(3)),
+        maxHeapUsedMiB: heapLimit,
+        maxRssMiB: rssLimit,
+        v8HeapLimitMiB: Number((v8.getHeapStatistics().heap_size_limit / MIB).toFixed(3)),
+      };
+    },
+  };
 }
 
 async function optionalSnapshot(brainDir) {
@@ -48,7 +100,9 @@ function snapshotTotals(snapshot) {
   if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return null;
   const nodes = Number(snapshot.nodeCount ?? snapshot.memory?.nodeCount ?? snapshot.memory?.nodes);
   const edges = Number(snapshot.edgeCount ?? snapshot.memory?.edgeCount ?? snapshot.memory?.edges);
-  if (!Number.isSafeInteger(nodes) || nodes <= 0 || !Number.isSafeInteger(edges) || edges <= 0) return null;
+  if (!Number.isSafeInteger(nodes) || nodes <= 0 || !Number.isSafeInteger(edges) || edges < 0) {
+    return null;
+  }
   return {
     nodes,
     edges,
@@ -101,12 +155,125 @@ function inventoryComparable(value) {
   return JSON.stringify({ authority: value.authority, manifest: value.manifest, records: value.records });
 }
 
-function validateLoaded({ loaded, inventory, snapshot }) {
-  const nodes = Array.isArray(loaded?.nodes) ? loaded.nodes.length : Number(loaded?.summary?.nodes);
-  const edges = Array.isArray(loaded?.edges) ? loaded.edges.length : Number(loaded?.summary?.edges);
-  if (!Number.isSafeInteger(nodes) || nodes <= 0 || !Number.isSafeInteger(edges) || edges <= 0
-      || loaded?.summary?.nodes !== nodes || loaded?.summary?.edges !== edges) {
-    throw typedError('loaded_counts_invalid');
+async function guardedRemoveOwnedDirectory(directory, parentRoot, prefix) {
+  const current = await fsp.lstat(directory.path, { bigint: true });
+  const parent = await fsp.realpath(path.dirname(directory.path));
+  if (parent !== parentRoot || !path.basename(directory.path).startsWith(prefix)
+      || current.dev.toString() !== directory.dev || current.ino.toString() !== directory.ino
+      || !current.isDirectory() || current.isSymbolicLink()) {
+    throw typedError('temporary_cleanup_guard_failed');
+  }
+  await fsp.rm(directory.path, { recursive: true, force: false });
+}
+
+function encodedRecord(record) {
+  let text;
+  try {
+    text = JSON.stringify(record);
+  } catch (error) {
+    throw typedError('source_record_invalid', error.message, { cause: error });
+  }
+  if (typeof text !== 'string') throw typedError('source_record_invalid');
+  return text;
+}
+
+async function streamLogicalSource({
+  brainDir,
+  scratchRoot,
+  requesterAgent,
+  operationLabel,
+  canaryId = null,
+  maxHeapUsedMiB,
+  maxRssMiB,
+} = {}) {
+  const tracker = createResourceTracker({ maxHeapUsedMiB, maxRssMiB });
+  const operationPath = await fsp.mkdtemp(path.join(scratchRoot, `brain-stream-${operationLabel}-`));
+  const operation = await canonicalDirectory(operationPath, 'stream operation root');
+  const quota = await createOperationScratchQuota({ operationRoot: operation.path });
+  const nodeHash = crypto.createHash('sha256');
+  const edgeHash = crypto.createHash('sha256');
+  let nodeCount = 0;
+  let edgeCount = 0;
+  let largestNode = null;
+  let largestNodeBytes = -1;
+  let largestEdge = null;
+  let largestEdgeBytes = -1;
+  let canaryMatches = 0;
+  let source = null;
+  try {
+    source = await openMemorySource(brainDir, {
+      requesterAgent,
+      operationId: path.basename(operation.path),
+      operationRoot: operation.path,
+      scratchQuota: quota,
+      lockRoot: path.join(scratchRoot, 'brain-source-locks'),
+    });
+    const initialEvidence = source.getEvidence();
+    if (initialEvidence?.sourceHealth === 'unavailable') throw typedError('source_unavailable');
+    for await (const node of source.iterateNodes()) {
+      const encoded = encodedRecord(node);
+      const bytes = Buffer.byteLength(encoded);
+      nodeHash.update(encoded).update('\n');
+      nodeCount += 1;
+      if (bytes > largestNodeBytes) {
+        largestNode = JSON.parse(encoded);
+        largestNodeBytes = bytes;
+      }
+      if (canaryId !== null && String(node.id) === canaryId) canaryMatches += 1;
+      if ((nodeCount & 255) === 0) tracker.sample();
+    }
+    for await (const edge of source.iterateEdges()) {
+      const encoded = encodedRecord(edge);
+      const bytes = Buffer.byteLength(encoded);
+      edgeHash.update(encoded).update('\n');
+      edgeCount += 1;
+      if (bytes > largestEdgeBytes) {
+        largestEdge = JSON.parse(encoded);
+        largestEdgeBytes = bytes;
+      }
+      if ((edgeCount & 255) === 0) tracker.sample();
+    }
+    const summary = await source.summarize();
+    if (summary.nodes !== nodeCount || summary.edges !== edgeCount) {
+      throw typedError('streamed_count_mismatch');
+    }
+    if (await Promise.resolve(source.isCurrent()) !== true) {
+      throw typedError('source_changed_concurrently');
+    }
+    const evidence = source.getEvidence({
+      completeCoverage: true,
+      authoritativeTotals: { nodes: nodeCount, edges: edgeCount },
+      returnedTotals: { nodes: nodeCount, edges: edgeCount },
+    });
+    return {
+      proof: {
+        nodes: nodeCount,
+        edges: edgeCount,
+        clusters: summary.clusters,
+        revision: source.revision ?? null,
+        nodeLogicalSha256: nodeHash.digest('hex'),
+        edgeLogicalSha256: edgeHash.digest('hex'),
+        largestNodeBytes,
+        largestEdgeBytes,
+        canaryMatches,
+        sourceHealth: evidence.sourceHealth,
+        implementation: evidence.implementation,
+        resources: tracker.summary(),
+      },
+      representative: { node: largestNode, edge: largestEdge },
+    };
+  } finally {
+    await source?.close?.().catch(() => {});
+    await quota.close();
+    await guardedRemoveOwnedDirectory(operation, scratchRoot, `brain-stream-${operationLabel}-`);
+  }
+}
+
+function validateStreamed({ streamed, inventory, snapshot }) {
+  const nodes = streamed?.nodes;
+  const edges = streamed?.edges;
+  if (!Number.isSafeInteger(nodes) || nodes <= 0 || !Number.isSafeInteger(edges) || edges < 0) {
+    throw typedError('streamed_counts_invalid');
   }
   const snapshotExpected = snapshotTotals(snapshot);
   if (!snapshotExpected) throw typedError('snapshot_counts_invalid');
@@ -115,15 +282,16 @@ function validateLoaded({ loaded, inventory, snapshot }) {
     const summary = inventory.manifest?.summary;
     expected = { nodes: summary?.nodeCount, edges: summary?.edgeCount };
     if (!Number.isSafeInteger(expected.nodes) || expected.nodes <= 0
-        || !Number.isSafeInteger(expected.edges) || expected.edges <= 0) {
+        || !Number.isSafeInteger(expected.edges) || expected.edges < 0) {
       throw typedError('manifest_counts_invalid');
     }
-    if (loaded.revision !== inventory.manifest.currentRevision) throw typedError('revision_mismatch');
-    if (snapshotExpected.revision !== null && snapshotExpected.revision !== undefined
-        && Number(snapshotExpected.revision) !== inventory.manifest.currentRevision) {
+    if (streamed.revision !== inventory.manifest.currentRevision) throw typedError('revision_mismatch');
+    if (!Number.isSafeInteger(snapshotExpected.revision)
+        || snapshotExpected.revision !== inventory.manifest.currentRevision) {
       throw typedError('snapshot_stale');
     }
-    if (snapshotExpected.generation && snapshotExpected.generation !== inventory.manifest.generation) {
+    if (snapshotExpected.generation === null || snapshotExpected.generation === undefined
+        || snapshotExpected.generation !== inventory.manifest.generation) {
       throw typedError('snapshot_stale');
     }
   } else if (inventory.authority === 'legacy-resident-sidecars') {
@@ -135,53 +303,74 @@ function validateLoaded({ loaded, inventory, snapshot }) {
       || nodes !== snapshotExpected.nodes || edges !== snapshotExpected.edges) {
     throw typedError('persistence_count_mismatch');
   }
-  return {
-    loaded: { nodes, edges, revision: loaded.revision ?? null },
-    expected,
-    snapshot: snapshotExpected,
-  };
+  return { expected, snapshot: snapshotExpected };
+}
+
+async function assertExternalTempRoot(home23Root, tempRoot) {
+  const home = await canonicalDirectory(home23Root, 'Home23 root');
+  const temporary = await canonicalDirectory(tempRoot, 'temporary proof root');
+  if (isInsideOrEqual(home.path, temporary.path) || isInsideOrEqual(temporary.path, home.path)) {
+    throw typedError('temp_root_overlaps_home23');
+  }
+  for (const liveBrain of await discoverLiveBrains(home.path)) {
+    if (isInsideOrEqual(liveBrain, temporary.path) || isInsideOrEqual(temporary.path, liveBrain)) {
+      throw typedError('temp_root_overlaps_live_brain');
+    }
+  }
+  return { home, temporary };
 }
 
 async function captureReadOnlyPersistence({
   home23Root,
   agent,
   brainDir,
-  loader = loadMemoryRevision,
-  afterLoad,
+  tempRoot,
+  maxHeapUsedMiB,
+  maxRssMiB,
+  afterStream,
 } = {}) {
-  const home = await canonicalDirectory(home23Root, 'Home23 root');
+  const { home, temporary } = await assertExternalTempRoot(home23Root, tempRoot);
   const requesterAgent = safeAgent(agent);
   const expectedBrain = path.join(home.path, 'instances', requesterAgent, 'brain');
   const brain = await canonicalDirectory(brainDir, 'brain');
   if (brain.path !== expectedBrain) throw typedError('brain_target_mismatch');
   const before = await selectionInventory(brain.path);
   const snapshot = (await optionalSnapshot(brain.path)).value;
-  const loaded = await loader(brain.path, {
-    home23Root: home.path,
+  const streamed = await streamLogicalSource({
+    brainDir: brain.path,
+    scratchRoot: temporary.path,
     requesterAgent,
-    operationId: `acceptance-load-${process.pid}-${Date.now()}`,
+    operationLabel: `live-${requesterAgent}`,
+    maxHeapUsedMiB,
+    maxRssMiB,
   });
-  await afterLoad?.({ loaded, before });
-  const validated = validateLoaded({ loaded, inventory: before, snapshot });
+  await afterStream?.({ streamed: streamed.proof, before });
+  const validated = validateStreamed({ streamed: streamed.proof, inventory: before, snapshot });
   const after = await selectionInventory(brain.path);
   if (inventoryComparable(before) !== inventoryComparable(after)) {
     throw typedError('source_changed_concurrently');
   }
   const proof = {
     ok: true,
-    mode: 'read-only',
+    mode: 'read-only-stream',
     sourceBrainDir: brain.path,
     writeBrainDir: null,
     selectedAuthority: before.authority,
     sourceRevision: before.manifest?.currentRevision ?? null,
-    loaded: validated.loaded,
+    streamed: streamed.proof,
     expected: validated.expected,
     snapshot: validated.snapshot,
     before: before.records,
     after: after.records,
     unchanged: true,
+    fullMaterializerUsed: false,
   };
-  return { proof, inventory: before };
+  return {
+    proof,
+    inventory: before,
+    representative: streamed.representative,
+    temporary,
+  };
 }
 
 export async function verifyReadOnlyPersistence(options = {}) {
@@ -204,12 +393,14 @@ async function discoverLiveBrains(home23Root) {
   return roots;
 }
 
-function memoryFacade(loaded) {
-  const nodes = new Map(loaded.nodes.map((node) => [String(node.id), node]));
-  const edges = new Map(loaded.edges.map((edge, index) => [
+function fullMemoryFacade(nodesInput, edgesInput) {
+  const nodes = new Map(nodesInput.map((node) => [String(node.id), node]));
+  const edges = new Map(edgesInput.map((edge, index) => [
     String(edge.key ?? `${edge.source ?? edge.from}->${edge.target ?? edge.to}#${index}`), edge,
   ]));
-  const clusterCount = new Set(loaded.nodes.map((node) => node.cluster).filter((value) => value != null)).size;
+  const clusterCount = new Set(nodesInput
+    .map((node) => node.cluster)
+    .filter((value) => value != null)).size;
   const generation = 1;
   return {
     nodes,
@@ -226,7 +417,29 @@ function memoryFacade(loaded) {
   };
 }
 
+function deltaCanaryFacade({ canary, baseline }) {
+  const generation = 1;
+  return {
+    capturePersistenceChangesSnapshot() {
+      return {
+        generation,
+        changes: { nodes: [canary], edges: [], removedNodeIds: [], removedEdgeKeys: [] },
+        summary: {
+          nodeCount: baseline.nodes + 1,
+          edgeCount: baseline.edges,
+          clusterCount: Number.isSafeInteger(baseline.clusters) ? baseline.clusters + 1 : 1,
+        },
+      };
+    },
+    capturePersistenceSnapshot() {
+      throw typedError('full_materializer_forbidden');
+    },
+    markPersistenceCleanIfGeneration(value) { return value === generation; },
+  };
+}
+
 async function copyPinnedSelection(sourceBrainDir, cloneDir, inventory) {
+  const copies = [];
   for (const record of inventory.records) {
     if (record.absent) continue;
     const source = path.join(sourceBrainDir, record.path);
@@ -242,19 +455,18 @@ async function copyPinnedSelection(sourceBrainDir, cloneDir, inventory) {
           || before.size.toString() !== String(record.physicalSize)) {
         throw typedError('source_changed_concurrently');
       }
-      const copyBytes = record.committedBytes === null
-        ? Number(before.size) : record.committedBytes;
-      if (!Number.isSafeInteger(copyBytes) || copyBytes < 0 || BigInt(copyBytes) > before.size) {
-        throw typedError('source_selection_invalid');
-      }
+      const copyBytes = Number(before.size);
+      if (!Number.isSafeInteger(copyBytes) || copyBytes < 0) throw typedError('source_selection_invalid');
       destinationHandle = await fsp.open(destination, 'wx', 0o600);
       const buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(1, copyBytes)));
+      const sourceDigest = crypto.createHash('sha256');
       let offset = 0;
       while (offset < copyBytes) {
         const { bytesRead } = await sourceHandle.read(
           buffer, 0, Math.min(buffer.length, copyBytes - offset), offset,
         );
         if (bytesRead === 0) throw typedError('source_changed_concurrently');
+        sourceDigest.update(buffer.subarray(0, bytesRead));
         await destinationHandle.write(buffer, 0, bytesRead, offset);
         offset += bytesRead;
       }
@@ -264,22 +476,24 @@ async function copyPinnedSelection(sourceBrainDir, cloneDir, inventory) {
           || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
         throw typedError('source_changed_concurrently');
       }
+      const sourceSha256 = sourceDigest.digest('hex');
+      const destinationHash = await hashFile(destination);
+      if (destinationHash.sha256 !== sourceSha256 || destinationHash.physicalSize !== copyBytes) {
+        throw typedError('clone_copy_mismatch');
+      }
+      copies.push({
+        role: record.role,
+        path: record.path,
+        bytes: copyBytes,
+        sourceSha256,
+        destinationSha256: destinationHash.sha256,
+      });
     } finally {
       await destinationHandle?.close();
       await sourceHandle.close();
     }
   }
-}
-
-async function guardedRemoveClone(clone, tempRoot) {
-  const current = await fsp.lstat(clone.path, { bigint: true });
-  const parent = await fsp.realpath(path.dirname(clone.path));
-  if (parent !== tempRoot || !path.basename(clone.path).startsWith('brain-save-clone-')
-      || current.dev.toString() !== clone.dev || current.ino.toString() !== clone.ino
-      || !current.isDirectory() || current.isSymbolicLink()) {
-    throw typedError('clone_cleanup_guard_failed');
-  }
-  await fsp.rm(clone.path, { recursive: true, force: false });
+  return copies;
 }
 
 async function assertDirectoryIdentity(directory, label) {
@@ -303,12 +517,13 @@ async function assertInventoryUnchanged(brainDir, expected) {
 
 async function pruneGeneratedEmptyRuntime(tempRoot) {
   const candidates = [
-    path.join(tempRoot, 'instances', 'persistence-clone', 'runtime', 'brain-operations'),
-    path.join(tempRoot, 'instances', 'persistence-clone', 'runtime'),
-    path.join(tempRoot, 'instances', 'persistence-clone'),
+    path.join(tempRoot, 'instances', 'bounded-forcefull-proof', 'runtime', 'brain-operations'),
+    path.join(tempRoot, 'instances', 'bounded-forcefull-proof', 'runtime'),
+    path.join(tempRoot, 'instances', 'bounded-forcefull-proof'),
     path.join(tempRoot, 'instances'),
     path.join(tempRoot, 'runtime', 'brain-source-locks'),
     path.join(tempRoot, 'runtime'),
+    path.join(tempRoot, 'brain-source-locks'),
   ];
   for (const candidate of candidates) {
     if (!isInsideOrEqual(tempRoot, candidate) || candidate === tempRoot) {
@@ -317,10 +532,72 @@ async function pruneGeneratedEmptyRuntime(tempRoot) {
     try {
       await fsp.rmdir(candidate);
     } catch (error) {
-      if (error.code === 'ENOENT') continue;
+      if (error.code === 'ENOENT' || error.code === 'ENOTEMPTY') continue;
       throw typedError('temp_runtime_cleanup_guard_failed', candidate, { cause: error });
     }
   }
+}
+
+function boundedRepresentative(representative) {
+  if (!representative?.node) throw typedError('representative_node_missing');
+  const first = { ...representative.node, id: 'bounded-proof-node-1' };
+  const second = { ...representative.node, id: 'bounded-proof-node-2' };
+  const edge = representative.edge
+    ? {
+      ...representative.edge,
+      key: 'bounded-proof-node-1->bounded-proof-node-2',
+      source: 'bounded-proof-node-1',
+      target: 'bounded-proof-node-2',
+      from: 'bounded-proof-node-1',
+      to: 'bounded-proof-node-2',
+    }
+    : {
+      key: 'bounded-proof-node-1->bounded-proof-node-2',
+      source: 'bounded-proof-node-1',
+      target: 'bounded-proof-node-2',
+      weight: 1,
+    };
+  return { nodes: [first, second], edges: [edge] };
+}
+
+async function proveBoundedForceFull({ tempRoot, representative, persister, loader }) {
+  const boundedPath = await fsp.mkdtemp(path.join(tempRoot, 'brain-bounded-forcefull-'));
+  const bounded = await canonicalDirectory(boundedPath, 'bounded force-full clone');
+  const view = boundedRepresentative(representative);
+  const scheduled = [];
+  let result;
+  try {
+    const persisted = await persister({
+      brainDir: bounded.path,
+      memory: fullMemoryFacade(view.nodes, view.edges),
+      forceFull: true,
+      home23Root: tempRoot,
+      schedule: (callback) => { scheduled.push(callback); },
+    });
+    const reloaded = await loader(bounded.path, {
+      home23Root: tempRoot,
+      requesterAgent: 'bounded-forcefull-proof',
+      operationId: `bounded-forcefull-load-${process.pid}-${Date.now()}`,
+    });
+    if (reloaded.nodes.length !== view.nodes.length || reloaded.edges.length !== view.edges.length
+        || reloaded.revision !== persisted.manifest?.currentRevision) {
+      throw typedError('bounded_forcefull_reload_mismatch');
+    }
+    result = {
+      persistedMode: persisted.mode,
+      persistedRevision: persisted.manifest.currentRevision,
+      reloadedRevision: reloaded.revision,
+      loaded: { nodes: reloaded.nodes.length, edges: reloaded.edges.length },
+      representativeLargestNodeBytes: Buffer.byteLength(encodedRecord(representative.node)),
+      representativeLargestEdgeBytes: representative.edge
+        ? Buffer.byteLength(encodedRecord(representative.edge)) : 0,
+      retirementDeferred: scheduled.length,
+    };
+  } finally {
+    await assertDirectoryIdentity(bounded, 'bounded force-full clone');
+    await guardedRemoveOwnedDirectory(bounded, tempRoot, 'brain-bounded-forcefull-');
+  }
+  return result;
 }
 
 export async function verifyTempSaveClone({
@@ -328,106 +605,99 @@ export async function verifyTempSaveClone({
   agent,
   brainDir,
   tempRoot,
-  loader = loadMemoryRevision,
+  maxHeapUsedMiB,
+  maxRssMiB,
   persister = persistMemoryRevision,
+  boundedLoader = loadMemoryRevision,
   afterReadOnlyProof,
-  removeClone = guardedRemoveClone,
+  removeClone,
 } = {}) {
-  const captured = await captureReadOnlyPersistence({ home23Root, agent, brainDir, loader });
-  const liveProof = captured.proof;
-  const home = await canonicalDirectory(home23Root, 'Home23 root');
-  const temporary = await canonicalDirectory(tempRoot, 'temporary clone root');
-  if (isInsideOrEqual(home.path, temporary.path) || isInsideOrEqual(temporary.path, home.path)) {
-    throw typedError('temp_root_overlaps_home23');
-  }
+  const { home, temporary } = await assertExternalTempRoot(home23Root, tempRoot);
   if ((await fsp.readdir(temporary.path)).length !== 0) throw typedError('temp_root_not_empty');
-  for (const liveBrain of await discoverLiveBrains(home.path)) {
-    if (isInsideOrEqual(liveBrain, temporary.path) || isInsideOrEqual(temporary.path, liveBrain)) {
-      throw typedError('temp_root_overlaps_live_brain');
-    }
-  }
+  const captured = await captureReadOnlyPersistence({
+    home23Root: home.path,
+    agent,
+    brainDir,
+    tempRoot: temporary.path,
+    maxHeapUsedMiB,
+    maxRssMiB,
+  });
+  const liveProof = captured.proof;
   await afterReadOnlyProof?.({ proof: liveProof, inventory: captured.inventory });
   const sourceBefore = captured.inventory;
   await assertInventoryUnchanged(liveProof.sourceBrainDir, sourceBefore);
   const clonePath = await fsp.mkdtemp(path.join(temporary.path, 'brain-save-clone-'));
   const clone = await canonicalDirectory(clonePath, 'generated clone');
   let cloneProof = null;
+  let boundedForceFull = null;
   let cleanupError = null;
   let operationError = null;
   try {
-    await copyPinnedSelection(liveProof.sourceBrainDir, clone.path, sourceBefore);
+    const copiedFiles = await copyPinnedSelection(liveProof.sourceBrainDir, clone.path, sourceBefore);
     await assertDirectoryIdentity(clone, 'generated clone');
-    const cloneSourceBefore = await selectionInventory(clone.path);
-    const cloneLoaded = await loader(clone.path, {
-      home23Root: temporary.path,
-      requesterAgent: 'persistence-clone',
-      operationId: `clone-load-${process.pid}-${Date.now()}`,
-    });
-    const cloneLoadedValidated = validateLoaded({
-      loaded: cloneLoaded,
-      inventory: cloneSourceBefore,
-      snapshot: (await optionalSnapshot(clone.path)).value,
-    });
-    await assertDirectoryIdentity(clone, 'generated clone');
-    await assertInventoryUnchanged(clone.path, cloneSourceBefore);
     await assertInventoryUnchanged(liveProof.sourceBrainDir, sourceBefore);
-    const scheduled = [];
+    const canaryId = `__home23_persistence_clone_${crypto.randomUUID()}`;
+    const canary = {
+      id: canaryId,
+      concept: 'clone-only persistence acceptance canary',
+      cluster: `__home23_acceptance_${crypto.randomUUID()}`,
+      metadata: { acceptanceOnly: true },
+    };
     const persisted = await persister({
       brainDir: clone.path,
-      memory: memoryFacade(cloneLoaded),
-      forceFull: true,
+      memory: deltaCanaryFacade({ canary, baseline: liveProof.streamed }),
+      forceFull: false,
+      fullRewriteIntervalMs: Number.MAX_SAFE_INTEGER,
       home23Root: temporary.path,
-      schedule: (callback) => { scheduled.push(callback); },
+      schedule: () => { throw typedError('unexpected_retirement_schedule'); },
     });
-    const reloaded = await loader(clone.path, {
-      home23Root: temporary.path,
+    if (!['legacy-delta', 'delta'].includes(persisted.mode)) {
+      throw typedError('clone_delta_mode_invalid', persisted.mode);
+    }
+    const readback = await streamLogicalSource({
+      brainDir: clone.path,
+      scratchRoot: temporary.path,
       requesterAgent: 'persistence-clone',
-      operationId: `clone-reload-${process.pid}-${Date.now()}`,
+      operationLabel: 'clone-readback',
+      canaryId,
+      maxHeapUsedMiB,
+      maxRssMiB,
     });
-    if (reloaded.nodes.length !== cloneLoaded.nodes.length || reloaded.edges.length !== cloneLoaded.edges.length) {
-      throw typedError('clone_reload_mismatch');
-    }
-    await assertDirectoryIdentity(clone, 'generated clone');
-    const cloneSourceAfter = await selectionInventory(clone.path);
-    const cloneSnapshotAfter = (await optionalSnapshot(clone.path)).value;
-    const postSnapshot = snapshotTotals(cloneSnapshotAfter);
-    const postSummary = cloneSourceAfter.manifest?.summary;
-    if (!postSnapshot
-        || postSnapshot.nodes !== reloaded.nodes.length
-        || postSnapshot.edges !== reloaded.edges.length
-        || postSummary?.nodeCount !== reloaded.nodes.length
-        || postSummary?.edgeCount !== reloaded.edges.length) {
-      throw typedError('clone_reload_mismatch');
-    }
-    const persistedRevision = persisted.manifest?.currentRevision;
-    const manifestGeneration = cloneSourceAfter.manifest?.generation;
-    if (!Number.isSafeInteger(persistedRevision)
-        || reloaded.revision !== persistedRevision
-        || cloneSourceAfter.manifest?.currentRevision !== persistedRevision
-        || !manifestGeneration
-        || cloneLoadedValidated.loaded.nodes !== reloaded.nodes.length
-        || cloneLoadedValidated.loaded.edges !== reloaded.edges.length) {
-      throw typedError('clone_reload_mismatch');
+    if (readback.proof.nodes !== liveProof.streamed.nodes + 1
+        || readback.proof.edges !== liveProof.streamed.edges
+        || readback.proof.canaryMatches !== 1) {
+      throw typedError('clone_delta_readback_mismatch');
     }
     cloneProof = {
+      copyPolicy: 'exact-full-physical-files',
+      copiedFiles,
       persistedMode: persisted.mode,
-      persistedRevision,
-      reloadedRevision: reloaded.revision,
-      manifestRevision: cloneSourceAfter.manifest.currentRevision,
-      snapshotRevision: postSnapshot.revision,
-      manifestGeneration,
-      snapshotGeneration: postSnapshot.generation,
-      snapshotMatchesManifest: postSnapshot.revision === persistedRevision
-        && postSnapshot.generation === manifestGeneration,
-      loaded: { nodes: reloaded.nodes.length, edges: reloaded.edges.length, revision: reloaded.revision },
-      retirementDeferred: scheduled.length,
+      persistedRevision: persisted.manifest?.currentRevision ?? null,
+      loaded: {
+        nodes: readback.proof.nodes,
+        edges: readback.proof.edges,
+        revision: readback.proof.revision,
+      },
+      canaryId,
+      canaryMatches: readback.proof.canaryMatches,
+      nodeLogicalSha256: readback.proof.nodeLogicalSha256,
+      edgeLogicalSha256: readback.proof.edgeLogicalSha256,
+      resources: readback.proof.resources,
+      fullMaterializerUsed: false,
     };
+    boundedForceFull = await proveBoundedForceFull({
+      tempRoot: temporary.path,
+      representative: captured.representative,
+      persister,
+      loader: boundedLoader,
+    });
   } catch (error) {
     operationError = error;
   } finally {
     try {
       await assertDirectoryIdentity(clone, 'generated clone');
-      await removeClone(clone, temporary.path);
+      if (removeClone) await removeClone(clone, temporary.path);
+      else await guardedRemoveOwnedDirectory(clone, temporary.path, 'brain-save-clone-');
     } catch (error) {
       cleanupError = error;
     }
@@ -445,11 +715,17 @@ export async function verifyTempSaveClone({
   if (cleanupError) throw cleanupError;
   if (runtimeCleanupError) throw runtimeCleanupError;
   if (operationError) throw operationError;
+  if ((await fsp.readdir(temporary.path)).length !== 0) throw typedError('temp_root_not_empty_after');
   return {
     ...liveProof,
-    mode: 'temp-save-clone',
+    mode: 'temp-save-clone-safe',
     writeBrainDir: clone.path,
     clone: cloneProof,
+    boundedForceFull,
+    liveForceFull: {
+      attempted: false,
+      reason: 'full-live-forceFull-would-duplicate-the-resident-graph-and-is-prohibited',
+    },
     cloneRemoved: true,
     before: sourceBefore.records,
     after: sourceAfter.records,
@@ -465,14 +741,14 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     home23Root: path.resolve(one(values, 'home23-root', { required: true })),
     agent: one(values, 'agent', { required: true }),
     brainDir: path.resolve(one(values, 'brain', { required: true })),
+    tempRoot: path.resolve(one(values, 'temp-root', { required: true })),
+    maxHeapUsedMiB: positiveLimit(one(values, 'max-heap-used-mib'), DEFAULT_MAX_HEAP_USED_MIB, 'max-heap-used-mib'),
+    maxRssMiB: positiveLimit(one(values, 'max-rss-mib'), DEFAULT_MAX_RSS_MIB, 'max-rss-mib'),
   };
   const result = mode === 'read-only'
     ? await verifyReadOnlyPersistence(options)
     : mode === 'temp-save-clone'
-      ? await verifyTempSaveClone({
-        ...options,
-        tempRoot: path.resolve(one(values, 'temp-root', { required: true })),
-      })
+      ? await verifyTempSaveClone(options)
       : (() => { throw typedError('mode_invalid'); })();
   return writeJsonReceipt(context, path.resolve(one(values, 'output', { required: true })), {
     helper: 'verify-brain-persistence',
