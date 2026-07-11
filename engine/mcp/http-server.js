@@ -10,12 +10,14 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
-const zlib = require('zlib');
 const { promisify } = require('util');
 const yaml = require('js-yaml');
 const { FreeWebSearch } = require('../src/tools/web-search-free');
-
-const gunzip = promisify(zlib.gunzip);
+const {
+  createDefaultMcpMemoryTools,
+  createMcpReadinessController,
+  createSnapshotScalarStateReader,
+} = require('../../shared/memory-source/mcp-http-runtime.cjs');
 
 // Initialize free web search
 const webSearch = new FreeWebSearch(console);
@@ -35,7 +37,6 @@ const COSMO_ROOT = path.join(__dirname, '..');
 const LOGS_DIR = process.env.COSMO_RUNTIME_DIR
   ? path.resolve(process.env.COSMO_RUNTIME_DIR)
   : path.join(COSMO_ROOT, 'runtime');
-const STATE_FILE = path.join(LOGS_DIR, 'state.json.gz');
 const THOUGHTS_FILE = path.join(LOGS_DIR, 'thoughts.jsonl');
 const TOPICS_QUEUE = path.join(LOGS_DIR, 'topics-queue.json');
 const ACTIONS_QUEUE = path.join(LOGS_DIR, 'actions-queue.json');
@@ -91,13 +92,6 @@ function isPathAllowed(relPath) {
   });
 }
 
-// Helper functions (same as stdio version)
-async function readSystemState() {
-  const compressed = await readFile(STATE_FILE);
-  const decompressed = await gunzip(compressed);
-  return JSON.parse(decompressed.toString());
-}
-
 async function readRecentThoughts(limit = 20) {
   const content = await readFile(THOUGHTS_FILE, 'utf-8');
   const lines = content.trim().split('\n');
@@ -150,59 +144,25 @@ async function getLatestCoordinatorReport() {
   };
 }
 
-async function queryMemory(query, limit = 10) {
-  const state = await readSystemState();
-  
-  if (!state.memory || !state.memory.nodes || state.memory.nodes.length === 0) {
-    return { results: [], message: 'Memory network is empty' };
-  }
-  
-  const queryWords = query.toLowerCase().split(/\s+/);
-  
-  const scored = state.memory.nodes.map(node => {
-    const conceptLower = (node.concept || '').toLowerCase();
-    let score = 0;
-    
-    queryWords.forEach(word => {
-      if (conceptLower.includes(word)) {
-        score += 1;
-      }
-    });
-    
-    score *= (node.activation || 0.5) * (node.weight || 0.5);
-    
-    return { ...node, score };
-  });
-  
-  const results = scored
-    .filter(n => n.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
-    .map(({ score, concept, tag, activation, weight, accessCount, cluster }) => ({
-      concept: concept.substring(0, 200),
-      tag,
-      activation: activation?.toFixed(3),
-      weight: weight?.toFixed(3),
-      accessCount,
-      cluster,
-      relevanceScore: score.toFixed(3)
-    }));
-  
-  return {
-    query,
-    resultsFound: results.length,
-    totalNodes: state.memory.nodes.length,
-    results
-  };
-}
-
 // Create MCP server
-function createMCPServer() {
+function createMCPServer(options = {}) {
+  const memoryTools = options.memoryTools;
+  const readScalarState = options.readScalarState;
+  const signal = options.signal;
+  if (!memoryTools || typeof memoryTools.queryMemory !== 'function'
+      || typeof memoryTools.getMemoryStatistics !== 'function'
+      || typeof memoryTools.getMemoryGraph !== 'function'
+      || typeof memoryTools.getSystemState !== 'function'
+      || typeof readScalarState !== 'function') {
+    throw Object.assign(new Error('MCP memory source dependencies required'), {
+      code: 'mcp_source_context_required',
+    });
+  }
   const {
     Server,
     CallToolRequestSchema,
     ListToolsRequestSchema,
-  } = loadMcpSdk();
+  } = options.sdk || loadMcpSdk();
   const server = new Server(
     {
       name: 'cosmo-brain',
@@ -255,6 +215,10 @@ function createMCPServer() {
                 type: 'number',
                 description: 'Max results (default: 10)',
                 default: 10,
+              },
+              tag: {
+                type: 'string',
+                description: 'Optional exact tag filter',
               },
             },
             required: ['query'],
@@ -419,14 +383,23 @@ function createMCPServer() {
         },
         {
           name: 'get_memory_graph',
-          description: 'Get complete memory network for graph visualization',
+          description: 'Get a bounded memory graph projection. Use graph export for a complete graph.',
           inputSchema: {
             type: 'object',
             properties: {
               limit: {
                 type: 'number',
-                description: 'Max nodes (default: 200, 0 for all)',
+                description: 'Max nodes (default: 200, range: 1-2000)',
                 default: 200,
+              },
+              edgeLimit: {
+                type: 'number',
+                description: 'Max connecting edges (default: 800, range: 0-8000)',
+                default: 800,
+              },
+              clusterId: {
+                type: ['string', 'number'],
+                description: 'Optional cluster filter',
               },
             },
           },
@@ -541,22 +514,7 @@ function createMCPServer() {
       
       switch (name) {
         case 'get_system_state': {
-          const state = await readSystemState();
-          result = {
-            cycle: state.cycleCount || 0,
-            cognitiveState: state.cognitiveState || {},
-            mode: state.currentMode || 'focus',
-            memory: {
-              totalNodes: state.memory?.nodes?.length || 0,
-              totalEdges: state.memory?.edges?.length || 0,
-              clusters: state.memory?.clusters?.length || 0,
-            },
-            goals: {
-              active: state.goals?.active?.length || 0,
-              completed: state.goals?.completed?.length || 0,
-              archived: state.goals?.archived?.length || 0,
-            },
-          };
+          result = await memoryTools.getSystemState({ signal });
           break;
         }
         
@@ -568,12 +526,17 @@ function createMCPServer() {
         }
         
         case 'query_memory': {
-          result = await queryMemory(args.query, args.limit || 10);
+          result = await memoryTools.queryMemory({
+            query: args.query,
+            limit: args.limit ?? 10,
+            tag: args.tag ?? null,
+            signal,
+          });
           break;
         }
         
         case 'get_active_goals': {
-          const state = await readSystemState();
+          const state = await readScalarState();
           const status = args.status || 'active';
           const limit = args.limit || 20;
           
@@ -607,7 +570,7 @@ function createMCPServer() {
         }
         
         case 'get_agent_activity': {
-          const state = await readSystemState();
+          const state = await readScalarState();
           
           // Extract agent data from agentExecutor state
           const agentExecutor = state.agentExecutor || {};
@@ -639,69 +602,7 @@ function createMCPServer() {
         }
         
         case 'get_memory_statistics': {
-          const state = await readSystemState();
-          const memory = state.memory || {};
-          const nodes = memory.nodes || [];
-          const edges = memory.edges || [];
-          
-          // Extract nodes from Map format if needed
-          const extractNodes = (nodeArray) => {
-            if (!nodeArray || nodeArray.length === 0) return [];
-            // Check if it's Map format [[id, node], ...]
-            if (Array.isArray(nodeArray[0]) && nodeArray[0].length === 2) {
-              return nodeArray.map(([id, node]) => node);
-            }
-            return nodeArray;
-          };
-          
-          const nodeList = extractNodes(nodes);
-          
-          const stats = {
-            totalNodes: nodeList.length,
-            totalEdges: Array.isArray(edges) ? edges.length : edges.size || 0,
-            clusters: memory.clusters?.length || memory.clusters?.size || 0,
-            nodesByTag: {},
-            averageActivation: 0,
-            averageWeight: 0,
-            mostAccessedNodes: [],
-            highestActivationNodes: [],
-          };
-          
-          if (nodeList.length > 0) {
-            // Group by tag
-            nodeList.forEach(node => {
-              const tag = node.tag || 'unknown';
-              stats.nodesByTag[tag] = (stats.nodesByTag[tag] || 0) + 1;
-            });
-            
-            // Calculate averages
-            const totalActivation = nodeList.reduce((sum, n) => sum + (n.activation || 0), 0);
-            const totalWeight = nodeList.reduce((sum, n) => sum + (n.weight || 0), 0);
-            stats.averageActivation = (totalActivation / nodeList.length).toFixed(3);
-            stats.averageWeight = (totalWeight / nodeList.length).toFixed(3);
-            
-            // Most accessed
-            stats.mostAccessedNodes = nodeList
-              .sort((a, b) => (b.accessCount || 0) - (a.accessCount || 0))
-              .slice(0, 5)
-              .map(n => ({
-                concept: n.concept?.substring(0, 150),
-                accessCount: n.accessCount,
-                activation: n.activation?.toFixed(3),
-              }));
-            
-            // Highest activation
-            stats.highestActivationNodes = nodeList
-              .sort((a, b) => (b.activation || 0) - (a.activation || 0))
-              .slice(0, 5)
-              .map(n => ({
-                concept: n.concept?.substring(0, 150),
-                activation: n.activation?.toFixed(3),
-                weight: n.weight?.toFixed(3),
-              }));
-          }
-          
-          result = stats;
+          result = await memoryTools.getMemoryStatistics({ signal });
           break;
         }
         
@@ -846,7 +747,7 @@ function createMCPServer() {
         }
         
         case 'get_journal': {
-          const state = await readSystemState();
+          const state = await readScalarState();
           const limit = args.limit || 20;
           const journal = state.journal || [];
           result = {
@@ -857,7 +758,7 @@ function createMCPServer() {
         }
         
         case 'get_oscillator_mode': {
-          const state = await readSystemState();
+          const state = await readScalarState();
           result = {
             currentMode: state.currentMode || state.oscillator?.currentMode || 'unknown',
             stats: state.oscillator || {},
@@ -877,72 +778,17 @@ function createMCPServer() {
         }
         
         case 'get_memory_graph': {
-          const state = await readSystemState();
-          const memory = state.memory || {};
-          const requestedLimit = args.limit !== undefined ? args.limit : 0; // 0 = all
-          
-          // Extract nodes from Map format
-          let nodeList = [];
-          if (memory.nodes) {
-            if (Array.isArray(memory.nodes) && memory.nodes.length > 0) {
-              if (Array.isArray(memory.nodes[0]) && memory.nodes[0].length === 2) {
-                // Map format [[id, node], ...]
-                nodeList = memory.nodes.map(([id, node]) => node);
-              } else {
-                // Already array format
-                nodeList = memory.nodes;
-              }
-            }
-          }
-          
-          // Extract edges
-          let edgeList = [];
-          if (memory.edges) {
-            if (Array.isArray(memory.edges)) {
-              edgeList = memory.edges;
-            } else if (memory.edges.size) {
-              // Map format - convert to array
-              edgeList = Array.from(memory.edges.entries()).map(([key, edge]) => {
-                const [source, target] = key.split('->');
-                return {
-                  source: parseInt(source),
-                  target: parseInt(target),
-                  weight: edge.weight || 0.5,
-                  type: edge.type
-                };
-              });
-            }
-          }
-          
-          // Sort and limit nodes
-          nodeList.sort((a, b) => (b.activation || 0) - (a.activation || 0));
-          
-          if (requestedLimit > 0 && nodeList.length > requestedLimit) {
-            const topNodes = nodeList.slice(0, requestedLimit);
-            const nodeIds = new Set(topNodes.map(n => n.id));
-            edgeList = edgeList.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target));
-            nodeList = topNodes;
-          }
-          
-          result = {
-            nodes: nodeList.map(n => ({
-              id: n.id,
-              concept: (n.concept || '').substring(0, 200),
-              tag: n.tag,
-              activation: n.activation || 0,
-              weight: n.weight || 0.5,
-              accessCount: n.accessCount || 0,
-              cluster: n.cluster || 0
-            })),
-            edges: edgeList,
-            totalNodes: memory.nodes?.length || 0,
-            totalEdges: memory.edges?.length || memory.edges?.size || 0
-          };
+          result = await memoryTools.getMemoryGraph({
+            nodeLimit: args.limit ?? args.nodeLimit ?? 200,
+            edgeLimit: args.edgeLimit ?? 800,
+            clusterId: args.clusterId ?? null,
+            signal,
+          });
           break;
         }
         
         case 'get_dreams': {
-          const state = await readSystemState();
+          const state = await readScalarState();
           const requestedLimit = args.limit || 20;
           const dreams = [];
           
@@ -1207,7 +1053,8 @@ function createMCPServer() {
             type: 'text',
             text: JSON.stringify(result, null, 2)
           }
-        ]
+        ],
+        ...((result?.ok === false || result?.success === false) ? { isError: true } : {}),
       };
     } catch (error) {
       return {
@@ -1225,8 +1072,20 @@ function createMCPServer() {
   return server;
 }
 
-function createMcpHttpApp() {
+function createMcpHttpApp(options = {}) {
+  // Load the execution runtime before advertising a listener. Missing SDK
+  // dependencies must fail process startup instead of producing a false-green
+  // health endpoint that cannot execute tools.
+  const sdk = options.sdk || loadMcpSdk();
+  const memoryTools = options.memoryTools || createDefaultMcpMemoryTools();
+  const readScalarState = options.readScalarState
+    || createSnapshotScalarStateReader({ brainDir: LOGS_DIR });
+  const readiness = options.readiness || createMcpReadinessController({
+    memoryTools,
+    logger: options.logger || console,
+  });
   const app = express();
+  app.locals.mcpReadiness = readiness;
   
   // CORS middleware - allow localhost on any port
   app.use((req, res, next) => {
@@ -1252,18 +1111,21 @@ function createMcpHttpApp() {
   app.use(express.urlencoded({ limit: '10gb', extended: true }));
 
   app.get('/health', (_req, res) => {
-    res.json({
-      ok: true,
-      protocolVersion: '2025-03-26',
-      sourceHealth: 'healthy',
-    });
+    const status = readiness.status();
+    res.status(status.ok ? 200 : 503).json(status);
   });
 
   // POST /mcp - handle all MCP requests (stateless)
   app.post('/mcp', async (req, res) => {
-    const { StreamableHTTPServerTransport } = loadMcpSdk();
+    const { StreamableHTTPServerTransport } = sdk;
+    const requestController = new AbortController();
     // Stateless: create new server + transport for each request
-    const server = createMCPServer();
+    const server = createMCPServer({
+      memoryTools,
+      readScalarState,
+      signal: requestController.signal,
+      sdk,
+    });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined  // Stateless mode
     });
@@ -1273,6 +1135,10 @@ function createMcpHttpApp() {
     res.on('close', () => {
       if (!requestComplete) {
         console.error('MCP: Client disconnected before request complete');
+        requestController.abort(Object.assign(new Error('MCP client disconnected'), {
+          name: 'AbortError',
+          code: 'cancelled',
+        }));
       }
       transport.close();
       server.close();
@@ -1341,13 +1207,14 @@ function startMcpHttpServer(options = {}) {
   const host = options.host ?? process.env.MCP_HTTP_HOST ?? '127.0.0.1';
   assertLoopbackHost(host);
   const port = options.port ?? Number(process.env.MCP_HTTP_PORT || 3335);
-  const app = options.app || createMcpHttpApp();
+  const app = options.app || createMcpHttpApp(options);
   const server = app.listen(port, host, () => {
     if (options.log !== false) {
       console.error(`✅ Cosmo MCP Server (Streamable HTTP) on http://${host}:${server.address().port}/mcp`);
       console.error(`   Logs: ${LOGS_DIR}`);
     }
   });
+  server.once('close', () => app.locals.mcpReadiness?.close?.());
   return server;
 }
 
@@ -1365,6 +1232,7 @@ if (require.main === module) {
 
 module.exports = {
   assertLoopbackHost,
+  createMCPServer,
   createMcpHttpApp,
   startMcpHttpServer,
 };

@@ -2516,3 +2516,11 @@ resolution, and deterministic concurrent mutation conflicts.
   server-derived, exact, durable, cancellable without false stop claims, and
   protected by a per-run mutation lock; executor/worker registration follows in
   the remaining Task 5 integration slices.
+- **2026-07-10** — Patch 51 made the vendored MCP HTTP runtime source-honest.
+  Health remains unavailable until a real canonical memory-source readiness
+  check completes, missing MCP SDK dependencies fail startup instead of yielding
+  a false-green listener, and system/search/statistics/graph tools use bounded
+  agent-scoped source adapters rather than decompressing the legacy full state.
+  The per-agent `COSMO_RUNTIME_DIR` contract is now honored ahead of the legacy
+  unified-server runtime path. Focused protocol, readiness, bounded-snapshot,
+  and canonical-source tests pass for both engine copies.
