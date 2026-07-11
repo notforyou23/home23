@@ -41,7 +41,6 @@ import { ConversationHistory } from './agent/history.js';
 import { createToolRegistry } from './agent/tools/index.js';
 import type { ToolContext, SubAgentTracker } from './agent/types.js';
 import { BrainOperationsClient } from './agent/brain-operations/client.js';
-import { resolveBrainRoute } from './agent/brain-route-resolver.js';
 import { TTSService } from './observability/tts.js';
 import { BrowserController } from './browser/cdp.js';
 import type { HomeConfig } from './types.js';
@@ -297,16 +296,10 @@ async function main(): Promise<void> {
   // ── Telegram adapter ref (captured during adapter creation) ──
   let telegramAdapterRef: TelegramAdapter | null = null;
 
-  // ── Resolve cosmo23 brainRoute at startup ──
+  // Brain target resolution is fresh and requester-bound inside BrainOperationsClient.
   const agentName = process.env.HOME23_AGENT || 'unknown';
   const cosmo23Port = Number(process.env.COSMO23_PORT || 43210);
   const cosmo23BaseUrl = `http://localhost:${cosmo23Port}`;
-  const brainRoute = await resolveBrainRoute(agentName, cosmo23BaseUrl);
-  if (brainRoute) {
-    console.log(`[home] brainRoute resolved: ${brainRoute}`);
-  } else {
-    console.warn(`[home] brainRoute NOT resolved for ${agentName} — brain_query tools will return is_error. Check: curl ${cosmo23BaseUrl}/api/brains`);
-  }
 
   const brainOperations = new BrainOperationsClient({
     baseUrl: `http://127.0.0.1:${DASHBOARD_PORT}`,
@@ -322,7 +315,7 @@ async function main(): Promise<void> {
     enginePort: DASHBOARD_PORT,
     agentName,
     cosmo23BaseUrl,
-    brainRoute,
+    brainRoute: null,
     workspacePath,
     tempDir,
     contextManager,

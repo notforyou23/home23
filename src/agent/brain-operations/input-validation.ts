@@ -98,3 +98,65 @@ export function optionalEnum<T extends string>(
   if (typeof value !== 'string' || !allowed.includes(value as T)) throw invalid(field);
   return value as T;
 }
+
+export function optionalJsonObject(
+  value: unknown,
+  field: string,
+  maxBytes: number,
+  maxDepth = 32,
+): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 2
+      || !Number.isSafeInteger(maxDepth) || maxDepth < 1) {
+    throw invalid(field);
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid(field);
+
+  const seen = new WeakSet<object>();
+  const cloneJson = (candidate: unknown, depth: number): unknown => {
+    if (candidate === null || typeof candidate === 'string' || typeof candidate === 'boolean') {
+      return candidate;
+    }
+    if (typeof candidate === 'number') {
+      if (!Number.isFinite(candidate)) throw invalid(field);
+      return candidate;
+    }
+    if (!candidate || typeof candidate !== 'object' || depth > maxDepth) throw invalid(field);
+    if (seen.has(candidate)) throw invalid(field);
+    seen.add(candidate);
+    try {
+      if (Array.isArray(candidate)) {
+        if (Object.getPrototypeOf(candidate) !== Array.prototype) throw invalid(field);
+        const descriptors = Object.getOwnPropertyDescriptors(candidate);
+        const keys = Reflect.ownKeys(descriptors);
+        if (keys.some((key) => typeof key !== 'string'
+            || (key !== 'length' && !/^(0|[1-9][0-9]*)$/.test(key)))) throw invalid(field);
+        const output: unknown[] = [];
+        for (let index = 0; index < candidate.length; index += 1) {
+          const descriptor = descriptors[String(index)];
+          if (!descriptor || !('value' in descriptor)) throw invalid(field);
+          output.push(cloneJson(descriptor.value, depth + 1));
+        }
+        return output;
+      }
+
+      const prototype = Object.getPrototypeOf(candidate);
+      if (prototype !== Object.prototype && prototype !== null) throw invalid(field);
+      const descriptors = Object.getOwnPropertyDescriptors(candidate);
+      const output: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+      for (const key of Reflect.ownKeys(descriptors)) {
+        if (typeof key !== 'string') throw invalid(field);
+        const descriptor = descriptors[key];
+        if (!descriptor || !('value' in descriptor)) throw invalid(field);
+        output[key] = cloneJson(descriptor.value, depth + 1);
+      }
+      return output;
+    } finally {
+      seen.delete(candidate);
+    }
+  };
+
+  const cloned = cloneJson(value, 1) as Record<string, unknown>;
+  if (Buffer.byteLength(JSON.stringify(cloned), 'utf8') > maxBytes) throw invalid(field);
+  return cloned;
+}

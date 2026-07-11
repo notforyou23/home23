@@ -1,517 +1,553 @@
 /**
- * Brain tools — search memory, run deep queries, check status.
- * These call the COSMO engine's HTTP API.
+ * Brain tools — all access goes through the requester-bound durable operations client.
  */
 
+import type {
+  BrainOperationRecord,
+  BrainOperationResult,
+  BrainOperationResultEnvelope,
+} from '../brain-operations/types.js';
+import {
+  assertExactKeys,
+  exactProviderModelPair,
+  hasOwn,
+  optionalBoolean,
+  optionalBoundedText,
+  optionalEnum,
+  optionalFiniteInteger,
+  optionalFiniteNumber,
+  optionalJsonObject,
+  requiredBoundedText,
+} from '../brain-operations/input-validation.js';
+import { operationToolResult } from '../tool-result.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 
 const DEFAULT_BRAIN_QUERY_MODE = 'quick';
 
-type MemoryGraphResponse = {
-  nodes?: Array<{ cluster?: number | string | null }>;
-  edges?: Array<unknown>;
-  _liveJournalCount?: number;
-};
+const targetSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    agent: { type: 'string', minLength: 1 },
+    brainId: { type: 'string', minLength: 1 },
+  },
+} as const;
 
-function summarizeMemoryGraphCounts(data: MemoryGraphResponse): {
-  totalNodes: number;
-  totalEdges: number;
-  clusterBuckets: number;
-  detectedClusters: number;
-  unclusteredNodes: number;
-  liveJournalCount?: number;
-} {
-  const nodes = Array.isArray(data.nodes) ? data.nodes : [];
-  const edges = Array.isArray(data.edges) ? data.edges : [];
-  const clusterIds = new Set<string>();
-  let unclusteredNodes = 0;
+const providerModelSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    provider: { type: 'string', minLength: 1 },
+    model: { type: 'string', minLength: 1 },
+  },
+  required: ['provider', 'model'],
+} as const;
 
-  for (const node of nodes) {
-    const cluster = node.cluster;
-    if (typeof cluster === 'number' && Number.isFinite(cluster)) {
-      clusterIds.add(String(cluster));
-    } else if (typeof cluster === 'string' && cluster.trim().length > 0) {
-      clusterIds.add(cluster.trim());
-    } else {
-      unclusteredNodes += 1;
-    }
-  }
+function invalidRequest(message = 'invalid_request'): Error {
+  return Object.assign(new Error(message), { code: 'invalid_request' });
+}
 
+function assertToolKeys(input: Record<string, unknown>, allowed: readonly string[]): void {
+  const keys = Reflect.ownKeys(input);
+  const allow = new Set(allowed);
+  if (keys.some((key) => typeof key !== 'string' || !allow.has(key))) throw invalidRequest();
+}
+
+function parsedWhenPresent<T>(
+  input: Record<string, unknown>,
+  key: string,
+  parse: (value: unknown) => T | undefined,
+): T | undefined {
+  if (!hasOwn(input, key)) return undefined;
+  const value = parse(input[key]);
+  if (value === undefined) throw invalidRequest(`${key}_invalid`);
+  return value;
+}
+
+function targetFrom(input: Record<string, unknown>): { agent?: string; brainId?: string } | undefined {
+  if (!hasOwn(input, 'target')) return undefined;
+  const value = input.target;
+  assertExactKeys(value, ['agent', 'brainId'], 'target', { requireAny: true });
+  const agent = parsedWhenPresent(value, 'agent', (candidate) =>
+    optionalBoundedText(candidate, 'target.agent', 256));
+  const brainId = parsedWhenPresent(value, 'brainId', (candidate) =>
+    optionalBoundedText(candidate, 'target.brainId', 256));
   return {
-    totalNodes: nodes.length,
-    totalEdges: edges.length,
-    clusterBuckets: clusterIds.size + (unclusteredNodes > 0 ? 1 : 0),
-    detectedClusters: clusterIds.size,
-    unclusteredNodes,
-    liveJournalCount: data._liveJournalCount,
+    ...(agent !== undefined ? { agent } : {}),
+    ...(brainId !== undefined ? { brainId } : {}),
   };
+}
+
+function exactPairWhenPresent(
+  input: Record<string, unknown>,
+  key: string,
+): { provider: string; model: string } | undefined {
+  return parsedWhenPresent(input, key, (value) => exactProviderModelPair(value, key));
+}
+
+function pgsConfigWhenPresent(
+  input: Record<string, unknown>,
+): { sweepFraction?: number } | undefined {
+  if (!hasOwn(input, 'pgsConfig')) return undefined;
+  const value = input.pgsConfig;
+  assertExactKeys(value, ['sweepFraction'], 'pgsConfig');
+  const sweepFraction = parsedWhenPresent(value, 'sweepFraction', (candidate) =>
+    optionalFiniteNumber(candidate, 'pgsConfig.sweepFraction', 0, 1, { exclusiveMin: true }));
+  return sweepFraction === undefined ? {} : { sweepFraction };
+}
+
+function priorContextWhenPresent(
+  input: Record<string, unknown>,
+): { query: string; answer: string } | undefined {
+  if (!hasOwn(input, 'priorContext')) return undefined;
+  const value = input.priorContext;
+  assertExactKeys(value, ['query', 'answer'], 'priorContext', { requireAll: true });
+  return {
+    query: requiredBoundedText(value.query, 'priorContext.query', 12_000),
+    answer: requiredBoundedText(value.answer, 'priorContext.answer', 20_000),
+  };
+}
+
+function runtime(ctx: ToolContext): NonNullable<ToolContext['turnRuntime']> {
+  if (!ctx.turnRuntime) {
+    throw Object.assign(new Error('turn_runtime_unavailable'), { code: 'turn_runtime_unavailable' });
+  }
+  return ctx.turnRuntime;
+}
+
+function toolFailure(label: string, error: unknown): ToolResult {
+  const code = typeof error === 'object' && error && 'code' in error
+    ? String((error as { code: unknown }).code)
+    : 'brain_operation_error';
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    content: `${label}: ${code}: ${message}`,
+    is_error: true,
+    metadata: {
+      code,
+      sourceHealth: code === 'source_unavailable' ? 'unavailable' : 'unknown',
+    },
+  };
+}
+
+function boundedJson(label: string, value: Record<string, unknown>): ToolResult {
+  return {
+    content: `${label}\n${JSON.stringify(value, null, 2)}`,
+    resultHandle: typeof value.resultHandle === 'string' ? value.resultHandle : undefined,
+    metadata: {
+      operationId: value.operationId,
+      state: value.state,
+      sourceEvidence: value.sourceEvidence,
+      resultArtifact: value.resultArtifact,
+    },
+  };
+}
+
+function operationControlResult(
+  action: string,
+  value: BrainOperationRecord | BrainOperationResultEnvelope,
+): ToolResult {
+  const failed = ['failed', 'cancelled', 'interrupted'].includes(value.state);
+  const running = value.state === 'queued' || value.state === 'running';
+  return {
+    content: `${failed
+      ? `${value.error?.code || value.state}: ${value.error?.message || value.state}`
+      : JSON.stringify(value.result || {})}\noperation=${value.operationId} state=${value.state}`
+      + (running
+        ? `\nUse brain_status {action:"wait",operationId:"${value.operationId}"} to reattach,`
+          + ' or action:"cancel" to stop it.'
+        : ''),
+    is_error: failed || undefined,
+    resultHandle: value.resultHandle || undefined,
+    metadata: {
+      action,
+      operationId: value.operationId,
+      state: value.state,
+      error: value.error,
+      sourceEvidence: value.sourceEvidence,
+      resultArtifact: value.resultArtifact,
+    },
+  };
+}
+
+function synthesisResult(operation: BrainOperationResult): ToolResult {
+  const rendered = operationToolResult(operation);
+  const generationMarker = operation.result?.generationMarker;
+  if (typeof generationMarker === 'string' && generationMarker.trim()) {
+    rendered.content += `\ngenerationMarker=${generationMarker}`;
+    rendered.metadata = { ...rendered.metadata, generationMarker };
+  }
+  return rendered;
+}
+
+async function executeBrainSearch(
+  input: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  try {
+    assertToolKeys(input, ['query', 'limit', 'tag', 'target']);
+    const turn = runtime(ctx);
+    const target = targetFrom(input);
+    const topK = parsedWhenPresent(input, 'limit', (value) =>
+      optionalFiniteInteger(value, 'limit', 1, 100)) ?? 10;
+    const tag = parsedWhenPresent(input, 'tag', (value) =>
+      optionalBoundedText(value, 'tag', 256));
+    const value = await turn.brainOperations.search({
+      ...(target ? { target } : {}),
+      query: requiredBoundedText(input.query, 'query', 12_000),
+      topK,
+      ...(tag !== undefined ? { tag } : {}),
+    }, turn.signal);
+    return boundedJson('brain_search', value);
+  } catch (error) {
+    return toolFailure('brain_search', error);
+  }
+}
+
+async function executeBrainQuery(
+  input: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  try {
+    assertToolKeys(input, [
+      'query', 'target', 'mode', 'enablePGS', 'pgsMode', 'pgsConfig', 'pgsSweep',
+      'pgsSynth', 'modelSelection', 'enableSynthesis', 'includeOutputs', 'includeThoughts',
+      'includeCoordinatorInsights', 'allowActions', 'priorContext',
+    ]);
+    const turn = runtime(ctx);
+    const enablePGS = parsedWhenPresent(input, 'enablePGS', (value) =>
+      optionalBoolean(value, 'enablePGS')) ?? false;
+    const pgsOnly = ['pgsMode', 'pgsConfig', 'pgsSweep', 'pgsSynth'];
+    const directOnly = ['modelSelection', 'enableSynthesis', 'includeOutputs', 'includeThoughts',
+      'includeCoordinatorInsights', 'allowActions'];
+    if ((!enablePGS && pgsOnly.some((key) => hasOwn(input, key)))
+        || (enablePGS && directOnly.some((key) => hasOwn(input, key)))) {
+      throw invalidRequest();
+    }
+    const target = targetFrom(input);
+    const mode = parsedWhenPresent(input, 'mode', (value) =>
+      optionalEnum(value, 'mode', ['quick', 'full', 'expert', 'dive'] as const))
+      ?? DEFAULT_BRAIN_QUERY_MODE;
+    const priorContext = priorContextWhenPresent(input);
+    const pgsConfig = pgsConfigWhenPresent(input);
+    const pgsSweep = exactPairWhenPresent(input, 'pgsSweep');
+    const pgsSynth = exactPairWhenPresent(input, 'pgsSynth');
+    const modelSelection = exactPairWhenPresent(input, 'modelSelection');
+    const operation = await turn.brainOperations.query({
+      ...(target ? { target } : {}),
+      query: requiredBoundedText(input.query, 'query', 12_000),
+      mode,
+      ...(priorContext !== undefined ? { priorContext } : {}),
+      ...(enablePGS ? {
+        enablePGS: true,
+        pgsMode: parsedWhenPresent(input, 'pgsMode', (value) =>
+          optionalEnum(value, 'pgsMode', ['full'] as const)) ?? 'full',
+        ...(pgsConfig !== undefined ? { pgsConfig } : {}),
+        ...(pgsSweep !== undefined ? { pgsSweep } : {}),
+        ...(pgsSynth !== undefined ? { pgsSynth } : {}),
+      } : {
+        ...(modelSelection !== undefined ? { modelSelection } : {}),
+        ...(hasOwn(input, 'enableSynthesis') ? {
+          enableSynthesis: parsedWhenPresent(input, 'enableSynthesis', (value) =>
+            optionalBoolean(value, 'enableSynthesis'))!,
+        } : {}),
+        ...(hasOwn(input, 'includeOutputs') ? {
+          includeOutputs: parsedWhenPresent(input, 'includeOutputs', (value) =>
+            optionalBoolean(value, 'includeOutputs'))!,
+        } : {}),
+        ...(hasOwn(input, 'includeThoughts') ? {
+          includeThoughts: parsedWhenPresent(input, 'includeThoughts', (value) =>
+            optionalBoolean(value, 'includeThoughts'))!,
+        } : {}),
+        ...(hasOwn(input, 'includeCoordinatorInsights') ? {
+          includeCoordinatorInsights: parsedWhenPresent(input, 'includeCoordinatorInsights', (value) =>
+            optionalBoolean(value, 'includeCoordinatorInsights'))!,
+        } : {}),
+        ...(hasOwn(input, 'allowActions') ? {
+          allowActions: parsedWhenPresent(input, 'allowActions', (value) =>
+            optionalBoolean(value, 'allowActions'))!,
+        } : {}),
+      }),
+    }, turn.signal);
+    return operationToolResult(operation);
+  } catch (error) {
+    return toolFailure('brain_query', error);
+  }
+}
+
+async function executeBrainExport(
+  input: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  try {
+    assertToolKeys(input, [
+      'operationId', 'resultHandle', 'query', 'answer', 'format', 'metadata',
+    ]);
+    const turn = runtime(ctx);
+    const format = parsedWhenPresent(input, 'format', (value) =>
+      optionalEnum(value, 'format', ['markdown', 'json'] as const)) ?? 'markdown';
+    const canonical = hasOwn(input, 'operationId');
+    if (canonical && (hasOwn(input, 'query') || hasOwn(input, 'answer'))) throw invalidRequest();
+    if (!canonical && (!hasOwn(input, 'query') || !hasOwn(input, 'answer')
+        || hasOwn(input, 'resultHandle'))) throw invalidRequest();
+    if (canonical && hasOwn(input, 'metadata')) throw invalidRequest();
+    const metadata = parsedWhenPresent(input, 'metadata', (value) =>
+      optionalJsonObject(value, 'metadata', 32_000));
+    const resultHandle = parsedWhenPresent(input, 'resultHandle', (value) =>
+      optionalBoundedText(value, 'resultHandle', 256));
+    const value = canonical
+      ? await turn.brainOperations.exportResult({
+        operationId: requiredBoundedText(input.operationId, 'operationId', 256),
+        ...(resultHandle !== undefined ? { resultHandle } : {}),
+        format,
+        ...(metadata ? { metadata } : {}),
+      }, turn.signal)
+      : await turn.brainOperations.exportAdHocResult({
+        query: requiredBoundedText(input.query, 'query', 12_000),
+        answer: requiredBoundedText(input.answer, 'answer', 2_000_000),
+        format,
+        metadata: { ...(metadata || {}), canonicalEvidence: false },
+      }, turn.signal);
+    return boundedJson('brain_query_export', value);
+  } catch (error) {
+    return toolFailure('brain_query_export', error);
+  }
+}
+
+async function executeBrainGraph(
+  input: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  try {
+    assertToolKeys(input, ['target', 'topN', 'tag', 'exportFull', 'format']);
+    const turn = runtime(ctx);
+    const target = targetFrom(input);
+    const exportFull = parsedWhenPresent(input, 'exportFull', (value) =>
+      optionalBoolean(value, 'exportFull')) ?? false;
+    if (exportFull) {
+      if (['topN', 'tag'].some((key) => hasOwn(input, key))) throw invalidRequest();
+      const operation = await turn.brainOperations.graphExport({
+        ...(target ? { target } : {}),
+        format: parsedWhenPresent(input, 'format', (value) =>
+          optionalEnum(value, 'format', ['jsonl'] as const)) ?? 'jsonl',
+      }, turn.signal);
+      const rendered = operationToolResult(operation);
+      rendered.content += '\nFull graph stored in requester-owned operation result storage.';
+      return rendered;
+    }
+    if (hasOwn(input, 'format')) throw invalidRequest();
+    const nodeLimit = parsedWhenPresent(input, 'topN', (value) =>
+      optionalFiniteInteger(value, 'topN', 1, 100)) ?? 25;
+    const tag = parsedWhenPresent(input, 'tag', (value) =>
+      optionalBoundedText(value, 'tag', 256));
+    const value = await turn.brainOperations.graph({
+      ...(target ? { target } : {}),
+      nodeLimit,
+      edgeLimit: Math.min(nodeLimit * 4, 400),
+      ...(tag !== undefined ? { tag } : {}),
+    }, turn.signal);
+    return boundedJson('brain_memory_graph', value);
+  } catch (error) {
+    return toolFailure('brain_memory_graph', error);
+  }
+}
+
+async function executeBrainSynthesis(
+  input: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  if (hasOwn(input, 'target')) {
+    return { content: 'brain_synthesize is own brain only.', is_error: true };
+  }
+  try {
+    assertToolKeys(input, ['action', 'operationId', 'generationMarker', 'trigger', 'reason']);
+    const turn = runtime(ctx);
+    const action = parsedWhenPresent(input, 'action', (value) =>
+      optionalEnum(value, 'action', ['run', 'status', 'reattach'] as const)) ?? 'run';
+    if (action === 'status') {
+      if (hasOwn(input, 'trigger') || hasOwn(input, 'reason')
+          || (hasOwn(input, 'operationId') && hasOwn(input, 'generationMarker'))) {
+        throw invalidRequest();
+      }
+      const operationId = parsedWhenPresent(input, 'operationId', (value) =>
+        optionalBoundedText(value, 'operationId', 256));
+      const generationMarker = parsedWhenPresent(input, 'generationMarker', (value) =>
+        optionalBoundedText(value, 'generationMarker', 256));
+      const value = await turn.brainOperations.synthesisStatus({
+        ...(operationId !== undefined ? { operationId } : {}),
+        ...(generationMarker !== undefined ? { generationMarker } : {}),
+      }, turn.signal);
+      return 'operationId' in value && 'state' in value
+        ? synthesisResult(value as BrainOperationResult)
+        : boundedJson('brain_synthesis_status', value as unknown as Record<string, unknown>);
+    }
+    if (action === 'reattach') {
+      if (hasOwn(input, 'generationMarker') || hasOwn(input, 'trigger') || hasOwn(input, 'reason')) {
+        throw invalidRequest();
+      }
+      const operationId = requiredBoundedText(input.operationId, 'operationId', 256);
+      return synthesisResult(await turn.brainOperations.reattachSynthesis(
+        operationId, turn.signal,
+      ));
+    }
+    if (hasOwn(input, 'operationId') || hasOwn(input, 'generationMarker')) throw invalidRequest();
+    const trigger = parsedWhenPresent(input, 'trigger', (value) =>
+      optionalBoundedText(value, 'trigger', 256)) ?? 'tool';
+    const reason = parsedWhenPresent(input, 'reason', (value) =>
+      optionalBoundedText(value, 'reason', 4_000));
+    return synthesisResult(await turn.brainOperations.synthesize({
+      trigger,
+      ...(reason !== undefined ? { reason } : {}),
+    }, turn.signal));
+  } catch (error) {
+    return toolFailure('brain_synthesize', error);
+  }
+}
+
+async function executeBrainStatus(
+  input: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  try {
+    assertToolKeys(input, ['target', 'operationId', 'action']);
+    const turn = runtime(ctx);
+    if (hasOwn(input, 'operationId')) {
+      if (hasOwn(input, 'target')) throw invalidRequest();
+      const operationId = requiredBoundedText(input.operationId, 'operationId', 256);
+      const action = parsedWhenPresent(input, 'action', (value) =>
+        optionalEnum(value, 'action', ['status', 'result', 'wait', 'cancel'] as const)) ?? 'status';
+      const value = action === 'wait'
+        ? await turn.brainOperations.resumeOperation(operationId, turn.signal)
+        : await turn.brainOperations.inspectOperation(operationId, action, turn.signal);
+      return 'attachmentState' in value
+        ? operationToolResult(value as BrainOperationResult)
+        : operationControlResult(action, value);
+    }
+    if (hasOwn(input, 'action')) throw invalidRequest();
+    const target = targetFrom(input);
+    return boundedJson('brain_status', await turn.brainOperations.status(
+      target ? { target } : {}, turn.signal,
+    ));
+  } catch (error) {
+    return toolFailure('brain_status', error);
+  }
 }
 
 export const brainSearchTool: ToolDefinition = {
   name: 'brain_search',
-  description: 'Semantic search across brain memory nodes using embedding cosine similarity. Returns the most relevant nodes ranked by similarity score.',
+  description: 'Search this agent brain or an authorized sibling/completed research brain.',
   input_schema: {
     type: 'object',
+    additionalProperties: false,
     properties: {
-      query: { type: 'string', description: 'Search query — what to look for in the brain' },
-      limit: { type: 'number', description: 'Max results (default: 10)' },
-      tag: { type: 'string', description: 'Optional: filter by node tag (e.g., agent_finding, insight, general)' },
+      query: { type: 'string', minLength: 1 },
+      limit: { type: 'integer', minimum: 1, maximum: 100 },
+      tag: { type: 'string', minLength: 1 },
+      target: targetSchema,
     },
     required: ['query'],
   },
-
-  async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-    const query = input.query as string;
-    const limit = (input.limit as number) || 10;
-    const tag = input.tag as string | undefined;
-
-    try {
-      const url = `http://localhost:${ctx.enginePort}/api/memory/search`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, topK: limit, minSimilarity: 0.15, tag: tag || null }),
-        signal: AbortSignal.timeout(180_000),
-      });
-
-      if (!res.ok) return { content: `Brain search failed: HTTP ${res.status}`, is_error: true };
-
-      const data = await res.json() as {
-        results?: Array<{ concept?: string; tag?: string; id?: string | number; similarity?: number }>;
-        stats?: { totalSearched?: number; totalMatched?: number; topSimilarity?: number; noiseFiltered?: boolean };
-      };
-      const results = data.results ?? [];
-      if (results.length === 0) {
-        const reason = data.stats?.noiseFiltered
-          ? `No semantically relevant results — top similarity ${data.stats?.topSimilarity ?? 0} is below the signal threshold.`
-          : `No matching nodes found.`;
-        return { content: `${reason} ${data.stats?.totalSearched ?? 0} nodes searched for "${query}".` };
-      }
-
-      const formatted = results
-        .map((n) => `[Node ${n.id ?? '?'}] (sim: ${n.similarity ?? 0}) [${n.tag ?? ''}]\n${(n.concept ?? '').slice(0, 500)}`)
-        .join('\n\n');
-
-      return { content: `Found ${results.length} matching node(s) (searched ${data.stats?.totalSearched ?? '?'}, top similarity: ${data.stats?.topSimilarity ?? '?'}):\n\n${formatted}` };
-    } catch (err) {
-      return { content: `Brain search error: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
-    }
-  },
+  execute: executeBrainSearch,
 };
 
 export const brainQueryTool: ToolDefinition = {
   name: 'brain_query',
-  description:
-    'Query the brain with the same protocol the dashboard Query tab uses. ' +
-    'Modes: quick (fast targeted extraction, default for agent chat), full (balanced), expert (maximum depth, multi-pass), dive (exploratory synthesis, creative cross-domain). ' +
-    'Enable PGS for full graph coverage via parallel partition sweeps — set enablePGS=true and pick pgsConfig.sweepFraction ' +
-    '(0.10 skim, 0.25 sample, 0.50 deep, 1.0 full). Sweep model should be fast/cheap (many parallel calls); ' +
-    'synthesis model stronger (one final reasoning pass). For follow-up queries that build on a prior answer, pass priorContext.',
+  description: 'Run a durable brain query. PGS can take hours and remains reattachable by operation ID.',
   input_schema: {
     type: 'object',
+    additionalProperties: false,
     properties: {
-      query: { type: 'string', description: 'The research question' },
-      model: { type: 'string', description: 'Main query model (answer generation). Any model from cosmo23 catalog.' },
-      mode: {
-        type: 'string',
-        enum: ['quick', 'full', 'expert', 'dive'],
-        description: 'quick=fast targeted extraction (default), full=balanced, expert=maximum depth, dive=exploratory synthesis',
-      },
-      enableSynthesis: { type: 'boolean', description: 'Enable the extra post-query synthesis metadata layer (default false for agent chat)' },
-      includeOutputs: { type: 'boolean', description: 'Include agent output files as evidence' },
-      includeThoughts: { type: 'boolean', description: 'Include thought journal entries as evidence' },
-      includeCoordinatorInsights: { type: 'boolean', description: 'Include coordinator reviews/insights' },
-      allowActions: { type: 'boolean', description: 'Permit the query to trigger tool actions (default false — safety)' },
-      exportFormat: { type: 'string', enum: ['markdown', 'json'], description: 'Optional: export the query result from COSMO23' },
-      enablePGS: { type: 'boolean', description: 'Enable Progressive Graph Search (full graph coverage)' },
-      pgsMode: { type: 'string', description: 'PGS mode — default "full"' },
+      query: { type: 'string', minLength: 1 },
+      target: targetSchema,
+      mode: { type: 'string', enum: ['quick', 'full', 'expert', 'dive'] },
+      enablePGS: { type: 'boolean' },
+      pgsMode: { type: 'string', enum: ['full'] },
       pgsConfig: {
-        type: 'object',
-        properties: {
-          sweepFraction: { type: 'number', description: '0.10=skim, 0.25=sample, 0.50=deep, 1.0=full coverage' },
-        },
+        type: 'object', additionalProperties: false,
+        properties: { sweepFraction: { type: 'number', exclusiveMinimum: 0, maximum: 1 } },
       },
-      pgsSweepModel: { type: 'string', description: 'Model for parallel partition sweeps (pick fast/cheap)' },
-      pgsSynthModel: { type: 'string', description: 'Model for final synthesis pass (pick stronger)' },
+      pgsSweep: providerModelSchema,
+      pgsSynth: providerModelSchema,
+      modelSelection: providerModelSchema,
+      enableSynthesis: { type: 'boolean' },
+      includeOutputs: { type: 'boolean' },
+      includeThoughts: { type: 'boolean' },
+      includeCoordinatorInsights: { type: 'boolean' },
+      allowActions: { type: 'boolean' },
       priorContext: {
-        type: 'object',
-        properties: {
-          query: { type: 'string' },
-          answer: { type: 'string' },
-        },
-        description: 'For follow-up queries — pass the previous query + answer for context continuity',
+        type: 'object', additionalProperties: false,
+        properties: { query: { type: 'string' }, answer: { type: 'string' } },
+        required: ['query', 'answer'],
       },
     },
     required: ['query'],
   },
-
-  async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-    if (!ctx.brainRoute) {
-      return {
-        content: `brain_query: agent brain not registered in cosmo23. Check: curl ${ctx.cosmo23BaseUrl}/api/brains`,
-        is_error: true,
-      };
-    }
-
-    const pgsConfig = input.pgsConfig as { sweepFraction?: number } | undefined;
-    const sweepFraction = pgsConfig?.sweepFraction;
-    const pgsFullSweep = typeof sweepFraction === 'number' && sweepFraction >= 1.0;
-
-    const explicitModel = input.enablePGS && input.pgsSynthModel ? input.pgsSynthModel : input.model;
-
-    const body: Record<string, unknown> = {
-      query: input.query,
-      mode: input.mode ?? DEFAULT_BRAIN_QUERY_MODE,
-      enableSynthesis: input.enableSynthesis ?? false,
-      includeOutputs: input.includeOutputs ?? false,
-      includeThoughts: input.includeThoughts ?? false,
-      includeCoordinatorInsights: input.includeCoordinatorInsights ?? false,
-      allowActions: input.allowActions ?? false,
-      enablePGS: input.enablePGS ?? false,
-      pgsMode: input.pgsMode ?? 'full',
-      pgsConfig: pgsConfig ?? {},
-      pgsFullSweep,
-      pgsSweepModel: input.pgsSweepModel,
-      pgsSynthModel: input.pgsSynthModel,
-      priorContext: input.priorContext ?? null,
-      exportFormat: input.exportFormat ?? null,
-      provider: null,
-    };
-    if (explicitModel) {
-      body.model = explicitModel;
-    }
-
-    const timeoutMs = body.enablePGS ? 1_800_000 : 120_000;
-
-    try {
-      const res = await fetch(`${ctx.brainRoute}/query`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-        return { content: `brain_query failed: HTTP ${res.status} — ${errText.slice(0, 500)}`, is_error: true };
-      }
-
-      const data = await res.json() as Record<string, unknown>;
-      const answer = (data.answer ?? data.response ?? data.text ?? '') as string;
-      const evidence = data.evidence as Array<unknown> | undefined;
-      const meta = data.metadata as Record<string, unknown> | undefined;
-      const exportedTo = typeof data.exportedTo === 'string' ? data.exportedTo : null;
-
-      const parts: string[] = [];
-      parts.push(answer.slice(0, 10_000) || 'brain_query returned empty result.');
-
-      const footer: string[] = [];
-      if (evidence?.length) footer.push(`${evidence.length} evidence nodes`);
-      const sources = meta?.sources as Record<string, unknown> | undefined;
-      if (sources) {
-        footer.push(
-          `sources=${sources.memoryNodes ?? 0} memory nodes, ${sources.thoughts ?? 0} thoughts, ${sources.edges ?? 0} edges`,
-        );
-      }
-      const pgs = meta?.pgs as Record<string, unknown> | undefined;
-      if (body.enablePGS && pgs) {
-        footer.push(
-          `PGS=${pgs.successfulSweeps ?? '?'} successful/${pgs.sweptPartitions ?? '?'} swept, ` +
-          `${pgs.failedSweeps ?? 0} failed, ${pgs.totalPartitions ?? '?'} total partitions, ` +
-          `sweep=${pgs.sweepModel ?? '?'}, synth=${pgs.synthesisModel ?? meta?.model ?? '?'}`,
-        );
-      }
-      if (meta?.models) footer.push(`models=${JSON.stringify(meta.models)}`);
-      if (meta?.model) footer.push(`model=${meta.model}`);
-      if (exportedTo) footer.push(`exportedTo=${exportedTo}`);
-      if (footer.length) parts.push(`\n\n---\n[${footer.join(' · ')} · mode=${body.mode}]`);
-      if (meta) {
-        parts.push(`\nmetadata: ${JSON.stringify(meta).slice(0, 4000)}`);
-      }
-
-      return { content: parts.join('') };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const name = err instanceof Error ? err.name : '';
-      if (name === 'TimeoutError' || /aborted due to timeout|timeout/i.test(message)) {
-        return {
-          content:
-            `brain_query timed out after ${Math.round(timeoutMs / 1000)}s ` +
-            `(model=${body.model ?? 'catalog-default'}, mode=${body.mode}, PGS=${Boolean(body.enablePGS)}, route=${ctx.brainRoute}). ` +
-            `Use brain_search for direct hits, or rerun brain_query with a narrower query/mode="quick"; use enablePGS only for deliberate coverage sweeps.`,
-          is_error: true,
-        };
-      }
-      return { content: `brain_query error: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
-    }
-  },
+  execute: executeBrainQuery,
 };
-
-// ── brain_query_export — write a query answer to the brain's export dir ──
 
 export const brainQueryExportTool: ToolDefinition = {
   name: 'brain_query_export',
-  description:
-    'Export a prior brain_query answer to the brain export directory as markdown or json. ' +
-    'Pass the query, answer, and metadata from the brain_query response so source counts and PGS provenance are preserved. ' +
-    'The file is written inside the brain\'s own runs/<brain>/exports/ directory and the path is returned.',
+  description: 'Export a requester-owned durable result, or explicitly mark an ad-hoc export noncanonical.',
   input_schema: {
     type: 'object',
+    additionalProperties: false,
     properties: {
-      query: { type: 'string', description: 'The original query' },
-      answer: { type: 'string', description: 'The answer to export' },
-      format: { type: 'string', enum: ['markdown', 'json'], description: 'Output format (default markdown)' },
-      metadata: { type: 'object', description: 'Metadata from the brain_query response (models, mode, evidence counts, PGS provenance, etc.)' },
+      operationId: { type: 'string', minLength: 1 },
+      resultHandle: { type: 'string', minLength: 1 },
+      query: { type: 'string', minLength: 1 },
+      answer: { type: 'string', minLength: 1 },
+      format: { type: 'string', enum: ['markdown', 'json'] },
+      metadata: { type: 'object' },
     },
-    required: ['query', 'answer'],
   },
-
-  async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-    if (!ctx.brainRoute) {
-      return {
-        content: `brain_query_export: agent brain not registered in cosmo23. Check: curl ${ctx.cosmo23BaseUrl}/api/brains`,
-        is_error: true,
-      };
-    }
-
-    const body = {
-      query: input.query,
-      answer: input.answer,
-      format: (input.format as string) ?? 'markdown',
-      metadata: input.metadata ?? {},
-    };
-
-    try {
-      const res = await fetch(`${ctx.brainRoute}/export-query`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(60_000),
-      });
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-        return { content: `brain_query_export failed: HTTP ${res.status} — ${errText.slice(0, 500)}`, is_error: true };
-      }
-      const data = await res.json() as { exportedTo?: string; error?: string };
-      if (data.error) return { content: `brain_query_export: ${data.error}`, is_error: true };
-      return { content: `Exported to: ${data.exportedTo ?? '(unknown path)'}` };
-    } catch (err) {
-      return { content: `brain_query_export error: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
-    }
-  },
+  execute: executeBrainExport,
 };
-
-// ── brain_memory_graph — fetch network structure ─────────────────────────────
 
 export const brainMemoryGraphTool: ToolDefinition = {
   name: 'brain_memory_graph',
-  description:
-    'Get a summarized view of the brain knowledge graph structure — node count, edge count, ' +
-    'cluster count, top nodes by activation/weight, and optionally a sample of nodes filtered by tag. ' +
-    'Use to answer "what clusters are forming?", "what are the most activated nodes right now?", ' +
-    'or "show me a structural overview." Returns a summary, NOT the full graph (full is 10k+ nodes).',
+  description: 'Read a bounded graph summary, or create a durable requester-owned full JSONL export.',
   input_schema: {
     type: 'object',
+    additionalProperties: false,
     properties: {
-      topN: { type: 'integer', description: 'How many top nodes to include (by activation*weight). Default 25, max 100.' },
-      tag: { type: 'string', description: 'Optional: filter sample nodes by tag (e.g., agent_finding, insight, research).' },
+      target: targetSchema,
+      topN: { type: 'integer', minimum: 1, maximum: 100 },
+      tag: { type: 'string', minLength: 1 },
+      exportFull: { type: 'boolean' },
+      format: { type: 'string', enum: ['jsonl'] },
     },
   },
-
-  async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-    const topN = Math.min(Number(input.topN) || 25, 100);
-    const tag = input.tag as string | undefined;
-
-    try {
-      const url = `http://localhost:${ctx.enginePort}/api/memory`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
-      if (!res.ok) return { content: `brain_memory_graph failed: HTTP ${res.status}`, is_error: true };
-
-      const data = await res.json() as {
-        nodes?: Array<{ id?: string | number; concept?: string; tag?: string; activation?: number; weight?: number; cluster?: number; accessCount?: number }>;
-        edges?: Array<{ source?: string | number; target?: string | number; weight?: number; type?: string }>;
-      };
-
-      const nodes = data.nodes ?? [];
-      const edges = data.edges ?? [];
-
-      // Cluster counts
-      const clusterCounts = new Map<number, number>();
-      for (const n of nodes) {
-        const c = typeof n.cluster === 'number' ? n.cluster : -1;
-        clusterCounts.set(c, (clusterCounts.get(c) ?? 0) + 1);
-      }
-
-      // Top-N scoring
-      const scored = nodes
-        .filter(n => !tag || n.tag === tag)
-        .map(n => ({
-          id: n.id,
-          concept: (n.concept ?? '').slice(0, 200),
-          tag: n.tag,
-          cluster: n.cluster,
-          activation: n.activation ?? 0,
-          weight: n.weight ?? 0,
-          accessCount: n.accessCount ?? 0,
-          score: (n.activation ?? 0) * (n.weight ?? 0),
-        }))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, topN);
-
-      // Tag histogram
-      const tagCounts = new Map<string, number>();
-      for (const n of nodes) {
-        const t = n.tag ?? '(none)';
-        tagCounts.set(t, (tagCounts.get(t) ?? 0) + 1);
-      }
-      const topTags = [...tagCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
-
-      const summary = {
-        totalNodes: nodes.length,
-        totalEdges: edges.length,
-        clusters: [...clusterCounts.entries()].map(([id, size]) => ({ id, size })).sort((a, b) => b.size - a.size),
-        topTags: topTags.map(([t, c]) => ({ tag: t, count: c })),
-        topNodes: scored,
-        filter: tag ? { tag } : null,
-      };
-
-      return { content: JSON.stringify(summary, null, 2).slice(0, 8000) };
-    } catch (err) {
-      return { content: `brain_memory_graph error: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
-    }
-  },
+  execute: executeBrainGraph,
 };
-
-// ── brain_synthesize — trigger meta-cognition ────────────────────────────────
 
 export const brainSynthesizeTool: ToolDefinition = {
   name: 'brain_synthesize',
-  description:
-    'Trigger the synthesis agent to run a meta-cognition pass over the entire brain (async, ~30s). ' +
-    'The agent reads the full memory graph + recent thoughts + coordinator state, produces higher-order ' +
-    'insights, and writes to brain-state.json. Use when you want a fresh top-down view of what the brain ' +
-    'has been learning. Call action="run" to start, action="status" to read the last synthesis output.',
+  description: 'Run, inspect, or reattach to synthesis for this agent own brain only.',
   input_schema: {
     type: 'object',
+    additionalProperties: false,
     properties: {
-      action: {
-        type: 'string',
-        enum: ['run', 'status'],
-        description: 'run = trigger synthesis; status = read latest synthesis output',
-      },
+      action: { type: 'string', enum: ['run', 'status', 'reattach'] },
+      operationId: { type: 'string', minLength: 1 },
+      generationMarker: { type: 'string', minLength: 1 },
+      trigger: { type: 'string', minLength: 1 },
+      reason: { type: 'string', minLength: 1 },
     },
-    required: ['action'],
   },
-
-  async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-    const action = input.action as string;
-
-    try {
-      if (action === 'run') {
-        const url = `http://localhost:${ctx.enginePort}/api/synthesis/run`;
-        const res = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(60_000) });
-        if (!res.ok) return { content: `brain_synthesize run failed: HTTP ${res.status}`, is_error: true };
-        const data = await res.json() as { started?: boolean; message?: string };
-        return {
-          content: data.started === false
-            ? `Synthesis not started: ${data.message ?? 'unknown'}`
-            : `Synthesis started (async). Call brain_synthesize with action="status" in ~30s to read the result.`,
-        };
-      }
-
-      if (action === 'status') {
-        const url = `http://localhost:${ctx.enginePort}/api/synthesis/state`;
-        const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
-        if (!res.ok) return { content: `brain_synthesize status failed: HTTP ${res.status}`, is_error: true };
-        const data = await res.json() as Record<string, unknown>;
-        return { content: JSON.stringify(data, null, 2).slice(0, 8000) };
-      }
-
-      return { content: `Unknown action: ${action}. Use 'run' or 'status'.`, is_error: true };
-    } catch (err) {
-      return { content: `brain_synthesize error: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
-    }
-  },
+  execute: executeBrainSynthesis,
 };
 
 export const brainStatusTool: ToolDefinition = {
   name: 'brain_status',
-  description: 'Get the current status of the COSMO brain — cycle, mode, node count, graph edge count, and health.',
+  description: 'Read authoritative bounded brain status or control one exact durable operation.',
   input_schema: {
     type: 'object',
-    properties: {},
+    additionalProperties: false,
+    properties: {
+      target: targetSchema,
+      operationId: { type: 'string', minLength: 1 },
+      action: { type: 'string', enum: ['status', 'result', 'wait', 'cancel'] },
+    },
   },
-
-  async execute(_input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-    try {
-      const stateUrl = `http://localhost:${ctx.enginePort}/api/state`;
-      const stateRes = await fetch(stateUrl, { signal: AbortSignal.timeout(60_000) });
-
-      if (!stateRes.ok) return { content: `Brain status check failed: HTTP ${stateRes.status}`, is_error: true };
-
-      const state = await stateRes.json() as Record<string, unknown>;
-      let graphSummary: ReturnType<typeof summarizeMemoryGraphCounts> | null = null;
-      let graphError: string | null = null;
-
-      try {
-        const graphUrl = `http://localhost:${ctx.enginePort}/api/memory`;
-        const graphRes = await fetch(graphUrl, { signal: AbortSignal.timeout(120_000) });
-        if (!graphRes.ok) {
-          graphError = `HTTP ${graphRes.status}`;
-        } else {
-          graphSummary = summarizeMemoryGraphCounts(await graphRes.json() as MemoryGraphResponse);
-        }
-      } catch (err) {
-        graphError = err instanceof Error ? err.message : String(err);
-      }
-
-      const projectedMemory = state.memory && typeof state.memory === 'object'
-        ? state.memory as Record<string, unknown>
-        : {};
-      const projectionNodes = typeof projectedMemory.nodes === 'number' ? projectedMemory.nodes : 0;
-      const projectionEdges = typeof projectedMemory.edges === 'number' ? projectedMemory.edges : 0;
-      const projectionClusters = typeof projectedMemory.clusters === 'number' ? projectedMemory.clusters : 0;
-
-      const status = {
-        ok: true,
-        cycleCount: state.cycleCount ?? null,
-        thoughtCount: state.thoughtCount ?? null,
-        oscillatorMode: state.oscillatorMode ?? null,
-        cognitiveState: state.cognitiveState ?? null,
-        temporal: state.temporal ?? null,
-        lastThoughtAt: state.lastThoughtAt ?? null,
-        lastUpdated: state.lastUpdated ?? null,
-        projection: state.projection === true,
-        memory: graphSummary
-          ? {
-            nodes: graphSummary.totalNodes,
-            edges: graphSummary.totalEdges,
-            clusters: graphSummary.clusterBuckets,
-            detectedClusters: graphSummary.detectedClusters,
-            unclusteredNodes: graphSummary.unclusteredNodes,
-            source: '/api/memory',
-          }
-          : {
-            nodes: projectionNodes,
-            edges: projectionEdges,
-            clusters: projectionClusters,
-            source: '/api/state projection',
-          },
-        graphEndpoint: graphSummary
-          ? {
-            ok: true,
-            liveJournalCount: graphSummary.liveJournalCount ?? null,
-          }
-          : {
-            ok: false,
-            error: graphError ?? 'unavailable',
-          },
-        stateProjectionMemory: state.memory ?? null,
-      };
-
-      return { content: JSON.stringify(status, null, 2).slice(0, 4000) };
-    } catch {
-      return { content: 'Brain status unavailable — engine may not be running.', is_error: true };
-    }
-  },
+  execute: executeBrainStatus,
 };
