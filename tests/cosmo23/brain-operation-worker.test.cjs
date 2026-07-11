@@ -1266,6 +1266,26 @@ async function prepareLegacyResearchPin({ home23Root, targetRoot, operationId: i
   await quota.close();
   const digest = sourceDescriptorDigest(projected.descriptor);
   const physical = await fsp.lstat(projected.projectionRoot, { bigint: true });
+  const protectedSpecs = [
+    ['manifest', 'memory-manifest.json'],
+    ['nodes', projected.manifest.activeBase.nodes.file],
+    ['edges', projected.manifest.activeBase.edges.file],
+    ['delta', projected.manifest.activeDelta.file],
+    ...(projected.manifest.ann.indexFile
+      ? [['ann-index', projected.manifest.ann.indexFile]] : []),
+    ...(projected.manifest.ann.metaFile
+      ? [['ann-meta', projected.manifest.ann.metaFile]] : []),
+  ];
+  const protectedFileIdentities = await Promise.all(protectedSpecs.map(async ([role, file]) => {
+    const stat = await fsp.lstat(path.join(projected.projectionRoot, file), { bigint: true });
+    return {
+      role,
+      file,
+      dev: String(stat.dev),
+      ino: String(stat.ino),
+      size: String(stat.size),
+    };
+  }));
   await fsp.writeFile(coordinatorPinPath(operationRoot), `${JSON.stringify({
     version: 1,
     operationId: id,
@@ -1273,11 +1293,9 @@ async function prepareLegacyResearchPin({ home23Root, targetRoot, operationId: i
     canonicalRoot: canonicalTarget,
     descriptor: projected.descriptor,
     digest,
-    protectedFiles: [
-      projected.manifest.activeBase.nodes.file,
-      projected.manifest.activeBase.edges.file,
-      projected.manifest.activeDelta.file,
-    ],
+    pinnedManifest: projected.manifest,
+    protectedFiles: protectedFileIdentities.slice(1).map(({ file }) => file),
+    protectedFileIdentities,
     committedBytes: projected.manifest.activeDelta.committedBytes,
     physicalRoot: projected.projectionRoot,
     physicalRootIdentity: { dev: String(physical.dev), ino: String(physical.ino) },
@@ -1408,8 +1426,15 @@ test('real native, legacy-resident, and legacy-research sources expose only nume
       const status = await worker.status(id, token());
       assert.equal(status.state, 'complete');
     });
-    const discovered = await discoverOperationPinFiles(home23Root);
-    assert.equal(discovered.some((entry) => entry.kind === 'process' && entry.operationId === id), false);
+    await worker.records.get(id).runPromise;
+    await eventually(async () => {
+      const discovered = await discoverOperationPinFiles(home23Root);
+      assert.equal(
+        discovered.some((entry) => entry.kind === 'process' && entry.operationId === id),
+        false,
+        `process pin not released for real source ${index}: ${JSON.stringify(discovered)}`,
+      );
+    });
     assert.equal(await hashTree(targetRoot), targetHashBefore);
   }
 });

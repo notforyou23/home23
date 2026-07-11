@@ -221,8 +221,7 @@ function createDefaultLoadAnn({ hnswlibLoader = () => require('hnswlib-node') } 
         retryable: true,
       });
     }
-    const root = await fs.realpath(canonicalRoot);
-    const resolveRegular = async (basename, label) => {
+    const validateBasename = (basename, label) => {
       if (typeof basename !== 'string' || path.basename(basename) !== basename
           || basename === '.' || basename === '..') {
         throw memorySourceError('source_unavailable', `${label} path is invalid`, {
@@ -230,6 +229,11 @@ function createDefaultLoadAnn({ hnswlibLoader = () => require('hnswlib-node') } 
           retryable: true,
         });
       }
+    };
+    validateBasename(annMeta.indexFile, 'ANN index');
+    validateBasename(annMeta.metaFile, 'ANN metadata');
+    const root = await fs.realpath(canonicalRoot);
+    const resolveRegular = async (basename, label) => {
       const filePath = path.join(root, basename);
       const stat = await fs.lstat(filePath);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1

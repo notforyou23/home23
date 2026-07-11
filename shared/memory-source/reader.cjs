@@ -331,7 +331,10 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
     physicalFiles: activeFiles(manifest).map((file) => path.join(physicalRoot, file)),
     maxBreakdownKeys: 0,
     getMutationBoundaries() { return enumerateMemoryMutationBoundaries(logicalRoot); },
-    getAnchoredFile(role) { return anchoredFileView(openedFiles?.get(role)); },
+    getAnchoredFile(role) {
+      if (role !== 'ann-index' && role !== 'ann-meta') return null;
+      return anchoredFileView(openedFiles?.get(role));
+    },
     getEvidence(input = {}) {
       return createEvidence({
         ...evidenceBase,
