@@ -37,6 +37,7 @@ const {
 } = require('./limits.cjs');
 const {
   assertStableOpenedFileContent,
+  portableFileIdentity,
   readOpenedFile,
 } = require('./confined-file.cjs');
 const {
@@ -87,6 +88,7 @@ function anchoredFileView(opened) {
   return Object.freeze({
     path: anchoredFdPath(opened.handle.fd),
     size: Number(opened.stat.size),
+    identity: portableFileIdentity(opened.stat),
     async readFile({ maxBytes } = {}) {
       return readOpenedFile(opened, { maxBytes });
     },

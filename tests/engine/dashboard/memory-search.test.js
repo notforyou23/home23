@@ -16,6 +16,7 @@ const {
   createDefaultEmbedQuery,
   createDefaultLoadAnn,
   createMemorySearchService,
+  MAX_ANN_METADATA_BYTES,
 } = require('../../../engine/src/dashboard/memory-search');
 const {
   sendMemorySearchError,
@@ -336,6 +337,10 @@ test('default ANN loading derives files from the pinned target source, not reque
   const manifest = await markAnn(targetDir);
   await fsp.writeFile(path.join(targetDir, manifest.ann.metaFile), JSON.stringify({
     dimension: 2,
+    count: 0,
+    skipped: 1,
+    generation: manifest.generation,
+    builtFromRevision: manifest.currentRevision,
     labels: [],
   }));
   const pathsRead = [];
@@ -381,12 +386,14 @@ test('default ANN loading consumes anchored handles without reopening target pat
   const views = {
     'ann-index': {
       path: '/dev/fd/73',
+      identity: { dev: '1', ino: '73', size: '4096' },
       async assertStable() { stableRoles.push('ann-index'); },
     },
     'ann-meta': {
       path: '/dev/fd/74',
+      identity: { dev: '1', ino: '74', size: '140000000' },
       async readFile({ maxBytes }) {
-        assert.equal(maxBytes, 16 * 1024 * 1024);
+        assert.equal(maxBytes, MAX_ANN_METADATA_BYTES);
         return Buffer.from(JSON.stringify({ dimension: 2, labels: [] }));
       },
       async assertStable() { stableRoles.push('ann-meta'); },
@@ -402,6 +409,58 @@ test('default ANN loading consumes anchored handles without reopening target pat
   assert.equal(loaded.dimension, 2);
   assert.deepEqual(pathsRead, ['/dev/fd/73']);
   assert.deepEqual(stableRoles.sort(), ['ann-index', 'ann-meta']);
+});
+
+test('default ANN loading deduplicates concurrent immutable pinned loads and caches the result', async () => {
+  const targetDir = await createBrain({ nodes: [{ id: 'target', concept: 'target canary' }] });
+  let metadataReads = 0;
+  let indexReads = 0;
+  class FakeIndex {
+    readIndexSync() { indexReads += 1; }
+    setEf() {}
+  }
+  const views = {
+    'ann-index': {
+      path: '/dev/fd/83',
+      identity: { dev: '1', ino: '83', size: '457000000' },
+      async assertStable() {},
+    },
+    'ann-meta': {
+      path: '/dev/fd/84',
+      identity: { dev: '1', ino: '84', size: '140000000' },
+      async readFile({ maxBytes }) {
+        metadataReads += 1;
+        assert.equal(maxBytes, MAX_ANN_METADATA_BYTES);
+        return Buffer.from(JSON.stringify({ dimension: 2, labels: [] }));
+      },
+      async assertStable() {},
+    },
+  };
+  const source = {
+    descriptor: {
+      canonicalRoot: await fsp.realpath(targetDir),
+      generation: 'g-live',
+      cutoffRevision: 42,
+    },
+    getAnchoredFile(role) { return views[role] || null; },
+  };
+  const loadAnn = createDefaultLoadAnn({
+    hnswlibLoader: () => ({ HierarchicalNSW: FakeIndex }),
+  });
+  const annMeta = {
+    indexFile: 'memory-ann.42.index',
+    metaFile: 'memory-ann.42.meta.json',
+    builtFromRevision: 42,
+  };
+  const [first, second] = await Promise.all([
+    loadAnn(source, annMeta),
+    loadAnn(source, annMeta),
+  ]);
+  const third = await loadAnn(source, annMeta);
+  assert.equal(second, first);
+  assert.equal(third, first);
+  assert.equal(metadataReads, 1);
+  assert.equal(indexReads, 1);
 });
 
 test('unsupported ANN descriptor paths degrade to a complete logical semantic scan', async () => {

@@ -38,7 +38,14 @@ async function writeManifestBrain() {
   const edges = await writeJsonlGzAtomic(path.join(brain, 'edges.gz'), []);
   await fsp.writeFile(path.join(brain, 'delta.jsonl'), '');
   await fsp.writeFile(path.join(brain, 'ann.index'), 'ann-index-canary\n');
-  await fsp.writeFile(path.join(brain, 'ann.meta.json'), '{"dimension":1}\n');
+  await fsp.writeFile(path.join(brain, 'ann.meta.json'), `${JSON.stringify({
+    dimension: 1,
+    count: 1,
+    skipped: 0,
+    generation: 'g1',
+    builtFromRevision: 2,
+    labels: [{ id: 1, concept: 'pin canary' }],
+  })}\n`);
   await fsp.writeFile(path.join(brain, 'memory-manifest.json'), `${JSON.stringify({
     formatVersion: 1,
     generation: 'g1',

@@ -20,6 +20,7 @@ const MAX_EMBEDDING_DIMENSIONS = 8192;
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_HEAP_BYTES = 8 * 1024 * 1024;
 const MAX_RECORD_BYTES = 256 * 1024;
+const MAX_ANN_METADATA_BYTES = 256 * 1024 * 1024;
 
 function roundScore(value) {
   return Math.round(Number(value || 0) * 10000) / 10000;
@@ -203,7 +204,13 @@ function createDefaultEmbedQuery({ getClient } = {}) {
 }
 
 function createDefaultLoadAnn({ hnswlibLoader = () => require('hnswlib-node') } = {}) {
-  return async function loadAnn(source, annMeta, { signal } = {}) {
+  // A dashboard normally serves one resident brain. Keep exactly one immutable,
+  // pinned ANN resident so a 100MB+ label map and a large native HNSW index are
+  // not reread and reallocated for every search. A cross-brain/revision switch
+  // replaces the entry rather than accumulating indexes in memory.
+  let cached = null;
+  let loadTail = Promise.resolve();
+  async function loadAnnNow(source, annMeta, { signal } = {}) {
     if (!annMeta?.indexFile || !annMeta?.metaFile) return null;
     throwIfAborted(signal);
     const canonicalRoot = source?.descriptor?.canonicalRoot;
@@ -233,6 +240,23 @@ function createDefaultLoadAnn({ hnswlibLoader = () => require('hnswlib-node') } 
     validateBasename(annMeta.indexFile, 'ANN index');
     validateBasename(annMeta.metaFile, 'ANN metadata');
     const root = await fs.realpath(canonicalRoot);
+    const pinnedCacheKey = anchoredIndex && anchoredMeta
+      && anchoredIndex.identity && anchoredMeta.identity
+      ? JSON.stringify({
+        root,
+        generation: source?.descriptor?.generation || null,
+        revision: annMeta.builtFromRevision ?? source?.descriptor?.cutoffRevision ?? null,
+        indexFile: annMeta.indexFile,
+        metaFile: annMeta.metaFile,
+        indexIdentity: anchoredIndex.identity,
+        metaIdentity: anchoredMeta.identity,
+      })
+      : null;
+    if (pinnedCacheKey && cached?.key === pinnedCacheKey) {
+      await Promise.all([anchoredIndex.assertStable(), anchoredMeta.assertStable()]);
+      throwIfAborted(signal);
+      return cached.value;
+    }
     const resolveRegular = async (basename, label) => {
       const filePath = path.join(root, basename);
       const stat = await fs.lstat(filePath);
@@ -264,15 +288,22 @@ function createDefaultLoadAnn({ hnswlibLoader = () => require('hnswlib-node') } 
           retryable: true,
         });
       }
+      if (Number.isFinite(anchoredMeta.size)
+          && anchoredMeta.size > MAX_ANN_METADATA_BYTES) {
+        throw memorySourceError('result_too_large', 'ANN metadata exceeds byte limit', {
+          status: 413,
+          retryable: false,
+        });
+      }
       indexPath = anchoredIndex.path;
-      metaBytes = await anchoredMeta.readFile({ maxBytes: 16 * 1024 * 1024 });
+      metaBytes = await anchoredMeta.readFile({ maxBytes: MAX_ANN_METADATA_BYTES });
     } else {
       const [{ filePath }, { filePath: metaPath, stat: metaStat }] = await Promise.all([
         resolveRegular(annMeta.indexFile, 'ANN index'),
         resolveRegular(annMeta.metaFile, 'ANN metadata'),
       ]);
       indexPath = filePath;
-      if (metaStat.size > 16 * 1024 * 1024) {
+      if (metaStat.size > MAX_ANN_METADATA_BYTES) {
         throw memorySourceError('result_too_large', 'ANN metadata exceeds byte limit', {
           status: 413,
           retryable: false,
@@ -280,7 +311,7 @@ function createDefaultLoadAnn({ hnswlibLoader = () => require('hnswlib-node') } 
       }
       metaBytes = await fs.readFile(metaPath);
     }
-    if (metaBytes.length > 16 * 1024 * 1024) {
+    if (metaBytes.length > MAX_ANN_METADATA_BYTES) {
       throw memorySourceError('result_too_large', 'ANN metadata exceeds byte limit', {
         status: 413,
         retryable: false,
@@ -291,6 +322,38 @@ function createDefaultLoadAnn({ hnswlibLoader = () => require('hnswlib-node') } 
     const dimension = meta.dimension || meta.dim;
     if (!Number.isSafeInteger(dimension) || dimension < 1 || dimension > MAX_EMBEDDING_DIMENSIONS) {
       throw memorySourceError('source_unavailable', 'ANN metadata dimension is invalid', {
+        status: 503,
+        retryable: true,
+      });
+    }
+    const labels = meta.labels;
+    const count = meta.count ?? labels?.length;
+    if (!Array.isArray(labels) || !Number.isSafeInteger(count) || count < 0
+        || labels.length !== count) {
+      throw memorySourceError('source_unavailable', 'ANN metadata labels are inconsistent', {
+        status: 503,
+        retryable: true,
+      });
+    }
+    if (meta.generation !== undefined && source?.descriptor?.generation
+        && meta.generation !== source.descriptor.generation) {
+      throw memorySourceError('source_changed', 'ANN metadata generation does not match source', {
+        status: 503,
+        retryable: true,
+      });
+    }
+    if (meta.builtFromRevision !== undefined
+        && meta.builtFromRevision !== annMeta.builtFromRevision) {
+      throw memorySourceError('source_changed', 'ANN metadata revision does not match source', {
+        status: 503,
+        retryable: true,
+      });
+    }
+    const sourceNodeCount = source?.descriptor?.summary?.nodeCount;
+    const skipped = meta.skipped ?? 0;
+    if (!Number.isSafeInteger(skipped) || skipped < 0
+        || (Number.isSafeInteger(sourceNodeCount) && count + skipped !== sourceNodeCount)) {
+      throw memorySourceError('source_changed', 'ANN metadata count does not match source', {
         status: 503,
         retryable: true,
       });
@@ -314,12 +377,21 @@ function createDefaultLoadAnn({ hnswlibLoader = () => require('hnswlib-node') } 
     }
     index.setEf(Math.max(100, meta.efConstruction || 100));
     throwIfAborted(signal);
-    return {
+    const loaded = {
       dimension,
-      count: meta.count,
-      labels: meta.labels || [],
+      count,
+      labels,
       index,
     };
+    if (pinnedCacheKey) cached = { key: pinnedCacheKey, value: loaded };
+    return loaded;
+  }
+  return function loadAnn(source, annMeta, options = {}) {
+    // Serialize all misses, including cross-brain misses, so the one-entry cache
+    // cannot transiently construct multiple ~500MB native indexes at once.
+    const run = loadTail.then(() => loadAnnNow(source, annMeta, options));
+    loadTail = run.catch(() => {});
+    return run;
   };
 }
 
@@ -585,6 +657,7 @@ function createMemorySearchService({
 module.exports = {
   MAX_EMBEDDING_DIMENSIONS,
   MAX_HEAP_BYTES,
+  MAX_ANN_METADATA_BYTES,
   MAX_RECORD_BYTES,
   MAX_RESPONSE_BYTES,
   createBoundedCandidateHeap,
