@@ -3,7 +3,7 @@
 Date: 2026-07-12  
 Operator: Codex  
 Repository: `/Users/jtr/_JTR23_/release/home23`  
-Implementation commits: `2730f4b`, `67d60be`  
+Implementation commits: `2730f4b`, `67d60be`, `80b38b0`
 Branch: `codex/brain-agent-migration`
 
 ## Verdict
@@ -50,25 +50,27 @@ Old unpinned ANN files and the false-green `memory-ann.null.*` evidence are also
 
 Final audit found that the earlier pre-migration backups were absent after the transient low-space migration window. Completion was held, and new coherent native backups were created and hash-verified after both ANN pins were fresh. No cause is assigned without deletion provenance.
 
+The first native backups copied the rebuildable ANN artifacts and pushed free space below the Home23 floor. Commit `80b38b0` changed native backup publication to copy authoritative state/base/delta only and to write a self-consistent backup manifest with `ann` null. It validates a complete canonical, non-colliding ANN descriptor before omission. The two full copies were replaced through normal retention only after the lean backups published and opened successfully as healthy `manifest-v1` sources. The live ANN remains pinned and unchanged.
+
 Jerry:
 
-- `backup-2026-07-12T15-47-32.485Z-18533-d3d5e227-49de-4d00-bdbb-24dfc8b5929b`
+- `backup-2026-07-12T15-53-48.954Z-35252-06193bb7-eaa3-490f-a962-276ab21eaf42`
 - source `memory-manifest`, generation and revision equal live authority
-- 1,835,362,424 copied bytes
+- 1,240,854,668 copied bytes
 - active base SHA-256 `c5526fc625deda4be4468efdfd057d478d7d8d742ae35f15b1608dc24567248e`
-- active ANN SHA-256 `1d33d5cac650b74e830e2b24e8e5edb8921852958f9b3f86c24744cd8b647875`
-- backup manifest SHA-256 record for live manifest `3e6f342fd82a435877ff35893f24d69f2dbbb4ac9e5dd82612eb05a35fd0db29`
+- backup source manifest has ANN null and SHA-256 `871fc165a8d72779778ae85923653f7bf45ed72590074aeb9febaba8cfe81d28`
+- omitted derived files: `memory-ann.1891463280844112.index`, `memory-ann.1891463280844112.meta.json`
 
 Forrest:
 
-- `backup-2026-07-12T15-47-43.799Z-18533-730a944a-770c-46a0-a268-aec37cba5faf`
+- `backup-2026-07-12T15-53-55.454Z-35252-c897713c-b0df-4cb2-a19c-bdcca7a3206b`
 - source `memory-manifest`, generation and revision equal live authority
-- 1,537,491,229 copied bytes
+- 1,039,486,738 copied bytes
 - active base SHA-256 `be9890c48c38988dff0239f03d5451f037572b713c256b31674c70f77e17d055`
-- active ANN SHA-256 `c6a22b850a32ea49f91d917d87f1043e1bef4a28f4f5c20faff8de07e11edd8e`
-- backup manifest SHA-256 record for live manifest `4e28c1ec7fb7cca7ffcf11b7ae012a359e108ed849bf729bb8d5d952a78a0764`
+- backup source manifest has ANN null and SHA-256 `a3a7dfe6356a7d4458cb91062afe3231caa2031fdd9df7c908be4e6117ad29c2`
+- omitted derived files: `memory-ann.1677572487654287.index`, `memory-ann.1677572487654287.meta.json`
 
-The data volume showed 9.3 GiB available immediately after these two complete backups; the temporary 1.4 GiB isolated implementation worktree is removed only after its commits are pushed.
+The data volume showed 11,911,308 KiB available after the lean backups replaced their full predecessors. The temporary implementation worktree is removed only after its commits are pushed.
 
 ## Live Route Proof
 
@@ -108,6 +110,7 @@ Only the two engines, dashboards, harnesses, and MCP processes were restarted as
 - `npm run test:contracts`: 36 pass, 1 intentional live skip, 0 fail.
 - Focused final brain/ANN/backup/pin matrix: 132 pass, 0 fail.
 - Full `npm test` with all installed Home23/COSMO dependency roots: pass. Major phase totals included 39/39 acceptance-runtime, 1,129/1,129 engine matrix, 229/229 script matrix, and 2/2 legacy route tests.
+- Final lean-backup recovery suite after the full pass: 9/9, including real source open/search, post-restore delta append, exact copied-manifest hash, and adversarial ANN/source collision refusal.
 - The first full invocation used an incomplete isolated `NODE_PATH`; its 10 module-resolution failures were rerun with the complete dependency roots and passed 24/24 before the clean full pass.
 - Adversarial subagent review completed with no remaining rollout blocker before live migration; a second live-scale ANN review identified the metadata ceiling and per-request reload risk that became commit `67d60be`.
 
