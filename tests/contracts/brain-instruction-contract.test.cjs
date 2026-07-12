@@ -53,7 +53,23 @@ test('public Brain inventory and examples describe named durable PGS and evidenc
   assert.match(readme, /`fullCoverage: true`/);
   assert.match(readme, /requested scope/i);
   assert.match(readme, /graph-wide absence claim/i);
+  assert.match(readme, /cumulative target union/i);
+  assert.match(readme, /use `full` to run every work unit/i);
+  assert.match(readme, /include all earlier target IDs/i);
   assert.doesNotMatch(readme, /\b49 registered tools\b/);
+});
+
+test('agent PGS guidance explains targeted union expansion and exact reuse', () => {
+  for (const relativePath of [
+    'src/agents/system-prompt.ts',
+    'cli/templates/COSMO_RESEARCH.md',
+    'docs/design/STEP16-AGENT-COSMO-TOOLKIT-DESIGN.md',
+  ]) {
+    const source = read(relativePath);
+    assert.match(source, /cumulative (?:target-partition |target )?union/i, relativePath);
+    assert.match(source, /use (?:`full`|full) (?:when|to)/i, relativePath);
+    assert.match(source, /(?:all earlier|every earlier|all prior) (?:partition |target )?IDs/i, relativePath);
+  }
 });
 
 test('active Jerry instructions use discovery, named PGS, continuation, and durable waits', { skip: !fs.existsSync(path.join(root, localInstructions[0])) }, () => {

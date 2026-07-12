@@ -40,6 +40,8 @@ Single-brain PGS uses the same named contract as `brain_query`:
 - `continueFromOperationId` for continuation;
 - canonical `targetPartitionIds` from `brain_pgs_partitions` for targeted work.
 
+Targeted levels apply to the cumulative union of named partitions. Use `full` when every work unit in those partitions must run. A targeted continuation includes all earlier target IDs and adds new IDs; successful prior units are reused and the scope cannot shrink.
+
 PGS rejects Direct Query fields, including `mode`, `modelSelection`, and `priorContext`. A scoped result proves only its requested scope. Only `fullCoverage:true` supports a graph-wide absence claim.
 
 `research_search_all_brains` is direct-only because one continuation lineage or partition list cannot be valid across unrelated brains.

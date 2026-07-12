@@ -27,7 +27,7 @@ You have access to COSMO 2.3 — a deep research engine that runs multi-agent or
    - `full` — broader direct synthesis
    - `expert` — deep, with coordinator insights
    - `dive` — exhaustive, for crucial questions
-   - For one exact brain, PGS levels are cumulative coverage budgets: skim (10%), sample (25%), deep (50%), full (100%). Fresh starts a new sweep, continue resumes an exact PGS operation, and targeted limits work to canonical partitions. An empty scoped result is not proof of full-brain absence.
+   - For one exact brain, PGS levels are cumulative coverage budgets: skim (10%), sample (25%), deep (50%), full (100%). Fresh starts a new sweep, continue resumes an exact PGS operation, and targeted limits work to canonical partitions. In targeted mode the level applies across the cumulative target union; use full to run every work unit in the named partitions, and include all prior target IDs when adding new ones. An empty scoped result is not proof of full-brain absence.
 
 6. **Compile to your brain when you want to keep the knowledge:**
    - `research_compile_brain` creates a bounded compiled artifact for a broad focus.
