@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const { mkdtempSync, mkdirSync, writeFileSync } = require('node:fs');
 const { tmpdir } = require('node:os');
@@ -12,8 +13,11 @@ const {
 } = require('../../../engine/src/core/brain-backups');
 const { writeMemorySidecars } = require('../../../engine/src/core/memory-sidecar');
 const {
+  appendMemoryRevision,
+  openMemorySource,
   retireUnpinnedSources,
   rewriteMemoryBase,
+  sourceDescriptorDigest,
 } = require('../../../shared/memory-source');
 
 function deferred() {
@@ -101,6 +105,115 @@ test('maybeBackup copies manifest-v1 active source files and writes backup manif
     assert.match(file.sha256, /^sha256:[a-f0-9]{64}$/);
     assert.equal(fs.statSync(path.join(backupPath, file.file)).size, file.bytes);
   }
+});
+
+test('native backup omits rebuildable ANN bytes and publishes a self-consistent null ANN manifest', async () => {
+  const { home23Root, brainDir } = createHomeFixture('brain-backup-derived-ann-');
+  writeFileSync(path.join(brainDir, 'state.json.gz'), 'state\n');
+  writeFileSync(path.join(brainDir, 'brain-snapshot.json'), '{"nodeCount":1}\n');
+  const sidecars = await writeMemorySidecars(brainDir, {
+    nodes: [{ id: 'n1', concept: 'derived ANN backup canary' }],
+    edges: [],
+  });
+  const indexFile = `memory-ann.${sidecars.manifest.currentRevision}.index`;
+  const metaFile = `memory-ann.${sidecars.manifest.currentRevision}.meta.json`;
+  writeFileSync(path.join(brainDir, indexFile), 'rebuildable-index\n');
+  writeFileSync(path.join(brainDir, metaFile), '{"rebuildable":true}\n');
+  writeFileSync(path.join(brainDir, 'memory-manifest.json'), `${JSON.stringify({
+    ...sidecars.manifest,
+    ann: {
+      indexFile,
+      metaFile,
+      builtFromRevision: sidecars.manifest.currentRevision,
+    },
+  }, null, 2)}\n`);
+
+  const result = await maybeBackup(brainDir, {
+    force: true,
+    retention: 1,
+    home23Root,
+    requesterAgent: 'target',
+    minFreeBytes: 0,
+  });
+  assert.equal(result.created, true);
+  const backupPath = path.join(brainDir, 'backups', result.backupName);
+  assert.equal(fs.existsSync(path.join(backupPath, indexFile)), false);
+  assert.equal(fs.existsSync(path.join(backupPath, metaFile)), false);
+  const copiedSourceManifest = JSON.parse(
+    fs.readFileSync(path.join(backupPath, 'memory-manifest.json'), 'utf8'),
+  );
+  assert.deepEqual(copiedSourceManifest.ann, {
+    indexFile: null,
+    metaFile: null,
+    builtFromRevision: null,
+  });
+  const backupManifest = JSON.parse(
+    fs.readFileSync(path.join(backupPath, 'backup-manifest.json'), 'utf8'),
+  );
+  assert.deepEqual(backupManifest.omittedDerivedFiles.sort(), [indexFile, metaFile].sort());
+  assert.equal(backupManifest.files.includes(indexFile), false);
+  assert.equal(backupManifest.files.includes(metaFile), false);
+  assert.deepEqual(
+    backupManifest.omittedDerivedFiles.filter((file) => backupManifest.files.includes(file)),
+    [],
+  );
+  const copiedManifestBytes = fs.readFileSync(path.join(backupPath, 'memory-manifest.json'));
+  const copiedManifestRecord = backupManifest.fileRecords.find(
+    (record) => record.file === 'memory-manifest.json',
+  );
+  assert.equal(copiedManifestRecord.bytes, copiedManifestBytes.length);
+  assert.equal(
+    copiedManifestRecord.sha256,
+    `sha256:${crypto.createHash('sha256').update(copiedManifestBytes).digest('hex')}`,
+  );
+  let restored = await openMemorySource(backupPath);
+  assert.equal(restored.getEvidence().implementation, 'manifest-v1');
+  assert.equal(restored.getEvidence().sourceHealth, 'healthy');
+  assert.match(backupManifest.descriptorDigest, /^sha256:[a-f0-9]{64}$/);
+  assert.match(sourceDescriptorDigest(restored.descriptor), /^sha256:[a-f0-9]{64}$/);
+  assert.deepEqual(await restored.summarize(), { nodes: 1, edges: 0, clusters: 0 });
+  const canary = await restored.searchKeyword({ query: 'derived ANN backup canary', topK: 3 });
+  assert.deepEqual(canary.results.map((row) => row.id), ['n1']);
+  await restored.close();
+
+  const lockRoot = path.join(home23Root, 'runtime', 'brain-source-locks');
+  mkdirSync(lockRoot, { recursive: true });
+  await appendMemoryRevision(backupPath, {
+    nodes: [{ id: 'n2', concept: 'restored writer canary' }],
+  }, { lockRoot });
+  restored = await openMemorySource(backupPath);
+  const appended = await restored.searchKeyword({ query: 'restored writer canary', topK: 3 });
+  assert.equal(appended.results.some((row) => row.id === 'n2'), true);
+  await restored.close();
+});
+
+test('native backup never classifies an authoritative source file as rebuildable ANN', async () => {
+  const { home23Root, brainDir } = createHomeFixture('brain-backup-ann-collision-');
+  writeFileSync(path.join(brainDir, 'state.json.gz'), 'state\n');
+  writeFileSync(path.join(brainDir, 'brain-snapshot.json'), '{"nodeCount":1}\n');
+  const sidecars = await writeMemorySidecars(brainDir, {
+    nodes: [{ id: 'n1', concept: 'ANN collision canary' }],
+    edges: [],
+  });
+  const metaFile = `memory-ann.${sidecars.manifest.currentRevision}.meta.json`;
+  writeFileSync(path.join(brainDir, metaFile), '{"rebuildable":true}\n');
+  writeFileSync(path.join(brainDir, 'memory-manifest.json'), `${JSON.stringify({
+    ...sidecars.manifest,
+    ann: {
+      indexFile: sidecars.manifest.activeBase.nodes.file,
+      metaFile,
+      builtFromRevision: sidecars.manifest.currentRevision,
+    },
+  }, null, 2)}\n`);
+
+  await assert.rejects(() => maybeBackup(brainDir, {
+    force: true,
+    retention: 1,
+    home23Root,
+    requesterAgent: 'target',
+    minFreeBytes: 0,
+  }), { code: 'BACKUP_SOURCE_CHANGED' });
+  assert.deepEqual(listBackups(brainDir), []);
 });
 
 test('maybeBackup rejects a legacy backup when a raw source mutates during copy', async () => {

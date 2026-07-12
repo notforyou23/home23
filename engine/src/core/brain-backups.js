@@ -188,8 +188,43 @@ async function withNativeBackupSources(brainDir, options, callback) {
       expectedRevision: pinned.descriptor.cutoffRevision,
       expectedDigest: pinned.digest,
     });
+    const ann = source.manifest?.ann;
+    const annValues = [ann?.indexFile, ann?.metaFile, ann?.builtFromRevision];
+    const annIsNull = annValues.every((value) => value === null);
+    const annIsComplete = typeof ann?.indexFile === 'string'
+      && typeof ann?.metaFile === 'string'
+      && Number.isSafeInteger(ann?.builtFromRevision)
+      && ann.builtFromRevision >= 0
+      && ann.builtFromRevision <= source.manifest.currentRevision;
+    if (!annIsNull && !annIsComplete) {
+      throw sourceChanged('native ANN descriptor is incomplete');
+    }
+    const annFiles = new Set();
+    if (annIsComplete) {
+      const expectedIndex = `memory-ann.${ann.builtFromRevision}.index`;
+      const expectedMeta = `memory-ann.${ann.builtFromRevision}.meta.json`;
+      if (ann.indexFile !== expectedIndex || ann.metaFile !== expectedMeta) {
+        throw sourceChanged('native ANN descriptor is not canonical');
+      }
+      const authoritativeFiles = new Set([
+        'state.json.gz',
+        'brain-snapshot.json',
+        'memory-manifest.json',
+        source.manifest.activeBase.nodes.file,
+        source.manifest.activeBase.edges.file,
+        source.manifest.activeDelta.file,
+      ]);
+      if (authoritativeFiles.has(ann.indexFile) || authoritativeFiles.has(ann.metaFile)) {
+        throw sourceChanged('native ANN descriptor collides with authoritative source');
+      }
+      annFiles.add(ann.indexFile);
+      annFiles.add(ann.metaFile);
+    }
     const files = new Set(['state.json.gz', 'brain-snapshot.json', 'memory-manifest.json']);
-    for (const filePath of source.physicalFiles || []) files.add(path.basename(filePath));
+    for (const filePath of source.physicalFiles || []) {
+      const file = path.basename(filePath);
+      if (!annFiles.has(file)) files.add(file);
+    }
     for (const file of files) {
       if (file === 'memory-manifest.json') continue;
       let stat;
@@ -205,7 +240,11 @@ async function withNativeBackupSources(brainDir, options, callback) {
         return { created: false, reason: `missing-source:${file}` };
       }
     }
-    const manifestBytes = Buffer.from(`${JSON.stringify(source.manifest, null, 2)}\n`);
+    const backupSourceManifest = {
+      ...source.manifest,
+      ann: { indexFile: null, metaFile: null, builtFromRevision: null },
+    };
+    const manifestBytes = Buffer.from(`${JSON.stringify(backupSourceManifest, null, 2)}\n`);
     let projectedBytes = manifestBytes.length;
     for (const file of files) {
       if (file === 'memory-manifest.json') continue;
@@ -218,6 +257,7 @@ async function withNativeBackupSources(brainDir, options, callback) {
       descriptor: source.descriptor,
       descriptorDigest: pinned.digest,
       sourceFingerprint: null,
+      omittedDerivedFiles: [...annFiles].sort(),
       manifestBytes,
       projectedBytes,
       async assertCurrent() {},
@@ -455,6 +495,7 @@ async function maybeBackup(brainDir, opts = {}) {
         revision: sourceSet.descriptor?.cutoffRevision ?? null,
         sourceFingerprint: sourceSet.sourceFingerprint,
         descriptorDigest: sourceSet.descriptorDigest,
+        omittedDerivedFiles: sourceSet.omittedDerivedFiles || [],
         copiedBytes,
         files: fileRecords.map(({ file }) => file),
         fileRecords,
