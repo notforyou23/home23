@@ -3660,6 +3660,60 @@ test('worker adapter dispatches exact local executor, strips control metadata, a
   );
 });
 
+test('worker adapter drops heavyweight local context immediately after terminal cleanup', async (t) => {
+  const timers = new FakeTimers();
+  const adapter = new BrainOperationWorkerAdapter({
+    clock: { now: () => timers.now, monotonicNow: () => timers.now },
+  });
+  t.after(() => adapter.stop?.());
+  let sourceReleases = 0;
+  let scratchCloses = 0;
+  adapter.registerLocalExecutor('query', async () => ({
+    state: 'complete', result: { answer: 'retained' }, resultArtifact: null,
+    error: null, sourceEvidence: { cutoffRevision: 1 },
+  }));
+  const operationId = `brop_${'c'.repeat(32)}`;
+  const context = {
+    operationId,
+    operationType: 'query',
+    requesterAgent: 'jerry',
+    target: {
+      domain: 'brain', brainId: 'brain-jerry', canonicalRoot: '/brains/jerry',
+      accessMode: 'own', ownerAgent: 'jerry', displayName: 'jerry', kind: 'resident',
+      lifecycle: 'resident', catalogRevision: 'a'.repeat(64),
+      route: '/api/brain/brain-jerry', mutationBoundaries: mutationBoundaries('/brains/jerry'),
+    },
+    parameters: {
+      query: 'canary',
+      operationControl: { hardDeadlineAt: new Date(timers.now + 1_000).toISOString() },
+    },
+    scratchDir: '/tmp/scratch-heavy-context',
+    scratchQuota: { async close() { scratchCloses += 1; } },
+    sourcePin: {
+      descriptor: validDescriptor(),
+      retainedProjection: Buffer.alloc(1024),
+      async release() { sourceReleases += 1; },
+    },
+  };
+  await adapter.start(context, 'cap-start');
+
+  await eventually(async () => {
+    assert.equal((await adapter.status(operationId, 'cap-status')).state, 'complete');
+    assert.equal(sourceReleases, 1);
+    assert.equal(scratchCloses, 1);
+  });
+
+  const local = adapter.localRecords.get(operationId);
+  assert.equal(local.context, null);
+  assert.deepEqual((await adapter.result(operationId, 'cap-result')).result, {
+    answer: 'retained',
+  });
+  assert.equal(adapter.localRecords.has(operationId), true);
+  assert.equal((await adapter.start(context, 'cap-replay')).state, 'complete');
+  assert.equal(sourceReleases, 1);
+  assert.equal(scratchCloses, 1);
+});
+
 test('worker adapter releases redundant and rejected local context resources exactly once', async (t) => {
   const timers = new FakeTimers();
   const adapter = new BrainOperationWorkerAdapter({

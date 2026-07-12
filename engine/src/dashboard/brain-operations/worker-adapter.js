@@ -304,6 +304,8 @@ class BrainOperationWorkerAdapter {
     this.localExecutors = new Map();
     this.localRecords = new Map();
     this.localTombstones = new Set();
+    this.releasedSourcePins = new WeakSet();
+    this.closedScratchQuotas = new WeakSet();
     this.stopped = false;
     if (options.sourceOperationTypes !== undefined
         && !Array.isArray(options.sourceOperationTypes)) {
@@ -348,14 +350,26 @@ class BrainOperationWorkerAdapter {
     if (this.localTombstones.has(operationId)) throw workerError('worker_not_found');
   }
 
+  async _releaseSourcePinOnce(sourcePin) {
+    if (!sourcePin || this.releasedSourcePins.has(sourcePin)) return;
+    this.releasedSourcePins.add(sourcePin);
+    await sourcePin.release?.();
+  }
+
+  async _closeScratchQuotaOnce(scratchQuota) {
+    if (!scratchQuota || this.closedScratchQuotas.has(scratchQuota)) return;
+    this.closedScratchQuotas.add(scratchQuota);
+    await scratchQuota.close?.();
+  }
+
   async _releaseUnownedContext(context, retainedContext = null) {
     try {
       if (context.sourcePin && context.sourcePin !== retainedContext?.sourcePin) {
-        await context.sourcePin.release?.();
+        await this._releaseSourcePinOnce(context.sourcePin);
       }
     } finally {
       if (context.scratchQuota && context.scratchQuota !== retainedContext?.scratchQuota) {
-        await context.scratchQuota.close?.();
+        await this._closeScratchQuotaOnce(context.scratchQuota);
       }
     }
   }
@@ -499,9 +513,13 @@ class BrainOperationWorkerAdapter {
     const context = record.context;
     record.releasePromise = (async () => {
       try {
-        await context?.sourcePin?.release?.();
+        await this._releaseSourcePinOnce(context?.sourcePin);
       } finally {
-        await context?.scratchQuota?.close?.();
+        try {
+          await this._closeScratchQuotaOnce(context?.scratchQuota);
+        } finally {
+          record.context = null;
+        }
       }
     })();
     return record.releasePromise;
