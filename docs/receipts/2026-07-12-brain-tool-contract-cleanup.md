@@ -25,6 +25,7 @@ Status: implementation, origin integration, and repository verification complete
 - Protected the complete local tree in commit `9367c36` before integrating upstream.
 - Merged the 23 newer `origin/main` commits and preserved both their context-latency/reliability safeguards and the new brain-tool/PGS contracts.
 - Corrected the merged large-PGS acceptance wait from five minutes to fifteen minutes; the real 100k/300k proof completed in about ten and a half minutes.
+- Final implementation and instruction clarification were pushed through commit `da602dc` on `main`.
 
 ## Live rollout
 
