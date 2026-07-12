@@ -49,7 +49,12 @@ import { TTSService } from './observability/tts.js';
 import { BrowserController } from './browser/cdp.js';
 import type { HomeConfig } from './types.js';
 import { CommandHandler, type CommandContext } from './commands/handler.js';
-import { createEvobrewChatHandler, createHealthHandler, createStopHandler } from './routes/evobrew-bridge.js';
+import {
+  createEvobrewChatHandler,
+  createHealthHandler,
+  createStopHandler,
+  listenBridgeApp,
+} from './routes/evobrew-bridge.js';
 import {
   createTurnStartHandler,
   createModelsHandler,
@@ -1553,9 +1558,8 @@ async function main(): Promise<void> {
     }
   });
 
-  bridgeApp.listen(BRIDGE_PORT, () => {
-    console.log(`[home] Evobrew bridge listening on port ${BRIDGE_PORT} (/api/chat, /api/stop, /api/chat/turn, /api/chat/stream, /api/chat/pending, /api/chat/stop-turn, /api/chat/history, /api/chat/conversations, /api/device/register, /api/device/registry, /health)`);
-  });
+  await listenBridgeApp(bridgeApp, BRIDGE_PORT);
+  console.log(`[home] Evobrew bridge listening on port ${BRIDGE_PORT} (/api/chat, /api/stop, /api/chat/turn, /api/chat/stream, /api/chat/pending, /api/chat/stop-turn, /api/chat/history, /api/chat/conversations, /api/device/register, /api/device/registry, /health)`);
 
   // ── Startup banner ──
   console.log('');

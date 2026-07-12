@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:net';
 import express from 'express';
-import { createEvobrewChatHandler } from '../../src/routes/evobrew-bridge.js';
+import { createEvobrewChatHandler, listenBridgeApp } from '../../src/routes/evobrew-bridge.js';
 
 function makeFakeAgent(captured: {
   chatId?: string;
@@ -49,6 +50,23 @@ async function postSse(app: express.Express, body: unknown): Promise<{ status: n
     });
   });
 }
+
+test('bridge listener rejects an occupied port instead of leaving a headless harness alive', async () => {
+  const owner = createServer();
+  await new Promise<void>((resolve) => owner.listen(0, resolve));
+  const address = owner.address();
+  assert.equal(typeof address, 'object');
+  const port = (address as { port: number }).port;
+
+  try {
+    await assert.rejects(
+      listenBridgeApp(express(), port),
+      (error: unknown) => (error as { code?: string }).code === 'bridge_port_in_use',
+    );
+  } finally {
+    await new Promise<void>((resolve, reject) => owner.close((error) => error ? reject(error) : resolve()));
+  }
+});
 
 test('evobrew bridge forwards structured IDE context to the local agent loop', async () => {
   const captured: { chatId?: string; userText?: string; onEventForwarded?: boolean } = {};
