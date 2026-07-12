@@ -326,6 +326,7 @@ export async function assembleContext(
   let sourceHealth = 'unknown';
   let matchOutcome = 'unknown';
   let retrievalError: string | null = null;
+  let contextRetrievalTimedOut = false;
 
   try {
     const contextSnippet = recentTurns
@@ -359,13 +360,19 @@ export async function assembleContext(
   } catch (err) {
     if (config.signal.aborted) config.signal.throwIfAborted();
     degraded = true;
-    sourceHealth = 'unavailable';
+    contextRetrievalTimedOut = typeof err === 'object'
+      && err !== null
+      && 'name' in err
+      && String((err as { name: unknown }).name) === 'TimeoutError';
+    sourceHealth = contextRetrievalTimedOut ? 'unknown' : 'unavailable';
     matchOutcome = 'unknown';
     const code = typeof err === 'object' && err && 'code' in err
       ? String((err as { code: unknown }).code)
       : 'brain_search_failed';
     const message = err instanceof Error ? err.message : String(err);
-    retrievalError = `${code}: ${message}`;
+    retrievalError = contextRetrievalTimedOut
+      ? `context_enrichment_timeout: ${message}`
+      : `${code}: ${message}`;
     events.push({
       event_id: randomUUID(),
       event_type: 'RetrievalDegraded',
@@ -374,7 +381,9 @@ export async function assembleContext(
       actor: 'assembly',
       payload: {
         reason: retrievalError,
-        what_unavailable: 'requester_dashboard_brain_search',
+        what_unavailable: contextRetrievalTimedOut
+          ? 'automatic_context_enrichment'
+          : 'requester_dashboard_brain_search',
       },
     });
   }
@@ -522,13 +531,20 @@ export async function assembleContext(
   if (degraded) {
     if (ledger) { ledger.emit(events); }
     const localEvidence = rankBySalience(salienceItems, CONTEXT_BUDGET - 700);
-    const pieces: string[] = [
-      '[SITUATIONAL AWARENESS: brain retrieval degraded]',
-      `sourceHealth=${sourceHealth} matchOutcome=${matchOutcome}`,
-      `route=requester_dashboard_brain_search error=${retrievalError || `source reported ${sourceHealth}`}`,
-      'Returned cues (if any), local trigger matches, and domain surfaces below remain available. ' +
-        'Retry the operation or inspect brain_status; success is not yet established.',
-    ];
+    const pieces: string[] = contextRetrievalTimedOut
+      ? [
+          '[SITUATIONAL AWARENESS: automatic brain context enrichment skipped for latency this turn]',
+          'This automatic deadline is not a brain health result. Do not claim that the brain is offline, ' +
+            'unavailable, or degraded from this skipped lookup.',
+          'If the user asks about current brain health or memory, use brain_status or brain_search and report that result.',
+        ]
+      : [
+          '[SITUATIONAL AWARENESS: brain retrieval degraded]',
+          `sourceHealth=${sourceHealth} matchOutcome=${matchOutcome}`,
+          `route=requester_dashboard_brain_search error=${retrievalError || `source reported ${sourceHealth}`}`,
+          'Returned cues (if any), local trigger matches, and domain surfaces below remain available. ' +
+            'Retry the operation or inspect brain_status; success is not yet established.',
+        ];
     if (localEvidence.length > 0) pieces.push(localEvidence.join('\n'));
     pieces.push('[/SITUATIONAL AWARENESS]');
 

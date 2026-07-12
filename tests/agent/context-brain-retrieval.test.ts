@@ -75,6 +75,13 @@ test('automatic retrieval fails open on its own short deadline', async () => {
     assert.equal(retrievalSignal?.aborted, true);
     assert.equal(result.degraded, true);
     assert.match(result.retrievalError || '', /timeout|timed out/i);
+    assert.equal(result.sourceHealth, 'unknown');
+    assert.match(result.block, /automatic brain context enrichment skipped/i);
+    assert.match(result.block, /not a brain health result/i);
+    assert.match(result.block, /brain_status|brain_search/);
+    assert.doesNotMatch(result.block, /sourceHealth=unavailable/);
+    const degradedEvent = result.events.find((event) => event.event_type === 'RetrievalDegraded');
+    assert.equal(degradedEvent?.payload.what_unavailable, 'automatic_context_enrichment');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
