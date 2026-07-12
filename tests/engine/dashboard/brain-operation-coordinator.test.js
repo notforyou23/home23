@@ -2973,6 +2973,34 @@ test('reconciliation repairs create/pin/attach/start windows and interrupts an u
   assert.equal(fixture.counters.releaseCalls, 1);
 });
 
+test('shutdown racing reconciliation cannot create post-stop runtime or source work', async (t) => {
+  const fixture = makeFixture(t);
+  const created = await directQueuedRecord(fixture, { requestId: 'reconcile-stop-race' });
+  const entered = deferred();
+  const gate = deferred();
+  const storeGet = fixture.store.get.bind(fixture.store);
+  let blocked = false;
+  fixture.store.get = async (operationId) => {
+    if (!blocked && operationId === created.record.operationId) {
+      blocked = true;
+      entered.resolve();
+      await gate.promise;
+    }
+    return storeGet(operationId);
+  };
+
+  const reconciling = fixture.coordinator.reconcile();
+  await entered.promise;
+  await fixture.coordinator.stop();
+  gate.resolve();
+
+  await assert.rejects(reconciling, typedCode('coordinator_stopped'));
+  assert.equal(fixture.coordinator.runtimes.size, 0);
+  assert.equal(fixture.counters.pin, 0);
+  assert.equal(fixture.worker.startCalls.length, 0);
+  assert.equal((await storeGet(created.record.operationId)).state, 'queued');
+});
+
 test('reconciliation releases a pre-existing terminal pin marker exactly once', async (t) => {
   const fixture = makeFixture(t);
   const created = await directQueuedRecord(fixture, { requestId: 'terminal-pin-pending' });

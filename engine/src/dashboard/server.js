@@ -10665,20 +10665,6 @@ You are empowered to explore and understand. The user trusts you to discover the
   }
 
   async getFastMemoryGraphSummary() {
-    try {
-      const status = await this.brainSourceService.status();
-      if (Number.isFinite(status?.summary?.nodes)) {
-        return {
-          nodes: status.summary.nodes,
-          edges: Number.isFinite(status.summary.edges) ? status.summary.edges : 0,
-          clusters: Number.isFinite(status.summary.clusters) ? status.summary.clusters : 0,
-          source: 'brain-source',
-        };
-      }
-    } catch {
-      // Fall through to advisory compatibility sources for bootstrapping.
-    }
-
     const snapshotPath = path.join(this.logsDir, 'brain-snapshot.json');
     try {
       const snapshot = JSON.parse(await fs.readFile(snapshotPath, 'utf8'));
@@ -11335,15 +11321,24 @@ You are empowered to explore and understand. The user trusts you to discover the
   }
 
   async prepareBrainOperationsForListen() {
-    // Query/PGS defaults must be migrated and every durable operation must be
-    // reconciled before this process accepts a new request.
+    // Query/PGS defaults must be migrated before requests are accepted. Durable
+    // recovery continues in the background so a long source projection cannot
+    // keep the dashboard and chat transport from binding their port.
     await this.brainOperationsProviderRuntime?.settled;
     await this.brainOperationsSynthesisRuntime?.settled;
-    await this.brainOperationsCoordinator.reconcile();
+    this._brainOperationsReconciliationPromise = Promise.resolve()
+      .then(() => this.brainOperationsCoordinator.reconcile())
+      .catch((error) => {
+        this.logger?.error?.('[brain-operations] startup reconciliation failed', {
+          code: error?.code || 'reconciliation_failed',
+          message: error?.message || String(error),
+        });
+      });
   }
 
   async stopBrainOperations() {
     await this.brainOperationsCoordinator?.stop?.();
+    await this._brainOperationsReconciliationPromise?.catch?.(() => {});
     await this.brainOperationsWorker?.stop?.();
   }
 

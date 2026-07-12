@@ -13,13 +13,13 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import yaml from 'js-yaml';
 import type { AssemblyResult, EventEnvelope } from '../types.js';
-import type { BrainOperationsClient } from './brain-operations/client.js';
 import type { EventLedger } from './event-ledger.js';
 import type { TriggerIndex } from './trigger-index.js';
 
 // ─── Constants ──────────────────────────────────────────
 const CONTEXT_BUDGET = 6000;
 const BRAIN_SEARCH_LIMIT = 8;
+const BRAIN_SEARCH_TIMEOUT_MS = 2_000;
 const STALENESS_HOURS = 24;
 
 // ─── Types ──────────────────────────────────────────────
@@ -35,9 +35,43 @@ interface AssemblyConfig {
   brainDir: string;
   enginePort: number;
   sessionId: string;
-  brainOperations: Pick<BrainOperationsClient, 'search'>;
   signal: AbortSignal;
+  brainSearchTimeoutMs?: number;
+  contextSearch?: (
+    request: { query: string; topK: number },
+    signal: AbortSignal,
+  ) => Promise<Record<string, unknown>>;
   triggerIndex?: TriggerIndex;
+}
+
+async function searchContextBrain(
+  query: string,
+  enginePort: number,
+  signal: AbortSignal,
+): Promise<Record<string, unknown>> {
+  const response = await fetch(`http://127.0.0.1:${enginePort}/api/memory/search`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ query, topK: BRAIN_SEARCH_LIMIT }),
+    signal,
+  });
+  const payload = await response.json() as Record<string, unknown>;
+  if (!response.ok) {
+    const errorRecord = payload.error && typeof payload.error === 'object'
+      ? payload.error as Record<string, unknown>
+      : {};
+    throw Object.assign(new Error(
+      typeof errorRecord.message === 'string' ? errorRecord.message : `brain search HTTP ${response.status}`,
+    ), {
+      code: typeof errorRecord.code === 'string' ? errorRecord.code : 'brain_search_failed',
+    });
+  }
+  return {
+    ...payload,
+    sourceEvidence: payload.evidence && typeof payload.evidence === 'object'
+      ? payload.evidence
+      : null,
+  };
 }
 
 // ─── Domain Surfaces ────────────────────────────────────
@@ -301,10 +335,13 @@ export async function assembleContext(
     searchQuery = `${userText} ${contextSnippet}`.trim().slice(0, 500);
 
     config.signal.throwIfAborted();
-    const retrieval = await config.brainOperations.search(
-      { query: searchQuery, topK: BRAIN_SEARCH_LIMIT },
+    const retrievalSignal = AbortSignal.any([
       config.signal,
-    );
+      AbortSignal.timeout(config.brainSearchTimeoutMs ?? BRAIN_SEARCH_TIMEOUT_MS),
+    ]);
+    const retrieval = config.contextSearch
+      ? await config.contextSearch({ query: searchQuery, topK: BRAIN_SEARCH_LIMIT }, retrievalSignal)
+      : await searchContextBrain(searchQuery, config.enginePort, retrievalSignal);
     config.signal.throwIfAborted();
     brainCues = Array.isArray(retrieval.results)
       ? retrieval.results as BrainSearchResult[]

@@ -25,13 +25,45 @@ test('dashboard waits for provider migration before durable operation reconcilia
   assert.deepEqual(calls, ['migration', 'reconcile']);
 });
 
-test('dashboard stops coordinator pumps before its local worker registry', async () => {
-  const calls = [];
+test('dashboard does not delay listen readiness for long operation reconciliation', async () => {
+  let releaseReconcile;
   const server = Object.create(DashboardServer.prototype);
-  server.brainOperationsCoordinator = { async stop() { calls.push('coordinator'); } };
+  server.logger = { error() {} };
+  server.brainOperationsProviderRuntime = { settled: Promise.resolve() };
+  server.brainOperationsSynthesisRuntime = { settled: Promise.resolve() };
+  server.brainOperationsCoordinator = {
+    async reconcile() {
+      await new Promise((resolve) => { releaseReconcile = resolve; });
+    },
+  };
+
+  const prepared = server.prepareBrainOperationsForListen();
+  const outcome = await Promise.race([
+    prepared.then(() => 'ready'),
+    new Promise((resolve) => setTimeout(() => resolve('blocked'), 50)),
+  ]);
+  releaseReconcile?.();
+  await prepared;
+
+  assert.equal(outcome, 'ready');
+});
+
+test('dashboard owns startup reconciliation between coordinator and worker shutdown', async () => {
+  const calls = [];
+  let releaseReconciliation;
+  const server = Object.create(DashboardServer.prototype);
+  server._brainOperationsReconciliationPromise = new Promise((resolve) => {
+    releaseReconciliation = resolve;
+  }).then(() => { calls.push('reconciliation'); });
+  server.brainOperationsCoordinator = {
+    async stop() {
+      calls.push('coordinator');
+      setTimeout(releaseReconciliation, 10);
+    },
+  };
   server.brainOperationsWorker = { async stop() { calls.push('worker'); } };
   await server.stopBrainOperations();
-  assert.deepEqual(calls, ['coordinator', 'worker']);
+  assert.deepEqual(calls, ['coordinator', 'reconciliation', 'worker']);
 });
 
 test('dashboard emergency shutdown budget exceeds coordinator cleanup plus HTTP close', () => {

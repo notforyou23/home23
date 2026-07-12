@@ -1118,7 +1118,6 @@ export class AgentLoop {
             brainDir: join(this.workspacePath, '..', 'brain'),
             enginePort: this.toolContext.enginePort,
             sessionId: chatId,
-            brainOperations: runContext.turnRuntime!.brainOperations,
             signal: runContext.turnRuntime!.signal,
             triggerIndex: this.triggerIndex,
           },

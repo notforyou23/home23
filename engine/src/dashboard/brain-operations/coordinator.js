@@ -706,6 +706,7 @@ class BrainOperationCoordinator {
   }
 
   _ensureRuntime(record) {
+    if (this.stopped) throw coordinatorError('coordinator_stopped');
     let runtime = this.runtimes.get(record.operationId);
     if (!runtime) {
       runtime = {
@@ -2156,9 +2157,12 @@ class BrainOperationCoordinator {
   }
 
   async _recoverNonterminalLocked(record) {
+    if (this.stopped) throw coordinatorError('coordinator_stopped');
     let current = await this.store.get(record.operationId);
+    if (this.stopped) throw coordinatorError('coordinator_stopped');
     if (TERMINAL_STATES.has(current.state)) return current;
     const claimedSynthesis = await this._reconcileClaimedSynthesisLocked(current, { allowPending: true });
+    if (this.stopped) throw coordinatorError('coordinator_stopped');
     if (claimedSynthesis !== null) {
       if (TERMINAL_STATES.has(claimedSynthesis.state)) return claimedSynthesis;
       current = claimedSynthesis;
@@ -2222,6 +2226,7 @@ class BrainOperationCoordinator {
             current.operationId,
             this._sourceLockControl(current),
           ).catch(() => {});
+          if (this.stopped) throw coordinatorError('coordinator_stopped', error);
           return this._failLocked(current.operationId, {
             state: 'interrupted',
             code: 'source_pin_unavailable',
@@ -2241,8 +2246,10 @@ class BrainOperationCoordinator {
       });
     }
     const reference = await this.store.getWorker(current.operationId);
+    if (this.stopped) throw coordinatorError('coordinator_stopped');
     if (reference === null) {
       const claimedWithoutWorker = await this._reconcileClaimedSynthesisLocked(current);
+      if (this.stopped) throw coordinatorError('coordinator_stopped');
       if (claimedWithoutWorker !== null) return claimedWithoutWorker;
       this._ensureRuntime(current);
       try {
@@ -2267,6 +2274,7 @@ class BrainOperationCoordinator {
         expectedReference: reference,
         minimumEventSequence: durableWorkerCursor,
       });
+      if (this.stopped) throw coordinatorError('coordinator_stopped');
     } catch (error) {
       const claimedAfterWorkerLoss = await this._reconcileClaimedSynthesisLocked(current);
       if (claimedAfterWorkerLoss !== null) return claimedAfterWorkerLoss;
@@ -2293,6 +2301,7 @@ class BrainOperationCoordinator {
         error: null,
         sourceEvidence: null,
       });
+      if (this.stopped) throw coordinatorError('coordinator_stopped');
     }
     const runtime = this._ensureRuntime(current);
     runtime.workerCursor = durableWorkerCursor;
@@ -2319,14 +2328,22 @@ class BrainOperationCoordinator {
 
   async reconcile() {
     if (this.stopped) throw coordinatorError('coordinator_stopped');
-    for (const record of await this.store.listPinsPendingRelease()) {
+    const pinsPendingRelease = await this.store.listPinsPendingRelease();
+    if (this.stopped) throw coordinatorError('coordinator_stopped');
+    for (const record of pinsPendingRelease) {
+      if (this.stopped) throw coordinatorError('coordinator_stopped');
       if (record.requesterAgent !== this.requesterAgent) throw coordinatorError('access_denied');
       await this._enqueue(record.operationId, async () => {
+        if (this.stopped) throw coordinatorError('coordinator_stopped');
         const current = await this.store.get(record.operationId);
+        if (this.stopped) throw coordinatorError('coordinator_stopped');
         if (TERMINAL_STATES.has(current.state)) await this._releasePinOnce(current);
       });
     }
-    for (const record of await this.store.listNonterminal()) {
+    const nonterminal = await this.store.listNonterminal();
+    if (this.stopped) throw coordinatorError('coordinator_stopped');
+    for (const record of nonterminal) {
+      if (this.stopped) throw coordinatorError('coordinator_stopped');
       if (record.requesterAgent !== this.requesterAgent) throw coordinatorError('access_denied');
       await this._enqueue(record.operationId, () => this._recoverNonterminalLocked(record));
     }
