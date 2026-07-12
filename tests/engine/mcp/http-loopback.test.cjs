@@ -112,7 +112,7 @@ test('engine MCP memory tools delegate to the bounded canonical-source adapter',
   try {
     assert.equal((await callTool(server, 'query_memory', { query: 'canary', limit: 3 })).route, 'search');
     assert.equal((await callTool(server, 'get_memory_statistics')).route, 'statistics');
-    assert.equal((await callTool(server, 'get_memory_graph', { limit: 5, edgeLimit: 7 })).route, 'graph');
+    assert.equal((await callTool(server, 'get_memory_graph', { nodeLimit: 5, edgeLimit: 7 })).route, 'graph');
     assert.equal((await callTool(server, 'get_system_state')).route, 'state');
     assert.deepEqual(await callTool(server, 'get_recent_thoughts', { limit: 2 }), {
       count: 1,

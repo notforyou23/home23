@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import Ajv from 'ajv';
 import type { BrainOperationsClient } from '../../../src/agent/brain-operations/client.js';
 import type {
   BrainCatalogEntry,
@@ -16,6 +17,7 @@ import {
   getBrainSummaryTool,
   launchTool,
   listBrainsTool,
+  listResearchRunsTool,
   queryBrainTool,
   searchAllBrainsTool,
   stopRunTool,
@@ -31,6 +33,27 @@ type ContextOverrides = Omit<Partial<ToolContext>, 'brainOperations' | 'turnRunt
   brainOperations?: BrainClientStub;
   turnAbortController?: AbortController;
 };
+
+const PGS_PAIRS = Object.freeze({
+  pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+  pgsSynth: { provider: 'anthropic', model: 'claude-sonnet-4-7' },
+});
+const CONTINUE_OPERATION_ID = 'brop_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC';
+
+function schemaAccepts(schema: Record<string, unknown>, value: unknown): boolean {
+  return new Ajv({ strict: false }).compile(schema)(value) as boolean;
+}
+
+function pgsQuery(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    query: 'pgs',
+    enablePGS: true,
+    pgsMode: 'fresh',
+    pgsLevel: 'full',
+    ...PGS_PAIRS,
+    ...extra,
+  };
+}
 
 let startupSentinelCalls = 0;
 
@@ -159,6 +182,44 @@ test('research_list_brains renders canonical catalog fields through the turn cli
   assert.equal(startupSentinelCalls, 0);
 });
 
+test('research_runs_list exposes authoritative run IDs and state for watch continue and stop', async () => {
+  let received: unknown = null;
+  const result = await listResearchRunsTool.execute({ state: 'active', limit: 10 }, makeCtx({
+    brainOperations: {
+      listResearchRuns: async (options: unknown) => {
+        received = options;
+        return { state: 'active', count: 1, runs: [{
+          runId: 'run-1', state: 'active', topic: 'topic', continuable: false, stoppable: true,
+        }] };
+      },
+    },
+  }));
+  assert.match(result.content, /run-1/);
+  assert.match(result.content, /active/);
+  assert.equal((received as { state: string }).state, 'active');
+  assert.equal((received as { limit: number }).limit, 10);
+  assert.ok((received as { signal: AbortSignal }).signal instanceof AbortSignal);
+});
+
+test('research_list_brains retains resident brains when reference rows are excluded', async () => {
+  const resident = {
+    ...canonicalResearch('brain-jerry', 'Jerry'), kind: 'resident' as const,
+    lifecycle: 'resident' as const, sourceType: 'brain',
+  };
+  const result = await listBrainsTool.execute({ includeReferences: false }, makeCtx({
+    brainOperations: {
+      getCatalog: async () => ({ catalogRevision: 'catalog-residents', brains: [
+        resident,
+        { ...canonicalResearch('research-local', 'Local Research'), sourceType: 'local' },
+        { ...canonicalResearch('research-reference', 'Reference Research'), sourceType: 'reference' },
+      ] }),
+    },
+  }));
+  assert.match(result.content, /Jerry/);
+  assert.match(result.content, /Local Research/);
+  assert.doesNotMatch(result.content, /Reference Research/);
+});
+
 test('research_search_all_brains reports one outcome per target and never hides failures', async () => {
   const ctx = makeCtx({ brainOperations: {
     getCatalog: async () => ({ catalogRevision: 'c1', brains: [
@@ -228,7 +289,7 @@ test('research query reuses the shared direct-query partial classifier', async (
   assert.equal(invalid.metadata?.classification, 'invalid_partial_result');
 });
 
-test('research query separates direct and PGS parameters and rejects present-null pairs', async () => {
+test('research query separates direct and approved named PGS parameters and rejects present-null pairs', async () => {
   const requests: Record<string, unknown>[] = [];
   const ctx = makeCtx({ brainOperations: { query: async (request: Record<string, unknown>) => {
     requests.push(request);
@@ -238,19 +299,16 @@ test('research query separates direct and PGS parameters and rejects present-nul
   assert.deepEqual(requests[0], {
     target: { brainId: 'brain-r1' }, query: 'direct', mode: 'quick', enablePGS: false,
   });
-  await queryBrainTool.execute({
-    brainId: 'brain-r1', query: 'pgs', enablePGS: true,
-    pgsConfig: { sweepFraction: 0.25 },
-  }, ctx);
+  await queryBrainTool.execute({ brainId: 'brain-r1', ...pgsQuery() }, ctx);
   assert.deepEqual(requests[1], {
-    target: { brainId: 'brain-r1' }, query: 'pgs', mode: 'quick', enablePGS: true,
-    pgsMode: 'full', pgsConfig: { sweepFraction: 0.25 },
+    target: { brainId: 'brain-r1' }, query: 'pgs', enablePGS: true,
+    pgsMode: 'fresh', pgsLevel: 'full', ...PGS_PAIRS,
   });
   for (const input of [
     { brainId: 'brain-r1', query: 'x', modelSelection: null },
-    { brainId: 'brain-r1', query: 'x', enablePGS: true, pgsSweep: null },
-    { brainId: 'brain-r1', query: 'x', enablePGS: true, pgsSynth: null },
-    { brainId: 'brain-r1', query: 'x', enablePGS: true, pgsConfig: null },
+    { brainId: 'brain-r1', ...pgsQuery({ pgsSweep: null }) },
+    { brainId: 'brain-r1', ...pgsQuery({ pgsSynth: null }) },
+    { brainId: 'brain-r1', ...pgsQuery({ pgsConfig: { sweepFraction: 1 } }) },
   ]) {
     const before = requests.length;
     const result = await queryBrainTool.execute(input, ctx);
@@ -259,7 +317,128 @@ test('research query separates direct and PGS parameters and rejects present-nul
   }
 });
 
-test('search-all forwards exact Direct Query and PGS provider shapes', async () => {
+test('research_query_brain accepts every PGS mode and level including targeted continuation', async () => {
+  const requests: Record<string, unknown>[] = [];
+  const ctx = makeCtx({ brainOperations: { query: async (request: Record<string, unknown>) => {
+    requests.push(request);
+    const operation = completeOperation(`op-research-pgs-${requests.length}`, 'ok');
+    operation.operationType = 'pgs';
+    return operation;
+  } } });
+  for (const pgsMode of ['fresh', 'continue', 'targeted'] as const) {
+    for (const pgsLevel of ['skim', 'sample', 'deep', 'full'] as const) {
+      const modeFields = pgsMode === 'continue'
+        ? { continueFromOperationId: CONTINUE_OPERATION_ID }
+        : pgsMode === 'targeted'
+          ? { targetPartitionIds: ['c-alpha', 'h-beta'] }
+          : {};
+      const result = await queryBrainTool.execute({
+        brainId: 'brain-r1', ...pgsQuery({ pgsMode, pgsLevel, ...modeFields }),
+      }, ctx);
+      assert.equal(result.is_error, undefined, `${pgsMode}/${pgsLevel}`);
+    }
+  }
+  const targetedContinuation = await queryBrainTool.execute({
+    brainId: 'brain-r1',
+    ...pgsQuery({
+      pgsMode: 'targeted', pgsLevel: 'sample',
+      continueFromOperationId: CONTINUE_OPERATION_ID,
+      targetPartitionIds: ['h-beta', 'c-alpha'],
+    }),
+  }, ctx);
+  assert.equal(targetedContinuation.is_error, undefined);
+  assert.deepEqual(requests.at(-1), {
+    target: { brainId: 'brain-r1' }, query: 'pgs', enablePGS: true,
+    pgsMode: 'targeted', pgsLevel: 'sample',
+    continueFromOperationId: CONTINUE_OPERATION_ID,
+    targetPartitionIds: ['h-beta', 'c-alpha'],
+    ...PGS_PAIRS,
+  });
+  assert.equal(requests.every((request) => !Object.hasOwn(request, 'pgsConfig')), true);
+});
+
+test('research query tools reject incomplete, mixed, legacy, or noncanonical PGS requests', async () => {
+  let queryCalls = 0;
+  const ctx = makeCtx({ brainOperations: {
+    getCatalog: async () => ({ catalogRevision: 'invalid-pgs', brains: [
+      canonicalResearch('brain-r1', 'R1'),
+    ] }),
+    query: async () => {
+      queryCalls += 1;
+      return completeOperation('op-invalid-research-pgs', 'unexpected');
+    },
+  } });
+  const tooManyTargets = Array.from({ length: 257 }, (_, index) => `h-${index}`);
+  const invalidParameters = [
+    { query: 'x', enablePGS: true },
+    pgsQuery({ pgsMode: undefined }),
+    pgsQuery({ pgsLevel: undefined }),
+    pgsQuery({ pgsSweep: undefined }),
+    pgsQuery({ pgsSynth: undefined }),
+    pgsQuery({ pgsMode: 'full' }),
+    pgsQuery({ pgsLevel: 'quarter' }),
+    pgsQuery({ pgsConfig: { sweepFraction: 0.25 } }),
+    pgsQuery({ mode: 'quick' }),
+    pgsQuery({ pgsMode: 'fresh', continueFromOperationId: CONTINUE_OPERATION_ID }),
+    pgsQuery({ pgsMode: 'fresh', targetPartitionIds: ['c-alpha'] }),
+    pgsQuery({ pgsMode: 'continue' }),
+    pgsQuery({ pgsMode: 'continue', continueFromOperationId: 'brop_short' }),
+    pgsQuery({ pgsMode: 'continue', continueFromOperationId: CONTINUE_OPERATION_ID,
+      targetPartitionIds: ['c-alpha'] }),
+    pgsQuery({ pgsMode: 'targeted' }),
+    pgsQuery({ pgsMode: 'targeted', targetPartitionIds: [] }),
+    pgsQuery({ pgsMode: 'targeted', targetPartitionIds: ['alpha'] }),
+    pgsQuery({ pgsMode: 'targeted', targetPartitionIds: ['c-alpha', 'c-alpha'] }),
+    pgsQuery({ pgsMode: 'targeted', targetPartitionIds: tooManyTargets }),
+    { query: 'x', pgsMode: 'fresh' },
+    { query: 'x', pgsLevel: 'full' },
+    { query: 'x', continueFromOperationId: CONTINUE_OPERATION_ID },
+    { query: 'x', targetPartitionIds: ['c-alpha'] },
+  ];
+  for (const parameters of invalidParameters) {
+    for (const [tool, input] of [
+      [queryBrainTool, { brainId: 'brain-r1', ...parameters }],
+      [searchAllBrainsTool, { topN: 1, ...parameters }],
+    ] as const) {
+      const result = await tool.execute(input, ctx);
+      assert.equal(result.is_error, true, `${tool.name}: ${JSON.stringify(input)}`);
+      assert.match(result.content, /invalid_request|invalid/i);
+    }
+  }
+  assert.equal(queryCalls, 0);
+});
+
+test('research query schema exposes exact direct and PGS families while search-all is direct-only', () => {
+  const querySchema = queryBrainTool.input_schema as any;
+  assert.equal('pgsConfig' in querySchema.properties, false);
+  assert.deepEqual(querySchema.properties.pgsMode.enum, ['fresh', 'continue', 'targeted']);
+  assert.deepEqual(querySchema.properties.pgsLevel.enum, ['skim', 'sample', 'deep', 'full']);
+  assert.equal(querySchema.properties.continueFromOperationId.pattern, '^brop_[A-Za-z0-9_-]{32}$');
+  assert.equal(querySchema.properties.targetPartitionIds.uniqueItems, true);
+  assert.equal(querySchema.properties.targetPartitionIds.maxItems, 256);
+  for (const value of [
+    { brainId: 'brain-r1', query: 'direct' },
+    { brainId: 'brain-r1', query: 'direct', modelSelection: PGS_PAIRS.pgsSweep },
+    { brainId: 'brain-r1', ...pgsQuery() },
+    { brainId: 'brain-r1', ...pgsQuery({ pgsMode: 'continue',
+      continueFromOperationId: CONTINUE_OPERATION_ID }) },
+    { brainId: 'brain-r1', ...pgsQuery({ pgsMode: 'targeted',
+      targetPartitionIds: ['c-alpha'] }) },
+  ]) assert.equal(schemaAccepts(querySchema, value), true, JSON.stringify(value));
+  for (const value of [
+    { brainId: 'brain-r1', ...pgsQuery({ mode: 'quick' }) },
+    { brainId: 'brain-r1', ...pgsQuery({ modelSelection: PGS_PAIRS.pgsSweep }) },
+    { brainId: 'brain-r1', query: 'direct', pgsMode: 'fresh' },
+  ]) assert.equal(schemaAccepts(querySchema, value), false, JSON.stringify(value));
+
+  const searchSchema = searchAllBrainsTool.input_schema as any;
+  for (const key of ['enablePGS', 'pgsMode', 'pgsLevel', 'continueFromOperationId',
+    'targetPartitionIds', 'pgsSweep', 'pgsSynth']) {
+    assert.equal(key in searchSchema.properties, false, key);
+  }
+});
+
+test('search-all forwards Direct Query and rejects fresh, continue, and targeted PGS', async () => {
   const requests: Record<string, unknown>[] = [];
   const ctx = makeCtx({ brainOperations: {
     getCatalog: async () => ({ catalogRevision: 'pair-catalog', brains: [
@@ -270,19 +449,17 @@ test('search-all forwards exact Direct Query and PGS provider shapes', async () 
       return completeOperation(`op-${requests.length}`, 'ok');
     },
   } });
-  await searchAllBrainsTool.execute({
-    query: 'x', topN: 2, enablePGS: true, pgsConfig: { sweepFraction: 0.25 },
-    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
-    pgsSynth: { provider: 'anthropic', model: 'claude-sonnet-4-7' },
-  }, ctx);
-  assert.equal(requests.length, 2);
-  for (const request of requests) assert.deepEqual({ ...request, target: undefined }, {
-    target: undefined, query: 'x', mode: 'quick', enablePGS: true, pgsMode: 'full',
-    pgsConfig: { sweepFraction: 0.25 },
-    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
-    pgsSynth: { provider: 'anthropic', model: 'claude-sonnet-4-7' },
-  });
-  requests.length = 0;
+  for (const input of [
+    { ...pgsQuery({ query: 'fresh' }), topN: 2 },
+    { ...pgsQuery({ query: 'continue', pgsMode: 'continue',
+      continueFromOperationId: CONTINUE_OPERATION_ID }), topN: 2 },
+    { ...pgsQuery({ query: 'targeted', pgsMode: 'targeted',
+      targetPartitionIds: ['c-alpha'] }), topN: 2 },
+  ]) {
+    const result = await searchAllBrainsTool.execute(input, ctx);
+    assert.equal(result.is_error, true, JSON.stringify(input));
+  }
+  assert.equal(requests.length, 0);
   await searchAllBrainsTool.execute({ query: 'direct', topN: 2,
     modelSelection: { provider: 'xai', model: 'grok-4' } }, ctx);
   for (const request of requests) assert.deepEqual({ ...request, target: undefined }, {
@@ -410,6 +587,7 @@ test('research launch and continue preserve every approved option and reject aut
     { topic: 't', primaryProvider: 'provider-only' },
     { topic: 't', fastModel: 'duplicate-label' },
     { topic: 't', strategicProvider: 'provider-only' },
+    { topic: 't' },
     { ...options, unknown: true },
   ]) {
     const before = launched;
@@ -417,6 +595,12 @@ test('research launch and continue preserve every approved option and reject aut
     assert.equal(result.is_error, true, JSON.stringify(input));
     assert.equal(launched, before);
   }
+});
+
+test('research_launch schema requires both topic and framing context', () => {
+  assert.deepEqual((launchTool.input_schema as any).required, ['topic', 'context']);
+  assert.equal(schemaAccepts(launchTool.input_schema, { topic: 'topic only' }), false);
+  assert.equal(schemaAccepts(launchTool.input_schema, { topic: 'topic', context: 'why and scope' }), true);
 });
 
 test('research launch requires topic as an own data property', async () => {
@@ -595,6 +779,36 @@ test('active-run awareness consumes only the bounded nonterminal projection', as
   assert.equal(active?.topic, '');
   assert.equal(signalSeen, ctx.turnRuntime?.signal);
   assert.equal(await checkCosmoActiveRun(), null);
+});
+
+test('active-run awareness trusts current run authority after launch operation is terminal', async () => {
+  let operationListCalls = 0;
+  const active = await checkCosmoActiveRun(makeCtx({ brainOperations: {
+    getActiveResearchRun: async () => ({
+      active: true,
+      runName: 'research-brop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      topic: 'underlying run still executing',
+      startedAt: '2026-07-12T12:00:00.000Z',
+      processCount: 4,
+    }),
+    listNonterminal: async () => { operationListCalls += 1; return []; },
+  } }));
+  assert.deepEqual(active, {
+    runName: 'research-brop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    topic: 'underlying run still executing',
+    startedAt: '2026-07-12T12:00:00.000Z',
+    processCount: 4,
+  });
+  assert.equal(operationListCalls, 0);
+});
+
+test('research template teaches bounded compile, direct-only search-all, and durable reattachment', () => {
+  const template = readFileSync(new URL('../../../cli/templates/COSMO_RESEARCH.md', import.meta.url), 'utf8');
+  assert.match(template, /direct query.*default/i);
+  assert.match(template, /research_search_all_brains.*direct-only/is);
+  assert.match(template, /bounded compiled artifact/i);
+  assert.match(template, /brain_status.*detach.*reattach/is);
+  assert.doesNotMatch(template, /one big node/i);
 });
 
 test('read-only research adapters contain no raw HTTP, agency assimilation, or local writes', () => {

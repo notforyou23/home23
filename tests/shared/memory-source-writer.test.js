@@ -172,6 +172,58 @@ test('ANN completion advances only its built-from watermark', async () => {
   assert.equal(result.manifest.ann.builtFromRevision, before.currentRevision);
 });
 
+test('ANN completion rejects a newer revision in the same generation', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const pinned = await readManifest(dir);
+  await appendMemoryRevision(dir, {
+    nodes: [{ id: 'newer', concept: 'same generation newer revision' }],
+  }, {
+    lockRoot,
+    summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+  });
+
+  const result = await advanceAnnBuiltFromRevision(dir, {
+    lockRoot,
+    expectedGeneration: pinned.generation,
+    builtFromRevision: pinned.currentRevision,
+    indexFile: `memory-ann.${pinned.currentRevision}.index`,
+    metaFile: `memory-ann.${pinned.currentRevision}.meta.json`,
+  });
+
+  assert.equal(result.advanced, false);
+  assert.equal(result.reason, 'source_changed');
+  assert.equal(result.manifest.generation, pinned.generation);
+  assert.equal(result.manifest.currentRevision, pinned.currentRevision + 1);
+  const after = await readManifest(dir);
+  assert.equal(after.ann.indexFile, null);
+  assert.equal(after.ann.metaFile, null);
+  assert.equal(after.ann.builtFromRevision, pinned.ann.builtFromRevision);
+});
+
+test('ANN completion survives a post-release observer failure after manifest commit', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const before = await readManifest(dir);
+  let releaseHookCalls = 0;
+  const result = await advanceAnnBuiltFromRevision(dir, {
+    lockRoot,
+    expectedGeneration: before.generation,
+    builtFromRevision: before.currentRevision,
+    indexFile: `memory-ann.${before.currentRevision}.index`,
+    metaFile: `memory-ann.${before.currentRevision}.meta.json`,
+    _testHooks: {
+      afterLockReleased() {
+        releaseHookCalls += 1;
+        throw new Error('injected post-release observer failure');
+      },
+    },
+  });
+  assert.equal(releaseHookCalls, 1);
+  assert.equal(result.advanced, true);
+  const after = await readManifest(dir);
+  assert.equal(after.ann.indexFile, `memory-ann.${before.currentRevision}.index`);
+  assert.equal(after.ann.metaFile, `memory-ann.${before.currentRevision}.meta.json`);
+});
+
 test('derived-state compare-and-swap rejects a newer source revision', async () => {
   const { dir, lockRoot } = await createCommittedFixture();
   const pinned = await openMemorySource(dir);

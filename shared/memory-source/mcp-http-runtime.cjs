@@ -22,9 +22,43 @@ async function readBoundedJson(file, maxBytes = MAX_SCALAR_SNAPSHOT_BYTES) {
   return JSON.parse(await fsp.readFile(file, 'utf8'));
 }
 
-function finiteCount(value) {
-  const count = Number(value);
-  return Number.isSafeInteger(count) && count >= 0 ? count : 0;
+function optionalCount(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function unsupportedSnapshotCapability(capability) {
+  return Object.freeze({
+    status: 'unsupported',
+    error: Object.freeze({
+      code: 'snapshot_capability_unsupported',
+      message: `${capability} is not projected by brain-snapshot`,
+      retryable: false,
+    }),
+  });
+}
+
+function snapshotCapabilities(snapshot) {
+  const availableGoals = [];
+  if (Array.isArray(snapshot?.activeGoalSummaries)) availableGoals.push('activeSummaries');
+  if (snapshot?.goalCounts && typeof snapshot.goalCounts === 'object') {
+    availableGoals.push('counts');
+  }
+  return Object.freeze({
+    goals: availableGoals.length > 0 ? Object.freeze({
+      status: 'degraded',
+      available: Object.freeze(availableGoals),
+      unavailable: Object.freeze(['completedEntries', 'archivedEntries']),
+      error: Object.freeze({
+        code: 'snapshot_capability_degraded',
+        message: 'brain-snapshot projects bounded active goal summaries and counts only',
+        retryable: false,
+      }),
+    }) : unsupportedSnapshotCapability('goals'),
+    agentActivity: unsupportedSnapshotCapability('agent activity'),
+    journal: unsupportedSnapshotCapability('journal'),
+    dreams: unsupportedSnapshotCapability('dreams'),
+    oscillator: unsupportedSnapshotCapability('oscillator'),
+  });
 }
 
 function createSnapshotScalarStateReader({ brainDir } = {}) {
@@ -38,42 +72,46 @@ function createSnapshotScalarStateReader({ brainDir } = {}) {
     if (!snapshot) {
       return {
         cycleCount: null,
-        currentMode: 'unknown',
+        currentMode: null,
         cognitiveState: null,
         goals: {
-          active: [], completed: [], archived: [],
+          active: null, completed: null, archived: null,
           counts: { active: null, completed: null, archived: null },
         },
         scalarProjection: {
           source: 'brain-snapshot',
           sourceHealth: 'unavailable',
           updatedAt: null,
+          capabilities: snapshotCapabilities(null),
         },
       };
     }
     const activeGoalSummaries = Array.isArray(snapshot.activeGoalSummaries)
       ? snapshot.activeGoalSummaries.slice(0, 100)
-      : [];
-    const counts = snapshot.goalCounts || {};
+      : null;
+    const counts = snapshot.goalCounts && typeof snapshot.goalCounts === 'object'
+      ? snapshot.goalCounts
+      : {};
     return {
       cycleCount: Number.isSafeInteger(snapshot.cycle) ? snapshot.cycle : null,
-      currentMode: 'unknown',
+      currentMode: null,
       cognitiveState: null,
       goals: {
-        active: activeGoalSummaries.map((goal) => [goal.id, goal]),
-        completed: [],
-        archived: [],
+        active: activeGoalSummaries?.map((goal) => [goal.id, goal]) ?? null,
+        completed: null,
+        archived: null,
         counts: {
-          active: finiteCount(counts.active),
-          completed: finiteCount(counts.completed),
-          archived: finiteCount(counts.archived),
+          active: optionalCount(counts.active),
+          completed: optionalCount(counts.completed),
+          archived: optionalCount(counts.archived),
         },
       },
       scalarProjection: {
         source: 'brain-snapshot',
         sourceHealth: 'degraded',
         updatedAt: snapshot.savedAt || null,
-        activeGoalsReturned: activeGoalSummaries.length,
+        activeGoalsReturned: activeGoalSummaries?.length ?? null,
+        capabilities: snapshotCapabilities(snapshot),
       },
     };
   };

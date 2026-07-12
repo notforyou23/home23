@@ -47,6 +47,35 @@ test('home summary reads graph and goal counts from lightweight disk truth', asy
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('fast dashboard summary never opens the authoritative brain source', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-dashboard-summary-'));
+  fs.writeFileSync(
+    path.join(dir, 'brain-snapshot.json'),
+    JSON.stringify({ nodeCount: 51_328, edgeCount: 80_230, clusterCount: 7 })
+  );
+  let authoritativeReads = 0;
+  const server = Object.create(DashboardServer.prototype);
+  server.logsDir = dir;
+  server.brainSourceService = {
+    async status() {
+      authoritativeReads += 1;
+      return { summary: { nodes: 999_999, edges: 999_999, clusters: 999 } };
+    },
+  };
+
+  try {
+    assert.deepEqual(await server.getFastMemoryGraphSummary(), {
+      nodes: 51_328,
+      edges: 80_230,
+      clusters: 7,
+      source: 'brain-snapshot',
+    });
+    assert.equal(authoritativeReads, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('home summary avoids hydrating memory sidecars for goal counts', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-dashboard-summary-'));
   fs.writeFileSync(

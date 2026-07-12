@@ -5,6 +5,11 @@
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import type { ScheduleSpec, JobPayload } from '../../scheduler/cron.js';
 import { randomUUID } from 'node:crypto';
+import {
+  CRON_TIMEOUT_MAX_SECONDS,
+  CRON_TIMEOUT_MIN_SECONDS,
+  validateCronTimeoutSeconds,
+} from '../cron-brain-query.js';
 
 // ─── cron_schedule ──────────────────────────────────────────
 
@@ -21,7 +26,7 @@ Schedule kinds:
 Payload kinds:
   agentTurn — full agent loop with all tools (default). For complex tasks.
   exec      — shell command. Runs in the home23 project root. For scripts/health checks.
-  query     — brain query (no tools). For lightweight lookups.
+  query     — durable brain query (no tools). May remain attached for long provider work.
 
 Delivery:
   delivery_to MUST be a valid, durable chat ID for the target channel:
@@ -41,7 +46,12 @@ Delivery:
       payload_kind: { type: 'string', enum: ['agentTurn', 'exec', 'query'], description: 'Payload type (default: agentTurn)' },
       message: { type: 'string', description: 'Prompt (agentTurn/query) or shell command (exec)' },
       model: { type: 'string', description: 'Model alias override for agentTurn/query (e.g. "sonnet"). Omit for agent default.' },
-      timeout_seconds: { type: 'number', description: 'Max seconds before timeout. Defaults: agentTurn=300, exec=60, query=120.' },
+      timeout_seconds: {
+        type: 'integer',
+        minimum: CRON_TIMEOUT_MIN_SECONDS,
+        maximum: CRON_TIMEOUT_MAX_SECONDS,
+        description: `Max whole seconds before timeout (${CRON_TIMEOUT_MIN_SECONDS}-${CRON_TIMEOUT_MAX_SECONDS}). Defaults: agentTurn=21600, exec=60, durable query=5400.`,
+      },
       delivery_channel: { type: 'string', description: 'Channel: "telegram", "discord", or "auto" (first available). Default: auto.' },
       delivery_to: { type: 'string', description: 'Durable chat ID for delivery (Telegram numeric ID, Discord channel ID). REQUIRED for delivery to work.' },
       announce_mode: { type: 'string', enum: ['none', 'failures', 'summary', 'full'], description: 'When to deliver results (default: failures)' },
@@ -99,7 +109,15 @@ Delivery:
 
     // Build payload
     const payloadKind = (input.payload_kind as string) || 'agentTurn';
-    const timeoutSeconds = typeof input.timeout_seconds === 'number' ? input.timeout_seconds : undefined;
+    let timeoutSeconds: number | undefined;
+    try {
+      timeoutSeconds = validateCronTimeoutSeconds(input.timeout_seconds);
+    } catch (error) {
+      return {
+        content: error instanceof Error ? error.message : 'timeout_seconds is invalid',
+        is_error: true,
+      };
+    }
     const model = typeof input.model === 'string' ? input.model : undefined;
     const cwd = typeof input.cwd === 'string' ? input.cwd : undefined;
 
@@ -116,16 +134,16 @@ Delivery:
 
     let payload: JobPayload;
     if (payloadKind === 'exec') {
-      payload = { kind: 'exec', command: msg ?? '', ...(timeoutSeconds ? { timeoutSeconds } : {}), ...(cwd ? { cwd } : {}) } as JobPayload;
+      payload = { kind: 'exec', command: msg ?? '', ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}), ...(cwd ? { cwd } : {}) } as JobPayload;
     } else if (payloadKind === 'query') {
-      payload = { kind: 'query', message: msg ?? '', ...(model ? { model } : {}), ...(timeoutSeconds ? { timeoutSeconds } : {}) };
+      payload = { kind: 'query', message: msg ?? '', ...(model ? { model } : {}), ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}) };
     } else {
       payload = {
         kind: 'agentTurn',
         ...(msg ? { message: msg } : {}),
         ...(msgPath ? { messagePath: msgPath } : {}),
         ...(model ? { model } : {}),
-        ...(timeoutSeconds ? { timeoutSeconds } : {}),
+        ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),
         ...(sessionHistory ? { sessionHistory } : {}),
       };
     }

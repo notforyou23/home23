@@ -3,7 +3,10 @@
 const fsp = require('node:fs').promises;
 const path = require('node:path');
 const { readJsonl } = require('./jsonl.cjs');
-const { createBoundedOverlayStore } = require('./overlay-store.cjs');
+const {
+  applyOverlayEntriesInBatches,
+  createBoundedOverlayStore,
+} = require('./overlay-store.cjs');
 const {
   readManifest,
   resolveMemorySourceSelection,
@@ -29,7 +32,12 @@ const {
   isTypedMemorySourceError,
 } = require('./contracts.cjs');
 const {
+  assertMemorySourceInputSelection,
+  resolveMemorySourceReadLimits,
+} = require('./limits.cjs');
+const {
   assertStableOpenedFileContent,
+  portableFileIdentity,
   readOpenedFile,
 } = require('./confined-file.cjs');
 const {
@@ -80,6 +88,7 @@ function anchoredFileView(opened) {
   return Object.freeze({
     path: anchoredFdPath(opened.handle.fd),
     size: Number(opened.stat.size),
+    identity: portableFileIdentity(opened.stat),
     async readFile({ maxBytes } = {}) {
       return readOpenedFile(opened, { maxBytes });
     },
@@ -192,27 +201,40 @@ async function loadOverlay(canonicalRoot, manifest, options) {
   let expectedRevision = manifest.baseRevision + 1;
   let expectedSequence = 1;
   try {
-    for await (const entry of readJsonl(path.join(canonicalRoot, manifest.activeDelta.file), {
-      byteLimit: manifest.activeDelta.committedBytes,
-      confinedRoot: canonicalRoot,
-      requireCompletePrefix: true,
-      allowTrailingBytes: true,
-      [OPENED_JSONL_FILE]: options[PINNED_OPENED_FILES]?.get('delta'),
-      signal: options.signal,
-    })) {
-      throwIfAborted(options.signal);
-      if (entry.epoch !== manifest.activeDeltaEpoch
-          || entry.revision !== expectedRevision
-          || entry.sequence !== expectedSequence) {
-        throw memorySourceError('source_unavailable', 'committed delta is not contiguous', {
-          retryable: true,
-        });
+    assertMemorySourceInputSelection(
+      manifest.activeDelta.committedBytes,
+      options.maxInputBytes,
+    );
+    const validatedEntries = (async function* validatedEntries() {
+      for await (const entry of readJsonl(
+        path.join(canonicalRoot, manifest.activeDelta.file),
+        {
+          byteLimit: manifest.activeDelta.committedBytes,
+          confinedRoot: canonicalRoot,
+          maxDecompressedBytes: options.maxDecompressedBytes,
+          requireCompletePrefix: true,
+          allowTrailingBytes: true,
+          [OPENED_JSONL_FILE]: options[PINNED_OPENED_FILES]?.get('delta'),
+          signal: options.signal,
+        },
+      )) {
+        throwIfAborted(options.signal);
+        if (entry.epoch !== manifest.activeDeltaEpoch
+            || entry.revision !== expectedRevision
+            || entry.sequence !== expectedSequence) {
+          throw memorySourceError('source_unavailable', 'committed delta is not contiguous', {
+            retryable: true,
+          });
+        }
+        appliedRecords += 1;
+        expectedRevision += 1;
+        expectedSequence += 1;
+        yield entry;
       }
-      await overlay.apply(entry);
-      appliedRecords += 1;
-      expectedRevision += 1;
-      expectedSequence += 1;
-    }
+    })();
+    await applyOverlayEntriesInBatches(overlay, validatedEntries, {
+      signal: options.signal,
+    });
     if (appliedRecords !== manifest.activeDelta.count
         || expectedRevision !== manifest.currentRevision + 1) {
       throw memorySourceError('source_unavailable', 'committed delta is incomplete', {
@@ -273,6 +295,8 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
         confinedRoot: canonicalRoot,
         expectedInputBytes: manifest.activeBase.nodes.bytes,
         expectedRecordCount: manifest.activeBase.nodes.count,
+        maxInputBytes: options.maxInputBytes,
+        maxDecompressedBytes: options.maxDecompressedBytes,
         [OPENED_JSONL_FILE]: openedFiles?.get('nodes'),
         signal: options.signal,
       })) {
@@ -302,6 +326,8 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
         confinedRoot: canonicalRoot,
         expectedInputBytes: manifest.activeBase.edges.bytes,
         expectedRecordCount: manifest.activeBase.edges.count,
+        maxInputBytes: options.maxInputBytes,
+        maxDecompressedBytes: options.maxDecompressedBytes,
         [OPENED_JSONL_FILE]: openedFiles?.get('edges'),
         signal: options.signal,
       })) {
@@ -422,8 +448,18 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
     async compareAndSwap() { throw memorySourceError('invalid_request', 'writer not available'); },
     async release() { await this.close(); },
     async close() {
-      await overlay.close();
-      await closeOpenedFiles(openedFiles);
+      let overlayError = null;
+      try {
+        await overlay.close();
+      } catch (error) {
+        overlayError = error;
+      }
+      try {
+        await closeOpenedFiles(openedFiles);
+      } catch (error) {
+        if (overlayError === null) throw error;
+      }
+      if (overlayError !== null) throw overlayError;
     },
   };
   Object.defineProperty(source, 'evidence', { get() { return source.getEvidence(); } });
@@ -433,13 +469,24 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
 async function openMemorySource(brainDir, options = {}) {
   throwIfAborted(options.signal);
   const openedFiles = options[PINNED_OPENED_FILES] || null;
+  let sourceLimits;
   let canonicalRoot = null;
   try {
+    sourceLimits = resolveMemorySourceReadLimits({
+      maxInputBytes: options.maxInputBytes,
+      maxDecompressedBytes: options.maxDecompressedBytes,
+      quotaMaxBytes: options.scratchQuota?.maxBytes,
+    });
     canonicalRoot = await fsp.realpath(brainDir);
     const manifest = options.pinnedManifest
       ? validateManifest(options.pinnedManifest)
       : await readManifest(canonicalRoot);
-    if (manifest) return await openManifestSource(canonicalRoot, manifest, options);
+    if (manifest) {
+      return await openManifestSource(canonicalRoot, manifest, {
+        ...options,
+        ...sourceLimits,
+      });
+    }
     const selection = await resolveMemorySourceSelection(canonicalRoot);
     if (selection.authority === 'legacy-resident-sidecars') {
       if (!options.operationRoot || !options.scratchQuota) {
@@ -456,9 +503,14 @@ async function openMemorySource(brainDir, options = {}) {
         signal: options.signal,
         maxOverlayMemoryBytes: options.maxOverlayMemoryBytes,
         maxOverlayDiskBytes: options.maxOverlayDiskBytes,
+        ...sourceLimits,
+      });
+      const projectionReadLimits = resolveMemorySourceReadLimits({
+        quotaMaxBytes: options.scratchQuota.maxBytes,
       });
       return await openManifestSource(projected.projectionRoot, projected.manifest, {
         ...options,
+        ...projectionReadLimits,
         logicalCanonicalRoot: canonicalRoot,
         legacySourceFingerprint: projected.sourceFingerprint,
       });

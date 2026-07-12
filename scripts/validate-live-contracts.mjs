@@ -575,9 +575,6 @@ async function runQueryFacadeProbe({ manifest, validator, dashboardBaseUrl, fail
     includeThoughts: false,
     allowActions: false,
     enablePGS: false,
-    pgsMode: 'full',
-    pgsSessionId: '',
-    pgsFullSweep: false,
     exportFormat: 'markdown',
     dryRun: true,
   };

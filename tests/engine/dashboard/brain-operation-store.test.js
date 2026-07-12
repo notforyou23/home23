@@ -3449,6 +3449,36 @@ test('seven-day GC retires terminal payloads but never nonterminal data', async 
   assert.equal((await fixture.store.get(nonterminal.record.operationId)).recordVersion, nonterminalResult.recordVersion);
 });
 
+test('production GC batches bound each scan and advance a stable cursor', async (t) => {
+  const fixture = makeFixture(t);
+  await createOne(fixture, { requestId: 'gc-batch-a' });
+  await createOne(fixture, { requestId: 'gc-batch-b' });
+  await createOne(fixture, { requestId: 'gc-batch-c' });
+  const operationIds = (await fixture.store.list()).map((record) => record.operationId).sort();
+
+  const first = await fixture.store.collectGarbage(undefined, {
+    maxOperations: 2,
+    afterOperationId: null,
+  });
+  assert.deepEqual(first, {
+    resultsExpired: 0,
+    metadataDeleted: 0,
+    scannedOperations: 2,
+    nextAfterOperationId: operationIds[1],
+  });
+
+  const second = await fixture.store.collectGarbage(undefined, {
+    maxOperations: 2,
+    afterOperationId: first.nextAfterOperationId,
+  });
+  assert.deepEqual(second, {
+    resultsExpired: 0,
+    metadataDeleted: 0,
+    scannedOperations: 1,
+    nextAfterOperationId: null,
+  });
+});
+
 test('retention timestamps and GC cover inline, JSON, artifact, scratch, handle indexes, and exact boundaries', async (t) => {
   const fixture = makeFixture(t);
   const terminalRows = [];

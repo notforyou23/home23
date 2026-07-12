@@ -873,7 +873,9 @@ export class AgentLoop {
           hard_deadline_at,
           first_token_deadline_at,
         });
-        turnBus.emit(chatId, turnId, endEnv);
+        turnBus.emit(chatId, turnId, endEnv.status === 'complete'
+          ? { ...endEnv, assistant_content: result.text }
+          : endEnv);
         turnBus.close(chatId, turnId);
         if (this.pusher) {
           this.pusher.notifyTurnComplete({
@@ -1118,8 +1120,9 @@ export class AgentLoop {
             brainDir: join(this.workspacePath, '..', 'brain'),
             enginePort: this.toolContext.enginePort,
             sessionId: chatId,
-            brainOperations: runContext.turnRuntime!.brainOperations,
             signal: runContext.turnRuntime!.signal,
+            contextSearch: (request, signal) =>
+              runContext.turnRuntime!.brainOperations.searchContext(request, signal),
             triggerIndex: this.triggerIndex,
           },
           this.eventLedger,

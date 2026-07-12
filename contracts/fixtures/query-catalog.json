@@ -5,7 +5,8 @@
   "endpoints": {
     "run": "/home23/api/query/run",
     "stream": "/home23/api/query/stream",
-    "export": "/home23/api/query/export"
+    "export": "/home23/api/query/export",
+    "pgsPartitions": "/home23/api/query/pgs-partitions"
   },
   "models": [
     {

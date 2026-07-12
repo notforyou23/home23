@@ -6,6 +6,12 @@ const path = require('node:path');
 const test = require('node:test');
 
 const {
+  readJsonl,
+  readManifest,
+  rewriteMemoryBase,
+} = require('../../../shared/memory-source');
+
+const {
   DEFAULT_GZIP_LEVEL,
   MEMORY_DELTA_FILE,
   appendMemoryDelta,
@@ -106,6 +112,63 @@ test('memory deltas stream append without one giant joined string', async () => 
   assert.equal(readResult.count, 80);
   assert.equal(readResult.parseErrors, 0);
   assert.equal(replayed, 80);
+});
+
+test('legacy delta append rechecks authority under the shared source lock', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'memory-sidecar-authority-race-'));
+  const lockRoot = mkdtempSync(path.join(tmpdir(), 'memory-source-locks-'));
+  await writeJsonlGz(path.join(dir, 'memory-nodes.jsonl.gz'), [
+    { id: 'legacy', concept: 'legacy base' },
+  ]);
+  await writeJsonlGz(path.join(dir, 'memory-edges.jsonl.gz'), []);
+  const legacyDelta = path.join(dir, MEMORY_DELTA_FILE);
+  fs.writeFileSync(legacyDelta, '');
+
+  const result = await appendMemoryDelta(dir, {
+    nodes: [{ id: 'new', concept: 'must reach manifest delta' }],
+    summary: { nodeCount: 2, edgeCount: 0, clusterCount: 0 },
+  }, {
+    lockRoot,
+    beforeLock: async () => {
+      await rewriteMemoryBase(dir, {
+        nodes: [{ id: 'legacy', concept: 'legacy base' }],
+        edges: [],
+        summary: { nodeCount: 1, edgeCount: 0, clusterCount: 0 },
+      }, { lockRoot });
+    },
+  });
+
+  const manifest = await readManifest(dir);
+  assert.ok(manifest);
+  assert.equal(result.manifest.currentRevision, manifest.currentRevision);
+  assert.equal(fs.statSync(legacyDelta).size, 0);
+  const records = [];
+  for await (const record of readJsonl(path.join(dir, manifest.activeDelta.file), {
+    confinedRoot: dir,
+    byteLimit: manifest.activeDelta.committedBytes,
+    requireCompletePrefix: true,
+  })) records.push(record);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].record.id, 'new');
+});
+
+test('manifest read failure never routes a mutation into the legacy journal', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'memory-sidecar-corrupt-manifest-'));
+  const lockRoot = mkdtempSync(path.join(tmpdir(), 'memory-source-locks-'));
+  await writeJsonlGz(path.join(dir, 'memory-nodes.jsonl.gz'), []);
+  await writeJsonlGz(path.join(dir, 'memory-edges.jsonl.gz'), []);
+  const legacyDelta = path.join(dir, MEMORY_DELTA_FILE);
+  fs.writeFileSync(legacyDelta, '');
+  fs.writeFileSync(path.join(dir, 'memory-manifest.json'), '{broken');
+
+  await assert.rejects(
+    appendMemoryDelta(dir, {
+      nodes: [{ id: 'must-not-land-in-legacy' }],
+      summary: { nodeCount: 1, edgeCount: 0, clusterCount: 0 },
+    }, { lockRoot }),
+    (error) => ['source_unavailable', 'invalid_memory_source'].includes(error?.code),
+  );
+  assert.equal(fs.statSync(legacyDelta).size, 0);
 });
 
 test('full sidecar rewrite clears pending memory delta journal', async () => {

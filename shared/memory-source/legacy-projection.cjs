@@ -13,8 +13,14 @@ const {
   readManifest,
   writeManifestAtomic,
 } = require('./manifest.cjs');
-const { createBoundedOverlayStore } = require('./overlay-store.cjs');
-const { createOperationScratchQuota } = require('./scratch-quota.cjs');
+const {
+  applyOverlayEntriesInBatches,
+  createBoundedOverlayStore,
+} = require('./overlay-store.cjs');
+const {
+  createOperationScratchQuota,
+  getOperationScratchQuotaCleanup,
+} = require('./scratch-quota.cjs');
 const {
   assertStableOpenedFile,
   assertOpenedFilePathIdentity,
@@ -30,6 +36,10 @@ const {
   sourceDescriptorDigest,
   throwIfAborted,
 } = require('./contracts.cjs');
+const {
+  assertMemorySourceInputSelection,
+  resolveMemorySourceReadLimits,
+} = require('./limits.cjs');
 const { OPENED_JSONL_FILE } = require('./private-capabilities.cjs');
 
 const MAX_ATTEMPTS = 3;
@@ -229,7 +239,8 @@ function invalidPublishedProjection(message, cause) {
   });
 }
 
-async function digestPublishedFile(projectionRoot, entry) {
+async function digestPublishedFile(projectionRoot, entry, { signal, maxReadBytes } = {}) {
+  throwIfAborted(signal);
   if (!entry || typeof entry.file !== 'string'
       || !Number.isSafeInteger(entry.bytes) || entry.bytes < 0
       || !validSha256(entry.sha256)) {
@@ -238,26 +249,50 @@ async function digestPublishedFile(projectionRoot, entry) {
   const filePath = path.join(projectionRoot, entry.file);
   const opened = await openConfinedRegularFile(projectionRoot, filePath, {
     flags: fs.constants.O_RDONLY,
+    maxBytes: maxReadBytes,
+    signal,
   });
+  let stream = null;
+  let abort = null;
   try {
+    throwIfAborted(signal);
     if (Number(opened.stat.size) !== entry.bytes) {
       throw invalidPublishedProjection('projection file size mismatch');
     }
     const hash = crypto.createHash('sha256');
     if (entry.bytes > 0) {
-      const stream = fs.createReadStream(null, {
+      stream = fs.createReadStream(null, {
         fd: opened.handle.fd,
         autoClose: false,
         start: 0,
         end: entry.bytes - 1,
+        signal,
       });
-      for await (const chunk of stream) hash.update(chunk);
+      abort = () => stream.destroy(signal.reason instanceof Error ? signal.reason : undefined);
+      signal?.addEventListener('abort', abort, { once: true });
+      try {
+        for await (const chunk of stream) {
+          throwIfAborted(signal);
+          hash.update(chunk);
+        }
+        throwIfAborted(signal);
+      } catch (error) {
+        rethrowAbort(error, signal);
+        throw error;
+      } finally {
+        signal?.removeEventListener('abort', abort);
+      }
     }
+    throwIfAborted(signal);
     if (hash.digest('hex') !== entry.sha256) {
       throw invalidPublishedProjection('projection file digest mismatch');
     }
     await assertStableOpenedFile(opened);
+    throwIfAborted(signal);
+    await assertOpenedFilePathIdentity(opened, portableFileIdentity(opened.stat));
+    throwIfAborted(signal);
   } finally {
+    stream?.destroy();
     await opened.handle.close().catch(() => {});
   }
 }
@@ -312,14 +347,22 @@ function validatePublishedManifest({ manifest, integrity, generation, revision }
   }
 }
 
-async function readPublishedProjection(projectionRoot, targetRoot, expectedFingerprint) {
+async function readPublishedProjection(
+  projectionRoot,
+  targetRoot,
+  expectedFingerprint,
+  { signal, maxReadBytes } = {},
+) {
+  throwIfAborted(signal);
   const existing = await fsp.lstat(projectionRoot).catch((error) => {
     if (error.code === 'ENOENT') return null;
     throw error;
   });
+  throwIfAborted(signal);
   if (existing === null) return null;
   try {
     const canonicalProjection = await fsp.realpath(projectionRoot);
+    throwIfAborted(signal);
     if (existing.isSymbolicLink() || !existing.isDirectory()
         || canonicalProjection !== projectionRoot) {
       throw invalidPublishedProjection('projection root is not canonical');
@@ -329,14 +372,15 @@ async function readPublishedProjection(projectionRoot, targetRoot, expectedFinge
       readConfinedFile(
         projectionRoot,
         path.join(projectionRoot, 'source-fingerprint.json'),
-        { maxBytes: 1024 * 1024 },
+        { maxBytes: 1024 * 1024, signal },
       ),
       readConfinedFile(
         projectionRoot,
         path.join(projectionRoot, 'projection-integrity.json'),
-        { maxBytes: 1024 * 1024 },
+        { maxBytes: 1024 * 1024, signal },
       ),
     ]);
+    throwIfAborted(signal);
     const storedFingerprint = JSON.parse(storedFingerprintBytes.toString('utf8'));
     const integrity = JSON.parse(integrityBytes.toString('utf8'));
     const digest = fingerprintDigest(expectedFingerprint);
@@ -348,11 +392,13 @@ async function readPublishedProjection(projectionRoot, targetRoot, expectedFinge
       throw invalidPublishedProjection('projection generation or fingerprint mismatch');
     }
     validatePublishedManifest({ manifest, integrity, generation, revision });
-    await Promise.all([
-      digestPublishedFile(projectionRoot, integrity.files.nodes),
-      digestPublishedFile(projectionRoot, integrity.files.edges),
-      digestPublishedFile(projectionRoot, integrity.files.delta),
-    ]);
+    for (const kind of ['nodes', 'edges', 'delta']) {
+      await digestPublishedFile(projectionRoot, integrity.files[kind], {
+        signal,
+        maxReadBytes,
+      });
+    }
+    throwIfAborted(signal);
     return projectionResult({
       targetRoot,
       projectionRoot,
@@ -360,7 +406,8 @@ async function readPublishedProjection(projectionRoot, targetRoot, expectedFinge
       sourceFingerprint: storedFingerprint,
     });
   } catch (error) {
-    if (error?.code === 'invalid_memory_source') throw error;
+    rethrowAbort(error, signal);
+    if (error?.code === 'invalid_memory_source' || error?.code === 'result_too_large') throw error;
     throw invalidPublishedProjection('published legacy projection failed validation', error);
   }
 }
@@ -409,7 +456,15 @@ async function removeOwnedAttempt(attemptRoot, identity) {
   await fsp.rm(attemptRoot, { recursive: true, force: false });
 }
 
-async function loadLegacyDelta({ targetRoot, fingerprint, openedFiles, overlay, signal }) {
+async function loadLegacyDelta({
+  targetRoot,
+  fingerprint,
+  openedFiles,
+  overlay,
+  signal,
+  maxInputBytes,
+  maxDecompressedBytes,
+}) {
   const delta = fingerprint.files.delta;
   if (!delta || Number(delta.stat.size) === 0) return;
   const byteLimit = Number(delta.stat.size);
@@ -419,21 +474,30 @@ async function loadLegacyDelta({ targetRoot, fingerprint, openedFiles, overlay, 
       retryable: false,
     });
   }
-  for await (const entry of readJsonl(path.join(targetRoot, delta.basename), {
-    [OPENED_JSONL_FILE]: openedFiles.get('delta'),
-    confinedRoot: targetRoot,
-    byteLimit,
-    requireCompletePrefix: true,
-    allowTrailingBytes: true,
-    signal,
-  })) {
-    throwIfAborted(signal);
-    await overlay.apply(entry);
-  }
+  assertMemorySourceInputSelection(byteLimit, maxInputBytes);
+  await applyOverlayEntriesInBatches(overlay, readJsonl(
+    path.join(targetRoot, delta.basename),
+    {
+      [OPENED_JSONL_FILE]: openedFiles.get('delta'),
+      confinedRoot: targetRoot,
+      byteLimit,
+      maxDecompressedBytes,
+      requireCompletePrefix: true,
+      allowTrailingBytes: true,
+      signal,
+    },
+  ), { signal });
 }
 
 function logicalNodeRecords({
-  targetRoot, fingerprint, openedFiles, overlay, signal, clusters,
+  targetRoot,
+  fingerprint,
+  openedFiles,
+  overlay,
+  signal,
+  clusters,
+  maxInputBytes,
+  maxDecompressedBytes,
 }) {
   return (async function* nodes() {
     for await (const record of readJsonl(path.join(targetRoot, fingerprint.files.nodes.basename), {
@@ -441,6 +505,8 @@ function logicalNodeRecords({
       gzip: true,
       confinedRoot: targetRoot,
       expectedInputBytes: Number(fingerprint.files.nodes.stat.size),
+      maxInputBytes,
+      maxDecompressedBytes,
       signal,
     })) {
       throwIfAborted(signal);
@@ -464,7 +530,15 @@ function logicalNodeRecords({
   })();
 }
 
-function logicalEdgeRecords({ targetRoot, fingerprint, openedFiles, overlay, signal }) {
+function logicalEdgeRecords({
+  targetRoot,
+  fingerprint,
+  openedFiles,
+  overlay,
+  signal,
+  maxInputBytes,
+  maxDecompressedBytes,
+}) {
   return (async function* edges() {
     const eligible = (record) => !overlay.hasRemovedNode(record.source)
       && !overlay.hasRemovedNode(record.target);
@@ -473,6 +547,8 @@ function logicalEdgeRecords({ targetRoot, fingerprint, openedFiles, overlay, sig
       gzip: true,
       confinedRoot: targetRoot,
       expectedInputBytes: Number(fingerprint.files.edges.stat.size),
+      maxInputBytes,
+      maxDecompressedBytes,
       signal,
     })) {
       throwIfAborted(signal);
@@ -599,18 +675,37 @@ async function projectLegacyResidentSidecars({
   maxAttempts = MAX_ATTEMPTS,
   maxOverlayMemoryBytes,
   maxOverlayDiskBytes,
+  maxInputBytes,
+  maxDecompressedBytes,
   _testHooks = {},
 } = {}) {
   throwIfAborted(signal);
   if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10) {
     throw memorySourceError('invalid_request', 'invalid legacy projection attempt limit');
   }
+  resolveMemorySourceReadLimits({ maxInputBytes, maxDecompressedBytes });
   const targetRoot = await fsp.realpath(canonicalRoot);
   const ownsQuota = !scratchQuota;
   const quota = scratchQuota || await createOperationScratchQuota({ operationRoot, signal });
   if (await quota.assertOperationRoot(operationRoot) !== true) {
     throw memorySourceError('source_operation_required', 'exact operation scratch quota required');
   }
+  let cleanupQuota = quota;
+  try {
+    cleanupQuota = getOperationScratchQuotaCleanup(quota);
+  } catch (error) {
+    // Test/compatibility wrappers do not carry the private cleanup capability.
+    // Their normal authority remains usable while its originating signal is live.
+    if (error?.code !== 'invalid_request') throw error;
+  }
+  const sourceLimits = resolveMemorySourceReadLimits({
+    maxInputBytes,
+    maxDecompressedBytes,
+    quotaMaxBytes: quota.maxBytes,
+  });
+  const projectionReadLimits = resolveMemorySourceReadLimits({
+    quotaMaxBytes: quota.maxBytes,
+  });
   const projectionsRoot = path.join(quota.operationRoot, 'source-projections');
   await fsp.mkdir(projectionsRoot, { recursive: true, mode: 0o700 });
   let lastChanged = null;
@@ -624,7 +719,10 @@ async function projectLegacyResidentSidecars({
         const generation = `legacy-${digest.slice(0, 20)}`;
         const revision = safeRevisionFromDigest(digest);
         const projectionRoot = path.join(projectionsRoot, generation);
-        const published = await readPublishedProjection(projectionRoot, targetRoot, before);
+        const published = await readPublishedProjection(projectionRoot, targetRoot, before, {
+          signal,
+          maxReadBytes: projectionReadLimits.maxInputBytes,
+        });
         if (published) {
           throwIfAborted(signal);
           await revalidateLegacyResidentFiles(
@@ -658,6 +756,7 @@ async function projectLegacyResidentSidecars({
             openedFiles: stableSource.openedFiles,
             overlay,
             signal,
+            ...sourceLimits,
           });
           const clusters = createBoundedClusterCounter();
           nodesWriter = await createQuotaBackpressuredJsonlGzipWriter(
@@ -671,6 +770,7 @@ async function projectLegacyResidentSidecars({
             overlay,
             signal,
             clusters,
+            ...sourceLimits,
           }));
           edgesWriter = await createQuotaBackpressuredJsonlGzipWriter(
             path.join(attemptRoot, 'memory-edges.base.jsonl.gz'),
@@ -682,6 +782,7 @@ async function projectLegacyResidentSidecars({
             openedFiles: stableSource.openedFiles,
             overlay,
             signal,
+            ...sourceLimits,
           }));
           await overlay.close();
           throwIfAborted(signal);
@@ -716,7 +817,10 @@ async function projectLegacyResidentSidecars({
             await fsyncDirectory(projectionsRoot);
           } catch (error) {
             if (!['EEXIST', 'ENOTEMPTY'].includes(error.code)) throw error;
-            const winner = await readPublishedProjection(projectionRoot, targetRoot, before);
+            const winner = await readPublishedProjection(projectionRoot, targetRoot, before, {
+              signal,
+              maxReadBytes: projectionReadLimits.maxInputBytes,
+            });
             throwIfAborted(signal);
             if (!winner) {
               throw memorySourceError('invalid_memory_source', 'projection publication conflict');
@@ -745,7 +849,7 @@ async function projectLegacyResidentSidecars({
           await nodesWriter?.cleanup?.().catch(() => {});
           await edgesWriter?.cleanup?.().catch(() => {});
           await removeOwnedAttempt(attemptRoot, attemptIdentity).catch(() => {});
-          await quota.reconcile().catch(() => {});
+          await cleanupQuota.reconcile().catch(() => {});
           throw error;
         }
       } catch (error) {

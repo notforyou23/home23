@@ -210,7 +210,10 @@ test('engine load supports legacy resident sidecars before manifest migration', 
 });
 
 test('legacy resident sidecar save appends delta instead of full manifest rewrite', async () => {
-  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-legacy-sidecar-save-'));
+  const installRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-legacy-sidecar-save-'));
+  const dir = path.join(installRoot, 'brain');
+  await fsp.mkdir(dir);
+  const home23Root = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-legacy-sidecar-home-'));
   await writeJsonlGzAtomic(path.join(dir, 'memory-nodes.jsonl.gz'), [
     { id: 'base', concept: 'base node' },
   ]);
@@ -220,6 +223,7 @@ test('legacy resident sidecar save appends delta instead of full manifest rewrit
 
   const result = await persistMemoryRevision({
     brainDir: dir,
+    home23Root,
     memory,
     writer: {
       readManifest: async () => null,
@@ -235,6 +239,10 @@ test('legacy resident sidecar save appends delta instead of full manifest rewrit
   const deltaText = await fsp.readFile(path.join(dir, 'memory-delta.jsonl'), 'utf8');
   assert.match(deltaText, /"op":"upsert_node"/);
   assert.match(deltaText, /"id":"delta"/);
+  assert.equal(await fsp.stat(path.join(home23Root, 'runtime', 'brain-source-locks'))
+    .then((stat) => stat.isDirectory(), () => false), true);
+  assert.equal(await fsp.stat(path.join(installRoot, '.home23-memory-source-locks'))
+    .then(() => true, () => false), false);
   assert.deepEqual(events, ['captured:1', 'clean-if:1']);
 });
 

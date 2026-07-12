@@ -2,6 +2,7 @@
 
 module.exports = {
   ...require('./contracts.cjs'),
+  ...require('./limits.cjs'),
   ...require('./confined-file.cjs'),
   ...require('./jsonl.cjs'),
   ...require('./manifest.cjs'),
@@ -11,8 +12,10 @@ module.exports = {
   ...require('./pins.cjs'),
   ...require('./operation-context.cjs'),
   ...require('./legacy-projection.cjs'),
+  ...require('./legacy-migration.cjs'),
   ...require('./legacy-snapshot.cjs'),
   ...require('./writer.cjs'),
   ...require('./graph.cjs'),
+  ...require('./pgs-partitions.cjs'),
   ...require('./mcp-tools.cjs'),
 };

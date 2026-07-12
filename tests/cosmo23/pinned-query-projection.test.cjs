@@ -91,7 +91,7 @@ test('large direct query scans portable iterators once and retains bounded recor
   assert.equal(projection.nodes.some(node => String(node.content).includes('bounded canary')), true);
 });
 
-test('oversized records and aggregate retained bytes fail closed', async () => {
+test('oversized and unserializable records fail closed', async () => {
   const oversized = createSyntheticPinnedSource({
     nodeCount: 1,
     edgeCount: 0,
@@ -103,16 +103,95 @@ test('oversized records and aggregate retained bytes fail closed', async () => {
     signal: new AbortController().signal,
   }), error => error.code === 'result_too_large');
 
-  const aggregate = createSyntheticPinnedSource({
+  const circularNode = { id: 'n0' };
+  circularNode.self = circularNode;
+  const unserializable = createSyntheticPinnedSource({
+    nodeCount: 1,
+    edgeCount: 0,
+    nodeFactory: () => circularNode,
+  });
+  await assert.rejects(projectPinnedQuery({
+    sourcePin: unserializable,
+    query: 'x',
+    signal: new AbortController().signal,
+  }), error => error.code === 'source_invalid');
+});
+
+test('aggregate retained bytes keep the deterministic best fitting subset and disclose truncation', async () => {
+  const sourceOptions = {
     nodeCount: 300,
     edgeCount: 0,
     nodeFactory: index => ({ id: `n${index}`, content: `x${'y'.repeat(64 * 1024)}` }),
-  });
-  await assert.rejects(projectPinnedQuery({
-    sourcePin: aggregate,
+  };
+  const project = sourcePin => projectPinnedQuery({
+    sourcePin,
     query: 'x',
     signal: new AbortController().signal,
     limits: { maxProjectionBytes: 2 * 1024 * 1024 },
+  });
+
+  const projection = await project(createSyntheticPinnedSource(sourceOptions));
+  const repeated = await project(createSyntheticPinnedSource(sourceOptions));
+
+  assert.equal(projection.nodes.length > 0 && projection.nodes.length < 300, true);
+  assert.deepEqual(projection.nodes.map(node => node.id), repeated.nodes.map(node => node.id));
+  assert.equal(projection.stats.retainedBytes <= 2 * 1024 * 1024, true);
+  assert.equal(projection.stats.byteBudgetTruncated, true);
+  assert.equal(projection.stats.droppedForByteBudget > 0, true);
+  assert.equal(projection.sourceEvidence.byteBudgetTruncated, true);
+  assert.equal(
+    projection.sourceEvidence.droppedForByteBudget,
+    projection.stats.droppedForByteBudget,
+  );
+});
+
+test('live-shaped small topK query scans large records and retains the highest-ranked fitting candidates', async () => {
+  const nodeCount = 2_048;
+  const content = `live canary ${'z'.repeat(48 * 1024)}`;
+  const records = Array.from({ length: nodeCount }, (_, index) => ({
+    id: `n${index}`,
+    content,
+    salience: index / (nodeCount - 1),
+  }));
+  const largestRecordBytes = Math.max(
+    ...records.map(record => Buffer.byteLength(JSON.stringify(record), 'utf8')),
+  );
+  const maxProjectionBytes = largestRecordBytes * 2;
+  const projection = await projectPinnedQuery({
+    sourcePin: createSyntheticPinnedSource({
+      nodeCount,
+      edgeCount: 0,
+      nodeFactory: index => records[index],
+    }),
+    query: 'live canary',
+    signal: new AbortController().signal,
+    limits: {
+      maxNodes: 8,
+      maxEdges: 1,
+      maxRecordBytes: 64 * 1024,
+      maxProjectionBytes,
+    },
+  });
+
+  assert.deepEqual(projection.nodes.map(node => node.id), ['n2047', 'n2046']);
+  assert.equal(projection.stats.nodesScanned, nodeCount);
+  assert.equal(projection.stats.nodesRetained, 2);
+  assert.equal(projection.stats.retainedBytes <= maxProjectionBytes, true);
+  assert.equal(projection.stats.byteBudgetTruncated, true);
+  assert.equal(projection.stats.droppedForByteBudget > 0, true);
+});
+
+test('projection fails closed when no valid candidate fits the aggregate byte budget', async () => {
+  const sourcePin = createSyntheticPinnedSource({
+    nodeCount: 2,
+    edgeCount: 0,
+    nodeFactory: index => ({ id: `n${index}`, content: 'x'.repeat(8 * 1024) }),
+  });
+  await assert.rejects(projectPinnedQuery({
+    sourcePin,
+    query: 'x',
+    signal: new AbortController().signal,
+    limits: { maxRecordBytes: 16 * 1024, maxProjectionBytes: 1024 },
   }), error => error.code === 'result_too_large');
 });
 

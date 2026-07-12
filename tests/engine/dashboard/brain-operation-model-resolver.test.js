@@ -142,10 +142,23 @@ test('validates bounded non-provider query and PGS options exactly', () => {
   });
   assert.deepEqual(query.parameters.priorContext, priorContext);
   const pgs = resolver.resolve('pgs', {
-    query: 'x', mode: 'full', pgsMode: 'full',
-    pgsConfig: { sweepFraction: 0.25 }, priorContext, allowActions: false,
+    query: 'x', mode: 'full', pgsMode: 'continue', pgsLevel: 'sample',
+    pgsConfig: { sweepFraction: 0.25 },
+    continueFromOperationId: `brop_${'D'.repeat(32)}`,
   });
   assert.deepEqual(pgs.parameters.pgsConfig, { sweepFraction: 0.25 });
+  assert.equal(pgs.parameters.pgsMode, 'continue');
+  assert.equal(pgs.parameters.pgsLevel, 'sample');
+  assert.equal(pgs.parameters.continueFromOperationId, `brop_${'D'.repeat(32)}`);
+
+  const targeted = resolver.resolve('pgs', {
+    query: 'x', pgsMode: 'targeted', pgsLevel: 'full',
+    pgsConfig: { sweepFraction: 1 }, targetPartitionIds: ['h-beta', 'c-alpha'],
+  });
+  assert.deepEqual(targeted.parameters.targetPartitionIds, ['c-alpha', 'h-beta']);
+  assert.throws(() => resolver.resolve('pgs', {
+    query: 'x', pgsMode: 'fresh', pgsLevel: 'skim', priorContext,
+  }), { code: 'invalid_request' });
 });
 
 test('prior context uses the public combined 20k contract without a hidden query sub-cap', () => {

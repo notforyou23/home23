@@ -6,6 +6,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const { PGS_OPERATION_LIMITS } = require('../../lib/brain-operation-limits');
+const { partitionIdForNode } = require('../../../shared/memory-source/pgs-partitions.cjs');
+const { serializeProviderRecord } = require('../../lib/provider-record-sanitizer');
 const {
   canonicalJson,
   sourceDescriptorDigest,
@@ -14,19 +16,36 @@ const {
   getOperationScratchQuotaCleanup,
 } = require('../../../shared/memory-source/scratch-quota.cjs');
 
-const SCHEMA_VERSION = 1;
+// Version 3 binds reusable sweeps to the exact query and scope policy, and
+// gives every work unit a stable partition-stratified coverage ordinal.
+const SCHEMA_VERSION = 3;
+const QUERY_NORMALIZATION_VERSION = 1;
+const SWEEP_PROMPT_CONTRACT_VERSION = 1;
+const COVERAGE_SELECTION_POLICY_VERSION = 1;
+const MAX_TARGET_PARTITIONS = 256;
+const COVERAGE_LEVELS = Object.freeze({
+  skim: 0.1,
+  sample: 0.25,
+  deep: 0.5,
+  full: 1,
+});
 const MAX_METADATA_VALUE_BYTES = 128 * 1024;
 const MAX_LIST_SCALAR_BYTES = 4 * 1024;
 const METADATA_KEYS = Object.freeze([
+  'canonicalQuery',
   'completeProjection',
+  'coverageSelectionPolicyVersion',
   'descriptorDigest',
   'edgeCount',
   'limits',
   'nodeCount',
   'pgsSweepModel',
   'pgsSweepProvider',
+  'queryDigest',
+  'queryNormalizationVersion',
   'schemaVersion',
   'sourceRevision',
+  'sweepPromptContractVersion',
 ]);
 
 function typed(code, message, retryable = false, details = {}) {
@@ -83,18 +102,6 @@ function safeScalar(value) {
     || Number.isSafeInteger(value);
 }
 
-function partitionIdForNode(node, id) {
-  const candidate = node.clusterId ?? node.cluster ?? node.partitionId;
-  if (safeScalar(candidate) && /^[A-Za-z0-9._-]+$/.test(String(candidate))) {
-    return `c-${String(candidate)}`;
-  }
-  if (safeScalar(candidate)) {
-    return `c-x${crypto.createHash('sha256').update(String(candidate)).digest('hex').slice(0, 16)}`;
-  }
-  const hash = crypto.createHash('sha256').update(String(id)).digest('hex');
-  return `h-${Number(BigInt(`0x${hash.slice(0, 16)}`) % 256n)}`;
-}
-
 function recordId(record, kind) {
   const value = kind === 'node'
     ? (record.id ?? record.nodeId ?? record.key)
@@ -112,17 +119,10 @@ function edgeEndpoint(record, side) {
 }
 
 function serializeRecord(record, maxBytes, kind) {
-  if (!record || typeof record !== 'object' || Array.isArray(record)) {
-    throw typed('source_invalid', `PGS ${kind} record must be an object`);
-  }
-  let json;
-  try { json = JSON.stringify(record); } catch { json = null; }
-  if (typeof json !== 'string') throw typed('source_invalid', `PGS ${kind} record is not serializable`);
-  const bytes = Buffer.byteLength(json, 'utf8');
-  if (bytes > maxBytes) {
-    throw typed('result_too_large', `PGS ${kind} record exceeds the byte limit`);
-  }
-  return { json, bytes };
+  return serializeProviderRecord(record, {
+    maxBytes,
+    label: `PGS ${kind} record`,
+  });
 }
 
 function requireDatabase() {
@@ -389,6 +389,8 @@ function createSchema(db) {
     CREATE TABLE work_units (
       work_unit_id TEXT PRIMARY KEY,
       partition_id TEXT NOT NULL,
+      partition_unit_index INTEGER NOT NULL CHECK(partition_unit_index >= 0),
+      coverage_ordinal INTEGER UNIQUE,
       first_ordinal INTEGER NOT NULL,
       last_ordinal INTEGER NOT NULL,
       node_count INTEGER NOT NULL,
@@ -407,6 +409,23 @@ function createSchema(db) {
       output_json TEXT NOT NULL,
       completed_at TEXT NOT NULL
     );
+    CREATE TABLE attempt_scopes (
+      attempt_id TEXT PRIMARY KEY,
+      scope_kind TEXT NOT NULL CHECK(scope_kind IN ('level','targeted')),
+      coverage_level TEXT,
+      coverage_fraction REAL,
+      target_partition_ids_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE attempt_scope_work_units (
+      attempt_id TEXT NOT NULL,
+      work_unit_id TEXT NOT NULL,
+      PRIMARY KEY(attempt_id, work_unit_id),
+      FOREIGN KEY(attempt_id) REFERENCES attempt_scopes(attempt_id),
+      FOREIGN KEY(work_unit_id) REFERENCES work_units(work_unit_id)
+    );
+    CREATE INDEX attempt_scope_work_lookup
+      ON attempt_scope_work_units(work_unit_id, attempt_id);
   `);
 }
 
@@ -449,9 +468,36 @@ function metadataObject(db) {
   return result;
 }
 
-function bindingMetadata({ sourceRevision, descriptorDigest, limits, sweepPair }) {
+function canonicalQueryBinding(query) {
+  if (typeof query !== 'string' || !query.trim()) {
+    throw typed('invalid_request', 'PGS query binding is required');
+  }
+  const bytes = Buffer.from(query, 'utf8');
+  if (bytes.length > MAX_METADATA_VALUE_BYTES - 2) {
+    throw typed('result_too_large', 'PGS query binding exceeds the metadata byte limit');
+  }
+  return Object.freeze({
+    canonicalQuery: query,
+    queryDigest: crypto.createHash('sha256').update(bytes).digest('hex'),
+  });
+}
+
+function bindingMetadata({
+  sourceRevision,
+  descriptorDigest,
+  limits,
+  sweepPair,
+  query,
+  queryNormalizationVersion,
+  sweepPromptContractVersion,
+  coverageSelectionPolicyVersion,
+}) {
   return {
     schemaVersion: SCHEMA_VERSION,
+    ...canonicalQueryBinding(query),
+    queryNormalizationVersion,
+    sweepPromptContractVersion,
+    coverageSelectionPolicyVersion,
     sourceRevision,
     descriptorDigest,
     completeProjection: true,
@@ -464,7 +510,9 @@ function bindingMetadata({ sourceRevision, descriptorDigest, limits, sweepPair }
 function sameBinding(actual, expected) {
   for (const key of [
     'schemaVersion', 'sourceRevision', 'descriptorDigest', 'completeProjection',
-    'pgsSweepProvider', 'pgsSweepModel',
+    'pgsSweepProvider', 'pgsSweepModel', 'canonicalQuery', 'queryDigest',
+    'queryNormalizationVersion', 'sweepPromptContractVersion',
+    'coverageSelectionPolicyVersion',
   ]) {
     if (actual[key] !== expected[key]) return false;
   }
@@ -477,7 +525,12 @@ async function openPinnedPGSStore({
   sourcePin,
   scratchDir,
   scratchQuota,
+  sessionStorage,
   pgsSweep,
+  query,
+  queryNormalizationVersion = QUERY_NORMALIZATION_VERSION,
+  sweepPromptContractVersion = SWEEP_PROMPT_CONTRACT_VERSION,
+  coverageSelectionPolicyVersion = COVERAGE_SELECTION_POLICY_VERSION,
   signal,
   limits: limitOverrides = {},
   statfsImpl = fsp.statfs,
@@ -493,35 +546,79 @@ async function openPinnedPGSStore({
     throw typed('source_invalid', 'PGS source revision is invalid');
   }
   const sweepPair = exactPair(pgsSweep, 'pgsSweep');
+  if (!Number.isSafeInteger(queryNormalizationVersion) || queryNormalizationVersion <= 0
+      || !Number.isSafeInteger(sweepPromptContractVersion) || sweepPromptContractVersion <= 0
+      || !Number.isSafeInteger(coverageSelectionPolicyVersion)
+      || coverageSelectionPolicyVersion <= 0) {
+    throw typed('invalid_request', 'PGS binding contract version is invalid');
+  }
   const limits = lowerLimits(limitOverrides);
   throwIfAborted(signal);
   const descriptorDigest = sourceDescriptorDigest(sourcePin.descriptor);
   const component = `${descriptorDigest}-r${sourceRevision}`;
-  const boundary = await captureOperationScratchBoundary(scratchDir, scratchQuota);
-  const { scratch } = boundary;
-  const scratchAnchor = boundary.directories.at(-1);
+  const usesSessionStorage = sessionStorage !== undefined;
+  if (usesSessionStorage && (!sessionStorage || typeof sessionStorage !== 'object'
+      || typeof sessionStorage.databasePath !== 'string'
+      || path.resolve(sessionStorage.databasePath) !== sessionStorage.databasePath
+      || !Number.isSafeInteger(sessionStorage.quotaMaxBytes)
+      || sessionStorage.quotaMaxBytes <= 0
+      || typeof sessionStorage.verify !== 'function'
+      || typeof sessionStorage.reconcileQuota !== 'function'
+      || typeof sessionStorage.close !== 'function')) {
+    throw typed('invalid_request', 'PGS session storage capability is invalid');
+  }
+  let boundary = null;
+  let scratch;
+  let scratchAnchor;
   let pgsAnchor;
   let projectionAnchor;
-  try {
-    await assertFreeSpace(scratch, limits.minFreeScratchBytes, statfsImpl);
-    throwIfAborted(signal);
-    pgsAnchor = await ensureExactScratchChild(boundary, scratchAnchor, 'pgs');
-    projectionAnchor = await ensureExactScratchChild(boundary, pgsAnchor, component);
-  } catch (error) {
-    closeScratchBoundary(boundary);
-    throw error;
+  let pgsRoot;
+  let projectionRoot;
+  let databasePath;
+  if (usesSessionStorage) {
+    await sessionStorage.verify();
+    await sessionStorage.reconcileQuota();
+    databasePath = sessionStorage.databasePath;
+    projectionRoot = path.dirname(databasePath);
+    scratch = projectionRoot;
+    await assertFreeSpace(projectionRoot, limits.minFreeScratchBytes, statfsImpl);
+    await sessionStorage.verify();
+  } else {
+    boundary = await captureOperationScratchBoundary(scratchDir, scratchQuota);
+    scratch = boundary.scratch;
+    scratchAnchor = boundary.directories.at(-1);
+    try {
+      await assertFreeSpace(scratch, limits.minFreeScratchBytes, statfsImpl);
+      throwIfAborted(signal);
+      pgsAnchor = await ensureExactScratchChild(boundary, scratchAnchor, 'pgs');
+      projectionAnchor = await ensureExactScratchChild(boundary, pgsAnchor, component);
+    } catch (error) {
+      closeScratchBoundary(boundary);
+      throw error;
+    }
+    pgsRoot = pgsAnchor.path;
+    projectionRoot = projectionAnchor.path;
+    databasePath = path.join(projectionRoot, 'projection.sqlite');
   }
-  const pgsRoot = pgsAnchor.path;
-  const projectionRoot = projectionAnchor.path;
-  const databasePath = path.join(projectionRoot, 'projection.sqlite');
   const Database = requireDatabase();
-  const expectedBinding = bindingMetadata({ sourceRevision, descriptorDigest, limits, sweepPair });
-  const scratchQuotaCleanup = getOperationScratchQuotaCleanup(scratchQuota);
+  const expectedBinding = bindingMetadata({
+    sourceRevision,
+    descriptorDigest,
+    limits,
+    sweepPair,
+    query,
+    queryNormalizationVersion,
+    sweepPromptContractVersion,
+    coverageSelectionPolicyVersion,
+  });
+  const scratchQuotaCleanup = usesSessionStorage
+    ? null
+    : getOperationScratchQuotaCleanup(scratchQuota);
   let db = null;
   let databaseAnchor = null;
   let abortListener = null;
   let reused = false;
-  let projectionMayClean = projectionAnchor.created === true;
+  let projectionMayClean = !usesSessionStorage && projectionAnchor.created === true;
   let buildStats = { maxTransactionRecords: 0, maxTransactionBytes: 0, maxRetainedRecords: 0 };
 
   function closeDb({ closeAnchor = false } = {}) {
@@ -606,25 +703,50 @@ async function openPinnedPGSStore({
 
   async function checkpoint({ cleanup = false } = {}) {
     if (!cleanup) throwIfAborted(signal);
-    await verifyScratchBoundary(boundary, { cleanup });
+    if (usesSessionStorage) {
+      await sessionStorage.verify();
+      await sessionStorage.reconcileQuota();
+    } else {
+      await verifyScratchBoundary(boundary, { cleanup });
+    }
     verifyExactRegularFileSync(databaseAnchor);
     db.pragma('wal_checkpoint(PASSIVE)');
-    const bytes = await (cleanup ? scratchQuotaCleanup.reconcile() : scratchQuota.reconcile());
-    await verifyScratchBoundary(boundary, { cleanup });
+    const reconciled = usesSessionStorage
+      ? await sessionStorage.reconcileQuota()
+      : await (cleanup ? scratchQuotaCleanup.reconcile() : scratchQuota.reconcile());
+    if (usesSessionStorage) await sessionStorage.verify();
+    else await verifyScratchBoundary(boundary, { cleanup });
     verifyExactRegularFileSync(databaseAnchor);
-    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > limits.maxScratchBytes) {
-      throw typed('result_too_large', 'PGS scratch quota exceeded');
+    const bytes = usesSessionStorage ? reconciled?.bytes : reconciled;
+    const quotaLimit = usesSessionStorage
+      ? Math.min(limits.maxScratchBytes, sessionStorage.quotaMaxBytes)
+      : limits.maxScratchBytes;
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > quotaLimit) {
+      throw typed(
+        usesSessionStorage ? 'session_quota_exceeded' : 'result_too_large',
+        usesSessionStorage ? 'PGS session quota exceeded' : 'PGS scratch quota exceeded',
+      );
     }
     await assertFreeSpace(scratch, limits.minFreeScratchBytes, statfsImpl);
     if (!cleanup) throwIfAborted(signal);
   }
 
   async function openAnchoredDatabase() {
-    await verifyScratchBoundary(boundary);
+    if (usesSessionStorage) {
+      await sessionStorage.verify();
+      await sessionStorage.reconcileQuota();
+    } else {
+      await verifyScratchBoundary(boundary);
+    }
     verifyExactRegularFileSync(databaseAnchor);
     db = new Database(databaseAnchor.path, { fileMustExist: true });
     verifyExactRegularFileSync(databaseAnchor);
-    await verifyScratchBoundary(boundary);
+    if (usesSessionStorage) {
+      await sessionStorage.reconcileQuota();
+      await sessionStorage.verify();
+    } else {
+      await verifyScratchBoundary(boundary);
+    }
   }
 
   async function publishNewDatabase() {
@@ -658,35 +780,75 @@ async function openPinnedPGSStore({
 
   try {
     const existingStat = await lstatOptional(databasePath);
+    if (usesSessionStorage && !existingStat) {
+      throw typed('session_state_invalid', 'PGS session database is unavailable');
+    }
+    let freshSessionDatabase = false;
     if (existingStat) {
       databaseAnchor = captureExactRegularFileSync(databasePath);
-      projectionMayClean = true;
+      projectionMayClean = !usesSessionStorage;
       let bindingMatches = false;
-      try {
-        await openAnchoredDatabase();
-        bindingMatches = sameBinding(metadataObject(db), expectedBinding);
-      } catch (error) {
-        if (error?.code === 'invalid_request') throw error;
+      freshSessionDatabase = usesSessionStorage && existingStat.size === 0n;
+      if (!freshSessionDatabase) {
+        try {
+          await openAnchoredDatabase();
+          const schemaRow = db.prepare("SELECT value FROM metadata WHERE key = 'schemaVersion'").get();
+          let storedSchemaVersion = null;
+          try { storedSchemaVersion = JSON.parse(schemaRow?.value); } catch {}
+          if (storedSchemaVersion !== SCHEMA_VERSION) {
+            throw typed(
+              'pgs_schema_unsupported',
+              `PGS schema v${String(storedSchemaVersion ?? 'unknown')} is not reusable as v${SCHEMA_VERSION}`,
+            );
+          }
+          bindingMatches = sameBinding(metadataObject(db), expectedBinding);
+          if (!bindingMatches) {
+            throw typed('pgs_binding_mismatch', 'PGS session binding does not match this request');
+          }
+        } catch (error) {
+          if (usesSessionStorage) {
+            if (['invalid_request', 'pgs_schema_unsupported', 'pgs_binding_mismatch']
+              .includes(error?.code)) throw error;
+            throw typed(
+              'pgs_projection_invalid',
+              'PGS session database is unreadable',
+              false,
+              { cause: error },
+            );
+          }
+          if (['invalid_request', 'pgs_schema_unsupported', 'pgs_binding_mismatch']
+            .includes(error?.code)) throw error;
+        }
       }
       if (bindingMatches) {
         reused = true;
         projectionMayClean = false;
-      } else {
+      } else if (!freshSessionDatabase) {
         await removeProjection({ recreate: true });
       }
     }
 
     if (!reused) {
-      projectionMayClean = true;
-      const workingDatabasePath = path.join(
-        projectionRoot,
-        `.projection.sqlite.${process.pid}.${crypto.randomUUID()}.tmp`,
-      );
-      databaseAnchor = captureExactRegularFileSync(workingDatabasePath, { create: true });
-      await openAnchoredDatabase();
-      configureDb();
+      if (usesSessionStorage) {
+        projectionMayClean = false;
+        if (!databaseAnchor) databaseAnchor = captureExactRegularFileSync(databasePath);
+        await openAnchoredDatabase();
+        configureDb();
+      } else {
+        projectionMayClean = true;
+        const workingDatabasePath = path.join(
+          projectionRoot,
+          `.projection.sqlite.${process.pid}.${crypto.randomUUID()}.tmp`,
+        );
+        databaseAnchor = captureExactRegularFileSync(workingDatabasePath, { create: true });
+        await openAnchoredDatabase();
+        configureDb();
+      }
       const pageSize = db.pragma('page_size', { simple: true });
-      db.pragma(`max_page_count = ${Math.max(1, Math.floor(limits.maxScratchBytes / pageSize))}`);
+      const databaseQuota = usesSessionStorage
+        ? Math.min(limits.maxScratchBytes, sessionStorage.quotaMaxBytes)
+        : limits.maxScratchBytes;
+      db.pragma(`max_page_count = ${Math.max(1, Math.floor(databaseQuota / pageSize))}`);
       createSchema(db);
 
       const insertNode = db.prepare(
@@ -756,16 +918,18 @@ async function openPinnedPGSStore({
 
       const insertWorkUnit = db.prepare(`
         INSERT INTO work_units(
-          work_unit_id, partition_id, first_ordinal, last_ordinal,
+          work_unit_id, partition_id, partition_unit_index,
+          first_ordinal, last_ordinal,
           node_count, context_chars, state
-        ) VALUES (?, ?, ?, ?, ?, ?, 'pending')
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
       `);
       const partitions = db.prepare(
         'SELECT DISTINCT partition_id FROM nodes ORDER BY partition_id',
       ).all();
       const workTransaction = db.transaction(rows => {
         for (const row of rows) insertWorkUnit.run(
-          row.workUnitId, row.partitionId, row.firstOrdinal, row.lastOrdinal,
+          row.workUnitId, row.partitionId, row.partitionUnitIndex,
+          row.firstOrdinal, row.lastOrdinal,
           row.nodeCount, row.contextChars,
         );
       });
@@ -776,14 +940,21 @@ async function openPinnedPGSStore({
         let lastOrdinal = -1;
         while (true) {
           const page = db.prepare(`
-            SELECT ordinal, length(json) AS chars FROM nodes
+            SELECT ordinal, length(CAST(json AS BLOB)) AS bytes FROM nodes
             WHERE partition_id = ? AND ordinal > ?
             ORDER BY ordinal LIMIT ?
           `).all(partition.partition_id, lastOrdinal, limits.maxTransactionRecords);
           if (!page.length) break;
           for (const node of page) {
+            if (!Number.isSafeInteger(node.bytes) || node.bytes < 0
+                || node.bytes > limits.maxContextCharsPerWorkUnit) {
+              throw typed(
+                'result_too_large',
+                'PGS source record cannot fit one work-unit context',
+              );
+            }
             const mustSplit = unit && (unit.nodeCount >= limits.maxNodesPerWorkUnit
-              || unit.contextChars + node.chars > limits.maxContextCharsPerWorkUnit);
+              || unit.contextChars + node.bytes > limits.maxContextCharsPerWorkUnit);
             if (mustSplit) {
               pendingRows.push(unit);
               unit = null;
@@ -792,6 +963,7 @@ async function openPinnedPGSStore({
               unit = {
                 workUnitId: `p-${partition.partition_id}-u${String(unitIndex).padStart(4, '0')}`,
                 partitionId: partition.partition_id,
+                partitionUnitIndex: unitIndex,
                 firstOrdinal: node.ordinal,
                 lastOrdinal: node.ordinal,
                 nodeCount: 0,
@@ -801,7 +973,7 @@ async function openPinnedPGSStore({
             }
             unit.lastOrdinal = node.ordinal;
             unit.nodeCount += 1;
-            unit.contextChars += node.chars;
+            unit.contextChars += node.bytes;
             lastOrdinal = node.ordinal;
             buildStats.maxRetainedRecords = Math.max(buildStats.maxRetainedRecords, unit.nodeCount);
           }
@@ -816,6 +988,39 @@ async function openPinnedPGSStore({
           workTransaction(pendingRows);
           await checkpoint();
         }
+      }
+
+      const assignCoverageOrdinal = db.prepare(
+        'UPDATE work_units SET coverage_ordinal = ? WHERE work_unit_id = ?',
+      );
+      const orderedWorkUnitPage = db.prepare(`
+        SELECT work_unit_id, partition_id, partition_unit_index FROM work_units
+        WHERE partition_unit_index > ?
+          OR (partition_unit_index = ? AND partition_id > ?)
+        ORDER BY partition_unit_index, partition_id
+        LIMIT ?
+      `);
+      let coverageOrdinal = 0;
+      let lastPartitionUnitIndex = -1;
+      let lastPartitionId = '';
+      while (true) {
+        const rows = orderedWorkUnitPage.all(
+          lastPartitionUnitIndex,
+          lastPartitionUnitIndex,
+          lastPartitionId,
+          limits.maxTransactionRecords,
+        );
+        if (!rows.length) break;
+        db.transaction((page) => {
+          for (const row of page) {
+            assignCoverageOrdinal.run(coverageOrdinal, row.work_unit_id);
+            coverageOrdinal += 1;
+          }
+        })(rows);
+        const last = rows.at(-1);
+        lastPartitionUnitIndex = last.partition_unit_index;
+        lastPartitionId = last.partition_id;
+        await checkpoint();
       }
 
       const metadata = {
@@ -834,13 +1039,18 @@ async function openPinnedPGSStore({
         upsertMetadata.run('completeProjection', JSON.stringify(true));
       })();
       await checkpoint();
-      await publishNewDatabase();
+      if (!usesSessionStorage) await publishNewDatabase();
     } else {
       configureDb();
       await checkpoint();
     }
   } catch (error) {
     const cancellation = signal?.aborted ? signal.reason : null;
+    if (['pgs_schema_unsupported', 'pgs_binding_mismatch'].includes(error?.code)) {
+      closeDb({ closeAnchor: true });
+      closeScratchBoundary(boundary);
+      throw error;
+    }
     if (projectionMayClean) await removeProjection().catch(() => {});
     else closeDb({ closeAnchor: true });
     closeScratchBoundary(boundary);
@@ -852,7 +1062,7 @@ async function openPinnedPGSStore({
   let closed = false;
   function assertOpen() {
     if (closed || !db?.open) throw typed('pgs_store_closed', 'PGS store is closed');
-    verifyScratchBoundarySync(boundary);
+    if (!usesSessionStorage) verifyScratchBoundarySync(boundary);
     verifyExactRegularFileSync(databaseAnchor);
   }
 
@@ -861,6 +1071,204 @@ async function openPinnedPGSStore({
       throw typed('invalid_request', 'PGS attempt ID is invalid');
     }
     return value;
+  }
+
+  function validateTargetPartitionIds(value) {
+    if (!Array.isArray(value) || value.length < 1 || value.length > MAX_TARGET_PARTITIONS) {
+      throw typed('invalid_request', 'PGS target partition list is invalid');
+    }
+    const targets = value.map((partitionId) => {
+      if (typeof partitionId !== 'string'
+          || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(partitionId)) {
+        throw typed('invalid_request', 'PGS target partition ID is invalid');
+      }
+      return partitionId;
+    });
+    if (new Set(targets).size !== targets.length) {
+      throw typed('invalid_request', 'PGS target partition IDs must be unique');
+    }
+    targets.sort();
+    const exists = db.prepare(
+      'SELECT 1 AS present FROM work_units WHERE partition_id = ? LIMIT 1',
+    );
+    for (const partitionId of targets) {
+      if (!exists.get(partitionId)) {
+        throw typed('target_not_found', `PGS target partition does not exist: ${partitionId}`);
+      }
+    }
+    return Object.freeze(targets);
+  }
+
+  function parseScopeRow(row) {
+    if (!row) throw typed('pgs_scope_required', 'PGS attempt scope is not planned');
+    let targetPartitionIds;
+    try { targetPartitionIds = JSON.parse(row.target_partition_ids_json); } catch { targetPartitionIds = null; }
+    if (!Array.isArray(targetPartitionIds)) {
+      throw typed('pgs_projection_invalid', 'PGS attempt scope is invalid');
+    }
+    return {
+      attemptId: row.attempt_id,
+      scopeKind: row.scope_kind,
+      coverageLevel: row.coverage_level,
+      coverageFraction: row.coverage_fraction,
+      targetPartitionIds,
+    };
+  }
+
+  function scopeSummary(attemptId) {
+    validateAttemptId(attemptId);
+    const scope = parseScopeRow(
+      db.prepare('SELECT * FROM attempt_scopes WHERE attempt_id = ?').get(attemptId),
+    );
+    const counts = db.prepare(`
+      SELECT COUNT(*) AS scope_work_units,
+        SUM(CASE WHEN w.state = 'complete' THEN 1 ELSE 0 END) AS scope_successful_work_units,
+        SUM(CASE WHEN w.state = 'pending' THEN 1 ELSE 0 END) AS scope_pending_work_units
+      FROM attempt_scope_work_units s
+      JOIN work_units w ON w.work_unit_id = s.work_unit_id
+      WHERE s.attempt_id = ?
+    `).get(attemptId);
+    const globalCoveredWorkUnits = db.prepare(
+      "SELECT COUNT(*) AS count FROM work_units WHERE state = 'complete'",
+    ).get().count;
+    const globalPendingWorkUnits = db.prepare(
+      "SELECT COUNT(*) AS count FROM work_units WHERE state = 'pending'",
+    ).get().count;
+    const scopeWorkUnits = counts.scope_work_units;
+    const scopeSuccessfulWorkUnits = counts.scope_successful_work_units || 0;
+    const scopePendingWorkUnits = counts.scope_pending_work_units || 0;
+    return Object.freeze({
+      ...scope,
+      scopeWorkUnits,
+      scopeSuccessfulWorkUnits,
+      scopePendingWorkUnits,
+      scopeComplete: scopeWorkUnits > 0 && scopePendingWorkUnits === 0,
+      globalCoveredWorkUnits,
+      globalPendingWorkUnits,
+      fullCoverage: globalPendingWorkUnits === 0,
+    });
+  }
+
+  function planScope({
+    attemptId,
+    coverageLevel,
+    coverageFraction,
+    targetPartitionIds,
+  } = {}) {
+    assertOpen();
+    validateAttemptId(attemptId);
+    const existing = db.prepare('SELECT * FROM attempt_scopes WHERE attempt_id = ?').get(attemptId);
+    if (existing) return scopeSummary(attemptId);
+    const targeted = targetPartitionIds !== undefined;
+    let scopeKind;
+    let normalizedLevel = null;
+    let normalizedFraction = null;
+    let targets = Object.freeze([]);
+    if (targeted) {
+      if (!Object.hasOwn(COVERAGE_LEVELS, coverageLevel)
+          || COVERAGE_LEVELS[coverageLevel] !== coverageFraction) {
+        throw typed('invalid_request', 'Targeted PGS coverage level and fraction do not match');
+      }
+      scopeKind = 'targeted';
+      normalizedLevel = coverageLevel;
+      normalizedFraction = coverageFraction;
+      targets = validateTargetPartitionIds(targetPartitionIds);
+    } else {
+      if (!Object.hasOwn(COVERAGE_LEVELS, coverageLevel)
+          || COVERAGE_LEVELS[coverageLevel] !== coverageFraction) {
+        throw typed('invalid_request', 'PGS coverage level and fraction do not match');
+      }
+      scopeKind = 'level';
+      normalizedLevel = coverageLevel;
+      normalizedFraction = coverageFraction;
+    }
+    const priorKinds = db.prepare('SELECT DISTINCT scope_kind FROM attempt_scopes').all();
+    if (priorKinds.some(row => row.scope_kind !== scopeKind)) {
+      throw typed('pgs_scope_non_monotonic', 'PGS session scope kind cannot change');
+    }
+    if (scopeKind === 'level') {
+      const prior = db.prepare(
+        "SELECT MAX(coverage_fraction) AS fraction FROM attempt_scopes WHERE scope_kind = 'level'",
+      ).get();
+      if (typeof prior.fraction === 'number' && normalizedFraction < prior.fraction) {
+        throw typed('pgs_scope_non_monotonic', 'PGS coverage level cannot shrink');
+      }
+    } else {
+      const required = new Set();
+      let priorFraction = null;
+      for (const row of db.prepare(
+        `SELECT target_partition_ids_json, coverage_fraction
+         FROM attempt_scopes WHERE scope_kind = 'targeted'`,
+      ).iterate()) {
+        let prior;
+        try { prior = JSON.parse(row.target_partition_ids_json); } catch { prior = null; }
+        if (!Array.isArray(prior)) throw typed('pgs_projection_invalid', 'PGS target scope is invalid');
+        prior.forEach(partitionId => required.add(partitionId));
+        if (typeof row.coverage_fraction === 'number') {
+          priorFraction = priorFraction === null
+            ? row.coverage_fraction
+            : Math.max(priorFraction, row.coverage_fraction);
+        }
+      }
+      if ([...required].some(partitionId => !targets.includes(partitionId))) {
+        throw typed('pgs_scope_non_monotonic', 'PGS target scope cannot remove prior targets');
+      }
+      if (priorFraction !== null && normalizedFraction < priorFraction) {
+        throw typed('pgs_scope_non_monotonic', 'PGS targeted coverage level cannot shrink');
+      }
+    }
+    const insertScope = db.prepare(`
+      INSERT INTO attempt_scopes(
+        attempt_id, scope_kind, coverage_level, coverage_fraction,
+        target_partition_ids_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    db.transaction(() => {
+      insertScope.run(
+        attemptId,
+        scopeKind,
+        normalizedLevel,
+        normalizedFraction,
+        JSON.stringify(targets),
+        new Date(clock.now()).toISOString(),
+      );
+      if (scopeKind === 'level') {
+        const total = db.prepare('SELECT COUNT(*) AS count FROM work_units').get().count;
+        const scopeCount = Math.ceil(total * normalizedFraction);
+        db.prepare(`
+          INSERT INTO attempt_scope_work_units(attempt_id, work_unit_id)
+          SELECT ?, work_unit_id FROM work_units
+          WHERE coverage_ordinal < ? ORDER BY coverage_ordinal
+        `).run(attemptId, scopeCount);
+      } else {
+        const placeholders = targets.map(() => '?').join(',');
+        const targetTotal = db.prepare(`
+          SELECT COUNT(*) AS count FROM work_units
+          WHERE partition_id IN (${placeholders})
+        `).get(...targets).count;
+        const scopeCount = Math.ceil(targetTotal * normalizedFraction);
+        db.prepare(`
+          INSERT INTO attempt_scope_work_units(attempt_id, work_unit_id)
+          SELECT ?, work_unit_id FROM work_units
+          WHERE partition_id IN (${placeholders}) ORDER BY coverage_ordinal LIMIT ?
+        `).run(attemptId, ...targets, scopeCount);
+        db.prepare(`
+          INSERT OR IGNORE INTO attempt_scope_work_units(attempt_id, work_unit_id)
+          SELECT ?, prior.work_unit_id
+          FROM attempt_scope_work_units prior
+          JOIN attempt_scopes attempts ON attempts.attempt_id = prior.attempt_id
+          WHERE attempts.scope_kind = 'targeted' AND prior.attempt_id <> ?
+        `).run(attemptId, attemptId);
+      }
+    })();
+    return scopeSummary(attemptId);
+  }
+
+  function ensureAttemptScope(attemptId) {
+    const row = db.prepare('SELECT 1 AS present FROM attempt_scopes WHERE attempt_id = ?').get(attemptId);
+    if (!row) {
+      planScope({ attemptId, coverageLevel: 'full', coverageFraction: 1 });
+    }
   }
 
   const api = {
@@ -874,16 +1282,42 @@ async function openPinnedPGSStore({
       edgeCount: db.prepare('SELECT COUNT(*) AS count FROM edges').get().count,
       workUnitCount: db.prepare('SELECT COUNT(*) AS count FROM work_units').get().count,
     }),
-    snapshotPendingWorkUnits({ attemptId, limit = limits.maxSelectedWorkUnits } = {}) {
+    planScope,
+    getScopeSummary(attemptId) {
+      assertOpen();
+      return scopeSummary(attemptId);
+    },
+    snapshotPendingWorkUnits({
+      attemptId,
+      limit = limits.maxSelectedWorkUnits,
+      afterWorkUnitId,
+    } = {}) {
       assertOpen();
       validateAttemptId(attemptId);
+      ensureAttemptScope(attemptId);
       if (!Number.isSafeInteger(limit) || limit <= 0 || limit > limits.maxSelectedWorkUnits) {
         throw typed('invalid_request', 'PGS pending snapshot limit is invalid');
       }
+      let afterCoverageOrdinal = -1;
+      if (afterWorkUnitId !== undefined) {
+        if (typeof afterWorkUnitId !== 'string' || !afterWorkUnitId) {
+          throw typed('invalid_request', 'PGS pending snapshot cursor is invalid');
+        }
+        const cursor = db.prepare(
+          'SELECT coverage_ordinal FROM work_units WHERE work_unit_id = ?',
+        ).get(afterWorkUnitId);
+        if (!cursor || !Number.isSafeInteger(cursor.coverage_ordinal)) {
+          throw typed('invalid_request', 'PGS pending snapshot cursor is invalid');
+        }
+        afterCoverageOrdinal = cursor.coverage_ordinal;
+      }
       if (attemptSnapshots.has(attemptId)) return [...attemptSnapshots.get(attemptId)];
       const ids = db.prepare(
-        "SELECT work_unit_id FROM work_units WHERE state = 'pending' ORDER BY work_unit_id LIMIT ?",
-      ).all(limit).map(row => row.work_unit_id);
+        `SELECT w.work_unit_id FROM attempt_scope_work_units s
+         JOIN work_units w ON w.work_unit_id = s.work_unit_id
+         WHERE s.attempt_id = ? AND w.state = 'pending' AND w.coverage_ordinal > ?
+         ORDER BY w.coverage_ordinal LIMIT ?`,
+      ).all(attemptId, afterCoverageOrdinal, limit).map(row => row.work_unit_id);
       attemptSnapshots.set(attemptId, Object.freeze(ids));
       return [...ids];
     },
@@ -1081,8 +1515,12 @@ async function openPinnedPGSStore({
       `).run(JSON.stringify(diagnostic), workUnitId);
       if (result.changes !== 1) throw typed('pgs_state_conflict', 'PGS work unit is not pending');
     },
-    listSuccessfulSweeps() {
+    listSuccessfulSweeps({ attemptId } = {}) {
       assertOpen();
+      if (attemptId !== undefined) {
+        validateAttemptId(attemptId);
+        ensureAttemptScope(attemptId);
+      }
       const maximumOutputJsonBytes = (limits.maxSweepOutputBytes * 6)
         + Buffer.byteLength(JSON.stringify({ output: '' }), 'utf8');
       const rows = [];
@@ -1090,21 +1528,27 @@ async function openPinnedPGSStore({
       let totalResultBytes = 2;
       const query = db.prepare(`
         SELECT
-          substr(CAST(work_unit_id AS BLOB), 1, ${MAX_LIST_SCALAR_BYTES + 1}) AS work_unit_id,
-          length(CAST(work_unit_id AS BLOB)) AS work_unit_id_bytes,
-          substr(CAST(partition_id AS BLOB), 1, ${MAX_LIST_SCALAR_BYTES + 1}) AS partition_id,
-          length(CAST(partition_id AS BLOB)) AS partition_id_bytes,
-          substr(CAST(provider AS BLOB), 1, ${MAX_LIST_SCALAR_BYTES + 1}) AS provider,
-          length(CAST(provider AS BLOB)) AS provider_bytes,
-          substr(CAST(model AS BLOB), 1, ${MAX_LIST_SCALAR_BYTES + 1}) AS model,
-          length(CAST(model AS BLOB)) AS model_bytes,
-          substr(CAST(output_json AS BLOB), 1, ?) AS output_json,
-          length(CAST(output_json AS BLOB)) AS output_json_bytes,
-          substr(CAST(completed_at AS BLOB), 1, ${MAX_LIST_SCALAR_BYTES + 1}) AS completed_at,
-          length(CAST(completed_at AS BLOB)) AS completed_at_bytes
-        FROM successful_sweeps ORDER BY work_unit_id
+          substr(CAST(ss.work_unit_id AS BLOB), 1, ${MAX_LIST_SCALAR_BYTES + 1}) AS work_unit_id,
+          length(CAST(ss.work_unit_id AS BLOB)) AS work_unit_id_bytes,
+          substr(CAST(ss.partition_id AS BLOB), 1, ${MAX_LIST_SCALAR_BYTES + 1}) AS partition_id,
+          length(CAST(ss.partition_id AS BLOB)) AS partition_id_bytes,
+          substr(CAST(ss.provider AS BLOB), 1, ${MAX_LIST_SCALAR_BYTES + 1}) AS provider,
+          length(CAST(ss.provider AS BLOB)) AS provider_bytes,
+          substr(CAST(ss.model AS BLOB), 1, ${MAX_LIST_SCALAR_BYTES + 1}) AS model,
+          length(CAST(ss.model AS BLOB)) AS model_bytes,
+          substr(CAST(ss.output_json AS BLOB), 1, ?) AS output_json,
+          length(CAST(ss.output_json AS BLOB)) AS output_json_bytes,
+          substr(CAST(ss.completed_at AS BLOB), 1, ${MAX_LIST_SCALAR_BYTES + 1}) AS completed_at,
+          length(CAST(ss.completed_at AS BLOB)) AS completed_at_bytes
+        FROM successful_sweeps ss
+        ${attemptId === undefined ? '' : `JOIN attempt_scope_work_units scope
+          ON scope.work_unit_id = ss.work_unit_id AND scope.attempt_id = ?`}
+        ORDER BY ss.work_unit_id
       `);
-      for (const row of query.iterate(maximumOutputJsonBytes + 1)) {
+      const parameters = attemptId === undefined
+        ? [maximumOutputJsonBytes + 1]
+        : [maximumOutputJsonBytes + 1, attemptId];
+      for (const row of query.iterate(...parameters)) {
         for (const field of ['work_unit_id', 'partition_id', 'provider', 'model', 'completed_at']) {
           if (!Number.isSafeInteger(row[`${field}_bytes`]) || row[`${field}_bytes`] < 1
               || row[`${field}_bytes`] > MAX_LIST_SCALAR_BYTES
@@ -1147,18 +1591,24 @@ async function openPinnedPGSStore({
       }
       return rows;
     },
-    listRetryablePartitions() {
+    listRetryablePartitions({ attemptId } = {}) {
       assertOpen();
+      if (attemptId !== undefined) {
+        validateAttemptId(attemptId);
+        ensureAttemptScope(attemptId);
+      }
       const partitions = [];
       let totalResultBytes = 2;
       const query = db.prepare(`
         SELECT DISTINCT
-          substr(CAST(partition_id AS BLOB), 1, ${MAX_LIST_SCALAR_BYTES + 1}) AS partition_id,
-          length(CAST(partition_id AS BLOB)) AS partition_id_bytes
-        FROM work_units
-        WHERE state = 'pending' ORDER BY partition_id
+          substr(CAST(w.partition_id AS BLOB), 1, ${MAX_LIST_SCALAR_BYTES + 1}) AS partition_id,
+          length(CAST(w.partition_id AS BLOB)) AS partition_id_bytes
+        FROM work_units w
+        ${attemptId === undefined ? '' : `JOIN attempt_scope_work_units scope
+          ON scope.work_unit_id = w.work_unit_id AND scope.attempt_id = ?`}
+        WHERE w.state = 'pending' ORDER BY w.partition_id
       `);
-      for (const row of query.iterate()) {
+      for (const row of query.iterate(...(attemptId === undefined ? [] : [attemptId]))) {
         if (!Number.isSafeInteger(row.partition_id_bytes) || row.partition_id_bytes < 1
             || row.partition_id_bytes > MAX_LIST_SCALAR_BYTES
             || !Buffer.isBuffer(row.partition_id)) {
@@ -1177,6 +1627,22 @@ async function openPinnedPGSStore({
       assertOpen();
       return db.prepare("SELECT COUNT(*) AS count FROM work_units WHERE state = 'pending'").get().count;
     },
+    countSuccessfulWorkUnits() {
+      assertOpen();
+      return db.prepare("SELECT COUNT(*) AS count FROM work_units WHERE state = 'complete'").get().count;
+    },
+    countScopeWorkUnits(attemptId) {
+      assertOpen();
+      return scopeSummary(attemptId).scopeWorkUnits;
+    },
+    countScopeSuccessfulWorkUnits(attemptId) {
+      assertOpen();
+      return scopeSummary(attemptId).scopeSuccessfulWorkUnits;
+    },
+    countScopePendingWorkUnits(attemptId) {
+      assertOpen();
+      return scopeSummary(attemptId).scopePendingWorkUnits;
+    },
     async reconcile() {
       assertOpen();
       await checkpoint();
@@ -1186,17 +1652,27 @@ async function openPinnedPGSStore({
       closed = true;
       if (abortListener) signal?.removeEventListener('abort', abortListener);
       abortListener = null;
-      if (db?.open) db.close();
-      db = null;
-      closeRegularFileCapture(databaseAnchor);
-      databaseAnchor = null;
-      closeScratchBoundary(boundary);
+      try {
+        if (db?.open) db.close();
+      } finally {
+        db = null;
+        try {
+          closeRegularFileCapture(databaseAnchor);
+        } finally {
+          databaseAnchor = null;
+          closeScratchBoundary(boundary);
+        }
+      }
     },
   };
   return Object.freeze(api);
 }
 
 module.exports = {
+  COVERAGE_LEVELS,
+  COVERAGE_SELECTION_POLICY_VERSION,
+  QUERY_NORMALIZATION_VERSION,
+  SWEEP_PROMPT_CONTRACT_VERSION,
   captureOperationScratchBoundary,
   closeScratchBoundary,
   ensureExactScratchChild,

@@ -1055,10 +1055,13 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            runName: currentRun,
             query: currentQuery.query,
-            answer: currentAnswer.answer,
+            result: currentAnswer,
+            model: currentQuery.model,
+            mode: currentQuery.mode,
+            timestamp: currentAnswer.metadata?.timestamp || new Date().toISOString(),
             format: format,
-            metadata: currentAnswer.metadata
           })
         });
 

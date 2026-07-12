@@ -12,7 +12,7 @@ const { createOperationScratchQuota } = require('../../shared/memory-source/scra
 function catalog() {
   const row = id => ({
     id, kind: 'chat', maxOutputTokens: 512, providerStallMs: 900_000,
-    transport: 'responses',
+    contextWindowTokens: 128_000, transport: 'responses',
   });
   return {
     version: 1,
@@ -187,15 +187,29 @@ function options(pin, scratch, extra = {}) {
     signal: new AbortController().signal,
     reportEvent: extra.reportEvent,
     pgsConfig: extra.pgsConfig || { sweepFraction: 1 },
+    ...(extra.pgsMode ? { pgsMode: extra.pgsMode } : {}),
+    ...(extra.pgsLevel ? { pgsLevel: extra.pgsLevel } : {}),
+    ...(extra.targetPartitionIds ? { targetPartitionIds: extra.targetPartitionIds } : {}),
     limits,
   };
 }
 
 function singleWorkStore() {
   let committed = false;
+  const summary = attemptId => ({
+    attemptId, scopeWorkUnits: 1, scopeSuccessfulWorkUnits: committed ? 1 : 0,
+    scopePendingWorkUnits: committed ? 0 : 1, scopeComplete: committed,
+    globalCoveredWorkUnits: committed ? 1 : 0,
+    globalPendingWorkUnits: committed ? 0 : 1, fullCoverage: committed,
+    coverageLevel: 'full', coverageFraction: 1, targetPartitionIds: [],
+  });
   return {
     stats: { nodeCount: 1, edgeCount: 0, workUnitCount: 1 },
-    snapshotPendingWorkUnits() { return ['p-c-one-u0000']; },
+    planScope({ attemptId }) {
+      return summary(attemptId);
+    },
+    getScopeSummary(attemptId) { return summary(attemptId); },
+    snapshotPendingWorkUnits() { return committed ? [] : ['p-c-one-u0000']; },
     beginWorkUnitAttempt() {},
     loadWorkUnit() {
       return {
@@ -211,6 +225,10 @@ function singleWorkStore() {
       }] : [];
     },
     listRetryablePartitions() { return []; },
+    countScopeWorkUnits() { return 1; },
+    countScopeSuccessfulWorkUnits() { return committed ? 1 : 0; },
+    countScopePendingWorkUnits() { return committed ? 0 : 1; },
+    countSuccessfulWorkUnits() { return committed ? 1 : 0; },
     countPendingWorkUnits() { return committed ? 0 : 1; },
     recordRetryableFailure() {},
     close() {},
@@ -251,8 +269,10 @@ test('pinned PGS keeps provider roles exact and returns machine-readable durable
   assert.equal(events.filter(event => event.type === 'provider_selected').length, 7);
   assert.equal(events.filter(event => event.type === 'provider_call_terminal').length, 7);
   assert.equal(events.every(event => event.type !== 'response.output_text.delta'), true);
-  assert.equal(events.find(event => event.phase === 'pgs_sweep').provider, 'sweep');
-  assert.equal(events.find(event => event.phase === 'pgs_synthesis').provider, 'synth');
+  assert.equal(events.find(event => event.type === 'provider_selected'
+    && event.phase === 'pgs_sweep').provider, 'sweep');
+  assert.equal(events.find(event => event.type === 'provider_selected'
+    && event.phase === 'pgs_synthesis').provider, 'synth');
 
   const receipts = await fs.readdir(path.join(scratch.scratchDir, 'pgs-receipts'));
   assert.equal(receipts.length, 1);
@@ -264,6 +284,24 @@ test('pinned PGS keeps provider roles exact and returns machine-readable durable
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.match(receipt.attemptId, /^attempt-/);
   assert.equal(receipt.result.answer, 'final pinned synthesis');
+});
+
+test('full PGS drains every bounded work batch beyond one selected-work window', async t => {
+  const scratch = await scratchFixture(t);
+  const fixture = makeEngine();
+  const envelope = await fixture.engine.runPinnedOperation(options(
+    sourcePin({ nodeCount: 40 }),
+    scratch,
+    { pgsMode: 'fresh', pgsLevel: 'full', pgsConfig: { sweepFraction: 1 } },
+  ));
+
+  assert.equal(envelope.state, 'complete');
+  assert.equal(envelope.result.metadata.pgs.scopeWorkUnits, 20);
+  assert.equal(envelope.result.metadata.pgs.scopeSuccessfulWorkUnits, 20);
+  assert.equal(envelope.result.metadata.pgs.scopePendingWorkUnits, 0);
+  assert.equal(envelope.result.metadata.pgs.fullCoverage, true);
+  assert.equal(fixture.calls.filter(call => call.phase === 'sweep').length, 20);
+  assert.equal(fixture.calls.filter(call => call.phase === 'synth').length, 1);
 });
 
 test('pinned PGS derives complete source evidence from the opened projection store', async t => {
@@ -350,7 +388,7 @@ test('pinned PGS enforces lowered sweep and synthesis byte ceilings inside provi
       limits: bounded,
     });
 
-    if (over) {
+    if (over && phase === 'sweep') {
       await assert.rejects(run, { code: 'result_too_large', retryable: false });
       const callPhase = phase === 'synthesis' ? 'synth' : phase;
       assert.equal(
@@ -361,6 +399,17 @@ test('pinned PGS enforces lowered sweep and synthesis byte ceilings inside provi
       if (phase === 'sweep') {
         assert.equal(fixture.calls.some(call => call.phase === 'synth'), false);
       }
+      const receipts = await fs.readdir(path.join(scratch.scratchDir, 'pgs-receipts'))
+        .catch((error) => {
+          if (error.code === 'ENOENT') return [];
+          throw error;
+        });
+      assert.deepEqual(receipts, []);
+    } else if (over) {
+      const result = await run;
+      assert.equal(result.state, 'partial');
+      assert.equal(result.error.code, 'result_too_large');
+      assert.equal(result.result.metadata.pgs.scopeComplete, true);
       const receipts = await fs.readdir(path.join(scratch.scratchDir, 'pgs-receipts'))
         .catch((error) => {
           if (error.code === 'ENOENT') return [];
@@ -538,17 +587,18 @@ test('pinned PGS rejects caller-controlled concurrency before store or provider 
   assert.equal(fixture.calls.length, 0);
 });
 
-test('fractional run is honestly partial and a retry executes only pending work', async t => {
+test('fractional scope completes honestly and a higher level executes only pending work', async t => {
   const scratch = await scratchFixture(t);
   const pin = sourcePin();
   const first = makeEngine();
   const partial = await first.engine.runPinnedOperation(options(pin, scratch, {
     pgsConfig: { sweepFraction: 0.5 },
   }));
-  assert.equal(partial.state, 'partial');
-  assert.equal(partial.error.code, 'pgs_partitions_incomplete');
+  assert.equal(partial.state, 'complete');
+  assert.equal(partial.error, null);
   assert.equal(partial.result.metadata.pgs.successfulSweeps, 3);
-  assert.equal(partial.result.metadata.pgs.pendingWorkUnits, 3);
+  assert.equal(partial.result.metadata.pgs.scopePendingWorkUnits, 0);
+  assert.equal(partial.result.metadata.pgs.globalPendingWorkUnits, 3);
 
   const retry = makeEngine();
   const complete = await retry.engine.runPinnedOperation(options(pin, scratch));
@@ -556,6 +606,43 @@ test('fractional run is honestly partial and a retry executes only pending work'
   assert.equal(complete.result.metadata.pgs.successfulSweeps, 6);
   assert.equal(retry.calls.filter(call => call.phase === 'sweep').length, 3);
   assert.equal(retry.calls.filter(call => call.phase === 'synth').length, 1);
+});
+
+test('targeted PGS synthesizes only the explicit partition scope and expands by union', async t => {
+  const scratch = await scratchFixture(t);
+  const pin = sourcePin();
+  const first = makeEngine();
+  const targeted = await first.engine.runPinnedOperation(options(pin, scratch, {
+    pgsMode: 'targeted',
+    pgsLevel: 'full',
+    targetPartitionIds: ['c-cluster-0'],
+  }));
+
+  assert.equal(targeted.state, 'complete');
+  assert.equal(targeted.result.sweepOutputs.length, 3);
+  assert.equal(targeted.result.sweepOutputs.every(row => row.partitionId === 'c-cluster-0'), true);
+  assert.deepEqual(targeted.result.metadata.pgs.targetPartitionIds, ['c-cluster-0']);
+  assert.equal(targeted.result.metadata.pgs.scopeComplete, true);
+  assert.equal(targeted.result.metadata.pgs.fullCoverage, false);
+  const firstSynthesis = first.calls.find(call => call.phase === 'synth');
+  assert.match(firstSynthesis.options.input, /c-cluster-0/);
+  assert.doesNotMatch(firstSynthesis.options.input, /c-cluster-1/);
+
+  const second = makeEngine();
+  const expanded = await second.engine.runPinnedOperation(options(pin, scratch, {
+    pgsMode: 'targeted',
+    pgsLevel: 'full',
+    targetPartitionIds: ['c-cluster-1', 'c-cluster-0'],
+  }));
+  assert.equal(expanded.state, 'complete');
+  assert.equal(expanded.result.sweepOutputs.length, 6);
+  assert.equal(expanded.result.metadata.pgs.reusedWorkUnits, 3);
+  assert.equal(expanded.result.metadata.pgs.newWorkUnits, 3);
+  assert.equal(expanded.result.metadata.pgs.fullCoverage, true);
+  assert.equal(second.calls.filter(call => call.phase === 'sweep').length, 3);
+  const secondSynthesis = second.calls.find(call => call.phase === 'synth');
+  assert.match(secondSynthesis.options.input, /c-cluster-0/);
+  assert.match(secondSynthesis.options.input, /c-cluster-1/);
 });
 
 test('cancellation during concurrent sweeps preserves the exact reason and starts no later work', async t => {

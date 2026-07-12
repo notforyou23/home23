@@ -1430,7 +1430,50 @@ test('repeated recoverable reconnect cycles continue until the attachment deadli
     new Set(['attachment-many']));
 });
 
-test('present-null, extra target fields, nonfinite limits, and partial provider pairs fail locally', async () => {
+test('client validates and forwards the named PGS session contract without raw fractions', async () => {
+  const bodies: Array<Record<string, unknown>> = [];
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify(record(`op-client-pgs-${bodies.length}`, 0, 'queued')));
+  };
+  const client = new BrainOperationsClient({
+    baseUrl: 'http://fixture', callerAgent: 'jerry', fetchImpl,
+  });
+  const pairs = {
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    pgsSynth: { provider: 'anthropic', model: 'claude-sonnet-4-7' },
+  };
+  const operationId = 'brop_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC';
+  await client.start('pgs', {
+    query: 'fresh', pgsMode: 'fresh', pgsLevel: 'skim', ...pairs,
+  });
+  await client.start('pgs', {
+    query: 'continue', pgsMode: 'continue', pgsLevel: 'deep',
+    continueFromOperationId: operationId, ...pairs,
+  });
+  await client.start('pgs', {
+    query: 'targeted', pgsMode: 'targeted', pgsLevel: 'full',
+    continueFromOperationId: operationId,
+    targetPartitionIds: ['h-beta', 'c-alpha'],
+    ...pairs,
+  });
+  assert.deepEqual((bodies[0]?.parameters as Record<string, unknown>), {
+    query: 'fresh', pgsMode: 'fresh', pgsLevel: 'skim', ...pairs,
+  });
+  assert.deepEqual((bodies[1]?.parameters as Record<string, unknown>), {
+    query: 'continue', pgsMode: 'continue', pgsLevel: 'deep',
+    continueFromOperationId: operationId, ...pairs,
+  });
+  assert.deepEqual((bodies[2]?.parameters as Record<string, unknown>), {
+    query: 'targeted', pgsMode: 'targeted', pgsLevel: 'full',
+    continueFromOperationId: operationId,
+    targetPartitionIds: ['h-beta', 'c-alpha'],
+    ...pairs,
+  });
+  assert.equal(bodies.every((body) => !Object.hasOwn(body.parameters as object, 'pgsConfig')), true);
+});
+
+test('present-null, extra target fields, nonfinite limits, and invalid PGS contracts fail locally', async () => {
   let fetches = 0;
   const client = new BrainOperationsClient({ baseUrl: 'http://fixture', callerAgent: 'jerry',
     fetchImpl: async () => { fetches += 1; throw new Error('fetch forbidden'); } });
@@ -1470,13 +1513,39 @@ test('present-null, extra target fields, nonfinite limits, and partial provider 
   ] as const) {
     await assert.rejects(client.start('graph', { [field]: value } as never), /invalid/i);
   }
-  for (const pgsConfig of [null, [], { extra: true }, { sweepFraction: 0.5, extra: true }]) {
-    await assert.rejects(client.start('pgs', { query: 'x', pgsConfig } as never), /invalid/i);
-  }
-  for (const sweepFraction of [null, '0.5', false, NaN, Infinity, 0, -0.1, 1.1]) {
-    await assert.rejects(client.start('pgs', {
-      query: 'x', pgsConfig: { sweepFraction },
-    } as never), /invalid/i);
+  await assert.rejects(client.start('graph', { view: 'full_graph' } as never), /invalid/i);
+  await assert.rejects(
+    client.start('research_launch', { topic: 'missing context' } as never), /invalid/i,
+  );
+  const operationId = 'brop_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC';
+  const pairs = {
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    pgsSynth: { provider: 'anthropic', model: 'claude-sonnet-4-7' },
+  };
+  for (const pgs of [
+    { query: 'x' },
+    { query: 'x', mode: 'quick', pgsMode: 'fresh', pgsLevel: 'full', ...pairs },
+    { query: 'x', pgsMode: 'fresh', pgsLevel: 'full', ...pairs,
+      pgsConfig: { sweepFraction: 1 } },
+    { query: 'x', pgsMode: 'fresh', pgsLevel: 'full', ...pairs,
+      priorContext: { query: 'before', answer: 'after' } },
+    { query: 'x', pgsMode: 'full', pgsLevel: 'full', ...pairs },
+    { query: 'x', pgsMode: 'fresh', pgsLevel: 'quarter', ...pairs },
+    { query: 'x', pgsMode: 'fresh', pgsLevel: 'full', pgsSweep: null,
+      pgsSynth: pairs.pgsSynth },
+    { query: 'x', pgsMode: 'fresh', pgsLevel: 'full', pgsSweep: pairs.pgsSweep },
+    { query: 'x', pgsMode: 'fresh', pgsLevel: 'full', continueFromOperationId: operationId,
+      ...pairs },
+    { query: 'x', pgsMode: 'continue', pgsLevel: 'full', ...pairs },
+    { query: 'x', pgsMode: 'continue', pgsLevel: 'full',
+      continueFromOperationId: operationId, targetPartitionIds: ['c-alpha'], ...pairs },
+    { query: 'x', pgsMode: 'targeted', pgsLevel: 'full', ...pairs },
+    { query: 'x', pgsMode: 'targeted', pgsLevel: 'full',
+      targetPartitionIds: ['alpha'], ...pairs },
+    { query: 'x', pgsMode: 'targeted', pgsLevel: 'full',
+      targetPartitionIds: ['c-alpha', 'c-alpha'], ...pairs },
+  ]) {
+    await assert.rejects(client.start('pgs', pgs as never), /invalid/i);
   }
   assert.equal(fetches, 0);
 });
@@ -1763,6 +1832,102 @@ test('catalog caching is positive-only, expires at 30 seconds, and refreshes sta
   assert.equal(emptyReads, 2, 'an empty catalog is never cached');
 });
 
+test('operation discovery lists bounded recent and nonterminal requester operations', async () => {
+  const seen: string[] = [];
+  const client = new BrainOperationsClient({
+    baseUrl: 'http://fixture',
+    callerAgent: 'jerry',
+    fetchImpl: async (url) => {
+      const parsed = new URL(String(url));
+      seen.push(`${parsed.pathname}${parsed.search}`);
+      return new Response(JSON.stringify({
+        operations: [{ operationId: 'brop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', state: 'running' }],
+        count: 1,
+      }));
+    },
+  });
+
+  assert.equal((await client.listOperations({ state: 'recent', limit: 5 })).length, 1);
+  assert.equal((await client.listOperations({ state: 'nonterminal' })).length, 1);
+  assert.deepEqual(seen, [
+    '/home23/api/brain-operations?state=recent&limit=5',
+    '/home23/api/brain-operations?state=nonterminal',
+  ]);
+  await assert.rejects(client.listOperations({ state: 'recent', limit: 101 }), /invalid_request/);
+});
+
+test('query capability catalog preserves exact provider and model pairs', async () => {
+  const client = new BrainOperationsClient({
+    baseUrl: 'http://fixture',
+    callerAgent: 'jerry',
+    fetchImpl: async (url) => {
+      assert.equal(new URL(String(url)).pathname, '/home23/api/query/catalog');
+      return new Response(JSON.stringify({
+        available: true,
+        models: [
+          { provider: 'openai', id: 'shared-model', name: 'OpenAI shared' },
+          { provider: 'anthropic', id: 'shared-model', name: 'Anthropic shared' },
+        ],
+        defaults: {
+          provider: 'openai', model: 'shared-model', mode: 'quick',
+          pgsSweepProvider: 'anthropic', pgsSweepModel: 'shared-model',
+          pgsSynthProvider: 'openai', pgsSynthModel: 'shared-model',
+        },
+      }));
+    },
+  });
+  const catalog = await client.getQueryCatalog();
+  assert.deepEqual(catalog.models.map((row) => [row.provider, row.id]), [
+    ['openai', 'shared-model'],
+    ['anthropic', 'shared-model'],
+  ]);
+  assert.equal(catalog.defaults.pgsSweepProvider, 'anthropic');
+});
+
+test('research run discovery reads current requester run authority', async () => {
+  const paths: string[] = [];
+  const client = new BrainOperationsClient({
+    baseUrl: 'http://fixture', callerAgent: 'jerry',
+    fetchImpl: async (url) => {
+      const parsed = new URL(String(url));
+      paths.push(`${parsed.pathname}${parsed.search}`);
+      if (parsed.pathname.endsWith('/active')) {
+        return new Response(JSON.stringify({ active: true, runName: 'run-1', topic: 'topic' }));
+      }
+      return new Response(JSON.stringify({ state: 'recent', count: 1, runs: [{
+        runId: 'run-1', state: 'active', topic: 'topic', updatedAt: '2026-07-12T12:00:00.000Z',
+      }] }));
+    },
+  });
+  assert.equal((await client.listResearchRuns({ state: 'recent', limit: 20 })).runs.length, 1);
+  assert.equal((await client.getActiveResearchRun()).runName, 'run-1');
+  assert.deepEqual(paths, [
+    '/home23/api/brain-operations/research-runs?state=recent&limit=20',
+    '/home23/api/brain-operations/research-runs/active',
+  ]);
+});
+
+test('automatic context search uses the shared client canonical bounded route', async () => {
+  let requestBody: Record<string, unknown> | null = null;
+  const controller = new AbortController();
+  const client = new BrainOperationsClient({
+    baseUrl: 'http://fixture', callerAgent: 'jerry',
+    fetchImpl: async (url, init) => {
+      assert.equal(new URL(String(url)).pathname, '/api/memory/search');
+      assert.ok(init?.signal);
+      assert.equal(init?.signal?.aborted, false);
+      requestBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        results: [{ id: 'n1', concept: 'canary', similarity: 1 }],
+        evidence: { sourceHealth: 'healthy', matchOutcome: 'matches' },
+      }));
+    },
+  });
+  const result = await client.searchContext({ query: 'canary', topK: 8 }, controller.signal);
+  assert.deepEqual(requestBody, { query: 'canary', topK: 8 });
+  assert.equal((result.sourceEvidence as Record<string, unknown>).sourceHealth, 'healthy');
+});
+
 test('target resolution distinguishes mismatch, unavailable, and not found while starts preserve selectors', async () => {
   const research = canonicalResearchTarget('brain-r1');
   const researchCatalogBase = canonicalCatalogEntry('research');
@@ -1856,7 +2021,13 @@ test('short waits use five minutes while query and PGS attachments retain their 
     });
     const pending = fixture.kind === 'search'
       ? client.search({ query: 'bound' }, controller.signal)
-      : client.query({ query: 'bound', ...(fixture.kind === 'pgs' ? { enablePGS: true } : {}) },
+      : client.query({ query: 'bound', ...(fixture.kind === 'pgs' ? {
+        enablePGS: true,
+        pgsMode: 'fresh' as const,
+        pgsLevel: 'full' as const,
+        pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+        pgsSynth: { provider: 'anthropic', model: 'claude-sonnet-4-7' },
+      } : {}) },
         controller.signal);
     await sse.opened;
     for (let index = 0; index < 50 && !scheduled.includes(fixture.expected); index += 1) {

@@ -509,8 +509,8 @@ test('isolated launcher exercises production query, pinned PGS, and lifecycle re
   const pgsInitial = await client.query({
     query: 'authoritative isolated canary',
     enablePGS: true,
-    pgsMode: 'full',
-    pgsConfig: { sweepFraction: 1 },
+    pgsMode: 'fresh',
+    pgsLevel: 'full',
     pgsSweep: { provider: 'controlled', model: 'controlled-pgs' },
     pgsSynth: { provider: 'controlled', model: 'controlled-pgs' },
   });

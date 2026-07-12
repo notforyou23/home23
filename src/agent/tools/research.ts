@@ -24,6 +24,13 @@ const SEARCH_ALL_MAX_TARGETS = 20;
 const SEARCH_ALL_CONCURRENCY = 3;
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SUMMARY_SECTIONS = ['executive', 'goals', 'trajectory', 'thoughts', 'insights'] as const;
+const PGS_MODES = ['fresh', 'continue', 'targeted'] as const;
+const PGS_LEVELS = ['skim', 'sample', 'deep', 'full'] as const;
+const BRAIN_OPERATION_ID_PATTERN = '^brop_[A-Za-z0-9_-]{32}$';
+const BRAIN_OPERATION_ID = /^brop_[A-Za-z0-9_-]{32}$/;
+const PGS_PARTITION_ID_PATTERN = '^(?:c|h)-[A-Za-z0-9._-]{1,253}$';
+const PGS_PARTITION_ID = /^(?:c|h)-[A-Za-z0-9._-]{1,253}$/;
+const MAX_PGS_TARGET_PARTITIONS = 256;
 
 const providerModelSchema = {
   type: 'object',
@@ -34,6 +41,72 @@ const providerModelSchema = {
   },
   required: ['provider', 'model'],
 } as const;
+
+const pgsToolProperties = {
+  pgsMode: { type: 'string', enum: PGS_MODES },
+  pgsLevel: { type: 'string', enum: PGS_LEVELS },
+  continueFromOperationId: { type: 'string', pattern: BRAIN_OPERATION_ID_PATTERN },
+  targetPartitionIds: {
+    type: 'array', minItems: 1, maxItems: MAX_PGS_TARGET_PARTITIONS, uniqueItems: true,
+    items: {
+      type: 'string', minLength: 3, maxLength: 256, pattern: PGS_PARTITION_ID_PATTERN,
+    },
+  },
+  pgsSweep: providerModelSchema,
+  pgsSynth: providerModelSchema,
+} as const;
+
+const pgsToolBranches = [
+  {
+    properties: { enablePGS: { const: false } },
+    not: {
+      anyOf: [
+        { required: ['pgsMode'] },
+        { required: ['pgsLevel'] },
+        { required: ['continueFromOperationId'] },
+        { required: ['targetPartitionIds'] },
+        { required: ['pgsSweep'] },
+        { required: ['pgsSynth'] },
+      ],
+    },
+  },
+  {
+    required: ['enablePGS', 'pgsMode', 'pgsLevel', 'pgsSweep', 'pgsSynth'],
+    properties: { enablePGS: { const: true } },
+    allOf: [
+      {
+        not: {
+          anyOf: [
+            { required: ['mode'] },
+            { required: ['modelSelection'] },
+          ],
+        },
+      },
+      {
+        oneOf: [
+          {
+            properties: { pgsMode: { const: 'fresh' } },
+            not: {
+              anyOf: [
+                { required: ['continueFromOperationId'] },
+                { required: ['targetPartitionIds'] },
+              ],
+            },
+          },
+          {
+            properties: { pgsMode: { const: 'continue' } },
+            required: ['continueFromOperationId'],
+            not: { required: ['targetPartitionIds'] },
+          },
+          {
+            properties: { pgsMode: { const: 'targeted' } },
+            required: ['targetPartitionIds'],
+          },
+        ],
+      },
+    ],
+  },
+] as const;
 
 function invalidRequest(message = 'invalid_request'): Error {
   return Object.assign(new Error(message), { code: 'invalid_request' });
@@ -110,24 +183,6 @@ function errorResult(error: unknown): ToolResult {
   return { content: `${typed.code}: ${typed.message}`, is_error: true, metadata: { code: typed.code } };
 }
 
-function exactPgsConfig(value: unknown): { sweepFraction?: number } {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalidRequest();
-  const keys = Reflect.ownKeys(value);
-  if (keys.some((key) => typeof key !== 'string' || key !== 'sweepFraction')) {
-    throw invalidRequest();
-  }
-  if (!hasOwn(value, 'sweepFraction')) return {};
-  const sweepFraction = optionalFiniteNumber(
-    (value as { sweepFraction?: unknown }).sweepFraction,
-    'pgsConfig.sweepFraction',
-    0,
-    1,
-    { exclusiveMin: true },
-  );
-  if (sweepFraction === undefined) throw invalidRequest();
-  return { sweepFraction };
-}
-
 function exactPairWhenPresent(
   input: Record<string, unknown>,
   key: string,
@@ -135,27 +190,85 @@ function exactPairWhenPresent(
   return parsedWhenPresent(input, key, (value) => exactProviderModelPair(value, key));
 }
 
+function requiredExactPair(
+  input: Record<string, unknown>,
+  key: string,
+): { provider: string; model: string } {
+  if (!hasOwn(input, key)) throw invalidRequest(`${key}_invalid`);
+  const pair = exactProviderModelPair(input[key], key);
+  if (pair === undefined) throw invalidRequest(`${key}_invalid`);
+  return pair;
+}
+
+function continuationIdWhenPresent(input: Record<string, unknown>): string | undefined {
+  if (!hasOwn(input, 'continueFromOperationId')) return undefined;
+  const value = requiredBoundedText(
+    input.continueFromOperationId,
+    'continueFromOperationId',
+    256,
+  );
+  if (!BRAIN_OPERATION_ID.test(value)) throw invalidRequest('continueFromOperationId_invalid');
+  return value;
+}
+
+function targetPartitionIdsWhenPresent(input: Record<string, unknown>): string[] | undefined {
+  if (!hasOwn(input, 'targetPartitionIds')) return undefined;
+  const value = input.targetPartitionIds;
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_PGS_TARGET_PARTITIONS) {
+    throw invalidRequest('targetPartitionIds_invalid');
+  }
+  const seen = new Set<string>();
+  return value.map((partitionId) => {
+    if (typeof partitionId !== 'string' || !PGS_PARTITION_ID.test(partitionId)
+        || seen.has(partitionId)) {
+      throw invalidRequest('targetPartitionIds_invalid');
+    }
+    seen.add(partitionId);
+    return partitionId;
+  });
+}
+
 function researchQueryParameters(input: Record<string, unknown>): Omit<BrainQueryRequest, 'target'> {
   const enablePGS = parsedWhenPresent(input, 'enablePGS', (value) =>
     optionalBoolean(value, 'enablePGS')) ?? false;
   const request: Omit<BrainQueryRequest, 'target'> = {
     query: requiredToolText(input, 'query', 12_000),
-    mode: parsedWhenPresent(input, 'mode', (value) =>
-      optionalEnum(value, 'mode', ['quick', 'full', 'expert', 'dive'] as const)) ?? 'quick',
     enablePGS,
   };
   if (enablePGS) {
-    if (hasOwn(input, 'modelSelection')) throw invalidRequest();
-    request.pgsMode = 'full';
-    if (hasOwn(input, 'pgsConfig')) request.pgsConfig = exactPgsConfig(input.pgsConfig);
-    const pgsSweep = exactPairWhenPresent(input, 'pgsSweep');
-    const pgsSynth = exactPairWhenPresent(input, 'pgsSynth');
-    if (pgsSweep !== undefined) request.pgsSweep = pgsSweep;
-    if (pgsSynth !== undefined) request.pgsSynth = pgsSynth;
+    if (hasOwn(input, 'mode') || hasOwn(input, 'modelSelection')) throw invalidRequest();
+    const pgsMode = parsedWhenPresent(input, 'pgsMode', (value) =>
+      optionalEnum(value, 'pgsMode', PGS_MODES));
+    const pgsLevel = parsedWhenPresent(input, 'pgsLevel', (value) =>
+      optionalEnum(value, 'pgsLevel', PGS_LEVELS));
+    if (pgsMode === undefined) throw invalidRequest('pgsMode_invalid');
+    if (pgsLevel === undefined) throw invalidRequest('pgsLevel_invalid');
+    const continueFromOperationId = continuationIdWhenPresent(input);
+    const targetPartitionIds = targetPartitionIdsWhenPresent(input);
+    if (pgsMode === 'fresh' && (continueFromOperationId || targetPartitionIds)) {
+      throw invalidRequest('pgsMode_invalid');
+    }
+    if (pgsMode === 'continue' && (!continueFromOperationId || targetPartitionIds)) {
+      throw invalidRequest('pgsMode_invalid');
+    }
+    if (pgsMode === 'targeted' && !targetPartitionIds) {
+      throw invalidRequest('pgsMode_invalid');
+    }
+    request.pgsMode = pgsMode;
+    request.pgsLevel = pgsLevel;
+    if (continueFromOperationId) request.continueFromOperationId = continueFromOperationId;
+    if (targetPartitionIds) request.targetPartitionIds = targetPartitionIds;
+    request.pgsSweep = requiredExactPair(input, 'pgsSweep');
+    request.pgsSynth = requiredExactPair(input, 'pgsSynth');
   } else {
-    if (hasOwn(input, 'pgsConfig') || hasOwn(input, 'pgsSweep') || hasOwn(input, 'pgsSynth')) {
+    if ([
+      'pgsMode', 'pgsLevel', 'continueFromOperationId', 'targetPartitionIds',
+      'pgsSweep', 'pgsSynth',
+    ].some((key) => hasOwn(input, key))) {
       throw invalidRequest();
     }
+    request.mode = parsedWhenPresent(input, 'mode', (value) =>
+      optionalEnum(value, 'mode', ['quick', 'full', 'expert', 'dive'] as const)) ?? 'quick';
     const modelSelection = exactPairWhenPresent(input, 'modelSelection');
     if (modelSelection !== undefined) request.modelSelection = modelSelection;
   }
@@ -187,8 +300,7 @@ function approvedLaunchOptions(input: Record<string, unknown>): Record<string, u
   const output: Record<string, unknown> = {
     topic: requiredToolText(input, 'topic', 12_000),
   };
-  const context = parsedWhenPresent(input, 'context', (value) =>
-    optionalBoundedText(value, 'context', 20_000));
+  const context = requiredToolText(input, 'context', 20_000);
   const cycles = parsedWhenPresent(input, 'cycles', (value) =>
     optionalFiniteInteger(value, 'cycles', 1, 10_000));
   const explorationMode = parsedWhenPresent(input, 'explorationMode', (value) =>
@@ -197,7 +309,7 @@ function approvedLaunchOptions(input: Record<string, unknown>): Record<string, u
     optionalEnum(value, 'analysisDepth', ['shallow', 'normal', 'deep'] as const));
   const maxConcurrent = parsedWhenPresent(input, 'maxConcurrent', (value) =>
     optionalFiniteInteger(value, 'maxConcurrent', 1, 64));
-  if (context !== undefined) output.context = context;
+  output.context = context;
   if (cycles !== undefined) output.cycles = cycles;
   if (explorationMode !== undefined) output.explorationMode = explorationMode;
   if (analysisDepth !== undefined) output.analysisDepth = analysisDepth;
@@ -253,6 +365,31 @@ export async function checkCosmoActiveRun(
   try {
     callerSignal?.throwIfAborted();
     const turn = ctx.turnRuntime;
+    const currentRunAuthority = turn.brainOperations as unknown as {
+      getActiveResearchRun?: (signal?: AbortSignal) => Promise<unknown>;
+    };
+    try {
+      if (typeof currentRunAuthority.getActiveResearchRun === 'function') {
+        const current = await currentRunAuthority.getActiveResearchRun(turn.signal) as {
+          active?: unknown; runName?: unknown; topic?: unknown;
+          startedAt?: unknown; processCount?: unknown;
+        };
+        callerSignal?.throwIfAborted();
+        if (current?.active === false) return null;
+        if (current?.active === true && typeof current.runName === 'string' && current.runName) {
+          return {
+            runName: current.runName,
+            topic: typeof current.topic === 'string' ? current.topic : '',
+            startedAt: typeof current.startedAt === 'string' ? current.startedAt : '',
+            processCount: Number.isInteger(current.processCount) && Number(current.processCount) >= 0
+              ? Number(current.processCount) : null,
+          };
+        }
+      }
+    } catch (error) {
+      if (callerSignal?.aborted) callerSignal.throwIfAborted();
+      // Compatibility fallback until every coordinator exposes current run authority.
+    }
     const operations = await turn.brainOperations.listNonterminal(turn.signal);
     callerSignal?.throwIfAborted();
     const active = operations
@@ -288,13 +425,33 @@ async function executeListBrains(
       optionalBoolean(value, 'includeReferences')) ?? true;
     const catalog = await turn.brainOperations.getCatalog({ signal: turn.signal });
     const selected = catalog.brains
-      .filter((brain) => includeReferences || brain.sourceType === 'local')
+      .filter((brain) => includeReferences || brain.kind === 'resident' || brain.sourceType === 'local')
       .slice(0, limit);
     const lines = selected.map((brain) =>
       `${brain.displayName} (${brain.id}) — ${brain.lifecycle} — ${brain.nodeCount ?? '?'} nodes`);
     return {
       content: `Catalog ${catalog.catalogRevision}\n${lines.length ? lines.join('\n') : '(no matching catalog rows)'}`,
     };
+  } catch (error) {
+    return errorResult(error);
+  }
+}
+
+async function executeListResearchRuns(
+  input: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  try {
+    assertToolKeys(input, ['state', 'limit']);
+    const turn = runtime(ctx);
+    const state = parsedWhenPresent(input, 'state', (value) =>
+      optionalEnum(value, 'state', ['recent', 'active'] as const)) ?? 'recent';
+    const limit = parsedWhenPresent(input, 'limit', (value) =>
+      optionalFiniteInteger(value, 'limit', 1, 100)) ?? 20;
+    const result = await turn.brainOperations.listResearchRuns({
+      state, limit, signal: turn.signal,
+    });
+    return { content: JSON.stringify(result) };
   } catch (error) {
     return errorResult(error);
   }
@@ -307,7 +464,8 @@ async function executeQueryBrain(
   try {
     assertToolKeys(input, [
       'brainId', 'query', 'mode', 'enablePGS', 'modelSelection',
-      'pgsConfig', 'pgsSweep', 'pgsSynth',
+      'pgsMode', 'pgsLevel', 'continueFromOperationId', 'targetPartitionIds',
+      'pgsSweep', 'pgsSynth',
     ]);
     const turn = runtime(ctx);
     const brainId = requiredToolText(input, 'brainId', 128);
@@ -326,8 +484,7 @@ async function executeSearchAll(
 ): Promise<ToolResult> {
   try {
     assertToolKeys(input, [
-      'query', 'mode', 'topN', 'enablePGS', 'modelSelection',
-      'pgsConfig', 'pgsSweep', 'pgsSynth',
+      'query', 'mode', 'topN', 'modelSelection',
     ]);
     const turn = runtime(ctx);
     const signal = turn.signal;
@@ -575,6 +732,19 @@ export const listBrainsTool: ToolDefinition = {
   execute: executeListBrains,
 };
 
+export const listResearchRunsTool: ToolDefinition = {
+  name: 'research_runs_list',
+  description: 'List authoritative requester-owned research run IDs and states before watch, continue, or stop.',
+  input_schema: {
+    type: 'object', additionalProperties: false,
+    properties: {
+      state: { type: 'string', enum: ['recent', 'active'] },
+      limit: { type: 'integer', minimum: 1, maximum: 100 },
+    },
+  },
+  execute: executeListResearchRuns,
+};
+
 export const queryBrainTool: ToolDefinition = {
   name: 'research_query_brain',
   description: 'Run a durable direct or PGS query against one exact research brain.',
@@ -586,14 +756,10 @@ export const queryBrainTool: ToolDefinition = {
       mode: { type: 'string', enum: ['quick', 'full', 'expert', 'dive'] },
       enablePGS: { type: 'boolean' },
       modelSelection: providerModelSchema,
-      pgsConfig: {
-        type: 'object', additionalProperties: false,
-        properties: { sweepFraction: { type: 'number', exclusiveMinimum: 0, maximum: 1 } },
-      },
-      pgsSweep: providerModelSchema,
-      pgsSynth: providerModelSchema,
+      ...pgsToolProperties,
     },
     required: ['brainId', 'query'],
+    oneOf: pgsToolBranches,
   },
   execute: executeQueryBrain,
 };
@@ -607,14 +773,7 @@ export const searchAllBrainsTool: ToolDefinition = {
       query: { type: 'string', minLength: 1 },
       topN: { type: 'integer', minimum: 1, maximum: SEARCH_ALL_MAX_TARGETS },
       mode: { type: 'string', enum: ['quick', 'full', 'expert', 'dive'] },
-      enablePGS: { type: 'boolean' },
       modelSelection: providerModelSchema,
-      pgsConfig: {
-        type: 'object', additionalProperties: false,
-        properties: { sweepFraction: { type: 'number', exclusiveMinimum: 0, maximum: 1 } },
-      },
-      pgsSweep: providerModelSchema,
-      pgsSynth: providerModelSchema,
     },
     required: ['query'],
   },
@@ -640,7 +799,7 @@ export const launchTool: ToolDefinition = {
       strategicModel: { type: 'string', minLength: 1 },
       strategicProvider: { type: 'string', minLength: 1 },
     },
-    required: ['topic'],
+    required: ['topic', 'context'],
   },
   execute: executeLaunch,
 };

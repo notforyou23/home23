@@ -56,6 +56,27 @@ async function callTool(server, name, args = {}) {
   return JSON.parse(rpc.result.content[0].text);
 }
 
+async function listTools(server) {
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 'list-tools',
+      method: 'tools/list',
+      params: {},
+    }),
+  });
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  const data = body.split('\n').find((line) => line.startsWith('data: '));
+  assert.ok(data, body);
+  return JSON.parse(data.slice('data: '.length)).result.tools;
+}
+
 test('engine MCP loopback serves canonical health and delegates a bounded tool call', async (t) => {
   const calls = [];
   const memoryTools = completeMemoryTools({
@@ -103,6 +124,99 @@ test('engine MCP loopback serves canonical health and delegates a bounded tool c
   assert.equal(calls[0].limit, 3);
   assert.equal(calls[0].tag, 'proof');
   assert.ok(calls[0].signal instanceof AbortSignal);
+});
+
+test('engine MCP advertises the exact graph controls and own-brain diagnostic boundary', async (t) => {
+  const server = startMcpHttpServer({
+    host: '127.0.0.1',
+    port: 0,
+    log: false,
+    memoryTools: completeMemoryTools(),
+    readiness: fixedReadiness({
+      ok: true,
+      protocolVersion: '2025-03-26',
+      sourceHealth: 'healthy',
+    }),
+  });
+  await once(server, 'listening');
+  t.after(() => close(server));
+
+  const tools = await listTools(server);
+  const graph = tools.find(({ name }) => name === 'get_memory_graph');
+  assert.deepEqual(Object.keys(graph.inputSchema.properties).sort(), [
+    'clusterId', 'edgeLimit', 'nodeLimit',
+  ]);
+  assert.equal(graph.inputSchema.additionalProperties, false);
+  assert.match(graph.description, /own brain/i);
+  assert.match(graph.description, /durable brain operations/i);
+  assert.match(
+    tools.find(({ name }) => name === 'query_memory').description,
+    /own brain/i,
+  );
+});
+
+test('engine MCP snapshot-only tools return typed unsupported state, never invented empty totals', async (t) => {
+  const unsupported = (capability) => ({
+    status: 'unsupported',
+    error: {
+      code: 'snapshot_capability_unsupported',
+      message: `${capability} is not projected by brain-snapshot`,
+      retryable: false,
+    },
+  });
+  const readScalarState = async () => ({
+    cycleCount: null,
+    currentMode: null,
+    cognitiveState: null,
+    goals: {
+      active: null,
+      completed: null,
+      archived: null,
+      counts: { active: null, completed: null, archived: null },
+    },
+    scalarProjection: {
+      source: 'brain-snapshot',
+      sourceHealth: 'unavailable',
+      capabilities: {
+        goals: unsupported('goals'),
+        agentActivity: unsupported('agent activity'),
+        journal: unsupported('journal'),
+        dreams: unsupported('dreams'),
+        oscillator: unsupported('oscillator'),
+      },
+    },
+  });
+  const server = startMcpHttpServer({
+    host: '127.0.0.1',
+    port: 0,
+    log: false,
+    memoryTools: completeMemoryTools(),
+    readScalarState,
+    readiness: fixedReadiness({
+      ok: true,
+      protocolVersion: '2025-03-26',
+      sourceHealth: 'healthy',
+    }),
+  });
+  await once(server, 'listening');
+  t.after(() => close(server));
+
+  for (const [tool, capability] of [
+    ['get_active_goals', 'goals'],
+    ['get_agent_activity', 'agentActivity'],
+    ['get_journal', 'journal'],
+    ['get_dreams', 'dreams'],
+    ['get_oscillator_mode', 'oscillator'],
+  ]) {
+    const result = await callTool(server, tool);
+    assert.equal(result.ok, false, tool);
+    assert.equal(result.status, 'unsupported', tool);
+    assert.equal(result.sourceHealth, 'unavailable', tool);
+    assert.equal(result.capability, capability, tool);
+    assert.equal(result.error.code, 'snapshot_capability_unsupported', tool);
+    assert.equal(Object.hasOwn(result, 'count'), false, tool);
+    assert.equal(Object.hasOwn(result, 'totalEntries'), false, tool);
+  }
 });
 
 test('engine MCP loopback rejects an oversized JSON-RPC body before tool delegation', async (t) => {

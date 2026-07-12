@@ -21,6 +21,7 @@ const {
 const {
   BrainOperationCoordinator,
   DEFAULT_EXECUTION_DEADLINES_MS,
+  DEFAULT_STOP_TIMEOUT_MS,
   enrichSourceEvidence,
 } = require('../../../engine/src/dashboard/brain-operations/coordinator.js');
 const {
@@ -369,6 +370,9 @@ class ControlledWorker {
         activeProviderCalls: [],
         events: [],
         result: null,
+        ...(context.operationType === 'pgs' && this.pgsSessionForStarts
+          ? { pgsSession: structuredClone(this.pgsSessionForStarts(context)) }
+          : {}),
       };
       this.records.set(context.operationId, record);
     }
@@ -384,6 +388,7 @@ class ControlledWorker {
       phase: record.phase,
       eventSequence: record.eventSequence,
       activeProviderCalls: record.activeProviderCalls,
+      ...(record.pgsSession ? { pgsSession: record.pgsSession } : {}),
     });
   }
 
@@ -597,6 +602,7 @@ function makeFixture(t, overrides = {}) {
       heartbeatMs: 10_000,
       eventSilenceMs: 60_000,
       workerControlTimeoutMs: overrides.workerControlTimeoutMs,
+      stopTimeoutMs: overrides.stopTimeoutMs,
       executionDeadlineMsByType: {
         search: 60_000,
         graph: 60_000,
@@ -691,6 +697,7 @@ test('default execution deadlines preserve two-hour and eight-hour server bounds
   assert.equal(DEFAULT_EXECUTION_DEADLINES_MS.research_stop, 2 * 60 * 60 * 1000);
   assert.equal(DEFAULT_EXECUTION_DEADLINES_MS.pgs, 8 * 60 * 60 * 1000);
   assert.equal(DEFAULT_EXECUTION_DEADLINES_MS.synthesis, 8 * 60 * 60 * 1000);
+  assert.equal(DEFAULT_STOP_TIMEOUT_MS, 180_000);
 });
 
 test('resolveTargetContext is fresh, deeply frozen, exact, and side-effect free', async (t) => {
@@ -753,6 +760,192 @@ test('start normalizes query enablePGS to durable pgs and rejects caller authori
   }
 });
 
+test('PGS continuation resolves only a same-target prior session into trusted worker parameters', async (t) => {
+  const fixture = makeFixture(t);
+  const fresh = await fixture.coordinator.start(request({
+    requestId: 'pgs-session-fresh',
+    operationType: 'pgs',
+    parameters: {
+      query: 'durable canary', pgsMode: 'fresh', pgsLevel: 'sample',
+      pgsConfig: { sweepFraction: 0.25 },
+    },
+  }));
+  fixture.worker.finish(fresh.operationId, {
+    state: 'partial',
+    result: {
+      answer: 'sample synthesis',
+      metadata: { pgs: {
+        sessionId: `pgss_${'s'.repeat(32)}`,
+        continuableUntil: '2026-07-19T12:00:00.000Z',
+        canContinue: true,
+      } },
+    },
+    error: { code: 'pgs_scope_incomplete', message: 'sample complete', retryable: true },
+    sourceEvidence: null,
+  });
+  await waitForState(fixture, fresh.operationId, 'partial');
+
+  const continued = await fixture.coordinator.start(request({
+    requestId: 'pgs-session-continue',
+    operationType: 'pgs',
+    parameters: {
+      query: 'durable canary', pgsMode: 'continue', pgsLevel: 'deep',
+      pgsConfig: { sweepFraction: 0.5 },
+      continueFromOperationId: fresh.operationId,
+    },
+  }));
+  assert.equal(continued.parameters.pgsSessionId, `pgss_${'s'.repeat(32)}`);
+  assert.equal(
+    fixture.worker.startCalls.at(-1).context.parameters.pgsSessionId,
+    `pgss_${'s'.repeat(32)}`,
+  );
+
+  await assert.rejects(
+    fixture.coordinator.start(request({
+      requestId: 'pgs-session-wrong-target',
+      operationType: 'pgs',
+      target: { agent: 'forrest' },
+      parameters: {
+        query: 'durable canary', pgsMode: 'continue', pgsLevel: 'deep',
+        pgsConfig: { sweepFraction: 0.5 },
+        continueFromOperationId: fresh.operationId,
+      },
+    })),
+    typedCode('session_target_mismatch'),
+  );
+});
+
+test('cancelled, interrupted, and failed null-result PGS operations retain durable session lineage for continuation', async (t) => {
+  const fixture = makeFixture(t);
+  const continuableUntil = '2026-07-19T12:00:00.000Z';
+  const sessions = [
+    `pgss_${'c'.repeat(32)}`,
+    `pgss_${'i'.repeat(32)}`,
+    `pgss_${'f'.repeat(32)}`,
+  ];
+  let sessionIndex = 0;
+  fixture.worker.pgsSessionForStarts = (context) => ({
+    sessionId: context.parameters.pgsSessionId || sessions[sessionIndex++],
+    continuableUntil,
+    sourceOperationId: context.parameters.continueFromOperationId || null,
+  });
+
+  for (const [index, terminal] of ['cancelled', 'interrupted', 'failed'].entries()) {
+    const fresh = await fixture.coordinator.start(request({
+      requestId: `pgs-null-result-${terminal}`,
+      operationType: 'pgs',
+      parameters: {
+        query: `durable ${terminal} canary`, pgsMode: 'fresh', pgsLevel: 'sample',
+        pgsConfig: { sweepFraction: 0.25 },
+      },
+    }));
+    assert.deepEqual(fresh.pgsSession, {
+      sessionId: sessions[index], continuableUntil, sourceOperationId: null,
+    });
+    fixture.worker.finish(fresh.operationId, {
+      state: terminal,
+      result: null,
+      error: terminal === 'failed'
+        ? { code: 'provider_failed', message: 'provider failed after committed sweeps', retryable: true }
+        : null,
+      sourceEvidence: null,
+    });
+    const terminalRecord = await waitForState(fixture, fresh.operationId, terminal);
+    assert.equal(terminalRecord.result, null);
+    assert.deepEqual(terminalRecord.pgsSession, {
+      sessionId: sessions[index], continuableUntil, sourceOperationId: null,
+    });
+
+    const continued = await fixture.coordinator.start(request({
+      requestId: `pgs-null-result-${terminal}-continue`,
+      operationType: 'pgs',
+      parameters: {
+        query: `durable ${terminal} canary`, pgsMode: 'continue', pgsLevel: 'deep',
+        pgsConfig: { sweepFraction: 0.5 },
+        continueFromOperationId: fresh.operationId,
+      },
+    }));
+    assert.equal(continued.parameters.pgsSessionId, sessions[index]);
+  }
+});
+
+test('PGS continuation fails closed for expired or answer-mismatched durable session lineage', async (t) => {
+  const fixture = makeFixture(t);
+  fixture.worker.pgsSessionForStarts = () => ({
+    sessionId: `pgss_${'e'.repeat(32)}`,
+    continuableUntil: '2026-07-19T12:00:00.000Z',
+    sourceOperationId: null,
+  });
+  const fresh = await fixture.coordinator.start(request({
+    requestId: 'pgs-lineage-mismatch-fresh',
+    operationType: 'pgs',
+    parameters: {
+      query: 'lineage canary', pgsMode: 'fresh', pgsLevel: 'sample',
+      pgsConfig: { sweepFraction: 0.25 },
+    },
+  }));
+  fixture.worker.finish(fresh.operationId, {
+    state: 'partial',
+    result: {
+      answer: 'partial',
+      metadata: { pgs: {
+        sessionId: `pgss_${'x'.repeat(32)}`,
+        continuableUntil: '2026-07-19T12:00:00.000Z',
+        canContinue: true,
+      } },
+    },
+    error: { code: 'pgs_scope_incomplete', message: 'partial', retryable: true },
+    sourceEvidence: null,
+  });
+  await waitForState(fixture, fresh.operationId, 'partial');
+  await assert.rejects(
+    fixture.coordinator.start(request({
+      requestId: 'pgs-lineage-mismatch-continue',
+      operationType: 'pgs',
+      parameters: {
+        query: 'lineage canary', pgsMode: 'continue', pgsLevel: 'deep',
+        pgsConfig: { sweepFraction: 0.5 }, continueFromOperationId: fresh.operationId,
+      },
+    })),
+    typedCode('session_lineage_mismatch'),
+  );
+
+  const expiredFresh = await fixture.coordinator.start(request({
+    requestId: 'pgs-lineage-expired-fresh',
+    operationType: 'pgs',
+    parameters: {
+      query: 'expired lineage canary', pgsMode: 'fresh', pgsLevel: 'sample',
+      pgsConfig: { sweepFraction: 0.25 },
+    },
+  }));
+  fixture.worker.finish(expiredFresh.operationId, {
+    state: 'partial',
+    result: {
+      answer: 'partial',
+      metadata: { pgs: {
+        sessionId: `pgss_${'e'.repeat(32)}`,
+        continuableUntil: '2026-07-19T12:00:00.000Z',
+        canContinue: true,
+      } },
+    },
+    error: { code: 'pgs_scope_incomplete', message: 'partial', retryable: true },
+    sourceEvidence: null,
+  });
+  await waitForState(fixture, expiredFresh.operationId, 'partial');
+  fixture.timers.now = Date.parse('2026-07-20T00:00:00.000Z');
+  await assert.rejects(
+    fixture.coordinator.start(request({
+      requestId: 'pgs-lineage-expired-continue',
+      operationType: 'pgs',
+      parameters: {
+        query: 'expired lineage canary', pgsMode: 'continue', pgsLevel: 'deep',
+        pgsConfig: { sweepFraction: 0.5 }, continueFromOperationId: expiredFresh.operationId,
+      },
+    })),
+    typedCode('session_not_continuable'),
+  );
+});
+
 test('thirty-two concurrent starts create, pin, issue, and start exactly once', async (t) => {
   const fixture = makeFixture(t);
   const results = await Promise.all(Array.from({ length: 32 }, () =>
@@ -764,7 +957,7 @@ test('thirty-two concurrent starts create, pin, issue, and start exactly once', 
   assert.equal((await fixture.store.list()).length, 1);
 });
 
-test('slow pin and worker start stay serialized against queued heartbeat and cancel CAS writes', async (t) => {
+test('slow pin stays serialized against heartbeat and cancellation prevents worker start', async (t) => {
   const pinEntered = deferred();
   const pinGate = deferred();
   const sourcePins = {
@@ -789,7 +982,7 @@ test('slow pin and worker start stay serialized against queued heartbeat and can
   const [operation, , cancelled] = await Promise.all([starting, heartbeat, cancelling]);
   assert.equal(cancelled.state, 'cancelled');
   assert.equal((await fixture.store.get(operation.operationId)).state, 'cancelled');
-  assert.equal(fixture.worker.startCalls.length, 1);
+  assert.equal(fixture.worker.startCalls.length, 0);
   assert.equal((await fixture.store.readEvents(operation.operationId, 0))
     .some(({ type }) => type === 'heartbeat'), true);
 });
@@ -1028,6 +1221,94 @@ test('terminal state is broadcast to a surviving attachment before durable closu
   assert.equal(closed.reason, 'operation_terminal');
 });
 
+test('graceful stop waits for terminal source-pin release before dropping runtime tracking', async (t) => {
+  const releaseEntered = deferred();
+  const releaseGate = deferred();
+  const sourcePins = {
+    async pin(canonicalRoot) {
+      const descriptor = validDescriptor(canonicalRoot);
+      return { descriptor, digest: descriptorDigest(descriptor) };
+    },
+    async openPinnedSource(descriptor) { return pinnedSourceHandle(descriptor); },
+    async releaseOperationPins() {
+      releaseEntered.resolve();
+      await releaseGate.promise;
+    },
+  };
+  const fixture = makeFixture(t, { sourcePins });
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'stop-waits-for-source-pin-release',
+  }));
+  const attachment = await fixture.coordinator.attach(operation.operationId, {
+    attachmentId: 'terminal-release-observer',
+    afterSequence: operation.eventSequence,
+  });
+  const terminalEvent = attachment.nextEvent();
+
+  fixture.worker.finish(operation.operationId, {
+    state: 'complete',
+    result: { answer: 'release before shutdown' },
+    error: null,
+    sourceEvidence: null,
+  });
+  assert.equal((await terminalEvent).state, 'complete');
+  await releaseEntered.promise;
+
+  let stopResolved = false;
+  const stopping = fixture.coordinator.stop().then(() => { stopResolved = true; });
+  await flush();
+  assert.equal(stopResolved, false);
+  releaseGate.resolve();
+  await stopping;
+
+  const terminal = await fixture.store.get(operation.operationId);
+  assert.equal(terminal.state, 'complete');
+  assert.match(terminal.sourcePinReleasedAt, /^2026-07-10T/);
+});
+
+test('graceful stop fails visibly when source-pin release exceeds its shutdown budget', async (t) => {
+  const releaseEntered = deferred();
+  const releaseGate = deferred();
+  t.after(() => releaseGate.resolve());
+  const sourcePins = {
+    async pin(canonicalRoot) {
+      const descriptor = validDescriptor(canonicalRoot);
+      return { descriptor, digest: descriptorDigest(descriptor) };
+    },
+    async openPinnedSource(descriptor) { return pinnedSourceHandle(descriptor); },
+    async releaseOperationPins() {
+      releaseEntered.resolve();
+      await releaseGate.promise;
+    },
+  };
+  const fixture = makeFixture(t, { sourcePins, stopTimeoutMs: 20 });
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'stop-reports-source-pin-release-timeout',
+  }));
+  fixture.worker.finish(operation.operationId, {
+    state: 'complete',
+    result: { answer: 'release remains pending' },
+    error: null,
+    sourceEvidence: null,
+  });
+  await releaseEntered.promise;
+
+  await assert.rejects(
+    fixture.coordinator.stop(),
+    typedCode('coordinator_stop_timeout'),
+  );
+  await assert.rejects(
+    fixture.coordinator.stop(),
+    typedCode('coordinator_stop_timeout'),
+  );
+
+  releaseGate.resolve();
+  await eventually(async () => {
+    const terminal = await fixture.store.get(operation.operationId);
+    assert.match(terminal.sourcePinReleasedAt, /^2026-07-10T/);
+  });
+});
+
 test('terminal closure drains durable provider evidence for a slow pull attachment', async (t) => {
   const fixture = makeFixture(t);
   const operation = await fixture.coordinator.start(request({
@@ -1039,19 +1320,17 @@ test('terminal closure drains durable provider evidence for a slow pull attachme
     attachmentId: 'slow-terminal-evidence',
     afterSequence: running.eventSequence,
   });
+  const slowSubscriber = fixture.coordinator.runtimes
+    .get(operation.operationId).attachments.get('slow-terminal-evidence');
+  const selectedPending = attachment.nextEvent();
   fixture.worker.emit(operation.operationId, {
     type: 'provider_selected',
     providerCallId: 'query',
     providerStallMs: 5_000,
   });
-  let slowSubscriber;
-  await eventually(() => {
-    const subscriber = fixture.coordinator.runtimes
-      .get(operation.operationId).attachments.get('slow-terminal-evidence');
-    assert.equal(subscriber.queue.length, 1);
-    assert.equal(subscriber.queue[0].type, 'provider_selected');
-    slowSubscriber = subscriber;
-  });
+  const selected = await selectedPending;
+  assert.equal(selected.type, 'provider_selected');
+  assert.equal(slowSubscriber.queue.length, 0);
   fixture.worker.emit(operation.operationId, {
     type: 'provider_activity',
     providerCallId: 'query',
@@ -1070,10 +1349,10 @@ test('terminal closure drains durable provider evidence for a slow pull attachme
   await attachment.done;
   assert.deepEqual(
     slowSubscriber.queue.map((event) => event.type),
-    ['provider_selected'],
+    ['provider_activity'],
   );
 
-  const events = [];
+  const events = [selected];
   for (;;) {
     const event = await attachment.nextEvent();
     if (event === null) break;
@@ -2511,6 +2790,34 @@ test('reconciliation repairs create/pin/attach/start windows and interrupts an u
   assert.equal(fixture.counters.releaseCalls, 1);
 });
 
+test('shutdown racing reconciliation cannot create post-stop runtime or source work', async (t) => {
+  const fixture = makeFixture(t);
+  const created = await directQueuedRecord(fixture, { requestId: 'reconcile-stop-race' });
+  const entered = deferred();
+  const gate = deferred();
+  const storeGet = fixture.store.get.bind(fixture.store);
+  let blocked = false;
+  fixture.store.get = async (operationId) => {
+    if (!blocked && operationId === created.record.operationId) {
+      blocked = true;
+      entered.resolve();
+      await gate.promise;
+    }
+    return storeGet(operationId);
+  };
+
+  const reconciling = fixture.coordinator.reconcile();
+  await entered.promise;
+  await fixture.coordinator.stop();
+  gate.resolve();
+
+  await assert.rejects(reconciling, typedCode('coordinator_stopped'));
+  assert.equal(fixture.coordinator.runtimes.size, 0);
+  assert.equal(fixture.counters.pin, 0);
+  assert.equal(fixture.worker.startCalls.length, 0);
+  assert.equal((await storeGet(created.record.operationId)).state, 'queued');
+});
+
 test('reconciliation releases a pre-existing terminal pin marker exactly once', async (t) => {
   const fixture = makeFixture(t);
   const created = await directQueuedRecord(fixture, { requestId: 'terminal-pin-pending' });
@@ -3159,6 +3466,60 @@ test('worker adapter dispatches exact local executor, strips control metadata, a
     }, 'cap-missing'),
     typedCode('executor_unavailable'),
   );
+});
+
+test('worker adapter drops heavyweight local context immediately after terminal cleanup', async (t) => {
+  const timers = new FakeTimers();
+  const adapter = new BrainOperationWorkerAdapter({
+    clock: { now: () => timers.now, monotonicNow: () => timers.now },
+  });
+  t.after(() => adapter.stop?.());
+  let sourceReleases = 0;
+  let scratchCloses = 0;
+  adapter.registerLocalExecutor('query', async () => ({
+    state: 'complete', result: { answer: 'retained' }, resultArtifact: null,
+    error: null, sourceEvidence: { cutoffRevision: 1 },
+  }));
+  const operationId = `brop_${'c'.repeat(32)}`;
+  const context = {
+    operationId,
+    operationType: 'query',
+    requesterAgent: 'jerry',
+    target: {
+      domain: 'brain', brainId: 'brain-jerry', canonicalRoot: '/brains/jerry',
+      accessMode: 'own', ownerAgent: 'jerry', displayName: 'jerry', kind: 'resident',
+      lifecycle: 'resident', catalogRevision: 'a'.repeat(64),
+      route: '/api/brain/brain-jerry', mutationBoundaries: mutationBoundaries('/brains/jerry'),
+    },
+    parameters: {
+      query: 'canary',
+      operationControl: { hardDeadlineAt: new Date(timers.now + 1_000).toISOString() },
+    },
+    scratchDir: '/tmp/scratch-heavy-context',
+    scratchQuota: { async close() { scratchCloses += 1; } },
+    sourcePin: {
+      descriptor: validDescriptor(),
+      retainedProjection: Buffer.alloc(1024),
+      async release() { sourceReleases += 1; },
+    },
+  };
+  await adapter.start(context, 'cap-start');
+
+  await eventually(async () => {
+    assert.equal((await adapter.status(operationId, 'cap-status')).state, 'complete');
+    assert.equal(sourceReleases, 1);
+    assert.equal(scratchCloses, 1);
+  });
+
+  const local = adapter.localRecords.get(operationId);
+  assert.equal(local.context, null);
+  assert.deepEqual((await adapter.result(operationId, 'cap-result')).result, {
+    answer: 'retained',
+  });
+  assert.equal(adapter.localRecords.has(operationId), true);
+  assert.equal((await adapter.start(context, 'cap-replay')).state, 'complete');
+  assert.equal(sourceReleases, 1);
+  assert.equal(scratchCloses, 1);
 });
 
 test('worker adapter releases redundant and rejected local context resources exactly once', async (t) => {

@@ -12,15 +12,26 @@ const {
   openPinnedPGSStore,
   lowerLimits,
   verifyScratchBoundary,
+  COVERAGE_LEVELS,
+  COVERAGE_SELECTION_POLICY_VERSION,
+  QUERY_NORMALIZATION_VERSION,
+  SWEEP_PROMPT_CONTRACT_VERSION,
 } = require('./pinned-store');
 const {
   ProviderCompletionError,
   assertProviderResultIdentity,
   requireCompleteProviderResult,
 } = require('../../lib/provider-completion');
+const {
+  assertProviderInputWithinBudget,
+  resolveProviderInputBudget,
+} = require('../../lib/provider-input-budget');
 const { getModelCapabilities } = require('../../server/config/model-catalog');
 
 const PINNED_SWEEP_CONCURRENCY = 2;
+const MAX_GENERATED_WORK_UNIT_ID_BYTES = 256;
+const SWEEP_INSTRUCTIONS = 'Analyze only this pinned PGS work unit. Return evidence-backed findings and explicit absences.';
+const SYNTHESIS_INSTRUCTIONS = 'Synthesize the pinned PGS findings into a direct answer. Preserve absences and cite work-unit IDs.';
 
 function typed(code, message, retryable = false) {
   return Object.assign(new Error(message), { code, retryable });
@@ -43,6 +54,40 @@ function exactPair(value, label) {
   return Object.freeze({ provider, model });
 }
 
+function resolveScopeRequest(options, pgsConfig) {
+  if (!pgsConfig || typeof pgsConfig !== 'object' || Array.isArray(pgsConfig)
+      || Object.keys(pgsConfig).some(key => key !== 'sweepFraction')) {
+    throw typed('invalid_request', 'PGS configuration is invalid');
+  }
+  const sweepFraction = pgsConfig.sweepFraction === undefined ? 1 : pgsConfig.sweepFraction;
+  const derivedLevel = Object.entries(COVERAGE_LEVELS)
+    .find(([, fraction]) => fraction === sweepFraction)?.[0];
+  const coverageLevel = options.pgsLevel === undefined ? derivedLevel : options.pgsLevel;
+  if (!Object.hasOwn(COVERAGE_LEVELS, coverageLevel)
+      || COVERAGE_LEVELS[coverageLevel] !== sweepFraction) {
+    throw typed('invalid_request', 'PGS level does not match its derived coverage fraction');
+  }
+  const mode = options.pgsMode === undefined
+    ? (options.targetPartitionIds === undefined ? 'fresh' : 'targeted')
+    : options.pgsMode;
+  if (!['fresh', 'continue', 'targeted'].includes(mode)) {
+    throw typed('invalid_request', 'PGS mode is invalid');
+  }
+  if (mode === 'targeted') {
+    if (!Array.isArray(options.targetPartitionIds)) {
+      throw typed('invalid_request', 'Targeted PGS requires partition IDs');
+    }
+  } else if (options.targetPartitionIds !== undefined) {
+    throw typed('invalid_request', 'PGS target partition IDs require targeted mode');
+  }
+  return Object.freeze({
+    mode,
+    coverageLevel,
+    coverageFraction: sweepFraction,
+    targetPartitionIds: mode === 'targeted' ? options.targetPartitionIds : undefined,
+  });
+}
+
 function utf8Bytes(value) {
   return Buffer.byteLength(typeof value === 'string' ? value : JSON.stringify(value), 'utf8');
 }
@@ -61,19 +106,63 @@ function providerEventAt(value) {
   return typeof value === 'string' && value.length <= 128 ? value : null;
 }
 
-function buildWorkInput(query, work, maximumChars) {
+function buildWorkInput(query, work, maximumBytes) {
   const parts = [`Query: ${query}\n\nPinned work unit ${work.workUnitId}:\n`];
-  let chars = parts[0].length;
-  const append = (prefix, record) => {
-    const text = `${prefix}${JSON.stringify(record)}\n`;
-    if (chars + text.length > maximumChars) return false;
+  let bytes = utf8Bytes(parts[0]);
+  if (bytes > maximumBytes) {
+    throw typed('result_too_large', 'PGS sweep scaffold exceeds the provider input byte limit');
+  }
+  const append = (prefix, record, required) => {
+    let json;
+    try { json = JSON.stringify(record); } catch { json = null; }
+    if (typeof json !== 'string') {
+      throw typed('source_invalid', 'PGS work-unit record is not serializable');
+    }
+    const text = `${prefix}${json}\n`;
+    const textBytes = utf8Bytes(text);
+    if (bytes + textBytes > maximumBytes) {
+      if (required) {
+        throw typed('result_too_large', 'PGS work unit exceeds the provider input byte limit');
+      }
+      return false;
+    }
     parts.push(text);
-    chars += text.length;
+    bytes += textBytes;
     return true;
   };
-  for (const node of work.nodes) if (!append('NODE ', node)) break;
-  for (const edge of work.edges) if (!append('EDGE ', edge)) break;
+  for (const node of work.nodes) append('NODE ', node, true);
+  for (const edge of work.edges) if (!append('EDGE ', edge, false)) break;
   return parts.join('');
+}
+
+function buildSynthesisInput(query, sweepOutputs, maximumBytes) {
+  const parts = [`Original query: ${query}\n\nPinned PGS sweep outputs:\n`];
+  let bytes = utf8Bytes(parts[0]);
+  if (bytes > maximumBytes) {
+    throw typed('result_too_large', 'PGS synthesis scaffold exceeds the provider input byte limit');
+  }
+  for (const row of sweepOutputs) {
+    let json;
+    try { json = JSON.stringify(row); } catch { json = null; }
+    if (typeof json !== 'string') {
+      throw typed('pgs_projection_invalid', 'PGS synthesis row is not serializable');
+    }
+    const text = `${json}\n`;
+    bytes += utf8Bytes(text);
+    if (bytes > maximumBytes) {
+      throw typed('result_too_large', 'PGS synthesis input exceeds the provider input byte limit');
+    }
+    parts.push(text);
+  }
+  return parts.join('');
+}
+
+function canReturnUsefulSynthesisPartial(error) {
+  if (error instanceof ProviderCompletionError) return true;
+  if (!error?.code) return true;
+  return error.code === 'result_too_large'
+    || error.code === 'model_capability_invalid'
+    || String(error.code).startsWith('provider_');
 }
 
 function normalizeFailure(error) {
@@ -243,7 +332,7 @@ async function writeSuccessReceipt({
   }
 }
 
-async function runPinnedOperation(engine, options = {}) {
+async function runPinnedOperationCore(engine, options = {}) {
   const {
     sourcePin,
     scratchDir,
@@ -261,15 +350,8 @@ async function runPinnedOperation(engine, options = {}) {
       || (options.accessMode && options.accessMode !== 'read-only')) {
     throw typed('access_denied', 'PGS operation is read-only');
   }
-  if (!pgsConfig || typeof pgsConfig !== 'object' || Array.isArray(pgsConfig)
-      || Object.keys(pgsConfig).some(key => key !== 'sweepFraction')) {
-    throw typed('invalid_request', 'PGS configuration is invalid');
-  }
-  const sweepFraction = pgsConfig.sweepFraction === undefined ? 1 : pgsConfig.sweepFraction;
-  if (typeof sweepFraction !== 'number' || !Number.isFinite(sweepFraction)
-      || sweepFraction <= 0 || sweepFraction > 1) {
-    throw typed('invalid_request', 'PGS sweepFraction must be in (0,1]');
-  }
+  const scopeRequest = resolveScopeRequest(options, pgsConfig);
+  const sweepFraction = scopeRequest.coverageFraction;
   const concurrency = PINNED_SWEEP_CONCURRENCY;
   const limits = lowerLimits(options.limits || {});
   const sweepPair = exactPair(options.pgsSweep, 'pgsSweep');
@@ -281,6 +363,34 @@ async function runPinnedOperation(engine, options = {}) {
   }
   const sweepCapabilities = getModelCapabilities(catalog, sweepPair.provider, sweepPair.model);
   const synthCapabilities = getModelCapabilities(catalog, synthPair.provider, synthPair.model);
+  const sweepInputBudget = resolveProviderInputBudget(sweepCapabilities, {
+    maxInputBytes: limits.maxContextCharsPerWorkUnit,
+    label: 'PGS sweep input',
+  });
+  const synthInputBudget = resolveProviderInputBudget(synthCapabilities, {
+    maxInputBytes: limits.maxSynthesisInputBytes,
+    label: 'PGS synthesis input',
+  });
+  const maximumWorkUnitScaffold = `Query: ${query}\n\nPinned work unit ${
+    'w'.repeat(MAX_GENERATED_WORK_UNIT_ID_BYTES)
+  }:\n`;
+  const sweepRecordBudget = sweepInputBudget.inputBudgetBytes
+    - utf8Bytes(SWEEP_INSTRUCTIONS)
+    - utf8Bytes(maximumWorkUnitScaffold)
+    - (limits.maxNodesPerWorkUnit * utf8Bytes('NODE \n'));
+  if (!Number.isSafeInteger(sweepRecordBudget) || sweepRecordBudget <= 0) {
+    throw typed('result_too_large', 'PGS sweep input leaves no work-unit record budget');
+  }
+  const storeLimits = Object.freeze({
+    ...limits,
+    // The store groups exact serialized node bytes. Lowering this boundary
+    // ensures every persisted unit leaves room for instructions, the current
+    // query, the longest generated work-unit ID, and every NODE separator.
+    maxContextCharsPerWorkUnit: Math.min(
+      limits.maxContextCharsPerWorkUnit,
+      sweepRecordBudget,
+    ),
+  });
   const sweepClient = registry.get(sweepPair.provider, sweepPair.model);
   const synthClient = registry.get(synthPair.provider, synthPair.model);
   for (const [pair, client, label] of [
@@ -296,6 +406,11 @@ async function runPinnedOperation(engine, options = {}) {
   const emit = event => {
     if (typeof reportEvent === 'function') reportEvent(Object.freeze(event));
   };
+  emit({
+    type: 'progress',
+    phase: 'pgs_projection',
+    stage: 'projection_started',
+  });
   const receiptBoundary = await captureOperationScratchBoundary(scratchDir, scratchQuota);
   let receiptDirectory;
   let store;
@@ -308,7 +423,11 @@ async function runPinnedOperation(engine, options = {}) {
       { create: false },
     );
     store = await (engine.openPinnedPGSStore || openPinnedPGSStore)({
-      sourcePin, scratchDir, scratchQuota, pgsSweep: sweepPair, signal, limits,
+      sourcePin, scratchDir, scratchQuota, pgsSweep: sweepPair, query, signal, limits: storeLimits,
+      sessionStorage: options.sessionStorage,
+      queryNormalizationVersion: QUERY_NORMALIZATION_VERSION,
+      sweepPromptContractVersion: SWEEP_PROMPT_CONTRACT_VERSION,
+      coverageSelectionPolicyVersion: COVERAGE_SELECTION_POLICY_VERSION,
       statfsImpl: options.statfsImpl, clock: engine.operationClock,
     });
     const returnedTotals = {
@@ -326,6 +445,14 @@ async function runPinnedOperation(engine, options = {}) {
         completeCoverage: true,
       })
       : sourcePin.evidence || null;
+    emit({
+      type: 'progress',
+      phase: 'pgs_projection',
+      stage: 'projection_complete',
+      nodeCount: returnedTotals.nodes,
+      edgeCount: returnedTotals.edges,
+      workUnitCount: store.stats?.workUnitCount,
+    });
   } catch (error) {
     try {
       store?.close();
@@ -334,12 +461,19 @@ async function runPinnedOperation(engine, options = {}) {
     }
     throw error;
   }
-  const validateCompletion = engine.requireCompleteProviderResult || requireCompleteProviderResult;
-  const attemptId = `attempt-${randomUUID()}`;
-  const pending = store.snapshotPendingWorkUnits({ attemptId, limit: limits.maxSelectedWorkUnits });
-  const selectedCount = pending.length ? Math.max(1, Math.ceil(pending.length * sweepFraction)) : 0;
-  const selected = pending.slice(0, selectedCount);
   const uncommitted = [];
+  try {
+    const validateCompletion = engine.requireCompleteProviderResult || requireCompleteProviderResult;
+    const attemptId = `attempt-${randomUUID()}`;
+    const scopeAtStart = store.planScope({
+      attemptId,
+      coverageLevel: scopeRequest.coverageLevel,
+      coverageFraction: scopeRequest.coverageFraction,
+      ...(scopeRequest.targetPartitionIds === undefined
+        ? {}
+        : { targetPartitionIds: scopeRequest.targetPartitionIds }),
+    });
+    const selected = [];
 
   async function providerCall({
     phase,
@@ -350,12 +484,23 @@ async function runPinnedOperation(engine, options = {}) {
     work,
     instructions,
     input,
+    maxInputBytes,
     maxOutputBytes,
   }) {
     const context = work ? { workUnitId: work.workUnitId, partitionId: work.partitionId } : {};
+    const inputMeasurement = assertProviderInputWithinBudget({
+      capabilities,
+      maxInputBytes,
+      instructions,
+      input,
+      label: phase === 'pgs_synthesis' ? 'PGS synthesis input' : 'PGS sweep input',
+    });
     emit({
       type: 'provider_selected', phase, provider: pair.provider, model: pair.model,
-      providerStallMs: capabilities.providerStallMs, providerCallId: id, ...context,
+      providerStallMs: capabilities.providerStallMs, providerCallId: id,
+      providerInputBytes: inputMeasurement.totalInputBytes,
+      providerInputBudgetBytes: inputMeasurement.inputBudgetBytes,
+      ...context,
     });
     let outcome = 'failed';
     try {
@@ -398,18 +543,23 @@ async function runPinnedOperation(engine, options = {}) {
     }
   }
 
-  async function sweep(workUnitId) {
+  async function sweep(workUnitId, workAttemptId) {
     throwIfAborted(signal);
     store.beginWorkUnitAttempt(workUnitId, {
-      attemptId, provider: sweepPair.provider, model: sweepPair.model,
+      attemptId: workAttemptId, provider: sweepPair.provider, model: sweepPair.model,
       startedAt: new Date(engine.operationClock.now()).toISOString(),
     });
     const work = store.loadWorkUnit(workUnitId, { signal });
     const completion = await providerCall({
       phase: 'pgs_sweep', pair: sweepPair, capabilities: sweepCapabilities,
       client: sweepClient, id: `pgs:${workUnitId}`, work,
-      instructions: 'Analyze only this pinned PGS work unit. Return evidence-backed findings and explicit absences.',
-      input: buildWorkInput(query, work, limits.maxContextCharsPerWorkUnit),
+      instructions: SWEEP_INSTRUCTIONS,
+      input: buildWorkInput(
+        query,
+        work,
+        sweepInputBudget.inputBudgetBytes - utf8Bytes(SWEEP_INSTRUCTIONS),
+      ),
+      maxInputBytes: limits.maxContextCharsPerWorkUnit,
       maxOutputBytes: limits.maxSweepOutputBytes,
     });
     const output = String(completion.content || '').trim();
@@ -418,28 +568,71 @@ async function runPinnedOperation(engine, options = {}) {
     return { workUnitId, output };
   }
 
-  try {
-    for (let offset = 0; offset < selected.length; offset += concurrency) {
+    let batchIndex = 0;
+    const failedWorkUnits = new Set();
+    let afterWorkUnitId;
+    while (true) {
       throwIfAborted(signal);
-      const ids = selected.slice(offset, offset + concurrency);
-      const settled = await Promise.allSettled(ids.map(sweep));
-      settled.forEach(row => { if (row.status === 'fulfilled') uncommitted.push(row.value); });
-      if (signal?.aborted) {
+      const workAttemptId = batchIndex === 0
+        ? attemptId
+        : `${attemptId}-batch-${String(batchIndex).padStart(4, '0')}`;
+      if (batchIndex > 0) {
+        store.planScope({
+          attemptId: workAttemptId,
+          coverageLevel: scopeRequest.coverageLevel,
+          coverageFraction: scopeRequest.coverageFraction,
+          ...(scopeRequest.targetPartitionIds === undefined
+            ? {}
+            : { targetPartitionIds: scopeRequest.targetPartitionIds }),
+        });
+      }
+      const pendingBatch = store.snapshotPendingWorkUnits({
+        attemptId: workAttemptId,
+        limit: limits.maxSelectedWorkUnits,
+        ...(afterWorkUnitId === undefined ? {} : { afterWorkUnitId }),
+      });
+      const batch = pendingBatch.filter(id => !failedWorkUnits.has(id));
+      if (!batch.length) break;
+      afterWorkUnitId = pendingBatch.at(-1);
+      selected.push(...batch);
+      emit({
+        type: 'progress',
+        phase: 'pgs_sweep',
+        stage: 'work_selected',
+        selectedWorkUnits: batch.length,
+        selectedWorkUnitsTotal: selected.length,
+        candidateWorkUnits: store.countScopePendingWorkUnits(workAttemptId),
+        pendingWorkUnits: store.countPendingWorkUnits(),
+        batchIndex,
+      });
+
+      for (let offset = 0; offset < batch.length; offset += concurrency) {
+        throwIfAborted(signal);
+        const ids = batch.slice(offset, offset + concurrency);
+        const settled = await Promise.allSettled(ids.map(id => sweep(id, workAttemptId)));
+        settled.forEach(row => { if (row.status === 'fulfilled') uncommitted.push(row.value); });
+        if (signal?.aborted) {
+          if (uncommitted.length) await store.commitSuccessfulSweeps(uncommitted);
+          uncommitted.length = 0;
+          throw signal.reason;
+        }
         if (uncommitted.length) await store.commitSuccessfulSweeps(uncommitted);
         uncommitted.length = 0;
-        throw signal.reason;
+        const fatal = settled.find(row =>
+          row.status === 'rejected' && row.reason?.retryable === false);
+        if (fatal) throw fatal.reason;
+        settled.forEach((row, index) => {
+          if (row.status === 'rejected') {
+            failedWorkUnits.add(ids[index]);
+            store.recordRetryableFailure(ids[index], row.reason);
+          }
+        });
       }
-      if (uncommitted.length) await store.commitSuccessfulSweeps(uncommitted);
-      uncommitted.length = 0;
-      const fatal = settled.find(row => row.status === 'rejected' && row.reason?.retryable === false);
-      if (fatal) throw fatal.reason;
-      settled.forEach((row, index) => {
-        if (row.status === 'rejected') store.recordRetryableFailure(ids[index], row.reason);
-      });
+      batchIndex += 1;
     }
 
     throwIfAborted(signal);
-    const durableSweeps = store.listSuccessfulSweeps();
+    const durableSweeps = store.listSuccessfulSweeps({ attemptId });
     const sweepOutputs = durableSweeps.map(row => ({
       workUnitId: row.workUnitId,
       partitionId: row.partitionId,
@@ -455,13 +648,35 @@ async function runPinnedOperation(engine, options = {}) {
         throw typed('result_too_large', 'PGS sweep outputs exceed the aggregate byte limit');
       }
     }
-    const pendingWorkUnits = store.countPendingWorkUnits();
+    const scopeSummary = store.getScopeSummary(attemptId);
+    const pendingWorkUnits = scopeSummary.globalPendingWorkUnits;
+    emit({
+      type: 'progress',
+      phase: 'pgs_sweep',
+      stage: 'sweep_complete',
+      successfulSweeps: sweepOutputs.length,
+      pendingWorkUnits,
+    });
     const metadata = { pgs: {
       successfulSweeps: sweepOutputs.length,
-      retryablePartitions: store.listRetryablePartitions(),
+      retryablePartitions: store.listRetryablePartitions({ attemptId }),
+      pgsMode: scopeRequest.mode,
+      coverageLevel: scopeRequest.coverageLevel,
+      coverageFraction: scopeRequest.coverageFraction,
+      targetPartitionIds: scopeSummary.targetPartitionIds,
       sweepFraction,
       selectedWorkUnits: selected.length,
       pendingWorkUnits,
+      reusedWorkUnits: scopeAtStart.scopeSuccessfulWorkUnits,
+      newWorkUnits: scopeSummary.scopeSuccessfulWorkUnits
+        - scopeAtStart.scopeSuccessfulWorkUnits,
+      scopeWorkUnits: scopeSummary.scopeWorkUnits,
+      scopeSuccessfulWorkUnits: scopeSummary.scopeSuccessfulWorkUnits,
+      scopePendingWorkUnits: scopeSummary.scopePendingWorkUnits,
+      scopeComplete: scopeSummary.scopeComplete,
+      globalCoveredWorkUnits: scopeSummary.globalCoveredWorkUnits,
+      globalPendingWorkUnits: scopeSummary.globalPendingWorkUnits,
+      fullCoverage: scopeSummary.fullCoverage,
       sourceTotals: {
         nodes: store.stats.nodeCount,
         edges: store.stats.edgeCount,
@@ -488,56 +703,65 @@ async function runPinnedOperation(engine, options = {}) {
       };
     }
 
-    const inputParts = [`Original query: ${query}\n\nPinned PGS sweep outputs:\n`];
-    let inputBytes = utf8Bytes(inputParts[0]);
-    for (const row of sweepOutputs) {
-      const text = `${JSON.stringify(row)}\n`;
-      inputBytes += utf8Bytes(text);
-      if (inputBytes > limits.maxSynthesisInputBytes) {
-        throw typed('result_too_large', 'PGS synthesis input exceeds the byte limit');
-      }
-      inputParts.push(text);
-    }
+    let answer;
     try {
+      emit({
+        type: 'progress',
+        phase: 'pgs_synthesis',
+        stage: 'synthesis_started',
+        sweepOutputs: sweepOutputs.length,
+      });
+      const synthesisInput = buildSynthesisInput(
+        query,
+        sweepOutputs,
+        synthInputBudget.inputBudgetBytes - utf8Bytes(SYNTHESIS_INSTRUCTIONS),
+      );
       const completion = await providerCall({
         phase: 'pgs_synthesis', pair: synthPair, capabilities: synthCapabilities,
         client: synthClient, id: 'pgs:synthesis', work: null,
-        instructions: 'Synthesize the pinned PGS findings into a direct answer. Preserve absences and cite work-unit IDs.',
-        input: inputParts.join(''),
+        instructions: SYNTHESIS_INSTRUCTIONS,
+        input: synthesisInput,
+        maxInputBytes: limits.maxSynthesisInputBytes,
         maxOutputBytes: limits.maxSynthesisOutputBytes,
       });
-      const answer = String(completion.content || '').trim();
+      answer = String(completion.content || '').trim();
+      if (!answer) throw typed('provider_incomplete', 'PGS synthesis returned no content', true);
       assertBytes(answer, limits.maxSynthesisOutputBytes, 'PGS synthesis output');
-      const partial = pendingWorkUnits > 0;
-      const result = { ...baseResult, answer };
-      assertBytes(result, limits.maxResultBytes, 'PGS result');
-      if (!partial) {
-        await writeSuccessReceipt({
-          engine, attemptId, result, signal, scratchQuota,
-          receiptBoundary, receiptDirectory,
-        });
-      }
-      return {
-        state: partial ? 'partial' : 'complete',
-        result,
-        error: partial ? {
-          code: 'pgs_partitions_incomplete',
-          message: 'Some PGS work remains pending and retryable',
-          retryable: true,
-        } : null,
-        resultArtifact: null,
-        sourceEvidence,
-      };
+      emit({
+        type: 'progress',
+        phase: 'pgs_synthesis',
+        stage: 'synthesis_complete',
+        answerBytes: utf8Bytes(answer),
+      });
     } catch (error) {
       if (signal?.aborted) throw signal.reason;
-      if (!(error instanceof ProviderCompletionError)) throw error;
-      if (!sweepOutputs.length) throw error;
+      if (!sweepOutputs.length || !canReturnUsefulSynthesisPartial(error)) throw error;
       assertBytes(baseResult, limits.maxResultBytes, 'PGS result');
       return {
         state: 'partial', result: baseResult, error: normalizeFailure(error),
         resultArtifact: null, sourceEvidence,
       };
     }
+    const partial = !scopeSummary.scopeComplete;
+    const result = { ...baseResult, answer };
+    assertBytes(result, limits.maxResultBytes, 'PGS result');
+    if (!partial) {
+      await writeSuccessReceipt({
+        engine, attemptId, result, signal, scratchQuota,
+        receiptBoundary, receiptDirectory,
+      });
+    }
+    return {
+      state: partial ? 'partial' : 'complete',
+      result,
+      error: partial ? {
+        code: 'pgs_partitions_incomplete',
+        message: 'Some work in the requested PGS scope remains pending and retryable',
+        retryable: true,
+      } : null,
+      resultArtifact: null,
+      sourceEvidence,
+    };
   } catch (error) {
     if (signal?.aborted || error === signal?.reason) {
       if (uncommitted.length) await store.commitSuccessfulSweeps(uncommitted);
@@ -546,8 +770,24 @@ async function runPinnedOperation(engine, options = {}) {
     }
     throw error;
   } finally {
-    store.close();
-    closeScratchBoundary(receiptBoundary);
+    try {
+      store.close();
+    } finally {
+      closeScratchBoundary(receiptBoundary);
+    }
+  }
+}
+
+async function runPinnedOperation(engine, options = {}) {
+  const sessionStorage = options.sessionStorage;
+  let closeStarted = false;
+  try {
+    return await runPinnedOperationCore(engine, options);
+  } finally {
+    if (sessionStorage && typeof sessionStorage.close === 'function' && !closeStarted) {
+      closeStarted = true;
+      await sessionStorage.close();
+    }
   }
 }
 

@@ -192,6 +192,18 @@ function requestFor({
   };
 }
 
+function pgsWorkerParameters(extra = {}) {
+  return {
+    query: 'PGS canary',
+    pgsMode: 'fresh',
+    pgsLevel: 'full',
+    pgsConfig: { sweepFraction: 1 },
+    pgsSweep: { provider: 'fake', model: 'sweep-model' },
+    pgsSynth: { provider: 'fake', model: 'synth-model' },
+    ...extra,
+  };
+}
+
 function capabilityClaims(request, nonce, overrides = {}, now = INITIAL_NOW) {
   const target = request.target;
   return {
@@ -311,6 +323,28 @@ async function makeFixture(t, overrides = {}) {
     counters.resolve += 1;
     return structuredClone(target);
   });
+  const pgsSessionAuthorityFactory = overrides.pgsSessionAuthorityFactory || (async () => ({
+    async createSession({ operationId }) {
+      return {
+        sessionId: `pgss_${'u'.repeat(32)}`,
+        continuableUntil: '2099-07-19T12:00:00.000Z',
+        workerHandle: { operationId },
+      };
+    },
+    async continueSession({ operationId }) {
+      return {
+        sessionId: `pgss_${'u'.repeat(32)}`,
+        continuableUntil: '2099-07-19T12:00:00.000Z',
+        workerHandle: { operationId },
+      };
+    },
+    async openSessionStorage() {
+      return {
+        databasePath: '/trusted/session.sqlite',
+        async verify() {}, async reconcileQuota() {}, async close() {},
+      };
+    },
+  }));
   const worker = new BrainOperationWorker({
     home23Root,
     capabilityKey: KEY,
@@ -322,6 +356,7 @@ async function makeFixture(t, overrides = {}) {
     timers: overrides.timers,
     processStartIdentity: 'test-process-start',
     randomBytes: (size) => Buffer.alloc(size, 7),
+    pgsSessionAuthorityFactory,
   });
   let nonce = 0;
   const token = (request, claimOverrides = {}, tokenNow = clock.wall) => issueCapability(
@@ -355,6 +390,154 @@ test('worker helpers derive stable trusted process and operation identities', ()
   assert.throws(() => createProcessPinIdentity({ pid: 0, processStartIdentity: 'x' }), typed('source_unavailable'));
   assert.equal(operationRootFromScratch('/tmp/op/scratch'), '/tmp/op');
   assert.throws(() => operationRootFromScratch('/tmp/op/not-scratch'), typed('invalid_request'));
+});
+
+test('PGS worker creates or continues a protected session and gives only trusted storage to executor', async (t) => {
+  const calls = [];
+  const storage = {
+    version: 1,
+    sessionId: `pgss_${'q'.repeat(32)}`,
+    databasePath: '/trusted/session.sqlite',
+    quotaMaxBytes: 1024,
+    async verify() { calls.push('verify'); },
+    async reconcileQuota() { calls.push('quota'); return { bytes: 0 }; },
+    async close() { calls.push('close'); return { released: true }; },
+  };
+  const authority = {
+    async createSession(input) {
+      calls.push(['create', input]);
+      return {
+        sessionId: storage.sessionId,
+        continuableUntil: '2026-07-19T12:00:00.000Z',
+        workerHandle: { kind: 'fresh-handle' },
+      };
+    },
+    async continueSession(input) {
+      calls.push(['continue', input]);
+      return {
+        sessionId: storage.sessionId,
+        continuableUntil: '2026-07-19T12:00:00.000Z',
+        workerHandle: { kind: 'continue-handle' },
+      };
+    },
+    async openSessionStorage(handle, expected) {
+      calls.push(['open', handle, expected]);
+      return storage;
+    },
+  };
+  const seen = [];
+  const executors = new Map([['pgs', async (context) => {
+    seen.push(context);
+    return {
+      state: 'partial',
+      result: { answer: 'scoped', metadata: { pgs: {} } },
+      resultArtifact: null,
+      error: { code: 'pgs_scope_incomplete', message: 'partial', retryable: true },
+      sourceEvidence: null,
+    };
+  }]]);
+  const fixture = await makeFixture(t, {
+    executors,
+    pgsSessionAuthorityFactory: async () => authority,
+  });
+
+  const fresh = requestFor({
+    id: operationId('f'), type: 'pgs',
+    parameters: {
+      query: 'canary', pgsMode: 'fresh', pgsLevel: 'sample',
+      pgsConfig: { sweepFraction: 0.25 },
+      pgsSweep: { provider: 'fake', model: 'sweep' },
+      pgsSynth: { provider: 'fake', model: 'synth' },
+    },
+  });
+  await fixture.worker.start(fresh.operationId, fixture.token(fresh), fresh);
+  const freshStatus = await terminalStatus(fixture, fresh);
+  assert.deepEqual(freshStatus.pgsSession, {
+    sessionId: storage.sessionId,
+    continuableUntil: '2026-07-19T12:00:00.000Z',
+    sourceOperationId: null,
+  });
+  assert.equal(seen[0].pgsSession.sessionId, storage.sessionId);
+  assert.equal(seen[0].pgsSession.sessionStorage, storage);
+  assert.equal(Object.hasOwn(seen[0].parameters, 'pgsSessionId'), false);
+  assert.equal(calls.some((entry) => Array.isArray(entry) && entry[0] === 'create'), true);
+
+  const continued = requestFor({
+    id: operationId('g'), type: 'pgs',
+    parameters: {
+      ...fresh.parameters,
+      pgsMode: 'continue', pgsLevel: 'deep', pgsConfig: { sweepFraction: 0.5 },
+      continueFromOperationId: fresh.operationId,
+      pgsSessionId: storage.sessionId,
+    },
+  });
+  await fixture.worker.start(continued.operationId, fixture.token(continued), continued);
+  const continuedStatus = await terminalStatus(fixture, continued);
+  assert.deepEqual(continuedStatus.pgsSession, {
+    sessionId: storage.sessionId,
+    continuableUntil: '2026-07-19T12:00:00.000Z',
+    sourceOperationId: fresh.operationId,
+  });
+  assert.equal(seen[1].pgsSession.sessionId, storage.sessionId);
+  assert.equal(Object.hasOwn(seen[1].parameters, 'pgsSessionId'), false);
+  assert.equal(calls.some((entry) => Array.isArray(entry) && entry[0] === 'continue'), true);
+});
+
+test('PGS worker terminal metadata survives cancellation, interruption, and typed failure without publishing an answer', async (t) => {
+  for (const terminal of ['cancelled', 'interrupted', 'failed']) {
+    await t.test(terminal, async (t) => {
+      let committedSweep = false;
+      const executors = new Map([['pgs', async (context) => {
+        await context.pgsSession.sessionStorage.reconcileQuota();
+        committedSweep = true;
+        if (terminal === 'failed') {
+          throw Object.assign(new Error('provider failed after a committed sweep'), {
+            code: 'provider_failed', retryable: true,
+          });
+        }
+        await new Promise((resolve, reject) => {
+          const aborted = () => reject(context.signal.reason);
+          if (context.signal.aborted) aborted();
+          else context.signal.addEventListener('abort', aborted, { once: true });
+        });
+        throw new Error('unreachable');
+      }]]);
+      const fixture = await makeFixture(t, { executors });
+      const request = requestFor({
+        id: operationId({ cancelled: 'w', interrupted: 'x', failed: 'v' }[terminal]),
+        type: 'pgs',
+        parameters: pgsWorkerParameters({
+          pgsLevel: 'sample', pgsConfig: { sweepFraction: 0.25 },
+        }),
+      });
+      const started = await fixture.worker.start(
+        request.operationId, fixture.token(request), request,
+      );
+      assert.equal(started.pgsSession.sessionId, `pgss_${'u'.repeat(32)}`);
+      await eventually(() => {
+        assert.equal(committedSweep, true);
+      });
+      if (terminal === 'cancelled') {
+        await fixture.worker.cancel(request.operationId, fixture.token(request));
+      } else if (terminal === 'interrupted') {
+        await fixture.worker.stop();
+      }
+      const status = await terminalStatus(fixture, request);
+      assert.equal(status.state, terminal);
+      assert.deepEqual(status.pgsSession, {
+        sessionId: `pgss_${'u'.repeat(32)}`,
+        continuableUntil: '2099-07-19T12:00:00.000Z',
+        sourceOperationId: null,
+      });
+      const result = await fixture.worker.result(
+        request.operationId, fixture.token(request), fixture.token(request),
+      );
+      assert.equal(result.state, terminal);
+      assert.equal(result.result, null);
+      assert.equal(result.resultArtifact, null);
+      if (terminal === 'failed') assert.equal(result.error.code, 'provider_failed');
+    });
+  }
 });
 
 test('expired deadlines fail before target resolution, scratch, or source pinning', async (t) => {
@@ -861,7 +1044,9 @@ test('worker uses the shared authority matrix for every operation domain and sou
     }
     const request = requestFor({
       id: operationId(String.fromCharCode(65 + index++)), type, target,
-      parameters: type === 'graph_export' ? { format: 'jsonl' } : {},
+      parameters: type === 'graph_export' ? { format: 'jsonl' }
+        : type === 'pgs' ? pgsWorkerParameters()
+          : {},
     });
     await fixture.worker.start(request.operationId, fixture.token(request), request);
     await terminalStatus(fixture, request);
@@ -1283,7 +1468,10 @@ test('Query and PGS results use their exact operation-specific byte ceilings', a
   ];
   for (const [type, resultBytes, character, succeeds] of cases) {
     const request = requestFor({
-      id: operationId(character), type, parameters: { resultBytes },
+      id: operationId(character), type,
+      parameters: type === 'pgs'
+        ? pgsWorkerParameters({ resultBytes })
+        : { resultBytes },
     });
     await fixture.worker.start(request.operationId, fixture.token(request), request);
     const terminal = await terminalStatus(fixture, request);

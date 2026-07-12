@@ -8,6 +8,7 @@ import {
   isTurnEnvelope,
   isTurnEvent,
 } from './turn-types.js';
+import { enrichTerminalEnvelope } from './history-projection.js';
 
 /**
  * Turn lifecycle on top of the conversation JSONL.
@@ -94,7 +95,7 @@ export class TurnStore {
     for (const r of all) {
       if (isTurnEnvelope(r) && r.turn_id === turn_id && r.status !== 'pending') last = r;
     }
-    return last;
+    return last ? enrichTerminalEnvelope(all, last) : null;
   }
 
   /** List all turns in a chat, last-record-wins per turn_id. */

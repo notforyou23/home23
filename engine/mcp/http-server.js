@@ -46,6 +46,18 @@ const COORDINATOR_DIR = path.join(LOGS_DIR, 'coordinator');
 // Load COSMO configuration for file access control (mirrors filesystem MCP server behavior)
 let COSMO_CONFIG = null;
 let ALLOWED_PATHS = null;
+const OWN_BRAIN_DIAGNOSTIC_TOOL_NAMES = Object.freeze([
+  'get_system_state',
+  'get_recent_thoughts',
+  'query_memory',
+  'get_active_goals',
+  'get_agent_activity',
+  'get_memory_statistics',
+  'get_journal',
+  'get_oscillator_mode',
+  'get_memory_graph',
+  'get_dreams',
+]);
 try {
   const configPath = path.join(COSMO_ROOT, 'src', 'config.yaml');
   if (fs.existsSync(configPath)) {
@@ -55,9 +67,9 @@ try {
     const mcpServers = COSMO_CONFIG?.mcp?.client?.servers;
     if (mcpServers && mcpServers[0] && mcpServers[0].allowedPaths) {
       ALLOWED_PATHS = mcpServers[0].allowedPaths;
-      console.log('📁 MCP HTTP file access paths:', ALLOWED_PATHS);
+      console.error('📁 MCP HTTP file access paths:', ALLOWED_PATHS);
     } else {
-      console.log('📁 MCP HTTP: no allowedPaths configured (full repository access)');
+      console.error('📁 MCP HTTP: no allowedPaths configured (full repository access)');
     }
   }
 } catch (error) {
@@ -73,6 +85,17 @@ try {
  *   (current default behavior, so this is non-breaking).
  * - If allowedPaths are present, the requested path must be under one of them.
  */
+function isPathAllowedForRoots(requestedPath, allowedRoots) {
+  const resolvedRequested = path.resolve(requestedPath);
+  return allowedRoots.some((allowedRoot) => {
+    const relative = path.relative(path.resolve(allowedRoot), resolvedRequested);
+    return relative === ''
+      || (relative !== '..'
+        && !relative.startsWith(`..${path.sep}`)
+        && !path.isAbsolute(relative));
+  });
+}
+
 function isPathAllowed(relPath) {
   if (!ALLOWED_PATHS || ALLOWED_PATHS.length === 0) {
     return true; // No restrictions configured
@@ -83,14 +106,12 @@ function isPathAllowed(relPath) {
     ? path.resolve(relPath)  // Use absolute path as-is
     : path.resolve(COSMO_ROOT, relPath);  // Resolve relative to COSMO root
 
-  return ALLOWED_PATHS.some(allowedPath => {
-    // Resolve allowed path (supports both absolute and COSMO-relative paths)
-    const resolvedAllowed = path.isAbsolute(allowedPath)
+  const resolvedAllowedRoots = ALLOWED_PATHS.map(allowedPath => (
+    path.isAbsolute(allowedPath)
       ? path.resolve(allowedPath)  // External absolute path
-      : path.resolve(COSMO_ROOT, allowedPath);  // COSMO-relative path
-    
-    return resolvedRequested.startsWith(resolvedAllowed);
-  });
+      : path.resolve(COSMO_ROOT, allowedPath) // COSMO-relative path
+  ));
+  return isPathAllowedForRoots(resolvedRequested, resolvedAllowedRoots);
 }
 
 async function readRecentThoughts(limit = 20, { signal } = {}) {
@@ -142,12 +163,48 @@ async function getLatestCoordinatorReport() {
   };
 }
 
+function unsupportedScalarResult(state, capability, overrideMessage) {
+  const projection = state?.scalarProjection || {};
+  const advertised = projection.capabilities?.[capability];
+  const error = advertised?.error || {
+    code: 'snapshot_capability_unsupported',
+    message: `${capability} is not projected by brain-snapshot`,
+    retryable: false,
+  };
+  return {
+    ok: false,
+    status: 'unsupported',
+    sourceHealth: projection.sourceHealth || 'degraded',
+    capability,
+    scalarProjection: {
+      source: projection.source || 'brain-snapshot',
+      sourceHealth: projection.sourceHealth || 'degraded',
+      updatedAt: projection.updatedAt || null,
+    },
+    error: {
+      code: error.code || 'snapshot_capability_unsupported',
+      message: overrideMessage || error.message || `${capability} is not projected by brain-snapshot`,
+      retryable: error.retryable === true,
+    },
+  };
+}
+
 // Create MCP server
 function createMCPServer(options = {}) {
   const memoryTools = options.memoryTools;
   const readScalarState = options.readScalarState;
   const signal = options.signal;
   const readThoughts = options.readRecentThoughts || readRecentThoughts;
+  const allowedToolNames = options.allowedToolNames === undefined
+    ? null
+    : new Set(options.allowedToolNames);
+  if (allowedToolNames
+      && ([...allowedToolNames].some((name) => typeof name !== 'string' || !name)
+        || allowedToolNames.size === 0)) {
+    throw Object.assign(new Error('MCP tool allowlist is invalid'), {
+      code: 'mcp_tool_allowlist_invalid',
+    });
+  }
   if (!memoryTools || typeof memoryTools.queryMemory !== 'function'
       || typeof memoryTools.getMemoryStatistics !== 'function'
       || typeof memoryTools.getMemoryGraph !== 'function'
@@ -176,11 +233,11 @@ function createMCPServer(options = {}) {
 
   // Register tool handlers
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    return {
+    const response = {
       tools: [
         {
           name: 'get_system_state',
-          description: 'Get Cosmo\'s current system state including cycle count, cognitive state, and memory/goal counts',
+          description: 'Get bounded own-brain read-only diagnostics. Snapshot-only fields include explicit capability metadata; use durable brain operations for direct, cross-brain, or PGS work.',
           inputSchema: {
             type: 'object',
             properties: {},
@@ -202,7 +259,7 @@ function createMCPServer(options = {}) {
         },
         {
           name: 'query_memory',
-          description: 'Query Cosmo\'s memory network for concepts',
+          description: 'Run a bounded read-only keyword query against this server agent\'s own brain. Use durable brain operations for direct, cross-brain, or PGS work.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -225,7 +282,7 @@ function createMCPServer(options = {}) {
         },
         {
           name: 'get_active_goals',
-          description: 'Get Cosmo\'s research goals',
+          description: 'Get bounded active-goal summaries when projected by the own-brain snapshot; unavailable goal collections return explicit unsupported state.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -243,7 +300,7 @@ function createMCPServer(options = {}) {
         },
         {
           name: 'get_agent_activity',
-          description: 'Get specialist agent missions',
+          description: 'Get own-brain agent activity only when the bounded snapshot advertises that capability; otherwise returns explicit unsupported state.',
           inputSchema: {
             type: 'object',
             properties: {},
@@ -259,7 +316,7 @@ function createMCPServer(options = {}) {
         },
         {
           name: 'get_memory_statistics',
-          description: 'Get memory network statistics',
+          description: 'Get bounded read-only statistics for this server agent\'s own canonical brain.',
           inputSchema: {
             type: 'object',
             properties: {},
@@ -353,7 +410,7 @@ function createMCPServer(options = {}) {
         },
         {
           name: 'get_journal',
-          description: 'Get Cosmo\'s thought journal entries',
+          description: 'Get own-brain journal entries only when the bounded snapshot advertises that capability; otherwise returns explicit unsupported state.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -366,7 +423,7 @@ function createMCPServer(options = {}) {
         },
         {
           name: 'get_oscillator_mode',
-          description: 'Get current oscillator mode and stats (focus/explore/execute)',
+          description: 'Get own-brain oscillator state only when the bounded snapshot advertises that capability; otherwise returns explicit unsupported state.',
           inputSchema: {
             type: 'object',
             properties: {},
@@ -382,30 +439,35 @@ function createMCPServer(options = {}) {
         },
         {
           name: 'get_memory_graph',
-          description: 'Get a bounded memory graph projection. Use graph export for a complete graph.',
+          description: 'Get a bounded read-only graph projection from this server agent\'s own brain. Use durable brain operations for direct, cross-brain, PGS, or complete graph work.',
           inputSchema: {
             type: 'object',
             properties: {
-              limit: {
-                type: 'number',
+              nodeLimit: {
+                type: 'integer',
                 description: 'Max nodes (default: 200, range: 1-2000)',
                 default: 200,
+                minimum: 1,
+                maximum: 2000,
               },
               edgeLimit: {
-                type: 'number',
+                type: 'integer',
                 description: 'Max connecting edges (default: 800, range: 0-8000)',
                 default: 800,
+                minimum: 0,
+                maximum: 8000,
               },
               clusterId: {
                 type: ['string', 'number'],
                 description: 'Optional cluster filter',
               },
             },
+            additionalProperties: false,
           },
         },
         {
           name: 'get_dreams',
-          description: 'Get dream thoughts and goals generated during sleep cycles',
+          description: 'Get own-brain dream records only when the bounded snapshot advertises that capability; otherwise returns explicit unsupported state.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -503,12 +565,17 @@ function createMCPServer(options = {}) {
         },
       ],
     };
+    if (allowedToolNames === null) return response;
+    return { tools: response.tools.filter((tool) => allowedToolNames.has(tool.name)) };
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     
     try {
+      if (allowedToolNames !== null && !allowedToolNames.has(name)) {
+        throw new Error(`MCP tool is not available on this transport: ${name}`);
+      }
       let result;
       
       switch (name) {
@@ -538,6 +605,20 @@ function createMCPServer(options = {}) {
           const state = await readScalarState();
           const status = args.status || 'active';
           const limit = args.limit || 20;
+          const capability = state.scalarProjection?.capabilities?.goals;
+          const activeAvailable = capability?.status === 'degraded'
+            && capability.available?.includes('activeSummaries')
+            && Array.isArray(state.goals?.active);
+          if (status !== 'active' || !activeAvailable) {
+            result = unsupportedScalarResult(
+              state,
+              'goals',
+              status === 'active'
+                ? undefined
+                : `brain-snapshot does not project ${status} goal entries`,
+            );
+            break;
+          }
           
           // Goals are exported as Map entries: [[key, value], [key, value], ...]
           // Need to extract just the values
@@ -561,15 +642,23 @@ function createMCPServer(options = {}) {
           }
           
           result = {
+            ok: true,
+            status: 'degraded',
+            sourceHealth: state.scalarProjection.sourceHealth,
             filter: status,
             count: goals.length,
-            goals: goals.slice(0, limit)
+            goals: goals.slice(0, limit),
+            scalarProjection: state.scalarProjection,
           };
           break;
         }
         
         case 'get_agent_activity': {
           const state = await readScalarState();
+          if (state.scalarProjection?.capabilities?.agentActivity?.status !== 'supported') {
+            result = unsupportedScalarResult(state, 'agentActivity');
+            break;
+          }
           
           // Extract agent data from agentExecutor state
           const agentExecutor = state.agentExecutor || {};
@@ -747,6 +836,10 @@ function createMCPServer(options = {}) {
         
         case 'get_journal': {
           const state = await readScalarState();
+          if (state.scalarProjection?.capabilities?.journal?.status !== 'supported') {
+            result = unsupportedScalarResult(state, 'journal');
+            break;
+          }
           const limit = args.limit || 20;
           const journal = state.journal || [];
           result = {
@@ -758,6 +851,10 @@ function createMCPServer(options = {}) {
         
         case 'get_oscillator_mode': {
           const state = await readScalarState();
+          if (state.scalarProjection?.capabilities?.oscillator?.status !== 'supported') {
+            result = unsupportedScalarResult(state, 'oscillator');
+            break;
+          }
           result = {
             currentMode: state.currentMode || state.oscillator?.currentMode || 'unknown',
             stats: state.oscillator || {},
@@ -778,7 +875,7 @@ function createMCPServer(options = {}) {
         
         case 'get_memory_graph': {
           result = await memoryTools.getMemoryGraph({
-            nodeLimit: args.limit ?? args.nodeLimit ?? 200,
+            nodeLimit: args.nodeLimit ?? 200,
             edgeLimit: args.edgeLimit ?? 800,
             clusterId: args.clusterId ?? null,
             signal,
@@ -788,6 +885,10 @@ function createMCPServer(options = {}) {
         
         case 'get_dreams': {
           const state = await readScalarState();
+          if (state.scalarProjection?.capabilities?.dreams?.status !== 'supported') {
+            result = unsupportedScalarResult(state, 'dreams');
+            break;
+          }
           const requestedLimit = args.limit || 20;
           const dreams = [];
           
@@ -1017,7 +1118,7 @@ function createMCPServer(options = {}) {
           }
 
           const maxResults = Math.min(args.maxResults || 8, 15);
-          console.log(`[MCP] Web search: "${query}" (max ${maxResults} results)`);
+          console.error(`[MCP] Web search: "${query}" (max ${maxResults} results)`);
 
           const searchResult = await webSearch.search(query, { maxResults });
 
@@ -1069,6 +1170,13 @@ function createMCPServer(options = {}) {
   });
 
   return server;
+}
+
+function createOwnBrainMCPServer(options = {}) {
+  return createMCPServer({
+    ...options,
+    allowedToolNames: OWN_BRAIN_DIAGNOSTIC_TOOL_NAMES,
+  });
 }
 
 function createMcpHttpApp(options = {}) {
@@ -1239,8 +1347,11 @@ if (require.main === module) {
 }
 
 module.exports = {
+  OWN_BRAIN_DIAGNOSTIC_TOOL_NAMES,
   assertLoopbackHost,
   createMCPServer,
+  createOwnBrainMCPServer,
   createMcpHttpApp,
+  isPathAllowedForRoots,
   startMcpHttpServer,
 };

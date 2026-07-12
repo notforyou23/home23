@@ -307,14 +307,14 @@ test('large PGS CLI auto-launches a 100k/300k isolated source and retains durabl
     '--controlled-provider',
     '--fixture-operation-delay-ms', '1',
     '--sweep-fraction', '0.10',
-    '--pgs-wait-ms', '60000',
+    '--pgs-wait-ms', '300000',
     '--sse-output', eventsFile,
     '--heap-output', heapFile,
     '--output', output,
   ], state.env);
 
   const [receipt] = await readRows(output);
-  assertIsolatedTerminal(receipt, 'partial');
+  assertIsolatedTerminal(receipt, 'complete');
   assert.equal(receipt.scenario, 'large-pgs-isolated');
   assert.equal(receipt.authoritativeNodeCount, 100000);
   assert.equal(receipt.authoritativeNodes, 100000);
@@ -323,13 +323,13 @@ test('large PGS CLI auto-launches a 100k/300k isolated source and retains durabl
   assert.equal(receipt.controlledProvider, true);
   assert.equal(receipt.liveProviderLargePgsGatePassed, false);
   assert.equal(receipt.providerTerminalValidated, true);
-  assert.ok(receipt.result.sweepOutputCount > 0);
-  assert.equal(receipt.error.code, 'pgs_partitions_incomplete');
+  assert.equal(receipt.result.sweepOutputCount, 400);
+  assert.equal(receipt.error, null);
   assert.equal(
     receipt.result.metadata.pgs.successfulSweeps,
     receipt.result.sweepOutputCount,
   );
-  assert.ok(receipt.result.metadata.pgs.retryablePartitions.length > 0);
+  assert.deepEqual(receipt.result.metadata.pgs.retryablePartitions, []);
   assert.ok((await fs.stat(receipt.isolatedStore)).isDirectory());
 
   const events = await readRows(eventsFile);
@@ -382,8 +382,18 @@ test('exact lifecycle CLIs auto-launch isolated production processes and retain 
     attached: detached.concurrentAttachments.attached,
     detached: detached.concurrentAttachments.detached,
   }, { total: 2, attached: 1, detached: 1 });
-  assert.equal(detached.terminalAttachments.detached, 1);
-  assert.ok(detached.terminalAttachments.closed >= 1);
+  assert.deepEqual({
+    total: detached.terminalAttachments.total,
+    attached: detached.terminalAttachments.attached,
+    detached: detached.terminalAttachments.detached,
+    closed: detached.terminalAttachments.closed,
+  }, { total: 2, attached: 0, detached: 1, closed: 1 });
+  const terminalSurvivor = detached.terminalAttachments.entries.find((entry) =>
+    entry.state === 'closed');
+  const terminalDetached = detached.terminalAttachments.entries.find((entry) =>
+    entry.state === 'detached');
+  assert.equal(terminalSurvivor?.reason, 'operation_terminal');
+  assert.ok(['caller_abort', 'transport_disconnect'].includes(terminalDetached?.reason));
   const detachEvents = await readRows(detachEventsFile);
   assert.equal(new Set(detachEvents.map((event) =>
     `${event.operationId}:${event.eventSequence}`)).size, detachEvents.length);

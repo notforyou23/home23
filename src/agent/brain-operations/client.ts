@@ -18,6 +18,7 @@ import type {
   BrainOperationEventGap,
   BrainOperationNotification,
   BrainNonterminalOperation,
+  BrainOperationSummary,
   BrainOperationRecord,
   BrainOperationResult,
   BrainOperationResultEnvelope,
@@ -26,6 +27,9 @@ import type {
   BrainTargetSelector,
   OperationActivity,
   ResolvedBrainTarget,
+  QueryCapabilityCatalog,
+  ResearchRunList,
+  ActiveResearchRun,
   SynthesisStateResponse,
 } from './types.js';
 
@@ -54,6 +58,10 @@ const PROVIDER_ACTIVITY_TEXT_LIMITS = Object.freeze({
 const PROVIDER_ACTIVITY_OUTCOMES = new Set([
   'complete', 'partial', 'failed', 'cancelled', 'aborted',
 ]);
+const PGS_MODES = ['fresh', 'continue', 'targeted'] as const;
+const PGS_LEVELS = ['skim', 'sample', 'deep', 'full'] as const;
+const PGS_PARTITION_ID = /^(?:c|h)-[A-Za-z0-9._-]{1,253}$/;
+const MAX_PGS_TARGET_PARTITIONS = 256;
 const requireCjs = createRequire(import.meta.url);
 const { OPERATION_ID_PATTERN: OPERATION_ID } = requireCjs(
   '../../../engine/src/dashboard/brain-operations/operation-contract.js',
@@ -67,10 +75,10 @@ const PARAMETER_FIELDS: Record<string, readonly string[]> = {
   query: ['requestId', 'target', 'query', 'mode', 'modelSelection', 'enablePGS',
     'enableSynthesis', 'includeOutputs', 'includeThoughts', 'includeCoordinatorInsights',
     'allowActions', 'priorContext', 'topK'],
-  pgs: ['requestId', 'target', 'query', 'mode', 'pgsMode', 'pgsConfig', 'pgsSweep',
-    'pgsSynth', 'priorContext'],
+  pgs: ['requestId', 'target', 'query', 'pgsMode', 'pgsLevel',
+    'continueFromOperationId', 'targetPartitionIds', 'pgsSweep', 'pgsSynth'],
   search: ['requestId', 'target', 'query', 'topK', 'tag'],
-  graph: ['requestId', 'target', 'nodeLimit', 'edgeLimit', 'tag', 'clusterId', 'minWeight'],
+  graph: ['requestId', 'target', 'view', 'nodeLimit', 'edgeLimit', 'tag', 'clusterId', 'minWeight'],
   status: ['requestId', 'target', 'view', 'generationMarker'],
   graph_export: ['requestId', 'target', 'format'],
   synthesis: ['requestId', 'trigger', 'reason'],
@@ -158,7 +166,16 @@ function validateCallerParameters(operationType: string, parameters: Record<stri
     exactProviderModelPair(value, 'pgsSynth'));
   if (operationType === 'query' && (pgsSweep || pgsSynth)) throw invalid();
   if (operationType === 'pgs' && modelSelection) throw invalid();
+  if (operationType === 'pgs' && (!pgsSweep || !pgsSynth)) {
+    throw invalid('pgs_provider_models_invalid');
+  }
   if (operationType === 'synthesis' && (modelSelection || pgsSweep || pgsSynth)) throw invalid();
+
+  if (operationType === 'research_launch') {
+    if (!hasOwn(parameters, 'topic') || !hasOwn(parameters, 'context')) throw invalid();
+    requiredBoundedText(parameters.topic, 'topic', 12_000);
+    requiredBoundedText(parameters.context, 'context', 20_000);
+  }
 
   if (['query', 'pgs', 'search'].includes(operationType)) {
     if (!hasOwn(parameters, 'query')) throw invalid('query_invalid');
@@ -173,6 +190,10 @@ function validateCallerParameters(operationType: string, parameters: Record<stri
     optionalFiniteInteger(value, 'edgeLimit', 1, 8_000));
   validatePresent(parameters, 'minWeight', (value) =>
     optionalFiniteNumber(value, 'minWeight', 0, 1));
+  if (operationType === 'graph') {
+    validatePresent(parameters, 'view', (value) =>
+      optionalEnum(value, 'view', ['sample', 'pgs_partitions'] as const));
+  }
   validatePresent(parameters, 'after', (value) =>
     optionalFiniteInteger(value, 'after', 0, Number.MAX_SAFE_INTEGER));
   validatePresent(parameters, 'limit', (value) => optionalFiniteInteger(value, 'limit', 1, 500));
@@ -181,11 +202,15 @@ function validateCallerParameters(operationType: string, parameters: Record<stri
   validatePresent(parameters, 'maxConcurrent', (value) =>
     optionalFiniteInteger(value, 'maxConcurrent', 1, 128));
   validatePresent(parameters, 'mode', (value) => optionalEnum(value, 'mode', [
-    'quick', 'full', 'expert', 'dive', 'fast', 'normal', 'deep', 'executive',
-    'raw', 'report', 'innovation', 'consulting', 'grounded',
+    'quick', 'full', 'expert', 'dive',
   ] as const));
-  validatePresent(parameters, 'pgsMode', (value) =>
-    optionalEnum(value, 'pgsMode', ['full'] as const));
+  const pgsMode = validatePresent(parameters, 'pgsMode', (value) =>
+    optionalEnum(value, 'pgsMode', PGS_MODES));
+  const pgsLevel = validatePresent(parameters, 'pgsLevel', (value) =>
+    optionalEnum(value, 'pgsLevel', PGS_LEVELS));
+  if (operationType === 'pgs' && (pgsMode === undefined || pgsLevel === undefined)) {
+    throw invalid('pgs_contract_invalid');
+  }
   for (const field of ['enablePGS', 'enableSynthesis', 'includeOutputs', 'includeThoughts',
     'includeCoordinatorInsights', 'allowActions']) {
     validatePresent(parameters, field, (value) => optionalBoolean(value, field));
@@ -199,10 +224,43 @@ function validateCallerParameters(operationType: string, parameters: Record<stri
       throw invalid('priorContext_invalid');
     }
   }
-  if (hasOwn(parameters, 'pgsConfig')) {
-    assertExactKeys(parameters.pgsConfig, ['sweepFraction'], 'pgsConfig');
-    validatePresent(parameters.pgsConfig, 'sweepFraction', (value) =>
-      optionalFiniteNumber(value, 'sweepFraction', 0, 1, { exclusiveMin: true }));
+  if (operationType === 'pgs') {
+    let continueFromOperationId: string | undefined;
+    if (hasOwn(parameters, 'continueFromOperationId')) {
+      continueFromOperationId = requiredBoundedText(
+        parameters.continueFromOperationId,
+        'continueFromOperationId',
+        256,
+      );
+      if (!OPERATION_ID.test(continueFromOperationId)) {
+        throw invalid('continueFromOperationId_invalid');
+      }
+    }
+    let targetPartitionIds: string[] | undefined;
+    if (hasOwn(parameters, 'targetPartitionIds')) {
+      const value = parameters.targetPartitionIds;
+      if (!Array.isArray(value) || value.length < 1 || value.length > MAX_PGS_TARGET_PARTITIONS) {
+        throw invalid('targetPartitionIds_invalid');
+      }
+      const seen = new Set<string>();
+      targetPartitionIds = value.map((partitionId) => {
+        if (typeof partitionId !== 'string' || !PGS_PARTITION_ID.test(partitionId)
+            || seen.has(partitionId)) {
+          throw invalid('targetPartitionIds_invalid');
+        }
+        seen.add(partitionId);
+        return partitionId;
+      });
+    }
+    if (pgsMode === 'fresh' && (continueFromOperationId || targetPartitionIds)) {
+      throw invalid('pgsMode_invalid');
+    }
+    if (pgsMode === 'continue' && (!continueFromOperationId || targetPartitionIds)) {
+      throw invalid('pgsMode_invalid');
+    }
+    if (pgsMode === 'targeted' && !targetPartitionIds) {
+      throw invalid('pgsMode_invalid');
+    }
   }
   if (hasOwn(parameters, 'requestId')
       && (typeof parameters.requestId !== 'string'
@@ -260,15 +318,77 @@ export class BrainOperationsClient {
     return value;
   }
 
+  async getQueryCatalog(signal?: AbortSignal): Promise<QueryCapabilityCatalog> {
+    const value = await this.requestJson<QueryCapabilityCatalog>(
+      '/home23/api/query/catalog', {},
+      { code: 'catalog_timeout', timeoutMs: this.options.statusReadMs ?? 10_000, signal },
+    );
+    if (typeof value.available !== 'boolean' || !Array.isArray(value.models)
+        || !value.defaults || Array.isArray(value.defaults) || typeof value.defaults !== 'object'
+        || value.models.some((entry) => !entry || typeof entry !== 'object'
+          || typeof entry.id !== 'string' || !entry.id
+          || typeof entry.provider !== 'string' || !entry.provider)) {
+      throw new Error('catalog_invalid');
+    }
+    return value;
+  }
+
+  async listResearchRuns(options: {
+    state?: 'recent' | 'active';
+    limit?: number;
+    signal?: AbortSignal;
+  } = {}): Promise<ResearchRunList> {
+    const state = options.state ?? 'recent';
+    const limit = options.limit ?? 20;
+    if (!['recent', 'active'].includes(state)
+        || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw invalid();
+    const value = await this.requestJson<ResearchRunList>(
+      `/home23/api/brain-operations/research-runs?state=${state}&limit=${limit}`, {},
+      { code: 'status_timeout', timeoutMs: this.options.statusReadMs ?? 10_000,
+        signal: options.signal },
+    );
+    if (!Array.isArray(value.runs) || value.state !== state) throw new Error('run_catalog_invalid');
+    return value;
+  }
+
+  async getActiveResearchRun(signal?: AbortSignal): Promise<ActiveResearchRun> {
+    const value = await this.requestJson<ActiveResearchRun>(
+      '/home23/api/brain-operations/research-runs/active', {},
+      { code: 'status_timeout', timeoutMs: this.options.statusReadMs ?? 10_000, signal },
+    );
+    if (typeof value.active !== 'boolean') throw new Error('run_catalog_invalid');
+    return value;
+  }
+
   private invalidateCatalog(): void {
     this.catalogCache = null;
     this.catalogCachedAt = 0;
   }
 
   async listNonterminal(signal?: AbortSignal): Promise<BrainNonterminalOperation[]> {
-    const value = await this.requestJson<{ operations: BrainNonterminalOperation[] }>(
-      '/home23/api/brain-operations?state=nonterminal', {},
-      { code: 'status_timeout', timeoutMs: this.options.statusReadMs ?? 10_000, signal },
+    return this.listOperations({ state: 'nonterminal', signal }) as Promise<BrainNonterminalOperation[]>;
+  }
+
+  async listOperations(options: {
+    state?: 'nonterminal' | 'recent';
+    limit?: number;
+    signal?: AbortSignal;
+  } = {}): Promise<Array<BrainNonterminalOperation | BrainOperationSummary>> {
+    const state = options.state ?? 'nonterminal';
+    if (state !== 'nonterminal' && state !== 'recent') throw invalid();
+    if (state === 'nonterminal' && options.limit !== undefined) throw invalid();
+    const limit = state === 'recent' ? (options.limit ?? 20) : undefined;
+    if (limit !== undefined
+        && (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)) throw invalid();
+    const query = state === 'recent'
+      ? `?state=recent&limit=${limit}`
+      : '?state=nonterminal';
+    const value = await this.requestJson<{
+      operations: Array<BrainNonterminalOperation | BrainOperationSummary>;
+    }>(
+      `/home23/api/brain-operations${query}`, {},
+      { code: 'status_timeout', timeoutMs: this.options.statusReadMs ?? 10_000,
+        signal: options.signal },
     );
     return Array.isArray(value.operations) ? value.operations : [];
   }
@@ -331,6 +451,30 @@ export class BrainOperationsClient {
 
   async search(request: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
     return this.runShort('search', request, signal);
+  }
+
+  async searchContext(
+    request: { query: string; topK: number },
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown>> {
+    assertExactKeys(request, ['query', 'topK'], 'contextSearch', { requireAll: true });
+    const query = requiredBoundedText(request.query, 'query', 12_000);
+    const topK = optionalFiniteInteger(request.topK, 'topK', 1, 100);
+    if (topK === undefined) throw invalid('topK_invalid');
+    const value = await this.requestJson<Record<string, unknown>>('/api/memory/search', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query, topK }),
+    }, {
+      code: 'context_search_timeout',
+      timeoutMs: this.options.statusReadMs ?? 10_000,
+      signal,
+    });
+    return {
+      ...value,
+      sourceEvidence: value.sourceEvidence
+        ?? (value.evidence && typeof value.evidence === 'object' ? value.evidence : null),
+    };
   }
 
   async graph(request: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {

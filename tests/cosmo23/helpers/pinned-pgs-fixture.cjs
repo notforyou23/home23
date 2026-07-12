@@ -27,7 +27,7 @@ const limits = Object.freeze({
 function catalog() {
   const model = {
     id: 'shared-model', kind: 'chat', transport: 'responses',
-    maxOutputTokens: 512, providerStallMs: 900_000,
+    maxOutputTokens: 512, contextWindowTokens: 128_000, providerStallMs: 900_000,
   };
   return {
     version: 1,

@@ -16,20 +16,26 @@ const QUERY_MODES = new Set([
   'quick', 'full', 'expert', 'dive', 'fast', 'normal', 'deep', 'executive',
   'raw', 'report', 'innovation', 'consulting', 'grounded',
 ]);
-const PGS_MODES = new Set(['full', 'continue', 'targeted']);
+const PGS_MODES = new Set(['fresh', 'continue', 'targeted']);
+const PGS_LEVELS = new Set(['skim', 'sample', 'deep', 'full']);
+const PGS_PARTITION_ID = /^(?:c|h)-[A-Za-z0-9._-]{1,253}$/;
+const MAX_PGS_TARGET_PARTITIONS = 256;
 const INTELLIGENCE_SECTIONS = new Set([
   'executive', 'goals', 'trajectory', 'thoughts', 'insights',
 ]);
 const PARAMETER_FIELDS = Object.freeze({
   search: ['query', 'topK', 'tag'],
-  graph: ['nodeLimit', 'edgeLimit', 'tag', 'clusterId', 'minWeight'],
+  graph: ['view', 'nodeLimit', 'edgeLimit', 'tag', 'clusterId', 'minWeight'],
   status: ['view', 'generationMarker'],
   query: [
     'query', 'mode', 'modelSelection', 'enablePGS', 'enableSynthesis',
     'includeOutputs', 'includeThoughts', 'includeCoordinatorInsights',
     'allowActions', 'priorContext', 'topK',
   ],
-  pgs: ['query', 'mode', 'pgsMode', 'pgsConfig', 'pgsSweep', 'pgsSynth', 'priorContext'],
+  pgs: [
+    'query', 'mode', 'pgsMode', 'pgsLevel', 'continueFromOperationId',
+    'targetPartitionIds', 'pgsSweep', 'pgsSynth',
+  ],
   graph_export: ['format'],
   synthesis: ['trigger', 'reason'],
   research_compile: ['kind', 'section', 'sectionId', 'focus'],
@@ -215,12 +221,33 @@ function validateParameters(operationType, parameters) {
   if (operationType === 'pgs') {
     exactProviderModelPair(parameters.pgsSweep);
     exactProviderModelPair(parameters.pgsSynth);
-    if (parameters.pgsMode !== undefined && !PGS_MODES.has(parameters.pgsMode)) {
+    if (!PGS_MODES.has(parameters.pgsMode) || !PGS_LEVELS.has(parameters.pgsLevel)
+        || !parameters.pgsSweep || !parameters.pgsSynth) {
       throw routeError('invalid_request');
     }
-    if (parameters.pgsConfig !== undefined) {
-      exactObject(parameters.pgsConfig, ['sweepFraction']);
-      boundedFinite(parameters.pgsConfig.sweepFraction, Number.MIN_VALUE, 1);
+    let continuation;
+    if (parameters.continueFromOperationId !== undefined) {
+      try { assertOperationId(parameters.continueFromOperationId); } catch {
+        throw routeError('invalid_request');
+      }
+      continuation = parameters.continueFromOperationId;
+    }
+    let targets;
+    if (parameters.targetPartitionIds !== undefined) {
+      if (!Array.isArray(parameters.targetPartitionIds)
+          || parameters.targetPartitionIds.length < 1
+          || parameters.targetPartitionIds.length > MAX_PGS_TARGET_PARTITIONS
+          || new Set(parameters.targetPartitionIds).size !== parameters.targetPartitionIds.length
+          || parameters.targetPartitionIds.some((value) =>
+            typeof value !== 'string' || !PGS_PARTITION_ID.test(value))) {
+        throw routeError('invalid_request');
+      }
+      targets = parameters.targetPartitionIds;
+    }
+    if ((parameters.pgsMode === 'fresh' && (continuation || targets))
+        || (parameters.pgsMode === 'continue' && (!continuation || targets))
+        || (parameters.pgsMode === 'targeted' && !targets)) {
+      throw routeError('invalid_request');
     }
   }
   if (operationType === 'search') {
@@ -228,6 +255,10 @@ function validateParameters(operationType, parameters) {
     boundedText(parameters.tag, { max: 256 });
   }
   if (operationType === 'graph') {
+    if (parameters.view !== undefined
+        && parameters.view !== 'sample' && parameters.view !== 'pgs_partitions') {
+      throw routeError('invalid_request');
+    }
     boundedInteger(parameters.nodeLimit, 1, 2000);
     boundedInteger(parameters.edgeLimit, 1, 8000);
     boundedText(parameters.tag, { max: 256 });
@@ -264,7 +295,7 @@ function validateParameters(operationType, parameters) {
   }
   if (operationType === 'research_launch') {
     boundedText(parameters.topic, { required: true, max: MAX_QUERY_CHARS });
-    boundedText(parameters.context, { max: MAX_PRIOR_CONTEXT_CHARS });
+    boundedText(parameters.context, { required: true, max: MAX_PRIOR_CONTEXT_CHARS });
     boundedInteger(parameters.cycles, 1, 10_000);
     boundedInteger(parameters.maxConcurrent, 1, 64);
     if (parameters.explorationMode !== undefined
@@ -350,6 +381,26 @@ function projectNonterminal(record) {
   };
 }
 
+function projectOperationSummary(record) {
+  return {
+    operationId: record.operationId,
+    requestId: record.requestId,
+    operationType: record.operationType,
+    requesterAgent: record.requesterAgent,
+    target: record.target,
+    state: record.state,
+    phase: record.phase,
+    startedAt: record.startedAt,
+    updatedAt: record.updatedAt,
+    completedAt: record.completedAt,
+    lastProviderActivityAt: record.lastProviderActivityAt,
+    lastProgressAt: record.lastProgressAt,
+    error: record.error,
+    resultHandle: record.resultHandle,
+    pgsSession: record.pgsSession ?? null,
+  };
+}
+
 function createBrainOperationsPlaceholderRouter(options = {}) {
   const limitBytes = options.limitBytes ?? PUBLIC_BODY_LIMIT_BYTES;
   if (!Number.isSafeInteger(limitBytes) || limitBytes <= 0) throw routeError('invalid_request');
@@ -384,7 +435,7 @@ function createBrainOperationsPlaceholderRouter(options = {}) {
 
 function createBrainOperationsRouter(options = {}) {
   const {
-    requesterAgent, coordinator, reader, exporter, buildCatalog, providerReadiness,
+    requesterAgent, coordinator, reader, exporter, buildCatalog, providerReadiness, researchRuns,
   } = options;
   assertIdentifier(requesterAgent, 'requesterAgent');
   if (!coordinator || !reader || !exporter || typeof buildCatalog !== 'function') {
@@ -418,16 +469,51 @@ function createBrainOperationsRouter(options = {}) {
   }));
 
   router.get('/', asyncRoute(async (req, res) => {
-    if (Object.keys(req.query || {}).length !== 1 || req.query.state !== 'nonterminal') {
+    const keys = Object.keys(req.query || {}).sort();
+    if (keys.length === 1 && keys[0] === 'state' && req.query.state === 'nonterminal') {
+      const records = await reader.listNonterminalAuthorized();
+      if (!Array.isArray(records)
+          || records.some((record) => record?.requesterAgent !== requesterAgent
+            || (record.state !== 'queued' && record.state !== 'running'))) {
+        throw routeError('operation_store_corrupt');
+      }
+      return res.json({ operations: records.map(projectNonterminal), count: records.length });
+    }
+    if (keys.length === 2 && keys[0] === 'limit' && keys[1] === 'state'
+        && req.query.state === 'recent' && /^(?:[1-9]|[1-9]\d|100)$/.test(String(req.query.limit))) {
+      const limit = Number(req.query.limit);
+      const records = await reader.listRecentAuthorized(limit);
+      if (!Array.isArray(records)
+          || records.some((record) => record?.requesterAgent !== requesterAgent)) {
+        throw routeError('operation_store_corrupt');
+      }
+      return res.json({ operations: records.map(projectOperationSummary), count: records.length });
+    }
+    throw routeError('invalid_request');
+  }));
+
+  router.get('/research-runs', asyncRoute(async (req, res) => {
+    if (!researchRuns || typeof researchRuns.list !== 'function') {
+      throw routeError('operation_unavailable');
+    }
+    const keys = Object.keys(req.query || {}).sort();
+    if (keys.length !== 2 || keys[0] !== 'limit' || keys[1] !== 'state'
+        || !['recent', 'active'].includes(String(req.query.state))
+        || !/^(?:[1-9]|[1-9]\d|100)$/.test(String(req.query.limit))) {
       throw routeError('invalid_request');
     }
-    const records = await reader.listNonterminalAuthorized();
-    if (!Array.isArray(records)
-        || records.some((record) => record?.requesterAgent !== requesterAgent
-          || (record.state !== 'queued' && record.state !== 'running'))) {
-      throw routeError('operation_store_corrupt');
+    res.json(await researchRuns.list({
+      state: String(req.query.state),
+      limit: Number(req.query.limit),
+    }));
+  }));
+
+  router.get('/research-runs/active', asyncRoute(async (req, res) => {
+    assertNoQuery(req);
+    if (!researchRuns || typeof researchRuns.getActive !== 'function') {
+      throw routeError('operation_unavailable');
     }
-    res.json({ operations: records.map(projectNonterminal), count: records.length });
+    res.json(await researchRuns.getActive());
   }));
 
   router.post('/', asyncRoute(async (req, res) => {

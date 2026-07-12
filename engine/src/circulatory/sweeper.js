@@ -28,6 +28,9 @@ const DREAMS_MAX_LINES = 2000;
 const DREAMS_KEEP_LINES = 500;
 const DISCARDED_MAX_LINES = 500;
 const CRON_ARCHIVE_MAX_AGE_DAYS = 30;
+// A sweep runs inline at the start of a cognitive cycle. Cap directory checks
+// so historical agent-output buildup cannot stall the loop before it journals.
+const AGENT_DIR_SCAN_LIMIT = 200;
 
 class Sweeper {
   constructor(config = {}) {
@@ -87,7 +90,9 @@ class Sweeper {
     ];
 
     let removed = 0;
+    let scanned = 0;
     for (const agentsDir of searchDirs) {
+      if (scanned >= AGENT_DIR_SCAN_LIMIT) break;
       let entries;
       try {
         entries = await fs.readdir(agentsDir, { withFileTypes: true });
@@ -97,8 +102,10 @@ class Sweeper {
       }
 
       for (const entry of entries) {
+        if (scanned >= AGENT_DIR_SCAN_LIMIT) break;
         if (!entry.isDirectory()) continue;
         if (!entry.name.startsWith('agent_')) continue;
+        scanned++;
 
         const dirPath = path.join(agentsDir, entry.name);
         const stat = await fs.stat(dirPath);

@@ -2282,6 +2282,13 @@ and PGS read-only runs were exercised against resident and completed-research
 target trees containing unknown files, nested directories, and symlinks; only
 requester scratch changed.
 
+**2026-07-12 Query facade follow-up:** The durable Query worker and Home23 Query
+facade accept only `full` PGS mode. Although the legacy PGS engine contains
+`continue` and `targeted` branches, the pinned durable operation path does not
+yet bind a session identity or persisted session authority, so exposing those
+modes would silently run fresh work. They now fail before QueryEngine execution;
+the dashboard exposes only the honest fresh-sweep option.
+
 **Verification:** The focused Home23 matrix passed 59/59 across exact provider
 identity, legacy adaptation, retry state, cancellation, canonical byte ceilings,
 receipt publication, Query mutation boundaries, and cross-brain read-only
@@ -2569,8 +2576,18 @@ Positive legacy coverage can therefore report the exact degraded
 honest unknown canonical baseline, while any non-null result must carry
 consistent retrieval facts. Focused pinned Query projection, Query worker, and
 PGS source-pin verification passed 33/33 at commit `8d917ca`; the wider PGS
-source/retry/cancellation/store slice passed 36/36. This remains offline proof,
-not live rollout acceptance.
+source/retry/cancellation/store slice passed 36/36. A cleanup follow-up at
+`6860b6e` makes shared pinned-source close attempt every anchored manifest/base/
+delta/ANN handle even when overlay cleanup fails, while preserving the primary
+typed error. Its operation-root replacement regression deterministically proves
+all six handles close, and the full pin suite passed 41/41 without garbage-
+collector cleanup. The isolated 100k-node/300k-edge PGS acceptance regression
+now uses a five-minute attachment budget instead of the brittle former
+60-second cutoff; the repaired operation completed with durable proof in
+117.9 seconds. Protected result inspection first confirms terminal status, and
+lifecycle attachment evidence is read through the production store's atomic-
+replacement retry path. This remains offline proof, not live rollout
+acceptance.
 
 The original Patch 53 receipts run through branch commit `b6a44f7`; the
 canonical retrieval-evidence follow-up is verified at `8d917ca`. They do not
@@ -2994,3 +3011,19 @@ restart or Jerry/Forrest acceptance; those remain guarded rollout work.
   survive save, import, merge, retry, and reload without partial publication or
   outbound echo. Offline A/B/C and focused persistence matrices are green;
   live rollout acceptance remains pending.
+- **2026-07-12** — Patch 55 replaces operation-local, full-only PGS with
+  query-bound durable sessions. Named skim/sample/deep/full levels are
+  cumulative and round-robin across partitions; targeted scopes are isolated;
+  continuations reuse committed sweeps from one protected per-agent SQLite
+  database without copying the graph for every operation. Session authority
+  binds the exact query, source revision/digest, sweep pair, limits, prompt
+  contract, and selection policy; owner/lineage checks, exclusive leases,
+  no-follow identity checks, quotas, expiration, and bounded cleanup fail
+  closed. Full coverage now drains multiple bounded work batches, while
+  cancellation and provider failure preserve only validated committed work.
+  The Home23 Query facade/tab and agent-facing brain/research tools expose the
+  same mode/level contract, durable reattach/cancel actions, and truthful
+  scoped versus global coverage. Focused store, authority, worker, coordinator,
+  facade, UI, and contract verification is recorded in the accompanying
+  2026-07-12 durable-PGS receipt; live acceptance remains required before this
+  patch is declared deployed.

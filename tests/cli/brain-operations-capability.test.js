@@ -162,6 +162,11 @@ test('generated ecosystem isolates one shared capability to dashboards and COSMO
     for (const name of ['home23-jerry', 'home23-forrest', 'home23-jerry-harness', 'home23-forrest-harness']) {
       assert.ok(apps.get(name)?.filter_env?.includes(CAPABILITY_ENV), `${name} blocks inherited capability`);
     }
+    assert.equal(apps.get('home23-jerry')?.kill_timeout, 210_000);
+    assert.equal(apps.get('home23-forrest')?.kill_timeout, 210_000);
+    assert.equal(apps.get('home23-jerry-dash')?.kill_timeout, 210_000);
+    assert.equal(apps.get('home23-forrest-dash')?.kill_timeout, 210_000);
+    assert.match(source, /const DASHBOARD_KILL_TIMEOUT_MS = 210000;/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

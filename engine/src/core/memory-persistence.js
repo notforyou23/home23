@@ -153,7 +153,7 @@ async function persistMemoryRevision({
     const result = await appendMemoryDelta(brainDir, {
       ...snapshot.changes,
       summary: snapshot.summary,
-    });
+    }, { lockRoot });
     const committed = result.count > 0;
     const cleaned = committed ? memory.markPersistenceCleanIfGeneration(snapshot.generation) : false;
     return {

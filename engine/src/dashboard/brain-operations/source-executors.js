@@ -123,8 +123,14 @@ function createSourceOperationExecutors({
     })],
 
     ['graph', (context) => execute(context, async (identity) => {
-      const { nodeLimit, limit, edgeLimit, clusterId, minWeight, full } = context.parameters || {};
-      const result = await brainSourceService.graph({
+      const { view, nodeLimit, limit, edgeLimit, clusterId, minWeight, full } = context.parameters || {};
+      const result = view === 'pgs_partitions'
+        ? await brainSourceService.pgsPartitions({
+          sourcePin: context.sourcePin,
+          signal: context.signal,
+          identity,
+        })
+        : await brainSourceService.graph({
         nodeLimit: nodeLimit ?? limit,
         edgeLimit,
         clusterId,

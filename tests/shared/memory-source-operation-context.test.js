@@ -68,6 +68,40 @@ test('withEphemeralMemorySource derives operation roots, opens source, and remov
   assert.equal(await fsp.access(brainDir).then(() => true).catch(() => false), true);
 });
 
+test('withEphemeralMemorySource removes owned operation scratch when quota construction aborts', async () => {
+  const home23Root = await tempDir('home23-memory-source-context-abort-home-');
+  const brainDir = await writeManifestBrain();
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('stop ephemeral quota construction'), {
+    name: 'AbortError',
+  });
+  controller.abort(reason);
+  const operationRoot = path.join(
+    await fsp.realpath(home23Root),
+    'instances',
+    'jerry',
+    'runtime',
+    'brain-operations',
+    'local-abort123',
+  );
+  try {
+    await assert.rejects(
+      () => withEphemeralMemorySource({
+        brainDir,
+        home23Root,
+        requesterAgent: 'jerry',
+        signal: controller.signal,
+        uuid: () => 'abort123',
+      }, async () => null),
+      (error) => error === reason,
+    );
+    assert.equal(await fsp.access(operationRoot).then(() => true).catch(() => false), false);
+  } finally {
+    await fsp.rm(home23Root, { recursive: true, force: true });
+    await fsp.rm(brainDir, { recursive: true, force: true });
+  }
+});
+
 test('local source contexts reject dot-segment requester and generated path components', async () => {
   const home23Root = await tempDir('home23-memory-source-context-safe-home-');
   const brainDir = await writeManifestBrain();

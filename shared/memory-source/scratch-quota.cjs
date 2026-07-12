@@ -21,6 +21,21 @@ const LOCK_TURNOVER = Symbol('scratch-lock-turnover');
 const PRIVATE_SCAN_RETRY = Symbol('scratch-private-scan-retry');
 const MAX_PRIVATE_SCAN_ATTEMPTS = 256;
 const cleanupCapabilities = new WeakMap();
+const DURABLE_OPERATION_METADATA_ENTRIES = new Set([
+  '.operation.lock',
+  'attachments',
+  'events.jsonl',
+  'result.artifact',
+  'result.json',
+  'status.json',
+]);
+const DURABLE_OPERATION_METADATA_TEMP =
+  /^\.(?:status\.json|result\.json|result\.artifact)\.tmp-\d+-[a-f0-9]+$/;
+
+function isDurableOperationMetadataEntry(name) {
+  return DURABLE_OPERATION_METADATA_ENTRIES.has(name)
+    || DURABLE_OPERATION_METADATA_TEMP.test(name);
+}
 
 function quotaExceeded(message) {
   return memorySourceError('result_too_large', message, {
@@ -439,19 +454,26 @@ function parseLedger(text, { operationRoot, maxBytes }) {
   };
 }
 
-async function scanPrivateBytes(operationRoot, {
+async function scanPrivateUsage(operationRoot, {
   signal,
   rootIdentity,
   assertStableOperationRoot,
   hooks,
+  separateDurableOperationMetadata = false,
 } = {}) {
   let total = 0;
+  let materializationTotal = 0;
   function transientEntryChange(error) {
     const retry = new Error('scratch entry changed during scan', { cause: error });
     retry[PRIVATE_SCAN_RETRY] = true;
     return retry;
   }
-  async function walk(directory, directoryIdentity, isRoot = false) {
+  async function walk(
+    directory,
+    directoryIdentity,
+    isRoot = false,
+    materializationScope = true,
+  ) {
     throwIfAborted(signal);
     await assertStableOperationRoot?.();
     const before = await fsp.lstat(directory);
@@ -475,6 +497,9 @@ async function scanPrivateBytes(operationRoot, {
     for (const name of entries) {
       throwIfAborted(signal);
       if (isRoot && (name === LEDGER_NAME || name === LOCK_NAME)) continue;
+      const entryMaterializationScope = materializationScope
+        && !(isRoot && separateDurableOperationMetadata
+          && isDurableOperationMetadataEntry(name));
       const filePath = path.join(directory, name);
       const stat = await fsp.lstat(filePath).catch((error) => {
         // A losing lock candidate is unlinked immediately after the atomic
@@ -493,7 +518,7 @@ async function scanPrivateBytes(operationRoot, {
         });
       }
       if (stat.isDirectory()) {
-        await walk(filePath, identityOf(stat), false).catch((error) => {
+        await walk(filePath, identityOf(stat), false, entryMaterializationScope).catch((error) => {
           if (error?.[PRIVATE_SCAN_RETRY]) throw error;
           if (error?.code === 'ENOENT') throw transientEntryChange(error);
           throw error;
@@ -520,10 +545,13 @@ async function scanPrivateBytes(operationRoot, {
             });
           }
           total += opened.size;
+          if (entryMaterializationScope) materializationTotal += opened.size;
         } finally {
           await handle?.close().catch(() => {});
         }
-        if (!Number.isSafeInteger(total)) throw quotaExceeded('scratch file total overflow');
+        if (!Number.isSafeInteger(total) || !Number.isSafeInteger(materializationTotal)) {
+          throw quotaExceeded('scratch file total overflow');
+        }
       } else {
         throw memorySourceError('invalid_memory_source', 'operation scratch contains a special file', {
           retryable: false,
@@ -542,10 +570,14 @@ async function scanPrivateBytes(operationRoot, {
   let lastTransient = null;
   for (let attempt = 0; attempt < MAX_PRIVATE_SCAN_ATTEMPTS; attempt += 1) {
     total = 0;
+    materializationTotal = 0;
     try {
       await walk(operationRoot, rootIdentity, true);
       await assertStableOperationRoot?.();
-      return total;
+      return Object.freeze({
+        totalBytes: total,
+        materializationBytes: materializationTotal,
+      });
     } catch (error) {
       if (!error?.[PRIVATE_SCAN_RETRY]) throw error;
       lastTransient = error;
@@ -563,6 +595,7 @@ async function scanPrivateBytes(operationRoot, {
 
 async function createOperationScratchQuota({
   operationRoot,
+  scratchDir,
   maxBytes = DEFAULT_MAX_BYTES,
   signal,
   lockRetryMs = 5,
@@ -572,6 +605,26 @@ async function createOperationScratchQuota({
   _testHooks = {},
 } = {}) {
   const root = await assertOperationRoot(operationRoot);
+  let separateDurableOperationMetadata = false;
+  if (scratchDir !== undefined) {
+    if (typeof scratchDir !== 'string' || !path.isAbsolute(scratchDir)
+        || scratchDir.includes('\0') || path.normalize(scratchDir) !== scratchDir) {
+      throw memorySourceError('invalid_request', 'exact operation scratch directory required');
+    }
+    const [scratchStat, canonicalScratch] = await Promise.all([
+      fsp.lstat(scratchDir),
+      fsp.realpath(scratchDir),
+    ]).catch((error) => {
+      throw memorySourceError('invalid_request', 'operation scratch directory unavailable', {
+        cause: error,
+      });
+    });
+    if (!scratchStat.isDirectory() || scratchStat.isSymbolicLink()
+        || canonicalScratch !== path.join(root, 'scratch')) {
+      throw memorySourceError('invalid_request', 'unsafe operation scratch directory');
+    }
+    separateDurableOperationMetadata = true;
+  }
   validateMaxBytes(maxBytes);
   if (typeof isProcessAlive !== 'function' || typeof clock?.now !== 'function') {
     throw memorySourceError('invalid_request', 'invalid scratch quota coordination hooks');
@@ -977,12 +1030,13 @@ async function createOperationScratchQuota({
         reservations: structuredClone(prior.reservations),
       });
       if (reconcile || next.claimedSinceReconcile >= RECONCILE_CLAIM_BYTES) {
-        next.actualPrivateBytes = await scanPrivateBytes(root, {
+        next.actualPrivateBytes = (await scanPrivateUsage(root, {
           signal: cleanup ? undefined : signal,
           rootIdentity,
           assertStableOperationRoot,
           hooks,
-        });
+          separateDurableOperationMetadata,
+        })).totalBytes;
         for (const [reservationHandleId, reservation] of Object.entries(next.reservations)) {
           // Failure to prove death is not authority to reclaim accounting.
           // This also stays conservative for a reused PID whose start
@@ -1138,12 +1192,15 @@ async function createOperationScratchQuota({
         ...prior,
         reservations: structuredClone(prior.reservations),
       };
-      const baselineBytes = await scanPrivateBytes(root, {
+      const baselineUsage = await scanPrivateUsage(root, {
         signal,
         rootIdentity,
         assertStableOperationRoot,
         hooks,
+        separateDurableOperationMetadata,
       });
+      const baselineBytes = baselineUsage.totalBytes;
+      const baselineMaterializationBytes = baselineUsage.materializationBytes;
       next.actualPrivateBytes = baselineBytes;
       for (const [reservationHandleId, reservation] of Object.entries(next.reservations)) {
         const alive = await inspectOwnerLiveness(reservation.owner);
@@ -1179,20 +1236,24 @@ async function createOperationScratchQuota({
       await writeLedgerAtomic(baseline.text);
       localUsedBytes = baseline.usedBytes;
       const authorizedPeakBytes = checkedTotal([
+        baselineMaterializationBytes,
+        maxGrowthBytes,
+      ], 'scratch materialization limit overflow');
+      const projectedTotalBytes = checkedTotal([
         next.actualPrivateBytes,
         maxGrowthBytes,
       ], 'scratch materialization limit overflow');
       const projected = serializeLedger({
         operationRoot: root,
         maxBytes,
-        actualPrivateBytes: authorizedPeakBytes,
+        actualPrivateBytes: projectedTotalBytes,
         claimedSinceReconcile: 0,
         reservations: next.reservations,
         updatedAt: clock.now(),
       });
       const projectedLedgerBytes = Buffer.byteLength(projected.text, 'utf8');
       const preflightPeak = checkedTotal([
-        authorizedPeakBytes,
+        projectedTotalBytes,
         reservationTotal(next.reservations),
         baselineLedgerBytes,
         projectedLedgerBytes,
@@ -1204,18 +1265,22 @@ async function createOperationScratchQuota({
 
       async function checkpoint() {
         await assertStableOperationRoot();
-        const actualPrivateBytes = await scanPrivateBytes(root, {
+        const actualUsage = await scanPrivateUsage(root, {
           signal: undefined,
           rootIdentity,
           assertStableOperationRoot,
           hooks,
+          separateDurableOperationMetadata,
         });
-        if (actualPrivateBytes > authorizedPeakBytes) {
+        if (actualUsage.materializationBytes > authorizedPeakBytes) {
           throw quotaExceeded('scratch materialization growth exceeded authorization');
         }
         return Object.freeze({
-          actualPrivateBytes,
-          growthBytes: Math.max(0, actualPrivateBytes - baselineBytes),
+          actualPrivateBytes: actualUsage.totalBytes,
+          growthBytes: Math.max(
+            0,
+            actualUsage.materializationBytes - baselineMaterializationBytes,
+          ),
         });
       }
 

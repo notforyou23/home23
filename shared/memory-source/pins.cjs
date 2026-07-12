@@ -37,8 +37,15 @@ const {
   throwIfAborted,
 } = require('./contracts.cjs');
 const { assertOperationRoot, createOperationScratchQuota } = require('./scratch-quota.cjs');
+const {
+  readDurableOperationLockCapability,
+} = require('./durable-lock-authority.cjs');
 
 const TRUSTED_PROVIDER_CONTEXT = Symbol('trusted-memory-source-provider-context');
+const TRUSTED_DURABLE_OPERATION_LOCK_CONTROL = Symbol(
+  'trusted-durable-operation-source-lock-control',
+);
+const DURABLE_OPERATION_SOURCE_LOCK_WAIT_MAX_MS = 15 * 60 * 1000;
 const MAX_OPERATION_STATUS_BYTES = 1024 * 1024;
 const MUTATION_BOUNDARY_KINDS = Object.freeze([
   'brain', 'run', 'pgs', 'session', 'cache', 'export', 'agency',
@@ -197,6 +204,31 @@ function abortableDelay(ms, signal) {
     }
     signal?.addEventListener('abort', aborted, { once: true });
   });
+}
+
+function durableOperationLockOptions(expectations, phase) {
+  const control = expectations?.[TRUSTED_DURABLE_OPERATION_LOCK_CONTROL];
+  if (!control) return { signal: expectations?.signal };
+  const providerContext = expectations[TRUSTED_PROVIDER_CONTEXT];
+  const clock = providerContext?.lockClock || Date;
+  const now = clock.now();
+  if (!Number.isFinite(now)) {
+    throw memorySourceError('invalid_request', 'durable source lock clock is invalid');
+  }
+  const remainingMs = phase === 'release'
+    ? DURABLE_OPERATION_SOURCE_LOCK_WAIT_MAX_MS
+    : Math.max(0, Date.parse(control.hardDeadlineAt) - now);
+  return {
+    lockTimeoutMs: Math.min(DURABLE_OPERATION_SOURCE_LOCK_WAIT_MAX_MS, remainingMs),
+    signal: phase === 'release' ? control.cleanupSignal : control.signal,
+    clock,
+    ...(providerContext?.lockRetryMs === undefined
+      ? {} : { lockRetryMs: providerContext.lockRetryMs }),
+    ...(providerContext?.lockJitterMs === undefined
+      ? {} : { lockJitterMs: providerContext.lockJitterMs }),
+    ...(providerContext?.lockTestHooks === undefined
+      ? {} : { _testHooks: providerContext.lockTestHooks }),
+  };
 }
 
 function validateOperationId(operationId) {
@@ -535,6 +567,8 @@ async function pinOperationSource({
   lockRoot,
   scratchQuota,
   signal,
+  [TRUSTED_PROVIDER_CONTEXT]: providerContext,
+  [TRUSTED_DURABLE_OPERATION_LOCK_CONTROL]: operationLockControl,
   _testHooks = {},
 }) {
   validateOperationId(operationId);
@@ -544,7 +578,15 @@ async function pinOperationSource({
   }
   const canonical = await fsp.realpath(canonicalRoot);
   const root = await assertOperationRoot(operationRoot);
-  return withMemorySourceLock(canonical, { lockRoot }, async () => {
+  const lockExpectations = operationLockControl ? {
+    signal,
+    [TRUSTED_PROVIDER_CONTEXT]: providerContext,
+    [TRUSTED_DURABLE_OPERATION_LOCK_CONTROL]: operationLockControl,
+  } : { signal };
+  return withMemorySourceLock(canonical, {
+    lockRoot,
+    ...durableOperationLockOptions(lockExpectations, 'acquire'),
+  }, async () => {
     throwIfAborted(signal);
     let record;
     try {
@@ -1273,7 +1315,7 @@ async function openPinnedSource(descriptor, expectations = {}) {
   try {
     await withMemorySourceLock(descriptor.canonicalRoot, {
       lockRoot,
-      signal: expectations.signal,
+      ...durableOperationLockOptions(expectations, 'acquire'),
     }, async () => {
       throwIfAborted(expectations.signal);
       try {
@@ -1354,7 +1396,10 @@ async function openPinnedSource(descriptor, expectations = {}) {
     await source?.close?.().catch(() => {});
     await closeProtectedFiles(openedFiles).catch(() => {});
     if (releaseProcessPinUnderLock) {
-      await withMemorySourceLock(descriptor.canonicalRoot, { lockRoot }, async () => {
+      await withMemorySourceLock(descriptor.canonicalRoot, {
+        lockRoot,
+        ...durableOperationLockOptions(expectations, 'release'),
+      }, async () => {
         await releaseProcessPinUnderLock();
       }).catch(() => {});
     }
@@ -1362,7 +1407,7 @@ async function openPinnedSource(descriptor, expectations = {}) {
   }
   const releaseProcessPin = async () => withMemorySourceLock(
     descriptor.canonicalRoot,
-    { lockRoot },
+    { lockRoot, ...durableOperationLockOptions(expectations, 'release') },
     async () => releaseProcessPinUnderLock(),
   );
   const closeSource = source.close.bind(source);
@@ -2044,20 +2089,88 @@ async function removeExactOperationRegularFile(operationRoot, operationIdentity,
   return true;
 }
 
-async function removeExactOperationDirectoryTree(operationRoot, operationIdentity, directory, label) {
+function escapeRegularExpression(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function removeExactOperationDirectoryTree(
+  operationRoot,
+  operationIdentity,
+  directory,
+  label,
+  { beforeQuarantineRemove } = {},
+) {
   await assertExactOperationDirectory(operationRoot, operationIdentity, 'operation root');
   const stat = await operationPathLstatOptional(directory);
-  if (stat === null) return false;
+  const quarantinePrefix = `.source-release-${path.basename(directory)}-`;
+  const quarantinePattern = new RegExp(
+    `^${escapeRegularExpression(quarantinePrefix)}([0-9]+)-([0-9]+)$`,
+  );
+  const ownedQuarantines = [];
+  for (const name of await fsp.readdir(operationRoot)) {
+    if (!name.startsWith(quarantinePrefix)) continue;
+    const match = quarantinePattern.exec(name);
+    const quarantine = path.join(operationRoot, name);
+    const quarantineStat = await operationPathLstatOptional(quarantine);
+    if (!match || quarantineStat === null || quarantineStat.isSymbolicLink()
+        || !quarantineStat.isDirectory()
+        || String(quarantineStat.dev) !== match[1]
+        || String(quarantineStat.ino) !== match[2]) {
+      throw memorySourceError('invalid_memory_source', `${label} quarantine is not owned`, {
+        retryable: false,
+      });
+    }
+    ownedQuarantines.push({
+      path: quarantine,
+      identity: operationPathIdentity(quarantineStat),
+    });
+  }
+  if (ownedQuarantines.length > 1 || (stat !== null && ownedQuarantines.length !== 0)) {
+    throw memorySourceError('invalid_memory_source', `${label} quarantine conflicts`, {
+      retryable: false,
+    });
+  }
+
+  const removeQuarantine = async (quarantine, identity) => {
+    await assertExactOperationDirectory(operationRoot, operationIdentity, 'operation root');
+    const latest = await operationPathLstatOptional(quarantine);
+    if (latest === null || latest.isSymbolicLink() || !latest.isDirectory()
+        || !sameOperationPathIdentity(latest, identity)) {
+      throw memorySourceError('invalid_memory_source', `${label} quarantine identity changed`, {
+        retryable: false,
+      });
+    }
+    await beforeQuarantineRemove?.({
+      operationRoot,
+      directory,
+      quarantine,
+      label,
+    });
+    await assertExactOperationDirectory(operationRoot, operationIdentity, 'operation root');
+    const beforeRemove = await operationPathLstatOptional(quarantine);
+    if (beforeRemove === null || beforeRemove.isSymbolicLink() || !beforeRemove.isDirectory()
+        || !sameOperationPathIdentity(beforeRemove, identity)) {
+      throw memorySourceError('invalid_memory_source', `${label} quarantine identity changed`, {
+        retryable: false,
+      });
+    }
+    await fsp.rm(quarantine, { recursive: true, force: false });
+    await fsyncSourceLockDirectory(operationRoot);
+    await assertExactOperationDirectory(operationRoot, operationIdentity, 'operation root');
+  };
+
+  if (stat === null) {
+    if (ownedQuarantines.length === 0) return false;
+    await removeQuarantine(ownedQuarantines[0].path, ownedQuarantines[0].identity);
+    return true;
+  }
   if (stat.isSymbolicLink() || !stat.isDirectory()) {
     throw memorySourceError('invalid_memory_source', `${label} is not a directory`, {
       retryable: false,
     });
   }
   const identity = operationPathIdentity(stat);
-  const quarantine = path.join(
-    operationRoot,
-    `.source-release-${path.basename(directory)}-${process.pid}-${crypto.randomUUID()}`,
-  );
+  const quarantine = path.join(operationRoot, `${quarantinePrefix}${identity.dev}-${identity.ino}`);
   await assertExactOperationDirectory(operationRoot, operationIdentity, 'operation root');
   await fsp.rename(directory, quarantine);
   await fsyncSourceLockDirectory(operationRoot);
@@ -2068,14 +2181,23 @@ async function removeExactOperationDirectoryTree(operationRoot, operationIdentit
       retryable: false,
     });
   }
-  await assertExactOperationDirectory(operationRoot, operationIdentity, 'operation root');
-  await fsp.rm(quarantine, { recursive: true, force: false });
-  await fsyncSourceLockDirectory(operationRoot);
-  await assertExactOperationDirectory(operationRoot, operationIdentity, 'operation root');
+  await removeQuarantine(quarantine, identity);
   return true;
 }
 
-async function releaseOperationSource({ home23Root, requesterAgent, operationId }) {
+async function releaseOperationSource({
+  home23Root,
+  requesterAgent,
+  operationId,
+  _testHooks = {},
+  [TRUSTED_PROVIDER_CONTEXT]: providerContext,
+  [TRUSTED_DURABLE_OPERATION_LOCK_CONTROL]: operationLockControl,
+}) {
+  if (!_testHooks || Array.isArray(_testHooks) || typeof _testHooks !== 'object'
+      || Reflect.ownKeys(_testHooks).some((key) => typeof key !== 'string')
+      || Object.values(_testHooks).some((hook) => typeof hook !== 'function')) {
+    throw memorySourceError('invalid_request', 'invalid source release test hooks');
+  }
   const canonicalHome23Root = await fsp.realpath(home23Root);
   const operationRoot = durableBrainOperationRoot(
     canonicalHome23Root,
@@ -2097,23 +2219,19 @@ async function releaseOperationSource({ home23Root, requesterAgent, operationId 
     ? coordinator.canonicalRoot
     : null;
   const cleanup = async () => {
-    await removeExactOperationRegularFile(
-      operationRoot,
-      operationIdentity,
-      coordinatorPinPath(operationRoot),
-      'coordinator source pin',
-    );
     await removeExactOperationDirectoryTree(
       operationRoot,
       operationIdentity,
       pinsRoot,
       'process pins root',
+      _testHooks,
     );
     await removeExactOperationDirectoryTree(
       operationRoot,
       operationIdentity,
       path.join(operationRoot, 'source-projections'),
       'source projections root',
+      _testHooks,
     );
     for (const pinFile of processPinReferences.keys()) {
       const relative = path.relative(pinsRoot, pinFile);
@@ -2121,17 +2239,38 @@ async function releaseOperationSource({ home23Root, requesterAgent, operationId 
         processPinReferences.delete(pinFile);
       }
     }
+    // The coordinator record is the durable source-root/lock authority for a
+    // retry. Remove it only after every process pin and projection quarantine
+    // has been reconciled successfully.
+    await removeExactOperationRegularFile(
+      operationRoot,
+      operationIdentity,
+      coordinatorPinPath(operationRoot),
+      'coordinator source pin',
+    );
   };
   if (sourceRoot) {
+    const lockExpectations = operationLockControl ? {
+      [TRUSTED_PROVIDER_CONTEXT]: providerContext,
+      [TRUSTED_DURABLE_OPERATION_LOCK_CONTROL]: operationLockControl,
+    } : null;
     await withMemorySourceLock(sourceRoot, {
       lockRoot: path.join(canonicalHome23Root, 'runtime', 'brain-source-locks'),
+      ...(lockExpectations ? durableOperationLockOptions(lockExpectations, 'release') : {}),
     }, cleanup);
   } else {
     await cleanup();
   }
 }
 
-function createMemorySourcePinProvider({ home23Root, requesterAgent }) {
+function createMemorySourcePinProvider({
+  home23Root,
+  requesterAgent,
+  _durableLockClock,
+  _durableLockRetryMs,
+  _durableLockJitterMs,
+  _durableLockTestHooks,
+}) {
   if (typeof home23Root !== 'string' || !path.isAbsolute(home23Root)) {
     throw memorySourceError('invalid_request', 'trusted home23 root required');
   }
@@ -2140,11 +2279,47 @@ function createMemorySourcePinProvider({ home23Root, requesterAgent }) {
   }
   const lockRoot = path.join(home23Root, 'runtime', 'brain-source-locks');
   const ownBrainPath = path.join(home23Root, 'instances', requesterAgent, 'brain');
-  const providerContext = Object.freeze({ lockRoot, ownBrainPath });
+  if ((_durableLockClock !== undefined && typeof _durableLockClock?.now !== 'function')
+      || (_durableLockRetryMs !== undefined
+        && (!Number.isSafeInteger(_durableLockRetryMs) || _durableLockRetryMs < 0))
+      || (_durableLockJitterMs !== undefined
+        && (!Number.isSafeInteger(_durableLockJitterMs) || _durableLockJitterMs < 0))
+      || (_durableLockTestHooks !== undefined
+        && (!_durableLockTestHooks || Array.isArray(_durableLockTestHooks)
+          || typeof _durableLockTestHooks !== 'object'
+          || Object.values(_durableLockTestHooks).some((hook) => typeof hook !== 'function')))) {
+    throw memorySourceError('invalid_request', 'invalid trusted durable source lock configuration');
+  }
+  const providerContext = Object.freeze({
+    lockRoot,
+    ownBrainPath,
+    lockClock: _durableLockClock || Date,
+    lockRetryMs: _durableLockRetryMs,
+    lockJitterMs: _durableLockJitterMs,
+    lockTestHooks: _durableLockTestHooks,
+  });
   return Object.freeze({
-    async pin(canonicalRoot, operationId) {
-      const operationRoot = durableBrainOperationRoot(home23Root, requesterAgent, operationId);
-      const scratchQuota = await createOperationScratchQuota({ operationRoot });
+    async pin(canonicalRoot, operationId, operationLockCapability = null) {
+      const operationLockControl = readDurableOperationLockCapability(operationLockCapability);
+      const requestedOperationRoot = durableBrainOperationRoot(
+        home23Root,
+        requesterAgent,
+        operationId,
+      );
+      const operationRoot = await assertOperationRoot(requestedOperationRoot);
+      const operationIdentity = await captureExactOperationDirectory(
+        operationRoot,
+        'coordinator-pin operation root',
+      );
+      const scratchDir = path.join(operationRoot, 'scratch');
+      await ensureExactOperationChildDirectory(
+        operationRoot,
+        operationIdentity,
+        scratchDir,
+        'coordinator-pin scratch root',
+      );
+      await fsyncSourceLockDirectory(operationRoot);
+      const scratchQuota = await createOperationScratchQuota({ operationRoot, scratchDir });
       try {
         return await pinOperationSource({
           canonicalRoot,
@@ -2153,12 +2328,18 @@ function createMemorySourcePinProvider({ home23Root, requesterAgent }) {
           requesterAgent,
           lockRoot,
           scratchQuota,
+          signal: operationLockControl?.signal,
+          [TRUSTED_PROVIDER_CONTEXT]: providerContext,
+          ...(operationLockControl ? {
+            [TRUSTED_DURABLE_OPERATION_LOCK_CONTROL]: operationLockControl,
+          } : {}),
         });
       } finally {
         await scratchQuota.close();
       }
     },
-    async openPinnedSource(descriptor, expectations) {
+    async openPinnedSource(descriptor, expectations, operationLockCapability = null) {
+      const operationLockControl = readDurableOperationLockCapability(operationLockCapability);
       const operationId = validateOperationId(expectations?.operationId);
       const operationRoot = durableBrainOperationRoot(home23Root, requesterAgent, operationId);
       return openPinnedSource(descriptor, {
@@ -2167,15 +2348,28 @@ function createMemorySourcePinProvider({ home23Root, requesterAgent }) {
         operationRoot,
         requesterAgent,
         [TRUSTED_PROVIDER_CONTEXT]: providerContext,
+        ...(operationLockControl === null ? {} : {
+          [TRUSTED_DURABLE_OPERATION_LOCK_CONTROL]: operationLockControl,
+        }),
       });
     },
-    async releaseOperationPins(operationId) {
-      return releaseOperationSource({ home23Root, requesterAgent, operationId });
+    async releaseOperationPins(operationId, operationLockCapability = null) {
+      const operationLockControl = readDurableOperationLockCapability(operationLockCapability);
+      return releaseOperationSource({
+        home23Root,
+        requesterAgent,
+        operationId,
+        [TRUSTED_PROVIDER_CONTEXT]: providerContext,
+        ...(operationLockControl === null ? {} : {
+          [TRUSTED_DURABLE_OPERATION_LOCK_CONTROL]: operationLockControl,
+        }),
+      });
     },
   });
 }
 
 module.exports = {
+  DURABLE_OPERATION_SOURCE_LOCK_WAIT_MAX_MS,
   validateOperationId,
   durableBrainOperationRoot,
   coordinatorPinPath,

@@ -7,7 +7,33 @@ const {
   sampleMemoryGraph,
   projectGraphNode,
   projectGraphEdge,
+  partitionIdForNode,
+  listPgsPartitions,
 } = require('../../shared/memory-source');
+
+test('PGS partition inventory uses the exact deterministic partition contract', async () => {
+  assert.equal(partitionIdForNode({ cluster: 4 }, 'n-a'), 'c-4');
+  assert.match(partitionIdForNode({ cluster: 'unsafe value' }, 'n-b'), /^c-x[a-f0-9]{16}$/);
+  const hashed = partitionIdForNode({}, 'n-c');
+  assert.match(hashed, /^h-(?:[0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$/);
+  assert.equal(partitionIdForNode({}, 'n-c'), hashed);
+
+  const source = syntheticStreamingSource({
+    nodes: 503,
+    edges: 0,
+    extraNode: (index) => ({ cluster: index < 501 ? 'alpha' : 'beta' }),
+  });
+  const result = await listPgsPartitions(source, { maxNodesPerWorkUnit: 250 });
+  assert.deepEqual(result.partitions, [
+    { partitionId: 'c-alpha', nodeCount: 501, estimatedWorkUnits: 3 },
+    { partitionId: 'c-beta', nodeCount: 2, estimatedWorkUnits: 1 },
+  ]);
+  assert.equal(result.totalNodes, 503);
+  assert.equal(result.totalPartitions, 2);
+  assert.equal(result.estimatedWorkUnits, 4);
+  assert.equal(result.complete, true);
+  assert.equal(source.loadAllCalls, 0);
+});
 
 function syntheticStreamingSource({ nodes = 0, edges = 0, extraNode = () => ({}), abortController = null } = {}) {
   const source = {

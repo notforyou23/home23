@@ -13,13 +13,13 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import yaml from 'js-yaml';
 import type { AssemblyResult, EventEnvelope } from '../types.js';
-import type { BrainOperationsClient } from './brain-operations/client.js';
 import type { EventLedger } from './event-ledger.js';
 import type { TriggerIndex } from './trigger-index.js';
 
 // ─── Constants ──────────────────────────────────────────
 const CONTEXT_BUDGET = 6000;
 const BRAIN_SEARCH_LIMIT = 8;
+const BRAIN_SEARCH_TIMEOUT_MS = 2_000;
 const STALENESS_HOURS = 24;
 
 // ─── Types ──────────────────────────────────────────────
@@ -35,8 +35,12 @@ interface AssemblyConfig {
   brainDir: string;
   enginePort: number;
   sessionId: string;
-  brainOperations: Pick<BrainOperationsClient, 'search'>;
   signal: AbortSignal;
+  brainSearchTimeoutMs?: number;
+  contextSearch: (
+    request: { query: string; topK: number },
+    signal: AbortSignal,
+  ) => Promise<Record<string, unknown>>;
   triggerIndex?: TriggerIndex;
 }
 
@@ -292,6 +296,9 @@ export async function assembleContext(
   let sourceHealth = 'unknown';
   let matchOutcome = 'unknown';
   let retrievalError: string | null = null;
+  let contextRetrievalTimedOut = false;
+  let successfulHybridRetrieval = false;
+  let retrievalFallback: Record<string, unknown> | null = null;
 
   try {
     const contextSnippet = recentTurns
@@ -301,9 +308,12 @@ export async function assembleContext(
     searchQuery = `${userText} ${contextSnippet}`.trim().slice(0, 500);
 
     config.signal.throwIfAborted();
-    const retrieval = await config.brainOperations.search(
-      { query: searchQuery, topK: BRAIN_SEARCH_LIMIT },
+    const retrievalSignal = AbortSignal.any([
       config.signal,
+      AbortSignal.timeout(config.brainSearchTimeoutMs ?? BRAIN_SEARCH_TIMEOUT_MS),
+    ]);
+    const retrieval = await config.contextSearch(
+      { query: searchQuery, topK: BRAIN_SEARCH_LIMIT }, retrievalSignal,
     );
     config.signal.throwIfAborted();
     brainCues = Array.isArray(retrieval.results)
@@ -318,17 +328,35 @@ export async function assembleContext(
     matchOutcome = typeof evidence.matchOutcome === 'string'
       ? evidence.matchOutcome
       : 'unknown';
-    degraded = sourceHealth !== 'healthy';
+    retrievalFallback = evidence.fallback
+      && typeof evidence.fallback === 'object'
+      && !Array.isArray(evidence.fallback)
+      ? evidence.fallback as Record<string, unknown>
+      : null;
+    successfulHybridRetrieval = sourceHealth === 'degraded'
+      && matchOutcome === 'matches'
+      && evidence.completeCoverage === true
+      && brainCues.length > 0
+      && retrievalFallback?.route === 'logical-keyword-supplement'
+      && retrievalFallback.reason === 'exact_canary_missing'
+      && retrievalFallback.completeness === 'complete';
+    degraded = sourceHealth !== 'healthy' && !successfulHybridRetrieval;
   } catch (err) {
     if (config.signal.aborted) config.signal.throwIfAborted();
     degraded = true;
-    sourceHealth = 'unavailable';
+    contextRetrievalTimedOut = typeof err === 'object'
+      && err !== null
+      && 'name' in err
+      && String((err as { name: unknown }).name) === 'TimeoutError';
+    sourceHealth = contextRetrievalTimedOut ? 'unknown' : 'unavailable';
     matchOutcome = 'unknown';
     const code = typeof err === 'object' && err && 'code' in err
       ? String((err as { code: unknown }).code)
       : 'brain_search_failed';
     const message = err instanceof Error ? err.message : String(err);
-    retrievalError = `${code}: ${message}`;
+    retrievalError = contextRetrievalTimedOut
+      ? `context_enrichment_timeout: ${message}`
+      : `${code}: ${message}`;
     events.push({
       event_id: randomUUID(),
       event_type: 'RetrievalDegraded',
@@ -337,7 +365,9 @@ export async function assembleContext(
       actor: 'assembly',
       payload: {
         reason: retrievalError,
-        what_unavailable: 'requester_dashboard_brain_search',
+        what_unavailable: contextRetrievalTimedOut
+          ? 'automatic_context_enrichment'
+          : 'requester_dashboard_brain_search',
       },
     });
   }
@@ -398,6 +428,8 @@ export async function assembleContext(
       sourceHealth,
       matchOutcome,
       retrievalError,
+      fallback: retrievalFallback,
+      retrievalInterpretation: successfulHybridRetrieval ? 'successful_hybrid' : null,
     },
   });
 
@@ -478,6 +510,8 @@ export async function assembleContext(
       sourceHealth,
       matchOutcome,
       retrievalError,
+      fallback: retrievalFallback,
+      retrievalInterpretation: successfulHybridRetrieval ? 'successful_hybrid' : null,
     },
   });
 
@@ -485,13 +519,20 @@ export async function assembleContext(
   if (degraded) {
     if (ledger) { ledger.emit(events); }
     const localEvidence = rankBySalience(salienceItems, CONTEXT_BUDGET - 700);
-    const pieces: string[] = [
-      '[SITUATIONAL AWARENESS: brain retrieval degraded]',
-      `sourceHealth=${sourceHealth} matchOutcome=${matchOutcome}`,
-      `route=requester_dashboard_brain_search error=${retrievalError || `source reported ${sourceHealth}`}`,
-      'Returned cues (if any), local trigger matches, and domain surfaces below remain available. ' +
-        'Retry the operation or inspect brain_status; success is not yet established.',
-    ];
+    const pieces: string[] = contextRetrievalTimedOut
+      ? [
+          '[SITUATIONAL AWARENESS: automatic brain context enrichment skipped for latency this turn]',
+          'This automatic deadline is not a brain health result. Do not claim that the brain is offline, ' +
+            'unavailable, or degraded from this skipped lookup.',
+          'If the user asks about current brain health or memory, use brain_status or brain_search and report that result.',
+        ]
+      : [
+          '[SITUATIONAL AWARENESS: brain retrieval degraded]',
+          `sourceHealth=${sourceHealth} matchOutcome=${matchOutcome}`,
+          `route=requester_dashboard_brain_search error=${retrievalError || `source reported ${sourceHealth}`}`,
+          'Returned cues (if any), local trigger matches, and domain surfaces below remain available. ' +
+            'Retry the operation or inspect brain_status; success is not yet established.',
+        ];
     if (localEvidence.length > 0) pieces.push(localEvidence.join('\n'));
     pieces.push('[/SITUATIONAL AWARENESS]');
 
@@ -529,11 +570,21 @@ export async function assembleContext(
     ? `Brain cues:\n${rankedParts.filter(p => !p.startsWith('\nRelevant context')).join('\n')}\n`
     : '';
 
+  const hybridRetrievalSection = successfulHybridRetrieval
+    ? '[RETRIEVAL NOTE: successful hybrid brain retrieval]\n' +
+      `sourceHealth=${sourceHealth} matchOutcome=${matchOutcome}\n` +
+      `fallback=${String(retrievalFallback?.route)} reason=${String(retrievalFallback?.reason)} ` +
+      `completeness=${String(retrievalFallback?.completeness)}\n` +
+      'The preferred ANN route missed an exact canary; the complete logical keyword supplement ' +
+      'returned matching cues. Preserve the degraded source-health evidence, but treat these matches as usable.\n' +
+      '[/RETRIEVAL NOTE]\n\n'
+    : '';
+
   const surfaceSection = rankedParts
     .filter(p => p.startsWith('\nRelevant context'))
     .join('\n');
 
-  const block = `[SITUATIONAL AWARENESS]\n\n${brainSection}${surfaceSection}\n\n[/SITUATIONAL AWARENESS]`;
+  const block = `[SITUATIONAL AWARENESS]\n\n${hybridRetrievalSection}${brainSection}${surfaceSection}\n\n[/SITUATIONAL AWARENESS]`;
 
   if (ledger) { ledger.emit(events); }
   return {

@@ -27,10 +27,10 @@ test('client capabilities payload validates and advertises platform truth', () =
   assert.equal(payload.platforms.tvos.query, false);
   assert.equal(payload.platforms.tvos.settings, false);
   assert.equal(payload.houseGlobal.sauna, true);
-  assert.equal(payload.features.queryStreaming, false);
+  assert.equal(payload.features.queryStreaming, true);
   assert.equal(payload.query.facade, true);
   assert.equal(payload.query.directCosmo, false);
-  assert.equal(payload.query.streaming, false);
+  assert.equal(payload.query.streaming, true);
   assert.equal(payload.endpoints.queryCatalog, '/home23/api/query/catalog');
   assert.equal(payload.endpoints.workers, '/home23/api/workers');
   assert.equal(payload.endpoints.chatTurnStatus, '/api/chat/turn-status');

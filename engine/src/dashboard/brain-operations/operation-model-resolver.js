@@ -10,10 +10,15 @@ const QUERY_KEYS = Object.freeze([
   'includeOutputs', 'includeThoughts', 'includeCoordinatorInsights', 'allowActions',
 ]);
 const PGS_KEYS = Object.freeze([
-  'query', 'mode', 'pgsMode', 'pgsConfig', 'pgsSweep', 'pgsSynth',
-  'priorContext', 'allowActions',
+  'query', 'mode', 'pgsMode', 'pgsLevel', 'pgsConfig',
+  'continueFromOperationId', 'targetPartitionIds', 'pgsSweep', 'pgsSynth',
 ]);
 const MODES = new Set(['quick', 'full', 'expert', 'dive']);
+const PGS_LEVEL_FRACTIONS = Object.freeze({ skim: 0.10, sample: 0.25, deep: 0.50, full: 1 });
+const PGS_MODES = new Set(['fresh', 'continue', 'targeted']);
+const OPERATION_ID_PATTERN = /^brop_[A-Za-z0-9_-]{32}$/;
+const PARTITION_ID_PATTERN = /^(?:c|h)-[A-Za-z0-9._-]{1,253}$/;
+const MAX_TARGET_PARTITIONS = 256;
 
 function typed(code, message, retryable = false) {
   return Object.assign(new Error(message), { code, retryable });
@@ -109,23 +114,60 @@ function normalizeRequest(operationType, input) {
       if (Object.hasOwn(input, key)) result[key] = optionalBoolean(input[key], key);
     }
   } else {
-    if (Object.hasOwn(input, 'pgsMode')) {
-      if (input.pgsMode !== 'full') throw typed('invalid_request', 'pgsMode is invalid');
-      result.pgsMode = 'full';
+    const pgsMode = input.pgsMode ?? 'fresh';
+    const pgsLevel = input.pgsLevel ?? 'full';
+    if (typeof pgsMode !== 'string' || !PGS_MODES.has(pgsMode)) {
+      throw typed('invalid_request', 'pgsMode is invalid');
     }
+    if (typeof pgsLevel !== 'string' || !Object.hasOwn(PGS_LEVEL_FRACTIONS, pgsLevel)) {
+      throw typed('invalid_request', 'pgsLevel is invalid');
+    }
+    const expectedFraction = PGS_LEVEL_FRACTIONS[pgsLevel];
     if (Object.hasOwn(input, 'pgsConfig')) {
       assertExactKeys(input.pgsConfig, ['sweepFraction'], 'pgsConfig');
-      const config = {};
-      if (Object.hasOwn(input.pgsConfig, 'sweepFraction')) {
-        const fraction = input.pgsConfig.sweepFraction;
-        if (typeof fraction !== 'number' || !Number.isFinite(fraction)
-            || fraction <= 0 || fraction > 1) {
-          throw typed('invalid_request', 'pgsConfig.sweepFraction is invalid');
-        }
-        config.sweepFraction = fraction;
+      if (Object.keys(input.pgsConfig).length !== 1
+          || input.pgsConfig.sweepFraction !== expectedFraction) {
+        throw typed('invalid_request', 'pgsConfig.sweepFraction does not match pgsLevel');
       }
-      result.pgsConfig = deepFreeze(config);
     }
+    let continueFromOperationId;
+    if (Object.hasOwn(input, 'continueFromOperationId')) {
+      continueFromOperationId = input.continueFromOperationId;
+      if (typeof continueFromOperationId !== 'string'
+          || !OPERATION_ID_PATTERN.test(continueFromOperationId)) {
+        throw typed('invalid_request', 'continueFromOperationId is invalid');
+      }
+    }
+    let targetPartitionIds;
+    if (Object.hasOwn(input, 'targetPartitionIds')) {
+      if (!Array.isArray(input.targetPartitionIds)
+          || input.targetPartitionIds.length < 1
+          || input.targetPartitionIds.length > MAX_TARGET_PARTITIONS) {
+        throw typed('invalid_request', 'targetPartitionIds is invalid');
+      }
+      const seen = new Set();
+      targetPartitionIds = input.targetPartitionIds.map((value) => {
+        if (typeof value !== 'string' || !PARTITION_ID_PATTERN.test(value) || seen.has(value)) {
+          throw typed('invalid_request', 'targetPartitionIds is invalid');
+        }
+        seen.add(value);
+        return value;
+      }).sort();
+    }
+    if (pgsMode === 'fresh' && (continueFromOperationId || targetPartitionIds)) {
+      throw typed('invalid_request', 'fresh PGS cannot continue or target partitions');
+    }
+    if (pgsMode === 'continue' && (!continueFromOperationId || targetPartitionIds)) {
+      throw typed('invalid_request', 'continue PGS requires exactly one prior operation');
+    }
+    if (pgsMode === 'targeted' && !targetPartitionIds) {
+      throw typed('invalid_request', 'targeted PGS requires explicit partitions');
+    }
+    result.pgsMode = pgsMode;
+    result.pgsLevel = pgsLevel;
+    result.pgsConfig = deepFreeze({ sweepFraction: expectedFraction });
+    if (continueFromOperationId) result.continueFromOperationId = continueFromOperationId;
+    if (targetPartitionIds) result.targetPartitionIds = deepFreeze(targetPartitionIds);
     if (Object.hasOwn(input, 'pgsSweep')) result.pgsSweep = exactPair(input.pgsSweep, 'pgsSweep');
     if (Object.hasOwn(input, 'pgsSynth')) result.pgsSynth = exactPair(input.pgsSynth, 'pgsSynth');
   }

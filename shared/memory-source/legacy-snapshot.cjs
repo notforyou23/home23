@@ -24,6 +24,7 @@ const {
   rethrowAbort,
   throwIfAborted,
 } = require('./contracts.cjs');
+const { resolveMemorySourceReadLimits } = require('./limits.cjs');
 
 const MAX_CLUSTER_KEYS = 1_000_000;
 const MAX_CLUSTER_BYTES = 16 * 1024 * 1024;
@@ -227,6 +228,8 @@ async function streamSnapshot({
         throw memorySourceError('result_too_large', 'legacy snapshot decompressed limit exceeded', {
           status: 413,
           retryable: false,
+          limitKind: 'decompressed',
+          limit: maxDecompressedBytes,
         });
       }
       hash.update(chunk);
@@ -260,11 +263,17 @@ async function removeOwnedProjectionAttempt(attemptRoot, identity) {
   await fsp.rm(attemptRoot, { recursive: true, force: false });
 }
 
-async function digestOpenedRegularFile(root, basename) {
+async function digestOpenedRegularFile(root, basename, { signal, maxReadBytes } = {}) {
+  throwIfAborted(signal);
   const opened = await openConfinedRegularFile(root, path.join(root, basename), {
     flags: fs.constants.O_RDONLY,
+    maxBytes: maxReadBytes,
+    signal,
   });
+  let stream = null;
+  let abort = null;
   try {
+    throwIfAborted(signal);
     const byteLimit = Number(opened.stat.size);
     if (!Number.isSafeInteger(byteLimit) || byteLimit < 0) {
       throw memorySourceError('invalid_memory_source', 'published projection file is too large', {
@@ -273,18 +282,35 @@ async function digestOpenedRegularFile(root, basename) {
     }
     const hash = crypto.createHash('sha256');
     if (byteLimit > 0) {
-      const stream = fs.createReadStream(null, {
+      stream = fs.createReadStream(null, {
         fd: opened.handle.fd,
         autoClose: false,
         start: 0,
         end: byteLimit - 1,
+        signal,
       });
-      for await (const chunk of stream) hash.update(chunk);
+      abort = () => stream.destroy(signal.reason instanceof Error ? signal.reason : undefined);
+      signal?.addEventListener('abort', abort, { once: true });
+      try {
+        for await (const chunk of stream) {
+          throwIfAborted(signal);
+          hash.update(chunk);
+        }
+        throwIfAborted(signal);
+      } catch (error) {
+        rethrowAbort(error, signal);
+        throw error;
+      } finally {
+        signal?.removeEventListener('abort', abort);
+      }
     }
     await assertStableOpenedFile(opened);
+    throwIfAborted(signal);
     await assertOpenedFilePathIdentity(opened, portableFileIdentity(opened.stat));
+    throwIfAborted(signal);
     return Object.freeze({ bytes: byteLimit, sha256: hash.digest('hex') });
   } finally {
+    stream?.destroy();
     await opened.handle.close().catch(() => {});
   }
 }
@@ -293,11 +319,15 @@ async function validateResearchProjectionWinner({
   projectionRoot,
   attemptRoot,
   expectedManifest,
+  signal,
+  maxReadBytes,
 }) {
+  throwIfAborted(signal);
   const winnerStat = await fsp.lstat(projectionRoot).catch((error) => {
     if (error.code === 'ENOENT') return null;
     throw error;
   });
+  throwIfAborted(signal);
   if (winnerStat === null || winnerStat.isSymbolicLink() || !winnerStat.isDirectory()
       || await fsp.realpath(projectionRoot) !== projectionRoot) {
     throw memorySourceError('invalid_memory_source', 'legacy research projection winner is unsafe', {
@@ -305,6 +335,7 @@ async function validateResearchProjectionWinner({
     });
   }
   const manifest = await readManifest(projectionRoot);
+  throwIfAborted(signal);
   if (!manifest || canonicalJson(manifest) !== canonicalJson(expectedManifest)) {
     throw memorySourceError(
       'invalid_memory_source',
@@ -319,6 +350,7 @@ async function validateResearchProjectionWinner({
     'memory-manifest.json',
   ];
   const entries = (await fsp.readdir(projectionRoot)).sort();
+  throwIfAborted(signal);
   if (canonicalJson(entries) !== canonicalJson([...files].sort())) {
     throw memorySourceError(
       'invalid_memory_source',
@@ -327,10 +359,15 @@ async function validateResearchProjectionWinner({
     );
   }
   for (const file of files) {
-    const [candidate, winner] = await Promise.all([
-      digestOpenedRegularFile(attemptRoot, file),
-      digestOpenedRegularFile(projectionRoot, file),
-    ]);
+    const candidate = await digestOpenedRegularFile(attemptRoot, file, {
+      signal,
+      maxReadBytes,
+    });
+    const winner = await digestOpenedRegularFile(projectionRoot, file, {
+      signal,
+      maxReadBytes,
+    });
+    throwIfAborted(signal);
     if (candidate.bytes !== winner.bytes || candidate.sha256 !== winner.sha256) {
       throw memorySourceError(
         'invalid_memory_source',
@@ -339,6 +376,7 @@ async function validateResearchProjectionWinner({
       );
     }
   }
+  throwIfAborted(signal);
   return manifest;
 }
 
@@ -378,7 +416,8 @@ async function projectLegacyResearchSnapshot({
   requesterAgent,
   scratchQuota,
   signal,
-  maxDecompressedBytes = 2 * 1024 * 1024 * 1024,
+  maxInputBytes,
+  maxDecompressedBytes,
   maxRecordBytes = 16 * 1024 * 1024,
   maxAttempts = 3,
   _testHooks = {},
@@ -387,6 +426,7 @@ async function projectLegacyResearchSnapshot({
   if (!operationId || !requesterAgent) {
     throw memorySourceError('invalid_request', 'operation identity required');
   }
+  resolveMemorySourceReadLimits({ maxInputBytes, maxDecompressedBytes });
   const targetRoot = await fsp.realpath(canonicalRoot);
   if (typeof stateFile !== 'string' || !path.isAbsolute(stateFile)
       || stateFile.includes('\0') || path.normalize(stateFile) !== stateFile) {
@@ -401,7 +441,18 @@ async function projectLegacyResearchSnapshot({
     throw memorySourceError('invalid_request', 'state file must be inside canonical root');
   }
   const ownsQuota = !scratchQuota;
-  const quota = scratchQuota || await createOperationScratchQuota({ operationRoot });
+  const quota = scratchQuota || await createOperationScratchQuota({ operationRoot, signal });
+  if (await quota.assertOperationRoot(operationRoot) !== true) {
+    throw memorySourceError('source_operation_required', 'exact operation scratch quota required');
+  }
+  const sourceLimits = resolveMemorySourceReadLimits({
+    maxInputBytes,
+    maxDecompressedBytes,
+    quotaMaxBytes: quota.maxBytes,
+  });
+  const projectionReadLimits = resolveMemorySourceReadLimits({
+    quotaMaxBytes: quota.maxBytes,
+  });
   let cleanupQuota = quota;
   try {
     cleanupQuota = getOperationScratchQuotaCleanup(quota);
@@ -420,6 +471,7 @@ async function projectLegacyResearchSnapshot({
       throwIfAborted(signal);
       const openedSource = await openConfinedRegularFile(targetRoot, sourceFile, {
         flags: fs.constants.O_RDONLY,
+        maxBytes: sourceLimits.maxInputBytes,
         signal,
       });
       let attemptRoot = null;
@@ -455,7 +507,7 @@ async function projectLegacyResearchSnapshot({
           stateFile: sourceFile,
           openedFile: openedSource,
           signal,
-          maxDecompressedBytes,
+          maxDecompressedBytes: sourceLimits.maxDecompressedBytes,
           maxRecordBytes,
           onRecord: async (kind, record) => {
             if (kind === 'nodes') {
@@ -568,6 +620,8 @@ async function projectLegacyResearchSnapshot({
                 projectionRoot,
                 attemptRoot,
                 expectedManifest: manifest,
+                signal,
+                maxReadBytes: projectionReadLimits.maxInputBytes,
               });
               throwIfAborted(signal);
               await removeOwnedProjectionAttempt(attemptRoot, attemptIdentity);

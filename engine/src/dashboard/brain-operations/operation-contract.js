@@ -26,6 +26,7 @@ const IDENTIFIER_MAX_LENGTH = 256;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}$/;
 const OPERATION_ID_PATTERN = /^brop_[A-Za-z0-9_-]{32}$/;
 const RESULT_HANDLE_PATTERN = /^brres_[A-Za-z0-9_-]{32}$/;
+const PGS_SESSION_ID_PATTERN = /^pgss_[A-Za-z0-9_-]{32}$/;
 const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/;
 const TARGET_ACCESS_MODES = new Set(['own', 'read-only']);
@@ -46,6 +47,7 @@ const PUBLIC_RECORD_FIELDS = Object.freeze([
   'operationType',
   'requestParameters',
   'parameters',
+  'pgsSession',
   'canonicalEvidence',
   'recordVersion',
   'eventSequence',
@@ -101,6 +103,28 @@ function assertResultHandle(value) {
     throw operationError('result_handle_invalid');
   }
   return value;
+}
+
+function validatePgsSessionMetadata(value, code = 'pgs_session_invalid') {
+  const session = safeJsonClone(value, code);
+  if (!session || Array.isArray(session) || typeof session !== 'object') {
+    throw operationError(code);
+  }
+  const keys = Reflect.ownKeys(session);
+  const allowed = new Set(['sessionId', 'continuableUntil', 'sourceOperationId']);
+  if (keys.length !== allowed.size
+      || keys.some((key) => typeof key !== 'string' || !allowed.has(key))
+      || typeof session.sessionId !== 'string'
+      || !PGS_SESSION_ID_PATTERN.test(session.sessionId)
+      || typeof session.continuableUntil !== 'string'
+      || !Number.isFinite(Date.parse(session.continuableUntil))
+      || new Date(Date.parse(session.continuableUntil)).toISOString() !== session.continuableUntil
+      || !(session.sourceOperationId === null
+        || (typeof session.sourceOperationId === 'string'
+          && OPERATION_ID_PATTERN.test(session.sourceOperationId)))) {
+    throw operationError(code);
+  }
+  return session;
 }
 
 function assertExpectedVersion(value) {
@@ -505,6 +529,7 @@ module.exports = {
   OPERATION_RESULT_ARTIFACT_MAX_BYTES,
   PUBLIC_RECORD_FIELDS,
   RESULT_HANDLE_PATTERN,
+  PGS_SESSION_ID_PATTERN,
   SHA256_HEX_PATTERN,
   SHA256_PATTERN,
   TERMINAL_STATES,
@@ -525,4 +550,5 @@ module.exports = {
   validateTransitionError,
   validateCreateInput,
   validateSourcePin,
+  validatePgsSessionMetadata,
 };

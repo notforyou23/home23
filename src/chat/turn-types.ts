@@ -38,6 +38,8 @@ export interface TurnEnvelope {
   error?: string;
   error_code?: string;
   error_message?: string;
+  /** Canonical final assistant text. Derived for completed terminal reads/streams. */
+  assistant_content?: string;
   /** Max seq of any event belonging to this turn. Written on status-end records. */
   last_seq?: number;
 }

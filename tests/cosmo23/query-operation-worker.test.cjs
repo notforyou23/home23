@@ -81,21 +81,31 @@ function pgsParameters(overrides = {}) {
   return {
     query: 'Cover every pinned partition',
     mode: 'full',
-    pgsMode: 'full',
+    pgsMode: 'fresh',
+    pgsLevel: 'sample',
     pgsConfig: { sweepFraction: 0.25 },
     pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
     pgsSynth: { provider: 'anthropic', model: 'claude-sonnet-4-6' },
-    priorContext: null,
-    allowActions: false,
     ...overrides,
   };
 }
+
+const PRIOR_PGS_OPERATION_ID = `brop_${'C'.repeat(32)}`;
 
 function operationContext(operationType, parameters, overrides = {}) {
   const controller = overrides.controller || new AbortController();
   const sourcePin = Object.hasOwn(overrides, 'sourcePin')
     ? overrides.sourcePin
     : createSourcePin();
+  const pgsSession = operationType === 'pgs' ? {
+    sessionId: `pgss_${'q'.repeat(32)}`,
+    continuableUntil: '2099-07-19T12:00:00.000Z',
+    sourceOperationId: parameters.continueFromOperationId || null,
+    sessionStorage: {
+      databasePath: '/trusted/session.sqlite',
+      async verify() {}, async reconcileQuota() {}, async close() {},
+    },
+  } : null;
   return {
     operationId: `op-${operationType}`,
     operationType,
@@ -118,6 +128,7 @@ function operationContext(operationType, parameters, overrides = {}) {
     scratchQuota: { quota: 'trusted' },
     signal: controller.signal,
     sourcePin,
+    ...(pgsSession ? { pgsSession } : {}),
     reportEvent: overrides.reportEvent || (() => {}),
     ...overrides.context,
   };
@@ -224,6 +235,52 @@ test('operationType alone selects Query versus PGS and legacy routing fields are
   assert.equal(harness.calls.length, 2);
 });
 
+test('PGS worker accepts honest fresh, continue, and targeted parameter shapes', async () => {
+  const harness = createHarness((_query, options) => ({
+    state: 'complete',
+    result: { answer: 'scoped', sweepOutputs: [], metadata: { pgs: {} }, sourceEvidence: childEvidence() },
+    error: null,
+    sourceEvidence: childEvidence(),
+    resultArtifact: null,
+  }));
+
+  await harness.executor(operationContext('pgs', pgsParameters()));
+  await harness.executor(operationContext('pgs', pgsParameters({
+    pgsMode: 'continue',
+    pgsLevel: 'deep',
+    pgsConfig: { sweepFraction: 0.5 },
+    continueFromOperationId: PRIOR_PGS_OPERATION_ID,
+  })));
+  await harness.executor(operationContext('pgs', pgsParameters({
+    pgsMode: 'targeted',
+    pgsLevel: 'full',
+    pgsConfig: { sweepFraction: 1 },
+    targetPartitionIds: ['c-alpha', 'h-beta'],
+  })));
+
+  assert.equal(harness.calls[0].options.pgsMode, 'fresh');
+  assert.equal(harness.calls[0].options.pgsLevel, 'sample');
+  assert.equal(harness.calls[1].options.continueFromOperationId, PRIOR_PGS_OPERATION_ID);
+  assert.equal(harness.calls[1].options.pgsConfig.sweepFraction, 0.5);
+  assert.deepEqual(harness.calls[2].options.targetPartitionIds, ['c-alpha', 'h-beta']);
+
+  for (const invalid of [
+    pgsParameters({ pgsMode: 'fresh', continueFromOperationId: PRIOR_PGS_OPERATION_ID }),
+    pgsParameters({ pgsMode: 'continue' }),
+    pgsParameters({ pgsMode: 'continue', continueFromOperationId: PRIOR_PGS_OPERATION_ID,
+      targetPartitionIds: ['c-alpha'] }),
+    pgsParameters({ pgsMode: 'targeted', targetPartitionIds: [] }),
+    pgsParameters({ pgsMode: 'targeted', targetPartitionIds: ['c-alpha', 'c-alpha'] }),
+    pgsParameters({ pgsMode: 'fresh', pgsLevel: 'deep', pgsConfig: { sweepFraction: 0.25 } }),
+  ]) {
+    await assert.rejects(
+      harness.executor(operationContext('pgs', invalid)),
+      error => error.code === 'invalid_request',
+    );
+  }
+  assert.equal(harness.calls.length, 3);
+});
+
 test('PGS forwards exact independent pairs and preserves machine-readable sweep outputs', async () => {
   const pendingUnits = Array.from({ length: 8 }, (_, index) => ({
     workUnitId: `p${index + 1}-u1`,
@@ -270,10 +327,15 @@ test('PGS forwards exact independent pairs and preserves machine-readable sweep 
     sweepFraction: 0.25,
     selectedWorkUnits: 2,
     pendingWorkUnits: 6,
+    sessionId: partialContext.pgsSession.sessionId,
+    continuableUntil: partialContext.pgsSession.continuableUntil,
+    sourceOperationId: null,
+    canContinue: true,
   });
   assert.deepEqual(Object.keys(harness.calls[0].options).sort(), [
     'allowActions', 'enablePGS', 'mode', 'mutationPolicy', 'pgsConfig', 'pgsMode',
-    'pgsSweep', 'pgsSynth', 'priorContext', 'reportEvent', 'scratchDir',
+    'pgsLevel', 'pgsSweep', 'pgsSynth', 'priorContext', 'reportEvent', 'scratchDir',
+    'sessionStorage',
     'scratchQuota', 'signal', 'sourcePin',
   ].sort());
   assert.equal(harness.calls[0].options.enablePGS, true);
@@ -285,13 +347,20 @@ test('PGS forwards exact independent pairs and preserves machine-readable sweep 
   assert.deepEqual(harness.calls[0].options.pgsSynth, {
     provider: 'anthropic', model: 'claude-sonnet-4-6',
   });
+  assert.equal(harness.calls[0].options.sessionStorage, partialContext.pgsSession.sessionStorage);
+  assert.equal(partial.result.metadata.pgs.sessionId, partialContext.pgsSession.sessionId);
+  assert.equal(partial.result.metadata.pgs.continuableUntil, partialContext.pgsSession.continuableUntil);
+  assert.equal(partial.result.metadata.pgs.canContinue, true);
 
-  const fullParameters = pgsParameters();
-  delete fullParameters.pgsConfig;
+  const fullParameters = pgsParameters({
+    pgsLevel: 'full',
+    pgsConfig: { sweepFraction: 1 },
+  });
   const full = await harness.executor(operationContext('pgs', fullParameters));
   assert.equal(full.state, 'complete');
   assert.equal(full.result.sweepOutputs.length, 8);
   assert.equal(harness.calls[1].options.pgsConfig.sweepFraction, 1);
+
 });
 
 test('complete, partial, and failed child envelopes keep their terminal data', async () => {
@@ -325,12 +394,21 @@ test('complete, partial, and failed child envelopes keep their terminal data', a
       resultArtifact: null,
     }));
     const envelope = await harness.executor(operationContext('pgs', pgsParameters({
+      pgsLevel: 'full',
       pgsConfig: { sweepFraction: 1 },
     })));
     assert.equal(envelope.state, terminal.state);
     assert.equal(envelope.error, terminal.error);
     assert.equal(envelope.result.sweepOutputs, sweepOutputs);
-    assert.deepEqual(envelope.result.metadata, result.metadata);
+    assert.deepEqual(envelope.result.metadata, {
+      pgs: {
+        ...result.metadata.pgs,
+        sessionId: `pgss_${'q'.repeat(32)}`,
+        continuableUntil: '2099-07-19T12:00:00.000Z',
+        sourceOperationId: null,
+        canContinue: true,
+      },
+    });
     assert.equal(envelope.result.sourceEvidence, envelope.sourceEvidence);
     assert.equal(envelope.resultArtifact, null);
   }
@@ -509,7 +587,9 @@ test('invalid trusted projections fail before QueryEngine work', async () => {
     })],
     ['query with PGS pair', operationContext('query', { ...queryBase, pgsSweep: pgsBase.pgsSweep })],
     ['PGS with query pair', operationContext('pgs', { ...pgsBase, modelSelection: queryBase.modelSelection })],
+    ['PGS continue mode', operationContext('pgs', { ...pgsBase, pgsMode: 'continue' })],
     ['PGS targeted mode', operationContext('pgs', { ...pgsBase, pgsMode: 'targeted' })],
+    ['PGS unknown mode', operationContext('pgs', { ...pgsBase, pgsMode: 'unknown' })],
     ['PGS zero fraction', operationContext('pgs', {
       ...pgsBase, pgsConfig: { sweepFraction: 0 },
     })],

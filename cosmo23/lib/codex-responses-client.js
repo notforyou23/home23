@@ -4,6 +4,7 @@ const {
   normalizeProviderCompletion,
   requireCompleteProviderResult,
 } = require('./provider-completion');
+const { boundedJsonStringify } = require('./bounded-json');
 const {
   awaitWithCancellation,
   cancelReadableStreamReader,
@@ -18,6 +19,7 @@ const {
 } = require('./provider-execution');
 
 const MAX_ERROR_TEXT_BYTES = 64 * 1024;
+const MAX_CODEX_INPUT_BYTES = 64 * 1024 * 1024;
 const MAX_SSE_BUFFER_BYTES = 2 * 1024 * 1024;
 const MAX_STREAM_TOOL_CALLS = 4096;
 
@@ -29,6 +31,53 @@ function boundedText(value, maxBytes) {
   const text = String(value || '');
   if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
   return `${Buffer.from(text, 'utf8').subarray(0, maxBytes).toString('utf8')}…`;
+}
+
+function normalizeCodexInput(input) {
+  let candidate;
+  if (typeof input === 'string') {
+    if (input.length === 0) {
+      throw typed('provider_execution_invalid', 'Codex input text is required');
+    }
+    candidate = [{
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: input }],
+    }];
+  } else if (Array.isArray(input)) {
+    if (input.length === 0) {
+      throw typed('provider_execution_invalid', 'Codex input items are required');
+    }
+    candidate = input;
+  } else {
+    throw typed('provider_execution_invalid', 'Codex input must be text or an item list');
+  }
+
+  let encoded;
+  try {
+    encoded = boundedJsonStringify(candidate, {
+      maxBytes: MAX_CODEX_INPUT_BYTES,
+      label: 'Codex input',
+    }).json;
+  } catch (error) {
+    if (error?.code === 'result_too_large') throw error;
+    throw typed('provider_execution_invalid', 'Codex input must be JSON serializable');
+  }
+  if (typeof encoded !== 'string') {
+    throw typed('provider_execution_invalid', 'Codex input must be JSON serializable');
+  }
+
+  const normalized = JSON.parse(encoded);
+  if (!Array.isArray(normalized) || normalized.length === 0
+      || normalized.some(item => !item || typeof item !== 'object'
+        || Array.isArray(item) || typeof item.type !== 'string' || !item.type.trim())) {
+    throw typed('provider_execution_invalid', 'Codex input items must be typed objects');
+  }
+  if (typeof input === 'string'
+      && !normalized[0].content[0].text.trim()) {
+    throw typed('provider_execution_invalid', 'Codex input text is required');
+  }
+  return normalized;
 }
 
 class CodexResponsesClient {
@@ -58,9 +107,10 @@ class CodexResponsesClient {
     if (typeof model !== 'string' || !model.trim()) {
       throw typed('model_not_found', 'Codex model is required');
     }
-    const outputTokens = requireMaxOutputTokens(maxOutputTokens, this.providerId, model);
+    requireMaxOutputTokens(maxOutputTokens, this.providerId, model);
     const outputBytes = requireMaxOutputBytes(maxOutputBytes, this.providerId, model);
     throwIfAborted(signal);
+    const normalizedInput = normalizeCodexInput(input);
 
     const credentials = await awaitWithCancellation(
       () => this.credentialsProvider({ signal }), signal,
@@ -85,8 +135,7 @@ class CodexResponsesClient {
           store: false,
           stream: true,
           instructions,
-          input,
-          max_output_tokens: outputTokens,
+          input: normalizedInput,
         }),
         signal,
       },
@@ -283,4 +332,4 @@ class CodexResponsesClient {
   }
 }
 
-module.exports = { CodexResponsesClient };
+module.exports = { CodexResponsesClient, MAX_CODEX_INPUT_BYTES };

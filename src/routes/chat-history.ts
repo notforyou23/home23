@@ -1,5 +1,8 @@
 import type { Request, Response } from 'express';
 import type { ConversationHistory } from '../agent/history.js';
+import { projectChatHistoryRecords } from '../chat/history-projection.js';
+
+export { projectChatHistoryRecords } from '../chat/history-projection.js';
 
 export interface ChatHistoryConfig {
   agentName: string;
@@ -19,7 +22,7 @@ function checkAuth(req: Request, res: Response, token?: string): boolean {
 
 /**
  * GET /api/chat/history?chatId=X&limit=50
- * Returns ALL records in order, bounded window.
+ * Returns display records in order, bounded after transport reconstruction.
  */
 export function createChatHistoryHandler(config: ChatHistoryConfig) {
   return (req: Request, res: Response): void => {
@@ -32,9 +35,15 @@ export function createChatHistoryHandler(config: ChatHistoryConfig) {
     const limit = Math.max(1, Math.min(1000, Number.isFinite(rawLimit) ? rawLimit : 200));
 
     const records = config.history.loadRaw(chatId);
-    const windowed = records.length > limit ? records.slice(-limit) : records;
+    const projected = projectChatHistoryRecords(records, limit);
 
-    res.json({ chatId, count: windowed.length, total: records.length, records: windowed });
+    res.json({
+      chatId,
+      count: projected.length,
+      total: records.length,
+      projectedTotal: projectChatHistoryRecords(records, Number.MAX_SAFE_INTEGER).length,
+      records: projected,
+    });
   };
 }
 

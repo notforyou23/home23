@@ -132,6 +132,12 @@ const CONTROLLED_PROVIDER = 'controlled';
 const CONTROLLED_QUERY_MODEL = 'controlled-query';
 const CONTROLLED_PGS_MODEL = 'controlled-pgs';
 const CONTROLLED_SYNTHESIS_MODEL = 'controlled-synthesis';
+const PGS_LEVEL_FRACTIONS = Object.freeze({
+  skim: 0.10,
+  sample: 0.25,
+  deep: 0.50,
+  full: 1,
+});
 const METRIC_SEMANTICS = Object.freeze({
   v8HeapUsedBytes: 'request-time-sample',
   rssBytes: 'request-time-sample',
@@ -291,6 +297,7 @@ function controlledModel(id) {
   return {
     id,
     kind: 'chat',
+    contextWindowTokens: 32 * 1024 * 1024,
     maxOutputTokens: 512,
     providerStallMs: 900_000,
     transport: 'responses',
@@ -795,8 +802,13 @@ async function runDashboardChild(config) {
           };
         }
         if (operationType === 'pgs') {
+          const sweepFraction = PGS_LEVEL_FRACTIONS[requestParameters.pgsLevel || 'full'];
+          if (sweepFraction === undefined) {
+            throw typedError('invalid_request', 'pgsLevel is invalid');
+          }
           return {
             ...requestParameters,
+            pgsConfig: { sweepFraction },
             pgsSweep: requestParameters.pgsSweep || {
               provider: CONTROLLED_PROVIDER,
               model: CONTROLLED_PGS_MODEL,
@@ -812,7 +824,7 @@ async function runDashboardChild(config) {
       capabilityKey: config.capabilityKey,
       exporter,
       readSynthesisState: synthesisRuntime.readState,
-      limits: { stopTimeoutMs: 250 },
+      limits: { stopTimeoutMs: 5_000 },
     });
     await next.reconcile();
     const compatibilityRouter = express.Router();

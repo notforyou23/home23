@@ -34,6 +34,7 @@ const {
   validateResultObject,
   validateSourceEvidence,
   validateSourcePin,
+  validatePgsSessionMetadata,
   validateTargetSnapshot,
   validateTransitionError,
 } = require('./operation-contract.js');
@@ -73,6 +74,7 @@ const PRIVATE_RECORD_FIELDS = Object.freeze([
   'operationType',
   'requestParameters',
   'parameters',
+  'pgsSession',
   'canonicalEvidence',
   'recordVersion',
   'eventSequence',
@@ -631,6 +633,7 @@ class BrainOperationStore {
     if (!Object.hasOwn(record, '_synthesisCompletionClaim')) {
       record._synthesisCompletionClaim = null;
     }
+    if (!Object.hasOwn(record, 'pgsSession')) record.pgsSession = null;
     exactInputKeys(record, PRIVATE_RECORD_FIELDS, 'operation_corrupt');
     if (record.operationId !== expectedOperationId || !OPERATION_ID_PATTERN.test(record.operationId)) {
       throw operationError('operation_corrupt');
@@ -657,6 +660,14 @@ class BrainOperationStore {
     try {
       assertPlainObject(record.requestParameters);
       assertPlainObject(record.parameters);
+      if (record.pgsSession !== null) {
+        const session = validatePgsSessionMetadata(record.pgsSession, 'operation_corrupt');
+        const expectedSourceOperationId = record.requestParameters.continueFromOperationId ?? null;
+        if (record.operationType !== 'pgs'
+            || session.sourceOperationId !== expectedSourceOperationId) {
+          throw operationError('operation_corrupt');
+        }
+      }
       if (record.phase !== null) assertIdentifier(record.phase, 'phase');
       assertIsoOrNull(record.startedAt);
       assertIsoOrNull(record.updatedAt);
@@ -1017,6 +1028,7 @@ class BrainOperationStore {
       operationType: input.operationType,
       requestParameters: input.requestParameters,
       parameters: input.parameters,
+      pgsSession: null,
       canonicalEvidence: input.canonicalEvidence,
       recordVersion: 1,
       eventSequence: 0,
@@ -1530,15 +1542,25 @@ class BrainOperationStore {
 
   async setWorker(operationId, input) {
     assertOperationId(operationId);
-    exactInputKeys(input, ['expectedVersion', 'worker'], 'worker_invalid');
+    exactInputKeys(input, ['expectedVersion', 'worker', 'pgsSession'], 'worker_invalid');
     assertExpectedVersion(input.expectedVersion);
     const worker = safeJsonClone(input.worker, 'worker_invalid');
     if (!worker || Array.isArray(worker) || typeof worker !== 'object') throw operationError('worker_invalid');
+    const pgsSession = input.pgsSession === undefined || input.pgsSession === null
+      ? null
+      : validatePgsSessionMetadata(input.pgsSession, 'worker_invalid');
     return this._withOperationLock(operationId, async (record) => {
       if (record._worker !== null) throw operationError('worker_conflict');
       this._assertMutable(record, input.expectedVersion);
+      const expectedSourceOperationId = record.requestParameters.continueFromOperationId ?? null;
+      if ((pgsSession !== null && record.operationType !== 'pgs')
+          || (record.operationType === 'pgs' && pgsSession !== null
+            && pgsSession.sourceOperationId !== expectedSourceOperationId)) {
+        throw operationError('worker_invalid');
+      }
       const next = await this._commitMutation(record, (draft) => {
         draft._worker = worker;
+        draft.pgsSession = pgsSession;
       }, { type: 'worker_assigned' });
       return projectPublicRecord(next);
     });
@@ -2613,10 +2635,35 @@ class BrainOperationStore {
     });
   }
 
-  async collectGarbage(explicitNow) {
+  async collectGarbage(explicitNow, options) {
     const now = this._nowMs(explicitNow);
     const receipt = { resultsExpired: 0, metadataDeleted: 0 };
-    const operationIds = await this._listOperationIds();
+    const bounded = options !== undefined;
+    let maxOperations = null;
+    let afterOperationId = null;
+    if (bounded) {
+      if (!options || Array.isArray(options) || typeof options !== 'object'
+          || Reflect.ownKeys(options).some((key) =>
+            typeof key !== 'string' || !['maxOperations', 'afterOperationId'].includes(key))
+          || !Number.isSafeInteger(options.maxOperations)
+          || options.maxOperations < 1 || options.maxOperations > 1_000
+          || !(options.afterOperationId === null
+            || typeof options.afterOperationId === 'string')) {
+        throw operationError('invalid_request');
+      }
+      maxOperations = options.maxOperations;
+      if (options.afterOperationId !== null) {
+        assertOperationId(options.afterOperationId);
+        afterOperationId = options.afterOperationId;
+      }
+    }
+    const allOperationIds = (await this._listOperationIds()).sort();
+    const startIndex = afterOperationId === null
+      ? 0
+      : allOperationIds.findIndex((operationId) => operationId > afterOperationId);
+    const operationIds = !bounded
+      ? allOperationIds
+      : startIndex < 0 ? [] : allOperationIds.slice(startIndex, startIndex + maxOperations);
     for (const operationId of operationIds) {
       let record;
       try {
@@ -2639,7 +2686,14 @@ class BrainOperationStore {
         if (await this._deleteExpiredMetadata(operationId, now)) receipt.metadataDeleted += 1;
       }
     }
-    return receipt;
+    if (!bounded) return receipt;
+    const hasMore = startIndex >= 0
+      && startIndex + operationIds.length < allOperationIds.length;
+    return {
+      ...receipt,
+      scannedOperations: operationIds.length,
+      nextAfterOperationId: hasMore ? operationIds.at(-1) : null,
+    };
   }
 }
 

@@ -5,10 +5,21 @@ const QUERY_PARAMETER_KEYS = Object.freeze([
   'includeOutputs', 'includeThoughts', 'includeCoordinatorInsights', 'allowActions',
 ]);
 const PGS_PARAMETER_KEYS = Object.freeze([
-  'query', 'mode', 'pgsMode', 'pgsConfig', 'pgsSweep', 'pgsSynth',
-  'priorContext', 'allowActions',
+  'query', 'mode', 'pgsMode', 'pgsLevel', 'pgsConfig',
+  'continueFromOperationId', 'targetPartitionIds', 'pgsSweep', 'pgsSynth',
 ]);
 const QUERY_MODES = new Set(['quick', 'full', 'expert', 'dive']);
+const PGS_LEVEL_FRACTIONS = Object.freeze({
+  skim: 0.10,
+  sample: 0.25,
+  deep: 0.50,
+  full: 1,
+});
+const PGS_MODES = new Set(['fresh', 'continue', 'targeted']);
+const OPERATION_ID_PATTERN = /^brop_[A-Za-z0-9_-]{32}$/;
+const PGS_SESSION_ID_PATTERN = /^pgss_[A-Za-z0-9_-]{32}$/;
+const PARTITION_ID_PATTERN = /^(?:c|h)-[A-Za-z0-9._-]{1,253}$/;
+const MAX_TARGET_PARTITIONS = 256;
 const TERMINAL_STATES = new Set(['complete', 'partial', 'failed']);
 const MAX_QUERY_CHARS = 12_000;
 const MAX_PRIOR_CONTEXT_CHARS = 20_000;
@@ -135,33 +146,63 @@ function validatePgsParameters(parameters) {
   const pgsSweep = exactPair(requireOwn(parameters, 'pgsSweep', 'parameters'), 'pgsSweep');
   const pgsSynth = exactPair(requireOwn(parameters, 'pgsSynth', 'parameters'), 'pgsSynth');
   const mode = optionalMode(parameters.mode);
-  const priorContext = optionalPriorContext(parameters.priorContext);
-  const allowActions = optionalBoolean(parameters.allowActions, 'allowActions');
-  let pgsMode;
-  if (Object.hasOwn(parameters, 'pgsMode')) {
-    if (parameters.pgsMode !== 'full') throw invalid('pgsMode is invalid');
-    pgsMode = 'full';
+  const pgsMode = requireOwn(parameters, 'pgsMode', 'parameters');
+  if (typeof pgsMode !== 'string' || !PGS_MODES.has(pgsMode)) {
+    throw invalid('pgsMode is invalid');
   }
-  let sweepFraction = 1;
-  if (Object.hasOwn(parameters, 'pgsConfig')) {
-    assertExactKeys(parameters.pgsConfig, ['sweepFraction'], 'pgsConfig');
-    if (Object.hasOwn(parameters.pgsConfig, 'sweepFraction')) {
-      sweepFraction = parameters.pgsConfig.sweepFraction;
-      if (typeof sweepFraction !== 'number' || !Number.isFinite(sweepFraction)
-          || sweepFraction <= 0 || sweepFraction > 1) {
-        throw invalid('pgsConfig.sweepFraction is invalid');
-      }
+  const pgsLevel = requireOwn(parameters, 'pgsLevel', 'parameters');
+  if (typeof pgsLevel !== 'string' || !Object.hasOwn(PGS_LEVEL_FRACTIONS, pgsLevel)) {
+    throw invalid('pgsLevel is invalid');
+  }
+  const pgsConfig = requireOwn(parameters, 'pgsConfig', 'parameters');
+  assertExactKeys(pgsConfig, ['sweepFraction'], 'pgsConfig');
+  if (Object.keys(pgsConfig).length !== 1
+      || pgsConfig.sweepFraction !== PGS_LEVEL_FRACTIONS[pgsLevel]) {
+    throw invalid('pgsConfig.sweepFraction does not match pgsLevel');
+  }
+  let continueFromOperationId;
+  if (Object.hasOwn(parameters, 'continueFromOperationId')) {
+    continueFromOperationId = parameters.continueFromOperationId;
+    if (typeof continueFromOperationId !== 'string'
+        || !OPERATION_ID_PATTERN.test(continueFromOperationId)) {
+      throw invalid('continueFromOperationId is invalid');
     }
+  }
+  let targetPartitionIds;
+  if (Object.hasOwn(parameters, 'targetPartitionIds')) {
+    if (!Array.isArray(parameters.targetPartitionIds)
+        || parameters.targetPartitionIds.length < 1
+        || parameters.targetPartitionIds.length > MAX_TARGET_PARTITIONS) {
+      throw invalid('targetPartitionIds is invalid');
+    }
+    const seen = new Set();
+    targetPartitionIds = parameters.targetPartitionIds.map((value) => {
+      if (typeof value !== 'string' || !PARTITION_ID_PATTERN.test(value) || seen.has(value)) {
+        throw invalid('targetPartitionIds is invalid');
+      }
+      seen.add(value);
+      return value;
+    }).sort();
+  }
+  if (pgsMode === 'fresh' && (continueFromOperationId || targetPartitionIds)) {
+    throw invalid('fresh PGS cannot continue or target partitions');
+  }
+  if (pgsMode === 'continue' && (!continueFromOperationId || targetPartitionIds)) {
+    throw invalid('continue PGS requires exactly one prior operation');
+  }
+  if (pgsMode === 'targeted' && !targetPartitionIds) {
+    throw invalid('targeted PGS requires explicit partitions');
   }
   return {
     query,
     mode,
     pgsMode,
-    pgsConfig: Object.freeze({ sweepFraction }),
+    pgsLevel,
+    pgsConfig: Object.freeze({ sweepFraction: pgsConfig.sweepFraction }),
+    continueFromOperationId,
+    targetPartitionIds: targetPartitionIds ? Object.freeze(targetPartitionIds) : undefined,
     pgsSweep,
     pgsSynth,
-    priorContext,
-    allowActions,
   };
 }
 
@@ -205,7 +246,53 @@ function validateContext(context) {
   if (typeof context.reportEvent !== 'function') {
     throw invalid('reportEvent is required');
   }
+  if (context.operationType === 'pgs') {
+    assertDataObject(context.pgsSession, 'pgsSession');
+    if (typeof context.pgsSession.sessionId !== 'string'
+        || !PGS_SESSION_ID_PATTERN.test(context.pgsSession.sessionId)
+        || typeof context.pgsSession.continuableUntil !== 'string'
+        || !Number.isFinite(Date.parse(context.pgsSession.continuableUntil))
+        || (context.pgsSession.sourceOperationId !== null
+          && (typeof context.pgsSession.sourceOperationId !== 'string'
+            || !OPERATION_ID_PATTERN.test(context.pgsSession.sourceOperationId)))) {
+      throw invalid('pgsSession is invalid');
+    }
+    const storage = context.pgsSession.sessionStorage;
+    if (!storage || typeof storage !== 'object'
+        || typeof storage.verify !== 'function'
+        || typeof storage.reconcileQuota !== 'function'
+        || typeof storage.close !== 'function') {
+      throw invalid('pgsSession storage is invalid');
+    }
+  }
   return context;
+}
+
+function attachPgsSession(envelope, context, parameters) {
+  if (!envelope.result) return envelope;
+  const result = envelope.result;
+  const metadata = result.metadata && typeof result.metadata === 'object'
+    && !Array.isArray(result.metadata) ? result.metadata : {};
+  const pgs = metadata.pgs && typeof metadata.pgs === 'object'
+    && !Array.isArray(metadata.pgs) ? metadata.pgs : {};
+  const continuable = Date.parse(context.pgsSession.continuableUntil) > Date.now()
+    && (parameters.pgsMode === 'targeted' || pgs.fullCoverage !== true);
+  return {
+    ...envelope,
+    result: {
+      ...result,
+      metadata: {
+        ...metadata,
+        pgs: {
+          ...pgs,
+          sessionId: context.pgsSession.sessionId,
+          continuableUntil: context.pgsSession.continuableUntil,
+          sourceOperationId: context.pgsSession.sourceOperationId,
+          canContinue: continuable,
+        },
+      },
+    },
+  };
 }
 
 function invalidWorkerResult(message) {
@@ -513,7 +600,15 @@ function createQueryOperationExecutor({ queryEngine } = {}) {
           }
         : {
             pgsMode: parameters.pgsMode,
+            pgsLevel: parameters.pgsLevel,
             pgsConfig: parameters.pgsConfig,
+            ...(parameters.continueFromOperationId
+              ? { continueFromOperationId: parameters.continueFromOperationId }
+              : {}),
+            ...(parameters.targetPartitionIds
+              ? { targetPartitionIds: parameters.targetPartitionIds }
+              : {}),
+            sessionStorage: context.pgsSession.sessionStorage,
             pgsSweep: parameters.pgsSweep,
             pgsSynth: parameters.pgsSynth,
           }),
@@ -524,7 +619,10 @@ function createQueryOperationExecutor({ queryEngine } = {}) {
       throwIfAborted(context.signal);
       const evidence = reconcileEvidence(context, rawResult);
       throwIfAborted(context.signal);
-      return normalizeEnvelope(rawResult, evidence);
+      const envelope = normalizeEnvelope(rawResult, evidence);
+      return context.operationType === 'pgs'
+        ? attachPgsSession(envelope, context, parameters)
+        : envelope;
     } catch (error) {
       if (context.signal.aborted) throw context.signal.reason;
       throw error;

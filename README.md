@@ -12,14 +12,14 @@ Home23 is not another chatbot framework. It is a complete AI operating system th
 - **Live problems are verifier-backed.** The dashboard exposes deterministic problem state, remediation steps, escalation/user-intervention receipts, and re-check actions instead of relying on stale narrative status.
 - **Resident agency and scheduler loops are guarded.** Pursuits close only on independent receipts, stale high-salience signals are deferred without interrupting chat, and repeated scheduler failures are escalated instead of stampeding the harness.
 - **Contracts are first-class.** Apple/client-facing routes ship schemas, fixtures, a manifest, and read-only live validation via `npm run test:contracts:live`.
-- **The agent runtime has 49 registered tools.** That includes files, shell, web, brain search/query/export/PGS-adjacent graph access, 11 COSMO research tools, workers, skills, cron, media, TTS, and governed memory promotion.
+- **The agent runtime ships a broad, discoverable tool registry.** That includes files, shell, web, nine brain surfaces, COSMO research and run discovery, workers, skills, cron, media, TTS, agency, and governed memory promotion. The inventory is capability-based rather than tied to a brittle fixed count.
 - **The dashboard is the main operating surface.** Home, Intelligence, Workers, Query, Brain Map, Settings, Good Life/operator panels, Evobrew, and COSMO are wired from the browser, with the CLI used for setup, lifecycle, and updates.
 - **The bundled systems are still one install.** Home23 owns provider configuration; Evobrew and COSMO23 consume the same managed config instead of becoming separate setup islands.
 - **COSMO23 completed-run answers are artifact-grounded.** Structured run artifact inventories now surface extracted record counts, route receipts, invalid JSON status, and markdown report headings before graph synthesis.
 
 Four integrated systems, one install:
 
-- **Agent** — always-on AI with a cognitive loop, 49 registered tools (full COSMO research toolkit, brain-tier access incl. graph/query/export tools, workers, skills, cron/media/TTS tools, and `promote_to_memory` for governed memory promotion), multi-channel (Telegram, Discord, iMessage, webhooks), and an LLM-powered conversation interface with **situational awareness** — the agent queries its brain and loads domain-specific context before every response
+- **Agent** — always-on AI with a cognitive loop, a discoverable tool registry (full COSMO research toolkit, brain catalog/query/operation/graph access, workers, skills, cron/media/TTS tools, agency, and `promote_to_memory` for governed memory promotion), multi-channel (Telegram, Discord, iMessage, webhooks), and an LLM-powered conversation interface with **situational awareness** — the agent queries its brain and loads domain-specific context before every response
 - **COSMO 2.3** — multi-phase research engine with guided runs, brain integration, and a 9-tab UI. Fully agent-drivable: your agent can launch runs, monitor them, query completed brains, and compile findings into its own memory
 - **Evobrew** — AI-powered IDE with brain connectivity, multi-provider LLM support, and code editing
 - **Dashboard** — OS home screen with real-time thoughts, chat (with mobile-first standalone page), Good Life governance, workers, Query, intelligence synthesis, live-problems monitoring, brain storage visibility, settings (incl. **per-slot cognitive model assignments** for every place the engine calls a model), and full access to COSMO and Evobrew
@@ -220,7 +220,7 @@ Home23/
     src/cognition/     Dynamic roles, thought-action parser, action dispatcher + handlers
     src/dashboard/     Dashboard server, settings API, tiles, home page
   src/                 TS agent harness
-    agent/tools/       49 registered agent tools (shell, files, web, brain, research_*, workers, skills, cron, media, tts, promote)
+    agent/tools/       Agent tools (shell, files, web, brain, research_*, workers, skills, agency, cron, media, tts, promote)
     agent/             Context assembly, memory objects, event ledger, trigger index
     channels/          Telegram, Discord, iMessage, webhooks adapters + session router
     routes/            Evobrew bridge, chat turn, device registration, chat history
@@ -245,7 +245,7 @@ Each agent runs 3 PM2 processes, plus 2 shared:
 |---|---|---|
 | `home23-<name>` | Cognitive engine — thinking, dreaming, brain growth, document ingestion, **live-problems loop** | 5001 (WS + admin HTTP) |
 | `home23-<name>-dash` | Dashboard API — brain queries, state, settings, feeder drop zone, model assignments, live-problems API, brain storage API | 5002 (HTTP) |
-| `home23-<name>-harness` | Agent runtime — Telegram, Discord, iMessage, 49 registered tools, LLM loop, situational awareness, `/api/notify` + `/api/diagnose` endpoints | 5004 (bridge) |
+| `home23-<name>-harness` | Agent runtime — Telegram, Discord, iMessage, discoverable tool registry, LLM loop, situational awareness, `/api/notify` + `/api/diagnose` endpoints | 5004 (bridge) |
 | `home23-evobrew` | AI IDE (shared across all agents) | 3415 |
 | `home23-cosmo23` | Research engine (shared, on-demand) | 43210 |
 
@@ -420,23 +420,33 @@ Documents fed through the feeder are LLM-synthesized before brain entry: raw tex
 
 ## Brain-Tier Tools
 
-Your agent has 6 tools for working with its own living brain directly:
+Your agent has nine tools for discovering and working with living brains through the durable operation boundary:
 
 | Tool | Purpose |
 |---|---|
+| `brain_catalog` | Discover requester-authorized brains and exact provider/model pairs before querying |
+| `brain_operations_list` | Rediscover recent or nonterminal requester-owned operations when an operation ID is not already in context |
+| `brain_pgs_partitions` | List bounded canonical partition IDs and estimates before targeted PGS |
 | `brain_status` | Node count, cluster count, last cycle, activity over recent windows |
-| `brain_search` | Semantic search over memory nodes (cosine similarity) |
-| `brain_query` | 9 query modes — `fast`, `normal`, `deep`, `raw`, `report`, `innovation`, `consulting`, `grounded`, `executive` |
-| `brain_memory_graph` | Structural view: cluster sizes, top-activated nodes, tag histogram |
-| `brain_synthesize` | Triggers a meta-cognition synthesis run (async, ~30s) |
-| `brain_pgs` | **Progressive Graph Search** — partitions brain into communities (Louvain), parallel LLM sweeps, synthesis. Supports dual-model control per-call. |
+| `brain_search` | Bounded hybrid semantic/keyword retrieval with salience and explicit ANN/scan fallback evidence |
+| `brain_query` | Direct Query or Progressive Graph Search through one durable operation contract |
+| `brain_query_export` | Export a stored durable Query result to the agent workspace |
+| `brain_memory_graph` | Bounded structural sample ranked by activation, weight, access, and recency, with cluster totals |
+| `brain_synthesize` | Start or reattach to an own-brain meta-cognition synthesis operation |
+
+Direct `brain_query` accepts `quick`, `full`, `expert`, and `dive` modes with an exact `modelSelection` provider/model pair. Progressive Graph Search is not a separate capability: `brain_pgs` was merged into `brain_query`. PGS calls set `enablePGS: true`, omit direct-only fields such as `mode`, and choose the named cumulative levels `skim`, `sample`, `deep`, and `full` with exact `pgsSweep` and `pgsSynth` provider/model pairs from `brain_catalog`.
+
+PGS supports `fresh`, `continue`, and `targeted` modes. Start with `pgsMode: "fresh"`; expand a durable session with `pgsMode: "continue"` plus `continueFromOperationId`; or obtain canonical partition IDs from `brain_pgs_partitions` before a targeted request. If an operation detaches, retain its `brop_...` ID and use `brain_status` with `wait` or `result` rather than launching a duplicate.
+
+Coverage evidence is scoped. A fractional or targeted run can prove its requested scope complete, but only `fullCoverage: true` supports a graph-wide absence claim. Reused work, requested-scope completion, and whole-graph coverage are separate facts.
 
 ## Agent Research Toolkit
 
-Your agent has 11 atomic tools for driving COSMO 2.3 research runs directly from a chat message or autonomous action. Each tool maps to one COSMO HTTP endpoint:
+Your agent has a bounded research toolkit for driving COSMO 2.3 runs directly from a chat message or autonomous action:
 
 | Tool | Purpose |
 |---|---|
+| `research_runs_list` | Discover active and completed requester-authorized research runs before status, continuation, or compile work |
 | `research_list_brains` | Enumerate available research brains with node/cycle counts |
 | `research_query_brain` | Query ONE brain (modes: quick / full / expert / dive) |
 | `research_search_all_brains` | Query the top-N most recent brains in parallel |
@@ -446,7 +456,7 @@ Your agent has 11 atomic tools for driving COSMO 2.3 research runs directly from
 | `research_watch_run` | Cursor-paginated log tail during a run |
 | `research_get_brain_summary` | Aggregated executive/goals/trajectory overview |
 | `research_get_brain_graph` | Knowledge graph structure (nodes, edges, clusters) |
-| `research_compile_brain` | Save whole-brain synthesis to workspace (auto-ingested) |
+| `research_compile_brain` | Compile a bounded pinned brain projection to requester workspace output (auto-ingested) |
 | `research_compile_section` | Save one specific goal or insight as a focused memory node |
 
 The workflow policy lives in a skill file (`workspace/COSMO_RESEARCH.md`) loaded into every agent turn. When a research run is active, the agent's system prompt automatically receives a live `[COSMO ACTIVE RUN]` block.

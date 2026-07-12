@@ -59,12 +59,10 @@ test('assembleContext emits a memory activation posture when brain search return
         brainDir,
         enginePort: 59999,
         sessionId: 'chat-activation',
-        brainOperations: {
-          search: async () => ({
-            results: [],
-            sourceEvidence: { sourceHealth: 'healthy', matchOutcome: 'no_match' },
-          }),
-        } as never,
+        contextSearch: async () => ({
+          results: [],
+          sourceEvidence: { sourceHealth: 'healthy', matchOutcome: 'no_match' },
+        }),
         signal: new AbortController().signal,
       },
       ledger as never,

@@ -90,6 +90,7 @@ test('custom models under built-in providers require source-declared capabilitie
   const explicit = normalizeModelCatalog(catalog({
     openai: {
       executionDefaults: {
+        contextWindowTokens: 128000,
         maxOutputTokens: 4096,
         providerStallMs: 120000,
         transport: 'responses',
@@ -99,13 +100,18 @@ test('custom models under built-in providers require source-declared capabilitie
   }));
   assert.deepEqual(
     getModelCapabilities(explicit, 'openai', 'custom-openai-model'),
-    { maxOutputTokens: 4096, providerStallMs: 120000 },
+    {
+      contextWindowTokens: 128000,
+      maxOutputTokens: 4096,
+      providerStallMs: 120000,
+    },
   );
 
   const modelDeclared = normalizeModelCatalog(catalog({
     openai: {
       models: [{
         ...customModel,
+        contextWindowTokens: 64000,
         maxOutputTokens: 2048,
         providerStallMs: 60000,
         transport: 'responses',
@@ -114,7 +120,11 @@ test('custom models under built-in providers require source-declared capabilitie
   }));
   assert.deepEqual(
     getModelCapabilities(modelDeclared, 'openai', 'custom-openai-model'),
-    { maxOutputTokens: 2048, providerStallMs: 60000 },
+    {
+      contextWindowTokens: 64000,
+      maxOutputTokens: 2048,
+      providerStallMs: 60000,
+    },
   );
 
   const legacy = normalizeModelCatalog(catalog({
@@ -122,7 +132,11 @@ test('custom models under built-in providers require source-declared capabilitie
   }));
   assert.deepEqual(
     getModelCapabilities(legacy, 'openai', 'gpt-5.4-mini'),
-    { maxOutputTokens: 32768, providerStallMs: 900000 },
+    {
+      contextWindowTokens: 128000,
+      maxOutputTokens: 32768,
+      providerStallMs: 900000,
+    },
   );
 });
 
@@ -139,7 +153,11 @@ test('reviewed legacy Home23 xAI models receive only the xAI built-in defaults',
     } });
     assert.deepEqual(
       getModelCapabilities(catalog, 'xai', modelId),
-      { maxOutputTokens: 8192, providerStallMs: 900000 },
+      {
+        contextWindowTokens: 128000,
+        maxOutputTokens: 8192,
+        providerStallMs: 900000,
+      },
     );
     assert.equal(catalog.providers.xai.models[0].transport, transport);
   }
@@ -211,6 +229,7 @@ test('provider IDs are safe and duplicate exact provider/model pairs fail closed
   const model = {
     id: 'shared-model',
     kind: 'chat',
+    contextWindowTokens: 128000,
     maxOutputTokens: 4096,
     providerStallMs: 120000,
     transport: 'chat-completions',
@@ -252,6 +271,7 @@ test('valid custom providers survive an atomic save and reload', t => {
     acme: {
       label: 'Acme',
       executionDefaults: {
+        contextWindowTokens: 128000,
         maxOutputTokens: 4096,
         providerStallMs: 120000,
         transport: 'chat-completions',
@@ -314,6 +334,7 @@ test('generated built-in execution defaults stay non-declared across save and re
       models: [{
         id: 'custom-openai-explicit',
         kind: 'chat',
+        contextWindowTokens: 128000,
         maxOutputTokens: 2048,
         providerStallMs: 60000,
         transport: 'responses',
@@ -338,6 +359,7 @@ test('structurally invalid saves fail closed and preserve the prior catalog byte
   const valid = { version: 1, providers: {
     acme: {
       executionDefaults: {
+        contextWindowTokens: 128000,
         maxOutputTokens: 4096,
         providerStallMs: 120000,
         transport: 'chat-completions',
@@ -600,6 +622,7 @@ test('atomic catalog save leaves a complete old or new file across injected cras
   const provider = (label, maxOutputTokens) => ({
     label,
     executionDefaults: {
+      contextWindowTokens: 128000,
       maxOutputTokens,
       providerStallMs: 120000,
       transport: 'chat-completions',

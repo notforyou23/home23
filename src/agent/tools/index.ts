@@ -10,7 +10,10 @@ import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { shellTool } from './shell.js';
 import { readFileTool, writeFileTool, editFileTool, listFilesTool, searchFilesTool } from './files.js';
 import { webBrowseTool, createWebSearchTool, type WebToolsConfig } from './web.js';
-import { brainSearchTool, brainQueryTool, brainQueryExportTool, brainStatusTool, brainMemoryGraphTool, brainSynthesizeTool } from './brain.js';
+import {
+  brainCatalogTool, brainMemoryGraphTool, brainOperationsListTool, brainPgsPartitionsTool,
+  brainQueryExportTool, brainQueryTool, brainSearchTool, brainStatusTool, brainSynthesizeTool,
+} from './brain.js';
 import { generateImageTool, generateMusicTool, ttsTool } from './media.js';
 import { cronScheduleTool, cronListTool, cronRunTool, cronDeleteTool, cronEnableTool, cronDisableTool, cronUpdateTool } from './cron.js';
 import { selfUpdateTool, selfReadTool } from './identity.js';
@@ -37,6 +40,7 @@ import {
 import { skillsAuditTool, skillsGetTool, skillsListTool, skillsRunTool, skillsSuggestTool } from './skills.js';
 import {
   listBrainsTool,
+  listResearchRunsTool,
   queryBrainTool,
   searchAllBrainsTool,
   launchTool,
@@ -116,6 +120,9 @@ export function createToolRegistry(opts: { web?: WebToolsConfig } = {}): ToolReg
   registry.register(webBrowseTool);
   registry.register(createWebSearchTool(opts.web));
   registry.register(brainSearchTool);
+  registry.register(brainCatalogTool);
+  registry.register(brainOperationsListTool);
+  registry.register(brainPgsPartitionsTool);
   registry.register(brainQueryTool);
   registry.register(brainQueryExportTool);
   registry.register(brainStatusTool);
@@ -141,6 +148,7 @@ export function createToolRegistry(opts: { web?: WebToolsConfig } = {}): ToolReg
   registry.register(spawnAgentTool);
   // COSMO 2.3 research toolkit — 11 tools (see docs/design/STEP16)
   registry.register(listBrainsTool);
+  registry.register(listResearchRunsTool);
   registry.register(queryBrainTool);
   registry.register(searchAllBrainsTool);
   registry.register(launchTool);

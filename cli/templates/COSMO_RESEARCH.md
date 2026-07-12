@@ -6,7 +6,7 @@ You have access to COSMO 2.3 — a deep research engine that runs multi-agent or
 
 1. **Check existing brains first.**
    - `research_list_brains` — see what you already have.
-   - `research_search_all_brains` — query the top few brains for your question. If an existing brain already answers it, don't re-launch.
+   - `research_search_all_brains` — make a bounded direct-only query across the top few completed research brains. It does not accept PGS continuation or targeted controls. If an existing brain already answers the question, don't re-launch.
 
 2. **Frame before you launch.** `research_launch` takes two critical fields:
    - `topic`: focused and specific. "Cosine similarity in semantic search" — not "everything about embeddings".
@@ -20,25 +20,27 @@ You have access to COSMO 2.3 — a deep research engine that runs multi-agent or
    - 60–80 for a deep dive
    - `maxConcurrent: 6` is a reasonable default
 
-4. **Watch sparingly.** `research_watch_run` is for checking progress, not for tailing every turn. Check every 2–3 turns, or when you think the run should be done. Always pass the `after` cursor from the previous call so you only see new entries.
+4. **Watch sparingly.** `research_watch_run` is for checking progress, not for tailing every turn. Check every 2–3 turns, or when you think the run should be done. Always pass the `after` cursor from the previous call so you only see new entries. A launch call may finish while its underlying run remains active; use the current active-run block and exact `runId`, not the launch operation's terminal state.
 
 5. **Query modes:**
-   - `quick` — fast overview, small token budget
-   - `full` — standard (default)
+   - A direct query is the default. Start with `quick` for a fast, bounded overview.
+   - `full` — broader direct synthesis
    - `expert` — deep, with coordinator insights
    - `dive` — exhaustive, for crucial questions
+   - For one exact brain, PGS levels are cumulative coverage budgets: skim (10%), sample (25%), deep (50%), full (100%). Fresh starts a new sweep, continue resumes an exact PGS operation, and targeted limits work to canonical partitions. An empty scoped result is not proof of full-brain absence.
 
 6. **Compile to your brain when you want to keep the knowledge:**
-   - `research_compile_brain` for the whole run (one big node)
-   - `research_compile_section` for one specific thread (one goal, insight, or agent's output)
-   The engine feeder automatically ingests files written to `workspace/research/`.
+   - `research_compile_brain` creates a bounded compiled artifact for a broad focus.
+   - `research_compile_section` creates a smaller artifact for one goal, insight, or agent output.
+   Generated installations watch `workspace/research/`, so the feeder can ingest these bounded artifacts.
 
 7. **Orient before querying deeply.** Use `research_get_brain_summary` to see a brain's executive summary, goals, and trajectory before drilling into specifics with `research_query_brain`. Use `research_get_brain_graph` when you need to see HOW knowledge connects (clusters, bridges) rather than what it says.
 
 ## Rules
 
 - **Never launch a run while another is active.** You'll see a `[COSMO ACTIVE RUN]` block in your prompt when one is in flight. If you need to cancel, use `research_stop`.
+- **Detached is not failed.** Preserve exact operation IDs. Use `brain_status` to wait for or inspect a detached durable query, then reattach instead of starting duplicate work.
 - **Never re-launch research that already exists in a brain.** Query it instead.
 - **Never skip `context` in `research_launch`.** The guided planner needs it.
-- **Prefer `research_compile_section` over `research_compile_brain`** when you only need one thread. Whole-brain compiles produce one giant node; section compiles produce focused nodes that cluster better in your own brain.
+- **Prefer `research_compile_section` over `research_compile_brain`** when you only need one thread. Keep every compile bounded to the knowledge you intend to retain.
 - **Don't quote multi-KB query responses verbatim.** Paraphrase, summarize, or compile. Large verbatim dumps eat conversation context.

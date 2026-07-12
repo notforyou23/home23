@@ -5,9 +5,8 @@
  * by cosmo23's Query view and evobrew's Research view) with these home23-
  * specific changes:
  *   - brain is fixed to the current dashboard agent (no picker)
- *   - every /api/brain/<id>/... call is routed cross-origin to cosmo23
- *     (same box, port 43210), since cosmo23 owns the streaming PGS endpoints
- *   - models populated from cosmo23's catalog at init (no host app to do it)
+ *   - catalog, run, stream, and export use Home23's durable Query facade
+ *   - every model selection retains its exact provider/model pair
  *   - panel id is `panel-query` (home23 tab shell), not `query-tab-panel`
  *
  * Every deviation from the upstream file is tagged with `HOME23`.
@@ -17,12 +16,22 @@ let lastQueryResult = null;
 let queryHistory = [];
 let _queryTabInitialized = false;
 
-// HOME23 — cosmo23 bridge. Cosmo23 listens on 43210 on the same host; CORS is
-// open, so fetch() / SSE from this origin are fine.
-const QT_COSMO_BASE = `http://${window.location.hostname}:43210`;
 let QT_BRAIN_ID = null;
 let QT_BRAIN_DISPLAY = '';
 let QT_AGENT_NAME = '';
+let QT_QUERY_CATALOG = null;
+let QT_ACTIVE_OPERATION_ID = null;
+
+const QT_PGS_LEVELS = Object.freeze({
+  skim: 0.10,
+  sample: 0.25,
+  deep: 0.50,
+  full: 1,
+});
+const QT_PGS_MODES = new Set(['fresh', 'continue', 'targeted']);
+const QT_OPERATION_ID_PATTERN = /^brop_[A-Za-z0-9_-]{32}$/;
+const QT_PARTITION_ID_PATTERN = /^(?:c|h)-[A-Za-z0-9._-]{1,253}$/;
+const QT_MAX_TARGET_PARTITIONS = 256;
 
 // HOME23 — stubs for the cosmo23-style picker API. The rest of this file was
 // written against them, so keeping the signatures means fewer call-site edits.
@@ -32,8 +41,302 @@ function requireSelectedBrainId() {
   if (!QT_BRAIN_ID) throw new Error('Current agent brain not loaded yet');
   return QT_BRAIN_ID;
 }
-function buildBrainApiPath(suffix) {
-  return `${QT_COSMO_BASE}/api/brain/${encodeURIComponent(requireSelectedBrainId())}${suffix}`;
+function exactModelPair(pair, label = 'model') {
+  if (!pair || typeof pair.provider !== 'string' || !pair.provider.trim()
+      || typeof pair.model !== 'string' || !pair.model.trim()) {
+    throw new Error(`Select an exact provider and ${label}`);
+  }
+  return { provider: pair.provider.trim(), model: pair.model.trim() };
+}
+
+function encodeModelPair(pair) {
+  const exact = exactModelPair(pair);
+  return `${encodeURIComponent(exact.provider)}::${encodeURIComponent(exact.model)}`;
+}
+
+function decodeModelPair(value) {
+  if (typeof value !== 'string') throw new Error('Select an exact provider and model');
+  const splitAt = value.indexOf('::');
+  if (splitAt < 1) throw new Error('Select an exact provider and model');
+  return exactModelPair({
+    provider: decodeURIComponent(value.slice(0, splitAt)),
+    model: decodeURIComponent(value.slice(splitAt + 2)),
+  });
+}
+
+function selectedModelPair(select, label = 'model') {
+  if (!select) throw new Error(`Select an exact provider and ${label}`);
+  return exactModelPair(decodeModelPair(select.value), label);
+}
+
+function selectExactModelPair(select, pair) {
+  if (!select || !pair?.provider || !pair?.model) return false;
+  const value = encodeModelPair(pair);
+  const option = Array.from(select.options || []).find((candidate) => candidate.value === value);
+  if (!option) return false;
+  select.value = value;
+  return true;
+}
+
+function queryModelConfigurationError(label, pair) {
+  const requested = pair?.provider && pair?.model
+    ? `${pair.provider}/${pair.model}`
+    : 'an incomplete provider/model pair';
+  const error = new Error(`Query configuration error: ${label} requires ${requested}, but that exact pair is unavailable`);
+  error.code = 'query_model_configuration_invalid';
+  return error;
+}
+
+function queryFacadeEndpoint(catalog, kind, agent) {
+  const endpoint = catalog?.endpoints?.[kind];
+  if (typeof endpoint !== 'string' || !endpoint) {
+    throw new Error(`Query ${kind} endpoint is unavailable`);
+  }
+  if (!agent) return endpoint;
+  return `${endpoint}${endpoint.includes('?') ? '&' : '?'}agent=${encodeURIComponent(agent)}`;
+}
+
+function requireOperationId(value, label = 'operation') {
+  if (typeof value !== 'string' || !QT_OPERATION_ID_PATTERN.test(value)) {
+    throw new Error(`Select a valid prior PGS ${label}`);
+  }
+  return value;
+}
+
+function parseTargetPartitionIds(value) {
+  const raw = Array.isArray(value)
+    ? value
+    : String(value || '').split(/[\s,]+/);
+  const targets = [];
+  const seen = new Set();
+  for (const entry of raw) {
+    const partitionId = String(entry || '').trim();
+    if (!partitionId || seen.has(partitionId)) continue;
+    if (!QT_PARTITION_ID_PATTERN.test(partitionId)) {
+      throw new Error(`Invalid target partition ID: ${partitionId}`);
+    }
+    seen.add(partitionId);
+    targets.push(partitionId);
+  }
+  if (!targets.length) throw new Error('Targeted PGS requires at least one partition ID');
+  if (targets.length > QT_MAX_TARGET_PARTITIONS) {
+    throw new Error(`Targeted PGS supports at most ${QT_MAX_TARGET_PARTITIONS} partition IDs`);
+  }
+  return targets;
+}
+
+function buildPgsPartitionsRequest({ agent, brainId }) {
+  if (typeof agent !== 'string' || !agent.trim()) throw new Error('Current agent is unavailable');
+  if (typeof brainId !== 'string' || !brainId.trim()) throw new Error('Current brain is unavailable');
+  return { agent: agent.trim(), brainId: brainId.trim() };
+}
+
+function buildFacadeQueryRequest(input) {
+  const request = {
+    agent: input.agent,
+    brainId: input.brainId,
+    query: input.query,
+    enablePGS: input.enablePGS === true,
+  };
+  if (input.enablePGS === true) {
+    if (Object.hasOwn(input, 'mode')) {
+      throw new Error('Direct Query mode is not accepted for PGS');
+    }
+    if (Object.hasOwn(input, 'priorContext')) {
+      throw new Error('Prior query context is available only for Direct Query');
+    }
+    if (!QT_PGS_MODES.has(input.pgsMode)) {
+      throw new Error('PGS mode must be fresh, continue, or targeted');
+    }
+    if (!Object.hasOwn(QT_PGS_LEVELS, input.pgsLevel)) {
+      throw new Error('PGS level must be skim, sample, deep, or full');
+    }
+    if (Object.hasOwn(input, 'pgsConfig')) {
+      throw new Error('PGS uses named levels; raw PGS configuration is not accepted');
+    }
+    request.pgsMode = input.pgsMode;
+    request.pgsLevel = input.pgsLevel;
+    const hasContinuation = input.continueFromOperationId !== undefined
+      && input.continueFromOperationId !== null
+      && input.continueFromOperationId !== '';
+    const hasTargets = input.targetPartitionIds !== undefined
+      && input.targetPartitionIds !== null;
+    if (input.pgsMode === 'fresh') {
+      if (hasContinuation || hasTargets) {
+        throw new Error('Fresh PGS cannot include a prior operation or target partitions');
+      }
+    } else if (input.pgsMode === 'continue') {
+      if (!hasContinuation || hasTargets) {
+        throw new Error('Continue PGS requires one prior operation and no target partitions');
+      }
+      request.continueFromOperationId = requireOperationId(input.continueFromOperationId);
+    } else {
+      if (!hasTargets) throw new Error('Targeted PGS requires target partition IDs');
+      request.targetPartitionIds = parseTargetPartitionIds(input.targetPartitionIds);
+      if (hasContinuation) {
+        request.continueFromOperationId = requireOperationId(input.continueFromOperationId);
+      }
+    }
+    request.pgsSweep = exactModelPair(input.pgsSweep, 'PGS sweep model');
+    request.pgsSynth = exactModelPair(input.pgsSynth, 'PGS synthesis model');
+  } else {
+    request.mode = input.mode;
+    request.modelSelection = exactModelPair(input.modelSelection);
+    for (const field of [
+      'enableSynthesis', 'includeOutputs', 'includeThoughts',
+      'includeCoordinatorInsights', 'allowActions',
+    ]) {
+      if (input[field] !== undefined) request[field] = input[field];
+    }
+  }
+  if (input.enablePGS !== true && input.priorContext !== undefined) {
+    request.priorContext = input.priorContext;
+  }
+  return request;
+}
+
+function isDetachedFacadePayload(payload) {
+  return payload?.detached === true
+    && payload?.attachmentState === 'detached'
+    && typeof payload?.operationId === 'string';
+}
+
+function queryResultFromFacadePayload(payload, fallbackQuery = '') {
+  const result = payload?.result;
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    throw new Error('Query facade returned no durable result');
+  }
+  const normalized = {
+    ...result,
+    query: result.query || payload.query || fallbackQuery,
+    answer: result.answer ?? payload.answer ?? null,
+    operationId: payload.operationId || null,
+    resultHandle: payload.resultHandle || null,
+    operationState: payload.state || null,
+    attachmentState: payload.attachmentState || null,
+    sourceEvidence: payload.sourceEvidence || null,
+  };
+  const session = pgsSessionIdentity(normalized);
+  return { ...normalized, ...session };
+}
+
+function pgsMetadata(result) {
+  return result?.metadata?.pgs || result?.pgs || null;
+}
+
+function pgsSessionIdentity(result) {
+  const pgs = pgsMetadata(result) || {};
+  return {
+    pgsSessionId: pgs.sessionId || null,
+    sourceOperationId: pgs.sourceOperationId || null,
+    continuableUntil: pgs.continuableUntil || null,
+    canContinue: typeof pgs.canContinue === 'boolean' ? pgs.canContinue : null,
+  };
+}
+
+function historyItemForQueryResult(result) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    throw new Error('Query history item is invalid');
+  }
+  return { ...result, ...pgsSessionIdentity(result) };
+}
+
+function brainOperationEndpoint(operationId, action = '') {
+  const id = requireOperationId(operationId);
+  const base = `/home23/api/brain-operations/${encodeURIComponent(id)}`;
+  return action ? `${base}/${encodeURIComponent(action)}` : base;
+}
+
+function nextPGSLevel(level) {
+  const levels = ['skim', 'sample', 'deep', 'full'];
+  const index = levels.indexOf(level);
+  if (index < 0) return 'sample';
+  return levels[Math.min(index + 1, levels.length - 1)];
+}
+
+function isPGSContinuable(result, now = Date.now()) {
+  const pgs = pgsMetadata(result) || {};
+  const identity = pgsSessionIdentity(result);
+  if (pgs.canContinue !== true) return false;
+  if (identity.continuableUntil) {
+    const expires = Date.parse(identity.continuableUntil);
+    if (!Number.isFinite(expires) || expires <= now) return false;
+  }
+  return true;
+}
+
+function escapeHtmlText(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function countOrNull(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function buildPGSCoverageHTML(pgs, result = {}) {
+  if (!pgs || typeof pgs !== 'object') return '';
+  const level = Object.hasOwn(QT_PGS_LEVELS, pgs.coverageLevel)
+    ? pgs.coverageLevel
+    : null;
+  const fraction = Number.isFinite(pgs.coverageFraction)
+    ? pgs.coverageFraction
+    : (level ? QT_PGS_LEVELS[level] : null);
+  const levelName = level ? level.charAt(0).toUpperCase() + level.slice(1) : 'Requested';
+  const percent = fraction === null ? null : Math.round(fraction * 100);
+  const scopeSuccessful = countOrNull(pgs.scopeSuccessfulWorkUnits);
+  const scopePending = countOrNull(pgs.scopePendingWorkUnits);
+  const scopeTotal = countOrNull(pgs.scopeWorkUnits)
+    ?? (scopeSuccessful !== null && scopePending !== null ? scopeSuccessful + scopePending : null);
+  const globalCovered = countOrNull(pgs.globalCoveredWorkUnits);
+  const globalPending = countOrNull(pgs.globalPendingWorkUnits);
+  const globalTotal = countOrNull(pgs.globalWorkUnits)
+    ?? (globalCovered !== null && globalPending !== null ? globalCovered + globalPending : null);
+  const reused = countOrNull(pgs.reusedWorkUnits);
+  const newlySwept = countOrNull(pgs.newWorkUnits);
+  const identity = pgsSessionIdentity({ ...result, metadata: { pgs } });
+  const lines = [];
+  lines.push(`<span>Coverage level: ${escapeHtmlText(levelName)}${percent === null ? '' : ` (${percent}%)`}</span>`);
+  lines.push(`<span>Requested scope: ${scopeSuccessful ?? '?'}${scopeTotal === null ? '' : `/${scopeTotal}`} complete; ${scopePending ?? '?'} pending${pgs.scopeComplete === true ? ' · scope complete' : ''}</span>`);
+  lines.push(`<span>Global coverage: ${globalCovered ?? '?'}${globalTotal === null ? '' : `/${globalTotal}`}; ${globalPending ?? '?'} pending</span>`);
+  lines.push(`<span>${pgs.fullCoverage === true ? 'Full graph coverage: complete' : 'Full graph coverage: not yet complete'}</span>`);
+  lines.push(`<span>This operation: ${reused ?? '?'} reused; ${newlySwept ?? '?'} new</span>`);
+  if (Array.isArray(pgs.targetPartitionIds) && pgs.targetPartitionIds.length) {
+    lines.push(`<span>Target partitions: ${pgs.targetPartitionIds.map(escapeHtmlText).join(', ')}</span>`);
+  }
+  if (result.operationId) lines.push(`<span>Operation: <code>${escapeHtmlText(result.operationId)}</code></span>`);
+  if (identity.pgsSessionId) lines.push(`<span>Session: <code>${escapeHtmlText(identity.pgsSessionId)}</code></span>`);
+  if (identity.continuableUntil) {
+    lines.push(`<span>Continuable until: ${escapeHtmlText(identity.continuableUntil)}</span>`);
+  }
+  return `<div class="qt-pgs-coverage">${lines.join('')}</div>`;
+}
+
+function buildFacadeExportRequest(result, format, agent) {
+  if (result?.operationId) {
+    return {
+      agent,
+      operationId: result.operationId,
+      ...(result.resultHandle ? { resultHandle: result.resultHandle } : {}),
+      format,
+    };
+  }
+  return {
+    agent,
+    query: result?.query || '',
+    answer: result?.answer || '',
+    format,
+    metadata: result?.metadata || {},
+  };
+}
+
+function facadeErrorMessage(payload, fallback = 'Query failed') {
+  if (typeof payload?.error === 'string') return payload.error;
+  return payload?.error?.message || payload?.message || fallback;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -118,7 +421,7 @@ function initQueryTab() {
             <div class="qt-option-group">
               <label class="qt-checkbox-label">
                 <input type="checkbox" id="qt-stream" checked>
-                <span>Stream response</span>
+                <span>Show live progress</span>
               </label>
             </div>
           </div>
@@ -128,7 +431,6 @@ function initQueryTab() {
 
           <!-- Enhancement Toggles -->
           <div class="qt-enhancements">
-            <label class="qt-toggle-label"><input type="checkbox" id="qt-evidence"> Evidence Metrics</label>
             <label class="qt-toggle-label"><input type="checkbox" id="qt-synthesis" checked> Synthesis</label>
             <label class="qt-toggle-label"><input type="checkbox" id="qt-coordinator" checked> Coordinator Insights</label>
           </div>
@@ -140,21 +442,21 @@ function initQueryTab() {
             <label class="qt-toggle-label" title="Allow query to create files, read full contents, and take actions">
               <input type="checkbox" id="qt-allow-actions"> Allow Actions
             </label>
-            <label class="qt-toggle-label qt-pgs-label" title="Partitioned Graph Synthesis: full graph coverage via parallel sweeps (3-6 min)">
-              <input type="checkbox" id="qt-pgs"> 🧬 PGS (Full Graph)
+            <label class="qt-toggle-label qt-pgs-label" title="Partitioned Graph Synthesis: durable cumulative or targeted coverage with reusable sweeps">
+              <input type="checkbox" id="qt-pgs"> 🧬 PGS
             </label>
           </div>
 
           <div id="qt-pgs-controls" class="qt-pgs-controls qt-hidden">
             <div class="qt-option-group">
-              <label>Sweep Depth:</label>
+              <label>Coverage Level:</label>
               <div class="qt-pgs-depth-chips">
-                <button type="button" class="qt-depth-chip" data-depth="0.10">Skim (10%)</button>
-                <button type="button" class="qt-depth-chip qt-depth-active" data-depth="0.25">Sample (25%)</button>
-                <button type="button" class="qt-depth-chip" data-depth="0.50">Deep (50%)</button>
-                <button type="button" class="qt-depth-chip" data-depth="1.0">Full (100%)</button>
+                <button type="button" class="qt-depth-chip" data-level="skim">Skim (10%)</button>
+                <button type="button" class="qt-depth-chip qt-depth-active" data-level="sample">Sample (25%)</button>
+                <button type="button" class="qt-depth-chip" data-level="deep">Deep (50%)</button>
+                <button type="button" class="qt-depth-chip" data-level="full">Full (100%)</button>
               </div>
-              <input type="hidden" id="qt-pgs-depth" value="0.25" />
+              <input type="hidden" id="qt-pgs-level" value="sample" />
             </div>
             <div class="qt-pgs-model-row">
               <div class="qt-option-group">
@@ -169,14 +471,23 @@ function initQueryTab() {
             <div class="qt-option-group">
               <label>Session Mode:</label>
               <select id="qt-pgs-mode" class="qt-select">
-                <option value="full" selected>fresh sweep</option>
-                <option value="continue">continue (remaining only)</option>
-                <option value="targeted">targeted (best remaining)</option>
+                <option value="fresh" selected>Start fresh session</option>
+                <option value="continue">Continue prior session</option>
+                <option value="targeted">Target partitions</option>
               </select>
             </div>
-            <div class="qt-option-group">
-              <label>Session ID:</label>
-              <input id="qt-pgs-session" class="qt-input-inline" type="text" placeholder="default" />
+            <div id="qt-pgs-continuation-group" class="qt-option-group qt-hidden">
+              <label>Prior PGS Operation:</label>
+              <select id="qt-pgs-continue-operation" class="qt-select">
+                <option value="">Select a continuable PGS result</option>
+              </select>
+              <div class="qt-option-help">Continue reuses compatible successful sweeps. A mismatch is shown as an error and never starts over silently.</div>
+            </div>
+            <div id="qt-pgs-target-group" class="qt-option-group qt-hidden">
+              <label>Target Partition IDs:</label>
+              <textarea id="qt-pgs-targets" class="qt-input-inline" rows="3" placeholder="Load canonical partitions, then keep the ones you want"></textarea>
+              <button type="button" id="qt-pgs-load-partitions" class="qt-btn qt-btn-outline qt-btn-sm">Load canonical partitions</button>
+              <div id="qt-pgs-partitions-status" class="qt-option-help">Target IDs must come from the current pinned brain source. The selected level still applies within these targets.</div>
             </div>
           </div>
         </div>
@@ -218,7 +529,7 @@ function initQueryTab() {
 
   // Bind events
   bindQueryTabEvents();
-  // HOME23 — cosmo23's app.js isn't present; do model + brain setup ourselves.
+  // HOME23 — load the durable facade catalog for this dashboard agent.
   resolveCurrentAgentBrainThenLoad().catch(err => {
     console.error('[home23-query] Failed to resolve current agent brain:', err);
     const ph = document.querySelector('.qt-result-placeholder p');
@@ -226,49 +537,16 @@ function initQueryTab() {
   });
 }
 
-// HOME23 — look up the current dashboard agent, find its brain in cosmo23's
-// registry by sourceLabel (agent name), and wire global query state.
+// HOME23 — resolve the dashboard agent, then let the Home23 Query facade supply
+// its canonical resident brain and exact provider/model catalog.
 async function resolveCurrentAgentBrainThenLoad() {
-  // Load Query-tab defaults from home23 settings; used after models populate.
-  let qDefaults = {};
-  try {
-    const r = await fetch('/home23/api/settings/query');
-    if (r.ok) qDefaults = await r.json();
-  } catch { /* defaults stay empty */ }
-
-  // Populate all three model selects from cosmo23's catalog.
-  await populateQueryModels(qDefaults);
-
-  // Seed mode + PGS toggles from saved defaults.
-  if (qDefaults.defaultMode) {
-    const s = document.getElementById('qt-mode');
-    if (s) s.value = qDefaults.defaultMode;
-  }
-  if (qDefaults.enablePGSByDefault) {
-    const chk = document.getElementById('qt-pgs');
-    if (chk) {
-      chk.checked = true;
-      const controls = document.getElementById('qt-pgs-controls');
-      if (controls) controls.classList.remove('qt-hidden');
-    }
-  }
-  if (typeof qDefaults.pgsDepth === 'number') {
-    const hidden = document.getElementById('qt-pgs-depth');
-    if (hidden) hidden.value = String(qDefaults.pgsDepth);
-    document.querySelectorAll('.qt-depth-chip').forEach(c => {
-      c.classList.toggle('qt-depth-active', parseFloat(c.dataset.depth) === qDefaults.pgsDepth);
-    });
-  }
-  updateQueryOptionsSummary();
-
   // Prefer explicit URL override, then the dashboard's own agent, then primary.
   let dashboardAgent = '';
   const urlAgent = new URLSearchParams(window.location.search).get('agent');
-  let currentBrainMeta = null;
   try {
     const brainRes = await fetch('/home23/api/brain/current');
     if (brainRes.ok) {
-      currentBrainMeta = await brainRes.json();
+      const currentBrainMeta = await brainRes.json();
       if (currentBrainMeta?.agent) {
         dashboardAgent = String(currentBrainMeta.agent).trim();
       }
@@ -300,23 +578,38 @@ async function resolveCurrentAgentBrainThenLoad() {
   if (!dashboardAgent) throw new Error('No agents configured in home23');
   QT_AGENT_NAME = dashboardAgent;
 
-  if (currentBrainMeta?.routeKey) {
-    QT_BRAIN_ID = currentBrainMeta.routeKey;
-    QT_BRAIN_DISPLAY = currentBrainMeta.displayName || dashboardAgent;
-  } else {
-    // Fallback: ask cosmo23's registry if the direct mapping is unavailable.
-    const brRes = await fetch(`${QT_COSMO_BASE}/api/brains`);
-    if (!brRes.ok) throw new Error(`cosmo23 /api/brains HTTP ${brRes.status}`);
-    const bj = await brRes.json();
-    const brains = Array.isArray(bj) ? bj : (bj.brains || []);
-    const match = brains.find(b =>
-      String(b.sourceLabel || '').toLowerCase() === dashboardAgent.toLowerCase() &&
-      (b.name === 'brain' || (b.path || '').endsWith(`/${dashboardAgent}/brain`))
-    );
-    if (!match) throw new Error(`No brain found for agent "${dashboardAgent}" in cosmo23 registry (roots may not be seeded — check Query settings)`);
-    QT_BRAIN_ID = match.routeKey || match.id;
-    QT_BRAIN_DISPLAY = match.displayName || dashboardAgent;
+  const catalogRes = await fetch(`/home23/api/query/catalog?agent=${encodeURIComponent(dashboardAgent)}`);
+  const catalog = await catalogRes.json();
+  if (!catalogRes.ok) throw new Error(facadeErrorMessage(catalog, `Query catalog HTTP ${catalogRes.status}`));
+  if (!catalog.available) throw new Error(catalog.reason || 'Query is unavailable');
+  if (!catalog.selectedBrain?.id) throw new Error('Current agent canonical brain is unavailable');
+  QT_QUERY_CATALOG = catalog;
+  QT_BRAIN_ID = catalog.selectedBrain.id;
+  QT_BRAIN_DISPLAY = catalog.selectedBrain.displayName || dashboardAgent;
+
+  populateQueryModels(catalog);
+  const qDefaults = catalog.defaults || {};
+  if (qDefaults.mode) {
+    const s = document.getElementById('qt-mode');
+    if (s) s.value = qDefaults.mode;
   }
+  if (qDefaults.enablePGSByDefault) {
+    const chk = document.getElementById('qt-pgs');
+    if (chk) {
+      chk.checked = true;
+      document.getElementById('qt-pgs-controls')?.classList.remove('qt-hidden');
+    }
+  }
+  if (typeof qDefaults.pgsDepth === 'number') {
+    const level = ({ 0.1: 'skim', 0.25: 'sample', 0.5: 'deep', 1: 'full' })[qDefaults.pgsDepth] || 'sample';
+    const hidden = document.getElementById('qt-pgs-level');
+    if (hidden) hidden.value = level;
+    document.querySelectorAll('.qt-depth-chip').forEach((chip) => {
+      chip.classList.toggle('qt-depth-active', chip.dataset.level === level);
+    });
+  }
+  updatePGSModeControls();
+  updateQueryOptionsSummary();
 
   // Header label (if present) + placeholder text.
   const label = document.getElementById('qt-brain-label');
@@ -326,51 +619,48 @@ async function resolveCurrentAgentBrainThenLoad() {
   checkBrainStatus();
 }
 
-// HOME23 — fetch cosmo23's merged model catalog and fill the three selects.
-// Accepts `overrides` from home23 Query settings so saved defaults win over
-// cosmo23's catalog defaults.
-async function populateQueryModels(overrides = {}) {
-  try {
-    const res = await fetch(`${QT_COSMO_BASE}/api/providers/models`);
-    if (!res.ok) return;
-    const data = await res.json();
-    const models = Array.isArray(data) ? data : (data.models || []);
-    if (models.length === 0) return;
-
-    const defaultModel = overrides.defaultModel || data?.defaults?.queryModel || models[0].id;
-    const pgsSweepDefault = overrides.pgsSweepModel || data?.defaults?.pgsSweepModel || models[0].id;
-    const pgsSynthDefault = overrides.pgsSynthModel || defaultModel;
-
-    const fill = (select, selected) => {
-      if (!select) return;
-      // Group by provider
-      const byProvider = new Map();
-      for (const m of models) {
-        const p = m.provider || 'other';
-        if (!byProvider.has(p)) byProvider.set(p, []);
-        byProvider.get(p).push(m);
+function populateQueryModels(catalog) {
+  const models = (catalog?.models || []).filter((model) => model?.id && model?.provider);
+  if (!models.length) throw new Error('No exact Query provider/model pairs are available');
+  const defaults = catalog.defaults || {};
+  const fill = (select, selectedPair, label) => {
+    if (!select) return;
+    const byProvider = new Map();
+    for (const model of models) {
+      if (!byProvider.has(model.provider)) byProvider.set(model.provider, []);
+      byProvider.get(model.provider).push(model);
+    }
+    select.innerHTML = '';
+    for (const [provider, providerModels] of byProvider) {
+      const group = document.createElement('optgroup');
+      group.label = providerModels[0].providerLabel || provider;
+      for (const model of providerModels) {
+        const option = document.createElement('option');
+        option.value = encodeModelPair({ provider, model: model.id });
+        option.textContent = model.name || model.id;
+        option.dataset.provider = provider;
+        option.dataset.model = model.id;
+        group.appendChild(option);
       }
-      select.innerHTML = '';
-      for (const [provider, ms] of byProvider) {
-        const og = document.createElement('optgroup');
-        og.label = provider;
-        for (const m of ms) {
-          const opt = document.createElement('option');
-          opt.value = m.id;
-          opt.textContent = m.name || m.id;
-          if (m.id === selected) opt.selected = true;
-          og.appendChild(opt);
-        }
-        select.appendChild(og);
-      }
-    };
+      select.appendChild(group);
+    }
+    if (!selectExactModelPair(select, selectedPair)) {
+      throw queryModelConfigurationError(label, selectedPair);
+    }
+  };
 
-    fill(document.getElementById('qt-model'), defaultModel);
-    fill(document.getElementById('qt-pgs-sweep-model'), pgsSweepDefault);
-    fill(document.getElementById('qt-pgs-synth-model'), pgsSynthDefault);
-  } catch (err) {
-    console.warn('[home23-query] Model population failed:', err.message);
-  }
+  fill(document.getElementById('qt-model'), {
+    provider: defaults.provider,
+    model: defaults.model,
+  }, 'Direct Query model');
+  fill(document.getElementById('qt-pgs-sweep-model'), {
+    provider: defaults.pgsSweepProvider,
+    model: defaults.pgsSweepModel,
+  }, 'PGS sweep model');
+  fill(document.getElementById('qt-pgs-synth-model'), {
+    provider: defaults.pgsSynthProvider,
+    model: defaults.pgsSynthModel,
+  }, 'PGS synthesis model');
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -422,7 +712,13 @@ function bindQueryTabEvents() {
   document.getElementById('qt-pgs-synth-model')?.addEventListener('change', (e) => {
     e.target.dataset.userChanged = '1';
   });
-  document.getElementById('qt-pgs-mode')?.addEventListener('change', updateSummary);
+  document.getElementById('qt-pgs-mode')?.addEventListener('change', () => {
+    updatePGSModeControls();
+    updateSummary();
+  });
+  document.getElementById('qt-pgs-load-partitions')?.addEventListener('click', () => {
+    loadPgsPartitionInventory();
+  });
 
   const pgsToggle = document.getElementById('qt-pgs');
   pgsToggle?.addEventListener('change', () => {
@@ -431,12 +727,12 @@ function bindQueryTabEvents() {
     updateSummary();
   });
 
-  // PGS depth chip selection
+  // PGS named cumulative coverage selection.
   document.querySelectorAll('.qt-depth-chip').forEach(chip => {
     chip.addEventListener('click', () => {
       document.querySelectorAll('.qt-depth-chip').forEach(c => c.classList.remove('qt-depth-active'));
       chip.classList.add('qt-depth-active');
-      document.getElementById('qt-pgs-depth').value = chip.dataset.depth;
+      document.getElementById('qt-pgs-level').value = chip.dataset.level;
       updateSummary();
     });
   });
@@ -478,6 +774,66 @@ function bindQueryTabEvents() {
   // HOME23 — no brain picker to wire; brain is fixed once per page load.
 }
 
+function updatePGSModeControls() {
+  const mode = document.getElementById('qt-pgs-mode')?.value || 'fresh';
+  document.getElementById('qt-pgs-continuation-group')?.classList.toggle(
+    'qt-hidden', mode === 'fresh',
+  );
+  document.getElementById('qt-pgs-target-group')?.classList.toggle(
+    'qt-hidden', mode !== 'targeted',
+  );
+}
+
+async function loadPgsPartitionInventory() {
+  const button = document.getElementById('qt-pgs-load-partitions');
+  const status = document.getElementById('qt-pgs-partitions-status');
+  const targetInput = document.getElementById('qt-pgs-targets');
+  if (button) button.disabled = true;
+  if (status) status.textContent = 'Reading canonical partitions from the pinned brain source…';
+  try {
+    const endpoint = queryFacadeEndpoint(QT_QUERY_CATALOG, 'pgsPartitions', QT_AGENT_NAME);
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(buildPgsPartitionsRequest({
+        agent: QT_AGENT_NAME,
+        brainId: requireSelectedBrainId(),
+      })),
+    });
+    const payload = await response.json();
+    if (!response.ok || payload?.ok !== true || !Array.isArray(payload.partitions)) {
+      throw new Error(payload?.error?.message || payload?.error?.code || 'Partition inventory failed');
+    }
+    const ids = parseTargetPartitionIds(payload.partitions.map((row) => row.partitionId));
+    if (targetInput) targetInput.value = ids.join('\n');
+    if (status) {
+      status.textContent = `${ids.length} canonical partitions · ${payload.totalNodes ?? '?'} nodes · ${payload.estimatedWorkUnits ?? '?'} estimated work units. Remove any partitions you do not want.`;
+    }
+  } catch (error) {
+    if (status) status.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function queryOptionsSummaryText({
+  enablePGS,
+  directMode = 'full',
+  directModel = 'model unavailable',
+  pgsLevel = 'sample',
+  pgsMode = 'fresh',
+  pgsSweep = 'sweep model unavailable',
+  pgsSynth = 'synthesis model unavailable',
+}) {
+  if (enablePGS) {
+    const levelName = pgsLevel.charAt(0).toUpperCase() + pgsLevel.slice(1);
+    const percent = Math.round((QT_PGS_LEVELS[pgsLevel] || QT_PGS_LEVELS.sample) * 100);
+    return `PGS ${levelName} (${percent}%) · ${pgsMode} · ${pgsSweep} → ${pgsSynth}`;
+  }
+  const modeName = directMode.charAt(0).toUpperCase() + directMode.slice(1);
+  return `${modeName} mode · ${directModel}`;
+}
+
 function updateQueryOptionsSummary() {
   const summary = document.getElementById('qt-options-summary');
   if (!summary) return;
@@ -486,10 +842,19 @@ function updateQueryOptionsSummary() {
   const mode = modeSelect?.value || 'full';
   const model = modelSelect?.selectedOptions?.[0]?.textContent || modelSelect?.value || 'model unavailable';
   const pgsOn = document.getElementById('qt-pgs')?.checked;
-  const pgsDepthVal = parseFloat(document.getElementById('qt-pgs-depth')?.value || '0.25');
-  const depthName = {0.1: 'Skim', 0.25: 'Sample', 0.5: 'Deep', 1.0: 'Full'}[pgsDepthVal] || `${Math.round(pgsDepthVal * 100)}%`;
-  const pgs = pgsOn ? ` · PGS ${depthName} (${Math.round(pgsDepthVal * 100)}%)` : '';
-  summary.textContent = `${mode.charAt(0).toUpperCase() + mode.slice(1)} mode · ${model}${pgs}`;
+  const pgsLevel = document.getElementById('qt-pgs-level')?.value || 'sample';
+  const pgsMode = document.getElementById('qt-pgs-mode')?.value || 'fresh';
+  const sweepSelect = document.getElementById('qt-pgs-sweep-model');
+  const synthSelect = document.getElementById('qt-pgs-synth-model');
+  summary.textContent = queryOptionsSummaryText({
+    enablePGS: pgsOn,
+    directMode: mode,
+    directModel: model,
+    pgsLevel,
+    pgsMode,
+    pgsSweep: sweepSelect?.selectedOptions?.[0]?.textContent || sweepSelect?.value,
+    pgsSynth: synthSelect?.selectedOptions?.[0]?.textContent || synthSelect?.value,
+  });
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -524,28 +889,50 @@ async function executeQuery() {
   const query = input?.value?.trim();
   if (!query) return;
 
-  let brainRoute;
+  const enablePGS = document.getElementById('qt-pgs')?.checked || false;
+  const mode = document.getElementById('qt-mode')?.value || 'full';
+  const pgsMode = document.getElementById('qt-pgs-mode')?.value || 'fresh';
+  const pgsLevel = document.getElementById('qt-pgs-level')?.value || 'sample';
+  const continuationOperationId = document.getElementById('qt-pgs-continue-operation')?.value || '';
+  const targetPartitionText = document.getElementById('qt-pgs-targets')?.value || '';
+  const priorContext = lastQueryResult?.query && typeof lastQueryResult?.answer === 'string'
+    ? { query: lastQueryResult.query, answer: lastQueryResult.answer }
+    : undefined;
+  let request;
   try {
-    brainRoute = buildBrainApiPath('');
+    request = buildFacadeQueryRequest({
+      agent: QT_AGENT_NAME,
+      brainId: requireSelectedBrainId(),
+      query,
+      enablePGS,
+      ...(enablePGS ? {
+        pgsMode,
+        pgsLevel,
+        ...(pgsMode === 'continue' ? {
+          continueFromOperationId: continuationOperationId,
+        } : {}),
+        ...(pgsMode === 'targeted' ? {
+          targetPartitionIds: targetPartitionText,
+          ...(continuationOperationId ? { continueFromOperationId: continuationOperationId } : {}),
+        } : {}),
+        pgsSweep: selectedModelPair(document.getElementById('qt-pgs-sweep-model'), 'PGS sweep model'),
+        pgsSynth: selectedModelPair(document.getElementById('qt-pgs-synth-model'), 'PGS synthesis model'),
+      } : {
+        mode,
+        modelSelection: selectedModelPair(document.getElementById('qt-model')),
+        enableSynthesis: document.getElementById('qt-synthesis')?.checked ?? true,
+        includeCoordinatorInsights: document.getElementById('qt-coordinator')?.checked ?? true,
+        includeOutputs: document.getElementById('qt-outputs')?.checked ?? true,
+        includeThoughts: document.getElementById('qt-thoughts')?.checked ?? true,
+        allowActions: document.getElementById('qt-allow-actions')?.checked || false,
+        ...(priorContext !== undefined ? { priorContext } : {}),
+      }),
+    });
   } catch (error) {
     showQueryToast(error.message);
     return;
   }
 
-  const enablePGSEarly = document.getElementById('qt-pgs')?.checked || false;
-  const baseModel = document.getElementById('qt-model')?.value || '';
-  const model = (enablePGSEarly && document.getElementById('qt-pgs-synth-model')?.value) || baseModel;
-  const mode = document.getElementById('qt-mode')?.value || 'full';
-  const includeEvidenceMetrics = document.getElementById('qt-evidence')?.checked || false;
-  const enableSynthesis = document.getElementById('qt-synthesis')?.checked ?? true;
-  const includeCoordinatorInsights = document.getElementById('qt-coordinator')?.checked ?? true;
-  const includeOutputs = document.getElementById('qt-outputs')?.checked ?? true;
-  const includeThoughts = document.getElementById('qt-thoughts')?.checked ?? true;
-  const allowActions = document.getElementById('qt-allow-actions')?.checked || false;
-  const enablePGS = document.getElementById('qt-pgs')?.checked || false;
-  const pgsMode = document.getElementById('qt-pgs-mode')?.value || 'full';
-  const pgsSessionId = (document.getElementById('qt-pgs-session')?.value || '').trim() || 'default';
-  const pgsDepth = parseFloat(document.getElementById('qt-pgs-depth')?.value || '0.25');
   const useStreaming = document.getElementById('qt-stream')?.checked ?? true;
 
   const submitBtn = document.getElementById('qt-submit');
@@ -556,63 +943,55 @@ async function executeQuery() {
   loadingDiv.classList.remove('qt-hidden');
 
   // Update loading hint for PGS
-  const depthLabel = {0.1: 'Skim', 0.25: 'Sample', 0.5: 'Deep', 1.0: 'Full'}[pgsDepth] || `${Math.round(pgsDepth * 100)}%`;
+  const levelLabel = pgsLevel.charAt(0).toUpperCase() + pgsLevel.slice(1);
+  const levelPercent = Math.round((QT_PGS_LEVELS[pgsLevel] || 0.25) * 100);
   const hintEl = document.getElementById('qt-loading-hint');
   if (hintEl) {
     hintEl.textContent = enablePGS
-      ? `PGS ${depthLabel} (${Math.round(pgsDepth * 100)}% coverage) — ${pgsDepth <= 0.25 ? '1-3 min' : pgsDepth <= 0.5 ? '3-6 min' : '5-10+ min'}`
-      : 'This may take 10-30 seconds';
+      ? `Durable PGS ${levelLabel} (${levelPercent}% requested coverage, ${pgsMode}) — results remain reattachable by operation ID`
+      : 'Durable query — keep this view open for live progress; provider work may take longer than a quick response';
   }
-
-  // When PGS is enabled, use the dedicated PGS model selectors
-  const pgsSweepModel = enablePGS ? (document.getElementById('qt-pgs-sweep-model')?.value || null) : null;
-  const pgsSynthModel = enablePGS ? (document.getElementById('qt-pgs-synth-model')?.value || null) : null;
-
-  const options = {
-    includeEvidenceMetrics,
-    enableSynthesis,
-    includeCoordinatorInsights,
-    includeOutputs,
-    includeThoughts,
-    allowActions,
-    enablePGS,
-    pgsMode,
-    pgsSessionId,
-    pgsFullSweep: pgsDepth >= 1.0,
-    pgsConfig: { sweepFraction: pgsDepth },
-    pgsSweepModel
-  };
 
   try {
     if (useStreaming) {
-      await executeQueryStreaming(brainRoute, query, model, mode, options, submitBtn, loadingDiv, resultDiv);
+      await executeQueryStreaming(request, submitBtn, loadingDiv, resultDiv);
       return;
     }
 
     // Non-streaming path
     resultDiv.style.display = 'none';
 
-    const res = await fetch(`${brainRoute}/query`, {
+    const res = await fetch(queryFacadeEndpoint(QT_QUERY_CATALOG, 'run', QT_AGENT_NAME), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        query, model, mode, ...options,
-        exportFormat: 'markdown',
-        provider: null, // Let backend infer provider from model name
-        priorContext: lastQueryResult ? {
-          query: lastQueryResult.query,
-          answer: lastQueryResult.answer
-        } : null
-      })
+      body: JSON.stringify(request),
     });
 
     const data = await res.json();
-    if (data.error) throw new Error(data.message || data.error);
+    if (isDetachedFacadePayload(data)) {
+      renderDetachedQuery({ ...data, query }, resultDiv);
+      return;
+    }
+    if (!res.ok || data.ok !== true) {
+      if (data.operationId && QT_OPERATION_ID_PATTERN.test(data.operationId)) {
+        saveToHistory({
+          query,
+          answer: null,
+          metadata: {},
+          operationId: data.operationId,
+          resultHandle: data.resultHandle || null,
+          operationState: data.state || 'failed',
+          attachmentState: data.attachmentState || 'closed',
+        });
+      }
+      throw new Error(facadeErrorMessage(data));
+    }
 
-    lastQueryResult = { query, answer: data.answer, metadata: data.metadata, fullResult: data };
+    const result = queryResultFromFacadePayload(data, query);
+    lastQueryResult = { ...result, fullResult: data };
     enableFollowUp();
-    displayQueryResult(data);
-    saveToHistory({ query, ...data });
+    displayQueryResult(result);
+    saveToHistory(result);
 
   } catch (error) {
     console.error('Query failed:', error);
@@ -628,29 +1007,24 @@ async function executeQuery() {
    Streaming Query — SSE with PGS progress
    ═══════════════════════════════════════════════════════ */
 
-async function executeQueryStreaming(brainRoute, query, model, mode, options, submitBtn, loadingDiv, resultDiv) {
-  const isPGS = options.enablePGS || false;
+async function executeQueryStreaming(request, submitBtn, loadingDiv, resultDiv) {
+  const isPGS = request.enablePGS || false;
+  const query = request.query;
   let pgsTimerInterval = null;
   const pgsStartTime = Date.now();
 
   try {
-    const response = await fetch(`${brainRoute}/query/stream`, {
+    const response = await fetch(queryFacadeEndpoint(QT_QUERY_CATALOG, 'stream', QT_AGENT_NAME), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        query, model, mode, ...options,
-        exportFormat: 'markdown',
-        provider: null, // Let backend infer provider from model name
-        priorContext: lastQueryResult ? {
-          query: lastQueryResult.query,
-          answer: lastQueryResult.answer
-        } : null
-      })
+      body: JSON.stringify(request),
     });
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`HTTP ${response.status}: ${text}`);
+      let payload = null;
+      try { payload = JSON.parse(text); } catch { /* keep HTTP fallback */ }
+      throw new Error(facadeErrorMessage(payload, `HTTP ${response.status}: ${text}`));
     }
 
     const reader = response.body.getReader();
@@ -658,6 +1032,7 @@ async function executeQueryStreaming(brainRoute, query, model, mode, options, su
     let buffer = '';
     let accumulatedAnswer = '';
     let finalResult = null;
+    let detachedResult = null;
 
     // Show result div for streaming
     resultDiv.style.display = '';
@@ -787,6 +1162,8 @@ async function executeQueryStreaming(brainRoute, query, model, mode, options, su
               accumulatedAnswer: () => accumulatedAnswer,
               setAccumulatedAnswer: (v) => { accumulatedAnswer = v; },
               setFinalResult: (v) => { finalResult = v; },
+              setDetachedResult: (v) => { detachedResult = v; },
+              query,
               clearPgsTimer: () => {
                 if (pgsTimerInterval) { clearInterval(pgsTimerInterval); pgsTimerInterval = null; }
               }
@@ -807,14 +1184,10 @@ async function executeQueryStreaming(brainRoute, query, model, mode, options, su
       }
     }
 
-    // Final result display
-    if (finalResult) {
-      lastQueryResult = {
-        query: finalResult.query || query,
-        answer: finalResult.answer,
-        metadata: finalResult.metadata,
-        fullResult: finalResult
-      };
+    if (detachedResult) {
+      renderDetachedQuery({ ...detachedResult, query }, resultDiv);
+    } else if (finalResult) {
+      lastQueryResult = { ...finalResult, fullResult: finalResult };
       enableFollowUp();
 
       // Smooth transition
@@ -825,7 +1198,9 @@ async function executeQueryStreaming(brainRoute, query, model, mode, options, su
         resultDiv.style.opacity = '1';
       }, 200);
 
-      saveToHistory({ query: finalResult.query || query, ...finalResult });
+      saveToHistory(finalResult);
+    } else {
+      throw new Error('Query stream ended before a terminal result or durable detach receipt');
     }
 
   } catch (error) {
@@ -846,20 +1221,41 @@ async function executeQueryStreaming(brainRoute, query, model, mode, options, su
 function handleSSEEvent(type, event, ctx) {
   const { isPGS, containerDiv, progressDiv, resultDiv } = ctx;
 
+  if (event?.operationId && QT_OPERATION_ID_PATTERN.test(event.operationId)) {
+    QT_ACTIVE_OPERATION_ID = event.operationId;
+    showActiveOperationActions(event.operationId, resultDiv);
+  }
+
   switch (type) {
     case 'error':
-      throw new Error(event.error || event.message || 'Unknown error');
+      throw new Error(facadeErrorMessage(event, 'Unknown query error'));
 
-    case 'thinking':
-    case 'progress':
+    case 'status': {
+      const message = [event.state, event.phase].filter(Boolean).join(' · ') || 'Query operation is running';
       if (isPGS) {
-        ctx.pgsSetStatus(event.message);
-        ctx.pgsAddLog(event.message);
+        if (event.phase) ctx.pgsUpdatePhase(event.phase);
+        ctx.pgsSetStatus(message);
+        ctx.pgsAddLog(message);
       } else if (progressDiv) {
-        progressDiv.textContent = `💭 ${event.message}`;
+        progressDiv.textContent = `⚡ ${message}`;
         progressDiv.style.display = '';
       }
       break;
+    }
+
+    case 'thinking':
+    case 'progress': {
+      const message = event.message || [event.state, event.phase].filter(Boolean).join(' · ') || 'Query operation is running';
+      if (isPGS) {
+        if (event.phase) ctx.pgsUpdatePhase(event.phase);
+        ctx.pgsSetStatus(message);
+        ctx.pgsAddLog(message);
+      } else if (progressDiv) {
+        progressDiv.textContent = `💭 ${message}`;
+        progressDiv.style.display = '';
+      }
+      break;
+    }
 
     case 'response_chunk':
     case 'chunk': {
@@ -947,7 +1343,7 @@ function handleSSEEvent(type, event, ctx) {
 
     case 'result':
     case 'complete':
-      ctx.setFinalResult(event.result || event);
+      ctx.setFinalResult(queryResultFromFacadePayload(event, ctx.query));
       ctx.clearPgsTimer();
       if (isPGS) {
         ctx.pgsUpdatePhase('done');
@@ -961,7 +1357,43 @@ function handleSSEEvent(type, event, ctx) {
         progressDiv.style.display = 'none';
       }
       break;
+
+    case 'detached':
+      if (!isDetachedFacadePayload(event)) {
+        throw new Error('Query facade returned an invalid detach receipt');
+      }
+      ctx.setDetachedResult(event);
+      ctx.clearPgsTimer();
+      break;
   }
+}
+
+function renderDetachedQuery(payload, resultDiv = document.getElementById('qt-result')) {
+  if (!resultDiv) return;
+  const guidance = payload.guidance || {};
+  const detachedHistory = historyItemForQueryResult({
+    query: payload.query || '',
+    answer: null,
+    metadata: payload.metadata || {},
+    operationId: payload.operationId,
+    resultHandle: payload.resultHandle || null,
+    operationState: payload.state || 'running',
+    attachmentState: 'detached',
+  });
+  saveToHistory(detachedHistory);
+  resultDiv.innerHTML = `
+    <div class="qt-panel qt-detached">
+      <div class="qt-panel-title">⏳ Query continues durably</div>
+      <p>This view detached from operation <code>${escapeHtml(payload.operationId)}</code>. The operation was not cancelled.</p>
+      ${guidance.result ? `<p>${escapeHtml(guidance.resume || 'Reconnect with the operation ID to retrieve the result.')}</p>` : ''}
+      ${guidance.status ? `<code>${escapeHtml(guidance.status)}</code>` : ''}
+      <div class="qt-operation-actions">
+        <button class="qt-btn qt-btn-primary qt-btn-sm" onclick="reattachQueryOperation('${escapeHtmlText(payload.operationId)}')">Reattach</button>
+        <button class="qt-btn qt-btn-outline qt-btn-sm" onclick="cancelQueryOperation('${escapeHtmlText(payload.operationId)}')">Cancel</button>
+      </div>
+    </div>
+  `;
+  resultDiv.style.display = '';
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -1016,14 +1448,11 @@ function displayQueryResult(result) {
   // PGS metadata
   const pgs = result.metadata?.pgs;
   if (pgs) {
-    html += `<div class="qt-metadata qt-pgs-meta">
-      <span>🧬 PGS</span>
-      <span>🔬 ${pgs.sweptPartitions}/${pgs.totalPartitions} partitions swept</span>
-      <span>📊 ${pgs.totalNodes?.toLocaleString()} nodes (100% coverage)</span>
-      <span>🔬 Sweep: ${escapeHtml(pgs.sweepModel || '?')}</span>
-      <span>🧬 Synthesis: ${escapeHtml(pgs.synthesisModel || '?')}</span>
-      <span>⏱️ ${pgs.elapsed || '?'}</span>
-    </div>`;
+    html += buildPGSCoverageHTML(pgs, result);
+  }
+
+  if (result.operationId) {
+    html += `<div class="qt-operation-identity">Durable operation: <code>${escapeHtml(result.operationId)}</code></div>`;
   }
 
   // Standard metadata
@@ -1062,7 +1491,7 @@ function displayQueryResult(result) {
     html += `<span class="qt-auto-saved">✅ Auto-saved to <code>${escapeHtml(exportedTo.split('/').slice(-3).join('/'))}</code></span>`;
   }
   html += `
-    <button class="qt-btn qt-btn-primary qt-btn-sm" onclick="exportToBrain()">💾 Save to Brain</button>
+    <button class="qt-btn qt-btn-primary qt-btn-sm" onclick="exportToWorkspace()">💾 Export to Workspace</button>
     <select id="qt-export-format" class="qt-select-sm">
       <option value="markdown">Markdown</option>
       <option value="json">JSON</option>
@@ -1070,6 +1499,15 @@ function displayQueryResult(result) {
     <button class="qt-btn qt-btn-outline qt-btn-sm" onclick="downloadQueryResult()">⬇ Download</button>
     <button class="qt-btn qt-btn-outline qt-btn-sm" onclick="copyQueryResult()">📋 Copy</button>
   </div>`;
+
+  if (pgs && result.operationId) {
+    const continuationAllowed = isPGSContinuable(result);
+    html += `<div class="qt-operation-actions">
+      ${continuationAllowed ? `<button class="qt-btn qt-btn-primary qt-btn-sm" onclick="preparePGSContinuation('${escapeHtmlText(result.operationId)}')">Continue</button>` : ''}
+      <button class="qt-btn qt-btn-outline qt-btn-sm" onclick="reattachQueryOperation('${escapeHtmlText(result.operationId)}')">Reattach</button>
+      <button class="qt-btn qt-btn-outline qt-btn-sm" onclick="startFreshPGS()">Start Fresh</button>
+    </div>`;
+  }
 
   html += `</div>`; // close answer card
 
@@ -1088,6 +1526,7 @@ function buildPGSProgressHTML() {
       <div class="pgs-status-row">
         <span class="pgs-title">🧬 Partitioned Graph Synthesis</span>
         <span class="pgs-timer">0:00</span>
+        <span class="qt-operation-live-actions"></span>
       </div>
       <div class="pgs-status">Initializing...</div>
       <div class="pgs-phases">
@@ -1108,6 +1547,172 @@ function buildPGSProgressHTML() {
   `;
 }
 
+function showActiveOperationActions(operationId, resultDiv = document.getElementById('qt-result')) {
+  if (!resultDiv || !QT_OPERATION_ID_PATTERN.test(operationId)) return;
+  let host = resultDiv.querySelector('.qt-operation-live-actions');
+  if (!host) {
+    host = document.createElement('div');
+    host.className = 'qt-operation-live-actions';
+    resultDiv.prepend(host);
+  }
+  host.innerHTML = `
+    <code>${escapeHtml(operationId)}</code>
+    <button class="qt-btn qt-btn-outline qt-btn-sm" onclick="cancelQueryOperation('${escapeHtmlText(operationId)}')">Cancel</button>
+  `;
+}
+
+function preparePGSContinuation(operationId) {
+  const id = requireOperationId(operationId);
+  const source = [lastQueryResult, ...queryHistory].find((item) => item?.operationId === id) || {};
+  const pgs = pgsMetadata(source) || {};
+  const currentLevel = pgs.coverageLevel || 'sample';
+  const selectedLevel = pgs.scopeComplete === false ? currentLevel : nextPGSLevel(currentLevel);
+  const targets = Array.isArray(pgs.targetPartitionIds) ? pgs.targetPartitionIds : [];
+
+  const pgsToggle = document.getElementById('qt-pgs');
+  if (pgsToggle) pgsToggle.checked = true;
+  document.getElementById('qt-pgs-controls')?.classList.remove('qt-hidden');
+  const mode = document.getElementById('qt-pgs-mode');
+  if (mode) mode.value = targets.length ? 'targeted' : 'continue';
+  const prior = document.getElementById('qt-pgs-continue-operation');
+  if (prior) {
+    ensureContinuationOption(prior, source);
+    prior.value = id;
+  }
+  const level = document.getElementById('qt-pgs-level');
+  if (level) level.value = selectedLevel;
+  document.querySelectorAll('.qt-depth-chip').forEach((chip) => {
+    chip.classList.toggle('qt-depth-active', chip.dataset.level === selectedLevel);
+  });
+  const targetInput = document.getElementById('qt-pgs-targets');
+  if (targetInput && targets.length) targetInput.value = targets.join(', ');
+  const queryInput = document.getElementById('qt-input');
+  if (queryInput && source.query) queryInput.value = source.query;
+  updatePGSModeControls();
+  updateQueryOptionsSummary();
+  showQueryToast(`Ready to continue ${id}`);
+}
+
+function startFreshPGS() {
+  const pgsToggle = document.getElementById('qt-pgs');
+  if (pgsToggle) pgsToggle.checked = true;
+  document.getElementById('qt-pgs-controls')?.classList.remove('qt-hidden');
+  const mode = document.getElementById('qt-pgs-mode');
+  if (mode) mode.value = 'fresh';
+  const prior = document.getElementById('qt-pgs-continue-operation');
+  if (prior) prior.value = '';
+  const targets = document.getElementById('qt-pgs-targets');
+  if (targets) targets.value = '';
+  updatePGSModeControls();
+  updateQueryOptionsSummary();
+}
+
+function ensureContinuationOption(select, item) {
+  if (!select || !item?.operationId || !QT_OPERATION_ID_PATTERN.test(item.operationId)) return;
+  const existing = Array.from(select.options || []).find((option) => option.value === item.operationId);
+  if (existing) return;
+  const option = document.createElement('option');
+  option.value = item.operationId;
+  option.textContent = `${String(item.query || 'PGS').slice(0, 54)} · ${item.operationId}`;
+  select.appendChild(option);
+}
+
+async function fetchBrainOperationJson(operationId, action = '', init = {}) {
+  const response = await fetch(brainOperationEndpoint(operationId, action), init);
+  const payload = await response.json();
+  if (!response.ok) throw new Error(facadeErrorMessage(payload, `Operation ${action || 'status'} failed`));
+  return payload;
+}
+
+async function reattachQueryOperation(operationId) {
+  const id = requireOperationId(operationId);
+  const resultDiv = document.getElementById('qt-result');
+  if (!resultDiv) return;
+  QT_ACTIVE_OPERATION_ID = id;
+  resultDiv.innerHTML = `<div class="qt-panel qt-detached">
+    <div class="qt-panel-title">Reattached to durable operation</div>
+    <p id="qt-reattach-status">Checking <code>${escapeHtml(id)}</code>…</p>
+    <div class="qt-operation-actions">
+      <button class="qt-btn qt-btn-outline qt-btn-sm" onclick="cancelQueryOperation('${escapeHtmlText(id)}')">Cancel</button>
+    </div>
+  </div>`;
+  resultDiv.style.display = '';
+  try {
+    let status = await fetchBrainOperationJson(id);
+    if (status.state === 'queued' || status.state === 'running') {
+      const attachmentId = `qt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      const eventsUrl = `${brainOperationEndpoint(id, 'events')}?after=0&attachmentId=${encodeURIComponent(attachmentId)}`;
+      const response = await fetch(eventsUrl, { headers: { Accept: 'text/event-stream' } });
+      if (!response.ok || !response.body) throw new Error(`Reattach stream HTTP ${response.status}`);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const event = JSON.parse(line.slice(6));
+          const statusEl = document.getElementById('qt-reattach-status');
+          if (statusEl) statusEl.textContent = [event.state, event.phase].filter(Boolean).join(' · ') || 'Running';
+        }
+      }
+      status = await fetchBrainOperationJson(id);
+    }
+    if (status.state === 'queued' || status.state === 'running') {
+      renderDetachedQuery({
+        operationId: id,
+        state: status.state,
+        query: queryHistory.find((item) => item.operationId === id)?.query || '',
+        guidance: { resume: 'The durable operation is still running.' },
+      }, resultDiv);
+      return;
+    }
+    const envelope = await fetchBrainOperationJson(id, 'result');
+    if (!['complete', 'partial'].includes(envelope.state) || !envelope.result) {
+      throw Object.assign(new Error(facadeErrorMessage(envelope, `Operation ended ${envelope.state}`)), { envelope });
+    }
+    const result = queryResultFromFacadePayload(envelope, queryHistory.find((item) => item.operationId === id)?.query || '');
+    lastQueryResult = { ...result, fullResult: envelope };
+    displayQueryResult(result);
+    saveToHistory(result);
+  } catch (error) {
+    const envelope = error.envelope || {};
+    resultDiv.innerHTML = `<div class="qt-error">
+      <div>${escapeHtml(error.message)}</div>
+      <div>Operation: <code>${escapeHtml(id)}</code></div>
+      <div class="qt-operation-actions">
+        <button class="qt-btn qt-btn-primary qt-btn-sm" onclick="reattachQueryOperation('${escapeHtmlText(id)}')">Reattach</button>
+        <button class="qt-btn qt-btn-outline qt-btn-sm" onclick="startFreshPGS()">Start Fresh</button>
+      </div>
+      ${envelope.state ? `<div>State: ${escapeHtml(envelope.state)}</div>` : ''}
+    </div>`;
+  }
+}
+
+async function cancelQueryOperation(operationId) {
+  const id = requireOperationId(operationId);
+  try {
+    const payload = await fetchBrainOperationJson(id, 'cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    const item = queryHistory.find((candidate) => candidate.operationId === id);
+    if (item) item.operationState = payload.state || 'cancelled';
+    saveQueryHistory();
+    updateQueryHistoryUI();
+    showQueryToast(`Cancelled ${id}`);
+    return payload;
+  } catch (error) {
+    showQueryToast(`Cancel failed: ${error.message}`);
+    throw error;
+  }
+}
+
 /* ═══════════════════════════════════════════════════════
    Export / Copy
    ═══════════════════════════════════════════════════════ */
@@ -1119,25 +1724,20 @@ function copyQueryResult() {
     .catch(() => showQueryToast('❌ Copy failed'));
 }
 
-async function exportToBrain() {
+async function exportToWorkspace() {
   if (!lastQueryResult) { showQueryToast('No result to export'); return; }
   const fmt = document.getElementById('qt-export-format')?.value || 'markdown';
   try {
-    const res = await fetch(buildBrainApiPath('/export-query'), {
+    const res = await fetch(queryFacadeEndpoint(QT_QUERY_CATALOG, 'export', QT_AGENT_NAME), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        query: lastQueryResult.query,
-        answer: lastQueryResult.answer,
-        format: fmt,
-        metadata: lastQueryResult.metadata || {}
-      })
+      body: JSON.stringify(buildFacadeExportRequest(lastQueryResult, fmt, QT_AGENT_NAME)),
     });
     const data = await res.json();
-    if (data.exportedTo) {
-      showQueryToast(`✅ Saved: ${data.exportedTo.split('/').slice(-2).join('/')}`);
+    if (res.ok && data.success === true && data.exportedTo) {
+      showQueryToast(`✅ Exported: ${data.exportedTo.split('/').slice(-2).join('/')}`);
     } else {
-      showQueryToast(`❌ ${data.error || 'Export failed'}`);
+      showQueryToast(`❌ ${facadeErrorMessage(data, 'Export failed')}`);
     }
   } catch (err) {
     showQueryToast(`❌ ${err.message}`);
@@ -1190,7 +1790,11 @@ function getHistoryKey() {
 }
 
 function saveToHistory(item) {
-  queryHistory.unshift(item);
+  const historyItem = historyItemForQueryResult(item);
+  if (historyItem.operationId) {
+    queryHistory = queryHistory.filter((existing) => existing?.operationId !== historyItem.operationId);
+  }
+  queryHistory.unshift(historyItem);
   queryHistory = queryHistory.slice(0, 50);
   saveQueryHistory();
   updateQueryHistoryUI();
@@ -1203,7 +1807,10 @@ function saveQueryHistory() {
 function loadQueryHistory() {
   try {
     const saved = localStorage.getItem(getHistoryKey());
-    queryHistory = saved ? JSON.parse(saved) : [];
+    const parsed = saved ? JSON.parse(saved) : [];
+    queryHistory = Array.isArray(parsed)
+      ? parsed.filter((item) => item && typeof item === 'object').map(historyItemForQueryResult)
+      : [];
   } catch {
     queryHistory = [];
   }
@@ -1215,6 +1822,8 @@ function updateQueryHistoryUI() {
   const list = document.getElementById('qt-history-list');
   if (!section || !list) return;
 
+  updatePGSContinuationOptions();
+
   if (queryHistory.length === 0) {
     section.classList.add('qt-hidden');
     return;
@@ -1224,18 +1833,38 @@ function updateQueryHistoryUI() {
   list.innerHTML = queryHistory.slice(0, 20).map((item, i) => `
     <div class="qt-history-item" onclick="loadHistoryItem(${i})">
       <div class="qt-history-query">${escapeHtml(item.query || '')}</div>
-      <div class="qt-history-meta">${item.metadata?.mode || '?'} · ${item.metadata?.timestamp ? new Date(item.metadata.timestamp).toLocaleString() : ''}</div>
+      <div class="qt-history-meta">${item.metadata?.mode || item.operationState || '?'} · ${item.operationId ? escapeHtml(item.operationId) : ''} · ${item.metadata?.timestamp ? new Date(item.metadata.timestamp).toLocaleString() : ''}</div>
     </div>
   `).join('');
+}
+
+function updatePGSContinuationOptions() {
+  const select = document.getElementById('qt-pgs-continue-operation');
+  if (!select) return;
+  const selected = select.value;
+  select.innerHTML = '<option value="">Select a continuable PGS result</option>';
+  const now = Date.now();
+  for (const item of queryHistory) {
+    const pgs = pgsMetadata(item);
+    if (!pgs || !item.operationId || !isPGSContinuable(item, now)) continue;
+    ensureContinuationOption(select, item);
+  }
+  if (Array.from(select.options).some((option) => option.value === selected)) {
+    select.value = selected;
+  }
 }
 
 function loadHistoryItem(index) {
   const item = queryHistory[index];
   if (!item) return;
   document.getElementById('qt-input').value = item.query || '';
-  lastQueryResult = { query: item.query, answer: item.answer, metadata: item.metadata, fullResult: item };
-  enableFollowUp();
-  displayQueryResult(item);
+  lastQueryResult = { ...item, fullResult: item };
+  if (typeof item.answer === 'string') {
+    enableFollowUp();
+    displayQueryResult(item);
+  } else if (item.operationId) {
+    reattachQueryOperation(item.operationId);
+  }
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -1576,6 +2205,24 @@ function getQueryTabStyles() {
     font-size: 13px;
     min-height: 36px;
   }
+  textarea.qt-input-inline { width: 100%; resize: vertical; font-family: inherit; }
+  #qt-pgs-continuation-group, #qt-pgs-target-group { grid-column: span 2; }
+  .qt-option-help { color: var(--text-muted, var(--text-secondary)); font-size: 11px; line-height: 1.4; }
+  .qt-pgs-coverage {
+    display: grid;
+    gap: 5px;
+    margin-top: 12px;
+    padding: 10px 12px;
+    border: 1px solid rgba(167, 139, 250, 0.35);
+    border-radius: 8px;
+    background: rgba(167, 139, 250, 0.08);
+    font-size: 12px;
+  }
+  .qt-operation-identity { margin-top: 8px; color: var(--text-secondary); font-size: 12px; }
+  .qt-operation-actions, .qt-operation-live-actions {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px;
+  }
+  .qt-operation-live-actions { margin: 0 0 0 auto; }
 
   /* ── Response Section ── */
   .qt-response-section {

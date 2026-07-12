@@ -58,7 +58,7 @@ function buildClientCapabilities(options = {}) {
     features: {
       multiAgent: true,
       selectedAgentChat: true,
-      queryStreaming: false,
+      queryStreaming: true,
       saunaControl: true,
       pushRegistration: true,
       settingsControlPlane: true,
@@ -99,7 +99,7 @@ function buildClientCapabilities(options = {}) {
     query: {
       facade: true,
       directCosmo: false,
-      streaming: false,
+      streaming: true,
       availabilityEndpoint: '/home23/api/query/catalog',
     },
     chat: {

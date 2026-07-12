@@ -65,7 +65,7 @@
         "endpoints": {
           "type": "object",
           "additionalProperties": { "type": "string" },
-          "required": ["run", "stream", "export"]
+          "required": ["run", "stream", "export", "pgsPartitions"]
         },
         "models": {
           "type": "array",
@@ -148,7 +148,7 @@
         "brainId": { "type": "string", "minLength": 1, "maxLength": 256 },
         "query": { "type": "string", "minLength": 1, "maxLength": 12000 },
         "mode": {
-          "enum": ["quick", "full", "expert", "dive", "fast", "normal", "deep", "executive", "raw", "report", "innovation", "consulting", "grounded"]
+          "enum": ["quick", "full", "expert", "dive"]
         },
         "modelSelection": { "$ref": "#/$defs/providerModelPair" },
         "enablePGS": { "const": false },
@@ -166,30 +166,55 @@
     "pgsQueryRequest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["query", "enablePGS"],
+      "required": ["query", "enablePGS", "pgsMode", "pgsLevel", "pgsSweep", "pgsSynth"],
       "properties": {
         "agent": { "type": "string", "minLength": 1, "maxLength": 256 },
         "brainId": { "type": "string", "minLength": 1, "maxLength": 256 },
         "query": { "type": "string", "minLength": 1, "maxLength": 12000 },
-        "mode": {
-          "enum": ["quick", "full", "expert", "dive", "fast", "normal", "deep", "executive", "raw", "report", "innovation", "consulting", "grounded"]
-        },
         "enablePGS": { "const": true },
-        "pgsMode": { "enum": ["full", "continue", "targeted"] },
-        "pgsConfig": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["sweepFraction"],
-          "properties": {
-            "sweepFraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+        "pgsMode": { "enum": ["fresh", "continue", "targeted"] },
+        "pgsLevel": { "enum": ["skim", "sample", "deep", "full"] },
+        "continueFromOperationId": {
+          "type": "string",
+          "pattern": "^brop_[A-Za-z0-9_-]{32}$"
+        },
+        "targetPartitionIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 256,
+            "pattern": "^(?:c|h)-[A-Za-z0-9._-]{1,253}$"
           }
         },
         "pgsSweep": { "$ref": "#/$defs/providerModelPair" },
         "pgsSynth": { "$ref": "#/$defs/providerModelPair" },
-        "priorContext": { "$ref": "#/$defs/priorContext" },
         "dryRun": { "type": "boolean" },
         "validateOnly": { "type": "boolean" }
-      }
+      },
+      "oneOf": [
+        {
+          "properties": { "pgsMode": { "const": "fresh" } },
+          "not": {
+            "anyOf": [
+              { "required": ["continueFromOperationId"] },
+              { "required": ["targetPartitionIds"] }
+            ]
+          }
+        },
+        {
+          "required": ["continueFromOperationId"],
+          "properties": { "pgsMode": { "const": "continue" } },
+          "not": { "required": ["targetPartitionIds"] }
+        },
+        {
+          "required": ["targetPartitionIds"],
+          "properties": { "pgsMode": { "const": "targeted" } }
+        }
+      ]
     },
     "queryResult": {
       "type": "object",
@@ -491,6 +516,43 @@
         "answer": { "type": "string" },
         "format": { "enum": ["markdown", "json", "jsonl"] },
         "metadata": { "type": ["object", "null"], "additionalProperties": true }
+      }
+    },
+    "pgsPartitionsRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent", "brainId"],
+      "properties": {
+        "agent": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "brainId": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+    "pgsPartitionsResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["ok", "operationId", "complete", "partitions", "totalNodes", "totalPartitions", "estimatedWorkUnits"],
+      "properties": {
+        "ok": { "const": true },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "complete": { "const": true },
+        "totalNodes": { "type": "integer", "minimum": 0 },
+        "totalPartitions": { "type": "integer", "minimum": 0 },
+        "estimatedWorkUnits": { "type": "integer", "minimum": 0 },
+        "partitions": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["partitionId", "nodeCount", "estimatedWorkUnits"],
+            "properties": {
+              "partitionId": { "type": "string", "pattern": "^(?:c|h)-[A-Za-z0-9._-]{1,253}$" },
+              "nodeCount": { "type": "integer", "minimum": 1 },
+              "estimatedWorkUnits": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
+        "sourceEvidence": { "$ref": "#/$defs/sourceEvidence" }
       }
     },
     "streamEvent": {

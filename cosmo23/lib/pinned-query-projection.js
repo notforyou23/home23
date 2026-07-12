@@ -1,6 +1,7 @@
 'use strict';
 
 const { QUERY_OPERATION_LIMITS } = require('./brain-operation-limits');
+const { serializeProviderRecord } = require('./provider-record-sanitizer');
 
 const COOPERATIVE_YIELD_EVERY = 1_000;
 
@@ -41,23 +42,10 @@ function boundedLimits(overrides = {}) {
 }
 
 function serializeRecord(record, maxRecordBytes, kind) {
-  if (!record || typeof record !== 'object' || Array.isArray(record)) {
-    throw typed('source_invalid', `Pinned ${kind} record must be an object`);
-  }
-  let json;
-  try {
-    json = JSON.stringify(record);
-  } catch (error) {
-    throw typed('source_invalid', `Pinned ${kind} record is not serializable`);
-  }
-  if (typeof json !== 'string') {
-    throw typed('source_invalid', `Pinned ${kind} record is not serializable`);
-  }
-  const bytes = Buffer.byteLength(json, 'utf8');
-  if (bytes > maxRecordBytes) {
-    throw typed('result_too_large', `Pinned ${kind} record exceeds the byte limit`);
-  }
-  return { value: JSON.parse(json), json, bytes };
+  return serializeProviderRecord(record, {
+    maxBytes: maxRecordBytes,
+    label: `Pinned ${kind} record`,
+  });
 }
 
 function nodeId(node) {
@@ -160,6 +148,17 @@ class BoundedMinHeap {
     return { added: candidate, removed };
   }
 
+  removeMinimum() {
+    if (this.rows.length === 0) return null;
+    const removed = this.rows[0];
+    const last = this.rows.pop();
+    if (this.rows.length > 0) {
+      this.rows[0] = last;
+      this._down(0);
+    }
+    return removed;
+  }
+
   valuesBestFirst() {
     return [...this.rows].sort((left, right) => {
       const comparison = compareCandidate(right, left);
@@ -173,6 +172,7 @@ async function projectPinnedQuery({
   query,
   signal,
   limits = {},
+  sourceSummary,
   onNodeScanned = null,
   onEdgeScanned = null,
 } = {}) {
@@ -190,6 +190,7 @@ async function projectPinnedQuery({
   let nodesScanned = 0;
   let maxRetainedNodes = 0;
   let maxRetainedBytes = 0;
+  let nodesDroppedForByteBudget = 0;
 
   throwIfAborted(signal);
   for await (const rawNode of sourcePin.iterateNodes({ signal })) {
@@ -198,18 +199,24 @@ async function projectPinnedQuery({
     const serialized = serializeRecord(rawNode, selectedLimits.maxRecordBytes, 'node');
     const id = nodeId(serialized.value);
     if (id !== null) {
-      const change = heap.add({
-        id,
-        score: scoreNode(serialized.value, terms),
-        record: serialized.value,
-        bytes: serialized.bytes,
-      });
-      if (change.added) retainedNodeBytes += change.added.bytes;
-      if (change.removed) retainedNodeBytes -= change.removed.bytes;
-      maxRetainedNodes = Math.max(maxRetainedNodes, heap.rows.length);
-      maxRetainedBytes = Math.max(maxRetainedBytes, retainedNodeBytes);
-      if (retainedNodeBytes > selectedLimits.maxProjectionBytes) {
-        throw typed('result_too_large', 'Pinned query projection exceeds the byte limit');
+      if (serialized.bytes > selectedLimits.maxProjectionBytes) {
+        nodesDroppedForByteBudget += 1;
+      } else {
+        const change = heap.add({
+          id,
+          score: scoreNode(serialized.value, terms),
+          record: serialized.value,
+          bytes: serialized.bytes,
+        });
+        if (change.added) retainedNodeBytes += change.added.bytes;
+        if (change.removed) retainedNodeBytes -= change.removed.bytes;
+        while (retainedNodeBytes > selectedLimits.maxProjectionBytes) {
+          const removed = heap.removeMinimum();
+          retainedNodeBytes -= removed.bytes;
+          nodesDroppedForByteBudget += 1;
+        }
+        maxRetainedNodes = Math.max(maxRetainedNodes, heap.rows.length);
+        maxRetainedBytes = Math.max(maxRetainedBytes, retainedNodeBytes);
       }
     }
     if (typeof onNodeScanned === 'function') onNodeScanned(nodesScanned);
@@ -217,10 +224,14 @@ async function projectPinnedQuery({
   }
 
   const nodes = heap.valuesBestFirst().map(row => row.record);
+  if (nodes.length === 0 && nodesDroppedForByteBudget > 0) {
+    throw typed('result_too_large', 'No pinned query candidate fits the projection byte limit');
+  }
   const retainedIds = new Set(nodes.map(nodeId).filter(Boolean));
   const edges = [];
   let edgeBytes = 0;
   let edgesScanned = 0;
+  let edgesDroppedForByteBudget = 0;
   for await (const rawEdge of sourcePin.iterateEdges({ signal })) {
     throwIfAborted(signal);
     edgesScanned += 1;
@@ -232,20 +243,26 @@ async function projectPinnedQuery({
         && retainedIds.has(source) && retainedIds.has(target)) {
       if (retainedNodeBytes + edgeBytes + serialized.bytes
           > selectedLimits.maxProjectionBytes) {
-        throw typed('result_too_large', 'Pinned query projection exceeds the byte limit');
+        edgesDroppedForByteBudget += 1;
+      } else {
+        edges.push(serialized.value);
+        edgeBytes += serialized.bytes;
+        maxRetainedBytes = Math.max(maxRetainedBytes, retainedNodeBytes + edgeBytes);
       }
-      edges.push(serialized.value);
-      edgeBytes += serialized.bytes;
-      maxRetainedBytes = Math.max(maxRetainedBytes, retainedNodeBytes + edgeBytes);
     }
     if (typeof onEdgeScanned === 'function') onEdgeScanned(edgesScanned);
     await yieldForCancellation(edgesScanned, signal);
   }
   throwIfAborted(signal);
 
-  const summary = typeof sourcePin.summarize === 'function'
-    ? await sourcePin.summarize({ signal })
-    : sourcePin.descriptor?.summary || null;
+  const droppedForByteBudget = nodesDroppedForByteBudget + edgesDroppedForByteBudget;
+  const byteBudgetTruncated = droppedForByteBudget > 0;
+
+  const summary = sourceSummary !== undefined
+    ? sourceSummary
+    : typeof sourcePin.summarize === 'function'
+      ? await sourcePin.summarize({ signal })
+      : sourcePin.descriptor?.summary || null;
   throwIfAborted(signal);
   const evidence = typeof sourcePin.getEvidence === 'function'
     ? sourcePin.getEvidence({
@@ -253,6 +270,8 @@ async function projectPinnedQuery({
       returnedTotals: { nodes: nodes.length, edges: edges.length },
       completeCoverage: true,
       filteredTotal: 0,
+      byteBudgetTruncated,
+      droppedForByteBudget,
     })
     : sourcePin.evidence || null;
   const sourceRevision = sourcePin.revision
@@ -275,6 +294,10 @@ async function projectPinnedQuery({
       maxRetainedEdges: edges.length,
       maxRetainedBytes,
       retainedBytes: retainedNodeBytes + edgeBytes,
+      byteBudgetTruncated,
+      droppedForByteBudget,
+      nodesDroppedForByteBudget,
+      edgesDroppedForByteBudget,
     }),
   });
 }

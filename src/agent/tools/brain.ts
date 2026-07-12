@@ -15,7 +15,6 @@ import {
   optionalBoundedText,
   optionalEnum,
   optionalFiniteInteger,
-  optionalFiniteNumber,
   optionalJsonObject,
   requiredBoundedText,
 } from '../brain-operations/input-validation.js';
@@ -23,13 +22,29 @@ import { operationToolResult } from '../tool-result.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 
 const DEFAULT_BRAIN_QUERY_MODE = 'quick';
+const BRAIN_OPERATION_ID_PATTERN = '^brop_[A-Za-z0-9_-]{32}$';
+const BRAIN_OPERATION_ID = /^brop_[A-Za-z0-9_-]{32}$/;
+const PGS_MODES = ['fresh', 'continue', 'targeted'] as const;
+const PGS_LEVELS = ['skim', 'sample', 'deep', 'full'] as const;
+const PGS_PARTITION_ID_PATTERN = '^(?:c|h)-[A-Za-z0-9._-]{1,253}$';
+const PGS_PARTITION_ID = /^(?:c|h)-[A-Za-z0-9._-]{1,253}$/;
+const MAX_PGS_TARGET_PARTITIONS = 256;
 
 const targetSchema = {
   type: 'object',
   additionalProperties: false,
+  minProperties: 1,
+  maxProperties: 1,
+  description: 'Omit target for this agent own brain. Otherwise select exactly one authorized brain.',
   properties: {
-    agent: { type: 'string', minLength: 1, maxLength: 256 },
-    brainId: { type: 'string', minLength: 1, maxLength: 256 },
+    agent: {
+      type: 'string', minLength: 1, maxLength: 256,
+      description: 'Agent name for an authorized resident brain, for example forrest.',
+    },
+    brainId: {
+      type: 'string', minLength: 1, maxLength: 256,
+      description: 'Exact opaque brain ID returned by the brain catalog; never an agent name.',
+    },
   },
 } as const;
 
@@ -79,10 +94,17 @@ function targetFrom(input: Record<string, unknown>): { agent?: string; brainId?:
     optionalBoundedText(candidate, 'target.agent', 256));
   const brainId = parsedWhenPresent(value, 'brainId', (candidate) =>
     optionalBoundedText(candidate, 'target.brainId', 256));
+  if (agent !== undefined && brainId !== undefined) throw invalidRequest('target_invalid');
   return {
     ...(agent !== undefined ? { agent } : {}),
     ...(brainId !== undefined ? { brainId } : {}),
   };
+}
+
+function requiredOperationId(input: Record<string, unknown>): string {
+  const operationId = requiredToolText(input, 'operationId', 256);
+  if (!BRAIN_OPERATION_ID.test(operationId)) throw invalidRequest('operation_id_invalid');
+  return operationId;
 }
 
 function exactPairWhenPresent(
@@ -92,15 +114,42 @@ function exactPairWhenPresent(
   return parsedWhenPresent(input, key, (value) => exactProviderModelPair(value, key));
 }
 
-function pgsConfigWhenPresent(
+function requiredExactPair(
   input: Record<string, unknown>,
-): { sweepFraction?: number } | undefined {
-  if (!hasOwn(input, 'pgsConfig')) return undefined;
-  const value = input.pgsConfig;
-  assertExactKeys(value, ['sweepFraction'], 'pgsConfig');
-  const sweepFraction = parsedWhenPresent(value, 'sweepFraction', (candidate) =>
-    optionalFiniteNumber(candidate, 'pgsConfig.sweepFraction', 0, 1, { exclusiveMin: true }));
-  return sweepFraction === undefined ? {} : { sweepFraction };
+  key: string,
+): { provider: string; model: string } {
+  if (!hasOwn(input, key)) throw invalidRequest(`${key}_invalid`);
+  const pair = exactProviderModelPair(input[key], key);
+  if (pair === undefined) throw invalidRequest(`${key}_invalid`);
+  return pair;
+}
+
+function continuationIdWhenPresent(input: Record<string, unknown>): string | undefined {
+  if (!hasOwn(input, 'continueFromOperationId')) return undefined;
+  const value = requiredBoundedText(
+    input.continueFromOperationId,
+    'continueFromOperationId',
+    256,
+  );
+  if (!BRAIN_OPERATION_ID.test(value)) throw invalidRequest('continueFromOperationId_invalid');
+  return value;
+}
+
+function targetPartitionIdsWhenPresent(input: Record<string, unknown>): string[] | undefined {
+  if (!hasOwn(input, 'targetPartitionIds')) return undefined;
+  const value = input.targetPartitionIds;
+  if (!Array.isArray(value) || value.length < 1 || value.length > MAX_PGS_TARGET_PARTITIONS) {
+    throw invalidRequest('targetPartitionIds_invalid');
+  }
+  const seen = new Set<string>();
+  return value.map((partitionId) => {
+    if (typeof partitionId !== 'string' || !PGS_PARTITION_ID.test(partitionId)
+        || seen.has(partitionId)) {
+      throw invalidRequest('targetPartitionIds_invalid');
+    }
+    seen.add(partitionId);
+    return partitionId;
+  });
 }
 
 function priorContextWhenPresent(
@@ -109,10 +158,14 @@ function priorContextWhenPresent(
   if (!hasOwn(input, 'priorContext')) return undefined;
   const value = input.priorContext;
   assertExactKeys(value, ['query', 'answer'], 'priorContext', { requireAll: true });
-  return {
+  const priorContext = {
     query: requiredBoundedText(value.query, 'priorContext.query', 12_000),
     answer: requiredBoundedText(value.answer, 'priorContext.answer', 20_000),
   };
+  if (priorContext.query.length + priorContext.answer.length > 20_000) {
+    throw invalidRequest('priorContext_invalid');
+  }
+  return priorContext;
 }
 
 function optionalTagWhenPresent(input: Record<string, unknown>): string | undefined {
@@ -251,48 +304,166 @@ async function executeBrainSearch(
   }
 }
 
+async function executeBrainCatalog(
+  input: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  try {
+    assertToolKeys(input, []);
+    const turn = runtime(ctx);
+    const [brainCatalog, queryCatalog] = await Promise.all([
+      turn.brainOperations.getCatalog({ signal: turn.signal }),
+      turn.brainOperations.getQueryCatalog(turn.signal),
+    ]);
+    const models = queryCatalog.models.map((model) => ({
+      provider: model.provider,
+      model: model.id,
+      name: model.name ?? null,
+      providerLabel: model.providerLabel ?? null,
+    }));
+    const defaults = queryCatalog.defaults;
+    const defaultPairs = [
+      ['query', defaults.provider, defaults.model],
+      ['pgsSweep', defaults.pgsSweepProvider, defaults.pgsSweepModel],
+      ['pgsSynth', defaults.pgsSynthProvider, defaults.pgsSynthModel],
+    ].map(([purpose, provider, model]) => ({
+      purpose,
+      provider: typeof provider === 'string' ? provider : null,
+      model: typeof model === 'string' ? model : null,
+      available: typeof provider === 'string' && typeof model === 'string'
+        && models.some((entry) => entry.provider === provider && entry.model === model),
+    }));
+    return boundedJson('brain_catalog', {
+      catalogRevision: brainCatalog.catalogRevision,
+      brains: brainCatalog.brains.map((brain) => ({
+        id: brain.id,
+        displayName: brain.displayName,
+        ownerAgent: brain.ownerAgent,
+        kind: brain.kind,
+        lifecycle: brain.lifecycle,
+        nodeCount: brain.nodeCount,
+        sourceType: brain.sourceType,
+        modifiedAt: brain.modifiedAt,
+      })),
+      queryAvailable: queryCatalog.available,
+      queryReason: queryCatalog.reason ?? null,
+      models,
+      defaults: defaultPairs,
+      streaming: queryCatalog.streaming ?? null,
+      limits: queryCatalog.limits ?? null,
+    });
+  } catch (error) {
+    return toolFailure('brain_catalog', error);
+  }
+}
+
+async function executeBrainOperationsList(
+  input: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  try {
+    assertToolKeys(input, ['state', 'limit']);
+    const turn = runtime(ctx);
+    const state = parsedWhenPresent(input, 'state', (value) =>
+      optionalEnum(value, 'state', ['nonterminal', 'recent'] as const)) ?? 'recent';
+    const limit = parsedWhenPresent(input, 'limit', (value) =>
+      optionalFiniteInteger(value, 'limit', 1, 100)) ?? 20;
+    if (state === 'nonterminal' && hasOwn(input, 'limit')) throw invalidRequest();
+    const operations = await turn.brainOperations.listOperations({
+      state,
+      ...(state === 'recent' ? { limit } : {}),
+      signal: turn.signal,
+    });
+    return boundedJson('brain_operations_list', { state, count: operations.length, operations });
+  } catch (error) {
+    return toolFailure('brain_operations_list', error);
+  }
+}
+
+async function executeBrainPgsPartitions(
+  input: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  try {
+    assertToolKeys(input, ['target']);
+    const turn = runtime(ctx);
+    const target = targetFrom(input);
+    const result = await turn.brainOperations.graph({
+      ...(target ? { target } : {}),
+      view: 'pgs_partitions',
+    }, turn.signal);
+    return boundedJson('brain_pgs_partitions', result);
+  } catch (error) {
+    return toolFailure('brain_pgs_partitions', error);
+  }
+}
+
 async function executeBrainQuery(
   input: Record<string, unknown>,
   ctx: ToolContext,
 ): Promise<ToolResult> {
   try {
     assertToolKeys(input, [
-      'query', 'target', 'mode', 'enablePGS', 'pgsMode', 'pgsConfig', 'pgsSweep',
-      'pgsSynth', 'modelSelection', 'enableSynthesis', 'includeOutputs', 'includeThoughts',
+      'query', 'target', 'mode', 'enablePGS', 'pgsMode', 'pgsLevel',
+      'continueFromOperationId', 'targetPartitionIds', 'pgsSweep', 'pgsSynth',
+      'modelSelection', 'enableSynthesis', 'includeOutputs', 'includeThoughts',
       'includeCoordinatorInsights', 'allowActions', 'priorContext',
     ]);
     const turn = runtime(ctx);
     const enablePGS = parsedWhenPresent(input, 'enablePGS', (value) =>
       optionalBoolean(value, 'enablePGS')) ?? false;
-    const pgsOnly = ['pgsMode', 'pgsConfig', 'pgsSweep', 'pgsSynth'];
-    const directOnly = ['modelSelection', 'enableSynthesis', 'includeOutputs', 'includeThoughts',
-      'includeCoordinatorInsights', 'allowActions'];
+    const pgsOnly = [
+      'pgsMode', 'pgsLevel', 'continueFromOperationId', 'targetPartitionIds',
+      'pgsSweep', 'pgsSynth',
+    ];
+    const directOnly = ['mode', 'modelSelection', 'enableSynthesis', 'includeOutputs', 'includeThoughts',
+      'includeCoordinatorInsights', 'allowActions', 'priorContext'];
     if ((!enablePGS && pgsOnly.some((key) => hasOwn(input, key)))
         || (enablePGS && directOnly.some((key) => hasOwn(input, key)))) {
       throw invalidRequest();
     }
     const target = targetFrom(input);
-    const mode = parsedWhenPresent(input, 'mode', (value) =>
-      optionalEnum(value, 'mode', ['quick', 'full', 'expert', 'dive'] as const))
-      ?? DEFAULT_BRAIN_QUERY_MODE;
     const priorContext = priorContextWhenPresent(input);
-    const pgsConfig = pgsConfigWhenPresent(input);
-    const pgsSweep = exactPairWhenPresent(input, 'pgsSweep');
-    const pgsSynth = exactPairWhenPresent(input, 'pgsSynth');
     const modelSelection = exactPairWhenPresent(input, 'modelSelection');
+    let pgsParameters: Record<string, unknown> | undefined;
+    if (enablePGS) {
+      const pgsMode = parsedWhenPresent(input, 'pgsMode', (value) =>
+        optionalEnum(value, 'pgsMode', PGS_MODES));
+      const pgsLevel = parsedWhenPresent(input, 'pgsLevel', (value) =>
+        optionalEnum(value, 'pgsLevel', PGS_LEVELS));
+      if (pgsMode === undefined) throw invalidRequest('pgsMode_invalid');
+      if (pgsLevel === undefined) throw invalidRequest('pgsLevel_invalid');
+      const continueFromOperationId = continuationIdWhenPresent(input);
+      const targetPartitionIds = targetPartitionIdsWhenPresent(input);
+      if (pgsMode === 'fresh' && (continueFromOperationId || targetPartitionIds)) {
+        throw invalidRequest('pgsMode_invalid');
+      }
+      if (pgsMode === 'continue' && (!continueFromOperationId || targetPartitionIds)) {
+        throw invalidRequest('pgsMode_invalid');
+      }
+      if (pgsMode === 'targeted' && !targetPartitionIds) {
+        throw invalidRequest('pgsMode_invalid');
+      }
+      pgsParameters = {
+        enablePGS: true,
+        pgsMode,
+        pgsLevel,
+        ...(continueFromOperationId ? { continueFromOperationId } : {}),
+        ...(targetPartitionIds ? { targetPartitionIds } : {}),
+        pgsSweep: requiredExactPair(input, 'pgsSweep'),
+        pgsSynth: requiredExactPair(input, 'pgsSynth'),
+      };
+    }
     const operation = await turn.brainOperations.query({
       ...(target ? { target } : {}),
       query: requiredToolText(input, 'query', 12_000),
-      mode,
       ...(priorContext !== undefined ? { priorContext } : {}),
       ...(enablePGS ? {
-        enablePGS: true,
-        pgsMode: parsedWhenPresent(input, 'pgsMode', (value) =>
-          optionalEnum(value, 'pgsMode', ['full'] as const)) ?? 'full',
-        ...(pgsConfig !== undefined ? { pgsConfig } : {}),
-        ...(pgsSweep !== undefined ? { pgsSweep } : {}),
-        ...(pgsSynth !== undefined ? { pgsSynth } : {}),
+        ...pgsParameters,
       } : {
+        mode: parsedWhenPresent(input, 'mode', (value) =>
+          optionalEnum(value, 'mode', ['quick', 'full', 'expert', 'dive'] as const))
+          ?? DEFAULT_BRAIN_QUERY_MODE,
         ...(modelSelection !== undefined ? { modelSelection } : {}),
         ...(hasOwn(input, 'enableSynthesis') ? {
           enableSynthesis: parsedWhenPresent(input, 'enableSynthesis', (value) =>
@@ -328,30 +499,25 @@ async function executeBrainExport(
 ): Promise<ToolResult> {
   try {
     assertToolKeys(input, [
-      'operationId', 'resultHandle', 'query', 'answer', 'format', 'metadata',
+      'operationId', 'query', 'answer', 'format', 'metadata',
     ]);
     const turn = runtime(ctx);
     const format = parsedWhenPresent(input, 'format', (value) =>
       optionalEnum(value, 'format', ['markdown', 'json'] as const)) ?? 'markdown';
     const canonical = hasOwn(input, 'operationId');
     if (canonical && (hasOwn(input, 'query') || hasOwn(input, 'answer'))) throw invalidRequest();
-    if (!canonical && (!hasOwn(input, 'query') || !hasOwn(input, 'answer')
-        || hasOwn(input, 'resultHandle'))) throw invalidRequest();
+    if (!canonical && (!hasOwn(input, 'query') || !hasOwn(input, 'answer'))) throw invalidRequest();
     if (canonical && hasOwn(input, 'metadata')) throw invalidRequest();
     const metadata = parsedWhenPresent(input, 'metadata', (value) =>
       optionalJsonObject(value, 'metadata', 32_000));
-    const resultHandle = parsedWhenPresent(input, 'resultHandle', (value) =>
-      optionalBoundedText(value, 'resultHandle', 256));
     const value = canonical
       ? await turn.brainOperations.exportResult({
-        operationId: requiredToolText(input, 'operationId', 256),
-        ...(resultHandle !== undefined ? { resultHandle } : {}),
+        operationId: requiredOperationId(input),
         format,
-        ...(metadata ? { metadata } : {}),
       }, turn.signal)
       : await turn.brainOperations.exportAdHocResult({
         query: requiredToolText(input, 'query', 12_000),
-        answer: requiredToolText(input, 'answer', 2_000_000),
+        answer: requiredToolText(input, 'answer', 1_000_000),
         format,
         metadata: { ...(metadata || {}), canonicalEvidence: false },
       }, turn.signal);
@@ -428,6 +594,9 @@ async function executeBrainSynthesis(
       }
       const operationId = parsedWhenPresent(input, 'operationId', (value) =>
         optionalBoundedText(value, 'operationId', 256));
+      if (operationId !== undefined && !BRAIN_OPERATION_ID.test(operationId)) {
+        throw invalidRequest('operation_id_invalid');
+      }
       const generationMarker = parsedWhenPresent(input, 'generationMarker', (value) =>
         optionalBoundedText(value, 'generationMarker', 256));
       const value = await turn.brainOperations.synthesisStatus({
@@ -442,7 +611,7 @@ async function executeBrainSynthesis(
       if (hasOwn(input, 'generationMarker') || hasOwn(input, 'trigger') || hasOwn(input, 'reason')) {
         throw invalidRequest();
       }
-      const operationId = requiredToolText(input, 'operationId', 256);
+      const operationId = requiredOperationId(input);
       return synthesisResult(await turn.brainOperations.reattachSynthesis(
         operationId, turn.signal,
       ));
@@ -470,7 +639,7 @@ async function executeBrainStatus(
     const turn = runtime(ctx);
     if (hasOwn(input, 'operationId')) {
       if (hasOwn(input, 'target')) throw invalidRequest();
-      const operationId = requiredToolText(input, 'operationId', 256);
+      const operationId = requiredOperationId(input);
       const action = parsedWhenPresent(input, 'action', (value) =>
         optionalEnum(value, 'action', ['status', 'result', 'wait', 'cancel'] as const)) ?? 'status';
       const value = action === 'wait'
@@ -507,6 +676,44 @@ export const brainSearchTool: ToolDefinition = {
   execute: executeBrainSearch,
 };
 
+export const brainCatalogTool: ToolDefinition = {
+  name: 'brain_catalog',
+  description: 'List authorized brains and exact available provider/model pairs before selecting a target or query model.',
+  input_schema: { type: 'object', additionalProperties: false, properties: {} },
+  execute: executeBrainCatalog,
+};
+
+export const brainOperationsListTool: ToolDefinition = {
+  name: 'brain_operations_list',
+  description: 'Rediscover requester-owned recent or currently running durable operations and their exact operation IDs.',
+  input_schema: {
+    type: 'object', additionalProperties: false,
+    properties: {
+      state: { type: 'string', enum: ['recent', 'nonterminal'] },
+      limit: { type: 'integer', minimum: 1, maximum: 100 },
+    },
+    oneOf: [
+      { properties: { state: { const: 'recent' } } },
+      {
+        required: ['state'],
+        properties: { state: { const: 'nonterminal' } },
+        not: { required: ['limit'] },
+      },
+    ],
+  },
+  execute: executeBrainOperationsList,
+};
+
+export const brainPgsPartitionsTool: ToolDefinition = {
+  name: 'brain_pgs_partitions',
+  description: 'List the complete canonical PGS partition IDs and estimated work for an authorized brain before targeted PGS.',
+  input_schema: {
+    type: 'object', additionalProperties: false,
+    properties: { target: targetSchema },
+  },
+  execute: executeBrainPgsPartitions,
+};
+
 export const brainQueryTool: ToolDefinition = {
   name: 'brain_query',
   description: 'Run a durable brain query. PGS can take hours and remains reattachable by operation ID.',
@@ -518,10 +725,14 @@ export const brainQueryTool: ToolDefinition = {
       target: targetSchema,
       mode: { type: 'string', enum: ['quick', 'full', 'expert', 'dive'] },
       enablePGS: { type: 'boolean' },
-      pgsMode: { type: 'string', enum: ['full'] },
-      pgsConfig: {
-        type: 'object', additionalProperties: false,
-        properties: { sweepFraction: { type: 'number', exclusiveMinimum: 0, maximum: 1 } },
+      pgsMode: { type: 'string', enum: PGS_MODES },
+      pgsLevel: { type: 'string', enum: PGS_LEVELS },
+      continueFromOperationId: { type: 'string', pattern: BRAIN_OPERATION_ID_PATTERN },
+      targetPartitionIds: {
+        type: 'array', minItems: 1, maxItems: MAX_PGS_TARGET_PARTITIONS, uniqueItems: true,
+        items: {
+          type: 'string', minLength: 3, maxLength: 256, pattern: PGS_PARTITION_ID_PATTERN,
+        },
       },
       pgsSweep: providerModelSchema,
       pgsSynth: providerModelSchema,
@@ -533,11 +744,72 @@ export const brainQueryTool: ToolDefinition = {
       allowActions: { type: 'boolean' },
       priorContext: {
         type: 'object', additionalProperties: false,
-        properties: { query: { type: 'string' }, answer: { type: 'string' } },
+        description: 'Direct-query follow-up context. Query and answer are limited to 20,000 characters combined.',
+        properties: {
+          query: { type: 'string', minLength: 1, maxLength: 12_000 },
+          answer: { type: 'string', minLength: 1, maxLength: 20_000 },
+        },
         required: ['query', 'answer'],
       },
     },
     required: ['query'],
+    oneOf: [
+      {
+        properties: { enablePGS: { const: false } },
+        not: {
+          anyOf: [
+            { required: ['pgsMode'] },
+            { required: ['pgsLevel'] },
+            { required: ['continueFromOperationId'] },
+            { required: ['targetPartitionIds'] },
+            { required: ['pgsSweep'] },
+            { required: ['pgsSynth'] },
+          ],
+        },
+      },
+      {
+        required: ['enablePGS', 'pgsMode', 'pgsLevel', 'pgsSweep', 'pgsSynth'],
+        properties: { enablePGS: { const: true } },
+        allOf: [
+          {
+            not: {
+              anyOf: [
+                { required: ['mode'] },
+                { required: ['modelSelection'] },
+                { required: ['enableSynthesis'] },
+                { required: ['includeOutputs'] },
+                { required: ['includeThoughts'] },
+                { required: ['includeCoordinatorInsights'] },
+                { required: ['allowActions'] },
+                { required: ['priorContext'] },
+              ],
+            },
+          },
+          {
+            oneOf: [
+              {
+                properties: { pgsMode: { const: 'fresh' } },
+                not: {
+                  anyOf: [
+                    { required: ['continueFromOperationId'] },
+                    { required: ['targetPartitionIds'] },
+                  ],
+                },
+              },
+              {
+                properties: { pgsMode: { const: 'continue' } },
+                required: ['continueFromOperationId'],
+                not: { required: ['targetPartitionIds'] },
+              },
+              {
+                properties: { pgsMode: { const: 'targeted' } },
+                required: ['targetPartitionIds'],
+              },
+            ],
+          },
+        ],
+      },
+    ],
   },
   execute: executeBrainQuery,
 };
@@ -549,13 +821,22 @@ export const brainQueryExportTool: ToolDefinition = {
     type: 'object',
     additionalProperties: false,
     properties: {
-      operationId: { type: 'string', minLength: 1 },
-      resultHandle: { type: 'string', minLength: 1 },
+      operationId: { type: 'string', pattern: BRAIN_OPERATION_ID_PATTERN },
       query: { type: 'string', minLength: 1 },
-      answer: { type: 'string', minLength: 1 },
+      answer: { type: 'string', minLength: 1, maxLength: 1_000_000 },
       format: { type: 'string', enum: ['markdown', 'json'] },
       metadata: { type: 'object' },
     },
+    oneOf: [
+      {
+        required: ['operationId'],
+        not: { anyOf: [{ required: ['query'] }, { required: ['answer'] }, { required: ['metadata'] }] },
+      },
+      {
+        required: ['query', 'answer'],
+        not: { required: ['operationId'] },
+      },
+    ],
   },
   execute: executeBrainExport,
 };
@@ -573,6 +854,17 @@ export const brainMemoryGraphTool: ToolDefinition = {
       exportFull: { type: 'boolean' },
       format: { type: 'string', enum: ['jsonl'] },
     },
+    oneOf: [
+      {
+        properties: { exportFull: { const: false } },
+        not: { required: ['format'] },
+      },
+      {
+        properties: { exportFull: { const: true } },
+        required: ['exportFull'],
+        not: { anyOf: [{ required: ['topN'] }, { required: ['tag'] }] },
+      },
+    ],
   },
   execute: executeBrainGraph,
 };
@@ -585,26 +877,65 @@ export const brainSynthesizeTool: ToolDefinition = {
     additionalProperties: false,
     properties: {
       action: { type: 'string', enum: ['run', 'status', 'reattach'] },
-      operationId: { type: 'string', minLength: 1 },
-      generationMarker: { type: 'string', minLength: 1 },
-      trigger: { type: 'string', minLength: 1 },
-      reason: { type: 'string', minLength: 1 },
+      operationId: { type: 'string', pattern: BRAIN_OPERATION_ID_PATTERN },
+      generationMarker: { type: 'string', minLength: 1, maxLength: 256 },
+      trigger: { type: 'string', minLength: 1, maxLength: 256 },
+      reason: { type: 'string', minLength: 1, maxLength: 4_000 },
     },
+    oneOf: [
+      {
+        properties: { action: { const: 'run' } },
+        not: { anyOf: [{ required: ['operationId'] }, { required: ['generationMarker'] }] },
+      },
+      {
+        properties: { action: { const: 'status' } },
+        required: ['action'],
+        not: { anyOf: [{ required: ['trigger'] }, { required: ['reason'] }] },
+        oneOf: [
+          { not: { anyOf: [{ required: ['operationId'] }, { required: ['generationMarker'] }] } },
+          { required: ['operationId'], not: { required: ['generationMarker'] } },
+          { required: ['generationMarker'], not: { required: ['operationId'] } },
+        ],
+      },
+      {
+        properties: { action: { const: 'reattach' } },
+        required: ['action', 'operationId'],
+        not: {
+          anyOf: [
+            { required: ['generationMarker'] },
+            { required: ['trigger'] },
+            { required: ['reason'] },
+          ],
+        },
+      },
+    ],
   },
   execute: executeBrainSynthesis,
 };
 
 export const brainStatusTool: ToolDefinition = {
   name: 'brain_status',
-  description: 'Read authoritative bounded brain status or control one exact durable operation.',
+  description: 'Read authoritative bounded brain status; omit all arguments for own-brain health, or control one exact durable operation.',
   input_schema: {
     type: 'object',
     additionalProperties: false,
     properties: {
       target: targetSchema,
-      operationId: { type: 'string', minLength: 1 },
+      operationId: {
+        type: 'string', pattern: BRAIN_OPERATION_ID_PATTERN,
+        description: 'Exact operation ID returned by a prior brain tool call; never invent one.',
+      },
       action: { type: 'string', enum: ['status', 'result', 'wait', 'cancel'] },
     },
+    oneOf: [
+      {
+        not: { anyOf: [{ required: ['operationId'] }, { required: ['action'] }] },
+      },
+      {
+        required: ['operationId'],
+        not: { required: ['target'] },
+      },
+    ],
   },
   execute: executeBrainStatus,
 };

@@ -100,7 +100,11 @@ async function appendMemoryRevision(brainDir, changes, options = {}) {
   const capturedChanges = normalizeCapturedChanges(changes);
   const capturedSummary = options.summary ? validateScalarSummaryOnly(options.summary) : null;
   await options.beforeLock?.();
-  return withMemorySourceLock(brainDir, { lockRoot: options.lockRoot }, async () => {
+  return withMemorySourceLock(brainDir, {
+    lockRoot: options.lockRoot,
+    signal: options.signal,
+    lockTimeoutMs: options.lockTimeoutMs,
+  }, async () => {
     const manifest = await readManifest(brainDir);
     if (!manifest) throw memorySourceError('source_unavailable', 'memory manifest required', { retryable: true });
     const deltaPath = path.join(brainDir, manifest.activeDelta.file);
@@ -234,26 +238,40 @@ async function rewriteMemoryBase(brainDir, capturedView, options = {}) {
 }
 
 async function advanceAnnBuiltFromRevision(brainDir, update = {}) {
-  return withMemorySourceLock(brainDir, { lockRoot: update.lockRoot }, async () => {
-    const manifest = await readManifest(brainDir);
-    if (!manifest || manifest.generation !== update.expectedGeneration) {
-      return { advanced: false, reason: 'source_changed', manifest };
-    }
-    if (!Number.isSafeInteger(update.builtFromRevision)
-        || update.builtFromRevision > manifest.currentRevision) {
-      throw memorySourceError('invalid_request', 'invalid ANN revision');
-    }
-    const next = {
-      ...manifest,
-      ann: {
-        indexFile: update.indexFile,
-        metaFile: update.metaFile,
-        builtFromRevision: update.builtFromRevision,
-      },
-    };
-    await writeManifestAtomic(brainDir, next);
-    return { advanced: true, manifest: next };
-  });
+  let completedOutcome = null;
+  try {
+    return await withMemorySourceLock(brainDir, {
+      lockRoot: update.lockRoot,
+      signal: update.signal,
+      lockTimeoutMs: update.lockTimeoutMs,
+      _testHooks: update._testHooks,
+    }, async () => {
+      const manifest = await readManifest(brainDir);
+      if (!manifest || manifest.generation !== update.expectedGeneration) {
+        return { advanced: false, reason: 'source_changed', manifest };
+      }
+      if (!Number.isSafeInteger(update.builtFromRevision) || update.builtFromRevision < 0) {
+        throw memorySourceError('invalid_request', 'invalid ANN revision');
+      }
+      if (update.builtFromRevision !== manifest.currentRevision) {
+        return { advanced: false, reason: 'source_changed', manifest };
+      }
+      const next = {
+        ...manifest,
+        ann: {
+          indexFile: update.indexFile,
+          metaFile: update.metaFile,
+          builtFromRevision: update.builtFromRevision,
+        },
+      };
+      await writeManifestAtomic(brainDir, next);
+      completedOutcome = { advanced: true, manifest: next };
+      return completedOutcome;
+    });
+  } catch (error) {
+    if (completedOutcome && error?.sourceLockReleased === true) return completedOutcome;
+    throw error;
+  }
 }
 
 async function compareAndSwapSourceRevision(brainDir, update = {}) {

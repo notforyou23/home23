@@ -86,12 +86,15 @@ function createResourceTracker({
   };
 }
 
-async function optionalSnapshot(brainDir) {
+async function optionalSnapshot(brainDir, { advisory = false } = {}) {
   const file = path.join(brainDir, 'brain-snapshot.json');
   try {
-    return { file, value: await readJson(file, { maxBytes: 32 * 1024 * 1024 }) };
+    return { file, status: 'present', value: await readJson(file, { maxBytes: 32 * 1024 * 1024 }) };
   } catch (error) {
-    if (error.code === 'ENOENT' || error?.cause?.code === 'ENOENT') return { file, value: null };
+    if (error.code === 'ENOENT' || error?.cause?.code === 'ENOENT') {
+      return { file, status: 'missing', value: null };
+    }
+    if (advisory) return { file, status: 'invalid', value: null };
     throw typedError('snapshot_invalid', error.message, { cause: error });
   }
 }
@@ -271,18 +274,41 @@ async function streamLogicalSource({
   }
 }
 
+function snapshotEvidence({ streamed, snapshot, totals, requiredForAcceptance, notRequiredReason }) {
+  const countsAreUsable = totals !== null && totals.nodes > 0;
+  return {
+    status: snapshot.status === 'present' ? (countsAreUsable ? 'valid' : 'invalid') : snapshot.status,
+    nodes: totals?.nodes ?? null,
+    edges: totals?.edges ?? null,
+    revision: totals?.revision ?? null,
+    generation: totals?.generation ?? null,
+    savedAt: totals?.savedAt ?? null,
+    matchesStreamed: totals === null
+      ? null
+      : totals.nodes === streamed.nodes && totals.edges === streamed.edges,
+    requiredForAcceptance,
+    notRequiredReason,
+  };
+}
+
 function validateStreamed({ streamed, inventory, snapshot }) {
   const nodes = streamed?.nodes;
   const edges = streamed?.edges;
   if (!Number.isSafeInteger(nodes) || nodes <= 0 || !Number.isSafeInteger(edges) || edges < 0) {
     throw typedError('streamed_counts_invalid');
   }
-  const snapshotExpected = snapshotTotals(snapshot);
-  if (!snapshotExpected || snapshotExpected.nodes <= 0) throw typedError('snapshot_counts_invalid');
+  const snapshotExpected = snapshotTotals(snapshot.value);
   let expected;
+  let expectedAuthority;
+  let requiredForAcceptance;
+  let notRequiredReason;
   if (inventory.authority === 'manifest-v1') {
+    if (!snapshotExpected || snapshotExpected.nodes <= 0) throw typedError('snapshot_counts_invalid');
     const summary = inventory.manifest?.summary;
     expected = { nodes: summary?.nodeCount, edges: summary?.edgeCount };
+    expectedAuthority = 'manifest-v1-summary';
+    requiredForAcceptance = true;
+    notRequiredReason = null;
     if (!Number.isSafeInteger(expected.nodes) || expected.nodes <= 0
         || !Number.isSafeInteger(expected.edges) || expected.edges < 0) {
       throw typedError('manifest_counts_invalid');
@@ -297,15 +323,29 @@ function validateStreamed({ streamed, inventory, snapshot }) {
       throw typedError('snapshot_stale');
     }
   } else if (inventory.authority === 'legacy-resident-sidecars') {
-    expected = { nodes: snapshotExpected.nodes, edges: snapshotExpected.edges };
+    expected = { nodes, edges };
+    expectedAuthority = 'streamed-logical-source';
+    requiredForAcceptance = false;
+    notRequiredReason = 'legacy-resident-sidecars-stream-includes-committed-delta';
   } else {
     throw typedError('source_authority_unsupported', inventory.authority);
   }
   if (nodes !== expected.nodes || edges !== expected.edges
-      || nodes !== snapshotExpected.nodes || edges !== snapshotExpected.edges) {
+      || (requiredForAcceptance
+        && (nodes !== snapshotExpected.nodes || edges !== snapshotExpected.edges))) {
     throw typedError('persistence_count_mismatch');
   }
-  return { expected, snapshot: snapshotExpected };
+  return {
+    expected,
+    expectedAuthority,
+    snapshot: snapshotEvidence({
+      streamed,
+      snapshot,
+      totals: snapshotExpected,
+      requiredForAcceptance,
+      notRequiredReason,
+    }),
+  };
 }
 
 async function assertExternalTempRoot(home23Root, tempRoot) {
@@ -337,7 +377,9 @@ async function captureReadOnlyPersistence({
   const brain = await canonicalDirectory(brainDir, 'brain');
   if (brain.path !== expectedBrain) throw typedError('brain_target_mismatch');
   const before = await selectionInventory(brain.path);
-  const snapshot = (await optionalSnapshot(brain.path)).value;
+  const snapshot = await optionalSnapshot(brain.path, {
+    advisory: before.authority === 'legacy-resident-sidecars',
+  });
   const streamed = await streamLogicalSource({
     brainDir: brain.path,
     scratchRoot: temporary.path,
@@ -361,6 +403,7 @@ async function captureReadOnlyPersistence({
     sourceRevision: before.manifest?.currentRevision ?? null,
     streamed: streamed.proof,
     expected: validated.expected,
+    expectedAuthority: validated.expectedAuthority,
     snapshot: validated.snapshot,
     before: before.records,
     after: after.records,

@@ -91,6 +91,8 @@ const limits = {
   maxContextCharsPerWorkUnit: 4096,
 };
 
+const query = 'What does the pinned evidence show?';
+
 test('streams a revision-bound projection and creates deterministic bounded work units', async t => {
   const { scratchDir, quota } = await fixture(t);
   const store = await openPinnedPGSStore({
@@ -98,6 +100,7 @@ test('streams a revision-bound projection and creates deterministic bounded work
     scratchDir,
     scratchQuota: quota,
     pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
     signal: new AbortController().signal,
     limits,
   });
@@ -112,7 +115,10 @@ test('streams a revision-bound projection and creates deterministic bounded work
 
   const pending = store.snapshotPendingWorkUnits({ attemptId: 'attempt-1', limit: 10 });
   assert.equal(pending.length, 10);
-  assert.deepEqual(pending, [...pending].sort());
+  assert.deepEqual(
+    pending.slice(0, 3).map(workUnitId => store.loadWorkUnit(workUnitId).partitionId),
+    ['c-cluster-0', 'c-cluster-1', 'c-cluster-2'],
+  );
   const unit = store.loadWorkUnit(pending[0]);
   assert.equal(unit.nodes.length <= 25, true);
   assert.equal(unit.stats.contextChars <= 4096, true);
@@ -137,6 +143,7 @@ test('rejects a symlinked PGS directory without touching its outside target', as
       scratchDir,
       scratchQuota: quota,
       pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+      query,
       signal: new AbortController().signal,
       limits,
     }),
@@ -164,6 +171,7 @@ test('rejects a symlinked revision directory without touching its outside target
       scratchDir,
       scratchQuota: quota,
       pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+      query,
       signal: new AbortController().signal,
       limits,
     }),
@@ -180,6 +188,7 @@ test('persists successful work idempotently and leaves failed work pending', asy
     scratchDir,
     scratchQuota: quota,
     pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
     signal: new AbortController().signal,
     limits: { ...limits, maxNodesPerWorkUnit: 2 },
   });
@@ -212,6 +221,7 @@ test('caps cumulative durable sweep output before every retry commit', async t =
     scratchDir,
     scratchQuota: quota,
     pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
     signal: new AbortController().signal,
     limits: {
       ...limits,
@@ -268,12 +278,12 @@ test('durable sweep and retry listings stream rows through explicit byte bounds'
     'utf8',
   );
   const successful = source.slice(
-    source.indexOf('    listSuccessfulSweeps()'),
-    source.indexOf('    listRetryablePartitions()', source.indexOf('    listSuccessfulSweeps()')),
+    source.indexOf('    listSuccessfulSweeps('),
+    source.indexOf('    listRetryablePartitions(', source.indexOf('    listSuccessfulSweeps(')),
   );
   const retryable = source.slice(
-    source.indexOf('    listRetryablePartitions()'),
-    source.indexOf('    countPendingWorkUnits()', source.indexOf('    listRetryablePartitions()')),
+    source.indexOf('    listRetryablePartitions('),
+    source.indexOf('    countPendingWorkUnits()', source.indexOf('    listRetryablePartitions(')),
   );
   for (const body of [successful, retryable]) {
     assert.match(body, /\.iterate\s*\(/);
@@ -290,6 +300,7 @@ test('reuses only an exact source revision, limits, and sweep pair', async t => 
     scratchDir,
     scratchQuota: quota,
     pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
     signal: new AbortController().signal,
     limits,
   };
@@ -300,12 +311,17 @@ test('reuses only an exact source revision, limits, and sweep pair', async t => 
   assert.equal(second.reused, true);
   second.close();
 
-  const changed = await openPinnedPGSStore({
-    ...options,
-    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3-alt' },
-  });
-  assert.equal(changed.reused, false);
-  changed.close();
+  await assert.rejects(
+    openPinnedPGSStore({ ...options, query: `${query} changed` }),
+    { code: 'pgs_binding_mismatch' },
+  );
+  await assert.rejects(
+    openPinnedPGSStore({
+      ...options,
+      pgsSweep: { provider: 'minimax', model: 'MiniMax-M3-alt' },
+    }),
+    { code: 'pgs_binding_mismatch' },
+  );
 });
 
 test('rebuilds boundedly when durable projection metadata has an unexpected oversized field', async t => {
@@ -315,6 +331,7 @@ test('rebuilds boundedly when durable projection metadata has an unexpected over
     scratchDir,
     scratchQuota: quota,
     pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
     signal: new AbortController().signal,
     limits,
   };
@@ -345,6 +362,7 @@ test('oversized records and cancellation remove an incomplete projection', async
     scratchDir,
     scratchQuota: quota,
     pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
     signal: new AbortController().signal,
     limits,
   }), error => error.code === 'result_too_large');
@@ -360,6 +378,7 @@ test('oversized records and cancellation remove an incomplete projection', async
     scratchDir,
     scratchQuota: quota,
     pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
     signal: controller.signal,
     limits,
   }), error => error === reason);
@@ -367,4 +386,134 @@ test('oversized records and cancellation remove an incomplete projection', async
   const pgsRoot = path.join(scratchDir, 'pgs');
   const entries = await fs.readdir(pgsRoot).catch(() => []);
   assert.deepEqual(entries, []);
+});
+
+test('refuses schema-v2 state instead of silently rebuilding it', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const options = {
+    sourcePin: syntheticSource({ nodeCount: 6, edgeCount: 5 }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits,
+  };
+  const first = await openPinnedPGSStore(options);
+  const { databasePath } = first;
+  first.close();
+  const database = new Database(databasePath);
+  database.prepare("UPDATE metadata SET value = '2' WHERE key = 'schemaVersion'").run();
+  database.close();
+
+  await assert.rejects(openPinnedPGSStore(options), { code: 'pgs_schema_unsupported' });
+});
+
+test('plans deterministic cumulative round-robin scopes and never reselects success', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const store = await openPinnedPGSStore({
+    sourcePin: syntheticSource({ nodeCount: 30, edgeCount: 29 }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits: { ...limits, maxNodesPerWorkUnit: 1, maxSelectedWorkUnits: 64 },
+  });
+  t.after(() => store.close());
+  const completed = new Set();
+  const levels = [
+    ['skim', 0.1, 3],
+    ['sample', 0.25, 8],
+    ['deep', 0.5, 15],
+    ['full', 1, 30],
+  ];
+
+  for (const [coverageLevel, coverageFraction, expectedScope] of levels) {
+    const attemptId = `attempt-${coverageLevel}`;
+    const plan = store.planScope({ attemptId, coverageLevel, coverageFraction });
+    assert.equal(plan.scopeWorkUnits, expectedScope);
+    const selected = store.snapshotPendingWorkUnits({ attemptId, limit: 64 });
+    assert.equal(selected.length, expectedScope - completed.size);
+    assert.equal(selected.every(id => !completed.has(id)), true);
+    if (coverageLevel === 'skim') {
+      assert.equal(new Set(selected.map(id => store.loadWorkUnit(id).partitionId)).size, 3);
+    }
+    for (const workUnitId of selected) {
+      store.beginWorkUnitAttempt(workUnitId, {
+        attemptId, provider: 'minimax', model: 'MiniMax-M3',
+      });
+    }
+    await store.commitSuccessfulSweeps(selected.map(workUnitId => ({
+      workUnitId, output: `finding ${workUnitId}`,
+    })));
+    selected.forEach(id => completed.add(id));
+    assert.equal(store.countScopePendingWorkUnits(attemptId), 0);
+    assert.equal(store.countScopeSuccessfulWorkUnits(attemptId), expectedScope);
+  }
+});
+
+test('target scopes filter snapshots, successes, counts, and monotonic unions', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const store = await openPinnedPGSStore({
+    sourcePin: syntheticSource({ nodeCount: 12, edgeCount: 11 }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits: { ...limits, maxNodesPerWorkUnit: 1, maxSelectedWorkUnits: 64 },
+  });
+  t.after(() => store.close());
+
+  const firstPlan = store.planScope({
+    attemptId: 'attempt-target-one',
+    coverageLevel: 'sample',
+    coverageFraction: 0.25,
+    targetPartitionIds: ['c-cluster-1'],
+  });
+  assert.deepEqual(firstPlan.targetPartitionIds, ['c-cluster-1']);
+  const first = store.snapshotPendingWorkUnits({ attemptId: firstPlan.attemptId, limit: 64 });
+  assert.equal(first.length, 1);
+  assert.equal(first.every(id => store.loadWorkUnit(id).partitionId === 'c-cluster-1'), true);
+  for (const workUnitId of first) {
+    store.beginWorkUnitAttempt(workUnitId, {
+      attemptId: firstPlan.attemptId, provider: 'minimax', model: 'MiniMax-M3',
+    });
+  }
+  await store.commitSuccessfulSweeps(first.map(workUnitId => ({
+    workUnitId, output: `target ${workUnitId}`,
+  })));
+  assert.equal(store.listSuccessfulSweeps({ attemptId: firstPlan.attemptId }).length, 1);
+  assert.equal(store.countScopePendingWorkUnits(firstPlan.attemptId), 0);
+  assert.equal(store.countPendingWorkUnits(), 11);
+
+  const union = store.planScope({
+    attemptId: 'attempt-target-union',
+    coverageLevel: 'sample',
+    coverageFraction: 0.25,
+    targetPartitionIds: ['c-cluster-2', 'c-cluster-1'],
+  });
+  assert.deepEqual(union.targetPartitionIds, ['c-cluster-1', 'c-cluster-2']);
+  const newIds = store.snapshotPendingWorkUnits({ attemptId: union.attemptId, limit: 64 });
+  assert.equal(newIds.length, 1);
+  assert.equal(newIds.every(id => store.loadWorkUnit(id).partitionId === 'c-cluster-2'), true);
+
+  const deeper = store.planScope({
+    attemptId: 'attempt-target-deeper',
+    coverageLevel: 'deep',
+    coverageFraction: 0.5,
+    targetPartitionIds: ['c-cluster-1', 'c-cluster-2'],
+  });
+  assert.equal(deeper.scopeWorkUnits, 4);
+  assert.equal(store.snapshotPendingWorkUnits({ attemptId: deeper.attemptId, limit: 64 }).length, 3);
+  await assert.rejects(
+    Promise.resolve().then(() => store.planScope({
+      attemptId: 'attempt-target-shrink',
+      coverageLevel: 'deep',
+      coverageFraction: 0.5,
+      targetPartitionIds: ['c-cluster-2'],
+    })),
+    { code: 'pgs_scope_non_monotonic' },
+  );
 });

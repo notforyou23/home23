@@ -11,6 +11,9 @@ const {
   issueCapability,
 } = require('../../../../shared/brain-operations/capability.cjs');
 const {
+  createDurableOperationLockCapability,
+} = require('../../../../shared/memory-source/durable-lock-authority.cjs');
+const {
   OPERATION_RESULT_ARTIFACT_MAX_BYTES,
   TERMINAL_STATES,
   assertIdentifier,
@@ -19,6 +22,7 @@ const {
   operationError,
   safeJsonClone,
   validateSourcePin,
+  validatePgsSessionMetadata,
 } = require('./operation-contract.js');
 const {
   validateActiveProviderCalls,
@@ -38,6 +42,8 @@ const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DEFAULT_HEARTBEAT_MS = 10_000;
 const DEFAULT_EVENT_SILENCE_MS = 60_000;
+const DEFAULT_WORKER_START_TIMEOUT_MS = 30 * MINUTE_MS;
+const DEFAULT_STOP_TIMEOUT_MS = 180_000;
 const CAPABILITY_TTL_MS = 60_000;
 const MAX_ACTIVE_PROVIDER_CALLS = 4096;
 const PROVIDER_OPERATION_TYPES = new Set(['query', 'pgs', 'synthesis', 'research_compile']);
@@ -72,8 +78,9 @@ const CALLER_FORBIDDEN_PARAMETER_KEYS = new Set([
   'accessMode', 'ownerAgent', 'lifecycle', 'runOwner', 'runOwnerAgent', 'policy',
   'sourcePinDescriptor', 'sourcePinDigest', 'lockRoot', 'projectionRoot',
   'operationRoot', 'operationPath', 'scratchDir', 'scratchPath', 'writeScope',
-  'writes', 'mutationBoundaries', 'operationControl',
+  'writes', 'mutationBoundaries', 'operationControl', 'pgsSessionId',
 ]);
+const PGS_SESSION_ID_PATTERN = /^pgss_[A-Za-z0-9_-]{32}$/;
 
 const WORKER_EVIDENCE_FORBIDDEN_KEYS = new Set([
   'accessMode', 'brainId', 'canonicalRoot', 'capability', 'capabilityToken',
@@ -449,7 +456,9 @@ class BrainOperationCoordinator {
     this.eventSilenceMs = options.limits?.eventSilenceMs ?? DEFAULT_EVENT_SILENCE_MS;
     this.workerControlTimeoutMs = options.limits?.workerControlTimeoutMs
       ?? DEFAULT_EVENT_SILENCE_MS;
-    this.stopTimeoutMs = options.limits?.stopTimeoutMs ?? Math.min(DEFAULT_EVENT_SILENCE_MS, 1_000);
+    this.workerStartTimeoutMs = options.limits?.workerStartTimeoutMs
+      ?? DEFAULT_WORKER_START_TIMEOUT_MS;
+    this.stopTimeoutMs = options.limits?.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
     this.executionDeadlineMsByType = Object.freeze({
       ...DEFAULT_EXECUTION_DEADLINES_MS,
       ...(options.limits?.executionDeadlineMsByType || {}),
@@ -457,6 +466,7 @@ class BrainOperationCoordinator {
     if (!Number.isFinite(this.heartbeatMs) || this.heartbeatMs <= 0
         || !Number.isFinite(this.eventSilenceMs) || this.eventSilenceMs <= 0
         || !Number.isFinite(this.workerControlTimeoutMs) || this.workerControlTimeoutMs <= 0
+        || !Number.isFinite(this.workerStartTimeoutMs) || this.workerStartTimeoutMs <= 0
         || !Number.isFinite(this.stopTimeoutMs) || this.stopTimeoutMs <= 0) {
       throw coordinatorError('coordinator_configuration_invalid');
     }
@@ -469,6 +479,7 @@ class BrainOperationCoordinator {
     this.operationQueues = new Map();
     this.runtimes = new Map();
     this.stopped = false;
+    this.stopPromise = null;
   }
 
   async _enqueue(operationId, callback) {
@@ -592,6 +603,69 @@ class BrainOperationCoordinator {
       });
       parameters = clone(parameters, 'parameters_invalid');
     }
+    if (normalized.operationType === 'pgs'
+        && typeof parameters.continueFromOperationId === 'string') {
+      const prior = await this.store.get(parameters.continueFromOperationId);
+      if (prior.requesterAgent !== this.requesterAgent) throw coordinatorError('access_denied');
+      if (prior.operationType !== 'pgs') throw coordinatorError('session_lineage_mismatch');
+      if (prior.target?.domain !== target.domain
+          || prior.target?.brainId !== target.brainId
+          || prior.target?.canonicalRoot !== target.canonicalRoot
+          || prior.target?.ownerAgent !== target.ownerAgent) {
+        throw coordinatorError('session_target_mismatch');
+      }
+      if (prior.requestParameters?.query !== parameters.query) {
+        throw coordinatorError('session_binding_mismatch');
+      }
+      if (!TERMINAL_STATES.has(prior.state)) throw coordinatorError('session_not_ready');
+      let priorResult = prior.result;
+      if (priorResult === null && prior.resultHandle) {
+        try {
+          priorResult = await this.store.getResult(prior.operationId, {
+            requesterAgent: this.requesterAgent,
+            resultHandle: prior.resultHandle,
+          });
+        } catch (error) {
+          throw coordinatorError('session_result_unavailable', error);
+        }
+      }
+      const resultPgs = priorResult?.metadata?.pgs;
+      let durableSession = null;
+      if (prior.pgsSession !== null && prior.pgsSession !== undefined) {
+        try {
+          durableSession = validatePgsSessionMetadata(prior.pgsSession, 'session_lineage_mismatch');
+        } catch (error) {
+          throw coordinatorError('session_lineage_mismatch', error);
+        }
+      }
+      if (resultPgs !== undefined) {
+        if (!resultPgs || typeof resultPgs !== 'object' || Array.isArray(resultPgs)
+            || typeof resultPgs.sessionId !== 'string'
+            || !PGS_SESSION_ID_PATTERN.test(resultPgs.sessionId)
+            || typeof resultPgs.continuableUntil !== 'string'
+            || !Number.isFinite(Date.parse(resultPgs.continuableUntil))) {
+          throw coordinatorError('session_lineage_mismatch');
+        }
+        if (durableSession && (resultPgs.sessionId !== durableSession.sessionId
+            || resultPgs.continuableUntil !== durableSession.continuableUntil
+            || (resultPgs.sourceOperationId ?? null) !== durableSession.sourceOperationId)) {
+          throw coordinatorError('session_lineage_mismatch');
+        }
+      }
+      const session = durableSession || (resultPgs ? {
+        sessionId: resultPgs.sessionId,
+        continuableUntil: resultPgs.continuableUntil,
+        sourceOperationId: resultPgs.sourceOperationId ?? null,
+      } : null);
+      const terminalWithoutAnswer = priorResult === null
+        && ['failed', 'cancelled', 'interrupted'].includes(prior.state);
+      if (!session
+          || Date.parse(session.continuableUntil) <= this.now()
+          || (!terminalWithoutAnswer && resultPgs?.canContinue !== true)) {
+        throw coordinatorError('session_not_continuable');
+      }
+      parameters.pgsSessionId = session.sessionId;
+    }
     const deadlineMs = this.executionDeadlineMsByType[normalized.operationType];
     return {
       ...parameters,
@@ -638,7 +712,7 @@ class BrainOperationCoordinator {
     return issueCapability(this.capabilityKey, claims);
   }
 
-  async _boundedWorkerControl(callback) {
+  async _boundedWorkerControl(callback, timeoutMs = this.workerControlTimeoutMs) {
     let timer = null;
     try {
       return await new Promise((resolve, reject) => {
@@ -651,7 +725,7 @@ class BrainOperationCoordinator {
         };
         timer = this.setTimeout(() => {
           finish(reject, coordinatorError('worker_control_timeout'));
-        }, this.workerControlTimeoutMs);
+        }, timeoutMs);
         Promise.resolve()
           .then(callback)
           .then((value) => finish(resolve, value), (error) => finish(reject, error));
@@ -697,6 +771,7 @@ class BrainOperationCoordinator {
   }
 
   _ensureRuntime(record) {
+    if (this.stopped) throw coordinatorError('coordinator_stopped');
     let runtime = this.runtimes.get(record.operationId);
     if (!runtime) {
       runtime = {
@@ -706,10 +781,12 @@ class BrainOperationCoordinator {
         silenceTimer: null,
         streamController: null,
         pumpPromise: null,
+        workerStartPromise: null,
         workerCursor: 0,
         providerSnapshotThrough: null,
         providerCalls: new Map(),
         attachments: new Map(),
+        sourceLockController: new AbortController(),
         stopped: false,
       };
       this.runtimes.set(record.operationId, runtime);
@@ -766,12 +843,25 @@ class BrainOperationCoordinator {
     return validateIsoDeadline(control.hardDeadlineAt);
   }
 
+  _sourceLockControl(record) {
+    const hardDeadlineAt = this._hardDeadline(record);
+    const runtime = this.runtimes.get(record.operationId);
+    return createDurableOperationLockCapability({
+      hardDeadlineAt: new Date(hardDeadlineAt).toISOString(),
+      signal: runtime?.sourceLockController?.signal || null,
+      cleanupSignal: null,
+    });
+  }
+
   _armHardDeadline(record, runtime) {
     if (runtime.hardDeadlineTimer || runtime.stopped || TERMINAL_STATES.has(record.state) || this.stopped) return;
     const deadlineAt = this._hardDeadline(record);
     const delay = Math.max(0, deadlineAt - this.now());
     runtime.hardDeadlineTimer = this.setTimeout(async () => {
       runtime.hardDeadlineTimer = null;
+      if (!runtime.sourceLockController.signal.aborted) {
+        runtime.sourceLockController.abort(coordinatorError('operation_timeout'));
+      }
       try {
         await this._enqueue(record.operationId, async () => {
           if (runtime.stopped || this.stopped || this.runtimes.get(record.operationId) !== runtime) return;
@@ -789,20 +879,52 @@ class BrainOperationCoordinator {
     }, delay);
   }
 
-  async _pinRecord(record) {
+  async _pinRecord(record, options = {}) {
     if (record.sourcePinDescriptor !== null || record.sourcePinDigest !== null) return record;
-    const pinned = await this.sourcePins.pin(record.target.canonicalRoot, record.operationId);
+    const pinned = await this.sourcePins.pin(
+      record.target.canonicalRoot,
+      record.operationId,
+      this._sourceLockControl(record),
+    );
     const descriptor = validateSourcePin(
       pinned?.descriptor,
       pinned?.digest,
       record.target.canonicalRoot,
     );
-    try {
-      return await this.store.attachSourcePin(record.operationId, {
-        expectedVersion: record.recordVersion,
+
+    let releaseUnpublished = false;
+    const publish = async () => {
+      const current = await this.store.get(record.operationId);
+      if (TERMINAL_STATES.has(current.state)) {
+        releaseUnpublished = true;
+        return current;
+      }
+      if (current.sourcePinDescriptor !== null || current.sourcePinDigest !== null) {
+        if (current.sourcePinDigest === pinned.digest
+            && sameJson(current.sourcePinDescriptor, descriptor)) return current;
+        throw coordinatorError('source_pin_conflict');
+      }
+      const attached = await this.store.attachSourcePin(record.operationId, {
+        expectedVersion: current.recordVersion,
         descriptor,
         digest: pinned.digest,
       });
+      const runtime = this.runtimes.get(record.operationId);
+      if (runtime) await this._broadcastNewEvents(runtime, current.eventSequence);
+      return attached;
+    };
+
+    try {
+      const published = options.alreadyLocked === true
+        ? await publish()
+        : await this._enqueue(record.operationId, publish);
+      if (releaseUnpublished) {
+        await this.sourcePins.releaseOperationPins(
+          record.operationId,
+          this._sourceLockControl(record),
+        );
+      }
+      return published;
     } catch (error) {
       const published = await this.store.get(record.operationId).catch(() => null);
       if (published
@@ -810,7 +932,10 @@ class BrainOperationCoordinator {
           && sameJson(published.sourcePinDescriptor, descriptor)) {
         return published;
       }
-      await this.sourcePins.releaseOperationPins(record.operationId).catch(() => {});
+      await this.sourcePins.releaseOperationPins(
+        record.operationId,
+        this._sourceLockControl(record),
+      ).catch(() => {});
       throw error;
     }
   }
@@ -844,7 +969,7 @@ class BrainOperationCoordinator {
             expectedCanonicalRoot: record.target.canonicalRoot,
             expectedDigest: record.sourcePinDigest,
             expectedRevision: record.sourcePinDescriptor.cutoffRevision,
-          });
+          }, this._sourceLockControl(record));
         validatePinnedSourceHandle(sourcePin, record);
       }
       const parameters = clone(record.parameters, 'operation_corrupt');
@@ -885,6 +1010,7 @@ class BrainOperationCoordinator {
       return await this.store.setWorker(record.operationId, {
         expectedVersion: record.recordVersion,
         worker: intended,
+        pgsSession: workerRecord.pgsSession,
       });
     } catch (error) {
       const published = await this.store.getWorker(record.operationId).catch(() => null);
@@ -894,15 +1020,37 @@ class BrainOperationCoordinator {
   }
 
   async _startWorker(record) {
-    const workerRecord = await this._requestWorkerStart(record);
-    return this._publishStartedWorkerLocked(record, workerRecord);
+    return this._trackWorkerStart(record, async () => {
+      const workerRecord = await this._requestWorkerStart(record);
+      return this._publishStartedWorkerLocked(record, workerRecord);
+    });
+  }
+
+  _trackWorkerStart(record, callback) {
+    const runtime = this.runtimes.get(record.operationId);
+    if (!runtime) throw coordinatorError('coordinator_stopped');
+    const settlement = Promise.resolve().then(callback);
+    runtime.workerStartPromise = settlement;
+    const clear = () => {
+      if (runtime.workerStartPromise === settlement) runtime.workerStartPromise = null;
+    };
+    settlement.then(clear, clear);
+    return settlement;
   }
 
   async _requestWorkerStart(record) {
     const context = await this._buildWorkerContext(record);
+    const runtime = this.runtimes.get(record.operationId);
+    if (!runtime || runtime.stopped || this.stopped) {
+      throw coordinatorError('coordinator_stopped');
+    }
     const capability = this._issueCapability(record, 'start');
+    const starting = this._boundedWorkerControl(
+        () => this.worker.start(context, capability),
+        this.workerStartTimeoutMs,
+      );
     return validateWorkerRecord(
-      await this._boundedWorkerControl(() => this.worker.start(context, capability)),
+      await starting,
       { operationId: record.operationId, operationType: record.operationType },
     );
   }
@@ -912,6 +1060,10 @@ class BrainOperationCoordinator {
     if (TERMINAL_STATES.has(current.state)) {
       void this._cancelWorker(current).catch(() => {});
       return current;
+    }
+    if (this.stopped) {
+      await this._cancelWorker(current).catch(() => {});
+      return this.store.get(current.operationId);
     }
     const existingWorker = await this.store.getWorker(record.operationId);
     if (existingWorker === null) current = await this._persistWorkerReference(current, workerRecord);
@@ -989,11 +1141,7 @@ class BrainOperationCoordinator {
     let record = created.record;
     this._ensureRuntime(record);
     try {
-      record = await this._enqueue(record.operationId, async () => {
-        const current = await this.store.get(record.operationId);
-        if (TERMINAL_STATES.has(current.state)) return current;
-        return policy.requiresSourcePin ? this._pinRecord(current) : current;
-      });
+      if (policy.requiresSourcePin) record = await this._pinRecord(record);
     } catch (error) {
       await this._enqueue(record.operationId, async () => {
         const current = await this.store.get(record.operationId);
@@ -1009,37 +1157,42 @@ class BrainOperationCoordinator {
       throw error;
     }
     if (TERMINAL_STATES.has(record.state)) return record;
+    if (this.stopped) return record;
 
-    let workerRecord;
-    try {
-      workerRecord = await this._requestWorkerStart(record);
-    } catch (error) {
-      return this._enqueue(record.operationId, async () => {
-        const current = await this.store.get(record.operationId);
-        if (TERMINAL_STATES.has(current.state)) return current;
-        try {
-          const recovered = await this._probeUncertainStartLocked(current);
-          if (recovered) return recovered;
-        } catch (probeError) {
-          if (probeError?.code !== 'worker_not_found') {
-            // A status transport/authentication failure cannot prove that the
-            // worker is absent. Leave queued durable truth for reconciliation.
-            throw error;
+    return this._trackWorkerStart(record, async () => {
+      let workerRecord;
+      try {
+        workerRecord = await this._requestWorkerStart(record);
+      } catch (error) {
+        return this._enqueue(record.operationId, async () => {
+          const current = await this.store.get(record.operationId);
+          if (TERMINAL_STATES.has(current.state)) return current;
+          try {
+            const recovered = await this._probeUncertainStartLocked(current);
+            if (recovered) return recovered;
+          } catch (probeError) {
+            if (probeError?.code !== 'worker_not_found') {
+              // A status transport/authentication failure cannot prove that the
+              // worker is absent. Leave queued durable truth for reconciliation.
+              throw error;
+            }
           }
-        }
-        const persistedWorker = await this.store.getWorker(record.operationId).catch(() => null);
-        await this._failLocked(record.operationId, {
-          state: 'failed',
-          code: sanitizeErrorCode(error?.code, 'worker_start_failed'),
-          message: error?.message || 'worker start failed',
-          retryable: error?.retryable !== false,
-          cancelWorker: persistedWorker !== null,
+          await this._failLocked(record.operationId, {
+            state: 'failed',
+            code: sanitizeErrorCode(error?.code, 'worker_start_failed'),
+            message: error?.message || 'worker start failed',
+            retryable: error?.retryable !== false,
+            // Remote workers register pending starts before long source-open
+            // work. A start timeout can therefore be cancellable even though no
+            // worker reference has reached the requester store yet.
+            cancelWorker: true,
+          });
+          throw error;
         });
-        throw error;
-      });
-    }
-    return this._enqueue(record.operationId, () =>
-      this._publishStartedWorkerLocked(record, workerRecord));
+      }
+      return this._enqueue(record.operationId, () =>
+        this._publishStartedWorkerLocked(record, workerRecord));
+    });
   }
 
   async status(operationId) {
@@ -1575,7 +1728,15 @@ class BrainOperationCoordinator {
         await this._enqueue(operationId, () => this._finalizeFromWorkerLocked(operationId, status));
         return;
       }
-      await this._enqueue(operationId, () => this._rearmProviderCallsLocked(current, status.activeProviderCalls, runtime));
+      await this._enqueue(operationId, async () => {
+        await this._rearmProviderCallsLocked(current, status.activeProviderCalls, runtime);
+        // A silence-recovery status can already cover provider events that the
+        // aborted stream never delivered. Replaying those rows on reconnect is
+        // evidence recovery, not a second provider selection.
+        runtime.providerSnapshotThrough = status.eventSequence > runtime.workerCursor
+          ? status.eventSequence
+          : null;
+      });
     }
   }
 
@@ -1899,6 +2060,12 @@ class BrainOperationCoordinator {
   async _failLocked(operationId, options) {
     let record = await this.store.get(operationId);
     if (TERMINAL_STATES.has(record.state)) return record;
+    const runtime = this.runtimes.get(operationId);
+    if (runtime?.sourceLockController && !runtime.sourceLockController.signal.aborted) {
+      runtime.sourceLockController.abort(coordinatorError(
+        sanitizeErrorCode(options.code, 'operation_failed'),
+      ));
+    }
     if (!options.skipClaimReconcile) {
       const claimed = await this._reconcileClaimedSynthesisLocked(record, { preserveMissing: true });
       if (claimed !== null) return claimed;
@@ -1953,7 +2120,10 @@ class BrainOperationCoordinator {
     return this.store.releaseSourcePinOnce(
       record.operationId,
       new Date(this.now()).toISOString(),
-      async () => this.sourcePins.releaseOperationPins(record.operationId),
+      async () => this.sourcePins.releaseOperationPins(
+        record.operationId,
+        this._sourceLockControl(record),
+      ),
     );
   }
 
@@ -1983,8 +2153,15 @@ class BrainOperationCoordinator {
       await this._broadcastNewEvents(runtime, oldestCursor);
     }
     await this._closeRuntimeAttachments(record, runtime);
-    this._stopRuntime(record.operationId);
-    await this._releasePinOnce(record);
+    try {
+      // Keep the event-pump promise visible to stop() until the durable source-pin
+      // release marker is committed. Otherwise a prompt process shutdown can exit
+      // while releaseSourcePinOnce still owns the operation lock, forcing the next
+      // coordinator to wait for stale-lock recovery before it can become ready.
+      await this._releasePinOnce(record);
+    } finally {
+      this._stopRuntime(record.operationId);
+    }
   }
 
   _stopRuntime(operationId) {
@@ -1997,6 +2174,9 @@ class BrainOperationCoordinator {
     for (const call of runtime.providerCalls.values()) this._clearProviderTimer(call);
     runtime.providerCalls.clear();
     runtime.streamController?.abort(coordinatorError('coordinator_stopped'));
+    if (!runtime.sourceLockController.signal.aborted) {
+      runtime.sourceLockController.abort(coordinatorError('coordinator_stopped'));
+    }
     for (const subscriber of runtime.attachments.values()) {
       if (subscriber.signal && subscriber.signalHandler) {
         subscriber.signal.removeEventListener('abort', subscriber.signalHandler);
@@ -2043,9 +2223,12 @@ class BrainOperationCoordinator {
   }
 
   async _recoverNonterminalLocked(record) {
+    if (this.stopped) throw coordinatorError('coordinator_stopped');
     let current = await this.store.get(record.operationId);
+    if (this.stopped) throw coordinatorError('coordinator_stopped');
     if (TERMINAL_STATES.has(current.state)) return current;
     const claimedSynthesis = await this._reconcileClaimedSynthesisLocked(current, { allowPending: true });
+    if (this.stopped) throw coordinatorError('coordinator_stopped');
     if (claimedSynthesis !== null) {
       if (TERMINAL_STATES.has(claimedSynthesis.state)) return claimedSynthesis;
       current = claimedSynthesis;
@@ -2099,9 +2282,17 @@ class BrainOperationCoordinator {
           });
         }
         try {
-          current = await this._pinRecord(current);
+          // Recovery pinning runs inside the operation queue, so arm the runtime
+          // first: its hard-deadline callback can abort the trusted lock wait
+          // immediately even while the queued terminal transition waits its turn.
+          this._ensureRuntime(current);
+          current = await this._pinRecord(current, { alreadyLocked: true });
         } catch (error) {
-          await this.sourcePins.releaseOperationPins(current.operationId).catch(() => {});
+          await this.sourcePins.releaseOperationPins(
+            current.operationId,
+            this._sourceLockControl(current),
+          ).catch(() => {});
+          if (this.stopped) throw coordinatorError('coordinator_stopped', error);
           return this._failLocked(current.operationId, {
             state: 'interrupted',
             code: 'source_pin_unavailable',
@@ -2121,8 +2312,10 @@ class BrainOperationCoordinator {
       });
     }
     const reference = await this.store.getWorker(current.operationId);
+    if (this.stopped) throw coordinatorError('coordinator_stopped');
     if (reference === null) {
       const claimedWithoutWorker = await this._reconcileClaimedSynthesisLocked(current);
+      if (this.stopped) throw coordinatorError('coordinator_stopped');
       if (claimedWithoutWorker !== null) return claimedWithoutWorker;
       this._ensureRuntime(current);
       try {
@@ -2147,6 +2340,7 @@ class BrainOperationCoordinator {
         expectedReference: reference,
         minimumEventSequence: durableWorkerCursor,
       });
+      if (this.stopped) throw coordinatorError('coordinator_stopped');
     } catch (error) {
       const claimedAfterWorkerLoss = await this._reconcileClaimedSynthesisLocked(current);
       if (claimedAfterWorkerLoss !== null) return claimedAfterWorkerLoss;
@@ -2173,6 +2367,7 @@ class BrainOperationCoordinator {
         error: null,
         sourceEvidence: null,
       });
+      if (this.stopped) throw coordinatorError('coordinator_stopped');
     }
     const runtime = this._ensureRuntime(current);
     runtime.workerCursor = durableWorkerCursor;
@@ -2199,34 +2394,56 @@ class BrainOperationCoordinator {
 
   async reconcile() {
     if (this.stopped) throw coordinatorError('coordinator_stopped');
-    for (const record of await this.store.listPinsPendingRelease()) {
+    const pinsPendingRelease = await this.store.listPinsPendingRelease();
+    if (this.stopped) throw coordinatorError('coordinator_stopped');
+    for (const record of pinsPendingRelease) {
+      if (this.stopped) throw coordinatorError('coordinator_stopped');
       if (record.requesterAgent !== this.requesterAgent) throw coordinatorError('access_denied');
       await this._enqueue(record.operationId, async () => {
+        if (this.stopped) throw coordinatorError('coordinator_stopped');
         const current = await this.store.get(record.operationId);
+        if (this.stopped) throw coordinatorError('coordinator_stopped');
         if (TERMINAL_STATES.has(current.state)) await this._releasePinOnce(current);
       });
     }
-    for (const record of await this.store.listNonterminal()) {
+    const nonterminal = await this.store.listNonterminal();
+    if (this.stopped) throw coordinatorError('coordinator_stopped');
+    for (const record of nonterminal) {
+      if (this.stopped) throw coordinatorError('coordinator_stopped');
       if (record.requesterAgent !== this.requesterAgent) throw coordinatorError('access_denied');
       await this._enqueue(record.operationId, () => this._recoverNonterminalLocked(record));
     }
   }
 
-  async stop() {
-    if (this.stopped) return;
+  stop() {
+    if (this.stopPromise) return this.stopPromise;
+    this.stopPromise = this._stop();
+    return this.stopPromise;
+  }
+
+  async _stop() {
     this.stopped = true;
-    const pumps = [];
+    const settlements = [];
     for (const [operationId, runtime] of this.runtimes) {
-      if (runtime.pumpPromise) pumps.push(runtime.pumpPromise);
+      if (runtime.pumpPromise) settlements.push(runtime.pumpPromise);
+      if (runtime.workerStartPromise) {
+        settlements.push(runtime.workerStartPromise);
+        settlements.push((async () => {
+          const record = await this.store.get(operationId);
+          await this._cancelWorker(record);
+        })());
+      }
       this._stopRuntime(operationId);
     }
-    if (pumps.length === 0) return;
+    if (settlements.length === 0) return;
     let timer = null;
     try {
       await Promise.race([
-        Promise.allSettled(pumps),
-        new Promise((resolve) => {
-          timer = globalThis.setTimeout(resolve, this.stopTimeoutMs);
+        Promise.allSettled(settlements),
+        new Promise((resolve, reject) => {
+          timer = globalThis.setTimeout(() => {
+            reject(coordinatorError('coordinator_stop_timeout'));
+          }, this.stopTimeoutMs);
         }),
       ]);
     } finally {
@@ -2259,5 +2476,7 @@ module.exports = {
   DEFAULT_EVENT_SILENCE_MS,
   DEFAULT_EXECUTION_DEADLINES_MS,
   DEFAULT_HEARTBEAT_MS,
+  DEFAULT_STOP_TIMEOUT_MS,
+  DEFAULT_WORKER_START_TIMEOUT_MS,
   enrichSourceEvidence,
 };

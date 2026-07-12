@@ -32,6 +32,7 @@
         "error": { "type": ["string", "null"] },
         "error_code": { "type": ["string", "null"] },
         "error_message": { "type": ["string", "null"] },
+        "assistant_content": { "type": ["string", "null"] },
         "last_seq": { "type": ["integer", "null"], "minimum": 0 }
       }
     },

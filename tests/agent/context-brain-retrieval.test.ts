@@ -1,10 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assembleContext } from '../../src/agent/context-assembly.js';
 import { deferred, flushMicrotasks } from '../helpers/manual-clock.js';
+
+test('production context assembly uses the turn-scoped brain client without raw fetch', () => {
+  const assemblySource = readFileSync(
+    new URL('../../src/agent/context-assembly.ts', import.meta.url), 'utf8',
+  );
+  const loopSource = readFileSync(new URL('../../src/agent/loop.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(assemblySource, /\bfetch\s*\(/);
+  assert.match(loopSource, /contextSearch:\s*\(request, signal\)\s*=>\s*\n?\s*runContext\.turnRuntime!\.brainOperations\.searchContext\(request, signal\)/);
+});
 
 test('automatic retrieval sends topK and keeps local trigger matches when remote search fails', async () => {
   const root = mkdtempSync(join(tmpdir(), 'context-brain-'));
@@ -19,11 +28,11 @@ test('automatic retrieval sends topK and keeps local trigger matches when remote
       enginePort: 5002,
       sessionId: 'chat-1',
       signal: AbortSignal.timeout(1_000),
-      brainOperations: { search: async (request: Record<string, unknown>, signal: AbortSignal) => {
+      contextSearch: async (request: Record<string, unknown>, signal: AbortSignal) => {
         searchRequest = request;
         assert.equal(signal.aborted, false);
         throw Object.assign(new Error('dashboard memory route'), { code: 'source_unavailable' });
-      } } as never,
+      },
       triggerIndex: { evaluate: () => [{
         memoryId: 'm1',
         memory: {
@@ -38,6 +47,50 @@ test('automatic retrieval sends topK and keeps local trigger matches when remote
     assert.match(result.block, /source_unavailable.*dashboard memory route|dashboard memory route/s);
     assert.match(result.block, /success is not yet established/i);
     assert.doesNotMatch(result.block, /will succeed/i);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('automatic retrieval fails open on its own short deadline', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'context-brain-timeout-'));
+  const workspace = join(root, 'workspace');
+  mkdirSync(workspace, { recursive: true });
+  let retrievalSignal: AbortSignal | null = null;
+  try {
+    const result = await assembleContext('quick reply', 'chat-timeout', [], {
+      workspacePath: workspace,
+      brainDir: join(root, 'brain'),
+      enginePort: 5002,
+      sessionId: 'chat-timeout',
+      signal: new AbortController().signal,
+      brainSearchTimeoutMs: 5,
+      contextSearch: async (_request: Record<string, unknown>, signal: AbortSignal) => {
+        retrievalSignal = signal;
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, 30);
+          signal.addEventListener('abort', () => {
+            clearTimeout(timer);
+            reject(signal.reason);
+          }, { once: true });
+        });
+        return {
+          results: [], sourceEvidence: { sourceHealth: 'healthy', matchOutcome: 'no_match' },
+        };
+      },
+      triggerIndex: { evaluate: () => [] } as never,
+    });
+
+    assert.equal(retrievalSignal?.aborted, true);
+    assert.equal(result.degraded, true);
+    assert.match(result.retrievalError || '', /timeout|timed out/i);
+    assert.equal(result.sourceHealth, 'unknown');
+    assert.match(result.block, /automatic brain context enrichment skipped/i);
+    assert.match(result.block, /not a brain health result/i);
+    assert.match(result.block, /brain_status|brain_search/);
+    assert.doesNotMatch(result.block, /sourceHealth=unavailable/);
+    const degradedEvent = result.events.find((event) => event.event_type === 'RetrievalDegraded');
+    assert.equal(degradedEvent?.payload.what_unavailable, 'automatic_context_enrichment');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -61,7 +114,7 @@ test('concurrent context retrieval keeps per-turn clients, signals, and cancella
         enginePort: 5002,
         sessionId: `chat-${turn}`,
         signal: controller.signal,
-        brainOperations: { search: async (_request: Record<string, unknown>, signal: AbortSignal) => {
+        contextSearch: async (_request: Record<string, unknown>, signal: AbortSignal) => {
           calls.push({ turn, signal });
           return Promise.race([
             release[turn]!.promise,
@@ -69,7 +122,7 @@ test('concurrent context retrieval keeps per-turn clients, signals, and cancella
               'abort', () => reject(signal.reason), { once: true },
             )),
           ]);
-        } } as never,
+        },
         triggerIndex: { evaluate: () => [] } as never,
       },
     ));
@@ -82,9 +135,12 @@ test('concurrent context retrieval keeps per-turn clients, signals, and cancella
     });
     await assert.rejects(pending[0]!, (error) => error === reason);
     const second = await pending[1]!;
-    assert.equal(calls[0]!.signal, controllers[0]!.signal);
-    assert.equal(calls[1]!.signal, controllers[1]!.signal);
+    assert.notEqual(calls[0]!.signal, controllers[0]!.signal);
+    assert.notEqual(calls[1]!.signal, controllers[1]!.signal);
     assert.notEqual(calls[0]!.signal, calls[1]!.signal);
+    assert.equal(calls[0]!.signal.aborted, true);
+    assert.equal(calls[0]!.signal.reason, reason);
+    assert.equal(calls[1]!.signal.aborted, false);
     assert.match(second.block, /turn-one-only/);
     assert.equal(controllers[1]!.signal.aborted, false);
   } finally {
@@ -104,9 +160,9 @@ test('healthy empty, filtered, and corpus-empty outcomes remain independent from
         enginePort: 5002,
         sessionId: `chat-${matchOutcome}`,
         signal: new AbortController().signal,
-        brainOperations: { search: async () => ({
+        contextSearch: async () => ({
           results: [], sourceEvidence: { sourceHealth: 'healthy', matchOutcome },
-        }) } as never,
+        }),
         triggerIndex: { evaluate: () => [] } as never,
       });
       const posture = result.events.find((event) => event.event_type === 'MemoryActivationPosture');
@@ -115,6 +171,52 @@ test('healthy empty, filtered, and corpus-empty outcomes remain independent from
       assert.equal(posture?.payload.activationStatus, matchOutcome);
       assert.equal(result.degraded, false);
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('complete exact-keyword supplementation is usable hybrid retrieval without a false brain warning', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'context-hybrid-canary-'));
+  const workspace = join(root, 'workspace');
+  mkdirSync(workspace, { recursive: true });
+  try {
+    const result = await assembleContext('exact canary', 'chat-hybrid-canary', [], {
+      workspacePath: workspace,
+      brainDir: join(root, 'brain'),
+      enginePort: 5002,
+      sessionId: 'chat-hybrid-canary',
+      signal: new AbortController().signal,
+      contextSearch: async () => ({
+        results: [{ id: 'canary-1', concept: 'exact canary recovered', similarity: 0.91 }],
+        sourceEvidence: {
+          sourceHealth: 'degraded',
+          matchOutcome: 'matches',
+          completeCoverage: true,
+          fallback: {
+            route: 'logical-keyword-supplement',
+            reason: 'exact_canary_missing',
+            completeness: 'complete',
+          },
+        },
+      }),
+      triggerIndex: { evaluate: () => [] } as never,
+    });
+
+    assert.equal(result.degraded, false);
+    assert.equal(result.sourceHealth, 'degraded');
+    assert.equal(result.matchOutcome, 'matches');
+    assert.equal(result.retrievalError, null);
+    assert.match(result.block, /successful hybrid brain retrieval/i);
+    assert.match(result.block, /logical-keyword-supplement/);
+    assert.match(result.block, /exact_canary_missing/);
+    assert.match(result.block, /exact canary recovered/);
+    assert.doesNotMatch(result.block, /brain retrieval degraded|success is not yet established/i);
+    assert.equal(result.events.some((event) => event.event_type === 'RetrievalDegraded'), false);
+    const posture = result.events.find((event) => event.event_type === 'MemoryActivationPosture');
+    assert.equal(posture?.payload.activationStatus, 'active');
+    assert.equal(posture?.payload.sourceHealth, 'degraded');
+    assert.equal(posture?.payload.matchOutcome, 'matches');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -131,10 +233,10 @@ test('degraded source can preserve partial cues without claiming a healthy route
       enginePort: 5002,
       sessionId: 'chat-partial',
       signal: new AbortController().signal,
-      brainOperations: { search: async () => ({
+      contextSearch: async () => ({
         results: [{ id: 'partial-1', concept: 'retained partial cue', similarity: 0.8 }],
         sourceEvidence: { sourceHealth: 'degraded', matchOutcome: 'matches' },
-      }) } as never,
+      }),
       triggerIndex: { evaluate: () => [] } as never,
     });
     assert.equal(result.degraded, true);

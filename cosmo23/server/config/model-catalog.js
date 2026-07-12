@@ -7,31 +7,40 @@ const MODEL_CATALOG_FILE_NAME = 'model-catalog.json';
 const BUILTIN_EXECUTION_DEFAULTS = Object.freeze({
   openai: Object.freeze({
     maxOutputTokens: 32768,
+    contextWindowTokens: 128000,
     providerStallMs: 900000,
     transport: 'responses',
   }),
   'openai-codex': Object.freeze({
     maxOutputTokens: 32768,
+    contextWindowTokens: 128000,
     providerStallMs: 900000,
     transport: 'codex-responses',
   }),
   anthropic: Object.freeze({
     maxOutputTokens: 8192,
+    contextWindowTokens: 200000,
     providerStallMs: 900000,
     transport: 'anthropic-messages',
   }),
   minimax: Object.freeze({
     maxOutputTokens: 32768,
+    contextWindowTokens: 128000,
     providerStallMs: 900000,
     transport: 'anthropic-messages',
   }),
   xai: Object.freeze({
     maxOutputTokens: 8192,
+    contextWindowTokens: 128000,
     providerStallMs: 900000,
     transport: 'chat-completions',
   }),
   'ollama-cloud': Object.freeze({
     maxOutputTokens: 8192,
+    // Hosted model windows vary. Keep the shared default at the smallest
+    // reviewed cloud context instead of granting every discovered model the
+    // largest advertised window.
+    contextWindowTokens: 32768,
     providerStallMs: 900000,
     transport: 'chat-completions',
   }),
@@ -140,15 +149,15 @@ const BUILTIN_MODEL_CATALOG = {
       executionDefaults: BUILTIN_EXECUTION_DEFAULTS['openai-codex'],
       models: [
         { id: 'gpt-5.6', label: 'GPT-5.6', kind: 'chat' },
-        { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', kind: 'chat' },
-        { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', kind: 'chat' },
-        { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', kind: 'chat' },
-        { id: 'gpt-5.5', label: 'GPT-5.5', kind: 'chat' },
+        { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', kind: 'chat', contextWindowTokens: 372000 },
+        { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', kind: 'chat', contextWindowTokens: 372000 },
+        { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', kind: 'chat', contextWindowTokens: 372000 },
+        { id: 'gpt-5.5', label: 'GPT-5.5', kind: 'chat', contextWindowTokens: 272000 },
         { id: 'gpt-5.5-pro', label: 'GPT-5.5 Pro', kind: 'chat' },
         { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', kind: 'chat' },
         { id: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark', kind: 'chat' },
-        { id: 'gpt-5.4', label: 'GPT-5.4', kind: 'chat' },
-        { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', kind: 'chat' }
+        { id: 'gpt-5.4', label: 'GPT-5.4', kind: 'chat', contextWindowTokens: 272000 },
+        { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', kind: 'chat', contextWindowTokens: 272000 }
       ]
     }
   },
@@ -411,19 +420,38 @@ function normalizeProviderConfig(providerId, providerConfig = {}, fallbackConfig
       .map(model => normalizeModelEntry(model, providerId)?.id)
       .filter(Boolean),
   );
+  const fallbackModelsById = new Map(
+    (Array.isArray(fallback.models) ? fallback.models : [])
+      .map(model => normalizeModelEntry(model, providerId))
+      .filter(Boolean)
+      .map(model => [model.id, model]),
+  );
   const normalizedModels = sourceModels
     .map(model => normalizeModelEntry(model, providerId))
     .filter(Boolean)
     .map(model => {
       if (model.kind !== 'chat') return model;
       const canUseBuiltInDefaults = !providerDeclaredModels || fallbackModelIds.has(model.id);
+      const fallbackModel = canUseBuiltInDefaults ? fallbackModelsById.get(model.id) : null;
+      const fallbackModelDefaults = {};
+      for (const field of [
+        'maxOutputTokens', 'contextWindowTokens', 'providerStallMs', 'transport',
+      ]) {
+        if (fallbackModel?.[field] !== undefined) {
+          fallbackModelDefaults[field] = fallbackModel[field];
+        }
+      }
       const reviewedLegacyDefaults = REVIEWED_LEGACY_MODEL_DEFAULTS[providerId]?.[model.id] || {};
       const modelDefaults = {
         ...(canUseBuiltInDefaults ? fallbackExecutionDefaults : reviewedLegacyDefaults),
+        ...fallbackModelDefaults,
         ...providerExecutionDefaults,
       };
       const maxOutputTokens = positiveSafeInteger(
         model.maxOutputTokens ?? modelDefaults.maxOutputTokens,
+      );
+      const contextWindowTokens = positiveSafeInteger(
+        model.contextWindowTokens ?? modelDefaults.contextWindowTokens,
       );
       const providerStallMs = positiveSafeInteger(
         model.providerStallMs ?? modelDefaults.providerStallMs,
@@ -431,6 +459,9 @@ function normalizeProviderConfig(providerId, providerConfig = {}, fallbackConfig
       const transport = model.transport ?? modelDefaults.transport;
       if (!maxOutputTokens) {
         throw capabilityError(providerId, model.id, 'maxOutputTokens');
+      }
+      if (!contextWindowTokens || contextWindowTokens <= maxOutputTokens) {
+        throw capabilityError(providerId, model.id, 'contextWindowTokens');
       }
       if (!providerStallMs) {
         throw capabilityError(providerId, model.id, 'providerStallMs');
@@ -441,6 +472,7 @@ function normalizeProviderConfig(providerId, providerConfig = {}, fallbackConfig
       return {
         ...model,
         maxOutputTokens,
+        contextWindowTokens,
         providerStallMs,
         transport,
       };
@@ -493,6 +525,10 @@ function validateSelectableModelCapabilities(catalog) {
     if (!positiveSafeInteger(model.maxOutputTokens)) {
       throw capabilityError(model.provider, model.id, 'maxOutputTokens');
     }
+    if (!positiveSafeInteger(model.contextWindowTokens)
+        || model.contextWindowTokens <= model.maxOutputTokens) {
+      throw capabilityError(model.provider, model.id, 'contextWindowTokens');
+    }
     if (!positiveSafeInteger(model.providerStallMs)) {
       throw capabilityError(model.provider, model.id, 'providerStallMs');
     }
@@ -520,14 +556,22 @@ function getModelCapabilities(catalog, providerId, modelId) {
     });
   }
   const maxOutputTokens = positiveSafeInteger(model.maxOutputTokens);
+  const contextWindowTokens = positiveSafeInteger(model.contextWindowTokens);
   const providerStallMs = positiveSafeInteger(model.providerStallMs);
   if (!maxOutputTokens || !providerStallMs || !EXECUTION_TRANSPORTS.has(model.transport)) {
     throw capabilityError(model.provider, model.id, 'execution capabilities');
   }
-  return {
+  const capabilities = {
     maxOutputTokens,
     providerStallMs,
   };
+  // Raw dependency-injected catalogs remain usable by non-query operations,
+  // but direct Query requires this exact-pair capability before provider work.
+  // Every normalized production catalog is validated to include it.
+  if (contextWindowTokens && contextWindowTokens > maxOutputTokens) {
+    capabilities.contextWindowTokens = contextWindowTokens;
+  }
+  return capabilities;
 }
 
 function resolveDefaultModel(requestedId, fallbackId, catalog, kind = 'chat') {

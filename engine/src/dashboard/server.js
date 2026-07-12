@@ -41,6 +41,7 @@ const {
   createBrainOperationsRouter,
 } = require('./brain-operations/router.js');
 const { createSourceOperationExecutors } = require('./brain-operations/source-executors.js');
+const { createResearchRunsReader } = require('./brain-operations/research-runs-reader.js');
 const { createGraphExportExecutor } = require('./brain-operations/graph-export-executor.js');
 const { createQueryCompatibilityBodyParser } = require('./home23-query-api.js');
 const {
@@ -109,6 +110,28 @@ function readJsonlTail(file, limit = 20, maxBytes = 256 * 1024) {
   }
 }
 
+function sendMemorySearchError(res, error, logger = console) {
+  if (error?.name === 'AbortError' || error?.code === 'cancelled') {
+    return res.status(499).json({ ok: false, error: { code: 'cancelled' } });
+  }
+  const status = Number(error?.status) || (error?.code === 'invalid_request' ? 400
+    : error?.code === 'result_too_large' ? 413
+      : error?.code === 'source_changed' ? 409
+        : ['source_unavailable', 'source_busy'].includes(error?.code) ? 503
+          : 500);
+  if (status >= 500 && !['source_unavailable', 'source_busy'].includes(error?.code)) {
+    logger.error?.('[/api/memory/search] Error:', error.message);
+  }
+  return res.status(status).json({
+    ok: false,
+    error: {
+      code: error?.code || 'memory_search_failed',
+      message: error.message,
+      retryable: error?.retryable === true,
+    },
+  });
+}
+
 function readJsonlTailLines(filePath, limit = 100, maxBytes = 1024 * 1024) {
   const fsSync = require('fs');
   const count = Math.max(0, Number(limit) || 0);
@@ -138,6 +161,41 @@ function readJsonlTailLines(filePath, limit = 100, maxBytes = 1024 * 1024) {
       try { fsSync.closeSync(fd); } catch {}
     }
   }
+}
+
+function parseConversationLines(lines, limit) {
+  const messages = [];
+  for (const line of lines || []) {
+    if (!line.trim()) continue;
+    try {
+      const record = JSON.parse(line);
+      // Turn envelopes and token/event transport records share this JSONL but
+      // are not canonical conversation messages. In particular, envelopes use
+      // role=assistant with no content and must never become empty bubbles.
+      if (record?.type === 'turn' || record?.type === 'event' || record?.type === 'session_boundary') {
+        continue;
+      }
+      // Handle both direct StoredMessage format and wrapped {type,message} format.
+      const msg = record.message || record;
+      if (!msg.role) continue;
+      let text = '';
+      if (typeof msg.content === 'string') {
+        text = msg.content;
+      } else if (Array.isArray(msg.content)) {
+        text = msg.content
+          .filter(block => block.type === 'text')
+          .map(block => block.text)
+          .join('');
+      }
+      if (!text) continue;
+      messages.push({
+        role: msg.role,
+        content: text,
+        timestamp: record.timestamp || msg.ts || null,
+      });
+    } catch { /* skip bad lines */ }
+  }
+  return limit ? messages.slice(-limit) : messages;
 }
 
 function readJsonlHeadLines(filePath, limit = 200, maxBytes = 256 * 1024) {
@@ -258,8 +316,33 @@ class DashboardServer {
     this.orchestrator = null;
     this.server = null;
     this._shutdownStarted = false;
+    this._shutdownPromise = null;
     this._shutdownHandlersRegistered = false;
     this._logWatchInterval = null;
+    this._brainOperationsGcInterval = null;
+    this._brainOperationsGcPromise = null;
+    this._brainOperationsGcIntervalMs = Number(
+      options.brainOperationsGcIntervalMs
+        || process.env.HOME23_BRAIN_OPERATIONS_GC_INTERVAL_MS
+        || 60 * 60 * 1000,
+    );
+    if (!Number.isSafeInteger(this._brainOperationsGcIntervalMs)
+        || this._brainOperationsGcIntervalMs < 60_000) {
+      throw new TypeError('dashboard_options_invalid');
+    }
+    this._brainOperationsGcBatchSize = Number(
+      options.brainOperationsGcBatchSize
+        || process.env.HOME23_BRAIN_OPERATIONS_GC_BATCH_SIZE
+        || 100,
+    );
+    if (!Number.isSafeInteger(this._brainOperationsGcBatchSize)
+        || this._brainOperationsGcBatchSize < 1
+        || this._brainOperationsGcBatchSize > 1_000) {
+      throw new TypeError('dashboard_options_invalid');
+    }
+    this._brainOperationsGcCursor = null;
+    this._brainOperationsGcSetInterval = setInterval;
+    this._brainOperationsGcClearInterval = clearInterval;
     this._serverSockets = new Set();
     this._serverCloseTimeoutMs = Number(process.env.HOME23_DASHBOARD_SERVER_CLOSE_TIMEOUT_MS || 5000);
     this._socketDestroyGraceMs = Number(process.env.HOME23_DASHBOARD_SOCKET_DESTROY_GRACE_MS || 750);
@@ -335,6 +418,7 @@ class DashboardServer {
       exporter: dependencies.exporter,
       buildCatalog: dependencies.buildCatalog,
       providerReadiness: dependencies.providerReadiness,
+      researchRuns: dependencies.researchRuns,
     });
     this.brainOperationsPlaceholder.attach(route.router);
     this.brainOperationsCoordinator = dependencies.coordinator;
@@ -489,6 +573,7 @@ class DashboardServer {
       home23Root,
       requesterAgent,
     });
+    const researchRuns = createResearchRunsReader({ home23Root, requesterAgent });
     let coordinator = null;
     let synthesisOperationRuntime = null;
     let synthesisOperationError = null;
@@ -569,6 +654,7 @@ class DashboardServer {
       reader,
       exporter,
       buildCatalog,
+      researchRuns,
       providerOperationRuntime,
       synthesisOperationRuntime,
       providerReadiness: () => providerOperationRuntime?.getReadiness() || ({
@@ -2486,40 +2572,16 @@ class DashboardServer {
         || value.startsWith('worker_');
     };
 
-    const parseConversationLines = (lines, limit) => {
-      const messages = [];
-      for (const line of lines || []) {
-        if (!line.trim()) continue;
-        try {
-          const record = JSON.parse(line);
-          // Handle both direct StoredMessage format and wrapped {type,message} format
-          const msg = record.message || record;
-          if (msg.role) {
-            let text = '';
-            if (typeof msg.content === 'string') {
-              text = msg.content;
-            } else if (Array.isArray(msg.content)) {
-              text = msg.content
-                .filter(b => b.type === 'text')
-                .map(b => b.text)
-                .join('');
-            }
-            messages.push({
-              role: msg.role,
-              content: text,
-              timestamp: record.timestamp || msg.ts || null,
-            });
-          }
-        } catch { /* skip bad lines */ }
-      }
-      return limit ? messages.slice(-limit) : messages;
-    };
-
     const parseConversationFile = (filePath, limit) => {
       const fsSync = require('fs');
       if (!fsSync.existsSync(filePath)) return [];
       const boundedLimit = Math.max(1, Math.min(parseInt(limit || 100, 10) || 100, 250));
-      return parseConversationLines(readJsonlTailLines(filePath, boundedLimit, 2 * 1024 * 1024), boundedLimit);
+      // Bound by bytes, not physical JSONL records: one streamed answer can
+      // contain hundreds of token events before its single canonical message.
+      return parseConversationLines(
+        readJsonlTailLines(filePath, Number.MAX_SAFE_INTEGER, 16 * 1024 * 1024),
+        boundedLimit,
+      );
     };
 
     const previewConversationFile = (filePath) => {
@@ -7106,21 +7168,13 @@ Be specific, actionable, and maintain research continuity.`;
         if (result.evidence?.sourceHealth === 'unavailable') {
           return res.status(503).json({
             ok: false,
-            error: { code: 'source_unavailable' },
+            error: { code: 'source_unavailable', retryable: true },
             ...result,
           });
         }
         return res.json(result);
       } catch (error) {
-        if (error?.name === 'AbortError' || error?.code === 'cancelled') {
-          return res.status(499).json({ ok: false, error: { code: 'cancelled' } });
-        }
-        const status = Number(error?.status) || (error?.code === 'invalid_request' ? 400 : 500);
-        if (status >= 500) console.error('[/api/memory/search] Error:', error.message);
-        return res.status(status).json({
-          ok: false,
-          error: { code: error?.code || 'memory_search_failed', message: error.message },
-        });
+        return sendMemorySearchError(res, error);
       }
     };
     this.app.post('/api/memory/search', handleMemorySearch);
@@ -8367,28 +8421,6 @@ You are empowered to explore and understand. The user trusts you to discover the
         res.json({ executiveView });
       } catch (error) {
         console.error('Executive view generation failed:', error);
-        res.status(500).json({ error: error.message });
-      }
-    });
-
-    // API: Export query result
-    this.app.post('/api/query/export', async (req, res) => {
-      try {
-        const { query, answer, format, metadata } = req.body;
-        
-        if (!query || !answer || !format) {
-          return res.status(400).json({ error: 'Missing required fields' });
-        }
-        
-        const filepath = await this.queryEngine.exportResult(query, answer, format, metadata);
-        
-        res.json({ 
-          success: true,
-          filepath: filepath,
-          filename: path.basename(filepath)
-        });
-      } catch (error) {
-        console.error('Export failed:', error);
         res.status(500).json({ error: error.message });
       }
     });
@@ -10650,20 +10682,6 @@ You are empowered to explore and understand. The user trusts you to discover the
   }
 
   async getFastMemoryGraphSummary() {
-    try {
-      const status = await this.brainSourceService.status();
-      if (Number.isFinite(status?.summary?.nodes)) {
-        return {
-          nodes: status.summary.nodes,
-          edges: Number.isFinite(status.summary.edges) ? status.summary.edges : 0,
-          clusters: Number.isFinite(status.summary.clusters) ? status.summary.clusters : 0,
-          source: 'brain-source',
-        };
-      }
-    } catch {
-      // Fall through to advisory compatibility sources for bootstrapping.
-    }
-
     const snapshotPath = path.join(this.logsDir, 'brain-snapshot.json');
     try {
       const snapshot = JSON.parse(await fs.readFile(snapshotPath, 'utf8'));
@@ -11320,15 +11338,70 @@ You are empowered to explore and understand. The user trusts you to discover the
   }
 
   async prepareBrainOperationsForListen() {
-    // Query/PGS defaults must be migrated and every durable operation must be
-    // reconciled before this process accepts a new request.
+    // Query/PGS defaults must be migrated before requests are accepted. Durable
+    // recovery continues in the background so a long source projection cannot
+    // keep the dashboard and chat transport from binding their port.
     await this.brainOperationsProviderRuntime?.settled;
     await this.brainOperationsSynthesisRuntime?.settled;
-    await this.brainOperationsCoordinator.reconcile();
+    this._brainOperationsReconciliationPromise = Promise.resolve()
+      .then(() => this.brainOperationsCoordinator.reconcile())
+      .catch((error) => {
+        this.logger?.error?.('[brain-operations] startup reconciliation failed', {
+          code: error?.code || 'reconciliation_failed',
+          message: error?.message || String(error),
+        });
+      });
+    this.startBrainOperationsGarbageCollection();
+  }
+
+  startBrainOperationsGarbageCollection() {
+    if (this._brainOperationsGcInterval
+        || typeof this.brainOperationsStore?.collectGarbage !== 'function') return;
+    const collect = () => {
+      if (this._brainOperationsGcPromise) return this._brainOperationsGcPromise;
+      const pending = Promise.resolve()
+        .then(() => this.brainOperationsStore.collectGarbage(undefined, {
+          maxOperations: this._brainOperationsGcBatchSize,
+          afterOperationId: this._brainOperationsGcCursor,
+        }))
+        .then((receipt) => {
+          this._brainOperationsGcCursor = receipt?.nextAfterOperationId ?? null;
+          return receipt;
+        })
+        .catch((error) => {
+          this.logger?.error?.('[brain-operations] garbage collection failed', {
+            code: error?.code || 'operation_gc_failed',
+            message: error?.message || String(error),
+          });
+        })
+        .finally(() => {
+          if (this._brainOperationsGcPromise === pending) {
+            this._brainOperationsGcPromise = null;
+          }
+        });
+      this._brainOperationsGcPromise = pending;
+      return pending;
+    };
+    this._brainOperationsGcInterval = this._brainOperationsGcSetInterval(
+      collect,
+      this._brainOperationsGcIntervalMs,
+    );
+    this._brainOperationsGcInterval.unref?.();
+    collect();
+  }
+
+  async stopBrainOperationsGarbageCollection() {
+    if (this._brainOperationsGcInterval) {
+      this._brainOperationsGcClearInterval(this._brainOperationsGcInterval);
+      this._brainOperationsGcInterval = null;
+    }
+    await this._brainOperationsGcPromise?.catch?.(() => {});
   }
 
   async stopBrainOperations() {
+    await this.stopBrainOperationsGarbageCollection();
     await this.brainOperationsCoordinator?.stop?.();
+    await this._brainOperationsReconciliationPromise?.catch?.(() => {});
     await this.brainOperationsWorker?.stop?.();
   }
 
@@ -11410,7 +11483,7 @@ You are empowered to explore and understand. The user trusts you to discover the
         const emergencyExit = setTimeout(() => {
           console.error('[DashboardServer] shutdown timed out; forcing process exit');
           process.exit(1);
-        }, Math.max(this._serverCloseTimeoutMs + 2000, 3000));
+        }, this._shutdownEmergencyTimeoutMs());
         emergencyExit.unref?.();
         this.stop(signal)
           .then(() => {
@@ -11426,9 +11499,25 @@ You are empowered to explore and understand. The user trusts you to discover the
     }
   }
 
-  async stop(reason = 'manual') {
-    if (this._shutdownStarted) return;
+  _shutdownEmergencyTimeoutMs() {
+    const coordinatorTimeoutMs = Number(this.brainOperationsCoordinator?.stopTimeoutMs || 0);
+    const boundedCoordinatorTimeoutMs = Number.isFinite(coordinatorTimeoutMs)
+      && coordinatorTimeoutMs > 0 ? coordinatorTimeoutMs : 0;
+    return Math.max(
+      boundedCoordinatorTimeoutMs + this._serverCloseTimeoutMs + 5_000,
+      this._serverCloseTimeoutMs + 2_000,
+      3_000,
+    );
+  }
+
+  stop(reason = 'manual') {
+    if (this._shutdownPromise) return this._shutdownPromise;
     this._shutdownStarted = true;
+    this._shutdownPromise = this._stop(reason);
+    return this._shutdownPromise;
+  }
+
+  async _stop(reason) {
     console.log(`[DashboardServer] shutting down (${reason})`);
 
     if (this._synthesisAgent?.stopSchedule) {
@@ -11874,4 +11963,10 @@ if (require.main === module) {
   });
 }
 
-module.exports = { DashboardServer, readJsonlTail, updateDashboardOAuthTokenSecrets };
+module.exports = {
+  DashboardServer,
+  parseConversationLines,
+  readJsonlTail,
+  sendMemorySearchError,
+  updateDashboardOAuthTokenSecrets,
+};

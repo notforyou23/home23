@@ -121,6 +121,20 @@ class BrainOperationStoreReader {
         || String(left.operationId || '').localeCompare(String(right.operationId || '')));
   }
 
+  async listRecentAuthorized(limit) {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw operationError('invalid_request');
+    }
+    if (typeof this.store.list !== 'function') throw operationError('operation_unavailable');
+    const source = await this.store.list();
+    if (!Array.isArray(source)) throw operationError('operation_corrupt');
+    return source.map((record) => this._authorizeRecord(record))
+      .sort((left, right) =>
+        String(right.updatedAt || '').localeCompare(String(left.updatedAt || ''))
+        || String(right.operationId || '').localeCompare(String(left.operationId || '')))
+      .slice(0, limit);
+  }
+
   async getResultAuthorized(operationId, resultHandle) {
     const record = await this.getAuthorized(operationId);
     const effectiveHandle = this._effectiveHandle(record, resultHandle);

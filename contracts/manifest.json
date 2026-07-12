@@ -274,6 +274,18 @@
       "consumers": ["ios", "mac", "query"]
     },
     {
+      "id": "query-pgs-partitions",
+      "method": "POST",
+      "base": "dashboard",
+      "route": "/home23/api/query/pgs-partitions",
+      "schema": "schemas/query.schema.json",
+      "definition": "pgsPartitionsResponse",
+      "fixture": "fixtures/query-pgs-partitions.json",
+      "auth": "none",
+      "liveValidation": "requires-action",
+      "consumers": ["query"]
+    },
+    {
       "id": "query-stream-event",
       "method": "POST",
       "base": "dashboard",

@@ -11,6 +11,7 @@
  */
 
 import { chatState } from './home23-chat-state.mjs';
+import { reconcileCanonicalAssistantElements } from './home23-chat-reconstruction.mjs';
 
 // Expose for classic-script consumers (home23-dashboard.js, home23-chat.html
 // onload handler) and for in-browser debugging.
@@ -759,6 +760,7 @@ async function resumePendingTurns() {
     const containerId = 'chat-messages';
     currentTurnCtx = {
       containerId,
+      turnId: turn.turn_id,
       responseEl: null,
       currentResponse: '',
       thinkingEl: null,
@@ -954,6 +956,7 @@ async function sendMessage(source) {
   }
 
   activeTurnId = turnId;
+  if (currentTurnCtx) currentTurnCtx.turnId = turnId;
   openTurnStream({ bridgeBase, chatId: activeChatId, turnId, cursor: -1 });
 }
 
@@ -964,7 +967,7 @@ function dispatchLegacyEvent(event, ctx) {
     ctx.currentThinking = '';
     ctx.currentResponse += event.text || event.chunk || '';
     if (!ctx.responseEl) {
-      ctx.responseEl = appendMessage('assistant', ctx.currentResponse, containerId);
+      ctx.responseEl = appendMessage('assistant', ctx.currentResponse, containerId, ctx.turnId);
     } else {
       ctx.responseEl.innerHTML = renderMarkdown(ctx.currentResponse);
       scheduleChatPersist();
@@ -1034,6 +1037,24 @@ function openTurnStream({ bridgeBase, chatId, turnId, cursor }) {
 }
 
 function finalizeTurn(finalEnvelope) {
+  if (finalEnvelope?.status === 'complete' && typeof finalEnvelope.assistant_content === 'string') {
+    const containerId = (currentTurnCtx && currentTurnCtx.containerId) || 'chat-messages';
+    const container = document.getElementById(containerId);
+    const reconciled = reconcileCanonicalAssistantElements(
+      container?.querySelectorAll('.h23-chat-msg.assistant'),
+      finalEnvelope.turn_id,
+      finalEnvelope.assistant_content,
+      renderMarkdown,
+    );
+    if (!reconciled) {
+      appendMessage(
+        'assistant',
+        finalEnvelope.assistant_content,
+        containerId,
+        finalEnvelope.turn_id,
+      );
+    }
+  }
   if (finalEnvelope && finalEnvelope.status === 'error') {
     appendError(finalEnvelope.error || 'Error', (currentTurnCtx && currentTurnCtx.containerId) || 'chat-messages');
   } else if (finalEnvelope && finalEnvelope.status === 'stopped') {
@@ -1139,11 +1160,12 @@ function renderMarkdown(text) {
   return html;
 }
 
-function appendMessage(role, content, containerId) {
+function appendMessage(role, content, containerId, turnId) {
   const container = document.getElementById(containerId || 'chat-messages');
   if (!container) return null;
   const div = document.createElement('div');
   div.className = `h23-chat-msg ${role}`;
+  if (turnId) div.dataset.turnId = turnId;
   if (role === 'assistant') {
     div.innerHTML = renderMarkdown(content);
   } else {

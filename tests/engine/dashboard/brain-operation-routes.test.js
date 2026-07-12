@@ -405,6 +405,8 @@ test('start enforces operation authority domains and exact operation-specific sc
         target: { brainId: 'brain-forrest' }, parameters: { after: 0 } },
       { requestId: 'requester-target', operationType: 'research_launch',
         target: { agent: 'jerry' }, parameters: { topic: 'topic' } },
+      { requestId: 'research-context-missing', operationType: 'research_launch',
+        parameters: { topic: 'topic' } },
       { requestId: 'brain-run-alias', operationType: 'query',
         target: { runId: 'run-1' }, parameters: { query: 'canary' } },
       { requestId: 'query-extra', operationType: 'query',
@@ -453,8 +455,13 @@ test('start validates bounded query, graph, cursor, and PGS values without coerc
       ['topk-over', 'search', { query: 'x', topK: 101 }],
       ['nodes-over', 'graph', { nodeLimit: 2_001, edgeLimit: 8_000 }],
       ['edges-over', 'graph', { nodeLimit: 2_000, edgeLimit: 8_001 }],
-      ['pgs-zero', 'pgs', { query: 'x', pgsConfig: { sweepFraction: 0 } }],
-      ['pgs-extra', 'pgs', { query: 'x', pgsConfig: { sweepFraction: 0.5, extra: true } }],
+      ['graph-view-invalid', 'graph', { view: 'full_graph' }],
+      ['pgs-legacy', 'pgs', { query: 'x', pgsConfig: { sweepFraction: 0.25 } }],
+      ['pgs-missing-level', 'pgs', {
+        query: 'x', pgsMode: 'fresh',
+        pgsSweep: { provider: 'anthropic', model: 'shared-name' },
+        pgsSynth: { provider: 'openai', model: 'shared-name' },
+      }],
       ['watch-limit', 'research_watch', { after: 0, limit: 501 }],
       ['watch-cursor', 'research_watch', { after: -1 }],
     ];
@@ -470,15 +477,20 @@ test('start validates bounded query, graph, cursor, and PGS values without coerc
       requestId: 'bounds-valid', operationType: 'pgs', target: { agent: 'forrest' },
       parameters: {
         query: 'x'.repeat(12_000),
-        priorContext: { query: 'q', answer: 'a'.repeat(19_999) },
-        pgsConfig: { sweepFraction: 0.25 },
+        pgsMode: 'fresh',
+        pgsLevel: 'sample',
         pgsSweep: { provider: 'anthropic', model: 'shared-name' },
         pgsSynth: { provider: 'openai', model: 'shared-name' },
       },
     });
     assert.equal(valid.status, 202);
+    const preflight = await post({
+      requestId: 'pgs-partition-preflight', operationType: 'graph', target: { agent: 'forrest' },
+      parameters: { view: 'pgs_partitions' },
+    });
+    assert.equal(preflight.status, 202);
   });
-  assert.equal(deps.calls.filter(([name]) => name === 'start').length, 1);
+  assert.equal(deps.calls.filter(([name]) => name === 'start').length, 2);
 });
 
 test('catalog, requester collection, status, result, cancel, detach, and export use exact facades', async () => {
@@ -510,6 +522,64 @@ test('catalog, requester collection, status, result, cancel, detach, and export 
   assert.ok(deps.calls.some((call) => call[0] === 'result' && call[2] === RESULT_HANDLE));
   assert.ok(deps.calls.some((call) => call[0] === 'export'
     && call[1].requesterAgent === 'jerry' && call[1].operationId === OPERATION_ID));
+});
+
+test('requester collection lists bounded recent operations for recovery after context loss', async () => {
+  const terminal = record({
+    operationId: 'brop_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC',
+    state: 'partial',
+    phase: 'complete',
+    completedAt: '2026-07-10T12:05:00.000Z',
+    updatedAt: '2026-07-10T12:05:00.000Z',
+    error: { code: 'pgs_partitions_incomplete', message: 'partial', retryable: true },
+  });
+  const deps = fakes({
+    reader: {
+      getAuthorized: async () => record(),
+      listNonterminalAuthorized: async () => [record()],
+      listRecentAuthorized: async (limit) => {
+        assert.equal(limit, 5);
+        return [terminal, record()];
+      },
+      getResultAuthorized: async () => ({ answer: 'stored answer' }),
+    },
+  });
+  await withRouter(deps, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}?state=recent&limit=5`);
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.count, 2);
+    assert.deepEqual(payload.operations.map((row) => row.operationId), [
+      terminal.operationId,
+      OPERATION_ID,
+    ]);
+    assert.equal(payload.operations[0].error.code, 'pgs_partitions_incomplete');
+
+    for (const query of ['state=recent', 'state=recent&limit=0', 'state=recent&limit=101']) {
+      const invalid = await fetch(`${baseUrl}?${query}`);
+      assert.equal(invalid.status, 400, query);
+      assert.equal((await invalid.json()).error.code, 'invalid_request', query);
+    }
+  });
+});
+
+test('research run discovery is requester-bound, bounded, and separate from operation state', async () => {
+  const deps = fakes({
+    researchRuns: {
+      list: async (options) => ({ state: options.state, count: 1, runs: [{
+        runId: 'active-run', state: 'active', topic: 'topic', updatedAt: '2026-07-12T12:00:00.000Z',
+      }] }),
+      getActive: async () => ({ active: true, runName: 'active-run', topic: 'topic' }),
+    },
+  });
+  await withRouter(deps, async (baseUrl) => {
+    const listed = await fetch(`${baseUrl}/research-runs?state=recent&limit=20`);
+    assert.equal(listed.status, 200);
+    assert.equal((await listed.json()).runs[0].runId, 'active-run');
+    const active = await fetch(`${baseUrl}/research-runs/active`);
+    assert.equal(active.status, 200);
+    assert.equal((await active.json()).runName, 'active-run');
+  });
 });
 
 test('collection and result fail closed on caller identity or handle injection', async () => {

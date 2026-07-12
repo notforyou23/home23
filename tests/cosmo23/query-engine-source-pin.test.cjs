@@ -12,6 +12,7 @@ function model(provider, id) {
   return {
     id,
     kind: 'chat',
+    contextWindowTokens: 1_000_000,
     maxOutputTokens: 256,
     providerStallMs: 900_000,
     transport: 'responses',
@@ -413,6 +414,7 @@ test('operation PGS selection delegates only to the pinned package path', async 
   const pin = sourcePin();
   const signal = new AbortController().signal;
   const reportEvent = () => {};
+  const sessionStorage = { databasePath: '/trusted/session.sqlite' };
   const result = await engine.executeEnhancedQuery('pgs query', {
     operationType: 'pgs',
     enablePGS: true,
@@ -422,6 +424,10 @@ test('operation PGS selection delegates only to the pinned package path', async 
     pgsSweep: { provider: 'alpha', model: 'answer-model' },
     pgsSynth: { provider: 'alpha', model: 'answer-model' },
     pgsConfig: { sweepFraction: 0.5 },
+    pgsMode: 'continue',
+    pgsLevel: 'deep',
+    targetPartitionIds: ['c-alpha'],
+    sessionStorage,
     reportEvent,
     signal,
   });
@@ -432,5 +438,9 @@ test('operation PGS selection delegates only to the pinned package path', async 
   assert.equal(forwarded[0].signal, signal);
   assert.equal(forwarded[0].reportEvent, reportEvent);
   assert.deepEqual(forwarded[0].pgsConfig, { sweepFraction: 0.5 });
+  assert.equal(forwarded[0].pgsMode, 'continue');
+  assert.equal(forwarded[0].pgsLevel, 'deep');
+  assert.deepEqual(forwarded[0].targetPartitionIds, ['c-alpha']);
+  assert.equal(forwarded[0].sessionStorage, sessionStorage);
   assert.equal(pin.releaseCount(), 0);
 });

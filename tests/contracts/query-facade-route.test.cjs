@@ -2,7 +2,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const express = require('express');
 const Ajv2020 = require('ajv/dist/2020');
+const crypto = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const {
   QUERY_COMPATIBILITY_BODY_LIMIT_BYTES,
@@ -10,6 +12,7 @@ const {
   createQueryCompatibilityBodyParser,
   createQueryApiRouter,
 } = require('../../engine/src/dashboard/home23-query-api.js');
+const { buildClientCapabilities } = require('../../engine/src/dashboard/client-capabilities.js');
 
 const MAX_JSON_ESCAPED_UTF16_UNIT_BYTES = 6;
 const MAX_AGENT_SELECTOR_CHARS = 256;
@@ -24,6 +27,11 @@ const EXPECTED_QUERY_COMPATIBILITY_BODY_LIMIT_BYTES = MAX_AD_HOC_FIXED_BODY_BYTE
   + MAX_JSON_ESCAPED_UTF16_UNIT_BYTES
     * (MAX_AGENT_SELECTOR_CHARS + MAX_QUERY_CHARS + MAX_AD_HOC_ANSWER_CHARS)
   + MAX_METADATA_JSON_BYTES;
+const CONTINUE_OPERATION_ID = `brop_${'c'.repeat(32)}`;
+const PGS_PAIRS = Object.freeze({
+  pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+  pgsSynth: { provider: 'anthropic', model: 'claude-sonnet-4-7' },
+});
 
 function makeFetch(routes) {
   return async (url, init = {}) => {
@@ -192,6 +200,63 @@ test('query catalog facade normalizes COSMO status, models, brains, and selected
   assert.equal(catalog.endpoints.run, '/home23/api/query/run');
   assert.equal(catalog.endpoints.stream, '/home23/api/query/stream');
   assert.equal(catalog.endpoints.export, '/home23/api/query/export');
+});
+
+test('client streaming capability matches an operation-backed Query catalog', async () => {
+  const catalog = await buildQueryCatalog({
+    agent: 'jerry',
+    operationAdapter: {},
+    fetchImpl: makeFetch({
+      '/api/status': { success: true, apiReachable: true, running: false, activeRun: false },
+      '/api/providers/models': {
+        models: [{ id: 'gpt-5.5', provider: 'openai', kind: 'chat' }],
+      },
+      '/api/brains': {
+        brains: [{ id: 'brain-jerry', routeKey: 'brain-jerry', sourceLabel: 'Jerry' }],
+      },
+    }),
+  });
+  const capabilities = buildClientCapabilities();
+  assert.equal(catalog.streaming, true);
+  assert.equal(capabilities.features.queryStreaming, catalog.streaming);
+  assert.equal(capabilities.query.streaming, catalog.streaming);
+});
+
+test('query catalog resolves the resident agent brain without waiting for the global COSMO brain scan', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-query-resident-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const brainPath = path.join(root, 'instances', 'jerry', 'brain');
+  fs.mkdirSync(brainPath, { recursive: true });
+  fs.writeFileSync(path.join(root, 'instances', 'jerry', 'config.yaml'), 'agent:\n  displayName: Jerry\n');
+
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push(new URL(url).pathname);
+    return makeFetch({
+      '/api/status': { success: true, apiReachable: true, running: false, activeRun: false },
+      '/api/providers/models': {
+        models: [{ id: 'gpt-5.5', label: 'GPT-5.5', provider: 'openai-codex', kind: 'chat' }],
+      },
+    })(url, init);
+  };
+
+  const catalog = await buildQueryCatalog({
+    home23Root: root,
+    agent: 'jerry',
+    cosmoBaseUrl: 'http://cosmo.test',
+    fetchImpl,
+  });
+
+  const canonicalRoot = fs.realpathSync(brainPath);
+  const canonicalId = `brain-${crypto.createHash('sha256').update(canonicalRoot).digest('hex').slice(0, 16)}`;
+  const routeKey = crypto.createHash('sha1').update(path.resolve(brainPath)).digest('hex').slice(0, 16);
+  assert.equal(catalog.available, true);
+  assert.equal(catalog.reason, null);
+  assert.equal(catalog.selectedBrain.id, canonicalId);
+  assert.equal(catalog.selectedBrain.routeKey, routeKey);
+  assert.equal(catalog.selectedBrain.sourceLabel, 'jerry');
+  assert.deepEqual(catalog.brains, [catalog.selectedBrain]);
+  assert.equal(calls.includes('/api/brains'), false);
 });
 
 test('query catalog facade reports explicit unavailable state when COSMO is unreachable', async () => {
@@ -635,7 +700,7 @@ test('query facade rejects one character beyond published query and prior-contex
     modelSelection: { provider: 'openai', model: 'gpt-5.5' },
     mode: 'quick',
     enablePGS: false,
-    priorContext: { query: 'p', answer: 'a'.repeat(20001) },
+    priorContext: { query: 'p'.repeat(10001), answer: 'a'.repeat(10000) },
   });
   assert.equal(tooLongPrior.status, 413);
   assert.equal(forwarded.length, 0);
@@ -697,6 +762,38 @@ test('compatibility run performs durable start, attach/wait, then protected resu
   assert.equal(response.body.answer, 'ok');
 });
 
+test('compatibility facade accepts only the four durable query modes before operation creation', async () => {
+  for (const mode of ['quick', 'full', 'expert', 'dive']) {
+    const forwarded = [];
+    const fixture = makeQueryApp({ onForward: (request) => forwarded.push(request) });
+    const response = await postJson(fixture.app, '/home23/api/query/run', {
+      query: 'x',
+      mode,
+      modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+      enablePGS: false,
+    });
+    assert.equal(response.status, 200, mode);
+    assert.equal(forwarded.length, 1, mode);
+    assert.equal(forwarded[0].parameters.mode, mode);
+  }
+
+  for (const mode of [
+    'fast', 'normal', 'deep', 'executive', 'raw', 'report',
+    'innovation', 'consulting', 'grounded',
+  ]) {
+    const fixture = makeQueryApp();
+    const response = await postJson(fixture.app, '/home23/api/query/run', {
+      query: 'x',
+      mode,
+      modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+      enablePGS: false,
+    });
+    assert.equal(response.status, 400, mode);
+    assert.equal(response.body.error.code, 'invalid_request', mode);
+    assert.equal(fixture.calls.length, 0, mode);
+  }
+});
+
 test('compatibility PGS selects six-hour attachment policy and forwards progress beyond 120 seconds', async () => {
   let now = 0;
   const progress = [];
@@ -718,14 +815,149 @@ test('compatibility PGS selects six-hour attachment policy and forwards progress
   const response = await postJson(fixture.app, '/home23/api/query/run', {
     query: 'x',
     enablePGS: true,
-    pgsConfig: { sweepFraction: 0.25 },
+    pgsMode: 'fresh',
+    pgsLevel: 'sample',
     pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
     pgsSynth: { provider: 'anthropic', model: 'claude-sonnet-4-7' },
-    mode: 'quick',
   });
   assert.equal(response.status, 200);
   assert.deepEqual(progress, [0, 121_000]);
   assert.equal(response.body.answer, 'ok');
+});
+
+test('compatibility PGS rejects the unrelated direct-query mode before durable start', async () => {
+  const fixture = makeQueryApp();
+  const response = await postJson(fixture.app, '/home23/api/query/run', {
+    query: 'x',
+    mode: 'quick',
+    enablePGS: true,
+    pgsMode: 'fresh',
+    pgsLevel: 'sample',
+    ...PGS_PAIRS,
+  });
+  assert.equal(response.status, 400);
+  assert.equal(response.body.error.code, 'invalid_request');
+  assert.equal(fixture.calls.length, 0);
+});
+
+test('compatibility PGS accepts every named level in fresh, continue, and targeted modes and derives its fraction', async () => {
+  const levels = new Map([
+    ['skim', 0.1],
+    ['sample', 0.25],
+    ['deep', 0.5],
+    ['full', 1],
+  ]);
+  const modes = [
+    ['fresh', {}],
+    ['continue', { continueFromOperationId: CONTINUE_OPERATION_ID }],
+    ['targeted', { targetPartitionIds: ['c-one', 'c-two'] }],
+  ];
+
+  for (const [pgsMode, modeFields] of modes) {
+    for (const [pgsLevel, sweepFraction] of levels) {
+      const forwarded = [];
+      const fixture = makeQueryApp({
+        adapter: {
+          start: async (request) => {
+            forwarded.push(request);
+            return {
+              ...canonicalCompatRecord({ state: 'queued', eventSequence: 0 }),
+              operationType: 'pgs',
+            };
+          },
+          attachAndWait: async () => ({
+            ...canonicalCompatRecord({ state: 'complete', eventSequence: 3, result: null }),
+            operationType: 'pgs',
+          }),
+        },
+      });
+      const response = await postJson(fixture.app, '/home23/api/query/run', {
+        query: 'x',
+        enablePGS: true,
+        pgsMode,
+        pgsLevel,
+        ...modeFields,
+        ...PGS_PAIRS,
+      });
+
+      assert.equal(response.status, 200, `${pgsMode}/${pgsLevel}: ${JSON.stringify(response.body)}`);
+      assert.equal(forwarded.length, 1, `${pgsMode}/${pgsLevel}`);
+      assert.deepEqual(forwarded[0].parameters, {
+        query: 'x',
+        pgsMode,
+        pgsLevel,
+        pgsConfig: { sweepFraction },
+        ...modeFields,
+        ...PGS_PAIRS,
+      });
+    }
+  }
+});
+
+test('compatibility PGS enforces exact mode-dependent continuation and target fields', async () => {
+  const validTargetedContinuation = {
+    query: 'x',
+    enablePGS: true,
+    pgsMode: 'targeted',
+    pgsLevel: 'sample',
+    continueFromOperationId: CONTINUE_OPERATION_ID,
+    targetPartitionIds: ['c-one'],
+    ...PGS_PAIRS,
+  };
+  const validFixture = makeQueryApp({ adapter: {
+    start: async () => ({
+      ...canonicalCompatRecord({ state: 'queued', eventSequence: 0 }),
+      operationType: 'pgs',
+    }),
+    attachAndWait: async () => ({
+      ...canonicalCompatRecord({ state: 'complete', eventSequence: 3, result: null }),
+      operationType: 'pgs',
+    }),
+  } });
+  assert.equal((await postJson(
+    validFixture.app,
+    '/home23/api/query/run',
+    validTargetedContinuation,
+  )).status, 200);
+
+  const base = {
+    query: 'x', enablePGS: true, pgsMode: 'fresh', pgsLevel: 'sample', ...PGS_PAIRS,
+  };
+  const invalidBodies = [
+    { ...base, pgsMode: undefined },
+    { ...base, pgsLevel: undefined },
+    { ...base, pgsMode: 'full' },
+    { ...base, pgsLevel: 'quarter' },
+    { ...base, pgsSweep: undefined },
+    { ...base, pgsSynth: undefined },
+    { ...base, pgsConfig: { sweepFraction: 0.25 } },
+    { ...base, continueFromOperationId: CONTINUE_OPERATION_ID },
+    { ...base, targetPartitionIds: ['c-one'] },
+    { ...base, pgsMode: 'continue' },
+    { ...base, pgsMode: 'continue', continueFromOperationId: 'brop_short' },
+    {
+      ...base,
+      pgsMode: 'continue',
+      continueFromOperationId: CONTINUE_OPERATION_ID,
+      targetPartitionIds: ['c-one'],
+    },
+    { ...base, pgsMode: 'targeted' },
+    { ...base, pgsMode: 'targeted', targetPartitionIds: [] },
+    { ...base, pgsMode: 'targeted', targetPartitionIds: ['one'] },
+    { ...base, pgsMode: 'targeted', targetPartitionIds: ['c-one', 'c-one'] },
+    {
+      ...base,
+      pgsMode: 'targeted',
+      targetPartitionIds: Array.from({ length: 257 }, (_, index) => `c-${index}`),
+    },
+  ];
+  for (const body of invalidBodies) {
+    const fixture = makeQueryApp();
+    const response = await postJson(fixture.app, '/home23/api/query/run', body);
+    assert.equal(response.status, 400, JSON.stringify(body));
+    assert.equal(response.body.error.code, 'invalid_request', JSON.stringify(body));
+    assert.equal(fixture.calls.length, 0, JSON.stringify(body));
+  }
 });
 
 test('compatibility PGS preserves a useful null-answer partial with sweep output and typed error', async () => {
@@ -769,6 +1001,8 @@ test('compatibility PGS preserves a useful null-answer partial with sweep output
   const response = await postJson(fixture.app, '/home23/api/query/run', {
     query: 'x',
     enablePGS: true,
+    pgsMode: 'fresh',
+    pgsLevel: 'full',
     pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
     pgsSynth: { provider: 'anthropic', model: 'claude-sonnet-4-7' },
   });
@@ -815,7 +1049,12 @@ test('compatibility stream attaches to events and terminal bytes come only from 
   let resultReads = 0;
   const fixture = makeQueryApp({ adapter: {
     attachAndWait: async (_operation, options) => {
-      options.onEvent(canonicalCompatRecord({ state: 'running', eventSequence: 1 }));
+      options.onEvent(canonicalCompatRecord({
+        state: 'running', eventSequence: 1,
+        stage: 'work_selected', message: 'Selecting bounded PGS work',
+        batchIndex: 2, selectedWorkUnits: 16, selectedWorkUnitsTotal: 48,
+        candidateWorkUnits: 64, pendingWorkUnits: 80,
+      }));
       options.onEvent(canonicalCompatRecord({ state: 'complete', eventSequence: 2, result: null }));
       return canonicalCompatRecord({ state: 'complete', eventSequence: 2, result: null });
     },
@@ -841,6 +1080,23 @@ test('compatibility stream attaches to events and terminal bytes come only from 
   assert.equal(response.status, 200);
   const rows = parseSseData(response.text);
   assert.deepEqual(rows.filter((row) => row.eventSequence).map((row) => row.eventSequence), [1, 2]);
+  assert.deepEqual({
+    stage: rows[0].stage,
+    message: rows[0].message,
+    batchIndex: rows[0].batchIndex,
+    selectedWorkUnits: rows[0].selectedWorkUnits,
+    selectedWorkUnitsTotal: rows[0].selectedWorkUnitsTotal,
+    candidateWorkUnits: rows[0].candidateWorkUnits,
+    pendingWorkUnits: rows[0].pendingWorkUnits,
+  }, {
+    stage: 'work_selected',
+    message: 'Selecting bounded PGS work',
+    batchIndex: 2,
+    selectedWorkUnits: 16,
+    selectedWorkUnitsTotal: 48,
+    candidateWorkUnits: 64,
+    pendingWorkUnits: 80,
+  });
   assert.equal(rows.at(-1).answer, 'protected bytes');
   assert.equal(resultReads, 1);
   assert.equal(fixture.calls.filter((call) => call === 'start').length, 1);
@@ -857,6 +1113,8 @@ test('compatibility request accepts only exact nested provider pairs and finite 
     { query: 'x', pgsSweepModel: 'MiniMax-M3', enablePGS: true },
     { query: 'x', pgsSweep: null, enablePGS: true },
     { query: 'x', pgsSweep: { provider: 'minimax' }, enablePGS: true },
+    { query: 'x', pgsMode: 'continue', enablePGS: true },
+    { query: 'x', pgsMode: 'targeted', enablePGS: true },
     { query: 'x', pgsConfig: { sweepFraction: null }, enablePGS: true },
     { query: 'x', pgsConfig: { sweepFraction: 0.25, extra: 1 }, enablePGS: true },
     { query: 'x', unknown: true, enablePGS: false },
@@ -1062,6 +1320,49 @@ test('query compatibility JSON is bounded before the dashboard broad parser mate
   assert.equal(adapterCalls, 0);
 });
 
+test('Query PGS partition preflight returns canonical IDs through a durable graph operation', async () => {
+  const operationId = `brop_${'p'.repeat(32)}`;
+  let startedRequest = null;
+  const app = express();
+  app.use('/home23/api/query', createQueryApiRouter({
+    getDefaultAgent: () => 'jerry',
+    resolveAgent: () => 'jerry',
+    catalogProvider: async () => compatCatalog(),
+    operationAdapter: {
+      start: async (request) => {
+        startedRequest = request;
+        return { operationId, operationType: 'graph', state: 'queued' };
+      },
+      attachAndWait: async () => ({ operationId, operationType: 'graph', state: 'complete' }),
+      getResult: async () => ({
+        operationId,
+        operationType: 'graph',
+        state: 'complete',
+        error: null,
+        resultHandle: null,
+        resultArtifact: null,
+        sourceEvidence: { sourceHealth: 'healthy' },
+        result: {
+          complete: true,
+          totalNodes: 42,
+          totalPartitions: 1,
+          estimatedWorkUnits: 1,
+          partitions: [{ partitionId: 'c-alpha', nodeCount: 42, estimatedWorkUnits: 1 }],
+        },
+      }),
+      detach: async () => {},
+      exportStored: async () => {},
+    },
+  }));
+  const response = await postJson(app, '/home23/api/query/pgs-partitions', {
+    agent: 'jerry', brainId: 'brain-jerry',
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.partitions[0].partitionId, 'c-alpha');
+  assert.equal(startedRequest.operationType, 'graph');
+  assert.deepEqual(startedRequest.parameters, { view: 'pgs_partitions' });
+});
+
 test('query compatibility body cap admits the maximum valid ad hoc export aggregate', async () => {
   assert.equal(
     QUERY_COMPATIBILITY_BODY_LIMIT_BYTES,
@@ -1216,27 +1517,59 @@ test('compatibility export failures retain typed error and durable operation aut
   }
 });
 
-test('query request schema enforces exact direct and PGS provider objects', () => {
+test('query request schema enforces direct requests and every named PGS mode/level contract', () => {
   const validate = compileQueryDefinition('queryRequest');
   assert.equal(validate({
     query: 'x',
     enablePGS: false,
     modelSelection: { provider: 'openai', model: 'gpt-5.5' },
   }), true, JSON.stringify(validate.errors));
-  assert.equal(validate({
-    query: 'x',
-    enablePGS: true,
-    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
-    pgsSynth: { provider: 'anthropic', model: 'claude-sonnet-4-7' },
-    pgsConfig: { sweepFraction: 0.25 },
-  }), true, JSON.stringify(validate.errors));
+  for (const mode of ['quick', 'full', 'expert', 'dive']) {
+    assert.equal(validate({ query: 'x', enablePGS: false, mode }), true, mode);
+  }
+  for (const mode of [
+    'fast', 'normal', 'deep', 'executive', 'raw', 'report',
+    'innovation', 'consulting', 'grounded',
+  ]) {
+    assert.equal(validate({ query: 'x', enablePGS: false, mode }), false, mode);
+  }
+  for (const pgsLevel of ['skim', 'sample', 'deep', 'full']) {
+    for (const [pgsMode, modeFields] of [
+      ['fresh', {}],
+      ['continue', { continueFromOperationId: CONTINUE_OPERATION_ID }],
+      ['targeted', { targetPartitionIds: ['c-one'] }],
+      ['targeted', {
+        continueFromOperationId: CONTINUE_OPERATION_ID,
+        targetPartitionIds: ['c-one', 'c-two'],
+      }],
+    ]) {
+      const request = {
+        query: 'x', enablePGS: true, pgsMode, pgsLevel, ...modeFields, ...PGS_PAIRS,
+      };
+      assert.equal(validate(request), true, `${JSON.stringify(request)} ${JSON.stringify(validate.errors)}`);
+    }
+  }
   for (const invalid of [
     { query: 'x', enablePGS: false, model: 'gpt-5.5', provider: 'openai' },
     { query: 'x', enablePGS: false, modelSelection: null },
     { query: 'x', enablePGS: false, modelSelection: { provider: 'openai' } },
-    { query: 'x', enablePGS: true, pgsSweepModel: 'MiniMax-M3' },
-    { query: 'x', enablePGS: true, pgsSweep: { provider: 'minimax', model: 'MiniMax-M3', extra: 1 } },
-    { query: 'x', enablePGS: true, pgsConfig: { sweepFraction: 0 } },
+    { query: 'x', enablePGS: true, pgsMode: 'fresh', pgsLevel: 'skim', ...PGS_PAIRS, pgsSweepModel: 'MiniMax-M3' },
+    { query: 'x', enablePGS: true, pgsMode: 'fresh', pgsLevel: 'skim', pgsSynth: PGS_PAIRS.pgsSynth },
+    { query: 'x', enablePGS: true, pgsMode: 'fresh', pgsLevel: 'skim', pgsSweep: PGS_PAIRS.pgsSweep },
+    { query: 'x', enablePGS: true, pgsLevel: 'skim', ...PGS_PAIRS },
+    { query: 'x', enablePGS: true, pgsMode: 'fresh', ...PGS_PAIRS },
+    { query: 'x', enablePGS: true, pgsMode: 'continue', pgsLevel: 'sample', ...PGS_PAIRS },
+    { query: 'x', enablePGS: true, pgsMode: 'targeted', pgsLevel: 'sample', ...PGS_PAIRS },
+    { query: 'x', enablePGS: true, pgsMode: 'fresh', pgsLevel: 'sample', continueFromOperationId: CONTINUE_OPERATION_ID, ...PGS_PAIRS },
+    { query: 'x', enablePGS: true, pgsMode: 'continue', pgsLevel: 'sample', continueFromOperationId: CONTINUE_OPERATION_ID, targetPartitionIds: ['c-one'], ...PGS_PAIRS },
+    { query: 'x', enablePGS: true, pgsMode: 'targeted', pgsLevel: 'sample', targetPartitionIds: [], ...PGS_PAIRS },
+    { query: 'x', enablePGS: true, pgsMode: 'targeted', pgsLevel: 'sample', targetPartitionIds: ['one'], ...PGS_PAIRS },
+    { query: 'x', enablePGS: true, pgsMode: 'targeted', pgsLevel: 'sample', targetPartitionIds: ['c-one', 'c-one'], ...PGS_PAIRS },
+    { query: 'x', enablePGS: true, pgsMode: 'fresh', pgsLevel: 'quarter', ...PGS_PAIRS },
+    { query: 'x', enablePGS: true, pgsMode: 'fresh', pgsLevel: 'sample', pgsSweep: { provider: 'minimax', model: 'MiniMax-M3', extra: 1 }, pgsSynth: PGS_PAIRS.pgsSynth },
+    { query: 'x', enablePGS: true, pgsMode: 'fresh', pgsLevel: 'sample', pgsConfig: { sweepFraction: 0.25 }, ...PGS_PAIRS },
+    { query: 'x', enablePGS: true, pgsMode: 'fresh', pgsLevel: 'sample', priorContext: { query: 'before', answer: 'after' }, ...PGS_PAIRS },
+    { query: 'x', enablePGS: true, pgsMode: 'fresh', pgsLevel: 'sample', mode: 'quick', ...PGS_PAIRS },
   ]) assert.equal(validate(invalid), false, JSON.stringify(invalid));
 });
 

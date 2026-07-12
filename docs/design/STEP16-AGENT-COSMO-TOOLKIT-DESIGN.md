@@ -1,364 +1,86 @@
-# Step 16: Agent ↔ COSMO 2.3 Full Toolkit Design
+# Step 16: Agent COSMO Research Toolkit
 
-**Date:** 2026-04-10
-**Status:** Approved · implementation pending
+**Original date:** 2026-04-10
 
-## Summary
+**Current contract:** 2026-07-12
+**Status:** Implemented through requester-bound durable brain operations
 
-Expand jerry's interaction with COSMO 2.3 from the current 4-action `research`
-tool into a proper **tool + skill** split covering COSMO's real API surface:
+## Purpose
 
-- **11 atomic tools** (`research_*` prefix) in `src/agent/tools/research.ts` —
-  one per COSMO operation, each a thin HTTP wrapper with a focused schema.
-- **1 skill file** at `instances/<agent>/workspace/COSMO_RESEARCH.md` — the
-  when-and-why policy (workflow, mode selection, "always pass context", etc.),
-  loaded into every turn's system prompt via the existing identity layer.
-- **1 inline situational-awareness injection** in `src/agent/loop.ts` — polls
-  `GET /api/status` at turn start; when a run is active, injects a live
-  `[COSMO ACTIVE RUN]` block so jerry doesn't double-launch.
+Home23 agents can inspect completed research, start and manage requester-owned COSMO runs, and compile bounded results without bypassing the durable brain-operation authority. Tool schemas are mechanism; `workspace/COSMO_RESEARCH.md` contains the usage policy loaded into agent context.
 
-## Why tool + skill, not one mega-tool
+The original v1 tools called COSMO HTTP routes directly. That transport is deprecated. Current tools use the turn-scoped `BrainOperationsClient`, requester-derived authorization, durable operation IDs, bounded reads, and protected result/export paths.
 
-- **Tools are mechanism** — atomic, side-effect-bearing HTTP calls. Stateless,
-  composable, schema-constrained. They describe what each endpoint DOES, not
-  when jerry should use it.
-- **Skill is policy** — workflow, judgment calls, mode heuristics, "always
-  pass context", "check existing brains before launching", "watch sparingly
-  not every turn". This is behavior, not mechanism, and it evolves independently
-  of the tool code.
-- **Split matches existing pattern**: jerry already layers SOUL.md / MISSION.md /
-  LEARNINGS.md on top of atomic tools. Adding COSMO_RESEARCH.md as a new
-  identity-layer file slots in naturally with zero new infrastructure.
-- **Policy without code churn**: editing a markdown file retrains jerry's
-  behavior. Updating the tool code requires a rebuild + harness restart.
+## Current inventory
 
-## Tool inventory — 11 tools, all v1
-
-| Name | COSMO endpoint(s) | Purpose |
+| Tool | Durable operation or authority | Purpose |
 |---|---|---|
-| `research_list_brains` | `GET /api/brains` | enumerate available research brains with metadata |
-| `research_query_brain` | `POST /api/brain/:name/query` | query ONE brain with full mode control (quick/full/expert/dive) |
-| `research_search_all_brains` | `GET /api/brains` + `POST /api/brain/:name/query` × top-N | query the top N most recent brains at once |
-| `research_launch` | `POST /api/launch` | start a new run with full parameters: topic, **context**, depth, cycles, maxConcurrent, per-role models |
-| `research_continue` | `POST /api/continue/:brainId` | resume a completed brain with new overrides |
-| `research_stop` | `POST /api/stop` | stop the active run |
-| `research_watch_run` | `GET /api/watch/logs?after=<cursor>` | cursor-paginated log tail during a run |
-| `research_get_brain_summary` | `GET /api/brain/:name/intelligence/{executive,goals,trajectory,thoughts,insights}` | structured high-level brain overview |
-| `research_get_brain_graph` | `GET /api/brain/:name/graph` | nodes/edges/clusters for structure inspection |
-| `research_compile_brain` | `POST /api/brain/:name/query` + workspace write | whole-brain compile into `workspace/research/` |
-| `research_compile_section` | `GET /api/brain/:name/intelligence/insight/:filename` (or goals/agents filter) + workspace write | compile ONE goal, insight, or agent's output — narrower than whole-brain |
+| `research_runs_list` | requester research-run catalog | discover exact active/recent run IDs and states |
+| `research_list_brains` | canonical brain catalog | list resident and completed research brains |
+| `research_query_brain` | `query` or `pgs` | query one exact completed research brain |
+| `research_search_all_brains` | bounded parallel `query` | Direct Query over up to 20 completed brains; PGS is intentionally unsupported |
+| `research_launch` | `research_launch` | start one requester-owned durable run |
+| `research_continue` | `research_continue` | continue one exact requester-owned continuable run |
+| `research_stop` | `research_stop` | stop and wait for one exact stoppable run |
+| `research_watch_run` | `research_watch` | read a bounded cursor-paginated run log |
+| `research_get_brain_summary` | `research_intelligence` | read selected bounded intelligence sections |
+| `research_get_brain_graph` | `graph` | read a bounded graph sample |
+| `research_compile_brain` | `research_compile` | compile a bounded pinned brain projection into requester output |
+| `research_compile_section` | `research_compile` | compile one exact goal, insight, or agent section |
 
-All 11 implemented in v1 — no deferral. Graph and compile_section are
-load-bearing for precise brain navigation; cutting them would force jerry to
-always dump a whole brain when he only wants one thread.
+## Query contract
 
-## Schemas
+Direct research queries default to `quick` and accept `quick`, `full`, `expert`, or `dive`, plus an optional exact `{provider, model}` pair.
 
-### `research_list_brains`
-```ts
-{
-  limit?: number;           // default 20
-  includeReferences?: boolean; // default true
-}
-```
-Returns: markdown list `[{id, name, nodeCount, cycleCount, mtime, source, topic}]`.
+Single-brain PGS uses the same named contract as `brain_query`:
 
-### `research_query_brain`
-```ts
-{
-  brainId: string;           // required — from research_list_brains
-  query: string;             // required
-  mode?: 'quick'|'full'|'expert'|'dive';  // default 'full'
-  includeThoughts?: boolean;           // default true
-  includeCoordinatorInsights?: boolean; // default: true for expert/dive
-}
-```
-Returns: synthesized response text (can be 5-30KB).
+- cumulative levels: `skim` 10%, `sample` 25%, `deep` 50%, `full` 100%;
+- modes: `fresh`, `continue`, `targeted`;
+- exact `pgsSweep` and `pgsSynth` provider/model pairs;
+- `continueFromOperationId` for continuation;
+- canonical `targetPartitionIds` from `brain_pgs_partitions` for targeted work.
 
-### `research_search_all_brains`
-```ts
-{
-  query: string;     // required
-  topN?: number;     // default 5
-  mode?: 'quick'|'full'|'expert';  // default 'full'
-}
-```
-Returns: per-brain findings, concatenated with headers.
+PGS rejects Direct Query fields, including `mode`, `modelSelection`, and `priorContext`. A scoped result proves only its requested scope. Only `fullCoverage:true` supports a graph-wide absence claim.
 
-### `research_launch`
-```ts
-{
-  topic: string;              // required — focused, not "everything about X"
-  context?: string;           // CRITICAL — framing, source preferences, scope, rails
-  cycles?: number;            // default 20
-  explorationMode?: 'guided'|'autonomous';  // default 'guided'
-  analysisDepth?: 'shallow'|'normal'|'deep'; // default 'normal'
-  maxConcurrent?: number;     // default 6
-  primaryModel?: string;      // research/analysis agents
-  primaryProvider?: string;
-  fastModel?: string;         // coordinator/planner
-  fastProvider?: string;
-  strategicModel?: string;    // synthesis/QA
-  strategicProvider?: string;
-}
-```
-Returns: `{success, runName, brainId, cycles, dashboardUrl}` as markdown.
+`research_search_all_brains` is direct-only because one continuation lineage or partition list cannot be valid across unrelated brains.
 
-### `research_continue`
-```ts
-{
-  brainId: string;   // required
-  context?: string;  // new focus for the continuation
-  cycles?: number;
-  primaryModel?: string; primaryProvider?: string;
-  // Other fields fall through to prior effectiveContinueSettings
-}
-```
-Returns: same shape as launch.
+## Run lifecycle
 
-### `research_stop`
-```ts
-{}   // no params — stops the single active run
-```
-Returns: confirmation or "no active run".
+Before launch, call `research_runs_list {state:"active"}` and inspect existing brains. Launch, continue, stop, and compile may remain attached for up to six hours. If a call detaches, preserve its `brop_...` operation ID and use `brain_operations_list` plus `brain_status` wait/result/cancel rather than starting a duplicate.
 
-### `research_watch_run`
-```ts
-{
-  after?: number;  // log cursor, default 0
-  limit?: number;  // default 50
-  filter?: 'all'|'errors'|'progress'|'cycles';  // default 'progress'
-}
-```
-Returns: log entries with new cursor for follow-up calls. Active run state at top.
+The live `[COSMO ACTIVE RUN]` prompt block is derived from canonical requester-owned run metadata, not from whether the short launch operation record is still nonterminal.
 
-### `research_get_brain_summary`
-```ts
-{
-  brainId: string;   // required
-  include?: Array<'executive'|'goals'|'trajectory'|'thoughts'|'insights'>;
-  // default: ['executive', 'goals', 'trajectory']
-}
-```
-Returns: structured markdown pulling from `/api/brain/:name/intelligence/*` endpoints.
+Exact run states:
 
-### `research_get_brain_graph`
-```ts
-{
-  brainId: string;     // required
-  clusterId?: string;  // filter to one cluster
-  minWeight?: number;  // filter edges by weight
-  limit?: number;      // max nodes returned (default 100 to control context size)
-}
-```
-Returns: `{clusters: [...], nodes: [...], edges: [...]}` as structured markdown +
-summary counts. Does NOT embed full embeddings.
+- active/stoppable: `starting`, `active`, `stopping`;
+- continuable: `paused`, `failed`, `completed`;
+- terminal/non-continuable: `stopped`.
 
-### `research_compile_brain`
-```ts
-{
-  brainId: string;  // required
-  focus?: string;   // optional prompt override (default: comprehensive summary)
-}
-```
-Returns: workspace path + summary preview. Writes to
-`instances/<agent>/workspace/research/cosmo-<runId>-<date>.md`. Engine feeder
-auto-ingests.
+Run-control tools require the exact `runId` returned by `research_runs_list`. They never infer a run from a topic or brain display name.
 
-### `research_compile_section`
-```ts
-{
-  brainId: string;               // required
-  section: 'goal'|'insight'|'agent';  // required — which kind of slice
-  sectionId: string;             // required — goalId, insight filename, or agentId
-  focus?: string;                // optional query override
-}
-```
-Returns: workspace path + summary preview. File named
-`cosmo-<runId>-<section>-<sectionId>-<date>.md` so multiple sections from one
-run don't collide.
+## Compile and ingestion
 
-## Skill file — `instances/<agent>/workspace/COSMO_RESEARCH.md`
+Compile output is durable requester-owned workspace output under `workspace/research/`. Fresh-install feeder defaults include that directory, so completed compile artifacts are eligible for ingestion.
 
-New identity-layer file, ~2000-2500 chars (hard cap in `context.ts`). Content:
+`research_compile_brain` is bounded by the pinned compile limits (currently 2,000 nodes, 8,000 edges, and 8 MiB). It is not an unlimited whole-brain dump. Prefer `research_compile_section` for focused durable knowledge that clusters cleanly.
 
-```markdown
-# COSMO Research Skill
+## Safety and failure semantics
 
-You have access to COSMO 2.3 — a deep research engine that runs multi-agent
-orchestration with LLM providers to build knowledge brains. Use it when a
-question needs real investigation beyond what's already in your own brain.
+- Resident and completed-research reads are requester-authorized and read-only.
+- Research launch/continue/stop write only within the requester-owned run boundary.
+- Unknown, ambiguous, cross-owner, active-brain read, or invalid-state targets fail closed.
+- Tool failures remain errors; per-brain failures in search-all are retained rather than converted to no findings.
+- Direct COSMO/dashboard route fallback is forbidden because it loses authorization, source pins, durable receipts, and reattachment.
+- Fixed sleeps are forbidden. Wait on durable activity or reattach by exact operation ID.
 
-## Core workflow
+## Verification authority
 
-1. **Check existing brains first.** Use `research_list_brains` to see what you
-   already have. Use `research_search_all_brains` to query the top few for your
-   question. If an existing brain already answers it, don't re-launch.
+Executable schemas and focused regressions live in:
 
-2. **Frame before you launch.** `research_launch` takes TWO critical fields:
-   - `topic`: focused, specific. "Cosine similarity in semantic search" not
-     "everything about embeddings"
-   - `context`: WHY you're researching, what sources are acceptable, scope,
-     depth, any rails. **Do not skip this.** Without it, COSMO's guided planner
-     invents framing from model priors and builds over-prescriptive plans.
-     A good context paragraph: "I need a one-page primer for a user who knows
-     linear algebra. Wikipedia + primary docs are fine. 5 cycles, normal depth.
-     No deep academic sourcing needed."
+- `src/agent/tools/research.ts`
+- `src/agent/brain-operations/client.ts`
+- `tests/agent/tools/research.test.ts`
+- `tests/agent/brain-operations-client.test.ts`
+- `cli/templates/COSMO_RESEARCH.md`
 
-3. **Sizing**: 5-10 cycles for a primer, 20-40 for a real investigation,
-   60-80 for a deep dive. `maxConcurrent: 6` is a good default.
-
-4. **Watch sparingly.** `research_watch_run` is for checking progress, not
-   for tailing every turn. Check every 2-3 turns or when you think the run
-   should be done. Don't spam it.
-
-5. **Query modes**:
-   - `quick` — fast overview, small token budget
-   - `full` — standard (default)
-   - `expert` — deep, with coordinator insights
-   - `dive` — exhaustive, for a crucial question
-
-6. **Compile to your brain.** When a run finishes and you want to KEEP the
-   knowledge:
-   - `research_compile_brain` for the whole run (one big node)
-   - `research_compile_section` for one specific thread (one goal or insight)
-   The engine feeder auto-ingests files written to workspace/research/.
-
-## Rules
-
-- **Never launch a run while another is active.** Check active state first
-  (you'll also see a [COSMO ACTIVE RUN] block in your prompt when one is in
-  flight). If you need to cancel, use `research_stop`.
-- **Never re-launch research that already exists in a brain.** Query the
-  existing brain.
-- **Never skip `context` in `research_launch`.** Guided planner needs it.
-- **Prefer `research_compile_section` over `research_compile_brain`** when you
-  only need one thread. Whole-brain compiles produce one giant node; section
-  compiles produce focused nodes that cluster better.
-```
-
-This gets loaded into every turn's system prompt via the identity layer (same
-mechanism as SOUL.md, MISSION.md). Size-capped in `context.ts:readIdentityFile`
-to ~2500 chars.
-
-## Situational awareness — inline in loop.ts
-
-Dynamic state belongs in code, not in a skill file. Add a poll at turn start:
-
-```ts
-// src/agent/loop.ts around line 374, before the evobrew block
-
-const activeRun = await checkCosmoActiveRun();  // 1 HTTP call, ~100ms
-if (activeRun) {
-  rawSystemPrompt += `\n\n[COSMO ACTIVE RUN]
-A research run is currently in flight — do not launch another.
-- runName: ${activeRun.runName}
-- topic: ${activeRun.topic}
-- started: ${activeRun.startedAt}
-- processes: ${activeRun.processCount}
-Use research_watch_run to check progress, research_stop to cancel.`;
-}
-```
-
-`checkCosmoActiveRun()` is a small helper (in `src/agent/tools/research.ts` as
-an internal export) that hits `GET /api/status`, returns `null` on idle or
-unreachable, returns `{runName, topic, startedAt, processCount}` on active.
-Guard with "if any research_* tool is registered" so agents without COSMO
-access don't pay the poll cost.
-
-## Implementation plan
-
-1. **Rewrite `src/agent/tools/research.ts`** — replace the single `researchTool`
-   export with 11 named exports: `listBrainsTool`, `queryBrainTool`,
-   `searchAllBrainsTool`, `launchTool`, `continueRunTool`, `stopRunTool`,
-   `watchRunTool`, `getBrainSummaryTool`, `getBrainGraphTool`, `compileBrainTool`,
-   `compileSectionTool`. Plus internal helper `checkCosmoActiveRun()`.
-2. **Update `src/agent/tools/index.ts`** — import and register all 11.
-3. **Extend `src/agent/loop.ts`** — add the active-run poll + inject, guarded
-   on research tool presence.
-4. **Write `instances/jerry/workspace/COSMO_RESEARCH.md`** — the skill file.
-5. **Update `instances/jerry/config.yaml`** — add `COSMO_RESEARCH.md` to
-   `identityFiles`.
-6. **Update `src/agent/context.ts:readIdentityFile`** — add a size cap branch
-   for `COSMO_RESEARCH.md` (~2500 chars).
-7. **Build and restart harness** — `npm run build && pm2 restart home23-jerry-harness`.
-8. **Smoke test each tool** — individual HTTP calls through the bridge, plus a
-   composite test via dashboard chat.
-
-## Smoke test checklist
-
-- [ ] `research_list_brains` returns the 4 runs from 2026-04-10 testing
-- [ ] `research_query_brain` with brainId of run #4 + `mode='expert'` returns the 15KB synthesis
-- [ ] `research_search_all_brains` queries top 5 and concatenates
-- [ ] `research_launch` with topic + explicit `context` produces a plan that honors the context
-- [ ] `research_continue` resumes a completed brain
-- [ ] `research_watch_run` returns paginated logs with working cursor
-- [ ] `research_stop` cleanly kills an active run
-- [ ] `research_get_brain_summary` returns structured markdown from 3 intelligence endpoints
-- [ ] `research_get_brain_graph` returns nodes/edges/clusters without embedding blob
-- [ ] `research_compile_brain` writes to workspace and feeder ingests (manifest `status=ok, compiled=true`)
-- [ ] `research_compile_section` writes one-thread file and feeder ingests
-- [ ] Situational awareness: `[COSMO ACTIVE RUN]` block appears only when running
-- [ ] Skill file: `COSMO_RESEARCH.md` in identity layer, loaded into every turn
-- [ ] Composite test: via dashboard chat, ask jerry "launch a 5-cycle run on X with context Y, watch it, then compile the synthesis goal section to your brain". Verify end-to-end without manual API hits.
-
-## Risks and how they're addressed
-
-- **Tool count creep (19 → 30)**: Mitigation — all 11 share the `research_`
-  prefix so LLMs pattern-match the cluster. Existing agents handle 30+ tools
-  with good naming discipline.
-- **Query response size (15KB+ eats context)**: Jerry paraphrases or compiles
-  rather than quoting verbatim. The skill file tells him to prefer compile
-  over query for anything he wants to keep.
-- **Watch-loop pathology (agents spam or forget)**: Skill file says "check
-  every 2-3 turns, not every turn". Tool response includes clear stopping
-  conditions ("run completed" / "no new entries since cursor").
-- **Continuation context inheritance**: `research_continue` lets COSMO's
-  `/api/continue/:brainId` handle prior settings via `effectiveContinueSettings`.
-  We only pass overrides.
-- **Active-run poll cost**: 1 HTTP call / turn, ~100ms, localhost. Negligible.
-  Guarded on research tool presence so non-COSMO agents don't pay it.
-
-## Key files
-
-- `src/agent/tools/research.ts` — rewrite: 11 tools + active-run helper
-- `src/agent/tools/index.ts` — register 11 tools
-- `src/agent/loop.ts` — add active-run awareness injection
-- `src/agent/context.ts` — add COSMO_RESEARCH.md size cap branch
-- `instances/jerry/workspace/COSMO_RESEARCH.md` — new skill file
-- `instances/jerry/config.yaml` — add COSMO_RESEARCH.md to identityFiles
-- `docs/design/COSMO23-VENDORED-PATCHES.md` — reference (do not modify bundled
-  cosmo23 unless this doc says so)
-- `cosmo23/server/CLAUDE.md` — authoritative COSMO route map
-
-## 2026-07-10 Reliability Addendum
-
-This addendum supersedes the direct-HTTP, current-run, client-owned path, and
-automatic-assimilation mechanics described above. The eleven public tool names
-remain stable, but all execution now crosses the requester dashboard through
-the shared `BrainOperationsClient` and its canonical catalog.
-
-- Every tool uses the exact turn-scoped client and abort signal. Query, PGS,
-  launch, continue, stop, and compile are durable operations with operation IDs,
-  typed terminal states, resumable waits, and requester-owned result handles.
-- Catalog rendering consumes canonical `id`, `displayName`, `kind`, `lifecycle`,
-  `sourceType`, `nodeCount`, and `modifiedAt` fields. It does not infer identity
-  from paths or obsolete response aliases.
-- Multi-brain search selects only completed research brains, sorts and caps the
-  target set deterministically, runs at bounded concurrency, and returns one
-  explicit outcome per selected brain. Partial and all-failed results remain
-  visible with their operation IDs, errors, source evidence, and handles.
-- Continue, stop, and watch require an exact requester-owned `runId`. No tool
-  substitutes the globally active run, forwards an owner, or supplies a target
-  filesystem path.
-- Summary and graph reads are server-bounded pinned-source reads. Full graph
-  materialization is not part of this toolkit.
-- Compile operations select the exact brain or section on the server and write
-  only through a prevalidated requester-output capability. Agent code no longer
-  writes workspace files directly.
-- Read-only calls no longer mutate resident agency state. Deliberate promotion
-  remains a separate authorized action instead of an automatic side effect of
-  listing, querying, summarizing, or inspecting a graph.
-- Turn-start active-run awareness reads requester-authorized nonterminal durable
-  operations. It no longer performs an independent `/api/status` poll or treats
-  whichever process happens to be active as the requested run.
+When this document and executable schemas differ, the discrepancy is a contract bug and must be resolved; neither surface is allowed to remain silently stale.

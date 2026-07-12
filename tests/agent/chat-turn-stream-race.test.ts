@@ -153,3 +153,38 @@ test('turn stream catches terminal envelope emitted while persisted catch-up is 
   assert.match(text, /"status":"complete"/);
   assert.match(text, /data: \[DONE\]/);
 });
+
+test('turn stream enriches a persisted complete envelope with canonical assistant content', async () => {
+  const full = 'Full canonical response after every streamed chunk.';
+  const records = [
+    {
+      type: 'turn', turn_id: 't-canonical', chat_id: 'c-canonical', status: 'pending',
+      role: 'assistant', started_at: '2026-07-12T16:00:00.000Z',
+    },
+    {
+      type: 'event', turn_id: 't-canonical', seq: 1, ts: '2026-07-12T16:00:01.000Z',
+      kind: 'response_chunk', data: { type: 'response_chunk', chunk: 'Full canonical' },
+    },
+    { role: 'user', content: 'question', ts: '2026-07-12T16:00:00.000Z' },
+    { role: 'assistant', content: full, ts: '2026-07-12T16:00:02.000Z' },
+    {
+      type: 'turn', turn_id: 't-canonical', chat_id: 'c-canonical', status: 'complete',
+      role: 'assistant', started_at: '', ended_at: '2026-07-12T16:00:02.000Z', last_seq: 1,
+      stop_reason: 'end_turn',
+    },
+  ];
+  const app = express();
+  app.get('/api/chat/stream', createTurnStreamHandler({
+    agentName: 'jerry',
+    agent: {} as any,
+    history: { loadRaw: () => records } as any,
+  }));
+
+  const text = await readSseUntilDone(
+    app,
+    '/api/chat/stream?chatId=c-canonical&turn_id=t-canonical&cursor=1',
+  );
+
+  assert.match(text, /"status":"complete"/);
+  assert.match(text, /"assistant_content":"Full canonical response after every streamed chunk\."/);
+});

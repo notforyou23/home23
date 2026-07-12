@@ -1,10 +1,15 @@
 {
   "mcpServers": {
-    "cosmo-brain": {
+    "home23-own-brain": {
       "command": "node",
       "args": [
-        "/path/to/home23/engine/mcp/cosmo-mcp.js"
-      ]
+        "/path/to/home23/engine/mcp/stdio-server.js"
+      ],
+      "env": {
+        "HOME23_ROOT": "/path/to/home23",
+        "HOME23_AGENT": "your-agent-id",
+        "COSMO_RUNTIME_DIR": "/path/to/home23/instances/your-agent-id/brain"
+      }
     }
   }
 }

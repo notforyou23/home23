@@ -80,6 +80,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`const HOME23 = __dirname;`);
   lines.push(`const ENGINE = path.join(HOME23, 'engine');`);
   lines.push(`const ENGINE_KILL_TIMEOUT_MS = 210000;`);
+  lines.push(`const DASHBOARD_KILL_TIMEOUT_MS = 210000;`);
   lines.push(`const PM2_INHERITANCE_BLOCKLIST = ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY'];`);
   lines.push(`for (const key of PM2_INHERITANCE_BLOCKLIST) delete process.env[key];`);
   lines.push(``);
@@ -198,6 +199,7 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      filter_env: ['HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY'],`);
     lines.push(`      node_args: '--max-old-space-size=2048',`);
     lines.push(`      max_memory_restart: '3G',`);
+    lines.push(`      kill_timeout: DASHBOARD_KILL_TIMEOUT_MS,`);
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${logsDir} + '/dashboard-out.log',`);
     lines.push(`      error_file: ${logsDir} + '/dashboard-err.log',`);

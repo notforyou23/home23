@@ -4,6 +4,7 @@ const express = require('express');
 const fsp = require('node:fs').promises;
 const {
   enrichEvidenceIdentity,
+  listPgsPartitions,
   sampleMemoryGraph,
   throwIfAborted,
   withEphemeralMemorySource,
@@ -166,6 +167,24 @@ function createBrainSourceService({
         return result;
       });
     },
+
+    async pgsPartitions(options = {}) {
+      const { sourcePin = null, signal, identity, ...partitionOptions } = options;
+      throwIfAborted(signal);
+      return withSource(sourcePin, { signal, identity }, async (source, context) => {
+        const initialEvidence = source.getEvidence();
+        if (initialEvidence.sourceHealth === 'unavailable') {
+          throw memorySourceError('source_unavailable', 'canonical brain source is unavailable', {
+            status: 503,
+            retryable: true,
+            sourceEvidence: enrichEvidenceIdentity(initialEvidence, context.identity),
+          });
+        }
+        const result = await listPgsPartitions(source, { ...partitionOptions, signal });
+        result.evidence = enrichEvidenceIdentity(result.evidence, context.identity);
+        return result;
+      });
+    },
   };
 }
 
@@ -176,7 +195,7 @@ function sendBrainSourceError(res, error) {
   const status = Number(error?.status) || (error?.code === 'invalid_request' ? 400
     : error?.code === 'result_too_large' ? 413
       : error?.code === 'source_changed' ? 409
-        : error?.code === 'source_unavailable' ? 503
+        : ['source_unavailable', 'source_busy'].includes(error?.code) ? 503
         : 500);
   return res.status(status).json({
     ok: false,

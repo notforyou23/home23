@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import fsp from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { isDeepStrictEqual } from 'node:util';
 import {
   appendJsonlReceipt,
@@ -232,6 +233,14 @@ function resultProjection(result) {
 }
 
 async function protectedTerminal(client, operationId, signal) {
+  const status = await client.inspectOperation(operationId, 'status', signal);
+  if (!status || !TERMINAL.has(status.state)) {
+    throw typedError('operation_not_terminal', JSON.stringify({
+      operationId,
+      state: status?.state ?? null,
+      attachmentState: status?.attachmentState ?? null,
+    }));
+  }
   const terminal = await client.inspectOperation(operationId, 'result', signal);
   if (!terminal || !TERMINAL.has(terminal.state)) throw typedError('operation_not_terminal');
   return terminal;
@@ -2391,14 +2400,14 @@ export async function executeScenario({
     const queryInput = {
       query: canary.query,
       ...(selector ? { target: selector } : {}),
-      mode: one(values, 'mode', { defaultValue: 'quick' }),
       ...(pgs ? {
         enablePGS: true,
-        pgsMode: 'full',
-        pgsConfig: { sweepFraction: numberValue(values, 'sweep-fraction', { defaultValue: 0.1, min: 0, max: 1, exclusiveMin: true }) },
+        pgsMode: 'fresh',
+        pgsLevel: 'full',
         ...(exactPair(values, 'pgs-sweep-selection') ? { pgsSweep: exactPair(values, 'pgs-sweep-selection') } : {}),
         ...(exactPair(values, 'pgs-synth-selection') ? { pgsSynth: exactPair(values, 'pgs-synth-selection') } : {}),
       } : {
+        mode: one(values, 'mode', { defaultValue: 'quick' }),
         ...(exactPair(values, 'model-selection') ? { modelSelection: exactPair(values, 'model-selection') } : {}),
       }),
     };
@@ -2514,6 +2523,13 @@ async function resumeIsolatedOperationToTerminal(client, operationId, signal, ti
 }
 
 async function readAttachmentEvidence(fixture, operationId) {
+  const { BrainOperationStore } = require(
+    '../engine/src/dashboard/brain-operations/operation-store.js'
+  );
+  const store = new BrainOperationStore({
+    root: fixture.operationsRoot,
+    requesterAgent: fixture.agent,
+  });
   const directory = path.join(fixture.operationsRoot, 'operations', operationId, 'attachments');
   const names = [];
   const handle = await fsp.opendir(directory);
@@ -2529,7 +2545,8 @@ async function readAttachmentEvidence(fixture, operationId) {
   names.sort();
   const rows = [];
   for (const name of names) {
-    const row = await readJson(path.join(directory, name), { maxBytes: 1024 * 1024 });
+    const attachmentId = name.slice(0, -'.json'.length);
+    const row = await store.getAttachment(operationId, attachmentId);
     if (row.operationId !== operationId || row.requesterAgent !== fixture.agent
         || !['attached', 'detached', 'closed'].includes(row.state)) {
       throw typedError('isolated_attachment_evidence_invalid');
@@ -2548,6 +2565,118 @@ async function readAttachmentEvidence(fixture, operationId) {
       reason: row.reason,
     })),
   };
+}
+
+function attachmentEvidenceEntry(evidence, attachmentId) {
+  return evidence.entries.find((entry) => entry.attachmentId === attachmentId) ?? null;
+}
+
+function assertAttachmentEvidenceShape(evidence) {
+  if (!evidence || evidence.total !== 2
+      || !Array.isArray(evidence.attachmentIds) || evidence.attachmentIds.length !== 2
+      || new Set(evidence.attachmentIds).size !== 2
+      || !Array.isArray(evidence.entries) || evidence.entries.length !== 2
+      || evidence.attached + evidence.detached + evidence.closed !== 2
+      || evidence.entries.some((entry) => !entry
+        || !evidence.attachmentIds.includes(entry.attachmentId)
+        || !['attached', 'detached', 'closed'].includes(entry.state))) {
+    throw typedError('surviving_attachment_evidence_invalid');
+  }
+  const counted = {
+    attached: evidence.entries.filter((entry) => entry.state === 'attached').length,
+    detached: evidence.entries.filter((entry) => entry.state === 'detached').length,
+    closed: evidence.entries.filter((entry) => entry.state === 'closed').length,
+  };
+  if (counted.attached !== evidence.attached
+      || counted.detached !== evidence.detached
+      || counted.closed !== evidence.closed) {
+    throw typedError('surviving_attachment_evidence_invalid');
+  }
+}
+
+export async function waitForSurvivingAttachmentClosure({
+  initialEvidence,
+  readEvidence,
+  signal = null,
+  timeoutMs = 10_000,
+  pollMs = 25,
+  now = Date.now,
+  wait = sleep,
+  deadlineWait = sleep,
+} = {}) {
+  if (typeof readEvidence !== 'function' || typeof now !== 'function'
+      || typeof wait !== 'function' || typeof deadlineWait !== 'function'
+      || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1
+      || !Number.isSafeInteger(pollMs) || pollMs < 1) {
+    throw typedError('surviving_attachment_wait_invalid');
+  }
+  assertAttachmentEvidenceShape(initialEvidence);
+  const detachedEntry = initialEvidence.entries.find((entry) => entry.state === 'detached');
+  const survivorEntry = initialEvidence.entries.find((entry) => entry.state === 'attached');
+  if (initialEvidence.attached !== 1 || initialEvidence.detached !== 1
+      || initialEvidence.closed !== 0
+      || !['caller_abort', 'transport_disconnect'].includes(detachedEntry?.reason)
+      || survivorEntry?.reason !== null) {
+    throw typedError('surviving_attachment_evidence_invalid');
+  }
+  const expectedIds = [...initialEvidence.attachmentIds];
+  const deadline = now() + timeoutMs;
+  let lastEvidence = initialEvidence;
+  const deadlineController = new AbortController();
+  const releasedDeadline = typedError('surviving_attachment_deadline_released');
+  const never = new Promise(() => {});
+  let removeCallerAbort = () => {};
+  const callerAbort = signal ? new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+    removeCallerAbort = () => signal.removeEventListener('abort', abort);
+    if (signal.aborted) abort();
+  }) : never;
+  const timeout = Promise.resolve(deadlineWait(
+    Math.max(1, timeoutMs),
+    deadlineController.signal,
+  )).then(() => {
+    throw typedError('surviving_attachment_not_proven', JSON.stringify(lastEvidence));
+  }).catch((error) => {
+    if (deadlineController.signal.aborted && error === deadlineController.signal.reason) return never;
+    throw error;
+  });
+  const beforeDeadline = (promise) => Promise.race([callerAbort, timeout, promise]);
+  try {
+    while (now() < deadline) {
+      if (signal?.aborted) throw signal.reason;
+      const evidence = await beforeDeadline(Promise.resolve().then(readEvidence));
+      if (signal?.aborted) throw signal.reason;
+      if (now() >= deadline) {
+        throw typedError('surviving_attachment_not_proven', JSON.stringify(lastEvidence));
+      }
+      assertAttachmentEvidenceShape(evidence);
+      if (!isDeepStrictEqual(evidence.attachmentIds, expectedIds)) {
+        throw typedError('surviving_attachment_evidence_invalid');
+      }
+      const detached = attachmentEvidenceEntry(evidence, detachedEntry.attachmentId);
+      const survivor = attachmentEvidenceEntry(evidence, survivorEntry.attachmentId);
+      if (detached?.state !== 'detached' || detached.reason !== detachedEntry.reason
+          || !survivor
+          || (survivor.state === 'attached' && survivor.reason !== null)
+          || (survivor.state === 'closed' && survivor.reason !== 'operation_terminal')
+          || !['attached', 'closed'].includes(survivor.state)) {
+        throw typedError('surviving_attachment_evidence_invalid');
+      }
+      lastEvidence = evidence;
+      if (evidence.total === 2 && evidence.attached === 0
+          && evidence.detached === 1 && evidence.closed === 1
+          && survivor.state === 'closed') {
+        return evidence;
+      }
+      if (now() >= deadline) break;
+      await beforeDeadline(wait(pollMs, signal));
+    }
+    throw typedError('surviving_attachment_not_proven', JSON.stringify(lastEvidence));
+  } finally {
+    removeCallerAbort();
+    deadlineController.abort(releasedDeadline);
+  }
 }
 
 async function readRetainedProviderTerminalEvidence(fixture, operationId) {
@@ -2837,6 +2966,9 @@ export function createBoundedMetricAccumulator({
         throw typedError('isolated_fixture_metric_invalid', role);
       }
       if (last?.updatedAt === row.updatedAt) return false;
+      if (last && Date.parse(row.updatedAt) < Date.parse(last.updatedAt)) {
+        throw typedError('isolated_fixture_metric_timestamp_regressed', role);
+      }
       if (last && row.processMaxRssMiB < last.processMaxRssMiB) {
         throw typedError('rss_high_water_regressed', role);
       }
@@ -2889,14 +3021,35 @@ export function createBoundedMetricAccumulator({
   });
 }
 
-function startIsolatedMetricSampler(fixture, { intervalMs = 100 } = {}) {
+export function startIsolatedMetricSampler(fixture, {
+  intervalMs = 100,
+  initialFreshWaitMs = 10_000,
+  finalFreshWaitMs = 30_000,
+  signal = null,
+  monotonicNow = () => performance.now(),
+  wallNow = Date.now,
+  wait = sleep,
+  deadlineWait = sleep,
+  readMetricFile = (file) => readJson(file, { maxBytes: 1024 * 1024 }),
+} = {}) {
+  if (!Number.isSafeInteger(intervalMs) || intervalMs < 1
+      || !Number.isSafeInteger(initialFreshWaitMs) || initialFreshWaitMs < 1
+      || !Number.isSafeInteger(finalFreshWaitMs) || finalFreshWaitMs < 1
+      || (signal !== null && !(signal instanceof AbortSignal))
+      || typeof monotonicNow !== 'function' || typeof wallNow !== 'function'
+      || typeof wait !== 'function' || typeof deadlineWait !== 'function'
+      || typeof readMetricFile !== 'function') {
+    throw typedError('isolated_fixture_metric_sampler_invalid');
+  }
   const roles = ['dashboard', 'cosmo'];
   const accumulators = new Map(roles.map((role) => [role, createBoundedMetricAccumulator({
     role,
     expectedPid: fixture.pids[role],
   })]));
   const samplerController = new AbortController();
+  const lastAcceptedUpdatedAtMs = new Map(roles.map((role) => [role, -Infinity]));
   let failure = null;
+  let staleCaptureCount = 0;
   let settleReady;
   let rejectReady;
   const ready = new Promise((resolve, reject) => {
@@ -2908,34 +3061,63 @@ function startIsolatedMetricSampler(fixture, { intervalMs = 100 } = {}) {
     let lastError = null;
     for (let attempt = 0; attempt < 8; attempt += 1) {
       try {
-        return await readJson(fixture.metrics[role], { maxBytes: 1024 * 1024 });
+        return await readMetricFile(fixture.metrics[role]);
       } catch (error) {
         lastError = error;
         if (error?.code !== 'json_file_invalid' || attempt === 7) break;
-        await sleep(5, retrySignal);
+        await wait(5, retrySignal);
       }
     }
     throw lastError;
   }
 
-  async function capture({ forceRetain = false } = {}) {
-    const capturedAtMs = Date.now();
-    for (const role of roles) {
-      const metric = await readMetric(
-        role,
-        forceRetain ? null : samplerController.signal,
-      );
-      const updatedAtMs = Date.parse(metric.updatedAt);
-      if (metric.schemaVersion !== 2 || metric.role !== role
-          || metric.pid !== fixture.pids[role]
-          || metric.restartCount !== 0
-          || JSON.stringify(metric.semantics) !== JSON.stringify(METRIC_SEMANTICS)
-          || !Number.isFinite(updatedAtMs)
-          || updatedAtMs > capturedAtMs + 1_000
-          || capturedAtMs - updatedAtMs > 5_000) {
-        throw typedError('isolated_fixture_metric_invalid', role);
+  async function capture({
+    forceRetain = false,
+    waitForFreshMs = 0,
+    deadlineMs = waitForFreshMs > 0 ? monotonicNow() + waitForFreshMs : null,
+    requireAdvance = false,
+    bounded = (promise) => promise,
+  } = {}) {
+    const captured = new Map();
+    const captureSignal = forceRetain ? signal : samplerController.signal;
+    const throwIfUnavailable = (role) => {
+      if (signal?.aborted) throw signal.reason || typedError('acceptance_interrupted');
+      if (!forceRetain && samplerController.signal.aborted) {
+        throw samplerController.signal.reason || typedError('metric_sampler_stopped');
       }
-      accumulators.get(role).add({
+      if (deadlineMs !== null && monotonicNow() >= deadlineMs) {
+        throw typedError('isolated_fixture_metric_stale', role);
+      }
+    };
+    for (const role of roles) {
+      let metric;
+      let capturedAtMs;
+      let updatedAtMs;
+      while (true) {
+        throwIfUnavailable(role);
+        metric = await bounded(readMetric(role, captureSignal));
+        throwIfUnavailable(role);
+        capturedAtMs = wallNow();
+        updatedAtMs = Date.parse(metric.updatedAt);
+        if (metric.schemaVersion !== 2 || metric.role !== role
+            || metric.pid !== fixture.pids[role]
+            || metric.restartCount !== 0
+            || JSON.stringify(metric.semantics) !== JSON.stringify(METRIC_SEMANTICS)
+            || !Number.isFinite(updatedAtMs)) {
+          throw typedError('isolated_fixture_metric_invalid', role);
+        }
+        const fresh = updatedAtMs <= capturedAtMs + 1_000
+          && capturedAtMs - updatedAtMs <= 5_000;
+        const advancing = updatedAtMs > lastAcceptedUpdatedAtMs.get(role);
+        if (fresh && (!requireAdvance || advancing)) break;
+        staleCaptureCount += 1;
+        const remainingMs = deadlineMs === null ? 50 : deadlineMs - monotonicNow();
+        if (remainingMs <= 0) {
+          throw typedError('isolated_fixture_metric_stale', role);
+        }
+        await bounded(wait(Math.min(50, remainingMs), captureSignal));
+      }
+      const added = accumulators.get(role).add({
         role,
         capturedAt: new Date(capturedAtMs).toISOString(),
         updatedAt: metric.updatedAt,
@@ -2945,12 +3127,18 @@ function startIsolatedMetricSampler(fixture, { intervalMs = 100 } = {}) {
         rssMiB: metric.rssMiB,
         processMaxRssMiB: metric.processMaxRssMiB,
       }, { forceRetain });
+      if (requireAdvance && !added) {
+        throw typedError('isolated_fixture_metric_not_advancing', role);
+      }
+      if (added) lastAcceptedUpdatedAtMs.set(role, updatedAtMs);
+      captured.set(role, Object.freeze({ updatedAt: metric.updatedAt, updatedAtMs, added }));
     }
+    return captured;
   }
 
   const task = (async () => {
     try {
-      await capture();
+      await capture({ waitForFreshMs: initialFreshWaitMs });
       settleReady();
     } catch (error) {
       failure ||= error;
@@ -2959,10 +3147,11 @@ function startIsolatedMetricSampler(fixture, { intervalMs = 100 } = {}) {
     }
     while (!samplerController.signal.aborted) {
       try {
-        await sleep(intervalMs, samplerController.signal);
+        await wait(intervalMs, samplerController.signal);
         await capture();
       } catch (error) {
         if (samplerController.signal.aborted) break;
+        if (error?.code === 'isolated_fixture_metric_stale') continue;
         failure ||= error;
         break;
       }
@@ -2974,7 +3163,55 @@ function startIsolatedMetricSampler(fixture, { intervalMs = 100 } = {}) {
     async stop() {
       samplerController.abort(typedError('metric_sampler_stopped'));
       await task;
-      try { await capture({ forceRetain: true }); } catch (error) { failure ||= error; }
+      if (failure) throw failure;
+      if (signal?.aborted) throw signal.reason || typedError('acceptance_interrupted');
+      const finalDeadlineMs = monotonicNow() + finalFreshWaitMs;
+      const deadlineController = new AbortController();
+      const releasedDeadline = typedError('isolated_fixture_metric_deadline_released');
+      const never = new Promise(() => {});
+      let removeCallerAbort = () => {};
+      const callerAbort = signal ? new Promise((resolve, reject) => {
+        const abort = () => reject(signal.reason || typedError('acceptance_interrupted'));
+        signal.addEventListener('abort', abort, { once: true });
+        removeCallerAbort = () => signal.removeEventListener('abort', abort);
+        if (signal.aborted) abort();
+      }) : never;
+      const timeout = Promise.resolve()
+        .then(() => deadlineWait(finalFreshWaitMs, deadlineController.signal))
+        .then(() => {
+          throw typedError('isolated_fixture_metric_stale', 'final');
+        })
+        .catch((error) => {
+          if (deadlineController.signal.aborted
+              && error === deadlineController.signal.reason) return never;
+          throw error;
+        });
+      timeout.catch(() => {});
+      const bounded = (promise) => Promise.race([callerAbort, timeout, promise]);
+      const finalSamples = Object.fromEntries(roles.map((role) => [role, []]));
+      try {
+        for (let index = 0; index < 3; index += 1) {
+          const captured = await capture({
+            forceRetain: true,
+            deadlineMs: finalDeadlineMs,
+            requireAdvance: true,
+            bounded,
+          });
+          for (const role of roles) {
+            finalSamples[role].push(captured.get(role).updatedAt);
+          }
+          if (index < 2) {
+            const remainingMs = finalDeadlineMs - monotonicNow();
+            if (remainingMs <= 0) throw typedError('isolated_fixture_metric_stale', 'final');
+            await bounded(wait(Math.min(Math.max(50, intervalMs), remainingMs), signal));
+          }
+        }
+      } catch (error) {
+        failure ||= error;
+      } finally {
+        removeCallerAbort();
+        deadlineController.abort(releasedDeadline);
+      }
       if (failure) throw failure;
       const targets = roles.map((role) => accumulators.get(role).summary());
       if (targets.some((target) => target.pidChanged || target.restartDelta !== 0
@@ -2992,6 +3229,8 @@ function startIsolatedMetricSampler(fixture, { intervalMs = 100 } = {}) {
         },
         maxHeapGrowthMiB: MEMORY_GROWTH_LIMIT_MIB,
         maxRssGrowthMiB: MEMORY_GROWTH_LIMIT_MIB,
+        staleCaptureCount,
+        finalSamples,
         maxProcessMaxRssGrowthMiB: MEMORY_GROWTH_LIMIT_MIB,
         maxRetainedSamplesPerRole: MAX_METRIC_SAMPLES_PER_ROLE,
         targets,
@@ -3153,10 +3392,11 @@ async function executeIsolatedLifecycleScenario({
       signal,
     );
     const terminal = await protectedTerminal(survivorClient, initial.operationId, signal);
-    const terminalAttachments = await readAttachmentEvidence(fixture, initial.operationId);
-    if (terminalAttachments.detached !== 1 || terminalAttachments.closed < 1) {
-      throw typedError('surviving_attachment_not_proven');
-    }
+    const terminalAttachments = await waitForSurvivingAttachmentClosure({
+      initialEvidence: concurrentAttachments,
+      readEvidence: () => readAttachmentEvidence(fixture, initial.operationId),
+      signal,
+    });
     return terminalReceipt({
       context, values, baseUrl: fixture.baseUrl, callerAgent, scenario, terminal,
       activityLog: activities,
@@ -3491,7 +3731,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       baseUrl = fixture.baseUrl;
       sourceIntegrityOptions = { fixture };
       if (one(values, 'heap-output')) {
-        metricSampler = startIsolatedMetricSampler(fixture);
+        metricSampler = startIsolatedMetricSampler(fixture, { signal: controller.signal });
         await metricSampler.ready;
       }
     } else if (context.authority === 'isolated-controlled'

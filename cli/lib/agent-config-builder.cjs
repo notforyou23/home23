@@ -9,6 +9,7 @@ function buildFeederWatchPaths(instanceDir, ingestPaths = []) {
     { path: `${instanceDir}/workspace/projects`, label: 'projects' },
     { path: `${instanceDir}/workspace/reports`, label: 'reports' },
     { path: `${instanceDir}/workspace/research-runs`, label: 'research_runs' },
+    { path: `${instanceDir}/workspace/research`, label: 'compiled_research' },
     ...ingestPaths,
   ];
 }

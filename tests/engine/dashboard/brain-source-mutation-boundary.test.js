@@ -234,7 +234,7 @@ async function runSourceOperation(fixture, label, entry, operationType) {
     }), true, 'per-process pins may exist only in the requester operation');
 
     const scratchDir = path.join(operationRoot, 'scratch');
-    if (operationType === 'graph_export') await fsp.mkdir(scratchDir, { recursive: false });
+    const scratchBaseline = await inventoryTree(scratchDir);
     const target = operationTarget(
       fixture,
       entry,
@@ -293,8 +293,11 @@ async function runSourceOperation(fixture, label, entry, operationType) {
         fixture.home23Root, 'instances', 'jerry', 'workspace', 'brain-exports',
       )), false, 'regular graph export is retained only in operation result storage');
     } else {
-      assert.equal(fs.existsSync(scratchDir), false,
-        `${operationType} must not create requester scratch`);
+      assert.deepEqual(
+        await inventoryTree(scratchDir),
+        scratchBaseline,
+        `${operationType} must not add or mutate requester scratch`,
+      );
     }
   } finally {
     await source?.release?.().catch(() => {});

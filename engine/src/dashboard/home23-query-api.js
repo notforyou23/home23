@@ -13,6 +13,7 @@ const DEFAULT_ENDPOINTS = {
   run: '/home23/api/query/run',
   stream: '/home23/api/query/stream',
   export: '/home23/api/query/export',
+  pgsPartitions: '/home23/api/query/pgs-partitions',
 };
 
 const MAX_QUERY_CHARS = 12_000;
@@ -34,12 +35,18 @@ const QUERY_COMPATIBILITY_BODY_LIMIT_BYTES = MAX_AD_HOC_FIXED_BODY_BYTES
   + MAX_METADATA_JSON_BYTES;
 const QUERY_WAIT_MS = 90 * 60_000;
 const PGS_WAIT_MS = 6 * 60 * 60_000;
+const SHORT_READ_WAIT_MS = 5 * 60_000;
 const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
-const QUERY_MODES = new Set([
-  'quick', 'full', 'expert', 'dive', 'fast', 'normal', 'deep', 'executive',
-  'raw', 'report', 'innovation', 'consulting', 'grounded',
+const QUERY_MODES = new Set(['quick', 'full', 'expert', 'dive']);
+const PGS_MODES = new Set(['fresh', 'continue', 'targeted']);
+const PGS_LEVEL_FRACTIONS = new Map([
+  ['skim', 0.1],
+  ['sample', 0.25],
+  ['deep', 0.5],
+  ['full', 1],
 ]);
-const PGS_MODES = new Set(['full', 'continue', 'targeted']);
+const MAX_TARGET_PARTITION_IDS = 256;
+const PARTITION_ID_PATTERN = /^(?:c|h)-[A-Za-z0-9._-]{1,253}$/;
 const NONTERMINAL_STATES = new Set(['queued', 'running']);
 const SUCCESS_STATES = new Set(['complete', 'partial']);
 const TERMINAL_STATES = new Set(['complete', 'partial', 'failed', 'cancelled', 'interrupted']);
@@ -156,6 +163,29 @@ function normalizeBrains(payload) {
     }));
 }
 
+function buildResidentBrain(home23Root, agent) {
+  if (!home23Root || !agent) return null;
+  const brainPath = path.resolve(home23Root, 'instances', agent, 'brain');
+  const canonicalRoot = fs.existsSync(brainPath)
+    ? fs.realpathSync(brainPath)
+    : brainPath;
+  const config = readYaml(path.join(home23Root, 'instances', agent, 'config.yaml'));
+  const displayName = config.agent?.displayName || config.agent?.name || agent;
+  return {
+    id: `brain-${crypto.createHash('sha256').update(canonicalRoot).digest('hex').slice(0, 16)}`,
+    routeKey: crypto.createHash('sha1').update(brainPath).digest('hex').slice(0, 16),
+    name: 'brain',
+    displayName: `${displayName} Brain`,
+    path: brainPath,
+    sourceLabel: agent,
+    sourceType: 'home23-agent',
+    isReference: false,
+    isActive: fs.existsSync(brainPath),
+    modifiedDate: null,
+    topic: null,
+  };
+}
+
 function findSelectedBrain(brains, agent) {
   const target = String(agent || '').toLowerCase();
   if (!target) return null;
@@ -257,10 +287,18 @@ async function buildQueryCatalog(options = {}) {
     ? options.queryDefaultsProvider(agent)
     : loadQueryDefaults(home23Root, agent);
 
+  const residentBrainPromise = options.residentBrainProvider
+    ? Promise.resolve().then(() => options.residentBrainProvider({ agent, home23Root }))
+    : Promise.resolve(buildResidentBrain(home23Root, agent));
+  const brainCatalogPromise = residentBrainPromise.then((residentBrain) => (
+    residentBrain
+      ? { brains: [residentBrain] }
+      : fetchJson(fetchImpl, cosmoBaseUrl, '/api/brains', timeoutMs)
+  ));
   const [statusResult, modelsResult, brainsResult] = await Promise.allSettled([
     fetchJson(fetchImpl, cosmoBaseUrl, '/api/status', timeoutMs),
     fetchJson(fetchImpl, cosmoBaseUrl, '/api/providers/models', timeoutMs),
-    fetchJson(fetchImpl, cosmoBaseUrl, '/api/brains', timeoutMs),
+    brainCatalogPromise,
   ]);
 
   const statusError = statusResult.status === 'rejected' ? statusResult.reason : null;
@@ -280,6 +318,7 @@ async function buildQueryCatalog(options = {}) {
       run: DEFAULT_ENDPOINTS.run,
       stream: DEFAULT_ENDPOINTS.stream,
       export: DEFAULT_ENDPOINTS.export,
+      pgsPartitions: DEFAULT_ENDPOINTS.pgsPartitions,
     },
     models,
     defaults: {
@@ -391,6 +430,33 @@ function exactProviderPair(value, field) {
   boundedString(value.model, `${field}.model`, { required: true, max: 256 });
 }
 
+function validateContinueFromOperationId(value) {
+  boundedString(value, 'continueFromOperationId', { required: true, max: 256 });
+  try { assertOperationId(value); } catch {
+    throw compatibilityError('invalid_request', 'continueFromOperationId is invalid');
+  }
+  return value;
+}
+
+function validateTargetPartitionIds(value) {
+  if (!Array.isArray(value)
+      || value.length === 0
+      || value.length > MAX_TARGET_PARTITION_IDS) {
+    throw compatibilityError('invalid_request', 'targetPartitionIds is invalid');
+  }
+  const unique = new Set();
+  for (const partitionId of value) {
+    if (typeof partitionId !== 'string'
+        || partitionId.length > 256
+        || !PARTITION_ID_PATTERN.test(partitionId)
+        || unique.has(partitionId)) {
+      throw compatibilityError('invalid_request', 'targetPartitionIds is invalid');
+    }
+    unique.add(partitionId);
+  }
+  return [...value];
+}
+
 function validatePriorContext(value) {
   if (value === undefined) return;
   exactObject(value, ['query', 'answer'], 'priorContext is invalid');
@@ -474,14 +540,17 @@ function resolveRequestAgent(req, resolveAgent) {
 
 function validateCompatibilityRequest(body, catalog, agent) {
   const common = [
-    'agent', 'brainId', 'query', 'mode', 'enablePGS', 'priorContext',
+    'agent', 'brainId', 'query', 'enablePGS',
     'dryRun', 'validateOnly',
   ];
   const direct = [
-    'modelSelection', 'enableSynthesis', 'includeOutputs', 'includeThoughts',
-    'includeCoordinatorInsights', 'allowActions', 'topK',
+    'mode', 'modelSelection', 'enableSynthesis', 'includeOutputs', 'includeThoughts',
+    'includeCoordinatorInsights', 'allowActions', 'topK', 'priorContext',
   ];
-  const pgs = ['pgsMode', 'pgsConfig', 'pgsSweep', 'pgsSynth'];
+  const pgs = [
+    'pgsMode', 'pgsLevel', 'continueFromOperationId', 'targetPartitionIds',
+    'pgsSweep', 'pgsSynth',
+  ];
   exactObject(body, [...common, ...direct, ...pgs]);
   const targetBrainId = validateSelectedBrain(body, catalog, agent);
   boundedString(body.query, 'query', { required: true, max: Number.MAX_SAFE_INTEGER });
@@ -496,26 +565,44 @@ function validateCompatibilityRequest(body, catalog, agent) {
     throw compatibilityError('invalid_request', 'mode is invalid');
   }
   optionalBoolean(body.enablePGS, 'enablePGS');
-  validatePriorContext(body.priorContext);
   const enablePGS = body.enablePGS === true;
 
   if (enablePGS) {
     if (direct.some((key) => Object.hasOwn(body, key))) {
       throw compatibilityError('invalid_request', 'direct-query fields are invalid for PGS');
     }
+    if (!Object.hasOwn(body, 'pgsSweep') || !Object.hasOwn(body, 'pgsSynth')) {
+      throw compatibilityError('invalid_request', 'PGS requires exact sweep and synthesis pairs');
+    }
     exactProviderPair(body.pgsSweep, 'pgsSweep');
     exactProviderPair(body.pgsSynth, 'pgsSynth');
-    if (body.pgsMode !== undefined && !PGS_MODES.has(body.pgsMode)) {
+    if (!PGS_MODES.has(body.pgsMode)) {
       throw compatibilityError('invalid_request', 'pgsMode is invalid');
     }
-    if (body.pgsConfig !== undefined) {
-      exactObject(body.pgsConfig, ['sweepFraction'], 'pgsConfig is invalid');
-      if (ownKeys(body.pgsConfig).length !== 1
-          || typeof body.pgsConfig.sweepFraction !== 'number'
-          || !Number.isFinite(body.pgsConfig.sweepFraction)
-          || body.pgsConfig.sweepFraction <= 0
-          || body.pgsConfig.sweepFraction > 1) {
-        throw compatibilityError('invalid_request', 'pgsConfig.sweepFraction is invalid');
+    const sweepFraction = PGS_LEVEL_FRACTIONS.get(body.pgsLevel);
+    if (sweepFraction === undefined) {
+      throw compatibilityError('invalid_request', 'pgsLevel is invalid');
+    }
+    const hasContinuation = Object.hasOwn(body, 'continueFromOperationId');
+    const hasTargets = Object.hasOwn(body, 'targetPartitionIds');
+    let continueFromOperationId;
+    let targetPartitionIds;
+    if (body.pgsMode === 'fresh') {
+      if (hasContinuation || hasTargets) {
+        throw compatibilityError('invalid_request', 'fresh PGS cannot continue or target partitions');
+      }
+    } else if (body.pgsMode === 'continue') {
+      if (!hasContinuation || hasTargets) {
+        throw compatibilityError('invalid_request', 'continue PGS requires only a prior operation');
+      }
+      continueFromOperationId = validateContinueFromOperationId(body.continueFromOperationId);
+    } else {
+      if (!hasTargets) {
+        throw compatibilityError('invalid_request', 'targeted PGS requires targetPartitionIds');
+      }
+      targetPartitionIds = validateTargetPartitionIds(body.targetPartitionIds);
+      if (hasContinuation) {
+        continueFromOperationId = validateContinueFromOperationId(body.continueFromOperationId);
       }
     }
     return {
@@ -523,12 +610,13 @@ function validateCompatibilityRequest(body, catalog, agent) {
       targetBrainId,
       parameters: {
         query: body.query,
-        ...(body.mode !== undefined ? { mode: body.mode } : {}),
-        ...(body.pgsMode !== undefined ? { pgsMode: body.pgsMode } : {}),
-        ...(body.pgsConfig !== undefined ? { pgsConfig: body.pgsConfig } : {}),
-        ...(body.pgsSweep !== undefined ? { pgsSweep: body.pgsSweep } : {}),
-        ...(body.pgsSynth !== undefined ? { pgsSynth: body.pgsSynth } : {}),
-        ...(body.priorContext !== undefined ? { priorContext: body.priorContext } : {}),
+        pgsMode: body.pgsMode,
+        pgsLevel: body.pgsLevel,
+        pgsConfig: { sweepFraction },
+        ...(continueFromOperationId !== undefined ? { continueFromOperationId } : {}),
+        ...(targetPartitionIds !== undefined ? { targetPartitionIds } : {}),
+        pgsSweep: body.pgsSweep,
+        pgsSynth: body.pgsSynth,
       },
     };
   }
@@ -537,6 +625,7 @@ function validateCompatibilityRequest(body, catalog, agent) {
     throw compatibilityError('invalid_request', 'PGS fields require enablePGS true');
   }
   exactProviderPair(body.modelSelection, 'modelSelection');
+  validatePriorContext(body.priorContext);
   for (const field of [
     'enableSynthesis', 'includeOutputs', 'includeThoughts',
     'includeCoordinatorInsights', 'allowActions',
@@ -755,7 +844,7 @@ function statusEvent(record) {
   if (!Number.isSafeInteger(sequence) || sequence < 0) {
     throw compatibilityError('event_stream_invalid', 'operation event sequence is invalid', 502, true);
   }
-  return {
+  const event = {
     type: record.type || 'status',
     operationId: record.operationId,
     state: record.state || null,
@@ -763,6 +852,21 @@ function statusEvent(record) {
     eventSequence: sequence,
     updatedAt: record.updatedAt || record.at || null,
   };
+  for (const field of ['stage', 'message', 'provider', 'model', 'providerCallId']) {
+    if (typeof record[field] === 'string' && record[field].length > 0
+        && record[field].length <= 4096) event[field] = record[field];
+  }
+  for (const field of [
+    'batchIndex', 'selectedWorkUnits', 'selectedWorkUnitsTotal',
+    'candidateWorkUnits', 'pendingWorkUnits', 'successfulSweeps',
+    'scopeWorkUnits', 'scopeSuccessfulWorkUnits', 'scopePendingWorkUnits',
+    'globalCoveredWorkUnits', 'globalPendingWorkUnits',
+  ]) {
+    if (Number.isSafeInteger(record[field]) && record[field] >= 0) {
+      event[field] = record[field];
+    }
+  }
+  return event;
 }
 
 function terminalPayload(envelope) {
@@ -877,7 +981,9 @@ async function startAndWait(options, request, { signal, onEvent } = {}) {
     throw compatibilityError('operation_contract_invalid', 'operation did not start durably', 502, true);
   }
   const attachmentId = requestId('compat-attachment');
-  const waitMs = started.operationType === 'pgs' ? PGS_WAIT_MS : QUERY_WAIT_MS;
+  const waitMs = started.operationType === 'pgs'
+    ? PGS_WAIT_MS
+    : started.operationType === 'query' ? QUERY_WAIT_MS : SHORT_READ_WAIT_MS;
   const status = await adapter.attachAndWait(started, {
     attachmentId,
     signal,
@@ -929,7 +1035,12 @@ function createQueryApiRouter(options = {}) {
         agent: req.query?.agent || options.getDefaultAgent?.() || null,
         available: false,
         reason: 'query catalog error',
-        endpoints: { run: DEFAULT_ENDPOINTS.run, stream: DEFAULT_ENDPOINTS.stream, export: DEFAULT_ENDPOINTS.export },
+        endpoints: {
+          run: DEFAULT_ENDPOINTS.run,
+          stream: DEFAULT_ENDPOINTS.stream,
+          export: DEFAULT_ENDPOINTS.export,
+          pgsPartitions: DEFAULT_ENDPOINTS.pgsPartitions,
+        },
         models: [],
         defaults: null,
         brains: [],
@@ -987,6 +1098,56 @@ function createQueryApiRouter(options = {}) {
         return;
       }
       res.json(terminalPayload(outcome.envelope));
+    } catch (err) {
+      responseFinished = true;
+      if (!res.headersSent) sendCompatibilityError(res, err);
+      else res.end();
+    }
+  });
+
+  router.post('/pgs-partitions', async (req, res) => {
+    let responseFinished = false;
+    const controller = new AbortController();
+    res.once('close', () => {
+      if (!responseFinished && !controller.signal.aborted) {
+        controller.abort(compatibilityError('caller_disconnected', 'partition caller disconnected', 499));
+      }
+    });
+    try {
+      validateRouteQuery(req);
+      exactObject(req.body, ['agent', 'brainId']);
+      const agent = resolveRequestAgent(req, resolveAgent);
+      const catalog = await catalogFor(options, agent);
+      const targetBrainId = validateSelectedBrain(req.body, catalog, agent);
+      const outcome = await startAndWait(options, {
+        requestId: requestId('compat-pgs-partitions'),
+        operationType: 'graph',
+        target: { brainId: targetBrainId },
+        parameters: { view: 'pgs_partitions' },
+      }, { signal: controller.signal });
+      responseFinished = true;
+      if (outcome.detached) {
+        res.status(202).json(detachedPayload(outcome.detached));
+        return;
+      }
+      const envelope = outcome.envelope;
+      const result = envelope?.result;
+      if (envelope?.state !== 'complete' || envelope.error !== null
+          || !result || Array.isArray(result) || typeof result !== 'object'
+          || result.complete !== true || !Array.isArray(result.partitions)
+          || result.partitions.some((row) => !row || typeof row !== 'object'
+            || typeof row.partitionId !== 'string'
+            || !PARTITION_ID_PATTERN.test(row.partitionId)
+            || !Number.isSafeInteger(row.nodeCount) || row.nodeCount < 1
+            || !Number.isSafeInteger(row.estimatedWorkUnits) || row.estimatedWorkUnits < 1)) {
+        throw compatibilityError('result_invalid', 'PGS partition inventory is invalid', 502, true);
+      }
+      res.json({
+        ok: true,
+        operationId: envelope.operationId,
+        sourceEvidence: envelope.sourceEvidence ?? result.evidence ?? null,
+        ...result,
+      });
     } catch (err) {
       responseFinished = true;
       if (!res.headersSent) sendCompatibilityError(res, err);

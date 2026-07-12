@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import Ajv from 'ajv';
 import {
   brainMemoryGraphTool,
+  brainCatalogTool,
+  brainOperationsListTool,
+  brainPgsPartitionsTool,
   brainQueryExportTool,
   brainQueryTool,
   brainSearchTool,
@@ -12,6 +16,7 @@ import type { BrainOperationsClient } from '../../../src/agent/brain-operations/
 import { optionalJsonObject } from '../../../src/agent/brain-operations/input-validation.js';
 import type { BrainOperationResult } from '../../../src/agent/brain-operations/types.js';
 import type { ToolContext } from '../../../src/agent/types.js';
+import { CORE_RUNTIME_PROMPT } from '../../../src/agents/system-prompt.js';
 import {
   canonicalBrainTarget,
   makeBrainOperationRecord,
@@ -21,6 +26,27 @@ type BrainClientStub = Record<string, (...args: any[]) => any>;
 type ContextOverrides = Omit<Partial<ToolContext>, 'brainOperations' | 'turnRuntime'> & {
   brainOperations?: BrainClientStub;
 };
+
+const PGS_PAIRS = Object.freeze({
+  pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+  pgsSynth: { provider: 'anthropic', model: 'claude-sonnet-4-7' },
+});
+const CONTINUE_OPERATION_ID = 'brop_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC';
+
+function schemaAccepts(schema: Record<string, unknown>, value: unknown): boolean {
+  return new Ajv({ strict: false }).compile(schema)(value) as boolean;
+}
+
+function pgsRequest(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    query: 'x',
+    enablePGS: true,
+    pgsMode: 'fresh',
+    pgsLevel: 'full',
+    ...PGS_PAIRS,
+    ...extra,
+  };
+}
 
 function makeCtx(overrides: ContextOverrides = {}): ToolContext {
   const { brainOperations = {}, ...contextOverrides } = overrides;
@@ -94,6 +120,60 @@ function failedOperation(operationId: string, code: string): BrainOperationResul
     sourceEvidence: { sourceHealth: 'unavailable', matchOutcome: 'unknown' },
   };
 }
+
+test('brain discovery tools expose exact model pairs, recent operations, and canonical PGS partitions', async () => {
+  const calls: Array<[string, unknown]> = [];
+  const ctx = makeCtx({ brainOperations: {
+    getCatalog: async () => ({ catalogRevision: 'catalog-9', brains: [{
+      id: 'brain-jerry', displayName: 'Jerry', ownerAgent: 'jerry', kind: 'resident',
+      lifecycle: 'resident', nodeCount: 42,
+    }] }),
+    getQueryCatalog: async () => ({
+      available: true,
+      models: [
+        { provider: 'openai', id: 'shared', name: 'OpenAI shared' },
+        { provider: 'anthropic', id: 'shared', name: 'Anthropic shared' },
+      ],
+      defaults: { provider: 'openai', model: 'shared' },
+    }),
+    listOperations: async (options: unknown) => {
+      calls.push(['operations', options]);
+      return [{ operationId: CONTINUE_OPERATION_ID, operationType: 'pgs', state: 'partial' }];
+    },
+    graph: async (request: unknown) => {
+      calls.push(['graph', request]);
+      return {
+        complete: true,
+        partitions: [{ partitionId: 'c-alpha', nodeCount: 42, estimatedWorkUnits: 1 }],
+      };
+    },
+  } });
+  const catalog = await brainCatalogTool.execute({}, ctx);
+  assert.match(catalog.content, /"provider": "openai"/);
+  assert.match(catalog.content, /"provider": "anthropic"/);
+  const operations = await brainOperationsListTool.execute({ state: 'recent', limit: 5 }, ctx);
+  assert.match(operations.content, new RegExp(CONTINUE_OPERATION_ID));
+  const partitions = await brainPgsPartitionsTool.execute({ target: { agent: 'jerry' } }, ctx);
+  assert.match(partitions.content, /c-alpha/);
+  assert.deepEqual(calls, [
+    ['operations', { state: 'recent', limit: 5, signal: ctx.turnRuntime?.signal }],
+    ['graph', { target: { agent: 'jerry' }, view: 'pgs_partitions' }],
+  ]);
+});
+
+test('brain_operations_list rejects a nonterminal limit instead of silently ignoring it', async () => {
+  let calls = 0;
+  const ctx = makeCtx({ brainOperations: {
+    listOperations: async () => { calls += 1; return []; },
+  } });
+  assert.equal(schemaAccepts(brainOperationsListTool.input_schema, {
+    state: 'nonterminal', limit: 5,
+  }), false);
+  const result = await brainOperationsListTool.execute({ state: 'nonterminal', limit: 5 }, ctx);
+  assert.equal(result.is_error, true);
+  assert.match(result.content, /invalid_request|invalid/i);
+  assert.equal(calls, 0);
+});
 
 test('brain_search uses the turn-scoped client and forwards an explicit sibling target', async () => {
   let request: Record<string, unknown> | null = null;
@@ -293,12 +373,11 @@ test('canonical and ad-hoc export branches preserve their distinct authority con
     },
   } });
   const canonical = await brainQueryExportTool.execute({
-    operationId: 'op-existing', resultHandle: 'brres_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    operationId: CONTINUE_OPERATION_ID,
     format: 'markdown',
   }, ctx);
   assert.deepEqual(canonicalRequest, {
-    operationId: 'op-existing', resultHandle: 'brres_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-    format: 'markdown',
+    operationId: CONTINUE_OPERATION_ID, format: 'markdown',
   });
   assert.equal(canonical.is_error, undefined);
 
@@ -366,7 +445,7 @@ test('PGS partial preserves useful sweep output and result handle', async () => 
   };
   partial.error = { code: 'provider_incomplete', message: 'final synthesis truncated', retryable: true };
   partial.resultHandle = 'brres_cccccccccccccccccccccccccccccccc';
-  const result = await brainQueryTool.execute({ query: 'x', enablePGS: true }, makeCtx({
+  const result = await brainQueryTool.execute(pgsRequest(), makeCtx({
     brainOperations: { query: async () => partial },
   }));
   assert.equal(result.is_error, undefined);
@@ -382,18 +461,16 @@ test('PGS partial preserves useful sweep output and result handle', async () => 
   assert.equal(result.resultHandle, 'brres_cccccccccccccccccccccccccccccccc');
 });
 
-test('PGS request excludes query-only false defaults and preserves exact sweep fraction', async () => {
+test('PGS request preserves the approved fresh/full named contract without raw config', async () => {
   let request: Record<string, unknown> | null = null;
   const operation = completeOperation('op-pgs-projection', 'answer');
   operation.operationType = 'pgs';
-  await brainQueryTool.execute({
-    query: 'x', mode: 'quick', enablePGS: true, pgsConfig: { sweepFraction: 0.25 },
-  }, makeCtx({ brainOperations: {
+  await brainQueryTool.execute(pgsRequest(), makeCtx({ brainOperations: {
     query: async (value: Record<string, unknown>) => { request = value; return operation; },
   } }));
   assert.deepEqual(request, {
-    query: 'x', mode: 'quick', enablePGS: true, pgsMode: 'full',
-    pgsConfig: { sweepFraction: 0.25 },
+    query: 'x', enablePGS: true, pgsMode: 'fresh', pgsLevel: 'full',
+    ...PGS_PAIRS,
   });
   for (const key of ['modelSelection', 'enableSynthesis', 'includeOutputs', 'includeThoughts',
     'includeCoordinatorInsights', 'allowActions']) {
@@ -401,12 +478,213 @@ test('PGS request excludes query-only false defaults and preserves exact sweep f
   }
 });
 
+test('brain_query accepts every named PGS mode and level with exact continuation and target fields', async () => {
+  const requests: Record<string, unknown>[] = [];
+  const ctx = makeCtx({ brainOperations: {
+    query: async (value: Record<string, unknown>) => {
+      requests.push(value);
+      const operation = completeOperation(`op-pgs-${requests.length}`, 'answer');
+      operation.operationType = 'pgs';
+      return operation;
+    },
+  } });
+  for (const pgsMode of ['fresh', 'continue', 'targeted'] as const) {
+    for (const pgsLevel of ['skim', 'sample', 'deep', 'full'] as const) {
+      const extra = pgsMode === 'continue'
+        ? { continueFromOperationId: CONTINUE_OPERATION_ID }
+        : pgsMode === 'targeted'
+          ? { targetPartitionIds: ['c-alpha', 'h-beta'] }
+          : {};
+      const result = await brainQueryTool.execute(pgsRequest({ pgsMode, pgsLevel, ...extra }), ctx);
+      assert.equal(result.is_error, undefined, `${pgsMode}/${pgsLevel}`);
+    }
+  }
+  const targetedContinuation = await brainQueryTool.execute(pgsRequest({
+    pgsMode: 'targeted',
+    pgsLevel: 'deep',
+    continueFromOperationId: CONTINUE_OPERATION_ID,
+    targetPartitionIds: ['h-beta', 'c-alpha'],
+  }), ctx);
+  assert.equal(targetedContinuation.is_error, undefined);
+  assert.deepEqual(requests.at(-1), {
+    query: 'x', enablePGS: true, pgsMode: 'targeted', pgsLevel: 'deep',
+    continueFromOperationId: CONTINUE_OPERATION_ID,
+    targetPartitionIds: ['h-beta', 'c-alpha'],
+    ...PGS_PAIRS,
+  });
+  assert.equal(requests.every((request) => !Object.hasOwn(request, 'pgsConfig')), true);
+});
+
+test('brain_query rejects incomplete, mixed, legacy, or noncanonical PGS requests before launch', async () => {
+  let calls = 0;
+  const ctx = makeCtx({ brainOperations: { query: async () => {
+    calls += 1;
+    return completeOperation('op-invalid-pgs', 'unexpected');
+  } } });
+  const tooManyTargets = Array.from({ length: 257 }, (_, index) => `c-${index}`);
+  const invalid = [
+    { query: 'x', enablePGS: true },
+    pgsRequest({ pgsMode: undefined }),
+    pgsRequest({ pgsLevel: undefined }),
+    pgsRequest({ pgsSweep: undefined }),
+    pgsRequest({ pgsSynth: undefined }),
+    pgsRequest({ pgsMode: 'full' }),
+    pgsRequest({ pgsLevel: 'quarter' }),
+    pgsRequest({ pgsConfig: { sweepFraction: 0.25 } }),
+    pgsRequest({ priorContext: { query: 'before', answer: 'after' } }),
+    pgsRequest({ mode: 'quick' }),
+    pgsRequest({ pgsMode: 'fresh', continueFromOperationId: CONTINUE_OPERATION_ID }),
+    pgsRequest({ pgsMode: 'fresh', targetPartitionIds: ['c-alpha'] }),
+    pgsRequest({ pgsMode: 'continue' }),
+    pgsRequest({ pgsMode: 'continue', continueFromOperationId: 'brop_short' }),
+    pgsRequest({ pgsMode: 'continue', continueFromOperationId: CONTINUE_OPERATION_ID,
+      targetPartitionIds: ['c-alpha'] }),
+    pgsRequest({ pgsMode: 'targeted' }),
+    pgsRequest({ pgsMode: 'targeted', targetPartitionIds: [] }),
+    pgsRequest({ pgsMode: 'targeted', targetPartitionIds: ['alpha'] }),
+    pgsRequest({ pgsMode: 'targeted', targetPartitionIds: ['c-alpha', 'c-alpha'] }),
+    pgsRequest({ pgsMode: 'targeted', targetPartitionIds: tooManyTargets }),
+    { query: 'x', pgsMode: 'fresh' },
+    { query: 'x', pgsLevel: 'full' },
+    { query: 'x', continueFromOperationId: CONTINUE_OPERATION_ID },
+    { query: 'x', targetPartitionIds: ['c-alpha'] },
+    { query: 'x', pgsSweep: PGS_PAIRS.pgsSweep },
+    { query: 'x', pgsSynth: PGS_PAIRS.pgsSynth },
+  ];
+  for (const input of invalid) {
+    const result = await brainQueryTool.execute(input, ctx);
+    assert.equal(result.is_error, true, JSON.stringify(input));
+    assert.match(result.content, /invalid_request|invalid/i);
+  }
+  assert.equal(calls, 0);
+});
+
+test('brain_query schema accepts exactly the direct and PGS parameter families', () => {
+  const schema = brainQueryTool.input_schema as any;
+  assert.equal('pgsConfig' in schema.properties, false);
+  assert.deepEqual(schema.properties.pgsMode.enum, ['fresh', 'continue', 'targeted']);
+  assert.deepEqual(schema.properties.pgsLevel.enum, ['skim', 'sample', 'deep', 'full']);
+  assert.equal(schema.properties.continueFromOperationId.pattern, '^brop_[A-Za-z0-9_-]{32}$');
+  assert.equal(schema.properties.targetPartitionIds.uniqueItems, true);
+  assert.equal(schema.properties.targetPartitionIds.maxItems, 256);
+  assert.equal(schema.properties.targetPartitionIds.items.pattern,
+    '^(?:c|h)-[A-Za-z0-9._-]{1,253}$');
+  for (const value of [
+    { query: 'direct' },
+    { query: 'direct', enablePGS: false, mode: 'quick' },
+    { query: 'follow-up', priorContext: { query: 'before', answer: 'after' } },
+    pgsRequest(),
+    pgsRequest({ pgsMode: 'continue', continueFromOperationId: CONTINUE_OPERATION_ID }),
+    pgsRequest({ pgsMode: 'targeted', targetPartitionIds: ['c-alpha'] }),
+  ]) assert.equal(schemaAccepts(schema, value), true, JSON.stringify(value));
+
+  for (const directField of [
+    { mode: 'quick' },
+    { modelSelection: PGS_PAIRS.pgsSweep },
+    { enableSynthesis: true },
+    { includeOutputs: true },
+    { includeThoughts: true },
+    { includeCoordinatorInsights: true },
+    { allowActions: true },
+    { priorContext: { query: 'before', answer: 'after' } },
+  ]) {
+    const value = pgsRequest(directField);
+    assert.equal(schemaAccepts(schema, value), false, JSON.stringify(value));
+  }
+  for (const pgsField of [
+    { pgsMode: 'fresh' },
+    { pgsLevel: 'full' },
+    { continueFromOperationId: CONTINUE_OPERATION_ID },
+    { targetPartitionIds: ['c-alpha'] },
+    { pgsSweep: PGS_PAIRS.pgsSweep },
+    { pgsSynth: PGS_PAIRS.pgsSynth },
+  ]) {
+    const value = { query: 'direct', ...pgsField };
+    assert.equal(schemaAccepts(schema, value), false, JSON.stringify(value));
+  }
+});
+
+test('brain_query rejects priorContext whose query and answer exceed 20,000 characters combined', async () => {
+  let calls = 0;
+  const ctx = makeCtx({ brainOperations: { query: async () => {
+    calls += 1;
+    return completeOperation('op-prior-context', 'ok');
+  } } });
+  const accepted = await brainQueryTool.execute({
+    query: 'follow-up', priorContext: { query: 'q'.repeat(10_000), answer: 'a'.repeat(10_000) },
+  }, ctx);
+  assert.equal(accepted.is_error, undefined);
+  const rejected = await brainQueryTool.execute({
+    query: 'follow-up', priorContext: { query: 'q'.repeat(10_001), answer: 'a'.repeat(10_000) },
+  }, ctx);
+  assert.equal(rejected.is_error, true);
+  assert.match(rejected.content, /priorContext.*invalid/i);
+  assert.equal(calls, 1);
+});
+
+test('export, graph, synthesis, and status schemas expose only executable action shapes', () => {
+  const cases: Array<[Record<string, unknown>, unknown[], unknown[]]> = [
+    [brainQueryExportTool.input_schema,
+      [
+        { operationId: CONTINUE_OPERATION_ID },
+        { operationId: CONTINUE_OPERATION_ID, format: 'json' },
+        { query: 'q', answer: 'a' },
+        { query: 'q', answer: 'a', metadata: { source: 'manual' } },
+      ],
+      [
+        {},
+        { operationId: CONTINUE_OPERATION_ID, resultHandle: 'ignored' },
+        { operationId: CONTINUE_OPERATION_ID, metadata: {} },
+        { operationId: CONTINUE_OPERATION_ID, query: 'q', answer: 'a' },
+        { query: 'q' },
+      ]],
+    [brainMemoryGraphTool.input_schema,
+      [{}, { topN: 10, tag: 'x' }, { exportFull: true }, { exportFull: true, format: 'jsonl' }],
+      [{ format: 'jsonl' }, { exportFull: false, format: 'jsonl' },
+        { exportFull: true, topN: 10 }, { exportFull: true, tag: 'x' }]],
+    [brainSynthesizeTool.input_schema,
+      [{}, { action: 'run', trigger: 'manual' }, { action: 'status' },
+        { action: 'status', operationId: CONTINUE_OPERATION_ID },
+        { action: 'status', generationMarker: 'g1' },
+        { action: 'reattach', operationId: CONTINUE_OPERATION_ID }],
+      [{ action: 'run', operationId: CONTINUE_OPERATION_ID },
+        { action: 'status', trigger: 'manual' },
+        { action: 'status', operationId: CONTINUE_OPERATION_ID, generationMarker: 'g1' },
+        { action: 'reattach' },
+        { action: 'reattach', operationId: CONTINUE_OPERATION_ID, reason: 'x' }]],
+    [brainStatusTool.input_schema,
+      [{}, { target: { agent: 'jerry' } },
+        { operationId: CONTINUE_OPERATION_ID },
+        { operationId: CONTINUE_OPERATION_ID, action: 'wait' }],
+      [{ action: 'status' },
+        { target: { agent: 'jerry' }, operationId: CONTINUE_OPERATION_ID },
+        { target: { agent: 'jerry' }, action: 'status' }]],
+  ];
+  for (const [schema, accepted, rejected] of cases) {
+    for (const value of accepted) assert.equal(schemaAccepts(schema, value), true, JSON.stringify(value));
+    for (const value of rejected) assert.equal(schemaAccepts(schema, value), false, JSON.stringify(value));
+  }
+  assert.equal('resultHandle' in (brainQueryExportTool.input_schema as any).properties, false);
+});
+
+test('the runtime prompt has one canonical brain doctrine with bounded PGS and no bypass', () => {
+  assert.equal(CORE_RUNTIME_PROMPT.match(/### Brain tools/g)?.length, 1);
+  assert.doesNotMatch(CORE_RUNTIME_PROMPT, /## Brain Integration/);
+  assert.match(CORE_RUNTIME_PROMPT, /PGS levels are cumulative/i);
+  assert.match(CORE_RUNTIME_PROMPT, /fresh starts/i);
+  assert.match(CORE_RUNTIME_PROMPT, /continue resumes/i);
+  assert.match(CORE_RUNTIME_PROMPT, /targeted limits/i);
+  assert.match(CORE_RUNTIME_PROMPT, /empty scoped result.*not.*full-brain absence/is);
+  assert.match(CORE_RUNTIME_PROMPT, /priorContext is direct-query only/i);
+  assert.doesNotMatch(CORE_RUNTIME_PROMPT, /brain is unreachable.*shell \+ curl/is);
+});
+
 test('PGS with no useful sweeps is all_failed and is_error true', async () => {
   const failed = failedOperation('op-pgs-all-failed', 'provider_failed');
   failed.operationType = 'pgs';
   failed.result = { answer: null, sweepOutputs: [],
     metadata: { pgs: { successfulSweeps: 0, retryablePartitions: ['sweep-1', 'sweep-2'] } } };
-  const result = await brainQueryTool.execute({ query: 'x', enablePGS: true }, makeCtx({
+  const result = await brainQueryTool.execute(pgsRequest(), makeCtx({
     brainOperations: { query: async () => failed },
   }));
   assert.equal(result.is_error, true);
@@ -433,7 +711,7 @@ test('malformed PGS partials fail closed as invalid_partial_result', async () =>
     operation.result = structuredClone(baseResult);
     operation.error = { code: 'provider_incomplete', message: 'truncated', retryable: true };
     mutate(operation.result);
-    const result = await brainQueryTool.execute({ query: 'x', enablePGS: true }, makeCtx({
+    const result = await brainQueryTool.execute(pgsRequest(), makeCtx({
       brainOperations: { query: async () => operation },
     }));
     assert.equal(result.is_error, true);
@@ -445,7 +723,7 @@ test('malformed PGS partials fail closed as invalid_partial_result', async () =>
   missingError.state = 'partial';
   missingError.result = structuredClone(baseResult);
   missingError.error = null;
-  const result = await brainQueryTool.execute({ query: 'x', enablePGS: true }, makeCtx({
+  const result = await brainQueryTool.execute(pgsRequest(), makeCtx({
     brainOperations: { query: async () => missingError },
   }));
   assert.equal(result.metadata?.classification, 'invalid_partial_result');
@@ -524,7 +802,7 @@ test('brain_synthesize status and reattach never start a second synthesis', asyn
   let starts = 0;
   const statusRequests: Record<string, unknown>[] = [];
   const reattached: string[] = [];
-  const sourceChanged = failedOperation('op-source-changed', 'source_changed');
+  const sourceChanged = failedOperation(CONTINUE_OPERATION_ID, 'source_changed');
   sourceChanged.operationType = 'synthesis';
   const ctx = makeCtx({ brainOperations: {
     synthesize: async () => { starts += 1; return completeOperation('unexpected', 'unexpected'); },
@@ -543,9 +821,9 @@ test('brain_synthesize status and reattach never start a second synthesis', asyn
   assert.match(status.content, /currentGenerationMarker.*g2/s);
   assert.match(status.content, /markerStatus.*changed/s);
   const resumed = await brainSynthesizeTool.execute({
-    action: 'reattach', operationId: 'op-source-changed',
+    action: 'reattach', operationId: CONTINUE_OPERATION_ID,
   }, ctx);
-  assert.deepEqual(reattached, ['op-source-changed']);
+  assert.deepEqual(reattached, [CONTINUE_OPERATION_ID]);
   assert.equal(resumed.is_error, true);
   assert.match(resumed.content, /source_changed/);
   assert.doesNotMatch(resumed.content, /generation.*complete/i);
@@ -555,7 +833,8 @@ test('brain_synthesize status and reattach never start a second synthesis', asyn
 test('brain_status exposes status, result, wait, and exact cancel by operation ID', async () => {
   const inspected: string[] = [];
   const resumed: string[] = [];
-  const running = completeOperation('op-control', '');
+  const operationId = 'brop_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC';
+  const running = completeOperation(operationId, '');
   running.state = 'running';
   running.attachmentState = 'detached';
   const ctx = makeCtx({ brainOperations: {
@@ -569,11 +848,11 @@ test('brain_status exposes status, result, wait, and exact cancel by operation I
     resumeOperation: async (operationId: string) => { resumed.push(operationId); return running; },
   } });
   for (const action of ['status', 'result', 'cancel'] as const) {
-    await brainStatusTool.execute({ operationId: 'op-control', action }, ctx);
+    await brainStatusTool.execute({ operationId, action }, ctx);
   }
-  const waited = await brainStatusTool.execute({ operationId: 'op-control', action: 'wait' }, ctx);
-  assert.deepEqual(inspected, ['op-control:status', 'op-control:result', 'op-control:cancel']);
-  assert.deepEqual(resumed, ['op-control']);
+  const waited = await brainStatusTool.execute({ operationId, action: 'wait' }, ctx);
+  assert.deepEqual(inspected, [`${operationId}:status`, `${operationId}:result`, `${operationId}:cancel`]);
+  assert.deepEqual(resumed, [operationId]);
   assert.match(waited.content, /running|Detached/i);
   assert.deepEqual(Object.keys((brainStatusTool.input_schema as any).properties)
     .filter((key) => ['operationType', 'waitMs'].includes(key)), []);
@@ -657,7 +936,7 @@ test('strict schemas and executors reject coercion, null, extras, and legacy mod
     { query: 'x', modelSelection: { provider: 'x'.repeat(257), model: 'gpt' } },
     { query: 'x', modelSelection: { provider: 'openai', model: 'x'.repeat(257) } },
     { query: 'x', enablePGS: true, modelSelection: { provider: 'openai', model: 'gpt' } },
-    { query: 'x', enablePGS: false, pgsMode: 'full' },
+    { query: 'x', enablePGS: false, pgsMode: 'fresh' },
   ];
   for (const input of invalidQueries) {
     const result = await brainQueryTool.execute(input, makeCtx());
@@ -709,6 +988,20 @@ test('ad-hoc export metadata rejects cycles, nonfinite leaves, and oversized JSO
     assert.equal(result.is_error, true);
     assert.match(result.content, /invalid/i);
   }
+});
+
+test('ad-hoc export publishes and enforces the one-million-character answer ceiling', async () => {
+  const schema = brainQueryExportTool.input_schema as any;
+  assert.equal(schema.properties.answer.maxLength, 1_000_000);
+  let calls = 0;
+  const result = await brainQueryExportTool.execute({
+    query: 'q', answer: 'a'.repeat(1_000_001), format: 'markdown',
+  }, makeCtx({ brainOperations: {
+    exportAdHocResult: async () => { calls += 1; return {}; },
+  } }));
+  assert.equal(result.is_error, true);
+  assert.match(result.content, /answer_invalid|invalid_request|invalid/i);
+  assert.equal(calls, 0);
 });
 
 test('JSON metadata validation preserves dangerous keys without prototype mutation', () => {

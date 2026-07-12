@@ -35,8 +35,12 @@ const {
   requireCompleteProviderResult,
 } = require('./provider-completion');
 const { boundedJsonStringify } = require('./bounded-json');
-const { projectPinnedQuery } = require('./pinned-query-projection');
+const { boundedLimits, projectPinnedQuery } = require('./pinned-query-projection');
 const { QUERY_OPERATION_LIMITS } = require('./brain-operation-limits');
+const {
+  assertProviderInputWithinBudget,
+  resolveProviderInputBudget,
+} = require('./provider-input-budget');
 
 const CLUSTER_SNAPSHOT_DEFAULT_TTL = Number.parseInt(
   process.env.COSMO_CLUSTER_SNAPSHOT_TTL || '4000',
@@ -1631,14 +1635,6 @@ STYLE:
       throw operationError('provider_model_mismatch', 'Provider client identity mismatch');
     }
 
-    const projection = await this.projectPinnedQuery({
-      sourcePin,
-      query,
-      signal,
-      limits: options.limits || this.operationLimits || {},
-    });
-    operationThrowIfAborted(signal);
-
     const mode = typeof options.mode === 'string' && options.mode.trim()
       ? options.mode.trim()
       : 'normal';
@@ -1648,6 +1644,63 @@ STYLE:
         answer: String(options.priorContext.answer || ''),
       }
       : null;
+    const instructions = [
+      'Answer from the pinned Home23 brain evidence supplied in the input.',
+      'Distinguish evidence from inference and do not claim coverage beyond the pinned source.',
+      'Return a direct, useful answer to the query.',
+    ].join(' ');
+    const selectedLimits = boundedLimits(options.limits || this.operationLimits || {});
+    const promptBudget = resolveProviderInputBudget(capabilities, {
+      maxInputBytes: selectedLimits.maxPromptBytes,
+      label: 'Query prompt',
+    });
+    const maxPromptBytes = promptBudget.inputBudgetBytes;
+    const sourceSummary = typeof sourcePin.summarize === 'function'
+      ? await sourcePin.summarize({ signal })
+      : sourcePin.descriptor?.summary || null;
+    operationThrowIfAborted(signal);
+    const promptScaffold = boundedJsonStringify({
+      query,
+      mode,
+      priorContext,
+      source: {
+        // projectPinnedQuery may obtain an evidence-only revision after the
+        // scan. Reserve the longest valid numeric revision here so that path
+        // cannot make the final prompt longer than the pre-scan scaffold.
+        revision: Number.MAX_SAFE_INTEGER,
+        summary: sourceSummary,
+        nodes: [],
+        edges: [],
+      },
+    }, {
+      maxBytes: maxPromptBytes,
+      reservedBytes: utf8Bytes(instructions),
+      label: 'Query prompt',
+    });
+    const separatorReserve = Math.max(0, selectedLimits.maxNodes - 1)
+      + Math.max(0, selectedLimits.maxEdges - 1);
+    const promptProjectionBudget = maxPromptBytes
+      - promptScaffold.totalBytes
+      - separatorReserve;
+    if (!Number.isSafeInteger(promptProjectionBudget) || promptProjectionBudget <= 0) {
+      throw operationError('result_too_large', 'Query prompt leaves no projection byte budget');
+    }
+    const projectionLimits = {
+      ...selectedLimits,
+      maxProjectionBytes: Math.min(
+        selectedLimits.maxProjectionBytes,
+        promptProjectionBudget,
+      ),
+    };
+    const projection = await this.projectPinnedQuery({
+      sourcePin,
+      query,
+      signal,
+      limits: projectionLimits,
+      sourceSummary,
+    });
+    operationThrowIfAborted(signal);
+
     const promptPayload = {
       query,
       mode,
@@ -1659,17 +1712,6 @@ STYLE:
         edges: projection.edges,
       },
     };
-    const instructions = [
-      'Answer from the pinned Home23 brain evidence supplied in the input.',
-      'Distinguish evidence from inference and do not claim coverage beyond the pinned source.',
-      'Return a direct, useful answer to the query.',
-    ].join(' ');
-    const maxPromptBytes = Number.isSafeInteger((options.limits || {}).maxPromptBytes)
-      ? options.limits.maxPromptBytes
-      : QUERY_OPERATION_LIMITS.maxPromptBytes;
-    if (maxPromptBytes <= 0 || maxPromptBytes > QUERY_OPERATION_LIMITS.maxPromptBytes) {
-      throw operationError('invalid_request', 'Invalid query prompt limit');
-    }
     const serializedPrompt = boundedJsonStringify(promptPayload, {
       maxBytes: maxPromptBytes,
       reservedBytes: utf8Bytes(instructions),
@@ -1677,11 +1719,14 @@ STYLE:
     });
     const input = serializedPrompt.json;
     const promptBytes = serializedPrompt.totalBytes;
-    const maxResultBytes = lowerTrustedOutputBytes(
-      (options.limits || {}).maxResultBytes,
-      QUERY_OPERATION_LIMITS.maxResultBytes,
-      'query result',
-    );
+    const maxResultBytes = selectedLimits.maxResultBytes;
+    assertProviderInputWithinBudget({
+      capabilities,
+      maxInputBytes: selectedLimits.maxPromptBytes,
+      instructions,
+      input,
+      label: 'Query prompt',
+    });
 
     this._emitOperationEvent({
       type: 'progress',
@@ -1738,6 +1783,9 @@ STYLE:
           model,
           mode,
           promptBytes,
+          promptBudgetBytes: promptBudget.inputBudgetBytes,
+          inputBudgetTokens: promptBudget.inputBudgetTokens,
+          contextWindowTokens: promptBudget.contextWindowTokens,
           projection: projection.stats,
         },
         sourceEvidence: projection.sourceEvidence,
@@ -1793,7 +1841,11 @@ STYLE:
       query,
       pgsSweep: options.pgsSweep,
       pgsSynth: options.pgsSynth,
+      pgsMode: options.pgsMode,
+      pgsLevel: options.pgsLevel,
+      targetPartitionIds: options.targetPartitionIds,
       pgsConfig: options.pgsConfig || {},
+      sessionStorage: options.sessionStorage,
       signal,
       reportEvent: options.reportEvent || options.onEvent || this.operationEventSink,
       onChunk: options.onChunk || null,

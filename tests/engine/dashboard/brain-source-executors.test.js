@@ -172,6 +172,37 @@ test('registerable source executors return standard envelopes', async () => {
   }
 });
 
+test('graph operation routes PGS partition preflight through the canonical pinned source', async () => {
+  const context = await baseContext();
+  let partitionCalls = 0;
+  const executors = createSourceOperationExecutors({
+    searchService: { async search() { throw new Error('unexpected search'); } },
+    brainSourceService: {
+      async status() { throw new Error('unexpected status'); },
+      async graph() { throw new Error('bounded graph sample must not stand in for PGS preflight'); },
+      async pgsPartitions(request) {
+        partitionCalls += 1;
+        assert.equal(request.sourcePin, context.sourcePin);
+        assert.equal(request.identity.operationId, 'op-1');
+        return {
+          partitions: [{ partitionId: 'c-alpha', nodeCount: 2, estimatedWorkUnits: 1 }],
+          complete: true,
+          evidence: evidence({ canonicalRoot: context.target.canonicalRoot }),
+        };
+      },
+    },
+    graphExportExecutor: async () => { throw new Error('unexpected export'); },
+  });
+  const result = await executors.get('graph')({
+    ...context,
+    operationType: 'graph',
+    parameters: { view: 'pgs_partitions' },
+  });
+  assert.equal(result.state, 'complete');
+  assert.equal(result.result.complete, true);
+  assert.equal(partitionCalls, 1);
+});
+
 test('graph export streams NDJSON artifact and rejects caller-controlled destinations', async () => {
   const context = await baseContext();
   const executor = createGraphExportExecutor();

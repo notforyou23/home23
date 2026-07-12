@@ -11,6 +11,7 @@ const {
   openMemorySource,
   projectLegacyResidentSidecars,
   projectLegacyResearchSnapshot,
+  resolveMemorySourceReadLimits,
   resolveMemorySourceSelection,
   throwIfAborted,
 } = require('../../shared/memory-source');
@@ -22,11 +23,40 @@ function sortedMutationBoundaries(canonicalRoot) {
 }
 
 async function createTempOperationRoot() {
-  return fsp.mkdtemp(path.join(os.tmpdir(), 'home23-cosmo-memory-source-'));
+  const created = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-cosmo-memory-source-'));
+  return fsp.realpath(created);
+}
+
+function sameIdentity(stat, identity) {
+  return Boolean(stat && identity && stat.dev === identity.dev && stat.ino === identity.ino);
+}
+
+async function removeOwnedOperationRoot(operationRoot, identity) {
+  if (typeof operationRoot !== 'string' || !identity) return;
+  const stat = await fsp.lstat(operationRoot).catch((error) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (stat === null) return;
+  if (stat.isSymbolicLink() || !stat.isDirectory()
+      || !sameIdentity(stat, identity)
+      || await fsp.realpath(operationRoot) !== operationRoot) {
+    throw memorySourceError(
+      'invalid_memory_source',
+      'owned COSMO operation root identity changed',
+      { retryable: false },
+    );
+  }
+  await fsp.rm(operationRoot, { recursive: true, force: false });
 }
 
 async function openCosmoMemorySource(brainDir, options = {}) {
   throwIfAborted(options.signal);
+  const hooks = options._testHooks || {};
+  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)
+      || Object.values(hooks).some((hook) => typeof hook !== 'function')) {
+    throw memorySourceError('invalid_request', 'invalid COSMO memory source test hooks');
+  }
   const selection = await resolveMemorySourceSelection(brainDir);
   const canonicalRoot = selection.canonicalRoot;
   const mutationBoundaries = sortedMutationBoundaries(canonicalRoot);
@@ -49,17 +79,44 @@ async function openCosmoMemorySource(brainDir, options = {}) {
   }
 
   const ownsOperationRoot = !options.operationRoot;
-  const operationRoot = options.operationRoot || await createTempOperationRoot();
-  const scratchQuota = options.scratchQuota || await createOperationScratchQuota({ operationRoot });
+  let operationRoot = options.operationRoot || null;
+  let operationRootIdentity = null;
+  let scratchQuota = options.scratchQuota || null;
   let projection = null;
   let source = null;
   try {
+    if (ownsOperationRoot) {
+      operationRoot = await createTempOperationRoot();
+      const stat = await fsp.lstat(operationRoot);
+      if (stat.isSymbolicLink() || !stat.isDirectory()
+          || await fsp.realpath(operationRoot) !== operationRoot) {
+        throw memorySourceError(
+          'invalid_memory_source',
+          'owned COSMO operation root is unsafe',
+          { retryable: false },
+        );
+      }
+      operationRootIdentity = { dev: stat.dev, ino: stat.ino };
+    }
+    if (!scratchQuota) {
+      scratchQuota = await createOperationScratchQuota({
+        operationRoot,
+        signal: options.signal,
+      });
+    }
+    const projectionReadLimits = resolveMemorySourceReadLimits({
+      quotaMaxBytes: scratchQuota.maxBytes,
+    });
     if (selection.authority === 'legacy-resident-sidecars') {
       projection = await projectLegacyResidentSidecars({
         canonicalRoot,
         operationRoot,
         scratchQuota,
         signal: options.signal,
+        maxInputBytes: options.maxInputBytes,
+        maxDecompressedBytes: options.maxDecompressedBytes,
+        maxOverlayMemoryBytes: options.maxOverlayMemoryBytes,
+        maxOverlayDiskBytes: options.maxOverlayDiskBytes,
       });
     } else if (selection.authority === 'legacy-research-snapshot') {
       const stateFile = selection.targetFiles.find((file) => file.role === 'legacy-state')?.path;
@@ -71,6 +128,8 @@ async function openCosmoMemorySource(brainDir, options = {}) {
         requesterAgent: options.requesterAgent || 'cosmo',
         scratchQuota,
         signal: options.signal,
+        maxInputBytes: options.maxInputBytes,
+        maxDecompressedBytes: options.maxDecompressedBytes,
       });
     } else {
       throw memorySourceError('source_unavailable', 'no COSMO memory source available', { retryable: true });
@@ -78,6 +137,7 @@ async function openCosmoMemorySource(brainDir, options = {}) {
 
     source = await openMemorySource(projection.projectionRoot, {
       ...options,
+      ...projectionReadLimits,
       operationRoot,
       scratchQuota,
       pinnedManifest: projection.manifest,
@@ -92,6 +152,28 @@ async function openCosmoMemorySource(brainDir, options = {}) {
       },
     });
     const closeSource = source.close?.bind(source);
+    let closePromise = null;
+    const closeOwnedSource = () => {
+      closePromise ||= (async () => {
+        let firstError = null;
+        try {
+          await closeSource?.();
+          await hooks.afterSourceClose?.({ operationRoot });
+        } catch (error) {
+          firstError = error;
+        }
+        if (!options.scratchQuota) scratchQuota?.close();
+        if (ownsOperationRoot) {
+          try {
+            await removeOwnedOperationRoot(operationRoot, operationRootIdentity);
+          } catch (error) {
+            firstError ||= error;
+          }
+        }
+        if (firstError) throw firstError;
+      })();
+      return closePromise;
+    };
     return Object.assign(source, {
       descriptor: projection.descriptor || source.descriptor,
       projectionRoot: projection.projectionRoot,
@@ -110,11 +192,7 @@ async function openCosmoMemorySource(brainDir, options = {}) {
         });
       },
       async close() {
-        await closeSource?.();
-        if (!options.scratchQuota) scratchQuota.close();
-        if (ownsOperationRoot) {
-          await fsp.rm(operationRoot, { recursive: true, force: true }).catch(() => {});
-        }
+        await closeOwnedSource();
       },
       async release() {
         await this.close();
@@ -122,9 +200,9 @@ async function openCosmoMemorySource(brainDir, options = {}) {
     });
   } catch (error) {
     await source?.close?.().catch(() => {});
-    if (!options.scratchQuota) scratchQuota.close();
+    if (!options.scratchQuota) scratchQuota?.close();
     if (ownsOperationRoot) {
-      await fsp.rm(operationRoot, { recursive: true, force: true }).catch(() => {});
+      await removeOwnedOperationRoot(operationRoot, operationRootIdentity).catch(() => {});
     }
     throw error;
   }

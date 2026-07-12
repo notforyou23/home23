@@ -9,7 +9,8 @@
  * alongside the user message so the agent knows the user's workspace state.
  */
 
-import type { Request, Response } from 'express';
+import type { Server } from 'node:http';
+import type { Express, Request, Response } from 'express';
 import type { AgentLoop } from '../agent/loop.js';
 import { executeTrackedTurn } from '../agent/turn-entrypoint.js';
 
@@ -17,6 +18,26 @@ export interface BridgeConfig {
   agent: AgentLoop;
   token: string;
   agentName: string;
+}
+
+export async function listenBridgeApp(app: Express, port: number): Promise<Server> {
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw Object.assign(new Error('bridge_port_invalid'), { code: 'bridge_port_invalid' });
+  }
+  return await new Promise<Server>((resolve, reject) => {
+    const server = app.listen(port);
+    const onListening = () => {
+      server.off('error', onError);
+      resolve(server);
+    };
+    const onError = (error: NodeJS.ErrnoException) => {
+      server.off('listening', onListening);
+      const code = error.code === 'EADDRINUSE' ? 'bridge_port_in_use' : 'bridge_listen_failed';
+      reject(Object.assign(new Error(`${code}:${port}`, { cause: error }), { code }));
+    };
+    server.once('listening', onListening);
+    server.once('error', onError);
+  });
 }
 
 function writeSse(res: Response, data: Record<string, unknown>): void {

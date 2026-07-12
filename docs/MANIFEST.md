@@ -45,7 +45,7 @@ The COSMO-derived cognitive loop engine. Handles thinking, dreaming, brain growt
 The agent runtime layer: AgentLoop, tools, channels, routes, scheduler, worker routing, and situational awareness.
 
 ### Structure
-- `agent/` — Core agent loop, 49 registered tools, LLM integration, workers, skills, memory promotion
+- `agent/` — Core agent loop, discoverable tool registry, LLM integration, workers, skills, agency, and memory promotion. Brain access includes catalog, recent operations, canonical PGS partitions, search, direct/PGS query, export, graph, synthesis, and status; research access includes active/completed run discovery.
 - `channels/` — Telegram, Discord, iMessage, and webhook channel adapters
 - `routes/` — HTTP bridge endpoints (evobrew, chat, dashboard)
 - `brain/` — Brain query and memory interface
@@ -150,6 +150,7 @@ Full research engine with 9-tab UI, multi-phase research runs, and brain integra
 
 - start-agent.sh — Agent start helper
 - stop-agent.sh — Agent stop helper
+- rebuild-ann-indexes.sh — Rebuild configured agents' ANN indexes, or a bounded explicit list of agent selectors, without hardcoded installation names
 
 ## What Does NOT Ship
 

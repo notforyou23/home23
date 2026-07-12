@@ -29,6 +29,56 @@ export interface BrainCatalog {
   brains: BrainCatalogEntry[];
 }
 
+export interface QueryModelCatalogEntry {
+  id: string;
+  name?: string | null;
+  provider: string;
+  providerLabel?: string | null;
+  kind?: string | null;
+  source?: string | null;
+}
+
+export interface QueryCapabilityCatalog {
+  available: boolean;
+  reason?: string | null;
+  models: QueryModelCatalogEntry[];
+  defaults: Record<string, unknown>;
+  streaming?: boolean;
+  limits?: Record<string, unknown>;
+}
+
+export interface ResearchRunSummary {
+  runId: string;
+  ownerAgent: string;
+  operationId: string;
+  state: string;
+  topic: string;
+  createdAt: string | null;
+  startedAt: string | null;
+  updatedAt: string;
+  completedAt: string | null;
+  stoppedAt: string | null;
+  continuable: boolean;
+  stoppable: boolean;
+  error: Record<string, unknown> | null;
+}
+
+export interface ResearchRunList {
+  state: 'recent' | 'active';
+  runs: ResearchRunSummary[];
+  count: number;
+}
+
+export interface ActiveResearchRun {
+  active: boolean;
+  runName?: string;
+  topic?: string;
+  startedAt?: string;
+  processCount?: number | null;
+  state?: string;
+  operationId?: string;
+}
+
 export interface ResolvedBrainTarget extends BrainCatalogEntry {
   accessMode: 'own' | 'read-only';
   catalogRevision: string;
@@ -110,6 +160,24 @@ export type BrainNonterminalOperation = Pick<BrainOperationRecord,
   | 'lastProviderActivityAt' | 'lastProgressAt'> & {
     state: 'queued' | 'running';
   };
+
+export interface BrainOperationSummary {
+  operationId: string;
+  requestId: string;
+  operationType: string;
+  requesterAgent: string;
+  target: BrainOperationRecord['target'];
+  state: BrainOperationState;
+  phase: string | null;
+  startedAt: string | null;
+  updatedAt: string;
+  completedAt: string | null;
+  lastProviderActivityAt: string | null;
+  lastProgressAt: string | null;
+  error: BrainOperationRecord['error'];
+  resultHandle: string | null;
+  pgsSession: Record<string, unknown> | null;
+}
 
 export interface BrainOperationEventGap {
   type: 'event_gap';
@@ -234,7 +302,6 @@ export interface BrainQueryRequest {
   mode?: 'quick' | 'full' | 'expert' | 'dive';
   modelSelection?: { provider: string; model: string };
   enablePGS?: boolean;
-  pgsConfig?: { sweepFraction?: number };
   pgsSweep?: { provider: string; model: string };
   pgsSynth?: { provider: string; model: string };
   enableSynthesis?: boolean;
@@ -242,6 +309,9 @@ export interface BrainQueryRequest {
   includeThoughts?: boolean;
   includeCoordinatorInsights?: boolean;
   allowActions?: boolean;
-  pgsMode?: 'full';
+  pgsMode?: 'fresh' | 'continue' | 'targeted';
+  pgsLevel?: 'skim' | 'sample' | 'deep' | 'full';
+  continueFromOperationId?: string;
+  targetPartitionIds?: string[];
   priorContext?: { query: string; answer: string } | null;
 }
