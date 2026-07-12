@@ -152,6 +152,8 @@ test('brain discovery tools expose exact model pairs, recent operations, and can
   const catalog = await brainCatalogTool.execute({}, ctx);
   assert.match(catalog.content, /"provider": "openai"/);
   assert.match(catalog.content, /"provider": "anthropic"/);
+  assert.match(catalog.content, /"selectable": true/);
+  assert.doesNotMatch(catalog.content, /"available": true/);
   const operations = await brainOperationsListTool.execute({ state: 'recent', limit: 5 }, ctx);
   assert.match(operations.content, new RegExp(CONTINUE_OPERATION_ID));
   const partitions = await brainPgsPartitionsTool.execute({ target: { agent: 'jerry' } }, ctx);

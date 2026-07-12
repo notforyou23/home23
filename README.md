@@ -424,7 +424,7 @@ Your agent has nine tools for discovering and working with living brains through
 
 | Tool | Purpose |
 |---|---|
-| `brain_catalog` | Discover requester-authorized brains and exact provider/model pairs before querying |
+| `brain_catalog` | Discover requester-authorized brains and exact configured/selectable provider/model pairs before querying; catalog selection is not credential health |
 | `brain_operations_list` | Rediscover recent or nonterminal requester-owned operations when an operation ID is not already in context |
 | `brain_pgs_partitions` | List bounded canonical partition IDs and estimates before targeted PGS |
 | `brain_status` | Node count, cluster count, last cycle, activity over recent windows |

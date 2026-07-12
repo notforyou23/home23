@@ -56,6 +56,7 @@ test('public Brain inventory and examples describe named durable PGS and evidenc
   assert.match(readme, /cumulative target union/i);
   assert.match(readme, /use `full` to run every work unit/i);
   assert.match(readme, /include all earlier target IDs/i);
+  assert.match(readme, /catalog selection is not credential health/i);
   assert.doesNotMatch(readme, /\b49 registered tools\b/);
 });
 
@@ -70,6 +71,13 @@ test('agent PGS guidance explains targeted union expansion and exact reuse', () 
     assert.match(source, /use (?:`full`|full) (?:when|to)/i, relativePath);
     assert.match(source, /(?:all earlier|every earlier|all prior) (?:partition |target )?IDs/i, relativePath);
   }
+});
+
+test('agent guidance never treats configured model selection as credential health', () => {
+  const prompt = read('src/agents/system-prompt.ts');
+  assert.match(prompt, /configured\/selectable provider-model pairs/i);
+  assert.match(prompt, /not that current credentials were live-probed/i);
+  assert.match(prompt, /typed authentication failure/i);
 });
 
 test('active Jerry instructions use discovery, named PGS, continuation, and durable waits', { skip: !fs.existsSync(path.join(root, localInstructions[0])) }, () => {

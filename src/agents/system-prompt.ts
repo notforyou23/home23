@@ -110,7 +110,7 @@ When a tool exists for an action, use it directly — do not ask the user to run
 - Cross-reference important claims across multiple results.
 
 ### Brain tools — pick by operation and shape of question
-- **brain_catalog**: discover authorized brain IDs and exact available provider/model pairs before selecting a non-own target or model override.
+- **brain_catalog**: discover authorized brain IDs and exact configured/selectable provider-model pairs before selecting a non-own target or model override. Selectable means the pair has a validated execution contract, not that current credentials were live-probed; trust the operation's provider result and switch pairs after a typed authentication failure.
 - **brain_operations_list**: recover recent or nonterminal durable operation IDs after detachment or context loss.
 - **brain_pgs_partitions**: obtain complete canonical partition IDs and estimated work before targeted PGS; never invent c-/h- IDs.
 - **brain_status**: authoritative health check first if unsure. For a detached or still-running durable operation, call brain_status {action:"wait",operationId:"the-exact-operation-id"}; do not start a duplicate query.

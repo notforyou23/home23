@@ -330,7 +330,7 @@ async function executeBrainCatalog(
       purpose,
       provider: typeof provider === 'string' ? provider : null,
       model: typeof model === 'string' ? model : null,
-      available: typeof provider === 'string' && typeof model === 'string'
+      selectable: typeof provider === 'string' && typeof model === 'string'
         && models.some((entry) => entry.provider === provider && entry.model === model),
     }));
     return boundedJson('brain_catalog', {
@@ -678,7 +678,7 @@ export const brainSearchTool: ToolDefinition = {
 
 export const brainCatalogTool: ToolDefinition = {
   name: 'brain_catalog',
-  description: 'List authorized brains and exact available provider/model pairs before selecting a target or query model.',
+  description: 'List authorized brains and exact configured/selectable provider-model pairs; selection is not a credential health probe.',
   input_schema: { type: 'object', additionalProperties: false, properties: {} },
   execute: executeBrainCatalog,
 };
