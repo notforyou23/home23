@@ -12,6 +12,7 @@ module.exports = {
   ...require('./pins.cjs'),
   ...require('./operation-context.cjs'),
   ...require('./legacy-projection.cjs'),
+  ...require('./legacy-migration.cjs'),
   ...require('./legacy-snapshot.cjs'),
   ...require('./writer.cjs'),
   ...require('./graph.cjs'),

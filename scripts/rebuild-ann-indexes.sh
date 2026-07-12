@@ -1,4 +1,6 @@
 #!/bin/bash
+set -o pipefail
+
 # Nightly rebuild of the HNSW ANN search indexes for all real agent brains.
 # Dashboards auto-reload the index when memory-ann.meta.json mtime changes,
 # so no dashboard restart is needed after a rebuild.
@@ -9,8 +11,9 @@ RC=0
 
 for AGENT in "${AGENTS[@]}"; do
   BRAIN_DIR="$HOME23_ROOT/instances/$AGENT/brain"
-  if [ ! -f "$BRAIN_DIR/memory-nodes.jsonl.gz" ]; then
-    echo "[rebuild-ann] skip $AGENT: no sidecar"
+  if [ ! -f "$BRAIN_DIR/memory-manifest.json" ]; then
+    echo "[rebuild-ann] $AGENT FAILED code=ann_manifest_missing"
+    RC=1
     continue
   fi
   echo "[rebuild-ann] building $AGENT..."

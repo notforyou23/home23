@@ -36,6 +36,7 @@ const {
   readJsonl,
   readManifest,
   rewriteMemoryBase,
+  withMemorySourceLock,
 } = require('../../../shared/memory-source');
 
 const NODES_FILE = 'memory-nodes.jsonl.gz';
@@ -182,12 +183,15 @@ async function writeMemorySidecars(brainDir, memory, options = {}) {
   };
 }
 
-async function appendMemoryDelta(brainDir, changes = {}) {
-  const manifest = await readManifest(brainDir).catch(() => null);
+async function appendMemoryDelta(brainDir, changes = {}, options = {}) {
+  const lockRoot = options.lockRoot || defaultSidecarLockRoot(brainDir);
+  const manifest = await readManifest(brainDir);
   if (manifest) {
     const result = await appendMemoryRevision(brainDir, normalizeCompatibilityChanges(changes), {
-      lockRoot: defaultSidecarLockRoot(brainDir),
+      lockRoot,
       summary: changes.summary || manifest.summary,
+      signal: options.signal,
+      lockTimeoutMs: options.lockTimeoutMs,
     });
     return { count: result.count, bytes: result.bytes, manifest: result.manifest };
   }
@@ -198,46 +202,64 @@ async function appendMemoryDelta(brainDir, changes = {}) {
     (changes.removedNodeIds || []).length ||
     (changes.removedEdgeKeys || []).length
   );
-  if (!hasChanges) {
-    return { count: 0, bytes: fs.existsSync(p) ? fs.statSync(p).size : 0 };
-  }
-
+  const normalized = normalizeCompatibilityChanges(changes);
   const entries = function* deltaEntries() {
-    for (const node of changes.nodes || []) {
+    for (const node of normalized.nodes) {
       yield { op: 'upsert_node', record: serializeNodeRecord(node) };
     }
-    for (const edge of changes.edges || []) {
+    for (const edge of normalized.edges) {
       yield { op: 'upsert_edge', record: edge };
     }
-    for (const id of changes.removedNodeIds || []) {
+    for (const id of normalized.removedNodeIds) {
       yield { op: 'remove_node', id };
     }
-    for (const key of changes.removedEdgeKeys || []) {
+    for (const key of normalized.removedEdgeKeys) {
       yield { op: 'remove_edge', key };
     }
   };
 
   await fs.promises.mkdir(brainDir, { recursive: true });
-  const stream = fs.createWriteStream(p, { flags: 'a', encoding: 'utf8' });
-  const drain = () => new Promise((resolve) => stream.once('drain', resolve));
-  let count = 0;
-
-  try {
-    for (const entry of entries()) {
-      const line = JSON.stringify(entry) + '\n';
-      if (!stream.write(line)) await drain();
-      count++;
+  await options.beforeLock?.();
+  const legacyResult = await withMemorySourceLock(brainDir, {
+    lockRoot,
+    signal: options.signal,
+    lockTimeoutMs: options.lockTimeoutMs ?? 30 * 60 * 1000,
+    _testHooks: options._testHooks,
+  }, async () => {
+    // A first safe rewrite can publish manifest-v1 while an engine save is
+    // waiting. Re-read authority only after owning the same external lock so
+    // the save cannot append to the retired legacy journal after cutover.
+    const lockedManifest = await readManifest(brainDir);
+    if (lockedManifest) return { route: 'manifest', manifest: lockedManifest };
+    if (!hasChanges) {
+      return { route: 'legacy', count: 0, bytes: fs.existsSync(p) ? fs.statSync(p).size : 0 };
     }
-  } catch (error) {
-    stream.destroy();
-    throw error;
-  }
 
-  await new Promise((resolve, reject) => {
-    stream.once('error', reject);
-    stream.end(resolve);
+    const handle = await fs.promises.open(p, 'a', 0o600);
+    let count = 0;
+    try {
+      for (const entry of entries()) {
+        await handle.write(`${JSON.stringify(entry)}\n`, null, 'utf8');
+        count++;
+      }
+      await handle.sync();
+      const stat = await handle.stat();
+      return { route: 'legacy', count, bytes: stat.size };
+    } finally {
+      await handle.close();
+    }
   });
-  return { count, bytes: fs.statSync(p).size };
+
+  if (legacyResult.route === 'manifest') {
+    const result = await appendMemoryRevision(brainDir, normalized, {
+      lockRoot,
+      summary: changes.summary || legacyResult.manifest.summary,
+      signal: options.signal,
+      lockTimeoutMs: options.lockTimeoutMs,
+    });
+    return { count: result.count, bytes: result.bytes, manifest: result.manifest };
+  }
+  return { count: legacyResult.count, bytes: legacyResult.bytes };
 }
 
 async function readMemoryDeltas(brainDir, handlers = {}) {
