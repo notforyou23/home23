@@ -7,6 +7,8 @@ import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const {
+  DURABLE_OPERATION_SOURCE_LOCK_WAIT_MAX_MS,
+  coordinatorPinPath,
   createMemorySourcePinProvider,
   createOperationScratchQuota,
   durableBrainOperationRoot,
@@ -15,8 +17,12 @@ const {
   pruneStalePins,
   retireUnpinnedSources,
   sourceDescriptorDigest,
+  withMemorySourceLock,
   writeJsonlGzAtomic,
 } = require('../../shared/memory-source');
+const {
+  createDurableOperationLockCapability,
+} = require('../../shared/memory-source/durable-lock-authority.cjs');
 const { createDefaultLoadAnn } = require('../../engine/src/dashboard/memory-search');
 const {
   BrainOperationStore,
@@ -307,6 +313,17 @@ test('pin provider returns exactly descriptor and digest and persists private co
   assert.equal('close' in result, false);
   assert.equal('release' in result, false);
   assert.equal('physicalRoot' in result.descriptor, false);
+  const scratchPath = path.join(
+    durableOperationRoot(home23Root, 'jerry', 'brop_test_pin'),
+    'scratch',
+  );
+  const scratchStat = await fsp.lstat(scratchPath);
+  assert.equal(scratchStat.isDirectory(), true);
+  assert.equal(scratchStat.isSymbolicLink(), false);
+  assert.equal(
+    await fsp.realpath(scratchPath),
+    path.join(await fsp.realpath(path.dirname(scratchPath)), 'scratch'),
+  );
   const recordPath = path.join(
     durableOperationRoot(home23Root, 'jerry', 'brop_test_pin'),
     'coordinator-source-pin.json',
@@ -333,6 +350,153 @@ test('pin provider returns exactly descriptor and digest and persists private co
     );
   }
   assert.deepEqual(await provider.pin(brain, 'brop_test_pin'), result);
+});
+
+test('durable process-pin open and release wait past the generic 30-second lock window', async (t) => {
+  const home23Root = await fsp.realpath(await tempDir('home23-durable-lock-wait-home-'));
+  const brain = await writeManifestBrain();
+  const operationId = 'brop_durable_lock_wait';
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
+  const lockRoot = path.join(home23Root, 'runtime', 'brain-source-locks');
+  const clock = { value: Date.now(), now() { return this.value; } };
+  let phaseStartedAt = clock.value;
+  let releaseHolder = null;
+  const retryElapsed = [];
+  const provider = createMemorySourcePinProvider({
+    home23Root,
+    requesterAgent: 'jerry',
+    _durableLockClock: clock,
+    _durableLockRetryMs: 1,
+    _durableLockJitterMs: 0,
+    _durableLockTestHooks: {
+      beforeLockRetry({ elapsedMs }) {
+        retryElapsed.push(elapsedMs);
+        clock.value += 20_000;
+        if (clock.value - phaseStartedAt > 30_000) releaseHolder?.();
+      },
+    },
+  });
+  t.after(() => Promise.all([
+    fsp.rm(home23Root, { recursive: true, force: true }),
+    fsp.rm(brain, { recursive: true, force: true }),
+  ]));
+  const control = () => ({
+    hardDeadlineAt: new Date(
+      clock.value + DURABLE_OPERATION_SOURCE_LOCK_WAIT_MAX_MS,
+    ).toISOString(),
+    signal: null,
+    cleanupSignal: null,
+  });
+  const authority = () => createDurableOperationLockCapability(control());
+
+  async function holdSourceLock() {
+    const entered = deferred();
+    const released = deferred();
+    releaseHolder = released.resolve;
+    const held = withMemorySourceLock(brain, { lockRoot }, async () => {
+      entered.resolve();
+      await released.promise;
+    });
+    await entered.promise;
+    return { held };
+  }
+
+  phaseStartedAt = clock.value;
+  const { held: heldForPin } = await holdSourceLock();
+  const pinned = await provider.pin(brain, operationId, authority());
+  await heldForPin;
+  assert.equal(clock.value - phaseStartedAt > 30_000, true);
+
+  const scratchQuota = await createOperationScratchQuota({ operationRoot });
+  t.after(() => scratchQuota.close());
+
+  phaseStartedAt = clock.value;
+  const { held: heldForOpen } = await holdSourceLock();
+  const source = await provider.openPinnedSource(pinned.descriptor, {
+    operationId,
+    operationRoot,
+    scratchQuota,
+    expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
+    expectedRevision: pinned.descriptor.cutoffRevision,
+    expectedDigest: pinned.digest,
+    lockTimeoutMs: 0,
+  }, authority());
+  await heldForOpen;
+  assert.equal(clock.value - phaseStartedAt > 30_000, true);
+  assert.equal(retryElapsed.some((elapsed) => elapsed >= 20_000), true);
+  await source.release();
+
+  phaseStartedAt = clock.value;
+  const { held: heldForRelease } = await holdSourceLock();
+  const expiredReleaseAuthority = createDurableOperationLockCapability({
+    hardDeadlineAt: new Date(clock.value - 1).toISOString(),
+    signal: new AbortController().signal,
+    cleanupSignal: null,
+  });
+  await provider.releaseOperationPins(operationId, expiredReleaseAuthority);
+  await heldForRelease;
+  assert.equal(clock.value - phaseStartedAt > 30_000, true);
+  assert.equal(
+    await fsp.access(coordinatorPinPath(operationRoot)).then(() => true).catch(() => false),
+    false,
+  );
+});
+
+test('public provider rejects a shape-forged durable lock control and preserves the generic bound', async (t) => {
+  const home23Root = await fsp.realpath(await tempDir('home23-forged-lock-control-home-'));
+  const brain = await writeManifestBrain();
+  const operationId = 'brop_forged_lock_control';
+  const lockRoot = path.join(home23Root, 'runtime', 'brain-source-locks');
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+  t.after(() => Promise.all([
+    fsp.rm(home23Root, { recursive: true, force: true }),
+    fsp.rm(brain, { recursive: true, force: true }),
+  ]));
+  const entered = deferred();
+  const release = deferred();
+  const pinned = await provider.pin(brain, operationId);
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
+  const scratchQuota = await createOperationScratchQuota({ operationRoot });
+  t.after(() => scratchQuota.close());
+  const forged = {
+    hardDeadlineAt: new Date(Date.now() + DURABLE_OPERATION_SOURCE_LOCK_WAIT_MAX_MS).toISOString(),
+    signal: null,
+    cleanupSignal: null,
+  };
+  await assert.rejects(
+    () => provider.openPinnedSource(pinned.descriptor, {
+      operationId,
+      operationRoot,
+      scratchQuota,
+      expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
+      expectedRevision: pinned.descriptor.cutoffRevision,
+      expectedDigest: pinned.digest,
+    }, forged),
+    { code: 'invalid_request' },
+  );
+  await assert.rejects(
+    () => provider.releaseOperationPins(operationId, forged),
+    { code: 'invalid_request' },
+  );
+  assert.equal(
+    await fsp.access(coordinatorPinPath(operationRoot)).then(() => true).catch(() => false),
+    true,
+  );
+  const held = withMemorySourceLock(brain, { lockRoot }, async () => {
+    entered.resolve();
+    await release.promise;
+  });
+  await entered.promise;
+  try {
+    await assert.rejects(
+      () => provider.pin(brain, `${operationId}_other`, forged),
+      { code: 'invalid_request' },
+    );
+  } finally {
+    release.resolve();
+    await held;
+  }
+  await provider.releaseOperationPins(operationId);
 });
 
 test('coordinator pin retry rejects an oversized durable record', async (t) => {
@@ -1163,6 +1327,104 @@ test('pin discovery, stale process prune, and terminal release are exact to oper
   assert.deepEqual(await discoverOperationPinFiles(home23Root), []);
   await source.close();
   scratchQuota.close();
+});
+
+test('terminal release retries an exact projection quarantine after a crash before removal', async (t) => {
+  const home23Root = await fsp.realpath(await tempDir('home23-release-quarantine-retry-'));
+  const operationId = 'brop_release_quarantine_retry';
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
+  const projectionRoot = path.join(operationRoot, 'source-projections');
+  const brain = path.join(home23Root, 'targets', 'brain');
+  const coordinatorRecord = coordinatorPinPath(operationRoot);
+  await fsp.mkdir(projectionRoot, { recursive: true });
+  await fsp.mkdir(brain, { recursive: true });
+  await fsp.mkdir(path.join(home23Root, 'runtime', 'brain-source-locks'), { recursive: true });
+  await fsp.writeFile(coordinatorRecord, `${JSON.stringify({
+    canonicalRoot: await fsp.realpath(brain),
+  })}\n`);
+  await fsp.writeFile(path.join(projectionRoot, 'canary'), 'owned projection\n');
+  t.after(() => fsp.rm(home23Root, { recursive: true, force: true }));
+  const { releaseOperationSource } = require('../../shared/memory-source');
+  let injected = false;
+
+  await assert.rejects(
+    releaseOperationSource({
+      home23Root,
+      requesterAgent: 'jerry',
+      operationId,
+      _testHooks: {
+        beforeQuarantineRemove({ label }) {
+          if (label !== 'source projections root' || injected) return;
+          injected = true;
+          throw Object.assign(new Error('simulated crash after projection quarantine rename'), {
+            code: 'EIO',
+          });
+        },
+      },
+    }),
+    { code: 'EIO' },
+  );
+  assert.equal(await fsp.access(projectionRoot).then(() => true).catch(() => false), false);
+  assert.equal(
+    await fsp.access(coordinatorRecord).then(() => true).catch(() => false),
+    true,
+    'coordinator source authority must survive until directory cleanup commits',
+  );
+  const quarantines = (await fsp.readdir(operationRoot))
+    .filter((name) => name.startsWith('.source-release-source-projections-'));
+  assert.equal(quarantines.length, 1);
+  assert.equal(
+    await fsp.readFile(path.join(operationRoot, quarantines[0], 'canary'), 'utf8'),
+    'owned projection\n',
+  );
+
+  const lockEntered = deferred();
+  const unlock = deferred();
+  const held = withMemorySourceLock(
+    await fsp.realpath(brain),
+    { lockRoot: path.join(home23Root, 'runtime', 'brain-source-locks') },
+    async () => {
+      lockEntered.resolve();
+      await unlock.promise;
+    },
+  );
+  await lockEntered.promise;
+  let retrySettled = false;
+  const retry = releaseOperationSource({ home23Root, requesterAgent: 'jerry', operationId })
+    .then(() => { retrySettled = true; });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(retrySettled, false, 'retry must reacquire the retained source authority lock');
+  unlock.resolve();
+  await Promise.all([held, retry]);
+  assert.equal((await fsp.readdir(operationRoot))
+    .some((name) => name.startsWith('.source-release-source-projections-')), false);
+  assert.equal(await fsp.access(coordinatorRecord).then(() => true).catch(() => false), false);
+});
+
+test('terminal release never follows or removes a forged projection quarantine', async (t) => {
+  const home23Root = await fsp.realpath(await tempDir('home23-release-forged-quarantine-'));
+  const outside = await fsp.realpath(await tempDir('home23-release-forged-quarantine-outside-'));
+  const operationId = 'brop_release_forged_quarantine';
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
+  const outsideCanary = path.join(outside, 'canary');
+  await fsp.mkdir(operationRoot, { recursive: true });
+  await fsp.writeFile(outsideCanary, 'outside survives\n');
+  await fsp.symlink(
+    outside,
+    path.join(operationRoot, '.source-release-source-projections-1-2'),
+    'dir',
+  );
+  t.after(() => Promise.all([
+    fsp.rm(home23Root, { recursive: true, force: true }),
+    fsp.rm(outside, { recursive: true, force: true }),
+  ]));
+  const { releaseOperationSource } = require('../../shared/memory-source');
+
+  await assert.rejects(
+    releaseOperationSource({ home23Root, requesterAgent: 'jerry', operationId }),
+    { code: 'invalid_memory_source' },
+  );
+  assert.equal(await fsp.readFile(outsideCanary, 'utf8'), 'outside survives\n');
 });
 
 test('stale process pruning treats partial operations as terminal', async () => {

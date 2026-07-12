@@ -2,10 +2,16 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fsSync = require('node:fs');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const { createRequire } = require('node:module');
 const Database = require('better-sqlite3');
+const pinnedStoreRequire = createRequire(require.resolve(
+  '../../cosmo23/pgs-engine/src/pinned-store',
+));
+const PinnedStoreDatabase = pinnedStoreRequire('better-sqlite3');
 
 const {
   createOperationScratchQuota,
@@ -42,7 +48,10 @@ function syntheticSource({
   nodeCount = 600,
   edgeCount = 599,
   oversized = false,
+  contentBytes = null,
   onNode = null,
+  nodeFactory = null,
+  edgeFactory = null,
 } = {}) {
   return {
     revision,
@@ -51,17 +60,21 @@ function syntheticSource({
       for (let index = 0; index < nodeCount; index += 1) {
         if (signal?.aborted) throw signal.reason;
         onNode?.(index);
-        yield {
+        const fallback = {
           id: `n${index}`,
           clusterId: `cluster-${index % 3}`,
-          content: oversized && index === 0 ? 'x'.repeat(257 * 1024) : `node ${index}`,
+          content: oversized && index === 0
+            ? 'x'.repeat(257 * 1024)
+            : contentBytes && index === 0 ? 'x'.repeat(contentBytes) : `node ${index}`,
         };
+        yield nodeFactory ? nodeFactory(index, fallback) : fallback;
       }
     },
     async *iterateEdges({ signal } = {}) {
       for (let index = 0; index < edgeCount; index += 1) {
         if (signal?.aborted) throw signal.reason;
-        yield { source: `n${index}`, target: `n${index + 1}`, type: 'next' };
+        const fallback = { source: `n${index}`, target: `n${index + 1}`, type: 'next' };
+        yield edgeFactory ? edgeFactory(index, fallback) : fallback;
       }
     },
     loadAll() { throw new Error('materializer forbidden'); },
@@ -123,6 +136,39 @@ test('streams a revision-bound projection and creates deterministic bounded work
   assert.equal(unit.nodes.length <= 25, true);
   assert.equal(unit.stats.contextChars <= 4096, true);
   assert.match(unit.workUnitId, /^p-c-cluster-[0-2]-u\d{4}$/);
+});
+
+test('store close releases anchored handles when SQLite close throws', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const store = await openPinnedPGSStore({
+    sourcePin: syntheticSource({ nodeCount: 1, edgeCount: 0 }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits,
+  });
+  const marker = Object.assign(new Error('sqlite close failed'), { code: 'sqlite_close_failed' });
+  const originalDatabaseClose = PinnedStoreDatabase.prototype.close;
+  const originalCloseSync = fsSync.closeSync;
+  let closedAnchorHandles = 0;
+  PinnedStoreDatabase.prototype.close = function closeThenThrow(...args) {
+    originalDatabaseClose.apply(this, args);
+    throw marker;
+  };
+  fsSync.closeSync = function instrumentedCloseSync(...args) {
+    closedAnchorHandles += 1;
+    return originalCloseSync.apply(this, args);
+  };
+
+  try {
+    assert.throws(() => store.close(), error => error === marker);
+  } finally {
+    PinnedStoreDatabase.prototype.close = originalDatabaseClose;
+    fsSync.closeSync = originalCloseSync;
+  }
+  assert.equal(closedAnchorHandles > 0, true);
 });
 
 test('rejects a symlinked PGS directory without touching its outside target', async t => {
@@ -516,4 +562,83 @@ test('target scopes filter snapshots, successes, counts, and monotonic unions', 
     })),
     { code: 'pgs_scope_non_monotonic' },
   );
+});
+
+test('a source record that cannot fit one work-unit context fails before provider use', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  await assert.rejects(openPinnedPGSStore({
+    sourcePin: syntheticSource({
+      nodeCount: 1,
+      edgeCount: 0,
+      contentBytes: 129 * 1024,
+    }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits,
+  }), error => error.code === 'result_too_large');
+
+  const pgsRoot = path.join(scratchDir, 'pgs');
+  assert.deepEqual(await fs.readdir(pgsRoot).catch(() => []), []);
+});
+
+test('PGS persists provider-safe records without mutating vector-bearing source evidence', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const node = {
+    id: 'n0',
+    clusterId: 'cluster-0',
+    content: 'provider-safe PGS evidence',
+    embedding: Buffer.from([1, 2, 3, 4]),
+    vector: new Float32Array([0.3, 0.4]),
+    metadata: {
+      embeddings: Object.assign(new Array(3), { 2: 0.6 }),
+      nested: { vectors: [[0.7], [0.8]], evidence: 'preserved' },
+      vector: 'textual vector field must remain',
+    },
+  };
+  const edge = {
+    source: 'n0', target: 'n0', type: 'self',
+    embedding: [0.9],
+    vector: 'textual edge vector must remain',
+  };
+  const beforeNode = {
+    ...node,
+    vector: [...node.vector],
+    metadata: structuredClone(node.metadata),
+  };
+  const beforeEdge = structuredClone(edge);
+  const store = await openPinnedPGSStore({
+    sourcePin: syntheticSource({
+      nodeCount: 1,
+      edgeCount: 1,
+      nodeFactory: () => node,
+      edgeFactory: () => edge,
+    }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'openai-codex', model: 'gpt-5.4-mini' },
+    query,
+    signal: new AbortController().signal,
+    limits,
+  });
+  t.after(() => store.close());
+
+  const [workUnitId] = store.snapshotPendingWorkUnits({ attemptId: 'safe-records', limit: 1 });
+  const work = store.loadWorkUnit(workUnitId);
+  assert.equal(Object.hasOwn(work.nodes[0], 'embedding'), false);
+  assert.equal(Object.hasOwn(work.nodes[0], 'vector'), false);
+  assert.equal(Object.hasOwn(work.nodes[0].metadata, 'embeddings'), false);
+  assert.equal(Object.hasOwn(work.nodes[0].metadata.nested, 'vectors'), false);
+  assert.equal(work.nodes[0].metadata.nested.evidence, 'preserved');
+  assert.equal(work.nodes[0].metadata.vector, 'textual vector field must remain');
+  assert.equal(Object.hasOwn(work.edges[0], 'embedding'), false);
+  assert.equal(work.edges[0].vector, 'textual edge vector must remain');
+  assert.deepEqual({
+    ...node,
+    vector: [...node.vector],
+    metadata: structuredClone(node.metadata),
+  }, beforeNode);
+  assert.deepEqual(edge, beforeEdge);
 });

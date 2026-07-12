@@ -3,7 +3,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { CodexResponsesClient } = require('../../cosmo23/lib/codex-responses-client');
+const {
+  CodexResponsesClient,
+  MAX_CODEX_INPUT_BYTES,
+} = require('../../cosmo23/lib/codex-responses-client');
 const { requireCompleteProviderResult } = require('../../cosmo23/lib/provider-completion');
 
 function streamFrom(text, { fail = null } = {}) {
@@ -54,6 +57,143 @@ async function generate(client, signal, overrides = {}) {
     ...overrides,
   });
 }
+
+test('Codex normalizes bounded string input into the exact backend item list', async () => {
+  const controller = new AbortController();
+  let wireBody = null;
+  const body = streamFrom(
+    'data: {"type":"response.output_text.delta","delta":"OK"}\n\n'
+      + 'data: {"type":"response.completed","response":{"id":"codex-input"}}\n\n',
+  );
+  const client = makeClient({
+    body,
+    signal: controller.signal,
+    fetchImpl: async (url, init) => {
+      assert.equal(url, 'https://chatgpt.com/backend-api/codex/responses');
+      assert.equal(init.signal, controller.signal);
+      wireBody = JSON.parse(init.body);
+      return new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    },
+  });
+
+  const result = await generate(client, controller.signal, {
+    instructions: 'Return a normal terminal response containing OK.',
+    input: 'Reply with OK.',
+  });
+
+  assert.equal(result.status, 'complete');
+  assert.deepEqual(wireBody, {
+    model: 'gpt-5.6-terra',
+    store: false,
+    stream: true,
+    instructions: 'Return a normal terminal response containing OK.',
+    input: [{
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: 'Reply with OK.' }],
+    }],
+  });
+  assert.equal(Object.hasOwn(wireBody, 'max_output_tokens'), false);
+});
+
+test('Codex preserves valid structured input items on the wire', async () => {
+  const controller = new AbortController();
+  let wireInput = null;
+  const input = [{
+    type: 'message',
+    role: 'user',
+    content: [{ type: 'input_text', text: 'question' }],
+  }, {
+    type: 'function_call_output',
+    call_id: 'call-1',
+    output: 'tool result',
+  }];
+  const body = streamFrom(
+    'data: {"type":"response.output_text.delta","delta":"answer"}\n\n'
+      + 'data: {"type":"response.completed"}\n\n',
+  );
+  const client = makeClient({
+    body,
+    signal: controller.signal,
+    fetchImpl: async (_url, init) => {
+      wireInput = JSON.parse(init.body).input;
+      return new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    },
+  });
+
+  const result = await generate(client, controller.signal, { input });
+
+  assert.equal(result.status, 'complete');
+  assert.deepEqual(wireInput, input);
+});
+
+test('Codex rejects invalid input structure before credentials or fetch', async () => {
+  const invalidInputs = [
+    undefined,
+    null,
+    '',
+    '   ',
+    {},
+    [],
+    [null],
+    ['question'],
+    [{}],
+    [{ type: '' }],
+    [{ type: 'message', content: 1n }],
+  ];
+  const circular = { type: 'message' };
+  circular.self = circular;
+  invalidInputs.push([circular]);
+
+  for (const input of invalidInputs) {
+    const counters = {};
+    const controller = new AbortController();
+    const client = makeClient({
+      body: streamFrom(''), signal: controller.signal, counters,
+    });
+    await assert.rejects(
+      generate(client, controller.signal, { input }),
+      error => error.code === 'provider_execution_invalid' && error.retryable === false,
+    );
+    assert.equal(counters.credentialCalls || 0, 0);
+    assert.equal(counters.fetchCalls || 0, 0);
+  }
+});
+
+test('Codex rejects string and structured input beyond its hard transport ceiling', async () => {
+  assert.equal(MAX_CODEX_INPUT_BYTES, 64 * 1024 * 1024);
+  const inputs = [
+    '\0'.repeat(Math.ceil(MAX_CODEX_INPUT_BYTES / 6)),
+    [{
+      type: 'message',
+      role: 'user',
+      content: [{
+        type: 'input_text',
+        text: '\0'.repeat(Math.ceil(MAX_CODEX_INPUT_BYTES / 6)),
+      }],
+    }],
+  ];
+
+  for (const input of inputs) {
+    const counters = {};
+    const controller = new AbortController();
+    const client = makeClient({
+      body: streamFrom(''), signal: controller.signal, counters,
+    });
+    await assert.rejects(
+      generate(client, controller.signal, { input }),
+      error => error.code === 'result_too_large' && error.retryable === false,
+    );
+    assert.equal(counters.credentialCalls || 0, 0);
+    assert.equal(counters.fetchCalls || 0, 0);
+  }
+});
 
 test('Codex flushes an unterminated terminal frame and reports exact identity', async () => {
   const controller = new AbortController();

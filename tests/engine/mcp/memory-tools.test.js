@@ -134,6 +134,28 @@ test('MCP unavailable source is unknown evidence and never healthy zero', async 
   assert.equal(result.evidence.matchOutcome, 'unknown');
 });
 
+test('MCP tools preserve typed retryable compatibility admission contention', async () => {
+  const brainDir = await writeManifestFixture();
+  const home23Root = await tempDir('home23-mcp-memory-busy-home-');
+  const result = await toolsFor({
+    brainDir,
+    home23Root,
+    withEphemeralSource: async () => {
+      throw Object.assign(new Error('compatibility source busy'), {
+        code: 'source_busy',
+        retryable: true,
+      });
+    },
+  }).queryMemory({ query: 'anything', limit: 5 });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.totalNodes, null);
+  assert.equal(result.error.code, 'source_busy');
+  assert.equal(result.error.retryable, true);
+  assert.equal(result.evidence.sourceHealth, 'unavailable');
+  assert.equal(result.evidence.matchOutcome, 'unknown');
+});
+
 test('MCP graph applies bounded node and edge caps', async () => {
   const brainDir = await writeManifestFixture();
   const home23Root = await tempDir('home23-mcp-memory-home-');

@@ -7,7 +7,8 @@ const os = require('node:os');
 const path = require('node:path');
 const {
   createBrainSourceRouter,
-  rejectCallerIdentity
+  rejectCallerIdentity,
+  sendBrainSourceError
 } = require('../../cosmo23/server/lib/brain-source-router');
 const {
   rewriteMemoryBase
@@ -94,4 +95,20 @@ test('COSMO brain-source routes reject caller-supplied source identity', () => {
       (error) => error.code === 'invalid_request' && error.status === 400 && error.field === key
     );
   }
+});
+
+test('COSMO brain-source routes map compatibility admission contention to retryable 503', () => {
+  const response = {
+    statusCode: null,
+    payload: null,
+    status(code) { this.statusCode = code; return this; },
+    json(payload) { this.payload = payload; return this; }
+  };
+  sendBrainSourceError(response, Object.assign(new Error('compatibility source busy'), {
+    code: 'source_busy',
+    retryable: true
+  }));
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.payload.error.code, 'source_busy');
+  assert.equal(response.payload.error.retryable, true);
 });

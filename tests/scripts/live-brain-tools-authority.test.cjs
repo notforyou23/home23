@@ -2,25 +2,167 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const crypto = require('node:crypto');
+const { createHash } = require('node:crypto');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 
 async function fixture(t, authority = 'live') {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'home23-brain-authority-')));
+  const isolatedStore = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), 'home23-brain-authority-store-')),
+  );
   t.after(() => fs.rm(root, { recursive: true, force: true }));
+  t.after(() => fs.rm(isolatedStore, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, 'run-authority.json'), `${JSON.stringify({
+    schemaVersion: 1,
+    receiptRunId: 'authority-run',
+    authority: 'live',
+    implementationCommit: 'a'.repeat(40),
+    expectedLiveTree: 'b'.repeat(40),
+    actualLiveTree: 'b'.repeat(40),
+    hostname: 'fixture-host',
+    startedAt: '2026-07-11T00:00:00.000Z',
+  }, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+  const { receiptContext } = await import('../../scripts/lib/brain-acceptance-common.mjs');
+  const contextFor = (selectedAuthority) => receiptContext({
+    'receipt-run-dir': root,
+    'receipt-run-id': 'authority-run',
+    authority: selectedAuthority,
+  }, {}, { startedAt: '2026-07-11T00:00:00.000Z' });
   return {
     root,
-    context: {
-      receiptRunDir: root,
-      receiptRunId: 'authority-run',
-      authority,
-      implementationCommit: 'a'.repeat(40),
-      hostname: 'fixture-host',
-      startedAt: '2026-07-11T00:00:00.000Z',
-    },
+    isolatedStore,
+    context: await contextFor(authority),
+    contextFor,
   };
+}
+
+async function writeRequiredGuardedPm2Transactions(fx, common) {
+  const transactions = [
+    ['dry-run', '11111111-1111-4111-8111-111111111111'],
+    ['apply', '22222222-2222-4222-8222-222222222222'],
+  ];
+  const dumpPath = path.join(fx.root, 'dump.pm2');
+  const dumpBytes = Buffer.from('[{"name":"home23-jerry"}]\n');
+  await fs.writeFile(dumpPath, dumpBytes, { flag: 'wx', mode: 0o640 });
+  const dumpStat = await fs.stat(dumpPath, { bigint: true });
+  const sha256 = createHash('sha256').update(dumpBytes).digest('hex');
+  const fileIdentity = (file, stat) => ({
+    path: file,
+    dev: stat.dev.toString(),
+    ino: stat.ino.toString(),
+    nlink: stat.nlink.toString(),
+    uid: Number(stat.uid),
+    mode: Number(stat.mode & 0o777n),
+    size: stat.size.toString(),
+    mtimeNs: stat.mtimeNs.toString(),
+    ctimeNs: stat.ctimeNs.toString(),
+  });
+  const table = [{
+    name: 'home23-jerry', status: 'online', pid: 101, restartCount: 0,
+    uptime: 1, script: path.join(fx.root, 'engine.js'), cwd: fx.root,
+    namespace: 'default', execMode: 'fork_mode', instances: 1,
+    args: [], interpreter: 'node', nodeArgs: [], envKeys: [],
+  }];
+  await fs.mkdir(path.join(fx.root, 'backups'), { mode: 0o700 });
+  for (const [mode, transactionId] of transactions) {
+    const resultBasename = `guarded-pm2-save-${mode}.json`;
+    const outputPath = path.join(fx.root, 'live', resultBasename);
+    const intentBasename = `.${resultBasename}.${transactionId}.guarded-pm2-intent.json`;
+    const backupBasename = `dump.pm2.${transactionId}.bak`;
+    const backupPath = path.join(fx.root, 'backups', backupBasename);
+    await fs.writeFile(backupPath, dumpBytes, { flag: 'wx', mode: 0o600 });
+    const backupStat = await fs.stat(backupPath, { bigint: true });
+    const shared = {
+      helper: 'guarded-pm2-save', transactionId, transactionState: 'committed', mode,
+      dumpPath, outputPath, ok: true,
+      pm2SaveInvoked: mode === 'apply', applied: mode === 'apply',
+      restored: false, restorationVerified: false, errorCode: null,
+      backupBasename,
+    };
+    const result = await common.writeJsonReceipt(fx.context, outputPath, {
+      ...shared,
+      backupPath,
+      backupMode: '0600',
+      backupCreatedExclusively: true,
+      backupSha256: sha256,
+      backupIdentity: fileIdentity(backupPath, backupStat),
+      originalMode: '0640',
+      originalSha256: sha256,
+      originalIdentity: fileIdentity(dumpPath, dumpStat),
+      allowChanged: ['home23-jerry'],
+      expectedConfigured: ['home23-jerry'],
+      ecosystemIdentity: table,
+      liveTable: table,
+      liveModules: [],
+      moduleRowsExcluded: true,
+      moduleRowsFrozen: true,
+      unrelatedRestartBaselineMonotonic: true,
+      unrelatedRowsFrozen: true,
+      restartBaseline: [],
+      unrelatedRestartBaselines: [],
+      dumpTableBefore: table,
+      dumpTableAfter: mode === 'apply' ? table : null,
+      ...(mode === 'apply' ? {
+        ecosystemAuthorityReloaded: true,
+        immediatePreSaveTableRevalidated: true,
+        dumpSha256After: sha256,
+      } : {}),
+      receiptKind: 'guarded-pm2-save-result', transactionRole: 'result',
+      transactionIntentBasename: intentBasename, receiptPublicationVerified: true,
+    });
+    await common.writeJsonReceipt(fx.context, path.join(fx.root, 'live', intentBasename), {
+      ...shared,
+      receiptKind: 'guarded-pm2-save-intent', transactionRole: 'intent',
+      outputArtifactSha256: result.artifactSha256,
+    });
+  }
+}
+
+async function writeRequiredOperationIdentityEvidence(fx, common) {
+  const forrestPath = path.join(fx.root, 'live', 'forrest-terminal.json');
+  const isolatedPath = path.join(fx.root, 'isolated-controlled', 'fixture-terminal.json');
+  await common.writeJsonReceipt(fx.context, forrestPath, {
+    helper: 'authority-fixture', receiptKind: 'operation-terminal',
+    operationId: `brop_${'F'.repeat(32)}`, operationType: 'search', state: 'complete',
+    requesterAgent: 'forrest', protectedResultRead: true,
+    authorizedEndpoint: 'http://127.0.0.1:5012', isolatedStore: null,
+  });
+  await common.writeJsonReceipt(await fx.contextFor('isolated-controlled'), isolatedPath, {
+    helper: 'authority-fixture', receiptKind: 'operation-terminal',
+    operationId: `brop_${'I'.repeat(32)}`, operationType: 'search', state: 'complete',
+    requesterAgent: 'fixture-agent', protectedResultRead: true,
+    authorizedEndpoint: null, isolatedStore: fx.isolatedStore,
+  });
+  const entry = ({ operationId, authority, requesterAgent, receipt,
+    isolatedStore, authorizedEndpoint }) => ({
+    operationId, authority, requesterAgent, receipt, isolatedStore, authorizedEndpoint,
+  });
+  await fs.writeFile(path.join(fx.root, 'operation-identity-manifest.json'), `${JSON.stringify({
+    schemaVersion: 1,
+    receiptRunId: fx.context.receiptRunId,
+    authorities: ['live', 'isolated-controlled'],
+    auditRoot: fx.root,
+    createdAt: '2026-07-11T00:00:03.000Z',
+    groups: {
+      jerryLive: [entry({
+        operationId: `brop_${'P'.repeat(32)}`, authority: 'live', requesterAgent: 'jerry',
+        receipt: 'live/canary.json', isolatedStore: null,
+        authorizedEndpoint: 'http://127.0.0.1:5002',
+      })],
+      forrestLive: [entry({
+        operationId: `brop_${'F'.repeat(32)}`, authority: 'live', requesterAgent: 'forrest',
+        receipt: 'live/forrest-terminal.json', isolatedStore: null,
+        authorizedEndpoint: 'http://127.0.0.1:5012',
+      })],
+      isolatedControlled: [entry({
+        operationId: `brop_${'I'.repeat(32)}`, authority: 'isolated-controlled',
+        requesterAgent: 'fixture-agent', receipt: 'isolated-controlled/fixture-terminal.json',
+        isolatedStore: fx.isolatedStore, authorizedEndpoint: null,
+      })],
+    },
+  }, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
 }
 
 test('pretty canonical JSON receipts round-trip as one row and artifact manifests classify them as receipts', async (t) => {
@@ -32,22 +174,27 @@ test('pretty canonical JSON receipts round-trip as one row and artifact manifest
     helper: 'pretty-canary',
     receiptKind: 'operation-terminal',
     operationId: `brop_${'P'.repeat(32)}`,
+    state: 'complete',
+    protectedResultRead: true,
+    requesterAgent: 'jerry',
+    authorizedEndpoint: 'http://127.0.0.1:5002',
+    isolatedStore: null,
   });
 
   const rows = await smoke.readReceiptRows(pretty);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].helper, 'pretty-canary');
 
+  await writeRequiredGuardedPm2Transactions(fx, common);
+  await writeRequiredOperationIdentityEvidence(fx, common);
   const output = path.join(fx.root, 'artifact-manifest.json');
   const manifest = await smoke.buildArtifactManifest({
     smokeRoot: fx.root,
     output,
     context: fx.context,
   });
-  assert.deepEqual(
-    manifest.artifacts.map(({ path: artifactPath, kind }) => ({ artifactPath, kind })),
-    [{ artifactPath: 'live/canary.json', kind: 'receipt' }],
-  );
+  assert.equal(manifest.artifacts.find((entry) => entry.path === 'live/canary.json')?.kind, 'receipt');
+  assert.equal(manifest.artifacts.find((entry) => entry.path === 'run-authority.json')?.kind, 'raw');
   assert.equal((await smoke.readReceiptRows(output)).length, 1);
 });
 
@@ -76,7 +223,7 @@ test('artifact manifests reject canonical pretty receipts with corrupt hashes or
     const common = await import('../../scripts/lib/brain-acceptance-common.mjs');
     const smoke = await import('../../scripts/live-brain-tools-smoke.mjs');
     await common.writeJsonReceipt(
-      { ...fx.context, authority: 'isolated-controlled' },
+      await fx.contextFor('isolated-controlled'),
       path.join(fx.root, 'live', 'wrong-authority.json'),
       { helper: 'wrong-authority' },
     );
@@ -86,7 +233,7 @@ test('artifact manifests reject canonical pretty receipts with corrupt hashes or
         output: path.join(fx.root, 'artifact-manifest.json'),
         context: fx.context,
       }),
-      (error) => error.code === 'artifact_authority_mismatch',
+      (error) => error.code === 'receipt_authority_mismatch',
     );
   });
 });
@@ -474,17 +621,6 @@ function evidence(agent, operationId) {
   };
 }
 
-function projectedAnswer(answer) {
-  return {
-    answerPresent: true,
-    answerBytes: Buffer.byteLength(answer),
-    answerSha256: crypto.createHash('sha256').update(answer).digest('hex'),
-    sweepOutputCount: null,
-    sweepOutputs: null,
-    metadata: null,
-  };
-}
-
 function terminalRecord({ operationId, agent, answer }) {
   return {
     operationId,
@@ -505,6 +641,7 @@ function terminalRecord({ operationId, agent, answer }) {
 async function writeTerminalReceipt({
   common, context, file, record, authorizedEndpoint = null, isolatedStore = null,
 }) {
+  const { projectProtectedResult } = await import('../../scripts/live-brain-tools-smoke.mjs');
   return common.appendJsonlReceipt(context, file, {
     helper: 'live-brain-tools-smoke',
     scenario: 'authority-fixture',
@@ -523,7 +660,7 @@ async function writeTerminalReceipt({
     sourcePinDigest: record.sourcePinDigest,
     sourceEvidence: record.sourceEvidence,
     error: record.error,
-    result: projectedAnswer(record.result.answer),
+    result: projectProtectedResult(record.result),
   });
 }
 
@@ -583,7 +720,7 @@ test('strict identity manifest rereads live and retained-store operations withou
   });
   const isolated = await createIsolatedTerminal(t);
   const liveContext = fx.context;
-  const isolatedContext = { ...fx.context, authority: 'isolated-controlled' };
+  const isolatedContext = await fx.contextFor('isolated-controlled');
   const jerryReceipt = path.join(fx.root, 'live', 'jerry.jsonl');
   const forrestReceipt = path.join(fx.root, 'live', 'forrest.jsonl');
   const isolatedReceipt = path.join(fx.root, 'isolated-controlled', 'fixture.jsonl');

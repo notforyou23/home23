@@ -18,6 +18,9 @@ const {
   createMemorySearchService,
   MAX_ANN_METADATA_BYTES,
 } = require('../../../engine/src/dashboard/memory-search');
+const {
+  sendMemorySearchError,
+} = require('../../../engine/src/dashboard/server');
 
 async function tempDir(prefix) {
   return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -654,5 +657,30 @@ test('read-only pinned source search leaves target memory files unchanged', asyn
     assert.deepEqual(await fileSnapshot(dir), before);
   } finally {
     await source.close();
+  }
+});
+
+test('dashboard memory-search boundary maps compatibility source contention to retryable 503', () => {
+  assert.equal(typeof sendMemorySearchError, 'function');
+  for (const code of ['source_busy', 'source_unavailable']) {
+    const response = {
+      statusCode: null,
+      payload: null,
+      status(statusCode) { this.statusCode = statusCode; return this; },
+      json(payload) { this.payload = payload; return this; },
+    };
+    sendMemorySearchError(response, Object.assign(new Error(`${code} fixture`), {
+      code,
+      retryable: true,
+    }), { error() {} });
+    assert.equal(response.statusCode, 503);
+    assert.deepEqual(response.payload, {
+      ok: false,
+      error: {
+        code,
+        message: `${code} fixture`,
+        retryable: true,
+      },
+    });
   }
 });

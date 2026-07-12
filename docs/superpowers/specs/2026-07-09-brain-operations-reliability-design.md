@@ -1,7 +1,7 @@
 # Brain Operations Reliability and Cross-Brain Read Design
 
 **Date:** 2026-07-09
-**Status:** Design approved; implementation in progress
+**Status:** Implemented and live-verified on 2026-07-10; see `docs/receipts/2026-07-09-brain-tools-hardening.md`
 **Author:** Codex + jtr
 **Supersedes in part:** docs/superpowers/specs/2026-04-19-brain-tools-rework-design.md
 **Related:** docs/design/COSMO23-VENDORED-PATCHES.md, docs/design/STEP16-AGENT-COSMO-TOOLKIT-DESIGN.md

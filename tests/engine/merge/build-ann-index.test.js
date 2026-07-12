@@ -437,3 +437,22 @@ test('ANN builder preserves typed retryable compatibility admission contention',
     (error) => error === busy,
   );
 });
+
+test('ANN builder preserves typed retryable compatibility admission contention', async () => {
+  const dir = await createBrain();
+  const home23Root = await tempDir('home23-ann-builder-busy-home-');
+  const busy = Object.assign(new Error('compatibility source busy'), {
+    code: 'source_busy',
+    retryable: true,
+  });
+  await assert.rejects(
+    () => build(dir, {
+      home23Root,
+      requesterAgent: 'jerry',
+      resolveTargetContext: () => canonicalResolve(dir),
+      hnswlib: fakeHnsw({}),
+      withEphemeralMemorySource: async () => { throw busy; },
+    }),
+    (error) => error === busy,
+  );
+});

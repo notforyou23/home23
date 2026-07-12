@@ -962,3 +962,61 @@ test('withPhysicalGrowth checkpoint rejects growth beyond its exact authorizatio
   await quota.reconcile();
   quota.close();
 });
+
+test('withPhysicalGrowth tolerates concurrent durable operation metadata without relaxing scratch bounds', async () => {
+  const operationRoot = await tempDir();
+  const attachmentsRoot = path.join(operationRoot, 'attachments');
+  const projectionRoot = path.join(operationRoot, 'source-projections');
+  const scratchDir = path.join(operationRoot, 'scratch');
+  await fsp.mkdir(attachmentsRoot, { mode: 0o700 });
+  await fsp.mkdir(projectionRoot, { mode: 0o700 });
+  await fsp.mkdir(scratchDir, { mode: 0o700 });
+  await fsp.writeFile(path.join(operationRoot, 'status.json'), '{}\n', { mode: 0o600 });
+  await fsp.writeFile(path.join(operationRoot, 'events.jsonl'), '', { mode: 0o600 });
+  const quota = await createOperationScratchQuota({
+    operationRoot, scratchDir, maxBytes: 256 * 1024,
+  });
+
+  await quota.withPhysicalGrowth(1024, 'projection-growth', async ({ checkpoint }) => {
+    await fsp.writeFile(path.join(projectionRoot, 'bounded.bin'), Buffer.alloc(1024));
+    await fsp.appendFile(path.join(operationRoot, 'events.jsonl'), Buffer.alloc(2048));
+    await fsp.writeFile(path.join(operationRoot, 'status.json'), Buffer.alloc(4096));
+    await fsp.writeFile(path.join(attachmentsRoot, 'attachment.json'), Buffer.alloc(1024));
+    await checkpoint();
+  });
+
+  await assert.rejects(
+    () => quota.withPhysicalGrowth(1024, 'still-bounded', async ({ checkpoint }) => {
+      await fsp.writeFile(path.join(projectionRoot, 'bounded-2.bin'), Buffer.alloc(1024));
+      await fsp.writeFile(path.join(operationRoot, 'unexpected.bin'), Buffer.alloc(1));
+      await checkpoint();
+    }),
+    { code: 'result_too_large', status: 413, retryable: false },
+  );
+  quota.close();
+});
+
+test('withPhysicalGrowth rejects aggregate metadata plus growth before materializing an artifact', async () => {
+  const operationRoot = await tempDir();
+  const projectionRoot = path.join(operationRoot, 'source-projections');
+  const scratchDir = path.join(operationRoot, 'scratch');
+  const artifactPath = path.join(projectionRoot, 'must-not-exist.bin');
+  await fsp.mkdir(projectionRoot, { mode: 0o700 });
+  await fsp.mkdir(scratchDir, { mode: 0o700 });
+  await fsp.writeFile(path.join(operationRoot, 'status.json'), Buffer.alloc(3400), { mode: 0o600 });
+  const quota = await createOperationScratchQuota({
+    operationRoot, scratchDir, maxBytes: 6800,
+  });
+  let invoked = false;
+
+  await assert.rejects(
+    () => quota.withPhysicalGrowth(1024, 'aggregate-preflight', async () => {
+      invoked = true;
+      await fsp.writeFile(artifactPath, Buffer.alloc(1024), { mode: 0o600 });
+    }),
+    { code: 'result_too_large', status: 413, retryable: false },
+  );
+  assert.equal(invoked, false);
+  assert.equal(await exists(artifactPath), false);
+  quota.close();
+});

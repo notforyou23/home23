@@ -15,7 +15,17 @@ async function fixture() {
   await fs.mkdir(path.join(home23Root, 'instances', 'jerry', 'runtime', 'brain-operations'), {
     recursive: true,
   });
-  await fs.mkdir(receiptRunDir);
+  await fs.mkdir(receiptRunDir, { mode: 0o700 });
+  await fs.writeFile(path.join(receiptRunDir, 'run-authority.json'), `${JSON.stringify({
+    schemaVersion: 1,
+    receiptRunId: 'list-fixture',
+    authority: 'live',
+    implementationCommit: 'a'.repeat(40),
+    expectedLiveTree: 'b'.repeat(40),
+    actualLiveTree: 'b'.repeat(40),
+    hostname: 'fixture-host',
+    startedAt: '2026-07-10T00:00:00.000Z',
+  }, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
   return { root, home23Root, receiptRunDir };
 }
 
@@ -46,9 +56,9 @@ test('stdout is a complete canonical receipt even when no output file is request
   assert.equal(row.helper, 'list-brain-operations');
   assert.equal(row.receiptRunId, 'list-fixture');
   assert.equal(row.authority, 'isolated-controlled');
-  assert.match(row.implementationCommit, /^(unknown|[a-f0-9]{40,64})$/);
-  assert.equal(typeof row.hostname, 'string');
-  assert.match(row.startedAt, /^\d{4}-/);
+  assert.equal(row.implementationCommit, 'a'.repeat(40));
+  assert.equal(row.hostname, 'fixture-host');
+  assert.equal(row.startedAt, '2026-07-10T00:00:00.000Z');
   assert.match(row.completedAt, /^\d{4}-/);
   assert.match(row.artifactSha256, /^[a-f0-9]{64}$/);
 });

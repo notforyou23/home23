@@ -1,7 +1,7 @@
 # Brain Tool Contract Cleanup Receipt
 
 Date: 2026-07-12
-Status: implementation and repository verification complete; live rollout pending
+Status: implementation, origin integration, and repository verification complete; live rollout pending
 
 ## Outcome
 
@@ -16,9 +16,16 @@ Status: implementation and repository verification complete; live rollout pendin
 - `npm run build` — passed.
 - `npm run test:contracts` — 46 passed, 0 failed, 1 intentionally skipped.
 - Focused integrated brain/Query/PGS/MCP matrix — 280 passed, 0 failed.
-- `npm test` — passed, including the live-shaped 100k-node/300k-edge isolated PGS lifecycle proof.
+- `npm test` pretest/acceptance — passed, including the live-shaped 100k-node/300k-edge isolated PGS lifecycle proof attached for more than ten minutes.
+- `npm --ignore-scripts test` post-merge repository suite — passed.
 - `git diff --check` — passed.
+
+## Integration
+
+- Protected the complete local tree in commit `9367c36` before integrating upstream.
+- Merged the 23 newer `origin/main` commits and preserved both their context-latency/reliability safeguards and the new brain-tool/PGS contracts.
+- Corrected the merged large-PGS acceptance wait from five minutes to fifteen minutes; the real 100k/300k proof completed in about ten and a half minutes.
 
 ## Live rollout
 
-Pending merge with the 23 newer `origin/main` commits, scoped PM2 restarts, and post-restart route/tool receipts.
+Pending scoped PM2 restarts and post-restart route/tool receipts.

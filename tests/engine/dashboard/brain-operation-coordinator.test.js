@@ -34,6 +34,9 @@ const {
   OPERATION_AUTHORITY: REAL_OPERATION_AUTHORITY,
   authorizeBrainOperation: authorizeRealBrainOperation,
 } = require('../../../shared/brain-operations/authority.cjs');
+const {
+  readDurableOperationLockCapability,
+} = require('../../../shared/memory-source/durable-lock-authority.cjs');
 
 const INITIAL_NOW = Date.parse('2026-07-10T16:00:00.000Z');
 const TERMINAL = new Set(['complete', 'partial', 'failed', 'cancelled', 'interrupted']);
@@ -602,6 +605,7 @@ function makeFixture(t, overrides = {}) {
       heartbeatMs: 10_000,
       eventSilenceMs: 60_000,
       workerControlTimeoutMs: overrides.workerControlTimeoutMs,
+      workerStartTimeoutMs: overrides.workerStartTimeoutMs,
       stopTimeoutMs: overrides.stopTimeoutMs,
       executionDeadlineMsByType: {
         search: 60_000,
@@ -957,7 +961,7 @@ test('thirty-two concurrent starts create, pin, issue, and start exactly once', 
   assert.equal((await fixture.store.list()).length, 1);
 });
 
-test('slow pin stays serialized against heartbeat and cancellation prevents worker start', async (t) => {
+test('slow pin publication stays serialized while queued cancellation prevents worker dispatch', async (t) => {
   const pinEntered = deferred();
   const pinGate = deferred();
   const sourcePins = {
@@ -987,6 +991,154 @@ test('slow pin stays serialized against heartbeat and cancellation prevents work
     .some(({ type }) => type === 'heartbeat'), true);
 });
 
+test('queued cancellation aborts a trusted long source-pin wait without worker dispatch', async (t) => {
+  const pinEntered = deferred();
+  let pinControl = null;
+  const sourcePins = {
+    async pin(_canonicalRoot, _operationId, capability) {
+      pinControl = readDurableOperationLockCapability(capability);
+      pinEntered.resolve();
+      await new Promise((resolve, reject) => {
+        if (pinControl.signal.aborted) reject(pinControl.signal.reason);
+        else pinControl.signal.addEventListener('abort', () => reject(pinControl.signal.reason), {
+          once: true,
+        });
+      });
+    },
+    async openPinnedSource(descriptor) { return pinnedSourceHandle(descriptor); },
+    async releaseOperationPins() {},
+  };
+  const fixture = makeFixture(t, { sourcePins });
+  const starting = fixture.coordinator.start(request({ requestId: 'cancel-long-pin-wait' }));
+  await pinEntered.promise;
+  const queued = (await fixture.store.listNonterminal())[0];
+  const cancelled = await fixture.coordinator.cancel(queued.operationId);
+  assert.equal(cancelled.state, 'cancelled');
+  await assert.rejects(starting, typedCode('operation_cancelled'));
+  assert.equal(pinControl.signal.aborted, true);
+  assert.equal(pinControl.cleanupSignal, null);
+  assert.equal(fixture.worker.startCalls.length, 0);
+});
+
+test('hard execution deadline aborts a trusted long source-pin wait', async (t) => {
+  const pinEntered = deferred();
+  let pinControl = null;
+  const sourcePins = {
+    async pin(_canonicalRoot, _operationId, capability) {
+      pinControl = readDurableOperationLockCapability(capability);
+      pinEntered.resolve();
+      await new Promise((resolve, reject) => {
+        if (pinControl.signal.aborted) reject(pinControl.signal.reason);
+        else pinControl.signal.addEventListener('abort', () => reject(pinControl.signal.reason), {
+          once: true,
+        });
+      });
+    },
+    async openPinnedSource(descriptor) { return pinnedSourceHandle(descriptor); },
+    async releaseOperationPins() {},
+  };
+  const fixture = makeFixture(t, {
+    sourcePins,
+    executionDeadlineMsByType: { query: 100 },
+  });
+  const starting = fixture.coordinator.start(request({ requestId: 'deadline-long-pin-wait' }));
+  await pinEntered.promise;
+  const queued = (await fixture.store.listNonterminal())[0];
+  await fixture.timers.advance(100);
+  await assert.rejects(starting, typedCode('operation_timeout'));
+  const failed = await waitForState(fixture, queued.operationId, 'failed');
+  assert.equal(failed.error.code, 'operation_timeout');
+  assert.equal(pinControl.signal.aborted, true);
+  assert.equal(pinControl.cleanupSignal, null);
+  assert.equal(fixture.worker.startCalls.length, 0);
+});
+
+test('slow source pin leaves queued status attachments and heartbeats available', async (t) => {
+  const pinEntered = deferred();
+  const pinGate = deferred();
+  const sourcePins = {
+    async pin(canonicalRoot) {
+      pinEntered.resolve();
+      await pinGate.promise;
+      const descriptor = validDescriptor(canonicalRoot);
+      return { descriptor, digest: descriptorDigest(descriptor) };
+    },
+    async openPinnedSource(descriptor) { return pinnedSourceHandle(descriptor); },
+    async releaseOperationPins() {},
+  };
+  const fixture = makeFixture(t, { sourcePins });
+  const starting = fixture.coordinator.start(request({ requestId: 'slow-pin-readable' }));
+  await pinEntered.promise;
+  const queued = (await fixture.store.listNonterminal())[0];
+  assert.ok(queued);
+
+  let statusSettled = false;
+  let attachmentSettled = false;
+  const status = fixture.coordinator.status(queued.operationId).then((value) => {
+    statusSettled = true;
+    return value;
+  });
+  const attachment = fixture.coordinator.attach(queued.operationId, {
+    attachmentId: 'slow-pin-reader',
+    afterSequence: queued.eventSequence,
+  }).then((value) => {
+    attachmentSettled = true;
+    return value;
+  });
+  const heartbeat = fixture.timers.advance(10_000);
+  let readinessDeadline;
+
+  try {
+    const [statusValue, attachmentValue] = await Promise.race([
+      Promise.all([status, attachment, heartbeat]).then(([statusResult, attachmentResult]) =>
+        [statusResult, attachmentResult]),
+      new Promise((resolve, reject) => {
+        readinessDeadline = setTimeout(() => reject(new Error(
+          'queued status, attachment, and heartbeat did not become ready within 10 seconds',
+        )), 10_000);
+      }),
+    ]);
+    assert.equal(statusSettled, true, 'queued status must not wait for source projection');
+    assert.equal(attachmentSettled, true, 'SSE attachment setup must not wait for source projection');
+    assert.equal((await fixture.store.readEvents(queued.operationId, 0))
+      .some(({ type }) => type === 'heartbeat'), true,
+      'queued heartbeat must not wait for source projection');
+    assert.equal(statusValue.state, 'queued');
+    const event = await attachmentValue.nextEvent();
+    assert.equal(event.type, 'heartbeat');
+    assert.equal(event.state, 'queued');
+  } finally {
+    if (readinessDeadline) clearTimeout(readinessDeadline);
+    pinGate.resolve();
+    await Promise.allSettled([starting, status, attachment, heartbeat]);
+  }
+});
+
+test('coordinator stop during slow pin leaves queued recovery truth without dispatching a worker', async (t) => {
+  const pinEntered = deferred();
+  const pinGate = deferred();
+  const sourcePins = {
+    async pin(canonicalRoot) {
+      pinEntered.resolve();
+      await pinGate.promise;
+      const descriptor = validDescriptor(canonicalRoot);
+      return { descriptor, digest: descriptorDigest(descriptor) };
+    },
+    async openPinnedSource(descriptor) { return pinnedSourceHandle(descriptor); },
+    async releaseOperationPins() {},
+  };
+  const fixture = makeFixture(t, { sourcePins });
+  const starting = fixture.coordinator.start(request({ requestId: 'slow-pin-stop-recovery' }));
+  await pinEntered.promise;
+  await fixture.coordinator.stop();
+  pinGate.resolve();
+
+  const operation = await starting;
+  assert.equal(operation.state, 'queued');
+  assert.equal(operation.sourcePinDigest, descriptorDigest(validDescriptor(operation.target.canonicalRoot)));
+  assert.equal(fixture.worker.startCalls.length, 0);
+});
+
 test('lost worker-start response proves and publishes the live worker instead of releasing its pin', async (t) => {
   class LostStartResponseWorker extends ControlledWorker {
     async start(context, capability) {
@@ -1006,6 +1158,48 @@ test('lost worker-start response proves and publishes the live worker instead of
   assert.equal(worker.startCalls.length, 1);
   assert.equal(worker.statusCalls.length >= 1, true);
   assert.equal(fixture.counters.releaseCalls, 0);
+});
+
+test('timed-out uncertain worker startup sends cancellation even before a worker reference is published', async (t) => {
+  class PendingStartWorker extends ControlledWorker {
+    constructor() {
+      super();
+      this.startGate = deferred();
+    }
+
+    async start(context, capability) {
+      this.startCalls.push({ context, capability });
+      return this.startGate.promise;
+    }
+
+    async status(operationId, capability) {
+      this.statusCalls.push({ operationId, capability });
+      const error = new Error('worker_not_found');
+      error.code = 'worker_not_found';
+      throw error;
+    }
+
+    async cancel(operationId, capability) {
+      this.cancelCalls.push({ operationId, capability });
+      this.startGate.resolve({});
+      return {};
+    }
+  }
+
+  const worker = new PendingStartWorker();
+  const fixture = makeFixture(t, {
+    worker,
+    workerStartTimeoutMs: 100,
+    workerControlTimeoutMs: 100,
+  });
+  const starting = fixture.coordinator.start(request({ requestId: 'pending-start-timeout' }));
+  await eventually(() => assert.equal(worker.startCalls.length, 1), 10_000);
+  await fixture.timers.advance(100);
+  await assert.rejects(starting, typedCode('worker_control_timeout'));
+  await eventually(() => assert.equal(worker.cancelCalls.length, 1));
+  const failed = (await fixture.store.list())[0];
+  assert.equal(failed.state, 'failed');
+  assert.equal(failed.error.code, 'worker_control_timeout');
 });
 
 test('lost start response retry matches persisted selectors before catalog/model drift', async (t) => {
@@ -1772,6 +1966,128 @@ test('queued and running heartbeats use ten-second cadence and stop clears timer
   assert.equal((await fixture.store.get(running.operationId)).state, 'running');
 });
 
+test('source worker startup may exceed the short control timeout without creating ghost work', async (t) => {
+  const worker = new ControlledWorker();
+  worker.blockStart = deferred();
+  t.after(() => worker.blockStart.resolve());
+  const fixture = makeFixture(t, { worker });
+  let settled = false;
+  let startError = null;
+  const starting = fixture.coordinator.start(request({ requestId: 'long-source-worker-start' }));
+  starting.then(
+    () => { settled = true; },
+    (error) => { settled = true; startError = error; },
+  );
+  await eventually(() => {
+    if (startError) throw startError;
+    assert.equal(worker.startCalls.length, 1);
+  }, 10_000);
+
+  await fixture.timers.advance((15 * 60_000) + 60_000);
+  await flush();
+  assert.equal(settled, false);
+  assert.equal((await fixture.store.listNonterminal())[0].state, 'queued');
+
+  worker.blockStart.resolve();
+  const running = await starting;
+  assert.equal(running.state, 'running');
+  assert.equal(worker.startCalls.length, 1);
+  assert.equal(worker.cancelCalls.length, 0);
+});
+
+test('coordinator stop cancels and waits for an unpublished pending worker start', async (t) => {
+  class StoppablePendingWorker extends ControlledWorker {
+    constructor() {
+      super();
+      this.startGate = deferred();
+    }
+
+    async start(context, capability) {
+      this.startCalls.push({ context, capability });
+      await this.startGate.promise;
+      let record = this.records.get(context.operationId);
+      if (!record) {
+        record = {
+          reference: {
+            version: 1,
+            workerId: `worker-${context.operationId}`,
+            workerType: 'cosmo',
+            operationType: context.operationType,
+          },
+          operationId: context.operationId,
+          state: 'running',
+          phase: 'executing',
+          eventSequence: 0,
+          activeProviderCalls: [],
+          events: [],
+          result: null,
+        };
+        this.records.set(context.operationId, record);
+      }
+      return this.publicRecord(record);
+    }
+
+    async cancel(operationId, capability) {
+      this.cancelCalls.push({ operationId, capability });
+      this.startGate.resolve();
+      return {};
+    }
+  }
+
+  const worker = new StoppablePendingWorker();
+  t.after(() => worker.startGate.resolve());
+  const fixture = makeFixture(t, { worker });
+  const starting = fixture.coordinator.start(request({ requestId: 'stop-pending-worker-start' }));
+  await eventually(() => assert.equal(worker.startCalls.length, 1), 10_000);
+
+  await fixture.coordinator.stop();
+  assert.equal(worker.cancelCalls.length >= 1, true);
+  const queued = await starting;
+  assert.equal(queued.state, 'queued');
+  assert.equal(await fixture.store.getWorker(queued.operationId), null);
+  assert.equal(fixture.coordinator.runtimes.has(queued.operationId), false);
+});
+
+test('coordinator stop waits for cancellation after a worker resolves during publication', async (t) => {
+  class PublicationGateWorker extends ControlledWorker {
+    async start(context, capability) {
+      const record = await super.start(context, capability);
+      this.publicationOperationId = context.operationId;
+      return record;
+    }
+  }
+
+  const worker = new PublicationGateWorker();
+  const fixture = makeFixture(t, { worker });
+  const publicationEntered = deferred();
+  const publicationGate = deferred();
+  const storeGet = fixture.store.get.bind(fixture.store);
+  let publicationBlocked = false;
+  fixture.store.get = async (operationId) => {
+    if (!publicationBlocked && operationId === worker.publicationOperationId) {
+      publicationBlocked = true;
+      publicationEntered.resolve();
+      await publicationGate.promise;
+    }
+    return storeGet(operationId);
+  };
+
+  const starting = fixture.coordinator.start(request({ requestId: 'stop-during-worker-publication' }));
+  await publicationEntered.promise;
+  let stopSettled = false;
+  const stopping = fixture.coordinator.stop().then(() => { stopSettled = true; });
+  await flush();
+  assert.equal(stopSettled, false);
+
+  publicationGate.resolve();
+  await stopping;
+  const queued = await starting;
+  assert.equal(queued.state, 'queued');
+  assert.equal(worker.cancelCalls.length >= 1, true);
+  assert.equal(await fixture.store.getWorker(queued.operationId), null);
+  assert.equal(fixture.coordinator.runtimes.has(queued.operationId), false);
+});
+
 test('coordinator shutdown ends in-memory attachment waiters without terminalizing durable work', async (t) => {
   const fixture = makeFixture(t);
   const operation = await fixture.coordinator.start(request({ requestId: 'stop-attachment' }));
@@ -1821,6 +2137,63 @@ test('silence reconnect tolerates a worker iterator rejecting with the abort rea
   assert.equal(fixture.worker.statusCalls.length > statusBefore, true);
   assert.equal((await fixture.store.get(operation.operationId)).state, 'running');
   assert.equal(fixture.worker.cancelCalls.length, 0);
+});
+
+test('silence recovery treats provider events covered by its status snapshot as historical', async (t) => {
+  class SnapshotReplayWorker extends ControlledWorker {
+    constructor() {
+      super();
+      this.firstStream = true;
+      this.snapshotInjected = false;
+    }
+
+    async *events(operationId, options, capability) {
+      if (this.firstStream) {
+        this.firstStream = false;
+        this.eventsCalls.push({ operationId, ...options, capability });
+        await new Promise((resolve) => {
+          if (options.signal.aborted) resolve();
+          else options.signal.addEventListener('abort', resolve, { once: true });
+        });
+        return;
+      }
+      yield* super.events(operationId, options, capability);
+    }
+
+    async status(operationId, capability) {
+      if (!this.snapshotInjected) {
+        this.snapshotInjected = true;
+        this.emit(operationId, {
+          type: 'provider_selected',
+          providerCallId: 'query',
+          providerStallMs: 5_000,
+        });
+      }
+      return super.status(operationId, capability);
+    }
+  }
+
+  const worker = new SnapshotReplayWorker();
+  const fixture = makeFixture(t, { worker });
+  const operation = await fixture.coordinator.start(request({ requestId: 'silence-provider-snapshot' }));
+  await eventually(() => assert.equal(worker.eventsCalls.length, 1));
+  await fixture.timers.advance(60_000);
+  await eventually(() => assert.equal(worker.eventsCalls.length >= 2, true));
+  assert.equal((await fixture.store.get(operation.operationId)).state, 'running');
+
+  worker.emit(operation.operationId, {
+    type: 'provider_call_terminal',
+    providerCallId: 'query',
+  });
+  worker.finish(operation.operationId, {
+    state: 'complete',
+    result: { answer: 'provider snapshot replay completed' },
+    error: null,
+    sourceEvidence: null,
+  });
+  const complete = await waitForState(fixture, operation.operationId, 'complete');
+  assert.equal(complete.error, null);
+  assert.equal(worker.cancelCalls.length, 0);
 });
 
 test('a stuck authenticated worker status is bounded without shortening execution', async (t) => {
@@ -2841,6 +3214,43 @@ test('reconciliation releases a pre-existing terminal pin marker exactly once', 
   assert.equal(typeof released.sourcePinReleasedAt, 'string');
   assert.equal(fixture.counters.releaseCalls, 1);
   assert.equal(fixture.counters.releaseVisible.size, 1);
+});
+
+test('reconciliation releases an expired terminal pin with fresh cleanup authority', async (t) => {
+  let releaseControl = null;
+  const sourcePins = {
+    async pin() { throw new Error('terminal reconciliation must not repin'); },
+    async openPinnedSource(descriptor) { return pinnedSourceHandle(descriptor); },
+    async releaseOperationPins(_operationId, capability) {
+      releaseControl = readDurableOperationLockCapability(capability);
+    },
+  };
+  const fixture = makeFixture(t, { sourcePins });
+  const hardDeadlineAt = new Date(fixture.timers.now - 1).toISOString();
+  const created = await directQueuedRecord(fixture, {
+    requestId: 'expired-terminal-pin-pending',
+    parameters: { query: 'canary', operationControl: { hardDeadlineAt } },
+  });
+  const descriptor = validDescriptor('/brains/jerry');
+  let record = await fixture.store.attachSourcePin(created.record.operationId, {
+    expectedVersion: created.record.recordVersion,
+    descriptor,
+    digest: descriptorDigest(descriptor),
+  });
+  record = await fixture.store.transition(record.operationId, {
+    expectedVersion: record.recordVersion,
+    state: 'failed',
+    phase: 'terminal',
+    error: { code: 'operation_timeout', message: 'expired', retryable: true },
+    sourceEvidence: null,
+  });
+
+  await fixture.coordinator.reconcile();
+  const released = await fixture.store.get(record.operationId);
+  assert.equal(typeof released.sourcePinReleasedAt, 'string');
+  assert.equal(releaseControl.hardDeadlineAt, hardDeadlineAt);
+  assert.equal(releaseControl.signal, null);
+  assert.equal(releaseControl.cleanupSignal, null);
 });
 
 test('queued record without durable operationControl deadline is interrupted before worker work', async (t) => {

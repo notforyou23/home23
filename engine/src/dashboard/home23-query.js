@@ -442,7 +442,7 @@ function initQueryTab() {
             <label class="qt-toggle-label" title="Allow query to create files, read full contents, and take actions">
               <input type="checkbox" id="qt-allow-actions"> Allow Actions
             </label>
-            <label class="qt-toggle-label qt-pgs-label" title="Partitioned Graph Synthesis: durable cumulative or targeted coverage with reusable sweeps">
+            <label class="qt-toggle-label qt-pgs-label" title="Partitioned Graph Synthesis: durable cumulative or targeted coverage with reusable sweeps; large runs may take hours">
               <input type="checkbox" id="qt-pgs"> 🧬 PGS
             </label>
           </div>
@@ -948,7 +948,7 @@ async function executeQuery() {
   const hintEl = document.getElementById('qt-loading-hint');
   if (hintEl) {
     hintEl.textContent = enablePGS
-      ? `Durable PGS ${levelLabel} (${levelPercent}% requested coverage, ${pgsMode}) — results remain reattachable by operation ID`
+      ? `Durable PGS ${levelLabel} (${levelPercent}% requested coverage, ${pgsMode}) — large runs may take hours; progress and results remain reattachable by operation ID`
       : 'Durable query — keep this view open for live progress; provider work may take longer than a quick response';
   }
 

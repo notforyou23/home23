@@ -72,8 +72,7 @@ function createQueryEngine(targetRoot) {
       version: 1,
       providers: { alpha: { models: [{
         id: 'answer-model', kind: 'chat', transport: 'responses',
-        maxOutputTokens: 256, contextWindowTokens: 1_000_000,
-        providerStallMs: 900_000,
+        maxOutputTokens: 256, contextWindowTokens: 128_000, providerStallMs: 900_000,
       }] } },
       defaults: {},
     },

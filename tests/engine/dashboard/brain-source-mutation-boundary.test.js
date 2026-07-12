@@ -234,6 +234,10 @@ async function runSourceOperation(fixture, label, entry, operationType) {
     }), true, 'per-process pins may exist only in the requester operation');
 
     const scratchDir = path.join(operationRoot, 'scratch');
+    const scratchStat = await fsp.lstat(scratchDir);
+    assert.equal(scratchStat.isDirectory(), true,
+      'source pinning creates only requester-owned operation scratch');
+    assert.equal(scratchStat.isSymbolicLink(), false);
     const scratchBaseline = await inventoryTree(scratchDir);
     const target = operationTarget(
       fixture,
@@ -298,6 +302,8 @@ async function runSourceOperation(fixture, label, entry, operationType) {
         scratchBaseline,
         `${operationType} must not add or mutate requester scratch`,
       );
+      assert.deepEqual(await fsp.readdir(scratchDir), [],
+        `${operationType} may use the requester scratch boundary but must not retain artifacts`);
     }
   } finally {
     await source?.release?.().catch(() => {});

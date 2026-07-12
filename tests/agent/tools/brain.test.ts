@@ -21,6 +21,7 @@ import {
   canonicalBrainTarget,
   makeBrainOperationRecord,
 } from '../../helpers/brain-operation-record.js';
+import { CORE_RUNTIME_PROMPT } from '../../../src/agents/system-prompt.js';
 
 type BrainClientStub = Record<string, (...args: any[]) => any>;
 type ContextOverrides = Omit<Partial<ToolContext>, 'brainOperations' | 'turnRuntime'> & {
@@ -831,9 +832,9 @@ test('brain_synthesize status and reattach never start a second synthesis', asyn
 });
 
 test('brain_status exposes status, result, wait, and exact cancel by operation ID', async () => {
+  const operationId = `brop_${'C'.repeat(32)}`;
   const inspected: string[] = [];
   const resumed: string[] = [];
-  const operationId = 'brop_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC';
   const running = completeOperation(operationId, '');
   running.state = 'running';
   running.attachmentState = 'detached';
@@ -851,7 +852,9 @@ test('brain_status exposes status, result, wait, and exact cancel by operation I
     await brainStatusTool.execute({ operationId, action }, ctx);
   }
   const waited = await brainStatusTool.execute({ operationId, action: 'wait' }, ctx);
-  assert.deepEqual(inspected, [`${operationId}:status`, `${operationId}:result`, `${operationId}:cancel`]);
+  assert.deepEqual(inspected, [
+    `${operationId}:status`, `${operationId}:result`, `${operationId}:cancel`,
+  ]);
   assert.deepEqual(resumed, [operationId]);
   assert.match(waited.content, /running|Detached/i);
   assert.deepEqual(Object.keys((brainStatusTool.input_schema as any).properties)
@@ -917,6 +920,55 @@ test('omitted target stays omitted so the coordinator selects the exact own brai
     },
   } }));
   assert.equal(request?.target, undefined);
+});
+
+test('brain tools reject a target that mixes agent and brain ID selectors', async () => {
+  let downstreamCalls = 0;
+  const target = { agent: 'jerry', brainId: 'jerry' };
+  const ctx = makeCtx({ brainOperations: {
+    search: async () => { downstreamCalls += 1; return {}; },
+    query: async () => { downstreamCalls += 1; return completeOperation('op-mixed', 'wrong'); },
+    graph: async () => { downstreamCalls += 1; return {}; },
+    status: async () => { downstreamCalls += 1; return {}; },
+  } });
+
+  for (const [tool, input] of [
+    [brainSearchTool, { query: 'health', target }],
+    [brainQueryTool, { query: 'health', target }],
+    [brainMemoryGraphTool, { target }],
+    [brainStatusTool, { target }],
+  ] as const) {
+    const result = await tool.execute(input, ctx);
+    assert.equal(result.is_error, true, tool.name);
+    assert.match(result.content, /target_invalid/, tool.name);
+  }
+  assert.equal(downstreamCalls, 0);
+});
+
+test('brain tool schemas make own-brain and exact-selector contracts explicit', () => {
+  const target = (brainSearchTool.input_schema as any).properties.target;
+  assert.equal(target.minProperties, 1);
+  assert.equal(target.maxProperties, 1);
+  assert.match(target.description, /omit.*own brain/i);
+  assert.match(target.properties.agent.description, /agent name/i);
+  assert.match(target.properties.brainId.description, /catalog/i);
+
+  const operationId = (brainStatusTool.input_schema as any).properties.operationId;
+  assert.equal(operationId.pattern, '^brop_[A-Za-z0-9_-]{32}$');
+  assert.match(operationId.description, /returned.*brain/i);
+  assert.match(brainStatusTool.description, /omit.*health/i);
+});
+
+test('brain_status rejects an invented operation ID before calling the client', async () => {
+  let downstreamCalls = 0;
+  const result = await brainStatusTool.execute({
+    operationId: 'health', action: 'status',
+  }, makeCtx({ brainOperations: {
+    inspectOperation: async () => { downstreamCalls += 1; return {}; },
+  } }));
+  assert.equal(result.is_error, true);
+  assert.match(result.content, /operation_id_invalid/);
+  assert.equal(downstreamCalls, 0);
 });
 
 test('strict schemas and executors reject coercion, null, extras, and legacy model shortcuts', async () => {
@@ -1011,4 +1063,19 @@ test('JSON metadata validation preserves dangerous keys without prototype mutati
   assert.equal((validated.__proto__ as { polluted: boolean }).polluted, true);
   assert.equal(({} as { polluted?: boolean }).polluted, undefined);
   assert.equal(JSON.stringify(validated), '{"__proto__":{"polluted":true},"safe":1}');
+});
+
+test('runtime prompt teaches durable brain waits without obsolete short latency promises', () => {
+  assert.match(CORE_RUNTIME_PROMPT, /ordinary (?:query )?attachment(?:s)? wait for up to 90 minutes/i);
+  assert.match(CORE_RUNTIME_PROMPT, /PGS and synthesis attachment(?:s)? wait for up to six hours/i);
+  assert.match(CORE_RUNTIME_PROMPT, /brain_status \{action:"wait",operationId:/i);
+  assert.match(CORE_RUNTIME_PROMPT, /verified operation (?:progress|events).*renew.*turn activity lease/i);
+  assert.match(CORE_RUNTIME_PROMPT, /own-brain health.*brain_status \{\}/i);
+  assert.match(CORE_RUNTIME_PROMPT, /own-brain (?:search|lookup).*omit.*target/i);
+  assert.match(CORE_RUNTIME_PROMPT, /never.*agent name.*brainId/i);
+  assert.match(CORE_RUNTIME_PROMPT, /never invent.*operationId/i);
+  assert.match(CORE_RUNTIME_PROMPT, /do not fall back.*direct COSMO/i);
+  assert.doesNotMatch(CORE_RUNTIME_PROMPT, /brain_search[^\n]*~500ms/i);
+  assert.doesNotMatch(CORE_RUNTIME_PROMPT, /brain_query[^\n]*1-6 min/i);
+  assert.doesNotMatch(CORE_RUNTIME_PROMPT, /PGS[^\n]*5-10\+ min/i);
 });

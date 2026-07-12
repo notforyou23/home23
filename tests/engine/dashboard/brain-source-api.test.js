@@ -9,6 +9,7 @@ const require = createRequire(import.meta.url);
 const {
   createBrainSourceService,
   rejectCallerIdentity,
+  sendBrainSourceError,
 } = require('../../../engine/src/dashboard/brain-source-api');
 const { openMemorySource } = require('../../../shared/memory-source');
 
@@ -108,6 +109,35 @@ test('caller-supplied source identity fields are rejected at compatibility bound
       (error) => error.code === 'invalid_request' && error.status === 400 && error.field === key,
     );
   }
+});
+
+test('dashboard maps retryable compatibility admission contention to HTTP 503', () => {
+  const response = {
+    statusCode: null,
+    payload: null,
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    json(payload) {
+      this.payload = payload;
+      return this;
+    },
+  };
+  sendBrainSourceError(response, Object.assign(new Error('compatibility source busy'), {
+    code: 'source_busy',
+    retryable: true,
+  }));
+  assert.equal(response.statusCode, 503);
+  assert.deepEqual(response.payload, {
+    ok: false,
+    success: false,
+    error: {
+      code: 'source_busy',
+      message: 'compatibility source busy',
+      retryable: true,
+    },
+  });
 });
 
 test('catalog/source mismatch fails before source iteration', async () => {

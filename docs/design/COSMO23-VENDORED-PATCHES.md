@@ -2677,6 +2677,60 @@ restart or Jerry/Forrest acceptance; those remain guarded rollout work.
 
 ---
 
+## Patch 55 — Long brain-operation lock, context, and cleanup reliability
+
+**Vendored production files touched:**
+- `cosmo23/lib/codex-responses-client.js`
+- `cosmo23/lib/pinned-query-projection.js`
+- `cosmo23/lib/provider-input-budget.js`
+- `cosmo23/lib/provider-record-sanitizer.js`
+- `cosmo23/lib/query-engine.js`
+- `cosmo23/pgs-engine/src/pinned-operation.js`
+- `cosmo23/pgs-engine/src/pinned-store.js`
+- `cosmo23/server/config/model-catalog.js`
+- `cosmo23/server/lib/brain-operation-runtime.js`
+- `cosmo23/server/lib/brain-operation-worker.js`
+
+**Problem:** Real Jerry operations exposed several boundaries that the original
+durable implementation did not cover. A full source projection could hold the
+per-brain lock longer than the generic 30-second wait, status and cancellation
+could queue behind projection, multi-million-record Query prompts could exceed
+the selected model context, PGS could pack records to a raw byte ceiling larger
+than its sweep model's effective context, and numeric embedding payloads consumed
+provider context without adding textual evidence. A crash between projection
+quarantine rename and removal or a stop during an unpublished worker start could
+also strand requester scratch/process pins.
+
+**Fix:** Durable operations now use a private branded lock authority with a
+bounded 15-minute acquisition/cleanup policy while ordinary callers retain the
+30-second limit. Projection runs outside the coordinator CAS queue, so status,
+heartbeats, attachments, hard deadlines, and cancellation remain available.
+Worker prestarts are authenticated and abortable before target resolution or
+start-lock waits; real-provider rollback completes before graceful stop and
+cleanup failure is surfaced. Source release reconciles exact dev/inode-owned
+quarantines idempotently and removes coordinator lock authority last.
+
+Query and PGS share exact provider input budgeting from reviewed per-model
+context capabilities. Both count decoded UTF-8 instructions plus input, reserve
+output and protocol capacity, strip only numeric `embedding(s)`/`vector(s)`
+payloads (including Buffer, typed, and sparse arrays), preserve textual fields,
+and leave source records immutable. Query projects deterministically within the
+model budget. PGS lowers work-unit packing before persistence, checks sweep and
+synthesis inputs again at provider dispatch, and preserves successful sweeps as
+a truthful partial when synthesis cannot fit or complete. Codex Responses input
+is normalized and transport-bounded without unsupported wire parameters.
+
+**Offline verification:** The final combined lock/quota/query/PGS integration
+matrix passed 315/315. Query/PGS focused coverage passed 108/108; controlled
+100k-node/300k-edge PGS and lifecycle acceptance passed 3/3. Four-million-record
+Query and PGS probes stayed within their heap/RSS ceilings. The dependency-
+complete default test command, TypeScript build, and contract suite exited 0;
+contracts reported 36 pass and one intentional live-only skip. Live deployment
+and exact Jerry/Forrest operation IDs are recorded separately in the dated Brain
+Tools Hardening receipt.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -3011,7 +3065,13 @@ restart or Jerry/Forrest acceptance; those remain guarded rollout work.
   survive save, import, merge, retry, and reload without partial publication or
   outbound echo. Offline A/B/C and focused persistence matrices are green;
   live rollout acceptance remains pending.
-- **2026-07-12** — Patch 55 replaces operation-local, full-only PGS with
+- **2026-07-11** — Patch 55 hardened the real long-running Query/PGS path after
+  live Jerry scale exposed source-lock starvation, oversized model input,
+  embedding-density waste, and stop/crash cleanup windows. Durable lock waits,
+  model-aware packing, exact UTF-8 provider budgets, typed vector stripping,
+  abortable prestarts, and idempotent release are now covered by focused,
+  acceptance, scale, full-suite, and independent adversarial review.
+- **2026-07-12** — Patch 56 replaces operation-local, full-only PGS with
   query-bound durable sessions. Named skim/sample/deep/full levels are
   cumulative and round-robin across partitions; targeted scopes are isolated;
   continuations reuse committed sweeps from one protected per-agent SQLite

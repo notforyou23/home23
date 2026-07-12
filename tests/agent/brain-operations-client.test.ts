@@ -34,11 +34,21 @@ const {
   BrainOperationCoordinator,
 } = require('../../engine/src/dashboard/brain-operations/coordinator.js');
 const {
+  BrainOperationWorkerAdapter,
+} = require('../../engine/src/dashboard/brain-operations/worker-adapter.js');
+const {
   createBrainOperationStoreReader,
 } = require('../../engine/src/dashboard/brain-operations/store-reader.js');
 const {
   createBrainOperationExporter,
 } = require('../../engine/src/dashboard/brain-operations/exporter.js');
+const {
+  canonicalJson,
+} = require('../../shared/brain-operations/canonical-json.cjs');
+const {
+  OPERATION_AUTHORITY,
+  authorizeBrainOperation,
+} = require('../../shared/brain-operations/authority.cjs');
 
 function record(
   operationId: string,
@@ -673,6 +683,237 @@ test('verified operation events keep a query attachment alive beyond the old fix
   assert.equal(result.result?.answer, 'delayed answer');
   assert.equal(result.resultHandle, OPAQUE_RESULT_HANDLE);
   assert.deepEqual(activities, [1, 2, 3, 4]);
+});
+
+test('real client stays attached while a durable legacy source pin is still projecting', async (t) => {
+  const home23Root = fs.realpathSync.native(fs.mkdtempSync(
+    path.join(tmpdir(), 'home23-brain-slow-pin-boundary-'),
+  ));
+  for (const relative of [
+    'instances/jerry/brain',
+    'instances/jerry/runtime',
+    'instances/jerry/workspace',
+  ]) fs.mkdirSync(path.join(home23Root, relative), { recursive: true });
+  const operationsRoot = path.join(home23Root, 'instances/jerry/runtime/brain-operations');
+  const clock = new ManualClock();
+  clock.nowMs = Date.parse('2026-07-10T16:00:00.000Z');
+  const clientClock = new ManualClock();
+  clientClock.nowMs = clock.nowMs;
+  const store = new BrainOperationStore({
+    root: operationsRoot,
+    requesterAgent: 'jerry',
+    now: clock.now,
+  });
+  const reader = createBrainOperationStoreReader({
+    operationsRoot,
+    expectedRequester: 'jerry',
+    liveStore: store,
+  });
+  const exporter = createBrainOperationExporter({ home23Root, requesterAgent: 'jerry', reader });
+  const target = realBrainTarget(home23Root);
+  const catalogEntry = {
+    id: target.brainId,
+    displayName: target.displayName,
+    ownerAgent: target.ownerAgent,
+    kind: target.kind,
+    lifecycle: target.lifecycle,
+    canonicalRoot: target.canonicalRoot,
+    sourceType: 'home23-agent',
+    nodeCount: 12,
+    modifiedAt: '2026-07-10T00:00:00.000Z',
+    route: target.route,
+    mutationBoundaries: target.mutationBoundaries,
+  };
+  const descriptor = {
+    version: 1,
+    canonicalRoot: target.canonicalRoot,
+    generation: 'slow-pin-generation',
+    baseRevision: 1,
+    cutoffRevision: 1,
+    activeBase: {
+      nodes: { file: 'nodes.base-1.jsonl.gz', count: 12, bytes: 100 },
+      edges: { file: 'edges.base-1.jsonl.gz', count: 10, bytes: 100 },
+    },
+    activeDelta: {
+      epoch: 'epoch-1', file: 'delta.epoch-1.jsonl', fromRevision: 2,
+      toRevision: 1, count: 0, committedBytes: 0,
+    },
+    summary: { nodeCount: 12, edgeCount: 10, clusterCount: 2 },
+  };
+  const digest = `sha256:${Buffer.from(await crypto.subtle.digest(
+    'SHA-256', new TextEncoder().encode(canonicalJson(descriptor)),
+  )).toString('hex')}`;
+  const pinEntered = deferred<void>();
+  const pinGate = deferred<void>();
+  const executorEntered = deferred<void>();
+  const executorResult = deferred<Record<string, unknown>>();
+  const sourceHandle = {
+    revision: descriptor.cutoffRevision,
+    descriptor,
+    evidence: {},
+    async *iterateNodes() {},
+    async *iterateEdges() {},
+    async summarize() { return {}; },
+    async searchKeyword() { return {}; },
+    getEvidence() { return this.evidence; },
+    async isCurrent() { return true; },
+    async compareAndSwap(commit: () => Promise<unknown>) {
+      return { committed: true, value: await commit() };
+    },
+    async release() {},
+  };
+  const sourcePins = {
+    async pin() {
+      pinEntered.resolve(undefined);
+      await pinGate.promise;
+      return { descriptor, digest };
+    },
+    async openPinnedSource() { return sourceHandle; },
+    async releaseOperationPins() {},
+  };
+  const scratchQuotaFactory = async () => ({
+    async claim() {},
+    async release() {},
+    async reconcile() { return {}; },
+    async assertOperationRoot() { return true; },
+    async close() {},
+  });
+  const worker = new BrainOperationWorkerAdapter({
+    supportsSourceOperations: true,
+    sourceOperationTypes: ['query'],
+    clock: { now: clock.now, monotonicNow: clock.now },
+  });
+  worker.registerLocalExecutor('query', async () => {
+    executorEntered.resolve(undefined);
+    return executorResult.promise;
+  });
+  const coordinator = new BrainOperationCoordinator({
+    requesterAgent: 'jerry',
+    store,
+    buildCanonicalCatalog: async () => ({
+      catalogRevision: target.catalogRevision,
+      brains: [catalogEntry],
+    }),
+    resolveCanonicalTarget: () => catalogEntry,
+    operationAuthority: OPERATION_AUTHORITY,
+    authorizeBrainOperation,
+    worker,
+    sourcePins,
+    scratchQuotaFactory,
+    operationModelResolver: async ({ requestParameters }: { requestParameters: Record<string, unknown> }) => ({
+      ...requestParameters,
+      modelSelection: { provider: 'fixture', model: 'fixture-query' },
+    }),
+    capabilityIssuer: ({ purpose }: { purpose: string }) => `fixture-${purpose}`,
+    clock: { now: clock.now },
+    timers: { setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout },
+    limits: {
+      heartbeatMs: 5,
+      eventSilenceMs: 60,
+      workerControlTimeoutMs: 100,
+      executionDeadlineMsByType: { query: 1_000 },
+    },
+  });
+  const attachEntered = deferred<void>();
+  let attachReturned = false;
+  const realAttach = coordinator.attach.bind(coordinator);
+  coordinator.attach = async (...args: unknown[]) => {
+    attachEntered.resolve(undefined);
+    const value = await realAttach(...args);
+    attachReturned = true;
+    return value;
+  };
+  const app = express();
+  const placeholder = createBrainOperationsPlaceholderRouter();
+  app.use('/home23/api/brain-operations', placeholder.router);
+  placeholder.attach(createBrainOperationsRouter({
+    requesterAgent: 'jerry',
+    coordinator,
+    reader,
+    exporter,
+    buildCatalog: async () => ({
+      catalogRevision: target.catalogRevision,
+      brains: [catalogEntry],
+    }),
+  }).router);
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('test_server_address_unavailable');
+
+  const eventsRequested = deferred<void>();
+  let eventsHeadersReturned = false;
+  const activities: number[] = [];
+  let querySettled = false;
+  const client = new BrainOperationsClient({
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    callerAgent: 'jerry',
+    statusReadMs: 10,
+    connectMs: 10,
+    inactivityMs: 20,
+    queryWaitMs: 200,
+    attachmentIdFactory: () => 'slow-pin-http-reader',
+    now: clientClock.now,
+    setTimeout: clientClock.setTimeout,
+    clearTimeout: clientClock.clearTimeout,
+    onActivity: (activity) => activities.push(activity.sequence),
+    fetchImpl: async (url, init) => {
+      const events = String(url).includes('/events?');
+      if (events) eventsRequested.resolve(undefined);
+      const response = await fetch(url, init);
+      if (events) eventsHeadersReturned = true;
+      return response;
+    },
+  });
+  const pending = client.query({ query: 'wait through projection' }).then((value) => {
+    querySettled = true;
+    return value;
+  });
+  t.after(async () => {
+    pinGate.resolve(undefined);
+    executorResult.resolve({
+      state: 'cancelled', result: null, resultArtifact: null,
+      error: null, sourceEvidence: null,
+    });
+    await pending.catch(() => undefined);
+    await coordinator.stop().catch(() => undefined);
+    await worker.stop().catch(() => undefined);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    fs.rmSync(home23Root, { recursive: true, force: true });
+  });
+
+  await pinEntered.promise;
+  clientClock.advance(11);
+  await eventsRequested.promise;
+  await attachEntered.promise;
+  assert.equal(querySettled, false, 'the durable query must remain attached');
+  clock.advance(6);
+  pinGate.resolve(undefined);
+  await executorEntered.promise;
+  for (let index = 0; index < 1_000 && (!attachReturned || !eventsHeadersReturned); index += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.equal(attachReturned, true);
+  assert.equal(eventsHeadersReturned, true);
+  executorResult.resolve({
+    state: 'complete',
+    result: { answer: 'projection survived' },
+    resultArtifact: null,
+    error: null,
+    sourceEvidence: null,
+  });
+  const result = await pending;
+  assert.equal(result.state, 'complete');
+  assert.equal(result.result?.answer, 'projection survived');
+  assert.equal(result.attachmentState, 'closed');
+  assert.equal(activities.length > 0, true, 'queued heartbeat must renew operation activity');
+  const events = await store.readEvents(result.operationId, 0);
+  const heartbeatIndex = events.findIndex((event: { type: string }) => event.type === 'heartbeat');
+  const pinIndex = events.findIndex((event: { type: string }) => event.type === 'source_pin_attached');
+  assert.equal(heartbeatIndex >= 0, true);
+  assert.equal(pinIndex >= 0, true);
+  assert.equal(heartbeatIndex < pinIndex, true,
+    'the queued heartbeat and attachment must cross before slow pin publication');
 });
 
 test('SSE parser flushes one valid final frame when EOF has no blank-line terminator', async () => {

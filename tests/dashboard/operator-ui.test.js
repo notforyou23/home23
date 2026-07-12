@@ -5,6 +5,14 @@ import test from 'node:test';
 
 const HOME23_ROOT = process.cwd();
 
+test('query dashboard describes durable PGS work without short fixed-time promises', () => {
+  const js = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-query.js'), 'utf8');
+
+  assert.match(js, /may take hours/i);
+  assert.match(js, /durable/i);
+  assert.doesNotMatch(js, /1-3 min|3-6 min|5-10\+ min/);
+});
+
 test('live-problems panel exposes an operator readout, not only raw verifier rows', () => {
   const js = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-dashboard.js'), 'utf8');
   const css = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-dashboard.css'), 'utf8');

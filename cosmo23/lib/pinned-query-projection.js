@@ -212,6 +212,9 @@ async function projectPinnedQuery({
         if (change.removed) retainedNodeBytes -= change.removed.bytes;
         while (retainedNodeBytes > selectedLimits.maxProjectionBytes) {
           const removed = heap.removeMinimum();
+          if (!removed) {
+            throw typed('result_too_large', 'Pinned query record cannot fit the projection budget');
+          }
           retainedNodeBytes -= removed.bytes;
           nodesDroppedForByteBudget += 1;
         }
