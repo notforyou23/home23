@@ -23,13 +23,24 @@ import { operationToolResult } from '../tool-result.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 
 const DEFAULT_BRAIN_QUERY_MODE = 'quick';
+const BRAIN_OPERATION_ID_PATTERN = '^brop_[A-Za-z0-9_-]{32}$';
+const BRAIN_OPERATION_ID = /^brop_[A-Za-z0-9_-]{32}$/;
 
 const targetSchema = {
   type: 'object',
   additionalProperties: false,
+  minProperties: 1,
+  maxProperties: 1,
+  description: 'Omit target for this agent own brain. Otherwise select exactly one authorized brain.',
   properties: {
-    agent: { type: 'string', minLength: 1, maxLength: 256 },
-    brainId: { type: 'string', minLength: 1, maxLength: 256 },
+    agent: {
+      type: 'string', minLength: 1, maxLength: 256,
+      description: 'Agent name for an authorized resident brain, for example forrest.',
+    },
+    brainId: {
+      type: 'string', minLength: 1, maxLength: 256,
+      description: 'Exact opaque brain ID returned by the brain catalog; never an agent name.',
+    },
   },
 } as const;
 
@@ -79,10 +90,17 @@ function targetFrom(input: Record<string, unknown>): { agent?: string; brainId?:
     optionalBoundedText(candidate, 'target.agent', 256));
   const brainId = parsedWhenPresent(value, 'brainId', (candidate) =>
     optionalBoundedText(candidate, 'target.brainId', 256));
+  if (agent !== undefined && brainId !== undefined) throw invalidRequest('target_invalid');
   return {
     ...(agent !== undefined ? { agent } : {}),
     ...(brainId !== undefined ? { brainId } : {}),
   };
+}
+
+function requiredOperationId(input: Record<string, unknown>): string {
+  const operationId = requiredToolText(input, 'operationId', 256);
+  if (!BRAIN_OPERATION_ID.test(operationId)) throw invalidRequest('operation_id_invalid');
+  return operationId;
 }
 
 function exactPairWhenPresent(
@@ -470,7 +488,7 @@ async function executeBrainStatus(
     const turn = runtime(ctx);
     if (hasOwn(input, 'operationId')) {
       if (hasOwn(input, 'target')) throw invalidRequest();
-      const operationId = requiredToolText(input, 'operationId', 256);
+      const operationId = requiredOperationId(input);
       const action = parsedWhenPresent(input, 'action', (value) =>
         optionalEnum(value, 'action', ['status', 'result', 'wait', 'cancel'] as const)) ?? 'status';
       const value = action === 'wait'
@@ -596,13 +614,16 @@ export const brainSynthesizeTool: ToolDefinition = {
 
 export const brainStatusTool: ToolDefinition = {
   name: 'brain_status',
-  description: 'Read authoritative bounded brain status or control one exact durable operation.',
+  description: 'Read authoritative bounded brain status; omit all arguments for own-brain health, or control one exact durable operation.',
   input_schema: {
     type: 'object',
     additionalProperties: false,
     properties: {
       target: targetSchema,
-      operationId: { type: 'string', minLength: 1 },
+      operationId: {
+        type: 'string', pattern: BRAIN_OPERATION_ID_PATTERN,
+        description: 'Exact operation ID returned by a prior brain tool call; never invent one.',
+      },
       action: { type: 'string', enum: ['status', 'result', 'wait', 'cancel'] },
     },
   },

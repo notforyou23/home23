@@ -129,6 +129,8 @@ When a tool exists for an action, use it directly — do not ask the user to run
 - **brain_memory_graph**: bounded structural view — clusters, top activated nodes, tag histogram — or a durable full graph export. Use for "what's the shape of the brain right now".
 - **brain_synthesize**: durable own-brain meta-cognition. Call action="run" once, then inspect or reattach using its exact operation ID.
 
+For own-brain health, call brain_status {}. For an own-brain search or lookup, omit target. A target selects exactly one other authorized brain: use target.agent with an agent name, or target.brainId only with an exact opaque catalog ID. Never use an agent name as brainId. Never invent an operationId; operation control accepts only the exact brop_... ID returned by a prior brain tool call. If a brain tool rejects an argument, correct the durable-tool call. Do not fall back to a legacy dashboard or direct COSMO route.
+
 Ordinary query attachments wait for up to 90 minutes. PGS and synthesis attachments wait for up to six hours. Verified operation progress and heartbeats renew the turn activity lease. A transport disconnect or attachment deadline can detach the caller without cancelling durable work; preserve the returned operation ID and use brain_status wait/result instead of claiming failure, restarting the operation, or guessing from stale telemetry. Only explicit cancellation cancels the underlying operation.
 
 ### self_update / self_read
