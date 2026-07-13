@@ -135,6 +135,29 @@ function buildHome23ModelAuthority({ homeConfig, agentConfig = {} } = {}) {
     }
   }
 
+  const homeModels = optionalObject(home.models, 'Home23 models config');
+  if (homeModels.aliases !== undefined && homeModels.aliases !== null) {
+    const aliases = optionalObject(homeModels.aliases, 'Home23 model aliases');
+    const chatPairs = new Set();
+    for (const [alias, rawPair] of Object.entries(aliases)) {
+      const pairConfig = optionalObject(rawPair, `Model alias ${alias}`);
+      const pair = exactPair(pairConfig.provider, pairConfig.model);
+      if (!pair || !configuredPairs.has(`${pair.provider}\0${pair.model}`)) {
+        const identity = pair ? `${pair.provider}/${pair.model}` : 'missing';
+        throw catalogError(`Home23 model alias ${alias} is not a configured pair: ${identity}`);
+      }
+      chatPairs.add(`${pair.provider}\0${pair.model}`);
+    }
+    configuredPairs.clear();
+    for (const key of chatPairs) configuredPairs.add(key);
+    models.splice(0, models.length, ...models.filter(({ provider, model }) => (
+      chatPairs.has(`${provider}\0${model}`)
+    )));
+    for (const [provider, entry] of Object.entries(providers)) {
+      entry.models = entry.models.filter(({ id }) => chatPairs.has(`${provider}\0${id}`));
+    }
+  }
+
   const embeddingDefaults = deepClone(BUILTIN_MODEL_CATALOG.defaults.embeddings);
   const homeEmbeddings = optionalObject(home.embeddings, 'Home23 embeddings config');
   if (homeEmbeddings.providers !== undefined && !Array.isArray(homeEmbeddings.providers)) {

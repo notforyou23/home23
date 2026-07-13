@@ -124,6 +124,50 @@ test('pure builder exposes only Home23 exact chat pairs with COSMO provider capa
   assert.doesNotThrow(() => normalizeModelCatalog(authority.executionCatalog));
 });
 
+test('selected agent Query authority exposes the same exact pairs as Chat aliases', () => {
+  const homeConfig = baseHome();
+  homeConfig.models = {
+    aliases: {
+      terra: { provider: 'openai-codex', model: 'future-codex-model' },
+      grok: { provider: 'xai', model: 'grok-home' },
+      'grok-again': { provider: 'xai', model: 'grok-home' },
+    },
+  };
+
+  const authority = buildHome23ModelAuthority({ homeConfig, agentConfig: {} });
+
+  assert.deepEqual(
+    authority.models.map(({ provider, model }) => ({ provider, model })),
+    [
+      { provider: 'openai-codex', model: 'future-codex-model' },
+      { provider: 'xai', model: 'grok-home' },
+    ],
+  );
+  assert.deepEqual(
+    authority.executionCatalog.providers['openai-codex'].models
+      .filter(({ kind }) => kind === 'chat')
+      .map(({ provider, id }) => ({ provider, model: id })),
+    [{ provider: 'openai-codex', model: 'future-codex-model' }],
+  );
+  assert.deepEqual(
+    authority.executionCatalog.providers.xai.models
+      .filter(({ kind }) => kind === 'chat')
+      .map(({ provider, id }) => ({ provider, model: id })),
+    [{ provider: 'xai', model: 'grok-home' }],
+  );
+  assert.deepEqual(authority.queryDefaults, {
+    defaultProvider: 'xai',
+    defaultModel: 'grok-home',
+    pgsSweepProvider: 'openai-codex',
+    pgsSweepModel: 'future-codex-model',
+    pgsSynthProvider: 'xai',
+    pgsSynthModel: 'grok-home',
+    defaultMode: 'full',
+    enablePGSByDefault: true,
+    pgsDepth: 0.5,
+  });
+});
+
 test('agent role preferences resolve only as configured exact pairs and otherwise use Chat', () => {
   const authority = buildHome23ModelAuthority({
     homeConfig: baseHome(),
