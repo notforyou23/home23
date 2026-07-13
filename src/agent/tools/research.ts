@@ -56,60 +56,6 @@ const pgsToolProperties = {
   pgsSynth: providerModelSchema,
 } as const;
 
-const pgsToolBranches = [
-  {
-    type: 'object',
-    properties: { enablePGS: { const: false } },
-    not: {
-      anyOf: [
-        { required: ['pgsMode'] },
-        { required: ['pgsLevel'] },
-        { required: ['continueFromOperationId'] },
-        { required: ['targetPartitionIds'] },
-        { required: ['pgsSweep'] },
-        { required: ['pgsSynth'] },
-      ],
-    },
-  },
-  {
-    type: 'object',
-    required: ['enablePGS', 'pgsMode', 'pgsLevel', 'pgsSweep', 'pgsSynth'],
-    properties: { enablePGS: { const: true } },
-    allOf: [
-      {
-        not: {
-          anyOf: [
-            { required: ['mode'] },
-            { required: ['modelSelection'] },
-          ],
-        },
-      },
-      {
-        oneOf: [
-          {
-            properties: { pgsMode: { const: 'fresh' } },
-            not: {
-              anyOf: [
-                { required: ['continueFromOperationId'] },
-                { required: ['targetPartitionIds'] },
-              ],
-            },
-          },
-          {
-            properties: { pgsMode: { const: 'continue' } },
-            required: ['continueFromOperationId'],
-            not: { required: ['targetPartitionIds'] },
-          },
-          {
-            properties: { pgsMode: { const: 'targeted' } },
-            required: ['targetPartitionIds'],
-          },
-        ],
-      },
-    ],
-  },
-] as const;
-
 function invalidRequest(message = 'invalid_request'): Error {
   return Object.assign(new Error(message), { code: 'invalid_request' });
 }
@@ -764,7 +710,6 @@ export const queryBrainTool: ToolDefinition = {
       ...pgsToolProperties,
     },
     required: ['brainId', 'query'],
-    oneOf: pgsToolBranches,
   },
   execute: executeQueryBrain,
 };

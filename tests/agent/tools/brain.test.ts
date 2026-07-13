@@ -611,20 +611,39 @@ test('brain_query schema publishes the direct and PGS parameter families without
   }
 });
 
-test('every provider-bound brain tool schema has a plain object root', () => {
-  const tools = createToolRegistry().getOpenAITools();
-  const brainTools = tools.filter((tool) => tool.function.name.startsWith('brain_'));
-  for (const tool of brainTools) {
-    const schema = tool.function.parameters as Record<string, unknown>;
-    assert.equal(schema.type, 'object', `${tool.function.name} root`);
-    for (const keyword of ['oneOf', 'anyOf', 'allOf', 'enum', 'const', 'not'] as const) {
-      assert.equal(keyword in schema, false, `${tool.function.name} root ${keyword}`);
+test('every provider-bound tool schema in the active registry has a plain object root', () => {
+  const registry = createToolRegistry();
+  const inventories = [
+    {
+      provider: 'openai-compatible',
+      tools: registry.getOpenAITools().map((tool) => ({
+        name: tool.function.name,
+        schema: tool.function.parameters,
+      })),
+    },
+    {
+      provider: 'anthropic',
+      tools: registry.getAnthropicTools().map((tool) => ({
+        name: tool.name,
+        schema: tool.input_schema,
+      })),
+    },
+  ];
+  for (const inventory of inventories) {
+    assert.equal(inventory.tools.length, registry.size, `${inventory.provider} inventory`);
+    for (const tool of inventory.tools) {
+      const schema = tool.schema as Record<string, unknown>;
+      assert.equal(schema.type, 'object', `${inventory.provider} ${tool.name} root`);
+      for (const keyword of ['oneOf', 'anyOf', 'allOf', 'enum', 'const', 'not'] as const) {
+        assert.equal(keyword in schema, false, `${inventory.provider} ${tool.name} root ${keyword}`);
+      }
     }
   }
 
-  const exportSchema = tools.find((tool) => tool.function.name === 'brain_query_export')!
+  const openAiTools = registry.getOpenAITools();
+  const exportSchema = openAiTools.find((tool) => tool.function.name === 'brain_query_export')!
     .function.parameters as any;
-  const skillsSchema = tools.find((tool) => tool.function.name === 'skills_run')!
+  const skillsSchema = openAiTools.find((tool) => tool.function.name === 'skills_run')!
     .function.parameters as any;
   assert.equal(exportSchema.properties.metadata.additionalProperties, true);
   assert.equal(skillsSchema.properties.input.additionalProperties, true);

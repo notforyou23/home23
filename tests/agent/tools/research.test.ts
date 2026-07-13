@@ -440,7 +440,7 @@ test('research query tools reject incomplete, mixed, legacy, or noncanonical PGS
   assert.equal(queryCalls, 0);
 });
 
-test('research query schema exposes exact direct and PGS families while search-all is direct-only', () => {
+test('research query schema exposes provider-safe fields while runtime owns direct and PGS cross-field rules', () => {
   const querySchema = queryBrainTool.input_schema as any;
   assert.equal('pgsConfig' in querySchema.properties, false);
   assert.deepEqual(querySchema.properties.pgsMode.enum, ['fresh', 'continue', 'targeted']);
@@ -461,7 +461,7 @@ test('research query schema exposes exact direct and PGS families while search-a
     { brainId: 'brain-r1', ...pgsQuery({ mode: 'quick' }) },
     { brainId: 'brain-r1', ...pgsQuery({ modelSelection: PGS_PAIRS.pgsSweep }) },
     { brainId: 'brain-r1', query: 'direct', pgsMode: 'fresh' },
-  ]) assert.equal(schemaAccepts(querySchema, value), false, JSON.stringify(value));
+  ]) assert.equal(schemaAccepts(querySchema, value), true, JSON.stringify(value));
 
   const searchSchema = searchAllBrainsTool.input_schema as any;
   for (const key of ['enablePGS', 'pgsMode', 'pgsLevel', 'continueFromOperationId',
