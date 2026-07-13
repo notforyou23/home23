@@ -26,6 +26,7 @@ const {
 } = require('../../../engine/src/dashboard/brain-operations/coordinator.js');
 const {
   BrainOperationWorkerAdapter,
+  validateWorkerEvent,
 } = require('../../../engine/src/dashboard/brain-operations/worker-adapter.js');
 const {
   createCosmoBrainOperationWorkerClient,
@@ -4136,6 +4137,172 @@ test('worker adapter accepts an interrupted remote result envelope', async () =>
   });
   assert.equal((await adapter.result(operationId, 'cap-result', 'cap-status')).state, 'interrupted');
   assert.deepEqual(received, [operationId, 'cap-result', 'cap-status']);
+});
+
+test('worker progress validation is operation-aware and rejects extra nested fields', () => {
+  const operationId = `brop_${'v'.repeat(32)}`;
+  const event = (raw, operationType, eventSequence = 1) => validateWorkerEvent({
+    ...raw, operationId, eventSequence, at: '2026-07-13T12:00:00.000Z',
+  }, { operationId, operationType, afterSequence: eventSequence - 1 });
+
+  assert.equal(event({
+    type: 'progress', phase: 'pgs_sweep', stage: 'sweep_batch_complete',
+    selected: 4, completed: 2, successful: 1, failed: 1,
+    reused: 0, pending: 2, retryable: 1, total: 4,
+  }, 'pgs').stage, 'sweep_batch_complete');
+  assert.equal(event({
+    type: 'provider_activity', phase: 'pgs_synthesis', provider: 'fake', model: 'model',
+    providerCallId: 'pgs:synthesis:reduce:2:0001', childEventType: 'token',
+    providerEventAt: null,
+  }, 'pgs').providerEventAt, null);
+  assert.equal(event({
+    type: 'provider_activity', phase: 'pgs_synthesis', provider: 'fake', model: 'model',
+    providerCallId: 'pgs:synthesis:reduce:2:0001', childEventType: 'token',
+    providerEventAt: 'provider-clock-opaque',
+  }, 'pgs').providerEventAt, 'provider-clock-opaque');
+  assert.equal(event({
+    type: 'progress', phase: 'query', stage: 'projection_complete',
+    selectedNodes: 12, selectedEdges: 10,
+  }, 'query').stage, 'projection_complete');
+  assert.equal(event({
+    type: 'progress', phase: 'research_compile', stage: 'requester_artifact_published',
+  }, 'research_compile').stage, 'requester_artifact_published');
+  assert.equal(event({
+    type: 'progress', phase: 'synthesis', stage: 'source_projection_complete',
+    sourceRevision: 7, nodes: 12, edges: 10, clusters: 2,
+  }, 'synthesis').stage, 'source_projection_complete');
+
+  const pgsProgress = [
+    { type: 'progress', phase: 'pgs_projection', stage: 'projection_started' },
+    { type: 'progress', phase: 'pgs_projection', stage: 'projection_complete', nodeCount: 12, edgeCount: 10, workUnitCount: 6 },
+    { type: 'progress', phase: 'pgs_sweep', stage: 'work_selected', selectedWorkUnits: 6, selectedWorkUnitsTotal: 6, candidateWorkUnits: 6, pendingWorkUnits: 6, batchIndex: 0 },
+    { type: 'progress', phase: 'pgs_sweep', stage: 'sweep_batch_complete', selected: 6, completed: 2, successful: 2, failed: 0, reused: 0, pending: 4, retryable: 0, total: 6 },
+    { type: 'progress', phase: 'pgs_sweep', stage: 'sweep_complete', successfulSweeps: 6, pendingWorkUnits: 0 },
+    { type: 'progress', phase: 'pgs_synthesis', stage: 'synthesis_started', sweepOutputs: 6 },
+    { type: 'progress', phase: 'pgs_synthesis', stage: 'synthesis_reduction_started', level: 1, inputItems: 6, batches: 2 },
+    { type: 'progress', phase: 'pgs_synthesis', stage: 'synthesis_reduction_truncated', level: 1, batch: 1, providerCallId: 'pgs:synthesis:reduce:1:0000', originalBytes: 200, retainedBytes: 100 },
+    { type: 'progress', phase: 'pgs_synthesis', stage: 'synthesis_batch_complete', level: 1, batch: 1, batches: 2 },
+    { type: 'progress', phase: 'pgs_synthesis', stage: 'synthesis_reduction_complete', level: 1, outputItems: 2 },
+    { type: 'progress', phase: 'pgs_synthesis', stage: 'synthesis_complete', answerBytes: 20, hierarchical: true, inputSweeps: 6, providerCalls: 3, levels: 2, providerCallCeiling: 8, intermediateEncodedBytes: 100, intermediateEncodedByteCeiling: 1_000, truncatedReductionOutputs: 1, truncatedReductionBytes: 100 },
+  ];
+  pgsProgress.forEach((row, index) => {
+    assert.equal(event(row, 'pgs', index + 10).stage, row.stage);
+  });
+
+  const compatibilityRows = [
+    ['query', { type: 'progress', completed: 1 }],
+    ['query', { type: 'provider_selected', phase: 'query', provider: 'fake', model: 'model', providerCallId: 'query', providerStallMs: 5_000 }],
+    ['query', { type: 'provider_activity', phase: 'query', provider: 'fake', model: 'model', providerCallId: 'query', providerEventType: 'token', providerEventAt: null }],
+    ['query', { type: 'provider_call_terminal', phase: 'query', provider: 'fake', model: 'model', providerCallId: 'query', outcome: 'complete' }],
+    ['search', { type: 'progress', phase: 'search', stage: 'source_pin_verified', sourceRevision: 7 }],
+    ['status', { type: 'progress', phase: 'status', stage: 'source_operation_finished', sourceRevision: 7 }],
+    ['graph_export', { type: 'progress', phase: 'graph_export', stage: 'graph_streaming', completedRecords: 20, completedBytes: 200 }],
+    ['research_launch', { type: 'progress_update', phase: 'launch', completed: 1, total: 2 }],
+    ['research_compile', { type: 'provider_selected', phase: 'research_compile', provider: 'fake', model: 'model', providerCallId: 'research_compile', providerStallMs: 5_000 }],
+    ['research_compile', { type: 'provider_activity', phase: 'research_compile', provider: 'fake', model: 'model', providerCallId: 'research_compile', providerEventType: 'token', providerEventAt: null }],
+    ['research_compile', { type: 'provider_call_terminal', phase: 'research_compile', provider: 'fake', model: 'model', providerCallId: 'research_compile', outcome: 'complete' }],
+    ['synthesis', { type: 'provider_selected', phase: 'synthesis', provider: 'fake', model: 'model', providerCallId: 'synthesis', providerStallMs: 5_000, sourceRevision: 7 }],
+    ['synthesis', { type: 'provider_activity', phase: 'synthesis', provider: 'fake', model: 'model', providerCallId: 'synthesis', childEventType: 'token', providerEventAt: null, sourceRevision: 7 }],
+    ['synthesis', { type: 'provider_call_terminal', phase: 'synthesis', provider: 'fake', model: 'model', providerCallId: 'synthesis', outcome: 'complete' }],
+    ['pgs', { type: 'provider_selected', phase: 'pgs_synthesis', provider: 'fake', model: 'model', providerCallId: 'pgs:synthesis:reduce:1:0000', providerStallMs: 5_000, providerInputBytes: 100, providerInputBudgetBytes: 1_000 }],
+    ['pgs', { type: 'provider_activity', phase: 'pgs_synthesis', provider: 'fake', model: 'model', providerCallId: 'pgs:synthesis:reduce:1:0000', childEventType: 'token', providerEventAt: null }],
+    ['pgs', { type: 'provider_call_terminal', phase: 'pgs_synthesis', provider: 'fake', model: 'model', providerCallId: 'pgs:synthesis:reduce:1:0000', outcome: 'complete' }],
+    ['research_watch', { type: 'heartbeat' }],
+    ['research_watch', { type: 'phase', phase: 'watching' }],
+    ['research_watch', { type: 'token', payload: 'bounded token envelope' }],
+    ['research_watch', { type: 'token_estimate', count: 12 }],
+    ['research_watch', { type: 'terminal', state: 'complete' }],
+  ];
+  compatibilityRows.forEach(([operationType, row], index) => {
+    assert.equal(event(row, operationType, index + 30).type, row.type);
+  });
+
+  const gapSequence = 60;
+  assert.equal(event({
+    type: 'event_gap', oldestSequence: 57, latestSequence: 59,
+    currentStatus: {
+      reference: { version: 1, workerId: 'worker-gap', workerType: 'local', operationType: 'query' },
+      operationId, operationType: 'query', state: 'running', phase: 'query',
+      eventSequence: 59, activeProviderCalls: [], pgsSession: null,
+    },
+  }, 'query', gapSequence).type, 'event_gap');
+
+  assert.throws(() => event({
+    type: 'progress', phase: 'pgs_projection', stage: 'projection_started',
+    debug: { unbounded: true },
+  }, 'pgs'), typedCode('worker_event_invalid'));
+  assert.throws(() => event({
+    type: 'progress', completed: 1, payload: { unbounded: true },
+  }, 'research_launch'), typedCode('worker_event_invalid'));
+  assert.throws(() => event({
+    type: 'progress', phase: 'pgs_sweep', stage: 'sweep_batch_complete',
+    selected: 4, completed: 2, successful: 1, failed: 1,
+    reused: 0, pending: 2, retryable: 1,
+  }, 'pgs'), typedCode('worker_event_invalid'));
+  assert.throws(() => event({
+    type: 'progress', phase: 'pgs_sweep', stage: 'sweep_batch_complete',
+    selected: 4, completed: 2, successful: 1, failed: 1,
+    reused: 0, pending: 3, retryable: 1, total: 4,
+  }, 'pgs'), typedCode('worker_event_invalid'));
+  assert.throws(() => event({
+    type: 'progress', phase: 'query', stage: 'projection_complete',
+    selectedNodes: 12, selectedEdges: 10,
+  }, 'research_compile'), typedCode('worker_event_invalid'));
+});
+
+test('settled PGS progress survives worker validation, journal compaction, and terminal status', async (t) => {
+  const fixture = makeFixture(t);
+  fixture.store.eventMaxCount = 4;
+  fixture.store.eventMaxBytes = 1024 * 1024;
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'pgs-progress-compaction-roundtrip',
+    operationType: 'pgs',
+    parameters: { query: 'progress canary' },
+  }));
+  const progress = [
+    { type: 'progress', phase: 'pgs_projection', stage: 'projection_started' },
+    { type: 'progress', phase: 'pgs_projection', stage: 'projection_complete', nodeCount: 100, edgeCount: 200, workUnitCount: 4 },
+    { type: 'progress', phase: 'pgs_sweep', stage: 'work_selected', selectedWorkUnits: 4, selectedWorkUnitsTotal: 4, candidateWorkUnits: 4, pendingWorkUnits: 99, batchIndex: 0 },
+    { type: 'progress', phase: 'pgs_sweep', stage: 'sweep_batch_complete', selected: 4, completed: 2, successful: 1, failed: 1, reused: 0, pending: 2, retryable: 1, total: 4 },
+    { type: 'progress', phase: 'pgs_sweep', stage: 'sweep_batch_complete', selected: 4, completed: 4, successful: 3, failed: 1, reused: 0, pending: 0, retryable: 1, total: 4 },
+    { type: 'progress', phase: 'pgs_synthesis', stage: 'synthesis_reduction_started', level: 1, inputItems: 3, batches: 1 },
+    { type: 'progress', phase: 'pgs_synthesis', stage: 'synthesis_batch_complete', level: 1, batch: 1, batches: 1 },
+  ];
+  for (const event of progress) fixture.worker.emit(operation.operationId, event);
+  for (let index = 0; index < 12; index += 1) {
+    fixture.worker.emit(operation.operationId, {
+      type: 'progress', phase: 'pgs_synthesis', stage: 'synthesis_batch_complete',
+      level: 1, batch: 1, batches: 1,
+    });
+  }
+  fixture.worker.finish(operation.operationId, {
+    state: 'complete', result: { answer: 'durable progress' }, error: null, sourceEvidence: null,
+  });
+  const terminal = await waitForState(fixture, operation.operationId, 'complete');
+  assert.deepEqual(terminal.progressSnapshot, {
+    version: 1,
+    stage: 'terminal',
+    eventSequence: terminal.eventSequence,
+    sourceNodes: 100,
+    sourceEdges: 200,
+    candidateWorkUnits: 4,
+    selected: 4,
+    completed: 4,
+    successful: 3,
+    failed: 1,
+    reused: 0,
+    pending: 0,
+    retryable: 1,
+    total: 4,
+    synthesisLevel: 1,
+    synthesisBatch: 1,
+    synthesisBatches: 1,
+    lastProgressAt: terminal.progressSnapshot.lastProgressAt,
+  });
+  assert.match(terminal.progressSnapshot.lastProgressAt, /^\d{4}-\d{2}-\d{2}T/);
+  const compacted = await fixture.store.readEvents(operation.operationId, 0);
+  assert.equal(compacted.some(event => event.type === 'event_gap'), true);
+  assert.equal(compacted.length < progress.length + 12, true);
 });
 
 test('worker adapter cancellation aborts the exact local executor and event snapshots are monotonic', async (t) => {

@@ -26,6 +26,7 @@ const {
 } = require('./operation-contract.js');
 const {
   validateActiveProviderCalls,
+  validateWorkerEvent,
   validateWorkerRecord,
   validateWorkerReference,
 } = require('./worker-adapter.js');
@@ -52,11 +53,6 @@ const TERMINAL_WORKER_STATES = new Set(['complete', 'partial', 'failed', 'cancel
 const WORKER_RESULT_STATES = new Set([
   'complete', 'partial', 'failed', 'cancelled', 'interrupted',
 ]);
-const WORKER_EVENT_TYPES = new Set([
-  'event_gap', 'heartbeat', 'phase', 'progress', 'progress_update', 'provider_activity',
-  'provider_call_terminal', 'provider_selected', 'terminal', 'token', 'token_estimate',
-]);
-
 const DEFAULT_EXECUTION_DEADLINES_MS = Object.freeze({
   search: 2 * HOUR_MS,
   graph: 2 * HOUR_MS,
@@ -255,49 +251,17 @@ function sanitizeWorkerEvidenceValue(value) {
   return sanitized;
 }
 
-function containsForbiddenWorkerEvidenceKey(value) {
-  if (Array.isArray(value)) return value.some(containsForbiddenWorkerEvidenceKey);
-  if (!value || typeof value !== 'object') return false;
-  return Object.entries(value).some(([key, child]) =>
-    WORKER_EVIDENCE_FORBIDDEN_KEYS.has(key) || containsForbiddenWorkerEvidenceKey(child));
-}
-
-function validateCoordinatorWorkerEvent(rawEvent, operationId, afterSequence) {
-  const event = clone(rawEvent, 'worker_event_invalid');
-  if (!event || Array.isArray(event) || typeof event !== 'object'
-      || event.operationId !== operationId
-      || !Number.isSafeInteger(event.eventSequence)
-      || event.eventSequence <= afterSequence
-      || !WORKER_EVENT_TYPES.has(event.type)
-      || Object.hasOwn(event, 'sequence')) {
-    throw coordinatorError('worker_event_invalid');
+function validateCoordinatorWorkerEvent(rawEvent, operationId, operationType, afterSequence) {
+  try {
+    return validateWorkerEvent(rawEvent, {
+      operationId,
+      operationType,
+      afterSequence,
+      validateCurrentStatus: false,
+    });
+  } catch (error) {
+    throw coordinatorError('worker_event_invalid', error);
   }
-  const payload = { ...event };
-  delete payload.operationId;
-  delete payload.eventSequence;
-  delete payload.type;
-  if (event.type === 'event_gap') delete payload.currentStatus;
-  if (containsForbiddenWorkerEvidenceKey(payload)) throw coordinatorError('worker_event_invalid');
-  if (event.type !== 'terminal' && Object.hasOwn(event, 'state')) {
-    throw coordinatorError('worker_event_invalid');
-  }
-  if (event.type === 'terminal' && !TERMINAL_WORKER_STATES.has(event.state)) {
-    throw coordinatorError('worker_event_invalid');
-  }
-  if (event.type === 'phase') {
-    try { assertIdentifier(event.phase, 'phase'); } catch (error) {
-      throw coordinatorError('worker_event_invalid', error);
-    }
-  }
-  if (event.type === 'event_gap') {
-    if (!Number.isSafeInteger(event.oldestSequence) || event.oldestSequence <= 0
-        || !Number.isSafeInteger(event.latestSequence)
-        || event.latestSequence < event.oldestSequence
-        || event.eventSequence < event.latestSequence) {
-      throw coordinatorError('worker_event_invalid');
-    }
-  }
-  return event;
 }
 
 function enrichSourceEvidence(record, workerEvidence = {}) {
@@ -1612,7 +1576,12 @@ class BrainOperationCoordinator {
   async _acceptWorkerEventLocked(operationId, rawEvent, runtime) {
     const record = await this.store.get(operationId);
     if (TERMINAL_STATES.has(record.state)) return rawEvent.eventSequence;
-    rawEvent = validateCoordinatorWorkerEvent(rawEvent, operationId, runtime.workerCursor);
+    rawEvent = validateCoordinatorWorkerEvent(
+      rawEvent,
+      operationId,
+      record.operationType,
+      runtime.workerCursor,
+    );
     if (rawEvent.type === 'event_gap') {
       const workerRecord = await this._authenticatedWorkerStatus(record, {
         minimumEventSequence: Math.max(runtime.workerCursor, rawEvent.eventSequence),
@@ -1722,6 +1691,7 @@ class BrainOperationCoordinator {
         const capability = this._issueCapability(record, 'events');
         for await (const event of this.worker.events(operationId, {
           afterSequence: runtime.workerCursor,
+          operationType: record.operationType,
           signal: controller.signal,
         }, capability)) {
           if (controller.signal.aborted || runtime.stopped || this.stopped) break;

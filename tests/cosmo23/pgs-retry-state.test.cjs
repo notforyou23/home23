@@ -72,6 +72,7 @@ test('ordinary failed PGS work remains pending and a new attempt retries only th
   const scratch = await scratchFixture(t, 'home23-pgs-failed-retry-');
   const pin = sourcePin();
   let failed = false;
+  const events = [];
   const first = createEngine({
     sweepGenerate() {
       if (!failed) {
@@ -86,11 +87,22 @@ test('ordinary failed PGS work remains pending and a new attempt retries only th
       };
     },
   });
-  const partial = await first.engine.runPinnedOperation(operationOptions(pin, scratch));
+  const partial = await first.engine.runPinnedOperation(operationOptions(pin, scratch, {
+    reportEvent(event) { events.push(event); },
+  }));
   assert.equal(partial.state, 'partial');
   assert.equal(partial.result.metadata.pgs.successfulSweeps, 5);
   assert.equal(partial.result.metadata.pgs.pendingWorkUnits, 1);
   assert.equal(partial.result.metadata.pgs.retryablePartitions.length, 1);
+  assert.deepEqual(events
+    .filter(event => event.stage === 'sweep_batch_complete')
+    .map(({ completed, successful, failed: failedCount, pending, retryable }) => ({
+      completed, successful, failed: failedCount, pending, retryable,
+    })), [
+    { completed: 2, successful: 1, failed: 1, pending: 4, retryable: 1 },
+    { completed: 4, successful: 3, failed: 1, pending: 2, retryable: 1 },
+    { completed: 6, successful: 5, failed: 1, pending: 0, retryable: 1 },
+  ]);
 
   const retry = createEngine();
   const complete = await retry.engine.runPinnedOperation(operationOptions(pin, scratch));

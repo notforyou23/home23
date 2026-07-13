@@ -714,6 +714,8 @@ async function runPinnedOperationCore(engine, options = {}) {
 
     let batchIndex = 0;
     const failedWorkUnits = new Set();
+    const settledFailedWorkUnits = new Set();
+    const retryableWorkUnits = new Set();
     let afterWorkUnitId;
     while (true) {
       throwIfAborted(signal);
@@ -762,15 +764,41 @@ async function runPinnedOperationCore(engine, options = {}) {
         }
         if (uncommitted.length) await store.commitSuccessfulSweeps(uncommitted);
         uncommitted.length = 0;
+        settled.forEach((row, index) => {
+          if (row.status === 'rejected') {
+            const workUnitId = ids[index];
+            settledFailedWorkUnits.add(workUnitId);
+            if (row.reason?.retryable !== false) {
+              failedWorkUnits.add(workUnitId);
+              retryableWorkUnits.add(workUnitId);
+              store.recordRetryableFailure(workUnitId, row.reason);
+            }
+          }
+        });
+        // HOME23 PATCH — publish batch progress only after successful outputs
+        // and retryable failures are durable. Counters are derived from the
+        // selected scope, never the unrelated global-pending total.
+        const settledScope = store.getScopeSummary(attemptId);
+        const successful = settledScope.scopeSuccessfulWorkUnits;
+        const failed = settledFailedWorkUnits.size;
+        const completed = successful + failed;
+        const selectedTotal = scopeAtStart.scopeSuccessfulWorkUnits + selected.length;
+        emit({
+          type: 'progress',
+          phase: 'pgs_sweep',
+          stage: 'sweep_batch_complete',
+          selected: selectedTotal,
+          completed,
+          successful,
+          failed,
+          reused: scopeAtStart.scopeSuccessfulWorkUnits,
+          pending: selectedTotal - completed,
+          retryable: retryableWorkUnits.size,
+          total: settledScope.scopeWorkUnits,
+        });
         const fatal = settled.find(row =>
           row.status === 'rejected' && row.reason?.retryable === false);
         if (fatal) throw fatal.reason;
-        settled.forEach((row, index) => {
-          if (row.status === 'rejected') {
-            failedWorkUnits.add(ids[index]);
-            store.recordRetryableFailure(ids[index], row.reason);
-          }
-        });
       }
       batchIndex += 1;
     }
@@ -1001,6 +1029,16 @@ async function runPinnedOperationCore(engine, options = {}) {
             level,
             shard: batchIndex + 1,
             output,
+          });
+          // HOME23 PATCH — the batch is complete only after the validated,
+          // bounded shard has entered the next synthesis level's input set.
+          emit({
+            type: 'progress',
+            phase: 'pgs_synthesis',
+            stage: 'synthesis_batch_complete',
+            level,
+            batch: batchIndex + 1,
+            batches: reductionBatches.length,
           });
         }
         const reducedEncodedBytes = encodedSynthesisItemBytes(reducedItems);
