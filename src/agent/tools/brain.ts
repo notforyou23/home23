@@ -704,15 +704,6 @@ export const brainOperationsListTool: ToolDefinition = {
       state: { type: 'string', enum: ['recent', 'nonterminal'] },
       limit: { type: 'integer', minimum: 1, maximum: 100 },
     },
-    oneOf: [
-      { type: 'object', properties: { state: { const: 'recent' } } },
-      {
-        type: 'object',
-        required: ['state'],
-        properties: { state: { const: 'nonterminal' } },
-        not: { required: ['limit'] },
-      },
-    ],
   },
   execute: executeBrainOperationsList,
 };
@@ -766,65 +757,6 @@ export const brainQueryTool: ToolDefinition = {
       },
     },
     required: ['query'],
-    oneOf: [
-      {
-        type: 'object',
-        properties: { enablePGS: { const: false } },
-        not: {
-          anyOf: [
-            { required: ['pgsMode'] },
-            { required: ['pgsLevel'] },
-            { required: ['continueFromOperationId'] },
-            { required: ['targetPartitionIds'] },
-            { required: ['pgsSweep'] },
-            { required: ['pgsSynth'] },
-          ],
-        },
-      },
-      {
-        type: 'object',
-        required: ['enablePGS', 'pgsMode', 'pgsLevel', 'pgsSweep', 'pgsSynth'],
-        properties: { enablePGS: { const: true } },
-        allOf: [
-          {
-            not: {
-              anyOf: [
-                { required: ['mode'] },
-                { required: ['modelSelection'] },
-                { required: ['enableSynthesis'] },
-                { required: ['includeOutputs'] },
-                { required: ['includeThoughts'] },
-                { required: ['includeCoordinatorInsights'] },
-                { required: ['allowActions'] },
-                { required: ['priorContext'] },
-              ],
-            },
-          },
-          {
-            oneOf: [
-              {
-                properties: { pgsMode: { const: 'fresh' } },
-                not: {
-                  anyOf: [
-                    { required: ['continueFromOperationId'] },
-                    { required: ['targetPartitionIds'] },
-                  ],
-                },
-              },
-              {
-                properties: { pgsMode: { const: 'continue' } },
-                required: ['continueFromOperationId'],
-                not: { required: ['targetPartitionIds'] },
-              },
-              {
-                properties: { pgsMode: { const: 'targeted' } },
-                required: ['targetPartitionIds'],
-              },
-            ],
-          },
-        ],
-      },
-    ],
   },
   execute: executeBrainQuery,
 };
@@ -842,18 +774,6 @@ export const brainQueryExportTool: ToolDefinition = {
       format: { type: 'string', enum: ['markdown', 'json'] },
       metadata: { type: 'object', additionalProperties: true },
     },
-    oneOf: [
-      {
-        type: 'object',
-        required: ['operationId'],
-        not: { anyOf: [{ required: ['query'] }, { required: ['answer'] }, { required: ['metadata'] }] },
-      },
-      {
-        type: 'object',
-        required: ['query', 'answer'],
-        not: { required: ['operationId'] },
-      },
-    ],
   },
   execute: executeBrainExport,
 };
@@ -871,19 +791,6 @@ export const brainMemoryGraphTool: ToolDefinition = {
       exportFull: { type: 'boolean' },
       format: { type: 'string', enum: ['jsonl'] },
     },
-    oneOf: [
-      {
-        type: 'object',
-        properties: { exportFull: { const: false } },
-        not: { required: ['format'] },
-      },
-      {
-        type: 'object',
-        properties: { exportFull: { const: true } },
-        required: ['exportFull'],
-        not: { anyOf: [{ required: ['topN'] }, { required: ['tag'] }] },
-      },
-    ],
   },
   execute: executeBrainGraph,
 };
@@ -901,36 +808,6 @@ export const brainSynthesizeTool: ToolDefinition = {
       trigger: { type: 'string', minLength: 1, maxLength: 256 },
       reason: { type: 'string', minLength: 1, maxLength: 4_000 },
     },
-    oneOf: [
-      {
-        type: 'object',
-        properties: { action: { const: 'run' } },
-        not: { anyOf: [{ required: ['operationId'] }, { required: ['generationMarker'] }] },
-      },
-      {
-        type: 'object',
-        properties: { action: { const: 'status' } },
-        required: ['action'],
-        not: { anyOf: [{ required: ['trigger'] }, { required: ['reason'] }] },
-        oneOf: [
-          { not: { anyOf: [{ required: ['operationId'] }, { required: ['generationMarker'] }] } },
-          { required: ['operationId'], not: { required: ['generationMarker'] } },
-          { required: ['generationMarker'], not: { required: ['operationId'] } },
-        ],
-      },
-      {
-        type: 'object',
-        properties: { action: { const: 'reattach' } },
-        required: ['action', 'operationId'],
-        not: {
-          anyOf: [
-            { required: ['generationMarker'] },
-            { required: ['trigger'] },
-            { required: ['reason'] },
-          ],
-        },
-      },
-    ],
   },
   execute: executeBrainSynthesis,
 };
@@ -949,17 +826,6 @@ export const brainStatusTool: ToolDefinition = {
       },
       action: { type: 'string', enum: ['status', 'result', 'wait', 'cancel'] },
     },
-    oneOf: [
-      {
-        type: 'object',
-        not: { anyOf: [{ required: ['operationId'] }, { required: ['action'] }] },
-      },
-      {
-        type: 'object',
-        required: ['operationId'],
-        not: { required: ['target'] },
-      },
-    ],
   },
   execute: executeBrainStatus,
 };

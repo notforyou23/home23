@@ -15,7 +15,7 @@ import {
 import type { BrainOperationsClient } from '../../../src/agent/brain-operations/client.js';
 import { optionalJsonObject } from '../../../src/agent/brain-operations/input-validation.js';
 import type { BrainOperationResult } from '../../../src/agent/brain-operations/types.js';
-import type { ToolContext } from '../../../src/agent/types.js';
+import type { ToolContext, ToolDefinition } from '../../../src/agent/types.js';
 import { CORE_RUNTIME_PROMPT } from '../../../src/agents/system-prompt.js';
 import { createToolRegistry } from '../../../src/agent/tools/index.js';
 import {
@@ -175,7 +175,7 @@ test('brain_operations_list rejects a nonterminal limit instead of silently igno
   } });
   assert.equal(schemaAccepts(brainOperationsListTool.input_schema, {
     state: 'nonterminal', limit: 5,
-  }), false);
+  }), true);
   const result = await brainOperationsListTool.execute({ state: 'nonterminal', limit: 5 }, ctx);
   assert.equal(result.is_error, true);
   assert.match(result.content, /invalid_request|invalid/i);
@@ -566,7 +566,7 @@ test('brain_query rejects incomplete, mixed, legacy, or noncanonical PGS request
   assert.equal(calls, 0);
 });
 
-test('brain_query schema accepts exactly the direct and PGS parameter families', () => {
+test('brain_query schema publishes the direct and PGS parameter families without root unions', () => {
   const schema = brainQueryTool.input_schema as any;
   assert.equal('pgsConfig' in schema.properties, false);
   assert.deepEqual(schema.properties.pgsMode.enum, ['fresh', 'continue', 'targeted']);
@@ -596,7 +596,7 @@ test('brain_query schema accepts exactly the direct and PGS parameter families',
     { priorContext: { query: 'before', answer: 'after' } },
   ]) {
     const value = pgsRequest(directField);
-    assert.equal(schemaAccepts(schema, value), false, JSON.stringify(value));
+    assert.equal(schemaAccepts(schema, value), true, JSON.stringify(value));
   }
   for (const pgsField of [
     { pgsMode: 'fresh' },
@@ -607,22 +607,18 @@ test('brain_query schema accepts exactly the direct and PGS parameter families',
     { pgsSynth: PGS_PAIRS.pgsSynth },
   ]) {
     const value = { query: 'direct', ...pgsField };
-    assert.equal(schemaAccepts(schema, value), false, JSON.stringify(value));
+    assert.equal(schemaAccepts(schema, value), true, JSON.stringify(value));
   }
 });
 
-test('every xAI-bound tool schema has an object root and object-typed root union branches', () => {
+test('every provider-bound brain tool schema has a plain object root', () => {
   const tools = createToolRegistry().getOpenAITools();
-  for (const tool of tools) {
+  const brainTools = tools.filter((tool) => tool.function.name.startsWith('brain_'));
+  for (const tool of brainTools) {
     const schema = tool.function.parameters as Record<string, unknown>;
     assert.equal(schema.type, 'object', `${tool.function.name} root`);
-    for (const keyword of ['oneOf', 'anyOf'] as const) {
-      const branches = schema[keyword];
-      if (!Array.isArray(branches)) continue;
-      for (const [index, branch] of branches.entries()) {
-        assert.equal((branch as Record<string, unknown>).type, 'object',
-          `${tool.function.name} ${keyword}[${index}]`);
-      }
+    for (const keyword of ['oneOf', 'anyOf', 'allOf', 'enum', 'const', 'not'] as const) {
+      assert.equal(keyword in schema, false, `${tool.function.name} root ${keyword}`);
     }
   }
 
@@ -632,6 +628,25 @@ test('every xAI-bound tool schema has an object root and object-typed root union
     .function.parameters as any;
   assert.equal(exportSchema.properties.metadata.additionalProperties, true);
   assert.equal(skillsSchema.properties.input.additionalProperties, true);
+});
+
+test('provider-compatible brain schemas retain action-specific runtime rejection', async () => {
+  const invalidCases: Array<[ToolDefinition, Record<string, unknown>]> = [
+    [brainOperationsListTool, { state: 'nonterminal', limit: 1 }],
+    [brainQueryTool, pgsRequest({ pgsMode: 'continue' })],
+    [brainQueryExportTool, {
+      operationId: CONTINUE_OPERATION_ID, query: 'mixed', answer: 'invalid',
+    }],
+    [brainMemoryGraphTool, { exportFull: true, topN: 5 }],
+    [brainSynthesizeTool, { action: 'reattach' }],
+    [brainStatusTool, { action: 'result' }],
+  ];
+
+  for (const [tool, input] of invalidCases) {
+    const result = await tool.execute(input, makeCtx());
+    assert.equal(result.is_error, true, `${tool.name}: ${JSON.stringify(input)}`);
+    assert.match(result.content, /invalid_request|invalid/i, tool.name);
+  }
 });
 
 test('PGS launches detached while direct brain_query remains attached', async () => {
@@ -684,7 +699,7 @@ test('brain_query rejects priorContext whose query and answer exceed 20,000 char
   assert.equal(calls, 1);
 });
 
-test('export, graph, synthesis, and status schemas expose only executable action shapes', () => {
+test('provider-compatible schemas expose action fields while runtime defers cross-field rules', () => {
   const cases: Array<[Record<string, unknown>, unknown[], unknown[]]> = [
     [brainQueryExportTool.input_schema,
       [
@@ -695,7 +710,6 @@ test('export, graph, synthesis, and status schemas expose only executable action
       ],
       [
         {},
-        { operationId: CONTINUE_OPERATION_ID, resultHandle: 'ignored' },
         { operationId: CONTINUE_OPERATION_ID, metadata: {} },
         { operationId: CONTINUE_OPERATION_ID, query: 'q', answer: 'a' },
         { query: 'q' },
@@ -724,8 +738,11 @@ test('export, graph, synthesis, and status schemas expose only executable action
   ];
   for (const [schema, accepted, rejected] of cases) {
     for (const value of accepted) assert.equal(schemaAccepts(schema, value), true, JSON.stringify(value));
-    for (const value of rejected) assert.equal(schemaAccepts(schema, value), false, JSON.stringify(value));
+    for (const value of rejected) assert.equal(schemaAccepts(schema, value), true, JSON.stringify(value));
   }
+  assert.equal(schemaAccepts(brainQueryExportTool.input_schema, {
+    operationId: CONTINUE_OPERATION_ID, resultHandle: 'ignored',
+  }), false);
   assert.equal('resultHandle' in (brainQueryExportTool.input_schema as any).properties, false);
 });
 
