@@ -272,6 +272,14 @@ test('stop-turn publishes the timeout that already won while the run is still un
     assert.equal(eventual?.status, immediate.status);
     assert.equal(eventual?.stop_reason, immediate.stop_reason);
     assert.equal(eventual?.error_code, immediate.error_code);
+    const turnRecords = history.loadRaw('timeout-race-chat')
+      .filter((record: any) => record.type === 'turn'
+        && record.turn_id === started.turnId && record.status !== 'pending');
+    assert.equal(turnRecords.length, 1, 'stop route and loop must share one terminal envelope');
+    const eventsAfterTerminal = history.loadRaw('timeout-race-chat')
+      .filter((record: any) => record.type === 'event'
+        && record.turn_id === started.turnId && record.seq > immediate.last_seq);
+    assert.equal(eventsAfterTerminal.length, 0);
   } finally {
     unsubscribe();
     unwind.resolve();

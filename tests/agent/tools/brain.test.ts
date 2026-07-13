@@ -17,11 +17,11 @@ import { optionalJsonObject } from '../../../src/agent/brain-operations/input-va
 import type { BrainOperationResult } from '../../../src/agent/brain-operations/types.js';
 import type { ToolContext } from '../../../src/agent/types.js';
 import { CORE_RUNTIME_PROMPT } from '../../../src/agents/system-prompt.js';
+import { createToolRegistry } from '../../../src/agent/tools/index.js';
 import {
   canonicalBrainTarget,
   makeBrainOperationRecord,
 } from '../../helpers/brain-operation-record.js';
-import { CORE_RUNTIME_PROMPT } from '../../../src/agents/system-prompt.js';
 
 type BrainClientStub = Record<string, (...args: any[]) => any>;
 type ContextOverrides = Omit<Partial<ToolContext>, 'brainOperations' | 'turnRuntime'> & {
@@ -51,11 +51,15 @@ function pgsRequest(extra: Record<string, unknown> = {}): Record<string, unknown
 
 function makeCtx(overrides: ContextOverrides = {}): ToolContext {
   const { brainOperations = {}, ...contextOverrides } = overrides;
+  const runtimeStubs = { ...brainOperations };
+  if (!runtimeStubs.launchQuery && runtimeStubs.query) {
+    runtimeStubs.launchQuery = runtimeStubs.query;
+  }
   const abortController = new AbortController();
   const startupSentinel = new Proxy({}, {
     get: (_target, key) => () => { throw new Error(`startup_global_client_used:${String(key)}`); },
   }) as BrainOperationsClient;
-  const runtimeClient = new Proxy(brainOperations, {
+  const runtimeClient = new Proxy(runtimeStubs, {
     get: (target, key) => {
       if (typeof key === 'string' && key in target) return target[key];
       return () => { throw new Error(`unexpected_brain_client_call:${String(key)}`); };
@@ -607,6 +611,61 @@ test('brain_query schema accepts exactly the direct and PGS parameter families',
   }
 });
 
+test('every xAI-bound tool schema has an object root and object-typed root union branches', () => {
+  const tools = createToolRegistry().getOpenAITools();
+  for (const tool of tools) {
+    const schema = tool.function.parameters as Record<string, unknown>;
+    assert.equal(schema.type, 'object', `${tool.function.name} root`);
+    for (const keyword of ['oneOf', 'anyOf'] as const) {
+      const branches = schema[keyword];
+      if (!Array.isArray(branches)) continue;
+      for (const [index, branch] of branches.entries()) {
+        assert.equal((branch as Record<string, unknown>).type, 'object',
+          `${tool.function.name} ${keyword}[${index}]`);
+      }
+    }
+  }
+
+  const exportSchema = tools.find((tool) => tool.function.name === 'brain_query_export')!
+    .function.parameters as any;
+  const skillsSchema = tools.find((tool) => tool.function.name === 'skills_run')!
+    .function.parameters as any;
+  assert.equal(exportSchema.properties.metadata.additionalProperties, true);
+  assert.equal(skillsSchema.properties.input.additionalProperties, true);
+});
+
+test('PGS launches detached while direct brain_query remains attached', async () => {
+  const launched: Record<string, unknown>[] = [];
+  const queried: Record<string, unknown>[] = [];
+  const detached = completeOperation(CONTINUE_OPERATION_ID, '');
+  detached.operationType = 'pgs';
+  detached.state = 'running';
+  detached.attachmentState = 'detached';
+  detached.result = null;
+  detached.resultHandle = null;
+  const direct = completeOperation(`brop_${'D'.repeat(32)}`, 'direct answer');
+  const ctx = makeCtx({ brainOperations: {
+    launchQuery: async (request: Record<string, unknown>) => {
+      launched.push(request);
+      return detached;
+    },
+    query: async (request: Record<string, unknown>) => {
+      queried.push(request);
+      return direct;
+    },
+  } });
+
+  const pgs = await brainQueryTool.execute(pgsRequest(), ctx);
+  const ordinary = await brainQueryTool.execute({ query: 'direct' }, ctx);
+
+  assert.equal(launched.length, 1);
+  assert.equal(queried.length, 1);
+  assert.match(pgs.content, /running/i);
+  assert.match(pgs.content, new RegExp(CONTINUE_OPERATION_ID));
+  assert.match(pgs.content, /brain_status.*status/i);
+  assert.match(ordinary.content, /direct answer/);
+});
+
 test('brain_query rejects priorContext whose query and answer exceed 20,000 characters combined', async () => {
   let calls = 0;
   const ctx = makeCtx({ brainOperations: { query: async () => {
@@ -779,7 +838,7 @@ test('detached query remains running and exposes its operation ID', async () => 
   }));
   assert.match(result.content, /op-running/);
   assert.match(result.content, /running/);
-  assert.match(result.content, /brain_status.*wait/i);
+  assert.match(result.content, /brain_status.*status/i);
   assert.doesNotMatch(result.content, /state=complete/i);
 });
 
@@ -840,13 +899,20 @@ test('brain_status exposes status, result, wait, and exact cancel by operation I
   const running = completeOperation(operationId, '');
   running.state = 'running';
   running.attachmentState = 'detached';
+  running.phase = 'pgs_sweep';
+  running.updatedAt = '2026-07-13T02:00:48.805Z';
+  running.lastProviderActivityAt = '2026-07-13T02:00:48.805Z';
+  running.lastProgressAt = '2026-07-13T01:14:22.908Z';
+  running.pgsSession = { sessionId: `pgss_${'S'.repeat(32)}`, completedWorkUnits: 470 };
   const ctx = makeCtx({ brainOperations: {
     inspectOperation: async (operationId: string, action: string) => {
       inspected.push(`${operationId}:${action}`);
-      return action === 'result'
-        ? { operationId, state: 'complete', result: { answer: 'stored' }, resultHandle: null,
-          resultArtifact: null, error: null, sourceEvidence: null }
-        : { ...running, state: action === 'cancel' ? 'cancelled' : 'running' };
+      if (action === 'result') {
+        return { operationId, state: 'complete', result: { answer: 'stored' }, resultHandle: null,
+          resultArtifact: null, error: null, sourceEvidence: null };
+      }
+      const { attachmentState: _attachmentState, ...status } = running;
+      return { ...status, state: action === 'cancel' ? 'cancelled' : 'running' };
     },
     resumeOperation: async (operationId: string) => { resumed.push(operationId); return running; },
   } });
@@ -859,6 +925,11 @@ test('brain_status exposes status, result, wait, and exact cancel by operation I
   ]);
   assert.deepEqual(resumed, [operationId]);
   assert.match(waited.content, /running|Detached/i);
+  const inspectedStatus = await brainStatusTool.execute({ operationId, action: 'status' }, ctx);
+  assert.match(inspectedStatus.content, /pgs_sweep/);
+  assert.match(inspectedStatus.content, /lastProviderActivityAt/);
+  assert.match(inspectedStatus.content, /2026-07-13T02:00:48.805Z/);
+  assert.match(inspectedStatus.content, /completedWorkUnits.*470/s);
   assert.deepEqual(Object.keys((brainStatusTool.input_schema as any).properties)
     .filter((key) => ['operationType', 'waitMs'].includes(key)), []);
 });
@@ -1069,9 +1140,11 @@ test('JSON metadata validation preserves dangerous keys without prototype mutati
 
 test('runtime prompt teaches durable brain waits without obsolete short latency promises', () => {
   assert.match(CORE_RUNTIME_PROMPT, /ordinary (?:query )?attachment(?:s)? wait for up to 90 minutes/i);
-  assert.match(CORE_RUNTIME_PROMPT, /PGS and synthesis attachment(?:s)? wait for up to six hours/i);
-  assert.match(CORE_RUNTIME_PROMPT, /brain_status \{action:"wait",operationId:/i);
-  assert.match(CORE_RUNTIME_PROMPT, /verified operation (?:progress|events).*renew.*turn activity lease/i);
+  assert.match(CORE_RUNTIME_PROMPT, /PGS.*launch.*detached.*immediately/i);
+  assert.match(CORE_RUNTIME_PROMPT, /brain_status \{action:"status",operationId:/i);
+  assert.match(CORE_RUNTIME_PROMPT, /chat Stop.*detach.*durable/i);
+  assert.match(CORE_RUNTIME_PROMPT, /only brain_status action:"cancel".*cancels/i);
+  assert.match(CORE_RUNTIME_PROMPT, /verified operation activity.*renews.*turn lease/i);
   assert.match(CORE_RUNTIME_PROMPT, /own-brain health.*brain_status \{\}/i);
   assert.match(CORE_RUNTIME_PROMPT, /own-brain (?:search|lookup).*omit.*target/i);
   assert.match(CORE_RUNTIME_PROMPT, /never.*agent name.*brainId/i);

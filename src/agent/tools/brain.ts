@@ -250,13 +250,21 @@ function operationControlResult(
   }
   const failed = ['failed', 'cancelled', 'interrupted'].includes(value.state);
   const running = value.state === 'queued' || value.state === 'running';
+  const runningProjection = running ? {
+    phase: 'phase' in value ? value.phase : null,
+    updatedAt: 'updatedAt' in value ? value.updatedAt : null,
+    lastProviderActivityAt: 'lastProviderActivityAt' in value
+      ? value.lastProviderActivityAt : null,
+    lastProgressAt: 'lastProgressAt' in value ? value.lastProgressAt : null,
+    pgsSession: 'pgsSession' in value ? value.pgsSession : null,
+  } : null;
   return {
     content: `${failed
       ? `${value.error?.code || value.state}: ${value.error?.message || value.state}`
-      : JSON.stringify(value.result || {})}\noperation=${value.operationId} state=${value.state}`
+      : JSON.stringify(runningProjection || value.result || {})}\noperation=${value.operationId} state=${value.state}`
       + (running
-        ? `\nUse brain_status {action:"wait",operationId:"${value.operationId}"} to reattach,`
-          + ' or action:"cancel" to stop it.'
+        ? `\nUse brain_status {action:"status",operationId:"${value.operationId}"} to check it,`
+          + ' action:"result" after terminal, or action:"cancel" to stop it.'
         : ''),
     is_error: failed || undefined,
     resultHandle: value.resultHandle || undefined,
@@ -267,6 +275,7 @@ function operationControlResult(
       error: value.error,
       sourceEvidence: value.sourceEvidence,
       resultArtifact: value.resultArtifact,
+      ...(runningProjection || {}),
     },
   };
 }
@@ -454,7 +463,7 @@ async function executeBrainQuery(
         pgsSynth: requiredExactPair(input, 'pgsSynth'),
       };
     }
-    const operation = await turn.brainOperations.query({
+    const request = {
       ...(target ? { target } : {}),
       query: requiredToolText(input, 'query', 12_000),
       ...(priorContext !== undefined ? { priorContext } : {}),
@@ -486,7 +495,10 @@ async function executeBrainQuery(
             optionalBoolean(value, 'allowActions'))!,
         } : {}),
       }),
-    }, turn.signal);
+    };
+    const operation = await (enablePGS
+      ? turn.brainOperations.launchQuery(request, turn.signal)
+      : turn.brainOperations.query(request, turn.signal));
     return operationToolResult(operation);
   } catch (error) {
     return toolFailure('brain_query', error);
@@ -693,8 +705,9 @@ export const brainOperationsListTool: ToolDefinition = {
       limit: { type: 'integer', minimum: 1, maximum: 100 },
     },
     oneOf: [
-      { properties: { state: { const: 'recent' } } },
+      { type: 'object', properties: { state: { const: 'recent' } } },
       {
+        type: 'object',
         required: ['state'],
         properties: { state: { const: 'nonterminal' } },
         not: { required: ['limit'] },
@@ -755,6 +768,7 @@ export const brainQueryTool: ToolDefinition = {
     required: ['query'],
     oneOf: [
       {
+        type: 'object',
         properties: { enablePGS: { const: false } },
         not: {
           anyOf: [
@@ -768,6 +782,7 @@ export const brainQueryTool: ToolDefinition = {
         },
       },
       {
+        type: 'object',
         required: ['enablePGS', 'pgsMode', 'pgsLevel', 'pgsSweep', 'pgsSynth'],
         properties: { enablePGS: { const: true } },
         allOf: [
@@ -825,14 +840,16 @@ export const brainQueryExportTool: ToolDefinition = {
       query: { type: 'string', minLength: 1 },
       answer: { type: 'string', minLength: 1, maxLength: 1_000_000 },
       format: { type: 'string', enum: ['markdown', 'json'] },
-      metadata: { type: 'object' },
+      metadata: { type: 'object', additionalProperties: true },
     },
     oneOf: [
       {
+        type: 'object',
         required: ['operationId'],
         not: { anyOf: [{ required: ['query'] }, { required: ['answer'] }, { required: ['metadata'] }] },
       },
       {
+        type: 'object',
         required: ['query', 'answer'],
         not: { required: ['operationId'] },
       },
@@ -856,10 +873,12 @@ export const brainMemoryGraphTool: ToolDefinition = {
     },
     oneOf: [
       {
+        type: 'object',
         properties: { exportFull: { const: false } },
         not: { required: ['format'] },
       },
       {
+        type: 'object',
         properties: { exportFull: { const: true } },
         required: ['exportFull'],
         not: { anyOf: [{ required: ['topN'] }, { required: ['tag'] }] },
@@ -884,10 +903,12 @@ export const brainSynthesizeTool: ToolDefinition = {
     },
     oneOf: [
       {
+        type: 'object',
         properties: { action: { const: 'run' } },
         not: { anyOf: [{ required: ['operationId'] }, { required: ['generationMarker'] }] },
       },
       {
+        type: 'object',
         properties: { action: { const: 'status' } },
         required: ['action'],
         not: { anyOf: [{ required: ['trigger'] }, { required: ['reason'] }] },
@@ -898,6 +919,7 @@ export const brainSynthesizeTool: ToolDefinition = {
         ],
       },
       {
+        type: 'object',
         properties: { action: { const: 'reattach' } },
         required: ['action', 'operationId'],
         not: {
@@ -929,9 +951,11 @@ export const brainStatusTool: ToolDefinition = {
     },
     oneOf: [
       {
+        type: 'object',
         not: { anyOf: [{ required: ['operationId'] }, { required: ['action'] }] },
       },
       {
+        type: 'object',
         required: ['operationId'],
         not: { required: ['target'] },
       },

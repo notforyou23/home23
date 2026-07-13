@@ -3087,3 +3087,12 @@ Tools Hardening receipt.
   facade, UI, and contract verification is recorded in the accompanying
   2026-07-12 durable-PGS receipt; live acceptance remains required before this
   patch is declared deployed.
+- **2026-07-13** — Patch 57 makes agent-launched PGS genuinely background-safe.
+  PGS tool calls return the durable operation ID without holding the chat turn;
+  Chat Stop detaches instead of cancelling; operation status exposes provider
+  liveness and reusable session progress; and xAI-facing union schemas declare
+  every root branch as an object. The vendored worker now renews stall authority
+  for every provider frame while publishing repetitive activity at a bounded
+  cadence, preserving semantically distinct start/completion markers. The
+  dashboard coordinator applies the same semantic-aware journal coalescing so
+  a long sweep cannot flood chat status or amplify bounded-journal rewrites.

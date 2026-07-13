@@ -41,6 +41,7 @@ try {
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DEFAULT_HEARTBEAT_MS = 10_000;
+const PROVIDER_ACTIVITY_JOURNAL_INTERVAL_MS = 10_000;
 const DEFAULT_EVENT_SILENCE_MS = 60_000;
 const DEFAULT_WORKER_START_TIMEOUT_MS = 30 * MINUTE_MS;
 const DEFAULT_STOP_TIMEOUT_MS = 180_000;
@@ -61,7 +62,7 @@ const DEFAULT_EXECUTION_DEADLINES_MS = Object.freeze({
   graph: 2 * HOUR_MS,
   status: 2 * HOUR_MS,
   query: 2 * HOUR_MS,
-  pgs: 8 * HOUR_MS,
+  pgs: 24 * HOUR_MS,
   graph_export: 2 * HOUR_MS,
   synthesis: 8 * HOUR_MS,
   research_compile: 2 * HOUR_MS,
@@ -1542,7 +1543,9 @@ class BrainOperationCoordinator {
     const prior = runtime.providerCalls.get(providerCallId);
     if (prior) this._clearProviderTimer(prior);
     const call = prior || {
-      providerCallId, providerStallMs, lastActivityAt: this.now(), timer: null, generation: 0,
+      providerCallId, providerStallMs, lastActivityAt: this.now(),
+      lastJournaledActivityAt: null, lastJournaledActivitySignature: null,
+      timer: null, generation: 0,
     };
     call.providerStallMs = providerStallMs;
     call.lastActivityAt = this.now();
@@ -1638,6 +1641,25 @@ class BrainOperationCoordinator {
     if (['provider_selected', 'provider_activity', 'provider_call_terminal'].includes(rawEvent.type)) {
       if (isHistoricalSnapshotEvent) this._validateHistoricalProviderEvent(record, rawEvent);
       else await this._handleProviderEventLocked(record, runtime, rawEvent);
+    }
+    if (rawEvent.type === 'provider_activity' && !isHistoricalSnapshotEvent) {
+      const call = runtime.providerCalls.get(rawEvent.providerCallId);
+      const now = this.now();
+      const signature = `${rawEvent.providerEventType ?? ''}\u0000${rawEvent.childEventType ?? ''}`;
+      if (call?.lastJournaledActivitySignature === signature
+          && call.lastJournaledActivityAt !== null
+          && now - call.lastJournaledActivityAt < PROVIDER_ACTIVITY_JOURNAL_INTERVAL_MS) {
+        runtime.workerCursor = rawEvent.eventSequence;
+        if (Number.isSafeInteger(runtime.providerSnapshotThrough)
+            && runtime.workerCursor >= runtime.providerSnapshotThrough) {
+          runtime.providerSnapshotThrough = null;
+        }
+        return runtime.workerCursor;
+      }
+      if (call) {
+        call.lastJournaledActivityAt = now;
+        call.lastJournaledActivitySignature = signature;
+      }
     }
     const before = record.eventSequence;
     await this.store.appendEvent(operationId, this._cleanWorkerEvent(rawEvent));

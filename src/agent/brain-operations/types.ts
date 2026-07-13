@@ -152,6 +152,7 @@ export interface BrainOperationRecord {
   resultExpiresAt: string | null;
   resultExpiredAt: string | null;
   metadataExpiresAt: string | null;
+  pgsSession?: Record<string, unknown> | null;
 }
 
 export type BrainNonterminalOperation = Pick<BrainOperationRecord,

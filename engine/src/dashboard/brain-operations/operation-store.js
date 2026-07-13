@@ -1273,6 +1273,7 @@ class BrainOperationStore {
           eventSequence: record.eventSequence,
           rows: [],
           rawCount: 0,
+          hasFutureRows: false,
           fileIdentity: null,
         });
         return [];
@@ -1288,6 +1289,7 @@ class BrainOperationStore {
     const lines = source.split('\n');
     if (lines.at(-1) === '') lines.pop();
     const rows = [];
+    let hasFutureRows = false;
     let previousSequence = 0;
     for (const line of lines) {
       if (!line) continue;
@@ -1304,19 +1306,22 @@ class BrainOperationStore {
       }
       previousSequence = event.sequence;
       if (event.sequence <= record.eventSequence) rows.push(event);
+      else hasFutureRows = true;
     }
     const identityAfter = await this._eventFileIdentity(record.operationId);
     if (!sameFileIdentity(identityBefore, identityAfter)) {
       if (attempt >= 7) throw operationError('operation_corrupt');
       return this._readEventRows(record, attempt + 1, true);
     }
+    const retained = this._compactEvents(rows);
     this.eventCache.set(record.operationId, {
       eventSequence: record.eventSequence,
-      rows,
+      rows: retained,
       rawCount: lines.length,
+      hasFutureRows,
       fileIdentity: identityAfter,
     });
-    return rows;
+    return retained;
   }
 
   _compactEvents(events) {
@@ -1390,19 +1395,42 @@ class BrainOperationStore {
   ) {
     let rows = await this._readEventRows(current);
     const existingPath = this._eventPath(current.operationId);
-    const allRowsCount = this.eventCache.get(current.operationId)?.rawCount ?? rows.length;
-    if (allRowsCount !== rows.length && rows.length > 0) {
+    let cache = this.eventCache.get(current.operationId);
+    let allRowsCount = cache?.rawCount ?? rows.length;
+    if (cache?.hasFutureRows && rows.length > 0) {
       await writeFileDurable(existingPath, rows.map(eventLine).join(''), {
         encoding: 'utf8', mode: 0o600, strictDirectorySync: true,
       });
-    } else if (allRowsCount !== rows.length && rows.length === 0) {
+      allRowsCount = rows.length;
+      cache = {
+        eventSequence: current.eventSequence,
+        rows,
+        rawCount: rows.length,
+        hasFutureRows: false,
+        fileIdentity: await this._eventFileIdentity(current.operationId),
+      };
+    } else if (cache?.hasFutureRows && rows.length === 0) {
       await fsp.rm(existingPath, { force: true });
+      allRowsCount = 0;
+      cache = {
+        eventSequence: current.eventSequence,
+        rows: [],
+        rawCount: 0,
+        hasFutureRows: false,
+        fileIdentity: null,
+      };
     }
 
     const proposed = [...rows, event];
     const retained = this._compactEvents(proposed);
+    const eventSize = Buffer.byteLength(eventLine(event), 'utf8');
+    const physicalBytes = Number(cache?.fileIdentity?.size ?? 0);
+    const compactionRequired = retained.length !== proposed.length;
+    const compactionWindowExceeded = allRowsCount + 1 >= this.eventMaxCount * 2
+      || physicalBytes + eventSize >= this.eventMaxBytes * 2;
+    let nextRawCount;
     try {
-      if (retained.length === proposed.length) {
+      if (!compactionRequired || !compactionWindowExceeded) {
         if (typeof appendJsonlDurable === 'function') {
           await appendJsonlDurable(existingPath, event, { strictDirectorySync: true });
         } else {
@@ -1414,10 +1442,12 @@ class BrainOperationStore {
             await handle.close();
           }
         }
+        nextRawCount = allRowsCount + 1;
       } else {
         await writeFileDurable(existingPath, retained.map(eventLine).join(''), {
           encoding: 'utf8', mode: 0o600, strictDirectorySync: true,
         });
+        nextRawCount = retained.length;
       }
       next._eventBytes = eventBytes(retained);
       next._eventOldestSequence = oldestContiguousSequence(retained, next.eventSequence);
@@ -1430,7 +1460,8 @@ class BrainOperationStore {
       this.eventCache.set(current.operationId, {
         eventSequence: next.eventSequence,
         rows: retained,
-        rawCount: retained.length,
+        rawCount: nextRawCount,
+        hasFutureRows: false,
         fileIdentity: await this._eventFileIdentity(current.operationId),
       });
     } catch (error) {

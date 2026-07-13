@@ -76,6 +76,8 @@ PGS requests use:
 
 The Query tab exposes named levels and all three modes, retains operation/session identity in history, displays scoped and global coverage separately, and offers Continue, Reattach, Cancel, and Start Fresh actions when valid. “Stream response” is labeled “Show live progress,” because the route streams durable progress events rather than provider tokens. Detached operations remain reconnectable by operation ID.
 
+Agent-tool PGS launches are start-only: `brain_query` returns the queued/running operation ID immediately without holding the chat turn. Agents use nonblocking status checks and fetch the protected result after terminal state; an explicit wait remains available only when blocking is intentional. Chat Stop detaches an attachment and never substitutes for operation cancellation.
+
 ## Error Handling
 
 Typed failures cover invalid mode/level combinations, unauthorized or missing prior operations, expired sessions, binding mismatches, target validation, non-monotonic continuation, session conflicts, filesystem identity changes, quota exhaustion, provider failure, cancellation, and result-size limits. No mismatch, missing state, or exhausted target scope falls back to a new full sweep.

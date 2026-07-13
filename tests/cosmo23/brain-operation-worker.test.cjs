@@ -1447,13 +1447,19 @@ test('provider activity is coalesced without evicting its selected and terminal 
     for (let index = 0; index < WORKER_EVENT_MAX_COUNT + 128; index += 1) {
       report({ type: 'provider_activity', providerCallId: 'long-call', providerChunk: index });
     }
+    fixture.clock.advance(9_999);
+    report({ type: 'provider_activity', providerCallId: 'long-call', providerChunk: 'still-coalesced' });
+    fixture.clock.advance(1);
+    report({ type: 'provider_activity', providerCallId: 'long-call', providerChunk: 'next-window' });
     report({ type: 'provider_call_terminal', providerCallId: 'long-call', outcome: 'complete' });
     const providerEvents = fixture.worker.records.get(request.operationId).events
       .filter((event) => event.providerCallId === 'long-call');
     assert.deepEqual(providerEvents.map((event) => event.type), [
-      'provider_selected', 'provider_activity', 'provider_call_terminal',
+      'provider_selected', 'provider_activity', 'provider_activity', 'provider_call_terminal',
     ]);
-    assert.equal(providerEvents[1].providerChunk, WORKER_EVENT_MAX_COUNT + 127);
+    assert.equal(providerEvents[1].providerChunk, 0);
+    assert.equal(providerEvents[2].providerChunk, 'next-window');
+    assert.equal(fixture.worker.records.get(request.operationId).eventSequence < 20, true);
   } finally {
     gate.resolve();
     status = await terminalStatus(fixture, request);
@@ -1465,10 +1471,8 @@ test('provider activity is coalesced without evicting its selected and terminal 
   })) streamed.push(event);
   const gapIndex = streamed.findIndex((event) => event.type === 'event_gap');
   const terminalIndex = streamed.findIndex((event) => event.type === 'provider_call_terminal');
-  assert.equal(gapIndex >= 0, true);
-  assert.equal(terminalIndex > gapIndex, true);
-  assert.equal(streamed[gapIndex].eventSequence, streamed[gapIndex].latestSequence);
-  assert.equal(streamed[terminalIndex].eventSequence, streamed[gapIndex].latestSequence + 2);
+  assert.equal(gapIndex, -1);
+  assert.equal(terminalIndex >= 0, true);
   assert.equal(streamed.at(-1).eventSequence, status.eventSequence);
 });
 

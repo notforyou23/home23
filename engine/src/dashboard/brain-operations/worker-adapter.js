@@ -31,6 +31,7 @@ const NOISY_EVENT_TYPES = new Set([
   'heartbeat', 'progress', 'progress_update', 'token', 'token_estimate',
 ]);
 const MAX_ACTIVE_PROVIDER_CALLS = 4096;
+const PROVIDER_ACTIVITY_PUBLISH_INTERVAL_MS = 10_000;
 const OBSERVED_TERMINAL_RETENTION_MS = 10 * 60 * 1000;
 const UNREAD_TERMINAL_RETENTION_MS = 24 * 60 * 60 * 1000;
 const WORKER_EVENT_TYPES = new Set([
@@ -498,11 +499,20 @@ class BrainOperationWorkerAdapter {
           providerCallId: normalized.providerCallId,
           providerStallMs: normalized.providerStallMs,
           lastActivityAt: monotonic,
+          lastPublishedActivityAt: null,
+          lastPublishedActivitySignature: null,
         });
       } else if (!current) {
         throw workerError('provider_contract_invalid');
       } else if (normalized.type === 'provider_activity') {
         current.lastActivityAt = monotonic;
+        const signature = `${normalized.providerEventType ?? ''}\u0000${normalized.childEventType ?? ''}`;
+        if (current.lastPublishedActivitySignature === signature
+            && current.lastPublishedActivityAt !== null
+            && monotonic - current.lastPublishedActivityAt
+              < PROVIDER_ACTIVITY_PUBLISH_INTERVAL_MS) return null;
+        current.lastPublishedActivityAt = monotonic;
+        current.lastPublishedActivitySignature = signature;
       } else {
         record.activeProviderCalls.delete(normalized.providerCallId);
       }

@@ -225,7 +225,7 @@ Waiting is based on verified operation activity, not a fixed 60- or 120-second f
 - The server emits a heartbeat at least every 10 seconds for queued and running operations, including operation ID, monotonic event sequence, state, phase, updatedAt, lastProviderActivityAt, and lastProgressAt.
 - The client treats 60 seconds without an event as a transport-health failure, attempts a bounded status read and reconnect, and only then returns source unavailable while marking that caller attachment detached.
 - Ordinary query attachments have a configurable default wait deadline of 90 minutes; the default server execution deadline is two hours.
-- PGS and synthesis attachments have a configurable default wait deadline of six hours; the default server execution deadline is eight hours.
+- PGS and synthesis attachments have a configurable default wait deadline of six hours; the default PGS server execution deadline is 24 hours so a full live-scale sweep is not killed merely for exceeding an earlier eight-hour estimate.
 - Reaching an attachment wait deadline detaches only that caller. Reaching the server execution deadline cancels worker/provider work and terminalizes the operation with operation_timeout.
 - Short search/status/graph operations keep smaller configurable bounds because they have no legitimate multi-hour execution path.
 - Heartbeats prove transport/worker liveness but do not by themselves prove provider progress. Provider adapters update lastProviderActivityAt from real provider events. Provider-specific stall bounds are configurable and enforced separately from the hard execution deadline.
@@ -239,7 +239,8 @@ The agent's turn controller must cooperate with long tools. Verified operation e
 
 ### Cancellation policy
 
-- Explicit user/operator cancellation always cancels the durable operation and propagates a combined AbortSignal through server, query engine, PGS partitions, and provider clients.
+- An explicit exact-operation cancellation (`brain_status` action `cancel`, or the Query tab's Cancel action) cancels the durable operation and propagates a combined AbortSignal through server, query engine, PGS partitions, and provider clients.
+- Chat Stop, turn abort, attachment timeout, and transport disconnect detach durable work; they do not substitute for exact-operation cancellation.
 - A short, non-durable operation is cancelled when its client disconnects.
 - A durable PGS or synthesis operation is detached, not cancelled, by an accidental transport disconnect.
 - Ordinary durable query, compile, and stop operations follow the same detach-on-disconnect rule; their hard execution deadlines still apply.

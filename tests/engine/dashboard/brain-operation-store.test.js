@@ -2166,6 +2166,33 @@ test('event count and byte ceilings compact independently while retaining materi
   assert.ok(byteRows.some((row) => row.type === 'provider_selected'));
 });
 
+test('bounded event journal appends within a compaction window instead of rewriting on every event', async (t) => {
+  const fixture = makeFixture(t, { eventMaxCount: 6, eventMaxBytes: 1024 * 1024 });
+  const { record } = await createOne(fixture, { requestId: 'event-compaction-window' });
+  for (let index = 0; index < 6; index += 1) {
+    await fixture.store.appendEvent(record.operationId, { type: 'heartbeat', index });
+  }
+  const eventPath = fixture.store._eventPath(record.operationId);
+  const before = fs.lstatSync(eventPath);
+  for (let index = 6; index < 9; index += 1) {
+    await fixture.store.appendEvent(record.operationId, { type: 'heartbeat', index });
+  }
+  const after = fs.lstatSync(eventPath);
+  assert.equal(after.ino, before.ino, 'sub-threshold compaction must not replace the journal file');
+  const physicalRows = fs.readFileSync(eventPath, 'utf8').trim().split('\n');
+  assert.equal(physicalRows.length > 6 && physicalRows.length < 12, true);
+  const logicalRows = (await fixture.store.readEvents(record.operationId, 0))
+    .filter((event) => event.type !== 'event_gap');
+  assert.equal(logicalRows.length <= 6, true);
+  const reloaded = anotherStore(fixture, {
+    eventMaxCount: 6,
+    eventMaxBytes: 1024 * 1024,
+  });
+  const reloadedRows = (await reloaded.readEvents(record.operationId, 0))
+    .filter((event) => event.type !== 'event_gap');
+  assert.equal(reloadedRows.length <= 6, true);
+});
+
 test('event crash before status publication is invisible after reload and retry uses one sequence', async (t) => {
   let fail = true;
   const fixture = makeFixture(t, {

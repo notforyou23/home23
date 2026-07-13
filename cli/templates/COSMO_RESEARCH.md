@@ -39,7 +39,7 @@ You have access to COSMO 2.3 — a deep research engine that runs multi-agent or
 ## Rules
 
 - **Never launch a run while another is active.** You'll see a `[COSMO ACTIVE RUN]` block in your prompt when one is in flight. If you need to cancel, use `research_stop`.
-- **Detached is not failed.** Preserve exact operation IDs. Use `brain_status` to wait for or inspect a detached durable query, then reattach instead of starting duplicate work.
+- **PGS starts in the background.** Preserve the exact operation ID returned immediately. Use `brain_status` action `status` to inspect it and `result` after it is terminal. Never start duplicate work because a call is detached; use `wait` to reattach only when deliberately blocking a turn. Chat Stop detaches durable work, while only the exact `cancel` action cancels it.
 - **Never re-launch research that already exists in a brain.** Query it instead.
 - **Never skip `context` in `research_launch`.** The guided planner needs it.
 - **Prefer `research_compile_section` over `research_compile_brain`** when you only need one thread. Keep every compile bounded to the knowledge you intend to retain.

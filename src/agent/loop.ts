@@ -199,6 +199,29 @@ const XAI_SERVER_TOOLS: XaiResponseTool[] = [
   { type: 'code_interpreter' },
 ];
 
+const XAI_UNSUPPORTED_SCHEMA_COMPOSITION = new Set([
+  'oneOf', 'anyOf', 'allOf', 'not', 'if', 'then', 'else',
+]);
+
+function normalizeXaiToolSchema(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeXaiToolSchema(item));
+  }
+  if (!value || typeof value !== 'object') return value;
+  const schema = value as Record<string, unknown>;
+  const normalized: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(schema)) {
+    if (XAI_UNSUPPORTED_SCHEMA_COMPOSITION.has(key)) continue;
+    if (key === 'properties' && child && typeof child === 'object' && !Array.isArray(child)) {
+      normalized[key] = Object.fromEntries(Object.entries(child as Record<string, unknown>)
+        .map(([name, propertySchema]) => [name, normalizeXaiToolSchema(propertySchema)]));
+      continue;
+    }
+    normalized[key] = normalizeXaiToolSchema(child);
+  }
+  return normalized;
+}
+
 function buildXaiResponseTools(registry: ToolRegistry): XaiResponseTool[] {
   const localTools = (registry.getOpenAITools() as OpenAIFunctionTool[])
     // Avoid a name collision with xAI's native web_search tool.
@@ -207,7 +230,7 @@ function buildXaiResponseTools(registry: ToolRegistry): XaiResponseTool[] {
       type: 'function' as const,
       name: tool.function.name,
       description: tool.function.description ?? null,
-      parameters: tool.function.parameters ?? null,
+      parameters: normalizeXaiToolSchema(tool.function.parameters ?? null),
     }));
 
   return [...XAI_SERVER_TOOLS, ...localTools];
@@ -740,6 +763,7 @@ export class AgentLoop {
 
     let seq = 0;
     const persistAndFanOut = (event: import('./types.js').AgentEvent): void => {
+      if (this.terminalTurnOverrides.has(this.turnKey(chatId, turnId))) return;
       seq++;
       const record: TurnEvent = {
         type: 'event',
@@ -781,8 +805,24 @@ export class AgentLoop {
       clearTimeout: this.turnTiming.clearTimeout,
       onExpire: expireTurn,
     });
+    const persistedOperationActivity = new Map<string, {
+      emittedAt: number;
+      state: OperationActivity['state'];
+      phase: OperationActivity['phase'];
+    }>();
     const onOperationActivity = (activity: OperationActivity): void => {
       if (!lease.observe(activity)) return;
+      const now = this.turnTiming.now();
+      const previous = persistedOperationActivity.get(activity.operationId);
+      const materialChange = !previous
+        || previous.state !== activity.state
+        || previous.phase !== activity.phase;
+      if (!materialChange && now - previous.emittedAt < 10_000) return;
+      persistedOperationActivity.set(activity.operationId, {
+        emittedAt: now,
+        state: activity.state,
+        phase: activity.phase,
+      });
       persistAndFanOut({
         type: 'status',
         status: 'brain_operation_active',
@@ -863,7 +903,10 @@ export class AgentLoop {
         const terminalActivityDeadlineAt = new Date(
           lease.activityDeadlineMs ?? startedAtMs + inactivityMs,
         ).toISOString();
-        const endEnv = this.turnStore.writeEnd(chatId, turnId, terminalOverride?.status ?? 'complete', {
+        const existingEnd = terminalOverride
+          ? this.turnStore.finalEnvelope(chatId, turnId)
+          : null;
+        const endEnv = existingEnd ?? this.turnStore.writeEnd(chatId, turnId, terminalOverride?.status ?? 'complete', {
           last_seq: seq,
           stop_reason: terminalOverride?.stop_reason ?? 'end_turn',
           error_code: terminalOverride?.error_code,
@@ -873,10 +916,12 @@ export class AgentLoop {
           hard_deadline_at,
           first_token_deadline_at,
         });
-        turnBus.emit(chatId, turnId, endEnv.status === 'complete'
-          ? { ...endEnv, assistant_content: result.text }
-          : endEnv);
-        turnBus.close(chatId, turnId);
+        if (!existingEnd) {
+          turnBus.emit(chatId, turnId, endEnv.status === 'complete'
+            ? { ...endEnv, assistant_content: result.text }
+            : endEnv);
+          turnBus.close(chatId, turnId);
+        }
         if (this.pusher) {
           this.pusher.notifyTurnComplete({
             chatId,
@@ -901,7 +946,10 @@ export class AgentLoop {
         const terminalActivityDeadlineAt = new Date(
           lease.activityDeadlineMs ?? startedAtMs + inactivityMs,
         ).toISOString();
-        const endEnv = this.turnStore.writeEnd(chatId, turnId, status, {
+        const existingEnd = terminalOverride
+          ? this.turnStore.finalEnvelope(chatId, turnId)
+          : null;
+        const endEnv = existingEnd ?? this.turnStore.writeEnd(chatId, turnId, status, {
           last_seq: seq,
           error: msg,
           error_code: terminalOverride?.error_code ?? (isTimeout ? 'turn_timeout' : (status === 'error' ? 'provider_error' : undefined)),
@@ -912,8 +960,10 @@ export class AgentLoop {
           hard_deadline_at,
           first_token_deadline_at,
         });
-        turnBus.emit(chatId, turnId, endEnv);
-        turnBus.close(chatId, turnId);
+        if (!existingEnd) {
+          turnBus.emit(chatId, turnId, endEnv);
+          turnBus.close(chatId, turnId);
+        }
         throw err;
       } finally {
         lease.close();

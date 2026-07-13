@@ -67,7 +67,21 @@ async function runProvider(provider: typeof PROVIDERS[number]): Promise<{
   const tool = {
     name: TOOL_NAME,
     description: 'returns one typed failure',
-    input_schema: { type: 'object', properties: {} },
+    input_schema: {
+      type: 'object',
+      properties: {
+        operationId: { type: 'string' },
+        query: { type: 'string' },
+      },
+      oneOf: [
+        {
+          type: 'object',
+          required: ['operationId'],
+          allOf: [{ oneOf: [{ required: ['operationId'] }, { not: { required: ['query'] } }] }],
+        },
+        { type: 'object', required: ['query'] },
+      ],
+    },
     execute: async (_input: Record<string, unknown>, context: Record<string, unknown>) => {
       contexts.push(context);
       return { content: 'typed failure', is_error: true };
@@ -266,3 +280,15 @@ for (const provider of PROVIDERS) {
     }
   });
 }
+
+test('xAI receives an object-root schema without unsupported composition keywords', async () => {
+  const result = await runProvider('xai');
+  const tools = result.providerRequests[0]?.tools as Array<Record<string, unknown>>;
+  const localTool = tools.find(tool => tool.name === TOOL_NAME)!;
+  const schema = localTool.parameters as Record<string, unknown>;
+  assert.equal(schema.type, 'object');
+  const serialized = JSON.stringify(schema);
+  for (const keyword of ['oneOf', 'anyOf', 'allOf', 'not', 'if', 'then', 'else']) {
+    assert.doesNotMatch(serialized, new RegExp(`"${keyword}"`));
+  }
+});

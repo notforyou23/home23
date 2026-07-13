@@ -45,6 +45,7 @@ const MAX_PARAMETERS_BYTES = 64 * 1024;
 const MAX_CONTROL_OBJECT_BYTES = 64 * 1024;
 const MAX_TOMBSTONES = 100_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const PROVIDER_ACTIVITY_PUBLISH_INTERVAL_MS = 10_000;
 const CAPABILITY_FIELDS = Object.freeze([
   'requesterAgent', 'targetDomain', 'targetBrainId', 'targetRunId',
   'targetRequesterAgent', 'canonicalRoot', 'accessMode', 'operationType',
@@ -864,11 +865,20 @@ class BrainOperationWorker {
           providerCallId: event.providerCallId,
           providerStallMs: event.providerStallMs,
           lastActivityAt: monotonic,
+          lastPublishedActivityAt: null,
+          lastPublishedActivitySignature: null,
         });
       } else if (!current) {
         throw workerError('provider_contract_invalid');
       } else if (event.type === 'provider_activity') {
         current.lastActivityAt = monotonic;
+        const signature = `${event.providerEventType ?? ''}\u0000${event.childEventType ?? ''}`;
+        if (current.lastPublishedActivitySignature === signature
+            && current.lastPublishedActivityAt !== null
+            && monotonic - current.lastPublishedActivityAt
+              < PROVIDER_ACTIVITY_PUBLISH_INTERVAL_MS) return null;
+        current.lastPublishedActivityAt = monotonic;
+        current.lastPublishedActivitySignature = signature;
       } else {
         record.activeProviderCalls.delete(event.providerCallId);
       }
@@ -881,15 +891,6 @@ class BrainOperationWorker {
       at: new Date(this.now()).toISOString(),
     });
     if (normalized.type === 'phase') record.phase = normalized.phase;
-    if (normalized.type === 'provider_activity') {
-      for (let index = record.events.length - 1; index >= 0; index -= 1) {
-        const retained = record.events[index];
-        if (retained.type === 'provider_activity'
-            && retained.providerCallId === normalized.providerCallId) {
-          this._removeEvent(record, index);
-        }
-      }
-    }
     this._pushEvent(record, normalized);
     this._notify(record);
     return normalized;

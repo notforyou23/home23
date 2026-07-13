@@ -1096,8 +1096,9 @@ test('research stop remains attached beyond the old 30 second cutoff', async () 
   assert.equal((await pending).state, 'complete');
 });
 
-test('explicit operator cancellation posts cancel and returns cancelled', async () => {
+test('chat operator stop detaches durable work without cancelling it', async () => {
   let cancelCalls = 0;
+  let detachCalls = 0;
   const controller = new AbortController();
   const sse = controlledStream();
   const cancelled = {
@@ -1110,6 +1111,10 @@ test('explicit operator cancellation posts cancel and returns cancelled', async 
     if (init?.method === 'POST' && parsed.pathname.endsWith('/cancel')) {
       cancelCalls += 1;
       return new Response(JSON.stringify(cancelled), { status: 200 });
+    }
+    if (init?.method === 'POST' && parsed.pathname.endsWith('/detach')) {
+      detachCalls += 1;
+      return new Response(JSON.stringify(record('op-cancel', 1, 'running')), { status: 200 });
     }
     if (init?.method === 'POST') {
       return new Response(JSON.stringify(record('op-cancel', 0, 'queued')), { status: 200 });
@@ -1132,8 +1137,10 @@ test('explicit operator cancellation posts cancel and returns cancelled', async 
   await flushMicrotasks();
   controller.abort(Object.assign(new Error('operator_stop'), { code: 'operator_stop' }));
   const result = await pending;
-  assert.equal(result.state, 'cancelled');
-  assert.equal(cancelCalls, 1);
+  assert.equal(result.state, 'running');
+  assert.equal(result.attachmentState, 'detached');
+  assert.equal(cancelCalls, 0);
+  assert.equal(detachCalls, 1);
 });
 
 test('one SSE connect timeout status-checks and reconnects while the durable query is running', async () => {
@@ -1714,6 +1721,42 @@ test('client validates and forwards the named PGS session contract without raw f
   assert.equal(bodies.every((body) => !Object.hasOwn(body.parameters as object, 'pgsConfig')), true);
 });
 
+test('launchQuery starts one PGS operation and returns detached without opening an event stream', async () => {
+  const calls: Array<{ method: string; pathname: string; body: Record<string, unknown> | null }> = [];
+  const operation = {
+    ...record('brop_LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL', 0, 'queued'),
+    operationType: 'pgs',
+  };
+  const fetchImpl: typeof fetch = async (url, init) => {
+    const parsed = new URL(String(url));
+    calls.push({
+      method: String(init?.method || 'GET'),
+      pathname: parsed.pathname,
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+    });
+    return Response.json(operation);
+  };
+  const client = new BrainOperationsClient({
+    baseUrl: 'http://fixture', callerAgent: 'jerry', fetchImpl,
+  });
+
+  const result = await client.launchQuery({
+    query: 'background PGS', enablePGS: true,
+    pgsMode: 'fresh', pgsLevel: 'skim',
+    pgsSweep: { provider: 'openai-codex', model: 'gpt-5.4-mini' },
+    pgsSynth: { provider: 'openai-codex', model: 'gpt-5.4-mini' },
+  });
+
+  assert.equal(result.operationId, operation.operationId);
+  assert.equal(result.state, 'queued');
+  assert.equal(result.attachmentState, 'detached');
+  assert.deepEqual(calls.map(call => [call.method, call.pathname]), [
+    ['POST', '/home23/api/brain-operations'],
+  ]);
+  assert.equal(calls[0]?.body?.operationType, 'pgs');
+  assert.equal((calls[0]?.body?.parameters as Record<string, unknown>).enablePGS, undefined);
+});
+
 test('present-null, extra target fields, nonfinite limits, and invalid PGS contracts fail locally', async () => {
   let fetches = 0;
   const client = new BrainOperationsClient({ baseUrl: 'http://fixture', callerAgent: 'jerry',
@@ -2281,8 +2324,10 @@ test('short waits use five minutes while query and PGS attachments retain their 
       assert.equal(cancelCalls, 1, 'the short attachment deadline cancels short work');
     } else {
       controller.abort(Object.assign(new Error('operator_stop'), { code: 'operator_stop' }));
-      assert.equal((await pending).state, 'cancelled');
-      assert.equal(cancelCalls, 1);
+      const detached = await pending;
+      assert.equal(detached.state, 'running');
+      assert.equal(detached.attachmentState, 'detached');
+      assert.equal(cancelCalls, 0);
     }
   }
 });

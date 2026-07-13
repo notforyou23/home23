@@ -80,6 +80,15 @@ test('agent guidance never treats configured model selection as credential healt
   assert.match(prompt, /typed authentication failure/i);
 });
 
+test('agent guidance keeps PGS background-safe and distinguishes liveness from batch progress', () => {
+  const prompt = read('src/agents/system-prompt.ts');
+  assert.match(prompt, /PGS launches detached immediately/i);
+  assert.match(prompt, /Chat Stop detaches durable work without cancelling it/i);
+  assert.match(prompt, /Judge provider liveness from lastProviderActivityAt/i);
+  assert.match(prompt, /lastProgressAt records committed batch progress and may legitimately lag/i);
+  assert.match(prompt, /Only brain_status action:"cancel" for the exact operation ID cancels durable work/i);
+});
+
 test('active Jerry instructions use discovery, named PGS, continuation, and durable waits', { skip: !fs.existsSync(path.join(root, localInstructions[0])) }, () => {
   const soul = read(localInstructions[0]);
   const weekly = read(localInstructions[1]);

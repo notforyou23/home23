@@ -32,7 +32,7 @@ The original v1 tools called COSMO HTTP routes directly. That transport is depre
 
 Direct research queries default to `quick` and accept `quick`, `full`, `expert`, or `dive`, plus an optional exact `{provider, model}` pair.
 
-Single-brain PGS uses the same named contract as `brain_query`:
+Single-brain PGS uses the same named contract as `brain_query` and launches detached immediately from agent tools:
 
 - cumulative levels: `skim` 10%, `sample` 25%, `deep` 50%, `full` 100%;
 - modes: `fresh`, `continue`, `targeted`;
@@ -48,7 +48,7 @@ PGS rejects Direct Query fields, including `mode`, `modelSelection`, and `priorC
 
 ## Run lifecycle
 
-Before launch, call `research_runs_list {state:"active"}` and inspect existing brains. Launch, continue, stop, and compile may remain attached for up to six hours. If a call detaches, preserve its `brop_...` operation ID and use `brain_operations_list` plus `brain_status` wait/result/cancel rather than starting a duplicate.
+Before launch, call `research_runs_list {state:"active"}` and inspect existing brains. Research launch, continue, stop, and compile may remain attached for up to six hours. A single-brain PGS call returns its `brop_...` operation ID immediately; use `brain_status` status/result later. `wait` is an explicit blocking reattachment, Chat Stop only detaches durable work, and only the exact cancel action stops the operation.
 
 The live `[COSMO ACTIVE RUN]` prompt block is derived from canonical requester-owned run metadata, not from whether the short launch operation record is still nonterminal.
 

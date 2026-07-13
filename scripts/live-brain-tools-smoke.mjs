@@ -3622,6 +3622,7 @@ export async function executeScenario({
     const toolResult = await runTool(modules.brainQueryTool, queryInput, client, callerAgent, signal);
     const operationId = toolResult.metadata?.operationId;
     if (!operationId) throw typedError('operation_id_missing');
+    if (pgs) await client.resumeOperation(operationId, signal);
     const terminal = await protectedTerminal(client, operationId, signal);
     assertCanaryBoundUsefulResult(terminal, canary, activityLog);
     const requiredNodes = integer(values, 'require-authoritative-nodes', { min: 1 });

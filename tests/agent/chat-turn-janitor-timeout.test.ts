@@ -11,6 +11,24 @@ import { ManualClock, deferred, flushMicrotasks } from '../helpers/manual-clock.
 
 function makeBrainOperations() {
   const base = {
+    async searchContext(request: { query: string; topK: number }, signal?: AbortSignal) {
+      const response = await fetch('http://localhost:5002/api/memory/search', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(request),
+        signal,
+      });
+      if (!response.ok) throw new Error(`context_search_failed:${response.status}`);
+      return response.json();
+    },
+    async getActiveResearchRun(signal?: AbortSignal) {
+      const response = await fetch(
+        'http://localhost:5002/home23/api/brain-operations/research-runs/active',
+        { signal },
+      );
+      if (!response.ok) throw new Error(`active_run_probe_failed:${response.status}`);
+      return response.json();
+    },
     withActivityHandler(onActivity: (activity: unknown) => void) {
       return Object.freeze({
         ...base,
@@ -244,6 +262,68 @@ test('verified operation activity renews inactivity but duplicate sequence does 
     assert.match(jsonl, /"error_code":"turn_timeout"/);
     const finalStatus = new TurnStore(history).statusForTurn('activity-chat', started.turnId);
     assert.equal(new Date(finalStatus!.activity_deadline_at!).getTime(), 1_025);
+  } finally {
+    if (capturedRuntime && !capturedRuntime.signal.aborted) {
+      capturedRuntime.abortController.abort(new Error('test cleanup'));
+    }
+    if (response) await response.catch(() => {});
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('high-frequency operation activity renews the lease without flooding persisted chat status', async () => {
+  const root = join(tmpdir(), `chat-turn-activity-coalesce-${process.pid}-${Math.random()}`);
+  const { agent, history } = makeAgent(root);
+  const clock = installManualClock(agent);
+  let capturedRuntime: TurnRuntimeContext | null = null;
+  let response: Promise<unknown> | null = null;
+
+  try {
+    (agent as any).run = async (
+      _chatId: string,
+      _userText: string,
+      _media: unknown,
+      _onEvent: unknown,
+      _modelRuntime: unknown,
+      turnRuntime: TurnRuntimeContext,
+    ) => {
+      capturedRuntime = turnRuntime;
+      await new Promise((_resolve, reject) => {
+        turnRuntime.signal.addEventListener('abort', () => reject(turnRuntime.signal.reason), {
+          once: true,
+        });
+      });
+    };
+
+    const started = await agent.runWithTurn('coalesced-activity-chat', 'hello', {
+      inactivityMs: 30_000,
+      hardDurationMs: 120_000,
+      firstTokenTimeoutMs: 60_000,
+    });
+    response = started.response;
+    response.catch(() => {});
+    await flushMicrotasks();
+    assert.ok(capturedRuntime);
+
+    for (let sequence = 1; sequence <= 5_000; sequence += 1) {
+      clock.nowMs += 1;
+      capturedRuntime!.onOperationActivity({
+        source: 'brain_operation', operationId: 'op-noisy', sequence,
+        eventSequence: sequence, type: 'provider_activity',
+        state: 'running', phase: 'sweep', updatedAt: new Date(clock.nowMs).toISOString(),
+        lastProviderActivityAt: new Date(clock.nowMs).toISOString(), lastProgressAt: null,
+      });
+    }
+
+    const jsonl = readFileSync(
+      join(root, 'conversations', 'test-agent__coalesced-activity-chat.jsonl'),
+      'utf8',
+    );
+    assert.equal((jsonl.match(/brain_operation_active/g) || []).length, 1);
+    clock.advance(25_001);
+    await flushMicrotasks();
+    assert.equal(capturedRuntime!.signal.aborted, false,
+      'coalesced events must still renew the in-memory activity lease');
   } finally {
     if (capturedRuntime && !capturedRuntime.signal.aborted) {
       capturedRuntime.abortController.abort(new Error('test cleanup'));
@@ -641,7 +721,7 @@ test('hard cancellation reaches the COSMO active-run probe with the exact turn r
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      if (!url.endsWith('/api/status')) {
+      if (!url.endsWith('/home23/api/brain-operations/research-runs/active')) {
         throw new Error(`unexpected fetch after pending active-run probe: ${url}`);
       }
       probeSignal = init?.signal as AbortSignal;

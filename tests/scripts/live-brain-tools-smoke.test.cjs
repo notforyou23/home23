@@ -569,10 +569,21 @@ test('large pinned PGS partial retains canonical null-answer sweep outputs and e
     },
     error: { code: 'provider_partial', message: 'one partition remains retryable', retryable: true },
   });
-  const client = {
-    async query() { return partial; },
-    async inspectOperation() { return partial; },
-  };
+  const detachedClientFor = (terminal) => ({
+    async launchQuery() {
+      return {
+        ...terminal,
+        state: 'running',
+        attachmentState: 'detached',
+        completedAt: null,
+        result: null,
+        error: null,
+      };
+    },
+    async resumeOperation() { return terminal; },
+    async inspectOperation() { return terminal; },
+  });
+  const client = detachedClientFor(partial);
   const row = await executeScenario({
     scenario: 'pgs', modules, client,
     values: {
@@ -757,10 +768,7 @@ test('large pinned PGS partial retains canonical null-answer sweep outputs and e
   ];
   await assert.rejects(executeScenario({
     scenario: 'pgs', modules,
-    client: {
-      async query() { return degradedPartial; },
-      async inspectOperation() { return degradedPartial; },
-    },
+    client: detachedClientFor(degradedPartial),
     values: {
       'canary-receipt': degradedCanary,
       'target-brain': 'brain-jerry',
@@ -784,10 +792,7 @@ test('large pinned PGS partial retains canonical null-answer sweep outputs and e
   });
   await assert.rejects(executeScenario({
     scenario: 'pgs', modules,
-    client: {
-      async query() { return duplicateSweepPartial; },
-      async inspectOperation() { return duplicateSweepPartial; },
-    },
+    client: detachedClientFor(duplicateSweepPartial),
     values: {
       'canary-receipt': canary,
       'target-brain': 'brain-jerry',
@@ -816,14 +821,9 @@ test('large pinned PGS partial retains canonical null-answer sweep outputs and e
 
   await assert.rejects(executeScenario({
     scenario: 'pgs', modules,
-    client: {
-      async query() { return { ...degradedPartial, sourceEvidence: {
-        ...degradedPartial.sourceEvidence, deltaWatermark: { revision: 8 },
-      } }; },
-      async inspectOperation() { return { ...degradedPartial, sourceEvidence: {
-        ...degradedPartial.sourceEvidence, deltaWatermark: { revision: 8 },
-      } }; },
-    },
+    client: detachedClientFor({ ...degradedPartial, sourceEvidence: {
+      ...degradedPartial.sourceEvidence, deltaWatermark: { revision: 8 },
+    } }),
     values: {
       'canary-receipt': degradedCanary,
       'target-brain': 'brain-jerry',

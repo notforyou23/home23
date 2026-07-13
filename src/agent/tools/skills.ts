@@ -168,7 +168,10 @@ export const skillsRunTool: ToolDefinition = {
     properties: {
       skillId: { type: 'string', description: 'Shared skill ID' },
       action: { type: 'string', description: 'Action to run' },
-      input: { type: 'object', description: 'JSON object passed to the skill action' },
+      input: {
+        type: 'object', additionalProperties: true,
+        description: 'JSON object passed to the skill action',
+      },
     },
     required: ['skillId', 'action'],
   },

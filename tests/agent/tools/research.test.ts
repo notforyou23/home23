@@ -63,13 +63,17 @@ function makeCtx(overrides: ContextOverrides = {}): ToolContext {
     turnAbortController = new AbortController(),
     ...contextOverrides
   } = overrides;
+  const runtimeStubs = { ...brainOperations };
+  if (!runtimeStubs.launchQuery && runtimeStubs.query) {
+    runtimeStubs.launchQuery = runtimeStubs.query;
+  }
   const startupSentinel = new Proxy({}, {
     get: (_target, key) => () => {
       startupSentinelCalls += 1;
       throw new Error(`startup_global_client_used:${String(key)}`);
     },
   }) as BrainOperationsClient;
-  const runtimeClient = new Proxy(brainOperations, {
+  const runtimeClient = new Proxy(runtimeStubs, {
     get: (target, key) => {
       if (typeof key === 'string' && key in target) return target[key];
       return () => { throw new Error(`unexpected_brain_client_call:${String(key)}`); };
@@ -315,6 +319,34 @@ test('research query separates direct and approved named PGS parameters and reje
     assert.equal(result.is_error, true);
     assert.equal(requests.length, before);
   }
+});
+
+test('research_query_brain launches PGS detached instead of holding the agent turn', async () => {
+  const launched: Record<string, unknown>[] = [];
+  let attachedCalls = 0;
+  const operation = completeOperation('brop_RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR', '');
+  operation.operationType = 'pgs';
+  operation.state = 'running';
+  operation.attachmentState = 'detached';
+  operation.result = null;
+  operation.resultHandle = null;
+  const result = await queryBrainTool.execute({
+    brainId: 'brain-r1', query: 'background research PGS', enablePGS: true,
+    pgsMode: 'fresh', pgsLevel: 'skim',
+    pgsSweep: { provider: 'openai-codex', model: 'gpt-5.4-mini' },
+    pgsSynth: { provider: 'openai-codex', model: 'gpt-5.4-mini' },
+  }, makeCtx({ brainOperations: {
+    launchQuery: async (request: Record<string, unknown>) => {
+      launched.push(request);
+      return operation;
+    },
+    query: async () => { attachedCalls += 1; return operation; },
+  } }));
+
+  assert.equal(launched.length, 1);
+  assert.equal(attachedCalls, 0);
+  assert.match(result.content, /running/i);
+  assert.match(result.content, /brain_status.*status/i);
 });
 
 test('research_query_brain accepts every PGS mode and level including targeted continuation', async () => {

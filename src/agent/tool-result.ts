@@ -103,8 +103,8 @@ export function operationToolResult(operation: BrainOperationResult): ToolResult
   }
 
   const detachedGuidance = operation.attachmentState === 'detached'
-      && operation.state === 'running'
-    ? `\nDetached from wait; the durable operation is still running. Resume with brain_status {action:"wait",operationId:"${operation.operationId}"}.`
+      && (operation.state === 'queued' || operation.state === 'running')
+    ? `\nStarted in the background; the durable operation is ${operation.state}. Check with brain_status {action:"status",operationId:"${operation.operationId}"}, then use action:"result" after it is terminal. Use action:"wait" only when intentionally blocking.`
     : '';
   return {
     content: `${invalidPartial ? 'invalid_partial_result: malformed partial payload' : useful}`

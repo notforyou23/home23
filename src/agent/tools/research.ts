@@ -58,6 +58,7 @@ const pgsToolProperties = {
 
 const pgsToolBranches = [
   {
+    type: 'object',
     properties: { enablePGS: { const: false } },
     not: {
       anyOf: [
@@ -71,6 +72,7 @@ const pgsToolBranches = [
     },
   },
   {
+    type: 'object',
     required: ['enablePGS', 'pgsMode', 'pgsLevel', 'pgsSweep', 'pgsSynth'],
     properties: { enablePGS: { const: true } },
     allOf: [
@@ -469,10 +471,13 @@ async function executeQueryBrain(
     ]);
     const turn = runtime(ctx);
     const brainId = requiredToolText(input, 'brainId', 128);
-    return operationToolResult(await turn.brainOperations.query({
+    const request = {
       target: { brainId },
       ...researchQueryParameters(input),
-    }, turn.signal));
+    };
+    return operationToolResult(await (request.enablePGS === true
+      ? turn.brainOperations.launchQuery(request, turn.signal)
+      : turn.brainOperations.query(request, turn.signal)));
   } catch (error) {
     return errorResult(error);
   }

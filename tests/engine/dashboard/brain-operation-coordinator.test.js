@@ -695,11 +695,11 @@ async function directQueuedRecord(fixture, {
   });
 }
 
-test('default execution deadlines preserve two-hour and eight-hour server bounds', () => {
+test('default execution deadlines preserve two-hour ordinary and 24-hour PGS server bounds', () => {
   assert.equal(DEFAULT_EXECUTION_DEADLINES_MS.query, 2 * 60 * 60 * 1000);
   assert.equal(DEFAULT_EXECUTION_DEADLINES_MS.research_compile, 2 * 60 * 60 * 1000);
   assert.equal(DEFAULT_EXECUTION_DEADLINES_MS.research_stop, 2 * 60 * 60 * 1000);
-  assert.equal(DEFAULT_EXECUTION_DEADLINES_MS.pgs, 8 * 60 * 60 * 1000);
+  assert.equal(DEFAULT_EXECUTION_DEADLINES_MS.pgs, 24 * 60 * 60 * 1000);
   assert.equal(DEFAULT_EXECUTION_DEADLINES_MS.synthesis, 8 * 60 * 60 * 1000);
   assert.equal(DEFAULT_STOP_TIMEOUT_MS, 180_000);
 });
@@ -2524,6 +2524,59 @@ test('provider call timers are independent and only matching local receipt activ
   assert.equal(failed.error.retryable, true);
   assert.deepEqual(failed.result, { sweepOutputs: [{ partition: 'p1', answer: 'partial' }] });
   assert.equal(fixture.worker.cancelCalls.length, 1);
+});
+
+test('provider activity renews stall authority without a durable event per provider frame', async (t) => {
+  const fixture = makeFixture(t, {
+    executionDeadlineMsByType: { query: 120_000 },
+  });
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'provider-activity-journal-coalescing',
+  }));
+  fixture.worker.emit(operation.operationId, {
+    type: 'provider_selected', providerCallId: 'query', providerStallMs: 60_000,
+  });
+  await eventually(async () => {
+    const rows = await fixture.store.readEvents(operation.operationId, 0);
+    assert.equal(rows.filter((event) => event.type === 'provider_selected').length, 1);
+  });
+  for (let index = 0; index < 20; index += 1) {
+    fixture.worker.emit(operation.operationId, {
+      type: 'provider_activity', providerCallId: 'query', providerChunk: index,
+    });
+  }
+  await eventually(async () => {
+    const runtime = fixture.coordinator.runtimes.get(operation.operationId);
+    const workerRecord = fixture.worker.records.get(operation.operationId);
+    const status = await fixture.store.get(operation.operationId);
+    assert.equal(runtime.workerCursor, workerRecord.eventSequence, JSON.stringify({
+      cursor: runtime.workerCursor, workerSequence: workerRecord.eventSequence,
+      state: status.state, error: status.error,
+    }));
+  });
+  let rows = await fixture.store.readEvents(operation.operationId, 0);
+  assert.equal(rows.filter((event) => event.type === 'provider_activity').length, 1);
+  assert.equal((await fixture.store.get(operation.operationId)).state, 'running');
+
+  fixture.worker.emit(operation.operationId, {
+    type: 'provider_activity', providerCallId: 'query',
+    providerEventType: 'controlled_provider_progress',
+  });
+  await eventually(async () => {
+    rows = await fixture.store.readEvents(operation.operationId, 0);
+    assert.equal(rows.filter((event) => event.type === 'provider_activity').length, 2);
+    assert.equal(rows.at(-1).providerEventType, 'controlled_provider_progress');
+  });
+
+  await fixture.timers.advance(10_000);
+  fixture.worker.emit(operation.operationId, {
+    type: 'provider_activity', providerCallId: 'query', providerChunk: 20,
+  });
+  await eventually(async () => {
+    rows = await fixture.store.readEvents(operation.operationId, 0);
+    assert.equal(rows.filter((event) => event.type === 'provider_activity').length, 3);
+  });
+  assert.equal((await fixture.store.get(operation.operationId)).state, 'running');
 });
 
 test('stale provider and hard-deadline callbacks no-op after renewal or coordinator stop', async (t) => {

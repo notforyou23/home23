@@ -449,6 +449,13 @@ export class BrainOperationsClient {
     return this.runDurable(operationType, parameters, waitMs, signal);
   }
 
+  async launchQuery(request: BrainQueryRequest, signal?: AbortSignal): Promise<BrainOperationResult> {
+    const operationType = request.enablePGS === true ? 'pgs' : 'query';
+    const { enablePGS: _routingOnly, ...parameters } = request;
+    const started = await this.start(operationType, parameters, signal);
+    return { ...started, attachmentState: 'detached' };
+  }
+
   async search(request: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
     return this.runShort('search', request, signal);
   }
@@ -763,13 +770,15 @@ export class BrainOperationsClient {
       if (status && TERMINAL.has(status.state)) return canonicalTerminal(status);
       const reason = attachmentSignal.reason as { code?: string; message?: string } | undefined;
       const code = reason?.code || reason?.message || 'transport_disconnect';
-      if (code === 'operator_stop' || !DURABLE_OPERATION_TYPES.has(options.operationType)) {
+      if (!DURABLE_OPERATION_TYPES.has(options.operationType)) {
         const cancelled = await this.cancel(operationId);
         if (TERMINAL.has(cancelled.state)) return canonicalTerminal(cancelled);
         last = cancelled;
         return detachLast('cancel_not_terminal');
       }
-      return detachLast(code === 'wait_deadline' ? 'wait_deadline' : 'transport_disconnect');
+      return detachLast(code === 'wait_deadline'
+        ? 'wait_deadline'
+        : code === 'operator_stop' ? 'operator_stop' : 'transport_disconnect');
     };
     const statusOrDetach = async (
       reason: string,
