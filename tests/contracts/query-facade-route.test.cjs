@@ -148,6 +148,58 @@ test('respond-async Query start returns durable identity without waiting for pro
   assert.deepEqual(fixture.calls, ['start']);
 });
 
+test('respond-async Query terminal replay returns the original durable result without attachment', async () => {
+  const calls = [];
+  const terminal = canonicalCompatRecord({
+    state: 'complete',
+    eventSequence: 3,
+    completedAt: '2026-07-13T16:00:00.000Z',
+    result: { answer: 'already complete' },
+    resultHandle: `brres_${'d'.repeat(32)}`,
+  });
+  const fixture = makeQueryApp({ adapter: {
+    start: async () => {
+      calls.push('start');
+      return terminal;
+    },
+    attachAndWait: async () => {
+      calls.push('attachAndWait');
+      throw new Error('terminal replay must not attach');
+    },
+    getResult: async (operationId) => {
+      calls.push('getResult');
+      return {
+        operationId,
+        operationType: 'query',
+        state: 'complete',
+        result: terminal.result,
+        resultHandle: terminal.resultHandle,
+        resultArtifact: null,
+        error: null,
+        sourceEvidence: null,
+      };
+    },
+  } });
+
+  const response = await postJson(fixture.app, '/home23/api/query/run', {
+    query: 'x',
+    mode: 'quick',
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+    enablePGS: false,
+  }, {
+    prefer: 'respond-async',
+    'X-Home23-Query-Request-Id': `qreq_${'a'.repeat(32)}`,
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.operationId, COMPAT_OPERATION_ID);
+  assert.equal(response.body.state, 'complete');
+  assert.equal(response.body.attachmentState, 'closed');
+  assert.equal(response.body.detached, false);
+  assert.equal(response.body.result.answer, 'already complete');
+  assert.deepEqual(calls, ['start', 'getResult']);
+});
+
 test('Query run forwards one valid client request ID unchanged to durable start', async () => {
   const forwarded = [];
   const fixture = makeQueryApp({ onForward: (request) => forwarded.push(request) });

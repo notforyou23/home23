@@ -83,17 +83,24 @@ function makeAdapter(overrides = {}) {
   return { adapter, coordinator, reader, exporter };
 }
 
-test('compatibility adapter rejects terminal and cross-requester start records', async () => {
-  for (const started of [
-    record({ state: 'complete' }),
-    record({ state: 'queued', requesterAgent: 'forrest' }),
-  ]) {
-    const { adapter } = makeAdapter({ coordinator: { start: async () => started } });
-    await assert.rejects(
-      adapter.start({ requestId: 'request-1', operationType: 'query', parameters: { query: 'x' } }),
-      (error) => ['operation_contract_invalid', 'access_denied'].includes(error.code),
-    );
-  }
+test('compatibility adapter accepts an authorized terminal idempotent start replay', async () => {
+  const terminal = record({ state: 'complete' });
+  const { adapter } = makeAdapter({ coordinator: { start: async () => terminal } });
+
+  assert.equal(
+    await adapter.start({ requestId: 'request-1', operationType: 'query', parameters: { query: 'x' } }),
+    terminal,
+  );
+});
+
+test('compatibility adapter rejects a cross-requester start record', async () => {
+  const { adapter } = makeAdapter({
+    coordinator: { start: async () => record({ state: 'queued', requesterAgent: 'forrest' }) },
+  });
+  await assert.rejects(
+    adapter.start({ requestId: 'request-1', operationType: 'query', parameters: { query: 'x' } }),
+    (error) => error.code === 'access_denied',
+  );
 });
 
 test('compatibility attachment deadline detaches durable work without cancelling it', async () => {

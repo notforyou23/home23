@@ -29,15 +29,14 @@ function exactObject(value, allowed, code = 'invalid_request') {
   return value;
 }
 
-function assertRecord(record, { start = false } = {}) {
+function assertRecord(record) {
   if (!record || Array.isArray(record) || typeof record !== 'object') {
     throw adapterError('operation_contract_invalid');
   }
   assertOperationId(record.operationId);
   assertIdentifier(record.operationType, 'operationType');
   assertIdentifier(record.requesterAgent, 'requesterAgent');
-  if (start ? !START_STATES.has(record.state) : !START_STATES.has(record.state)
-      && !TERMINAL_STATES.has(record.state)) {
+  if (!START_STATES.has(record.state) && !TERMINAL_STATES.has(record.state)) {
     throw adapterError('operation_contract_invalid');
   }
   if (!Number.isSafeInteger(record.eventSequence) || record.eventSequence < 0) {
@@ -188,8 +187,8 @@ class BrainOperationsCompatibilityAdapter {
     this.randomUUID = options.randomUUID || crypto.randomUUID;
   }
 
-  _authorize(record, { start = false } = {}) {
-    assertRecord(record, { start });
+  _authorize(record) {
+    assertRecord(record);
     if (record.requesterAgent !== this.requesterAgent) throw adapterError('access_denied');
     return record;
   }
@@ -197,7 +196,7 @@ class BrainOperationsCompatibilityAdapter {
   async start(request) {
     exactObject(request, ['requestId', 'operationType', 'target', 'parameters']);
     const record = await this.coordinator.start(request);
-    return this._authorize(record, { start: true });
+    return this._authorize(record);
   }
 
   async attachAndWait(record, options = {}) {

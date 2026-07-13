@@ -1005,12 +1005,31 @@ function terminalPayload(envelope) {
   };
 }
 
+async function terminalReplayEnvelope(adapter, started, request) {
+  const envelope = await adapter.getResult(started.operationId);
+  if (envelope?.operationId !== started.operationId) {
+    throw compatibilityError('operation_contract_invalid', 'operation result changed identity', 502, true);
+  }
+  if (envelope?.operationType !== undefined
+      && envelope.operationType !== request.operationType) {
+    throw operationResultError(
+      envelope,
+      'operation_contract_invalid',
+      'operation result changed type',
+    );
+  }
+  return { ...envelope, operationType: request.operationType };
+}
+
 async function startAndWait(options, request, { signal, onEvent } = {}) {
   const adapter = operationAdapter(options);
   const started = await adapter.start(request);
-  if (!started || !NONTERMINAL_STATES.has(started.state)
+  if (!started || (!NONTERMINAL_STATES.has(started.state) && !TERMINAL_STATES.has(started.state))
       || started.operationType !== request.operationType) {
     throw compatibilityError('operation_contract_invalid', 'operation did not start durably', 502, true);
+  }
+  if (TERMINAL_STATES.has(started.state)) {
+    return { envelope: await terminalReplayEnvelope(adapter, started, request) };
   }
   const attachmentId = requestId('compat-attachment');
   const waitMs = started.operationType === 'pgs'
@@ -1049,9 +1068,12 @@ async function startAndWait(options, request, { signal, onEvent } = {}) {
 async function startDetached(options, request) {
   const adapter = operationAdapter(options);
   const started = await adapter.start(request);
-  if (!started || !NONTERMINAL_STATES.has(started.state)
+  if (!started || (!NONTERMINAL_STATES.has(started.state) && !TERMINAL_STATES.has(started.state))
       || started.operationType !== request.operationType) {
     throw compatibilityError('operation_contract_invalid', 'operation did not start durably', 502, true);
+  }
+  if (TERMINAL_STATES.has(started.state)) {
+    return { envelope: await terminalReplayEnvelope(adapter, started, request) };
   }
   return {
     detached: {
