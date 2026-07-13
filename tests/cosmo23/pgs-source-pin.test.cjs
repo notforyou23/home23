@@ -785,13 +785,14 @@ test('PGS hierarchically synthesizes a large deterministic sweep fan-in within t
 
 test('PGS bounds JSON-escaped hierarchical shards and strictly reduces adversarial control output', async t => {
   const scratch = await scratchFixture(t);
+  const events = [];
   const fixture = makeCodexBudgetEngine({
     synthContextWindowTokens: 48_000,
     maxOutputTokens: 4_096,
     maximumCalls: 50,
     synthesisOutput(request) {
       return request.instructions.startsWith('Reduce this bounded shard')
-        ? '\0'.repeat(request.maxOutputBytes)
+        ? '\0'.repeat(5_000)
         : 'bounded final synthesis';
     },
   });
@@ -831,6 +832,9 @@ test('PGS bounds JSON-escaped hierarchical shards and strictly reduces adversari
 
   const envelope = await fixture.engine.runPinnedOperation(codexBudgetOptions(
     sourcePin({ nodeCount: 1 }), scratch, {
+      reportEvent(event) { events.push(event); },
+      pgsMode: 'continue',
+      pgsLevel: 'full',
       limits: {
         ...codexBudgetOptions(sourcePin({ nodeCount: 1 }), scratch).limits,
         maxSynthesisInputBytes: 512 * 1024,
@@ -839,11 +843,19 @@ test('PGS bounds JSON-escaped hierarchical shards and strictly reduces adversari
   ));
 
   const synthesisCalls = fixture.calls.filter(call => call.model === 'gpt-5.5');
+  assert.equal(fixture.calls.some(call => call.model === 'gpt-5.4-mini'), false);
   assert.equal(envelope.state, 'complete');
   assert.equal(envelope.result.answer, 'bounded final synthesis');
   assert.equal(synthesisCalls.length < 20, true);
   assert.equal(envelope.result.metadata.pgs.synthesis.providerCalls, synthesisCalls.length);
   assert.equal(envelope.result.metadata.pgs.synthesis.intermediateEncodedBytes > 0, true);
+  assert.equal(envelope.result.metadata.pgs.synthesis.truncatedReductionOutputs > 0, true);
+  assert.equal(envelope.result.metadata.pgs.synthesis.truncatedReductionBytes > 0, true);
+  assert.equal(events.some(event => event.type === 'progress'
+    && event.phase === 'pgs_synthesis'
+    && event.stage === 'synthesis_reduction_truncated'
+    && event.originalBytes === 5_000
+    && event.retainedBytes < event.originalBytes), true);
   assert.equal(
     envelope.result.metadata.pgs.synthesis.providerCalls
       <= envelope.result.metadata.pgs.synthesis.providerCallCeiling,
@@ -857,7 +869,7 @@ test('PGS bounds JSON-escaped hierarchical shards and strictly reduces adversari
   assert.equal(
     synthesisCalls
       .filter(call => call.instructions.startsWith('Reduce this bounded shard'))
-      .every(call => call.maxOutputBytes < 1_500),
+      .every(call => call.maxOutputBytes <= 2 * 1024 * 1024),
     true,
   );
 });

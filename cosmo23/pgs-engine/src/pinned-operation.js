@@ -33,6 +33,7 @@ const MAX_GENERATED_WORK_UNIT_ID_BYTES = 256;
 const SWEEP_INSTRUCTIONS = 'Analyze only this pinned PGS work unit. Return evidence-backed findings and explicit absences.';
 const SYNTHESIS_INSTRUCTIONS = 'Synthesize the pinned PGS findings into a direct answer. Preserve absences and cite work-unit IDs.';
 const SYNTHESIS_REDUCTION_INSTRUCTIONS = 'Reduce this bounded shard of pinned PGS findings. Preserve substantive evidence, explicit absences, contradictions, and every cited work-unit ID for final synthesis.';
+const SYNTHESIS_REDUCTION_TRUNCATION_MARKER = '\n[PGS intermediate reduction truncated at byte limit]';
 
 function typed(code, message, retryable = false) {
   return Object.assign(new Error(message), { code, retryable });
@@ -270,6 +271,32 @@ function resolveIntermediateOutputBytes(maximumInputBytes, maximumOutputBytes) {
   // following level's exact input budget.
   const jsonSafeOutputBytes = Math.floor((targetEncodedRowBytes - rowOverheadBytes) / 6);
   return Math.min(maximumOutputBytes, jsonSafeOutputBytes);
+}
+
+function truncateIntermediateOutput(value, maximumBytes) {
+  const originalBytes = utf8Bytes(value);
+  if (originalBytes <= maximumBytes) {
+    return { output: value, originalBytes, retainedBytes: originalBytes, truncated: false };
+  }
+  const markerBytes = utf8Bytes(SYNTHESIS_REDUCTION_TRUNCATION_MARKER);
+  const contentBytes = maximumBytes - markerBytes;
+  if (contentBytes <= 0) {
+    throw typed('result_too_large', 'PGS synthesis reduction leaves no truncation content budget');
+  }
+  const encoded = Buffer.from(value, 'utf8');
+  let end = Math.min(contentBytes, encoded.length);
+  while (end > 0 && end < encoded.length && (encoded[end] & 0xC0) === 0x80) end -= 1;
+  if (end <= 0) {
+    throw typed('result_too_large', 'PGS synthesis reduction cannot retain valid UTF-8 content');
+  }
+  const output = `${encoded.subarray(0, end).toString('utf8')}${
+    SYNTHESIS_REDUCTION_TRUNCATION_MARKER
+  }`;
+  const retainedBytes = utf8Bytes(output);
+  if (retainedBytes > maximumBytes) {
+    throw typed('result_too_large', 'PGS synthesis reduction truncation exceeded its byte limit');
+  }
+  return { output, originalBytes, retainedBytes, truncated: true };
 }
 
 function canReturnUsefulSynthesisPartial(error) {
@@ -846,6 +873,8 @@ async function runPinnedOperationCore(engine, options = {}) {
       let hierarchical = false;
       let providerCallCeiling = null;
       let intermediateEncodedBytes = 0;
+      let truncatedReductionOutputs = 0;
+      let truncatedReductionBytes = 0;
       const initialEncodedBytes = encodedSynthesisItemBytes(synthesisItems);
       const intermediateEncodedByteCeiling = Math.min(
         limits.maxResultBytes,
@@ -903,6 +932,8 @@ async function runPinnedOperationCore(engine, options = {}) {
             providerCallCeiling,
             intermediateEncodedBytes,
             intermediateEncodedByteCeiling,
+            truncatedReductionOutputs,
+            truncatedReductionBytes,
           });
           break;
         }
@@ -941,11 +972,27 @@ async function runPinnedOperationCore(engine, options = {}) {
             instructions: SYNTHESIS_REDUCTION_INSTRUCTIONS,
             input,
             maxInputBytes: limits.maxSynthesisInputBytes,
-            maxOutputBytes: intermediateOutputBytes,
+            maxOutputBytes: limits.maxSynthesisOutputBytes,
           });
           providerCalls += 1;
-          const output = String(completion.content || '').trim();
-          if (!output) throw typed('provider_incomplete', 'PGS synthesis reduction returned no content', true);
+          const providerOutput = String(completion.content || '').trim();
+          if (!providerOutput) throw typed('provider_incomplete', 'PGS synthesis reduction returned no content', true);
+          const boundedOutput = truncateIntermediateOutput(providerOutput, intermediateOutputBytes);
+          const output = boundedOutput.output;
+          if (boundedOutput.truncated) {
+            truncatedReductionOutputs += 1;
+            truncatedReductionBytes += boundedOutput.originalBytes - boundedOutput.retainedBytes;
+            emit({
+              type: 'progress',
+              phase: 'pgs_synthesis',
+              stage: 'synthesis_reduction_truncated',
+              level,
+              batch: batchIndex + 1,
+              providerCallId: `pgs:synthesis:reduce:${level}:${String(batchIndex).padStart(4, '0')}`,
+              originalBytes: boundedOutput.originalBytes,
+              retainedBytes: boundedOutput.retainedBytes,
+            });
+          }
           assertBytes(output, intermediateOutputBytes, 'PGS synthesis reduction output');
           reducedItems.push({
             kind: 'synthesis-shard',

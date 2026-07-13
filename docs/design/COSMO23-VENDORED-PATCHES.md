@@ -2811,6 +2811,13 @@ whether synthesis was hierarchical plus its input sweep count, provider-call
 count and ceiling, level count, and intermediate encoded-byte count and ceiling.
 Reduction calls use unique correlation IDs, while the authoritative final call
 retains the canonical `pgs:synthesis` ID required by durable terminal proof.
+Reduction providers may overshoot the much smaller hierarchy shard target even
+when they remain inside PGS's bounded 2 MiB synthesis transport ceiling. Those
+intermediate-only responses are now truncated deterministically on a valid
+UTF-8 boundary with an in-band marker, a bounded progress event, and result
+metadata counting truncated outputs and bytes. The final answer remains strict:
+it is never silently truncated, and output beyond its configured ceiling still
+fails with the original durable sweeps available for continuation.
 
 **Offline verification:** The pinned-source regression covers a 286-sweep
 fan-in under a deliberately smaller exact model context and one individual
