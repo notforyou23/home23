@@ -2785,6 +2785,34 @@ guards. Focused exact-pair, Settings transaction, PGS mode/reuse, transport, and
 atomic-publication regressions passed. The TypeScript build and contract suites
 also passed.
 
+## Patch 59 — Bounded hierarchical PGS synthesis fan-in
+
+**Problem:** Durable PGS retained and completed every selected sweep, but then
+serialized all successful sweep outputs into one synthesis request. Large
+brains could therefore finish hundreds of valid sweeps and terminate partial
+with `result_too_large` before the synthesis provider was called, even though
+the same exact synthesis pair could safely reduce bounded subsets.
+
+**Fix:** Pinned PGS now packs sweep outputs deterministically against the exact
+selected model input budget. Oversized individual outputs are split on Unicode
+code-point boundaries with their work-unit identity retained. When the complete
+fan-in cannot fit, bounded reduction calls preserve evidence, absences,
+contradictions, and work-unit citations, then feed the resulting shards through
+additional bounded levels until one final synthesis request fits. Every level
+uses the caller-selected exact synthesis provider/model pair; no fallback model
+or literal model selection is introduced. Intermediate outputs are capped to a
+quarter of the next input budget so reduction converges, while the original
+durable sweeps remain unchanged and are still returned as a truthful partial if
+any provider reduction fails. Result metadata records whether synthesis was
+hierarchical plus its input sweep count, provider-call count, and level count.
+
+**Offline verification:** The pinned-source regression covers a 286-sweep
+fan-in under a deliberately smaller exact model context and one individual
+sweep larger than that context. Both complete through bounded hierarchical
+synthesis, and every provider request remains within the decoded UTF-8 input
+budget. The focused pinned PGS source suite passes 22/22. Live processes were
+not restarted and no active operation was mutated by this patch.
+
 ---
 
 ## History
@@ -3156,3 +3184,6 @@ also passed.
   Home23's exact provider/model authority, retires the model-only legacy Query
   and PGS endpoints, and removes the hidden five-minute Codex transport timeout
   from durable operations.
+- **2026-07-13** — Patch 59 replaces one-shot PGS synthesis fan-in with exact-
+  budget hierarchical reduction, preserving the selected synthesis pair and
+  durable sweep evidence at large-brain scale.

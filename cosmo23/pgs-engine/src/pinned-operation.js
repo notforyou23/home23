@@ -32,6 +32,7 @@ const PINNED_SWEEP_CONCURRENCY = 2;
 const MAX_GENERATED_WORK_UNIT_ID_BYTES = 256;
 const SWEEP_INSTRUCTIONS = 'Analyze only this pinned PGS work unit. Return evidence-backed findings and explicit absences.';
 const SYNTHESIS_INSTRUCTIONS = 'Synthesize the pinned PGS findings into a direct answer. Preserve absences and cite work-unit IDs.';
+const SYNTHESIS_REDUCTION_INSTRUCTIONS = 'Reduce this bounded shard of pinned PGS findings. Preserve substantive evidence, explicit absences, contradictions, and every cited work-unit ID for final synthesis.';
 
 function typed(code, message, retryable = false) {
   return Object.assign(new Error(message), { code, retryable });
@@ -135,13 +136,19 @@ function buildWorkInput(query, work, maximumBytes) {
   return parts.join('');
 }
 
-function buildSynthesisInput(query, sweepOutputs, maximumBytes) {
-  const parts = [`Original query: ${query}\n\nPinned PGS sweep outputs:\n`];
+function synthesisScaffold(query, level, final) {
+  return `Original query: ${query}\n\nPinned PGS ${
+    final ? 'findings for final synthesis' : `findings for reduction level ${level}`
+  }:\n`;
+}
+
+function buildSynthesisInput(query, synthesisItems, maximumBytes, { level = 1, final = true } = {}) {
+  const parts = [synthesisScaffold(query, level, final)];
   let bytes = utf8Bytes(parts[0]);
   if (bytes > maximumBytes) {
     throw typed('result_too_large', 'PGS synthesis scaffold exceeds the provider input byte limit');
   }
-  for (const row of sweepOutputs) {
+  for (const row of synthesisItems) {
     let json;
     try { json = JSON.stringify(row); } catch { json = null; }
     if (typeof json !== 'string') {
@@ -155,6 +162,86 @@ function buildSynthesisInput(query, sweepOutputs, maximumBytes) {
     parts.push(text);
   }
   return parts.join('');
+}
+
+function splitSynthesisRow(row, maximumBytes) {
+  const serialized = JSON.stringify(row);
+  if (utf8Bytes(`${serialized}\n`) <= maximumBytes) return [row];
+  if (typeof row.output !== 'string') {
+    throw typed('result_too_large', 'PGS synthesis item exceeds the provider input byte limit');
+  }
+  const encoded = Buffer.from(row.output, 'utf8');
+  const fragments = [];
+  let offset = 0;
+  while (offset < encoded.length) {
+    let low = offset + 1;
+    let high = encoded.length;
+    let acceptedEnd = offset;
+    while (low <= high) {
+      let end = Math.floor((low + high) / 2);
+      if (end < encoded.length) {
+        while (end > offset && (encoded[end] & 0xC0) === 0x80) end -= 1;
+      }
+      let minimumCandidate = false;
+      if (end === offset) {
+        end = offset + 1;
+        while (end < encoded.length && (encoded[end] & 0xC0) === 0x80) end += 1;
+        minimumCandidate = end > high;
+      }
+      const candidate = {
+        ...row,
+        fragmentIndex: Number.MAX_SAFE_INTEGER,
+        fragmentCount: Number.MAX_SAFE_INTEGER,
+        output: encoded.subarray(offset, end).toString('utf8'),
+      };
+      if (utf8Bytes(`${JSON.stringify(candidate)}\n`) <= maximumBytes) {
+        acceptedEnd = end;
+        low = end + 1;
+      } else {
+        high = end - 1;
+      }
+      if (minimumCandidate) break;
+    }
+    if (acceptedEnd === offset) {
+      throw typed('result_too_large', 'PGS synthesis item metadata exceeds the provider input byte limit');
+    }
+    fragments.push(encoded.subarray(offset, acceptedEnd).toString('utf8'));
+    offset = acceptedEnd;
+  }
+  return fragments.map((output, index) => ({
+    ...row,
+    fragmentIndex: index + 1,
+    fragmentCount: fragments.length,
+    output,
+  }));
+}
+
+function packSynthesisBatches(query, items, maximumBytes, { level, final }) {
+  const scaffold = synthesisScaffold(query, level, final);
+  const scaffoldBytes = utf8Bytes(scaffold);
+  if (scaffoldBytes >= maximumBytes) {
+    throw typed('result_too_large', 'PGS synthesis scaffold exceeds the provider input byte limit');
+  }
+  const maximumRowBytes = maximumBytes - scaffoldBytes;
+  const expanded = items.flatMap(row => splitSynthesisRow(row, maximumRowBytes));
+  const batches = [];
+  let current = [];
+  let currentBytes = scaffoldBytes;
+  for (const row of expanded) {
+    const rowBytes = utf8Bytes(`${JSON.stringify(row)}\n`);
+    if (current.length && currentBytes + rowBytes > maximumBytes) {
+      batches.push(current);
+      current = [];
+      currentBytes = scaffoldBytes;
+    }
+    if (currentBytes + rowBytes > maximumBytes) {
+      throw typed('result_too_large', 'PGS synthesis item exceeds the provider input byte limit');
+    }
+    current.push(row);
+    currentBytes += rowBytes;
+  }
+  if (current.length) batches.push(current);
+  return batches;
 }
 
 function canReturnUsefulSynthesisPartial(error) {
@@ -704,6 +791,7 @@ async function runPinnedOperationCore(engine, options = {}) {
     }
 
     let answer;
+    let synthesisStats = null;
     try {
       emit({
         type: 'progress',
@@ -711,27 +799,121 @@ async function runPinnedOperationCore(engine, options = {}) {
         stage: 'synthesis_started',
         sweepOutputs: sweepOutputs.length,
       });
-      const synthesisInput = buildSynthesisInput(
-        query,
-        sweepOutputs,
-        synthInputBudget.inputBudgetBytes - utf8Bytes(SYNTHESIS_INSTRUCTIONS),
+      const finalMaximumInputBytes = synthInputBudget.inputBudgetBytes
+        - utf8Bytes(SYNTHESIS_INSTRUCTIONS);
+      const reductionMaximumInputBytes = synthInputBudget.inputBudgetBytes
+        - utf8Bytes(SYNTHESIS_REDUCTION_INSTRUCTIONS);
+      const intermediateOutputBytes = Math.min(
+        limits.maxSynthesisOutputBytes,
+        Math.floor(reductionMaximumInputBytes / 4),
       );
-      const completion = await providerCall({
-        phase: 'pgs_synthesis', pair: synthPair, capabilities: synthCapabilities,
-        client: synthClient, id: 'pgs:synthesis', work: null,
-        instructions: SYNTHESIS_INSTRUCTIONS,
-        input: synthesisInput,
-        maxInputBytes: limits.maxSynthesisInputBytes,
-        maxOutputBytes: limits.maxSynthesisOutputBytes,
-      });
-      answer = String(completion.content || '').trim();
-      if (!answer) throw typed('provider_incomplete', 'PGS synthesis returned no content', true);
-      assertBytes(answer, limits.maxSynthesisOutputBytes, 'PGS synthesis output');
+      if (finalMaximumInputBytes <= 0 || reductionMaximumInputBytes <= 0
+          || intermediateOutputBytes <= 0) {
+        throw typed('model_capability_invalid', 'PGS synthesis model leaves no hierarchical input budget');
+      }
+      let synthesisItems = sweepOutputs;
+      let level = 1;
+      let providerCalls = 0;
+      let hierarchical = false;
+      while (true) {
+        if (level > 64) {
+          throw typed('result_too_large', 'PGS hierarchical synthesis did not converge');
+        }
+        const finalBatches = packSynthesisBatches(
+          query,
+          synthesisItems,
+          finalMaximumInputBytes,
+          { level, final: true },
+        );
+        if (finalBatches.length === 1) {
+          const synthesisInput = buildSynthesisInput(
+            query,
+            finalBatches[0],
+            finalMaximumInputBytes,
+            { level, final: true },
+          );
+          const completion = await providerCall({
+            phase: 'pgs_synthesis', pair: synthPair, capabilities: synthCapabilities,
+            client: synthClient, id: `pgs:synthesis:final:${level}`, work: null,
+            instructions: SYNTHESIS_INSTRUCTIONS,
+            input: synthesisInput,
+            maxInputBytes: limits.maxSynthesisInputBytes,
+            maxOutputBytes: limits.maxSynthesisOutputBytes,
+          });
+          providerCalls += 1;
+          answer = String(completion.content || '').trim();
+          if (!answer) throw typed('provider_incomplete', 'PGS synthesis returned no content', true);
+          assertBytes(answer, limits.maxSynthesisOutputBytes, 'PGS synthesis output');
+          synthesisStats = Object.freeze({
+            hierarchical,
+            inputSweeps: sweepOutputs.length,
+            providerCalls,
+            levels: level,
+          });
+          break;
+        }
+
+        hierarchical = true;
+        const reductionBatches = packSynthesisBatches(
+          query,
+          synthesisItems,
+          reductionMaximumInputBytes,
+          { level, final: false },
+        );
+        emit({
+          type: 'progress',
+          phase: 'pgs_synthesis',
+          stage: 'synthesis_reduction_started',
+          level,
+          inputItems: synthesisItems.length,
+          batches: reductionBatches.length,
+        });
+        const reducedItems = [];
+        for (let batchIndex = 0; batchIndex < reductionBatches.length; batchIndex += 1) {
+          throwIfAborted(signal);
+          const input = buildSynthesisInput(
+            query,
+            reductionBatches[batchIndex],
+            reductionMaximumInputBytes,
+            { level, final: false },
+          );
+          const completion = await providerCall({
+            phase: 'pgs_synthesis', pair: synthPair, capabilities: synthCapabilities,
+            client: synthClient,
+            id: `pgs:synthesis:reduce:${level}:${String(batchIndex).padStart(4, '0')}`,
+            work: null,
+            instructions: SYNTHESIS_REDUCTION_INSTRUCTIONS,
+            input,
+            maxInputBytes: limits.maxSynthesisInputBytes,
+            maxOutputBytes: intermediateOutputBytes,
+          });
+          providerCalls += 1;
+          const output = String(completion.content || '').trim();
+          if (!output) throw typed('provider_incomplete', 'PGS synthesis reduction returned no content', true);
+          assertBytes(output, intermediateOutputBytes, 'PGS synthesis reduction output');
+          reducedItems.push({
+            kind: 'synthesis-shard',
+            level,
+            shard: batchIndex + 1,
+            output,
+          });
+        }
+        emit({
+          type: 'progress',
+          phase: 'pgs_synthesis',
+          stage: 'synthesis_reduction_complete',
+          level,
+          outputItems: reducedItems.length,
+        });
+        synthesisItems = reducedItems;
+        level += 1;
+      }
       emit({
         type: 'progress',
         phase: 'pgs_synthesis',
         stage: 'synthesis_complete',
         answerBytes: utf8Bytes(answer),
+        ...synthesisStats,
       });
     } catch (error) {
       if (signal?.aborted) throw signal.reason;
@@ -743,6 +925,7 @@ async function runPinnedOperationCore(engine, options = {}) {
       };
     }
     const partial = !scopeSummary.scopeComplete;
+    metadata.pgs.synthesis = synthesisStats;
     const result = { ...baseResult, answer };
     assertBytes(result, limits.maxResultBytes, 'PGS result');
     if (!partial) {

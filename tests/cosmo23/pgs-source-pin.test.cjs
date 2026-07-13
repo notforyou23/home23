@@ -638,9 +638,10 @@ test('PGS rejects an oversized Unicode sweep prompt before either provider runs'
   assert.equal(fixture.calls.length, 0);
 });
 
-test('PGS returns useful partial sweeps when the 16 MiB synthesis cap exceeds gpt-5.5 context', async t => {
+test('PGS hierarchically reduces one sweep output larger than the synthesis model context', async t => {
   const scratch = await scratchFixture(t);
   const fixture = makeCodexBudgetEngine();
+  const oversizedSweepOutput = ('🧠 quoted \\" slash \\\\ newline\n').repeat(7_000);
   let closed = false;
   const summary = attemptId => ({
     attemptId,
@@ -669,7 +670,7 @@ test('PGS returns useful partial sweeps when the 16 MiB synthesis cap exceeds gp
         partitionId: 'c-one',
         provider: 'openai-codex',
         model: 'gpt-5.4-mini',
-        output: 's'.repeat(250 * 1024),
+        output: oversizedSweepOutput,
       }];
     },
     listRetryablePartitions() { return []; },
@@ -684,13 +685,86 @@ test('PGS returns useful partial sweeps when the 16 MiB synthesis cap exceeds gp
     scratch,
   ));
 
-  assert.equal(envelope.state, 'partial');
-  assert.equal(envelope.result.answer, null);
+  assert.equal(envelope.state, 'complete');
+  assert.equal(envelope.result.answer, 'bounded synthesis');
   assert.equal(envelope.result.sweepOutputs.length, 1);
-  assert.equal(envelope.error.code, 'result_too_large');
-  assert.equal(envelope.error.retryable, false);
-  assert.equal(fixture.calls.length, 0, 'synthesis must be rejected before provider use');
+  assert.equal(envelope.error, null);
+  assert.equal(fixture.calls.length > 1, true);
+  assert.equal(envelope.result.metadata.pgs.synthesis.hierarchical, true);
+  const sourceFragments = fixture.calls
+    .filter(call => call.instructions.startsWith('Reduce this bounded shard'))
+    .flatMap(call => call.input.split('\n').filter(line => line.startsWith('{')).map(JSON.parse))
+    .filter(row => row.workUnitId === 'p-c-one-u0000')
+    .sort((left, right) => left.fragmentIndex - right.fragmentIndex);
+  assert.equal(sourceFragments.length > 1, true);
+  assert.equal(sourceFragments.map(row => row.output).join(''), oversizedSweepOutput);
   assert.equal(closed, true);
+});
+
+test('PGS hierarchically synthesizes a large deterministic sweep fan-in within the exact model budget', async t => {
+  const scratch = await scratchFixture(t);
+  const fixture = makeCodexBudgetEngine({
+    synthContextWindowTokens: 48_000,
+    maxOutputTokens: 4_096,
+  });
+  const sweepRows = Array.from({ length: 286 }, (_, index) => ({
+    workUnitId: `p-c-${String(index).padStart(3, '0')}-u0000`,
+    partitionId: `c-${String(index).padStart(3, '0')}`,
+    provider: 'openai-codex',
+    model: 'gpt-5.4-mini',
+    output: `finding-${String(index).padStart(3, '0')} ${'evidence '.repeat(120)}`,
+  }));
+  const summary = attemptId => ({
+    attemptId,
+    scopeWorkUnits: sweepRows.length,
+    scopeSuccessfulWorkUnits: sweepRows.length,
+    scopePendingWorkUnits: 0,
+    scopeComplete: true,
+    globalCoveredWorkUnits: sweepRows.length,
+    globalPendingWorkUnits: 0,
+    fullCoverage: true,
+    coverageLevel: 'full',
+    coverageFraction: 1,
+    targetPartitionIds: [],
+  });
+  fixture.engine.openPinnedPGSStore = async () => ({
+    stats: { nodeCount: 10_000, edgeCount: 20_000, workUnitCount: sweepRows.length },
+    planScope({ attemptId }) { return summary(attemptId); },
+    getScopeSummary(attemptId) { return summary(attemptId); },
+    snapshotPendingWorkUnits() { return []; },
+    beginWorkUnitAttempt() { throw new Error('no pending work'); },
+    loadWorkUnit() { throw new Error('no pending work'); },
+    async commitSuccessfulSweeps() {},
+    listSuccessfulSweeps() { return structuredClone(sweepRows); },
+    listRetryablePartitions() { return []; },
+    countScopePendingWorkUnits() { return 0; },
+    countPendingWorkUnits() { return 0; },
+    recordRetryableFailure() {},
+    close() {},
+  });
+
+  const envelope = await fixture.engine.runPinnedOperation(codexBudgetOptions(
+    sourcePin({ nodeCount: 1 }),
+    scratch,
+    {
+      limits: {
+        ...codexBudgetOptions(sourcePin({ nodeCount: 1 }), scratch).limits,
+        maxSynthesisInputBytes: 512 * 1024,
+      },
+    },
+  ));
+
+  const synthesisCalls = fixture.calls.filter(call => call.model === 'gpt-5.5');
+  assert.equal(envelope.state, 'complete');
+  assert.equal(envelope.result.answer, 'bounded synthesis');
+  assert.equal(synthesisCalls.length > 1, true, 'large fan-in must use multiple bounded calls');
+  assert.equal(synthesisCalls.every(call => (
+    Buffer.byteLength(call.instructions, 'utf8') + Buffer.byteLength(call.input, 'utf8')
+  ) <= 33_312), true);
+  assert.equal(envelope.result.metadata.pgs.synthesis.hierarchical, true);
+  assert.equal(envelope.result.metadata.pgs.synthesis.inputSweeps, sweepRows.length);
+  assert.equal(envelope.result.metadata.pgs.synthesis.providerCalls, synthesisCalls.length);
+  assert.equal(envelope.result.metadata.pgs.synthesis.levels >= 2, true);
 });
 
 test('pinned PGS derives complete source evidence from the opened projection store', async t => {
