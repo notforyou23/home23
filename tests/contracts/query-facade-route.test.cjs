@@ -57,14 +57,14 @@ function makeFetch(routes) {
   };
 }
 
-async function postJson(app, route, body) {
+async function postJson(app, route, body, headers = {}) {
   return await new Promise((resolve, reject) => {
     const server = app.listen(0, async () => {
       try {
         const port = server.address().port;
         const res = await fetch(`http://127.0.0.1:${port}${route}`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: { 'content-type': 'application/json', ...headers },
           body: JSON.stringify(body),
         });
         const json = await res.json();
@@ -77,6 +77,30 @@ async function postJson(app, route, body) {
     });
   });
 }
+
+test('respond-async Query start returns durable identity without waiting for provider work', async () => {
+  let waited = false;
+  const fixture = makeQueryApp({ adapter: {
+    attachAndWait: async () => {
+      waited = true;
+      throw new Error('async starts must not attach');
+    },
+  } });
+  const response = await postJson(fixture.app, '/home23/api/query/run', {
+    query: 'x',
+    mode: 'quick',
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+    enablePGS: false,
+  }, { prefer: 'respond-async' });
+
+  assert.equal(response.status, 202);
+  assert.equal(response.body.operationId, COMPAT_OPERATION_ID);
+  assert.equal(response.body.state, 'queued');
+  assert.equal(response.body.attachmentState, 'detached');
+  assert.equal(response.body.detached, true);
+  assert.equal(waited, false);
+  assert.deepEqual(fixture.calls, ['start']);
+});
 
 async function postRawJson(app, route, body) {
   return await new Promise((resolve, reject) => {

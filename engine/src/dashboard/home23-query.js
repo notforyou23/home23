@@ -963,7 +963,10 @@ async function executeQuery() {
 
     const res = await fetch(queryFacadeEndpoint(QT_QUERY_CATALOG, 'run', QT_AGENT_NAME), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        Prefer: 'respond-async',
+      },
       body: JSON.stringify(request),
     });
 

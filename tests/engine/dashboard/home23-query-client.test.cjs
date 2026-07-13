@@ -42,6 +42,10 @@ const exactPairs = {
   pgsSynth: { provider: 'anthropic', model: 'claude-sonnet-4-7' },
 };
 
+test('visible non-streaming Query starts durable work asynchronously', () => {
+  assert.match(source, /Prefer:\s*['"]respond-async['"]/);
+});
+
 function pgsRequest(overrides = {}) {
   return {
     agent: 'jerry',

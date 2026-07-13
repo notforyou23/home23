@@ -1027,6 +1027,21 @@ async function startAndWait(options, request, { signal, onEvent } = {}) {
   return { envelope: { ...envelope, operationType: request.operationType } };
 }
 
+async function startDetached(options, request) {
+  const adapter = operationAdapter(options);
+  const started = await adapter.start(request);
+  if (!started || !NONTERMINAL_STATES.has(started.state)
+      || started.operationType !== request.operationType) {
+    throw compatibilityError('operation_contract_invalid', 'operation did not start durably', 502, true);
+  }
+  return {
+    detached: {
+      ...started,
+      attachmentState: 'detached',
+    },
+  };
+}
+
 function createQueryApiRouter(options = {}) {
   const router = express.Router();
   router.use(createQueryCompatibilityBodyParser());
@@ -1099,14 +1114,21 @@ function createQueryApiRouter(options = {}) {
         });
         return;
       }
-      const outcome = await startAndWait(options, {
+      const operationRequest = {
         requestId: requestId('compat-query'),
         operationType: normalized.operationType,
         target: { brainId: normalized.targetBrainId },
         parameters: normalized.parameters,
-      }, { signal: controller.signal });
+      };
+      const prefersAsync = String(req.get('prefer') || '')
+        .split(',')
+        .some((value) => value.trim().toLowerCase() === 'respond-async');
+      const outcome = prefersAsync
+        ? await startDetached(options, operationRequest)
+        : await startAndWait(options, operationRequest, { signal: controller.signal });
       responseFinished = true;
       if (outcome.detached) {
+        if (prefersAsync) res.set('Preference-Applied', 'respond-async');
         res.status(202).json(detachedPayload(outcome.detached));
         return;
       }
