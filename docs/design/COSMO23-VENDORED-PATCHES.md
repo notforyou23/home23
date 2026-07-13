@@ -2809,6 +2809,8 @@ bounded typed partial with the original durable sweeps unchanged. Provider
 failure retains the same truthful partial behavior. Result metadata records
 whether synthesis was hierarchical plus its input sweep count, provider-call
 count and ceiling, level count, and intermediate encoded-byte count and ceiling.
+Reduction calls use unique correlation IDs, while the authoritative final call
+retains the canonical `pgs:synthesis` ID required by durable terminal proof.
 
 **Offline verification:** The pinned-source regression covers a 286-sweep
 fan-in under a deliberately smaller exact model context and one individual

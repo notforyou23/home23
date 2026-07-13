@@ -885,7 +885,7 @@ async function runPinnedOperationCore(engine, options = {}) {
           assertProviderCallAvailable();
           const completion = await providerCall({
             phase: 'pgs_synthesis', pair: synthPair, capabilities: synthCapabilities,
-            client: synthClient, id: `pgs:synthesis:final:${level}`, work: null,
+            client: synthClient, id: 'pgs:synthesis', work: null,
             instructions: SYNTHESIS_INSTRUCTIONS,
             input: synthesisInput,
             maxInputBytes: limits.maxSynthesisInputBytes,

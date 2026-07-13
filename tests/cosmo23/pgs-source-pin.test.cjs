@@ -711,6 +711,7 @@ test('PGS hierarchically reduces one sweep output larger than the synthesis mode
 
 test('PGS hierarchically synthesizes a large deterministic sweep fan-in within the exact model budget', async t => {
   const scratch = await scratchFixture(t);
+  const events = [];
   const fixture = makeCodexBudgetEngine({
     synthContextWindowTokens: 48_000,
     maxOutputTokens: 4_096,
@@ -755,6 +756,7 @@ test('PGS hierarchically synthesizes a large deterministic sweep fan-in within t
     sourcePin({ nodeCount: 1 }),
     scratch,
     {
+      reportEvent(event) { events.push(event); },
       limits: {
         ...codexBudgetOptions(sourcePin({ nodeCount: 1 }), scratch).limits,
         maxSynthesisInputBytes: 512 * 1024,
@@ -773,6 +775,12 @@ test('PGS hierarchically synthesizes a large deterministic sweep fan-in within t
   assert.equal(envelope.result.metadata.pgs.synthesis.inputSweeps, sweepRows.length);
   assert.equal(envelope.result.metadata.pgs.synthesis.providerCalls, synthesisCalls.length);
   assert.equal(envelope.result.metadata.pgs.synthesis.levels >= 2, true);
+  assert.equal(events.some(event => event.type === 'provider_call_terminal'
+    && event.phase === 'pgs_synthesis'
+    && event.providerCallId === 'pgs:synthesis'
+    && event.outcome === 'complete'), true);
+  assert.equal(events.some(event => event.type === 'provider_call_terminal'
+    && event.providerCallId.startsWith('pgs:synthesis:reduce:')), true);
 });
 
 test('PGS bounds JSON-escaped hierarchical shards and strictly reduces adversarial control output', async t => {
