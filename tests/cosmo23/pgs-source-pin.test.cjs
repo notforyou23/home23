@@ -59,8 +59,16 @@ function makeCodexBudgetEngine(catalogOptions = {}) {
     providerId: 'openai-codex',
     async generate(request) {
       calls.push(request);
+      if (calls.length > (catalogOptions.maximumCalls || Number.POSITIVE_INFINITY)) {
+        throw Object.assign(new Error('synthesis call ceiling exceeded'), {
+          code: 'provider_failed', retryable: false,
+        });
+      }
+      const configuredSynthesisOutput = typeof catalogOptions.synthesisOutput === 'function'
+        ? catalogOptions.synthesisOutput(request)
+        : 'bounded synthesis';
       return {
-        content: request.model === 'gpt-5.4-mini' ? 'bounded sweep' : 'bounded synthesis',
+        content: request.model === 'gpt-5.4-mini' ? 'bounded sweep' : configuredSynthesisOutput,
         terminalReceived: true,
         finishReason: 'completed',
         hadError: false,
@@ -765,6 +773,85 @@ test('PGS hierarchically synthesizes a large deterministic sweep fan-in within t
   assert.equal(envelope.result.metadata.pgs.synthesis.inputSweeps, sweepRows.length);
   assert.equal(envelope.result.metadata.pgs.synthesis.providerCalls, synthesisCalls.length);
   assert.equal(envelope.result.metadata.pgs.synthesis.levels >= 2, true);
+});
+
+test('PGS bounds JSON-escaped hierarchical shards and strictly reduces adversarial control output', async t => {
+  const scratch = await scratchFixture(t);
+  const fixture = makeCodexBudgetEngine({
+    synthContextWindowTokens: 48_000,
+    maxOutputTokens: 4_096,
+    maximumCalls: 50,
+    synthesisOutput(request) {
+      return request.instructions.startsWith('Reduce this bounded shard')
+        ? '\0'.repeat(request.maxOutputBytes)
+        : 'bounded final synthesis';
+    },
+  });
+  const sweepRows = Array.from({ length: 20 }, (_, index) => ({
+    workUnitId: `p-control-${String(index).padStart(3, '0')}-u0000`,
+    partitionId: `control-${String(index).padStart(3, '0')}`,
+    provider: 'openai-codex',
+    model: 'gpt-5.4-mini',
+    output: `control evidence ${index} ${'x'.repeat(9_000)}`,
+  }));
+  const summary = attemptId => ({
+    attemptId,
+    scopeWorkUnits: sweepRows.length,
+    scopeSuccessfulWorkUnits: sweepRows.length,
+    scopePendingWorkUnits: 0,
+    scopeComplete: true,
+    globalCoveredWorkUnits: sweepRows.length,
+    globalPendingWorkUnits: 0,
+    fullCoverage: true,
+    coverageLevel: 'full', coverageFraction: 1, targetPartitionIds: [],
+  });
+  fixture.engine.openPinnedPGSStore = async () => ({
+    stats: { nodeCount: 2_000, edgeCount: 4_000, workUnitCount: sweepRows.length },
+    planScope({ attemptId }) { return summary(attemptId); },
+    getScopeSummary(attemptId) { return summary(attemptId); },
+    snapshotPendingWorkUnits() { return []; },
+    beginWorkUnitAttempt() { throw new Error('no pending work'); },
+    loadWorkUnit() { throw new Error('no pending work'); },
+    async commitSuccessfulSweeps() {},
+    listSuccessfulSweeps() { return structuredClone(sweepRows); },
+    listRetryablePartitions() { return []; },
+    countScopePendingWorkUnits() { return 0; },
+    countPendingWorkUnits() { return 0; },
+    recordRetryableFailure() {},
+    close() {},
+  });
+
+  const envelope = await fixture.engine.runPinnedOperation(codexBudgetOptions(
+    sourcePin({ nodeCount: 1 }), scratch, {
+      limits: {
+        ...codexBudgetOptions(sourcePin({ nodeCount: 1 }), scratch).limits,
+        maxSynthesisInputBytes: 512 * 1024,
+      },
+    },
+  ));
+
+  const synthesisCalls = fixture.calls.filter(call => call.model === 'gpt-5.5');
+  assert.equal(envelope.state, 'complete');
+  assert.equal(envelope.result.answer, 'bounded final synthesis');
+  assert.equal(synthesisCalls.length < 20, true);
+  assert.equal(envelope.result.metadata.pgs.synthesis.providerCalls, synthesisCalls.length);
+  assert.equal(envelope.result.metadata.pgs.synthesis.intermediateEncodedBytes > 0, true);
+  assert.equal(
+    envelope.result.metadata.pgs.synthesis.providerCalls
+      <= envelope.result.metadata.pgs.synthesis.providerCallCeiling,
+    true,
+  );
+  assert.equal(
+    envelope.result.metadata.pgs.synthesis.intermediateEncodedBytes
+      <= envelope.result.metadata.pgs.synthesis.intermediateEncodedByteCeiling,
+    true,
+  );
+  assert.equal(
+    synthesisCalls
+      .filter(call => call.instructions.startsWith('Reduce this bounded shard'))
+      .every(call => call.maxOutputBytes < 1_500),
+    true,
+  );
 });
 
 test('pinned PGS derives complete source evidence from the opened projection store', async t => {

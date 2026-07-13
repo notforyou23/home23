@@ -2800,18 +2800,24 @@ fan-in cannot fit, bounded reduction calls preserve evidence, absences,
 contradictions, and work-unit citations, then feed the resulting shards through
 additional bounded levels until one final synthesis request fits. Every level
 uses the caller-selected exact synthesis provider/model pair; no fallback model
-or literal model selection is introduced. Intermediate outputs are capped to a
-quarter of the next input budget so reduction converges, while the original
-durable sweeps remain unchanged and are still returned as a truthful partial if
-any provider reduction fails. Result metadata records whether synthesis was
-hierarchical plus its input sweep count, provider-call count, and level count.
+or literal model selection is introduced. The decoded intermediate output cap
+accounts for worst-case sixfold JSON control-character escaping, so each fully
+encoded shard occupies at most one quarter of the next input budget. Every
+level must strictly reduce encoded bytes; aggregate intermediate bytes and
+provider calls also have explicit ceilings. Nonconvergence therefore stops as a
+bounded typed partial with the original durable sweeps unchanged. Provider
+failure retains the same truthful partial behavior. Result metadata records
+whether synthesis was hierarchical plus its input sweep count, provider-call
+count and ceiling, level count, and intermediate encoded-byte count and ceiling.
 
 **Offline verification:** The pinned-source regression covers a 286-sweep
 fan-in under a deliberately smaller exact model context and one individual
 sweep larger than that context. Both complete through bounded hierarchical
 synthesis, and every provider request remains within the decoded UTF-8 input
-budget. The focused pinned PGS source suite passes 22/22. Live processes were
-not restarted and no active operation was mutated by this patch.
+budget. An adversarial NUL-heavy reduction regression proves JSON escaping
+cannot reverse the reduction or multiply batches. The focused pinned PGS source
+suite passes 23/23. Live processes were not restarted and no active operation
+was mutated by this patch.
 
 ---
 

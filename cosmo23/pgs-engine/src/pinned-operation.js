@@ -244,11 +244,40 @@ function packSynthesisBatches(query, items, maximumBytes, { level, final }) {
   return batches;
 }
 
+function encodedSynthesisItemBytes(items) {
+  let total = 0;
+  for (const row of items) {
+    const bytes = utf8Bytes(`${JSON.stringify(row)}\n`);
+    if (!Number.isSafeInteger(bytes) || !Number.isSafeInteger(total + bytes)) {
+      throw typed('result_too_large', 'PGS synthesis encoded byte accounting overflowed');
+    }
+    total += bytes;
+  }
+  return total;
+}
+
+function resolveIntermediateOutputBytes(maximumInputBytes, maximumOutputBytes) {
+  const targetEncodedRowBytes = Math.floor(maximumInputBytes / 4);
+  const rowOverheadBytes = utf8Bytes(`${JSON.stringify({
+    kind: 'synthesis-shard',
+    level: Number.MAX_SAFE_INTEGER,
+    shard: Number.MAX_SAFE_INTEGER,
+    output: '',
+  })}\n`);
+  // JSON control escapes can expand one decoded UTF-8 byte to six ASCII bytes
+  // (for example NUL becomes "\\u0000"). Cap the provider's decoded output so
+  // every possible encoded shard still occupies at most one quarter of the
+  // following level's exact input budget.
+  const jsonSafeOutputBytes = Math.floor((targetEncodedRowBytes - rowOverheadBytes) / 6);
+  return Math.min(maximumOutputBytes, jsonSafeOutputBytes);
+}
+
 function canReturnUsefulSynthesisPartial(error) {
   if (error instanceof ProviderCompletionError) return true;
   if (!error?.code) return true;
   return error.code === 'result_too_large'
     || error.code === 'model_capability_invalid'
+    || error.code === 'pgs_synthesis_nonconvergent'
     || String(error.code).startsWith('provider_');
 }
 
@@ -803,9 +832,9 @@ async function runPinnedOperationCore(engine, options = {}) {
         - utf8Bytes(SYNTHESIS_INSTRUCTIONS);
       const reductionMaximumInputBytes = synthInputBudget.inputBudgetBytes
         - utf8Bytes(SYNTHESIS_REDUCTION_INSTRUCTIONS);
-      const intermediateOutputBytes = Math.min(
+      const intermediateOutputBytes = resolveIntermediateOutputBytes(
+        reductionMaximumInputBytes,
         limits.maxSynthesisOutputBytes,
-        Math.floor(reductionMaximumInputBytes / 4),
       );
       if (finalMaximumInputBytes <= 0 || reductionMaximumInputBytes <= 0
           || intermediateOutputBytes <= 0) {
@@ -815,6 +844,21 @@ async function runPinnedOperationCore(engine, options = {}) {
       let level = 1;
       let providerCalls = 0;
       let hierarchical = false;
+      let providerCallCeiling = null;
+      let intermediateEncodedBytes = 0;
+      const initialEncodedBytes = encodedSynthesisItemBytes(synthesisItems);
+      const intermediateEncodedByteCeiling = Math.min(
+        limits.maxResultBytes,
+        Math.max(1_024, initialEncodedBytes * 2),
+      );
+      const assertProviderCallAvailable = () => {
+        if (providerCalls >= providerCallCeiling) {
+          throw typed(
+            'pgs_synthesis_nonconvergent',
+            'PGS hierarchical synthesis exceeded its provider call ceiling',
+          );
+        }
+      };
       while (true) {
         if (level > 64) {
           throw typed('result_too_large', 'PGS hierarchical synthesis did not converge');
@@ -825,6 +869,12 @@ async function runPinnedOperationCore(engine, options = {}) {
           finalMaximumInputBytes,
           { level, final: true },
         );
+        if (providerCallCeiling === null) {
+          providerCallCeiling = Math.min(
+            2_048,
+            Math.max(8, (finalBatches.length * 2) + 8),
+          );
+        }
         if (finalBatches.length === 1) {
           const synthesisInput = buildSynthesisInput(
             query,
@@ -832,6 +882,7 @@ async function runPinnedOperationCore(engine, options = {}) {
             finalMaximumInputBytes,
             { level, final: true },
           );
+          assertProviderCallAvailable();
           const completion = await providerCall({
             phase: 'pgs_synthesis', pair: synthPair, capabilities: synthCapabilities,
             client: synthClient, id: `pgs:synthesis:final:${level}`, work: null,
@@ -849,6 +900,9 @@ async function runPinnedOperationCore(engine, options = {}) {
             inputSweeps: sweepOutputs.length,
             providerCalls,
             levels: level,
+            providerCallCeiling,
+            intermediateEncodedBytes,
+            intermediateEncodedByteCeiling,
           });
           break;
         }
@@ -860,6 +914,7 @@ async function runPinnedOperationCore(engine, options = {}) {
           reductionMaximumInputBytes,
           { level, final: false },
         );
+        const reductionInputEncodedBytes = encodedSynthesisItemBytes(reductionBatches.flat());
         emit({
           type: 'progress',
           phase: 'pgs_synthesis',
@@ -877,6 +932,7 @@ async function runPinnedOperationCore(engine, options = {}) {
             reductionMaximumInputBytes,
             { level, final: false },
           );
+          assertProviderCallAvailable();
           const completion = await providerCall({
             phase: 'pgs_synthesis', pair: synthPair, capabilities: synthCapabilities,
             client: synthClient,
@@ -897,6 +953,21 @@ async function runPinnedOperationCore(engine, options = {}) {
             shard: batchIndex + 1,
             output,
           });
+        }
+        const reducedEncodedBytes = encodedSynthesisItemBytes(reducedItems);
+        if (reducedEncodedBytes >= reductionInputEncodedBytes) {
+          throw typed(
+            'pgs_synthesis_nonconvergent',
+            'PGS hierarchical synthesis did not strictly reduce encoded bytes',
+          );
+        }
+        intermediateEncodedBytes += reducedEncodedBytes;
+        if (!Number.isSafeInteger(intermediateEncodedBytes)
+            || intermediateEncodedBytes > intermediateEncodedByteCeiling) {
+          throw typed(
+            'result_too_large',
+            'PGS hierarchical synthesis exceeded its aggregate intermediate byte limit',
+          );
         }
         emit({
           type: 'progress',
