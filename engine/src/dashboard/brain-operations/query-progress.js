@@ -102,6 +102,12 @@ function canonicalIso(value, code) {
   return value;
 }
 
+function safeCounterSum(left, right, code) {
+  const sum = left + right;
+  if (!Number.isSafeInteger(sum)) throw progressError(code);
+  return sum;
+}
+
 function validateQueryProgressSnapshot(value, code = 'progress_snapshot_invalid') {
   if (!value || Array.isArray(value) || typeof value !== 'object') throw progressError(code);
   const allowed = new Set(SNAPSHOT_FIELDS);
@@ -124,33 +130,6 @@ function validateQueryProgressSnapshot(value, code = 'progress_snapshot_invalid'
   for (const field of ['lastProviderActivityAt', 'lastProgressAt']) {
     if (value[field] !== undefined) canonicalIso(value[field], code);
   }
-  if (value.selected !== undefined
-      && value.completed !== undefined
-      && value.completed > value.selected) {
-    throw progressError(code);
-  }
-  if (value.successful !== undefined
-      && value.completed !== undefined
-      && value.successful > value.completed) {
-    throw progressError(code);
-  }
-  if (value.failed !== undefined
-      && value.completed !== undefined
-      && value.failed > value.completed) {
-    throw progressError(code);
-  }
-  if (value.completed !== undefined
-      && value.successful !== undefined
-      && value.failed !== undefined
-      && value.completed !== value.successful + value.failed) {
-    throw progressError(code);
-  }
-  if (value.selected !== undefined
-      && value.completed !== undefined
-      && value.pending !== undefined
-      && value.pending !== value.selected - value.completed) {
-    throw progressError(code);
-  }
   if (value.reused !== undefined
       && value.successful !== undefined
       && value.reused > value.successful) {
@@ -161,7 +140,29 @@ function validateQueryProgressSnapshot(value, code = 'progress_snapshot_invalid'
       && value.retryable > value.failed) {
     throw progressError(code);
   }
-  if (value.selected !== undefined && value.total !== undefined && value.selected > value.total) {
+  const minimumSuccessful = value.successful ?? value.reused ?? 0;
+  const minimumFailed = value.failed ?? value.retryable ?? 0;
+  const impliedCompleted = safeCounterSum(minimumSuccessful, minimumFailed, code);
+  if (value.completed !== undefined
+      && (value.completed < impliedCompleted
+        || (value.successful !== undefined
+          && value.failed !== undefined
+          && value.completed !== impliedCompleted))) {
+    throw progressError(code);
+  }
+  const completedFloor = Math.max(value.completed ?? 0, impliedCompleted);
+  const selectedFloor = value.pending === undefined
+    ? completedFloor
+    : safeCounterSum(completedFloor, value.pending, code);
+  if (value.selected !== undefined
+      && (value.selected < selectedFloor
+        || (value.completed !== undefined
+          && value.pending !== undefined
+          && value.selected !== safeCounterSum(value.completed, value.pending, code)))) {
+    throw progressError(code);
+  }
+  const totalFloor = Math.max(value.selected ?? 0, selectedFloor);
+  if (value.total !== undefined && value.total < totalFloor) {
     throw progressError(code);
   }
   if (value.synthesisBatch !== undefined
@@ -195,14 +196,23 @@ function setMaximumIfPresent(target, outputKey, source, inputKey = outputKey) {
   target[outputKey] = Math.max(target[outputKey], value);
 }
 
-function applyStageCounters(next, event, code) {
+function applyStageCounters(next, event, code, previous) {
   if (event.stage === 'projection_complete') {
     setIfPresent(next, 'sourceNodes', event, 'nodeCount');
     setIfPresent(next, 'sourceEdges', event, 'edgeCount');
     setIfPresent(next, 'candidateWorkUnits', event, 'workUnitCount');
   } else if (event.stage === 'work_selected') {
-    setMaximumIfPresent(next, 'candidateWorkUnits', event, 'candidateWorkUnits');
+    if (previous !== null
+        && QUERY_PROGRESS_STAGES.indexOf(previous.stage)
+          >= QUERY_PROGRESS_STAGES.indexOf('selecting_work')) {
+      setMaximumIfPresent(next, 'candidateWorkUnits', event, 'candidateWorkUnits');
+    } else {
+      setIfPresent(next, 'candidateWorkUnits', event, 'candidateWorkUnits');
+    }
     setIfPresent(next, 'selected', event, 'selectedWorkUnitsTotal');
+    if (Number.isSafeInteger(next.selected) && Number.isSafeInteger(next.completed)) {
+      next.pending = next.selected - next.completed;
+    }
   } else if (event.stage === 'sweep_batch_complete') {
     if (SETTLED_COUNTER_FIELDS.some((field) => !Object.hasOwn(event, field))) {
       throw progressError(code);
@@ -220,11 +230,15 @@ function applyStageCounters(next, event, code) {
   }
 }
 
-function assertMonotonic(previous, next, code) {
+function assertMonotonic(previous, next, code, {
+  allowCandidateReplacement = false,
+  allowPendingIncrease = false,
+} = {}) {
   if (QUERY_PROGRESS_STAGES.indexOf(next.stage) < QUERY_PROGRESS_STAGES.indexOf(previous.stage)) {
     throw progressError(code);
   }
   for (const field of CUMULATIVE_COUNTER_FIELDS) {
+    if (field === 'candidateWorkUnits' && allowCandidateReplacement) continue;
     if (next[field] !== undefined
         && previous[field] !== undefined
         && next[field] < previous[field]) {
@@ -233,6 +247,7 @@ function assertMonotonic(previous, next, code) {
   }
   if (next.pending !== undefined
       && previous.pending !== undefined
+      && !allowPendingIncrease
       && next.pending > previous.pending) {
     throw progressError(code);
   }
@@ -287,20 +302,32 @@ function reduceQueryProgressSnapshot(previous, event, context) {
   if (!terminal && !queued && !progress && !providerActivity) return previous;
   if (previous === null && !terminal && !queued && mappedStage === null) return null;
 
+  const selectedAfterSweeping = mappedStage === 'selecting_work' && previous?.stage === 'sweeping';
+  const firstWorkSelection = mappedStage === 'selecting_work'
+    && previous !== null
+    && QUERY_PROGRESS_STAGES.indexOf(previous.stage)
+      < QUERY_PROGRESS_STAGES.indexOf('selecting_work');
   const next = {
     ...(previous ?? {}),
     version: 1,
-    stage: terminal ? 'terminal' : (mappedStage ?? previous?.stage ?? 'queued'),
+    stage: terminal
+      ? 'terminal'
+      : (selectedAfterSweeping ? 'sweeping' : (mappedStage ?? previous?.stage ?? 'queued')),
     eventSequence: context.nextSequence,
   };
   if (progress) {
     next.lastProgressAt = eventTime(event, context, code);
-    if (mappedStage !== null) applyStageCounters(next, event, code);
+    if (mappedStage !== null) applyStageCounters(next, event, code, previous);
   }
   if (providerActivity) {
     next.lastProviderActivityAt = eventTime(event, context, code);
   }
-  if (previous !== null) assertMonotonic(previous, next, code);
+  if (previous !== null) {
+    assertMonotonic(previous, next, code, {
+      allowCandidateReplacement: firstWorkSelection,
+      allowPendingIncrease: selectedAfterSweeping,
+    });
+  }
   return validateQueryProgressSnapshot(next, code);
 }
 

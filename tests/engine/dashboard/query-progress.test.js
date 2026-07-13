@@ -67,6 +67,25 @@ test('v1 snapshot rejects impossible partial settled-work algebra', () => {
     { selected: 3, completed: 4 },
     { completed: 3, successful: 4 },
     { completed: 3, failed: 4 },
+    { selected: 3, successful: 4 },
+    { selected: 3, failed: 4 },
+    { selected: 3, pending: 4 },
+    { selected: 3, reused: 4 },
+    { selected: 3, retryable: 4 },
+    { completed: 3, reused: 4 },
+    { completed: 3, retryable: 4 },
+    { total: 3, completed: 4 },
+    { total: 3, successful: 4 },
+    { total: 3, failed: 4 },
+    { total: 3, pending: 4 },
+    { total: 3, reused: 4 },
+    { total: 3, retryable: 4 },
+    { selected: 3, successful: 2, failed: 2 },
+    { selected: 3, successful: 2, failed: 1, pending: 1 },
+    { total: 3, successful: 2, failed: 2 },
+    { total: 3, completed: 2, pending: 2 },
+    { selected: Number.MAX_SAFE_INTEGER, successful: Number.MAX_SAFE_INTEGER, failed: 1 },
+    { total: Number.MAX_SAFE_INTEGER, completed: Number.MAX_SAFE_INTEGER, pending: 1 },
   ]) {
     assert.throws(
       () => validateQueryProgressSnapshot({ ...base, ...counters }),
@@ -109,22 +128,58 @@ test('raw stages map exact counters without folding global pending into active w
   assert.equal(Object.hasOwn(selected, 'pending'), false);
 });
 
-test('repeated work selection preserves the candidate bound while selected remains cumulative', () => {
-  const first = reduceQueryProgressSnapshot(null, {
+test('multi-window selection keeps sweeping stage and selected-run candidate authority', () => {
+  const projection = reduceQueryProgressSnapshot(null, {
+    type: 'progress',
+    stage: 'projection_complete',
+    workUnitCount: 1_000,
+  }, { operationType: 'pgs', nextSequence: 1, now: Date.parse('2026-07-13T12:00:00.000Z') });
+  const first = reduceQueryProgressSnapshot(projection, {
     type: 'progress',
     stage: 'work_selected',
     candidateWorkUnits: 100,
     selectedWorkUnitsTotal: 64,
-  }, { operationType: 'pgs', nextSequence: 1, now: Date.parse('2026-07-13T12:00:00.000Z') });
-  const second = reduceQueryProgressSnapshot(first, {
+  }, { operationType: 'pgs', nextSequence: 2, now: Date.parse('2026-07-13T12:00:01.000Z') });
+  const settled = reduceQueryProgressSnapshot(first, {
+    type: 'progress',
+    stage: 'sweep_batch_complete',
+    selected: 64,
+    completed: 64,
+    successful: 64,
+    failed: 0,
+    reused: 0,
+    pending: 0,
+    retryable: 0,
+    total: 100,
+  }, { operationType: 'pgs', nextSequence: 3, now: Date.parse('2026-07-13T12:00:02.000Z') });
+  const second = reduceQueryProgressSnapshot(settled, {
     type: 'progress',
     stage: 'work_selected',
     candidateWorkUnits: 36,
     selectedWorkUnitsTotal: 100,
-  }, { operationType: 'pgs', nextSequence: 2, now: Date.parse('2026-07-13T12:00:01.000Z') });
+  }, { operationType: 'pgs', nextSequence: 4, now: Date.parse('2026-07-13T12:00:03.000Z') });
 
+  assert.equal(first.candidateWorkUnits, 100);
+  assert.equal(second.stage, 'sweeping');
   assert.equal(second.candidateWorkUnits, 100);
   assert.equal(second.selected, 100);
+  assert.equal(second.pending, 36);
+  assert.throws(() => reduceQueryProgressSnapshot(settled, {
+    type: 'progress',
+    stage: 'work_selected',
+    candidateWorkUnits: 36,
+    selectedWorkUnitsTotal: 101,
+  }, { operationType: 'pgs', nextSequence: 4, now: Date.parse('2026-07-13T12:00:03.000Z') }),
+  /progress_snapshot_invalid/);
+  assert.throws(() => reduceQueryProgressSnapshot({
+    ...second, stage: 'synthesizing', eventSequence: 5,
+  }, {
+    type: 'progress',
+    stage: 'work_selected',
+    candidateWorkUnits: 20,
+    selectedWorkUnitsTotal: 120,
+  }, { operationType: 'pgs', nextSequence: 6, now: Date.parse('2026-07-13T12:00:04.000Z') }),
+  /progress_snapshot_invalid/);
 });
 
 test('provider activity and synthesis stages advance only canonical snapshot authority', () => {
