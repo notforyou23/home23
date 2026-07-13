@@ -39,6 +39,10 @@ const {
   validateTransitionError,
 } = require('./operation-contract.js');
 const {
+  reduceQueryProgressSnapshot,
+  validateQueryProgressSnapshot,
+} = require('./query-progress.js');
+const {
   canonicalJson,
   canonicalSha256,
 } = require('../../../../shared/brain-operations/canonical-json.cjs');
@@ -78,6 +82,7 @@ const PRIVATE_RECORD_FIELDS = Object.freeze([
   'canonicalEvidence',
   'recordVersion',
   'eventSequence',
+  'acceptedAt',
   'requesterAgent',
   'target',
   'state',
@@ -87,6 +92,7 @@ const PRIVATE_RECORD_FIELDS = Object.freeze([
   'completedAt',
   'lastProviderActivityAt',
   'lastProgressAt',
+  'progressSnapshot',
   'result',
   'resultHandle',
   'resultArtifact',
@@ -634,6 +640,8 @@ class BrainOperationStore {
       record._synthesisCompletionClaim = null;
     }
     if (!Object.hasOwn(record, 'pgsSession')) record.pgsSession = null;
+    if (!Object.hasOwn(record, 'progressSnapshot')) record.progressSnapshot = null;
+    if (!Object.hasOwn(record, 'acceptedAt')) record.acceptedAt = null;
     exactInputKeys(record, PRIVATE_RECORD_FIELDS, 'operation_corrupt');
     if (record.operationId !== expectedOperationId || !OPERATION_ID_PATTERN.test(record.operationId)) {
       throw operationError('operation_corrupt');
@@ -670,6 +678,7 @@ class BrainOperationStore {
       }
       if (record.phase !== null) assertIdentifier(record.phase, 'phase');
       assertIsoOrNull(record.startedAt);
+      assertIsoOrNull(record.acceptedAt);
       assertIsoOrNull(record.updatedAt);
       assertIsoOrNull(record.completedAt);
       assertIsoOrNull(record.lastProviderActivityAt);
@@ -677,6 +686,12 @@ class BrainOperationStore {
       assertIsoOrNull(record.resultExpiresAt);
       assertIsoOrNull(record.resultExpiredAt);
       assertIsoOrNull(record.metadataExpiresAt);
+      if (record.progressSnapshot !== null) {
+        validateQueryProgressSnapshot(record.progressSnapshot, 'operation_corrupt');
+        if (record.progressSnapshot.eventSequence > record.eventSequence) {
+          throw operationError('operation_corrupt');
+        }
+      }
     } catch (error) {
       throw operationError('operation_corrupt', error);
     }
@@ -1032,6 +1047,7 @@ class BrainOperationStore {
       canonicalEvidence: input.canonicalEvidence,
       recordVersion: 1,
       eventSequence: 0,
+      acceptedAt: isoTime(now),
       requesterAgent: input.requesterAgent,
       target: input.target,
       state: 'queued',
@@ -1041,6 +1057,9 @@ class BrainOperationStore {
       completedAt: null,
       lastProviderActivityAt: null,
       lastProgressAt: null,
+      progressSnapshot: input.operationType === 'query' || input.operationType === 'pgs'
+        ? { version: 1, stage: 'queued', eventSequence: 0 }
+        : null,
       result: null,
       resultHandle: null,
       resultArtifact: null,
@@ -1207,14 +1226,39 @@ class BrainOperationStore {
     const records = [];
     for (const operationId of await this._listOperationIds()) {
       try {
-        const record = await this._readPrivateRecord(operationId);
+        const record = await this._ensureAcceptedAt(operationId);
         if (!record._deleting) records.push(projectPublicRecord(record));
       } catch (error) {
         if (error.code !== 'operation_not_found') throw error;
       }
     }
     return records.sort((left, right) =>
-      left.updatedAt.localeCompare(right.updatedAt) || left.operationId.localeCompare(right.operationId));
+      left.acceptedAt.localeCompare(right.acceptedAt) || left.operationId.localeCompare(right.operationId));
+  }
+
+  async _ensureAcceptedAt(operationId) {
+    return this._withOperationLock(operationId, async (record) => {
+      if (record.acceptedAt !== null) return record;
+      const candidates = [
+        record.startedAt,
+        record.updatedAt,
+        record.completedAt,
+        record.lastProviderActivityAt,
+        record.lastProgressAt,
+        record.sourcePinReleasedAt,
+        record.resultExpiredAt,
+      ].filter((value) => value !== null);
+      if (candidates.length === 0) throw operationError('operation_corrupt');
+      const acceptedAt = candidates.sort((left, right) => left.localeCompare(right))[0];
+      const migrated = safeJsonClone(record, 'operation_corrupt');
+      migrated.acceptedAt = acceptedAt;
+      await this._writeJson(
+        this._statusPath(operationId),
+        migrated,
+        'before_legacy_accepted_at_rename',
+      );
+      return migrated;
+    });
   }
 
   async listNonterminal() {
@@ -1478,6 +1522,16 @@ class BrainOperationStore {
     next.eventSequence = current.eventSequence + 1;
     next.updatedAt = isoTime(now);
     const event = this._normalizeEvent(next, rawEvent, next.eventSequence, now);
+    next.progressSnapshot = reduceQueryProgressSnapshot(
+      current.progressSnapshot,
+      event,
+      {
+        operationType: current.operationType,
+        nextSequence: next.eventSequence,
+        now,
+        terminal: rawEvent?.type === 'state' && TERMINAL_STATES.has(rawEvent.state),
+      },
+    );
     await this._writeEventAndStatus(
       current,
       next,

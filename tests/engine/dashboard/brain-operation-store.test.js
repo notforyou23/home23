@@ -580,6 +580,8 @@ test('persisted private record schema drift fails closed before public projectio
     (record) => { record.phase = '/tmp/private-phase'; },
     (record) => { record.resultArtifact = { arbitrary: '/tmp/private' }; },
     (record) => { delete record.startedAt; },
+    (record) => { record.acceptedAt = 'not-canonical'; },
+    (record) => { record.progressSnapshot = { version: 1, stage: 'queued', eventSequence: -1 }; },
     (record) => { record.privatePath = '/tmp/private'; },
   ];
   for (let index = 0; index < mutations.length; index += 1) {
@@ -732,6 +734,197 @@ test('public projections are exact while idempotency, worker, result-kind, and j
   assert.deepEqual(privateRecord._worker, { workerId: 'private-worker', route: '/internal/private-worker' });
   assert.equal(privateRecord._resultKind, null);
   assert.equal(typeof privateRecord._eventBytes, 'number');
+});
+
+test('legacy status without a progress snapshot loads as an explicit null', async (t) => {
+  const fixture = makeFixture(t);
+  const created = await createOne(fixture, { requestId: 'legacy-progress-null' });
+  const recordPath = statusPath(fixture.root, created.record.operationId);
+  const privateRecord = JSON.parse(fs.readFileSync(recordPath, 'utf8'));
+  delete privateRecord.progressSnapshot;
+  fs.writeFileSync(recordPath, JSON.stringify(privateRecord));
+
+  const loaded = await anotherStore(fixture).get(created.record.operationId);
+  assert.equal(Object.hasOwn(loaded, 'progressSnapshot'), true);
+  assert.equal(loaded.progressSnapshot, null);
+});
+
+test('progress append commits one snapshot, event, and status sequence atomically', async (t) => {
+  const fixture = makeFixture(t);
+  const created = await createOne(fixture, {
+    requestId: 'progress-atomic-commit',
+    operationType: 'pgs',
+  });
+  assert.deepEqual(created.record.progressSnapshot, {
+    version: 1, stage: 'queued', eventSequence: 0,
+  });
+  const committed = await fixture.store.appendEvent(created.record.operationId, {
+    type: 'progress',
+    stage: 'sweep_batch_complete',
+    selected: 4,
+    completed: 2,
+    successful: 1,
+    failed: 1,
+    reused: 0,
+    pending: 2,
+    retryable: 1,
+    total: 4,
+  });
+
+  assert.equal(committed.recordVersion, created.record.recordVersion + 1);
+  assert.equal(committed.eventSequence, created.record.eventSequence + 1);
+  assert.equal(committed.progressSnapshot.eventSequence, committed.eventSequence);
+  assert.equal(committed.progressSnapshot.stage, 'sweeping');
+  const rows = await fixture.store.readEvents(created.record.operationId, 0);
+  assert.deepEqual(rows.map((row) => row.sequence), [committed.eventSequence]);
+  const persisted = JSON.parse(fs.readFileSync(
+    statusPath(fixture.root, created.record.operationId),
+    'utf8',
+  ));
+  assert.deepEqual(persisted.progressSnapshot, committed.progressSnapshot);
+});
+
+test('progress failure before status rename publishes neither event nor snapshot', async (t) => {
+  let fail = true;
+  const fixture = makeFixture(t, {
+    crashInjector: async (stage) => {
+      if (fail && stage === 'before_status_rename') {
+        fail = false;
+        throw Object.assign(new Error('progress status crash'), { code: 'injected_crash' });
+      }
+    },
+  });
+  const created = await createOne(fixture, {
+    requestId: 'progress-atomic-crash',
+    operationType: 'pgs',
+  });
+  await assert.rejects(() => fixture.store.appendEvent(created.record.operationId, {
+    type: 'progress', stage: 'work_selected', selected: 2, total: 2,
+  }), typedCode('injected_crash'));
+
+  const reloaded = anotherStore(fixture);
+  assert.deepEqual((await reloaded.get(created.record.operationId)).progressSnapshot, {
+    version: 1, stage: 'queued', eventSequence: 0,
+  });
+  assert.deepEqual(await reloaded.readEvents(created.record.operationId, 0), []);
+});
+
+test('compaction preserves durable progress after raw progress events are gone', async (t) => {
+  const fixture = makeFixture(t, { eventMaxCount: 2, eventMaxBytes: 1024 * 1024 });
+  const created = await createOne(fixture, {
+    requestId: 'progress-survives-compaction',
+    operationType: 'pgs',
+  });
+  const progress = await fixture.store.appendEvent(created.record.operationId, {
+    type: 'progress',
+    stage: 'sweep_batch_complete',
+    selected: 3,
+    completed: 2,
+    successful: 2,
+    failed: 0,
+    reused: 1,
+    pending: 1,
+    retryable: 0,
+    total: 3,
+  });
+  for (let index = 0; index < 6; index += 1) {
+    await fixture.store.appendEvent(created.record.operationId, { type: 'heartbeat', index });
+  }
+
+  const reloaded = anotherStore(fixture, { eventMaxCount: 2, eventMaxBytes: 1024 * 1024 });
+  const rows = (await reloaded.readEvents(created.record.operationId, 0))
+    .filter((row) => row.type !== 'event_gap');
+  assert.equal(rows.some((row) => row.type === 'progress'), false);
+  assert.deepEqual((await reloaded.get(created.record.operationId)).progressSnapshot,
+    progress.progressSnapshot);
+});
+
+test('terminal transition retains counters and publishes the transition sequence', async (t) => {
+  const fixture = makeFixture(t);
+  const created = await createOne(fixture, {
+    requestId: 'progress-terminal',
+    operationType: 'pgs',
+  });
+  const progress = await fixture.store.appendEvent(created.record.operationId, {
+    type: 'progress',
+    stage: 'sweep_batch_complete',
+    selected: 2,
+    completed: 2,
+    successful: 2,
+    failed: 0,
+    reused: 0,
+    pending: 0,
+    retryable: 0,
+    total: 2,
+  });
+  const terminal = await fixture.store.transition(created.record.operationId, {
+    expectedVersion: progress.recordVersion,
+    state: 'complete',
+  });
+
+  assert.equal(terminal.progressSnapshot.stage, 'terminal');
+  assert.equal(terminal.progressSnapshot.eventSequence, terminal.eventSequence);
+  assert.equal(terminal.progressSnapshot.completed, 2);
+  assert.equal(terminal.progressSnapshot.successful, 2);
+  assert.equal(terminal.progressSnapshot.pending, 0);
+  assert.equal(Object.hasOwn(terminal.progressSnapshot, 'completedAt'), false);
+});
+
+test('acceptedAt is immutable and legacy inventory migration persists it once under lock', async (t) => {
+  const fixture = makeFixture(t);
+  const created = await createOne(fixture, { requestId: 'accepted-at-authority' });
+  const acceptedAt = created.record.acceptedAt;
+  assert.equal(acceptedAt, new Date(INITIAL_NOW).toISOString());
+
+  fixture.clock.now += 60_000;
+  const running = await fixture.store.transition(created.record.operationId, {
+    expectedVersion: created.record.recordVersion,
+    state: 'running',
+  });
+  assert.equal(running.acceptedAt, acceptedAt);
+  assert.notEqual(running.updatedAt, acceptedAt);
+
+  const recordPath = statusPath(fixture.root, created.record.operationId);
+  const legacy = JSON.parse(fs.readFileSync(recordPath, 'utf8'));
+  delete legacy.acceptedAt;
+  fs.writeFileSync(recordPath, JSON.stringify(legacy));
+
+  const inventoryStore = anotherStore(fixture);
+  const originalWriteJson = inventoryStore._writeJson.bind(inventoryStore);
+  let migrationWrites = 0;
+  inventoryStore._writeJson = async (...args) => {
+    if (args[0] === recordPath) migrationWrites += 1;
+    return originalWriteJson(...args);
+  };
+  const [firstInventory, secondInventory] = await Promise.all([
+    inventoryStore.list(),
+    inventoryStore.list(),
+  ]);
+  const migratedAt = running.startedAt;
+  assert.equal(firstInventory[0].acceptedAt, migratedAt);
+  assert.equal(secondInventory[0].acceptedAt, migratedAt);
+  assert.equal(migrationWrites, 1);
+  assert.equal(JSON.parse(fs.readFileSync(recordPath, 'utf8')).acceptedAt, migratedAt);
+
+  fixture.clock.now += 60_000;
+  const heartbeat = await inventoryStore.appendEvent(created.record.operationId, { type: 'heartbeat' });
+  assert.equal(heartbeat.acceptedAt, migratedAt);
+});
+
+test('acceptedAt keeps inventory order stable across later operation activity', async (t) => {
+  const fixture = makeFixture(t);
+  const first = await createOne(fixture, { requestId: 'accepted-order-first' });
+  fixture.clock.now += 30_000;
+  const second = await createOne(fixture, { requestId: 'accepted-order-second' });
+  fixture.clock.now += 30_000;
+  const updatedFirst = await fixture.store.appendEvent(first.record.operationId, {
+    type: 'heartbeat',
+  });
+  assert.ok(updatedFirst.updatedAt > second.record.updatedAt);
+  assert.deepEqual((await fixture.store.list()).map((record) => record.operationId), [
+    first.record.operationId,
+    second.record.operationId,
+  ]);
 });
 
 test('independent store instances serialize create, events, pin, worker, result, and terminal races', async (t) => {
