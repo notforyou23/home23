@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const express = require('express');
+const http = require('node:http');
 const Ajv2020 = require('ajv/dist/2020');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -78,6 +79,51 @@ async function postJson(app, route, body, headers = {}) {
   });
 }
 
+async function postJsonWithRawHeaders(app, route, body, rawHeaders) {
+  return await new Promise((resolve, reject) => {
+    const server = app.listen(0, '127.0.0.1', () => {
+      const payload = JSON.stringify(body);
+      const headers = {
+        'content-type': 'application/json',
+        'content-length': String(Buffer.byteLength(payload)),
+      };
+      for (let index = 0; index < rawHeaders.length; index += 2) {
+        const name = rawHeaders[index];
+        const value = rawHeaders[index + 1];
+        headers[name] = Object.hasOwn(headers, name)
+          ? [headers[name], value].flat()
+          : value;
+      }
+      const request = http.request({
+        host: '127.0.0.1',
+        port: server.address().port,
+        path: route,
+        method: 'POST',
+        headers,
+      }, (response) => {
+        const chunks = [];
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.on('end', () => {
+          server.close();
+          try {
+            resolve({
+              status: response.statusCode,
+              body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+            });
+          } catch (error) {
+            reject(error);
+          }
+        });
+      });
+      request.once('error', (error) => {
+        server.close();
+        reject(error);
+      });
+      request.end(payload);
+    });
+  });
+}
+
 test('respond-async Query start returns durable identity without waiting for provider work', async () => {
   let waited = false;
   const fixture = makeQueryApp({ adapter: {
@@ -100,6 +146,81 @@ test('respond-async Query start returns durable identity without waiting for pro
   assert.equal(response.body.detached, true);
   assert.equal(waited, false);
   assert.deepEqual(fixture.calls, ['start']);
+});
+
+test('Query run forwards one valid client request ID unchanged to durable start', async () => {
+  const forwarded = [];
+  const fixture = makeQueryApp({ onForward: (request) => forwarded.push(request) });
+  const clientRequestId = `qreq_${'A0_-'.repeat(8)}`;
+  const response = await postJson(fixture.app, '/home23/api/query/run', {
+    query: 'x',
+    mode: 'quick',
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+    enablePGS: false,
+  }, { 'X-Home23-Query-Request-Id': clientRequestId, prefer: 'respond-async' });
+
+  assert.equal(response.status, 202);
+  assert.equal(forwarded.length, 1);
+  assert.equal(forwarded[0].requestId, clientRequestId);
+});
+
+test('Query run generates its existing compatibility request ID when the client header is absent', async () => {
+  const forwarded = [];
+  const fixture = makeQueryApp({ onForward: (request) => forwarded.push(request) });
+  const response = await postJson(fixture.app, '/home23/api/query/run', {
+    query: 'x',
+    mode: 'quick',
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+    enablePGS: false,
+  }, { prefer: 'respond-async' });
+
+  assert.equal(response.status, 202);
+  assert.equal(forwarded.length, 1);
+  assert.match(
+    forwarded[0].requestId,
+    /^compat-query-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
+});
+
+test('Query run rejects malformed, comma-joined, and duplicate client request IDs before start', async () => {
+  const body = {
+    query: 'x',
+    mode: 'quick',
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+    enablePGS: false,
+  };
+  const valid = `qreq_${'a'.repeat(32)}`;
+  const malformed = [
+    '',
+    'qreq_short',
+    `qreq_${'a'.repeat(31)}!`,
+    `${valid},${valid}`,
+  ];
+  for (const value of malformed) {
+    const fixture = makeQueryApp();
+    const response = await postJson(fixture.app, '/home23/api/query/run', body, {
+      'X-Home23-Query-Request-Id': value,
+      prefer: 'respond-async',
+    });
+    assert.equal(response.status, 400, JSON.stringify(value));
+    assert.equal(response.body.error.code, 'invalid_request', JSON.stringify(value));
+    assert.equal(fixture.calls.length, 0, JSON.stringify(value));
+  }
+
+  const duplicate = makeQueryApp();
+  const response = await postJsonWithRawHeaders(
+    duplicate.app,
+    '/home23/api/query/run',
+    body,
+    [
+      'X-Home23-Query-Request-Id', valid,
+      'X-Home23-Query-Request-Id', valid,
+      'Prefer', 'respond-async',
+    ],
+  );
+  assert.equal(response.status, 400);
+  assert.equal(response.body.error.code, 'invalid_request');
+  assert.equal(duplicate.calls.length, 0);
 });
 
 async function postRawJson(app, route, body) {

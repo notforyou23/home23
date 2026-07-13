@@ -47,6 +47,8 @@ const PGS_LEVEL_FRACTIONS = new Map([
 ]);
 const MAX_TARGET_PARTITION_IDS = 256;
 const PARTITION_ID_PATTERN = /^(?:c|h)-[A-Za-z0-9._-]{1,253}$/;
+const QUERY_REQUEST_ID_HEADER = 'x-home23-query-request-id';
+const QUERY_REQUEST_ID_PATTERN = /^qreq_[A-Za-z0-9_-]{32}$/;
 const NONTERMINAL_STATES = new Set(['queued', 'running']);
 const SUCCESS_STATES = new Set(['complete', 'partial']);
 const TERMINAL_STATES = new Set(['complete', 'partial', 'failed', 'cancelled', 'interrupted']);
@@ -742,6 +744,23 @@ function requestId(prefix) {
   return `${prefix}-${crypto.randomUUID()}`;
 }
 
+function queryRequestId(req) {
+  const rawHeaders = Array.isArray(req.rawHeaders) ? req.rawHeaders : [];
+  const values = [];
+  for (let index = 0; index < rawHeaders.length; index += 2) {
+    if (String(rawHeaders[index]).toLowerCase() === QUERY_REQUEST_ID_HEADER) {
+      values.push(rawHeaders[index + 1]);
+    }
+  }
+  if (values.length === 0) return requestId('compat-query');
+  if (values.length !== 1
+      || typeof values[0] !== 'string'
+      || !QUERY_REQUEST_ID_PATTERN.test(values[0])) {
+    throw compatibilityError('invalid_request', 'query request ID header is invalid');
+  }
+  return values[0];
+}
+
 async function catalogFor(options, agent) {
   const catalog = options.catalogProvider
     ? await options.catalogProvider({ agent })
@@ -1094,6 +1113,7 @@ function createQueryApiRouter(options = {}) {
     });
     try {
       validateRouteQuery(req);
+      const operationRequestId = queryRequestId(req);
       const agent = resolveRequestAgent(req, resolveAgent);
       const catalog = await catalogFor(options, agent);
       if (!catalog.available) {
@@ -1115,7 +1135,7 @@ function createQueryApiRouter(options = {}) {
         return;
       }
       const operationRequest = {
-        requestId: requestId('compat-query'),
+        requestId: operationRequestId,
         operationType: normalized.operationType,
         target: { brainId: normalized.targetBrainId },
         parameters: normalized.parameters,
