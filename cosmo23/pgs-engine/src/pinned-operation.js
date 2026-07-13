@@ -629,6 +629,7 @@ async function runPinnedOperationCore(engine, options = {}) {
     input,
     maxInputBytes,
     maxOutputBytes,
+    streamChunks = false,
   }) {
     const context = work ? { workUnitId: work.workUnitId, partitionId: work.partitionId } : {};
     const inputMeasurement = assertProviderInputWithinBudget({
@@ -655,7 +656,7 @@ async function runPinnedOperationCore(engine, options = {}) {
         maxOutputTokens: capabilities.maxOutputTokens,
         maxOutputBytes,
         signal,
-        onChunk: phase === 'pgs_synthesis' ? onChunk : null,
+        onChunk: streamChunks ? onChunk : null,
         onProviderActivity(child = {}) {
           throwIfAborted(signal);
           emit({
@@ -919,6 +920,7 @@ async function runPinnedOperationCore(engine, options = {}) {
             input: synthesisInput,
             maxInputBytes: limits.maxSynthesisInputBytes,
             maxOutputBytes: limits.maxSynthesisOutputBytes,
+            streamChunks: true,
           });
           providerCalls += 1;
           answer = String(completion.content || '').trim();

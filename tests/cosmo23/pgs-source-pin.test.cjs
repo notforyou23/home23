@@ -67,6 +67,11 @@ function makeCodexBudgetEngine(catalogOptions = {}) {
       const configuredSynthesisOutput = typeof catalogOptions.synthesisOutput === 'function'
         ? catalogOptions.synthesisOutput(request)
         : 'bounded synthesis';
+      if (typeof request.onChunk === 'function') {
+        request.onChunk(request.instructions.startsWith('Reduce this bounded shard')
+          ? 'reduction chunk'
+          : 'final chunk');
+      }
       return {
         content: request.model === 'gpt-5.4-mini' ? 'bounded sweep' : configuredSynthesisOutput,
         terminalReceived: true,
@@ -786,6 +791,7 @@ test('PGS hierarchically synthesizes a large deterministic sweep fan-in within t
 test('PGS bounds JSON-escaped hierarchical shards and strictly reduces adversarial control output', async t => {
   const scratch = await scratchFixture(t);
   const events = [];
+  const chunks = [];
   const fixture = makeCodexBudgetEngine({
     synthContextWindowTokens: 48_000,
     maxOutputTokens: 4_096,
@@ -833,6 +839,7 @@ test('PGS bounds JSON-escaped hierarchical shards and strictly reduces adversari
   const envelope = await fixture.engine.runPinnedOperation(codexBudgetOptions(
     sourcePin({ nodeCount: 1 }), scratch, {
       reportEvent(event) { events.push(event); },
+      onChunk(chunk) { chunks.push(chunk); },
       pgsMode: 'continue',
       pgsLevel: 'full',
       limits: {
@@ -846,6 +853,7 @@ test('PGS bounds JSON-escaped hierarchical shards and strictly reduces adversari
   assert.equal(fixture.calls.some(call => call.model === 'gpt-5.4-mini'), false);
   assert.equal(envelope.state, 'complete');
   assert.equal(envelope.result.answer, 'bounded final synthesis');
+  assert.deepEqual(chunks, ['final chunk']);
   assert.equal(synthesisCalls.length < 20, true);
   assert.equal(envelope.result.metadata.pgs.synthesis.providerCalls, synthesisCalls.length);
   assert.equal(envelope.result.metadata.pgs.synthesis.intermediateEncodedBytes > 0, true);

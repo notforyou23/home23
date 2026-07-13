@@ -2817,7 +2817,9 @@ intermediate-only responses are now truncated deterministically on a valid
 UTF-8 boundary with an in-band marker, a bounded progress event, and result
 metadata counting truncated outputs and bytes. The final answer remains strict:
 it is never silently truncated, and output beyond its configured ceiling still
-fails with the original durable sweeps available for continuation.
+fails with the original durable sweeps available for continuation. Reduction
+calls never forward raw provider chunks to the user-visible stream; only the
+canonical final `pgs:synthesis` call may emit answer chunks.
 
 **Offline verification:** The pinned-source regression covers a 286-sweep
 fan-in under a deliberately smaller exact model context and one individual
