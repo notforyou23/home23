@@ -1,6 +1,125 @@
 import type { BrainOperationResult } from './brain-operations/types.js';
 import type { ToolRegistry } from './tools/index.js';
-import type { AgentEventCallback, ToolContext, ToolResult } from './types.js';
+import type {
+  AgentEventCallback,
+  BrainToolEventMetadata,
+  ToolContext,
+  ToolResult,
+} from './types.js';
+
+const OPERATION_ID = /^brop_[A-Za-z0-9_-]{32}$/;
+const RESULT_HANDLE = /^brres_[A-Za-z0-9_-]{32}$/;
+const OPERATION_TYPE = /^[a-z][a-z0-9_-]{0,63}$/;
+const OPERATION_STATES = new Set([
+  'queued', 'running', 'complete', 'partial', 'failed', 'cancelled', 'interrupted',
+]);
+const ATTACHMENT_STATES = new Set(['attached', 'detached', 'closed']);
+const PGS_FIELDS = new Set([
+  'totalPartitions', 'completedPartitions', 'successfulSweeps', 'failedSweeps',
+  'pendingWorkUnits', 'completedWorkUnits', 'totalWorkUnits', 'coverage',
+  'mode', 'level', 'fresh',
+]);
+const SOURCE_FIELDS = new Set([
+  'sourceHealth', 'implementation', 'currentRevision', 'baseRevision',
+  'deltaRevision', 'builtFromRevision', 'fresh', 'fallbackReason', 'matchOutcome',
+  'freshness', 'nodeCount', 'edgeCount',
+]);
+const MAX_EVENT_METADATA_BYTES = 32 * 1024;
+
+function ownDataValue(record: Record<string, unknown>, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(record, key);
+  return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function boundedString(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed && trimmed.length <= maxLength ? trimmed : undefined;
+}
+
+function safePrimitive(value: unknown): string | number | boolean | null | undefined {
+  if (value === null || typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value.length <= 256 ? value : undefined;
+  if (typeof value === 'number' && Number.isFinite(value) && Number.isSafeInteger(value)) {
+    return value;
+  }
+  return undefined;
+}
+
+function projectPrimitiveRecord(
+  value: unknown,
+  allowed: Set<string>,
+): Record<string, string | number | boolean | null> | undefined {
+  const source = recordValue(value);
+  if (!source) return undefined;
+  const projected: Record<string, string | number | boolean | null> = {};
+  for (const key of allowed) {
+    const primitive = safePrimitive(ownDataValue(source, key));
+    if (primitive !== undefined) projected[key] = primitive;
+  }
+  return Object.keys(projected).length ? projected : undefined;
+}
+
+function projectError(value: unknown): BrainToolEventMetadata['error'] | undefined {
+  const error = recordValue(value);
+  if (!error) return undefined;
+  const code = boundedString(ownDataValue(error, 'code'), 128);
+  const message = boundedString(ownDataValue(error, 'message'), 1_024);
+  const retryable = ownDataValue(error, 'retryable');
+  return code && message && typeof retryable === 'boolean'
+    ? { code, message, retryable }
+    : undefined;
+}
+
+export function projectBrainToolEventMetadata(
+  toolName: string,
+  result: ToolResult,
+): { resultHandle?: string; toolMetadata?: BrainToolEventMetadata } {
+  if (!toolName.startsWith('brain_')) return {};
+  const resultRecord = result as unknown as Record<string, unknown>;
+  const metadata = recordValue(ownDataValue(resultRecord, 'metadata'));
+  if (!metadata) return {};
+  const operationId = ownDataValue(metadata, 'operationId');
+  const state = ownDataValue(metadata, 'state');
+  if (typeof operationId !== 'string' || !OPERATION_ID.test(operationId)
+      || typeof state !== 'string' || !OPERATION_STATES.has(state)) return {};
+
+  const projected: BrainToolEventMetadata = {
+    operationId,
+    state: state as BrainToolEventMetadata['state'],
+  };
+  const operationType = boundedString(ownDataValue(metadata, 'operationType'), 64);
+  if (operationType && OPERATION_TYPE.test(operationType)) projected.operationType = operationType;
+  const attachmentState = ownDataValue(metadata, 'attachmentState');
+  if (typeof attachmentState === 'string' && ATTACHMENT_STATES.has(attachmentState)) {
+    projected.attachmentState = attachmentState as NonNullable<BrainToolEventMetadata['attachmentState']>;
+  }
+  const classification = boundedString(ownDataValue(metadata, 'classification'), 128);
+  if (classification) projected.classification = classification;
+  const error = projectError(ownDataValue(metadata, 'error'));
+  if (error) projected.error = error;
+  const pgs = projectPrimitiveRecord(ownDataValue(metadata, 'pgs'), PGS_FIELDS);
+  if (pgs) projected.pgs = pgs;
+  const sourceEvidence = projectPrimitiveRecord(
+    ownDataValue(metadata, 'sourceEvidence'), SOURCE_FIELDS,
+  );
+  if (sourceEvidence) projected.sourceEvidence = sourceEvidence;
+  if (Buffer.byteLength(JSON.stringify(projected)) > MAX_EVENT_METADATA_BYTES) return {};
+
+  return {
+    ...(typeof ownDataValue(resultRecord, 'resultHandle') === 'string'
+        && RESULT_HANDLE.test(ownDataValue(resultRecord, 'resultHandle') as string)
+      ? { resultHandle: ownDataValue(resultRecord, 'resultHandle') as string }
+      : {}),
+    toolMetadata: projected,
+  };
+}
 
 function validateDisplayLimit(limit: number): void {
   if (!Number.isSafeInteger(limit) || limit < 128) {
@@ -91,7 +210,9 @@ export function operationToolResult(operation: BrainOperationResult): ToolResult
       resultHandle: operation.resultHandle || undefined,
       metadata: {
         operationId: operation.operationId,
+        operationType: operation.operationType,
         state: operation.state,
+        attachmentState: operation.attachmentState,
         classification: operation.operationType === 'pgs' ? 'all_failed' : operation.state,
         pgs,
         sweepOutputs,
@@ -113,7 +234,9 @@ export function operationToolResult(operation: BrainOperationResult): ToolResult
     resultHandle: operation.resultHandle || undefined,
     metadata: {
       operationId: operation.operationId,
+      operationType: operation.operationType,
       state: operation.state,
+      attachmentState: operation.attachmentState,
       classification: usefulPartial
         ? 'useful_partial'
         : invalidPartial ? 'invalid_partial_result' : operation.state,
@@ -156,11 +279,13 @@ export async function executeAndFormatTool(input: {
   const success = result.is_error !== true;
   const modelContent = visibleContent(result, input.modelLimit);
   const eventContent = visibleContent(result, input.eventLimit);
+  const eventMetadata = projectBrainToolEventMetadata(input.name, result);
   input.onEvent?.({
     type: 'tool_result',
     tool: input.name,
     result: eventContent,
     success,
+    ...eventMetadata,
   });
   return { result, modelContent, eventContent, success };
 }

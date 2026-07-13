@@ -112,7 +112,8 @@ export type AgentLoopRunner = (
 export type AgentEvent =
   | { type: 'thinking'; content: string }
   | { type: 'tool_start'; tool: string; args: unknown }
-  | { type: 'tool_result'; tool: string; result: string; success: boolean }
+  | { type: 'tool_result'; tool: string; result: string; success: boolean;
+      resultHandle?: string; toolMetadata?: BrainToolEventMetadata }
   | { type: 'response_chunk'; chunk: string }
   | { type: 'media'; mediaType: string; path: string; caption?: string }
   | { type: 'subagent_result'; task: string; result: string }
@@ -121,6 +122,18 @@ export type AgentEvent =
       activity_deadline_at?: string; hard_deadline_at?: string };
 
 export type AgentEventCallback = (event: AgentEvent) => void;
+
+export interface BrainToolEventMetadata {
+  operationId: string;
+  operationType?: string;
+  state: 'queued' | 'running' | 'complete' | 'partial'
+    | 'failed' | 'cancelled' | 'interrupted';
+  attachmentState?: 'attached' | 'detached' | 'closed';
+  classification?: string;
+  error?: { code: string; message: string; retryable: boolean };
+  pgs?: Record<string, string | number | boolean | null>;
+  sourceEvidence?: Record<string, string | number | boolean | null>;
+}
 
 // ─── Agent Response ─────────────────────────────────────────
 

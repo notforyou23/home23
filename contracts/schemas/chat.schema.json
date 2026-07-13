@@ -3,6 +3,66 @@
   "$id": "https://home23.local/contracts/chat.schema.json",
   "title": "Home23 Chat Bridge Contracts",
   "$defs": {
+    "brainToolEventMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operationId", "state"],
+      "properties": {
+        "operationId": { "type": "string", "pattern": "^brop_[A-Za-z0-9_-]{32}$" },
+        "operationType": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$" },
+        "state": {
+          "type": "string",
+          "enum": ["queued", "running", "complete", "partial", "failed", "cancelled", "interrupted"]
+        },
+        "attachmentState": { "type": "string", "enum": ["attached", "detached", "closed"] },
+        "classification": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message", "retryable"],
+          "properties": {
+            "code": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "message": { "type": "string", "minLength": 1, "maxLength": 1024 },
+            "retryable": { "type": "boolean" }
+          }
+        },
+        "pgs": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "totalPartitions": { "type": ["integer", "string", "boolean", "null"] },
+            "completedPartitions": { "type": ["integer", "string", "boolean", "null"] },
+            "successfulSweeps": { "type": ["integer", "string", "boolean", "null"] },
+            "failedSweeps": { "type": ["integer", "string", "boolean", "null"] },
+            "pendingWorkUnits": { "type": ["integer", "string", "boolean", "null"] },
+            "completedWorkUnits": { "type": ["integer", "string", "boolean", "null"] },
+            "totalWorkUnits": { "type": ["integer", "string", "boolean", "null"] },
+            "coverage": { "type": ["integer", "string", "boolean", "null"] },
+            "mode": { "type": ["integer", "string", "boolean", "null"] },
+            "level": { "type": ["integer", "string", "boolean", "null"] },
+            "fresh": { "type": ["integer", "string", "boolean", "null"] }
+          }
+        },
+        "sourceEvidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sourceHealth": { "type": ["integer", "string", "boolean", "null"] },
+            "implementation": { "type": ["integer", "string", "boolean", "null"] },
+            "currentRevision": { "type": ["integer", "string", "boolean", "null"] },
+            "baseRevision": { "type": ["integer", "string", "boolean", "null"] },
+            "deltaRevision": { "type": ["integer", "string", "boolean", "null"] },
+            "builtFromRevision": { "type": ["integer", "string", "boolean", "null"] },
+            "fresh": { "type": ["integer", "string", "boolean", "null"] },
+            "fallbackReason": { "type": ["integer", "string", "boolean", "null"] },
+            "matchOutcome": { "type": ["integer", "string", "boolean", "null"] },
+            "freshness": { "type": ["integer", "string", "boolean", "null"] },
+            "nodeCount": { "type": ["integer", "string", "boolean", "null"] },
+            "edgeCount": { "type": ["integer", "string", "boolean", "null"] }
+          }
+        }
+      }
+    },
     "startTurnResponse": {
       "type": "object",
       "additionalProperties": true,
@@ -61,6 +121,16 @@
             "args": {},
             "result": { "type": ["string", "null"] },
             "success": { "type": ["boolean", "null"] },
+            "resultHandle": {
+              "type": ["string", "null"],
+              "pattern": "^brres_[A-Za-z0-9_-]{32}$"
+            },
+            "toolMetadata": {
+              "oneOf": [
+                { "$ref": "#/$defs/brainToolEventMetadata" },
+                { "type": "null" }
+              ]
+            },
             "mediaType": { "type": ["string", "null"] },
             "path": { "type": ["string", "null"] },
             "caption": { "type": ["string", "null"] },

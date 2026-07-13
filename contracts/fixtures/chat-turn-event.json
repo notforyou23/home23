@@ -3,9 +3,27 @@
   "turn_id": "t_contract_123",
   "seq": 1,
   "ts": "2026-06-26T14:28:00Z",
-  "kind": "response_chunk",
+  "kind": "tool_result",
   "data": {
-    "type": "response_chunk",
-    "chunk": "Hello from Home23."
+    "type": "tool_result",
+    "tool": "brain_query",
+    "result": "Started in the background",
+    "success": true,
+    "resultHandle": "brres_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "toolMetadata": {
+      "operationId": "brop_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "operationType": "pgs",
+      "state": "running",
+      "attachmentState": "detached",
+      "classification": "detached",
+      "pgs": {
+        "successfulSweeps": 3,
+        "pendingWorkUnits": 7
+      },
+      "sourceEvidence": {
+        "sourceHealth": "healthy",
+        "currentRevision": 42
+      }
+    }
   }
 }

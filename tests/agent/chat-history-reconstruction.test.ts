@@ -46,7 +46,17 @@ test('completed history uses canonical assistant content instead of a bounded ch
     },
     {
       type: 'event', turn_id: turnId, seq: 3, ts: '2026-07-12T16:06:03.000Z', kind: 'tool_result',
-      data: { type: 'tool_result', tool: 'brain_status', result: 'ok', success: true },
+      data: {
+        type: 'tool_result', tool: 'brain_status', result: 'running', success: true,
+        resultHandle: 'brres_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        toolMetadata: {
+          operationId: 'brop_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          operationType: 'pgs',
+          state: 'running',
+          attachmentState: 'detached',
+          classification: 'detached',
+        },
+      },
     },
     ...full.split(/(?<= )/).map((text, index) => chunk(turnId, index + 4, text)),
     { role: 'user', content: 'show me the whole answer', ts: '2026-07-12T16:06:00.000Z' },
@@ -71,6 +81,10 @@ test('completed history uses canonical assistant content instead of a bounded ch
   assert.ok(projected.some(record => record?.kind === 'thinking'), 'thinking record must remain visible');
   assert.ok(projected.some(record => record?.kind === 'tool_start'), 'tool start must remain visible');
   assert.ok(projected.some(record => record?.kind === 'tool_result'), 'tool result must remain visible');
+  const toolResult = projected.find(record => record?.kind === 'tool_result');
+  assert.equal(toolResult?.data?.resultHandle, 'brres_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+  assert.equal(toolResult?.data?.toolMetadata?.operationId, 'brop_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+  assert.equal(toolResult?.data?.toolMetadata?.attachmentState, 'detached');
   const terminal = projected.find(record => record?.type === 'turn' && record?.status === 'complete');
   assert.equal(terminal?.assistant_content, full, 'terminal envelope must carry canonical reconciliation content');
 });
