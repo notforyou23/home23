@@ -82,6 +82,7 @@ test('v1 snapshot rejects impossible partial settled-work algebra', () => {
     { total: 3, retryable: 4 },
     { selected: 3, successful: 2, failed: 2 },
     { selected: 3, successful: 2, failed: 1, pending: 1 },
+    { selected: 5, successful: 2, failed: 1, pending: 1 },
     { total: 3, successful: 2, failed: 2 },
     { total: 3, completed: 2, pending: 2 },
     { selected: Number.MAX_SAFE_INTEGER, successful: Number.MAX_SAFE_INTEGER, failed: 1 },

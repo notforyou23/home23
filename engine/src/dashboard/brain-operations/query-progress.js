@@ -154,11 +154,13 @@ function validateQueryProgressSnapshot(value, code = 'progress_snapshot_invalid'
   const selectedFloor = value.pending === undefined
     ? completedFloor
     : safeCounterSum(completedFloor, value.pending, code);
+  const exactCompleted = value.completed
+    ?? (value.successful !== undefined && value.failed !== undefined ? impliedCompleted : undefined);
   if (value.selected !== undefined
       && (value.selected < selectedFloor
-        || (value.completed !== undefined
+        || (exactCompleted !== undefined
           && value.pending !== undefined
-          && value.selected !== safeCounterSum(value.completed, value.pending, code)))) {
+          && value.selected !== safeCounterSum(exactCompleted, value.pending, code)))) {
     throw progressError(code);
   }
   const totalFloor = Math.max(value.selected ?? 0, selectedFloor);
