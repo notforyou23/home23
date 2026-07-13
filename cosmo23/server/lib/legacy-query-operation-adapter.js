@@ -18,8 +18,20 @@ const ALLOWED_BODY_KEYS = new Set([
   'query', 'model', 'provider', 'mode', 'includeEvidenceMetrics',
   'enableSynthesis', 'includeCoordinatorInsights', 'includeOutputs', 'includeThoughts',
   'priorContext', 'exportFormat', 'allowActions', 'enablePGS', 'pgsMode',
+  'pgsLevel', 'continueFromOperationId', 'targetPartitionIds', 'pgsSweep', 'pgsSynth',
   'pgsSessionId', 'pgsFullSweep', 'pgsConfig', 'pgsSweepModel', 'synthesis', 'topK',
 ]);
+// HOME23 PATCH — canonical durable PGS accepts named levels, never a caller's
+// raw fraction or model-only shortcut.
+const PGS_LEVEL_FRACTIONS = Object.freeze({
+  skim: 0.10,
+  sample: 0.25,
+  deep: 0.50,
+  full: 1,
+});
+const PGS_MODES = new Set(['fresh', 'continue', 'targeted']);
+const PARTITION_ID_PATTERN = /^(?:c|h)-[A-Za-z0-9._-]{1,253}$/;
+const MAX_TARGET_PARTITION_IDS = 256;
 const MODE_MAP = Object.freeze({
   quick: 'quick', fast: 'quick',
   full: 'full', normal: 'full',
@@ -65,6 +77,14 @@ function exactPair(provider, model) {
   return Object.freeze({ provider: normalizedProvider, model: normalizedModel });
 }
 
+function exactPairObject(value, label) {
+  plainObject(value, label);
+  if (Reflect.ownKeys(value).sort().join('\0') !== 'model\0provider') {
+    throw typed('provider_model_mismatch', `${label} requires only provider and model`);
+  }
+  return exactPair(value.provider, value.model);
+}
+
 function uniquePairForModel(catalog, model) {
   const normalizedModel = typeof model === 'string' ? model.trim() : '';
   if (!normalizedModel) throw typed('provider_model_mismatch', 'Model is required');
@@ -94,6 +114,32 @@ function validatePriorContext(value) {
   return Object.freeze({ query: value.query, answer: value.answer });
 }
 
+function validateContinueFromOperationId(value) {
+  if (typeof value !== 'string' || !OPERATION_ID_PATTERN.test(value)) {
+    throw typed('invalid_request', 'continueFromOperationId is invalid');
+  }
+  return value;
+}
+
+function validateTargetPartitionIds(value) {
+  if (!Array.isArray(value)
+      || value.length === 0
+      || value.length > MAX_TARGET_PARTITION_IDS) {
+    throw typed('invalid_request', 'targetPartitionIds is invalid');
+  }
+  const unique = new Set();
+  for (const partitionId of value) {
+    if (typeof partitionId !== 'string'
+        || partitionId.length > 256
+        || !PARTITION_ID_PATTERN.test(partitionId)
+        || unique.has(partitionId)) {
+      throw typed('invalid_request', 'targetPartitionIds is invalid');
+    }
+    unique.add(partitionId);
+  }
+  return Object.freeze([...value]);
+}
+
 function normalizeLegacyQueryRequest(body, { catalog } = {}) {
   plainObject(body, 'request body');
   if (Reflect.ownKeys(body).some(key => typeof key !== 'string' || !ALLOWED_BODY_KEYS.has(key))) {
@@ -113,29 +159,57 @@ function normalizeLegacyQueryRequest(body, { catalog } = {}) {
   if (enablePGS) {
     if (body.model !== undefined || body.provider !== undefined
         || body.pgsSweepModel !== undefined || body.pgsSessionId !== undefined
-        || body.pgsFullSweep !== undefined || body.synthesis !== undefined
+        || body.pgsFullSweep !== undefined || body.pgsConfig !== undefined
+        || body.synthesis !== undefined
         || body.topK !== undefined) {
       throw typed('invalid_request', 'Legacy PGS provider/session shortcuts are unsupported');
     }
-    if (body.pgsMode !== undefined && body.pgsMode !== null && body.pgsMode !== 'full') {
+    if (!PGS_MODES.has(body.pgsMode)) {
       throw typed('invalid_request', 'pgsMode is invalid');
     }
-    parameters.pgsMode = 'full';
-    if (body.pgsConfig !== undefined && body.pgsConfig !== null) {
-      plainObject(body.pgsConfig, 'pgsConfig');
-      if (Reflect.ownKeys(body.pgsConfig).join('\0') !== 'sweepFraction'
-          || typeof body.pgsConfig.sweepFraction !== 'number'
-          || !Number.isFinite(body.pgsConfig.sweepFraction)
-          || body.pgsConfig.sweepFraction <= 0 || body.pgsConfig.sweepFraction > 1) {
-        throw typed('invalid_request', 'pgsConfig is invalid');
-      }
-      parameters.pgsConfig = Object.freeze({ sweepFraction: body.pgsConfig.sweepFraction });
+    if (typeof body.pgsLevel !== 'string'
+        || !Object.hasOwn(PGS_LEVEL_FRACTIONS, body.pgsLevel)) {
+      throw typed('invalid_request', 'pgsLevel is invalid');
     }
+    const hasContinuation = Object.hasOwn(body, 'continueFromOperationId');
+    const hasTargets = Object.hasOwn(body, 'targetPartitionIds');
+    if (body.pgsMode === 'fresh') {
+      if (hasContinuation || hasTargets) {
+        throw typed('invalid_request', 'Fresh PGS cannot continue or target partitions');
+      }
+    } else if (body.pgsMode === 'continue') {
+      if (!hasContinuation || hasTargets) {
+        throw typed('invalid_request', 'Continue PGS requires one prior operation and no targets');
+      }
+      parameters.continueFromOperationId = validateContinueFromOperationId(
+        body.continueFromOperationId,
+      );
+    } else {
+      if (!hasTargets) {
+        throw typed('invalid_request', 'Targeted PGS requires targetPartitionIds');
+      }
+      parameters.targetPartitionIds = validateTargetPartitionIds(body.targetPartitionIds);
+      if (hasContinuation) {
+        parameters.continueFromOperationId = validateContinueFromOperationId(
+          body.continueFromOperationId,
+        );
+      }
+    }
+    parameters.pgsMode = body.pgsMode;
+    parameters.pgsLevel = body.pgsLevel;
+    parameters.pgsConfig = Object.freeze({
+      sweepFraction: PGS_LEVEL_FRACTIONS[body.pgsLevel],
+    });
+    parameters.pgsSweep = exactPairObject(body.pgsSweep, 'pgsSweep');
+    parameters.pgsSynth = exactPairObject(body.pgsSynth, 'pgsSynth');
     return Object.freeze({ operationType: 'pgs', parameters: Object.freeze(parameters) });
   }
 
-  if (body.pgsMode !== undefined || body.pgsConfig !== undefined
-      || body.pgsSweepModel !== undefined || body.pgsSessionId !== undefined
+  if (body.pgsMode !== undefined || body.pgsLevel !== undefined
+      || body.continueFromOperationId !== undefined || body.targetPartitionIds !== undefined
+      || body.pgsConfig !== undefined || body.pgsSweep !== undefined
+      || body.pgsSynth !== undefined || body.pgsSweepModel !== undefined
+      || body.pgsSessionId !== undefined
       || body.pgsFullSweep !== undefined) {
     throw typed('invalid_request', 'PGS fields require enablePGS');
   }

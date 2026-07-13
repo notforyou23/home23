@@ -4,14 +4,17 @@ const path = require('node:path');
 const test = require('node:test');
 const yaml = require('js-yaml');
 
-const { loadModelCatalogSync } = require('../../cosmo23/server/config/model-catalog');
+const {
+  BUILTIN_MODEL_CATALOG,
+  normalizeModelCatalog,
+} = require('../../cosmo23/server/config/model-catalog');
 
 const repoRoot = path.resolve(__dirname, '../..');
 const previousOpusModelId = ['claude', 'opus', '4', '7'].join('-');
 const previousMiniMaxModelPattern = new RegExp(['MiniMax-M', '2|minimax-m', '2'].join(''), 'i');
 
 test('Home23 model defaults use Claude Opus 4.8 instead of the previous Opus release', () => {
-  const homeConfig = yaml.load(fs.readFileSync(path.join(repoRoot, 'config/home.yaml'), 'utf8'));
+  const homeConfig = yaml.load(fs.readFileSync(path.join(repoRoot, 'config/home.yaml.example'), 'utf8'));
 
   assert.deepEqual(homeConfig.providers.anthropic.defaultModels, [
     'claude-sonnet-4-7',
@@ -24,7 +27,7 @@ test('Home23 model defaults use Claude Opus 4.8 instead of the previous Opus rel
 });
 
 test('COSMO built-in Anthropic catalog exposes Claude Opus 4.8', () => {
-  const catalog = loadModelCatalogSync();
+  const catalog = normalizeModelCatalog(BUILTIN_MODEL_CATALOG);
   const anthropicModels = catalog.providers.anthropic.models.map((model) => model.id);
 
   assert.ok(anthropicModels.includes('claude-opus-4-8'));
@@ -39,7 +42,7 @@ test('Evobrew default runtime preferences point PGS synthesis at Claude Opus 4.8
 });
 
 test('Home23 MiniMax catalog uses M3 and removes older M2 models', () => {
-  const homeConfig = yaml.load(fs.readFileSync(path.join(repoRoot, 'config/home.yaml'), 'utf8'));
+  const homeConfig = yaml.load(fs.readFileSync(path.join(repoRoot, 'config/home.yaml.example'), 'utf8'));
   const ollamaCloudModels = homeConfig.providers['ollama-cloud'].defaultModels || [];
 
   assert.deepEqual(homeConfig.providers.minimax.defaultModels, ['MiniMax-M3']);
@@ -49,7 +52,7 @@ test('Home23 MiniMax catalog uses M3 and removes older M2 models', () => {
 });
 
 test('COSMO built-in MiniMax catalog exposes only MiniMax-M3', () => {
-  const catalog = loadModelCatalogSync();
+  const catalog = normalizeModelCatalog(BUILTIN_MODEL_CATALOG);
   const minimaxModels = catalog.providers.minimax.models.map((model) => model.id);
   const ollamaCloudModels = catalog.providers['ollama-cloud'].models.map((model) => model.id);
 

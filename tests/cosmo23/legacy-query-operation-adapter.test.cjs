@@ -80,6 +80,128 @@ test('legacy request normalization resolves only a unique model provider and str
   );
 });
 
+test('legacy request normalization preserves canonical PGS modes, named levels, and exact pairs', () => {
+  assert.deepEqual(normalizeLegacyQueryRequest({
+    query: 'cover the graph',
+    enablePGS: true,
+    pgsMode: 'fresh',
+    pgsLevel: 'deep',
+    pgsSweep: { provider: 'alpha', model: 'sweep-model' },
+    pgsSynth: { provider: 'beta', model: 'synth-model' },
+  }, { catalog: catalog() }), {
+    operationType: 'pgs',
+    parameters: {
+      query: 'cover the graph',
+      mode: 'full',
+      pgsMode: 'fresh',
+      pgsLevel: 'deep',
+      pgsConfig: { sweepFraction: 0.5 },
+      pgsSweep: { provider: 'alpha', model: 'sweep-model' },
+      pgsSynth: { provider: 'beta', model: 'synth-model' },
+    },
+  });
+
+  assert.deepEqual(normalizeLegacyQueryRequest({
+    query: 'continue the graph',
+    enablePGS: true,
+    pgsMode: 'continue',
+    pgsLevel: 'full',
+    continueFromOperationId: OPERATION_ID,
+    pgsSweep: { provider: 'alpha', model: 'sweep-model' },
+    pgsSynth: { provider: 'beta', model: 'synth-model' },
+  }, { catalog: catalog() }), {
+    operationType: 'pgs',
+    parameters: {
+      query: 'continue the graph',
+      mode: 'full',
+      pgsMode: 'continue',
+      pgsLevel: 'full',
+      continueFromOperationId: OPERATION_ID,
+      pgsConfig: { sweepFraction: 1 },
+      pgsSweep: { provider: 'alpha', model: 'sweep-model' },
+      pgsSynth: { provider: 'beta', model: 'synth-model' },
+    },
+  });
+
+  assert.deepEqual(normalizeLegacyQueryRequest({
+    query: 'focus the graph',
+    enablePGS: true,
+    pgsMode: 'targeted',
+    pgsLevel: 'skim',
+    continueFromOperationId: OPERATION_ID,
+    targetPartitionIds: ['c-one', 'h-two'],
+    pgsSweep: { provider: 'alpha', model: 'sweep-model' },
+    pgsSynth: { provider: 'beta', model: 'synth-model' },
+  }, { catalog: catalog() }), {
+    operationType: 'pgs',
+    parameters: {
+      query: 'focus the graph',
+      mode: 'full',
+      pgsMode: 'targeted',
+      pgsLevel: 'skim',
+      continueFromOperationId: OPERATION_ID,
+      targetPartitionIds: ['c-one', 'h-two'],
+      pgsConfig: { sweepFraction: 0.1 },
+      pgsSweep: { provider: 'alpha', model: 'sweep-model' },
+      pgsSynth: { provider: 'beta', model: 'synth-model' },
+    },
+  });
+
+  for (const body of [
+    {
+      query: 'x', enablePGS: true, pgsMode: 'full', pgsLevel: 'sample',
+      pgsSweep: { provider: 'alpha', model: 'sweep-model' },
+      pgsSynth: { provider: 'beta', model: 'synth-model' },
+    },
+    {
+      query: 'x', enablePGS: true, pgsMode: 'fresh', pgsLevel: 'sample',
+      pgsConfig: { sweepFraction: 0.25 },
+      pgsSweep: { provider: 'alpha', model: 'sweep-model' },
+      pgsSynth: { provider: 'beta', model: 'synth-model' },
+    },
+    {
+      query: 'x', enablePGS: true, pgsMode: 'fresh', pgsLevel: 'sample',
+      pgsSweepModel: 'sweep-model',
+      pgsSynth: { provider: 'beta', model: 'synth-model' },
+    },
+    {
+      query: 'x', enablePGS: true, pgsMode: 'fresh', pgsLevel: 'sample',
+      continueFromOperationId: OPERATION_ID,
+      pgsSweep: { provider: 'alpha', model: 'sweep-model' },
+      pgsSynth: { provider: 'beta', model: 'synth-model' },
+    },
+    {
+      query: 'x', enablePGS: true, pgsMode: 'continue', pgsLevel: 'sample',
+      pgsSweep: { provider: 'alpha', model: 'sweep-model' },
+      pgsSynth: { provider: 'beta', model: 'synth-model' },
+    },
+    {
+      query: 'x', enablePGS: true, pgsMode: 'continue', pgsLevel: 'sample',
+      continueFromOperationId: OPERATION_ID,
+      targetPartitionIds: ['c-one'],
+      pgsSweep: { provider: 'alpha', model: 'sweep-model' },
+      pgsSynth: { provider: 'beta', model: 'synth-model' },
+    },
+    {
+      query: 'x', enablePGS: true, pgsMode: 'targeted', pgsLevel: 'sample',
+      targetPartitionIds: [],
+      pgsSweep: { provider: 'alpha', model: 'sweep-model' },
+      pgsSynth: { provider: 'beta', model: 'synth-model' },
+    },
+    {
+      query: 'x', enablePGS: true, pgsMode: 'targeted', pgsLevel: 'sample',
+      targetPartitionIds: ['c-one', 'c-one'],
+      pgsSweep: { provider: 'alpha', model: 'sweep-model' },
+      pgsSynth: { provider: 'beta', model: 'synth-model' },
+    },
+  ]) {
+    assert.throws(
+      () => normalizeLegacyQueryRequest(body, { catalog: catalog() }),
+      error => error.code === 'invalid_request',
+    );
+  }
+});
+
 test('route response construction copies a frozen durable result before adding legacy fields', () => {
   const durable = Object.freeze({ answer: 'durable', operationId: OPERATION_ID });
   const artifactInventory = Object.freeze({ fingerprint: 'inventory-1' });
@@ -344,7 +466,12 @@ test('legacy adapter exposes useful PGS partial output with a typed nonretryable
     catalogProvider: () => pgsCatalog, requesterAgent: 'jerry',
   });
   const result = await adapter.execute({
-    brainId: 'brain-jerry', body: { query: 'canary', enablePGS: true },
+    brainId: 'brain-jerry',
+    body: {
+      query: 'canary', enablePGS: true, pgsMode: 'fresh', pgsLevel: 'sample',
+      pgsSweep: { provider: 'sweep', model: 'sweep-model' },
+      pgsSynth: { provider: 'synth', model: 'synth-model' },
+    },
   });
   assert.equal(result.state, 'partial');
   assert.equal(result.sweepOutputs.length, 1);

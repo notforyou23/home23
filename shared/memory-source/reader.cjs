@@ -89,6 +89,29 @@ function anchoredFileView(opened) {
     path: anchoredFdPath(opened.handle.fd),
     size: Number(opened.stat.size),
     identity: portableFileIdentity(opened.stat),
+    async *readChunks({ maxBytes, chunkBytes = 64 * 1024 } = {}) {
+      const size = Number(opened.stat.size);
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || size > maxBytes
+          || !Number.isSafeInteger(chunkBytes) || chunkBytes < 1 || chunkBytes > 1024 * 1024) {
+        throw memorySourceError('result_too_large', 'anchored file exceeds byte limit', {
+          status: 413,
+          retryable: false,
+        });
+      }
+      let position = 0;
+      while (position < size) {
+        const buffer = Buffer.allocUnsafe(Math.min(chunkBytes, size - position));
+        const { bytesRead } = await opened.handle.read(buffer, 0, buffer.length, position);
+        if (bytesRead <= 0) {
+          throw memorySourceError('source_changed', 'anchored file became truncated', {
+            retryable: true,
+          });
+        }
+        position += bytesRead;
+        yield bytesRead === buffer.length ? buffer : buffer.subarray(0, bytesRead);
+      }
+      await assertStableOpenedFileContent(opened);
+    },
     async readFile({ maxBytes } = {}) {
       return readOpenedFile(opened, { maxBytes });
     },

@@ -103,3 +103,80 @@ test('provider operation runtime stays unavailable without creating an operation
     retryable: true, migrated: false,
   });
 });
+
+test('provider operation runtime accepts validated agent-scoped defaults without consulting legacy home query defaults', async (t) => {
+  const root = await makeHome({
+    defaultProvider: 'legacy', defaultModel: 'legacy-model',
+    pgsSweepProvider: 'legacy', pgsSweepModel: 'legacy-model',
+    pgsSynthProvider: 'legacy', pgsSynthModel: 'legacy-model',
+  });
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const queryDefaults = {
+    defaultProvider: 'anthropic', defaultModel: 'claude-opus-test',
+    pgsSweepProvider: 'minimax', pgsSweepModel: 'MiniMax-Test',
+    pgsSynthProvider: 'anthropic', pgsSynthModel: 'claude-opus-test',
+  };
+  const runtime = createProviderOperationRuntime({
+    home23Root: root, catalog, providerRegistry: registry(), queryDefaults,
+    logger: { error() {} },
+  });
+
+  const direct = await runtime.resolve({
+    operationType: 'query', requestParameters: { query: 'canary' },
+  });
+  const pgs = await runtime.resolve({
+    operationType: 'pgs', requestParameters: { query: 'canary' },
+  });
+  assert.deepEqual(direct.modelSelection, {
+    provider: 'anthropic', model: 'claude-opus-test',
+  });
+  assert.deepEqual(pgs.pgsSweep, { provider: 'minimax', model: 'MiniMax-Test' });
+  assert.deepEqual(pgs.pgsSynth, {
+    provider: 'anthropic', model: 'claude-opus-test',
+  });
+  assert.equal(runtime.getReadiness().migrated, false);
+  const persisted = yaml.load(fs.readFileSync(path.join(root, 'config', 'home.yaml'), 'utf8'));
+  assert.equal(persisted.query.defaultProvider, 'legacy');
+});
+
+test('provider operation runtime hot-refreshes atomically and preserves the prior resolver on failure', async (t) => {
+  const root = await makeHome({});
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const initialDefaults = {
+    defaultProvider: 'anthropic', defaultModel: 'claude-opus-test',
+    pgsSweepProvider: 'minimax', pgsSweepModel: 'MiniMax-Test',
+    pgsSynthProvider: 'anthropic', pgsSynthModel: 'claude-opus-test',
+  };
+  const refreshedDefaults = {
+    defaultProvider: 'minimax', defaultModel: 'MiniMax-Test',
+    pgsSweepProvider: 'anthropic', pgsSweepModel: 'claude-opus-test',
+    pgsSynthProvider: 'minimax', pgsSynthModel: 'MiniMax-Test',
+  };
+  const runtime = createProviderOperationRuntime({
+    home23Root: root, catalog, providerRegistry: registry(),
+    queryDefaults: initialDefaults, logger: { error() {} },
+  });
+  await runtime.settled;
+
+  const receipt = await runtime.refresh({
+    catalog,
+    providerRegistry: registry(),
+    queryDefaults: refreshedDefaults,
+  });
+  assert.deepEqual(receipt, { refreshed: true, queryDefaults: refreshedDefaults });
+  assert.deepEqual((await runtime.resolve({
+    operationType: 'query', requestParameters: { query: 'after refresh' },
+  })).modelSelection, { provider: 'minimax', model: 'MiniMax-Test' });
+
+  await assert.rejects(
+    () => runtime.refresh({
+      catalog,
+      providerRegistry: registry(false),
+      queryDefaults: initialDefaults,
+    }),
+    error => error.code === 'provider_unavailable',
+  );
+  assert.deepEqual((await runtime.resolve({
+    operationType: 'query', requestParameters: { query: 'after failed refresh' },
+  })).modelSelection, { provider: 'minimax', model: 'MiniMax-Test' });
+});

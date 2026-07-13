@@ -13,6 +13,7 @@ const {
   withEphemeralMemorySource,
 } = require('../../../shared/memory-source');
 const { build } = require('../../../engine/src/merge/build-ann-index');
+const { createDefaultLoadAnn } = require('../../../engine/src/dashboard/memory-search');
 
 async function tempDir(prefix) {
   return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -123,6 +124,66 @@ test('builder streams one pinned logical source and advances ANN watermark', asy
   assert.equal(manifest.ann.builtFromRevision, result.builtFromRevision);
   assert.equal(manifest.ann.indexFile, `memory-ann.${result.builtFromRevision}.index`);
   assert.equal(manifest.ann.metaFile, `memory-ann.${result.builtFromRevision}.meta.json`);
+  let loadedIndexPath = null;
+  class FakeLoadedIndex {
+    readIndexSync(filePath) { loadedIndexPath = filePath; }
+    setEf() {}
+    searchKnn() { return { neighbors: [], distances: [] }; }
+  }
+  const loadAnn = createDefaultLoadAnn({
+    hnswlibLoader: () => ({ HierarchicalNSW: FakeLoadedIndex }),
+  });
+  const loaded = await loadAnn({
+    descriptor: {
+      canonicalRoot: await fsp.realpath(dir),
+      generation: manifest.generation,
+      cutoffRevision: manifest.currentRevision,
+      summary: manifest.summary,
+    },
+  }, manifest.ann);
+  assert.equal(loaded.count, 2);
+  assert.equal(loaded.labels.length, 2);
+  assert.equal(path.basename(loadedIndexPath), manifest.ann.indexFile);
+  await loadAnn.close();
+});
+
+test('builder rejects an oversized label id before publishing ANN outputs', async (t) => {
+  const dir = await tempDir('home23-ann-builder-invalid-label-brain-');
+  const home23Root = await tempDir('home23-ann-builder-invalid-label-home-');
+  t.after(() => Promise.all([
+    fsp.rm(dir, { recursive: true, force: true }),
+    fsp.rm(home23Root, { recursive: true, force: true }),
+  ]));
+  const hnswRecord = {};
+  let advanceCalls = 0;
+  await assert.rejects(
+    () => build(dir, {
+      home23Root,
+      requesterAgent: 'jerry',
+      resolveTargetContext: () => canonicalResolve(dir),
+      hnswlib: fakeHnsw(hnswRecord),
+      withEphemeralMemorySource: async (_options, callback) => callback({
+        revision: 1,
+        manifest: {
+          formatVersion: 1,
+          generation: 'invalid-label-generation',
+          summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+        },
+        async *iterateNodes() {
+          yield { id: 'x'.repeat(300 * 1024), concept: 'oversized id', embedding: [1, 0] };
+        },
+      }, { lockRoot: path.join(home23Root, 'runtime', 'brain-source-locks') }),
+      advanceAnnBuiltFromRevision: async () => {
+        advanceCalls += 1;
+        return { advanced: true };
+      },
+    }),
+    (error) => error?.code === 'invalid_memory_source'
+      && /cannot be represented/i.test(error.message),
+  );
+  assert.equal(hnswRecord.writePath, undefined);
+  assert.equal(advanceCalls, 0);
+  assert.deepEqual(await fsp.readdir(dir), []);
 });
 
 test('builder rejects legacy projection authority before HNSW construction or target writes', async () => {

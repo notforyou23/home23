@@ -4063,6 +4063,115 @@ test('isolated fixture delay proof is bound to exact accepted operations and pro
     }],
   }]);
 
+  // Wall time can be adjusted backwards while a long acceptance run is in
+  // flight. The controlled child records the delay with a monotonic clock;
+  // keep wall timestamps ordered, but do not demand that they independently
+  // prove the same duration.
+  const monotonicDelayFixture = {
+    ...fixture,
+    operationDelayEvidence: {
+      ...delayEvidence,
+      roles: {
+        ...delayEvidence.roles,
+        cosmo: {
+          ...delayEvidence.roles.cosmo,
+          actions: [{
+            ...delayEvidence.roles.cosmo.actions[0],
+            completedAt: '2026-07-11T00:00:00.004Z',
+            elapsedMs: 5.25,
+          }],
+        },
+      },
+    },
+  };
+  const monotonicDelayEvents = operationEvents.map((event) => (
+    event.eventSequence === 12
+      ? { ...event, providerEventAt: '2026-07-11T00:00:00.004Z' }
+      : event
+  ));
+  const monotonicDelayReceipt = isolatedFixtureReceipt(
+    monotonicDelayFixture,
+    stopped,
+    { unchanged: true },
+    'large-pgs-isolated',
+    {
+      acceptedRows: [{ ...acceptedRows[0], operationType: 'pgs' }],
+      operationEvents: monotonicDelayEvents,
+    },
+  );
+  assert.equal(
+    monotonicDelayReceipt.operationDelayEvidence.acceptedOperations[0].actions[0].elapsedMs,
+    5.25,
+  );
+
+  // Wall timestamps still have to preserve causal ordering even though the
+  // monotonic timer is the duration authority.
+  const backwardsWallClockFixture = {
+    ...fixture,
+    operationDelayEvidence: {
+      ...delayEvidence,
+      roles: {
+        ...delayEvidence.roles,
+        cosmo: {
+          ...delayEvidence.roles.cosmo,
+          actions: [{
+            ...delayEvidence.roles.cosmo.actions[0],
+            completedAt: '2026-07-10T23:59:59.999Z',
+          }],
+        },
+      },
+    },
+  };
+  assert.throws(
+    () => isolatedFixtureReceipt(
+      backwardsWallClockFixture,
+      stopped,
+      { unchanged: true },
+      'large-pgs-isolated',
+      {
+        acceptedRows: [{ ...acceptedRows[0], operationType: 'pgs' }],
+        operationEvents: operationEvents.map((event) => event.eventSequence === 12
+          ? { ...event, providerEventAt: '2026-07-10T23:59:59.999Z' }
+          : event),
+      },
+    ),
+    (error) => error.code === 'isolated_fixture_delay_unproven'
+      && error.proofReason === 'complete_event_order_or_time',
+  );
+
+  // A successful action flag cannot substitute for the monotonic delay proof.
+  const shortMonotonicFixture = {
+    ...fixture,
+    operationDelayEvidence: {
+      ...delayEvidence,
+      roles: {
+        ...delayEvidence.roles,
+        cosmo: {
+          ...delayEvidence.roles.cosmo,
+          actions: [{
+            ...delayEvidence.roles.cosmo.actions[0],
+            elapsedMs: 4.99,
+            actionProven: true,
+          }],
+        },
+      },
+    },
+  };
+  assert.throws(
+    () => isolatedFixtureReceipt(
+      shortMonotonicFixture,
+      stopped,
+      { unchanged: true },
+      'large-pgs-isolated',
+      {
+        acceptedRows: [{ ...acceptedRows[0], operationType: 'pgs' }],
+        operationEvents,
+      },
+    ),
+    (error) => error.code === 'isolated_fixture_delay_unproven'
+      && error.proofReason === 'complete_event_order_or_time',
+  );
+
   const completePgsReceipt = isolatedFixtureReceipt(
     fixture, stopped, { unchanged: true }, 'large-pgs-isolated', {
       acceptedRows: [{ ...acceptedRows[0], operationType: 'pgs' }],

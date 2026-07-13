@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { promises as fsp } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -15,8 +17,10 @@ const {
 const {
   createDefaultEmbedQuery,
   createDefaultLoadAnn,
+  createAnnWorkerRuntime,
   createMemorySearchService,
   MAX_ANN_METADATA_BYTES,
+  parseAnnMetadataChunks,
 } = require('../../../engine/src/dashboard/memory-search');
 const {
   sendMemorySearchError,
@@ -76,6 +80,45 @@ async function fileSnapshot(dir) {
     };
   }
   return rows;
+}
+
+function zeroLabelAnnMeta(revision) {
+  return {
+    indexFile: `memory-ann.${revision}.index`,
+    metaFile: `memory-ann.${revision}.meta.json`,
+    builtFromRevision: revision,
+  };
+}
+
+function zeroLabelPinnedSource(root, revision) {
+  const encoded = Buffer.from(JSON.stringify({
+    dimension: 2,
+    count: 0,
+    skipped: 0,
+    builtFromRevision: revision,
+    labels: [],
+  }));
+  const views = {
+    'ann-index': {
+      path: `/dev/fd/${100 + revision}`,
+      identity: { dev: '1', ino: String(100 + revision), size: '4096' },
+      async assertStable() {},
+    },
+    'ann-meta': {
+      identity: { dev: '1', ino: String(200 + revision), size: String(encoded.length) },
+      async readFile() { return encoded; },
+      async assertStable() {},
+    },
+  };
+  return {
+    descriptor: {
+      canonicalRoot: root,
+      generation: `g-${revision}`,
+      cutoffRevision: revision,
+      summary: { nodeCount: 0 },
+    },
+    getAnchoredFile(role) { return views[role] || null; },
+  };
 }
 
 async function sourceSearch({ dir, embedQuery, loadAnn, query = 'canary', request = {} }) {
@@ -205,6 +248,29 @@ test('noise-filtered semantic candidates are supplemented by exact keyword resul
   });
   assert.equal(result.results.some((row) => row.concept.includes('exact-canary')), true);
   assert.equal(result.evidence.fallback.reason, 'ann_missing');
+});
+
+test('healthy fresh ANN stays healthy when exact keyword results supplement semantic hits', async () => {
+  const dir = await createBrain({
+    nodes: [{ id: 'exact', concept: 'exact supplement canary', embedding: [1, 0] }],
+  });
+  await markAnn(dir);
+  const result = await sourceSearch({
+    dir,
+    query: 'exact supplement canary',
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => ({
+      dimension: 2,
+      search: () => [{
+        node: { id: 'semantic', concept: 'semantic neighbor', embedding: [1, 0] },
+        similarity: 1,
+      }],
+    }),
+  });
+  assert.equal(result.evidence.fallback.reason, 'exact_canary_missing');
+  assert.equal(result.evidence.sourceHealth, 'healthy');
+  assert.equal(result.evidence.indexWatermark.fresh, true);
+  assert.deepEqual(result.results.map((row) => row.id), ['semantic', 'exact']);
 });
 
 test('healthy empty and healthy no-match remain distinct while unavailable fails truthfully', async () => {
@@ -411,6 +477,164 @@ test('default ANN loading consumes anchored handles without reopening target pat
   assert.deepEqual(stableRoles.sort(), ['ann-index', 'ann-meta']);
 });
 
+test('default ANN loading streams and compacts large pinned label metadata', async () => {
+  const targetDir = await createBrain({ nodes: [{ id: 'target', concept: 'target canary' }] });
+  const encoded = Buffer.from(JSON.stringify({
+    version: 1,
+    dimension: 2,
+    count: 2,
+    skipped: 0,
+    generation: 'g-streamed',
+    builtFromRevision: 42,
+    labels: [
+      {
+        id: 'one',
+        concept: 'a'.repeat(32 * 1024),
+        tag: 'conversation',
+        weight: 1,
+        activation: 0.5,
+        cluster: 4,
+        created: '2026-07-13T00:00:00.000Z',
+        source_class: 'conversation',
+        salienceWeight: 2.25,
+        provenance: { sourceClass: 'conversation', reason: 'discarded', retention: 'durable' },
+      },
+      { id: 'two', concept: 'short', cluster: 5 },
+    ],
+  }, null, 2));
+  let metadataReads = 0;
+  let streamedChunks = 0;
+  class FakeIndex {
+    readIndexSync() {}
+    setEf() {}
+  }
+  const views = {
+    'ann-index': {
+      path: '/dev/fd/93',
+      identity: { dev: '1', ino: '93', size: '4096' },
+      async assertStable() {},
+    },
+    'ann-meta': {
+      path: '/dev/fd/94',
+      size: encoded.length,
+      identity: { dev: '1', ino: '94', size: String(encoded.length) },
+      async readFile() {
+        metadataReads += 1;
+        assert.fail('large ANN metadata must not be materialized as one Buffer');
+      },
+      async *readChunks({ maxBytes }) {
+        assert.equal(maxBytes, MAX_ANN_METADATA_BYTES);
+        for (let offset = 0; offset < encoded.length; offset += 37) {
+          streamedChunks += 1;
+          yield encoded.subarray(offset, Math.min(encoded.length, offset + 37));
+        }
+      },
+      async assertStable() {},
+    },
+  };
+  const loadAnn = createDefaultLoadAnn({
+    hnswlibLoader: () => ({ HierarchicalNSW: FakeIndex }),
+  });
+  const loaded = await loadAnn({
+    descriptor: {
+      canonicalRoot: await fsp.realpath(targetDir),
+      generation: 'g-streamed',
+      cutoffRevision: 42,
+      summary: { nodeCount: 2 },
+    },
+    getAnchoredFile(role) { return views[role] || null; },
+  }, {
+    indexFile: 'memory-ann.42.index',
+    metaFile: 'memory-ann.42.meta.json',
+    builtFromRevision: 42,
+  });
+
+  assert.equal(metadataReads, 0);
+  assert.equal(streamedChunks > 1, true);
+  assert.equal(loaded.count, 2);
+  assert.equal(Buffer.byteLength(loaded.labels[0].concept, 'utf8') <= 512, true);
+  assert.equal(Object.hasOwn(loaded.labels[0], 'provenance'), false);
+  assert.equal(loaded.labels[0].source_class, 'conversation');
+  assert.deepEqual(loaded.labels.map((label) => label.id), ['one', 'two']);
+});
+
+test('ANN metadata streaming stays bounded for a large label catalog', () => {
+  const probe = spawnSync(process.execPath, [
+    '--max-old-space-size=128',
+    '--expose-gc',
+    path.join(process.cwd(), 'tests/engine/dashboard/memory-search-ann-heap-probe.cjs'),
+  ], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    timeout: 120_000,
+    maxBuffer: 1024 * 1024,
+  });
+  assert.equal(probe.status, 0, `${probe.stderr}\n${probe.stdout}`);
+  const receipt = JSON.parse(probe.stdout.trim());
+  assert.equal(receipt.labels, 25_000);
+  assert.equal(receipt.heapUsedBytes < 96 * 1024 * 1024, true,
+    `retained heap ${receipt.heapUsedBytes}`);
+  assert.equal(receipt.maxRssBytes < 256 * 1024 * 1024, true,
+    `max RSS ${receipt.maxRssBytes}`);
+});
+
+test('ANN metadata streaming rejects label-count amplification before heap exhaustion', () => {
+  const probe = spawnSync(process.execPath, [
+    '--max-old-space-size=128',
+    '--expose-gc',
+    path.join(process.cwd(), 'tests/engine/dashboard/memory-search-ann-heap-probe.cjs'),
+    'amplification',
+  ], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    timeout: 120_000,
+    maxBuffer: 1024 * 1024,
+  });
+  assert.equal(probe.status, 0, `${probe.stderr}\n${probe.stdout}`);
+  const receipt = JSON.parse(probe.stdout.trim());
+  assert.equal(receipt.rejected, true);
+  assert.equal(receipt.heapUsedBytes < 96 * 1024 * 1024, true,
+    `retained heap ${receipt.heapUsedBytes}`);
+  assert.equal(receipt.maxRssBytes < 256 * 1024 * 1024, true,
+    `max RSS ${receipt.maxRssBytes}`);
+});
+
+test('ANN metadata rejects a source-count mismatch before consuming label chunks', async () => {
+  let chunksRead = 0;
+  async function* chunks() {
+    chunksRead += 1;
+    yield Buffer.from('{"dimension":768,"count":1000000,"skipped":0,"labels":[');
+    chunksRead += 1;
+    yield Buffer.from('{"id":"must-not-be-read","concept":""}]}');
+  }
+  await assert.rejects(
+    parseAnnMetadataChunks(chunks(), { expectedSourceNodeCount: 142_231 }),
+    (error) => error?.code === 'source_unavailable'
+      && /count does not match source/i.test(error.message),
+  );
+  assert.equal(chunksRead, 1);
+});
+
+test('ANN metadata rejects a fragmented oversized label before joining it', async () => {
+  let chunksRead = 0;
+  async function* chunks() {
+    chunksRead += 1;
+    yield Buffer.from('{"dimension":768,"count":1,"skipped":0,"labels":[{"id":"large","concept":"');
+    for (let index = 0; index < 8; index += 1) {
+      chunksRead += 1;
+      yield Buffer.from('a'.repeat(64 * 1024));
+    }
+    chunksRead += 1;
+    yield Buffer.from('"}]}');
+  }
+  await assert.rejects(
+    parseAnnMetadataChunks(chunks(), { expectedSourceNodeCount: 1 }),
+    (error) => error?.code === 'source_unavailable'
+      && /label exceeds byte limit/i.test(error.message),
+  );
+  assert.equal(chunksRead <= 6, true, `consumed ${chunksRead} chunks`);
+});
+
 test('default ANN loading deduplicates concurrent immutable pinned loads and caches the result', async () => {
   const targetDir = await createBrain({ nodes: [{ id: 'target', concept: 'target canary' }] });
   let metadataReads = 0;
@@ -461,6 +685,247 @@ test('default ANN loading deduplicates concurrent immutable pinned loads and cac
   assert.equal(third, first);
   assert.equal(metadataReads, 1);
   assert.equal(indexReads, 1);
+});
+
+test('same-key ANN cache respawns an unexpectedly dead runtime', async (t) => {
+  const targetDir = await createBrain({ nodes: [] });
+  const root = await fsp.realpath(targetDir);
+  const runtimes = [];
+  const loadAnn = createDefaultLoadAnn({
+    indexRuntimeFactory: async () => {
+      const state = { healthy: true, terminated: false };
+      runtimes.push(state);
+      return {
+        isHealthy() { return state.healthy && !state.terminated; },
+        async search() { return { neighbors: [], distances: [] }; },
+        async terminate() { state.terminated = true; },
+      };
+    },
+  });
+  t.after(() => loadAnn.close());
+  const source = zeroLabelPinnedSource(root, 1);
+  const annMeta = zeroLabelAnnMeta(1);
+  await loadAnn.runExclusive(source, annMeta, {}, (ann) => ann.search([1, 0], 1));
+  assert.equal(runtimes.length, 1);
+  runtimes[0].healthy = false;
+  await loadAnn.runExclusive(source, annMeta, {}, (ann) => ann.search([1, 0], 1));
+  assert.equal(runtimes[0].terminated, true);
+  assert.equal(runtimes.length, 2);
+});
+
+test('ANN child abort keeps the exclusive search pending until the child exits', async () => {
+  const child = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.connected = true;
+  child.killed = false;
+  child.send = () => true;
+  child.kill = () => {
+    child.killed = true;
+    return true;
+  };
+  const runtimePromise = createAnnWorkerRuntime({
+    indexPath: '/tmp/fake-ann.index',
+    dimension: 2,
+    ef: 100,
+    forkImpl() {
+      queueMicrotask(() => child.emit('message', { type: 'ready' }));
+      return child;
+    },
+  });
+  const runtime = await runtimePromise;
+  const controller = new AbortController();
+  const abortReason = new Error('stop child search');
+  abortReason.name = 'AbortError';
+  let settled = false;
+  const search = runtime.search([1, 0], 1, { signal: controller.signal })
+    .finally(() => { settled = true; });
+  controller.abort(abortReason);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(child.killed, true);
+  assert.equal(settled, false);
+  child.connected = false;
+  child.emit('exit', null, 'SIGKILL');
+  await assert.rejects(search, (error) => error === abortReason);
+  assert.equal(settled, true);
+});
+
+test('ANN child watchdog terminates a connected nonresponsive search', async () => {
+  const child = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.connected = true;
+  child.send = () => true;
+  child.kill = () => {
+    queueMicrotask(() => {
+      child.connected = false;
+      child.emit('close', null, 'SIGKILL');
+    });
+    return true;
+  };
+  const runtimePromise = createAnnWorkerRuntime({
+    indexPath: '/tmp/fake-ann.index',
+    dimension: 2,
+    ef: 100,
+    searchTimeoutMs: 5,
+    forkImpl() {
+      queueMicrotask(() => child.emit('message', { type: 'ready' }));
+      return child;
+    },
+  });
+  const runtime = await runtimePromise;
+  await assert.rejects(
+    runtime.search([1, 0], 1),
+    (error) => error?.code === 'source_unavailable' && /search timed out/i.test(error.message),
+  );
+  assert.equal(runtime.isHealthy(), false);
+});
+
+test('default ANN loading terminates the isolated runtime before pinned revision replacement', async (t) => {
+  const targetDir = await createBrain({ nodes: [] });
+  const root = await fsp.realpath(targetDir);
+  const events = [];
+  let active = 0;
+  let maxActive = 0;
+  const loadAnn = createDefaultLoadAnn({
+    indexRuntimeFactory: async ({ indexPath }) => {
+      events.push(`load:${indexPath}`);
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      const index = { indexPath };
+      let closed = false;
+      return {
+        index,
+        async search() {
+          if (closed) throw new Error('runtime closed');
+          return { neighbors: [], distances: [] };
+        },
+        async terminate() {
+          if (closed) return;
+          closed = true;
+          events.push(`terminate:${indexPath}`);
+          active -= 1;
+        },
+      };
+    },
+  });
+  t.after(() => loadAnn.close());
+  const firstLoaded = await loadAnn.runExclusive(
+    zeroLabelPinnedSource(root, 1), zeroLabelAnnMeta(1), {}, (ann) => ann,
+  );
+  const secondLoaded = await loadAnn.runExclusive(
+    zeroLabelPinnedSource(root, 2), zeroLabelAnnMeta(2), {}, (ann) => ann,
+  );
+  assert.notEqual(secondLoaded.index, firstLoaded.index);
+  await assert.rejects(firstLoaded.search([1, 0], 1), /runtime closed/);
+  assert.deepEqual(await secondLoaded.search([1, 0], 1), []);
+  assert.equal(maxActive, 1);
+  assert.equal(active, 1);
+  assert.deepEqual(events, [
+    'load:/dev/fd/101',
+    'terminate:/dev/fd/101',
+    'load:/dev/fd/102',
+  ]);
+});
+
+test('isolated ANN worker survives a corrupt pinned-index replacement and can recover', async (t) => {
+  const targetDir = await createBrain({ nodes: [] });
+  const root = await fsp.realpath(targetDir);
+  const hnswlib = require('hnswlib-node');
+  const goodIndexPath = path.join(root, 'memory-ann.good.index');
+  const badIndexPath = path.join(root, 'memory-ann.bad.index');
+  const goodMetaPath = path.join(root, 'memory-ann.good.meta.json');
+  const badMetaPath = path.join(root, 'memory-ann.bad.meta.json');
+  const index = new hnswlib.HierarchicalNSW('cosine', 2);
+  index.initIndex(1);
+  index.addPoint([1, 0], 0);
+  index.writeIndexSync(goodIndexPath);
+  await fsp.writeFile(badIndexPath, 'corrupt-index');
+  const metadata = (revision) => JSON.stringify({
+    dimension: 2,
+    count: 1,
+    skipped: 0,
+    generation: `g-${revision}`,
+    builtFromRevision: revision,
+    labels: [{ id: `node-${revision}`, concept: 'worker replacement canary' }],
+  });
+  await fsp.writeFile(goodMetaPath, metadata(1));
+  await fsp.writeFile(badMetaPath, metadata(2));
+  const source = (revision) => ({
+    descriptor: {
+      canonicalRoot: root,
+      generation: `g-${revision}`,
+      cutoffRevision: revision,
+      summary: { nodeCount: 1 },
+    },
+  });
+  const loadAnn = createDefaultLoadAnn();
+  t.after(() => loadAnn.close());
+  const goodMeta = {
+    indexFile: path.basename(goodIndexPath),
+    metaFile: path.basename(goodMetaPath),
+    builtFromRevision: 1,
+  };
+  const first = await loadAnn.runExclusive(source(1), goodMeta, {}, (ann) => (
+    ann.search([1, 0], 1)
+  ));
+  assert.equal(first[0].node.id, 'node-1');
+  await assert.rejects(
+    loadAnn.runExclusive(source(2), {
+      indexFile: path.basename(badIndexPath),
+      metaFile: path.basename(badMetaPath),
+      builtFromRevision: 2,
+    }, {}, (ann) => ann.search([1, 0], 1)),
+    (error) => error?.code === 'source_unavailable'
+      && /worker failed to load/i.test(error.message),
+  );
+  const recovered = await loadAnn.runExclusive(source(1), goodMeta, {}, (ann) => (
+    ann.search([1, 0], 1)
+  ));
+  assert.equal(recovered[0].node.id, 'node-1');
+});
+
+test('distinct pinned ANN loads cannot replace a runtime during an exclusive consumer', async (t) => {
+  const targetDir = await createBrain({ nodes: [] });
+  const root = await fsp.realpath(targetDir);
+  const events = [];
+  let releaseFirst;
+  let markFirstStarted;
+  const firstStarted = new Promise((resolve) => { markFirstStarted = resolve; });
+  const firstRelease = new Promise((resolve) => { releaseFirst = resolve; });
+  const loadAnn = createDefaultLoadAnn({
+    indexRuntimeFactory: async ({ indexPath }) => ({
+      async search() { return { neighbors: [], distances: [] }; },
+      async terminate() { events.push(`terminate:${indexPath}`); },
+      index: { indexPath },
+      loaded: events.push(`load:${indexPath}`),
+    }),
+  });
+  t.after(() => loadAnn.close());
+  const first = loadAnn.runExclusive(
+    zeroLabelPinnedSource(root, 1), zeroLabelAnnMeta(1), {}, async () => {
+      events.push('consumer:first:start');
+      markFirstStarted();
+      await firstRelease;
+      events.push('consumer:first:end');
+    },
+  );
+  await firstStarted;
+  const second = loadAnn.runExclusive(
+    zeroLabelPinnedSource(root, 2), zeroLabelAnnMeta(2), {}, () => {
+      events.push('consumer:second');
+    },
+  );
+  await Promise.resolve();
+  assert.equal(events.includes('load:/dev/fd/102'), false);
+  releaseFirst();
+  await Promise.all([first, second]);
+  assert.deepEqual(events, [
+    'load:/dev/fd/101',
+    'consumer:first:start',
+    'consumer:first:end',
+    'terminate:/dev/fd/101',
+    'load:/dev/fd/102',
+    'consumer:second',
+  ]);
 });
 
 test('unsupported ANN descriptor paths degrade to a complete logical semantic scan', async () => {

@@ -157,6 +157,17 @@ Runs at first `pm2 start` via `cli/lib/pm2-commands.js`. Writes
   and known local legacy roots such as `/Users/jtr/_JTR23_/cosmo-home_2.3/runs`
 - A persistent `security.encryption_key` (generated once, preserved on re-seed)
 
+The same seed also rewrites
+`cosmo23/.cosmo23-config/model-catalog.json` from Home23's shared exact-pair
+authority. `config/home.yaml` `providers.*.defaultModels` owns the complete chat
+model list; the generated catalog retains the required embedding row/default and
+reviewed execution capabilities. Reseeding removes stale COSMO discovery rows, so
+the managed COSMO process, Query selectors, and protected provider execution do
+not silently drift onto different provider/model catalogs.
+The managed config also carries validated exact Direct, PGS sweep, and PGS
+synthesis defaults. In `HOME23_MANAGED` mode, live Ollama/Codex discovery is
+diagnostic only and cannot replace or expand those selectable rows.
+
 ### `ecosystem.config.cjs` (PM2 launcher)
 
 - Sets `COSMO23_CONFIG_DIR=cosmo23/.cosmo23-config/` so both reads and writes
@@ -2729,6 +2740,51 @@ contracts reported 36 pass and one intentional live-only skip. Live deployment
 and exact Jerry/Forrest operation IDs are recorded separately in the dated Brain
 Tools Hardening receipt.
 
+## Patch 58 — Shared Chat/Query model authority and durable provider transport
+
+**Problem:** Home23 Chat, the Home23 Query tab, and the vendored COSMO Query tab
+could advertise different model lists. COSMO discovery could replace managed
+rows, Query controls carried model-only values that were ambiguous across
+providers, and the older dashboard Query/PGS surface still selected literal
+models. A valid long Codex operation could also be terminated by Undici's hidden
+five-minute header timeout before Home23's explicit provider-stall deadline.
+
+**Fix:** `config/home.yaml` `providers.*.defaultModels` now builds one exact-pair
+authority for Chat, both Query selectors, dashboard admission, and the managed
+COSMO worker. Provider execution limits come from reviewed provider capabilities;
+role defaults are accepted only when their exact pair is configured. Managed
+discovery cannot add or replace selectable rows. Direct and PGS requests carry
+exact nested provider/model pairs, including fresh/continue/targeted session
+state and named PGS levels. The main Chat picker also stores exact pairs, so
+duplicate OpenAI and OpenAI Codex model IDs remain distinct. The older `/query`
+page redirects to the Home23 Query tab and its model-only APIs fail closed.
+Codex durable calls use an explicit
+long-lived dispatcher so operation cancellation, provider silence, and the hard
+deadline remain the only timeout authorities. Both the Home23 and standalone
+COSMO packages pin Undici 6.21.3, whose Node `>=18.17` floor is compatible with
+their declared runtimes, and the managed catalog seed uses a same-directory
+fsync/rename/directory-fsync publication so interruption cannot leave partial
+JSON authority.
+Settings validates the prospective exact pairs for every configured agent before
+writing. It then reseeds managed COSMO, synchronously refreshes COSMO and any
+other affected dashboards, hot-swaps the current dashboard resolver only after
+the replacement validates, and returns success only after online verification.
+A failed refresh restores the prior YAML, reseeds the prior authority, and runs
+a compensating runtime refresh instead of leaving a false-green split state.
+
+**Live evidence:** Chat, Home23 Query, and managed COSMO returned the same 31
+exact pairs; all 31 passed bounded provider probes. A durable Direct Query using
+`openai-codex / gpt-5.4-mini` completed against Jerry's healthy `manifest-v1`
+source. The live PGS default uses the known-good
+`openai-codex / gpt-5.4-mini` sweep/synthesis pair.
+
+**Verification:** The complete Home23 test command passed, including the
+controlled 100,000-node/300,000-edge PGS acceptance with durable retained sweep
+output, all agent/COSMO/dashboard/CLI/engine/script groups, and the legacy route
+guards. Focused exact-pair, Settings transaction, PGS mode/reuse, transport, and
+atomic-publication regressions passed. The TypeScript build and contract suites
+also passed.
+
 ---
 
 ## History
@@ -3096,3 +3152,7 @@ Tools Hardening receipt.
   cadence, preserving semantically distinct start/completion markers. The
   dashboard coordinator applies the same semantic-aware journal coalescing so
   a long sweep cannot flood chat status or amplify bounded-journal rewrites.
+- **2026-07-13** — Patch 58 unifies Chat, Home23 Query, and managed COSMO on
+  Home23's exact provider/model authority, retires the model-only legacy Query
+  and PGS endpoints, and removes the hidden five-minute Codex transport timeout
+  from durable operations.

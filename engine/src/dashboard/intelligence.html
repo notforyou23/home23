@@ -91,7 +91,7 @@
             <div class="nav-link" data-tab="watch">👁️ Watch</div>
             <div class="nav-link" data-tab="deliverables">📦 Deliverables</div>
             <div class="nav-link" data-tab="operations">Operations</div>
-            <div class="nav-link" data-tab="query">Query</div>
+            <a class="nav-link" href="/home23#query">Query ↗</a>
             <div class="nav-link" data-tab="inject">🧠 Inject</div>
             <div class="nav-link" data-tab="memory">Memory</div>
             <div class="nav-link" data-tab="goals">Goals</div>
@@ -2370,7 +2370,7 @@
                     e.preventDefault();
                     // Switch to query tab if not active
                     if (currentTab !== 'query') {
-                        document.querySelector('[data-tab="query"]').click();
+                        window.location.href = '/home23#query';
                     }
                     // Focus input after a brief delay to allow tab switch
                     setTimeout(() => {
@@ -7102,7 +7102,7 @@
                 if (!data.success || data.systems.length === 0) {
                     showToast('No compiled systems yet. Compile your first system from the Query tab!', 'warning');
                     // Switch to Query tab
-                    document.querySelector('[data-tab="query"]').click();
+                    window.location.href = '/home23#query';
                     return;
                 }
                 

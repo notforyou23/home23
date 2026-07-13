@@ -120,7 +120,7 @@ class PGSEngine {
    */
   async execute(query, options = {}) {
     const {
-      model = 'claude-opus-4-8',
+      model: requestedModel = null,
       explicitProvider = null,
       pgsSweepProvider: sweepProviderOverride = null,
       mode: legacyMode = 'full',
@@ -132,6 +132,12 @@ class PGSEngine {
       enableSynthesis,
       includeCoordinatorInsights
     } = options;
+    const synthesisAssignment = this.qe?.runConfig?.modelAssignments?.synthesis;
+    const model = requestedModel
+      || (typeof synthesisAssignment?.model === 'string'
+        ? synthesisAssignment.model.trim()
+        : '')
+      || null;
     const mode = pgsMode || legacyMode || 'full';
     const synthesisProvider = this.resolveExactProvider(
       model,
@@ -1311,7 +1317,7 @@ Explicitly state what was searched for and NOT found in this partition. "This pa
    */
   async synthesize(query, sweepResults, options = {}) {
     const {
-      model = 'claude-opus-4-8',
+      model: requestedModel = null,
       provider = null,
       onChunk,
       totalNodes,
@@ -1320,6 +1326,12 @@ Explicitly state what was searched for and NOT found in this partition. "This pa
       selectedPartitions,
       config: cfg
     } = options;
+    const synthesisAssignment = this.qe?.runConfig?.modelAssignments?.synthesis;
+    const model = requestedModel
+      || (typeof synthesisAssignment?.model === 'string'
+        ? synthesisAssignment.model.trim()
+        : '')
+      || null;
     const synthesisMaxTokens = cfg?.synthesisMaxTokens || PGS_DEFAULTS.synthesisMaxTokens;
     const synthesisConfig = resolveSynthesisCommitConfig(
       options.synthesis || cfg?.synthesis || this.qe.runConfig?.synthesis || this.qe.runMetadata?.synthesis,

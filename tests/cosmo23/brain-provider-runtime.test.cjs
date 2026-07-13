@@ -74,6 +74,22 @@ test('provider runtime enables Anthropic OAuth only when no explicit credential 
   assert.equal(Object.hasOwn(withKey.anthropic, 'useOAuthService'), false);
 });
 
+test('provider runtime sends managed Anthropic OAuth credentials as an auth token', () => {
+  const merged = require('../../cosmo23/lib/brain-provider-runtime')
+    .mergeProviderConfiguration({}, {
+      providers: {
+        anthropic: {
+          apiKey: 'sk-ant-oat-managed-test-token',
+          oauthManaged: true,
+        },
+      },
+    });
+  assert.equal(merged.anthropic.authToken, 'sk-ant-oat-managed-test-token');
+  assert.equal(Object.hasOwn(merged.anthropic, 'apiKey'), false);
+  assert.equal(Object.hasOwn(merged.anthropic, 'api_key'), false);
+  assert.equal(Object.hasOwn(merged.anthropic, 'useOAuthService'), false);
+});
+
 test('provider runtime rejects symlinked canonical config and permits an absent secrets file', async (t) => {
   const root = await fixture();
   t.after(() => fsp.rm(root, { recursive: true, force: true }));

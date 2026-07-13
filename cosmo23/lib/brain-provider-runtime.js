@@ -51,6 +51,17 @@ function mergeProviderConfiguration(home, secrets) {
     result[provider] = { ...publicConfig, ...privateConfig };
   }
   if (!result.anthropic) result.anthropic = {};
+  const anthropicCredential = result.anthropic.authToken
+    || result.anthropic.auth_token
+    || result.anthropic.apiKey
+    || result.anthropic.api_key;
+  const anthropicOauthManaged = result.anthropic.oauthManaged === true
+    || (typeof anthropicCredential === 'string' && anthropicCredential.startsWith('sk-ant-oat'));
+  if (anthropicOauthManaged && anthropicCredential) {
+    result.anthropic.authToken = anthropicCredential;
+    delete result.anthropic.apiKey;
+    delete result.anthropic.api_key;
+  }
   if (!result.anthropic.apiKey && !result.anthropic.api_key
       && !result.anthropic.authToken && !result.anthropic.auth_token) {
     result.anthropic.useOAuthService = true;

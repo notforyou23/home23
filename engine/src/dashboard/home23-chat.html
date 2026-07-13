@@ -739,7 +739,7 @@
       const agentText = agentSel && agentSel.selectedOptions[0]
         ? agentSel.selectedOptions[0].textContent
         : '';
-      const modelText = modelSel && modelSel.value ? modelSel.value : '';
+      const modelText = modelSel?.selectedOptions?.[0]?.dataset?.model || '';
       if (agentText) nameEl.textContent = agentText;
       subEl.innerHTML = (modelText || 'tap to change') +
         '<span class="sh-title-caret">&#9662;</span>';

@@ -10,7 +10,8 @@ const {
   createBrainProviderClientRegistry,
 } = require('../../../cosmo23/lib/brain-provider-client-registry.js');
 const {
-  loadModelCatalogSync,
+  BUILTIN_MODEL_CATALOG,
+  normalizeModelCatalog,
 } = require('../../../cosmo23/server/config/model-catalog.js');
 const {
   ProviderCompletionError,
@@ -24,7 +25,9 @@ const {
 } = require('../../../engine/src/synthesis/provider-registry.js');
 
 function catalog() {
-  return loadModelCatalogSync();
+  // Keep the portable engine suite isolated from the operator's standalone
+  // ~/.cosmo2.3 catalog. Home23 injects its managed catalog in production.
+  return normalizeModelCatalog(BUILTIN_MODEL_CATALOG);
 }
 
 function exactRegistry(modelCatalog, generate = async () => ({

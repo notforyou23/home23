@@ -42,10 +42,12 @@ function requireProviderId(value) {
   return providerId;
 }
 
-// HOME23 PATCH — Claude Opus 4.8 rejects legacy sampling params such as
-// temperature and uses adaptive thinking instead of the older budgeted shape.
+// HOME23 PATCH — current Sonnet 4.7 and Opus 4.8 models reject legacy sampling
+// params such as temperature and use adaptive thinking instead.
 function isAnthropicSamplingDeprecatedModel(model) {
-  return /^(?:[^/]+\/)?claude-opus-4-8(?:$|[-@])/.test(String(model || '').trim());
+  return /^(?:[^/]+\/)?claude-(?:sonnet-(?:4-7|[5-9](?:-[0-9]+)*)|opus-4-8)(?:$|[-@])/.test(
+    String(model || '').trim(),
+  );
 }
 
 class AnthropicClient {

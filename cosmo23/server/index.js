@@ -129,6 +129,9 @@ const {
 const {
   normalizeExecutionMode
 } = require('../lib/execution-mode');
+const {
+  buildExactQueryDefaults,
+} = require('./lib/managed-query-defaults');
 
 const ROOT = path.resolve(__dirname, '..');
 const HOME23_ROOT = path.resolve(__dirname, '..', '..');
@@ -541,9 +544,10 @@ async function buildProvidersModelsPayload() {
   const catalog = loadModelCatalogSync();
   const defaults = getCatalogDefaults(catalog);
   let models = listCatalogModels(catalog);
+  const home23Managed = /^(1|true|yes|on)$/i.test(process.env.HOME23_MANAGED || '');
 
   const ollamaProvider = registry.getProviderById('ollama');
-  if (ollamaProvider) {
+  if (!home23Managed && ollamaProvider) {
     try {
       const ollamaHealth = await ollamaProvider.healthCheck();
       if (ollamaHealth.healthy) {
@@ -572,7 +576,7 @@ async function buildProvidersModelsPayload() {
 
   // OpenAI Codex — dynamic model discovery with seed list fallback
   const codexProvider = registry.getProviderById('openai-codex');
-  if (codexProvider) {
+  if (!home23Managed && codexProvider) {
     const CODEX_DISCOVERY_TTL = 5 * 60 * 1000; // 5 minutes
     let codexModels = null;
 
@@ -637,10 +641,29 @@ async function buildProvidersModelsPayload() {
     });
   }
 
+  let managedDefaults = null;
+  if (home23Managed) {
+    try {
+      const stored = JSON.parse(fs.readFileSync(getConfigPath(), 'utf8'));
+      managedDefaults = stored?.home23?.queryDefaults || null;
+    } catch (error) {
+      throw Object.assign(new Error(`Managed Query defaults are unreadable: ${error.message}`), {
+        code: 'model_catalog_invalid', retryable: false,
+      });
+    }
+  }
+  const queryDefaults = buildExactQueryDefaults({
+    models: deduped,
+    managed: home23Managed,
+    managedDefaults,
+    legacyDefaults: defaults,
+  });
+
   return {
     success: true,
     models: deduped,
     defaults,
+    queryDefaults,
     catalogPath: getModelCatalogPath(),
     providerCount: registry.getProviderIds().length,
     platform: getPlatform()

@@ -283,9 +283,16 @@ async function buildQueryCatalog(options = {}) {
   const cosmoBaseUrl = options.cosmoBaseUrl || getDefaultCosmoBaseUrl();
   const fetchImpl = options.fetchImpl || fetch;
   const timeoutMs = Number(options.timeoutMs || 5000);
-  const queryDefaults = options.queryDefaultsProvider
-    ? options.queryDefaultsProvider(agent)
-    : loadQueryDefaults(home23Root, agent);
+  const modelAuthorityPromise = Promise.resolve().then(() => {
+    if (options.modelAuthorityProvider) {
+      return options.modelAuthorityProvider({ agent, home23Root });
+    }
+    if (home23Root) {
+      const { loadHome23ModelAuthority } = require('./home23-model-catalog.js');
+      return loadHome23ModelAuthority({ home23Root, agent });
+    }
+    return null;
+  });
 
   const residentBrainPromise = options.residentBrainProvider
     ? Promise.resolve().then(() => options.residentBrainProvider({ agent, home23Root }))
@@ -297,14 +304,20 @@ async function buildQueryCatalog(options = {}) {
   ));
   const [statusResult, modelsResult, brainsResult] = await Promise.allSettled([
     fetchJson(fetchImpl, cosmoBaseUrl, '/api/status', timeoutMs),
-    fetchJson(fetchImpl, cosmoBaseUrl, '/api/providers/models', timeoutMs),
+    modelAuthorityPromise.then((authority) => (
+      authority || fetchJson(fetchImpl, cosmoBaseUrl, '/api/providers/models', timeoutMs)
+    )),
     brainCatalogPromise,
   ]);
 
   const statusError = statusResult.status === 'rejected' ? statusResult.reason : null;
   const modelError = modelsResult.status === 'rejected' ? modelsResult.reason : null;
   const brainError = brainsResult.status === 'rejected' ? brainsResult.reason : null;
-  const models = modelsResult.status === 'fulfilled' ? normalizeModels(modelsResult.value) : [];
+  const modelAuthority = modelsResult.status === 'fulfilled' ? modelsResult.value : null;
+  const models = modelAuthority ? normalizeModels(modelAuthority) : [];
+  const queryDefaults = modelAuthority?.queryDefaults || (options.queryDefaultsProvider
+    ? options.queryDefaultsProvider(agent)
+    : loadQueryDefaults(home23Root, agent));
   const brains = brainsResult.status === 'fulfilled' ? normalizeBrains(brainsResult.value) : [];
   const selectedBrain = findSelectedBrain(brains, agent);
   const reason = availabilityFor({ statusError, models, brains, selectedBrain });

@@ -152,6 +152,8 @@ class CosmoStandaloneApp {
       launch: {},
       local: {}
     };
+    this.queryDefaults = null;
+    this.queryModelConfigurationNotified = false;
     this.managedByHome23 = false;
     this.home23DashboardPort = '5002';
     this.activeContext = null;
@@ -815,6 +817,7 @@ class CosmoStandaloneApp {
       const result = await this.api('/api/providers/models');
       this.models = result.models || [];
       this.modelDefaults = result.defaults || this.modelDefaults;
+      this.queryDefaults = result.queryDefaults || null;
       this.renderModelOptions();
     } catch (error) {
       this.showToast(`Model load failed: ${error.message}`, 'error');
@@ -879,6 +882,51 @@ class CosmoStandaloneApp {
     }
   }
 
+  // HOME23 PATCH — Query options are exact managed pairs. Launch/catalog
+  // controls retain their historical model-only values for compatibility.
+  populateQueryModelSelect(selectOrId, models, preferredPair) {
+    const select = typeof selectOrId === 'string' ? document.getElementById(selectOrId) : selectOrId;
+    if (!select) return true;
+
+    select.innerHTML = '';
+    select.disabled = true;
+    const grouped = new Map();
+    for (const model of models) {
+      if (!model?.provider || !model?.id) continue;
+      if (!grouped.has(model.provider)) grouped.set(model.provider, []);
+      grouped.get(model.provider).push(model);
+    }
+    for (const [provider, providerModels] of grouped) {
+      const optgroup = document.createElement('optgroup');
+      optgroup.label = providerModels[0].providerLabel || provider;
+      for (const model of providerModels) {
+        const option = document.createElement('option');
+        option.value = encodeQueryModelPair({ provider, model: model.id });
+        option.dataset.provider = provider;
+        option.dataset.model = model.id;
+        option.textContent = model.label || model.id;
+        optgroup.appendChild(option);
+      }
+      select.appendChild(optgroup);
+    }
+
+    let preferredValue = null;
+    try {
+      preferredValue = encodeQueryModelPair({
+        provider: preferredPair?.provider,
+        model: preferredPair?.model,
+      });
+    } catch {
+      return false;
+    }
+    if (!Array.from(select.options || []).some(option => option.value === preferredValue)) {
+      return false;
+    }
+    select.value = preferredValue;
+    select.disabled = false;
+    return true;
+  }
+
   renderModelOptions() {
     const chatModels = this.getChatModels();
     const localChatModels = this.getLocalModels('chat');
@@ -898,10 +946,32 @@ class CosmoStandaloneApp {
     this.populateModelSelect('catalog-local-primary', localChatModels, this.modelDefaults.local?.primary);
     this.populateModelSelect('catalog-local-fast', localChatModels, this.modelDefaults.local?.fast);
 
-    // Query tab model selects — single source of truth, no separate fetch
-    this.populateModelSelect('qt-model', chatModels, this.modelDefaults.queryModel || 'gpt-5.5');
-    this.populateModelSelect('qt-pgs-sweep-model', chatModels, this.modelDefaults.pgsSweepModel || this.modelDefaults.queryModel || 'gpt-5.5');
-    this.populateModelSelect('qt-pgs-synth-model', chatModels, this.modelDefaults.queryModel || 'gpt-5.5');
+    // Query selectors retain the exact managed provider/model pairs. Missing or
+    // stale defaults disable Query instead of inventing a model-only fallback.
+    const queryDefaults = this.queryDefaults || {};
+    const queryModelsReady = [
+      this.populateQueryModelSelect('qt-model', chatModels, {
+        provider: queryDefaults.defaultProvider,
+        model: queryDefaults.defaultModel,
+      }),
+      this.populateQueryModelSelect('qt-pgs-sweep-model', chatModels, {
+        provider: queryDefaults.pgsSweepProvider,
+        model: queryDefaults.pgsSweepModel,
+      }),
+      this.populateQueryModelSelect('qt-pgs-synth-model', chatModels, {
+        provider: queryDefaults.pgsSynthProvider,
+        model: queryDefaults.pgsSynthModel,
+      }),
+    ].every(Boolean);
+    if (!queryModelsReady && !this.queryModelConfigurationNotified) {
+      this.queryModelConfigurationNotified = true;
+      this.showToast('Query models are unavailable: managed exact provider/model defaults are incomplete', 'error');
+    } else if (queryModelsReady) {
+      this.queryModelConfigurationNotified = false;
+    }
+    if (typeof window.refreshCosmoQueryTabState === 'function') {
+      window.refreshCosmoQueryTabState();
+    }
 
     // Interactive tab model select
     this.populateModelSelect('interactive-model', chatModels);
@@ -1405,6 +1475,9 @@ class CosmoStandaloneApp {
   renderQueryBrains() {
     populateBrainSelect(document.getElementById('query-brain'), this.brains, this.selectedBrainId);
     this.updateQueryBrainNote();
+    if (typeof window.refreshCosmoQueryTabState === 'function') {
+      window.refreshCosmoQueryTabState();
+    }
   }
 
   syncSelectedBrainIntoQuery() {

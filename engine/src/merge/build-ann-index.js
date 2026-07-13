@@ -17,6 +17,7 @@ const {
   memorySourceError,
   throwIfAborted,
 } = require('../../../shared/memory-source');
+const { projectAnnLabel } = require('../../../shared/ann-label-contract.cjs');
 
 const DIM = 768;
 const HNSW_M = 16;
@@ -62,22 +63,18 @@ function createIndex(hnswlib, dimension, capacity) {
 
 function projectLabel(node) {
   const provenance = classifyMemoryProvenance(node);
-  return {
-    id: node.id,
-    concept: typeof node.concept === 'string' ? node.concept.slice(0, 800) : '',
-    tag: node.tag || null,
-    weight: node.weight ?? null,
-    activation: node.activation ?? null,
-    cluster: node.cluster ?? null,
-    created: node.created ?? null,
-    source_class: node.source_class || provenance.sourceClass,
-    salienceWeight: node.salienceWeight ?? provenance.salienceWeight,
-    provenance: node.provenance || {
-      sourceClass: provenance.sourceClass,
-      reason: provenance.reason,
-      retention: provenance.retention,
-    },
-  };
+  try {
+    return projectAnnLabel(node, {
+      fallbackSourceClass: provenance.sourceClass,
+      fallbackSalienceWeight: provenance.salienceWeight,
+    });
+  } catch (cause) {
+    throw memorySourceError('invalid_memory_source', 'node cannot be represented in ANN metadata', {
+      retryable: false,
+      nodeId: typeof node?.id === 'string' && node.id.length <= 256 ? node.id : null,
+      cause,
+    });
+  }
 }
 
 async function fsyncDirectory(dir) {

@@ -44,7 +44,7 @@ async function writeManifestBrain() {
     skipped: 0,
     generation: 'g1',
     builtFromRevision: 2,
-    labels: [{ id: 1, concept: 'pin canary' }],
+    labels: [{ id: '1', concept: 'pin canary' }],
   })}\n`);
   await fsp.writeFile(path.join(brain, 'memory-manifest.json'), `${JSON.stringify({
     formatVersion: 1,

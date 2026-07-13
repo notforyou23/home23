@@ -115,8 +115,6 @@ class ProviderRegistry {
         'qwen3.5:397b',
         'qwen3-coder:480b',
         'qwen3-coder-next',
-        'qwen3-next:80b',
-        'qwen3-vl:235b',
         'qwen3-vl:235b-instruct',
         'deepseek-v4-pro',
         'deepseek-v4-flash',
@@ -131,7 +129,6 @@ class ProviderRegistry {
         'devstral-2:123b',
         'devstral-small-2:24b',
         'gemini-3-flash-preview',
-        'cogito-2.1:671b',
         'rnj-1:8b',
       ];
       const discoveryTtlMs = 5 * 60 * 1000;

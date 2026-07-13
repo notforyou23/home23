@@ -202,6 +202,61 @@ test('query catalog facade normalizes COSMO status, models, brains, and selected
   assert.equal(catalog.endpoints.export, '/home23/api/query/export');
 });
 
+test('query catalog uses the shared Home23 exact-pair authority without fetching COSMO models', async () => {
+  const calls = [];
+  const catalog = await buildQueryCatalog({
+    agent: 'jerry',
+    cosmoBaseUrl: 'http://cosmo.test',
+    fetchImpl: async (url, init) => {
+      calls.push(new URL(url).pathname);
+      return makeFetch({
+        '/api/status': {
+          success: true, running: false, apiReachable: true, activeRun: false,
+        },
+        '/api/brains': {
+          brains: [{
+            id: 'brain-jerry', routeKey: 'brain-jerry', sourceLabel: 'Jerry',
+          }],
+        },
+      })(url, init);
+    },
+    modelAuthorityProvider: () => ({
+      models: [
+        {
+          id: 'gpt-5.6-terra', model: 'gpt-5.6-terra', name: 'gpt-5.6-terra',
+          provider: 'openai-codex', providerLabel: 'OpenAI Codex', kind: 'chat',
+          source: 'home23-config',
+        },
+        {
+          id: 'grok-4.5', model: 'grok-4.5', name: 'grok-4.5',
+          provider: 'xai', providerLabel: 'xAI', kind: 'chat',
+          source: 'home23-config',
+        },
+      ],
+      queryDefaults: {
+        defaultProvider: 'openai-codex', defaultModel: 'gpt-5.6-terra',
+        pgsSweepProvider: 'xai', pgsSweepModel: 'grok-4.5',
+        pgsSynthProvider: 'openai-codex', pgsSynthModel: 'gpt-5.6-terra',
+        defaultMode: 'dive', enablePGSByDefault: false, pgsDepth: 0.5,
+      },
+    }),
+  });
+
+  assert.equal(catalog.available, true);
+  assert.deepEqual(catalog.models.map(({ provider, id }) => ({ provider, id })), [
+    { provider: 'openai-codex', id: 'gpt-5.6-terra' },
+    { provider: 'xai', id: 'grok-4.5' },
+  ]);
+  assert.deepEqual(catalog.defaults, {
+    model: 'gpt-5.6-terra', provider: 'openai-codex', mode: 'dive',
+    enablePGSByDefault: false,
+    pgsSweepModel: 'grok-4.5', pgsSweepProvider: 'xai',
+    pgsSynthModel: 'gpt-5.6-terra', pgsSynthProvider: 'openai-codex',
+    pgsDepth: 0.5,
+  });
+  assert.equal(calls.includes('/api/providers/models'), false);
+});
+
 test('client streaming capability matches an operation-backed Query catalog', async () => {
   const catalog = await buildQueryCatalog({
     agent: 'jerry',
@@ -245,6 +300,16 @@ test('query catalog resolves the resident agent brain without waiting for the gl
     agent: 'jerry',
     cosmoBaseUrl: 'http://cosmo.test',
     fetchImpl,
+    modelAuthorityProvider: () => ({
+      models: [{
+        id: 'gpt-5.5', model: 'gpt-5.5', provider: 'openai-codex', kind: 'chat',
+      }],
+      queryDefaults: {
+        defaultProvider: 'openai-codex', defaultModel: 'gpt-5.5',
+        pgsSweepProvider: 'openai-codex', pgsSweepModel: 'gpt-5.5',
+        pgsSynthProvider: 'openai-codex', pgsSynthModel: 'gpt-5.5',
+      },
+    }),
   });
 
   const canonicalRoot = fs.realpathSync(brainPath);
@@ -257,6 +322,7 @@ test('query catalog resolves the resident agent brain without waiting for the gl
   assert.equal(catalog.selectedBrain.sourceLabel, 'jerry');
   assert.deepEqual(catalog.brains, [catalog.selectedBrain]);
   assert.equal(calls.includes('/api/brains'), false);
+  assert.equal(calls.includes('/api/providers/models'), false);
 });
 
 test('query catalog facade reports explicit unavailable state when COSMO is unreachable', async () => {

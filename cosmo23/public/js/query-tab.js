@@ -8,6 +8,187 @@ let lastQueryResult = null;
 let queryHistory = [];
 let _queryTabInitialized = false;
 
+// HOME23 PATCH — the managed Query surface carries exact provider/model pairs
+// and emits only the durable adapter's canonical Direct or PGS schema.
+const QT_PGS_LEVELS = Object.freeze({
+  skim: 0.10,
+  sample: 0.25,
+  deep: 0.50,
+  full: 1,
+});
+const QT_PGS_MODES = new Set(['fresh', 'continue', 'targeted']);
+const QT_OPERATION_ID_PATTERN = /^brop_[A-Za-z0-9_-]{32}$/;
+const QT_PARTITION_ID_PATTERN = /^(?:c|h)-[A-Za-z0-9._-]{1,253}$/;
+const QT_MAX_TARGET_PARTITIONS = 256;
+
+function exactQueryModelPair(pair, label = 'model') {
+  const provider = typeof pair?.provider === 'string' ? pair.provider.trim() : '';
+  const model = typeof pair?.model === 'string' ? pair.model.trim() : '';
+  if (!provider || !model) {
+    throw new Error(`Select an exact provider and ${label}`);
+  }
+  return { provider, model };
+}
+
+function encodeQueryModelPair(pair) {
+  const exact = exactQueryModelPair(pair);
+  return `${encodeURIComponent(exact.provider)}::${encodeURIComponent(exact.model)}`;
+}
+
+function decodeQueryModelPair(value) {
+  if (typeof value !== 'string') throw new Error('Select an exact provider and model');
+  const splitAt = value.indexOf('::');
+  if (splitAt < 1) throw new Error('Select an exact provider and model');
+  return exactQueryModelPair({
+    provider: decodeURIComponent(value.slice(0, splitAt)),
+    model: decodeURIComponent(value.slice(splitAt + 2)),
+  });
+}
+
+function selectedQueryModelPair(select, label = 'model') {
+  if (!select || select.disabled) throw new Error(`Select an exact provider and ${label}`);
+  return exactQueryModelPair(decodeQueryModelPair(select.value), label);
+}
+
+function requireQueryOperationId(value) {
+  if (typeof value !== 'string' || !QT_OPERATION_ID_PATTERN.test(value)) {
+    throw new Error('Select a valid prior PGS operation');
+  }
+  return value;
+}
+
+function parseQueryTargetPartitionIds(value) {
+  const entries = Array.isArray(value) ? value : String(value || '').split(/[\s,]+/);
+  const targets = [];
+  const seen = new Set();
+  for (const entry of entries) {
+    const partitionId = String(entry || '').trim();
+    if (!partitionId) continue;
+    if (seen.has(partitionId)) {
+      throw new Error(`Duplicate target partition ID: ${partitionId}`);
+    }
+    if (!QT_PARTITION_ID_PATTERN.test(partitionId)) {
+      throw new Error(`Invalid target partition ID: ${partitionId}`);
+    }
+    seen.add(partitionId);
+    targets.push(partitionId);
+  }
+  if (!targets.length) throw new Error('Targeted PGS requires at least one partition ID');
+  if (targets.length > QT_MAX_TARGET_PARTITIONS) {
+    throw new Error(`Targeted PGS supports at most ${QT_MAX_TARGET_PARTITIONS} partition IDs`);
+  }
+  return targets;
+}
+
+function queryCountOrNull(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function escapeQueryHtmlText(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function buildCosmoPgsCoverageHTML(pgs, result = {}) {
+  if (!pgs || typeof pgs !== 'object' || Array.isArray(pgs)) return '';
+  const level = Object.hasOwn(QT_PGS_LEVELS, pgs.coverageLevel)
+    ? pgs.coverageLevel
+    : null;
+  const fraction = Number.isFinite(pgs.coverageFraction)
+    ? pgs.coverageFraction
+    : (level ? QT_PGS_LEVELS[level] : null);
+  const levelName = level ? level.charAt(0).toUpperCase() + level.slice(1) : 'Requested';
+  const percent = fraction === null ? null : Math.round(fraction * 100);
+  const scopeSuccessful = queryCountOrNull(pgs.scopeSuccessfulWorkUnits);
+  const scopePending = queryCountOrNull(pgs.scopePendingWorkUnits);
+  const scopeTotal = queryCountOrNull(pgs.scopeWorkUnits)
+    ?? (scopeSuccessful !== null && scopePending !== null ? scopeSuccessful + scopePending : null);
+  const globalCovered = queryCountOrNull(pgs.globalCoveredWorkUnits);
+  const globalPending = queryCountOrNull(pgs.globalPendingWorkUnits);
+  const globalTotal = queryCountOrNull(pgs.globalWorkUnits)
+    ?? (globalCovered !== null && globalPending !== null ? globalCovered + globalPending : null);
+  const reused = queryCountOrNull(pgs.reusedWorkUnits);
+  const newlySwept = queryCountOrNull(pgs.newWorkUnits);
+  const lines = [
+    `<span>Coverage level: ${escapeQueryHtmlText(levelName)}${percent === null ? '' : ` (${percent}%)`}</span>`,
+    `<span>Requested scope: ${scopeSuccessful ?? '?'}${scopeTotal === null ? '' : `/${scopeTotal}`} complete; ${scopePending ?? '?'} pending</span>`,
+    `<span>Global coverage: ${globalCovered ?? '?'}${globalTotal === null ? '' : `/${globalTotal}`}; ${globalPending ?? '?'} pending</span>`,
+    `<span>${pgs.fullCoverage === true ? 'Full graph coverage: complete' : 'Full graph coverage: not yet complete'}</span>`,
+    `<span>This operation: ${reused ?? '?'} reused; ${newlySwept ?? '?'} new</span>`,
+  ];
+  if (Array.isArray(pgs.targetPartitionIds) && pgs.targetPartitionIds.length) {
+    lines.push(`<span>Target partitions: ${pgs.targetPartitionIds.map(escapeQueryHtmlText).join(', ')}</span>`);
+  }
+  if (QT_OPERATION_ID_PATTERN.test(result.operationId || '')) {
+    lines.push(`<span>Operation: <code>${escapeQueryHtmlText(result.operationId)}</code></span>`);
+  }
+  return `<div class="qt-metadata qt-pgs-meta">${lines.join('')}</div>`;
+}
+
+function buildCosmoQueryRequest(input) {
+  const query = typeof input?.query === 'string' ? input.query.trim() : '';
+  if (!query) throw new Error('Enter a query');
+  if (input.enablePGS === true) {
+    if (!QT_PGS_MODES.has(input.pgsMode)) {
+      throw new Error('PGS mode must be fresh, continue, or targeted');
+    }
+    if (!Object.hasOwn(QT_PGS_LEVELS, input.pgsLevel)) {
+      throw new Error('PGS level must be skim, sample, deep, or full');
+    }
+    const request = {
+      query,
+      enablePGS: true,
+      pgsMode: input.pgsMode,
+      pgsLevel: input.pgsLevel,
+      pgsSweep: exactQueryModelPair(input.pgsSweep, 'PGS sweep model'),
+      pgsSynth: exactQueryModelPair(input.pgsSynth, 'PGS synthesis model'),
+    };
+    const hasContinuation = input.continueFromOperationId !== undefined
+      && input.continueFromOperationId !== null
+      && input.continueFromOperationId !== '';
+    const hasTargets = input.targetPartitionIds !== undefined
+      && input.targetPartitionIds !== null;
+    if (input.pgsMode === 'fresh') {
+      if (hasContinuation || hasTargets) {
+        throw new Error('Fresh PGS cannot include a prior operation or target partitions');
+      }
+    } else if (input.pgsMode === 'continue') {
+      if (!hasContinuation || hasTargets) {
+        throw new Error('Continue PGS requires one prior operation and no target partitions');
+      }
+      request.continueFromOperationId = requireQueryOperationId(input.continueFromOperationId);
+    } else {
+      if (!hasTargets) throw new Error('Targeted PGS requires target partition IDs');
+      request.targetPartitionIds = parseQueryTargetPartitionIds(input.targetPartitionIds);
+      if (hasContinuation) {
+        request.continueFromOperationId = requireQueryOperationId(input.continueFromOperationId);
+      }
+    }
+    return request;
+  }
+
+  const selected = exactQueryModelPair(input.modelSelection);
+  const request = {
+    query,
+    enablePGS: false,
+    mode: input.mode || 'full',
+    provider: selected.provider,
+    model: selected.model,
+  };
+  for (const field of [
+    'enableSynthesis', 'includeCoordinatorInsights', 'includeOutputs',
+    'includeThoughts', 'allowActions',
+  ]) {
+    if (input[field] !== undefined) request[field] = input[field];
+  }
+  if (input.priorContext !== undefined) request.priorContext = input.priorContext;
+  return request;
+}
+
 function getBrainSelector() {
   return document.getElementById('query-brain');
 }
@@ -135,12 +316,12 @@ function initQueryTab() {
             <div class="qt-option-group">
               <label>Sweep Depth:</label>
               <div class="qt-pgs-depth-chips">
-                <button type="button" class="qt-depth-chip" data-depth="0.10">Skim (10%)</button>
-                <button type="button" class="qt-depth-chip qt-depth-active" data-depth="0.25">Sample (25%)</button>
-                <button type="button" class="qt-depth-chip" data-depth="0.50">Deep (50%)</button>
-                <button type="button" class="qt-depth-chip" data-depth="1.0">Full (100%)</button>
+                <button type="button" class="qt-depth-chip" data-level="skim">Skim (10%)</button>
+                <button type="button" class="qt-depth-chip qt-depth-active" data-level="sample">Sample (25%)</button>
+                <button type="button" class="qt-depth-chip" data-level="deep">Deep (50%)</button>
+                <button type="button" class="qt-depth-chip" data-level="full">Full (100%)</button>
               </div>
-              <input type="hidden" id="qt-pgs-depth" value="0.25" />
+              <input type="hidden" id="qt-pgs-level" value="sample" />
             </div>
             <div class="qt-pgs-model-row">
               <div class="qt-option-group">
@@ -155,15 +336,22 @@ function initQueryTab() {
             <div class="qt-option-group">
               <label>Session Mode:</label>
               <select id="qt-pgs-mode" class="qt-select">
-                <option value="full" selected>fresh sweep</option>
-                <option value="continue">continue (remaining only)</option>
-                <option value="targeted">targeted (best remaining)</option>
+                <option value="fresh" selected>Fresh session</option>
+                <option value="continue">Continue prior session</option>
+                <option value="targeted">Target partitions</option>
               </select>
             </div>
-            <div class="qt-option-group">
-              <label>Session ID:</label>
-              <input id="qt-pgs-session" class="qt-input-inline" type="text" placeholder="default" />
+            <div id="qt-pgs-continue-operation-group" class="qt-option-group qt-hidden">
+              <label>Prior Operation ID:</label>
+              <input id="qt-pgs-continue-operation" class="qt-input-inline" type="text" placeholder="brop_…" autocomplete="off" />
+              <span class="qt-field-note">Required for Continue; optional for Targeted reuse.</span>
             </div>
+            <div id="qt-pgs-target-group" class="qt-option-group qt-pgs-wide qt-hidden">
+              <label>Target Partition IDs:</label>
+              <textarea id="qt-pgs-targets" class="qt-input-inline qt-pgs-targets" rows="3" placeholder="c-partition-one, h-partition-two"></textarea>
+              <span class="qt-field-note">Use canonical c- or h- partition IDs, separated by commas, spaces, or new lines.</span>
+            </div>
+            <div class="qt-mode-hint qt-pgs-wide">Durable PGS retains validated sweeps so Continue and Targeted modes can reuse completed work.</div>
           </div>
         </div>
       </details>
@@ -206,12 +394,33 @@ function initQueryTab() {
   bindQueryTabEvents();
   // Models populated by app.js renderModelOptions() — single source of truth
   loadQueryHistory();
-  checkBrainStatus();
+  refreshCosmoQueryTabState();
 }
 
 /* ═══════════════════════════════════════════════════════
    Event Binding
    ═══════════════════════════════════════════════════════ */
+
+function updateCosmoQueryOptionsSummary() {
+  const summary = document.getElementById('qt-options-summary');
+  if (!summary) return;
+  const mode = document.getElementById('qt-mode')?.value || 'full';
+  const modelSelect = document.getElementById('qt-model');
+  const model = modelSelect?.selectedOptions?.[0]?.textContent || modelSelect?.value || '...';
+  const pgsOn = document.getElementById('qt-pgs')?.checked;
+  const pgsLevel = document.getElementById('qt-pgs-level')?.value || 'sample';
+  const pgsMode = document.getElementById('qt-pgs-mode')?.value || 'fresh';
+  const depthName = pgsLevel.charAt(0).toUpperCase() + pgsLevel.slice(1);
+  const pgsPercent = Math.round((QT_PGS_LEVELS[pgsLevel] || QT_PGS_LEVELS.sample) * 100);
+  const pgs = pgsOn ? ` · 🧬 PGS ${depthName} (${pgsPercent}%) · ${pgsMode}` : '';
+  summary.textContent = `${mode.charAt(0).toUpperCase() + mode.slice(1)} mode · ${model}${pgs}`;
+}
+
+function refreshCosmoQueryTabState() {
+  updateCosmoQueryOptionsSummary();
+  updateCosmoPgsModeControls();
+  checkBrainStatus();
+}
 
 function bindQueryTabEvents() {
   const submitBtn = document.getElementById('qt-submit');
@@ -245,37 +454,28 @@ function bindQueryTabEvents() {
   });
 
   // Update options summary
-  const updateSummary = () => {
-    const summary = document.getElementById('qt-options-summary');
-    if (summary) {
-      const mode = modeSelect?.value || 'full';
-      const model = modelSelect?.selectedOptions?.[0]?.textContent || modelSelect?.value || '...';
-      const pgsOn = document.getElementById('qt-pgs')?.checked;
-      const pgsDepthVal = parseFloat(document.getElementById('qt-pgs-depth')?.value || '0.25');
-      const depthName = {0.1: 'Skim', 0.25: 'Sample', 0.5: 'Deep', 1.0: 'Full'}[pgsDepthVal] || `${Math.round(pgsDepthVal * 100)}%`;
-      const pgs = pgsOn ? ` · 🧬 PGS ${depthName} (${Math.round(pgsDepthVal * 100)}%)` : '';
-      summary.textContent = `${mode.charAt(0).toUpperCase() + mode.slice(1)} mode · ${model}${pgs}`;
-    }
-  };
-  modeSelect?.addEventListener('change', updateSummary);
+  modeSelect?.addEventListener('change', updateCosmoQueryOptionsSummary);
   modelSelect?.addEventListener('change', () => {
     // Sync PGS synthesis model with main model unless user has diverged
     const synthSelect = document.getElementById('qt-pgs-synth-model');
     if (synthSelect && !synthSelect.dataset.userChanged) {
       synthSelect.value = modelSelect.value;
     }
-    updateSummary();
+    updateCosmoQueryOptionsSummary();
   });
   document.getElementById('qt-pgs-synth-model')?.addEventListener('change', (e) => {
     e.target.dataset.userChanged = '1';
   });
-  document.getElementById('qt-pgs-mode')?.addEventListener('change', updateSummary);
+  document.getElementById('qt-pgs-mode')?.addEventListener('change', () => {
+    updateCosmoPgsModeControls();
+    updateCosmoQueryOptionsSummary();
+  });
 
   const pgsToggle = document.getElementById('qt-pgs');
   pgsToggle?.addEventListener('change', () => {
     const controls = document.getElementById('qt-pgs-controls');
     if (controls) controls.classList.toggle('qt-hidden', !pgsToggle.checked);
-    updateSummary();
+    updateCosmoQueryOptionsSummary();
   });
 
   // PGS depth chip selection
@@ -283,8 +483,8 @@ function bindQueryTabEvents() {
     chip.addEventListener('click', () => {
       document.querySelectorAll('.qt-depth-chip').forEach(c => c.classList.remove('qt-depth-active'));
       chip.classList.add('qt-depth-active');
-      document.getElementById('qt-pgs-depth').value = chip.dataset.depth;
-      updateSummary();
+      document.getElementById('qt-pgs-level').value = chip.dataset.level;
+      updateCosmoQueryOptionsSummary();
     });
   });
 
@@ -329,6 +529,17 @@ function bindQueryTabEvents() {
     loadQueryHistory();
     checkBrainStatus();
   });
+  refreshCosmoQueryTabState();
+}
+
+function updateCosmoPgsModeControls() {
+  const mode = document.getElementById('qt-pgs-mode')?.value || 'fresh';
+  document.getElementById('qt-pgs-continue-operation-group')?.classList.toggle(
+    'qt-hidden', mode === 'fresh',
+  );
+  document.getElementById('qt-pgs-target-group')?.classList.toggle(
+    'qt-hidden', mode !== 'targeted',
+  );
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -372,20 +583,17 @@ async function executeQuery() {
     return;
   }
 
-  const enablePGSEarly = document.getElementById('qt-pgs')?.checked || false;
-  const baseModel = document.getElementById('qt-model')?.value || '';
-  const model = (enablePGSEarly && document.getElementById('qt-pgs-synth-model')?.value) || baseModel;
   const mode = document.getElementById('qt-mode')?.value || 'full';
-  const includeEvidenceMetrics = document.getElementById('qt-evidence')?.checked || false;
   const enableSynthesis = document.getElementById('qt-synthesis')?.checked ?? true;
   const includeCoordinatorInsights = document.getElementById('qt-coordinator')?.checked ?? true;
   const includeOutputs = document.getElementById('qt-outputs')?.checked ?? true;
   const includeThoughts = document.getElementById('qt-thoughts')?.checked ?? true;
   const allowActions = document.getElementById('qt-allow-actions')?.checked || false;
   const enablePGS = document.getElementById('qt-pgs')?.checked || false;
-  const pgsMode = document.getElementById('qt-pgs-mode')?.value || 'full';
-  const pgsSessionId = (document.getElementById('qt-pgs-session')?.value || '').trim() || 'default';
-  const pgsDepth = parseFloat(document.getElementById('qt-pgs-depth')?.value || '0.25');
+  const pgsMode = document.getElementById('qt-pgs-mode')?.value || 'fresh';
+  const pgsLevel = document.getElementById('qt-pgs-level')?.value || 'sample';
+  const continueFromOperationId = document.getElementById('qt-pgs-continue-operation')?.value?.trim() || '';
+  const targetPartitionIds = document.getElementById('qt-pgs-targets')?.value || '';
   const useStreaming = document.getElementById('qt-stream')?.checked ?? true;
 
   const submitBtn = document.getElementById('qt-submit');
@@ -396,36 +604,62 @@ async function executeQuery() {
   loadingDiv.classList.remove('qt-hidden');
 
   // Update loading hint for PGS
-  const depthLabel = {0.1: 'Skim', 0.25: 'Sample', 0.5: 'Deep', 1.0: 'Full'}[pgsDepth] || `${Math.round(pgsDepth * 100)}%`;
+  const pgsFraction = QT_PGS_LEVELS[pgsLevel] || QT_PGS_LEVELS.sample;
+  const depthLabel = pgsLevel.charAt(0).toUpperCase() + pgsLevel.slice(1);
   const hintEl = document.getElementById('qt-loading-hint');
   if (hintEl) {
     hintEl.textContent = enablePGS
-      ? `PGS ${depthLabel} (${Math.round(pgsDepth * 100)}% coverage) — ${pgsDepth <= 0.25 ? '1-3 min' : pgsDepth <= 0.5 ? '3-6 min' : '5-10+ min'}`
+      ? `PGS ${depthLabel} (${Math.round(pgsFraction * 100)}% coverage) — ${pgsFraction <= 0.25 ? '1-3 min' : pgsFraction <= 0.5 ? '3-6 min' : '5-10+ min'}`
       : 'This may take 10-30 seconds';
   }
 
-  // When PGS is enabled, use the dedicated PGS model selectors
-  const pgsSweepModel = enablePGS ? (document.getElementById('qt-pgs-sweep-model')?.value || null) : null;
-  const pgsSynthModel = enablePGS ? (document.getElementById('qt-pgs-synth-model')?.value || null) : null;
-
-  const options = {
-    includeEvidenceMetrics,
-    enableSynthesis,
-    includeCoordinatorInsights,
-    includeOutputs,
-    includeThoughts,
-    allowActions,
-    enablePGS,
-    pgsMode,
-    pgsSessionId,
-    pgsFullSweep: pgsDepth >= 1.0,
-    pgsConfig: { sweepFraction: pgsDepth },
-    pgsSweepModel
-  };
+  let request;
+  try {
+    request = buildCosmoQueryRequest({
+      query,
+      enablePGS,
+      ...(enablePGS ? {
+        pgsMode,
+        pgsLevel,
+        ...(pgsMode === 'continue' ? { continueFromOperationId } : {}),
+        ...(pgsMode === 'targeted' ? {
+          targetPartitionIds,
+          ...(continueFromOperationId ? { continueFromOperationId } : {}),
+        } : {}),
+        pgsSweep: selectedQueryModelPair(
+          document.getElementById('qt-pgs-sweep-model'),
+          'PGS sweep model',
+        ),
+        pgsSynth: selectedQueryModelPair(
+          document.getElementById('qt-pgs-synth-model'),
+          'PGS synthesis model',
+        ),
+      } : {
+        mode,
+        modelSelection: selectedQueryModelPair(document.getElementById('qt-model')),
+        enableSynthesis,
+        includeCoordinatorInsights,
+        includeOutputs,
+        includeThoughts,
+        allowActions,
+        ...(lastQueryResult ? {
+          priorContext: {
+            query: lastQueryResult.query,
+            answer: lastQueryResult.answer,
+          },
+        } : {}),
+      }),
+    });
+  } catch (error) {
+    submitBtn.disabled = false;
+    loadingDiv.classList.add('qt-hidden');
+    showQueryToast(error.message);
+    return;
+  }
 
   try {
     if (useStreaming) {
-      await executeQueryStreaming(brainRoute, query, model, mode, options, submitBtn, loadingDiv, resultDiv);
+      await executeQueryStreaming(brainRoute, request, submitBtn, loadingDiv, resultDiv);
       return;
     }
 
@@ -435,15 +669,7 @@ async function executeQuery() {
     const res = await fetch(`${brainRoute}/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        query, model, mode, ...options,
-        exportFormat: 'markdown',
-        provider: null, // Let backend infer provider from model name
-        priorContext: lastQueryResult ? {
-          query: lastQueryResult.query,
-          answer: lastQueryResult.answer
-        } : null
-      })
+      body: JSON.stringify(request)
     });
 
     const data = await res.json();
@@ -468,8 +694,9 @@ async function executeQuery() {
    Streaming Query — SSE with PGS progress
    ═══════════════════════════════════════════════════════ */
 
-async function executeQueryStreaming(brainRoute, query, model, mode, options, submitBtn, loadingDiv, resultDiv) {
-  const isPGS = options.enablePGS || false;
+async function executeQueryStreaming(brainRoute, request, submitBtn, loadingDiv, resultDiv) {
+  const query = request.query;
+  const isPGS = request.enablePGS === true;
   let pgsTimerInterval = null;
   const pgsStartTime = Date.now();
 
@@ -477,15 +704,7 @@ async function executeQueryStreaming(brainRoute, query, model, mode, options, su
     const response = await fetch(`${brainRoute}/query/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        query, model, mode, ...options,
-        exportFormat: 'markdown',
-        provider: null, // Let backend infer provider from model name
-        priorContext: lastQueryResult ? {
-          query: lastQueryResult.query,
-          answer: lastQueryResult.answer
-        } : null
-      })
+      body: JSON.stringify(request)
     });
 
     if (!response.ok) {
@@ -671,8 +890,9 @@ async function executeQueryStreaming(brainRoute, query, model, mode, options, su
         query,
         answer: accumulatedAnswer,
         metadata: {
-          model,
-          mode,
+          provider: isPGS ? request.pgsSynth.provider : request.provider,
+          model: isPGS ? request.pgsSynth.model : request.model,
+          mode: isPGS ? 'pgs' : request.mode,
           recoveredFromStream: true,
           timestamp: new Date().toISOString()
         }
@@ -876,14 +1096,17 @@ function displayQueryResult(result) {
   // PGS metadata
   const pgs = result.metadata?.pgs;
   if (pgs) {
+    html += buildCosmoPgsCoverageHTML(pgs, result);
     html += `<div class="qt-metadata qt-pgs-meta">
       <span>🧬 PGS</span>
-      <span>🔬 ${pgs.sweptPartitions}/${pgs.totalPartitions} partitions swept</span>
-      <span>📊 ${pgs.totalNodes?.toLocaleString()} nodes (100% coverage)</span>
       <span>🔬 Sweep: ${escapeHtml(pgs.sweepModel || '?')}</span>
       <span>🧬 Synthesis: ${escapeHtml(pgs.synthesisModel || '?')}</span>
       <span>⏱️ ${pgs.elapsed || '?'}</span>
     </div>`;
+    if (QT_OPERATION_ID_PATTERN.test(result.operationId || '')) {
+      const continuationInput = document.getElementById('qt-pgs-continue-operation');
+      if (continuationInput) continuationInput.value = result.operationId;
+    }
   }
 
   // Standard metadata
@@ -1377,6 +1600,9 @@ function getQueryTabStyles() {
   .qt-pgs-model-row .qt-select {
     width: 100%;
   }
+  .qt-pgs-wide { grid-column: span 2; }
+  .qt-pgs-targets { width: 100%; resize: vertical; box-sizing: border-box; }
+  .qt-field-note { font-size: 11px; color: var(--text-muted, var(--text-secondary)); }
   .qt-pgs-depth-chips {
     display: flex;
     gap: 6px;

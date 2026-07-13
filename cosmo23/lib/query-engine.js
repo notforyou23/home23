@@ -1451,7 +1451,7 @@ STYLE:
     'default': 2500
   };
 
-  static resolveModelContextWindow(model = 'gpt-5.2') {
+  static resolveModelContextWindow(model = null) {
     const id = String(model || '').trim();
     if (QueryEngine.MODEL_CONTEXT_WINDOWS[id]) {
       return QueryEngine.MODEL_CONTEXT_WINDOWS[id];
@@ -1463,7 +1463,7 @@ STYLE:
     return QueryEngine.MODEL_CONTEXT_WINDOWS.default;
   }
 
-  static resolveModelMaxNodes(model = 'gpt-5.2') {
+  static resolveModelMaxNodes(model = null) {
     const id = String(model || '').trim();
     if (QueryEngine.MODEL_MAX_NODES[id]) {
       return QueryEngine.MODEL_MAX_NODES[id];
@@ -1477,7 +1477,7 @@ STYLE:
     return QueryEngine.MODEL_MAX_NODES.default;
   }
 
-  static resolveContextCharLimit(model = 'gpt-5.2', mode = 'normal') {
+  static resolveContextCharLimit(model = null, mode = 'normal') {
     const contextWindow = QueryEngine.resolveModelContextWindow(model);
     const utilizationByMode = {
       quick: 0.25,
@@ -1503,7 +1503,7 @@ STYLE:
   // Direct Query should stay close to the original bounded query contract.
   // PGS is the large/full-graph coverage path; direct Query is the rich answer
   // path over the best bounded evidence set.
-  static calculateMemoryNodeLimit({ mode = 'normal', totalNodes = 0, isMergedBrain = false, model = 'gpt-5.2' } = {}) {
+  static calculateMemoryNodeLimit({ mode = 'normal', totalNodes = 0, isMergedBrain = false, model = null } = {}) {
     const baseLimits = {
       quick: 50, full: 400, expert: 800, dive: 1000,
       fast: 100, normal: 200, deep: 400, raw: 150,
@@ -1880,7 +1880,7 @@ STYLE:
     const startTime = Date.now(); // Performance tracking
 
     const {
-      model: requestedModel = 'gpt-5.2',  // Default to gpt-5.2
+      model: requestedModel = null,
       mode = 'normal',
       exportFormat = null,
       // NEW: Enhancement options (all opt-in)
@@ -2481,7 +2481,7 @@ STYLE:
     return result;
   }
 
-  buildContext(state, relevantMemory, relevantThoughts, metrics, report, mode, outputFiles = null, model = 'gpt-5.2') {
+  buildContext(state, relevantMemory, relevantThoughts, metrics, report, mode, outputFiles = null, model = null) {
     let context = `# COSMO Research State\n\n`;
     const isGrounded = mode === 'grounded';
     const isQuickMode = mode === 'quick' || mode === 'fast';
@@ -4483,7 +4483,7 @@ This is STRATEGIC BRAINSTORMING informed by research insights. Be bold, creative
       return this.executePinnedQuery(query, options);
     }
     const {
-      model = 'gpt-5.2',
+      model = null,
       mode = 'normal',
       exportFormat = null,
       includeFiles = true,

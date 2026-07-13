@@ -12,6 +12,10 @@
 
 import { chatState } from './home23-chat-state.mjs';
 import { reconcileCanonicalAssistantElements } from './home23-chat-reconstruction.mjs';
+import {
+  decodeModelPair,
+  encodeModelPair,
+} from './home23-model-pair.mjs';
 
 // Expose for classic-script consumers (home23-dashboard.js, home23-chat.html
 // onload handler) and for in-browser debugging.
@@ -25,6 +29,7 @@ let chatAgent = null;
 let chatAgents = [];
 let chatModels = {};
 let chatModel = null;
+let chatProvider = null;
 let chatStreaming = false;
 let activeTurnId = null;
 let activeChatId = null;
@@ -124,7 +129,7 @@ function _syncState() {
   chatState.set({
     agent: chatAgent,
     model: chatModel,
-    provider: chatAgent?.provider ?? null,
+    provider: chatProvider ?? chatAgent?.provider ?? null,
     conversationId: chatConversationId,
     conversations: chatConversations,
     streaming: chatStreaming,
@@ -187,6 +192,7 @@ async function initChat(mode) {
 
   // Model selector — use agent's current model (may have been changed in settings)
   chatModel = initialAgent.model;
+  chatProvider = initialAgent.provider;
   populateModelSelect(initialAgent.provider, initialAgent.model);
 
   // Input bindings — one input now (shared). 'overlay' binding removed; the
@@ -388,11 +394,18 @@ function openListPopover({ anchor, items, onSelect, emptyText = 'Nothing to show
 function showModelPicker(anchorOverride) {
   const select = document.getElementById('chat-model-select');
   if (!select) return;
-  const current = select.value || chatModel || '';
+  let current = select.value;
+  if (!current && chatProvider && chatModel) {
+    current = encodeModelPair({ provider: chatProvider, model: chatModel });
+  }
   const items = Array.from(select.options)
-    .map(o => o.value)
-    .filter(Boolean)
-    .map(v => ({ label: v, active: v === current }));
+    .filter(option => option.value)
+    .map(option => ({
+      label: option.dataset.model || option.textContent || '',
+      hint: option.dataset.provider || '',
+      active: option.value === current,
+      _value: option.value,
+    }));
   // Prefer the model pill (tile) as anchor; fall back to the ⋯ button.
   const anchor = anchorOverride
     || document.getElementById('chat-model-pill')
@@ -403,7 +416,7 @@ function showModelPicker(anchorOverride) {
     items,
     emptyText: 'No models available for this provider.',
     onSelect: (it) => {
-      select.value = it.label;
+      select.value = it._value;
       select.dispatchEvent(new Event('change', { bubbles: true }));
     },
   });
@@ -552,31 +565,46 @@ function renderAgentSelectors(selectedName) {
 }
 
 function populateModelSelect(provider, currentModel) {
-  // Collect all models across providers
-  const allModels = [];
-  for (const [provName, cfg] of Object.entries(chatModels)) {
-    for (const m of (cfg.defaultModels || [])) {
-      allModels.push({ provider: provName, model: m });
-    }
-  }
-
-  const options = allModels.map(modelEntry =>
-    `<option value="${modelEntry.model}" data-provider="${modelEntry.provider}" title="${modelEntry.model}" ${modelEntry.model === currentModel ? 'selected' : ''}>${formatModelLabel(modelEntry.model)}</option>`
-  ).join('');
+  let selectedValue = '';
+  try {
+    selectedValue = encodeModelPair({ provider, model: currentModel });
+  } catch { /* invalid agent configuration stays unselected */ }
+  const options = Object.entries(chatModels).map(([providerName, config]) => {
+    const providerOptions = (config.defaultModels || []).map(model => {
+      const modelEntry = { provider: providerName, model };
+      const value = encodeModelPair(modelEntry);
+      return `<option value="${escapeHtml(encodeModelPair(modelEntry))}" data-provider="${escapeHtml(modelEntry.provider)}" data-model="${escapeHtml(modelEntry.model)}" title="${escapeHtml(`${modelEntry.provider} / ${modelEntry.model}`)}" ${value === selectedValue ? 'selected' : ''}>${escapeHtml(formatModelLabel(modelEntry.model))}</option>`;
+    }).join('');
+    return providerOptions
+      ? `<optgroup label="${escapeHtml(providerName)}">${providerOptions}</optgroup>`
+      : '';
+  }).join('');
 
   document.querySelectorAll('.h23-chat-model-select').forEach(select => {
     select.innerHTML = options;
-    if (currentModel) {
-      select.value = currentModel;
-    }
-    select.title = select.selectedOptions[0]?.value || currentModel || '';
+    select.value = selectedValue;
+    select.title = select.selectedOptions[0]?.title || '';
 
     if (!select.dataset.bound) {
       select.addEventListener('change', async () => {
-        chatModel = select.value;
-        const selectedOpt = select.selectedOptions[0];
-        const selectedProvider = selectedOpt?.dataset?.provider || '';
-        syncModelSelectors(chatModel);
+        let selectedPair;
+        try {
+          selectedPair = decodeModelPair(select.value);
+        } catch {
+          select.value = '';
+          return;
+        }
+        chatModel = selectedPair.model;
+        chatProvider = selectedPair.provider;
+        if (chatAgent) {
+          chatAgent = { ...chatAgent, model: selectedPair.model, provider: selectedPair.provider };
+        }
+        const agentRow = chatAgents.find(agent => agent.name === chatAgent?.agentName);
+        if (agentRow) {
+          agentRow.model = selectedPair.model;
+          agentRow.provider = selectedPair.provider;
+        }
+        syncModelSelectors(selectedPair.provider, selectedPair.model);
         // Push into chatState so the model pill label (and any other
         // subscribers) re-render with the new model.
         _syncState();
@@ -586,7 +614,7 @@ function populateModelSelect(provider, currentModel) {
             await fetch(`/home23/api/settings/agents/${chatAgent.agentName}`, {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ model: chatModel, provider: selectedProvider }),
+              body: JSON.stringify({ model: selectedPair.model, provider: selectedPair.provider }),
             });
           } catch (err) {
             console.warn('Failed to persist model change:', err);
@@ -597,15 +625,18 @@ function populateModelSelect(provider, currentModel) {
     }
   });
 
-  syncModelSelectors(currentModel);
+  chatProvider = provider;
+  chatModel = currentModel;
+  syncModelSelectors(provider, currentModel);
 }
 
-function syncModelSelectors(modelName) {
-  if (!modelName) return;
+function syncModelSelectors(providerName, modelName) {
+  if (!providerName || !modelName) return;
+  const value = encodeModelPair({ provider: providerName, model: modelName });
 
   document.querySelectorAll('.h23-chat-model-select').forEach(select => {
-    select.value = modelName;
-    select.title = select.selectedOptions[0]?.value || modelName;
+    select.value = value;
+    select.title = select.selectedOptions[0]?.title || '';
   });
 }
 
@@ -672,9 +703,11 @@ async function switchAgent(name, options = {}) {
 
   // Reset model to agent's default
   chatModel = null;
+  chatProvider = null;
   const agentData = chatAgents.find(a => a.name === name);
   if (agentData) {
     chatModel = agentData.model;
+    chatProvider = agentData.provider;
     populateModelSelect(agentData.provider, agentData.model);
   }
 

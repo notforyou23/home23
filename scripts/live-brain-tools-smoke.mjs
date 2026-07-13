@@ -4298,7 +4298,10 @@ function exactDelayActionProof({
         || !strictIsoTimestamp(completion.at)
         || Date.parse(completion.at) > Date.parse(terminalEvent.at)
         || Date.parse(completedAt) > Date.parse(operation.completedAt)
-        || !Number.isSafeInteger(wallClockElapsedMs) || wallClockElapsedMs < effectiveDelayMs
+        // The action's monotonic elapsedMs is the duration authority. Wall
+        // time may be corrected while a multi-minute scale run is active, so
+        // use it only to prove timestamp ordering rather than elapsed delay.
+        || !Number.isSafeInteger(wallClockElapsedMs) || wallClockElapsedMs < 0
         || telemetryAction.elapsedMs < effectiveDelayMs) {
       failIsolatedDelayProof('complete_event_order_or_time');
     }

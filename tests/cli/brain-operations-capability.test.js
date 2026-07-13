@@ -48,7 +48,19 @@ function makeInstall({ key, mode = 0o600 } = {}) {
   symlinkSync(TEST_NODE_MODULES, join(root, 'node_modules'), 'dir');
   writeFileSync(join(root, 'config', 'home.yaml'), yaml.dump({
     home: { primaryAgent: 'jerry' },
-    providers: { 'ollama-local': { baseUrl: 'http://127.0.0.1:11434' } },
+    providers: {
+      openai: { defaultModels: ['gpt-test'] },
+      'ollama-local': { baseUrl: 'http://127.0.0.1:11434' },
+    },
+    chat: { defaultProvider: 'openai', defaultModel: 'gpt-test' },
+    query: {
+      defaultProvider: 'openai',
+      defaultModel: 'gpt-test',
+      pgsSweepProvider: 'openai',
+      pgsSweepModel: 'gpt-test',
+      pgsSynthProvider: 'openai',
+      pgsSynthModel: 'gpt-test',
+    },
   }), 'utf8');
   const secrets = {
     providers: {},

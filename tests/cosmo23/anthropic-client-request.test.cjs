@@ -104,12 +104,35 @@ for (const [name, Client] of clients) {
     });
   });
 
-  test(`${name} keeps temperature for non-Opus 4.8 models`, async () => {
+  test(`${name} omits deprecated sampling params for Claude Sonnet 4.7`, async () => {
     const params = await captureGenerateParams(Client, {
-      model: 'claude-sonnet-4-7'
+      model: 'claude-sonnet-4-7',
+      reasoningEffort: 'high'
     });
 
     assert.equal(params.model, 'claude-sonnet-4-7');
+    assert.equal(Object.hasOwn(params, 'temperature'), false);
+    assert.deepEqual(params.thinking, {
+      type: 'adaptive',
+      display: 'summarized'
+    });
+  });
+
+  test(`${name} omits deprecated sampling params for the Sonnet 5 wire model`, async () => {
+    const params = await captureGenerateParams(Client, {
+      model: 'claude-sonnet-5'
+    });
+
+    assert.equal(params.model, 'claude-sonnet-5');
+    assert.equal(Object.hasOwn(params, 'temperature'), false);
+  });
+
+  test(`${name} keeps temperature for models that still accept sampling params`, async () => {
+    const params = await captureGenerateParams(Client, {
+      model: 'claude-haiku-4-5'
+    });
+
+    assert.equal(params.model, 'claude-haiku-4-5');
     assert.equal(params.temperature, 0.1);
     assert.equal(Object.hasOwn(params, 'thinking'), false);
   });

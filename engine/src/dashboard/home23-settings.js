@@ -21,6 +21,32 @@ const tilesBroadcast = typeof BroadcastChannel !== 'undefined'
   ? new BroadcastChannel('home23-dashboard-tiles')
   : null;
 
+function encodeSettingsModelPair(pair) {
+  if (!pair || typeof pair.provider !== 'string' || !pair.provider.trim()
+      || typeof pair.model !== 'string' || !pair.model.trim()) {
+    throw new Error('Select an exact provider and model');
+  }
+  return `${encodeURIComponent(pair.provider.trim())}::${encodeURIComponent(pair.model.trim())}`;
+}
+
+function decodeSettingsModelPair(value) {
+  if (typeof value !== 'string') throw new Error('Select an exact provider and model');
+  const splitAt = value.indexOf('::');
+  if (splitAt < 1 || value.indexOf('::', splitAt + 2) !== -1) {
+    throw new Error('Select an exact provider and model');
+  }
+  let provider;
+  let model;
+  try {
+    provider = decodeURIComponent(value.slice(0, splitAt)).trim();
+    model = decodeURIComponent(value.slice(splitAt + 2)).trim();
+  } catch {
+    throw new Error('Select an exact provider and model');
+  }
+  if (!provider || !model) throw new Error('Select an exact provider and model');
+  return { provider, model };
+}
+
 function readinessCard({ title, body, state = 'warn' }) {
   const dot = state === 'ok' ? 'ok' : state === 'fail' ? 'fail' : '';
   return `
@@ -820,7 +846,7 @@ const WIZARD_MODEL_FALLBACKS = {
   minimax: ['MiniMax-M3'],
   anthropic: ['claude-sonnet-4-7', 'claude-opus-4-8'],
   openai: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4-mini'],
-  'openai-codex': ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.3-codex', 'gpt-5.3-codex-spark'],
+  'openai-codex': ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.5', 'gpt-5.3-codex-spark'],
   xai: ['grok-4.5', 'grok-4.3'],
 };
 
@@ -1699,6 +1725,9 @@ async function loadQuerySettings() {
       const sel = document.getElementById(id);
       if (!sel) return;
       sel.innerHTML = '';
+      const selectedValue = selected?.provider && selected?.model
+        ? encodeSettingsModelPair(selected)
+        : '';
       const byProvider = new Map();
       for (const m of models) {
         const p = m.providerLabel || m.provider || 'other';
@@ -1710,18 +1739,28 @@ async function loadQuerySettings() {
         og.label = provider;
         for (const m of ms) {
           const opt = document.createElement('option');
-          opt.value = m.id;
+          opt.value = encodeSettingsModelPair(m);
           opt.textContent = m.name || m.id;
-          if (m.id === selected) opt.selected = true;
+          if (opt.value === selectedValue) opt.selected = true;
           og.appendChild(opt);
         }
         sel.appendChild(og);
       }
     };
 
-    fill('query-default-model', settings.defaultModel || '');
-    fill('query-pgs-sweep-model', settings.pgsSweepModel || '');
-    fill('query-pgs-synth-model', settings.pgsSynthModel || settings.defaultModel || '');
+    const directPair = {
+      provider: settings.defaultProvider || '',
+      model: settings.defaultModel || '',
+    };
+    fill('query-default-model', directPair);
+    fill('query-pgs-sweep-model', {
+      provider: settings.pgsSweepProvider || directPair.provider,
+      model: settings.pgsSweepModel || directPair.model,
+    });
+    fill('query-pgs-synth-model', {
+      provider: settings.pgsSynthProvider || directPair.provider,
+      model: settings.pgsSynthModel || directPair.model,
+    });
 
     const modeSel = document.getElementById('query-default-mode');
     if (modeSel) modeSel.value = settings.defaultMode || 'full';
@@ -1735,17 +1774,29 @@ async function loadQuerySettings() {
 }
 
 async function saveQuerySettings() {
-  const body = {
-    agent: selectedSettingsAgent,
-    defaultModel: document.getElementById('query-default-model')?.value || '',
-    defaultMode: document.getElementById('query-default-mode')?.value || 'full',
-    enablePGSByDefault: !!document.getElementById('query-pgs-default')?.checked,
-    pgsSweepModel: document.getElementById('query-pgs-sweep-model')?.value || '',
-    pgsSynthModel: document.getElementById('query-pgs-synth-model')?.value || '',
-    pgsDepth: parseFloat(document.getElementById('query-pgs-depth')?.value || '0.25'),
-  };
   const statusEl = document.getElementById('query-status');
   try {
+    const directPair = decodeSettingsModelPair(
+      document.getElementById('query-default-model')?.value || '',
+    );
+    const sweepPair = decodeSettingsModelPair(
+      document.getElementById('query-pgs-sweep-model')?.value || '',
+    );
+    const synthPair = decodeSettingsModelPair(
+      document.getElementById('query-pgs-synth-model')?.value || '',
+    );
+    const body = {
+      agent: selectedSettingsAgent,
+      defaultProvider: directPair.provider,
+      defaultModel: directPair.model,
+      defaultMode: document.getElementById('query-default-mode')?.value || 'full',
+      enablePGSByDefault: !!document.getElementById('query-pgs-default')?.checked,
+      pgsSweepProvider: sweepPair.provider,
+      pgsSweepModel: sweepPair.model,
+      pgsSynthProvider: synthPair.provider,
+      pgsSynthModel: synthPair.model,
+      pgsDepth: parseFloat(document.getElementById('query-pgs-depth')?.value || '0.25'),
+    };
     const res = await fetch(`${API}/query`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },

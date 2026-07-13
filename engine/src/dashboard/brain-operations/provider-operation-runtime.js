@@ -21,6 +21,7 @@ function createProviderOperationRuntime({
   home23Root,
   catalog,
   providerRegistry,
+  queryDefaults = null,
   yamlImpl = yaml,
   logger = console,
 } = {}) {
@@ -37,12 +38,15 @@ function createProviderOperationRuntime({
     yaml: yamlImpl,
     logger,
   });
+  let refreshTail = Promise.resolve();
   const settled = Promise.resolve().then(async () => {
-    const migration = await migrateQueryDefaultPairs({
-      settingsStore,
-      catalog,
-      providerRegistry,
-    });
+    const migration = queryDefaults
+      ? { queryDefaults, migrated: false }
+      : await migrateQueryDefaultPairs({
+        settingsStore,
+        catalog,
+        providerRegistry,
+      });
     state.resolver = createOperationModelResolver({
       catalog,
       providerRegistry,
@@ -66,6 +70,35 @@ function createProviderOperationRuntime({
     return state.resolver(input);
   }
 
+  function refresh({
+    catalog: nextCatalog,
+    providerRegistry: nextProviderRegistry,
+    queryDefaults: nextQueryDefaults,
+  } = {}) {
+    const attempt = refreshTail.then(async () => {
+      await settled;
+      if (!state.resolver) throw state.error;
+      // Build and fully validate the replacement before publishing it. A bad
+      // catalog/pair leaves the live resolver byte-for-byte reachable.
+      const nextResolver = createOperationModelResolver({
+        catalog: nextCatalog,
+        providerRegistry: nextProviderRegistry,
+        queryDefaults: nextQueryDefaults,
+      });
+      state.resolver = nextResolver;
+      state.queryDefaults = nextQueryDefaults;
+      state.error = null;
+      state.migrated = false;
+      state.status = 'ready';
+      return Object.freeze({
+        refreshed: true,
+        queryDefaults: nextQueryDefaults,
+      });
+    });
+    refreshTail = attempt.catch(() => {});
+    return attempt;
+  }
+
   function getReadiness() {
     return Object.freeze({
       ready: state.status === 'ready',
@@ -78,6 +111,7 @@ function createProviderOperationRuntime({
 
   return Object.freeze({
     getReadiness,
+    refresh,
     resolve,
     settled,
     settingsStore,

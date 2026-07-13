@@ -99,6 +99,50 @@ test('Codex normalizes bounded string input into the exact backend item list', a
   assert.equal(Object.hasOwn(wireBody, 'max_output_tokens'), false);
 });
 
+test('Codex forwards its long-lived dispatcher so transport defaults cannot end a durable call', async () => {
+  const controller = new AbortController();
+  const dispatcher = { dispatch() {} };
+  let observedDispatcher = null;
+  const body = streamFrom(
+    'data: {"type":"response.output_text.delta","delta":"OK"}\n\n'
+      + 'data: {"type":"response.completed"}\n\n',
+  );
+  const client = new CodexResponsesClient({
+    dispatcher,
+    credentialsProvider: async () => ({ accessToken: 'test-token', accountId: 'test-account' }),
+    fetchImpl: async (_url, init) => {
+      observedDispatcher = init.dispatcher;
+      return new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    },
+  });
+
+  const result = await generate(client, controller.signal);
+  assert.equal(result.status, 'complete');
+  assert.equal(observedDispatcher, dispatcher);
+});
+
+test('Codex turns an opaque fetch failure into a typed retryable transport error', async () => {
+  const controller = new AbortController();
+  const client = new CodexResponsesClient({
+    credentialsProvider: async () => ({ accessToken: 'test-token', accountId: 'test-account' }),
+    fetchImpl: async () => {
+      throw Object.assign(new TypeError('fetch failed'), {
+        cause: Object.assign(new Error('Headers Timeout Error'), { code: 'UND_ERR_HEADERS_TIMEOUT' }),
+      });
+    },
+  });
+
+  await assert.rejects(
+    generate(client, controller.signal),
+    (error) => error.code === 'provider_unavailable'
+      && error.retryable === true
+      && /UND_ERR_HEADERS_TIMEOUT/.test(error.message),
+  );
+});
+
 test('Codex preserves valid structured input items on the wire', async () => {
   const controller = new AbortController();
   let wireInput = null;

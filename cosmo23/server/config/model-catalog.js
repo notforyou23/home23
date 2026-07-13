@@ -100,8 +100,6 @@ const BUILTIN_MODEL_CATALOG = {
         { id: 'qwen3.5:397b', label: 'Qwen 3.5 397B', kind: 'chat' },
         { id: 'qwen3-coder:480b', label: 'Qwen 3 Coder 480B', kind: 'chat' },
         { id: 'qwen3-coder-next', label: 'Qwen 3 Coder Next', kind: 'chat' },
-        { id: 'qwen3-next:80b', label: 'Qwen 3 Next 80B', kind: 'chat' },
-        { id: 'qwen3-vl:235b', label: 'Qwen 3 VL 235B', kind: 'chat' },
         { id: 'qwen3-vl:235b-instruct', label: 'Qwen 3 VL 235B Instruct', kind: 'chat' },
         { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro', kind: 'chat' },
         { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash', kind: 'chat' },
@@ -116,7 +114,6 @@ const BUILTIN_MODEL_CATALOG = {
         { id: 'devstral-2:123b', label: 'Devstral 2 123B', kind: 'chat' },
         { id: 'devstral-small-2:24b', label: 'Devstral Small 2 24B', kind: 'chat' },
         { id: 'gemini-3-flash-preview', label: 'Gemini 3 Flash Preview', kind: 'chat' },
-        { id: 'cogito-2.1:671b', label: 'Cogito 2.1 671B', kind: 'chat' },
         { id: 'rnj-1:8b', label: 'Rnj-1 8B', kind: 'chat' }
       ]
     },
@@ -148,13 +145,10 @@ const BUILTIN_MODEL_CATALOG = {
       label: 'OpenAI Codex',
       executionDefaults: BUILTIN_EXECUTION_DEFAULTS['openai-codex'],
       models: [
-        { id: 'gpt-5.6', label: 'GPT-5.6', kind: 'chat' },
         { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', kind: 'chat', contextWindowTokens: 372000 },
         { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', kind: 'chat', contextWindowTokens: 372000 },
-        { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', kind: 'chat', contextWindowTokens: 372000 },
         { id: 'gpt-5.5', label: 'GPT-5.5', kind: 'chat', contextWindowTokens: 272000 },
         { id: 'gpt-5.5-pro', label: 'GPT-5.5 Pro', kind: 'chat' },
-        { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', kind: 'chat' },
         { id: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark', kind: 'chat' },
         { id: 'gpt-5.4', label: 'GPT-5.4', kind: 'chat', contextWindowTokens: 272000 },
         { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', kind: 'chat', contextWindowTokens: 272000 }

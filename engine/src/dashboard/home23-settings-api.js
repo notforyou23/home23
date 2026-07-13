@@ -13,6 +13,7 @@ const { writeYamlSafely } = require('./yaml-write-safety');
 const { StateCompression } = require('../core/state-compression');
 const { readJsonlGz, sidecarsExist, nodesPath } = require('../core/memory-sidecar');
 const { buildAgentConfig, buildFeederConfig } = require('../../../cli/lib/agent-config-builder.cjs');
+const { buildHome23ModelAuthority } = require('./home23-model-catalog.js');
 
 const PM2_ENV_BLOCKLIST = [
   'cron_restart',
@@ -47,12 +48,86 @@ function cleanPm2Env(extra = {}) {
   return env;
 }
 
+function planModelAuthorityRuntimeTargets({
+  agent,
+  agentNames = [],
+  globalCatalogChanged = false,
+  affectsManagedCosmo = false,
+} = {}) {
+  const dashboards = globalCatalogChanged
+    ? agentNames
+    : [agent];
+  const targets = [];
+  if (affectsManagedCosmo) targets.push('home23-cosmo23');
+  for (const name of dashboards) {
+    const normalized = typeof name === 'string' ? name.trim() : '';
+    if (normalized) targets.push(`home23-${normalized}-dash`);
+  }
+  return [...new Set(targets)];
+}
+
+async function applyModelAuthorityRuntimeRefresh({
+  change = {},
+  currentAgent = null,
+  agentNames = [],
+  reloadCurrentDashboard,
+  restartProcesses,
+} = {}) {
+  if (typeof restartProcesses !== 'function') {
+    throw new Error('Model authority process refresh is unavailable');
+  }
+  const planned = planModelAuthorityRuntimeTargets({ ...change, agentNames });
+  const currentDashboard = currentAgent ? `home23-${currentAgent}-dash` : null;
+  const shouldReloadCurrent = currentDashboard && planned.includes(currentDashboard);
+  const externalTargets = planned.filter(name => name !== currentDashboard);
+  const restarted = externalTargets.length > 0
+    ? await restartProcesses(externalTargets)
+    : [];
+  if (!Array.isArray(restarted)
+      || restarted.some(name => !externalTargets.includes(name))) {
+    throw new Error('Model authority process refresh returned invalid evidence');
+  }
+  const refreshed = [];
+  if (shouldReloadCurrent) {
+    if (typeof reloadCurrentDashboard !== 'function') {
+      throw new Error('Current dashboard model authority reload is unavailable');
+    }
+    await reloadCurrentDashboard(change);
+    refreshed.push(currentDashboard);
+  }
+  return Object.freeze({ refreshed, restarted: [...restarted] });
+}
+
 function createSettingsRouter(home23Root, options = {}) {
   const router = express.Router();
   const tileService = new Home23TileService({ home23Root });
   const getOrchestrator = typeof options.getOrchestrator === 'function'
     ? options.getOrchestrator
     : () => null;
+  const resolveCurrentDashboardAgent = typeof options.getCurrentDashboardAgent === 'function'
+    ? options.getCurrentDashboardAgent
+    : () => getCurrentDashboardAgent();
+  const seedModelAuthority = typeof options.seedModelAuthority === 'function'
+    ? options.seedModelAuthority
+    : async () => {
+      const moduleUrl = pathToFileURL(
+        path.join(home23Root, 'cli', 'lib', 'cosmo23-config.js'),
+      ).href;
+      const { seedCosmo23Config: seed } = await import(moduleUrl);
+      return seed(home23Root);
+    };
+  const onModelAuthorityChanged = typeof options.onModelAuthorityChanged === 'function'
+    ? options.onModelAuthorityChanged
+    : (change) => applyModelAuthorityRuntimeRefresh({
+      change,
+      currentAgent: resolveCurrentDashboardAgent(),
+      agentNames: discoverAgents(),
+      reloadCurrentDashboard: options.reloadCurrentDashboardModelAuthority,
+      restartProcesses: restartOnlineProcessesWithSharedLock,
+    });
+  const recycleModelProcess = typeof options.recycleManagedProcess === 'function'
+    ? options.recycleManagedProcess
+    : (name) => recycleManagedProcess(name);
 
   function loadYaml(filePath) {
     if (!fs.existsSync(filePath)) return {};
@@ -66,6 +141,79 @@ function createSettingsRouter(home23Root, options = {}) {
       rootDir: home23Root,
       logger: console,
     });
+  }
+
+  function cloneConfig(value) {
+    return JSON.parse(JSON.stringify(value || {}));
+  }
+
+  function modelPairError(label, provider, model) {
+    return Object.assign(
+      new Error(`${label} must be an exact configured provider/model pair: ${provider || 'missing'}/${model || 'missing'}`),
+      { code: 'model_pair_invalid', retryable: false },
+    );
+  }
+
+  function assertExactConfiguredPair(authority, provider, model, label) {
+    const normalizedProvider = typeof provider === 'string' ? provider.trim() : '';
+    const normalizedModel = typeof model === 'string' ? model.trim() : '';
+    if (!normalizedProvider || !normalizedModel || !authority.models.some((entry) => (
+      entry.provider === normalizedProvider && entry.model === normalizedModel
+    ))) {
+      throw modelPairError(label, normalizedProvider, normalizedModel);
+    }
+  }
+
+  function validateModelAuthority(homeConfig, agentConfig) {
+    const authority = buildHome23ModelAuthority({ homeConfig, agentConfig });
+    const query = agentConfig.query === undefined || agentConfig.query === null
+      ? (homeConfig.query || {})
+      : agentConfig.query;
+    const chat = agentConfig.chat || homeConfig.chat || {};
+    const directProvider = query.defaultProvider || query.provider
+      || chat.defaultProvider || chat.provider;
+    const directModel = query.defaultModel || chat.defaultModel || chat.model;
+    const sweepProvider = query.pgsSweepProvider || directProvider;
+    const sweepModel = query.pgsSweepModel || directModel;
+    const synthProvider = query.pgsSynthProvider || directProvider;
+    const synthModel = query.pgsSynthModel || directModel;
+    assertExactConfiguredPair(authority, directProvider, directModel, 'Direct Query model');
+    assertExactConfiguredPair(authority, sweepProvider, sweepModel, 'PGS sweep model');
+    assertExactConfiguredPair(authority, synthProvider, synthModel, 'PGS synthesis model');
+    return authority;
+  }
+
+  async function refreshModelAuthority({ rollback, ...change }) {
+    let runtimeRefreshStarted = false;
+    try {
+      await seedModelAuthority({ home23Root, ...change });
+      runtimeRefreshStarted = true;
+      return await onModelAuthorityChanged({ home23Root, ...change });
+    } catch (error) {
+      rollback();
+      try {
+        await seedModelAuthority({
+          home23Root,
+          ...change,
+          reason: `${change.reason}-rollback`,
+        });
+      } catch (rollbackError) {
+        console.error('[Settings] Failed to restore managed model authority after rollback:', rollbackError.message);
+      }
+      if (runtimeRefreshStarted) {
+        try {
+          await onModelAuthorityChanged({
+            home23Root,
+            ...change,
+            reason: `${change.reason}-rollback`,
+            rollback: true,
+          });
+        } catch (rollbackError) {
+          console.error('[Settings] Failed to restore runtime model authority after rollback:', rollbackError.message);
+        }
+      }
+      throw error;
+    }
   }
 
   function getHome23Version() {
@@ -220,10 +368,6 @@ function createSettingsRouter(home23Root, options = {}) {
     const sharedTargets = activeTargets.filter(name => SHARED_PM2_PROCESS_NAMES.has(name));
     const restarted = [];
 
-    if (nonSharedTargets.length > 0) {
-      restarted.push(...restartOnlineEcosystemProcesses(nonSharedTargets));
-    }
-
     if (sharedTargets.length > 0) {
       const sharedStart = await import(pathToFileURL(
         path.join(home23Root, 'cli', 'lib', 'shared-service-start.js')
@@ -232,13 +376,24 @@ function createSettingsRouter(home23Root, options = {}) {
         const service = sharedStart.SHARED_SERVICES.find(candidate => candidate.name === name);
         if (!service) throw new Error(`Shared-service definition is missing for ${name}`);
         await sharedStart.coordinateSharedServiceStartup({
-          repoRoot: home23Root,
-          service,
-          logger: console,
-          reason: 'settings-runtime-update',
-          waitMs: 10000,
+          home23Root,
+          services: [service],
+          restartOnline: true,
         });
         restarted.push(name);
+      }
+    }
+
+    // Restart dashboards last. This process may itself be one of the targets;
+    // shared authority must already be online before PM2 replaces it.
+    if (nonSharedTargets.length > 0) {
+      restarted.push(...restartOnlineEcosystemProcesses(nonSharedTargets));
+    }
+
+    const verifiedOnline = listOnlinePm2ProcessNames();
+    for (const name of restarted) {
+      if (!verifiedOnline.has(name)) {
+        throw new Error(`Model authority runtime did not return online: ${name}`);
       }
     }
 
@@ -1474,55 +1629,127 @@ function createSettingsRouter(home23Root, options = {}) {
     });
   });
 
-  router.put('/models', (req, res) => {
+  router.put('/models', async (req, res) => {
     const { agent, chat, aliases, providerModels, engineRoles, imageGeneration } = req.body || {};
     const configPath = getHomeConfigPath();
-    const homeConfig = loadYaml(configPath);
+    const previousHomeConfig = loadYaml(configPath);
+    const homeConfig = cloneConfig(previousHomeConfig);
     const targetAgent = resolveRequestedAgent(agent);
     const roleModels = engineRoles && typeof engineRoles === 'object' ? engineRoles : {};
     const chatChanged = !!chat;
     const engineRolesChanged = engineRoles !== undefined;
+    const catalogChanged = !!providerModels;
+    const authorityChanged = chatChanged || catalogChanged;
     let restartedHarness = false;
     let restartedAgent = false;
     let homeConfigDirty = false;
+    let agentConfigPath = null;
+    let previousAgentConfig = null;
+    let agentConfig = null;
+    let runtimeRefresh = null;
+    let authorityFilesWritten = false;
+    let authorityRefreshAttempted = false;
+    let authorityRolledBack = false;
 
-    if (chatChanged || engineRolesChanged) {
-      if (!targetAgent) {
-        return res.status(400).json({ error: 'No target agent selected' });
-      }
-      const agentConfigPath = path.join(home23Root, 'instances', targetAgent, 'config.yaml');
-      if (!fs.existsSync(agentConfigPath)) {
-        return res.status(404).json({ error: `Agent "${targetAgent}" not found` });
-      }
-      const agentConfig = loadYaml(agentConfigPath);
-      if (!agentConfig.chat) agentConfig.chat = {};
-      if (chatChanged && chat?.defaultProvider !== undefined) {
-        agentConfig.chat.provider = chat.defaultProvider;
-        agentConfig.chat.defaultProvider = chat.defaultProvider;
-      }
-      if (chatChanged && chat?.defaultModel !== undefined) {
-        agentConfig.chat.model = chat.defaultModel;
-        agentConfig.chat.defaultModel = chat.defaultModel;
-      }
+    const rollbackAuthorityFiles = () => {
+      if (authorityRolledBack) return;
+      authorityRolledBack = true;
+      if (agentConfigPath && previousAgentConfig) saveYaml(agentConfigPath, previousAgentConfig);
+      if (homeConfigDirty) saveYaml(configPath, previousHomeConfig);
+    };
 
-      if (engineRolesChanged) {
-        if (!agentConfig.engine) agentConfig.engine = {};
-        for (const role of ['thought', 'consolidation', 'dreaming', 'query']) {
-          if (roleModels[role]) {
-            agentConfig.engine[role] = roleModels[role];
-          } else {
-            delete agentConfig.engine[role];
+    try {
+      if (chatChanged || engineRolesChanged) {
+        if (!targetAgent) {
+          return res.status(400).json({ ok: false, error: 'No target agent selected' });
+        }
+        agentConfigPath = path.join(home23Root, 'instances', targetAgent, 'config.yaml');
+        if (!fs.existsSync(agentConfigPath)) {
+          return res.status(404).json({ ok: false, error: `Agent "${targetAgent}" not found` });
+        }
+        previousAgentConfig = loadYaml(agentConfigPath);
+        agentConfig = cloneConfig(previousAgentConfig);
+        if (!agentConfig.chat) agentConfig.chat = {};
+        if (chatChanged && chat?.defaultProvider !== undefined) {
+          agentConfig.chat.provider = chat.defaultProvider;
+          agentConfig.chat.defaultProvider = chat.defaultProvider;
+        }
+        if (chatChanged && chat?.defaultModel !== undefined) {
+          agentConfig.chat.model = chat.defaultModel;
+          agentConfig.chat.defaultModel = chat.defaultModel;
+        }
+
+        if (engineRolesChanged) {
+          if (!agentConfig.engine) agentConfig.engine = {};
+          for (const role of ['thought', 'consolidation', 'dreaming', 'query']) {
+            if (roleModels[role]) {
+              agentConfig.engine[role] = roleModels[role];
+            } else {
+              delete agentConfig.engine[role];
+            }
           }
         }
       }
-      saveYaml(agentConfigPath, agentConfig);
+
+      if (aliases !== undefined) {
+        if (!homeConfig.models) homeConfig.models = {};
+        homeConfig.models.aliases = aliases;
+        homeConfigDirty = true;
+      }
+      if (catalogChanged) {
+        if (!homeConfig.providers) homeConfig.providers = {};
+        for (const [provName, models] of Object.entries(providerModels)) {
+          if (!homeConfig.providers[provName]) homeConfig.providers[provName] = {};
+          homeConfig.providers[provName].defaultModels = models;
+        }
+        homeConfigDirty = true;
+      }
+      if (imageGeneration && typeof imageGeneration === 'object') {
+        if (!homeConfig.media) homeConfig.media = {};
+        homeConfig.media.imageGeneration = normalizeImageGenerationSettings(imageGeneration);
+        homeConfigDirty = true;
+      }
+
+      if (authorityChanged) {
+        const agents = discoverAgents();
+        for (const agentName of agents) {
+          const prospectiveAgent = agentName === targetAgent && agentConfig
+            ? agentConfig
+            : loadAgentConfig(agentName);
+          validateModelAuthority(homeConfig, prospectiveAgent);
+        }
+      }
+
+      if (agentConfigPath && agentConfig) {
+        saveYaml(agentConfigPath, agentConfig);
+        if (authorityChanged) authorityFilesWritten = true;
+      }
+      if (homeConfigDirty) {
+        saveYaml(configPath, homeConfig);
+        if (authorityChanged) authorityFilesWritten = true;
+      }
+
+      if (authorityChanged) {
+        const primaryAgent = getPrimaryAgent({ autoHeal: false });
+        authorityRefreshAttempted = true;
+        runtimeRefresh = await refreshModelAuthority({
+          agent: targetAgent || primaryAgent,
+          primaryAgent,
+          globalCatalogChanged: catalogChanged,
+          affectsManagedCosmo: catalogChanged || targetAgent === primaryAgent,
+          reason: 'model-settings-update',
+          rollback: rollbackAuthorityFiles,
+        });
+      }
+
+      if (homeConfigDirty) regenerateEvobrewConfig();
 
       if (chatChanged) {
         const effectiveProvider = agentConfig.chat.defaultProvider || agentConfig.chat.provider;
         const effectiveModel = agentConfig.chat.defaultModel || agentConfig.chat.model;
         syncAgentDefaultModelFiles(targetAgent, effectiveProvider, effectiveModel);
         try {
-          restartedHarness = recycleManagedProcess(`home23-${targetAgent}-harness`);
+          restartedHarness = recycleModelProcess(`home23-${targetAgent}-harness`);
         } catch (err) {
           console.error(`[Settings] Failed to restart ${targetAgent}-harness after chat model changes:`, err.message);
         }
@@ -1530,38 +1757,39 @@ function createSettingsRouter(home23Root, options = {}) {
 
       if (chatChanged || engineRolesChanged) {
         try {
-          restartedAgent = recycleManagedProcess(`home23-${targetAgent}`);
+          restartedAgent = recycleModelProcess(`home23-${targetAgent}`);
         } catch (err) {
           console.error(`[Settings] Failed to restart ${targetAgent} after model changes:`, err.message);
         }
       }
-    }
 
-    if (aliases !== undefined) {
-      if (!homeConfig.models) homeConfig.models = {};
-      homeConfig.models.aliases = aliases;
-      homeConfigDirty = true;
-    }
-    if (providerModels) {
-      if (!homeConfig.providers) homeConfig.providers = {};
-      for (const [provName, models] of Object.entries(providerModels)) {
-        if (!homeConfig.providers[provName]) homeConfig.providers[provName] = {};
-        homeConfig.providers[provName].defaultModels = models;
+      res.json({
+        ok: true,
+        agent: targetAgent,
+        restartedAgent,
+        restartedHarness,
+        runtimeRefresh,
+      });
+    } catch (err) {
+      if (authorityChanged && authorityFilesWritten && !authorityRolledBack) {
+        try {
+          rollbackAuthorityFiles();
+          if (!authorityRefreshAttempted) {
+            await seedModelAuthority({
+              home23Root,
+              agent: targetAgent || getPrimaryAgent({ autoHeal: false }),
+              reason: 'model-settings-write-rollback',
+            });
+          }
+        } catch (rollbackError) {
+          console.error('[Settings] Failed to roll back model settings transaction:', rollbackError.message);
+        }
       }
-      homeConfigDirty = true;
+      const status = err?.code === 'model_pair_invalid' || err?.code === 'model_catalog_invalid'
+        ? 400
+        : 500;
+      res.status(status).json({ ok: false, code: err?.code || 'settings_update_failed', error: err.message });
     }
-    if (imageGeneration && typeof imageGeneration === 'object') {
-      if (!homeConfig.media) homeConfig.media = {};
-      homeConfig.media.imageGeneration = normalizeImageGenerationSettings(imageGeneration);
-      homeConfigDirty = true;
-    }
-
-    if (homeConfigDirty) {
-      saveYaml(configPath, homeConfig);
-      regenerateEvobrewConfig();
-    }
-
-    res.json({ ok: true, agent: targetAgent, restartedAgent, restartedHarness });
   });
 
   // ── Query (Query-tab defaults) ──
@@ -1588,14 +1816,15 @@ function createSettingsRouter(home23Root, options = {}) {
     });
   });
 
-  router.put('/query', (req, res) => {
+  router.put('/query', async (req, res) => {
     try {
       const targetAgent = resolveRequestedAgent(req.body?.agent);
       if (!targetAgent) {
         return res.status(400).json({ ok: false, error: 'No target agent selected' });
       }
       const configPath = path.join(home23Root, 'instances', targetAgent, 'config.yaml');
-      const agentConfig = loadYaml(configPath);
+      const previousAgentConfig = loadYaml(configPath);
+      const agentConfig = cloneConfig(previousAgentConfig);
       if (!agentConfig.query) agentConfig.query = {};
       const b = req.body || {};
       if (typeof b.defaultModel === 'string') agentConfig.query.defaultModel = b.defaultModel;
@@ -1607,10 +1836,25 @@ function createSettingsRouter(home23Root, options = {}) {
       if (typeof b.pgsSynthModel === 'string') agentConfig.query.pgsSynthModel = b.pgsSynthModel;
       if (typeof b.pgsSynthProvider === 'string') agentConfig.query.pgsSynthProvider = b.pgsSynthProvider;
       if (typeof b.pgsDepth === 'number') agentConfig.query.pgsDepth = b.pgsDepth;
+
+      const homeConfig = loadHomeConfig();
+      validateModelAuthority(homeConfig, agentConfig);
       saveYaml(configPath, agentConfig);
-      res.json({ ok: true, agent: targetAgent });
+      const primaryAgent = getPrimaryAgent({ autoHeal: false });
+      const runtimeRefresh = await refreshModelAuthority({
+        agent: targetAgent,
+        primaryAgent,
+        globalCatalogChanged: false,
+        affectsManagedCosmo: targetAgent === primaryAgent,
+        reason: 'query-settings-update',
+        rollback: () => saveYaml(configPath, previousAgentConfig),
+      });
+      res.json({ ok: true, agent: targetAgent, runtimeRefresh });
     } catch (err) {
-      res.status(500).json({ ok: false, error: err.message });
+      const status = err?.code === 'model_pair_invalid' || err?.code === 'model_catalog_invalid'
+        ? 400
+        : 500;
+      res.status(status).json({ ok: false, code: err?.code || 'settings_update_failed', error: err.message });
     }
   });
 
@@ -2560,7 +2804,9 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
 }
 
 module.exports = {
+  applyModelAuthorityRuntimeRefresh,
   assertNoSharedPm2Targets,
   createSettingsRouter,
+  planModelAuthorityRuntimeTargets,
   updateSettingsSecrets,
 };

@@ -45,6 +45,9 @@ const { createResearchRunsReader } = require('./brain-operations/research-runs-r
 const { createGraphExportExecutor } = require('./brain-operations/graph-export-executor.js');
 const { createQueryCompatibilityBodyParser } = require('./home23-query-api.js');
 const {
+  createLegacyQueryRetirementRouter,
+} = require('./legacy-query-retirement.js');
+const {
   buildMcpUnavailableEnvelope,
   isMcpProxyAvailable,
   probeMcpAvailability,
@@ -466,8 +469,7 @@ class DashboardServer {
       require('./brain-operations/provider-operation-runtime.js');
     const { createHome23BrainProviderRuntime } =
       require('../../../cosmo23/lib/brain-provider-runtime.js');
-    const { loadModelCatalogSync } =
-      require('../../../cosmo23/server/config/model-catalog.js');
+    const { loadHome23ModelAuthority } = require('./home23-model-catalog.js');
     const { createMemorySourcePinProvider } = require('../../../shared/memory-source');
     const { createOperationScratchQuota } = require('../../../shared/memory-source');
     const { createDashboardSynthesisOperationRuntime } =
@@ -490,7 +492,11 @@ class DashboardServer {
       requesterAgent,
       reader,
     });
-    const catalog = loadModelCatalogSync();
+    const modelAuthority = loadHome23ModelAuthority({
+      home23Root,
+      agent: requesterAgent,
+    });
+    const catalog = modelAuthority.executionCatalog;
     let providerOperationRuntime = null;
     let providerOperationError = null;
     let providerRuntime = null;
@@ -504,6 +510,7 @@ class DashboardServer {
         home23Root,
         catalog,
         providerRegistry: providerRuntime.providerRegistry,
+        queryDefaults: modelAuthority.queryDefaults,
         logger: this.logger,
       });
     } catch (error) {
@@ -665,6 +672,35 @@ class DashboardServer {
         migrated: false,
       }),
     };
+  }
+
+  async reloadCurrentDashboardModelAuthority(change = {}, dependencies = {}) {
+    const requesterAgent = this.getHome23AgentName();
+    if (change.globalCatalogChanged !== true
+        && change.agent !== undefined
+        && change.agent !== requesterAgent) {
+      throw new Error('Model authority refresh targeted another dashboard');
+    }
+    if (!this.brainOperationsProviderRuntime
+        || typeof this.brainOperationsProviderRuntime.refresh !== 'function') {
+      throw new Error('Dashboard provider authority cannot be hot-reloaded');
+    }
+    const loadAuthority = dependencies.loadAuthority
+      || require('./home23-model-catalog.js').loadHome23ModelAuthority;
+    const createProviderRuntime = dependencies.createProviderRuntime
+      || require('../../../cosmo23/lib/brain-provider-runtime.js').createHome23BrainProviderRuntime;
+    const home23Root = this.getHome23Root();
+    const authority = loadAuthority({ home23Root, agent: requesterAgent });
+    const providerRuntime = createProviderRuntime({
+      home23Root,
+      catalog: authority.executionCatalog,
+      logger: this.logger,
+    });
+    return this.brainOperationsProviderRuntime.refresh({
+      catalog: authority.executionCatalog,
+      providerRegistry: providerRuntime.providerRegistry,
+      queryDefaults: authority.queryDefaults,
+    });
   }
 
   /**
@@ -1638,6 +1674,11 @@ class DashboardServer {
   }
 
   setupRoutes() {
+    // Retire the pre-durable Query/PGS surface before static files and legacy
+    // handlers can answer. The canonical Home23 tab is exact-pair, durable,
+    // wait-aware, and backed by the shared Chat model authority.
+    this.app.use(createLegacyQueryRetirementRouter());
+
     this.app.use(express.static(path.join(__dirname), {
       setHeaders(res, filePath) {
         if (/\.(?:html|js|css)$/.test(filePath)) {
@@ -1790,9 +1831,9 @@ class DashboardServer {
             chip: 'This Agent',
             summaryTemplate: "Query targets {{dashboardAgent}}'s brain by default. PGS and query defaults resolve against the current dashboard agent unless you override them.",
             routes: [
-              { method: 'GET', path: '/home23/api/brain/current' },
-              { method: 'GET', path: '/home23/api/settings/query' },
-              { method: 'GET', path: '/api/query' },
+              { method: 'GET', path: '/home23/api/query/catalog' },
+              { method: 'POST', path: '/home23/api/query/run' },
+              { method: 'POST', path: '/home23/api/query/stream' },
             ],
           },
           'brain-map': {
@@ -2330,6 +2371,10 @@ class DashboardServer {
       });
       const { router: settingsRouter } = createSettingsRouter(home23Root, {
         getOrchestrator: () => this.orchestrator,
+        getCurrentDashboardAgent: () => this.getHome23AgentName(),
+        reloadCurrentDashboardModelAuthority: (change) => (
+          this.reloadCurrentDashboardModelAuthority(change)
+        ),
       });
       this.app.use('/home23/api/settings', settingsRouter);
     } catch (err) {
@@ -11448,7 +11493,7 @@ You are empowered to explore and understand. The user trusts you to discover the
       console.log(`  Enhanced Views:`);
       console.log(`    • Main Dashboard:     http://localhost:${this.port}/`);
       console.log(`    • Intelligence:       http://localhost:${this.port}/intelligence        🎮 Operations Tab`);
-      console.log(`    • Query Interface:    http://localhost:${this.port}/query`);
+      console.log(`    • Query Interface:    http://localhost:${this.port}/home23#query`);
       console.log(`    • Insights Explorer:  http://localhost:${this.port}/insights`);
       console.log(`    • Dreams Explorer:    http://localhost:${this.port}/dreams`);
       console.log(`    • Evaluation Metrics: http://localhost:${this.port}/evaluation`);

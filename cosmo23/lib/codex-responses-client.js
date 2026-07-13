@@ -1,5 +1,7 @@
 'use strict';
 
+const { Agent } = require('undici');
+
 const {
   normalizeProviderCompletion,
   requireCompleteProviderResult,
@@ -22,6 +24,13 @@ const MAX_ERROR_TEXT_BYTES = 64 * 1024;
 const MAX_CODEX_INPUT_BYTES = 64 * 1024 * 1024;
 const MAX_SSE_BUFFER_BYTES = 2 * 1024 * 1024;
 const MAX_STREAM_TOOL_CALLS = 4096;
+// Durable Query/PGS already own cancellation, provider-silence, and hard
+// deadlines. Disable Undici's unrelated five-minute header/body ceilings so a
+// valid long-running Codex response cannot be terminated underneath them.
+const DEFAULT_CODEX_DISPATCHER = new Agent({
+  headersTimeout: 0,
+  bodyTimeout: 0,
+});
 
 function typed(code, message, retryable = false) {
   return Object.assign(new Error(message), { code, retryable });
@@ -81,12 +90,20 @@ function normalizeCodexInput(input) {
 }
 
 class CodexResponsesClient {
-  constructor({ fetchImpl = globalThis.fetch, credentialsProvider }) {
+  constructor({
+    fetchImpl = globalThis.fetch,
+    credentialsProvider,
+    dispatcher = DEFAULT_CODEX_DISPATCHER,
+  }) {
     if (typeof fetchImpl !== 'function' || typeof credentialsProvider !== 'function') {
       throw typed('provider_configuration_invalid', 'Codex provider dependencies are unavailable');
     }
+    if (!dispatcher || typeof dispatcher.dispatch !== 'function') {
+      throw typed('provider_configuration_invalid', 'Codex transport dispatcher is unavailable');
+    }
     this.fetchImpl = fetchImpl;
     this.credentialsProvider = credentialsProvider;
+    this.dispatcher = dispatcher;
     this.providerId = 'openai-codex';
   }
 
@@ -118,28 +135,41 @@ class CodexResponsesClient {
     if (!credentials?.accessToken) {
       throw typed('provider_unavailable', 'Codex credentials are unavailable', true);
     }
-    const response = await awaitWithCancellation(() => this.fetchImpl(
-      'https://chatgpt.com/backend-api/codex/responses',
-      {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${credentials.accessToken}`,
-          'content-type': 'application/json',
-          'chatgpt-account-id': credentials.accountId || '',
-          'openai-beta': 'responses=experimental',
-          originator: 'cosmo',
-          accept: 'text/event-stream',
+    let response;
+    try {
+      response = await awaitWithCancellation(() => this.fetchImpl(
+        'https://chatgpt.com/backend-api/codex/responses',
+        {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${credentials.accessToken}`,
+            'content-type': 'application/json',
+            'chatgpt-account-id': credentials.accountId || '',
+            'openai-beta': 'responses=experimental',
+            originator: 'cosmo',
+            accept: 'text/event-stream',
+          },
+          body: JSON.stringify({
+            model,
+            store: false,
+            stream: true,
+            instructions,
+            input: normalizedInput,
+          }),
+          signal,
+          dispatcher: this.dispatcher,
         },
-        body: JSON.stringify({
-          model,
-          store: false,
-          stream: true,
-          instructions,
-          input: normalizedInput,
-        }),
-        signal,
-      },
-    ), signal);
+      ), signal);
+    } catch (error) {
+      rethrowCancellation(error, signal);
+      rethrowNonRetryable(error);
+      const transportCode = error?.cause?.code || error?.code || null;
+      throw typed(
+        'provider_unavailable',
+        `Codex transport failed${transportCode ? ` (${transportCode})` : ''}`,
+        true,
+      );
+    }
     if (!response?.ok) {
       const body = await awaitWithCancellation(() => response.text(), signal);
       throw typed(

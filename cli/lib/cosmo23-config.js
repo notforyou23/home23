@@ -6,15 +6,33 @@
  * handles everything else (model selection, run settings, etc.).
  */
 
-import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
+import { createRequire } from 'node:module';
 import yaml from 'js-yaml';
 import {
   ensureBrainOperationsCapabilityKey,
   updateHome23Secrets,
 } from './brain-operations-capability.js';
+
+const require = createRequire(import.meta.url);
+const {
+  buildHome23ModelAuthority,
+  loadHome23ModelAuthority,
+} = require('../../engine/src/dashboard/home23-model-catalog.js');
 
 function loadYaml(filePath) {
   if (!existsSync(filePath)) return {};
@@ -25,6 +43,54 @@ function loadJson(filePath) {
   if (!existsSync(filePath)) return {};
   try { return JSON.parse(readFileSync(filePath, 'utf8')) || {}; }
   catch { return {}; }
+}
+
+function fsyncDirectorySync(directory) {
+  const directoryFd = openSync(directory, 'r');
+  try {
+    fsyncSync(directoryFd);
+  } finally {
+    closeSync(directoryFd);
+  }
+}
+
+function interruptedCatalogWrite(point) {
+  throw Object.assign(new Error(`injected managed model catalog crash at ${point}`), {
+    code: 'model_catalog_write_interrupted',
+    retryable: true,
+  });
+}
+
+function writeManagedModelCatalogSync(filePath, serialized, options = {}) {
+  const directory = dirname(filePath);
+  mkdirSync(directory, { recursive: true });
+  const tempPath = join(
+    directory,
+    `.${basename(filePath)}.tmp-${process.pid}-${Date.now()}-${randomBytes(8).toString('hex')}`,
+  );
+  let tempFd = null;
+  let renamed = false;
+  try {
+    tempFd = openSync(tempPath, 'wx', 0o600);
+    writeFileSync(tempFd, serialized, 'utf8');
+    fsyncSync(tempFd);
+    closeSync(tempFd);
+    tempFd = null;
+    if (options._testCrashAt === 'before-rename') interruptedCatalogWrite('before-rename');
+    renameSync(tempPath, filePath);
+    renamed = true;
+    if (options._testCrashAt === 'after-rename') interruptedCatalogWrite('after-rename');
+    fsyncDirectorySync(directory);
+  } finally {
+    if (tempFd !== null) closeSync(tempFd);
+    if (!renamed) {
+      try {
+        unlinkSync(tempPath);
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+    }
+  }
 }
 
 function getKnownLegacyBrainRoots(home23Root) {
@@ -88,13 +154,21 @@ function computeBrainRoots(home23Root) {
   return unique;
 }
 
-export async function seedCosmo23Config(home23Root) {
+export async function seedCosmo23Config(home23Root, options = {}) {
   await ensureBrainOperationsCapabilityKey(home23Root);
   const secrets = loadYaml(join(home23Root, 'config', 'secrets.yaml'));
   const homeConfig = loadYaml(join(home23Root, 'config', 'home.yaml'));
+  const primaryAgent = typeof homeConfig.home?.primaryAgent === 'string'
+    ? homeConfig.home.primaryAgent.trim()
+    : '';
+  const modelAuthority = primaryAgent
+    ? loadHome23ModelAuthority({ home23Root, agent: primaryAgent })
+    : buildHome23ModelAuthority({ homeConfig, agentConfig: {} });
+  const managedModelCatalog = JSON.parse(JSON.stringify(modelAuthority.executionCatalog));
 
   const configDir = join(home23Root, 'cosmo23', '.cosmo23-config');
   const configPath = join(configDir, 'config.json');
+  const modelCatalogPath = join(configDir, 'model-catalog.json');
 
   if (!existsSync(configDir)) {
     mkdirSync(configDir, { recursive: true });
@@ -115,6 +189,11 @@ export async function seedCosmo23Config(home23Root) {
   if (!config.security) config.security = {};
   if (!config.server) config.server = {};
   if (!config.features) config.features = {};
+  config.home23 = {
+    ...(config.home23 || {}),
+    managed: true,
+    queryDefaults: JSON.parse(JSON.stringify(modelAuthority.queryDefaults)),
+  };
 
   // Home23 owns brain discovery. Seed the full root set (every agent instance +
   // any external roots the user has configured via ~/.evobrew or ~/.cosmo2.3 or
@@ -197,7 +276,13 @@ export async function seedCosmo23Config(home23Root) {
 
   // Write config
   writeFileSync(configPath, JSON.stringify(config, null, 2));
+  writeManagedModelCatalogSync(
+    modelCatalogPath,
+    `${JSON.stringify(managedModelCatalog, null, 2)}\n`,
+    { _testCrashAt: options._testModelCatalogCrashAt },
+  );
   console.log(`[cosmo23] Config seeded at ${configPath}`);
+  console.log(`[cosmo23] Managed model catalog synced at ${modelCatalogPath}`);
 
-  return { configDir, configPath };
+  return { configDir, configPath, modelCatalogPath };
 }

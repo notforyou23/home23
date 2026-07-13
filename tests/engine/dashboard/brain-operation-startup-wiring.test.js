@@ -122,3 +122,34 @@ test('dashboard emergency shutdown budget exceeds coordinator cleanup plus HTTP 
   server._serverCloseTimeoutMs = 5_000;
   assert.equal(server._shutdownEmergencyTimeoutMs(), 190_000);
 });
+
+test('dashboard hot-reloads its exact agent model authority before Settings can report success', async () => {
+  const calls = [];
+  const server = Object.create(DashboardServer.prototype);
+  server.logger = { error() {} };
+  server.getHome23Root = () => '/home23';
+  server.getHome23AgentName = () => 'jerry';
+  server.brainOperationsProviderRuntime = {
+    async refresh(input) {
+      calls.push(input);
+      return { refreshed: true };
+    },
+  };
+  const authority = {
+    executionCatalog: { version: 1, providers: {} },
+    queryDefaults: { defaultProvider: 'alpha', defaultModel: 'model' },
+  };
+  const providerRegistry = { assertPairAvailable() {} };
+
+  const result = await server.reloadCurrentDashboardModelAuthority({ agent: 'jerry' }, {
+    loadAuthority: () => authority,
+    createProviderRuntime: () => ({ providerRegistry }),
+  });
+
+  assert.deepEqual(calls, [{
+    catalog: authority.executionCatalog,
+    providerRegistry,
+    queryDefaults: authority.queryDefaults,
+  }]);
+  assert.deepEqual(result, { refreshed: true });
+});

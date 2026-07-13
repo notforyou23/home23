@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { loadModelCatalogSync } = require('../../../cosmo23/server/config/model-catalog.js');
+const {
+  BUILTIN_MODEL_CATALOG,
+  normalizeModelCatalog,
+} = require('../../../cosmo23/server/config/model-catalog.js');
 const {
   createDashboardSynthesisOperationRuntime,
   persistSynthesisSelection,
@@ -44,7 +47,9 @@ test('dashboard synthesis runtime fixes the exact pair, migrates config, and sta
     brainDir: '/tmp/home23-synthesis-runtime-brain',
     workspacePath: '/tmp/home23-synthesis-runtime-workspace',
     homeConfig: document,
-    catalog: loadModelCatalogSync(),
+    // Engine tests must not read the operator's standalone ~/.cosmo2.3
+    // catalog. Home23 injects its managed catalog at runtime.
+    catalog: normalizeModelCatalog(BUILTIN_MODEL_CATALOG),
     providerRegistry: registry(),
     settingsStore: {
       async read() { return { data: structuredClone(document), version: `v${version}` }; },
