@@ -124,6 +124,21 @@ function validateQueryProgressSnapshot(value, code = 'progress_snapshot_invalid'
   for (const field of ['lastProviderActivityAt', 'lastProgressAt']) {
     if (value[field] !== undefined) canonicalIso(value[field], code);
   }
+  if (value.selected !== undefined
+      && value.completed !== undefined
+      && value.completed > value.selected) {
+    throw progressError(code);
+  }
+  if (value.successful !== undefined
+      && value.completed !== undefined
+      && value.successful > value.completed) {
+    throw progressError(code);
+  }
+  if (value.failed !== undefined
+      && value.completed !== undefined
+      && value.failed > value.completed) {
+    throw progressError(code);
+  }
   if (value.completed !== undefined
       && value.successful !== undefined
       && value.failed !== undefined
@@ -168,13 +183,25 @@ function setIfPresent(target, outputKey, source, inputKey = outputKey) {
   if (Object.hasOwn(source, inputKey)) target[outputKey] = source[inputKey];
 }
 
+function setMaximumIfPresent(target, outputKey, source, inputKey = outputKey) {
+  if (!Object.hasOwn(source, inputKey)) return;
+  const value = source[inputKey];
+  if (target[outputKey] === undefined
+      || !Number.isSafeInteger(value)
+      || value < 0) {
+    target[outputKey] = value;
+    return;
+  }
+  target[outputKey] = Math.max(target[outputKey], value);
+}
+
 function applyStageCounters(next, event, code) {
   if (event.stage === 'projection_complete') {
     setIfPresent(next, 'sourceNodes', event, 'nodeCount');
     setIfPresent(next, 'sourceEdges', event, 'edgeCount');
     setIfPresent(next, 'candidateWorkUnits', event, 'workUnitCount');
   } else if (event.stage === 'work_selected') {
-    setIfPresent(next, 'candidateWorkUnits', event, 'candidateWorkUnits');
+    setMaximumIfPresent(next, 'candidateWorkUnits', event, 'candidateWorkUnits');
     setIfPresent(next, 'selected', event, 'selectedWorkUnitsTotal');
   } else if (event.stage === 'sweep_batch_complete') {
     if (SETTLED_COUNTER_FIELDS.some((field) => !Object.hasOwn(event, field))) {

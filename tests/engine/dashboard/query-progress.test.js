@@ -61,6 +61,20 @@ test('v1 snapshot accepts only the exact source, work, synthesis, and activity f
   );
 });
 
+test('v1 snapshot rejects impossible partial settled-work algebra', () => {
+  const base = { version: 1, stage: 'sweeping', eventSequence: 1 };
+  for (const counters of [
+    { selected: 3, completed: 4 },
+    { completed: 3, successful: 4 },
+    { completed: 3, failed: 4 },
+  ]) {
+    assert.throws(
+      () => validateQueryProgressSnapshot({ ...base, ...counters }),
+      /progress_snapshot_invalid/,
+    );
+  }
+});
+
 test('raw stages map exact counters without folding global pending into active work', () => {
   const projection = reduceQueryProgressSnapshot({
     version: 1, stage: 'queued', eventSequence: 0,
@@ -93,6 +107,24 @@ test('raw stages map exact counters without folding global pending into active w
   assert.equal(selected.candidateWorkUnits, 12);
   assert.equal(selected.selected, 8);
   assert.equal(Object.hasOwn(selected, 'pending'), false);
+});
+
+test('repeated work selection preserves the candidate bound while selected remains cumulative', () => {
+  const first = reduceQueryProgressSnapshot(null, {
+    type: 'progress',
+    stage: 'work_selected',
+    candidateWorkUnits: 100,
+    selectedWorkUnitsTotal: 64,
+  }, { operationType: 'pgs', nextSequence: 1, now: Date.parse('2026-07-13T12:00:00.000Z') });
+  const second = reduceQueryProgressSnapshot(first, {
+    type: 'progress',
+    stage: 'work_selected',
+    candidateWorkUnits: 36,
+    selectedWorkUnitsTotal: 100,
+  }, { operationType: 'pgs', nextSequence: 2, now: Date.parse('2026-07-13T12:00:01.000Z') });
+
+  assert.equal(second.candidateWorkUnits, 100);
+  assert.equal(second.selected, 100);
 });
 
 test('provider activity and synthesis stages advance only canonical snapshot authority', () => {
