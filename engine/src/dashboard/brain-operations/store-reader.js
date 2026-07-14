@@ -125,14 +125,19 @@ class BrainOperationStoreReader {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
       throw operationError('invalid_request');
     }
-    if (typeof this.store.list !== 'function') throw operationError('operation_unavailable');
-    const source = await this.store.list();
-    if (!Array.isArray(source)) throw operationError('operation_corrupt');
-    return source.map((record) => this._authorizeRecord(record))
+    const records = await this.listAuthorized();
+    return records
       .sort((left, right) =>
         String(right.updatedAt || '').localeCompare(String(left.updatedAt || ''))
         || String(right.operationId || '').localeCompare(String(left.operationId || '')))
       .slice(0, limit);
+  }
+
+  async listAuthorized() {
+    if (typeof this.store.list !== 'function') throw operationError('operation_unavailable');
+    const source = await this.store.list();
+    if (!Array.isArray(source)) throw operationError('operation_corrupt');
+    return source.map((record) => this._authorizeRecord(record));
   }
 
   async getResultAuthorized(operationId, resultHandle) {
@@ -142,6 +147,20 @@ class BrainOperationStoreReader {
       requesterAgent: this.expectedRequester,
       resultHandle: effectiveHandle,
     });
+  }
+
+  async ensureNotebookResultSummaryAuthorized(operationId) {
+    assertOperationId(operationId);
+    const record = await this.getAuthorized(operationId);
+    if (record.notebookResultSummary !== null
+        && record.notebookResultSummary !== undefined) return record;
+    if (typeof this.store.ensureNotebookResultSummary !== 'function') {
+      throw operationError('operation_unavailable');
+    }
+    return this._authorizeRecord(
+      await this.store.ensureNotebookResultSummary(operationId),
+      operationId,
+    );
   }
 
   async openResultArtifactAuthorized(operationId, resultHandle) {

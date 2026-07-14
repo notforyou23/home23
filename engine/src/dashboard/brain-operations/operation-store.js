@@ -27,6 +27,7 @@ const {
   assertTransition,
   buildBrainOperationIdempotencyKey,
   buildRequestFingerprint,
+  deriveNotebookResultSummary,
   operationError,
   projectPublicRecord,
   safeJsonClone,
@@ -35,6 +36,7 @@ const {
   validateSourceEvidence,
   validateSourcePin,
   validatePgsSessionMetadata,
+  validateNotebookResultSummary,
   validateTargetSnapshot,
   validateTransitionError,
 } = require('./operation-contract.js');
@@ -93,6 +95,7 @@ const PRIVATE_RECORD_FIELDS = Object.freeze([
   'lastProviderActivityAt',
   'lastProgressAt',
   'progressSnapshot',
+  'notebookResultSummary',
   'result',
   'resultHandle',
   'resultArtifact',
@@ -642,6 +645,7 @@ class BrainOperationStore {
     if (!Object.hasOwn(record, 'pgsSession')) record.pgsSession = null;
     if (!Object.hasOwn(record, 'progressSnapshot')) record.progressSnapshot = null;
     if (!Object.hasOwn(record, 'acceptedAt')) record.acceptedAt = null;
+    if (!Object.hasOwn(record, 'notebookResultSummary')) record.notebookResultSummary = null;
     exactInputKeys(record, PRIVATE_RECORD_FIELDS, 'operation_corrupt');
     if (record.operationId !== expectedOperationId || !OPERATION_ID_PATTERN.test(record.operationId)) {
       throw operationError('operation_corrupt');
@@ -689,6 +693,28 @@ class BrainOperationStore {
       if (record.progressSnapshot !== null) {
         validateQueryProgressSnapshot(record.progressSnapshot, 'operation_corrupt');
         if (record.progressSnapshot.eventSequence > record.eventSequence) {
+          throw operationError('operation_corrupt');
+        }
+      }
+      const notebookResultSummary = validateNotebookResultSummary(
+        record.notebookResultSummary,
+        'operation_corrupt',
+      );
+      if ((record.operationType !== 'query' && record.operationType !== 'pgs')
+          && notebookResultSummary !== null) {
+        throw operationError('operation_corrupt');
+      }
+      if (record.operationType === 'query'
+          && notebookResultSummary !== null
+          && notebookResultSummary.continuation !== null) {
+        throw operationError('operation_corrupt');
+      }
+      if (record.operationType === 'pgs'
+          && notebookResultSummary !== null
+          && notebookResultSummary.continuation !== null) {
+        const session = validatePgsSessionMetadata(record.pgsSession, 'operation_corrupt');
+        if (notebookResultSummary.continuation.continuableUntil !== session.continuableUntil
+            || notebookResultSummary.continuation.sourceOperationId !== session.sourceOperationId) {
           throw operationError('operation_corrupt');
         }
       }
@@ -1060,6 +1086,7 @@ class BrainOperationStore {
       progressSnapshot: input.operationType === 'query' || input.operationType === 'pgs'
         ? { version: 1, stage: 'queued', eventSequence: 0 }
         : null,
+      notebookResultSummary: null,
       result: null,
       resultHandle: null,
       resultArtifact: null,
@@ -1873,6 +1900,7 @@ class BrainOperationStore {
     return this._withOperationLock(operationId, async (record) => {
       this._assertMutable(record, input.expectedVersion);
       this._assertNoResult(record);
+      const notebookResultSummary = deriveNotebookResultSummary(record, normalized, sha256);
       await this._removeOperationPublicationTemps(operationId);
       await this._assertResultPathAbsent(this._resultArtifactPath(operationId));
       const exactOrphan = await this._inspectExactOrphanJson(
@@ -1884,6 +1912,7 @@ class BrainOperationStore {
         if (exactOrphan) throw operationError('result_conflict');
         const next = await this._commitMutation(record, (draft) => {
           draft.result = normalized;
+          draft.notebookResultSummary = notebookResultSummary;
           draft._resultKind = 'inline';
         }, { type: 'result_ready', storage: 'inline', bytes });
         return projectPublicRecord(next);
@@ -1913,6 +1942,7 @@ class BrainOperationStore {
         handleWritten = true;
         const next = await this._commitMutation(record, (draft) => {
           draft.result = null;
+          draft.notebookResultSummary = notebookResultSummary;
           draft.resultHandle = handle;
           draft.resultArtifact = {
             mediaType: 'application/json',
@@ -1988,6 +2018,64 @@ class BrainOperationStore {
     } catch (error) {
       throw operationError('result_corrupt', error);
     }
+  }
+
+  async ensureNotebookResultSummary(operationId) {
+    assertOperationId(operationId);
+    return this._withOperationLock(operationId, async (record) => {
+      if (record.operationType !== 'query' && record.operationType !== 'pgs') {
+        throw operationError('operation_type_invalid');
+      }
+      if (record.notebookResultSummary !== null) return projectPublicRecord(record);
+      if (record.resultExpiredAt !== null || record._resultKind === 'expired'
+          || record._resultKind === null) {
+        return projectPublicRecord(record);
+      }
+
+      let result;
+      let sha256;
+      if (record._resultKind === 'inline') {
+        result = validateResultObject(record.result);
+        const serialized = Buffer.from(canonicalJson(result), 'utf8');
+        sha256 = crypto.createHash('sha256').update(serialized).digest('hex');
+      } else if (record._resultKind === 'json-file') {
+        let bytes;
+        try {
+          bytes = await this._withDirectoryConfinement(
+            this._operationAncestorPaths(operationId),
+            'result_corrupt',
+            () => this._readSecureRegularFile(
+              this._resultJsonPath(operationId),
+              record.resultArtifact?.bytes,
+              'result_corrupt',
+            ),
+          );
+        } catch (error) {
+          throw operationError('result_corrupt', error);
+        }
+        sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+        if (bytes.length !== record.resultArtifact?.bytes
+            || sha256 !== record.resultArtifact?.sha256) {
+          throw operationError('result_corrupt');
+        }
+        try {
+          result = validateResultObject(JSON.parse(bytes.toString('utf8')));
+        } catch (error) {
+          throw operationError('result_corrupt', error);
+        }
+      } else {
+        throw operationError('result_unavailable');
+      }
+
+      const next = safeJsonClone(record, 'operation_corrupt');
+      next.notebookResultSummary = deriveNotebookResultSummary(record, result, sha256);
+      await this._writeJson(
+        this._statusPath(operationId),
+        next,
+        'before_notebook_summary_backfill_status_rename',
+      );
+      return projectPublicRecord(next);
+    });
   }
 
   async _copyArtifactIntoStore(
