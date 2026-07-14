@@ -40,16 +40,23 @@ function snapshotFrame(status, sequence, stage = status.progress.stage) {
   } };
 }
 
-function fakeQuerySystem({ includeGap = true } = {}) {
+function fakeQuerySystem({ includeGap = true, repeatedStalls = 0 } = {}) {
   const dashboard = 'http://dashboard.test';
   const harness = 'http://harness.test';
   const wrong = 'http://wrong.test';
   const directId = `brop_${'B'.repeat(32)}`;
   const pgsId = `brop_${'A'.repeat(32)}`;
   const continuationId = `brop_${'D'.repeat(32)}`;
+  const recoveryIds = [
+    `brop_${'E'.repeat(32)}`,
+    `brop_${'F'.repeat(32)}`,
+  ];
   const credential = fixture('query-notebook-device-credential');
   const pgsStatus = structuredClone(fixture('query-notebook-page').items[0]);
   pgsStatus.notification = { subscribed: true, deliveryState: 'active' };
+  for (const action of pgsStatus.actions) {
+    if (action.token) action.expiresAt = '2099-01-01T00:00:00.000Z';
+  }
   const directStatus = structuredClone(fixture('query-notebook-status'));
   Object.assign(directStatus, {
     executionState: 'complete', humanClassification: 'finished',
@@ -65,9 +72,60 @@ function fakeQuerySystem({ includeGap = true } = {}) {
   const continuationStatus = structuredClone(pgsStatus);
   continuationStatus.operationId = continuationId;
   continuationStatus.configuration.pgsMode = 'continue';
-  continuationStatus.continuation.sourceOperationId = pgsId;
-  const resultFor = (operationId) => ({ ...structuredClone(fixture('query-notebook-result')), operationId });
-  const terminalSnapshot = snapshotFrame(pgsStatus, 41);
+  continuationStatus.continuation.sourceOperationId = repeatedStalls > 0 ? recoveryIds[1] : pgsId;
+  const stalledStatus = (operationId, mode, completed, reused, token) => {
+    const status = structuredClone(pgsStatus);
+    Object.assign(status, {
+      operationId, executionState: 'failed', humanClassification: 'finished',
+      completedAt: '2026-07-13T19:10:00.000Z',
+      error: { code: 'provider_stalled', retryable: true },
+      resultAvailability: 'absent', expiresAt: null, answerPreviewAvailable: false,
+      resultVersion: null, coverage: null, continuation: null,
+      actions: [{ kind: 'continueSweep', token, expiresAt: '2099-01-01T00:00:00.000Z' }],
+      progress: {
+        version: 1, stage: 'terminal', eventSequence: completed + 10,
+        selected: completed + 2, completed, successful: completed, failed: 0,
+        reused, pending: 2, retryable: 0, total: 1_038,
+        lastProviderActivityAt: '2026-07-13T19:09:58.000Z',
+        lastProgressAt: '2026-07-13T19:10:00.000Z',
+      },
+    });
+    status.configuration.pgsMode = mode;
+    return status;
+  };
+  const recoveryStatuses = repeatedStalls > 0 ? [
+    stalledStatus(pgsId, 'fresh', 201, 0, 'signed-stall-one'),
+    stalledStatus(recoveryIds[0], 'continue', 247, 201, 'signed-stall-two'),
+  ] : [];
+  const recoveredStatus = structuredClone(pgsStatus);
+  recoveredStatus.operationId = recoveryIds[1];
+  recoveredStatus.configuration.pgsMode = 'continue';
+  recoveredStatus.continuation.sourceOperationId = recoveryIds[0];
+  recoveredStatus.progress = {
+    ...recoveredStatus.progress,
+    selected: 250, completed: 250, successful: 249, failed: 1,
+    reused: 247, pending: 0, retryable: 1, total: 1_038,
+  };
+  recoveredStatus.coverage = {
+    ...recoveredStatus.coverage,
+    successfulSweeps: 249, selectedWorkUnits: 250,
+    pendingWorkUnits: 0, reusedWorkUnits: 247, newWorkUnits: 2,
+  };
+  const resultFor = (operationId) => {
+    const result = { ...structuredClone(fixture('query-notebook-result')), operationId };
+    for (const action of result.actions) {
+      if (action.token) action.expiresAt = '2099-01-01T00:00:00.000Z';
+    }
+    if (operationId === recoveryIds[1]) {
+      result.continuation.sourceOperationId = recoveryIds[0];
+      result.coverage = structuredClone(recoveredStatus.coverage);
+    } else if (operationId === continuationId) {
+      result.continuation.sourceOperationId = repeatedStalls > 0 ? recoveryIds[1] : pgsId;
+    }
+    return result;
+  };
+  const rootTerminalStatus = repeatedStalls > 0 ? recoveryStatuses[0] : pgsStatus;
+  const terminalSnapshot = snapshotFrame(rootTerminalStatus, rootTerminalStatus.progress.eventSequence);
   const runningStatus = structuredClone(pgsStatus);
   Object.assign(runningStatus, {
     executionState: 'running', humanClassification: 'running', completedAt: null,
@@ -144,7 +202,13 @@ function fakeQuerySystem({ includeGap = true } = {}) {
     if (suffix === '/notifications') {
       return jsonResponse({ ...fixture('query-notebook-notification'), operationId });
     }
-    if (suffix === '/actions') return jsonResponse(fixture('query-notebook-action'), 202);
+    if (suffix === '/actions') {
+      const nextOperationId = repeatedStalls > 0
+        ? operationId === pgsId ? recoveryIds[0]
+          : operationId === recoveryIds[0] ? recoveryIds[1] : continuationId
+        : continuationId;
+      return jsonResponse({ ...fixture('query-notebook-action'), operationId: nextOperationId }, 202);
+    }
     if (suffix === '/result') return jsonResponse(resultFor(operationId));
     if (suffix === '/events') {
       const after = Number(url.searchParams.get('after'));
@@ -173,6 +237,9 @@ function fakeQuerySystem({ includeGap = true } = {}) {
     if (suffix === '') {
       if (operationId === directId) return jsonResponse(directStatus);
       if (operationId === continuationId) return jsonResponse(continuationStatus);
+      if (repeatedStalls > 0 && operationId === recoveryIds[0]) return jsonResponse(recoveryStatuses[1]);
+      if (repeatedStalls > 0 && operationId === recoveryIds[1]) return jsonResponse(recoveredStatus);
+      if (repeatedStalls > 0 && operationId === pgsId) return jsonResponse(recoveryStatuses[0]);
       return jsonResponse(pgsStatus);
     }
     return jsonResponse({ error: 'not_found' }, 404);
@@ -454,6 +521,268 @@ test('long-operation waiting survives bounded transient status transport failure
   assert.equal(stalledAdvanceNow, 2_000);
 });
 
+test('PGS acceptance waiting follows repeated signed stall recoveries under one hard deadline', async () => {
+  const { waitForPgsAcceptanceWithRecovery } = await verifier();
+  assert.equal(typeof waitForPgsAcceptanceWithRecovery, 'function');
+
+  const ids = [
+    `brop_${'S'.repeat(32)}`,
+    `brop_${'T'.repeat(32)}`,
+    `brop_${'U'.repeat(32)}`,
+  ];
+  const base = {
+    requestKind: 'pgs', requesterAgent: 'jerry',
+    brain: { id: 'brain-jerry', displayName: 'Jerry' },
+    question: 'Map the durable brain',
+    configuration: {
+      pgsMode: 'targeted', pgsLevel: 'sample',
+      sweepModel: { provider: 'openai-codex', model: 'gpt-5.4-mini' },
+      synthesisModel: { provider: 'openai-codex', model: 'gpt-5.4-mini' },
+    },
+    resultAvailability: 'absent',
+  };
+  const stalled = (operationId, token, completed, successful, reused) => ({
+    ...structuredClone(base), operationId, executionState: 'failed',
+    error: { code: 'provider_stalled', retryable: true },
+    actions: [{ kind: 'continueSweep', token, expiresAt: '2026-07-20T20:00:00.000Z' }],
+    progress: {
+      version: 1, stage: 'terminal', eventSequence: completed + 10,
+      selected: completed + 5, completed, successful, failed: completed - successful,
+      reused, pending: 5, retryable: completed - successful, total: 1_038,
+      lastProviderActivityAt: '2026-07-14T04:00:00.000Z',
+      lastProgressAt: '2026-07-14T04:00:01.000Z',
+    },
+  });
+  const statuses = new Map([
+    [ids[0], stalled(ids[0], 'signed-stall-one', 201, 201, 0)],
+    [ids[1], {
+      ...stalled(ids[1], 'signed-stall-two', 247, 246, 201),
+      configuration: { ...structuredClone(base.configuration), pgsMode: 'continue' },
+    }],
+    [ids[2], {
+      ...structuredClone(base), operationId: ids[2], executionState: 'partial',
+      configuration: { ...structuredClone(base.configuration), pgsMode: 'continue' },
+      resultAvailability: 'available', error: { code: 'pgs_scope_incomplete', retryable: true },
+      actions: [{ kind: 'openResult' }],
+      progress: {
+        version: 1, stage: 'terminal', eventSequence: 310,
+        selected: 300, completed: 300, successful: 299, failed: 1,
+        reused: 247, pending: 0, retryable: 1, total: 1_038,
+        lastProviderActivityAt: '2026-07-14T04:30:00.000Z',
+        lastProgressAt: '2026-07-14T04:30:01.000Z',
+      },
+    }],
+  ]);
+  const starts = [];
+  let now = 1_000;
+  const recovered = await waitForPgsAcceptanceWithRecovery({
+    initialOperationId: ids[0],
+    readStatus: async (operationId) => statuses.get(operationId),
+    readResult: async (operationId) => ({
+      operationId,
+      continuation: {
+        canContinue: true,
+        continuableUntil: '2026-07-20T20:00:00.000Z',
+        sourceOperationId: ids[1],
+      },
+      coverage: { reusedWorkUnits: 247, successfulSweeps: 299 },
+    }),
+    startAuthorizedAction: async (request) => {
+      starts.push(request);
+      now += 2_000;
+      return { operationId: ids[starts.length], requestId: `qreq_${String(starts.length).repeat(32)}` };
+    },
+    now: () => now,
+    sleepImpl: async (milliseconds) => { now += milliseconds; },
+    pollIntervalMs: 1_000,
+    hardTimeoutMs: 5_000,
+    stallTimeoutMs: 3_000,
+  });
+
+  assert.equal(recovered.operationId, ids[2]);
+  assert.equal(recovered.terminal.executionState, 'partial');
+  assert.equal(recovered.result.coverage.reusedWorkUnits, 247);
+  assert.deepEqual(recovered.lineageBinding, {
+    rootOperationId: ids[0],
+    finalSourceOperationId: ids[1],
+    continuableUntil: '2026-07-20T20:00:00.000Z',
+    recoveryHops: 2,
+    requiredReusedWorkUnits: 246,
+    finalReusedWorkUnits: 247,
+  });
+  assert.deepEqual(recovered.lineage.map(({ operationId }) => operationId), ids);
+  assert.deepEqual(starts, [
+    { sourceOperationId: ids[0], kind: 'continueSweep', actionToken: 'signed-stall-one' },
+    { sourceOperationId: ids[1], kind: 'continueSweep', actionToken: 'signed-stall-two' },
+  ], 'the verifier must submit only the exact signed action, never reconstructed mode or targets');
+  assert.deepEqual(recovered.recoveries.map(({ sourceOperationId, operationId }) => (
+    { sourceOperationId, operationId }
+  )), [
+    { sourceOperationId: ids[0], operationId: ids[1] },
+    { sourceOperationId: ids[1], operationId: ids[2] },
+  ]);
+  assert.equal(now, 5_000, 'continuations share one immutable hard deadline');
+});
+
+test('PGS stall recovery fails closed without exact authority and rejects lineage cycles', async () => {
+  const { waitForPgsAcceptanceWithRecovery } = await verifier();
+  const sourceId = `brop_${'W'.repeat(32)}`;
+  const stalled = {
+    operationId: sourceId, requestKind: 'pgs', requesterAgent: 'jerry',
+    brain: { id: 'brain-jerry', displayName: 'Jerry' }, question: 'Map durable truth',
+    configuration: {
+      pgsMode: 'fresh', pgsLevel: 'sample',
+      sweepModel: { provider: 'openai-codex', model: 'gpt-5.4-mini' },
+      synthesisModel: { provider: 'openai-codex', model: 'gpt-5.4-mini' },
+    },
+    executionState: 'failed', resultAvailability: 'absent',
+    error: { code: 'provider_stalled', retryable: true },
+    actions: [{ kind: 'targetedRetry', token: 'wrong-authority', expiresAt: '2026-07-20T20:00:00.000Z' }],
+    progress: { version: 1, stage: 'terminal', eventSequence: 20 },
+  };
+  await assert.rejects(waitForPgsAcceptanceWithRecovery({
+    initialOperationId: sourceId, readStatus: async () => stalled,
+    readResult: async () => { throw new Error('must not read'); },
+    startAuthorizedAction: async () => { throw new Error('must not start'); },
+    now: () => 0, sleepImpl: async () => {}, pollIntervalMs: 1,
+    hardTimeoutMs: 10_000, stallTimeoutMs: 10_000,
+  }), { code: 'continuation_unavailable' });
+
+  const authorized = {
+    ...stalled,
+    actions: [{ kind: 'continueSweep', token: 'signed-cycle', expiresAt: '2026-07-20T20:00:00.000Z' }],
+  };
+  await assert.rejects(waitForPgsAcceptanceWithRecovery({
+    initialOperationId: sourceId, readStatus: async () => authorized,
+    readResult: async () => { throw new Error('must not read'); },
+    startAuthorizedAction: async () => ({ operationId: sourceId, requestId: `qreq_${'C'.repeat(32)}` }),
+    now: () => 0, sleepImpl: async () => {}, pollIntervalMs: 1,
+    hardTimeoutMs: 10_000, stallTimeoutMs: 10_000,
+  }), { code: 'continuation_cycle_detected' });
+});
+
+test('PGS stall recovery bounds hops and validates action authority before starting', async () => {
+  const { waitForPgsAcceptanceWithRecovery } = await verifier();
+  const operationId = (index) => `brop_${index.toString(36).padStart(32, '0')}`;
+  const nowIso = '2026-07-14T05:00:00.000Z';
+  const futureIso = '2026-07-14T06:00:00.000Z';
+  const stalled = (id, token = 'signed', expiresAt = futureIso) => ({
+    operationId: id, requestKind: 'pgs', requesterAgent: 'jerry',
+    brain: { id: 'brain-jerry', displayName: 'Jerry' }, question: 'Map durable truth',
+    configuration: {
+      pgsMode: 'continue', pgsLevel: 'sample',
+      sweepModel: { provider: 'openai-codex', model: 'gpt-5.4-mini' },
+      synthesisModel: { provider: 'openai-codex', model: 'gpt-5.4-mini' },
+    },
+    executionState: 'failed', resultAvailability: 'absent',
+    error: { code: 'provider_stalled', retryable: true },
+    actions: [{ kind: 'continueSweep', token, expiresAt }],
+    progress: { version: 1, stage: 'terminal', eventSequence: 20,
+      selected: 2, completed: 1, successful: 1, failed: 0, reused: 1,
+      pending: 1, retryable: 0, total: 2 },
+  });
+  let starts = 0;
+  await assert.rejects(waitForPgsAcceptanceWithRecovery({
+    initialOperationId: operationId(0),
+    readStatus: async (id) => stalled(id),
+    readResult: async () => { throw new Error('must not read'); },
+    startAuthorizedAction: async () => {
+      starts += 1;
+      if (starts > 32) throw Object.assign(new Error('test escape'), { code: 'test_escape' });
+      return { operationId: operationId(starts), requestId: `qreq_${'R'.repeat(32)}` };
+    },
+    now: () => Date.parse(nowIso), sleepImpl: async () => {}, pollIntervalMs: 1,
+    hardTimeoutMs: 10_000, stallTimeoutMs: 10_000,
+  }), { code: 'continuation_hop_limit' });
+  assert.equal(starts, 32);
+
+  for (const [token, expiresAt] of [
+    ['x'.repeat(2_049), futureIso],
+    ['signed', '2026-07-14T06:00:00Z'],
+    ['signed', nowIso],
+  ]) {
+    let actionStarts = 0;
+    await assert.rejects(waitForPgsAcceptanceWithRecovery({
+      initialOperationId: operationId(100),
+      readStatus: async (id) => stalled(id, token, expiresAt),
+      readResult: async () => { throw new Error('must not read'); },
+      startAuthorizedAction: async () => { actionStarts += 1; },
+      now: () => Date.parse(nowIso), sleepImpl: async () => {}, pollIntervalMs: 1,
+      hardTimeoutMs: 10_000, stallTimeoutMs: 10_000,
+    }), { code: 'continuation_unavailable' });
+    assert.equal(actionStarts, 0);
+  }
+
+  let duplicateStarts = 0;
+  await assert.rejects(waitForPgsAcceptanceWithRecovery({
+    initialOperationId: operationId(101),
+    readStatus: async (id) => {
+      const status = stalled(id);
+      status.actions.push({ ...status.actions[0], token: 'second-signed-token' });
+      return status;
+    },
+    readResult: async () => { throw new Error('must not read'); },
+    startAuthorizedAction: async () => { duplicateStarts += 1; },
+    now: () => Date.parse(nowIso), sleepImpl: async () => {}, pollIntervalMs: 1,
+    hardTimeoutMs: 10_000, stallTimeoutMs: 10_000,
+  }), { code: 'continuation_unavailable' });
+  assert.equal(duplicateStarts, 0);
+});
+
+test('PGS recovery proves durable reuse, request identity, and final continuation binding', async () => {
+  const { waitForPgsAcceptanceWithRecovery } = await verifier();
+  const sourceId = `brop_${'J'.repeat(32)}`;
+  const childId = `brop_${'K'.repeat(32)}`;
+  const base = {
+    requestKind: 'pgs', requesterAgent: 'jerry',
+    brain: { id: 'brain-jerry', displayName: 'Jerry' }, question: 'Map durable truth',
+    configuration: {
+      pgsMode: 'fresh', pgsLevel: 'sample',
+      sweepModel: { provider: 'openai-codex', model: 'gpt-5.4-mini' },
+      synthesisModel: { provider: 'openai-codex', model: 'gpt-5.4-mini' },
+    },
+  };
+  const source = {
+    ...structuredClone(base), operationId: sourceId, executionState: 'failed',
+    resultAvailability: 'absent', error: { code: 'provider_stalled', retryable: true },
+    actions: [{ kind: 'continueSweep', token: 'signed', expiresAt: '2099-01-01T00:00:00.000Z' }],
+    progress: { version: 1, stage: 'terminal', eventSequence: 210,
+      selected: 203, completed: 201, successful: 201, failed: 0,
+      reused: 0, pending: 2, retryable: 0, total: 1_038 },
+  };
+  const child = {
+    ...structuredClone(base), operationId: childId, executionState: 'partial',
+    resultAvailability: 'available', error: { code: 'pgs_scope_incomplete', retryable: true },
+    actions: [{ kind: 'openResult' }],
+    configuration: { ...structuredClone(base.configuration), pgsMode: 'continue' },
+    progress: { version: 1, stage: 'terminal', eventSequence: 260,
+      selected: 250, completed: 250, successful: 249, failed: 1,
+      reused: 201, pending: 0, retryable: 1, total: 1_038 },
+  };
+  const run = ({ requestId = `qreq_${'Q'.repeat(32)}`, reused = 201,
+    sourceOperationId = sourceId } = {}) => waitForPgsAcceptanceWithRecovery({
+    initialOperationId: sourceId,
+    readStatus: async (id) => id === sourceId ? source : {
+      ...child, progress: { ...child.progress, reused },
+    },
+    readResult: async (operationId) => ({
+      operationId,
+      continuation: { canContinue: true,
+        continuableUntil: '2099-01-01T00:00:00.000Z', sourceOperationId },
+      coverage: { reusedWorkUnits: reused, successfulSweeps: 249 },
+    }),
+    startAuthorizedAction: async () => ({ operationId: childId, requestId }),
+    now: () => Date.parse('2026-07-14T05:00:00.000Z'), sleepImpl: async () => {},
+    pollIntervalMs: 1, hardTimeoutMs: 10_000, stallTimeoutMs: 10_000,
+  });
+
+  await assert.rejects(run({ reused: 0 }), { code: 'continuation_reuse_unproven' });
+  await assert.rejects(run({ requestId: 'bad-request-id' }), { code: 'continuation_start_invalid' });
+  await assert.rejects(run({ sourceOperationId: `brop_${'Z'.repeat(32)}` }), {
+    code: 'continuation_result_binding_invalid',
+  });
+});
+
 test('progress monotonicity permits only canonical candidate replacement and synthesis resets', async () => {
   const { waitForTerminal } = await verifier();
   const run = async (statuses) => waitForTerminal({
@@ -659,4 +988,44 @@ test('integrated verifier scans retained pre-gap frames and rejects a fake serve
   assert.equal(receipt.compatibility.brainTool.toolSucceeded, true);
 
   await assert.rejects(run(false), { code: 'server_gap_not_observed' });
+});
+
+test('integrated verifier recovers repeated provider stalls before accepting PGS evidence', async () => {
+  const { parseOptions, runVerifier } = await verifier();
+  const system = fakeQuerySystem({ repeatedStalls: 2 });
+  const options = parseOptions([
+    '--agent', 'jerry', '--dashboard-url', system.dashboard,
+    '--harness-url', system.harness, '--wrong-agent-dashboard-url', system.wrong,
+    '--output', path.join(tmpdir(), 'unused-query-stall-recovery.json'),
+    '--poll-ms', '250', '--sse-observe-ms', '1000',
+    '--direct-hard-timeout-ms', '1000', '--direct-stall-timeout-ms', '1000',
+    '--pgs-hard-timeout-ms', '1000', '--pgs-stall-timeout-ms', '1000',
+    '--chat-hard-timeout-ms', '1000', '--chat-stall-timeout-ms', '1000',
+  ], { HOME23_QUERY_BRIDGE_TOKEN: 'fake-bridge-token' });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = system.fetchImpl;
+  try {
+    const receipt = await runVerifier(options);
+    assert.equal(receipt.status, 'passed');
+    assert.equal(receipt.operations.pgs.operationId, `brop_${'A'.repeat(32)}`);
+    assert.equal(receipt.operations.pgs.acceptedOperationId, `brop_${'F'.repeat(32)}`);
+    assert.deepEqual(receipt.operations.pgs.recoveries.map(({ sourceOperationId, operationId }) => ({
+      sourceOperationId, operationId,
+    })), [
+      { sourceOperationId: `brop_${'A'.repeat(32)}`, operationId: `brop_${'E'.repeat(32)}` },
+      { sourceOperationId: `brop_${'E'.repeat(32)}`, operationId: `brop_${'F'.repeat(32)}` },
+    ]);
+    assert.equal(receipt.operations.pgs.result.operationId, `brop_${'F'.repeat(32)}`);
+    assert.deepEqual(receipt.operations.pgs.lineageBinding, {
+      rootOperationId: `brop_${'A'.repeat(32)}`,
+      finalSourceOperationId: `brop_${'E'.repeat(32)}`,
+      continuableUntil: '2026-07-20T19:10:00.000Z',
+      recoveryHops: 2,
+      requiredReusedWorkUnits: 247,
+      finalReusedWorkUnits: 247,
+    });
+    assert.equal(receipt.operations.continuation.operationId, `brop_${'D'.repeat(32)}`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

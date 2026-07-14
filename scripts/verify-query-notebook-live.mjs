@@ -29,6 +29,8 @@ const DEFAULT_MAX_RECEIPT_BYTES = 4 * 1024 * 1024;
 const MAX_PROGRESS_SAMPLES = 512;
 const MAX_SSE_EVENTS = 256;
 const MAX_SSE_FRAME_BYTES = 64 * 1024;
+const MAX_ACTION_TOKEN_LENGTH = 2_048;
+const MAX_PGS_RECOVERY_HOPS = 32;
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
 const Ajv2020 = require('ajv/dist/2020');
@@ -80,6 +82,8 @@ Long-operation controls:
   --pgs-stall-timeout-ms <ms>         Default: 7200000
   --chat-hard-timeout-ms <ms>         Default: 5400000
   --chat-stall-timeout-ms <ms>        Default: 1200000
+
+Retryable PGS provider stalls follow at most 32 exact signed continuation hops.
 
 The verifier performs real provider operations. It does not restart processes.
 `;
@@ -571,6 +575,208 @@ export async function waitForTerminal({
   }
 }
 
+function pgsLineageSnapshot(status) {
+  return {
+    operationId: status.operationId,
+    executionState: status.executionState,
+    pgsMode: status.configuration?.pgsMode,
+    pgsLevel: status.configuration?.pgsLevel,
+    completed: status.progress?.completed,
+    successful: status.progress?.successful,
+    reused: status.progress?.reused,
+    errorCode: status.error?.code ?? null,
+  };
+}
+
+function assertPgsRecoveryLineage(source, recovered, actionKind) {
+  const sourceConfiguration = source?.configuration;
+  const recoveredConfiguration = recovered?.configuration;
+  const expectedMode = actionKind === 'continueSweep' ? 'continue'
+    : actionKind === 'targetedRetry' ? 'targeted' : null;
+  if (source?.requestKind !== 'pgs' || recovered?.requestKind !== 'pgs'
+      || source?.requesterAgent !== recovered?.requesterAgent
+      || source?.brain?.id !== recovered?.brain?.id
+      || source?.question !== recovered?.question
+      || expectedMode === null || recoveredConfiguration?.pgsMode !== expectedMode
+      || sourceConfiguration?.pgsLevel !== recoveredConfiguration?.pgsLevel
+      || !samePair(sourceConfiguration?.sweepModel, recoveredConfiguration?.sweepModel)
+      || !samePair(sourceConfiguration?.synthesisModel, recoveredConfiguration?.synthesisModel)) {
+    throw errorWithCode('continuation_lineage_invalid');
+  }
+}
+
+function retryableProviderStall(status) {
+  return status?.executionState === 'failed'
+    && status?.error?.code === 'provider_stalled'
+    && status.error.retryable === true
+    && status.resultAvailability === 'absent';
+}
+
+function singleAuthorizedAction(source, kind, nowValue) {
+  const actions = source?.actions?.filter((entry) => entry?.kind === kind);
+  if (actions?.length !== 1) throw errorWithCode('continuation_unavailable');
+  const [action] = actions;
+  const expiresAt = action.expiresAt;
+  const expiresAtMs = typeof expiresAt === 'string' ? Date.parse(expiresAt) : NaN;
+  if (typeof action.token !== 'string' || action.token.length < 1
+      || action.token.length > MAX_ACTION_TOKEN_LENGTH
+      || !Number.isFinite(expiresAtMs)
+      || new Date(expiresAtMs).toISOString() !== expiresAt
+      || expiresAtMs <= nowValue) throw errorWithCode('continuation_unavailable');
+  return action;
+}
+
+function resultValue(response) {
+  return response?.value && typeof response.value === 'object' ? response.value : response;
+}
+
+function assertPgsRecoveryResult({
+  response, operationId, expectedSourceOperationId, expectedContinuableUntil,
+  requiredReusedWorkUnits, recoveryCount,
+}) {
+  const result = resultValue(response);
+  const continuation = result?.continuation;
+  const continuableUntilMs = typeof continuation?.continuableUntil === 'string'
+    ? Date.parse(continuation.continuableUntil) : NaN;
+  if (result?.operationId !== operationId || !continuation
+      || continuation.sourceOperationId !== expectedSourceOperationId
+      || !Number.isFinite(continuableUntilMs)
+      || new Date(continuableUntilMs).toISOString() !== continuation.continuableUntil
+      || (expectedContinuableUntil !== undefined
+        && continuation.continuableUntil !== expectedContinuableUntil)) {
+    throw errorWithCode('continuation_result_binding_invalid');
+  }
+  if (recoveryCount > 0) {
+    const reused = result.coverage?.reusedWorkUnits;
+    const successful = result.coverage?.successfulSweeps;
+    if (!Number.isSafeInteger(reused) || reused < 1
+        || reused < requiredReusedWorkUnits
+        || !Number.isSafeInteger(successful) || successful < reused) {
+      throw errorWithCode('continuation_reuse_unproven');
+    }
+  }
+  return result;
+}
+
+export async function waitForPgsAcceptanceWithRecovery({
+  initialOperationId,
+  readStatus,
+  readResult,
+  startAuthorizedAction,
+  expectedSourceOperationId = null,
+  expectedContinuableUntil,
+  now = Date.now,
+  sleepImpl = delay,
+  pollIntervalMs,
+  hardTimeoutMs,
+  stallTimeoutMs,
+  onSample = () => {},
+  onRecovery = () => {},
+}) {
+  if (!OPERATION_ID.test(initialOperationId) || typeof readStatus !== 'function'
+      || typeof readResult !== 'function'
+      || typeof startAuthorizedAction !== 'function' || typeof now !== 'function'
+      || typeof sleepImpl !== 'function' || !Number.isFinite(hardTimeoutMs)
+      || hardTimeoutMs <= 0 || !Number.isFinite(stallTimeoutMs)
+      || stallTimeoutMs <= 0
+      || (expectedSourceOperationId !== null
+        && !OPERATION_ID.test(expectedSourceOperationId))) {
+    throw errorWithCode('pgs_recovery_wait_invalid');
+  }
+  const startedAt = now();
+  const deadline = startedAt + hardTimeoutMs;
+  const seen = new Set();
+  const lineage = [];
+  const recoveries = [];
+  let operationId = initialOperationId;
+  let sourceTerminal = null;
+  let sourceActionKind = null;
+  let finalExpectedSourceOperationId = expectedSourceOperationId;
+  let requiredReusedWorkUnits = 0;
+  let lastReusedWorkUnits = 0;
+
+  while (true) {
+    const remaining = deadline - now();
+    if (remaining <= 0) throw errorWithCode('operation_hard_timeout');
+    if (seen.has(operationId)) throw errorWithCode('continuation_cycle_detected');
+    seen.add(operationId);
+    const terminal = await waitForTerminal({
+      readStatus: () => readStatus(operationId),
+      now,
+      sleepImpl,
+      pollIntervalMs,
+      hardTimeoutMs: remaining,
+      stallTimeoutMs,
+      onSample: (sample) => onSample(operationId, sample),
+    });
+    if (terminal?.operationId !== operationId) throw errorWithCode('operation_status_invalid');
+    if (sourceTerminal !== null) {
+      assertPgsRecoveryLineage(sourceTerminal, terminal, sourceActionKind);
+      const priorSuccessful = sourceTerminal.progress?.successful;
+      const reused = terminal.progress?.reused;
+      if (!Number.isSafeInteger(priorSuccessful) || priorSuccessful < 1
+          || !Number.isSafeInteger(reused) || reused < 1
+          || reused < priorSuccessful || reused < lastReusedWorkUnits) {
+        throw errorWithCode('continuation_reuse_unproven');
+      }
+      requiredReusedWorkUnits = Math.max(requiredReusedWorkUnits, priorSuccessful);
+      lastReusedWorkUnits = reused;
+    }
+    lineage.push(pgsLineageSnapshot(terminal));
+    if (SUCCESS_OPERATION_STATES.has(terminal.executionState)) {
+      const resultResponse = await readResult(operationId);
+      const result = assertPgsRecoveryResult({
+        response: resultResponse,
+        operationId,
+        expectedSourceOperationId: finalExpectedSourceOperationId,
+        expectedContinuableUntil,
+        requiredReusedWorkUnits,
+        recoveryCount: recoveries.length,
+      });
+      const lineageBinding = {
+        rootOperationId: initialOperationId,
+        finalSourceOperationId: finalExpectedSourceOperationId,
+        continuableUntil: result.continuation.continuableUntil,
+        recoveryHops: recoveries.length,
+        requiredReusedWorkUnits,
+        finalReusedWorkUnits: result.coverage?.reusedWorkUnits ?? 0,
+      };
+      return { operationId, terminal, result, resultResponse, lineage, recoveries,
+        lineageBinding, durationMs: now() - startedAt };
+    }
+    if (!retryableProviderStall(terminal)) {
+      throw errorWithCode('terminal_operation_failed', `terminal state ${terminal.executionState}`, {
+        terminalStatus: terminal,
+      });
+    }
+    if (recoveries.length >= MAX_PGS_RECOVERY_HOPS) {
+      throw errorWithCode('continuation_hop_limit');
+    }
+    const action = singleAuthorizedAction(terminal, 'continueSweep', now());
+    const started = await startAuthorizedAction({
+      sourceOperationId: operationId,
+      kind: action.kind,
+      actionToken: action.token,
+    });
+    if (!OPERATION_ID.test(started?.operationId) || !REQUEST_ID.test(started?.requestId)) {
+      throw errorWithCode('continuation_start_invalid');
+    }
+    if (seen.has(started.operationId)) throw errorWithCode('continuation_cycle_detected');
+    const recovery = {
+      sourceOperationId: operationId,
+      operationId: started.operationId,
+      kind: action.kind,
+      requestId: started.requestId,
+    };
+    recoveries.push(recovery);
+    onRecovery(recovery);
+    sourceTerminal = terminal;
+    sourceActionKind = action.kind;
+    finalExpectedSourceOperationId = operationId;
+    operationId = started.operationId;
+  }
+}
+
 export async function waitForProgressAdvance({
   readStatus, afterSequence, now = Date.now, sleepImpl = delay, pollIntervalMs,
   hardTimeoutMs, stallTimeoutMs, onTransientError = () => {},
@@ -1050,14 +1256,14 @@ async function subscribeNotification(options, credential, operationId) {
   return response.value;
 }
 
-async function continueSweep({ options, credential, sourceResult, checks }) {
-  const action = sourceResult.actions?.find((entry) => entry?.kind === 'continueSweep');
-  if (!action || typeof action.token !== 'string') throw errorWithCode('continuation_unavailable');
+async function startAuthorizedPgsAction({
+  options, credential, sourceOperationId, kind, actionToken,
+}) {
   const requestId = queryRequestId();
-  const body = { kind: 'continueSweep', actionToken: action.token, requestId };
+  const body = { kind, actionToken, requestId };
   const response = await requestJson(route(
     options.dashboardUrl,
-    `/home23/api/query/operations/${encodeURIComponent(sourceResult.operationId)}/actions`,
+    `/home23/api/query/operations/${encodeURIComponent(sourceOperationId)}/actions`,
   ), {
     method: 'POST', headers: { ...deviceHeaders(credential), 'content-type': 'application/json' },
     body: JSON.stringify(body), timeoutMs: options.httpTimeoutMs, expectedStatuses: [202],
@@ -1066,31 +1272,70 @@ async function continueSweep({ options, credential, sourceResult, checks }) {
   if (!OPERATION_ID.test(response.value?.operationId) || response.value?.requestKind !== 'pgs') {
     throw errorWithCode('continuation_start_invalid');
   }
-  const progress = [];
-  const report = createProgressReporter({
-    kind: 'continuation', operationId: response.value.operationId, emit: options.onEvent,
+  return { operationId: response.value.operationId, requestId };
+}
+
+async function continueSweep({ options, credential, sourceResult, checks }) {
+  const action = singleAuthorizedAction(sourceResult, 'continueSweep', Date.now());
+  if (!sourceResult.continuation
+      || !Number.isFinite(Date.parse(sourceResult.continuation.continuableUntil))) {
+    throw errorWithCode('continuation_unavailable');
+  }
+  const started = await startAuthorizedPgsAction({
+    options,
+    credential,
+    sourceOperationId: sourceResult.operationId,
+    kind: action.kind,
+    actionToken: action.token,
   });
-  const terminal = await waitForTerminal({
-    readStatus: () => statusReader(options, credential, response.value.operationId),
+  const progress = [];
+  const reporters = new Map();
+  const report = (operationId, sample) => {
+    if (!reporters.has(operationId)) reporters.set(operationId, createProgressReporter({
+      kind: 'continuation', operationId, emit: options.onEvent,
+    }));
+    reporters.get(operationId)(sample);
+  };
+  const accepted = await waitForPgsAcceptanceWithRecovery({
+    initialOperationId: started.operationId,
+    readStatus: (operationId) => statusReader(options, credential, operationId),
+    readResult: (operationId) => getProtectedResult(options, credential, operationId),
+    startAuthorizedAction: (action) => startAuthorizedPgsAction({
+      options, credential, ...action,
+    }),
+    expectedSourceOperationId: sourceResult.operationId,
+    expectedContinuableUntil: sourceResult.continuation.continuableUntil,
     pollIntervalMs: options.pollMs,
     hardTimeoutMs: options.pgsHardTimeoutMs,
     stallTimeoutMs: options.pgsStallTimeoutMs,
-    successStates: SUCCESS_OPERATION_STATES,
-    onSample(sample) { recordBoundedSample(progress, sample); report(sample); },
+    onSample(operationId, sample) {
+      recordBoundedSample(progress, { operationId, ...sample });
+      report(operationId, sample);
+    },
+    onRecovery(recovery) {
+      options.onEvent?.({ type: 'pgs_stall_recovery', kind: 'continuation',
+        observedAt: new Date().toISOString(), ...recovery });
+    },
   });
-  const result = await getProtectedResult(options, credential, response.value.operationId);
+  const result = accepted.resultResponse;
   if (!Number.isSafeInteger(result.value?.coverage?.reusedWorkUnits)
       || result.value.coverage.reusedWorkUnits < 1) throw errorWithCode('continuation_reuse_unproven');
   checks.push({ id: 'continuation-reuse', status: 'passed', detail: {
-    operationId: response.value.operationId,
+    operationId: accepted.operationId,
+    rootOperationId: started.operationId,
     sourceOperationId: sourceResult.operationId,
     reusedWorkUnits: result.value.coverage.reusedWorkUnits,
+    recoveryCount: accepted.recoveries.length,
   } });
   return {
-    operationId: response.value.operationId,
-    requestId,
-    terminalState: terminal.executionState,
+    operationId: started.operationId,
+    acceptedOperationId: accepted.operationId,
+    requestId: started.requestId,
+    terminalState: accepted.terminal.executionState,
     progress,
+    lineage: accepted.lineage,
+    recoveries: accepted.recoveries,
+    lineageBinding: accepted.lineageBinding,
     result: result.receipt,
   };
 }
@@ -1339,19 +1584,36 @@ export async function runVerifier(options) {
   const reconnect = proveMeaningfulReconnect(firstFrames, reconnectFrames, 0);
 
   const pgsProgress = [];
-  const pgsReport = createProgressReporter({
-    kind: 'pgs', operationId: pgsStart.operationId, emit: options.onEvent,
-  });
-  const pgsTerminal = await waitForTerminal({
-    readStatus: () => statusReader(options, credential, pgsStart.operationId),
+  const pgsReporters = new Map();
+  const reportPgsProgress = (operationId, sample) => {
+    if (!pgsReporters.has(operationId)) pgsReporters.set(operationId, createProgressReporter({
+      kind: 'pgs', operationId, emit: options.onEvent,
+    }));
+    pgsReporters.get(operationId)(sample);
+  };
+  const pgsAccepted = await waitForPgsAcceptanceWithRecovery({
+    initialOperationId: pgsStart.operationId,
+    readStatus: (operationId) => statusReader(options, credential, operationId),
+    readResult: (operationId) => getProtectedResult(options, credential, operationId),
+    startAuthorizedAction: (action) => startAuthorizedPgsAction({
+      options, credential, ...action,
+    }),
+    expectedSourceOperationId: null,
     pollIntervalMs: options.pollMs,
     hardTimeoutMs: options.pgsHardTimeoutMs,
     stallTimeoutMs: options.pgsStallTimeoutMs,
-    successStates: SUCCESS_OPERATION_STATES,
-    onSample(sample) { recordBoundedSample(pgsProgress, sample); pgsReport(sample); },
+    onSample(operationId, sample) {
+      recordBoundedSample(pgsProgress, { operationId, ...sample });
+      reportPgsProgress(operationId, sample);
+    },
+    onRecovery(recovery) {
+      options.onEvent?.({ type: 'pgs_stall_recovery', kind: 'pgs',
+        observedAt: new Date().toISOString(), ...recovery });
+    },
   });
+  const pgsTerminal = pgsAccepted.terminal;
   const pgsDurationMs = Date.now() - pgsStartedAt;
-  const pgsResult = await getProtectedResult(options, credential, pgsStart.operationId);
+  const pgsResult = pgsAccepted.resultResponse;
   const pgsEvidence = assertPgsAcceptance(pgsTerminal, pgsResult.value, {
     level: options.pgsLevel,
     sweep: models.sweep,
@@ -1429,6 +1691,7 @@ export async function runVerifier(options) {
       },
       pgs: {
         operationId: pgsStart.operationId,
+        acceptedOperationId: pgsAccepted.operationId,
         requestId: pgsStart.requestId,
         requestBytes: pgsStart.requestBytes,
         requestSha256: pgsStart.requestSha256,
@@ -1436,6 +1699,9 @@ export async function runVerifier(options) {
         terminalState: pgsTerminal.executionState,
         durationMs: pgsDurationMs,
         progress: pgsProgress,
+        lineage: pgsAccepted.lineage,
+        recoveries: pgsAccepted.recoveries,
+        lineageBinding: pgsAccepted.lineageBinding,
         result: pgsResult.receipt,
         acceptance: pgsEvidence,
         notification: {
