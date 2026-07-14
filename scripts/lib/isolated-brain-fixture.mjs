@@ -809,6 +809,9 @@ function controlledProviderActionIdentity(model, options = {}) {
   if (/Compile the supplied pinned Home23 research evidence/.test(instructions)) {
     return { phase: 'research_compile', providerCallId: 'research_compile' };
   }
+  if (/The first answer did not satisfy the selected long-answer contract\./.test(instructions)) {
+    return { phase: 'query', providerCallId: 'query-expand' };
+  }
   return { phase: 'query', providerCallId: 'query' };
 }
 

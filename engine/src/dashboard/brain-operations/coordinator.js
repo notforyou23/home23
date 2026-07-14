@@ -1532,8 +1532,12 @@ class BrainOperationCoordinator {
     if (!PROVIDER_OPERATION_TYPES.has(operationType)) {
       throw coordinatorError('provider_contract_invalid');
     }
-    const singleton = operationType === 'query'
-      || operationType === 'synthesis'
+    if (operationType === 'query'
+        && providerCallId !== 'query'
+        && providerCallId !== 'query-expand') {
+      throw coordinatorError('provider_contract_invalid');
+    }
+    const singleton = operationType === 'synthesis'
       || operationType === 'research_compile';
     if (singleton && providerCallId !== operationType) throw coordinatorError('provider_contract_invalid');
     if (operationType === 'pgs' && !/^pgs:(?:synthesis|[A-Za-z0-9][A-Za-z0-9._:@+-]{0,251})$/.test(providerCallId)) {

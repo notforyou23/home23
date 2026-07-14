@@ -3102,6 +3102,39 @@ test('initial worker start replays provider events without double-arming its act
   });
 });
 
+test('query provider lifecycle accepts the bounded sequential expansion call', async (t) => {
+  const fixture = makeFixture(t, { executionDeadlineMsByType: { query: 60_000 } });
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'query-expansion-provider-lifecycle',
+  }));
+
+  fixture.worker.emit(operation.operationId, {
+    type: 'provider_selected', providerCallId: 'query', providerStallMs: 5_000,
+  });
+  fixture.worker.emit(operation.operationId, {
+    type: 'provider_call_terminal', providerCallId: 'query',
+  });
+  fixture.worker.emit(operation.operationId, {
+    type: 'provider_selected', providerCallId: 'query-expand', providerStallMs: 5_000,
+  });
+  fixture.worker.emit(operation.operationId, {
+    type: 'provider_activity', providerCallId: 'query-expand',
+  });
+  fixture.worker.emit(operation.operationId, {
+    type: 'provider_call_terminal', providerCallId: 'query-expand',
+  });
+
+  await eventually(async () => {
+    const rows = await fixture.store.readEvents(operation.operationId, 0);
+    assert.deepEqual(
+      rows.filter(({ type }) => type === 'provider_selected')
+        .map(({ providerCallId }) => providerCallId),
+      ['query', 'query-expand'],
+    );
+  });
+  assert.equal((await fixture.store.get(operation.operationId)).state, 'running');
+});
+
 test('provider terminal clears one timer, invalid correlation fails closed, and heartbeats renew none', async (t) => {
   const fixture = makeFixture(t, { executionDeadlineMsByType: { query: 60_000 } });
   const operation = await fixture.coordinator.start(request());

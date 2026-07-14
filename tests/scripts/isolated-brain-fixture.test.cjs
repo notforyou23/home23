@@ -1317,8 +1317,13 @@ test('isolated launcher exercises production query, pinned PGS, and lifecycle re
   const workerTelemetry = await launched.operationTelemetry(terminal.operationId);
   assert.equal(terminal.state, 'complete', JSON.stringify({ terminal, workerTelemetry }));
   assert.match(terminal.result.answer, /production pinned query executor/);
+  assert.equal(terminal.result.answerQuality.expansionAttempted, true);
   const delayTelemetry = (await launched.telemetry()).cosmo;
-  assert.equal(delayTelemetry.providerDelayCompletions, 1);
+  assert.equal(delayTelemetry.providerDelayCompletions, 2);
+  assert.deepEqual(
+    delayTelemetry.providerDelayActions.slice(0, 2).map(({ providerCallId }) => providerCallId),
+    ['query', 'query-expand'],
+  );
   assert.equal(delayTelemetry.lastProviderDelay.configuredDelayMs, 3000);
   assert.equal(delayTelemetry.lastProviderDelay.effectiveDelayMs, 500);
   assert.equal(delayTelemetry.lastProviderDelay.testOnlyDelay, true);
