@@ -67,8 +67,19 @@ import { EngineEventListener } from './engine-events.js';
 import { DeviceRegistry } from './push/device-registry.js';
 import { ApnsClient } from './push/apns-client.js';
 import { ApnsPusher } from './push/apns-pusher.js';
-import { createRegisterDeviceHandler, createUnregisterDeviceHandler, createListDevicesHandler } from './routes/device.js';
+import {
+  createListDevicesHandler,
+  createQueryCredentialHandler,
+  createQueryCredentialJsonParser,
+  createRegisterDeviceHandler,
+  createUnregisterDeviceHandler,
+} from './routes/device.js';
+import {
+  createQueryNotificationJsonParser,
+  createQueryTerminalNotificationHandler,
+} from './routes/query-notifications.js';
 import { createChatHistoryHandler, createChatListHandler } from './routes/chat-history.js';
+import { resolveQueryNotebookBridgeToken } from './query-notebook-credential-config.js';
 import { syncSharedSkillsRegistry } from './skills/runtime.js';
 import { PromoterWorker } from './workers/promoter.js';
 import { createWorkerRouter } from './workers/connector.js';
@@ -87,6 +98,7 @@ import {
 
 const requireCjs = createRequire(import.meta.url);
 const { assertPm2AgentIdentity } = requireCjs('../scripts/lib/pm2-agent-identity-guard.cjs');
+const { createQueryNotebookCredentialAuthority } = requireCjs('../shared/query-notebook-credential.cjs');
 assertPm2AgentIdentity();
 
 const AGENT_NAME = process.env.HOME23_AGENT ?? 'test-agent';
@@ -923,6 +935,7 @@ async function main(): Promise<void> {
   const apnsConfig = config.apns;
   const deviceRegistryPath = join(process.env.COSMO_RUNTIME_DIR ?? process.cwd(), 'device-registry.json');
   const deviceRegistry = new DeviceRegistry(deviceRegistryPath);
+  let apnsPusher: ApnsPusher | undefined;
 
   if (apnsConfig?.team_id && apnsConfig?.key_id && apnsConfig?.key_path && apnsConfig?.bundle_id) {
     try {
@@ -933,8 +946,8 @@ async function main(): Promise<void> {
         bundle_id: apnsConfig.bundle_id,
         default_env: apnsConfig.default_env ?? 'production',
       });
-      const pusher = new ApnsPusher(apnsClient, deviceRegistry, AGENT_NAME);
-      agent.setPusher(pusher);
+      apnsPusher = new ApnsPusher(apnsClient, deviceRegistry, AGENT_NAME);
+      agent.setPusher(apnsPusher);
       console.log(`[home] APNs pusher installed — bundle=${apnsConfig.bundle_id}, env=${apnsConfig.default_env ?? 'production'}`);
     } catch (err) {
       console.warn('[home] APNs pusher init failed:', err instanceof Error ? err.message : err);
@@ -945,9 +958,26 @@ async function main(): Promise<void> {
 
   // ── Evobrew Bridge (standalone Express server) ──
   const BRIDGE_PORT = config.ports?.bridge ?? 5004;
-  const bridgeToken = config.channels?.webhooks?.token ?? process.env.BRIDGE_TOKEN ?? '';
-  const bridgeApp = (await import('express')).default();
-  bridgeApp.use((await import('express')).default.json({ limit: '90mb' }));
+  const bridgeToken = resolveQueryNotebookBridgeToken(config, process.env);
+  let queryCredentialAuthority;
+  try {
+    queryCredentialAuthority = bridgeToken
+      ? createQueryNotebookCredentialAuthority({
+        bridgeToken,
+        requesterAgent: AGENT_NAME,
+      })
+      : undefined;
+  } catch {
+    console.warn('[home] Query notebook credential enrollment unavailable: bridge token configuration is invalid');
+  }
+  const express = (await import('express')).default;
+  const bridgeApp = express();
+  const deviceConfig = {
+    agentName: AGENT_NAME,
+    registry: deviceRegistry,
+    token: bridgeToken || undefined,
+    queryCredentialAuthority,
+  };
 
   // CORS for evobrew
   bridgeApp.use((_req: any, res: any, next: any) => {
@@ -957,6 +987,23 @@ async function main(): Promise<void> {
     if (_req.method === 'OPTIONS') { res.sendStatus(200); return; }
     next();
   });
+
+  // Query credential exchange stays small even though Chat accepts large media payloads.
+  bridgeApp.post(
+    '/api/device/query-credential',
+    createQueryCredentialJsonParser(),
+    createQueryCredentialHandler(deviceConfig),
+  );
+  bridgeApp.post(
+    '/api/query-notifications/terminal',
+    createQueryNotificationJsonParser(),
+    createQueryTerminalNotificationHandler({
+      agentName: AGENT_NAME,
+      bridgeToken: bridgeToken || undefined,
+      pusher: apnsPusher,
+    }),
+  );
+  bridgeApp.use(express.json({ limit: '90mb' }));
 
   const bridgeConfig = {
     agent,
@@ -1477,7 +1524,6 @@ async function main(): Promise<void> {
   });
 
   // Device registration routes (iOS push)
-  const deviceConfig = { agentName: AGENT_NAME, registry: deviceRegistry, token: bridgeToken || undefined };
   bridgeApp.post('/api/device/register', createRegisterDeviceHandler(deviceConfig));
   bridgeApp.delete('/api/device/register', createUnregisterDeviceHandler(deviceConfig));
   bridgeApp.get('/api/device/registry', createListDevicesHandler(deviceConfig));
@@ -1559,7 +1605,7 @@ async function main(): Promise<void> {
   });
 
   await listenBridgeApp(bridgeApp, BRIDGE_PORT);
-  console.log(`[home] Evobrew bridge listening on port ${BRIDGE_PORT} (/api/chat, /api/stop, /api/chat/turn, /api/chat/stream, /api/chat/pending, /api/chat/stop-turn, /api/chat/history, /api/chat/conversations, /api/device/register, /api/device/registry, /health)`);
+  console.log(`[home] Evobrew bridge listening on port ${BRIDGE_PORT} (/api/chat, /api/stop, /api/chat/turn, /api/chat/stream, /api/chat/pending, /api/chat/stop-turn, /api/chat/history, /api/chat/conversations, /api/device/register, /api/device/registry, /api/device/query-credential, /api/query-notifications/terminal, /health)`);
 
   // ── Startup banner ──
   console.log('');

@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const CONTRACT_VERSION = '2026.06.26';
+const CONTRACT_VERSION = '2026.07.13';
 
 function readPackageVersion(home23Root) {
   if (!home23Root) return null;
@@ -15,7 +15,7 @@ function readPackageVersion(home23Root) {
 
 function buildClientCapabilities(options = {}) {
   const generatedAt = options.generatedAt || new Date().toISOString();
-  const packageVersion = options.packageVersion || readPackageVersion(options.home23Root) || '0.6.0';
+  const packageVersion = options.packageVersion || readPackageVersion(options.home23Root) || '1.0.0';
 
   return {
     contractVersion: CONTRACT_VERSION,
@@ -74,6 +74,15 @@ function buildClientCapabilities(options = {}) {
       queryCatalog: '/home23/api/query/catalog',
       queryRun: '/home23/api/query/run',
       queryStream: '/home23/api/query/stream',
+      queryNotebook: '/home23/api/query/notebook',
+      queryOperation: '/home23/api/query/operations/{operationId}',
+      queryOperationEvents: '/home23/api/query/operations/{operationId}/events',
+      queryOperationResult: '/home23/api/query/operations/{operationId}/result',
+      queryOperationCancel: '/home23/api/query/operations/{operationId}/cancel',
+      queryOperationActions: '/home23/api/query/operations/{operationId}/actions',
+      queryOperationNotifications: '/home23/api/query/operations/{operationId}/notifications',
+      queryDeviceCredential: '/api/device/query-credential',
+      queryWebSession: '/home23/api/query/session',
       workers: '/home23/api/workers',
       media: '/home23/api/media',
       chatHealth: '/health',
@@ -91,6 +100,8 @@ function buildClientCapabilities(options = {}) {
     auth: {
       dashboard: 'none',
       bridge: 'bearer-if-configured',
+      queryNotebook: 'required',
+      queryNotebookMethods: ['device-bearer', 'same-origin-session'],
     },
     selectedAgent: {
       source: 'settings-agents',
@@ -101,6 +112,12 @@ function buildClientCapabilities(options = {}) {
       directCosmo: false,
       streaming: true,
       availabilityEndpoint: '/home23/api/query/catalog',
+      notebookVersion: 1,
+      progressSnapshots: true,
+      actionTokens: true,
+      deviceCredentials: true,
+      webSessions: true,
+      notificationSubscriptions: true,
     },
     chat: {
       turnStatus: true,

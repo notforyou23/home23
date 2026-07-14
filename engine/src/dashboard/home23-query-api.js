@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
 const {
+  assertIdentifier,
   assertOperationId,
   assertResultHandle,
 } = require('./brain-operations/operation-contract.js');
@@ -516,6 +517,20 @@ function validateSelectedBrain(body, catalog, agent) {
   return selectedId;
 }
 
+function validateDurableTargetSelector(body, agent) {
+  if (Object.hasOwn(body, 'agent') && normalizeAgentSelector(body.agent) !== agent) {
+    throw compatibilityError('target_mismatch', 'request agent does not match the selected agent', 400);
+  }
+  if (Object.hasOwn(body, 'brainId')) {
+    boundedString(body.brainId, 'brainId', { required: true, max: 256 });
+    try { assertIdentifier(body.brainId, 'brainId'); } catch {
+      throw compatibilityError('invalid_request', 'brainId is invalid');
+    }
+    return { brainId: body.brainId };
+  }
+  return { agent };
+}
+
 function validateRouteQuery(req) {
   const allowed = new Set(['agent', 'dryRun', 'validateOnly']);
   for (const [key, value] of Object.entries(req.query || {})) {
@@ -567,7 +582,10 @@ function validateCompatibilityRequest(body, catalog, agent) {
     'pgsSweep', 'pgsSynth',
   ];
   exactObject(body, [...common, ...direct, ...pgs]);
-  const targetBrainId = validateSelectedBrain(body, catalog, agent);
+  const targetBrainId = catalog ? validateSelectedBrain(body, catalog, agent) : null;
+  const target = catalog
+    ? { brainId: targetBrainId }
+    : validateDurableTargetSelector(body, agent);
   boundedString(body.query, 'query', { required: true, max: Number.MAX_SAFE_INTEGER });
   if (body.query.length > MAX_QUERY_CHARS) {
     throw compatibilityError(
@@ -623,6 +641,7 @@ function validateCompatibilityRequest(body, catalog, agent) {
     return {
       operationType: 'pgs',
       targetBrainId,
+      target,
       parameters: {
         query: body.query,
         pgsMode: body.pgsMode,
@@ -652,6 +671,7 @@ function validateCompatibilityRequest(body, catalog, agent) {
   return {
     operationType: 'query',
     targetBrainId,
+    target,
     parameters: {
       query: body.query,
       ...(body.mode !== undefined ? { mode: body.mode } : {}),
@@ -818,7 +838,10 @@ function errorStatus(error) {
   if (error?.code === 'access_denied') return 403;
   if (['operation_not_found', 'result_not_found', 'target_not_found'].includes(error?.code)) return 404;
   if (error?.code === 'result_expired') return 410;
+  if (['idempotency_conflict', 'version_conflict', 'operation_terminal'].includes(error?.code)) return 409;
   if (error?.code === 'request_too_large') return 413;
+  if (['invalid_request', 'operation_id_invalid', 'identifier_invalid',
+    'target_mismatch'].includes(error?.code)) return 400;
   if (error?.retryable === true) return 503;
   return 500;
 }
@@ -1137,17 +1160,17 @@ function createQueryApiRouter(options = {}) {
       validateRouteQuery(req);
       const operationRequestId = queryRequestId(req);
       const agent = resolveRequestAgent(req, resolveAgent);
-      const catalog = await catalogFor(options, agent);
-      if (!catalog.available) {
-        throw compatibilityError(
-          'query_unavailable',
-          catalog.reason || 'query unavailable',
-          503,
-          true,
-        );
-      }
-      const normalized = validateCompatibilityRequest(req.body, catalog, agent);
       if (isDryRunRequest(req)) {
+        const catalog = await catalogFor(options, agent);
+        if (!catalog.available) {
+          throw compatibilityError(
+            'query_unavailable',
+            catalog.reason || 'query unavailable',
+            503,
+            true,
+          );
+        }
+        validateCompatibilityRequest(req.body, catalog, agent);
         responseFinished = true;
         res.json({
           ok: true,
@@ -1156,10 +1179,14 @@ function createQueryApiRouter(options = {}) {
         });
         return;
       }
+      // Durable starts own idempotency and canonical-target authority. Keeping the
+      // live facade catalog out of this path lets a lost response be recovered by
+      // request ID even when that catalog is unavailable or has since renamed a target.
+      const normalized = validateCompatibilityRequest(req.body, null, agent);
       const operationRequest = {
         requestId: operationRequestId,
         operationType: normalized.operationType,
-        target: { brainId: normalized.targetBrainId },
+        target: normalized.target,
         parameters: normalized.parameters,
       };
       const prefersAsync = String(req.get('prefer') || '')

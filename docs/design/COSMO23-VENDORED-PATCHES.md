@@ -2832,6 +2832,55 @@ was mutated by this patch.
 
 ---
 
+## Patch 60 — Settled PGS batch progress and operation-aware event validation
+
+**Vendored production file touched:**
+- `cosmo23/pgs-engine/src/pinned-operation.js`
+
+**Home23 integration companions:**
+- `engine/src/dashboard/brain-operations/worker-adapter.js`
+- `engine/src/dashboard/brain-operations/coordinator.js`
+
+**Problem:** Durable PGS exposed projection, selection, final sweep, and
+synthesis lifecycle markers, but it did not publish settled batch counters.
+The Query surface therefore could not distinguish active selected work from
+unrelated global pending work or show whether completed work succeeded, failed,
+was reused, or remained retryable. Hierarchical synthesis likewise exposed
+level start/completion but no durable per-batch completion. The Home23 worker
+and coordinator accepted broadly shaped progress objects without binding their
+schema to the operation type, so tightening PGS counters risked either accepting
+arbitrary nested payloads or rejecting valid Query, synthesis, research, and
+legacy transport events.
+
+**Fix:** Pinned PGS now emits `sweep_batch_complete` only after each concurrent
+batch settles, successful sweep outputs commit, and retryable diagnostics are
+recorded. Its exact counters obey `completed = successful + failed` and
+`selected = completed + pending`; selected includes reused durable work, active
+pending excludes global pending, and retryable remains separate from failed.
+Hierarchical reduction emits `synthesis_batch_complete` only after the provider
+result is complete, bounded, and inserted into the next level's input set.
+
+The Home23 worker validator now receives the durable operation type and uses
+exact stage-specific progress schemas. It enumerates every existing PGS stage,
+the production Direct Query, synthesis, research compile, source-read, and graph
+export stages, including the shared source-wrapper verification/completion
+stages around graph export, provider field variants (including nullable provider
+timestamps and reduction call IDs), and bounded legacy transport envelopes.
+Unknown staged events, missing settled counters, impossible algebra, extra keys,
+and arbitrary nested payloads fail before persistence. Coordinator validation
+uses the same operation-aware contract while preserving its independent
+authenticated status read on worker event gaps.
+
+**Verification:** Focused pinned PGS source/retry tests, coordinator/worker
+transport tests, Query progress/store regressions, and the required combined
+Task 2 matrix pass offline. The regressions prove durable-commit-before-progress
+ordering, retryable failure accounting, hierarchical synthesis batch markers,
+every pre-existing PGS event stage, provider/transport compatibility, event-gap
+recovery, journal compaction, and canonical status reconstruction. Live
+processes were not restarted and no active operation was mutated by this patch.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -3204,3 +3253,5 @@ was mutated by this patch.
 - **2026-07-13** — Patch 59 replaces one-shot PGS synthesis fan-in with exact-
   budget hierarchical reduction, preserving the selected synthesis pair and
   durable sweep evidence at large-brain scale.
+- **2026-07-13** — Patch 60 makes PGS batch progress settlement-backed and
+  binds worker/coordinator event validation to the durable operation type.

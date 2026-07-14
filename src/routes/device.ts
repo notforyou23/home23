@@ -1,16 +1,32 @@
-import type { Request, Response } from 'express';
+import { json, type NextFunction, type Request, type RequestHandler, type Response } from 'express';
+import { timingSafeEqual } from 'node:crypto';
 import type { DeviceRegistry } from '../push/device-registry.js';
+
+interface QueryCredentialAuthority {
+  issue(input: {
+    audience: 'device';
+    credentialId: string;
+    requesterKind: 'device';
+    generation: number;
+    expiresAt: string;
+  }): string;
+}
 
 export interface DeviceRouteConfig {
   agentName: string;
   registry: DeviceRegistry;
   token?: string;
+  queryCredentialAuthority?: QueryCredentialAuthority;
+  now?: () => number | string | Date;
 }
 
 function checkAuth(req: Request, res: Response, token?: string): boolean {
   if (!token) return true;
   const h = req.headers.authorization;
-  if (!h || h !== `Bearer ${token}`) {
+  const wanted = Buffer.from(`Bearer ${token}`, 'utf8');
+  const supplied = typeof h === 'string' ? Buffer.from(h, 'utf8') : Buffer.alloc(0);
+  const comparable = supplied.length === wanted.length ? supplied : Buffer.alloc(wanted.length);
+  if (!timingSafeEqual(comparable, wanted) || supplied.length !== wanted.length) {
     res.status(401).json({ error: 'Unauthorized' });
     return false;
   }
@@ -32,6 +48,8 @@ export function createRegisterDeviceHandler(config: DeviceRouteConfig) {
       app_build,
       contract_version,
       capabilities_hash,
+      installation_id,
+      query_notifications,
     } = req.body ?? {};
 
     if (!device_token || typeof device_token !== 'string' || !/^[0-9a-fA-F]{32,}$/.test(device_token)) {
@@ -52,6 +70,17 @@ export function createRegisterDeviceHandler(config: DeviceRouteConfig) {
     if (platform != null && typeof platform !== 'string') {
       res.status(400).json({ error: 'platform must be a string' }); return;
     }
+    if (query_notifications != null && typeof query_notifications !== 'boolean') {
+      res.status(400).json({ error: 'query_notifications must be a boolean' }); return;
+    }
+    if (installation_id != null
+        && (typeof installation_id !== 'string'
+          || !INSTALLATION_ID_PATTERN.test(installation_id))) {
+      res.status(400).json({ error: 'valid installation_id required' }); return;
+    }
+    if (query_notifications === true && installation_id == null) {
+      res.status(400).json({ error: 'installation_id required for query notifications' }); return;
+    }
 
     const result = config.registry.register({
       device_token,
@@ -63,6 +92,8 @@ export function createRegisterDeviceHandler(config: DeviceRouteConfig) {
       app_build,
       contract_version,
       capabilities_hash,
+      installation_id: installation_id ?? undefined,
+      query_notifications: query_notifications ?? undefined,
     });
     res.json({
       ok: true,
@@ -71,6 +102,8 @@ export function createRegisterDeviceHandler(config: DeviceRouteConfig) {
       registered_chat_ids: result.chat_ids,
       ignored_chat_ids: [],
       updated_at: result.last_seen_at,
+      installation_id: result.installation_id ?? null,
+      query_notifications: result.query_notifications === true,
       device: result,
     });
   };
@@ -128,5 +161,74 @@ export function createListDevicesHandler(config: DeviceRouteConfig) {
         updated_at: device.last_seen_at || device.registered_at,
       })),
     });
+  };
+}
+
+const QUERY_CREDENTIAL_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const INSTALLATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/;
+const QUERY_CREDENTIAL_BODY_LIMIT_BYTES = 2 * 1024;
+
+/** Strict bounded parser for the enrollment route; must be mounted before broad Chat parsing. */
+export function createQueryCredentialJsonParser(): RequestHandler {
+  const parser = json({ limit: QUERY_CREDENTIAL_BODY_LIMIT_BYTES, strict: true });
+  return (req: Request, res: Response, next: NextFunction): void => {
+    parser(req, res, (error?: unknown) => {
+      if (!error) {
+        next();
+        return;
+      }
+      const status = (error as { status?: number }).status === 413 ? 413 : 400;
+      res.status(status).json({ error: 'invalid_request' });
+    });
+  };
+}
+
+/** POST /api/device/query-credential — enroll this installation for Query notebook access. */
+export function createQueryCredentialHandler(config: DeviceRouteConfig) {
+  return (req: Request, res: Response): void => {
+    if (!config.token || !config.queryCredentialAuthority) {
+      res.status(503).json({ error: 'query_credential_unavailable' });
+      return;
+    }
+    if (!checkAuth(req, res, config.token)) return;
+
+    const body = req.body;
+    if (!body || Array.isArray(body) || typeof body !== 'object'
+        || Object.keys(body).length !== 2
+        || !Object.hasOwn(body, 'installationId')
+        || !Object.hasOwn(body, 'agent')
+        || typeof body.installationId !== 'string'
+        || !INSTALLATION_ID_PATTERN.test(body.installationId)
+        || body.agent !== config.agentName) {
+      res.status(400).json({ error: 'invalid_request' });
+      return;
+    }
+
+    try {
+      const rawNow = (config.now ?? Date.now)();
+      const now = rawNow instanceof Date ? rawNow.getTime()
+        : typeof rawNow === 'string' ? Date.parse(rawNow) : rawNow;
+      if (!Number.isFinite(now)) throw new Error('invalid clock');
+      const enrollment = config.registry.enrollQueryCredential({
+        installationId: body.installationId,
+        requesterAgent: config.agentName,
+      });
+      const expiresAt = new Date(Number(now) + QUERY_CREDENTIAL_TTL_MS).toISOString();
+      const token = config.queryCredentialAuthority.issue({
+        audience: 'device',
+        credentialId: enrollment.credential_id,
+        requesterKind: 'device',
+        generation: enrollment.credential_generation,
+        expiresAt,
+      });
+      res.json({
+        credentialId: enrollment.credential_id,
+        token,
+        expiresAt,
+        generation: enrollment.credential_generation,
+      });
+    } catch {
+      res.status(503).json({ error: 'query_credential_unavailable' });
+    }
   };
 }

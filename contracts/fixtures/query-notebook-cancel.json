@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "operationId": "brop_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+  "requestKind": "pgs",
+  "requesterAgent": "jerry",
+  "brain": {
+    "id": "brain-jerry",
+    "displayName": "Jerry"
+  },
+  "question": "Inspect the selected areas and stop if requested.",
+  "questionTitle": "Inspect the selected areas and stop if requested.",
+  "configuration": {
+    "pgsMode": "targeted",
+    "pgsLevel": "deep",
+    "sweepModel": {
+      "provider": "openai",
+      "model": "gpt-5.2"
+    },
+    "synthesisModel": {
+      "provider": "anthropic",
+      "model": "claude-opus-4-8"
+    }
+  },
+  "executionState": "cancelled",
+  "humanClassification": "finished",
+  "acceptedAt": "2026-07-13T20:10:00.000Z",
+  "startedAt": "2026-07-13T20:10:01.000Z",
+  "updatedAt": "2026-07-13T20:11:00.000Z",
+  "completedAt": "2026-07-13T20:11:00.000Z",
+  "progress": {
+    "version": 1,
+    "stage": "terminal",
+    "eventSequence": 8,
+    "selected": 4,
+    "completed": 1,
+    "successful": 1,
+    "failed": 0,
+    "reused": 0,
+    "pending": 3,
+    "retryable": 0,
+    "total": 4,
+    "lastProgressAt": "2026-07-13T20:10:45.000Z"
+  },
+  "error": null,
+  "resultAvailability": "absent",
+  "expiresAt": null,
+  "answerPreviewAvailable": false,
+  "resultVersion": null,
+  "coverage": null,
+  "continuation": null,
+  "actions": [
+    {
+      "kind": "none"
+    }
+  ],
+  "notification": {
+    "subscribed": false,
+    "deliveryState": null
+  }
+}

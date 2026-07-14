@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { connect, ClientHttp2Session } from 'node:http2';
+import { connect, constants as http2Constants, ClientHttp2Session } from 'node:http2';
 import jwt from 'jsonwebtoken';
 import type { ApnsConfig, PushPayload } from './types.js';
 
@@ -51,7 +51,12 @@ export class ApnsClient {
    * Send a push. Resolves to the APNs response status.
    * On 410 Gone, caller should invalidate the device token.
    */
-  async send(deviceToken: string, payload: PushPayload, env?: 'sandbox' | 'production'): Promise<{ status: number; apnsId?: string; reason?: string }> {
+  async send(
+    deviceToken: string,
+    payload: PushPayload,
+    env?: 'sandbox' | 'production',
+    options: { signal?: AbortSignal } = {},
+  ): Promise<{ status: number; apnsId?: string; reason?: string }> {
     const targetEnv = env ?? this.config.default_env;
     const host = this.hostFor(targetEnv);
     const session = await this.ensureSession(host);
@@ -80,14 +85,34 @@ export class ApnsClient {
         apnsId = headers['apns-id'] as string | undefined;
       });
       req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      let settled = false;
+      const cleanup = () => options.signal?.removeEventListener('abort', onAbort);
+      const finish = (task: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        task();
+      };
+      const onAbort = () => {
+        try { req.close(http2Constants.NGHTTP2_CANCEL); } catch {}
+        const error = new Error('apns_aborted') as Error & { code: string };
+        error.name = 'AbortError';
+        error.code = 'apns_aborted';
+        finish(() => reject(error));
+      };
       req.on('end', () => {
         let reason: string | undefined;
         if (status >= 400 && chunks.length) {
           try { reason = JSON.parse(Buffer.concat(chunks).toString()).reason; } catch {}
         }
-        resolve({ status, apnsId, reason });
+        finish(() => resolve({ status, apnsId, reason }));
       });
-      req.on('error', reject);
+      req.on('error', error => finish(() => reject(error)));
+      if (options.signal?.aborted) {
+        onAbort();
+        return;
+      }
+      options.signal?.addEventListener('abort', onAbort, { once: true });
 
       req.write(body);
       req.end();

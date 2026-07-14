@@ -25,6 +25,88 @@
         "class": { "type": "string" },
         "purpose": { "type": "string" }
       }
+    },
+    "workerRunListResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["runs"],
+      "properties": {
+        "runs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/workerRunSummary" }
+        }
+      }
+    },
+    "workerRunSummary": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["runId", "worker"],
+      "properties": {
+        "runId": { "type": "string" },
+        "worker": { "type": "string" },
+        "ownerAgent": { "type": ["string", "null"] },
+        "status": { "type": ["string", "null"] },
+        "verifierStatus": { "type": ["string", "null"] },
+        "startedAt": { "type": ["string", "null"] },
+        "finishedAt": { "type": ["string", "null"] },
+        "summary": { "type": ["string", "null"] },
+        "runPath": { "type": ["string", "null"] },
+        "receiptPath": { "type": ["string", "null"] }
+      }
+    },
+    "workerEvidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "type": { "type": ["string", "null"] },
+        "detail": { "type": ["string", "null"] },
+        "status": { "type": ["string", "null"] }
+      }
+    },
+    "workerMemoryCandidate": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "title": { "type": ["string", "null"] },
+        "detail": { "type": ["string", "null"] },
+        "content": { "type": ["string", "null"] },
+        "type": { "type": ["string", "null"] },
+        "status": { "type": ["string", "null"] }
+      }
+    },
+    "workerRunReceipt": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["runId", "worker", "evidence", "artifacts", "memoryCandidates"],
+      "properties": {
+        "schema": { "type": ["string", "null"] },
+        "runId": { "type": "string" },
+        "worker": { "type": "string" },
+        "ownerAgent": { "type": ["string", "null"] },
+        "requestedBy": { "type": ["string", "null"] },
+        "requester": { "type": ["string", "null"] },
+        "startedAt": { "type": ["string", "null"] },
+        "finishedAt": { "type": ["string", "null"] },
+        "status": { "type": ["string", "null"] },
+        "verifierStatus": { "type": ["string", "null"] },
+        "summary": { "type": ["string", "null"] },
+        "actions": {
+          "type": ["array", "null"],
+          "items": { "type": "string" }
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/workerEvidence" }
+        },
+        "artifacts": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "memoryCandidates": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/workerMemoryCandidate" }
+        }
+      }
     }
   }
 }

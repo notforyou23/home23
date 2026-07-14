@@ -1,8 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { join } from 'node:path';
 import { createRegisterDeviceHandler, createUnregisterDeviceHandler, createListDevicesHandler } from '../../src/routes/device.js';
 import type { DeviceRegistration } from '../../src/push/types.js';
+
+const require = createRequire(import.meta.url);
 
 class MemoryDeviceRegistry {
   devices: DeviceRegistration[] = [];
@@ -92,7 +97,7 @@ class MemoryDeviceRegistry {
 
 async function postJson(app: express.Express, route: string, body: unknown) {
   return await new Promise<{ status: number; body: any }>((resolve, reject) => {
-    const server = app.listen(0, async () => {
+    const server = app.listen(0, '127.0.0.1', async () => {
       try {
         const port = (server.address() as { port: number }).port;
         const res = await fetch(`http://127.0.0.1:${port}${route}`, {
@@ -113,7 +118,7 @@ async function postJson(app: express.Express, route: string, body: unknown) {
 
 async function deleteJson(app: express.Express, route: string, body: unknown) {
   return await new Promise<{ status: number; body: any }>((resolve, reject) => {
-    const server = app.listen(0, async () => {
+    const server = app.listen(0, '127.0.0.1', async () => {
       try {
         const port = (server.address() as { port: number }).port;
         const res = await fetch(`http://127.0.0.1:${port}${route}`, {
@@ -134,7 +139,7 @@ async function deleteJson(app: express.Express, route: string, body: unknown) {
 
 async function getJson(app: express.Express, route: string, headers: Record<string, string> = {}) {
   return await new Promise<{ status: number; body: any }>((resolve, reject) => {
-    const server = app.listen(0, async () => {
+    const server = app.listen(0, '127.0.0.1', async () => {
       try {
         const port = (server.address() as { port: number }).port;
         const res = await fetch(`http://127.0.0.1:${port}${route}`, { headers });
@@ -180,6 +185,21 @@ test('device registration returns an agent-scoped contract receipt', async () =>
   assert.equal(list.status, 200);
   assert.equal(list.body.devices[0].agent_id, 'jerry');
   assert.equal(list.body.devices[0].updated_at, '2026-06-26T15:00:00.000Z');
+
+  const root = process.cwd();
+  const manifest = JSON.parse(readFileSync(join(root, 'contracts/manifest.json'), 'utf8'));
+  const entry = manifest.entries.find((candidate: any) => candidate.id === 'device-registry');
+  const { createContractValidator } = require('../contracts/contract-validator.cjs');
+  const validator = createContractValidator(root);
+  const legacy = validator.validateValue(entry, list.body);
+  assert.equal(legacy.valid, true, legacy.errorsText);
+  const missingInstallation = validator.validateValue(entry, {
+    devices: [{
+      ...list.body.devices[0],
+      query_notifications: true,
+    }],
+  });
+  assert.equal(missingInstallation.valid, false);
 });
 
 test('device registration rejects mismatched agent ids', async () => {

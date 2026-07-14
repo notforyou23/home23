@@ -8,14 +8,17 @@
   "$defs": {
     "clientCapabilitiesResponse": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": ["contractVersion", "generatedAt", "server", "platforms", "features", "endpoints", "auth", "selectedAgent", "query", "chat", "push", "houseGlobal"],
       "properties": {
-        "contractVersion": { "type": "string" },
-        "generatedAt": { "type": "string" },
+        "contractVersion": { "const": "2026.07.13" },
+        "generatedAt": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{3})?Z$"
+        },
         "server": {
           "type": "object",
-          "additionalProperties": true,
+          "additionalProperties": false,
           "required": ["name"],
           "properties": {
             "name": { "type": "string" },
@@ -34,25 +37,38 @@
         },
         "features": {
           "type": "object",
-          "additionalProperties": { "type": "boolean" }
+          "additionalProperties": { "type": "boolean" },
+          "required": ["multiAgent", "selectedAgentChat", "queryStreaming", "saunaControl", "pushRegistration", "settingsControlPlane", "chatTurnStatus", "operatorDiagnostics"]
         },
         "endpoints": {
           "type": "object",
           "additionalProperties": { "type": "string" },
-          "required": ["agents", "settingsStatus", "settingsScope", "settingsModels", "settingsQuery", "chatHealth", "chatModels", "chatTurn", "chatStream", "chatPending", "chatStopTurn", "chatHistory", "chatConversations", "chatTurnStatus", "deviceRegister", "queryCatalog", "queryRun", "queryStream", "workers", "media", "saunaTileData"]
+          "required": ["agents", "settingsStatus", "settingsScope", "settingsModels", "settingsQuery", "chatHealth", "chatModels", "chatTurn", "chatStream", "chatPending", "chatStopTurn", "chatHistory", "chatConversations", "chatTurnStatus", "deviceRegister", "queryCatalog", "queryRun", "queryStream", "queryNotebook", "queryOperation", "queryOperationEvents", "queryOperationResult", "queryOperationCancel", "queryOperationActions", "queryOperationNotifications", "queryDeviceCredential", "queryWebSession", "workers", "media", "saunaTileData"]
         },
         "auth": {
           "type": "object",
-          "additionalProperties": true,
-          "required": ["dashboard", "bridge"],
+          "additionalProperties": false,
+          "required": ["dashboard", "bridge", "queryNotebook", "queryNotebookMethods"],
           "properties": {
             "dashboard": { "type": "string" },
-            "bridge": { "type": "string" }
+            "bridge": { "type": "string" },
+            "queryNotebook": { "const": "required" },
+            "queryNotebookMethods": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "uniqueItems": true,
+              "prefixItems": [
+                { "const": "device-bearer" },
+                { "const": "same-origin-session" }
+              ],
+              "items": false
+            }
           }
         },
         "selectedAgent": {
           "type": "object",
-          "additionalProperties": true,
+          "additionalProperties": false,
           "required": ["source", "supported"],
           "properties": {
             "source": { "type": "string" },
@@ -61,18 +77,24 @@
         },
         "query": {
           "type": "object",
-          "additionalProperties": true,
-          "required": ["facade", "directCosmo", "streaming"],
+          "additionalProperties": false,
+          "required": ["facade", "directCosmo", "streaming", "availabilityEndpoint", "notebookVersion", "progressSnapshots", "actionTokens", "deviceCredentials", "webSessions", "notificationSubscriptions"],
           "properties": {
             "facade": { "type": "boolean" },
             "directCosmo": { "type": "boolean" },
             "streaming": { "type": "boolean" },
-            "availabilityEndpoint": { "type": ["string", "null"] }
+            "availabilityEndpoint": { "type": "string" },
+            "notebookVersion": { "const": 1 },
+            "progressSnapshots": { "const": true },
+            "actionTokens": { "const": true },
+            "deviceCredentials": { "const": true },
+            "webSessions": { "const": true },
+            "notificationSubscriptions": { "const": true }
           }
         },
         "chat": {
           "type": "object",
-          "additionalProperties": true,
+          "additionalProperties": false,
           "required": ["turnStatus", "stopByTurnId", "resumePending"],
           "properties": {
             "turnStatus": { "type": "boolean" },
@@ -82,7 +104,7 @@
         },
         "push": {
           "type": "object",
-          "additionalProperties": true,
+          "additionalProperties": false,
           "required": ["registration", "perAgentReceipts"],
           "properties": {
             "registration": { "type": "boolean" },
@@ -100,7 +122,10 @@
     "platformCapabilities": {
       "type": "object",
       "additionalProperties": { "type": "boolean" },
-      "required": ["home", "query", "chat", "sauna", "settings"]
+      "properties": {
+        "workers": { "type": ["boolean", "null"] }
+      },
+      "required": ["home", "query", "chat", "sauna", "settings", "diagnostics", "push"]
     }
   }
 }

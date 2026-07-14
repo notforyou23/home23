@@ -1,6 +1,8 @@
 {
   "device_token": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   "agent_id": "jerry",
+  "installation_id": "ios-installation-00000001",
+  "query_notifications": true,
   "chat_ids": ["ios_contract_smoke"],
   "bundle_id": "com.regina6.home23",
   "env": "sandbox",

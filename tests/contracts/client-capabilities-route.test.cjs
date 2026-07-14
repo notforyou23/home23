@@ -11,8 +11,8 @@ const {
 
 test('client capabilities payload validates and advertises platform truth', () => {
   const payload = buildClientCapabilities({
-    packageVersion: '0.6.0',
-    generatedAt: '2026-06-26T14:28:00Z',
+    packageVersion: '1.0.0',
+    generatedAt: '2026-07-13T20:00:00Z',
   });
   const manifest = loadJson('contracts/manifest.json');
   const entry = manifest.entries.find((item) => item.id === 'client-capabilities');
@@ -21,6 +21,8 @@ test('client capabilities payload validates and advertises platform truth', () =
   const validator = createContractValidator(process.cwd());
   const result = validator.validateValue(entry, payload);
   assert.equal(result.valid, true, result.errorsText);
+  assert.deepEqual(payload, loadJson('contracts/fixtures/client-capabilities.json'),
+    'published fixture must equal the runtime capability payload');
 
   assert.equal(payload.platforms.ios.query, true);
   assert.equal(payload.platforms.mac.query, true);
@@ -31,7 +33,34 @@ test('client capabilities payload validates and advertises platform truth', () =
   assert.equal(payload.query.facade, true);
   assert.equal(payload.query.directCosmo, false);
   assert.equal(payload.query.streaming, true);
+  assert.equal(payload.query.notebookVersion, 1);
+  assert.equal(payload.query.progressSnapshots, true);
+  assert.equal(payload.query.actionTokens, true);
+  assert.equal(payload.query.deviceCredentials, true);
+  assert.equal(payload.query.webSessions, true);
+  assert.equal(payload.query.notificationSubscriptions, true);
+  assert.equal(payload.auth.dashboard, 'none');
+  assert.equal(payload.auth.queryNotebook, 'required');
+  assert.deepEqual(payload.auth.queryNotebookMethods, [
+    'device-bearer',
+    'same-origin-session',
+  ]);
   assert.equal(payload.endpoints.queryCatalog, '/home23/api/query/catalog');
+  assert.equal(payload.endpoints.queryNotebook, '/home23/api/query/notebook');
+  assert.equal(payload.endpoints.queryOperation,
+    '/home23/api/query/operations/{operationId}');
+  assert.equal(payload.endpoints.queryOperationEvents,
+    '/home23/api/query/operations/{operationId}/events');
+  assert.equal(payload.endpoints.queryOperationResult,
+    '/home23/api/query/operations/{operationId}/result');
+  assert.equal(payload.endpoints.queryOperationCancel,
+    '/home23/api/query/operations/{operationId}/cancel');
+  assert.equal(payload.endpoints.queryOperationActions,
+    '/home23/api/query/operations/{operationId}/actions');
+  assert.equal(payload.endpoints.queryOperationNotifications,
+    '/home23/api/query/operations/{operationId}/notifications');
+  assert.equal(payload.endpoints.queryDeviceCredential, '/api/device/query-credential');
+  assert.equal(payload.endpoints.queryWebSession, '/home23/api/query/session');
   assert.equal(payload.endpoints.workers, '/home23/api/workers');
   assert.equal(payload.endpoints.chatTurnStatus, '/api/chat/turn-status');
 });
@@ -39,8 +68,8 @@ test('client capabilities payload validates and advertises platform truth', () =
 test('client capabilities route returns the contract payload', async (t) => {
   const app = express();
   registerClientCapabilitiesRoute(app, {
-    packageVersion: '0.6.0',
-    generatedAt: '2026-06-26T14:28:00Z',
+    packageVersion: '1.0.0',
+    generatedAt: '2026-07-13T20:00:00Z',
   });
   const server = http.createServer(app);
   t.after(() => new Promise((resolve) => server.close(resolve)));
@@ -51,7 +80,9 @@ test('client capabilities route returns the contract payload', async (t) => {
   const response = await fetch(`http://127.0.0.1:${address.port}/home23/api/client-capabilities`);
   assert.equal(response.status, 200);
   const payload = await response.json();
-  assert.equal(payload.contractVersion, '2026.06.26');
+  assert.equal(payload.contractVersion, '2026.07.13');
   assert.equal(payload.features.chatTurnStatus, true);
   assert.equal(payload.endpoints.deviceRegister, '/api/device/register');
+  assert.equal(payload.auth.queryNotebook, 'required');
+  assert.equal(payload.query.notebookVersion, 1);
 });

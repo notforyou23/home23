@@ -48,6 +48,71 @@ const WORKER_EVENT_FORBIDDEN_KEYS = new Set([
   'targetKind', 'targetLifecycle', 'targetRequesterAgent', 'targetRunId', 'token',
   'writeScope', 'writes',
 ]);
+const EVENT_BASE_FIELDS = Object.freeze(['type', 'operationId', 'eventSequence', 'at']);
+const PROVIDER_COMMON_FIELDS = Object.freeze([
+  'phase', 'provider', 'model', 'providerCallId', 'sourceRevision',
+  'workUnitId', 'partitionId',
+]);
+const PROGRESS_FIELDS_BY_OPERATION = Object.freeze({
+  pgs: Object.freeze({
+    projection_started: [],
+    projection_complete: ['nodeCount', 'edgeCount', 'workUnitCount'],
+    work_selected: [
+      'selectedWorkUnits', 'selectedWorkUnitsTotal', 'candidateWorkUnits',
+      'pendingWorkUnits', 'batchIndex',
+    ],
+    sweep_batch_complete: [
+      'selected', 'completed', 'successful', 'failed', 'reused',
+      'pending', 'retryable', 'total',
+    ],
+    sweep_complete: ['successfulSweeps', 'pendingWorkUnits'],
+    synthesis_started: ['sweepOutputs'],
+    synthesis_reduction_started: ['level', 'inputItems', 'batches'],
+    synthesis_reduction_truncated: [
+      'level', 'batch', 'providerCallId', 'originalBytes', 'retainedBytes',
+    ],
+    synthesis_batch_complete: ['level', 'batch', 'batches'],
+    synthesis_reduction_complete: ['level', 'outputItems'],
+    synthesis_complete: [
+      'answerBytes', 'hierarchical', 'inputSweeps', 'providerCalls', 'levels',
+      'providerCallCeiling', 'intermediateEncodedBytes',
+      'intermediateEncodedByteCeiling', 'truncatedReductionOutputs',
+      'truncatedReductionBytes',
+    ],
+  }),
+  query: Object.freeze({
+    projection_complete: ['selectedNodes', 'selectedEdges'],
+  }),
+  synthesis: Object.freeze({
+    source_projection_complete: ['sourceRevision', 'nodes', 'edges', 'clusters'],
+  }),
+  research_compile: Object.freeze({
+    source_projection_complete: [],
+    requester_artifact_published: [],
+  }),
+  graph_export: Object.freeze({
+    graph_streaming: ['completedRecords', 'completedBytes'],
+  }),
+});
+const SOURCE_PROGRESS_STAGES = new Set(['source_pin_verified', 'source_operation_finished']);
+const SOURCE_OPERATION_TYPES = new Set(['search', 'status', 'graph', 'graph_export']);
+const LEGACY_PROGRESS_FIELDS = Object.freeze([
+  'phase', 'stage', 'completed', 'total', 'percent', 'message', 'payload', 'index',
+  'sourceRevision',
+]);
+const NUMERIC_EVENT_FIELDS = new Set([
+  'providerStallMs', 'providerInputBytes', 'providerInputBudgetBytes', 'providerChunk',
+  'sourceRevision', 'nodeCount', 'edgeCount', 'workUnitCount', 'selectedWorkUnits',
+  'selectedWorkUnitsTotal', 'candidateWorkUnits', 'pendingWorkUnits', 'batchIndex',
+  'selected', 'completed', 'successful', 'failed', 'reused', 'pending', 'retryable',
+  'total', 'successfulSweeps', 'sweepOutputs', 'level', 'inputItems', 'batches',
+  'batch', 'originalBytes', 'retainedBytes', 'outputItems', 'answerBytes',
+  'inputSweeps', 'providerCalls', 'levels', 'providerCallCeiling',
+  'intermediateEncodedBytes', 'intermediateEncodedByteCeiling',
+  'truncatedReductionOutputs', 'truncatedReductionBytes', 'selectedNodes',
+  'selectedEdges', 'nodes', 'edges', 'clusters', 'completedRecords', 'completedBytes',
+  'percent', 'index', 'count', 'estimate', 'oldestSequence', 'latestSequence',
+]);
 
 function workerError(code, cause) {
   return operationError(code, cause);
@@ -176,6 +241,128 @@ function containsForbiddenEventKey(value) {
     WORKER_EVENT_FORBIDDEN_KEYS.has(key) || containsForbiddenEventKey(child));
 }
 
+function assertCanonicalEventTime(value, code) {
+  if (typeof value !== 'string') throw workerError(code);
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== value) {
+    throw workerError(code);
+  }
+}
+
+function validateKnownEventScalars(event, code) {
+  for (const [key, value] of Object.entries(event)) {
+    if (NUMERIC_EVENT_FIELDS.has(key)
+        && (!Number.isSafeInteger(value) || value < 0)) {
+      throw workerError(code);
+    }
+  }
+  for (const key of [
+    'phase', 'stage', 'provider', 'model', 'providerCallId', 'workUnitId',
+    'partitionId', 'providerEventType', 'childEventType', 'outcome', 'message',
+    'token', 'text',
+  ]) {
+    if (Object.hasOwn(event, key)
+        && (typeof event[key] !== 'string' || event[key].length > 4096)) {
+      throw workerError(code);
+    }
+  }
+  if (Object.hasOwn(event, 'at')) assertCanonicalEventTime(event.at, code);
+  if (Object.hasOwn(event, 'providerEventAt')
+      && event.providerEventAt !== null
+      && (typeof event.providerEventAt !== 'string'
+        || event.providerEventAt.length > 128
+        || event.providerEventAt.includes('\0'))) {
+    throw workerError(code);
+  }
+  if (Object.hasOwn(event, 'payload') && typeof event.payload !== 'string') {
+    throw workerError(code);
+  }
+  if (Object.hasOwn(event, 'hierarchical') && typeof event.hierarchical !== 'boolean') {
+    throw workerError(code);
+  }
+}
+
+function progressFields(operationType, event, code) {
+  const stage = typeof event.stage === 'string' ? event.stage : null;
+  const schemas = PROGRESS_FIELDS_BY_OPERATION[operationType];
+  if (schemas && stage && Object.hasOwn(schemas, stage)) {
+    return ['phase', 'stage', ...schemas[stage]];
+  }
+  if (SOURCE_OPERATION_TYPES.has(operationType)
+      && stage && SOURCE_PROGRESS_STAGES.has(stage)) {
+    return ['phase', 'stage', 'sourceRevision'];
+  }
+  // Preserve the bounded legacy transport used by already-running direct
+  // Query/research workers while refusing unknown staged operation schemas.
+  if (stage !== null && schemas) throw workerError(code);
+  return LEGACY_PROGRESS_FIELDS;
+}
+
+function validateProgressRequirements(operationType, event, code) {
+  const schemas = PROGRESS_FIELDS_BY_OPERATION[operationType];
+  const sourceStage = SOURCE_OPERATION_TYPES.has(operationType)
+    && SOURCE_PROGRESS_STAGES.has(event.stage);
+  const required = sourceStage
+    ? ['sourceRevision']
+    : (schemas && typeof event.stage === 'string' ? schemas[event.stage] : null);
+  if (required && required.some((field) => !Object.hasOwn(event, field))) {
+    throw workerError(code);
+  }
+  if (operationType === 'pgs' && event.stage === 'sweep_batch_complete') {
+    if (event.completed !== event.successful + event.failed
+        || event.selected !== event.completed + event.pending
+        || event.reused > event.successful
+        || event.retryable > event.failed
+        || event.total < event.selected) {
+      throw workerError(code);
+    }
+  }
+  if (operationType === 'pgs' && event.stage === 'synthesis_batch_complete'
+      && (event.batch < 1 || event.batches < 1 || event.batch > event.batches)) {
+    throw workerError(code);
+  }
+  if (operationType === 'pgs' && event.stage === 'synthesis_reduction_truncated'
+      && event.retainedBytes > event.originalBytes) {
+    throw workerError(code);
+  }
+}
+
+function validateExactWorkerEventPayload(event, operationType, code) {
+  let payloadFields;
+  if (event.type === 'event_gap') {
+    payloadFields = ['oldestSequence', 'latestSequence', 'currentStatus'];
+  } else if (event.type === 'terminal') {
+    payloadFields = ['state'];
+  } else if (event.type === 'phase') {
+    payloadFields = ['phase'];
+  } else if (event.type === 'heartbeat') {
+    payloadFields = [];
+  } else if (event.type === 'progress' || event.type === 'progress_update') {
+    payloadFields = progressFields(operationType, event, code);
+  } else if (event.type === 'provider_selected') {
+    payloadFields = [
+      ...PROVIDER_COMMON_FIELDS, 'providerStallMs',
+      'providerInputBytes', 'providerInputBudgetBytes',
+    ];
+  } else if (event.type === 'provider_activity') {
+    payloadFields = [
+      ...PROVIDER_COMMON_FIELDS, 'providerEventType', 'childEventType',
+      'providerEventAt', 'providerChunk',
+    ];
+  } else if (event.type === 'provider_call_terminal') {
+    payloadFields = [...PROVIDER_COMMON_FIELDS, 'outcome'];
+  } else if (event.type === 'token' || event.type === 'token_estimate') {
+    payloadFields = ['token', 'text', 'count', 'estimate', 'payload'];
+  } else {
+    throw workerError(code);
+  }
+  exactKeys(event, [...EVENT_BASE_FIELDS, ...payloadFields], code);
+  validateKnownEventScalars(event, code);
+  if (event.type === 'progress' || event.type === 'progress_update') {
+    validateProgressRequirements(operationType, event, code);
+  }
+}
+
 function validateWorkerEvent(rawEvent, expected = {}) {
   const code = 'worker_event_invalid';
   const event = clone(rawEvent, code);
@@ -187,6 +374,12 @@ function validateWorkerEvent(rawEvent, expected = {}) {
       || Object.hasOwn(event, 'sequence')) {
     throw workerError(code);
   }
+  if (expected.operationType !== undefined) {
+    try { assertIdentifier(expected.operationType, 'operationType'); } catch (error) {
+      throw workerError(code, error);
+    }
+  }
+  validateExactWorkerEventPayload(event, expected.operationType || 'legacy', code);
   const payload = { ...event };
   delete payload.operationId;
   delete payload.eventSequence;
@@ -218,11 +411,14 @@ function validateWorkerEvent(rawEvent, expected = {}) {
         || event.eventSequence < event.latestSequence) {
       throw workerError(code);
     }
-    const currentStatus = validateWorkerRecord(event.currentStatus, {
-      operationId: expected.operationId,
-    });
-    if (currentStatus.eventSequence < event.latestSequence) throw workerError(code);
-    event.currentStatus = currentStatus;
+    if (expected.validateCurrentStatus !== false) {
+      const currentStatus = validateWorkerRecord(event.currentStatus, {
+        operationId: expected.operationId,
+        ...(expected.operationType ? { operationType: expected.operationType } : {}),
+      });
+      if (currentStatus.eventSequence < event.latestSequence) throw workerError(code);
+      event.currentStatus = currentStatus;
+    }
   }
   return event;
 }
@@ -483,6 +679,7 @@ class BrainOperationWorkerAdapter {
       at: new Date(this.now()).toISOString(),
     }, {
       operationId: record.operationId,
+      operationType: record.operationType,
       afterSequence: record.eventSequence,
     }));
     const monotonic = this.monotonicNow();
@@ -699,7 +896,11 @@ class BrainOperationWorkerAdapter {
       if (!this.remoteWorker?.events) throw workerError('worker_not_found');
       let cursor = input.afterSequence;
       for await (const rawEvent of this.remoteWorker.events(operationId, input, capability)) {
-        const event = validateWorkerEvent(rawEvent, { operationId, afterSequence: cursor });
+        const event = validateWorkerEvent(rawEvent, {
+          operationId,
+          operationType: input.operationType,
+          afterSequence: cursor,
+        });
         cursor = event.eventSequence;
         yield event;
       }

@@ -367,9 +367,21 @@ test('pinned PGS keeps provider roles exact and returns machine-readable durable
     'projection_started',
     'projection_complete',
     'work_selected',
+    'sweep_batch_complete',
+    'sweep_batch_complete',
+    'sweep_batch_complete',
     'sweep_complete',
     'synthesis_started',
     'synthesis_complete',
+  ]);
+  assert.deepEqual(events
+    .filter(event => event.stage === 'sweep_batch_complete')
+    .map(({ selected, completed, successful, failed, reused, pending, retryable, total }) => ({
+      selected, completed, successful, failed, reused, pending, retryable, total,
+    })), [
+    { selected: 6, completed: 2, successful: 2, failed: 0, reused: 0, pending: 4, retryable: 0, total: 6 },
+    { selected: 6, completed: 4, successful: 4, failed: 0, reused: 0, pending: 2, retryable: 0, total: 6 },
+    { selected: 6, completed: 6, successful: 6, failed: 0, reused: 0, pending: 0, retryable: 0, total: 6 },
   ]);
   const selectionProgress = events.find(event => event.stage === 'work_selected');
   assert.equal(selectionProgress.candidateWorkUnits, 6);
@@ -502,6 +514,35 @@ test('PGS closes an opened store when work-selection progress reporting throws',
     error => error === marker,
   );
   assert.equal(closed, true);
+});
+
+test('PGS publishes settled-batch progress only after durable success commit', async t => {
+  const scratch = await scratchFixture(t);
+  const fixture = makeEngine();
+  const store = singleWorkStore();
+  let committed = false;
+  const commit = store.commitSuccessfulSweeps;
+  store.commitSuccessfulSweeps = async (...args) => {
+    await commit(...args);
+    committed = true;
+  };
+  fixture.engine.openPinnedPGSStore = async () => store;
+  const marker = Object.assign(new Error('settled progress sink failed'), {
+    code: 'worker_event_invalid',
+  });
+
+  await assert.rejects(
+    fixture.engine.runPinnedOperation(options(sourcePin({ nodeCount: 1 }), scratch, {
+      reportEvent(event) {
+        if (event.stage === 'sweep_batch_complete') {
+          assert.equal(committed, true);
+          throw marker;
+        }
+      },
+    })),
+    error => error === marker,
+  );
+  assert.equal(committed, true);
 });
 
 test('PGS closes its receipt boundary when store cleanup throws', async t => {
@@ -786,6 +827,15 @@ test('PGS hierarchically synthesizes a large deterministic sweep fan-in within t
     && event.outcome === 'complete'), true);
   assert.equal(events.some(event => event.type === 'provider_call_terminal'
     && event.providerCallId.startsWith('pgs:synthesis:reduce:')), true);
+  const synthesisBatches = events.filter(event => event.stage === 'synthesis_batch_complete');
+  assert.equal(synthesisBatches.length > 0, true);
+  assert.equal(synthesisBatches.every(event => (
+    Number.isSafeInteger(event.level)
+      && Number.isSafeInteger(event.batch)
+      && Number.isSafeInteger(event.batches)
+      && event.batch >= 1
+      && event.batch <= event.batches
+  )), true);
 });
 
 test('PGS bounds JSON-escaped hierarchical shards and strictly reduces adversarial control output', async t => {

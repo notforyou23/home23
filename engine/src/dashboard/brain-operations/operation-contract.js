@@ -40,6 +40,23 @@ const MUTATION_BOUNDARY_KINDS = Object.freeze([
 ]);
 const BOUNDED_JSON_OBJECT_MAX_BYTES = 64 * 1024;
 const ERROR_MESSAGE_MAX_LENGTH = 4096;
+const NOTEBOOK_RESULT_VERSION_PATTERN = /^qrv1_[A-Za-z0-9_-]{43}$/;
+const NOTEBOOK_COVERAGE_FIELDS = Object.freeze([
+  'coverageLevel', 'coverageFraction', 'successfulSweeps',
+  'selectedWorkUnits', 'pendingWorkUnits', 'reusedWorkUnits', 'newWorkUnits',
+  'scopeWorkUnits', 'scopeSuccessfulWorkUnits', 'scopePendingWorkUnits', 'scopeComplete',
+  'globalCoveredWorkUnits', 'globalPendingWorkUnits', 'fullCoverage',
+  'targetPartitionIds', 'retryablePartitions', 'retryablePartitionCount',
+]);
+const NOTEBOOK_COVERAGE_COUNTER_FIELDS = new Set([
+  'successfulSweeps', 'selectedWorkUnits', 'pendingWorkUnits', 'reusedWorkUnits',
+  'newWorkUnits', 'scopeWorkUnits', 'scopeSuccessfulWorkUnits',
+  'scopePendingWorkUnits', 'globalCoveredWorkUnits', 'globalPendingWorkUnits',
+  'retryablePartitionCount',
+]);
+const NOTEBOOK_PARTITION_ID_PATTERN = /^(?:c|h)-[A-Za-z0-9._-]{1,253}$/;
+const NOTEBOOK_RETRYABLE_PARTITION_ID_PATTERN = IDENTIFIER_PATTERN;
+const NOTEBOOK_PARTITION_ARRAY_LIMIT = 256;
 
 const PUBLIC_RECORD_FIELDS = Object.freeze([
   'operationId',
@@ -51,6 +68,7 @@ const PUBLIC_RECORD_FIELDS = Object.freeze([
   'canonicalEvidence',
   'recordVersion',
   'eventSequence',
+  'acceptedAt',
   'requesterAgent',
   'target',
   'state',
@@ -60,6 +78,8 @@ const PUBLIC_RECORD_FIELDS = Object.freeze([
   'completedAt',
   'lastProviderActivityAt',
   'lastProgressAt',
+  'progressSnapshot',
+  'notebookResultSummary',
   'result',
   'resultHandle',
   'resultArtifact',
@@ -338,6 +358,185 @@ function validateResultObject(value) {
   return assertJsonObject(value, 'result_invalid');
 }
 
+function validateNotebookCoverage(value, code = 'notebook_result_summary_invalid') {
+  if (value === null) return null;
+  const coverage = assertJsonObject(value, code);
+  if (Reflect.ownKeys(coverage).some((field) =>
+    typeof field !== 'string' || !NOTEBOOK_COVERAGE_FIELDS.includes(field))) {
+    throw operationError(code);
+  }
+  const projected = {};
+  for (const field of NOTEBOOK_COVERAGE_FIELDS) {
+    if (!Object.hasOwn(coverage, field)) continue;
+    const entry = coverage[field];
+    if (NOTEBOOK_COVERAGE_COUNTER_FIELDS.has(field)) {
+      assertSafeNonnegative(entry, code);
+      projected[field] = entry;
+    } else if (field === 'coverageLevel') {
+      if (!['skim', 'sample', 'deep', 'full'].includes(entry)) throw operationError(code);
+      projected[field] = entry;
+    } else if (field === 'coverageFraction') {
+      if (typeof entry !== 'number' || !Number.isFinite(entry) || entry < 0 || entry > 1) {
+        throw operationError(code);
+      }
+      projected[field] = entry;
+    } else if (field === 'scopeComplete' || field === 'fullCoverage') {
+      if (typeof entry !== 'boolean') throw operationError(code);
+      projected[field] = entry;
+    } else if (field === 'targetPartitionIds' || field === 'retryablePartitions') {
+      const pattern = field === 'targetPartitionIds'
+        ? NOTEBOOK_PARTITION_ID_PATTERN
+        : NOTEBOOK_RETRYABLE_PARTITION_ID_PATTERN;
+      if (!Array.isArray(entry) || entry.length > NOTEBOOK_PARTITION_ARRAY_LIMIT
+          || new Set(entry).size !== entry.length
+          || entry.some((partitionId) => typeof partitionId !== 'string'
+            || !pattern.test(partitionId)
+            || partitionId === '.' || partitionId === '..')) {
+        throw operationError(code);
+      }
+      projected[field] = [...entry];
+    }
+  }
+  const hasRetryablePartitions = Object.hasOwn(projected, 'retryablePartitions');
+  const hasRetryableCount = Object.hasOwn(projected, 'retryablePartitionCount');
+  if (hasRetryablePartitions !== hasRetryableCount
+      || (hasRetryablePartitions
+        && (projected.retryablePartitionCount < projected.retryablePartitions.length
+          || (projected.retryablePartitions.length < NOTEBOOK_PARTITION_ARRAY_LIMIT
+            && projected.retryablePartitionCount !== projected.retryablePartitions.length)))) {
+    throw operationError(code);
+  }
+  return projected;
+}
+
+function validateNotebookContinuation(value, code = 'notebook_result_summary_invalid') {
+  if (value === null) return null;
+  const continuation = assertJsonObject(value, code);
+  assertExactKeys(continuation, ['canContinue', 'continuableUntil', 'sourceOperationId'], code);
+  if (typeof continuation.canContinue !== 'boolean') throw operationError(code);
+  if (typeof continuation.continuableUntil !== 'string'
+      || !Number.isFinite(Date.parse(continuation.continuableUntil))
+      || new Date(Date.parse(continuation.continuableUntil)).toISOString()
+        !== continuation.continuableUntil) {
+    throw operationError(code);
+  }
+  if (continuation.sourceOperationId !== null) {
+    try { assertOperationId(continuation.sourceOperationId); } catch (error) {
+      throw operationError(code, error);
+    }
+  }
+  return continuation;
+}
+
+function validateNotebookResultSummary(value, code = 'notebook_result_summary_invalid') {
+  if (value === null) return null;
+  const summary = assertJsonObject(value, code);
+  assertExactKeys(summary, [
+    'version', 'resultVersion', 'answerAvailable', 'coverage', 'continuation',
+  ], code);
+  if (summary.version !== 1
+      || typeof summary.resultVersion !== 'string'
+      || !NOTEBOOK_RESULT_VERSION_PATTERN.test(summary.resultVersion)
+      || typeof summary.answerAvailable !== 'boolean') {
+    throw operationError(code);
+  }
+  const normalized = {
+    version: 1,
+    resultVersion: summary.resultVersion,
+    answerAvailable: summary.answerAvailable,
+    coverage: validateNotebookCoverage(summary.coverage, code),
+    continuation: validateNotebookContinuation(summary.continuation, code),
+  };
+  if (Buffer.byteLength(canonicalJson(normalized), 'utf8') > BOUNDED_JSON_OBJECT_MAX_BYTES) {
+    throw operationError(code);
+  }
+  return normalized;
+}
+
+function notebookCoverageFromResult(resultPgs) {
+  if (!resultPgs || Array.isArray(resultPgs) || typeof resultPgs !== 'object') return null;
+  const coverage = {};
+  for (const field of NOTEBOOK_COVERAGE_FIELDS) {
+    if (field === 'retryablePartitionCount') continue;
+    if (Object.hasOwn(resultPgs, field)) coverage[field] = resultPgs[field];
+  }
+  if (Object.hasOwn(coverage, 'targetPartitionIds')) {
+    coverage.targetPartitionIds = validateAndBoundPartitionIds(
+      coverage.targetPartitionIds,
+      NOTEBOOK_PARTITION_ID_PATTERN,
+      'result_invalid',
+    );
+  }
+  if (Object.hasOwn(coverage, 'retryablePartitions')) {
+    const retryablePartitionCount = Array.isArray(coverage.retryablePartitions)
+      ? coverage.retryablePartitions.length
+      : null;
+    const retryablePartitions = validateAndBoundPartitionIds(
+      coverage.retryablePartitions,
+      NOTEBOOK_RETRYABLE_PARTITION_ID_PATTERN,
+      'result_invalid',
+    );
+    coverage.retryablePartitionCount = retryablePartitionCount;
+    coverage.retryablePartitions = retryablePartitions;
+  }
+  if (Object.keys(coverage).length === 0) return null;
+  return validateNotebookCoverage(coverage, 'result_invalid');
+}
+
+function validateAndBoundPartitionIds(value, pattern, code) {
+  if (!Array.isArray(value)
+      || new Set(value).size !== value.length
+      || value.some((partitionId) => typeof partitionId !== 'string'
+        || !pattern.test(partitionId)
+        || partitionId === '.' || partitionId === '..')) {
+    throw operationError(code);
+  }
+  return value.slice(0, NOTEBOOK_PARTITION_ARRAY_LIMIT);
+}
+
+function notebookContinuationFromResult(record, resultPgs) {
+  if (record.operationType !== 'pgs' || record.pgsSession === null
+      || !resultPgs || Array.isArray(resultPgs) || typeof resultPgs !== 'object'
+      || !Object.hasOwn(resultPgs, 'canContinue')) return null;
+  const session = validatePgsSessionMetadata(record.pgsSession, 'result_invalid');
+  if (typeof resultPgs.canContinue !== 'boolean'
+      || resultPgs.sessionId !== session.sessionId
+      || resultPgs.continuableUntil !== session.continuableUntil
+      || (resultPgs.sourceOperationId ?? null) !== session.sourceOperationId) {
+    return null;
+  }
+  return {
+    canContinue: resultPgs.canContinue,
+    continuableUntil: session.continuableUntil,
+    sourceOperationId: session.sourceOperationId,
+  };
+}
+
+function deriveNotebookResultSummary(record, normalizedResult, serializedSha256) {
+  if (!record || Array.isArray(record) || typeof record !== 'object'
+      || !normalizedResult || Array.isArray(normalizedResult)
+      || typeof normalizedResult !== 'object') {
+    throw operationError('result_invalid');
+  }
+  if (record.operationType !== 'query' && record.operationType !== 'pgs') return null;
+  if (typeof serializedSha256 !== 'string' || !SHA256_HEX_PATTERN.test(serializedSha256)) {
+    throw operationError('result_invalid');
+  }
+  const digest = crypto.createHash('sha256')
+    .update('home23-query-result-v1\0', 'utf8')
+    .update(Buffer.from(serializedSha256, 'hex'))
+    .digest('base64url');
+  const resultPgs = normalizedResult.metadata?.pgs;
+  return validateNotebookResultSummary({
+    version: 1,
+    resultVersion: `qrv1_${digest}`,
+    answerAvailable: typeof normalizedResult.answer === 'string'
+      && normalizedResult.answer.length > 0,
+    coverage: record.operationType === 'pgs' ? notebookCoverageFromResult(resultPgs) : null,
+    continuation: notebookContinuationFromResult(record, resultPgs),
+  }, 'result_invalid');
+}
+
 function validateTransitionError(value, code = 'transition_invalid') {
   if (value === null) return null;
   try {
@@ -527,6 +726,7 @@ module.exports = {
   OPERATION_EVENT_MAX_COUNT,
   OPERATION_ID_PATTERN,
   OPERATION_RESULT_ARTIFACT_MAX_BYTES,
+  NOTEBOOK_RESULT_VERSION_PATTERN,
   PUBLIC_RECORD_FIELDS,
   RESULT_HANDLE_PATTERN,
   PGS_SESSION_ID_PATTERN,
@@ -540,6 +740,7 @@ module.exports = {
   assertTransition,
   buildBrainOperationIdempotencyKey,
   buildRequestFingerprint,
+  deriveNotebookResultSummary,
   operationError,
   projectPublicRecord,
   safeJsonClone,
@@ -551,4 +752,5 @@ module.exports = {
   validateCreateInput,
   validateSourcePin,
   validatePgsSessionMetadata,
+  validateNotebookResultSummary,
 };
