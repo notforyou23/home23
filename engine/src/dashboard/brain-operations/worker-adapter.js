@@ -95,6 +95,7 @@ const PROGRESS_FIELDS_BY_OPERATION = Object.freeze({
   }),
 });
 const SOURCE_PROGRESS_STAGES = new Set(['source_pin_verified', 'source_operation_finished']);
+const SOURCE_OPERATION_TYPES = new Set(['search', 'status', 'graph', 'graph_export']);
 const LEGACY_PROGRESS_FIELDS = Object.freeze([
   'phase', 'stage', 'completed', 'total', 'percent', 'message', 'payload', 'index',
   'sourceRevision',
@@ -287,7 +288,7 @@ function progressFields(operationType, event, code) {
   if (schemas && stage && Object.hasOwn(schemas, stage)) {
     return ['phase', 'stage', ...schemas[stage]];
   }
-  if (['search', 'status', 'graph'].includes(operationType)
+  if (SOURCE_OPERATION_TYPES.has(operationType)
       && stage && SOURCE_PROGRESS_STAGES.has(stage)) {
     return ['phase', 'stage', 'sourceRevision'];
   }
@@ -301,7 +302,7 @@ function validateProgressRequirements(operationType, event, code) {
   const schemas = PROGRESS_FIELDS_BY_OPERATION[operationType];
   const required = schemas && typeof event.stage === 'string'
     ? schemas[event.stage]
-    : (['search', 'status', 'graph'].includes(operationType)
+    : (SOURCE_OPERATION_TYPES.has(operationType)
       && SOURCE_PROGRESS_STAGES.has(event.stage) ? ['sourceRevision'] : null);
   if (required && required.some((field) => !Object.hasOwn(event, field))) {
     throw workerError(code);

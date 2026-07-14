@@ -11,6 +11,7 @@ const {
   createSourceOperationExecutors,
 } = require('../../../engine/src/dashboard/brain-operations/source-executors');
 const { createGraphExportExecutor } = require('../../../engine/src/dashboard/brain-operations/graph-export-executor');
+const { BrainOperationWorkerAdapter } = require('../../../engine/src/dashboard/brain-operations/worker-adapter');
 
 async function tempDir(prefix) {
   return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -170,6 +171,56 @@ test('registerable source executors return standard envelopes', async () => {
       && event.phase === operationType
       && event.stage === 'source_operation_finished'), true);
   }
+});
+
+test('graph export source wrapper stages survive production worker validation', async (t) => {
+  const context = await baseContext();
+  const operationId = `brop_${'g'.repeat(32)}`;
+  const adapter = new BrainOperationWorkerAdapter();
+  t.after(() => adapter.stop());
+  const executors = createSourceOperationExecutors({
+    searchService: { async search() { throw new Error('unexpected search'); } },
+    brainSourceService: {
+      async status() { throw new Error('unexpected status'); },
+      async graph() { throw new Error('unexpected graph'); },
+    },
+    graphExportExecutor: async () => ({
+      evidence: evidence({ canonicalRoot: context.target.canonicalRoot }),
+      resultArtifact: {
+        scratchPath: path.join(context.scratchDir, 'graph.jsonl'),
+        mediaType: 'application/x-ndjson',
+        contentEncoding: 'identity',
+        bytes: 0,
+        sha256: '0'.repeat(64),
+      },
+    }),
+  });
+  adapter.registerLocalExecutor('graph_export', executors.get('graph_export'));
+
+  await adapter.start({
+    ...context,
+    operationId,
+    operationType: 'graph_export',
+    parameters: {
+      format: 'jsonl',
+      operationControl: { hardDeadlineAt: '2099-01-01T00:00:00.000Z' },
+    },
+  }, 'cap-start');
+
+  const events = [];
+  for await (const event of adapter.events(operationId, {
+    afterSequence: 0,
+    signal: new AbortController().signal,
+  }, 'cap-events')) events.push(event);
+  assert.equal((await adapter.status(operationId, 'cap-status')).state, 'complete');
+  assert.deepEqual(events.filter((event) => event.type === 'progress').map((event) => ({
+    phase: event.phase,
+    stage: event.stage,
+    sourceRevision: event.sourceRevision,
+  })), [
+    { phase: 'graph_export', stage: 'source_pin_verified', sourceRevision: 3 },
+    { phase: 'graph_export', stage: 'source_operation_finished', sourceRevision: 3 },
+  ]);
 });
 
 test('graph operation routes PGS partition preflight through the canonical pinned source', async () => {

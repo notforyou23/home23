@@ -2863,12 +2863,13 @@ result is complete, bounded, and inserted into the next level's input set.
 The Home23 worker validator now receives the durable operation type and uses
 exact stage-specific progress schemas. It enumerates every existing PGS stage,
 the production Direct Query, synthesis, research compile, source-read, and graph
-export stages, provider field variants (including nullable provider timestamps
-and reduction call IDs), and bounded legacy transport envelopes. Unknown staged
-events, missing settled counters, impossible algebra, extra keys, and arbitrary
-nested payloads fail before persistence. Coordinator validation uses the same
-operation-aware contract while preserving its independent authenticated status
-read on worker event gaps.
+export stages, including the shared source-wrapper verification/completion
+stages around graph export, provider field variants (including nullable provider
+timestamps and reduction call IDs), and bounded legacy transport envelopes.
+Unknown staged events, missing settled counters, impossible algebra, extra keys,
+and arbitrary nested payloads fail before persistence. Coordinator validation
+uses the same operation-aware contract while preserving its independent
+authenticated status read on worker event gaps.
 
 **Verification:** Focused pinned PGS source/retry tests, coordinator/worker
 transport tests, Query progress/store regressions, and the required combined

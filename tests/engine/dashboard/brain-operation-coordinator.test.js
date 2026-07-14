@@ -4196,6 +4196,8 @@ test('worker progress validation is operation-aware and rejects extra nested fie
     ['query', { type: 'provider_call_terminal', phase: 'query', provider: 'fake', model: 'model', providerCallId: 'query', outcome: 'complete' }],
     ['search', { type: 'progress', phase: 'search', stage: 'source_pin_verified', sourceRevision: 7 }],
     ['status', { type: 'progress', phase: 'status', stage: 'source_operation_finished', sourceRevision: 7 }],
+    ['graph_export', { type: 'progress', phase: 'graph_export', stage: 'source_pin_verified', sourceRevision: 7 }],
+    ['graph_export', { type: 'progress', phase: 'graph_export', stage: 'source_operation_finished', sourceRevision: 7 }],
     ['graph_export', { type: 'progress', phase: 'graph_export', stage: 'graph_streaming', completedRecords: 20, completedBytes: 200 }],
     ['research_launch', { type: 'progress_update', phase: 'launch', completed: 1, total: 2 }],
     ['research_compile', { type: 'provider_selected', phase: 'research_compile', provider: 'fake', model: 'model', providerCallId: 'research_compile', providerStallMs: 5_000 }],
@@ -4248,6 +4250,9 @@ test('worker progress validation is operation-aware and rejects extra nested fie
     type: 'progress', phase: 'query', stage: 'projection_complete',
     selectedNodes: 12, selectedEdges: 10,
   }, 'research_compile'), typedCode('worker_event_invalid'));
+  assert.throws(() => event({
+    type: 'progress', phase: 'graph_export', stage: 'unknown_source_stage', sourceRevision: 7,
+  }, 'graph_export'), typedCode('worker_event_invalid'));
 });
 
 test('settled PGS progress survives worker validation, journal compaction, and terminal status', async (t) => {
