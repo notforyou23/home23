@@ -88,3 +88,18 @@ Final HTTP readbacks were 200 for Jerry and Forrest Query catalogs, both MCP hea
 ## Retained Boundaries
 
 Runtime sessions under `instances/*/runtime/pgs-sessions` are ignored local installation state and are not Git deliverables. They are retained only for the bounded continuation window and then reclaimed through session authority. The portable source, tests, schemas, design, plan, and this receipt are the deliverable.
+
+## 2026-07-14 Current-State Correction
+
+The capacity figures above were an accurate July 12 snapshot, not a permanent
+inventory. After the broader Query/iOS acceptance work, Jerry retains 14
+seven-day PGS sessions totaling 6.1 GiB, with 17 GiB free on the data volume.
+This remains below the 32 GiB per-agent cap. The retained sessions include
+acceptance and recovery sources that expire between July 19 and July 21; they
+were not deleted because they are operator runtime data and remain valid
+continuation authority.
+
+The final recovery reused one existing 449 MiB immutable session projection
+across every continuation. No continuation copied that projection. The current
+closeout and exact operation lineage are recorded in
+`docs/receipts/2026-07-14-query-pgs-recovery-closeout.md`.
