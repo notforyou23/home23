@@ -57,6 +57,7 @@ const PARTITION_ID_PATTERN = /^(?:c|h)-[A-Za-z0-9._-]{1,253}$/;
 const RETRYABLE_PARTITION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}$/;
 const ACTION_PARTITION_ID_PATTERN = /^(?:c|h)-[A-Za-z0-9._-]{1,253}$/;
 const QUERY_REQUEST_ID_PATTERN = /^qreq_[A-Za-z0-9_-]{32}$/;
+const EXECUTABLE_ACTIONS = new Set(['continueSweep', 'targetedRetry']);
 const PGS_LEVEL_ORDER = Object.freeze(['skim', 'sample', 'deep', 'full']);
 const MAX_ACTION_PARTITIONS = 256;
 const MAX_ACTION_TOKEN_TTL_MS = 60 * 60 * 1000;
@@ -718,10 +719,20 @@ function createQueryNotebookService(options) {
     return actions === undefined ? projected : { ...projected, actions };
   }
 
+  async function getQueryNotebookStatusAuthorized(operationId) {
+    assertOperationId(operationId);
+    let record = await reader.getAuthorized(operationId);
+    if (record.requesterAgent !== reader.expectedRequester) throw notebookError('access_denied');
+    validateNotebookRecord(record);
+    record = await ensureVisibleSummary(record);
+    return projectSummaryWithActions(record);
+  }
+
   async function resolveAction(rawInput) {
     if (!actionsConfigured) throw notebookError('action_unavailable');
-    exactKeys(rawInput, ['sourceOperationId', 'actionToken', 'requestId'], 'invalid_request');
-    if (typeof rawInput.actionToken !== 'string'
+    exactKeys(rawInput, ['sourceOperationId', 'kind', 'actionToken', 'requestId'], 'invalid_request');
+    if (!EXECUTABLE_ACTIONS.has(rawInput.kind)
+        || typeof rawInput.actionToken !== 'string'
         || typeof rawInput.requestId !== 'string'
         || !QUERY_REQUEST_ID_PATTERN.test(rawInput.requestId)) {
       throw notebookError('invalid_request');
@@ -731,6 +742,7 @@ function createQueryNotebookService(options) {
     }
     const claims = actionTokens.verify(rawInput.actionToken, {
       sourceOperationId: rawInput.sourceOperationId,
+      action: rawInput.kind,
     });
     const loaded = actionRecord(await reader.getAuthorized(rawInput.sourceOperationId));
     if (loaded.record.operationId !== rawInput.sourceOperationId) {
@@ -763,6 +775,7 @@ function createQueryNotebookService(options) {
 
   return Object.freeze({
     getQueryNotebookResultAuthorized,
+    getQueryNotebookStatusAuthorized,
     listQueryNotebookAuthorized,
     resolveAction,
   });

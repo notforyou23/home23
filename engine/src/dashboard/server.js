@@ -1,5 +1,6 @@
 const express = require('express');
 const path = require('path');
+const yaml = require('js-yaml');
 const {
   registerRuntimeMetricsRoute,
 } = require('../../../shared/runtime-metrics-route.cjs');
@@ -45,6 +46,21 @@ const { createResearchRunsReader } = require('./brain-operations/research-runs-r
 const { createGraphExportExecutor } = require('./brain-operations/graph-export-executor.js');
 const { createQueryCompatibilityBodyParser } = require('./home23-query-api.js');
 const {
+  createHome23QueryNotebookRouter,
+  createQueryNotebookPlaceholderRouter,
+} = require('./home23-query-notebook-api.js');
+const {
+  createQueryNotebookAuth,
+  createQueryNotebookCredentialLookup,
+} = require('./query-notebook-auth.js');
+const { createQueryNotebookSubscriptions } = require('./query-notebook-subscriptions.js');
+const { createQueryNotebookService } = require('./query-notebook-service.js');
+const { createQueryNotebookActionTokens } = require('./query-notebook-action-token.js');
+const {
+  createQueryNotebookCredentialAuthority,
+  deriveQueryNotebookCredentialKey,
+} = require('../../../shared/query-notebook-credential.cjs');
+const {
   createLegacyQueryRetirementRouter,
 } = require('./legacy-query-retirement.js');
 const {
@@ -76,6 +92,43 @@ function cleanPm2Env(extra = {}) {
   const env = { ...process.env, ...extra };
   for (const key of PM2_ENV_BLOCKLIST) delete env[key];
   return env;
+}
+
+function loadQueryNotebookBridgeToken({ home23Root, requesterAgent }) {
+  if (typeof home23Root !== 'string' || !path.isAbsolute(home23Root)
+      || typeof requesterAgent !== 'string'
+      || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(requesterAgent)) return '';
+  const fsSync = require('node:fs');
+  function readToken(configPath, select) {
+    let descriptor;
+    try {
+      descriptor = fsSync.openSync(
+        configPath,
+        fsSync.constants.O_RDONLY | (fsSync.constants.O_NOFOLLOW || 0),
+      );
+      const stat = fsSync.fstatSync(descriptor);
+      if (!stat.isFile() || stat.size < 1 || stat.size > 1024 * 1024) return '';
+      const token = select(yaml.load(fsSync.readFileSync(descriptor, 'utf8')) || {});
+      if (typeof token !== 'string'
+          || Buffer.byteLength(token, 'utf8') < 32
+          || Buffer.byteLength(token, 'utf8') > 4096
+          || token.includes('\0')) return '';
+      return token;
+    } catch {
+      return '';
+    } finally {
+      if (descriptor !== undefined) {
+        try { fsSync.closeSync(descriptor); } catch {}
+      }
+    }
+  }
+  return readToken(
+    path.join(home23Root, 'instances', requesterAgent, 'config.yaml'),
+    (config) => config?.channels?.webhooks?.token,
+  ) || readToken(
+    path.join(home23Root, 'config', 'secrets.yaml'),
+    (config) => config?.bridge?.token,
+  );
 }
 
 function readJsonlTail(file, limit = 20, maxBytes = 256 * 1024) {
@@ -280,6 +333,8 @@ class DashboardServer {
     // requester-bound coordinator dependencies have been constructed.
     this.brainOperationsPlaceholder = createBrainOperationsPlaceholderRouter();
     this.app.use('/home23/api/brain-operations', this.brainOperationsPlaceholder.router);
+    this.queryNotebookPlaceholder = createQueryNotebookPlaceholderRouter();
+    this.app.use('/home23/api/query', this.queryNotebookPlaceholder.router);
     this.queryCompatibilityBodyParser = createQueryCompatibilityBodyParser();
     this.app.use('/home23/api/query', this.queryCompatibilityBodyParser);
     this.app.use(createMcpProxyRouter({
@@ -297,12 +352,14 @@ class DashboardServer {
     if (typeof broadJsonParser !== 'function') throw new TypeError('dashboard_options_invalid');
     this.app.use((req, res, next) => {
       if (req.brainOperationBodyParsed === true) return next();
+      if (req.queryNotebookBodyParsed === true) return next();
       if (req.queryCompatibilityBodyParsed === true) return next();
       return broadJsonParser(req, res, next);
     });
     const broadUrlencodedParser = express.urlencoded({ limit: '10gb', extended: true });
     this.app.use((req, res, next) => {
       if (req.brainOperationBodyParsed === true) return next();
+      if (req.queryNotebookBodyParsed === true) return next();
       if (req.queryCompatibilityBodyParsed === true) return next();
       return broadUrlencodedParser(req, res, next);
     });
@@ -378,6 +435,7 @@ class DashboardServer {
     });
 
     this.initializeBrainOperations(options.brainOperations);
+    this.initializeQueryNotebook(options.queryNotebook);
     this.brainSourceService = createBrainSourceService({
       brainDir: this.logsDir,
       home23Root: this.getHome23Root(),
@@ -447,6 +505,84 @@ class DashboardServer {
       reader: dependencies.reader,
       exporter: dependencies.exporter,
     });
+  }
+
+  initializeQueryNotebook(injectedDependencies = {}) {
+    const dependencies = injectedDependencies || {};
+    if (dependencies.router) {
+      this.queryNotebookPlaceholder.attach(dependencies.router);
+      return;
+    }
+    const requesterAgent = this.getHome23AgentName();
+    const configuredBridgeToken = loadQueryNotebookBridgeToken({
+      home23Root: this.getHome23Root(), requesterAgent,
+    });
+    // Authority precedence is explicit: injected, selected-agent config,
+    // local secrets, then process environment. No source is ever persisted or logged here.
+    const bridgeToken = dependencies.bridgeToken !== undefined
+      ? dependencies.bridgeToken
+      : configuredBridgeToken
+        || process.env.BRIDGE_TOKEN
+        || process.env.HOME23_BRIDGE_TOKEN
+        || '';
+    let credentialAuthority = dependencies.credentialAuthority;
+    let actionTokens = dependencies.actionTokens;
+    if (!credentialAuthority && typeof bridgeToken === 'string'
+        && Buffer.byteLength(bridgeToken, 'utf8') >= 32) {
+      credentialAuthority = createQueryNotebookCredentialAuthority({
+        bridgeToken, requesterAgent,
+      });
+      if (!actionTokens) {
+        actionTokens = createQueryNotebookActionTokens({
+          key: deriveQueryNotebookCredentialKey({ bridgeToken, requesterAgent }),
+          requesterAgent,
+        });
+      }
+    }
+    const lookupDeviceCredential = dependencies.lookupDeviceCredential
+      || createQueryNotebookCredentialLookup({
+        filePath: path.join(this.defaultRunDir, 'device-registry.json'),
+        requesterAgent,
+      });
+    const verifyBridgeBearer = dependencies.verifyBridgeBearer || ((supplied) => {
+      if (typeof supplied !== 'string' || typeof bridgeToken !== 'string' || !bridgeToken) return false;
+      const wanted = Buffer.from(bridgeToken, 'utf8');
+      const received = Buffer.from(supplied, 'utf8');
+      const comparable = received.length === wanted.length ? received : Buffer.alloc(wanted.length);
+      return crypto.timingSafeEqual(comparable, wanted) && received.length === wanted.length;
+    });
+    const auth = dependencies.auth || createQueryNotebookAuth({
+      requesterAgent,
+      credentialAuthority,
+      lookupDeviceCredential,
+      verifyBridgeBearer,
+    });
+    const notebookService = dependencies.notebookService || createQueryNotebookService({
+      reader: this.brainOperationsReader,
+      ...(actionTokens ? {
+        actionTokens,
+        startOperation: (request) => this.brainOperationsCoordinator.start(request),
+      } : {}),
+    });
+    const subscriptions = dependencies.subscriptions || createQueryNotebookSubscriptions({
+      filePath: path.join(this.defaultRunDir, 'query-notebook-subscriptions.json'),
+      requesterAgent,
+    });
+    const router = createHome23QueryNotebookRouter({
+      requesterAgent,
+      auth,
+      notebookService,
+      getStatusAuthorized: (operationId) => (
+        notebookService.getQueryNotebookStatusAuthorized(operationId)
+      ),
+      coordinator: this.brainOperationsCoordinator,
+      subscriptions,
+      enqueueTerminalNotification: dependencies.enqueueTerminalNotification,
+    });
+    this.queryNotebookPlaceholder.attach(router);
+    this.queryNotebookAuth = auth;
+    this.queryNotebookService = notebookService;
+    this.queryNotebookSubscriptions = subscriptions;
   }
 
   createDefaultBrainOperationsDependencies({ requesterAgent }) {
@@ -12010,6 +12146,7 @@ if (require.main === module) {
 
 module.exports = {
   DashboardServer,
+  loadQueryNotebookBridgeToken,
   parseConversationLines,
   readJsonlTail,
   sendMemorySearchError,

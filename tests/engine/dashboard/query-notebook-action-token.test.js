@@ -266,6 +266,7 @@ test('targeted retry is projected only when every durable partition is executabl
   });
   await assert.rejects(() => service.resolveAction({
     sourceOperationId: SOURCE_OPERATION_ID,
+    kind: 'targetedRetry',
     actionToken: token,
     requestId: REQUEST_ID,
   }), { code: 'action_unavailable' });
@@ -304,6 +305,7 @@ test('continuation advances only with explicit completed-scope evidence', async 
     });
     await assert.rejects(() => service.resolveAction({
       sourceOperationId: SOURCE_OPERATION_ID,
+      kind: 'continueSweep',
       actionToken: token,
       requestId: REQUEST_ID,
     }), { code: 'action_unavailable' });
@@ -335,6 +337,7 @@ test('continuation advances only with explicit completed-scope evidence', async 
   });
   await pending.service.resolveAction({
     sourceOperationId: SOURCE_OPERATION_ID,
+    kind: 'continueSweep',
     actionToken: pendingToken,
     requestId: REQUEST_ID,
   });
@@ -353,7 +356,8 @@ test('continue action reconstructs query, target, models, and next level from du
     sourceOperationId: SOURCE_OPERATION_ID, action: 'continueSweep', expiresAt: LATER,
   });
   const started = await service.resolveAction({
-    sourceOperationId: SOURCE_OPERATION_ID, actionToken, requestId: REQUEST_ID,
+    sourceOperationId: SOURCE_OPERATION_ID, kind: 'continueSweep',
+    actionToken, requestId: REQUEST_ID,
   });
   assert.equal(started.operationId, CHILD_OPERATION_ID);
   assert.deepEqual(starts, [{
@@ -370,9 +374,27 @@ test('continue action reconstructs query, target, models, and next level from du
     },
   }]);
   await assert.rejects(() => service.resolveAction({
-    sourceOperationId: SOURCE_OPERATION_ID, actionToken, requestId: REQUEST_ID,
+    sourceOperationId: SOURCE_OPERATION_ID, kind: 'continueSweep',
+    actionToken, requestId: REQUEST_ID,
     query: 'caller override',
   }), { code: 'invalid_request' });
+});
+
+test('action resolution binds the requested kind to the signed action before start', async () => {
+  let starts = 0;
+  const { tokens, service } = actionService({
+    startOperation: async () => { starts += 1; },
+  });
+  const actionToken = tokens.issue({
+    sourceOperationId: SOURCE_OPERATION_ID, action: 'continueSweep', expiresAt: LATER,
+  });
+  await assert.rejects(() => service.resolveAction({
+    sourceOperationId: SOURCE_OPERATION_ID,
+    kind: 'targetedRetry',
+    actionToken,
+    requestId: REQUEST_ID,
+  }), { code: 'action_token_invalid' });
+  assert.equal(starts, 0);
 });
 
 test('targeted retry uses only durable canonical retryable partitions with a deterministic cap', async () => {
@@ -394,7 +416,8 @@ test('targeted retry uses only durable canonical retryable partitions with a det
     sourceOperationId: SOURCE_OPERATION_ID, action: 'targetedRetry', expiresAt: LATER,
   });
   await service.resolveAction({
-    sourceOperationId: SOURCE_OPERATION_ID, actionToken, requestId: REQUEST_ID,
+    sourceOperationId: SOURCE_OPERATION_ID, kind: 'targetedRetry',
+    actionToken, requestId: REQUEST_ID,
   });
   assert.deepEqual(starts[0].parameters.targetPartitionIds, canonicalPartitions.slice(0, 256));
   assert.equal(starts[0].parameters.pgsMode, 'targeted');
@@ -417,7 +440,8 @@ test('action resolution rejects session drift and never fresh-falls back on sour
     sourceOperationId: SOURCE_OPERATION_ID, action: 'continueSweep', expiresAt: LATER,
   });
   await assert.rejects(() => drift.service.resolveAction({
-    sourceOperationId: SOURCE_OPERATION_ID, actionToken: driftToken, requestId: REQUEST_ID,
+    sourceOperationId: SOURCE_OPERATION_ID, kind: 'continueSweep',
+    actionToken: driftToken, requestId: REQUEST_ID,
   }), { code: 'action_unavailable' });
   assert.equal(starts, 0);
 
@@ -433,7 +457,8 @@ test('action resolution rejects session drift and never fresh-falls back on sour
     sourceOperationId: SOURCE_OPERATION_ID, action: 'continueSweep', expiresAt: LATER,
   });
   await assert.rejects(() => changed.service.resolveAction({
-    sourceOperationId: SOURCE_OPERATION_ID, actionToken: changedToken, requestId: REQUEST_ID,
+    sourceOperationId: SOURCE_OPERATION_ID, kind: 'continueSweep',
+    actionToken: changedToken, requestId: REQUEST_ID,
   }), { code: 'source_changed' });
   assert.equal(starts, 1);
 });
