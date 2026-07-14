@@ -21,8 +21,9 @@ exact final commit.
 - Started/completed: `<pending>` / `<pending>`
 
 The JSON receipt is machine authority for operation identifiers, exact catalog
-provider/model pairs, timings, persisted progress samples, route-scoped
-credential checks, SSE cursors, protected result digests, continuation reuse,
+provider/model pairs, named PGS level and persisted provider-work evidence,
+timings, persisted progress samples, route-scoped credential checks, real
+server SSE cursors/gap frames, protected result digests, continuation reuse,
 notification subscription, same-origin web compatibility, and the selected-agent
 brain-tool turn. It must have `status: "passed"` and must not contain bearer
 tokens, cookies, API keys, answer text, raw sweep outputs, filesystem paths, or
@@ -92,10 +93,13 @@ Mandatory receipt readback:
 - Missing, wrong-device, and wrong-agent credential rejection: `<pending>`
 - Direct operation ID and byte-identical request replay: `<pending>`
 - PGS operation ID, named level, and exact sweep/synthesis pairs: `<pending>`
-- Activity-aware direct/PGS timings and monotonic persisted counters: `<pending>`
-- SSE detach/reconnect cursors and event-gap recovery: `<pending>`
+- Activity-aware direct/PGS timings, stage/timestamp order, and complete
+  persisted-counter algebra: `<pending>`
+- SSE detach/reconnect advancement, server-originated gap frame, and recovery
+  from its `toSequence`: `<pending>`
 - Protected result byte/digest receipt and unauthenticated rejection: `<pending>`
-- Forbidden projection key and raw `sweepOutputs` rejection: `<pending>`
+- Exact public-schema validation (including unknown nested field rejection) and
+  server rejection of forbidden private-field requests: `<pending>`
 - Continuation operation and positive reused-work count: `<pending>`
 - Exact-device terminal-notification subscription: `<pending>`
 - Same-origin web Query session/readback: `<pending>`

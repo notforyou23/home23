@@ -2,6 +2,8 @@
 
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
@@ -20,13 +22,7 @@ const REQUEST_ID = /^qreq_[A-Za-z0-9_-]{32}$/;
 const CREDENTIAL_ID = /^qncred_[A-Za-z0-9_-]{32}$/;
 const INSTALLATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/;
 const SAFE_LEVELS = new Set(['skim', 'sample', 'deep', 'full']);
-const FORBIDDEN_PROJECTION_KEYS = new Set([
-  'canonicalRoot', 'privatePath', 'sourcePinDescriptor', 'sourcePinDigest',
-  'resultHandle', 'resultArtifact', 'sweepOutputs', 'operationControl',
-  'mutationBoundaries', 'capability', 'capabilityToken', 'providerPayload',
-]);
 const SECRET_KEY = /(?:authorization|cookie|token|secret|password|api[_-]?key)/i;
-const MAX_HTTP_ERROR_MESSAGE_CHARS = 512;
 const DEFAULT_MAX_JSON_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MAX_RESULT_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MAX_RECEIPT_BYTES = 4 * 1024 * 1024;
@@ -34,6 +30,24 @@ const MAX_PROGRESS_SAMPLES = 512;
 const MAX_SSE_EVENTS = 256;
 const MAX_SSE_FRAME_BYTES = 64 * 1024;
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const require = createRequire(import.meta.url);
+const Ajv2020 = require('ajv/dist/2020');
+const QUERY_NOTEBOOK_SCHEMA = JSON.parse(readFileSync(
+  path.join(REPO_ROOT, 'contracts/schemas/query-notebook.schema.json'), 'utf8',
+));
+const projectionAjv = new Ajv2020({ strict: false, allErrors: true, allowUnionTypes: true });
+projectionAjv.addSchema(QUERY_NOTEBOOK_SCHEMA, QUERY_NOTEBOOK_SCHEMA.$id);
+const projectionValidators = new Map();
+const PROGRESS_STAGES = [
+  'queued', 'preparing_source', 'selecting_work', 'sweeping', 'synthesizing',
+  'finalizing', 'terminal',
+];
+const PROGRESS_COUNTERS = [
+  'sourceNodes', 'sourceEdges', 'candidateWorkUnits', 'selected', 'completed',
+  'successful', 'failed', 'reused', 'pending', 'retryable', 'total',
+  'synthesisLevel', 'synthesisBatch', 'synthesisBatches',
+];
+const MONOTONIC_COUNTERS = PROGRESS_COUNTERS.filter((key) => key !== 'pending');
 
 export const HELP = `Usage:
   node scripts/verify-query-notebook-live.mjs \\
@@ -337,15 +351,76 @@ export async function replayDetachedStart({
   };
 }
 
+export function validatePublicProjection(definition, value) {
+  if (!Object.hasOwn(QUERY_NOTEBOOK_SCHEMA.$defs, definition)) {
+    throw errorWithCode('public_projection_invalid');
+  }
+  let validate = projectionValidators.get(definition);
+  if (!validate) {
+    validate = projectionAjv.compile({
+      $ref: `${QUERY_NOTEBOOK_SCHEMA.$id}#/$defs/${definition}`,
+    });
+    projectionValidators.set(definition, validate);
+  }
+  if (!validate(value)) throw errorWithCode('public_projection_invalid');
+  return value;
+}
+
+function assertProgressSnapshot(progress) {
+  if (!progress || typeof progress !== 'object' || Array.isArray(progress)) {
+    throw errorWithCode('progress_snapshot_invalid');
+  }
+  if (progress.version !== undefined && progress.version !== 1) {
+    throw errorWithCode('progress_snapshot_invalid');
+  }
+  if (progress.stage !== undefined && !PROGRESS_STAGES.includes(progress.stage)) {
+    throw errorWithCode('progress_snapshot_invalid');
+  }
+  if (progress.eventSequence !== undefined
+      && (!Number.isSafeInteger(progress.eventSequence) || progress.eventSequence < 0)) {
+    throw errorWithCode('progress_snapshot_invalid');
+  }
+  for (const key of PROGRESS_COUNTERS) {
+    if (progress[key] !== undefined
+        && (!Number.isSafeInteger(progress[key]) || progress[key] < 0)) {
+      throw errorWithCode('progress_snapshot_invalid');
+    }
+  }
+  for (const key of ['lastProviderActivityAt', 'lastProgressAt']) {
+    if (progress[key] !== undefined && !Number.isFinite(Date.parse(progress[key]))) {
+      throw errorWithCode('progress_snapshot_invalid');
+    }
+  }
+  const { selected, completed, successful, failed, reused, pending, retryable,
+    total, synthesisBatch, synthesisBatches } = progress;
+  if (reused !== undefined && successful !== undefined && reused > successful) {
+    throw errorWithCode('progress_snapshot_invalid');
+  }
+  if (retryable !== undefined && failed !== undefined && retryable > failed) {
+    throw errorWithCode('progress_snapshot_invalid');
+  }
+  if (completed !== undefined && successful !== undefined && failed !== undefined
+      && completed !== successful + failed) throw errorWithCode('progress_snapshot_invalid');
+  if (selected !== undefined && completed !== undefined && pending !== undefined
+      && selected !== completed + pending) throw errorWithCode('progress_snapshot_invalid');
+  if (total !== undefined && selected !== undefined && total < selected) {
+    throw errorWithCode('progress_snapshot_invalid');
+  }
+  if (synthesisBatch !== undefined && synthesisBatches !== undefined
+      && synthesisBatch > synthesisBatches) throw errorWithCode('progress_snapshot_invalid');
+  return progress;
+}
+
 function progressProjection(status) {
   const progress = status?.progress && typeof status.progress === 'object' ? status.progress : {};
+  assertProgressSnapshot(progress);
   const projection = {
     executionState: status?.executionState ?? status?.status ?? null,
     eventSequence: Number.isSafeInteger(progress.eventSequence)
       ? progress.eventSequence : Number.isSafeInteger(status?.last_seq) ? status.last_seq : null,
   };
   for (const key of [
-    'stage', 'sourceNodes', 'sourceEdges', 'candidateWorkUnits', 'selected',
+    'version', 'stage', 'sourceNodes', 'sourceEdges', 'candidateWorkUnits', 'selected',
     'completed', 'successful', 'failed', 'reused', 'pending', 'retryable', 'total',
     'synthesisLevel', 'synthesisBatch', 'synthesisBatches',
     'lastProviderActivityAt', 'lastProgressAt',
@@ -376,12 +451,28 @@ function assertMonotonic(previous, next) {
   if (!previous) return;
   if (Number.isSafeInteger(previous.eventSequence) && Number.isSafeInteger(next.eventSequence)
       && next.eventSequence < previous.eventSequence) throw errorWithCode('progress_not_monotonic');
-  for (const key of ['completed', 'successful', 'reused']) {
+  const previousStage = PROGRESS_STAGES.indexOf(previous.stage);
+  const nextStage = PROGRESS_STAGES.indexOf(next.stage);
+  if (previousStage >= 0 && nextStage >= 0 && nextStage < previousStage) {
+    throw errorWithCode('progress_not_monotonic');
+  }
+  for (const key of MONOTONIC_COUNTERS) {
     if (Number.isSafeInteger(previous[key]) && Number.isSafeInteger(next[key])
         && next[key] < previous[key]) throw errorWithCode('progress_not_monotonic');
   }
-  if (Number.isSafeInteger(previous.total) && Number.isSafeInteger(next.total)
-      && previous.total !== next.total) throw errorWithCode('progress_total_changed');
+  if (Number.isSafeInteger(previous.pending) && Number.isSafeInteger(next.pending)
+      && next.pending > previous.pending) {
+    const selectedDelta = Number.isSafeInteger(previous.selected) && Number.isSafeInteger(next.selected)
+      ? next.selected - previous.selected : 0;
+    const pendingDelta = next.pending - previous.pending;
+    if (selectedDelta < pendingDelta) throw errorWithCode('progress_not_monotonic');
+  }
+  for (const key of ['lastProviderActivityAt', 'lastProgressAt']) {
+    if (previous[key] !== undefined && next[key] !== undefined
+        && Date.parse(next[key]) < Date.parse(previous[key])) {
+      throw errorWithCode('progress_not_monotonic');
+    }
+  }
 }
 
 export async function waitForTerminal({
@@ -420,6 +511,38 @@ export async function waitForTerminal({
     }
     const current = now();
     if (current - startedAt >= hardTimeoutMs) throw errorWithCode('operation_hard_timeout');
+    if (current - lastActivityAt >= stallTimeoutMs) throw errorWithCode('operation_stalled');
+    await sleepImpl(Math.min(
+      pollIntervalMs,
+      Math.max(1, hardTimeoutMs - (current - startedAt)),
+      Math.max(1, stallTimeoutMs - (current - lastActivityAt)),
+    ));
+  }
+}
+
+async function waitForProgressAdvance({
+  readStatus, afterSequence, now = Date.now, sleepImpl = delay, pollIntervalMs,
+  hardTimeoutMs, stallTimeoutMs,
+}) {
+  const startedAt = now();
+  let lastActivityAt = startedAt;
+  let previous = null;
+  let fingerprint = null;
+  while (true) {
+    const status = await readStatus();
+    const sample = progressProjection(status);
+    assertMonotonic(previous, sample);
+    const nextFingerprint = activityFingerprint(sample);
+    if (nextFingerprint !== fingerprint) {
+      lastActivityAt = now();
+      fingerprint = nextFingerprint;
+    }
+    previous = sample;
+    if (Number.isSafeInteger(sample.eventSequence) && sample.eventSequence > afterSequence) {
+      return status;
+    }
+    const current = now();
+    if (current - startedAt >= hardTimeoutMs) throw errorWithCode('sse_reconnect_advance_timeout');
     if (current - lastActivityAt >= stallTimeoutMs) throw errorWithCode('operation_stalled');
     await sleepImpl(Math.min(
       pollIntervalMs,
@@ -476,17 +599,113 @@ export async function consumeNotebookFrames({ frames, readStatus, afterSequence 
   return { gapObserved, afterSequence: cursor, recoveries };
 }
 
-export function assertSafeProjection(value) {
-  const visit = (entry) => {
-    if (Array.isArray(entry)) { for (const item of entry) visit(item); return; }
-    if (!entry || typeof entry !== 'object') return;
-    for (const [key, nested] of Object.entries(entry)) {
-      if (FORBIDDEN_PROJECTION_KEYS.has(key)) throw errorWithCode('unsafe_projection', `forbidden projection key ${key}`);
-      visit(nested);
-    }
+function frameSequence(frame) {
+  const sequence = frame?.data?.eventSequence ?? frame?.id;
+  return Number.isSafeInteger(sequence) && sequence >= 0 ? sequence : null;
+}
+
+function validateStreamFrame(frame) {
+  if (!frame?.data || typeof frame.data !== 'object') throw errorWithCode('event_stream_invalid');
+  validatePublicProjection('queryStreamEvent', frame.data);
+  if (frame.event !== frame.data.type || frameSequence(frame) !== frame.data.eventSequence) {
+    throw errorWithCode('event_stream_invalid');
+  }
+  return frame;
+}
+
+export function proveMeaningfulReconnect(firstFrames, reconnectFrames, requestedAfter = 0) {
+  const sequences = (frames) => frames.map((frame) => {
+    validateStreamFrame(frame);
+    return frameSequence(frame);
+  });
+  const first = sequences(firstFrames);
+  const reconnect = sequences(reconnectFrames);
+  const detachedAtSequence = Math.max(requestedAfter, ...first);
+  const reconnectedAtSequence = Math.max(requestedAfter, ...reconnect);
+  if (detachedAtSequence <= requestedAfter || reconnectedAtSequence <= detachedAtSequence) {
+    throw errorWithCode('sse_reconnect_not_advanced');
+  }
+  return { detachedAtSequence, reconnectedAtSequence };
+}
+
+export async function proveServerGapFrames({ frames, requestedAfter = 0, readStatus }) {
+  for (const frame of frames) validateStreamFrame(frame);
+  const gap = frames.find((frame) => frame.data.type === 'gap');
+  if (!gap) throw errorWithCode('server_gap_not_observed');
+  const { fromSequence, toSequence } = gap.data;
+  if (fromSequence !== requestedAfter + 1 || toSequence < fromSequence) {
+    throw errorWithCode('server_gap_invalid');
+  }
+  const status = await readStatus();
+  const progress = assertProgressSnapshot(status?.progress);
+  if (!Number.isSafeInteger(progress.eventSequence) || progress.eventSequence < toSequence) {
+    throw errorWithCode('gap_recovery_invalid');
+  }
+  return { fromSequence, toSequence, authoritativeSequence: progress.eventSequence };
+}
+
+export function proveGapRecoveryFrames(frames, gapEvidence) {
+  if (!Array.isArray(frames) || frames.length === 0) throw errorWithCode('gap_recovery_invalid');
+  const sequences = frames.map((frame) => {
+    validateStreamFrame(frame);
+    return frameSequence(frame);
+  });
+  const recoveredAtSequence = Math.max(gapEvidence.toSequence, ...sequences);
+  if (recoveredAtSequence < gapEvidence.authoritativeSequence) {
+    throw errorWithCode('gap_recovery_invalid');
+  }
+  return { requestedAfter: gapEvidence.toSequence, recoveredAtSequence };
+}
+
+function samePair(actual, expected) {
+  return actual?.provider === expected?.provider && actual?.model === expected?.model;
+}
+
+export function assertPgsAcceptance(status, result, expected) {
+  validatePublicProjection('queryNotebookStatus', status);
+  validatePublicProjection('queryNotebookResult', result);
+  const progress = assertProgressSnapshot(status.progress);
+  const coverage = result.coverage;
+  const statusCoverage = status.coverage;
+  if (status.operationId !== result.operationId || status.requestKind !== 'pgs'
+      || status.configuration?.pgsLevel !== expected.level
+      || coverage?.coverageLevel !== expected.level
+      || statusCoverage?.coverageLevel !== expected.level
+      || !samePair(status.configuration?.sweepModel, expected.sweep)
+      || !samePair(status.configuration?.synthesisModel, expected.synthesis)
+      || (status.executionState !== 'complete' && status.executionState !== 'partial')
+      || progress.stage !== 'terminal'
+      || !Number.isSafeInteger(progress.selected) || progress.selected < 1
+      || !Number.isSafeInteger(progress.completed) || progress.completed < 1
+      || !Number.isSafeInteger(progress.successful) || progress.successful < 1
+      || !Number.isFinite(Date.parse(progress.lastProviderActivityAt))
+      || !Number.isSafeInteger(coverage?.selectedWorkUnits) || coverage.selectedWorkUnits < 1
+      || !Number.isSafeInteger(coverage?.successfulSweeps) || coverage.successfulSweeps < 1
+      || statusCoverage.selectedWorkUnits !== coverage.selectedWorkUnits
+      || statusCoverage.successfulSweeps !== coverage.successfulSweeps
+      || statusCoverage.reusedWorkUnits !== coverage.reusedWorkUnits) {
+    throw errorWithCode('pgs_execution_unproven');
+  }
+  return {
+    requestKind: status.requestKind,
+    requestedLevel: expected.level,
+    pgsMode: status.configuration.pgsMode,
+    sweep: status.configuration.sweepModel,
+    synthesis: status.configuration.synthesisModel,
+    progress: {
+      selected: progress.selected,
+      completed: progress.completed,
+      successful: progress.successful,
+      failed: progress.failed,
+      reused: progress.reused,
+      lastProviderActivityAt: progress.lastProviderActivityAt,
+    },
+    coverage: {
+      selectedWorkUnits: coverage.selectedWorkUnits,
+      successfulSweeps: coverage.successfulSweeps,
+      reusedWorkUnits: coverage.reusedWorkUnits,
+    },
   };
-  visit(value);
-  return value;
 }
 
 export function redactForReceipt(value) {
@@ -513,10 +732,9 @@ export function encodeReceipt(value, maxBytes = DEFAULT_MAX_RECEIPT_BYTES) {
   return encoded;
 }
 
-function safeError(error) {
+export function safeErrorForReceipt(error) {
   return {
     code: typeof error?.code === 'string' ? error.code : 'verification_failed',
-    message: String(error?.message || error || 'verification failed').slice(0, MAX_HTTP_ERROR_MESSAGE_CHARS),
     ...(Number.isInteger(error?.status) ? { httpStatus: error.status } : {}),
   };
 }
@@ -624,6 +842,7 @@ async function enrollCredential({ options, harnessUrl, bridgeToken, installation
     timeoutMs: options.httpTimeoutMs,
   });
   const value = enrollment.value;
+  validatePublicProjection('queryNotebookDeviceCredential', value);
   if (!CREDENTIAL_ID.test(value?.credentialId) || typeof value?.token !== 'string'
       || !value.token || !Number.isSafeInteger(value?.generation) || value.generation < 1
       || !Number.isFinite(Date.parse(value?.expiresAt))) throw errorWithCode('credential_enrollment_invalid');
@@ -679,7 +898,7 @@ async function statusReader(options, credential, operationId) {
     options.dashboardUrl,
     `/home23/api/query/operations/${encodeURIComponent(operationId)}`,
   ), { headers: deviceHeaders(credential), timeoutMs: options.httpTimeoutMs });
-  assertSafeProjection(result.value);
+  validatePublicProjection('queryNotebookStatus', result.value);
   if (result.value?.operationId !== operationId || result.value?.requesterAgent !== options.agent) {
     throw errorWithCode('operation_status_invalid');
   }
@@ -727,7 +946,7 @@ async function getProtectedResult(options, credential, operationId) {
     headers: deviceHeaders(credential), timeoutMs: options.httpTimeoutMs,
     maxBytes: options.maxResultBytes,
   });
-  assertSafeProjection(response.value);
+  validatePublicProjection('queryNotebookResult', response.value);
   if (response.value?.operationId !== operationId
       || typeof response.value?.answer !== 'string' || !response.value.answer.trim()) {
     throw errorWithCode('protected_result_invalid');
@@ -755,6 +974,7 @@ async function subscribeNotification(options, credential, operationId) {
     method: 'POST', headers: { ...deviceHeaders(credential), 'content-type': 'application/json' },
     body: JSON.stringify({ enabled: true }), timeoutMs: options.httpTimeoutMs,
   });
+  validatePublicProjection('queryNotebookNotificationResponse', response.value);
   if (response.value?.operationId !== operationId || response.value?.subscribed !== true
       || typeof response.value?.routeId !== 'string') throw errorWithCode('notification_subscription_invalid');
   const status = await statusReader(options, credential, operationId);
@@ -776,6 +996,7 @@ async function continueSweep({ options, credential, sourceResult, checks }) {
     method: 'POST', headers: { ...deviceHeaders(credential), 'content-type': 'application/json' },
     body: JSON.stringify(body), timeoutMs: options.httpTimeoutMs, expectedStatuses: [202],
   });
+  validatePublicProjection('queryNotebookActionResponse', response.value);
   if (!OPERATION_ID.test(response.value?.operationId) || response.value?.requestKind !== 'pgs') {
     throw errorWithCode('continuation_start_invalid');
   }
@@ -831,7 +1052,7 @@ function parseSseBlock(block) {
   return { event, id, data: parsed };
 }
 
-async function readSseFrames(response, { signal, maxEvents = MAX_SSE_EVENTS } = {}) {
+export async function readSseFrames(response, { signal, maxEvents = MAX_SSE_EVENTS } = {}) {
   const frames = [];
   if (!response.body) throw errorWithCode('event_stream_invalid');
   const decoder = new TextDecoder();
@@ -876,7 +1097,7 @@ async function observeNotebookSse(options, credential, operationId, afterSequenc
     if (!response.ok || !String(response.headers.get('content-type')).startsWith('text/event-stream')) {
       throw errorWithCode('event_stream_unavailable', `SSE returned HTTP ${response.status}`);
     }
-    return readSseFrames(response, { signal: controller.signal, maxEvents });
+    return await readSseFrames(response, { signal: controller.signal, maxEvents });
   } finally {
     clearTimeout(timer);
     controller.abort();
@@ -896,12 +1117,13 @@ async function verifyWebSession(options, bridgeToken) {
     },
     timeoutMs: options.httpTimeoutMs,
   });
+  validatePublicProjection('queryNotebookWebSession', exchange.value);
   const cookie = exchange.response.headers.get('set-cookie')?.split(';', 1)[0];
   if (!cookie || !/^home23_query_session=/u.test(cookie)) throw errorWithCode('web_session_invalid');
   const notebook = await requestJson(route(origin, '/home23/api/query/notebook?limit=1'), {
     headers: { cookie }, timeoutMs: options.httpTimeoutMs,
   });
-  assertSafeProjection(notebook.value);
+  validatePublicProjection('queryNotebookPage', notebook.value);
   return { status: exchange.response.status, expiresAt: exchange.value?.expiresAt,
     notebookItems: notebook.value?.items?.length ?? null };
 }
@@ -1023,6 +1245,7 @@ export async function runVerifier(options) {
   const directResult = await getProtectedResult(options, credential, direct.operationId);
   checks.push({ id: 'direct-protected-result', status: 'passed', detail: directResult.receipt });
 
+  const pgsStartedAt = Date.now();
   const pgsStart = await replayDetachedStart({
     url: route(options.dashboardUrl, '/home23/api/query/run'),
     body: requestBody({ options, catalog, models, kind: 'pgs' }),
@@ -1030,33 +1253,22 @@ export async function runVerifier(options) {
   });
   const notification = await subscribeNotification(options, credential, pgsStart.operationId);
   const firstFrames = await observeNotebookSse(options, credential, pgsStart.operationId, 0, 2);
-  const firstObserved = await consumeNotebookFrames({
-    frames: firstFrames,
+  for (const frame of firstFrames) validateStreamFrame(frame);
+  const detachedAtSequence = Math.max(0, ...firstFrames.map(frameSequence));
+  if (detachedAtSequence < 1) throw errorWithCode('sse_reconnect_not_advanced');
+  await waitForProgressAdvance({
     readStatus: () => statusReader(options, credential, pgsStart.operationId),
-    afterSequence: 0,
+    afterSequence: detachedAtSequence,
+    pollIntervalMs: options.pollMs,
+    hardTimeoutMs: options.pgsHardTimeoutMs,
+    stallTimeoutMs: options.pgsStallTimeoutMs,
   });
   const reconnectFrames = await observeNotebookSse(
-    options, credential, pgsStart.operationId, firstObserved.afterSequence, 2,
+    options, credential, pgsStart.operationId, detachedAtSequence, 2,
   );
-  const reconnected = await consumeNotebookFrames({
-    frames: reconnectFrames,
-    readStatus: () => statusReader(options, credential, pgsStart.operationId),
-    afterSequence: firstObserved.afterSequence,
-  });
-  const syntheticGap = await consumeNotebookFrames({
-    frames: [{ event: 'gap', id: 2, data: { type: 'gap', eventSequence: 2 } }],
-    readStatus: async () => ({ progress: { eventSequence: 3 } }),
-    afterSequence: 0,
-  });
-  checks.push({ id: 'sse-detach-reconnect-gap-recovery', status: 'passed', detail: {
-    firstCursor: firstObserved.afterSequence,
-    reconnectCursor: reconnected.afterSequence,
-    liveGapObserved: firstObserved.gapObserved || reconnected.gapObserved,
-    deterministicGapRecovery: syntheticGap.gapObserved,
-  } });
+  const reconnect = proveMeaningfulReconnect(firstFrames, reconnectFrames, 0);
 
   const pgsProgress = [];
-  const pgsStartedAt = Date.now();
   const pgsReport = createProgressReporter({
     kind: 'pgs', operationId: pgsStart.operationId, emit: options.onEvent,
   });
@@ -1070,8 +1282,31 @@ export async function runVerifier(options) {
   });
   const pgsDurationMs = Date.now() - pgsStartedAt;
   const pgsResult = await getProtectedResult(options, credential, pgsStart.operationId);
+  const pgsEvidence = assertPgsAcceptance(pgsTerminal, pgsResult.value, {
+    level: options.pgsLevel,
+    sweep: models.sweep,
+    synthesis: models.synthesis,
+  });
   checks.push({ id: 'pgs-protected-result', status: 'passed', durationMs: pgsDurationMs,
-    detail: pgsResult.receipt });
+    detail: { ...pgsResult.receipt, pgsEvidence } });
+
+  const gapFrames = await observeNotebookSse(
+    options, credential, pgsStart.operationId, 0, 4,
+  );
+  const gap = await proveServerGapFrames({
+    frames: gapFrames,
+    requestedAfter: 0,
+    readStatus: () => statusReader(options, credential, pgsStart.operationId),
+  });
+  const recoveryFrames = await observeNotebookSse(
+    options, credential, pgsStart.operationId, gap.toSequence, 2,
+  );
+  const recovery = proveGapRecoveryFrames(recoveryFrames, gap);
+  checks.push({ id: 'sse-detach-reconnect-gap-recovery', status: 'passed', detail: {
+    ...reconnect,
+    serverGap: gap,
+    recovery,
+  } });
   const continuation = await continueSweep({ options, credential, sourceResult: pgsResult.value, checks });
 
   const forbidden = await requestJson(route(
@@ -1131,6 +1366,7 @@ export async function runVerifier(options) {
         durationMs: pgsDurationMs,
         progress: pgsProgress,
         result: pgsResult.receipt,
+        acceptance: pgsEvidence,
         notification: {
           subscribed: notification.subscribed,
           routeId: notification.routeId,
@@ -1138,10 +1374,10 @@ export async function runVerifier(options) {
           exactCredentialId: credential.credentialId,
         },
         sse: {
-          firstCursor: firstObserved.afterSequence,
-          reconnectCursor: reconnected.afterSequence,
-          liveGapObserved: firstObserved.gapObserved || reconnected.gapObserved,
-          deterministicGapRecovery: syntheticGap.recoveries,
+          detachedAtSequence: reconnect.detachedAtSequence,
+          reconnectedAtSequence: reconnect.reconnectedAtSequence,
+          serverGap: gap,
+          recovery,
         },
       },
       continuation,
@@ -1173,14 +1409,14 @@ async function main() {
       startedAt,
       completedAt: new Date().toISOString(),
       agent: options?.agent ?? null,
-      error: safeError(error),
+      error: safeErrorForReceipt(error),
     };
   }
   if (options?.output) {
     try { await writeReceipt(options.output, receipt, options.maxReceiptBytes); }
     catch (error) {
       exitCode = 1;
-      process.stderr.write(`${JSON.stringify({ status: 'failed', error: safeError(error) })}\n`);
+      process.stderr.write(`${JSON.stringify({ status: 'failed', error: safeErrorForReceipt(error) })}\n`);
     }
   }
   process.stdout.write(`${JSON.stringify(redactForReceipt({
