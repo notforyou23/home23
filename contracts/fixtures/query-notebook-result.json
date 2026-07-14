@@ -1,55 +1,41 @@
 {
   "schemaVersion": 1,
-  "operationId": "brop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-  "resultVersion": "qrv1_VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV",
-  "answer": "The durable source remains available. This bounded answer preserves the useful partial while one retryable area remains.",
-  "coverage": {
-    "coverageLevel": "sample",
-    "successfulSweeps": 9,
-    "selectedWorkUnits": 12,
-    "pendingWorkUnits": 2,
-    "reusedWorkUnits": 3,
-    "newWorkUnits": 7,
-    "scopeWorkUnits": 12,
-    "scopeSuccessfulWorkUnits": 9,
-    "scopePendingWorkUnits": 2,
-    "scopeComplete": false,
-    "retryablePartitions": ["c-retry-1"],
-    "retryablePartitionCount": 1
-  },
+  "operationId": "brop_FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+  "resultVersion": "qrv1_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+  "answer": "Findings, evidence, themes, non-obvious connections, convergence, contradictions, confidence, actionable implications, and unresolved questions are addressed in the stored Direct answer. Projection limits: the answer used the retained prompt subset rather than the entire brain.",
+  "coverage": null,
   "evidence": {
-    "sourceHealth": "degraded",
+    "sourceHealth": "healthy",
     "freshness": "known",
     "matchOutcome": "matches",
-    "completeCoverage": false,
-    "filteredTotal": 12,
+    "completeCoverage": true,
+    "filteredTotal": 0,
     "authoritativeTotals": {
-      "nodes": 141900,
-      "edges": 464000
+      "nodes": 142764,
+      "edges": 468230
     },
     "returnedTotals": {
-      "nodes": 12,
-      "edges": 36
+      "nodes": 80,
+      "edges": 14
     }
   },
-  "continuation": {
-    "canContinue": true,
-    "continuableUntil": "2026-07-20T19:10:00.000Z",
-    "sourceOperationId": null
+  "projection": {
+    "nodesScanned": 142764,
+    "nodesRetained": 80,
+    "edgesScanned": 468230,
+    "edgesRetained": 14,
+    "droppedForPromptBudget": 1920,
+    "promptReduced": true
   },
+  "answerQuality": {
+    "requestedMode": "dive",
+    "state": "substantial",
+    "expansionAttempted": true
+  },
+  "continuation": null,
   "actions": [
     {
       "kind": "openResult"
-    },
-    {
-      "kind": "continueSweep",
-      "token": "eyJhY3Rpb24iOiJjb250aW51ZVN3ZWVwIiwiZXhwaXJlc0F0IjoiMjAyNi0wNy0xM1QyMTowMDowMC4wMDBaIiwiaXNzdWVkQXQiOiIyMDI2LTA3LTEzVDIwOjAwOjAwLjAwMFoiLCJub25jZSI6InFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxIiwicmVxdWVzdGVyQWdlbnQiOiJqZXJyeSIsInNvdXJjZU9wZXJhdGlvbklkIjoiYnJvcF9BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInYiOjF9.gRdhRJfdS_MIP_eznb3jEy7oK6kIbvW_F_Pvz1N0bjw",
-      "expiresAt": "2026-07-13T21:00:00.000Z"
-    },
-    {
-      "kind": "targetedRetry",
-      "token": "eyJhY3Rpb24iOiJ0YXJnZXRlZFJldHJ5IiwiZXhwaXJlc0F0IjoiMjAyNi0wNy0xM1QyMTowMDowMC4wMDBaIiwiaXNzdWVkQXQiOiIyMDI2LTA3LTEzVDIwOjAwOjAwLjAwMFoiLCJub25jZSI6InFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxIiwicmVxdWVzdGVyQWdlbnQiOiJqZXJyeSIsInNvdXJjZU9wZXJhdGlvbklkIjoiYnJvcF9BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInYiOjF9.VrI_G177278XPxuWs5Ysq0tdfids8jNiXFnFGv-ILA8",
-      "expiresAt": "2026-07-13T21:00:00.000Z"
     },
     {
       "kind": "export"

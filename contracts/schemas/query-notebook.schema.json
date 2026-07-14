@@ -95,10 +95,21 @@
       "required": ["pgsMode", "pgsLevel", "sweepModel", "synthesisModel"],
       "properties": {
         "pgsMode": { "enum": ["fresh", "continue", "targeted"] },
-        "pgsLevel": { "enum": ["skim", "sample", "deep", "full"] },
+        "pgsLevel": { "enum": ["skim", "sample", "deep", "full", "legacy"] },
         "sweepModel": { "$ref": "#/$defs/providerModelPair" },
-        "synthesisModel": { "$ref": "#/$defs/providerModelPair" }
-      }
+        "synthesisModel": { "$ref": "#/$defs/providerModelPair" },
+        "legacy": { "const": true }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "pgsLevel": { "const": "legacy" } },
+            "required": ["pgsLevel"]
+          },
+          "then": { "required": ["legacy"] },
+          "else": { "not": { "required": ["legacy"] } }
+        }
+      ]
     },
     "typedError": {
       "oneOf": [
@@ -321,7 +332,7 @@
     "queryNotebookPage": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schemaVersion", "items", "nextCursor"],
+      "required": ["schemaVersion", "items", "nextCursor", "omittedIncompatibleCount"],
       "properties": {
         "schemaVersion": { "const": 1 },
         "items": {
@@ -334,7 +345,8 @@
           "minLength": 1,
           "maxLength": 1368,
           "pattern": "^[A-Za-z0-9_-]+$"
-        }
+        },
+        "omittedIncompatibleCount": { "$ref": "#/$defs/safeCounter" }
       }
     },
     "queryNotebookStatus": { "$ref": "#/$defs/queryNotebookSummary" },
@@ -457,12 +469,58 @@
         { "type": "null" }
       ]
     },
+    "queryProjectionReceipt": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "nodesScanned", "nodesRetained", "edgesScanned", "edgesRetained",
+            "droppedForPromptBudget", "promptReduced"
+          ],
+          "properties": {
+            "nodesScanned": { "$ref": "#/$defs/safeCounter" },
+            "nodesRetained": { "$ref": "#/$defs/safeCounter" },
+            "edgesScanned": { "$ref": "#/$defs/safeCounter" },
+            "edgesRetained": { "$ref": "#/$defs/safeCounter" },
+            "droppedForPromptBudget": { "$ref": "#/$defs/safeCounter" },
+            "promptReduced": { "type": "boolean" }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": { "droppedForPromptBudget": { "minimum": 1 } },
+                "required": ["droppedForPromptBudget"]
+              },
+              "then": { "properties": { "promptReduced": { "const": true } } },
+              "else": { "properties": { "promptReduced": { "const": false } } }
+            }
+          ]
+        },
+        { "type": "null" }
+      ]
+    },
+    "queryAnswerQualityReceipt": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requestedMode", "state", "expansionAttempted"],
+          "properties": {
+            "requestedMode": { "enum": ["quick", "full", "expert", "dive"] },
+            "state": { "enum": ["substantial", "constrained", "not-required"] },
+            "expansionAttempted": { "type": "boolean" }
+          }
+        },
+        { "type": "null" }
+      ]
+    },
     "queryNotebookResult": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "schemaVersion", "operationId", "resultVersion", "answer", "coverage",
-        "evidence", "continuation", "actions", "notification"
+        "evidence", "projection", "answerQuality", "continuation", "actions", "notification"
       ],
       "properties": {
         "schemaVersion": { "const": 1 },
@@ -471,6 +529,8 @@
         "answer": { "type": ["string", "null"], "maxLength": 1048576 },
         "coverage": { "$ref": "#/$defs/coverage" },
         "evidence": { "$ref": "#/$defs/safeEvidence" },
+        "projection": { "$ref": "#/$defs/queryProjectionReceipt" },
+        "answerQuality": { "$ref": "#/$defs/queryAnswerQualityReceipt" },
         "continuation": { "$ref": "#/$defs/continuation" },
         "actions": {
           "type": "array",
@@ -479,6 +539,16 @@
           "items": { "$ref": "#/$defs/recoveryAction" }
         },
         "notification": { "$ref": "#/$defs/notificationState" }
+      }
+    },
+    "queryNotebookHistoryVisibilityResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "operationId", "hidden"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "hidden": { "const": true }
       }
     },
     "queryNotebookExport": {

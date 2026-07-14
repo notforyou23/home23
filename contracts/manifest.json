@@ -1,6 +1,6 @@
 {
-  "contractVersion": "2026.07.13",
-  "generatedAt": "2026-07-13T20:00:00Z",
+  "contractVersion": "2026.07.14",
+  "generatedAt": "2026-07-14T22:00:00Z",
   "entries": [
     {
       "id": "agent-roster",
@@ -389,6 +389,18 @@
       "schema": "schemas/query-notebook.schema.json",
       "definition": "queryNotebookStatus",
       "fixture": "fixtures/query-notebook-cancel.json",
+      "auth": "required",
+      "liveValidation": "fixture-only",
+      "consumers": ["ios", "mac", "query"]
+    },
+    {
+      "id": "query-notebook-history-visibility",
+      "method": "DELETE",
+      "base": "dashboard",
+      "route": "/home23/api/query/operations/:operationId/history",
+      "schema": "schemas/query-notebook.schema.json",
+      "definition": "queryNotebookHistoryVisibilityResponse",
+      "fixture": "fixtures/query-notebook-history-visibility.json",
       "auth": "required",
       "liveValidation": "fixture-only",
       "consumers": ["ios", "mac", "query"]

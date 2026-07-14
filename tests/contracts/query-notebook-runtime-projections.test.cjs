@@ -46,8 +46,11 @@ const IDS = Object.freeze({
   cancel: `brop_${'C'.repeat(32)}`,
   child: `brop_${'D'.repeat(32)}`,
   older: `brop_${'E'.repeat(32)}`,
+  result: `brop_${'F'.repeat(32)}`,
+  unknown: `brop_${'G'.repeat(32)}`,
 });
 const RESULT_VERSION = `qrv1_${'V'.repeat(43)}`;
+const DIRECT_RESULT_VERSION = `qrv1_${'D'.repeat(43)}`;
 const SESSION_ID = `pgss_${'S'.repeat(32)}`;
 const CONTINUABLE_UNTIL = '2026-07-20T19:10:00.000Z';
 const ACTION_EXPIRES_AT = '2026-07-13T21:00:00.000Z';
@@ -60,6 +63,7 @@ const FIXTURE_NAMES = Object.freeze([
   'query-notebook-result',
   'query-notebook-export',
   'query-notebook-cancel',
+  'query-notebook-history-visibility',
   'query-notebook-action',
   'query-notebook-notification',
   'query-notebook-device-credential',
@@ -69,7 +73,7 @@ const FIXTURE_NAMES = Object.freeze([
 // This independent corpus pin makes coordinated runtime+fixture shape drift fail until
 // a reviewer deliberately accepts a new public contract.
 const EXPECTED_FIXTURE_CORPUS_SHA256 =
-  '9598c8cd1433b3407291ddc2ae0ebb0aaa59481a17d3c2677a46cf2518829df4';
+  '3cadab26a87f4a34807469b81ab6930328dcf278763b7aec0a7849deed2104bb';
 
 function fixture(name) {
   return JSON.parse(fs.readFileSync(
@@ -222,6 +226,133 @@ function directRunningRecord() {
   };
 }
 
+function directResultRecord() {
+  return {
+    operationId: IDS.result,
+    requestId: 'runtime-contract-direct-result',
+    operationType: 'query',
+    requesterAgent: 'jerry',
+    requestParameters: {
+      query: 'Synthesize the strongest current themes and contradictions.',
+      mode: 'dive',
+    },
+    parameters: {
+      query: 'Synthesize the strongest current themes and contradictions.',
+      mode: 'dive',
+      modelSelection: { provider: 'openai-codex', model: 'gpt-5.5' },
+    },
+    target: {
+      domain: 'brain', brainId: 'brain-jerry', displayName: 'Jerry',
+      canonicalRoot: '/private/runtime-contract/brain',
+    },
+    state: 'complete',
+    acceptedAt: '2026-07-13T18:30:00.000Z',
+    startedAt: '2026-07-13T18:30:01.000Z',
+    updatedAt: '2026-07-13T18:40:00.000Z',
+    completedAt: '2026-07-13T18:40:00.000Z',
+    progressSnapshot: {
+      version: 1,
+      stage: 'terminal',
+      eventSequence: 12,
+      sourceNodes: 142764,
+      sourceEdges: 468230,
+      lastProgressAt: '2026-07-13T18:40:00.000Z',
+    },
+    error: null,
+    result: { answer: 'stored-private-direct-result' },
+    resultHandle: `brres_${'D'.repeat(32)}`,
+    resultArtifact: null,
+    resultExpiresAt: '2026-07-20T18:40:00.000Z',
+    resultExpiredAt: null,
+    notebookResultSummary: {
+      version: 1,
+      resultVersion: DIRECT_RESULT_VERSION,
+      answerAvailable: true,
+      coverage: null,
+      continuation: null,
+    },
+    pgsSession: null,
+    sourceEvidence: {
+      sourceHealth: 'healthy',
+      freshness: 'known',
+      matchOutcome: 'matches',
+      completeCoverage: true,
+      filteredTotal: 0,
+      authoritativeTotals: { nodes: 142764, edges: 468230 },
+      returnedTotals: { nodes: 80, edges: 14 },
+      canonicalRoot: '/private/runtime-contract/brain',
+    },
+    sourcePinDescriptor: null,
+    sourcePinDigest: null,
+  };
+}
+
+function legacyDisplayRecord() {
+  return pgsRecord({
+    operationId: IDS.older,
+    requestId: 'runtime-contract-legacy',
+    requestParameters: {
+      query: 'Legacy sweep receipt retained for display.',
+      mode: 'quick',
+      pgsMode: 'full',
+      pgsConfig: { sweepFraction: 0.333 },
+    },
+    parameters: {
+      query: 'Legacy sweep receipt retained for display.',
+      mode: 'quick',
+      pgsMode: 'full',
+      pgsConfig: { sweepFraction: 0.333 },
+      pgsSweep: { provider: 'minimax', model: 'MiniMax-M2.1' },
+      pgsSynth: { provider: 'anthropic', model: 'claude-opus-4-8' },
+    },
+    state: 'complete',
+    acceptedAt: '2026-07-13T18:00:00.000Z',
+    startedAt: '2026-07-13T18:00:01.000Z',
+    updatedAt: '2026-07-13T18:05:00.000Z',
+    completedAt: '2026-07-13T18:05:00.000Z',
+    progressSnapshot: null,
+    error: null,
+    result: null,
+    resultHandle: null,
+    resultArtifact: null,
+    resultExpiresAt: null,
+    resultExpiredAt: null,
+    pgsSession: null,
+    notebookResultSummary: null,
+    sourceEvidence: null,
+  });
+}
+
+function incompatibleRecord() {
+  return pgsRecord({
+    operationId: IDS.unknown,
+    requestId: 'runtime-contract-unknown',
+    requestParameters: {
+      query: 'Unknown future receipt.', pgsMode: 'fresh', pgsLevel: 'future',
+    },
+    parameters: {
+      query: 'Unknown future receipt.', pgsMode: 'fresh', pgsLevel: 'future',
+      pgsSweep: { provider: 'minimax', model: 'MiniMax-M2.1' },
+      pgsSynth: { provider: 'anthropic', model: 'claude-opus-4-8' },
+    },
+    state: 'complete',
+    acceptedAt: '2026-07-13T17:00:00.000Z',
+    startedAt: '2026-07-13T17:00:01.000Z',
+    updatedAt: '2026-07-13T17:05:00.000Z',
+    completedAt: '2026-07-13T17:05:00.000Z',
+    progressSnapshot: null,
+    error: null,
+    result: null,
+    resultHandle: null,
+    resultArtifact: null,
+    resultExpiresAt: null,
+    resultExpiredAt: null,
+    pgsSession: null,
+    notebookResultSummary: null,
+    sourceEvidence: null,
+  });
+}
+
 function cancelledRecord(terminal) {
   return {
     operationId: IDS.cancel,
@@ -293,6 +424,23 @@ function rawPgsResult() {
   };
 }
 
+function rawDirectResult() {
+  return {
+    answer: 'Findings, evidence, themes, non-obvious connections, convergence, contradictions, confidence, actionable implications, and unresolved questions are addressed in the stored Direct answer. Projection limits: the answer used the retained prompt subset rather than the entire brain.',
+    projection: {
+      nodesScanned: 142764,
+      nodesRetained: 80,
+      edgesScanned: 468230,
+      edgesRetained: 14,
+      droppedForPromptBudget: 1920,
+      promptReduced: true,
+    },
+    answerQuality: {
+      requestedMode: 'dive', state: 'substantial', expansionAttempted: true,
+    },
+  };
+}
+
 async function listen(app) {
   const server = http.createServer(app);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -361,19 +509,22 @@ async function runtimeProjectionCorpus(t) {
     [IDS.page, pgsRecord()],
     [IDS.status, directRunningRecord()],
     [IDS.cancel, cancelledRecord(false)],
+    [IDS.result, directResultRecord()],
   ]);
-  const older = pgsRecord({
-    operationId: IDS.older,
-    requestId: 'runtime-contract-older',
-    acceptedAt: '2026-07-13T18:00:00.000Z',
-  });
+  const older = legacyDisplayRecord();
+  const unknown = incompatibleRecord();
   const reader = {
     expectedRequester: 'jerry',
-    async listAuthorized() { return [records.get(IDS.page), older]; },
-    async getAuthorized(operationId) { return records.get(operationId); },
+    async listAuthorized() {
+      return [records.get(IDS.page), records.get(IDS.result), older, unknown];
+    },
+    async getAuthorized(operationId) {
+      return records.get(operationId) || (operationId === IDS.older ? older : null);
+    },
     async getResultAuthorized(operationId) {
-      assert.equal(operationId, IDS.page);
-      return rawPgsResult();
+      if (operationId === IDS.page) return rawPgsResult();
+      assert.equal(operationId, IDS.result);
+      return rawDirectResult();
     },
   };
   const actionTokens = createQueryNotebookActionTokens({
@@ -385,10 +536,22 @@ async function runtimeProjectionCorpus(t) {
     now: () => NOW_MS,
     randomBytes: () => Buffer.alloc(24, 0xaa),
   });
+  const hiddenOperationIds = new Set();
   const notebookService = createQueryNotebookService({
     reader,
     actionTokens,
     now: () => NOW_MS,
+    visibilityStore: {
+      async prune(existingOperationIds) {
+        const existing = new Set(existingOperationIds);
+        for (const operationId of hiddenOperationIds) {
+          if (!existing.has(operationId)) hiddenOperationIds.delete(operationId);
+        }
+      },
+      async hiddenOperationIds() { return [...hiddenOperationIds].sort(); },
+      async isHidden(operationId) { return hiddenOperationIds.has(operationId); },
+      async hide(operationId) { hiddenOperationIds.add(operationId); },
+    },
     startOperation: async () => ({
       operationId: IDS.child,
       operationType: 'pgs',
@@ -485,11 +648,11 @@ async function runtimeProjectionCorpus(t) {
   };
 
   const page = await jsonRequest(dashboardServer.base,
-    '/home23/api/query/notebook?limit=1', { headers: deviceHeaders });
+    '/home23/api/query/notebook?limit=3', { headers: deviceHeaders });
   const status = await jsonRequest(dashboardServer.base,
     `/home23/api/query/operations/${IDS.status}`, { headers: deviceHeaders });
   const result = await jsonRequest(dashboardServer.base,
-    `/home23/api/query/operations/${IDS.page}/result`, { headers: deviceHeaders });
+    `/home23/api/query/operations/${IDS.result}/result`, { headers: deviceHeaders });
   const exported = await jsonRequest(dashboardServer.base,
     `/home23/api/query/operations/${IDS.page}/export`, {
       method: 'POST', body: { format: 'markdown' }, headers: deviceHeaders,
@@ -533,9 +696,15 @@ async function runtimeProjectionCorpus(t) {
       'sec-fetch-dest': 'empty',
     },
   });
+  const historyVisibility = await jsonRequest(
+    dashboardServer.base,
+    `/home23/api/query/operations/${IDS.page}/history`,
+    { method: 'DELETE', headers: deviceHeaders },
+  );
 
   for (const response of [
     page, status, result, exported, cancel, action, notification, webSession,
+    historyVisibility,
   ]) {
     assert.ok(response.response.ok, `${response.response.status}: ${canonicalJson(response.body)}`);
   }
@@ -548,6 +717,7 @@ async function runtimeProjectionCorpus(t) {
     'query-notebook-result': result.body,
     'query-notebook-export': exported.body,
     'query-notebook-cancel': cancel.body,
+    'query-notebook-history-visibility': historyVisibility.body,
     'query-notebook-action': action.body,
     'query-notebook-notification': notification.body,
     'query-notebook-device-credential': enrollment.body,

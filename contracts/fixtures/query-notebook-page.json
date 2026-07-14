@@ -94,7 +94,108 @@
         "subscribed": false,
         "deliveryState": null
       }
+    },
+    {
+      "schemaVersion": 1,
+      "operationId": "brop_FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+      "requestKind": "direct",
+      "requesterAgent": "jerry",
+      "brain": {
+        "id": "brain-jerry",
+        "displayName": "Jerry"
+      },
+      "question": "Synthesize the strongest current themes and contradictions.",
+      "questionTitle": "Synthesize the strongest current themes and contradictions.",
+      "configuration": {
+        "directMode": "dive",
+        "directModel": {
+          "provider": "openai-codex",
+          "model": "gpt-5.5"
+        }
+      },
+      "executionState": "complete",
+      "humanClassification": "finished",
+      "acceptedAt": "2026-07-13T18:30:00.000Z",
+      "startedAt": "2026-07-13T18:30:01.000Z",
+      "updatedAt": "2026-07-13T18:40:00.000Z",
+      "completedAt": "2026-07-13T18:40:00.000Z",
+      "progress": {
+        "version": 1,
+        "stage": "terminal",
+        "eventSequence": 12,
+        "sourceNodes": 142764,
+        "sourceEdges": 468230,
+        "lastProgressAt": "2026-07-13T18:40:00.000Z"
+      },
+      "error": null,
+      "resultAvailability": "available",
+      "expiresAt": "2026-07-20T18:40:00.000Z",
+      "answerPreviewAvailable": true,
+      "resultVersion": "qrv1_DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+      "coverage": null,
+      "continuation": null,
+      "actions": [
+        {
+          "kind": "openResult"
+        },
+        {
+          "kind": "export"
+        }
+      ],
+      "notification": {
+        "subscribed": false,
+        "deliveryState": null
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "operationId": "brop_EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
+      "requestKind": "pgs",
+      "requesterAgent": "jerry",
+      "brain": {
+        "id": "brain-jerry",
+        "displayName": "Jerry"
+      },
+      "question": "Legacy sweep receipt retained for display.",
+      "questionTitle": "Legacy sweep receipt retained for display.",
+      "configuration": {
+        "pgsMode": "fresh",
+        "pgsLevel": "legacy",
+        "sweepModel": {
+          "provider": "minimax",
+          "model": "MiniMax-M2.1"
+        },
+        "synthesisModel": {
+          "provider": "anthropic",
+          "model": "claude-opus-4-8"
+        },
+        "legacy": true
+      },
+      "executionState": "complete",
+      "humanClassification": "finished",
+      "acceptedAt": "2026-07-13T18:00:00.000Z",
+      "startedAt": "2026-07-13T18:00:01.000Z",
+      "updatedAt": "2026-07-13T18:05:00.000Z",
+      "completedAt": "2026-07-13T18:05:00.000Z",
+      "progress": null,
+      "error": null,
+      "resultAvailability": "absent",
+      "expiresAt": null,
+      "answerPreviewAvailable": false,
+      "resultVersion": null,
+      "coverage": null,
+      "continuation": null,
+      "actions": [
+        {
+          "kind": "none"
+        }
+      ],
+      "notification": {
+        "subscribed": false,
+        "deliveryState": null
+      }
     }
   ],
-  "nextCursor": "eyJhY2NlcHRlZEF0IjoiMjAyNi0wNy0xM1QxOTowMDowMC4wMDBaIiwiZmlsdGVyRGlnZXN0Ijoic2hhMjU2OjIwNmRkZjgxYjhhYTJhOGFiNjA2ZmM4YjNkOGRkMzkyODlkODNkYjYyOGY5MDU0ZmYzZTdmYjIzZjZlZGRjNDAiLCJvcGVyYXRpb25JZCI6ImJyb3BfQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJ2IjoxfQ"
+  "nextCursor": null,
+  "omittedIncompatibleCount": 1
 }

@@ -35,6 +35,7 @@ const REQUIRED_ENTRY_IDS = [
   'query-notebook-result',
   'query-notebook-export',
   'query-notebook-cancel',
+  'query-notebook-history-visibility',
   'query-notebook-action',
   'query-notebook-notification',
   'query-notebook-device-credential',
@@ -73,6 +74,7 @@ const QUERY_NOTEBOOK_ENTRY_TRUTH = {
   'query-notebook-result': ['GET', '/home23/api/query/operations/:operationId/result', 'queryNotebookResult'],
   'query-notebook-export': ['POST', '/home23/api/query/operations/:operationId/export', 'queryNotebookExport'],
   'query-notebook-cancel': ['POST', '/home23/api/query/operations/:operationId/cancel', 'queryNotebookStatus'],
+  'query-notebook-history-visibility': ['DELETE', '/home23/api/query/operations/:operationId/history', 'queryNotebookHistoryVisibilityResponse'],
   'query-notebook-action': ['POST', '/home23/api/query/operations/:operationId/actions', 'queryNotebookActionResponse'],
   'query-notebook-notification': ['POST', '/home23/api/query/operations/:operationId/notifications', 'queryNotebookNotificationResponse'],
   'query-notebook-device-credential': ['POST', '/api/device/query-credential', 'queryNotebookDeviceCredential'],
@@ -139,7 +141,7 @@ test('contract fixtures validate against their manifest schemas', () => {
 
 test('Query notebook manifest entries publish exact protected route truth', () => {
   const manifest = loadManifest();
-  assert.equal(manifest.contractVersion, '2026.07.13');
+  assert.equal(manifest.contractVersion, '2026.07.14');
   for (const [id, [method, route, definition]] of Object.entries(QUERY_NOTEBOOK_ENTRY_TRUTH)) {
     const entry = manifest.entries.find((candidate) => candidate.id === id);
     assert.ok(entry, `manifest missing ${id}`);
@@ -212,8 +214,22 @@ test('Query notebook fixtures are bounded, redacted, strict, and version-consist
   }).valid, false, 'notification route IDs must have exactly 32 suffix characters');
 
   const result = loadJson(repoPath('contracts/fixtures/query-notebook-result.json'));
-  assert.match(page.items[0].resultVersion, /^qrv1_[A-Za-z0-9_-]{43}$/);
-  assert.equal(page.items[0].resultVersion, result.resultVersion,
+  assert.equal(page.omittedIncompatibleCount, 1);
+  const legacy = page.items.find(item => item.configuration?.legacy === true);
+  assert.ok(legacy, 'page fixture must publish one display-only legacy PGS row');
+  assert.equal(legacy.configuration.pgsLevel, 'legacy');
+  assert.equal(result.projection.nodesRetained, 80);
+  assert.equal(result.answerQuality.state, 'substantial');
+  assert.equal(result.answerQuality.requestedMode, 'dive');
+  const visibility = loadJson(
+    repoPath('contracts/fixtures/query-notebook-history-visibility.json'),
+  );
+  assert.equal(visibility.hidden, true);
+  assert.match(visibility.operationId, /^brop_[A-Za-z0-9_-]{32}$/);
+  const resultSummary = page.items.find(item => item.operationId === result.operationId);
+  assert.ok(resultSummary, 'page fixture must include the protected Direct result summary');
+  assert.match(resultSummary.resultVersion, /^qrv1_[A-Za-z0-9_-]{43}$/);
+  assert.equal(resultSummary.resultVersion, result.resultVersion,
     'summary and protected result must identify the same bounded resultVersion');
   const resultEntry = entries.find((entry) => entry.id === 'query-notebook-result');
   assert.equal(validator.validateValue(resultEntry, {
