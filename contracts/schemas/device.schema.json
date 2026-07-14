@@ -138,7 +138,10 @@
             },
             "allOf": [
               {
-                "if": { "properties": { "query_notifications": { "const": true } } },
+                "if": {
+                  "required": ["query_notifications"],
+                  "properties": { "query_notifications": { "const": true } }
+                },
                 "then": {
                   "required": ["installation_id"],
                   "properties": {

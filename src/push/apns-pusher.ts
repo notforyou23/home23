@@ -26,11 +26,15 @@ export interface QueryTerminalNotificationReceipt {
 
 interface ApnsPusherOptions {
   queryTimeoutMs?: number;
+  queryMaxConcurrency?: number;
 }
 
 export class ApnsPusher {
   private readonly queryDeliveries = new Map<string, Promise<QueryTerminalNotificationReceipt>>();
+  private readonly querySendWaiters: Array<() => void> = [];
+  private queryActiveSends = 0;
   private readonly queryTimeoutMs: number;
+  private readonly queryMaxConcurrency: number;
 
   constructor(
     private client: ApnsClient,
@@ -39,9 +43,34 @@ export class ApnsPusher {
     options: ApnsPusherOptions = {},
   ) {
     this.queryTimeoutMs = options.queryTimeoutMs ?? 5_000;
+    this.queryMaxConcurrency = options.queryMaxConcurrency ?? 4;
     if (!Number.isSafeInteger(this.queryTimeoutMs)
         || this.queryTimeoutMs < 1 || this.queryTimeoutMs > 30_000) {
       throw new TypeError('query_apns_timeout_invalid');
+    }
+    if (!Number.isSafeInteger(this.queryMaxConcurrency)
+        || this.queryMaxConcurrency < 1 || this.queryMaxConcurrency > 16) {
+      throw new TypeError('query_apns_concurrency_invalid');
+    }
+  }
+
+  private async withQuerySendSlot<T>(task: () => Promise<T>): Promise<T> {
+    await new Promise<void>((resolve) => {
+      if (this.queryActiveSends < this.queryMaxConcurrency) {
+        this.queryActiveSends += 1;
+        resolve();
+        return;
+      }
+      this.querySendWaiters.push(() => {
+        this.queryActiveSends += 1;
+        resolve();
+      });
+    });
+    try {
+      return await task();
+    } finally {
+      this.queryActiveSends -= 1;
+      this.querySendWaiters.shift()?.();
     }
   }
 
@@ -158,29 +187,30 @@ export class ApnsPusher {
         generation: input.generation,
       };
       try {
-        const controller = new AbortController();
-        let timer: NodeJS.Timeout | undefined;
-        const timeout = new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => {
+        const result = await this.withQuerySendSlot(async () => {
+          const controller = new AbortController();
+          let timer: NodeJS.Timeout | undefined;
+          const timeout = new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => {
+              controller.abort();
+              const error = new Error('apns_timeout') as Error & { code: string };
+              error.code = 'apns_timeout';
+              reject(error);
+            }, this.queryTimeoutMs);
+            timer.unref?.();
+          });
+          try {
+            return await Promise.race([
+              this.client.send(device.device_token, payload, device.env, {
+                signal: controller.signal,
+              }),
+              timeout,
+            ]);
+          } finally {
+            if (timer) clearTimeout(timer);
             controller.abort();
-            const error = new Error('apns_timeout') as Error & { code: string };
-            error.code = 'apns_timeout';
-            reject(error);
-          }, this.queryTimeoutMs);
-          timer.unref?.();
+          }
         });
-        let result;
-        try {
-          result = await Promise.race([
-            this.client.send(device.device_token, payload, device.env, {
-              signal: controller.signal,
-            }),
-            timeout,
-          ]);
-        } finally {
-          if (timer) clearTimeout(timer);
-          controller.abort();
-        }
         if (result.status >= 200 && result.status < 300) {
           receipt = this.registry.finishQueryNotificationDelivery({
             routeId: input.routeId, deviceId, generation: input.generation,

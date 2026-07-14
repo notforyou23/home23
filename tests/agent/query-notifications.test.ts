@@ -295,6 +295,61 @@ test('concurrent duplicate terminal callbacks share one APNs attempt', async () 
   }
 });
 
+test('unrelated terminal routes share one pusher-level APNs concurrency bound', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'home23-query-push-'));
+  try {
+    const registry = new DeviceRegistry(join(root, 'device-registry.json'));
+    const deviceIds = Array.from({ length: 6 }, (_, index) =>
+      `ios-installation-${String(index + 1).padStart(8, '0')}`);
+    for (const [index, installationId] of deviceIds.entries()) {
+      registry.register({
+        device_token: String(index + 1).repeat(64),
+        bundle_id: 'com.regina6.home23',
+        env: 'sandbox',
+        chat_ids: [],
+        agent_id: 'jerry',
+        installation_id: installationId,
+        query_notifications: true,
+      });
+    }
+    let active = 0;
+    let maxActive = 0;
+    let sends = 0;
+    const pusher = new ApnsPusher({ async send() {
+      sends += 1;
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise(resolve => setTimeout(resolve, 20));
+      active -= 1;
+      return { status: 200 };
+    } } as any, registry, 'jerry', {
+      queryMaxConcurrency: 2,
+    } as any);
+
+    await Promise.all([
+      pusher.notifyQueryTerminal({
+        operationId: OPERATION_ID,
+        state: 'complete',
+        routeId: `qroute_${'c'.repeat(32)}`,
+        generation: 1,
+        deviceIds: deviceIds.slice(0, 3),
+      }),
+      pusher.notifyQueryTerminal({
+        operationId: `brop_${'d'.repeat(32)}`,
+        state: 'partial',
+        routeId: `qroute_${'e'.repeat(32)}`,
+        generation: 1,
+        deviceIds: deviceIds.slice(3),
+      }),
+    ]);
+
+    assert.equal(sends, 6);
+    assert.equal(maxActive, 2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('hung APNs work is aborted and releases the bounded in-flight dedupe promise', async () => {
   const root = mkdtempSync(join(tmpdir(), 'home23-query-push-'));
   try {
