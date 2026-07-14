@@ -14,6 +14,9 @@ const {
   openPinnedPGSStore,
 } = require('../../cosmo23/pgs-engine/src/pinned-store');
 const {
+  createPgsSessionAuthority,
+} = require('../../engine/src/dashboard/brain-operations/pgs-session-authority');
+const {
   createEngine,
   limits: operationLimits,
   operationOptions,
@@ -63,6 +66,7 @@ async function sessionFixture(t) {
   const quotas = [];
   let verifies = 0;
   let closes = 0;
+  let marks = 0;
   let closed = false;
   const sessionStorage = Object.freeze({
     databasePath,
@@ -86,6 +90,11 @@ async function sessionFixture(t) {
       }
       return { bytes };
     },
+    async markProjectionUsable() {
+      if (closed) throw Object.assign(new Error('closed'), { code: 'session_capability_closed' });
+      marks += 1;
+      return { marked: true };
+    },
     async close() {
       closes += 1;
       closed = true;
@@ -100,7 +109,7 @@ async function sessionFixture(t) {
     anchorPath,
     leasePath,
     sessionStorage,
-    counts: () => ({ verifies, quotas: quotas.length, closes }),
+    counts: () => ({ verifies, quotas: quotas.length, closes, marks }),
   };
 }
 
@@ -131,6 +140,7 @@ test('initializes and reuses the authority database in place without a scratch c
   );
   assert.equal(first.databasePath, session.databasePath);
   assert.equal(first.reused, false);
+  assert.equal(session.counts().marks, 1);
   first.close();
 
   assert.deepEqual(await fs.readdir(firstScratch.scratchDir), []);
@@ -142,11 +152,123 @@ test('initializes and reuses the authority database in place without a scratch c
   );
   assert.equal(second.databasePath, session.databasePath);
   assert.equal(second.reused, true);
+  assert.equal(session.counts().marks, 2);
   second.close();
 
   assert.deepEqual(await fs.readdir(secondScratch.scratchDir), []);
   assert.equal(session.counts().verifies > 2, true);
   assert.equal(session.counts().quotas > 2, true);
+});
+
+test('does not mark a fresh session usable when initial projection construction fails', async (t) => {
+  const session = await sessionFixture(t);
+  const scratch = await operationScratch(session.root, 'brop-projection-failure');
+  t.after(() => scratch.scratchQuota.close());
+  const base = sourcePin({ nodeCount: 8 });
+  const marker = Object.assign(new Error('source failed during projection'), {
+    code: 'source_unavailable',
+  });
+  const source = {
+    ...base,
+    async *iterateNodes() {
+      yield { id: 'n-before-failure', concept: 'partial projection' };
+      throw marker;
+    },
+  };
+
+  await assert.rejects(
+    openPinnedPGSStore(storeOptions(source, scratch, session.sessionStorage)),
+    error => error === marker,
+  );
+  assert.equal(session.counts().marks, 0);
+});
+
+test('failed initial projection discards the real fresh session but preserves operation scratch', async (t) => {
+  const root = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), 'home23-pgs-session-discard-')),
+  );
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const agentRuntimeRoot = path.join(root, 'instances', 'jerry', 'runtime');
+  await fs.mkdir(agentRuntimeRoot, { recursive: true });
+  const authority = await createPgsSessionAuthority({ agentRuntimeRoot, agentId: 'jerry' });
+  t.after(() => authority.stop());
+  const operationId = `brop_${'d'.repeat(32)}`;
+  const created = await authority.createSession({
+    ownerAgent: 'jerry', operationId, binding: { integration: 'failed-projection' },
+  });
+  const storage = await authority.openSessionStorage(created.workerHandle, {
+    ownerAgent: 'jerry', operationId,
+  });
+  const scratch = await operationScratch(root, operationId);
+  t.after(() => scratch.scratchQuota.close());
+  const fixture = createEngine();
+  const base = sourcePin({ nodeCount: 8 });
+  const marker = Object.assign(new Error('source failed during projection'), {
+    code: 'source_unavailable',
+  });
+  const source = {
+    ...base,
+    async *iterateNodes() {
+      yield { id: 'n-before-failure', concept: 'partial projection' };
+      throw marker;
+    },
+  };
+  const options = operationOptions(source, {
+    scratchDir: scratch.scratchDir,
+    quota: scratch.scratchQuota,
+  }, {
+    sessionStorage: storage,
+    limits: operationLimits,
+  });
+
+  await assert.rejects(fixture.engine.runPinnedOperation(options), error => error === marker);
+  await assert.rejects(fs.lstat(created.workerHandle.sessionRoot), { code: 'ENOENT' });
+  await assert.rejects(
+    fs.lstat(path.join(
+      agentRuntimeRoot, 'pgs-sessions', `${created.sessionId}.authority.json`,
+    )),
+    { code: 'ENOENT' },
+  );
+  assert.equal((await fs.stat(scratch.scratchDir)).isDirectory(), true);
+});
+
+test('cancelled and interrupted initialization discard only their fresh sessions', async (t) => {
+  const root = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), 'home23-pgs-session-abort-discard-')),
+  );
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const agentRuntimeRoot = path.join(root, 'instances', 'jerry', 'runtime');
+  await fs.mkdir(agentRuntimeRoot, { recursive: true });
+  const authority = await createPgsSessionAuthority({ agentRuntimeRoot, agentId: 'jerry' });
+  t.after(() => authority.stop());
+
+  for (const [index, code] of ['operation_cancelled', 'worker_stopped'].entries()) {
+    const operationId = `brop_${String(index + 1).repeat(32)}`;
+    const created = await authority.createSession({
+      ownerAgent: 'jerry', operationId, binding: { integration: code },
+    });
+    const storage = await authority.openSessionStorage(created.workerHandle, {
+      ownerAgent: 'jerry', operationId,
+    });
+    const scratch = await operationScratch(root, operationId);
+    t.after(() => scratch.scratchQuota.close());
+    const controller = new AbortController();
+    const reason = Object.assign(new Error(code), { code });
+    controller.abort(reason);
+    const fixture = createEngine();
+    const options = operationOptions(sourcePin({ nodeCount: 8 }), {
+      scratchDir: scratch.scratchDir,
+      quota: scratch.scratchQuota,
+    }, {
+      sessionStorage: storage,
+      signal: controller.signal,
+      limits: operationLimits,
+    });
+
+    await assert.rejects(fixture.engine.runPinnedOperation(options), error => error === reason);
+    await assert.rejects(fs.lstat(created.workerHandle.sessionRoot), { code: 'ENOENT' });
+    assert.equal((await fs.stat(scratch.scratchDir)).isDirectory(), true);
+  }
 });
 
 test('authority database binding and schema mismatches fail closed without cleanup', async (t) => {

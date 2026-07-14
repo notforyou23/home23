@@ -564,6 +564,7 @@ async function openPinnedPGSStore({
       || sessionStorage.quotaMaxBytes <= 0
       || typeof sessionStorage.verify !== 'function'
       || typeof sessionStorage.reconcileQuota !== 'function'
+      || typeof sessionStorage.markProjectionUsable !== 'function'
       || typeof sessionStorage.close !== 'function')) {
     throw typed('invalid_request', 'PGS session storage capability is invalid');
   }
@@ -575,6 +576,8 @@ async function openPinnedPGSStore({
   let pgsRoot;
   let projectionRoot;
   let databasePath;
+  // HOME23 PATCH 61 — A fresh durable session is not reusable until the full
+  // pinned projection has passed every schema, binding, quota, and identity check.
   if (usesSessionStorage) {
     await sessionStorage.verify();
     await sessionStorage.reconcileQuota();
@@ -1665,6 +1668,14 @@ async function openPinnedPGSStore({
       }
     },
   };
+  if (usesSessionStorage) {
+    try {
+      await sessionStorage.markProjectionUsable();
+    } catch (error) {
+      closeDb({ closeAnchor: true });
+      throw error;
+    }
+  }
   return Object.freeze(api);
 }
 

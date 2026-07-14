@@ -1170,7 +1170,14 @@ class BrainOperationWorker {
             if (pgsSession?.sessionStorage) {
               await pgsSession.sessionStorage.close();
             } else if (pgsWorkerHandle && pgsSessionAuthority) {
-              await pgsSessionAuthority.releaseLease?.(pgsWorkerHandle);
+              // HOME23 PATCH 61 — only a fresh lineage that never opened usable
+              // storage may be discarded; continuations retain their database.
+              if (pgsWorkerHandle.sourceOperationId === null
+                  && typeof pgsSessionAuthority.discardUnusableSession === 'function') {
+                await pgsSessionAuthority.discardUnusableSession(pgsWorkerHandle);
+              } else {
+                await pgsSessionAuthority.releaseLease?.(pgsWorkerHandle);
+              }
             }
           } finally {
             try {
@@ -1499,10 +1506,22 @@ class BrainOperationWorker {
     await Promise.allSettled([...this.records.values()]
       .map((record) => record.runPromise)
       .filter(Boolean));
+    // HOME23 PATCH 61 — drain every autonomous PGS retention janitor on shutdown.
+    const authoritySettlements = await Promise.allSettled(
+      [...this.pgsSessionAuthorities.values()].map(async (pending) => {
+        const authority = await pending;
+        await authority.stop?.();
+      }),
+    );
+    this.pgsSessionAuthorities.clear();
     const cleanupFailure = startSettlements.find((settlement) =>
       settlement.status === 'rejected'
       && settlement.reason?.code === 'source_cleanup_failed');
     if (cleanupFailure) throw cleanupFailure.reason;
+    const authorityFailure = authoritySettlements.find(
+      (settlement) => settlement.status === 'rejected',
+    );
+    if (authorityFailure) throw authorityFailure.reason;
   }
 }
 

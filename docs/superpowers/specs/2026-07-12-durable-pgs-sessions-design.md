@@ -30,6 +30,20 @@ The session database is never copied into each continuation operation. Operation
 
 Sessions have a bounded retention policy. The API reports `continuableUntil`; expired sessions are unavailable for continuation and are removed only by the scoped session cleanup path. Quota accounting includes the session database and its SQLite sidecars. Cleanup never follows links or leaves the selected agent's runtime boundary.
 
+The session authority runs that same bounded cleanup once at authority startup
+and hourly while the authority is resident, using an unref'd timer that cannot
+keep the process alive and an explicit stop hook that drains in-flight cleanup.
+This makes expiration autonomous even when PGS is idle. Internal storage status
+reports only bounded aggregate facts: session count, active count, actual bytes,
+configured maxima and headroom, and the next expiry.
+
+A new session is not reusable merely because its database file exists. The
+pinned store marks the projection usable only after the complete projection,
+schema, binding, quota, and identity checks succeed. Closing a newly created
+session before that mark discards only its exact identity-checked database,
+SQLite sidecars, lease, and authority anchor. Continuations and any successfully
+published fresh projection are never eligible for this initialization discard.
+
 ## Immutable Binding
 
 The session schema version is bumped. A reusable session is bound to:
@@ -82,6 +96,11 @@ Agent-tool PGS launches are start-only: `brain_query` returns the queued/running
 
 Typed failures cover invalid mode/level combinations, unauthorized or missing prior operations, expired sessions, binding mismatches, target validation, non-monotonic continuation, session conflicts, filesystem identity changes, quota exhaustion, provider failure, cancellation, and result-size limits. No mismatch, missing state, or exhausted target scope falls back to a new full sweep.
 
+Failure, cancellation, interruption, or process shutdown before a fresh
+projection becomes reusable triggers exact initialization discard. Once the
+projection is marked usable, the ordinary retention and continuation contract
+remains authoritative.
+
 ## Verification
 
 Tests must prove:
@@ -95,6 +114,12 @@ Tests must prove:
 - cancellation, provider failure, synthesis failure, and worker interruption retain only valid reusable work;
 - receipts and UI rendering distinguish scoped completion from full coverage;
 - local session storage and cleanup remain bounded;
+- startup and idle janitor cleanup reclaim only expired lease-free sessions,
+  stop the unref'd timer explicitly, retry after failure, and expose bounded
+  internal authority telemetry including code-safe janitor health (this is not
+  a user-visible Query surface yet);
+- failed fresh initialization is discarded, while usable fresh sessions and
+  every continuation remain retained;
 - direct Query, brain tools, MCP, export, chat history, and manifest-v1 source access do not regress.
 
 Live acceptance requires a fresh fractional PGS run against Jerry's manifest-v1 brain, a continuation that reports reused sweeps and executes only new work, a targeted run with isolated synthesis, durable detach/reattach, and current PM2/route health receipts. A live 100% run may be omitted when its provider cost is disproportionate, but the full path must be proven with deterministic integration fixtures and dry-run validation.

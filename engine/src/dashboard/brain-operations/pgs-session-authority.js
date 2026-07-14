@@ -16,6 +16,8 @@ const DEFAULT_LEASE_MS = 8 * 60 * 60 * 1000;
 const MAX_LEASE_MS = DAY_MS;
 const DEFAULT_MAX_SESSION_BYTES = 8 * 1024 * 1024 * 1024;
 const DEFAULT_MAX_TOTAL_BYTES = 32 * 1024 * 1024 * 1024;
+const DEFAULT_JANITOR_INTERVAL_MS = 60 * 60 * 1000;
+const MAX_JANITOR_INTERVAL_MS = DAY_MS;
 const DEFAULT_CLEANUP_BATCH_SIZE = 32;
 const MAX_CLEANUP_BATCH_SIZE = 256;
 const MAX_AUTHORITY_BYTES = 512 * 1024;
@@ -50,6 +52,12 @@ function sessionError(code, message = code, retryable = false, cause) {
   error.code = code;
   error.retryable = retryable;
   return error;
+}
+
+function safeJanitorErrorCode(error) {
+  const code = error?.code;
+  if (typeof code === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(code)) return code;
+  return 'janitor_cleanup_failed';
 }
 
 function exactKeys(value, allowed, code = 'invalid_request') {
@@ -320,7 +328,7 @@ async function createPgsSessionAuthority(options) {
   exactKeys(options, [
     'agentRuntimeRoot', 'agentId', 'clock', 'retentionMs', 'leaseMs',
     'maxSessionBytes', 'maxTotalBytes', 'cleanupBatchSize', 'processId',
-    'isProcessAlive',
+    'isProcessAlive', 'janitorIntervalMs', 'timers',
   ]);
   const agentRuntimeRoot = options.agentRuntimeRoot;
   const agentId = assertIdentifier(options.agentId);
@@ -343,10 +351,18 @@ async function createPgsSessionAuthority(options) {
     DEFAULT_CLEANUP_BATCH_SIZE,
     MAX_CLEANUP_BATCH_SIZE,
   );
+  const janitorIntervalMs = boundedInteger(
+    options.janitorIntervalMs,
+    DEFAULT_JANITOR_INTERVAL_MS,
+    MAX_JANITOR_INTERVAL_MS,
+  );
   const processId = options.processId ?? process.pid;
   if (!Number.isSafeInteger(processId) || processId <= 0) throw sessionError('invalid_request');
   const isProcessAlive = options.isProcessAlive ?? defaultIsProcessAlive;
-  if (typeof isProcessAlive !== 'function' || maxSessionBytes > maxTotalBytes) {
+  const timers = options.timers ?? globalThis;
+  if (typeof isProcessAlive !== 'function' || maxSessionBytes > maxTotalBytes
+      || typeof timers.setInterval !== 'function'
+      || typeof timers.clearInterval !== 'function') {
     throw sessionError('invalid_request');
   }
 
@@ -360,6 +376,7 @@ async function createPgsSessionAuthority(options) {
   }
   const sessionsStat = await assertCanonicalDirectory(sessionsRoot, 'session_root_invalid');
   const sessionsIdentity = identity(sessionsStat);
+  const usableSessionIds = new Set();
 
   function now() {
     const value = clock();
@@ -494,6 +511,7 @@ async function createPgsSessionAuthority(options) {
         bytes: inspected.bytes,
         overQuota: inspected.bytes > maxSessionBytes,
         activeQuotaMaxBytes,
+        continuableUntil: anchor.continuableUntil,
       }));
     }
     return Object.freeze({
@@ -659,6 +677,56 @@ async function createPgsSessionAuthority(options) {
     return Object.freeze({ released: true, sessionId: handle.sessionId });
   }
 
+  async function removeExactSessionUnsafe(read, inspected) {
+    await assertCanonicalDirectory(
+      inspected.sessionRoot,
+      'session_state_invalid',
+      read.anchor.directoryIdentity,
+    );
+    for (const file of inspected.files) {
+      const named = await fsp.lstat(file.path);
+      if (!named.isFile() || named.isSymbolicLink() || named.nlink !== 1
+          || !identityMatches(named, file.identity)) {
+        throw sessionError('session_state_invalid');
+      }
+    }
+    const anchorNamed = await fsp.lstat(read.anchorPath);
+    if (!anchorNamed.isFile() || anchorNamed.isSymbolicLink() || anchorNamed.nlink !== 1
+        || !identityMatches(anchorNamed, read.anchorIdentity)) {
+      throw sessionError('session_state_invalid');
+    }
+
+    for (const file of inspected.files) await fsp.unlink(file.path);
+    await fsp.rmdir(inspected.sessionRoot);
+    await fsp.unlink(read.anchorPath);
+    await fsyncDirectory(sessionsRoot);
+    return read.anchorBytes
+      + inspected.files.reduce((total, file) => total + file.bytes, 0);
+  }
+
+  async function discardInitialSessionUnsafe(workerHandle) {
+    const handle = workerHandleValue(workerHandle);
+    if (handle.ownerAgent !== agentId) throw sessionError('session_owner_mismatch');
+    if (handle.sourceOperationId !== null) throw sessionError('session_discard_denied');
+    if (usableSessionIds.has(handle.sessionId)) throw sessionError('session_discard_denied');
+    await validateWorkerHandle(handle, {
+      ownerAgent: agentId,
+      operationId: handle.operationId,
+    });
+    const read = await readAnchor(handle.sessionId);
+    if (read.anchor.operationIds.length !== 1
+        || read.anchor.operationIds[0] !== handle.operationId) {
+      throw sessionError('session_discard_denied');
+    }
+    const inspected = await inspectDatabaseFiles(read.anchor);
+    const reclaimedBytes = await removeExactSessionUnsafe(read, inspected);
+    return Object.freeze({
+      discarded: true,
+      reclaimedBytes,
+      sessionId: handle.sessionId,
+    });
+  }
+
   async function validateWorkerHandle(workerHandle, expected) {
     exactKeys(expected, ['ownerAgent', 'operationId'], 'session_capability_invalid');
     const handle = workerHandleValue(workerHandle);
@@ -714,6 +782,7 @@ async function createPgsSessionAuthority(options) {
       return validated;
     });
     let closed = false;
+    let projectionUsable = handle.sourceOperationId !== null;
     function assertOpen() {
       if (closed) throw sessionError('session_capability_closed');
     }
@@ -737,12 +806,23 @@ async function createPgsSessionAuthority(options) {
           return assertActiveCapacity(validated);
         });
       },
+      async markProjectionUsable() {
+        assertOpen();
+        await withServiceQueue(sessionsRoot, async () => {
+          const validated = await validateWorkerHandle(handle, expected);
+          await assertActiveCapacity(validated);
+          usableSessionIds.add(handle.sessionId);
+        });
+        projectionUsable = true;
+        return Object.freeze({ marked: true, sessionId: handle.sessionId });
+      },
       async close() {
         if (closed) return Object.freeze({ released: false, sessionId: handle.sessionId });
-        const released = await withServiceQueue(
-          sessionsRoot,
-          () => releaseLeaseUnsafe(handle),
-        );
+        const released = await withServiceQueue(sessionsRoot, () => (
+          projectionUsable
+            ? releaseLeaseUnsafe(handle)
+            : discardInitialSessionUnsafe(handle)
+        ));
         closed = true;
         return released;
       },
@@ -945,31 +1025,10 @@ async function createPgsSessionAuthority(options) {
         }
       }
 
-      await assertCanonicalDirectory(
-        inspected.sessionRoot,
-        'session_state_invalid',
-        read.anchor.directoryIdentity,
-      );
-      for (const file of inspected.files) {
-        const named = await fsp.lstat(file.path);
-        if (!named.isFile() || named.isSymbolicLink() || named.nlink !== 1
-            || !identityMatches(named, file.identity)) {
-          throw sessionError('session_state_invalid');
-        }
-      }
-      const anchorNamed = await fsp.lstat(read.anchorPath);
-      if (!anchorNamed.isFile() || anchorNamed.isSymbolicLink() || anchorNamed.nlink !== 1
-          || !identityMatches(anchorNamed, read.anchorIdentity)) {
-        throw sessionError('session_state_invalid');
-      }
-
-      for (const file of inspected.files) await fsp.unlink(file.path);
-      await fsp.rmdir(inspected.sessionRoot);
-      await fsp.unlink(read.anchorPath);
-      await fsyncDirectory(sessionsRoot);
+      const removedBytes = await removeExactSessionUnsafe(read, inspected);
+      usableSessionIds.delete(sessionId);
       removedSessionIds.push(sessionId);
-      reclaimedBytes += read.anchorBytes
-        + inspected.files.reduce((total, file) => total + file.bytes, 0);
+      reclaimedBytes += removedBytes;
     }
     return Object.freeze({
       removedSessions: removedSessionIds.length,
@@ -999,6 +1058,64 @@ async function createPgsSessionAuthority(options) {
     sessionsRoot,
     () => releaseLeaseUnsafe(workerHandle),
   );
+  const discardUnusableSession = (workerHandle) => withServiceQueue(
+    sessionsRoot,
+    () => discardInitialSessionUnsafe(workerHandle),
+  );
+
+  let lastJanitorErrorCode = null;
+
+  const storageStatus = (input) => withServiceQueue(sessionsRoot, async () => {
+    if (input !== undefined) throw sessionError('invalid_request');
+    const snapshot = await inspectHouseCapacity();
+    const expiries = snapshot.sessions.map((session) => session.continuableUntil).sort();
+    return Object.freeze({
+      activeSessions: snapshot.sessions.filter(
+        (session) => session.activeQuotaMaxBytes !== null,
+      ).length,
+      headroomBytes: Math.max(0, maxTotalBytes - snapshot.totalBytes),
+      janitorHealthy: lastJanitorErrorCode === null,
+      lastJanitorErrorCode,
+      maxSessionBytes,
+      maxTotalBytes,
+      nextExpiry: expiries[0] ?? null,
+      sessionCount: snapshot.sessions.length,
+      totalBytes: snapshot.totalBytes,
+    });
+  });
+
+  await cleanupExpiredUnsafe();
+  let janitorStopped = false;
+  let janitorRun = Promise.resolve();
+  const runJanitor = () => {
+    if (janitorStopped) return janitorRun;
+    janitorRun = janitorRun.then(
+      () => cleanupExpired(),
+      () => cleanupExpired(),
+    ).then(
+      (result) => {
+        lastJanitorErrorCode = null;
+        return result;
+      },
+      (error) => {
+        lastJanitorErrorCode = safeJanitorErrorCode(error);
+        return undefined;
+      },
+    );
+    return janitorRun;
+  };
+  const janitorTimer = timers.setInterval(runJanitor, janitorIntervalMs);
+  janitorTimer?.unref?.();
+
+  const stop = async () => {
+    if (!janitorStopped) {
+      janitorStopped = true;
+      timers.clearInterval(janitorTimer);
+    }
+    await janitorRun;
+    if (lastJanitorErrorCode) throw sessionError(lastJanitorErrorCode);
+    return Object.freeze({ stopped: true });
+  };
 
   return Object.freeze({
     createSession,
@@ -1007,6 +1124,9 @@ async function createPgsSessionAuthority(options) {
     openSessionStorage,
     reconcileQuota,
     releaseLease,
+    discardUnusableSession,
+    storageStatus,
+    stop,
     validateWorkerHandle,
     cleanupBatchSize,
   });

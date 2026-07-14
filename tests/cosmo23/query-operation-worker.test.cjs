@@ -103,7 +103,8 @@ function operationContext(operationType, parameters, overrides = {}) {
     sourceOperationId: parameters.continueFromOperationId || null,
     sessionStorage: {
       databasePath: '/trusted/session.sqlite',
-      async verify() {}, async reconcileQuota() {}, async close() {},
+      async verify() {}, async reconcileQuota() {},
+      async markProjectionUsable() {}, async close() {},
     },
   } : null;
   return {
@@ -612,6 +613,27 @@ test('invalid trusted projections fail before QueryEngine work', async () => {
       label,
     );
   }
+  assert.equal(harness.calls.length, 0);
+});
+
+test('PGS rejects session storage that cannot publish projection usability', async () => {
+  const harness = createHarness();
+  const parameters = pgsParameters();
+  const context = operationContext('pgs', parameters, {
+    context: {
+      pgsSession: {
+        sessionId: `pgss_${'q'.repeat(32)}`,
+        continuableUntil: '2099-07-19T12:00:00.000Z',
+        sourceOperationId: null,
+        sessionStorage: {
+          databasePath: '/trusted/session.sqlite',
+          async verify() {}, async reconcileQuota() {}, async close() {},
+        },
+      },
+    },
+  });
+
+  await assert.rejects(harness.executor(context), { code: 'invalid_request' });
   assert.equal(harness.calls.length, 0);
 });
 

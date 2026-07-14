@@ -345,9 +345,12 @@ async function makeFixture(t, overrides = {}) {
     async openSessionStorage() {
       return {
         databasePath: '/trusted/session.sqlite',
-        async verify() {}, async reconcileQuota() {}, async close() {},
+        async verify() {}, async reconcileQuota() {},
+        async markProjectionUsable() {}, async close() {},
       };
     },
+    async discardUnusableSession() {},
+    async stop() {},
   }));
   const worker = new BrainOperationWorker({
     home23Root,
@@ -405,6 +408,7 @@ test('PGS worker creates or continues a protected session and gives only trusted
     quotaMaxBytes: 1024,
     async verify() { calls.push('verify'); },
     async reconcileQuota() { calls.push('quota'); return { bytes: 0 }; },
+    async markProjectionUsable() { calls.push('usable'); },
     async close() { calls.push('close'); return { released: true }; },
   };
   const authority = {
@@ -428,6 +432,7 @@ test('PGS worker creates or continues a protected session and gives only trusted
       calls.push(['open', handle, expected]);
       return storage;
     },
+    async stop() { calls.push('authority-stop'); },
   };
   const seen = [];
   const executors = new Map([['pgs', async (context) => {
@@ -485,6 +490,98 @@ test('PGS worker creates or continues a protected session and gives only trusted
   assert.equal(seen[1].pgsSession.sessionId, storage.sessionId);
   assert.equal(Object.hasOwn(seen[1].parameters, 'pgsSessionId'), false);
   assert.equal(calls.some((entry) => Array.isArray(entry) && entry[0] === 'continue'), true);
+  await fixture.worker.stop();
+  assert.equal(calls.filter((entry) => entry === 'authority-stop').length, 1);
+});
+
+test('PGS pre-executor cleanup discards only a fresh session that never opened usable storage', async (t) => {
+  const calls = [];
+  const marker = Object.assign(new Error('session storage failed to open'), {
+    code: 'session_state_invalid',
+  });
+  const authority = {
+    async cleanupExpired() {},
+    async createSession({ operationId }) {
+      return {
+        sessionId: `pgss_${'u'.repeat(32)}`,
+        continuableUntil: '2099-07-19T12:00:00.000Z',
+        workerHandle: { operationId, sourceOperationId: null },
+      };
+    },
+    async continueSession() { throw new Error('continuation must not run'); },
+    async openSessionStorage() { throw marker; },
+    async discardUnusableSession(handle) { calls.push(['discard', handle]); },
+    async releaseLease(handle) { calls.push(['release', handle]); },
+    async stop() {},
+  };
+  const fixture = await makeFixture(t, {
+    executors: new Map([['pgs', async () => {
+      throw new Error('executor must not run');
+    }]]),
+    pgsSessionAuthorityFactory: async () => authority,
+  });
+  const request = requestFor({
+    id: operationId('o'), type: 'pgs',
+    parameters: {
+      query: 'canary', pgsMode: 'fresh', pgsLevel: 'sample',
+      pgsConfig: { sweepFraction: 0.25 },
+      pgsSweep: { provider: 'fake', model: 'sweep' },
+      pgsSynth: { provider: 'fake', model: 'synth' },
+    },
+  });
+
+  await assert.rejects(
+    fixture.worker.start(request.operationId, fixture.token(request), request),
+    error => error === marker,
+  );
+  assert.deepEqual(calls.map(([kind]) => kind), ['discard']);
+});
+
+test('PGS pre-executor cleanup never discards a continuation when storage open fails', async (t) => {
+  const calls = [];
+  const marker = Object.assign(new Error('continued storage failed to open'), {
+    code: 'session_state_invalid',
+  });
+  const priorOperationId = operationId('p');
+  const sessionId = `pgss_${'u'.repeat(32)}`;
+  const authority = {
+    async cleanupExpired() {},
+    async createSession() { throw new Error('fresh create must not run'); },
+    async continueSession({ operationId }) {
+      return {
+        sessionId,
+        continuableUntil: '2099-07-19T12:00:00.000Z',
+        workerHandle: { operationId, sourceOperationId: priorOperationId },
+      };
+    },
+    async openSessionStorage() { throw marker; },
+    async discardUnusableSession(handle) { calls.push(['discard', handle]); },
+    async releaseLease(handle) { calls.push(['release', handle]); },
+    async stop() {},
+  };
+  const fixture = await makeFixture(t, {
+    executors: new Map([['pgs', async () => {
+      throw new Error('executor must not run');
+    }]]),
+    pgsSessionAuthorityFactory: async () => authority,
+  });
+  const request = requestFor({
+    id: operationId('q'), type: 'pgs',
+    parameters: {
+      query: 'canary', pgsMode: 'continue', pgsLevel: 'deep',
+      pgsConfig: { sweepFraction: 0.5 },
+      pgsSweep: { provider: 'fake', model: 'sweep' },
+      pgsSynth: { provider: 'fake', model: 'synth' },
+      continueFromOperationId: priorOperationId,
+      pgsSessionId: sessionId,
+    },
+  });
+
+  await assert.rejects(
+    fixture.worker.start(request.operationId, fixture.token(request), request),
+    error => error === marker,
+  );
+  assert.deepEqual(calls.map(([kind]) => kind), ['release']);
 });
 
 test('PGS worker terminal metadata survives cancellation, interruption, and typed failure without publishing an answer', async (t) => {

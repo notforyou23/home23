@@ -33,7 +33,32 @@ async function fixture(t, overrides = {}) {
     ...overrides,
   };
   const authority = await createPgsSessionAuthority(options);
+  t.after(() => authority.stop?.());
   return { authority, agentRuntimeRoot, now, options };
+}
+
+function fakeJanitorTimers() {
+  let callback = null;
+  let interval = null;
+  let unrefCalls = 0;
+  let clearCalls = 0;
+  return {
+    timers: {
+      setInterval(next, delay) {
+        callback = next;
+        interval = delay;
+        return { unref() { unrefCalls += 1; } };
+      },
+      clearInterval() {
+        clearCalls += 1;
+        callback = null;
+      },
+    },
+    async tick() {
+      if (callback) await callback();
+    },
+    status() { return { interval, unrefCalls, clearCalls, armed: callback !== null }; },
+  };
 }
 
 function binding(overrides = {}) {
@@ -374,9 +399,95 @@ test('opens a trusted session-storage capability with verify, quota, and close h
   assert.equal(storage.quotaMaxBytes, 1024 * 1024);
   assert.equal((await storage.verify()).sessionId, created.sessionId);
   assert.equal((await storage.reconcileQuota()).sessionId, created.sessionId);
+  assert.deepEqual(await storage.markProjectionUsable(), {
+    marked: true,
+    sessionId: created.sessionId,
+  });
   assert.deepEqual(await storage.close(), { released: true, sessionId: created.sessionId });
   assert.deepEqual(await storage.close(), { released: false, sessionId: created.sessionId });
   await assert.rejects(storage.verify(), { code: 'session_capability_closed' });
+});
+
+test('closing a fresh session before its projection is usable discards only that exact session', async (t) => {
+  const { authority, agentRuntimeRoot } = await fixture(t);
+  const created = await authority.createSession({
+    ownerAgent: 'jerry', operationId: OPERATION_A, binding: binding(),
+  });
+  const storage = await authority.openSessionStorage(created.workerHandle, {
+    ownerAgent: 'jerry', operationId: OPERATION_A,
+  });
+  await fsp.writeFile(created.workerHandle.databasePath, Buffer.alloc(71));
+  const outside = path.join(agentRuntimeRoot, 'preserve.txt');
+  await fsp.writeFile(outside, 'preserve');
+
+  const result = await storage.close();
+
+  assert.deepEqual(result, {
+    discarded: true,
+    reclaimedBytes: result.reclaimedBytes,
+    sessionId: created.sessionId,
+  });
+  assert.equal(result.reclaimedBytes >= 71, true);
+  await assert.rejects(fsp.lstat(created.workerHandle.sessionRoot), { code: 'ENOENT' });
+  await assert.rejects(
+    fsp.lstat(path.join(
+      agentRuntimeRoot, 'pgs-sessions', `${created.sessionId}.authority.json`,
+    )),
+    { code: 'ENOENT' },
+  );
+  assert.equal(await fsp.readFile(outside, 'utf8'), 'preserve');
+});
+
+test('usable fresh and every continuation close by releasing the lease without discarding state', async (t) => {
+  const { authority } = await fixture(t);
+  const created = await authority.createSession({
+    ownerAgent: 'jerry', operationId: OPERATION_A, binding: binding(),
+  });
+  const freshStorage = await authority.openSessionStorage(created.workerHandle, {
+    ownerAgent: 'jerry', operationId: OPERATION_A,
+  });
+  assert.deepEqual(await freshStorage.markProjectionUsable(), {
+    marked: true,
+    sessionId: created.sessionId,
+  });
+  await assert.rejects(
+    authority.discardUnusableSession(created.workerHandle),
+    { code: 'session_discard_denied' },
+  );
+  assert.equal((await fsp.stat(created.workerHandle.databasePath)).isFile(), true);
+  assert.deepEqual(await freshStorage.close(), { released: true, sessionId: created.sessionId });
+  assert.equal((await fsp.stat(created.workerHandle.databasePath)).isFile(), true);
+
+  const continued = await authority.continueSession({
+    sessionId: created.sessionId,
+    ownerAgent: 'jerry',
+    sourceOperationId: OPERATION_A,
+    operationId: OPERATION_B,
+    binding: binding(),
+  });
+  const continuedStorage = await authority.openSessionStorage(continued.workerHandle, {
+    ownerAgent: 'jerry', operationId: OPERATION_B,
+  });
+  assert.deepEqual(await continuedStorage.close(), {
+    released: true,
+    sessionId: created.sessionId,
+  });
+  assert.equal((await fsp.stat(created.workerHandle.databasePath)).isFile(), true);
+});
+
+test('unusable fresh-session discard fails closed after database identity replacement', async (t) => {
+  const { authority } = await fixture(t);
+  const created = await authority.createSession({
+    ownerAgent: 'jerry', operationId: OPERATION_A, binding: binding(),
+  });
+  const storage = await authority.openSessionStorage(created.workerHandle, {
+    ownerAgent: 'jerry', operationId: OPERATION_A,
+  });
+  await fsp.rename(created.workerHandle.databasePath, `${created.workerHandle.databasePath}.old`);
+  await fsp.writeFile(created.workerHandle.databasePath, 'replacement');
+
+  await assert.rejects(storage.close(), { code: 'session_state_invalid' });
+  assert.equal(await fsp.readFile(created.workerHandle.databasePath, 'utf8'), 'replacement');
 });
 
 test('writer capacity is capped by remaining house headroom without reserving inactive sessions', async (t) => {
@@ -612,4 +723,111 @@ test('cleanup skips an expired session while its writer process is still alive',
   assert.equal(cleanup.removedSessions, 0);
   assert.equal(cleanup.skippedActive, 1);
   assert.equal((await fsp.stat(created.workerHandle.databasePath)).isFile(), true);
+});
+
+test('authority startup and the unref hourly janitor reclaim expired lease-free sessions while idle', async (t) => {
+  const janitor = fakeJanitorTimers();
+  const first = await fixture(t, {
+    retentionMs: 1000,
+    janitorIntervalMs: 60 * 60 * 1000,
+    timers: janitor.timers,
+  });
+  const expired = await first.authority.createSession({
+    ownerAgent: 'jerry', operationId: OPERATION_A, binding: binding(),
+  });
+  await fsp.writeFile(expired.workerHandle.databasePath, Buffer.alloc(73));
+  await first.authority.releaseLease(expired.workerHandle);
+  first.now.value += 1001;
+
+  assert.deepEqual(janitor.status(), {
+    interval: 60 * 60 * 1000,
+    unrefCalls: 1,
+    clearCalls: 0,
+    armed: true,
+  });
+  await janitor.tick();
+  await assert.rejects(fsp.lstat(expired.workerHandle.sessionRoot), { code: 'ENOENT' });
+
+  const retained = await first.authority.createSession({
+    ownerAgent: 'jerry', operationId: OPERATION_B, binding: binding(),
+  });
+  await first.authority.releaseLease(retained.workerHandle);
+  first.now.value += 1001;
+  await first.authority.stop();
+  assert.equal(janitor.status().clearCalls, 1);
+  await janitor.tick();
+  assert.equal((await fsp.stat(retained.workerHandle.databasePath)).isFile(), true);
+
+  const restartedJanitor = fakeJanitorTimers();
+  const restarted = await createPgsSessionAuthority({
+    ...first.options,
+    timers: restartedJanitor.timers,
+  });
+  t.after(() => restarted.stop());
+  await assert.rejects(fsp.lstat(retained.workerHandle.sessionRoot), { code: 'ENOENT' });
+  assert.equal(restartedJanitor.status().unrefCalls, 1);
+});
+
+test('janitor reports a code-safe failure, retries, and clears stale health after success', async (t) => {
+  const janitor = fakeJanitorTimers();
+  const { authority, now } = await fixture(t, {
+    retentionMs: 1000,
+    janitorIntervalMs: 60 * 60 * 1000,
+    timers: janitor.timers,
+  });
+  const created = await authority.createSession({
+    ownerAgent: 'jerry', operationId: OPERATION_A, binding: binding(),
+  });
+  await authority.releaseLease(created.workerHandle);
+  now.value += 1001;
+
+  const authorityPath = path.join(
+    path.dirname(created.workerHandle.sessionRoot),
+    `${created.sessionId}.authority.json`,
+  );
+  const validAuthority = await fsp.readFile(authorityPath);
+  await fsp.writeFile(authorityPath, '{');
+  await janitor.tick();
+  await fsp.writeFile(authorityPath, validAuthority);
+
+  const failedStatus = await authority.storageStatus();
+  assert.equal(failedStatus.janitorHealthy, false);
+  assert.equal(failedStatus.lastJanitorErrorCode, 'session_state_invalid');
+  assert.equal(JSON.stringify(failedStatus).includes(authorityPath), false);
+
+  await janitor.tick();
+  const recoveredStatus = await authority.storageStatus();
+  assert.equal(recoveredStatus.janitorHealthy, true);
+  assert.equal(recoveredStatus.lastJanitorErrorCode, null);
+  await assert.rejects(fsp.lstat(created.workerHandle.sessionRoot), { code: 'ENOENT' });
+  await authority.stop();
+});
+
+test('session storage telemetry is aggregate, bounded, and reports active and expiry state', async (t) => {
+  const { authority, now } = await fixture(t, {
+    maxSessionBytes: 1024,
+    maxTotalBytes: 4096,
+  });
+  const active = await authority.createSession({
+    ownerAgent: 'jerry', operationId: OPERATION_A, binding: binding(),
+  });
+  await fsp.writeFile(active.workerHandle.databasePath, Buffer.alloc(100));
+  now.value += 500;
+  const retained = await authority.createSession({
+    ownerAgent: 'jerry', operationId: OPERATION_B, binding: binding({ sourceRevision: 43 }),
+  });
+  await fsp.writeFile(retained.workerHandle.databasePath, Buffer.alloc(200));
+  await authority.releaseLease(retained.workerHandle);
+
+  assert.deepEqual(await authority.storageStatus(), {
+    activeSessions: 1,
+    headroomBytes: 3796,
+    janitorHealthy: true,
+    lastJanitorErrorCode: null,
+    maxSessionBytes: 1024,
+    maxTotalBytes: 4096,
+    nextExpiry: active.continuableUntil,
+    sessionCount: 2,
+    totalBytes: 300,
+  });
 });

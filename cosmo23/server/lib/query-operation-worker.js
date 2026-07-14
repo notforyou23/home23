@@ -261,6 +261,8 @@ function validateContext(context) {
     if (!storage || typeof storage !== 'object'
         || typeof storage.verify !== 'function'
         || typeof storage.reconcileQuota !== 'function'
+        // HOME23 PATCH 61 — fresh projection publication is an explicit capability.
+        || typeof storage.markProjectionUsable !== 'function'
         || typeof storage.close !== 'function') {
       throw invalid('pgsSession storage is invalid');
     }

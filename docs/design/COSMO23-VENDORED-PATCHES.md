@@ -2898,6 +2898,56 @@ and 50 while feeding every progress event through the production reducer.
 
 ---
 
+## Patch 61 — Autonomous PGS retention and unusable-initialization discard
+
+**Vendored production files touched:**
+- `cosmo23/pgs-engine/src/pinned-store.js`
+- `cosmo23/server/lib/brain-operation-worker.js`
+- `cosmo23/server/lib/query-operation-worker.js`
+
+**Home23 integration companion:**
+- `engine/src/dashboard/brain-operations/pgs-session-authority.js`
+
+**Problem:** Seven-day PGS retention was quota-bounded but admission-driven:
+expired sessions were reclaimed only when another PGS create/continue request
+arrived or a caller invoked cleanup directly. An idle installation could
+therefore retain expired multi-hundred-megabyte graph projections indefinitely.
+A newly created session whose initial projection failed before publication also
+had no unambiguous discard boundary, so an unusable partial database could
+consume retained quota until expiry.
+
+**Fix:** Each per-agent session authority now performs the existing exact,
+bounded, no-follow expiry sweep at authority startup and hourly on an unref'd
+timer. Worker shutdown explicitly stops every instantiated authority, clears the
+timer, and drains an in-flight janitor pass. The authority exposes bounded
+internal aggregate storage status: actual bytes, session/active counts,
+configured maxima and headroom, the next expiry, and code-safe janitor health.
+This status is internal authority telemetry, not a user-visible Query surface.
+An hourly failure retains only its typed error code and does not stop later
+passes; the next successful cleanup clears the stale failure before shutdown.
+
+Fresh initialization now has an explicit publication handshake. Session storage
+starts unusable only for a newly created lineage; the pinned store marks it
+usable after the complete schema/binding/projection/quota/identity path succeeds.
+Closing before that mark removes only the exact captured session files and
+anchor. Pre-executor failure uses the same discard authority. A usable fresh
+session, any continuation, a replaced identity, or a noninitial lineage is
+ineligible for discard and fails closed. Fresh/continue semantics and successful
+sweep retention are unchanged.
+
+**Offline verification:** The focused authority tests prove startup cleanup,
+hourly idle cleanup, timer `unref`, explicit stop, bounded telemetry, exact
+unusable-session discard, replacement refusal, failure/retry health recovery,
+and retention of usable fresh and continued sessions. The pinned-store
+integration proves a source failure after
+partial projection bytes discards the real fresh session while preserving its
+operation scratch boundary. Worker tests prove pre-executor fresh cleanup uses
+discard and shutdown stops the authority. Query-worker validation rejects a
+session capability that cannot publish projection usability. No runtime session
+was deleted and no process was restarted.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -3272,3 +3322,5 @@ and 50 while feeding every progress event through the production reducer.
   durable sweep evidence at large-brain scale.
 - **2026-07-13** — Patch 60 makes PGS batch progress settlement-backed and
   binds worker/coordinator event validation to the durable operation type.
+- **2026-07-14** — Patch 61 makes PGS expiry autonomous while idle and discards
+  only a newly created session whose initial projection never became reusable.
