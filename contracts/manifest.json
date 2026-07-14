@@ -370,6 +370,18 @@
       "consumers": ["ios", "mac", "query"]
     },
     {
+      "id": "query-notebook-export",
+      "method": "POST",
+      "base": "dashboard",
+      "route": "/home23/api/query/operations/:operationId/export",
+      "schema": "schemas/query-notebook.schema.json",
+      "definition": "queryNotebookExport",
+      "fixture": "fixtures/query-notebook-export.json",
+      "auth": "required",
+      "liveValidation": "fixture-only",
+      "consumers": ["ios", "mac", "query"]
+    },
+    {
       "id": "query-notebook-cancel",
       "method": "POST",
       "base": "dashboard",

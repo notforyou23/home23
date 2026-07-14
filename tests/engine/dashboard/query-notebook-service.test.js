@@ -456,6 +456,92 @@ test('result detail loads through the requester reader without a caller handle',
   ]);
 });
 
+test('protected export is derived only from the stored bounded notebook result', async () => {
+  const record = queryRecord();
+  const calls = [];
+  const service = createQueryNotebookService({
+    reader: {
+      expectedRequester: 'jerry',
+      async listAuthorized() { return []; },
+      async getAuthorized(operationId) { calls.push(['get', operationId]); return record; },
+      async getResultAuthorized(...args) {
+        calls.push(['result', ...args]);
+        return {
+          answer: 'bounded answer',
+          sweepOutputs: [{ output: 'private sweep output' }],
+          resultHandle: `brres_${'H'.repeat(32)}`,
+          canonicalRoot: '/private/brain',
+          providerPayload: { secret: 'sk-private' },
+        };
+      },
+    },
+    now: () => NOW,
+  });
+
+  const exported = await service.exportQueryNotebookResultAuthorized(
+    OPERATION_ID, { format: 'markdown' },
+  );
+  assert.equal(exported.schemaVersion, 1);
+  assert.equal(exported.operationId, OPERATION_ID);
+  assert.equal(exported.resultVersion, `qrv1_${'v'.repeat(43)}`);
+  assert.equal(exported.format, 'markdown');
+  assert.match(exported.filename, /^home23-query-[A-Za-z0-9_-]{8}\.md$/);
+  assert.equal(exported.mediaType, 'text/markdown; charset=utf-8');
+  assert.equal(exported.content, '# Query Answer\n\nbounded answer\n');
+  assert.equal(exported.bytes, Buffer.byteLength(exported.content, 'utf8'));
+  assert.match(exported.sha256, /^[a-f0-9]{64}$/);
+  assert.deepEqual(calls, [
+    ['get', OPERATION_ID],
+    ['result', OPERATION_ID],
+  ]);
+  for (const forbidden of [
+    'sweepOutputs', 'resultHandle', 'canonicalRoot', '/private/', 'providerPayload', 'sk-private',
+  ]) assert.equal(JSON.stringify(exported).includes(forbidden), false, forbidden);
+
+  await assert.rejects(
+    () => service.exportQueryNotebookResultAuthorized(OPERATION_ID, { format: 'json' }),
+    { code: 'export_format_invalid' },
+  );
+  await assert.rejects(
+    () => service.exportQueryNotebookResultAuthorized(OPERATION_ID, {
+      format: 'markdown', answer: 'caller supplied',
+    }),
+    { code: 'invalid_request' },
+  );
+});
+
+test('protected export rejects absent, expired, and non-text stored results', async () => {
+  let record = queryRecord({
+    state: 'failed', result: null, resultHandle: null, resultArtifact: null,
+    resultExpiresAt: null, notebookResultSummary: null,
+  });
+  let answer = 'unused';
+  const service = createQueryNotebookService({
+    reader: {
+      expectedRequester: 'jerry',
+      async listAuthorized() { return []; },
+      async getAuthorized() { return record; },
+      async getResultAuthorized() { return { answer }; },
+    },
+    now: () => NOW,
+  });
+  await assert.rejects(
+    () => service.exportQueryNotebookResultAuthorized(OPERATION_ID, { format: 'markdown' }),
+    { code: 'result_unavailable' },
+  );
+  record = queryRecord({ result: null, resultExpiredAt: NOW });
+  await assert.rejects(
+    () => service.exportQueryNotebookResultAuthorized(OPERATION_ID, { format: 'markdown' }),
+    { code: 'result_unavailable' },
+  );
+  record = queryRecord();
+  answer = null;
+  await assert.rejects(
+    () => service.exportQueryNotebookResultAuthorized(OPERATION_ID, { format: 'markdown' }),
+    { code: 'result_unavailable' },
+  );
+});
+
 function mutationBoundaries(root = '/brains/jerry') {
   return ['brain', 'run', 'pgs', 'session', 'cache', 'export', 'agency']
     .map(kind => ({ kind, path: `${root}/${kind}` }));

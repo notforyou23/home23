@@ -78,6 +78,7 @@ function buildClientCapabilities(options = {}) {
       queryOperation: '/home23/api/query/operations/{operationId}',
       queryOperationEvents: '/home23/api/query/operations/{operationId}/events',
       queryOperationResult: '/home23/api/query/operations/{operationId}/result',
+      queryOperationExport: '/home23/api/query/operations/{operationId}/export',
       queryOperationCancel: '/home23/api/query/operations/{operationId}/cancel',
       queryOperationActions: '/home23/api/query/operations/{operationId}/actions',
       queryOperationNotifications: '/home23/api/query/operations/{operationId}/notifications',
@@ -118,6 +119,7 @@ function buildClientCapabilities(options = {}) {
       deviceCredentials: true,
       webSessions: true,
       notificationSubscriptions: true,
+      exportFormats: ['markdown'],
     },
     chat: {
       turnStatus: true,

@@ -19,7 +19,7 @@ Verification receipt: `docs/superpowers/reports/2026-06-26-home23-apple-contract
 - Device unregister supports scoped `chat_ids` removal through `DELETE /api/device/register`, returning removed and remaining chat ids.
 - Sauna actions expose backend field metadata (`min`, `max`, `step`, `unit`) so clients can render controls from the contract instead of hardcoded limits.
 - tvOS consumes `/home23/api/client-capabilities` and advertises only its supported subset until it implements full Query and Settings parity.
-- Query notebook v1 publishes strict, redacted inventory, status, progress/gap/terminal events, protected result, cancel, continuation action, notification subscription, device credential, and same-origin web-session contracts. The global dashboard remains `auth.dashboard: none`; every Query notebook manifest entry is independently `auth: required`.
+- Query notebook v1 publishes strict, redacted inventory, status, progress/gap/terminal events, protected result and Markdown export, cancel, continuation action, notification subscription, device credential, and same-origin web-session contracts. The global dashboard remains `auth.dashboard: none`; every Query notebook manifest entry is independently `auth: required`.
 
 ## Target Shape
 
@@ -48,7 +48,7 @@ Home23 Apple clients/
 | Chat | turn start, stream events, pending turns, history, conversations, models | `chat.schema.json` |
 | Settings control plane | status, scope, model defaults, query defaults, agent actions | `settings.schema.json` |
 | Query | defaults, provider catalog, brain registry, request/result/stream/export | `query.schema.json` |
-| Query notebook | protected history, status, truthful progress, result, continuation, cancel, and terminal notification subscription | `query-notebook.schema.json` |
+| Query notebook | protected history, status, truthful progress, result/export, continuation, cancel, and terminal notification subscription | `query-notebook.schema.json` |
 | Home cards | summary, pulse, goals, dreams, sensors, memory, vibe | `home-surfaces.schema.json` |
 | Sauna | tile state and start/stop actions | `sauna.schema.json` |
 | Client handshake | backend feature/version discovery | `client-capabilities.schema.json` |
@@ -78,6 +78,7 @@ Home23 Apple clients/
 - Home and selected-agent dashboard surfaces use the selected agent dashboard port.
 - Query uses the selected-agent dashboard query facade under `/home23/api/query/*`.
 - Query notebook history and operation resources use the protected selected-agent routes under `/home23/api/query/notebook` and `/home23/api/query/operations/{operationId}/*`.
+- Operation-scoped export uses `POST /home23/api/query/operations/{operationId}/export` with only `{ "format": "markdown" }`; its bounded response is derived from the protected canonical result and contains no caller-supplied answer, query, path, filename, handle, or private provider fields.
 - iOS and Mac provision a route-scoped credential from the selected-agent harness at `/api/device/query-credential`; that credential, its token, and generation belong in protected credential storage and never in logs or notebook fixtures.
 - The same-origin web Query surface exchanges its configured bridge bearer at `/home23/api/query/session` for a short-lived HttpOnly session. Cross-origin access and global `auth.dashboard: none` do not grant notebook access.
 - Chat uses the selected agent bridge port.

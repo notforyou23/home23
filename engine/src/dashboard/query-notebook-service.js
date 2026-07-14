@@ -22,6 +22,7 @@ const {
 const QUERY_MAX_CHARS = 12_000;
 const QUESTION_TITLE_MAX_CHARS = 160;
 const ANSWER_MAX_BYTES = 1024 * 1024;
+const NOTEBOOK_EXPORT_MAX_BYTES = ANSWER_MAX_BYTES + 64;
 const SEARCH_MAX_CHARS = 512;
 const CURSOR_MAX_BYTES = 1024;
 const RESULT_VERSION_PATTERN = /^qrv1_[A-Za-z0-9_-]{43}$/;
@@ -744,6 +745,29 @@ function createQueryNotebookService(options) {
     return actions === undefined ? projected : { ...projected, actions };
   }
 
+  async function exportQueryNotebookResultAuthorized(operationId, rawInput) {
+    exactKeys(rawInput, ['format'], 'invalid_request');
+    if (rawInput.format !== 'markdown') throw notebookError('export_format_invalid');
+    const result = await getQueryNotebookResultAuthorized(operationId);
+    if (typeof result.answer !== 'string') throw notebookError('result_unavailable');
+    const content = `# Query Answer\n\n${result.answer}\n`;
+    const bytes = Buffer.byteLength(content, 'utf8');
+    if (!Number.isSafeInteger(bytes) || bytes > NOTEBOOK_EXPORT_MAX_BYTES) {
+      throw notebookError('notebook_result_invalid');
+    }
+    return {
+      schemaVersion: 1,
+      operationId: result.operationId,
+      resultVersion: result.resultVersion,
+      format: 'markdown',
+      filename: `home23-query-${result.operationId.slice(-8)}.md`,
+      mediaType: 'text/markdown; charset=utf-8',
+      bytes,
+      sha256: crypto.createHash('sha256').update(content, 'utf8').digest('hex'),
+      content,
+    };
+  }
+
   async function getQueryNotebookStatusAuthorized(operationId) {
     assertOperationId(operationId);
     let record = await reader.getAuthorized(operationId);
@@ -799,6 +823,7 @@ function createQueryNotebookService(options) {
   }
 
   return Object.freeze({
+    exportQueryNotebookResultAuthorized,
     getQueryNotebookResultAuthorized,
     getQueryNotebookStatusAuthorized,
     listQueryNotebookAuthorized,
@@ -807,6 +832,7 @@ function createQueryNotebookService(options) {
 }
 
 module.exports = {
+  NOTEBOOK_EXPORT_MAX_BYTES,
   createQueryNotebookService,
   decodeNotebookCursor,
   deriveResultAvailability,

@@ -85,6 +85,9 @@
           "kind": "targetedRetry",
           "token": "eyJhY3Rpb24iOiJ0YXJnZXRlZFJldHJ5IiwiZXhwaXJlc0F0IjoiMjAyNi0wNy0xM1QyMTowMDowMC4wMDBaIiwiaXNzdWVkQXQiOiIyMDI2LTA3LTEzVDIwOjAwOjAwLjAwMFoiLCJub25jZSI6InFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxIiwicmVxdWVzdGVyQWdlbnQiOiJqZXJyeSIsInNvdXJjZU9wZXJhdGlvbklkIjoiYnJvcF9BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInYiOjF9.VrI_G177278XPxuWs5Ysq0tdfids8jNiXFnFGv-ILA8",
           "expiresAt": "2026-07-13T21:00:00.000Z"
+        },
+        {
+          "kind": "export"
         }
       ],
       "notification": {

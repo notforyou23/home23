@@ -43,7 +43,7 @@
         "endpoints": {
           "type": "object",
           "additionalProperties": { "type": "string" },
-          "required": ["agents", "settingsStatus", "settingsScope", "settingsModels", "settingsQuery", "chatHealth", "chatModels", "chatTurn", "chatStream", "chatPending", "chatStopTurn", "chatHistory", "chatConversations", "chatTurnStatus", "deviceRegister", "queryCatalog", "queryRun", "queryStream", "queryNotebook", "queryOperation", "queryOperationEvents", "queryOperationResult", "queryOperationCancel", "queryOperationActions", "queryOperationNotifications", "queryDeviceCredential", "queryWebSession", "workers", "media", "saunaTileData"]
+          "required": ["agents", "settingsStatus", "settingsScope", "settingsModels", "settingsQuery", "chatHealth", "chatModels", "chatTurn", "chatStream", "chatPending", "chatStopTurn", "chatHistory", "chatConversations", "chatTurnStatus", "deviceRegister", "queryCatalog", "queryRun", "queryStream", "queryNotebook", "queryOperation", "queryOperationEvents", "queryOperationResult", "queryOperationExport", "queryOperationCancel", "queryOperationActions", "queryOperationNotifications", "queryDeviceCredential", "queryWebSession", "workers", "media", "saunaTileData"]
         },
         "auth": {
           "type": "object",
@@ -78,7 +78,7 @@
         "query": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["facade", "directCosmo", "streaming", "availabilityEndpoint", "notebookVersion", "progressSnapshots", "actionTokens", "deviceCredentials", "webSessions", "notificationSubscriptions"],
+          "required": ["facade", "directCosmo", "streaming", "availabilityEndpoint", "notebookVersion", "progressSnapshots", "actionTokens", "deviceCredentials", "webSessions", "notificationSubscriptions", "exportFormats"],
           "properties": {
             "facade": { "type": "boolean" },
             "directCosmo": { "type": "boolean" },
@@ -89,7 +89,14 @@
             "actionTokens": { "const": true },
             "deviceCredentials": { "const": true },
             "webSessions": { "const": true },
-            "notificationSubscriptions": { "const": true }
+            "notificationSubscriptions": { "const": true },
+            "exportFormats": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1,
+              "prefixItems": [{ "const": "markdown" }],
+              "items": false
+            }
           }
         },
         "chat": {

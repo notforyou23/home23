@@ -481,6 +481,29 @@
         "notification": { "$ref": "#/$defs/notificationState" }
       }
     },
+    "queryNotebookExport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "operationId", "resultVersion", "format", "filename",
+        "mediaType", "bytes", "sha256", "content"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "resultVersion": { "type": "string", "pattern": "^qrv1_[A-Za-z0-9_-]{43}$" },
+        "format": { "const": "markdown" },
+        "filename": {
+          "type": "string",
+          "pattern": "^home23-query-[A-Za-z0-9_-]{8}\\.md$",
+          "maxLength": 26
+        },
+        "mediaType": { "const": "text/markdown; charset=utf-8" },
+        "bytes": { "type": "integer", "minimum": 0, "maximum": 1048640 },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "content": { "type": "string", "maxLength": 1048640 }
+      }
+    },
     "queryNotebookActionResponse": {
       "type": "object",
       "additionalProperties": false,

@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const express = require('express');
 const {
   assertIdentifier,
@@ -14,6 +15,10 @@ const ACTION_ORDER = Object.freeze([
 ]);
 const EXECUTABLE_TOKEN_ACTIONS = new Set(['continueSweep', 'targetedRetry']);
 const QUERY_REQUEST_ID_PATTERN = /^qreq_[A-Za-z0-9_-]{32}$/;
+const RESULT_VERSION_PATTERN = /^qrv1_[A-Za-z0-9_-]{43}$/;
+const EXPORT_FILENAME_PATTERN = /^home23-query-[A-Za-z0-9_-]{8}\.md$/;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const EXPORT_CONTENT_MAX_BYTES = (1024 * 1024) + 64;
 
 function apiError(code, httpStatus, retryable = false, cause) {
   const error = new Error(code, cause ? { cause } : undefined);
@@ -36,7 +41,7 @@ function sendError(res, error) {
   const code = typeof error?.code === 'string' ? error.code : 'query_notebook_internal';
   const status = Number.isInteger(error?.httpStatus) ? error.httpStatus
     : code === 'access_denied' ? 403
-      : ['operation_not_found', 'result_not_found'].includes(code) ? 404
+      : ['operation_not_found', 'result_not_found', 'result_unavailable'].includes(code) ? 404
         : code === 'result_expired' ? 410
           : ['operation_terminal', 'idempotency_conflict'].includes(code) ? 409
             : ['operation_unavailable', 'query_notebook_auth_unavailable'].includes(code) ? 503
@@ -275,10 +280,15 @@ function tokenActions(raw) {
   return actions;
 }
 
-function decorateActions(value, status = value) {
+function decorateActions(value, status = value, exportConfigured = false) {
   const projected = tokenActions(value.actions);
   const byKind = new Map(projected.map((action) => [action.kind, action]));
   if (status.resultAvailability === 'available') byKind.set('openResult', { kind: 'openResult' });
+  if (exportConfigured
+      && status.resultAvailability === 'available'
+      && status.answerPreviewAvailable === true) {
+    byKind.set('export', { kind: 'export' });
+  }
   if (status.executionState === 'queued' || status.executionState === 'running') {
     byKind.set('cancel', { kind: 'cancel' });
   }
@@ -299,6 +309,7 @@ function createHome23QueryNotebookRouter(options = {}) {
     throw apiError('invalid_request', 400, false, error);
   }
   const { auth, notebookService, getStatusAuthorized, coordinator } = options;
+  const exportConfigured = typeof notebookService?.exportQueryNotebookResultAuthorized === 'function';
   if (!auth || typeof auth.requireCredential !== 'function' || typeof auth.createSession !== 'function'
       || !notebookService
       || typeof notebookService.listQueryNotebookAuthorized !== 'function'
@@ -330,7 +341,7 @@ function createHome23QueryNotebookRouter(options = {}) {
   }
 
   async function decorateForRequest(value, identity, current = value, activeSubscriptions) {
-    const decorated = decorateActions(value, current);
+    const decorated = decorateActions(value, current, exportConfigured);
     const entries = activeSubscriptions ?? await loadActiveSubscriptions(
       identity, current.operationId
     );
@@ -388,6 +399,57 @@ function createHome23QueryNotebookRouter(options = {}) {
       throw apiError('notebook_projection_invalid', 500);
     }
     res.json(await decorateForRequest(result, req.queryNotebookIdentity, current));
+  }));
+
+  router.post('/operations/:operationId/export', asyncRoute(async (req, res) => {
+    assertNoQuery(req);
+    if (!exportConfigured) throw apiError('operation_unavailable', 503, true);
+    const current = await status(req.params.operationId);
+    if (current.resultAvailability === 'expired') {
+      throw apiError('result_expired', 410);
+    }
+    if (current.resultAvailability !== 'available') {
+      throw apiError('result_unavailable', 404);
+    }
+    const body = exactKeys(req.body, ['format']);
+    if (body.format !== 'markdown') throw apiError('export_format_invalid', 400);
+    const raw = await notebookService.exportQueryNotebookResultAuthorized(
+      req.params.operationId, { format: body.format },
+    );
+    if (!raw || Array.isArray(raw) || typeof raw !== 'object'
+        || Reflect.ownKeys(raw).some((key) => typeof key !== 'string'
+          || ![
+            'schemaVersion', 'operationId', 'resultVersion', 'format', 'filename',
+            'mediaType', 'bytes', 'sha256', 'content',
+          ].includes(key))
+        || Reflect.ownKeys(raw).length !== 9
+        || raw.schemaVersion !== 1
+        || raw.operationId !== req.params.operationId
+        || !RESULT_VERSION_PATTERN.test(raw.resultVersion)
+        || raw.resultVersion !== current.resultVersion
+        || raw.format !== 'markdown'
+        || !EXPORT_FILENAME_PATTERN.test(raw.filename)
+        || raw.mediaType !== 'text/markdown; charset=utf-8'
+        || !Number.isSafeInteger(raw.bytes) || raw.bytes < 0
+        || raw.bytes > EXPORT_CONTENT_MAX_BYTES
+        || typeof raw.content !== 'string'
+        || Buffer.byteLength(raw.content, 'utf8') !== raw.bytes
+        || !SHA256_PATTERN.test(raw.sha256)
+        || crypto.createHash('sha256').update(raw.content, 'utf8').digest('hex') !== raw.sha256) {
+      throw apiError('notebook_projection_invalid', 500);
+    }
+    res.setHeader('cache-control', 'no-store');
+    res.json({
+      schemaVersion: raw.schemaVersion,
+      operationId: raw.operationId,
+      resultVersion: raw.resultVersion,
+      format: raw.format,
+      filename: raw.filename,
+      mediaType: raw.mediaType,
+      bytes: raw.bytes,
+      sha256: raw.sha256,
+      content: raw.content,
+    });
   }));
 
   router.post('/operations/:operationId/cancel', asyncRoute(async (req, res) => {

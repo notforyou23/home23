@@ -39,6 +39,7 @@ test('client capabilities payload validates and advertises platform truth', () =
   assert.equal(payload.query.deviceCredentials, true);
   assert.equal(payload.query.webSessions, true);
   assert.equal(payload.query.notificationSubscriptions, true);
+  assert.deepEqual(payload.query.exportFormats, ['markdown']);
   assert.equal(payload.auth.dashboard, 'none');
   assert.equal(payload.auth.queryNotebook, 'required');
   assert.deepEqual(payload.auth.queryNotebookMethods, [
@@ -53,6 +54,8 @@ test('client capabilities payload validates and advertises platform truth', () =
     '/home23/api/query/operations/{operationId}/events');
   assert.equal(payload.endpoints.queryOperationResult,
     '/home23/api/query/operations/{operationId}/result');
+  assert.equal(payload.endpoints.queryOperationExport,
+    '/home23/api/query/operations/{operationId}/export');
   assert.equal(payload.endpoints.queryOperationCancel,
     '/home23/api/query/operations/{operationId}/cancel');
   assert.equal(payload.endpoints.queryOperationActions,

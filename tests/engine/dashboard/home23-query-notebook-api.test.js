@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -270,6 +271,8 @@ test('device bearer requires exact audience, agent, device ID, and current gener
   app.get('/protected', auth.requireCredential, (req, res) => {
     res.json({ identity: req.queryNotebookIdentity });
   });
+  app.post(`/home23/api/query/operations/${OPERATION_ID}/export`, express.json(),
+    auth.requireCredential, (req, res) => res.json({ accepted: req.body.format }));
   const server = await listen(app);
   t.after(server.close);
   const get = (token, deviceId = CREDENTIAL_ID) => fetch(`${server.base}/protected`, {
@@ -286,6 +289,19 @@ test('device bearer requires exact audience, agent, device ID, and current gener
     await get('expired-device'),
     await get('valid-device', `qncred_${'X'.repeat(32)}`),
   ]) assert.equal(response.status, 401);
+
+  const wrongDeviceExport = await fetch(
+    `${server.base}/home23/api/query/operations/${OPERATION_ID}/export`, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer valid-device',
+        'x-home23-device-id': `qncred_${'X'.repeat(32)}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ format: 'markdown' }),
+    },
+  );
+  assert.equal(wrongDeviceExport.status, 401);
 
   generation = 3;
   assert.equal((await get('valid-device')).status, 401);
@@ -558,6 +574,18 @@ test('protected facade serves only requester-bound redacted list, status, result
         continuation: status.continuation, actions: status.actions,
       };
     },
+    async exportQueryNotebookResultAuthorized(operationId, input) {
+      assert.equal(operationId, OPERATION_ID);
+      assert.deepEqual(input, { format: 'markdown' });
+      const content = '# Query Answer\n\nbounded answer\n';
+      return {
+        schemaVersion: 1, operationId, resultVersion: status.resultVersion,
+        format: 'markdown', filename: 'home23-query-AAAAAAAA.md',
+        mediaType: 'text/markdown; charset=utf-8',
+        bytes: Buffer.byteLength(content),
+        sha256: crypto.createHash('sha256').update(content, 'utf8').digest('hex'), content,
+      };
+    },
     async resolveAction(input) {
       actionCalls.push(input);
       return {
@@ -597,7 +625,7 @@ test('protected facade serves only requester-bound redacted list, status, result
   const list = await jsonRequest(server.base, '/home23/api/query/notebook?limit=25&state=finished');
   assert.equal(list.response.status, 200);
   assert.deepEqual(list.body.items[0].actions.map(({ kind }) => kind), [
-    'openResult', 'continueSweep',
+    'openResult', 'continueSweep', 'export',
   ]);
   assert.deepEqual(list.body.items[0].notification, {
     subscribed: false, deliveryState: null,
@@ -614,8 +642,32 @@ test('protected facade serves only requester-bound redacted list, status, result
   assert.equal(result.response.status, 200);
   assert.equal(result.body.answer, 'bounded answer');
   assert.deepEqual(result.body.actions.map(({ kind }) => kind), [
-    'openResult', 'continueSweep',
+    'openResult', 'continueSweep', 'export',
   ]);
+
+  const exported = await jsonRequest(server.base,
+    `/home23/api/query/operations/${OPERATION_ID}/export`, {
+      method: 'POST', body: { format: 'markdown' },
+    });
+  assert.equal(exported.response.status, 200);
+  assert.equal(exported.response.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(exported.body, {
+    schemaVersion: 1, operationId: OPERATION_ID, resultVersion: status.resultVersion,
+    format: 'markdown', filename: 'home23-query-AAAAAAAA.md',
+    mediaType: 'text/markdown; charset=utf-8', bytes: 31,
+    sha256: crypto.createHash('sha256')
+      .update('# Query Answer\n\nbounded answer\n', 'utf8').digest('hex'),
+    content: '# Query Answer\n\nbounded answer\n',
+  });
+  for (const forbidden of ['resultHandle', 'relativePath', 'exportedTo', '/private/']) {
+    assert.equal(JSON.stringify(exported.body).includes(forbidden), false, forbidden);
+  }
+  for (const field of ['answer', 'query', 'path', 'resultHandle', 'metadata', 'fileName']) {
+    assert.equal((await jsonRequest(server.base,
+      `/home23/api/query/operations/${OPERATION_ID}/export`, {
+        method: 'POST', body: { format: 'markdown', [field]: 'caller-controlled' },
+      })).response.status, 400, field);
+  }
 
   const action = await jsonRequest(server.base,
     `/home23/api/query/operations/${OPERATION_ID}/actions`, {
@@ -645,6 +697,10 @@ test('protected facade serves only requester-bound redacted list, status, result
   assert.equal(cancelled.body.executionState, 'cancelled');
   assert.deepEqual(cancelCalls, [OPERATION_ID]);
   assert.deepEqual(cancelled.body.actions.map(({ kind }) => kind), ['none']);
+  assert.equal((await jsonRequest(server.base,
+    `/home23/api/query/operations/${OPERATION_ID}/export`, {
+      method: 'POST', body: { format: 'markdown' },
+    })).response.status, 404);
 
   assert.equal((await jsonRequest(server.base,
     `/home23/api/query/operations/${OPERATION_ID}?unexpected=1`)).response.status, 400);
@@ -659,6 +715,110 @@ test('protected facade serves only requester-bound redacted list, status, result
   assert.equal((await jsonRequest(server.base, '/home23/api/query/session', {
     method: 'POST', body: {},
   })).response.status, 400);
+});
+
+test('protected export preserves expired, race-lost, and foreign authority errors', async (t) => {
+  const { createHome23QueryNotebookRouter } = require(
+    '../../../engine/src/dashboard/home23-query-notebook-api.js'
+  );
+  let current = notebookSummary({
+    resultAvailability: 'expired', resultVersion: null, answerPreviewAvailable: false,
+  });
+  let exportError = null;
+  const router = createHome23QueryNotebookRouter({
+    requesterAgent: 'jerry', auth: acceptedAuth(),
+    notebookService: {
+      async listQueryNotebookAuthorized() {
+        return { schemaVersion: 1, items: [], nextCursor: null };
+      },
+      async getQueryNotebookResultAuthorized() { throw new Error('not used'); },
+      async exportQueryNotebookResultAuthorized() {
+        if (exportError) throw exportError;
+        throw new Error('should not export unavailable status');
+      },
+      async resolveAction() { throw new Error('not used'); },
+    },
+    getStatusAuthorized: async () => current,
+    coordinator: { async cancel() {}, async attach() {}, async detach() {} },
+  });
+  const app = express();
+  app.use('/home23/api/query', express.json(), router);
+  const server = await listen(app);
+  t.after(server.close);
+  const call = () => jsonRequest(server.base,
+    `/home23/api/query/operations/${OPERATION_ID}/export`, {
+      method: 'POST', body: { format: 'markdown' },
+    });
+
+  let response = await call();
+  assert.equal(response.response.status, 410);
+  assert.equal(response.body.error.code, 'result_expired');
+
+  current = notebookSummary({
+    resultAvailability: 'available', resultVersion: `qrv1_${'V'.repeat(43)}`,
+  });
+  exportError = Object.assign(new Error('result_unavailable'), { code: 'result_unavailable' });
+  response = await call();
+  assert.equal(response.response.status, 404);
+  assert.equal(response.body.error.code, 'result_unavailable');
+
+  current = { ...current, requesterAgent: 'forrest' };
+  response = await call();
+  assert.equal(response.response.status, 403);
+  assert.equal(response.body.error.code, 'access_denied');
+});
+
+test('configured export stays hidden for an available non-text result across projections', async (t) => {
+  const { createHome23QueryNotebookRouter } = require(
+    '../../../engine/src/dashboard/home23-query-notebook-api.js'
+  );
+  const current = notebookSummary({
+    resultAvailability: 'available', answerPreviewAvailable: false,
+  });
+  const result = {
+    schemaVersion: 1,
+    operationId: OPERATION_ID,
+    resultVersion: current.resultVersion,
+    answer: null,
+    coverage: current.coverage,
+    continuation: current.continuation,
+    actions: current.actions,
+  };
+  const router = createHome23QueryNotebookRouter({
+    requesterAgent: 'jerry', auth: acceptedAuth(),
+    notebookService: {
+      async listQueryNotebookAuthorized() {
+        return { schemaVersion: 1, items: [current], nextCursor: null };
+      },
+      async getQueryNotebookResultAuthorized() { return result; },
+      async exportQueryNotebookResultAuthorized() {
+        throw Object.assign(new Error('result_unavailable'), { code: 'result_unavailable' });
+      },
+      async resolveAction() { throw new Error('not used'); },
+    },
+    getStatusAuthorized: async () => current,
+    coordinator: { async cancel() {}, async attach() {}, async detach() {} },
+  });
+  const app = express();
+  app.use('/home23/api/query', express.json(), router);
+  const server = await listen(app);
+  t.after(server.close);
+
+  const inventory = await jsonRequest(server.base, '/home23/api/query/notebook');
+  const status = await jsonRequest(server.base,
+    `/home23/api/query/operations/${OPERATION_ID}`);
+  const protectedResult = await jsonRequest(server.base,
+    `/home23/api/query/operations/${OPERATION_ID}/result`);
+  for (const projection of [inventory.body.items[0], status.body, protectedResult.body]) {
+    assert.equal(projection.actions.some(({ kind }) => kind === 'export'), false);
+    assert.equal(projection.actions.some(({ kind }) => kind === 'openResult'), true);
+  }
+  const exported = await jsonRequest(server.base,
+    `/home23/api/query/operations/${OPERATION_ID}/export`, {
+      method: 'POST', body: { format: 'markdown' },
+    });
+  assert.equal(exported.response.status, 404);
+  assert.equal(exported.body.error.code, 'result_unavailable');
 });
 
 test('notebook inventory loads active subscriptions once for the whole page', async (t) => {
@@ -721,6 +881,10 @@ test('facade action algebra exposes only routes backed by executable authority',
   assert.deepEqual(projected.actions.map(({ kind }) => kind), ['openResult', 'targetedRetry']);
   assert.equal(projected.actions.some(({ kind }) => kind === 'retryFresh'), false);
   assert.equal(projected.actions.some(({ kind }) => kind === 'export'), false);
+  const nonText = decorateActions(notebookSummary({
+    answerPreviewAvailable: false,
+  }), notebookSummary({ answerPreviewAvailable: false }), true);
+  assert.equal(nonText.actions.some(({ kind }) => kind === 'export'), false);
   assert.throws(() => decorateActions(notebookSummary({
     actions: [{
       kind: 'continueSweep', token: 'opaque', expiresAt: '2026-07-13T20:30:00Z',

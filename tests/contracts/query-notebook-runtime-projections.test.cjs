@@ -58,6 +58,7 @@ const FIXTURE_NAMES = Object.freeze([
   'query-notebook-gap-event',
   'query-notebook-terminal-event',
   'query-notebook-result',
+  'query-notebook-export',
   'query-notebook-cancel',
   'query-notebook-action',
   'query-notebook-notification',
@@ -68,7 +69,7 @@ const FIXTURE_NAMES = Object.freeze([
 // This independent corpus pin makes coordinated runtime+fixture shape drift fail until
 // a reviewer deliberately accepts a new public contract.
 const EXPECTED_FIXTURE_CORPUS_SHA256 =
-  '2406b35fabaeba83573d5c565104dbe7d6d4f4162ddc0ad72f940066abd809eb';
+  '9598c8cd1433b3407291ddc2ae0ebb0aaa59481a17d3c2677a46cf2518829df4';
 
 function fixture(name) {
   return JSON.parse(fs.readFileSync(
@@ -489,6 +490,10 @@ async function runtimeProjectionCorpus(t) {
     `/home23/api/query/operations/${IDS.status}`, { headers: deviceHeaders });
   const result = await jsonRequest(dashboardServer.base,
     `/home23/api/query/operations/${IDS.page}/result`, { headers: deviceHeaders });
+  const exported = await jsonRequest(dashboardServer.base,
+    `/home23/api/query/operations/${IDS.page}/export`, {
+      method: 'POST', body: { format: 'markdown' }, headers: deviceHeaders,
+    });
   const cancel = await jsonRequest(dashboardServer.base,
     `/home23/api/query/operations/${IDS.cancel}/cancel`, {
       method: 'POST', body: {}, headers: deviceHeaders,
@@ -529,7 +534,9 @@ async function runtimeProjectionCorpus(t) {
     },
   });
 
-  for (const response of [page, status, result, cancel, action, notification, webSession]) {
+  for (const response of [
+    page, status, result, exported, cancel, action, notification, webSession,
+  ]) {
     assert.ok(response.response.ok, `${response.response.status}: ${canonicalJson(response.body)}`);
   }
   return {
@@ -539,6 +546,7 @@ async function runtimeProjectionCorpus(t) {
     'query-notebook-gap-event': byType.get('gap'),
     'query-notebook-terminal-event': byType.get('terminal'),
     'query-notebook-result': result.body,
+    'query-notebook-export': exported.body,
     'query-notebook-cancel': cancel.body,
     'query-notebook-action': action.body,
     'query-notebook-notification': notification.body,
