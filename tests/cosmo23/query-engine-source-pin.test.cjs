@@ -110,6 +110,7 @@ function operationOptions(pin, extra = {}) {
   return {
     sourcePin: pin,
     modelSelection: { provider: 'alpha', model: 'answer-model' },
+    mode: 'full',
     signal: new AbortController().signal,
     ...extra,
   };
@@ -130,6 +131,10 @@ test('operation query uses only the pinned iterator and exact provider pair', as
   assert.equal(pin.releaseCount(), 0);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].maxOutputTokens, 256);
+  assert.equal(calls[0].reasoningEffort, 'high');
+  assert.equal(calls[0].verbosity, 'high');
+  assert.match(calls[0].instructions, /findings/i);
+  assert.match(calls[0].instructions, /projection limit/i);
   assert.equal(calls[0].maxOutputBytes, 8 * 1024 * 1024);
   assert.equal(calls[0].provider, 'alpha');
   assert.equal(calls[0].model, 'answer-model');
@@ -154,6 +159,40 @@ test('operation query uses only the pinned iterator and exact provider pair', as
       model: 'answer-model', providerCallId: 'query', outcome: 'complete',
     },
   ]);
+});
+
+test('operation query sends the exact selected mode policy to the provider', async () => {
+  const highCeilingCatalog = {
+    version: 1,
+    providers: {
+      alpha: {
+        models: [model('alpha', 'answer-model', {
+          contextWindowTokens: 256_000,
+          maxOutputTokens: 50_000,
+        })],
+      },
+    },
+    defaults: {},
+  };
+  const { engine, calls } = fixture({ catalog: highCeilingCatalog });
+  const expected = [
+    ['quick', 'low', 'low', 2_500, /strongest matching evidence/i],
+    ['full', 'high', 'high', 25_000, /findings.*evidence.*implications.*gaps/is],
+    ['expert', 'high', 'high', 30_000, /contradictions.*confidence.*unresolved questions/is],
+    ['dive', 'high', 'high', 32_000, /themes.*non-obvious connections.*convergence/is],
+  ];
+
+  for (const [mode] of expected) {
+    await engine.executeQuery('alpha canary', operationOptions(sourcePin(), { mode }));
+  }
+
+  assert.equal(calls.length, expected.length);
+  expected.forEach(([mode, reasoningEffort, verbosity, maxOutputTokens, instruction], index) => {
+    assert.equal(calls[index].reasoningEffort, reasoningEffort, mode);
+    assert.equal(calls[index].verbosity, verbosity, mode);
+    assert.equal(calls[index].maxOutputTokens, maxOutputTokens, mode);
+    assert.match(calls[index].instructions, instruction, mode);
+  });
 });
 
 test('operation query never forwards vector payloads and leaves pinned evidence untouched', async () => {

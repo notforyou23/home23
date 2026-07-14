@@ -37,6 +37,7 @@ const {
 const { boundedJsonStringify } = require('./bounded-json');
 const { boundedLimits, projectPinnedQuery } = require('./pinned-query-projection');
 const { QUERY_OPERATION_LIMITS } = require('./brain-operation-limits');
+const { queryModePolicy } = require('./query-mode-policy');
 const {
   assertProviderInputWithinBudget,
   resolveProviderInputBudget,
@@ -1635,20 +1636,15 @@ STYLE:
       throw operationError('provider_model_mismatch', 'Provider client identity mismatch');
     }
 
-    const mode = typeof options.mode === 'string' && options.mode.trim()
-      ? options.mode.trim()
-      : 'normal';
+    const mode = options.mode ?? 'full';
+    const modePolicy = queryModePolicy(mode);
     const priorContext = options.priorContext && typeof options.priorContext === 'object'
       ? {
         query: String(options.priorContext.query || ''),
         answer: String(options.priorContext.answer || ''),
       }
       : null;
-    const instructions = [
-      'Answer from the pinned Home23 brain evidence supplied in the input.',
-      'Distinguish evidence from inference and do not claim coverage beyond the pinned source.',
-      'Return a direct, useful answer to the query.',
-    ].join(' ');
+    const instructions = modePolicy.instructions;
     const selectedLimits = boundedLimits(options.limits || this.operationLimits || {});
     const promptBudget = resolveProviderInputBudget(capabilities, {
       maxInputBytes: selectedLimits.maxPromptBytes,
@@ -1751,7 +1747,12 @@ STYLE:
         model,
         instructions,
         input,
-        maxOutputTokens: capabilities.maxOutputTokens,
+        reasoningEffort: modePolicy.reasoningEffort,
+        verbosity: modePolicy.verbosity,
+        maxOutputTokens: Math.min(
+          modePolicy.maxOutputTokens,
+          capabilities.maxOutputTokens,
+        ),
         maxOutputBytes: maxResultBytes,
         signal,
         onChunk: options.onChunk || null,
