@@ -153,10 +153,19 @@ function fakeQuerySystem({ includeGap = true } = {}) {
         pgsAfterZeroCalls += 1;
         if (pgsAfterZeroCalls === 1) return sseResponse([runningSnapshot]);
         const frames = [terminalSnapshot];
-        if (includeGap) frames.push({ event: 'gap', data: {
-          ...fixture('query-notebook-gap-event'), operationId, eventSequence: 30,
-          fromSequence: 1, toSequence: 30,
-        } });
+        if (includeGap) {
+          for (let sequence = 21; sequence <= 25; sequence += 1) {
+            const progressEvent = structuredClone(fixture('query-notebook-progress-event'));
+            progressEvent.operationId = operationId;
+            progressEvent.eventSequence = sequence;
+            progressEvent.progress.eventSequence = sequence;
+            frames.push({ event: 'progress', data: progressEvent });
+          }
+          frames.push({ event: 'gap', data: {
+            ...fixture('query-notebook-gap-event'), operationId, eventSequence: 30,
+            fromSequence: 1, toSequence: 30,
+          } });
+        }
         return sseResponse(frames);
       }
       return sseResponse([terminalSnapshot]);
@@ -338,6 +347,58 @@ test('activity-aware waiting resets the stall clock and enforces monotonic progr
   assert.deepEqual(emitted[1].progress, { eventSequence: 2, completed: 1, total: 3 });
 });
 
+test('progress monotonicity permits only canonical candidate replacement and synthesis resets', async () => {
+  const { waitForTerminal } = await verifier();
+  const run = async (statuses) => waitForTerminal({
+    readStatus: async () => statuses.shift(),
+    now: () => 0, sleepImpl: async () => {}, pollIntervalMs: 1,
+    hardTimeoutMs: 10_000, stallTimeoutMs: 10_000,
+  });
+
+  await run([
+    { executionState: 'running', progress: { version: 1, stage: 'preparing_source',
+      eventSequence: 1, candidateWorkUnits: 100 } },
+    { executionState: 'running', progress: { version: 1, stage: 'selecting_work',
+      eventSequence: 2, candidateWorkUnits: 12 } },
+    { executionState: 'complete', progress: { version: 1, stage: 'terminal',
+      eventSequence: 3, candidateWorkUnits: 12 } },
+  ]);
+  await assert.rejects(run([
+    { executionState: 'running', progress: { version: 1, stage: 'selecting_work',
+      eventSequence: 1, candidateWorkUnits: 12 } },
+    { executionState: 'running', progress: { version: 1, stage: 'sweeping',
+      eventSequence: 2, candidateWorkUnits: 11 } },
+  ]), { code: 'progress_not_monotonic' });
+  await assert.rejects(run([
+    { executionState: 'running', progress: { version: 1, stage: 'preparing_source',
+      eventSequence: 1, candidateWorkUnits: 100 } },
+    { executionState: 'running', progress: { version: 1, stage: 'sweeping',
+      eventSequence: 2, candidateWorkUnits: 12 } },
+  ]), { code: 'progress_not_monotonic' });
+
+  await run([
+    { executionState: 'running', progress: { version: 1, stage: 'synthesizing',
+      eventSequence: 1, synthesisLevel: 1, synthesisBatch: 4, synthesisBatches: 4 } },
+    { executionState: 'running', progress: { version: 1, stage: 'synthesizing',
+      eventSequence: 2, synthesisLevel: 2, synthesisBatch: 1, synthesisBatches: 2 } },
+    { executionState: 'complete', progress: { version: 1, stage: 'terminal',
+      eventSequence: 3, synthesisLevel: 2, synthesisBatch: 2, synthesisBatches: 2 } },
+  ]);
+  for (const [previous, reset] of [
+    [{ synthesisBatch: 4, synthesisBatches: 4 },
+      { synthesisLevel: 2, synthesisBatch: 1, synthesisBatches: 4 }],
+    [{ synthesisBatch: 3, synthesisBatches: 4 },
+      { synthesisLevel: 2, synthesisBatch: 3, synthesisBatches: 3 }],
+  ]) {
+    await assert.rejects(run([
+      { executionState: 'running', progress: { version: 1, stage: 'synthesizing',
+        eventSequence: 1, synthesisLevel: 2, ...previous } },
+      { executionState: 'running', progress: { version: 1, stage: 'synthesizing',
+        eventSequence: 2, ...reset } },
+    ]), { code: 'progress_not_monotonic' });
+  }
+});
+
 test('public projections use the exact contract schema and PGS evidence proves the requested path', async () => {
   const { assertPgsAcceptance, validatePublicProjection } = await verifier();
   const status = fixture('query-notebook-page').items[0];
@@ -457,7 +518,7 @@ test('receipt projection redacts secrets, rejects forbidden result fields, and i
   }
 });
 
-test('integrated verifier proves PGS routing and rejects a fake server-gap success', async () => {
+test('integrated verifier scans retained pre-gap frames and rejects a fake server-gap success', async () => {
   const { parseOptions, runVerifier } = await verifier();
   const run = async (includeGap) => {
     const system = fakeQuerySystem({ includeGap });

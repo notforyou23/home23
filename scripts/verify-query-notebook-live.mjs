@@ -47,7 +47,10 @@ const PROGRESS_COUNTERS = [
   'successful', 'failed', 'reused', 'pending', 'retryable', 'total',
   'synthesisLevel', 'synthesisBatch', 'synthesisBatches',
 ];
-const MONOTONIC_COUNTERS = PROGRESS_COUNTERS.filter((key) => key !== 'pending');
+const CUMULATIVE_COUNTERS = [
+  'sourceNodes', 'sourceEdges', 'candidateWorkUnits', 'selected', 'completed',
+  'successful', 'failed', 'reused', 'retryable', 'total',
+];
 
 export const HELP = `Usage:
   node scripts/verify-query-notebook-live.mjs \\
@@ -456,7 +459,11 @@ function assertMonotonic(previous, next) {
   if (previousStage >= 0 && nextStage >= 0 && nextStage < previousStage) {
     throw errorWithCode('progress_not_monotonic');
   }
-  for (const key of MONOTONIC_COUNTERS) {
+  const allowCandidateReplacement = previousStage >= 0
+    && previousStage < PROGRESS_STAGES.indexOf('selecting_work')
+    && next.stage === 'selecting_work';
+  for (const key of CUMULATIVE_COUNTERS) {
+    if (key === 'candidateWorkUnits' && allowCandidateReplacement) continue;
     if (Number.isSafeInteger(previous[key]) && Number.isSafeInteger(next[key])
         && next[key] < previous[key]) throw errorWithCode('progress_not_monotonic');
   }
@@ -466,6 +473,20 @@ function assertMonotonic(previous, next) {
       ? next.selected - previous.selected : 0;
     const pendingDelta = next.pending - previous.pending;
     if (selectedDelta < pendingDelta) throw errorWithCode('progress_not_monotonic');
+  }
+  if (Number.isSafeInteger(previous.synthesisLevel)
+      && Number.isSafeInteger(next.synthesisLevel)
+      && next.synthesisLevel < previous.synthesisLevel) {
+    throw errorWithCode('progress_not_monotonic');
+  }
+  const synthesisLevelAdvanced = Number.isSafeInteger(previous.synthesisLevel)
+    && Number.isSafeInteger(next.synthesisLevel)
+    && next.synthesisLevel > previous.synthesisLevel;
+  if (!synthesisLevelAdvanced) {
+    for (const key of ['synthesisBatch', 'synthesisBatches']) {
+      if (Number.isSafeInteger(previous[key]) && Number.isSafeInteger(next[key])
+          && next[key] < previous[key]) throw errorWithCode('progress_not_monotonic');
+    }
   }
   for (const key of ['lastProviderActivityAt', 'lastProgressAt']) {
     if (previous[key] !== undefined && next[key] !== undefined
@@ -1052,7 +1073,9 @@ function parseSseBlock(block) {
   return { event, id, data: parsed };
 }
 
-export async function readSseFrames(response, { signal, maxEvents = MAX_SSE_EVENTS } = {}) {
+export async function readSseFrames(response, {
+  signal, maxEvents = MAX_SSE_EVENTS, stopWhen = () => false,
+} = {}) {
   const frames = [];
   if (!response.body) throw errorWithCode('event_stream_invalid');
   const decoder = new TextDecoder();
@@ -1070,7 +1093,7 @@ export async function readSseFrames(response, { signal, maxEvents = MAX_SSE_EVEN
         if (Buffer.byteLength(block) > MAX_SSE_FRAME_BYTES) throw errorWithCode('event_frame_too_large');
         const frame = parseSseBlock(block);
         if (frame) frames.push(frame);
-        if (frames.length >= maxEvents || frame?.event === 'done') return frames;
+        if (frames.length >= maxEvents || frame?.event === 'done' || stopWhen(frame)) return frames;
       }
     }
   } catch (error) {
@@ -1079,7 +1102,9 @@ export async function readSseFrames(response, { signal, maxEvents = MAX_SSE_EVEN
   return frames;
 }
 
-async function observeNotebookSse(options, credential, operationId, afterSequence, maxEvents = 2) {
+async function observeNotebookSse(
+  options, credential, operationId, afterSequence, maxEvents = 2, stopWhen = () => false,
+) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.sseObserveMs);
   timer.unref?.();
@@ -1097,7 +1122,7 @@ async function observeNotebookSse(options, credential, operationId, afterSequenc
     if (!response.ok || !String(response.headers.get('content-type')).startsWith('text/event-stream')) {
       throw errorWithCode('event_stream_unavailable', `SSE returned HTTP ${response.status}`);
     }
-    return await readSseFrames(response, { signal: controller.signal, maxEvents });
+    return await readSseFrames(response, { signal: controller.signal, maxEvents, stopWhen });
   } finally {
     clearTimeout(timer);
     controller.abort();
@@ -1291,7 +1316,8 @@ export async function runVerifier(options) {
     detail: { ...pgsResult.receipt, pgsEvidence } });
 
   const gapFrames = await observeNotebookSse(
-    options, credential, pgsStart.operationId, 0, 4,
+    options, credential, pgsStart.operationId, 0, MAX_SSE_EVENTS,
+    (frame) => frame?.data?.type === 'gap' || frame?.data?.type === 'terminal',
   );
   const gap = await proveServerGapFrames({
     frames: gapFrames,
