@@ -1264,6 +1264,8 @@ class BrainOperationStore {
   }
 
   async _ensureAcceptedAt(operationId) {
+    const current = await this._readPrivateRecord(operationId);
+    if (current.acceptedAt !== null) return current;
     return this._withOperationLock(operationId, async (record) => {
       if (record.acceptedAt !== null) return record;
       const candidates = [
