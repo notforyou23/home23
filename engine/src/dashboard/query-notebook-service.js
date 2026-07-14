@@ -18,6 +18,9 @@ const {
 const {
   validateQueryProgressSnapshot,
 } = require('./brain-operations/query-progress.js');
+const {
+  normalizeNotebookRecordForProjection,
+} = require('./query-notebook-compatibility.js');
 
 const QUERY_MAX_CHARS = 12_000;
 const QUESTION_TITLE_MAX_CHARS = 160;
@@ -36,6 +39,7 @@ const QUERY_MODES = new Set([
 ]);
 const PGS_MODES = new Set(['fresh', 'continue', 'targeted']);
 const PGS_LEVELS = new Set(['skim', 'sample', 'deep', 'full']);
+const DISPLAY_PGS_LEVELS = new Set([...PGS_LEVELS, 'legacy']);
 const TERMINAL_STATES = new Set(['complete', 'partial', 'failed', 'cancelled', 'interrupted']);
 const SAFE_EVIDENCE_TOTALS = Object.freeze(['authoritativeTotals', 'returnedTotals']);
 const SOURCE_HEALTH_VALUES = new Set(Object.values(SOURCE_HEALTH));
@@ -180,7 +184,7 @@ function projectSafeEvidence(value) {
   return Object.keys(projected).length === 0 ? null : projected;
 }
 
-function projectConfiguration(record) {
+function projectConfiguration(record, { legacyConfiguration = false } = {}) {
   const request = record.requestParameters;
   const parameters = plainObject(record.parameters);
   if (record.operationType === 'query') {
@@ -193,7 +197,7 @@ function projectConfiguration(record) {
       directModel: exactPair(parameters.modelSelection),
     };
   }
-  if (!PGS_MODES.has(request.pgsMode) || !PGS_LEVELS.has(request.pgsLevel)) {
+  if (!PGS_MODES.has(request.pgsMode) || !DISPLAY_PGS_LEVELS.has(request.pgsLevel)) {
     throw notebookError('notebook_projection_invalid');
   }
   return {
@@ -201,6 +205,7 @@ function projectConfiguration(record) {
     pgsLevel: request.pgsLevel,
     sweepModel: exactPair(parameters.pgsSweep),
     synthesisModel: exactPair(parameters.pgsSynth),
+    ...(legacyConfiguration ? { legacy: true } : {}),
   };
 }
 
@@ -212,7 +217,7 @@ function exactKeys(value, allowed, code = 'notebook_projection_invalid') {
   }
 }
 
-function projectCoverage(value) {
+function projectCoverage(value, { omittedLegacyRetryablePartitions = false } = {}) {
   if (value === null || value === undefined) return null;
   exactKeys(value, COVERAGE_FIELDS);
   const projected = {};
@@ -245,6 +250,7 @@ function projectCoverage(value) {
       projected[field] = [...entry];
     }
   }
+  if (omittedLegacyRetryablePartitions) delete projected.retryablePartitions;
   return projected;
 }
 
@@ -264,7 +270,7 @@ function projectContinuation(value, nowValue) {
   };
 }
 
-function projectPersistedResultSummary(record, nowValue) {
+function projectPersistedResultSummary(record, nowValue, compatibility = {}) {
   const availability = deriveResultAvailability(record);
   const summary = record.notebookResultSummary;
   if (summary === null || summary === undefined) {
@@ -296,7 +302,7 @@ function projectPersistedResultSummary(record, nowValue) {
   return {
     resultVersion: validated.resultVersion,
     answerPreviewAvailable: validated.answerAvailable,
-    coverage: projectCoverage(validated.coverage),
+    coverage: projectCoverage(validated.coverage, compatibility),
     continuation: projectContinuation(validated.continuation, nowValue),
   };
 }
@@ -318,12 +324,13 @@ function projectProgress(value) {
 
 function projectNotebookSummary(rawRecord, { now = Date.now } = {}) {
   if (typeof now !== 'function') throw notebookError('notebook_projection_invalid');
-  const record = validateNotebookRecord(rawRecord);
+  const normalized = normalizeNotebookRecordForProjection(rawRecord);
+  const record = validateNotebookRecord(normalized.record);
   const rawNow = now();
   const nowValue = rawNow instanceof Date ? rawNow.getTime()
     : typeof rawNow === 'string' ? Date.parse(rawNow) : rawNow;
   if (!Number.isFinite(nowValue)) throw notebookError('notebook_projection_invalid');
-  const result = projectPersistedResultSummary(record, nowValue);
+  const result = projectPersistedResultSummary(record, nowValue, normalized);
   const availability = deriveResultAvailability(record);
   return {
     schemaVersion: 1,
@@ -333,7 +340,7 @@ function projectNotebookSummary(rawRecord, { now = Date.now } = {}) {
     brain: { id: record.target.brainId, displayName: record.target.displayName },
     question: record.requestParameters.query,
     questionTitle: questionTitle(record.requestParameters.query),
-    configuration: projectConfiguration(record),
+    configuration: projectConfiguration(record, normalized),
     executionState: record.state,
     humanClassification: record.state === 'queued' || record.state === 'running'
       ? 'running' : 'finished',
@@ -356,7 +363,8 @@ function projectNotebookSummary(rawRecord, { now = Date.now } = {}) {
 
 function projectNotebookResult(rawRecord, rawResult, { now = Date.now } = {}) {
   if (typeof now !== 'function') throw notebookError('notebook_projection_invalid');
-  const record = validateNotebookRecord(rawRecord);
+  const normalized = normalizeNotebookRecordForProjection(rawRecord);
+  const record = validateNotebookRecord(normalized.record);
   if (deriveResultAvailability(record) !== 'available') {
     throw notebookError('result_unavailable');
   }
@@ -364,7 +372,7 @@ function projectNotebookResult(rawRecord, rawResult, { now = Date.now } = {}) {
   const nowValue = rawNow instanceof Date ? rawNow.getTime()
     : typeof rawNow === 'string' ? Date.parse(rawNow) : rawNow;
   if (!Number.isFinite(nowValue)) throw notebookError('notebook_projection_invalid');
-  const persisted = projectPersistedResultSummary(record, nowValue);
+  const persisted = projectPersistedResultSummary(record, nowValue, normalized);
   const result = plainObject(rawResult, 'notebook_result_invalid');
   const answer = result.answer;
   if (answer !== null && (typeof answer !== 'string'
@@ -628,6 +636,7 @@ function createQueryNotebookService(options) {
 
   function executableActions(record, summary) {
     if (!actionsConfigured) return undefined;
+    if (summary.configuration?.legacy === true) return [];
     try {
       const loaded = actionRecord(record, summary);
       const expiresAt = new Date(Math.min(
@@ -685,6 +694,23 @@ function createQueryNotebookService(options) {
     return backfilled;
   }
 
+  function assertProjectableLookahead(record) {
+    if (deriveResultAvailability(record) === 'available'
+        && (record.notebookResultSummary === null
+          || record.notebookResultSummary === undefined)) {
+      projectNotebookSummary({
+        ...record,
+        result: null,
+        resultHandle: null,
+        resultArtifact: null,
+        resultExpiresAt: null,
+        resultExpiredAt: null,
+      }, { now });
+      return;
+    }
+    projectNotebookSummary(record, { now });
+  }
+
   async function listQueryNotebookAuthorized(rawInput = {}) {
     const filters = normalizeListInput(rawInput);
     const filterDigest = notebookFilterDigest(filters);
@@ -715,21 +741,36 @@ function createQueryNotebookService(options) {
         || (record.acceptedAt === cursor.acceptedAt
           && record.operationId < cursor.operationId));
     }
-    const page = records.slice(0, filters.limit + 1);
-    const hasMore = page.length > filters.limit;
-    if (hasMore) page.pop();
-    const visible = [];
-    for (const record of page) visible.push(await ensureVisibleSummary(record));
-    const items = visible.map((record) => projectSummaryWithActions(record));
-    const last = page.at(-1);
+    const page = [];
+    let omittedIncompatibleCount = 0;
+    let deferredOmittedCount = 0;
+    let hasMore = false;
+    for (const record of records) {
+      try {
+        if (page.length >= filters.limit) {
+          assertProjectableLookahead(record);
+          hasMore = true;
+          break;
+        }
+        const visible = await ensureVisibleSummary(record);
+        page.push({ record, item: projectSummaryWithActions(visible) });
+      } catch (error) {
+        if (error?.code !== 'notebook_projection_invalid') throw error;
+        if (page.length < filters.limit) omittedIncompatibleCount += 1;
+        else deferredOmittedCount += 1;
+      }
+    }
+    if (!hasMore) omittedIncompatibleCount += deferredOmittedCount;
+    const last = page.at(-1)?.record;
     return {
       schemaVersion: 1,
-      items,
-      nextCursor: hasMore ? encodeNotebookCursor({
+      items: page.map((entry) => entry.item),
+      nextCursor: hasMore && last ? encodeNotebookCursor({
         acceptedAt: last.acceptedAt,
         operationId: last.operationId,
         filterDigest,
       }) : null,
+      omittedIncompatibleCount,
     };
   }
 

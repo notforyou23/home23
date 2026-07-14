@@ -235,6 +235,99 @@ test('authorized inventory paginates immutable acceptedAt order and binds normal
     .items.map(row => row.question), ['Alpha   Beta']);
 });
 
+test('mixed notebook pages keep known legacy PGS receipts and count unknown rows', async () => {
+  const modern = pgsRecord({
+    operationId: `brop_${'M'.repeat(32)}`,
+    acceptedAt: '2026-07-13T15:04:00.000Z',
+  });
+  const legacy = pgsRecord({
+    operationId: `brop_${'L'.repeat(32)}`,
+    acceptedAt: '2026-07-13T15:02:00.000Z',
+    requestParameters: {
+      query: 'legacy sweep', mode: 'quick', pgsMode: 'full',
+      pgsConfig: { sweepFraction: 0.001 },
+    },
+    parameters: {
+      query: 'legacy sweep', mode: 'quick', pgsMode: 'full',
+      pgsConfig: { sweepFraction: 0.001 },
+      pgsSweep: { provider: 'openai-codex', model: 'gpt-5.4-mini' },
+      pgsSynth: { provider: 'openai-codex', model: 'gpt-5.5' },
+    },
+    pgsSession: null,
+    notebookResultSummary: {
+      ...queryRecord().notebookResultSummary,
+      coverage: {
+        selectedWorkUnits: 1,
+        successfulSweeps: 1,
+        pendingWorkUnits: 2_647,
+        retryablePartitionCount: 300,
+        retryablePartitions: Array.from(
+          { length: 300 }, (_, index) => `retry-${String(index).padStart(3, '0')}`,
+        ),
+      },
+      continuation: null,
+    },
+  });
+  const unknown = pgsRecord({
+    operationId: `brop_${'U'.repeat(32)}`,
+    acceptedAt: '2026-07-13T15:03:00.000Z',
+    requestParameters: {
+      query: 'unknown sweep', pgsMode: 'invented', pgsConfig: { sweepFraction: 0.001 },
+    },
+    parameters: {
+      query: 'unknown sweep', pgsMode: 'invented', pgsConfig: { sweepFraction: 0.001 },
+      pgsSweep: { provider: 'openai-codex', model: 'gpt-5.4-mini' },
+      pgsSynth: { provider: 'openai-codex', model: 'gpt-5.5' },
+    },
+    pgsSession: null,
+    notebookResultSummary: {
+      ...queryRecord().notebookResultSummary,
+      coverage: null,
+      continuation: null,
+    },
+  });
+  const older = pgsRecord({
+    operationId: `brop_${'O'.repeat(32)}`,
+    acceptedAt: '2026-07-13T15:01:00.000Z',
+  });
+  const projectedLegacy = projectNotebookSummary(legacy, { now: () => NOW });
+  assert.equal(projectedLegacy.configuration.legacy, true);
+  const service = createQueryNotebookService({
+    reader: {
+      expectedRequester: 'jerry',
+      async listAuthorized() { return [older, legacy, unknown, modern]; },
+      async getAuthorized() { throw new Error('not used'); },
+      async getResultAuthorized() { throw new Error('not used'); },
+    },
+    now: () => NOW,
+    actionTokens: {
+      issue() { throw new Error('legacy receipt must not issue an action'); },
+      verify() { throw new Error('not used'); },
+    },
+    startOperation: async () => { throw new Error('not used'); },
+  });
+
+  const first = await service.listQueryNotebookAuthorized({ limit: 2 });
+  assert.deepEqual(first.items.map(item => item.operationId), [
+    modern.operationId, legacy.operationId,
+  ]);
+  assert.equal(first.items[1].configuration.pgsMode, 'fresh');
+  assert.equal(first.items[1].configuration.pgsLevel, 'legacy');
+  assert.equal(first.items[1].configuration.legacy, true);
+  assert.equal(first.items[1].coverage.retryablePartitionCount, 300);
+  assert.equal(Object.hasOwn(first.items[1].coverage, 'retryablePartitions'), false);
+  assert.deepEqual(first.items[1].actions, []);
+  assert.equal(first.omittedIncompatibleCount, 1);
+  assert.equal(typeof first.nextCursor, 'string');
+
+  const second = await service.listQueryNotebookAuthorized({
+    limit: 2, cursor: first.nextCursor,
+  });
+  assert.deepEqual(second.items.map(item => item.operationId), [older.operationId]);
+  assert.equal(second.omittedIncompatibleCount, 0);
+  assert.equal(second.nextCursor, null);
+});
+
 test('unfiltered acceptedAt cursor remains complete when a later row finishes between pages', async () => {
   const records = Array.from({ length: 6 }, (_, index) => inventoryRecord(index, {
     state: 'running',
