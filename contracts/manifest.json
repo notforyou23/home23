@@ -1,6 +1,6 @@
 {
-  "contractVersion": "2026.06.26",
-  "generatedAt": "2026-06-26T14:28:00Z",
+  "contractVersion": "2026.07.13",
+  "generatedAt": "2026-07-13T20:00:00Z",
   "entries": [
     {
       "id": "agent-roster",
@@ -296,6 +296,138 @@
       "auth": "none",
       "liveValidation": "capability-disabled",
       "consumers": ["ios", "mac", "query"]
+    },
+    {
+      "id": "query-notebook-page",
+      "method": "GET",
+      "base": "dashboard",
+      "route": "/home23/api/query/notebook",
+      "schema": "schemas/query-notebook.schema.json",
+      "definition": "queryNotebookPage",
+      "fixture": "fixtures/query-notebook-page.json",
+      "auth": "required",
+      "liveValidation": "fixture-only",
+      "consumers": ["ios", "mac", "query"]
+    },
+    {
+      "id": "query-notebook-status",
+      "method": "GET",
+      "base": "dashboard",
+      "route": "/home23/api/query/operations/:operationId",
+      "schema": "schemas/query-notebook.schema.json",
+      "definition": "queryNotebookStatus",
+      "fixture": "fixtures/query-notebook-status.json",
+      "auth": "required",
+      "liveValidation": "fixture-only",
+      "consumers": ["ios", "mac", "query"]
+    },
+    {
+      "id": "query-notebook-progress-event",
+      "method": "GET",
+      "base": "dashboard",
+      "route": "/home23/api/query/operations/:operationId/events",
+      "schema": "schemas/query-notebook.schema.json",
+      "definition": "queryProgressEvent",
+      "fixture": "fixtures/query-notebook-progress-event.json",
+      "auth": "required",
+      "liveValidation": "fixture-only",
+      "consumers": ["ios", "mac", "query"]
+    },
+    {
+      "id": "query-notebook-gap-event",
+      "method": "GET",
+      "base": "dashboard",
+      "route": "/home23/api/query/operations/:operationId/events",
+      "schema": "schemas/query-notebook.schema.json",
+      "definition": "queryGapEvent",
+      "fixture": "fixtures/query-notebook-gap-event.json",
+      "auth": "required",
+      "liveValidation": "fixture-only",
+      "consumers": ["ios", "mac", "query"]
+    },
+    {
+      "id": "query-notebook-terminal-event",
+      "method": "GET",
+      "base": "dashboard",
+      "route": "/home23/api/query/operations/:operationId/events",
+      "schema": "schemas/query-notebook.schema.json",
+      "definition": "queryTerminalEvent",
+      "fixture": "fixtures/query-notebook-terminal-event.json",
+      "auth": "required",
+      "liveValidation": "fixture-only",
+      "consumers": ["ios", "mac", "query"]
+    },
+    {
+      "id": "query-notebook-result",
+      "method": "GET",
+      "base": "dashboard",
+      "route": "/home23/api/query/operations/:operationId/result",
+      "schema": "schemas/query-notebook.schema.json",
+      "definition": "queryNotebookResult",
+      "fixture": "fixtures/query-notebook-result.json",
+      "auth": "required",
+      "liveValidation": "fixture-only",
+      "consumers": ["ios", "mac", "query"]
+    },
+    {
+      "id": "query-notebook-cancel",
+      "method": "POST",
+      "base": "dashboard",
+      "route": "/home23/api/query/operations/:operationId/cancel",
+      "schema": "schemas/query-notebook.schema.json",
+      "definition": "queryNotebookStatus",
+      "fixture": "fixtures/query-notebook-cancel.json",
+      "auth": "required",
+      "liveValidation": "fixture-only",
+      "consumers": ["ios", "mac", "query"]
+    },
+    {
+      "id": "query-notebook-action",
+      "method": "POST",
+      "base": "dashboard",
+      "route": "/home23/api/query/operations/:operationId/actions",
+      "schema": "schemas/query-notebook.schema.json",
+      "definition": "queryNotebookActionResponse",
+      "fixture": "fixtures/query-notebook-action.json",
+      "auth": "required",
+      "liveValidation": "fixture-only",
+      "consumers": ["ios", "mac", "query"]
+    },
+    {
+      "id": "query-notebook-notification",
+      "method": "POST",
+      "base": "dashboard",
+      "route": "/home23/api/query/operations/:operationId/notifications",
+      "schema": "schemas/query-notebook.schema.json",
+      "definition": "queryNotebookNotificationResponse",
+      "fixture": "fixtures/query-notebook-notification.json",
+      "auth": "required",
+      "liveValidation": "fixture-only",
+      "consumers": ["ios", "mac", "query", "push"]
+    },
+    {
+      "id": "query-notebook-device-credential",
+      "method": "POST",
+      "base": "bridge",
+      "route": "/api/device/query-credential",
+      "schema": "schemas/query-notebook.schema.json",
+      "definition": "queryNotebookDeviceCredential",
+      "fixture": "fixtures/query-notebook-device-credential.json",
+      "auth": "required",
+      "liveValidation": "fixture-only",
+      "consumers": ["ios", "mac", "query"]
+    },
+    {
+      "id": "query-notebook-web-session",
+      "method": "POST",
+      "base": "dashboard",
+      "route": "/home23/api/query/session",
+      "schema": "schemas/query-notebook.schema.json",
+      "definition": "queryNotebookWebSession",
+      "fixture": "fixtures/query-notebook-web-session.json",
+      "auth": "required",
+      "liveValidation": "fixture-only",
+      "consumers": ["web", "query"]
     },
     {
       "id": "home-surfaces",

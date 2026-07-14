@@ -1,0 +1,549 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://home23.local/contracts/query-notebook.schema.json",
+  "title": "Home23 Query Notebook Contracts",
+  "$defs": {
+    "operationId": {
+      "type": "string",
+      "pattern": "^brop_[A-Za-z0-9_-]{32}$",
+      "maxLength": 37
+    },
+    "canonicalTimestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$",
+      "maxLength": 32
+    },
+    "nullableTimestamp": {
+      "oneOf": [
+        { "$ref": "#/$defs/canonicalTimestamp" },
+        { "type": "null" }
+      ]
+    },
+    "safeCounter": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "providerModelPair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "model"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "model": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+    "queryProgressSnapshotV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "stage", "eventSequence"],
+      "properties": {
+        "version": { "const": 1 },
+        "stage": {
+          "enum": [
+            "queued", "preparing_source", "selecting_work", "sweeping",
+            "synthesizing", "finalizing", "terminal"
+          ]
+        },
+        "eventSequence": { "$ref": "#/$defs/safeCounter" },
+        "sourceNodes": { "$ref": "#/$defs/safeCounter" },
+        "sourceEdges": { "$ref": "#/$defs/safeCounter" },
+        "candidateWorkUnits": { "$ref": "#/$defs/safeCounter" },
+        "selected": { "$ref": "#/$defs/safeCounter" },
+        "completed": { "$ref": "#/$defs/safeCounter" },
+        "successful": { "$ref": "#/$defs/safeCounter" },
+        "failed": { "$ref": "#/$defs/safeCounter" },
+        "reused": { "$ref": "#/$defs/safeCounter" },
+        "pending": { "$ref": "#/$defs/safeCounter" },
+        "retryable": { "$ref": "#/$defs/safeCounter" },
+        "total": { "$ref": "#/$defs/safeCounter" },
+        "synthesisLevel": { "$ref": "#/$defs/safeCounter" },
+        "synthesisBatch": { "$ref": "#/$defs/safeCounter" },
+        "synthesisBatches": { "$ref": "#/$defs/safeCounter" },
+        "lastProviderActivityAt": { "$ref": "#/$defs/canonicalTimestamp" },
+        "lastProgressAt": { "$ref": "#/$defs/canonicalTimestamp" }
+      }
+    },
+    "brainIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "displayName"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      }
+    },
+    "directConfiguration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["directMode", "directModel"],
+      "properties": {
+        "directMode": {
+          "type": ["string", "null"],
+          "enum": [
+            null, "quick", "full", "expert", "dive", "fast", "normal",
+            "deep", "executive", "raw", "report", "innovation", "consulting",
+            "grounded"
+          ]
+        },
+        "directModel": { "$ref": "#/$defs/providerModelPair" }
+      }
+    },
+    "pgsConfiguration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pgsMode", "pgsLevel", "sweepModel", "synthesisModel"],
+      "properties": {
+        "pgsMode": { "enum": ["fresh", "continue", "targeted"] },
+        "pgsLevel": { "enum": ["skim", "sample", "deep", "full"] },
+        "sweepModel": { "$ref": "#/$defs/providerModelPair" },
+        "synthesisModel": { "$ref": "#/$defs/providerModelPair" }
+      }
+    },
+    "typedError": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "retryable"],
+          "properties": {
+            "code": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}$"
+            },
+            "retryable": { "type": "boolean" }
+          }
+        },
+        { "type": "null" }
+      ]
+    },
+    "coverage": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "coverageLevel": { "enum": ["skim", "sample", "deep", "full"] },
+            "coverageFraction": { "type": "number", "minimum": 0, "maximum": 1 },
+            "successfulSweeps": { "$ref": "#/$defs/safeCounter" },
+            "selectedWorkUnits": { "$ref": "#/$defs/safeCounter" },
+            "pendingWorkUnits": { "$ref": "#/$defs/safeCounter" },
+            "reusedWorkUnits": { "$ref": "#/$defs/safeCounter" },
+            "newWorkUnits": { "$ref": "#/$defs/safeCounter" },
+            "scopeWorkUnits": { "$ref": "#/$defs/safeCounter" },
+            "scopeSuccessfulWorkUnits": { "$ref": "#/$defs/safeCounter" },
+            "scopePendingWorkUnits": { "$ref": "#/$defs/safeCounter" },
+            "scopeComplete": { "type": "boolean" },
+            "globalCoveredWorkUnits": { "$ref": "#/$defs/safeCounter" },
+            "globalPendingWorkUnits": { "$ref": "#/$defs/safeCounter" },
+            "fullCoverage": { "type": "boolean" },
+            "targetPartitionIds": {
+              "type": "array",
+              "maxItems": 256,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^(?:c|h)-[A-Za-z0-9._-]{1,253}$"
+              }
+            },
+            "retryablePartitions": {
+              "type": "array",
+              "maxItems": 256,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}$"
+              }
+            },
+            "retryablePartitionCount": { "$ref": "#/$defs/safeCounter" }
+          }
+        },
+        { "type": "null" }
+      ]
+    },
+    "continuation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["canContinue", "continuableUntil", "sourceOperationId"],
+          "properties": {
+            "canContinue": { "type": "boolean" },
+            "continuableUntil": { "$ref": "#/$defs/canonicalTimestamp" },
+            "sourceOperationId": {
+              "oneOf": [
+                { "$ref": "#/$defs/operationId" },
+                { "type": "null" }
+              ]
+            }
+          }
+        },
+        { "type": "null" }
+      ]
+    },
+    "plainAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["openResult", "retryFresh", "cancel", "export", "none"] }
+      }
+    },
+    "tokenAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "token", "expiresAt"],
+      "properties": {
+        "kind": { "enum": ["continueSweep", "targetedRetry"] },
+        "token": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "expiresAt": { "$ref": "#/$defs/canonicalTimestamp" }
+      }
+    },
+    "recoveryAction": {
+      "oneOf": [
+        { "$ref": "#/$defs/plainAction" },
+        { "$ref": "#/$defs/tokenAction" }
+      ]
+    },
+    "notificationState": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["subscribed", "deliveryState"],
+          "properties": {
+            "subscribed": { "const": false },
+            "deliveryState": { "type": "null" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["subscribed", "deliveryState"],
+          "properties": {
+            "subscribed": { "const": true },
+            "deliveryState": { "enum": ["active", "pending", "delivered", "failed"] }
+          }
+        }
+      ]
+    },
+    "queryNotebookSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "operationId", "requestKind", "requesterAgent", "brain",
+        "question", "questionTitle", "configuration", "executionState",
+        "humanClassification", "acceptedAt", "startedAt", "updatedAt", "completedAt",
+        "progress", "error", "resultAvailability", "expiresAt",
+        "answerPreviewAvailable", "resultVersion", "coverage", "continuation",
+        "actions", "notification"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "requestKind": { "enum": ["direct", "pgs"] },
+        "requesterAgent": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "brain": { "$ref": "#/$defs/brainIdentity" },
+        "question": { "type": "string", "minLength": 1, "maxLength": 12000 },
+        "questionTitle": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "configuration": {
+          "oneOf": [
+            { "$ref": "#/$defs/directConfiguration" },
+            { "$ref": "#/$defs/pgsConfiguration" }
+          ]
+        },
+        "executionState": {
+          "enum": ["queued", "running", "complete", "partial", "failed", "cancelled", "interrupted"]
+        },
+        "humanClassification": { "enum": ["running", "finished"] },
+        "acceptedAt": { "$ref": "#/$defs/canonicalTimestamp" },
+        "startedAt": { "$ref": "#/$defs/nullableTimestamp" },
+        "updatedAt": { "$ref": "#/$defs/nullableTimestamp" },
+        "completedAt": { "$ref": "#/$defs/nullableTimestamp" },
+        "progress": {
+          "oneOf": [
+            { "$ref": "#/$defs/queryProgressSnapshotV1" },
+            { "type": "null" }
+          ]
+        },
+        "error": { "$ref": "#/$defs/typedError" },
+        "resultAvailability": { "enum": ["available", "expired", "absent"] },
+        "expiresAt": { "$ref": "#/$defs/nullableTimestamp" },
+        "answerPreviewAvailable": { "type": "boolean" },
+        "resultVersion": {
+          "oneOf": [
+            { "type": "string", "pattern": "^qrv1_[A-Za-z0-9_-]{43}$" },
+            { "type": "null" }
+          ]
+        },
+        "coverage": { "$ref": "#/$defs/coverage" },
+        "continuation": { "$ref": "#/$defs/continuation" },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 7,
+          "items": { "$ref": "#/$defs/recoveryAction" }
+        },
+        "notification": { "$ref": "#/$defs/notificationState" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "executionState": { "enum": ["queued", "running"] } },
+            "required": ["executionState"]
+          },
+          "then": { "properties": { "humanClassification": { "const": "running" } } },
+          "else": { "properties": { "humanClassification": { "const": "finished" } } }
+        },
+        {
+          "if": {
+            "properties": { "resultAvailability": { "const": "available" } },
+            "required": ["resultAvailability"]
+          },
+          "then": {
+            "properties": {
+              "resultVersion": { "type": "string", "pattern": "^qrv1_[A-Za-z0-9_-]{43}$" }
+            }
+          },
+          "else": {
+            "properties": {
+              "resultVersion": { "type": "null" },
+              "answerPreviewAvailable": { "const": false }
+            }
+          }
+        }
+      ]
+    },
+    "queryNotebookPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "items", "nextCursor"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "items": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/queryNotebookSummary" }
+        },
+        "nextCursor": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 1368,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      }
+    },
+    "queryNotebookStatus": { "$ref": "#/$defs/queryNotebookSummary" },
+    "queryProgressEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "operationId", "eventSequence", "progress"],
+      "properties": {
+        "type": { "const": "progress" },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "eventSequence": { "$ref": "#/$defs/safeCounter" },
+        "progress": { "$ref": "#/$defs/queryProgressSnapshotV1" }
+      }
+    },
+    "queryGapEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "operationId", "eventSequence", "fromSequence", "toSequence"],
+      "properties": {
+        "type": { "const": "gap" },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "eventSequence": { "$ref": "#/$defs/safeCounter" },
+        "fromSequence": { "$ref": "#/$defs/safeCounter" },
+        "toSequence": { "$ref": "#/$defs/safeCounter" }
+      }
+    },
+    "queryTerminalEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "operationId", "eventSequence", "executionState"],
+      "properties": {
+        "type": { "const": "terminal" },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "eventSequence": { "$ref": "#/$defs/safeCounter" },
+        "executionState": { "enum": ["complete", "partial", "failed", "cancelled", "interrupted"] }
+      }
+    },
+    "querySnapshotEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type", "operationId", "eventSequence", "executionState", "progress", "error",
+        "resultAvailability", "resultVersion", "actions", "notification"
+      ],
+      "properties": {
+        "type": { "const": "snapshot" },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "eventSequence": { "$ref": "#/$defs/safeCounter" },
+        "executionState": {
+          "enum": ["queued", "running", "complete", "partial", "failed", "cancelled", "interrupted"]
+        },
+        "progress": {
+          "oneOf": [
+            { "$ref": "#/$defs/queryProgressSnapshotV1" },
+            { "type": "null" }
+          ]
+        },
+        "error": { "$ref": "#/$defs/typedError" },
+        "resultAvailability": { "enum": ["available", "expired", "absent"] },
+        "resultVersion": {
+          "oneOf": [
+            { "type": "string", "pattern": "^qrv1_[A-Za-z0-9_-]{43}$" },
+            { "type": "null" }
+          ]
+        },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 7,
+          "items": { "$ref": "#/$defs/recoveryAction" }
+        },
+        "notification": { "$ref": "#/$defs/notificationState" }
+      }
+    },
+    "queryHeartbeatEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "operationId", "eventSequence"],
+      "properties": {
+        "type": { "const": "heartbeat" },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "eventSequence": { "$ref": "#/$defs/safeCounter" },
+        "at": { "$ref": "#/$defs/canonicalTimestamp" }
+      }
+    },
+    "queryStreamEvent": {
+      "oneOf": [
+        { "$ref": "#/$defs/querySnapshotEvent" },
+        { "$ref": "#/$defs/queryProgressEvent" },
+        { "$ref": "#/$defs/queryHeartbeatEvent" },
+        { "$ref": "#/$defs/queryGapEvent" },
+        { "$ref": "#/$defs/queryTerminalEvent" }
+      ]
+    },
+    "safeTotals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodes", "edges"],
+      "properties": {
+        "nodes": { "$ref": "#/$defs/safeCounter" },
+        "edges": { "$ref": "#/$defs/safeCounter" }
+      }
+    },
+    "safeEvidence": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "sourceHealth": { "enum": ["healthy", "degraded", "unavailable"] },
+            "freshness": { "enum": ["known", "unknown"] },
+            "matchOutcome": { "enum": ["matches", "no_match", "filtered", "corpus_empty", "unknown"] },
+            "completeCoverage": { "type": "boolean" },
+            "filteredTotal": { "$ref": "#/$defs/safeCounter" },
+            "authoritativeTotals": { "$ref": "#/$defs/safeTotals" },
+            "returnedTotals": { "$ref": "#/$defs/safeTotals" }
+          }
+        },
+        { "type": "null" }
+      ]
+    },
+    "queryNotebookResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "operationId", "resultVersion", "answer", "coverage",
+        "evidence", "continuation", "actions", "notification"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "resultVersion": { "type": "string", "pattern": "^qrv1_[A-Za-z0-9_-]{43}$" },
+        "answer": { "type": ["string", "null"], "maxLength": 1048576 },
+        "coverage": { "$ref": "#/$defs/coverage" },
+        "evidence": { "$ref": "#/$defs/safeEvidence" },
+        "continuation": { "$ref": "#/$defs/continuation" },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 7,
+          "items": { "$ref": "#/$defs/recoveryAction" }
+        },
+        "notification": { "$ref": "#/$defs/notificationState" }
+      }
+    },
+    "queryNotebookActionResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "operationId", "requestKind", "executionState"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "requestKind": { "const": "pgs" },
+        "executionState": { "enum": ["queued", "running"] }
+      }
+    },
+    "queryNotebookNotificationResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schemaVersion", "operationId", "subscribed"],
+          "properties": {
+            "schemaVersion": { "const": 1 },
+            "operationId": { "$ref": "#/$defs/operationId" },
+            "subscribed": { "const": false }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schemaVersion", "operationId", "subscribed", "routeId", "deliveryState"
+          ],
+          "properties": {
+            "schemaVersion": { "const": 1 },
+            "operationId": { "$ref": "#/$defs/operationId" },
+            "subscribed": { "const": true },
+            "routeId": { "type": "string", "pattern": "^qroute_[A-Za-z0-9_-]{32}$" },
+            "deliveryState": { "enum": ["active", "pending", "delivered", "failed"] }
+          }
+        }
+      ]
+    },
+    "queryNotebookDeviceCredential": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["credentialId", "token", "expiresAt", "generation"],
+      "properties": {
+        "credentialId": { "type": "string", "pattern": "^qncred_[A-Za-z0-9_-]{32}$" },
+        "token": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 2048,
+          "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"
+        },
+        "expiresAt": { "$ref": "#/$defs/canonicalTimestamp" },
+        "generation": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 }
+      }
+    },
+    "queryNotebookWebSession": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "expiresAt"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "expiresAt": { "$ref": "#/$defs/canonicalTimestamp" }
+      }
+    }
+  }
+}

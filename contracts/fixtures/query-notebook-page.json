@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "items": [
+    {
+      "schemaVersion": 1,
+      "operationId": "brop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "requestKind": "pgs",
+      "requesterAgent": "jerry",
+      "brain": {
+        "id": "brain-jerry",
+        "displayName": "Jerry"
+      },
+      "question": "Map durable truth across the current brain source.",
+      "questionTitle": "Map durable truth across the current brain source.",
+      "configuration": {
+        "pgsMode": "fresh",
+        "pgsLevel": "sample",
+        "sweepModel": {
+          "provider": "minimax",
+          "model": "MiniMax-M2.1"
+        },
+        "synthesisModel": {
+          "provider": "anthropic",
+          "model": "claude-opus-4-8"
+        }
+      },
+      "executionState": "partial",
+      "humanClassification": "finished",
+      "acceptedAt": "2026-07-13T19:00:00.000Z",
+      "startedAt": "2026-07-13T19:00:01.000Z",
+      "updatedAt": "2026-07-13T19:10:00.000Z",
+      "completedAt": "2026-07-13T19:10:00.000Z",
+      "progress": {
+        "version": 1,
+        "stage": "terminal",
+        "eventSequence": 41,
+        "selected": 12,
+        "completed": 10,
+        "successful": 9,
+        "failed": 1,
+        "reused": 3,
+        "pending": 2,
+        "retryable": 1,
+        "total": 12,
+        "lastProviderActivityAt": "2026-07-13T19:09:58.000Z",
+        "lastProgressAt": "2026-07-13T19:10:00.000Z"
+      },
+      "error": {
+        "code": "pgs_scope_incomplete",
+        "retryable": true
+      },
+      "resultAvailability": "available",
+      "expiresAt": "2026-07-20T19:10:00.000Z",
+      "answerPreviewAvailable": true,
+      "resultVersion": "qrv1_VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV",
+      "coverage": {
+        "coverageLevel": "sample",
+        "successfulSweeps": 9,
+        "selectedWorkUnits": 12,
+        "pendingWorkUnits": 2,
+        "reusedWorkUnits": 3,
+        "newWorkUnits": 7,
+        "scopeWorkUnits": 12,
+        "scopeSuccessfulWorkUnits": 9,
+        "scopePendingWorkUnits": 2,
+        "scopeComplete": false,
+        "retryablePartitions": ["c-retry-1"],
+        "retryablePartitionCount": 1
+      },
+      "continuation": {
+        "canContinue": true,
+        "continuableUntil": "2026-07-20T19:10:00.000Z",
+        "sourceOperationId": null
+      },
+      "actions": [
+        {
+          "kind": "openResult"
+        },
+        {
+          "kind": "continueSweep",
+          "token": "eyJhY3Rpb24iOiJjb250aW51ZVN3ZWVwIiwiZXhwaXJlc0F0IjoiMjAyNi0wNy0xM1QyMTowMDowMC4wMDBaIiwiaXNzdWVkQXQiOiIyMDI2LTA3LTEzVDIwOjAwOjAwLjAwMFoiLCJub25jZSI6InFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxIiwicmVxdWVzdGVyQWdlbnQiOiJqZXJyeSIsInNvdXJjZU9wZXJhdGlvbklkIjoiYnJvcF9BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInYiOjF9.gRdhRJfdS_MIP_eznb3jEy7oK6kIbvW_F_Pvz1N0bjw",
+          "expiresAt": "2026-07-13T21:00:00.000Z"
+        },
+        {
+          "kind": "targetedRetry",
+          "token": "eyJhY3Rpb24iOiJ0YXJnZXRlZFJldHJ5IiwiZXhwaXJlc0F0IjoiMjAyNi0wNy0xM1QyMTowMDowMC4wMDBaIiwiaXNzdWVkQXQiOiIyMDI2LTA3LTEzVDIwOjAwOjAwLjAwMFoiLCJub25jZSI6InFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxcXFxIiwicmVxdWVzdGVyQWdlbnQiOiJqZXJyeSIsInNvdXJjZU9wZXJhdGlvbklkIjoiYnJvcF9BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsInYiOjF9.VrI_G177278XPxuWs5Ysq0tdfids8jNiXFnFGv-ILA8",
+          "expiresAt": "2026-07-13T21:00:00.000Z"
+        }
+      ],
+      "notification": {
+        "subscribed": false,
+        "deliveryState": null
+      }
+    }
+  ],
+  "nextCursor": "eyJhY2NlcHRlZEF0IjoiMjAyNi0wNy0xM1QxOTowMDowMC4wMDBaIiwiZmlsdGVyRGlnZXN0Ijoic2hhMjU2OjIwNmRkZjgxYjhhYTJhOGFiNjA2ZmM4YjNkOGRkMzkyODlkODNkYjYyOGY5MDU0ZmYzZTdmYjIzZjZlZGRjNDAiLCJvcGVyYXRpb25JZCI6ImJyb3BfQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUEiLCJ2IjoxfQ"
+}
