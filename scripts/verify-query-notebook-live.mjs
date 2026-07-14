@@ -496,6 +496,20 @@ function assertMonotonic(previous, next) {
   }
 }
 
+const TRANSIENT_TRANSPORT_CODES = new Set([
+  'ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETDOWN', 'ENETUNREACH',
+  'EPIPE', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_SOCKET',
+]);
+
+function isTransientTransportError(error) {
+  const code = typeof error?.code === 'string' ? error.code
+    : typeof error?.cause?.code === 'string' ? error.cause.code : '';
+  if (TRANSIENT_TRANSPORT_CODES.has(code)) return true;
+  if (error?.name === 'AbortError' || error?.name === 'TimeoutError') return true;
+  return false;
+}
+
 export async function waitForTerminal({
   readStatus,
   terminalStates = TERMINAL_OPERATION_STATES,
@@ -506,13 +520,29 @@ export async function waitForTerminal({
   hardTimeoutMs,
   stallTimeoutMs,
   onSample = () => {},
+  onTransientError = () => {},
 }) {
   const startedAt = now();
   let lastActivityAt = startedAt;
   let previous = null;
   let fingerprint = null;
   while (true) {
-    const status = await readStatus();
+    let status;
+    try {
+      status = await readStatus();
+    } catch (error) {
+      if (!isTransientTransportError(error)) throw error;
+      onTransientError(error);
+      const current = now();
+      if (current - startedAt >= hardTimeoutMs) throw errorWithCode('operation_hard_timeout');
+      if (current - lastActivityAt >= stallTimeoutMs) throw errorWithCode('operation_stalled');
+      await sleepImpl(Math.min(
+        pollIntervalMs,
+        Math.max(1, hardTimeoutMs - (current - startedAt)),
+        Math.max(1, stallTimeoutMs - (current - lastActivityAt)),
+      ));
+      continue;
+    }
     if (!status || typeof status !== 'object') throw errorWithCode('status_invalid');
     const sample = progressProjection(status);
     assertMonotonic(previous, sample);
@@ -541,16 +571,31 @@ export async function waitForTerminal({
   }
 }
 
-async function waitForProgressAdvance({
+export async function waitForProgressAdvance({
   readStatus, afterSequence, now = Date.now, sleepImpl = delay, pollIntervalMs,
-  hardTimeoutMs, stallTimeoutMs,
+  hardTimeoutMs, stallTimeoutMs, onTransientError = () => {},
 }) {
   const startedAt = now();
   let lastActivityAt = startedAt;
   let previous = null;
   let fingerprint = null;
   while (true) {
-    const status = await readStatus();
+    let status;
+    try {
+      status = await readStatus();
+    } catch (error) {
+      if (!isTransientTransportError(error)) throw error;
+      onTransientError(error);
+      const current = now();
+      if (current - startedAt >= hardTimeoutMs) throw errorWithCode('sse_reconnect_advance_timeout');
+      if (current - lastActivityAt >= stallTimeoutMs) throw errorWithCode('operation_stalled');
+      await sleepImpl(Math.min(
+        pollIntervalMs,
+        Math.max(1, hardTimeoutMs - (current - startedAt)),
+        Math.max(1, stallTimeoutMs - (current - lastActivityAt)),
+      ));
+      continue;
+    }
     const sample = progressProjection(status);
     assertMonotonic(previous, sample);
     const nextFingerprint = activityFingerprint(sample);

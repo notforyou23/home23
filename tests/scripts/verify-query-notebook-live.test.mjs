@@ -347,6 +347,113 @@ test('activity-aware waiting resets the stall clock and enforces monotonic progr
   assert.deepEqual(emitted[1].progress, { eventSequence: 2, completed: 1, total: 3 });
 });
 
+test('long-operation waiting survives bounded transient status transport failures', async () => {
+  const { waitForProgressAdvance, waitForTerminal } = await verifier();
+  let now = 0;
+  let calls = 0;
+  const transientErrors = [];
+  const terminal = await waitForTerminal({
+    readStatus: async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } });
+      }
+      return {
+        executionState: 'complete',
+        progress: { version: 1, stage: 'terminal', eventSequence: 9 },
+      };
+    },
+    now: () => now,
+    sleepImpl: async (milliseconds) => { now += milliseconds; },
+    pollIntervalMs: 1_000,
+    hardTimeoutMs: 10_000,
+    stallTimeoutMs: 5_000,
+    onTransientError: (error) => transientErrors.push(error),
+  });
+  assert.equal(terminal.executionState, 'complete');
+  assert.equal(calls, 2);
+  assert.equal(now, 1_000);
+  assert.equal(transientErrors.length, 1);
+
+  const nonTransient = Object.assign(new Error('invalid projection'), {
+    code: 'public_projection_invalid',
+  });
+  await assert.rejects(waitForTerminal({
+    readStatus: async () => { throw nonTransient; },
+    now: () => now,
+    sleepImpl: async () => {},
+    pollIntervalMs: 1,
+    hardTimeoutMs: 10_000,
+    stallTimeoutMs: 10_000,
+  }), { code: 'public_projection_invalid' });
+
+  const programmerError = new TypeError('cannot read properties of undefined');
+  let programmerCalls = 0;
+  await assert.rejects(waitForTerminal({
+    readStatus: async () => { programmerCalls += 1; throw programmerError; },
+    now: () => now,
+    sleepImpl: async (milliseconds) => { now += milliseconds; },
+    pollIntervalMs: 1,
+    hardTimeoutMs: 2,
+    stallTimeoutMs: 2,
+  }), (error) => error === programmerError);
+  assert.equal(programmerCalls, 1, 'code-less programming TypeError must fail immediately');
+
+  let repeatedCalls = 0;
+  let repeatedNow = 0;
+  await assert.rejects(waitForTerminal({
+    readStatus: async () => {
+      repeatedCalls += 1;
+      throw new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } });
+    },
+    now: () => repeatedNow,
+    sleepImpl: async (milliseconds) => { repeatedNow += milliseconds; },
+    pollIntervalMs: 1_000,
+    hardTimeoutMs: 10_000,
+    stallTimeoutMs: 3_000,
+  }), { code: 'operation_stalled' });
+  assert.equal(repeatedNow, 3_000);
+  assert.equal(repeatedCalls, 4);
+
+  let advanceNow = 0;
+  let advanceCalls = 0;
+  const advanced = await waitForProgressAdvance({
+    readStatus: async () => {
+      advanceCalls += 1;
+      if (advanceCalls === 1) {
+        throw new TypeError('fetch failed', { cause: { code: 'UND_ERR_SOCKET' } });
+      }
+      return {
+        executionState: 'running',
+        progress: { version: 1, stage: 'sweeping', eventSequence: 12 },
+      };
+    },
+    afterSequence: 11,
+    now: () => advanceNow,
+    sleepImpl: async (milliseconds) => { advanceNow += milliseconds; },
+    pollIntervalMs: 1_000,
+    hardTimeoutMs: 10_000,
+    stallTimeoutMs: 5_000,
+  });
+  assert.equal(advanced.progress.eventSequence, 12);
+  assert.equal(advanceCalls, 2);
+  assert.equal(advanceNow, 1_000);
+
+  let stalledAdvanceNow = 0;
+  await assert.rejects(waitForProgressAdvance({
+    readStatus: async () => {
+      throw new TypeError('fetch failed', { cause: { code: 'ETIMEDOUT' } });
+    },
+    afterSequence: 11,
+    now: () => stalledAdvanceNow,
+    sleepImpl: async (milliseconds) => { stalledAdvanceNow += milliseconds; },
+    pollIntervalMs: 1_000,
+    hardTimeoutMs: 2_000,
+    stallTimeoutMs: 10_000,
+  }), { code: 'sse_reconnect_advance_timeout' });
+  assert.equal(stalledAdvanceNow, 2_000);
+});
+
 test('progress monotonicity permits only canonical candidate replacement and synthesis resets', async () => {
   const { waitForTerminal } = await verifier();
   const run = async (statuses) => waitForTerminal({
