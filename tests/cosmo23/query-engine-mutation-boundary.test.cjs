@@ -95,7 +95,11 @@ test('operation-mode Query leaves the complete target tree byte-identical', asyn
   });
 
   assert.equal(result.answer, 'read-only answer');
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].instructions, /first answer did not satisfy the selected long-answer contract/i);
+  assert.deepEqual(result.answerQuality, {
+    requestedMode: 'full', state: 'constrained', expansionAttempted: true,
+  });
   assert.deepEqual(await snapshotTree(root), before);
 });
 
