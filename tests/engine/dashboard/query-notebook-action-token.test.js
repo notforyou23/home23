@@ -118,7 +118,7 @@ function sourceRecord(overrides = {}) {
       answerAvailable: true,
       coverage: {
         coverageLevel: 'sample', coverageFraction: 0.25,
-        scopePendingWorkUnits: 0, fullCoverage: false,
+        scopePendingWorkUnits: 0, scopeComplete: true, fullCoverage: false,
         retryablePartitions: ['c-retry-001'], retryablePartitionCount: 1,
       },
       continuation: { canContinue: true, continuableUntil, sourceOperationId: null },
@@ -236,6 +236,109 @@ test('action-enabled notebook service requires both token issue and verify autho
     actionTokens: { verify() {} },
     startOperation: async () => {},
   }), { code: 'notebook_configuration_invalid' });
+});
+
+test('targeted retry is projected only when every durable partition is executable', async () => {
+  let starts = 0;
+  const record = sourceRecord({
+    notebookResultSummary: {
+      ...sourceRecord().notebookResultSummary,
+      coverage: {
+        ...sourceRecord().notebookResultSummary.coverage,
+        retryablePartitions: ['retry-1'],
+        retryablePartitionCount: 1,
+      },
+    },
+  });
+  const { tokens, service } = actionService({
+    record,
+    result: pgsResult(record, ['retry-1']),
+    startOperation: async () => { starts += 1; },
+  });
+  assert.deepEqual(
+    (await service.listQueryNotebookAuthorized()).items[0].actions.map(({ kind }) => kind),
+    ['continueSweep'],
+  );
+  const token = tokens.issue({
+    sourceOperationId: SOURCE_OPERATION_ID,
+    action: 'targetedRetry',
+    expiresAt: LATER,
+  });
+  await assert.rejects(() => service.resolveAction({
+    sourceOperationId: SOURCE_OPERATION_ID,
+    actionToken: token,
+    requestId: REQUEST_ID,
+  }), { code: 'action_unavailable' });
+  assert.equal(starts, 0);
+});
+
+test('continuation advances only with explicit completed-scope evidence', async () => {
+  for (const coverage of [
+    null,
+    { coverageLevel: 'sample', scopeComplete: true, fullCoverage: false },
+    {
+      coverageLevel: 'sample', scopePendingWorkUnits: 0,
+      scopeComplete: false, fullCoverage: false,
+    },
+  ]) {
+    let starts = 0;
+    const record = sourceRecord({
+      notebookResultSummary: {
+        ...sourceRecord().notebookResultSummary,
+        coverage,
+      },
+    });
+    const { tokens, service } = actionService({
+      record,
+      startOperation: async () => { starts += 1; },
+    });
+    assert.equal(
+      (await service.listQueryNotebookAuthorized()).items[0].actions
+        .some(({ kind }) => kind === 'continueSweep'),
+      false,
+    );
+    const token = tokens.issue({
+      sourceOperationId: SOURCE_OPERATION_ID,
+      action: 'continueSweep',
+      expiresAt: LATER,
+    });
+    await assert.rejects(() => service.resolveAction({
+      sourceOperationId: SOURCE_OPERATION_ID,
+      actionToken: token,
+      requestId: REQUEST_ID,
+    }), { code: 'action_unavailable' });
+    assert.equal(starts, 0);
+  }
+
+  const pendingRecord = sourceRecord({
+    notebookResultSummary: {
+      ...sourceRecord().notebookResultSummary,
+      coverage: {
+        ...sourceRecord().notebookResultSummary.coverage,
+        scopePendingWorkUnits: 2,
+        scopeComplete: false,
+      },
+    },
+  });
+  const starts = [];
+  const pending = actionService({
+    record: pendingRecord,
+    startOperation: async (request) => {
+      starts.push(request);
+      return { operationId: CHILD_OPERATION_ID, operationType: 'pgs', state: 'queued' };
+    },
+  });
+  const pendingToken = pending.tokens.issue({
+    sourceOperationId: SOURCE_OPERATION_ID,
+    action: 'continueSweep',
+    expiresAt: LATER,
+  });
+  await pending.service.resolveAction({
+    sourceOperationId: SOURCE_OPERATION_ID,
+    actionToken: pendingToken,
+    requestId: REQUEST_ID,
+  });
+  assert.equal(starts[0].parameters.pgsLevel, 'sample');
 });
 
 test('continue action reconstructs query, target, models, and next level from durable source only', async () => {

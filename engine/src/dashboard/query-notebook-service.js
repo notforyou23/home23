@@ -557,10 +557,27 @@ function createQueryNotebookService(options) {
   function nextContinuationLevel(record, summary) {
     const current = record.requestParameters.pgsLevel;
     const currentIndex = PGS_LEVEL_ORDER.indexOf(current);
-    if (currentIndex < 0) throw notebookError('action_unavailable');
-    if (summary.coverage?.scopePendingWorkUnits > 0) return current;
+    const coverage = summary.coverage;
+    if (currentIndex < 0 || !coverage
+        || !Object.hasOwn(coverage, 'scopePendingWorkUnits')) {
+      throw notebookError('action_unavailable');
+    }
+    if (coverage.scopePendingWorkUnits > 0) return current;
+    if (coverage.scopePendingWorkUnits !== 0 || coverage.scopeComplete !== true) {
+      throw notebookError('action_unavailable');
+    }
     if (currentIndex >= PGS_LEVEL_ORDER.length - 1) throw notebookError('action_unavailable');
     return PGS_LEVEL_ORDER[currentIndex + 1];
+  }
+
+  function executablePartitionIds(value) {
+    if (!Array.isArray(value) || value.length === 0
+        || new Set(value).size !== value.length
+        || value.some((id) => typeof id !== 'string'
+          || !ACTION_PARTITION_ID_PATTERN.test(id))) {
+      throw notebookError('action_unavailable');
+    }
+    return [...value].sort().slice(0, MAX_ACTION_PARTITIONS);
   }
 
   function retryablePartitions(rawResult, session) {
@@ -572,15 +589,10 @@ function createQueryNotebookService(options) {
           || pgs.sessionId !== session.sessionId
           || pgs.continuableUntil !== session.continuableUntil
           || (pgs.sourceOperationId ?? null) !== session.sourceOperationId
-          || !Array.isArray(pgs.retryablePartitions)
-          || new Set(pgs.retryablePartitions).size !== pgs.retryablePartitions.length
-          || pgs.retryablePartitions.some((id) => typeof id !== 'string'
-            || !ACTION_PARTITION_ID_PATTERN.test(id))) {
+          || !Array.isArray(pgs.retryablePartitions)) {
         throw notebookError('action_unavailable');
       }
-      const partitions = [...pgs.retryablePartitions].sort().slice(0, MAX_ACTION_PARTITIONS);
-      if (partitions.length === 0) throw notebookError('action_unavailable');
-      return partitions;
+      return executablePartitionIds(pgs.retryablePartitions);
     } catch (error) {
       if (error?.code === 'action_unavailable') throw error;
       throw notebookError('action_unavailable', error);
@@ -602,9 +614,11 @@ function createQueryNotebookService(options) {
       } catch (error) {
         if (error?.code !== 'action_unavailable') throw error;
       }
-      if (Array.isArray(loaded.summary.coverage?.retryablePartitions)
-          && loaded.summary.coverage.retryablePartitions.length > 0) {
+      try {
+        executablePartitionIds(loaded.summary.coverage?.retryablePartitions);
         actionNames.push('targetedRetry');
+      } catch (error) {
+        if (error?.code !== 'action_unavailable') throw error;
       }
       return actionNames.map((action) => ({
         kind: action,
