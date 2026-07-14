@@ -591,6 +591,93 @@ test('setResult atomically persists one bounded PGS notebook summary before file
     result.answer);
 });
 
+test('mismatched PGS continuation metadata preserves a useful partial without continuation authority', async (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'home23-notebook-lineage-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const store = new BrainOperationStore({
+    root,
+    requesterAgent: 'jerry',
+    now: () => Date.parse(NOW),
+  });
+  const created = await store.create({
+    requestId: 'pgs-notebook-lineage-mismatch',
+    requesterAgent: 'jerry',
+    target: storeTarget(),
+    operationType: 'pgs',
+    requestParameters: {
+      query: 'Keep useful partial evidence', pgsMode: 'fresh', pgsLevel: 'sample',
+    },
+    parameters: {
+      query: 'Keep useful partial evidence', pgsMode: 'fresh', pgsLevel: 'sample',
+      pgsSweep: { provider: 'minimax', model: 'sweep-model' },
+      pgsSynth: { provider: 'anthropic', model: 'synth-model' },
+    },
+  });
+  const session = {
+    sessionId: `pgss_${'D'.repeat(32)}`,
+    continuableUntil: '2026-07-20T16:00:00.000Z',
+    sourceOperationId: null,
+  };
+  const worker = await store.setWorker(created.record.operationId, {
+    expectedVersion: created.record.recordVersion,
+    worker: { workerId: 'lineage-worker' },
+    pgsSession: session,
+  });
+  const usefulPartial = {
+    answer: 'Useful partial answer',
+    metadata: { pgs: {
+      sessionId: `pgss_${'X'.repeat(32)}`,
+      continuableUntil: session.continuableUntil,
+      sourceOperationId: null,
+      canContinue: true,
+      coverageLevel: 'sample',
+      coverageFraction: 0.25,
+      scopeWorkUnits: 4,
+      scopeSuccessfulWorkUnits: 2,
+      scopePendingWorkUnits: 2,
+      scopeComplete: false,
+    } },
+  };
+  const published = await store.setResult(created.record.operationId, {
+    expectedVersion: worker.recordVersion,
+    result: usefulPartial,
+  });
+  assert.equal(published.result.answer, usefulPartial.answer);
+  assert.equal(published.notebookResultSummary.answerAvailable, true);
+  assert.equal(published.notebookResultSummary.continuation, null);
+  const terminal = await store.transition(created.record.operationId, {
+    expectedVersion: published.recordVersion,
+    state: 'partial',
+    error: { code: 'pgs_scope_incomplete', message: 'partial', retryable: true },
+  });
+  assert.equal(terminal.state, 'partial');
+  assert.equal(terminal.result.answer, usefulPartial.answer);
+  assert.equal(terminal.notebookResultSummary.continuation, null);
+
+  const reader = createBrainOperationStoreReader({
+    operationsRoot: root,
+    expectedRequester: 'jerry',
+    liveStore: store,
+  });
+  const service = createQueryNotebookService({
+    reader,
+    now: () => NOW,
+    actionTokens: {
+      issue() { throw new Error('continuation action must not be issued'); },
+      verify() { throw new Error('not used'); },
+    },
+    startOperation: async () => { throw new Error('not used'); },
+  });
+  const page = await service.listQueryNotebookAuthorized();
+  assert.equal(page.items[0].executionState, 'partial');
+  assert.equal(page.items[0].continuation, null);
+  assert.deepEqual(page.items[0].actions, []);
+  const detail = await service.getQueryNotebookResultAuthorized(created.record.operationId);
+  assert.equal(detail.answer, usefulPartial.answer);
+  assert.equal(detail.continuation, null);
+  assert.deepEqual(detail.actions, []);
+});
+
 function removePersistedNotebookSummary(root, operationId) {
   const file = path.join(root, 'operations', operationId, 'status.json');
   const record = JSON.parse(fs.readFileSync(file, 'utf8'));

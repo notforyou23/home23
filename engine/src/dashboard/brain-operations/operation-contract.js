@@ -503,7 +503,7 @@ function notebookContinuationFromResult(record, resultPgs) {
       || resultPgs.sessionId !== session.sessionId
       || resultPgs.continuableUntil !== session.continuableUntil
       || (resultPgs.sourceOperationId ?? null) !== session.sourceOperationId) {
-    throw operationError('result_invalid');
+    return null;
   }
   return {
     canContinue: resultPgs.canContinue,
