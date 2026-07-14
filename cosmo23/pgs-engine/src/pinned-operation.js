@@ -746,7 +746,7 @@ async function runPinnedOperationCore(engine, options = {}) {
         phase: 'pgs_sweep',
         stage: 'work_selected',
         selectedWorkUnits: batch.length,
-        selectedWorkUnitsTotal: selected.length,
+        selectedWorkUnitsTotal: scopeAtStart.scopeSuccessfulWorkUnits + selected.length,
         candidateWorkUnits: store.countScopePendingWorkUnits(workAttemptId),
         pendingWorkUnits: store.countPendingWorkUnits(),
         batchIndex,

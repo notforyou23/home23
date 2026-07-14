@@ -4,6 +4,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  reduceQueryProgressSnapshot,
+} = require('../../engine/src/dashboard/brain-operations/query-progress.js');
+
+const {
   createEngine,
   operationOptions,
   scratchFixture,
@@ -32,6 +36,67 @@ test('fractional PGS retry reuses durable sweeps and launches only pending work'
   assert.equal(complete.result.metadata.pgs.pendingWorkUnits, 0);
   assert.equal(retry.calls.filter(call => call.phase === 'sweep').length, 3);
   assert.equal(retry.calls.filter(call => call.phase === 'synth').length, 1);
+});
+
+test('multi-window PGS continuation counts reused work in every selected total', async t => {
+  const scratch = await scratchFixture(t, 'home23-pgs-reused-multi-window-');
+  const pin = sourcePin({ nodeCount: 100 });
+  const first = createEngine();
+  const partial = await first.engine.runPinnedOperation(operationOptions(pin, scratch, {
+    pgsMode: 'fresh',
+    pgsLevel: 'skim',
+    pgsConfig: { sweepFraction: 0.1 },
+  }));
+  assert.equal(partial.state, 'complete');
+  assert.equal(partial.result.metadata.pgs.scopeSuccessfulWorkUnits, 5);
+
+  const events = [];
+  const continuation = createEngine();
+  const complete = await continuation.engine.runPinnedOperation(operationOptions(pin, scratch, {
+    pgsMode: 'continue',
+    pgsLevel: 'full',
+    reportEvent(event) { events.push(event); },
+  }));
+  assert.equal(complete.state, 'complete');
+  assert.equal(complete.result.metadata.pgs.reusedWorkUnits, 5);
+  assert.equal(complete.result.metadata.pgs.newWorkUnits, 45);
+
+  const progressEvents = events.filter(event => event.type === 'progress');
+  let snapshot = null;
+  progressEvents.forEach((event, index) => {
+    snapshot = reduceQueryProgressSnapshot(snapshot, event, {
+      operationType: 'pgs',
+      nextSequence: index + 1,
+      now: Date.parse('2026-07-14T00:00:00.000Z') + index,
+    });
+  });
+
+  assert.deepEqual(progressEvents
+    .filter(event => event.stage === 'work_selected')
+    .map(event => event.selectedWorkUnitsTotal), [21, 37, 50]);
+  assert.deepEqual(progressEvents
+    .filter(event => event.stage === 'sweep_batch_complete')
+    .map(({ selected, completed, pending }) => ({ selected, completed, pending }))
+    .filter((row, index, rows) => index === 0 || row.selected !== rows[index - 1].selected), [
+      { selected: 21, completed: 7, pending: 14 },
+      { selected: 37, completed: 23, pending: 14 },
+      { selected: 50, completed: 39, pending: 11 },
+    ]);
+  assert.deepEqual({
+    selected: snapshot.selected,
+    completed: snapshot.completed,
+    successful: snapshot.successful,
+    failed: snapshot.failed,
+    reused: snapshot.reused,
+    pending: snapshot.pending,
+  }, {
+    selected: 50,
+    completed: 50,
+    successful: 50,
+    failed: 0,
+    reused: 5,
+    pending: 0,
+  });
 });
 
 test('named PGS levels expand cumulatively without repeating successful sweeps', async t => {

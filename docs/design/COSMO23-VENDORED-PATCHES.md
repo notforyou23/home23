@@ -2852,11 +2852,24 @@ schema to the operation type, so tightening PGS counters risked either accepting
 arbitrary nested payloads or rejecting valid Query, synthesis, research, and
 legacy transport events.
 
+A live full continuation later exposed one remaining counter split at the
+bounded-selection boundary: `sweep_batch_complete.selected` included durable
+reused work, while the preceding `work_selected.selectedWorkUnitsTotal`
+counted only newly selected work. On the second selection window this made the
+derived active `pending` count appear to increase at settlement, so the
+operation-aware progress reducer correctly rejected the event as
+`progress_snapshot_invalid` even though sweep outputs were durable.
+
 **Fix:** Pinned PGS now emits `sweep_batch_complete` only after each concurrent
 batch settles, successful sweep outputs commit, and retryable diagnostics are
 recorded. Its exact counters obey `completed = successful + failed` and
 `selected = completed + pending`; selected includes reused durable work, active
 pending excludes global pending, and retryable remains separate from failed.
+`work_selected.selectedWorkUnitsTotal` uses the same cumulative authority as
+settled `selected`: durable reused successes plus all newly selected work in
+the current continuation. Per-window `selectedWorkUnits` and final result
+metadata retain their existing new-work semantics. This keeps every
+multi-window transition monotonic without weakening progress validation.
 Hierarchical reduction emits `synthesis_batch_complete` only after the provider
 result is complete, bounded, and inserted into the next level's input set.
 
@@ -2878,6 +2891,10 @@ ordering, retryable failure accounting, hierarchical synthesis batch markers,
 every pre-existing PGS event stage, provider/transport compatibility, event-gap
 recovery, journal compaction, and canonical status reconstruction. Live
 processes were not restarted and no active operation was mutated by this patch.
+The follow-up continuation regression first reproduced the live
+`progress_snapshot_invalid` transition with five reused successes and three
+bounded selection windows, then passed with exact selected totals of 21, 37,
+and 50 while feeding every progress event through the production reducer.
 
 ---
 
