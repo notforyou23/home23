@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { promises as fsp } from 'node:fs';
+import { constants as fsConstants, promises as fsp } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -12,7 +12,10 @@ const {
   readJsonl,
   writeJsonlGzAtomic,
 } = require('../../shared/memory-source');
-const { openConfinedRegularFile } = require('../../shared/memory-source/confined-file.cjs');
+const {
+  acceptsWritableOpenCtimeDrift,
+  openConfinedRegularFile,
+} = require('../../shared/memory-source/confined-file.cjs');
 const { OPENED_JSONL_FILE } = require('../../shared/memory-source/private-capabilities.cjs');
 
 async function tempDir() {
@@ -24,6 +27,35 @@ async function writeJsonl(filePath, records) {
   await fsp.writeFile(filePath, text ? `${text}\n` : '', 'utf8');
   return Buffer.byteLength(text ? `${text}\n` : '', 'utf8');
 }
+
+function confinedStat({ dev = 1n, ino = 2n, size = 3n, mtimeNs = 4n, ctimeNs = 5n } = {}) {
+  return {
+    dev,
+    ino,
+    size,
+    mtimeNs,
+    ctimeNs,
+    isFile: () => true,
+    isSymbolicLink: () => false,
+  };
+}
+
+test('writable open accepts only ctime drift confirmed by a stable pathname restat', () => {
+  const before = confinedStat();
+  const opened = confinedStat({ ctimeNs: 6n });
+  const stableRestat = confinedStat({ ctimeNs: 6n });
+
+  assert.equal(acceptsWritableOpenCtimeDrift(before, opened, stableRestat, fsConstants.O_RDWR), true);
+  assert.equal(acceptsWritableOpenCtimeDrift(before, opened, stableRestat, fsConstants.O_RDONLY), false);
+  assert.equal(
+    acceptsWritableOpenCtimeDrift(before, opened, confinedStat({ size: 4n, ctimeNs: 6n }), fsConstants.O_RDWR),
+    false,
+  );
+  assert.equal(
+    acceptsWritableOpenCtimeDrift(before, opened, confinedStat({ ino: 9n, ctimeNs: 6n }), fsConstants.O_RDWR),
+    false,
+  );
+});
 
 async function createManifestFixture({
   nodes = [],

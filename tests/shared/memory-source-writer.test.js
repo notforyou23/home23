@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { copyFileSync, renameSync } from 'node:fs';
 import { promises as fsp } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -86,6 +87,38 @@ async function readCommittedDelta(dir) {
   })) rows.push(row);
   return rows;
 }
+
+test('a fresh process can append on its first writable open', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const modulePath = require.resolve('../../shared/memory-source');
+  const script = String.raw`
+    const { appendMemoryRevision } = require(process.env.MEMORY_SOURCE_MODULE);
+    appendMemoryRevision(process.env.BRAIN_DIR, {
+      nodes: [{ id: 'fresh-process', concept: 'first writable open succeeds' }],
+    }, {
+      lockRoot: process.env.LOCK_ROOT,
+      summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+    }).then(() => process.exit(0), (error) => {
+      process.stderr.write(String(error && (error.stack || error.message) || error));
+      process.exit(1);
+    });
+  `;
+  const child = spawnSync(process.execPath, ['-e', script], {
+    env: {
+      ...process.env,
+      MEMORY_SOURCE_MODULE: modulePath,
+      BRAIN_DIR: dir,
+      LOCK_ROOT: lockRoot,
+    },
+    encoding: 'utf8',
+    timeout: 10_000,
+  });
+
+  assert.equal(child.status, 0, child.stderr || child.stdout);
+  const manifest = await readManifest(dir);
+  assert.equal(manifest.currentRevision, 2);
+  assert.equal(manifest.summary.nodeCount, 2);
+});
 
 test('a failed full rewrite leaves the old manifest and delta authoritative', async () => {
   const { dir, lockRoot } = await createCommittedFixture();

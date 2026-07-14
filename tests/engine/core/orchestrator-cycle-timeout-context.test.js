@@ -50,3 +50,9 @@ test('saveState and loadState delegate memory graph persistence to revisioned so
   assert.match(source, /persistence\.mode === 'legacy-delta'/);
   assert.match(source, /state\.json\.gz[\s\S]*whole live graph and can OOM/);
 });
+
+test('successful saves refresh brain-snapshot and expose advisory snapshot failures', () => {
+  assert.match(source, /const \{ readSnapshot, writeSnapshot \} = require\('\.\/brain-snapshot'\);/);
+  assert.match(source, /this\.logger\?\.warn\?\.\('Brain snapshot refresh failed'/);
+  assert.doesNotMatch(source, /catch \{ \/\* advisory — ignore \*\/ \}/);
+});

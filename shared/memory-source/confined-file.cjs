@@ -14,6 +14,27 @@ function sameIdentity(left, right) {
     && left.ctimeNs === right.ctimeNs;
 }
 
+function sameIdentityExceptCtime(left, right) {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs;
+}
+
+function isWritableFlags(flags) {
+  return (flags & fs.constants.O_WRONLY) === fs.constants.O_WRONLY
+    || (flags & fs.constants.O_RDWR) === fs.constants.O_RDWR;
+}
+
+function acceptsWritableOpenCtimeDrift(pathStat, openedStat, pathRestat, flags) {
+  return isWritableFlags(flags)
+    && pathStat.ctimeNs !== openedStat.ctimeNs
+    && sameIdentityExceptCtime(fileIdentity(pathStat), fileIdentity(openedStat))
+    && pathRestat?.isFile?.()
+    && !pathRestat?.isSymbolicLink?.()
+    && sameIdentity(fileIdentity(pathRestat), fileIdentity(openedStat));
+}
+
 function fileIdentity(stat) {
   return {
     dev: stat.dev,
@@ -109,7 +130,16 @@ async function openConfinedRegularFile(root, filePath, options = {}) {
   try {
     handle = await fsp.open(filePath, flags | fs.constants.O_NOFOLLOW);
     const opened = await handle.stat({ bigint: true });
-    if (!opened.isFile() || !sameIdentity(fileIdentity(pathStat), fileIdentity(opened))) {
+    let stableIdentity = opened.isFile()
+      && sameIdentity(fileIdentity(pathStat), fileIdentity(opened));
+    if (!stableIdentity
+        && opened.isFile()
+        && isWritableFlags(flags)
+        && sameIdentityExceptCtime(fileIdentity(pathStat), fileIdentity(opened))) {
+      const pathRestat = await fsp.lstat(filePath, { bigint: true });
+      stableIdentity = acceptsWritableOpenCtimeDrift(pathStat, opened, pathRestat, flags);
+    }
+    if (!stableIdentity) {
       throw memorySourceError('invalid_memory_source', 'source changed while opening', {
         retryable: false,
       });
@@ -270,6 +300,7 @@ async function readConfinedFile(root, filePath, options = {}) {
 }
 
 module.exports = {
+  acceptsWritableOpenCtimeDrift,
   openConfinedRegularFile,
   portableFileIdentity,
   assertStableOpenedFile,

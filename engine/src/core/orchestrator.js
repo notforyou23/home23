@@ -7376,7 +7376,7 @@ class Orchestrator {
       // must not block anything. Record sidecar sizes if we wrote them
       // so the loader can validate integrity.
       try {
-        const { writeSnapshot } = require('./brain-snapshot');
+        const { readSnapshot, writeSnapshot } = require('./brain-snapshot');
         const countGoalEntries = (entries) => {
           if (!entries) return 0;
           if (Array.isArray(entries)) return entries.length;
@@ -7419,7 +7419,12 @@ class Orchestrator {
             }),
           }),
         });
-      } catch { /* advisory — ignore */ }
+      } catch (error) {
+        this.logger?.warn?.('Brain snapshot refresh failed', {
+          error: error?.message || String(error),
+          cycle: this.cycleCount,
+        });
+      }
       
       // Coherent brain-backup snapshot: once per hour, copy the 4 brain
       // files (state + both sidecars + brain-snapshot) into a timestamped
