@@ -4,10 +4,17 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  countSidecarNodes,
   evaluateSaveSafety,
   resolveKnownGoodNodeCount,
 } from '../../../engine/src/core/brain-persistence-guard.js';
-import { appendMemoryDelta, writeMemorySidecars } from '../../../engine/src/core/memory-sidecar.js';
+import {
+  appendMemoryDelta,
+  edgesPath,
+  nodesPath,
+  writeJsonlGz,
+  writeMemorySidecars,
+} from '../../../engine/src/core/memory-sidecar.js';
 import { StateCompression } from '../../../engine/src/core/state-compression.js';
 
 test('resolveKnownGoodNodeCount prefers brain-snapshot count', async () => {
@@ -36,7 +43,52 @@ test('resolveKnownGoodNodeCount counts memory sidecar before empty small-shape s
   assert.equal(result.source, 'memory-manifest');
 });
 
-test('resolveKnownGoodNodeCount applies sidecar deltas when snapshot is missing', async () => {
+test('resolveKnownGoodNodeCount uses manifest summary without scanning graph records', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'brain-guard-manifest-summary-'));
+  const statePath = join(dir, 'state.json');
+  await writeMemorySidecars(dir, {
+    nodes: [{ id: 'n1' }, { id: 'n2' }],
+    edges: [{ source: 'n1', target: 'n2' }],
+  });
+
+  const result = await resolveKnownGoodNodeCount(dir, statePath, {
+    countSidecarNodes: async () => {
+      throw new Error('sidecar scan called');
+    },
+    readSnapshot: () => {
+      throw new Error('snapshot fallback called');
+    },
+    loadCompressed: async () => {
+      throw new Error('state fallback called');
+    },
+  });
+
+  assert.deepEqual(result, { count: 2, source: 'memory-manifest' });
+});
+
+test('countSidecarNodes reads manifest totals without traversing edge records', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'brain-guard-manifest-edges-'));
+  await writeMemorySidecars(dir, {
+    nodes: [{ id: 'n1' }, { id: 'n2' }],
+    edges: [{ source: 'n1', target: 'n2' }],
+  });
+
+  assert.equal(await countSidecarNodes(dir), 2);
+});
+
+test('countSidecarNodes applies legacy node deltas', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'brain-guard-legacy-delta-'));
+  await writeJsonlGz(nodesPath(dir), [{ id: 'n1' }, { id: 'n2' }]);
+  await writeJsonlGz(edgesPath(dir), []);
+  await appendMemoryDelta(dir, {
+    nodes: [{ id: 'n3' }, { id: 'n4' }],
+    removedNodeIds: ['n1'],
+  });
+
+  assert.equal(await countSidecarNodes(dir), 3);
+});
+
+test('resolveKnownGoodNodeCount uses the committed summary after manifest deltas', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'brain-guard-delta-'));
   const statePath = join(dir, 'state.json');
   await writeMemorySidecars(dir, {
@@ -46,6 +98,7 @@ test('resolveKnownGoodNodeCount applies sidecar deltas when snapshot is missing'
   await appendMemoryDelta(dir, {
     nodes: [{ id: 'n3' }, { id: 'n4' }],
     removedNodeIds: ['n1'],
+    summary: { nodeCount: 3, edgeCount: 0, clusterCount: 0 },
   });
   await StateCompression.saveCompressed(statePath, { memory: { nodes: [], edges: [] } });
 
