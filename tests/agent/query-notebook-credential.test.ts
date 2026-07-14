@@ -256,7 +256,9 @@ async function postCredential(
   body: unknown,
   authorization?: string,
 ): Promise<{ status: number; body: Record<string, unknown> }> {
-  const server = app.listen(0);
+  // Bind the same address we fetch. An unspecified/IPv6 ephemeral listener can
+  // select a port already occupied in the separate IPv4 namespace.
+  const server = app.listen(0, '127.0.0.1');
   try {
     await new Promise<void>((resolve, reject) => {
       server.once('listening', resolve);

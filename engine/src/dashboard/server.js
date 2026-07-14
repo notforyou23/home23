@@ -166,6 +166,284 @@ function readJsonlTail(file, limit = 20, maxBytes = 256 * 1024) {
   }
 }
 
+const QUERY_NOTIFICATION_TERMINAL_STATES = new Set([
+  'complete', 'partial', 'failed', 'cancelled', 'interrupted',
+]);
+
+function createQueryTerminalNotificationDelivery(options = {}) {
+  const requesterAgent = options.requesterAgent;
+  const subscriptions = options.subscriptions;
+  const getStatusAuthorized = options.getStatusAuthorized;
+  const bridgeToken = options.bridgeToken;
+  const bridgeBaseUrl = options.bridgeBaseUrl;
+  const fetchImpl = options.fetchImpl || fetch;
+  const timeoutMs = options.timeoutMs ?? 2_500;
+  const maxConcurrency = options.maxConcurrency ?? 4;
+  const retryIntervalMs = options.retryIntervalMs ?? 30_000;
+  const timers = options.timers || { setTimeout, clearTimeout };
+  if (typeof requesterAgent !== 'string' || !requesterAgent
+      || !subscriptions || typeof subscriptions.listActive !== 'function'
+      || typeof subscriptions.markTerminalPending !== 'function'
+      || typeof subscriptions.markTerminalPendingBatch !== 'function'
+      || typeof subscriptions.claimDeliveries !== 'function'
+      || typeof subscriptions.settleDeliveries !== 'function'
+      || typeof getStatusAuthorized !== 'function'
+      || typeof fetchImpl !== 'function'
+      || !Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 10_000
+      || !Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1 || maxConcurrency > 16
+      || !Number.isSafeInteger(retryIntervalMs) || retryIntervalMs < 10
+      || retryIntervalMs > 3_600_000
+      || typeof timers.setTimeout !== 'function' || typeof timers.clearTimeout !== 'function') {
+    throw new TypeError('query_notification_delivery_configuration_invalid');
+  }
+
+  const workQueue = [];
+  const deliveryAbort = new AbortController();
+  let activeWork = 0;
+  function drainWork() {
+    while (activeWork < maxConcurrency && workQueue.length > 0) {
+      const work = workQueue.shift();
+      activeWork += 1;
+      Promise.resolve().then(work.task).then(work.resolve, work.reject).finally(() => {
+        activeWork -= 1;
+        drainWork();
+      });
+    }
+  }
+
+  function scheduleWork(task) {
+    if (deliveryAbort.signal.aborted) {
+      return Promise.reject(new Error('query_notification_delivery_stopped'));
+    }
+    if (workQueue.length >= 10_000) {
+      return Promise.reject(new Error('query_notification_delivery_capacity_exceeded'));
+    }
+    return new Promise((resolve, reject) => {
+      workQueue.push({ task, resolve, reject });
+      drainWork();
+    });
+  }
+
+  async function mapBounded(items, task) {
+    return Promise.all(items.map((item) => scheduleWork(() => task(item))));
+  }
+
+  function validEntry(entry) {
+    return entry && !Array.isArray(entry) && typeof entry === 'object'
+      && entry.requesterAgent === requesterAgent
+      && typeof entry.operationId === 'string' && /^brop_[A-Za-z0-9_-]{32}$/.test(entry.operationId)
+      && typeof entry.deviceId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/.test(entry.deviceId)
+      && typeof entry.routeId === 'string' && /^qroute_[A-Za-z0-9_-]{32}$/.test(entry.routeId)
+      && Number.isSafeInteger(entry.generation) && entry.generation >= 1
+      && QUERY_NOTIFICATION_TERMINAL_STATES.has(entry.terminalState);
+  }
+
+  function validReceipt(receipt, entry) {
+    if (!receipt || Array.isArray(receipt) || typeof receipt !== 'object'
+        || Reflect.ownKeys(receipt).some((key) => ![
+          'ok', 'operationId', 'routeId', 'generation', 'delivered', 'failed', 'pending',
+        ].includes(key))
+        || receipt.ok !== true
+        || receipt.operationId !== entry.operationId
+        || receipt.routeId !== entry.routeId
+        || receipt.generation !== entry.generation
+        || !Array.isArray(receipt.delivered)
+        || !Array.isArray(receipt.failed)
+        || !Array.isArray(receipt.pending)) return null;
+    const allowed = entry.deviceId;
+    if (receipt.delivered.some((id) => id !== allowed)
+        || receipt.pending.some((id) => id !== allowed)
+        || receipt.failed.some((failure) => !failure || Array.isArray(failure)
+          || typeof failure !== 'object'
+          || Reflect.ownKeys(failure).length !== 2
+          || failure.deviceId !== allowed
+          || typeof failure.retryable !== 'boolean')) return null;
+    const count = receipt.delivered.length + receipt.pending.length + receipt.failed.length;
+    return count === 1 ? receipt : null;
+  }
+
+  async function attempt(entry) {
+    if (typeof bridgeToken !== 'string' || !bridgeToken
+        || typeof bridgeBaseUrl !== 'string' || !/^http:\/\/127\.0\.0\.1:\d+$/.test(bridgeBaseUrl)) {
+      return { routeId: entry.routeId, state: 'failed', retryable: true };
+    }
+    const body = {
+      operationId: entry.operationId,
+      state: entry.terminalState,
+      agent: requesterAgent,
+      routeId: entry.routeId,
+      generation: entry.generation,
+      deviceIds: [entry.deviceId],
+    };
+    try {
+      const signal = AbortSignal.any([
+        AbortSignal.timeout(timeoutMs), deliveryAbort.signal,
+      ]);
+      let onAbort;
+      const aborted = new Promise((_, reject) => {
+        onAbort = () => reject(new Error('query_notification_delivery_aborted'));
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      });
+      let response;
+      try {
+        response = await Promise.race([
+          fetchImpl(`${bridgeBaseUrl}/api/query-notifications/terminal`, {
+            method: 'POST',
+            headers: {
+              accept: 'application/json',
+              'content-type': 'application/json',
+              authorization: `Bearer ${bridgeToken}`,
+            },
+            body: JSON.stringify(body),
+            signal,
+          }),
+          aborted,
+        ]);
+      } finally {
+        if (onAbort) signal.removeEventListener('abort', onAbort);
+      }
+      if (!response?.ok) return { routeId: entry.routeId, state: 'failed', retryable: true };
+      const receipt = validReceipt(await response.json(), entry);
+      if (!receipt) return { routeId: entry.routeId, state: 'failed', retryable: true };
+      if (receipt.delivered.includes(entry.deviceId)) {
+        return { routeId: entry.routeId, state: 'delivered' };
+      }
+      const failure = receipt.failed.find((item) => item.deviceId === entry.deviceId);
+      if (failure) {
+        return { routeId: entry.routeId, state: 'failed', retryable: failure.retryable };
+      }
+      return { routeId: entry.routeId, state: 'failed', retryable: true };
+    } catch {
+      return { routeId: entry.routeId, state: 'failed', retryable: true };
+    }
+  }
+
+  const inFlightDeliveries = new Set();
+  let acceptingDeliveries = true;
+
+  async function deliverEntriesInternal(rawEntries) {
+    const unique = new Map();
+    for (const entry of rawEntries) {
+      if (!validEntry(entry)) throw new TypeError('query_notification_entry_invalid');
+      if (entry.deliveryState === 'pending'
+          || (entry.deliveryState === 'failed' && entry.deliveryRetryable === true)) {
+        unique.set(entry.routeId, entry);
+      }
+    }
+    if (unique.size === 0) return [];
+    const claimed = await subscriptions.claimDeliveries({ routeIds: [...unique.keys()] });
+    if (!Array.isArray(claimed) || claimed.length === 0) return [];
+    const results = await mapBounded(claimed, attempt);
+    return subscriptions.settleDeliveries({ results });
+  }
+
+  function deliverEntries(rawEntries) {
+    if (!acceptingDeliveries) return Promise.resolve([]);
+    const delivery = deliverEntriesInternal(rawEntries).finally(() => {
+      inFlightDeliveries.delete(delivery);
+    });
+    inFlightDeliveries.add(delivery);
+    return delivery;
+  }
+
+  async function enqueue(rawEntry) {
+    if (!validEntry(rawEntry)) throw new TypeError('query_notification_entry_invalid');
+    if (rawEntry.deliveryState === 'delivered'
+        || (rawEntry.deliveryState === 'failed' && rawEntry.deliveryRetryable === false)) {
+      return rawEntry;
+    }
+    const [settled] = await deliverEntries([rawEntry]);
+    return settled || rawEntry;
+  }
+
+  async function onTerminal(record) {
+    if (!record || record.requesterAgent !== requesterAgent
+        || typeof record.operationId !== 'string'
+        || !QUERY_NOTIFICATION_TERMINAL_STATES.has(record.state)) return [];
+    let pending;
+    try {
+      pending = await subscriptions.markTerminalPending({
+        requesterAgent, operationId: record.operationId, terminalState: record.state,
+      });
+    } catch {
+      return [];
+    }
+    return deliverEntries(pending);
+  }
+
+  async function replay() {
+    let entries;
+    try { entries = await subscriptions.listActive(); } catch { return []; }
+    const terminalsByOperation = new Map();
+    for (const entry of entries) {
+      if (entry.deliveryState === 'active') {
+        let status;
+        try { status = await getStatusAuthorized(entry.operationId); } catch { continue; }
+        if (!QUERY_NOTIFICATION_TERMINAL_STATES.has(status?.executionState)) continue;
+        terminalsByOperation.set(entry.operationId, {
+          operationId: entry.operationId, terminalState: status.executionState,
+        });
+      }
+    }
+    let terminalized = [];
+    if (terminalsByOperation.size > 0) {
+      try {
+        terminalized = await subscriptions.markTerminalPendingBatch({
+          terminals: [...terminalsByOperation.values()],
+        });
+      } catch {}
+    }
+    const candidates = entries.filter((entry) => entry.deliveryState !== 'active');
+    candidates.push(...terminalized);
+    return deliverEntries(candidates);
+  }
+
+  let retryTimer = null;
+  let retryLoopStarted = false;
+  let retryLoopStopped = true;
+  let currentReplay = null;
+
+  async function runRetryCycle() {
+    if (retryLoopStopped) return [];
+    currentReplay = replay();
+    try {
+      return await currentReplay;
+    } finally {
+      currentReplay = null;
+      if (!retryLoopStopped) {
+        retryTimer = timers.setTimeout(runRetryCycle, retryIntervalMs);
+        retryTimer?.unref?.();
+      }
+    }
+  }
+
+  async function start() {
+    if (retryLoopStarted) return currentReplay || [];
+    retryLoopStarted = true;
+    retryLoopStopped = false;
+    return runRetryCycle();
+  }
+
+  async function stop() {
+    acceptingDeliveries = false;
+    deliveryAbort.abort();
+    const stoppedError = new Error('query_notification_delivery_stopped');
+    while (workQueue.length > 0) workQueue.shift().reject(stoppedError);
+    retryLoopStopped = true;
+    if (retryTimer !== null) {
+      timers.clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+    await currentReplay?.catch?.(() => {});
+    while (inFlightDeliveries.size > 0) {
+      await Promise.allSettled([...inFlightDeliveries]);
+    }
+  }
+
+  return Object.freeze({ enqueue, onTerminal, replay, start, stop });
+}
+
 function sendMemorySearchError(res, error, logger = console) {
   if (error?.name === 'AbortError' || error?.code === 'cancelled') {
     return res.status(499).json({ ok: false, error: { code: 'cancelled' } });
@@ -568,6 +846,33 @@ class DashboardServer {
       filePath: path.join(this.defaultRunDir, 'query-notebook-subscriptions.json'),
       requesterAgent,
     });
+    const deliverySubscriptions = [
+      'listActive', 'markTerminalPending', 'markTerminalPendingBatch',
+      'claimDeliveries', 'settleDeliveries',
+    ].every((method) => typeof subscriptions?.[method] === 'function')
+      ? subscriptions
+      : {
+        listActive: (...args) => subscriptions.listActive(...args),
+        async markTerminalPending() { return []; },
+        async markTerminalPendingBatch() { return []; },
+        async claimDeliveries() { return []; },
+        async settleDeliveries() { return []; },
+      };
+    const target = this.getHome23AgentContext(requesterAgent);
+    const notificationDelivery = dependencies.notificationDelivery
+      || createQueryTerminalNotificationDelivery({
+        requesterAgent,
+        subscriptions: deliverySubscriptions,
+        getStatusAuthorized: (operationId) => (
+          notebookService.getQueryNotebookStatusAuthorized(operationId)
+        ),
+        bridgeToken,
+        bridgeBaseUrl: `http://127.0.0.1:${target.bridgePort}`,
+        fetchImpl: dependencies.queryNotificationFetch,
+        timeoutMs: dependencies.queryNotificationTimeoutMs,
+        retryIntervalMs: dependencies.queryNotificationRetryIntervalMs,
+        timers: dependencies.queryNotificationTimers,
+      });
     const router = createHome23QueryNotebookRouter({
       requesterAgent,
       auth,
@@ -577,12 +882,17 @@ class DashboardServer {
       ),
       coordinator: this.brainOperationsCoordinator,
       subscriptions,
-      enqueueTerminalNotification: dependencies.enqueueTerminalNotification,
+      enqueueTerminalNotification: dependencies.enqueueTerminalNotification || notificationDelivery.enqueue,
     });
     this.queryNotebookPlaceholder.attach(router);
     this.queryNotebookAuth = auth;
     this.queryNotebookService = notebookService;
     this.queryNotebookSubscriptions = subscriptions;
+    this.queryNotebookNotificationDelivery = notificationDelivery;
+    const startNotificationDelivery = typeof notificationDelivery.start === 'function'
+      ? notificationDelivery.start()
+      : notificationDelivery.replay?.();
+    void Promise.resolve(startNotificationDelivery).catch(() => {});
   }
 
   createDefaultBrainOperationsDependencies({ requesterAgent }) {
@@ -787,6 +1097,7 @@ class DashboardServer {
         return providerOperationRuntime.resolve(input);
       },
       readSynthesisState: () => readCommittedSynthesisState({ brainDir: this.logsDir }),
+      onTerminal: (record) => this.queryNotebookNotificationDelivery?.onTerminal(record),
       capabilityKey: process.env.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY || null,
       exporter,
     });
@@ -11714,6 +12025,7 @@ You are empowered to explore and understand. The user trusts you to discover the
     }
     this.logStreamClients?.clear?.();
 
+    await this.queryNotebookNotificationDelivery?.stop?.();
     await this.stopBrainOperations();
 
     if (this.server) {
@@ -12146,6 +12458,7 @@ if (require.main === module) {
 
 module.exports = {
   DashboardServer,
+  createQueryTerminalNotificationDelivery,
   loadQueryNotebookBridgeToken,
   parseConversationLines,
   readJsonlTail,

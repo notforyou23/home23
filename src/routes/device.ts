@@ -48,6 +48,8 @@ export function createRegisterDeviceHandler(config: DeviceRouteConfig) {
       app_build,
       contract_version,
       capabilities_hash,
+      installation_id,
+      query_notifications,
     } = req.body ?? {};
 
     if (!device_token || typeof device_token !== 'string' || !/^[0-9a-fA-F]{32,}$/.test(device_token)) {
@@ -68,6 +70,17 @@ export function createRegisterDeviceHandler(config: DeviceRouteConfig) {
     if (platform != null && typeof platform !== 'string') {
       res.status(400).json({ error: 'platform must be a string' }); return;
     }
+    if (query_notifications != null && typeof query_notifications !== 'boolean') {
+      res.status(400).json({ error: 'query_notifications must be a boolean' }); return;
+    }
+    if (installation_id != null
+        && (typeof installation_id !== 'string'
+          || !INSTALLATION_ID_PATTERN.test(installation_id))) {
+      res.status(400).json({ error: 'valid installation_id required' }); return;
+    }
+    if (query_notifications === true && installation_id == null) {
+      res.status(400).json({ error: 'installation_id required for query notifications' }); return;
+    }
 
     const result = config.registry.register({
       device_token,
@@ -79,6 +92,8 @@ export function createRegisterDeviceHandler(config: DeviceRouteConfig) {
       app_build,
       contract_version,
       capabilities_hash,
+      installation_id: installation_id ?? undefined,
+      query_notifications: query_notifications ?? undefined,
     });
     res.json({
       ok: true,
@@ -87,6 +102,8 @@ export function createRegisterDeviceHandler(config: DeviceRouteConfig) {
       registered_chat_ids: result.chat_ids,
       ignored_chat_ids: [],
       updated_at: result.last_seen_at,
+      installation_id: result.installation_id ?? null,
+      query_notifications: result.query_notifications === true,
       device: result,
     });
   };

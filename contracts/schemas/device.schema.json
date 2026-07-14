@@ -20,13 +20,35 @@
         "app_build": { "type": ["string", "integer", "null"] },
         "contract_version": { "type": ["string", "null"] },
         "capabilities_hash": { "type": ["string", "null"] },
+        "installation_id": {
+          "type": ["string", "null"],
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$"
+        },
+        "query_notifications": { "type": ["boolean", "null"] },
         "registered_at": { "type": ["string", "null"] }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["query_notifications"],
+            "properties": { "query_notifications": { "const": true } }
+          },
+          "then": {
+            "required": ["installation_id"],
+            "properties": {
+              "installation_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$"
+              }
+            }
+          }
+        }
+      ]
     },
     "registerResponse": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["ok", "agent_id", "registered_chat_ids", "updated_at"],
+      "required": ["ok", "agent_id", "registered_chat_ids", "updated_at", "installation_id", "query_notifications"],
       "properties": {
         "ok": { "type": "boolean" },
         "agent_id": { "type": ["string", "null"] },
@@ -38,8 +60,23 @@
           "type": "array",
           "items": { "type": "string" }
         },
-        "updated_at": { "type": "string" }
-      }
+        "updated_at": { "type": "string" },
+        "installation_id": { "type": ["string", "null"] },
+        "query_notifications": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "query_notifications": { "const": true } } },
+          "then": {
+            "properties": {
+              "installation_id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$"
+              }
+            }
+          }
+        }
+      ]
     },
     "unregisterRequest": {
       "type": "object",
@@ -91,12 +128,28 @@
               "bundle_id": { "type": "string" },
               "env": { "type": "string" },
               "agent_id": { "type": ["string", "null"] },
+              "installation_id": { "type": ["string", "null"] },
+              "query_notifications": { "type": ["boolean", "null"] },
               "chat_ids": {
                 "type": ["array", "null"],
                 "items": { "type": "string" }
               },
               "updated_at": { "type": ["string", "null"] }
-            }
+            },
+            "allOf": [
+              {
+                "if": { "properties": { "query_notifications": { "const": true } } },
+                "then": {
+                  "required": ["installation_id"],
+                  "properties": {
+                    "installation_id": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$"
+                    }
+                  }
+                }
+              }
+            ]
           }
         }
       }

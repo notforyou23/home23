@@ -595,6 +595,7 @@ function makeFixture(t, overrides = {}) {
     scratchQuotaFactory,
     operationModelResolver,
     readSynthesisState: overrides.readSynthesisState,
+    onTerminal: overrides.onTerminal,
     capabilityIssuer: overrides.capabilityIssuer || (({ operationId, purpose }) => {
       const token = `cap-${purpose}-${operationId}-${counters.capabilities.length + 1}`;
       counters.capabilities.push({ operationId, purpose, token });
@@ -1749,6 +1750,399 @@ test('authenticated Query progress survives terminal finalization as lastProgres
     return current;
   });
   assert.match(terminal.lastProgressAt, /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test('terminal notification hook cannot delay terminal truth or source-pin release', async (t) => {
+  const notificationEntered = deferred();
+  const notificationNeverReturns = deferred();
+  const fixture = makeFixture(t, {
+    onTerminal(record) {
+      notificationEntered.resolve(record);
+      return notificationNeverReturns.promise;
+    },
+  });
+  t.after(() => notificationNeverReturns.resolve());
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'terminal-notification-does-not-block',
+  }));
+  fixture.worker.finish(operation.operationId, {
+    state: 'complete', result: { answer: 'durable first' },
+    error: null, sourceEvidence: null,
+  });
+
+  const notified = await Promise.race([
+    notificationEntered.promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('notification hook not invoked')), 100)),
+  ]);
+  assert.equal(notified.operationId, operation.operationId);
+  await eventually(async () => {
+    assert.equal((await fixture.store.get(operation.operationId)).state, 'complete');
+    assert.equal(fixture.counters.releaseCalls, 1);
+  });
+});
+
+test('throwing terminal notification hook is isolated from terminal cleanup', async (t) => {
+  let calls = 0;
+  const fixture = makeFixture(t, {
+    onTerminal() {
+      calls += 1;
+      throw new Error('push unavailable');
+    },
+  });
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'terminal-notification-throws',
+  }));
+  fixture.worker.finish(operation.operationId, {
+    state: 'partial', result: { answer: 'useful partial' },
+    error: null, sourceEvidence: null,
+  });
+  await eventually(async () => {
+    assert.equal((await fixture.store.get(operation.operationId)).state, 'partial');
+    assert.equal(fixture.counters.releaseCalls, 1);
+    assert.equal(calls, 1);
+  });
+});
+
+test('Query subscription delivery failure remains durable and retryable with the stable route', async (t) => {
+  const { createQueryNotebookSubscriptions } = require(
+    '../../../engine/src/dashboard/query-notebook-subscriptions.js'
+  );
+  const root = fs.mkdtempSync(path.join(tmpdir(), 'home23-query-delivery-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const filePath = path.join(root, 'subscriptions.json');
+  const createStore = () => createQueryNotebookSubscriptions({
+    filePath, requesterAgent: 'jerry', now: () => Date.parse('2026-07-13T20:00:00.000Z'),
+  });
+  const store = createStore();
+  const operationId = `brop_${'n'.repeat(32)}`;
+  const subscribed = await store.subscribe({
+    requesterAgent: 'jerry', operationId,
+    credentialId: 'device-credential', deviceId: 'ios-installation-00000001', generation: 4,
+    expiresAt: '2026-07-14T20:00:00.000Z', terminalState: null,
+  });
+  const [terminal] = await store.markTerminalPending({
+    requesterAgent: 'jerry', operationId, terminalState: 'complete',
+  });
+  assert.equal(terminal.routeId, subscribed.routeId);
+  const attempting = await store.markDeliveryPending({ routeId: subscribed.routeId });
+  assert.equal(attempting.deliveryState, 'pending');
+  assert.equal(attempting.deliveryAttempts, 1);
+  const failed = await store.markDeliveryFailed({
+    routeId: subscribed.routeId, retryable: true,
+  });
+  assert.equal(failed.deliveryState, 'failed');
+  assert.equal(failed.deliveryRetryable, true);
+
+  const reopened = createStore();
+  const persisted = (await reopened.listActive({ operationId }))[0];
+  assert.equal(persisted.deliveryState, 'failed');
+  assert.equal(persisted.routeId, subscribed.routeId);
+  const retrying = await reopened.markDeliveryPending({ routeId: subscribed.routeId });
+  assert.equal(retrying.deliveryAttempts, 2);
+  const delivered = await reopened.markDelivered({ routeId: subscribed.routeId });
+  assert.equal(delivered.deliveryState, 'delivered');
+  assert.equal(delivered.deliveryRetryable, false);
+});
+
+test('dashboard terminal delivery writes pending before I/O and replays lost responses idempotently', async () => {
+  const { createQueryTerminalNotificationDelivery } = require(
+    '../../../engine/src/dashboard/server.js'
+  );
+  assert.equal(typeof createQueryTerminalNotificationDelivery, 'function');
+  const operationId = `brop_${'p'.repeat(32)}`;
+  const routeId = `qroute_${'r'.repeat(32)}`;
+  let entry = {
+    requesterAgent: 'jerry', operationId, credentialId: 'credential-1',
+    deviceId: 'ios-installation-00000001', generation: 4,
+    expiresAt: '2026-07-14T20:00:00.000Z', terminalState: 'complete',
+    routeId, deliveryState: 'pending', deliveryAttempts: 0,
+    deliveryRetryable: null,
+  };
+  const order = [];
+  const subscriptions = {
+    async claimDeliveries({ routeIds }) {
+      assert.deepEqual(routeIds, [routeId]);
+      order.push('pending');
+      entry = { ...entry, deliveryState: 'pending',
+        deliveryAttempts: entry.deliveryAttempts + 1, deliveryRetryable: null };
+      return [entry];
+    },
+    async settleDeliveries({ results }) {
+      const [result] = results;
+      assert.equal(result.routeId, routeId);
+      entry = { ...entry, deliveryState: result.state,
+        deliveryRetryable: result.retryable ?? false };
+      return [entry];
+    },
+    async markTerminalPending() { return [entry]; },
+    async markTerminalPendingBatch() { return []; },
+    async listActive() { return [entry]; },
+  };
+  const bodies = [];
+  let calls = 0;
+  const fetchImpl = async (_url, options) => {
+    calls += 1;
+    order.push('fetch');
+    assert.equal(options.headers.authorization, 'Bearer configured-bridge-token');
+    bodies.push(JSON.parse(options.body));
+    if (calls === 1) throw new Error('response lost after APNs accepted');
+    return {
+      ok: true,
+      async json() {
+        return { ok: true, operationId, routeId, generation: 4,
+          delivered: [entry.deviceId], failed: [], pending: [] };
+      },
+    };
+  };
+  const delivery = createQueryTerminalNotificationDelivery({
+    requesterAgent: 'jerry', subscriptions,
+    getStatusAuthorized: async () => ({ operationId, executionState: 'complete' }),
+    bridgeToken: 'configured-bridge-token', bridgeBaseUrl: 'http://127.0.0.1:5004',
+    fetchImpl, timeoutMs: 100,
+  });
+
+  const failed = await delivery.enqueue(entry);
+  assert.equal(failed.deliveryState, 'failed');
+  assert.deepEqual(order.slice(0, 2), ['pending', 'fetch']);
+  const delivered = await delivery.replay();
+  assert.equal(delivered[0].deliveryState, 'delivered');
+  assert.equal(calls, 2);
+  assert.deepEqual(bodies[0], bodies[1]);
+  assert.deepEqual(bodies[0], {
+    operationId, state: 'complete', agent: 'jerry', routeId,
+    generation: 4, deviceIds: [entry.deviceId],
+  });
+});
+
+test('dashboard wires terminal callbacks, subscribe-after-terminal, and startup replay to one delivery authority', () => {
+  const source = fs.readFileSync(path.join(process.cwd(), 'engine/src/dashboard/server.js'), 'utf8');
+  assert.match(source, /const notificationDelivery = dependencies\.notificationDelivery\s*\|\| createQueryTerminalNotificationDelivery/);
+  assert.match(source, /enqueueTerminalNotification:\s*dependencies\.enqueueTerminalNotification\s*\|\| notificationDelivery\.enqueue/);
+  assert.match(source, /this\.queryNotebookNotificationDelivery = notificationDelivery/);
+  assert.match(source, /notificationDelivery\.start/);
+  assert.match(source, /queryNotebookNotificationDelivery\?\.stop/);
+  assert.match(source, /onTerminal:\s*\(record\) => this\.queryNotebookNotificationDelivery\?\.onTerminal\(record\)/);
+});
+
+test('dashboard terminal replay bounds concurrent harness delivery', async () => {
+  const { createQueryTerminalNotificationDelivery } = require(
+    '../../../engine/src/dashboard/server.js'
+  );
+  const entries = Array.from({ length: 20 }, (_, index) => ({
+    requesterAgent: 'jerry',
+    operationId: `brop_${String(index).padStart(32, '0')}`,
+    credentialId: `credential-${index}`,
+    deviceId: `ios-installation-${String(index).padStart(8, '0')}`,
+    generation: 1,
+    terminalState: 'complete',
+    routeId: `qroute_${String(index).padStart(32, '0')}`,
+    deliveryState: 'pending',
+    deliveryRetryable: null,
+  }));
+  let active = 0;
+  let maximum = 0;
+  let claimCalls = 0;
+  let settleCalls = 0;
+  const subscriptions = {
+    async listActive() { return entries; },
+    async markTerminalPending() { return []; },
+    async markTerminalPendingBatch() { return []; },
+    async claimDeliveries({ routeIds }) {
+      claimCalls += 1;
+      return routeIds.map((routeId) => entries.find((entry) => entry.routeId === routeId));
+    },
+    async settleDeliveries({ results }) {
+      settleCalls += 1;
+      return results.map((result) => ({
+        ...entries.find((entry) => entry.routeId === result.routeId),
+        deliveryState: result.state,
+      }));
+    },
+  };
+  const delivery = createQueryTerminalNotificationDelivery({
+    requesterAgent: 'jerry',
+    subscriptions,
+    getStatusAuthorized: async () => ({ executionState: 'complete' }),
+    bridgeToken: 'configured-bridge-token', bridgeBaseUrl: 'http://127.0.0.1:5004',
+    maxConcurrency: 3,
+    fetchImpl: async (_url, options) => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      active -= 1;
+      const body = JSON.parse(options.body);
+      return { ok: true, async json() {
+        return { ok: true, operationId: body.operationId, routeId: body.routeId,
+          generation: body.generation, delivered: body.deviceIds, failed: [], pending: [] };
+      } };
+    },
+  });
+  const results = await delivery.replay();
+  assert.equal(results.length, 20);
+  assert.equal(maximum <= 3, true);
+  assert.equal(claimCalls, 1);
+  assert.equal(settleCalls, 1);
+});
+
+test('dashboard delivery concurrency bound is shared across simultaneous terminal callbacks', async () => {
+  const { createQueryTerminalNotificationDelivery } = require(
+    '../../../engine/src/dashboard/server.js'
+  );
+  const entries = Array.from({ length: 8 }, (_, index) => ({
+    requesterAgent: 'jerry', operationId: `brop_${String(index).padStart(32, '0')}`,
+    credentialId: `credential-${index}`,
+    deviceId: `ios-installation-${String(index).padStart(8, '0')}`, generation: 1,
+    terminalState: 'complete', routeId: `qroute_${String(index).padStart(32, '0')}`,
+    deliveryState: 'active', deliveryRetryable: null,
+  }));
+  let active = 0;
+  let maximum = 0;
+  const subscriptions = {
+    async listActive() { return entries; },
+    async markTerminalPending({ operationId }) {
+      const entry = entries.find((candidate) => candidate.operationId === operationId);
+      entry.deliveryState = 'pending';
+      return [entry];
+    },
+    async markTerminalPendingBatch() { return []; },
+    async claimDeliveries({ routeIds }) {
+      return routeIds.map((routeId) => entries.find((entry) => entry.routeId === routeId));
+    },
+    async settleDeliveries({ results }) {
+      return results.map((result) => ({
+        ...entries.find((entry) => entry.routeId === result.routeId),
+        deliveryState: result.state,
+      }));
+    },
+  };
+  const delivery = createQueryTerminalNotificationDelivery({
+    requesterAgent: 'jerry', subscriptions,
+    getStatusAuthorized: async () => ({ executionState: 'complete' }),
+    bridgeToken: 'configured-bridge-token', bridgeBaseUrl: 'http://127.0.0.1:5004',
+    maxConcurrency: 2,
+    fetchImpl: async (_url, options) => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await new Promise(resolve => setTimeout(resolve, 10));
+      active -= 1;
+      const body = JSON.parse(options.body);
+      return { ok: true, async json() {
+        return { ok: true, operationId: body.operationId, routeId: body.routeId,
+          generation: body.generation, delivered: body.deviceIds, failed: [], pending: [] };
+      } };
+    },
+  });
+  await Promise.all(entries.map((entry) => delivery.onTerminal({
+    requesterAgent: 'jerry', operationId: entry.operationId, state: 'complete',
+  })));
+  assert.equal(maximum, 2);
+});
+
+test('dashboard retry loop uses one unref timer, retries during uptime, and stops cleanly', async () => {
+  const { createQueryTerminalNotificationDelivery } = require(
+    '../../../engine/src/dashboard/server.js'
+  );
+  const operationId = `brop_${'u'.repeat(32)}`;
+  const routeId = `qroute_${'v'.repeat(32)}`;
+  let entry = {
+    requesterAgent: 'jerry', operationId, credentialId: 'credential-retry',
+    deviceId: 'ios-installation-00000001', generation: 1, terminalState: 'complete',
+    routeId, deliveryState: 'failed', deliveryRetryable: true,
+  };
+  let fetches = 0;
+  let scheduled = null;
+  let clears = 0;
+  let unrefs = 0;
+  const delivery = createQueryTerminalNotificationDelivery({
+    requesterAgent: 'jerry',
+    subscriptions: {
+      async listActive() { return [entry]; },
+      async markTerminalPending() { return []; },
+      async markTerminalPendingBatch() { return []; },
+      async claimDeliveries() { entry = { ...entry, deliveryState: 'pending' }; return [entry]; },
+      async settleDeliveries({ results }) {
+        const result = results[0];
+        entry = { ...entry, deliveryState: result.state,
+          deliveryRetryable: result.retryable ?? false };
+        return [entry];
+      },
+    },
+    getStatusAuthorized: async () => ({ executionState: 'complete' }),
+    bridgeToken: 'configured-bridge-token', bridgeBaseUrl: 'http://127.0.0.1:5004',
+    retryIntervalMs: 20,
+    timers: {
+      setTimeout(callback) {
+        scheduled = callback;
+        return { unref() { unrefs += 1; } };
+      },
+      clearTimeout() { clears += 1; scheduled = null; },
+    },
+    fetchImpl: async (_url, options) => {
+      fetches += 1;
+      const body = JSON.parse(options.body);
+      if (fetches === 1) throw new Error('bridge unavailable');
+      return { ok: true, async json() {
+        return { ok: true, operationId, routeId, generation: 1,
+          delivered: body.deviceIds, failed: [], pending: [] };
+      } };
+    },
+  });
+  await delivery.start();
+  assert.equal(fetches, 1);
+  assert.equal(typeof scheduled, 'function');
+  assert.equal(unrefs, 1);
+  const retry = scheduled;
+  await retry();
+  assert.equal(fetches, 2);
+  assert.equal(entry.deliveryState, 'delivered');
+  assert.equal(unrefs, 2);
+  await delivery.stop();
+  assert.equal(clears, 1);
+  assert.equal(scheduled, null);
+});
+
+test('dashboard delivery stop aborts an already-started terminal delivery within a bound', async () => {
+  const { createQueryTerminalNotificationDelivery } = require(
+    '../../../engine/src/dashboard/server.js'
+  );
+  const entered = deferred();
+  const operationId = `brop_${'w'.repeat(32)}`;
+  const routeId = `qroute_${'x'.repeat(32)}`;
+  const entry = {
+    requesterAgent: 'jerry', operationId, credentialId: 'credential-stop',
+    deviceId: 'ios-installation-00000001', generation: 1, terminalState: 'complete',
+    routeId, deliveryState: 'active', deliveryRetryable: null,
+  };
+  let observedSignal;
+  const delivery = createQueryTerminalNotificationDelivery({
+    requesterAgent: 'jerry',
+    subscriptions: {
+      async listActive() { return []; },
+      async markTerminalPending() { entry.deliveryState = 'pending'; return [entry]; },
+      async markTerminalPendingBatch() { return []; },
+      async claimDeliveries() { return [entry]; },
+      async settleDeliveries({ results }) {
+        return [{ ...entry, deliveryState: results[0].state }];
+      },
+    },
+    getStatusAuthorized: async () => ({ executionState: 'complete' }),
+    bridgeToken: 'configured-bridge-token', bridgeBaseUrl: 'http://127.0.0.1:5004',
+    fetchImpl: async (_url, options) => {
+      observedSignal = options.signal;
+      entered.resolve();
+      return new Promise(() => {});
+    },
+  });
+  const terminal = delivery.onTerminal({ requesterAgent: 'jerry', operationId, state: 'complete' });
+  await entered.promise;
+  await Promise.race([
+    delivery.stop(),
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error('delivery stop did not abort in time')), 100,
+    )),
+  ]);
+  assert.equal(observedSignal.aborted, true);
+  await terminal;
 });
 
 test('requester-bound cancel and detach reject a foreign durable record before mutation', async () => {

@@ -92,7 +92,7 @@ class MemoryDeviceRegistry {
 
 async function postJson(app: express.Express, route: string, body: unknown) {
   return await new Promise<{ status: number; body: any }>((resolve, reject) => {
-    const server = app.listen(0, async () => {
+    const server = app.listen(0, '127.0.0.1', async () => {
       try {
         const port = (server.address() as { port: number }).port;
         const res = await fetch(`http://127.0.0.1:${port}${route}`, {
@@ -113,7 +113,7 @@ async function postJson(app: express.Express, route: string, body: unknown) {
 
 async function deleteJson(app: express.Express, route: string, body: unknown) {
   return await new Promise<{ status: number; body: any }>((resolve, reject) => {
-    const server = app.listen(0, async () => {
+    const server = app.listen(0, '127.0.0.1', async () => {
       try {
         const port = (server.address() as { port: number }).port;
         const res = await fetch(`http://127.0.0.1:${port}${route}`, {
@@ -134,7 +134,7 @@ async function deleteJson(app: express.Express, route: string, body: unknown) {
 
 async function getJson(app: express.Express, route: string, headers: Record<string, string> = {}) {
   return await new Promise<{ status: number; body: any }>((resolve, reject) => {
-    const server = app.listen(0, async () => {
+    const server = app.listen(0, '127.0.0.1', async () => {
       try {
         const port = (server.address() as { port: number }).port;
         const res = await fetch(`http://127.0.0.1:${port}${route}`, { headers });

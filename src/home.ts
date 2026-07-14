@@ -74,6 +74,10 @@ import {
   createRegisterDeviceHandler,
   createUnregisterDeviceHandler,
 } from './routes/device.js';
+import {
+  createQueryNotificationJsonParser,
+  createQueryTerminalNotificationHandler,
+} from './routes/query-notifications.js';
 import { createChatHistoryHandler, createChatListHandler } from './routes/chat-history.js';
 import { resolveQueryNotebookBridgeToken } from './query-notebook-credential-config.js';
 import { syncSharedSkillsRegistry } from './skills/runtime.js';
@@ -931,6 +935,7 @@ async function main(): Promise<void> {
   const apnsConfig = config.apns;
   const deviceRegistryPath = join(process.env.COSMO_RUNTIME_DIR ?? process.cwd(), 'device-registry.json');
   const deviceRegistry = new DeviceRegistry(deviceRegistryPath);
+  let apnsPusher: ApnsPusher | undefined;
 
   if (apnsConfig?.team_id && apnsConfig?.key_id && apnsConfig?.key_path && apnsConfig?.bundle_id) {
     try {
@@ -941,8 +946,8 @@ async function main(): Promise<void> {
         bundle_id: apnsConfig.bundle_id,
         default_env: apnsConfig.default_env ?? 'production',
       });
-      const pusher = new ApnsPusher(apnsClient, deviceRegistry, AGENT_NAME);
-      agent.setPusher(pusher);
+      apnsPusher = new ApnsPusher(apnsClient, deviceRegistry, AGENT_NAME);
+      agent.setPusher(apnsPusher);
       console.log(`[home] APNs pusher installed — bundle=${apnsConfig.bundle_id}, env=${apnsConfig.default_env ?? 'production'}`);
     } catch (err) {
       console.warn('[home] APNs pusher init failed:', err instanceof Error ? err.message : err);
@@ -988,6 +993,15 @@ async function main(): Promise<void> {
     '/api/device/query-credential',
     createQueryCredentialJsonParser(),
     createQueryCredentialHandler(deviceConfig),
+  );
+  bridgeApp.post(
+    '/api/query-notifications/terminal',
+    createQueryNotificationJsonParser(),
+    createQueryTerminalNotificationHandler({
+      agentName: AGENT_NAME,
+      bridgeToken: bridgeToken || undefined,
+      pusher: apnsPusher,
+    }),
   );
   bridgeApp.use(express.json({ limit: '90mb' }));
 
@@ -1591,7 +1605,7 @@ async function main(): Promise<void> {
   });
 
   await listenBridgeApp(bridgeApp, BRIDGE_PORT);
-  console.log(`[home] Evobrew bridge listening on port ${BRIDGE_PORT} (/api/chat, /api/stop, /api/chat/turn, /api/chat/stream, /api/chat/pending, /api/chat/stop-turn, /api/chat/history, /api/chat/conversations, /api/device/register, /api/device/registry, /api/device/query-credential, /health)`);
+  console.log(`[home] Evobrew bridge listening on port ${BRIDGE_PORT} (/api/chat, /api/stop, /api/chat/turn, /api/chat/stream, /api/chat/pending, /api/chat/stop-turn, /api/chat/history, /api/chat/conversations, /api/device/register, /api/device/registry, /api/device/query-credential, /api/query-notifications/terminal, /health)`);
 
   // ── Startup banner ──
   console.log('');

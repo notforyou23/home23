@@ -405,6 +405,10 @@ class BrainOperationCoordinator {
     this.readSynthesisState = typeof options.readSynthesisState === 'function'
       ? options.readSynthesisState
       : null;
+    if (options.onTerminal !== undefined && typeof options.onTerminal !== 'function') {
+      throw coordinatorError('coordinator_configuration_invalid');
+    }
+    this.onTerminal = options.onTerminal ?? null;
     this.now = typeof options.clock?.now === 'function' ? options.clock.now : Date.now;
     this.setTimeout = typeof options.timers?.setTimeout === 'function'
       ? options.timers.setTimeout
@@ -443,6 +447,7 @@ class BrainOperationCoordinator {
     }
     this.operationQueues = new Map();
     this.runtimes = new Map();
+    this.terminalNotificationsStarted = new Set();
     this.stopped = false;
     this.stopPromise = null;
   }
@@ -2145,6 +2150,7 @@ class BrainOperationCoordinator {
       await this._broadcastNewEvents(runtime, oldestCursor);
     }
     await this._closeRuntimeAttachments(record, runtime);
+    this._notifyTerminalBestEffort(record);
     try {
       // Keep the event-pump promise visible to stop() until the durable source-pin
       // release marker is committed. Otherwise a prompt process shutdown can exit
@@ -2154,6 +2160,25 @@ class BrainOperationCoordinator {
     } finally {
       this._stopRuntime(record.operationId);
     }
+  }
+
+  _notifyTerminalBestEffort(record) {
+    if (!this.onTerminal || this.terminalNotificationsStarted.has(record.operationId)) return;
+    this.terminalNotificationsStarted.add(record.operationId);
+    if (this.terminalNotificationsStarted.size > 10_000) {
+      const oldest = this.terminalNotificationsStarted.values().next().value;
+      if (oldest) this.terminalNotificationsStarted.delete(oldest);
+    }
+    const projection = Object.freeze({
+      operationId: record.operationId,
+      requesterAgent: record.requesterAgent,
+      state: record.state,
+    });
+    // Query notification delivery is best-effort and must never enter the
+    // awaited source-pin cleanup path. Its own store writes pending before I/O.
+    queueMicrotask(() => {
+      Promise.resolve().then(() => this.onTerminal(projection)).catch(() => {});
+    });
   }
 
   _stopRuntime(operationId) {

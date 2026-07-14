@@ -11,6 +11,8 @@ export interface DeviceRegistration {
   app_build?: string | number;
   contract_version?: string;
   capabilities_hash?: string;
+  installation_id?: string;   // stable Keychain installation identity
+  query_notifications?: boolean; // capability only; never operation authority
 }
 
 /** Durable Query-notebook credential enrollment. Independent of APNs registration. */
@@ -24,11 +26,28 @@ export interface QueryCredentialRegistration {
   revoked_at: string | null;
 }
 
+export type QueryTerminalState = 'complete' | 'partial' | 'failed' | 'cancelled' | 'interrupted';
+
+export interface QueryNotificationDeliveryReceipt {
+  route_id: string;
+  operation_id: string;
+  device_id: string;
+  generation: number;
+  terminal_state: QueryTerminalState;
+  state: 'pending' | 'failed' | 'delivered';
+  attempts: number;
+  updated_at: string;
+  delivered_at: string | null;
+  retryable: boolean;
+  error_code: string | null;
+}
+
 /** In-memory + on-disk registry shape. */
 export interface DeviceRegistryFile {
   version: 2;
   devices: DeviceRegistration[];
   query_credentials: QueryCredentialRegistration[];
+  query_delivery_receipts: QueryNotificationDeliveryReceipt[];
 }
 
 /** APNs auth + routing config, loaded from home23 secrets. */
@@ -41,7 +60,7 @@ export interface ApnsConfig {
 }
 
 /** What gets sent to api.push.apple.com. */
-export interface PushPayload {
+export interface ChatPushPayload {
   aps: {
     alert: { title: string; body: string };
     'mutable-content': 1;
@@ -50,4 +69,21 @@ export interface PushPayload {
   chatId: string;
   turnId: string;
   agent: string;
+  kind?: undefined;
 }
+
+export interface QueryPushPayload {
+  aps: {
+    alert: { title: string; body: string };
+    'mutable-content': 1;
+    sound: 'default';
+  };
+  kind: 'query_operation';
+  operationId: string;
+  state: QueryTerminalState;
+  agent: string;
+  routeId: string;
+  generation: number;
+}
+
+export type PushPayload = ChatPushPayload | QueryPushPayload;
