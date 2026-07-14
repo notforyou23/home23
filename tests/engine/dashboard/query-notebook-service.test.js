@@ -17,6 +17,10 @@ const { BrainOperationStore } = require('../../../engine/src/dashboard/brain-ope
 const {
   createBrainOperationStoreReader,
 } = require('../../../engine/src/dashboard/brain-operations/store-reader.js');
+const {
+  MATCH_OUTCOME,
+  SOURCE_HEALTH,
+} = require('../../../shared/memory-source/contracts.cjs');
 
 const OPERATION_ID = `brop_${'N'.repeat(32)}`;
 const NOW = '2026-07-13T16:00:00.000Z';
@@ -130,6 +134,39 @@ test('summary and result projections are exact, bounded, and redacted', () => {
   }
 });
 
+test('safe evidence publishes only canonical memory-source enum values', () => {
+  const injected = projectNotebookResult(queryRecord({
+    sourceEvidence: {
+      sourceHealth: '/Users/jtr/private/brain',
+      freshness: 'anthropic:claude-secret-provider',
+      matchOutcome: 'sk-secret-token-value',
+    },
+  }), { answer: 'bounded answer' }, { now: () => NOW });
+  assert.equal(injected.evidence, null);
+  assert.equal(JSON.stringify(injected).includes('/Users/jtr/private'), false);
+  assert.equal(JSON.stringify(injected).includes('anthropic'), false);
+  assert.equal(JSON.stringify(injected).includes('sk-secret'), false);
+
+  for (const sourceHealth of Object.values(SOURCE_HEALTH)) {
+    const projected = projectNotebookResult(queryRecord({
+      sourceEvidence: { sourceHealth },
+    }), { answer: 'bounded answer' }, { now: () => NOW });
+    assert.deepEqual(projected.evidence, { sourceHealth });
+  }
+  for (const matchOutcome of Object.values(MATCH_OUTCOME)) {
+    const projected = projectNotebookResult(queryRecord({
+      sourceEvidence: { matchOutcome },
+    }), { answer: 'bounded answer' }, { now: () => NOW });
+    assert.deepEqual(projected.evidence, { matchOutcome });
+  }
+  for (const freshness of ['known', 'unknown']) {
+    const projected = projectNotebookResult(queryRecord({
+      sourceEvidence: { freshness },
+    }), { answer: 'bounded answer' }, { now: () => NOW });
+    assert.deepEqual(projected.evidence, { freshness });
+  }
+});
+
 function inventoryRecord(index, overrides = {}) {
   const suffix = String(index).padStart(32, '0');
   const minute = String(index).padStart(2, '0');
@@ -196,6 +233,43 @@ test('authorized inventory paginates immutable acceptedAt order and binds normal
   });
   assert.deepEqual((await service.listQueryNotebookAuthorized({ q: ' alpha beta ' }))
     .items.map(row => row.question), ['Alpha   Beta']);
+});
+
+test('unfiltered acceptedAt cursor remains complete when a later row finishes between pages', async () => {
+  const records = Array.from({ length: 6 }, (_, index) => inventoryRecord(index, {
+    state: 'running',
+    completedAt: null,
+    result: null,
+    resultHandle: null,
+    resultArtifact: null,
+    resultExpiresAt: null,
+    notebookResultSummary: null,
+  }));
+  const service = createQueryNotebookService({
+    reader: {
+      expectedRequester: 'jerry',
+      async listAuthorized() { return records; },
+      async getAuthorized() { throw new Error('not used'); },
+      async getResultAuthorized() { throw new Error('not used'); },
+    },
+    now: () => NOW,
+  });
+
+  const first = await service.listQueryNotebookAuthorized({ limit: 3 });
+  const later = records.find(record => record.operationId === `brop_${String(1).padStart(32, '0')}`);
+  later.state = 'complete';
+  later.completedAt = '2026-07-13T15:01:30.000Z';
+  later.updatedAt = later.completedAt;
+  const second = await service.listQueryNotebookAuthorized({ limit: 3, cursor: first.nextCursor });
+  const expected = records
+    .toSorted((left, right) => right.acceptedAt.localeCompare(left.acceptedAt)
+      || right.operationId.localeCompare(left.operationId))
+    .map(record => record.operationId);
+  const actual = [...first.items, ...second.items].map(record => record.operationId);
+  assert.deepEqual(actual, expected);
+  assert.equal(new Set(actual).size, records.length);
+  assert.equal(second.items.find(record => record.operationId === later.operationId).executionState,
+    'complete');
 });
 
 test('inventory filters before slicing, caps pages, and rejects foreign requester rows', async () => {

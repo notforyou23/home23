@@ -4,6 +4,10 @@ const { Buffer } = require('node:buffer');
 const crypto = require('node:crypto');
 const { canonicalJson } = require('../../../shared/brain-operations/canonical-json.cjs');
 const {
+  MATCH_OUTCOME,
+  SOURCE_HEALTH,
+} = require('../../../shared/memory-source/contracts.cjs');
+const {
   EXECUTION_STATES,
   OPERATION_ID_PATTERN,
   assertOperationId,
@@ -32,6 +36,9 @@ const PGS_MODES = new Set(['fresh', 'continue', 'targeted']);
 const PGS_LEVELS = new Set(['skim', 'sample', 'deep', 'full']);
 const TERMINAL_STATES = new Set(['complete', 'partial', 'failed', 'cancelled', 'interrupted']);
 const SAFE_EVIDENCE_TOTALS = Object.freeze(['authoritativeTotals', 'returnedTotals']);
+const SOURCE_HEALTH_VALUES = new Set(Object.values(SOURCE_HEALTH));
+const MATCH_OUTCOME_VALUES = new Set(Object.values(MATCH_OUTCOME));
+const FRESHNESS_VALUES = new Set(['known', 'unknown']);
 const COVERAGE_FIELDS = Object.freeze([
   'coverageLevel', 'coverageFraction', 'successfulSweeps',
   'selectedWorkUnits', 'pendingWorkUnits', 'reusedWorkUnits', 'newWorkUnits',
@@ -150,14 +157,9 @@ function projectSafeEvidence(value) {
   if (value === null || value === undefined) return null;
   plainObject(value);
   const projected = {};
-  for (const field of ['sourceHealth', 'freshness', 'matchOutcome']) {
-    if (value[field] !== undefined) {
-      if (typeof value[field] !== 'string' || value[field].length > 128) {
-        throw notebookError('notebook_projection_invalid');
-      }
-      projected[field] = value[field];
-    }
-  }
+  if (SOURCE_HEALTH_VALUES.has(value.sourceHealth)) projected.sourceHealth = value.sourceHealth;
+  if (FRESHNESS_VALUES.has(value.freshness)) projected.freshness = value.freshness;
+  if (MATCH_OUTCOME_VALUES.has(value.matchOutcome)) projected.matchOutcome = value.matchOutcome;
   if (value.completeCoverage !== undefined) {
     if (typeof value.completeCoverage !== 'boolean') throw notebookError('notebook_projection_invalid');
     projected.completeCoverage = value.completeCoverage;
