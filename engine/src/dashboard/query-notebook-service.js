@@ -503,11 +503,14 @@ function matchesFilters(record, filters) {
 }
 
 function createQueryNotebookService(options) {
-  exactKeys(options, ['reader', 'now', 'actionTokens', 'startOperation'],
+  exactKeys(options, ['reader', 'now', 'actionTokens', 'startOperation', 'visibilityStore'],
     'notebook_configuration_invalid');
-  const { reader, actionTokens, startOperation } = options;
+  const {
+    reader, actionTokens, startOperation, visibilityStore,
+  } = options;
   const now = options.now ?? Date.now;
   const actionsConfigured = actionTokens !== undefined || startOperation !== undefined;
+  const visibilityConfigured = visibilityStore !== undefined;
   if (!reader || typeof reader.expectedRequester !== 'string'
       || !reader.expectedRequester
       || typeof reader.listAuthorized !== 'function'
@@ -517,7 +520,12 @@ function createQueryNotebookService(options) {
       || (actionsConfigured && (!actionTokens
         || typeof actionTokens.issue !== 'function'
         || typeof actionTokens.verify !== 'function'
-        || typeof startOperation !== 'function'))) {
+        || typeof startOperation !== 'function'))
+      || (visibilityConfigured && (!visibilityStore
+        || typeof visibilityStore.hiddenOperationIds !== 'function'
+        || typeof visibilityStore.isHidden !== 'function'
+        || typeof visibilityStore.hide !== 'function'
+        || typeof visibilityStore.prune !== 'function'))) {
     throw notebookError('notebook_configuration_invalid');
   }
 
@@ -726,7 +734,30 @@ function createQueryNotebookService(options) {
       }
       if (record.requesterAgent !== reader.expectedRequester) throw notebookError('access_denied');
     }
+    let hiddenOperationIds = new Set();
+    if (visibilityConfigured) {
+      const existingOperationIds = source.map((record) => record.operationId);
+      try {
+        for (const operationId of existingOperationIds) assertOperationId(operationId);
+      } catch (error) {
+        throw notebookError('operation_corrupt', error);
+      }
+      await visibilityStore.prune(existingOperationIds);
+      const hidden = await visibilityStore.hiddenOperationIds();
+      if (!Array.isArray(hidden) || new Set(hidden).size !== hidden.length) {
+        throw notebookError('visibility_store_corrupt');
+      }
+      try {
+        for (const operationId of hidden) assertOperationId(operationId);
+      } catch (error) {
+        throw notebookError('visibility_store_corrupt', error);
+      }
+      hiddenOperationIds = new Set(hidden);
+    }
     let records = source.filter((record) => NOTEBOOK_OPERATION_TYPES.has(record.operationType));
+    if (visibilityConfigured) {
+      records = records.filter((record) => !hiddenOperationIds.has(record.operationId));
+    }
     records = records.filter((record) => {
       validateNotebookRecord(record);
       if (canonicalIsoOrNull(record.acceptedAt) === null) {
@@ -818,6 +849,17 @@ function createQueryNotebookService(options) {
     return projectSummaryWithActions(record);
   }
 
+  async function hideQueryNotebookOperationAuthorized(operationId) {
+    if (!visibilityConfigured) throw notebookError('operation_unavailable');
+    assertOperationId(operationId);
+    const record = await reader.getAuthorized(operationId);
+    if (record.requesterAgent !== reader.expectedRequester) throw notebookError('access_denied');
+    validateNotebookRecord(record);
+    if (!TERMINAL_STATES.has(record.state)) throw notebookError('operation_not_terminal');
+    await visibilityStore.hide(operationId);
+    return { schemaVersion: 1, operationId, hidden: true };
+  }
+
   async function resolveAction(rawInput) {
     if (!actionsConfigured) throw notebookError('action_unavailable');
     exactKeys(rawInput, ['sourceOperationId', 'kind', 'actionToken', 'requestId'], 'invalid_request');
@@ -867,6 +909,7 @@ function createQueryNotebookService(options) {
     exportQueryNotebookResultAuthorized,
     getQueryNotebookResultAuthorized,
     getQueryNotebookStatusAuthorized,
+    hideQueryNotebookOperationAuthorized,
     listQueryNotebookAuthorized,
     resolveAction,
   });

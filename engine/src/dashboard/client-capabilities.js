@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const CONTRACT_VERSION = '2026.07.13';
+const CONTRACT_VERSION = '2026.07.14';
 
 function readPackageVersion(home23Root) {
   if (!home23Root) return null;
@@ -82,6 +82,7 @@ function buildClientCapabilities(options = {}) {
       queryOperationCancel: '/home23/api/query/operations/{operationId}/cancel',
       queryOperationActions: '/home23/api/query/operations/{operationId}/actions',
       queryOperationNotifications: '/home23/api/query/operations/{operationId}/notifications',
+      queryOperationHistory: '/home23/api/query/operations/{operationId}/history',
       queryDeviceCredential: '/api/device/query-credential',
       queryWebSession: '/home23/api/query/session',
       workers: '/home23/api/workers',
@@ -119,6 +120,7 @@ function buildClientCapabilities(options = {}) {
       deviceCredentials: true,
       webSessions: true,
       notificationSubscriptions: true,
+      historyRemoval: 'terminal-only',
       exportFormats: ['markdown'],
     },
     chat: {

@@ -43,7 +43,8 @@ function sendError(res, error) {
     : code === 'access_denied' ? 403
       : ['operation_not_found', 'result_not_found', 'result_unavailable'].includes(code) ? 404
         : code === 'result_expired' ? 410
-          : ['operation_terminal', 'idempotency_conflict'].includes(code) ? 409
+          : ['operation_terminal', 'operation_not_terminal', 'idempotency_conflict'].includes(code)
+            ? 409
             : ['operation_unavailable', 'query_notebook_auth_unavailable'].includes(code) ? 503
               : code === 'request_too_large' ? 413
                 : code === 'invalid_request' || code.endsWith('_invalid') ? 400 : 500;
@@ -310,6 +311,8 @@ function createHome23QueryNotebookRouter(options = {}) {
   }
   const { auth, notebookService, getStatusAuthorized, coordinator } = options;
   const exportConfigured = typeof notebookService?.exportQueryNotebookResultAuthorized === 'function';
+  const historyRemovalConfigured =
+    typeof notebookService?.hideQueryNotebookOperationAuthorized === 'function';
   if (!auth || typeof auth.requireCredential !== 'function' || typeof auth.createSession !== 'function'
       || !notebookService
       || typeof notebookService.listQueryNotebookAuthorized !== 'function'
@@ -399,6 +402,29 @@ function createHome23QueryNotebookRouter(options = {}) {
       throw apiError('notebook_projection_invalid', 500);
     }
     res.json(await decorateForRequest(result, req.queryNotebookIdentity, current));
+  }));
+
+  router.delete('/operations/:operationId/history', asyncRoute(async (req, res) => {
+    assertNoQuery(req);
+    if (req.body !== undefined) throw apiError('invalid_request', 400);
+    if (!historyRemovalConfigured) throw apiError('operation_unavailable', 503, true);
+    try { assertOperationId(req.params.operationId); } catch (error) {
+      throw apiError('operation_id_invalid', 400, false, error);
+    }
+    const result = await notebookService.hideQueryNotebookOperationAuthorized(
+      req.params.operationId,
+    );
+    exactKeys(result, ['schemaVersion', 'operationId', 'hidden'],
+      'notebook_projection_invalid');
+    if (Reflect.ownKeys(result).length !== 3 || result.schemaVersion !== 1
+        || result.operationId !== req.params.operationId || result.hidden !== true) {
+      throw apiError('notebook_projection_invalid', 500);
+    }
+    res.json({
+      schemaVersion: 1,
+      operationId: result.operationId,
+      hidden: true,
+    });
   }));
 
   router.post('/operations/:operationId/export', asyncRoute(async (req, res) => {

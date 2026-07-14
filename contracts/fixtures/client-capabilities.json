@@ -1,5 +1,5 @@
 {
-  "contractVersion": "2026.07.13",
+  "contractVersion": "2026.07.14",
   "generatedAt": "2026-07-13T20:00:00Z",
   "server": {
     "name": "home23",
@@ -63,6 +63,7 @@
     "queryOperationCancel": "/home23/api/query/operations/{operationId}/cancel",
     "queryOperationActions": "/home23/api/query/operations/{operationId}/actions",
     "queryOperationNotifications": "/home23/api/query/operations/{operationId}/notifications",
+    "queryOperationHistory": "/home23/api/query/operations/{operationId}/history",
     "queryDeviceCredential": "/api/device/query-credential",
     "queryWebSession": "/home23/api/query/session",
     "workers": "/home23/api/workers",
@@ -103,6 +104,7 @@
     "deviceCredentials": true,
     "webSessions": true,
     "notificationSubscriptions": true,
+    "historyRemoval": "terminal-only",
     "exportFormats": [
       "markdown"
     ]

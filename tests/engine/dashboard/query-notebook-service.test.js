@@ -549,6 +549,77 @@ test('result detail loads through the requester reader without a caller handle',
   ]);
 });
 
+test('terminal history removal hides inventory but preserves exact operation reads', async () => {
+  const record = queryRecord();
+  const hidden = new Set();
+  const visibilityStore = {
+    async hiddenOperationIds() { return [...hidden]; },
+    async isHidden(operationId) { return hidden.has(operationId); },
+    async hide(operationId) { hidden.add(operationId); return true; },
+    async prune(existingOperationIds) {
+      for (const operationId of [...hidden]) {
+        if (!existingOperationIds.includes(operationId)) hidden.delete(operationId);
+      }
+    },
+  };
+  const service = createQueryNotebookService({
+    reader: {
+      expectedRequester: 'jerry',
+      async listAuthorized() { return [record]; },
+      async getAuthorized() { return record; },
+      async getResultAuthorized() { return { answer: 'bounded answer' }; },
+    },
+    visibilityStore,
+    now: () => NOW,
+  });
+
+  assert.deepEqual((await service.listQueryNotebookAuthorized()).items
+    .map(({ operationId }) => operationId), [OPERATION_ID]);
+  assert.deepEqual(await service.hideQueryNotebookOperationAuthorized(OPERATION_ID), {
+    schemaVersion: 1, operationId: OPERATION_ID, hidden: true,
+  });
+  assert.deepEqual((await service.listQueryNotebookAuthorized()).items, []);
+  assert.equal((await service.getQueryNotebookStatusAuthorized(OPERATION_ID)).operationId,
+    OPERATION_ID);
+  assert.equal((await service.getQueryNotebookResultAuthorized(OPERATION_ID)).answer,
+    'bounded answer');
+  assert.deepEqual(await service.hideQueryNotebookOperationAuthorized(OPERATION_ID), {
+    schemaVersion: 1, operationId: OPERATION_ID, hidden: true,
+  });
+});
+
+test('history removal rejects active and foreign operations before visibility mutation', async () => {
+  let record = queryRecord({ state: 'running', completedAt: null, result: null,
+    resultExpiresAt: null, notebookResultSummary: null });
+  let hideCalls = 0;
+  const service = createQueryNotebookService({
+    reader: {
+      expectedRequester: 'jerry',
+      async listAuthorized() { return [record]; },
+      async getAuthorized() { return record; },
+      async getResultAuthorized() { throw new Error('not used'); },
+    },
+    visibilityStore: {
+      async hiddenOperationIds() { return []; },
+      async isHidden() { return false; },
+      async hide() { hideCalls += 1; },
+      async prune() {},
+    },
+    now: () => NOW,
+  });
+
+  await assert.rejects(
+    () => service.hideQueryNotebookOperationAuthorized(OPERATION_ID),
+    { code: 'operation_not_terminal' },
+  );
+  record = queryRecord({ requesterAgent: 'mallory' });
+  await assert.rejects(
+    () => service.hideQueryNotebookOperationAuthorized(OPERATION_ID),
+    { code: 'access_denied' },
+  );
+  assert.equal(hideCalls, 0);
+});
+
 test('protected export is derived only from the stored bounded notebook result', async () => {
   const record = queryRecord();
   const calls = [];

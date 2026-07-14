@@ -39,6 +39,7 @@ test('client capabilities payload validates and advertises platform truth', () =
   assert.equal(payload.query.deviceCredentials, true);
   assert.equal(payload.query.webSessions, true);
   assert.equal(payload.query.notificationSubscriptions, true);
+  assert.equal(payload.query.historyRemoval, 'terminal-only');
   assert.deepEqual(payload.query.exportFormats, ['markdown']);
   assert.equal(payload.auth.dashboard, 'none');
   assert.equal(payload.auth.queryNotebook, 'required');
@@ -62,6 +63,8 @@ test('client capabilities payload validates and advertises platform truth', () =
     '/home23/api/query/operations/{operationId}/actions');
   assert.equal(payload.endpoints.queryOperationNotifications,
     '/home23/api/query/operations/{operationId}/notifications');
+  assert.equal(payload.endpoints.queryOperationHistory,
+    '/home23/api/query/operations/{operationId}/history');
   assert.equal(payload.endpoints.queryDeviceCredential, '/api/device/query-credential');
   assert.equal(payload.endpoints.queryWebSession, '/home23/api/query/session');
   assert.equal(payload.endpoints.workers, '/home23/api/workers');
@@ -83,9 +86,10 @@ test('client capabilities route returns the contract payload', async (t) => {
   const response = await fetch(`http://127.0.0.1:${address.port}/home23/api/client-capabilities`);
   assert.equal(response.status, 200);
   const payload = await response.json();
-  assert.equal(payload.contractVersion, '2026.07.13');
+  assert.equal(payload.contractVersion, '2026.07.14');
   assert.equal(payload.features.chatTurnStatus, true);
   assert.equal(payload.endpoints.deviceRegister, '/api/device/register');
   assert.equal(payload.auth.queryNotebook, 'required');
   assert.equal(payload.query.notebookVersion, 1);
+  assert.equal(payload.query.historyRemoval, 'terminal-only');
 });

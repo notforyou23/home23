@@ -717,6 +717,67 @@ test('protected facade serves only requester-bound redacted list, status, result
   })).response.status, 400);
 });
 
+test('authenticated DELETE removes only one terminal operation from visible history', async (t) => {
+  const { createHome23QueryNotebookRouter } = require(
+    '../../../engine/src/dashboard/home23-query-notebook-api.js'
+  );
+  const hideCalls = [];
+  let hideError = null;
+  const router = createHome23QueryNotebookRouter({
+    requesterAgent: 'jerry',
+    auth: acceptedAuth(),
+    notebookService: {
+      async listQueryNotebookAuthorized() {
+        return { schemaVersion: 1, items: [], nextCursor: null };
+      },
+      async getQueryNotebookResultAuthorized() { throw new Error('not used'); },
+      async hideQueryNotebookOperationAuthorized(operationId) {
+        hideCalls.push(operationId);
+        if (hideError) throw hideError;
+        return { schemaVersion: 1, operationId, hidden: true };
+      },
+      async resolveAction() { throw new Error('not used'); },
+    },
+    getStatusAuthorized: async () => { throw new Error('not used'); },
+    coordinator: { async cancel() {}, async attach() {}, async detach() {} },
+  });
+  const app = express();
+  app.use('/home23/api/query', express.json({ limit: '64kb', strict: true }), router);
+  const server = await listen(app);
+  t.after(server.close);
+
+  const removed = await jsonRequest(server.base,
+    `/home23/api/query/operations/${OPERATION_ID}/history`, { method: 'DELETE' });
+  assert.equal(removed.response.status, 200);
+  assert.deepEqual(removed.body, {
+    schemaVersion: 1, operationId: OPERATION_ID, hidden: true,
+  });
+  assert.deepEqual(hideCalls, [OPERATION_ID]);
+
+  assert.equal((await jsonRequest(server.base,
+    `/home23/api/query/operations/${OPERATION_ID}/history?unexpected=1`, {
+      method: 'DELETE',
+    })).response.status, 400);
+  assert.equal((await jsonRequest(server.base,
+    `/home23/api/query/operations/${OPERATION_ID}/history`, {
+      method: 'DELETE', body: {},
+    })).response.status, 400);
+
+  hideError = Object.assign(new Error('operation_not_terminal'), {
+    code: 'operation_not_terminal',
+  });
+  const active = await jsonRequest(server.base,
+    `/home23/api/query/operations/${OPERATION_ID}/history`, { method: 'DELETE' });
+  assert.equal(active.response.status, 409);
+  assert.equal(active.body.error.code, 'operation_not_terminal');
+
+  hideError = Object.assign(new Error('access_denied'), { code: 'access_denied' });
+  const foreign = await jsonRequest(server.base,
+    `/home23/api/query/operations/${OPERATION_ID}/history`, { method: 'DELETE' });
+  assert.equal(foreign.response.status, 403);
+  assert.equal(foreign.body.error.code, 'access_denied');
+});
+
 test('protected export preserves expired, race-lost, and foreign authority errors', async (t) => {
   const { createHome23QueryNotebookRouter } = require(
     '../../../engine/src/dashboard/home23-query-notebook-api.js'
@@ -1232,6 +1293,17 @@ test('DashboardServer mounts the protected placeholder before compatibility and 
   assert.ok(broadParser > compatibilityMount);
   assert.match(source, /if \(req\.queryNotebookBodyParsed === true\) return next\(\);/);
   assert.match(source, /this\.queryNotebookPlaceholder\.attach\(router\);/);
+});
+
+test('DashboardServer binds Query visibility authority to the selected runtime directory', () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), 'engine/src/dashboard/server.js'), 'utf8',
+  );
+  assert.match(source, /createQueryNotebookVisibilityStore/);
+  assert.match(source,
+    /path\.join\(this\.defaultRunDir, 'query-notebook-visibility\.json'\)/);
+  assert.match(source, /createQueryNotebookService\(\{[\s\S]*visibilityStore/);
+  assert.match(source, /this\.queryNotebookVisibilityStore = visibilityStore/);
 });
 
 test('DashboardServer verifies shared credentials from agent or secrets config before env', async (t) => {

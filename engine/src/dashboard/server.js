@@ -55,6 +55,9 @@ const {
 } = require('./query-notebook-auth.js');
 const { createQueryNotebookSubscriptions } = require('./query-notebook-subscriptions.js');
 const { createQueryNotebookService } = require('./query-notebook-service.js');
+const {
+  createQueryNotebookVisibilityStore,
+} = require('./query-notebook-visibility-store.js');
 const { createQueryNotebookActionTokens } = require('./query-notebook-action-token.js');
 const {
   createQueryNotebookCredentialAuthority,
@@ -835,8 +838,13 @@ class DashboardServer {
       lookupDeviceCredential,
       verifyBridgeBearer,
     });
+    const visibilityStore = dependencies.visibilityStore || createQueryNotebookVisibilityStore({
+      filePath: path.join(this.defaultRunDir, 'query-notebook-visibility.json'),
+      requesterAgent,
+    });
     const notebookService = dependencies.notebookService || createQueryNotebookService({
       reader: this.brainOperationsReader,
+      visibilityStore,
       ...(actionTokens ? {
         actionTokens,
         startOperation: (request) => this.brainOperationsCoordinator.start(request),
@@ -887,6 +895,7 @@ class DashboardServer {
     this.queryNotebookPlaceholder.attach(router);
     this.queryNotebookAuth = auth;
     this.queryNotebookService = notebookService;
+    this.queryNotebookVisibilityStore = visibilityStore;
     this.queryNotebookSubscriptions = subscriptions;
     this.queryNotebookNotificationDelivery = notificationDelivery;
     const startNotificationDelivery = typeof notificationDelivery.start === 'function'
