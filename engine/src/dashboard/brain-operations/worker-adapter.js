@@ -300,10 +300,11 @@ function progressFields(operationType, event, code) {
 
 function validateProgressRequirements(operationType, event, code) {
   const schemas = PROGRESS_FIELDS_BY_OPERATION[operationType];
-  const required = schemas && typeof event.stage === 'string'
-    ? schemas[event.stage]
-    : (SOURCE_OPERATION_TYPES.has(operationType)
-      && SOURCE_PROGRESS_STAGES.has(event.stage) ? ['sourceRevision'] : null);
+  const sourceStage = SOURCE_OPERATION_TYPES.has(operationType)
+    && SOURCE_PROGRESS_STAGES.has(event.stage);
+  const required = sourceStage
+    ? ['sourceRevision']
+    : (schemas && typeof event.stage === 'string' ? schemas[event.stage] : null);
   if (required && required.some((field) => !Object.hasOwn(event, field))) {
     throw workerError(code);
   }

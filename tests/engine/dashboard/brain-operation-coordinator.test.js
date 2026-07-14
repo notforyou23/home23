@@ -4253,6 +4253,12 @@ test('worker progress validation is operation-aware and rejects extra nested fie
   assert.throws(() => event({
     type: 'progress', phase: 'graph_export', stage: 'unknown_source_stage', sourceRevision: 7,
   }, 'graph_export'), typedCode('worker_event_invalid'));
+  assert.throws(() => event({
+    type: 'progress', phase: 'graph_export', stage: 'source_pin_verified',
+  }, 'graph_export'), typedCode('worker_event_invalid'));
+  assert.throws(() => event({
+    type: 'progress', phase: 'graph_export', stage: 'source_operation_finished',
+  }, 'graph_export'), typedCode('worker_event_invalid'));
 });
 
 test('settled PGS progress survives worker validation, journal compaction, and terminal status', async (t) => {
