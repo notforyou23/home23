@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const Ajv2020 = require('ajv/dist/2020').default;
 
 const root = path.resolve(__dirname, '../..');
 const publicInstructions = ['README.md', 'docs/MANIFEST.md'];
@@ -87,6 +88,50 @@ test('agent guidance keeps PGS background-safe and distinguishes liveness from b
   assert.match(prompt, /Judge provider liveness from lastProviderActivityAt/i);
   assert.match(prompt, /lastProgressAt records committed batch progress and may legitimately lag/i);
   assert.match(prompt, /Only brain_status action:"cancel" for the exact operation ID cancels durable work/i);
+});
+
+test('agent guidance resumes retryable stalled PGS from its exact mode-aware durable lineage', () => {
+  const prompt = read('src/agents/system-prompt.ts');
+  assert.match(prompt, /retryable provider_stalled/i);
+  assert.match(prompt, /successful\/reused work and pending work/i);
+  assert.match(prompt, /resume only when the exact original inputs are available/i);
+  assert.match(prompt, /never infer missing lineage values/i);
+  assert.match(prompt, /failed brain_status output does not expose them all/i);
+  assert.match(prompt, /resume with brain_query/i);
+  assert.match(prompt, /enablePGS=true/i);
+  assert.match(prompt, /level\/fresh lineage[^\n]*pgsMode=["']continue["']/i);
+  assert.match(prompt, /targeted lineage[^\n]*pgsMode=["']targeted["']/i);
+  assert.match(prompt, /continueFromOperationId[^\n]*stalled operation ID/i);
+  assert.match(prompt, /exact cumulative prior targetPartitionIds/i);
+  assert.match(prompt, /exact same query, brain target, and pgsLevel/i);
+  assert.match(prompt, /exact same pgsSweep and pgsSynth pairs/i);
+  assert.match(prompt, /preserve and report the new operation ID/i);
+  assert.match(prompt, /do not start fresh or claim brain loss/i);
+  assert.doesNotMatch(prompt, /(?:automatically retry|automatic retry|auto-retry)/i);
+  assert.doesNotMatch(prompt, /(?:queryActionToken|actionToken)/i);
+
+  const querySchema = JSON.parse(read('contracts/schemas/query.schema.json'));
+  const validate = new Ajv2020({ strict: false }).compile({
+    ...querySchema,
+    $ref: '#/$defs/pgsQueryRequest',
+  });
+  const targetedRecovery = {
+    agent: 'forrest',
+    query: 'Map the exact durable lineage',
+    enablePGS: true,
+    pgsMode: 'targeted',
+    pgsLevel: 'deep',
+    continueFromOperationId: 'brop_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC',
+    targetPartitionIds: ['c-alpha', 'h-beta'],
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    pgsSynth: { provider: 'anthropic', model: 'claude-sonnet-4-7' },
+  };
+  assert.equal(validate(targetedRecovery), true, JSON.stringify(validate.errors));
+  assert.equal(validate({ ...targetedRecovery, pgsMode: 'continue' }), false,
+    'continue mode must not carry targeted lineage IDs');
+  const { targetPartitionIds: _omitted, ...missingTargets } = targetedRecovery;
+  assert.equal(validate(missingTargets), false,
+    'targeted recovery must retain its cumulative prior target IDs');
 });
 
 test('active Jerry instructions use discovery, named PGS, continuation, and durable waits', { skip: !fs.existsSync(path.join(root, localInstructions[0])) }, () => {
