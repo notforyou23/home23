@@ -12,6 +12,7 @@ const {
   OPERATION_ID_PATTERN,
   assertOperationId,
   operationError,
+  validatePgsSessionMetadata,
   validateNotebookResultSummary,
 } = require('./brain-operations/operation-contract.js');
 const {
@@ -54,6 +55,11 @@ const COVERAGE_COUNTER_FIELDS = new Set([
 ]);
 const PARTITION_ID_PATTERN = /^(?:c|h)-[A-Za-z0-9._-]{1,253}$/;
 const RETRYABLE_PARTITION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}$/;
+const ACTION_PARTITION_ID_PATTERN = /^(?:c|h)-[A-Za-z0-9._-]{1,253}$/;
+const QUERY_REQUEST_ID_PATTERN = /^qreq_[A-Za-z0-9_-]{32}$/;
+const PGS_LEVEL_ORDER = Object.freeze(['skim', 'sample', 'deep', 'full']);
+const MAX_ACTION_PARTITIONS = 256;
+const MAX_ACTION_TOKEN_TTL_MS = 60 * 60 * 1000;
 const PROGRESS_FIELDS = Object.freeze([
   'version', 'stage', 'eventSequence', 'sourceNodes', 'sourceEdges',
   'candidateWorkUnits', 'selected', 'completed', 'successful', 'failed', 'reused',
@@ -487,16 +493,137 @@ function matchesFilters(record, filters) {
 }
 
 function createQueryNotebookService(options) {
-  exactKeys(options, ['reader', 'now'], 'notebook_configuration_invalid');
-  const { reader } = options;
+  exactKeys(options, ['reader', 'now', 'actionTokens', 'startOperation'],
+    'notebook_configuration_invalid');
+  const { reader, actionTokens, startOperation } = options;
   const now = options.now ?? Date.now;
+  const actionsConfigured = actionTokens !== undefined || startOperation !== undefined;
   if (!reader || typeof reader.expectedRequester !== 'string'
       || !reader.expectedRequester
       || typeof reader.listAuthorized !== 'function'
       || typeof reader.getAuthorized !== 'function'
       || typeof reader.getResultAuthorized !== 'function'
-      || typeof now !== 'function') {
+      || typeof now !== 'function'
+      || (actionsConfigured && (!actionTokens
+        || typeof actionTokens.issue !== 'function'
+        || typeof actionTokens.verify !== 'function'
+        || typeof startOperation !== 'function'))) {
     throw notebookError('notebook_configuration_invalid');
+  }
+
+  function actionNow() {
+    const raw = now();
+    const milliseconds = raw instanceof Date ? raw.getTime()
+      : typeof raw === 'string' ? Date.parse(raw) : raw;
+    if (!Number.isFinite(milliseconds)) throw notebookError('action_unavailable');
+    return milliseconds;
+  }
+
+  function actionRecord(rawRecord, projectedSummary = null) {
+    try {
+      const record = validateNotebookRecord(rawRecord);
+      if (record.requesterAgent !== reader.expectedRequester) throw notebookError('access_denied');
+      if (record.operationType !== 'pgs' || !TERMINAL_STATES.has(record.state)) {
+        throw notebookError('action_unavailable');
+      }
+      const session = validatePgsSessionMetadata(record.pgsSession, 'action_unavailable');
+      if (Date.parse(session.continuableUntil) <= actionNow()
+          || record.sourcePinDescriptor === null || record.sourcePinDescriptor === undefined
+          || typeof record.sourcePinDigest !== 'string'
+          || !FILTER_DIGEST_PATTERN.test(record.sourcePinDigest)) {
+        throw notebookError('action_unavailable');
+      }
+      // This also proves the persisted notebook continuation and PGS session still agree.
+      const summary = projectedSummary ?? projectNotebookSummary(record, { now });
+      if (!summary.continuation?.canContinue) throw notebookError('action_unavailable');
+      return { record, session, summary };
+    } catch (error) {
+      if (error?.code === 'access_denied' || error?.code === 'action_unavailable') throw error;
+      throw notebookError('action_unavailable', error);
+    }
+  }
+
+  function actionModels(record) {
+    try {
+      return {
+        pgsSweep: exactPair(plainObject(record.parameters).pgsSweep),
+        pgsSynth: exactPair(record.parameters.pgsSynth),
+      };
+    } catch (error) {
+      throw notebookError('action_unavailable', error);
+    }
+  }
+
+  function nextContinuationLevel(record, summary) {
+    const current = record.requestParameters.pgsLevel;
+    const currentIndex = PGS_LEVEL_ORDER.indexOf(current);
+    if (currentIndex < 0) throw notebookError('action_unavailable');
+    if (summary.coverage?.scopePendingWorkUnits > 0) return current;
+    if (currentIndex >= PGS_LEVEL_ORDER.length - 1) throw notebookError('action_unavailable');
+    return PGS_LEVEL_ORDER[currentIndex + 1];
+  }
+
+  function retryablePartitions(rawResult, session) {
+    try {
+      const result = plainObject(rawResult, 'action_unavailable');
+      const pgs = plainObject(plainObject(result.metadata, 'action_unavailable').pgs,
+        'action_unavailable');
+      if (pgs.canContinue !== true
+          || pgs.sessionId !== session.sessionId
+          || pgs.continuableUntil !== session.continuableUntil
+          || (pgs.sourceOperationId ?? null) !== session.sourceOperationId
+          || !Array.isArray(pgs.retryablePartitions)
+          || new Set(pgs.retryablePartitions).size !== pgs.retryablePartitions.length
+          || pgs.retryablePartitions.some((id) => typeof id !== 'string'
+            || !ACTION_PARTITION_ID_PATTERN.test(id))) {
+        throw notebookError('action_unavailable');
+      }
+      const partitions = [...pgs.retryablePartitions].sort().slice(0, MAX_ACTION_PARTITIONS);
+      if (partitions.length === 0) throw notebookError('action_unavailable');
+      return partitions;
+    } catch (error) {
+      if (error?.code === 'action_unavailable') throw error;
+      throw notebookError('action_unavailable', error);
+    }
+  }
+
+  function executableActions(record, summary) {
+    if (!actionsConfigured) return undefined;
+    try {
+      const loaded = actionRecord(record, summary);
+      const expiresAt = new Date(Math.min(
+        Date.parse(loaded.session.continuableUntil),
+        actionNow() + MAX_ACTION_TOKEN_TTL_MS,
+      )).toISOString();
+      const actionNames = [];
+      try {
+        nextContinuationLevel(loaded.record, loaded.summary);
+        actionNames.push('continueSweep');
+      } catch (error) {
+        if (error?.code !== 'action_unavailable') throw error;
+      }
+      if (Array.isArray(loaded.summary.coverage?.retryablePartitions)
+          && loaded.summary.coverage.retryablePartitions.length > 0) {
+        actionNames.push('targetedRetry');
+      }
+      return actionNames.map((action) => ({
+        kind: action,
+        token: actionTokens.issue({
+          sourceOperationId: loaded.record.operationId,
+          action,
+          expiresAt,
+        }),
+        expiresAt,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  function projectSummaryWithActions(record) {
+    const summary = projectNotebookSummary(record, { now });
+    const actions = executableActions(record, summary);
+    return actions === undefined ? summary : { ...summary, actions };
   }
 
   async function ensureVisibleSummary(record) {
@@ -552,7 +679,7 @@ function createQueryNotebookService(options) {
     if (hasMore) page.pop();
     const visible = [];
     for (const record of page) visible.push(await ensureVisibleSummary(record));
-    const items = visible.map((record) => projectNotebookSummary(record, { now }));
+    const items = visible.map((record) => projectSummaryWithActions(record));
     const last = page.at(-1);
     return {
       schemaVersion: 1,
@@ -572,12 +699,58 @@ function createQueryNotebookService(options) {
     validateNotebookRecord(record);
     record = await ensureVisibleSummary(record);
     const result = await reader.getResultAuthorized(operationId);
-    return projectNotebookResult(record, result, { now });
+    const projected = projectNotebookResult(record, result, { now });
+    const actions = executableActions(record, projectNotebookSummary(record, { now }));
+    return actions === undefined ? projected : { ...projected, actions };
+  }
+
+  async function resolveAction(rawInput) {
+    if (!actionsConfigured) throw notebookError('action_unavailable');
+    exactKeys(rawInput, ['sourceOperationId', 'actionToken', 'requestId'], 'invalid_request');
+    if (typeof rawInput.actionToken !== 'string'
+        || typeof rawInput.requestId !== 'string'
+        || !QUERY_REQUEST_ID_PATTERN.test(rawInput.requestId)) {
+      throw notebookError('invalid_request');
+    }
+    try { assertOperationId(rawInput.sourceOperationId); } catch (error) {
+      throw notebookError('invalid_request', error);
+    }
+    const claims = actionTokens.verify(rawInput.actionToken, {
+      sourceOperationId: rawInput.sourceOperationId,
+    });
+    const loaded = actionRecord(await reader.getAuthorized(rawInput.sourceOperationId));
+    if (loaded.record.operationId !== rawInput.sourceOperationId) {
+      throw notebookError('action_unavailable');
+    }
+    const models = actionModels(loaded.record);
+    const parameters = {
+      query: loaded.record.requestParameters.query,
+      pgsMode: claims.action === 'continueSweep' ? 'continue' : 'targeted',
+      pgsLevel: claims.action === 'continueSweep'
+        ? nextContinuationLevel(loaded.record, loaded.summary)
+        : loaded.record.requestParameters.pgsLevel,
+      continueFromOperationId: loaded.record.operationId,
+      ...models,
+    };
+    if (claims.action === 'targetedRetry') {
+      parameters.targetPartitionIds = retryablePartitions(
+        await reader.getResultAuthorized(loaded.record.operationId), loaded.session,
+      );
+    } else if (claims.action !== 'continueSweep') {
+      throw notebookError('action_unavailable');
+    }
+    return startOperation({
+      requestId: rawInput.requestId,
+      operationType: 'pgs',
+      target: { brainId: loaded.record.target.brainId },
+      parameters,
+    });
   }
 
   return Object.freeze({
     getQueryNotebookResultAuthorized,
     listQueryNotebookAuthorized,
+    resolveAction,
   });
 }
 

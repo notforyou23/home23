@@ -275,6 +275,114 @@ test('Query run rejects malformed, comma-joined, and duplicate client request ID
   assert.equal(duplicate.calls.length, 0);
 });
 
+test('lost-start replay reaches durable idempotency while the live catalog is unavailable', async () => {
+  const requestId = `qreq_${'l'.repeat(32)}`;
+  let catalogAvailable = true;
+  let catalogCalls = 0;
+  let providerStarts = 0;
+  const starts = new Map();
+  const fixture = makeQueryApp({
+    catalogProvider: async () => {
+      catalogCalls += 1;
+      if (!catalogAvailable) {
+        throw Object.assign(new Error('catalog offline'), {
+          code: 'catalog_unavailable', retryable: true,
+        });
+      }
+      return compatCatalog();
+    },
+    adapter: {
+      start: async (request) => {
+        const prior = starts.get(request.requestId);
+        const fingerprint = JSON.stringify(request);
+        if (prior) {
+          if (prior.fingerprint !== fingerprint) {
+            throw Object.assign(new Error('idempotency_conflict'), {
+              code: 'idempotency_conflict', retryable: false,
+            });
+          }
+          return prior.record;
+        }
+        providerStarts += 1;
+        const record = canonicalCompatRecord({ state: 'queued', eventSequence: 0 });
+        starts.set(request.requestId, { fingerprint, record });
+        return record;
+      },
+    },
+  });
+  const body = {
+    query: 'recover this exact start',
+    mode: 'quick',
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+    enablePGS: false,
+  };
+  const headers = { 'X-Home23-Query-Request-Id': requestId, prefer: 'respond-async' };
+
+  const accepted = await postJson(fixture.app, '/home23/api/query/run', body, headers);
+  assert.equal(accepted.status, 202);
+  catalogAvailable = false;
+  const replay = await postJson(fixture.app, '/home23/api/query/run', body, headers);
+  assert.equal(replay.status, 202);
+  assert.equal(replay.body.operationId, accepted.body.operationId);
+  assert.equal(providerStarts, 1);
+
+  const conflict = await postJson(fixture.app, '/home23/api/query/run', {
+    ...body, query: 'changed request',
+  }, headers);
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.body.error.code, 'idempotency_conflict');
+  assert.equal(providerStarts, 1);
+  assert.equal(catalogCalls, 0, 'durable non-dry starts must not depend on the facade catalog');
+});
+
+test('lost-start replay is not blocked by a renamed live catalog target', async () => {
+  const requestId = `qreq_${'n'.repeat(32)}`;
+  let renamed = false;
+  let providerStarts = 0;
+  const starts = new Map();
+  const fixture = makeQueryApp({
+    catalogProvider: async () => renamed ? {
+      ...compatCatalog(),
+      selectedBrain: {
+        id: 'brain-jerry-renamed', routeKey: 'brain-jerry-renamed', displayName: 'Jerry Brain',
+      },
+    } : compatCatalog(),
+    adapter: {
+      start: async (request) => {
+        const fingerprint = JSON.stringify(request);
+        const prior = starts.get(request.requestId);
+        if (prior) {
+          if (prior.fingerprint !== fingerprint) {
+            throw Object.assign(new Error('idempotency_conflict'), {
+              code: 'idempotency_conflict', retryable: false,
+            });
+          }
+          return prior.record;
+        }
+        providerStarts += 1;
+        const record = canonicalCompatRecord({ state: 'queued', eventSequence: 0 });
+        starts.set(request.requestId, { fingerprint, record });
+        return record;
+      },
+    },
+  });
+  const body = {
+    brainId: 'brain-jerry',
+    query: 'survive catalog rename',
+    mode: 'quick',
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+    enablePGS: false,
+  };
+  const headers = { 'X-Home23-Query-Request-Id': requestId, prefer: 'respond-async' };
+  const accepted = await postJson(fixture.app, '/home23/api/query/run', body, headers);
+  assert.equal(accepted.status, 202);
+  renamed = true;
+  const replay = await postJson(fixture.app, '/home23/api/query/run', body, headers);
+  assert.equal(replay.status, 202);
+  assert.equal(replay.body.operationId, accepted.body.operationId);
+  assert.equal(providerStarts, 1);
+});
+
 async function postRawJson(app, route, body) {
   return await new Promise((resolve, reject) => {
     const server = app.listen(0, async () => {
@@ -859,6 +967,12 @@ function makeQueryApp({
     catalogProvider,
     operationAdapter: {
       start: async (request) => {
+        if (request.target?.brainId !== undefined
+            && request.target.brainId !== 'brain-jerry') {
+          throw Object.assign(new Error('target_mismatch'), {
+            code: 'target_mismatch', status: 400, retryable: false,
+          });
+        }
         calls.push('start');
         onForward(request);
         return canonicalCompatRecord({ state: 'queued', eventSequence: 0 });
