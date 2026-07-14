@@ -37,7 +37,8 @@
         },
         "features": {
           "type": "object",
-          "additionalProperties": { "type": "boolean" }
+          "additionalProperties": { "type": "boolean" },
+          "required": ["multiAgent", "selectedAgentChat", "queryStreaming", "saunaControl", "pushRegistration", "settingsControlPlane", "chatTurnStatus", "operatorDiagnostics"]
         },
         "endpoints": {
           "type": "object",
@@ -77,12 +78,12 @@
         "query": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["facade", "directCosmo", "streaming", "notebookVersion", "progressSnapshots", "actionTokens", "deviceCredentials", "webSessions", "notificationSubscriptions"],
+          "required": ["facade", "directCosmo", "streaming", "availabilityEndpoint", "notebookVersion", "progressSnapshots", "actionTokens", "deviceCredentials", "webSessions", "notificationSubscriptions"],
           "properties": {
             "facade": { "type": "boolean" },
             "directCosmo": { "type": "boolean" },
             "streaming": { "type": "boolean" },
-            "availabilityEndpoint": { "type": ["string", "null"] },
+            "availabilityEndpoint": { "type": "string" },
             "notebookVersion": { "const": 1 },
             "progressSnapshots": { "const": true },
             "actionTokens": { "const": true },
@@ -121,7 +122,10 @@
     "platformCapabilities": {
       "type": "object",
       "additionalProperties": { "type": "boolean" },
-      "required": ["home", "query", "chat", "sauna", "settings"]
+      "properties": {
+        "workers": { "type": ["boolean", "null"] }
+      },
+      "required": ["home", "query", "chat", "sauna", "settings", "diagnostics", "push"]
     }
   }
 }

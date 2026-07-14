@@ -560,6 +560,30 @@
       "auth": "none",
       "liveValidation": "safe",
       "consumers": ["mac", "home", "settings"]
+    },
+    {
+      "id": "worker-runs",
+      "method": "GET",
+      "base": "dashboard",
+      "route": "/home23/api/workers/runs",
+      "schema": "schemas/worker-agents.schema.json",
+      "definition": "workerRunListResponse",
+      "fixture": "fixtures/worker-runs.json",
+      "auth": "none",
+      "liveValidation": "safe",
+      "consumers": ["mac", "home", "settings"]
+    },
+    {
+      "id": "worker-run-receipt",
+      "method": "GET",
+      "base": "dashboard",
+      "route": "/home23/api/workers/runs/:runId/receipt",
+      "schema": "schemas/worker-agents.schema.json",
+      "definition": "workerRunReceipt",
+      "fixture": "fixtures/worker-run-receipt.json",
+      "auth": "none",
+      "liveValidation": "fixture-only",
+      "consumers": ["mac", "home", "settings"]
     }
   ]
 }
