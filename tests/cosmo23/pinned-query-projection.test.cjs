@@ -91,17 +91,60 @@ test('large direct query scans portable iterators once and retains bounded recor
   assert.equal(projection.nodes.some(node => String(node.content).includes('bounded canary')), true);
 });
 
-test('oversized and unserializable records fail closed', async () => {
+test('live-shaped giant metadata retains broad diverse compact evidence', async () => {
+  const nodeCount = 2_000;
+  const types = ['finding', 'decision', 'observation', 'question'];
+  const projection = await projectPinnedQuery({
+    sourcePin: createSyntheticPinnedSource({
+      nodeCount,
+      edgeCount: 0,
+      nodeFactory: index => ({
+        id: `giant-${index}`,
+        type: types[index % types.length],
+        tags: [`lane-${index % 8}`],
+        content: `projection canary ${index} ${'x'.repeat(1_024)}`,
+        salience: (index % 100) / 100,
+        embedding: new Array(256).fill(0.25),
+        metadata: {
+          source: 'jerry',
+          path: `/Users/jtr/private/node-${index}.json`,
+          providerPayload: 'z'.repeat(32 * 1024),
+        },
+      }),
+    }),
+    query: 'projection canary',
+    mode: 'dive',
+    signal: new AbortController().signal,
+    limits: {
+      maxNodes: 512,
+      maxEdges: 1,
+      maxProjectionBytes: 2 * 1024 * 1024,
+    },
+  });
+  const serialized = JSON.stringify(projection.nodes);
+
+  assert.equal(projection.stats.nodesRetained >= 64, true);
+  assert.equal(new Set(projection.nodes.map(node => node.type)).size >= 3, true);
+  assert.equal(serialized.includes('/Users/jtr/private'), false);
+  assert.equal(serialized.includes('embedding'), false);
+  assert.equal(serialized.includes('providerPayload'), false);
+  assert.equal(projection.stats.retainedBytes <= 2 * 1024 * 1024, true);
+});
+
+test('oversized textual evidence is compacted while unserializable records fail closed', async () => {
   const oversized = createSyntheticPinnedSource({
     nodeCount: 1,
     edgeCount: 0,
     nodeFactory: () => ({ id: 'n0', content: 'x'.repeat(257 * 1024) }),
   });
-  await assert.rejects(projectPinnedQuery({
+  const compacted = await projectPinnedQuery({
     sourcePin: oversized,
     query: 'x',
     signal: new AbortController().signal,
-  }), error => error.code === 'result_too_large');
+  });
+  assert.equal(compacted.nodes.length, 1);
+  assert.equal(compacted.nodes[0].contentTruncated, true);
+  assert.equal(Buffer.byteLength(JSON.stringify(compacted.nodes[0]), 'utf8') <= 4_096, true);
 
   const circularNode = { id: 'n0' };
   circularNode.self = circularNode;
@@ -117,7 +160,7 @@ test('oversized and unserializable records fail closed', async () => {
   }), error => error.code === 'source_invalid');
 });
 
-test('aggregate retained bytes keep the deterministic best fitting subset and disclose truncation', async () => {
+test('aggregate compaction keeps a deterministic broad fitting subset', async () => {
   const sourceOptions = {
     nodeCount: 300,
     edgeCount: 0,
@@ -132,12 +175,12 @@ test('aggregate retained bytes keep the deterministic best fitting subset and di
   const projection = await project(createSyntheticPinnedSource(sourceOptions));
   const repeated = await project(createSyntheticPinnedSource(sourceOptions));
 
-  assert.equal(projection.nodes.length > 0 && projection.nodes.length < 300, true);
+  assert.equal(projection.nodes.length, 300);
   assert.deepEqual(projection.nodes.map(node => node.id), repeated.nodes.map(node => node.id));
   assert.equal(projection.stats.retainedBytes <= 2 * 1024 * 1024, true);
-  assert.equal(projection.stats.byteBudgetTruncated, true);
-  assert.equal(projection.stats.droppedForByteBudget > 0, true);
-  assert.equal(projection.sourceEvidence.byteBudgetTruncated, true);
+  assert.equal(projection.stats.byteBudgetTruncated, false);
+  assert.equal(projection.stats.droppedForByteBudget, 0);
+  assert.equal(projection.sourceEvidence.byteBudgetTruncated, false);
   assert.equal(
     projection.sourceEvidence.droppedForByteBudget,
     projection.stats.droppedForByteBudget,
@@ -172,12 +215,14 @@ test('live-shaped small topK query scans large records and retains the highest-r
     },
   });
 
-  assert.deepEqual(projection.nodes.map(node => node.id), ['n2047', 'n2046']);
+  assert.deepEqual(projection.nodes.map(node => node.id), [
+    'n2047', 'n2046', 'n2045', 'n2044', 'n2043', 'n2042', 'n2041', 'n2040',
+  ]);
   assert.equal(projection.stats.nodesScanned, nodeCount);
-  assert.equal(projection.stats.nodesRetained, 2);
+  assert.equal(projection.stats.nodesRetained, 8);
   assert.equal(projection.stats.retainedBytes <= maxProjectionBytes, true);
-  assert.equal(projection.stats.byteBudgetTruncated, true);
-  assert.equal(projection.stats.droppedForByteBudget > 0, true);
+  assert.equal(projection.stats.byteBudgetTruncated, false);
+  assert.equal(projection.stats.droppedForByteBudget, 0);
 });
 
 test('projection fails closed when no valid candidate fits the aggregate byte budget', async () => {
@@ -282,22 +327,14 @@ test('known numeric vector payload fields are omitted without mutating evidence 
     id: 'n0',
     content: 'projection density canary evidence',
     salience: 0.95,
-    embeddingModel: 'keep-this-model-metadata',
-    vectorEvidence: 'keep-this-evidence-field',
-    metadata: {
-      source: 'jerry',
-      nested: {
-        vector: 'textual evidence using the field name vector',
-        note: 'keep nested metadata',
-      },
-    },
+    provenance: 'jerry',
   }]);
   assert.deepEqual(projection.edges, [{
     source: 'n0',
     target: 'n0',
     type: 'supports',
     evidence: 'keep edge evidence',
-    metadata: { provenance: 'brain', keep: true },
+    provenance: 'brain',
   }]);
   assert.deepEqual({ node, edge }, sourceBefore);
 });
@@ -340,7 +377,7 @@ test('safe projection applies record and aggregate limits after removing vector 
   assert.equal(projection.stats.maxRetainedBytes <= maxProjectionBytes, true);
 });
 
-test('safe projection keeps UTF-8 byte accounting and rejects oversized remaining evidence', async () => {
+test('safe projection keeps UTF-8 byte accounting and truncates on code-point boundaries', async () => {
   const keptNode = {
     id: 'unicode-kept',
     content: `unicode ${'🧠'.repeat(20)}`,
@@ -360,7 +397,7 @@ test('safe projection keeps UTF-8 byte accounting and rejects oversized remainin
   assert.equal(kept.stats.retainedBytes, expectedBytes);
   assert.equal(kept.nodes[0].content, keptNode.content);
 
-  await assert.rejects(projectPinnedQuery({
+  const truncated = await projectPinnedQuery({
     sourcePin: createSyntheticPinnedSource({
       nodeCount: 1,
       edgeCount: 0,
@@ -373,7 +410,10 @@ test('safe projection keeps UTF-8 byte accounting and rejects oversized remainin
     query: 'unicode',
     signal: new AbortController().signal,
     limits: { maxRecordBytes: 256, maxProjectionBytes: 512 },
-  }), error => error.code === 'result_too_large');
+  });
+  assert.equal(truncated.nodes[0].contentTruncated, true);
+  assert.equal(Buffer.byteLength(JSON.stringify(truncated.nodes[0]), 'utf8') <= 256, true);
+  assert.equal(truncated.nodes[0].content.includes('\uFFFD'), false);
 });
 
 test('vector sanitization does not bypass dangerous accessors or nonserializable evidence', async () => {
@@ -393,7 +433,7 @@ test('vector sanitization does not bypass dangerous accessors or nonserializable
     query: 'canary',
     signal: new AbortController().signal,
   }), error => error.code === 'source_invalid');
-  assert.equal(getterCalls, 1);
+  assert.equal(getterCalls, 0);
 
   const circularEmbedding = [];
   circularEmbedding.push(circularEmbedding);

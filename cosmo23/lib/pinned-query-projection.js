@@ -1,9 +1,14 @@
 'use strict';
 
 const { QUERY_OPERATION_LIMITS } = require('./brain-operation-limits');
-const { serializeProviderRecord } = require('./provider-record-sanitizer');
+const {
+  projectQueryEvidenceEdge,
+  projectQueryEvidenceNode,
+  projectionRecordLimits,
+} = require('./query-evidence-projector');
 
 const COOPERATIVE_YIELD_EVERY = 1_000;
+const CANDIDATE_OVERSAMPLE = 4;
 
 function typed(code, message, retryable = false) {
   return Object.assign(new Error(message), { code, retryable });
@@ -41,13 +46,6 @@ function boundedLimits(overrides = {}) {
   return Object.freeze(result);
 }
 
-function serializeRecord(record, maxRecordBytes, kind) {
-  return serializeProviderRecord(record, {
-    maxBytes: maxRecordBytes,
-    label: `Pinned ${kind} record`,
-  });
-}
-
 function nodeId(node) {
   const value = node?.id ?? node?.nodeId ?? node?.key;
   if ((typeof value !== 'string' && !Number.isSafeInteger(value))
@@ -76,11 +74,6 @@ function nodeText(node) {
     node.content, node.concept, node.text, node.summary, node.title,
     node.type, node.tag, Array.isArray(node.tags) ? node.tags.join(' ') : '',
   ];
-  if (node.metadata && typeof node.metadata === 'object' && !Array.isArray(node.metadata)) {
-    for (const value of Object.values(node.metadata)) {
-      if (typeof value === 'string') values.push(value);
-    }
-  }
   return values.filter(value => typeof value === 'string').join(' ').toLowerCase();
 }
 
@@ -167,9 +160,65 @@ class BoundedMinHeap {
   }
 }
 
+function normalizedBucketPart(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9_.:-]+/g, '-');
+  return normalized ? normalized.slice(0, 96) : null;
+}
+
+function candidateBucket(record) {
+  const type = normalizedBucketPart(record.type);
+  const tag = normalizedBucketPart(record.tag)
+    || (Array.isArray(record.tags) ? normalizedBucketPart(record.tags[0]) : null);
+  if (type && tag) return `type:${type}|tag:${tag}`;
+  if (type) return `type:${type}`;
+  if (tag) return `tag:${tag}`;
+  return 'untyped';
+}
+
+function diverseBestFirst(candidates) {
+  const groups = new Map();
+  for (const candidate of candidates) {
+    const bucket = candidateBucket(candidate.record);
+    if (!groups.has(bucket)) groups.set(bucket, []);
+    groups.get(bucket).push(candidate);
+  }
+  const orderedGroups = [...groups.entries()].sort((left, right) => {
+    const comparison = compareCandidate(right[1][0], left[1][0]);
+    return comparison || left[0].localeCompare(right[0]);
+  });
+  const offsets = new Map(orderedGroups.map(([bucket]) => [bucket, 0]));
+  const output = [];
+  while (true) {
+    let added = false;
+    for (const [bucket, rows] of orderedGroups) {
+      const offset = offsets.get(bucket);
+      if (offset >= rows.length) continue;
+      output.push(rows[offset]);
+      offsets.set(bucket, offset + 1);
+      added = true;
+    }
+    if (!added) break;
+  }
+  return output;
+}
+
+function effectiveRecordLimits(mode, selectedLimits) {
+  const configured = projectionRecordLimits(mode);
+  const maxRecordBytes = Math.min(configured.maxRecordBytes, selectedLimits.maxRecordBytes);
+  if (maxRecordBytes <= 1) {
+    throw typed('result_too_large', 'Query evidence record limit is too small');
+  }
+  return Object.freeze({
+    maxRecordBytes,
+    maxContentBytes: Math.min(configured.maxContentBytes, maxRecordBytes - 1),
+  });
+}
+
 async function projectPinnedQuery({
   sourcePin,
   query,
+  mode = 'full',
   signal,
   limits = {},
   sourceSummary,
@@ -184,50 +233,46 @@ async function projectPinnedQuery({
     throw typed('invalid_request', 'Query is required');
   }
   const selectedLimits = boundedLimits(limits);
+  const recordLimits = effectiveRecordLimits(mode, selectedLimits);
   const terms = queryTerms(query);
-  const heap = new BoundedMinHeap(selectedLimits.maxNodes);
-  let retainedNodeBytes = 0;
+  const candidateLimit = Math.min(
+    QUERY_OPERATION_LIMITS.maxNodes * CANDIDATE_OVERSAMPLE,
+    selectedLimits.maxNodes * CANDIDATE_OVERSAMPLE,
+  );
+  const heap = new BoundedMinHeap(candidateLimit);
   let nodesScanned = 0;
-  let maxRetainedNodes = 0;
-  let maxRetainedBytes = 0;
   let nodesDroppedForByteBudget = 0;
 
   throwIfAborted(signal);
   for await (const rawNode of sourcePin.iterateNodes({ signal })) {
     throwIfAborted(signal);
     nodesScanned += 1;
-    const serialized = serializeRecord(rawNode, selectedLimits.maxRecordBytes, 'node');
-    const id = nodeId(serialized.value);
-    if (id !== null) {
-      if (serialized.bytes > selectedLimits.maxProjectionBytes) {
-        nodesDroppedForByteBudget += 1;
-      } else {
-        const change = heap.add({
-          id,
-          score: scoreNode(serialized.value, terms),
-          record: serialized.value,
-          bytes: serialized.bytes,
-        });
-        if (change.added) retainedNodeBytes += change.added.bytes;
-        if (change.removed) retainedNodeBytes -= change.removed.bytes;
-        while (retainedNodeBytes > selectedLimits.maxProjectionBytes) {
-          const removed = heap.removeMinimum();
-          if (!removed) {
-            throw typed('result_too_large', 'Pinned query record cannot fit the projection budget');
-          }
-          retainedNodeBytes -= removed.bytes;
-          nodesDroppedForByteBudget += 1;
-        }
-        maxRetainedNodes = Math.max(maxRetainedNodes, heap.rows.length);
-        maxRetainedBytes = Math.max(maxRetainedBytes, retainedNodeBytes);
-      }
-    }
+    const projected = projectQueryEvidenceNode(rawNode, recordLimits);
+    const id = nodeId(projected.value);
+    heap.add({
+      id,
+      score: scoreNode(projected.value, terms),
+      record: projected.value,
+      bytes: projected.bytes,
+    });
     if (typeof onNodeScanned === 'function') onNodeScanned(nodesScanned);
     await yieldForCancellation(nodesScanned, signal);
   }
 
-  const nodes = heap.valuesBestFirst().map(row => row.record);
-  if (nodes.length === 0 && nodesDroppedForByteBudget > 0) {
+  const selectedRows = [];
+  let retainedNodeBytes = 0;
+  for (const candidate of diverseBestFirst(heap.valuesBestFirst())) {
+    if (selectedRows.length >= selectedLimits.maxNodes) break;
+    if (retainedNodeBytes + candidate.bytes > selectedLimits.maxProjectionBytes) {
+      nodesDroppedForByteBudget += 1;
+      continue;
+    }
+    selectedRows.push(candidate);
+    retainedNodeBytes += candidate.bytes;
+  }
+  selectedRows.sort((left, right) => compareCandidate(right, left));
+  const nodes = selectedRows.map(row => row.record);
+  if (nodes.length === 0 && heap.rows.length > 0) {
     throw typed('result_too_large', 'No pinned query candidate fits the projection byte limit');
   }
   const retainedIds = new Set(nodes.map(nodeId).filter(Boolean));
@@ -238,19 +283,18 @@ async function projectPinnedQuery({
   for await (const rawEdge of sourcePin.iterateEdges({ signal })) {
     throwIfAborted(signal);
     edgesScanned += 1;
-    const serialized = serializeRecord(rawEdge, selectedLimits.maxRecordBytes, 'edge');
-    const source = edgeEndpoint(serialized.value, 'source');
-    const target = edgeEndpoint(serialized.value, 'target');
+    const projected = projectQueryEvidenceEdge(rawEdge, recordLimits);
+    const source = edgeEndpoint(projected.value, 'source');
+    const target = edgeEndpoint(projected.value, 'target');
     if (edges.length < selectedLimits.maxEdges
         && source !== null && target !== null
         && retainedIds.has(source) && retainedIds.has(target)) {
-      if (retainedNodeBytes + edgeBytes + serialized.bytes
+      if (retainedNodeBytes + edgeBytes + projected.bytes
           > selectedLimits.maxProjectionBytes) {
         edgesDroppedForByteBudget += 1;
       } else {
-        edges.push(serialized.value);
-        edgeBytes += serialized.bytes;
-        maxRetainedBytes = Math.max(maxRetainedBytes, retainedNodeBytes + edgeBytes);
+        edges.push(projected.value);
+        edgeBytes += projected.bytes;
       }
     }
     if (typeof onEdgeScanned === 'function') onEdgeScanned(edgesScanned);
@@ -293,9 +337,9 @@ async function projectPinnedQuery({
       edgesScanned,
       nodesRetained: nodes.length,
       edgesRetained: edges.length,
-      maxRetainedNodes,
+      maxRetainedNodes: nodes.length,
       maxRetainedEdges: edges.length,
-      maxRetainedBytes,
+      maxRetainedBytes: retainedNodeBytes + edgeBytes,
       retainedBytes: retainedNodeBytes + edgeBytes,
       byteBudgetTruncated,
       droppedForByteBudget,

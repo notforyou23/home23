@@ -238,8 +238,8 @@ test('operation query never forwards vector payloads and leaves pinned evidence 
   }
   assertNoVectorFields(providerInput.source.nodes);
   assertNoVectorFields(providerInput.source.edges);
-  assert.equal(providerInput.source.nodes[0].metadata.source, 'jerry');
-  assert.equal(providerInput.source.nodes[0].metadata.nested.evidence, 'preserved');
+  assert.equal(providerInput.source.nodes[0].provenance, 'jerry');
+  assert.equal(Object.hasOwn(providerInput.source.nodes[0], 'metadata'), false);
   assert.equal(providerInput.source.edges[0].evidence, 'preserved edge');
   assert.equal(JSON.stringify({ node, edge }), before);
 });
@@ -271,7 +271,7 @@ test('gpt-5.5 large-brain projection stays below its conservative model context 
   const contextWindowTokens = 272_000;
   const maxOutputTokens = 32_768;
   const expectedPromptByteLimit = Math.floor(contextWindowTokens * 0.95)
-    - maxOutputTokens
+    - 25_000
     - 8_192;
   const captured = [];
   const pin = createSyntheticPinnedSource({
@@ -322,6 +322,76 @@ test('gpt-5.5 large-brain projection stays below its conservative model context 
   assert.equal(result.metadata.projection.nodesRetained > 0, true);
   assert.equal(result.metadata.projection.nodesRetained < 2_000, true);
   assert.equal(pin.stats().recordsConsumed, 6_000);
+});
+
+test('OpenAI Direct Query fits compact evidence to the measured o200k prompt budget', async () => {
+  const provider = 'openai-codex';
+  const selectedModel = 'gpt-5.5';
+  const calls = [];
+  const source = createSyntheticPinnedSource({
+    nodeCount: 2_000,
+    edgeCount: 0,
+    nodeFactory: index => ({
+      id: `openai-${index}`,
+      type: ['finding', 'decision', 'observation', 'question'][index % 4],
+      tags: [`lane-${index % 8}`],
+      content: `openai projection canary ${index} ${'evidence '.repeat(500)}`,
+      salience: (index % 100) / 100,
+      metadata: { providerPayload: 'z'.repeat(32 * 1024) },
+    }),
+  });
+  const selectedCatalog = {
+    version: 1,
+    providers: {
+      [provider]: {
+        models: [model(provider, selectedModel, {
+          contextWindowTokens: 128_000,
+          maxOutputTokens: 32_768,
+          transport: 'codex-responses',
+        })],
+      },
+    },
+    defaults: {},
+  };
+  const engine = new QueryEngine({
+    operationMode: true,
+    modelCatalog: selectedCatalog,
+    providerRegistry: {
+      get(requestedProvider, requestedModel) {
+        assert.equal(requestedProvider, provider);
+        assert.equal(requestedModel, selectedModel);
+        return {
+          providerId: provider,
+          async generate(options) {
+            calls.push(options);
+            return {
+              content: 'bounded OpenAI answer',
+              terminalReceived: true,
+              finishReason: 'completed',
+              hadError: false,
+              provider,
+              model: selectedModel,
+            };
+          },
+        };
+      },
+    },
+  });
+
+  const result = await engine.executeQuery('openai projection canary', {
+    sourcePin: source,
+    modelSelection: { provider, model: selectedModel },
+    mode: 'full',
+    signal: new AbortController().signal,
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(result.metadata.promptBudgetStrategy, 'o200k_base');
+  assert.equal(result.metadata.promptTokens <= result.metadata.inputBudgetTokens, true);
+  assert.equal(result.metadata.projection.nodesRetained >= 64, true);
+  assert.equal(result.metadata.projection.promptReduced, true);
+  assert.equal(result.metadata.projection.droppedForPromptBudget > 0, true);
+  assert.equal(result.metadata.promptBytes <= 8 * 1024 * 1024, true);
 });
 
 test('model budget counts Unicode and escaped JSON scaffold overhead before provider work', async () => {

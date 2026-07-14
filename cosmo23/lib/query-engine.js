@@ -38,10 +38,7 @@ const { boundedJsonStringify } = require('./bounded-json');
 const { boundedLimits, projectPinnedQuery } = require('./pinned-query-projection');
 const { QUERY_OPERATION_LIMITS } = require('./brain-operation-limits');
 const { queryModePolicy } = require('./query-mode-policy');
-const {
-  assertProviderInputWithinBudget,
-  resolveProviderInputBudget,
-} = require('./provider-input-budget');
+const { createProviderPromptBudget } = require('./provider-prompt-budget');
 
 const CLUSTER_SNAPSHOT_DEFAULT_TTL = Number.parseInt(
   process.env.COSMO_CLUSTER_SNAPSHOT_TTL || '4000',
@@ -1646,7 +1643,14 @@ STYLE:
       : null;
     const instructions = modePolicy.instructions;
     const selectedLimits = boundedLimits(options.limits || this.operationLimits || {});
-    const promptBudget = resolveProviderInputBudget(capabilities, {
+    const providerMaxOutputTokens = Math.min(
+      modePolicy.maxOutputTokens,
+      capabilities.maxOutputTokens,
+    );
+    const promptBudget = createProviderPromptBudget({
+      provider,
+      capabilities,
+      maxOutputTokens: providerMaxOutputTokens,
       maxInputBytes: selectedLimits.maxPromptBytes,
       label: 'Query prompt',
     });
@@ -1691,45 +1695,125 @@ STYLE:
     const projection = await this.projectPinnedQuery({
       sourcePin,
       query,
+      mode,
       signal,
       limits: projectionLimits,
       sourceSummary,
     });
     operationThrowIfAborted(signal);
 
-    const promptPayload = {
-      query,
-      mode,
-      priorContext,
-      source: {
-        revision: projection.sourceRevision,
-        summary: projection.summary,
-        nodes: projection.nodes,
-        edges: projection.edges,
-      },
-    };
-    const serializedPrompt = boundedJsonStringify(promptPayload, {
-      maxBytes: maxPromptBytes,
-      reservedBytes: utf8Bytes(instructions),
-      label: 'Query prompt',
+    let promptOverflow = null;
+    function promptCandidate(nodes, edges) {
+      const promptPayload = {
+        query,
+        mode,
+        priorContext,
+        source: {
+          revision: projection.sourceRevision,
+          summary: projection.summary,
+          nodes,
+          edges,
+        },
+      };
+      let serialized;
+      try {
+        serialized = boundedJsonStringify(promptPayload, {
+          maxBytes: maxPromptBytes,
+          reservedBytes: utf8Bytes(instructions),
+          label: 'Query prompt',
+        });
+      } catch (error) {
+        if (error?.code === 'result_too_large') {
+          promptOverflow = error;
+          return null;
+        }
+        throw error;
+      }
+      const measurement = promptBudget.measure(instructions, serialized.json);
+      return Object.freeze({ nodes, edges, serialized, measurement });
+    }
+
+    function greatestFittingCount(maximum, build) {
+      let low = 0;
+      let high = maximum;
+      let best = null;
+      while (low <= high) {
+        const middle = Math.floor((low + high) / 2);
+        const candidate = build(middle);
+        if (candidate?.measurement.fits) {
+          best = candidate;
+          low = middle + 1;
+        } else {
+          high = middle - 1;
+        }
+      }
+      return best;
+    }
+
+    const nodesOnly = greatestFittingCount(
+      projection.nodes.length,
+      count => promptCandidate(projection.nodes.slice(0, count), []),
+    );
+    if (!nodesOnly
+        || (projection.nodes.length > 0 && nodesOnly.nodes.length === 0)) {
+      const error = operationError(
+        'result_too_large',
+        'Query prompt cannot retain its last matching evidence record',
+      );
+      if (Number.isSafeInteger(promptOverflow?.bytesExamined)) {
+        error.bytesExamined = promptOverflow.bytesExamined;
+      }
+      throw error;
+    }
+    const retainedIds = new Set(nodesOnly.nodes.map(node => String(node.id)));
+    const eligibleEdges = projection.edges.filter(edge => (
+      retainedIds.has(String(edge.source)) && retainedIds.has(String(edge.target))
+    ));
+    const fittedPrompt = greatestFittingCount(
+      eligibleEdges.length,
+      count => promptCandidate(nodesOnly.nodes, eligibleEdges.slice(0, count)),
+    ) || nodesOnly;
+    const promptNodes = fittedPrompt.nodes;
+    const promptEdges = fittedPrompt.edges;
+    const input = fittedPrompt.serialized.json;
+    const promptBytes = fittedPrompt.measurement.totalBytes;
+    const promptTokens = fittedPrompt.measurement.totalTokens;
+    const droppedForPromptBudget = (projection.nodes.length - promptNodes.length)
+      + (projection.edges.length - promptEdges.length);
+    const promptReduced = droppedForPromptBudget > 0;
+    const retainedBytes = [...promptNodes, ...promptEdges].reduce(
+      (total, record) => total + Buffer.byteLength(JSON.stringify(record), 'utf8'),
+      0,
+    );
+    const projectionStats = Object.freeze({
+      ...projection.stats,
+      nodesRetained: promptNodes.length,
+      edgesRetained: promptEdges.length,
+      maxRetainedNodes: promptNodes.length,
+      maxRetainedEdges: promptEdges.length,
+      maxRetainedBytes: retainedBytes,
+      retainedBytes,
+      droppedForPromptBudget,
+      promptReduced,
+      promptBytes,
+      promptTokens,
     });
-    const input = serializedPrompt.json;
-    const promptBytes = serializedPrompt.totalBytes;
+    const sourceEvidence = projection.sourceEvidence
+      ? {
+        ...projection.sourceEvidence,
+        returnedTotals: { nodes: promptNodes.length, edges: promptEdges.length },
+        droppedForPromptBudget,
+        promptReduced,
+      }
+      : null;
     const maxResultBytes = selectedLimits.maxResultBytes;
-    assertProviderInputWithinBudget({
-      capabilities,
-      maxInputBytes: selectedLimits.maxPromptBytes,
-      instructions,
-      input,
-      label: 'Query prompt',
-    });
 
     this._emitOperationEvent({
       type: 'progress',
       phase: 'query',
       stage: 'projection_complete',
-      selectedNodes: projection.stats?.selectedNodes ?? projection.nodes.length,
-      selectedEdges: projection.stats?.selectedEdges ?? projection.edges.length,
+      selectedNodes: promptNodes.length,
+      selectedEdges: promptEdges.length,
     }, options);
 
     const baseEvent = {
@@ -1749,10 +1833,7 @@ STYLE:
         input,
         reasoningEffort: modePolicy.reasoningEffort,
         verbosity: modePolicy.verbosity,
-        maxOutputTokens: Math.min(
-          modePolicy.maxOutputTokens,
-          capabilities.maxOutputTokens,
-        ),
+        maxOutputTokens: providerMaxOutputTokens,
         maxOutputBytes: maxResultBytes,
         signal,
         onChunk: options.onChunk || null,
@@ -1784,12 +1865,14 @@ STYLE:
           model,
           mode,
           promptBytes,
+          promptTokens,
+          promptBudgetStrategy: promptBudget.strategy,
           promptBudgetBytes: promptBudget.inputBudgetBytes,
           inputBudgetTokens: promptBudget.inputBudgetTokens,
           contextWindowTokens: promptBudget.contextWindowTokens,
-          projection: projection.stats,
+          projection: projectionStats,
         },
-        sourceEvidence: projection.sourceEvidence,
+        sourceEvidence,
         resultArtifact: null,
       };
       if (utf8Bytes(result) > maxResultBytes) {
