@@ -93,6 +93,7 @@ export interface EmbeddedAgentConfig {
 
 export interface HomeConfig {
   home?: { name: string; version: string };
+  bridge?: { token?: string };
   system: { name: string; version: string; workspace: string };
 
   agent?: {

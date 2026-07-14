@@ -13,10 +13,22 @@ export interface DeviceRegistration {
   capabilities_hash?: string;
 }
 
+/** Durable Query-notebook credential enrollment. Independent of APNs registration. */
+export interface QueryCredentialRegistration {
+  installation_id: string;
+  requester_agent: string;
+  credential_id: string;
+  credential_generation: number;
+  enrolled_at: string;
+  updated_at: string;
+  revoked_at: string | null;
+}
+
 /** In-memory + on-disk registry shape. */
 export interface DeviceRegistryFile {
-  version: 1;
+  version: 2;
   devices: DeviceRegistration[];
+  query_credentials: QueryCredentialRegistration[];
 }
 
 /** APNs auth + routing config, loaded from home23 secrets. */
