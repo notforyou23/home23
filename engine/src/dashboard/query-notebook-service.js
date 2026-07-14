@@ -520,6 +520,24 @@ function createQueryNotebookService(options) {
     return milliseconds;
   }
 
+  function retryableFailedSweep(record, summary) {
+    const progress = summary.progress;
+    return record.state === 'failed'
+      && record.error?.code === 'provider_stalled'
+      && record.error.retryable === true
+      && deriveResultAvailability(record) === 'absent'
+      && summary.continuation === null
+      && progress?.stage === 'terminal'
+      && Number.isSafeInteger(progress.selected)
+      && Number.isSafeInteger(progress.completed)
+      && Number.isSafeInteger(progress.successful)
+      && Number.isSafeInteger(progress.pending)
+      && progress.completed > 0
+      && progress.successful > 0
+      && progress.pending > 0
+      && progress.completed + progress.pending === progress.selected;
+  }
+
   function actionRecord(rawRecord, projectedSummary = null) {
     try {
       const record = validateNotebookRecord(rawRecord);
@@ -536,7 +554,13 @@ function createQueryNotebookService(options) {
       }
       // This also proves the persisted notebook continuation and PGS session still agree.
       const summary = projectedSummary ?? projectNotebookSummary(record, { now });
-      if (!summary.continuation?.canContinue) throw notebookError('action_unavailable');
+      const failedSweepRecovery = retryableFailedSweep(record, summary);
+      if (record.state === 'failed' && record.error?.retryable !== true) {
+        throw notebookError('action_unavailable');
+      }
+      if (!summary.continuation?.canContinue && !failedSweepRecovery) {
+        throw notebookError('action_unavailable');
+      }
       return { record, session, summary };
     } catch (error) {
       if (error?.code === 'access_denied' || error?.code === 'action_unavailable') throw error;
@@ -558,6 +582,7 @@ function createQueryNotebookService(options) {
   function nextContinuationLevel(record, summary) {
     const current = record.requestParameters.pgsLevel;
     const currentIndex = PGS_LEVEL_ORDER.indexOf(current);
+    if (retryableFailedSweep(record, summary)) return current;
     const coverage = summary.coverage;
     if (currentIndex < 0 || !coverage
         || !Object.hasOwn(coverage, 'scopePendingWorkUnits')) {

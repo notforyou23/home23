@@ -344,6 +344,113 @@ test('continuation advances only with explicit completed-scope evidence', async 
   assert.equal(starts[0].parameters.pgsLevel, 'sample');
 });
 
+test('retryable stalled PGS resumes committed sweep work at the same level', async () => {
+  const stalled = sourceRecord({
+    state: 'failed',
+    error: { code: 'provider_stalled', retryable: true },
+    result: null,
+    resultHandle: null,
+    resultArtifact: null,
+    resultExpiresAt: null,
+    notebookResultSummary: null,
+    progressSnapshot: {
+      version: 1,
+      stage: 'terminal',
+      eventSequence: 2669,
+      sourceNodes: 142231,
+      sourceEdges: 465991,
+      candidateWorkUnits: 1038,
+      selected: 256,
+      completed: 200,
+      successful: 200,
+      failed: 0,
+      reused: 0,
+      pending: 56,
+      retryable: 0,
+      total: 1038,
+      lastProviderActivityAt: '2026-07-13T15:09:59.000Z',
+      lastProgressAt: '2026-07-13T15:09:58.000Z',
+    },
+  });
+  const starts = [];
+  const { tokens, service } = actionService({
+    record: stalled,
+    startOperation: async (request) => {
+      starts.push(request);
+      return { operationId: CHILD_OPERATION_ID, operationType: 'pgs', state: 'queued' };
+    },
+  });
+
+  const status = await service.getQueryNotebookStatusAuthorized(SOURCE_OPERATION_ID);
+  assert.deepEqual(status.actions.map(({ kind }) => kind), ['continueSweep']);
+  const actionToken = status.actions[0].token;
+  assert.equal(tokens.verify(actionToken, {
+    sourceOperationId: SOURCE_OPERATION_ID,
+    action: 'continueSweep',
+  }).action, 'continueSweep');
+
+  await service.resolveAction({
+    sourceOperationId: SOURCE_OPERATION_ID,
+    kind: 'continueSweep',
+    actionToken,
+    requestId: REQUEST_ID,
+  });
+  assert.deepEqual(starts, [{
+    requestId: REQUEST_ID,
+    operationType: 'pgs',
+    target: { brainId: 'brain-jerry' },
+    parameters: {
+      query: 'Map the durable brain',
+      pgsMode: 'continue',
+      pgsLevel: 'sample',
+      continueFromOperationId: SOURCE_OPERATION_ID,
+      pgsSweep: { provider: 'minimax', model: 'stored-sweep' },
+      pgsSynth: { provider: 'anthropic', model: 'stored-synth' },
+    },
+  }]);
+});
+
+test('failed PGS recovery remains unavailable without retryable bound durable progress', async () => {
+  const stalled = sourceRecord({
+    state: 'failed',
+    error: { code: 'provider_stalled', retryable: true },
+    result: null,
+    resultHandle: null,
+    resultArtifact: null,
+    resultExpiresAt: null,
+    notebookResultSummary: null,
+    progressSnapshot: {
+      version: 1, stage: 'terminal', eventSequence: 10,
+      selected: 4, completed: 2, successful: 2, failed: 0,
+      reused: 0, pending: 2, retryable: 0, total: 4,
+    },
+  });
+  const unavailable = [
+    { ...stalled, error: { code: 'provider_stalled', retryable: false } },
+    { ...stalled, error: { code: 'provider_failed', retryable: true } },
+    {
+      ...stalled,
+      pgsSession: { ...stalled.pgsSession, continuableUntil: '2026-07-13T15:59:59.000Z' },
+    },
+    { ...stalled, pgsSession: null },
+    { ...stalled, sourcePinDescriptor: null, sourcePinDigest: null },
+    {
+      ...stalled,
+      progressSnapshot: {
+        version: 1, stage: 'terminal', eventSequence: 10,
+        selected: 4, completed: 0, successful: 0, failed: 0,
+        reused: 0, pending: 4, retryable: 0, total: 4,
+      },
+    },
+  ];
+
+  for (const record of unavailable) {
+    const { service } = actionService({ record });
+    const status = await service.getQueryNotebookStatusAuthorized(SOURCE_OPERATION_ID);
+    assert.deepEqual(status.actions, []);
+  }
+});
+
 test('continue action reconstructs query, target, models, and next level from durable source only', async () => {
   const starts = [];
   const { tokens, service } = actionService({
