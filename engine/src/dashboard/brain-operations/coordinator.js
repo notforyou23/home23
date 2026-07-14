@@ -851,11 +851,46 @@ class BrainOperationCoordinator {
 
   async _pinRecord(record, options = {}) {
     if (record.sourcePinDescriptor !== null || record.sourcePinDigest !== null) return record;
-    const pinned = await this.sourcePins.pin(
-      record.target.canonicalRoot,
-      record.operationId,
-      this._sourceLockControl(record),
-    );
+    let inherited = false;
+    let pinned;
+    // HOME23 PATCH 62 — Continuation is bound to the prior immutable session
+    // projection, never to whatever revision the live brain has reached now.
+    if (record.operationType === 'pgs'
+        && typeof record.parameters?.continueFromOperationId === 'string') {
+      if (typeof record.parameters?.pgsSessionId !== 'string'
+          || !PGS_SESSION_ID_PATTERN.test(record.parameters.pgsSessionId)) {
+        throw coordinatorError('session_lineage_mismatch');
+      }
+      const prior = await this.store.get(record.parameters.continueFromOperationId);
+      if (prior.requesterAgent !== record.requesterAgent) throw coordinatorError('access_denied');
+      if (prior.operationType !== 'pgs') throw coordinatorError('session_lineage_mismatch');
+      if (!TERMINAL_STATES.has(prior.state)) throw coordinatorError('session_not_ready');
+      if (prior.target?.domain !== record.target.domain
+          || prior.target?.brainId !== record.target.brainId
+          || prior.target?.canonicalRoot !== record.target.canonicalRoot
+          || prior.target?.ownerAgent !== record.target.ownerAgent) {
+        throw coordinatorError('session_target_mismatch');
+      }
+      if (prior.requestParameters?.query !== record.requestParameters?.query) {
+        throw coordinatorError('session_binding_mismatch');
+      }
+      if (prior.sourcePinDescriptor === null || prior.sourcePinDigest === null) {
+        throw coordinatorError('session_source_unavailable');
+      }
+      const priorDescriptor = validateSourcePin(
+        prior.sourcePinDescriptor,
+        prior.sourcePinDigest,
+        record.target.canonicalRoot,
+      );
+      pinned = { descriptor: priorDescriptor, digest: prior.sourcePinDigest };
+      inherited = true;
+    } else {
+      pinned = await this.sourcePins.pin(
+        record.target.canonicalRoot,
+        record.operationId,
+        this._sourceLockControl(record),
+      );
+    }
     const descriptor = validateSourcePin(
       pinned?.descriptor,
       pinned?.digest,
@@ -888,7 +923,7 @@ class BrainOperationCoordinator {
       const published = options.alreadyLocked === true
         ? await publish()
         : await this._enqueue(record.operationId, publish);
-      if (releaseUnpublished) {
+      if (releaseUnpublished && !inherited) {
         await this.sourcePins.releaseOperationPins(
           record.operationId,
           this._sourceLockControl(record),
@@ -902,10 +937,12 @@ class BrainOperationCoordinator {
           && sameJson(published.sourcePinDescriptor, descriptor)) {
         return published;
       }
-      await this.sourcePins.releaseOperationPins(
-        record.operationId,
-        this._sourceLockControl(record),
-      ).catch(() => {});
+      if (!inherited) {
+        await this.sourcePins.releaseOperationPins(
+          record.operationId,
+          this._sourceLockControl(record),
+        ).catch(() => {});
+      }
       throw error;
     }
   }

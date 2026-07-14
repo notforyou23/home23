@@ -776,6 +776,9 @@ test('PGS continuation resolves only a same-target prior session into trusted wo
       pgsConfig: { sweepFraction: 0.25 },
     },
   }));
+  assert.equal(fixture.counters.pin, 1);
+  const freshSourceDescriptor = structuredClone(fresh.sourcePinDescriptor);
+  const freshSourceDigest = fresh.sourcePinDigest;
   fixture.worker.finish(fresh.operationId, {
     state: 'partial',
     result: {
@@ -800,11 +803,50 @@ test('PGS continuation resolves only a same-target prior session into trusted wo
       continueFromOperationId: fresh.operationId,
     },
   }));
+  assert.equal(fixture.counters.pin, 1);
+  assert.deepEqual(continued.sourcePinDescriptor, freshSourceDescriptor);
+  assert.equal(continued.sourcePinDigest, freshSourceDigest);
   assert.equal(continued.parameters.pgsSessionId, `pgss_${'s'.repeat(32)}`);
+  assert.deepEqual(
+    fixture.worker.startCalls.at(-1).context.sourcePinDescriptor,
+    freshSourceDescriptor,
+  );
+  assert.equal(
+    fixture.worker.startCalls.at(-1).context.sourcePinDigest,
+    freshSourceDigest,
+  );
   assert.equal(
     fixture.worker.startCalls.at(-1).context.parameters.pgsSessionId,
     `pgss_${'s'.repeat(32)}`,
   );
+
+  fixture.worker.finish(continued.operationId, {
+    state: 'partial',
+    result: {
+      answer: 'deeper synthesis',
+      metadata: { pgs: {
+        sessionId: `pgss_${'s'.repeat(32)}`,
+        continuableUntil: '2026-07-19T12:00:00.000Z',
+        sourceOperationId: fresh.operationId,
+        canContinue: true,
+      } },
+    },
+    error: { code: 'pgs_scope_incomplete', message: 'deep complete', retryable: true },
+    sourceEvidence: null,
+  });
+  await waitForState(fixture, continued.operationId, 'partial');
+  const continuedAgain = await fixture.coordinator.start(request({
+    requestId: 'pgs-session-continue-again',
+    operationType: 'pgs',
+    parameters: {
+      query: 'durable canary', pgsMode: 'continue', pgsLevel: 'full',
+      pgsConfig: { sweepFraction: 1 },
+      continueFromOperationId: continued.operationId,
+    },
+  }));
+  assert.equal(fixture.counters.pin, 1);
+  assert.deepEqual(continuedAgain.sourcePinDescriptor, freshSourceDescriptor);
+  assert.equal(continuedAgain.sourcePinDigest, freshSourceDigest);
 
   await assert.rejects(
     fixture.coordinator.start(request({

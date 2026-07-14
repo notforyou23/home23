@@ -470,6 +470,7 @@ test('PGS worker creates or continues a protected session and gives only trusted
   assert.equal(seen[0].pgsSession.sessionStorage, storage);
   assert.equal(Object.hasOwn(seen[0].parameters, 'pgsSessionId'), false);
   assert.equal(calls.some((entry) => Array.isArray(entry) && entry[0] === 'create'), true);
+  assert.equal(fixture.counters.open, 1);
 
   const continued = requestFor({
     id: operationId('g'), type: 'pgs',
@@ -490,6 +491,31 @@ test('PGS worker creates or continues a protected session and gives only trusted
   assert.equal(seen[1].pgsSession.sessionId, storage.sessionId);
   assert.equal(Object.hasOwn(seen[1].parameters, 'pgsSessionId'), false);
   assert.equal(calls.some((entry) => Array.isArray(entry) && entry[0] === 'continue'), true);
+  assert.equal(fixture.counters.open, 1);
+  assert.equal(seen[1].sourcePin.revision, fresh.sourcePinDescriptor.cutoffRevision);
+  assert.deepEqual(seen[1].sourcePin.descriptor, fresh.sourcePinDescriptor);
+  assert.equal(seen[1].pgsSession.sessionStorage.reuseOnly, true);
+  const evidence = seen[1].sourcePin.getEvidence({
+    selectedAgent: 'jerry',
+    selectedBrain: 'jerry-brain',
+    route: 'test-continuation',
+    returnedTotals: {
+      nodes: fresh.sourcePinDescriptor.summary.nodeCount,
+      edges: fresh.sourcePinDescriptor.summary.edgeCount,
+    },
+    completeCoverage: true,
+  });
+  assert.equal(evidence.deltaWatermark.revision, fresh.sourcePinDescriptor.cutoffRevision);
+  assert.deepEqual(evidence.authoritativeTotals, {
+    nodes: fresh.sourcePinDescriptor.summary.nodeCount,
+    edges: fresh.sourcePinDescriptor.summary.edgeCount,
+  });
+  await assert.rejects(
+    async () => {
+      for await (const _node of seen[1].sourcePin.iterateNodes()) void _node;
+    },
+    typed('session_projection_required'),
+  );
   await fixture.worker.stop();
   assert.equal(calls.filter((entry) => entry === 'authority-stop').length, 1);
 });

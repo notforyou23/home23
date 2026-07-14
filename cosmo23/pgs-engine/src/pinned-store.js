@@ -565,9 +565,14 @@ async function openPinnedPGSStore({
       || typeof sessionStorage.verify !== 'function'
       || typeof sessionStorage.reconcileQuota !== 'function'
       || typeof sessionStorage.markProjectionUsable !== 'function'
-      || typeof sessionStorage.close !== 'function')) {
+      || typeof sessionStorage.close !== 'function'
+      || (sessionStorage.reuseOnly !== undefined
+        && typeof sessionStorage.reuseOnly !== 'boolean'))) {
     throw typed('invalid_request', 'PGS session storage capability is invalid');
   }
+  // HOME23 PATCH 62 — Continuations may reuse an exact complete projection,
+  // but can never initialize or rebuild one from a later live source.
+  const reuseOnly = usesSessionStorage && sessionStorage.reuseOnly === true;
   let boundary = null;
   let scratch;
   let scratchAnchor;
@@ -786,6 +791,9 @@ async function openPinnedPGSStore({
     if (usesSessionStorage && !existingStat) {
       throw typed('session_state_invalid', 'PGS session database is unavailable');
     }
+    if (reuseOnly && existingStat.size === 0n) {
+      throw typed('session_state_invalid', 'PGS continuation session projection is unavailable');
+    }
     let freshSessionDatabase = false;
     if (existingStat) {
       databaseAnchor = captureExactRegularFileSync(databasePath);
@@ -831,6 +839,9 @@ async function openPinnedPGSStore({
       }
     }
 
+    if (reuseOnly && !reused) {
+      throw typed('session_state_invalid', 'PGS continuation session projection is not reusable');
+    }
     if (!reused) {
       if (usesSessionStorage) {
         projectionMayClean = false;

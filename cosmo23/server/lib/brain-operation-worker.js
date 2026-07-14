@@ -17,6 +17,8 @@ const {
   verifyCapability,
 } = require('../../../shared/brain-operations/capability.cjs');
 const {
+  classifyMatchOutcome,
+  createEvidence,
   createOperationScratchQuota,
   durableBrainOperationRoot,
   sourceDescriptorDigest,
@@ -315,6 +317,101 @@ function pgsSessionBinding(request) {
     operationLimits: PGS_OPERATION_LIMITS,
     sweepPromptContractVersion: 1,
     coverageSelectionPolicyVersion: 1,
+  });
+}
+
+function isPgsContinuation(request) {
+  return request.operationType === 'pgs'
+    && typeof request.parameters.pgsSessionId === 'string'
+    && typeof request.parameters.continueFromOperationId === 'string';
+}
+
+function createPgsSessionProjectionSource(request) {
+  // HOME23 PATCH 62 — The retained database is the continuation's immutable
+  // graph projection. This facade can report its authority but cannot rebuild it.
+  const descriptor = request.sourcePinDescriptor;
+  const summary = descriptor.summary;
+  const authoritativeTotals = Object.freeze({
+    nodes: summary.nodeCount,
+    edges: summary.edgeCount,
+  });
+  const getEvidence = (input = {}) => {
+    const returnedTotals = input.returnedTotals || { nodes: 0, edges: 0 };
+    const completeCoverage = input.completeCoverage === true;
+    const filteredTotal = Number.isSafeInteger(input.filteredTotal) && input.filteredTotal >= 0
+      ? input.filteredTotal
+      : 0;
+    return createEvidence({
+      selectedAgent: input.selectedAgent ?? request.target.ownerAgent ?? null,
+      selectedBrain: input.selectedBrain ?? request.target.brainId ?? null,
+      route: input.route || request.target.route || 'brain-operation-worker',
+      implementation: 'manifest-v1-session-projection',
+      identity: {
+        requesterAgent: request.requesterAgent,
+        targetAgent: request.target.ownerAgent ?? null,
+        brainId: request.target.brainId ?? null,
+        canonicalRoot: descriptor.canonicalRoot,
+        catalogRevision: request.target.catalogRevision ?? null,
+        kind: request.target.kind ?? null,
+        sourceType: request.target.sourceType ?? null,
+        accessMode: request.target.accessMode,
+        operationId: request.operationId,
+      },
+      baseRevision: descriptor.baseRevision,
+      baseFile: descriptor.activeBase.nodes.file,
+      deltaRevision: descriptor.cutoffRevision,
+      deltaEpoch: descriptor.activeDelta.epoch,
+      deltaApplied: descriptor.activeDelta.count,
+      annBuiltFromRevision: null,
+      annFresh: false,
+      filters: input.filters || {},
+      limits: input.limits || {},
+      authoritativeTotals,
+      returnedTotals,
+      completeCoverage,
+      filteredTotal,
+      mutationBoundaries: request.target.mutationBoundaries || [],
+      sourceHealth: 'healthy',
+      matchOutcome: classifyMatchOutcome({
+        sourceHealth: 'healthy',
+        authoritativeTotal: authoritativeTotals.nodes,
+        returnedTotal: returnedTotals.nodes,
+        filteredTotal,
+        completeCoverage,
+      }),
+      freshness: 'known',
+    });
+  };
+  const projectionRequired = async function* projectionRequired() {
+    throw workerError(
+      'session_projection_required',
+      'PGS continuation must reuse its retained session projection',
+      { retryable: false },
+    );
+  };
+  return Object.freeze({
+    descriptor,
+    revision: descriptor.cutoffRevision,
+    evidence: getEvidence(),
+    getEvidence,
+    async summarize() { return { ...summary }; },
+    iterateNodes: projectionRequired,
+    iterateEdges: projectionRequired,
+    async release() {},
+  });
+}
+
+function continuationSessionStorage(storage) {
+  // HOME23 PATCH 62 — Capability narrowing is explicit and survives every
+  // adapter boundary down to the pinned store.
+  return Object.freeze({
+    databasePath: storage.databasePath,
+    quotaMaxBytes: storage.quotaMaxBytes,
+    reuseOnly: true,
+    verify: (...args) => storage.verify(...args),
+    reconcileQuota: (...args) => storage.reconcileQuota(...args),
+    markProjectionUsable: (...args) => storage.markProjectionUsable(...args),
+    close: (...args) => storage.close(...args),
   });
 }
 
@@ -1206,38 +1303,40 @@ class BrainOperationWorker {
         }
         throwIfAborted();
         if (this.stopped) throw workerError('worker_stopped');
-        sourcePin = await this.sourcePins.openPinnedSource(
-          request.sourcePinDescriptor,
-          {
-            expectedCanonicalRoot: request.target.canonicalRoot,
-            expectedRevision: request.sourcePinDescriptor.cutoffRevision,
-            expectedDigest: request.sourcePinDigest,
-            operationId: request.operationId,
-            operationType: request.operationType,
-            requesterAgent: request.requesterAgent,
-            operationRoot,
-            lockRoot: path.join(this.home23Root, 'runtime', 'brain-source-locks'),
-            processIdentity: this.processIdentity,
-            scratchQuota,
-            identity: capabilityBindings(request),
-            signal: controller.signal,
-          },
-          createDurableOperationLockCapability({
-            hardDeadlineAt: request.operationControl.hardDeadlineAt,
-            signal: controller.signal,
-            cleanupSignal: cleanupController.signal,
-          }),
-        );
-        throwIfAborted();
-        if (!sourcePin || typeof sourcePin.release !== 'function'
-            || !Number.isSafeInteger(sourcePin.revision)
-            || sourcePin.revision !== request.sourcePinDescriptor.cutoffRevision
-            || !sourcePin.descriptor
-            || !constantTimeEqualHex(
-              request.sourcePinDigest,
-              sourceDescriptorDigest(sourcePin.descriptor),
-            )) {
-          throw workerError('source_changed');
+        if (!isPgsContinuation(request)) {
+          sourcePin = await this.sourcePins.openPinnedSource(
+            request.sourcePinDescriptor,
+            {
+              expectedCanonicalRoot: request.target.canonicalRoot,
+              expectedRevision: request.sourcePinDescriptor.cutoffRevision,
+              expectedDigest: request.sourcePinDigest,
+              operationId: request.operationId,
+              operationType: request.operationType,
+              requesterAgent: request.requesterAgent,
+              operationRoot,
+              lockRoot: path.join(this.home23Root, 'runtime', 'brain-source-locks'),
+              processIdentity: this.processIdentity,
+              scratchQuota,
+              identity: capabilityBindings(request),
+              signal: controller.signal,
+            },
+            createDurableOperationLockCapability({
+              hardDeadlineAt: request.operationControl.hardDeadlineAt,
+              signal: controller.signal,
+              cleanupSignal: cleanupController.signal,
+            }),
+          );
+          throwIfAborted();
+          if (!sourcePin || typeof sourcePin.release !== 'function'
+              || !Number.isSafeInteger(sourcePin.revision)
+              || sourcePin.revision !== request.sourcePinDescriptor.cutoffRevision
+              || !sourcePin.descriptor
+              || !constantTimeEqualHex(
+                request.sourcePinDigest,
+                sourceDescriptorDigest(sourcePin.descriptor),
+              )) {
+            throw workerError('source_changed');
+          }
         }
         if (this.stopped) throw workerError('worker_stopped');
       }
@@ -1269,10 +1368,14 @@ class BrainOperationWorker {
           });
         }
         pgsWorkerHandle = selected.workerHandle;
-        const sessionStorage = await pgsSessionAuthority.openSessionStorage(
+        let sessionStorage = await pgsSessionAuthority.openSessionStorage(
           selected.workerHandle,
           { ownerAgent: request.requesterAgent, operationId: request.operationId },
         );
+        if (requestedSessionId !== undefined) {
+          sessionStorage = continuationSessionStorage(sessionStorage);
+          sourcePin = createPgsSessionProjectionSource(request);
+        }
         pgsSession = Object.freeze({
           sessionId: selected.sessionId,
           continuableUntil: selected.continuableUntil,

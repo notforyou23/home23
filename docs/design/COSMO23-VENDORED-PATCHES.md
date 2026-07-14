@@ -2948,6 +2948,47 @@ was deleted and no process was restarted.
 
 ---
 
+## Patch 62 — Immutable retained-session PGS continuation
+
+**Vendored production files touched:**
+- `cosmo23/pgs-engine/src/pinned-store.js`
+- `cosmo23/server/lib/brain-operation-worker.js`
+
+**Home23 integration companion:**
+- `engine/src/dashboard/brain-operations/coordinator.js`
+
+**Problem:** A durable PGS continuation correctly resolved its prior session ID,
+but the dashboard then pinned the target brain again at its current revision.
+If the live brain advanced during a long sweep, the worker built a new session
+binding from that newer descriptor. Session authority correctly rejected it as
+`session_binding_mismatch`, even though the retained SQLite session still held
+the complete immutable original graph projection and committed sweeps.
+
+**Fix:** Continuations now inherit the prior operation's server-validated source
+descriptor and digest; they never accept source authority from a public request
+and never pin the current live brain. After owner, target, lineage, expiry, and
+binding validation, the COSMO worker opens the protected retained session and
+uses a read-only session-projection source view bound to the original revision.
+That view supplies canonical evidence but refuses node or edge iteration.
+Continuation storage is marked reuse-only: the pinned store requires an
+existing schema-v3, complete, exact-binding database and fails closed if it is
+missing, empty, corrupt, incomplete, or mismatched. It cannot rebuild from the
+live brain or silently start fresh. Fresh and targeted initial sessions retain
+their physical pinned-source behavior.
+
+This preserves cumulative and multi-hop continuation without reopening a
+1.1 GiB brain or making another 469 MiB graph copy. Brain changes after the
+original revision are intentionally excluded; a user starts a fresh PGS session
+when those changes must be included.
+
+**Verification:** Focused coordinator, worker, and real session-storage tests
+prove one physical pin/open for the fresh operation, exact original revision and
+digest inheritance across multiple continuations, no live-source iteration,
+canonical original-source evidence, and fail-closed empty reuse-only storage.
+The wider protected operation matrix remains required before live rollout.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -3324,3 +3365,5 @@ was deleted and no process was restarted.
   binds worker/coordinator event validation to the durable operation type.
 - **2026-07-14** — Patch 61 makes PGS expiry autonomous while idle and discards
   only a newly created session whose initial projection never became reusable.
+- **2026-07-14** — Patch 62 keeps PGS continuation on its verified immutable
+  retained-session projection instead of repinning the advancing live brain.

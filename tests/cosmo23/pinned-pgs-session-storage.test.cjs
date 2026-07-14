@@ -183,6 +183,83 @@ test('does not mark a fresh session usable when initial projection construction 
   assert.equal(session.counts().marks, 0);
 });
 
+test('reuse-only continuation rejects an empty session database without reading live source', async (t) => {
+  const session = await sessionFixture(t);
+  const scratch = await operationScratch(session.root, 'brop-reuse-only-empty');
+  t.after(() => scratch.scratchQuota.close());
+  let iterated = false;
+  const base = sourcePin({ nodeCount: 8 });
+  const source = {
+    ...base,
+    async *iterateNodes() {
+      iterated = true;
+      yield* base.iterateNodes();
+    },
+    async *iterateEdges() {
+      iterated = true;
+      yield* base.iterateEdges();
+    },
+  };
+  const reuseOnlyStorage = Object.freeze({
+    ...session.sessionStorage,
+    reuseOnly: true,
+  });
+
+  await assert.rejects(
+    openPinnedPGSStore(storeOptions(source, scratch, reuseOnlyStorage)),
+    { code: 'session_state_invalid' },
+  );
+  assert.equal(iterated, false);
+  assert.equal(session.counts().marks, 0);
+});
+
+test('reuse-only continuation fails closed for missing, corrupt, or incomplete projections', async (t) => {
+  const cases = [
+    ['missing', async (databasePath) => fs.unlink(databasePath), 'session_state_invalid'],
+    ['corrupt', async (databasePath) => fs.writeFile(databasePath, 'not sqlite'), 'pgs_projection_invalid'],
+    ['incomplete', async (databasePath) => {
+      const database = new Database(databasePath);
+      database.prepare("UPDATE metadata SET value = 'false' WHERE key = 'completeProjection'").run();
+      database.close();
+    }, 'pgs_binding_mismatch'],
+  ];
+  for (const [label, mutate, expectedCode] of cases) {
+    await t.test(label, async (subtest) => {
+      const session = await sessionFixture(subtest);
+      const scratch = await operationScratch(session.root, `brop-reuse-only-${label}`);
+      subtest.after(() => scratch.scratchQuota.close());
+      let iterated = false;
+      const base = sourcePin({ nodeCount: 8 });
+      const source = {
+        ...base,
+        async *iterateNodes() {
+          iterated = true;
+          yield* base.iterateNodes();
+        },
+        async *iterateEdges() {
+          iterated = true;
+          yield* base.iterateEdges();
+        },
+      };
+      const initial = await openPinnedPGSStore(
+        storeOptions(base, scratch, session.sessionStorage),
+      );
+      initial.close();
+      await mutate(session.databasePath);
+      const reuseOnlyStorage = Object.freeze({
+        ...session.sessionStorage,
+        reuseOnly: true,
+      });
+
+      await assert.rejects(
+        openPinnedPGSStore(storeOptions(source, scratch, reuseOnlyStorage)),
+        { code: expectedCode },
+      );
+      assert.equal(iterated, false);
+    });
+  }
+});
+
 test('failed initial projection discards the real fresh session but preserves operation scratch', async (t) => {
   const root = await fs.realpath(
     await fs.mkdtemp(path.join(os.tmpdir(), 'home23-pgs-session-discard-')),
