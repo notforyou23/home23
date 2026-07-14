@@ -74,6 +74,17 @@ function complete(content = 'pinned answer') {
   };
 }
 
+function substantialAnswer(length = 4_500) {
+  const structure = [
+    '# Findings', '# Evidence and inference', '# Themes',
+    '# Non-obvious connections', '# Convergence', '# Contradictions',
+    '# Confidence', '# Actionable implications',
+    '# Gaps and unresolved questions',
+    'Projection limits: this uses the retained prompt subset, not the entire brain.',
+  ].join('\n\n');
+  return `${structure}\n\n${'Detailed supported analysis. '.repeat(length)}`.slice(0, length);
+}
+
 function fixture(overrides = {}) {
   const calls = [];
   const events = [];
@@ -110,7 +121,7 @@ function operationOptions(pin, extra = {}) {
   return {
     sourcePin: pin,
     modelSelection: { provider: 'alpha', model: 'answer-model' },
-    mode: 'full',
+    mode: 'quick',
     signal: new AbortController().signal,
     ...extra,
   };
@@ -131,9 +142,9 @@ test('operation query uses only the pinned iterator and exact provider pair', as
   assert.equal(pin.releaseCount(), 0);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].maxOutputTokens, 256);
-  assert.equal(calls[0].reasoningEffort, 'high');
-  assert.equal(calls[0].verbosity, 'high');
-  assert.match(calls[0].instructions, /findings/i);
+  assert.equal(calls[0].reasoningEffort, 'low');
+  assert.equal(calls[0].verbosity, 'low');
+  assert.match(calls[0].instructions, /strongest matching evidence/i);
   assert.match(calls[0].instructions, /projection limit/i);
   assert.equal(calls[0].maxOutputBytes, 8 * 1024 * 1024);
   assert.equal(calls[0].provider, 'alpha');
@@ -174,7 +185,17 @@ test('operation query sends the exact selected mode policy to the provider', asy
     },
     defaults: {},
   };
-  const { engine, calls } = fixture({ catalog: highCeilingCatalog });
+  const calls = [];
+  const { engine } = fixture({
+    catalog: highCeilingCatalog,
+    client: {
+      providerId: 'alpha',
+      async generate(options) {
+        calls.push(options);
+        return complete(substantialAnswer());
+      },
+    },
+  });
   const expected = [
     ['quick', 'low', 'low', 2_500, /strongest matching evidence/i],
     ['full', 'high', 'high', 25_000, /findings.*evidence.*implications.*gaps/is],
@@ -193,6 +214,89 @@ test('operation query sends the exact selected mode policy to the provider', asy
     assert.equal(calls[index].maxOutputTokens, maxOutputTokens, mode);
     assert.match(calls[index].instructions, instruction, mode);
   });
+});
+
+test('substantial Dive completes in one provider call', async () => {
+  const calls = [];
+  const item = fixture({
+    client: {
+      providerId: 'alpha',
+      async generate(options) {
+        calls.push(options);
+        return complete(substantialAnswer());
+      },
+    },
+  });
+
+  const result = await item.engine.executeQuery(
+    'alpha canary', operationOptions(sourcePin(), { mode: 'dive' }),
+  );
+
+  assert.equal(calls.length, 1);
+  assert.equal(result.answerQuality.requestedMode, 'dive');
+  assert.equal(result.answerQuality.state, 'substantial');
+  assert.equal(result.answerQuality.expansionAttempted, false);
+});
+
+test('thin Dive performs exactly one bounded expansion call', async () => {
+  const calls = [];
+  const item = fixture({
+    client: {
+      providerId: 'alpha',
+      async generate(options) {
+        calls.push(options);
+        return complete(calls.length === 1 ? 'thin first answer' : substantialAnswer());
+      },
+    },
+  });
+
+  const result = await item.engine.executeQuery(
+    'alpha canary', operationOptions(sourcePin(), { mode: 'dive' }),
+  );
+
+  assert.equal(calls.length, 2);
+  assert.equal(result.answer, substantialAnswer());
+  assert.deepEqual(result.answerQuality, {
+    requestedMode: 'dive', state: 'substantial', expansionAttempted: true,
+  });
+  assert.deepEqual(
+    item.events.filter(event => event.type === 'provider_selected')
+      .map(event => event.providerCallId),
+    ['query', 'query-expand'],
+  );
+});
+
+test('failed Dive expansion preserves the useful first answer as Partial', async () => {
+  let calls = 0;
+  const item = fixture({
+    client: {
+      providerId: 'alpha',
+      async generate() {
+        calls += 1;
+        if (calls === 1) return complete('thin but useful first answer');
+        throw Object.assign(new Error('provider expansion failed'), {
+          code: 'provider_failed', retryable: true,
+        });
+      },
+    },
+  });
+
+  const envelope = await item.engine.executeQuery(
+    'alpha canary', operationOptions(sourcePin(), { mode: 'dive' }),
+  );
+
+  assert.equal(calls, 2);
+  assert.equal(envelope.state, 'partial');
+  assert.equal(envelope.result.answer, 'thin but useful first answer');
+  assert.deepEqual(envelope.result.answerQuality, {
+    requestedMode: 'dive', state: 'constrained', expansionAttempted: true,
+  });
+  assert.deepEqual(envelope.error, {
+    code: 'query_expansion_failed',
+    message: 'The bounded Query expansion pass failed',
+    retryable: true,
+  });
+  assert.equal(envelope.sourceEvidence, envelope.result.sourceEvidence);
 });
 
 test('operation query never forwards vector payloads and leaves pinned evidence untouched', async () => {
@@ -307,14 +411,16 @@ test('gpt-5.5 large-brain projection stays below its conservative model context 
           { code: 'provider_failed', retryable: false },
         );
       }
-      return complete();
+      return complete(substantialAnswer());
     },
   };
   const { engine } = fixture({ catalog: constrainedCatalog, client });
 
-  const result = await engine.executeQuery('jerry canary', operationOptions(pin));
+  const result = await engine.executeQuery(
+    'jerry canary', operationOptions(pin, { mode: 'full' }),
+  );
 
-  assert.equal(result.answer, 'pinned answer');
+  assert.equal(result.answer, substantialAnswer());
   assert.equal(captured.length, 1);
   assert.equal(result.metadata.promptBudgetBytes, expectedPromptByteLimit);
   assert.equal(result.metadata.inputBudgetTokens, expectedPromptByteLimit);
@@ -365,7 +471,7 @@ test('OpenAI Direct Query fits compact evidence to the measured o200k prompt bud
           async generate(options) {
             calls.push(options);
             return {
-              content: 'bounded OpenAI answer',
+              content: substantialAnswer(),
               terminalReceived: true,
               finishReason: 'completed',
               hadError: false,

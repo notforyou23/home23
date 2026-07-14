@@ -38,6 +38,7 @@ const { boundedJsonStringify } = require('./bounded-json');
 const { boundedLimits, projectPinnedQuery } = require('./pinned-query-projection');
 const { QUERY_OPERATION_LIMITS } = require('./brain-operation-limits');
 const { queryModePolicy } = require('./query-mode-policy');
+const { assessQueryAnswer } = require('./query-answer-quality');
 const { createProviderPromptBudget } = require('./provider-prompt-budget');
 
 const CLUSTER_SNAPSHOT_DEFAULT_TTL = Number.parseInt(
@@ -1816,50 +1817,93 @@ STYLE:
       selectedEdges: promptEdges.length,
     }, options);
 
-    const baseEvent = {
-      phase: 'query',
-      provider,
-      model,
-      providerStallMs: capabilities.providerStallMs,
-      providerCallId: 'query',
-    };
-    this._emitOperationEvent({ type: 'provider_selected', ...baseEvent }, options);
-    let outcome = 'failed';
-    try {
-      const response = await client.generate({
+    const publicProjection = Object.freeze({
+      nodesScanned: projectionStats.nodesScanned,
+      nodesRetained: projectionStats.nodesRetained,
+      edgesScanned: projectionStats.edgesScanned,
+      edgesRetained: projectionStats.edgesRetained,
+      droppedForPromptBudget: projectionStats.droppedForPromptBudget,
+      promptReduced: projectionStats.promptReduced,
+    });
+
+    async function runProviderCall({
+      providerCallId,
+      callInstructions,
+      callInput,
+      onChunk,
+    }) {
+      const baseEvent = {
+        phase: 'query',
         provider,
         model,
-        instructions,
-        input,
-        reasoningEffort: modePolicy.reasoningEffort,
-        verbosity: modePolicy.verbosity,
-        maxOutputTokens: providerMaxOutputTokens,
-        maxOutputBytes: maxResultBytes,
-        signal,
-        onChunk: options.onChunk || null,
-        onProviderActivity: (event = {}) => {
-          operationThrowIfAborted(signal);
-          this._emitOperationEvent({
-            type: 'provider_activity',
-            phase: 'query',
-            provider,
-            model,
-            providerCallId: 'query',
-            providerEventType: safeProviderEventType(event.type),
-            providerEventAt: safeProviderEventAt(event.at),
-          }, options);
-        },
-      });
-      operationThrowIfAborted(signal);
-      const complete = this.requireCompleteProviderResult(response);
-      assertProviderResultIdentity(complete, provider, model);
-      operationThrowIfAborted(signal);
-      const answer = String(complete.content || '').trim();
-      if (!answer) {
-        throw operationError('provider_incomplete', 'Provider returned no answer', true);
+        providerStallMs: capabilities.providerStallMs,
+        providerCallId,
+      };
+      this._emitOperationEvent({ type: 'provider_selected', ...baseEvent }, options);
+      let outcome = 'failed';
+      try {
+        const response = await client.generate({
+          provider,
+          model,
+          instructions: callInstructions,
+          input: callInput,
+          reasoningEffort: modePolicy.reasoningEffort,
+          verbosity: modePolicy.verbosity,
+          maxOutputTokens: providerMaxOutputTokens,
+          maxOutputBytes: maxResultBytes,
+          signal,
+          onChunk,
+          onProviderActivity: (event = {}) => {
+            operationThrowIfAborted(signal);
+            this._emitOperationEvent({
+              type: 'provider_activity',
+              phase: 'query',
+              provider,
+              model,
+              providerCallId,
+              providerEventType: safeProviderEventType(event.type),
+              providerEventAt: safeProviderEventAt(event.at),
+            }, options);
+          },
+        });
+        operationThrowIfAborted(signal);
+        const complete = this.requireCompleteProviderResult(response);
+        assertProviderResultIdentity(complete, provider, model);
+        operationThrowIfAborted(signal);
+        const answer = String(complete.content || '').trim();
+        if (!answer) {
+          throw operationError('provider_incomplete', 'Provider returned no answer', true);
+        }
+        outcome = 'complete';
+        return answer;
+      } catch (error) {
+        if (signal?.aborted) {
+          outcome = 'cancelled';
+          throw signal.reason;
+        }
+        throw error;
+      } finally {
+        this._emitOperationEvent({
+          type: 'provider_call_terminal',
+          phase: 'query',
+          provider,
+          model,
+          providerCallId,
+          outcome,
+        }, options);
       }
+    }
+
+    function resultWithQuality(answer, state, expansionAttempted) {
+      const answerQuality = Object.freeze({
+        requestedMode: mode,
+        state,
+        expansionAttempted,
+      });
       const result = {
         answer,
+        projection: publicProjection,
+        answerQuality,
         metadata: {
           provider,
           model,
@@ -1871,6 +1915,7 @@ STYLE:
           inputBudgetTokens: promptBudget.inputBudgetTokens,
           contextWindowTokens: promptBudget.contextWindowTokens,
           projection: projectionStats,
+          answerQuality,
         },
         sourceEvidence,
         resultArtifact: null,
@@ -1878,24 +1923,103 @@ STYLE:
       if (utf8Bytes(result) > maxResultBytes) {
         throw operationError('result_too_large', 'Query result exceeds the byte limit');
       }
-      operationThrowIfAborted(signal);
-      outcome = 'complete';
       return result;
+    }
+
+    const firstAnswer = await runProviderCall.call(this, {
+      providerCallId: 'query',
+      callInstructions: instructions,
+      callInput: input,
+      onChunk: options.onChunk || null,
+    });
+    operationThrowIfAborted(signal);
+    const healthyEvidence = sourceEvidence?.sourceHealth === 'healthy'
+      && promptNodes.length > 0;
+    const firstAssessment = assessQueryAnswer({
+      mode,
+      answer: firstAnswer,
+      healthyEvidence,
+      projection: projectionStats,
+    });
+    const firstResult = resultWithQuality(
+      firstAnswer,
+      firstAssessment.quality,
+      false,
+    );
+    if (!firstAssessment.shouldExpand) return firstResult;
+
+    const expansionInstructions = [
+      instructions,
+      'The first answer did not satisfy the selected long-answer contract.',
+      'Produce a deeper evidence-backed synthesis that preserves supported claims, separates evidence from inference, makes material projection limits and gaps explicit, and does not invent evidence.',
+      'Return only the improved final answer; do not discuss this expansion pass.',
+    ].join(' ');
+    let expansionInput;
+    try {
+      const expansionPayload = {
+        query,
+        mode,
+        priorContext,
+        qualityGaps: firstAssessment.reasons,
+        firstAnswer,
+        source: {
+          revision: projection.sourceRevision,
+          summary: projection.summary,
+          nodes: promptNodes,
+          edges: promptEdges,
+        },
+      };
+      const serializedExpansion = boundedJsonStringify(expansionPayload, {
+        maxBytes: maxPromptBytes,
+        reservedBytes: utf8Bytes(expansionInstructions),
+        label: 'Query expansion prompt',
+      });
+      promptBudget.assertFits(expansionInstructions, serializedExpansion.json);
+      expansionInput = serializedExpansion.json;
     } catch (error) {
-      if (signal?.aborted) {
-        outcome = 'cancelled';
-        throw signal.reason;
-      }
-      throw error;
-    } finally {
-      this._emitOperationEvent({
-        type: 'provider_call_terminal',
-        phase: 'query',
-        provider,
-        model,
-        providerCallId: 'query',
-        outcome,
-      }, options);
+      if (signal?.aborted) throw signal.reason;
+      const partialResult = resultWithQuality(firstAnswer, 'constrained', true);
+      return {
+        state: 'partial',
+        result: partialResult,
+        error: {
+          code: 'query_expansion_failed',
+          message: 'The bounded Query expansion pass failed',
+          retryable: true,
+        },
+        sourceEvidence,
+        resultArtifact: null,
+      };
+    }
+
+    try {
+      const expandedAnswer = await runProviderCall.call(this, {
+        providerCallId: 'query-expand',
+        callInstructions: expansionInstructions,
+        callInput: expansionInput,
+        onChunk: null,
+      });
+      const expandedAssessment = assessQueryAnswer({
+        mode,
+        answer: expandedAnswer,
+        healthyEvidence,
+        projection: projectionStats,
+      });
+      return resultWithQuality(expandedAnswer, expandedAssessment.quality, true);
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      const partialResult = resultWithQuality(firstAnswer, 'constrained', true);
+      return {
+        state: 'partial',
+        result: partialResult,
+        error: {
+          code: 'query_expansion_failed',
+          message: 'The bounded Query expansion pass failed',
+          retryable: true,
+        },
+        sourceEvidence,
+        resultArtifact: null,
+      };
     }
   }
 

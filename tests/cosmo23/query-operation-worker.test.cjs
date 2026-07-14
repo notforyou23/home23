@@ -207,6 +207,47 @@ test('direct Query forwards only the trusted projection and returns a canonical 
   assert.equal(context.sourcePin.releaseCount(), 0);
 });
 
+test('Query expansion failure preserves a useful first answer and rejects resultless Partial', async () => {
+  const answerQuality = {
+    requestedMode: 'dive', state: 'constrained', expansionAttempted: true,
+  };
+  const expansionError = {
+    code: 'query_expansion_failed',
+    message: 'The bounded Query expansion pass failed',
+    retryable: true,
+  };
+  const valid = createHarness(() => ({
+    state: 'partial',
+    result: {
+      answer: 'Useful first answer',
+      answerQuality,
+      sourceEvidence: childEvidence(),
+      resultArtifact: null,
+    },
+    error: expansionError,
+    sourceEvidence: childEvidence(),
+    resultArtifact: null,
+  }));
+
+  const envelope = await valid.executor(operationContext('query', queryParameters()));
+  assert.equal(envelope.state, 'partial');
+  assert.equal(envelope.result.answer, 'Useful first answer');
+  assert.deepEqual(envelope.result.answerQuality, answerQuality);
+  assert.deepEqual(envelope.error, expansionError);
+
+  const invalid = createHarness(() => ({
+    state: 'partial',
+    result: null,
+    error: expansionError,
+    sourceEvidence: childEvidence(),
+    resultArtifact: null,
+  }));
+  await assert.rejects(
+    invalid.executor(operationContext('query', queryParameters())),
+    error => error?.code === 'worker_result_invalid',
+  );
+});
+
 test('operationType alone selects Query versus PGS and legacy routing fields are rejected', async () => {
   const harness = createHarness((_query, options) => ({
     state: 'complete',

@@ -37,6 +37,12 @@ const QUERY_MODES = new Set([
   'quick', 'full', 'expert', 'dive', 'fast', 'normal', 'deep', 'executive',
   'raw', 'report', 'innovation', 'consulting', 'grounded',
 ]);
+const DIRECT_QUERY_MODES = new Set(['quick', 'full', 'expert', 'dive']);
+const ANSWER_QUALITY_STATES = new Set(['substantial', 'constrained', 'not-required']);
+const QUERY_PROJECTION_FIELDS = Object.freeze([
+  'nodesScanned', 'nodesRetained', 'edgesScanned', 'edgesRetained',
+  'droppedForPromptBudget', 'promptReduced',
+]);
 const PGS_MODES = new Set(['fresh', 'continue', 'targeted']);
 const PGS_LEVELS = new Set(['skim', 'sample', 'deep', 'full']);
 const DISPLAY_PGS_LEVELS = new Set([...PGS_LEVELS, 'legacy']);
@@ -182,6 +188,56 @@ function projectSafeEvidence(value) {
     if (totals !== undefined) projected[field] = totals;
   }
   return Object.keys(projected).length === 0 ? null : projected;
+}
+
+function projectQueryProjection(value) {
+  if (value === null || value === undefined) return null;
+  exactKeys(value, QUERY_PROJECTION_FIELDS, 'notebook_result_invalid');
+  if (Reflect.ownKeys(value).length !== QUERY_PROJECTION_FIELDS.length) {
+    throw notebookError('notebook_result_invalid');
+  }
+  const projected = {
+    nodesScanned: safeCounter(value.nodesScanned, 'notebook_result_invalid'),
+    nodesRetained: safeCounter(value.nodesRetained, 'notebook_result_invalid'),
+    edgesScanned: safeCounter(value.edgesScanned, 'notebook_result_invalid'),
+    edgesRetained: safeCounter(value.edgesRetained, 'notebook_result_invalid'),
+    droppedForPromptBudget: safeCounter(
+      value.droppedForPromptBudget,
+      'notebook_result_invalid',
+    ),
+    promptReduced: value.promptReduced,
+  };
+  if (typeof projected.promptReduced !== 'boolean'
+      || projected.nodesRetained > projected.nodesScanned
+      || projected.edgesRetained > projected.edgesScanned
+      || projected.promptReduced !== (projected.droppedForPromptBudget > 0)) {
+    throw notebookError('notebook_result_invalid');
+  }
+  return projected;
+}
+
+function projectAnswerQuality(value, record) {
+  if (value === null || value === undefined) return null;
+  exactKeys(
+    value,
+    ['requestedMode', 'state', 'expansionAttempted'],
+    'notebook_result_invalid',
+  );
+  if (Reflect.ownKeys(value).length !== 3
+      || !DIRECT_QUERY_MODES.has(value.requestedMode)
+      || value.requestedMode !== record.requestParameters.mode
+      || !ANSWER_QUALITY_STATES.has(value.state)
+      || typeof value.expansionAttempted !== 'boolean'
+      || (value.requestedMode === 'quick'
+        && (value.state !== 'not-required' || value.expansionAttempted !== false))
+      || (value.requestedMode !== 'quick' && value.state === 'not-required')) {
+    throw notebookError('notebook_result_invalid');
+  }
+  return {
+    requestedMode: value.requestedMode,
+    state: value.state,
+    expansionAttempted: value.expansionAttempted,
+  };
 }
 
 function projectConfiguration(record, { legacyConfiguration = false } = {}) {
@@ -379,6 +435,14 @@ function projectNotebookResult(rawRecord, rawResult, { now = Date.now } = {}) {
       || Buffer.byteLength(answer, 'utf8') > ANSWER_MAX_BYTES)) {
     throw notebookError('notebook_result_invalid');
   }
+  const projection = projectQueryProjection(result.projection);
+  const answerQuality = projectAnswerQuality(result.answerQuality, record);
+  if (record.operationType !== 'query' && (projection !== null || answerQuality !== null)) {
+    throw notebookError('notebook_result_invalid');
+  }
+  if ((projection === null) !== (answerQuality === null)) {
+    throw notebookError('notebook_result_invalid');
+  }
   return {
     schemaVersion: 1,
     operationId: record.operationId,
@@ -386,6 +450,8 @@ function projectNotebookResult(rawRecord, rawResult, { now = Date.now } = {}) {
     answer,
     coverage: persisted.coverage,
     evidence: projectSafeEvidence(record.sourceEvidence),
+    projection,
+    answerQuality,
     continuation: persisted.continuation,
   };
 }

@@ -110,6 +110,17 @@ test('summary and result projections are exact, bounded, and redacted', () => {
 
   const result = projectNotebookResult(record, {
     answer: 'bounded answer',
+    projection: {
+      nodesScanned: 142_764,
+      nodesRetained: 180,
+      edgesScanned: 468_230,
+      edgesRetained: 64,
+      droppedForPromptBudget: 12,
+      promptReduced: true,
+    },
+    answerQuality: {
+      requestedMode: 'full', state: 'substantial', expansionAttempted: true,
+    },
     sweepOutputs: [{ output: 'x'.repeat(1_000_000) }],
     sourceEvidence: { canonicalRoot: '/private/result' },
   });
@@ -123,6 +134,17 @@ test('summary and result projections are exact, bounded, and redacted', () => {
       sourceHealth: 'healthy',
       returnedTotals: { nodes: 3, edges: 2 },
     },
+    projection: {
+      nodesScanned: 142_764,
+      nodesRetained: 180,
+      edgesScanned: 468_230,
+      edgesRetained: 64,
+      droppedForPromptBudget: 12,
+      promptReduced: true,
+    },
+    answerQuality: {
+      requestedMode: 'full', state: 'substantial', expansionAttempted: true,
+    },
     continuation: null,
   });
 
@@ -131,6 +153,54 @@ test('summary and result projections are exact, bounded, and redacted', () => {
     'sweepOutputs', 'operationControl', '/private/',
   ]) {
     assert.equal(JSON.stringify({ summary, result }).includes(forbidden), false, forbidden);
+  }
+});
+
+test('result receipt projection is exact and legacy results remain readable', () => {
+  const legacy = projectNotebookResult(queryRecord(), { answer: 'legacy answer' });
+  assert.equal(legacy.projection, null);
+  assert.equal(legacy.answerQuality, null);
+
+  const validProjection = {
+    nodesScanned: 100,
+    nodesRetained: 80,
+    edgesScanned: 50,
+    edgesRetained: 20,
+    droppedForPromptBudget: 4,
+    promptReduced: true,
+  };
+  const validQuality = {
+    requestedMode: 'full', state: 'constrained', expansionAttempted: true,
+  };
+  for (const rawResult of [
+    {
+      answer: 'x',
+      projection: { ...validProjection, privatePath: '/Users/jtr/private' },
+      answerQuality: validQuality,
+    },
+    {
+      answer: 'x',
+      projection: { ...validProjection, nodesRetained: 101 },
+      answerQuality: validQuality,
+    },
+    {
+      answer: 'x',
+      projection: { ...validProjection, promptReduced: false },
+      answerQuality: validQuality,
+    },
+    {
+      answer: 'x',
+      projection: validProjection,
+      answerQuality: { ...validQuality, requestedMode: 'dive' },
+    },
+    {
+      answer: 'x', projection: validProjection,
+    },
+  ]) {
+    assert.throws(
+      () => projectNotebookResult(queryRecord(), rawResult),
+      error => error?.code === 'notebook_result_invalid',
+    );
   }
 });
 

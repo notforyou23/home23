@@ -532,6 +532,31 @@ function attachEvidence(result, evidence) {
   return { ...result, sourceEvidence: evidence };
 }
 
+function validateExpansionPartial(raw, result) {
+  if (raw.state !== 'partial' || !Object.hasOwn(raw, 'error') || raw.error === null) return;
+  const error = assertWorkerDataObject(raw.error, 'query expansion error');
+  if (error.code !== 'query_expansion_failed') return;
+  if (error.retryable !== true || typeof error.message !== 'string' || !error.message) {
+    throw invalidWorkerResult('Query expansion error is invalid');
+  }
+  if (result === null) {
+    throw invalidWorkerResult('Query expansion Partial must preserve its first answer');
+  }
+  const useful = assertWorkerDataObject(result, 'query expansion Partial result');
+  if (typeof useful.answer !== 'string' || !useful.answer.trim()) {
+    throw invalidWorkerResult('Query expansion Partial must preserve its first answer');
+  }
+  const quality = assertWorkerDataObject(
+    useful.answerQuality,
+    'query expansion Partial answerQuality',
+  );
+  if (!QUERY_MODES.has(quality.requestedMode)
+      || quality.state !== 'constrained'
+      || quality.expansionAttempted !== true) {
+    throw invalidWorkerResult('Query expansion Partial answerQuality is invalid');
+  }
+}
+
 function normalizeEnvelope(raw, evidence) {
   assertDataObject(raw, 'query executor result');
   if (Object.hasOwn(raw, 'resultArtifact') && raw.resultArtifact !== null) {
@@ -552,6 +577,7 @@ function normalizeEnvelope(raw, evidence) {
     throw typed('worker_result_invalid', 'Query executor returned an invalid terminal state');
   }
   const result = Object.hasOwn(raw, 'result') ? raw.result : null;
+  validateExpansionPartial(raw, result);
   return {
     state: raw.state,
     result: attachEvidence(result, evidence),
