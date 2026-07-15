@@ -8414,33 +8414,28 @@ class Orchestrator {
     return summary;
   }
 
+  // Routes a Good Life agenda item to governance disposition instead of the
+  // live-problems diagnostic path (see executeAgendaItem's sourceSignal ===
+  // 'good-life' branch, which exists specifically to short-circuit here).
+  // That routing decision -- and the resulting 'good_life_governance'
+  // action/status this returns -- is real: it is what lets motor-cortex
+  // mark the agenda item acted_on and what keeps a Good Life policy nudge
+  // from spawning a live-problem diagnostic dispatch it doesn't need.
+  //
+  // What is NOT real: the JSONL line this used to append to
+  // good-life-actions.jsonl. Nothing in the codebase ever reads that file
+  // (grep confirms it), and its `verifier: 'next domain.good-life
+  // evaluation'` field named the very loop that produced the record as the
+  // thing that would one day verify it -- a receipt that could never be
+  // checked. Removed; the routing decision itself is still returned.
   recordGoodLifeAgendaAction(item, opts = {}) {
-    const now = new Date().toISOString();
-    const receipt = {
-      at: now,
-      agendaId: item.id,
-      actor: opts.actor || 'good-life-regulator',
-      origin: opts.origin || 'good-life',
-      action: 'good_life_governance',
-      status: 'recorded',
-      policy: item.temporalContext?.policy || opts.goodLife?.intent || null,
-      lanes: item.temporalContext?.lanes || [],
-      usefulnessContract: item.temporalContext?.usefulnessContract || null,
-      workerRoute: item.temporalContext?.workerRoute || null,
-      content: String(item.content || '').slice(0, 1000),
-      verifier: 'next domain.good-life evaluation',
-    };
-    try {
-      const file = require('path').join(this.logsDir, 'good-life-actions.jsonl');
-      require('fs').appendFileSync(file, JSON.stringify(receipt) + '\n', 'utf8');
-    } catch (err) {
-      this.logger.warn?.('[good-life] action receipt write failed', { error: err?.message || String(err) });
-    }
+    const policy = item.temporalContext?.policy || opts.goodLife?.intent || null;
+    const lanes = item.temporalContext?.lanes || [];
 
-    this.logger.info?.('[good-life] agenda action recorded', {
+    this.logger.info?.('[good-life] agenda item routed to governance disposition (no diagnostic dispatch)', {
       agendaId: item.id,
-      policy: receipt.policy,
-      lanes: receipt.lanes,
+      policy,
+      lanes,
     });
 
     return {
@@ -8448,7 +8443,7 @@ class Orchestrator {
       action: 'good_life_governance',
       target: item.id,
       status: 'recorded',
-      detail: 'Good Life governance receipt recorded; next evaluation verifies lane movement',
+      detail: 'Routed to Good Life governance disposition; no live-problem diagnostic dispatched',
     };
   }
 
