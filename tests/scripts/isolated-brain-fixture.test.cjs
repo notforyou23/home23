@@ -135,6 +135,27 @@ async function assertPidExited(pid) {
   assert.fail(`fixture child ${pid} remained alive`);
 }
 
+async function awaitHealthyMcp(baseUrl) {
+  const deadline = performance.now() + 10_000;
+  let last = null;
+  while (performance.now() < deadline) {
+    const remainingMs = Math.max(1, Math.ceil(deadline - performance.now()));
+    const response = await fetch(`${baseUrl}/health`, {
+      signal: AbortSignal.timeout(Math.min(1_000, remainingMs)),
+    });
+    const body = await response.json();
+    last = { status: response.status, body };
+    if (response.status === 200) return last;
+    assert.equal(response.status, 503, JSON.stringify(body));
+    assert.equal(body.ok, false, JSON.stringify(body));
+    assert.equal(body.sourceHealth, 'unavailable', JSON.stringify(body));
+    assert.equal(body.error?.code, 'source_refresh_pending', JSON.stringify(body));
+    assert.equal(body.error?.retryable, true, JSON.stringify(body));
+    await new Promise((resolve) => setTimeout(resolve, Math.min(25, remainingMs)));
+  }
+  assert.fail(`fixture MCP did not become healthy: ${JSON.stringify(last)}`);
+}
+
 function mutateAfterIdentityRead(filePattern, mutate, { occurrence = 1 } = {}) {
   const originalOpen = fs.open;
   let observed = 0;
@@ -1079,9 +1100,9 @@ test('isolated launcher exposes distinct own, sibling, completed-research, and M
     ));
   }
 
-  const health = await fetch(`${launched.mcpBaseUrl}/health`);
+  const health = await awaitHealthyMcp(launched.mcpBaseUrl);
   assert.equal(health.status, 200);
-  assert.deepEqual(await health.json(), {
+  assert.deepEqual(health.body, {
     ok: true,
     protocolVersion: '2025-03-26',
     sourceHealth: 'healthy',

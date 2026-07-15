@@ -162,3 +162,62 @@ test('expired healthy readiness fails closed while bounded refresh is pending', 
   });
   readiness.close();
 });
+
+test('readiness freshness begins when a slow canonical source check completes', async () => {
+  let now = 100;
+  const readiness = createMcpReadinessController({
+    memoryTools: {
+      async checkReadiness() {
+        now += 75;
+        return {
+          ok: true,
+          sourceHealth: 'healthy',
+          revision: 8,
+        };
+      },
+    },
+    retryMs: 50,
+    now: () => now,
+    logger: { warn() {} },
+  });
+
+  await readiness.refresh();
+  assert.deepEqual(readiness.status(), {
+    ok: true,
+    protocolVersion: '2025-03-26',
+    sourceHealth: 'healthy',
+    revision: 8,
+  });
+  readiness.close();
+});
+
+test('direct refresh invalidates an expired healthy proof before its check completes', async () => {
+  let now = 100;
+  let calls = 0;
+  let releaseRefresh;
+  const readiness = createMcpReadinessController({
+    memoryTools: {
+      async checkReadiness() {
+        calls += 1;
+        if (calls > 1) await new Promise((resolve) => { releaseRefresh = resolve; });
+        return { ok: true, sourceHealth: 'healthy', revision: calls };
+      },
+    },
+    retryMs: 50,
+    now: () => now,
+    logger: { warn() {} },
+  });
+  await readiness.refresh();
+  assert.equal(readiness.status().revision, 1);
+
+  now += 51;
+  const pending = readiness.refresh();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(typeof releaseRefresh, 'function');
+  assert.equal(readiness.status().ok, false);
+  assert.equal(readiness.status().error.code, 'source_refresh_pending');
+  releaseRefresh();
+  await pending;
+  assert.equal(readiness.status().revision, 2);
+  readiness.close();
+});

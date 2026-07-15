@@ -180,7 +180,7 @@ function createMcpReadinessController({
     });
   }
   const abortController = new AbortController();
-  let lastAttemptAt = 0;
+  let lastCompletedAt = null;
   let inFlight = null;
   let closed = false;
   let current = Object.freeze({
@@ -188,10 +188,22 @@ function createMcpReadinessController({
     protocolVersion: '2025-03-26',
     sourceHealth: 'starting',
   });
+  const refreshPendingStatus = () => Object.freeze({
+    ok: false,
+    protocolVersion: '2025-03-26',
+    sourceHealth: 'unavailable',
+    error: Object.freeze({
+      code: 'source_refresh_pending',
+      message: 'canonical source readiness refresh is pending',
+      retryable: true,
+    }),
+  });
 
   const refresh = () => {
     if (closed || inFlight) return inFlight;
-    lastAttemptAt = now();
+    if (lastCompletedAt !== null && now() - lastCompletedAt >= retryMs) {
+      current = refreshPendingStatus();
+    }
     inFlight = Promise.resolve()
       .then(() => memoryTools.checkReadiness({ signal: abortController.signal }))
       .then((result) => {
@@ -220,24 +232,18 @@ function createMcpReadinessController({
           error: publicReadinessError(error),
         });
       })
-      .finally(() => { inFlight = null; });
+      .finally(() => {
+        if (!closed) lastCompletedAt = now();
+        inFlight = null;
+      });
     return inFlight;
   };
 
   refresh();
   return Object.freeze({
     status() {
-      if (!closed && now() - lastAttemptAt >= retryMs) {
-        current = Object.freeze({
-          ok: false,
-          protocolVersion: '2025-03-26',
-          sourceHealth: 'unavailable',
-          error: Object.freeze({
-            code: 'source_refresh_pending',
-            message: 'canonical source readiness refresh is pending',
-            retryable: true,
-          }),
-        });
+      if (!closed && !inFlight && lastCompletedAt !== null
+          && now() - lastCompletedAt >= retryMs) {
         refresh();
       }
       return current;
