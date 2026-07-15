@@ -195,6 +195,20 @@ async function writeAllAt(handle, bytes, position) {
 async function appendMemoryRevision(brainDir, changes, options = {}) {
   const capturedChanges = normalizeCapturedChanges(changes);
   const capturedSummary = options.summary ? validateScalarSummaryOnly(options.summary) : null;
+  const hasExpectedSource = options.expectedGeneration !== undefined
+    || options.expectedRevision !== undefined
+    || options.expectedDigest !== undefined;
+  if (hasExpectedSource && (
+    typeof options.expectedGeneration !== 'string' || !options.expectedGeneration
+    || !Number.isSafeInteger(options.expectedRevision) || options.expectedRevision < 0
+    || typeof options.expectedDigest !== 'string'
+    || !/^sha256:[a-f0-9]{64}$/.test(options.expectedDigest)
+  )) {
+    throw memorySourceError('invalid_request', 'exact expected source contract required');
+  }
+  if (options.authorize !== undefined && typeof options.authorize !== 'function') {
+    throw memorySourceError('invalid_request', 'append authorization callback must be a function');
+  }
   await options.beforeLock?.();
   return withMemorySourceLock(brainDir, {
     lockRoot: options.lockRoot,
@@ -203,6 +217,18 @@ async function appendMemoryRevision(brainDir, changes, options = {}) {
   }, async () => {
     const manifest = await readManifest(brainDir);
     if (!manifest) throw memorySourceError('source_unavailable', 'memory manifest required', { retryable: true });
+    if (hasExpectedSource) {
+      const descriptor = createDescriptor(await fsp.realpath(brainDir), manifest);
+      if (manifest.generation !== options.expectedGeneration
+          || manifest.currentRevision !== options.expectedRevision
+          || sourceDescriptorDigest(descriptor) !== options.expectedDigest) {
+        throw memorySourceError('source_changed', 'expected memory source changed before append', {
+          retryable: true,
+        });
+      }
+    }
+    await options.authorize?.({ manifest });
+    throwIfAborted(options.signal);
     const deltaPath = path.join(brainDir, manifest.activeDelta.file);
     const committedBytes = manifest.activeDelta.committedBytes;
     const opened = await openConfinedRegularFile(brainDir, deltaPath, {
