@@ -80,8 +80,14 @@ function unchangedFile(left, right) {
 }
 
 function sameManifestIdentity(signature, identity) {
+  // dev (st_dev) is excluded here for the same reason writer.cjs's
+  // sameCommittedContent excludes it: it is assigned by the OS at MOUNT
+  // time and APFS reassigns it across reboots even when the file was never
+  // touched. `identity` here is manifest.activeDelta.fileIdentity, read
+  // back from a manifest that may have been written before a reboot;
+  // comparing it against a live post-reboot stat's dev breaks every
+  // delta-overlay read forever after the next reboot. See writer.cjs.
   return Boolean(signature && identity
-    && signature.dev === identity.dev
     && signature.ino === identity.ino
     && String(signature.size) === identity.size
     && signature.mtimeNs === identity.mtimeNs

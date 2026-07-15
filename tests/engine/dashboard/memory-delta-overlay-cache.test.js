@@ -240,6 +240,26 @@ test('suffix extension rejects a changed previously committed prefix', async () 
   );
 });
 
+// st_dev is assigned by the OS at MOUNT time and changes across reboots.
+// A manifest.activeDelta.fileIdentity persisted before a reboot must still
+// be usable to refresh the overlay cache afterward -- not one byte of the
+// delta file changed, only the volume's dev id. See writer.cjs's
+// sameCommittedContent for the save-path counterpart of this bug.
+test('refresh succeeds when only dev changed (remount) since the manifest was written', async () => {
+  const f = await fixture();
+  const manifest = await append(f, { nodes: [{ id: 'delta', concept: 'one' }] });
+  const cache = createMemoryDeltaOverlayCache({ cacheRoot: path.join(f.requester, 'cache') });
+  const first = await cache.refresh({ canonicalRoot: f.brain, manifest });
+  assert.equal(first.node('delta').concept, 'one');
+
+  const remounted = JSON.parse(JSON.stringify(manifest));
+  remounted.activeDelta.fileIdentity.dev = String(BigInt(manifest.activeDelta.fileIdentity.dev) + 1n);
+
+  const restarted = createMemoryDeltaOverlayCache({ cacheRoot: path.join(f.requester, 'cache') });
+  const afterRemount = await restarted.refresh({ canonicalRoot: f.brain, manifest: remounted });
+  assert.equal(afterRemount.node('delta').concept, 'one');
+});
+
 test('restored-mtime in-place tamper cannot inherit writer append authority', async () => {
   const f = await fixture();
   let manifest = await append(f, { nodes: [{ id: 'delta', concept: 'one' }] });
