@@ -276,7 +276,7 @@ already ships, and is already trusted in production**. It knows `jtr_life` / `ga
 and `curator` / `introspection` / `agent_insight` are the machine. We do not invent a classifier —
 we move this one from read-time to **write-time and GC-time**.
 
-### 1.10 The vault is not what it appears, and jtr's richest source was never ingested
+### 1.10 The vault is not what it appears, and its richest sources report false success
 
 ```
 /Users/jtr/life/                             771 MB, 4,392 files
@@ -290,15 +290,24 @@ we move this one from read-time to **write-time and GC-time**.
   areas/memory-extraction/                   ~16 files, dated md, ~1.5 KB each  ← real, ideal vault material
 ```
 
-**656 MB (85%) of the "vault" is two files**, and `feeder.maxFileBytes: 5242880` (5 MB) means
-**both are silently skipped**:
+**656 MB (85%) of the "vault" is two files.** Measured fate — *not* what a `maxFileBytes: 5242880`
+reading would predict:
 
-- **`chat.html` (471 MB) is jtr's complete ChatGPT export — 94× over the size limit, never ingested.**
-  The single richest record of jtr's own thinking has been in the vault since February and neither
-  agent has seen one byte of it. It requires extraction/splitting, not a watch path.
-- **`checkpoint-15880.json` (185 MB)** is an engine state checkpoint containing a journal of machine
-  thoughts (`{"cycle":15695,"role":"critic","thought":"Insight: Many assume..."}`). jtr flagged
-  checkpoints as partly valuable; this one is largely the diary. **Judgment call — see §7.**
+```
+chat.html               471.3 MB   label=jtr_life   parse=ok              nodes=1   quarantined=False
+checkpoint-15880.json   185.0 MB   label=jtr_life   parse=un_normalizable nodes=0   quarantined=True
+```
+
+- **`chat.html` (471 MB) is jtr's complete ChatGPT export, and it produced ONE node, marked `ok`.**
+  It did not trip the size limit. It is recorded as a success. **This is worse than being skipped** — a
+  skip leaves a log line; a false success leaves a green tick nobody will ever question. The single
+  richest record of jtr's own thinking is one node deep, and the manifest says it worked. See §4.1c.
+- **`checkpoint-15880.json` (185 MB)** is an engine state checkpoint whose payload is a journal of
+  machine thoughts (`{"cycle":15695,"role":"critic","thought":"Insight: Many assume..."}`). Correctly
+  quarantined as `un_normalizable`. jtr flagged checkpoints as partly valuable; this one is largely
+  the diary. **Judgment call — see §7.**
+- **`MRI Report.pdf`** — `conversion_failed`, quarantined, 0 nodes. The markitdown venv python call
+  errored. Jerry cannot read it; forrest does not watch the folder. **Nobody has jtr's MRI.**
 
 The real, human-scale vault is closer to **~15 MB** (`feed/`, `memory-extraction/`, `people`,
 `entities`, `companies`, `infrastructure`, `runs`, `methodologies`) plus `jerry_garcia` and
@@ -439,6 +448,84 @@ addressed on its own:
 **Unmeasured — must be traced before implementation:** the `orchestrator.js` `addNode` sites at
 lines 2851, 2933, 4082, 4423, 5011, 8067, 8095 were not individually read. Do not assume.
 
+### 4.1b Principle: direct-to-node is a privileged path
+
+**jtr's directive: anything that writes directly to a node needs scrutiny.**
+
+The feeder earns node-writing because it is provenance-bearing: a file exists, it is hashed, it is
+manifested, and deleting the file removes the nodes. **Every direct `addNode()` call bypasses all of
+that** — no source, no hash, no manifest entry, no removal path. That is precisely how 38,500
+unremovable orphans came to exist.
+
+**Rule:** a direct `addNode()` call site must justify itself against three questions, and the answers
+belong in a comment at the call site:
+
+1. **What event does this record?** (Not "what does it summarize" — what *happened*?)
+2. **What file backs it?** If none, it is unremovable by design. Why is that acceptable here?
+3. **How does it get deleted?** If the answer is "it doesn't," it must not be a node.
+
+Sites that pass today: `promote-to-memory.js` (jtr-initiated = an event by definition),
+`pin-canonical-nodes.js` (explicit, bounded, curated).
+Sites that fail today: `state_snapshot`, `base-agent` ×2, `composter`, the dream dice roll.
+Sites not yet traced: 7 in `orchestrator.js`, `artifacts/*` ×3, `goal-curator`, `trajectory-fork` ×2.
+
+**Preferred remedy for a failing site is not a gate — it is a file.** If the output is worth keeping,
+write it to the vault and let the feeder ingest it with full provenance. If it is not worth a file, it
+is not worth a node. This is §3 applied to the write path.
+
+### 4.1c Nothing sits unread — the silent-drop problem
+
+**jtr's directive: nothing should be sitting because of size or other limits. That should never be.**
+
+Measured, the failure mode is worse than skipping. **It is false success.**
+
+```
+471.3 MB → 1 node    ~/life/areas/chat.html                parse=ok  ← entire ChatGPT export
+  3.9 MB → 1 node    ~/life/areas/.../jerry_records.json   parse=ok
+  1.5 MB → 2 nodes   ~/life/areas/projects/shows_catalog.json  parse=ok
+  1.3 MB → 0 nodes   ~/life/feed/cursor_testing_new_database_structures2.md  parse=ok
+```
+
+**Every one is marked `ok`.** There is no yield check anywhere in the pipeline — bytes-in is never
+compared to nodes-out — so total extraction failure is indistinguishable from success. Nothing would
+ever surface these. A skip at least writes a log line; a false success writes nothing and reports done.
+
+**Every drop point is invisible** (`document-feeder.js:336–370`):
+
+| Drop | Behaviour | Record left |
+|---|---|---|
+| `stat.size > maxFileBytes` (5 MB) | `logger.info(...)` then `return` | **log line only — no manifest entry** |
+| `catch { return; }` (unreadable) | bare catch | **nothing at all** |
+| `basename.startsWith('.')` | `return` | **nothing** |
+| `_shouldIgnorePath()` | `return` | **nothing** |
+| compile queue full (200) | `reject` → falls back to **raw text** | warn log; silent quality loss |
+| compiler circuit open (5 fails / 60s) | `reject` → falls back to **raw text** | silent quality loss |
+
+**The manifest records only what succeeded.** There is no way to ask "what did you refuse?" — the
+system that wrote 14,448 receipts about declining to act has never once recorded that it could not
+read a file.
+
+**Required changes:**
+
+1. **Every file seen gets a manifest entry, including refusals**, with `outcome` and `reason`
+   (`skipped_too_large`, `unreadable`, `dotfile`, `excluded`, `compiled_raw_fallback`). "What is
+   sitting unread" becomes a query, not archaeology.
+2. **Yield check.** A file whose nodes-out is ~0 relative to bytes-in is a **failure**, not a success.
+   Flag it; do not mark it `ok`. `chat.html` at 471 MB → 1 node must scream.
+3. **`maxFileBytes` must route, not drop.** Oversized files go to a splitter/extractor queue.
+   A 5 MB ceiling is a *processing strategy*, never a *reason to never read something*.
+4. **Dotfiles: explicit-allow, not blanket-deny.** `~/.health_log.jsonl` is a dotfile — **the current
+   §4.6 "add the health log to watch paths" cannot work**; it would be silently dropped at
+   `basename.startsWith('.')`.
+5. **Quarantine must be surfaced to jtr, not just recorded.** `MRI Report.pdf` is
+   `conversion_failed` + quarantined. Jerry cannot read it (conversion failed); Forrest cannot read it
+   (does not watch the folder). **Nobody has jtr's MRI.** A quarantined file in a real-world label is a
+   **live problem with an executable verifier** — that is exactly what the live-problems system is for
+   and it is the correct use of it.
+6. **Raw-text fallback must be visible.** Queue-full and circuit-open silently degrade compiled
+   synthesis to raw text. That is a quality cliff recorded nowhere; some existing low-quality nodes are
+   plausibly this. Record the fallback in the manifest and re-compile later.
+
 ### 4.2 The event gate at ingestion
 
 A document with no substantive content produces **no node and no compiler call**. Kills the
@@ -562,25 +649,45 @@ Add `~/.health_log.jsonl`, the health API, and the health-relevant parts of `/Us
 forrest's watch paths. This is the only change in this design that makes an agent **better** rather
 than quieter.
 
-**Unmeasured:** `~/.health_log.jsonl` is a rolling append-only log (260 entries). The feeder is
-document-oriented and hash-gated — **a growing log rehashes on every append and would re-ingest the
-whole file each time**, which is a new pollution source of exactly the kind this spec exists to
-prevent. The health API is an HTTP endpoint, not a file, and the feeder has no HTTP source concept.
-**Both need a mechanism decision before implementation — this is not a watch-path line.**
+**This is not a watch-path line — three separate blockers, all measured:**
+
+1. **`~/.health_log.jsonl` is a dotfile.** `document-feeder.js:345` — `if
+   (basename.startsWith('.')) return;`. Adding it to forrest's watch paths **silently does nothing**.
+   Requires the explicit-allow rule from §4.1c(4).
+2. **It is a rolling append-only log.** The feeder is document-oriented and hash-gated — every append
+   rehashes the whole file and re-ingests it entirely. That is a **new pollution source of exactly the
+   kind this spec exists to prevent**. Needs a tail/delta reader, not a document reader.
+3. **The health API is an HTTP endpoint**, and the feeder has no HTTP source concept at all.
+
+**`MRI Report.pdf` is `conversion_failed` and quarantined** (markitdown venv python call errored).
+Jerry cannot read it; forrest does not watch the folder. **Nobody has jtr's MRI.** Fixing the
+converter is a prerequisite for forrest being useful, and per §4.1c(5) this should be a live problem
+with an executable verifier — not a silent manifest field.
 
 ### 4.6a jtr's ChatGPT export — the largest unrealized source
 
-`chat.html` is **471 MB** and `maxFileBytes` is **5 MB** (§1.10). jtr's complete ChatGPT history has
-been in the vault since February, silently skipped, never ingested. It is plausibly the single
-richest record of jtr's own thinking available to this system.
+**Corrected — it was not skipped. It reports success.**
 
-It requires a **splitter** (ChatGPT exports are structured HTML with per-conversation blocks) that
-emits per-conversation files into a watched directory. Same for `jtr_antrhopic_archive` (47 MB) if it
-has the same shape.
+```
+~/life/areas/chat.html   471.3 MB   label=jtr_life   parse=ok   nodes=1   quarantined=False
+```
+
+jtr's complete ChatGPT history — plausibly the single richest record of his own thinking in this
+system — **produced one node and is marked `ok`**. It did not trip `maxFileBytes`. Nothing flagged it.
+The manifest reports the file as successfully ingested.
+
+This is the canonical case for the yield check (§4.1c(2)): **471 MB → 1 node must be a screaming
+failure, not a green tick.**
+
+It requires a **splitter** — ChatGPT exports are structured HTML with per-conversation blocks — that
+emits per-conversation files into a watched directory, at which point each conversation is a real
+event with a real file and full provenance. Same for `jtr_antrhopic_archive` (47 MB), and
+`jerry_records.json` (3.9 MB → 1 node) and `shows_catalog.json` (1.5 MB → 2 nodes), which are
+structured JSON collections flattened into nothing by the same defect.
 
 **This is not part of the decontamination and must not block it** — but it is the strongest available
-evidence for the thesis: the brain filled with 14,448 receipts about not acting, while 471 MB of jtr's
-actual thinking sat unread in the folder next to it.
+evidence for the thesis: the brain wrote 14,448 receipts about declining to act, while 471 MB of jtr's
+actual thinking sat one node deep in the folder next to it, marked `ok`.
 
 *(Note: the Pi barometric-pressure sensing in the `empire` subsystem is a **real** health signal —
 jtr is barometrically sensitive and tracks it because it correlates with how he feels. It is not
@@ -635,7 +742,10 @@ Nothing is irreversible before step 4, and step 4 is reversible because of step 
 | Brain persistence incident during rebuild | Standard rule applies: **standalone load test before any engine restart**; verify node counts after. |
 | **Closing only the feeder door leaves 38,500 nodes/yr flowing** | §4.1a. The feeder is 1 of ~23 `addNode` sites. `state_snapshot` (30% of growth) is a **direct orchestrator read** and is immune to any watch-path change. This defect killed the first draft. |
 | **Untraced `addNode` sites** | 7 orchestrator sites + artifacts/goal-curator/trajectory-fork not individually read. **Trace before implementing**, do not assume. |
-| **Health-log ingestion creates new pollution** | §4.6. A rolling append-only log rehashes per append → full re-ingest each time. Needs a mechanism decision, not a watch-path line. |
+| **Health-log ingestion creates new pollution** | §4.6. Three blockers: it is a **dotfile** (silently dropped), a **rolling log** (rehashes per append → full re-ingest each time), and the API is **HTTP** (no feeder concept). Not a watch-path line. |
+| **False success hides total extraction failure** | §4.1c. `chat.html` 471 MB → 1 node, `parse=ok`. No yield check exists anywhere. **A rebuild would faithfully reproduce every one of these**, because they are recorded as successes and the reingest is hash-gated on the same code path. **Fix the yield check before step 4 or the rebuild re-bakes the losses.** |
+| **jtr's MRI is quarantined and nobody knows** | §4.1c(5). `conversion_failed`. The failure is a manifest field nobody reads. Route real-label quarantines to live-problems, which has executable verifiers and is the honest subsystem. |
+| **`jtr_voice` source is the old cosmo-home install** | §7.7. **Confirmed, not hypothetical.** 670 nodes would silently vanish on rebuild. Re-add the path or relocate the files into the vault before step 4. |
 | Removing `state_snapshot` degrades situational awareness | RECENT.md remains loaded as a **system-prompt surface** (its designed role, per STEP20/STEP23). Only the brain-node copy goes. Verify context-assembly still loads the surface after the change. |
 | Retrieval regresses once garbage is gone | `provenance-salience.js` currently downranks garbage at read time. Removing the garbage makes those code paths inert, not wrong. **Retrieval is jtr-confirmed healthy today; re-verify after rebuild before demolishing the filter.** |
 
@@ -664,10 +774,13 @@ Nothing is irreversible before step 4, and step 4 is reversible because of step 
 6. **The `workspace` label mechanism** (6,883 nodes, jerry; 6,564, forrest — 83% of his brain). It does
    **not** correspond to an `additionalWatchPaths` entry; it appears to enter via the feeder's
    `ingestDir` scan (`document-feeder.js:139`, `_scanDirectory(ingestDir, null)`). **Unconfirmed.**
-7. **`jtr_voice` and `garcia_jerry` provenance.** Neither label appears in the current `config.yaml`.
-   They may be legacy manifest entries from paths no longer watched — meaning they would **not**
-   regenerate on rebuild. **This is load-bearing: 1,530 of the ~2,500 real nodes carry these labels.**
-   If their sources are gone, the rebuild loses them. **Verify before step 3.**
+7. **`jtr_voice` provenance — CONFIRMED TRAP.** Measured: its source is
+   `/Users/jtr/_JTR23_/cosmo-home/runs/jtr/inputs/voice/` — **the OLD cosmo install**, not
+   `/Users/jtr/life/`, not in `config.yaml`, not watched. **Its 670 nodes would silently fail to
+   regenerate on rebuild.** The path must be re-added (or the files relocated into the vault) before
+   step 4. `garcia_jerry` appears to resolve to `/Users/jtr/life/areas/jerry_garcia/` and is likely
+   safe — **still verify**, since it carries 860 nodes and shares the `/Users/jtr/life/` root with the
+   `jtr_life` label for reasons not yet understood.
 8. **The 7 untraced `orchestrator.js` `addNode` sites** (2851, 2933, 4082, 4423, 5011, 8067, 8095), plus
    `artifacts/*` ×3, `goal-curator.js`, `trajectory-fork.js` ×2.
 9. **Health-log and health-API ingestion mechanism** (§4.6) — a rolling log and an HTTP endpoint do not
