@@ -14,7 +14,9 @@ import { generateEcosystem } from './generate-ecosystem.js';
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
+const { deriveMemoryAuthorityAttestationKey } = require('../../shared/memory-authority-attestation.cjs');
 const CAPABILITY_ENV = 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY';
+const AUTHORITY_ENV = 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY';
 const DRY_RUN_CAPABILITY = '0'.repeat(64);
 
 function commandError(code, cause) {
@@ -83,14 +85,14 @@ async function listProcessesDefault() {
   return JSON.parse(stdout);
 }
 
-function envEvidence(row) {
+function envEvidence(row, environmentName) {
   const raw = row?.pm2_env;
-  const direct = raw && Object.hasOwn(raw, CAPABILITY_ENV) ? raw[CAPABILITY_ENV] : undefined;
-  const nested = raw?.env && Object.hasOwn(raw.env, CAPABILITY_ENV)
-    ? raw.env[CAPABILITY_ENV]
+  const direct = raw && Object.hasOwn(raw, environmentName) ? raw[environmentName] : undefined;
+  const nested = raw?.env && Object.hasOwn(raw.env, environmentName)
+    ? raw.env[environmentName]
     : undefined;
-  const normalized = row?.env && Object.hasOwn(row.env, CAPABILITY_ENV)
-    ? row.env[CAPABILITY_ENV]
+  const normalized = row?.env && Object.hasOwn(row.env, environmentName)
+    ? row.env[environmentName]
     : undefined;
   const values = [direct, nested, normalized].filter((value) => value !== undefined);
   if (new Set(values).size > 1) throw commandError('pm2_environment_disagreement');
@@ -106,7 +108,21 @@ function rowStatus(row) {
   return rawStatus ?? normalizedStatus ?? 'unknown';
 }
 
-function inspectLiveEnvironment(rows, configuredProcessNames, capabilityKey, forceOnlineStale = false) {
+function expectedEnvironment(name, capabilityKey, authorityKey) {
+  const requiresCapability = name === 'home23-cosmo23' || name.endsWith('-dash');
+  return {
+    [CAPABILITY_ENV]: requiresCapability ? capabilityKey : undefined,
+    [AUTHORITY_ENV]: authorityKey,
+  };
+}
+
+function inspectLiveEnvironment(
+  rows,
+  configuredProcessNames,
+  capabilityKey,
+  authorityKey,
+  forceOnlineStale = false,
+) {
   if (!Array.isArray(rows)) throw commandError('pm2_inspection_invalid');
   const configured = new Set(configuredProcessNames);
   const seen = new Map();
@@ -119,7 +135,10 @@ function inspectLiveEnvironment(rows, configuredProcessNames, capabilityKey, for
   for (const name of configuredProcessNames) {
     const row = seen.get(name);
     if (!row || rowStatus(row) !== 'online') continue;
-    if (forceOnlineStale || envEvidence(row) !== capabilityKey) changedProcessNames.push(name);
+    const expected = expectedEnvironment(name, capabilityKey, authorityKey);
+    if (forceOnlineStale || Object.entries(expected).some(
+      ([environmentName, value]) => envEvidence(row, environmentName) !== value,
+    )) changedProcessNames.push(name);
   }
   return changedProcessNames;
 }
@@ -153,7 +172,13 @@ async function writeEcosystemAtomic(filePath, source, baseline) {
   }
 }
 
-async function inspectPm2(dependencies, configuredProcessNames, capabilityKey, forceOnlineStale = false) {
+async function inspectPm2(
+  dependencies,
+  configuredProcessNames,
+  capabilityKey,
+  authorityKey,
+  forceOnlineStale = false,
+) {
   try {
     const rows = await dependencies.listProcesses();
     return {
@@ -161,6 +186,7 @@ async function inspectPm2(dependencies, configuredProcessNames, capabilityKey, f
         rows,
         configuredProcessNames,
         capabilityKey,
+        authorityKey,
         forceOnlineStale,
       ),
       liveEnvVerified: true,
@@ -249,6 +275,7 @@ export async function prepareBrainOperationsCapability(home23Root, options = {})
     dependencies,
     rendered.configuredProcessNames,
     capabilityKey,
+    deriveMemoryAuthorityAttestationKey(capabilityKey),
     dryRun && keyWouldBeCreated,
   );
   if (!dryRun) await assertCapabilityStillPrepared(home23Root, capabilityKey);
@@ -391,27 +418,37 @@ export function buildScopedPm2RefreshArgs(receipt) {
   if (receipt.liveEnvVerified !== true) throw commandError('live_env_unverified');
   const configured = receipt.configuredProcessNames;
   const changed = receipt.changedProcessNames;
-  if (!Array.isArray(configured) || configured.length === 0
-      || new Set(configured).size !== configured.length
-      || !configured.every((name) => name === 'home23-cosmo23'
-        || /^home23-[a-z0-9][a-z0-9-]*-dash$/.test(name))) {
+  if (!isRendererAuthorizedScope(configured)) {
     throw commandError('changed_processes_invalid');
   }
-  if (!Array.isArray(changed) || changed.length === 0
-      || new Set(changed).size !== changed.length
-      || !changed.every((name) => configured.includes(name))) {
-    throw commandError('changed_processes_invalid');
-  }
-  const canonicalChanged = configured.filter((name) => changed.includes(name));
-  if (canonicalChanged.length !== changed.length
-      || canonicalChanged.some((name, index) => name !== changed[index])) {
+  if (!Array.isArray(changed)
+      || changed.length !== configured.length
+      || changed.some((name, index) => name !== configured[index])) {
     throw commandError('changed_processes_invalid');
   }
   return [
     'start',
     'ecosystem.config.cjs',
     '--only',
-    changed.join(','),
+    configured.join(','),
     '--update-env',
   ];
+}
+
+function isRendererAuthorizedScope(configured) {
+  if (!Array.isArray(configured) || configured.length < 4
+      || new Set(configured).size !== configured.length
+      || configured.at(-1) !== 'home23-cosmo23') return false;
+  let index = 0;
+  while (index < configured.length - 1) {
+    const engineName = configured[index];
+    if (!/^home23-[a-z0-9][a-z0-9-]*$/.test(engineName)
+        || engineName === 'home23-cosmo23'
+        || configured[index + 1] !== `${engineName}-dash`) return false;
+    index += 2;
+    if (configured[index] === `${engineName}-mcp`) index += 1;
+    if (configured[index] !== `${engineName}-harness`) return false;
+    index += 1;
+  }
+  return index === configured.length - 1;
 }

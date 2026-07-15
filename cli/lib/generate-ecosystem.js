@@ -394,7 +394,12 @@ export function generateEcosystem(home23Root, options = {}) {
     ecosystemSource,
     manifest,
     configuredProcessNames: [
-      ...orderedAgents.map((agent) => `home23-${agent.name}-dash`),
+      ...orderedAgents.flatMap((agent) => [
+        `home23-${agent.name}`,
+        `home23-${agent.name}-dash`,
+        ...(agent.config.mcp?.enabled !== false ? [`home23-${agent.name}-mcp`] : []),
+        `home23-${agent.name}-harness`,
+      ]),
       'home23-cosmo23',
     ],
   };
