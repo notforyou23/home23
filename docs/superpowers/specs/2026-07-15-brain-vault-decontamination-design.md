@@ -1095,9 +1095,98 @@ Nothing is irreversible before step 4, and step 4 is reversible because of step 
    deliverable and proves the atomizer design against real material before a ~29h rebuild depends on it.
 6. **Retrieval — separate spec, after** (§8).
 
-### Must be traced before implementation (do not assume)
+### TRACING COMPLETE — 2026-07-15. Results below; several correct the spec above.
 
-6. **The `workspace` label mechanism** (6,883 nodes, jerry; 6,564, forrest — 83% of his brain). It does
+**Corrections to this document's own numbers (measured, authoritative):**
+
+1. **Orphans are 63,109 (44%), not 117,025 (82%).** §1.7 counted only the `nodeIds` field. Manifest
+   entries written before ~April carry **`nodeCount` but no `nodeIds`** — 4,651 entries claiming
+   **53,913 nodes** that were wrongly counted as orphans.
+   ```
+   entries with nodeIds        : 17,105  →  26,457 distinct ids
+   entries with nodeCount ONLY :  4,651  →  53,913 nodes (pre-April, ids never tracked)
+   entries claiming nothing    :    313  (the quarantined)
+   TOTAL CLAIMED               : 80,370 / 143,479  → orphans 63,109 (44%)
+   ```
+   **New consequence:** those 53,913 nodes have provenance that is **countable but not traceable** —
+   we know a file produced 2,611 nodes but not *which* ones. So no targeted removal and **no
+   drill-down** for a third of the brain. **The rebuild is the only thing that makes them traceable.**
+2. **The "70% self-referential" figure holds, but §1.1's method was wrong.** It used a regex matching
+   `brain|home23|engine|thought`, which also matches *real conversations about Home23* — which jtr
+   explicitly keeps. Full-brain tag census (140,086 nodes, authoritative) puts it at **~71% machine,
+   ~9–13% real** — same conclusion, sound method:
+   ```
+   workspace              29,298  20.9%   ← largest tag in the brain (identity files)
+   consolidated           19,033  13.6%
+   reasoning               8,524   6.1%
+   conversation_sessions   6,213   4.4%   ← REAL
+   curator/analysis_insight/agent_insight/novel_implication/critic/curiosity/
+     analyst/synthesis_report/proposal/speculative_hypothesis/document_*  ≈ 36%
+   jtr_life                5,167   3.7%   ← jtr's actual life
+   ```
+   **"~4% real" (§1.1) was too pessimistic — it is ~9–13%.**
+3. **`state_snapshot` is not in the top 22 brain-wide.** It is **30% of recent *growth*, not 30% of the
+   brain** — a newer, accelerating problem, consistent with the doubling since May.
+4. **§7.6 RESOLVED — the `workspace` fallback is already OFF.** `orchestrator.js:747` gates it on
+   `shouldAddWorkspaceFeederFallback()` = "only if `additionalWatchPaths` is empty"; both agents have
+   watch paths. The live feeder confirms the workspace root is **not** watched. The 29,298 workspace
+   nodes are **historical** (jerry's last workspace ingest: 2026-07-07 — worker-runs, insights,
+   briefings, and `metrics/process-memory.jsonl` → 10 nodes; **it was ingesting its own CPU/memory
+   metrics as knowledge**). **Only a rebuild removes them.**
+5. **§4.1's keep/drop table was INCOMPLETE — jerry has 9 watch paths, not 7.** An earlier `grep -A14`
+   truncated the block. Missing: `/Users/jtr/jtrbrain-feed` (`legacy_jtrbrain_feed`, 1 near-empty file)
+   and `/Users/jtr/Desktop/jerryg-fork-jtr-import-import alias` (`jerrybrain`, a 1.2 KB macOS **alias
+   file**, not a directory — 0 entries). **Neither is load-bearing; the signed-off decisions stand.**
+
+**NEW FINDINGS — both material:**
+
+6. **`workspace/jtr` — 4,131 files, watched, ZERO ingested. The largest "sitting unread" case found.**
+   Configured as `jerry_jtr_notes`; **not one manifest entry exists.** Contents: **2,194 dated markdown
+   session summaries** of jtr's real conversations (`2026-03-23-0331-persistent-agent-team-built.md` —
+   *"jtr articulated the persistent agent model: 'mini-Altheas'…"*), plus 1,555 json, 120 jsonl, 93 bib.
+   Dated, write-once, one per session — **artifacts by §4.3b's own rule.** Nothing written since
+   2026-04-14. **Cause unknown — trace before rebuild** (candidate: chokidar `ignoreInitial` plus no new
+   files since April, so neither the watcher nor the startup scan ever fired).
+7. **`projects` = ~49,488 nodes — 35% of the brain is npm packages and old cosmo project files.**
+   §1.6's "5,057 entries → 141 nodes" was the same `nodeIds` artifact. The path
+   (`cosmo-home_2.3/projects/`, incl. `node_modules`) **is not in the current config** — so it will not
+   regenerate. **The rebuild deletes 35% of the brain for free, correctly, with no classifier.**
+
+**§7.7 CONFIRMED and larger than stated — legacy labels that will NOT regenerate:**
+```
+projects              5,057 entries  ~49,488 nodes   ← node_modules; GOOD riddance
+workspace             6,905 entries  ~12,092 nodes   ← identity files; jtr agreed to drop
+jtr_voice               672 entries  ~ 1,340 nodes   ← REAL — /Users/jtr/_JTR23_/cosmo-home/runs/…/voice/
+garcia_jerry            860 entries  ~   943 nodes   ← REAL — /Users/jtr/_JTR23_/cosmo-home/runs/
+legacy_cosmo23_memory   271 entries  ~   313 nodes   ← REAL — cosmo-home_2.3/workspace
+```
+**All source files verified present on disk** (voice: 1,442 files, all manifested — an earlier "770
+unread" alarm was a label-vs-directory miscount). **~2,596 real nodes are at risk; re-add the three
+paths before step 4 or they vanish silently.**
+
+**Also resolved:**
+
+8. **§7.13 — no other live brains.** `agent`, `local`, `test-agent`, `workers`, `conversations`,
+   `cosmo23` have zero brain files. Only jerry and forrest.
+9. **§7.15 — `.last_extraction` is not written by Home23.** No reference anywhere in `engine/`, `src/`,
+   `cli/`, or `scripts/`. External or historical; not a competing writer. **Closed.**
+10. **Manifest removal has an offline gap.** 283 `jtr_life` entries point at deleted files and **494
+    nodes are still claimed by them**. Removal only fires when the feeder is watching at delete time;
+    **offline deletes leave orphans.** This weakens §4.5's "delete the file → the nodes go" — true only
+    while running. **The rebuild is the reconciliation.**
+11. **`AUTO DRIVER LICENSE.pdf` (4.15 MB) is also `conversion_failed`.** The PDF converter has failed on
+    **both** of jtr's identity/medical documents. §4.1c(5) applies to both.
+12. **FALSE ALARM, retracted:** "1.28 MB markdown → 0 nodes, `parse=ok`." Those files produced **2,611
+    and 385 nodes**; they are pre-April entries with `nodeCount` and no `nodeIds`. **The markdown path
+    works fine.** (Same defect as correction 1.)
+
+**§7.14 — the yield scan works.** 22 low-yield files found mechanically, no judgment. **But it must key
+on `nodeCount ?? len(nodeIds)`**, or it reports every pre-April entry as a total loss (which is how
+correction 12 happened).
+
+### Still to trace before implementation (do not assume)
+
+6. ~~The `workspace` label mechanism~~ — **RESOLVED**, see correction 4. Original text: (6,883 nodes, jerry; 6,564, forrest — 83% of his brain). It does
    **not** correspond to an `additionalWatchPaths` entry; it appears to enter via the feeder's
    `ingestDir` scan (`document-feeder.js:139`, `_scanDirectory(ingestDir, null)`). **Unconfirmed.**
 7. **`jtr_voice` provenance — CONFIRMED TRAP.** Measured: its source is
@@ -1118,7 +1207,7 @@ Nothing is irreversible before step 4, and step 4 is reversible because of step 
     automatically from nodes. **Unverified.**
 12. **Compiler benchmark** — 100 chunks against `MiniMax-M3` for real latency and token cost before
     committing to ~77,425 calls.
-13. **Other instances** — `instances/` also contains `agent`, `local`, `test-agent`, `cosmo23`,
+13. ~~Other instances~~ — **RESOLVED**: no other live brains. Original text: — `instances/` also contains `agent`, `local`, `test-agent`, `cosmo23`,
     `conversations`, `workers`. Whether any hold live brains subject to this design is unexamined.
 14. **Atomizer inventory (§4.1e).** Which vault files are collections, and what does each explode to?
     Known: `conversations.json` (250 items — confirmed), `chat.html`, `jerry_records.json`,
@@ -1126,7 +1215,7 @@ Nothing is irreversible before step 4, and step 4 is reversible because of step 
     (bytes-in vs nodes-out) across the manifest identifies candidates mechanically — every collection
     in the vault has the same signature: large file, ~1 node, `parse=ok`. **This scan is cheap and
     should run before step 4; it re-scopes the whole rebuild.**
-15. **`.last_extraction`** — `/Users/jtr/life/areas/.last_extraction` contains `2026-03-16T00:00:00+0000`.
+15. ~~`.last_extraction`~~ — **RESOLVED**: not written by Home23. Original text: — `/Users/jtr/life/areas/.last_extraction` contains `2026-03-16T00:00:00+0000`.
     Something already performs an "extraction" pass over the vault. Unidentified. Trace it — it may
     already be a partial atomizer, or a competing writer.
 
