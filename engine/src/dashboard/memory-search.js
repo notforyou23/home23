@@ -453,7 +453,15 @@ async function parseAnnMetadataChunks(chunks, {
       fail('ANN metadata header is malformed', error);
     }
     if (header.authorityProjectionSchema !== ANN_AUTHORITY_PROJECTION_SCHEMA) {
-      fail('ANN metadata authority projection schema does not match current trust policy');
+      throw memorySourceError(
+        'source_unavailable',
+        'ANN metadata authority projection schema does not match current trust policy',
+        {
+          status: 503,
+          retryable: true,
+          annFallbackReason: 'ann_authority_projection_schema_mismatch',
+        },
+      );
     }
     const declaredCount = header.count;
     const includesSkippedLabels = header.labelCount !== undefined;
@@ -1452,22 +1460,26 @@ function createMemorySearchService({
         }
         return true;
       };
+      const annLoadStartedAt = performance.now();
       try {
-        const annLoadStartedAt = performance.now();
         annUsed = typeof loadAnn.runExclusive === 'function'
           ? await loadAnn.runExclusive(source, manifest.ann, { signal }, consumeAnn)
           : await consumeAnn(await loadAnn(source, manifest.ann, { signal }));
-        annLoadMs = performance.now() - annLoadStartedAt;
       } catch (error) {
         rethrowAbort(error, signal);
         if (error?.code !== 'ann_descriptor_unsupported'
-            && error?.annFallbackReason !== 'ann_authority_context_unavailable') throw error;
+            && !(error?.code === 'source_unavailable'
+              && ['ann_authority_context_unavailable',
+                'ann_authority_projection_schema_mismatch',
+              ].includes(error?.annFallbackReason))) throw error;
         const reason = error?.annFallbackReason || 'ann_descriptor_unsupported';
         fallback = {
           route: 'logical-source-scan',
           reason,
           completeness: 'complete',
         };
+      } finally {
+        annLoadMs = performance.now() - annLoadStartedAt;
       }
       if (!annUsed && !fallback) {
         fallback = { route: 'logical-keyword-scan', reason: 'embedding_dimension_mismatch', completeness: 'complete' };
@@ -1489,6 +1501,7 @@ function createMemorySearchService({
     if (queryEmbedding && (request.exhaustive === true || !annCovered
         || ['embedding_dimension_mismatch', 'ann_descriptor_unsupported',
           'ann_authority_context_unavailable',
+          'ann_authority_projection_schema_mismatch',
         ].includes(fallback?.reason) || annLabelCoverageIncomplete)) {
       semanticRoute = 'logical-source-scan';
       await runLogicalSourceScan({ includeSemantic: true });

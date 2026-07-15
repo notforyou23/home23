@@ -2006,6 +2006,206 @@ test('unavailable ANN authority context degrades to a complete logical scan', as
   });
 });
 
+test('legacy ANN authority schemas degrade to a complete logical source scan', async (t) => {
+  const targetDir = await createBrain({
+    nodes: [{ id: 'legacy-schema', concept: 'legacy schema canary', embedding: [1, 0] }],
+  });
+  const canonicalRoot = await fsp.realpath(targetDir);
+
+  for (const [name, authorityProjectionSchema] of [
+    ['missing', undefined],
+    ['stale', 'home23.ann-authority-projection.v0'],
+  ]) {
+    const metadata = {
+      version: 1,
+      authorityProjectionSchema,
+      authorityAttestationKeyId: AUTHORITY_KEY_ID,
+      dimension: 2,
+      count: 1,
+      skipped: 0,
+      builtFromRevision: 3,
+      labels: [{ id: 'legacy-schema', concept: 'legacy schema canary' }],
+    };
+    if (authorityProjectionSchema === undefined) delete metadata.authorityProjectionSchema;
+    const encoded = Buffer.from(JSON.stringify(metadata));
+    const source = {
+      manifest: {
+        formatVersion: 1,
+        currentRevision: 3,
+        baseRevision: 3,
+        activeDelta: { count: 0 },
+        ann: {
+          indexFile: 'memory-ann.3.index',
+          metaFile: 'memory-ann.3.meta.json',
+          builtFromRevision: 3,
+        },
+      },
+      revision: 3,
+      descriptor: {
+        canonicalRoot,
+        generation: 'g-legacy-schema',
+        summary: { nodeCount: 1 },
+      },
+      async summarize() { return { nodes: 1, edges: 0, clusters: 0 }; },
+      async *iterateNodes() {
+        yield { id: 'legacy-schema', concept: 'legacy schema canary', embedding: [1, 0] };
+      },
+      async searchKeyword() { return { results: [] }; },
+      getAnchoredFile(role) {
+        if (role === 'ann-index') {
+          return { path: '/dev/fd/301', async assertStable() {} };
+        }
+        if (role === 'ann-meta') {
+          return {
+            async readFile() { return encoded; },
+            async assertStable() {},
+          };
+        }
+        return null;
+      },
+      getEvidence(input = {}) {
+        return {
+          sourceHealth: input.sourceHealth || 'healthy',
+          matchOutcome: input.matchOutcome || 'unknown',
+          indexWatermark: { fresh: true, builtFromRevision: 3 },
+        };
+      },
+    };
+    const loadAnn = createDefaultLoadAnn({
+      indexRuntimeFactory: async () => assert.fail('legacy schema must fall back before loading ANN'),
+    });
+    t.after(() => loadAnn.close());
+    const service = createMemorySearchService({
+      brainDir: targetDir,
+      embedQuery: async () => [1, 0],
+      loadAnn,
+      logger: { warn() {} },
+    });
+
+    const result = await service.search({
+      sourcePin: source,
+      identity: { operationId: `legacy-schema-${name}`, requesterAgent: 'jerry' },
+      query: 'legacy schema canary',
+      topK: 5,
+      minSimilarity: 0.1,
+      noiseFloor: 0.1,
+    });
+    assert.deepEqual(result.results.map((row) => row.id), ['legacy-schema']);
+    assert.equal(result.results[0].retrievalMode, 'logical-source-scan');
+    assert.equal(result.evidence.sourceHealth, 'degraded');
+    assert.deepEqual(result.evidence.fallback, {
+      route: 'logical-source-scan',
+      reason: 'ann_authority_projection_schema_mismatch',
+      completeness: 'complete',
+    });
+    assert.equal(result.evidence.stageTimings.annLoadMs > 0, true);
+  }
+});
+
+test('unrelated unsafe ANN metadata remains fail closed', async (t) => {
+  const targetDir = await createBrain({
+    nodes: [{ id: 'unsafe-meta', concept: 'unsafe metadata canary', embedding: [1, 0] }],
+  });
+  const encoded = Buffer.from(JSON.stringify({
+    authorityProjectionSchema: CURRENT_ANN_AUTHORITY_PROJECTION_SCHEMA,
+    authorityAttestationKeyId: AUTHORITY_KEY_ID,
+    dimension: 0,
+    count: 1,
+    skipped: 0,
+    builtFromRevision: 3,
+    labels: [{ id: 'unsafe-meta', concept: 'unsafe metadata canary' }],
+  }));
+  const source = {
+    manifest: {
+      formatVersion: 1,
+      currentRevision: 3,
+      baseRevision: 3,
+      activeDelta: { count: 0 },
+      ann: {
+        indexFile: 'memory-ann.3.index',
+        metaFile: 'memory-ann.3.meta.json',
+        builtFromRevision: 3,
+      },
+    },
+    revision: 3,
+    descriptor: {
+      canonicalRoot: await fsp.realpath(targetDir),
+      generation: 'g-unsafe-meta',
+      summary: { nodeCount: 1 },
+    },
+    async summarize() { return { nodes: 1, edges: 0, clusters: 0 }; },
+    async *iterateNodes() {
+      yield { id: 'unsafe-meta', concept: 'unsafe metadata canary', embedding: [1, 0] };
+    },
+    async searchKeyword() { return { results: [] }; },
+    getAnchoredFile(role) {
+      if (role === 'ann-index') return { path: '/dev/fd/302', async assertStable() {} };
+      if (role === 'ann-meta') {
+        return {
+          async readFile() { return encoded; },
+          async assertStable() {},
+        };
+      }
+      return null;
+    },
+    getEvidence(input = {}) {
+      return {
+        sourceHealth: input.sourceHealth || 'healthy',
+        matchOutcome: input.matchOutcome || 'unknown',
+        indexWatermark: { fresh: true, builtFromRevision: 3 },
+      };
+    },
+  };
+  const loadAnn = createDefaultLoadAnn({
+    indexRuntimeFactory: async () => assert.fail('invalid dimension must fail before loading ANN'),
+  });
+  t.after(() => loadAnn.close());
+  const service = createMemorySearchService({
+    brainDir: targetDir,
+    embedQuery: async () => [1, 0],
+    loadAnn,
+    logger: { warn() {} },
+  });
+
+  await assert.rejects(
+    service.search({
+      sourcePin: source,
+      identity: { operationId: 'unsafe-meta', requesterAgent: 'jerry' },
+      query: 'unsafe metadata canary',
+      topK: 5,
+      minSimilarity: 0.1,
+      noiseFloor: 0.1,
+    }),
+    (error) => error?.code === 'source_unavailable'
+      && /dimension is invalid/i.test(error.message)
+      && error.annFallbackReason === undefined,
+  );
+
+  const spoofedService = createMemorySearchService({
+    brainDir: targetDir,
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => {
+      throw Object.assign(new Error('source identity changed'), {
+        code: 'source_changed',
+        annFallbackReason: 'ann_authority_projection_schema_mismatch',
+      });
+    },
+    logger: { warn() {} },
+  });
+  await assert.rejects(
+    spoofedService.search({
+      sourcePin: source,
+      identity: { operationId: 'spoofed-schema-fallback', requesterAgent: 'jerry' },
+      query: 'unsafe metadata canary',
+      topK: 5,
+      minSimilarity: 0.1,
+      noiseFloor: 0.1,
+    }),
+    (error) => error?.code === 'source_changed'
+      && error.annFallbackReason === 'ann_authority_projection_schema_mismatch',
+  );
+});
+
 test('search cancellation is never converted into embedding fallback or source unavailable', async () => {
   const controller = new AbortController();
   let recordsConsumed = 0;
