@@ -6,7 +6,23 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const { auditPinnedBrainProvenance } = require('../../scripts/audit-brain-provenance.cjs');
+const provenanceAudit = require('../../scripts/audit-brain-provenance.cjs');
+const {
+  auditPinnedBrainProvenance,
+  main,
+} = provenanceAudit;
+
+test('first-rollout provenance CLI rejects apply mode before opening a source', async () => {
+  await assert.rejects(
+    () => main(['--apply', 'true', '--requester', 'requester']),
+    /first rollout is dry-run-only; CLI apply is disabled/,
+  );
+});
+
+test('first-rollout provenance module exposes no apply capability', () => {
+  assert.equal(provenanceAudit.applyPinnedBrainProvenanceAudit, undefined);
+  assert.equal(provenanceAudit.APPLY_RECEIPT_SCHEMA, undefined);
+});
 
 test('provenance audit is bounded, includes mandatory risk strata, and writes only requester-owned output', async (t) => {
   const home23Root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-provenance-audit-'));
@@ -71,6 +87,10 @@ test('provenance audit is bounded, includes mandatory risk strata, and writes on
     now: '2026-07-14T12:00:00.000Z',
   });
 
+  assert.equal(result.schema, 'home23.brain-provenance-audit.v1');
+  assert.equal(result.receiptSchema, 'home23.brain-provenance-audit-receipt.v1');
+  assert.equal(result.firstRolloutDryRunOnly, true);
+  assert.equal(result.applyCapability, 'none-first-rollout-dry-run-only');
   assert.equal(result.sourceRevision, 44);
   assert.ok(result.recordsWritten <= 6, `expected bounded output, got ${result.recordsWritten}`);
   assert.ok(result.outputFile.startsWith(`${fs.realpathSync(requesterRoot)}${path.sep}`));
@@ -83,6 +103,7 @@ test('provenance audit is bounded, includes mandatory risk strata, and writes on
   assert.equal(reportOnly.proposedAuthorityClass, 'narrative');
   assert.notEqual(unverifiedCurrent.proposedAuthorityClass, 'verified_current_state');
   assert.ok(unverifiedCurrent.missingEvidence.includes('verifier_evidence'));
+  assert.ok(unverifiedCurrent.reasons.includes('attestation_missing'));
   for (const row of rows) {
     assert.equal(row.schema, 'home23.brain-provenance-audit.v1');
     assert.equal(row.sourceRevision, 44);
@@ -238,4 +259,38 @@ test('provenance audit selects low-activation legacy operational risk instead of
   assert.equal(rows.some((row) => row.nodeId.startsWith('archive-')), false);
   const risk = rows.find((row) => row.nodeId === 'legacy-current-risk');
   assert.ok(risk.missingEvidence.includes('verifier_evidence'));
+});
+
+test('provenance audit completes exact writes when the filesystem returns short writes', async (t) => {
+  const home23Root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-provenance-short-write-'));
+  t.after(() => fs.rmSync(home23Root, { recursive: true, force: true }));
+  const brainRoot = path.join(home23Root, 'instances', 'requester', 'brain');
+  fs.mkdirSync(brainRoot, { recursive: true });
+  const source = {
+    descriptor: { canonicalRoot: brainRoot, generation: 'g1', cutoffRevision: 8 },
+    revision: 8,
+    async *iterateNodes() {
+      yield { id: 'n1', concept: 'current status', tag: 'current-state' };
+    },
+  };
+  const originalWriteSync = fs.writeSync;
+  fs.writeSync = function shortWrite(fd, buffer, offset, length, position) {
+    if (Buffer.isBuffer(buffer)) {
+      return originalWriteSync.call(fs, fd, buffer, offset, Math.min(length, 7), position);
+    }
+    return originalWriteSync.call(fs, fd, String(buffer).slice(0, 7));
+  };
+  t.after(() => { fs.writeSync = originalWriteSync; });
+
+  const receipt = await auditPinnedBrainProvenance({
+    source, home23Root, requesterAgent: 'requester', targetBrainRoot: brainRoot,
+    now: '2026-07-14T12:00:00.000Z',
+  });
+  fs.writeSync = originalWriteSync;
+  const bytes = fs.readFileSync(receipt.outputFile);
+  assert.equal(bytes.toString('utf8').trim().split('\n').length, receipt.recordsWritten);
+  assert.equal(
+    receipt.reportSha256,
+    `sha256:${require('node:crypto').createHash('sha256').update(bytes).digest('hex')}`,
+  );
 });

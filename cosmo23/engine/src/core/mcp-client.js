@@ -1,6 +1,7 @@
 const { spawn } = require('child_process');
 const readline = require('readline');
 const path = require('path');
+const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
 
 function loadFetch() {
   if (typeof globalThis.fetch === 'function') return globalThis.fetch.bind(globalThis);
@@ -72,7 +73,7 @@ class MCPClient {
     try {
       // Spawn process with combined environment
       this.process = spawn(command, args, {
-        env: { ...process.env, ...env },
+        env: unprivilegedChildEnv(process.env, env),
         stdio: ['pipe', 'pipe', 'inherit'] // stdin, stdout, stderr
       });
       

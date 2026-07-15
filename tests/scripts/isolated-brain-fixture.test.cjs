@@ -1072,7 +1072,7 @@ test('isolated launcher exposes distinct own, sibling, completed-research, and M
     const search = TERMINAL.has(initialSearch.state)
       ? await client.inspectOperation(initialSearch.operationId, 'result')
       : await awaitTerminal(client, initialSearch);
-    assert.equal(search.sourceEvidence?.sourceHealth, 'healthy', JSON.stringify(search));
+    assert.equal(search.sourceEvidence?.sourceHealth, 'degraded', JSON.stringify(search));
     assert.equal(search.sourceEvidence.selectedBrain, entry.brainId);
     assert.ok(search.result.results.some(
       (result) => String(result.concept).includes(entry.phrase),
@@ -1110,7 +1110,7 @@ test('isolated launcher exposes distinct own, sibling, completed-research, and M
   const mcpBody = JSON.parse(dataLine.slice(6));
   assert.equal(proxied.status, 200, JSON.stringify(mcpBody));
   const mcpResult = JSON.parse(mcpBody.result.content[0].text);
-  assert.equal(mcpResult.evidence.sourceHealth, 'healthy');
+  assert.equal(mcpResult.evidence.sourceHealth, 'degraded');
   assert.equal(mcpResult.evidence.identity.brainId, own.id);
   assert.ok(mcpResult.results.some((result) => String(result.id) === '1'));
 

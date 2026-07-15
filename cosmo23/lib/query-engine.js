@@ -38,12 +38,15 @@ const { boundedJsonStringify } = require('./bounded-json');
 const {
   boundedLimits,
   projectPinnedQuery,
-  summarizeNodeAuthorities,
 } = require('./pinned-query-projection');
 const { QUERY_OPERATION_LIMITS } = require('./brain-operation-limits');
 const { queryModePolicy } = require('./query-mode-policy');
 const { assessQueryAnswer } = require('./query-answer-quality');
 const { createProviderPromptBudget } = require('./provider-prompt-budget');
+const {
+  summarizeRetrievalAuthority,
+  attestRetrievalAuthoritySummary,
+} = require('../../shared/memory-source/contracts.cjs');
 
 const CLUSTER_SNAPSHOT_DEFAULT_TTL = Number.parseInt(
   process.env.COSMO_CLUSTER_SNAPSHOT_TTL || '4000',
@@ -1817,15 +1820,19 @@ STYLE:
       promptBytes,
       promptTokens,
     });
+    const promptAuthoritySummary = summarizeRetrievalAuthority(promptAuthorities);
     const sourceEvidence = projection.sourceEvidence
       ? {
         ...projection.sourceEvidence,
         returnedTotals: { nodes: promptNodes.length, edges: promptEdges.length },
         droppedForPromptBudget,
         promptReduced,
-        authoritySummary: summarizeNodeAuthorities(promptAuthorities),
+        authoritySummary: promptAuthoritySummary,
       }
       : null;
+    if (sourceEvidence) {
+      attestRetrievalAuthoritySummary(sourceEvidence, promptAuthorities);
+    }
     const maxResultBytes = selectedLimits.maxResultBytes;
 
     this._emitOperationEvent({

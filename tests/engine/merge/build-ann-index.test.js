@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import { promises as fsp } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,6 +15,17 @@ const {
 } = require('../../../shared/memory-source');
 const { build } = require('../../../engine/src/merge/build-ann-index');
 const { createDefaultLoadAnn } = require('../../../engine/src/dashboard/memory-search');
+const { attestMemoryAuthority } = require('../../../shared/memory-authority-attestation.cjs');
+
+const CURRENT_ANN_AUTHORITY_PROJECTION_SCHEMA = 'home23.ann-authority-projection.v1';
+const AUTHORITY_KEY = '8'.repeat(64);
+const AUTHORITY_KEY_ID = createHash('sha256').update(AUTHORITY_KEY).digest('hex').slice(0, 16);
+const priorAuthorityKey = process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = AUTHORITY_KEY;
+test.after(() => {
+  if (priorAuthorityKey === undefined) delete process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+  else process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = priorAuthorityKey;
+});
 
 async function tempDir(prefix) {
   return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -114,12 +126,35 @@ test('builder streams one pinned logical source and advances ANN watermark', asy
   assert.equal(ephemeralCalls, 1);
   assert.equal(result.total, 2);
   assert.equal(result.advanced.advanced, true);
+  assert.deepEqual(Object.keys(result.stageDurations).sort(), [
+    'cleanupMs', 'indexWriteMs', 'metadataWriteMs', 'publishMs', 'reuseValidationMs',
+    'sourceOpenMs', 'sourceScanMs', 'totalMs',
+  ]);
+  assert.ok(Object.values(result.stageDurations)
+    .every((value) => Number.isSafeInteger(value) && value >= 0));
+  assert.deepEqual(result.stageStatuses, {
+    cleanup: 'completed',
+    sourceOpen: 'completed',
+    sourceScan: 'completed',
+    indexWrite: 'completed',
+    metadataWrite: 'completed',
+    publish: 'completed',
+    reuseValidation: 'skipped',
+    total: 'completed',
+  });
+  assert.deepEqual(result.semanticCoverage, {
+    status: 'complete', sourceNodes: 3, indexed: 2, skipped: 1,
+    usable: true, vectorCoverageBps: 6666, minimumVectorCoverageBps: 5000,
+  });
   assert.equal(hnswRecord.dimension, 2);
   assert.equal(hnswRecord.points.length, 2);
   const meta = JSON.parse(await fsp.readFile(path.join(dir, `memory-ann.${result.builtFromRevision}.meta.json`), 'utf8'));
   assert.deepEqual(meta.labels.map((label) => label.id).sort(), ['base', 'delta', 'wrong-dim']);
   assert.equal(meta.count, 2);
   assert.equal(meta.skipped, 1);
+  assert.equal(meta.authorityProjectionSchema, CURRENT_ANN_AUTHORITY_PROJECTION_SCHEMA);
+  assert.equal(meta.authorityAttestationKeyId, AUTHORITY_KEY_ID);
+  assert.notEqual(meta.authorityAttestationKeyId, AUTHORITY_KEY);
   assert.equal(meta.builtFromRevision, result.builtFromRevision);
   assert.equal(meta.generation, result.generation);
   assert.match(
@@ -358,6 +393,176 @@ test('builder reuses an ANN already pinned fresh at the current revision', async
   assert.equal(casCalls, 0);
 });
 
+test('builder refuses fresh reuse without an exact current authority projection schema', async () => {
+  const dir = await createBrain();
+  const home23Root = await tempDir('home23-ann-builder-legacy-authority-reuse-home-');
+  const first = await build(dir, {
+    home23Root,
+    requesterAgent: 'jerry',
+    resolveTargetContext: () => canonicalResolve(dir),
+    hnswlib: fakeHnsw({}),
+  });
+  const currentMeta = JSON.parse(await fsp.readFile(first.metaPath, 'utf8'));
+  for (const authorityProjectionSchema of [undefined, 'home23.ann-authority-projection.v0']) {
+    const meta = { ...currentMeta, authorityProjectionSchema };
+    if (authorityProjectionSchema === undefined) delete meta.authorityProjectionSchema;
+    await fsp.writeFile(first.metaPath, JSON.stringify(meta));
+
+    await assert.rejects(() => build(dir, {
+      home23Root,
+      requesterAgent: 'jerry',
+      resolveTargetContext: () => canonicalResolve(dir),
+      hnswlib: fakeHnsw({}),
+    }), (error) => error?.code === 'source_unavailable'
+      && /authority projection schema/i.test(error.message));
+  }
+});
+
+test('builder refuses fresh ANN reuse after the authority verifier key rotates', async () => {
+  const dir = await createBrain();
+  const home23Root = await tempDir('home23-ann-builder-authority-key-reuse-home-');
+  await build(dir, {
+    home23Root,
+    requesterAgent: 'jerry',
+    resolveTargetContext: () => canonicalResolve(dir),
+    hnswlib: fakeHnsw({}),
+    authorityKey: AUTHORITY_KEY,
+  });
+
+  await assert.rejects(() => build(dir, {
+    home23Root,
+    requesterAgent: 'jerry',
+    resolveTargetContext: () => canonicalResolve(dir),
+    hnswlib: fakeHnsw({}),
+    authorityKey: '9'.repeat(64),
+  }), (error) => error?.code === 'source_unavailable'
+    && /authority verifier context/i.test(error.message));
+});
+
+test('builder refuses fresh ANN reuse across embedding provider or model identity', async () => {
+  const dir = await createBrain();
+  const home23Root = await tempDir('home23-ann-builder-provider-reuse-home-');
+  await build(dir, {
+    home23Root,
+    requesterAgent: 'jerry',
+    resolveTargetContext: () => canonicalResolve(dir),
+    hnswlib: fakeHnsw({}),
+    provider: 'provider-a',
+    model: 'model-a',
+  });
+  await assert.rejects(() => build(dir, {
+    home23Root,
+    requesterAgent: 'jerry',
+    resolveTargetContext: () => canonicalResolve(dir),
+    hnswlib: fakeHnsw({}),
+    provider: 'provider-b',
+    model: 'model-b',
+  }), (error) => error?.code === 'source_unavailable'
+    && /embedding identity/i.test(error.message));
+});
+
+test('builder rejects zero or insufficient usable-vector coverage before publication', async (t) => {
+  for (const [name, nodes] of [
+    ['zero', [{ id: 'a', concept: 'a' }]],
+    ['insufficient', [
+      { id: 'a', concept: 'a', embedding: [1, 0] },
+      { id: 'b', concept: 'b' },
+      { id: 'c', concept: 'c' },
+    ]],
+  ]) {
+    const dir = await tempDir(`home23-ann-builder-${name}-coverage-brain-`);
+    const home23Root = await tempDir(`home23-ann-builder-${name}-coverage-home-`);
+    t.after(() => Promise.all([
+      fsp.rm(dir, { recursive: true, force: true }),
+      fsp.rm(home23Root, { recursive: true, force: true }),
+    ]));
+    let publications = 0;
+    await assert.rejects(() => build(dir, {
+      home23Root,
+      requesterAgent: 'jerry',
+      resolveTargetContext: () => canonicalResolve(dir),
+      hnswlib: fakeHnsw({}),
+      withEphemeralMemorySource: async (_options, callback) => callback({
+        revision: 1,
+        manifest: {
+          formatVersion: 1,
+          generation: `${name}-coverage-generation`,
+          summary: { nodeCount: nodes.length, edgeCount: 0, clusterCount: 1 },
+        },
+        async *iterateNodes() { for (const node of nodes) yield node; },
+      }, { lockRoot: path.join(home23Root, 'runtime', 'brain-source-locks') }),
+      advanceAnnBuiltFromRevision: async () => {
+        publications += 1;
+        return { advanced: true };
+      },
+    }), (error) => error?.code === 'invalid_memory_source'
+      && /usable-vector coverage/i.test(error.message));
+    assert.equal(publications, 0);
+    assert.deepEqual(await fsp.readdir(dir), []);
+  }
+});
+
+test('default CLI target rejects a symlinked own-brain root that escapes Home23', async (t) => {
+  const madeHome = await tempDir('home23-ann-builder-confined-home-');
+  const madeExternal = await tempDir('home23-ann-builder-confined-external-');
+  const home23Root = await fsp.realpath(madeHome);
+  const externalBrain = await fsp.realpath(madeExternal);
+  t.after(() => Promise.all([
+    fsp.rm(home23Root, { recursive: true, force: true }),
+    fsp.rm(externalBrain, { recursive: true, force: true }),
+  ]));
+  const agentRoot = path.join(home23Root, 'instances', 'jerry');
+  await fsp.mkdir(agentRoot, { recursive: true });
+  await rewriteMemoryBase(externalBrain, {
+    nodes: [{ id: 'outside', concept: 'outside', embedding: [1, 0] }],
+    edges: [],
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+  }, { lockRoot: path.join(home23Root, 'runtime', 'brain-source-locks') });
+  const lexicalBrain = path.join(agentRoot, 'brain');
+  await fsp.symlink(externalBrain, lexicalBrain);
+
+  await assert.rejects(() => build(lexicalBrain, {
+    hnswlib: fakeHnsw({}),
+  }), (error) => error?.code === 'invalid_memory_source'
+    && /canonical nonsymlink own-brain/i.test(error.message));
+  assert.equal(
+    (await fsp.readdir(externalBrain)).some((name) => name.startsWith('memory-ann.')),
+    false,
+  );
+});
+
+test('builder total timing includes operation cleanup after build phases', async (t) => {
+  const dir = await tempDir('home23-ann-builder-cleanup-timing-brain-');
+  const home23Root = await tempDir('home23-ann-builder-cleanup-timing-home-');
+  t.after(() => Promise.all([
+    fsp.rm(dir, { recursive: true, force: true }),
+    fsp.rm(home23Root, { recursive: true, force: true }),
+  ]));
+  const result = await build(dir, {
+    home23Root,
+    requesterAgent: 'jerry',
+    resolveTargetContext: () => canonicalResolve(dir),
+    hnswlib: fakeHnsw({}),
+    withEphemeralMemorySource: async (_options, callback) => {
+      const value = await callback({
+        revision: 1,
+        manifest: {
+          formatVersion: 1,
+          generation: 'cleanup-timing-generation',
+          summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+        },
+        async *iterateNodes() { yield { id: 'a', concept: 'a', embedding: [1, 0] }; },
+      }, { lockRoot: path.join(home23Root, 'runtime', 'brain-source-locks') });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return value;
+    },
+    advanceAnnBuiltFromRevision: async () => ({ advanced: true }),
+  });
+  assert.ok(result.stageDurations.cleanupMs >= 15, JSON.stringify(result.stageDurations));
+  assert.ok(result.stageDurations.totalMs >= result.stageDurations.cleanupMs);
+  assert.equal(result.stageStatuses.cleanup, 'completed');
+});
+
 test('builder refuses fresh reuse when the actual index is corrupt', async () => {
   const dir = await createBrain();
   const home23Root = await tempDir('home23-ann-builder-corrupt-reuse-');
@@ -414,6 +619,43 @@ test('builder metadata retains bounded labels for skipped nodes', async () => {
   assert.equal(meta.labelCount, 2);
   assert.equal(meta.sourceNodeCount, 2);
   assert.deepEqual(meta.labels.map((label) => label.id), ['vector', 'skipped']);
+});
+
+test('builder metadata preserves bounded path-redacted source chains and qualified evidence truth', async (t) => {
+  const authorityKey = '8'.repeat(64);
+  const priorAuthorityKey = process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+  process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = authorityKey;
+  t.after(() => {
+    if (priorAuthorityKey === undefined) delete process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+    else process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = priorAuthorityKey;
+  });
+  const dir = await tempDir('home23-ann-builder-source-chain-brain-');
+  const runtime = await tempDir('home23-ann-builder-source-chain-runtime-');
+  const lockRoot = path.join(runtime, 'locks');
+  await rewriteMemoryBase(dir, {
+    nodes: [attestMemoryAuthority({
+      id: 'verified', concept: 'verified current source', embedding: [1, 0],
+      created: '2026-07-14T12:00:00.000Z',
+      provenance: {
+        schema: 'home23.node-provenance.v1',
+        authorityClass: 'verified_current_state', operationalAuthority: true,
+        sourceRefs: ['/Volumes/PrivateBrain/current/source.json'],
+        evidenceRefs: ['verifier:live-source'],
+      },
+    }, authorityKey)],
+    edges: [],
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+  }, { lockRoot });
+  const result = await build(dir, {
+    home23Root: runtime, requesterAgent: 'jerry', resolveTargetContext: () => canonicalResolve(dir),
+    hnswlib: fakeHnsw({}),
+  });
+  const meta = JSON.parse(await fsp.readFile(result.metaPath, 'utf8'));
+  const label = meta.labels[0];
+  assert.equal(label.evidencePresent, true);
+  assert.equal(label.sourceChain.length, 2);
+  assert.ok(label.sourceChain.every(entry => !entry.ref.includes('/Volumes/')));
+  assert.ok(label.sourceChain.every(entry => entry.ref.length <= 240));
 });
 
 test('concurrent builders use unique temps and only one publishes a revision', async (t) => {
@@ -534,7 +776,7 @@ test('builder publishes a bridgeable index after a same-generation append during
   assert.equal(manifest.ann.indexFile, `memory-ann.${pinned.currentRevision}.index`);
   assert.equal(manifest.ann.metaFile, `memory-ann.${pinned.currentRevision}.meta.json`);
   assert.equal(manifest.ann.builtFromRevision, pinned.currentRevision);
-  assert.equal(result.coverage, 'overlay-covered');
+  assert.equal(result.coverage, 'rebuilt-overlay-covered');
   assert.equal(result.currentRevision, pinned.currentRevision + 1);
   assert.equal(result.bridgeableGap, 1);
   assert.equal(result.semanticCoverage.indexed + result.semanticCoverage.skipped, pinned.summary.nodeCount);

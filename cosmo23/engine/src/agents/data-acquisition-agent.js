@@ -32,6 +32,66 @@ const {
 } = require('../core/research-contract');
 const path = require('path');
 const fs = require('fs').promises;
+const { execFileSync } = require('child_process');
+const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
+
+// Inputs cross this boundary only through argv and JSON files. Record keys are
+// quoted as SQLite identifiers at runtime; they must never become Python source.
+const SQLITE_INGEST_SCRIPT = String.raw`
+import json
+import sqlite3
+import sys
+
+data_path, schema_path, db_path, table_name = sys.argv[1:5]
+
+def quote_identifier(value):
+    if not isinstance(value, str) or "\x00" in value:
+        raise ValueError("invalid SQLite identifier")
+    return '"' + value.replace('"', '""') + '"'
+
+with open(data_path, encoding="utf-8") as source:
+    records = json.load(source)
+with open(schema_path, encoding="utf-8") as source:
+    keys = json.load(source)
+
+if not isinstance(records, list) or not isinstance(keys, list):
+    raise ValueError("invalid ingestion input")
+
+table_sql = quote_identifier(table_name)
+column_sql = [quote_identifier(key) for key in keys]
+synthetic_id = [] if any(key.casefold() == "id" for key in keys) else [
+    'id INTEGER PRIMARY KEY AUTOINCREMENT'
+]
+definitions = synthetic_id + [column + ' TEXT' for column in column_sql]
+placeholders = ', '.join('?' for _ in keys)
+
+conn = sqlite3.connect(db_path)
+try:
+    cur = conn.cursor()
+    cur.execute('DROP TABLE IF EXISTS ' + table_sql)
+    cur.execute('CREATE TABLE ' + table_sql + ' (' + ', '.join(definitions) + ')')
+    inserted = 0
+    insert_sql = (
+        'INSERT INTO ' + table_sql + ' (' + ', '.join(column_sql) +
+        ') VALUES (' + placeholders + ')'
+    )
+    for record in records:
+        if not isinstance(record, dict):
+            raise ValueError("invalid ingestion record")
+        values = [
+            json.dumps(record.get(key))
+            if isinstance(record.get(key), (dict, list))
+            else str(record[key]) if record.get(key) is not None else None
+            for key in keys
+        ]
+        cur.execute(insert_sql, values)
+        inserted += 1
+    conn.commit()
+finally:
+    conn.close()
+
+print(inserted)
+`;
 
 class DataAcquisitionAgent extends ExecutionBaseAgent {
   constructor(mission, config, logger, eventEmitter = null) {
@@ -1138,8 +1198,6 @@ Start simple: curl → wget → cheerio/node → beautiful-soup/python → playw
   async _consolidateToDatabase() {
     if (!this._outputDir) return null;
 
-    const { execSync } = require('child_process');
-
     // Find all JSON data files (exclude operational files)
     const excludes = new Set(['manifest.json', 'sources.json', '.DS_Store']);
     const jsonFiles = [];
@@ -1216,10 +1274,6 @@ Start simple: curl → wget → cheerio/node → beautiful-soup/python → playw
     const dbPath = path.join(this._outputDir, 'acquired_data.sqlite');
     const tableName = 'records';
 
-    // Build SQL via sqlite3 CLI (no native bindings needed)
-    const colsDef = allKeys.map(k => `"${k}" TEXT`).join(', ');
-    const createSQL = `CREATE TABLE IF NOT EXISTS "${tableName}" (id INTEGER PRIMARY KEY AUTOINCREMENT, ${colsDef});`;
-
     // Write data as a temp JSON file for Python to ingest
     const tempDataPath = path.join(this._outputDir, '_ingest_temp.json');
     const tempSchemaPath = path.join(this._outputDir, '_ingest_schema.json');
@@ -1227,29 +1281,19 @@ Start simple: curl → wget → cheerio/node → beautiful-soup/python → playw
     await fs.writeFile(tempDataPath, JSON.stringify(allRecords), 'utf8');
     await fs.writeFile(tempSchemaPath, JSON.stringify(allKeys), 'utf8');
 
-    // Python one-liner to do the actual INSERT (sqlite3 is stdlib)
-    const pyScript = `
-import json, sqlite3, sys
-with open("${tempDataPath}") as f: records = json.load(f)
-with open("${tempSchemaPath}") as f: keys = json.load(f)
-conn = sqlite3.connect("${dbPath}")
-cur = conn.cursor()
-cur.execute('DROP TABLE IF EXISTS "${tableName}"')
-cur.execute('CREATE TABLE "${tableName}" (id INTEGER PRIMARY KEY AUTOINCREMENT, ${allKeys.map(k => `"${k}" TEXT`).join(", ")})')
-inserted = 0
-for r in records:
-    vals = [json.dumps(r.get(k)) if isinstance(r.get(k), (dict, list)) else str(r[k]) if r.get(k) is not None else None for k in keys]
-    cur.execute('INSERT INTO "${tableName}" (${allKeys.map(k => `"${k}"`).join(", ")}) VALUES (${allKeys.map(() => '?').join(', ')})', vals)
-    inserted += 1
-conn.commit()
-conn.close()
-print(inserted)
-`;
-
     try {
-      const result = execSync(`python3 -c ${JSON.stringify(pyScript)}`, {
+      const result = execFileSync('python3', [
+        '-c',
+        SQLITE_INGEST_SCRIPT,
+        tempDataPath,
+        tempSchemaPath,
+        dbPath,
+        tableName,
+      ], {
         timeout: 30000,
-        encoding: 'utf8'
+        encoding: 'utf8',
+        env: unprivilegedChildEnv(),
+        maxBuffer: 1024 * 1024,
       }).trim();
 
       const inserted = parseInt(result) || 0;

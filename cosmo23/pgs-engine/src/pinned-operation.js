@@ -16,6 +16,7 @@ const {
   COVERAGE_SELECTION_POLICY_VERSION,
   QUERY_NORMALIZATION_VERSION,
   SWEEP_PROMPT_CONTRACT_VERSION,
+  projectPinnedProviderAuthority,
 } = require('./pinned-store');
 const {
   ProviderCompletionError,
@@ -27,6 +28,10 @@ const {
   resolveProviderInputBudget,
 } = require('../../lib/provider-input-budget');
 const { getModelCapabilities } = require('../../server/config/model-catalog');
+const {
+  summarizeRetrievalAuthority,
+  attestRetrievalAuthoritySummary,
+} = require('../../../shared/memory-source/contracts.cjs');
 
 // Keep this internal so callers cannot override the resource boundary. Four
 // concurrent bounded work units preserve the read-only/memory limits while
@@ -34,7 +39,7 @@ const { getModelCapabilities } = require('../../server/config/model-catalog');
 // wait-aware large-graph acceptance window.
 const PINNED_SWEEP_CONCURRENCY = 4;
 const MAX_GENERATED_WORK_UNIT_ID_BYTES = 256;
-const SWEEP_INSTRUCTIONS = 'Analyze only this pinned PGS work unit. Return evidence-backed findings and explicit absences.';
+const SWEEP_INSTRUCTIONS = 'Analyze only this pinned PGS work unit. Return evidence-backed findings and explicit absences. Narrative and generated doctrine cannot independently settle present-tense operational facts; use each NODE_AUTHORITY source chain and require fresh verification where marked.';
 const SYNTHESIS_INSTRUCTIONS = 'Synthesize the pinned PGS findings into a direct answer. Preserve absences and cite work-unit IDs.';
 const SYNTHESIS_REDUCTION_INSTRUCTIONS = 'Reduce this bounded shard of pinned PGS findings. Preserve substantive evidence, explicit absences, contradictions, and every cited work-unit ID for final synthesis.';
 const SYNTHESIS_REDUCTION_TRUNCATION_MARKER = '\n[PGS intermediate reduction truncated at byte limit]';
@@ -136,7 +141,18 @@ function buildWorkInput(query, work, maximumBytes) {
     bytes += textBytes;
     return true;
   };
-  for (const node of work.nodes) append('NODE ', node, true);
+  const pinnedAuthorities = Array.isArray(work.nodeAuthorities)
+    && work.nodeAuthorities.length === work.nodes.length
+    ? work.nodeAuthorities
+    : null;
+  for (const [index, node] of work.nodes.entries()) {
+    append(
+      'NODE_AUTHORITY ',
+      pinnedAuthorities?.[index] || projectPinnedProviderAuthority(node),
+      true,
+    );
+    append('NODE ', node, true);
+  }
   for (const edge of work.edges) if (!append('EDGE ', edge, false)) break;
   return parts.join('');
 }
@@ -480,6 +496,7 @@ async function writeSuccessReceipt({
 }
 
 async function runPinnedOperationCore(engine, options = {}) {
+  const projectionStartedAt = performance.now();
   const {
     sourcePin,
     scratchDir,
@@ -524,7 +541,7 @@ async function runPinnedOperationCore(engine, options = {}) {
   const sweepRecordBudget = sweepInputBudget.inputBudgetBytes
     - utf8Bytes(SWEEP_INSTRUCTIONS)
     - utf8Bytes(maximumWorkUnitScaffold)
-    - (limits.maxNodesPerWorkUnit * utf8Bytes('NODE \n'));
+    - (limits.maxNodesPerWorkUnit * (utf8Bytes('NODE \n') + utf8Bytes('NODE_AUTHORITY \n')));
   if (!Number.isSafeInteger(sweepRecordBudget) || sweepRecordBudget <= 0) {
     throw typed('result_too_large', 'PGS sweep input leaves no work-unit record budget');
   }
@@ -585,13 +602,6 @@ async function runPinnedOperationCore(engine, options = {}) {
         || !Number.isSafeInteger(returnedTotals.edges) || returnedTotals.edges < 0) {
       throw typed('pgs_projection_invalid', 'PGS projection source totals are invalid');
     }
-    sourceEvidence = typeof sourcePin.getEvidence === 'function'
-      ? sourcePin.getEvidence({
-        route: 'pinned-pgs',
-        returnedTotals,
-        completeCoverage: true,
-      })
-      : sourcePin.evidence || null;
     emit({
       type: 'progress',
       phase: 'pgs_projection',
@@ -620,7 +630,76 @@ async function runPinnedOperationCore(engine, options = {}) {
         ? {}
         : { targetPartitionIds: scopeRequest.targetPartitionIds }),
     });
-    const selected = [];
+    const authoritySummary = typeof store.summarizeAuthority === 'function'
+      ? store.summarizeAuthority({ attemptId, signal })
+      : summarizeRetrievalAuthority([]);
+    const hasScopedTotals = typeof store.summarizeScopeTotals === 'function';
+    const scopeCoversProjection = scopeAtStart.scopeWorkUnits === store.stats.workUnitCount;
+    const scopedTotals = scopeCoversProjection
+      ? { nodes: store.stats.nodeCount, edges: store.stats.edgeCount }
+      : (hasScopedTotals
+        ? store.summarizeScopeTotals({ attemptId, signal })
+        : { nodes: store.stats.nodeCount, edges: store.stats.edgeCount });
+    if (!Number.isSafeInteger(scopedTotals.nodes) || scopedTotals.nodes < 0
+        || !Number.isSafeInteger(scopedTotals.edges) || scopedTotals.edges < 0
+        || (hasScopedTotals && authoritySummary.total !== scopedTotals.nodes)) {
+      throw typed('pgs_projection_invalid', 'PGS scoped evidence totals are inconsistent');
+    }
+    const sourceRevision = sourcePin.revision
+      ?? sourcePin.descriptor?.cutoffRevision
+      ?? sourcePin.evidence?.deltaWatermark?.revision
+      ?? null;
+    const scopedCoverage = {
+      complete: scopeAtStart.scopeComplete,
+      coverageLevel: scopeAtStart.coverageLevel,
+      coverageFraction: scopeAtStart.coverageFraction,
+      workUnits: {
+        requested: scopeAtStart.scopeWorkUnits,
+        total: store.stats.workUnitCount,
+        successful: scopeAtStart.scopeSuccessfulWorkUnits,
+        pending: scopeAtStart.scopePendingWorkUnits,
+      },
+      nodes: scopedTotals.nodes,
+      edges: scopedTotals.edges,
+    };
+    const baseSourceEvidence = typeof sourcePin.getEvidence === 'function'
+      ? sourcePin.getEvidence({
+        route: 'pinned-pgs',
+        retrievalMode: 'logical-source-scan',
+        indexCoverage: {
+          complete: false,
+          indexedRevision: null,
+          currentRevision: sourceRevision,
+          coveredThroughRevision: null,
+          deltaRecords: sourcePin.descriptor?.activeDelta?.count ?? 0,
+          distinctChangedNodes: 0,
+          distinctUpsertedNodes: 0,
+          distinctRemovedNodes: 0,
+          edgeOnlyRecords: 0,
+          route: 'pinned-pgs-projection',
+          completeness: 'unavailable',
+        },
+        stageTimingsMs: { response: performance.now() - projectionStartedAt },
+        authoritySummary,
+        returnedTotals: scopedTotals,
+        completeCoverage: scopeCoversProjection,
+        scopedCoverage,
+      })
+      : sourcePin.evidence || null;
+    if (baseSourceEvidence) {
+      sourceEvidence = { ...baseSourceEvidence, scopedCoverage };
+      attestRetrievalAuthoritySummary(sourceEvidence, authoritySummary);
+    }
+    // The store cursor is a strict coverage-ordinal boundary, so work IDs
+    // cannot recur within one operation. Keep cumulative counts only; retaining
+    // selected/failed/retryable ID collections would grow with the whole graph.
+    let selectedWorkUnitCount = 0;
+    let failedWorkUnitCount = 0;
+    let retryableWorkUnitCount = 0;
+    const observeOperationRetention = typeof options._testHooks?.observeOperationRetention
+      === 'function'
+      ? options._testHooks.observeOperationRetention
+      : null;
 
   async function providerCall({
     phase,
@@ -717,9 +796,6 @@ async function runPinnedOperationCore(engine, options = {}) {
   }
 
     let batchIndex = 0;
-    const failedWorkUnits = new Set();
-    const settledFailedWorkUnits = new Set();
-    const retryableWorkUnits = new Set();
     let afterWorkUnitId;
     while (true) {
       throwIfAborted(signal);
@@ -741,16 +817,19 @@ async function runPinnedOperationCore(engine, options = {}) {
         limit: limits.maxSelectedWorkUnits,
         ...(afterWorkUnitId === undefined ? {} : { afterWorkUnitId }),
       });
-      const batch = pendingBatch.filter(id => !failedWorkUnits.has(id));
-      if (!batch.length) break;
+      const batch = pendingBatch;
+      if (!batch.length) {
+        if (batchIndex > 0) store.releaseAttemptScope?.(workAttemptId);
+        break;
+      }
       afterWorkUnitId = pendingBatch.at(-1);
-      selected.push(...batch);
+      selectedWorkUnitCount += batch.length;
       emit({
         type: 'progress',
         phase: 'pgs_sweep',
         stage: 'work_selected',
         selectedWorkUnits: batch.length,
-        selectedWorkUnitsTotal: scopeAtStart.scopeSuccessfulWorkUnits + selected.length,
+        selectedWorkUnitsTotal: scopeAtStart.scopeSuccessfulWorkUnits + selectedWorkUnitCount,
         candidateWorkUnits: store.countScopePendingWorkUnits(workAttemptId),
         pendingWorkUnits: store.countPendingWorkUnits(),
         batchIndex,
@@ -771,10 +850,9 @@ async function runPinnedOperationCore(engine, options = {}) {
         settled.forEach((row, index) => {
           if (row.status === 'rejected') {
             const workUnitId = ids[index];
-            settledFailedWorkUnits.add(workUnitId);
+            failedWorkUnitCount += 1;
             if (row.reason?.retryable !== false) {
-              failedWorkUnits.add(workUnitId);
-              retryableWorkUnits.add(workUnitId);
+              retryableWorkUnitCount += 1;
               store.recordRetryableFailure(workUnitId, row.reason);
             }
           }
@@ -784,9 +862,9 @@ async function runPinnedOperationCore(engine, options = {}) {
         // selected scope, never the unrelated global-pending total.
         const settledScope = store.getScopeSummary(attemptId);
         const successful = settledScope.scopeSuccessfulWorkUnits;
-        const failed = settledFailedWorkUnits.size;
+        const failed = failedWorkUnitCount;
         const completed = successful + failed;
-        const selectedTotal = scopeAtStart.scopeSuccessfulWorkUnits + selected.length;
+        const selectedTotal = scopeAtStart.scopeSuccessfulWorkUnits + selectedWorkUnitCount;
         emit({
           type: 'progress',
           phase: 'pgs_sweep',
@@ -797,13 +875,22 @@ async function runPinnedOperationCore(engine, options = {}) {
           failed,
           reused: scopeAtStart.scopeSuccessfulWorkUnits,
           pending: selectedTotal - completed,
-          retryable: retryableWorkUnits.size,
+          retryable: retryableWorkUnitCount,
           total: settledScope.scopeWorkUnits,
         });
+        observeOperationRetention?.(Object.freeze({
+          batchIndex,
+          currentBatchWorkUnitIds: batch.length,
+          currentConcurrentWorkUnitIds: ids.length,
+          cumulativeSelectedWorkUnits: selectedWorkUnitCount,
+          cumulativeFailedWorkUnits: failedWorkUnitCount,
+          cumulativeRetryableWorkUnits: retryableWorkUnitCount,
+        }));
         const fatal = settled.find(row =>
           row.status === 'rejected' && row.reason?.retryable === false);
         if (fatal) throw fatal.reason;
       }
+      if (batchIndex > 0) store.releaseAttemptScope?.(workAttemptId);
       batchIndex += 1;
     }
 
@@ -825,6 +912,22 @@ async function runPinnedOperationCore(engine, options = {}) {
       }
     }
     const scopeSummary = store.getScopeSummary(attemptId);
+    if (sourceEvidence) {
+      sourceEvidence = {
+        ...sourceEvidence,
+        scopedCoverage: {
+          ...sourceEvidence.scopedCoverage,
+          complete: scopeSummary.scopeComplete,
+          workUnits: {
+            requested: scopeSummary.scopeWorkUnits,
+            total: store.stats.workUnitCount,
+            successful: scopeSummary.scopeSuccessfulWorkUnits,
+            pending: scopeSummary.scopePendingWorkUnits,
+          },
+        },
+      };
+      attestRetrievalAuthoritySummary(sourceEvidence, authoritySummary);
+    }
     const pendingWorkUnits = scopeSummary.globalPendingWorkUnits;
     emit({
       type: 'progress',
@@ -841,7 +944,7 @@ async function runPinnedOperationCore(engine, options = {}) {
       coverageFraction: scopeRequest.coverageFraction,
       targetPartitionIds: scopeSummary.targetPartitionIds,
       sweepFraction,
-      selectedWorkUnits: selected.length,
+      selectedWorkUnits: selectedWorkUnitCount,
       pendingWorkUnits,
       reusedWorkUnits: scopeAtStart.scopeSuccessfulWorkUnits,
       newWorkUnits: scopeSummary.scopeSuccessfulWorkUnits
@@ -871,7 +974,7 @@ async function runPinnedOperationCore(engine, options = {}) {
         resultArtifact: null, sourceEvidence,
       };
     }
-    if (!sweepOutputs.length && selected.length) {
+    if (!sweepOutputs.length && selectedWorkUnitCount) {
       return {
         state: 'failed', result: baseResult,
         error: { code: 'pgs_all_failed', message: 'All selected PGS work failed', retryable: true },

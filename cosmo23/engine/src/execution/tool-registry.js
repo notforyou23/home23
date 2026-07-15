@@ -15,10 +15,18 @@
 
 'use strict';
 
-const { execSync } = require('child_process');
+const { execSync: rawExecSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { normalizeTool } = require('./schemas');
+const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
+
+function execSync(command, options = {}) {
+  return rawExecSync(command, {
+    ...options,
+    env: unprivilegedChildEnv(process.env, options.env || {}),
+  });
+}
 
 // Known tools to scan for at startup
 const KNOWN_TOOLS = [

@@ -5,12 +5,20 @@
 
 const fs = require('fs').promises;
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync: rawExecSync } = require('child_process');
 const mammoth = require('mammoth');
 const docx = require('docx');
 const { Document, Packer, Paragraph, TextRun, AlignmentType, HeadingLevel, Table, TableRow, TableCell, WidthType } = docx;
 const XLSX = require('xlsx');
 const MsgReader = require('msgreader').default || require('msgreader');
+const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
+
+function execSync(command, options = {}) {
+  return rawExecSync(command, {
+    ...options,
+    env: unprivilegedChildEnv(process.env, options.env || {}),
+  });
+}
 
 // ============================================================================
 // TOOL DEFINITIONS (OpenAI/Anthropic Format)

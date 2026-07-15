@@ -1,4 +1,5 @@
 const path = require('path');
+const { unprivilegedChildEnv } = require('../../../shared/child-process-env.cjs');
 
 /**
  * LatentProjector
@@ -238,7 +239,8 @@ class LatentProjector {
       // Run training script in background
       const training = spawn('node', [scriptPath], {
         detached: false,
-        stdio: 'pipe'
+        stdio: 'pipe',
+        env: unprivilegedChildEnv(),
       });
 
       // Capture output for logging

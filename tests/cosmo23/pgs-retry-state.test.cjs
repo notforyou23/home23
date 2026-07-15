@@ -99,6 +99,34 @@ test('multi-window PGS continuation counts reused work in every selected total',
   });
 });
 
+test('large multi-window PGS retains only the current bounded work IDs', async t => {
+  const scratch = await scratchFixture(t, 'home23-pgs-bounded-operation-ids-');
+  const pin = sourcePin({ nodeCount: 400 });
+  const retention = [];
+  const fixture = createEngine();
+  const envelope = await fixture.engine.runPinnedOperation(operationOptions(pin, scratch, {
+    _testHooks: {
+      observeOperationRetention(snapshot) { retention.push(snapshot); },
+    },
+  }));
+
+  assert.equal(envelope.state, 'complete');
+  assert.equal(envelope.result.metadata.pgs.selectedWorkUnits, 200);
+  assert.equal(retention.length > 10, true);
+  assert.equal(retention.at(-1).cumulativeSelectedWorkUnits, 200);
+  assert.equal(
+    Math.max(...retention.map(row => row.currentBatchWorkUnitIds)) <= 16,
+    true,
+  );
+  assert.equal(
+    Math.max(...retention.map(row => row.currentConcurrentWorkUnitIds)) <= 4,
+    true,
+  );
+  assert.equal(retention.every(row => !Object.hasOwn(row, 'selectedWorkUnitIds')), true);
+  assert.equal(retention.every(row => !Object.hasOwn(row, 'failedWorkUnitIds')), true);
+  assert.equal(retention.every(row => !Object.hasOwn(row, 'retryableWorkUnitIds')), true);
+});
+
 test('named PGS levels expand cumulatively without repeating successful sweeps', async t => {
   const scratch = await scratchFixture(t, 'home23-pgs-level-retry-');
   const pin = sourcePin({ nodeCount: 16 });

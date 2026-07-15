@@ -4,6 +4,7 @@
 
 import { exec } from 'node:child_process';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
+import { unprivilegedChildEnv } from '../../security/child-process-env.js';
 
 const DEFAULT_STDOUT_LIMIT = 8000;
 const DEFAULT_STDERR_LIMIT = 4000;
@@ -66,7 +67,7 @@ export const shellTool: ToolDefinition = {
         return;
       }
 
-      const env = { ...process.env };
+      const env = unprivilegedChildEnv();
       if (env.PATH) {
         const extras: string[] = [];
         if (process.platform === 'darwin' && !env.PATH.includes('/opt/homebrew/bin')) {

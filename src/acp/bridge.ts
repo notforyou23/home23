@@ -8,6 +8,7 @@
 import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { ACPConfig } from '../types.js';
+import { unprivilegedChildEnv } from '../security/child-process-env.js';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -77,7 +78,7 @@ export class ACPBridge {
 
     const child = spawn(agentDef.bin, agentDef.args(prompt), {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env },
+      env: unprivilegedChildEnv(),
     });
 
     const session: ActiveSession = {

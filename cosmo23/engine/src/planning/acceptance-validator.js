@@ -11,6 +11,7 @@ const { exec } = require('child_process');
 const { promisify } = require('util');
 const execAsync = promisify(exec);
 const { getDomainAnchor } = require('../utils/domain-anchor');
+const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
 
 class AcceptanceValidator {
   constructor(agentExecutor, logger) {
@@ -271,7 +272,8 @@ class AcceptanceValidator {
       // Execute command
       const { stdout, stderr } = await execAsync(criterion.command, {
         timeout: 30000, // 30 second timeout
-        maxBuffer: 1024 * 1024 // 1MB buffer
+        maxBuffer: 1024 * 1024, // 1MB buffer
+        env: unprivilegedChildEnv()
       });
       
       this.logger?.debug('[AcceptanceValidator] Tool check passed', {
@@ -538,4 +540,3 @@ Provide your verdict and a brief explanation.`;
 }
 
 module.exports = AcceptanceValidator;
-

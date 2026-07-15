@@ -21,8 +21,19 @@ const {
   sourceDescriptorDigest,
 } = require('../../shared/memory-source/contracts.cjs');
 const {
+  attestMemoryAuthority,
+} = require('../../shared/memory-authority-attestation.cjs');
+const {
   openPinnedPGSStore,
 } = require('../../cosmo23/pgs-engine/src/pinned-store');
+
+const AUTHORITY_KEY = '7'.repeat(64);
+const priorAuthorityKey = process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = AUTHORITY_KEY;
+test.after(() => {
+  if (priorAuthorityKey === undefined) delete process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+  else process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = priorAuthorityKey;
+});
 
 function descriptor(revision = 3, nodeCount = 600, edgeCount = 599) {
   return {
@@ -136,6 +147,91 @@ test('streams a revision-bound projection and creates deterministic bounded work
   assert.equal(unit.nodes.length <= 25, true);
   assert.equal(unit.stats.contextChars <= 4096, true);
   assert.match(unit.workUnitId, /^p-c-cluster-[0-2]-u\d{4}$/);
+});
+
+test('summarizes authority, domain, and source-chain evidence from the exact PGS scope', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const nodes = [
+    attestMemoryAuthority({
+      id: 'current', clusterId: 'ops', content: 'current verified state',
+      asserted_at: '2026-07-14T12:00:00.000Z',
+      metadata: { sourcePath: '/Users/jtr/private/runtime/current.json' },
+      provenance: {
+        schema: 'home23.node-provenance.v1',
+        authorityClass: 'verified_current_state', operationalAuthority: true,
+        evidenceRefs: ['verifier:/Volumes/private/current.json'],
+      },
+    }, AUTHORITY_KEY),
+    {
+      id: 'archive', clusterId: 'archive', content: 'old news archive',
+      tag: 'news', source_event_at: '2025-01-01T00:00:00.000Z',
+      provenance: { authorityClass: 'narrative', operationalAuthority: false },
+    },
+  ];
+  const store = await openPinnedPGSStore({
+    sourcePin: syntheticSource({
+      nodeCount: nodes.length,
+      edgeCount: 1,
+      nodeFactory: index => nodes[index],
+      edgeFactory: () => ({ source: 'current', target: 'archive', type: 'relates' }),
+    }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits,
+  });
+  t.after(() => store.close());
+  store.planScope({
+    attemptId: 'attempt-authority-fractional',
+    coverageLevel: 'deep',
+    coverageFraction: 0.5,
+  });
+  const fractionalSummary = store.summarizeAuthority({
+    attemptId: 'attempt-authority-fractional',
+    signal: new AbortController().signal,
+  });
+  const fractionalTotals = store.summarizeScopeTotals({
+    attemptId: 'attempt-authority-fractional',
+    signal: new AbortController().signal,
+  });
+  assert.equal(fractionalSummary.total, 1);
+  assert.deepEqual(fractionalTotals, { nodes: 1, edges: 1 });
+
+  store.planScope({ attemptId: 'attempt-authority', coverageLevel: 'full', coverageFraction: 1 });
+
+  const summary = store.summarizeAuthority({
+    attemptId: 'attempt-authority',
+    signal: new AbortController().signal,
+  });
+  const scopedTotals = store.summarizeScopeTotals({
+    attemptId: 'attempt-authority',
+    signal: new AbortController().signal,
+  });
+
+  assert.equal(summary.total, 2);
+  assert.deepEqual(scopedTotals, { nodes: 2, edges: 1 });
+  assert.equal(summary.authorityClasses.verified_current_state, 1);
+  assert.equal(summary.authorityClasses.narrative, 1);
+  assert.equal(summary.retrievalDomains.current_ops, 1);
+  assert.equal(summary.retrievalDomains.external_intake, 1);
+  assert.equal(summary.sourceChain.referenceCounts.evidence, 1);
+
+  const workUnitIds = store.snapshotPendingWorkUnits({
+    attemptId: 'attempt-authority',
+    limit: 2,
+  });
+  const work = workUnitIds.map(workUnitId => store.loadWorkUnit(workUnitId));
+  const providerNodes = work.flatMap(unit => unit.nodes);
+  const providerAuthorities = work.flatMap(unit => unit.nodeAuthorities);
+  assert.equal(providerAuthorities.length, providerNodes.length);
+  const currentIndex = providerNodes.findIndex(node => node.id === 'current');
+  assert.notEqual(currentIndex, -1);
+  assert.equal(providerAuthorities[currentIndex].authorityClass, 'verified_current_state');
+  assert.equal(providerAuthorities[currentIndex].operationalAuthority, true);
+  assert.equal(JSON.stringify(providerNodes[currentIndex]).includes('/Users/'), false);
+  assert.equal(JSON.stringify(providerAuthorities[currentIndex]).includes('/Volumes/'), false);
 });
 
 test('store close releases anchored handles when SQLite close throws', async t => {
@@ -370,6 +466,257 @@ test('reuses only an exact source revision, limits, and sweep pair', async t => 
   );
 });
 
+test('migrates a pre-authority v3 projection without losing completed sweep work', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const options = {
+    sourcePin: syntheticSource({ nodeCount: 6, edgeCount: 5 }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits,
+  };
+  const first = await openPinnedPGSStore(options);
+  const { databasePath } = first;
+  first.planScope({ attemptId: 'old-v3', coverageLevel: 'full', coverageFraction: 1 });
+  const [completedWorkUnit] = first.snapshotPendingWorkUnits({
+    attemptId: 'old-v3',
+    limit: 1,
+  });
+  first.beginWorkUnitAttempt(completedWorkUnit, {
+    attemptId: 'old-v3', provider: 'minimax', model: 'MiniMax-M3',
+  });
+  await first.commitSuccessfulSweeps([{
+    workUnitId: completedWorkUnit,
+    output: 'preserved completed sweep',
+  }]);
+  first.close();
+
+  const oldV3 = new Database(databasePath);
+  oldV3.prepare("DELETE FROM metadata WHERE key = 'authorityProjectionVersion'").run();
+  oldV3.exec('ALTER TABLE nodes DROP COLUMN authority_mac');
+  oldV3.exec('ALTER TABLE nodes DROP COLUMN authority_json');
+  oldV3.close();
+
+  const migrated = await openPinnedPGSStore(options);
+  t.after(() => migrated.close());
+  assert.equal(migrated.reused, true);
+  assert.equal(
+    migrated.listSuccessfulSweeps().some(row => (
+      row.workUnitId === completedWorkUnit && row.output === 'preserved completed sweep'
+    )),
+    true,
+  );
+  const readback = new Database(databasePath, { readonly: true });
+  assert.equal(
+    readback.prepare(
+      "SELECT json_extract(value, '$') AS version FROM metadata WHERE key = 'authorityProjectionVersion'",
+    ).get().version,
+    2,
+  );
+  assert.equal(
+    readback.pragma('table_info(nodes)').some(column => column.name === 'authority_json'),
+    true,
+  );
+  assert.equal(
+    readback.pragma('table_info(nodes)').some(column => column.name === 'authority_mac'),
+    true,
+  );
+  readback.close();
+});
+
+test('pre-authority migration checkpoints quota and preserves exact cancellation', async t => {
+  const { operationRoot, scratchDir, quota } = await fixture(t);
+  const migrationLimits = {
+    ...limits,
+    maxTransactionRecords: 16,
+    maxTransactionBytes: 1024 * 1024,
+    maxContextCharsPerWorkUnit: 64 * 1024,
+  };
+  const options = {
+    sourcePin: syntheticSource({ nodeCount: 20, edgeCount: 19, contentBytes: 32 * 1024 }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits: migrationLimits,
+  };
+  const first = await openPinnedPGSStore(options);
+  const { databasePath } = first;
+  first.close();
+  const oldV3 = new Database(databasePath);
+  oldV3.prepare("DELETE FROM metadata WHERE key = 'authorityProjectionVersion'").run();
+  oldV3.exec('ALTER TABLE nodes DROP COLUMN authority_mac');
+  oldV3.exec('ALTER TABLE nodes DROP COLUMN authority_json');
+  oldV3.close();
+  quota.close();
+
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('cancel authority migration'), { code: 'cancelled' });
+  let armed = false;
+  const cancellingQuota = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes: limits.maxScratchBytes,
+    signal: controller.signal,
+    _testHooks: {
+      afterLedgerPublish() {
+        if (armed) controller.abort(reason);
+      },
+    },
+  });
+  armed = true;
+  await assert.rejects(
+    openPinnedPGSStore({
+      ...options,
+      scratchQuota: cancellingQuota,
+      signal: controller.signal,
+    }),
+    error => error === reason,
+  );
+  cancellingQuota.close();
+
+  const recoveryQuota = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes: limits.maxScratchBytes,
+  });
+  t.after(() => recoveryQuota.close());
+  const recovered = await openPinnedPGSStore({
+    ...options,
+    scratchQuota: recoveryQuota,
+    signal: new AbortController().signal,
+  });
+  t.after(() => recovered.close());
+  assert.equal(recovered.reused, true);
+});
+
+test('persisted PGS authority is bound to node identity and sanitized record bytes', async t => {
+  for (const scenario of ['forged-class', 'copied-authority', 'changed-node']) {
+    await t.test(scenario, async t => {
+      const { scratchDir, quota } = await fixture(t);
+      const options = {
+        sourcePin: syntheticSource({ nodeCount: 2, edgeCount: 1 }),
+        scratchDir,
+        scratchQuota: quota,
+        pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+        query,
+        signal: new AbortController().signal,
+        limits,
+      };
+      const first = await openPinnedPGSStore(options);
+      const { databasePath } = first;
+      first.close();
+      const database = new Database(databasePath);
+      const rows = database.prepare(
+        'SELECT id, json, authority_json, authority_mac FROM nodes ORDER BY ordinal',
+      ).all();
+      if (scenario === 'forged-class') {
+        const authority = JSON.parse(rows[0].authority_json);
+        authority.authorityClass = 'verified_current_state';
+        authority.operationalAuthority = true;
+        authority.requiresFreshVerification = false;
+        database.prepare('UPDATE nodes SET authority_json = ? WHERE id = ?')
+          .run(JSON.stringify(authority), rows[0].id);
+      } else if (scenario === 'copied-authority') {
+        database.prepare(
+          'UPDATE nodes SET authority_json = ?, authority_mac = ? WHERE id = ?',
+        ).run(rows[0].authority_json, rows[0].authority_mac, rows[1].id);
+      } else {
+        const node = JSON.parse(rows[0].json);
+        node.content = 'forged provider-visible assertion';
+        database.prepare('UPDATE nodes SET json = ? WHERE id = ?')
+          .run(JSON.stringify(node), rows[0].id);
+      }
+      database.close();
+
+      const reopened = await openPinnedPGSStore(options);
+      t.after(() => reopened.close());
+      assert.equal(reopened.reused, true);
+      reopened.planScope({
+        attemptId: `tamper-${scenario}`,
+        coverageLevel: 'full',
+        coverageFraction: 1,
+      });
+      assert.throws(
+        () => reopened.summarizeAuthority({ attemptId: `tamper-${scenario}` }),
+        { code: 'pgs_projection_invalid' },
+      );
+    });
+  }
+});
+
+test('missing authority key reuses PGS work safely but demotes persisted authority', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const signed = attestMemoryAuthority({
+    id: 'signed-current',
+    content: 'signed current receipt',
+    asserted_at: '2026-07-14T12:00:00.000Z',
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'verified_current_state',
+      operationalAuthority: true,
+      evidenceRefs: ['verifier:live'],
+    },
+  }, AUTHORITY_KEY);
+  const options = {
+    sourcePin: syntheticSource({
+      nodeCount: 1,
+      edgeCount: 0,
+      nodeFactory: () => signed,
+    }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits,
+  };
+  const first = await openPinnedPGSStore(options);
+  first.close();
+
+  delete process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+  try {
+    const reopened = await openPinnedPGSStore(options);
+    t.after(() => reopened.close());
+    assert.equal(reopened.reused, true);
+    reopened.planScope({ attemptId: 'missing-key', coverageLevel: 'full', coverageFraction: 1 });
+    const summary = reopened.summarizeAuthority({ attemptId: 'missing-key' });
+    assert.equal(summary.authorityClasses.verified_current_state, 0);
+    assert.equal(summary.authorityClasses.narrative, 1);
+  } finally {
+    process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = AUTHORITY_KEY;
+  }
+});
+
+test('adding an authority key does not break a narrative PGS projection built without one', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const options = {
+    sourcePin: syntheticSource({ nodeCount: 1, edgeCount: 0 }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits,
+  };
+  delete process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+  try {
+    const first = await openPinnedPGSStore(options);
+    first.close();
+  } finally {
+    process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = AUTHORITY_KEY;
+  }
+
+  const reopened = await openPinnedPGSStore(options);
+  t.after(() => reopened.close());
+  assert.equal(reopened.reused, true);
+  reopened.planScope({ attemptId: 'key-added', coverageLevel: 'full', coverageFraction: 1 });
+  const summary = reopened.summarizeAuthority({ attemptId: 'key-added' });
+  assert.equal(summary.authorityClasses.verified_current_state, 0);
+  assert.equal(summary.authorityClasses.narrative, 1);
+});
+
 test('rebuilds boundedly when durable projection metadata has an unexpected oversized field', async t => {
   const { scratchDir, quota } = await fixture(t);
   const options = {
@@ -497,6 +844,166 @@ test('plans deterministic cumulative round-robin scopes and never reselects succ
     assert.equal(store.countScopePendingWorkUnits(attemptId), 0);
     assert.equal(store.countScopeSuccessfulWorkUnits(attemptId), expectedScope);
   }
+});
+
+test('compacts 1000 transient attempt scopes without losing sweep or monotonic scope state', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const options = {
+    sourcePin: syntheticSource({ nodeCount: 30, edgeCount: 29 }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits: { ...limits, maxNodesPerWorkUnit: 1, maxSelectedWorkUnits: 64 },
+  };
+  const store = await openPinnedPGSStore(options);
+  const { databasePath } = store;
+  const root = store.planScope({
+    attemptId: 'attempt-retained-root',
+    coverageLevel: 'full',
+    coverageFraction: 1,
+  });
+  const [completedWorkUnit] = store.snapshotPendingWorkUnits({
+    attemptId: root.attemptId,
+    limit: 1,
+  });
+  store.beginWorkUnitAttempt(completedWorkUnit, {
+    attemptId: root.attemptId,
+    provider: 'minimax',
+    model: 'MiniMax-M3',
+  });
+  await store.commitSuccessfulSweeps([{
+    workUnitId: completedWorkUnit,
+    output: 'durable completed sweep',
+  }]);
+
+  for (let index = 0; index < 1_000; index += 1) {
+    const attemptId = `attempt-batch-${String(index).padStart(4, '0')}`;
+    store.planScope({ attemptId, coverageLevel: 'full', coverageFraction: 1 });
+    store.snapshotPendingWorkUnits({ attemptId, limit: 1 });
+    store.releaseAttemptScope(attemptId);
+  }
+
+  const liveReadback = new Database(databasePath, { readonly: true });
+  assert.equal(liveReadback.prepare('SELECT COUNT(*) AS count FROM attempt_scopes').get().count, 2);
+  assert.equal(
+    liveReadback.prepare('SELECT COUNT(*) AS count FROM attempt_scope_work_units').get().count
+      <= root.scopeWorkUnits * 2,
+    true,
+  );
+  liveReadback.close();
+  assert.equal(store.getScopeSummary(root.attemptId).scopeSuccessfulWorkUnits, 1);
+  store.close();
+
+  const historical = new Database(databasePath);
+  historical.prepare('DELETE FROM attempt_scope_work_units').run();
+  historical.prepare('DELETE FROM attempt_scopes').run();
+  const insertHistoricalScope = historical.prepare(`
+    INSERT INTO attempt_scopes(
+      attempt_id, scope_kind, coverage_level, coverage_fraction,
+      target_partition_ids_json, created_at
+    ) VALUES (?, 'level', 'full', 1, '[]', ?)
+  `);
+  const insertHistoricalMappings = historical.prepare(`
+    INSERT INTO attempt_scope_work_units(attempt_id, work_unit_id)
+    SELECT ?, work_unit_id FROM work_units
+  `);
+  historical.transaction(() => {
+    for (let index = 0; index < 1_000; index += 1) {
+      const attemptId = `historical-attempt-${String(index).padStart(4, '0')}`;
+      insertHistoricalScope.run(attemptId, '2026-07-14T12:00:00.000Z');
+      insertHistoricalMappings.run(attemptId);
+    }
+  })();
+  assert.equal(historical.prepare('SELECT COUNT(*) AS count FROM attempt_scopes').get().count, 1_000);
+  assert.equal(
+    historical.prepare('SELECT COUNT(*) AS count FROM attempt_scope_work_units').get().count,
+    root.scopeWorkUnits * 1_000,
+  );
+  historical.close();
+
+  const reopened = await openPinnedPGSStore(options);
+  t.after(() => reopened.close());
+  const compactedReadback = new Database(databasePath, { readonly: true });
+  assert.equal(compactedReadback.prepare('SELECT COUNT(*) AS count FROM attempt_scopes').get().count, 1);
+  assert.equal(
+    compactedReadback.prepare('SELECT COUNT(*) AS count FROM attempt_scope_work_units').get().count,
+    root.scopeWorkUnits,
+  );
+  compactedReadback.close();
+  assert.equal(reopened.listSuccessfulSweeps().some(row => (
+    row.workUnitId === completedWorkUnit && row.output === 'durable completed sweep'
+  )), true);
+  await assert.rejects(
+    Promise.resolve().then(() => reopened.planScope({
+      attemptId: 'attempt-illegal-shrink',
+      coverageLevel: 'deep',
+      coverageFraction: 0.5,
+    })),
+    { code: 'pgs_scope_non_monotonic' },
+  );
+});
+
+test('retained targeted scope policy preserves target unions across reopen', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const options = {
+    sourcePin: syntheticSource({ nodeCount: 12, edgeCount: 11 }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits: { ...limits, maxNodesPerWorkUnit: 1, maxSelectedWorkUnits: 64 },
+  };
+  const first = await openPinnedPGSStore(options);
+  const firstPlan = first.planScope({
+    attemptId: 'attempt-target-before-reopen',
+    coverageLevel: 'sample',
+    coverageFraction: 0.25,
+    targetPartitionIds: ['c-cluster-1'],
+  });
+  const [completedWorkUnit] = first.snapshotPendingWorkUnits({
+    attemptId: firstPlan.attemptId,
+    limit: 64,
+  });
+  first.beginWorkUnitAttempt(completedWorkUnit, {
+    attemptId: firstPlan.attemptId,
+    provider: 'minimax',
+    model: 'MiniMax-M3',
+  });
+  await first.commitSuccessfulSweeps([{
+    workUnitId: completedWorkUnit,
+    output: 'retained targeted sweep',
+  }]);
+  first.close();
+
+  const reopened = await openPinnedPGSStore(options);
+  t.after(() => reopened.close());
+  await assert.rejects(
+    Promise.resolve().then(() => reopened.planScope({
+      attemptId: 'attempt-target-removal',
+      coverageLevel: 'sample',
+      coverageFraction: 0.25,
+      targetPartitionIds: ['c-cluster-2'],
+    })),
+    { code: 'pgs_scope_non_monotonic' },
+  );
+  const union = reopened.planScope({
+    attemptId: 'attempt-target-after-reopen',
+    coverageLevel: 'sample',
+    coverageFraction: 0.25,
+    targetPartitionIds: ['c-cluster-1', 'c-cluster-2'],
+  });
+  assert.equal(
+    reopened.listSuccessfulSweeps({ attemptId: union.attemptId })
+      .some(row => row.workUnitId === completedWorkUnit),
+    true,
+  );
+  assert.equal(
+    reopened.snapshotPendingWorkUnits({ attemptId: union.attemptId, limit: 64 }).length,
+    union.scopeWorkUnits - 1,
+  );
 });
 
 test('target scopes filter snapshots, successes, counts, and monotonic unions', async t => {

@@ -104,7 +104,11 @@ for (const [name, Bridge] of implementations) {
     assert.equal(query.resultsFound, 1);
     assert.equal(query.results[0].id, 'delta');
     assert.equal(query.results.some((row) => row.id === 'tombstone'), false);
-    assert.equal(query.evidence.sourceHealth, 'healthy');
+    assert.equal(query.evidence.sourceHealth, 'degraded');
+    assert.equal(query.evidence.retrievalMode, 'logical-source-scan');
+    assert.equal(query.evidence.completeCoverage, true);
+    assert.equal(query.evidence.freshness, 'known');
+    assert.equal(query.evidence.matchOutcome, 'matches');
     assert.equal(query.evidence.deltaWatermark.appliedRecords, 2);
     assert.equal(query.evidence.identity.requesterAgent, 'jerry');
     assert.equal(query.evidence.identity.targetAgent, 'jerry');

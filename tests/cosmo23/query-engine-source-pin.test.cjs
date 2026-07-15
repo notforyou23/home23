@@ -8,8 +8,26 @@ const path = require('node:path');
 
 const { QueryEngine } = require('../../cosmo23/lib/query-engine');
 const {
+  createQueryOperationExecutor,
+} = require('../../cosmo23/server/lib/query-operation-worker.js');
+const {
+  attestMemoryAuthority,
+} = require('../../shared/memory-authority-attestation.cjs');
+const {
+  getAttestedRetrievalAuthoritySummary,
+  summarizeRetrievalAuthority,
+} = require('../../shared/memory-source/contracts.cjs');
+const {
   createSyntheticPinnedSource,
 } = require('./helpers/brain-operation-fixtures.cjs');
+
+const AUTHORITY_KEY = '9'.repeat(64);
+const priorAuthorityKey = process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = AUTHORITY_KEY;
+test.after(() => {
+  if (priorAuthorityKey === undefined) delete process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+  else process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = priorAuthorityKey;
+});
 
 function model(provider, id, overrides = {}) {
   return {
@@ -169,15 +187,12 @@ test('operation query uses only the pinned iterator and exact provider pair', as
     providerInput.source.nodes.map(node => node.id),
   );
   assert.equal(JSON.stringify(providerInput).includes('/Users/jtr/'), false);
-  assert.deepEqual(result.sourceEvidence.authoritySummary, {
-    verifiedCurrentState: 1,
-    jtrCorrection: 0,
-    artifactLog: 0,
-    workerReceipt: 0,
-    generatedDoctrine: 0,
-    narrative: 1,
-    requiresFreshVerification: 1,
-  });
+  assert.deepEqual(
+    result.sourceEvidence.authoritySummary,
+    summarizeRetrievalAuthority(providerInput.source.nodeAuthorities),
+  );
+  assert.equal(result.sourceEvidence.authoritySummary.authorityClasses.narrative, 2);
+  assert.equal(result.sourceEvidence.authoritySummary.authorityClasses.verified_current_state, 0);
   assert.match(calls[0].instructions, /narrative and generated doctrine cannot independently settle present-tense operational facts/i);
   assert.match(calls[0].instructions, /fresh verification/i);
   assert.deepEqual(events, [
@@ -302,6 +317,158 @@ test('thin Dive performs exactly one bounded expansion call', async () => {
     );
     assert.equal(JSON.stringify(providerInput).includes('/Users/jtr/'), false);
   }
+});
+
+test('trimmed Dive reuses retained authority and worker reconciliation preserves its attestation', async () => {
+  const provider = 'openai-codex';
+  const selectedModel = 'gpt-5.5';
+  const query = 'retained authority integration canary';
+  const nodeCount = 240;
+  const nodes = Array.from({ length: nodeCount }, (_, index) => attestMemoryAuthority({
+    id: `authority-${index}`,
+    type: 'finding',
+    content: `${query} ${index} ${'evidence-0123456789 '.repeat(180)}`,
+    salience: (index % 100) / 100,
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'verified_current_state',
+      operationalAuthority: true,
+      evidenceRefs: [`verifier:authority-${index}`],
+    },
+  }, AUTHORITY_KEY));
+  const pin = {
+    revision: 23,
+    descriptor: {
+      cutoffRevision: 23,
+      activeDelta: { count: 0 },
+      summary: { nodeCount, edgeCount: 0, clusterCount: 0 },
+    },
+    async *iterateNodes({ signal } = {}) {
+      for (const node of nodes) {
+        if (signal?.aborted) throw signal.reason;
+        yield node;
+      }
+    },
+    async *iterateEdges() {},
+    async summarize() { return this.descriptor.summary; },
+    getEvidence(extra = {}) {
+      const returnedTotals = extra.returnedTotals || { nodes: 0, edges: 0 };
+      const completeCoverage = extra.completeCoverage === true;
+      return {
+        selectedAgent: extra.selectedAgent ?? null,
+        selectedBrain: extra.selectedBrain ?? null,
+        route: extra.route || 'pinned-query-projection',
+        sourceHealth: 'healthy',
+        freshness: 'known',
+        baseWatermark: { revision: 22 },
+        deltaWatermark: { revision: 23 },
+        indexWatermark: { builtFromRevision: 23 },
+        authoritativeTotals: { nodes: nodeCount, edges: 0 },
+        returnedTotals,
+        completeCoverage,
+        filteredTotal: extra.filteredTotal || 0,
+        matchOutcome: returnedTotals.nodes > 0
+          ? 'matches' : completeCoverage ? 'no_match' : 'unknown',
+        ...extra,
+      };
+    },
+  };
+  const selectedCatalog = {
+    version: 1,
+    providers: {
+      [provider]: {
+        models: [model(provider, selectedModel, {
+          contextWindowTokens: 128_000,
+          maxOutputTokens: 32_768,
+          transport: 'codex-responses',
+        })],
+      },
+    },
+    defaults: {},
+  };
+  const calls = [];
+  const engine = new QueryEngine({
+    operationMode: true,
+    modelCatalog: selectedCatalog,
+    providerRegistry: {
+      get(requestedProvider, requestedModel) {
+        assert.equal(requestedProvider, provider);
+        assert.equal(requestedModel, selectedModel);
+        return {
+          providerId: provider,
+          async generate(options) {
+            calls.push(options);
+            return {
+              content: calls.length === 1 ? 'thin first answer' : substantialAnswer(),
+              terminalReceived: true,
+              finishReason: 'completed',
+              hadError: false,
+              provider,
+              model: selectedModel,
+            };
+          },
+        };
+      },
+    },
+  });
+
+  const result = await engine.executeQuery(query, {
+    sourcePin: pin,
+    modelSelection: { provider, model: selectedModel },
+    mode: 'dive',
+    signal: new AbortController().signal,
+  });
+
+  assert.equal(result.metadata.projection.promptReduced, true);
+  assert.equal(calls.length, 2);
+  const prompts = calls.map(call => JSON.parse(call.input));
+  const retainedIds = prompts[0].source.nodes.map(node => node.id);
+  const retainedAuthorityIds = prompts[0].source.nodeAuthorities.map(authority => authority.id);
+  assert.deepEqual(retainedAuthorityIds, retainedIds);
+  assert.deepEqual(prompts[1].source.nodes.map(node => node.id), retainedIds);
+  assert.deepEqual(
+    prompts[1].source.nodeAuthorities.map(authority => authority.id),
+    retainedAuthorityIds,
+  );
+  assert.deepEqual(prompts[1].source.nodeAuthorities, prompts[0].source.nodeAuthorities);
+  const expectedSummary = summarizeRetrievalAuthority(prompts[0].source.nodeAuthorities);
+  assert.deepEqual(result.sourceEvidence.authoritySummary, expectedSummary);
+  assert.deepEqual(
+    getAttestedRetrievalAuthoritySummary(result.sourceEvidence),
+    expectedSummary,
+  );
+
+  const executor = createQueryOperationExecutor({
+    queryEngine: { async executeEnhancedQuery() { return result; } },
+  });
+  const reconciled = await executor({
+    operationId: 'op-query-authority-integration',
+    operationType: 'query',
+    requesterAgent: 'jerry',
+    target: {
+      domain: 'brain',
+      brainId: 'brain-jerry',
+      accessMode: 'own',
+      ownerAgent: 'jerry',
+      route: 'resident:jerry',
+    },
+    parameters: {
+      query,
+      mode: 'dive',
+      modelSelection: { provider, model: selectedModel },
+    },
+    scratchDir: '/requester/runtime/brain-operations/op/scratch',
+    scratchQuota: { quota: 'trusted' },
+    signal: new AbortController().signal,
+    sourcePin: pin,
+    reportEvent() {},
+  });
+  assert.deepEqual(reconciled.sourceEvidence.authoritySummary, expectedSummary);
+  assert.equal(
+    reconciled.sourceEvidence.authoritySummary.authorityClasses.verified_current_state,
+    retainedIds.length,
+  );
+  assert.equal(reconciled.sourceEvidence.authoritySummary.authorityClasses.narrative, 0);
 });
 
 test('failed Dive expansion preserves the useful first answer as Partial', async () => {

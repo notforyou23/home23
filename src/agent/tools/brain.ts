@@ -197,13 +197,15 @@ function toolFailure(label: string, error: unknown): ToolResult {
 }
 
 function boundedJson(label: string, value: Record<string, unknown>): ToolResult {
+  const sourceEvidence = value.sourceEvidence
+    ?? (value.evidence && typeof value.evidence === 'object' ? value.evidence : undefined);
   return {
     content: `${label}\n${JSON.stringify(value, null, 2)}`,
     resultHandle: typeof value.resultHandle === 'string' ? value.resultHandle : undefined,
     metadata: {
       operationId: value.operationId,
       state: value.state,
-      sourceEvidence: value.sourceEvidence,
+      sourceEvidence,
       resultArtifact: value.resultArtifact,
     },
   };

@@ -6,6 +6,7 @@ const { canonicalJson } = require('../../../shared/brain-operations/canonical-js
 const {
   MATCH_OUTCOME,
   SOURCE_HEALTH,
+  projectRetrievalEvidenceEnvelope,
 } = require('../../../shared/memory-source/contracts.cjs');
 const {
   EXECUTION_STATES,
@@ -57,16 +58,24 @@ const RETRIEVAL_MODE_VALUES = new Set([
 ]);
 const INDEX_COVERAGE_COUNTERS = Object.freeze([
   'indexedRevision', 'currentRevision', 'coveredThroughRevision', 'deltaRecords',
-  'changedNodes', 'upsertedNodes', 'removedNodes',
+  'distinctChangedNodes', 'distinctUpsertedNodes', 'distinctRemovedNodes', 'edgeOnlyRecords',
 ]);
+const INDEX_COVERAGE_LEGACY_ALIASES = Object.freeze({
+  changedNodes: 'distinctChangedNodes',
+  upsertedNodes: 'distinctUpsertedNodes',
+  removedNodes: 'distinctRemovedNodes',
+});
 const STAGE_TIMING_FIELDS = Object.freeze([
-  'sourceOpen', 'deltaOverlay', 'embedding', 'annLoad', 'annQuery',
-  'deltaSemantic', 'keyword', 'merge', 'total',
+  'sourceOpen', 'embedding', 'overlayRefresh', 'annLoad', 'annSearch',
+  'overlayScoring', 'keywordScoring', 'merge', 'response',
 ]);
-const AUTHORITY_SUMMARY_FIELDS = Object.freeze([
-  'verifiedCurrentState', 'jtrCorrection', 'artifactLog', 'workerReceipt',
-  'generatedDoctrine', 'narrative', 'requiresFreshVerification',
-]);
+const STAGE_TIMING_LEGACY_ALIASES = Object.freeze({
+  deltaOverlay: 'overlayRefresh',
+  annQuery: 'annSearch',
+  deltaSemantic: 'overlayScoring',
+  keyword: 'keywordScoring',
+  total: 'response',
+});
 const COVERAGE_FIELDS = Object.freeze([
   'coverageLevel', 'coverageFraction', 'successfulSweeps',
   'selectedWorkUnits', 'pendingWorkUnits', 'reusedWorkUnits', 'newWorkUnits',
@@ -182,9 +191,21 @@ function safeTotals(value) {
   if (value === undefined || value === null) return undefined;
   plainObject(value);
   return {
-    nodes: safeCounter(value.nodes),
-    edges: safeCounter(value.edges),
+    nodes: value.nodes === null ? null : safeCounter(value.nodes),
+    edges: value.edges === null ? null : safeCounter(value.edges),
   };
+}
+
+function safeDuration(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw notebookError('notebook_projection_invalid');
+  }
+  return value;
+}
+
+function safeRoute(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,255}$/.test(value)
+    ? value : null;
 }
 
 function projectSafeEvidence(value) {
@@ -203,34 +224,43 @@ function projectSafeEvidence(value) {
     const totals = safeTotals(value[field]);
     if (totals !== undefined) projected[field] = totals;
   }
-  if (RETRIEVAL_MODE_VALUES.has(value.retrievalMode)) {
-    projected.retrievalMode = value.retrievalMode;
+  const canonical = projectRetrievalEvidenceEnvelope(value);
+  if (RETRIEVAL_MODE_VALUES.has(canonical.retrievalMode)) {
+    projected.retrievalMode = canonical.retrievalMode;
   }
-  if (value.indexCoverage !== undefined && value.indexCoverage !== null) {
-    const coverage = plainObject(value.indexCoverage);
-    if (typeof coverage.complete !== 'boolean') throw notebookError('notebook_projection_invalid');
+  if (canonical.indexCoverage !== undefined && canonical.indexCoverage !== null) {
+    const coverage = plainObject(canonical.indexCoverage);
     projected.indexCoverage = { complete: coverage.complete };
     for (const field of INDEX_COVERAGE_COUNTERS) {
-      if (coverage[field] !== undefined) {
+      if (coverage[field] !== undefined && coverage[field] !== null) {
         projected.indexCoverage[field] = safeCounter(coverage[field]);
       }
     }
+    for (const [legacy, field] of Object.entries(INDEX_COVERAGE_LEGACY_ALIASES)) {
+      if (projected.indexCoverage[field] !== undefined) {
+        projected.indexCoverage[legacy] = projected.indexCoverage[field];
+      }
+    }
+    const route = safeRoute(coverage.route);
+    const completeness = safeRoute(coverage.completeness);
+    if (route !== null) projected.indexCoverage.route = route;
+    if (completeness !== null) projected.indexCoverage.completeness = completeness;
   }
-  if (value.stageTimingsMs !== undefined && value.stageTimingsMs !== null) {
-    const timings = plainObject(value.stageTimingsMs);
+  if (canonical.stageTimingsMs !== undefined && canonical.stageTimingsMs !== null) {
+    const timings = plainObject(canonical.stageTimingsMs);
     projected.stageTimingsMs = {};
     for (const field of STAGE_TIMING_FIELDS) {
-      if (timings[field] !== undefined) projected.stageTimingsMs[field] = safeCounter(timings[field]);
+      if (timings[field] !== undefined) projected.stageTimingsMs[field] = safeDuration(timings[field]);
+    }
+    for (const [legacy, field] of Object.entries(STAGE_TIMING_LEGACY_ALIASES)) {
+      if (projected.stageTimingsMs[field] !== undefined) {
+        projected.stageTimingsMs[legacy] = projected.stageTimingsMs[field];
+      }
     }
     if (Object.keys(projected.stageTimingsMs).length === 0) delete projected.stageTimingsMs;
   }
-  if (value.authoritySummary !== undefined && value.authoritySummary !== null) {
-    const summary = plainObject(value.authoritySummary);
-    projected.authoritySummary = {};
-    for (const field of AUTHORITY_SUMMARY_FIELDS) {
-      if (summary[field] !== undefined) projected.authoritySummary[field] = safeCounter(summary[field]);
-    }
-    if (Object.keys(projected.authoritySummary).length === 0) delete projected.authoritySummary;
+  if (canonical.authoritySummary !== undefined && canonical.authoritySummary !== null) {
+    projected.authoritySummary = canonical.authoritySummary;
   }
   return Object.keys(projected).length === 0 ? null : projected;
 }
@@ -488,13 +518,26 @@ function projectNotebookResult(rawRecord, rawResult, { now = Date.now } = {}) {
   if ((projection === null) !== (answerQuality === null)) {
     throw notebookError('notebook_result_invalid');
   }
+  const projectedEvidence = projectSafeEvidence(record.sourceEvidence);
+  for (const field of ['sourceEvidence', 'evidence']) {
+    if (!Object.hasOwn(result, field) || result[field] === null) continue;
+    let childEvidence;
+    try {
+      childEvidence = projectSafeEvidence(result[field]);
+    } catch (error) {
+      throw notebookError('notebook_result_invalid', error);
+    }
+    if (canonicalJson(childEvidence) !== canonicalJson(projectedEvidence)) {
+      throw notebookError('notebook_result_invalid');
+    }
+  }
   return {
     schemaVersion: 1,
     operationId: record.operationId,
     resultVersion: persisted.resultVersion,
     answer,
     coverage: persisted.coverage,
-    evidence: projectSafeEvidence(record.sourceEvidence),
+    evidence: projectedEvidence,
     projection,
     answerQuality,
     continuation: persisted.continuation,

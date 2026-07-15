@@ -20,6 +20,7 @@ const {
 const {
   MATCH_OUTCOME,
   SOURCE_HEALTH,
+  createEvidence,
 } = require('../../../shared/memory-source/contracts.cjs');
 
 const OPERATION_ID = `brop_${'N'.repeat(32)}`;
@@ -122,7 +123,6 @@ test('summary and result projections are exact, bounded, and redacted', () => {
       requestedMode: 'full', state: 'substantial', expansionAttempted: true,
     },
     sweepOutputs: [{ output: 'x'.repeat(1_000_000) }],
-    sourceEvidence: { canonicalRoot: '/private/result' },
   });
   assert.deepEqual(result, {
     schemaVersion: 1,
@@ -289,22 +289,60 @@ test('notebook result exposes bounded retrieval coverage, timings, and authority
       currentRevision: 45,
       coveredThroughRevision: 45,
       deltaRecords: 5,
+      distinctChangedNodes: 2,
+      distinctUpsertedNodes: 1,
+      distinctRemovedNodes: 1,
+      edgeOnlyRecords: 0,
       changedNodes: 2,
       upsertedNodes: 1,
       removedNodes: 1,
     },
     stageTimingsMs: {
       sourceOpen: 2,
-      deltaOverlay: 3,
       embedding: 4,
+      overlayRefresh: 3,
       annLoad: 5,
+      annSearch: 6,
+      overlayScoring: 7,
+      keywordScoring: 8,
+      merge: 9,
+      response: 44,
+      deltaOverlay: 3,
       annQuery: 6,
       deltaSemantic: 7,
       keyword: 8,
-      merge: 9,
       total: 44,
     },
     authoritySummary: {
+      total: 5,
+      authorityClasses: {
+        verified_current_state: 2,
+        jtr_correction: 1,
+        artifact_log: 1,
+        worker_receipt: 0,
+        generated_doctrine: 0,
+        narrative: 1,
+      },
+      retrievalDomains: {
+        current_ops: 0,
+        closed_incidents: 0,
+        project_history: 0,
+        external_intake: 0,
+      },
+      sourceChain: {
+        withEvidence: 0,
+        withoutEvidence: 0,
+        referenceCounts: {
+          source: 0,
+          evidence: 0,
+          artifact: 0,
+          trace: 0,
+          generation: 0,
+          lineage: 0,
+          verification: 0,
+          closure: 0,
+        },
+      },
       verifiedCurrentState: 2,
       jtrCorrection: 1,
       artifactLog: 1,
@@ -315,6 +353,86 @@ test('notebook result exposes bounded retrieval coverage, timings, and authority
     },
   });
   assert.equal(JSON.stringify(projected).includes('/private/'), false);
+});
+
+test('notebook projects real durable sourceEvidence into canonical public evidence', () => {
+  const sourceEvidence = createEvidence({
+    sourceHealth: 'healthy',
+    freshness: 'known',
+    matchOutcome: 'matches',
+    deltaRevision: 45,
+    retrievalMode: 'semantic-ann-delta-overlay',
+    indexCoverage: {
+      complete: true,
+      indexedRevision: 40,
+      currentRevision: 45,
+      coveredThroughRevision: 45,
+      deltaRecords: 5,
+      distinctChangedNodes: 2,
+      distinctUpsertedNodes: 1,
+      distinctRemovedNodes: 1,
+      edgeOnlyRecords: 0,
+      route: 'ann-plus-delta',
+      completeness: 'complete',
+    },
+    stageTimingsMs: {
+      sourceOpen: 1.25,
+      embedding: 2.5,
+      overlayRefresh: 3.75,
+      annLoad: 4,
+      annSearch: 5,
+      overlayScoring: 6,
+      keywordScoring: 7,
+      merge: 8,
+      response: 9,
+    },
+    authoritySummary: {
+      total: 2,
+      authorityClasses: { verified_current_state: 1, narrative: 1 },
+      retrievalDomains: { current_ops: 1, external_intake: 1 },
+      sourceChain: {
+        withEvidence: 1,
+        withoutEvidence: 1,
+        referenceCounts: { evidence: 1, generation: 1 },
+      },
+      requiresFreshVerification: 1,
+    },
+  });
+  const record = queryRecord({ sourceEvidence });
+
+  const projected = projectNotebookResult(record, { answer: 'bounded answer' }, { now: () => NOW });
+
+  assert.equal(projected.evidence.retrievalMode, 'semantic-ann-delta-overlay');
+  assert.equal(projected.evidence.indexCoverage.currentRevision, 45);
+  assert.equal(projected.evidence.indexCoverage.distinctChangedNodes, 2);
+  assert.equal(projected.evidence.stageTimingsMs.overlayRefresh, 3.75);
+  assert.equal(projected.evidence.authoritySummary.total, 2);
+  assert.equal(projected.evidence.authoritySummary.retrievalDomains.external_intake, 1);
+  assert.equal(projected.evidence.authoritySummary.sourceChain.referenceCounts.evidence, 1);
+  assert.equal(Object.hasOwn(projected, 'sourceEvidence'), false);
+});
+
+test('notebook rejects raw result source evidence that conflicts with the durable record', () => {
+  const sourceEvidence = createEvidence({
+    retrievalMode: 'semantic-ann',
+    indexCoverage: {
+      complete: true,
+      indexedRevision: 45,
+      currentRevision: 45,
+      coveredThroughRevision: 45,
+      deltaRecords: 0,
+      route: 'ann',
+      completeness: 'complete',
+    },
+  });
+  assert.throws(() => projectNotebookResult(
+    queryRecord({ sourceEvidence }),
+    {
+      answer: 'bounded answer',
+      sourceEvidence: { ...sourceEvidence, retrievalMode: 'logical-source-scan' },
+    },
+    { now: () => NOW },
+  ), { code: 'notebook_result_invalid' });
 });
 
 function inventoryRecord(index, overrides = {}) {

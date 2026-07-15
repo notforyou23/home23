@@ -8,6 +8,7 @@ const {
   memorySourceError,
   parseBoundedInteger,
   rethrowAbort,
+  summarizeRetrievalAuthority,
   throwIfAborted,
 } = require('./contracts.cjs');
 const { sampleMemoryGraph } = require('./graph.cjs');
@@ -151,20 +152,26 @@ function createMemoryTools({
       return withSource(async (source) => {
         const summary = await source.summarize({ signal });
         const match = await source.searchKeyword({ query, topK, tag, signal });
+        const authoritySummary = summarizeRetrievalAuthority(
+          match.results.map(result => result.retrievalAuthority || {}),
+        );
         return {
           ok: true,
           query,
           resultsFound: match.results.length,
           totalNodes: summary.nodes,
           results: match.results,
-          evidence: source.getEvidence({
-            completeCoverage: match.results.length < topK,
+          evidence: {
+            ...(match.evidence || source.getEvidence()),
+            completeCoverage: match.evidence?.completeCoverage
+              ?? (match.results.length < topK),
             filters: { tag },
             limits: { topK },
             authoritativeTotals: { nodes: summary.nodes, edges: summary.edges },
             returnedTotals: { nodes: match.results.length, edges: 0 },
             filteredTotal: match.filtered || 0,
-          }),
+            authoritySummary: match.evidence?.authoritySummary || authoritySummary,
+          },
         };
       }, { signal, identity });
     },

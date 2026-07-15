@@ -1,4 +1,8 @@
 const { UnifiedClient } = require('../core/unified-client');
+const { randomUUID } = require('node:crypto');
+const {
+  attestMemoryAuthorityIfAvailable,
+} = require('../../../shared/memory-authority-attestation.cjs');
 const {
   CampaignDecisionSchema,
   SynthesisDecisionSchema,
@@ -293,13 +297,22 @@ class GoalCurator {
     ].map((ref) => String(ref || '').trim()).filter(Boolean))).slice(0, 8)
       .map((ref) => ref.slice(0, 240));
     const incidentId = goal.incidentId || goal.metadata?.incidentId || goal.metadata?.incident_id || null;
+    const resolutionId = `goal-resolution-${randomUUID()}`;
+    const receiptIdentity = `goal-curator:${event.goalId}:${resolutionType}:${resolutionId}`.slice(0, 240);
+    const receiptRef = `worker-receipt:${receiptIdentity}`;
+    const authoritySourceRefs = Array.from(new Set([
+      `goal:${event.goalId}`,
+      ...sourceRefs,
+    ])).slice(0, 8);
 
     try {
-      const node = await this.memory.addNode({
+      const resolutionNode = {
+        id: resolutionId,
         concept,
         tag: 'goal_resolution',
         type: 'goal_resolution',
         tags: ['goal_resolution', resolutionType, `goal:${event.goalId}`],
+        created: resolvedAt,
         asserted_at: resolvedAt,
         asserted_cycle: cycle,
         confidence_decay: 1,
@@ -311,8 +324,10 @@ class GoalCurator {
           resolved_at: resolvedAt,
           resolved_cycle: cycle,
           supersedes_goal_id: event.goalId,
-          incidentId,
-          source_refs: sourceRefs,
+          relatedIncidentId: incidentId,
+          supporting_refs: sourceRefs,
+          receipt_identity: receiptIdentity,
+          closure_proof_refs: [receiptRef],
           pursuitCount: goal.pursuitCount || 0,
           finalProgress: goal.progress || 0,
           provenance: {
@@ -320,14 +335,16 @@ class GoalCurator {
             authorityClass: 'worker_receipt',
             retrievalDomain: 'closed_incidents',
             semanticTime: resolvedAt,
-            sourceRefs,
-            evidenceRefs: sourceRefs,
+            sourceRefs: authoritySourceRefs,
+            evidenceRefs: [receiptRef, ...sourceRefs].slice(0, 8),
             operationalAuthority: false,
             requiresFreshVerification: false,
             generationMethod: 'goal_curator_resolution',
           },
         },
-      });
+      };
+      attestMemoryAuthorityIfAvailable(resolutionNode);
+      const node = await this.memory.addNode(resolutionNode);
       if (node && goal) {
         goal.resolutionNodeId = node.id;
       }

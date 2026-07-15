@@ -4,6 +4,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
 const zlib = require('zlib');
+const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
 
 /**
  * CodeCreationAgent - Actual code generation specialist
@@ -3147,7 +3148,10 @@ if __name__ == "__main__":
               // Local backend: use local Python to check syntax
               const { execSync } = require('child_process');
               try {
-                execSync(`python3 -m py_compile "${entry.localPath}"`, { stdio: 'pipe' });
+                execSync(`python3 -m py_compile "${entry.localPath}"`, {
+                  stdio: 'pipe',
+                  env: unprivilegedChildEnv(),
+                });
                 checkResult = { content: 'SYNTAX_OK' };
               } catch (error) {
                 checkResult = { content: `SYNTAX_ERROR\n${error.message}` };

@@ -2,6 +2,7 @@ const { execFile, spawn } = require('child_process');
 const fs = require('fs').promises;
 const path = require('path');
 const crypto = require('crypto');
+const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
 
 /**
  * PythonExecutor - Safe Python code execution with file tracking
@@ -82,12 +83,12 @@ class PythonExecutor {
 
     // Try python3 first (preferred on macOS/Linux)
     try {
-      execFileSync('python3', ['--version'], { stdio: 'ignore' });
+      execFileSync('python3', ['--version'], { stdio: 'ignore', env: unprivilegedChildEnv() });
       return 'python3';
     } catch {
       // Try python (Windows or older systems)
       try {
-        execFileSync('python', ['--version'], { stdio: 'ignore' });
+        execFileSync('python', ['--version'], { stdio: 'ignore', env: unprivilegedChildEnv() });
         return 'python';
       } catch {
         throw new Error('Python not found. Please install Python 3.8+ or set pythonPath in config.');
@@ -336,7 +337,7 @@ class PythonExecutor {
       // Use spawn instead of exec for better control and no shell interpretation
       const childProcess = spawn(this.pythonPath, [absoluteScriptPath], {
         cwd: cwd,
-        env: { ...process.env, PYTHONUNBUFFERED: '1' } // Unbuffered output
+        env: unprivilegedChildEnv(process.env, { PYTHONUNBUFFERED: '1' }) // Unbuffered output
       });
 
       // Track process for potential cleanup

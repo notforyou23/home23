@@ -3,6 +3,7 @@
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { unprivilegedChildEnv } = require('../../../shared/child-process-env.cjs');
 
 const NATIVE_TEXT_EXTS = new Set([
   '.md', '.txt', '.yaml', '.yml', '.json', '.csv', '.org', '.rst',
@@ -70,7 +71,8 @@ class DocumentConverter {
       try {
         execFileSync(this.pythonPath, ['-c', 'from markitdown import MarkItDown'], {
           timeout: 10000,
-          stdio: 'pipe'
+          stdio: 'pipe',
+          env: unprivilegedChildEnv(),
         });
         this._available = true;
       } catch {
@@ -140,7 +142,7 @@ class DocumentConverter {
       }
 
       try {
-        const env = { ...process.env };
+        const env = unprivilegedChildEnv();
         if (this.visionModel) {
           env.MLM_MODEL = this.visionModel;
         }

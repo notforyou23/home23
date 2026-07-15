@@ -11,6 +11,7 @@ const {
   scoreMemoryAuthority,
   getSemanticTimeMs,
   normalizeRetrievalIntent,
+  createMemoryAuthorityResolver,
 } = require('../../../shared/memory-authority.cjs');
 
 function safeSnippet(text, maxLen = 120) {
@@ -45,7 +46,11 @@ async function getActiveClusterSummary(memoryGraph, maxClusters = 5, maxNodesPer
     if (!Array.isArray(nodesIterable) || nodesIterable.length === 0) return null;
 
     const intent = normalizeRetrievalIntent(options.intent || 'current_state');
-    const nodes = nodesIterable
+    const authorityEligible = createMemoryAuthorityResolver({
+      intent,
+      authorityCandidates: nodesIterable,
+    }).apply(nodesIterable);
+    const nodes = authorityEligible
       .filter(n => n && (n.concept || n.summary || n.keyPhrase || n.tag))
       .filter((n) => intent !== 'current_state' || (
         classifyMemoryDomain(n) === 'current_ops'

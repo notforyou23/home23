@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { exec } from 'node:child_process';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
+import { unprivilegedChildEnv } from '../../security/child-process-env.js';
 
 function resolvePath(inputPath: string, workspacePath: string): string {
   if (inputPath.startsWith('/')) return inputPath;
@@ -124,7 +125,11 @@ export const listFilesTool: ToolDefinition = {
     // Use rg --files which properly supports ** recursive globs (find -path does not)
     const cmd = `rg --files --glob ${JSON.stringify(pattern)} ${JSON.stringify(cwd)} 2>/dev/null | head -200`;
     return new Promise((resolve) => {
-      exec(cmd, { timeout: 15_000, maxBuffer: 1024 * 512 }, (_error, stdout) => {
+      exec(cmd, {
+        timeout: 15_000,
+        maxBuffer: 1024 * 512,
+        env: unprivilegedChildEnv(),
+      }, (_error, stdout) => {
         const files = stdout.trim().split('\n').filter(Boolean);
         if (files.length === 0) resolve({ content: 'No files matched.' });
         else resolve({ content: files.join('\n') + (files.length >= 200 ? '\n(truncated at 200)' : '') });
@@ -171,7 +176,12 @@ export const searchFilesTool: ToolDefinition = {
     const cmd = `{ ${rgCmd}; } || { ${grepCmd}; }`;
 
     return new Promise((resolve) => {
-      exec(cmd, { maxBuffer: 1024 * 1024, timeout: 30_000, shell: '/bin/bash' }, (error, stdout, stderr) => {
+      exec(cmd, {
+        maxBuffer: 1024 * 1024,
+        timeout: 30_000,
+        shell: '/bin/bash',
+        env: unprivilegedChildEnv(),
+      }, (error, stdout, stderr) => {
         const execError = error as (Error & { code?: string | number; killed?: boolean; signal?: string }) | null;
 
         // exec returns an error when the command times out or the shell

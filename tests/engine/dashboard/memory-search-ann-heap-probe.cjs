@@ -2,12 +2,15 @@
 
 const assert = require('node:assert/strict');
 const { parseAnnMetadataChunks } = require('../../../engine/src/dashboard/memory-search');
+const {
+  ANN_AUTHORITY_PROJECTION_SCHEMA,
+} = require('../../../shared/ann-label-contract.cjs');
 
 const LABELS = 25_000;
 const LARGE_CONCEPT = 'ann-stream-canary '.repeat(256);
 
 async function* metadataChunks() {
-  yield Buffer.from(`{"version":1,"dimension":768,"count":${LABELS},"skipped":0,"labels":[`);
+  yield Buffer.from(`{"version":1,"authorityProjectionSchema":"${ANN_AUTHORITY_PROJECTION_SCHEMA}","dimension":768,"count":${LABELS},"skipped":0,"labels":[`);
   for (let index = 0; index < LABELS; index += 1) {
     if (index > 0) yield Buffer.from(',');
     yield Buffer.from(JSON.stringify({
@@ -27,7 +30,7 @@ async function* metadataChunks() {
 }
 
 async function* amplifiedMetadataChunks() {
-  yield Buffer.from(`{"version":1,"dimension":768,"count":${LABELS},"skipped":0,"labels":[`);
+  yield Buffer.from(`{"version":1,"authorityProjectionSchema":"${ANN_AUTHORITY_PROJECTION_SCHEMA}","dimension":768,"count":${LABELS},"skipped":0,"labels":[`);
   for (let index = 0; index < 1_000_000; index += 1) {
     if (index > 0) yield Buffer.from(',');
     yield Buffer.from(`{"id":"node-${index}","concept":""}`);

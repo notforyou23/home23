@@ -2989,6 +2989,81 @@ The wider protected operation matrix remains required before live rollout.
 
 ---
 
+## Patch 63 — Privileged child-environment isolation
+
+**Vendored production files touched:**
+- `cosmo23/engine/src/agents/`
+- `cosmo23/engine/src/execution/`
+- `cosmo23/engine/src/core/mcp-client.js`
+- `cosmo23/engine/src/interactive/interactive-tools.js`
+- `cosmo23/engine/src/planning/acceptance-validator.js`
+- `cosmo23/engine/src/agents/data-acquisition-agent.js`
+- `cosmo23/ide/tools.js`
+
+**Home23 integration companion:**
+- `shared/child-process-env.cjs`
+
+**Problem:** Model-, tool-, skill-, provider-, and acquired-data-controlled
+subprocesses inherited the service environment. That environment can contain
+the brain-operations capability root and memory-authority attestation key.
+Data acquisition also interpolated external JSON keys into generated Python
+source, making ordinary SQLite consolidation fragile and giving data control
+over executable source text.
+
+**Fix:** Every unprivileged child path builds its environment through the
+central scrubber after applying requested overrides, so an override cannot
+restore either privileged key. Data acquisition now invokes one static Python
+helper with argv paths, quotes SQLite identifiers, binds values, and treats
+hostile-looking keys as literal column names rather than source. Trusted PM2
+and service launchers retain their explicit environments. This is defense in
+depth for application-layer integrity inside one OS-user boundary; it is not a
+claim that HMAC protects against hostile arbitrary local code running as that
+same user.
+
+**Verification:** Static inventory tests cover every vendored child boundary;
+dynamic probes prove the protected variables do not cross representative bash,
+macOS, and Python children. A hostile-key SQLite round trip proves no generated
+source execution. No service was restarted for offline verification.
+
+---
+
+## Patch 64 — Authenticated Query/PGS projection and honest scope evidence
+
+**Vendored production files touched:**
+- `cosmo23/lib/pinned-query-projection.js`
+- `cosmo23/lib/provider-record-sanitizer.js`
+- `cosmo23/lib/pgs-engine.js`
+- `cosmo23/pgs-engine/src/pinned-store.js`
+- `cosmo23/pgs-engine/src/pinned-operation.js`
+
+**Problem:** Query and PGS could derive authority after provider redaction,
+which invalidated legitimate signed records, or could retain verified authority
+while relevance/provider text included fields added after signing. Reusable PGS
+SQLite state stored an unauthenticated compact authority object, and fractional
+requested-scope completion was reported as if it described ANN completeness.
+
+**Fix:** Query and PGS classify raw nodes only after validating their authority
+attestation, then expose authenticated records through the strict canonical
+signed-field projection before path redaction. PGS stores the compact provider
+authority with an integrity MAC bound to node identity, sanitized record bytes,
+source revision/descriptor, and projection version. Pre-authority schema-v3
+sessions migrate in byte-bounded, quota-checkpointed, cancellable pages while
+preserving completed sweeps. Missing-key transitions remain readable but
+demote to narrative. PGS now reports index coverage as unavailable for its
+logical projection and publishes requested scope with final successful/pending
+work-unit counts separately. Repeated batch scopes are transient: one compact
+retained policy preserves monotonic level/target unions, stale historical rows
+compact on reopen, and completed sweep results remain independently durable.
+
+**Verification:** Regressions cover post-signature text/metadata injection,
+path redaction, forged or copied SQLite authority, changed sanitized records,
+missing-key transitions, frozen source evidence, retryable partial scope,
+completed-sweep migration, and exact cancellation recovery. The large
+wait-aware PGS and aggregate gates remain release requirements before rollout;
+the scale suite also holds 1,000 repeated attempts to bounded policy storage.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -3367,3 +3442,16 @@ The wider protected operation matrix remains required before live rollout.
   only a newly created session whose initial projection never became reusable.
 - **2026-07-14** — Patch 62 keeps PGS continuation on its verified immutable
   retained-session projection instead of repinning the advancing live brain.
+- **2026-07-15** — Patch 63 prevents COSMO model-, tool-, skill-, and
+  provider-controlled subprocesses from inheriting Home23's brain-operations
+  capability root or memory-authority attestation key. All affected shell,
+  Python, IDE, interactive, acceptance, discovery, execution-monitor, and
+  external-process MCP boundaries now build child environments through the
+  shared scrubber after applying any requested overrides, so an override cannot
+  restore a protected key. Trusted service launchers remain unchanged and keep
+  their explicit PM2/runtime environment. This is application-layer integrity
+  within one OS-user boundary, not protection from hostile arbitrary local code.
+- **2026-07-15** — Patch 64 authenticates Query/PGS provider authority before
+  redaction, binds reusable PGS authority to its node/source projection, reports
+  requested scope separately from unavailable index coverage, and compacts
+  transient attempt mappings without losing completed sweeps.

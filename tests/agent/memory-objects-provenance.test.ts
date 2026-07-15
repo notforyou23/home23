@@ -8,6 +8,15 @@ import { MemoryObjectStore } from '../../src/agent/memory-objects.js';
 import { promoteToMemoryTool } from '../../src/agent/tools/promote.js';
 import { AgentLoop } from '../../src/agent/loop.js';
 import { ConversationHistory } from '../../src/agent/history.js';
+import authorityAttestation from '../../shared/memory-authority-attestation.cjs';
+
+const AUTHORITY_KEY = '6'.repeat(64);
+const priorAuthorityKey = process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = AUTHORITY_KEY;
+test.after(() => {
+  if (priorAuthorityKey === undefined) delete process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+  else process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = priorAuthorityKey;
+});
 
 function baseObject(overrides: Record<string, unknown> = {}): any {
   return {
@@ -62,11 +71,14 @@ test('MemoryObjectStore binds jtr correction authority to validated recorded-tur
   }), { chatId: 'chat-1', messageRef: 'fake-message', userText: 'Correction: fake.' });
 
   assert.equal(authenticated.provenance.node_profile?.authorityClass, 'jtr_correction');
+  assert.equal(authorityAttestation.verifyMemoryAuthorityAttestation(authenticated, AUTHORITY_KEY), true);
   assert.equal(authenticated.provenance.node_profile?.retrievalDomain, 'current_ops');
   assert.ok(authenticated.provenance.source_refs.includes(messageRef));
   assert.ok(authenticated.evidence.evidence_links.includes(messageRef));
   assert.notEqual(replayed.provenance.node_profile?.authorityClass, 'jtr_correction');
   assert.notEqual(forged.provenance.node_profile?.authorityClass, 'jtr_correction');
+  assert.equal(authorityAttestation.verifyMemoryAuthorityAttestation(replayed, AUTHORITY_KEY), false);
+  assert.equal(authorityAttestation.verifyMemoryAuthorityAttestation(forged, AUTHORITY_KEY), false);
   assert.notEqual(forged.actor, 'jtr');
   assert.equal('createAuthenticatedUserIngress' in store, false);
 });
@@ -94,6 +106,28 @@ test('unrelated correction prose cannot consume or inherit a recorded user claim
 
   assert.notEqual(unrelated.provenance.node_profile?.authorityClass, 'jtr_correction');
   assert.equal(exact.provenance.node_profile?.authorityClass, 'jtr_correction');
+  assert.equal(authorityAttestation.verifyMemoryAuthorityAttestation(exact, AUTHORITY_KEY), true);
+});
+
+test('authority-bearing MemoryObject mutation invalidates the authenticated correction signature', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-memory-object-attestation-mutation-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const messageRef = 'turn:attestation-mutation:user';
+  const userText = 'Correction: the route is manifest-v1.';
+  const store = new MemoryObjectStore(dir, {
+    validateCorrectionIngress: (ingress) => ingress.messageRef === messageRef
+      && ingress.chatId === 'chat-1' && ingress.userText === userText,
+  });
+  const signed = store.createObject(baseObject({
+    type: 'correction', statement: userText,
+  }), { chatId: 'chat-1', messageRef, userText });
+  assert.equal(authorityAttestation.verifyMemoryAuthorityAttestation(signed, AUTHORITY_KEY), true);
+
+  const changed = store.updateObject(signed.memory_id, {
+    statement: 'Correction: a different route is authoritative.',
+  });
+  assert.ok(changed);
+  assert.equal(authorityAttestation.verifyMemoryAuthorityAttestation(changed, AUTHORITY_KEY), false);
 });
 
 test('AgentLoop atomically consumes an authenticated user turn after one correction', (t) => {
@@ -141,6 +175,7 @@ test('all query, PGS, compiler, model, and report method variants are terminally
     assert.equal(object.provenance.node_profile?.authorityClass, 'narrative', generation_method);
     assert.equal(object.provenance.node_profile?.operationalAuthority, false, generation_method);
     assert.equal(object.provenance.node_profile?.requiresFreshVerification, true, generation_method);
+    assert.equal(object.provenance.node_profile?.attestation, undefined, generation_method);
   }
 });
 

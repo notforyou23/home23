@@ -76,6 +76,7 @@ const { createMcpProxyRouter } = require('./mcp-proxy-router.js');
 const {
   registerSynthesisCompatibilityRoutes,
 } = require('./brain-operations/synthesis-compatibility-routes.js');
+const { unprivilegedChildEnv } = require('../../../shared/child-process-env.cjs');
 
 const PM2_ENV_BLOCKLIST = [
   'cron_restart',
@@ -90,6 +91,7 @@ const PM2_ENV_BLOCKLIST = [
   'COSMO_RUNTIME_DIR',
   'COSMO_WORKSPACE_PATH',
   'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY',
+  'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY',
 ];
 
 function cleanPm2Env(extra = {}) {
@@ -8450,7 +8452,8 @@ You are empowered to explore and understand. The user trusts you to discover the
           const output = execSync(cmd, { 
             encoding: 'utf-8',
             maxBuffer: 10 * 1024 * 1024,
-            timeout: 10000 // 10 second timeout
+            timeout: 10000, // 10 second timeout
+            env: unprivilegedChildEnv(),
           });
           
           console.log(`[IDE GREP] Found matches (${output.length} chars)`);
@@ -9479,6 +9482,7 @@ You are empowered to explore and understand. The user trusts you to discover the
         
         const proc = spawn('node', [scriptPath, ...args], {
           cwd: path.join(__dirname, '..', '..'),
+          env: unprivilegedChildEnv(),
           detached: true,
           stdio: 'ignore'  // Don't block on I/O
         });
@@ -9581,7 +9585,8 @@ You are empowered to explore and understand. The user trusts you to discover the
           config
         ], {
           cwd: path.join(__dirname, '..', '..'),
-          env: process.env,  // Pass environment variables (API keys)
+          // Provider credentials remain available; Home23 authority capabilities do not.
+          env: unprivilegedChildEnv(),
           detached: true,
           stdio: 'ignore'  // Don't block on I/O
         });

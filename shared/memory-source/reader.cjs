@@ -46,7 +46,9 @@ const {
 } = require('./private-capabilities.cjs');
 const {
   projectMemoryAuthority,
+  projectMemoryRelations,
   scoreMemoryAuthority,
+  createMemoryAuthorityResolver,
 } = require('../memory-authority.cjs');
 const { createDescriptor } = require('./descriptor.cjs');
 
@@ -460,14 +462,25 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
         maxBytes,
       };
     },
-    async searchKeyword({ query, topK = 10, tag = null, signal } = {}) {
+    async searchKeyword({ query, topK = 10, tag = null, intent = null, signal } = {}) {
+      const searchStartedAt = performance.now();
       const tokens = normalizeKeywordTokens(query);
       const limit = parseBoundedInteger(topK, {
         name: 'topK', defaultValue: 10, min: 1, max: 100,
       });
       const exactTag = normalizeOptionalTag(tag);
       const results = [];
+      const resolver = createMemoryAuthorityResolver({
+        intent: intent || query,
+      });
       let filtered = 0;
+      // Authority events can occur after a higher-scoring stale claim in the
+      // physical source. Build the bounded relation index first so suppressed
+      // rows never consume the caller's top-K heap.
+      for await (const node of this.iterateNodes({ signal })) {
+        throwIfAborted(signal);
+        resolver.observe(node, { trustedProjection: false });
+      }
       for await (const node of this.iterateNodes({ signal })) {
         throwIfAborted(signal);
         const haystack = JSON.stringify({
@@ -485,15 +498,38 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
           const normalizedQuery = String(query || '').trim().toLocaleLowerCase('en-US');
           const keywordRelevance = (matchedTokens.length / tokens.length)
             + (normalizedQuery && haystack.includes(normalizedQuery) ? 1 : 0);
+          const resolvedNode = resolver.apply([node])[0];
+          if (!resolvedNode) continue;
+          const retrievalAuthority = projectMemoryAuthority(resolvedNode, {
+            baseScore: keywordRelevance,
+            query,
+            intent: intent || query,
+          });
           results.push({
-            id: normalizeId(node.id),
-            concept: typeof node.concept === 'string' ? node.concept.slice(0, 1024) : null,
-            tag: node.tag ?? null,
-            retrievalScore: scoreMemoryAuthority(node, keywordRelevance, { query }),
-            retrievalAuthority: projectMemoryAuthority(node, {
-              baseScore: keywordRelevance,
-              query,
+            id: normalizeId(resolvedNode.id),
+            concept: typeof resolvedNode.concept === 'string'
+              ? resolvedNode.concept.slice(0, 1024) : null,
+            tag: resolvedNode.tag ?? null,
+            status: resolvedNode.status ?? resolvedNode?.metadata?.status ?? null,
+            retrievalMode: 'logical-source-scan',
+            retrievalScore: scoreMemoryAuthority(resolvedNode, keywordRelevance, {
+              query, intent: intent || query,
             }),
+            retrievalDomain: retrievalAuthority.retrievalDomain,
+            authorityClass: retrievalAuthority.authorityClass,
+            semanticTime: retrievalAuthority.semanticTime,
+            evidencePresent: retrievalAuthority.sourceChain.length > 0,
+            authorityRelations: resolvedNode.authorityRelations
+              || projectMemoryRelations(resolvedNode),
+            ...(resolvedNode.resolutionEvidence
+              ? { resolutionEvidence: resolvedNode.resolutionEvidence } : {}),
+            ...(resolvedNode.correctionEvidence
+              ? { correctionEvidence: resolvedNode.correctionEvidence } : {}),
+            ...(resolvedNode.closureEvidence
+              ? { closureEvidence: resolvedNode.closureEvidence } : {}),
+            ...(resolvedNode.supersessionEvidence
+              ? { supersessionEvidence: resolvedNode.supersessionEvidence } : {}),
+            retrievalAuthority,
           });
           results.sort((left, right) => Number(right.retrievalScore || 0)
             - Number(left.retrievalScore || 0)
@@ -501,16 +537,56 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
           if (results.length > limit) results.pop();
         }
       }
-      return {
-        results,
-        filtered,
-        evidence: this.getEvidence({
-          returnedTotals: { nodes: results.length, edges: 0 },
+      const resolvedResults = results
+        .sort((left, right) => Number(right.retrievalScore || 0)
+          - Number(left.retrievalScore || 0)
+          || String(left.id).localeCompare(String(right.id)))
+        .slice(0, limit);
+      const fallback = {
+        route: 'logical-source-scan',
+        reason: 'keyword_source_scan',
+        completeness: 'complete',
+      };
+      const keywordScoring = Math.round((performance.now() - searchStartedAt) * 10000) / 10000;
+      const indexCoverage = {
+        complete: false,
+        indexedRevision: manifest.ann?.indexFile && manifest.ann?.metaFile
+          ? manifest.ann.builtFromRevision ?? null
+          : null,
+        currentRevision: manifest.currentRevision ?? null,
+        coveredThroughRevision: null,
+        route: 'logical-source-scan',
+        completeness: 'complete',
+      };
+      const stageTimingsMs = {
+        sourceOpen: 0,
+        embedding: 0,
+        overlayRefresh: 0,
+        annLoad: 0,
+        annSearch: 0,
+        overlayScoring: 0,
+        keywordScoring,
+        merge: 0,
+        response: keywordScoring,
+      };
+      const evidence = {
+        ...this.getEvidence({
+          returnedTotals: { nodes: resolvedResults.length, edges: 0 },
           completeCoverage: true,
           filteredTotal: filtered,
           filters: { tag: exactTag },
           limits: { topK: limit },
         }),
+        sourceHealth: 'degraded',
+        fallback,
+        retrievalMode: 'logical-source-scan',
+        indexCoverage,
+        stageTimingsMs,
+      };
+      return {
+        results: resolvedResults,
+        filtered,
+        evidence,
       };
     },
     isCurrent() {

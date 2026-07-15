@@ -6,6 +6,9 @@ const assert = require('node:assert/strict');
 const {
   createQueryOperationExecutor,
 } = require('../../cosmo23/server/lib/query-operation-worker.js');
+const {
+  attestRetrievalAuthoritySummary,
+} = require('../../shared/memory-source/contracts.cjs');
 
 function createSourcePin() {
   const evidenceCalls = [];
@@ -59,6 +62,11 @@ function childEvidence(overrides = {}) {
       : completeCoverage ? 'no_match' : 'unknown',
     ...overrides,
   };
+}
+
+function attestedChildEvidence(overrides = {}) {
+  const evidence = childEvidence(overrides);
+  return attestRetrievalAuthoritySummary(evidence, evidence.authoritySummary || {});
 }
 
 function queryParameters(overrides = {}) {
@@ -201,6 +209,7 @@ test('direct Query forwards only the trusted projection and returns a canonical 
     returnedTotals: { nodes: 2, edges: 1 },
     completeCoverage: true,
     filteredTotal: 0,
+    authoritySummary: envelope.sourceEvidence.authoritySummary,
   }]);
   assert.deepEqual(envelope.sourceEvidence.returnedTotals, { nodes: 2, edges: 1 });
   assert.equal(envelope.sourceEvidence.matchOutcome, 'matches');
@@ -475,6 +484,160 @@ test('retrieval facts are re-bound to canonical source identity and authority', 
   assert.deepEqual(envelope.sourceEvidence.authoritativeTotals, { nodes: 20, edges: 19 });
   assert.deepEqual(envelope.sourceEvidence.returnedTotals, { nodes: 1, edges: 0 });
   assert.equal(envelope.sourceEvidence.matchOutcome, 'matches');
+});
+
+test('canonical reconciliation preserves the approved child retrieval evidence envelope', async () => {
+  const retrievalEnvelope = {
+    retrievalMode: 'semantic-ann-delta-overlay',
+    indexCoverage: {
+      complete: true,
+      indexedRevision: 17,
+      currentRevision: 17,
+      coveredThroughRevision: 17,
+      deltaRecords: 1,
+      distinctChangedNodes: 1,
+      distinctUpsertedNodes: 1,
+      distinctRemovedNodes: 0,
+      edgeOnlyRecords: 0,
+      route: 'ann-plus-delta',
+      completeness: 'complete',
+    },
+    stageTimingsMs: { sourceOpen: 1, embedding: 2, response: 3 },
+    authoritySummary: {
+      total: 1,
+      authorityClasses: { verified_current_state: 1 },
+      retrievalDomains: { current_ops: 1 },
+      sourceChain: {
+        withEvidence: 1,
+        withoutEvidence: 0,
+        referenceCounts: { evidence: 1 },
+      },
+      requiresFreshVerification: 0,
+    },
+  };
+  const harness = createHarness(() => ({
+    answer: 'Evidence-backed answer',
+    sourceEvidence: attestedChildEvidence({
+      returnedTotals: { nodes: 1, edges: 0 },
+      ...retrievalEnvelope,
+    }),
+    resultArtifact: null,
+  }));
+
+  const envelope = await harness.executor(operationContext('query', queryParameters()));
+
+  assert.equal(envelope.sourceEvidence.retrievalMode, retrievalEnvelope.retrievalMode);
+  assert.deepEqual(envelope.sourceEvidence.indexCoverage, retrievalEnvelope.indexCoverage);
+  assert.deepEqual(envelope.sourceEvidence.stageTimingsMs, retrievalEnvelope.stageTimingsMs);
+  assert.equal(envelope.sourceEvidence.authoritySummary.total, 1);
+  assert.equal(envelope.sourceEvidence.authoritySummary.authorityClasses.verified_current_state, 1);
+  assert.equal(envelope.sourceEvidence.authoritySummary.retrievalDomains.current_ops, 1);
+  assert.equal(envelope.sourceEvidence.authoritySummary.sourceChain.referenceCounts.evidence, 1);
+  assert.equal(envelope.result.sourceEvidence, envelope.sourceEvidence);
+});
+
+test('canonical reconciliation rejects forged retrieval coverage and authority populations', async () => {
+  const honestEnvelope = {
+    retrievalMode: 'semantic-ann-delta-overlay',
+    indexCoverage: {
+      complete: true,
+      indexedRevision: 17,
+      currentRevision: 17,
+      coveredThroughRevision: 17,
+      deltaRecords: 0,
+      distinctChangedNodes: 0,
+      distinctUpsertedNodes: 0,
+      distinctRemovedNodes: 0,
+      edgeOnlyRecords: 0,
+      route: 'ann-plus-delta',
+      completeness: 'complete',
+    },
+    authoritySummary: {
+      total: 1,
+      authorityClasses: { verified_current_state: 1 },
+      retrievalDomains: { current_ops: 1 },
+      sourceChain: { withEvidence: 1, withoutEvidence: 0, referenceCounts: {} },
+      requiresFreshVerification: 0,
+    },
+  };
+  const variants = [
+    { indexCoverage: { ...honestEnvelope.indexCoverage, currentRevision: 18 } },
+    { indexCoverage: { ...honestEnvelope.indexCoverage, indexedRevision: 16 } },
+    { indexCoverage: { ...honestEnvelope.indexCoverage, coveredThroughRevision: 16 } },
+    { indexCoverage: { ...honestEnvelope.indexCoverage, completeness: 'partial' } },
+    { indexCoverage: { ...honestEnvelope.indexCoverage, complete: 'true' } },
+    { indexCoverage: { ...honestEnvelope.indexCoverage, currentRevision: '17' } },
+    { authoritySummary: { ...honestEnvelope.authoritySummary, total: '1' } },
+  ];
+  for (const variant of variants) {
+    const retrievalEnvelope = { ...honestEnvelope, ...variant };
+    const harness = createHarness(() => ({
+      answer: 'must not escape',
+      sourceEvidence: childEvidence({
+        returnedTotals: { nodes: 1, edges: 0 },
+        ...retrievalEnvelope,
+      }),
+      resultArtifact: null,
+    }));
+    await assert.rejects(
+      harness.executor(operationContext('query', queryParameters())),
+      error => error.code === 'worker_result_invalid',
+    );
+  }
+});
+
+test('canonical reconciliation accepts the compact Query authority summary after prompt trimming', async () => {
+  const harness = createHarness(() => ({
+    answer: 'Evidence-backed answer',
+    sourceEvidence: attestedChildEvidence({
+      returnedTotals: { nodes: 1, edges: 0 },
+      authoritySummary: {
+        verifiedCurrentState: 1,
+        jtrCorrection: 0,
+        artifactLog: 0,
+        workerReceipt: 0,
+        generatedDoctrine: 0,
+        narrative: 0,
+        requiresFreshVerification: 0,
+      },
+    }),
+    resultArtifact: null,
+  }));
+
+  const envelope = await harness.executor(operationContext('query', queryParameters()));
+
+  assert.equal(envelope.sourceEvidence.authoritySummary.total, 1);
+  assert.equal(envelope.sourceEvidence.authoritySummary.authorityClasses.verified_current_state, 1);
+  assert.equal(envelope.sourceEvidence.authoritySummary.retrievalDomains.current_ops, 0);
+});
+
+test('canonical reconciliation does not accept a same-total narrative to verified substitution', async () => {
+  const harness = createHarness(() => ({
+    answer: 'Answer-side counts must not authenticate authority.',
+    sourceEvidence: childEvidence({
+      returnedTotals: { nodes: 1, edges: 0 },
+      authoritySummary: {
+        total: 1,
+        authorityClasses: { verified_current_state: 1 },
+        retrievalDomains: { current_ops: 1 },
+        sourceChain: {
+          withEvidence: 1,
+          withoutEvidence: 0,
+          referenceCounts: { evidence: 1 },
+        },
+        requiresFreshVerification: 0,
+      },
+    }),
+    resultArtifact: null,
+  }));
+
+  const envelope = await harness.executor(operationContext('query', queryParameters()));
+
+  assert.equal(envelope.sourceEvidence.authoritySummary.total, 1);
+  assert.equal(envelope.sourceEvidence.authoritySummary.authorityClasses.verified_current_state, 0);
+  assert.equal(envelope.sourceEvidence.authoritySummary.authorityClasses.narrative, 1);
+  assert.equal(envelope.sourceEvidence.authoritySummary.sourceChain.withEvidence, 0);
+  assert.equal(envelope.sourceEvidence.authoritySummary.requiresFreshVerification, 1);
 });
 
 test('forged canonical assertions and malformed retrieval totals fail closed', async () => {

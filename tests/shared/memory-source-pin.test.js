@@ -25,8 +25,17 @@ const {
 } = require('../../shared/memory-source/durable-lock-authority.cjs');
 const { createDefaultLoadAnn } = require('../../engine/src/dashboard/memory-search');
 const {
+  ANN_AUTHORITY_PROJECTION_SCHEMA,
+} = require('../../shared/ann-label-contract.cjs');
+const {
+  memoryAuthorityAttestationKeyId,
+} = require('../../shared/memory-authority-attestation.cjs');
+const {
   BrainOperationStore,
 } = require('../../engine/src/dashboard/brain-operations/operation-store.js');
+
+const AUTHORITY_KEY = '8'.repeat(64);
+const AUTHORITY_KEY_ID = memoryAuthorityAttestationKeyId(AUTHORITY_KEY);
 
 async function tempDir(prefix) {
   return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -39,6 +48,8 @@ async function writeManifestBrain() {
   await fsp.writeFile(path.join(brain, 'delta.jsonl'), '');
   await fsp.writeFile(path.join(brain, 'ann.index'), 'ann-index-canary\n');
   await fsp.writeFile(path.join(brain, 'ann.meta.json'), `${JSON.stringify({
+    authorityProjectionSchema: ANN_AUTHORITY_PROJECTION_SCHEMA,
+    authorityAttestationKeyId: AUTHORITY_KEY_ID,
     dimension: 1,
     count: 1,
     skipped: 0,
@@ -869,6 +880,7 @@ test('ANN loading uses anchored index and metadata handles after pathname replac
     }
     const ann = await createDefaultLoadAnn({
       hnswlibLoader: () => ({ HierarchicalNSW: FakeIndex }),
+      authorityKey: AUTHORITY_KEY,
     })(source, source.manifest.ann);
     assert.equal(ann.dimension, 1);
     assert.equal(pathsRead.length, 1);

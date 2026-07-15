@@ -1,8 +1,14 @@
 'use strict';
 
+const {
+  verifyMemoryAuthorityAttestation,
+} = require('./memory-authority-attestation.cjs');
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_CHAIN_REFS = 8;
 const MAX_REF_LENGTH = 240;
+const MAX_RELATION_REFS = 12;
+const MAX_AUTHORITY_EVENTS = 5000;
 
 const MEMORY_DOMAINS = Object.freeze([
   'current_ops',
@@ -86,28 +92,36 @@ function nodeProfile(node) {
   return metadataProfile.schema ? metadataProfile : nested;
 }
 
-function storedDomain(node) {
+function authenticatedNodeProfile(node, options = {}) {
   const profile = nodeProfile(node);
+  return profile.schema === 'home23.node-provenance.v1'
+    && verifyMemoryAuthorityAttestation(node, options.authorityKey)
+    ? profile
+    : null;
+}
+
+function storedDomain(node, options = {}) {
+  const profile = authenticatedNodeProfile(node, options) || {};
   const candidates = [
     profile.retrievalDomain,
     profile.retrieval_domain,
-    node?.retrievalDomain,
-    node?.retrieval_domain,
-    node?.metadata?.retrievalDomain,
-    node?.metadata?.retrieval_domain,
+    ...(options.trustedProjection === true ? [
+      node?.retrievalDomain,
+      node?.retrieval_domain,
+    ] : []),
   ];
   return candidates.map(lower).find((value) => DOMAIN_SET.has(value)) || null;
 }
 
-function storedAuthority(node) {
-  const profile = nodeProfile(node);
+function storedAuthority(node, options = {}) {
+  const profile = authenticatedNodeProfile(node, options) || {};
   const candidates = [
     profile.authorityClass,
     profile.authority_class,
-    node?.authorityClass,
-    node?.authority_class,
-    node?.metadata?.authorityClass,
-    node?.metadata?.authority_class,
+    ...(options.trustedProjection === true ? [
+      node?.authorityClass,
+      node?.authority_class,
+    ] : []),
   ];
   return candidates.map(lower).find((value) => AUTHORITY_SET.has(value)) || null;
 }
@@ -136,7 +150,7 @@ function isGenerated(node) {
 function isExternal(node) {
   const tags = tagsOf(node);
   if (tags.some((tag) => EXTERNAL_TAGS.has(tag))) return true;
-  return /\b(?:x digest|x[-_]timeline|twitter|tweet|rss|news digest|market signals?|ticker-|pre-market|portfolio|external intake)\b/.test(textOf(node));
+  return /\b(?:x digest|x[-_]timeline|twitter|tweet|rss|news digest|market signals?|ticker[- ]|pre-market|portfolio|external intake|evening-research|cron-agent)\b/.test(textOf(node));
 }
 
 function isHistorical(node) {
@@ -156,8 +170,9 @@ function hasEvidence(node) {
     || Boolean(node?.metadata?.content_hash || node?.metadata?.source_hash || node?.metadata?.receipt_id);
 }
 
-function hasDirectVerifierEvidence(node) {
-  const profile = nodeProfile(node);
+function hasDirectVerifierEvidence(node, options = {}) {
+  const profile = authenticatedNodeProfile(node, options);
+  if (!profile) return false;
   const evidenceRefs = [
     ...(Array.isArray(profile.evidenceRefs) ? profile.evidenceRefs : []),
     ...(Array.isArray(profile.evidence_refs) ? profile.evidence_refs : []),
@@ -167,8 +182,59 @@ function hasDirectVerifierEvidence(node) {
   return evidenceRefs.some((ref) => ref.startsWith('verifier:'));
 }
 
-function classifyMemoryDomain(node = {}) {
-  const explicit = storedDomain(node);
+function hasAuthenticatedCorrectionIngress(node, options = {}) {
+  const profile = authenticatedNodeProfile(node, options);
+  if (!profile || lower(profile.authorityClass || profile.authority_class) !== 'jtr_correction') return false;
+  const sources = new Set([
+    ...(Array.isArray(profile.sourceRefs) ? profile.sourceRefs : []),
+    ...(Array.isArray(profile.source_refs) ? profile.source_refs : []),
+  ].map(value => String(value || '').trim()).filter(Boolean));
+  const evidence = [
+    ...(Array.isArray(profile.evidenceRefs) ? profile.evidenceRefs : []),
+    ...(Array.isArray(profile.evidence_refs) ? profile.evidence_refs : []),
+  ].map(value => String(value || '').trim()).filter(Boolean);
+  return evidence.some(ref => sources.has(ref));
+}
+
+function hasAuthenticatedAdoptedDoctrine(node, options = {}) {
+  const profile = authenticatedNodeProfile(node, options);
+  if (!profile || lower(profile.authorityClass || profile.authority_class) !== 'generated_doctrine') return false;
+  return [
+    ...(Array.isArray(profile.evidenceRefs) ? profile.evidenceRefs : []),
+    ...(Array.isArray(profile.evidence_refs) ? profile.evidence_refs : []),
+  ].some(ref => lower(ref).startsWith('adopted-doctrine-receipt:')
+    || lower(ref).startsWith('adopted_doctrine_receipt:'));
+}
+
+function hasAuthenticatedWorkerReceipt(node, options = {}) {
+  const profile = authenticatedNodeProfile(node, options);
+  if (!profile || lower(profile.authorityClass || profile.authority_class) !== 'worker_receipt') return false;
+  const evidence = [
+    ...(Array.isArray(profile.evidenceRefs) ? profile.evidenceRefs : []),
+    ...(Array.isArray(profile.evidence_refs) ? profile.evidence_refs : []),
+  ].map(lower).filter(Boolean);
+  return evidence.some(ref => ref.startsWith('verifier:')
+    || ref.startsWith('worker-receipt:') || ref.startsWith('worker_receipt:'));
+}
+
+function hasAuthenticatedAuthorityEvidence(node, options = {}) {
+  const profile = authenticatedNodeProfile(node, options);
+  if (!profile) return false;
+  const authorityClass = lower(profile.authorityClass || profile.authority_class);
+  if (authorityClass === 'verified_current_state') return hasDirectVerifierEvidence(node, options);
+  if (authorityClass === 'jtr_correction') return hasAuthenticatedCorrectionIngress(node, options);
+  if (authorityClass === 'worker_receipt') return hasAuthenticatedWorkerReceipt(node, options);
+  if (authorityClass === 'generated_doctrine') return hasAuthenticatedAdoptedDoctrine(node, options);
+  if (authorityClass === 'artifact_log') {
+    return Boolean(profile.contentHash || profile.content_hash
+      || (Array.isArray(profile.sourceRefs) && profile.sourceRefs.length > 0)
+      || (Array.isArray(profile.source_refs) && profile.source_refs.length > 0));
+  }
+  return false;
+}
+
+function classifyMemoryDomain(node = {}, options = {}) {
+  const explicit = storedDomain(node, options);
   if (explicit) return explicit;
   if (isResolution(node)) return 'closed_incidents';
   if (isExternal(node)) return 'external_intake';
@@ -176,47 +242,41 @@ function classifyMemoryDomain(node = {}) {
   return 'current_ops';
 }
 
-function classifyClaimAuthority(node = {}) {
-  const explicit = storedAuthority(node);
-  const actor = lower(node?.metadata?.actor || node?.actor || node?.provenance?.actor);
+function classifyClaimAuthority(node = {}, options = {}) {
+  const explicit = storedAuthority(node, options);
+  const profile = authenticatedNodeProfile(node, options);
 
   // Generated prose cannot promote itself through copied current-state flags.
   if (isGenerated(node)) {
-    const adopted = node?.metadata?.adopted_doctrine === true
-      || nodeProfile(node).adoptedDoctrine === true
-      || tagsOf(node).includes('adopted_doctrine');
-    return adopted ? 'generated_doctrine' : 'narrative';
+    return hasAuthenticatedAdoptedDoctrine(node, options) ? 'generated_doctrine' : 'narrative';
   }
   if (explicit) {
-    if (explicit === 'verified_current_state' && !hasDirectVerifierEvidence(node)) return 'narrative';
-    if (explicit === 'jtr_correction' && actor !== 'jtr') return 'narrative';
+    if (explicit === 'verified_current_state' && !hasDirectVerifierEvidence(node, options)) return 'narrative';
+    if (explicit === 'jtr_correction' && !hasAuthenticatedCorrectionIngress(node, options)) return 'narrative';
+    if (explicit === 'worker_receipt' && !hasAuthenticatedWorkerReceipt(node, options)) return 'narrative';
+    if (explicit === 'generated_doctrine' && !hasAuthenticatedAdoptedDoctrine(node, options)) return 'narrative';
     return explicit;
   }
 
-  const correction = node?.metadata?.correction === true
-    || nodeProfile(node).jtrCorrection === true;
-  if (correction && actor === 'jtr') {
+  if (hasAuthenticatedCorrectionIngress(node, options)) {
     return 'jtr_correction';
   }
 
-  if (isResolution(node)
-      || tagsOf(node).some((tag) => /(?:^|_)receipt$/.test(tag))
-      || Boolean(node?.metadata?.receipt_id || node?.metadata?.worker_receipt)) {
+  if (hasAuthenticatedWorkerReceipt(node, options)) {
     return 'worker_receipt';
   }
 
-  const profile = nodeProfile(node);
   const authority = provenanceAuthority(node);
-  const operationalAuthority = profile.operationalAuthority === true
+  const operationalAuthority = profile?.operationalAuthority === true
     || authority.presentTenseAuthority === true;
-  if (operationalAuthority && hasDirectVerifierEvidence(node)) return 'verified_current_state';
+  if (operationalAuthority && hasDirectVerifierEvidence(node, options)) return 'verified_current_state';
 
   if (node?.metadata?.source_path || node?.metadata?.sourcePath || node?.metadata?.content_hash
       || node?.metadata?.source_hash || tagsOf(node).some((tag) => ['artifact', 'log', 'raw_log'].includes(tag))) {
     return 'artifact_log';
   }
 
-  if (tagsOf(node).some((tag) => ['doctrine', 'generated_doctrine'].includes(tag))) {
+  if (hasAuthenticatedAdoptedDoctrine(node, options)) {
     return 'generated_doctrine';
   }
   return 'narrative';
@@ -244,6 +304,17 @@ function projectSourceChain(node = {}, options = {}) {
       if (ref) candidates.push({ kind, ref });
     }
   };
+
+  if (options.trustedProjection === true && Array.isArray(node?.sourceChain)) {
+    const allowedKinds = new Set([
+      'source', 'evidence', 'artifact', 'trace', 'generation', 'lineage',
+      'verification', 'closure',
+    ]);
+    for (const entry of node.sourceChain) {
+      const kind = lower(entry?.kind);
+      if (allowedKinds.has(kind)) append(kind, entry?.ref);
+    }
+  }
 
   append('source', profile.sourceRefs || profile.source_refs || []);
   append('source', node?.provenance?.source_refs || []);
@@ -291,7 +362,7 @@ function parseTime(value) {
 }
 
 function getSemanticTimeMs(node = {}, options = {}) {
-  const profile = nodeProfile(node);
+  const profile = authenticatedNodeProfile(node, options) || {};
   const authority = provenanceAuthority(node);
   const fields = [
     node?.metadata?.resolved_at, node?.resolved_at,
@@ -316,22 +387,263 @@ function getSemanticTimeMs(node = {}, options = {}) {
 
 function normalizeRetrievalIntent(intent) {
   const value = lower(intent);
-  if (/\b(?:history|historical|recurrence|resolution|closed|incident review|what happened)\b/.test(value)) return 'history';
-  if (/\b(?:current|now|today|live|status|health|active|present)\b/.test(value)) return 'current_state';
+  if (/\b(?:history|historical|recurrence|resolution|closed|incident review|what happened)\b/.test(value)
+      || /\b(?:did|has|is|was)\s+(?:this|that|it|the\s+\w+)\s+happen(?:ed|ing)?\s+again\b/.test(value)) {
+    return 'history';
+  }
+  if (/\b(?:current|currently|now|today|live|status|health|active|present|still)\b/.test(value)
+      || /\bhow\s+(?:is|are)\b.*\bdoing\b/.test(value)) return 'current_state';
   return value === 'current_state' ? value : 'general';
+}
+
+function boundedRelationRef(prefix, value) {
+  const ref = boundedRef(value);
+  if (!ref) return null;
+  if (/^(?:node|goal|incident|source|claim):/.test(ref)) return ref;
+  return `${prefix}:${ref}`.slice(0, MAX_REF_LENGTH);
+}
+
+function projectMemoryRelations(node = {}, options = {}) {
+  const limit = Math.max(1, Math.min(
+    MAX_RELATION_REFS,
+    Number(options.limit) || MAX_RELATION_REFS,
+  ));
+  const projected = options.trustedProjection === true
+    ? asRecord(node.authorityRelations)
+    : {};
+  const refs = [];
+  const supersedes = [];
+  const seenRefs = new Set();
+  const seenSupersedes = new Set();
+  const offer = (rows, seen, value) => {
+    if (!value || seen.has(value) || rows.length >= limit) return;
+    seen.add(value);
+    rows.push(value);
+  };
+  const offerRef = (prefix, value) => offer(refs, seenRefs, boundedRelationRef(prefix, value));
+  const offerSupersedes = (value) => offer(
+    supersedes, seenSupersedes, boundedRelationRef('node', value),
+  );
+
+  offerRef('node', node.id);
+  offerRef('incident', node?.metadata?.incidentId ?? node?.metadata?.incident_id
+    ?? node?.incidentId ?? node?.incident_id);
+  offerRef('goal', node?.metadata?.goalId ?? node?.metadata?.goal_id
+    ?? node?.goalId ?? node?.goal_id);
+  for (const ref of Array.isArray(projected.refs) ? projected.refs : []) offerRef('source', ref);
+  const sourceRefs = [
+    ...(Array.isArray(node?.provenance?.source_refs) ? node.provenance.source_refs : []),
+    ...(Array.isArray(node?.metadata?.source_refs) ? node.metadata.source_refs : []),
+  ];
+  for (const ref of sourceRefs) offerRef('source', ref);
+
+  const correction = classifyClaimAuthority(node, options) === 'jtr_correction';
+  if (correction) {
+    const explicit = [
+      node?.metadata?.supersedes,
+      node?.metadata?.supersedes_ids,
+      node?.metadata?.supersedesIds,
+      node?.metadata?.corrects,
+      node?.metadata?.corrects_node_id,
+      node?.metadata?.correction_of,
+      node?.provenance?.supersedes,
+      projected.supersedes,
+    ];
+    for (const values of explicit) {
+      for (const value of Array.isArray(values) ? values : [values]) offerSupersedes(value);
+    }
+  } else if (options.trustedProjection === true
+      && lower(node?.authorityClass || node?.authority_class) === 'jtr_correction') {
+    // Parsed ANN labels are bounded build-time projections. Their authority is
+    // only honored when a caller explicitly opts into trusted projections.
+    for (const value of Array.isArray(projected.supersedes) ? projected.supersedes : []) {
+      offerSupersedes(value);
+    }
+  }
+
+  const profile = authenticatedNodeProfile(node, options) || {};
+  const closureProofRefs = [
+    ...(Array.isArray(profile.closureProofRefs) ? profile.closureProofRefs : []),
+    ...(Array.isArray(profile.closure_proof_refs) ? profile.closure_proof_refs : []),
+    ...(Array.isArray(node?.metadata?.closure_proof_refs) ? node.metadata.closure_proof_refs : []),
+    ...(Array.isArray(node?.metadata?.resolution_proof_refs) ? node.metadata.resolution_proof_refs : []),
+  ];
+  const verifierRefs = [
+    ...(Array.isArray(profile.evidenceRefs) ? profile.evidenceRefs : []),
+    ...(Array.isArray(profile.evidence_refs) ? profile.evidence_refs : []),
+    ...(Array.isArray(node?.evidence?.evidence_links) ? node.evidence.evidence_links : []),
+    ...(Array.isArray(node?.metadata?.verifier_refs) ? node.metadata.verifier_refs : []),
+  ].map(lower).filter((ref) => ref.startsWith('verifier:')
+    || ref.startsWith('worker-receipt:') || ref.startsWith('worker_receipt:'));
+  const authenticatedReceipt = hasAuthenticatedWorkerReceipt(node, options);
+  const closure = (authenticatedReceipt && isResolution(node))
+    || (options.trustedProjection === true && projected.closure === true);
+  const closureProof = (authenticatedReceipt && verifierRefs.length > 0
+      && closureProofRefs.some(ref => {
+        const normalized = lower(ref);
+        return normalized.startsWith('verifier:')
+          || normalized.startsWith('worker-receipt:')
+          || normalized.startsWith('worker_receipt:');
+      }))
+    || (options.trustedProjection === true && projected.closureProof === true);
+  return {
+    refs,
+    supersedes,
+    ...(closure ? { closure: true } : {}),
+    ...(closureProof ? { closureProof: true } : {}),
+  };
+}
+
+function isVerifiedMemoryClosure(node = {}, options = {}) {
+  const relations = projectMemoryRelations(node, options);
+  const projected = options.trustedProjection === true
+    && lower(node?.authorityClass || node?.authority_class) === 'worker_receipt'
+    && node?.evidencePresent === true;
+  return relations.closure === true
+    && relations.closureProof === true
+    && relations.refs.some((ref) => /^(?:goal|incident|source):/.test(ref))
+    && (options.trustedProjection === true
+      ? projected
+      : classifyClaimAuthority(node, options) === 'worker_receipt');
+}
+
+function createMemoryAuthorityResolver({
+  intent = 'general',
+  authorityCandidates = [],
+  trustedProjection = false,
+  authorityKey,
+  maxEvents = MAX_AUTHORITY_EVENTS,
+} = {}) {
+  const normalizedIntent = normalizeRetrievalIntent(intent);
+  const closures = new Map();
+  const corrections = new Map();
+  const boundedMax = Math.max(1, Math.min(MAX_AUTHORITY_EVENTS, Number(maxEvents) || MAX_AUTHORITY_EVENTS));
+  let closureEvents = 0;
+  let correctionEvents = 0;
+  const projectionTrust = (node, operationOptions = {}) => {
+    if (typeof operationOptions.trustedProjection === 'boolean') {
+      return operationOptions.trustedProjection;
+    }
+    return trustedProjection === true;
+  };
+  const newer = (map, ref, event) => {
+    const existing = map.get(ref);
+    if (!existing || event.time > existing.time
+        || (event.time === existing.time && event.nodeId.localeCompare(existing.nodeId) < 0)) {
+      map.set(ref, event);
+    }
+  };
+  const observe = (node, operationOptions = {}) => {
+    if (!node || typeof node !== 'object') return;
+    const nodeTrustedProjection = projectionTrust(node, operationOptions);
+    const authorityOptions = { trustedProjection: nodeTrustedProjection, authorityKey };
+    const relations = projectMemoryRelations(node, authorityOptions);
+    const time = getSemanticTimeMs(node, authorityOptions);
+    const nodeId = String(node.id ?? '');
+    if (closureEvents < boundedMax
+        && isVerifiedMemoryClosure(node, authorityOptions)) {
+      const event = { nodeId, time, refs: relations.refs };
+      for (const ref of relations.refs) {
+        if (/^(?:goal|incident|source):/.test(ref)) newer(closures, ref, event);
+      }
+      closureEvents += 1;
+    }
+    const correction = classifyClaimAuthority(node, authorityOptions) === 'jtr_correction'
+      || (nodeTrustedProjection
+        && lower(node?.authorityClass || node?.authority_class) === 'jtr_correction');
+    if (correctionEvents < boundedMax && correction && relations.supersedes.length > 0) {
+      const event = { nodeId, time, supersedes: relations.supersedes };
+      for (const ref of relations.supersedes) newer(corrections, ref, event);
+      correctionEvents += 1;
+    }
+  };
+  for (const node of authorityCandidates || []) observe(node);
+
+  const apply = (candidates = [], operationOptions = {}) => {
+    const currentState = normalizedIntent === 'current_state';
+    const output = [];
+    for (const node of candidates) {
+      if (!node || typeof node !== 'object') continue;
+      const nodeTrustedProjection = projectionTrust(node, operationOptions);
+      const authorityOptions = { trustedProjection: nodeTrustedProjection, authorityKey };
+      const relations = projectMemoryRelations(node, authorityOptions);
+      const nodeId = String(node.id ?? '');
+      const time = getSemanticTimeMs(node, authorityOptions);
+      const verifiedClosure = isVerifiedMemoryClosure(node, authorityOptions);
+      const correction = classifyClaimAuthority(node, authorityOptions) === 'jtr_correction'
+        || (nodeTrustedProjection
+          && lower(node?.authorityClass || node?.authority_class) === 'jtr_correction');
+      if (verifiedClosure) {
+        output.push({
+          ...node,
+          authorityRelations: relations,
+          resolutionEvidence: {
+            resolves: relations.refs.filter((ref) => /^(?:goal|incident|source):/.test(ref)),
+            closedAt: time || null,
+          },
+        });
+        continue;
+      }
+      if (correction && relations.supersedes.length > 0) {
+        output.push({
+          ...node,
+          authorityRelations: relations,
+          correctionEvidence: { supersedes: relations.supersedes, correctedAt: time || null },
+        });
+        continue;
+      }
+      const closure = relations.refs
+        .map((ref) => closures.get(ref))
+        .filter(Boolean)
+        .sort((left, right) => right.time - left.time)[0];
+      const supersession = corrections.get(`node:${nodeId}`)
+        || relations.refs.map((ref) => corrections.get(ref)).filter(Boolean)
+          .sort((left, right) => right.time - left.time)[0];
+      const newerClosure = closure && (!time || closure.time > time);
+      const newerCorrection = supersession && (!time || supersession.time > time);
+      if (currentState && (newerClosure || newerCorrection)) continue;
+      output.push({
+        ...node,
+        authorityRelations: relations,
+        ...(newerClosure ? {
+          closureEvidence: { closureNodeId: closure.nodeId, closedAt: closure.time || null },
+        } : {}),
+        ...(newerCorrection ? {
+          supersessionEvidence: {
+            correctionNodeId: supersession.nodeId,
+            correctedAt: supersession.time || null,
+          },
+        } : {}),
+      });
+    }
+    return output;
+  };
+
+  return Object.freeze({ observe, apply });
+}
+
+function projectedAuthorityClass(node, options = {}) {
+  const stored = storedAuthority(node, options);
+  if (options.trustedProjection !== true || !stored) return classifyClaimAuthority(node, options);
+  if (stored === 'verified_current_state') {
+    return node?.evidencePresent === true ? stored : 'narrative';
+  }
+  if (stored === 'jtr_correction') {
+    return projectMemoryRelations(node, options).supersedes.length > 0 ? stored : 'narrative';
+  }
+  if (stored === 'artifact_log' || stored === 'worker_receipt') {
+    return node?.evidencePresent === true ? stored : 'narrative';
+  }
+  // Low-authority projections cannot promote an operational claim.
+  return stored;
 }
 
 function explainMemoryAuthorityScore(node, baseScore, options = {}) {
   const base = Number(baseScore) || 0;
   if (base <= 0) return { score: base, factors: [{ name: 'base', value: base }] };
 
-  const domain = classifyMemoryDomain(node);
-  const stored = storedAuthority(node);
-  const authorityClass = options.trustedProjection === true
-    && node?.evidencePresent === true
-    && stored === 'verified_current_state'
-    ? stored
-    : classifyClaimAuthority(node);
+  const domain = classifyMemoryDomain(node, options);
+  const authorityClass = projectedAuthorityClass(node, options);
   const intent = normalizeRetrievalIntent(options.intent || options.query || 'general');
   const nowMs = Number.isFinite(options.nowMs) ? options.nowMs : Date.now();
 
@@ -358,15 +670,22 @@ function explainMemoryAuthorityScore(node, baseScore, options = {}) {
   const ageDays = semanticTime ? Math.max(0, (nowMs - semanticTime) / DAY_MS) : null;
   const freshness = ageDays === null ? 0.65 : Math.max(0.03, Math.pow(0.5, ageDays / halfLifeDays));
   const freshnessBlend = domain === 'external_intake' ? freshness : 0.35 + (0.65 * freshness);
-  const profile = nodeProfile(node);
+  const profile = authenticatedNodeProfile(node, options) || {};
   const needsFreshVerification = profile.requiresFreshVerification === true
     || (Array.isArray(provenanceAuthority(node).verificationBeforeReuse)
       && provenanceAuthority(node).verificationBeforeReuse.includes('check_current_source_of_truth'));
   const guard = intent === 'current_state' && ['generated_doctrine', 'narrative'].includes(authorityClass)
     ? (needsFreshVerification ? 0.3 : 0.45)
     : 1;
-  const reportOnly = !hasDirectVerifierEvidence(node)
+  const reportOnly = !hasDirectVerifierEvidence(node, options)
     && ['generated_doctrine', 'narrative'].includes(authorityClass) ? 0.5 : 1;
+  const storedConfidence = Number(node?.confidence_decay ?? node?.metadata?.confidence_decay);
+  const confidence = Number.isFinite(storedConfidence)
+    ? Math.max(0.1, Math.min(1, storedConfidence))
+    : 1;
+  const statusValue = lower(node?.status || node?.metadata?.status);
+  const status = node?.superseded_by || node?.metadata?.superseded_by
+    || ['stale', 'superseded'].includes(statusValue) ? 0.15 : 1;
   const factors = [
     { name: 'base', value: base },
     { name: `domain:${domain}`, value: domainWeights[domain] },
@@ -374,6 +693,8 @@ function explainMemoryAuthorityScore(node, baseScore, options = {}) {
     { name: 'freshness', value: freshnessBlend },
     { name: 'current_state_guard', value: guard },
     { name: 'direct_evidence', value: reportOnly },
+    { name: 'confidence', value: confidence },
+    { name: 'status', value: status },
   ];
   return {
     score: factors.reduce((score, factor) => score * factor.value, 1),
@@ -386,14 +707,9 @@ function scoreMemoryAuthority(node, baseScore, options = {}) {
 }
 
 function projectMemoryAuthority(node = {}, options = {}) {
-  const retrievalDomain = classifyMemoryDomain(node);
-  const stored = storedAuthority(node);
-  const authorityClass = options.trustedProjection === true
-    && node?.evidencePresent === true
-    && stored === 'verified_current_state'
-    ? stored
-    : classifyClaimAuthority(node);
-  const profile = nodeProfile(node);
+  const retrievalDomain = classifyMemoryDomain(node, options);
+  const authorityClass = projectedAuthorityClass(node, options);
+  const profile = authenticatedNodeProfile(node, options) || {};
   const operationalAuthority = authorityClass === 'verified_current_state';
   const requiresFreshVerification = profile.requiresFreshVerification === true
     || (!operationalAuthority && ['generated_doctrine', 'narrative'].includes(authorityClass));
@@ -427,4 +743,8 @@ module.exports = {
   normalizeRetrievalIntent,
   projectMemoryAuthority,
   isGeneratedMemoryMethod,
+  projectMemoryRelations,
+  isVerifiedMemoryClosure,
+  createMemoryAuthorityResolver,
+  hasAuthenticatedAuthorityEvidence,
 };

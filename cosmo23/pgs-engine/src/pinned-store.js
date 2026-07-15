@@ -7,11 +7,21 @@ const crypto = require('node:crypto');
 
 const { PGS_OPERATION_LIMITS } = require('../../lib/brain-operation-limits');
 const { partitionIdForNode } = require('../../../shared/memory-source/pgs-partitions.cjs');
-const { serializeProviderRecord } = require('../../lib/provider-record-sanitizer');
+const {
+  redactPrivatePaths,
+  serializeProviderRecord,
+} = require('../../lib/provider-record-sanitizer');
 const {
   canonicalJson,
+  createRetrievalAuthorityAccumulator,
   sourceDescriptorDigest,
 } = require('../../../shared/memory-source/contracts.cjs');
+const {
+  projectMemoryAuthority,
+} = require('../../../shared/memory-authority.cjs');
+const {
+  ATTESTATION_ENV,
+} = require('../../../shared/memory-authority-attestation.cjs');
 const {
   getOperationScratchQuotaCleanup,
 } = require('../../../shared/memory-source/scratch-quota.cjs');
@@ -19,10 +29,13 @@ const {
 // Version 3 binds reusable sweeps to the exact query and scope policy, and
 // gives every work unit a stable partition-stratified coverage ordinal.
 const SCHEMA_VERSION = 3;
+const AUTHORITY_PROJECTION_VERSION = 2;
+const AUTHORITY_INTEGRITY_SCHEMA = 'home23.pgs-authority-projection-integrity.v1';
 const QUERY_NORMALIZATION_VERSION = 1;
 const SWEEP_PROMPT_CONTRACT_VERSION = 1;
 const COVERAGE_SELECTION_POLICY_VERSION = 1;
 const MAX_TARGET_PARTITIONS = 256;
+const RETAINED_SCOPE_POLICY_ATTEMPT_ID = 'home23-retained-scope-policy-v1';
 const COVERAGE_LEVELS = Object.freeze({
   skim: 0.1,
   sample: 0.25,
@@ -32,6 +45,7 @@ const COVERAGE_LEVELS = Object.freeze({
 const MAX_METADATA_VALUE_BYTES = 128 * 1024;
 const MAX_LIST_SCALAR_BYTES = 4 * 1024;
 const METADATA_KEYS = Object.freeze([
+  'authorityProjectionVersion',
   'canonicalQuery',
   'completeProjection',
   'coverageSelectionPolicyVersion',
@@ -122,7 +136,133 @@ function serializeRecord(record, maxBytes, kind) {
   return serializeProviderRecord(record, {
     maxBytes,
     label: `PGS ${kind} record`,
+    redactPaths: true,
   });
+}
+
+function projectPinnedProviderAuthority(node) {
+  const profile = projectMemoryAuthority(node, { limit: 2 });
+  const sourceChain = profile.sourceChain.slice(0, 2).map((link) => {
+    const kind = typeof link?.kind === 'string' ? link.kind : 'source';
+    const ref = typeof link?.ref === 'string' ? link.ref : '';
+    return { kind, ref: redactPrivatePaths(ref) };
+  });
+  return {
+    retrievalDomain: profile.retrievalDomain,
+    authorityClass: profile.authorityClass,
+    semanticTime: profile.semanticTime,
+    operationalAuthority: profile.authorityClass === 'verified_current_state',
+    requiresFreshVerification: profile.requiresFreshVerification,
+    sourceChain,
+  };
+}
+
+function parsePinnedProviderAuthority(value) {
+  let profile;
+  try {
+    profile = typeof value === 'string' ? JSON.parse(value) : value;
+  } catch (cause) {
+    throw typed('pgs_projection_invalid', 'PGS node authority is invalid', false, { cause });
+  }
+  const keys = [
+    'authorityClass', 'operationalAuthority', 'requiresFreshVerification',
+    'retrievalDomain', 'semanticTime', 'sourceChain',
+  ];
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)
+      || Object.keys(profile).sort().join('\0') !== keys.sort().join('\0')
+      || !['current_ops', 'closed_incidents', 'project_history', 'external_intake']
+        .includes(profile.retrievalDomain)
+      || ![
+        'verified_current_state', 'jtr_correction', 'artifact_log',
+        'worker_receipt', 'generated_doctrine', 'narrative',
+      ].includes(profile.authorityClass)
+      || typeof profile.operationalAuthority !== 'boolean'
+      || profile.operationalAuthority !== (profile.authorityClass === 'verified_current_state')
+      || typeof profile.requiresFreshVerification !== 'boolean'
+      || !(profile.semanticTime === null || (typeof profile.semanticTime === 'string'
+        && Number.isFinite(Date.parse(profile.semanticTime))))
+      || !Array.isArray(profile.sourceChain) || profile.sourceChain.length > 2) {
+    throw typed('pgs_projection_invalid', 'PGS node authority is invalid');
+  }
+  for (const link of profile.sourceChain) {
+    if (!link || typeof link !== 'object' || Array.isArray(link)
+        || Object.keys(link).sort().join('\0') !== 'kind\0ref'
+        || typeof link.kind !== 'string' || typeof link.ref !== 'string'
+        || redactPrivatePaths(link.ref) !== link.ref) {
+      throw typed('pgs_projection_invalid', 'PGS node authority is invalid');
+    }
+  }
+  return profile;
+}
+
+function serializePinnedProviderAuthority(node) {
+  const profile = projectPinnedProviderAuthority(node);
+  parsePinnedProviderAuthority(profile);
+  return JSON.stringify(profile);
+}
+
+function authorityIntegrityKey() {
+  const key = process.env[ATTESTATION_ENV];
+  return typeof key === 'string' && /^[a-f0-9]{64}$/i.test(key) ? key : null;
+}
+
+function authorityIntegrityPayload({
+  id,
+  json,
+  authorityJson,
+  sourceRevision,
+  descriptorDigest,
+}) {
+  return canonicalJson({
+    schema: AUTHORITY_INTEGRITY_SCHEMA,
+    authorityProjectionVersion: AUTHORITY_PROJECTION_VERSION,
+    sourceRevision,
+    descriptorDigest,
+    nodeId: id,
+    sanitizedNodeDigest: crypto.createHash('sha256').update(json).digest('hex'),
+    authority: parsePinnedProviderAuthority(authorityJson),
+  });
+}
+
+function signPinnedProviderAuthority(input) {
+  const key = authorityIntegrityKey();
+  if (!key) return null;
+  return crypto.createHmac('sha256', key)
+    .update(authorityIntegrityPayload(input))
+    .digest('base64url');
+}
+
+function readPinnedProviderAuthority({
+  id,
+  json,
+  authorityJson,
+  authorityMac,
+  sourceRevision,
+  descriptorDigest,
+}) {
+  const key = authorityIntegrityKey();
+  if (!key || !authorityMac) {
+    try {
+      return projectPinnedProviderAuthority(JSON.parse(json));
+    } catch (cause) {
+      throw typed('pgs_projection_invalid', 'PGS node authority is invalid', false, { cause });
+    }
+  }
+  const expected = signPinnedProviderAuthority({
+    id, json, authorityJson, sourceRevision, descriptorDigest,
+  });
+  let suppliedBytes;
+  let expectedBytes;
+  try {
+    suppliedBytes = Buffer.from(authorityMac || '', 'base64url');
+    expectedBytes = Buffer.from(expected || '', 'base64url');
+  } catch {}
+  if (!authorityMac || !suppliedBytes || !expectedBytes
+      || suppliedBytes.length !== 32 || expectedBytes.length !== suppliedBytes.length
+      || !crypto.timingSafeEqual(suppliedBytes, expectedBytes)) {
+    throw typed('pgs_projection_invalid', 'PGS node authority integrity is invalid');
+  }
+  return parsePinnedProviderAuthority(authorityJson);
 }
 
 function requireDatabase() {
@@ -375,7 +515,9 @@ function createSchema(db) {
       id TEXT PRIMARY KEY,
       partition_id TEXT NOT NULL,
       ordinal INTEGER NOT NULL,
-      json TEXT NOT NULL
+      json TEXT NOT NULL,
+      authority_json TEXT NOT NULL,
+      authority_mac TEXT
     );
     CREATE INDEX nodes_partition ON nodes(partition_id, ordinal);
     CREATE TABLE edges (
@@ -427,6 +569,90 @@ function createSchema(db) {
     CREATE INDEX attempt_scope_work_lookup
       ON attempt_scope_work_units(work_unit_id, attempt_id);
   `);
+}
+
+function compactAttemptScopes(db, { preserveAttemptIds = [] } = {}) {
+  const rows = db.prepare(`
+    SELECT attempt_id, scope_kind, coverage_level, coverage_fraction,
+      target_partition_ids_json, created_at
+    FROM attempt_scopes ORDER BY created_at, attempt_id
+  `).iterate();
+  const kinds = new Set();
+  const targets = new Set();
+  let coverageFraction = null;
+  let createdAt = null;
+  let rowCount = 0;
+  for (const row of rows) {
+    rowCount += 1;
+    if (!['level', 'targeted'].includes(row.scope_kind)
+        || !Object.hasOwn(COVERAGE_LEVELS, row.coverage_level)
+        || COVERAGE_LEVELS[row.coverage_level] !== row.coverage_fraction
+        || typeof row.created_at !== 'string' || !row.created_at) {
+      throw typed('pgs_projection_invalid', 'PGS retained scope policy is invalid');
+    }
+    let rowTargets;
+    try { rowTargets = JSON.parse(row.target_partition_ids_json); } catch { rowTargets = null; }
+    if (!Array.isArray(rowTargets)
+        || rowTargets.some(target => typeof target !== 'string' || !target)) {
+      throw typed('pgs_projection_invalid', 'PGS retained target scope is invalid');
+    }
+    kinds.add(row.scope_kind);
+    rowTargets.forEach(target => targets.add(target));
+    coverageFraction = coverageFraction === null
+      ? row.coverage_fraction
+      : Math.max(coverageFraction, row.coverage_fraction);
+    createdAt ||= row.created_at;
+  }
+  if (rowCount === 0) return;
+  if (kinds.size !== 1 || targets.size > MAX_TARGET_PARTITIONS) {
+    throw typed('pgs_projection_invalid', 'PGS retained scope policy is invalid');
+  }
+  const scopeKind = [...kinds][0];
+  if ((scopeKind === 'level' && targets.size !== 0)
+      || (scopeKind === 'targeted' && targets.size === 0)) {
+    throw typed('pgs_projection_invalid', 'PGS retained scope policy is invalid');
+  }
+  const coverageLevel = Object.entries(COVERAGE_LEVELS)
+    .find(([, fraction]) => fraction === coverageFraction)?.[0];
+  if (!coverageLevel) {
+    throw typed('pgs_projection_invalid', 'PGS retained coverage policy is invalid');
+  }
+  const retained = [...new Set(preserveAttemptIds)].filter(attemptId => (
+    attemptId !== RETAINED_SCOPE_POLICY_ATTEMPT_ID
+  ));
+  const placeholders = retained.map(() => '?').join(',');
+  const keepPredicate = placeholders
+    ? `attempt_id = ? OR attempt_id IN (${placeholders})`
+    : 'attempt_id = ?';
+  const upsertPolicy = db.prepare(`
+    INSERT INTO attempt_scopes(
+      attempt_id, scope_kind, coverage_level, coverage_fraction,
+      target_partition_ids_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(attempt_id) DO UPDATE SET
+      scope_kind = excluded.scope_kind,
+      coverage_level = excluded.coverage_level,
+      coverage_fraction = excluded.coverage_fraction,
+      target_partition_ids_json = excluded.target_partition_ids_json
+  `);
+  db.transaction(() => {
+    upsertPolicy.run(
+      RETAINED_SCOPE_POLICY_ATTEMPT_ID,
+      scopeKind,
+      coverageLevel,
+      coverageFraction,
+      JSON.stringify([...targets].sort()),
+      createdAt,
+    );
+    db.prepare(`
+      INSERT OR IGNORE INTO attempt_scope_work_units(attempt_id, work_unit_id)
+      SELECT ?, work_unit_id FROM attempt_scope_work_units
+    `).run(RETAINED_SCOPE_POLICY_ATTEMPT_ID);
+    db.prepare(`DELETE FROM attempt_scope_work_units WHERE NOT (${keepPredicate})`)
+      .run(RETAINED_SCOPE_POLICY_ATTEMPT_ID, ...retained);
+    db.prepare(`DELETE FROM attempt_scopes WHERE NOT (${keepPredicate})`)
+      .run(RETAINED_SCOPE_POLICY_ATTEMPT_ID, ...retained);
+  })();
 }
 
 function metadataObject(db) {
@@ -494,6 +720,7 @@ function bindingMetadata({
 }) {
   return {
     schemaVersion: SCHEMA_VERSION,
+    authorityProjectionVersion: AUTHORITY_PROJECTION_VERSION,
     ...canonicalQueryBinding(query),
     queryNormalizationVersion,
     sweepPromptContractVersion,
@@ -509,7 +736,8 @@ function bindingMetadata({
 
 function sameBinding(actual, expected) {
   for (const key of [
-    'schemaVersion', 'sourceRevision', 'descriptorDigest', 'completeProjection',
+    'schemaVersion', 'authorityProjectionVersion',
+    'sourceRevision', 'descriptorDigest', 'completeProjection',
     'pgsSweepProvider', 'pgsSweepModel', 'canonicalQuery', 'queryDigest',
     'queryNormalizationVersion', 'sweepPromptContractVersion',
     'coverageSelectionPolicyVersion',
@@ -519,6 +747,93 @@ function sameBinding(actual, expected) {
   if (!Number.isSafeInteger(actual.nodeCount) || actual.nodeCount < 0
       || !Number.isSafeInteger(actual.edgeCount) || actual.edgeCount < 0) return false;
   return JSON.stringify(actual.limits) === JSON.stringify(expected.limits);
+}
+
+async function migratePinnedAuthorityProjection(db, {
+  signal,
+  checkpoint,
+  limits,
+  sourceRevision,
+  descriptorDigest,
+}) {
+  let version = null;
+  const versionRow = db.prepare(
+    "SELECT value FROM metadata WHERE key = 'authorityProjectionVersion'",
+  ).get();
+  if (versionRow) {
+    try { version = JSON.parse(versionRow.value); } catch {}
+    if (version !== AUTHORITY_PROJECTION_VERSION) {
+      throw typed(
+        'pgs_projection_invalid',
+        `PGS authority projection v${String(version ?? 'unknown')} is unsupported`,
+      );
+    }
+  }
+  const columns = db.pragma('table_info(nodes)');
+  const hasAuthorityColumn = columns.some(column => column.name === 'authority_json');
+  const hasAuthorityMacColumn = columns.some(column => column.name === 'authority_mac');
+  if (version === AUTHORITY_PROJECTION_VERSION) {
+    if (!hasAuthorityColumn || !hasAuthorityMacColumn) {
+      throw typed('pgs_projection_invalid', 'PGS authority projection columns are unavailable');
+    }
+    const missing = db.prepare(
+      'SELECT COUNT(*) AS count FROM nodes WHERE authority_json IS NULL',
+    ).get().count;
+    if (missing !== 0) {
+      throw typed('pgs_projection_invalid', 'PGS node authority projection is incomplete');
+    }
+    return;
+  }
+  try {
+    db.transaction(() => {
+      if (!hasAuthorityColumn) db.exec('ALTER TABLE nodes ADD COLUMN authority_json TEXT');
+      if (!hasAuthorityMacColumn) db.exec('ALTER TABLE nodes ADD COLUMN authority_mac TEXT');
+    })();
+    await checkpoint();
+    const update = db.prepare(
+      'UPDATE nodes SET authority_json = ?, authority_mac = ? WHERE id = ?',
+    );
+    const scanLimit = Math.max(1, Math.min(
+      limits.maxTransactionRecords,
+      Math.floor(limits.maxTransactionBytes / limits.maxRecordBytes),
+    ));
+    let lastOrdinal = -1;
+    while (true) {
+      throwIfAborted(signal);
+      const rows = db.prepare(
+        'SELECT id, ordinal, json FROM nodes WHERE ordinal > ? ORDER BY ordinal LIMIT ?',
+      ).all(lastOrdinal, scanLimit);
+      if (!rows.length) break;
+      db.transaction((page) => {
+        for (const row of page) {
+          const node = JSON.parse(row.json);
+          // A v3 projection predating this column contains only provider-sanitized
+          // records. Re-projecting those records deliberately fails closed to
+          // narrative when sanitization invalidated an original attestation.
+          const authorityJson = serializePinnedProviderAuthority(node);
+          const authorityMac = signPinnedProviderAuthority({
+            id: row.id,
+            json: row.json,
+            authorityJson,
+            sourceRevision,
+            descriptorDigest,
+          });
+          update.run(authorityJson, authorityMac, row.id);
+        }
+      })(rows);
+      lastOrdinal = rows.at(-1).ordinal;
+      await checkpoint();
+    }
+    db.prepare(
+      'INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)',
+    ).run('authorityProjectionVersion', JSON.stringify(AUTHORITY_PROJECTION_VERSION));
+    await checkpoint();
+  } catch (cause) {
+    if (cause?.code === 'pgs_projection_invalid') throw cause;
+    throw typed('pgs_projection_invalid', 'PGS authority projection migration failed', false, {
+      cause,
+    });
+  }
 }
 
 async function openPinnedPGSStore({
@@ -797,7 +1112,10 @@ async function openPinnedPGSStore({
     let freshSessionDatabase = false;
     if (existingStat) {
       databaseAnchor = captureExactRegularFileSync(databasePath);
-      projectionMayClean = !usesSessionStorage;
+      // An existing projection is durable caller state until validation proves
+      // it must be replaced. Cancellation during validation or migration must
+      // never delete completed sweep work.
+      projectionMayClean = false;
       let bindingMatches = false;
       freshSessionDatabase = usesSessionStorage && existingStat.size === 0n;
       if (!freshSessionDatabase) {
@@ -812,11 +1130,21 @@ async function openPinnedPGSStore({
               `PGS schema v${String(storedSchemaVersion ?? 'unknown')} is not reusable as v${SCHEMA_VERSION}`,
             );
           }
+          await migratePinnedAuthorityProjection(db, {
+            signal,
+            checkpoint,
+            limits,
+            sourceRevision,
+            descriptorDigest,
+          });
           bindingMatches = sameBinding(metadataObject(db), expectedBinding);
           if (!bindingMatches) {
             throw typed('pgs_binding_mismatch', 'PGS session binding does not match this request');
           }
+          compactAttemptScopes(db);
+          await checkpoint();
         } catch (error) {
+          if (signal?.aborted) throw signal.reason;
           if (usesSessionStorage) {
             if (['invalid_request', 'pgs_schema_unsupported', 'pgs_binding_mismatch']
               .includes(error?.code)) throw error;
@@ -866,13 +1194,18 @@ async function openPinnedPGSStore({
       createSchema(db);
 
       const insertNode = db.prepare(
-        'INSERT INTO nodes(id, partition_id, ordinal, json) VALUES (?, ?, ?, ?)',
+        `INSERT INTO nodes(
+          id, partition_id, ordinal, json, authority_json, authority_mac
+        ) VALUES (?, ?, ?, ?, ?, ?)`,
       );
       const insertEdge = db.prepare(
         'INSERT INTO edges(ordinal, source, target, json) VALUES (?, ?, ?, ?)',
       );
       const nodeTransaction = db.transaction(rows => {
-        for (const row of rows) insertNode.run(row.id, row.partitionId, row.ordinal, row.json);
+        for (const row of rows) insertNode.run(
+          row.id, row.partitionId, row.ordinal, row.json, row.authorityJson,
+          row.authorityMac,
+        );
       });
       const edgeTransaction = db.transaction(rows => {
         for (const row of rows) insertEdge.run(row.ordinal, row.source, row.target, row.json);
@@ -897,12 +1230,24 @@ async function openPinnedPGSStore({
           throwIfAborted(signal);
           const serialized = serializeRecord(record, limits.maxRecordBytes, kind);
           const row = kind === 'node'
-            ? {
-              id: recordId(record, kind),
-              partitionId: partitionIdForNode(record, recordId(record, kind)),
-              ordinal,
-              json: serialized.json,
-            }
+            ? (() => {
+              const id = recordId(record, kind);
+              const authorityJson = serializePinnedProviderAuthority(record);
+              return {
+                id,
+                partitionId: partitionIdForNode(record, id),
+                ordinal,
+                json: serialized.json,
+                authorityJson,
+                authorityMac: signPinnedProviderAuthority({
+                  id,
+                  json: serialized.json,
+                  authorityJson,
+                  sourceRevision,
+                  descriptorDigest,
+                }),
+              };
+            })()
             : {
               ordinal,
               source: edgeEndpoint(record, 'source'),
@@ -910,6 +1255,9 @@ async function openPinnedPGSStore({
               json: serialized.json,
             };
           const rowBytes = serialized.bytes
+            + (kind === 'node' ? Buffer.byteLength(row.authorityJson, 'utf8') : 0)
+            + (kind === 'node' && row.authorityMac
+              ? Buffer.byteLength(row.authorityMac, 'utf8') : 0)
             + Buffer.byteLength(kind === 'node' ? row.id + row.partitionId : row.source + row.target);
           if (rows.length && (rows.length >= limits.maxTransactionRecords
               || bytes + rowBytes > limits.maxTransactionBytes)) await flush();
@@ -954,21 +1302,35 @@ async function openPinnedPGSStore({
         let lastOrdinal = -1;
         while (true) {
           const page = db.prepare(`
-            SELECT ordinal, length(CAST(json AS BLOB)) AS bytes FROM nodes
+            SELECT id, ordinal, json, authority_json, authority_mac,
+              length(CAST(json AS BLOB)) AS bytes,
+              length(CAST(authority_json AS BLOB)) AS authority_bytes
+            FROM nodes
             WHERE partition_id = ? AND ordinal > ?
             ORDER BY ordinal LIMIT ?
           `).all(partition.partition_id, lastOrdinal, limits.maxTransactionRecords);
           if (!page.length) break;
           for (const node of page) {
+            readPinnedProviderAuthority({
+              id: node.id,
+              json: node.json,
+              authorityJson: node.authority_json,
+              authorityMac: node.authority_mac,
+              sourceRevision,
+              descriptorDigest,
+            });
+            const providerRecordBytes = node.bytes + node.authority_bytes;
             if (!Number.isSafeInteger(node.bytes) || node.bytes < 0
-                || node.bytes > limits.maxContextCharsPerWorkUnit) {
+                || !Number.isSafeInteger(node.authority_bytes) || node.authority_bytes < 0
+                || !Number.isSafeInteger(providerRecordBytes)
+                || providerRecordBytes > limits.maxContextCharsPerWorkUnit) {
               throw typed(
                 'result_too_large',
                 'PGS source record cannot fit one work-unit context',
               );
             }
             const mustSplit = unit && (unit.nodeCount >= limits.maxNodesPerWorkUnit
-              || unit.contextChars + node.bytes > limits.maxContextCharsPerWorkUnit);
+              || unit.contextChars + providerRecordBytes > limits.maxContextCharsPerWorkUnit);
             if (mustSplit) {
               pendingRows.push(unit);
               unit = null;
@@ -987,7 +1349,7 @@ async function openPinnedPGSStore({
             }
             unit.lastOrdinal = node.ordinal;
             unit.nodeCount += 1;
-            unit.contextChars += node.bytes;
+            unit.contextChars += providerRecordBytes;
             lastOrdinal = node.ordinal;
             buildStats.maxRetainedRecords = Math.max(buildStats.maxRetainedRecords, unit.nodeCount);
           }
@@ -1083,6 +1445,9 @@ async function openPinnedPGSStore({
   function validateAttemptId(value) {
     if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value)) {
       throw typed('invalid_request', 'PGS attempt ID is invalid');
+    }
+    if (value === RETAINED_SCOPE_POLICY_ATTEMPT_ID) {
+      throw typed('invalid_request', 'PGS attempt ID is reserved');
     }
     return value;
   }
@@ -1237,14 +1602,26 @@ async function openPinnedPGSStore({
         target_partition_ids_json, created_at
       ) VALUES (?, ?, ?, ?, ?, ?)
     `);
+    const retainScopePolicy = db.prepare(`
+      INSERT INTO attempt_scopes(
+        attempt_id, scope_kind, coverage_level, coverage_fraction,
+        target_partition_ids_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(attempt_id) DO UPDATE SET
+        scope_kind = excluded.scope_kind,
+        coverage_level = excluded.coverage_level,
+        coverage_fraction = excluded.coverage_fraction,
+        target_partition_ids_json = excluded.target_partition_ids_json
+    `);
     db.transaction(() => {
+      const createdAt = new Date(clock.now()).toISOString();
       insertScope.run(
         attemptId,
         scopeKind,
         normalizedLevel,
         normalizedFraction,
         JSON.stringify(targets),
-        new Date(clock.now()).toISOString(),
+        createdAt,
       );
       if (scopeKind === 'level') {
         const total = db.prepare('SELECT COUNT(*) AS count FROM work_units').get().count;
@@ -1274,6 +1651,18 @@ async function openPinnedPGSStore({
           WHERE attempts.scope_kind = 'targeted' AND prior.attempt_id <> ?
         `).run(attemptId, attemptId);
       }
+      retainScopePolicy.run(
+        RETAINED_SCOPE_POLICY_ATTEMPT_ID,
+        scopeKind,
+        normalizedLevel,
+        normalizedFraction,
+        JSON.stringify(targets),
+        createdAt,
+      );
+      db.prepare(`
+        INSERT OR IGNORE INTO attempt_scope_work_units(attempt_id, work_unit_id)
+        SELECT ?, work_unit_id FROM attempt_scope_work_units WHERE attempt_id = ?
+      `).run(RETAINED_SCOPE_POLICY_ATTEMPT_ID, attemptId);
     })();
     return scopeSummary(attemptId);
   }
@@ -1297,9 +1686,97 @@ async function openPinnedPGSStore({
       workUnitCount: db.prepare('SELECT COUNT(*) AS count FROM work_units').get().count,
     }),
     planScope,
+    releaseAttemptScope(attemptId) {
+      assertOpen();
+      validateAttemptId(attemptId);
+      const result = db.transaction(() => {
+        db.prepare('DELETE FROM attempt_scope_work_units WHERE attempt_id = ?').run(attemptId);
+        return db.prepare('DELETE FROM attempt_scopes WHERE attempt_id = ?').run(attemptId);
+      })();
+      attemptSnapshots.delete(attemptId);
+      return result.changes === 1;
+    },
     getScopeSummary(attemptId) {
       assertOpen();
       return scopeSummary(attemptId);
+    },
+    summarizeAuthority({ attemptId, signal: authoritySignal } = {}) {
+      assertOpen();
+      validateAttemptId(attemptId);
+      ensureAttemptScope(attemptId);
+      const accumulator = createRetrievalAuthorityAccumulator();
+      try {
+        const rows = db.prepare(`
+          SELECT n.id, n.json, n.authority_json, n.authority_mac
+          FROM attempt_scope_work_units scoped
+          JOIN work_units work ON work.work_unit_id = scoped.work_unit_id
+          JOIN nodes n ON n.partition_id = work.partition_id
+            AND n.ordinal BETWEEN work.first_ordinal AND work.last_ordinal
+          WHERE scoped.attempt_id = ?
+          ORDER BY work.coverage_ordinal, n.ordinal
+        `).iterate(attemptId);
+        for (const row of rows) {
+          throwIfAborted(authoritySignal);
+          accumulator.add(readPinnedProviderAuthority({
+            id: row.id,
+            json: row.json,
+            authorityJson: row.authority_json,
+            authorityMac: row.authority_mac,
+            sourceRevision,
+            descriptorDigest,
+          }));
+        }
+      } catch (cause) {
+        if (authoritySignal?.aborted) throw authoritySignal.reason;
+        if (cause?.code === 'pgs_projection_invalid') throw cause;
+        throw typed('pgs_projection_invalid', 'PGS authority evidence is unreadable', false, {
+          cause,
+        });
+      }
+      return accumulator.snapshot();
+    },
+    summarizeScopeTotals({ attemptId, signal: totalsSignal } = {}) {
+      assertOpen();
+      validateAttemptId(attemptId);
+      ensureAttemptScope(attemptId);
+      throwIfAborted(totalsSignal);
+      try {
+        const nodes = db.prepare(`
+          SELECT COALESCE(SUM(work.node_count), 0) AS count
+          FROM attempt_scope_work_units scoped
+          JOIN work_units work ON work.work_unit_id = scoped.work_unit_id
+          WHERE scoped.attempt_id = ?
+        `).get(attemptId).count;
+        const edges = db.prepare(`
+          WITH scoped_nodes AS (
+            SELECT node.id
+            FROM attempt_scope_work_units scoped
+            JOIN work_units work ON work.work_unit_id = scoped.work_unit_id
+            JOIN nodes node ON node.partition_id = work.partition_id
+              AND node.ordinal BETWEEN work.first_ordinal AND work.last_ordinal
+            WHERE scoped.attempt_id = ?
+          )
+          SELECT COUNT(*) AS count FROM (
+            SELECT edge.ordinal
+            FROM scoped_nodes node JOIN edges edge ON edge.source = node.id
+            UNION
+            SELECT edge.ordinal
+            FROM scoped_nodes node JOIN edges edge ON edge.target = node.id
+          )
+        `).get(attemptId).count;
+        throwIfAborted(totalsSignal);
+        if (!Number.isSafeInteger(nodes) || nodes < 0
+            || !Number.isSafeInteger(edges) || edges < 0) {
+          throw typed('pgs_projection_invalid', 'PGS scoped totals are invalid');
+        }
+        return Object.freeze({ nodes, edges });
+      } catch (cause) {
+        if (totalsSignal?.aborted) throw totalsSignal.reason;
+        if (cause?.code === 'pgs_projection_invalid') throw cause;
+        throw typed('pgs_projection_invalid', 'PGS scoped totals are unreadable', false, {
+          cause,
+        });
+      }
     },
     snapshotPendingWorkUnits({
       attemptId,
@@ -1340,11 +1817,19 @@ async function openPinnedPGSStore({
       throwIfAborted(loadSignal);
       const unit = db.prepare('SELECT * FROM work_units WHERE work_unit_id = ?').get(workUnitId);
       if (!unit) throw typed('target_not_found', 'PGS work unit does not exist');
-      const nodes = db.prepare(`
-        SELECT id, json FROM nodes
+      const rows = db.prepare(`
+        SELECT id, json, authority_json, authority_mac FROM nodes
         WHERE partition_id = ? AND ordinal BETWEEN ? AND ? ORDER BY ordinal
-      `).all(unit.partition_id, unit.first_ordinal, unit.last_ordinal)
-        .map(row => JSON.parse(row.json));
+      `).all(unit.partition_id, unit.first_ordinal, unit.last_ordinal);
+      const nodes = rows.map(row => JSON.parse(row.json));
+      const nodeAuthorities = rows.map(row => readPinnedProviderAuthority({
+        id: row.id,
+        json: row.json,
+        authorityJson: row.authority_json,
+        authorityMac: row.authority_mac,
+        sourceRevision,
+        descriptorDigest,
+      }));
       if (nodes.length > limits.maxNodesPerWorkUnit) {
         throw typed('result_too_large', 'PGS work unit exceeds the node limit');
       }
@@ -1369,6 +1854,7 @@ async function openPinnedPGSStore({
         workUnitId,
         partitionId: unit.partition_id,
         nodes,
+        nodeAuthorities,
         edges,
         stats: { retainedRecords: nodes.length, contextChars: unit.context_chars },
       };
@@ -1667,7 +2153,17 @@ async function openPinnedPGSStore({
       if (abortListener) signal?.removeEventListener('abort', abortListener);
       abortListener = null;
       try {
-        if (db?.open) db.close();
+        if (db?.open) {
+          db.transaction(() => {
+            db.prepare(
+              'DELETE FROM attempt_scope_work_units WHERE attempt_id <> ?',
+            ).run(RETAINED_SCOPE_POLICY_ATTEMPT_ID);
+            db.prepare('DELETE FROM attempt_scopes WHERE attempt_id <> ?')
+              .run(RETAINED_SCOPE_POLICY_ATTEMPT_ID);
+          })();
+          attemptSnapshots.clear();
+          db.close();
+        }
       } finally {
         db = null;
         try {
@@ -1701,6 +2197,7 @@ module.exports = {
   lowerLimits,
   openPinnedPGSStore,
   partitionIdForNode,
+  projectPinnedProviderAuthority,
   verifyScratchBoundary,
   verifyScratchBoundarySync,
 };

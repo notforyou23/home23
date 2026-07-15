@@ -10,6 +10,7 @@
 
 import { readFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
 import { execSync, exec } from 'node:child_process';
+import { unprivilegedChildEnv } from './security/child-process-env.js';
 import { promisify } from 'node:util';
 import { setDefaultResultOrder } from 'node:dns';
 import { createRequire } from 'node:module';
@@ -763,7 +764,7 @@ async function main(): Promise<void> {
             timeout: timeoutMs,
             encoding: 'utf-8',
             cwd: execCwd || PROJECT_ROOT,
-            env: { ...process.env },
+            env: unprivilegedChildEnv(),
             maxBuffer: 10 * 1024 * 1024,
           });
           const durationMs = Date.now() - startMs;
