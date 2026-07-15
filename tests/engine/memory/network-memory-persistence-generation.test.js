@@ -237,6 +237,25 @@ test('explicit high IDs advance allocation and generated IDs skip occupied recor
   assert.equal(mem.persistenceGeneration, 3);
 });
 
+test('numeric allocator reconciles canonical string IDs before generating a node', async () => {
+  const mem = memory();
+  Map.prototype.set.call(mem.nodes, '547601', {
+    id: '547601', concept: 'loaded canonical source node', cluster: null,
+  });
+  Map.prototype.set.call(mem.nodes, '547602', {
+    id: '547602', concept: 'loaded canonical source node', cluster: null,
+  });
+  mem.nextNodeId = 547602;
+
+  assert.equal(mem.reconcileNodeIdAllocator(), 547603);
+  const generated = await mem.addNode('must not alias a loaded string ID', 'test', [1, 0]);
+
+  assert.equal(generated.id, 547603);
+  assert.equal(mem.nodes.size, 3);
+  assert.equal(mem.nodes.has('547602'), true);
+  assert.equal(mem.nodes.has(547602), false);
+});
+
 test('node patch options cannot redirect the target or replace the requested patch', async () => {
   const mem = memory();
   const first = await addIsolatedNode(mem, 'n1', [1, 0]);
@@ -283,6 +302,26 @@ test('graph import keeps node and cluster indexes consistent when snapshots repl
 
   assert.equal(mem.nodes.get('n1').cluster, null);
   assert.deepEqual([...mem.clusters.get(2)], ['n2']);
+});
+
+test('graph import updates an equivalent logical ID without creating a type alias', () => {
+  const mem = memory();
+  mem.importGraphChanges({
+    nodes: [{ id: '42', concept: 'loaded canonical node', cluster: null }],
+  });
+  mem.markPersistenceClean();
+
+  const result = mem.importGraphChanges({
+    nodes: [{ id: 42, concept: 'updated through numeric ingress', cluster: null }],
+  });
+
+  assert.equal(result.importedNodes, 1);
+  assert.equal(mem.nodes.size, 1);
+  assert.equal(mem.nodes.has('42'), true);
+  assert.equal(mem.nodes.has(42), false);
+  assert.equal(mem.nodes.get('42').id, '42');
+  assert.equal(mem.nodes.get('42').concept, 'updated through numeric ingress');
+  assert.doesNotThrow(() => mem.capturePersistenceChangesSnapshot());
 });
 
 test('graph import rejects accessor-backed pair records without invoking accessors', () => {
@@ -646,6 +685,25 @@ test('changes-only capture rejects accessors without invoking their getter', asy
   );
   assert.equal(getterCalls, 0);
   assert.equal(mem.persistenceBarrierActive, false);
+});
+
+test('persistence capture rejects numeric and string aliases for one logical node ID', () => {
+  const mem = memory();
+  Map.prototype.set.call(mem.nodes, '42', {
+    id: '42', concept: 'canonical source node', cluster: null,
+  });
+  Map.prototype.set.call(mem.nodes, 42, {
+    id: 42, concept: 'resident type alias', cluster: null,
+  });
+
+  assert.throws(
+    () => mem.capturePersistenceChangesSnapshot(),
+    /memory_persistence_duplicate_logical_node_id:42/,
+  );
+  assert.throws(
+    () => mem.capturePersistenceSnapshot(),
+    /memory_persistence_duplicate_logical_node_id:42/,
+  );
 });
 
 test('descriptor clone preserves own __proto__ data without prototype pollution', async () => {

@@ -51,6 +51,18 @@ test('saveState and loadState delegate memory graph persistence to revisioned so
   assert.match(source, /state\.json\.gz[\s\S]*whole live graph and can OOM/);
 });
 
+test('revisioned graph hydration reconciles its derived node allocator', () => {
+  const loadStart = source.indexOf('for (const nodeData of state.memory.nodes)');
+  const loadEnd = source.indexOf("this.logger.info('Memory loaded (GPT-5.5)'", loadStart);
+  const loadBlock = source.slice(loadStart, loadEnd);
+  const shellAllocatorRestore = loadBlock.indexOf('if (state.memory.nextNodeId)');
+  const allocatorReconcile = loadBlock.indexOf('this.memory.reconcileNodeIdAllocator();');
+
+  assert.ok(shellAllocatorRestore >= 0, 'compact state allocator restore missing');
+  assert.ok(allocatorReconcile > shellAllocatorRestore,
+    'durable node identities must override the stale compact-state allocator floor');
+});
+
 test('successful saves refresh brain-snapshot and expose advisory snapshot failures', () => {
   assert.match(source, /const \{ readSnapshot, writeSnapshot \} = require\('\.\/brain-snapshot'\);/);
   assert.match(source, /this\.logger\?\.warn\?\.\('Brain snapshot refresh failed'/);

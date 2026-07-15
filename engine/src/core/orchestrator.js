@@ -7699,7 +7699,6 @@ class Orchestrator {
               missingEmbedIds.push(nodeRecord.id);
             }
           }
-
           if (missingEmbedIds.length > 0) {
             this.logger.info('Deferring embedding regeneration to background', {
               count: missingEmbedIds.length,
@@ -7804,6 +7803,7 @@ class Orchestrator {
           if (state.memory.nextNodeId) {
             this.memory.nextNodeId = state.memory.nextNodeId;
           }
+          this.memory.reconcileNodeIdAllocator();
           if (state.memory.nextClusterId) {
             this.memory.nextClusterId = Math.max(this.memory.nextClusterId, state.memory.nextClusterId);
           } else {

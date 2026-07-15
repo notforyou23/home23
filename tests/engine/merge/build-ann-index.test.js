@@ -188,6 +188,86 @@ test('builder streams one pinned logical source and advances ANN watermark', asy
   await loadAnn.close();
 });
 
+test('builder reports exact manifest and scanned counts while failing closed on source drift', async () => {
+  const dir = await tempDir('home23-ann-builder-count-drift-brain-');
+  const home23Root = await tempDir('home23-ann-builder-count-drift-home-');
+  await assert.rejects(
+    () => build(dir, {
+      home23Root,
+      requesterAgent: 'jerry',
+      resolveTargetContext: () => canonicalResolve(dir),
+      hnswlib: fakeHnsw({}),
+      withEphemeralMemorySource: async (_options, callback) => callback({
+        revision: 3,
+        manifest: {
+          formatVersion: 1,
+          generation: 'count-drift-generation',
+          baseRevision: 2,
+          activeDeltaEpoch: 'count-drift-epoch',
+          summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+          ann: { indexFile: null, metaFile: null, builtFromRevision: null },
+        },
+        async *iterateNodes() {
+          yield { id: '42', concept: 'one canonical node', embedding: [1, 0] };
+        },
+      }, { lockRoot: path.join(home23Root, 'runtime', 'brain-source-locks') }),
+      advanceAnnBuiltFromRevision: async () => { throw new Error('must not publish'); },
+    }),
+    (error) => error?.code === 'invalid_memory_source'
+      && error?.manifestNodeCount === 2
+      && error?.scannedNodeCount === 1,
+  );
+});
+
+test('builder counts an underreported source without exhausting native HNSW capacity', async () => {
+  const dir = await tempDir('home23-ann-builder-underreported-brain-');
+  const home23Root = await tempDir('home23-ann-builder-underreported-home-');
+  let addCalls = 0;
+  const capacityHnsw = {
+    HierarchicalNSW: class {
+      initIndex(capacity) { this.capacity = capacity; }
+      addPoint() {
+        addCalls += 1;
+        if (addCalls > this.capacity) throw new Error('native HNSW capacity exhausted');
+      }
+      writeIndexSync() { throw new Error('must not publish'); }
+    },
+  };
+
+  await assert.rejects(
+    () => build(dir, {
+      home23Root,
+      requesterAgent: 'jerry',
+      resolveTargetContext: () => canonicalResolve(dir),
+      hnswlib: capacityHnsw,
+      withEphemeralMemorySource: async (_options, callback) => callback({
+        revision: 3,
+        manifest: {
+          formatVersion: 1,
+          generation: 'underreported-generation',
+          baseRevision: 2,
+          activeDeltaEpoch: 'underreported-epoch',
+          summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+          ann: { indexFile: null, metaFile: null, builtFromRevision: null },
+        },
+        async *iterateNodes() {
+          yield { id: 'one', concept: 'first node', embedding: [1, 0] };
+          yield { id: 'two', concept: 'second node', embedding: [0, 1] };
+        },
+      }, { lockRoot: path.join(home23Root, 'runtime', 'brain-source-locks') }),
+      advanceAnnBuiltFromRevision: async () => { throw new Error('must not publish'); },
+    }),
+    (error) => error?.code === 'invalid_memory_source'
+      && error?.manifestNodeCount === 1
+      && error?.scannedNodeCount === 2
+      && error?.indexedNodeCount === 2
+      && error?.skippedNodeCount === 0,
+  );
+  assert.equal(addCalls, 1);
+  await assert.rejects(fsp.access(path.join(dir, 'memory-ann.3.index')), { code: 'ENOENT' });
+  await assert.rejects(fsp.access(path.join(dir, 'memory-ann.3.meta.json')), { code: 'ENOENT' });
+});
+
 test('builder rejects an oversized label id before publishing ANN outputs', async (t) => {
   const dir = await tempDir('home23-ann-builder-invalid-label-brain-');
   const home23Root = await tempDir('home23-ann-builder-invalid-label-home-');

@@ -174,11 +174,56 @@ function isThenableWithoutInvocation(value) {
 function nextSafeIntegerAfter(iterable, current) {
   let next = current;
   for (const value of iterable) {
-    if (Number.isSafeInteger(value) && value >= next && value < Number.MAX_SAFE_INTEGER) {
-      next = value + 1;
+    const numeric = Number.isSafeInteger(value)
+      ? value
+      : (typeof value === 'string'
+        && /^(0|[1-9]\d*)$/.test(value)
+        && Number.isSafeInteger(Number(value))
+        && String(Number(value)) === value
+        ? Number(value)
+        : null);
+    if (numeric !== null && numeric >= next && numeric < Number.MAX_SAFE_INTEGER) {
+      next = numeric + 1;
     }
   }
   return next;
+}
+
+function logicalGraphId(value) {
+  return value === null || value === undefined ? '' : String(value);
+}
+
+function resolveEquivalentGraphIdentity(nodes, value) {
+  if (nodes.has(value)) return value;
+  const text = logicalGraphId(value);
+  if (!text) return undefined;
+  if (nodes.has(text)) return text;
+  if (/^-?(?:0|[1-9]\d*)$/.test(text)) {
+    const numeric = Number(text);
+    if (Number.isSafeInteger(numeric) && String(numeric) === text && nodes.has(numeric)) return numeric;
+  }
+  return undefined;
+}
+
+function equivalentGraphIdentityExists(nodes, value) {
+  return resolveEquivalentGraphIdentity(nodes, value) !== undefined;
+}
+
+function assertUniqueLogicalNodeIds(nodes) {
+  for (const nodeId of nodes.keys()) {
+    if (!isLegacyGraphIdentity(nodeId)) {
+      throw new TypeError('memory_persistence_invalid_logical_node_id');
+    }
+    const logicalId = logicalGraphId(nodeId);
+    const alias = typeof nodeId === 'number' ? logicalId : Number(logicalId);
+    if ((typeof nodeId === 'number' && nodes.has(alias))
+        || (typeof nodeId === 'string'
+          && Number.isSafeInteger(alias)
+          && String(alias) === logicalId
+          && nodes.has(alias))) {
+      throw new Error(`memory_persistence_duplicate_logical_node_id:${logicalId}`);
+    }
+  }
 }
 
 function isLegacyGraphIdentity(value) {
@@ -767,12 +812,13 @@ class NetworkMemory {
       if (incomingAuthorityAttested
           && requestedNodeId !== undefined
           && requestedNodeId !== null
-          && this.nodes.has(requestedNodeId)) {
+          && equivalentGraphIdentityExists(this.nodes, requestedNodeId)) {
         const error = new Error('authenticated memory node ID already exists');
         error.code = 'authority_node_id_collision';
         throw error;
       }
-      if (requestedNodeId !== undefined && requestedNodeId !== null && !this.nodes.has(requestedNodeId)) {
+      if (requestedNodeId !== undefined && requestedNodeId !== null
+          && !equivalentGraphIdentityExists(this.nodes, requestedNodeId)) {
         node.id = requestedNodeId;
         if (
           Number.isSafeInteger(requestedNodeId)
@@ -797,14 +843,14 @@ class NetworkMemory {
             throw new Error('node_id_space_exhausted');
           }
           node.id = `${this.nodeIdPrefix}_${this.nextNodeId++}`;
-        } while (this.nodes.has(node.id));
+        } while (equivalentGraphIdentityExists(this.nodes, node.id));
       } else {
         do {
           if (!Number.isSafeInteger(this.nextNodeId) || this.nextNodeId >= Number.MAX_SAFE_INTEGER) {
             throw new Error('node_id_space_exhausted');
           }
           node.id = this.nextNodeId++;
-        } while (this.nodes.has(node.id));
+        } while (equivalentGraphIdentityExists(this.nodes, node.id));
       }
 
       if (preserveIncomingAuthority) {
@@ -1027,21 +1073,25 @@ class NetworkMemory {
 
   importGraphChanges(changes = {}) {
     const nodeRecords = new Map();
+    const incomingNodeIds = new Map();
     for (const rawNode of Array.from(changes.nodes || [])) {
       const clonedInput = deepCloneJsonRecord(rawNode);
       const isTuple = Array.isArray(clonedInput) && clonedInput.length === 2;
       const node = isTuple ? clonedInput[1] : clonedInput;
       if (!node || typeof node !== 'object' || Array.isArray(node)) continue;
-      const nodeId = isTuple ? clonedInput[0] : node.id;
-      if (nodeId === undefined || nodeId === null) continue;
-      if (isTuple) {
-        Object.defineProperty(node, 'id', {
-          configurable: true,
-          enumerable: true,
-          writable: true,
-          value: nodeId,
-        });
-      }
+      const rawNodeId = isTuple ? clonedInput[0] : node.id;
+      if (rawNodeId === undefined || rawNodeId === null) continue;
+      const logicalId = logicalGraphId(rawNodeId);
+      const nodeId = resolveEquivalentGraphIdentity(this.nodes, rawNodeId)
+        ?? incomingNodeIds.get(logicalId)
+        ?? rawNodeId;
+      incomingNodeIds.set(logicalId, nodeId);
+      Object.defineProperty(node, 'id', {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: nodeId,
+      });
       if (Object.prototype.hasOwnProperty.call(node, 'embedding')) {
         node.embedding = this.normalizeEmbedding(node.embedding);
       }
@@ -1072,6 +1122,12 @@ class NetworkMemory {
         endpointA = Number.isNaN(Number(parts[0])) ? parts[0] : Number(parts[0]);
         endpointB = Number.isNaN(Number(parts[1])) ? parts[1] : Number(parts[1]);
       }
+      endpointA = resolveEquivalentGraphIdentity(this.nodes, endpointA)
+        ?? incomingNodeIds.get(logicalGraphId(endpointA))
+        ?? endpointA;
+      endpointB = resolveEquivalentGraphIdentity(this.nodes, endpointB)
+        ?? incomingNodeIds.get(logicalGraphId(endpointB))
+        ?? endpointB;
       if (endpointA === undefined || endpointB === undefined || endpointA === endpointB) continue;
       const sorted = [endpointA, endpointB].sort((a, b) => String(a).localeCompare(String(b)));
       edgeKey = sorted.join('->');
@@ -1088,10 +1144,20 @@ class NetworkMemory {
       const clusterId = isTuple ? clonedInput[0] : clonedInput?.id;
       const members = isTuple ? clonedInput[1] : clonedInput?.nodes;
       if (clusterId === undefined || clusterId === null || !members) continue;
-      clusterRecords.set(clusterId, new Set(Array.from(members)));
+      clusterRecords.set(clusterId, new Set(Array.from(members, (nodeId) => (
+        resolveEquivalentGraphIdentity(this.nodes, nodeId)
+          ?? incomingNodeIds.get(logicalGraphId(nodeId))
+          ?? nodeId
+      ))));
     }
 
-    const nodeDeletes = Array.from(new Set(changes.nodeDeletes || changes.removedNodeIds || []));
+    const nodeDeletes = Array.from(new Set(
+      Array.from(changes.nodeDeletes || changes.removedNodeIds || [], (nodeId) => (
+        resolveEquivalentGraphIdentity(this.nodes, nodeId)
+          ?? incomingNodeIds.get(logicalGraphId(nodeId))
+          ?? nodeId
+      )),
+    ));
     const edgeDeletes = Array.from(new Set(changes.edgeDeletes || changes.removedEdgeKeys || []));
     const clusterDeletes = Array.from(new Set(changes.clusterDeletes || changes.removedClusterIds || []));
 
@@ -1551,6 +1617,13 @@ class NetworkMemory {
       this.deletedEdgeKeys.size > 0;
   }
 
+  reconcileNodeIdAllocator() {
+    let next = nextSafeIntegerAfter(this.nodes.keys(), this.nextNodeId);
+    next = nextSafeIntegerAfter(this.deletedNodeIds, next);
+    this.nextNodeId = next;
+    return next;
+  }
+
   getPersistenceChanges() {
     return this._getPersistenceChangesUnsafe();
   }
@@ -1598,6 +1671,7 @@ class NetworkMemory {
 
   capturePersistenceSnapshot() {
     return this.withPersistenceBarrier(() => {
+      assertUniqueLogicalNodeIds(this.nodes);
       const nodes = Array.from(this.nodes.values())
         .map((node) => serializeNodePersistenceRecord(node));
       const edges = Array.from(this.edges.entries())
@@ -1614,6 +1688,7 @@ class NetworkMemory {
 
   capturePersistenceChangesSnapshot() {
     return this.withPersistenceBarrier(() => {
+      assertUniqueLogicalNodeIds(this.nodes);
       const changes = deepCloneJsonRecord(this._getPersistenceChangesUnsafe());
       const clusterCount = new Set(
         Array.from(this.nodes.values())

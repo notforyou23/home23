@@ -4,10 +4,12 @@ const path = require('node:path');
 const fsp = require('node:fs').promises;
 const {
   openMemorySource,
+  createDescriptor,
   readManifest,
   resolveMemorySourceSelection,
   appendMemoryRevision,
   rewriteMemoryBase,
+  sourceDescriptorDigest,
   retireUnpinnedSources,
 } = require('../../../shared/memory-source');
 
@@ -33,6 +35,13 @@ function hasChanges(changes) {
     || changes.edges.length > 0
     || changes.removedNodeIds.length > 0
     || changes.removedEdgeKeys.length > 0;
+}
+
+function nodeSummaryRepairNeeded(left, right) {
+  return Boolean(left && right
+    && left.nodeCount !== right.nodeCount
+    && left.edgeCount === right.edgeCount
+    && left.clusterCount === right.clusterCount);
 }
 
 function normalizeMemoryId(value) {
@@ -176,6 +185,23 @@ async function persistMemoryRevision({
   const snapshot = !rewrite && typeof memory.capturePersistenceChangesSnapshot === 'function'
     ? memory.capturePersistenceChangesSnapshot()
     : memory.capturePersistenceSnapshot();
+  const capturedHasChanges = hasChanges(snapshot.changes);
+  // A revisioned load materializes every logical node, so a clean resident
+  // graph can safely repair a node-count drift caused by historical ID type
+  // aliases. Edge and cluster disagreement may instead reflect hydration
+  // filtering; keep that fail-closed until a real graph mutation describes it.
+  const summaryRepair = Boolean(!rewrite && !capturedHasChanges && manifest
+    && nodeSummaryRepairNeeded(manifest.summary, snapshot.summary));
+  const summaryRepairExpected = summaryRepair
+    ? {
+        expectedGeneration: manifest.generation,
+        expectedRevision: manifest.currentRevision,
+        expectedDigest: sourceDescriptorDigest(createDescriptor(
+          await fsp.realpath(brainDir),
+          manifest,
+        )),
+      }
+    : null;
   let result;
   if (rewrite) {
     result = await writer.rewriteMemoryBase(brainDir, {
@@ -183,22 +209,25 @@ async function persistMemoryRevision({
       edges: snapshot.fullView.edges,
       summary: snapshot.summary,
     }, { lockRoot, level: gzipLevel });
-  } else if (hasChanges(snapshot.changes)) {
+  } else if (capturedHasChanges || summaryRepair) {
     result = await writer.appendMemoryRevision(brainDir, snapshot.changes, {
       lockRoot,
       summary: snapshot.summary,
+      ...(summaryRepairExpected || {}),
     });
   } else {
     result = { manifest, count: 0 };
   }
-  const committed = Boolean(result?.manifest && (rewrite || result.count > 0));
-  const cleaned = committed ? memory.markPersistenceCleanIfGeneration(snapshot.generation) : false;
+  const committed = Boolean(result?.manifest && (rewrite || result.count > 0 || summaryRepair));
+  const cleaned = committed && (rewrite || capturedHasChanges)
+    ? memory.markPersistenceCleanIfGeneration(snapshot.generation)
+    : false;
   if (rewrite && result?.manifest) {
     scheduleSourceRetirement({ brainDir, home23Root, lockRoot, retire, schedule, logger });
   }
   return {
     ...result,
-    mode: rewrite ? 'full' : (result.count > 0 ? 'delta' : 'reused'),
+    mode: rewrite ? 'full' : (result.count > 0 ? 'delta' : (summaryRepair ? 'summary-repair' : 'reused')),
     cleaned,
     persistedGeneration: snapshot.generation,
     persistedChanges: snapshot.changes,

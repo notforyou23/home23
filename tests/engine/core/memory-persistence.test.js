@@ -11,6 +11,10 @@ const {
   persistMemoryRevision,
 } = require('../../../engine/src/core/memory-persistence.js');
 const {
+  appendMemoryRevision,
+  openMemorySource,
+  readManifest,
+  rewriteMemoryBase,
   writeJsonlGzAtomic,
 } = require('../../../shared/memory-source');
 
@@ -351,6 +355,211 @@ test('manifest delta and reuse saves never materialize the full resident graph',
       assert.equal(appended, null);
     }
   }
+});
+
+test('a clean resident snapshot repairs stale manifest summary without appending a revision', async () => {
+  const events = [];
+  const brainDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-summary-repair-unit-'));
+  const summary = Object.freeze({ nodeCount: 1, edgeCount: 0, clusterCount: 1 });
+  const memory = {
+    capturePersistenceSnapshot() {
+      throw new Error('full resident graph materializer invoked');
+    },
+    capturePersistenceChangesSnapshot() {
+      events.push('changes-only');
+      return Object.freeze({
+        generation: 9,
+        changes: Object.freeze({
+          nodes: Object.freeze([]),
+          edges: Object.freeze([]),
+          removedNodeIds: Object.freeze([]),
+          removedEdgeKeys: Object.freeze([]),
+        }),
+        summary,
+      });
+    },
+    markPersistenceCleanIfGeneration() {
+      throw new Error('clean graph must not need a dirty-generation CAS');
+    },
+  };
+  const manifest = {
+    formatVersion: 1,
+    generation: 'summary-repair-generation',
+    baseRevision: 1,
+    currentRevision: 17,
+    baseWrittenAt: new Date().toISOString(),
+    activeBase: {
+      nodes: { file: 'nodes.gz', count: 1, bytes: 1 },
+      edges: { file: 'edges.gz', count: 0, bytes: 1 },
+    },
+    activeDelta: {
+      epoch: 'summary-repair-epoch', file: 'delta.jsonl',
+      fromRevision: 2, toRevision: 17, count: 16, committedBytes: 1,
+    },
+    summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+  };
+
+  const result = await persistMemoryRevision({
+    brainDir,
+    memory,
+    writer: {
+      readManifest: async () => manifest,
+      appendMemoryRevision: async (_brainDir, changes, options) => {
+        events.push('summary-repaired');
+        assert.deepEqual(changes, {
+          nodes: [], edges: [], removedNodeIds: [], removedEdgeKeys: [],
+        });
+        assert.equal(options.summary, summary);
+        assert.equal(options.expectedGeneration, manifest.generation);
+        assert.equal(options.expectedRevision, manifest.currentRevision);
+        assert.match(options.expectedDigest, /^sha256:[a-f0-9]{64}$/);
+        return { manifest: { ...manifest, summary }, count: 0 };
+      },
+      rewriteMemoryBase: async () => { throw new Error('full rewrite not expected'); },
+    },
+  });
+
+  assert.equal(result.mode, 'summary-repair');
+  assert.deepEqual(result.manifest.summary, summary);
+  assert.deepEqual(events, ['changes-only', 'summary-repaired']);
+});
+
+test('summary-only repair refuses to rewrite unrelated edge or cluster authority', async () => {
+  let appendCalls = 0;
+  const manifest = {
+    currentRevision: 17,
+    baseWrittenAt: new Date().toISOString(),
+    summary: { nodeCount: 2, edgeCount: 4, clusterCount: 1 },
+  };
+  const memory = {
+    capturePersistenceChangesSnapshot() {
+      return Object.freeze({
+        generation: 9,
+        changes: Object.freeze({
+          nodes: Object.freeze([]), edges: Object.freeze([]),
+          removedNodeIds: Object.freeze([]), removedEdgeKeys: Object.freeze([]),
+        }),
+        summary: Object.freeze({ nodeCount: 1, edgeCount: 3, clusterCount: 2 }),
+      });
+    },
+  };
+
+  const result = await persistMemoryRevision({
+    brainDir: '/unused',
+    memory,
+    writer: {
+      readManifest: async () => manifest,
+      appendMemoryRevision: async () => { appendCalls += 1; },
+      rewriteMemoryBase: async () => { throw new Error('full rewrite not expected'); },
+    },
+  });
+
+  assert.equal(result.mode, 'reused');
+  assert.equal(result.manifest, manifest);
+  assert.equal(appendCalls, 0);
+});
+
+test('summary-only repair publishes coherent authority through the production writer and reader', async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-summary-repair-brain-'));
+  const home23Root = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-summary-repair-home-'));
+  const lockRoot = path.join(home23Root, 'runtime', 'brain-source-locks');
+  await rewriteMemoryBase(dir, {
+    nodes: [{ id: '42', concept: 'one canonical node', cluster: 7 }],
+    edges: [],
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+  }, { lockRoot });
+  const stale = await readManifest(dir);
+  await fsp.writeFile(path.join(dir, 'memory-manifest.json'), `${JSON.stringify({
+    ...stale,
+    summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+  }, null, 2)}\n`);
+  const memory = {
+    capturePersistenceChangesSnapshot() {
+      return Object.freeze({
+        generation: 5,
+        changes: Object.freeze({
+          nodes: Object.freeze([]), edges: Object.freeze([]),
+          removedNodeIds: Object.freeze([]), removedEdgeKeys: Object.freeze([]),
+        }),
+        summary: Object.freeze({ nodeCount: 1, edgeCount: 0, clusterCount: 1 }),
+      });
+    },
+    markPersistenceCleanIfGeneration() {
+      throw new Error('summary-only repair must not consume a dirty generation');
+    },
+  };
+
+  const result = await persistMemoryRevision({ brainDir: dir, home23Root, memory });
+  assert.equal(result.mode, 'summary-repair');
+  assert.equal(result.manifest.currentRevision, stale.currentRevision);
+  assert.deepEqual(result.manifest.summary, { nodeCount: 1, edgeCount: 0, clusterCount: 1 });
+
+  const source = await openMemorySource(dir, {
+    operationRoot: path.join(home23Root, 'operation'),
+    lockRoot,
+  });
+  try {
+    const nodes = [];
+    for await (const node of source.iterateNodes()) nodes.push(node.id);
+    assert.deepEqual(nodes, ['42']);
+    assert.equal(source.descriptor.summary.nodeCount, nodes.length);
+  } finally {
+    await source.close();
+  }
+});
+
+test('summary-only repair loses an exact-source CAS race without rewriting newer authority', async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-summary-race-brain-'));
+  const home23Root = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-summary-race-home-'));
+  const lockRoot = path.join(home23Root, 'runtime', 'brain-source-locks');
+  await rewriteMemoryBase(dir, {
+    nodes: [{ id: 'base', concept: 'base node', cluster: 1 }],
+    edges: [],
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+  }, { lockRoot });
+  const before = await readManifest(dir);
+  let raced = false;
+  const memory = {
+    capturePersistenceChangesSnapshot() {
+      return Object.freeze({
+        generation: 8,
+        changes: Object.freeze({
+          nodes: Object.freeze([]), edges: Object.freeze([]),
+          removedNodeIds: Object.freeze([]), removedEdgeKeys: Object.freeze([]),
+        }),
+        summary: Object.freeze({ nodeCount: 0, edgeCount: 0, clusterCount: 1 }),
+      });
+    },
+  };
+
+  await assert.rejects(
+    () => persistMemoryRevision({
+      brainDir: dir,
+      home23Root,
+      memory,
+      writer: {
+        readManifest,
+        rewriteMemoryBase,
+        appendMemoryRevision: async (brainDir, changes, options) => {
+          if (!raced) {
+            raced = true;
+            await appendMemoryRevision(brainDir, {
+              nodes: [{ id: 'new', concept: 'concurrent node', cluster: 2 }],
+            }, {
+              lockRoot,
+              summary: { nodeCount: 2, edgeCount: 0, clusterCount: 2 },
+            });
+          }
+          return appendMemoryRevision(brainDir, changes, options);
+        },
+      },
+    }),
+    (error) => error?.code === 'source_changed' && error?.retryable === true,
+  );
+
+  const after = await readManifest(dir);
+  assert.equal(after.currentRevision, before.currentRevision + 1);
+  assert.deepEqual(after.summary, { nodeCount: 2, edgeCount: 0, clusterCount: 2 });
 });
 
 test('a successful full rewrite schedules production retirement with global pin discovery', async () => {

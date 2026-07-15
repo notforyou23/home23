@@ -71,6 +71,12 @@ function semanticCoverage(sourceNodes, indexed, skipped, minimumBps) {
       || indexed + skipped !== sourceNodes) {
     throw memorySourceError('invalid_memory_source', 'ANN scan count does not match source authority', {
       retryable: false,
+      manifestNodeCount: sourceNodes,
+      scannedNodeCount: Number.isSafeInteger(indexed) && Number.isSafeInteger(skipped)
+        ? indexed + skipped
+        : null,
+      indexedNodeCount: indexed,
+      skippedNodeCount: skipped,
     });
   }
   const vectorCoverageBps = sourceNodes === 0
@@ -587,6 +593,8 @@ async function build(brainDir, deps = {}) {
     const metaTmpPath = uniqueTempPath(metaPath);
     const labels = [];
     const skippedLabels = [];
+    let scanned = 0;
+    let indexed = 0;
     let skipped = 0;
     let dimension = null;
     let index = null;
@@ -599,21 +607,28 @@ async function build(brainDir, deps = {}) {
       const sourceScanStarted = Date.now();
       for await (const node of source.iterateNodes({ signal: deps.signal })) {
         throwIfAborted(deps.signal);
+        scanned += 1;
         const embedding = node?.embedding;
         if (!Array.isArray(embedding) || embedding.length === 0) {
           skipped += 1;
-          skippedLabels.push(projectLabel(node));
+          if (scanned <= capacity) skippedLabels.push(projectLabel(node));
           continue;
         }
         if (dimension === null) {
           dimension = embedding.length;
-          index = createIndex(hnswlib, dimension, capacity);
+          if (scanned <= capacity) index = createIndex(hnswlib, dimension, capacity);
         }
         if (embedding.length !== dimension) {
           skipped += 1;
-          skippedLabels.push(projectLabel(node));
+          if (scanned <= capacity) skippedLabels.push(projectLabel(node));
           continue;
         }
+        indexed += 1;
+        // The manifest count is source authority and also the native HNSW
+        // capacity. If the stream exceeds it, finish the bounded count pass
+        // without calling native code past capacity, then fail with exact
+        // typed diagnostics below. No partial output is published.
+        if (scanned > capacity) continue;
         const label = projectLabel(node);
         index.addPoint(embedding, labels.length);
         labels.push(label);
@@ -621,7 +636,7 @@ async function build(brainDir, deps = {}) {
       stageDurations.sourceScanMs = elapsedMs(sourceScanStarted);
       const coverage = requireUsableSemanticCoverage(semanticCoverage(
         capacity,
-        labels.length,
+        indexed,
         skipped,
         minimumCoverageBps,
       ));
