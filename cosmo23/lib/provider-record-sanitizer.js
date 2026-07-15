@@ -11,7 +11,7 @@ const PROVIDER_OMITTED_VECTOR_FIELDS = new Set([
   'vectors',
 ]);
 const PRIVATE_PATHS = Object.freeze([
-  /file:\/\/(?:localhost)?\/[^\x00\s"'`<>\])},;]+/giu,
+  /(?<![A-Za-z0-9+.-])file:\/+[^\x00\s"'`<>\])},;]+/giu,
   /\\\\[^\s\\/"'`<>\])},;]+\\[^\s"'`<>\])},;]+/gu,
   /(?<![A-Za-z0-9_.-])[A-Za-z]:[\\/][^\x00\s"'`<>\])},;]+/gu,
   /(?<![A-Za-z0-9_.:\/\]\-])\/(?!\/)[^\x00\s"'`<>\])},;]+/gu,
@@ -83,7 +83,7 @@ function redactPrivatePaths(value) {
   });
   for (const pattern of PRIVATE_PATHS) {
     redacted = redacted.replace(pattern, (match) => {
-      const normalized = match.replace(/^file:\/\/(?:localhost)?/iu, '');
+      const normalized = match.replace(/^file:\/+/iu, '');
       const basename = normalized.split(/[\\/]/u).filter(Boolean).at(-1) || 'source';
       return `[redacted-path]/${basename}`;
     });

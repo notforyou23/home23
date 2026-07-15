@@ -52,6 +52,8 @@ test('unsigned Query evidence redacts arbitrary absolute POSIX paths without cor
       'node=node:/Users/incident/one',
       'source=source:/manifest-v1',
       'private-source=source:/data/private/secret.json',
+      'file-one=file:/secret',
+      'file-host=FILE://NAS/share/secret.json',
     ].join(' | '),
   }, projectionRecordLimits('full'));
 
@@ -64,7 +66,8 @@ test('unsigned Query evidence redacts arbitrary absolute POSIX paths without cor
   assert.match(projected.value.content, /node:\/Users\/incident\/one/);
   assert.match(projected.value.content, /source:\/manifest-v1/);
   assert.doesNotMatch(projected.value.content, /source:\/data\/private/);
-  assert.equal((projected.value.content.match(/\[redacted-path\]/g) || []).length, 3);
+  assert.doesNotMatch(projected.value.content, /file:|nas\/share/iu);
+  assert.equal((projected.value.content.match(/\[redacted-path\]/g) || []).length, 5);
 });
 
 test('query evidence edge projection keeps endpoints and bounded relationship evidence', () => {

@@ -496,7 +496,11 @@ test('pinned Query skips private path-shaped IDs without rewriting identity join
   const unsafeIds = [
     '/Volumes/PrivateBrain/nodes/secret.json',
     '/custom-root/private/secret.json',
+    'file:/secret',
+    'FILE:/secret',
     'file:///var/tmp/private.json',
+    'file://nas/share/private.json',
+    'FILE://NAS/share/private.json',
     String.raw`D:\Brains\Jerry\private.json`,
   ];
   const records = [

@@ -110,3 +110,21 @@ test('path redaction preserves multi-segment semantic refs and protocol-relative
     'unknown:[redacted-path]/secret.json',
   );
 });
+
+test('path redaction removes every file URI slash and authority form', () => {
+  const variants = [
+    'file:/secret',
+    'FILE:/secret',
+    'file://nas/share/secret.json',
+    'FILE://NAS/share/secret.json',
+    'file:///var/tmp/private.log',
+    'file://localhost/var/tmp/private.log',
+  ];
+
+  for (const variant of variants) {
+    const redacted = redactPrivatePaths(variant);
+    assert.doesNotMatch(redacted, /file:|nas|localhost|\/var\/tmp/iu);
+    assert.match(redacted, /^\[redacted-path\]\/(?:secret|secret\.json|private\.log)$/u);
+  }
+  assert.equal(redactPrivatePaths('//example.com/a/b'), '//example.com/a/b');
+});
