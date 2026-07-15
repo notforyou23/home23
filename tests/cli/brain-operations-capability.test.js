@@ -85,14 +85,26 @@ function makeInstall({ key, mode = 0o600 } = {}) {
 }
 
 function targetNames() {
+  return [
+    'home23-jerry',
+    'home23-jerry-dash',
+    'home23-jerry-mcp',
+    'home23-jerry-harness',
+    'home23-forrest',
+    'home23-forrest-dash',
+    'home23-forrest-mcp',
+    'home23-forrest-harness',
+    'home23-cosmo23',
+  ];
+}
+
+function capabilityTargetNames() {
   return ['home23-jerry-dash', 'home23-forrest-dash', 'home23-cosmo23'];
 }
 
 function processesWithoutCapability() {
   return [
     ...targetNames().map((name) => ({ name, status: 'online', env: {} })),
-    { name: 'home23-jerry', status: 'online', env: {} },
-    { name: 'home23-jerry-harness', status: 'online', env: {} },
     { name: 'unrelated-service', status: 'online', env: {} },
   ];
 }
@@ -101,17 +113,22 @@ function processesWithCapability(key) {
   return targetNames().map((name) => ({
     name,
     status: 'online',
-    env: { [CAPABILITY_ENV]: key },
+    env: capabilityTargetNames().includes(name) ? { [CAPABILITY_ENV]: key } : {},
   }));
 }
 
 function rawPm2Processes(key) {
+  const authorityKey = authorityAttestation.deriveMemoryAuthorityAttestationKey(key);
   return targetNames().map((name) => ({
     name,
     pm2_env: {
       status: 'online',
-      [CAPABILITY_ENV]: key,
-      env: { [CAPABILITY_ENV]: key },
+      ...(capabilityTargetNames().includes(name) ? { [CAPABILITY_ENV]: key } : {}),
+      [AUTHORITY_ENV]: authorityKey,
+      env: {
+        ...(capabilityTargetNames().includes(name) ? { [CAPABILITY_ENV]: key } : {}),
+        [AUTHORITY_ENV]: authorityKey,
+      },
     },
   }));
 }
@@ -154,34 +171,35 @@ function loadEcosystem(root) {
   return require(ecosystemPath);
 }
 
-function assertReceiptHasNoSecret(receipt, secret) {
-  assert.equal(JSON.stringify(receipt).includes(secret), false);
+function assertReceiptHasNoSecret(receipt, ...secrets) {
+  const serialized = JSON.stringify(receipt);
+  for (const secret of secrets) {
+    assert.equal(serialized.includes(secret), false, 'receipt must redact configured secrets');
+  }
 }
 
 test('generated ecosystem isolates one shared capability to dashboards and COSMO only', () => {
   const key = 'a'.repeat(64);
   const root = makeInstall({ key });
   try {
+    const rendered = generateEcosystem(root);
     const ecosystem = loadEcosystem(root);
     const apps = new Map(ecosystem.apps.map((app) => [app.name, app]));
     const authorityKey = authorityAttestation.deriveMemoryAuthorityAttestationKey(key);
-    for (const name of targetNames()) assert.equal(apps.get(name)?.env?.[CAPABILITY_ENV], key, name);
+    assert.deepEqual(rendered.configuredProcessNames, targetNames());
+    for (const name of capabilityTargetNames()) {
+      assert.equal(apps.get(name)?.env?.[CAPABILITY_ENV] === key, true, name);
+    }
     for (const app of ecosystem.apps) {
       assert.ok(app.filter_env?.includes(CAPABILITY_ENV), `${app.name} filters inherited capability`);
       assert.ok(app.filter_env?.includes(AUTHORITY_ENV), `${app.name} filters inherited authority key`);
-      if (!targetNames().includes(app.name)) {
-        assert.notEqual(app.env?.[CAPABILITY_ENV], key, app.name);
+      if (!capabilityTargetNames().includes(app.name)) {
+        assert.equal(app.env?.[CAPABILITY_ENV] === key, false, app.name);
       }
     }
-    for (const name of [
-      'home23-jerry', 'home23-forrest',
-      'home23-jerry-dash', 'home23-forrest-dash',
-      'home23-jerry-mcp', 'home23-forrest-mcp',
-      'home23-jerry-harness', 'home23-forrest-harness',
-      'home23-cosmo23',
-    ]) {
-      assert.equal(apps.get(name)?.env?.[AUTHORITY_ENV], authorityKey, name);
-      assert.notEqual(apps.get(name)?.env?.[AUTHORITY_ENV], key, name);
+    for (const name of targetNames()) {
+      assert.equal(apps.get(name)?.env?.[AUTHORITY_ENV] === authorityKey, true, name);
+      assert.equal(apps.get(name)?.env?.[AUTHORITY_ENV] === key, false, name);
     }
     const source = readFileSync(join(root, 'ecosystem.config.cjs'), 'utf8');
     assert.doesNotMatch(source, /commonEnv\s*=\s*\{[^}]*HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY/s);
@@ -237,13 +255,27 @@ test('generated ecosystem omits agent-scoped MCP when an agent disables it', () 
     const forrestConfig = yaml.load(readFileSync(forrestConfigPath, 'utf8'));
     forrestConfig.mcp = { enabled: false };
     writeFileSync(forrestConfigPath, yaml.dump(forrestConfig), 'utf8');
-    generateEcosystem(root);
+    const rendered = generateEcosystem(root);
 
     const ecosystem = loadEcosystem(root);
     assert.ok(ecosystem.apps.some((app) => app.name === 'home23-jerry-mcp'));
     assert.equal(ecosystem.apps.some((app) => app.name === 'home23-forrest-mcp'), false);
     assert.equal(ecosystem.apps.find((app) => app.name === 'home23-jerry-dash')?.env?.[MCP_AVAILABLE_ENV], 'true');
     assert.equal(ecosystem.apps.find((app) => app.name === 'home23-forrest-dash')?.env?.[MCP_AVAILABLE_ENV], 'false');
+    const configuredProcessNames = targetNames().filter((name) => name !== 'home23-forrest-mcp');
+    assert.deepEqual(rendered.configuredProcessNames, configuredProcessNames);
+    assert.deepEqual(buildScopedPm2RefreshArgs({
+      restartRequired: true,
+      liveEnvVerified: true,
+      configuredProcessNames,
+      changedProcessNames: configuredProcessNames,
+    }, configuredProcessNames), [
+      'start',
+      'ecosystem.config.cjs',
+      '--only',
+      configuredProcessNames.join(','),
+      '--update-env',
+    ]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -312,7 +344,11 @@ test('prepare dry-run is byte/type/mode/mtime read-only and normal prepare is id
     assert.deepEqual(prepared.changedProcessNames, targetNames());
     assert.equal(prepared.restartRequired, true);
     assert.equal(prepared.liveEnvVerified, true);
-    assertReceiptHasNoSecret(prepared, key);
+    assertReceiptHasNoSecret(
+      prepared,
+      key,
+      authorityAttestation.deriveMemoryAuthorityAttestationKey(key),
+    );
     assert.deepEqual(pm2Calls, []);
     assert.notDeepEqual(readFileSync(secretsPath), secretsBefore);
     assert.notDeepEqual(readFileSync(ecosystemPath), ecosystemBefore);
@@ -346,11 +382,11 @@ test('prepare dry-run is byte/type/mode/mtime read-only and normal prepare is id
     assert.equal(settled.filesystemChanged, false);
     assert.deepEqual(pm2Calls, []);
 
-    assert.deepEqual(buildScopedPm2RefreshArgs(prepared), [
+    assert.deepEqual(buildScopedPm2RefreshArgs(prepared, targetNames()), [
       'start',
       'ecosystem.config.cjs',
       '--only',
-      'home23-jerry-dash,home23-forrest-dash,home23-cosmo23',
+      targetNames().join(','),
       '--update-env',
     ]);
   } finally {
@@ -363,7 +399,7 @@ test('existing 0644 key is reported in dry-run, repaired once, and never rotated
   const root = makeInstall({ key, mode: 0o644 });
   const secretsPath = join(root, 'config', 'secrets.yaml');
   const ecosystemPath = join(root, 'ecosystem.config.cjs');
-  const processRows = processesWithCapability(key);
+  const processRows = rawPm2Processes(key);
   try {
     const bytesBefore = readFileSync(secretsPath);
     const ecosystemBefore = readFileSync(ecosystemPath);
@@ -654,7 +690,11 @@ test('PM2 inspection failure is fail-closed and refresh guard only permits exact
     assert.equal(receipt.liveEnvVerified, false);
     assert.equal(receipt.restartRequired, true);
     assert.deepEqual(receipt.changedProcessNames, targetNames());
-    assertReceiptHasNoSecret(receipt, key);
+    assertReceiptHasNoSecret(
+      receipt,
+      key,
+      authorityAttestation.deriveMemoryAuthorityAttestationKey(key),
+    );
 
     const base = {
       restartRequired: true,
@@ -662,6 +702,23 @@ test('PM2 inspection failure is fail-closed and refresh guard only permits exact
       configuredProcessNames: targetNames(),
       changedProcessNames: targetNames(),
     };
+    assert.throws(
+      () => buildScopedPm2RefreshArgs(base),
+      /configured_processes_unauthorized/,
+    );
+    const attackerScope = [
+      'home23-attacker',
+      'home23-attacker-dash',
+      'home23-attacker-harness',
+      'home23-cosmo23',
+    ];
+    const jerryOnlyScope = [
+      'home23-jerry',
+      'home23-jerry-dash',
+      'home23-jerry-mcp',
+      'home23-jerry-harness',
+      'home23-cosmo23',
+    ];
     for (const bad of [
       { ...base, restartRequired: false },
       { ...base, liveEnvVerified: false },
@@ -674,8 +731,23 @@ test('PM2 inspection failure is fail-closed and refresh guard only permits exact
       { ...base, changedProcessNames: ['home23-attacker-dash'] },
       { ...base, changedProcessNames: ['home23-cosmo23', 'home23-cosmo23'] },
       { ...base, changedProcessNames: ['home23-cosmo23', 'home23-jerry-dash'] },
+      { ...base, changedProcessNames: [...targetNames()].reverse() },
+      { ...base, configuredProcessNames: [...targetNames()].reverse() },
+      {
+        ...base,
+        configuredProcessNames: attackerScope,
+        changedProcessNames: attackerScope,
+      },
+      {
+        ...base,
+        configuredProcessNames: jerryOnlyScope,
+        changedProcessNames: jerryOnlyScope,
+      },
     ]) {
-      assert.throws(() => buildScopedPm2RefreshArgs(bad), /refresh_|live_env_|changed_processes_/);
+      assert.throws(
+        () => buildScopedPm2RefreshArgs(bad, targetNames()),
+        /refresh_|live_env_|changed_processes_|configured_processes_/,
+      );
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -686,13 +758,14 @@ test('PM2 normalization handles live shapes and fails closed on duplicate or dis
   const key = 'f'.repeat(64);
   const root = makeInstall({ key });
   try {
-    const directOnly = targetNames().map((name) => ({
+    const expected = rawPm2Processes(key);
+    const directOnly = expected.map(({ name, pm2_env: { env: _env, ...direct } }) => ({
       name,
-      pm2_env: { status: 'online', [CAPABILITY_ENV]: key },
+      pm2_env: direct,
     }));
-    const nestedOnly = targetNames().map((name) => ({
+    const nestedOnly = expected.map(({ name, pm2_env }) => ({
       name,
-      pm2_env: { status: 'online', env: { [CAPABILITY_ENV]: key } },
+      pm2_env: { status: 'online', env: pm2_env.env },
     }));
     for (const rows of [directOnly, nestedOnly]) {
       const receipt = await prepareBrainOperationsCapability(root, {
@@ -703,15 +776,44 @@ test('PM2 normalization handles live shapes and fails closed on duplicate or dis
       assert.deepEqual(receipt.changedProcessNames, []);
     }
 
-    const absentAndOffline = [
-      { name: 'home23-jerry-dash', pm2_env: { status: 'stopped', [CAPABILITY_ENV]: key } },
-    ];
-    const absentReceipt = await prepareBrainOperationsCapability(root, {
-      listProcesses: async () => absentAndOffline,
+    const missingAuthority = await prepareBrainOperationsCapability(root, {
+      listProcesses: async () => processesWithCapability(key),
     });
-    assert.equal(absentReceipt.liveEnvVerified, true);
-    assert.deepEqual(absentReceipt.changedProcessNames, []);
-    assert.equal(absentReceipt.restartRequired, false);
+    assert.equal(missingAuthority.liveEnvVerified, true);
+    assert.equal(missingAuthority.restartRequired, true);
+    assert.deepEqual(missingAuthority.changedProcessNames, targetNames());
+    assertReceiptHasNoSecret(
+      missingAuthority,
+      key,
+      authorityAttestation.deriveMemoryAuthorityAttestationKey(key),
+    );
+
+    const overprivileged = rawPm2Processes(key);
+    overprivileged[0].pm2_env[CAPABILITY_ENV] = key;
+    overprivileged[0].pm2_env.env[CAPABILITY_ENV] = key;
+    const overprivilegedReceipt = await prepareBrainOperationsCapability(root, {
+      listProcesses: async () => overprivileged,
+    });
+    assert.equal(overprivilegedReceipt.liveEnvVerified, true);
+    assert.deepEqual(overprivilegedReceipt.changedProcessNames, targetNames());
+    assert.equal(overprivilegedReceipt.restartRequired, true);
+
+    const offline = rawPm2Processes(key);
+    offline[1].pm2_env.status = 'stopped';
+    const offlineReceipt = await prepareBrainOperationsCapability(root, {
+      listProcesses: async () => offline,
+    });
+    assert.equal(offlineReceipt.liveEnvVerified, true);
+    assert.deepEqual(offlineReceipt.changedProcessNames, targetNames());
+    assert.equal(offlineReceipt.restartRequired, true);
+
+    const missing = rawPm2Processes(key).slice(1);
+    const missingReceipt = await prepareBrainOperationsCapability(root, {
+      listProcesses: async () => missing,
+    });
+    assert.equal(missingReceipt.liveEnvVerified, true);
+    assert.deepEqual(missingReceipt.changedProcessNames, targetNames());
+    assert.equal(missingReceipt.restartRequired, true);
 
     const duplicateRows = [
       ...rawPm2Processes(key),
@@ -724,7 +826,7 @@ test('PM2 normalization handles live shapes and fails closed on duplicate or dis
     assert.deepEqual(duplicateReceipt.changedProcessNames, targetNames());
 
     const disagreement = rawPm2Processes(key);
-    disagreement[0].pm2_env.env[CAPABILITY_ENV] = '0'.repeat(64);
+    disagreement[0].pm2_env.env[AUTHORITY_ENV] = '0'.repeat(64);
     const disagreementReceipt = await prepareBrainOperationsCapability(root, {
       listProcesses: async () => disagreement,
     });
