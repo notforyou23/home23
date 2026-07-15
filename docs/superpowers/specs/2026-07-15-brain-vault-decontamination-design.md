@@ -619,6 +619,68 @@ fabricates nodes, which pollute the brain.** §1.12's feedback path has a twin a
   (§4.1d) and quarantine for extraction. A compiler handed near-empty input does not fail — **it
   invents**, and that is worse than silence.
 
+### 4.1e The atomizer — the missing stage, and the real Obsidian lesson
+
+**The pipeline has no concept of a collection.** A file containing N items is treated as *one
+document*, chunked as one blob, and emitted as ~one synthesis. Measured across the vault:
+
+```
+jtr_antrhopic_archive/conversations.json   46.7 MB  →  0 nodes   suspect_truncation
+areas/chat.html                           471.3 MB  →  1 node    parse=ok (a fabrication, §4.1c-1)
+jtr_antrhopic_archive/projects.json        0.23 MB  →  1 node    parse=ok
+areas/.../jerry_records.json                3.9 MB  →  1 node    parse=ok
+areas/projects/shows_catalog.json           1.5 MB  →  2 nodes   parse=ok
+```
+
+**Every collection in jtr's vault collapses to a point.** Both of his complete AI conversation
+archives — ChatGPT and Claude — are effectively absent from the brain.
+
+**What is actually inside `conversations.json`:**
+
+```
+250 conversations, 4,722 messages
+per-item keys: uuid, name, summary, created_at, updated_at, account, chat_messages
+  - "Turtles All the Way Down"
+  - "Clarifying AI Consciousness Discussions"
+  - "Philosophical Quotes on Infinite Recursion"
+  - "Maintaining Ethical AI Principles"
+```
+
+**Every item is already a perfect vault note** — title, a pre-written summary, a date, a stable UUID,
+and a body. It is structured for precisely this. It produced **zero nodes**, while the brain retained
+14,448 records of declining to act (immune to decay by configuration) and 944 copies of `RECENT.md`.
+
+**The Obsidian lesson is not the index — it is the atoms.** An Obsidian vault works because it holds
+one note per conversation, per idea, per person. Nobody drops a 46 MB JSON array into a vault and
+expects search to work: **a human runs a splitter first, and that explosion step is what makes the
+vault a vault.** Home23 copied the index and skipped the explosion, so N conversations enter as one
+document and leave as one hallucination.
+
+Note also what Obsidian does with an unreadable file: it lists it and **indexes nothing**. It never
+claims to have read it, and — having no compiler — it *cannot* fabricate. Its worst failure is "not
+found." **Where extraction fails, fall back to Obsidian behaviour: catalog only (§4.1d), never
+synthesis.**
+
+**Required: an atomizer stage, before chunking and before the compiler.**
+
+- A collection (JSON array, HTML export, mbox, CSV, JSONL) is **exploded into one document per item**,
+  each with its own path, hash, manifest entry, and provenance. Each item is then an ordinary document
+  and every downstream rule applies unchanged.
+- Atomized items land as **real files in the vault** (per §3 — permanence requires a file), not as
+  in-memory splits. Delete the note, the manifest removes the nodes. This is the Obsidian property.
+- **Known atomizers needed:** Claude export (`conversations.json` — trivial, already structured),
+  ChatGPT export (`chat.html` — payload is in a `<script>` block injected into `#root`; the JSON must
+  be pulled from the script, which is exactly what the text converter correctly refuses to do),
+  `jerry_records.json`, `shows_catalog.json`, `projects.json`.
+- **Absent an atomizer for a given collection, it must catalog-and-quarantine (§4.1d), never
+  compile.** §4.1c-1 proves a compiler handed a flattened collection does not fail — it invents.
+
+**This resizes the rebuild.** §4.5's "9,939 files → 77,425 chunks" counts collections as single
+documents. Atomized, `conversations.json` alone becomes 250 documents; `chat.html` plausibly 10× that.
+**The real rebuild is larger, slower, more expensive — and produces a brain that finally contains
+jtr's intellectual history instead of a fabricated sauna tile.** Re-scope §4.5 after the atomizer
+inventory is known.
+
 ### 4.2 The event gate at ingestion
 
 A document with no substantive content produces **no node and no compiler call**. Kills the
@@ -720,6 +782,13 @@ of this size.
 
 **Unmeasured:** actual per-call latency and token cost against the configured compiler model
 (`MiniMax-M3`). **Benchmark 100 chunks before committing to the full run.**
+
+**These numbers are now known to be an undercount.** They treat collections as single documents
+(§4.1e). Atomized, `conversations.json` alone becomes 250 documents and `chat.html` plausibly ~10× that;
+`jerry_records.json`, `shows_catalog.json`, and `projects.json` likewise explode. **The real rebuild is
+larger and slower than 77,425 chunks / 14–29h — and is worth it, because that is the difference between
+a brain containing jtr's 250 Claude conversations and a brain containing one fabricated sauna tile.**
+Re-scope after the atomizer inventory (§7.14).
 
 **Accepted loss, chosen explicitly:** the ~38,500 orphans — dreams, raw thoughts, agent insights,
 consolidations — have no source file and **cannot be regenerated**. They remain in the archive,
@@ -865,8 +934,12 @@ Nothing is irreversible before step 4, and step 4 is reversible because of step 
    machine output." Measured, this one is an engine state dump whose payload is a journal of critic
    thoughts — i.e. largely the diary. Is there extractable value, or is it archive? *(`memory-extraction/`
    is unambiguous and stays: ~16 dated markdown files, ~1.5 KB each, real.)*
-5. **`chat.html` (471 MB ChatGPT export).** Worth building a splitter for? (§4.6a) Separate project,
-   must not block decontamination — but it is the largest unrealized source in the system.
+5. **The AI conversation archives.** Measured (§4.1e): `conversations.json` holds **250 Claude
+   conversations / 4,722 messages** and produced **0 nodes**; `chat.html` is the ChatGPT equivalent
+   (~10× larger) and produced 1 fabricated node. Both are jtr's own intellectual history. **The Claude
+   atomizer is trivial** — the items already carry `name`, `summary`, `created_at`, `uuid`,
+   `chat_messages`. Is this in scope now, or a fast-follow? *(Recommendation: the Claude one is small
+   enough to do first and would prove the atomizer design against real material.)*
 
 ### Must be traced before implementation (do not assume)
 
@@ -893,6 +966,15 @@ Nothing is irreversible before step 4, and step 4 is reversible because of step 
     committing to ~77,425 calls.
 13. **Other instances** — `instances/` also contains `agent`, `local`, `test-agent`, `cosmo23`,
     `conversations`, `workers`. Whether any hold live brains subject to this design is unexamined.
+14. **Atomizer inventory (§4.1e).** Which vault files are collections, and what does each explode to?
+    Known: `conversations.json` (250 items — confirmed), `chat.html`, `jerry_records.json`,
+    `shows_catalog.json`, `projects.json`. **Unknown: the rest of the 9,939.** A yield-ratio scan
+    (bytes-in vs nodes-out) across the manifest identifies candidates mechanically — every collection
+    in the vault has the same signature: large file, ~1 node, `parse=ok`. **This scan is cheap and
+    should run before step 4; it re-scopes the whole rebuild.**
+15. **`.last_extraction`** — `/Users/jtr/life/areas/.last_extraction` contains `2026-03-16T00:00:00+0000`.
+    Something already performs an "extraction" pass over the vault. Unidentified. Trace it — it may
+    already be a partial atomizer, or a competing writer.
 
 ---
 
