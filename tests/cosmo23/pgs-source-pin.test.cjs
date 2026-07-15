@@ -130,14 +130,14 @@ function codexBudgetOptions(pin, scratch, overrides = {}) {
   };
 }
 
-function sourcePin({ nodeCount = 12 } = {}) {
+function sourcePin({ nodeCount = 12, suppliedNodes = null } = {}) {
   let releases = 0;
-  const edgeCount = Math.max(0, nodeCount - 1);
-  const nodes = Array.from({ length: nodeCount }, (_, index) => ({
+  const nodes = suppliedNodes ?? Array.from({ length: nodeCount }, (_, index) => ({
     id: `n${index}`,
     clusterId: `cluster-${index % 2}`,
     content: `pinned evidence ${index}`,
   }));
+  const edgeCount = Math.max(0, nodes.length - 1);
   return {
     revision: 5,
     descriptor: {
@@ -445,6 +445,41 @@ test('pinned PGS keeps provider roles exact and returns machine-readable durable
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.match(receipt.attemptId, /^attempt-/);
   assert.equal(receipt.result.answer, 'final pinned synthesis');
+});
+
+test('pinned PGS completes with explicit truncation when one verified node exceeds provider context', async t => {
+  const scratch = await scratchFixture(t);
+  const verified = attestMemoryAuthority({
+    id: 'verified-oversized',
+    clusterId: 'current-ops',
+    concept: 'current verified state '.repeat(400),
+    asserted_at: '2026-07-15T10:00:00.000Z',
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'verified_current_state',
+      operationalAuthority: true,
+      evidenceRefs: ['verifier:/Users/jtr/private/current.json'],
+    },
+  }, AUTHORITY_KEY);
+  const pin = sourcePin({ suppliedNodes: [verified] });
+  const fixture = makeEngine();
+  const events = [];
+
+  const envelope = await fixture.engine.runPinnedOperation(options(pin, scratch, {
+    reportEvent: event => events.push(event),
+  }));
+  const sweep = fixture.calls.find(call => call.phase === 'sweep').options;
+  const selected = events.find(event => event.type === 'provider_selected'
+    && event.phase === 'pgs_sweep');
+
+  assert.equal(envelope.state, 'complete');
+  assert.match(sweep.input, /"contentTruncated":true/);
+  assert.match(sweep.input, /"authorityClass":"verified_current_state"/);
+  assert.equal(sweep.input.includes('/Users/'), false);
+  const providerInputBytes = Buffer.byteLength(sweep.instructions, 'utf8')
+    + Buffer.byteLength(sweep.input, 'utf8');
+  assert.equal(providerInputBytes, selected.providerInputBytes);
+  assert.equal(providerInputBytes <= selected.providerInputBudgetBytes, true);
 });
 
 test('full PGS drains every bounded work batch beyond one selected-work window', async t => {

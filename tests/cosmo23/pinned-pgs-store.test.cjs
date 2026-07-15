@@ -1071,9 +1071,9 @@ test('target scopes filter snapshots, successes, counts, and monotonic unions', 
   );
 });
 
-test('a source record that cannot fit one work-unit context fails before provider use', async t => {
+test('a source record larger than one work-unit context is explicitly bounded for provider use', async t => {
   const { scratchDir, quota } = await fixture(t);
-  await assert.rejects(openPinnedPGSStore({
+  const store = await openPinnedPGSStore({
     sourcePin: syntheticSource({
       nodeCount: 1,
       edgeCount: 0,
@@ -1085,10 +1085,16 @@ test('a source record that cannot fit one work-unit context fails before provide
     query,
     signal: new AbortController().signal,
     limits,
-  }), error => error.code === 'result_too_large');
+  });
+  t.after(() => store.close());
+  const [workUnitId] = store.snapshotPendingWorkUnits({ attemptId: 'bounded-record', limit: 1 });
+  const work = store.loadWorkUnit(workUnitId);
 
-  const pgsRoot = path.join(scratchDir, 'pgs');
-  assert.deepEqual(await fs.readdir(pgsRoot).catch(() => []), []);
+  assert.equal(work.nodes[0].id, 'n0');
+  assert.equal(work.nodes[0].contentTruncated, true);
+  assert.equal(Buffer.byteLength(work.nodes[0].content, 'utf8') < 129 * 1024, true);
+  assert.equal(work.stats.contextChars <= limits.maxContextCharsPerWorkUnit, true);
+  assert.equal(work.nodeAuthorities[0].authorityClass, 'narrative');
 });
 
 test('PGS persists provider-safe records without mutating vector-bearing source evidence', async t => {

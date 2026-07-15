@@ -12,6 +12,9 @@ const {
   serializeProviderRecord,
 } = require('../../lib/provider-record-sanitizer');
 const {
+  projectQueryEvidenceNode,
+} = require('../../lib/query-evidence-projector');
+const {
   canonicalJson,
   createRetrievalAuthorityAccumulator,
   sourceDescriptorDigest,
@@ -138,6 +141,32 @@ function serializeRecord(record, maxBytes, kind) {
     label: `PGS ${kind} record`,
     redactPaths: true,
   });
+}
+
+function serializeNodeForWorkUnit(record, {
+  maxRecordBytes,
+  maxContextBytes,
+  authorityBytes,
+}) {
+  const serialized = serializeRecord(record, maxRecordBytes, 'node');
+  const availableBytes = maxContextBytes - authorityBytes;
+  if (serialized.bytes <= availableBytes) return serialized;
+  // PGS is a bounded evidence scan. A single very large narrative node must not
+  // make the whole brain unsweepable, but truncation must be explicit and the
+  // separate authority projection remains bound to the original durable node.
+  const projectionRecordBytes = availableBytes - 64;
+  const projectionContentBytes = projectionRecordBytes - 1024;
+  if (projectionContentBytes <= 0) {
+    throw typed('result_too_large', 'PGS source record cannot fit one work-unit context');
+  }
+  const projected = projectQueryEvidenceNode(record, {
+    maxContentBytes: projectionContentBytes,
+    maxRecordBytes: projectionRecordBytes,
+  });
+  return serializeRecord({
+    ...projected.value,
+    contentTruncated: true,
+  }, availableBytes, 'node');
 }
 
 function projectPinnedProviderAuthority(node) {
@@ -1228,11 +1257,22 @@ async function openPinnedPGSStore({
         }
         for await (const record of iterator) {
           throwIfAborted(signal);
-          const serialized = serializeRecord(record, limits.maxRecordBytes, kind);
+          const authorityJson = kind === 'node'
+            ? serializePinnedProviderAuthority(record)
+            : null;
+          const authorityBytes = authorityJson === null
+            ? 0
+            : Buffer.byteLength(authorityJson, 'utf8');
+          const serialized = kind === 'node'
+            ? serializeNodeForWorkUnit(record, {
+              maxRecordBytes: limits.maxRecordBytes,
+              maxContextBytes: limits.maxContextCharsPerWorkUnit,
+              authorityBytes,
+            })
+            : serializeRecord(record, limits.maxRecordBytes, kind);
           const row = kind === 'node'
             ? (() => {
               const id = recordId(record, kind);
-              const authorityJson = serializePinnedProviderAuthority(record);
               return {
                 id,
                 partitionId: partitionIdForNode(record, id),
