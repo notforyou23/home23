@@ -139,6 +139,13 @@ function identityMatches(stat, expected) {
   return expected && String(stat.dev) === expected.dev && String(stat.ino) === expected.ino;
 }
 
+function persistentIdentity(value) {
+  return value && !Array.isArray(value) && typeof value === 'object'
+    && Reflect.ownKeys(value).length === 2
+    && typeof value.dev === 'string' && /^[0-9]+$/.test(value.dev)
+    && typeof value.ino === 'string' && /^[0-9]+$/.test(value.ino);
+}
+
 function sameIdentity(left, right) {
   return left && right && left.dev === right.dev && left.ino === right.ino;
 }
@@ -263,7 +270,8 @@ function validateAnchor(raw, expected) {
       || !Array.isArray(raw.operationIds) || raw.operationIds.length < 1
       || raw.operationIds.length > 4096 || new Set(raw.operationIds).size !== raw.operationIds.length
       || raw.operationIds.some((operationId) => !OPERATION_ID_PATTERN.test(operationId))
-      || !raw.directoryIdentity || !raw.databaseIdentity) {
+      || !persistentIdentity(raw.directoryIdentity)
+      || !persistentIdentity(raw.databaseIdentity)) {
     throw sessionError('session_state_invalid');
   }
   parseIso(raw.createdAt);
@@ -441,6 +449,77 @@ async function createPgsSessionAuthority(options) {
       sessionIds.push(sessionId);
     }
     return sessionIds.sort();
+  }
+
+  async function reconcilePersistentDeviceIdentitiesUnsafe() {
+    const repairs = [];
+    let deviceMapping = null;
+    for (const sessionId of await listSessionIds()) {
+      const read = await readAnchor(sessionId);
+      const sessionRoot = sessionPath(sessionId);
+      const directoryStat = await assertCanonicalDirectory(sessionRoot, 'session_state_invalid');
+      const currentDirectoryIdentity = identity(directoryStat);
+      const databasePath = path.join(sessionRoot, DATABASE_NAME);
+      const database = await openExactRegular(
+        databasePath,
+        fs.constants.O_RDONLY,
+        'session_state_invalid',
+      );
+      await database.handle.close();
+      const currentDatabaseIdentity = database.identity;
+      const storedDirectoryIdentity = read.anchor.directoryIdentity;
+      const storedDatabaseIdentity = read.anchor.databaseIdentity;
+      if (sameIdentity(storedDirectoryIdentity, currentDirectoryIdentity)
+          && sameIdentity(storedDatabaseIdentity, currentDatabaseIdentity)) continue;
+
+      const consistentDeviceRenumbering = storedDirectoryIdentity.dev
+          === storedDatabaseIdentity.dev
+        && currentDirectoryIdentity.dev === currentDatabaseIdentity.dev
+        && currentDirectoryIdentity.dev === sessionsIdentity.dev
+        && storedDirectoryIdentity.dev !== currentDirectoryIdentity.dev
+        && storedDirectoryIdentity.ino === currentDirectoryIdentity.ino
+        && storedDatabaseIdentity.ino === currentDatabaseIdentity.ino;
+      if (!consistentDeviceRenumbering) throw sessionError('session_state_invalid');
+      const candidateMapping = `${storedDirectoryIdentity.dev}:${currentDirectoryIdentity.dev}`;
+      if (deviceMapping !== null && deviceMapping !== candidateMapping) {
+        throw sessionError('session_state_invalid');
+      }
+      deviceMapping = candidateMapping;
+      repairs.push({
+        read,
+        sessionRoot,
+        databasePath,
+        currentDirectoryIdentity,
+        currentDatabaseIdentity,
+      });
+    }
+
+    for (const repair of repairs) {
+      await assertCanonicalDirectory(
+        repair.sessionRoot,
+        'session_state_invalid',
+        repair.currentDirectoryIdentity,
+      );
+      const database = await openExactRegular(
+        repair.databasePath,
+        fs.constants.O_RDONLY,
+        'session_state_invalid',
+        repair.currentDatabaseIdentity,
+      );
+      await database.handle.close();
+      const anchorNamed = await fsp.lstat(repair.read.anchorPath);
+      if (!anchorNamed.isFile() || anchorNamed.isSymbolicLink() || anchorNamed.nlink !== 1
+          || !identityMatches(anchorNamed, repair.read.anchorIdentity)) {
+        throw sessionError('session_state_invalid');
+      }
+      const { bindingCanonical, ...persistedAnchor } = repair.read.anchor;
+      await replaceJson(repair.read.anchorPath, sessionsRoot, {
+        ...persistedAnchor,
+        directoryIdentity: repair.currentDirectoryIdentity,
+        databaseIdentity: repair.currentDatabaseIdentity,
+      }, 'session_state_invalid');
+    }
+    return repairs.length;
   }
 
   async function inspectDatabaseFiles(anchor) {
@@ -1084,6 +1163,7 @@ async function createPgsSessionAuthority(options) {
     });
   });
 
+  await reconcilePersistentDeviceIdentitiesUnsafe();
   await cleanupExpiredUnsafe();
   let janitorStopped = false;
   let janitorRun = Promise.resolve();

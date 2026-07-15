@@ -132,6 +132,144 @@ test('same-owner continuation reopens one session after authority recreation', a
   assert.equal(await fsp.readFile(continued.workerHandle.databasePath, 'utf8'), 'already swept');
 });
 
+test('authority restart rebases one consistent filesystem device renumbering without losing work', async (t) => {
+  const { authority, agentRuntimeRoot, options } = await fixture(t);
+  const created = await authority.createSession({
+    ownerAgent: 'jerry', operationId: OPERATION_A, binding: binding(),
+  });
+  await fsp.writeFile(created.workerHandle.databasePath, 'retained after reboot');
+  await authority.releaseLease(created.workerHandle);
+  await authority.stop();
+
+  const authorityPath = path.join(
+    agentRuntimeRoot, 'pgs-sessions', `${created.sessionId}.authority.json`,
+  );
+  const anchor = JSON.parse(await fsp.readFile(authorityPath, 'utf8'));
+  const currentDevice = BigInt((await fsp.lstat(created.workerHandle.sessionRoot)).dev);
+  const staleDevice = String(currentDevice + 1n);
+  anchor.directoryIdentity.dev = staleDevice;
+  anchor.databaseIdentity.dev = staleDevice;
+  await fsp.writeFile(authorityPath, `${JSON.stringify(anchor)}\n`, { mode: 0o600 });
+
+  const restarted = await createPgsSessionAuthority(options);
+  t.after(() => restarted.stop());
+  const continued = await restarted.continueSession({
+    sessionId: created.sessionId,
+    ownerAgent: 'jerry',
+    sourceOperationId: OPERATION_A,
+    operationId: OPERATION_B,
+    binding: binding(),
+  });
+  const repaired = JSON.parse(await fsp.readFile(authorityPath, 'utf8'));
+  const quota = await restarted.reconcileQuota();
+  const fresh = await restarted.createSession({
+    ownerAgent: 'jerry', operationId: OPERATION_C, binding: binding({ sourceRevision: 43 }),
+  });
+
+  assert.equal(repaired.directoryIdentity.dev, String(currentDevice));
+  assert.equal(repaired.databaseIdentity.dev, String(currentDevice));
+  assert.equal(await fsp.readFile(continued.workerHandle.databasePath, 'utf8'), 'retained after reboot');
+  assert.equal(quota.sessions.some(({ sessionId }) => sessionId === created.sessionId), true);
+  assert.equal(fresh.workerHandle.quotaMaxBytes > 0, true);
+});
+
+test('authority restart rejects inconsistent device identity drift', async (t) => {
+  const { authority, agentRuntimeRoot, options } = await fixture(t);
+  const created = await authority.createSession({
+    ownerAgent: 'jerry', operationId: OPERATION_A, binding: binding(),
+  });
+  await authority.releaseLease(created.workerHandle);
+  await authority.stop();
+
+  const authorityPath = path.join(
+    agentRuntimeRoot, 'pgs-sessions', `${created.sessionId}.authority.json`,
+  );
+  const anchor = JSON.parse(await fsp.readFile(authorityPath, 'utf8'));
+  anchor.directoryIdentity.dev = String(BigInt(anchor.directoryIdentity.dev) + 1n);
+  await fsp.writeFile(authorityPath, `${JSON.stringify(anchor)}\n`, { mode: 0o600 });
+
+  await assert.rejects(createPgsSessionAuthority(options), { code: 'session_state_invalid' });
+});
+
+test('authority restart rejects multiple stale device mappings without rewriting either anchor', async (t) => {
+  const { authority, agentRuntimeRoot, options } = await fixture(t);
+  const first = await authority.createSession({
+    ownerAgent: 'jerry', operationId: OPERATION_A, binding: binding(),
+  });
+  await authority.releaseLease(first.workerHandle);
+  const second = await authority.createSession({
+    ownerAgent: 'jerry', operationId: OPERATION_B, binding: binding({ sourceRevision: 43 }),
+  });
+  await authority.releaseLease(second.workerHandle);
+  await authority.stop();
+
+  const paths = [first, second].map(({ sessionId }) => path.join(
+    agentRuntimeRoot, 'pgs-sessions', `${sessionId}.authority.json`,
+  ));
+  for (const [index, authorityPath] of paths.entries()) {
+    const anchor = JSON.parse(await fsp.readFile(authorityPath, 'utf8'));
+    const staleDevice = String(BigInt(anchor.directoryIdentity.dev) + BigInt(index + 1));
+    anchor.directoryIdentity.dev = staleDevice;
+    anchor.databaseIdentity.dev = staleDevice;
+    await fsp.writeFile(authorityPath, `${JSON.stringify(anchor)}\n`, { mode: 0o600 });
+  }
+  const before = await Promise.all(paths.map(authorityPath => fsp.readFile(authorityPath, 'utf8')));
+
+  await assert.rejects(createPgsSessionAuthority(options), { code: 'session_state_invalid' });
+  assert.deepEqual(
+    await Promise.all(paths.map(authorityPath => fsp.readFile(authorityPath, 'utf8'))),
+    before,
+  );
+});
+
+test('authority restart rebases then reclaims an expired session', async (t) => {
+  const { authority, agentRuntimeRoot, now, options } = await fixture(t, { retentionMs: 1000 });
+  const created = await authority.createSession({
+    ownerAgent: 'jerry', operationId: OPERATION_A, binding: binding(),
+  });
+  await authority.releaseLease(created.workerHandle);
+  await authority.stop();
+  const authorityPath = path.join(
+    agentRuntimeRoot, 'pgs-sessions', `${created.sessionId}.authority.json`,
+  );
+  const anchor = JSON.parse(await fsp.readFile(authorityPath, 'utf8'));
+  const staleDevice = String(BigInt(anchor.directoryIdentity.dev) + 1n);
+  anchor.directoryIdentity.dev = staleDevice;
+  anchor.databaseIdentity.dev = staleDevice;
+  await fsp.writeFile(authorityPath, `${JSON.stringify(anchor)}\n`, { mode: 0o600 });
+  now.value += 1001;
+
+  const restarted = await createPgsSessionAuthority(options);
+  t.after(() => restarted.stop());
+
+  await assert.rejects(fsp.lstat(created.workerHandle.sessionRoot), { code: 'ENOENT' });
+  await assert.rejects(fsp.lstat(authorityPath), { code: 'ENOENT' });
+});
+
+test('authority restart never rebases stale device metadata over a replaced database inode', async (t) => {
+  const { authority, agentRuntimeRoot, options } = await fixture(t);
+  const created = await authority.createSession({
+    ownerAgent: 'jerry', operationId: OPERATION_A, binding: binding(),
+  });
+  await authority.releaseLease(created.workerHandle);
+  await authority.stop();
+  const authorityPath = path.join(
+    agentRuntimeRoot, 'pgs-sessions', `${created.sessionId}.authority.json`,
+  );
+  const anchor = JSON.parse(await fsp.readFile(authorityPath, 'utf8'));
+  const staleDevice = String(BigInt(anchor.directoryIdentity.dev) + 1n);
+  anchor.directoryIdentity.dev = staleDevice;
+  anchor.databaseIdentity.dev = staleDevice;
+  await fsp.writeFile(authorityPath, `${JSON.stringify(anchor)}\n`, { mode: 0o600 });
+  const anchorBefore = await fsp.readFile(authorityPath, 'utf8');
+  await fsp.rename(created.workerHandle.databasePath, `${created.workerHandle.databasePath}.old`);
+  await fsp.writeFile(created.workerHandle.databasePath, 'replacement');
+
+  await assert.rejects(createPgsSessionAuthority(options), { code: 'session_state_invalid' });
+  assert.equal(await fsp.readFile(authorityPath, 'utf8'), anchorBefore);
+  assert.equal(await fsp.readFile(created.workerHandle.databasePath, 'utf8'), 'replacement');
+});
+
 test('continuation denies a different owner', async (t) => {
   const { authority } = await fixture(t);
   const created = await authority.createSession({
