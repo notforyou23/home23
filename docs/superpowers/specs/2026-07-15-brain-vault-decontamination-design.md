@@ -3,8 +3,14 @@
 **Date:** 2026-07-15
 **Status:** **Design approved by jtr** — all open design decisions closed (§7). Blocked on the
 tracing work in §7.6–7.15 before implementation. Retrieval is a separate follow-on spec (§8).
-**Scope:** Home23 engine (ingestion, memory, cognition, agency, good-life), jerry + forrest instances
+**Scope:** **Vault + Brain.** Home23 engine (ingestion, memory, cognition, agency, good-life), jerry +
+forrest instances, and the consolidation of jtr's corpus from four locations into one vault (§4.0).
+**Out of scope:** live connectors (calendar, email, home/tesla devices) — per jtr, *"that's not the
+important stuff for a persistent Brain, which is the overall goal."* See §1.15.
 **First deliverable:** the Claude atomizer (§4.1e-1) — proves the design against real material.
+
+> **The goal is a persistent Brain.** Not a connected agent — an enduring one. The Brain is the part
+> that makes an agent persistent rather than merely in contact with things.
 
 ---
 
@@ -460,6 +466,57 @@ instances so we save space and clean things up. I also had files scattered acros
 the *presence* of garbage. **None addressed the absence of jtr.** The brain is not merely polluted —
 **it was never given the material it exists to hold.**
 
+### 1.15 Vault, Brain, Live State — three things, currently merged
+
+**This distinction was implicit for this entire investigation and is the thing the design was missing.**
+
+| | What it is | Lives | Lifetime | Precious? |
+|---|---|---|---|---|
+| **Vault** | the files — notes, conversations, MRI, voice, research. jtr's record. | disk, human-readable, portable | **forever, until jtr deletes** | **YES — it is the asset** |
+| **Brain** | the derived index over the vault: embeddings, 471,118 weighted edges, clusters, spreading activation, decay | nodes + edges | **disposable — rebuildable in an afternoon** | **NO — it is regenerable** |
+| **Live state** | sauna temp, HRV, barometric pressure, PM2, calendar, devices | **queried at the source** | **now** | **N/A — never stored** |
+
+**Home23 has no vault, and the brain is doing both jobs.** 63,109 nodes exist *only* in the brain — no
+file, nowhere else. **That is why the brain became precious by accident**, why the V8 incident was
+terrifying, why deleting it feels unthinkable. Separate the two and the fear evaporates: the vault is
+the asset, the brain is a rebuild, and cleaning is `rm` + reingest.
+
+**Live state must never become brain nodes — and today it does.** This is the same disease wearing a
+sensor:
+
+```
+2026-07-07  workspace/metrics/process-memory.jsonl        → 10 brain nodes
+2026-07-07  workspace/metrics/process-cpu-io-summary.json →  5 brain nodes
+            imac-node-pulses.jsonl  2,206 entries | pi-node-pulses.jsonl
+```
+
+**Jerry memorised his own CPU usage.** A reading from July 7th was true for a second and is now noise —
+yet it is a permanent node, immune to decay, forever. A stream is not memory. Ask "how's the sauna?"
+→ hit the sensor. **The brain's copy is always stale and always accumulating.**
+
+**But state *transitions* are events, and events are vault-worthy.** 29.72 inHg every five minutes is
+noise. *"Pressure dropped 8 mb overnight; jtr reported a headache"* is a fact about jtr's life and
+earns a file. **The stream is not memory; the notable change is.** That is §3's event rule applied to
+sensors instead of loops — and it is how the barometer becomes genuinely useful to forrest rather than
+2,415,493 bytes of pulses.
+
+**How the three answer a real question:**
+
+- *"What did I say about persistent agents?"* → **brain** retrieves → **vault** file → jtr opens it
+- *"How's the sauna?"* → **live**, at the sensor. Not memory.
+- *"Does pressure affect how I feel?"* → **brain**, over vault entries that recorded *notable* pressure
+  events alongside jtr's health notes — **the analysis is only possible because the notable ones became
+  files**
+
+**SCOPE (jtr, 2026-07-15):** *"We won't be able to address them all now. But yes — calendar, email,
+home devices, tesla devices, etc. But that's not the important stuff for a persistent 'Brain', which
+is the overall goal."*
+
+**Live connectors are OUT OF SCOPE for this spec.** They are contact with the world; they are not the
+Brain. **The Brain is the enduring part — the thing that makes an agent persistent rather than merely
+connected.** This spec covers Vault + Brain. Live state gets a later project, and §1.15's rule —
+*query it, never store it; store only the notable change* — is what that project must obey.
+
 ## 2. Diagnosis
 
 The architectural error is not "internal signals became stimuli," and it is not a governance failure.
@@ -539,6 +596,101 @@ before changing it**; do not assume it is a watch-path removal. Same for `jtr_vo
 manifest entries from paths no longer watched.
 
 The keep/drop list requires jtr's confirmation before execution.
+
+### 4.0 THE VAULT — consolidation is the project (DECIDED)
+
+**Per §1.14, this is the centre of gravity, not a preliminary.** jtr's material is scattered across four
+locations and 95% has never been read.
+
+**Where it lives today:** `/Users/jtr/life/` — and it is a **scaffold, not a vault**:
+
+```
+/Users/jtr/life/          771 MB, 4,392 files, 99.7% ingested
+  areas/entities/           0 B      ← empty, beside an EXAMPLE_ENTITY_STRUCTURE.md
+  areas/companies/         52 K
+  areas/people/           108 K
+  areas/methodologies/    104 K
+  areas/jerry_garcia/      55 M
+  areas/jtr_antrhopic_archive/ 47 M
+  areas/chat.html         471 M      ← one file = 61% of the "vault"
+  areas/checkpoint-15880.json 185 M  ← one file
+  feed/                   7.9 M
+```
+
+Someone designed a PARA taxonomy — companies, entities, people, methodologies — and it is essentially
+empty. **`entities/` is zero bytes.** 656 MB of 771 MB is two files. **The taxonomy was aspirational
+and nobody ever filed anything into it.**
+
+#### 4.0a Folders vs tags — jtr: *"I don't need organized if we 'tag' the docs in some way, right?"*
+
+**Correct in principle — and the tagging he assumes exists does not.** Measured:
+
+```js
+// ingestion-manifest.js:64
+tag: label,          // the node's tag IS the watch-path label. That is the entire mechanism.
+```
+
+**No frontmatter support anywhere in the pipeline.** One folder = one tag for every file in it, forever.
+Jerry has 9 watch paths, so **his entire tag vocabulary is 9 words** — the MRI, the bibliographies, the
+Jerry Garcia research and jtr's notes all carry the identical tag `jtr_life`. This is also *why* the
+taxonomy folders exist: folders were the only way to get more than 9 tags. Then nobody maintained them.
+
+**The resolving distinction: provenance is a fact; meaning is a judgment.**
+
+- **Folders fail at meaning** — that is the 0-byte `entities/`. Taxonomy needs a human forever, so it decays.
+- **Folders are free at provenance** — a voice note is always a voice note. Derivable *mechanically at
+  consolidation* from the source path we are already reading. **jtr files nothing; the move does it.**
+
+**Design:**
+
+- **Type/origin → shallow folders**, derived mechanically. Never maintained by hand, never a decision.
+- **Meaning → frontmatter tags.** Unlimited, re-taggable. **Requires building frontmatter parsing into
+  the ingestion pipeline — small, real, and new work this spec must cost.**
+- **Free first pass at meaning:** the compiler *already* extracts key concepts. Let it propose tags
+  during the rebuild — it is already running, so this is free. **Only pay for a dedicated tagging pass
+  over 49,627 documents if the free one proves insufficient.**
+- Fully flat is rejected: 49,627 files in one directory is a real filesystem problem, and it discards
+  provenance the source path hands us for nothing.
+
+#### 4.0b Proposed shape
+
+```
+vault/
+  voice/          ~2,668 voice notes      ← cosmo-home/runs/jtr/inputs/voice + cosmo-home/voice
+  sessions/       ~2,194 session summaries ← workspace/jtr  (4,131 files, currently 0 ingested)
+  conversations/    250 Claude + N ChatGPT ← atomized (§4.1e)
+  research/       jerry_garcia, trail-running, cosmo research outputs
+  health/         MRI, health log, driver's license
+  reading/        bibliographies, feed/ docs, articles
+  notes/          memory-extraction, people, companies, methodologies, infrastructure
+  _archive/       checkpoint-15880.json and the other giants — cataloged (§4.1d), never compiled
+```
+
+Eight directories, every one derived from where a file came from, **none requiring a decision from jtr.**
+Meaning rides on top as frontmatter.
+
+**Location:** `/Users/jtr/life/` is the recommendation — already 99.7% ingested, already the `jtr_life`
+label, already outside the repo. Requires moving the two giants to `_archive/` and deleting the empty
+scaffold. **jtr is agnostic on location (2026-07-15); this is a default, not a constraint.**
+
+#### 4.0c Consolidation inputs, and what gets archived
+
+```
+cosmo-home        28,962 docs |  27,431 unread  | 2.4 GB
+cosmo-home_2.3     7,808 docs |   7,444 unread  | 1.6 GB
+.openclaw         12,061 docs |  12,061 unread  | 3.6 GB   (agents/: claude, codex, main)
+workspace/jtr      4,131 files|   4,131 unread  ← watched, never ingested (§7 correction 6)
+/Users/jtr/life/     796 docs |       2 unread  ← already home
+```
+
+**This dissolves §7.7's "confirmed trap."** `jtr_voice` (1,340 nodes), `garcia_jerry` (943), and
+`legacy_cosmo23_memory` (313) do **not** need their dead `cosmo-home` paths re-added to config — **the
+files move into the vault.** The trap only existed because we were preserving pointers into installs
+that are about to be archived.
+
+**After consolidation:** archive `cosmo-home`, `cosmo-home_2.3`, `cosmo_2.3`, `.openclaw` — **~8.7 GB
+reclaimed, and one location instead of four.** Deduplication is required (e.g. `cosmo-home/voice` and
+`cosmo-home_2.3/voice` are both 613 files, 4.0 MB — almost certainly the same notes).
 
 ### 4.1a Close the OTHER doors — the feeder is 1 of ~23
 
