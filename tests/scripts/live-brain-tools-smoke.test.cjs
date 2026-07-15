@@ -2919,6 +2919,103 @@ test('positive reads require complete exact targets while zero-result requires h
   });
   assert.equal(parity.state, 'complete');
   assert.equal(parity.mcpParity, true);
+
+  const advancedDashboard = operation({
+    operationId: 'op_mcp_parity_advanced', operationType: 'search',
+    result: { results: [{ id: 'n-current-crossing' }] },
+    sourceEvidence: {
+      ...dashboardTerminal.sourceEvidence,
+      deltaWatermark: { revision: 9 },
+      returnedTotals: { nodes: 1, edges: 0 },
+    },
+  });
+  const advancedClient = {
+    async search() {
+      return {
+        operationId: advancedDashboard.operationId,
+        results: [{ id: 'n-current-crossing' }],
+        sourceEvidence: advancedDashboard.sourceEvidence,
+      };
+    },
+    async inspectOperation() { return advancedDashboard; },
+  };
+  const advancedMcpResponse = new Response(JSON.stringify({
+    jsonrpc: '2.0', id: 'acceptance', result: { content: [{
+      type: 'text',
+      text: JSON.stringify({
+        results: [{ id: 'n-current-crossing' }],
+        evidence: {
+          sourceHealth: 'healthy', matchOutcome: 'matches',
+          deltaWatermark: { revision: 10 },
+          authoritativeTotals: { nodes: 140_090, edges: 456_720 },
+          returnedTotals: { nodes: 1, edges: 0 },
+          selectedBrain: 'brain-jerry',
+        },
+      }),
+    }] },
+  }), { headers: { 'content-type': 'application/json' } });
+  let advancedMcpSignal = null;
+  const advanced = await executeScenario({
+    scenario: 'mcp-parity', modules: {}, client: advancedClient,
+    values: { 'canary-receipt': canary }, context: state.context,
+    baseUrl: 'http://fixture', callerAgent: 'jerry', signal,
+    mcpTimeoutMs: 17,
+    fetchImpl: async (_url, init) => {
+      advancedMcpSignal = init.signal;
+      return advancedMcpResponse;
+    },
+  });
+  assert.equal(advanced.mcpParity, true);
+  assert.equal(advanced.sourceRevision, 9);
+  assert.equal(advanced.mcpSourceRevision, 10);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(advancedMcpSignal.aborted, true);
+  assert.equal(advancedMcpSignal.reason?.name, 'TimeoutError');
+});
+
+test('MCP acceptance call uses a configurable wait and preserves caller cancellation', async () => {
+  const { mcpCall } = await import('../../scripts/live-brain-tools-smoke.mjs');
+  const response = new Response(JSON.stringify({
+    jsonrpc: '2.0', id: 'acceptance', result: { content: [{
+      type: 'text', text: JSON.stringify({ ok: true }),
+    }] },
+  }), { headers: { 'content-type': 'application/json' } });
+  const caller = new AbortController();
+  let observedSignal = null;
+  const result = await mcpCall('http://fixture', 'query_memory', { query: 'x' }, {
+    signal: caller.signal,
+    timeoutMs: 1_000,
+    fetchImpl: async (_url, init) => {
+      observedSignal = init.signal;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return response;
+    },
+  });
+  assert.deepEqual(result, { ok: true });
+  assert.ok(observedSignal instanceof AbortSignal);
+  assert.equal(observedSignal.aborted, false);
+
+  const cancelled = new AbortController();
+  const pending = mcpCall('http://fixture', 'query_memory', { query: 'x' }, {
+    signal: cancelled.signal,
+    timeoutMs: 1_000,
+    fetchImpl: async (_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+    }),
+  });
+  const reason = Object.assign(new Error('caller stopped'), { code: 'cancelled' });
+  cancelled.abort(reason);
+  await assert.rejects(pending, (error) => error === reason);
+
+  await assert.rejects(
+    mcpCall('http://fixture', 'query_memory', { query: 'x' }, {
+      timeoutMs: 5,
+      fetchImpl: async (_url, init) => new Promise((_resolve, reject) => {
+        init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+      }),
+    }),
+    (error) => error?.name === 'TimeoutError',
+  );
 });
 
 test('healthy model discovery performs exact direct, PGS sweep, and PGS synthesis pair probes', async () => {

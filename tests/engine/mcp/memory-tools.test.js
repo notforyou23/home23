@@ -66,7 +66,13 @@ async function writeManifestFixture({ missingBase = false } = {}) {
   return brainDir;
 }
 
-function toolsFor({ brainDir, home23Root, resolveTargetContext, withEphemeralSource } = {}) {
+function toolsFor({
+  brainDir,
+  home23Root,
+  resolveTargetContext,
+  withEphemeralSource,
+  searchMemory,
+} = {}) {
   return createMemoryTools({
     brainDir,
     home23Root,
@@ -85,8 +91,66 @@ function toolsFor({ brainDir, home23Root, resolveTargetContext, withEphemeralSou
     readScalarState: async () => ({ cycleCount: 7 }),
     logger: { warn() {} },
     ...(withEphemeralSource ? { withEphemeralSource } : {}),
+    ...(searchMemory ? { searchMemory } : {}),
   });
 }
+
+test('MCP query delegates to the shared search authority response when injected', async () => {
+  const brainDir = await writeManifestFixture();
+  const home23Root = await tempDir('home23-mcp-memory-shared-search-');
+  const calls = [];
+  const evidence = {
+    sourceHealth: 'healthy',
+    matchOutcome: 'matches',
+    deltaWatermark: { revision: 4 },
+    retrievalMode: 'semantic-ann-delta-overlay',
+    indexCoverage: { complete: true, coveredThroughRevision: 4 },
+    authoritativeTotals: { nodes: 2, edges: 0 },
+    returnedTotals: { nodes: 1, edges: 0 },
+    selectedBrain: null,
+    selectedAgent: null,
+    identity: {
+      requesterAgent: 'ada',
+      targetAgent: 'ada',
+      brainId: 'brain-ada',
+      canonicalRoot: brainDir,
+      catalogRevision: 'catalog-4',
+      kind: 'resident',
+      sourceType: 'memory-manifest',
+      accessMode: 'own',
+      operationId: 'mcp-search-test',
+    },
+  };
+  const tools = toolsFor({
+    brainDir,
+    home23Root,
+    withEphemeralSource: async () => {
+      throw new Error('legacy keyword scan must not run');
+    },
+    searchMemory: async (input) => {
+      calls.push(input);
+      return {
+        query: input.query,
+        results: [{ id: 'shared-canary' }],
+        evidence,
+      };
+    },
+  });
+
+  const result = await tools.queryMemory({
+    query: 'shared canary', limit: 3, tag: 'proof',
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.resultsFound, 1);
+  assert.equal(result.totalNodes, 2);
+  assert.deepEqual(result.results, [{ id: 'shared-canary' }]);
+  assert.equal(result.evidence.selectedBrain, 'brain-ada');
+  assert.equal(result.evidence.selectedAgent, 'ada');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].query, 'shared canary');
+  assert.equal(calls[0].topK, 3);
+  assert.equal(calls[0].tag, 'proof');
+});
 
 test('MCP query reads manifest base plus delta and excludes tombstones', async () => {
   const brainDir = await writeManifestFixture();

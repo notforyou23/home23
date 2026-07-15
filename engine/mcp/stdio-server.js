@@ -12,16 +12,18 @@
 
 const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const {
-  createDefaultMcpMemoryTools,
   createSnapshotScalarStateReader,
 } = require('../../shared/memory-source/mcp-http-runtime.cjs');
-const { createOwnBrainMCPServer } = require('./http-server.js');
+const {
+  createOwnBrainMCPServer,
+  createProductionMcpMemoryTools,
+} = require('./http-server.js');
 
 async function startMcpStdioServer(options = {}) {
   const brainDir = options.brainDir
     || process.env.COSMO_RUNTIME_DIR
     || process.env.COSMO_RUNTIME_PATH;
-  const memoryTools = options.memoryTools || createDefaultMcpMemoryTools({
+  const memoryTools = options.memoryTools || createProductionMcpMemoryTools({
     brainDir,
     home23Root: options.home23Root || process.env.HOME23_ROOT,
     requesterAgent: options.requesterAgent || process.env.HOME23_AGENT,
@@ -38,15 +40,23 @@ async function startMcpStdioServer(options = {}) {
   });
   const transport = options.transport || new StdioServerTransport();
   await server.connect(transport);
+  let closePromise = null;
   return Object.freeze({
     server,
     transport,
-    close: async () => {
-      abortController.abort(Object.assign(new Error('MCP stdio server closed'), {
-        name: 'AbortError',
-        code: 'cancelled',
-      }));
-      await server.close();
+    close: () => {
+      closePromise ||= (async () => {
+        abortController.abort(Object.assign(new Error('MCP stdio server closed'), {
+          name: 'AbortError',
+          code: 'cancelled',
+        }));
+        try {
+          await server.close();
+        } finally {
+          await memoryTools.close?.();
+        }
+      })();
+      return closePromise;
     },
   });
 }

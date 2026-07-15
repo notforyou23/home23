@@ -6,6 +6,7 @@ const path = require('node:path');
 const { StringDecoder } = require('node:string_decoder');
 const v8 = require('node:v8');
 const { fork } = require('node:child_process');
+const { unprivilegedChildEnv } = require('../../../shared/child-process-env.cjs');
 const {
   withEphemeralMemorySource,
   classifyMatchOutcome,
@@ -583,6 +584,7 @@ function createAnnWorkerRuntime({
     if (inheritedFd !== null) stdio.push(inheritedFd);
     const child = forkImpl(ANN_WORKER_PATH, [childPath, String(dimension), String(ef)], {
       stdio,
+      env: unprivilegedChildEnv(process.env),
     });
 
     child.stderr?.on('data', (chunk) => {
@@ -1717,7 +1719,13 @@ function createMemorySearchService({
     }));
   }
 
-  return { search };
+  let closePromise = null;
+  function close() {
+    closePromise ||= Promise.resolve().then(() => loadAnn.close?.());
+    return closePromise;
+  }
+
+  return { search, close };
 }
 
 module.exports = {

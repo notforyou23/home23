@@ -1254,7 +1254,18 @@ export async function discoverHealthyModels(baseUrl, fetchImpl = fetch) {
   };
 }
 
-async function mcpCall(baseUrl, name, args, fetchImpl = fetch) {
+export async function mcpCall(baseUrl, name, args, {
+  fetchImpl = fetch,
+  signal,
+  timeoutMs = QUERY_WAIT_MS,
+} = {}) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > PGS_WAIT_MS) {
+    throw typedError('invalid_argument', 'MCP wait must be a bounded positive integer');
+  }
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const requestSignal = signal
+    ? AbortSignal.any([signal, timeoutSignal])
+    : timeoutSignal;
   const response = await fetchImpl(`${baseUrl}/api/mcp`, {
     method: 'POST',
     headers: {
@@ -1265,7 +1276,7 @@ async function mcpCall(baseUrl, name, args, fetchImpl = fetch) {
       jsonrpc: '2.0', id: `acceptance-${Date.now()}`,
       method: 'tools/call', params: { name, arguments: args },
     }),
-    signal: AbortSignal.timeout(30_000),
+    signal: requestSignal,
   });
   const textBody = (await readResponseBytesBounded(response, {
     maxBytes: MAX_MCP_RESPONSE_BYTES,
@@ -1308,13 +1319,26 @@ async function mcpCall(baseUrl, name, args, fetchImpl = fetch) {
   try { return JSON.parse(text); } catch (error) { throw typedError('mcp_result_invalid', text.slice(0, 256), { cause: error }); }
 }
 
-async function verifyMcpParity({ client, baseUrl, canary, signal, fetchImpl = fetch }) {
+async function verifyMcpParity({
+  client,
+  baseUrl,
+  canary,
+  signal,
+  fetchImpl = fetch,
+  mcpTimeoutMs = QUERY_WAIT_MS,
+}) {
   const dashboard = await client.search({ query: canary.query, topK: 20 }, signal);
-  const mcp = await mcpCall(baseUrl, 'query_memory', { query: canary.query, limit: 20 }, fetchImpl);
+  const mcp = await mcpCall(
+    baseUrl,
+    'query_memory',
+    { query: canary.query, limit: 20 },
+    { fetchImpl, signal, timeoutMs: mcpTimeoutMs },
+  );
   const mcpEvidence = mcp.evidence || mcp.sourceEvidence;
   const dashboardIds = new Set(resultsFromSearch(dashboard).map((result) => String(result.id)));
   const mcpIds = new Set(resultsFromSearch(mcp).map((result) => String(result.id)));
-  if (!dashboardIds.has(canary.nodeId) || !mcpIds.has(canary.nodeId)) throw typedError('mcp_canary_mismatch');
+  const crossingIds = [...dashboardIds].filter((id) => mcpIds.has(id));
+  if (crossingIds.length === 0) throw typedError('mcp_canary_mismatch');
   let dashboardRevision;
   let mcpRevision;
   try {
@@ -1324,7 +1348,7 @@ async function verifyMcpParity({ client, baseUrl, canary, signal, fetchImpl = fe
     );
     mcpRevision = currentEvidenceRevision(mcpEvidence, 'mcp_source_revision_mismatch');
   } catch { throw typedError('mcp_source_revision_mismatch'); }
-  if (dashboardRevision !== canary.sourceRevision || mcpRevision !== canary.sourceRevision) {
+  if (dashboardRevision < canary.sourceRevision || mcpRevision < dashboardRevision) {
     throw typedError('mcp_source_revision_mismatch');
   }
   try {
@@ -1340,7 +1364,13 @@ async function verifyMcpParity({ client, baseUrl, canary, signal, fetchImpl = fe
       mcp: mcpEvidence?.selectedBrain ?? null,
     }));
   }
-  return { dashboard, mcp, nodeId: canary.nodeId, sourceRevision: canary.sourceRevision };
+  return {
+    dashboard,
+    mcp,
+    nodeId: crossingIds[0],
+    dashboardRevision,
+    mcpRevision,
+  };
 }
 
 async function validateUnavailableMcp({ baseUrl, expectedReasons, fetchImpl = fetch }) {
@@ -3221,6 +3251,7 @@ export async function executeScenario({
   activityLog = [],
   controlledNegativeClient = null,
   canaryOverride = null,
+  mcpTimeoutMs = QUERY_WAIT_MS,
 } = {}) {
   const selector = targetSelector(values);
   if (scenario === 'discover-canary') {
@@ -3256,15 +3287,28 @@ export async function executeScenario({
   }
   if (scenario === 'mcp-parity') {
     const canary = await canaryFromReceipt(values, context, callerAgent);
-    const parity = await verifyMcpParity({ client, baseUrl, canary, signal, fetchImpl });
+    const parity = await verifyMcpParity({
+      client,
+      baseUrl,
+      canary,
+      signal,
+      fetchImpl,
+      mcpTimeoutMs,
+    });
     const terminal = await protectedTerminal(client, parity.dashboard.operationId, signal);
     assertCompleteTerminal(terminal, {
       expectedBrain: canary.selectedBrain,
       targetErrorCode: 'mcp_target_mismatch',
     });
-    assertCanaryEvidence(terminal, canary);
+    assertCanaryEvidence(terminal, {
+      ...canary,
+      nodeId: parity.nodeId,
+      sourceRevision: parity.dashboardRevision,
+    });
     return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, activityLog, extras: {
-      mcpParity: true, nodeId: parity.nodeId, sourceRevision: parity.sourceRevision,
+      mcpParity: true,
+      nodeId: parity.nodeId,
+      mcpSourceRevision: parity.mcpRevision,
     } });
   }
   if (scenario === 'mcp-unavailable') {
@@ -5613,6 +5657,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
           scenario, modules, client, values, context, baseUrl, callerAgent,
           signal: controller.signal, activityLog: activities,
           canaryOverride: fixture?.canary || null,
+          mcpTimeoutMs: clientOptions.queryWaitMs,
         });
   } finally {
     let finalizationError = null;

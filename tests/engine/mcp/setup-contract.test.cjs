@@ -32,7 +32,8 @@ test('Claude Desktop example names the real canonical stdio entrypoint and requi
 test('stdio entrypoint delegates to the canonical MCP runtime instead of legacy state', async () => {
   const source = await fsp.readFile(path.join(REPO_ROOT, 'engine/mcp/stdio-server.js'), 'utf8');
 
-  assert.match(source, /createDefaultMcpMemoryTools/);
+  assert.match(source, /createProductionMcpMemoryTools/);
+  assert.doesNotMatch(source, /createDefaultMcpMemoryTools/);
   assert.match(source, /createSnapshotScalarStateReader/);
   assert.match(source, /createOwnBrainMCPServer/);
   assert.match(source, /require\.main === module/);

@@ -122,6 +122,8 @@ function createDefaultMcpMemoryTools({
   home23Root = process.env.HOME23_ROOT,
   requesterAgent = process.env.HOME23_AGENT,
   logger = console,
+  resolveTargetContext = null,
+  searchMemory = null,
 } = {}) {
   if (typeof brainDir !== 'string' || !path.isAbsolute(brainDir)
       || typeof home23Root !== 'string' || !path.isAbsolute(home23Root)
@@ -131,28 +133,30 @@ function createDefaultMcpMemoryTools({
     });
   }
   const readScalarState = createSnapshotScalarStateReader({ brainDir });
+  const resolveLocalTarget = resolveTargetContext || (async () => {
+    const canonicalRoot = await fsp.realpath(brainDir);
+    return Object.freeze({
+      catalogRevision: 'local-self',
+      accessMode: 'own',
+      target: Object.freeze({
+        id: `resident-${requesterAgent}`,
+        brainId: `resident-${requesterAgent}`,
+        ownerAgent: requesterAgent,
+        requesterAgent,
+        canonicalRoot,
+        kind: 'resident',
+        sourceType: 'resident-brain',
+      }),
+    });
+  });
   return createMemoryTools({
     brainDir,
     home23Root,
     requesterAgent,
     readScalarState,
     logger,
-    resolveTargetContext: async () => {
-      const canonicalRoot = await fsp.realpath(brainDir);
-      return Object.freeze({
-        catalogRevision: 'local-self',
-        accessMode: 'own',
-        target: Object.freeze({
-          id: `resident-${requesterAgent}`,
-          brainId: `resident-${requesterAgent}`,
-          ownerAgent: requesterAgent,
-          requesterAgent,
-          canonicalRoot,
-          kind: 'resident',
-          sourceType: 'resident-brain',
-        }),
-      });
-    },
+    resolveTargetContext: resolveLocalTarget,
+    searchMemory,
   });
 }
 
@@ -223,8 +227,19 @@ function createMcpReadinessController({
   refresh();
   return Object.freeze({
     status() {
-      if (!closed && current.sourceHealth === 'unavailable'
-          && now() - lastAttemptAt >= retryMs) refresh();
+      if (!closed && now() - lastAttemptAt >= retryMs) {
+        current = Object.freeze({
+          ok: false,
+          protocolVersion: '2025-03-26',
+          sourceHealth: 'unavailable',
+          error: Object.freeze({
+            code: 'source_refresh_pending',
+            message: 'canonical source readiness refresh is pending',
+            retryable: true,
+          }),
+        });
+        refresh();
+      }
       return current;
     },
     refresh,

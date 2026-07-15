@@ -69,8 +69,14 @@ function createMemoryTools({
   resolveTargetContext,
   logger = console,
   withEphemeralSource = withEphemeralMemorySource,
+  searchMemory = null,
 } = {}) {
   assertTrustedContext({ brainDir, home23Root, requesterAgent, resolveTargetContext });
+  if (searchMemory !== null && typeof searchMemory !== 'function') {
+    throw Object.assign(new Error('shared MCP search dependency is invalid'), {
+      code: 'mcp_source_context_required',
+    });
+  }
 
   async function withSource(fn, { signal, identity } = {}) {
     throwIfAborted(signal);
@@ -149,6 +155,35 @@ function createMemoryTools({
         min: 1,
         max: 100,
       });
+      if (searchMemory) {
+        throwIfAborted(signal);
+        if (identity !== undefined) {
+          throw memorySourceError('invalid_request', 'MCP source identity is server-derived');
+        }
+        try {
+          const result = await searchMemory({ query, topK, tag, signal });
+          const results = Array.isArray(result?.results) ? result.results : [];
+          const evidence = result?.evidence;
+          if (!evidence || typeof evidence !== 'object') {
+            throw memorySourceError('source_unavailable', 'shared search evidence is unavailable', {
+              retryable: true,
+            });
+          }
+          const canonicalEvidence = enrichEvidenceIdentity(evidence, evidence.identity);
+          return {
+            ok: true,
+            query,
+            resultsFound: results.length,
+            totalNodes: canonicalEvidence.authoritativeTotals?.nodes ?? null,
+            results,
+            evidence: canonicalEvidence,
+          };
+        } catch (error) {
+          rethrowAbort(error, signal);
+          logger.warn?.('[MCP memory] shared search failed', { error: error.message });
+          return unavailableResult(error, error.sourceEvidence);
+        }
+      }
       return withSource(async (source) => {
         const summary = await source.summarize({ signal });
         const match = await source.searchKeyword({ query, topK, tag, signal });

@@ -1701,6 +1701,70 @@ test('ANN child abort keeps the exclusive search pending until the child exits',
   assert.equal(settled, true);
 });
 
+test('ANN worker child never inherits brain authority capabilities', async () => {
+  const priorBrainOperations = process.env.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY;
+  const priorAuthority = process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+  process.env.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY = 'test-brain-operations-capability';
+  process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = 'test-authority-capability';
+  try {
+    const child = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.connected = true;
+    child.send = () => true;
+    child.kill = () => {
+      queueMicrotask(() => {
+        child.connected = false;
+        child.emit('close', null, 'SIGKILL');
+      });
+      return true;
+    };
+    let childEnv = null;
+    const runtime = await createAnnWorkerRuntime({
+      indexPath: '/tmp/fake-ann.index',
+      dimension: 2,
+      ef: 100,
+      forkImpl(_modulePath, _args, options) {
+        childEnv = options.env;
+        queueMicrotask(() => child.emit('message', { type: 'ready' }));
+        return child;
+      },
+    });
+    assert.ok(childEnv && typeof childEnv === 'object');
+    assert.equal(Object.hasOwn(childEnv, 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY'), false);
+    assert.equal(Object.hasOwn(childEnv, 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'), false);
+    await runtime.terminate();
+  } finally {
+    if (priorBrainOperations === undefined) {
+      delete process.env.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY;
+    } else {
+      process.env.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY = priorBrainOperations;
+    }
+    if (priorAuthority === undefined) {
+      delete process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+    } else {
+      process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = priorAuthority;
+    }
+  }
+});
+
+test('memory search service closes its persistent ANN loader', async () => {
+  let closes = 0;
+  const loadAnn = async () => null;
+  loadAnn.close = async () => { closes += 1; };
+  const service = createMemorySearchService({
+    brainDir: '/tmp/brain',
+    home23Root: '/tmp/home23',
+    requesterAgent: 'ada',
+    resolveTargetContext: async () => ({ target: {} }),
+    loadAnn,
+  });
+
+  assert.equal(typeof service.close, 'function');
+  await service.close();
+  await service.close();
+  assert.equal(closes, 1);
+});
+
 test('ANN child watchdog terminates a connected nonresponsive search', async () => {
   const child = new EventEmitter();
   child.stderr = new EventEmitter();

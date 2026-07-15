@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const {
+  createProductionMcpMemoryTools,
   startMcpHttpServer,
 } = require('../../../engine/mcp/http-server.js');
 
@@ -124,6 +125,90 @@ test('engine MCP loopback serves canonical health and delegates a bounded tool c
   assert.equal(calls[0].limit, 3);
   assert.equal(calls[0].tag, 'proof');
   assert.ok(calls[0].signal instanceof AbortSignal);
+});
+
+test('production MCP memory tools use the dashboard search service with canonical catalog identity', async () => {
+  const calls = [];
+  let closes = 0;
+  const memoryTools = createProductionMcpMemoryTools({
+    brainDir: '/canonical/brain',
+    home23Root: '/canonical/home23',
+    requesterAgent: 'ada',
+    createSearchService(options) {
+      return {
+        async close() { closes += 1; },
+        async search(input) {
+          calls.push({ input, options });
+          const resolved = await options.resolveTargetContext({});
+          return {
+            query: input.query,
+            results: [{ id: 'shared-canary' }],
+            evidence: {
+              sourceHealth: 'healthy',
+              matchOutcome: 'matches',
+              deltaWatermark: { revision: 9 },
+              authoritativeTotals: { nodes: 10, edges: 20 },
+              returnedTotals: { nodes: 1, edges: 0 },
+              selectedBrain: null,
+              selectedAgent: null,
+              identity: {
+                requesterAgent: 'ada',
+                targetAgent: resolved.target.ownerAgent,
+                brainId: resolved.target.id,
+                canonicalRoot: resolved.target.canonicalRoot,
+                catalogRevision: resolved.catalogRevision,
+                kind: resolved.target.kind,
+                sourceType: resolved.target.sourceType,
+                accessMode: resolved.accessMode,
+                operationId: 'mcp-production-test',
+              },
+            },
+          };
+        },
+      };
+    },
+    buildCatalog: async () => ({
+      catalogRevision: 'catalog-9',
+      brains: [{
+        id: 'brain-ada',
+        ownerAgent: 'ada',
+        canonicalRoot: '/canonical/brain',
+        kind: 'resident',
+        sourceType: 'memory-manifest',
+      }],
+    }),
+    realpath: async (value) => value,
+  });
+
+  const result = await memoryTools.queryMemory({ query: 'shared', limit: 4 });
+  assert.equal(result.ok, true);
+  assert.equal(result.evidence.selectedBrain, 'brain-ada');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].input.topK, 4);
+  await memoryTools.close();
+  await memoryTools.close();
+  assert.equal(closes, 1);
+});
+
+test('HTTP server shutdown closes canonical memory tools', async () => {
+  let closes = 0;
+  const server = startMcpHttpServer({
+    host: '127.0.0.1',
+    port: 0,
+    log: false,
+    memoryTools: completeMemoryTools({
+      async close() { closes += 1; },
+    }),
+    readiness: fixedReadiness({
+      ok: true,
+      protocolVersion: '2025-03-26',
+      sourceHealth: 'healthy',
+    }),
+  });
+  await once(server, 'listening');
+  await close(server);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(closes, 1);
 });
 
 test('engine MCP advertises the exact graph controls and own-brain diagnostic boundary', async (t) => {

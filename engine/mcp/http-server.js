@@ -18,6 +18,7 @@ const {
   createMcpReadinessController,
   createSnapshotScalarStateReader,
 } = require('../../shared/memory-source/mcp-http-runtime.cjs');
+const { createMemorySearchService } = require('../src/dashboard/memory-search.js');
 const { readRecentJsonlTail } = require('../../shared/bounded-jsonl-tail.cjs');
 
 // Initialize free web search
@@ -187,6 +188,105 @@ function unsupportedScalarResult(state, capability, overrideMessage) {
       retryable: error.retryable === true,
     },
   };
+}
+
+async function buildInstalledBrainCatalog(home23Root) {
+  const {
+    buildCanonicalCatalog,
+    parseReferenceRunsPaths,
+  } = require('../../cosmo23/server/lib/brain-registry.js');
+  const agentsPath = path.join(home23Root, 'config', 'agents.json');
+  let manifest = [];
+  if (fs.existsSync(agentsPath)) manifest = JSON.parse(fs.readFileSync(agentsPath, 'utf8'));
+  if (!Array.isArray(manifest)) {
+    throw Object.assign(new Error('catalog_configuration_invalid'), {
+      code: 'catalog_configuration_invalid',
+    });
+  }
+  const cosmoRoot = path.join(home23Root, 'cosmo23');
+  const localRunsPath = path.join(cosmoRoot, 'runs');
+  return buildCanonicalCatalog({
+    instancesRoot: path.join(home23Root, 'instances'),
+    localRunsPath,
+    referenceRunsPaths: parseReferenceRunsPaths(
+      process.env.COSMO_REFERENCE_RUNS_PATHS || process.env.COSMO_REFERENCE_RUNS_PATH || '',
+      cosmoRoot,
+      localRunsPath,
+    ),
+    configuredAgentNames: manifest.map((agent) => agent?.name),
+    activeRunPath: path.join(cosmoRoot, 'runtime'),
+  });
+}
+
+function createProductionMcpMemoryTools({
+  brainDir = LOGS_DIR,
+  home23Root = process.env.HOME23_ROOT,
+  requesterAgent = process.env.HOME23_AGENT,
+  createSearchService = createMemorySearchService,
+  buildCatalog = () => buildInstalledBrainCatalog(home23Root),
+  realpath = fs.promises.realpath,
+  logger = console,
+} = {}) {
+  if (typeof createSearchService !== 'function' || typeof buildCatalog !== 'function'
+      || typeof realpath !== 'function') {
+    throw Object.assign(new Error('MCP shared search dependencies required'), {
+      code: 'mcp_source_context_required',
+    });
+  }
+  const resolveTargetContext = async (selector = {}) => {
+    if (selector && Object.keys(selector).length !== 0) {
+      throw Object.assign(new Error('MCP source identity is server-derived'), {
+        code: 'invalid_request', status: 400,
+      });
+    }
+    const canonicalRoot = await realpath(brainDir);
+    const catalog = await buildCatalog();
+    const entries = catalog?.brains || catalog?.entries || catalog?.targets || [];
+    const matches = entries.filter((entry) => (
+      entry?.canonicalRoot === canonicalRoot || entry?.target?.canonicalRoot === canonicalRoot
+    ) && (entry?.target?.ownerAgent || entry?.ownerAgent) === requesterAgent
+      && (entry?.target?.kind || entry?.kind) === 'resident');
+    if (matches.length !== 1) {
+      throw Object.assign(new Error(matches.length > 1
+        ? 'ambiguous local source context' : 'local source missing from canonical catalog'), {
+        code: 'source_changed', retryable: true,
+      });
+    }
+    const target = matches[0]?.target || matches[0];
+    return Object.freeze({
+      catalogRevision: catalog.catalogRevision || catalog.revision || 'local',
+      accessMode: 'own',
+      target: Object.freeze({ ...target, canonicalRoot }),
+    });
+  };
+  const searchService = createSearchService({
+    brainDir,
+    home23Root,
+    requesterAgent,
+    resolveTargetContext,
+    logger,
+  });
+  if (!searchService || typeof searchService.search !== 'function') {
+    throw Object.assign(new Error('MCP shared search service required'), {
+      code: 'mcp_source_context_required',
+    });
+  }
+  const memoryTools = createDefaultMcpMemoryTools({
+    brainDir,
+    home23Root,
+    requesterAgent,
+    logger,
+    resolveTargetContext,
+    searchMemory: (request) => searchService.search(request),
+  });
+  let closePromise = null;
+  return Object.freeze({
+    ...memoryTools,
+    close() {
+      closePromise ||= Promise.resolve().then(() => searchService.close?.());
+      return closePromise;
+    },
+  });
 }
 
 // Create MCP server
@@ -1184,7 +1284,9 @@ function createMcpHttpApp(options = {}) {
   // dependencies must fail process startup instead of producing a false-green
   // health endpoint that cannot execute tools.
   const sdk = options.sdk || loadMcpSdk();
-  const memoryTools = options.memoryTools || createDefaultMcpMemoryTools();
+  const memoryTools = options.memoryTools || createProductionMcpMemoryTools({
+    logger: options.logger || console,
+  });
   const readScalarState = options.readScalarState
     || createSnapshotScalarStateReader({ brainDir: LOGS_DIR });
   const readiness = options.readiness || createMcpReadinessController({
@@ -1193,6 +1295,8 @@ function createMcpHttpApp(options = {}) {
   });
   const app = express();
   app.locals.mcpReadiness = readiness;
+  app.locals.mcpMemoryTools = memoryTools;
+  app.locals.mcpLogger = options.logger || console;
   
   // CORS middleware - allow localhost on any port
   app.use((req, res, next) => {
@@ -1330,7 +1434,14 @@ function startMcpHttpServer(options = {}) {
       console.error(`   Logs: ${LOGS_DIR}`);
     }
   });
-  server.once('close', () => app.locals.mcpReadiness?.close?.());
+  server.once('close', () => {
+    app.locals.mcpReadiness?.close?.();
+    void Promise.resolve().then(() => app.locals.mcpMemoryTools?.close?.()).catch((error) => {
+      app.locals.mcpLogger?.warn?.('[MCP] canonical memory tools close failed', {
+        error: error.message,
+      });
+    });
+  });
   return server;
 }
 
@@ -1351,6 +1462,7 @@ module.exports = {
   assertLoopbackHost,
   createMCPServer,
   createOwnBrainMCPServer,
+  createProductionMcpMemoryTools,
   createMcpHttpApp,
   isPathAllowedForRoots,
   startMcpHttpServer,

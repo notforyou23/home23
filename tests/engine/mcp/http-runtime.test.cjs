@@ -111,3 +111,54 @@ test('readiness is starting until source proof and retries unavailable checks', 
   assert.equal(readiness.status().revision, 4);
   readiness.close();
 });
+
+test('expired healthy readiness fails closed while bounded refresh is pending', async () => {
+  let now = 100;
+  let revision = 4;
+  let releaseRefresh = null;
+  const memoryTools = {
+    async checkReadiness() {
+      if (releaseRefresh) await new Promise((resolve) => { releaseRefresh = resolve; });
+      return {
+        ok: true,
+        sourceHealth: 'healthy',
+        revision,
+        totals: { nodes: revision, edges: revision * 2 },
+      };
+    },
+  };
+  const readiness = createMcpReadinessController({
+    memoryTools,
+    retryMs: 50,
+    now: () => now,
+    logger: { warn() {} },
+  });
+  await readiness.refresh();
+  assert.equal(readiness.status().revision, 4);
+
+  revision = 5;
+  now += 51;
+  releaseRefresh = true;
+  assert.deepEqual(readiness.status(), {
+    ok: false,
+    protocolVersion: '2025-03-26',
+    sourceHealth: 'unavailable',
+    error: {
+      code: 'source_refresh_pending',
+      message: 'canonical source readiness refresh is pending',
+      retryable: true,
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(typeof releaseRefresh, 'function');
+  releaseRefresh();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(readiness.status(), {
+    ok: true,
+    protocolVersion: '2025-03-26',
+    sourceHealth: 'healthy',
+    revision: 5,
+    totals: { nodes: 5, edges: 10 },
+  });
+  readiness.close();
+});
