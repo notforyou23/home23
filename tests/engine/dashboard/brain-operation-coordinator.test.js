@@ -27,6 +27,7 @@ const {
 const {
   BrainOperationWorkerAdapter,
   validateWorkerEvent,
+  validateWorkerRecord,
 } = require('../../../engine/src/dashboard/brain-operations/worker-adapter.js');
 const {
   createCosmoBrainOperationWorkerClient,
@@ -4716,6 +4717,29 @@ test('worker progress validation is operation-aware and rejects extra nested fie
     },
   }, 'query', gapSequence).type, 'event_gap');
 
+  const workerStatus = {
+    reference: { version: 1, workerId: 'worker-progress', workerType: 'cosmo', operationType: 'pgs' },
+    operationId, operationType: 'pgs', state: 'running', phase: 'pgs_sweep',
+    eventSequence: 61, activeProviderCalls: [], pgsSession: null,
+    latestPgsProgress: {
+      type: 'progress', operationId, eventSequence: 60,
+      phase: 'pgs_sweep', stage: 'sweep_batch_complete',
+      selected: 64, completed: 60, successful: 59, failed: 1,
+      reused: 20, pending: 4, retryable: 1, total: 100,
+      at: '2026-07-13T12:00:00.000Z',
+    },
+  };
+  assert.equal(validateWorkerRecord(workerStatus, {
+    operationId, operationType: 'pgs',
+  }).latestPgsProgress.completed, 60);
+  assert.throws(() => validateWorkerRecord({
+    ...workerStatus,
+    latestPgsProgress: {
+      ...workerStatus.latestPgsProgress,
+      operationId: `brop_${'w'.repeat(32)}`,
+    },
+  }, { operationId, operationType: 'pgs' }), typedCode('worker_contract_invalid'));
+
   assert.throws(() => event({
     type: 'progress', phase: 'pgs_projection', stage: 'projection_started',
     debug: { unbounded: true },
@@ -4801,6 +4825,85 @@ test('settled PGS progress survives worker validation, journal compaction, and t
   const compacted = await fixture.store.readEvents(operation.operationId, 0);
   assert.equal(compacted.some(event => event.type === 'event_gap'), true);
   assert.equal(compacted.length < progress.length + 12, true);
+});
+
+test('authenticated worker gap reconstructs the latest settled PGS progress snapshot', async (t) => {
+  const fixture = makeFixture(t);
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'pgs-progress-worker-gap-recovery',
+    operationType: 'pgs',
+    parameters: { query: 'worker gap progress canary' },
+  }));
+  const workerRecord = fixture.worker.records.get(operation.operationId);
+  fixture.worker.emit(operation.operationId, {
+    type: 'progress', phase: 'pgs_sweep', stage: 'sweep_batch_complete',
+    selected: 420, completed: 340, successful: 339, failed: 1,
+    reused: 0, pending: 80, retryable: 1, total: 420,
+  });
+  await eventually(async () => {
+    assert.equal((await fixture.store.get(operation.operationId)).progressSnapshot?.completed, 340);
+  });
+
+  const lostSequence = workerRecord.eventSequence + 1;
+  workerRecord.eventSequence = lostSequence;
+  workerRecord.latestPgsProgress = {
+    type: 'progress', operationId: operation.operationId, eventSequence: lostSequence,
+    phase: 'pgs_sweep', stage: 'sweep_batch_complete',
+    selected: 420, completed: 420, successful: 419, failed: 1,
+    reused: 0, pending: 0, retryable: 1, total: 421,
+    at: new Date(fixture.timers.now).toISOString(),
+  };
+  fixture.coordinator._authenticatedWorkerStatus = async () => ({
+    ...fixture.worker.publicRecord(workerRecord),
+    latestPgsProgress: structuredClone(workerRecord.latestPgsProgress),
+  });
+  fixture.worker.emit(operation.operationId, {
+    type: 'event_gap',
+    oldestSequence: lostSequence,
+    latestSequence: lostSequence,
+  });
+
+  const recovered = await eventually(async () => {
+    const current = await fixture.store.get(operation.operationId);
+    assert.equal(current.progressSnapshot?.completed, 420);
+    return current;
+  });
+  assert.equal(recovered.state, 'running');
+  assert.equal(recovered.progressSnapshot.successful, 419);
+  assert.equal(recovered.progressSnapshot.lastProgressAt, new Date(fixture.timers.now).toISOString());
+  fixture.worker.emit(operation.operationId, {
+    type: 'progress', phase: 'pgs_synthesis', stage: 'synthesis_started',
+    sweepOutputs: 419,
+  });
+  await eventually(async () => {
+    assert.equal((await fixture.store.get(operation.operationId)).progressSnapshot.stage, 'synthesizing');
+  });
+
+  fixture.worker.finish(operation.operationId, {
+    state: 'complete',
+    result: {
+      answer: 'terminal coverage canary',
+      metadata: { pgs: {
+        successfulSweeps: 420,
+        selectedWorkUnits: 421,
+        reusedWorkUnits: 0,
+        scopeWorkUnits: 421,
+        scopeSuccessfulWorkUnits: 420,
+        scopePendingWorkUnits: 1,
+        retryablePartitions: ['retryable-1'],
+      } },
+    },
+    error: null,
+    sourceEvidence: null,
+  });
+  const terminal = await eventually(async () => {
+    const current = await fixture.store.get(operation.operationId);
+    assert.equal(current.state, 'complete', JSON.stringify(current.error));
+    return current;
+  });
+  assert.equal(terminal.progressSnapshot.completed, 421);
+  assert.equal(terminal.progressSnapshot.successful, 420);
+  assert.equal(terminal.progressSnapshot.pending, 0);
 });
 
 test('worker adapter cancellation aborts the exact local executor and event snapshots are monotonic', async (t) => {

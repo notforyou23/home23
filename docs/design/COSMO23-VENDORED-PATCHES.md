@@ -3083,6 +3083,45 @@ reusable.
 
 ---
 
+## Patch 65 — Lossless PGS progress across worker-journal gaps
+
+**Vendored production file touched:**
+- `cosmo23/server/lib/brain-operation-worker.js`
+
+**Home23 integration companions:**
+- `engine/src/dashboard/brain-operations/worker-adapter.js`
+- `engine/src/dashboard/brain-operations/coordinator.js`
+- `engine/src/dashboard/brain-operations/query-progress.js`
+
+**Problem:** The worker journal is bounded and treats progress rows as
+disposable. A settled `sweep_batch_complete` could therefore disappear before
+coordinator attachment or recovery while the retained PGS session continued to
+advance. Authenticated gap recovery rebuilt provider-call liveness but advanced
+its worker cursor without rebuilding settled counters, and terminal transition
+preserved that stale public projection.
+
+**Fix:** The authenticated worker status now carries one exact, operation-bound
+latest settled PGS snapshot outside the evictable journal. It contains only the
+bounded counter schema and worker receipt time; it cannot carry prompts,
+provider output, capabilities, authority keys, or source paths. Gap recovery
+validates the operation identity and monotonically merges advancing counters
+before moving its cursor, ignoring stale or regressive snapshots. Terminal
+finalization first merges the authenticated worker snapshot, then reconciles
+again from internally consistent result coverage metadata so a lost final batch
+cannot leave terminal counters stale. Progress stage never moves backward when
+late settled counters arrive after synthesis has begun.
+
+**Offline verification:** The regression reproduces an active public record
+frozen at 340 completed units while authenticated worker status has advanced to
+420, proves active recovery before terminalization, and proves result coverage
+advances terminal successful work again. A worker test compacts the original
+settled journal row and confirms status retains only its exact redacted scalar
+snapshot. The full coordinator (120), worker (45), and query-progress (7)
+suites pass. Live services were not restarted and no provider operation was
+started.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -3480,3 +3519,8 @@ reusable.
   persisted without an authority MAC remain narrative after a later key
   restoration; only MAC-backed rows can regain authority through successful
   integrity verification.
+- **2026-07-15** — Patch 65 retains the latest operation-bound settled PGS
+  counters outside the disposable worker journal, merges them monotonically on
+  authenticated gap recovery, and reconciles terminal progress from consistent
+  result coverage. Focused verification was offline only; no service restart or
+  live provider operation was performed.

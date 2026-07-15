@@ -72,6 +72,10 @@ const PROVIDER_EVENT_TYPES = new Set([
 const NOISY_EVENT_TYPES = new Set([
   'heartbeat', 'progress', 'progress_update', 'token', 'token_estimate',
 ]);
+const SETTLED_PGS_PROGRESS_FIELDS = Object.freeze([
+  'selected', 'completed', 'successful', 'failed', 'reused',
+  'pending', 'retryable', 'total',
+]);
 const FORBIDDEN_PARAMETER_KEYS = new Set([
   'accessMode', 'brainId', 'canonicalRoot', 'capability', 'capabilityToken',
   'lifecycle', 'lockRoot', 'operationControl', 'operationId', 'operationPath',
@@ -176,6 +180,40 @@ function containsForbiddenKey(value, forbidden) {
   if (!value || typeof value !== 'object') return false;
   return Object.entries(value).some(([key, child]) =>
     forbidden.has(key) || containsForbiddenKey(child, forbidden));
+}
+
+// HOME23 PATCH — keep the latest settled PGS counters outside the evictable
+// worker journal so authenticated gap recovery cannot freeze public progress.
+function projectLatestPgsProgress(record, event) {
+  if (record.operationType !== 'pgs'
+      || event.type !== 'progress'
+      || event.phase !== 'pgs_sweep'
+      || event.stage !== 'sweep_batch_complete'
+      || SETTLED_PGS_PROGRESS_FIELDS.some((field) =>
+        !Number.isSafeInteger(event[field]) || event[field] < 0)
+      || event.completed !== event.successful + event.failed
+      || event.selected !== event.completed + event.pending
+      || event.reused > event.successful
+      || event.retryable > event.failed
+      || event.total < event.selected) return record.latestPgsProgress;
+  const candidate = Object.freeze({
+    type: 'progress',
+    operationId: record.operationId,
+    eventSequence: event.eventSequence,
+    phase: 'pgs_sweep',
+    stage: 'sweep_batch_complete',
+    ...Object.fromEntries(SETTLED_PGS_PROGRESS_FIELDS.map((field) => [field, event[field]])),
+    at: event.at,
+  });
+  const current = record.latestPgsProgress;
+  if (current) {
+    if (candidate.eventSequence <= current.eventSequence
+        || SETTLED_PGS_PROGRESS_FIELDS
+          .filter((field) => field !== 'pending')
+          .some((field) => candidate[field] < current[field])
+        || candidate.pending > current.pending) return current;
+  }
+  return candidate;
 }
 
 function validateSourceDescriptor(rawDescriptor, canonicalRoot, digest) {
@@ -813,6 +851,7 @@ class BrainOperationWorker {
       eventSequence: record.eventSequence,
       activeProviderCalls: Object.freeze(activeProviderCalls),
       pgsSession: record.pgsSessionMetadata || null,
+      latestPgsProgress: record.latestPgsProgress,
     });
   }
 
@@ -853,6 +892,7 @@ class BrainOperationWorker {
       waiters: new Set(),
       result: null,
       pgsSessionMetadata: null,
+      latestPgsProgress: null,
       controller,
       cleanupController,
       context: null,
@@ -988,6 +1028,7 @@ class BrainOperationWorker {
       at: new Date(this.now()).toISOString(),
     });
     if (normalized.type === 'phase') record.phase = normalized.phase;
+    record.latestPgsProgress = projectLatestPgsProgress(record, normalized);
     this._pushEvent(record, normalized);
     this._notify(record);
     return normalized;

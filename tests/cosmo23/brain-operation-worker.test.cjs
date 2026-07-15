@@ -1656,6 +1656,52 @@ test('event storage is count/byte bounded and exposes an authenticated resumable
   gate.resolve();
 });
 
+test('PGS status retains latest settled progress after its journal event is compacted', async (t) => {
+  const gate = deferred();
+  let report;
+  const fixture = await makeFixture(t, {
+    executors: new Map([['pgs', async (context) => {
+      report = context.reportEvent;
+      await Promise.race([
+        gate.promise,
+        new Promise((resolve) => context.signal.addEventListener('abort', resolve, { once: true })),
+      ]);
+      return {
+        state: context.signal.aborted ? 'cancelled' : 'complete',
+        result: null, resultArtifact: null, error: null, sourceEvidence: null,
+      };
+    }]]),
+  });
+  const request = requestFor({
+    id: operationId('8'), type: 'pgs', parameters: pgsWorkerParameters(),
+  });
+  await fixture.worker.start(request.operationId, fixture.token(request), request);
+  await eventually(() => assert.equal(typeof report, 'function'));
+  report({
+    type: 'progress', phase: 'pgs_sweep', stage: 'sweep_batch_complete',
+    selected: 420, completed: 419, successful: 419, failed: 0,
+    reused: 0, pending: 1, retryable: 0, total: 420,
+  });
+  const settledSequence = fixture.worker.records.get(request.operationId).eventSequence;
+  for (let index = 0; index < WORKER_EVENT_MAX_COUNT + 16; index += 1) {
+    report({ type: 'heartbeat' });
+  }
+  const internal = fixture.worker.records.get(request.operationId);
+  assert.equal(internal.events.some((event) => event.eventSequence === settledSequence), false);
+
+  const status = await fixture.worker.status(request.operationId, fixture.token(request));
+  assert.deepEqual(status.latestPgsProgress, {
+    type: 'progress', operationId: request.operationId, eventSequence: settledSequence,
+    phase: 'pgs_sweep', stage: 'sweep_batch_complete',
+    selected: 420, completed: 419, successful: 419, failed: 0,
+    reused: 0, pending: 1, retryable: 0, total: 420,
+    at: new Date(fixture.clock.wall).toISOString(),
+  });
+
+  await fixture.worker.cancel(request.operationId, fixture.token(request));
+  gate.resolve();
+});
+
 test('GC protects live work and enforces observed and unread terminal retention without sleeps', async (t) => {
   const liveGate = deferred();
   const fixture = await makeFixture(t, {

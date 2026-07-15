@@ -174,7 +174,7 @@ function validateWorkerRecord(rawRecord, expected = {}) {
   const record = clone(rawRecord, code);
   exactKeys(record, [
     'reference', 'operationId', 'operationType', 'state', 'phase', 'eventSequence',
-    'activeProviderCalls', 'pgsSession',
+    'activeProviderCalls', 'pgsSession', 'latestPgsProgress',
   ], code);
   assertOperationId(record.operationId);
   if (expected.operationId && record.operationId !== expected.operationId) throw workerError(code);
@@ -194,6 +194,23 @@ function validateWorkerRecord(rawRecord, expected = {}) {
     ? validatePgsSessionMetadata(record.pgsSession, code)
     : null;
   if (pgsSession !== null && record.operationType !== 'pgs') throw workerError(code);
+  let latestPgsProgress = null;
+  if (Object.hasOwn(record, 'latestPgsProgress') && record.latestPgsProgress !== null) {
+    if (record.operationType !== 'pgs') throw workerError(code);
+    try {
+      latestPgsProgress = validateWorkerEvent(record.latestPgsProgress, {
+        operationId: record.operationId,
+        operationType: 'pgs',
+        afterSequence: -1,
+      });
+    } catch (error) {
+      throw workerError(code, error);
+    }
+    if (latestPgsProgress.type !== 'progress'
+        || latestPgsProgress.phase !== 'pgs_sweep'
+        || latestPgsProgress.stage !== 'sweep_batch_complete'
+        || latestPgsProgress.eventSequence > record.eventSequence) throw workerError(code);
+  }
   return Object.freeze({
     reference,
     operationId: record.operationId,
@@ -203,6 +220,9 @@ function validateWorkerRecord(rawRecord, expected = {}) {
     eventSequence: record.eventSequence,
     activeProviderCalls: Object.freeze(activeProviderCalls),
     pgsSession: pgsSession === null ? null : Object.freeze(pgsSession),
+    latestPgsProgress: latestPgsProgress === null
+      ? null
+      : Object.freeze(latestPgsProgress),
   });
 }
 
@@ -612,6 +632,7 @@ class BrainOperationWorkerAdapter {
       phase: record.phase,
       eventSequence: record.eventSequence,
       activeProviderCalls,
+      latestPgsProgress: record.latestPgsProgress || null,
     }, {
       operationId: record.operationId,
       operationType: record.operationType,
@@ -827,6 +848,7 @@ class BrainOperationWorkerAdapter {
       eventByteSizes: new Map(),
       waiters: new Set(),
       result: null,
+      latestPgsProgress: null,
       controller: new AbortController(),
       context,
       fingerprint,

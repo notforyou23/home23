@@ -48,6 +48,10 @@ const DEFAULT_WORKER_START_TIMEOUT_MS = 30 * MINUTE_MS;
 const DEFAULT_STOP_TIMEOUT_MS = 180_000;
 const CAPABILITY_TTL_MS = 60_000;
 const MAX_ACTIVE_PROVIDER_CALLS = 4096;
+const SETTLED_PGS_PROGRESS_FIELDS = Object.freeze([
+  'selected', 'completed', 'successful', 'failed', 'reused',
+  'pending', 'retryable', 'total',
+]);
 const PROVIDER_OPERATION_TYPES = new Set(['query', 'pgs', 'synthesis', 'research_compile']);
 const TERMINAL_WORKER_STATES = new Set(['complete', 'partial', 'failed', 'cancelled', 'interrupted']);
 const WORKER_RESULT_STATES = new Set([
@@ -323,6 +327,44 @@ function validateResultEnvelope(rawEnvelope) {
     throw coordinatorError('worker_result_invalid');
   }
   return envelope;
+}
+
+function terminalPgsProgressFromResult(record, envelope) {
+  if (record.operationType !== 'pgs' || envelope.result === null) return null;
+  const pgs = envelope.result?.metadata?.pgs;
+  if (!pgs || Array.isArray(pgs) || typeof pgs !== 'object') return null;
+  const required = [
+    'selectedWorkUnits', 'reusedWorkUnits', 'scopeWorkUnits',
+    'scopeSuccessfulWorkUnits', 'scopePendingWorkUnits',
+  ];
+  if (required.some((field) => !Number.isSafeInteger(pgs[field]) || pgs[field] < 0)
+      || !Array.isArray(pgs.retryablePartitions)) return null;
+  const selected = pgs.selectedWorkUnits + pgs.reusedWorkUnits;
+  const successful = pgs.scopeSuccessfulWorkUnits;
+  const total = pgs.scopeWorkUnits;
+  if (!Number.isSafeInteger(selected)
+      || successful > selected
+      || selected > total
+      || pgs.scopePendingWorkUnits !== total - successful
+      || (Number.isSafeInteger(pgs.successfulSweeps)
+        && pgs.successfulSweeps !== successful)) return null;
+  const failed = selected - successful;
+  const retryable = pgs.retryablePartitions.length;
+  if (retryable > failed) return null;
+  return {
+    type: 'progress',
+    operationId: record.operationId,
+    phase: 'pgs_sweep',
+    stage: 'sweep_batch_complete',
+    selected,
+    completed: selected,
+    successful,
+    failed,
+    reused: pgs.reusedWorkUnits,
+    pending: 0,
+    retryable,
+    total,
+  };
 }
 
 function validateArtifactEnvelope(operationType, rawArtifact) {
@@ -1628,7 +1670,7 @@ class BrainOperationCoordinator {
   }
 
   async _acceptWorkerEventLocked(operationId, rawEvent, runtime) {
-    const record = await this.store.get(operationId);
+    let record = await this.store.get(operationId);
     if (TERMINAL_STATES.has(record.state)) return rawEvent.eventSequence;
     rawEvent = validateCoordinatorWorkerEvent(
       rawEvent,
@@ -1640,6 +1682,11 @@ class BrainOperationCoordinator {
       const workerRecord = await this._authenticatedWorkerStatus(record, {
         minimumEventSequence: Math.max(runtime.workerCursor, rawEvent.eventSequence),
       });
+      record = await this._mergePgsProgressLocked(
+        record,
+        workerRecord.latestPgsProgress,
+        runtime,
+      );
       const before = record.eventSequence;
       await this.store.appendEvent(operationId, {
         // The COSMO stream had a gap, but the requester-facing durable journal
@@ -1705,6 +1752,38 @@ class BrainOperationCoordinator {
       await this._finalizeFromWorkerLocked(operationId, workerRecord);
     }
     return runtime.workerCursor;
+  }
+
+  async _mergePgsProgressLocked(record, rawProgress, runtime = null) {
+    if (record.operationType !== 'pgs' || rawProgress === null || rawProgress === undefined) {
+      return record;
+    }
+    if (rawProgress.operationId !== record.operationId) {
+      throw coordinatorError('worker_contract_invalid');
+    }
+    const current = await this.store.get(record.operationId);
+    if (TERMINAL_STATES.has(current.state)) return current;
+    const prior = current.progressSnapshot;
+    if (prior !== null) {
+      const regresses = SETTLED_PGS_PROGRESS_FIELDS
+        .filter((field) => field !== 'pending')
+        .some((field) => prior[field] !== undefined && rawProgress[field] < prior[field])
+        || (prior.pending !== undefined && rawProgress.pending > prior.pending);
+      if (regresses) return current;
+      const advances = SETTLED_PGS_PROGRESS_FIELDS.some((field) =>
+        prior[field] === undefined || rawProgress[field] !== prior[field]);
+      if (!advances) return current;
+    }
+    const before = current.eventSequence;
+    const event = { ...rawProgress };
+    delete event.operationId;
+    delete event.eventSequence;
+    if (Number.isSafeInteger(rawProgress.eventSequence)) {
+      event.workerEventSequence = rawProgress.eventSequence;
+    }
+    const merged = await this.store.appendEvent(record.operationId, event);
+    if (runtime) await this._broadcastNewEvents(runtime, before);
+    return merged;
   }
 
   _armSilence(runtime) {
@@ -1861,6 +1940,11 @@ class BrainOperationCoordinator {
         cancelWorker: true,
       });
     }
+    record = await this._mergePgsProgressLocked(
+      record,
+      workerRecord?.latestPgsProgress,
+      runtime,
+    );
     let envelope;
     try {
       envelope = validateResultEnvelope(
@@ -1872,6 +1956,10 @@ class BrainOperationCoordinator {
       );
       if (workerRecord && envelope.state !== workerRecord.state) {
         throw coordinatorError('worker_result_invalid');
+      }
+      const terminalPgsProgress = terminalPgsProgressFromResult(record, envelope);
+      if (terminalPgsProgress !== null) {
+        record = await this._mergePgsProgressLocked(record, terminalPgsProgress, runtime);
       }
       if (record.operationType === 'synthesis'
           && typeof this.store.getSynthesisCompletionClaim === 'function') {

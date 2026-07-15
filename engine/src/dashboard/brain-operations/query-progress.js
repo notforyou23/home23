@@ -305,6 +305,10 @@ function reduceQueryProgressSnapshot(previous, event, context) {
   if (previous === null && !terminal && !queued && mappedStage === null) return null;
 
   const selectedAfterSweeping = mappedStage === 'selecting_work' && previous?.stage === 'sweeping';
+  const recoveredSettledProgress = event.stage === 'sweep_batch_complete'
+    && previous !== null
+    && QUERY_PROGRESS_STAGES.indexOf(previous.stage)
+      > QUERY_PROGRESS_STAGES.indexOf('sweeping');
   const firstWorkSelection = mappedStage === 'selecting_work'
     && previous !== null
     && QUERY_PROGRESS_STAGES.indexOf(previous.stage)
@@ -314,7 +318,9 @@ function reduceQueryProgressSnapshot(previous, event, context) {
     version: 1,
     stage: terminal
       ? 'terminal'
-      : (selectedAfterSweeping ? 'sweeping' : (mappedStage ?? previous?.stage ?? 'queued')),
+      : (selectedAfterSweeping || recoveredSettledProgress
+        ? previous.stage
+        : (mappedStage ?? previous?.stage ?? 'queued')),
     eventSequence: context.nextSequence,
   };
   if (progress) {
