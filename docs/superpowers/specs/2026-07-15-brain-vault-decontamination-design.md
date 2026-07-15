@@ -510,8 +510,11 @@ read a file.
 1. **Every file seen gets a manifest entry, including refusals**, with `outcome` and `reason`
    (`skipped_too_large`, `unreadable`, `dotfile`, `excluded`, `compiled_raw_fallback`). "What is
    sitting unread" becomes a query, not archaeology.
-2. **Yield check.** A file whose nodes-out is ~0 relative to bytes-in is a **failure**, not a success.
-   Flag it; do not mark it `ok`. `chat.html` at 471 MB → 1 node must scream.
+2. **Yield check (§4.1c-2).** A file whose extracted text or nodes-out is ~0 relative to bytes-in is a
+   **failure**, not a success. Flag it; never mark it `ok`. `chat.html` at 471 MB → 1,324 chars → 1
+   node must scream. **Below the yield floor the input must not reach the compiler at all** — emit a
+   catalog node (§4.1d) and quarantine for extraction, because a compiler handed near-empty input does
+   not fail, **it fabricates** (§4.1c-1).
 3. **`maxFileBytes` must route, not drop.** Oversized files go to a splitter/extractor queue.
    A 5 MB ceiling is a *processing strategy*, never a *reason to never read something*.
 4. **Dotfiles: explicit-allow, not blanket-deny.** `~/.health_log.jsonl` is a dotfile — **the current
@@ -525,6 +528,96 @@ read a file.
 6. **Raw-text fallback must be visible.** Queue-full and circuit-open silently degrade compiled
    synthesis to raw text. That is a quality cliff recorded nowhere; some existing low-quality nodes are
    plausibly this. Record the fallback in the manifest and re-compile later.
+
+### 4.1d The catalog rule — a file's existence is knowledge, even when its content isn't
+
+**jtr's directive: even when a file can't be read, identify it and record what and where it is, so we
+know where to look.**
+
+This is correct and the current design misses it. **Existence and content are separate facts.** A file
+that exists is an event; it has a name, a path, a size, a type, a date. That is real, provenance-bearing
+knowledge that satisfies §3 completely — and it is exactly what is missing today:
+
+```
+MRI Report.pdf  →  conversion_failed, quarantined, 0 nodes, invisible
+```
+
+Asked *"do I have jtr's MRI?"*, Jerry currently has no answer. He should answer: **"Yes —
+`/Users/jtr/life/feed/MRI Report.pdf`, PDF, 2 pages, added 2026-02-XX. I could not read it: markitdown
+conversion failed. Here is where it lives."** That is a useful, honest, actionable memory.
+
+**Rule:** every file the feeder sees gets a **catalog node** — path, name, type, size, mtime, label,
+and ingestion outcome — regardless of whether its content could be extracted. Content nodes are
+additional, not a precondition. The catalog node is:
+
+- **provenance-bearing** — it *is* the file, so §4.1b is satisfied trivially
+- **self-deleting** — delete the file, the manifest removes the catalog node like any other
+- **honest** — it states what is known and what is not, instead of nothing or a fabrication
+- **the answer to "where do I look?"** — the point of a vault index
+
+**This subsumes the quarantine-visibility requirement in §4.1c(5)**: a quarantined file still gets a
+catalog node saying so. And it is strictly better than the current failure mode, which is not silence —
+it is invention (§4.1c-1).
+
+### 4.1c-1 The false-success mechanism, traced end to end — and it fabricates
+
+**`chat.html` (471 MB, `parse=ok`, `nodeIds: [47620]`) — the full manifest entry:**
+
+```
+structuralSignature: {"nBlocks": 1, "typeCounts": {"compiled_synthesis": 1}, "avgTextLen": 1324}
+compiled: true    nodeCount: 1    totalChunks: 1    ingestedAt: 2026-04-17
+```
+
+**471,000,000 bytes → 1,324 characters → 1 chunk → 1 node.**
+
+Mechanism, and **every stage behaved correctly**: a ChatGPT export is a shell page whose conversations
+live inside `<script>var jsonData = [...]</script>`, injected into `#root` by JS at render time. The
+HTML→text converter did what a text extractor should — **it ignored the script block** — and extracted
+the visible text: a `<title>`, CSS, an empty div. 1,324 chars. One chunk. One compiler call.
+`parse=ok`. Nobody was wrong. Nothing flagged it.
+
+**And then the compiler fabricated the node. Node 47620, verbatim:**
+
+```
+1. **What is this document?**
+A Home23 dashboard HTML fragment showing Sauna, Quotes, Clock, and Weather tiles
+in a non-functional/empty state.
+2. **Key findings:**
+- Sauna tile present with temperature "--°F" (no data) and status "Off"
+- Clock frozen at "00:00:00 AM" — time sync failure
+- Location set to "Florence, Italy" — unexpected/geographical mismatch
+4. **What contradicts:**
+- Sauna "--°F" contradicts prior ~182°F readings — suggests this is a different
+  dashboard instance, test environment, or disconnected tile
+5. **Connections:**
+- Sauna tile → jtr-pi infrastructure (get_sauna.sh, sauna_temps.txt)
+- Dashboard → Home23 Dashboard at port 8090
+```
+
+**None of this exists in a ChatGPT export.** There is no sauna tile, no clock, no Florence. Given
+1,324 chars of generic HTML shell, the compiler **invented a Home23 dashboard**, then:
+
+1. **reasoned about the contradiction it had invented** ("--°F contradicts prior ~182°F readings"),
+   constructing an explanation for a discrepancy in a document that does not exist;
+2. **linked the fabrication to real infrastructure** — `get_sauna.sh`, `sauna_temps.txt`, `jtr-pi`,
+   port 8090. **The hallucination now carries graph edges to real sauna nodes.**
+3. produced it in confident, structured, plausible form. `parse=ok`.
+
+**Why it hallucinated Home23 specifically — a compiler-level feedback loop not previously identified:**
+the compiler's context is saturated with Home23. Hand it an ambiguous scrap and its prior is dashboards
+and sauna sensors, so that is what it produces. **A polluted brain yields a polluted prior, which
+fabricates nodes, which pollute the brain.** §1.12's feedback path has a twin at the compile step.
+
+**Consequences for this design:**
+
+- **Node content is untrustworthy even where provenance is clean.** §4.5's claim that `[CONSOLIDATED]`
+  nodes are "correct conclusions from a poisoned premise" is **too generous** — some are *fabricated
+  conclusions from no premise*. This strengthens rebuild-over-clean: cleaning cannot detect invention.
+- **A rebuild reproduces this exactly** unless the yield check (§4.1c-2) lands first. Same converter,
+  same 1,324 chars, same compiler, same fabrication — in 29 hours, marked `ok`.
+- **Low-yield input must never reach the compiler.** Below a yield floor, emit a **catalog node**
+  (§4.1d) and quarantine for extraction. A compiler handed near-empty input does not fail — **it
+  invents**, and that is worse than silence.
 
 ### 4.2 The event gate at ingestion
 
@@ -575,8 +668,11 @@ Deletion is insufficient. Even with every garbage node gone:
   *through* restraint receipts. Deleting nodes leaves topology worn by material that no longer
   exists — paths connecting real things for reasons that were never real. That cannot be cleaned,
   only regrown.
-- **`[CONSOLIDATED]` nodes are correct conclusions from a poisoned premise.** The summarizer worked
-  perfectly on garbage inputs. They regenerate correctly from real material.
+- **`[CONSOLIDATED]` nodes are unsound at best and fabricated at worst.** The summarizer worked
+  perfectly on garbage inputs, so at best they are correct conclusions from a poisoned premise. But
+  §4.1c-1 shows the compiler **invents** when given thin input, so some are *fabricated conclusions
+  from no premise* — and the fabrications carry graph edges to real nodes. **Cleaning cannot detect
+  invention; only regeneration from real material can prevent it.**
 - **Cleanup yields a brain we *hope* is clean**, verified by a hand-written classifier, on an
   unauditable graph. **Rebuild yields a brain that is clean by construction** — every node traces to a
   file because a file is the only thing that made it. Not verified. Guaranteed.
@@ -744,6 +840,9 @@ Nothing is irreversible before step 4, and step 4 is reversible because of step 
 | **Untraced `addNode` sites** | 7 orchestrator sites + artifacts/goal-curator/trajectory-fork not individually read. **Trace before implementing**, do not assume. |
 | **Health-log ingestion creates new pollution** | §4.6. Three blockers: it is a **dotfile** (silently dropped), a **rolling log** (rehashes per append → full re-ingest each time), and the API is **HTTP** (no feeder concept). Not a watch-path line. |
 | **False success hides total extraction failure** | §4.1c. `chat.html` 471 MB → 1 node, `parse=ok`. No yield check exists anywhere. **A rebuild would faithfully reproduce every one of these**, because they are recorded as successes and the reingest is hash-gated on the same code path. **Fix the yield check before step 4 or the rebuild re-bakes the losses.** |
+| **Low-yield input makes the compiler FABRICATE** | §4.1c-1. Node 47620 (from `chat.html`) is an invented Home23 dashboard — sauna tile, frozen clock, "Florence, Italy" — none of which exists in a ChatGPT export, cross-linked to real `jtr-pi`/`get_sauna.sh` nodes and marked `ok`. **Node content is untrustworthy even where provenance is clean.** Cleaning cannot detect invention; only rebuild-with-a-yield-floor can prevent it. |
+| **The compiler's prior is polluted by the brain it feeds** | §4.1c-1. Saturated with Home23 context, the compiler hallucinates Home23 from ambiguous input. A second feedback loop, at the compile step, distinct from §1.12. Decontamination is a prerequisite for trustworthy compilation — which is another reason the door (§4.1) must precede the rebuild. |
+| **False negatives from silenced tooling** | Discovered during this investigation: `timeout` does not exist on this Mac; commands using it failed with "command not found" while stderr was suppressed, returning empty output that read as findings ("node not found", "brain file decompresses to zero bytes" — both false; `gzip -t` confirms **GZ OK**). **During implementation, never suppress stderr on a verification command, and never treat an empty result as a negative without proving the command ran.** This is the same defect class as §4.1c, in our own tooling. |
 | **jtr's MRI is quarantined and nobody knows** | §4.1c(5). `conversion_failed`. The failure is a manifest field nobody reads. Route real-label quarantines to live-problems, which has executable verifiers and is the honest subsystem. |
 | **`jtr_voice` source is the old cosmo-home install** | §7.7. **Confirmed, not hypothetical.** 670 nodes would silently vanish on rebuild. Re-add the path or relocate the files into the vault before step 4. |
 | Removing `state_snapshot` degrades situational awareness | RECENT.md remains loaded as a **system-prompt surface** (its designed role, per STEP20/STEP23). Only the brain-node copy goes. Verify context-assembly still loads the surface after the change. |
