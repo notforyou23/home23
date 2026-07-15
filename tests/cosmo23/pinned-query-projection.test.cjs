@@ -421,6 +421,7 @@ test('pinned Query compacts maximum-bound signed claims and refs without losing 
 
 test('pinned Query skips an authenticated durable ID outside provider bounds without aborting valid evidence', async () => {
   const oversizedIdentity = 'i'.repeat(513);
+  const oversizedUnicodeIdentity = '🧠'.repeat(129);
   const records = [
     attestMemoryAuthority({
       id: oversizedIdentity,
@@ -430,6 +431,16 @@ test('pinned Query skips an authenticated durable ID outside provider bounds wit
         authorityClass: 'verified_current_state',
         operationalAuthority: true,
         evidenceRefs: ['verifier:oversized-identity'],
+      },
+    }, AUTHORITY_KEY),
+    attestMemoryAuthority({
+      id: oversizedUnicodeIdentity,
+      content: 'oversized Unicode identity evidence',
+      provenance: {
+        schema: 'home23.node-provenance.v1',
+        authorityClass: 'verified_current_state',
+        operationalAuthority: true,
+        evidenceRefs: ['verifier:oversized-unicode-identity'],
       },
     }, AUTHORITY_KEY),
     attestMemoryAuthority({
@@ -449,8 +460,13 @@ test('pinned Query skips an authenticated durable ID outside provider bounds wit
     const projection = await projectPinnedQuery({
       sourcePin: createSyntheticPinnedSource({
         nodeCount: records.length,
-        edgeCount: 0,
+        edgeCount: 3,
         nodeFactory: index => records[index],
+        edgeFactory: index => [
+          { source: oversizedIdentity, target: 'valid-control', type: 'skip-oversized' },
+          { source: oversizedUnicodeIdentity, target: 'valid-control', type: 'skip-unicode' },
+          { source: 'valid-control', target: 'valid-control', type: 'keep-control' },
+        ][index],
       }),
       query: 'valid control evidence',
       mode,
@@ -460,8 +476,13 @@ test('pinned Query skips an authenticated durable ID outside provider bounds wit
 
     assert.deepEqual(projection.nodes.map(node => node.id), ['valid-control']);
     assert.deepEqual(projection.nodeAuthorities.map(node => node.id), ['valid-control']);
+    assert.deepEqual(projection.edges, [{
+      source: 'valid-control', target: 'valid-control', type: 'keep-control',
+    }]);
     assert.equal(projection.nodes.some(node => node.id === oversizedIdentity), false);
-    assert.equal(projection.stats.nodesScanned, 2);
+    assert.equal(projection.nodes.some(node => node.id === oversizedUnicodeIdentity), false);
+    assert.equal(projection.stats.nodesScanned, 3);
+    assert.equal(projection.stats.edgesScanned, 3);
     assert.equal(projection.sourceEvidence.returnedTotals.nodes, 1);
     assert.equal(projection.sourceEvidence.authoritySummary.total, 1);
     assert.equal(
@@ -469,6 +490,105 @@ test('pinned Query skips an authenticated durable ID outside provider bounds wit
       1,
     );
   }
+});
+
+test('pinned Query skips private path-shaped IDs without rewriting identity joins', async () => {
+  const unsafeIds = [
+    '/Volumes/PrivateBrain/nodes/secret.json',
+    '/custom-root/private/secret.json',
+    'file:///var/tmp/private.json',
+    String.raw`D:\Brains\Jerry\private.json`,
+  ];
+  const records = [
+    ...unsafeIds.map((id, index) => ({ id, content: `private identity ${index}` })),
+    { id: 'valid-control', content: 'valid identity control' },
+  ];
+
+  for (const mode of ['quick', 'full', 'expert', 'dive']) {
+    const projection = await projectPinnedQuery({
+      sourcePin: createSyntheticPinnedSource({
+        nodeCount: records.length,
+        edgeCount: 0,
+        nodeFactory: index => records[index],
+      }),
+      query: 'valid identity control',
+      mode,
+      signal: new AbortController().signal,
+      limits: { maxNodes: records.length, maxEdges: 1 },
+    });
+
+    assert.deepEqual(projection.nodes.map(node => node.id), ['valid-control']);
+    assert.deepEqual(projection.nodeAuthorities.map(node => node.id), ['valid-control']);
+    assert.equal(projection.sourceEvidence.returnedTotals.nodes, 1);
+    assert.equal(projection.sourceEvidence.authoritySummary.total, 1);
+    assert.equal(projection.sourceEvidence.authoritySummary.authorityClasses.narrative, 1);
+    assert.equal(unsafeIds.some(id => JSON.stringify(projection).includes(id)), false);
+  }
+});
+
+test('edge endpoint preflight rejects accessors and cycles before skipping unretained edges', async () => {
+  let getterCalls = 0;
+  const accessorEdge = { target: 'missing' };
+  Object.defineProperty(accessorEdge, 'source', {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      return 'missing';
+    },
+  });
+  await assert.rejects(projectPinnedQuery({
+    sourcePin: createSyntheticPinnedSource({
+      nodeCount: 1,
+      edgeCount: 1,
+      nodeFactory: () => ({ id: 'valid-control', content: 'valid control' }),
+      edgeFactory: () => accessorEdge,
+    }),
+    query: 'valid control',
+    signal: new AbortController().signal,
+  }), error => error.code === 'source_invalid');
+  assert.equal(getterCalls, 0);
+
+  const cyclicEdge = { source: 'missing', target: 'missing', metadata: {} };
+  cyclicEdge.metadata.self = cyclicEdge;
+  await assert.rejects(projectPinnedQuery({
+    sourcePin: createSyntheticPinnedSource({
+      nodeCount: 1,
+      edgeCount: 1,
+      nodeFactory: () => ({ id: 'valid-control', content: 'valid control' }),
+      edgeFactory: () => cyclicEdge,
+    }),
+    query: 'valid control',
+    signal: new AbortController().signal,
+  }), error => error.code === 'source_invalid');
+});
+
+test('retained edge eligibility and projection share one validated structural read', async () => {
+  let structuralReads = 0;
+  const edge = new Proxy({
+    source: 'valid-control',
+    target: 'valid-control',
+    type: 'keep-control',
+  }, {
+    ownKeys(target) {
+      structuralReads += 1;
+      return Reflect.ownKeys(target);
+    },
+  });
+  const projection = await projectPinnedQuery({
+    sourcePin: createSyntheticPinnedSource({
+      nodeCount: 1,
+      edgeCount: 1,
+      nodeFactory: () => ({ id: 'valid-control', content: 'valid control' }),
+      edgeFactory: () => edge,
+    }),
+    query: 'valid control',
+    signal: new AbortController().signal,
+  });
+
+  assert.deepEqual(projection.edges, [{
+    source: 'valid-control', target: 'valid-control', type: 'keep-control',
+  }]);
+  assert.equal(structuralReads, 1);
 });
 
 test('oversized textual evidence is compacted while unserializable records fail closed', async () => {

@@ -2,10 +2,10 @@
 
 const { QUERY_OPERATION_LIMITS } = require('./brain-operation-limits');
 const {
-  MAX_QUERY_EVIDENCE_IDENTIFIER_BYTES,
-  projectQueryEvidenceEdge,
   projectQueryEvidenceNode,
+  projectRetainedQueryEvidenceEdge,
   projectionRecordLimits,
+  queryEvidenceIdentifier,
   truncateUtf8,
 } = require('./query-evidence-projector');
 const {
@@ -71,23 +71,24 @@ function serializeRecord(record, maxRecordBytes, kind) {
     redactPaths: true,
   });
 }
-function nodeId(node) {
-  const value = node?.id ?? node?.nodeId ?? node?.key;
-  if ((typeof value !== 'string' && !Number.isSafeInteger(value))
-      || String(value).length === 0
-      || Buffer.byteLength(String(value), 'utf8') > MAX_QUERY_EVIDENCE_IDENTIFIER_BYTES) {
-    return null;
+function identifierValue(record, fields) {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return undefined;
+  for (const field of fields) {
+    const descriptor = Object.getOwnPropertyDescriptor(record, field);
+    if (!descriptor) continue;
+    if (!Object.hasOwn(descriptor, 'value')) {
+      throw typed('source_invalid', 'Accessor-backed Query evidence is unsafe');
+    }
+    if (descriptor.value !== null && descriptor.value !== undefined) return descriptor.value;
   }
-  return String(value);
+  return undefined;
 }
-
-function edgeEndpoint(edge, side) {
-  const value = side === 'source'
-    ? (edge?.source ?? edge?.from ?? edge?.sourceId)
-    : (edge?.target ?? edge?.to ?? edge?.targetId);
-  if ((typeof value !== 'string' && !Number.isSafeInteger(value))
-      || String(value).length === 0 || String(value).length > 512) return null;
-  return String(value);
+function nodeId(node) {
+  const value = identifierValue(node, ['id', 'nodeId', 'key']);
+  if ((typeof value !== 'string' && !Number.isSafeInteger(value)) || String(value).length === 0) {
+    throw typed('source_invalid', 'Query evidence node ID is invalid');
+  }
+  return queryEvidenceIdentifier(value);
 }
 
 function queryTerms(query) {
@@ -374,12 +375,12 @@ async function projectPinnedQuery({
     throwIfAborted(signal);
     nodesScanned += 1;
     const rawId = nodeId(rawNode);
-    const authenticated = verifyMemoryAuthorityAttestation(rawNode);
-    if (authenticated && rawId === null) {
+    if (rawId === null) {
       if (typeof onNodeScanned === 'function') onNodeScanned(nodesScanned);
       await yieldForCancellation(nodesScanned, signal);
       continue;
     }
+    const authenticated = verifyMemoryAuthorityAttestation(rawNode);
     const providerNode = authenticatedProviderNode(rawNode);
     const projected = authenticated
       ? projectAuthenticatedProviderNode(providerNode, recordLimits)
@@ -430,12 +431,13 @@ async function projectPinnedQuery({
   for await (const rawEdge of sourcePin.iterateEdges({ signal })) {
     throwIfAborted(signal);
     edgesScanned += 1;
-    const projected = projectQueryEvidenceEdge(rawEdge, recordLimits);
-    const source = edgeEndpoint(projected.value, 'source');
-    const target = edgeEndpoint(projected.value, 'target');
-    if (edges.length < selectedLimits.maxEdges
-        && source !== null && target !== null
-        && retainedIds.has(source) && retainedIds.has(target)) {
+    const projected = projectRetainedQueryEvidenceEdge(rawEdge, recordLimits, retainedIds);
+    if (projected === null) {
+      if (typeof onEdgeScanned === 'function') onEdgeScanned(edgesScanned);
+      await yieldForCancellation(edgesScanned, signal);
+      continue;
+    }
+    if (edges.length < selectedLimits.maxEdges) {
       if (retainedNodeBytes + edgeBytes + projected.bytes
           > selectedLimits.maxProjectionBytes) {
         edgesDroppedForByteBudget += 1;

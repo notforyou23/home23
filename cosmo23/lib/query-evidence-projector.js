@@ -113,16 +113,41 @@ function truncateUtf8(value, maxBytes) {
   return Object.freeze({ value: result, bytes, truncated: true });
 }
 
-function safeIdentifier(value, label) {
+function queryEvidenceIdentifier(value) {
   if (typeof value !== 'string' && !Number.isSafeInteger(value)) {
-    throw typed('source_invalid', `Query evidence ${label} is invalid`);
+    return null;
   }
   const identifier = String(value);
   if (!identifier
       || Buffer.byteLength(identifier, 'utf8') > MAX_QUERY_EVIDENCE_IDENTIFIER_BYTES) {
+    return null;
+  }
+  return redactProviderPrivatePaths(identifier) === identifier ? identifier : null;
+}
+
+function safeIdentifier(value, label) {
+  const identifier = queryEvidenceIdentifier(value);
+  if (identifier === null) {
     throw typed('source_invalid', `Query evidence ${label} is invalid`);
   }
   return identifier;
+}
+
+function preflightQueryEvidenceEdge(rawEdge) {
+  if (!rawEdge || typeof rawEdge !== 'object' || Array.isArray(rawEdge)) {
+    throw typed('source_invalid', 'Query evidence edge must be an object');
+  }
+  validateStructure(rawEdge);
+  const source = dataProperty(rawEdge, 'source')
+    ?? dataProperty(rawEdge, 'from')
+    ?? dataProperty(rawEdge, 'sourceId');
+  const target = dataProperty(rawEdge, 'target')
+    ?? dataProperty(rawEdge, 'to')
+    ?? dataProperty(rawEdge, 'targetId');
+  return Object.freeze({
+    source: queryEvidenceIdentifier(source),
+    target: queryEvidenceIdentifier(target),
+  });
 }
 
 function safeShortString(value, maxBytes = 256) {
@@ -264,21 +289,10 @@ function projectQueryEvidenceNode(rawNode, options) {
   return serializeProjected(output, limits.maxRecordBytes);
 }
 
-function projectQueryEvidenceEdge(rawEdge, options) {
-  const limits = assertLimits(options);
-  if (!rawEdge || typeof rawEdge !== 'object' || Array.isArray(rawEdge)) {
-    throw typed('source_invalid', 'Query evidence edge must be an object');
-  }
-  validateStructure(rawEdge);
-  const source = dataProperty(rawEdge, 'source')
-    ?? dataProperty(rawEdge, 'from')
-    ?? dataProperty(rawEdge, 'sourceId');
-  const target = dataProperty(rawEdge, 'target')
-    ?? dataProperty(rawEdge, 'to')
-    ?? dataProperty(rawEdge, 'targetId');
+function projectQueryEvidenceEdgeFromPreflight(rawEdge, limits, preflight) {
   const output = {
-    source: safeIdentifier(source, 'edge source'),
-    target: safeIdentifier(target, 'edge target'),
+    source: safeIdentifier(preflight.source, 'edge source'),
+    target: safeIdentifier(preflight.target, 'edge target'),
   };
   addClassification(output, rawEdge);
   addProvenance(output, rawEdge);
@@ -289,10 +303,34 @@ function projectQueryEvidenceEdge(rawEdge, options) {
   return serializeProjected(output, limits.maxRecordBytes);
 }
 
+function projectQueryEvidenceEdge(rawEdge, options) {
+  const limits = assertLimits(options);
+  return projectQueryEvidenceEdgeFromPreflight(
+    rawEdge,
+    limits,
+    preflightQueryEvidenceEdge(rawEdge),
+  );
+}
+
+function projectRetainedQueryEvidenceEdge(rawEdge, options, retainedIds) {
+  const limits = assertLimits(options);
+  if (!(retainedIds instanceof Set)) {
+    throw typed('invalid_request', 'Retained Query evidence IDs must be a Set');
+  }
+  const preflight = preflightQueryEvidenceEdge(rawEdge);
+  if (preflight.source === null || preflight.target === null
+      || !retainedIds.has(preflight.source) || !retainedIds.has(preflight.target)) {
+    return null;
+  }
+  return projectQueryEvidenceEdgeFromPreflight(rawEdge, limits, preflight);
+}
+
 module.exports = {
   MAX_QUERY_EVIDENCE_IDENTIFIER_BYTES,
   projectQueryEvidenceEdge,
   projectQueryEvidenceNode,
+  projectRetainedQueryEvidenceEdge,
   projectionRecordLimits,
+  queryEvidenceIdentifier,
   truncateUtf8,
 };
