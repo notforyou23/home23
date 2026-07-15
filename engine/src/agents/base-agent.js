@@ -5,6 +5,54 @@ const path = require('path');
 const { writeFileDurable } = require('../utils/durable-write');
 
 /**
+ * Governing rule (jtr, 2026-07-15): "Something happened" -> event, worth
+ * keeping. "A loop ticked" -> not an event, no record. addFinding()/
+ * addInsight() write UNCONDITIONALLY today, so an agent that analysed zero
+ * documents writes a permanent node saying exactly that -- measured
+ * verbatim from the live brain:
+ *   [AGENT INSIGHT: agent_x] Total content analyzed: 0 words across 0 documents
+ *   [AGENT: agent_y] {"documentCount":0,"documents":[]}
+ *
+ * describesNoEvent() recognises those two measured "found nothing" shapes
+ * ONLY -- a structured JSON payload reporting documentCount: 0, and the
+ * "0 words across 0 documents" prose sentence. It deliberately does NOT try
+ * to guess at general "emptiness" (e.g. any zero anywhere, or short text) --
+ * that would risk silently eating a real finding/insight that happens to
+ * mention a zero. An agent that genuinely analysed 47 documents and found
+ * something must still persist it; this only stops the specific "nothing to
+ * report" shapes that were confirmed by direct inspection of what these
+ * call sites actually emit when they found nothing.
+ *
+ * @param {*} text - the finding/insight content passed to addFinding/addInsight
+ * @returns {boolean} true iff the content is a known "no event" shape
+ */
+function describesNoEvent(text) {
+  if (typeof text !== 'string' || text.length === 0) return false;
+
+  // Shape 1: a structured JSON payload explicitly reporting zero documents,
+  // e.g. document-analysis-agent.js's storeDocumentContentsForHandoff():
+  //   {"source":"document_analysis_agent","documentCount":0,"documents":[]}
+  const trimmed = text.trim();
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.documentCount === 0) {
+        return true;
+      }
+    } catch {
+      // Not valid JSON -- fall through to the prose check below.
+    }
+  }
+
+  // Shape 2: the exact prose sentence document-analysis-agent.js's
+  // generateDocumentInsights() always pushes, even when nothing was found:
+  //   `Total content analyzed: ${totalWords} words across ${documents.length} documents`
+  if (/\b0\s+words\s+across\s+0\s+documents\b/i.test(text)) return true;
+
+  return false;
+}
+
+/**
  * BaseAgent - Foundation class for all specialist agents
  * 
  * Provides:
@@ -215,6 +263,24 @@ class BaseAgent extends EventEmitter {
       return null;
     }
 
+    // Governing rule: a loop ticking is not an event. An agent that found
+    // nothing does not get to write a permanent node saying so. See
+    // describesNoEvent() above.
+    if (describesNoEvent(finding)) {
+      this.logger.debug('Finding describes no event (nothing found) — not persisted', {
+        agentId: this.agentId,
+        tag
+      }, 3);
+      this.results.push({
+        type: 'finding',
+        content: finding,
+        nodeId: null,
+        timestamp: new Date(),
+        noEvent: true
+      });
+      return null;
+    }
+
     const node = await this.memory.addNode(
       `[AGENT: ${this.agentId}] ${finding}`,
       tag
@@ -285,6 +351,24 @@ class BaseAgent extends EventEmitter {
   async addInsight(insight, tag = 'agent_insight') {
     if (!this.memory) {
       this.logger.warn('No memory system injected, insight not stored');
+      return null;
+    }
+
+    // Governing rule: a loop ticking is not an event. An agent that found
+    // nothing does not get to write a permanent node saying so. See
+    // describesNoEvent() above.
+    if (describesNoEvent(insight)) {
+      this.logger.debug('Insight describes no event (nothing found) — not persisted', {
+        agentId: this.agentId,
+        tag
+      }, 3);
+      this.results.push({
+        type: 'insight',
+        content: insight,
+        nodeId: null,
+        timestamp: new Date(),
+        noEvent: true
+      });
       return null;
     }
 
@@ -1995,4 +2079,4 @@ class BaseAgent extends EventEmitter {
   }
 }
 
-module.exports = { BaseAgent };
+module.exports = { BaseAgent, describesNoEvent };

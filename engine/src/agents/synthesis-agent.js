@@ -2,6 +2,21 @@ const { BaseAgent } = require('./base-agent');
 const { DeliverableManifest } = require('./deliverable-manifest');
 
 /**
+ * Governing rule (jtr, 2026-07-15): "something happened" -> event, worth
+ * keeping. "A loop ticked" -> not an event, no record. A synthesis report
+ * generated over zero evidence nodes is GPT free-associating from mission
+ * text alone (see this.zeroEvidenceSynthesis in execute()) -- nothing was
+ * actually synthesized from the brain, so nothing should be written back
+ * into it. A report backed by real evidence nodes still persists.
+ *
+ * @param {number} evidenceNodeCount - knowledgeBase.nodes.length for this run
+ * @returns {boolean} true iff the report should be written to memory
+ */
+function shouldPersistSynthesisReport(evidenceNodeCount) {
+  return evidenceNodeCount > 0;
+}
+
+/**
  * SynthesisAgent - Report writing and knowledge consolidation specialist
  * 
  * Purpose:
@@ -264,12 +279,18 @@ class SynthesisAgent extends BaseAgent {
       }
     }, 3);
 
-    // Step 7: Add report to memory
+    // Step 7: Add report to memory -- gated by shouldPersistSynthesisReport()
+    // (see governing-rule comment above). Kept in this.results either way so
+    // the caller/mission result is unaffected; only the brain write is gated.
     await this.reportProgress(97, 'Adding synthesis to memory');
-    await this.addFinding(
-      report,
-      knowledgeBase.nodes.length > 0 ? 'synthesis_report' : 'synthesis_report_uncertified'
-    );
+    if (shouldPersistSynthesisReport(knowledgeBase.nodes.length)) {
+      await this.addFinding(report, 'synthesis_report');
+    } else {
+      this.logger.debug?.('Zero-evidence synthesis report kept as draft result only, not persisted', {
+        agentId: this.agentId,
+        goal: this.mission.goalId
+      });
+    }
 
     // Store final results
     this.results.push({
@@ -1102,4 +1123,4 @@ Generate the complete final deliverable now:`;
   }
 }
 
-module.exports = { SynthesisAgent };
+module.exports = { SynthesisAgent, shouldPersistSynthesisReport };
