@@ -21,7 +21,11 @@ Sampled 3,123 live brain nodes from jerry's current memory delta:
 | Records of non-events ("0 documents", "empty session", `NO_ACTION`) | ~25% |
 | Knowledge about jtr's actual world | **~4%** |
 
-Jerry's brain is ~65,000 nodes / ~110,000 edges. Roughly 2,500 of those nodes are about jtr's life.
+Jerry's brain is **143,479 nodes / 471,118 edges** (live engine, 2026-07-15T14:56). Roughly **5,700**
+of those nodes are about jtr's life.
+
+**It has more than doubled since May 7** (65,100 nodes), growing **~1,135 nodes/day** — of which
+**~45/day are about jtr and ~1,090/day are about itself.**
 
 Verbatim node contents from the sample:
 
@@ -50,7 +54,7 @@ This is the distinction the whole design rests on:
 
 ### 1.3 Every removal mechanism is disabled or neutered
 
-The brain grew to 65,000 nodes because **each independent safeguard against exactly this was turned
+The brain grew to 143,479 nodes because **each independent safeguard against exactly this was turned
 off**, each for a locally reasonable reason:
 
 1. **The feeder points at the agents' own exhaust.** 6 of jerry's 7 watch paths are his own output
@@ -180,27 +184,27 @@ identified as empty, then stored those syntheses as permanent nodes:
 > *"A session-boundary stub from a Codex harness smoke-test chat — a single entry with zero dialogue,
 > no substantive content"*
 
-### 1.7 Provenance: 59% of the brain has no source
+### 1.7 Provenance: 82% of the brain has no source
 
 ```
 manifest entries        : 22,067
 entries with nodeIds    : 17,103   (4,964 empty, 313 quarantined)
 distinct nodeIds claimed: 26,454
-brain nodes             : ~65,000
-→ orphans (no source doc): ~38,500  (59%)
+brain nodes             : 143,479   (live engine, authoritative)
+→ orphans (no source doc): 117,025   (82%)
 ```
 
 Every sampled orphan carries a literal machine-emitted prefix: `[STATE_SNAPSHOT]`, `[AGENT:`,
 `[AGENT INSIGHT:`, `NO_ACTION`, `[CONSOLIDATED]`, `[DREAM]`. The garbage announces itself in a fixed
 vocabulary from known code paths.
 
-**This is why the brain feels precious and why deleting it feels dangerous.** 38,500 nodes exist
+**This is why the brain feels precious and why deleting it feels dangerous.** 117,025 nodes exist
 nowhere else on earth. They are not a projection of anything. That fear is a symptom of the
 pollution, not a property of brains.
 
 ### 1.8 The doors — the feeder is one of ~23
 
-**This invalidated the first draft of this spec.** 38,500 nodes have no manifest entry, which means
+**This invalidated the first draft of this spec.** 117,025 nodes have no manifest entry, which means
 they never came through the feeder. Fixing watch paths does nothing to them. `memory.addNode()` call
 sites outside `network-memory.js`:
 
@@ -268,7 +272,7 @@ return Math.pow(0.5, ageDays / halfLifeDays);   // telemetry decays at retrieval
 
 **This is why retrieval is not experienced as a problem.** The system's response to "the brain is
 full of garbage" was to **hide the garbage from retrieval rather than stop making it**. The symptom
-was suppressed at the read side while the disease grew underneath — which is how it reached 65,000
+was suppressed at the read side while the disease grew underneath — which is how it reached 143,479
 nodes without anyone noticing.
 
 **Consequence for this design (the good news):** the classifier this spec needs **already exists,
@@ -347,6 +351,51 @@ The agent is not choosing to narrate itself. It is **fed its own diary as its pi
 every turn, by design**. When it asks "what is going on?", 70% of the answer is "you were talking
 about yourself."
 
+### 1.13 Two lenses on one brain — why jtr never saw it
+
+**jtr and the agent read the same brain through different retrieval systems, and only one is broken.**
+
+| Path | Mechanism | Used by |
+|---|---|---|
+| **PGS** (`src/agent/tools/brain.ts`, `/home23/api/query/run`) | 82 partitions, each with `centroidEmbedding`, `summary`, `keywords`, `adjacentPartitions`; modes fresh/continue/targeted, levels skim/sample/deep/full | **jtr's dashboard Query tab**, and the agent's *deliberate* brain tool |
+| **Single-seed** (`network-memory.js:1911 query()`) | one best-cosine seed → 3-hop spread | **`context-assembly.ts` — the agent's automatic pre-turn context, every turn** |
+
+`network-memory.query()`, verbatim:
+
+```js
+let bestMatch = null; let bestSimilarity = 0;
+for (const [id, node] of this.nodes) {                 // linear scan of all 143,479
+  const similarity = this.cosineSimilarity(queryEmbedding, node.embedding);
+  if (similarity > bestSimilarity) { bestSimilarity = similarity; bestMatch = id; }
+}
+const activated = await this.spreadActivation(bestMatch, null, {...});   // ← from ONE node
+```
+
+**The entire pre-turn context is one node's neighbourhood.** With `maxDepth: 3`,
+`decayFactor: 0.7`, `activationThreshold: 0.1`, the reachable set is a few hundred nodes out of
+143,479. The rest are not ranked low — **they are unreachable for that query.**
+
+Three compounding defects:
+
+1. **Single seed.** If the best cosine match lands in the diary — and the diary is 70% of the brain —
+   the walk stays in the diary. **This is the mechanism of §1.12, exactly.**
+2. **`state_snapshot` nodes are force-injected.** `findRelevantStateSnapshots()` pushes RECENT.md
+   snapshots into results **even when spreading activation never reached them** — bypassing the graph
+   entirely. The ouroboros is not merely 30% of the brain; it is *privileged at retrieval*. Note this
+   fights §1.9's `provenance-salience` filter, which then downranks the very nodes just injected.
+3. **The 461 MB ANN index is not used by this path.** `query()` does a full linear cosine scan over
+   143,479 × 768-dim vectors. The index (plus a 139 MB meta file) is built and maintained but the
+   pre-turn path ignores it.
+
+**This is why jtr reports retrieval as healthy — it is.** He has been using PGS the whole time. The
+broken lens is the one the agent cannot choose, and it is pointed at the diary.
+
+**Scope:** the *fix* (context-assembly on PGS, grounding/citation chain, partition quality — the
+largest partition holds 32,965 nodes, 24% of the brain in one blob, which is what pollution does to
+clustering) belongs to a **separate retrieval spec, to follow this one** (§8). Decontamination first:
+PGS partitions are rebuilt during reingest anyway, so retrieval tuned against a 70%-diary corpus would
+need re-tuning after. **Fix what it sees, then fix how it sees.**
+
 ---
 
 ## 2. Diagnosis
@@ -381,13 +430,13 @@ receipt survive as a vault note? *"2026-05-11: I considered acting and decided n
 files. The absurdity does the work that 8,869 lines of governance could not.
 
 **The brain becomes a derived index** over a vault of files. Every node traces to a file, so the brain
-is **regenerable** — and the 45k-delete problem does not get solved, it evaporates. There is no
+is **regenerable** — and the 117k-delete problem does not get solved, it evaporates. There is no
 surgery; there is a rebuild.
 
 ### What is explicitly preserved
 
 We are **not** replacing the brain with Obsidian. Home23's index is richer than Obsidian's and all of
-it survives untouched: **110k weighted associative edges, Hebbian reinforcement, semantic embeddings,
+it survives untouched: **471,118 weighted associative edges, Hebbian reinforcement, semantic embeddings,
 spreading activation, small-world dream bridges, clustering, decay, consolidation/summarization,
 dream rewiring.** None of that is what broke. We are giving the brain the one thing Obsidian has and
 it lacks: **a source of truth it is derived from.**
@@ -431,8 +480,8 @@ The keep/drop list requires jtr's confirmation before execution.
 
 ### 4.1a Close the OTHER doors — the feeder is 1 of ~23
 
-**The watch-path fix (§4.1) only governs feeder-sourced nodes (26,454 of ~65,000).** The other
-~38,500 enter via direct `addNode()` calls and are untouched by it. Each door in §1.8 must be
+**The watch-path fix (§4.1) only governs feeder-sourced nodes (26,454 of 143,479).** The other
+**117,025** enter via direct `addNode()` calls and are untouched by it. Each door in §1.8 must be
 addressed on its own:
 
 | Door | Change |
@@ -454,7 +503,7 @@ lines 2851, 2933, 4082, 4423, 5011, 8067, 8095 were not individually read. Do no
 
 The feeder earns node-writing because it is provenance-bearing: a file exists, it is hashed, it is
 manifested, and deleting the file removes the nodes. **Every direct `addNode()` call bypasses all of
-that** — no source, no hash, no manifest entry, no removal path. That is precisely how 38,500
+that** — no source, no hash, no manifest entry, no removal path. That is precisely how 117,025
 unremovable orphans came to exist.
 
 **Rule:** a direct `addNode()` call site must justify itself against three questions, and the answers
@@ -725,7 +774,7 @@ empty-session nodes at the door and stops paying an LLM to write paragraphs abou
 
 Deletion is insufficient. Even with every garbage node gone:
 
-- **The graph stays poisoned.** 110k edges with Hebbian weights learned over 8 months where 70% of the
+- **The graph stays poisoned.** 471,118 edges with Hebbian weights learned over 8 months where 70% of the
   material was diary. Clusters formed *around* `STATE_SNAPSHOT`s. Dream bridges route real memories
   *through* restraint receipts. Deleting nodes leaves topology worn by material that no longer
   exists — paths connecting real things for reasons that were never real. That cannot be cleaned,
@@ -790,7 +839,7 @@ larger and slower than 77,425 chunks / 14–29h — and is worth it, because tha
 a brain containing jtr's 250 Claude conversations and a brain containing one fabricated sauna tile.**
 Re-scope after the atomizer inventory (§7.14).
 
-**Accepted loss, chosen explicitly:** the ~38,500 orphans — dreams, raw thoughts, agent insights,
+**Accepted loss, chosen explicitly:** the ~117,025 orphans — dreams, raw thoughts, agent insights,
 consolidations — have no source file and **cannot be regenerated**. They remain in the archive,
 read-only and intact, retrievable by hand if ever wanted. They are not in the new brain.
 
@@ -875,14 +924,14 @@ feeder at `workspace/`. The node count went up. It was logged as a repair. That 
 ouroboros was installed.
 
 0. **Trace the unknowns** — §7 items 6–13. Especially: the `workspace` label mechanism, the
-   `jtr_voice`/`garcia_jerry` provenance (**1,530 of ~2,500 real nodes — if their sources are gone,
+   `jtr_voice`/`garcia_jerry` provenance (**1,530 of ~5,700 real nodes — if their sources are gone,
    the rebuild silently loses them**), the 7 untraced `orchestrator.js` `addNode` sites, and the
    sidecar/ANN rebuild fate. **A rebuild launched on untraced assumptions is how a 4% brain becomes a
    0% brain.**
 1. **Fix the doors** — §4.1 (watch paths), **§4.1a (the other ~22 `addNode` sites)**, §4.2 (event
    gate), §4.3 (emitters), §4.4 (decay exemptions, GC, existing classifier). **Non-negotiable and
    first.** Rebuilding before the doors are shut rebuilds the disease, faster, and it will look like
-   it worked for a week. **§4.1a is not optional: watch paths alone leave 59% of the inflow open.**
+   it worked for a week. **§4.1a is not optional: watch paths alone leave 82% of the inflow open.**
 2. **Archive** — old brain, manifest, all sidecars. Read-only. Untouched forever.
 3. **Benchmark** — 100 chunks through the compiler for real latency/cost before committing to ~77,425.
 4. **Rebuild** — delete manifest, restart, let it run (14–29h, resumable).
@@ -898,14 +947,14 @@ Nothing is irreversible before step 4, and step 4 is reversible because of step 
 
 | Risk | Mitigation |
 |---|---|
-| Orphans (38,500) are permanently lost from the live brain | Archive is read-only and intact forever; retrievable by hand. Loss is explicit and chosen. |
+| Orphans (117,025) are permanently lost from the live brain | Archive is read-only and intact forever; retrievable by hand. Loss is explicit and chosen. |
 | Re-enabling the GC deletes real knowledge (it was disabled for a real reason) | Provenance-keyed, not access-keyed — cannot eat an unaccessed MRI. Ships with a dry-run that prints its removal list first. |
 | Rebuild fails or produces a worse brain | Old brain archived; revert is a config change. **A failed rebuild disproves the architecture — which is information worth having now.** |
 | Door fix breaks something that depended on ingesting `workspace/` | Config-level; revertible in one minute. |
 | Reingest cost/duration | **~77,425 LLM calls at 3 concurrent ≈ 14–29h** (§4.5), not 4,000. Benchmark 100 chunks first. Hash-gated → resumable. Embeddings local/free. |
 | Keep/drop label list is wrong | Requires jtr's confirmation before execution; printed for review. |
 | Brain persistence incident during rebuild | Standard rule applies: **standalone load test before any engine restart**; verify node counts after. |
-| **Closing only the feeder door leaves 38,500 nodes/yr flowing** | §4.1a. The feeder is 1 of ~23 `addNode` sites. `state_snapshot` (30% of growth) is a **direct orchestrator read** and is immune to any watch-path change. This defect killed the first draft. |
+| **Closing only the feeder door leaves ~1,090 diary nodes/DAY flowing** | §4.1a. The feeder is 1 of ~23 `addNode` sites. `state_snapshot` (30% of growth) is a **direct orchestrator read** and is immune to any watch-path change. This defect killed the first draft. |
 | **Untraced `addNode` sites** | 7 orchestrator sites + artifacts/goal-curator/trajectory-fork not individually read. **Trace before implementing**, do not assume. |
 | **Health-log ingestion creates new pollution** | §4.6. Three blockers: it is a **dotfile** (silently dropped), a **rolling log** (rehashes per append → full re-ingest each time), and the API is **HTTP** (no feeder concept). Not a watch-path line. |
 | **False success hides total extraction failure** | §4.1c. `chat.html` 471 MB → 1 node, `parse=ok`. No yield check exists anywhere. **A rebuild would faithfully reproduce every one of these**, because they are recorded as successes and the reingest is hash-gated on the same code path. **Fix the yield check before step 4 or the rebuild re-bakes the losses.** |
@@ -978,7 +1027,25 @@ Nothing is irreversible before step 4, and step 4 is reversible because of step 
 
 ---
 
-## 8. What This Does Not Do
+## 8. Scope Boundary — the retrieval spec that follows this one
+
+jtr's goal: *"query the brain and have it pull from everything — general or specific, with confidence,
+nothing missed, and if I want to dig in more I can."*
+
+**That needs four things. This spec delivers two of them.**
+
+| Requirement | Status |
+|---|---|
+| **1. A coverage mechanism** | ✅ **Already exists.** PGS: 82 partitions with centroids, summaries, keywords, adjacency. Match query → centroids → search relevant partitions → synthesize. Coverage by construction. Not luck. |
+| **2. A complete, trustworthy corpus** | ❌ **This spec.** PGS can only cover what is in the brain. Today the brain lacks jtr's 250 Claude conversations (0 nodes), his ChatGPT history (1 *fabricated* node), his MRI (quarantined), his health log (dotfile, never seen), his records/catalogs (flattened to 1–2 nodes each). **No retrieval improvement can fix this.** And §4.1c-1 means the corpus can *invent* — there is no confidence in an answer citing a hallucinated sauna tile. |
+| **3. A grounding chain you can drill into** | ❌ **Retrieval spec.** answer → node → manifest entry → **the file on disk**. §4.1b makes this possible (117,025 orphans have no file to drill into); §4.1d (catalog) makes "nothing missed" *checkable* — *"three conversations, two research runs, and an MRI I could not read, at this path."* **The known-unknown is stated rather than silently absent.** That is the only honest version of "nothing missed." |
+| **4. The agent on the same path as jtr** | ❌ **Retrieval spec.** §1.13 — `context-assembly.ts` must use PGS like `brain.ts` and like the dashboard. Also: use the 461 MB ANN index; remove the `state_snapshot` force-injection; fix partition skew (one partition = 24% of the brain). |
+
+**Ordering rationale (jtr's call, 2026-07-15):** decontamination first. PGS partitions are regenerated
+during reingest, so retrieval tuned against a 70%-diary corpus would need re-tuning afterward. **Fix
+what it sees, then fix how it sees.** Accepted cost: the agent keeps narrating until spec 2 lands.
+
+## 9. What This Does Not Do
 
 - Does not rewrite `engine/` wholesale. Root-cause fixes only.
 - Does not add a governance layer, charter, registry, or verifier gate. Those become receipt factories.
