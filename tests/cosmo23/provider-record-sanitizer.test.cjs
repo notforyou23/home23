@@ -77,3 +77,25 @@ test('path redaction removes typed absolute local refs but preserves non-file ty
   assert.match(redacted, /incident:\/brain-route/);
   assert.match(redacted, /source:\/manifest-v1/);
 });
+
+test('path redaction preserves multi-segment semantic refs and protocol-relative URLs exactly', () => {
+  const preserved = [
+    'incident:/brain/route',
+    'goal:/home23/current',
+    'node:/x/y',
+    'source:/manifest/v1',
+    '//example.com/a/b',
+  ];
+
+  for (const reference of preserved) {
+    assert.equal(redactPrivatePaths(reference), reference);
+  }
+  assert.equal(
+    redactPrivatePaths('source:/Volumes/PrivateBrain/current/manifest.json'),
+    'source:[redacted-path]/manifest.json',
+  );
+  assert.equal(
+    redactPrivatePaths('artifact:/var/tmp/private.log'),
+    'artifact:[redacted-path]/private.log',
+  );
+});

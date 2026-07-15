@@ -419,6 +419,58 @@ test('pinned Query compacts maximum-bound signed claims and refs without losing 
   }
 });
 
+test('pinned Query skips an authenticated durable ID outside provider bounds without aborting valid evidence', async () => {
+  const oversizedIdentity = 'i'.repeat(513);
+  const records = [
+    attestMemoryAuthority({
+      id: oversizedIdentity,
+      content: 'oversized identity evidence',
+      provenance: {
+        schema: 'home23.node-provenance.v1',
+        authorityClass: 'verified_current_state',
+        operationalAuthority: true,
+        evidenceRefs: ['verifier:oversized-identity'],
+      },
+    }, AUTHORITY_KEY),
+    attestMemoryAuthority({
+      id: 'valid-control',
+      content: 'valid control evidence',
+      provenance: {
+        schema: 'home23.node-provenance.v1',
+        authorityClass: 'verified_current_state',
+        operationalAuthority: true,
+        evidenceRefs: ['verifier:valid-control'],
+      },
+    }, AUTHORITY_KEY),
+  ];
+  assert.equal(verifyMemoryAuthorityAttestation(records[0], AUTHORITY_KEY), true);
+
+  for (const mode of ['quick', 'full', 'expert', 'dive']) {
+    const projection = await projectPinnedQuery({
+      sourcePin: createSyntheticPinnedSource({
+        nodeCount: records.length,
+        edgeCount: 0,
+        nodeFactory: index => records[index],
+      }),
+      query: 'valid control evidence',
+      mode,
+      signal: new AbortController().signal,
+      limits: { maxNodes: 2, maxEdges: 1 },
+    });
+
+    assert.deepEqual(projection.nodes.map(node => node.id), ['valid-control']);
+    assert.deepEqual(projection.nodeAuthorities.map(node => node.id), ['valid-control']);
+    assert.equal(projection.nodes.some(node => node.id === oversizedIdentity), false);
+    assert.equal(projection.stats.nodesScanned, 2);
+    assert.equal(projection.sourceEvidence.returnedTotals.nodes, 1);
+    assert.equal(projection.sourceEvidence.authoritySummary.total, 1);
+    assert.equal(
+      projection.sourceEvidence.authoritySummary.authorityClasses.verified_current_state,
+      1,
+    );
+  }
+});
+
 test('oversized textual evidence is compacted while unserializable records fail closed', async () => {
   const oversized = createSyntheticPinnedSource({
     nodeCount: 1,

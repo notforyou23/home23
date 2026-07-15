@@ -46,7 +46,10 @@ test('unsigned Query evidence redacts arbitrary absolute POSIX paths without cor
       'log=/var/tmp/private.log',
       'url=https://example.com/evidence/receipt.json',
       'api=http://localhost:5002/api/state',
-      'incident=incident:/brain-route',
+      'protocol=//example.com/a/b',
+      'incident=incident:/brain/route',
+      'goal=goal:/home23/current',
+      'node=node:/x/y',
       'source=source:/manifest-v1',
     ].join(' | '),
   }, projectionRecordLimits('full'));
@@ -54,7 +57,10 @@ test('unsigned Query evidence redacts arbitrary absolute POSIX paths without cor
   assert.doesNotMatch(projected.value.content, /\/Volumes\/PrivateBrain|\/var\/tmp/);
   assert.match(projected.value.content, /https:\/\/example\.com\/evidence\/receipt\.json/);
   assert.match(projected.value.content, /http:\/\/localhost:5002\/api\/state/);
-  assert.match(projected.value.content, /incident:\/brain-route/);
+  assert.match(projected.value.content, /protocol=\/\/example\.com\/a\/b/);
+  assert.match(projected.value.content, /incident:\/brain\/route/);
+  assert.match(projected.value.content, /goal:\/home23\/current/);
+  assert.match(projected.value.content, /node:\/x\/y/);
   assert.match(projected.value.content, /source:\/manifest-v1/);
   assert.equal((projected.value.content.match(/\[redacted-path\]/g) || []).length, 2);
 });

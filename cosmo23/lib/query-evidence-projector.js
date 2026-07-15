@@ -14,6 +14,7 @@ const TIMESTAMP_FIELDS = Object.freeze([
 const MAX_STRUCTURE_DEPTH = 12;
 const MAX_STRUCTURE_PROPERTIES = 20_000;
 const MAX_TAGS = 16;
+const MAX_QUERY_EVIDENCE_IDENTIFIER_BYTES = 512;
 
 const RECORD_LIMITS = Object.freeze({
   quick: Object.freeze({ maxContentBytes: 1_536, maxRecordBytes: 3_072 }),
@@ -117,7 +118,8 @@ function safeIdentifier(value, label) {
     throw typed('source_invalid', `Query evidence ${label} is invalid`);
   }
   const identifier = String(value);
-  if (!identifier || Buffer.byteLength(identifier, 'utf8') > 512) {
+  if (!identifier
+      || Buffer.byteLength(identifier, 'utf8') > MAX_QUERY_EVIDENCE_IDENTIFIER_BYTES) {
     throw typed('source_invalid', `Query evidence ${label} is invalid`);
   }
   return identifier;
@@ -288,6 +290,7 @@ function projectQueryEvidenceEdge(rawEdge, options) {
 }
 
 module.exports = {
+  MAX_QUERY_EVIDENCE_IDENTIFIER_BYTES,
   projectQueryEvidenceEdge,
   projectQueryEvidenceNode,
   projectionRecordLimits,

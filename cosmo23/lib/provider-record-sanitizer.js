@@ -14,9 +14,11 @@ const PRIVATE_PATHS = Object.freeze([
   /file:\/\/(?:localhost)?\/[^\x00\s"'`<>\])},;]+/giu,
   /\\\\[^\s\\/"'`<>\])},;]+\\[^\s"'`<>\])},;]+/gu,
   /(?<![A-Za-z0-9_.-])[A-Za-z]:[\\/][^\x00\s"'`<>\])},;]+/gu,
-  /(?<![A-Za-z0-9_.:\/\]\-])\/[^\x00\s"'`<>\])},;]+/gu,
+  /(?<![A-Za-z0-9_.:\/\]\-])\/(?!\/)[^\x00\s"'`<>\])},;]+/gu,
 ]);
 const TYPED_ABSOLUTE_LOCAL_PATH = /\b([A-Za-z][A-Za-z0-9+.-]*:)(\/(?!\/)(?:[^/\x00\s"'`<>\])},;]+\/)+[^/\x00\s"'`<>\])},;]+)/gu;
+const FILE_TYPED_REF_SCHEMES = new Set(['artifact', 'file', 'local', 'path']);
+const LOCAL_POSIX_ROOT = /^\/(?:Users|home|Volumes|var|opt|mnt|etc|tmp|private|root|Library|System|Applications|usr|bin|sbin|dev|proc|run|srv)(?:\/|$)/iu;
 
 function typed(code, message) {
   return Object.assign(new Error(message), { code, retryable: false });
@@ -70,7 +72,11 @@ function providerRecordReplacer(key, value) {
 
 function redactPrivatePaths(value) {
   if (typeof value !== 'string') return value;
-  let redacted = value.replace(TYPED_ABSOLUTE_LOCAL_PATH, (_match, prefix, localPath) => {
+  let redacted = value.replace(TYPED_ABSOLUTE_LOCAL_PATH, (match, prefix, localPath) => {
+    const scheme = prefix.slice(0, -1).toLowerCase();
+    if (!FILE_TYPED_REF_SCHEMES.has(scheme) && !LOCAL_POSIX_ROOT.test(localPath)) {
+      return match;
+    }
     const basename = localPath.split('/').filter(Boolean).at(-1) || 'source';
     return `${prefix}[redacted-path]/${basename}`;
   });

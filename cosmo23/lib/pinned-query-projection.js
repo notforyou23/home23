@@ -2,6 +2,7 @@
 
 const { QUERY_OPERATION_LIMITS } = require('./brain-operation-limits');
 const {
+  MAX_QUERY_EVIDENCE_IDENTIFIER_BYTES,
   projectQueryEvidenceEdge,
   projectQueryEvidenceNode,
   projectionRecordLimits,
@@ -73,7 +74,8 @@ function serializeRecord(record, maxRecordBytes, kind) {
 function nodeId(node) {
   const value = node?.id ?? node?.nodeId ?? node?.key;
   if ((typeof value !== 'string' && !Number.isSafeInteger(value))
-      || String(value).length === 0 || String(value).length > 512) {
+      || String(value).length === 0
+      || Buffer.byteLength(String(value), 'utf8') > MAX_QUERY_EVIDENCE_IDENTIFIER_BYTES) {
     return null;
   }
   return String(value);
@@ -373,6 +375,11 @@ async function projectPinnedQuery({
     nodesScanned += 1;
     const rawId = nodeId(rawNode);
     const authenticated = verifyMemoryAuthorityAttestation(rawNode);
+    if (authenticated && rawId === null) {
+      if (typeof onNodeScanned === 'function') onNodeScanned(nodesScanned);
+      await yieldForCancellation(nodesScanned, signal);
+      continue;
+    }
     const providerNode = authenticatedProviderNode(rawNode);
     const projected = authenticated
       ? projectAuthenticatedProviderNode(providerNode, recordLimits)
