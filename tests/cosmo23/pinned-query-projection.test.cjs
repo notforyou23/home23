@@ -220,7 +220,7 @@ test('pinned Query ranks current verified evidence above freshly reingested arch
   assert.equal(projection.sourceEvidence.authoritySummary.sourceChain.withEvidence, 2);
   assert.equal(projection.sourceEvidence.authoritySummary.sourceChain.referenceCounts.evidence, 1);
   assert.equal(projection.sourceEvidence.authoritySummary.sourceChain.referenceCounts.artifact, 1);
-  assert.equal(projection.nodeAuthorities[1].requiresFreshVerification, true);
+  assert.equal(projection.nodeAuthorities[1].requiresFreshVerification, false);
   assert.deepEqual(
     projection.nodeAuthorities.map(authority => authority.id),
     projection.nodes.map(node => node.id),

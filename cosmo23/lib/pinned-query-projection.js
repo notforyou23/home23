@@ -144,15 +144,14 @@ function scoreNode(node, authorityNode, terms, { query, nowMs } = {}) {
 
 function projectProviderAuthority(node) {
   const profile = projectMemoryAuthority(node, { limit: 2 });
-  const operationalAuthority = profile.authorityClass === 'verified_current_state';
   return Object.freeze({
     schema: profile.schema,
     domain: profile.retrievalDomain,
     retrievalDomain: profile.retrievalDomain,
     authorityClass: profile.authorityClass,
     semanticTime: profile.semanticTime,
-    operationalAuthority,
-    requiresFreshVerification: !operationalAuthority,
+    operationalAuthority: profile.operationalAuthority === true,
+    requiresFreshVerification: profile.requiresFreshVerification === true,
     sourceChain: profile.sourceChain.slice(0, 2).map(link => Object.freeze({
       kind: link.kind,
       ref: redactPrivatePaths(link.ref),

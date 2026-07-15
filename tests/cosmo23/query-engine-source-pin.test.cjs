@@ -319,23 +319,57 @@ test('thin Dive performs exactly one bounded expansion call', async () => {
   }
 });
 
-test('trimmed Dive reuses retained authority and worker reconciliation preserves its attestation', async () => {
+test('trimmed Dive preserves mixed signed freshness authority through attestation and worker reconciliation', async () => {
   const provider = 'openai-codex';
   const selectedModel = 'gpt-5.5';
-  const query = 'retained authority integration canary';
+  const query = 'mixed freshness authority sentinel';
   const nodeCount = 240;
-  const nodes = Array.from({ length: nodeCount }, (_, index) => attestMemoryAuthority({
-    id: `authority-${index}`,
-    type: 'finding',
-    content: `${query} ${index} ${'evidence-0123456789 '.repeat(180)}`,
-    salience: (index % 100) / 100,
-    provenance: {
-      schema: 'home23.node-provenance.v1',
-      authorityClass: 'verified_current_state',
-      operationalAuthority: true,
-      evidenceRefs: [`verifier:authority-${index}`],
+  const mixedProfiles = [
+    {
+      id: 'signed-correction',
+      authorityClass: 'jtr_correction',
+      sourceRefs: ['turn:jtr-correction'],
+      evidenceRefs: ['turn:jtr-correction'],
+      requiresFreshVerification: false,
     },
-  }, AUTHORITY_KEY));
+    {
+      id: 'signed-artifact',
+      authorityClass: 'artifact_log',
+      sourceRefs: ['artifact:durable-log'],
+      contentHash: 'sha256:durable-log',
+      requiresFreshVerification: false,
+    },
+    {
+      id: 'signed-receipt',
+      authorityClass: 'worker_receipt',
+      evidenceRefs: ['verifier:durable-worker-receipt'],
+      requiresFreshVerification: false,
+    },
+    {
+      id: 'signed-needs-verification',
+      authorityClass: 'narrative',
+      sourceRefs: ['source:volatile-claim'],
+      requiresFreshVerification: true,
+    },
+  ];
+  const nodes = Array.from({ length: nodeCount }, (_, index) => {
+    const mixed = mixedProfiles[index] || null;
+    return attestMemoryAuthority({
+      id: mixed?.id || `verified-filler-${index}`,
+      type: 'finding',
+      content: `${mixed ? query : 'bulk retained padding'} ${index} ${'evidence-0123456789 '.repeat(180)}`,
+      salience: mixed ? 1 : 0,
+      provenance: {
+        schema: 'home23.node-provenance.v1',
+        authorityClass: mixed?.authorityClass || 'verified_current_state',
+        operationalAuthority: mixed ? false : true,
+        sourceRefs: mixed?.sourceRefs || [],
+        evidenceRefs: mixed?.evidenceRefs || [`verifier:verified-filler-${index}`],
+        ...(mixed?.contentHash ? { contentHash: mixed.contentHash } : {}),
+        requiresFreshVerification: mixed?.requiresFreshVerification || false,
+      },
+    }, AUTHORITY_KEY);
+  });
   const pin = {
     revision: 23,
     descriptor: {
@@ -424,7 +458,21 @@ test('trimmed Dive reuses retained authority and worker reconciliation preserves
   const prompts = calls.map(call => JSON.parse(call.input));
   const retainedIds = prompts[0].source.nodes.map(node => node.id);
   const retainedAuthorityIds = prompts[0].source.nodeAuthorities.map(authority => authority.id);
+  const retainedAuthorities = new Map(
+    prompts[0].source.nodeAuthorities.map(authority => [authority.id, authority]),
+  );
   assert.deepEqual(retainedAuthorityIds, retainedIds);
+  assert.deepEqual(
+    mixedProfiles.map(profile => retainedIds.includes(profile.id)),
+    [true, true, true, true],
+  );
+  for (const id of ['signed-correction', 'signed-artifact', 'signed-receipt']) {
+    assert.equal(retainedAuthorities.get(id).requiresFreshVerification, false, id);
+  }
+  assert.equal(
+    retainedAuthorities.get('signed-needs-verification').requiresFreshVerification,
+    true,
+  );
   assert.deepEqual(prompts[1].source.nodes.map(node => node.id), retainedIds);
   assert.deepEqual(
     prompts[1].source.nodeAuthorities.map(authority => authority.id),
@@ -432,6 +480,7 @@ test('trimmed Dive reuses retained authority and worker reconciliation preserves
   );
   assert.deepEqual(prompts[1].source.nodeAuthorities, prompts[0].source.nodeAuthorities);
   const expectedSummary = summarizeRetrievalAuthority(prompts[0].source.nodeAuthorities);
+  assert.equal(expectedSummary.requiresFreshVerification, 1);
   assert.deepEqual(result.sourceEvidence.authoritySummary, expectedSummary);
   assert.deepEqual(
     getAttestedRetrievalAuthoritySummary(result.sourceEvidence),
@@ -464,11 +513,7 @@ test('trimmed Dive reuses retained authority and worker reconciliation preserves
     reportEvent() {},
   });
   assert.deepEqual(reconciled.sourceEvidence.authoritySummary, expectedSummary);
-  assert.equal(
-    reconciled.sourceEvidence.authoritySummary.authorityClasses.verified_current_state,
-    retainedIds.length,
-  );
-  assert.equal(reconciled.sourceEvidence.authoritySummary.authorityClasses.narrative, 0);
+  assert.equal(reconciled.sourceEvidence.authoritySummary.requiresFreshVerification, 1);
 });
 
 test('failed Dive expansion preserves the useful first answer as Partial', async () => {
