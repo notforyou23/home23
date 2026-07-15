@@ -1795,11 +1795,11 @@ test('authenticated Query progress survives terminal finalization as lastProgres
 });
 
 test('terminal notification hook cannot delay terminal truth or source-pin release', async (t) => {
-  const notificationEntered = deferred();
+  let notified = null;
   const notificationNeverReturns = deferred();
   const fixture = makeFixture(t, {
     onTerminal(record) {
-      notificationEntered.resolve(record);
+      notified = record;
       return notificationNeverReturns.promise;
     },
   });
@@ -1812,15 +1812,12 @@ test('terminal notification hook cannot delay terminal truth or source-pin relea
     error: null, sourceEvidence: null,
   });
 
-  const notified = await Promise.race([
-    notificationEntered.promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error('notification hook not invoked')), 100)),
-  ]);
-  assert.equal(notified.operationId, operation.operationId);
   await eventually(async () => {
     assert.equal((await fixture.store.get(operation.operationId)).state, 'complete');
     assert.equal(fixture.counters.releaseCalls, 1);
   });
+  await flush();
+  assert.equal(notified?.operationId, operation.operationId);
 });
 
 test('throwing terminal notification hook is isolated from terminal cleanup', async (t) => {
