@@ -1,8 +1,10 @@
 # Brain/Vault Decontamination — Design
 
 **Date:** 2026-07-15
-**Status:** Proposed
+**Status:** **Design approved by jtr** — all open design decisions closed (§7). Blocked on the
+tracing work in §7.6–7.15 before implementation. Retrieval is a separate follow-on spec (§8).
 **Scope:** Home23 engine (ingestion, memory, cognition, agency, good-life), jerry + forrest instances
+**First deliverable:** the Claude atomizer (§4.1e-1) — proves the design against real material.
 
 ---
 
@@ -489,7 +491,7 @@ addressed on its own:
 | `orchestrator.js` `state_snapshot` writer (§1.8.1) | **Remove.** RECENT.md is a derived surface; re-ingesting it into the brain it summarizes is the ouroboros. It is already loaded into the system prompt as a surface — it does not need to be a node. *(If retained at all: strip the generated timestamp so the hash gate can actually fire, and remove `confidence_decay: 1`.)* |
 | `agents/base-agent.js` ×2 | Gate on the event rule — no finding, no node. `documentCount: 0` writes nothing. |
 | `circulatory/composter.js` | Remove `addNode(summary, 'compost_receipt')`. The janitor does not file into what it cleans. |
-| `orchestrator.js` dream node | Replace `Math.random() < 0.2` with "did this dream produce a goal or rewire the graph". |
+| `orchestrator.js` dream node | **§4.3a (DECIDED).** Remove *both* dice rolls: `Math.random() < 0.3` (whether the goal exists) and `Math.random() < 0.2` (whether the prose is remembered). A dream that produced a goal earns a vault note; one that produced nothing leaves no trace. Rewiring is phase-level and untouched. |
 | `cognition/actions/promote-to-memory.js` | **Keep.** jtr-initiated promotion is an event by definition. |
 | `memory/pin-canonical-nodes.js` | **Keep.** Explicit, bounded, curated. |
 | `goals/goal-curator.js`, `artifacts/*`, `trajectory-fork.js` | **Audit against the event rule.** Not yet traced; each needs the same question — does it record an event, or a tick? |
@@ -730,6 +732,29 @@ documents. Atomized, `conversations.json` alone becomes 250 documents; `chat.htm
 jtr's intellectual history instead of a fabricated sauna tile.** Re-scope §4.5 after the atomizer
 inventory is known.
 
+### 4.1e-1 First deliverable: the Claude atomizer (DECIDED)
+
+**jtr agreed: the Claude archive goes first.** It is the smallest real collection, the highest-value
+content in the vault, and it **proves the atomizer design against real material before a ~29h rebuild
+depends on it**.
+
+```
+/Users/jtr/life/areas/jtr_antrhopic_archive/conversations.json
+  46.7 MB → 0 nodes today (suspect_truncation)
+  250 conversations / 4,722 messages
+  per item: uuid, name, summary, created_at, updated_at, chat_messages
+```
+
+Every item is already a vault note — title, pre-written summary, date, stable ID, body. The atomizer
+emits **250 markdown files**, one per conversation, into a watched vault folder: `name` → title,
+`summary` + `created_at` + `uuid` → frontmatter, `chat_messages` → body. The `uuid` gives a stable
+filename so re-running is idempotent, and the hash gate makes it resumable.
+
+**Acceptance:** 250 files → 250 manifest entries → each with a nonzero yield (§4.1c-2) → the archive is
+queryable by conversation. Success here validates the atomizer for `chat.html`, `jerry_records.json`,
+`shows_catalog.json`, and `projects.json`. **Failure here is cheap and tells us the design is wrong
+before we spend 29 hours.**
+
 ### 4.2 The event gate at ingestion
 
 A document with no substantive content produces **no node and no compiler call**. Kills the
@@ -745,9 +770,93 @@ empty-session nodes at the door and stops paying an LLM to write paragraphs abou
 | `resident_tick` scratch + receipt (`resident-kernel.js:2467`) | write **only** when an action actually occurred or pursuit state changed |
 | `recordGoodLifeAgendaAction()` | remove — a receipt whose verifier is the loop that authored it is not an action |
 | `pulse-remarks.jsonl` | keep real-world content (weather, sauna); drop the self-report |
-| Dream node creation | replace `Math.random() < 0.2` with "did this dream produce a goal or rewire the graph" |
+| Dream node creation | **§4.3a (DECIDED).** Remove *both* dice rolls: `Math.random() < 0.3` (whether the goal exists) and `Math.random() < 0.2` (whether the prose is remembered). A dream that produced a goal earns a vault note; one that produced nothing leaves no trace. Rewiring is phase-level and untouched. |
 
 `NOTIFY` becomes owner-facing only.
+
+### 4.3a Dreams — keep the productive ones (DECIDED)
+
+**jtr: "dreams are useful consolidation tools, not just theatre... make sure the work done by dreaming
+is for a purpose and kept if so."**
+
+Measured, dreaming has **two independent dice rolls**, and the first one randomizes *productivity
+itself*:
+
+```js
+// orchestrator.js ~4227 — whether the dream's captured goal EXISTS
+const dreamGoals = await this.goalCapture.captureGoalsFromOutput(dreamThought.hypothesis, {...});
+if (Math.random() < 0.3) {
+  const newGoal = this.goals.addGoal({...});
+}
+
+// orchestrator.js:4266 — whether the dream's prose is REMEMBERED
+if (Math.random() < 0.2) {
+  await this.memory.addNode(`[DREAM] ${dreamThought.hypothesis}`, 'dream');
+}
+```
+
+**A dream that captured a real goal has a 70% chance of that goal being discarded by a coin flip.**
+Independently, its prose is retained 20% of the time. The two dice are unrelated, so the remembered
+dreams are not the productive ones — "keep productive dreams" is currently *unimplementable*.
+
+Also measured: `memory.rewire(rewiringP)` (`orchestrator.js:4285`) is a **phase-level** operation that
+runs once per dream phase regardless of any individual dream. **The only per-dream product is a goal.**
+
+**Design:**
+
+- **Remove `Math.random() < 0.3`.** A captured goal becomes a goal on merit, not by lottery.
+- **Replace `Math.random() < 0.2` with `if (goalWasCreated)`.** A dream that produced a goal is
+  productive; it earns a note. A dream that produced nothing leaves no trace. This is §3's event rule
+  applied unchanged — the dream *is* the event, the goal is the evidence.
+- **The dream note is a vault file** (§4.3b), not a bare `addNode` — so it is readable by jtr,
+  deletable, and regenerable. Its provenance is the goal it created.
+- **Keep the dreaming, the goal capture, and the Watts-Strogatz rewiring untouched.** That is the
+  consolidation and it is real work.
+
+### 4.3b Synthesis write-back — a separate vault folder (DECIDED), and the trap in it
+
+**jtr: "yes — separate folder."** Machine-authored syntheses persist as files, in their own folder,
+not intermixed with jtr's own notes.
+
+**⚠ The trap: "syntheses become vault files" + "the vault is watched" is exactly how the ouroboros was
+built.** RECENT.md is a machine-authored file in a watched location. That is §1.8.1. Writing syntheses
+to a watched folder without a further rule **rebuilds the disease with better manners**:
+
+> synthesis → vault file → feeder ingests → node → consolidation → synthesis → vault file → …
+
+**The rule that defuses it — and it is the sharpest line in this spec:**
+
+> ### Write-once is an artifact. Regenerated-on-a-schedule is a loop.
+> The vault may contain machine-authored files. **Nothing in the vault may be machine-*rewritten* on a
+> cadence.**
+
+That single distinction separates every good case from every bad one measured today:
+
+| File | Written | Verdict |
+|---|---|---|
+| A synthesis note (this consolidation, once, never revised) | **once, as an event** | artifact ✅ |
+| A productive dream note (§4.3a) | **once, as an event** | artifact ✅ |
+| `RECENT.md` snapshot | **every cycle, new timestamp → new hash → new node** | loop ❌ |
+| A restraint receipt | every gate tick | loop ❌ |
+| `pulse-remarks` | every cycle | loop ❌ |
+
+RECENT.md was never bad because it was machine-authored. **It was bad because it regenerates.** Its
+own dedup gate proves the intent was right and the cadence defeated it (§1.8.1).
+
+**Design:**
+
+- Syntheses and productive dream notes are written **once**, to a dedicated vault folder
+  (e.g. `/Users/jtr/life/synthesis/`), dated and titled, **never rewritten or regenerated**.
+- The folder is watched, so syntheses are retrievable, provenance-bearing, and **deletable by jtr —
+  delete the note, the manifest removes the nodes.** That is the whole point.
+- **Enforcement, not convention:** the feeder must **reject any watched file whose content is
+  regenerated by the machine on a cadence.** Detection is mechanical — a path whose hash changes on a
+  schedule with no external cause. If we rely on discipline here, this loop returns; §1.3 is five
+  proofs that every "we'll be careful" control was eventually switched off.
+- **Open (small, my call unless jtr objects): may a synthesis be a consolidation *source*?**
+  Synthesis-of-synthesis is how abstraction forms — and also how `[CONSOLIDATED]` drifted into prose
+  about prose (§4.1c-1). **Recommendation: no.** Syntheses are ingestible and retrievable but excluded
+  as consolidation inputs, until there is evidence the drift is controllable.
 
 ### 4.4 Un-sabotage the janitors
 
@@ -970,25 +1079,21 @@ Nothing is irreversible before step 4, and step 4 is reversible because of step 
 
 ## 7. Open Questions
 
-### For jtr
+### DECIDED by jtr, 2026-07-15 — all five closed
 
-1. **Keep/drop list confirmation.** The label-level table in §4.1 needs sign-off before execution.
-2. **Dreams.** The dreaming (goal creation + Watts-Strogatz rewiring) is real consolidation and stays.
-   Whether dream *prose* that produced a goal should become a vault note — or exist at all — is jtr's
-   call, not a technical question.
-3. **Vault write-back for syntheses.** When consolidation produces genuinely new knowledge, the rule
-   says it must become a vault file to persist. Format, location, and whether jtr wants machine-authored
-   notes sitting next to his own are undecided.
-4. **`checkpoint-15880.json` (185 MB).** jtr flagged checkpoints as partly valuable and "not fully
-   machine output." Measured, this one is an engine state dump whose payload is a journal of critic
-   thoughts — i.e. largely the diary. Is there extractable value, or is it archive? *(`memory-extraction/`
-   is unambiguous and stays: ~16 dated markdown files, ~1.5 KB each, real.)*
-5. **The AI conversation archives.** Measured (§4.1e): `conversations.json` holds **250 Claude
-   conversations / 4,722 messages** and produced **0 nodes**; `chat.html` is the ChatGPT equivalent
-   (~10× larger) and produced 1 fabricated node. Both are jtr's own intellectual history. **The Claude
-   atomizer is trivial** — the items already carry `name`, `summary`, `created_at`, `uuid`,
-   `chat_messages`. Is this in scope now, or a fast-follow? *(Recommendation: the Claude one is small
-   enough to do first and would prove the atomizer design against real material.)*
+1. **Keep/drop list — AGREED.** The §4.1 table is signed off. Notably: the workspace identity files
+   (`SOUL.md`, `MISSION.md`, `HEARTBEAT.md`, ... — 6,883 nodes) leave the brain. They are already
+   loaded into the system prompt as the identity layer every turn; ingesting them **turns config into
+   knowledge**, so the agent retrieves its own instructions as though they were facts about the world.
+2. **Dreams — keep productive dreams.** See §4.3a.
+3. **Synthesis write-back — YES, separate folder.** See §4.3b. **This carries a feedback-loop trap and
+   the rule that defuses it.**
+4. **`checkpoint-15880.json` — ARCHIVE.** No atomizer, no extraction, no ingestion. It stays on disk,
+   read-only, and comes off the ingest path. *(`memory-extraction/` is unaffected and stays: ~16 dated
+   markdown files, ~1.5 KB each, real.)*
+5. **AI conversation archives — AGREED, Claude atomizer first.** See §4.1e-1. It is the first
+   deliverable and proves the atomizer design against real material before a ~29h rebuild depends on it.
+6. **Retrieval — separate spec, after** (§8).
 
 ### Must be traced before implementation (do not assume)
 
