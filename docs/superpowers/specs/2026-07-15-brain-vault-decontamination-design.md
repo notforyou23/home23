@@ -198,7 +198,133 @@ vocabulary from known code paths.
 nowhere else on earth. They are not a projection of anything. That fear is a symptom of the
 pollution, not a property of brains.
 
-### 1.8 The feedback path — why the agent cannot stop narrating
+### 1.8 The doors — the feeder is one of ~23
+
+**This invalidated the first draft of this spec.** 38,500 nodes have no manifest entry, which means
+they never came through the feeder. Fixing watch paths does nothing to them. `memory.addNode()` call
+sites outside `network-memory.js`:
+
+| Site | What it writes |
+|---|---|
+| `ingestion/ingestion-manifest.js` | **the feeder** — the only door the first draft closed |
+| `agents/base-agent.js` ×2 | `[AGENT: id] finding` / `[AGENT INSIGHT: id] insight` ← **source of "0 words across 0 documents"** |
+| `core/orchestrator.js` ×10 | incl. `state_snapshot` (§1.8.1), `addNode(content, 'consolidated')`, dreams |
+| `artifacts/artifact-{ingestor,lifecycle,registry}.js` ×3 | artifact deliverables |
+| `circulatory/composter.js` | `addNode(summary, 'compost_receipt')` ← **the janitor writes receipts into what it cleans** |
+| `cognition/trajectory-fork.js` ×2 | forked trajectories |
+| `cognition/actions/promote-to-memory.js` | `agent_promoted` |
+| `memory/pin-canonical-nodes.js` | pinned canonical nodes |
+| `goals/goal-curator.js` | goal resolutions |
+
+**Tag census** (3,123 nodes sampled from jerry's recent delta — this maps nodes to doors):
+
+| Tag | Count | Share | Door |
+|---|---|---|---|
+| `conversation_sessions` | 1,837 | **58.8%** | feeder — **KEEP** |
+| `state_snapshot` | 944 | **30.2%** | orchestrator direct — RECENT.md |
+| `consolidated` | 91 | 2.9% | orchestrator |
+| `curator` | 47 | 1.5% | curator-cycle |
+| `agent_insight` | 20 | 0.6% | base-agent |
+| `synthesis_report`, `document_*`, `analyst`, `critic`, `introspection`, `proposal`, `curiosity`, `dream`, ... | ~180 | ~5% | various |
+| **`jtr_life`** | **2** | **0.1%** | feeder |
+
+Recent brain growth is **89% two sources** (conversations + RECENT.md re-ingestion). jtr's actual
+life is **0.1%**.
+
+#### 1.8.1 `state_snapshot` — 30% of growth, and the first draft's fix was aimed at the wrong door
+
+`orchestrator.js:7505` reads `RECENT.md` **directly off disk — not via the feeder**:
+
+```js
+content = await fs.readFile(path.join(workspacePath, 'RECENT.md'), 'utf8');
+const hash = crypto.createHash('sha256').update(trimmed).digest('hex');
+if (hash === this.lastStateSnapshotHash) return;      // dedup gate
+await this.memory.addNode({
+  concept: `[STATE_SNAPSHOT] RECENT.md as of cycle ${this.cycleCount}.\n\n${body}`,
+  tag: 'state_snapshot',
+  confidence_decay: 1,        // never decays
+  status: 'current',
+});
+```
+
+1. Removing `workspace/memory` from watch paths **does nothing** — this is a direct read.
+2. **The dedup gate is defeated by RECENT.md's own timestamp.** The curator stamps every
+   regeneration (`_Generated: 2026-07-09T07:15:17.722Z_`) → new hash → gate always passes → new node
+   every regeneration. The dedup was designed correctly; the content guarantees it can never fire.
+3. `confidence_decay: 1` — never decays, on top of the `exemptTags` immunity.
+
+### 1.9 Retrieval works because the garbage is hidden at read time
+
+`engine/src/memory/provenance-salience.js` is a **retrieval-time salience filter**:
+
+```js
+const AUTONOMOUS_TAGS = new Set(['reasoning','curator','critic','analyst','curiosity',
+  'proposal','novel_hypothesis','synthesis','synthesis_report','deep_thought',
+  'introspection','agent_insight','analysis_insight']);
+const IDENTITY_TAGS  = new Set(['jtr_life','garcia_jerry','legacy_jtrbrain_feed','daily-notes']);
+const TELEMETRY_TAGS = new Set(['jerry_cron_docs','cron','telemetry','metrics']);
+return Math.pow(0.5, ageDays / halfLifeDays);   // telemetry decays at retrieval time
+```
+
+**This is why retrieval is not experienced as a problem.** The system's response to "the brain is
+full of garbage" was to **hide the garbage from retrieval rather than stop making it**. The symptom
+was suppressed at the read side while the disease grew underneath — which is how it reached 65,000
+nodes without anyone noticing.
+
+**Consequence for this design (the good news):** the classifier this spec needs **already exists,
+already ships, and is already trusted in production**. It knows `jtr_life` / `garcia_jerry` are jtr
+and `curator` / `introspection` / `agent_insight` are the machine. We do not invent a classifier —
+we move this one from read-time to **write-time and GC-time**.
+
+### 1.10 The vault is not what it appears, and jtr's richest source was never ingested
+
+```
+/Users/jtr/life/                             771 MB, 4,392 files
+  areas/chat.html                            471 MB   "<title>ChatGPT Data Export</title>"
+  areas/checkpoint-15880.json                185 MB   engine state dump + critic journal
+  areas/jerry_garcia                          55 MB   research + agent outputs + 649 .complete markers
+  areas/jtr_antrhopic_archive                 47 MB
+  areas/projects                             3.9 MB
+  feed/                                      7.9 MB   11 md, 9 txt, 4 csv, 2 pdf (MRI Report.pdf)
+  areas/{infrastructure,runs,people,entities,companies,methodologies}   ~800 KB total
+  areas/memory-extraction/                   ~16 files, dated md, ~1.5 KB each  ← real, ideal vault material
+```
+
+**656 MB (85%) of the "vault" is two files**, and `feeder.maxFileBytes: 5242880` (5 MB) means
+**both are silently skipped**:
+
+- **`chat.html` (471 MB) is jtr's complete ChatGPT export — 94× over the size limit, never ingested.**
+  The single richest record of jtr's own thinking has been in the vault since February and neither
+  agent has seen one byte of it. It requires extraction/splitting, not a watch path.
+- **`checkpoint-15880.json` (185 MB)** is an engine state checkpoint containing a journal of machine
+  thoughts (`{"cycle":15695,"role":"critic","thought":"Insight: Many assume..."}`). jtr flagged
+  checkpoints as partly valuable; this one is largely the diary. **Judgment call — see §7.**
+
+The real, human-scale vault is closer to **~15 MB** (`feed/`, `memory-extraction/`, `people`,
+`entities`, `companies`, `infrastructure`, `runs`, `methodologies`) plus `jerry_garcia` and
+`jtr_antrhopic_archive`. The "45% JSON" alarm resolves benignly: the JSON is concentrated in two
+oversized machine dumps the feeder already skips.
+
+### 1.11 Forrest, measured
+
+The first draft made claims about forrest from jerry's data. Measured directly:
+
+```
+FORREST manifest: 5,450 entries
+  workspace              4,716 → 6,564 nodes   (83% of his claimed brain — his own identity/output files)
+  conversation_sessions    449 →   843
+  trail_running            248 →   468
+  research_runs             23 →    30
+  reports                   13 →    21
+  memory_snapshots           1 →     1
+  total claimed: 7,927     parseStatus: ok 5,445 | suspect_truncation 5
+```
+
+**Forrest has zero `jtr_life` nodes, zero `jtr_voice`, zero health-log nodes.** His entire
+world-facing knowledge is 468 trail-running nodes and 843 conversation nodes. **83% of his brain is
+his own workspace.** The health agent's cortex contains no health data.
+
+### 1.12 The feedback path — why the agent cannot stop narrating
 
 1. Loops write prose (receipts, snapshots, remarks, `NO_ACTION`)
 2. The feeder watches `workspace/` and ingests it
@@ -294,6 +420,25 @@ manifest entries from paths no longer watched.
 
 The keep/drop list requires jtr's confirmation before execution.
 
+### 4.1a Close the OTHER doors — the feeder is 1 of ~23
+
+**The watch-path fix (§4.1) only governs feeder-sourced nodes (26,454 of ~65,000).** The other
+~38,500 enter via direct `addNode()` calls and are untouched by it. Each door in §1.8 must be
+addressed on its own:
+
+| Door | Change |
+|---|---|
+| `orchestrator.js` `state_snapshot` writer (§1.8.1) | **Remove.** RECENT.md is a derived surface; re-ingesting it into the brain it summarizes is the ouroboros. It is already loaded into the system prompt as a surface — it does not need to be a node. *(If retained at all: strip the generated timestamp so the hash gate can actually fire, and remove `confidence_decay: 1`.)* |
+| `agents/base-agent.js` ×2 | Gate on the event rule — no finding, no node. `documentCount: 0` writes nothing. |
+| `circulatory/composter.js` | Remove `addNode(summary, 'compost_receipt')`. The janitor does not file into what it cleans. |
+| `orchestrator.js` dream node | Replace `Math.random() < 0.2` with "did this dream produce a goal or rewire the graph". |
+| `cognition/actions/promote-to-memory.js` | **Keep.** jtr-initiated promotion is an event by definition. |
+| `memory/pin-canonical-nodes.js` | **Keep.** Explicit, bounded, curated. |
+| `goals/goal-curator.js`, `artifacts/*`, `trajectory-fork.js` | **Audit against the event rule.** Not yet traced; each needs the same question — does it record an event, or a tick? |
+
+**Unmeasured — must be traced before implementation:** the `orchestrator.js` `addNode` sites at
+lines 2851, 2933, 4082, 4423, 5011, 8067, 8095 were not individually read. Do not assume.
+
 ### 4.2 The event gate at ingestion
 
 A document with no substantive content produces **no node and no compiler call**. Kills the
@@ -321,6 +466,13 @@ empty-session nodes at the door and stops paying an LLM to write paragraphs abou
   a file?* Keep forever regardless of age or access; no file → not knowledge. This is the "safer
   archival/compaction policy" its own comment demands, and it cannot eat the MRI because the MRI is a
   file. **Ships with a dry-run that prints what it would remove.** Then re-enable.
+- **Reuse the existing classifier — do not write a new one.** `provenance-salience.js` (§1.9) already
+  enumerates `IDENTITY_TAGS` (jtr's world), `AUTONOMOUS_TAGS` (machine output), and `TELEMETRY_TAGS`,
+  and is already trusted in production at retrieval time. **Promote it from a read-time filter to the
+  shared write-time/GC-time authority.** This removes the single largest risk in the first draft — a
+  hand-written classifier nobody has validated — and replaces it with one already running against this
+  exact brain. Any disagreement between the retrieval filter and the GC becomes a visible bug rather
+  than two divergent opinions.
 - **`prune_stale_cluster`:** make it delete, or delete it. A pruner that emits flags is worse than no
   pruner because it looks like one.
 - **Retire `brain_node_count_stable`.** The count was never the metric. The metric is **every node
@@ -359,17 +511,32 @@ await this._scanDirectory(watchPath, label);
 Delete the manifest, restart the engine, everything re-ingests. This is what a fresh install already
 does on every boot.
 
-**Job size:**
+**Job size — corrected. The first draft was wrong by ~19×.**
 
 ```
 files to reingest     : 9,939
-approx chunks/blocks  : 77,425
+chunks/blocks         : 77,425
 nodes produced before : 15,919
 previously-bad parses : 21
 ```
 
-Batched at `flush.batchSize: 20` → roughly 4,000 compiler calls. Hours, not days. Embeddings are
-local (`nomic-embed-text` via ollama) and therefore free.
+`document-compiler.js:151` — `async compile(text, metadata)` is **one LLM call per chunk**.
+`document-feeder.js:41` — `_compileMaxConcurrent = 3` is a **concurrency limiter, not a batcher**.
+The `flush.batchSize: 20` cited in the first draft is the *manifest flush* batch and has nothing to
+do with compiler calls.
+
+```
+→ ~77,425 LLM calls at 3 concurrent
+→ at ~4s/call: ~29 hours.  At ~2s/call: ~14 hours.
+```
+
+**This is a 1–2 day operation, not "hours, not days."** Embeddings are local (`nomic-embed-text` via
+ollama) and free. Hash-gated → resumable if interrupted. `_compileMaxConcurrent` is configurable and
+`_compileCircuitFailures: 5` will trip the circuit on provider errors — both need review before a run
+of this size.
+
+**Unmeasured:** actual per-call latency and token cost against the configured compiler model
+(`MiniMax-M3`). **Benchmark 100 chunks before committing to the full run.**
 
 **Accepted loss, chosen explicitly:** the ~38,500 orphans — dreams, raw thoughts, agent insights,
 consolidations — have no source file and **cannot be regenerated**. They remain in the archive,
@@ -384,14 +551,36 @@ Health API (port 8091)        — HRV, resting HR, VO2, sleep stages, O2 sat, st
 ~/.health_log.jsonl           — 260 rolling snapshots
 ```
 
-**Neither is on his watch paths.** His cortex has never seen jtr's HRV. He has been reasoning about
-jtr's health from his own reports about jtr's health.
+**Neither is on his watch paths.** Measured (§1.11): **83% of forrest's claimed brain is his own
+`workspace`; he has zero `jtr_life`, zero `jtr_voice`, and zero health-log nodes.** His entire
+world-facing knowledge is 468 trail-running nodes and 843 conversation nodes. He has been reasoning
+about jtr's health from his own reports about jtr's health.
 
 `MRI Report.pdf` sits in `/Users/jtr/life/feed/`. **Jerry watches that folder. Forrest does not.**
 
 Add `~/.health_log.jsonl`, the health API, and the health-relevant parts of `/Users/jtr/life/` to
 forrest's watch paths. This is the only change in this design that makes an agent **better** rather
 than quieter.
+
+**Unmeasured:** `~/.health_log.jsonl` is a rolling append-only log (260 entries). The feeder is
+document-oriented and hash-gated — **a growing log rehashes on every append and would re-ingest the
+whole file each time**, which is a new pollution source of exactly the kind this spec exists to
+prevent. The health API is an HTTP endpoint, not a file, and the feeder has no HTTP source concept.
+**Both need a mechanism decision before implementation — this is not a watch-path line.**
+
+### 4.6a jtr's ChatGPT export — the largest unrealized source
+
+`chat.html` is **471 MB** and `maxFileBytes` is **5 MB** (§1.10). jtr's complete ChatGPT history has
+been in the vault since February, silently skipped, never ingested. It is plausibly the single
+richest record of jtr's own thinking available to this system.
+
+It requires a **splitter** (ChatGPT exports are structured HTML with per-conversation blocks) that
+emits per-conversation files into a watched directory. Same for `jtr_antrhopic_archive` (47 MB) if it
+has the same shape.
+
+**This is not part of the decontamination and must not block it** — but it is the strongest available
+evidence for the thesis: the brain filled with 14,448 receipts about not acting, while 471 MB of jtr's
+actual thinking sat unread in the folder next to it.
 
 *(Note: the Pi barometric-pressure sensing in the `empire` subsystem is a **real** health signal —
 jtr is barometrically sensitive and tracks it because it correlates with how he feels. It is not
@@ -413,15 +602,23 @@ its own work on real evidence.
 feeder at `workspace/`. The node count went up. It was logged as a repair. That is the day the
 ouroboros was installed.
 
-1. **Fix the door** — §4.1–4.4. Watch paths, event gate, emitters, decay exemptions, GC, dream dice
-   roll. **Non-negotiable and first.** Rebuilding before the door is fixed rebuilds the disease,
-   faster, and it will look like it worked for a week.
+0. **Trace the unknowns** — §7 items 6–13. Especially: the `workspace` label mechanism, the
+   `jtr_voice`/`garcia_jerry` provenance (**1,530 of ~2,500 real nodes — if their sources are gone,
+   the rebuild silently loses them**), the 7 untraced `orchestrator.js` `addNode` sites, and the
+   sidecar/ANN rebuild fate. **A rebuild launched on untraced assumptions is how a 4% brain becomes a
+   0% brain.**
+1. **Fix the doors** — §4.1 (watch paths), **§4.1a (the other ~22 `addNode` sites)**, §4.2 (event
+   gate), §4.3 (emitters), §4.4 (decay exemptions, GC, existing classifier). **Non-negotiable and
+   first.** Rebuilding before the doors are shut rebuilds the disease, faster, and it will look like
+   it worked for a week. **§4.1a is not optional: watch paths alone leave 59% of the inflow open.**
 2. **Archive** — old brain, manifest, all sidecars. Read-only. Untouched forever.
-3. **Rebuild** — delete manifest, restart, let it run.
-4. **Verify** — every node traces to a file. Node count is *derived*, not a target.
-5. **Demolish** — remove the provably-inert governance machinery.
+3. **Benchmark** — 100 chunks through the compiler for real latency/cost before committing to ~77,425.
+4. **Rebuild** — delete manifest, restart, let it run (14–29h, resumable).
+5. **Verify** — every node traces to a file. Node count is *derived*, not a target. Re-verify
+   retrieval health, which is currently jtr-confirmed and partly a product of the read-time filter.
+6. **Demolish** — remove the provably-inert governance machinery.
 
-Nothing is irreversible before step 3, and step 3 is reversible because of step 2.
+Nothing is irreversible before step 4, and step 4 is reversible because of step 2.
 
 ---
 
@@ -433,21 +630,57 @@ Nothing is irreversible before step 3, and step 3 is reversible because of step 
 | Re-enabling the GC deletes real knowledge (it was disabled for a real reason) | Provenance-keyed, not access-keyed — cannot eat an unaccessed MRI. Ships with a dry-run that prints its removal list first. |
 | Rebuild fails or produces a worse brain | Old brain archived; revert is a config change. **A failed rebuild disproves the architecture — which is information worth having now.** |
 | Door fix breaks something that depended on ingesting `workspace/` | Config-level; revertible in one minute. |
-| Reingest cost/duration | ~4,000 batched compiler calls; embeddings local/free. Hash-gated → resumable if interrupted. |
+| Reingest cost/duration | **~77,425 LLM calls at 3 concurrent ≈ 14–29h** (§4.5), not 4,000. Benchmark 100 chunks first. Hash-gated → resumable. Embeddings local/free. |
 | Keep/drop label list is wrong | Requires jtr's confirmation before execution; printed for review. |
 | Brain persistence incident during rebuild | Standard rule applies: **standalone load test before any engine restart**; verify node counts after. |
+| **Closing only the feeder door leaves 38,500 nodes/yr flowing** | §4.1a. The feeder is 1 of ~23 `addNode` sites. `state_snapshot` (30% of growth) is a **direct orchestrator read** and is immune to any watch-path change. This defect killed the first draft. |
+| **Untraced `addNode` sites** | 7 orchestrator sites + artifacts/goal-curator/trajectory-fork not individually read. **Trace before implementing**, do not assume. |
+| **Health-log ingestion creates new pollution** | §4.6. A rolling append-only log rehashes per append → full re-ingest each time. Needs a mechanism decision, not a watch-path line. |
+| Removing `state_snapshot` degrades situational awareness | RECENT.md remains loaded as a **system-prompt surface** (its designed role, per STEP20/STEP23). Only the brain-node copy goes. Verify context-assembly still loads the surface after the change. |
+| Retrieval regresses once garbage is gone | `provenance-salience.js` currently downranks garbage at read time. Removing the garbage makes those code paths inert, not wrong. **Retrieval is jtr-confirmed healthy today; re-verify after rebuild before demolishing the filter.** |
 
 ---
 
 ## 7. Open Questions
 
-1. **Keep/drop list confirmation.** The label-level list in §4.1 needs jtr's sign-off before execution.
+### For jtr
+
+1. **Keep/drop list confirmation.** The label-level table in §4.1 needs sign-off before execution.
 2. **Dreams.** The dreaming (goal creation + Watts-Strogatz rewiring) is real consolidation and stays.
    Whether dream *prose* that produced a goal should become a vault note — or exist at all — is jtr's
    call, not a technical question.
 3. **Vault write-back for syntheses.** When consolidation produces genuinely new knowledge, the rule
    says it must become a vault file to persist. Format, location, and whether jtr wants machine-authored
    notes sitting next to his own are undecided.
+4. **`checkpoint-15880.json` (185 MB).** jtr flagged checkpoints as partly valuable and "not fully
+   machine output." Measured, this one is an engine state dump whose payload is a journal of critic
+   thoughts — i.e. largely the diary. Is there extractable value, or is it archive? *(`memory-extraction/`
+   is unambiguous and stays: ~16 dated markdown files, ~1.5 KB each, real.)*
+5. **`chat.html` (471 MB ChatGPT export).** Worth building a splitter for? (§4.6a) Separate project,
+   must not block decontamination — but it is the largest unrealized source in the system.
+
+### Must be traced before implementation (do not assume)
+
+6. **The `workspace` label mechanism** (6,883 nodes, jerry; 6,564, forrest — 83% of his brain). It does
+   **not** correspond to an `additionalWatchPaths` entry; it appears to enter via the feeder's
+   `ingestDir` scan (`document-feeder.js:139`, `_scanDirectory(ingestDir, null)`). **Unconfirmed.**
+7. **`jtr_voice` and `garcia_jerry` provenance.** Neither label appears in the current `config.yaml`.
+   They may be legacy manifest entries from paths no longer watched — meaning they would **not**
+   regenerate on rebuild. **This is load-bearing: 1,530 of the ~2,500 real nodes carry these labels.**
+   If their sources are gone, the rebuild loses them. **Verify before step 3.**
+8. **The 7 untraced `orchestrator.js` `addNode` sites** (2851, 2933, 4082, 4423, 5011, 8067, 8095), plus
+   `artifacts/*` ×3, `goal-curator.js`, `trajectory-fork.js` ×2.
+9. **Health-log and health-API ingestion mechanism** (§4.6) — a rolling log and an HTTP endpoint do not
+   fit the document-oriented, hash-gated feeder.
+10. **Rebuild fate of the Step 20 sidecars** — `memory-objects.json` (13.8 MB), `event-ledger.jsonl`
+    (19 MB), `trigger-index.json`, `problem-threads.json`. They are not brain nodes and do not
+    regenerate from the manifest. Are they archived, migrated, or orphaned? **Unaddressed.**
+11. **ANN index rebuild** — `memory-ann.*.index` (461 MB) + `.meta.json` (139 MB). Assumed to rebuild
+    automatically from nodes. **Unverified.**
+12. **Compiler benchmark** — 100 chunks against `MiniMax-M3` for real latency and token cost before
+    committing to ~77,425 calls.
+13. **Other instances** — `instances/` also contains `agent`, `local`, `test-agent`, `cosmo23`,
+    `conversations`, `workers`. Whether any hold live brains subject to this design is unexamined.
 
 ---
 
