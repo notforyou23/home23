@@ -710,7 +710,7 @@ class NetworkMemory {
       ? (inputNode.tag || inputNode.type || (Array.isArray(inputNode.tags) ? inputNode.tags[0] : null)
         || (preserveIncomingAuthority ? null : (tag || 'general')))
       : (tag || 'general');
-    const nodeEmbedding = preserveIncomingAuthority ? null : (inputNode?.embedding || embedding);
+    const nodeEmbedding = incomingAuthorityAttested ? null : (inputNode?.embedding || embedding);
 
     if (!conceptText.trim()) {
       this.logger?.warn?.('Skipping node with empty concept', { tag: nodeTag });
@@ -776,14 +776,16 @@ class NetworkMemory {
       tag: nodeTag,
       embedding: embed || null,
       embedding_status: embed ? 'embedded' : 'missing',
-      activation: inputNode?.activation ?? 0,
-      cluster: inputNode?.cluster ?? null,
-      weight: inputNode?.weight ?? 1.0,
+      activation: incomingAuthorityAttested ? 0 : (inputNode?.activation ?? 0),
+      cluster: incomingAuthorityAttested ? null : (inputNode?.cluster ?? null),
+      weight: incomingAuthorityAttested ? 1.0 : (inputNode?.weight ?? 1.0),
       created: inputNode?.created
         ? new Date(inputNode.created)
         : (preserveIncomingAuthority ? new Date(incomingAuthorityTime) : new Date()),
-      accessed: inputNode?.accessed ? new Date(inputNode.accessed) : new Date(),
-      accessCount: inputNode?.accessCount ?? 0,
+      accessed: incomingAuthorityAttested
+        ? new Date()
+        : (inputNode?.accessed ? new Date(inputNode.accessed) : new Date()),
+      accessCount: incomingAuthorityAttested ? 0 : (inputNode?.accessCount ?? 0),
       type: inputNode?.type || null,
       tags: Array.isArray(inputNode?.tags) ? inputNode.tags : [],
       actor: inputNode?.actor || null,

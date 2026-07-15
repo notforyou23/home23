@@ -507,6 +507,34 @@ test('addNode cannot promote a signed receipt through an external tag argument',
   assert.equal(isVerifiedMemoryClosure(stored, { authorityKey: AUTHORITY_KEY }), false);
 });
 
+test('addNode demotes signed receipts whose type or tags mutate after signing', async () => {
+  for (const [field, value] of [
+    ['type', 'goal_resolution'],
+    ['tags', ['goal_resolution']],
+  ]) {
+    const memory = makeMemory();
+    const receipt = attestedNode(`mutated-${field}-worker-receipt`, {
+      concept: 'Worker recorded progress but did not close the goal.',
+      metadata: {
+        goalId: `goal-${field}`,
+        closure_proof_refs: [`worker-receipt:worker-1:goal-${field}`],
+      },
+      provenance: {
+        schema: 'home23.node-provenance.v1',
+        authorityClass: 'worker_receipt',
+        sourceRefs: [`goal:goal-${field}`],
+        evidenceRefs: [`worker-receipt:worker-1:goal-${field}`],
+      },
+    });
+    receipt[field] = value;
+
+    assert.equal(verifyMemoryAuthorityAttestation(receipt, AUTHORITY_KEY), false, field);
+    const stored = await memory.addNode(receipt, 'general', [1, 0]);
+    assert.equal(verifyMemoryAuthorityAttestation(stored, AUTHORITY_KEY), false, field);
+    assert.equal(isVerifiedMemoryClosure(stored, { authorityKey: AUTHORITY_KEY }), false, field);
+  }
+});
+
 test('addNode never invents current authority time for an undated signed record', async () => {
   const memory = makeMemory();
   const undated = {
@@ -520,10 +548,26 @@ test('addNode never invents current authority time for an undated signed record'
     },
   };
   attestMemoryAuthority(undated, AUTHORITY_KEY);
+  Object.assign(undated, {
+    embedding: [0, 1],
+    embedding_status: 'missing',
+    activation: 0.99,
+    weight: 999,
+    accessed: '2099-01-01T00:00:00.000Z',
+    accessCount: 999999,
+    cluster: 'caller-controlled-cluster',
+  });
 
   const stored = await memory.addNode(undated, 'general', [1, 0]);
   assert.equal(verifyMemoryAuthorityAttestation(stored, AUTHORITY_KEY), false);
   assert.notEqual(classifyClaimAuthority(stored, { authorityKey: AUTHORITY_KEY }), 'worker_receipt');
+  assert.equal(stored.activation, 0);
+  assert.deepEqual(Array.from(stored.embedding), [1, 0]);
+  assert.equal(stored.embedding_status, 'embedded');
+  assert.equal(stored.weight, 1);
+  assert.equal(stored.accessCount, 0);
+  assert.notEqual(stored.accessed.getUTCFullYear(), 2099);
+  assert.notEqual(stored.cluster, 'caller-controlled-cluster');
 });
 
 test('addNode refuses to mint a new authority identity from a colliding signed ID', async () => {
@@ -544,6 +588,38 @@ test('addNode refuses to mint a new authority identity from a colliding signed I
   );
   assert.equal(memory.nodes.size, 1);
   assert.equal(memory.nodes.get(first.id), first);
+});
+
+test('addNode rejects numeric and string-equivalent authenticated ID collisions', async () => {
+  for (const [residentId, incomingId] of [[7, '7'], ['8', 8]]) {
+    const memory = makeMemory();
+    const resident = attestedNode(residentId, {
+      concept: 'Resident identity receipt.',
+      provenance: {
+        schema: 'home23.node-provenance.v1',
+        authorityClass: 'worker_receipt',
+        sourceRefs: [`goal:resident-${residentId}`],
+        evidenceRefs: [`worker-receipt:worker-1:resident-${residentId}`],
+      },
+    });
+    const incoming = attestedNode(incomingId, {
+      concept: 'Equivalent incoming identity receipt.',
+      provenance: {
+        schema: 'home23.node-provenance.v1',
+        authorityClass: 'worker_receipt',
+        sourceRefs: [`goal:incoming-${incomingId}`],
+        evidenceRefs: [`worker-receipt:worker-1:incoming-${incomingId}`],
+      },
+    });
+
+    const stored = await memory.addNode(resident, 'general', [1, 0]);
+    await assert.rejects(
+      memory.addNode(incoming, 'general', [1, 0]),
+      error => error?.code === 'authority_node_id_collision',
+    );
+    assert.equal(memory.nodes.size, 1);
+    assert.equal(memory.nodes.get(stored.id), stored);
+  }
 });
 
 test('addNode preserves and collision-checks a signed memory_id-only identity', async () => {
@@ -592,6 +668,50 @@ test('addNode recomputes embeddings for authenticated input', async () => {
   const stored = await memory.addNode(receipt, 'general', [0, 1]);
   assert.equal(embedCalls, 1);
   assert.deepEqual(Array.from(stored.embedding), [1, 0]);
+  assert.equal(verifyMemoryAuthorityAttestation(stored, AUTHORITY_KEY), true);
+});
+
+test('addNode resets mutable operational fields on authenticated input', async () => {
+  const memory = makeMemory();
+  let embedCalls = 0;
+  memory.embed = async () => {
+    embedCalls += 1;
+    return [1, 0];
+  };
+  const receipt = attestedNode('signed-operational-state-receipt', {
+    concept: 'Signed receipt with caller-controlled operational state.',
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'worker_receipt',
+      sourceRefs: ['goal:operational-state'],
+      evidenceRefs: ['worker-receipt:worker-1:operational-state'],
+    },
+  });
+  Object.assign(receipt, {
+    embedding: [0, 1],
+    embedding_status: 'missing',
+    activation: 0.99,
+    weight: 999,
+    accessed: '2099-01-01T00:00:00.000Z',
+    accessCount: 999999,
+    cluster: 'caller-controlled-cluster',
+  });
+  assert.equal(verifyMemoryAuthorityAttestation(receipt, AUTHORITY_KEY), true);
+
+  const startedAt = Date.now();
+  const stored = await memory.addNode(receipt, 'general', [0, 1]);
+  const finishedAt = Date.now();
+
+  assert.equal(embedCalls, 1);
+  assert.deepEqual(Array.from(stored.embedding), [1, 0]);
+  assert.equal(stored.embedding_status, 'embedded');
+  assert.equal(stored.activation, 0);
+  assert.equal(stored.weight, 1);
+  assert.equal(stored.accessCount, 0);
+  assert.equal(stored.accessed instanceof Date, true);
+  assert.ok(stored.accessed.getTime() >= startedAt);
+  assert.ok(stored.accessed.getTime() <= finishedAt);
+  assert.notEqual(stored.cluster, 'caller-controlled-cluster');
   assert.equal(verifyMemoryAuthorityAttestation(stored, AUTHORITY_KEY), true);
 });
 
