@@ -221,3 +221,148 @@ test('direct refresh invalidates an expired healthy proof before its check compl
   assert.equal(readiness.status().revision, 2);
   readiness.close();
 });
+
+test('healthy readiness proactively renews across TTLs and clears its unref timer', async () => {
+  let now = 100;
+  let calls = 0;
+  const timers = [];
+  const readiness = createMcpReadinessController({
+    memoryTools: {
+      async checkReadiness() {
+        calls += 1;
+        if (calls === 3) return {
+          ok: false,
+          sourceHealth: 'unavailable',
+          error: { code: 'source_unavailable', retryable: true },
+        };
+        return { ok: true, sourceHealth: 'healthy', revision: calls };
+      },
+    },
+    retryMs: 100,
+    refreshIntervalMs: 50,
+    now: () => now,
+    setTimeoutImpl(callback, delay) {
+      const timer = {
+        callback,
+        delay,
+        cleared: false,
+        unrefCalls: 0,
+        unref() { this.unrefCalls += 1; },
+      };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeoutImpl(timer) { timer.cleared = true; },
+    logger: { warn() {} },
+  });
+  await readiness.refresh();
+  assert.equal(readiness.status().revision, 1);
+  assert.equal(timers[0].delay, 50);
+  assert.equal(timers[0].unrefCalls, 1);
+
+  now = 150;
+  timers[0].callback();
+  await readiness.refresh();
+  assert.equal(readiness.status().revision, 2);
+  assert.equal(timers[1].unrefCalls, 1);
+
+  now = 200;
+  timers[1].callback();
+  await readiness.refresh();
+  assert.equal(readiness.status().ok, false);
+  assert.equal(readiness.status().error.code, 'source_unavailable');
+
+  readiness.close();
+  assert.equal(timers[2].cleared, true);
+});
+
+test('slow proactive readiness refresh becomes 503 only when the old proof expires', async () => {
+  let now = 100;
+  let calls = 0;
+  let scheduled = null;
+  let releaseRefresh;
+  const readiness = createMcpReadinessController({
+    memoryTools: {
+      async checkReadiness() {
+        calls += 1;
+        if (calls > 1) await new Promise((resolve) => { releaseRefresh = resolve; });
+        return { ok: true, sourceHealth: 'healthy', revision: calls };
+      },
+    },
+    retryMs: 100,
+    refreshIntervalMs: 50,
+    now: () => now,
+    setTimeoutImpl(callback) {
+      scheduled = callback;
+      return { unref() {} };
+    },
+    clearTimeoutImpl() {},
+    logger: { warn() {} },
+  });
+  await readiness.refresh();
+  now = 150;
+  scheduled();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(typeof releaseRefresh, 'function');
+  assert.equal(readiness.status().ok, true);
+
+  now = 201;
+  assert.equal(readiness.status().ok, false);
+  assert.equal(readiness.status().error.code, 'source_refresh_pending');
+  releaseRefresh();
+  await readiness.refresh();
+  assert.equal(readiness.status().ok, true);
+  assert.equal(readiness.status().revision, 2);
+  readiness.close();
+});
+
+test('transient proactive busy retains but never extends the original healthy TTL', async () => {
+  let now = 100;
+  let calls = 0;
+  const timers = [];
+  const readiness = createMcpReadinessController({
+    memoryTools: {
+      async checkReadiness() {
+        calls += 1;
+        if (calls === 1) return {
+          ok: true, sourceHealth: 'healthy', revision: 1,
+        };
+        return {
+          ok: false,
+          sourceHealth: 'unavailable',
+          error: { code: 'source_busy', retryable: true },
+        };
+      },
+    },
+    retryMs: 100,
+    refreshIntervalMs: 50,
+    now: () => now,
+    setTimeoutImpl(callback, delay) {
+      const timer = { callback, delay, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimeoutImpl() {},
+    logger: { warn() {} },
+  });
+  await readiness.refresh();
+  assert.equal(readiness.status().revision, 1);
+
+  now = 150;
+  timers[0].callback();
+  await readiness.refresh();
+  assert.equal(readiness.status().ok, true);
+  assert.equal(readiness.status().revision, 1);
+
+  now = 199;
+  assert.equal(readiness.status().ok, true);
+  assert.equal(readiness.status().revision, 1);
+
+  now = 200;
+  assert.equal(readiness.status().ok, false);
+  assert.equal(readiness.status().error.code, 'source_refresh_pending');
+  await readiness.refresh();
+  assert.equal(readiness.status().ok, false);
+  assert.equal(readiness.status().error.code, 'source_busy');
+  readiness.close();
+});

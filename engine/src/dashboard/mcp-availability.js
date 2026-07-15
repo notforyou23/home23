@@ -13,6 +13,9 @@ async function probeMcpAvailability({
   port,
   fetchImpl = globalThis.fetch,
   timeoutMs = 1500,
+  retryDelayMs = 25,
+  now = Date.now,
+  sleepImpl = (delay) => new Promise((resolve) => setTimeout(resolve, delay)),
 } = {}) {
   if (!enabled) return { available: false, endpoint: null, reason: 'mcp_disabled' };
   const numericPort = Number(port);
@@ -22,22 +25,66 @@ async function probeMcpAvailability({
   if (typeof fetchImpl !== 'function') {
     return { available: false, endpoint: null, reason: 'mcp_fetch_unavailable' };
   }
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1
+      || !Number.isSafeInteger(retryDelayMs) || retryDelayMs < 1
+      || typeof now !== 'function' || typeof sleepImpl !== 'function') {
+    return { available: false, endpoint: null, reason: 'mcp_unconfigured' };
+  }
 
+  const deadline = now() + timeoutMs;
+  const transientSourceCodes = new Set(['source_refresh_pending', 'source_busy']);
+  let sawTransientSource = false;
   try {
-    const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
-      ? AbortSignal.timeout(timeoutMs)
-      : undefined;
-    const response = await fetchImpl(mcpHealthEndpoint(numericPort), { signal });
-    if (!response?.ok) {
-      return { available: false, endpoint: null, reason: 'mcp_unhealthy' };
+    while (now() < deadline) {
+      const remainingMs = Math.max(1, Math.ceil(deadline - now()));
+      const signal = typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+        ? AbortSignal.timeout(remainingMs)
+        : undefined;
+      const response = await fetchImpl(mcpHealthEndpoint(numericPort), { signal });
+      let body;
+      try {
+        body = await response.json();
+      } catch (error) {
+        if (!response?.ok) {
+          return { available: false, endpoint: null, reason: 'mcp_unhealthy' };
+        }
+        return { available: false, endpoint: null, reason: 'mcp_source_unavailable' };
+      }
+      const sourceCode = body?.error?.code;
+      const transientSource = response?.status === 503
+        && transientSourceCodes.has(sourceCode)
+        && body?.error?.retryable === true
+        && body?.protocolVersion === '2025-03-26'
+        && body?.ok === false
+        && body?.sourceHealth === 'unavailable';
+      if (transientSource) {
+        sawTransientSource = true;
+        const retryRemainingMs = deadline - now();
+        if (retryRemainingMs <= 0) break;
+        await sleepImpl(Math.min(retryDelayMs, retryRemainingMs));
+        continue;
+      }
+      if (!response?.ok) {
+        return {
+          available: false,
+          endpoint: null,
+          reason: sourceCode ? 'mcp_source_unavailable' : 'mcp_unhealthy',
+        };
+      }
+      if (body?.protocolVersion !== '2025-03-26' || body?.ok !== true
+          || body?.sourceHealth === 'unavailable') {
+        return { available: false, endpoint: null, reason: 'mcp_source_unavailable' };
+      }
+      return { available: true, endpoint: mcpEndpoint(numericPort), reason: null };
     }
-    const body = await response.json();
-    if (body?.protocolVersion !== '2025-03-26' || body?.ok !== true
-        || body?.sourceHealth === 'unavailable') {
+    if (sawTransientSource) {
       return { available: false, endpoint: null, reason: 'mcp_source_unavailable' };
     }
-    return { available: true, endpoint: mcpEndpoint(numericPort), reason: null };
+    return { available: false, endpoint: null, reason: 'mcp_unreachable' };
   } catch (error) {
+    if (sawTransientSource && now() >= deadline) {
+      return { available: false, endpoint: null, reason: 'mcp_source_unavailable' };
+    }
     return {
       available: false,
       endpoint: null,

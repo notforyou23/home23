@@ -152,6 +152,95 @@ test('MCP query delegates to the shared search authority response when injected'
   assert.equal(calls[0].tag, 'proof');
 });
 
+test('MCP readiness and foreground query serialize their local source admission', async () => {
+  const brainDir = await writeManifestFixture();
+  const home23Root = await tempDir('home23-mcp-memory-local-admission-');
+  let releaseReadiness;
+  let readinessEntered;
+  const entered = new Promise((resolve) => { readinessEntered = resolve; });
+  let sourceActive = false;
+  let searchCalls = 0;
+  const tools = toolsFor({
+    brainDir,
+    home23Root,
+    withEphemeralSource: async (_options, callback) => {
+      sourceActive = true;
+      readinessEntered();
+      await new Promise((resolve) => { releaseReadiness = resolve; });
+      const source = {
+        revision: 4,
+        async summarize() { return { nodes: 2, edges: 0 }; },
+        getEvidence(extra = {}) {
+          return {
+            sourceHealth: 'healthy',
+            matchOutcome: 'matches',
+            ...extra,
+          };
+        },
+      };
+      try {
+        return await callback(source, {
+          identity: {
+            requesterAgent: 'ada', targetAgent: 'ada', brainId: 'ada',
+            canonicalRoot: brainDir, catalogRevision: 'test', accessMode: 'own',
+            kind: 'resident', sourceType: 'memory-manifest', operationId: 'readiness-test',
+          },
+        });
+      } finally {
+        sourceActive = false;
+      }
+    },
+    searchMemory: async () => {
+      searchCalls += 1;
+      if (sourceActive) throw Object.assign(new Error('self contention'), {
+        code: 'source_busy', retryable: true,
+      });
+      return {
+        results: [{ id: 'foreground' }],
+        evidence: {
+          sourceHealth: 'healthy',
+          matchOutcome: 'matches',
+          authoritativeTotals: { nodes: 2, edges: 0 },
+          identity: {
+            requesterAgent: 'ada', targetAgent: 'ada', brainId: 'ada',
+            canonicalRoot: brainDir, catalogRevision: 'test', accessMode: 'own',
+            kind: 'resident', sourceType: 'memory-manifest', operationId: 'query-test',
+          },
+        },
+      };
+    },
+  });
+
+  const readiness = tools.checkReadiness();
+  await entered;
+  const abortedController = new AbortController();
+  const abortedReason = Object.assign(new Error('caller disconnected'), {
+    name: 'AbortError', code: 'cancelled',
+  });
+  const abortedQuery = tools.queryMemory({
+    query: 'aborted foreground', limit: 1, signal: abortedController.signal,
+  });
+  let abortedOutcome = null;
+  void abortedQuery.then(
+    () => { abortedOutcome = 'resolved'; },
+    (error) => { abortedOutcome = error; },
+  );
+  const query = tools.queryMemory({ query: 'foreground', limit: 1 });
+  abortedController.abort(abortedReason);
+  await new Promise((resolve) => setImmediate(resolve));
+  const callsBeforeRelease = searchCalls;
+  const abortBeforeRelease = abortedOutcome;
+  releaseReadiness();
+  assert.equal((await readiness).ok, true);
+  await assert.rejects(abortedQuery, (error) => error === abortedReason);
+  const result = await query;
+  assert.equal(callsBeforeRelease, 0);
+  assert.equal(abortBeforeRelease, abortedReason);
+  assert.equal(result.ok, true);
+  assert.equal(result.results[0].id, 'foreground');
+  assert.equal(searchCalls, 1);
+});
+
 test('MCP query reads manifest base plus delta and excludes tombstones', async () => {
   const brainDir = await writeManifestFixture();
   const home23Root = await tempDir('home23-mcp-memory-home-');

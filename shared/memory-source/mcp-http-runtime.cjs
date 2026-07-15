@@ -172,6 +172,9 @@ function createMcpReadinessController({
   memoryTools,
   retryMs = 30_000,
   now = Date.now,
+  refreshIntervalMs,
+  setTimeoutImpl = setTimeout,
+  clearTimeoutImpl = clearTimeout,
   logger = console,
 } = {}) {
   if (!memoryTools || typeof memoryTools.checkReadiness !== 'function') {
@@ -179,9 +182,22 @@ function createMcpReadinessController({
       code: 'mcp_source_context_required',
     });
   }
+  const proactiveRefreshMs = refreshIntervalMs === undefined
+    ? Math.max(1, Math.floor(retryMs / 2))
+    : refreshIntervalMs;
+  if (!Number.isSafeInteger(retryMs) || retryMs < 1
+      || !Number.isSafeInteger(proactiveRefreshMs) || proactiveRefreshMs < 1
+      || proactiveRefreshMs > retryMs
+      || typeof now !== 'function' || typeof setTimeoutImpl !== 'function'
+      || typeof clearTimeoutImpl !== 'function') {
+    throw Object.assign(new Error('memory readiness timing is invalid'), {
+      code: 'mcp_source_context_required',
+    });
+  }
   const abortController = new AbortController();
-  let lastCompletedAt = null;
+  let lastHealthyAt = null;
   let inFlight = null;
+  let refreshTimer = null;
   let closed = false;
   let current = Object.freeze({
     ok: false,
@@ -198,24 +214,60 @@ function createMcpReadinessController({
       retryable: true,
     }),
   });
+  const clearScheduledRefresh = () => {
+    if (refreshTimer === null) return;
+    clearTimeoutImpl(refreshTimer);
+    refreshTimer = null;
+  };
+  const scheduleRefresh = (delayMs = proactiveRefreshMs) => {
+    clearScheduledRefresh();
+    if (closed) return;
+    refreshTimer = setTimeoutImpl(() => {
+      refreshTimer = null;
+      void refresh();
+    }, delayMs);
+    refreshTimer?.unref?.();
+  };
+  const transientSourceCodes = new Set(['source_busy', 'source_refresh_pending']);
+  const retainHealthyProofFor = (error, observedAt) => {
+    if (current.ok !== true || lastHealthyAt === null
+        || !transientSourceCodes.has(error?.code) || error?.retryable !== true) return null;
+    const remainingMs = retryMs - (observedAt - lastHealthyAt);
+    if (remainingMs <= 0) return null;
+    return Math.max(1, Math.min(proactiveRefreshMs, Math.floor(remainingMs / 2)));
+  };
 
   const refresh = () => {
     if (closed || inFlight) return inFlight;
-    if (lastCompletedAt !== null && now() - lastCompletedAt >= retryMs) {
+    clearScheduledRefresh();
+    if (current.ok === true && lastHealthyAt !== null
+        && now() - lastHealthyAt >= retryMs) {
       current = refreshPendingStatus();
     }
+    let nextRefreshMs = proactiveRefreshMs;
     inFlight = Promise.resolve()
       .then(() => memoryTools.checkReadiness({ signal: abortController.signal }))
       .then((result) => {
         if (closed) return;
+        const observedAt = now();
         const healthy = result?.ok === true && result?.sourceHealth !== 'unavailable';
-        current = Object.freeze(healthy ? {
-          ok: true,
-          protocolVersion: '2025-03-26',
-          sourceHealth: result.sourceHealth || 'healthy',
-          ...(result.revision !== undefined ? { revision: result.revision } : {}),
-          ...(result.totals !== undefined ? { totals: result.totals } : {}),
-        } : {
+        if (healthy) {
+          lastHealthyAt = observedAt;
+          current = Object.freeze({
+            ok: true,
+            protocolVersion: '2025-03-26',
+            sourceHealth: result.sourceHealth || 'healthy',
+            ...(result.revision !== undefined ? { revision: result.revision } : {}),
+            ...(result.totals !== undefined ? { totals: result.totals } : {}),
+          });
+          return;
+        }
+        const retainedRetryMs = retainHealthyProofFor(result?.error, observedAt);
+        if (retainedRetryMs !== null) {
+          nextRefreshMs = retainedRetryMs;
+          return;
+        }
+        current = Object.freeze({
           ok: false,
           protocolVersion: '2025-03-26',
           sourceHealth: 'unavailable',
@@ -224,6 +276,11 @@ function createMcpReadinessController({
       })
       .catch((error) => {
         if (closed) return;
+        const retainedRetryMs = retainHealthyProofFor(error, now());
+        if (retainedRetryMs !== null) {
+          nextRefreshMs = retainedRetryMs;
+          return;
+        }
         logger.warn?.('[MCP] canonical source readiness failed', { error: error.message });
         current = Object.freeze({
           ok: false,
@@ -233,7 +290,9 @@ function createMcpReadinessController({
         });
       })
       .finally(() => {
-        if (!closed) lastCompletedAt = now();
+        if (!closed) {
+          scheduleRefresh(nextRefreshMs);
+        }
         inFlight = null;
       });
     return inFlight;
@@ -242,9 +301,9 @@ function createMcpReadinessController({
   refresh();
   return Object.freeze({
     status() {
-      if (!closed && !inFlight && lastCompletedAt !== null
-          && now() - lastCompletedAt >= retryMs) {
-        refresh();
+      if (!closed && lastHealthyAt !== null && now() - lastHealthyAt >= retryMs) {
+        if (current.ok === true) current = refreshPendingStatus();
+        if (!inFlight) refresh();
       }
       return current;
     },
@@ -252,6 +311,7 @@ function createMcpReadinessController({
     close() {
       if (closed) return;
       closed = true;
+      clearScheduledRefresh();
       abortController.abort(Object.assign(new Error('MCP server closed'), {
         name: 'AbortError',
         code: 'cancelled',

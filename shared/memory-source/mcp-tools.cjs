@@ -77,8 +77,36 @@ function createMemoryTools({
       code: 'mcp_source_context_required',
     });
   }
+  let localSourceTail = Promise.resolve();
+  const withLocalSourceAdmission = (operation, signal) => {
+    const run = localSourceTail.then(() => {
+      throwIfAborted(signal);
+      return operation();
+    });
+    localSourceTail = run.catch(() => {});
+    if (!signal) return run;
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const settle = (fn, value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        fn(value);
+      };
+      const onAbort = () => settle(reject, signal.reason || Object.assign(
+        new Error('cancelled'),
+        { name: 'AbortError', code: 'cancelled' },
+      ));
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) onAbort();
+      run.then(
+        (value) => settle(resolve, value),
+        (error) => settle(reject, error),
+      );
+    });
+  };
 
-  async function withSource(fn, { signal, identity } = {}) {
+  async function withSourceUnlocked(fn, { signal, identity } = {}) {
     throwIfAborted(signal);
     if (identity !== undefined) {
       throw memorySourceError('invalid_request', 'MCP source identity is server-derived');
@@ -130,6 +158,10 @@ function createMemoryTools({
       return unavailableResult(error, error.sourceEvidence || sourceEvidence);
     }
   }
+  const withSource = (fn, options = {}) => withLocalSourceAdmission(
+    () => withSourceUnlocked(fn, options),
+    options.signal,
+  );
 
   return Object.freeze({
     async checkReadiness({ signal, identity } = {}) {
@@ -156,33 +188,34 @@ function createMemoryTools({
         max: 100,
       });
       if (searchMemory) {
-        throwIfAborted(signal);
-        if (identity !== undefined) {
-          throw memorySourceError('invalid_request', 'MCP source identity is server-derived');
-        }
-        try {
-          const result = await searchMemory({ query, topK, tag, signal });
-          const results = Array.isArray(result?.results) ? result.results : [];
-          const evidence = result?.evidence;
-          if (!evidence || typeof evidence !== 'object') {
-            throw memorySourceError('source_unavailable', 'shared search evidence is unavailable', {
-              retryable: true,
-            });
+        return withLocalSourceAdmission(async () => {
+          if (identity !== undefined) {
+            throw memorySourceError('invalid_request', 'MCP source identity is server-derived');
           }
-          const canonicalEvidence = enrichEvidenceIdentity(evidence, evidence.identity);
-          return {
-            ok: true,
-            query,
-            resultsFound: results.length,
-            totalNodes: canonicalEvidence.authoritativeTotals?.nodes ?? null,
-            results,
-            evidence: canonicalEvidence,
-          };
-        } catch (error) {
-          rethrowAbort(error, signal);
-          logger.warn?.('[MCP memory] shared search failed', { error: error.message });
-          return unavailableResult(error, error.sourceEvidence);
-        }
+          try {
+            const result = await searchMemory({ query, topK, tag, signal });
+            const results = Array.isArray(result?.results) ? result.results : [];
+            const evidence = result?.evidence;
+            if (!evidence || typeof evidence !== 'object') {
+              throw memorySourceError('source_unavailable', 'shared search evidence is unavailable', {
+                retryable: true,
+              });
+            }
+            const canonicalEvidence = enrichEvidenceIdentity(evidence, evidence.identity);
+            return {
+              ok: true,
+              query,
+              resultsFound: results.length,
+              totalNodes: canonicalEvidence.authoritativeTotals?.nodes ?? null,
+              results,
+              evidence: canonicalEvidence,
+            };
+          } catch (error) {
+            rethrowAbort(error, signal);
+            logger.warn?.('[MCP memory] shared search failed', { error: error.message });
+            return unavailableResult(error, error.sourceEvidence);
+          }
+        }, signal);
       }
       return withSource(async (source) => {
         const summary = await source.summarize({ signal });
