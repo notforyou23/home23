@@ -5,7 +5,15 @@
 
 const fs = require('fs').promises;
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync: rawExecSync } = require('child_process');
+const { unprivilegedChildEnv } = require('../../shared/child-process-env.cjs');
+
+function execSync(command, options = {}) {
+  return rawExecSync(command, {
+    ...options,
+    env: unprivilegedChildEnv(process.env, options.env || {}),
+  });
+}
 
 // ============================================================================
 // TOOL DEFINITIONS (OpenAI/Anthropic Format)

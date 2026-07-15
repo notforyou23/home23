@@ -3,6 +3,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { exec } from 'node:child_process';
+import { unprivilegedChildEnv } from '../security/child-process-env.js';
 import type { StoredMessage, HistoryRecord } from './history.js';
 import type { ConversationHistory } from './history.js';
 import type { MemoryManager } from './memory.js';
@@ -217,7 +218,10 @@ export class CompactionManager {
     if (extractedLearnings) {
       const scriptPath = join(process.cwd(), 'memory-pipeline', 'build_index.py');
       if (existsSync(scriptPath)) {
-        exec(`OLLAMA_HOST=http://localhost:11434 python3 ${scriptPath}`, { timeout: 120_000 }, (err) => {
+        exec(`python3 ${JSON.stringify(scriptPath)}`, {
+          timeout: 120_000,
+          env: unprivilegedChildEnv(process.env, { OLLAMA_HOST: 'http://localhost:11434' }),
+        }, (err) => {
           if (err) console.warn('[compaction] FAISS rebuild failed:', err.message);
           else console.log('[compaction] FAISS index rebuilt');
         });

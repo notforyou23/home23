@@ -34,9 +34,11 @@ import { startEcosystemProcesses } from '../../cli/lib/shared-service-start.js';
 import { ensureSystemHealth } from '../../cli/lib/system-health.js';
 import { seedCosmo23Config } from '../../cli/lib/cosmo23-config.js';
 import * as capabilitySecretModule from '../../cli/lib/brain-operations-capability.js';
+import authorityAttestation from '../../shared/memory-authority-attestation.cjs';
 
 const require = createRequire(import.meta.url);
 const CAPABILITY_ENV = 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY';
+const AUTHORITY_ENV = 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY';
 const MCP_AVAILABLE_ENV = 'HOME23_MCP_AVAILABLE';
 const TEST_NODE_MODULES = dirname(dirname(require.resolve('js-yaml/package.json')));
 
@@ -162,12 +164,24 @@ test('generated ecosystem isolates one shared capability to dashboards and COSMO
   try {
     const ecosystem = loadEcosystem(root);
     const apps = new Map(ecosystem.apps.map((app) => [app.name, app]));
+    const authorityKey = authorityAttestation.deriveMemoryAuthorityAttestationKey(key);
     for (const name of targetNames()) assert.equal(apps.get(name)?.env?.[CAPABILITY_ENV], key, name);
     for (const app of ecosystem.apps) {
       assert.ok(app.filter_env?.includes(CAPABILITY_ENV), `${app.name} filters inherited capability`);
+      assert.ok(app.filter_env?.includes(AUTHORITY_ENV), `${app.name} filters inherited authority key`);
       if (!targetNames().includes(app.name)) {
         assert.notEqual(app.env?.[CAPABILITY_ENV], key, app.name);
       }
+    }
+    for (const name of [
+      'home23-jerry', 'home23-forrest',
+      'home23-jerry-dash', 'home23-forrest-dash',
+      'home23-jerry-mcp', 'home23-forrest-mcp',
+      'home23-jerry-harness', 'home23-forrest-harness',
+      'home23-cosmo23',
+    ]) {
+      assert.equal(apps.get(name)?.env?.[AUTHORITY_ENV], authorityKey, name);
+      assert.notEqual(apps.get(name)?.env?.[AUTHORITY_ENV], key, name);
     }
     const source = readFileSync(join(root, 'ecosystem.config.cjs'), 'utf8');
     assert.doesNotMatch(source, /commonEnv\s*=\s*\{[^}]*HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY/s);
@@ -748,6 +762,7 @@ test('every PM2 launcher and watchdog scrub list blocks inherited brain capabili
     const source = readFileSync(join(process.cwd(), file), 'utf8');
     const blocklist = source.match(/const PM2_ENV_BLOCKLIST = \[([\s\S]*?)\n\];/)?.[1] || '';
     assert.match(blocklist, /HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY/, file);
+    assert.match(blocklist, /HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY/, file);
   }
   const startSource = readFileSync(join(process.cwd(), 'cli', 'lib', 'pm2-commands.js'), 'utf8');
   assert.match(startSource, /coordinateSharedServiceStartup\(\{ home23Root \}\)/);

@@ -10,6 +10,17 @@ const path = require('node:path');
 const { PGSEngine } = require('../../cosmo23/pgs-engine/src');
 const { openPinnedPGSStore } = require('../../cosmo23/pgs-engine/src/pinned-store');
 const { createOperationScratchQuota } = require('../../shared/memory-source/scratch-quota.cjs');
+const {
+  attestMemoryAuthority,
+} = require('../../shared/memory-authority-attestation.cjs');
+
+const AUTHORITY_KEY = '8'.repeat(64);
+const priorAuthorityKey = process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = AUTHORITY_KEY;
+test.after(() => {
+  if (priorAuthorityKey === undefined) delete process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+  else process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = priorAuthorityKey;
+});
 
 function catalog() {
   const row = id => ({
@@ -217,6 +228,7 @@ function makeEngine({
   sweepOutput = null,
   synthesisOutput = null,
   enforceOutputBytes = false,
+  retryableSweepFailureAt = null,
 } = {}) {
   const events = [];
   const calls = [];
@@ -224,6 +236,12 @@ function makeEngine({
     providerId: 'sweep',
     async generate(options) {
       calls.push({ phase: 'sweep', options });
+      const sweepCallCount = calls.filter(call => call.phase === 'sweep').length;
+      if (sweepCallCount === retryableSweepFailureAt) {
+        throw Object.assign(new Error('retryable sweep failure'), {
+          code: 'provider_failed', retryable: true,
+        });
+      }
       options.onProviderActivity({ type: 'response.output_text.delta', at: '2000-01-01T00:00:00Z' });
       const content = sweepOutput
         ?? `finding for ${JSON.parse(JSON.stringify(options.input)).slice(0, 24)}`;
@@ -291,19 +309,46 @@ function options(pin, scratch, extra = {}) {
 
 function singleWorkStore() {
   let committed = false;
-  const summary = attemptId => ({
+  const summary = (attemptId, coverageLevel = 'full', coverageFraction = 1) => ({
     attemptId, scopeWorkUnits: 1, scopeSuccessfulWorkUnits: committed ? 1 : 0,
     scopePendingWorkUnits: committed ? 0 : 1, scopeComplete: committed,
     globalCoveredWorkUnits: committed ? 1 : 0,
     globalPendingWorkUnits: committed ? 0 : 1, fullCoverage: committed,
-    coverageLevel: 'full', coverageFraction: 1, targetPartitionIds: [],
+    coverageLevel, coverageFraction, targetPartitionIds: [],
   });
   return {
     stats: { nodeCount: 1, edgeCount: 0, workUnitCount: 1 },
-    planScope({ attemptId }) {
-      return summary(attemptId);
+    planScope({ attemptId, coverageLevel, coverageFraction }) {
+      return summary(attemptId, coverageLevel, coverageFraction);
     },
     getScopeSummary(attemptId) { return summary(attemptId); },
+    summarizeAuthority() {
+      return {
+        total: 1,
+        authorityClasses: {
+          verified_current_state: 0, jtr_correction: 0, artifact_log: 0,
+          worker_receipt: 0, generated_doctrine: 0, narrative: 1,
+        },
+        retrievalDomains: {
+          current_ops: 1, closed_incidents: 0, project_history: 0, external_intake: 0,
+        },
+        sourceChain: {
+          withEvidence: 0,
+          withoutEvidence: 1,
+          referenceCounts: {
+            source: 0, evidence: 0, artifact: 0, trace: 0, generation: 0,
+            lineage: 0, verification: 0, closure: 0,
+          },
+        },
+        requiresFreshVerification: 1,
+        verifiedCurrentState: 0,
+        jtrCorrection: 0,
+        artifactLog: 0,
+        workerReceipt: 0,
+        generatedDoctrine: 0,
+        narrative: 1,
+      };
+    },
     snapshotPendingWorkUnits() { return committed ? [] : ['p-c-one-u0000']; },
     beginWorkUnitAttempt() {},
     loadWorkUnit() {
@@ -605,7 +650,7 @@ test('PGS bounds exact gpt-5.4-mini and gpt-5.5 inputs by decoded UTF-8 bytes', 
 });
 
 test('PGS partitions work units against the exact provider input budget before persistence', async t => {
-  const sweepInstructions = 'Analyze only this pinned PGS work unit. Return evidence-backed findings and explicit absences.';
+  const sweepInstructions = 'Analyze only this pinned PGS work unit. Return evidence-backed findings and explicit absences. Narrative and generated doctrine cannot independently settle present-tense operational facts; use each NODE_AUTHORITY source chain and require fresh verification where marked.';
   for (const scenario of [
     {
       name: 'model-effective-32k',
@@ -664,7 +709,10 @@ test('PGS partitions work units against the exact provider input budget before p
     const expectedStoreLimit = totalBudget
       - Buffer.byteLength(sweepInstructions, 'utf8')
       - framingBytes
-      - (runLimits.maxNodesPerWorkUnit * Buffer.byteLength('NODE \n', 'utf8'));
+      - (runLimits.maxNodesPerWorkUnit * (
+        Buffer.byteLength('NODE \n', 'utf8')
+        + Buffer.byteLength('NODE_AUTHORITY \n', 'utf8')
+      ));
     assert.equal(openedContextLimit, expectedStoreLimit, scenario.name);
     assert.equal(openedContextLimit < scenario.callerLimit, true, scenario.name);
     assert.equal(openedContextLimit < modelBudget, true, scenario.name);
@@ -939,12 +987,12 @@ test('pinned PGS derives complete source evidence from the opened projection sto
   pin.getEvidence = (extra) => {
     assert.equal(storeOpened, true, 'source evidence must be derived after the store opens');
     evidenceCalls.push(structuredClone(extra));
-    return {
+    return Object.freeze({
       sourceHealth: 'healthy',
       matchOutcome: extra.returnedTotals.nodes > 0 ? 'matches' : 'corpus_empty',
       deltaWatermark: { revision: 5 },
       ...extra,
-    };
+    });
   };
   fixture.engine.openPinnedPGSStore = async () => {
     storeOpened = true;
@@ -953,15 +1001,105 @@ test('pinned PGS derives complete source evidence from the opened projection sto
 
   const envelope = await fixture.engine.runPinnedOperation(options(pin, scratch));
 
-  assert.deepEqual(evidenceCalls, [{
-    route: 'pinned-pgs',
-    returnedTotals: { nodes: 1, edges: 0 },
-    completeCoverage: true,
-  }]);
+  assert.equal(evidenceCalls.length, 1);
+  assert.equal(evidenceCalls[0].route, 'pinned-pgs');
+  assert.deepEqual(evidenceCalls[0].returnedTotals, { nodes: 1, edges: 0 });
+  assert.equal(evidenceCalls[0].completeCoverage, true);
   assert.deepEqual(envelope.result.sourceEvidence.returnedTotals, { nodes: 1, edges: 0 });
   assert.equal(envelope.result.sourceEvidence.completeCoverage, true);
   assert.equal(envelope.result.sourceEvidence.matchOutcome, 'matches');
+  assert.equal(envelope.result.sourceEvidence.retrievalMode, 'logical-source-scan');
+  assert.equal(envelope.result.sourceEvidence.indexCoverage.currentRevision, 5);
+  assert.equal(envelope.result.sourceEvidence.indexCoverage.route, 'pinned-pgs-projection');
+  assert.equal(envelope.result.sourceEvidence.authoritySummary.total, 1);
+  assert.equal(envelope.result.sourceEvidence.authoritySummary.authorityClasses.narrative, 1);
+  assert.equal(Number.isFinite(envelope.result.sourceEvidence.stageTimingsMs.response), true);
+  const sweepInput = fixture.calls.find(call => call.phase === 'sweep').options.input;
+  assert.match(sweepInput, /NODE_AUTHORITY/);
+  assert.match(sweepInput, /"retrievalDomain":"current_ops"/);
+  assert.match(sweepInput, /"authorityClass":"narrative"/);
+  assert.match(sweepInput, /"sourceChain":\[\]/);
   assert.equal(envelope.sourceEvidence, envelope.result.sourceEvidence);
+});
+
+test('pinned PGS provider authority caps and path-redacts each node source chain', async t => {
+  const scratch = await scratchFixture(t);
+  const pin = sourcePin({ nodeCount: 1 });
+  pin.iterateNodes = async function* iterateNodes() {
+    yield attestMemoryAuthority({
+      id: 'n1', clusterId: 'ops', content: 'live evidence',
+      metadata: { sourcePath: '/Users/jtr/private/runtime/receipt.json' },
+      provenance: {
+        schema: 'home23.node-provenance.v1',
+        authorityClass: 'verified_current_state', operationalAuthority: true,
+        evidenceRefs: [
+          'verifier:/Volumes/private/one.json',
+          'verifier:two',
+          'verifier:three',
+        ],
+      },
+    }, AUTHORITY_KEY);
+  };
+  const fixture = makeEngine();
+
+  await fixture.engine.runPinnedOperation(options(pin, scratch));
+
+  const input = fixture.calls.find(call => call.phase === 'sweep').options.input;
+  const authorityLine = input.split('\n').find(line => line.startsWith('NODE_AUTHORITY '));
+  const authority = JSON.parse(authorityLine.slice('NODE_AUTHORITY '.length));
+  assert.equal(authority.sourceChain.length <= 2, true);
+  assert.equal(authority.authorityClass, 'verified_current_state');
+  assert.equal(authority.operationalAuthority, true);
+  assert.equal(JSON.stringify(authority.sourceChain).includes('/Users/'), false);
+  assert.equal(JSON.stringify(authority.sourceChain).includes('/Volumes/'), false);
+  assert.equal(authority.sourceChain.some(link => link.kind === 'evidence'), true);
+  const nodeLine = input.split('\n').find(line => line.startsWith('NODE '));
+  const providerNode = JSON.parse(nodeLine.slice('NODE '.length));
+  assert.equal(JSON.stringify(providerNode).includes('/Users/'), false);
+  assert.match(providerNode.metadata.sourcePath, /\[redacted-path\]/);
+});
+
+test('fractional PGS evidence reports the exact scoped population as incomplete coverage', async t => {
+  const scratch = await scratchFixture(t);
+  const pin = sourcePin({ nodeCount: 10 });
+  const fixture = makeEngine();
+  const evidenceCalls = [];
+  pin.getEvidence = (extra) => {
+    evidenceCalls.push(structuredClone(extra));
+    return { sourceHealth: 'healthy', matchOutcome: 'matches', ...extra };
+  };
+  fixture.engine.openPinnedPGSStore = async () => ({
+    ...singleWorkStore(),
+    stats: { nodeCount: 10, edgeCount: 9, workUnitCount: 10 },
+    summarizeScopeTotals() { return { nodes: 1, edges: 0 }; },
+  });
+
+  const envelope = await fixture.engine.runPinnedOperation(options(pin, scratch, {
+    pgsLevel: 'skim',
+    pgsConfig: { sweepFraction: 0.1 },
+  }));
+
+  assert.equal(evidenceCalls.length, 1);
+  assert.deepEqual(evidenceCalls[0].returnedTotals, { nodes: 1, edges: 0 });
+  assert.equal(evidenceCalls[0].authoritySummary.total, 1);
+  assert.equal(evidenceCalls[0].completeCoverage, false);
+  assert.equal(evidenceCalls[0].indexCoverage.completeness, 'unavailable');
+  assert.equal(evidenceCalls[0].indexCoverage.complete, false);
+  assert.deepEqual(evidenceCalls[0].scopedCoverage, {
+    complete: false,
+    coverageLevel: 'skim',
+    coverageFraction: 0.1,
+    workUnits: { requested: 1, total: 10, successful: 0, pending: 1 },
+    nodes: 1,
+    edges: 0,
+  });
+  assert.deepEqual(envelope.sourceEvidence.returnedTotals, { nodes: 1, edges: 0 });
+  assert.equal(envelope.sourceEvidence.completeCoverage, false);
+  assert.deepEqual(envelope.sourceEvidence.scopedCoverage, {
+    ...evidenceCalls[0].scopedCoverage,
+    complete: true,
+    workUnits: { requested: 1, total: 10, successful: 1, pending: 0 },
+  });
 });
 
 test('pinned PGS rejects non-integer projection totals before evidence or provider work', async t => {
@@ -1283,6 +1421,22 @@ test('fractional scope completes honestly and a higher level executes only pendi
   assert.equal(complete.result.metadata.pgs.successfulSweeps, 6);
   assert.equal(retry.calls.filter(call => call.phase === 'sweep').length, 3);
   assert.equal(retry.calls.filter(call => call.phase === 'synth').length, 1);
+});
+
+test('retryable partial PGS reports requested-scope completion from final durable work state', async t => {
+  const scratch = await scratchFixture(t);
+  const pin = sourcePin();
+  const fixture = makeEngine({ retryableSweepFailureAt: 2 });
+
+  const partial = await fixture.engine.runPinnedOperation(options(pin, scratch));
+
+  assert.equal(partial.state, 'partial');
+  assert.equal(partial.error.code, 'pgs_partitions_incomplete');
+  assert.equal(partial.sourceEvidence.scopedCoverage.complete, false);
+  assert.equal(partial.sourceEvidence.scopedCoverage.workUnits.requested, 6);
+  assert.equal(partial.sourceEvidence.scopedCoverage.workUnits.successful, 5);
+  assert.equal(partial.sourceEvidence.scopedCoverage.workUnits.pending, 1);
+  assert.equal(partial.result.metadata.pgs.scopeComplete, false);
 });
 
 test('targeted PGS synthesizes only the explicit partition scope and expands by union', async t => {

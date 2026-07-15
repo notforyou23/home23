@@ -4,7 +4,36 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { NetworkMemory } = require('../../../engine/src/memory/network-memory.js');
-const { scoreMemorySalience } = require('../../../engine/src/memory/provenance-salience.js');
+const {
+  scoreMemorySalience,
+  scoreMemoryAuthority,
+} = require('../../../engine/src/memory/provenance-salience.js');
+const {
+  classifyClaimAuthority,
+  isVerifiedMemoryClosure,
+  projectMemoryRelations,
+} = require('../../../shared/memory-authority.cjs');
+const {
+  attestMemoryAuthority,
+  verifyMemoryAuthorityAttestation,
+} = require('../../../shared/memory-authority-attestation.cjs');
+
+const AUTHORITY_KEY = '5'.repeat(64);
+const priorAuthorityKey = process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = AUTHORITY_KEY;
+test.after(() => {
+  if (priorAuthorityKey === undefined) delete process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+  else process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = priorAuthorityKey;
+});
+
+function attestedNode(id, node) {
+  const copy = structuredClone(node);
+  return attestMemoryAuthority({
+    id,
+    created: copy.created || copy.asserted_at || '2026-07-14T15:00:00.000Z',
+    ...copy,
+  }, AUTHORITY_KEY);
+}
 
 function makeMemory() {
   const memory = new NetworkMemory({
@@ -28,6 +57,27 @@ function makeMemoryLite() {
   const memory = makeMemory();
   memory.embed = async () => null;
   return memory;
+}
+
+function verifiedProvenance(ref) {
+  return {
+    schema: 'home23.node-provenance.v1', authorityClass: 'verified_current_state',
+    operationalAuthority: true, sourceRefs: [`probe:${ref}`], evidenceRefs: [`verifier:${ref}`],
+  };
+}
+
+function closureProvenance(ref) {
+  return {
+    schema: 'home23.node-provenance.v1', authorityClass: 'worker_receipt',
+    sourceRefs: [`incident:${ref}`], evidenceRefs: [`verifier:${ref}-live`],
+  };
+}
+
+function correctionProvenance(ref) {
+  return {
+    schema: 'home23.node-provenance.v1', authorityClass: 'jtr_correction',
+    sourceRefs: [ref], evidenceRefs: [ref],
+  };
 }
 
 function makeRewireMemory() {
@@ -119,6 +169,30 @@ test('retrieval salience demotes cron conversation logs below direct user conver
   assert.ok(directScore > cronScore);
 });
 
+test('NetworkMemory semantic and keyword routes use the shared authority scorer exactly once', async () => {
+  const memory = makeMemoryLite();
+  const nowMs = Date.parse('2026-07-14T16:00:00.000Z');
+  const node = await memory.addNode({
+    concept: 'Current shared scorer canary is healthy.', tag: 'state_snapshot',
+    asserted_at: '2026-07-14T15:59:00.000Z',
+    provenance: { authority: { presentTenseAuthority: true }, source_refs: ['probe:canary'] },
+    evidence: { evidence_links: ['verifier:canary'] },
+  }, 'state_snapshot', null);
+  const options = { intent: 'current_state', query: 'current shared scorer canary', nowMs };
+  assert.equal(
+    memory.scoreTemporalRetrieval(node, 0.8, options),
+    scoreMemoryAuthority(node, 0.8, options),
+  );
+
+  const [keyword] = memory.queryByKeyword('current shared scorer canary', 1, {
+    intent: 'current_state', nowMs, markAccess: false,
+  });
+  assert.equal(
+    keyword.retrievalScore,
+    scoreMemoryAuthority(keyword, keyword.similarity, options),
+  );
+});
+
 test('current-state retrieval suppresses an older open alarm when a newer verified closure exists', async () => {
   const memory = makeMemory();
   const alarm = await memory.addNode({
@@ -126,13 +200,17 @@ test('current-state retrieval suppresses an older open alarm when a newer verifi
     tag: 'incident', status: 'open', asserted_at: '2026-07-13T12:00:00.000Z',
     metadata: { incidentId: 'brain-fetch' },
   }, 'incident', [1, 0]);
-  const closure = await memory.addNode({
+  const closure = await memory.addNode(attestedNode('closure-brain-fetch-current', {
     concept: '[GOAL_RESOLUTION] COMPLETED brain endpoint incident after live probe.',
     tag: 'goal_resolution', type: 'goal_resolution', status: 'completed',
     asserted_at: '2026-07-14T15:00:00.000Z',
-    metadata: { kind: 'goal_resolution', incidentId: 'brain-fetch', resolved_at: '2026-07-14T15:00:00.000Z' },
-    provenance: { source_refs: ['receipt:brain-fetch'] },
-  }, 'goal_resolution', [1, 0]);
+    metadata: {
+      kind: 'goal_resolution', incidentId: 'brain-fetch',
+      resolved_at: '2026-07-14T15:00:00.000Z',
+      closure_proof_refs: ['verifier:brain-fetch-live'],
+    },
+    provenance: closureProvenance('brain-fetch'),
+  }), 'goal_resolution', [1, 0]);
 
   const results = await memory.query('current brain endpoint incident status', 5, {
     intent: 'current_state', markAccess: false, nowMs: Date.parse('2026-07-14T16:00:00.000Z'),
@@ -149,11 +227,16 @@ test('recurrence retrieval keeps incident history but ranks the closure before t
     concept: 'Brain endpoint incident is open and retrieval is down.', tag: 'incident', status: 'open',
     asserted_at: '2026-07-13T12:00:00.000Z', metadata: { incidentId: 'brain-fetch' },
   }, 'incident', [1, 0]);
-  const closure = await memory.addNode({
+  const closure = await memory.addNode(attestedNode('closure-brain-fetch-history', {
     concept: '[GOAL_RESOLUTION] COMPLETED brain endpoint incident.', tag: 'goal_resolution',
     type: 'goal_resolution', status: 'completed', asserted_at: '2026-07-14T15:00:00.000Z',
-    metadata: { kind: 'goal_resolution', incidentId: 'brain-fetch', resolved_at: '2026-07-14T15:00:00.000Z' },
-  }, 'goal_resolution', [1, 0]);
+    metadata: {
+      kind: 'goal_resolution', incidentId: 'brain-fetch',
+      resolved_at: '2026-07-14T15:00:00.000Z',
+      closure_proof_refs: ['verifier:brain-fetch-live'],
+    },
+    provenance: closureProvenance('brain-fetch'),
+  }), 'goal_resolution', [1, 0]);
 
   const results = await memory.query('brain endpoint incident recurrence history', 5, {
     intent: 'history', markAccess: false, nowMs: Date.parse('2026-07-14T16:00:00.000Z'),
@@ -161,6 +244,30 @@ test('recurrence retrieval keeps incident history but ranks the closure before t
 
   assert.equal(results[0].id, closure.id);
   assert.equal(results.some((node) => node.id === alarm.id), true);
+});
+
+test('jtr correction suppresses its explicitly superseded claim for current-state retrieval', async () => {
+  const memory = makeMemory();
+  const stale = await memory.addNode({
+    id: 'stale-claim', concept: 'Current brain path uses legacy sidecars.',
+    asserted_at: '2026-07-13T12:00:00.000Z',
+  }, 'conversation_sessions', [1, 0]);
+  const correction = await memory.addNode(attestedNode('correction-manifest-v1', {
+    concept: 'Current brain path uses manifest-v1.',
+    tag: 'conversation_sessions',
+    asserted_at: '2026-07-14T15:00:00.000Z',
+    metadata: { actor: 'jtr', correction: true, supersedes: [stale.id] },
+    actor: 'jtr',
+    provenance: correctionProvenance('turn:correction:user'),
+  }), 'conversation_sessions', [1, 0]);
+
+  const results = await memory.query('current brain path', 5, {
+    intent: 'current_state', markAccess: false,
+    nowMs: Date.parse('2026-07-14T16:00:00.000Z'),
+  });
+  assert.equal(results[0].id, correction.id);
+  assert.equal(results.some((node) => node.id === stale.id), false);
+  assert.deepEqual(results[0].correctionEvidence.supersedes, [`node:${stale.id}`]);
 });
 
 test('a progress receipt cannot suppress an open incident as if it were closure proof', async () => {
@@ -189,11 +296,15 @@ test('verified live telemetry is not penalized below equivalent verified state e
   const memory = makeMemory();
   const evidence = {
     asserted_at: '2026-07-14T15:59:00.000Z',
-    provenance: { authority: { presentTenseAuthority: true }, source_refs: ['probe:live'] },
+    provenance: verifiedProvenance('live'),
     evidence: { evidence_links: ['verifier:live'] },
   };
-  const telemetry = { ...evidence, concept: 'Live metric is healthy.', tag: 'telemetry' };
-  const snapshot = { ...evidence, concept: 'Live state is healthy.', tag: 'state_snapshot' };
+  const telemetry = attestedNode('verified-telemetry', {
+    ...evidence, concept: 'Live metric is healthy.', tag: 'telemetry',
+  });
+  const snapshot = attestedNode('verified-snapshot', {
+    ...evidence, concept: 'Live state is healthy.', tag: 'state_snapshot',
+  });
   const options = { intent: 'current_state', nowMs: Date.parse('2026-07-14T16:00:00.000Z') };
 
   const telemetryScore = scoreMemorySalience(telemetry, 1, options);
@@ -225,12 +336,12 @@ test('peripheral semantic retrieval applies authority ranking instead of returni
   const narrative = await memory.addNode({
     concept: 'Brain endpoint status report.', tag: 'synthesis_report', activation: 0.01,
   }, 'synthesis_report', [1, 0]);
-  const verified = await memory.addNode({
+  const verified = await memory.addNode(attestedNode('verified-brain-probe', {
     concept: 'Brain endpoint live probe succeeded.', tag: 'state_snapshot', activation: 0.2,
     asserted_at: new Date().toISOString(),
-    provenance: { authority: { presentTenseAuthority: true }, source_refs: ['probe:brain'] },
+    provenance: verifiedProvenance('brain'),
     evidence: { evidence_links: ['verifier:brain'] },
-  }, 'state_snapshot', [1, 0]);
+  }), 'state_snapshot', [1, 0]);
 
   const results = await memory.queryPeripheral('brain endpoint status', 2);
 
@@ -250,6 +361,7 @@ test('addNode preserves temporal metadata through exportGraph', async () => {
     superseded_by: 'node-newer',
     confidence_decay: 0.8,
     status: 'completed',
+    evidence: { evidence_links: ['verifier:goal-closure'] },
     metadata: { kind: 'goal_resolution', goalId: 'g1' },
   }, 'goal_resolution', [1, 0]);
 
@@ -261,10 +373,226 @@ test('addNode preserves temporal metadata through exportGraph', async () => {
   assert.equal(node.superseded_by, 'node-newer');
   assert.equal(node.confidence_decay, 0.8);
   assert.equal(node.status, 'completed');
+  assert.deepEqual(node.evidence.evidence_links, ['verifier:goal-closure']);
   assert.equal(node.metadata.goalId, 'g1');
   assert.equal(node.source_class, 'durable');
   assert.equal(node.salienceWeight, 1);
   assert.equal(node.provenance.sourceClass, 'durable');
+});
+
+test('ordinary NetworkMemory callers cannot auto-sign raw authority profiles', async () => {
+  const memory = makeMemory();
+  const raw = await memory.addNode({
+    id: 'raw-self-promoted',
+    concept: 'Raw caller claims to be verified.',
+    provenance: verifiedProvenance('raw-self'),
+    evidence: { evidence_links: ['verifier:raw-self'] },
+  }, 'state_snapshot', [1, 0]);
+
+  assert.equal(verifyMemoryAuthorityAttestation(raw, AUTHORITY_KEY), false);
+  assert.notEqual(classifyClaimAuthority(raw, { authorityKey: AUTHORITY_KEY }), 'verified_current_state');
+});
+
+test('addNode re-attests only a valid incoming receipt after final normalization', async () => {
+  const memory = makeMemory();
+  memory.config.coordinator = {
+    useMemorySummaries: true,
+    extractiveSummarization: true,
+  };
+  memory.extractiveSummarizer.summarize = () => ({
+    quality: 1,
+    summary: 'Normalized signed summary.',
+    keyPhrase: 'normalized-receipt',
+  });
+  const receipt = attestedNode('normalized-goal-receipt', {
+    concept: 'Goal completed after a live verification and produced a durable resolution receipt.',
+    tag: 'goal_resolution',
+    type: 'goal_resolution',
+    status: 'completed',
+    metadata: {
+      kind: 'goal_resolution',
+      goalId: 'goal-1',
+      resolved_at: '2026-07-14T15:00:00.000Z',
+      closure_proof_refs: ['worker-receipt:goal-curator:goal-1'],
+    },
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'worker_receipt',
+      sourceRefs: ['goal:goal-1'],
+      evidenceRefs: ['worker-receipt:goal-curator:goal-1'],
+    },
+  });
+
+  const stored = await memory.addNode(receipt, 'goal_resolution', [1, 0]);
+  assert.equal(stored.summary, 'Normalized signed summary.');
+  assert.equal(stored.keyPhrase, 'normalized-receipt');
+  assert.equal(verifyMemoryAuthorityAttestation(stored, AUTHORITY_KEY), true);
+  assert.equal(classifyClaimAuthority(stored, { authorityKey: AUTHORITY_KEY }), 'worker_receipt');
+
+  const raw = await memory.addNode({
+    id: 'normalized-raw-claim',
+    concept: 'Unsigned caller claims verified state.',
+    provenance: verifiedProvenance('normalized-raw'),
+    evidence: { evidence_links: ['verifier:normalized-raw'] },
+  }, 'state_snapshot', [1, 0]);
+  assert.equal(verifyMemoryAuthorityAttestation(raw, AUTHORITY_KEY), false);
+  assert.notEqual(classifyClaimAuthority(raw, { authorityKey: AUTHORITY_KEY }), 'verified_current_state');
+});
+
+test('addNode snapshots a signed receipt before asynchronous embedding', async () => {
+  const memory = makeMemory();
+  let releaseEmbedding;
+  let markEmbeddingStarted;
+  const embeddingStarted = new Promise((resolve) => { markEmbeddingStarted = resolve; });
+  const embeddingGate = new Promise((resolve) => { releaseEmbedding = resolve; });
+  memory.embed = async () => {
+    markEmbeddingStarted();
+    await embeddingGate;
+    return [1, 0];
+  };
+  const receipt = attestedNode('goal-receipt-toctou', {
+    concept: 'Original goal completed.',
+    tag: 'goal_resolution',
+    type: 'goal_resolution',
+    status: 'completed',
+    metadata: {
+      kind: 'goal_resolution',
+      goalId: 'original-goal',
+      resolved_at: '2026-07-14T15:00:00.000Z',
+      closure_proof_refs: ['worker-receipt:goal-curator:original-goal'],
+    },
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'worker_receipt',
+      sourceRefs: ['goal:original-goal'],
+      evidenceRefs: ['worker-receipt:goal-curator:original-goal'],
+    },
+  });
+
+  const pending = memory.addNode(receipt);
+  await embeddingStarted;
+  receipt.metadata.goalId = 'victim-goal';
+  receipt.provenance.sourceRefs = ['goal:victim-goal'];
+  releaseEmbedding();
+  const stored = await pending;
+
+  assert.equal(stored.metadata.goalId, 'original-goal');
+  assert.deepEqual(stored.provenance.sourceRefs, ['goal:original-goal']);
+  assert.equal(verifyMemoryAuthorityAttestation(stored, AUTHORITY_KEY), true);
+  const relations = projectMemoryRelations(stored, { authorityKey: AUTHORITY_KEY });
+  assert.equal(relations.refs.includes('goal:original-goal'), true);
+  assert.equal(relations.refs.includes('goal:victim-goal'), false);
+});
+
+test('addNode cannot promote a signed receipt through an external tag argument', async () => {
+  const memory = makeMemory();
+  const receipt = attestedNode('untagged-worker-receipt', {
+    concept: 'Worker recorded progress but did not close the goal.',
+    metadata: {
+      goalId: 'goal-open',
+      closure_proof_refs: ['worker-receipt:worker-1:goal-open'],
+    },
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'worker_receipt',
+      sourceRefs: ['goal:goal-open'],
+      evidenceRefs: ['worker-receipt:worker-1:goal-open'],
+    },
+  });
+  assert.equal(isVerifiedMemoryClosure(receipt, { authorityKey: AUTHORITY_KEY }), false);
+
+  const stored = await memory.addNode(receipt, 'goal_resolution', [1, 0]);
+  assert.notEqual(stored.tag, 'goal_resolution');
+  assert.equal(verifyMemoryAuthorityAttestation(stored, AUTHORITY_KEY), true);
+  assert.equal(isVerifiedMemoryClosure(stored, { authorityKey: AUTHORITY_KEY }), false);
+});
+
+test('addNode never invents current authority time for an undated signed record', async () => {
+  const memory = makeMemory();
+  const undated = {
+    id: 'undated-worker-receipt',
+    concept: 'Undated worker receipt.',
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'worker_receipt',
+      sourceRefs: ['goal:undated'],
+      evidenceRefs: ['worker-receipt:worker-1:undated'],
+    },
+  };
+  attestMemoryAuthority(undated, AUTHORITY_KEY);
+
+  const stored = await memory.addNode(undated, 'general', [1, 0]);
+  assert.equal(verifyMemoryAuthorityAttestation(stored, AUTHORITY_KEY), false);
+  assert.notEqual(classifyClaimAuthority(stored, { authorityKey: AUTHORITY_KEY }), 'worker_receipt');
+});
+
+test('addNode refuses to mint a new authority identity from a colliding signed ID', async () => {
+  const memory = makeMemory();
+  const receipt = attestedNode('unique-worker-receipt', {
+    concept: 'Unique signed receipt.',
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'worker_receipt',
+      sourceRefs: ['goal:unique'],
+      evidenceRefs: ['worker-receipt:worker-1:unique'],
+    },
+  });
+  const first = await memory.addNode(receipt, 'general', [1, 0]);
+  await assert.rejects(
+    memory.addNode(structuredClone(receipt), 'general', [1, 0]),
+    error => error?.code === 'authority_node_id_collision',
+  );
+  assert.equal(memory.nodes.size, 1);
+  assert.equal(memory.nodes.get(first.id), first);
+});
+
+test('addNode preserves and collision-checks a signed memory_id-only identity', async () => {
+  const memory = makeMemory();
+  const receipt = attestMemoryAuthority({
+    memory_id: 'memory-id-only-worker-receipt',
+    concept: 'Receipt uses the durable memory_id alias.',
+    created: '2026-07-14T15:00:00.000Z',
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'worker_receipt',
+      sourceRefs: ['goal:memory-id-only'],
+      evidenceRefs: ['worker-receipt:worker-1:memory-id-only'],
+    },
+  }, AUTHORITY_KEY);
+
+  assert.equal(verifyMemoryAuthorityAttestation(receipt, AUTHORITY_KEY), true);
+  const stored = await memory.addNode(receipt, 'general', [1, 0]);
+  assert.equal(stored.id, 'memory-id-only-worker-receipt');
+  assert.equal(verifyMemoryAuthorityAttestation(stored, AUTHORITY_KEY), true);
+  await assert.rejects(
+    memory.addNode(structuredClone(receipt), 'general', [1, 0]),
+    error => error?.code === 'authority_node_id_collision',
+  );
+  assert.equal(memory.nodes.size, 1);
+});
+
+test('addNode recomputes embeddings for authenticated input', async () => {
+  const memory = makeMemory();
+  let embedCalls = 0;
+  memory.embed = async () => {
+    embedCalls += 1;
+    return [1, 0];
+  };
+  const receipt = attestedNode('signed-vector-receipt', {
+    concept: 'Signed receipt with caller vector.',
+    embedding: [0, 1],
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'worker_receipt',
+      sourceRefs: ['goal:vector'],
+      evidenceRefs: ['worker-receipt:worker-1:vector'],
+    },
+  });
+
+  const stored = await memory.addNode(receipt, 'general', [0, 1]);
+  assert.equal(embedCalls, 1);
+  assert.deepEqual(Array.from(stored.embedding), [1, 0]);
+  assert.equal(verifyMemoryAuthorityAttestation(stored, AUTHORITY_KEY), true);
 });
 
 test('runtime embeddings use typed arrays while exports stay JSON arrays', async () => {
@@ -306,7 +634,7 @@ test('Memory Lite query falls back to keyword retrieval when query embedding fai
 
   assert.equal(results.length, 1);
   assert.match(results[0].concept, /Project Alpha/);
-  assert.equal(results[0].retrievalMode, 'keyword');
+  assert.equal(results[0].retrievalMode, 'logical-source-scan');
 });
 
 test('own-brain semantic query reinforces access metadata and persistence changes', async () => {

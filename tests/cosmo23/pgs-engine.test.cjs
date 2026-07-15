@@ -453,6 +453,53 @@ test('skips cross-partition synthesis for a single partition PGS sweep', async (
   assert.equal(result.answer, 'single partition answer');
   assert.equal(result.metadata.pgs.synthesisSkipped, true);
   assert.equal(result.metadata.pgs.singlePartition, true);
+  assert.equal(result.sourceEvidence.retrievalMode, 'logical-source-scan');
+  assert.equal(result.sourceEvidence.sourceHealth, 'degraded');
+  assert.equal(result.sourceEvidence.freshness, 'unknown');
+  assert.equal(result.sourceEvidence.indexCoverage.complete, false);
+  assert.equal(result.sourceEvidence.indexCoverage.completeness, 'unavailable');
+  assert.equal(result.sourceEvidence.indexCoverage.indexedRevision, null);
+  assert.equal(result.sourceEvidence.indexCoverage.currentRevision, null);
+  assert.equal(result.sourceEvidence.scopedCoverage.complete, true);
+  assert.equal(result.sourceEvidence.completeCoverage, true);
+  assert.deepEqual(result.sourceEvidence.authoritativeTotals, { nodes: 3, edges: 0 });
+  assert.deepEqual(result.sourceEvidence.returnedTotals, { nodes: 3, edges: 0 });
+  assert.equal(Number.isFinite(result.sourceEvidence.stageTimingsMs.response), true);
+  assert.equal(result.sourceEvidence.authoritySummary.total, 3);
+  assert.ok(result.sourceEvidence.sourceChain.length <= 2);
+  assert.match(result.metadata.pgs.evidenceDoctrine, /narrative and generated doctrine/i);
   assert.equal(updated.searched, 1);
   assert.equal(updated.remaining, 0);
+});
+
+test('legacy PGS reports complete requested scope separately from partial graph and absent index', () => {
+  const engine = makeEngine();
+  const evidence = engine.buildLegacySourceEvidence({
+    nodes: [
+      { id: 'n1', concept: 'one' },
+      { id: 'n2', concept: 'two' },
+      { id: 'n3', concept: 'three' },
+    ],
+    edges: [
+      { source: 'n1', target: 'n2' },
+      { source: 'n2', target: 'n3' },
+    ],
+    partitions: [
+      { id: 1, nodeIds: ['n1', 'n2'] },
+      { id: 2, nodeIds: ['n3'] },
+    ],
+    partitionsToSweep: [{ id: 1, nodeIds: ['n1', 'n2'] }],
+    successfulSweeps: [{ partitionId: 1 }],
+    startTime: Date.now(),
+  });
+
+  assert.equal(evidence.sourceHealth, 'degraded');
+  assert.equal(evidence.freshness, 'unknown');
+  assert.equal(evidence.indexCoverage.complete, false);
+  assert.equal(evidence.scopedCoverage.complete, true);
+  assert.deepEqual(evidence.scopedCoverage.partitions, { requested: 1, successful: 1, total: 2 });
+  assert.equal(evidence.completeCoverage, false);
+  assert.deepEqual(evidence.authoritativeTotals, { nodes: 3, edges: 2 });
+  assert.deepEqual(evidence.returnedTotals, { nodes: 2, edges: 1 });
+  assert.equal(evidence.matchOutcome, 'matches');
 });

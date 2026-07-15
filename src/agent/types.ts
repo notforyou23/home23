@@ -141,7 +141,7 @@ export interface BrainToolEventMetadata {
   classification?: string;
   error?: { code: string; message: string; retryable: boolean };
   pgs?: Record<string, string | number | boolean | null>;
-  sourceEvidence?: Record<string, string | number | boolean | null>;
+  sourceEvidence?: Record<string, unknown>;
 }
 
 // ─── Agent Response ─────────────────────────────────────────

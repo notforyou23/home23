@@ -10,6 +10,13 @@ const PROVIDER_OMITTED_VECTOR_FIELDS = new Set([
   'vector',
   'vectors',
 ]);
+const PRIVATE_PATHS = Object.freeze([
+  /file:\/\/(?:localhost)?\/[^\x00\s"'`<>\])},;]+/giu,
+  /\\\\[^\s\\/"'`<>\])},;]+\\[^\s"'`<>\])},;]+/gu,
+  /(?<![A-Za-z0-9_.-])[A-Za-z]:[\\/][^\x00\s"'`<>\])},;]+/gu,
+  /(?<![A-Za-z0-9_.:\/\]\-])\/[^\x00\s"'`<>\])},;]+/gu,
+]);
+const TYPED_ABSOLUTE_LOCAL_PATH = /\b([A-Za-z][A-Za-z0-9+.-]*:)(\/(?!\/)(?:[^/\x00\s"'`<>\])},;]+\/)+[^/\x00\s"'`<>\])},;]+)/gu;
 
 function typed(code, message) {
   return Object.assign(new Error(message), { code, retryable: false });
@@ -61,9 +68,26 @@ function providerRecordReplacer(key, value) {
     : value;
 }
 
+function redactPrivatePaths(value) {
+  if (typeof value !== 'string') return value;
+  let redacted = value.replace(TYPED_ABSOLUTE_LOCAL_PATH, (_match, prefix, localPath) => {
+    const basename = localPath.split('/').filter(Boolean).at(-1) || 'source';
+    return `${prefix}[redacted-path]/${basename}`;
+  });
+  for (const pattern of PRIVATE_PATHS) {
+    redacted = redacted.replace(pattern, (match) => {
+      const normalized = match.replace(/^file:\/\/(?:localhost)?/iu, '');
+      const basename = normalized.split(/[\\/]/u).filter(Boolean).at(-1) || 'source';
+      return `[redacted-path]/${basename}`;
+    });
+  }
+  return redacted;
+}
+
 function serializeProviderRecord(record, {
   maxBytes,
   label = 'Pinned provider record',
+  redactPaths = false,
 } = {}) {
   if (!record || typeof record !== 'object' || Array.isArray(record)) {
     throw typed('source_invalid', `${label} must be an object`);
@@ -75,7 +99,10 @@ function serializeProviderRecord(record, {
   try {
     // The holder descriptor exposes an exact field's raw value before a
     // Buffer or typed vector's native toJSON result reaches the replacer.
-    json = JSON.stringify(record, providerRecordReplacer);
+    json = JSON.stringify(record, function providerBoundaryReplacer(key, value) {
+      const projected = providerRecordReplacer.call(this, key, value);
+      return redactPaths ? redactPrivatePaths(projected) : projected;
+    });
   } catch (cause) {
     throw typed('source_invalid', `${label} is not serializable`);
   }
@@ -97,5 +124,6 @@ function serializeProviderRecord(record, {
 
 module.exports = {
   isNumericVectorPayload,
+  redactPrivatePaths,
   serializeProviderRecord,
 };

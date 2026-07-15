@@ -32,6 +32,8 @@ const {
 } = require('./provider-completion');
 const { PGS_OPERATION_LIMITS } = require('./brain-operation-limits');
 const { projectMemoryAuthority } = require('../../shared/memory-authority.cjs');
+const { summarizeRetrievalAuthority } = require('../../shared/memory-source/contracts.cjs');
+const { redactPrivatePaths } = require('./provider-record-sanitizer');
 
 function readIntEnv(name, fallback) {
   const raw = process.env[name];
@@ -343,6 +345,10 @@ class PGSEngine {
       emit({ type: 'progress', message: 'PGS: Single partition covered; skipping cross-partition synthesis.' });
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       emit({ type: 'pgs_phase', phase: 'done', phaseIndex: 4, totalPhases: 4, message: `Complete in ${elapsed}s` });
+      const sourceEvidence = this.buildLegacySourceEvidence({
+        nodes, edges, partitions, partitionsToSweep, successfulSweeps, startTime,
+        graphCoverageComplete: updatedRemaining === 0 && failedSweeps === 0,
+      });
       return {
         answer: successfulSweeps[0].sweepOutput,
         metadata: {
@@ -365,7 +371,8 @@ class PGSEngine {
             sessionMode: mode,
             sessionId: pgsSessionId,
             searched: updatedSearched,
-            remaining: updatedRemaining
+            remaining: updatedRemaining,
+            evidenceDoctrine: 'Narrative and generated doctrine require direct evidence before settling present-tense operational facts.'
           },
           sources: {
             memoryNodes: nodes.length,
@@ -374,7 +381,8 @@ class PGSEngine {
             liveJournalNodes: 0
           },
           timestamp: new Date().toISOString()
-        }
+        },
+        sourceEvidence,
       };
     }
 
@@ -395,6 +403,10 @@ class PGSEngine {
     const synthesisCommit = typeof synthesisResult === 'string' ? null : synthesisResult.synthesisCommit;
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const sourceEvidence = this.buildLegacySourceEvidence({
+      nodes, edges, partitions, partitionsToSweep, successfulSweeps, startTime,
+      graphCoverageComplete: updatedRemaining === 0 && failedSweeps === 0,
+    });
     emit({ type: 'pgs_phase', phase: 'done', phaseIndex: 4, totalPhases: 4, message: `Complete in ${elapsed}s` });
 
     // Build result in standard format
@@ -419,7 +431,8 @@ class PGSEngine {
           sessionMode: mode,
           sessionId: pgsSessionId,
           searched: updatedSearched,
-          remaining: updatedRemaining
+          remaining: updatedRemaining,
+          evidenceDoctrine: 'Narrative and generated doctrine require direct evidence before settling present-tense operational facts.'
         },
         sources: {
           memoryNodes: nodes.length,
@@ -428,13 +441,86 @@ class PGSEngine {
           liveJournalNodes: 0
         },
         timestamp: new Date().toISOString()
-      }
+      },
+      sourceEvidence,
     };
   }
 
   async executeDirectQueryFallback(query, options, emit, reason) {
     emit({ type: 'progress', message: `PGS: ${reason}. Using direct query path for complete small-run context.` });
     return await this.qe.executeEnhancedQuery(query, { ...options, enablePGS: false });
+  }
+
+  buildLegacySourceEvidence({
+    nodes,
+    edges = [],
+    partitions = partitionsToSweep,
+    partitionsToSweep,
+    successfulSweeps,
+    startTime,
+    graphCoverageComplete,
+  }) {
+    const successfulPartitionIds = new Set(successfulSweeps.map(sweep => String(sweep.partitionId)));
+    const scopedNodeIds = new Set(partitionsToSweep
+      .filter(partition => successfulPartitionIds.has(String(partition.id)))
+      .flatMap(partition => partition.nodeIds || []).map(String));
+    const nodeAuthorities = nodes
+      .filter(node => scopedNodeIds.has(String(node.id)))
+      .map(node => projectMemoryAuthority(node, { limit: 2 }));
+    const sourceChain = [];
+    for (const authority of nodeAuthorities) {
+      for (const entry of authority.sourceChain || []) {
+        const projected = { kind: entry.kind, ref: redactPrivatePaths(entry.ref) };
+        if (!sourceChain.some(existing => existing.kind === projected.kind && existing.ref === projected.ref)) {
+          sourceChain.push(projected);
+        }
+        if (sourceChain.length >= 2) break;
+      }
+      if (sourceChain.length >= 2) break;
+    }
+    const scopedEdges = edges.filter(edge => (
+      scopedNodeIds.has(String(edge.source)) && scopedNodeIds.has(String(edge.target))
+    ));
+    const scopedComplete = partitionsToSweep.every(partition => (
+      successfulPartitionIds.has(String(partition.id))
+    ));
+    const completeCoverage = graphCoverageComplete === true;
+    return {
+      retrievalMode: 'logical-source-scan',
+      sourceHealth: 'degraded',
+      freshness: 'unknown',
+      matchOutcome: nodeAuthorities.length > 0 ? 'matches' : 'unknown',
+      authoritativeTotals: { nodes: nodes.length, edges: edges.length },
+      returnedTotals: { nodes: nodeAuthorities.length, edges: scopedEdges.length },
+      filteredTotal: nodeAuthorities.length,
+      completeCoverage,
+      scopedCoverage: {
+        complete: scopedComplete,
+        partitions: {
+          requested: partitionsToSweep.length,
+          successful: successfulPartitionIds.size,
+          total: partitions.length,
+        },
+        nodes: nodeAuthorities.length,
+      },
+      indexWatermark: { builtFromRevision: null, fresh: false },
+      indexCoverage: {
+        complete: false,
+        indexedRevision: null,
+        currentRevision: null,
+        coveredThroughRevision: null,
+        deltaRecords: 0,
+        distinctChangedNodes: 0,
+        distinctUpsertedNodes: 0,
+        distinctRemovedNodes: 0,
+        edgeOnlyRecords: 0,
+        route: 'legacy-pgs-partition-scan',
+        completeness: 'unavailable',
+      },
+      stageTimingsMs: { response: Date.now() - startTime },
+      authoritySummary: summarizeRetrievalAuthority(nodeAuthorities),
+      sourceChain,
+    };
   }
 
   // ─── Phase 1: Partition (cached) ─────────────────────────────────────

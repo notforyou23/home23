@@ -17,6 +17,17 @@ const {
   openConfinedRegularFile,
 } = require('../../shared/memory-source/confined-file.cjs');
 const { OPENED_JSONL_FILE } = require('../../shared/memory-source/private-capabilities.cjs');
+const {
+  attestMemoryAuthority,
+} = require('../../shared/memory-authority-attestation.cjs');
+
+const AUTHORITY_KEY = '4'.repeat(64);
+const priorAuthorityKey = process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = AUTHORITY_KEY;
+test.after(() => {
+  if (priorAuthorityKey === undefined) delete process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+  else process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = priorAuthorityKey;
+});
 
 async function tempDir() {
   return fsp.mkdtemp(path.join(os.tmpdir(), 'home23-memory-source-reader-'));
@@ -537,7 +548,9 @@ test('short-token keyword canary is searchable with complete-coverage evidence',
   const source = await openMemorySource(dir);
   const result = await source.searchKeyword({ query: 'AI', topK: 100 });
   assert.deepEqual(result.results.map((row) => row.id), ['1']);
-  assert.equal(result.evidence.sourceHealth, 'healthy');
+  assert.equal(result.evidence.sourceHealth, 'degraded');
+  assert.equal(result.evidence.retrievalMode, 'logical-source-scan');
+  assert.equal(result.evidence.fallback.reason, 'keyword_source_scan');
   assert.equal(result.evidence.matchOutcome, 'matches');
   await assert.rejects(() => source.searchKeyword({ query: '   ... ' }), { code: 'invalid_request' });
   await source.close();
@@ -592,6 +605,7 @@ test('keyword search ranks current verified evidence above earlier archive order
       evidenceRefs: ['verifier:live-route'],
     },
   };
+  attestMemoryAuthority(current, AUTHORITY_KEY);
   const fixture = await createManifestFixture({
     nodes: [archive, current],
     delta: [],
@@ -620,4 +634,122 @@ test('keyword search ranks current verified evidence above earlier archive order
     sourceChain: [{ kind: 'evidence', ref: 'verifier:live-route' }],
   });
   assert.equal(result.evidence.completeCoverage, true);
+});
+
+test('keyword source scan applies shared closure and correction authority with explicit fallback mode', async (t) => {
+  const nodes = [
+    {
+      id: 'alarm-old', concept: 'Current brain route status is down.', status: 'open',
+      asserted_at: '2026-07-13T12:00:00.000Z', metadata: { incidentId: 'brain-route' },
+    },
+    {
+      id: 'closure-new', concept: 'Current brain route status incident is closed.',
+      tag: 'goal_resolution', type: 'goal_resolution', status: 'completed',
+      asserted_at: '2026-07-14T15:00:00.000Z',
+      metadata: {
+        incidentId: 'brain-route', resolved_at: '2026-07-14T15:00:00.000Z',
+        closure_proof_refs: ['verifier:brain-route-live'],
+        provenance: {
+          schema: 'home23.node-provenance.v1', authorityClass: 'worker_receipt',
+          retrievalDomain: 'closed_incidents', sourceRefs: ['incident:brain-route'],
+          evidenceRefs: ['verifier:brain-route-live'],
+          generationMethod: 'goal_curator_resolution',
+        },
+      },
+    },
+    {
+      id: 'claim-old', concept: 'Current brain route status uses legacy sidecars.',
+      asserted_at: '2026-07-13T13:00:00.000Z',
+    },
+    {
+      id: 'correction-new', concept: 'Current brain route status uses manifest-v1.',
+      asserted_at: '2026-07-14T15:30:00.000Z',
+      metadata: {
+        actor: 'jtr', correction: true, supersedes: ['claim-old'],
+        provenance: {
+          schema: 'home23.node-provenance.v1', authorityClass: 'jtr_correction',
+          retrievalDomain: 'current_ops', sourceRefs: ['turn:correction:user'],
+          evidenceRefs: ['turn:correction:user'],
+        },
+      },
+    },
+  ];
+  attestMemoryAuthority(nodes[1], AUTHORITY_KEY);
+  attestMemoryAuthority(nodes[3], AUTHORITY_KEY);
+  const fixture = await createManifestFixture({
+    nodes, delta: [], baseRevision: 2, currentRevision: 2,
+    summary: { nodeCount: nodes.length, edgeCount: 0, clusterCount: 1 },
+  });
+  t.after(() => fsp.rm(fixture.dir, { recursive: true, force: true }));
+  const source = await openMemorySource(fixture.dir);
+  t.after(() => source.close());
+
+  const current = await source.searchKeyword({
+    query: 'current brain route status', topK: 10, intent: 'current_state',
+  });
+  assert.deepEqual(current.results.map((row) => row.id), ['correction-new', 'closure-new']);
+  assert.ok(current.results.every((row) => row.retrievalMode === 'logical-source-scan'));
+  assert.equal(current.evidence.sourceHealth, 'degraded');
+  assert.deepEqual(current.evidence.fallback, {
+    route: 'logical-source-scan', reason: 'keyword_source_scan', completeness: 'complete',
+  });
+  assert.deepEqual(current.evidence.indexCoverage, {
+    complete: false,
+    indexedRevision: null,
+    currentRevision: 2,
+    coveredThroughRevision: null,
+    route: 'logical-source-scan',
+    completeness: 'complete',
+  });
+  assert.equal(Number.isFinite(current.evidence.stageTimingsMs.keywordScoring), true);
+  assert.equal(Number.isFinite(current.evidence.stageTimingsMs.response), true);
+
+  const history = await source.searchKeyword({
+    query: 'brain route status history', topK: 10, intent: 'history',
+  });
+  assert.equal(history.results.find((row) => row.id === 'alarm-old').closureEvidence.closureNodeId, 'closure-new');
+  assert.equal(history.results.find((row) => row.id === 'claim-old').supersessionEvidence.correctionNodeId, 'correction-new');
+});
+
+test('keyword source scan resolves suppression before topK so lower eligible matches backfill', async (t) => {
+  const nodes = [
+    {
+      id: 'alarm-old', concept: 'service status exact', status: 'open',
+      asserted_at: '2026-07-13T12:00:00.000Z', metadata: { incidentId: 'service-route' },
+    },
+    {
+      id: 'eligible', concept: 'service alternative evidence',
+      asserted_at: '2026-07-14T14:00:00.000Z',
+    },
+    {
+      id: 'closure-new', concept: 'resolved unrelated wording',
+      tag: 'goal_resolution', status: 'completed',
+      asserted_at: '2026-07-14T15:00:00.000Z',
+      metadata: {
+        incidentId: 'service-route', resolved_at: '2026-07-14T15:00:00.000Z',
+        closure_proof_refs: ['verifier:service-route-live'],
+        provenance: {
+          schema: 'home23.node-provenance.v1', authorityClass: 'worker_receipt',
+          retrievalDomain: 'closed_incidents', sourceRefs: ['incident:service-route'],
+          evidenceRefs: ['verifier:service-route-live'],
+          generationMethod: 'goal_curator_resolution',
+        },
+      },
+    },
+  ];
+  attestMemoryAuthority(nodes[2], AUTHORITY_KEY);
+  const fixture = await createManifestFixture({
+    nodes, delta: [], baseRevision: 2, currentRevision: 2,
+    summary: { nodeCount: nodes.length, edgeCount: 0, clusterCount: 1 },
+  });
+  t.after(() => fsp.rm(fixture.dir, { recursive: true, force: true }));
+  const source = await openMemorySource(fixture.dir);
+  t.after(() => source.close());
+
+  const result = await source.searchKeyword({
+    query: 'service status exact', topK: 1, intent: 'current_state',
+  });
+
+  assert.deepEqual(result.results.map((row) => row.id), ['eligible']);
+  assert.equal(result.evidence.matchOutcome, 'matches');
 });

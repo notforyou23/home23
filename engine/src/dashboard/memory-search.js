@@ -11,21 +11,28 @@ const {
   classifyMatchOutcome,
   parseBoundedInteger,
   normalizeKeywordTokens,
+  summarizeRetrievalAuthority,
   memorySourceError,
   rethrowAbort,
   throwIfAborted,
 } = require('../../../shared/memory-source');
 const {
+  ANN_AUTHORITY_PROJECTION_SCHEMA,
   MAX_ANN_LABEL_BYTES,
   projectAnnLabel,
 } = require('../../../shared/ann-label-contract.cjs');
 const {
   classifyMemoryProvenance,
-  explainMemorySalienceScore,
 } = require('../memory/provenance-salience');
 const {
   projectMemoryAuthority,
+  projectMemoryRelations,
+  createMemoryAuthorityResolver,
+  hasAuthenticatedAuthorityEvidence,
 } = require('../../../shared/memory-authority.cjs');
+const {
+  memoryAuthorityAttestationKeyId,
+} = require('../../../shared/memory-authority-attestation.cjs');
 const { createMemoryDeltaOverlayCache } = require('./memory-delta-overlay-cache');
 
 const MAX_EMBEDDING_DIMENSIONS = 8192;
@@ -64,7 +71,7 @@ function truncateString(value, maxBytes) {
 function projectBoundedSearchNode(node, {
   similarity = null,
   retrievalScore = null,
-  retrievalMode = 'keyword',
+  retrievalMode = 'logical-source-scan',
   maxRecordBytes = MAX_RECORD_BYTES,
 } = {}) {
   const provenance = classifyMemoryProvenance(node);
@@ -119,6 +126,15 @@ function projectBoundedSearchNode(node, {
     authorityClass: retrievalAuthority.authorityClass,
     semanticTime: retrievalAuthority.semanticTime,
     retrievalAuthority,
+    authorityRelations: projectMemoryRelations(node, {
+      trustedProjection: node?._trustedAuthorityProjection === true,
+    }),
+    ...(node?.resolutionEvidence ? { resolutionEvidence: node.resolutionEvidence } : {}),
+    ...(node?.correctionEvidence ? { correctionEvidence: node.correctionEvidence } : {}),
+    ...(node?.closureEvidence ? { closureEvidence: node.closureEvidence } : {}),
+    ...(node?.supersessionEvidence ? { supersessionEvidence: node.supersessionEvidence } : {}),
+    ...(node?._trustedAuthorityProjection === true
+      ? { _trustedAuthorityProjection: true } : {}),
     status: node?.status ?? null,
     evidencePresent: typeof node?.evidencePresent === 'boolean' ? node.evidencePresent : null,
     weight: node?.weight ?? null,
@@ -270,7 +286,7 @@ function createDefaultEmbedQuery({ getClient } = {}) {
 
 function compactAnnLabel(label) {
   try {
-    return projectAnnLabel(label);
+    return projectAnnLabel(label, { trustedProjection: true });
   } catch (cause) {
     throw memorySourceError('source_unavailable', 'ANN metadata label is invalid', {
       status: 503,
@@ -435,6 +451,9 @@ async function parseAnnMetadataChunks(chunks, {
       header = JSON.parse(headerText);
     } catch (error) {
       fail('ANN metadata header is malformed', error);
+    }
+    if (header.authorityProjectionSchema !== ANN_AUTHORITY_PROJECTION_SCHEMA) {
+      fail('ANN metadata authority projection schema does not match current trust policy');
     }
     const declaredCount = header.count;
     const includesSkippedLabels = header.labelCount !== undefined;
@@ -753,7 +772,7 @@ function createInProcessAnnRuntimeFactory(hnswlibLoader) {
   };
 }
 
-function createDefaultLoadAnn({ hnswlibLoader, indexRuntimeFactory } = {}) {
+function createDefaultLoadAnn({ hnswlibLoader, indexRuntimeFactory, authorityKey } = {}) {
   const createIndexRuntime = indexRuntimeFactory
     || (hnswlibLoader ? createInProcessAnnRuntimeFactory(hnswlibLoader) : createAnnWorkerRuntime);
   // A dashboard normally serves one resident brain. Keep exactly one immutable,
@@ -768,6 +787,23 @@ function createDefaultLoadAnn({ hnswlibLoader, indexRuntimeFactory } = {}) {
   async function loadAnnNow(source, annMeta, { signal } = {}) {
     if (!annMeta?.indexFile || !annMeta?.metaFile) return null;
     throwIfAborted(signal);
+    let authorityAttestationKeyId;
+    try {
+      authorityAttestationKeyId = authorityKey === undefined
+        ? memoryAuthorityAttestationKeyId()
+        : memoryAuthorityAttestationKeyId(authorityKey);
+    } catch (cause) {
+      throw memorySourceError(
+        'source_unavailable',
+        'ANN authority verifier context is unavailable',
+        {
+          status: 503,
+          retryable: true,
+          annFallbackReason: 'ann_authority_context_unavailable',
+          cause,
+        },
+      );
+    }
     const canonicalRoot = source?.descriptor?.canonicalRoot;
     if (typeof canonicalRoot !== 'string' || !path.isAbsolute(canonicalRoot)) {
       throw memorySourceError('source_unavailable', 'ANN target root is unavailable', {
@@ -803,6 +839,7 @@ function createDefaultLoadAnn({ hnswlibLoader, indexRuntimeFactory } = {}) {
         revision: annMeta.builtFromRevision ?? source?.descriptor?.cutoffRevision ?? null,
         indexFile: annMeta.indexFile,
         metaFile: annMeta.metaFile,
+        authorityAttestationKeyId,
         indexIdentity: anchoredIndex.identity,
         metaIdentity: anchoredMeta.identity,
       })
@@ -877,6 +914,7 @@ function createDefaultLoadAnn({ hnswlibLoader, indexRuntimeFactory } = {}) {
         revision: annMeta.builtFromRevision ?? source?.descriptor?.cutoffRevision ?? null,
         indexFile: annMeta.indexFile,
         metaFile: annMeta.metaFile,
+        authorityAttestationKeyId,
         indexIdentity: {
           dev: indexView.stat.dev,
           ino: indexView.stat.ino,
@@ -910,6 +948,17 @@ function createDefaultLoadAnn({ hnswlibLoader, indexRuntimeFactory } = {}) {
       signal,
     });
     throwIfAborted(signal);
+    if (meta.authorityAttestationKeyId !== authorityAttestationKeyId) {
+      throw memorySourceError(
+        'source_unavailable',
+        'ANN authority verifier context does not match current trust policy',
+        {
+          status: 503,
+          retryable: true,
+          annFallbackReason: 'ann_authority_context_unavailable',
+        },
+      );
+    }
     const dimension = meta.dimension || meta.dim;
     if (!Number.isSafeInteger(dimension) || dimension < 1 || dimension > MAX_EMBEDDING_DIMENSIONS) {
       throw memorySourceError('source_unavailable', 'ANN metadata dimension is invalid', {
@@ -1034,7 +1083,7 @@ function mergeResults(primary, keywordRows, limit) {
   const merged = new Map();
   for (const row of [...primary, ...keywordRows]) {
     const id = String(row.id);
-    const normalized = { ...row, retrievalMode: row.retrievalMode || 'keyword' };
+    const normalized = { ...row, retrievalMode: row.retrievalMode || 'logical-source-scan' };
     const existing = merged.get(id);
     if (!existing
         || Number(normalized.retrievalScore ?? normalized.similarity ?? 0)
@@ -1061,18 +1110,7 @@ function keywordRelevance(node, tokens, query, tag) {
   return (matched.length / tokens.length) + (normalizedQuery && haystack.includes(normalizedQuery) ? 1 : 0);
 }
 
-function authorityScoredCandidate(node, baseScore, options, { semantic = false } = {}) {
-  if (semantic) {
-    const scoreExplanation = explainMemorySalienceScore(node, baseScore, options);
-    return {
-      retrievalScore: scoreExplanation.score,
-      retrievalBaseScore: baseScore,
-      retrievalAuthority: {
-        ...projectMemoryAuthority(node, options),
-        scoreExplanation,
-      },
-    };
-  }
+function authorityScoredCandidate(node, baseScore, options) {
   const retrievalAuthority = projectMemoryAuthority(node, { ...options, baseScore });
   return {
     retrievalScore: retrievalAuthority.scoreExplanation.score,
@@ -1124,6 +1162,17 @@ function createMemorySearchService({
       intent: request.intent || query,
       trustedProjection,
     });
+    const authorityResolver = createMemoryAuthorityResolver({
+      intent: request.intent || query,
+    });
+    const offerAuthorityResolved = (heap, candidate, trustedProjection = false) => {
+      const resolved = authorityResolver.apply([candidate], { trustedProjection })[0];
+      if (!resolved) return;
+      const { _trustedAuthorityProjection: _ignoredCallerTrust, ...plain } = resolved;
+      heap.offer(trustedProjection
+        ? { ...plain, _trustedAuthorityProjection: true }
+        : plain);
+    };
     const initialEvidence = source.getEvidence();
     if (initialEvidence.sourceHealth === 'unavailable') {
       throw memorySourceError('source_unavailable', 'canonical memory source is unavailable', {
@@ -1192,9 +1241,116 @@ function createMemorySearchService({
       maxBytes: MAX_HEAP_BYTES,
       maxRecordBytes: MAX_RECORD_BYTES,
     });
+    let logicalScanComplete = false;
+    let logicalScanFiltered = 0;
+    let logicalScanMs = 0;
+    const runLogicalSourceScan = async ({ includeSemantic = false } = {}) => {
+      if (logicalScanComplete) return;
+      const scanStartedAt = performance.now();
+      const logicalSemanticCandidates = createBoundedCandidateHeap({
+        maxCount: candidateLimit,
+        maxBytes: MAX_HEAP_BYTES,
+        maxRecordBytes: MAX_RECORD_BYTES,
+      });
+      const logicalKeywordCandidates = createBoundedCandidateHeap({
+        maxCount: candidateLimit,
+        maxBytes: MAX_HEAP_BYTES,
+        maxRecordBytes: MAX_RECORD_BYTES,
+      });
+      const projectLogicalCandidate = (node, baseScore, similarity = null) => {
+        const retrievalAuthority = projectMemoryAuthority(node, {
+          ...authorityOptions(node),
+          baseScore,
+        });
+        return {
+          ...node,
+          similarity,
+          retrievalScore: retrievalAuthority.scoreExplanation.score,
+          retrievalAuthority,
+          retrievalDomain: retrievalAuthority.retrievalDomain,
+          authorityClass: retrievalAuthority.authorityClass,
+          semanticTime: retrievalAuthority.semanticTime,
+          sourceChain: retrievalAuthority.sourceChain,
+          evidencePresent: hasAuthenticatedAuthorityEvidence(node),
+          authorityRelations: projectMemoryRelations(node, { trustedProjection: false }),
+          retrievalQuery: query,
+          retrievalMode: 'logical-source-scan',
+          _trustedAuthorityProjection: true,
+        };
+      };
+      // Pass one selects only bounded query candidates. Authority events that
+      // cannot affect one of those candidates must not consume the resolver's
+      // bounded relation budget merely because they occur earlier on disk.
+      for await (const node of source.iterateNodes({ signal })) {
+        throwIfAborted(signal);
+        const unfilteredKeywordRelevance = keywordRelevance(
+          node, keywordTokens, query, null,
+        );
+        const keywordMatches = unfilteredKeywordRelevance > 0;
+        const tagMatches = tag === null || node.tag === tag;
+        if (keywordMatches && !tagMatches) logicalScanFiltered += 1;
+
+        let similarity = null;
+        const semanticMatches = includeSemantic && tagMatches
+          && Array.isArray(node.embedding)
+          && node.embedding.length === queryEmbedding?.length
+          && Number.isFinite(similarity = cosineSimilarity(queryEmbedding, node.embedding))
+          && similarity >= similarityThreshold;
+        if (!semanticMatches && !(keywordMatches && tagMatches)) continue;
+        if (semanticMatches) {
+          logicalSemanticCandidates.offer(projectLogicalCandidate(node, similarity, similarity));
+        }
+        if (keywordMatches && tagMatches) {
+          logicalKeywordCandidates.offer(projectLogicalCandidate(
+            node,
+            unfilteredKeywordRelevance,
+          ));
+        }
+      }
+
+      const semanticRows = logicalSemanticCandidates.sorted();
+      const keywordRows = logicalKeywordCandidates.sorted();
+      const relevantRelationRefs = new Set();
+      for (const candidate of [...semanticRows, ...keywordRows]) {
+        if (candidate.id !== null && candidate.id !== undefined) {
+          relevantRelationRefs.add(`node:${String(candidate.id)}`);
+        }
+        for (const ref of candidate.authorityRelations?.refs || []) {
+          relevantRelationRefs.add(ref);
+        }
+      }
+      const logicalAuthorityResolver = createMemoryAuthorityResolver({
+        intent: request.intent || query,
+      });
+      // Pass two observes only closures/corrections capable of changing the
+      // retained candidates. Resolution and final heap insertion are deferred
+      // until the pass ends, so physical source order cannot change the result.
+      for await (const node of source.iterateNodes({ signal })) {
+        throwIfAborted(signal);
+        const relations = projectMemoryRelations(node, { trustedProjection: false });
+        if (relations.refs.some(ref => relevantRelationRefs.has(ref))
+            || relations.supersedes.some(ref => relevantRelationRefs.has(ref))) {
+          logicalAuthorityResolver.observe(node, { trustedProjection: false });
+        }
+      }
+      const publishResolved = (heap, rows) => {
+        for (const candidate of rows) {
+          throwIfAborted(signal);
+          const resolved = logicalAuthorityResolver.apply(
+            [candidate], { trustedProjection: true },
+          )[0];
+          if (resolved) heap.offer(resolved);
+        }
+      };
+      publishResolved(semantic, semanticRows);
+      publishResolved(boundedKeyword, keywordRows);
+      logicalScanComplete = true;
+      logicalScanMs = performance.now() - scanStartedAt;
+    };
     let semanticRoute = 'none';
     let annUsed = false;
     let annLabelsAvailable = false;
+    let annLabelCoverageIncomplete = false;
     let annSearchMs = 0;
     let annLoadMs = 0;
     let overlayScoringMs = 0;
@@ -1202,6 +1358,33 @@ function createMemorySearchService({
       const consumeAnn = async (ann) => {
         if (!ann || Number(ann.dimension || ann.dim) !== queryEmbedding.length) return false;
         semanticRoute = annFresh ? 'semantic-ann' : 'semantic-ann-delta-overlay';
+        if (Array.isArray(ann.labels)) {
+          annLabelsAvailable = ann.count === undefined || ann.skipped === 0
+            || ann.includesSkippedLabels === true
+            || ann.labels.length === Number(ann.count || 0) + Number(ann.skipped || 0);
+          if (annLabelsAvailable) {
+            for (const label of ann.labels) {
+              throwIfAborted(signal);
+              if (overlay?.hasChangedNode(label?.id)) continue;
+              authorityResolver.observe(label, { trustedProjection: true });
+            }
+          }
+        }
+        if (!annLabelsAvailable) {
+          annLabelCoverageIncomplete = true;
+          fallback = {
+            route: 'logical-source-scan',
+            reason: 'exact_canary_missing',
+            completeness: 'complete',
+          };
+          return false;
+        }
+        if (overlay) {
+          for (const node of overlay.nodeUpserts()) {
+            throwIfAborted(signal);
+            authorityResolver.observe(node, { trustedProjection: false });
+          }
+        }
         const annStartedAt = performance.now();
         for (const hit of await annSearchRows(ann, queryEmbedding, candidateLimit, { signal })) {
           throwIfAborted(signal);
@@ -1211,7 +1394,7 @@ function createMemorySearchService({
           if (tag && node.tag !== tag) continue;
           const similarity = Number(hit.similarity);
           if (!Number.isFinite(similarity) || similarity < similarityThreshold) continue;
-          semantic.offer({
+          offerAuthorityResolved(semantic, {
             ...node,
             similarity,
             ...authorityScoredCandidate(
@@ -1220,25 +1403,21 @@ function createMemorySearchService({
             retrievalQuery: query,
             _trustedAuthorityProjection: true,
             retrievalMode: 'semantic-ann',
-          });
+          }, true);
         }
         annSearchMs = performance.now() - annStartedAt;
-        if (Array.isArray(ann.labels)) {
-          annLabelsAvailable = ann.count === undefined || ann.skipped === 0 || ann.includesSkippedLabels === true
-            || ann.labels.length === Number(ann.count || 0) + Number(ann.skipped || 0);
-          for (const label of ann.labels) {
-            throwIfAborted(signal);
-            if (overlay?.hasChangedNode(label?.id)) continue;
-            const relevance = keywordRelevance(label, keywordTokens, query, tag);
-            if (relevance <= 0) continue;
-            boundedKeyword.offer({
-              ...label,
-              ...authorityScoredCandidate(label, relevance, authorityOptions(label, true)),
-              retrievalQuery: query,
-              _trustedAuthorityProjection: true,
-              retrievalMode: 'keyword-index',
-            });
-          }
+        for (const label of ann.labels) {
+          throwIfAborted(signal);
+          if (overlay?.hasChangedNode(label?.id)) continue;
+          const relevance = keywordRelevance(label, keywordTokens, query, tag);
+          if (relevance <= 0) continue;
+          offerAuthorityResolved(boundedKeyword, {
+            ...label,
+            ...authorityScoredCandidate(label, relevance, authorityOptions(label, true)),
+            retrievalQuery: query,
+            _trustedAuthorityProjection: true,
+            retrievalMode: 'keyword-index-overlay',
+          }, true);
         }
         if (overlay) {
           const scoreStartedAt = performance.now();
@@ -1248,24 +1427,24 @@ function createMemorySearchService({
             if (Array.isArray(node.embedding) && node.embedding.length === queryEmbedding.length) {
               const similarity = cosineSimilarity(queryEmbedding, node.embedding);
               if (similarity >= similarityThreshold) {
-                semantic.offer({
+                offerAuthorityResolved(semantic, {
                   ...node,
                   similarity,
                   ...authorityScoredCandidate(
                     node, similarity, authorityOptions(node), { semantic: true },
                   ),
                   retrievalQuery: query,
-                  retrievalMode: 'semantic-delta-overlay',
+                  retrievalMode: 'semantic-ann-delta-overlay',
                 });
               }
             }
             const relevance = keywordRelevance(node, keywordTokens, query, tag);
             if (relevance > 0) {
-              boundedKeyword.offer({
+              offerAuthorityResolved(boundedKeyword, {
                 ...node,
                 ...authorityScoredCandidate(node, relevance, authorityOptions(node)),
                 retrievalQuery: query,
-                retrievalMode: 'keyword-delta-overlay',
+                retrievalMode: 'keyword-index-overlay',
               });
             }
           }
@@ -1281,10 +1460,12 @@ function createMemorySearchService({
         annLoadMs = performance.now() - annLoadStartedAt;
       } catch (error) {
         rethrowAbort(error, signal);
-        if (error?.code !== 'ann_descriptor_unsupported') throw error;
+        if (error?.code !== 'ann_descriptor_unsupported'
+            && error?.annFallbackReason !== 'ann_authority_context_unavailable') throw error;
+        const reason = error?.annFallbackReason || 'ann_descriptor_unsupported';
         fallback = {
           route: 'logical-source-scan',
-          reason: 'ann_descriptor_unsupported',
+          reason,
           completeness: 'complete',
         };
       }
@@ -1306,70 +1487,124 @@ function createMemorySearchService({
     }
 
     if (queryEmbedding && (request.exhaustive === true || !annCovered
-        || ['embedding_dimension_mismatch', 'ann_descriptor_unsupported'].includes(fallback?.reason))) {
-      semanticRoute = 'semantic-scan';
-      for await (const node of source.iterateNodes({ signal })) {
-        throwIfAborted(signal);
-        if (tag && node.tag !== tag) continue;
-        if (!Array.isArray(node.embedding) || node.embedding.length !== queryEmbedding.length) continue;
-        const similarity = cosineSimilarity(queryEmbedding, node.embedding);
-        if (similarity >= similarityThreshold) {
-          semantic.offer({
-            ...node,
-            similarity,
-            ...authorityScoredCandidate(
-              node, similarity, authorityOptions(node), { semantic: true },
-            ),
-            retrievalQuery: query,
-            retrievalMode: 'semantic-scan',
-          });
-        }
-      }
+        || ['embedding_dimension_mismatch', 'ann_descriptor_unsupported',
+          'ann_authority_context_unavailable',
+        ].includes(fallback?.reason) || annLabelCoverageIncomplete)) {
+      semanticRoute = 'logical-source-scan';
+      await runLogicalSourceScan({ includeSemantic: true });
     }
 
     const semanticCandidates = semantic.sorted().slice(0, limit);
     const semanticTop = semanticCandidates.filter((row) => Number(row.similarity || 0) >= semanticNoiseFloor);
+    const indexedKeywordRows = boundedKeyword.sorted();
+    if (summary.nodes > 0 && annUsed && annLabelsAvailable && semanticTop.length === 0
+        && indexedKeywordRows.length === 0 && !fallback) {
+      // Bounded ANN label text can prove a positive match, but truncation means
+      // it can never prove exact absence. Use the logical source before saying
+      // that the corpus has no match.
+      fallback = {
+        route: 'logical-source-scan', reason: 'exact_canary_missing', completeness: 'complete',
+      };
+    }
     const keywordStartedAt = performance.now();
+    const logicalScanCompleteAtKeywordStart = logicalScanComplete;
     let keyword = null;
     let keywordRows;
-    if (annUsed && annLabelsAvailable && request.exhaustive !== true) {
-      keywordRows = boundedKeyword.sorted().slice(0, limit);
+    const keywordUsesIndex = annUsed && annLabelsAvailable
+      && request.exhaustive !== true && fallback?.reason !== 'exact_canary_missing';
+    if (keywordUsesIndex) {
+      keywordRows = indexedKeywordRows.slice(0, limit);
     } else {
-      keyword = await source.searchKeyword({ query, topK: limit, tag, signal });
-      keywordRows = (keyword.results || []).map((row) => ({
-        ...row,
-        retrievalMode: row.retrievalMode || 'keyword',
-      }));
+      await runLogicalSourceScan({ includeSemantic: false });
+      keywordRows = boundedKeyword.sorted().slice(0, limit);
+      keyword = {
+        results: keywordRows,
+        filtered: logicalScanFiltered,
+        evidence: { completeCoverage: true },
+      };
     }
-    const keywordScoringMs = performance.now() - keywordStartedAt;
+    for (const row of keywordRows) authorityResolver.observe(row);
+    const keywordScoringMs = (logicalScanCompleteAtKeywordStart ? logicalScanMs : 0)
+      + (performance.now() - keywordStartedAt);
     const filteredTotal = Number.isSafeInteger(keyword?.filtered) && keyword.filtered >= 0
       ? keyword.filtered
       : 0;
-    const completeCoverage = keyword?.evidence?.completeCoverage === true;
+    const completeCoverage = keywordUsesIndex
+      ? annCovered
+      : keyword?.evidence?.completeCoverage === true;
     const exactMissing = keywordRows.some((row) => !semanticTop.some((existing) => String(existing.id) === String(row.id)));
-    if (semanticCandidates.length > 0 && semanticTop.length === 0 && keywordRows.length > 0 && !fallback) {
-      fallback = { route: 'logical-keyword-scan', reason: 'semantic_noise_filtered', completeness: 'complete' };
-    } else if (exactMissing && !fallback) {
-      fallback = { route: 'logical-keyword-supplement', reason: 'exact_canary_missing', completeness: 'complete' };
+    if (!keywordUsesIndex && semanticCandidates.length > 0
+        && semanticTop.length === 0 && keywordRows.length > 0 && !fallback) {
+      fallback = { route: 'logical-source-scan', reason: 'semantic_noise_filtered', completeness: 'complete' };
+    } else if (!keywordUsesIndex && exactMissing && !fallback) {
+      fallback = { route: 'logical-source-scan', reason: 'exact_canary_missing', completeness: 'complete' };
     }
     const mergeStartedAt = performance.now();
-    const results = mergeResults(semanticTop, keywordRows, limit);
+    const mergedResults = mergeResults(semanticTop, keywordRows, limit);
     const mergeMs = performance.now() - mergeStartedAt;
     const baseEvidence = source.getEvidence();
-    const degradesSourceHealth = fallback
-      && !['ann_missing', 'exact_canary_missing'].includes(fallback.reason);
+    const degradesSourceHealth = Boolean(fallback);
     const sourceHealth = baseEvidence.sourceHealth === 'healthy' && degradesSourceHealth
       ? 'degraded'
       : baseEvidence.sourceHealth;
+    const retrievalMode = fallback
+      ? 'logical-source-scan'
+      : semanticTop.length > 0
+        ? semanticRoute
+        : (keywordUsesIndex ? 'keyword-index-overlay' : 'logical-source-scan');
+    const results = mergedResults.flatMap((row) => authorityResolver.apply(
+      [row],
+      { trustedProjection: row?._trustedAuthorityProjection === true },
+    ))
+      .map((row) => {
+        const { _trustedAuthorityProjection, ...published } = row;
+        return { ...published, retrievalMode };
+      })
+      .slice(0, limit);
+    const authoritySummary = summarizeRetrievalAuthority(
+      results.map(row => row.retrievalAuthority),
+    );
+    const outcomeHealth = sourceHealth === 'degraded'
+      && completeCoverage && fallback?.completeness === 'complete'
+      ? 'healthy'
+      : sourceHealth;
     const matchOutcome = classifyMatchOutcome({
-      sourceHealth,
+      sourceHealth: outcomeHealth,
       authoritativeTotal: summary.nodes,
       returnedTotal: results.length,
       filteredTotal,
       completeCoverage,
     });
+    const indexCoverage = {
+      complete: annUsed && annCovered,
+      indexedRevision: manifest.ann?.builtFromRevision ?? null,
+      currentRevision: manifest.currentRevision ?? null,
+      coveredThroughRevision: annUsed && annCovered ? manifest.currentRevision : null,
+      deltaRecords: overlay?.deltaRecords ?? manifest.activeDelta?.count ?? 0,
+      distinctChangedNodes: overlay?.changedNodeCount ?? 0,
+      distinctUpsertedNodes: overlay?.upsertedNodeCount ?? 0,
+      distinctRemovedNodes: overlay?.removedNodeCount ?? 0,
+      edgeOnlyRecords: overlay?.edgeOnlyRecords ?? 0,
+      route: annUsed ? semanticRoute : fallback?.route || 'none',
+      completeness: annUsed && annCovered ? 'complete' : fallback?.completeness || 'unknown',
+    };
+    const stageTimingsMs = {
+      sourceOpen: Number.isFinite(source.openDurationMs) ? roundScore(source.openDurationMs) : 0,
+      embedding: roundScore(embeddingMs),
+      overlayRefresh: roundScore(overlayRefreshMs),
+      annLoad: roundScore(annLoadMs),
+      annSearch: roundScore(annSearchMs),
+      overlayScoring: roundScore(overlayScoringMs),
+      keywordScoring: roundScore(keywordScoringMs),
+      merge: roundScore(mergeMs),
+      response: roundScore(performance.now() - responseStartedAt),
+    };
     const rawEvidence = source.getEvidence({
       identity,
+      retrievalMode,
+      indexCoverage,
+      stageTimingsMs,
+      authoritySummary,
       completeCoverage,
       filters: { tag },
       limits: { topK: limit },
@@ -1383,7 +1618,7 @@ function createMemorySearchService({
       stats: {
         totalSearched: summary.nodes,
         totalMatched: results.length,
-        retrievalMode: fallback ? 'hybrid' : semanticRoute,
+        retrievalMode,
         salienceWeighted: true,
         noiseFiltered: semanticCandidates.length > 0 && semanticTop.length === 0,
       },
@@ -1398,18 +1633,10 @@ function createMemorySearchService({
         authoritativeTotals: { nodes: summary.nodes, edges: summary.edges },
         returnedTotals: { nodes: results.length, edges: 0 },
         fallback,
-        indexCoverage: {
-          complete: annUsed && annCovered,
-          indexedRevision: manifest.ann?.builtFromRevision ?? null,
-          coveredThroughRevision: annUsed && annCovered ? manifest.currentRevision : null,
-          deltaRecords: overlay?.deltaRecords ?? manifest.activeDelta?.count ?? 0,
-          distinctChangedNodes: overlay?.changedNodeCount ?? 0,
-          distinctUpsertedNodes: overlay?.upsertedNodeCount ?? 0,
-          distinctRemovedNodes: overlay?.removedNodeCount ?? 0,
-          edgeOnlyRecords: overlay?.edgeOnlyRecords ?? 0,
-          route: annUsed ? semanticRoute : fallback?.route || 'none',
-          completeness: annUsed && annCovered ? 'complete' : fallback?.completeness || 'unknown',
-        },
+        retrievalMode,
+        indexCoverage,
+        stageTimingsMs,
+        authoritySummary,
         stageTimings: {
           sourceOpenMs: Number.isFinite(source.openDurationMs) ? roundScore(source.openDurationMs) : null,
           embeddingMs: roundScore(embeddingMs),

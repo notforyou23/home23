@@ -191,7 +191,25 @@ test('brain_search uses the turn-scoped client and forwards an explicit sibling 
     search: async (value: Record<string, unknown>, receivedSignal: AbortSignal) => {
       request = value;
       signal = receivedSignal;
-      return { results: [{ id: 'n1', concept: 'evidence' }], operationId: 'op-search' };
+      return {
+        results: [{ id: 'n1', concept: 'evidence' }],
+        operationId: 'op-search',
+        evidence: {
+          sourceHealth: 'degraded',
+          retrievalMode: 'logical-source-scan',
+          indexCoverage: {
+            complete: false, currentRevision: 17, coveredThroughRevision: 17,
+            route: 'keyword-source-scan', completeness: 'complete',
+          },
+          authoritySummary: {
+            total: 1,
+            authorityClasses: { narrative: 1 },
+            retrievalDomains: { current_ops: 1 },
+            sourceChain: { withEvidence: 0, withoutEvidence: 1, referenceCounts: {} },
+            requiresFreshVerification: 1,
+          },
+        },
+      };
     },
   } }));
   assert.deepEqual(request, {
@@ -200,6 +218,12 @@ test('brain_search uses the turn-scoped client and forwards an explicit sibling 
   assert.ok(signal);
   assert.match(result.content, /evidence/);
   assert.equal(result.metadata?.operationId, 'op-search');
+  assert.equal((result.metadata?.sourceEvidence as any).retrievalMode, 'logical-source-scan');
+  assert.equal((result.metadata?.sourceEvidence as any).indexCoverage.currentRevision, 17);
+  assert.equal(
+    (result.metadata?.sourceEvidence as any).authoritySummary.authorityClasses.narrative,
+    1,
+  );
 });
 
 test('brain_query forwards an explicit sibling target and returns operation provenance', async () => {

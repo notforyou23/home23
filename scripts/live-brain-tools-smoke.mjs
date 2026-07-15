@@ -894,6 +894,12 @@ function assertPositiveSourceEvidence(evidence) {
     && returnedNodes <= authoritativeNodes;
   if (exactPositive && evidence?.sourceHealth === 'healthy') return;
   if (exactPositive && evidence?.sourceHealth === 'degraded'
+      && evidence.completeCoverage === true
+      && evidence.freshness === 'known'
+      && evidence.retrievalMode === 'logical-source-scan') {
+    return;
+  }
+  if (exactPositive && evidence?.sourceHealth === 'degraded'
       && evidence.freshness === 'unknown'
       && evidence.implementation === 'legacy-resident-sidecar-projection') {
     return;
@@ -922,6 +928,15 @@ function assertCompleteTerminal(terminal, {
   if (terminal?.state !== 'complete') throw typedError('operation_success_required');
   if (sourcePolicy === 'healthy' && terminal?.sourceEvidence?.sourceHealth !== 'healthy') {
     throw typedError('source_health_unhealthy');
+  }
+  if (sourcePolicy === 'known-complete') {
+    const evidence = terminal?.sourceEvidence;
+    const acceptedHealth = evidence?.sourceHealth === 'healthy'
+      || (evidence?.sourceHealth === 'degraded'
+        && evidence?.retrievalMode === 'logical-source-scan');
+    if (!acceptedHealth) {
+      throw typedError('source_health_unhealthy');
+    }
   }
   if (sourcePolicy === 'positive') assertPositiveSourceEvidence(terminal?.sourceEvidence);
   return assertTerminalBrainIdentity(terminal, expectedBrain, targetErrorCode);
@@ -3343,7 +3358,7 @@ export async function executeScenario({
     }
     const selectedBrain = assertCompleteTerminal(terminal, {
       targetErrorCode: 'zero_result_target_mismatch',
-      sourcePolicy: 'healthy',
+      sourcePolicy: 'known-complete',
     });
     const evidence = terminal.sourceEvidence || {};
     const searchEvidence = search.sourceEvidence || {};
@@ -3377,7 +3392,11 @@ export async function executeScenario({
         || !Array.isArray(terminal.result?.results) || terminal.result.results.length !== 0
         || !isDeepStrictEqual(search.results, terminal.result.results)
         || !isDeepStrictEqual(searchEvidence, evidence)
-        || evidence.sourceHealth !== 'healthy'
+        || !(
+          evidence.sourceHealth === 'healthy'
+          || (evidence.sourceHealth === 'degraded'
+            && evidence.retrievalMode === 'logical-source-scan')
+        )
         || evidence.freshness !== 'known'
         || evidence.matchOutcome !== 'no_match'
         || evidence.completeCoverage !== true

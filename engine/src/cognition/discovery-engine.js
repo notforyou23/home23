@@ -27,6 +27,7 @@ const {
   classifyMemoryDomain,
   classifyClaimAuthority,
   scoreMemoryAuthority,
+  createMemoryAuthorityResolver,
 } = require('../../../shared/memory-authority.cjs');
 
 const DEFAULT_CONFIG = {
@@ -166,6 +167,7 @@ class DiscoveryEngine {
   async _runProbe() {
     const start = Date.now();
     try {
+      this._probeAuthorityContext = this._buildAuthorityContext();
       // Per-signal cap prevents one probe from dominating the queue.
       // Without this, a noisy signal (e.g., novelty with 3k+ fresh nodes)
       // crowds everything else out, or a cheap-but-overfiring signal
@@ -194,6 +196,8 @@ class DiscoveryEngine {
       this.stats.totalCandidatesProduced += all.length;
     } catch (err) {
       this._onProbeError(err);
+    } finally {
+      this._probeAuthorityContext = null;
     }
   }
 
@@ -248,8 +252,9 @@ class DiscoveryEngine {
     if (!clusters || clusters.size < 2) return [];
 
     const eligibleByCluster = new Map();
+    const authorityResolver = this._authorityContext().resolver;
     for (const [clusterId, nodeSet] of clusters.entries()) {
-      const ids = this._authorityEligibleIds(nodeSet);
+      const ids = this._authorityEligibleIds(nodeSet, authorityResolver);
       if (ids.length > 0) eligibleByCluster.set(clusterId, ids);
     }
     if (eligibleByCluster.size < 2) return [];
@@ -283,9 +288,11 @@ class DiscoveryEngine {
     const maxEdges = this.config.novelty.maxEdgeCount;
 
     const edgeCountByNode = this._buildEdgeCountIndex();
+    const authorityEligible = this._authorityContext().eligibleIds;
     const out = [];
 
     for (const [nodeId, node] of this.memory.nodes.entries()) {
+      if (!authorityEligible.has(nodeId)) continue;
       const createdMs = node.created ? new Date(node.created).getTime() : 0;
       if (!createdMs) continue;
       const ageMs = now - createdMs;
@@ -317,9 +324,11 @@ class DiscoveryEngine {
     const minEdges = this.config.orphan.minEdgeCount;
 
     const edgeCountByNode = this._buildEdgeCountIndex();
+    const authorityEligible = this._authorityContext().eligibleIds;
     const out = [];
 
     for (const [nodeId, node] of this.memory.nodes.entries()) {
+      if (!authorityEligible.has(nodeId)) continue;
       const edgeCount = edgeCountByNode.get(nodeId) || 0;
       if (edgeCount < minEdges) continue;
 
@@ -400,13 +409,16 @@ class DiscoveryEngine {
     }
 
     const out = [];
+    const authorityEligible = this._authorityContext().eligibleIds;
     for (const [clusterId, touchCount] of touches.entries()) {
       if (touchCount < this.config.stagnation.minRepeatCount) continue;
       const newEdges = newEdgeCountByCluster.get(clusterId) || 0;
       if (newEdges > this.config.stagnation.maxNewEdgesAllowed) continue;
 
       const nodeSet = this.memory.clusters.get(clusterId);
-      const liveIds = nodeSet ? this._liveIds(nodeSet) : [];
+      const liveIds = nodeSet
+        ? this._liveIds(nodeSet).filter((id) => authorityEligible.has(id))
+        : [];
       if (liveIds.length === 0) continue; // all stale — skip phantom
 
       const ratio = touchCount / Math.max(1, newEdges + 1); // higher = worse
@@ -442,10 +454,13 @@ class DiscoveryEngine {
     if (!Array.isArray(tops) || tops.length === 0) return [];
 
     const out = [];
+    const authorityEligible = this._authorityContext().eligibleIds;
     for (const hit of tops) {
       // Filter stale IDs — salience scorer reads cluster membership which
       // may reference pruned nodes.
-      const liveIds = (hit.nodeIds || []).filter(id => this.memory.nodes.has(id));
+      const liveIds = (hit.nodeIds || []).filter(id => (
+        this.memory.nodes.has(id) && authorityEligible.has(id)
+      ));
       if (liveIds.length === 0) continue;
       out.push(this._makeCandidate({
         key: `salience:${hit.clusterId}`,
@@ -496,13 +511,38 @@ class DiscoveryEngine {
     return factors.length ? factors.reduce((sum, value) => sum + value, 0) / factors.length : 1;
   }
 
-  _authorityEligibleIds(nodeIds) {
-    return this._liveIds(nodeIds).filter((id) => {
-      const node = this.memory?.nodes?.get?.(id);
+  _authorityEligibleIds(nodeIds, resolver = null) {
+    const liveNodes = this._liveIds(nodeIds)
+      .map((id) => this.memory?.nodes?.get?.(id))
+      .filter(Boolean);
+    const authorityResolver = resolver || createMemoryAuthorityResolver({
+      intent: 'current_state',
+      authorityCandidates: this.memory?.nodes?.values?.() || [],
+    });
+    return authorityResolver.apply(liveNodes).filter((node) => {
       if (!node || classifyMemoryDomain(node) !== 'current_ops') return false;
       return ['verified_current_state', 'jtr_correction', 'artifact_log', 'worker_receipt']
         .includes(classifyClaimAuthority(node));
+    }).map((node) => node.id);
+  }
+
+  _buildAuthorityContext() {
+    const resolver = createMemoryAuthorityResolver({
+      intent: 'current_state',
+      authorityCandidates: this.memory?.nodes?.values?.() || [],
     });
+    const eligibleIds = new Set();
+    for (const node of this.memory?.nodes?.values?.() || []) {
+      const resolved = resolver.apply([node])[0];
+      if (!resolved || classifyMemoryDomain(resolved) !== 'current_ops') continue;
+      if (['verified_current_state', 'jtr_correction', 'artifact_log', 'worker_receipt']
+        .includes(classifyClaimAuthority(resolved))) eligibleIds.add(resolved.id);
+    }
+    return { resolver, eligibleIds };
+  }
+
+  _authorityContext() {
+    return this._probeAuthorityContext || this._buildAuthorityContext();
   }
 
   /**

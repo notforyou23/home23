@@ -13,6 +13,7 @@
 'use strict';
 
 const { spawn } = require('child_process');
+const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
 const fs = require('fs');
 const path = require('path');
 const { normalizeExecutionResult, normalizeOutputContract } = require('./schemas');
@@ -132,7 +133,7 @@ class ExecutionMonitor {
 
       const spawnOpts = {
         cwd: workingDir,
-        env: { ...process.env },
+        env: unprivilegedChildEnv(),
         stdio: ['pipe', 'pipe', 'pipe'],
         timeout: 0  // We manage timeout ourselves for clean kill
       };

@@ -61,6 +61,16 @@ Every candidate receives exactly one public authority class, ordered for operati
 
 Existing internal `source_class`, memory-ingest authority, temporal status, tags, metadata, and consolidation lineage are inputs to this projection. Unknown or conflicting records default to `narrative`, not to verified state.
 
+`home23.node-provenance.v1` is a data schema, not proof. High-authority classes are accepted only when the normalized profile and every authority-bearing field are covered by a valid `home23.memory-authority-attestation.v1`. The durable node or memory ID, every claim-text fallback, class/domain, evidence and relation refs, status, actor, source classification, and semantic-time fields are bound into the attestation. The signed projection is strict and non-lossy: oversized text/arrays and object-valued refs are rejected rather than truncated, sliced, or string-coerced. Copying an attestation to another ID or changing any bound field fails verification. Unsigned legacy profiles remain retrievable but cannot close, supersede, or establish current operational truth.
+
+Trusted persistence snapshots an authenticated input synchronously before any provider await and re-signs only after deterministic, semantics-preserving normalization. It never imports an external tag into a signed record, invents current authority time, accepts caller vectors for authoritative placement, or mints a new authority identity on ID collision. A malformed or oversized optional signing attempt remains an ordinary unsigned write instead of breaking chat/goal persistence.
+
+The attestation key is domain-separated from the stable installation brain-operations capability root; agent engines, harnesses, MCP, dashboards, and COSMO receive only the derived authority key. Missing or invalid keys fail closed without breaking ordinary reads or writes. Existing nodes are never bulk-signed merely because their old metadata claimed authority. The first audit reports `attestation_missing`; later adoption requires revalidation against the real user turn, verifier, artifact, or worker lifecycle event.
+
+Signing is policy-gated, not automatic. A correction is signed only after the one-use authenticated user-turn validator succeeds. A goal-curator lifecycle receipt may close its own `goal:<id>` with a signed worker receipt, but it records an incident only as context and cannot manufacture `verifier:` proof or close that incident. Generic ingest tags, source strings, generated doctrine labels, and ordinary `NetworkMemory.addNode` callers do not auto-sign.
+
+This HMAC is an application-layer integrity boundary against forged or model-generated memory data. It is not claimed to resist arbitrary hostile code executing as the same operating-system user, which could read local installation files. Model/tool/provider child processes have both the authority key and brain-operations capability removed from their inherited environment as defense in depth. A stronger hostile-local-code boundary would require a separately privileged signer or OS-user/process isolation and is outside this retrieval repair; deployment receipts must state this limitation rather than overclaim it.
+
 The result also carries a bounded `sourceChain` containing direct source refs, trace ID, generation method, consolidation source IDs, verification requirements, and closure proof refs when present. A generated node may point to direct evidence, but the generated node itself stays `generated_doctrine` or `narrative`.
 
 ### Ranking
@@ -84,7 +94,7 @@ The same authority profile is also applied to legacy active-cluster context and 
 
 Source semantic time is distinct from ingest time. When present, `source_event_at`, assertion time, report period, resolution time, or an authority-profile production time takes precedence over feeder/backfill creation time. Rewriting an old conversation or digest today cannot make its claims current.
 
-Closure receipts are evidence, not stale debris. Completion/archive paths must emit the receipt even when no narrative summary is available. Retrieval builds a bounded closure index from incident/goal/source references, uses a newer verified closure to suppress or annotate the old open-alarm claim, and keeps the receipt eligible for recurrence/history queries.
+Closure receipts are evidence, not stale debris. Completion/archive paths must emit the receipt even when no narrative summary is available. Retrieval builds a bounded closure index from explicitly authorized closure references, uses a newer verified closure to suppress or annotate the old open-alarm claim, and keeps the receipt eligible for recurrence/history queries. Goal lifecycle completion/archive proves goal closure only; an incident or source requires its own independently validated verifier evidence.
 
 ## ANN Plus Delta Overlay
 
@@ -97,7 +107,15 @@ An ANN built at revision `R` is usable against current revision `C` when all are
 - `baseRevision <= R <= C`;
 - the active committed delta is contiguous from `baseRevision + 1` through `C`;
 - the ANN metadata revision equals `R`;
+- the ANN metadata declares the exact current `home23.ann-authority-projection.v1` schema;
+- the ANN metadata's non-secret authority-verifier key ID exactly matches the current verifier context;
 - the source reader can identify every node upsert and tombstone in the active delta.
+
+The authority-projection schema is distinct from the ANN file-format `version`.
+Metadata created before authenticated authority projection has no schema declaration
+and must never be reused or loaded as a trusted label source. A future projection
+change likewise requires an exact schema match, forcing rebuild instead of silently
+reinterpreting old correction or closure labels under newer trust rules.
 
 The active delta overlay may contain changes before `R`. Suppressing and rescanning every distinct node changed since `baseRevision` is conservative but correct: it can do extra bounded work, but it cannot serve an obsolete ANN label.
 
@@ -160,6 +178,12 @@ Report-only operational claims with no direct source ref are marked `authoritySt
 
 The shared memory-search response remains the authority for dashboard brain search, agent brain tools, MCP query/search, automatic context enrichment, Query, and PGS when those consumers use resident or completed-brain retrieval. Adapters must preserve the evidence envelope rather than substitute their own provider/model or retrieval status. Query/PGS pins retain the exact source revision used at operation start; their displayed evidence uses the same domain, provenance, source-chain, and index-coverage fields.
 
+Query and PGS must compute authenticated authority from the raw validated node before provider redaction, while exposing only attestation-bound claim fields for authenticated records. PGS persists that compact provider authority with an integrity MAC bound to node ID, sanitized record bytes, source revision/descriptor, and projection version. Missing keys demote safely to a narrative projection; they do not make old sweeps unreadable. Requested PGS scope completion is reported separately from unavailable ANN/index coverage, and durable pre-authority sweeps migrate in bounded, checkpointed, cancellable pages without discarding completed work.
+
+PGS attempt scopes are transient execution metadata, not durable sweep results. A single compact retained policy carries the monotonic level or targeted-union rule and at most one mapping per work unit across continuations; batch scopes are released after use and stale historical attempts are compacted on reopen. The operation loop retains only cumulative numeric counters plus the current bounded batch/concurrency window, never cumulative selected, failed, or retryable ID collections. Completed sweep rows remain durable and reusable independently of that compaction.
+
+When ANN cannot be trusted or used, native logical retrieval performs exactly one streaming authority-index pass and one combined semantic/keyword scoring pass. Semantic and exact-keyword fallback must share those passes; neither route may independently decompress and rescan the complete brain.
+
 The dashboard state summary reads cluster count from the selected manifest summary. A missing field in an optional snapshot must not turn a known nonzero cluster count into zero.
 
 ## Acceptance
@@ -176,7 +200,19 @@ Deterministic fixtures and a live canary suite must prove:
 8. Generated synthesis without direct refs cannot claim present-tense operational authority.
 9. Dashboard, MCP, agent tools, Query, and PGS preserve the same evidence fields.
 10. Live wait-aware probes complete against Jerry and Forrest without short client deadlines; no broad PM2 command is used.
+11. A raw node with a complete-looking provenance schema and matching self-declared refs remains narrative and cannot close or supersede.
+12. A valid attestation copied to another durable ID, or modified in any authority-bearing field, fails verification.
+13. Authenticated user-turn correction and goal-lifecycle writers sign only after their real validation boundary; generic ingest and ordinary graph callers remain unsigned.
+14. Goal completion/archive closes the goal but cannot close a merely related incident or manufacture verifier proof.
+15. Model-controlled shell, file-search, cron-exec, and ACP subprocesses inherit neither the authority key nor the brain-operations capability key, and tests/receipts never print either value.
+16. Signed arrays and text cannot hide authority after a 64-item or 16 KiB prefix, object-valued refs cannot alias relation targets, and every consumed relation/time alias is either bound or ignored.
+17. Caller mutation during an embedding await cannot change the stored signed receipt; external tags, undated replay, ID collisions, and caller vectors cannot promote or retarget authority.
+18. ANN metadata without the exact current authority-projection schema is rejected by both fresh builder reuse and dashboard loading before its labels become trusted; a current rebuild writes the schema explicitly.
+19. ANN metadata built under a missing or different authority-verifier key context is never trusted; retrieval falls back to a complete logical source scan with an explicit reason.
+20. PGS authority storage rejects forged classes, copied authority between node IDs, and changed sanitized node bytes; missing-key transitions remain readable but narrative.
+21. Query/PGS ignore post-signature text and unknown metadata for authenticated relevance/provider claims, redact local paths, and report final requested-scope success/pending counts separately from index completeness.
+22. One thousand repeated PGS attempts remain bounded to one compact policy plus active scope, and a native missing-ANN fallback reads the logical node source exactly twice rather than four times.
 
 ## Rollout and Safety
 
-Implementation lands index/overlay first, then authority ranking, then provenance projection/sweep. Focused tests precede broad tests. Live data is read-only through development. Before any sweep apply or compaction, create and verify a coherent backup and retain the dry-run receipt. Runtime restart is scoped to processes that load changed code; ANN files and manifest pins do not require a dashboard restart when their loader observes a new immutable pin.
+Implementation lands index/overlay first, then authority ranking, then provenance projection/sweep. Focused tests precede broad tests. Live data is read-only through development. Before any sweep apply or compaction, create and verify a coherent backup and retain the dry-run receipt. Runtime restart is scoped to processes that load changed code; ANN files and manifest pins do not require a dashboard restart when their loader observes a new immutable pin. Activating authority attestation requires regenerating the ignored local ecosystem config and a controlled restart of both agent engines, harnesses, MCP services, dashboards, and COSMO so every signer and verifier has the same derived key. A dashboards-plus-COSMO restart alone is explicitly insufficient; missing-key processes remain safely unsigned until the complete scoped rollout.

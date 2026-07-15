@@ -1,11 +1,22 @@
 'use strict';
 
 const { QUERY_OPERATION_LIMITS } = require('./brain-operation-limits');
-const { serializeProviderRecord } = require('./provider-record-sanitizer');
+const {
+  redactPrivatePaths,
+  serializeProviderRecord,
+} = require('./provider-record-sanitizer');
 const {
   projectMemoryAuthority,
   scoreMemoryAuthority,
 } = require('../../shared/memory-authority.cjs');
+const {
+  memoryAuthorityAttestationPayload,
+  verifyMemoryAuthorityAttestation,
+} = require('../../shared/memory-authority-attestation.cjs');
+const {
+  summarizeRetrievalAuthority,
+  attestRetrievalAuthoritySummary,
+} = require('../../shared/memory-source/contracts.cjs');
 
 const COOPERATIVE_YIELD_EVERY = 1_000;
 
@@ -49,6 +60,7 @@ function serializeRecord(record, maxRecordBytes, kind) {
   return serializeProviderRecord(record, {
     maxBytes: maxRecordBytes,
     label: `Pinned ${kind} record`,
+    redactPaths: true,
   });
 }
 
@@ -88,7 +100,38 @@ function nodeText(node) {
   return values.filter(value => typeof value === 'string').join(' ').toLowerCase();
 }
 
-function scoreNode(node, terms, { query, nowMs } = {}) {
+function nonNullFields(value) {
+  return Object.fromEntries(Object.entries(value || {}).filter(([, field]) => field !== null));
+}
+
+function authenticatedProviderNode(node) {
+  if (!verifyMemoryAuthorityAttestation(node)) return node;
+  let payload;
+  try {
+    payload = memoryAuthorityAttestationPayload(node);
+  } catch {
+    throw typed('source_invalid', 'Authenticated pinned node cannot be projected safely');
+  }
+  const provenance = {
+    ...nonNullFields(payload.provenance),
+    ...(Object.keys(payload.provenanceAuthority).length > 0
+      ? { authority: nonNullFields(payload.provenanceAuthority) }
+      : {}),
+    node_profile: nonNullFields(payload.profile),
+  };
+  const metadata = nonNullFields(payload.metadata);
+  const evidenceLinks = Array.isArray(payload.evidenceLinks) ? payload.evidenceLinks : [];
+  return {
+    id: payload.identity,
+    ...nonNullFields(payload.content),
+    ...nonNullFields(payload.classification),
+    ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+    ...(Object.keys(provenance).length > 0 ? { provenance } : {}),
+    ...(evidenceLinks.length > 0 ? { evidence: { evidence_links: evidenceLinks } } : {}),
+  };
+}
+
+function scoreNode(node, authorityNode, terms, { query, nowMs } = {}) {
   const text = nodeText(node);
   let matched = 0;
   for (const term of terms) if (text.includes(term)) matched += 1;
@@ -96,20 +139,24 @@ function scoreNode(node, terms, { query, nowMs } = {}) {
   const salience = Number(node.salience ?? node.weight ?? node.activation ?? 0);
   const boundedSalience = Number.isFinite(salience) ? Math.max(0, Math.min(1, salience)) : 0;
   const relevance = coverage * 4 + matched * 0.25 + boundedSalience;
-  return scoreMemoryAuthority(node, relevance, { query, nowMs });
+  return scoreMemoryAuthority(authorityNode, relevance, { query, nowMs });
 }
 
 function projectProviderAuthority(node) {
-  const profile = projectMemoryAuthority(node);
+  const profile = projectMemoryAuthority(node, { limit: 2 });
   const operationalAuthority = profile.authorityClass === 'verified_current_state';
   return Object.freeze({
     schema: profile.schema,
     domain: profile.retrievalDomain,
+    retrievalDomain: profile.retrievalDomain,
     authorityClass: profile.authorityClass,
     semanticTime: profile.semanticTime,
     operationalAuthority,
     requiresFreshVerification: !operationalAuthority,
-    sourceChain: profile.sourceChain,
+    sourceChain: profile.sourceChain.slice(0, 2).map(link => Object.freeze({
+      kind: link.kind,
+      ref: redactPrivatePaths(link.ref),
+    })),
   });
 }
 
@@ -196,6 +243,7 @@ async function projectPinnedQuery({
   onEdgeScanned = null,
   nowMs = Date.now(),
 } = {}) {
+  const projectionStartedAt = performance.now();
   if (!sourcePin || typeof sourcePin.iterateNodes !== 'function'
       || typeof sourcePin.iterateEdges !== 'function') {
     throw typed('source_pin_required', 'Pinned source iterators are required');
@@ -216,17 +264,25 @@ async function projectPinnedQuery({
   for await (const rawNode of sourcePin.iterateNodes({ signal })) {
     throwIfAborted(signal);
     nodesScanned += 1;
-    const serialized = serializeRecord(rawNode, selectedLimits.maxRecordBytes, 'node');
+    const rawId = nodeId(rawNode);
+    const providerNode = authenticatedProviderNode(rawNode);
+    const rawScore = rawId === null
+      ? null
+      : scoreNode(providerNode, rawNode, terms, { query, nowMs });
+    const rawAuthority = rawId === null
+      ? null
+      : projectProviderAuthority(rawNode);
+    const serialized = serializeRecord(providerNode, selectedLimits.maxRecordBytes, 'node');
     const id = nodeId(serialized.value);
-    if (id !== null) {
+    if (id !== null && id === rawId) {
       if (serialized.bytes > selectedLimits.maxProjectionBytes) {
         nodesDroppedForByteBudget += 1;
       } else {
         const change = heap.add({
           id,
-          score: scoreNode(serialized.value, terms, { query, nowMs }),
+          score: rawScore,
           record: serialized.value,
-          authority: projectProviderAuthority(serialized.value),
+          authority: rawAuthority,
           bytes: serialized.bytes,
         });
         if (change.added) retainedNodeBytes += change.added.bytes;
@@ -290,41 +346,40 @@ async function projectPinnedQuery({
       ? await sourcePin.summarize({ signal })
       : sourcePin.descriptor?.summary || null;
   throwIfAborted(signal);
+  const sourceRevision = sourcePin.revision
+    ?? sourcePin.descriptor?.cutoffRevision
+    ?? sourcePin.evidence?.deltaWatermark?.revision
+    ?? null;
+  const authoritySummary = summarizeRetrievalAuthority(nodeAuthorities);
   const evidence = typeof sourcePin.getEvidence === 'function'
     ? sourcePin.getEvidence({
       operation: 'query_projection',
+      retrievalMode: 'logical-source-scan',
+      indexCoverage: {
+        complete: false,
+        indexedRevision: null,
+        currentRevision: sourceRevision,
+        coveredThroughRevision: sourceRevision,
+        deltaRecords: sourcePin.descriptor?.activeDelta?.count ?? 0,
+        distinctChangedNodes: 0,
+        distinctUpsertedNodes: 0,
+        distinctRemovedNodes: 0,
+        edgeOnlyRecords: 0,
+        route: 'pinned-query-projection',
+        completeness: 'complete',
+      },
+      stageTimingsMs: {
+        response: performance.now() - projectionStartedAt,
+      },
       returnedTotals: { nodes: nodes.length, edges: edges.length },
       completeCoverage: true,
       filteredTotal: 0,
       byteBudgetTruncated,
       droppedForByteBudget,
-      authoritySummary: nodeAuthorities.reduce((summary, authority) => {
-        const field = ({
-          verified_current_state: 'verifiedCurrentState',
-          jtr_correction: 'jtrCorrection',
-          artifact_log: 'artifactLog',
-          worker_receipt: 'workerReceipt',
-          generated_doctrine: 'generatedDoctrine',
-          narrative: 'narrative',
-        })[authority.authorityClass];
-        if (field) summary[field] += 1;
-        if (authority.requiresFreshVerification) summary.requiresFreshVerification += 1;
-        return summary;
-      }, {
-        verifiedCurrentState: 0,
-        jtrCorrection: 0,
-        artifactLog: 0,
-        workerReceipt: 0,
-        generatedDoctrine: 0,
-        narrative: 0,
-        requiresFreshVerification: 0,
-      }),
+      authoritySummary,
     })
     : sourcePin.evidence || null;
-  const sourceRevision = sourcePin.revision
-    ?? sourcePin.descriptor?.cutoffRevision
-    ?? evidence?.deltaWatermark?.revision
-    ?? null;
+  if (evidence) attestRetrievalAuthoritySummary(evidence, nodeAuthorities);
 
   return Object.freeze({
     nodes,

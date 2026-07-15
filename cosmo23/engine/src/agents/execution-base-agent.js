@@ -21,6 +21,7 @@ const fsPromises = require('fs').promises;
 const path = require('path');
 const { execSync, exec } = require('child_process');
 const os = require('os');
+const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Blocked command patterns — reused from IDEAgent safety boundary
@@ -334,7 +335,7 @@ class ExecutionBaseAgent extends BaseAgent {
         timeout,
         maxBuffer: 10 * 1024 * 1024,
         encoding: 'utf8',
-        env: { ...process.env, ...(options.env || {}) }
+        env: unprivilegedChildEnv(process.env, options.env || {})
       };
 
       if (options.cwd) {

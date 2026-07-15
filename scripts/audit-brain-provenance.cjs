@@ -4,12 +4,18 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const yaml = require('js-yaml');
 const {
   withEphemeralMemorySource,
 } = require('../shared/memory-source/operation-context.cjs');
 const authorityProfile = require('../engine/src/memory/provenance-salience.js');
+const {
+  deriveMemoryAuthorityAttestationKey,
+  verifyMemoryAuthorityAttestation,
+} = require('../shared/memory-authority-attestation.cjs');
 
 const AUDIT_SCHEMA = 'home23.brain-provenance-audit.v1';
+const AUDIT_RECEIPT_SCHEMA = 'home23.brain-provenance-audit-receipt.v1';
 const MAX_LIMIT = 1000;
 const AUTHORITY_CLASSES = new Set([
   'verified_current_state', 'jtr_correction', 'artifact_log',
@@ -54,6 +60,7 @@ async function auditPinnedBrainProvenance({
   maxPerRiskStratum = 50,
   signal,
   now = new Date().toISOString(),
+  authorityKey,
 } = {}) {
   if (!source || typeof source.iterateNodes !== 'function' || !source.descriptor) {
     throw new Error('pinned read-only source required');
@@ -89,6 +96,7 @@ async function auditPinnedBrainProvenance({
 
   const highLimit = boundedLimit(maxHighActivation, 'maxHighActivation');
   const riskLimit = boundedLimit(maxPerRiskStratum, 'maxPerRiskStratum');
+  const resolvedAuthorityKey = authorityKey || resolveAuthorityKey(root);
   const highActivation = new BoundedActivationHeap(highLimit);
   const risks = {
     report_only: new BoundedActivationHeap(riskLimit),
@@ -120,7 +128,9 @@ async function auditPinnedBrainProvenance({
 
   const rows = [...selected.values()]
     .sort((a, b) => finiteNumber(b.activation) - finiteNumber(a.activation))
-    .map((node) => auditRecord(node, { revision, generation, target, now }));
+    .map((node) => auditRecord(node, {
+      revision, generation, target, now, authorityKey: resolvedAuthorityKey,
+    }));
   const outputParentBinding = captureDirectoryBinding(path.dirname(finalOutput));
   assertDirectoryBinding(outputParentBinding, 'audit output directory');
   if (!Number.isInteger(fs.constants.O_NOFOLLOW)) {
@@ -128,33 +138,97 @@ async function auditPinnedBrainProvenance({
   }
   const fd = fs.openSync(
     finalOutput,
-    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+    fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
     0o600,
   );
+  const reportHash = crypto.createHash('sha256');
+  let openedIdentity = null;
+  let reportSha256 = null;
+  let writeSucceeded = false;
   try {
     const opened = fs.fstatSync(fd, { bigint: true });
+    openedIdentity = { dev: opened.dev, ino: opened.ino };
     if (!opened.isFile() || opened.nlink !== 1n
         || path.dirname(fs.realpathSync(finalOutput)) !== outputParentBinding.path) {
       throw new Error('audit output escaped requester-owned runtime');
     }
     assertDirectoryBinding(outputParentBinding, 'audit output directory');
-    for (const row of rows) fs.writeSync(fd, `${JSON.stringify(row)}\n`);
+    let expectedBytes = 0;
+    for (const row of rows) {
+      const line = Buffer.from(`${JSON.stringify(row)}\n`, 'utf8');
+      reportHash.update(line);
+      writeAllSync(fd, line, expectedBytes);
+      expectedBytes += line.length;
+    }
     fs.fsyncSync(fd);
+    const afterWrite = fs.fstatSync(fd, { bigint: true });
+    if (afterWrite.dev !== opened.dev || afterWrite.ino !== opened.ino
+        || afterWrite.size !== BigInt(expectedBytes) || afterWrite.nlink !== 1n) {
+      throw new Error('audit output identity or size changed during write');
+    }
+    const readback = Buffer.alloc(expectedBytes);
+    readAllSync(fd, readback);
+    const intendedDigest = reportHash.digest('hex');
+    const actualDigest = crypto.createHash('sha256').update(readback).digest('hex');
+    if (actualDigest !== intendedDigest) throw new Error('audit output digest readback mismatch');
+    reportSha256 = `sha256:${actualDigest}`;
     assertDirectoryBinding(outputParentBinding, 'audit output directory');
+    const boundPath = fs.lstatSync(finalOutput, { bigint: true });
+    if (!boundPath.isFile() || boundPath.isSymbolicLink()
+        || boundPath.dev !== opened.dev || boundPath.ino !== opened.ino) {
+      throw new Error('audit output path identity changed after write');
+    }
+    writeSucceeded = true;
   } finally {
     fs.closeSync(fd);
+    if (!writeSucceeded && openedIdentity) {
+      const current = (() => {
+        try { return fs.lstatSync(finalOutput, { bigint: true }); } catch { return null; }
+      })();
+      if (current?.isFile() && !current.isSymbolicLink()
+          && current.dev === openedIdentity.dev && current.ino === openedIdentity.ino) {
+        fs.unlinkSync(finalOutput);
+      }
+    }
   }
 
   return Object.freeze({
     schema: AUDIT_SCHEMA,
+    receiptSchema: AUDIT_RECEIPT_SCHEMA,
+    sourceRoot: target,
     sourceRevision: revision,
     sourceGeneration: generation,
     scanned,
     recordsWritten: rows.length,
     riskCounts: Object.fromEntries(Object.entries(risks).map(([key, heap]) => [key, heap.values().length])),
     outputFile: finalOutput,
+    reportSha256,
     dryRun: true,
+    firstRolloutDryRunOnly: true,
+    applyCapability: 'none-first-rollout-dry-run-only',
   });
+}
+
+function writeAllSync(fd, buffer, startPosition) {
+  let offset = 0;
+  while (offset < buffer.length) {
+    const written = fs.writeSync(fd, buffer, offset, buffer.length - offset, startPosition + offset);
+    if (!Number.isSafeInteger(written) || written <= 0) {
+      throw new Error('audit output short write made no progress');
+    }
+    offset += written;
+  }
+}
+
+function readAllSync(fd, buffer) {
+  let offset = 0;
+  while (offset < buffer.length) {
+    const read = fs.readSync(fd, buffer, offset, buffer.length - offset, offset);
+    if (!Number.isSafeInteger(read) || read <= 0) {
+      throw new Error('audit output readback was incomplete');
+    }
+    offset += read;
+  }
 }
 
 function captureDirectoryBinding(directory) {
@@ -175,14 +249,17 @@ function assertDirectoryBinding(binding, label) {
   }
 }
 
-function auditRecord(node, { revision, generation, target, now }) {
+function auditRecord(node, { revision, generation, target, now, authorityKey }) {
   const stored = storedProfile(node);
-  const proposedAuthorityClass = classifyAuthority(node);
-  const proposedRetrievalDomain = classifyDomain(node);
+  const proposedAuthorityClass = classifyAuthority(node, authorityKey);
+  const proposedRetrievalDomain = classifyDomain(node, authorityKey);
   const sourceChain = projectSourceChain(node);
   const missingEvidence = missingEvidenceFor(node, proposedAuthorityClass, sourceChain);
   const reasons = [];
   if (!stored) reasons.push('missing_node_provenance');
+  const attestationMissing = Boolean(stored)
+    && !verifyMemoryAuthorityAttestation(node, authorityKey);
+  if (attestationMissing) reasons.push('attestation_missing');
   if (stored?.authorityClass && stored.authorityClass !== proposedAuthorityClass) {
     reasons.push('authority_class_mismatch');
   }
@@ -193,6 +270,7 @@ function auditRecord(node, { revision, generation, target, now }) {
   if (missingEvidence.length) reasons.push('evidence_gap');
   if (!reasons.length) reasons.push('classification_confirmed');
   const reviewRequired = missingEvidence.length > 0
+    || attestationMissing
     || stored?.authorityClass !== proposedAuthorityClass
     || stored?.retrievalDomain !== proposedRetrievalDomain;
   return {
@@ -220,14 +298,10 @@ function auditRecord(node, { revision, generation, target, now }) {
   };
 }
 
-function classifyAuthority(node) {
+function classifyAuthority(node, authorityKey) {
   const directChain = fallbackSourceChain(node);
-  if (isGenerated(node)) {
-    const adopted = directChain.evidenceRefs.some((ref) => ref.startsWith('adopted-doctrine-receipt:'));
-    return adopted ? 'generated_doctrine' : 'narrative';
-  }
   if (typeof authorityProfile.classifyClaimAuthority === 'function') {
-    const projected = authorityProfile.classifyClaimAuthority(node);
+    const projected = authorityProfile.classifyClaimAuthority(node, { authorityKey });
     const value = typeof projected === 'string'
       ? projected
       : projected?.authorityClass || projected?.claimAuthority;
@@ -241,20 +315,14 @@ function classifyAuthority(node) {
       return value;
     }
   }
-  const stored = storedProfile(node);
-  if (hasTag(node, 'jtr-correction', 'jtr_correction', 'owner-correction')) return 'jtr_correction';
-  if (stored?.authorityClass === 'verified_current_state'
-      && directChain.evidenceRefs.some((ref) => ref.startsWith('verifier:'))) {
-    return 'verified_current_state';
-  }
-  if (hasTag(node, 'worker-receipt', 'worker_receipt')) return 'worker_receipt';
+  if (isGenerated(node)) return 'narrative';
   if (directChain.sourceRefs.length || directChain.evidenceRefs.length) return 'artifact_log';
   return 'narrative';
 }
 
-function classifyDomain(node) {
+function classifyDomain(node, authorityKey) {
   if (typeof authorityProfile.classifyMemoryDomain === 'function') {
-    const projected = authorityProfile.classifyMemoryDomain(node);
+    const projected = authorityProfile.classifyMemoryDomain(node, { authorityKey });
     const value = typeof projected === 'string'
       ? projected
       : projected?.retrievalDomain || projected?.domain;
@@ -396,6 +464,16 @@ function contentHash(node) {
   return crypto.createHash('sha256').update(String(content)).digest('hex');
 }
 
+function resolveAuthorityKey(home23Root) {
+  try {
+    const secrets = yaml.load(fs.readFileSync(path.join(home23Root, 'config', 'secrets.yaml'), 'utf8')) || {};
+    const capabilityKey = secrets?.brainOperations?.capabilityKey;
+    return deriveMemoryAuthorityAttestationKey(capabilityKey);
+  } catch {
+    return null;
+  }
+}
+
 function resolveRequesterOutput({ outputFile, requesterRuntime, target, revision, now }) {
   const auditsRoot = ensureExactChildDirectory(
     requesterRuntime, 'brain-provenance-audits', 'audit output directory',
@@ -528,6 +606,9 @@ function parseArgs(argv) {
 
 async function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
+  if (args.apply !== undefined) {
+    throw new Error('first rollout is dry-run-only; CLI apply is disabled');
+  }
   const home23Root = path.resolve(args['home23-root'] || path.join(__dirname, '..'));
   const requesterAgent = args.requester;
   if (!requesterAgent) throw new Error('--requester is required');
@@ -561,6 +642,7 @@ if (require.main === module) {
 
 module.exports = {
   AUDIT_SCHEMA,
+  AUDIT_RECEIPT_SCHEMA,
   auditPinnedBrainProvenance,
   main,
 };

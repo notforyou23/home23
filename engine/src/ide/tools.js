@@ -6,6 +6,7 @@
 const fs = require('fs').promises;
 const path = require('path');
 const { execSync } = require('child_process');
+const { unprivilegedChildEnv } = require('../../../shared/child-process-env.cjs');
 
 // ============================================================================
 // TOOL DEFINITIONS (OpenAI/Anthropic Format)
@@ -507,7 +508,7 @@ class ToolExecutor {
       
       // Try ripgrep first, fallback to grep
       try {
-        execSync('which rg', { encoding: 'utf-8' });
+        execSync('which rg', { encoding: 'utf-8', env: unprivilegedChildEnv() });
         cmd = `rg "${escapedPattern}" "${resolved}" --max-count 50 --max-columns 200`;
       } catch {
         cmd = `grep -r "${escapedPattern}" "${resolved}" | head -100`;
@@ -516,7 +517,8 @@ class ToolExecutor {
       const output = execSync(cmd, { 
         encoding: 'utf-8',
         maxBuffer: 10 * 1024 * 1024,
-        timeout: 10000
+        timeout: 10000,
+        env: unprivilegedChildEnv()
       });
       
       const matchCount = (output.match(/\n/g) || []).length;
@@ -731,7 +733,7 @@ class ToolExecutor {
         encoding: 'utf-8',
         maxBuffer: 10 * 1024 * 1024,
         timeout: 30000,
-        env: { ...process.env }
+        env: unprivilegedChildEnv()
       });
       
       return { output, exitCode: 0, success: true };
@@ -761,4 +763,3 @@ module.exports = {
   anthropicTools,
   ToolExecutor
 };
-

@@ -23,6 +23,9 @@ const require = createRequire(import.meta.url);
 const { isGeneratedMemoryMethod } = require('../../shared/memory-authority.cjs') as {
   isGeneratedMemoryMethod: (method: unknown) => boolean;
 };
+const { attestMemoryAuthorityIfAvailable } = require('../../shared/memory-authority-attestation.cjs') as {
+  attestMemoryAuthorityIfAvailable: (node: unknown) => unknown;
+};
 
 // ─── Confidence Anti-Theater Constraints ────────────────
 const CONFIDENCE_CAPS: Record<string, number> = {
@@ -289,6 +292,10 @@ export class MemoryObjectStore {
       },
       reuse_count: 0,
     };
+
+    // Only the one-use, recorded user-turn correction path is independently
+    // authenticated here. Generic verifier/adoption strings remain unsigned.
+    if (correctionMessageRef) attestMemoryAuthorityIfAvailable(obj);
 
     this.objects.push(obj);
     this.saveObjects();

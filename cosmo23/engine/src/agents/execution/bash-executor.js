@@ -1,5 +1,6 @@
 const { spawn, execFile } = require('child_process');
 const path = require('path');
+const { unprivilegedChildEnv } = require('../../../../../shared/child-process-env.cjs');
 
 /**
  * BashExecutor - Local bash command execution with security hardening
@@ -157,7 +158,7 @@ class BashExecutor {
         cwd,
         timeout,
         maxBuffer: 10 * 1024 * 1024,
-        env: { ...process.env }
+        env: unprivilegedChildEnv()
       }, (error, stdout, stderr) => {
         this.processes.delete(child.pid);
         const duration = Date.now() - startTime;
@@ -211,7 +212,7 @@ class BashExecutor {
 
       const child = spawn('sh', ['-c', command], {
         cwd,
-        env: { ...process.env }
+        env: unprivilegedChildEnv()
       });
 
       if (child.pid) {

@@ -17,15 +17,136 @@ const {
   memorySourceError,
   throwIfAborted,
 } = require('../../../shared/memory-source');
-const { projectAnnLabel } = require('../../../shared/ann-label-contract.cjs');
+const {
+  ANN_AUTHORITY_PROJECTION_SCHEMA,
+  projectAnnLabel,
+} = require('../../../shared/ann-label-contract.cjs');
 const { projectMemoryAuthority } = require('../../../shared/memory-authority.cjs');
+const {
+  memoryAuthorityAttestationKeyId,
+} = require('../../../shared/memory-authority-attestation.cjs');
 
 const DIM = 768;
 const HNSW_M = 16;
 const HNSW_EF_CONSTRUCTION = 200;
 const MAX_REUSE_METADATA_BYTES = 256 * 1024 * 1024;
+const DEFAULT_MIN_VECTOR_COVERAGE_BPS = 5000;
 
 function log(...a) { console.log('[build-ann]', ...a); }
+
+function elapsedMs(startedAt) {
+  return Math.max(0, Math.round(Date.now() - startedAt));
+}
+
+function emptyStageDurations(sourceOpenMs = 0) {
+  return {
+    cleanupMs: 0,
+    sourceOpenMs: Math.max(0, Math.round(Number(sourceOpenMs) || 0)),
+    sourceScanMs: 0,
+    indexWriteMs: 0,
+    metadataWriteMs: 0,
+    publishMs: 0,
+    reuseValidationMs: 0,
+    totalMs: 0,
+  };
+}
+
+function minimumVectorCoverageBps(deps) {
+  const raw = deps.minimumVectorCoverageBps
+    ?? process.env.ANN_MIN_VECTOR_COVERAGE_BPS
+    ?? DEFAULT_MIN_VECTOR_COVERAGE_BPS;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1 || value > 10000) {
+    throw memorySourceError('invalid_request', 'ANN minimum vector coverage must be 1..10000 bps', {
+      retryable: false,
+    });
+  }
+  return value;
+}
+
+function semanticCoverage(sourceNodes, indexed, skipped, minimumBps) {
+  if (!Number.isSafeInteger(sourceNodes) || sourceNodes < 0
+      || !Number.isSafeInteger(indexed) || indexed < 0
+      || !Number.isSafeInteger(skipped) || skipped < 0
+      || indexed + skipped !== sourceNodes) {
+    throw memorySourceError('invalid_memory_source', 'ANN scan count does not match source authority', {
+      retryable: false,
+    });
+  }
+  const vectorCoverageBps = sourceNodes === 0
+    ? 10000
+    : Math.floor((indexed * 10000) / sourceNodes);
+  const usable = sourceNodes === 0
+    || (indexed > 0 && vectorCoverageBps >= minimumBps);
+  return Object.freeze({
+    status: usable ? 'complete' : 'insufficient',
+    sourceNodes,
+    indexed,
+    skipped,
+    usable,
+    vectorCoverageBps,
+    minimumVectorCoverageBps: minimumBps,
+  });
+}
+
+function requireUsableSemanticCoverage(coverage) {
+  if (coverage.usable) return coverage;
+  throw memorySourceError('invalid_memory_source', 'ANN usable-vector coverage is insufficient', {
+    retryable: false,
+    semanticCoverage: coverage,
+  });
+}
+
+async function bindCanonicalDirectory(directory, label) {
+  const stat = await fsp.lstat(directory, { bigint: true }).catch(() => null);
+  const canonical = await fsp.realpath(directory).catch(() => null);
+  if (!stat?.isDirectory() || stat.isSymbolicLink() || canonical !== directory) {
+    throw memorySourceError('invalid_memory_source', `${label} must be a canonical nonsymlink directory`, {
+      retryable: false,
+    });
+  }
+  return Object.freeze({ path: directory, dev: stat.dev, ino: stat.ino });
+}
+
+async function assertDirectoryBinding(binding, label) {
+  const stat = await fsp.lstat(binding.path, { bigint: true }).catch(() => null);
+  const canonical = await fsp.realpath(binding.path).catch(() => null);
+  if (!stat?.isDirectory() || stat.isSymbolicLink()
+      || stat.dev !== binding.dev || stat.ino !== binding.ino || canonical !== binding.path) {
+    throw memorySourceError('source_changed', `${label} identity changed`, { retryable: true });
+  }
+}
+
+async function bindDefaultOwnBrain({ brainDir, home23Root, requesterAgent }) {
+  if (typeof requesterAgent !== 'string'
+      || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(requesterAgent)) {
+    throw memorySourceError('invalid_request', 'safe ANN requester agent required', { retryable: false });
+  }
+  const canonicalHome = await fsp.realpath(home23Root);
+  const expectedBrain = path.join(canonicalHome, 'instances', requesterAgent, 'brain');
+  if (path.resolve(brainDir) !== expectedBrain) {
+    throw memorySourceError(
+      'invalid_memory_source',
+      'ANN default target must be the canonical nonsymlink own-brain path',
+      { retryable: false },
+    );
+  }
+  const bindings = [];
+  for (const [directory, label] of [
+    [canonicalHome, 'Home23 root'],
+    [path.join(canonicalHome, 'instances'), 'instances root'],
+    [path.join(canonicalHome, 'instances', requesterAgent), 'agent root'],
+    [expectedBrain, 'canonical nonsymlink own-brain target'],
+  ]) {
+    bindings.push(await bindCanonicalDirectory(directory, label));
+  }
+  return Object.freeze({ canonicalBrain: expectedBrain, bindings: Object.freeze(bindings) });
+}
+
+async function assertDefaultOwnBrainBindings(bound) {
+  if (!bound) return;
+  for (const binding of bound.bindings) await assertDirectoryBinding(binding, 'ANN own-brain ancestry');
+}
 
 function defaultRequesterAgent(brainDir) {
   const parent = path.basename(path.dirname(path.resolve(brainDir)));
@@ -74,7 +195,7 @@ function projectLabel(node) {
       semanticTime: authority.semanticTime,
       status: node?.status || node?.metadata?.status
         || (authority.retrievalDomain === 'closed_incidents' ? 'closed' : null),
-      evidencePresent: authority.sourceChain.length > 0,
+      sourceChain: authority.sourceChain,
     }, {
       fallbackSourceClass: provenance.sourceClass,
       fallbackSalienceWeight: provenance.salienceWeight,
@@ -235,7 +356,18 @@ async function cleanupOwnedFiles(entries) {
   return errors;
 }
 
-async function validateReusableAnn({ metaPath, indexPath, hnswlib, generation, revision, sourceNodeCount }) {
+async function validateReusableAnn({
+  metaPath,
+  indexPath,
+  hnswlib,
+  generation,
+  revision,
+  sourceNodeCount,
+  provider,
+  model,
+  authorityAttestationKeyId,
+  minimumCoverageBps,
+}) {
   const stat = await fsp.lstat(metaPath);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_REUSE_METADATA_BYTES) {
     throw memorySourceError('source_unavailable', 'fresh ANN metadata is unsafe or oversized', {
@@ -252,6 +384,20 @@ async function validateReusableAnn({ metaPath, indexPath, hnswlib, generation, r
     });
   }
   const labelCount = meta.labelCount ?? meta.count;
+  if (meta.authorityProjectionSchema !== ANN_AUTHORITY_PROJECTION_SCHEMA) {
+    throw memorySourceError(
+      'source_unavailable',
+      'fresh ANN authority projection schema does not match current trust policy',
+      { retryable: true },
+    );
+  }
+  if (meta.authorityAttestationKeyId !== authorityAttestationKeyId) {
+    throw memorySourceError(
+      'source_unavailable',
+      'fresh ANN authority verifier context does not match current trust policy',
+      { retryable: true, annFallbackReason: 'ann_authority_context_unavailable' },
+    );
+  }
   if (meta.generation !== generation || meta.builtFromRevision !== revision
       || !Number.isSafeInteger(meta.dimension) || meta.dimension < 1
       || !Number.isSafeInteger(meta.count) || meta.count < 0
@@ -265,8 +411,19 @@ async function validateReusableAnn({ metaPath, indexPath, hnswlib, generation, r
       retryable: true,
     });
   }
+  if (meta.provider !== provider || meta.model !== model) {
+    throw memorySourceError('source_unavailable', 'fresh ANN embedding identity does not match request', {
+      retryable: false,
+    });
+  }
+  const coverage = requireUsableSemanticCoverage(semanticCoverage(
+    sourceNodeCount,
+    meta.count,
+    meta.skipped,
+    minimumCoverageBps,
+  ));
   try {
-    for (const label of meta.labels) projectAnnLabel(label);
+    for (const label of meta.labels) projectAnnLabel(label, { trustedProjection: true });
   } catch (cause) {
     throw memorySourceError('source_unavailable', 'fresh ANN metadata labels are invalid', {
       retryable: true,
@@ -286,7 +443,7 @@ async function validateReusableAnn({ metaPath, indexPath, hnswlib, generation, r
       cause,
     });
   }
-  return { count: meta.count, skipped: meta.skipped };
+  return { count: meta.count, skipped: meta.skipped, semanticCoverage: coverage };
 }
 
 function assertNativeAnnSource(source) {
@@ -305,12 +462,20 @@ function assertNativeAnnSource(source) {
 }
 
 async function build(brainDir, deps = {}) {
+  const buildStarted = Date.now();
   const home23Root = deps.home23Root || defaultHome23Root(brainDir);
   const requesterAgent = deps.requesterAgent || defaultRequesterAgent(brainDir);
+  const injectedResolver = typeof deps.resolveTargetContext === 'function';
+  const defaultOwnBrain = injectedResolver ? null : await bindDefaultOwnBrain({
+    brainDir: path.resolve(brainDir),
+    home23Root: path.resolve(home23Root),
+    requesterAgent,
+  });
   const resolveTargetContext = deps.resolveTargetContext
     || (() => defaultResolveTargetContext(brainDir, requesterAgent));
   const resolved = await resolveTargetContext({});
-  const canonicalBrain = await fsp.realpath(brainDir);
+  const canonicalBrain = defaultOwnBrain?.canonicalBrain || await fsp.realpath(brainDir);
+  await assertDefaultOwnBrainBindings(defaultOwnBrain);
   if (resolved.target?.canonicalRoot !== canonicalBrain) {
     throw memorySourceError('source_changed', 'ANN target/source mismatch', { retryable: true });
   }
@@ -319,9 +484,22 @@ async function build(brainDir, deps = {}) {
   const advanceAnn = deps.advanceAnnBuiltFromRevision || advanceAnnBuiltFromRevision;
   const provider = deps.provider || process.env.EMBEDDING_PROVIDER || 'local';
   const model = deps.model || process.env.EMBEDDING_MODEL || 'nomic-embed-text';
+  let authorityAttestationKeyId;
+  try {
+    authorityAttestationKeyId = deps.authorityKey === undefined
+      ? memoryAuthorityAttestationKeyId()
+      : memoryAuthorityAttestationKeyId(deps.authorityKey);
+  } catch (cause) {
+    throw memorySourceError(
+      'source_unavailable',
+      'ANN authority verifier context is unavailable',
+      { retryable: true, annFallbackReason: 'ann_authority_context_unavailable', cause },
+    );
+  }
+  const minimumCoverageBps = minimumVectorCoverageBps(deps);
   const now = deps.now || (() => new Date());
 
-  return withEphemeralSource({
+  const operationResult = await withEphemeralSource({
     brainDir,
     home23Root,
     requesterAgent,
@@ -345,6 +523,9 @@ async function build(brainDir, deps = {}) {
     const baseRevision = source.manifest?.baseRevision;
     const deltaEpoch = source.manifest?.activeDeltaEpoch;
     const capacity = source.manifest?.summary?.nodeCount;
+    const stageDurations = emptyStageDurations(
+      Number.isFinite(source.openDurationMs) ? source.openDurationMs : elapsedMs(buildStarted),
+    );
     if (!Number.isSafeInteger(capacity) || capacity < 0) {
       throw memorySourceError('invalid_memory_source', 'invalid ANN manifest capacity', {
         retryable: false,
@@ -358,6 +539,8 @@ async function build(brainDir, deps = {}) {
       const pinnedMetaPath = path.join(canonicalBrain, pinnedAnn.metaFile);
       await captureOwnedFileIdentity(pinnedIndexPath);
       await captureOwnedFileIdentity(pinnedMetaPath);
+      const reuseStarted = Date.now();
+      await assertDefaultOwnBrainBindings(defaultOwnBrain);
       const counts = await validateReusableAnn({
         metaPath: pinnedMetaPath,
         indexPath: pinnedIndexPath,
@@ -365,7 +548,13 @@ async function build(brainDir, deps = {}) {
         generation,
         revision,
         sourceNodeCount: capacity,
+        provider,
+        model,
+        authorityAttestationKeyId,
+        minimumCoverageBps,
       });
+      stageDurations.reuseValidationMs = elapsedMs(reuseStarted);
+      stageDurations.totalMs = elapsedMs(buildStarted);
       return {
         total: counts.count,
         skipped: counts.skipped,
@@ -378,14 +567,20 @@ async function build(brainDir, deps = {}) {
         coverage: 'fresh',
         currentRevision: revision,
         bridgeableGap: 0,
-        semanticCoverage: { indexed: counts.count, skipped: counts.skipped },
-        stageDurations: { totalMs: 0 },
+        semanticCoverage: counts.semanticCoverage,
+        stageDurations,
+        stageStatuses: {
+          sourceOpen: 'completed', sourceScan: 'skipped', indexWrite: 'skipped',
+          metadataWrite: 'skipped', publish: 'skipped', reuseValidation: 'reused',
+          total: 'completed',
+        },
       };
     }
     const indexFile = `memory-ann.${revision}.index`;
     const metaFile = `memory-ann.${revision}.meta.json`;
     const indexPath = path.join(canonicalBrain, indexFile);
     const metaPath = path.join(canonicalBrain, metaFile);
+    await assertDefaultOwnBrainBindings(defaultOwnBrain);
     await assertOutputAbsent(indexPath);
     await assertOutputAbsent(metaPath);
     const indexTmpPath = uniqueTempPath(indexPath);
@@ -401,6 +596,7 @@ async function build(brainDir, deps = {}) {
     let indexIdentity = null;
     let metaIdentity = null;
     try {
+      const sourceScanStarted = Date.now();
       for await (const node of source.iterateNodes({ signal: deps.signal })) {
         throwIfAborted(deps.signal);
         const embedding = node?.embedding;
@@ -422,10 +618,18 @@ async function build(brainDir, deps = {}) {
         index.addPoint(embedding, labels.length);
         labels.push(label);
       }
+      stageDurations.sourceScanMs = elapsedMs(sourceScanStarted);
+      const coverage = requireUsableSemanticCoverage(semanticCoverage(
+        capacity,
+        labels.length,
+        skipped,
+        minimumCoverageBps,
+      ));
       if (!index) {
         dimension = DIM;
         index = createIndex(hnswlib, dimension, capacity);
       }
+      const indexWriteStarted = Date.now();
       indexTmpIdentity = await reserveOwnedTemp(indexTmpPath);
       index.writeIndexSync(indexTmpPath);
       await syncOwnedFile(indexTmpPath, indexTmpIdentity);
@@ -435,9 +639,12 @@ async function build(brainDir, deps = {}) {
       await removeOwnedFile(indexTmpPath, indexTmpIdentity);
       indexTmpIdentity = null;
       await fsyncDirectory(canonicalBrain);
+      stageDurations.indexWriteMs = elapsedMs(indexWriteStarted);
       const allLabels = labels.concat(skippedLabels);
       const meta = {
         version: 1,
+        authorityProjectionSchema: ANN_AUTHORITY_PROJECTION_SCHEMA,
+        authorityAttestationKeyId,
         dimension,
         dim: dimension,
         count: labels.length,
@@ -454,6 +661,7 @@ async function build(brainDir, deps = {}) {
         buildDurationMs: Date.now() - started,
         labels: allLabels,
       };
+      const metadataWriteStarted = Date.now();
       metaTmpIdentity = await reserveOwnedTemp(metaTmpPath);
       await writeJsonOwnedTemp(metaTmpPath, metaTmpIdentity, meta);
       await linkOwnedTemp(metaTmpPath, metaPath);
@@ -462,6 +670,9 @@ async function build(brainDir, deps = {}) {
       await removeOwnedFile(metaTmpPath, metaTmpIdentity);
       metaTmpIdentity = null;
       await fsyncDirectory(canonicalBrain);
+      stageDurations.metadataWriteMs = elapsedMs(metadataWriteStarted);
+      const publishStarted = Date.now();
+      await assertDefaultOwnBrainBindings(defaultOwnBrain);
       const advanced = await advanceAnn(canonicalBrain, {
         expectedGeneration: generation,
         expectedBaseRevision: baseRevision,
@@ -477,9 +688,11 @@ async function build(brainDir, deps = {}) {
           advanced,
         });
       }
+      stageDurations.publishMs = elapsedMs(publishStarted);
       const publishedCurrentRevision = advanced.manifest?.currentRevision ?? revision;
-      const coverage = advanced.coverage
-        || (publishedCurrentRevision === revision ? 'fresh' : 'overlay-covered');
+      const publicationStatus = publishedCurrentRevision === revision
+        ? 'fresh'
+        : 'rebuilt-overlay-covered';
       return {
         total: labels.length,
         skipped,
@@ -488,11 +701,19 @@ async function build(brainDir, deps = {}) {
         generation,
         builtFromRevision: revision,
         advanced,
-        coverage,
+        coverage: publicationStatus,
         currentRevision: publishedCurrentRevision,
         bridgeableGap: publishedCurrentRevision - revision,
-        semanticCoverage: { indexed: labels.length, skipped },
-        stageDurations: { totalMs: Date.now() - started },
+        semanticCoverage: coverage,
+        stageDurations: {
+          ...stageDurations,
+          totalMs: elapsedMs(buildStarted),
+        },
+        stageStatuses: {
+          sourceOpen: 'completed', sourceScan: 'completed', indexWrite: 'completed',
+          metadataWrite: 'completed', publish: 'completed', reuseValidation: 'skipped',
+          total: 'completed',
+        },
       };
     } catch (error) {
       const cleanupErrors = await cleanupOwnedFiles([
@@ -511,6 +732,20 @@ async function build(brainDir, deps = {}) {
       throw error;
     }
   });
+  const totalMs = elapsedMs(buildStarted);
+  const phaseTotalMs = operationResult.stageDurations.totalMs;
+  return {
+    ...operationResult,
+    stageDurations: {
+      ...operationResult.stageDurations,
+      cleanupMs: Math.max(0, totalMs - phaseTotalMs),
+      totalMs,
+    },
+    stageStatuses: {
+      ...operationResult.stageStatuses,
+      cleanup: 'completed',
+    },
+  };
 }
 
 if (require.main === module) {
@@ -526,6 +761,7 @@ if (require.main === module) {
         indexCount: result.total,
         stageDurations: result.stageDurations,
         semanticCoverage: result.semanticCoverage,
+        stageStatuses: result.stageStatuses,
         reused: result.reused === true,
       }));
       process.exit(0);

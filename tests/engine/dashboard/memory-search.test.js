@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import { promises as fsp } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
@@ -32,6 +33,20 @@ const {
 const {
   explainMemorySalienceScore,
 } = require('../../../engine/src/memory/provenance-salience');
+const { projectAnnLabel } = require('../../../shared/ann-label-contract.cjs');
+const {
+  attestMemoryAuthority,
+} = require('../../../shared/memory-authority-attestation.cjs');
+
+const AUTHORITY_KEY = '7'.repeat(64);
+const AUTHORITY_KEY_ID = createHash('sha256').update(AUTHORITY_KEY).digest('hex').slice(0, 16);
+const CURRENT_ANN_AUTHORITY_PROJECTION_SCHEMA = 'home23.ann-authority-projection.v1';
+const priorAuthorityKey = process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = AUTHORITY_KEY;
+test.after(() => {
+  if (priorAuthorityKey === undefined) delete process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+  else process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = priorAuthorityKey;
+});
 
 async function tempDir(prefix) {
   return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -99,6 +114,8 @@ function zeroLabelAnnMeta(revision) {
 
 function zeroLabelPinnedSource(root, revision) {
   const encoded = Buffer.from(JSON.stringify({
+    authorityProjectionSchema: CURRENT_ANN_AUTHORITY_PROJECTION_SCHEMA,
+    authorityAttestationKeyId: AUTHORITY_KEY_ID,
     dimension: 2,
     count: 0,
     skipped: 0,
@@ -127,6 +144,79 @@ function zeroLabelPinnedSource(root, revision) {
     getAnchoredFile(role) { return views[role] || null; },
   };
 }
+
+test('default ANN loading rejects metadata without an exact current authority projection schema', async (t) => {
+  const targetDir = await createBrain({ nodes: [] });
+  const root = await fsp.realpath(targetDir);
+  const current = zeroLabelPinnedSource(root, 1);
+  let runtimeStarts = 0;
+  const loadAnn = createDefaultLoadAnn({
+    indexRuntimeFactory: async () => {
+      runtimeStarts += 1;
+      throw new Error('legacy metadata must be rejected before runtime load');
+    },
+  });
+  t.after(() => loadAnn.close());
+
+  for (const [name, authorityProjectionSchema] of [
+    ['missing', undefined],
+    ['stale', 'home23.ann-authority-projection.v0'],
+  ]) {
+    const metadata = {
+      version: 1,
+      authorityProjectionSchema,
+      authorityAttestationKeyId: AUTHORITY_KEY_ID,
+      dimension: 2,
+      count: 0,
+      skipped: 0,
+      builtFromRevision: 1,
+      labels: [],
+    };
+    if (authorityProjectionSchema === undefined) delete metadata.authorityProjectionSchema;
+    const bytes = Buffer.from(JSON.stringify(metadata));
+    const source = {
+      ...current,
+      getAnchoredFile(role) {
+        if (role !== 'ann-meta') return current.getAnchoredFile(role);
+        return {
+          identity: { dev: '1', ino: `${name}-meta`, size: String(bytes.length) },
+          async readFile() { return bytes; },
+          async assertStable() {},
+        };
+      },
+    };
+    await assert.rejects(
+      loadAnn(source, zeroLabelAnnMeta(1)),
+      (error) => error?.code === 'source_unavailable'
+        && /authority projection schema/i.test(error.message),
+    );
+  }
+  assert.equal(runtimeStarts, 0);
+});
+
+test('default ANN loading rejects trusted authority projected under a missing or rotated verifier key', async (t) => {
+  const targetDir = await createBrain({ nodes: [] });
+  const root = await fsp.realpath(targetDir);
+  const source = zeroLabelPinnedSource(root, 1);
+  let runtimeStarts = 0;
+
+  for (const authorityKey of ['', '6'.repeat(64)]) {
+    const loadAnn = createDefaultLoadAnn({
+      authorityKey,
+      indexRuntimeFactory: async () => {
+        runtimeStarts += 1;
+        throw new Error('mismatched authority context must be rejected before runtime load');
+      },
+    });
+    t.after(() => loadAnn.close());
+    await assert.rejects(
+      loadAnn(source, zeroLabelAnnMeta(1)),
+      (error) => error?.code === 'source_unavailable'
+        && /authority verifier context/i.test(error.message),
+    );
+  }
+  assert.equal(runtimeStarts, 0);
+});
 
 async function sourceSearch({ dir, embedQuery, loadAnn, query = 'canary', request = {} }) {
   const source = await openMemorySource(dir);
@@ -178,7 +268,9 @@ test('stale ANN cannot hide a new delta keyword canary', async () => {
   assert.equal(result.evidence.indexWatermark.fresh, false);
   assert.equal(result.evidence.fallback, null);
   assert.equal(result.stats.retrievalMode, 'semantic-ann-delta-overlay');
+  assert.equal(result.evidence.retrievalMode, 'semantic-ann-delta-overlay');
   assert.equal(result.evidence.indexCoverage.complete, true);
+  assert.equal(result.evidence.indexCoverage.currentRevision, result.evidence.deltaWatermark.revision);
   assert.equal(result.evidence.indexCoverage.coveredThroughRevision, result.evidence.deltaWatermark.revision);
   assert.equal(result.evidence.indexCoverage.distinctUpsertedNodes, 1);
   assert.equal(Number.isFinite(result.evidence.stageTimings.overlayScoringMs), true);
@@ -186,6 +278,15 @@ test('stale ANN cannot hide a new delta keyword canary', async () => {
   assert.equal(Number.isFinite(result.evidence.stageTimings.embeddingMs), true);
   assert.equal(Number.isFinite(result.evidence.stageTimings.annLoadMs), true);
   assert.equal(Number.isFinite(result.evidence.stageTimings.mergeMs), true);
+  assert.equal(Number.isFinite(result.evidence.stageTimingsMs.sourceOpen), true);
+  assert.equal(Number.isFinite(result.evidence.stageTimingsMs.embedding), true);
+  assert.equal(Number.isFinite(result.evidence.stageTimingsMs.overlayRefresh), true);
+  assert.equal(Number.isFinite(result.evidence.stageTimingsMs.annLoad), true);
+  assert.equal(Number.isFinite(result.evidence.stageTimingsMs.annSearch), true);
+  assert.equal(Number.isFinite(result.evidence.stageTimingsMs.overlayScoring), true);
+  assert.equal(Number.isFinite(result.evidence.stageTimingsMs.keywordScoring), true);
+  assert.equal(Number.isFinite(result.evidence.stageTimingsMs.merge), true);
+  assert.equal(Number.isFinite(result.evidence.stageTimingsMs.response), true);
 });
 
 test('fresh ANN search remains available when the requester overlay exceeds its retained cap', async () => {
@@ -241,6 +342,8 @@ test('default ANN loader validates stale revision counts against build revision,
   const marked = await markAnn(dir, { builtFromRevision: base.currentRevision });
   await fsp.writeFile(path.join(dir, marked.ann.metaFile), JSON.stringify({
     version: 1,
+    authorityProjectionSchema: CURRENT_ANN_AUTHORITY_PROJECTION_SCHEMA,
+    authorityAttestationKeyId: AUTHORITY_KEY_ID,
     dimension: 2,
     count: 1,
     labelCount: 1,
@@ -305,7 +408,7 @@ test('ANN search applies authority ranking and exposes a bounded score explanati
   assert.ok(explanation.factors.length <= 8);
   const factorNames = new Set(explanation.factors.map((factor) => factor.name));
   for (const name of [
-    'base', 'legacy_salience', 'legacy_decay',
+    'base',
     'domain:current_ops', 'authority:verified_current_state',
     'freshness', 'current_state_guard', 'direct_evidence',
   ]) assert.equal(factorNames.has(name), true, `missing ${name}`);
@@ -313,6 +416,16 @@ test('ANN search applies authority ranking and exposes a bounded score explanati
   assert.equal(Math.round(factorProduct * 10000) / 10000, result.results[0].retrievalScore);
   assert.equal(explanation.score, result.results[0].retrievalScore);
   assert.ok(result.results[0].retrievalScore > result.results[1].retrievalScore);
+  assert.equal(result.evidence.authoritySummary.total, result.results.length);
+  assert.equal(result.evidence.authoritySummary.authorityClasses.verified_current_state, 1);
+  assert.equal(result.evidence.authoritySummary.authorityClasses.narrative, 1);
+  assert.equal(result.evidence.authoritySummary.retrievalDomains.current_ops, 1);
+  assert.equal(result.evidence.authoritySummary.retrievalDomains.external_intake, 1);
+  assert.equal(
+    result.evidence.authoritySummary.sourceChain.withEvidence
+      + result.evidence.authoritySummary.sourceChain.withoutEvidence,
+    result.results.length,
+  );
 });
 
 test('authenticated ANN narrative labels use semantic time without evidence promotion', async () => {
@@ -332,6 +445,10 @@ test('authenticated ANN narrative labels use semantic time without evidence prom
     {
       id: 'recent', concept: 'archive narrative canary', retrievalDomain: 'project_history',
       authorityClass: 'narrative', semanticTime: '2026-07-14T15:59:00.000Z', evidencePresent: false,
+      sourceChain: [
+        { kind: 'source', ref: 'artifact:archive-canary' },
+        { kind: 'trace', ref: 'trace:archive-canary' },
+      ],
     },
   ];
   const result = await sourceSearch({
@@ -349,6 +466,11 @@ test('authenticated ANN narrative labels use semantic time without evidence prom
   assert.equal(result.results[0].id, 'recent');
   assert.equal(byId.get('recent').authorityClass, 'narrative');
   assert.equal(byId.get('old').authorityClass, 'narrative');
+  assert.deepEqual(byId.get('recent').retrievalAuthority.sourceChain, [
+    { kind: 'trace', ref: 'trace:archive-canary' },
+    { kind: 'source', ref: 'artifact:archive-canary' },
+  ]);
+  assert.equal(byId.get('recent').evidencePresent, false);
   assert.ok(byId.get('recent').retrievalScore > byId.get('old').retrievalScore);
 });
 
@@ -410,7 +532,7 @@ test('a delta tombstone suppresses an ANN label', async () => {
   });
   assert.equal(result.results.some((row) => row.id === 'deleted'), false);
   assert.equal(result.evidence.sourceHealth, 'healthy');
-  assert.equal(result.evidence.matchOutcome, 'unknown');
+  assert.equal(result.evidence.matchOutcome, 'corpus_empty');
   assert.equal(result.evidence.indexCoverage.distinctRemovedNodes, 1);
 });
 
@@ -555,7 +677,10 @@ test('bounded skipped-node labels avoid a base scan on common indexed keyword se
 test('global merge lets a higher-authority keyword candidate displace a semantic narrative', async () => {
   const current = {
     id: 'current', concept: 'live authority canary', embedding: [0, 1], tag: 'state_snapshot',
-    provenance: { authorityClass: 'verified_current_state', operationalAuthority: true, evidenceRefs: ['receipt:live'] },
+    provenance: {
+      schema: 'home23.node-provenance.v1', authorityClass: 'verified_current_state',
+      operationalAuthority: true, evidenceRefs: ['verifier:live'], sourceRefs: ['probe:live'],
+    },
   };
   const narrative = { id: 'narrative', concept: 'semantic neighbor', embedding: [1, 0], tag: 'synthesis' };
   const dir = await createBrain({ nodes: [narrative, current] });
@@ -588,6 +713,398 @@ test('explicit exhaustive search uses the logical source fallback', async () => 
   assert.equal(result.evidence.fallback.route, 'logical-source-scan');
   assert.equal(result.evidence.fallback.reason, 'exhaustive_requested');
   assert.equal(result.evidence.fallback.completeness, 'complete');
+  assert.equal(result.stats.retrievalMode, 'logical-source-scan');
+  assert.equal(result.evidence.retrievalMode, 'logical-source-scan');
+  assert.ok(result.results.every((row) => row.retrievalMode === 'logical-source-scan'));
+  assert.equal(result.evidence.sourceHealth, 'degraded');
+});
+
+test('fresh ANN applies shared closure and correction authority before returning current state', async () => {
+  const nodes = [
+    {
+      id: 'alarm-old', concept: 'Current brain route status is down.', status: 'open',
+      asserted_at: '2026-07-13T12:00:00.000Z', metadata: { incidentId: 'brain-route' },
+    },
+    {
+      id: 'closure-new', concept: 'Current brain route status incident is closed.',
+      tag: 'goal_resolution', type: 'goal_resolution', status: 'completed',
+      metadata: {
+        incidentId: 'brain-route', resolved_at: '2026-07-14T15:00:00.000Z',
+        closure_proof_refs: ['verifier:brain-route-live'],
+      },
+      provenance: {
+        schema: 'home23.node-provenance.v1', authorityClass: 'worker_receipt',
+        sourceRefs: ['incident:brain-route'], evidenceRefs: ['verifier:brain-route-live'],
+      },
+    },
+    {
+      id: 'claim-old', concept: 'Current brain route status uses legacy sidecars.',
+      asserted_at: '2026-07-13T13:00:00.000Z',
+    },
+    {
+      id: 'correction-new', concept: 'Current brain route status uses manifest-v1.',
+      asserted_at: '2026-07-14T15:30:00.000Z',
+      metadata: { actor: 'jtr', correction: true, supersedes: ['claim-old'] },
+      actor: 'jtr',
+      provenance: {
+        schema: 'home23.node-provenance.v1', authorityClass: 'jtr_correction',
+        sourceRefs: ['turn:correction:user'], evidenceRefs: ['turn:correction:user'],
+      },
+    },
+  ];
+  attestMemoryAuthority(nodes[1], AUTHORITY_KEY);
+  attestMemoryAuthority(nodes[3], AUTHORITY_KEY);
+  const dir = await createBrain({ nodes });
+  await markAnn(dir);
+  const labels = nodes.map((node) => projectAnnLabel({
+    ...node,
+    retrievalDomain: node.id === 'closure-new' ? 'closed_incidents' : 'current_ops',
+    authorityClass: node.id === 'closure-new' ? 'worker_receipt'
+      : node.id === 'correction-new' ? 'jtr_correction' : 'narrative',
+    semanticTime: node.asserted_at || node.metadata?.resolved_at,
+    evidencePresent: node.id === 'closure-new',
+  }));
+  const result = await sourceSearch({
+    dir,
+    query: 'current brain route status',
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => ({
+      dimension: 2, count: labels.length, skipped: 0, labels,
+      search: () => labels.map((node) => ({ node, similarity: 0.9 })),
+    }),
+    request: { topK: 10, intent: 'current_state' },
+  });
+
+  assert.deepEqual(result.results.map((row) => row.id), ['correction-new', 'closure-new']);
+  assert.equal(result.results[0].correctionEvidence.supersedes[0], 'node:claim-old');
+  assert.equal(result.results[1].resolutionEvidence.resolves[0], 'incident:brain-route');
+  assert.equal(result.stats.retrievalMode, 'semantic-ann');
+  assert.equal(result.evidence.retrievalMode, 'semantic-ann');
+  assert.ok(result.results.every((row) => row.retrievalMode === 'semantic-ann'));
+});
+
+test('ANN authority suppression happens before topK so lower semantic evidence backfills', async () => {
+  const nodes = [
+    {
+      id: 'alarm-old', concept: 'old alarm wording', status: 'open', embedding: [1, 0],
+      asserted_at: '2026-07-13T12:00:00.000Z', metadata: { incidentId: 'route' },
+    },
+    {
+      id: 'eligible', concept: 'eligible evidence wording', embedding: [1, 0],
+      asserted_at: '2026-07-14T14:00:00.000Z',
+    },
+    {
+      id: 'closure-new', concept: 'closure wording', tag: 'goal_resolution',
+      status: 'completed', embedding: [0, 1], asserted_at: '2026-07-14T15:00:00.000Z',
+      metadata: {
+        incidentId: 'route', resolved_at: '2026-07-14T15:00:00.000Z',
+        closure_proof_refs: ['verifier:route-live'],
+      },
+      provenance: {
+        schema: 'home23.node-provenance.v1', authorityClass: 'worker_receipt',
+        sourceRefs: ['incident:route'], evidenceRefs: ['verifier:route-live'],
+      },
+    },
+  ];
+  attestMemoryAuthority(nodes[2], AUTHORITY_KEY);
+  const dir = await createBrain({ nodes });
+  await markAnn(dir);
+  const labels = nodes.map((node) => projectAnnLabel({
+    ...node,
+    retrievalDomain: node.id === 'closure-new' ? 'closed_incidents' : 'current_ops',
+    authorityClass: node.id === 'closure-new' ? 'worker_receipt' : 'narrative',
+    semanticTime: node.asserted_at,
+    evidencePresent: node.id === 'closure-new',
+  }));
+
+  const result = await sourceSearch({
+    dir,
+    query: 'semantic-only-query',
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => ({
+      dimension: 2, count: labels.length, skipped: 0, labels,
+      search: () => [
+        { node: labels[0], similarity: 0.99 },
+        { node: labels[1], similarity: 0.9 },
+      ],
+    }),
+    request: { topK: 1, minSimilarity: 0.1, noiseFloor: 0.1, intent: 'current_state' },
+  });
+
+  assert.deepEqual(result.results.map((row) => row.id), ['eligible']);
+});
+
+test('bounded ANN label absence falls back to logical source before claiming no match', async () => {
+  const concept = `${'prefix '.repeat(100)}exact bounded canary`;
+  const node = { id: 'long-label', concept, embedding: [0, 1] };
+  const dir = await createBrain({ nodes: [node] });
+  await markAnn(dir);
+  const label = projectAnnLabel(node);
+  assert.equal(label.concept.includes('exact bounded canary'), false);
+
+  const result = await sourceSearch({
+    dir,
+    query: 'exact bounded canary',
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => ({
+      dimension: 2, count: 1, skipped: 0, labels: [label], search: () => [],
+    }),
+    request: { topK: 1, minSimilarity: 0.1, noiseFloor: 0.1 },
+  });
+
+  assert.deepEqual(result.results.map((row) => row.id), ['long-label']);
+  assert.equal(result.evidence.retrievalMode, 'logical-source-scan');
+  assert.equal(result.evidence.sourceHealth, 'degraded');
+  assert.equal(result.evidence.fallback.reason, 'exact_canary_missing');
+});
+
+test('missing ANN reports a degraded complete logical source scan with one approved mode', async () => {
+  const dir = await createBrain({
+    nodes: [{ id: 'canary', concept: 'current logical source canary', embedding: [1, 0] }],
+  });
+  const result = await sourceSearch({
+    dir,
+    query: 'current logical source canary',
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => null,
+    request: { intent: 'current_state' },
+  });
+  assert.equal(result.evidence.fallback.reason, 'ann_missing');
+  assert.equal(result.evidence.sourceHealth, 'degraded');
+  assert.equal(result.evidence.retrievalMode, 'logical-source-scan');
+  assert.equal(result.stats.retrievalMode, 'logical-source-scan');
+  assert.ok(result.results.every((row) => row.retrievalMode === 'logical-source-scan'));
+});
+
+test('native manifest logical fallback shares two passes across semantic and keyword authority scoring', async () => {
+  const nodes = [
+    {
+      id: 'alarm-old', concept: 'route truth canary is down', status: 'open',
+      asserted_at: '2026-07-13T12:00:00.000Z', embedding: [1, 0],
+      metadata: { incidentId: 'route-truth' },
+    },
+    {
+      id: 'closure-new', concept: 'route truth canary incident is closed',
+      tag: 'goal_resolution', type: 'goal_resolution', status: 'completed',
+      asserted_at: '2026-07-14T15:00:00.000Z', embedding: [0, 1],
+      metadata: {
+        incidentId: 'route-truth', resolved_at: '2026-07-14T15:00:00.000Z',
+        closure_proof_refs: ['verifier:route-truth-live'],
+      },
+      provenance: {
+        schema: 'home23.node-provenance.v1', authorityClass: 'worker_receipt',
+        sourceRefs: ['incident:route-truth'], evidenceRefs: ['verifier:route-truth-live'],
+      },
+    },
+    {
+      id: 'claim-old', concept: 'route truth canary uses legacy sidecars',
+      asserted_at: '2026-07-13T13:00:00.000Z', embedding: [1, 0],
+    },
+    {
+      id: 'correction-new', concept: 'route truth canary uses manifest v1',
+      asserted_at: '2026-07-14T15:30:00.000Z', embedding: [0, 1], actor: 'jtr',
+      metadata: { actor: 'jtr', correction: true, supersedes: ['claim-old'] },
+      provenance: {
+        schema: 'home23.node-provenance.v1', authorityClass: 'jtr_correction',
+        sourceRefs: ['turn:correction:user'], evidenceRefs: ['turn:correction:user'],
+      },
+    },
+  ];
+  attestMemoryAuthority(nodes[1], AUTHORITY_KEY);
+  attestMemoryAuthority(nodes[3], AUTHORITY_KEY);
+  const dir = await createBrain({ nodes });
+  const source = await openMemorySource(dir);
+  const iterateNodes = source.iterateNodes.bind(source);
+  let nativePasses = 0;
+  let delegatedKeywordScans = 0;
+  source.iterateNodes = async function* countedNativePass(options) {
+    nativePasses += 1;
+    yield* iterateNodes(options);
+  };
+  const searchKeyword = source.searchKeyword.bind(source);
+  source.searchKeyword = async function countedKeywordScan(options) {
+    delegatedKeywordScans += 1;
+    return searchKeyword(options);
+  };
+  const service = createMemorySearchService({
+    brainDir: dir,
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => null,
+    logger: { warn() {} },
+  });
+  try {
+    const result = await service.search({
+      sourcePin: source,
+      identity: { operationId: 'two-pass-native-fallback', requesterAgent: 'jerry' },
+      query: 'route truth canary',
+      topK: 10,
+      minSimilarity: 0.1,
+      noiseFloor: 0.1,
+      intent: 'current_state',
+    });
+
+    assert.deepEqual(result.results.map((row) => row.id), ['correction-new', 'closure-new']);
+    assert.equal(result.results[0].correctionEvidence.supersedes[0], 'node:claim-old');
+    assert.equal(result.results[1].resolutionEvidence.resolves.includes('incident:route-truth'), true);
+    assert.equal(result.evidence.retrievalMode, 'logical-source-scan');
+    assert.equal(result.evidence.completeCoverage, true);
+    assert.equal(nativePasses, 2);
+    assert.equal(delegatedKeywordScans, 0);
+  } finally {
+    await source.close();
+  }
+});
+
+test('native two-pass fallback resolves late relevant authority after more than 5000 unrelated events', async () => {
+  const unrelatedClosures = Array.from({ length: 5_000 }, (_, index) => ({
+    id: `noise-closure-${index}`,
+    concept: `archived receipt ${index} is closed`,
+    tag: 'goal_resolution',
+    type: 'goal_resolution',
+    status: 'completed',
+    asserted_at: '2026-07-14T14:00:00.000Z',
+    metadata: {
+      incidentId: `unrelated-${index}`,
+      resolved_at: '2026-07-14T14:00:00.000Z',
+      closure_proof_refs: [`verifier:unrelated-${index}`],
+    },
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'worker_receipt',
+      sourceRefs: [`incident:unrelated-${index}`],
+      evidenceRefs: [`verifier:unrelated-${index}`],
+    },
+  }));
+  for (const node of unrelatedClosures) attestMemoryAuthority(node, AUTHORITY_KEY);
+  const unrelatedCorrections = Array.from({ length: 5_000 }, (_, index) => ({
+    id: `noise-correction-${index}`,
+    concept: `archived correction receipt ${index}`,
+    asserted_at: '2026-07-14T14:05:00.000Z',
+    actor: 'jtr',
+    metadata: {
+      actor: 'jtr',
+      correction: true,
+      supersedes: [`noise-claim-${index}`],
+    },
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'jtr_correction',
+      sourceRefs: [`turn:noise-correction-${index}:user`],
+      evidenceRefs: [`turn:noise-correction-${index}:user`],
+    },
+  }));
+  for (const node of unrelatedCorrections) attestMemoryAuthority(node, AUTHORITY_KEY);
+  const alarm = {
+    id: 'late-alarm',
+    concept: 'late authority canary is down',
+    status: 'open',
+    asserted_at: '2026-07-13T12:00:00.000Z',
+    embedding: [1, 0],
+    metadata: { incidentId: 'late-authority' },
+  };
+  const staleClaim = {
+    id: 'late-claim',
+    concept: 'late authority canary uses legacy sidecars',
+    asserted_at: '2026-07-13T13:00:00.000Z',
+    embedding: [1, 0],
+  };
+  const closure = {
+    id: 'late-closure',
+    concept: 'late authority canary incident is closed',
+    tag: 'goal_resolution',
+    type: 'goal_resolution',
+    status: 'completed',
+    asserted_at: '2026-07-14T15:00:00.000Z',
+    embedding: [0, 1],
+    metadata: {
+      incidentId: 'late-authority',
+      resolved_at: '2026-07-14T15:00:00.000Z',
+      closure_proof_refs: ['verifier:late-authority-live'],
+    },
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'worker_receipt',
+      sourceRefs: ['incident:late-authority'],
+      evidenceRefs: ['verifier:late-authority-live'],
+    },
+  };
+  const correction = {
+    id: 'late-correction',
+    concept: 'late authority canary uses manifest v1',
+    asserted_at: '2026-07-14T15:30:00.000Z',
+    embedding: [0, 1],
+    actor: 'jtr',
+    metadata: { actor: 'jtr', correction: true, supersedes: ['late-claim'] },
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'jtr_correction',
+      sourceRefs: ['turn:late-correction:user'],
+      evidenceRefs: ['turn:late-correction:user'],
+    },
+  };
+  attestMemoryAuthority(closure, AUTHORITY_KEY);
+  attestMemoryAuthority(correction, AUTHORITY_KEY);
+  const nodes = [
+    ...unrelatedClosures,
+    ...unrelatedCorrections,
+    alarm,
+    staleClaim,
+    closure,
+    correction,
+  ];
+  const source = {
+    manifest: {
+      formatVersion: 1,
+      currentRevision: 1,
+      baseRevision: 1,
+      activeDelta: { count: 0 },
+      ann: { indexFile: null, metaFile: null, builtFromRevision: null },
+    },
+    revision: 1,
+    descriptor: { summary: { nodeCount: nodes.length, edgeCount: 0 } },
+    async summarize() { return { nodes: nodes.length, edges: 0, clusters: 0 }; },
+    async *iterateNodes({ signal } = {}) {
+      for (const node of nodes) {
+        if (signal?.aborted) throw signal.reason;
+        yield node;
+      }
+    },
+    getEvidence(input = {}) {
+      return {
+        sourceHealth: 'healthy',
+        matchOutcome: 'unknown',
+        indexWatermark: { fresh: false, builtFromRevision: null },
+        ...input,
+      };
+    },
+  };
+  let passes = 0;
+  const iterateNodes = source.iterateNodes.bind(source);
+  source.iterateNodes = async function* countedPass(options) {
+    passes += 1;
+    yield* iterateNodes(options);
+  };
+  const service = createMemorySearchService({
+    brainDir: process.cwd(),
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => null,
+    logger: { warn() {} },
+  });
+
+  const result = await service.search({
+    sourcePin: source,
+    identity: { operationId: 'late-authority-two-pass', requesterAgent: 'jerry' },
+    query: 'late authority canary',
+    topK: 10,
+    minSimilarity: 0.1,
+    noiseFloor: 0.1,
+    intent: 'current_state',
+  });
+
+  assert.deepEqual(result.results.map((row) => row.id), ['late-correction', 'late-closure']);
+  assert.equal(result.results[0].correctionEvidence.supersedes[0], 'node:late-claim');
+  assert.equal(result.results[1].resolutionEvidence.resolves.includes('incident:late-authority'), true);
+  assert.equal(passes, 2);
 });
 
 test('dimension mismatch and embedding failure use keyword retrieval', async () => {
@@ -609,7 +1126,7 @@ test('dimension mismatch and embedding failure use keyword retrieval', async () 
     embedQuery: async () => { throw new Error('offline'); },
     loadAnn: async () => null,
   });
-  assert.equal(unavailable.results[0].retrievalMode, 'keyword');
+  assert.equal(unavailable.results[0].retrievalMode, 'logical-source-scan');
   assert.equal(unavailable.evidence.fallback.reason, 'embedding_unavailable');
 });
 
@@ -650,7 +1167,7 @@ test('noise-filtered semantic candidates are supplemented by exact keyword resul
   assert.equal(result.evidence.fallback.reason, 'ann_missing');
 });
 
-test('healthy fresh ANN stays healthy when exact keyword results supplement semantic hits', async () => {
+test('incomplete fresh ANN label metadata uses a degraded exact logical scan', async () => {
   const dir = await createBrain({
     nodes: [{ id: 'exact', concept: 'exact supplement canary', embedding: [1, 0] }],
   });
@@ -668,9 +1185,10 @@ test('healthy fresh ANN stays healthy when exact keyword results supplement sema
     }),
   });
   assert.equal(result.evidence.fallback.reason, 'exact_canary_missing');
-  assert.equal(result.evidence.sourceHealth, 'healthy');
+  assert.equal(result.evidence.sourceHealth, 'degraded');
+  assert.equal(result.evidence.retrievalMode, 'logical-source-scan');
   assert.equal(result.evidence.indexWatermark.fresh, true);
-  assert.deepEqual(result.results.map((row) => row.id), ['exact', 'semantic']);
+  assert.deepEqual(result.results.map((row) => row.id), ['exact']);
 });
 
 test('healthy empty and healthy no-match remain distinct while unavailable fails truthfully', async () => {
@@ -770,7 +1288,7 @@ test('healthy complete tag-filtered zero reports filtered evidence instead of no
   });
 
   assert.deepEqual(result.results, []);
-  assert.equal(result.evidence.sourceHealth, 'healthy');
+  assert.equal(result.evidence.sourceHealth, 'degraded');
   assert.equal(result.evidence.completeCoverage, true);
   assert.equal(result.evidence.filteredTotal, 2);
   assert.equal(result.evidence.matchOutcome, 'filtered');
@@ -802,6 +1320,8 @@ test('default ANN loading derives files from the pinned target source, not reque
   const targetDir = await createBrain({ nodes: [{ id: 'target', concept: 'target canary' }] });
   const manifest = await markAnn(targetDir);
   await fsp.writeFile(path.join(targetDir, manifest.ann.metaFile), JSON.stringify({
+    authorityProjectionSchema: CURRENT_ANN_AUTHORITY_PROJECTION_SCHEMA,
+    authorityAttestationKeyId: AUTHORITY_KEY_ID,
     dimension: 2,
     count: 0,
     skipped: 1,
@@ -860,7 +1380,12 @@ test('default ANN loading consumes anchored handles without reopening target pat
       identity: { dev: '1', ino: '74', size: '140000000' },
       async readFile({ maxBytes }) {
         assert.equal(maxBytes, MAX_ANN_METADATA_BYTES);
-        return Buffer.from(JSON.stringify({ dimension: 2, labels: [] }));
+        return Buffer.from(JSON.stringify({
+          authorityProjectionSchema: CURRENT_ANN_AUTHORITY_PROJECTION_SCHEMA,
+          authorityAttestationKeyId: AUTHORITY_KEY_ID,
+          dimension: 2,
+          labels: [],
+        }));
       },
       async assertStable() { stableRoles.push('ann-meta'); },
     },
@@ -881,6 +1406,8 @@ test('default ANN loading streams and compacts large pinned label metadata', asy
   const targetDir = await createBrain({ nodes: [{ id: 'target', concept: 'target canary' }] });
   const encoded = Buffer.from(JSON.stringify({
     version: 1,
+    authorityProjectionSchema: CURRENT_ANN_AUTHORITY_PROJECTION_SCHEMA,
+    authorityAttestationKeyId: AUTHORITY_KEY_ID,
     dimension: 2,
     count: 2,
     skipped: 0,
@@ -978,6 +1505,26 @@ test('ANN metadata streaming stays bounded for a large label catalog', () => {
     `max RSS ${receipt.maxRssBytes}`);
 });
 
+test('million-candidate heap acceptance remains bounded without a logical base scan', () => {
+  const probe = spawnSync(process.execPath, [
+    '--max-old-space-size=256',
+    '--expose-gc',
+    path.join(process.cwd(), 'tests/engine/dashboard/memory-search-heap-probe.cjs'),
+  ], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    timeout: 120_000,
+    maxBuffer: 1024 * 1024,
+  });
+  assert.equal(probe.status, 0, `${probe.stderr}\n${probe.stdout}`);
+  const receipt = JSON.parse(probe.stdout.trim());
+  assert.equal(receipt.candidates, 1_000_000);
+  assert.equal(receipt.retained <= 1000, true);
+  assert.equal(receipt.retainedBytes <= 32 * 1024 * 1024, true);
+  assert.equal(receipt.baseScanCalls, 0);
+  assert.equal(receipt.retrievalMode, 'semantic-ann-delta-overlay');
+});
+
 test('ANN metadata streaming rejects label-count amplification before heap exhaustion', () => {
   const probe = spawnSync(process.execPath, [
     '--max-old-space-size=128',
@@ -1003,7 +1550,7 @@ test('ANN metadata rejects a source-count mismatch before consuming label chunks
   let chunksRead = 0;
   async function* chunks() {
     chunksRead += 1;
-    yield Buffer.from('{"dimension":768,"count":1000000,"skipped":0,"labels":[');
+    yield Buffer.from(`{"authorityProjectionSchema":"${CURRENT_ANN_AUTHORITY_PROJECTION_SCHEMA}","dimension":768,"count":1000000,"skipped":0,"labels":[`);
     chunksRead += 1;
     yield Buffer.from('{"id":"must-not-be-read","concept":""}]}');
   }
@@ -1019,7 +1566,7 @@ test('ANN metadata rejects a fragmented oversized label before joining it', asyn
   let chunksRead = 0;
   async function* chunks() {
     chunksRead += 1;
-    yield Buffer.from('{"dimension":768,"count":1,"skipped":0,"labels":[{"id":"large","concept":"');
+    yield Buffer.from(`{"authorityProjectionSchema":"${CURRENT_ANN_AUTHORITY_PROJECTION_SCHEMA}","dimension":768,"count":1,"skipped":0,"labels":[{"id":"large","concept":"`);
     for (let index = 0; index < 8; index += 1) {
       chunksRead += 1;
       yield Buffer.from('a'.repeat(64 * 1024));
@@ -1055,7 +1602,12 @@ test('default ANN loading deduplicates concurrent immutable pinned loads and cac
       async readFile({ maxBytes }) {
         metadataReads += 1;
         assert.equal(maxBytes, MAX_ANN_METADATA_BYTES);
-        return Buffer.from(JSON.stringify({ dimension: 2, labels: [] }));
+        return Buffer.from(JSON.stringify({
+          authorityProjectionSchema: CURRENT_ANN_AUTHORITY_PROJECTION_SCHEMA,
+          authorityAttestationKeyId: AUTHORITY_KEY_ID,
+          dimension: 2,
+          labels: [],
+        }));
       },
       async assertStable() {},
     },
@@ -1240,6 +1792,8 @@ test('isolated ANN worker survives a corrupt pinned-index replacement and can re
   index.writeIndexSync(goodIndexPath);
   await fsp.writeFile(badIndexPath, 'corrupt-index');
   const metadata = (revision) => JSON.stringify({
+    authorityProjectionSchema: CURRENT_ANN_AUTHORITY_PROJECTION_SCHEMA,
+    authorityAttestationKeyId: AUTHORITY_KEY_ID,
     dimension: 2,
     count: 1,
     skipped: 0,
@@ -1384,11 +1938,70 @@ test('unsupported ANN descriptor paths degrade to a complete logical semantic sc
     noiseFloor: 0.1,
   });
   assert.deepEqual(result.results.map((row) => row.id), ['portable']);
-  assert.equal(result.results[0].retrievalMode, 'semantic-scan');
+  assert.equal(result.results[0].retrievalMode, 'logical-source-scan');
   assert.equal(result.evidence.sourceHealth, 'degraded');
   assert.deepEqual(result.evidence.fallback, {
     route: 'logical-source-scan',
     reason: 'ann_descriptor_unsupported',
+    completeness: 'complete',
+  });
+});
+
+test('unavailable ANN authority context degrades to a complete logical scan', async () => {
+  const targetDir = await tempDir('home23-memory-search-authority-context-fallback-');
+  const source = {
+    manifest: {
+      formatVersion: 1,
+      currentRevision: 3,
+      baseRevision: 3,
+      activeDelta: { count: 0 },
+      ann: {
+        indexFile: 'memory-ann.3.index',
+        metaFile: 'memory-ann.3.meta.json',
+        builtFromRevision: 3,
+      },
+    },
+    revision: 3,
+    descriptor: { summary: { nodeCount: 1 } },
+    async summarize() { return { nodes: 1, edges: 0, clusters: 0 }; },
+    async *iterateNodes() {
+      yield { id: 'portable', concept: 'authority context canary', embedding: [1, 0] };
+    },
+    async searchKeyword() { return { results: [] }; },
+    getEvidence(input = {}) {
+      return {
+        sourceHealth: input.sourceHealth || 'healthy',
+        matchOutcome: input.matchOutcome || 'unknown',
+        indexWatermark: { fresh: true, builtFromRevision: 3 },
+      };
+    },
+  };
+  const service = createMemorySearchService({
+    brainDir: targetDir,
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => {
+      throw Object.assign(new Error('ANN authority verifier context is unavailable'), {
+        code: 'source_unavailable',
+        annFallbackReason: 'ann_authority_context_unavailable',
+      });
+    },
+    logger: { warn() {} },
+  });
+
+  const result = await service.search({
+    sourcePin: source,
+    identity: { operationId: 'authority-context-fallback', requesterAgent: 'jerry' },
+    query: 'authority context canary',
+    topK: 5,
+    minSimilarity: 0.1,
+    noiseFloor: 0.1,
+  });
+  assert.deepEqual(result.results.map((row) => row.id), ['portable']);
+  assert.equal(result.results[0].retrievalMode, 'logical-source-scan');
+  assert.equal(result.evidence.sourceHealth, 'degraded');
+  assert.deepEqual(result.evidence.fallback, {
+    route: 'logical-source-scan',
+    reason: 'ann_authority_context_unavailable',
     completeness: 'complete',
   });
 });

@@ -26,6 +26,7 @@ const { PathSecurityError, LimitExceededError, CommandBlockedError } = require('
 const fs = require('fs').promises;
 const path = require('path');
 const { execSync } = require('child_process');
+const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
 
 class IDEAgent extends BaseAgent {
   constructor(mission, config, logger) {
@@ -948,13 +949,15 @@ Build on existing knowledge where relevant.`;
         output = execSync(`rg "${escapedPattern}" "${resolved}" --max-count 50 --max-columns 200`, {
           encoding: 'utf8',
           maxBuffer: 5 * 1024 * 1024,
-          timeout: 30000
+          timeout: 30000,
+          env: unprivilegedChildEnv()
         });
       } catch {
         output = execSync(`grep -r "${escapedPattern}" "${resolved}" | head -100`, {
           encoding: 'utf8',
           maxBuffer: 5 * 1024 * 1024,
-          timeout: 30000
+          timeout: 30000,
+          env: unprivilegedChildEnv()
         });
       }
       
@@ -1094,7 +1097,8 @@ Build on existing knowledge where relevant.`;
         cwd: this.workspaceConfig.root,
         encoding: 'utf8',
         timeout: this.terminalTimeout,
-        maxBuffer: 5 * 1024 * 1024
+        maxBuffer: 5 * 1024 * 1024,
+        env: unprivilegedChildEnv()
       });
       return { output, exitCode: 0 };
     } catch (err) {

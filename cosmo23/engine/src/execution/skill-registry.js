@@ -22,6 +22,7 @@
 'use strict';
 
 const { execSync, spawn } = require('child_process');
+const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -332,7 +333,7 @@ class SkillRegistry {
 
       const child = spawn(command, args, {
         cwd: workingDir,
-        env,
+        env: unprivilegedChildEnv(process.env, env),
         timeout: timeoutSec * 1000,
         stdio: ['ignore', 'pipe', 'pipe'],
         maxBuffer: 10 * 1024 * 1024 // 10MB
@@ -376,7 +377,7 @@ class SkillRegistry {
     }
     // Fallback: try python3 directly
     try {
-      execSync('which python3 2>/dev/null', { timeout: 3000 });
+      execSync('which python3 2>/dev/null', { timeout: 3000, env: unprivilegedChildEnv() });
       return 'python3';
     } catch {
       return null;

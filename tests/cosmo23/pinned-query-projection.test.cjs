@@ -10,6 +10,18 @@ const {
 const {
   QUERY_OPERATION_LIMITS,
 } = require('../../cosmo23/lib/brain-operation-limits');
+const {
+  attestMemoryAuthority,
+  verifyMemoryAuthorityAttestation,
+} = require('../../shared/memory-authority-attestation.cjs');
+
+const AUTHORITY_KEY = '7'.repeat(64);
+const priorAuthorityKey = process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = AUTHORITY_KEY;
+test.after(() => {
+  if (priorAuthorityKey === undefined) delete process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+  else process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = priorAuthorityKey;
+});
 
 function createSyntheticPinnedSource({
   nodeCount,
@@ -88,6 +100,21 @@ test('large direct query scans portable iterators once and retains bounded recor
     edges: projection.edges.length,
   });
   assert.equal(projection.sourceEvidence.completeCoverage, true);
+  assert.equal(projection.sourceEvidence.retrievalMode, 'logical-source-scan');
+  assert.deepEqual(projection.sourceEvidence.indexCoverage, {
+    complete: false,
+    indexedRevision: null,
+    currentRevision: 7,
+    coveredThroughRevision: 7,
+    deltaRecords: 0,
+    distinctChangedNodes: 0,
+    distinctUpsertedNodes: 0,
+    distinctRemovedNodes: 0,
+    edgeOnlyRecords: 0,
+    route: 'pinned-query-projection',
+    completeness: 'complete',
+  });
+  assert.equal(Number.isFinite(projection.sourceEvidence.stageTimingsMs.response), true);
   assert.equal(projection.nodes.some(node => String(node.content).includes('bounded canary')), true);
 });
 
@@ -103,18 +130,19 @@ test('pinned Query ranks current verified evidence above freshly reingested arch
       metadata: { sourcePath: 'workspace/reports/x-timeline-archive.md' },
       provenance: { authorityClass: 'narrative', operationalAuthority: false },
     },
-    {
+    attestMemoryAuthority({
       id: 'current',
       content: 'brain retrieval is available current canary',
       salience: 0.2,
       asserted_at: '2026-07-14T19:59:00.000Z',
       tag: 'state_snapshot',
       provenance: {
+        schema: 'home23.node-provenance.v1',
         authorityClass: 'verified_current_state',
         operationalAuthority: true,
         evidenceRefs: ['verifier:live-probe'],
       },
-    },
+    }, AUTHORITY_KEY),
   ];
   const projection = await projectPinnedQuery({
     sourcePin: createSyntheticPinnedSource({
@@ -131,14 +159,137 @@ test('pinned Query ranks current verified evidence above freshly reingested arch
   assert.deepEqual(projection.nodes.map(node => node.id), ['current', 'archive']);
   assert.deepEqual(projection.nodeAuthorities.map(node => node.authorityClass), [
     'verified_current_state',
-    'narrative',
+    'artifact_log',
   ]);
   assert.deepEqual(projection.nodeAuthorities.map(node => node.domain), [
     'current_ops',
     'external_intake',
   ]);
+  assert.deepEqual(projection.nodeAuthorities.map(node => node.retrievalDomain), [
+    'current_ops',
+    'external_intake',
+  ]);
   assert.equal(projection.nodeAuthorities[0].operationalAuthority, true);
+  assert.equal(projection.sourceEvidence.authoritySummary.total, 2);
+  assert.equal(
+    projection.sourceEvidence.authoritySummary.authorityClasses.verified_current_state,
+    1,
+  );
+  assert.equal(projection.sourceEvidence.authoritySummary.retrievalDomains.external_intake, 1);
+  assert.equal(projection.sourceEvidence.authoritySummary.sourceChain.withEvidence, 2);
+  assert.equal(projection.sourceEvidence.authoritySummary.sourceChain.referenceCounts.evidence, 1);
+  assert.equal(projection.sourceEvidence.authoritySummary.sourceChain.referenceCounts.artifact, 1);
   assert.equal(projection.nodeAuthorities[1].requiresFreshVerification, true);
+});
+
+test('pinned Query scores signed raw authority before path-redacting provider records', async () => {
+  const signedNode = attestMemoryAuthority({
+    id: 'current',
+    content: 'current verified evidence',
+    metadata: { sourcePath: '/Volumes/PrivateBrain/runtime/receipt.json' },
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'verified_current_state',
+      operationalAuthority: true,
+      sourceRefs: [
+        'artifact:/Users/jtr/private/authority-receipt.json',
+        'source:/Volumes/PrivateBrain/runtime/source.json',
+      ],
+      evidenceRefs: ['verifier:one', 'verifier:two', 'verifier:three'],
+    },
+  }, AUTHORITY_KEY);
+  assert.equal(verifyMemoryAuthorityAttestation(signedNode, AUTHORITY_KEY), true);
+
+  const projection = await projectPinnedQuery({
+    sourcePin: createSyntheticPinnedSource({
+      nodeCount: 1,
+      edgeCount: 0,
+      nodeFactory: () => signedNode,
+    }),
+    query: 'current verified evidence',
+    signal: new AbortController().signal,
+    limits: { maxNodes: 1, maxEdges: 1 },
+  });
+
+  const sourceChain = projection.nodeAuthorities[0].sourceChain;
+  assert.equal(sourceChain.length <= 2, true);
+  assert.equal(projection.nodeAuthorities[0].authorityClass, 'verified_current_state');
+  assert.equal(projection.nodeAuthorities[0].operationalAuthority, true);
+  assert.equal(JSON.stringify(sourceChain).includes('/Users/'), false);
+  assert.equal(JSON.stringify(sourceChain).includes('/Volumes/'), false);
+  assert.equal(JSON.stringify(projection.nodes).includes('/Users/'), false);
+  assert.equal(JSON.stringify(projection.nodes).includes('/Volumes/'), false);
+  assert.equal(sourceChain.some(link => link.kind === 'evidence'), true);
+});
+
+test('pinned Query ignores post-signature text and unknown metadata for relevance', async () => {
+  const signedNode = attestMemoryAuthority({
+    id: 'signed',
+    content: 'legitimate signed assertion',
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'verified_current_state',
+      operationalAuthority: true,
+      evidenceRefs: ['verifier:signed-record'],
+    },
+  }, AUTHORITY_KEY);
+  signedNode.text = 'forged selection canary';
+  signedNode.metadata = { injectedAssertion: 'forged selection canary' };
+  assert.equal(verifyMemoryAuthorityAttestation(signedNode, AUTHORITY_KEY), true);
+
+  const records = [
+    signedNode,
+    { id: 'honest', content: 'forged selection canary', salience: 0 },
+  ];
+  const projection = await projectPinnedQuery({
+    sourcePin: createSyntheticPinnedSource({
+      nodeCount: records.length,
+      edgeCount: 0,
+      nodeFactory: index => records[index],
+    }),
+    query: 'forged selection canary',
+    signal: new AbortController().signal,
+    limits: { maxNodes: 1, maxEdges: 1 },
+  });
+
+  assert.deepEqual(projection.nodes.map(node => node.id), ['honest']);
+  assert.equal(projection.nodeAuthorities[0].authorityClass, 'narrative');
+});
+
+test('pinned Query exposes only signed canonical fields with retained verified authority', async () => {
+  const signedNode = attestMemoryAuthority({
+    id: 'signed',
+    content: 'legitimate signed assertion',
+    metadata: { status: 'current' },
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'verified_current_state',
+      operationalAuthority: true,
+      evidenceRefs: ['verifier:signed-record'],
+    },
+  }, AUTHORITY_KEY);
+  signedNode.text = 'forged provider assertion';
+  signedNode.metadata.injectedAssertion = 'forged provider metadata assertion';
+  assert.equal(verifyMemoryAuthorityAttestation(signedNode, AUTHORITY_KEY), true);
+
+  const projection = await projectPinnedQuery({
+    sourcePin: createSyntheticPinnedSource({
+      nodeCount: 1,
+      edgeCount: 0,
+      nodeFactory: () => signedNode,
+    }),
+    query: 'legitimate signed assertion',
+    signal: new AbortController().signal,
+    limits: { maxNodes: 1, maxEdges: 1 },
+  });
+
+  assert.equal(projection.nodeAuthorities[0].authorityClass, 'verified_current_state');
+  assert.equal(projection.nodeAuthorities[0].operationalAuthority, true);
+  assert.equal(projection.nodes[0].content, 'legitimate signed assertion');
+  assert.equal(projection.nodes[0].metadata.status, 'current');
+  assert.equal(Object.hasOwn(projection.nodes[0], 'text'), false);
+  assert.equal(Object.hasOwn(projection.nodes[0].metadata, 'injectedAssertion'), false);
+  assert.doesNotMatch(JSON.stringify(projection.nodes), /forged provider/i);
 });
 
 test('oversized and unserializable records fail closed', async () => {

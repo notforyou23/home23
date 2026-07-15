@@ -187,7 +187,7 @@ test('strict zero-result CLI auto-launches an isolated healthy manifest fixture'
   ], state.env);
   const terminal = (await readRows(output)).at(-1);
   assertIsolatedTerminal(terminal, 'complete');
-  assert.equal(terminal.sourceHealth, 'healthy');
+  assert.equal(terminal.sourceHealth, 'degraded');
   assert.equal(terminal.matchOutcome, 'no_match');
   assert.equal(terminal.completeCoverage, true);
   assert.ok(terminal.authoritativeTotal > 0);

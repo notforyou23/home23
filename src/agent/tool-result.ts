@@ -22,7 +22,27 @@ const PGS_FIELDS = new Set([
 const SOURCE_FIELDS = new Set([
   'sourceHealth', 'implementation', 'currentRevision', 'baseRevision',
   'deltaRevision', 'builtFromRevision', 'fresh', 'fallbackReason', 'matchOutcome',
-  'freshness', 'nodeCount', 'edgeCount',
+  'freshness', 'nodeCount', 'edgeCount', 'retrievalMode',
+]);
+const INDEX_COVERAGE_FIELDS = new Set([
+  'complete', 'indexedRevision', 'currentRevision', 'coveredThroughRevision',
+  'deltaRecords', 'distinctChangedNodes', 'distinctUpsertedNodes',
+  'distinctRemovedNodes', 'edgeOnlyRecords', 'route', 'completeness',
+]);
+const STAGE_TIMING_FIELDS = new Set([
+  'sourceOpen', 'embedding', 'overlayRefresh', 'annLoad', 'annSearch',
+  'overlayScoring', 'keywordScoring', 'merge', 'response',
+]);
+const AUTHORITY_CLASSES = new Set([
+  'verified_current_state', 'jtr_correction', 'artifact_log', 'worker_receipt',
+  'generated_doctrine', 'narrative',
+]);
+const RETRIEVAL_DOMAINS = new Set([
+  'current_ops', 'closed_incidents', 'project_history', 'external_intake',
+]);
+const SOURCE_CHAIN_KINDS = new Set([
+  'source', 'evidence', 'artifact', 'trace', 'generation', 'lineage',
+  'verification', 'closure',
 ]);
 const MAX_EVENT_METADATA_BYTES = 32 * 1024;
 
@@ -77,6 +97,71 @@ function projectError(value: unknown): BrainToolEventMetadata['error'] | undefin
     : undefined;
 }
 
+function projectCountRecord(value: unknown, allowed: Set<string>): Record<string, number> | undefined {
+  const source = recordValue(value);
+  if (!source) return undefined;
+  const projected: Record<string, number> = {};
+  for (const key of allowed) {
+    const entry = ownDataValue(source, key);
+    if (typeof entry === 'number' && Number.isSafeInteger(entry) && entry >= 0) {
+      projected[key] = entry;
+    }
+  }
+  return Object.keys(projected).length ? projected : undefined;
+}
+
+function projectSourceEvidence(value: unknown): Record<string, unknown> | undefined {
+  const source = recordValue(value);
+  if (!source) return undefined;
+  const projected: Record<string, unknown> = projectPrimitiveRecord(source, SOURCE_FIELDS) || {};
+  const indexCoverage = projectPrimitiveRecord(
+    ownDataValue(source, 'indexCoverage'), INDEX_COVERAGE_FIELDS,
+  );
+  if (indexCoverage) projected.indexCoverage = indexCoverage;
+  const timings = recordValue(ownDataValue(source, 'stageTimingsMs'));
+  if (timings) {
+    const safeTimings: Record<string, number> = {};
+    for (const key of STAGE_TIMING_FIELDS) {
+      const entry = ownDataValue(timings, key);
+      if (typeof entry === 'number' && Number.isFinite(entry) && entry >= 0) safeTimings[key] = entry;
+    }
+    if (Object.keys(safeTimings).length) projected.stageTimingsMs = safeTimings;
+  }
+  const authority = recordValue(ownDataValue(source, 'authoritySummary'));
+  if (authority) {
+    const summary: Record<string, unknown> = {};
+    for (const key of ['total', 'requiresFreshVerification']) {
+      const entry = ownDataValue(authority, key);
+      if (typeof entry === 'number' && Number.isSafeInteger(entry) && entry >= 0) summary[key] = entry;
+    }
+    const authorityClasses = projectCountRecord(
+      ownDataValue(authority, 'authorityClasses'), AUTHORITY_CLASSES,
+    );
+    const retrievalDomains = projectCountRecord(
+      ownDataValue(authority, 'retrievalDomains'), RETRIEVAL_DOMAINS,
+    );
+    if (authorityClasses) summary.authorityClasses = authorityClasses;
+    if (retrievalDomains) summary.retrievalDomains = retrievalDomains;
+    const chain = recordValue(ownDataValue(authority, 'sourceChain'));
+    if (chain) {
+      const chainSummary: Record<string, unknown> = {};
+      for (const key of ['withEvidence', 'withoutEvidence']) {
+        const entry = ownDataValue(chain, key);
+        if (typeof entry === 'number' && Number.isSafeInteger(entry) && entry >= 0) {
+          chainSummary[key] = entry;
+        }
+      }
+      const referenceCounts = projectCountRecord(
+        ownDataValue(chain, 'referenceCounts'), SOURCE_CHAIN_KINDS,
+      );
+      if (referenceCounts) chainSummary.referenceCounts = referenceCounts;
+      if (Object.keys(chainSummary).length) summary.sourceChain = chainSummary;
+    }
+    if (Object.keys(summary).length) projected.authoritySummary = summary;
+  }
+  return Object.keys(projected).length ? projected : undefined;
+}
+
 export function projectBrainToolEventMetadata(
   toolName: string,
   result: ToolResult,
@@ -106,9 +191,7 @@ export function projectBrainToolEventMetadata(
   if (error) projected.error = error;
   const pgs = projectPrimitiveRecord(ownDataValue(metadata, 'pgs'), PGS_FIELDS);
   if (pgs) projected.pgs = pgs;
-  const sourceEvidence = projectPrimitiveRecord(
-    ownDataValue(metadata, 'sourceEvidence'), SOURCE_FIELDS,
-  );
+  const sourceEvidence = projectSourceEvidence(ownDataValue(metadata, 'sourceEvidence'));
   if (sourceEvidence) projected.sourceEvidence = sourceEvidence;
   if (Buffer.byteLength(JSON.stringify(projected)) > MAX_EVENT_METADATA_BYTES) return {};
 

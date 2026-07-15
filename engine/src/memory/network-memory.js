@@ -4,14 +4,19 @@ const { ExtractiveSummarizer } = require('../utils/extractive-summarizer');
 const { cosmoEvents } = require('../realtime/event-emitter');
 const {
   classifyMemoryProvenance,
-  scoreMemorySalience,
 } = require('./provenance-salience');
 const {
   classifyClaimAuthority,
   getSemanticTimeMs,
   normalizeRetrievalIntent,
   projectMemoryAuthority,
+  createMemoryAuthorityResolver,
+  scoreMemoryAuthority,
 } = require('../../../shared/memory-authority.cjs');
+const {
+  attestMemoryAuthorityIfAvailable,
+  verifyMemoryAuthorityAttestation,
+} = require('../../../shared/memory-authority-attestation.cjs');
 
 function yieldToEventLoop() {
   return new Promise((resolve) => setImmediate(resolve));
@@ -635,16 +640,32 @@ class NetworkMemory {
    * Add new concept node
    */
   async addNode(concept, tag = 'general', embedding = null) {
-    const inputNode = concept && typeof concept === 'object' && !Array.isArray(concept)
+    const suppliedNode = concept && typeof concept === 'object' && !Array.isArray(concept)
       ? concept
       : null;
+    // Snapshot the entire caller record synchronously, before embedding or any
+    // other await. Authentication and persistence must describe the same bytes;
+    // caller mutation during provider latency cannot retarget a signed receipt.
+    const inputNode = suppliedNode ? deepCloneJsonRecord(suppliedNode) : null;
+    // Authentication is a property of the incoming record, not its raw schema.
+    // Remember it before normalization; only an already-valid receipt may be
+    // re-attested after addNode finalizes signed fields such as ID, dates,
+    // summary, key phrase, metadata, and stored provenance.
+    const incomingAuthorityAttested = inputNode
+      ? verifyMemoryAuthorityAttestation(inputNode)
+      : false;
+    const incomingAuthorityTime = incomingAuthorityAttested
+      ? getSemanticTimeMs(inputNode)
+      : 0;
+    const preserveIncomingAuthority = incomingAuthorityAttested && incomingAuthorityTime > 0;
     const conceptText = inputNode
       ? String(inputNode.concept || inputNode.content || inputNode.summary || inputNode.title || '')
       : String(concept || '');
     const nodeTag = inputNode
-      ? (inputNode.tag || inputNode.type || (Array.isArray(inputNode.tags) ? inputNode.tags[0] : null) || tag || 'general')
+      ? (inputNode.tag || inputNode.type || (Array.isArray(inputNode.tags) ? inputNode.tags[0] : null)
+        || (preserveIncomingAuthority ? null : (tag || 'general')))
       : (tag || 'general');
-    const nodeEmbedding = inputNode?.embedding || embedding;
+    const nodeEmbedding = preserveIncomingAuthority ? null : (inputNode?.embedding || embedding);
 
     if (!conceptText.trim()) {
       this.logger?.warn?.('Skipping node with empty concept', { tag: nodeTag });
@@ -681,7 +702,12 @@ class NetworkMemory {
       }
     }
 
-    const requestedNodeId = inputNode?.id;
+    // A verified receipt's durable identity is exactly the identity covered by
+    // its attestation. `memory_id` is a supported persisted alias; never mint a
+    // fresh graph ID for it or a replay could acquire a second identity.
+    const requestedNodeId = incomingAuthorityAttested
+      ? (inputNode.id ?? inputNode.memory_id)
+      : inputNode?.id;
     
     const provenance = classifyMemoryProvenance({
       ...inputNode,
@@ -708,15 +734,21 @@ class NetworkMemory {
       activation: inputNode?.activation ?? 0,
       cluster: inputNode?.cluster ?? null,
       weight: inputNode?.weight ?? 1.0,
-      created: inputNode?.created ? new Date(inputNode.created) : new Date(),
+      created: inputNode?.created
+        ? new Date(inputNode.created)
+        : (preserveIncomingAuthority ? new Date(incomingAuthorityTime) : new Date()),
       accessed: inputNode?.accessed ? new Date(inputNode.accessed) : new Date(),
       accessCount: inputNode?.accessCount ?? 0,
       type: inputNode?.type || null,
       tags: Array.isArray(inputNode?.tags) ? inputNode.tags : [],
+      actor: inputNode?.actor || null,
       metadata,
       source_class: inputNode?.source_class || inputNode?.sourceClass || metadata.source_class || provenance.sourceClass,
       salienceWeight: inputNode?.salienceWeight ?? metadata.salienceWeight ?? provenance.salienceWeight,
       provenance: storedProvenance,
+      evidence: inputNode?.evidence && typeof inputNode.evidence === 'object'
+        ? deepCloneJsonRecord(inputNode.evidence)
+        : null,
       asserted_at: inputNode?.asserted_at || inputNode?.metadata?.asserted_at || null,
       asserted_cycle: inputNode?.asserted_cycle ?? inputNode?.metadata?.asserted_cycle ?? null,
       superseded_by: inputNode?.superseded_by || inputNode?.metadata?.superseded_by || null,
@@ -732,6 +764,14 @@ class NetworkMemory {
     const edgeTimestamp = new Date();
     let storedNode = null;
     this.withPersistenceBarrier(() => {
+      if (incomingAuthorityAttested
+          && requestedNodeId !== undefined
+          && requestedNodeId !== null
+          && this.nodes.has(requestedNodeId)) {
+        const error = new Error('authenticated memory node ID already exists');
+        error.code = 'authority_node_id_collision';
+        throw error;
+      }
       if (requestedNodeId !== undefined && requestedNodeId !== null && !this.nodes.has(requestedNodeId)) {
         node.id = requestedNodeId;
         if (
@@ -765,6 +805,10 @@ class NetworkMemory {
           }
           node.id = this.nextNodeId++;
         } while (this.nodes.has(node.id));
+      }
+
+      if (preserveIncomingAuthority) {
+        attestMemoryAuthorityIfAvailable(node);
       }
 
       this.nodes.set(node.id, node);
@@ -1844,6 +1888,7 @@ class NetworkMemory {
           ...node,
           similarity,
           activation,
+          retrievalMode: 'logical-source-scan',
           retrievalScore: this.scoreTemporalRetrieval(node, activation, authorityOptions),
           retrievalAuthority: projectMemoryAuthority(node, {
             ...authorityOptions,
@@ -1861,7 +1906,7 @@ class NetworkMemory {
     for (const candidate of this.queryByKeyword(queryText, topK, {
       ...retrievalOptions,
       markAccess: false,
-      retrievalMode: 'keyword-supplement',
+      retrievalMode: 'logical-source-scan',
     })) {
       if (!scored.some(n => n.id === candidate.id)) {
         scored.push(candidate);
@@ -1935,13 +1980,13 @@ class NetworkMemory {
           ...node,
           similarity: keywordScore,
           activation: keywordScore,
-          retrievalMode: options.retrievalMode || 'keyword',
+          retrievalMode: 'logical-source-scan',
           retrievalScore: this.scoreTemporalRetrieval(node, keywordScore, {
             baseSimilarity: keywordScore,
             intent: normalizeRetrievalIntent(options.intent || queryText),
             query: queryText,
             nowMs: options.nowMs,
-          }) + Math.min(0.15, keywordScore * 0.1),
+          }),
           retrievalAuthority: projectMemoryAuthority(node, {
             baseScore: keywordScore,
             intent: normalizeRetrievalIntent(options.intent || queryText),
@@ -1998,17 +2043,7 @@ class NetworkMemory {
   }
 
   scoreTemporalRetrieval(node, baseScore, opts = {}) {
-    const freshness = this.temporalFreshness(node, opts.nowMs);
-    const status = this.statusMultiplier(node);
-    const authorityClass = classifyClaimAuthority(node);
-    const snapshotBoost = this.isStateSnapshotNode(node)
-      && !['generated_doctrine', 'narrative'].includes(authorityClass) ? 0.75 : 0;
-    const bestMatchBoost = opts.isBestMatch ? 0.05 : 0;
-    const decay = typeof node?.confidence_decay === 'number'
-      ? Math.max(0.1, Math.min(1, node.confidence_decay))
-      : 1;
-    const temporalScore = (baseScore * (0.65 + 0.35 * freshness) * status * decay) + bestMatchBoost;
-    return scoreMemorySalience(node, temporalScore, opts) + snapshotBoost;
+    return scoreMemoryAuthority(node, baseScore, opts);
   }
 
   findRelevantStateSnapshots(queryEmbedding, queryWords, bestSimilarity, options = {}) {
@@ -2029,13 +2064,14 @@ class NetworkMemory {
           intent: options.intent,
           query: options.query,
           nowMs: options.nowMs,
-        }) + Math.min(0.25, overlap * 0.05),
+        }),
         retrievalAuthority: projectMemoryAuthority(node, {
           baseScore: similarity,
           intent: options.intent,
           query: options.query,
           nowMs: options.nowMs,
         }),
+        retrievalMode: 'logical-source-scan',
       });
     }
     return candidates.sort((a, b) => {
@@ -2106,35 +2142,10 @@ class NetworkMemory {
   }
 
   applyClosureEvidence(candidates, intent = 'general') {
-    const index = this.buildClosureIndex();
-    if (index.size === 0) return candidates;
-    const currentState = normalizeRetrievalIntent(intent) === 'current_state';
-    const output = [];
-    for (const candidate of candidates) {
-      const refs = this.closureRefs(candidate);
-      if (this.isVerifiedClosure(candidate)) {
-        output.push({
-          ...candidate,
-          resolutionEvidence: { resolves: refs, closedAt: getSemanticTimeMs(candidate) || null },
-        });
-        continue;
-      }
-      const candidateTime = getSemanticTimeMs(candidate);
-      const closure = refs
-        .map((ref) => index.get(ref))
-        .filter(Boolean)
-        .sort((left, right) => right.time - left.time)[0];
-      if (!closure || (candidateTime && closure.time <= candidateTime)) {
-        output.push(candidate);
-        continue;
-      }
-      if (currentState) continue;
-      output.push({
-        ...candidate,
-        closureEvidence: { closureNodeId: closure.nodeId, closedAt: closure.time || null },
-      });
-    }
-    return output;
+    return createMemoryAuthorityResolver({
+      intent,
+      authorityCandidates: this.nodes.values(),
+    }).apply(candidates);
   }
 
   /**
@@ -2144,7 +2155,9 @@ class NetworkMemory {
     if (this.nodes.size === 0) return [];
     
     const queryEmbedding = await this.embed(queryText);
-    if (!queryEmbedding) return this.queryByKeyword(queryText, topK, { retrievalMode: 'keyword-peripheral' });
+    if (!queryEmbedding) return this.queryByKeyword(queryText, topK, {
+      retrievalMode: 'logical-source-scan',
+    });
     
     // Get all nodes with similarity scores
     const allScored = [];
@@ -2161,6 +2174,7 @@ class NetworkMemory {
         ...node,
         similarity,
         activation: node.activation || 0,
+        retrievalMode: 'logical-source-scan',
         retrievalScore,
         retrievalAuthority: projectMemoryAuthority(node, {
           baseScore: similarity,
@@ -2172,7 +2186,11 @@ class NetworkMemory {
     
     // Sort by LOWEST activation (peripheral nodes)
     // But still somewhat relevant (similarity > 0.2)
-    const peripheral = allScored
+    const authorityResolved = createMemoryAuthorityResolver({
+      intent: queryText,
+      authorityCandidates: this.nodes.values(),
+    }).apply(allScored);
+    const peripheral = authorityResolved
       .filter(n => n.similarity > 0.2 && n.activation < 0.3)
       .sort((a, b) => (b.retrievalScore - a.retrievalScore)
         || (a.activation - b.activation))
@@ -2180,7 +2198,7 @@ class NetworkMemory {
     
     // If no peripheral nodes found, fall back to random selection
     if (peripheral.length === 0) {
-      const random = allScored
+      const random = authorityResolved
         .filter(n => n.similarity > 0.2)
         .sort((a, b) => (b.retrievalScore - a.retrievalScore)
           || (a.activation - b.activation))
@@ -2658,6 +2676,7 @@ class NetworkMemory {
         source_class: n.source_class,
         salienceWeight: n.salienceWeight,
         provenance: n.provenance,
+        evidence: n.evidence,
         asserted_at: n.asserted_at,
         asserted_cycle: n.asserted_cycle,
         superseded_by: n.superseded_by,

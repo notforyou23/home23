@@ -6,9 +6,27 @@ set -o pipefail
 # so no dashboard restart is needed after a rebuild.
 HOME23_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILDER="$HOME23_ROOT/engine/src/merge/build-ann-index.js"
+HEALTH_WRITER="$HOME23_ROOT/scripts/lib/ann-index-health.cjs"
 MAX_EXPLICIT_AGENTS=64
 AGENTS=()
 RC=0
+
+record_health() {
+  local agent="$1"
+  local outcome="$2"
+  local receipt="${3:-}"
+  ANN_HOME23_ROOT="$HOME23_ROOT" ANN_AGENT="$agent" ANN_OUTCOME="$outcome" \
+    ANN_RECEIPT="$receipt" \
+    ANN_GAP_THRESHOLD="${ANN_SUSTAINED_GAP_THRESHOLD:-3}" \
+    ANN_MAX_GAP="${ANN_MAX_OVERLAY_GAP_RECORDS:-50000}" \
+    node "$HEALTH_WRITER"
+}
+
+record_hard_failure() {
+  if ! record_health "$1" "$2" ""; then
+    echo "[rebuild-ann] $1 FAILED code=ann_health_write_failed" >&2
+  fi
+}
 
 add_agent() {
   local candidate="$1"
@@ -48,8 +66,11 @@ fi
 
 for AGENT in "${AGENTS[@]}"; do
   BRAIN_DIR="$HOME23_ROOT/instances/$AGENT/brain"
-  if [ ! -f "$BRAIN_DIR/memory-manifest.json" ]; then
+  if [ ! -d "$BRAIN_DIR" ] || [ -L "$BRAIN_DIR" ] \
+      || [ ! -f "$BRAIN_DIR/memory-manifest.json" ] \
+      || [ -L "$BRAIN_DIR/memory-manifest.json" ]; then
     echo "[rebuild-ann] $AGENT FAILED code=ann_manifest_missing"
+    record_hard_failure "$AGENT" "manifest_missing"
     RC=1
     continue
   fi
@@ -58,64 +79,83 @@ for AGENT in "${AGENTS[@]}"; do
     RECEIPT_LINE="$(printf '%s\n' "$BUILDER_OUTPUT" | tail -1)"
     if [ "${#BUILDER_OUTPUT}" -gt 65536 ]; then
       echo "[rebuild-ann] $AGENT FAILED code=ann_receipt_oversized"
+      record_hard_failure "$AGENT" "receipt_invalid"
       RC=1
       continue
     fi
-    if NORMALIZED_RECEIPT="$(ANN_AGENT="$AGENT" ANN_RECEIPT="$RECEIPT_LINE" node -e '
+    if NORMALIZED_RECEIPT="$(ANN_AGENT="$AGENT" ANN_RECEIPT="$RECEIPT_LINE" \
+      ANN_REQUIRED_VECTOR_COVERAGE_BPS="${ANN_MIN_VECTOR_COVERAGE_BPS:-5000}" node -e '
       const receipt = JSON.parse(process.env.ANN_RECEIPT || "null");
-      const statuses = new Set(["fresh", "overlay-covered"]);
-      if (!receipt || receipt.event !== "ann_rebuild_receipt" || !statuses.has(receipt.status)
-          || !Number.isSafeInteger(receipt.builtRevision)
-          || !Number.isSafeInteger(receipt.currentRevision)
+      const requiredVectorCoverageBps = Number(process.env.ANN_REQUIRED_VECTOR_COVERAGE_BPS);
+      const statuses = new Set(["fresh", "overlay-covered", "rebuilt-overlay-covered"]);
+      const durationKeys = ["sourceOpenMs", "sourceScanMs", "indexWriteMs", "metadataWriteMs", "publishMs", "reuseValidationMs", "cleanupMs", "totalMs"];
+      const stageKeys = ["sourceOpen", "sourceScan", "indexWrite", "metadataWrite", "publish", "reuseValidation", "cleanup", "total"];
+      const stageVocabulary = new Set(["completed", "skipped", "reused"]);
+      const reusedStatuses = { sourceOpen: "completed", sourceScan: "skipped", indexWrite: "skipped", metadataWrite: "skipped", publish: "skipped", reuseValidation: "reused", cleanup: "completed", total: "completed" };
+      const builtStatuses = { sourceOpen: "completed", sourceScan: "completed", indexWrite: "completed", metadataWrite: "completed", publish: "completed", reuseValidation: "skipped", cleanup: "completed", total: "completed" };
+      if (!Number.isSafeInteger(requiredVectorCoverageBps)
+          || requiredVectorCoverageBps < 1 || requiredVectorCoverageBps > 10000
+          || !receipt || receipt.event !== "ann_rebuild_receipt" || !statuses.has(receipt.status)
+          || !Number.isSafeInteger(receipt.builtRevision) || receipt.builtRevision < 0
+          || !Number.isSafeInteger(receipt.currentRevision) || receipt.currentRevision < 0
           || !Number.isSafeInteger(receipt.bridgeableGap) || receipt.bridgeableGap < 0
           || receipt.currentRevision - receipt.builtRevision !== receipt.bridgeableGap
+          || (receipt.status === "fresh") !== (receipt.bridgeableGap === 0)
+          || (receipt.status === "rebuilt-overlay-covered" && receipt.reused)
+          || typeof receipt.reused !== "boolean"
           || !receipt.stageDurations || typeof receipt.stageDurations !== "object"
-          || !receipt.semanticCoverage || typeof receipt.semanticCoverage !== "object") process.exit(2);
+          || Object.keys(receipt.stageDurations).sort().join(",") !== durationKeys.slice().sort().join(",")
+          || durationKeys.some((key) => !Number.isSafeInteger(receipt.stageDurations[key]) || receipt.stageDurations[key] < 0)
+          || !receipt.stageStatuses || typeof receipt.stageStatuses !== "object"
+          || Object.keys(receipt.stageStatuses).sort().join(",") !== stageKeys.slice().sort().join(",")
+          || stageKeys.some((key) => !stageVocabulary.has(receipt.stageStatuses[key]))
+          || receipt.stageStatuses.total !== "completed"
+          || stageKeys.some((key) => receipt.stageStatuses[key] !== (receipt.reused ? reusedStatuses : builtStatuses)[key])
+          || (receipt.reused && ["sourceScanMs", "indexWriteMs", "metadataWriteMs", "publishMs"].some((key) => receipt.stageDurations[key] !== 0))
+          || (!receipt.reused && receipt.stageDurations.reuseValidationMs !== 0)
+          || durationKeys.slice(0, -1).some((key) => receipt.stageDurations.totalMs < receipt.stageDurations[key])
+          || durationKeys.slice(0, -1).reduce((sum, key) => sum + receipt.stageDurations[key], 0)
+            > receipt.stageDurations.totalMs + Math.ceil((durationKeys.length - 1) / 2)
+          || !receipt.semanticCoverage || typeof receipt.semanticCoverage !== "object"
+          || receipt.semanticCoverage.status !== "complete"
+          || !Number.isSafeInteger(receipt.semanticCoverage.sourceNodes) || receipt.semanticCoverage.sourceNodes < 0
+          || !Number.isSafeInteger(receipt.semanticCoverage.indexed) || receipt.semanticCoverage.indexed < 0
+          || !Number.isSafeInteger(receipt.semanticCoverage.skipped) || receipt.semanticCoverage.skipped < 0
+          || receipt.semanticCoverage.indexed + receipt.semanticCoverage.skipped !== receipt.semanticCoverage.sourceNodes
+          || receipt.semanticCoverage.usable !== true
+          || !Number.isSafeInteger(receipt.semanticCoverage.vectorCoverageBps)
+          || receipt.semanticCoverage.vectorCoverageBps < 0 || receipt.semanticCoverage.vectorCoverageBps > 10000
+          || !Number.isSafeInteger(receipt.semanticCoverage.minimumVectorCoverageBps)
+          || receipt.semanticCoverage.minimumVectorCoverageBps < 1
+          || receipt.semanticCoverage.minimumVectorCoverageBps > 10000
+          || receipt.semanticCoverage.minimumVectorCoverageBps < requiredVectorCoverageBps
+          || receipt.semanticCoverage.vectorCoverageBps < receipt.semanticCoverage.minimumVectorCoverageBps
+          || receipt.semanticCoverage.vectorCoverageBps !== (receipt.semanticCoverage.sourceNodes === 0
+            ? 10000 : Math.floor((receipt.semanticCoverage.indexed * 10000) / receipt.semanticCoverage.sourceNodes))
+          || (receipt.semanticCoverage.sourceNodes > 0 && receipt.semanticCoverage.indexed === 0)
+          || receipt.indexCount !== receipt.semanticCoverage.indexed) process.exit(2);
       process.stdout.write(JSON.stringify({ agent: process.env.ANN_AGENT, ...receipt }));
     ' 2>/dev/null)"; then
       echo "$NORMALIZED_RECEIPT"
-      HEALTH_PATH="$HOME23_ROOT/instances/$AGENT/runtime/ann-index-health.json"
-      if ! ANN_RECEIPT="$RECEIPT_LINE" ANN_HEALTH_PATH="$HEALTH_PATH" \
-        ANN_GAP_THRESHOLD="${ANN_SUSTAINED_GAP_THRESHOLD:-3}" \
-        ANN_MAX_GAP="${ANN_MAX_OVERLAY_GAP_RECORDS:-50000}" node -e '
-          const fs = require("node:fs");
-          const path = require("node:path");
-          const receipt = JSON.parse(process.env.ANN_RECEIPT);
-          const threshold = Number(process.env.ANN_GAP_THRESHOLD);
-          const maxGap = Number(process.env.ANN_MAX_GAP);
-          if (!Number.isSafeInteger(threshold) || threshold < 1
-              || !Number.isSafeInteger(maxGap) || maxGap < 0) process.exit(2);
-          let previous = {};
-          try { previous = JSON.parse(fs.readFileSync(process.env.ANN_HEALTH_PATH, "utf8")); } catch {}
-          const excessive = receipt.bridgeableGap > maxGap;
-          const consecutiveExcessiveGaps = excessive
-            ? Number(previous.consecutiveExcessiveGaps || 0) + 1
-            : 0;
-          const state = {
-            status: excessive ? "lagging" : "healthy",
-            consecutiveExcessiveGaps,
-            builtRevision: receipt.builtRevision,
-            currentRevision: receipt.currentRevision,
-            bridgeableGap: receipt.bridgeableGap,
-            updatedAt: new Date().toISOString(),
-          };
-          fs.mkdirSync(path.dirname(process.env.ANN_HEALTH_PATH), { recursive: true, mode: 0o700 });
-          const temp = `${process.env.ANN_HEALTH_PATH}.${process.pid}.tmp`;
-          fs.writeFileSync(temp, `${JSON.stringify(state)}\n`, { mode: 0o600 });
-          fs.renameSync(temp, process.env.ANN_HEALTH_PATH);
-          if (consecutiveExcessiveGaps >= threshold) process.exit(3);
-        '; then
+      record_health "$AGENT" "success" "$RECEIPT_LINE"
+      HEALTH_RC=$?
+      if [ "$HEALTH_RC" -eq 3 ]; then
         echo "[rebuild-ann] $AGENT FAILED code=ann_sustained_gap" >&2
+        RC=1
+      elif [ "$HEALTH_RC" -ne 0 ]; then
+        echo "[rebuild-ann] $AGENT FAILED code=ann_health_write_failed" >&2
         RC=1
       fi
     else
       printf '%s\n' "$BUILDER_OUTPUT" | tail -3
       echo "[rebuild-ann] $AGENT FAILED code=ann_receipt_invalid"
+      record_hard_failure "$AGENT" "receipt_invalid"
       RC=1
     fi
   else
     printf '%s\n' "$BUILDER_OUTPUT" | tail -3
     echo "[rebuild-ann] $AGENT FAILED"
+    record_hard_failure "$AGENT" "builder_failed"
     RC=1
   fi
 done

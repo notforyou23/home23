@@ -19,6 +19,34 @@ const MATCH_OUTCOME = Object.freeze({
   UNKNOWN: 'unknown',
 });
 
+const RETRIEVAL_MODES = Object.freeze([
+  'semantic-ann',
+  'semantic-ann-delta-overlay',
+  'keyword-index-overlay',
+  'logical-source-scan',
+]);
+const RETRIEVAL_MODE_SET = new Set(RETRIEVAL_MODES);
+const RETRIEVAL_DOMAINS = Object.freeze([
+  'current_ops', 'closed_incidents', 'project_history', 'external_intake',
+]);
+const AUTHORITY_CLASSES = Object.freeze([
+  'verified_current_state', 'jtr_correction', 'artifact_log', 'worker_receipt',
+  'generated_doctrine', 'narrative',
+]);
+const SOURCE_CHAIN_KINDS = Object.freeze([
+  'source', 'evidence', 'artifact', 'trace', 'generation', 'lineage',
+  'verification', 'closure',
+]);
+const AUTHORITY_CLASS_ALIASES = Object.freeze({
+  verified_current_state: 'verifiedCurrentState',
+  jtr_correction: 'jtrCorrection',
+  artifact_log: 'artifactLog',
+  worker_receipt: 'workerReceipt',
+  generated_doctrine: 'generatedDoctrine',
+  narrative: 'narrative',
+});
+const AUTHORITY_SUMMARY_ATTESTATIONS = new WeakMap();
+
 const TYPED_MEMORY_SOURCE_CODES = new Set([
   'invalid_request',
   'invalid_memory_source',
@@ -184,8 +212,194 @@ function canonicalEvidenceIdentity(identity) {
   });
 }
 
-function createEvidence(input = {}) {
+function safeCount(value, fallback = 0) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+}
+
+function safeOptionalCount(value) {
+  return value === null || value === undefined
+    ? null
+    : (Number.isSafeInteger(value) && value >= 0 ? value : null);
+}
+
+function safeDuration(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0
+    ? Math.round(number * 1000) / 1000
+    : null;
+}
+
+function boundedEvidenceText(value, maxBytes = 256) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  return truncateUtf8(value.trim(), maxBytes);
+}
+
+function zeroCounts(keys) {
+  return Object.fromEntries(keys.map((key) => [key, 0]));
+}
+
+function normalizeAuthoritySummary(value = {}) {
+  const input = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const nestedClasses = input.authorityClasses && typeof input.authorityClasses === 'object'
+    && !Array.isArray(input.authorityClasses) ? input.authorityClasses : {};
+  const authorityClasses = zeroCounts(AUTHORITY_CLASSES);
+  for (const authorityClass of AUTHORITY_CLASSES) {
+    const alias = AUTHORITY_CLASS_ALIASES[authorityClass];
+    authorityClasses[authorityClass] = safeCount(
+      nestedClasses[authorityClass],
+      safeCount(input[alias]),
+    );
+  }
+  const nestedDomains = input.retrievalDomains && typeof input.retrievalDomains === 'object'
+    && !Array.isArray(input.retrievalDomains) ? input.retrievalDomains : {};
+  const retrievalDomains = zeroCounts(RETRIEVAL_DOMAINS);
+  for (const domain of RETRIEVAL_DOMAINS) {
+    retrievalDomains[domain] = safeCount(nestedDomains[domain]);
+  }
+  const source = input.sourceChain && typeof input.sourceChain === 'object'
+    && !Array.isArray(input.sourceChain) ? input.sourceChain : {};
+  const rawReferenceCounts = source.referenceCounts && typeof source.referenceCounts === 'object'
+    && !Array.isArray(source.referenceCounts) ? source.referenceCounts : {};
+  const referenceCounts = zeroCounts(SOURCE_CHAIN_KINDS);
+  for (const kind of SOURCE_CHAIN_KINDS) referenceCounts[kind] = safeCount(rawReferenceCounts[kind]);
+  const total = safeCount(input.total,
+    Object.values(authorityClasses).reduce((sum, count) => sum + count, 0));
+  const result = {
+    total,
+    authorityClasses,
+    retrievalDomains,
+    sourceChain: {
+      withEvidence: safeCount(source.withEvidence),
+      withoutEvidence: safeCount(source.withoutEvidence),
+      referenceCounts,
+    },
+    requiresFreshVerification: safeCount(input.requiresFreshVerification),
+  };
+  for (const [authorityClass, alias] of Object.entries(AUTHORITY_CLASS_ALIASES)) {
+    result[alias] = authorityClasses[authorityClass];
+  }
+  return result;
+}
+
+function createRetrievalAuthorityAccumulator() {
+  const summary = normalizeAuthoritySummary();
+  return Object.freeze({
+    add(value) {
+      const entry = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+      const authorityClass = AUTHORITY_CLASSES.includes(entry.authorityClass)
+        ? entry.authorityClass : 'narrative';
+      const retrievalDomain = RETRIEVAL_DOMAINS.includes(entry.retrievalDomain)
+        ? entry.retrievalDomain
+        : (RETRIEVAL_DOMAINS.includes(entry.domain) ? entry.domain : 'current_ops');
+      summary.total += 1;
+      summary.authorityClasses[authorityClass] += 1;
+      summary[AUTHORITY_CLASS_ALIASES[authorityClass]] += 1;
+      summary.retrievalDomains[retrievalDomain] += 1;
+      if (entry.requiresFreshVerification === true) summary.requiresFreshVerification += 1;
+      const chain = Array.isArray(entry.sourceChain) ? entry.sourceChain : [];
+      if (chain.length > 0) summary.sourceChain.withEvidence += 1;
+      else summary.sourceChain.withoutEvidence += 1;
+      for (const link of chain) {
+        if (link && typeof link === 'object' && SOURCE_CHAIN_KINDS.includes(link.kind)) {
+          summary.sourceChain.referenceCounts[link.kind] += 1;
+        }
+      }
+    },
+    snapshot() { return normalizeAuthoritySummary(summary); },
+  });
+}
+
+function summarizeRetrievalAuthority(entries = []) {
+  const accumulator = createRetrievalAuthorityAccumulator();
+  if (!Array.isArray(entries)) return accumulator.snapshot();
+  for (const value of entries) {
+    accumulator.add(value);
+  }
+  return accumulator.snapshot();
+}
+
+function attestRetrievalAuthoritySummary(evidence, authorityEvidence) {
+  if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) {
+    throw memorySourceError('invalid_memory_source', 'authority evidence target is invalid');
+  }
+  const summary = Array.isArray(authorityEvidence)
+    ? summarizeRetrievalAuthority(authorityEvidence)
+    : normalizeAuthoritySummary(authorityEvidence);
+  AUTHORITY_SUMMARY_ATTESTATIONS.set(evidence, Object.freeze(summary));
+  return evidence;
+}
+
+function getAttestedRetrievalAuthoritySummary(evidence) {
+  const summary = evidence && typeof evidence === 'object'
+    ? AUTHORITY_SUMMARY_ATTESTATIONS.get(evidence)
+    : null;
+  return summary ? normalizeAuthoritySummary(summary) : null;
+}
+
+function normalizeIndexCoverage(value, currentRevision) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || typeof value.complete !== 'boolean') return null;
   return {
+    complete: value.complete,
+    indexedRevision: safeOptionalCount(value.indexedRevision),
+    currentRevision: safeOptionalCount(value.currentRevision ?? currentRevision),
+    coveredThroughRevision: safeOptionalCount(value.coveredThroughRevision),
+    deltaRecords: safeCount(value.deltaRecords),
+    distinctChangedNodes: safeCount(value.distinctChangedNodes ?? value.changedNodes),
+    distinctUpsertedNodes: safeCount(value.distinctUpsertedNodes ?? value.upsertedNodes),
+    distinctRemovedNodes: safeCount(value.distinctRemovedNodes ?? value.removedNodes),
+    edgeOnlyRecords: safeCount(value.edgeOnlyRecords),
+    route: boundedEvidenceText(value.route),
+    completeness: boundedEvidenceText(value.completeness),
+  };
+}
+
+function normalizeStageTimings(input = {}) {
+  const value = input.stageTimingsMs && typeof input.stageTimingsMs === 'object'
+    ? input.stageTimingsMs
+    : input.stageTimings && typeof input.stageTimings === 'object'
+      ? input.stageTimings : null;
+  if (!value || Array.isArray(value)) return null;
+  const aliases = {
+    sourceOpen: ['sourceOpen', 'sourceOpenMs'],
+    embedding: ['embedding', 'embeddingMs'],
+    overlayRefresh: ['overlayRefresh', 'overlayRefreshMs', 'deltaOverlay'],
+    annLoad: ['annLoad', 'annLoadMs'],
+    annSearch: ['annSearch', 'annSearchMs', 'annQuery'],
+    overlayScoring: ['overlayScoring', 'overlayScoringMs', 'deltaSemantic'],
+    keywordScoring: ['keywordScoring', 'keywordScoringMs', 'keyword'],
+    merge: ['merge', 'mergeMs'],
+    response: ['response', 'responseMs', 'total'],
+  };
+  const result = {};
+  for (const [canonical, candidates] of Object.entries(aliases)) {
+    const selected = candidates.find((key) => Object.hasOwn(value, key));
+    const duration = selected === undefined ? null : safeDuration(value[selected]);
+    if (duration !== null) result[canonical] = duration;
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
+
+function projectRetrievalEvidenceEnvelope(input = {}) {
+  const result = {};
+  if (RETRIEVAL_MODE_SET.has(input.retrievalMode)) result.retrievalMode = input.retrievalMode;
+  const currentRevision = normalizeRevision(
+    input.indexCoverage?.currentRevision ?? input.deltaRevision
+      ?? input.deltaWatermark?.revision,
+  );
+  const indexCoverage = normalizeIndexCoverage(input.indexCoverage, currentRevision);
+  if (indexCoverage) result.indexCoverage = indexCoverage;
+  const stageTimingsMs = normalizeStageTimings(input);
+  if (stageTimingsMs) result.stageTimingsMs = stageTimingsMs;
+  if (input.authoritySummary && typeof input.authoritySummary === 'object'
+      && !Array.isArray(input.authoritySummary)) {
+    result.authoritySummary = normalizeAuthoritySummary(input.authoritySummary);
+  }
+  return result;
+}
+
+function createEvidence(input = {}) {
+  const evidence = {
     selectedAgent: input.selectedAgent || null,
     selectedBrain: input.selectedBrain || null,
     route: input.route || 'shared-memory-source',
@@ -222,6 +436,8 @@ function createEvidence(input = {}) {
       ? input.diagnosticsDropped
       : 0,
   };
+  Object.assign(evidence, projectRetrievalEvidenceEnvelope(input));
+  return evidence;
 }
 
 function enrichEvidenceIdentity(evidence, identity) {
@@ -258,6 +474,7 @@ function enrichEvidenceIdentity(evidence, identity) {
 module.exports = {
   SOURCE_HEALTH,
   MATCH_OUTCOME,
+  RETRIEVAL_MODES,
   normalizeRevision,
   normalizeId,
   normalizeKeywordTokens,
@@ -272,6 +489,12 @@ module.exports = {
   createDiagnosticRing,
   classifyMatchOutcome,
   createEvidence,
+  normalizeAuthoritySummary,
+  createRetrievalAuthorityAccumulator,
+  projectRetrievalEvidenceEnvelope,
+  summarizeRetrievalAuthority,
+  attestRetrievalAuthoritySummary,
+  getAttestedRetrievalAuthoritySummary,
   enrichEvidenceIdentity,
   memorySourceError,
 };

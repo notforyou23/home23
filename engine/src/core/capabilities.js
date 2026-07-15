@@ -4,6 +4,7 @@ const { FilesystemHelpers } = require('../cluster/fs/helpers');
 const path = require('path');
 const fs = require('fs').promises;
 const { spawn } = require('child_process');
+const { unprivilegedChildEnv } = require('../../../shared/child-process-env.cjs');
 
 /**
  * Capabilities - COSMO's Motor Cortex
@@ -1091,7 +1092,7 @@ class Capabilities {
     return new Promise((resolve, reject) => {
       const child = spawn('sh', ['-c', command], {
         cwd: process.cwd(),
-        env: process.env
+        env: unprivilegedChildEnv()
       });
       
       let stdout = '';

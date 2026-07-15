@@ -419,6 +419,12 @@ export interface NodeProvenanceProfile {
   operationalAuthority: boolean;
   requiresFreshVerification: boolean;
   missingEvidence?: string[];
+  attestation?: {
+    schema: 'home23.memory-authority-attestation.v1';
+    algorithm: 'hmac-sha256';
+    keyId: string;
+    signature: string;
+  };
 }
 
 export interface MemoryObject {

@@ -1,5 +1,6 @@
 const { exec } = require('child_process');
 const { promisify } = require('util');
+const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
 const execPromise = promisify(exec);
 
 /**
@@ -19,7 +20,7 @@ class MacOSNative {
     const script = `tell application "${appName}" to activate`;
     
     try {
-      await execPromise(`osascript -e '${script}'`);
+      await execPromise(`osascript -e '${script}'`, { env: unprivilegedChildEnv() });
       this.logger.info('🍎 macOS app opened', { app: appName });
     } catch (error) {
       this.logger.error('Failed to open app', {
@@ -38,7 +39,7 @@ class MacOSNative {
     const script = `tell application "${appName}" to activate`;
     
     try {
-      await execPromise(`osascript -e '${script}'`);
+      await execPromise(`osascript -e '${script}'`, { env: unprivilegedChildEnv() });
       this.logger.info('🍎 macOS app focused', { app: appName });
     } catch (error) {
       this.logger.error('Failed to focus app', {
@@ -59,7 +60,7 @@ class MacOSNative {
     `;
     
     try {
-      const { stdout } = await execPromise(`osascript -e '${script}'`);
+      const { stdout } = await execPromise(`osascript -e '${script}'`, { env: unprivilegedChildEnv() });
       return stdout.trim();
     } catch {
       return null;
@@ -68,4 +69,3 @@ class MacOSNative {
 }
 
 module.exports = { MacOSNative };
-

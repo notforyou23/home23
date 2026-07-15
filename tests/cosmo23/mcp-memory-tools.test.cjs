@@ -11,6 +11,10 @@ const path = require('node:path');
 const {
   createDefaultMcpMemoryTools,
 } = require('../../shared/memory-source/mcp-http-runtime.cjs');
+const { createMemoryTools } = require('../../shared/memory-source/mcp-tools.cjs');
+const {
+  createEvidence,
+} = require('../../shared/memory-source/contracts.cjs');
 const {
   enumerateMemoryMutationBoundaries,
   readManifest,
@@ -128,8 +132,13 @@ test('COSMO MCP tools expose canonical server-derived identity and the committed
   assert.equal(result.results[0].retrievalAuthority.authorityClass, 'narrative');
   assert.equal(result.results[0].retrievalAuthority.requiresFreshVerification, true);
   assert.equal(Number.isFinite(result.results[0].retrievalScore), true);
-  assert.equal(result.evidence.sourceHealth, 'healthy');
+  assert.equal(result.evidence.sourceHealth, 'degraded');
   assert.equal(result.evidence.matchOutcome, 'matches');
+  assert.equal(result.evidence.retrievalMode, 'logical-source-scan');
+  assert.deepEqual(result.evidence.fallback, {
+    route: 'logical-source-scan', reason: 'keyword_source_scan', completeness: 'complete',
+  });
+  assert.equal(result.evidence.authoritySummary.total, 1);
   assert.equal(result.evidence.deltaWatermark.revision, fixture.manifest.currentRevision);
   assert.deepEqual(result.evidence.authoritativeTotals, { nodes: 2, edges: 1 });
   assert.deepEqual(result.evidence.identity, {
@@ -146,7 +155,94 @@ test('COSMO MCP tools expose canonical server-derived identity and the committed
   assert.match(result.evidence.identity.operationId, /^mcp-[A-Za-z0-9_.-]+$/);
 });
 
-test('COSMO MCP reports healthy zero only with complete canonical-source evidence', async (t) => {
+test('MCP query preserves the search producer evidence instead of rebuilding it', async (t) => {
+  const fixture = await createCanonicalBrain(t, {
+    nodes: [{ id: 'canary', concept: 'producer evidence canary' }],
+  });
+  const producerEvidence = createEvidence({
+    sourceHealth: 'degraded',
+    matchOutcome: 'matches',
+    freshness: 'known',
+    deltaRevision: fixture.manifest.currentRevision,
+    retrievalMode: 'logical-source-scan',
+    indexCoverage: {
+      complete: false,
+      indexedRevision: null,
+      currentRevision: fixture.manifest.currentRevision,
+      coveredThroughRevision: fixture.manifest.currentRevision,
+      deltaRecords: 0,
+      route: 'keyword-source-scan',
+      completeness: 'complete',
+    },
+    stageTimingsMs: { keywordScoring: 2.5, response: 3.5 },
+    returnedTotals: { nodes: 1, edges: 0 },
+    authoritativeTotals: { nodes: 1, edges: 0 },
+    completeCoverage: true,
+    authoritySummary: {
+      total: 1,
+      authorityClasses: { narrative: 1 },
+      retrievalDomains: { current_ops: 1 },
+      sourceChain: { withEvidence: 0, withoutEvidence: 1, referenceCounts: {} },
+      requiresFreshVerification: 1,
+    },
+  });
+  const source = {
+    revision: fixture.manifest.currentRevision,
+    async summarize() { return { nodes: 1, edges: 0, clusters: 1 }; },
+    async searchKeyword() {
+      return {
+        results: [{
+          id: 'canary',
+          retrievalAuthority: {
+            authorityClass: 'narrative', retrievalDomain: 'current_ops',
+            requiresFreshVerification: true, sourceChain: [],
+          },
+        }],
+        filtered: 0,
+        evidence: producerEvidence,
+      };
+    },
+    getEvidence(extra = {}) {
+      return createEvidence({
+        sourceHealth: 'healthy',
+        deltaRevision: fixture.manifest.currentRevision,
+        ...extra,
+      });
+    },
+  };
+  const tools = createMemoryTools({
+    brainDir: fixture.brainDir,
+    home23Root: fixture.home23Root,
+    requesterAgent: 'cosmo-test',
+    resolveTargetContext: async () => ({
+      catalogRevision: 'catalog-test',
+      accessMode: 'own',
+      target: {
+        id: 'resident-cosmo-test', ownerAgent: 'cosmo-test', kind: 'resident',
+        sourceType: 'resident-brain', canonicalRoot: fixture.brainDir,
+      },
+    }),
+    withEphemeralSource: async (_options, callback) => callback(source, {
+      identity: {
+        requesterAgent: 'cosmo-test', targetAgent: 'cosmo-test',
+        brainId: 'resident-cosmo-test', canonicalRoot: fixture.brainDir,
+        catalogRevision: 'catalog-test', kind: 'resident', sourceType: 'resident-brain',
+        accessMode: 'own', operationId: 'mcp-test-operation',
+      },
+    }),
+    logger: { warn() {} },
+  });
+
+  const result = await tools.queryMemory({ query: 'producer evidence canary', limit: 5 });
+
+  assert.equal(result.evidence.sourceHealth, 'degraded');
+  assert.equal(result.evidence.retrievalMode, 'logical-source-scan');
+  assert.equal(result.evidence.indexCoverage.route, 'keyword-source-scan');
+  assert.equal(result.evidence.stageTimingsMs.keywordScoring, 2.5);
+  assert.equal(result.evidence.authoritySummary.authorityClasses.narrative, 1);
+});
+
+test('COSMO MCP reports known zero through a complete degraded logical-source scan', async (t) => {
   const cases = [
     {
       label: 'empty corpus',
@@ -172,9 +268,13 @@ test('COSMO MCP reports healthy zero only with complete canonical-source evidenc
       assert.equal(result.resultsFound, 0);
       assert.deepEqual(result.results, []);
       assert.equal(result.totalNodes, item.expectedTotal);
-      assert.equal(result.evidence.sourceHealth, 'healthy');
+      assert.equal(result.evidence.sourceHealth, 'degraded');
       assert.equal(result.evidence.matchOutcome, item.expectedOutcome);
       assert.equal(result.evidence.completeCoverage, true);
+      assert.equal(result.evidence.retrievalMode, 'logical-source-scan');
+      assert.equal(result.evidence.indexCoverage.complete, false);
+      assert.equal(result.evidence.indexCoverage.currentRevision, fixture.manifest.currentRevision);
+      assert.equal(result.evidence.indexCoverage.route, 'logical-source-scan');
       assert.equal(result.evidence.deltaWatermark.revision, fixture.manifest.currentRevision);
       assert.deepEqual(result.evidence.authoritativeTotals, {
         nodes: item.expectedTotal,

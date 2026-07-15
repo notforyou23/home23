@@ -19,6 +19,7 @@ const {
   classifyMatchOutcome,
   createDiagnosticRing,
   createEvidence,
+  summarizeRetrievalAuthority,
   isTypedMemorySourceError,
   normalizeKeywordTokens,
   enrichEvidenceIdentity,
@@ -182,6 +183,120 @@ test('creates a complete additive evidence envelope with canonical identity', ()
   assert.equal(evidence.identity.requesterAgent, 'ada');
   assert.equal(evidence.identity.targetAgent, 'jerry');
   assert.equal(evidence.identity.catalogRevision, 'catalog-17');
+});
+
+test('normalizes the approved retrieval evidence envelope without dropping legacy aliases', () => {
+  const evidence = createEvidence({
+    deltaRevision: 45,
+    retrievalMode: 'semantic-ann-delta-overlay',
+    indexCoverage: {
+      complete: true,
+      indexedRevision: 40,
+      currentRevision: 45,
+      coveredThroughRevision: 45,
+      deltaRecords: 7,
+      changedNodes: 4,
+      upsertedNodes: 3,
+      removedNodes: 1,
+      edgeOnlyRecords: 2,
+      route: 'ann-plus-delta',
+      completeness: 'complete',
+    },
+    stageTimings: {
+      sourceOpenMs: 1,
+      embeddingMs: 2,
+      overlayRefreshMs: 3,
+      annLoadMs: 4,
+      annSearchMs: 5,
+      overlayScoringMs: 6,
+      keywordScoringMs: 7,
+      mergeMs: 8,
+      responseMs: 9,
+    },
+    authoritySummary: {
+      verifiedCurrentState: 1,
+      narrative: 2,
+      requiresFreshVerification: 2,
+      retrievalDomains: { current_ops: 1, external_intake: 2 },
+      sourceChain: {
+        withEvidence: 1,
+        withoutEvidence: 2,
+        referenceCounts: { evidence: 1, generation: 2 },
+      },
+    },
+  });
+
+  assert.equal(evidence.retrievalMode, 'semantic-ann-delta-overlay');
+  assert.deepEqual(evidence.indexCoverage, {
+    complete: true,
+    indexedRevision: 40,
+    currentRevision: 45,
+    coveredThroughRevision: 45,
+    deltaRecords: 7,
+    distinctChangedNodes: 4,
+    distinctUpsertedNodes: 3,
+    distinctRemovedNodes: 1,
+    edgeOnlyRecords: 2,
+    route: 'ann-plus-delta',
+    completeness: 'complete',
+  });
+  assert.deepEqual(evidence.stageTimingsMs, {
+    sourceOpen: 1,
+    embedding: 2,
+    overlayRefresh: 3,
+    annLoad: 4,
+    annSearch: 5,
+    overlayScoring: 6,
+    keywordScoring: 7,
+    merge: 8,
+    response: 9,
+  });
+  assert.deepEqual(evidence.authoritySummary.retrievalDomains, {
+    current_ops: 1,
+    closed_incidents: 0,
+    project_history: 0,
+    external_intake: 2,
+  });
+  assert.deepEqual(evidence.authoritySummary.sourceChain.referenceCounts, {
+    source: 0,
+    evidence: 1,
+    artifact: 0,
+    trace: 0,
+    generation: 2,
+    lineage: 0,
+    verification: 0,
+    closure: 0,
+  });
+});
+
+test('summarizes bounded per-node authority, domain, and source-chain evidence', () => {
+  const summary = summarizeRetrievalAuthority([
+    {
+      authorityClass: 'verified_current_state',
+      retrievalDomain: 'current_ops',
+      requiresFreshVerification: false,
+      sourceChain: [{ kind: 'evidence', ref: 'verifier:live' }, { kind: 'trace', ref: 't1' }],
+    },
+    {
+      authorityClass: 'narrative',
+      domain: 'external_intake',
+      requiresFreshVerification: true,
+      sourceChain: [{ kind: 'generation', ref: 'query-result' }],
+    },
+  ]);
+
+  assert.equal(summary.total, 2);
+  assert.equal(summary.authorityClasses.verified_current_state, 1);
+  assert.equal(summary.authorityClasses.narrative, 1);
+  assert.equal(summary.retrievalDomains.current_ops, 1);
+  assert.equal(summary.retrievalDomains.external_intake, 1);
+  assert.equal(summary.sourceChain.withEvidence, 2);
+  assert.equal(summary.sourceChain.referenceCounts.evidence, 1);
+  assert.equal(summary.sourceChain.referenceCounts.trace, 1);
+  assert.equal(summary.sourceChain.referenceCounts.generation, 1);
+  assert.equal(summary.requiresFreshVerification, 1);
+  assert.equal(summary.verifiedCurrentState, 1);
+  assert.equal(summary.narrative, 1);
 });
 
 test('identity enrichment preserves evidence and rejects canonical mismatch', () => {

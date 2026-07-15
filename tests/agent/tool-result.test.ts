@@ -42,6 +42,23 @@ test('brain tool events retain bounded durable identity without private metadata
       pgs: { successfulSweeps: 3, pendingWorkUnits: 7, token: 'must-not-escape' },
       sourceEvidence: {
         sourceHealth: 'healthy', currentRevision: 42, path: '/Users/jtr/private',
+        retrievalMode: 'semantic-ann-delta-overlay',
+        indexCoverage: {
+          complete: true, indexedRevision: 40, currentRevision: 42,
+          coveredThroughRevision: 42, deltaRecords: 2, distinctChangedNodes: 1,
+          route: 'ann-plus-delta', completeness: 'complete', path: '/Users/jtr/private',
+        },
+        stageTimingsMs: { sourceOpen: 1.25, response: 4.5, path: '/Users/jtr/private' },
+        authoritySummary: {
+          total: 1,
+          authorityClasses: { verified_current_state: 1 },
+          retrievalDomains: { current_ops: 1 },
+          sourceChain: {
+            withEvidence: 1, withoutEvidence: 0, referenceCounts: { evidence: 1 },
+          },
+          requiresFreshVerification: 0,
+          path: '/Users/jtr/private',
+        },
       },
       token: 'must-not-escape',
       path: '/Users/jtr/private',
@@ -71,7 +88,25 @@ test('brain tool events retain bounded durable identity without private metadata
       attachmentState: 'detached',
       classification: 'detached',
       pgs: { successfulSweeps: 3, pendingWorkUnits: 7 },
-      sourceEvidence: { sourceHealth: 'healthy', currentRevision: 42 },
+      sourceEvidence: {
+        sourceHealth: 'healthy', currentRevision: 42,
+        retrievalMode: 'semantic-ann-delta-overlay',
+        indexCoverage: {
+          complete: true, indexedRevision: 40, currentRevision: 42,
+          coveredThroughRevision: 42, deltaRecords: 2, distinctChangedNodes: 1,
+          route: 'ann-plus-delta', completeness: 'complete',
+        },
+        stageTimingsMs: { sourceOpen: 1.25, response: 4.5 },
+        authoritySummary: {
+          total: 1,
+          authorityClasses: { verified_current_state: 1 },
+          retrievalDomains: { current_ops: 1 },
+          sourceChain: {
+            withEvidence: 1, withoutEvidence: 0, referenceCounts: { evidence: 1 },
+          },
+          requiresFreshVerification: 0,
+        },
+      },
     },
   });
   assert.ok(Buffer.byteLength(JSON.stringify(events[0]?.toolMetadata)) <= 32 * 1024);

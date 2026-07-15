@@ -1,5 +1,10 @@
 'use strict';
 
+const {
+  projectMemoryRelations,
+  hasAuthenticatedAuthorityEvidence,
+} = require('./memory-authority.cjs');
+
 const MAX_ANN_LABEL_BYTES = 256 * 1024;
 const MAX_ANN_LABEL_ID_BYTES = 4 * 1024;
 const MAX_ANN_LABEL_CONCEPT_BYTES = 512;
@@ -8,6 +13,9 @@ const MAX_ANN_LABEL_CLUSTER_BYTES = 1024;
 const MAX_ANN_LABEL_CREATED_BYTES = 256;
 const MAX_ANN_LABEL_SOURCE_CLASS_BYTES = 128;
 const MAX_ANN_LABEL_AUTHORITY_BYTES = 128;
+const MAX_ANN_SOURCE_REF_BYTES = 240;
+const MAX_ANN_SOURCE_CHAIN = 2;
+const ANN_AUTHORITY_PROJECTION_SCHEMA = 'home23.ann-authority-projection.v1';
 
 function contractError(message) {
   const error = new TypeError(message);
@@ -44,9 +52,48 @@ function nullableCluster(value) {
   return nullableString(value, MAX_ANN_LABEL_CLUSTER_BYTES);
 }
 
+function redactAnnSourceRef(value) {
+  if (typeof value !== 'string') return null;
+  let output = value.replace(
+    /\b([A-Za-z][A-Za-z0-9+.-]*:)(\/(?!\/)(?:[^/\x00\s"'`<>\])},;]+\/)+[^/\x00\s"'`<>\])},;]+)/gu,
+    (_match, prefix, localPath) => {
+      const basename = localPath.split('/').filter(Boolean).at(-1) || 'source';
+      return `${prefix}[redacted-path]/${basename}`;
+    },
+  );
+  for (const pattern of [
+    /file:\/\/(?:localhost)?\/[^\x00\s"'`<>\])},;]+/giu,
+    /\\\\[^\s\\/"'`<>\])},;]+\\[^\s"'`<>\])},;]+/gu,
+    /(?<![A-Za-z0-9_.-])[A-Za-z]:[\\/][^\x00\s"'`<>\])},;]+/gu,
+    /(?<![A-Za-z0-9_.:\/\]\-])\/[^\x00\s"'`<>\])},;]+/gu,
+  ]) {
+    output = output.replace(pattern, (match) => {
+      const normalized = match.replace(/^file:\/\/(?:localhost)?/iu, '');
+      return `[redacted-path]/${normalized.split(/[\\/]/u).filter(Boolean).at(-1) || 'source'}`;
+    });
+  }
+  return compactUtf8(output, MAX_ANN_SOURCE_REF_BYTES);
+}
+
+function projectAnnSourceChain(value) {
+  const result = [];
+  for (const entry of Array.isArray(value) ? value : []) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const kind = typeof entry.kind === 'string'
+      ? compactUtf8(entry.kind, MAX_ANN_LABEL_AUTHORITY_BYTES)
+      : null;
+    const ref = redactAnnSourceRef(entry.ref);
+    if (!kind || !ref) continue;
+    result.push({ kind, ref });
+    if (result.length >= MAX_ANN_SOURCE_CHAIN) break;
+  }
+  return result;
+}
+
 function projectAnnLabel(label, {
   fallbackSourceClass,
   fallbackSalienceWeight,
+  trustedProjection = false,
 } = {}) {
   if (!label || typeof label !== 'object' || Array.isArray(label)) {
     throw contractError('ANN label must be an object');
@@ -86,12 +133,15 @@ function projectAnnLabel(label, {
     status: typeof label.status === 'string'
       ? compactUtf8(label.status, MAX_ANN_LABEL_AUTHORITY_BYTES)
       : undefined,
-    evidencePresent: typeof label.evidencePresent === 'boolean'
-      ? label.evidencePresent
-      : undefined,
+    sourceChain: projectAnnSourceChain(label.sourceChain),
+    evidencePresent: trustedProjection === true
+      ? label.evidencePresent === true
+      : hasAuthenticatedAuthorityEvidence(label),
+    authorityRelations: projectMemoryRelations(label, { trustedProjection }),
   };
   for (const key of Object.keys(projected)) {
-    if (projected[key] === undefined) delete projected[key];
+    if (projected[key] === undefined
+        || (Array.isArray(projected[key]) && projected[key].length === 0)) delete projected[key];
   }
   if (utf8Bytes(JSON.stringify(projected)) > MAX_ANN_LABEL_BYTES) {
     throw contractError('ANN projected label exceeds byte limit');
@@ -100,6 +150,7 @@ function projectAnnLabel(label, {
 }
 
 module.exports = {
+  ANN_AUTHORITY_PROJECTION_SCHEMA,
   MAX_ANN_LABEL_BYTES,
   MAX_ANN_LABEL_CONCEPT_BYTES,
   projectAnnLabel,

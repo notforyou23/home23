@@ -5,6 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryIngest, applyChannelCap, CHANNEL_CAPS } from '../../../engine/src/channels/memory-ingest.cjs';
 import { makeTraceId } from '../../../engine/src/channels/contract.js';
+import memoryAuthority from '../../../shared/memory-authority.cjs';
+import authorityAttestation from '../../../shared/memory-authority-attestation.cjs';
+
+const AUTHORITY_KEY = '4'.repeat(64);
 
 test('CHANNEL_CAPS has the six channel-class methods', () => {
   for (const k of ['sensor_primary', 'sensor_derived', 'build_event', 'work_event', 'neighbor_gossip', 'zero_context_audit']) {
@@ -336,6 +340,11 @@ test('MemoryIngest grants verified current state only when live verifier evidenc
   assert.equal(verified.provenance.node_profile.operationalAuthority, true);
   assert.equal(verified.provenance.node_profile.requiresFreshVerification, false);
   assert.deepEqual(verified.provenance.node_profile.evidenceRefs, ['verifier:os:ps-top-cpu']);
+  assert.equal(authorityAttestation.verifyMemoryAuthorityAttestation(verified, AUTHORITY_KEY), false);
+  assert.notEqual(
+    memoryAuthority.classifyClaimAuthority(verified, { authorityKey: AUTHORITY_KEY }),
+    'verified_current_state',
+  );
 });
 
 test('MemoryIngest keeps generated reports narrative and bounds jtr corrections to semantic authority', async () => {
@@ -362,9 +371,15 @@ test('MemoryIngest keeps generated reports narrative and bounds jtr corrections 
   assert.equal(generated.provenance.node_profile.authorityClass, 'narrative');
   assert.equal(generated.provenance.node_profile.operationalAuthority, false);
   assert.equal(generated.provenance.node_profile.requiresFreshVerification, true);
+  assert.equal(authorityAttestation.verifyMemoryAuthorityAttestation(generated, AUTHORITY_KEY), false);
   assert.equal(correction.provenance.node_profile.authorityClass, 'jtr_correction');
   assert.equal(correction.provenance.node_profile.operationalAuthority, false);
   assert.equal(correction.provenance.node_profile.requiresFreshVerification, true);
+  assert.equal(authorityAttestation.verifyMemoryAuthorityAttestation(correction, AUTHORITY_KEY), false);
+  assert.notEqual(
+    memoryAuthority.classifyClaimAuthority(correction, { authorityKey: AUTHORITY_KEY }),
+    'jtr_correction',
+  );
 });
 
 test('MemoryIngest caps zero-context audit confidence hard', async () => {

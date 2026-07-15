@@ -33,6 +33,7 @@ const PM2_ENV_BLOCKLIST = [
   'COSMO_RUNTIME_DIR',
   'COSMO_WORKSPACE_PATH',
   'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY',
+  'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY',
 ];
 
 const waitDefault = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

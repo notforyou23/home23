@@ -12,6 +12,7 @@
 const fs = require('fs').promises;
 const path = require('path');
 const { execSync } = require('child_process');
+const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
 
 // ═══════════════════════════════════════════════════════════════════════
 // SAFETY
@@ -549,7 +550,7 @@ const executors = {
     try {
       const result = execSync(
         `grep -rl --include="*.json" --include="*.md" --include="*.txt" --include="*.yaml" --include="*.yml" --include="*.js" --include="*.py" ${JSON.stringify(args.pattern)} ${JSON.stringify(searchDir)}`,
-        { timeout: 15000, maxBuffer: 512 * 1024, encoding: 'utf-8' }
+        { timeout: 15000, maxBuffer: 512 * 1024, encoding: 'utf-8', env: unprivilegedChildEnv() }
       );
       // Make paths relative to runtime
       const lines = result.trim().split('\n').filter(Boolean).map(p => path.relative(runtimePath, p));
@@ -587,7 +588,8 @@ const executors = {
         timeout: 30000,
         maxBuffer: 1024 * 1024,
         encoding: 'utf-8',
-        cwd
+        cwd,
+        env: unprivilegedChildEnv()
       });
       const trimmed = output.substring(0, 10000);
       return trimmed || '(command completed with no output)';
