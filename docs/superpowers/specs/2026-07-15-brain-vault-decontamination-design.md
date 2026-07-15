@@ -400,6 +400,66 @@ need re-tuning after. **Fix what it sees, then fix how it sees.**
 
 ---
 
+### 1.14 THE REAL FINDING — the brain has 5% of jtr's corpus
+
+**Everything above diagnoses the garbage. This is what was missed: the absence.**
+
+Discovery sweep across every location holding jtr's material (human-readable docs only —
+`.md`/`.txt`/`.pdf`, excluding `node_modules`/`.git`/`dist`):
+
+```
+                    docs     ingested    unread
+cosmo-home        28,962       1,531    27,431      2.4 GB
+cosmo-home_2.3     7,808         364     7,444      1.6 GB
+.openclaw         12,061           0    12,061      3.6 GB  (agents/: claude, codex, main — 410 MB)
+/Users/jtr/life/     796         794         2      ← 99.7% ingested
+────────────────────────────────────────────────
+TOTAL             49,627       2,689    46,938      → 5% ingested
+```
+
+*(Including `.json`/`.jsonl`: 106,295 files, 5,021 ingested, **101,274 never read**.)*
+
+**jtr has 49,627 documents. The brain has read 2,689 of them.**
+
+Set against §1.7 and the tracing results:
+
+> **The brain holds ~49,488 nodes of npm package metadata — more than jtr has documents in total —
+> and has never opened 46,938 of his files.**
+
+**The vault mechanism is not broken.** `/Users/jtr/life/` is **99.7% ingested**. The feeder, manifest,
+chunker, and compiler work. **The vault is simply 3% of jtr's corpus.** Every fix in §4 — atomizer,
+yield check, catalog rule, event gate — is correct and was aimed at a folder holding a twentieth of
+jtr's life.
+
+**This inverts the project's centre of gravity.** §4.1's keep/drop table optimises which *slice of the
+exhaust* to stop ingesting. The real work is that **jtr's material is scattered across four locations
+and 95% of it has never been seen.** Consolidation is not cleanup preparation — **it is the project.**
+
+**jtr's directive (2026-07-15):** *"I don't care about sticking to whatever ingestion paths/folders
+were set. If we need to reorganize to make it better we do that. Those old cosmo-home data files are
+all legit and good files — I need to bring them into home23. I aim to archive all other home and cosmo
+instances so we save space and clean things up. I also had files scattered across other places like
+.openclaw. If I need to pull into one location for ease of everything then we do that."*
+
+**Consequences for this spec:**
+
+- **§4.1's keep/drop table is superseded in spirit.** The signed-off *drops* stand (they are exhaust).
+  The *keeps* are no longer a list of legacy paths to preserve — they are inputs to a consolidation.
+  The `jtr_voice`/`garcia_jerry`/`legacy_cosmo23_memory` "trap" (§7.7) dissolves: those files **move
+  into the vault** rather than being re-added as watch paths to a dying install.
+- **§4.5's rebuild scope (9,939 files → 77,425 chunks → 14–29h) is for the wrong corpus.** The real
+  corpus is ~49,627 documents. The rebuild is **substantially larger — and worth it**, because it is
+  the difference between a brain holding 5% of jtr's life and one holding all of it.
+- **The 26 instances under `/Users/jtr/_JTR23_/` are archivable** once consolidated: `cosmo-home`
+  (2.4 G) + `cosmo-home_2.3` (1.6 G) + `cosmo_2.3` (1.1 G) + `.openclaw` (3.6 G) ≈ **8.7 GB reclaimed**,
+  and — more importantly — **one location instead of four.**
+- **`workspace/jtr` (4,131 files, 2,194 dated session summaries, zero ingested)** is part of this: real
+  write-once artifacts that belong in the vault (§7 correction 6).
+
+**This is the answer to "we kept doubling down."** Every remedy in this document's history addressed
+the *presence* of garbage. **None addressed the absence of jtr.** The brain is not merely polluted —
+**it was never given the material it exists to hold.**
+
 ## 2. Diagnosis
 
 The architectural error is not "internal signals became stimuli," and it is not a governance failure.
