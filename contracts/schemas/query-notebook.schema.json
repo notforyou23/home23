@@ -450,6 +450,137 @@
         "edges": { "$ref": "#/$defs/safeCounter" }
       }
     },
+    "retrievalMode": {
+      "enum": [
+        "semantic-ann", "semantic-ann-delta-overlay", "keyword-index-overlay",
+        "logical-source-scan", "hybrid", "semantic-scan", "keyword", "none"
+      ]
+    },
+    "indexCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["complete"],
+      "properties": {
+        "complete": { "type": "boolean" },
+        "indexedRevision": { "$ref": "#/$defs/safeCounter" },
+        "currentRevision": { "$ref": "#/$defs/safeCounter" },
+        "coveredThroughRevision": { "$ref": "#/$defs/safeCounter" },
+        "deltaRecords": { "$ref": "#/$defs/safeCounter" },
+        "distinctChangedNodes": { "$ref": "#/$defs/safeCounter" },
+        "distinctUpsertedNodes": { "$ref": "#/$defs/safeCounter" },
+        "distinctRemovedNodes": { "$ref": "#/$defs/safeCounter" },
+        "edgeOnlyRecords": { "$ref": "#/$defs/safeCounter" },
+        "changedNodes": { "$ref": "#/$defs/safeCounter" },
+        "upsertedNodes": { "$ref": "#/$defs/safeCounter" },
+        "removedNodes": { "$ref": "#/$defs/safeCounter" },
+        "route": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:+-]{0,255}$"
+        },
+        "completeness": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:+-]{0,255}$"
+        }
+      }
+    },
+    "stageTimingsMs": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "sourceOpen": { "type": "number", "minimum": 0 },
+        "embedding": { "type": "number", "minimum": 0 },
+        "overlayRefresh": { "type": "number", "minimum": 0 },
+        "annLoad": { "type": "number", "minimum": 0 },
+        "annSearch": { "type": "number", "minimum": 0 },
+        "overlayScoring": { "type": "number", "minimum": 0 },
+        "keywordScoring": { "type": "number", "minimum": 0 },
+        "merge": { "type": "number", "minimum": 0 },
+        "response": { "type": "number", "minimum": 0 },
+        "deltaOverlay": { "type": "number", "minimum": 0 },
+        "annQuery": { "type": "number", "minimum": 0 },
+        "deltaSemantic": { "type": "number", "minimum": 0 },
+        "keyword": { "type": "number", "minimum": 0 },
+        "total": { "type": "number", "minimum": 0 }
+      }
+    },
+    "authoritySummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total", "authorityClasses", "retrievalDomains", "sourceChain",
+        "requiresFreshVerification", "verifiedCurrentState", "jtrCorrection",
+        "artifactLog", "workerReceipt", "generatedDoctrine", "narrative"
+      ],
+      "properties": {
+        "total": { "$ref": "#/$defs/safeCounter" },
+        "authorityClasses": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "verified_current_state", "jtr_correction", "artifact_log",
+            "worker_receipt", "generated_doctrine", "narrative"
+          ],
+          "properties": {
+            "verified_current_state": { "$ref": "#/$defs/safeCounter" },
+            "jtr_correction": { "$ref": "#/$defs/safeCounter" },
+            "artifact_log": { "$ref": "#/$defs/safeCounter" },
+            "worker_receipt": { "$ref": "#/$defs/safeCounter" },
+            "generated_doctrine": { "$ref": "#/$defs/safeCounter" },
+            "narrative": { "$ref": "#/$defs/safeCounter" }
+          }
+        },
+        "retrievalDomains": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["current_ops", "closed_incidents", "project_history", "external_intake"],
+          "properties": {
+            "current_ops": { "$ref": "#/$defs/safeCounter" },
+            "closed_incidents": { "$ref": "#/$defs/safeCounter" },
+            "project_history": { "$ref": "#/$defs/safeCounter" },
+            "external_intake": { "$ref": "#/$defs/safeCounter" }
+          }
+        },
+        "sourceChain": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["withEvidence", "withoutEvidence", "referenceCounts"],
+          "properties": {
+            "withEvidence": { "$ref": "#/$defs/safeCounter" },
+            "withoutEvidence": { "$ref": "#/$defs/safeCounter" },
+            "referenceCounts": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "source", "evidence", "artifact", "trace", "generation",
+                "lineage", "verification", "closure"
+              ],
+              "properties": {
+                "source": { "$ref": "#/$defs/safeCounter" },
+                "evidence": { "$ref": "#/$defs/safeCounter" },
+                "artifact": { "$ref": "#/$defs/safeCounter" },
+                "trace": { "$ref": "#/$defs/safeCounter" },
+                "generation": { "$ref": "#/$defs/safeCounter" },
+                "lineage": { "$ref": "#/$defs/safeCounter" },
+                "verification": { "$ref": "#/$defs/safeCounter" },
+                "closure": { "$ref": "#/$defs/safeCounter" }
+              }
+            }
+          }
+        },
+        "requiresFreshVerification": { "$ref": "#/$defs/safeCounter" },
+        "verifiedCurrentState": { "$ref": "#/$defs/safeCounter" },
+        "jtrCorrection": { "$ref": "#/$defs/safeCounter" },
+        "artifactLog": { "$ref": "#/$defs/safeCounter" },
+        "workerReceipt": { "$ref": "#/$defs/safeCounter" },
+        "generatedDoctrine": { "$ref": "#/$defs/safeCounter" },
+        "narrative": { "$ref": "#/$defs/safeCounter" }
+      }
+    },
     "safeEvidence": {
       "oneOf": [
         {
@@ -463,7 +594,11 @@
             "completeCoverage": { "type": "boolean" },
             "filteredTotal": { "$ref": "#/$defs/safeCounter" },
             "authoritativeTotals": { "$ref": "#/$defs/safeTotals" },
-            "returnedTotals": { "$ref": "#/$defs/safeTotals" }
+            "returnedTotals": { "$ref": "#/$defs/safeTotals" },
+            "retrievalMode": { "$ref": "#/$defs/retrievalMode" },
+            "indexCoverage": { "$ref": "#/$defs/indexCoverage" },
+            "stageTimingsMs": { "$ref": "#/$defs/stageTimingsMs" },
+            "authoritySummary": { "$ref": "#/$defs/authoritySummary" }
           }
         },
         { "type": "null" }

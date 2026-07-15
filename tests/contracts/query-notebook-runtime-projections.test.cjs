@@ -73,7 +73,7 @@ const FIXTURE_NAMES = Object.freeze([
 // This independent corpus pin makes coordinated runtime+fixture shape drift fail until
 // a reviewer deliberately accepts a new public contract.
 const EXPECTED_FIXTURE_CORPUS_SHA256 =
-  '3cadab26a87f4a34807469b81ab6930328dcf278763b7aec0a7849deed2104bb';
+  '83dbb4c5d28446eea97d96313285bc65f9c05e7f71d680932bfeda58fcd9096a';
 
 function fixture(name) {
   return JSON.parse(fs.readFileSync(
@@ -280,6 +280,77 @@ function directResultRecord() {
       filteredTotal: 0,
       authoritativeTotals: { nodes: 142764, edges: 468230 },
       returnedTotals: { nodes: 80, edges: 14 },
+      retrievalMode: 'semantic-ann-delta-overlay',
+      indexCoverage: {
+        complete: true,
+        indexedRevision: 142760,
+        currentRevision: 142764,
+        coveredThroughRevision: 142764,
+        deltaRecords: 4,
+        distinctChangedNodes: 2,
+        distinctUpsertedNodes: 1,
+        distinctRemovedNodes: 1,
+        edgeOnlyRecords: 0,
+        changedNodes: 2,
+        upsertedNodes: 1,
+        removedNodes: 1,
+        route: 'pinned-query-projection',
+        completeness: 'complete',
+      },
+      stageTimingsMs: {
+        sourceOpen: 2,
+        embedding: 4,
+        overlayRefresh: 3,
+        annLoad: 5,
+        annSearch: 6,
+        overlayScoring: 7,
+        keywordScoring: 8,
+        merge: 9,
+        response: 44,
+        deltaOverlay: 3,
+        annQuery: 6,
+        deltaSemantic: 7,
+        keyword: 8,
+        total: 44,
+      },
+      authoritySummary: {
+        total: 80,
+        authorityClasses: {
+          verified_current_state: 2,
+          jtr_correction: 1,
+          artifact_log: 30,
+          worker_receipt: 4,
+          generated_doctrine: 3,
+          narrative: 40,
+        },
+        retrievalDomains: {
+          current_ops: 20,
+          closed_incidents: 10,
+          project_history: 30,
+          external_intake: 20,
+        },
+        sourceChain: {
+          withEvidence: 50,
+          withoutEvidence: 30,
+          referenceCounts: {
+            source: 10,
+            evidence: 10,
+            artifact: 10,
+            trace: 5,
+            generation: 5,
+            lineage: 5,
+            verification: 3,
+            closure: 2,
+          },
+        },
+        requiresFreshVerification: 40,
+        verifiedCurrentState: 2,
+        jtrCorrection: 1,
+        artifactLog: 30,
+        workerReceipt: 4,
+        generatedDoctrine: 3,
+        narrative: 40,
+      },
       canonicalRoot: '/private/runtime-contract/brain',
     },
     sourcePinDescriptor: null,

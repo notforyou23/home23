@@ -15,6 +15,23 @@ function fixture(name) {
   return JSON.parse(readFileSync(new URL(`../../contracts/fixtures/${name}.json`, import.meta.url), 'utf8'));
 }
 
+function pgsResultFixture(status) {
+  const direct = fixture('query-notebook-result');
+  return {
+    ...direct,
+    operationId: status.operationId,
+    resultVersion: status.resultVersion,
+    answer: 'The PGS result retains bounded evidence, coverage, and continuation authority.',
+    coverage: structuredClone(status.coverage),
+    evidence: null,
+    projection: null,
+    answerQuality: null,
+    continuation: structuredClone(status.continuation),
+    actions: structuredClone(status.actions),
+    notification: structuredClone(status.notification),
+  };
+}
+
 function jsonResponse(value, status = 200, headers = {}) {
   return new Response(JSON.stringify(value), {
     status, headers: { 'content-type': 'application/json', ...headers },
@@ -112,7 +129,11 @@ function fakeQuerySystem({ includeGap = true, repeatedStalls = 0 } = {}) {
     pendingWorkUnits: 0, reusedWorkUnits: 247, newWorkUnits: 2,
   };
   const resultFor = (operationId) => {
-    const result = { ...structuredClone(fixture('query-notebook-result')), operationId };
+    const sourceStatus = operationId === recoveryIds[1]
+      ? recoveredStatus
+      : operationId === continuationId ? continuationStatus : pgsStatus;
+    const result = pgsResultFixture(sourceStatus);
+    result.operationId = operationId;
     for (const action of result.actions) {
       if (action.token) action.expiresAt = '2099-01-01T00:00:00.000Z';
     }
@@ -838,7 +859,7 @@ test('progress monotonicity permits only canonical candidate replacement and syn
 test('public projections use the exact contract schema and PGS evidence proves the requested path', async () => {
   const { assertPgsAcceptance, validatePublicProjection } = await verifier();
   const status = fixture('query-notebook-page').items[0];
-  const result = fixture('query-notebook-result');
+  const result = pgsResultFixture(status);
   assert.equal(validatePublicProjection('queryNotebookStatus', status), status);
   assert.equal(validatePublicProjection('queryNotebookResult', result), result);
 
