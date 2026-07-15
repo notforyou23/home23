@@ -521,6 +521,7 @@ async function projectPinnedQuery({
 
 module.exports = {
   COOPERATIVE_YIELD_EVERY,
+  authenticatedProviderNode,
   boundedLimits,
   projectPinnedQuery,
   summarizeNodeAuthorities,

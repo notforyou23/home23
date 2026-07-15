@@ -15,6 +15,9 @@ const {
   projectQueryEvidenceNode,
 } = require('../../lib/query-evidence-projector');
 const {
+  authenticatedProviderNode,
+} = require('../../lib/pinned-query-projection');
+const {
   canonicalJson,
   createRetrievalAuthorityAccumulator,
   sourceDescriptorDigest,
@@ -32,8 +35,12 @@ const {
 // Version 3 binds reusable sweeps to the exact query and scope policy, and
 // gives every work unit a stable partition-stratified coverage ordinal.
 const SCHEMA_VERSION = 3;
-const AUTHORITY_PROJECTION_VERSION = 2;
+const AUTHORITY_PROJECTION_VERSION = 3;
+const LEGACY_AUTHORITY_PROJECTION_VERSION = 2;
 const AUTHORITY_INTEGRITY_SCHEMA = 'home23.pgs-authority-projection-integrity.v1';
+const AUTHORITY_MIGRATION_KEY = 'authorityProjectionMigration';
+const MAX_AUTHORITY_MIGRATION_BYTES = 512;
+const MAX_DECLARED_COUNT_BYTES = 64;
 const QUERY_NORMALIZATION_VERSION = 1;
 const SWEEP_PROMPT_CONTRACT_VERSION = 1;
 const COVERAGE_SELECTION_POLICY_VERSION = 1;
@@ -148,9 +155,24 @@ function serializeNodeForWorkUnit(record, {
   maxContextBytes,
   authorityBytes,
 }) {
-  const serialized = serializeRecord(record, maxRecordBytes, 'node');
+  // Preserve the durable hard record limit before dropping any unsigned fields.
+  const sourceSerialized = serializeRecord(record, maxRecordBytes, 'node');
+  const providerRecord = authenticatedProviderNode(record);
+  const serialized = providerRecord === record
+    ? sourceSerialized
+    : serializeRecord(providerRecord, maxRecordBytes, 'node');
   const availableBytes = maxContextBytes - authorityBytes;
-  if (serialized.bytes <= availableBytes) return serialized;
+  if (serialized.bytes <= availableBytes) {
+    if (sourceSerialized.bytes <= availableBytes) return serialized;
+    try {
+      return serializeRecord({
+        ...serialized.value,
+        contentTruncated: true,
+      }, availableBytes, 'node');
+    } catch (error) {
+      if (error?.code !== 'result_too_large') throw error;
+    }
+  }
   // PGS is a bounded evidence scan. A single very large narrative node must not
   // make the whole brain unsweepable, but truncation must be explicit and the
   // separate authority projection remains bound to the original durable node.
@@ -159,7 +181,7 @@ function serializeNodeForWorkUnit(record, {
   if (projectionContentBytes <= 0) {
     throw typed('result_too_large', 'PGS source record cannot fit one work-unit context');
   }
-  const projected = projectQueryEvidenceNode(record, {
+  const projected = projectQueryEvidenceNode(providerRecord, {
     maxContentBytes: projectionContentBytes,
     maxRecordBytes: projectionRecordBytes,
   });
@@ -169,8 +191,8 @@ function serializeNodeForWorkUnit(record, {
   }, availableBytes, 'node');
 }
 
-function projectPinnedProviderAuthority(node) {
-  const profile = projectMemoryAuthority(node, { limit: 2 });
+function projectPinnedProviderAuthority(node, options = {}) {
+  const profile = projectMemoryAuthority(node, { limit: 2, ...options });
   const sourceChain = profile.sourceChain.slice(0, 2).map((link) => {
     const kind = typeof link?.kind === 'string' ? link.kind : 'source';
     const ref = typeof link?.ref === 'string' ? link.ref : '';
@@ -224,8 +246,8 @@ function parsePinnedProviderAuthority(value) {
   return profile;
 }
 
-function serializePinnedProviderAuthority(node) {
-  const profile = projectPinnedProviderAuthority(node);
+function serializePinnedProviderAuthority(node, options = {}) {
+  const profile = projectPinnedProviderAuthority(node, options);
   parsePinnedProviderAuthority(profile);
   return JSON.stringify(profile);
 }
@@ -241,16 +263,28 @@ function authorityIntegrityPayload({
   authorityJson,
   sourceRevision,
   descriptorDigest,
+  authorityProjectionVersion = AUTHORITY_PROJECTION_VERSION,
+  partitionId,
 }) {
-  return canonicalJson({
+  const payload = {
     schema: AUTHORITY_INTEGRITY_SCHEMA,
-    authorityProjectionVersion: AUTHORITY_PROJECTION_VERSION,
+    authorityProjectionVersion,
     sourceRevision,
     descriptorDigest,
     nodeId: id,
     sanitizedNodeDigest: crypto.createHash('sha256').update(json).digest('hex'),
     authority: parsePinnedProviderAuthority(authorityJson),
-  });
+  };
+  if (authorityProjectionVersion === AUTHORITY_PROJECTION_VERSION) {
+    if (typeof partitionId !== 'string' || !partitionId
+        || Buffer.byteLength(partitionId, 'utf8') > 256) {
+      throw typed('pgs_projection_invalid', 'PGS node partition identity is invalid');
+    }
+    payload.partitionId = partitionId;
+  } else if (authorityProjectionVersion !== LEGACY_AUTHORITY_PROJECTION_VERSION) {
+    throw typed('pgs_projection_invalid', 'PGS authority projection version is invalid');
+  }
+  return canonicalJson(payload);
 }
 
 function signPinnedProviderAuthority(input) {
@@ -268,17 +302,24 @@ function readPinnedProviderAuthority({
   authorityMac,
   sourceRevision,
   descriptorDigest,
+  authorityProjectionVersion = AUTHORITY_PROJECTION_VERSION,
+  partitionId,
 }) {
   const key = authorityIntegrityKey();
   if (!key || !authorityMac) {
     try {
-      return projectPinnedProviderAuthority(JSON.parse(json));
+      // A projection persisted without a MAC cannot later inherit authority
+      // merely because an ambient key appeared. MAC-backed rows may regain
+      // their stored authority only through the verified path below.
+      return projectPinnedProviderAuthority(JSON.parse(json), { authorityKey: null });
     } catch (cause) {
       throw typed('pgs_projection_invalid', 'PGS node authority is invalid', false, { cause });
     }
   }
   const expected = signPinnedProviderAuthority({
     id, json, authorityJson, sourceRevision, descriptorDigest,
+    authorityProjectionVersion,
+    partitionId,
   });
   let suppliedBytes;
   let expectedBytes;
@@ -723,6 +764,57 @@ function metadataObject(db) {
   return result;
 }
 
+function readAuthorityMigrationCursor(db, version) {
+  const row = db.prepare(`
+    SELECT
+      substr(CAST(value AS BLOB), 1, ?) AS value_prefix,
+      length(CAST(value AS BLOB)) AS value_bytes
+    FROM metadata WHERE key = ?
+  `).get(MAX_AUTHORITY_MIGRATION_BYTES + 1, AUTHORITY_MIGRATION_KEY);
+  if (!row) return null;
+  if (version !== LEGACY_AUTHORITY_PROJECTION_VERSION
+      || !Number.isSafeInteger(row.value_bytes) || row.value_bytes < 1
+      || row.value_bytes > MAX_AUTHORITY_MIGRATION_BYTES
+      || !Buffer.isBuffer(row.value_prefix)) {
+    throw typed('pgs_projection_invalid', 'PGS authority migration cursor is invalid', false, {
+      rebuildAllowed: false,
+    });
+  }
+  let value;
+  try { value = JSON.parse(row.value_prefix.toString('utf8')); } catch {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.keys(value).sort().join('\0')
+        !== 'fromVersion\0integrityMode\0lastOrdinal\0toVersion'
+      || value.fromVersion !== LEGACY_AUTHORITY_PROJECTION_VERSION
+      || value.toVersion !== AUTHORITY_PROJECTION_VERSION
+      || !['verified', 'narrative'].includes(value.integrityMode)
+      || !Number.isSafeInteger(value.lastOrdinal) || value.lastOrdinal < -1) {
+    throw typed('pgs_projection_invalid', 'PGS authority migration cursor is invalid', false, {
+      rebuildAllowed: false,
+    });
+  }
+  return value;
+}
+
+function readDeclaredNodeCount(db) {
+  const row = db.prepare(`
+    SELECT
+      substr(CAST(value AS BLOB), 1, ?) AS value_prefix,
+      length(CAST(value AS BLOB)) AS value_bytes
+    FROM metadata WHERE key = 'nodeCount'
+  `).get(MAX_DECLARED_COUNT_BYTES + 1);
+  if (!row || !Number.isSafeInteger(row.value_bytes) || row.value_bytes < 1
+      || row.value_bytes > MAX_DECLARED_COUNT_BYTES || !Buffer.isBuffer(row.value_prefix)) {
+    throw typed('pgs_projection_invalid', 'PGS declared node count is invalid');
+  }
+  let value;
+  try { value = JSON.parse(row.value_prefix.toString('utf8')); } catch {}
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw typed('pgs_projection_invalid', 'PGS declared node count is invalid');
+  }
+  return value;
+}
+
 function canonicalQueryBinding(query) {
   if (typeof query !== 'string' || !query.trim()) {
     throw typed('invalid_request', 'PGS query binding is required');
@@ -784,6 +876,8 @@ async function migratePinnedAuthorityProjection(db, {
   limits,
   sourceRevision,
   descriptorDigest,
+  expectedNodeCount,
+  afterPage,
 }) {
   let version = null;
   const versionRow = db.prepare(
@@ -791,7 +885,8 @@ async function migratePinnedAuthorityProjection(db, {
   ).get();
   if (versionRow) {
     try { version = JSON.parse(versionRow.value); } catch {}
-    if (version !== AUTHORITY_PROJECTION_VERSION) {
+    if (version !== AUTHORITY_PROJECTION_VERSION
+        && version !== LEGACY_AUTHORITY_PROJECTION_VERSION) {
       throw typed(
         'pgs_projection_invalid',
         `PGS authority projection v${String(version ?? 'unknown')} is unsupported`,
@@ -801,7 +896,13 @@ async function migratePinnedAuthorityProjection(db, {
   const columns = db.pragma('table_info(nodes)');
   const hasAuthorityColumn = columns.some(column => column.name === 'authority_json');
   const hasAuthorityMacColumn = columns.some(column => column.name === 'authority_mac');
+  let migrationCursor = readAuthorityMigrationCursor(db, version);
   if (version === AUTHORITY_PROJECTION_VERSION) {
+    if (migrationCursor !== null) {
+      throw typed('pgs_projection_invalid', 'PGS authority migration cursor is stale', false, {
+        rebuildAllowed: false,
+      });
+    }
     if (!hasAuthorityColumn || !hasAuthorityMacColumn) {
       throw typed('pgs_projection_invalid', 'PGS authority projection columns are unavailable');
     }
@@ -813,54 +914,190 @@ async function migratePinnedAuthorityProjection(db, {
     }
     return;
   }
+  if (version === LEGACY_AUTHORITY_PROJECTION_VERSION
+      && (!hasAuthorityColumn || !hasAuthorityMacColumn)) {
+    throw typed('pgs_projection_invalid', 'PGS legacy authority projection is incomplete');
+  }
   try {
+    let migrationStarted = false;
     db.transaction(() => {
       if (!hasAuthorityColumn) db.exec('ALTER TABLE nodes ADD COLUMN authority_json TEXT');
       if (!hasAuthorityMacColumn) db.exec('ALTER TABLE nodes ADD COLUMN authority_mac TEXT');
+      if (version === LEGACY_AUTHORITY_PROJECTION_VERSION && migrationCursor === null) {
+        migrationCursor = {
+          fromVersion: LEGACY_AUTHORITY_PROJECTION_VERSION,
+          toVersion: AUTHORITY_PROJECTION_VERSION,
+          lastOrdinal: -1,
+          integrityMode: authorityIntegrityKey() ? 'verified' : 'narrative',
+        };
+        db.prepare('INSERT INTO metadata(key, value) VALUES (?, ?)').run(
+          AUTHORITY_MIGRATION_KEY,
+          JSON.stringify(migrationCursor),
+        );
+        migrationStarted = true;
+      }
     })();
-    await checkpoint();
+    if (!hasAuthorityColumn || !hasAuthorityMacColumn || migrationStarted) await checkpoint();
+    if (migrationCursor?.integrityMode === 'verified' && !authorityIntegrityKey()) {
+      migrationCursor = { ...migrationCursor, lastOrdinal: -1, integrityMode: 'narrative' };
+      db.transaction(() => {
+        db.prepare('UPDATE metadata SET value = ? WHERE key = ?').run(
+          JSON.stringify(migrationCursor),
+          AUTHORITY_MIGRATION_KEY,
+        );
+      })();
+      await checkpoint();
+    }
+    const integrityMode = migrationCursor?.integrityMode
+      ?? (authorityIntegrityKey() ? 'verified' : 'narrative');
     const update = db.prepare(
-      'UPDATE nodes SET authority_json = ?, authority_mac = ? WHERE id = ?',
+      'UPDATE nodes SET json = ?, authority_json = ?, authority_mac = ? WHERE id = ?',
     );
     const scanLimit = Math.max(1, Math.min(
       limits.maxTransactionRecords,
       Math.floor(limits.maxTransactionBytes / limits.maxRecordBytes),
     ));
-    let lastOrdinal = -1;
+    if (migrationCursor?.lastOrdinal >= 0) {
+      let validatedOrdinal = -1;
+      let validatedCount = 0;
+      while (validatedOrdinal < migrationCursor.lastOrdinal) {
+        throwIfAborted(signal);
+        const prefix = db.prepare(`
+          SELECT id, partition_id, ordinal, json, authority_json, authority_mac
+          FROM nodes
+          WHERE ordinal > ? AND ordinal <= ?
+          ORDER BY ordinal LIMIT ?
+        `).all(validatedOrdinal, migrationCursor.lastOrdinal, scanLimit);
+        if (!prefix.length) break;
+        for (const row of prefix) {
+          const expectedOrdinal = validatedCount;
+          if (row.ordinal !== expectedOrdinal) {
+            throw typed('pgs_projection_invalid', 'PGS migration prefix is incomplete');
+          }
+          if (integrityMode === 'verified') {
+            if (!row.authority_mac) {
+              throw typed('pgs_projection_invalid', 'PGS migration prefix MAC is unavailable');
+            }
+            readPinnedProviderAuthority({
+              id: row.id,
+              json: row.json,
+              authorityJson: row.authority_json,
+              authorityMac: row.authority_mac,
+              sourceRevision,
+              descriptorDigest,
+              partitionId: row.partition_id,
+            });
+          } else {
+            const authority = parsePinnedProviderAuthority(row.authority_json);
+            if (row.authority_mac !== null
+                || authority.authorityClass !== 'narrative'
+                || authority.operationalAuthority !== false) {
+              throw typed('pgs_projection_invalid', 'PGS narrative migration prefix is invalid');
+            }
+          }
+          validatedOrdinal = row.ordinal;
+          validatedCount += 1;
+        }
+        await checkpoint();
+      }
+      if (validatedOrdinal !== migrationCursor.lastOrdinal
+          || validatedCount !== migrationCursor.lastOrdinal + 1) {
+        throw typed('pgs_projection_invalid', 'PGS authority migration cursor is ahead');
+      }
+    }
+    let lastOrdinal = migrationCursor?.lastOrdinal ?? -1;
     while (true) {
       throwIfAborted(signal);
       const rows = db.prepare(
-        'SELECT id, ordinal, json FROM nodes WHERE ordinal > ? ORDER BY ordinal LIMIT ?',
+        `SELECT id, partition_id, ordinal, json, authority_json, authority_mac
+          FROM nodes WHERE ordinal > ? ORDER BY ordinal LIMIT ?`,
       ).all(lastOrdinal, scanLimit);
       if (!rows.length) break;
       db.transaction((page) => {
+        let expectedOrdinal = lastOrdinal + 1;
         for (const row of page) {
+          if (row.ordinal !== expectedOrdinal) {
+            throw typed('pgs_projection_invalid', 'PGS migration suffix is incomplete');
+          }
+          expectedOrdinal += 1;
+          if (version === LEGACY_AUTHORITY_PROJECTION_VERSION
+              && integrityMode === 'verified') {
+            readPinnedProviderAuthority({
+              id: row.id,
+              json: row.json,
+              authorityJson: row.authority_json,
+              authorityMac: row.authority_mac,
+              sourceRevision,
+              descriptorDigest,
+              authorityProjectionVersion: LEGACY_AUTHORITY_PROJECTION_VERSION,
+              partitionId: row.partition_id,
+            });
+          }
           const node = JSON.parse(row.json);
           // A v3 projection predating this column contains only provider-sanitized
           // records. Re-projecting those records deliberately fails closed to
           // narrative when sanitization invalidated an original attestation.
-          const authorityJson = serializePinnedProviderAuthority(node);
-          const authorityMac = signPinnedProviderAuthority({
-            id: row.id,
-            json: row.json,
-            authorityJson,
-            sourceRevision,
-            descriptorDigest,
+          const authorityJson = serializePinnedProviderAuthority(
+            node,
+            integrityMode === 'narrative' ? { authorityKey: null } : {},
+          );
+          const serialized = serializeNodeForWorkUnit(node, {
+            maxRecordBytes: limits.maxRecordBytes,
+            maxContextBytes: limits.maxContextCharsPerWorkUnit,
+            authorityBytes: Buffer.byteLength(authorityJson, 'utf8'),
           });
-          update.run(authorityJson, authorityMac, row.id);
+          const authorityMac = integrityMode === 'narrative'
+            ? null
+            : signPinnedProviderAuthority({
+              id: row.id,
+              json: serialized.json,
+              authorityJson,
+              sourceRevision,
+              descriptorDigest,
+              partitionId: row.partition_id,
+            });
+          update.run(serialized.json, authorityJson, authorityMac, row.id);
+        }
+        if (version === LEGACY_AUTHORITY_PROJECTION_VERSION) {
+          db.prepare('UPDATE metadata SET value = ? WHERE key = ?').run(
+            JSON.stringify({
+              fromVersion: LEGACY_AUTHORITY_PROJECTION_VERSION,
+              toVersion: AUTHORITY_PROJECTION_VERSION,
+              lastOrdinal: page.at(-1).ordinal,
+              integrityMode,
+            }),
+            AUTHORITY_MIGRATION_KEY,
+          );
         }
       })(rows);
       lastOrdinal = rows.at(-1).ordinal;
+      await afterPage?.({ lastOrdinal });
       await checkpoint();
     }
-    db.prepare(
-      'INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)',
-    ).run('authorityProjectionVersion', JSON.stringify(AUTHORITY_PROJECTION_VERSION));
+    throwIfAborted(signal);
+    const declaredNodeCount = readDeclaredNodeCount(db);
+    const actualNodeCount = db.prepare('SELECT COUNT(*) AS count FROM nodes').get().count;
+    const expectedFinalOrdinal = expectedNodeCount === 0 ? -1 : expectedNodeCount - 1;
+    if (declaredNodeCount !== expectedNodeCount
+        || !Number.isSafeInteger(actualNodeCount) || actualNodeCount !== expectedNodeCount
+        || lastOrdinal !== expectedFinalOrdinal) {
+      throw typed('pgs_projection_invalid', 'PGS migrated node population is incomplete');
+    }
+    db.transaction(() => {
+      db.prepare(
+        'INSERT OR REPLACE INTO metadata(key, value) VALUES (?, ?)',
+      ).run('authorityProjectionVersion', JSON.stringify(AUTHORITY_PROJECTION_VERSION));
+      db.prepare('DELETE FROM metadata WHERE key = ?').run(AUTHORITY_MIGRATION_KEY);
+    })();
     await checkpoint();
   } catch (cause) {
-    if (cause?.code === 'pgs_projection_invalid') throw cause;
+    if (cause?.code === 'pgs_projection_invalid') {
+      cause.rebuildAllowed = false;
+      throw cause;
+    }
     throw typed('pgs_projection_invalid', 'PGS authority projection migration failed', false, {
       cause,
+      rebuildAllowed: false,
     });
   }
 }
@@ -879,6 +1116,7 @@ async function openPinnedPGSStore({
   limits: limitOverrides = {},
   statfsImpl = fsp.statfs,
   clock = { now: () => Date.now() },
+  _testHooks = {},
 } = {}) {
   if (!sourcePin || typeof sourcePin.iterateNodes !== 'function'
       || typeof sourcePin.iterateEdges !== 'function'
@@ -889,6 +1127,10 @@ async function openPinnedPGSStore({
   if (!Number.isSafeInteger(sourceRevision) || sourceRevision < 0) {
     throw typed('source_invalid', 'PGS source revision is invalid');
   }
+  const expectedNodeCount = sourcePin.descriptor?.summary?.nodeCount;
+  if (!Number.isSafeInteger(expectedNodeCount) || expectedNodeCount < 0) {
+    throw typed('source_invalid', 'PGS source descriptor node count is invalid');
+  }
   const sweepPair = exactPair(pgsSweep, 'pgsSweep');
   if (!Number.isSafeInteger(queryNormalizationVersion) || queryNormalizationVersion <= 0
       || !Number.isSafeInteger(sweepPromptContractVersion) || sweepPromptContractVersion <= 0
@@ -897,6 +1139,12 @@ async function openPinnedPGSStore({
     throw typed('invalid_request', 'PGS binding contract version is invalid');
   }
   const limits = lowerLimits(limitOverrides);
+  if (!_testHooks || typeof _testHooks !== 'object' || Array.isArray(_testHooks)
+      || Object.keys(_testHooks).some(key => key !== 'afterAuthorityMigrationPage')
+      || (_testHooks.afterAuthorityMigrationPage !== undefined
+        && typeof _testHooks.afterAuthorityMigrationPage !== 'function')) {
+    throw typed('invalid_request', 'PGS test hooks are invalid');
+  }
   throwIfAborted(signal);
   const descriptorDigest = sourceDescriptorDigest(sourcePin.descriptor);
   const component = `${descriptorDigest}-r${sourceRevision}`;
@@ -1165,6 +1413,8 @@ async function openPinnedPGSStore({
             limits,
             sourceRevision,
             descriptorDigest,
+            expectedNodeCount,
+            afterPage: _testHooks.afterAuthorityMigrationPage,
           });
           bindingMatches = sameBinding(metadataObject(db), expectedBinding);
           if (!bindingMatches) {
@@ -1185,7 +1435,7 @@ async function openPinnedPGSStore({
             );
           }
           if (['invalid_request', 'pgs_schema_unsupported', 'pgs_binding_mismatch']
-            .includes(error?.code)) throw error;
+            .includes(error?.code) || error?.rebuildAllowed === false) throw error;
         }
       }
       if (bindingMatches) {
@@ -1273,9 +1523,10 @@ async function openPinnedPGSStore({
           const row = kind === 'node'
             ? (() => {
               const id = recordId(record, kind);
+              const partitionId = partitionIdForNode(serialized.value, id);
               return {
                 id,
-                partitionId: partitionIdForNode(record, id),
+                partitionId,
                 ordinal,
                 json: serialized.json,
                 authorityJson,
@@ -1285,6 +1536,7 @@ async function openPinnedPGSStore({
                   authorityJson,
                   sourceRevision,
                   descriptorDigest,
+                  partitionId,
                 }),
               };
             })()
@@ -1358,6 +1610,7 @@ async function openPinnedPGSStore({
               authorityMac: node.authority_mac,
               sourceRevision,
               descriptorDigest,
+              partitionId: partition.partition_id,
             });
             const providerRecordBytes = node.bytes + node.authority_bytes;
             if (!Number.isSafeInteger(node.bytes) || node.bytes < 0
@@ -1747,7 +2000,7 @@ async function openPinnedPGSStore({
       const accumulator = createRetrievalAuthorityAccumulator();
       try {
         const rows = db.prepare(`
-          SELECT n.id, n.json, n.authority_json, n.authority_mac
+          SELECT n.id, n.partition_id, n.json, n.authority_json, n.authority_mac
           FROM attempt_scope_work_units scoped
           JOIN work_units work ON work.work_unit_id = scoped.work_unit_id
           JOIN nodes n ON n.partition_id = work.partition_id
@@ -1764,6 +2017,7 @@ async function openPinnedPGSStore({
             authorityMac: row.authority_mac,
             sourceRevision,
             descriptorDigest,
+            partitionId: row.partition_id,
           }));
         }
       } catch (cause) {
@@ -1858,7 +2112,7 @@ async function openPinnedPGSStore({
       const unit = db.prepare('SELECT * FROM work_units WHERE work_unit_id = ?').get(workUnitId);
       if (!unit) throw typed('target_not_found', 'PGS work unit does not exist');
       const rows = db.prepare(`
-        SELECT id, json, authority_json, authority_mac FROM nodes
+        SELECT id, partition_id, json, authority_json, authority_mac FROM nodes
         WHERE partition_id = ? AND ordinal BETWEEN ? AND ? ORDER BY ordinal
       `).all(unit.partition_id, unit.first_ordinal, unit.last_ordinal);
       const nodes = rows.map(row => JSON.parse(row.json));
@@ -1869,6 +2123,7 @@ async function openPinnedPGSStore({
         authorityMac: row.authority_mac,
         sourceRevision,
         descriptorDigest,
+        partitionId: row.partition_id,
       }));
       if (nodes.length > limits.maxNodesPerWorkUnit) {
         throw typed('result_too_large', 'PGS work unit exceeds the node limit');

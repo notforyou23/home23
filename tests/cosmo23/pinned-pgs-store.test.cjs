@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fsSync = require('node:fs');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -22,10 +23,17 @@ const {
 } = require('../../shared/memory-source/contracts.cjs');
 const {
   attestMemoryAuthority,
+  verifyMemoryAuthorityAttestation,
 } = require('../../shared/memory-authority-attestation.cjs');
 const {
   openPinnedPGSStore,
 } = require('../../cosmo23/pgs-engine/src/pinned-store');
+const {
+  authenticatedProviderNode,
+} = require('../../cosmo23/lib/pinned-query-projection');
+const {
+  partitionIdForNode,
+} = require('../../shared/memory-source/pgs-partitions.cjs');
 
 const AUTHORITY_KEY = '7'.repeat(64);
 const priorAuthorityKey = process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
@@ -116,6 +124,107 @@ const limits = {
 };
 
 const query = 'What does the pinned evidence show?';
+
+function signedAliasNode({ id, oversized = false } = {}) {
+  const node = attestMemoryAuthority({
+    id: id ?? (oversized ? 'signed-oversized' : 'signed-fitting'),
+    clusterId: 'current-ops',
+    title: 'signed title',
+    concept: 'signed concept',
+    summary: 'signed summary',
+    content: 'signed content',
+    statement: 'signed statement',
+    keyPhrase: 'signed key phrase',
+    metadata: { status: 'current' },
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'verified_current_state',
+      operationalAuthority: true,
+      evidenceRefs: ['verifier:signed-alias-node'],
+    },
+  }, AUTHORITY_KEY);
+  node.text = oversized
+    ? 'UNSIGNED_POST_ATTESTATION_TEXT '.repeat(5_000)
+    : 'UNSIGNED_POST_ATTESTATION_TEXT';
+  node.salience = 1;
+  node.timestamp = '2099-01-01T00:00:00.000Z';
+  node.metadata.injectedAssertion = 'UNSIGNED_POST_ATTESTATION_METADATA';
+  assert.equal(verifyMemoryAuthorityAttestation(node, AUTHORITY_KEY), true);
+  return node;
+}
+
+function assertAuthorityBoundProviderNode(work, { truncated }) {
+  const [node] = work.nodes;
+  const [authority] = work.nodeAuthorities;
+  assert.equal(authority.authorityClass, 'verified_current_state');
+  assert.equal(authority.operationalAuthority, true);
+  assert.equal(node.title, 'signed title');
+  assert.equal(node.concept, 'signed concept');
+  assert.equal(node.summary, 'signed summary');
+  assert.equal(node.content, 'signed content');
+  assert.equal(node.statement, 'signed statement');
+  assert.equal(node.keyPhrase, 'signed key phrase');
+  assert.equal(Object.hasOwn(node, 'text'), false);
+  assert.equal(Object.hasOwn(node, 'salience'), false);
+  assert.equal(Object.hasOwn(node, 'timestamp'), false);
+  assert.equal(Object.hasOwn(node.metadata, 'injectedAssertion'), false);
+  assert.equal(node.contentTruncated === true, truncated);
+}
+
+function projectionAuthorityMac({
+  authority,
+  authorityProjectionVersion,
+  descriptor: sourceDescriptor,
+  id,
+  json,
+}) {
+  const payload = canonicalJson({
+    schema: 'home23.pgs-authority-projection-integrity.v1',
+    authorityProjectionVersion,
+    sourceRevision: 3,
+    descriptorDigest: sourceDescriptorDigest(sourceDescriptor),
+    nodeId: id,
+    sanitizedNodeDigest: crypto.createHash('sha256').update(json).digest('hex'),
+    authority,
+  });
+  return crypto.createHmac('sha256', AUTHORITY_KEY)
+    .update(payload)
+    .digest('base64url');
+}
+
+function forceLegacyV2Projection(databasePath, nodes, sourceDescriptor) {
+  const database = new Database(databasePath);
+  try {
+    const version = JSON.parse(database.prepare(
+      "SELECT value FROM metadata WHERE key = 'authorityProjectionVersion'",
+    ).get().value);
+    if (version === 2) return;
+    database.transaction(() => {
+      for (const node of nodes) {
+        const row = database.prepare(
+          'SELECT id, authority_json FROM nodes WHERE id = ?',
+        ).get(node.id);
+        const json = JSON.stringify(node);
+        const authority = JSON.parse(row.authority_json);
+        const authorityMac = projectionAuthorityMac({
+          authority,
+          authorityProjectionVersion: 2,
+          descriptor: sourceDescriptor,
+          id: node.id,
+          json,
+        });
+        database.prepare(
+          'UPDATE nodes SET json = ?, authority_mac = ? WHERE id = ?',
+        ).run(json, authorityMac, node.id);
+      }
+      database.prepare(
+        "UPDATE metadata SET value = ? WHERE key = 'authorityProjectionVersion'",
+      ).run(JSON.stringify(2));
+    })();
+  } finally {
+    database.close();
+  }
+}
 
 test('streams a revision-bound projection and creates deterministic bounded work units', async t => {
   const { scratchDir, quota } = await fixture(t);
@@ -232,6 +341,751 @@ test('summarizes authority, domain, and source-chain evidence from the exact PGS
   assert.equal(providerAuthorities[currentIndex].operationalAuthority, true);
   assert.equal(JSON.stringify(providerNodes[currentIndex]).includes('/Users/'), false);
   assert.equal(JSON.stringify(providerAuthorities[currentIndex]).includes('/Volumes/'), false);
+});
+
+test('authenticated PGS nodes expose only attested provider fields when fitting or bounded', async t => {
+  for (const oversized of [false, true]) {
+    await t.test(oversized ? 'oversized' : 'fitting', async t => {
+      const { scratchDir, quota } = await fixture(t);
+      const signed = signedAliasNode({ oversized });
+      const store = await openPinnedPGSStore({
+        sourcePin: syntheticSource({
+          nodeCount: 1,
+          edgeCount: 0,
+          nodeFactory: () => signed,
+        }),
+        scratchDir,
+        scratchQuota: quota,
+        pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+        query,
+        signal: new AbortController().signal,
+        limits,
+      });
+      t.after(() => store.close());
+      const [workUnitId] = store.snapshotPendingWorkUnits({
+        attemptId: `authenticated-${oversized ? 'oversized' : 'fitting'}`,
+        limit: 1,
+      });
+
+      assertAuthorityBoundProviderNode(store.loadWorkUnit(workUnitId), {
+        truncated: oversized,
+      });
+    });
+  }
+});
+
+test('authenticated PGS partition assignment ignores unsigned post-attestation aliases', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const signed = signedAliasNode({ id: 'signed-partition' });
+  signed.clusterId = 'unsigned-cluster';
+  signed.cluster = 'unsigned-cluster-alias';
+  signed.partitionId = 'unsigned-partition-alias';
+  assert.equal(verifyMemoryAuthorityAttestation(signed, AUTHORITY_KEY), true);
+  const store = await openPinnedPGSStore({
+    sourcePin: syntheticSource({
+      nodeCount: 1,
+      edgeCount: 0,
+      nodeFactory: () => signed,
+    }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits,
+  });
+  t.after(() => store.close());
+  const [workUnitId] = store.snapshotPendingWorkUnits({
+    attemptId: 'authenticated-partition',
+    limit: 1,
+  });
+  const work = store.loadWorkUnit(workUnitId);
+
+  assert.equal(work.partitionId, partitionIdForNode({ id: signed.id }, signed.id));
+  assert.notEqual(work.partitionId, 'c-unsigned-cluster');
+  assert.equal(work.nodeAuthorities[0].authorityClass, 'verified_current_state');
+});
+
+test('post-attestation mutation of bound content demotes authority but retains narrative projection', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const changed = signedAliasNode({ id: 'signed-content-changed' });
+  changed.content = 'post-attestation content is narrative only';
+  assert.equal(verifyMemoryAuthorityAttestation(changed, AUTHORITY_KEY), false);
+  const store = await openPinnedPGSStore({
+    sourcePin: syntheticSource({
+      nodeCount: 1,
+      edgeCount: 0,
+      nodeFactory: () => changed,
+    }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits,
+  });
+  t.after(() => store.close());
+  const [workUnitId] = store.snapshotPendingWorkUnits({
+    attemptId: 'changed-bound-content',
+    limit: 1,
+  });
+  const work = store.loadWorkUnit(workUnitId);
+
+  assert.equal(work.nodeAuthorities[0].authorityClass, 'narrative');
+  assert.equal(work.nodeAuthorities[0].operationalAuthority, false);
+  assert.equal(work.nodes[0].content, 'post-attestation content is narrative only');
+  assert.equal(work.nodes[0].text, 'UNSIGNED_POST_ATTESTATION_TEXT');
+});
+
+test('retained v2 PGS projection canonicalizes authenticated nodes without losing sweeps', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const signed = signedAliasNode();
+  const sourcePin = syntheticSource({
+    nodeCount: 1,
+    edgeCount: 0,
+    nodeFactory: () => signed,
+  });
+  const options = {
+    sourcePin,
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits,
+  };
+  const first = await openPinnedPGSStore(options);
+  const { databasePath } = first;
+  first.planScope({ attemptId: 'retained-v2-before', coverageLevel: 'full', coverageFraction: 1 });
+  const [workUnitId] = first.snapshotPendingWorkUnits({
+    attemptId: 'retained-v2-before',
+    limit: 1,
+  });
+  first.beginWorkUnitAttempt(workUnitId, {
+    attemptId: 'retained-v2-before', provider: 'minimax', model: 'MiniMax-M3',
+  });
+  await first.commitSuccessfulSweeps([{
+    workUnitId,
+    output: 'retained completed sweep',
+  }]);
+  first.close();
+  forceLegacyV2Projection(databasePath, [signed], sourcePin.descriptor);
+
+  const reopened = await openPinnedPGSStore(options);
+  t.after(() => reopened.close());
+
+  assert.equal(reopened.reused, true);
+  assertAuthorityBoundProviderNode(reopened.loadWorkUnit(workUnitId), { truncated: false });
+  assert.equal(
+    reopened.listSuccessfulSweeps().some(row => (
+      row.workUnitId === workUnitId && row.output === 'retained completed sweep'
+    )),
+    true,
+  );
+});
+
+test('current v3 PGS projection reopens without rewriting authenticated rows', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const signed = signedAliasNode();
+  const options = {
+    sourcePin: syntheticSource({
+      nodeCount: 1,
+      edgeCount: 0,
+      nodeFactory: () => signed,
+    }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits,
+  };
+  const first = await openPinnedPGSStore(options);
+  const { databasePath } = first;
+  first.close();
+  const beforeDatabase = new Database(databasePath, { readonly: true });
+  const before = beforeDatabase.prepare(
+    'SELECT json, authority_json, authority_mac FROM nodes WHERE id = ?',
+  ).get(signed.id);
+  beforeDatabase.close();
+
+  const reopened = await openPinnedPGSStore(options);
+  assert.equal(reopened.reused, true);
+  reopened.close();
+
+  const afterDatabase = new Database(databasePath, { readonly: true });
+  const after = afterDatabase.prepare(
+    'SELECT json, authority_json, authority_mac FROM nodes WHERE id = ?',
+  ).get(signed.id);
+  const version = JSON.parse(afterDatabase.prepare(
+    "SELECT value FROM metadata WHERE key = 'authorityProjectionVersion'",
+  ).get().value);
+  const migrationRows = afterDatabase.prepare(
+    "SELECT COUNT(*) AS count FROM metadata WHERE key = 'authorityProjectionMigration'",
+  ).get().count;
+  afterDatabase.close();
+
+  assert.deepEqual(after, before);
+  assert.equal(version, 3);
+  assert.equal(migrationRows, 0);
+});
+
+test('v2 authority migration resumes after a settled page without losing retained sweeps', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const nodes = Array.from({ length: 4 }, (_, index) => signedAliasNode({
+    id: `signed-resume-${index}`,
+  }));
+  const sourcePin = syntheticSource({
+    nodeCount: nodes.length,
+    edgeCount: 0,
+    nodeFactory: index => nodes[index],
+  });
+  const migrationLimits = { ...limits, maxTransactionRecords: 1 };
+  const baseOptions = {
+    sourcePin,
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    limits: migrationLimits,
+  };
+  const first = await openPinnedPGSStore({
+    ...baseOptions,
+    signal: new AbortController().signal,
+  });
+  const { databasePath } = first;
+  first.planScope({ attemptId: 'resume-before', coverageLevel: 'full', coverageFraction: 1 });
+  const workUnitIds = first.snapshotPendingWorkUnits({
+    attemptId: 'resume-before',
+    limit: nodes.length,
+  });
+  const [completedWorkUnit] = workUnitIds;
+  first.beginWorkUnitAttempt(completedWorkUnit, {
+    attemptId: 'resume-before', provider: 'minimax', model: 'MiniMax-M3',
+  });
+  await first.commitSuccessfulSweeps([{
+    workUnitId: completedWorkUnit,
+    output: 'sweep retained through migration cancellation',
+  }]);
+  first.close();
+  forceLegacyV2Projection(databasePath, nodes, sourcePin.descriptor);
+
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('cancel after one settled migration page'), {
+    code: 'cancelled',
+  });
+  let unexpectedStore = null;
+  try {
+    unexpectedStore = await openPinnedPGSStore({
+      ...baseOptions,
+      signal: controller.signal,
+      _testHooks: {
+        afterAuthorityMigrationPage({ lastOrdinal }) {
+          if (lastOrdinal === 0) controller.abort(reason);
+        },
+      },
+    });
+    assert.fail('v2 authority migration did not honor controlled cancellation');
+  } catch (error) {
+    assert.equal(error, reason);
+  } finally {
+    unexpectedStore?.close();
+  }
+
+  const interruptedDatabase = new Database(databasePath, { readonly: true });
+  assert.equal(JSON.parse(interruptedDatabase.prepare(
+    "SELECT value FROM metadata WHERE key = 'authorityProjectionVersion'",
+  ).get().value), 2);
+  assert.deepEqual(JSON.parse(interruptedDatabase.prepare(
+    "SELECT value FROM metadata WHERE key = 'authorityProjectionMigration'",
+  ).get().value), {
+    fromVersion: 2, toVersion: 3, lastOrdinal: 0, integrityMode: 'verified',
+  });
+  interruptedDatabase.close();
+
+  const recovered = await openPinnedPGSStore({
+    ...baseOptions,
+    signal: new AbortController().signal,
+  });
+  t.after(() => recovered.close());
+  assert.equal(recovered.reused, true);
+  for (const workUnitId of workUnitIds) {
+    assertAuthorityBoundProviderNode(recovered.loadWorkUnit(workUnitId), { truncated: false });
+  }
+  assert.equal(
+    recovered.listSuccessfulSweeps().some(row => (
+      row.workUnitId === completedWorkUnit
+      && row.output === 'sweep retained through migration cancellation'
+    )),
+    true,
+  );
+});
+
+test('v2 migration rejects a deleted migrated row below its verified cursor', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const nodes = Array.from({ length: 4 }, (_, index) => signedAliasNode({
+    id: `signed-deleted-prefix-${index}`,
+  }));
+  const sourcePin = syntheticSource({
+    nodeCount: nodes.length,
+    edgeCount: 0,
+    nodeFactory: index => nodes[index],
+  });
+  const baseOptions = {
+    sourcePin,
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    limits: { ...limits, maxTransactionRecords: 1 },
+  };
+  const first = await openPinnedPGSStore({
+    ...baseOptions,
+    signal: new AbortController().signal,
+  });
+  const { databasePath } = first;
+  first.close();
+  forceLegacyV2Projection(databasePath, nodes, sourcePin.descriptor);
+
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('cancel after verified cursor reaches two'), {
+    code: 'cancelled',
+  });
+  await assert.rejects(openPinnedPGSStore({
+    ...baseOptions,
+    signal: controller.signal,
+    _testHooks: {
+      afterAuthorityMigrationPage({ lastOrdinal }) {
+        if (lastOrdinal === 2) controller.abort(reason);
+      },
+    },
+  }), error => error === reason);
+
+  const damaged = new Database(databasePath);
+  damaged.prepare('DELETE FROM nodes WHERE ordinal = ?').run(1);
+  damaged.close();
+
+  await assert.rejects(openPinnedPGSStore({
+    ...baseOptions,
+    signal: new AbortController().signal,
+  }), { code: 'pgs_projection_invalid' });
+
+  const readback = new Database(databasePath, { readonly: true });
+  assert.equal(JSON.parse(readback.prepare(
+    "SELECT value FROM metadata WHERE key = 'authorityProjectionVersion'",
+  ).get().value), 2);
+  assert.deepEqual(JSON.parse(readback.prepare(
+    "SELECT value FROM metadata WHERE key = 'authorityProjectionMigration'",
+  ).get().value), {
+    fromVersion: 2, toVersion: 3, lastOrdinal: 2, integrityMode: 'verified',
+  });
+  readback.close();
+});
+
+test('v2 migration rejects a deleted unprocessed row after its cursor without promotion', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const nodes = Array.from({ length: 4 }, (_, index) => signedAliasNode({
+    id: `signed-deleted-suffix-${index}`,
+  }));
+  const sourcePin = syntheticSource({
+    nodeCount: nodes.length,
+    edgeCount: 0,
+    nodeFactory: index => nodes[index],
+  });
+  const baseOptions = {
+    sourcePin,
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    limits: { ...limits, maxTransactionRecords: 1 },
+  };
+  const first = await openPinnedPGSStore({
+    ...baseOptions,
+    signal: new AbortController().signal,
+  });
+  const { databasePath } = first;
+  first.planScope({
+    attemptId: 'deleted-suffix-before', coverageLevel: 'full', coverageFraction: 1,
+  });
+  const [completedWorkUnit] = first.snapshotPendingWorkUnits({
+    attemptId: 'deleted-suffix-before', limit: 1,
+  });
+  first.beginWorkUnitAttempt(completedWorkUnit, {
+    attemptId: 'deleted-suffix-before', provider: 'minimax', model: 'MiniMax-M3',
+  });
+  await first.commitSuccessfulSweeps([{
+    workUnitId: completedWorkUnit,
+    output: 'must remain retained after deleted suffix rejection',
+  }]);
+  first.close();
+  forceLegacyV2Projection(databasePath, nodes, sourcePin.descriptor);
+
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('cancel after first verified migration row'), {
+    code: 'cancelled',
+  });
+  await assert.rejects(openPinnedPGSStore({
+    ...baseOptions,
+    signal: controller.signal,
+    _testHooks: {
+      afterAuthorityMigrationPage({ lastOrdinal }) {
+        if (lastOrdinal === 0) controller.abort(reason);
+      },
+    },
+  }), error => error === reason);
+
+  const damaged = new Database(databasePath);
+  damaged.prepare('DELETE FROM nodes WHERE ordinal = ?').run(2);
+  damaged.close();
+
+  await assert.rejects(openPinnedPGSStore({
+    ...baseOptions,
+    signal: new AbortController().signal,
+  }), { code: 'pgs_projection_invalid' });
+
+  const readback = new Database(databasePath, { readonly: true });
+  assert.equal(JSON.parse(readback.prepare(
+    "SELECT value FROM metadata WHERE key = 'authorityProjectionVersion'",
+  ).get().value), 2);
+  assert.deepEqual(JSON.parse(readback.prepare(
+    "SELECT value FROM metadata WHERE key = 'authorityProjectionMigration'",
+  ).get().value), {
+    fromVersion: 2, toVersion: 3, lastOrdinal: 1, integrityMode: 'verified',
+  });
+  assert.equal(readback.prepare(
+    'SELECT COUNT(*) AS count FROM successful_sweeps WHERE work_unit_id = ?',
+  ).get(completedWorkUnit).count, 1);
+  assert.equal(readback.prepare(
+    'SELECT state FROM work_units WHERE work_unit_id = ?',
+  ).get(completedWorkUnit).state, 'complete');
+  readback.close();
+});
+
+test('v2 migration rejects a compacted suffix and forged stored node count', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const nodes = Array.from({ length: 4 }, (_, index) => signedAliasNode({
+    id: `signed-forged-count-${index}`,
+  }));
+  const sourcePin = syntheticSource({
+    nodeCount: nodes.length,
+    edgeCount: 0,
+    nodeFactory: index => nodes[index],
+  });
+  const baseOptions = {
+    sourcePin,
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    limits: { ...limits, maxTransactionRecords: 1 },
+  };
+  const first = await openPinnedPGSStore({
+    ...baseOptions,
+    signal: new AbortController().signal,
+  });
+  const { databasePath } = first;
+  first.close();
+  forceLegacyV2Projection(databasePath, nodes, sourcePin.descriptor);
+
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('cancel before compacted suffix forgery'), {
+    code: 'cancelled',
+  });
+  await assert.rejects(openPinnedPGSStore({
+    ...baseOptions,
+    signal: controller.signal,
+    _testHooks: {
+      afterAuthorityMigrationPage({ lastOrdinal }) {
+        if (lastOrdinal === 0) controller.abort(reason);
+      },
+    },
+  }), error => error === reason);
+
+  const forged = new Database(databasePath);
+  forged.transaction(() => {
+    forged.prepare('DELETE FROM nodes WHERE ordinal = ?').run(2);
+    forged.prepare('UPDATE nodes SET ordinal = ? WHERE ordinal = ?').run(2, 3);
+    forged.prepare("UPDATE metadata SET value = ? WHERE key = 'nodeCount'")
+      .run(JSON.stringify(3));
+  })();
+  forged.close();
+
+  await assert.rejects(openPinnedPGSStore({
+    ...baseOptions,
+    signal: new AbortController().signal,
+  }), { code: 'pgs_projection_invalid' });
+
+  const readback = new Database(databasePath, { readonly: true });
+  assert.equal(JSON.parse(readback.prepare(
+    "SELECT value FROM metadata WHERE key = 'authorityProjectionVersion'",
+  ).get().value), 2);
+  assert.deepEqual(JSON.parse(readback.prepare(
+    "SELECT value FROM metadata WHERE key = 'authorityProjectionMigration'",
+  ).get().value), {
+    fromVersion: 2, toVersion: 3, lastOrdinal: 2, integrityMode: 'verified',
+  });
+  readback.close();
+});
+
+test('verified v2 migration resumes keylessly as permanently narrative without losing work', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const nodes = Array.from({ length: 4 }, (_, index) => signedAliasNode({
+    id: `signed-keyless-resume-${index}`,
+  }));
+  const sourcePin = syntheticSource({
+    nodeCount: nodes.length,
+    edgeCount: 0,
+    nodeFactory: index => nodes[index],
+  });
+  const baseOptions = {
+    sourcePin,
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    limits: { ...limits, maxTransactionRecords: 1 },
+  };
+  const first = await openPinnedPGSStore({
+    ...baseOptions,
+    signal: new AbortController().signal,
+  });
+  const { databasePath } = first;
+  first.planScope({
+    attemptId: 'keyless-resume-before', coverageLevel: 'full', coverageFraction: 1,
+  });
+  const workUnitIds = first.snapshotPendingWorkUnits({
+    attemptId: 'keyless-resume-before', limit: nodes.length,
+  });
+  const [completedWorkUnit] = workUnitIds;
+  first.beginWorkUnitAttempt(completedWorkUnit, {
+    attemptId: 'keyless-resume-before', provider: 'minimax', model: 'MiniMax-M3',
+  });
+  await first.commitSuccessfulSweeps([{
+    workUnitId: completedWorkUnit,
+    output: 'retained across verified-to-narrative migration',
+  }]);
+  first.close();
+  forceLegacyV2Projection(databasePath, nodes, sourcePin.descriptor);
+
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('cancel verified migration after prefix'), {
+    code: 'cancelled',
+  });
+  await assert.rejects(openPinnedPGSStore({
+    ...baseOptions,
+    signal: controller.signal,
+    _testHooks: {
+      afterAuthorityMigrationPage({ lastOrdinal }) {
+        if (lastOrdinal === 1) controller.abort(reason);
+      },
+    },
+  }), error => error === reason);
+
+  delete process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+  let keyless;
+  try {
+    keyless = await openPinnedPGSStore({
+      ...baseOptions,
+      signal: new AbortController().signal,
+    });
+    assert.equal(keyless.reused, true);
+    for (const workUnitId of workUnitIds) {
+      const work = keyless.loadWorkUnit(workUnitId);
+      assert.equal(work.nodeAuthorities.every(authority => (
+        authority.authorityClass === 'narrative'
+        && authority.operationalAuthority === false
+      )), true);
+    }
+    assert.equal(keyless.listSuccessfulSweeps().some(row => (
+      row.workUnitId === completedWorkUnit
+      && row.output === 'retained across verified-to-narrative migration'
+    )), true);
+    keyless.close();
+    keyless = null;
+  } finally {
+    keyless?.close();
+    process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = AUTHORITY_KEY;
+  }
+
+  const migrated = new Database(databasePath, { readonly: true });
+  assert.equal(JSON.parse(migrated.prepare(
+    "SELECT value FROM metadata WHERE key = 'authorityProjectionVersion'",
+  ).get().value), 3);
+  assert.equal(migrated.prepare(
+    'SELECT COUNT(*) AS count FROM nodes WHERE authority_mac IS NOT NULL',
+  ).get().count, 0);
+  assert.equal(migrated.prepare(
+    "SELECT COUNT(*) AS count FROM nodes WHERE json_extract(authority_json, '$.authorityClass') != 'narrative'",
+  ).get().count, 0);
+  migrated.close();
+
+  const restored = await openPinnedPGSStore({
+    ...baseOptions,
+    signal: new AbortController().signal,
+  });
+  t.after(() => restored.close());
+  assert.equal(restored.reused, true);
+  for (const workUnitId of workUnitIds) {
+    assert.equal(restored.loadWorkUnit(workUnitId).nodeAuthorities.every(authority => (
+      authority.authorityClass === 'narrative'
+      && authority.operationalAuthority === false
+    )), true);
+  }
+});
+
+test('tampered v2 authority MAC fails closed without promoting projection version', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const nodes = [
+    signedAliasNode({ id: 'signed-valid-first' }),
+    signedAliasNode({ id: 'signed-tampered-second' }),
+  ];
+  const sourcePin = syntheticSource({
+    nodeCount: nodes.length,
+    edgeCount: 0,
+    nodeFactory: index => nodes[index],
+  });
+  const options = {
+    sourcePin,
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits: { ...limits, maxTransactionRecords: 1 },
+  };
+  const first = await openPinnedPGSStore(options);
+  const { databasePath } = first;
+  first.close();
+  forceLegacyV2Projection(databasePath, nodes, sourcePin.descriptor);
+  const tampered = new Database(databasePath);
+  tampered.prepare('UPDATE nodes SET authority_mac = ? WHERE id = ?')
+    .run('A'.repeat(43), nodes[1].id);
+  tampered.close();
+
+  await assert.rejects(openPinnedPGSStore(options), { code: 'pgs_projection_invalid' });
+
+  const readback = new Database(databasePath, { readonly: true });
+  assert.equal(JSON.parse(readback.prepare(
+    "SELECT value FROM metadata WHERE key = 'authorityProjectionVersion'",
+  ).get().value), 2);
+  readback.close();
+});
+
+test('malformed v2 migration cursor fails closed without promoting projection version', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const signed = signedAliasNode();
+  const sourcePin = syntheticSource({
+    nodeCount: 1,
+    edgeCount: 0,
+    nodeFactory: () => signed,
+  });
+  const options = {
+    sourcePin,
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits,
+  };
+  const first = await openPinnedPGSStore(options);
+  const { databasePath } = first;
+  first.close();
+  forceLegacyV2Projection(databasePath, [signed], sourcePin.descriptor);
+  const malformed = new Database(databasePath);
+  malformed.prepare('INSERT INTO metadata(key, value) VALUES (?, ?)').run(
+    'authorityProjectionMigration',
+    JSON.stringify({ fromVersion: 2, toVersion: 3, lastOrdinal: 'invalid' }),
+  );
+  malformed.close();
+
+  await assert.rejects(openPinnedPGSStore(options), { code: 'pgs_projection_invalid' });
+
+  const readback = new Database(databasePath, { readonly: true });
+  assert.equal(JSON.parse(readback.prepare(
+    "SELECT value FROM metadata WHERE key = 'authorityProjectionVersion'",
+  ).get().value), 2);
+  readback.close();
+});
+
+test('v2 migration cursor ahead of its v3-validated prefix fails before promotion', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const signed = signedAliasNode();
+  const sourcePin = syntheticSource({
+    nodeCount: 1,
+    edgeCount: 0,
+    nodeFactory: () => signed,
+  });
+  const options = {
+    sourcePin,
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits,
+  };
+  const first = await openPinnedPGSStore(options);
+  const { databasePath } = first;
+  first.close();
+  forceLegacyV2Projection(databasePath, [signed], sourcePin.descriptor);
+  const forged = new Database(databasePath);
+  forged.prepare('INSERT INTO metadata(key, value) VALUES (?, ?)').run(
+    'authorityProjectionMigration',
+    JSON.stringify({
+      fromVersion: 2, toVersion: 3, lastOrdinal: 99, integrityMode: 'verified',
+    }),
+  );
+  forged.close();
+
+  await assert.rejects(openPinnedPGSStore(options), { code: 'pgs_projection_invalid' });
+
+  const readback = new Database(databasePath, { readonly: true });
+  assert.equal(JSON.parse(readback.prepare(
+    "SELECT value FROM metadata WHERE key = 'authorityProjectionVersion'",
+  ).get().value), 2);
+  readback.close();
+});
+
+test('v3 authority integrity rejects a tampered stored partition identity', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const signed = signedAliasNode({ id: 'signed-partition-integrity' });
+  const options = {
+    sourcePin: syntheticSource({
+      nodeCount: 1,
+      edgeCount: 0,
+      nodeFactory: () => signed,
+    }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits,
+  };
+  const first = await openPinnedPGSStore(options);
+  const { databasePath } = first;
+  const [workUnitId] = first.snapshotPendingWorkUnits({
+    attemptId: 'partition-integrity',
+    limit: 1,
+  });
+  first.close();
+  const tampered = new Database(databasePath);
+  tampered.transaction(() => {
+    tampered.prepare('UPDATE nodes SET partition_id = ? WHERE id = ?')
+      .run('c-tampered', signed.id);
+    tampered.prepare('UPDATE work_units SET partition_id = ? WHERE work_unit_id = ?')
+      .run('c-tampered', workUnitId);
+  })();
+  tampered.close();
+
+  const reopened = await openPinnedPGSStore(options);
+  t.after(() => reopened.close());
+  await assert.rejects(
+    Promise.resolve().then(() => reopened.loadWorkUnit(workUnitId)),
+    { code: 'pgs_projection_invalid' },
+  );
 });
 
 test('store close releases anchored handles when SQLite close throws', async t => {
@@ -513,7 +1367,7 @@ test('migrates a pre-authority v3 projection without losing completed sweep work
     readback.prepare(
       "SELECT json_extract(value, '$') AS version FROM metadata WHERE key = 'authorityProjectionVersion'",
     ).get().version,
-    2,
+    3,
   );
   assert.equal(
     readback.pragma('table_info(nodes)').some(column => column.name === 'authority_json'),
@@ -676,17 +1530,32 @@ test('missing authority key reuses PGS work safely but demotes persisted authori
   first.close();
 
   delete process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+  let missingKeyStore;
   try {
-    const reopened = await openPinnedPGSStore(options);
-    t.after(() => reopened.close());
-    assert.equal(reopened.reused, true);
-    reopened.planScope({ attemptId: 'missing-key', coverageLevel: 'full', coverageFraction: 1 });
-    const summary = reopened.summarizeAuthority({ attemptId: 'missing-key' });
+    missingKeyStore = await openPinnedPGSStore(options);
+    assert.equal(missingKeyStore.reused, true);
+    missingKeyStore.planScope({
+      attemptId: 'missing-key', coverageLevel: 'full', coverageFraction: 1,
+    });
+    const summary = missingKeyStore.summarizeAuthority({ attemptId: 'missing-key' });
     assert.equal(summary.authorityClasses.verified_current_state, 0);
     assert.equal(summary.authorityClasses.narrative, 1);
+    missingKeyStore.close();
+    missingKeyStore = null;
   } finally {
+    missingKeyStore?.close();
     process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = AUTHORITY_KEY;
   }
+
+  const restored = await openPinnedPGSStore(options);
+  t.after(() => restored.close());
+  assert.equal(restored.reused, true);
+  restored.planScope({
+    attemptId: 'restored-key-with-mac', coverageLevel: 'full', coverageFraction: 1,
+  });
+  const restoredSummary = restored.summarizeAuthority({ attemptId: 'restored-key-with-mac' });
+  assert.equal(restoredSummary.authorityClasses.verified_current_state, 1);
+  assert.equal(restoredSummary.authorityClasses.narrative, 0);
 });
 
 test('adding an authority key does not break a narrative PGS projection built without one', async t => {
@@ -715,6 +1584,122 @@ test('adding an authority key does not break a narrative PGS projection built wi
   const summary = reopened.summarizeAuthority({ attemptId: 'key-added' });
   assert.equal(summary.authorityClasses.verified_current_state, 0);
   assert.equal(summary.authorityClasses.narrative, 1);
+});
+
+test('restoring an authority key cannot elevate a signed PGS row persisted without a MAC', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const signed = signedAliasNode({ id: 'signed-without-persisted-mac' });
+  const options = {
+    sourcePin: syntheticSource({
+      nodeCount: 1,
+      edgeCount: 0,
+      nodeFactory: () => signed,
+    }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits,
+  };
+
+  delete process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+  let first;
+  try {
+    first = await openPinnedPGSStore(options);
+    first.planScope({
+      attemptId: 'no-mac-before-key-restore', coverageLevel: 'full', coverageFraction: 1,
+    });
+    const [workUnitId] = first.snapshotPendingWorkUnits({
+      attemptId: 'no-mac-before-key-restore', limit: 1,
+    });
+    const work = first.loadWorkUnit(workUnitId);
+    assert.equal(work.nodes[0].text, 'UNSIGNED_POST_ATTESTATION_TEXT');
+    assert.equal(work.nodeAuthorities[0].authorityClass, 'narrative');
+    assert.equal(work.nodeAuthorities[0].operationalAuthority, false);
+    first.close();
+    first = null;
+  } finally {
+    first?.close();
+    process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = AUTHORITY_KEY;
+  }
+
+  const reopened = await openPinnedPGSStore(options);
+  t.after(() => reopened.close());
+  assert.equal(reopened.reused, true);
+  reopened.planScope({
+    attemptId: 'no-mac-after-key-restore', coverageLevel: 'full', coverageFraction: 1,
+  });
+  const [workUnitId] = reopened.snapshotPendingWorkUnits({
+    attemptId: 'no-mac-after-key-restore', limit: 1,
+  });
+  const work = reopened.loadWorkUnit(workUnitId);
+  assert.equal(work.nodes[0].text, 'UNSIGNED_POST_ATTESTATION_TEXT');
+  assert.equal(work.nodeAuthorities[0].authorityClass, 'narrative');
+  assert.equal(work.nodeAuthorities[0].operationalAuthority, false);
+});
+
+test('v2 migration without an authority key stays narrative after the key is restored', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const signed = signedAliasNode({ id: 'signed-v2-migrated-without-key' });
+  const sourcePin = syntheticSource({
+    nodeCount: 1,
+    edgeCount: 0,
+    nodeFactory: () => signed,
+  });
+  const options = {
+    sourcePin,
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits,
+  };
+  const first = await openPinnedPGSStore(options);
+  const { databasePath } = first;
+  first.close();
+  forceLegacyV2Projection(databasePath, [signed], sourcePin.descriptor);
+
+  delete process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY;
+  let migrated;
+  try {
+    migrated = await openPinnedPGSStore(options);
+    migrated.planScope({
+      attemptId: 'v2-no-key', coverageLevel: 'full', coverageFraction: 1,
+    });
+    const summary = migrated.summarizeAuthority({ attemptId: 'v2-no-key' });
+    assert.equal(summary.authorityClasses.verified_current_state, 0);
+    assert.equal(summary.authorityClasses.narrative, 1);
+    migrated.close();
+    migrated = null;
+  } finally {
+    migrated?.close();
+    process.env.HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY = AUTHORITY_KEY;
+  }
+
+  const readback = new Database(databasePath, { readonly: true });
+  assert.equal(JSON.parse(readback.prepare(
+    "SELECT value FROM metadata WHERE key = 'authorityProjectionVersion'",
+  ).get().value), 3);
+  assert.equal(readback.prepare(
+    'SELECT authority_mac FROM nodes WHERE id = ?',
+  ).get(signed.id).authority_mac, null);
+  readback.close();
+
+  const reopened = await openPinnedPGSStore(options);
+  t.after(() => reopened.close());
+  assert.equal(reopened.reused, true);
+  reopened.planScope({
+    attemptId: 'v2-after-key-restore', coverageLevel: 'full', coverageFraction: 1,
+  });
+  const [workUnitId] = reopened.snapshotPendingWorkUnits({
+    attemptId: 'v2-after-key-restore', limit: 1,
+  });
+  const work = reopened.loadWorkUnit(workUnitId);
+  assert.equal(work.nodes[0].text, 'UNSIGNED_POST_ATTESTATION_TEXT');
+  assert.equal(work.nodeAuthorities[0].authorityClass, 'narrative');
+  assert.equal(work.nodeAuthorities[0].operationalAuthority, false);
 });
 
 test('rebuilds boundedly when durable projection metadata has an unexpected oversized field', async t => {

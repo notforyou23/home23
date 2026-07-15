@@ -3062,6 +3062,25 @@ completed-sweep migration, and exact cancellation recovery. The large
 wait-aware PGS and aggregate gates remain release requirements before rollout;
 the scale suite also holds 1,000 repeated attempts to bounded policy storage.
 
+**2026-07-15 authenticated PGS follow-up:** Fresh PGS provider rows and
+partition assignment now use the canonical attestation payload, so unsigned
+post-attestation text, metadata, salience, timestamp, and cluster aliases cannot
+ride with verified authority or steer new fractional scopes. Authority
+projection v3 binds the stored partition ID into each node MAC. Version-2
+sessions migrate in bounded pages with a transactional cursor; completed sweeps
+and their historical partition/work-unit structure remain unchanged, while
+provider JSON and authority are reprojected and the retained historical
+partition ID is bound into the v3 MAC. Malformed cursors, invalid v2 MACs, and
+v3 partition tampering fail closed without promoting the projection version.
+Each verified cursor and remaining suffix prove a complete contiguous ordinal
+sequence, and promotion reconciles bounded declared node count with the actual
+row count and final ordinal against the immutable source-descriptor count bound
+by the session digest. If the key is lost between migration pages, the cursor
+atomically switches to irreversible narrative mode and restarts projection at
+ordinal zero; every row then receives explicit null-key narrative authority and
+a null MAC while retained scopes, work units, and completed sweeps remain
+reusable.
+
 ---
 
 ## History
@@ -3454,4 +3473,10 @@ the scale suite also holds 1,000 repeated attempts to bounded policy storage.
 - **2026-07-15** — Patch 64 authenticates Query/PGS provider authority before
   redaction, binds reusable PGS authority to its node/source projection, reports
   requested scope separately from unavailable index coverage, and compacts
-  transient attempt mappings without losing completed sweeps.
+  transient attempt mappings without losing completed sweeps. Its follow-up
+  canonicalizes every authenticated provider-visible node, binds v3 authority
+  integrity to the retained partition, and migrates retained v2 projections
+  resumably without losing historical work units or completed sweeps. Rows
+  persisted without an authority MAC remain narrative after a later key
+  restoration; only MAC-backed rows can regain authority through successful
+  integrity verification.
