@@ -131,16 +131,19 @@ function inspectLiveEnvironment(
     if (seen.has(row.name)) throw commandError('pm2_duplicate_process');
     seen.set(row.name, row);
   }
-  const changedProcessNames = [];
+  let allCurrent = true;
   for (const name of configuredProcessNames) {
     const row = seen.get(name);
-    if (!row || rowStatus(row) !== 'online') continue;
+    if (!row || rowStatus(row) !== 'online') {
+      allCurrent = false;
+      continue;
+    }
     const expected = expectedEnvironment(name, capabilityKey, authorityKey);
     if (forceOnlineStale || Object.entries(expected).some(
       ([environmentName, value]) => envEvidence(row, environmentName) !== value,
-    )) changedProcessNames.push(name);
+    )) allCurrent = false;
   }
-  return changedProcessNames;
+  return allCurrent ? [] : [...configuredProcessNames];
 }
 
 async function syncDirectory(directoryPath) {
@@ -413,24 +416,29 @@ export async function runBrainOperationsCommand(home23Root, args, dependencies =
   throw commandError('brain_operations_usage');
 }
 
-export function buildScopedPm2RefreshArgs(receipt) {
+export function buildScopedPm2RefreshArgs(receipt, rendererAuthorizedProcessNames) {
+  if (!isRendererAuthorizedScope(rendererAuthorizedProcessNames)) {
+    throw commandError('configured_processes_unauthorized');
+  }
   if (!receipt?.restartRequired) throw commandError('refresh_not_required');
   if (receipt.liveEnvVerified !== true) throw commandError('live_env_unverified');
   const configured = receipt.configuredProcessNames;
   const changed = receipt.changedProcessNames;
-  if (!isRendererAuthorizedScope(configured)) {
-    throw commandError('changed_processes_invalid');
+  if (!Array.isArray(configured)
+      || configured.length !== rendererAuthorizedProcessNames.length
+      || configured.some((name, index) => name !== rendererAuthorizedProcessNames[index])) {
+    throw commandError('configured_processes_unauthorized');
   }
   if (!Array.isArray(changed)
-      || changed.length !== configured.length
-      || changed.some((name, index) => name !== configured[index])) {
+      || changed.length !== rendererAuthorizedProcessNames.length
+      || changed.some((name, index) => name !== rendererAuthorizedProcessNames[index])) {
     throw commandError('changed_processes_invalid');
   }
   return [
     'start',
     'ecosystem.config.cjs',
     '--only',
-    configured.join(','),
+    rendererAuthorizedProcessNames.join(','),
     '--update-env',
   ];
 }

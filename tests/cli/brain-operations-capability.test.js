@@ -269,7 +269,7 @@ test('generated ecosystem omits agent-scoped MCP when an agent disables it', () 
       liveEnvVerified: true,
       configuredProcessNames,
       changedProcessNames: configuredProcessNames,
-    }), [
+    }, configuredProcessNames), [
       'start',
       'ecosystem.config.cjs',
       '--only',
@@ -382,7 +382,7 @@ test('prepare dry-run is byte/type/mode/mtime read-only and normal prepare is id
     assert.equal(settled.filesystemChanged, false);
     assert.deepEqual(pm2Calls, []);
 
-    assert.deepEqual(buildScopedPm2RefreshArgs(prepared), [
+    assert.deepEqual(buildScopedPm2RefreshArgs(prepared, targetNames()), [
       'start',
       'ecosystem.config.cjs',
       '--only',
@@ -702,6 +702,23 @@ test('PM2 inspection failure is fail-closed and refresh guard only permits exact
       configuredProcessNames: targetNames(),
       changedProcessNames: targetNames(),
     };
+    assert.throws(
+      () => buildScopedPm2RefreshArgs(base),
+      /configured_processes_unauthorized/,
+    );
+    const attackerScope = [
+      'home23-attacker',
+      'home23-attacker-dash',
+      'home23-attacker-harness',
+      'home23-cosmo23',
+    ];
+    const jerryOnlyScope = [
+      'home23-jerry',
+      'home23-jerry-dash',
+      'home23-jerry-mcp',
+      'home23-jerry-harness',
+      'home23-cosmo23',
+    ];
     for (const bad of [
       { ...base, restartRequired: false },
       { ...base, liveEnvVerified: false },
@@ -716,8 +733,21 @@ test('PM2 inspection failure is fail-closed and refresh guard only permits exact
       { ...base, changedProcessNames: ['home23-cosmo23', 'home23-jerry-dash'] },
       { ...base, changedProcessNames: [...targetNames()].reverse() },
       { ...base, configuredProcessNames: [...targetNames()].reverse() },
+      {
+        ...base,
+        configuredProcessNames: attackerScope,
+        changedProcessNames: attackerScope,
+      },
+      {
+        ...base,
+        configuredProcessNames: jerryOnlyScope,
+        changedProcessNames: jerryOnlyScope,
+      },
     ]) {
-      assert.throws(() => buildScopedPm2RefreshArgs(bad), /refresh_|live_env_|changed_processes_/);
+      assert.throws(
+        () => buildScopedPm2RefreshArgs(bad, targetNames()),
+        /refresh_|live_env_|changed_processes_|configured_processes_/,
+      );
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -765,17 +795,25 @@ test('PM2 normalization handles live shapes and fails closed on duplicate or dis
       listProcesses: async () => overprivileged,
     });
     assert.equal(overprivilegedReceipt.liveEnvVerified, true);
-    assert.deepEqual(overprivilegedReceipt.changedProcessNames, ['home23-jerry']);
+    assert.deepEqual(overprivilegedReceipt.changedProcessNames, targetNames());
+    assert.equal(overprivilegedReceipt.restartRequired, true);
 
-    const absentAndOffline = [
-      { name: 'home23-jerry-dash', pm2_env: { status: 'stopped', [CAPABILITY_ENV]: key } },
-    ];
-    const absentReceipt = await prepareBrainOperationsCapability(root, {
-      listProcesses: async () => absentAndOffline,
+    const offline = rawPm2Processes(key);
+    offline[1].pm2_env.status = 'stopped';
+    const offlineReceipt = await prepareBrainOperationsCapability(root, {
+      listProcesses: async () => offline,
     });
-    assert.equal(absentReceipt.liveEnvVerified, true);
-    assert.deepEqual(absentReceipt.changedProcessNames, []);
-    assert.equal(absentReceipt.restartRequired, false);
+    assert.equal(offlineReceipt.liveEnvVerified, true);
+    assert.deepEqual(offlineReceipt.changedProcessNames, targetNames());
+    assert.equal(offlineReceipt.restartRequired, true);
+
+    const missing = rawPm2Processes(key).slice(1);
+    const missingReceipt = await prepareBrainOperationsCapability(root, {
+      listProcesses: async () => missing,
+    });
+    assert.equal(missingReceipt.liveEnvVerified, true);
+    assert.deepEqual(missingReceipt.changedProcessNames, targetNames());
+    assert.equal(missingReceipt.restartRequired, true);
 
     const duplicateRows = [
       ...rawPm2Processes(key),
