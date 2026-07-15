@@ -57,11 +57,11 @@ test('cancelled concurrent sweeps remain pending for a later exact retry', async
   const pending = first.engine.runPinnedOperation(operationOptions(pin, scratch, {
     signal: controller.signal,
   }));
-  await eventually(() => starts === 2);
+  await eventually(() => starts === 4);
   controller.abort(reason);
 
   await assert.rejects(pending, error => error === reason);
-  assert.equal(starts, 2);
+  assert.equal(starts, 4);
   const retry = createEngine();
   const complete = await retry.engine.runPinnedOperation(operationOptions(pin, scratch));
   assert.equal(complete.state, 'complete');

@@ -369,7 +369,6 @@ test('pinned PGS keeps provider roles exact and returns machine-readable durable
     'work_selected',
     'sweep_batch_complete',
     'sweep_batch_complete',
-    'sweep_batch_complete',
     'sweep_complete',
     'synthesis_started',
     'synthesis_complete',
@@ -379,7 +378,6 @@ test('pinned PGS keeps provider roles exact and returns machine-readable durable
     .map(({ selected, completed, successful, failed, reused, pending, retryable, total }) => ({
       selected, completed, successful, failed, reused, pending, retryable, total,
     })), [
-    { selected: 6, completed: 2, successful: 2, failed: 0, reused: 0, pending: 4, retryable: 0, total: 6 },
     { selected: 6, completed: 4, successful: 4, failed: 0, reused: 0, pending: 2, retryable: 0, total: 6 },
     { selected: 6, completed: 6, successful: 6, failed: 0, reused: 0, pending: 0, retryable: 0, total: 6 },
   ]);
@@ -1216,6 +1214,56 @@ test('pinned PGS rejects caller-controlled concurrency before store or provider 
   assert.equal(fixture.calls.length, 0);
 });
 
+test('pinned PGS keeps four sweep calls in flight behind its internal bound', async t => {
+  const scratch = await scratchFixture(t);
+  let activeSweeps = 0;
+  let maxActiveSweeps = 0;
+  const sweepClient = {
+    providerId: 'sweep',
+    async generate() {
+      activeSweeps += 1;
+      maxActiveSweeps = Math.max(maxActiveSweeps, activeSweeps);
+      await new Promise(resolve => setTimeout(resolve, 20));
+      activeSweeps -= 1;
+      return {
+        content: 'bounded concurrent finding',
+        terminalReceived: true,
+        finishReason: 'completed',
+        hadError: false,
+        provider: 'sweep',
+        model: 'shared-model',
+      };
+    },
+  };
+  const synthClient = {
+    providerId: 'synth',
+    async generate() {
+      return {
+        content: 'bounded concurrent synthesis',
+        terminalReceived: true,
+        finishReason: 'completed',
+        hadError: false,
+        provider: 'synth',
+        model: 'shared-model',
+      };
+    },
+  };
+  const engine = new PGSEngine({
+    modelCatalog: catalog(),
+    providerRegistry: {
+      get(provider) { return provider === 'sweep' ? sweepClient : synthClient; },
+    },
+  });
+
+  const envelope = await engine.runPinnedOperation(options(
+    sourcePin({ nodeCount: 12 }),
+    scratch,
+  ));
+
+  assert.equal(envelope.state, 'complete');
+  assert.equal(maxActiveSweeps, 4);
+});
+
 test('fractional scope completes honestly and a higher level executes only pending work', async t => {
   const scratch = await scratchFixture(t);
   const pin = sourcePin();
@@ -1303,11 +1351,11 @@ test('cancellation during concurrent sweeps preserves the exact reason and start
     ...options(pin, scratch, { reportEvent: event => events.push(event) }),
     signal: controller.signal,
   });
-  while (starts < 2) await new Promise(resolve => setImmediate(resolve));
+  while (starts < 4) await new Promise(resolve => setImmediate(resolve));
   controller.abort(reason);
 
   await assert.rejects(pending, error => error === reason);
-  assert.equal(starts, 2);
-  assert.equal(events.filter(event => event.outcome === 'cancelled').length, 2);
+  assert.equal(starts, 4);
+  assert.equal(events.filter(event => event.outcome === 'cancelled').length, 4);
   assert.equal(pin.releaseCount(), 0);
 });

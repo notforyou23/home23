@@ -24,7 +24,9 @@ const require = createRequire(import.meta.url);
 const {
   createOperationScratchQuota,
   openMemorySource,
+  readManifest,
   resolveMemorySourceSelection,
+  writeManifestAtomic,
 } = require('../shared/memory-source/index.cjs');
 const {
   loadMemoryRevision,
@@ -541,6 +543,46 @@ async function copyPinnedSelection(sourceBrainDir, cloneDir, inventory) {
   return copies;
 }
 
+async function projectPortableCloneManifest(cloneDir, copies) {
+  const manifest = await readManifest(cloneDir);
+  if (!manifest) return { projected: false, reason: 'legacy-source' };
+  const {
+    fileIdentity: _sourceDeltaFileIdentity,
+    appendFrom: _sourceDeltaAppendFrom,
+    ...portableActiveDelta
+  } = manifest.activeDelta;
+  if (!_sourceDeltaFileIdentity && !_sourceDeltaAppendFrom) {
+    return { projected: false, reason: 'already-portable' };
+  }
+  await writeManifestAtomic(cloneDir, {
+    ...manifest,
+    // Device/inode identities authorize the source pathname, not a copied
+    // clone. Retain the cryptographic delta chain so the clone validates its
+    // committed bytes before its first append.
+    activeDelta: portableActiveDelta,
+  });
+  const manifestCopy = copies.find((row) => row.path === 'memory-manifest.json');
+  if (!manifestCopy) throw typedError('clone_manifest_copy_missing');
+  const destination = await hashFile(path.join(cloneDir, 'memory-manifest.json'));
+  manifestCopy.destinationSha256 = destination.sha256;
+  manifestCopy.destinationBytes = destination.physicalSize;
+  manifestCopy.projection = 'portable-delta-identity';
+  const retainedChainAuthority = [
+    portableActiveDelta.chainBaseCount,
+    portableActiveDelta.chainBaseBytes,
+    portableActiveDelta.chainBaseDigest,
+    portableActiveDelta.chainDigest,
+  ].every((value) => value !== undefined);
+  return {
+    projected: true,
+    chainAuthority: retainedChainAuthority ? 'retained' : 'absent',
+    removedFields: [
+      ...(_sourceDeltaFileIdentity ? ['fileIdentity'] : []),
+      ...(_sourceDeltaAppendFrom ? ['appendFrom'] : []),
+    ],
+  };
+}
+
 async function assertDirectoryIdentity(directory, label) {
   const stat = await fsp.lstat(directory.path, { bigint: true }).catch((error) => {
     throw typedError('clone_identity_changed', `${label} is unavailable`, { cause: error });
@@ -679,6 +721,7 @@ export async function verifyTempSaveClone({
   let operationError = null;
   try {
     const copiedFiles = await copyPinnedSelection(liveProof.sourceBrainDir, clone.path, sourceBefore);
+    const manifestProjection = await projectPortableCloneManifest(clone.path, copiedFiles);
     await assertDirectoryIdentity(clone, 'generated clone');
     await assertInventoryUnchanged(liveProof.sourceBrainDir, sourceBefore);
     const canaryId = `__home23_persistence_clone_${crypto.randomUUID()}`;
@@ -714,8 +757,11 @@ export async function verifyTempSaveClone({
       throw typedError('clone_delta_readback_mismatch');
     }
     cloneProof = {
-      copyPolicy: 'exact-full-physical-files',
+      copyPolicy: manifestProjection.projected
+        ? 'exact-physical-files-with-portable-manifest'
+        : 'exact-full-physical-files',
       copiedFiles,
+      manifestProjection,
       persistedMode: persisted.mode,
       persistedRevision: persisted.manifest?.currentRevision ?? null,
       loaded: {

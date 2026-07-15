@@ -352,6 +352,7 @@ class DocumentFeeder {
 
       // Read file and check staleness
       let fileContent;
+      let semanticEventAt = null;
       try {
         const stat = fs.statSync(filePath);
         if (!stat.isFile()) return;
@@ -405,16 +406,26 @@ class DocumentFeeder {
         this.logger?.debug?.('Skipping empty file', { filePath });
         return;
       }
+      semanticEventAt = deriveDocumentSemanticTime(text, filePath);
 
       // Compile — LLM synthesizes the document in context of existing knowledge
       // Uses concurrency-limited queue to avoid 429 rate-limit avalanche on bulk ingestion
       let textForChunking = text;
       let usedCompiler = false;
+      let compilerProvenance = null;
       try {
-        const compiled = await this._queueCompile(text, { filePath, format });
+        const compiled = this.compilerConfig.enabled === false
+          ? null
+          : await this._queueCompile(text, {
+              filePath,
+              format,
+              contentHash: fullHash,
+              semanticTime: semanticEventAt,
+            });
         if (compiled && compiled.synthesis) {
           textForChunking = compiled.synthesis;
           usedCompiler = true;
+          compilerProvenance = compiled.provenance || null;
           this.logger?.info?.('Document compiled for ingestion', {
             filePath: path.basename(filePath),
             originalLength: text.length,
@@ -450,6 +461,16 @@ class DocumentFeeder {
 
       // Classify — assign document family
       const classification = this.classifier.classify(textForChunking, chunks);
+      const provenance = buildDocumentNodeProvenance({
+        filePath,
+        fullHash,
+        semanticTime: semanticEventAt,
+        label,
+        docFamily: classification.family,
+        usedCompiler,
+        compilerProvenance,
+        sourceText: text,
+      });
 
       // Enqueue with enriched metadata
       await this.manifest.enqueue(filePath, label, fullHash, chunks, relationships, {
@@ -457,7 +478,8 @@ class DocumentFeeder {
         structuralSignature: validation.structuralSignature,
         docFamily: classification.family,
         docFamilyConfidence: classification.confidence,
-        compiled: usedCompiler
+        compiled: usedCompiler,
+        provenance,
       });
 
       this.logger?.debug?.('File enqueued for ingestion', {
@@ -689,6 +711,100 @@ class DocumentFeeder {
       relationships: this.chunker._buildRelationships(chunks)
     };
   }
+}
+
+function buildDocumentNodeProvenance({
+  filePath,
+  fullHash,
+  semanticTime,
+  label,
+  docFamily,
+  usedCompiler,
+  compilerProvenance,
+  sourceText,
+}) {
+  const generated = usedCompiler === true;
+  const generationMethod = generated
+    ? 'document_compiler_synthesis'
+    : 'document_raw_ingestion';
+  const profile = {
+    schema: 'home23.node-provenance.v1',
+    authorityClass: generated ? 'narrative' : 'artifact_log',
+    retrievalDomain: deriveDocumentRetrievalDomain({ filePath, label, docFamily, sourceText }),
+    semanticTime: semanticTime || null,
+    sourceRefs: boundedStrings([filePath]),
+    evidenceRefs: boundedStrings([`sha256:${fullHash}`]),
+    generationMethod,
+    sourcePath: boundedString(filePath, 2048),
+    contentHash: boundedString(fullHash, 128),
+    scope: boundedStrings([label, docFamily]),
+    expiresAt: null,
+    operationalAuthority: false,
+    requiresFreshVerification: true,
+    derivedNodeIds: [],
+  };
+  if (generated && compilerProvenance?.model) {
+    profile.generationModel = boundedString(compilerProvenance.model, 240);
+  }
+  return Object.freeze(profile);
+}
+
+function deriveDocumentSemanticTime(text, filePath) {
+  const boundedText = String(text || '').slice(0, 64 * 1024);
+  const structured = boundedText.match(
+    /^(?:source_event_at|event_at|asserted_at|published_at|reported_at|date)\s*:\s*["']?([^\n"']+)/im,
+  );
+  const filenameDate = path.basename(filePath || '').match(/(?:^|[^0-9])(20\d{2}-\d{2}-\d{2})(?:[^0-9]|$)/)?.[1];
+  return normalizeSemanticTime(structured?.[1]?.trim() || filenameDate || null);
+}
+
+function normalizeSemanticTime(value) {
+  if (typeof value !== 'string' || !value) return null;
+  const dateOnly = /^(20\d{2})-(\d{2})-(\d{2})$/.exec(value);
+  const candidate = dateOnly ? `${value}T00:00:00.000Z` : value;
+  const milliseconds = Date.parse(candidate);
+  if (!Number.isFinite(milliseconds)) return null;
+  return new Date(milliseconds).toISOString();
+}
+
+function deriveDocumentRetrievalDomain({ filePath, label, docFamily, sourceText }) {
+  const routingText = [filePath, label, docFamily]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  const contentHeader = String(sourceText || '').slice(0, 1024).toLowerCase();
+  const structuredClosedStatus = /["']?(?:status|state|resolution_status)["']?\s*[:=]\s*["']?(?:resolved|closed|fixed|completed|archived)\b/i
+    .test(contentHeader);
+  if (structuredClosedStatus) return 'closed_incidents';
+  if (/\b(?:x[-_ ]?digest|twitter|timeline|news|rss|market|ticker|cron|telemetry|external)[-_ ]?\b/.test(
+    `${routingText} ${contentHeader}`,
+  )) return 'external_intake';
+  if (/\b(?:closed|resolved|fixed|archived|resolution)[-_ ]?\b/.test(routingText)) {
+    return 'closed_incidents';
+  }
+  if (/\b(?:current|live|runtime|operations?|status|health)[-_ ]?\b/.test(routingText)) {
+    return 'current_ops';
+  }
+  return 'project_history';
+}
+
+function boundedStrings(values, limit = 8, maxBytes = 240) {
+  const result = [];
+  for (const value of values || []) {
+    const bounded = boundedString(value, maxBytes);
+    if (!bounded || result.includes(bounded)) continue;
+    result.push(bounded);
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
+function boundedString(value, maxBytes) {
+  if (typeof value !== 'string' || !value) return null;
+  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+  let bounded = value.slice(0, maxBytes);
+  while (bounded && Buffer.byteLength(bounded, 'utf8') > maxBytes) bounded = bounded.slice(0, -1);
+  return bounded || null;
 }
 
 module.exports = { DocumentFeeder };

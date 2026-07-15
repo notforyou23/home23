@@ -125,6 +125,9 @@ test('COSMO MCP tools expose canonical server-derived identity and the committed
   const result = await tools.queryMemory({ query: 'canonical identity canary', limit: 5 });
   assert.equal(result.ok, true);
   assert.deepEqual(result.results.map((row) => row.id), ['canonical-canary']);
+  assert.equal(result.results[0].retrievalAuthority.authorityClass, 'narrative');
+  assert.equal(result.results[0].retrievalAuthority.requiresFreshVerification, true);
+  assert.equal(Number.isFinite(result.results[0].retrievalScore), true);
   assert.equal(result.evidence.sourceHealth, 'healthy');
   assert.equal(result.evidence.matchOutcome, 'matches');
   assert.equal(result.evidence.deltaWatermark.revision, fixture.manifest.currentRevision);

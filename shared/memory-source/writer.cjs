@@ -3,8 +3,8 @@
 const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
-const { writeJsonlGzAtomic, limitError } = require('./jsonl.cjs');
+const { createHash, randomUUID } = require('node:crypto');
+const { writeJsonlGzAtomic, limitError, readJsonl } = require('./jsonl.cjs');
 const { readManifest, writeManifestAtomic, fsyncDirectory } = require('./manifest.cjs');
 const {
   openConfinedRegularFile,
@@ -21,6 +21,8 @@ const {
   sourceDescriptorDigest,
   throwIfAborted,
 } = require('./contracts.cjs');
+const { emptyDeltaDigest, nextDeltaChainDigest } = require('./delta-chain.cjs');
+const { createDescriptor } = require('./descriptor.cjs');
 
 async function inject(options, point) {
   if (options.faultAt === point) throw new Error(`injected:${point}`);
@@ -78,6 +80,100 @@ function countChanges(changes) {
     + changes.removedNodeIds.length + changes.removedEdgeKeys.length;
 }
 
+function committedFileIdentity(stat) {
+  return Object.freeze({
+    dev: String(stat.dev),
+    ino: String(stat.ino),
+    size: String(stat.size),
+    mtimeNs: String(stat.mtimeNs),
+    ctimeNs: String(stat.ctimeNs),
+  });
+}
+
+function sameCommittedContent(stat, identity) {
+  return Boolean(identity
+    && String(stat.dev) === identity.dev
+    && String(stat.ino) === identity.ino
+    && String(stat.size) === identity.size
+    && String(stat.mtimeNs) === identity.mtimeNs
+    && String(stat.ctimeNs) === identity.ctimeNs);
+}
+
+async function hashOpenedPrefix(handle, endByte, signal) {
+  const hash = createHash('sha256');
+  const chunk = Buffer.allocUnsafe(1024 * 1024);
+  let position = 0;
+  while (position < endByte) {
+    throwIfAborted(signal);
+    const read = await handle.read(chunk, 0, Math.min(chunk.length, endByte - position), position);
+    if (read.bytesRead <= 0) {
+      throw memorySourceError('source_unavailable', 'committed delta prefix is truncated', {
+        retryable: true,
+      });
+    }
+    hash.update(chunk.subarray(0, read.bytesRead));
+    position += read.bytesRead;
+  }
+  return hash.digest('hex');
+}
+
+async function validateCommittedDeltaChain(brainDir, deltaPath, opened, manifest, signal) {
+  const activeDelta = manifest.activeDelta;
+  const baseDigest = await hashOpenedPrefix(opened.handle, activeDelta.chainBaseBytes, signal);
+  if (baseDigest !== activeDelta.chainBaseDigest) {
+    throw memorySourceError('source_changed', 'delta chain base differs from manifest', {
+      retryable: true,
+    });
+  }
+  let expectedSequence = 1;
+  let expectedRevision = manifest.baseRevision + 1;
+  let chainDigest = activeDelta.chainBaseDigest;
+  for await (const entry of readJsonl(deltaPath, {
+    confinedRoot: brainDir,
+    byteLimit: activeDelta.committedBytes,
+    requireCompletePrefix: true,
+    allowTrailingBytes: true,
+    expectedRecordCount: activeDelta.count,
+    signal,
+  })) {
+    throwIfAborted(signal);
+    if (entry?.epoch !== manifest.activeDeltaEpoch
+        || entry.sequence !== expectedSequence
+        || entry.revision !== expectedRevision) {
+      throw memorySourceError('source_changed', 'committed delta chain range is invalid', {
+        retryable: true,
+      });
+    }
+    if (entry.sequence > activeDelta.chainBaseCount) {
+      const { previousDigest, chainDigest: recordDigest, ...payload } = entry;
+      let computed;
+      try {
+        computed = nextDeltaChainDigest(chainDigest, payload);
+      } catch (cause) {
+        throw memorySourceError('source_changed', 'committed delta chain record is invalid', {
+          retryable: true,
+          cause,
+        });
+      }
+      if (previousDigest !== chainDigest || recordDigest !== computed) {
+        throw memorySourceError('source_changed', 'committed delta chain continuity failed', {
+          retryable: true,
+        });
+      }
+      chainDigest = recordDigest;
+    }
+    expectedSequence += 1;
+    expectedRevision += 1;
+  }
+  if (expectedSequence !== activeDelta.count + 1
+      || expectedRevision !== manifest.currentRevision + 1
+      || chainDigest !== activeDelta.chainDigest) {
+    throw memorySourceError('source_changed', 'committed delta chain watermark differs from manifest', {
+      retryable: true,
+    });
+  }
+}
+
 async function writeAllAt(handle, bytes, position) {
   let written = 0;
   while (written < bytes.length) {
@@ -117,19 +213,66 @@ async function appendMemoryRevision(brainDir, changes, options = {}) {
     let sequence = manifest.activeDelta.count;
     let offset = committedBytes;
     try {
-      if (Number(opened.stat.size) < committedBytes) {
+      const appendFromStat = await opened.handle.stat({ bigint: true });
+      if (Number(appendFromStat.size) < committedBytes) {
         throw memorySourceError('source_unavailable', 'committed delta is truncated', { retryable: true });
       }
+      const preOpenIdentity = opened.pathIdentity || appendFromStat;
+      const cleanCommittedSize = Number(preOpenIdentity.size) === committedBytes;
+      const hasChainAuthority = typeof manifest.activeDelta.chainDigest === 'string';
+      if (cleanCommittedSize && manifest.activeDelta.fileIdentity
+          && !sameCommittedContent(preOpenIdentity, manifest.activeDelta.fileIdentity)) {
+        throw memorySourceError('source_changed', 'delta differs from committed manifest identity', {
+          retryable: true,
+        });
+      }
+      if (hasChainAuthority && (!cleanCommittedSize || !manifest.activeDelta.fileIdentity)) {
+        await validateCommittedDeltaChain(
+          brainDir,
+          deltaPath,
+          opened,
+          manifest,
+          options.signal,
+        );
+      }
       await assertOpenedFilePathIdentity(opened, openedIdentity);
-      await opened.handle.truncate(committedBytes);
+      if (Number(appendFromStat.size) !== committedBytes) {
+        await opened.handle.truncate(committedBytes);
+      }
+      const committedPrefixStat = await opened.handle.stat({ bigint: true });
+      const appendFrom = {
+        committedBytes,
+        count: manifest.activeDelta.count,
+        fileIdentity: cleanCommittedSize && manifest.activeDelta.fileIdentity
+          || committedFileIdentity(committedPrefixStat),
+      };
+      const chainBaseCount = hasChainAuthority
+        ? manifest.activeDelta.chainBaseCount
+        : manifest.activeDelta.count;
+      const chainBaseBytes = hasChainAuthority
+        ? manifest.activeDelta.chainBaseBytes
+        : committedBytes;
+      const chainBaseDigest = hasChainAuthority
+        ? manifest.activeDelta.chainBaseDigest
+        : await hashOpenedPrefix(opened.handle, committedBytes, options.signal);
+      let chainDigest = hasChainAuthority
+        ? manifest.activeDelta.chainDigest
+        : chainBaseDigest;
       for (const record of changeRecords(capturedChanges)) {
         revision += 1;
         sequence += 1;
-        const encoded = Buffer.from(`${JSON.stringify({
+        const payload = {
           epoch: manifest.activeDeltaEpoch,
           sequence,
           revision,
           ...record,
+        };
+        const previousDigest = chainDigest;
+        chainDigest = nextDeltaChainDigest(previousDigest, payload);
+        const encoded = Buffer.from(`${JSON.stringify({
+          ...payload,
+          previousDigest,
+          chainDigest,
         })}\n`);
         await writeAllAt(opened.handle, encoded, offset);
         offset += encoded.length;
@@ -153,6 +296,12 @@ async function appendMemoryRevision(brainDir, changes, options = {}) {
           toRevision: revision,
           count: sequence,
           committedBytes: bytes,
+          appendFrom,
+          fileIdentity: committedFileIdentity(committedStat),
+          chainBaseCount,
+          chainBaseBytes,
+          chainBaseDigest,
+          chainDigest,
         },
         summary: capturedSummary || manifest.summary,
       };
@@ -207,6 +356,7 @@ async function rewriteMemoryBase(brainDir, capturedView, options = {}) {
     const edges = await writeJsonlGzAtomic(path.join(brainDir, edgeFile), view.edges, options);
     const deltaHandle = await fsp.open(path.join(brainDir, deltaFile), 'wx', 0o600);
     await deltaHandle.sync();
+    const deltaStat = await deltaHandle.stat({ bigint: true });
     await deltaHandle.close();
     await fsyncDirectory(brainDir);
     await inject(options, 'afterBaseFiles');
@@ -227,6 +377,11 @@ async function rewriteMemoryBase(brainDir, capturedView, options = {}) {
         toRevision: baseRevision,
         count: 0,
         committedBytes: 0,
+        fileIdentity: committedFileIdentity(deltaStat),
+        chainBaseCount: 0,
+        chainBaseBytes: 0,
+        chainBaseDigest: emptyDeltaDigest(),
+        chainDigest: emptyDeltaDigest(),
       },
       ann: { indexFile: null, metaFile: null, builtFromRevision: null },
       summary: view.summary,
@@ -253,8 +408,52 @@ async function advanceAnnBuiltFromRevision(brainDir, update = {}) {
       if (!Number.isSafeInteger(update.builtFromRevision) || update.builtFromRevision < 0) {
         throw memorySourceError('invalid_request', 'invalid ANN revision');
       }
-      if (update.builtFromRevision !== manifest.currentRevision) {
+      const bridgeAuthoritySupplied = Number.isSafeInteger(update.expectedBaseRevision)
+        && typeof update.expectedDeltaEpoch === 'string'
+        && update.expectedDeltaEpoch.length > 0;
+      if (bridgeAuthoritySupplied
+          && (manifest.baseRevision !== update.expectedBaseRevision
+            || manifest.activeDeltaEpoch !== update.expectedDeltaEpoch)) {
         return { advanced: false, reason: 'source_changed', manifest };
+      }
+      if (Number.isSafeInteger(manifest.ann?.builtFromRevision)
+          && manifest.ann.builtFromRevision > update.builtFromRevision) {
+        return { advanced: false, reason: 'ann_regression', manifest };
+      }
+      const bridgeable = update.builtFromRevision >= manifest.baseRevision
+        && update.builtFromRevision <= manifest.currentRevision
+        && manifest.activeDelta.fromRevision === manifest.baseRevision + 1
+        && manifest.activeDelta.toRevision === manifest.currentRevision
+        && manifest.activeDelta.count === manifest.currentRevision - manifest.baseRevision;
+      if (!bridgeable
+          || (update.builtFromRevision !== manifest.currentRevision && !bridgeAuthoritySupplied)) {
+        return { advanced: false, reason: 'source_changed', manifest };
+      }
+      let expectedSequence = 1;
+      let expectedRevision = manifest.baseRevision + 1;
+      for await (const entry of readJsonl(path.join(brainDir, manifest.activeDelta.file), {
+        confinedRoot: brainDir,
+        byteLimit: manifest.activeDelta.committedBytes,
+        requireCompletePrefix: true,
+        allowTrailingBytes: true,
+        expectedRecordCount: manifest.activeDelta.count,
+        signal: update.signal,
+      })) {
+        if (entry?.epoch !== manifest.activeDeltaEpoch
+            || entry.sequence !== expectedSequence
+            || entry.revision !== expectedRevision) {
+          throw memorySourceError('source_unavailable', 'ANN delta bridge records are not contiguous', {
+            retryable: true,
+          });
+        }
+        expectedSequence += 1;
+        expectedRevision += 1;
+      }
+      if (expectedSequence !== manifest.activeDelta.count + 1
+          || expectedRevision !== manifest.currentRevision + 1) {
+        throw memorySourceError('source_unavailable', 'ANN delta bridge is incomplete', {
+          retryable: true,
+        });
       }
       const next = {
         ...manifest,
@@ -265,7 +464,11 @@ async function advanceAnnBuiltFromRevision(brainDir, update = {}) {
         },
       };
       await writeManifestAtomic(brainDir, next);
-      completedOutcome = { advanced: true, manifest: next };
+      completedOutcome = {
+        advanced: true,
+        coverage: update.builtFromRevision === manifest.currentRevision ? 'fresh' : 'overlay-covered',
+        manifest: next,
+      };
       return completedOutcome;
     });
   } catch (error) {
@@ -293,16 +496,9 @@ async function compareAndSwapSourceRevision(brainDir, update = {}) {
     }, async () => {
       throwIfAborted(update.signal);
       const manifest = await readManifest(brainDir);
-      const descriptor = manifest ? {
-        version: 1,
-        canonicalRoot: await fsp.realpath(brainDir),
-        generation: manifest.generation,
-        baseRevision: manifest.baseRevision,
-        cutoffRevision: manifest.currentRevision,
-        activeBase: manifest.activeBase,
-        activeDelta: manifest.activeDelta,
-        summary: manifest.summary,
-      } : null;
+      const descriptor = manifest
+        ? createDescriptor(await fsp.realpath(brainDir), manifest)
+        : null;
       if (!manifest || manifest.generation !== update.expectedGeneration
           || manifest.currentRevision !== update.expectedRevision
           || sourceDescriptorDigest(descriptor) !== update.expectedDigest) {

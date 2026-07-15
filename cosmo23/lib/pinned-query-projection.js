@@ -2,6 +2,10 @@
 
 const { QUERY_OPERATION_LIMITS } = require('./brain-operation-limits');
 const { serializeProviderRecord } = require('./provider-record-sanitizer');
+const {
+  projectMemoryAuthority,
+  scoreMemoryAuthority,
+} = require('../../shared/memory-authority.cjs');
 
 const COOPERATIVE_YIELD_EVERY = 1_000;
 
@@ -84,14 +88,29 @@ function nodeText(node) {
   return values.filter(value => typeof value === 'string').join(' ').toLowerCase();
 }
 
-function scoreNode(node, terms) {
+function scoreNode(node, terms, { query, nowMs } = {}) {
   const text = nodeText(node);
   let matched = 0;
   for (const term of terms) if (text.includes(term)) matched += 1;
   const coverage = terms.length ? matched / terms.length : 0;
   const salience = Number(node.salience ?? node.weight ?? node.activation ?? 0);
   const boundedSalience = Number.isFinite(salience) ? Math.max(0, Math.min(1, salience)) : 0;
-  return coverage * 4 + matched * 0.25 + boundedSalience;
+  const relevance = coverage * 4 + matched * 0.25 + boundedSalience;
+  return scoreMemoryAuthority(node, relevance, { query, nowMs });
+}
+
+function projectProviderAuthority(node) {
+  const profile = projectMemoryAuthority(node);
+  const operationalAuthority = profile.authorityClass === 'verified_current_state';
+  return Object.freeze({
+    schema: profile.schema,
+    domain: profile.retrievalDomain,
+    authorityClass: profile.authorityClass,
+    semanticTime: profile.semanticTime,
+    operationalAuthority,
+    requiresFreshVerification: !operationalAuthority,
+    sourceChain: profile.sourceChain,
+  });
 }
 
 function compareCandidate(left, right) {
@@ -175,6 +194,7 @@ async function projectPinnedQuery({
   sourceSummary,
   onNodeScanned = null,
   onEdgeScanned = null,
+  nowMs = Date.now(),
 } = {}) {
   if (!sourcePin || typeof sourcePin.iterateNodes !== 'function'
       || typeof sourcePin.iterateEdges !== 'function') {
@@ -204,8 +224,9 @@ async function projectPinnedQuery({
       } else {
         const change = heap.add({
           id,
-          score: scoreNode(serialized.value, terms),
+          score: scoreNode(serialized.value, terms, { query, nowMs }),
           record: serialized.value,
+          authority: projectProviderAuthority(serialized.value),
           bytes: serialized.bytes,
         });
         if (change.added) retainedNodeBytes += change.added.bytes;
@@ -226,7 +247,9 @@ async function projectPinnedQuery({
     await yieldForCancellation(nodesScanned, signal);
   }
 
-  const nodes = heap.valuesBestFirst().map(row => row.record);
+  const selectedRows = heap.valuesBestFirst();
+  const nodes = selectedRows.map(row => row.record);
+  const nodeAuthorities = selectedRows.map(row => ({ id: row.id, ...row.authority }));
   if (nodes.length === 0 && nodesDroppedForByteBudget > 0) {
     throw typed('result_too_large', 'No pinned query candidate fits the projection byte limit');
   }
@@ -275,6 +298,27 @@ async function projectPinnedQuery({
       filteredTotal: 0,
       byteBudgetTruncated,
       droppedForByteBudget,
+      authoritySummary: nodeAuthorities.reduce((summary, authority) => {
+        const field = ({
+          verified_current_state: 'verifiedCurrentState',
+          jtr_correction: 'jtrCorrection',
+          artifact_log: 'artifactLog',
+          worker_receipt: 'workerReceipt',
+          generated_doctrine: 'generatedDoctrine',
+          narrative: 'narrative',
+        })[authority.authorityClass];
+        if (field) summary[field] += 1;
+        if (authority.requiresFreshVerification) summary.requiresFreshVerification += 1;
+        return summary;
+      }, {
+        verifiedCurrentState: 0,
+        jtrCorrection: 0,
+        artifactLog: 0,
+        workerReceipt: 0,
+        generatedDoctrine: 0,
+        narrative: 0,
+        requiresFreshVerification: 0,
+      }),
     })
     : sourcePin.evidence || null;
   const sourceRevision = sourcePin.revision
@@ -284,6 +328,7 @@ async function projectPinnedQuery({
 
   return Object.freeze({
     nodes,
+    nodeAuthorities,
     edges,
     summary,
     sourceRevision,

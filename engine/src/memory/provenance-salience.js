@@ -1,4 +1,12 @@
 const DAY_MS = 24 * 60 * 60 * 1000;
+const {
+  classifyMemoryDomain,
+  classifyClaimAuthority,
+  projectSourceChain,
+  scoreMemoryAuthority,
+  explainMemoryAuthorityScore,
+  projectMemoryAuthority,
+} = require('../../../shared/memory-authority.cjs');
 
 const TELEMETRY_TAGS = new Set([
   'jerry_cron_docs',
@@ -220,17 +228,55 @@ function telemetryDecay(node, provenance, nowMs) {
   return Math.pow(0.5, ageDays / halfLifeDays);
 }
 
-function scoreMemorySalience(node, baseScore, opts = {}) {
+function explainMemorySalienceScore(node, baseScore, opts = {}) {
   const score = Number(baseScore) || 0;
-  if (score <= 0) return score;
+  if (score <= 0) return {
+    score,
+    factors: [{ name: 'base', value: score }],
+  };
 
   const provenance = classifyMemoryProvenance(node);
   const nowMs = Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
-  const decay = telemetryDecay(node, provenance, nowMs);
-  return score * provenance.salienceWeight * decay;
+  const verifiedLiveTelemetry = (opts.intent || opts.query)
+    && provenance.sourceClass === 'telemetry'
+    && classifyMemoryDomain(node) === 'current_ops'
+    && classifyClaimAuthority(node) === 'verified_current_state';
+  const decay = verifiedLiveTelemetry ? 1 : telemetryDecay(node, provenance, nowMs);
+  const salienceWeight = verifiedLiveTelemetry ? 1.6 : provenance.salienceWeight;
+  const legacyWeighted = score * salienceWeight * decay;
+  if (!(opts.intent || opts.query)) {
+    return {
+      score: legacyWeighted,
+      factors: [
+        { name: 'base', value: score },
+        { name: 'legacy_salience', value: salienceWeight },
+        { name: 'legacy_decay', value: decay },
+      ],
+    };
+  }
+  const authority = explainMemoryAuthorityScore(node, legacyWeighted, opts);
+  return {
+    score: authority.score,
+    factors: [
+      { name: 'base', value: score },
+      { name: 'legacy_salience', value: salienceWeight },
+      { name: 'legacy_decay', value: decay },
+      ...authority.factors.filter((factor) => factor.name !== 'base'),
+    ],
+  };
+}
+
+function scoreMemorySalience(node, baseScore, opts = {}) {
+  return explainMemorySalienceScore(node, baseScore, opts).score;
 }
 
 module.exports = {
   classifyMemoryProvenance,
   scoreMemorySalience,
+  explainMemorySalienceScore,
+  classifyMemoryDomain,
+  classifyClaimAuthority,
+  projectSourceChain,
+  scoreMemoryAuthority,
+  projectMemoryAuthority,
 };

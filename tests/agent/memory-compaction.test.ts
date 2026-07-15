@@ -65,6 +65,45 @@ test('conversation memory extraction uses non-Claude agent defaults', async () =
   }
 });
 
+test('model extraction keeps corrections narrative without an exact claim-to-message binding', async () => {
+  const root = join(tmpdir(), `home23-memory-correction-${Date.now()}`);
+  const workspace = join(root, 'workspace');
+  mkdirSync(workspace, { recursive: true });
+  const prevFetch = globalThis.fetch;
+  const prevKey = process.env.OLLAMA_CLOUD_API_KEY;
+  process.env.OLLAMA_CLOUD_API_KEY = 'test-ollama-key';
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    message: { content: JSON.stringify({
+      type: 'correction', title: 'Engine is stopped', statement: 'The engine is stopped.',
+      domain: 'ops', before: 'Engine was reported online.', after: 'Engine is stopped.',
+      why: 'The operator corrected the report.', trigger_keywords: 'engine,status',
+      applies_to: 'home23', priority: 'high',
+    }) },
+  }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+
+  try {
+    const memory = new MemoryManager({
+      client: {} as never, model: 'kimi-k2.6', provider: 'ollama-cloud', workspacePath: workspace,
+    });
+    await memory.extractAndSave('chat-1', [
+      { role: 'user', content: 'What is the engine status?' },
+      { role: 'assistant', content: 'It is online.' },
+      { role: 'user', content: 'Actually, that is wrong. The engine is stopped.' },
+      { role: 'assistant', content: 'Understood.' },
+    ], 'kimi-k2.6', 'ollama-cloud');
+
+    const stored = JSON.parse(readFileSync(join(root, 'brain', 'memory-objects.json'), 'utf8'));
+    assert.equal(stored.objects[0].actor, 'extraction');
+    assert.equal(stored.objects[0].provenance.node_profile.authorityClass, 'narrative');
+    assert.deepEqual(stored.objects[0].provenance.source_refs, []);
+  } finally {
+    globalThis.fetch = prevFetch;
+    if (prevKey === undefined) delete process.env.OLLAMA_CLOUD_API_KEY;
+    else process.env.OLLAMA_CLOUD_API_KEY = prevKey;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('pre-compaction hook does not skip non-Claude providers', async () => {
   const hook = new DefaultCompactionHooks();
   let seenProvider = '';

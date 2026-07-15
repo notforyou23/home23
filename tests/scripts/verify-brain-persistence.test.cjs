@@ -7,7 +7,7 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { gzipSync } = require('node:zlib');
 
-const { rewriteMemoryBase } = require('../../shared/memory-source');
+const { appendMemoryRevision, rewriteMemoryBase } = require('../../shared/memory-source');
 const execFileAsync = promisify(execFile);
 
 test('streaming hash metadata accepts Jerry-sized files above 1 GiB without allocating them', async () => {
@@ -307,12 +307,61 @@ test('temp-save writes only an external unpredictable clone, reloads it, and gua
   assert.equal(result.clone.persistedMode, 'delta');
   assert.equal(result.clone.canaryMatches, 1);
   assert.equal(result.clone.fullMaterializerUsed, false);
-  assert.equal(result.clone.copiedFiles.every((row) => row.sourceSha256 === row.destinationSha256), true);
+  assert.equal(result.clone.copyPolicy, 'exact-physical-files-with-portable-manifest');
+  assert.deepEqual(result.clone.manifestProjection, {
+    projected: true,
+    chainAuthority: 'retained',
+    removedFields: ['fileIdentity'],
+  });
+  const manifestCopy = result.clone.copiedFiles.find((row) => row.path === 'memory-manifest.json');
+  assert.equal(manifestCopy.projection, 'portable-delta-identity');
+  assert.notEqual(manifestCopy.sourceSha256, manifestCopy.destinationSha256);
+  assert.equal(result.clone.copiedFiles
+    .filter((row) => row.path !== 'memory-manifest.json')
+    .every((row) => row.sourceSha256 === row.destinationSha256), true);
   assert.equal(result.boundedForceFull.persistedMode, 'full');
   assert.deepEqual(result.boundedForceFull.loaded, { nodes: 2, edges: 1 });
   assert.equal(result.boundedForceFull.persistedRevision, result.boundedForceFull.reloadedRevision);
   assert.equal(result.liveForceFull.attempted, false);
   assert.match(result.liveForceFull.reason, /prohibited/);
+  assert.deepEqual(result.before, result.after);
+});
+
+test('temp-save projects source-only identities from a nonempty chained native delta', async (t) => {
+  const { verifyTempSaveClone } = await import('../../scripts/verify-brain-persistence.mjs');
+  const state = await fixture();
+  t.after(() => fs.rm(state.root, { recursive: true, force: true }));
+  const appended = await appendMemoryRevision(state.brainDir, {
+    nodes: [{ id: 'n3', concept: 'committed native delta', cluster: 'two' }],
+  }, {
+    lockRoot: path.join(state.root, 'fixture-locks'),
+    summary: { nodeCount: 3, edgeCount: 1, clusterCount: 2 },
+  });
+  await fs.writeFile(path.join(state.brainDir, 'brain-snapshot.json'), `${JSON.stringify({
+    nodeCount: 3,
+    edgeCount: 1,
+    currentRevision: appended.manifest.currentRevision,
+    generation: appended.manifest.generation,
+    savedAt: new Date().toISOString(),
+  })}\n`);
+
+  const result = await verifyTempSaveClone({
+    home23Root: state.home23Root,
+    agent: 'jerry',
+    brainDir: state.brainDir,
+    tempRoot: state.tempRoot,
+  });
+
+  assert.deepEqual(result.clone.manifestProjection, {
+    projected: true,
+    chainAuthority: 'retained',
+    removedFields: ['fileIdentity', 'appendFrom'],
+  });
+  assert.equal(result.clone.loaded.nodes, 4);
+  assert.equal(result.clone.canaryMatches, 1);
+  assert.equal(result.clone.copiedFiles
+    .filter((row) => row.path !== 'memory-manifest.json')
+    .every((row) => row.sourceSha256 === row.destinationSha256), true);
   assert.deepEqual(result.before, result.after);
 });
 

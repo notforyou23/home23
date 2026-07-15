@@ -10,6 +10,7 @@ import type { TTSService } from '../observability/tts.js';
 import type { BrowserController } from '../browser/cdp.js';
 import type { BrainOperationsClient } from './brain-operations/client.js';
 import type { OperationActivity } from './brain-operations/types.js';
+import type { MemoryObjectStore } from './memory-objects.js';
 
 // ─── Tool Types ─────────────────────────────────────────────
 
@@ -58,6 +59,14 @@ export interface ToolContext {
   contextManager: ContextManagerRef;
   subAgentTracker: SubAgentTracker;
   chatId: string;
+  /** Actual channel/user turn data, set by the loop rather than tool input. */
+  authenticatedUserMessage?: {
+    chatId: string;
+    messageRef: string;
+    text: string;
+  };
+  /** Loop-owned store whose correction validator is bound to active recorded turns. */
+  memoryObjectStore?: MemoryObjectStore;
   telegramAdapter: TelegramAdapterRef | null;
   runAgentLoop: AgentLoopRunner | null;
   workerConnectorBaseUrl?: string;

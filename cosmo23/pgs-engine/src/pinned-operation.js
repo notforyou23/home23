@@ -28,7 +28,11 @@ const {
 } = require('../../lib/provider-input-budget');
 const { getModelCapabilities } = require('../../server/config/model-catalog');
 
-const PINNED_SWEEP_CONCURRENCY = 2;
+// Keep this internal so callers cannot override the resource boundary. Four
+// concurrent bounded work units preserve the read-only/memory limits while
+// leaving enough headroom for durable commits and synthesis inside the
+// wait-aware large-graph acceptance window.
+const PINNED_SWEEP_CONCURRENCY = 4;
 const MAX_GENERATED_WORK_UNIT_ID_BYTES = 256;
 const SWEEP_INSTRUCTIONS = 'Analyze only this pinned PGS work unit. Return evidence-backed findings and explicit absences.';
 const SYNTHESIS_INSTRUCTIONS = 'Synthesize the pinned PGS findings into a direct answer. Preserve absences and cite work-unit IDs.';

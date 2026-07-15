@@ -91,6 +91,56 @@ test('large direct query scans portable iterators once and retains bounded recor
   assert.equal(projection.nodes.some(node => String(node.content).includes('bounded canary')), true);
 });
 
+test('pinned Query ranks current verified evidence above freshly reingested archive text', async () => {
+  const now = '2026-07-14T20:00:00.000Z';
+  const records = [
+    {
+      id: 'archive',
+      content: 'brain retrieval is unavailable archive canary',
+      salience: 1,
+      created: now,
+      source_event_at: '2025-01-01T00:00:00.000Z',
+      metadata: { sourcePath: 'workspace/reports/x-timeline-archive.md' },
+      provenance: { authorityClass: 'narrative', operationalAuthority: false },
+    },
+    {
+      id: 'current',
+      content: 'brain retrieval is available current canary',
+      salience: 0.2,
+      asserted_at: '2026-07-14T19:59:00.000Z',
+      tag: 'state_snapshot',
+      provenance: {
+        authorityClass: 'verified_current_state',
+        operationalAuthority: true,
+        evidenceRefs: ['verifier:live-probe'],
+      },
+    },
+  ];
+  const projection = await projectPinnedQuery({
+    sourcePin: createSyntheticPinnedSource({
+      nodeCount: records.length,
+      edgeCount: 0,
+      nodeFactory: index => records[index],
+    }),
+    query: 'brain retrieval canary',
+    signal: new AbortController().signal,
+    limits: { maxNodes: 2, maxEdges: 1 },
+    nowMs: Date.parse(now),
+  });
+
+  assert.deepEqual(projection.nodes.map(node => node.id), ['current', 'archive']);
+  assert.deepEqual(projection.nodeAuthorities.map(node => node.authorityClass), [
+    'verified_current_state',
+    'narrative',
+  ]);
+  assert.deepEqual(projection.nodeAuthorities.map(node => node.domain), [
+    'current_ops',
+    'external_intake',
+  ]);
+  assert.equal(projection.nodeAuthorities[0].operationalAuthority, true);
+  assert.equal(projection.nodeAuthorities[1].requiresFreshVerification, true);
+});
+
 test('oversized and unserializable records fail closed', async () => {
   const oversized = createSyntheticPinnedSource({
     nodeCount: 1,

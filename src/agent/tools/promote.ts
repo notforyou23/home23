@@ -79,7 +79,7 @@ Each promotion must include: what changed (before/after/why), when it should res
       // Lazy-load to avoid circular deps
       const { MemoryObjectStore } = await import('../memory-objects.js');
       const brainDir = ctx.workspacePath.replace('/workspace', '/brain');
-      const store = new MemoryObjectStore(brainDir);
+      const store = ctx.memoryObjectStore ?? new MemoryObjectStore(brainDir);
 
       const type = input.type as string;
       const title = input.title as string;
@@ -124,6 +124,11 @@ Each promotion must include: what changed (before/after/why), when it should res
         : type === 'procedure' ? 'action_change'
         : 'belief_change';
 
+      const userMessage = ctx.authenticatedUserMessage;
+      const correctionIngress = type === 'correction' && userMessage?.chatId === ctx.chatId
+        ? { chatId: userMessage.chatId, messageRef: userMessage.messageRef, userText: userMessage.text }
+        : undefined;
+
       const obj = store.createObject({
         type: type as any,
         thread_id: thread.thread_id,
@@ -166,7 +171,7 @@ Each promotion must include: what changed (before/after/why), when it should res
           review_after_days: type === 'procedure' ? 60 : 30,
         },
         privacy_class: privacy as any,
-      });
+      }, correctionIngress);
 
       return {
         content: `Promoted to memory: "${title}" (${obj.memory_id})\nThread: ${thread.thread_id} — ${thread.title}\nTriggers: ${triggerKeywords.join(', ')}\nState delta: ${before} → ${after} (${why})`,

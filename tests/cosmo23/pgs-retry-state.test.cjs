@@ -78,9 +78,9 @@ test('multi-window PGS continuation counts reused work in every selected total',
     .filter(event => event.stage === 'sweep_batch_complete')
     .map(({ selected, completed, pending }) => ({ selected, completed, pending }))
     .filter((row, index, rows) => index === 0 || row.selected !== rows[index - 1].selected), [
-      { selected: 21, completed: 7, pending: 14 },
-      { selected: 37, completed: 23, pending: 14 },
-      { selected: 50, completed: 39, pending: 11 },
+      { selected: 21, completed: 9, pending: 12 },
+      { selected: 37, completed: 25, pending: 12 },
+      { selected: 50, completed: 41, pending: 9 },
     ]);
   assert.deepEqual({
     selected: snapshot.selected,
@@ -164,7 +164,6 @@ test('ordinary failed PGS work remains pending and a new attempt retries only th
     .map(({ completed, successful, failed: failedCount, pending, retryable }) => ({
       completed, successful, failed: failedCount, pending, retryable,
     })), [
-    { completed: 2, successful: 1, failed: 1, pending: 4, retryable: 1 },
     { completed: 4, successful: 3, failed: 1, pending: 2, retryable: 1 },
     { completed: 6, successful: 5, failed: 1, pending: 0, retryable: 1 },
   ]);

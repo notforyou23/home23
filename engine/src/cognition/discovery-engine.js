@@ -23,6 +23,12 @@
 
 'use strict';
 
+const {
+  classifyMemoryDomain,
+  classifyClaimAuthority,
+  scoreMemoryAuthority,
+} = require('../../../shared/memory-authority.cjs');
+
 const DEFAULT_CONFIG = {
   probeIntervalMs: 30 * 1000,     // 30s between probes
   queueCapacity: 100,              // max candidates in the ranked queue
@@ -241,21 +247,21 @@ class DiscoveryEngine {
     const clusters = this.memory.clusters;
     if (!clusters || clusters.size < 2) return [];
 
-    const sizes = [];
-    for (const nodeSet of clusters.values()) {
-      sizes.push(nodeSet.size || 0);
+    const eligibleByCluster = new Map();
+    for (const [clusterId, nodeSet] of clusters.entries()) {
+      const ids = this._authorityEligibleIds(nodeSet);
+      if (ids.length > 0) eligibleByCluster.set(clusterId, ids);
     }
-    if (sizes.length === 0) return [];
+    if (eligibleByCluster.size < 2) return [];
+    const sizes = Array.from(eligibleByCluster.values(), (ids) => ids.length);
     const mean = sizes.reduce((a, b) => a + b, 0) / sizes.length;
     const upper = mean * this.config.anomaly.densityDeviationFactor;
     const lower = mean / this.config.anomaly.densityDeviationFactor;
 
     const out = [];
-    for (const [clusterId, nodeSet] of clusters.entries()) {
-      const size = nodeSet.size || 0;
+    for (const [clusterId, liveIds] of eligibleByCluster.entries()) {
+      const size = liveIds.length;
       if (size > upper || size < lower) {
-        const liveIds = this._liveIds(nodeSet);
-        if (liveIds.length === 0) continue;   // all stale — skip phantom candidate
         const deviation = Math.abs(size - mean) / Math.max(mean, 1);
         out.push(this._makeCandidate({
           key: `anomaly:${clusterId}`,
@@ -461,7 +467,8 @@ class DiscoveryEngine {
   _makeCandidate({ key, signal, clusterId, nodeIds, importance, rationale }) {
     const tc = this.getTemporalContext?.();
     const decay = this._decayFactor(signal, nodeIds);
-    const score = this._score(importance, signal, tc) * decay;
+    const authority = this._authorityFactor(nodeIds);
+    const score = this._score(importance, signal, tc) * decay * authority;
     return {
       key,
       signal,
@@ -469,6 +476,7 @@ class DiscoveryEngine {
       nodeIds,
       importance,
       score,
+      authorityFactor: authority,
       rationale,
       discoveredAt: new Date().toISOString(),
       temporalSnapshot: tc ? {
@@ -477,6 +485,24 @@ class DiscoveryEngine {
         activeRhythms: tc.jtrTime?.activeRhythms,
       } : null,
     };
+  }
+
+  _authorityFactor(nodeIds) {
+    if (!Array.isArray(nodeIds) || nodeIds.length === 0) return 1;
+    const factors = nodeIds
+      .map((id) => this.memory?.nodes?.get?.(id))
+      .filter(Boolean)
+      .map((node) => scoreMemoryAuthority(node, 1, { intent: 'current_state' }));
+    return factors.length ? factors.reduce((sum, value) => sum + value, 0) / factors.length : 1;
+  }
+
+  _authorityEligibleIds(nodeIds) {
+    return this._liveIds(nodeIds).filter((id) => {
+      const node = this.memory?.nodes?.get?.(id);
+      if (!node || classifyMemoryDomain(node) !== 'current_ops') return false;
+      return ['verified_current_state', 'jtr_correction', 'artifact_log', 'worker_receipt']
+        .includes(classifyClaimAuthority(node));
+    });
   }
 
   /**

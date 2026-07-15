@@ -308,6 +308,65 @@ test('MemoryIngest records authority routing so stale memories cannot pose as li
   assert.match(historical.provenance.authority.wrongTenseGuard, /present-tense operational truth/);
 });
 
+test('MemoryIngest grants verified current state only when live verifier evidence is present', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mi-node-provenance-'));
+  const ingest = new MemoryIngest({ brainDir: dir });
+  const now = new Date().toISOString();
+  const draft = {
+    method: 'sensor_primary', type: 'observation', topic: 'machine', tags: ['machine', 'process'],
+  };
+
+  const unverified = await ingest.writeFromObservation({
+    channelId: 'machine.process', sourceRef: 'process:no-verifier', receivedAt: now,
+    producedAt: now, flag: 'COLLECTED', confidence: 0.95,
+    payload: { summary: 'process is healthy' },
+  }, draft);
+  const verified = await ingest.writeFromObservation({
+    channelId: 'machine.process', sourceRef: 'process:verified', receivedAt: now,
+    producedAt: now, flag: 'COLLECTED', confidence: 0.95,
+    payload: { summary: 'process is healthy' }, verifierId: 'os:ps-top-cpu',
+  }, draft);
+
+  assert.equal(unverified.provenance.node_profile.schema, 'home23.node-provenance.v1');
+  assert.notEqual(unverified.provenance.node_profile.authorityClass, 'verified_current_state');
+  assert.equal(unverified.provenance.node_profile.operationalAuthority, false);
+  assert.equal(unverified.provenance.node_profile.requiresFreshVerification, true);
+  assert.ok(unverified.provenance.node_profile.missingEvidence.includes('verifier_evidence'));
+  assert.equal(verified.provenance.node_profile.authorityClass, 'verified_current_state');
+  assert.equal(verified.provenance.node_profile.operationalAuthority, true);
+  assert.equal(verified.provenance.node_profile.requiresFreshVerification, false);
+  assert.deepEqual(verified.provenance.node_profile.evidenceRefs, ['verifier:os:ps-top-cpu']);
+});
+
+test('MemoryIngest keeps generated reports narrative and bounds jtr corrections to semantic authority', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mi-generated-provenance-'));
+  const ingest = new MemoryIngest({ brainDir: dir });
+  const now = new Date().toISOString();
+
+  const generated = await ingest.writeFromObservation({
+    channelId: 'work.report', sourceRef: 'report:generated', receivedAt: now,
+    producedAt: now, flag: 'COLLECTED', confidence: 0.9,
+    payload: { summary: 'generated report says the deployment is healthy' },
+    verifierId: 'report-generator',
+  }, {
+    method: 'reflection_synthesis', type: 'observation', topic: 'deployment', tags: ['generated-report'],
+  });
+  const correction = await ingest.writeFromObservation({
+    channelId: 'machine.process', sourceRef: 'jtr:correction:process', receivedAt: now,
+    producedAt: now, flag: 'COLLECTED', confidence: 0.99,
+    payload: { summary: 'jtr says the process status is wrong' },
+  }, {
+    method: 'conversation', type: 'observation', topic: 'machine', tags: ['jtr-correction', 'machine'],
+  });
+
+  assert.equal(generated.provenance.node_profile.authorityClass, 'narrative');
+  assert.equal(generated.provenance.node_profile.operationalAuthority, false);
+  assert.equal(generated.provenance.node_profile.requiresFreshVerification, true);
+  assert.equal(correction.provenance.node_profile.authorityClass, 'jtr_correction');
+  assert.equal(correction.provenance.node_profile.operationalAuthority, false);
+  assert.equal(correction.provenance.node_profile.requiresFreshVerification, true);
+});
+
 test('MemoryIngest caps zero-context audit confidence hard', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mi-zc-'));
   const ingest = new MemoryIngest({ brainDir: dir });

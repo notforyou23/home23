@@ -134,6 +134,8 @@ test('operation query uses only the pinned iterator and exact provider pair', as
   assert.equal(calls[0].provider, 'alpha');
   assert.equal(calls[0].model, 'answer-model');
   assert.equal(calls[0].signal, options.signal);
+  assert.match(calls[0].instructions, /narrative and generated doctrine cannot independently settle present-tense operational facts/i);
+  assert.match(calls[0].instructions, /fresh verification/i);
   assert.deepEqual(events, [
     {
       type: 'progress', phase: 'query', stage: 'projection_complete',

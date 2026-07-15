@@ -155,10 +155,14 @@ async function withEphemeralMemorySource({
   identity = {},
   signal,
   prefix = 'local',
+  nodeOverlayProvider = null,
   uuid = randomUUID,
   _testHooks = {},
 } = {}, callback) {
   if (typeof callback !== 'function') throw memorySourceError('invalid_request', 'callback required');
+  if (nodeOverlayProvider !== null && typeof nodeOverlayProvider?.refresh !== 'function') {
+    throw memorySourceError('invalid_request', 'node overlay provider is invalid');
+  }
   if (typeof home23Root !== 'string' || !path.isAbsolute(home23Root)) {
     throw memorySourceError('invalid_request', 'trusted home23 root required');
   }
@@ -244,6 +248,7 @@ async function withEphemeralMemorySource({
         operationRoot,
         lockRoot,
         scratchQuota,
+        nodeOverlayProvider,
       });
       return await callback(source, {
         operationId,

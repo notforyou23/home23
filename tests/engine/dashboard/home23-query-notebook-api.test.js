@@ -1307,12 +1307,13 @@ test('DashboardServer verifies shared credentials from agent or secrets config b
   }
 
   const bridgeToken = 'config-only-bridge-token-'.padEnd(64, 'x');
+  const credentialNow = Date.now();
   const authority = createQueryNotebookCredentialAuthority({
-    bridgeToken, requesterAgent: 'jerry', now: () => NOW,
+    bridgeToken, requesterAgent: 'jerry', now: () => credentialNow,
   });
   const credential = authority.issue({
     audience: 'device', credentialId: CREDENTIAL_ID, requesterKind: 'device',
-    generation: 2, expiresAt: '2026-07-14T20:00:00.000Z',
+    generation: 2, expiresAt: new Date(credentialNow + 60 * 60 * 1000).toISOString(),
   });
   const headers = {
     authorization: `Bearer ${credential}`,

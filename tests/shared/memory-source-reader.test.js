@@ -57,6 +57,46 @@ test('writable open accepts only ctime drift confirmed by a stable pathname rest
   );
 });
 
+test('node-search overlay provider bypasses delta replay while preserving logical nodes', async () => {
+  const delta = [{
+    epoch: 'e3', sequence: 99, revision: 99, op: 'upsert_node',
+    record: { id: 'would-fail-replay', concept: 'invalid physical delta' },
+  }];
+  const { dir, manifest } = await createManifestFixture({
+    nodes: [{ id: 'base', concept: 'base node' }],
+    delta,
+    baseRevision: 2,
+    currentRevision: 3,
+    summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+  });
+  let refreshes = 0;
+  const logicalDelta = Object.freeze({ id: 'delta', concept: 'cached current node' });
+  const source = await openMemorySource(dir, {
+    nodeOverlayProvider: {
+      async refresh({ canonicalRoot, manifest: received }) {
+        refreshes += 1;
+        assert.equal(canonicalRoot, await fsp.realpath(dir));
+        assert.equal(received.currentRevision, manifest.currentRevision);
+        return {
+          deltaRecords: 1,
+          nodeUpserts: () => Object.freeze([logicalDelta]),
+          hasNodeUpsert: (id) => id === 'delta',
+          hasRemovedNode: () => false,
+        };
+      },
+    },
+  });
+  try {
+    assert.deepEqual((await collect(source.iterateNodes())).map((node) => node.id), ['base', 'delta']);
+    assert.equal(refreshes, 1);
+    await assert.rejects(async () => {
+      for await (const _edge of source.iterateEdges()) {}
+    }, { code: 'source_operation_required' });
+  } finally {
+    await source.close();
+  }
+});
+
 async function createManifestFixture({
   nodes = [],
   edges = [],
@@ -516,7 +556,11 @@ test('keyword search applies the advertised exact tag filter and reports filtere
   });
   const source = await openMemorySource(dir);
   const result = await source.searchKeyword({ query: 'shared canary', topK: 10, tag: 'alpha' });
-  assert.deepEqual(result.results, [{ id: '1', concept: 'shared canary', tag: 'alpha' }]);
+  assert.deepEqual(result.results.map(({ id, concept, tag }) => ({ id, concept, tag })), [
+    { id: '1', concept: 'shared canary', tag: 'alpha' },
+  ]);
+  assert.equal(result.results[0].retrievalAuthority.domain, 'current_ops');
+  assert.equal(Number.isFinite(result.results[0].retrievalScore), true);
   assert.equal(result.filtered, 1);
   assert.equal(result.evidence.filteredTotal, 1);
   assert.deepEqual(result.evidence.filters, { tag: 'alpha' });
@@ -526,4 +570,54 @@ test('keyword search applies the advertised exact tag filter and reports filtere
     { code: 'invalid_request', status: 400, field: 'tag' },
   );
   await source.close();
+});
+
+test('keyword search ranks current verified evidence above earlier archive order and projects authority', async (t) => {
+  const archive = {
+    id: 'archive',
+    concept: 'brain route canary is unavailable',
+    tag: 'jerry_cron_docs',
+    source_event_at: '2025-01-01T00:00:00.000Z',
+    provenance: { authorityClass: 'narrative', operationalAuthority: false },
+  };
+  const current = {
+    id: 'current',
+    concept: 'brain route canary is available',
+    tag: 'state_snapshot',
+    asserted_at: '2026-07-14T19:59:00.000Z',
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'verified_current_state',
+      operationalAuthority: true,
+      evidenceRefs: ['verifier:live-route'],
+    },
+  };
+  const fixture = await createManifestFixture({
+    nodes: [archive, current],
+    delta: [],
+    baseRevision: 2,
+    currentRevision: 2,
+    summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+  });
+  t.after(() => fsp.rm(fixture.dir, { recursive: true, force: true }));
+  const source = await openMemorySource(fixture.dir);
+  t.after(() => source.close());
+
+  const result = await source.searchKeyword({ query: 'brain route canary', topK: 1 });
+
+  assert.equal(result.results[0].id, 'current');
+  assert.equal(Number.isFinite(result.results[0].retrievalAuthority.scoreExplanation.score), true);
+  const { scoreExplanation, ...authority } = result.results[0].retrievalAuthority;
+  assert.ok(scoreExplanation.factors.length <= 8);
+  assert.deepEqual(authority, {
+    schema: 'home23.memory-authority-profile.v1',
+    domain: 'current_ops',
+    retrievalDomain: 'current_ops',
+    authorityClass: 'verified_current_state',
+    operationalAuthority: true,
+    requiresFreshVerification: false,
+    semanticTime: '2026-07-14T19:59:00.000Z',
+    sourceChain: [{ kind: 'evidence', ref: 'verifier:live-route' }],
+  });
+  assert.equal(result.evidence.completeCoverage, true);
 });

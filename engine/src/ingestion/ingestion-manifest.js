@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { isGeneratedMemoryMethod } = require('../../../shared/memory-authority.cjs');
 
 class IngestionManifest {
   /**
@@ -77,7 +78,10 @@ class IngestionManifest {
         contentHash,
         hash: fullHash,
         ingestedAt: new Date().toISOString(),
-        relationships
+        relationships,
+        provenance: normalizeNodeProvenance(enrichment.provenance, {
+          generated: enrichment.compiled === true,
+        }),
       }));
 
       // Upsert: remove existing entries for this file
@@ -94,6 +98,9 @@ class IngestionManifest {
         docFamilyConfidence: enrichment.docFamilyConfidence || null,
         structuralSignature: enrichment.structuralSignature || null,
         compiled: enrichment.compiled || false,
+        provenance: normalizeNodeProvenance(enrichment.provenance, {
+          generated: enrichment.compiled === true,
+        }),
         nodeCount: chunks.length,
         ingestedAt: new Date().toISOString()
       };
@@ -225,7 +232,10 @@ class IngestionManifest {
             blockPath: item.blockPath || null,
             blockId: item.blockId || null,
             // Classification
-            docFamily: item.docFamily || null
+            docFamily: item.docFamily || null,
+            provenance: normalizeNodeProvenance(item.provenance, {
+              derivedNodeIds: [node.id],
+            }),
           };
           if (typeof this.memory.patchNode !== 'function') {
             throw new Error('memory_node_patch_api_required');
@@ -282,7 +292,11 @@ class IngestionManifest {
             docFamily: representative.docFamily || existing.docFamily || null,
             docFamilyConfidence: representative.docFamilyConfidence || existing.docFamilyConfidence || null,
             structuralSignature: existing.structuralSignature || null,
-            compiled: existing.compiled || false
+            compiled: existing.compiled || false,
+            provenance: normalizeNodeProvenance(
+              representative.provenance || existing.provenance,
+              { derivedNodeIds: nodeIds }
+            )
           };
         }
 
@@ -412,6 +426,73 @@ class IngestionManifest {
     if (this._pendingSaveTimer) clearTimeout(this._pendingSaveTimer);
     this._pendingSaveTimer = setTimeout(() => this._savePending(), 100);
   }
+}
+
+function normalizeNodeProvenance(value, overrides = {}) {
+  if (!value || Array.isArray(value) || typeof value !== 'object') return null;
+  const authorityClasses = new Set([
+    'verified_current_state', 'jtr_correction', 'artifact_log',
+    'worker_receipt', 'generated_doctrine', 'narrative',
+  ]);
+  const retrievalDomains = new Set([
+    'current_ops', 'closed_incidents', 'project_history', 'external_intake',
+  ]);
+  const generationMethod = boundedString(value.generationMethod, 120);
+  const generated = overrides.generated === true
+    || value.authorityClass === 'generated_doctrine'
+    || isGeneratedMemoryMethod(generationMethod);
+  const authorityClass = generated
+    ? 'narrative'
+    : authorityClasses.has(value.authorityClass)
+      ? value.authorityClass
+      : 'narrative';
+  const retrievalDomain = retrievalDomains.has(value.retrievalDomain)
+    ? value.retrievalDomain
+    : 'project_history';
+  return {
+    schema: 'home23.node-provenance.v1',
+    authorityClass,
+    retrievalDomain,
+    semanticTime: boundedString(value.semanticTime, 64),
+    sourceRefs: boundedStrings(value.sourceRefs),
+    evidenceRefs: boundedStrings(value.evidenceRefs),
+    generationMethod,
+    generationModel: boundedString(value.generationModel, 240),
+    sourcePath: boundedString(value.sourcePath, 2048),
+    contentHash: boundedString(value.contentHash, 128),
+    derivedNodeIds: boundedStrings(
+      overrides.derivedNodeIds === undefined ? value.derivedNodeIds : overrides.derivedNodeIds,
+      64,
+      240
+    ),
+    scope: boundedStrings(value.scope),
+    expiresAt: boundedString(value.expiresAt, 64),
+    operationalAuthority: authorityClass === 'narrative' || authorityClass === 'generated_doctrine'
+      ? false
+      : value.operationalAuthority === true,
+    requiresFreshVerification: authorityClass === 'narrative' || authorityClass === 'generated_doctrine'
+      ? true
+      : value.requiresFreshVerification !== false,
+  };
+}
+
+function boundedStrings(values, limit = 8, maxBytes = 240) {
+  const result = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const bounded = boundedString(value, maxBytes);
+    if (!bounded || result.includes(bounded)) continue;
+    result.push(bounded);
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
+function boundedString(value, maxBytes) {
+  if (typeof value !== 'string' || !value) return null;
+  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+  let bounded = value.slice(0, maxBytes);
+  while (bounded && Buffer.byteLength(bounded, 'utf8') > maxBytes) bounded = bounded.slice(0, -1);
+  return bounded || null;
 }
 
 module.exports = { IngestionManifest };

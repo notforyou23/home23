@@ -17,6 +17,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const path = require('node:path');
 const lockfile = require('proper-lockfile');
+const { isGeneratedMemoryMethod } = require('../../../shared/memory-authority.cjs');
 
 const CHANNEL_CAPS = Object.freeze({
   sensor_primary:     0.95,
@@ -172,6 +173,8 @@ class MemoryIngest {
     const sourceClassification = classifyMemorySource(obs, draft);
     const stateDelta = buildObservationStateDelta(existing, obs, { confidence, draft });
     const substrate = buildSubstrateProfile(existing, obs, draft, sourceClassification, stateDelta);
+    const authority = buildAuthorityProfile(obs, draft, sourceClassification);
+    const nodeProfile = buildNodeProvenanceProfile(obs, draft, sourceClassification, authority);
     return {
       memory_id: id,
       type: draft.type || 'observation',
@@ -191,7 +194,8 @@ class MemoryIngest {
         session_refs: [`bus-ingest-${obs.receivedAt.slice(0, 10)}`],
         generation_method: draft.method || 'build_event',
         ...sourceClassification,
-        authority: buildAuthorityProfile(obs, draft, sourceClassification),
+        authority,
+        node_profile: nodeProfile,
         substrate,
         ...(obs.origin ? { origin: obs.origin } : {}),
       },
@@ -413,6 +417,7 @@ class MemoryIngest {
         updateKind: written.state_delta?.delta_class || 'no_change',
         stateDelta: written.state_delta || null,
         substrate: written.provenance?.substrate || null,
+        nodeProvenance: written.provenance?.node_profile || null,
       };
       try { fs.appendFileSync(this.receiptsPath, JSON.stringify(receipt) + '\n'); }
       catch (err) { this.logger.warn?.('[memory-ingest] receipt append failed:', err?.message || err); }
@@ -639,6 +644,121 @@ function buildAuthorityProfile(obs = {}, draft = {}, sourceClassification = {}) 
     }),
     wrongTenseGuard: 'Do not reuse this memory as present-tense operational truth unless the authorityOrder source for the question is checked now.',
   };
+}
+
+function buildNodeProvenanceProfile(obs = {}, draft = {}, sourceClassification = {}, authority = {}) {
+  const tags = boundedStrings(draft.tags || [], 8, 240);
+  const normalizedTags = new Set(tags.map((tag) => tag.toLowerCase()));
+  const method = String(draft.method || 'build_event');
+  const channelId = String(obs.channelId || '');
+  const sourceRef = String(obs.sourceRef || '');
+  const generated = isGeneratedMemoryMethod(method) || [...normalizedTags].some((tag) => (
+    tag === 'generated-report' || tag === 'generated_report' || tag === 'synthesis'
+    || tag === 'narrative' || tag === 'query' || tag === 'pgs'
+  ));
+  const adoptedDoctrineReceipt = tags.find((tag) => (
+    tag.toLowerCase().startsWith('adopted-doctrine-receipt:')
+    || tag.toLowerCase().startsWith('adopted_doctrine_receipt:')
+  ));
+  const jtrCorrection = [...normalizedTags].some((tag) => (
+    tag === 'jtr-correction' || tag === 'jtr_correction' || tag === 'owner-correction'
+  )) || sourceRef.toLowerCase().startsWith('jtr:correction:');
+  const verifierEvidence = obs.verifierId
+    ? boundedStrings([`verifier:${obs.verifierId}`], 8, 240)
+    : [];
+  const isVerifiedCurrent = !generated
+    && !jtrCorrection
+    && obs.flag === 'COLLECTED'
+    && authority.presentTenseAuthority === true
+    && verifierEvidence.length > 0;
+  const isWorkerReceipt = /^worker[.:]/i.test(sourceRef)
+    || normalizedTags.has('worker-receipt')
+    || normalizedTags.has('worker_receipt');
+
+  let authorityClass = 'narrative';
+  if (generated) authorityClass = adoptedDoctrineReceipt ? 'generated_doctrine' : 'narrative';
+  else if (jtrCorrection) authorityClass = 'jtr_correction';
+  else if (isVerifiedCurrent) authorityClass = 'verified_current_state';
+  else if (isWorkerReceipt) authorityClass = 'worker_receipt';
+  else if (sourceRef) authorityClass = 'artifact_log';
+
+  const isClosed = [...normalizedTags].some((tag) => (
+    tag === 'closed' || tag === 'resolved' || tag === 'fixed' || tag === 'archived'
+  ));
+  const isExternal = /^(x|news|market|research|timeline|cron)[.:]/i.test(channelId)
+    || [...normalizedTags].some((tag) => (
+      tag === 'external' || tag === 'news' || tag === 'x' || tag === 'twitter'
+      || tag === 'market' || tag === 'cron' || tag === 'telemetry'
+    ));
+  const retrievalDomain = isClosed
+    ? 'closed_incidents'
+    : isExternal
+      ? 'external_intake'
+      : authority.temporalStatus === 'current' || authority.temporalStatus === 'recent'
+        ? 'current_ops'
+        : 'project_history';
+
+  const volatileCorrection = jtrCorrection && (
+    /^(machine|os|build|work)\./i.test(channelId)
+    || [...normalizedTags].some((tag) => (
+      tag === 'machine' || tag === 'runtime' || tag === 'process' || tag === 'health'
+    ))
+  );
+  const operationalAuthority = authorityClass === 'verified_current_state'
+    || (authorityClass === 'jtr_correction' && !volatileCorrection);
+  const missingEvidence = [];
+  if (authorityClass === 'narrative' || authorityClass === 'generated_doctrine') {
+    missingEvidence.push('independent_direct_evidence');
+  }
+  if (authority.presentTenseAuthority === true && verifierEvidence.length === 0) {
+    missingEvidence.push('verifier_evidence');
+  }
+  if (volatileCorrection) missingEvidence.push('live_machine_verifier');
+
+  return {
+    schema: 'home23.node-provenance.v1',
+    authorityClass,
+    retrievalDomain,
+    semanticTime: boundedString(obs.producedAt || obs.receivedAt || null, 64),
+    sourceRefs: boundedStrings([
+      sourceRef,
+      channelId,
+      obs.traceId,
+      ...tags,
+    ], 8, 240),
+    evidenceRefs: boundedStrings([
+      ...verifierEvidence,
+      ...(adoptedDoctrineReceipt ? [adoptedDoctrineReceipt] : []),
+    ], 8, 240),
+    generationMethod: boundedString(method, 120),
+    sourcePath: null,
+    contentHash: null,
+    derivedNodeIds: [],
+    scope: tags,
+    expiresAt: null,
+    operationalAuthority,
+    requiresFreshVerification: !operationalAuthority,
+    missingEvidence: boundedStrings(missingEvidence, 8, 120),
+  };
+}
+
+function boundedStrings(values, limit = 8, maxBytes = 240) {
+  const result = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const bounded = boundedString(value, maxBytes);
+    if (!bounded || result.includes(bounded)) continue;
+    result.push(bounded);
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
+function boundedString(value, maxBytes) {
+  if (typeof value !== 'string' || !value) return null;
+  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+  let bounded = value.slice(0, maxBytes);
+  while (bounded && Buffer.byteLength(bounded, 'utf8') > maxBytes) bounded = bounded.slice(0, -1);
+  return bounded || null;
 }
 
 function authorityOrderFor({ channelId, method, isCurrentStateSurface, isHistorical }) {

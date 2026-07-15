@@ -54,9 +54,67 @@ for AGENT in "${AGENTS[@]}"; do
     continue
   fi
   echo "[rebuild-ann] building $AGENT..."
-  if node --max-old-space-size=4096 "$BUILDER" "$BRAIN_DIR" 2>&1 | tail -3; then
-    echo "[rebuild-ann] $AGENT OK"
+  if BUILDER_OUTPUT="$(node --max-old-space-size=4096 "$BUILDER" "$BRAIN_DIR" 2>&1)"; then
+    RECEIPT_LINE="$(printf '%s\n' "$BUILDER_OUTPUT" | tail -1)"
+    if [ "${#BUILDER_OUTPUT}" -gt 65536 ]; then
+      echo "[rebuild-ann] $AGENT FAILED code=ann_receipt_oversized"
+      RC=1
+      continue
+    fi
+    if NORMALIZED_RECEIPT="$(ANN_AGENT="$AGENT" ANN_RECEIPT="$RECEIPT_LINE" node -e '
+      const receipt = JSON.parse(process.env.ANN_RECEIPT || "null");
+      const statuses = new Set(["fresh", "overlay-covered"]);
+      if (!receipt || receipt.event !== "ann_rebuild_receipt" || !statuses.has(receipt.status)
+          || !Number.isSafeInteger(receipt.builtRevision)
+          || !Number.isSafeInteger(receipt.currentRevision)
+          || !Number.isSafeInteger(receipt.bridgeableGap) || receipt.bridgeableGap < 0
+          || receipt.currentRevision - receipt.builtRevision !== receipt.bridgeableGap
+          || !receipt.stageDurations || typeof receipt.stageDurations !== "object"
+          || !receipt.semanticCoverage || typeof receipt.semanticCoverage !== "object") process.exit(2);
+      process.stdout.write(JSON.stringify({ agent: process.env.ANN_AGENT, ...receipt }));
+    ' 2>/dev/null)"; then
+      echo "$NORMALIZED_RECEIPT"
+      HEALTH_PATH="$HOME23_ROOT/instances/$AGENT/runtime/ann-index-health.json"
+      if ! ANN_RECEIPT="$RECEIPT_LINE" ANN_HEALTH_PATH="$HEALTH_PATH" \
+        ANN_GAP_THRESHOLD="${ANN_SUSTAINED_GAP_THRESHOLD:-3}" \
+        ANN_MAX_GAP="${ANN_MAX_OVERLAY_GAP_RECORDS:-50000}" node -e '
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const receipt = JSON.parse(process.env.ANN_RECEIPT);
+          const threshold = Number(process.env.ANN_GAP_THRESHOLD);
+          const maxGap = Number(process.env.ANN_MAX_GAP);
+          if (!Number.isSafeInteger(threshold) || threshold < 1
+              || !Number.isSafeInteger(maxGap) || maxGap < 0) process.exit(2);
+          let previous = {};
+          try { previous = JSON.parse(fs.readFileSync(process.env.ANN_HEALTH_PATH, "utf8")); } catch {}
+          const excessive = receipt.bridgeableGap > maxGap;
+          const consecutiveExcessiveGaps = excessive
+            ? Number(previous.consecutiveExcessiveGaps || 0) + 1
+            : 0;
+          const state = {
+            status: excessive ? "lagging" : "healthy",
+            consecutiveExcessiveGaps,
+            builtRevision: receipt.builtRevision,
+            currentRevision: receipt.currentRevision,
+            bridgeableGap: receipt.bridgeableGap,
+            updatedAt: new Date().toISOString(),
+          };
+          fs.mkdirSync(path.dirname(process.env.ANN_HEALTH_PATH), { recursive: true, mode: 0o700 });
+          const temp = `${process.env.ANN_HEALTH_PATH}.${process.pid}.tmp`;
+          fs.writeFileSync(temp, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+          fs.renameSync(temp, process.env.ANN_HEALTH_PATH);
+          if (consecutiveExcessiveGaps >= threshold) process.exit(3);
+        '; then
+        echo "[rebuild-ann] $AGENT FAILED code=ann_sustained_gap" >&2
+        RC=1
+      fi
+    else
+      printf '%s\n' "$BUILDER_OUTPUT" | tail -3
+      echo "[rebuild-ann] $AGENT FAILED code=ann_receipt_invalid"
+      RC=1
+    fi
   else
+    printf '%s\n' "$BUILDER_OUTPUT" | tail -3
     echo "[rebuild-ann] $AGENT FAILED"
     RC=1
   fi

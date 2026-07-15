@@ -68,6 +68,10 @@ function fakeHnsw(record) {
         record.writePath = filePath;
         require('node:fs').writeFileSync(filePath, 'fake-index');
       }
+
+      readIndexSync() {}
+
+      getCurrentCount() { return record.points.length; }
     },
   };
 }
@@ -113,7 +117,9 @@ test('builder streams one pinned logical source and advances ANN watermark', asy
   assert.equal(hnswRecord.dimension, 2);
   assert.equal(hnswRecord.points.length, 2);
   const meta = JSON.parse(await fsp.readFile(path.join(dir, `memory-ann.${result.builtFromRevision}.meta.json`), 'utf8'));
-  assert.deepEqual(meta.labels.map((label) => label.id).sort(), ['base', 'delta']);
+  assert.deepEqual(meta.labels.map((label) => label.id).sort(), ['base', 'delta', 'wrong-dim']);
+  assert.equal(meta.count, 2);
+  assert.equal(meta.skipped, 1);
   assert.equal(meta.builtFromRevision, result.builtFromRevision);
   assert.equal(meta.generation, result.generation);
   assert.match(
@@ -142,7 +148,7 @@ test('builder streams one pinned logical source and advances ANN watermark', asy
     },
   }, manifest.ann);
   assert.equal(loaded.count, 2);
-  assert.equal(loaded.labels.length, 2);
+  assert.equal(loaded.labels.length, 3);
   assert.equal(path.basename(loadedIndexPath), manifest.ann.indexFile);
   await loadAnn.close();
 });
@@ -322,6 +328,7 @@ test('builder reuses an ANN already pinned fresh at the current revision', async
     hnswlib: fakeHnsw({}),
   });
   let constructions = 0;
+  let reads = 0;
   let casCalls = 0;
   const second = await build(dir, {
     home23Root,
@@ -330,6 +337,8 @@ test('builder reuses an ANN already pinned fresh at the current revision', async
     hnswlib: {
       HierarchicalNSW: class {
         constructor() { constructions += 1; }
+        readIndexSync() { reads += 1; }
+        getCurrentCount() { return first.total; }
       },
     },
     advanceAnnBuiltFromRevision: async () => {
@@ -339,10 +348,72 @@ test('builder reuses an ANN already pinned fresh at the current revision', async
   });
   assert.equal(second.reused, true);
   assert.equal(second.builtFromRevision, first.builtFromRevision);
+  assert.equal(second.total, first.total);
+  assert.equal(second.semanticCoverage.indexed, first.total);
+  assert.equal(second.semanticCoverage.skipped, first.skipped);
   assert.equal(second.advanced.advanced, true);
   assert.equal(second.advanced.reason, 'already_fresh');
-  assert.equal(constructions, 0);
+  assert.equal(constructions, 1);
+  assert.equal(reads, 1);
   assert.equal(casCalls, 0);
+});
+
+test('builder refuses fresh reuse when the actual index is corrupt', async () => {
+  const dir = await createBrain();
+  const home23Root = await tempDir('home23-ann-builder-corrupt-reuse-');
+  const first = await build(dir, {
+    home23Root, requesterAgent: 'jerry', resolveTargetContext: () => canonicalResolve(dir),
+    hnswlib: fakeHnsw({}),
+  });
+  await fsp.writeFile(first.indexPath, 'corrupt-index');
+  await assert.rejects(() => build(dir, {
+    home23Root, requesterAgent: 'jerry', resolveTargetContext: () => canonicalResolve(dir),
+    hnswlib: {
+      HierarchicalNSW: class {
+        readIndexSync() { throw new Error('corrupt HNSW'); }
+      },
+    },
+  }), (error) => error?.code === 'source_unavailable');
+});
+
+test('builder refuses fresh reuse when full metadata authority is corrupt', async () => {
+  const dir = await createBrain();
+  const home23Root = await tempDir('home23-ann-builder-corrupt-meta-reuse-');
+  const first = await build(dir, {
+    home23Root, requesterAgent: 'jerry', resolveTargetContext: () => canonicalResolve(dir),
+    hnswlib: fakeHnsw({}),
+  });
+  const meta = JSON.parse(await fsp.readFile(first.metaPath, 'utf8'));
+  meta.generation = 'wrong-generation';
+  await fsp.writeFile(first.metaPath, JSON.stringify(meta));
+  await assert.rejects(() => build(dir, {
+    home23Root, requesterAgent: 'jerry', resolveTargetContext: () => canonicalResolve(dir),
+    hnswlib: fakeHnsw({}),
+  }), { code: 'source_unavailable' });
+});
+
+test('builder metadata retains bounded labels for skipped nodes', async () => {
+  const dir = await tempDir('home23-ann-builder-skipped-brain-');
+  const runtime = await tempDir('home23-ann-builder-skipped-runtime-');
+  const lockRoot = path.join(runtime, 'locks');
+  await rewriteMemoryBase(dir, {
+    nodes: [
+      { id: 'vector', concept: 'vector', embedding: [1, 0] },
+      { id: 'skipped', concept: 'keyword-only node' },
+    ],
+    edges: [],
+    summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+  }, { lockRoot });
+  const result = await build(dir, {
+    home23Root: runtime, requesterAgent: 'jerry', resolveTargetContext: () => canonicalResolve(dir),
+    hnswlib: fakeHnsw({}),
+  });
+  const meta = JSON.parse(await fsp.readFile(result.metaPath, 'utf8'));
+  assert.equal(meta.count, 1);
+  assert.equal(meta.skipped, 1);
+  assert.equal(meta.labelCount, 2);
+  assert.equal(meta.sourceNodeCount, 2);
+  assert.deepEqual(meta.labels.map((label) => label.id), ['vector', 'skipped']);
 });
 
 test('concurrent builders use unique temps and only one publishes a revision', async (t) => {
@@ -429,13 +500,12 @@ test('builder removes its newly written ANN files and rejects if generation chan
   );
 });
 
-test('builder rejects a same-generation append before CAS and removes its ANN files', async () => {
+test('builder publishes a bridgeable index after a same-generation append during build', async () => {
   const dir = await createBrain();
   const home23Root = await tempDir('home23-ann-builder-same-generation-home-');
   const pinned = await readManifest(dir);
 
-  await assert.rejects(
-    () => build(dir, {
+  const result = await build(dir, {
       home23Root,
       requesterAgent: 'jerry',
       resolveTargetContext: () => canonicalResolve(dir),
@@ -456,24 +526,18 @@ test('builder rejects a same-generation append before CAS and removes its ANN fi
         } = require('../../../shared/memory-source');
         return advanceAnnBuiltFromRevision(brainDir, update);
       },
-    }),
-    (error) => error?.code === 'source_changed' && error?.retryable === true,
-  );
+    });
 
   const manifest = await readManifest(dir);
   assert.equal(manifest.generation, pinned.generation);
   assert.equal(manifest.currentRevision, pinned.currentRevision + 1);
-  assert.equal(manifest.ann.indexFile, null);
-  assert.equal(manifest.ann.metaFile, null);
-  assert.equal(manifest.ann.builtFromRevision, null);
-  await assert.rejects(
-    fsp.access(path.join(dir, `memory-ann.${pinned.currentRevision}.index`)),
-    { code: 'ENOENT' },
-  );
-  await assert.rejects(
-    fsp.access(path.join(dir, `memory-ann.${pinned.currentRevision}.meta.json`)),
-    { code: 'ENOENT' },
-  );
+  assert.equal(manifest.ann.indexFile, `memory-ann.${pinned.currentRevision}.index`);
+  assert.equal(manifest.ann.metaFile, `memory-ann.${pinned.currentRevision}.meta.json`);
+  assert.equal(manifest.ann.builtFromRevision, pinned.currentRevision);
+  assert.equal(result.coverage, 'overlay-covered');
+  assert.equal(result.currentRevision, pinned.currentRevision + 1);
+  assert.equal(result.bridgeableGap, 1);
+  assert.equal(result.semanticCoverage.indexed + result.semanticCoverage.skipped, pinned.summary.nodeCount);
   assert.deepEqual(
     (await fsp.readdir(dir)).filter((file) => file.includes('.tmp.')),
     [],

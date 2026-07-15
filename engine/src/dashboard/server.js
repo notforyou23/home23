@@ -26,6 +26,7 @@ const { Home23BriefsService } = require('./home23-briefs');
 const { Home23TileService } = require('./home23-tiles');
 const { updateDashboardOAuthTokenSecrets } = require('./home23-secrets');
 const { createMemorySearchService } = require('./memory-search');
+const { createMemoryDeltaOverlayCache } = require('./memory-delta-overlay-cache');
 const {
   createBrainSourceRouter,
   createBrainSourceService,
@@ -712,6 +713,15 @@ class DashboardServer {
       logger: this.logger,
     });
 
+    this.memoryDeltaOverlayCache = createMemoryDeltaOverlayCache({
+      cacheRoot: path.join(
+        this.getHome23Root(),
+        'instances',
+        this.getHome23AgentName(),
+        'runtime',
+        'cache',
+      ),
+    });
     this.initializeBrainOperations(options.brainOperations);
     this.initializeQueryNotebook(options.queryNotebook);
     this.brainSourceService = createBrainSourceService({
@@ -725,6 +735,7 @@ class DashboardServer {
       home23Root: this.getHome23Root(),
       requesterAgent: this.getHome23AgentName(),
       resolveTargetContext: (selector) => this.brainOperationsCoordinator.resolveTargetContext(selector),
+      deltaOverlayCache: this.memoryDeltaOverlayCache,
       logger: this.logger,
     });
     if (this.brainOperationsWorker?.registerLocalExecutor) {
@@ -1078,6 +1089,7 @@ class DashboardServer {
       authorizeBrainOperation,
       worker,
       sourcePins: createMemorySourcePinProvider({ home23Root, requesterAgent }),
+      nodeOverlayProvider: this.memoryDeltaOverlayCache,
       scratchQuotaFactory: createOperationScratchQuota,
       operationModelResolver: async (input) => {
         if (input.operationType === 'synthesis') {
@@ -11173,15 +11185,28 @@ You are empowered to explore and understand. The user trusts you to discover the
     return Number.isFinite(graph?.nodes) ? graph.nodes : null;
   }
 
+  async getManifestClusterCount() {
+    try {
+      const manifest = JSON.parse(await fs.readFile(path.join(this.logsDir, 'memory-manifest.json'), 'utf8'));
+      const count = manifest?.summary?.clusterCount;
+      return Number.isSafeInteger(count) && count >= 0 ? count : null;
+    } catch {
+      return null;
+    }
+  }
+
   async getFastMemoryGraphSummary() {
     const snapshotPath = path.join(this.logsDir, 'brain-snapshot.json');
     try {
       const snapshot = JSON.parse(await fs.readFile(snapshotPath, 'utf8'));
       if (Number.isFinite(snapshot?.nodeCount)) {
+        const manifestClusters = Number.isFinite(snapshot.clusterCount)
+          ? null
+          : await this.getManifestClusterCount();
         return {
           nodes: snapshot.nodeCount,
           edges: Number.isFinite(snapshot.edgeCount) ? snapshot.edgeCount : 0,
-          clusters: Number.isFinite(snapshot.clusterCount) ? snapshot.clusterCount : 0,
+          clusters: Number.isFinite(snapshot.clusterCount) ? snapshot.clusterCount : (manifestClusters ?? 0),
           source: 'brain-snapshot',
         };
       }

@@ -399,6 +399,11 @@ class BrainOperationCoordinator {
     }
     this.worker = options.worker;
     this.sourcePins = options.sourcePins ?? null;
+    this.nodeOverlayProvider = options.nodeOverlayProvider ?? null;
+    if (this.nodeOverlayProvider !== null
+        && typeof this.nodeOverlayProvider?.refresh !== 'function') {
+      throw coordinatorError('coordinator_configuration_invalid');
+    }
     this.scratchQuotaFactory = options.scratchQuotaFactory ?? null;
     this.operationModelResolver = options.operationModelResolver ?? null;
     this.exporter = options.exporter ?? null;
@@ -976,6 +981,9 @@ class BrainOperationCoordinator {
             expectedCanonicalRoot: record.target.canonicalRoot,
             expectedDigest: record.sourcePinDigest,
             expectedRevision: record.sourcePinDescriptor.cutoffRevision,
+            ...(record.operationType === 'search' && this.nodeOverlayProvider ? {
+              nodeOverlayProvider: this.nodeOverlayProvider,
+            } : {}),
           }, this._sourceLockControl(record));
         validatePinnedSourceHandle(sourcePin, record);
       }

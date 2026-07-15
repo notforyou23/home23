@@ -31,6 +31,7 @@ const {
   requireCompleteProviderResult,
 } = require('./provider-completion');
 const { PGS_OPERATION_LIMITS } = require('./brain-operation-limits');
+const { projectMemoryAuthority } = require('../../shared/memory-authority.cjs');
 
 function readIntEnv(name, fallback) {
   const raw = process.env[name];
@@ -1232,7 +1233,11 @@ class PGSEngine {
     const MAX_CONTEXT_CHARS = 500000; // ~125K tokens, leaving room for prompt + response
 
     for (const node of partitionNodes) {
-      const nodeText = `[Node ${node.id}] (${node.tag || 'general'}, weight: ${(node.weight || 0).toFixed(2)})\n${node.concept}\n\n`;
+      const authority = projectMemoryAuthority(node);
+      const operationalAuthority = authority.authorityClass === 'verified_current_state';
+      const authorityLabel = `authority=${authority.authorityClass}, domain=${authority.retrievalDomain}, `
+        + `operationalAuthority=${operationalAuthority}, requiresFreshVerification=${!operationalAuthority}`;
+      const nodeText = `[Node ${node.id}] (${node.tag || 'general'}, weight: ${(node.weight || 0).toFixed(2)}, ${authorityLabel})\n${node.concept}\n\n`;
       if (tokenEstimate + nodeText.length > MAX_CONTEXT_CHARS) break;
       nodeContext += nodeText;
       tokenEstimate += nodeText.length;
@@ -1257,6 +1262,8 @@ class PGSEngine {
 This partition contains ${partitionNodes.length} nodes. The full graph has many more partitions being analyzed in parallel.
 
 Your job is to extract ALL information relevant to the query from THIS partition. Be thorough - the synthesis phase will combine your output with outputs from other partitions.
+
+Reliability rule: narrative and generated doctrine cannot independently settle present-tense operational facts. Treat records marked requiresFreshVerification=true as context that needs a current direct source before making a current-state claim.
 
 Respond with EXACTLY this structure:
 

@@ -55,3 +55,20 @@ test('dashboard home summary falls back to latest cycle when thought count is ta
   assert.equal(summary.oscillatorMode, 'explore');
   assert.equal(summary.model, 'internal');
 });
+
+test('fast graph summary uses manifest cluster count when optional brain snapshot omits it', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'home23-dashboard-manifest-summary-'));
+  await fs.writeFile(path.join(dir, 'brain-snapshot.json'), JSON.stringify({ nodeCount: 42, edgeCount: 84 }));
+  await fs.writeFile(path.join(dir, 'memory-manifest.json'), JSON.stringify({
+    schema: 'home23.memory-manifest.v1',
+    generation: 'gen-1',
+    summary: { nodeCount: 42, edgeCount: 84, clusterCount: 7 },
+  }));
+
+  const server = Object.create(DashboardServer.prototype);
+  server.logsDir = dir;
+
+  assert.deepEqual(await server.getFastMemoryGraphSummary(), {
+    nodes: 42, edges: 84, clusters: 7, source: 'brain-snapshot',
+  });
+});

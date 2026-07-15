@@ -6,6 +6,12 @@ const {
   classifyMemoryProvenance,
   scoreMemorySalience,
 } = require('./provenance-salience');
+const {
+  classifyClaimAuthority,
+  getSemanticTimeMs,
+  normalizeRetrievalIntent,
+  projectMemoryAuthority,
+} = require('../../../shared/memory-authority.cjs');
 
 function yieldToEventLoop() {
   return new Promise((resolve) => setImmediate(resolve));
@@ -381,6 +387,8 @@ class NetworkMemory {
     this.dirtyEdgeKeys = new Set();
     this.deletedNodeIds = new Set();
     this.deletedEdgeKeys = new Set();
+    this._closureIndexCache = null;
+    this._closureIndexVersion = 0;
     
     // Initialize tokenizer for token-aware truncation
     try {
@@ -760,6 +768,7 @@ class NetworkMemory {
       }
 
       this.nodes.set(node.id, node);
+      this._closureIndexVersion += 1;
       storedNode = this.nodes.get(node.id);
       this._markNodeDirtyUnsafe(node.id);
       for (const { id, similarity } of initialConnections) {
@@ -965,6 +974,7 @@ class NetworkMemory {
           entry.stored[key] = value;
         }
         this._markNodeDirtyUnsafe(entry.nodeId);
+        this._closureIndexVersion += 1;
         nodes.push(this.nodes.get(entry.nodeId));
       }
       return { updated: nodes.length, nodes };
@@ -1143,6 +1153,7 @@ class NetworkMemory {
           if (previousMembers?.size === 0) this.clusters.delete(previousCluster);
         }
         this.nodes.set(prepared.nodeId, prepared.node);
+        this._closureIndexVersion += 1;
         this._markNodeDirtyUnsafe(prepared.nodeId);
         if (prepared.node.cluster !== null && prepared.node.cluster !== undefined) {
           if (!this.clusters.has(prepared.node.cluster)) this.clusters.set(prepared.node.cluster, new Set());
@@ -1372,6 +1383,7 @@ class NetworkMemory {
     this._requirePersistenceBarrierUnsafe();
     if (!this.nodes.has(nodeId)) return null;
     this.nodes.delete(nodeId);
+    this._closureIndexVersion += 1;
     this.dirtyNodeIds.delete(nodeId);
     this.deletedNodeIds.add(nodeId);
     this._advancePersistenceGenerationUnsafe();
@@ -1780,13 +1792,15 @@ class NetworkMemory {
       return [];
     }
     
+    const retrievalIntent = normalizeRetrievalIntent(options.intent || queryText);
+    const retrievalOptions = { ...options, intent: retrievalIntent, query: queryText };
     const queryEmbedding = await this.embed(queryText);
     
     if (!queryEmbedding) {
       this.logger?.warn?.('Query embedding failed, using Memory Lite keyword retrieval', {
         queryText: queryText?.substring(0, 100)
       });
-      return this.queryByKeyword(queryText, topK, options);
+      return this.queryByKeyword(queryText, topK, retrievalOptions);
     }
     
     // Find best matching node
@@ -1807,24 +1821,36 @@ class NetworkMemory {
       }
     }
     
-    if (!bestMatch) return this.queryByKeyword(queryText, topK, options);
+    if (!bestMatch) return this.queryByKeyword(queryText, topK, retrievalOptions);
     
     // Spread activation from best match
     const mutableAccess = options.markAccess !== false && options.accessMode !== 'read-only';
     const activated = await this.spreadActivation(bestMatch, null, { mutate: mutableAccess });
     
     const queryWords = this.extractQueryWords(queryText);
-    const snapshotCandidates = this.findRelevantStateSnapshots(queryEmbedding, queryWords, bestSimilarity);
+    const snapshotCandidates = this.findRelevantStateSnapshots(queryEmbedding, queryWords, bestSimilarity, retrievalOptions);
     const scored = Array.from(activated.entries())
-      .map(([id, activation]) => ({
-        ...this.nodes.get(id),
-        similarity: id === bestMatch ? bestSimilarity : activation,
-        activation,
-        retrievalScore: this.scoreTemporalRetrieval(this.nodes.get(id), activation, {
+      .map(([id, activation]) => {
+        const node = this.nodes.get(id);
+        const similarity = id === bestMatch ? bestSimilarity : activation;
+        const authorityOptions = {
           isBestMatch: id === bestMatch,
-          baseSimilarity: id === bestMatch ? bestSimilarity : activation,
-        })
-      }));
+          baseSimilarity: similarity,
+          intent: retrievalIntent,
+          query: queryText,
+          nowMs: options.nowMs,
+        };
+        return {
+          ...node,
+          similarity,
+          activation,
+          retrievalScore: this.scoreTemporalRetrieval(node, activation, authorityOptions),
+          retrievalAuthority: projectMemoryAuthority(node, {
+            ...authorityOptions,
+            baseScore: activation,
+          }),
+        };
+      });
 
     for (const candidate of snapshotCandidates) {
       if (!scored.some(n => n.id === candidate.id)) {
@@ -1832,7 +1858,11 @@ class NetworkMemory {
       }
     }
 
-    for (const candidate of this.queryByKeyword(queryText, topK, { markAccess: false, retrievalMode: 'keyword-supplement' })) {
+    for (const candidate of this.queryByKeyword(queryText, topK, {
+      ...retrievalOptions,
+      markAccess: false,
+      retrievalMode: 'keyword-supplement',
+    })) {
       if (!scored.some(n => n.id === candidate.id)) {
         scored.push(candidate);
       }
@@ -1840,7 +1870,7 @@ class NetworkMemory {
 
     // Return top K nodes by relevance plus temporal validity. State snapshots
     // are allowed to beat older cue-matched nodes so the brain orients to now.
-    const results = scored
+    const results = this.applyClosureEvidence(scored, retrievalIntent)
       .sort((a, b) => (b.retrievalScore ?? b.activation) - (a.retrievalScore ?? a.activation))
       .slice(0, topK);
     
@@ -1906,10 +1936,23 @@ class NetworkMemory {
           similarity: keywordScore,
           activation: keywordScore,
           retrievalMode: options.retrievalMode || 'keyword',
-          retrievalScore: this.scoreTemporalRetrieval(node, keywordScore, { baseSimilarity: keywordScore }) + Math.min(0.15, keywordScore * 0.1),
+          retrievalScore: this.scoreTemporalRetrieval(node, keywordScore, {
+            baseSimilarity: keywordScore,
+            intent: normalizeRetrievalIntent(options.intent || queryText),
+            query: queryText,
+            nowMs: options.nowMs,
+          }) + Math.min(0.15, keywordScore * 0.1),
+          retrievalAuthority: projectMemoryAuthority(node, {
+            baseScore: keywordScore,
+            intent: normalizeRetrievalIntent(options.intent || queryText),
+            query: queryText,
+            nowMs: options.nowMs,
+          }),
         };
       })
-      .filter(Boolean)
+      .filter(Boolean);
+
+    const closureAware = this.applyClosureEvidence(results, normalizeRetrievalIntent(options.intent || queryText))
       .sort((a, b) => {
         const scoreDelta = (b.retrievalScore || 0) - (a.retrievalScore || 0);
         if (Math.abs(scoreDelta) > 0.001) return scoreDelta;
@@ -1918,10 +1961,10 @@ class NetworkMemory {
       .slice(0, topK);
 
     if (options.markAccess !== false && options.accessMode !== 'read-only') {
-      this.recordNodeAccess(results.map(node => node.id), { weightBoost: 0.05 });
+      this.recordNodeAccess(closureAware.map(node => node.id), { weightBoost: 0.05 });
     }
 
-    return results;
+    return closureAware;
   }
 
   isStateSnapshotNode(node) {
@@ -1957,7 +2000,9 @@ class NetworkMemory {
   scoreTemporalRetrieval(node, baseScore, opts = {}) {
     const freshness = this.temporalFreshness(node, opts.nowMs);
     const status = this.statusMultiplier(node);
-    const snapshotBoost = this.isStateSnapshotNode(node) ? 0.75 : 0;
+    const authorityClass = classifyClaimAuthority(node);
+    const snapshotBoost = this.isStateSnapshotNode(node)
+      && !['generated_doctrine', 'narrative'].includes(authorityClass) ? 0.75 : 0;
     const bestMatchBoost = opts.isBestMatch ? 0.05 : 0;
     const decay = typeof node?.confidence_decay === 'number'
       ? Math.max(0.1, Math.min(1, node.confidence_decay))
@@ -1966,7 +2011,7 @@ class NetworkMemory {
     return scoreMemorySalience(node, temporalScore, opts) + snapshotBoost;
   }
 
-  findRelevantStateSnapshots(queryEmbedding, queryWords, bestSimilarity) {
+  findRelevantStateSnapshots(queryEmbedding, queryWords, bestSimilarity, options = {}) {
     const candidates = [];
     for (const node of this.nodes.values()) {
       if (!this.isStateSnapshotNode(node) || !node.embedding) continue;
@@ -1979,7 +2024,18 @@ class NetworkMemory {
         ...node,
         similarity,
         activation: similarity,
-        retrievalScore: this.scoreTemporalRetrieval(node, similarity, { baseSimilarity: similarity }) + Math.min(0.25, overlap * 0.05),
+        retrievalScore: this.scoreTemporalRetrieval(node, similarity, {
+          baseSimilarity: similarity,
+          intent: options.intent,
+          query: options.query,
+          nowMs: options.nowMs,
+        }) + Math.min(0.25, overlap * 0.05),
+        retrievalAuthority: projectMemoryAuthority(node, {
+          baseScore: similarity,
+          intent: options.intent,
+          query: options.query,
+          nowMs: options.nowMs,
+        }),
       });
     }
     return candidates.sort((a, b) => {
@@ -1987,6 +2043,98 @@ class NetworkMemory {
       if (Math.abs(scoreDelta) > 0.001) return scoreDelta;
       return this.nodeTimeMs(b) - this.nodeTimeMs(a);
     }).slice(0, 3);
+  }
+
+  closureRefs(node) {
+    if (!node) return [];
+    const refs = [];
+    const add = (prefix, value) => {
+      if (value !== null && value !== undefined && String(value).trim()) {
+        refs.push(`${prefix}:${String(value).trim()}`);
+      }
+    };
+    add('goal', node.metadata?.goalId || node.goalId);
+    add('goal', node.metadata?.supersedes_goal_id);
+    add('incident', node.metadata?.incidentId || node.metadata?.incident_id || node.incidentId);
+    const sourceRefs = [
+      ...(Array.isArray(node.provenance?.source_refs) ? node.provenance.source_refs : []),
+      ...(Array.isArray(node.metadata?.source_refs) ? node.metadata.source_refs : []),
+    ];
+    for (const ref of sourceRefs.slice(0, 8)) add('source', ref);
+    for (const tag of Array.isArray(node.tags) ? node.tags : []) {
+      const match = /^(goal|incident):(.+)$/.exec(String(tag));
+      if (match) add(match[1], match[2]);
+    }
+    return Array.from(new Set(refs)).slice(0, 12);
+  }
+
+  buildClosureIndex(maxClosures = 5000) {
+    if (this._closureIndexCache?.version === this._closureIndexVersion) {
+      return this._closureIndexCache.index;
+    }
+    const closures = [];
+    for (const node of this.nodes.values()) {
+      if (!this.isVerifiedClosure(node)) continue;
+      const refs = this.closureRefs(node);
+      if (refs.length === 0) continue;
+      closures.push({ nodeId: node.id, time: getSemanticTimeMs(node), refs });
+    }
+    closures.sort((left, right) => right.time - left.time);
+    const index = new Map();
+    for (const closure of closures.slice(0, maxClosures)) {
+      for (const ref of closure.refs) {
+        if (!index.has(ref)) index.set(ref, closure);
+      }
+    }
+    this._closureIndexCache = { version: this._closureIndexVersion, index };
+    return index;
+  }
+
+  isVerifiedClosure(node) {
+    if (classifyClaimAuthority(node) !== 'worker_receipt') return false;
+    const status = String(node?.status || node?.metadata?.status || '').trim().toLowerCase();
+    const kind = String(node?.type || node?.metadata?.kind || node?.tag || '').trim().toLowerCase();
+    const closed = ['resolved', 'completed', 'archived', 'closed', 'superseded'].includes(status)
+      || kind === 'goal_resolution';
+    if (!closed || this.closureRefs(node).length === 0) return false;
+    return Boolean(
+      node?.metadata?.resolved_at
+      || node?.resolved_at
+      || (Array.isArray(node?.metadata?.closure_proof_refs) && node.metadata.closure_proof_refs.length > 0)
+      || (Array.isArray(node?.metadata?.resolution_proof_refs) && node.metadata.resolution_proof_refs.length > 0),
+    );
+  }
+
+  applyClosureEvidence(candidates, intent = 'general') {
+    const index = this.buildClosureIndex();
+    if (index.size === 0) return candidates;
+    const currentState = normalizeRetrievalIntent(intent) === 'current_state';
+    const output = [];
+    for (const candidate of candidates) {
+      const refs = this.closureRefs(candidate);
+      if (this.isVerifiedClosure(candidate)) {
+        output.push({
+          ...candidate,
+          resolutionEvidence: { resolves: refs, closedAt: getSemanticTimeMs(candidate) || null },
+        });
+        continue;
+      }
+      const candidateTime = getSemanticTimeMs(candidate);
+      const closure = refs
+        .map((ref) => index.get(ref))
+        .filter(Boolean)
+        .sort((left, right) => right.time - left.time)[0];
+      if (!closure || (candidateTime && closure.time <= candidateTime)) {
+        output.push(candidate);
+        continue;
+      }
+      if (currentState) continue;
+      output.push({
+        ...candidate,
+        closureEvidence: { closureNodeId: closure.nodeId, closedAt: closure.time || null },
+      });
+    }
+    return output;
   }
 
   /**
@@ -2004,10 +2152,21 @@ class NetworkMemory {
       if (!node.embedding) continue;
       
       const similarity = this.cosineSimilarity(queryEmbedding, node.embedding);
+      const retrievalScore = this.scoreTemporalRetrieval(node, similarity, {
+        baseSimilarity: similarity,
+        intent: 'general',
+        query: queryText,
+      });
       allScored.push({
         ...node,
         similarity,
-        activation: node.activation || 0
+        activation: node.activation || 0,
+        retrievalScore,
+        retrievalAuthority: projectMemoryAuthority(node, {
+          baseScore: similarity,
+          intent: 'general',
+          query: queryText,
+        }),
       });
     }
     
@@ -2015,14 +2174,16 @@ class NetworkMemory {
     // But still somewhat relevant (similarity > 0.2)
     const peripheral = allScored
       .filter(n => n.similarity > 0.2 && n.activation < 0.3)
-      .sort((a, b) => a.activation - b.activation) // Lowest activation first
+      .sort((a, b) => (b.retrievalScore - a.retrievalScore)
+        || (a.activation - b.activation))
       .slice(0, topK);
     
     // If no peripheral nodes found, fall back to random selection
     if (peripheral.length === 0) {
       const random = allScored
         .filter(n => n.similarity > 0.2)
-        .sort(() => Math.random() - 0.5)
+        .sort((a, b) => (b.retrievalScore - a.retrievalScore)
+          || (a.activation - b.activation))
         .slice(0, topK);
       return random;
     }
@@ -2750,6 +2911,7 @@ class NetworkMemory {
         for (const [id, members] of prepared.clusters) {
           Map.prototype.set.call(this.clusters, id, new Set(members));
         }
+        this._closureIndexVersion += 1;
         this.activations.clear();
         this.nextNodeId = prepared.nextNodeId;
         this.nextClusterId = prepared.nextClusterId;

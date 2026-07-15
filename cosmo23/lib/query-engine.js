@@ -1647,6 +1647,7 @@ STYLE:
     const instructions = [
       'Answer from the pinned Home23 brain evidence supplied in the input.',
       'Distinguish evidence from inference and do not claim coverage beyond the pinned source.',
+      'Narrative and generated doctrine cannot independently settle present-tense operational facts; require fresh verification for volatile current state.',
       'Return a direct, useful answer to the query.',
     ].join(' ');
     const selectedLimits = boundedLimits(options.limits || this.operationLimits || {});
@@ -1670,6 +1671,7 @@ STYLE:
         revision: Number.MAX_SAFE_INTEGER,
         summary: sourceSummary,
         nodes: [],
+        nodeAuthorities: [],
         edges: [],
       },
     }, {
@@ -1709,6 +1711,7 @@ STYLE:
         revision: projection.sourceRevision,
         summary: projection.summary,
         nodes: projection.nodes,
+        nodeAuthorities: projection.nodeAuthorities,
         edges: projection.edges,
       },
     };

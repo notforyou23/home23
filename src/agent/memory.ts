@@ -68,17 +68,20 @@ export class MemoryManager {
       if (messages.length < 4) return; // Not enough to be worth extracting
       // Build a condensed transcript (last 30 messages max)
       const recent = messages.slice(-30);
+      const messageText = (message: { role: string; content: unknown }): string => (
+        typeof message.content === 'string'
+          ? message.content
+          : Array.isArray(message.content)
+            ? (message.content as Array<{ type: string; text?: string }>)
+                .filter(block => block.type === 'text' && block.text)
+                .map(block => block.text)
+                .join(' ')
+            : String(message.content)
+      );
       const transcript = recent
         .map(m => {
           const role = m.role === 'user' ? 'Human' : 'Assistant';
-          const content = typeof m.content === 'string'
-            ? m.content
-            : Array.isArray(m.content)
-              ? (m.content as Array<{ type: string; text?: string }>)
-                  .filter(b => b.type === 'text' && b.text)
-                  .map(b => b.text)
-                  .join(' ')
-              : String(m.content);
+          const content = messageText(m);
           return `${role}: ${content.slice(0, 500)}`;
         })
         .join('\n\n');

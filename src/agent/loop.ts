@@ -311,6 +311,7 @@ export class AgentLoop {
   private cacheDiagnostics?: CacheDiagnosticsConfig;
   private activeRuns = new Map<string, Map<string, AbortController>>();
   private activeTurnIds = new Map<string, Set<string>>();
+  private authenticatedUserTurns = new Map<string, { chatId: string; userText: string }>();
   private terminalTurnOverrides = new Map<string, TerminalTurnOutcome>();
   private sessionGapMs: number;
   private workspacePath: string;
@@ -372,7 +373,14 @@ export class AgentLoop {
     this.situationalAwareness = opts.situationalAwareness;
     this.eventLedger = new EventLedger(join(this.workspacePath, '..', 'brain'));
     const brainDir = join(this.workspacePath, '..', 'brain');
-    this.memoryStore = new MemoryObjectStore(brainDir);
+    this.memoryStore = new MemoryObjectStore(brainDir, {
+      validateCorrectionIngress: (ingress) => {
+        const recorded = this.authenticatedUserTurns.get(ingress.messageRef);
+        const valid = recorded?.chatId === ingress.chatId && recorded.userText === ingress.userText;
+        if (valid) this.authenticatedUserTurns.delete(ingress.messageRef);
+        return valid;
+      },
+    });
     this.triggerIndex = new TriggerIndex();
     this.triggerIndex.loadFrom(this.memoryStore);
   }
@@ -1006,6 +1014,8 @@ export class AgentLoop {
     const runContext: ToolContext = {
       ...this.toolContext,
       chatId,
+      authenticatedUserMessage: undefined,
+      memoryObjectStore: this.memoryStore,
       onEvent,
       conversationHistory: this.history,
       abortSignal: ac.signal,
@@ -1093,6 +1103,13 @@ export class AgentLoop {
           : userContent,
       };
       storedHistory.push(userMsg);
+      const userMessageRef = `turn:${activeTurnId}:user`;
+      this.authenticatedUserTurns.set(userMessageRef, { chatId, userText });
+      runContext.authenticatedUserMessage = {
+        chatId,
+        messageRef: userMessageRef,
+        text: userText,
+      };
 
       // Truncate/compact if needed
       let truncated: StoredMessage[];
@@ -2289,6 +2306,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
       if (err instanceof Error && err.stack) console.error('[agent] Stack:', err.stack);
       throw err;
     } finally {
+      this.authenticatedUserTurns.delete(`turn:${activeTurnId}:user`);
       this.unregisterActiveRun(chatId, activeTurnId, ac);
       if (typingInterval) clearInterval(typingInterval);
     }

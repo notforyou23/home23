@@ -5,6 +5,14 @@
  * without ever breaking a cycle.
  */
 
+const {
+  classifyMemoryDomain,
+  classifyClaimAuthority,
+  scoreMemoryAuthority,
+  getSemanticTimeMs,
+  normalizeRetrievalIntent,
+} = require('../../../shared/memory-authority.cjs');
+
 function safeSnippet(text, maxLen = 120) {
   if (!text || typeof text !== 'string') return null;
   const trimmed = text.trim().replace(/\s+/g, ' ');
@@ -25,7 +33,7 @@ function toTs(value) {
  * @param {number} maxNodesPerCluster
  * @returns {Promise<string|null>}
  */
-async function getActiveClusterSummary(memoryGraph, maxClusters = 5, maxNodesPerCluster = 3) {
+async function getActiveClusterSummary(memoryGraph, maxClusters = 5, maxNodesPerCluster = 3, options = {}) {
   try {
     if (!memoryGraph) return null;
 
@@ -36,8 +44,14 @@ async function getActiveClusterSummary(memoryGraph, maxClusters = 5, maxNodesPer
 
     if (!Array.isArray(nodesIterable) || nodesIterable.length === 0) return null;
 
+    const intent = normalizeRetrievalIntent(options.intent || 'current_state');
     const nodes = nodesIterable
       .filter(n => n && (n.concept || n.summary || n.keyPhrase || n.tag))
+      .filter((n) => intent !== 'current_state' || (
+        classifyMemoryDomain(n) === 'current_ops'
+        && ['verified_current_state', 'jtr_correction', 'artifact_log', 'worker_receipt']
+          .includes(classifyClaimAuthority(n))
+      ))
       .map(n => {
         const accessed = toTs(n.accessed || n.lastAccessed || n.updatedAt);
         const created = toTs(n.created || n.createdAt);
@@ -51,7 +65,12 @@ async function getActiveClusterSummary(memoryGraph, maxClusters = 5, maxNodesPer
           concept: n.concept,
           weight: typeof n.weight === 'number' ? n.weight : 0,
           activation: typeof n.activation === 'number' ? n.activation : 0,
-          recency
+          recency,
+          authorityScore: scoreMemoryAuthority(n, 1, {
+            intent: options.intent || 'current_state',
+            nowMs: options.nowMs,
+          }),
+          semanticTime: getSemanticTimeMs(n),
         };
       })
       .filter(n => n.recency > 0);
@@ -62,16 +81,21 @@ async function getActiveClusterSummary(memoryGraph, maxClusters = 5, maxNodesPer
     const clusterAgg = new Map();
     for (const n of nodes) {
       const key = n.cluster;
-      const prev = clusterAgg.get(key) || { last: 0, weight: 0 };
+      const prev = clusterAgg.get(key) || { last: 0, semanticTime: 0, authority: 0, weight: 0 };
       clusterAgg.set(key, {
         last: Math.max(prev.last, n.recency),
+        semanticTime: Math.max(prev.semanticTime, n.semanticTime),
+        authority: Math.max(prev.authority, n.authorityScore),
         weight: prev.weight + (n.weight || 0)
       });
     }
 
     const rankedClusters = Array.from(clusterAgg.entries())
       .sort((a, b) => {
-        // primary: recency
+        // Authority is primary so a recently accessed archive cannot outrank
+        // current evidence. Semantic event time then beats access recency.
+        if (b[1].authority !== a[1].authority) return b[1].authority - a[1].authority;
+        if (b[1].semanticTime !== a[1].semanticTime) return b[1].semanticTime - a[1].semanticTime;
         if (b[1].last !== a[1].last) return b[1].last - a[1].last;
         // secondary: weight
         return (b[1].weight || 0) - (a[1].weight || 0);
@@ -82,7 +106,9 @@ async function getActiveClusterSummary(memoryGraph, maxClusters = 5, maxNodesPer
     for (const [clusterId] of rankedClusters) {
       const clusterNodes = nodes
         .filter(n => n.cluster === clusterId)
-        .sort((a, b) => b.recency - a.recency)
+        .sort((a, b) => (b.authorityScore - a.authorityScore)
+          || (b.semanticTime - a.semanticTime)
+          || (b.recency - a.recency))
         .slice(0, maxNodesPerCluster);
 
       const items = clusterNodes

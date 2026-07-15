@@ -592,6 +592,7 @@ function makeFixture(t, overrides = {}) {
     }),
     worker,
     sourcePins,
+    nodeOverlayProvider: overrides.nodeOverlayProvider,
     scratchQuotaFactory,
     operationModelResolver,
     readSynthesisState: overrides.readSynthesisState,
@@ -704,6 +705,37 @@ test('default execution deadlines preserve two-hour ordinary and 24-hour PGS ser
   assert.equal(DEFAULT_EXECUTION_DEADLINES_MS.pgs, 24 * 60 * 60 * 1000);
   assert.equal(DEFAULT_EXECUTION_DEADLINES_MS.synthesis, 8 * 60 * 60 * 1000);
   assert.equal(DEFAULT_STOP_TIMEOUT_MS, 180_000);
+});
+
+test('search pin opens with the node overlay provider while graph pins retain full sources', async (t) => {
+  const opened = [];
+  const sourcePins = {
+    async pin(canonicalRoot) {
+      const descriptor = validDescriptor(canonicalRoot);
+      return { descriptor, digest: descriptorDigest(descriptor) };
+    },
+    async openPinnedSource(descriptor, expectations) {
+      opened.push({ operationType: expectations.operationType, provider: expectations.nodeOverlayProvider });
+      return pinnedSourceHandle(descriptor);
+    },
+    async releaseOperationPins() {},
+  };
+  const nodeOverlayProvider = { async refresh() { throw new Error('not called by coordinator'); } };
+  const fixture = makeFixture(t, { sourcePins, nodeOverlayProvider });
+  await fixture.coordinator.start(request({
+    requestId: 'search-overlay-pin',
+    operationType: 'search',
+    parameters: { query: 'canary', topK: 5 },
+  }));
+  await fixture.coordinator.start(request({
+    requestId: 'graph-full-pin',
+    operationType: 'graph',
+    parameters: {},
+  }));
+  assert.equal(opened[0].operationType, 'search');
+  assert.equal(opened[0].provider, nodeOverlayProvider);
+  assert.equal(opened[1].operationType, 'graph');
+  assert.equal(opened[1].provider, undefined);
 });
 
 test('resolveTargetContext is fresh, deeply frozen, exact, and side-effect free', async (t) => {
@@ -1795,11 +1827,11 @@ test('authenticated Query progress survives terminal finalization as lastProgres
 });
 
 test('terminal notification hook cannot delay terminal truth or source-pin release', async (t) => {
-  const notificationEntered = deferred();
+  let notified = null;
   const notificationNeverReturns = deferred();
   const fixture = makeFixture(t, {
     onTerminal(record) {
-      notificationEntered.resolve(record);
+      notified = record;
       return notificationNeverReturns.promise;
     },
   });
@@ -1812,15 +1844,12 @@ test('terminal notification hook cannot delay terminal truth or source-pin relea
     error: null, sourceEvidence: null,
   });
 
-  const notified = await Promise.race([
-    notificationEntered.promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error('notification hook not invoked')), 100)),
-  ]);
-  assert.equal(notified.operationId, operation.operationId);
   await eventually(async () => {
     assert.equal((await fixture.store.get(operation.operationId)).state, 'complete');
     assert.equal(fixture.counters.releaseCalls, 1);
   });
+  await flush();
+  assert.equal(notified?.operationId, operation.operationId);
 });
 
 test('throwing terminal notification hook is isolated from terminal cleanup', async (t) => {

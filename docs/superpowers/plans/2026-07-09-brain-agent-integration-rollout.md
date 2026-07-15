@@ -6792,7 +6792,26 @@ for (const file of files) {
         || receipt.clone?.canaryMatches !== 1 || receipt.clone?.fullMaterializerUsed !== false) {
       throw new Error(`clone delta/readback mismatch: ${file}`);
     }
-    if (receipt.clone.copiedFiles.some((row) => row.sourceSha256 !== row.destinationSha256)
+    const manifestCopies = receipt.clone.copiedFiles
+      .filter((row) => row.path === 'memory-manifest.json');
+    const nonManifestCopiesExact = receipt.clone.copiedFiles
+      .filter((row) => row.path !== 'memory-manifest.json')
+      .every((row) => row.sourceSha256 === row.destinationSha256);
+    const exactCopy = receipt.clone.copyPolicy === 'exact-full-physical-files'
+      && receipt.clone.copiedFiles.every((row) => row.sourceSha256 === row.destinationSha256);
+    const portableManifestCopy = receipt.clone.copyPolicy
+        === 'exact-physical-files-with-portable-manifest'
+      && receipt.clone.manifestProjection?.projected === true
+      && ['retained', 'absent'].includes(receipt.clone.manifestProjection?.chainAuthority)
+      && Array.isArray(receipt.clone.manifestProjection?.removedFields)
+      && receipt.clone.manifestProjection.removedFields.includes('fileIdentity')
+      && receipt.clone.manifestProjection.removedFields
+        .every((field) => ['fileIdentity', 'appendFrom'].includes(field))
+      && manifestCopies.length === 1
+      && manifestCopies[0].projection === 'portable-delta-identity'
+      && manifestCopies[0].sourceSha256 !== manifestCopies[0].destinationSha256
+      && nonManifestCopiesExact;
+    if ((!exactCopy && !portableManifestCopy)
         || receipt.boundedForceFull?.persistedMode !== 'full'
         || receipt.boundedForceFull?.loaded?.nodes !== 2
         || receipt.boundedForceFull?.loaded?.edges !== 1
@@ -6809,7 +6828,7 @@ NODE
 
 For a format-v1 source, `expected` must come from `memory-manifest.json.summary`; the helper must also require the manifest revision selected before streaming, the production source revision, and the revision re-read afterward to be identical. For a legacy source with no committed manifest, `expected` is the complete production stream assembled from the selected base plus the committed delta prefix, and the receipt must report that implementation explicitly with degraded health and unknown freshness. `brain-snapshot.json` is advisory for both formats: record its presence/validity, totals, revision/generation when available, and `matchesStreamed`, but a missing, stale, invalid, zero, or disagreeing snapshot alone is **not** a restart blocker and never becomes count authority. The authoritative streamed node total must be nonzero; edge totals must be safe nonnegative integers.
 
-Each live-load receipt must contain the complete sorted source inventory and hashes from before and after the bounded production stream and prove them identical. Each temp-save receipt must prove the writer received only its external clone realpath, every copied physical file matched byte-for-byte, one change-only canary survived production delta save plus full streaming readback, the bounded representative force-full load/write/reload passed, and the original live source inventory/hashes remained identical. Full-live force-full is deliberately prohibited; the later named engine restart and readiness check is the full-scale boot proof. If any command observes concurrent source movement, wait for that named engine to become quiet and repeat the entire named-agent proof; do not waive or hand-edit the receipt. **Do not restart Jerry or Forrest unless all four machine-read receipts pass.** Never invoke the production save API with either live brain path.
+Each live-load receipt must contain the complete sorted source inventory and hashes from before and after the bounded production stream and prove them identical. Each temp-save receipt must prove the writer received only its external clone realpath. Every non-manifest copied physical file must match byte-for-byte. A native manifest clone may differ only through the explicit `portable-delta-identity` projection: source-path `fileIdentity` and optional `appendFrom` are removed, any existing cryptographic chain authority is retained, its retained-or-absent state is recorded, and the projected destination hash is recorded. One change-only canary must survive production delta save plus full streaming readback, the bounded representative force-full load/write/reload must pass, and the original live source inventory/hashes must remain identical. Full-live force-full is deliberately prohibited; the later named engine restart and readiness check is the full-scale boot proof. If any command observes concurrent source movement, wait for that named engine to become quiet and repeat the entire named-agent proof; do not waive or hand-edit the receipt. **Do not restart Jerry or Forrest unless all four machine-read receipts pass.** Never invoke the production save API with either live brain path.
 
 - [ ] **Step 3: Refresh only the exact affected PM2 allowlist**
 
