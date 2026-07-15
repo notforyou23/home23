@@ -292,8 +292,6 @@ class Orchestrator {
     this.lastCycleTime = new Date();
     this.lastSummarization = 0;
     this.lastConsolidation = new Date();
-    this.lastStateSnapshotHash = null;
-    this.stateSnapshotHashLoaded = false;
 
     // Temporal substrate (Phase 1 of thinking-machine-cycle rebuild)
     this.processStartedAt = Date.now();
@@ -665,19 +663,17 @@ class Orchestrator {
       }
     });
 
-    // Prime the current-state anchor at startup, before any long cognitive
-    // cycle can time out. This makes "what is true now" available even when
-    // the first post-restart cycle takes several minutes to complete.
-    try {
-      const beforeSnapshotNodes = this.memory?.nodes?.size || 0;
-      await this.maybeWriteCurrentStateSnapshot();
-      if ((this.memory?.nodes?.size || 0) > beforeSnapshotNodes) {
-        await this.saveState();
-      }
-    } catch (err) {
-      this.logger?.warn?.('[state-snapshot] startup prime failed', { error: err.message });
-    }
-    
+    // NOTE: RECENT.md is a curator-generated SUMMARY of the brain, already
+    // loaded every turn as a system-prompt surface by
+    // src/agent/context-assembly.ts (reading straight off disk -- that is
+    // its designed role; see docs/design/STEP20-SITUATIONAL-AWARENESS-ENGINE-DESIGN.md
+    // and STEP23). It used to also be re-ingested here as a permanent
+    // `state_snapshot` brain node on every startup and every saveState()
+    // call -- the ouroboros: the summary of the cortex became the cortex,
+    // and the next summary then summarised that. That writer has been
+    // removed; RECENT.md now stays exactly where it was designed to live
+    // and is never minted into a node.
+
     // Initialize introspection module (self-awareness layer)
     this.introspection = new IntrospectionModule(
       this.config,
@@ -7190,8 +7186,6 @@ class Orchestrator {
   }
 
   async _saveStateUnlocked() {
-    await this.maybeWriteCurrentStateSnapshot();
-
     // Save evaluation metrics
     if (this.evaluation) {
       this.evaluation.reconcileGoalState?.(this.goals.export());
@@ -7616,72 +7610,6 @@ class Orchestrator {
         cycle: this.cycleCount,
       };
       return this.lastSaveResult;
-    }
-  }
-
-  async maybeWriteCurrentStateSnapshot() {
-    if (!this.memory || typeof this.memory.addNode !== 'function') return;
-    const workspacePath = process.env.COSMO_WORKSPACE_PATH || null;
-    if (!workspacePath) return;
-
-    const recentPath = path.join(workspacePath, 'RECENT.md');
-    let content = '';
-    try {
-      content = await fs.readFile(recentPath, 'utf8');
-    } catch (err) {
-      if (err?.code !== 'ENOENT') {
-        this.logger?.debug?.('[state-snapshot] RECENT.md read failed', { error: err.message });
-      }
-      return;
-    }
-
-    const trimmed = content.trim();
-    if (!trimmed) return;
-
-    const hash = crypto.createHash('sha256').update(trimmed).digest('hex');
-    if (hash === this.lastStateSnapshotHash) return;
-
-    if (!this.stateSnapshotHashLoaded) {
-      this.stateSnapshotHashLoaded = true;
-      for (const node of this.memory.nodes?.values?.() || []) {
-        if (node?.tag === 'state_snapshot' && node?.metadata?.source === 'RECENT.md' && node.metadata.hash === hash) {
-          this.lastStateSnapshotHash = hash;
-          return;
-        }
-      }
-    }
-
-    const assertedAt = new Date().toISOString();
-    const body = trimmed.length > 8000 ? `${trimmed.slice(0, 8000)}\n...[truncated]` : trimmed;
-    const node = await this.memory.addNode({
-      concept: [
-        `[STATE_SNAPSHOT] RECENT.md as of cycle ${this.cycleCount}.`,
-        body,
-      ].join('\n\n'),
-      tag: 'state_snapshot',
-      type: 'state_snapshot',
-      tags: ['state_snapshot', 'current_state', 'RECENT.md'],
-      asserted_at: assertedAt,
-      asserted_cycle: this.cycleCount,
-      confidence_decay: 1,
-      status: 'current',
-      metadata: {
-        kind: 'state_snapshot',
-        source: 'RECENT.md',
-        path: recentPath,
-        hash,
-        asserted_at: assertedAt,
-        asserted_cycle: this.cycleCount,
-      },
-    });
-
-    if (node) {
-      this.lastStateSnapshotHash = hash;
-      this.logger?.info?.('[state-snapshot] wrote RECENT.md memory anchor', {
-        nodeId: node.id,
-        cycle: this.cycleCount,
-        hash: hash.slice(0, 12),
-      });
     }
   }
 
