@@ -1444,9 +1444,18 @@ test('isolated launcher exercises production query, pinned PGS, and lifecycle re
     };
     assert.fail(JSON.stringify(diagnostics));
   }
-  assert.equal(reconciled.state, 'running');
-  const resumed = await reloaded.resumeOperation(restartStart.operationId);
-  assert.equal((await awaitTerminal(reloaded, resumed)).state, 'complete');
+  // The coordinator owns provider work, so the query may legitimately finish
+  // while the dashboard process is restarting. Recovery must preserve either
+  // actionable running truth or the already-durable terminal truth; it must not
+  // depend on winning that timing race.
+  assert.ok(['running', 'complete'].includes(reconciled.state), JSON.stringify(reconciled));
+  const recovered = reconciled.state === 'complete'
+    ? reconciled
+    : await awaitTerminal(
+      reloaded,
+      await reloaded.resumeOperation(restartStart.operationId),
+    );
+  assert.equal(recovered.state, 'complete');
   assert.equal((await reloaded.inspectOperation(terminal.operationId, 'result')).state, 'complete');
 
   const coordinatorRestart = await launched.restartCoordinator();

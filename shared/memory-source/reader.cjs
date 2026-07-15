@@ -221,7 +221,13 @@ async function loadOverlay(canonicalRoot, manifest, options) {
           || typeof snapshot.hasNodeUpsert !== 'function'
           || typeof snapshot.hasRemovedNode !== 'function'
           || !Number.isSafeInteger(snapshot.deltaRecords)
-          || snapshot.deltaRecords !== manifest.activeDelta.count) {
+          || snapshot.deltaRecords !== manifest.activeDelta.count
+          || snapshot.canonicalRoot !== canonicalRoot
+          || snapshot.generation !== manifest.generation
+          || snapshot.epoch !== manifest.activeDeltaEpoch
+          || snapshot.baseRevision !== manifest.baseRevision
+          || snapshot.coveredThroughRevision !== manifest.currentRevision
+          || snapshot.committedBytes !== manifest.activeDelta.committedBytes) {
         throw memorySourceError('source_unavailable', 'node overlay coverage is incomplete', {
           retryable: true,
         });
@@ -232,10 +238,39 @@ async function loadOverlay(canonicalRoot, manifest, options) {
           retryable: true,
         });
       }
+      const nodeOnly = snapshot.coverage !== 'nodes-and-edges';
+      let edgeUpserts = [];
+      if (!nodeOnly) {
+        if (typeof snapshot.upsertedEdges !== 'function'
+            || typeof snapshot.iterateEdgeUpserts !== 'function'
+            || typeof snapshot.hasEdgeUpsert !== 'function'
+            || typeof snapshot.hasRemovedEdge !== 'function'
+            || snapshot.committedChainDigest !== (manifest.activeDelta.chainDigest ?? null)
+            || snapshot.chainBaseCount !== (manifest.activeDelta.chainBaseCount ?? null)
+            || snapshot.chainBaseBytes !== (manifest.activeDelta.chainBaseBytes ?? null)
+            || snapshot.chainBaseDigest !== (manifest.activeDelta.chainBaseDigest ?? null)) {
+          throw memorySourceError('source_unavailable', 'edge overlay coverage is incomplete', {
+            retryable: true,
+          });
+        }
+        edgeUpserts = snapshot.upsertedEdges();
+        if (!Array.isArray(edgeUpserts)) {
+          throw memorySourceError('source_unavailable', 'edge overlay upserts are invalid', {
+            retryable: true,
+          });
+        }
+      }
       const overlay = {
-        nodeOnly: true,
+        nodeOnly,
         hasRemovedNode(id) { return snapshot.hasRemovedNode(id); },
         hasNodeUpsert(id) { return snapshot.hasNodeUpsert(id); },
+        hasRemovedEdge(value) { return nodeOnly ? false : snapshot.hasRemovedEdge(value); },
+        hasEdgeUpsert(value) { return nodeOnly ? false : snapshot.hasEdgeUpsert(value); },
+        upsertedEdges() { return edgeUpserts; },
+        async *iterateEdgeUpserts({ signal } = {}) {
+          if (nodeOnly) return;
+          yield* snapshot.iterateEdgeUpserts({ signal });
+        },
         async *iterateNodeUpserts() {
           for (const node of upserts) yield node;
         },
@@ -404,7 +439,7 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
         if (overlay.hasEdgeUpsert(record)) continue;
         yield Object.freeze({ ...record });
       }
-      for (const record of overlay.upsertedEdges()) {
+      for await (const record of overlay.iterateEdgeUpserts({ signal: options.signal })) {
         if (!overlay.hasRemovedNode(record.source) && !overlay.hasRemovedNode(record.target)) yield record;
       }
     } catch (error) {

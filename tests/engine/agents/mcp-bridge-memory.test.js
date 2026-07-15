@@ -16,6 +16,9 @@ const {
 const {
   MAX_STATE_COMPRESSED_BYTES,
 } = require('../../../shared/memory-source/mcp-bridge-adapter.cjs');
+const {
+  createMemoryDeltaOverlayCache,
+} = require('../../../engine/src/dashboard/memory-delta-overlay-cache');
 
 const implementations = [
   ['engine', EngineMCPBridge],
@@ -23,6 +26,29 @@ const implementations = [
 ];
 
 const logger = { warn() {}, debug() {}, error() {} };
+
+test('engine MCP bridge uses the explicitly injected process-owned overlay provider', async (t) => {
+  const fixture = await createFixture();
+  t.after(fixture.cleanup);
+  const cacheRoot = path.join(fixture.home23Root, 'instances', 'jerry', 'runtime', 'cache');
+  const provider = createMemoryDeltaOverlayCache({ cacheRoot });
+  let refreshes = 0;
+  const observedProvider = {
+    async refresh(input) {
+      refreshes += 1;
+      return provider.refresh(input);
+    },
+  };
+  const bridge = new EngineMCPBridge(fixture.brainDir, logger, {
+    brainSourceContext: fixture.brainSourceContext,
+    nodeOverlayProvider: observedProvider,
+  });
+
+  assert.equal((await bridge.query_memory('route watermark canary', 5)).ok, true);
+  assert.equal((await bridge.get_memory_statistics()).ok, true);
+  assert.equal((await bridge.get_memory_graph(2, { edgeLimit: 1 })).success, true);
+  assert.equal(refreshes, 3);
+});
 
 async function createFixture({ withManifest = true } = {}) {
   const home23Root = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-mcp-bridge-'));

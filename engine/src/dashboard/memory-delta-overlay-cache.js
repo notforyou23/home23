@@ -5,7 +5,9 @@ const fsp = fs.promises;
 const path = require('node:path');
 const crypto = require('node:crypto');
 const {
+  edgeKeyFor,
   memorySourceError,
+  normalizeId: normalizeSourceId,
   readJsonlRange,
   throwIfAborted,
   validateManifest,
@@ -18,6 +20,7 @@ const DEFAULT_MAX_INPUT_BYTES = 2 * 1024 * 1024 * 1024;
 const DEFAULT_MAX_RECORD_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MAX_RETAINED_BYTES = 128 * 1024 * 1024;
 const DEFAULT_MAX_CHANGED_NODES = 100_000;
+const DEFAULT_MAX_CHANGED_EDGES = 100_000;
 const DEFAULT_MAX_CACHE_BYTES = 256 * 1024 * 1024;
 
 function deepFreeze(value) {
@@ -34,6 +37,25 @@ function normalizeId(value) {
   if (value === null || value === undefined) return null;
   const id = String(value);
   return id && Buffer.byteLength(id, 'utf8') <= DEFAULT_MAX_RECORD_BYTES ? id : null;
+}
+
+function normalizeEdgeKey(value) {
+  if (typeof value === 'string') {
+    return value && Buffer.byteLength(value, 'utf8') <= DEFAULT_MAX_RECORD_BYTES ? value : null;
+  }
+  const source = normalizeSourceId(value?.source ?? value?.from);
+  const target = normalizeSourceId(value?.target ?? value?.to);
+  if (!source || !target) return null;
+  const key = edgeKeyFor({ source, target });
+  return Buffer.byteLength(key, 'utf8') <= DEFAULT_MAX_RECORD_BYTES ? key : null;
+}
+
+function normalizeEdgeRecord(record) {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return null;
+  const source = normalizeSourceId(record.source ?? record.from);
+  const target = normalizeSourceId(record.target ?? record.to);
+  if (!source || !target) return null;
+  return clone({ ...record, source, target });
 }
 
 function fileSignature(stat) {
@@ -87,14 +109,73 @@ function sameChainBase(state, activeDelta) {
     && state.chainBaseDigest === activeDelta.chainBaseDigest;
 }
 
+function derivedStateDigest(state) {
+  const unsigned = { ...state };
+  delete unsigned.stateDigest;
+  return crypto.createHash('sha256').update(JSON.stringify(unsigned)).digest('hex');
+}
+
+function persistedCollectionsAreValid(state) {
+  if (!Number.isSafeInteger(state.edgeOnlyRecords)
+      || state.edgeOnlyRecords < 0
+      || state.edgeOnlyRecords > state.deltaRecords) return false;
+  const nodeUpserts = new Set();
+  for (const node of state.upserts) {
+    const id = normalizeId(node?.id);
+    if (!id || nodeUpserts.has(id)) return false;
+    nodeUpserts.add(id);
+  }
+  const removedNodes = new Set();
+  for (const rawId of state.removedNodeIds) {
+    const id = normalizeId(rawId);
+    if (!id || removedNodes.has(id) || nodeUpserts.has(id)) return false;
+    removedNodes.add(id);
+  }
+  const changedNodes = new Set();
+  for (const rawId of state.changedNodeIds) {
+    const id = normalizeId(rawId);
+    if (!id || changedNodes.has(id)) return false;
+    changedNodes.add(id);
+  }
+  if ([...nodeUpserts, ...removedNodes].some((id) => !changedNodes.has(id))) return false;
+
+  const edgeUpserts = new Set();
+  for (const edge of state.upsertedEdges) {
+    const key = normalizeEdgeKey(edge);
+    if (!key || edgeUpserts.has(key)) return false;
+    edgeUpserts.add(key);
+  }
+  const removedEdges = new Set();
+  for (const rawKey of state.removedEdgeKeys) {
+    const key = normalizeEdgeKey(rawKey);
+    if (!key || removedEdges.has(key) || edgeUpserts.has(key)) return false;
+    removedEdges.add(key);
+  }
+  const changedEdges = new Set();
+  for (const rawKey of state.changedEdgeKeys) {
+    const key = normalizeEdgeKey(rawKey);
+    if (!key || changedEdges.has(key)) return false;
+    changedEdges.add(key);
+  }
+  return ![...edgeUpserts, ...removedEdges].some((key) => !changedEdges.has(key));
+}
+
 function snapshotFromState(state, cachePath) {
   const upserts = new Map(state.upserts.map((node) => [String(node.id), deepFreeze(node)]));
   const removed = new Set(state.removedNodeIds.map(String));
   const changed = new Set(state.changedNodeIds.map(String));
+  const edgeUpserts = new Map(state.upsertedEdges.map((edge) => [edgeKeyFor(edge), deepFreeze(edge)]));
+  const removedEdges = new Set(state.removedEdgeKeys);
+  const changedEdges = new Set(state.changedEdgeKeys);
   const frozenUpserts = Object.freeze([...upserts.values()]);
   const frozenChanged = Object.freeze([...changed]);
   const frozenRemoved = Object.freeze([...removed]);
+  const frozenEdgeUpserts = Object.freeze([...edgeUpserts.values()]);
+  const frozenChangedEdges = Object.freeze([...changedEdges]);
+  const frozenRemovedEdges = Object.freeze([...removedEdges]);
   return Object.freeze({
+    nodeOnly: false,
+    coverage: 'nodes-and-edges',
     canonicalRoot: state.canonicalRoot,
     generation: state.generation,
     epoch: state.epoch,
@@ -106,8 +187,15 @@ function snapshotFromState(state, cachePath) {
     changedNodeCount: changed.size,
     upsertedNodeCount: upserts.size,
     removedNodeCount: removed.size,
+    changedEdgeCount: changedEdges.size,
+    upsertedEdgeCount: edgeUpserts.size,
+    removedEdgeCount: removedEdges.size,
     cachePath,
     fileSignature: state.fileSignature,
+    committedChainDigest: state.committedChainDigest,
+    chainBaseCount: state.chainBaseCount,
+    chainBaseBytes: state.chainBaseBytes,
+    chainBaseDigest: state.chainBaseDigest,
     node(id) { return upserts.get(String(id)) || null; },
     hasNodeUpsert(id) { return upserts.has(String(id)); },
     hasChangedNode(id) { return changed.has(String(id)); },
@@ -115,6 +203,18 @@ function snapshotFromState(state, cachePath) {
     nodeUpserts() { return frozenUpserts; },
     changedNodeIds() { return frozenChanged; },
     removedNodeIds() { return frozenRemoved; },
+    edge(value) { return edgeUpserts.get(normalizeEdgeKey(value)) || null; },
+    hasEdgeUpsert(value) { return edgeUpserts.has(normalizeEdgeKey(value)); },
+    hasRemovedEdge(value) { return removedEdges.has(normalizeEdgeKey(value)); },
+    upsertedEdges() { return frozenEdgeUpserts; },
+    async *iterateEdgeUpserts({ signal } = {}) {
+      for (const edge of frozenEdgeUpserts) {
+        throwIfAborted(signal);
+        yield edge;
+      }
+    },
+    changedEdgeKeys() { return frozenChangedEdges; },
+    removedEdgeKeys() { return frozenRemovedEdges; },
   });
 }
 
@@ -126,6 +226,12 @@ function retainedStateBytes(state) {
   }
   for (const id of state.removedNodeIds || []) bytes += Buffer.byteLength(String(id), 'utf8');
   for (const id of state.changedNodeIds || []) bytes += Buffer.byteLength(String(id), 'utf8');
+  for (const edge of state.upsertedEdges || []) {
+    const key = normalizeEdgeKey(edge) || '';
+    bytes += Buffer.byteLength(key, 'utf8') + Buffer.byteLength(JSON.stringify(edge), 'utf8');
+  }
+  for (const key of state.removedEdgeKeys || []) bytes += Buffer.byteLength(String(key), 'utf8');
+  for (const key of state.changedEdgeKeys || []) bytes += Buffer.byteLength(String(key), 'utf8');
   return bytes;
 }
 
@@ -179,8 +285,11 @@ function createMemoryDeltaOverlayCache(options = {}) {
   const maxRecordBytes = options.maxRecordBytes ?? DEFAULT_MAX_RECORD_BYTES;
   const maxRetainedBytes = options.maxRetainedBytes ?? DEFAULT_MAX_RETAINED_BYTES;
   const maxChangedNodes = options.maxChangedNodes ?? DEFAULT_MAX_CHANGED_NODES;
+  const maxChangedEdges = options.maxChangedEdges ?? DEFAULT_MAX_CHANGED_EDGES;
   const maxCacheBytes = options.maxCacheBytes ?? DEFAULT_MAX_CACHE_BYTES;
-  for (const [name, value] of Object.entries({ maxRetainedBytes, maxChangedNodes, maxCacheBytes })) {
+  for (const [name, value] of Object.entries({
+    maxRetainedBytes, maxChangedNodes, maxChangedEdges, maxCacheBytes,
+  })) {
     if (!Number.isSafeInteger(value) || value < 1) {
       throw memorySourceError('invalid_request', `invalid ${name}`);
     }
@@ -226,7 +335,8 @@ function createMemoryDeltaOverlayCache(options = {}) {
           throw new Error('unsafe persisted overlay cache');
         }
         const persisted = JSON.parse(await fsp.readFile(cachePath, 'utf8'));
-        const structurallyValid = persisted?.canonicalRoot === root
+        const structurallyValid = persisted?.schemaVersion === 2
+          && persisted.canonicalRoot === root
           && persisted.generation === manifest.generation
           && persisted.epoch === manifest.activeDeltaEpoch
           && persisted.deltaFile === manifest.activeDelta.file
@@ -240,13 +350,23 @@ function createMemoryDeltaOverlayCache(options = {}) {
           && Array.isArray(persisted.upserts)
           && Array.isArray(persisted.removedNodeIds)
           && Array.isArray(persisted.changedNodeIds)
+          && Array.isArray(persisted.upsertedEdges)
+          && Array.isArray(persisted.removedEdgeKeys)
+          && Array.isArray(persisted.changedEdgeKeys)
+          && /^[a-f0-9]{64}$/.test(persisted.stateDigest || '')
+          && derivedStateDigest(persisted) === persisted.stateDigest
           && /^[a-f0-9]{64}$/.test(persisted.committedPrefixDigest || '')
           && persisted.upserts.length <= persisted.deltaRecords
           && persisted.removedNodeIds.length <= persisted.deltaRecords
           && persisted.changedNodeIds.length <= persisted.deltaRecords
+          && persisted.upsertedEdges.length <= persisted.deltaRecords
+          && persisted.removedEdgeKeys.length <= persisted.deltaRecords
+          && persisted.changedEdgeKeys.length <= persisted.deltaRecords
+          && persistedCollectionsAreValid(persisted)
           && sameFile(persisted.fileSignature, signature);
         if (structurallyValid
             && persisted.changedNodeIds.length <= maxChangedNodes
+            && persisted.changedEdgeKeys.length <= maxChangedEdges
             && retainedStateBytes(persisted) <= maxRetainedBytes) {
           const snapshot = snapshotFromState(persisted, cachePath);
           current = { state: persisted, snapshot };
@@ -282,7 +402,11 @@ function createMemoryDeltaOverlayCache(options = {}) {
       upserts: current.state.upserts.slice(),
       removedNodeIds: current.state.removedNodeIds.slice(),
       changedNodeIds: current.state.changedNodeIds.slice(),
+      upsertedEdges: current.state.upsertedEdges.slice(),
+      removedEdgeKeys: current.state.removedEdgeKeys.slice(),
+      changedEdgeKeys: current.state.changedEdgeKeys.slice(),
     } : {
+      schemaVersion: 2,
       canonicalRoot: root,
       generation: manifest.generation,
       epoch: manifest.activeDeltaEpoch,
@@ -295,6 +419,9 @@ function createMemoryDeltaOverlayCache(options = {}) {
       upserts: [],
       removedNodeIds: [],
       changedNodeIds: [],
+      upsertedEdges: [],
+      removedEdgeKeys: [],
+      changedEdgeKeys: [],
       fileSignature: signature,
       committedPrefixDigest: null,
       committedChainDigest: null,
@@ -305,7 +432,11 @@ function createMemoryDeltaOverlayCache(options = {}) {
     const upserts = new Map(state.upserts.map((node) => [String(node.id), node]));
     const removed = new Set(state.removedNodeIds.map(String));
     const changed = new Set(state.changedNodeIds.map(String));
+    const edgeUpserts = new Map(state.upsertedEdges.map((edge) => [edgeKeyFor(edge), edge]));
+    const removedEdges = new Set(state.removedEdgeKeys);
+    const changedEdges = new Set(state.changedEdgeKeys);
     const upsertBytes = new Map();
+    const edgeUpsertBytes = new Map();
     let retainedBytes = 0;
     for (const [id, node] of upserts) {
       const bytes = Buffer.byteLength(id, 'utf8') + Buffer.byteLength(JSON.stringify(node), 'utf8');
@@ -314,6 +445,13 @@ function createMemoryDeltaOverlayCache(options = {}) {
     }
     for (const id of removed) retainedBytes += Buffer.byteLength(id, 'utf8');
     for (const id of changed) retainedBytes += Buffer.byteLength(id, 'utf8');
+    for (const [key, edge] of edgeUpserts) {
+      const bytes = Buffer.byteLength(key, 'utf8') + Buffer.byteLength(JSON.stringify(edge), 'utf8');
+      edgeUpsertBytes.set(key, bytes);
+      retainedBytes += bytes;
+    }
+    for (const key of removedEdges) retainedBytes += Buffer.byteLength(key, 'utf8');
+    for (const key of changedEdges) retainedBytes += Buffer.byteLength(key, 'utf8');
     const chainAuthority = hasChainAuthority(manifest.activeDelta);
     const startByte = canExtend ? state.committedBytes : 0;
     let rangeDigest = null;
@@ -404,7 +542,38 @@ function createMemoryDeltaOverlayCache(options = {}) {
           changed.add(id);
           retainedBytes += Buffer.byteLength(id, 'utf8');
         }
-      } else if (entry.op === 'upsert_edge' || entry.op === 'remove_edge') {
+      } else if (entry.op === 'upsert_edge') {
+        const edge = normalizeEdgeRecord(entry.record);
+        const key = normalizeEdgeKey(edge);
+        if (!edge || !key) {
+          throw memorySourceError('source_unavailable', 'invalid edge delta', { retryable: true });
+        }
+        retainedBytes -= edgeUpsertBytes.get(key) || 0;
+        if (removedEdges.delete(key)) retainedBytes -= Buffer.byteLength(key, 'utf8');
+        const bytes = Buffer.byteLength(key, 'utf8') + Buffer.byteLength(JSON.stringify(edge), 'utf8');
+        edgeUpserts.set(key, edge);
+        edgeUpsertBytes.set(key, bytes);
+        retainedBytes += bytes;
+        if (!changedEdges.has(key)) {
+          changedEdges.add(key);
+          retainedBytes += Buffer.byteLength(key, 'utf8');
+        }
+        state.edgeOnlyRecords += 1;
+      } else if (entry.op === 'remove_edge') {
+        const key = normalizeEdgeKey(entry.key ?? entry.record ?? entry);
+        if (!key) {
+          throw memorySourceError('source_unavailable', 'invalid edge tombstone', { retryable: true });
+        }
+        if (edgeUpserts.delete(key)) retainedBytes -= edgeUpsertBytes.get(key) || 0;
+        edgeUpsertBytes.delete(key);
+        if (!removedEdges.has(key)) {
+          removedEdges.add(key);
+          retainedBytes += Buffer.byteLength(key, 'utf8');
+        }
+        if (!changedEdges.has(key)) {
+          changedEdges.add(key);
+          retainedBytes += Buffer.byteLength(key, 'utf8');
+        }
         state.edgeOnlyRecords += 1;
       } else {
         throw memorySourceError('source_unavailable', 'invalid delta operation', { retryable: true });
@@ -412,6 +581,11 @@ function createMemoryDeltaOverlayCache(options = {}) {
       if (changed.size > maxChangedNodes) {
         throw memorySourceError('result_too_large', 'delta overlay changed-node limit exceeded', {
           status: 413, retryable: false, limit: maxChangedNodes,
+        });
+      }
+      if (changedEdges.size > maxChangedEdges) {
+        throw memorySourceError('result_too_large', 'delta overlay changed-edge limit exceeded', {
+          status: 413, retryable: false, limit: maxChangedEdges,
         });
       }
       if (retainedBytes > maxRetainedBytes) {
@@ -435,6 +609,9 @@ function createMemoryDeltaOverlayCache(options = {}) {
     state.upserts = [...upserts.values()];
     state.removedNodeIds = [...removed];
     state.changedNodeIds = [...changed];
+    state.upsertedEdges = [...edgeUpserts.values()];
+    state.removedEdgeKeys = [...removedEdges];
+    state.changedEdgeKeys = [...changedEdges];
     state.fileSignature = signature;
     state.committedPrefixDigest = chainAuthority
       ? manifest.activeDelta.chainDigest
@@ -447,6 +624,7 @@ function createMemoryDeltaOverlayCache(options = {}) {
     state.chainBaseCount = chainAuthority ? manifest.activeDelta.chainBaseCount : null;
     state.chainBaseBytes = chainAuthority ? manifest.activeDelta.chainBaseBytes : null;
     state.chainBaseDigest = chainAuthority ? manifest.activeDelta.chainBaseDigest : null;
+    state.stateDigest = derivedStateDigest(state);
     await fsp.mkdir(directory, { recursive: true, mode: 0o700 });
     const temp = `${cachePath}.${process.pid}.${Date.now()}.tmp`;
     const encodedState = Buffer.from(`${JSON.stringify(state)}\n`);

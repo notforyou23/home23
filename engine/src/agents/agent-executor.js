@@ -146,6 +146,7 @@ class AgentExecutor {
     // explicitly unavailable instead of guessing a resident brain.
     this.mcpBridge = new MCPBridge(config.logsDir, logger, {
       brainSourceContext: phase2bSubsystems.brainSourceContext || null,
+      nodeOverlayProvider: phase2bSubsystems.nodeOverlayProvider ?? null,
     });  // MCP bridge for system introspection
     this.externalBridge = new ExternalBridge(config, logger);  // External API integrations
     this.frontierGate = new FrontierGate(config, logger);  // FrontierGate for governance

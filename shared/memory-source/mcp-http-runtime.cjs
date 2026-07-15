@@ -124,6 +124,7 @@ function createDefaultMcpMemoryTools({
   logger = console,
   resolveTargetContext = null,
   searchMemory = null,
+  nodeOverlayProvider = null,
 } = {}) {
   if (typeof brainDir !== 'string' || !path.isAbsolute(brainDir)
       || typeof home23Root !== 'string' || !path.isAbsolute(home23Root)
@@ -157,6 +158,7 @@ function createDefaultMcpMemoryTools({
     logger,
     resolveTargetContext: resolveLocalTarget,
     searchMemory,
+    nodeOverlayProvider,
   });
 }
 

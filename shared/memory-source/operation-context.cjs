@@ -167,7 +167,10 @@ async function withEphemeralMemorySource({
     throw memorySourceError('invalid_request', 'trusted home23 root required');
   }
   if (!_testHooks || Array.isArray(_testHooks) || typeof _testHooks !== 'object'
-      || Object.keys(_testHooks).some((key) => key !== 'beforeOperationRootQuarantine')
+      || Object.keys(_testHooks).some((key) => ![
+        'beforeOperationRootQuarantine',
+        'afterAdmissionLockReleased',
+      ].includes(key))
       || Object.values(_testHooks).some((hook) => typeof hook !== 'function')) {
     throw memorySourceError('invalid_request', 'invalid operation context test hooks');
   }
@@ -218,13 +221,33 @@ async function withEphemeralMemorySource({
   const admissionLockRoot = admissionLockDirectory.path;
   // Admit every compatibility open, not only sources currently detected as
   // legacy: preclassification would race a source transition into projection.
-  return withMemorySourceLock(canonicalBrain, {
-    lockRoot: admissionLockRoot,
-    signal,
-    lockRetryMs: 0,
-    lockJitterMs: 0,
-    lockTimeoutMs: 0,
-  }, async () => {
+  // Once a native manifest source is safely open, its descriptors/overlay are
+  // operation-owned and the admission lock can be released before the caller's
+  // potentially long query. Legacy projections retain admission for the whole
+  // callback so concurrent callers cannot recreate the projection storm.
+  let admittedOperation = null;
+  const cleanupAdmittedOperation = async (operation) => {
+    if (!operation) return;
+    await operation.source?.close?.().catch(() => {});
+    operation.scratchQuota?.close();
+    await removeOwnedOperationRoot(
+      operationsDirectory,
+      operation.operationIdentity,
+      _testHooks,
+    );
+  };
+  let admittedResult;
+  try {
+    admittedResult = await withMemorySourceLock(canonicalBrain, {
+      lockRoot: admissionLockRoot,
+      signal,
+      lockRetryMs: 0,
+      lockJitterMs: 0,
+      lockTimeoutMs: 0,
+      ...(_testHooks.afterAdmissionLockReleased ? {
+        _testHooks: { afterLockReleased: _testHooks.afterAdmissionLockReleased },
+      } : {}),
+    }, async () => {
     throwIfAborted(signal);
     const operationId = `${safePrefix}-${safeSegment(uuid(), 'uuid')}`;
     let operationIdentity = null;
@@ -250,19 +273,40 @@ async function withEphemeralMemorySource({
         scratchQuota,
         nodeOverlayProvider,
       });
-      return await callback(source, {
+      const context = {
         operationId,
         operationRoot,
         lockRoot,
         scratchQuota,
         identity: effectiveIdentity,
-      });
+      };
+      if (source.getEvidence().implementation === 'manifest-v1') {
+        admittedOperation = { source, context, scratchQuota, operationIdentity };
+        source = null;
+        scratchQuota = null;
+        operationIdentity = null;
+        return { native: true, value: undefined };
+      }
+      return { native: false, value: await callback(source, context) };
     } finally {
       await source?.close?.().catch(() => {});
       scratchQuota?.close();
       await removeOwnedOperationRoot(operationsDirectory, operationIdentity, _testHooks);
     }
-  });
+    });
+  } catch (error) {
+    await cleanupAdmittedOperation(admittedOperation);
+    throw error;
+  }
+  if (!admittedResult.native) return admittedResult.value;
+
+  const operation = admittedOperation;
+  if (!operation) throw invalidOperationTree('admitted native operation was not retained');
+  try {
+    return await callback(operation.source, operation.context);
+  } finally {
+    await cleanupAdmittedOperation(operation);
+  }
 }
 
 function createInstalledLocalSourceContext({

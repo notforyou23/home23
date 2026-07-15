@@ -8,6 +8,9 @@ const {
   createProductionMcpMemoryTools,
   startMcpHttpServer,
 } = require('../../../engine/mcp/http-server.js');
+const {
+  createDefaultMcpMemoryTools,
+} = require('../../../shared/memory-source/mcp-http-runtime.cjs');
 
 async function close(server) {
   if (!server.listening) return;
@@ -130,6 +133,8 @@ test('engine MCP loopback serves canonical health and delegates a bounded tool c
 test('production MCP memory tools use the dashboard search service with canonical catalog identity', async () => {
   const calls = [];
   let closes = 0;
+  const overlayProvider = Object.freeze({ async refresh() {} });
+  let directOptions = null;
   const memoryTools = createProductionMcpMemoryTools({
     brainDir: '/canonical/brain',
     home23Root: '/canonical/home23',
@@ -167,6 +172,14 @@ test('production MCP memory tools use the dashboard search service with canonica
         },
       };
     },
+    createOverlayCache(options) {
+      assert.equal(options.cacheRoot, '/canonical/home23/instances/ada/runtime/cache');
+      return overlayProvider;
+    },
+    createDirectMemoryTools(options) {
+      directOptions = options;
+      return createDefaultMcpMemoryTools(options);
+    },
     buildCatalog: async () => ({
       catalogRevision: 'catalog-9',
       brains: [{
@@ -185,6 +198,8 @@ test('production MCP memory tools use the dashboard search service with canonica
   assert.equal(result.evidence.selectedBrain, 'brain-ada');
   assert.equal(calls.length, 1);
   assert.equal(calls[0].input.topK, 4);
+  assert.equal(calls[0].options.deltaOverlayCache, overlayProvider);
+  assert.equal(directOptions.nodeOverlayProvider, overlayProvider);
   await memoryTools.close();
   await memoryTools.close();
   assert.equal(closes, 1);

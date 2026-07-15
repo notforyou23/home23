@@ -89,6 +89,13 @@ test('node-search overlay provider bypasses delta replay while preserving logica
         assert.equal(canonicalRoot, await fsp.realpath(dir));
         assert.equal(received.currentRevision, manifest.currentRevision);
         return {
+          coverage: 'nodes',
+          canonicalRoot,
+          generation: received.generation,
+          epoch: received.activeDeltaEpoch,
+          baseRevision: received.baseRevision,
+          coveredThroughRevision: received.currentRevision,
+          committedBytes: received.activeDelta.committedBytes,
           deltaRecords: 1,
           nodeUpserts: () => Object.freeze([logicalDelta]),
           hasNodeUpsert: (id) => id === 'delta',

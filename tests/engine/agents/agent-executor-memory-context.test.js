@@ -9,6 +9,9 @@ const require = createRequire(import.meta.url);
 const engineExecutorModule = require('../../../engine/src/agents/agent-executor');
 const cosmoExecutorModule = require('../../../cosmo23/engine/src/agents/agent-executor');
 const { rewriteMemoryBase } = require('../../../shared/memory-source');
+const {
+  createMemoryDeltaOverlayCache,
+} = require('../../../engine/src/dashboard/memory-delta-overlay-cache');
 
 const implementations = [
   ['engine', engineExecutorModule],
@@ -195,4 +198,47 @@ test('COSMO AgentExecutor accepts only an explicitly owned local run context', a
   const query = await executor.mcpBridge.query_memory('owned run', 5);
   assert.equal(query.ok, true);
   assert.equal(query.results[0].id, 'owned-canary');
+});
+
+test('engine AgentExecutor forwards the process-owned overlay provider into its MCP bridge', async (t) => {
+  const fixture = await createResidentFixture();
+  t.after(fixture.cleanup);
+  const brainSourceContext = engineExecutorModule.createTrustedAgentBrainSourceContext({
+    home23Root: fixture.home23Root,
+    requesterAgent: 'jerry',
+    brainDir: fixture.brainDir,
+    sourceKind: 'resident',
+  });
+  const provider = createMemoryDeltaOverlayCache({
+    cacheRoot: path.join(fixture.home23Root, 'instances', 'jerry', 'runtime', 'cache'),
+  });
+  let refreshes = 0;
+  const observedProvider = {
+    async refresh(input) {
+      refreshes += 1;
+      return provider.refresh(input);
+    },
+  };
+  const executor = new engineExecutorModule.AgentExecutor({
+    ...executorSubsystems(brainSourceContext),
+    nodeOverlayProvider: observedProvider,
+  }, executorConfig(fixture.brainDir), logger);
+
+  const result = await executor.mcpBridge.query_memory('route watermark', 5);
+  assert.equal(result.ok, true);
+  assert.equal(refreshes, 1);
+});
+
+test('engine composition creates one requester-scoped overlay provider and injects it', async () => {
+  const source = await fsp.readFile(
+    path.join(process.cwd(), 'engine', 'src', 'index.js'),
+    'utf8',
+  );
+  assert.match(source, /const resolvedNodeOverlayProvider = createMemoryDeltaOverlayCache\(\{/);
+  assert.match(source, /'instances',\s*requesterAgent,\s*'runtime',\s*'cache'/);
+  assert.match(source, /nodeOverlayProvider = resolvedNodeOverlayProvider/);
+  assert.match(
+    source,
+    /new AgentExecutor\(\s*\{ memory, goals, pathResolver, brainSourceContext, nodeOverlayProvider \}/,
+  );
 });

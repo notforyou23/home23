@@ -79,6 +79,7 @@ class MCPBridge {
       logger,
       brainSourceContext: normalizedOptions.brainSourceContext || null,
       memoryTools: normalizedOptions.memoryTools || null,
+      nodeOverlayProvider: normalizedOptions.nodeOverlayProvider ?? null,
       readScalarState: ({ signal } = {}) => this.readSystemStateShell({ signal }),
     });
   }

@@ -292,6 +292,7 @@ function createMcpBridgeMemoryAdapter({
   logger = console,
   brainSourceContext = null,
   memoryTools = null,
+  nodeOverlayProvider = null,
   readScalarState,
 } = {}) {
   if (!path.isAbsolute(logsDir || '') || typeof readScalarState !== 'function') {
@@ -307,6 +308,7 @@ function createMcpBridgeMemoryAdapter({
       ...trustedContext,
       readScalarState,
       logger,
+      nodeOverlayProvider,
     })
     : createUnavailableMemoryTools());
 

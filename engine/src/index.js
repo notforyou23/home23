@@ -55,6 +55,7 @@ const { GuidedModePlanner } = require('./core/guided-mode-planner');
 const { UnifiedClient } = require('./core/unified-client');
 const { SimpleLogger } = require('../lib/simple-logger');
 const { GoalAllocator } = require('./cluster/goal-allocator');
+const { createMemoryDeltaOverlayCache } = require('./dashboard/memory-delta-overlay-cache');
 
 // Clustering support
 const { ClusterAwareMemory } = require('./cluster/cluster-aware-memory');
@@ -252,15 +253,27 @@ async function main() {
   await coordinator.initialize();
 
   let brainSourceContext = null;
+  let nodeOverlayProvider = null;
   const requesterAgent = process.env.HOME23_AGENT || config.agent?.name || null;
   if (requesterAgent) {
     try {
-      brainSourceContext = createTrustedAgentBrainSourceContext({
+      const resolvedBrainSourceContext = createTrustedAgentBrainSourceContext({
         home23Root: path.resolve(__dirname, '..', '..'),
         requesterAgent,
         brainDir: runtimeRoot,
         sourceKind: 'resident',
       });
+      const resolvedNodeOverlayProvider = createMemoryDeltaOverlayCache({
+        cacheRoot: path.join(
+          path.resolve(__dirname, '..', '..'),
+          'instances',
+          requesterAgent,
+          'runtime',
+          'cache',
+        ),
+      });
+      brainSourceContext = resolvedBrainSourceContext;
+      nodeOverlayProvider = resolvedNodeOverlayProvider;
     } catch (error) {
       logger.warn('MCP memory source context unavailable', {
         code: error?.code || 'mcp_source_context_required',
@@ -270,7 +283,7 @@ async function main() {
   
   // Initialize Agent Executor
   const agentExecutor = new AgentExecutor(
-    { memory, goals, pathResolver, brainSourceContext },
+    { memory, goals, pathResolver, brainSourceContext, nodeOverlayProvider },
     config,
     logger
   );

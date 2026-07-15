@@ -70,10 +70,16 @@ function createMemoryTools({
   logger = console,
   withEphemeralSource = withEphemeralMemorySource,
   searchMemory = null,
+  nodeOverlayProvider = null,
 } = {}) {
   assertTrustedContext({ brainDir, home23Root, requesterAgent, resolveTargetContext });
   if (searchMemory !== null && typeof searchMemory !== 'function') {
     throw Object.assign(new Error('shared MCP search dependency is invalid'), {
+      code: 'mcp_source_context_required',
+    });
+  }
+  if (nodeOverlayProvider !== null && typeof nodeOverlayProvider?.refresh !== 'function') {
+    throw Object.assign(new Error('MCP node overlay provider is invalid'), {
       code: 'mcp_source_context_required',
     });
   }
@@ -129,6 +135,7 @@ function createMemoryTools({
         identity: baseIdentity,
         signal,
         prefix: 'mcp',
+        nodeOverlayProvider,
       }, async (source, operation) => {
         const withIdentity = (evidence) => enrichEvidenceIdentity(evidence, operation.identity);
         sourceEvidence = withIdentity(source.getEvidence?.() || null);

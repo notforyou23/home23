@@ -703,6 +703,20 @@ class NetworkMemory {
       ? getSemanticTimeMs(inputNode)
       : 0;
     const preserveIncomingAuthority = incomingAuthorityAttested && incomingAuthorityTime > 0;
+    // A verified receipt's durable identity is exactly the identity covered by
+    // its attestation. Reject obvious replays before provider or graph work;
+    // the mutation barrier repeats this check to close concurrent races.
+    const requestedNodeId = incomingAuthorityAttested
+      ? (inputNode.id ?? inputNode.memory_id)
+      : inputNode?.id;
+    if (incomingAuthorityAttested
+        && requestedNodeId !== undefined
+        && requestedNodeId !== null
+        && equivalentGraphIdentityExists(this.nodes, requestedNodeId)) {
+      const error = new Error('authenticated memory node ID already exists');
+      error.code = 'authority_node_id_collision';
+      throw error;
+    }
     const conceptText = inputNode
       ? String(inputNode.concept || inputNode.content || inputNode.summary || inputNode.title || '')
       : String(concept || '');
@@ -747,13 +761,6 @@ class NetworkMemory {
       }
     }
 
-    // A verified receipt's durable identity is exactly the identity covered by
-    // its attestation. `memory_id` is a supported persisted alias; never mint a
-    // fresh graph ID for it or a replay could acquire a second identity.
-    const requestedNodeId = incomingAuthorityAttested
-      ? (inputNode.id ?? inputNode.memory_id)
-      : inputNode?.id;
-    
     const provenance = classifyMemoryProvenance({
       ...inputNode,
       concept: conceptText,

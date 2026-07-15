@@ -72,6 +72,7 @@ function toolsFor({
   resolveTargetContext,
   withEphemeralSource,
   searchMemory,
+  nodeOverlayProvider,
 } = {}) {
   return createMemoryTools({
     brainDir,
@@ -92,8 +93,49 @@ function toolsFor({
     logger: { warn() {} },
     ...(withEphemeralSource ? { withEphemeralSource } : {}),
     ...(searchMemory ? { searchMemory } : {}),
+    ...(nodeOverlayProvider ? { nodeOverlayProvider } : {}),
   });
 }
+
+test('MCP direct tools pass the exact process-owned overlay provider to every source open', async () => {
+  const brainDir = await writeManifestFixture();
+  const home23Root = await tempDir('home23-mcp-memory-overlay-provider-');
+  const nodeOverlayProvider = Object.freeze({ refresh() { throw new Error('not called by fixture'); } });
+  const openedWith = [];
+  const evidence = { sourceHealth: 'healthy', matchOutcome: 'matches' };
+  const source = {
+    revision: 4,
+    async summarize() { return { nodes: 2, edges: 0, clusters: 0 }; },
+    async summarizeBreakdowns() { return { tags: null, clusterTotals: null, omitted: true }; },
+    async searchKeyword() { return { results: [], filtered: 0, evidence }; },
+    async *iterateNodes() { yield { id: 'node-1', concept: 'provider canary' }; },
+    async *iterateEdges() {},
+    getEvidence(extra = {}) { return { ...evidence, ...extra }; },
+  };
+  const tools = toolsFor({
+    brainDir,
+    home23Root,
+    nodeOverlayProvider,
+    withEphemeralSource: async (options, callback) => {
+      openedWith.push(options.nodeOverlayProvider);
+      return callback(source, {
+        identity: {
+          requesterAgent: 'ada', targetAgent: 'ada', brainId: 'ada',
+          canonicalRoot: brainDir, catalogRevision: 'test', accessMode: 'own',
+          kind: 'resident', sourceType: 'memory-manifest', operationId: 'provider-test',
+        },
+      });
+    },
+  });
+
+  await tools.checkReadiness();
+  await tools.queryMemory({ query: 'provider canary', limit: 1 });
+  await tools.getMemoryStatistics();
+  await tools.getMemoryGraph({ nodeLimit: 1, edgeLimit: 0 });
+
+  assert.equal(openedWith.length, 4);
+  assert.equal(openedWith.every((provider) => provider === nodeOverlayProvider), true);
+});
 
 test('MCP query delegates to the shared search authority response when injected', async () => {
   const brainDir = await writeManifestFixture();

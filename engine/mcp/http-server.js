@@ -19,6 +19,7 @@ const {
   createSnapshotScalarStateReader,
 } = require('../../shared/memory-source/mcp-http-runtime.cjs');
 const { createMemorySearchService } = require('../src/dashboard/memory-search.js');
+const { createMemoryDeltaOverlayCache } = require('../src/dashboard/memory-delta-overlay-cache.js');
 const { readRecentJsonlTail } = require('../../shared/bounded-jsonl-tail.cjs');
 
 // Initialize free web search
@@ -223,11 +224,14 @@ function createProductionMcpMemoryTools({
   home23Root = process.env.HOME23_ROOT,
   requesterAgent = process.env.HOME23_AGENT,
   createSearchService = createMemorySearchService,
+  createOverlayCache = createMemoryDeltaOverlayCache,
+  createDirectMemoryTools = createDefaultMcpMemoryTools,
   buildCatalog = () => buildInstalledBrainCatalog(home23Root),
   realpath = fs.promises.realpath,
   logger = console,
 } = {}) {
-  if (typeof createSearchService !== 'function' || typeof buildCatalog !== 'function'
+  if (typeof createSearchService !== 'function' || typeof createOverlayCache !== 'function'
+      || typeof createDirectMemoryTools !== 'function' || typeof buildCatalog !== 'function'
       || typeof realpath !== 'function') {
     throw Object.assign(new Error('MCP shared search dependencies required'), {
       code: 'mcp_source_context_required',
@@ -259,25 +263,35 @@ function createProductionMcpMemoryTools({
       target: Object.freeze({ ...target, canonicalRoot }),
     });
   };
+  const nodeOverlayProvider = createOverlayCache({
+    cacheRoot: path.join(home23Root, 'instances', requesterAgent, 'runtime', 'cache'),
+  });
+  if (!nodeOverlayProvider || typeof nodeOverlayProvider.refresh !== 'function') {
+    throw Object.assign(new Error('MCP overlay provider required'), {
+      code: 'mcp_source_context_required',
+    });
+  }
   const searchService = createSearchService({
     brainDir,
     home23Root,
     requesterAgent,
     resolveTargetContext,
     logger,
+    deltaOverlayCache: nodeOverlayProvider,
   });
   if (!searchService || typeof searchService.search !== 'function') {
     throw Object.assign(new Error('MCP shared search service required'), {
       code: 'mcp_source_context_required',
     });
   }
-  const memoryTools = createDefaultMcpMemoryTools({
+  const memoryTools = createDirectMemoryTools({
     brainDir,
     home23Root,
     requesterAgent,
     logger,
     resolveTargetContext,
     searchMemory: (request) => searchService.search(request),
+    nodeOverlayProvider,
   });
   let closePromise = null;
   return Object.freeze({

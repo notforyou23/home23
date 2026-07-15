@@ -590,6 +590,55 @@ test('addNode refuses to mint a new authority identity from a colliding signed I
   assert.equal(memory.nodes.get(first.id), first);
 });
 
+test('addNode rejects an authenticated equivalent-ID collision before preparatory work', async () => {
+  const memory = makeMemory();
+  const resident = attestedNode(7, {
+    concept: 'Resident signed receipt.',
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'worker_receipt',
+      sourceRefs: ['goal:resident-7'],
+      evidenceRefs: ['worker-receipt:worker-1:resident-7'],
+    },
+  });
+  await memory.addNode(resident, 'general', [1, 0]);
+
+  const calls = { embed: 0, summarize: 0, similarity: 0 };
+  memory.config.coordinator = {
+    useMemorySummaries: true,
+    extractiveSummarization: true,
+  };
+  memory.embed = async () => {
+    calls.embed += 1;
+    return [1, 0];
+  };
+  memory.extractiveSummarizer.summarize = () => {
+    calls.summarize += 1;
+    return { quality: 1, summary: 'must not run', keyPhrase: 'must-not-run' };
+  };
+  const findInitialConnections = memory.findInitialConnections.bind(memory);
+  memory.findInitialConnections = (...args) => {
+    calls.similarity += 1;
+    return findInitialConnections(...args);
+  };
+  const incoming = attestedNode('7', {
+    concept: 'Equivalent signed receipt must fail before preparation.',
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'worker_receipt',
+      sourceRefs: ['goal:incoming-7'],
+      evidenceRefs: ['worker-receipt:worker-1:incoming-7'],
+    },
+  });
+
+  await assert.rejects(
+    memory.addNode(incoming, 'general', [0, 1]),
+    error => error?.code === 'authority_node_id_collision',
+  );
+  assert.deepEqual(calls, { embed: 0, summarize: 0, similarity: 0 });
+  assert.equal(memory.nodes.size, 1);
+});
+
 test('addNode rejects numeric and string-equivalent authenticated ID collisions', async () => {
   for (const [residentId, incomingId] of [[7, '7'], ['8', 8]]) {
     const memory = makeMemory();

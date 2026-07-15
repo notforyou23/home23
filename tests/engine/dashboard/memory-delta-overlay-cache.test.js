@@ -10,6 +10,7 @@ const {
   appendMemoryRevision,
   readManifest,
   rewriteMemoryBase,
+  withEphemeralMemorySource,
 } = require('../../../shared/memory-source');
 const {
   createMemoryDeltaOverlayCache,
@@ -60,6 +61,33 @@ test('first load persists under requester cache and unchanged refresh is O(1)', 
   assert.equal(reads, 1, 'a restarted requester must reuse its persisted derived cache');
 });
 
+test('restart rejects a corrupted derived state instead of trusting its materialized claims', async () => {
+  const f = await fixture();
+  const manifest = await append(f, {
+    nodes: [{ id: 'delta', concept: 'source truth', embedding: [1, 0] }],
+    edges: [{ source: 'base', target: 'delta', weight: 0.7 }],
+  }, { nodeCount: 2, edgeCount: 1, clusterCount: 1 });
+  const cacheRoot = path.join(f.requester, 'cache');
+  const first = await createMemoryDeltaOverlayCache({ cacheRoot }).refresh({
+    canonicalRoot: f.brain,
+    manifest,
+  });
+  const persisted = JSON.parse(await fsp.readFile(first.cachePath, 'utf8'));
+  persisted.upserts[0].concept = 'corrupted cache claim';
+  persisted.upsertedEdges[0].weight = 999;
+  await fsp.writeFile(first.cachePath, `${JSON.stringify(persisted)}\n`);
+
+  let replayed = 0;
+  const restarted = createMemoryDeltaOverlayCache({
+    cacheRoot,
+    _testHooks: { onReadRange() { replayed += 1; } },
+  });
+  const rebuilt = await restarted.refresh({ canonicalRoot: f.brain, manifest });
+  assert.equal(rebuilt.node('delta').concept, 'source truth');
+  assert.equal(rebuilt.edge('base->delta').weight, 0.7);
+  assert.equal(replayed, 1);
+});
+
 test('extension reads only suffix and preserves latest node and edge-only coverage', async () => {
   const f = await fixture();
   let manifest = await append(f, { nodes: [{ id: 'delta', concept: 'one', embedding: [1, 0] }] });
@@ -73,6 +101,13 @@ test('extension reads only suffix and preserves latest node and edge-only covera
     nodeCount: 2, edgeCount: 1, clusterCount: 1,
   });
   const edgeSnapshot = await cache.refresh({ canonicalRoot: f.brain, manifest });
+  assert.equal(edgeSnapshot.nodeOnly, false);
+  assert.equal(edgeSnapshot.hasEdgeUpsert({ source: 'base', target: 'delta' }), true);
+  assert.equal(edgeSnapshot.edge({ source: 'delta', target: 'base' }).weight, 1);
+  assert.deepEqual(
+    edgeSnapshot.upsertedEdges().map((edge) => [edge.source, edge.target]),
+    [['base', 'delta']],
+  );
   manifest = await append(f, { nodes: [{ id: 'delta', concept: 'two', embedding: [1, 0] }] });
   const next = await cache.refresh({ canonicalRoot: f.brain, manifest });
 
@@ -83,6 +118,56 @@ test('extension reads only suffix and preserves latest node and edge-only covera
   assert.equal(next.deltaRecords, 3);
   assert.equal(next.changedNodeCount, 1);
   assert.equal(next.coveredThroughRevision, manifest.currentRevision);
+});
+
+test('persisted complete overlay serves and tombstones graph edges without replay', async () => {
+  const f = await fixture();
+  let manifest = await append(f, {
+    nodes: [{ id: 'delta', concept: 'edge endpoint', embedding: [1, 0] }],
+    edges: [{ source: 'base', target: 'delta', weight: 0.8 }],
+  }, { nodeCount: 2, edgeCount: 1, clusterCount: 1 });
+  const cacheRoot = path.join(f.requester, 'cache');
+  const cache = createMemoryDeltaOverlayCache({ cacheRoot });
+  const first = await cache.refresh({ canonicalRoot: f.brain, manifest });
+  assert.equal(first.edge({ source: 'base', target: 'delta' }).weight, 0.8);
+
+  let restoredReads = 0;
+  const restoredCache = createMemoryDeltaOverlayCache({
+    cacheRoot,
+    _testHooks: { onReadRange() { restoredReads += 1; } },
+  });
+  const restored = await restoredCache.refresh({ canonicalRoot: f.brain, manifest });
+  assert.equal(restored.edge({ source: 'delta', target: 'base' }).weight, 0.8);
+  assert.equal(restoredReads, 0, 'restart must reuse complete persisted edge coverage');
+
+  const visibleEdges = await withEphemeralMemorySource({
+    brainDir: f.brain,
+    home23Root: f.requester,
+    requesterAgent: 'jerry',
+    prefix: 'graph-cache',
+    nodeOverlayProvider: restoredCache,
+  }, async (source) => {
+    const rows = [];
+    for await (const edge of source.iterateEdges()) rows.push(edge);
+    return rows;
+  });
+  assert.equal(visibleEdges.length, 1);
+  assert.equal(visibleEdges[0].weight, 0.8);
+
+  manifest = await append(f, { removedEdgeKeys: ['base->delta'] }, {
+    nodeCount: 2, edgeCount: 0, clusterCount: 1,
+  });
+  const removed = await restoredCache.refresh({ canonicalRoot: f.brain, manifest });
+  assert.equal(removed.edge('base->delta'), null);
+  assert.equal(removed.hasRemovedEdge({ source: 'delta', target: 'base' }), true);
+  assert.deepEqual(removed.upsertedEdges(), []);
+
+  manifest = await append(f, {
+    edges: [{ from: 'delta', to: 'base', weight: 0.9 }],
+  }, { nodeCount: 2, edgeCount: 1, clusterCount: 1 });
+  const restoredAgain = await restoredCache.refresh({ canonicalRoot: f.brain, manifest });
+  assert.equal(restoredAgain.edge({ source: 'base', target: 'delta' }).weight, 0.9);
+  assert.equal(restoredAgain.hasRemovedEdge('base->delta'), false);
 });
 
 test('suffix refresh verifies a bounded historical fingerprint instead of rehashing the backlog', async () => {

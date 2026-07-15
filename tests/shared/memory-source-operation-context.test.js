@@ -301,6 +301,86 @@ test('compatibility admission permits one mixed caller per canonical legacy sour
   assert.deepEqual(await operationRoots(home23Root), []);
 });
 
+test('manifest compatibility admission releases after open so long callbacks do not starve readers', async (t) => {
+  const home23Root = await tempDir('home23-memory-source-native-admission-home-');
+  const brainDir = await writeManifestBrain();
+  t.after(() => Promise.all([
+    fsp.rm(home23Root, { recursive: true, force: true }),
+    fsp.rm(brainDir, { recursive: true, force: true }),
+  ]));
+  const held = deferred();
+  let entered = 0;
+  const first = withEphemeralMemorySource({
+    brainDir,
+    home23Root,
+    requesterAgent: 'jerry',
+    prefix: 'mcp',
+    uuid: () => 'native-holder',
+  }, async (source) => {
+    entered += 1;
+    assert.equal(source.getEvidence().implementation, 'manifest-v1');
+    await held.promise;
+    return 'first';
+  });
+  assert.equal(await waitFor(() => entered === 1), true);
+
+  const second = withEphemeralMemorySource({
+    brainDir,
+    home23Root,
+    requesterAgent: 'forrest',
+    prefix: 'dashboard-source',
+    uuid: () => 'native-contender',
+  }, async (source) => {
+    entered += 1;
+    assert.equal(source.getEvidence().implementation, 'manifest-v1');
+    return 'second';
+  });
+
+  let overlapError = null;
+  try {
+    assert.equal(await waitFor(() => entered === 2), true,
+      'a safely opened manifest callback must not retain compatibility admission');
+    assert.equal((await operationRoots(home23Root)).length, 2);
+    assert.equal(await second, 'second');
+  } catch (error) {
+    overlapError = error;
+  } finally {
+    held.resolve();
+  }
+  assert.equal(await first, 'first');
+  if (overlapError) throw overlapError;
+  assert.deepEqual(await operationRoots(home23Root), []);
+});
+
+test('manifest operation scratch is cleaned if admission release fails after open', async (t) => {
+  const home23Root = await tempDir('home23-memory-source-native-release-failure-home-');
+  const brainDir = await writeManifestBrain();
+  t.after(() => Promise.all([
+    fsp.rm(home23Root, { recursive: true, force: true }),
+    fsp.rm(brainDir, { recursive: true, force: true }),
+  ]));
+  let callbackCalls = 0;
+  await assert.rejects(
+    withEphemeralMemorySource({
+      brainDir,
+      home23Root,
+      requesterAgent: 'jerry',
+      prefix: 'mcp',
+      uuid: () => 'native-release-failure',
+      _testHooks: {
+        afterAdmissionLockReleased() {
+          throw new Error('controlled admission release observer failure');
+        },
+      },
+    }, async () => {
+      callbackCalls += 1;
+    }),
+    error => error?.code === 'invalid_memory_source' && error?.sourceLockReleased === true,
+  );
+  assert.equal(callbackCalls, 0);
+  assert.deepEqual(await operationRoots(home23Root), []);
+});
+
 test('compatibility admission rejects a second process before operation identity or scratch', async (t) => {
   const home23Root = await tempDir('home23-memory-source-cross-process-home-');
   const brainDir = await writeLegacyBrain();
