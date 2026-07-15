@@ -801,6 +801,7 @@ class BrainOperationCoordinator {
         workerStartPromise: null,
         workerCursor: 0,
         providerSnapshotThrough: null,
+        pgsProgressSnapshotThrough: null,
         providerCalls: new Map(),
         attachments: new Map(),
         sourceLockController: new AbortController(),
@@ -1704,10 +1705,29 @@ class BrainOperationCoordinator {
       runtime.providerSnapshotThrough = workerRecord.eventSequence > runtime.workerCursor
         ? workerRecord.eventSequence
         : null;
+      const progressSequence = workerRecord.latestPgsProgress?.eventSequence;
+      runtime.pgsProgressSnapshotThrough = Number.isSafeInteger(progressSequence)
+        && progressSequence > runtime.workerCursor
+        ? progressSequence
+        : null;
       return runtime.workerCursor;
     }
     const isHistoricalSnapshotEvent = Number.isSafeInteger(runtime.providerSnapshotThrough)
       && rawEvent.eventSequence <= runtime.providerSnapshotThrough;
+    const isHistoricalPgsProgress = Number.isSafeInteger(runtime.pgsProgressSnapshotThrough)
+      && rawEvent.eventSequence <= runtime.pgsProgressSnapshotThrough
+      && (rawEvent.type === 'progress' || rawEvent.type === 'progress_update');
+    if (isHistoricalPgsProgress) {
+      runtime.workerCursor = rawEvent.eventSequence;
+      if (runtime.workerCursor >= runtime.pgsProgressSnapshotThrough) {
+        runtime.pgsProgressSnapshotThrough = null;
+      }
+      if (Number.isSafeInteger(runtime.providerSnapshotThrough)
+          && runtime.workerCursor >= runtime.providerSnapshotThrough) {
+        runtime.providerSnapshotThrough = null;
+      }
+      return runtime.workerCursor;
+    }
     if (['provider_selected', 'provider_activity', 'provider_call_terminal'].includes(rawEvent.type)) {
       if (isHistoricalSnapshotEvent) this._validateHistoricalProviderEvent(record, rawEvent);
       else await this._handleProviderEventLocked(record, runtime, rawEvent);
@@ -1724,6 +1744,10 @@ class BrainOperationCoordinator {
             && runtime.workerCursor >= runtime.providerSnapshotThrough) {
           runtime.providerSnapshotThrough = null;
         }
+        if (Number.isSafeInteger(runtime.pgsProgressSnapshotThrough)
+            && runtime.workerCursor >= runtime.pgsProgressSnapshotThrough) {
+          runtime.pgsProgressSnapshotThrough = null;
+        }
         return runtime.workerCursor;
       }
       if (call) {
@@ -1738,6 +1762,10 @@ class BrainOperationCoordinator {
     if (Number.isSafeInteger(runtime.providerSnapshotThrough)
         && runtime.workerCursor >= runtime.providerSnapshotThrough) {
       runtime.providerSnapshotThrough = null;
+    }
+    if (Number.isSafeInteger(runtime.pgsProgressSnapshotThrough)
+        && runtime.workerCursor >= runtime.pgsProgressSnapshotThrough) {
+      runtime.pgsProgressSnapshotThrough = null;
     }
     if (rawEvent.type === 'terminal') {
       if (runtime.providerCalls.size > 0) {
@@ -1767,8 +1795,7 @@ class BrainOperationCoordinator {
     if (prior !== null) {
       const regresses = SETTLED_PGS_PROGRESS_FIELDS
         .filter((field) => field !== 'pending')
-        .some((field) => prior[field] !== undefined && rawProgress[field] < prior[field])
-        || (prior.pending !== undefined && rawProgress.pending > prior.pending);
+        .some((field) => prior[field] !== undefined && rawProgress[field] < prior[field]);
       if (regresses) return current;
       const advances = SETTLED_PGS_PROGRESS_FIELDS.some((field) =>
         prior[field] === undefined || rawProgress[field] !== prior[field]);

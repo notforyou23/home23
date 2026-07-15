@@ -113,6 +113,10 @@ const NUMERIC_EVENT_FIELDS = new Set([
   'selectedEdges', 'nodes', 'edges', 'clusters', 'completedRecords', 'completedBytes',
   'percent', 'index', 'count', 'estimate', 'oldestSequence', 'latestSequence',
 ]);
+const SETTLED_PGS_PROGRESS_FIELDS = Object.freeze([
+  'selected', 'completed', 'successful', 'failed', 'reused',
+  'pending', 'retryable', 'total',
+]);
 
 function workerError(code, cause) {
   return operationError(code, cause);
@@ -443,6 +447,29 @@ function validateWorkerEvent(rawEvent, expected = {}) {
   return event;
 }
 
+function projectLatestPgsProgress(record, event) {
+  if (record.operationType !== 'pgs'
+      || event.type !== 'progress'
+      || event.phase !== 'pgs_sweep'
+      || event.stage !== 'sweep_batch_complete') return record.latestPgsProgress;
+  const candidate = Object.freeze({
+    type: 'progress',
+    operationId: record.operationId,
+    eventSequence: event.eventSequence,
+    phase: 'pgs_sweep',
+    stage: 'sweep_batch_complete',
+    ...Object.fromEntries(SETTLED_PGS_PROGRESS_FIELDS.map((field) => [field, event[field]])),
+    at: event.at,
+  });
+  const current = record.latestPgsProgress;
+  if (current
+      && (candidate.eventSequence <= current.eventSequence
+        || SETTLED_PGS_PROGRESS_FIELDS
+          .filter((field) => field !== 'pending')
+          .some((field) => candidate[field] < current[field]))) return current;
+  return candidate;
+}
+
 function validateContext(rawContext) {
   const code = 'worker_context_invalid';
   if (!rawContext || Array.isArray(rawContext) || typeof rawContext !== 'object') {
@@ -737,6 +764,7 @@ class BrainOperationWorkerAdapter {
     }
     record.eventSequence = nextSequence;
     if (normalized.type === 'phase') record.phase = normalized.phase;
+    record.latestPgsProgress = projectLatestPgsProgress(record, normalized);
     this._pushEvent(record, normalized);
     this._notify(record);
     return normalized;

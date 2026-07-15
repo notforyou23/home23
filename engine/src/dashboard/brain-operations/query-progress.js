@@ -324,7 +324,12 @@ function reduceQueryProgressSnapshot(previous, event, context) {
     eventSequence: context.nextSequence,
   };
   if (progress) {
-    next.lastProgressAt = eventTime(event, context, code);
+    const progressAt = eventTime(event, context, code);
+    next.lastProgressAt = recoveredSettledProgress
+      && previous?.lastProgressAt !== undefined
+      && progressAt.localeCompare(previous.lastProgressAt) < 0
+      ? previous.lastProgressAt
+      : progressAt;
     if (mappedStage !== null) applyStageCounters(next, event, code, previous);
   }
   if (providerActivity) {
@@ -333,7 +338,8 @@ function reduceQueryProgressSnapshot(previous, event, context) {
   if (previous !== null) {
     assertMonotonic(previous, next, code, {
       allowCandidateReplacement: firstWorkSelection,
-      allowPendingIncrease: selectedAfterSweeping,
+      allowPendingIncrease: selectedAfterSweeping
+        || (context.operationType === 'pgs' && event.stage === 'sweep_batch_complete'),
     });
   }
   return validateQueryProgressSnapshot(next, code);

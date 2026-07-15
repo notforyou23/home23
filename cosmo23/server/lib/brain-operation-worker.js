@@ -210,8 +210,7 @@ function projectLatestPgsProgress(record, event) {
     if (candidate.eventSequence <= current.eventSequence
         || SETTLED_PGS_PROGRESS_FIELDS
           .filter((field) => field !== 'pending')
-          .some((field) => candidate[field] < current[field])
-        || candidate.pending > current.pending) return current;
+          .some((field) => candidate[field] < current[field])) return current;
   }
   return candidate;
 }

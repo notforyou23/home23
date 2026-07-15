@@ -1698,6 +1698,23 @@ test('PGS status retains latest settled progress after its journal event is comp
     at: new Date(fixture.clock.wall).toISOString(),
   });
 
+  report({
+    type: 'progress', phase: 'pgs_sweep', stage: 'sweep_batch_complete',
+    selected: 424, completed: 421, successful: 421, failed: 0,
+    reused: 0, pending: 3, retryable: 0, total: 500,
+  });
+  const multiWindowSequence = fixture.worker.records.get(request.operationId).eventSequence;
+  report({
+    type: 'progress', phase: 'pgs_sweep', stage: 'sweep_batch_complete',
+    selected: 424, completed: 420, successful: 420, failed: 0,
+    reused: 0, pending: 4, retryable: 0, total: 500,
+  });
+  const multiWindowStatus = await fixture.worker.status(request.operationId, fixture.token(request));
+  assert.equal(multiWindowStatus.latestPgsProgress.eventSequence, multiWindowSequence);
+  assert.equal(multiWindowStatus.latestPgsProgress.selected, 424);
+  assert.equal(multiWindowStatus.latestPgsProgress.completed, 421);
+  assert.equal(multiWindowStatus.latestPgsProgress.pending, 3);
+
   await fixture.worker.cancel(request.operationId, fixture.token(request));
   gate.resolve();
 });

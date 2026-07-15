@@ -183,6 +183,86 @@ test('multi-window selection keeps sweeping stage and selected-run candidate aut
   /progress_snapshot_invalid/);
 });
 
+test('settled multi-window progress accepts derived pending growth but rejects cumulative regression', () => {
+  const firstWindow = reduceQueryProgressSnapshot(null, {
+    type: 'progress',
+    stage: 'sweep_batch_complete',
+    selected: 4,
+    completed: 4,
+    successful: 4,
+    failed: 0,
+    reused: 0,
+    pending: 0,
+    retryable: 0,
+    total: 12,
+  }, { operationType: 'pgs', nextSequence: 1, now: Date.parse('2026-07-13T12:00:00.000Z') });
+  const secondWindow = reduceQueryProgressSnapshot(firstWindow, {
+    type: 'progress',
+    stage: 'sweep_batch_complete',
+    selected: 8,
+    completed: 6,
+    successful: 6,
+    failed: 0,
+    reused: 0,
+    pending: 2,
+    retryable: 0,
+    total: 12,
+  }, { operationType: 'pgs', nextSequence: 2, now: Date.parse('2026-07-13T12:00:01.000Z') });
+
+  assert.equal(secondWindow.selected, 8);
+  assert.equal(secondWindow.completed, 6);
+  assert.equal(secondWindow.pending, 2);
+  assert.throws(() => reduceQueryProgressSnapshot(secondWindow, {
+    type: 'progress',
+    stage: 'sweep_batch_complete',
+    selected: 8,
+    completed: 5,
+    successful: 5,
+    failed: 0,
+    reused: 0,
+    pending: 3,
+    retryable: 0,
+    total: 12,
+  }, { operationType: 'pgs', nextSequence: 3, now: Date.parse('2026-07-13T12:00:02.000Z') }),
+  /progress_snapshot_invalid/);
+});
+
+test('recovered settled progress after synthesis preserves its later stage and timestamp', () => {
+  const synthesizing = {
+    version: 1,
+    stage: 'synthesizing',
+    eventSequence: 8,
+    selected: 4,
+    completed: 4,
+    successful: 4,
+    failed: 0,
+    reused: 0,
+    pending: 0,
+    retryable: 0,
+    total: 12,
+    synthesisLevel: 1,
+    lastProgressAt: '2026-07-13T12:00:05.000Z',
+  };
+  const recovered = reduceQueryProgressSnapshot(synthesizing, {
+    type: 'progress',
+    stage: 'sweep_batch_complete',
+    selected: 8,
+    completed: 6,
+    successful: 6,
+    failed: 0,
+    reused: 0,
+    pending: 2,
+    retryable: 0,
+    total: 12,
+    at: '2026-07-13T12:00:04.000Z',
+  }, { operationType: 'pgs', nextSequence: 9, now: Date.parse('2026-07-13T12:00:06.000Z') });
+
+  assert.equal(recovered.stage, 'synthesizing');
+  assert.equal(recovered.completed, 6);
+  assert.equal(recovered.pending, 2);
+  assert.equal(recovered.lastProgressAt, synthesizing.lastProgressAt);
+});
+
 test('provider activity and synthesis stages advance only canonical snapshot authority', () => {
   const queued = { version: 1, stage: 'queued', eventSequence: 0 };
   const provider = reduceQueryProgressSnapshot(queued, {

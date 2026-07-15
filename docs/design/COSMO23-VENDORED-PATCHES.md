@@ -3105,20 +3105,28 @@ latest settled PGS snapshot outside the evictable journal. It contains only the
 bounded counter schema and worker receipt time; it cannot carry prompts,
 provider output, capabilities, authority keys, or source paths. Gap recovery
 validates the operation identity and monotonically merges advancing counters
-before moving its cursor, ignoring stale or regressive snapshots. Terminal
+before moving its cursor, ignoring stale or regressive snapshots. Authenticated
+historical PGS progress through that snapshot is validated but not replayed, so
+retained pre-snapshot rows cannot regress the recovered projection or suppress
+later synthesis and terminal events. Pending work is derived from
+`selected - completed` and may rise when a later selection window expands the
+selected set; the cumulative settled fields must still remain monotonic. Local
+adapter execution retains the same compacted status projection as the remote
+worker. Terminal
 finalization first merges the authenticated worker snapshot, then reconciles
 again from internally consistent result coverage metadata so a lost final batch
 cannot leave terminal counters stale. Progress stage never moves backward when
-late settled counters arrive after synthesis has begun.
+late settled counters arrive after synthesis has begun, and an older recovered
+worker timestamp cannot move `lastProgressAt` backward.
 
-**Offline verification:** The regression reproduces an active public record
-frozen at 340 completed units while authenticated worker status has advanced to
-420, proves active recovery before terminalization, and proves result coverage
-advances terminal successful work again. A worker test compacts the original
-settled journal row and confirms status retains only its exact redacted scalar
-snapshot. The full coordinator (120), worker (45), and query-progress (7)
-suites pass. Live services were not restarted and no provider operation was
-started.
+**Offline verification:** The regressions reproduce a valid second selection
+window whose pending count rises from zero, a replayable retained progress row
+behind an authenticated snapshot, and a settled snapshot that arrives after a
+newer synthesis timestamp. They also compact both remote-worker and local-
+adapter journals and confirm status retains the exact redacted scalar snapshot
+while event streaming reports the gap. The full coordinator (121), worker
+(45), query-progress/client (18), and store (98) suites pass. Live services
+were not restarted and no provider operation was started.
 
 ---
 
@@ -3522,5 +3530,8 @@ started.
 - **2026-07-15** — Patch 65 retains the latest operation-bound settled PGS
   counters outside the disposable worker journal, merges them monotonically on
   authenticated gap recovery, and reconciles terminal progress from consistent
-  result coverage. Focused verification was offline only; no service restart or
-  live provider operation was performed.
+  result coverage. Its follow-up accepts algebraically valid pending growth
+  across selection windows, suppresses authenticated historical progress through
+  the recovered snapshot, preserves later stages and timestamps, and gives local
+  adapter workers the same status projection. Focused verification was offline
+  only; no service restart or live provider operation was performed.
