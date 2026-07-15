@@ -190,6 +190,74 @@ test('delta records carry one epoch and strictly increasing sequence and revisio
   assert.equal(new Set(rows.map((row) => row.epoch)).size, 1);
 });
 
+// st_dev is assigned by the OS at MOUNT time and changes across reboots.
+// A persisted identity that includes it breaks every save after the next
+// reboot -- silently, forever. Measured 2026-07-15: both agents' manifests
+// recorded a dev that no longer matched the live volume eight minutes after
+// the manifest was written (a reboot remounted the volume); ino, size,
+// mtimeNs, and ctimeNs all still matched byte-for-byte.
+test('a committed delta whose dev changed (remount) still saves', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  await appendMemoryRevision(dir, {
+    nodes: [{ id: 'n2', concept: 'first committed append' }],
+  }, { lockRoot, summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 } });
+  const manifestPath = path.join(dir, 'memory-manifest.json');
+  const before = await readManifest(dir);
+  assert.equal(typeof before.activeDelta.fileIdentity.dev, 'string');
+
+  // Simulate a reboot remounting the volume: only the persisted dev changes.
+  // Not one byte of the delta file on disk is touched.
+  const remounted = {
+    ...before,
+    activeDelta: {
+      ...before.activeDelta,
+      fileIdentity: {
+        ...before.activeDelta.fileIdentity,
+        dev: String(BigInt(before.activeDelta.fileIdentity.dev) + 1n),
+      },
+    },
+  };
+  await fsp.writeFile(manifestPath, `${JSON.stringify(remounted, null, 2)}\n`);
+
+  const result = await appendMemoryRevision(dir, {
+    nodes: [{ id: 'n3', concept: 'second committed append after simulated remount' }],
+  }, { lockRoot, summary: { nodeCount: 3, edgeCount: 0, clusterCount: 1 } });
+  assert.equal(result.count, 1);
+
+  const source = await openMemorySource(dir);
+  assert.deepEqual(await concepts(source), [
+    'first committed append',
+    'old committed canary',
+    'second committed append after simulated remount',
+  ].sort());
+  await source.close();
+});
+
+// The guard exists to catch real content drift -- it must not be neutered
+// by the remount fix. A same-length in-place edit changes mtime/ctime but
+// keeps dev, ino, and size unchanged, so this exercises exactly the fields
+// sameCommittedContent still compares after dev is dropped.
+test('a committed delta whose CONTENT changed is still rejected', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  await appendMemoryRevision(dir, {
+    nodes: [{ id: 'n2', concept: 'first committed append' }],
+  }, { lockRoot, summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 } });
+  const manifest = await readManifest(dir);
+  const deltaPath = path.join(dir, manifest.activeDelta.file);
+  const original = await fsp.readFile(deltaPath, 'utf8');
+  assert.match(original, /first committed append/);
+  const tampered = original.replace('first committed append', 'first COMMITTED append');
+  assert.equal(tampered.length, original.length);
+  await fsp.writeFile(deltaPath, tampered);
+
+  await assert.rejects(() => appendMemoryRevision(dir, {
+    nodes: [{ id: 'n3', concept: 'must not commit' }],
+  }, { lockRoot, summary: { nodeCount: 3, edgeCount: 0, clusterCount: 1 } }), { code: 'source_changed' });
+
+  const manifestAfter = await readManifest(dir);
+  assert.equal(manifestAfter.currentRevision, manifest.currentRevision);
+});
+
 test('ANN completion advances only its built-from watermark', async () => {
   const { dir, lockRoot } = await createCommittedFixture();
   const before = await readManifest(dir);
