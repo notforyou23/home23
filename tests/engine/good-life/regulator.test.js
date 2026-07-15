@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -185,16 +185,13 @@ test('GoodLifeRegulator stales superseded repair work before self-maintenance bu
   assert.equal(staleUpdates[0].opts.note, 'superseded by current Good Life state with no open live problems');
   assert.equal(staleUpdates[0].opts.skipReconcile, true);
 
-  const receipts = readFileSync(join(dir, 'good-life-restraint-receipts.jsonl'), 'utf8')
-    .trim()
-    .split('\n')
-    .map(JSON.parse);
-  assert.equal(receipts.length, 1);
-  assert.equal(receipts[0].schema, 'home23.good-life.restraint-receipt.v1');
-  assert.equal(receipts[0].status, 'blocked_self_maintenance_budget');
-  assert.equal(receipts[0].policyMode, 'learn');
-  assert.equal(receipts[0].reason, 'self_maintenance_budget_exceeded');
-  assert.equal(receipts[0].sourceIssue, 96);
+  // A gate does not need a receipt: throttling/blocking a Good Life action
+  // must not append to good-life-restraint-receipts.jsonl at all.
+  assert.equal(
+    existsSync(join(dir, 'good-life-restraint-receipts.jsonl')),
+    false,
+    'blocked_self_maintenance_budget must not write a restraint receipt'
+  );
 });
 
 test('GoodLifeRegulator stales cleared rest and help drift before budget blocks new work', async () => {
@@ -343,12 +340,13 @@ test('GoodLifeRegulator defers help drift to active non-Good-Life agency work wh
   assert.equal(result.pursuitId, 'ap_visible_work');
   assert.equal(added, 0);
 
-  const receipts = readFileSync(join(dir, 'good-life-restraint-receipts.jsonl'), 'utf8')
-    .trim()
-    .split('\n')
-    .map(JSON.parse);
-  assert.equal(receipts[0].status, 'covered_by_active_agency_pursuit');
-  assert.equal(receipts[0].context.pursuitId, 'ap_visible_work');
+  // A gate does not need a receipt: deferring to active agency work must
+  // not append to good-life-restraint-receipts.jsonl at all.
+  assert.equal(
+    existsSync(join(dir, 'good-life-restraint-receipts.jsonl')),
+    false,
+    'covered_by_active_agency_pursuit must not write a restraint receipt'
+  );
 });
 
 test('GoodLifeRegulator maps viability repair drift to systems worker route', async () => {
