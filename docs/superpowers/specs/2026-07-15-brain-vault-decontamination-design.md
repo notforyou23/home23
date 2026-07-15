@@ -427,6 +427,48 @@ TOTAL             49,627       2,689    46,938      → 5% ingested
 
 **jtr has 49,627 documents. The brain has read 2,689 of them.**
 
+> ### ⚠ CORRECTION (2026-07-15, during implementation): the 49,627 figure is WRONG.
+>
+> The sweep counted every `.md`/`.txt`/`.pdf` on disk and called it "jtr's corpus." **It is not.**
+> Running the vault's own type router over the real files showed **46,036 of 52,797 (87%) landing in
+> the `notes/` junk drawer** — and sampling them showed why:
+>
+> ```
+>  9,622  cosmo-home/engine/runtime/coordinator/  → "Meta-Coordinator Review ... Thoughts Analyzed: 0"
+>  2,437  .openclaw/workspace/persist/            → "scheduled-sync-state ... auto sync, 1 file changed"
+>  1,433  .openclaw/workspace/memory/             → "reflection not found in memory" / "Checked: 0"
+> ```
+>
+> **That is the identical disease this document diagnoses — written by the PREVIOUS GENERATIONS of
+> this same system.** Cosmo's engine runtime and OpenClaw's workspace state kept their own diaries,
+> in the same shape as Jerry's 14,448 restraint receipts. By file count, `coordinator/` alone is
+> larger. §1.2's rule ("something happened" vs "a loop ticked") classifies every one of them
+> correctly, and it was the router — not a human — that surfaced them.
+>
+> **The plan was about to build the vault out of three previous agents' diaries.**
+>
+> **jtr's rulings (2026-07-15), two of which corrected further errors of mine:**
+> - `runs/*/inputs/` (24,312) — **REAL.** Sessions are real events, from any agent.
+> - `COSMObrains/*/outputs/` (4,582) — **REAL research.** *"lots of good information."* I read
+>   `agent_1767921533633_…` as exhaust; it is research output. Second time in one session that
+>   machine-shaped filenames led me to call real material garbage.
+> - `workspace/curriculum/` (2,094) — **REAL.** Genuine intellectual work
+>   (`systems-epistemology-curriculum.md`), nearly binned.
+> - `coordinator/`, `persist/`, `memory/` — **EXCLUDED.** Records that nothing happened.
+>
+> **Corrected corpus: ~40,000 real documents** (sessions ~27,000 · research ~9,000 · voice ~1,450 ·
+> reading · health 2), not 49,627 — and **not** the ~6,761 an earlier reading of the router output
+> suggested, because jtr's rulings restored the two large buckets.
+>
+> **The "5% ingested" claim is therefore also wrong and must not be quoted.** The absence is real —
+> the brain has never seen the voice notes, the session captures, the curricula, or the MRI — but the
+> ratio needs recomputing against the corrected corpus once consolidation reports actual numbers
+> (plan 1, Task 9). **Do not cite 5% or 49,627 until then.**
+>
+> The methodological lesson is the one this document keeps relearning: **I designed around the corpus
+> that existed on disk rather than asking what jtr cares about.** The router exposed it only because
+> it was forced to classify every file mechanically and a 87% junk drawer is impossible to ignore.
+
 Set against §1.7 and the tracing results:
 
 > **The brain holds ~49,488 nodes of npm package metadata — more than jtr has documents in total —
