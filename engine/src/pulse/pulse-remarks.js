@@ -89,6 +89,39 @@ const REMARKED_TTL_MS = 30 * 60 * 1000;    // 30 min: don't re-remark on same ha
 const RECENT_BRIEF_DEPTH = 3;              // drop notable events seen in last N briefs (regardless of remark)
 const PULSE_SIGNAL_WINDOW_MS = 60 * 60 * 1000; // pulse only speaks about signals from the last hour
 
+// Seeded live-problem invariants (engine/src/live-problems/seed.js) that
+// verify the AI's own cognitive machinery is alive: its own file-write
+// tool actually hits disk, its own thought stream is producing thoughts,
+// its own action-dispatch audit ledger is writable. These have no
+// real-world referent for jtr -- "the file tool works again" is the
+// engine confirming to itself that its own loop is ticking, not an event
+// in the house. That is the exact self-report anti-pattern: three clauses
+// of "those three just came back" while jtr's actual weather and sauna
+// get eight words at the end.
+//
+// Deliberately narrow: only the exact seeds that produce that pattern.
+// Everything else that can appear in the LIVE PROBLEMS block --
+// harness/dashboard/engine process uptime, host CPU/disk, provider and
+// publish health, cron jobs, and the explicitly real-world checks
+// (health_log_fresh, sauna_sensor_fresh, weather_sensor_fresh) -- is left
+// exactly as it was. An OPEN or CHRONIC instance of any of these three
+// checks also stays fully visible everywhere else: something actually
+// broken is real information regardless of what broke. Only the
+// RESOLVED-just-now "it's fine again" acknowledgment for these three is
+// suppressed, because "back to normal" for the engine's own internals is
+// a loop ticking, not an event.
+const COGNITION_INTERNAL_RESOLVED_ID_PATTERNS = [
+  /_create_file_tool_writes_to_disk$/,
+  /^thoughts_flowing$/,
+  /_dispatch_ledger_write_path_healthy$/,
+];
+
+function isCognitionInternalProblem(problem) {
+  const id = String(problem?.id || '');
+  if (!id) return false;
+  return COGNITION_INTERNAL_RESOLVED_ID_PATTERNS.some((pattern) => pattern.test(id));
+}
+
 function normalizeForHash(s) {
   return String(s || '').toLowerCase().replace(/\s+/g, ' ').replace(/[^\w\s]/g, '').trim().slice(0, 200);
 }
@@ -260,6 +293,14 @@ class PulseRemarks {
     // Registry suggestions belong in the Signals tile, not the pulse voice.
     if (signal.type === 'registry_suggestion') return false;
 
+    // live-problems/loop.js mirrors every resolved live-problem into
+    // signals.jsonl (type: 'resolved', evidence.problemId: <id>) -- this is
+    // a second path for the exact same self-report content
+    // _shouldSurfaceResolvedProblem() already excludes from the LIVE
+    // PROBLEMS block. Close it here too, or "the file tool works again"
+    // just reappears via the SIGNALS block instead.
+    if (isCognitionInternalProblem({ id: signal.evidence?.problemId })) return false;
+
     // Failed dispatch receipts are not "wins" just because they emitted a signal.
     const msg = String(signal.message || '').toLowerCase();
     if (
@@ -297,6 +338,11 @@ class PulseRemarks {
 
   _shouldSurfaceResolvedProblem(problem) {
     if (!problem) return false;
+    // "Back to normal" for the engine's own cognitive machinery (file
+    // tool, thought stream, dispatch ledger) is not a real-world event --
+    // see isCognitionInternalProblem(). OPEN/CHRONIC instances of these
+    // same checks are untouched by this gate; they surface elsewhere.
+    if (isCognitionInternalProblem(problem)) return false;
     const mentionedMs = Date.parse(problem.lastMentionedInPulseAt || 0);
     if (!mentionedMs) return true;
     const resolvedMs = Date.parse(problem.resolvedAt || 0);
@@ -1003,4 +1049,4 @@ class PulseRemarks {
   }
 }
 
-module.exports = { PulseRemarks, buildDefaultSystemPrompt };
+module.exports = { PulseRemarks, buildDefaultSystemPrompt, isCognitionInternalProblem };

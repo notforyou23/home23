@@ -11,6 +11,20 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+// A resident tick that selects a pursuit and merely re-affirms it
+// (AgencyEditor's default verdict: 'allow' / action: 'advance_one_step',
+// reason 'pursuit_has_no_editor_block') did not act and did not change any
+// pursuit's state -- it is a loop ticking, not an event. The other three
+// editor actions (kill_stale_thread, demote_ornamental_dashboard_panel,
+// require_consequence) each go on to mutate pursuit state or record an
+// explicit consequence further down in tick() -- those are real. Blacklist
+// only the known no-op action rather than allowlisting the real ones, so a
+// future editor action nobody has taught this function about defaults to
+// being recorded rather than silently dropped.
+export function residentTickIsRecordWorthy(editorAction) {
+  return editorAction !== 'advance_one_step';
+}
+
 function shortId(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(16).slice(2, 8)}`;
 }
@@ -2487,26 +2501,28 @@ export class AgencyKernel {
       at: now,
       dryRun: this.config.mode !== 'live',
     };
-    this.store.appendScratch({
-      schema: 'home23.agency.scratch.v1',
-      at: now,
-      kind: 'resident_tick',
-      pursuitId: selected.id,
-      provisionalTheory: selected.currentTheory,
-      editorVerdict: editor.verdict,
-      note: `Resident tick selected one pursuit and chose ${editor.action}.`,
-    });
-    this.store.appendReceipt({
-      schema: 'home23.agency.receipt.v1',
-      at: now,
-      event: 'resident_tick',
-      pursuitId: selected.id,
-      reason,
-      editor,
-      nextAction,
-      authority: this.authority.evaluate({ authorityLevel: selected.authorityLevel, action: nextAction.kind }),
-      mode: this.config.mode,
-    });
+    if (residentTickIsRecordWorthy(editor.action)) {
+      this.store.appendScratch({
+        schema: 'home23.agency.scratch.v1',
+        at: now,
+        kind: 'resident_tick',
+        pursuitId: selected.id,
+        provisionalTheory: selected.currentTheory,
+        editorVerdict: editor.verdict,
+        note: `Resident tick selected one pursuit and chose ${editor.action}.`,
+      });
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at: now,
+        event: 'resident_tick',
+        pursuitId: selected.id,
+        reason,
+        editor,
+        nextAction,
+        authority: this.authority.evaluate({ authorityLevel: selected.authorityLevel, action: nextAction.kind }),
+        mode: this.config.mode,
+      });
+    }
     if (editor.action === 'kill_stale_thread') {
       this.store.updatePursuit(selected.id, { status: 'discarded' }, {
         type: 'editor_kill',

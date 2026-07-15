@@ -117,6 +117,51 @@ function shouldRouteForceOutputDirectly(workState) {
     workState.activeAgents === 0;
 }
 
+/**
+ * Governing rule (jtr, 2026-07-15): "Something happened" -> event, worth
+ * keeping. "A loop ticked" -> not an event, no record. A cognitive-cycle
+ * thought only counts as "something happened" if it actually produced a
+ * goal -- the same test already applied to dreams.
+ *
+ * This function is the single place that turns the productivity signal
+ * into a persist/discard verdict, so the decision is explicit and testable
+ * rather than an accidental fallthrough.
+ *
+ * @param {object} params
+ * @param {boolean} params.shouldSkipGoalCapture - true when goal-capture was
+ *   never *run* for this thought (oscillator executing / strict guided mode
+ *   / active plan / intrinsic goals disabled). This is NOT the same as
+ *   "capture ran and found nothing" -- absence of a signal must never be
+ *   silently read as an unproductive signal. Callers must compute this
+ *   independently of goalWasProduced.
+ * @param {boolean} params.goalWasProduced - true iff IntrinsicGoalSystem
+ *   .addGoal() actually returned a created goal for this thought (not just
+ *   a captured candidate -- candidates are dropped for invalid text, at
+ *   maxGoals, as duplicates, or by the doneWhen gate, all *before* addGoal
+ *   returns anything to count).
+ * @returns {boolean} true iff the thought should be written to memory.
+ *
+ * Decision for the skipped case (shouldSkipGoalCapture === true): does NOT
+ * persist. This is a deliberate choice, not the skip-as-unproductive trap:
+ * during execution mode and while an active plan is running, the plan's own
+ * step outputs already live durably in clusterStateStore, and any real
+ * consequence of the thought is already recorded via the separate
+ * thought->action routing path (routeThoughtAction / artifactRegistry) --
+ * independent of memory.addNode. So the raw thought text in those modes is
+ * disposable working memory for an already-recorded process, matching the
+ * existing treatment of dream material. Strict guided mode already treats
+ * itself as non-autonomous (goal auto-spawn is deliberately suppressed
+ * there too). The one case worth flagging: intrinsicEnabled === false is a
+ * standing config flag, not a per-cycle mode -- while it is off, no thought
+ * can ever be "produced" under this rule, so thought persistence goes to
+ * zero for as long as the flag is off. That is a real behavior change and
+ * should be visible if it surprises anyone operating with goals disabled.
+ */
+function shouldPersistThought({ shouldSkipGoalCapture, goalWasProduced }) {
+  if (shouldSkipGoalCapture) return false;
+  return goalWasProduced === true;
+}
+
 function buildForceOutputMissionSpec(goal, cycleCount) {
   if (!goal) return null;
   // Lazy require keeps orchestrator boot light and avoids circular imports.
@@ -247,8 +292,6 @@ class Orchestrator {
     this.lastCycleTime = new Date();
     this.lastSummarization = 0;
     this.lastConsolidation = new Date();
-    this.lastStateSnapshotHash = null;
-    this.stateSnapshotHashLoaded = false;
 
     // Temporal substrate (Phase 1 of thinking-machine-cycle rebuild)
     this.processStartedAt = Date.now();
@@ -620,19 +663,17 @@ class Orchestrator {
       }
     });
 
-    // Prime the current-state anchor at startup, before any long cognitive
-    // cycle can time out. This makes "what is true now" available even when
-    // the first post-restart cycle takes several minutes to complete.
-    try {
-      const beforeSnapshotNodes = this.memory?.nodes?.size || 0;
-      await this.maybeWriteCurrentStateSnapshot();
-      if ((this.memory?.nodes?.size || 0) > beforeSnapshotNodes) {
-        await this.saveState();
-      }
-    } catch (err) {
-      this.logger?.warn?.('[state-snapshot] startup prime failed', { error: err.message });
-    }
-    
+    // NOTE: RECENT.md is a curator-generated SUMMARY of the brain, already
+    // loaded every turn as a system-prompt surface by
+    // src/agent/context-assembly.ts (reading straight off disk -- that is
+    // its designed role; see docs/design/STEP20-SITUATIONAL-AWARENESS-ENGINE-DESIGN.md
+    // and STEP23). It used to also be re-ingested here as a permanent
+    // `state_snapshot` brain node on every startup and every saveState()
+    // call -- the ouroboros: the summary of the cortex became the cortex,
+    // and the next summary then summarised that. That writer has been
+    // removed; RECENT.md now stays exactly where it was designed to live
+    // and is never minted into a node.
+
     // Initialize introspection module (self-awareness layer)
     this.introspection = new IntrospectionModule(
       this.config,
@@ -1184,6 +1225,134 @@ class Orchestrator {
         });
       }
     }
+  }
+
+  /**
+   * Apply captured-goal candidates from goalCapture.captureGoalsFromOutput()
+   * and report whether any were actually PRODUCED -- i.e. this.goals
+   * .addGoal() returned a created goal, not merely that a candidate was
+   * captured. A candidate is dropped here (and does not count) if its text
+   * is invalid or if the goal cap has been reached; addGoal() itself can
+   * also reject a candidate (duplicate description, goal-about-goal filter,
+   * doneWhen gate) and return null. Only a truthy return counts.
+   *
+   * This is the productivity signal consumed by shouldPersistThought() to
+   * decide whether the thought that led here is a permanent memory or
+   * working memory that leaves no trace.
+   *
+   * @param {Array} capturedGoals
+   * @returns {Promise<boolean>} goalWasProduced
+   */
+  async _processCapturedGoals(capturedGoals) {
+    let goalWasProduced = false;
+
+    for (const captured of capturedGoals) {
+      // Validate captured goal text
+      if (!captured.text ||
+          typeof captured.text !== 'string' ||
+          captured.text.length < 10 ||
+          captured.text.includes('Error:')) {
+        this.logger.warn('⚠️  Skipped invalid captured goal', {
+          hasText: Boolean(captured.text),
+          length: captured.text?.length || 0,
+          source: captured.source
+        });
+        continue;
+      }
+
+      if (this.goals.getGoals().length < this.config.architecture.goals.maxGoals) {
+        const priority = captured.priority === 'high' ? 0.8 :
+                        captured.priority === 'low' ? 0.3 : 0.5;
+
+        const newGoal = this.goals.addGoal({
+          description: captured.text,
+          reason: `Auto-captured via GPT-5.5: ${captured.source}`,
+          uncertainty: 0.5,
+          source: captured.source
+        });
+
+        if (newGoal) {
+          goalWasProduced = true;
+
+          // Track in evaluation framework
+          if (this.evaluation) {
+            this.evaluation.trackGoalCreated(newGoal.id, newGoal);
+          }
+
+          // Notify curator of new goal
+          if (this.goalCurator) {
+            await this.goalCurator.handleEvent({
+              type: 'created',
+              goalId: newGoal.id,
+              goal: newGoal,
+              cycle: this.cycleCount
+            });
+          }
+        }
+
+        this.logger.info('📝 Goal auto-captured (GPT-5.5)', {
+          text: captured.text.substring(0, 50),
+          source: captured.source
+        });
+      }
+    }
+
+    return goalWasProduced;
+  }
+
+  /**
+   * Persist a cognitive-cycle thought's memory node, gated on
+   * thoughtProductivityVerdict (see shouldPersistThought()). Always runs
+   * validateAndClean() so the caller can log/report on invalid thoughts
+   * regardless of the productivity verdict -- text validity and
+   * productivity are independent gates.
+   *
+   * @returns {Promise<{ memoryNode: object|null, thoughtValidation: object }>}
+   */
+  async _persistThoughtNode(thought, role, thoughtProductivityVerdict, shouldSkipGoalCapture) {
+    let memoryNode = null;
+    const thoughtValidation = validateAndClean(thought.hypothesis);
+    if (thoughtValidation.valid && thoughtProductivityVerdict) {
+      memoryNode = await this.memory.addNode(
+        thoughtValidation.content,
+        role.id
+      );
+    } else if (!thoughtValidation.valid) {
+      this.logger.warn('⚠️  Skipped invalid thought', {
+        reason: thoughtValidation.reason,
+        hasHypothesis: Boolean(thought.hypothesis),
+        length: thought.hypothesis?.length || 0,
+        role: role.id
+      });
+    } else {
+      this.logger.debug?.('Thought did not produce a goal — working memory only, not persisted', {
+        role: role.id,
+        cycle: this.cycleCount,
+        goalCaptureSkipped: shouldSkipGoalCapture
+      });
+    }
+
+    return { memoryNode, thoughtValidation };
+  }
+
+  /**
+   * Persist the [REASONING] companion node. Follows the SAME productivity
+   * verdict as its parent thought (thoughtProductivityVerdict) -- reasoning
+   * is commentary on the thought, not an independent event, so it cannot
+   * persist when the thought it explains did not.
+   *
+   * @returns {Promise<object|null>} the created node, or null if skipped
+   */
+  async _persistReasoningNode(thought, thoughtProductivityVerdict) {
+    if (!thought.reasoning || !thoughtProductivityVerdict) return null;
+    const reasoningValidation = validateAndClean(`[REASONING] ${thought.reasoning}`);
+    if (reasoningValidation.valid && reasoningValidation.content.length > 100) {
+      return this.memory.addNode(
+        reasoningValidation.content,
+        'reasoning'
+      );
+    }
+    return null;
   }
 
   /**
@@ -2728,54 +2897,11 @@ class Orchestrator {
         ? [] 
         : await this.goalCapture.captureGoalsFromOutput(thought.hypothesis);
       
-      for (const captured of capturedGoals) {
-        // Validate captured goal text
-        if (!captured.text || 
-            typeof captured.text !== 'string' || 
-            captured.text.length < 10 ||
-            captured.text.includes('Error:')) {
-          this.logger.warn('⚠️  Skipped invalid captured goal', {
-            hasText: Boolean(captured.text),
-            length: captured.text?.length || 0,
-            source: captured.source
-          });
-          continue;
-        }
-        
-        if (this.goals.getGoals().length < this.config.architecture.goals.maxGoals) {
-          const priority = captured.priority === 'high' ? 0.8 : 
-                          captured.priority === 'low' ? 0.3 : 0.5;
-          
-          const newGoal = this.goals.addGoal({
-            description: captured.text,
-            reason: `Auto-captured via GPT-5.5: ${captured.source}`,
-            uncertainty: 0.5,
-            source: captured.source
-          });
-          
-          if (newGoal) {
-            // Track in evaluation framework
-            if (this.evaluation) {
-              this.evaluation.trackGoalCreated(newGoal.id, newGoal);
-            }
-            
-            // Notify curator of new goal
-            if (this.goalCurator) {
-              await this.goalCurator.handleEvent({
-                type: 'created',
-                goalId: newGoal.id,
-                goal: newGoal,
-                cycle: this.cycleCount
-              });
-            }
-          }
-
-          this.logger.info('📝 Goal auto-captured (GPT-5.5)', {
-            text: captured.text.substring(0, 50),
-            source: captured.source
-          });
-        }
-      }
+      // Productivity signal for thought persistence (see shouldPersistThought
+      // above). Only actual addGoal() success counts -- a captured candidate
+      // is not a produced goal; it can still be dropped for invalid text or
+      // at maxGoals inside _processCapturedGoals().
+      const goalWasProduced = await this._processCapturedGoals(capturedGoals);
 
       // Calculate surprise BEFORE using it in branch reward
       const outputSurprise = this.goalCapture.detectSurprise(thought.hypothesis);
@@ -2845,21 +2971,19 @@ class Orchestrator {
         return;
       }
 
-      let memoryNode = null;
-      const thoughtValidation = validateAndClean(thought.hypothesis);
-      if (thoughtValidation.valid) {
-        memoryNode = await this.memory.addNode(
-          thoughtValidation.content,
-          role.id
-        );
-      } else {
-        this.logger.warn('⚠️  Skipped invalid thought', {
-          reason: thoughtValidation.reason,
-          hasHypothesis: Boolean(thought.hypothesis),
-          length: thought.hypothesis?.length || 0,
-          role: role.id
-        });
-      }
+      // A thought is working memory, not a permanent record. It only becomes
+      // an event worth keeping if it PRODUCED something -- a goal (same rule
+      // already applied to dreams). See shouldPersistThought() for the full
+      // rationale, including why the goal-capture-skipped case does not
+      // persist without being conflated with "ran and found nothing".
+      const thoughtProductivityVerdict = shouldPersistThought({ shouldSkipGoalCapture, goalWasProduced });
+
+      const { memoryNode, thoughtValidation } = await this._persistThoughtNode(
+        thought,
+        role,
+        thoughtProductivityVerdict,
+        shouldSkipGoalCapture
+      );
 
       // Evidence Receipt: MEMORY_WRITE stage — thought stored in brain
       try {
@@ -2875,7 +2999,7 @@ class Orchestrator {
           memory_delta: { ...evidenceMemoryDelta },
           behavior_impact: memoryNode
             ? `stored node ${memoryNode.id} (${role.id})`
-            : `skipped storage: ${thoughtValidation.reason || 'invalid'}`,
+            : `skipped storage: ${!thoughtValidation.valid ? (thoughtValidation.reason || 'invalid') : 'no goal produced'}`,
           provenance: { source: 'memory_addNode', trust_level: 'internal', parser_anomalies: memoryNode ? 0 : 1 }
         }));
         evidenceStagesWritten.push('memory_write');
@@ -2926,16 +3050,10 @@ class Orchestrator {
         this.logger.warn('Thought-action routing failed (non-fatal)', { error: e.message });
       }
 
-      // Add reasoning to memory if significant (with robust validation)
-      if (thought.reasoning) {
-        const reasoningValidation = validateAndClean(`[REASONING] ${thought.reasoning}`);
-        if (reasoningValidation.valid && reasoningValidation.content.length > 100) {
-          await this.memory.addNode(
-            reasoningValidation.content,
-            'reasoning'
-          );
-        }
-      }
+      // Add reasoning to memory if significant (with robust validation).
+      // [REASONING] follows the same productivity verdict as its parent
+      // thought -- it's not a separate event, it's commentary on one.
+      await this._persistReasoningNode(thought, thoughtProductivityVerdict);
 
       // Hebbian reinforcement (only if thought was stored)
       if (memoryNode && memoryContext.length > 0) {
@@ -4223,47 +4341,57 @@ class Orchestrator {
           }
         });
 
-        // Capture dream goals
+        // Capture dream goals. No dice: each candidate becomes a goal on its
+        // own merit via goals.addGoal()'s own internal gates (maxGoals,
+        // duplicate, doneWhen) -- exactly like a waking thought's goal
+        // capture. A goal that clears those gates IS the dream's product.
         const dreamGoals = await this.goalCapture.captureGoalsFromOutput(dreamThought.hypothesis, {
           provenance: 'dream'
         });
+        let dreamGoalWasProduced = false;
         for (const dg of dreamGoals) {
-          if (Math.random() < 0.3) {
-            // AUDIT: Attach dream metadata for traceability
-            const newGoal = this.goals.addGoal({
-              description: dg.text,
-              reason: 'Emerged from GPT-5.5 dream state',
-              uncertainty: 0.6,
-              source: 'dream_gpt5',
-              metadata: {
-                dreamId: dreamId,  // Link back to source dream
-                dreamCycle: this.cycleCount,
-                dreamTimestamp: new Date().toISOString(),
-                dreamContentSnippet: dreamThought.hypothesis.substring(0, 200)  // For quick reference
-              }
-            });
-            
-            if (newGoal) {
-              // Track in evaluation framework
-              if (this.evaluation) {
-                this.evaluation.trackGoalCreated(newGoal.id, newGoal);
-              }
-              
-              // Notify curator of new goal
-              if (this.goalCurator) {
-                await this.goalCurator.handleEvent({
-                  type: 'created',
-                  goalId: newGoal.id,
-                  goal: newGoal,
-                  cycle: this.cycleCount
-                });
-              }
+          // AUDIT: Attach dream metadata for traceability
+          const newGoal = this.goals.addGoal({
+            description: dg.text,
+            reason: 'Emerged from GPT-5.5 dream state',
+            uncertainty: 0.6,
+            source: 'dream_gpt5',
+            metadata: {
+              dreamId: dreamId,  // Link back to source dream
+              dreamCycle: this.cycleCount,
+              dreamTimestamp: new Date().toISOString(),
+              dreamContentSnippet: dreamThought.hypothesis.substring(0, 200)  // For quick reference
+            }
+          });
+
+          if (newGoal) {
+            dreamGoalWasProduced = true;
+            // Track in evaluation framework
+            if (this.evaluation) {
+              this.evaluation.trackGoalCreated(newGoal.id, newGoal);
+            }
+
+            // Notify curator of new goal
+            if (this.goalCurator) {
+              await this.goalCurator.handleEvent({
+                type: 'created',
+                goalId: newGoal.id,
+                goal: newGoal,
+                cycle: this.cycleCount
+              });
             }
           }
         }
 
-        // Add dreams to memory (with robust validation)
-        if (Math.random() < 0.2) {
+        // Add dreams to memory on merit, not on a coin flip: a [DREAM] node
+        // is only worth keeping when the dream actually produced a goal.
+        // Same rule as a waking thought -- reuse shouldPersistThought()
+        // directly rather than duplicating the verdict logic.
+        const dreamProductivityVerdict = shouldPersistThought({
+          shouldSkipGoalCapture: false,
+          goalWasProduced: dreamGoalWasProduced
+        });
+        if (dreamProductivityVerdict) {
           const dreamValidation = validateAndClean(`[DREAM] ${dreamThought.hypothesis}`);
           if (dreamValidation.valid) {
             await this.memory.addNode(
@@ -7068,8 +7196,6 @@ class Orchestrator {
   }
 
   async _saveStateUnlocked() {
-    await this.maybeWriteCurrentStateSnapshot();
-
     // Save evaluation metrics
     if (this.evaluation) {
       this.evaluation.reconcileGoalState?.(this.goals.export());
@@ -7494,72 +7620,6 @@ class Orchestrator {
         cycle: this.cycleCount,
       };
       return this.lastSaveResult;
-    }
-  }
-
-  async maybeWriteCurrentStateSnapshot() {
-    if (!this.memory || typeof this.memory.addNode !== 'function') return;
-    const workspacePath = process.env.COSMO_WORKSPACE_PATH || null;
-    if (!workspacePath) return;
-
-    const recentPath = path.join(workspacePath, 'RECENT.md');
-    let content = '';
-    try {
-      content = await fs.readFile(recentPath, 'utf8');
-    } catch (err) {
-      if (err?.code !== 'ENOENT') {
-        this.logger?.debug?.('[state-snapshot] RECENT.md read failed', { error: err.message });
-      }
-      return;
-    }
-
-    const trimmed = content.trim();
-    if (!trimmed) return;
-
-    const hash = crypto.createHash('sha256').update(trimmed).digest('hex');
-    if (hash === this.lastStateSnapshotHash) return;
-
-    if (!this.stateSnapshotHashLoaded) {
-      this.stateSnapshotHashLoaded = true;
-      for (const node of this.memory.nodes?.values?.() || []) {
-        if (node?.tag === 'state_snapshot' && node?.metadata?.source === 'RECENT.md' && node.metadata.hash === hash) {
-          this.lastStateSnapshotHash = hash;
-          return;
-        }
-      }
-    }
-
-    const assertedAt = new Date().toISOString();
-    const body = trimmed.length > 8000 ? `${trimmed.slice(0, 8000)}\n...[truncated]` : trimmed;
-    const node = await this.memory.addNode({
-      concept: [
-        `[STATE_SNAPSHOT] RECENT.md as of cycle ${this.cycleCount}.`,
-        body,
-      ].join('\n\n'),
-      tag: 'state_snapshot',
-      type: 'state_snapshot',
-      tags: ['state_snapshot', 'current_state', 'RECENT.md'],
-      asserted_at: assertedAt,
-      asserted_cycle: this.cycleCount,
-      confidence_decay: 1,
-      status: 'current',
-      metadata: {
-        kind: 'state_snapshot',
-        source: 'RECENT.md',
-        path: recentPath,
-        hash,
-        asserted_at: assertedAt,
-        asserted_cycle: this.cycleCount,
-      },
-    });
-
-    if (node) {
-      this.lastStateSnapshotHash = hash;
-      this.logger?.info?.('[state-snapshot] wrote RECENT.md memory anchor', {
-        nodeId: node.id,
-        cycle: this.cycleCount,
-        hash: hash.slice(0, 12),
-      });
     }
   }
 
@@ -8354,33 +8414,28 @@ class Orchestrator {
     return summary;
   }
 
+  // Routes a Good Life agenda item to governance disposition instead of the
+  // live-problems diagnostic path (see executeAgendaItem's sourceSignal ===
+  // 'good-life' branch, which exists specifically to short-circuit here).
+  // That routing decision -- and the resulting 'good_life_governance'
+  // action/status this returns -- is real: it is what lets motor-cortex
+  // mark the agenda item acted_on and what keeps a Good Life policy nudge
+  // from spawning a live-problem diagnostic dispatch it doesn't need.
+  //
+  // What is NOT real: the JSONL line this used to append to
+  // good-life-actions.jsonl. Nothing in the codebase ever reads that file
+  // (grep confirms it), and its `verifier: 'next domain.good-life
+  // evaluation'` field named the very loop that produced the record as the
+  // thing that would one day verify it -- a receipt that could never be
+  // checked. Removed; the routing decision itself is still returned.
   recordGoodLifeAgendaAction(item, opts = {}) {
-    const now = new Date().toISOString();
-    const receipt = {
-      at: now,
-      agendaId: item.id,
-      actor: opts.actor || 'good-life-regulator',
-      origin: opts.origin || 'good-life',
-      action: 'good_life_governance',
-      status: 'recorded',
-      policy: item.temporalContext?.policy || opts.goodLife?.intent || null,
-      lanes: item.temporalContext?.lanes || [],
-      usefulnessContract: item.temporalContext?.usefulnessContract || null,
-      workerRoute: item.temporalContext?.workerRoute || null,
-      content: String(item.content || '').slice(0, 1000),
-      verifier: 'next domain.good-life evaluation',
-    };
-    try {
-      const file = require('path').join(this.logsDir, 'good-life-actions.jsonl');
-      require('fs').appendFileSync(file, JSON.stringify(receipt) + '\n', 'utf8');
-    } catch (err) {
-      this.logger.warn?.('[good-life] action receipt write failed', { error: err?.message || String(err) });
-    }
+    const policy = item.temporalContext?.policy || opts.goodLife?.intent || null;
+    const lanes = item.temporalContext?.lanes || [];
 
-    this.logger.info?.('[good-life] agenda action recorded', {
+    this.logger.info?.('[good-life] agenda item routed to governance disposition (no diagnostic dispatch)', {
       agendaId: item.id,
-      policy: receipt.policy,
-      lanes: receipt.lanes,
+      policy,
+      lanes,
     });
 
     return {
@@ -8388,7 +8443,7 @@ class Orchestrator {
       action: 'good_life_governance',
       target: item.id,
       status: 'recorded',
-      detail: 'Good Life governance receipt recorded; next evaluation verifies lane movement',
+      detail: 'Routed to Good Life governance disposition; no live-problem diagnostic dispatched',
     };
   }
 
@@ -9406,4 +9461,5 @@ module.exports = {
   buildForceOutputMissionSpec,
   persistArchivedGoalsToState,
   shouldAddWorkspaceFeederFallback,
+  shouldPersistThought,
 };

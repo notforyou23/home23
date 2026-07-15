@@ -4,8 +4,9 @@
  * Composter — extract patterns from discarded thoughts before clearing.
  *
  * Triggered by sweeper when discarded-thoughts.jsonl exceeds threshold.
- * Reads the file, extracts patterns, writes a summary observation,
- * then signals the sweeper to truncate.
+ * Reads the file, extracts patterns, logs a summary, then truncates the
+ * file. Does NOT write the summary into the brain -- the composter is a
+ * janitor for discarded thoughts, not a source of new brain nodes.
  *
  * No LLM calls. Pure local pattern extraction.
  */
@@ -52,18 +53,12 @@ class Composter {
     const patterns = this._extractPatterns(entries);
     const summary = this._buildSummary(patterns, entries.length);
 
-    // Write as brain observation node
-    if (this.memory) {
-      try {
-        const node = await this.memory.addNode(summary, 'compost_receipt');
-        this.logger?.info?.('[composter] wrote compost receipt', {
-          nodeId: node?.id,
-          sourceCount: entries.length
-        });
-      } catch (e) {
-        this._warn('failed to write compost receipt to brain', e);
-      }
-    }
+    // NOTE (jtr, 2026-07-15): the composter used to write `summary` into the
+    // brain as a 'compost_receipt' node. Removed deliberately -- the
+    // composter is the janitor for discarded-thoughts.jsonl; it must not
+    // file a receipt into the thing it cleans. Composting itself (pattern
+    // extraction + truncation) is unaffected. Operational logging below is
+    // kept so composting activity is still visible in logs.
 
     // Truncate the file
     await fs.writeFile(filePath, '');

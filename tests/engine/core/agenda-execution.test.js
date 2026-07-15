@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -45,7 +45,7 @@ test('agenda Do it queues bounded operational items into live-problems diagnosti
   }
 });
 
-test('Good Life agenda items record governance receipts instead of live-problem diagnostics', async () => {
+test('Good Life agenda items route to governance disposition instead of live-problem diagnostics, without writing a receipt', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-agenda-'));
   try {
     const store = new LiveProblemStore({
@@ -77,9 +77,14 @@ test('Good Life agenda items record governance receipts instead of live-problem 
 
     assert.equal(result.action, 'good_life_governance');
     assert.equal(result.status, 'recorded');
+    assert.equal(result.directAction, true, 'must still signal a real disposition so motor-cortex marks the agenda item acted_on');
+    // The whole point of this branch is to route away from the live-problem
+    // diagnostic path -- that must still hold with the receipt write gone.
     assert.equal(store.all().length, 0);
-    assert.equal(existsSync(join(dir, 'good-life-actions.jsonl')), true);
-    assert.match(readFileSync(join(dir, 'good-life-actions.jsonl'), 'utf8'), /ag-good-life/);
+    // A gate/disposition does not need a receipt: nothing in the codebase
+    // ever reads good-life-actions.jsonl (grep confirmed it), so it must
+    // not be written at all now.
+    assert.equal(existsSync(join(dir, 'good-life-actions.jsonl')), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

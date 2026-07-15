@@ -177,8 +177,6 @@ architecture:
       # Set equal to decayInterval*2 to match old behavior.
       bridgeDecayInterval: 1800
       exemptTags:
-        - agent_insight
-        - agent_finding
         - mission_plan
         - cross_agent_pattern
     spreading:
