@@ -12,16 +12,17 @@ const {
   main,
 } = provenanceAudit;
 
-test('first-rollout provenance CLI rejects apply mode before opening a source', async () => {
+test('provenance CLI requires the exact reviewed apply confirmation before opening a source', async () => {
   await assert.rejects(
     () => main(['--apply', 'true', '--requester', 'requester']),
-    /first rollout is dry-run-only; CLI apply is disabled/,
+    /--apply must equal APPLY_REVIEWED_PROVENANCE_SWEEP/,
   );
 });
 
-test('first-rollout provenance module exposes no apply capability', () => {
-  assert.equal(provenanceAudit.applyPinnedBrainProvenanceAudit, undefined);
-  assert.equal(provenanceAudit.APPLY_RECEIPT_SCHEMA, undefined);
+test('provenance module exposes guarded apply constants without changing dry-run default', () => {
+  assert.equal(typeof provenanceAudit.applyPinnedBrainProvenanceAudit, 'function');
+  assert.equal(provenanceAudit.APPLY_RECEIPT_SCHEMA, 'home23.brain-provenance-apply-receipt.v1');
+  assert.equal(provenanceAudit.APPLY_CONFIRMATION, 'APPLY_REVIEWED_PROVENANCE_SWEEP');
 });
 
 test('provenance audit is bounded, includes mandatory risk strata, and writes only requester-owned output', async (t) => {
@@ -90,7 +91,7 @@ test('provenance audit is bounded, includes mandatory risk strata, and writes on
   assert.equal(result.schema, 'home23.brain-provenance-audit.v1');
   assert.equal(result.receiptSchema, 'home23.brain-provenance-audit-receipt.v1');
   assert.equal(result.firstRolloutDryRunOnly, true);
-  assert.equal(result.applyCapability, 'none-first-rollout-dry-run-only');
+  assert.equal(result.applyCapability, 'guarded-reviewed-report-and-coherent-backup');
   assert.equal(result.sourceRevision, 44);
   assert.ok(result.recordsWritten <= 6, `expected bounded output, got ${result.recordsWritten}`);
   assert.ok(result.outputFile.startsWith(`${fs.realpathSync(requesterRoot)}${path.sep}`));
@@ -109,6 +110,8 @@ test('provenance audit is bounded, includes mandatory risk strata, and writes on
     assert.equal(row.sourceRevision, 44);
     assert.equal(row.sourceGeneration, 'g1');
     assert.match(row.contentHash, /^[a-f0-9]{64}$/);
+    assert.match(row.beforeNodeHash, /^sha256:[a-f0-9]{64}$/);
+    assert.match(row.beforeProfileHash, /^sha256:[a-f0-9]{64}$/);
     assert.ok(row.proposedAuthorityClass);
     assert.ok(row.proposedRetrievalDomain);
     assert.ok(Array.isArray(row.reasons));

@@ -11,7 +11,10 @@ const {
   createMemorySourcePinProvider,
   createOperationScratchQuota,
   durableBrainOperationRoot,
+  createDescriptor,
   readManifest,
+  sourceDescriptorDigest,
+  validateManifest,
   withMemorySourceLock,
 } = require('../../../shared/memory-source');
 
@@ -412,6 +415,335 @@ async function hashAndSyncFile(filePath) {
   }
 }
 
+function sha256Bytes(bytes) {
+  return `sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+function readBoundRegularFile(filePath, { maxBytes = 1024 * 1024 } = {}) {
+  if (typeof filePath !== 'string' || !path.isAbsolute(filePath)
+      || path.normalize(filePath) !== filePath || !Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+    throw new Error('backup receipt path is invalid');
+  }
+  const before = fs.lstatSync(filePath, { bigint: true });
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n
+      || before.size > BigInt(maxBytes) || fs.realpathSync(filePath) !== filePath) {
+    throw new Error('backup receipt must be a bounded canonical regular file');
+  }
+  if (!Number.isInteger(fs.constants.O_NOFOLLOW)) {
+    throw new Error('backup receipt validation requires O_NOFOLLOW');
+  }
+  const fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  try {
+    const opened = fs.fstatSync(fd, { bigint: true });
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino
+        || opened.size !== before.size || opened.nlink !== 1n) {
+      throw new Error('backup receipt identity changed during validation');
+    }
+    const bytes = fs.readFileSync(fd);
+    const after = fs.fstatSync(fd, { bigint: true });
+    if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size) {
+      throw new Error('backup receipt identity changed during readback');
+    }
+    return Object.freeze({
+      bytes,
+      binding: Object.freeze({
+        path: filePath,
+        dev: String(opened.dev),
+        ino: String(opened.ino),
+        size: String(opened.size),
+        mtimeNs: String(opened.mtimeNs),
+        ctimeNs: String(opened.ctimeNs),
+        digest: sha256Bytes(bytes),
+        rehashOnAssert: true,
+      }),
+    });
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function assertBoundRegularFile(binding, label = 'backup file') {
+  const stat = fs.lstatSync(binding.path, { bigint: true });
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink < 1n
+      || String(stat.dev) !== binding.dev || String(stat.ino) !== binding.ino
+      || String(stat.size) !== binding.size || String(stat.mtimeNs) !== binding.mtimeNs
+      || (!binding.ignoreCtime && String(stat.ctimeNs) !== binding.ctimeNs)
+      || fs.realpathSync(binding.path) !== binding.path
+      || (binding.rehashOnAssert && sha256Bytes(fs.readFileSync(binding.path)) !== binding.digest)) {
+    throw sourceChanged(`${label} changed after validation`);
+  }
+}
+
+function fsyncDirectorySync(directory) {
+  const fd = fs.openSync(directory, fs.constants.O_RDONLY);
+  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+}
+
+function retainBackupBindingsAt(bindings, guardDirectory, backupIdentity) {
+  if (typeof guardDirectory !== 'string' || !path.isAbsolute(guardDirectory)
+      || path.normalize(guardDirectory) !== guardDirectory) {
+    throw new Error('backup guard path must be canonical and absolute');
+  }
+  const parent = path.dirname(guardDirectory);
+  const parentStat = fs.lstatSync(parent, { bigint: true });
+  if (!parentStat.isDirectory() || parentStat.isSymbolicLink()
+      || fs.realpathSync(parent) !== parent) {
+    throw new Error('backup guard parent must be a canonical nonsymlink directory');
+  }
+  fs.mkdirSync(guardDirectory, { mode: 0o700 });
+  const guardStat = fs.lstatSync(guardDirectory, { bigint: true });
+  if (!guardStat.isDirectory() || guardStat.isSymbolicLink()
+      || fs.realpathSync(guardDirectory) !== guardDirectory) {
+    throw new Error('backup guard directory is unsafe');
+  }
+  const retained = [];
+  try {
+    for (const binding of bindings) {
+      assertBoundRegularFile(binding);
+      const retainedPath = path.join(guardDirectory, path.basename(binding.path));
+      fs.linkSync(binding.path, retainedPath);
+      const retainedStat = fs.lstatSync(retainedPath, { bigint: true });
+      if (!retainedStat.isFile() || retainedStat.isSymbolicLink()
+          || String(retainedStat.dev) !== binding.dev || String(retainedStat.ino) !== binding.ino) {
+        throw new Error('backup guard hard link identity mismatch');
+      }
+      retained.push(Object.freeze({
+        ...binding,
+        path: retainedPath,
+        size: String(retainedStat.size),
+        mtimeNs: String(retainedStat.mtimeNs),
+        ctimeNs: String(retainedStat.ctimeNs),
+        ignoreCtime: true,
+      }));
+    }
+    fsyncDirectorySync(guardDirectory);
+    fsyncDirectorySync(parent);
+  } catch (error) {
+    const current = fs.lstatSync(guardDirectory, { bigint: true });
+    if (current.dev === guardStat.dev && current.ino === guardStat.ino) {
+      fs.rmSync(guardDirectory, { recursive: true, force: false });
+      fsyncDirectorySync(parent);
+    }
+    throw error;
+  }
+  const identity = sha256Bytes(Buffer.from(JSON.stringify({
+    backupIdentity,
+    files: retained.map((binding) => ({
+      file: path.basename(binding.path),
+      bytes: Number(binding.size),
+      sha256: binding.digest,
+    })),
+  })));
+  return Object.freeze({
+    identity,
+    assertCurrent() {
+      for (const binding of retained) assertBoundRegularFile(binding, 'retained backup file');
+      return true;
+    },
+    release() {
+      const current = fs.lstatSync(guardDirectory, { bigint: true });
+      if (!current.isDirectory() || current.isSymbolicLink()
+          || current.dev !== guardStat.dev || current.ino !== guardStat.ino) {
+        throw new Error('backup guard identity changed before cleanup');
+      }
+      fs.rmSync(guardDirectory, { recursive: true, force: false });
+      fsyncDirectorySync(parent);
+    },
+  });
+}
+
+function hashBoundRegularFile(filePath, expectedBytes) {
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0) {
+    throw new Error('backup copied file size is invalid');
+  }
+  const before = fs.lstatSync(filePath, { bigint: true });
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n
+      || before.size !== BigInt(expectedBytes) || fs.realpathSync(filePath) !== filePath) {
+    throw new Error('backup copied file must be an exact canonical regular file');
+  }
+  const fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  const hash = crypto.createHash('sha256');
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  let position = 0;
+  try {
+    const opened = fs.fstatSync(fd, { bigint: true });
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino
+        || opened.size !== before.size || opened.nlink !== 1n) {
+      throw new Error('backup copied file identity changed during validation');
+    }
+    while (position < expectedBytes) {
+      const read = fs.readSync(fd, buffer, 0, Math.min(buffer.length, expectedBytes - position), position);
+      if (!Number.isSafeInteger(read) || read <= 0) {
+        throw new Error('backup copied file is truncated');
+      }
+      hash.update(buffer.subarray(0, read));
+      position += read;
+    }
+    if (fs.readSync(fd, buffer, 0, 1, position) !== 0) {
+      throw new Error('backup copied file grew during validation');
+    }
+    const after = fs.fstatSync(fd, { bigint: true });
+    if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size
+        || after.mtimeNs !== opened.mtimeNs || after.ctimeNs !== opened.ctimeNs) {
+      throw new Error('backup copied file changed during validation');
+    }
+    return Object.freeze({
+      path: filePath,
+      dev: String(opened.dev),
+      ino: String(opened.ino),
+      size: String(opened.size),
+      mtimeNs: String(opened.mtimeNs),
+      ctimeNs: String(opened.ctimeNs),
+      digest: `sha256:${hash.digest('hex')}`,
+      rehashOnAssert: false,
+    });
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Verify a create-new native backup receipt and every copied byte before a
+ * destructive or metadata-mutating operation relies on it.
+ */
+function validateCoherentBackupReceipt({
+  brainDir,
+  receiptFile,
+  expectedDigest,
+  expectedGeneration,
+  expectedRevision,
+} = {}) {
+  if (typeof receiptFile !== 'string' || !receiptFile) {
+    throw new Error('backup receipt file is required');
+  }
+  if (typeof expectedDigest !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(expectedDigest)) {
+    throw new Error('backup receipt digest is required');
+  }
+  const canonicalBrain = fs.realpathSync(brainDir);
+  const expectedBackups = path.join(canonicalBrain, BACKUPS_DIR);
+  const backupsStat = fs.lstatSync(expectedBackups);
+  if (!backupsStat.isDirectory() || backupsStat.isSymbolicLink()
+      || fs.realpathSync(expectedBackups) !== expectedBackups) {
+    throw new Error('backup root must be a canonical nonsymlink directory inside the brain');
+  }
+  const canonicalBackups = expectedBackups;
+  const suppliedReceipt = path.resolve(receiptFile);
+  const suppliedReceiptStat = fs.lstatSync(suppliedReceipt);
+  if (!suppliedReceiptStat.isFile() || suppliedReceiptStat.isSymbolicLink()) {
+    throw new Error('backup receipt must be a canonical nonsymlink regular file');
+  }
+  const canonicalReceipt = fs.realpathSync(suppliedReceipt);
+  const backupDir = path.dirname(canonicalReceipt);
+  const backupDirStat = fs.lstatSync(backupDir);
+  if (!backupDirStat.isDirectory() || backupDirStat.isSymbolicLink()
+      || fs.realpathSync(backupDir) !== backupDir
+      || path.dirname(backupDir) !== canonicalBackups
+      || !path.basename(backupDir).startsWith('backup-')
+      || path.basename(canonicalReceipt) !== 'backup-manifest.json') {
+    throw new Error('backup receipt must be inside one canonical brain backup directory');
+  }
+  const openedReceipt = readBoundRegularFile(canonicalReceipt);
+  if (openedReceipt.binding.digest !== expectedDigest) {
+    throw new Error('backup receipt digest mismatch');
+  }
+  let receipt;
+  try {
+    receipt = JSON.parse(openedReceipt.bytes.toString('utf8'));
+  } catch {
+    throw new Error('backup receipt is malformed');
+  }
+  const receiptKeys = [
+    'copiedBytes', 'descriptorDigest', 'fileRecords', 'files', 'generation',
+    'omittedDerivedFiles', 'revision', 'source', 'sourceFingerprint', 'version',
+  ].sort();
+  if (!receipt || Array.isArray(receipt)
+      || Object.keys(receipt).sort().join(',') !== receiptKeys.join(',')
+      || receipt.version !== 2
+      || receipt.source !== 'memory-manifest'
+      || receipt.generation !== expectedGeneration
+      || receipt.revision !== expectedRevision
+      || typeof receipt.descriptorDigest !== 'string'
+      || !/^sha256:[a-f0-9]{64}$/.test(receipt.descriptorDigest)
+      || receipt.sourceFingerprint !== null
+      || !Array.isArray(receipt.omittedDerivedFiles)
+      || !Array.isArray(receipt.files) || !Array.isArray(receipt.fileRecords)
+      || receipt.files.length < 1 || receipt.files.length !== receipt.fileRecords.length) {
+    throw new Error('backup receipt source generation or revision is invalid');
+  }
+  const seen = new Set();
+  const bindings = [openedReceipt.binding];
+  let copiedBytes = 0;
+  for (let index = 0; index < receipt.fileRecords.length; index += 1) {
+    const record = receipt.fileRecords[index];
+    const file = receipt.files[index];
+    if (!record || Array.isArray(record) || Object.keys(record).sort().join(',') !== 'bytes,file,sha256'
+        || record.file !== file || typeof file !== 'string'
+        || path.basename(file) !== file || path.isAbsolute(file) || seen.has(file)
+        || !Number.isSafeInteger(record.bytes) || record.bytes < 0
+        || typeof record.sha256 !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(record.sha256)) {
+      throw new Error('backup receipt file records are invalid');
+    }
+    seen.add(file);
+    const binding = hashBoundRegularFile(path.join(backupDir, file), record.bytes);
+    if (Number(binding.size) !== record.bytes || binding.digest !== record.sha256) {
+      throw new Error('backup copied file digest or size mismatch');
+    }
+    copiedBytes += record.bytes;
+    bindings.push(binding);
+  }
+  if (copiedBytes !== receipt.copiedBytes || !seen.has('memory-manifest.json')) {
+    throw new Error('backup copied byte accounting is invalid');
+  }
+  const copiedManifestBytes = fs.readFileSync(path.join(backupDir, 'memory-manifest.json'));
+  let copiedManifest;
+  try {
+    copiedManifest = JSON.parse(copiedManifestBytes.toString('utf8'));
+    validateManifest(copiedManifest);
+  } catch {
+    throw new Error('backup memory manifest is invalid');
+  }
+  const requiredFiles = [
+    'state.json.gz',
+    'brain-snapshot.json',
+    'memory-manifest.json',
+    copiedManifest.activeBase.nodes.file,
+    copiedManifest.activeBase.edges.file,
+    copiedManifest.activeDelta.file,
+  ].sort();
+  const receivedFiles = [...receipt.files].sort();
+  if (requiredFiles.length !== receivedFiles.length
+      || requiredFiles.some((file, index) => file !== receivedFiles[index])) {
+    throw new Error('backup receipt authoritative file set is incomplete');
+  }
+  if (copiedManifest.generation !== expectedGeneration
+      || copiedManifest.currentRevision !== expectedRevision
+      || sourceDescriptorDigest(createDescriptor(canonicalBrain, copiedManifest))
+        !== receipt.descriptorDigest) {
+    throw new Error('backup memory manifest source identity mismatch');
+  }
+  const backupIdentity = sha256Bytes(Buffer.from(JSON.stringify({
+    descriptorDigest: receipt.descriptorDigest,
+    generation: receipt.generation,
+    revision: receipt.revision,
+    files: receipt.fileRecords,
+  })));
+  return Object.freeze({
+    digest: openedReceipt.binding.digest,
+    identity: backupIdentity,
+    generation: receipt.generation,
+    revision: receipt.revision,
+    receiptFile: canonicalReceipt,
+    assertCurrent() {
+      for (const binding of bindings) assertBoundRegularFile(binding);
+      return true;
+    },
+    retainAt(guardDirectory) {
+      for (const binding of bindings) assertBoundRegularFile(binding);
+      return retainBackupBindingsAt(bindings, guardDirectory, backupIdentity);
+    },
+  });
+}
+
 async function copySourceFile(sourceSet, file, destination) {
   if (file === 'memory-manifest.json' && sourceSet.manifestBytes) {
     await fsp.writeFile(destination, sourceSet.manifestBytes, { mode: 0o600 });
@@ -578,4 +910,5 @@ module.exports = {
   OPTIONAL_BACKUP_FILES,
   DEFAULT_MIN_FREE_BYTES,
   withBackupSources,
+  validateCoherentBackupReceipt,
 };
