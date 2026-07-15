@@ -4341,47 +4341,57 @@ class Orchestrator {
           }
         });
 
-        // Capture dream goals
+        // Capture dream goals. No dice: each candidate becomes a goal on its
+        // own merit via goals.addGoal()'s own internal gates (maxGoals,
+        // duplicate, doneWhen) -- exactly like a waking thought's goal
+        // capture. A goal that clears those gates IS the dream's product.
         const dreamGoals = await this.goalCapture.captureGoalsFromOutput(dreamThought.hypothesis, {
           provenance: 'dream'
         });
+        let dreamGoalWasProduced = false;
         for (const dg of dreamGoals) {
-          if (Math.random() < 0.3) {
-            // AUDIT: Attach dream metadata for traceability
-            const newGoal = this.goals.addGoal({
-              description: dg.text,
-              reason: 'Emerged from GPT-5.5 dream state',
-              uncertainty: 0.6,
-              source: 'dream_gpt5',
-              metadata: {
-                dreamId: dreamId,  // Link back to source dream
-                dreamCycle: this.cycleCount,
-                dreamTimestamp: new Date().toISOString(),
-                dreamContentSnippet: dreamThought.hypothesis.substring(0, 200)  // For quick reference
-              }
-            });
-            
-            if (newGoal) {
-              // Track in evaluation framework
-              if (this.evaluation) {
-                this.evaluation.trackGoalCreated(newGoal.id, newGoal);
-              }
-              
-              // Notify curator of new goal
-              if (this.goalCurator) {
-                await this.goalCurator.handleEvent({
-                  type: 'created',
-                  goalId: newGoal.id,
-                  goal: newGoal,
-                  cycle: this.cycleCount
-                });
-              }
+          // AUDIT: Attach dream metadata for traceability
+          const newGoal = this.goals.addGoal({
+            description: dg.text,
+            reason: 'Emerged from GPT-5.5 dream state',
+            uncertainty: 0.6,
+            source: 'dream_gpt5',
+            metadata: {
+              dreamId: dreamId,  // Link back to source dream
+              dreamCycle: this.cycleCount,
+              dreamTimestamp: new Date().toISOString(),
+              dreamContentSnippet: dreamThought.hypothesis.substring(0, 200)  // For quick reference
+            }
+          });
+
+          if (newGoal) {
+            dreamGoalWasProduced = true;
+            // Track in evaluation framework
+            if (this.evaluation) {
+              this.evaluation.trackGoalCreated(newGoal.id, newGoal);
+            }
+
+            // Notify curator of new goal
+            if (this.goalCurator) {
+              await this.goalCurator.handleEvent({
+                type: 'created',
+                goalId: newGoal.id,
+                goal: newGoal,
+                cycle: this.cycleCount
+              });
             }
           }
         }
 
-        // Add dreams to memory (with robust validation)
-        if (Math.random() < 0.2) {
+        // Add dreams to memory on merit, not on a coin flip: a [DREAM] node
+        // is only worth keeping when the dream actually produced a goal.
+        // Same rule as a waking thought -- reuse shouldPersistThought()
+        // directly rather than duplicating the verdict logic.
+        const dreamProductivityVerdict = shouldPersistThought({
+          shouldSkipGoalCapture: false,
+          goalWasProduced: dreamGoalWasProduced
+        });
+        if (dreamProductivityVerdict) {
           const dreamValidation = validateAndClean(`[DREAM] ${dreamThought.hypothesis}`);
           if (dreamValidation.valid) {
             await this.memory.addNode(
