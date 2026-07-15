@@ -5,6 +5,7 @@ const {
   projectQueryEvidenceEdge,
   projectQueryEvidenceNode,
   projectionRecordLimits,
+  truncateUtf8,
 } = require('./query-evidence-projector');
 const {
   redactPrivatePaths,
@@ -94,7 +95,8 @@ function queryTerms(query) {
 
 function nodeText(node) {
   const values = [
-    node.content, node.concept, node.text, node.summary, node.title,
+    node.content, node.concept, node.statement, node.text, node.summary, node.title,
+    node.keyPhrase,
     node.type, node.tag, Array.isArray(node.tags) ? node.tags.join(' ') : '',
   ];
   return values.filter(value => typeof value === 'string').join(' ').toLowerCase();
@@ -129,6 +131,28 @@ function authenticatedProviderNode(node) {
     ...(Object.keys(provenance).length > 0 ? { provenance } : {}),
     ...(evidenceLinks.length > 0 ? { evidence: { evidence_links: evidenceLinks } } : {}),
   };
+}
+
+function projectAuthenticatedProviderNode(providerNode, recordLimits) {
+  const status = typeof providerNode?.metadata?.status === 'string'
+    ? truncateUtf8(providerNode.metadata.status, 128).value
+    : null;
+  const metadata = status ? { status } : null;
+  const metadataReserve = metadata
+    ? Buffer.byteLength(JSON.stringify({ metadata }), 'utf8') + 8
+    : 0;
+  const maxRecordBytes = recordLimits.maxRecordBytes - metadataReserve;
+  if (maxRecordBytes <= 1) {
+    throw typed('result_too_large', 'Authenticated Query evidence record limit is too small');
+  }
+  const projected = projectQueryEvidenceNode(providerNode, {
+    maxRecordBytes,
+    maxContentBytes: Math.min(recordLimits.maxContentBytes, maxRecordBytes - 1),
+  });
+  return serializeRecord({
+    ...projected.value,
+    ...(metadata ? { metadata } : {}),
+  }, recordLimits.maxRecordBytes, 'node');
 }
 
 function scoreNode(node, authorityNode, terms, { query, nowMs } = {}) {
@@ -351,7 +375,7 @@ async function projectPinnedQuery({
     const authenticated = verifyMemoryAuthorityAttestation(rawNode);
     const providerNode = authenticatedProviderNode(rawNode);
     const projected = authenticated
-      ? serializeRecord(providerNode, recordLimits.maxRecordBytes, 'node')
+      ? projectAuthenticatedProviderNode(providerNode, recordLimits)
       : projectQueryEvidenceNode(providerNode, recordLimits);
     const id = nodeId(projected.value);
     if (id === null || id !== rawId) {
@@ -362,7 +386,10 @@ async function projectPinnedQuery({
     const authority = projectProviderAuthority(rawNode);
     heap.add({
       id,
-      score: scoreNode(projected.value, rawNode, terms, { query, nowMs }),
+      score: scoreNode(authenticated ? providerNode : projected.value, rawNode, terms, {
+        query,
+        nowMs,
+      }),
       record: projected.value,
       authority,
       bytes: projected.bytes + Buffer.byteLength(JSON.stringify({ id, ...authority }), 'utf8'),

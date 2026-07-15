@@ -8,6 +8,9 @@ const {
   projectPinnedQuery,
 } = require('../../cosmo23/lib/pinned-query-projection');
 const {
+  projectionRecordLimits,
+} = require('../../cosmo23/lib/query-evidence-projector');
+const {
   QUERY_OPERATION_LIMITS,
 } = require('../../cosmo23/lib/brain-operation-limits');
 const {
@@ -337,6 +340,83 @@ test('pinned Query exposes only signed canonical fields with retained verified a
   assert.equal(Object.hasOwn(projection.nodes[0], 'text'), false);
   assert.equal(Object.hasOwn(projection.nodes[0].metadata, 'injectedAssertion'), false);
   assert.doesNotMatch(JSON.stringify(projection.nodes), /forged provider/i);
+});
+
+test('pinned Query compacts maximum-bound signed claims and refs without losing authenticated relevance', async () => {
+  const signedAt = '2026-07-14T19:59:00.000Z';
+  const longClaim = `${'x'.repeat(16_000)} signed tail canary`;
+  const largeRefs = Array.from(
+    { length: 63 },
+    (_, index) => `artifact-${index}:${'r'.repeat(1_900)}`,
+  );
+  const target = attestMemoryAuthority({
+    id: 'z-tail-target',
+    content: longClaim,
+    concept: 'c'.repeat(16 * 1024),
+    statement: 's'.repeat(16 * 1024),
+    summary: 'm'.repeat(16 * 1024),
+    title: `/var/tmp/private.log ${'t'.repeat(16_000)}`,
+    keyPhrase: 'k'.repeat(16 * 1024),
+    asserted_at: signedAt,
+    status: 'active',
+    metadata: { status: 'current' },
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'verified_current_state',
+      operationalAuthority: true,
+      sourceRefs: ['/Volumes/PrivateBrain/runtime/secret.json', ...largeRefs],
+      evidenceRefs: ['verifier:maximum-bound-record', ...largeRefs],
+    },
+  }, AUTHORITY_KEY);
+  const control = attestMemoryAuthority({
+    id: 'a-tie-control',
+    content: 'unrelated authenticated assertion',
+    asserted_at: signedAt,
+    provenance: {
+      schema: 'home23.node-provenance.v1',
+      authorityClass: 'verified_current_state',
+      operationalAuthority: true,
+      evidenceRefs: ['verifier:tie-control'],
+    },
+  }, AUTHORITY_KEY);
+  assert.equal(verifyMemoryAuthorityAttestation(target, AUTHORITY_KEY), true);
+  assert.equal(verifyMemoryAuthorityAttestation(control, AUTHORITY_KEY), true);
+
+  for (const mode of ['quick', 'full', 'expert', 'dive']) {
+    const projection = await projectPinnedQuery({
+      sourcePin: createSyntheticPinnedSource({
+        nodeCount: 2,
+        edgeCount: 0,
+        nodeFactory: index => [target, control][index],
+      }),
+      query: 'signed tail canary',
+      mode,
+      signal: new AbortController().signal,
+      limits: { maxNodes: 1, maxEdges: 1 },
+      nowMs: Date.parse('2026-07-14T20:00:00.000Z'),
+    });
+
+    assert.deepEqual(projection.nodes.map(node => node.id), ['z-tail-target']);
+    assert.deepEqual(projection.nodeAuthorities.map(node => node.id), ['z-tail-target']);
+    assert.equal(projection.nodes[0].contentTruncated, true);
+    assert.equal(projection.nodes[0].status, 'active');
+    assert.equal(projection.nodes[0].metadata.status, 'current');
+    assert.equal(
+      Buffer.byteLength(JSON.stringify(projection.nodes[0]), 'utf8')
+        <= projectionRecordLimits(mode).maxRecordBytes,
+      true,
+    );
+    assert.equal(projection.nodeAuthorities[0].authorityClass, 'verified_current_state');
+    assert.equal(projection.nodeAuthorities[0].operationalAuthority, true);
+    assert.equal(projection.nodeAuthorities[0].sourceChain.length <= 2, true);
+    assert.doesNotMatch(JSON.stringify(projection.nodes), /\/Volumes\/|\/var\/tmp/);
+    assert.doesNotMatch(JSON.stringify(projection.nodeAuthorities), /\/Volumes\/|\/var\/tmp/);
+    assert.equal(projection.sourceEvidence.authoritySummary.total, 1);
+    assert.equal(
+      projection.sourceEvidence.authoritySummary.authorityClasses.verified_current_state,
+      1,
+    );
+  }
 });
 
 test('oversized textual evidence is compacted while unserializable records fail closed', async () => {

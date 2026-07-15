@@ -1,7 +1,12 @@
 'use strict';
 
-const PRIVATE_PATH = /(?:file:\/\/)?(?:\/Users\/[^\s"'`<>\])}]+|\/home\/[^\s"'`<>\])}]+|[A-Za-z]:\\Users\\[^\s"'`<>\])}]+)/giu;
-const TEXT_FIELDS = Object.freeze(['title', 'concept', 'summary', 'content', 'text']);
+const {
+  redactPrivatePaths: redactProviderPrivatePaths,
+} = require('./provider-record-sanitizer');
+
+const TEXT_FIELDS = Object.freeze([
+  'title', 'concept', 'summary', 'content', 'statement', 'keyPhrase', 'text',
+]);
 const EDGE_TEXT_FIELDS = Object.freeze(['label', 'evidence', 'summary', 'content', 'text']);
 const TIMESTAMP_FIELDS = Object.freeze([
   'timestamp', 'createdAt', 'updatedAt', 'observedAt', 'validAt',
@@ -83,9 +88,7 @@ function dataProperty(record, key) {
 }
 
 function redactPrivatePaths(value) {
-  PRIVATE_PATH.lastIndex = 0;
-  const redacted = value.replace(PRIVATE_PATH, '[private path omitted]');
-  PRIVATE_PATH.lastIndex = 0;
+  const redacted = redactProviderPrivatePaths(value);
   return { value: redacted, redacted: redacted !== value };
 }
 
@@ -151,7 +154,7 @@ function addTextFields(output, record, fields, maxContentBytes) {
 }
 
 function addClassification(output, record) {
-  for (const field of ['type', 'tag']) {
+  for (const field of ['type', 'tag', 'status']) {
     const safe = safeShortString(dataProperty(record, field), 128);
     if (safe?.value) output[field] = safe.value;
   }

@@ -38,6 +38,27 @@ test('query evidence node projection keeps only bounded answer evidence', () => 
   assert.doesNotThrow(() => Buffer.from(serialized, 'utf8').toString('utf8'));
 });
 
+test('unsigned Query evidence redacts arbitrary absolute POSIX paths without corrupting URLs or typed refs', () => {
+  const projected = projectQueryEvidenceNode({
+    id: 'portable-paths',
+    content: [
+      'receipt=/Volumes/PrivateBrain/runtime/secret.json',
+      'log=/var/tmp/private.log',
+      'url=https://example.com/evidence/receipt.json',
+      'api=http://localhost:5002/api/state',
+      'incident=incident:/brain-route',
+      'source=source:/manifest-v1',
+    ].join(' | '),
+  }, projectionRecordLimits('full'));
+
+  assert.doesNotMatch(projected.value.content, /\/Volumes\/PrivateBrain|\/var\/tmp/);
+  assert.match(projected.value.content, /https:\/\/example\.com\/evidence\/receipt\.json/);
+  assert.match(projected.value.content, /http:\/\/localhost:5002\/api\/state/);
+  assert.match(projected.value.content, /incident:\/brain-route/);
+  assert.match(projected.value.content, /source:\/manifest-v1/);
+  assert.equal((projected.value.content.match(/\[redacted-path\]/g) || []).length, 2);
+});
+
 test('query evidence edge projection keeps endpoints and bounded relationship evidence', () => {
   const projected = projectQueryEvidenceEdge({
     source: 'node-1',
