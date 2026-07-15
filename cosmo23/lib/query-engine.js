@@ -1794,45 +1794,71 @@ STYLE:
       eligibleEdges.length,
       count => promptCandidate(nodesOnly.nodes, eligibleEdges.slice(0, count)),
     ) || nodesOnly;
-    const promptNodes = fittedPrompt.nodes;
-    const promptAuthorities = fittedPrompt.nodeAuthorities;
-    const promptEdges = fittedPrompt.edges;
-    const input = fittedPrompt.serialized.json;
-    const promptBytes = fittedPrompt.measurement.totalBytes;
-    const promptTokens = fittedPrompt.measurement.totalTokens;
-    const droppedForPromptBudget = (projection.nodes.length - promptNodes.length)
-      + (projection.edges.length - promptEdges.length);
-    const promptReduced = droppedForPromptBudget > 0;
-    const retainedBytes = [...promptNodes, ...promptAuthorities, ...promptEdges].reduce(
-      (total, record) => total + Buffer.byteLength(JSON.stringify(record), 'utf8'),
-      0,
-    );
-    const projectionStats = Object.freeze({
-      ...projection.stats,
-      nodesRetained: promptNodes.length,
-      edgesRetained: promptEdges.length,
-      maxRetainedNodes: promptNodes.length,
-      maxRetainedEdges: promptEdges.length,
-      maxRetainedBytes: retainedBytes,
-      retainedBytes,
-      droppedForPromptBudget,
-      promptReduced,
-      promptBytes,
-      promptTokens,
-    });
-    const promptAuthoritySummary = summarizeRetrievalAuthority(promptAuthorities);
-    const sourceEvidence = projection.sourceEvidence
-      ? {
-        ...projection.sourceEvidence,
-        returnedTotals: { nodes: promptNodes.length, edges: promptEdges.length },
+    function contextForCandidate(candidate) {
+      const nodes = candidate.nodes;
+      const nodeAuthorities = candidate.nodeAuthorities;
+      const edges = candidate.edges;
+      const promptBytes = candidate.measurement.totalBytes;
+      const promptTokens = candidate.measurement.totalTokens;
+      const droppedForPromptBudget = (projection.nodes.length - nodes.length)
+        + (projection.edges.length - edges.length);
+      const promptReduced = droppedForPromptBudget > 0;
+      const retainedBytes = [...nodes, ...nodeAuthorities, ...edges].reduce(
+        (total, record) => total + Buffer.byteLength(JSON.stringify(record), 'utf8'),
+        0,
+      );
+      const projectionStats = Object.freeze({
+        ...projection.stats,
+        nodesRetained: nodes.length,
+        edgesRetained: edges.length,
+        maxRetainedNodes: nodes.length,
+        maxRetainedEdges: edges.length,
+        maxRetainedBytes: retainedBytes,
+        retainedBytes,
         droppedForPromptBudget,
         promptReduced,
-        authoritySummary: promptAuthoritySummary,
+        promptBytes,
+        promptTokens,
+      });
+      const authoritySummary = summarizeRetrievalAuthority(nodeAuthorities);
+      const sourceEvidence = projection.sourceEvidence
+        ? {
+          ...projection.sourceEvidence,
+          returnedTotals: { nodes: nodes.length, edges: edges.length },
+          droppedForPromptBudget,
+          promptReduced,
+          authoritySummary,
+        }
+        : null;
+      if (sourceEvidence) {
+        attestRetrievalAuthoritySummary(sourceEvidence, nodeAuthorities);
       }
-      : null;
-    if (sourceEvidence) {
-      attestRetrievalAuthoritySummary(sourceEvidence, promptAuthorities);
+      return Object.freeze({
+        nodes,
+        nodeAuthorities,
+        edges,
+        input: candidate.serialized.json,
+        promptBytes,
+        promptTokens,
+        projectionStats,
+        sourceEvidence,
+        publicProjection: Object.freeze({
+          nodesScanned: projectionStats.nodesScanned,
+          nodesRetained: projectionStats.nodesRetained,
+          edgesScanned: projectionStats.edgesScanned,
+          edgesRetained: projectionStats.edgesRetained,
+          droppedForPromptBudget: projectionStats.droppedForPromptBudget,
+          promptReduced: projectionStats.promptReduced,
+        }),
+      });
     }
+    const firstPromptContext = contextForCandidate(fittedPrompt);
+    const promptNodes = firstPromptContext.nodes;
+    const promptAuthorities = firstPromptContext.nodeAuthorities;
+    const promptEdges = firstPromptContext.edges;
+    const input = firstPromptContext.input;
+    const projectionStats = firstPromptContext.projectionStats;
+    const sourceEvidence = firstPromptContext.sourceEvidence;
     const maxResultBytes = selectedLimits.maxResultBytes;
 
     this._emitOperationEvent({
@@ -1842,15 +1868,6 @@ STYLE:
       selectedNodes: promptNodes.length,
       selectedEdges: promptEdges.length,
     }, options);
-
-    const publicProjection = Object.freeze({
-      nodesScanned: projectionStats.nodesScanned,
-      nodesRetained: projectionStats.nodesRetained,
-      edgesScanned: projectionStats.edgesScanned,
-      edgesRetained: projectionStats.edgesRetained,
-      droppedForPromptBudget: projectionStats.droppedForPromptBudget,
-      promptReduced: projectionStats.promptReduced,
-    });
 
     async function runProviderCall({
       providerCallId,
@@ -1920,7 +1937,7 @@ STYLE:
       }
     }
 
-    function resultWithQuality(answer, state, expansionAttempted) {
+    function resultWithQuality(answer, state, expansionAttempted, promptContext = firstPromptContext) {
       const answerQuality = Object.freeze({
         requestedMode: mode,
         state,
@@ -1928,22 +1945,22 @@ STYLE:
       });
       const result = {
         answer,
-        projection: publicProjection,
+        projection: promptContext.publicProjection,
         answerQuality,
         metadata: {
           provider,
           model,
           mode,
-          promptBytes,
-          promptTokens,
+          promptBytes: promptContext.promptBytes,
+          promptTokens: promptContext.promptTokens,
           promptBudgetStrategy: promptBudget.strategy,
           promptBudgetBytes: promptBudget.inputBudgetBytes,
           inputBudgetTokens: promptBudget.inputBudgetTokens,
           contextWindowTokens: promptBudget.contextWindowTokens,
-          projection: projectionStats,
+          projection: promptContext.projectionStats,
           answerQuality,
         },
-        sourceEvidence,
+        sourceEvidence: promptContext.sourceEvidence,
         resultArtifact: null,
       };
       if (utf8Bytes(result) > maxResultBytes) {
@@ -1981,28 +1998,70 @@ STYLE:
       'Return only the improved final answer; do not discuss this expansion pass.',
     ].join(' ');
     let expansionInput;
+    let expansionPromptContext;
     try {
-      const expansionPayload = {
-        query,
-        mode,
-        priorContext,
-        qualityGaps: firstAssessment.reasons,
-        firstAnswer,
-        source: {
-          revision: projection.sourceRevision,
-          summary: projection.summary,
-          nodes: promptNodes,
-          nodeAuthorities: promptAuthorities,
-          edges: promptEdges,
-        },
-      };
-      const serializedExpansion = boundedJsonStringify(expansionPayload, {
-        maxBytes: maxPromptBytes,
-        reservedBytes: utf8Bytes(expansionInstructions),
-        label: 'Query expansion prompt',
-      });
-      promptBudget.assertFits(expansionInstructions, serializedExpansion.json);
-      expansionInput = serializedExpansion.json;
+      function expansionCandidate(nodes, edges) {
+        const nodeAuthorities = authoritiesFor(nodes);
+        const expansionPayload = {
+          query,
+          mode,
+          priorContext,
+          qualityGaps: firstAssessment.reasons,
+          firstAnswer,
+          source: {
+            revision: projection.sourceRevision,
+            summary: projection.summary,
+            nodes,
+            nodeAuthorities,
+            edges,
+          },
+        };
+        let serialized;
+        try {
+          serialized = boundedJsonStringify(expansionPayload, {
+            maxBytes: maxPromptBytes,
+            reservedBytes: utf8Bytes(expansionInstructions),
+            label: 'Query expansion prompt',
+          });
+        } catch (error) {
+          if (error?.code === 'result_too_large') return null;
+          throw error;
+        }
+        return Object.freeze({
+          nodes,
+          nodeAuthorities,
+          edges,
+          serialized,
+          measurement: promptBudget.measure(expansionInstructions, serialized.json),
+        });
+      }
+      const expansionNodesOnly = greatestFittingCount(
+        promptNodes.length,
+        count => expansionCandidate(promptNodes.slice(0, count), []),
+      );
+      if (!expansionNodesOnly
+          || (promptNodes.length > 0 && expansionNodesOnly.nodes.length === 0)) {
+        throw operationError(
+          'result_too_large',
+          'Query expansion prompt cannot retain its last matching evidence record',
+        );
+      }
+      const expansionRetainedIds = new Set(
+        expansionNodesOnly.nodes.map(node => String(node.id)),
+      );
+      const expansionEligibleEdges = promptEdges.filter(edge => (
+        expansionRetainedIds.has(String(edge.source))
+          && expansionRetainedIds.has(String(edge.target))
+      ));
+      const fittedExpansion = greatestFittingCount(
+        expansionEligibleEdges.length,
+        count => expansionCandidate(
+          expansionNodesOnly.nodes,
+          expansionEligibleEdges.slice(0, count),
+        ),
+      ) || expansionNodesOnly;
+      expansionPromptContext = contextForCandidate(fittedExpansion);
+      expansionInput = expansionPromptContext.input;
     } catch (error) {
       if (signal?.aborted) throw signal.reason;
       const partialResult = resultWithQuality(firstAnswer, 'constrained', true);
@@ -2030,9 +2089,14 @@ STYLE:
         mode,
         answer: expandedAnswer,
         healthyEvidence,
-        projection: projectionStats,
+        projection: expansionPromptContext.projectionStats,
       });
-      return resultWithQuality(expandedAnswer, expandedAssessment.quality, true);
+      return resultWithQuality(
+        expandedAnswer,
+        expandedAssessment.quality,
+        true,
+        expansionPromptContext,
+      );
     } catch (error) {
       if (signal?.aborted) throw signal.reason;
       const partialResult = resultWithQuality(firstAnswer, 'constrained', true);

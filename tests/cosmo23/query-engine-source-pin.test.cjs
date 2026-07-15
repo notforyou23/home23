@@ -319,6 +319,100 @@ test('thin Dive performs exactly one bounded expansion call', async () => {
   }
 });
 
+test('Dive expansion independently trims evidence to its provider input budget', async () => {
+  const calls = [];
+  const item = fixture({
+    catalog: {
+      version: 1,
+      providers: {
+        alpha: {
+          models: [model('alpha', 'answer-model', { contextWindowTokens: 32_768 })],
+        },
+      },
+      defaults: {},
+    },
+    client: {
+      providerId: 'alpha',
+      async generate(options) {
+        calls.push(options);
+        return complete(calls.length === 1
+          ? 'A useful but deliberately unstructured first answer. '.repeat(120)
+          : substantialAnswer());
+      },
+    },
+  });
+  const nodes = Array.from({ length: 40 }, (_, index) => ({
+    id: `budget-node-${index}`,
+    content: `alpha expansion evidence ${index} ${'x'.repeat(240)}`,
+  }));
+  const nodeAuthorities = nodes.map(node => ({
+    id: node.id,
+    authorityClass: 'artifact_log',
+    retrievalDomain: 'current_ops',
+    requiresFreshVerification: false,
+    sourceChain: [{ kind: 'artifact', ref: `artifact:${node.id}` }],
+  }));
+  const edges = nodes.slice(1).map((node, index) => ({
+    source: nodes[index].id,
+    target: node.id,
+    type: 'supports',
+  }));
+  item.engine.projectPinnedQuery = async () => ({
+    sourceRevision: 11,
+    summary: { nodeCount: nodes.length, edgeCount: edges.length, clusterCount: 0 },
+    nodes,
+    nodeAuthorities,
+    edges,
+    stats: {
+      nodesScanned: nodes.length,
+      edgesScanned: edges.length,
+      nodesRetained: nodes.length,
+      edgesRetained: edges.length,
+      droppedForByteBudget: 0,
+      byteBudgetTruncated: false,
+    },
+    sourceEvidence: {
+      sourceHealth: 'healthy',
+      deltaWatermark: { revision: 11 },
+    },
+  });
+
+  const result = await item.engine.executeQuery(
+    'alpha canary', operationOptions(sourcePin(), { mode: 'dive' }),
+  );
+
+  assert.equal(calls.length, 2);
+  const firstPrompt = JSON.parse(calls[0].input);
+  const expansionPrompt = JSON.parse(calls[1].input);
+  assert.ok(firstPrompt.source.nodes.length > expansionPrompt.source.nodes.length);
+  assert.ok(expansionPrompt.source.nodes.length > 0);
+  assert.deepEqual(
+    expansionPrompt.source.nodeAuthorities.map(authority => authority.id),
+    expansionPrompt.source.nodes.map(node => node.id),
+  );
+  const expansionNodeIds = new Set(expansionPrompt.source.nodes.map(node => node.id));
+  assert.ok(expansionPrompt.source.edges.every(edge => (
+    expansionNodeIds.has(edge.source) && expansionNodeIds.has(edge.target)
+  )));
+  assert.equal(result.state, undefined);
+  assert.equal(result.answerQuality.state, 'substantial');
+  assert.equal(result.sourceEvidence.returnedTotals.nodes, expansionPrompt.source.nodes.length);
+  assert.equal(result.sourceEvidence.returnedTotals.edges, expansionPrompt.source.edges.length);
+  assert.deepEqual(
+    result.sourceEvidence.authoritySummary,
+    summarizeRetrievalAuthority(expansionPrompt.source.nodeAuthorities),
+  );
+  assert.equal(
+    getAttestedRetrievalAuthoritySummary(result.sourceEvidence).total,
+    expansionPrompt.source.nodes.length,
+  );
+  assert.equal(result.metadata.projection.nodesRetained, expansionPrompt.source.nodes.length);
+  assert.equal(result.metadata.promptBytes, Buffer.byteLength(
+    calls[1].instructions + calls[1].input,
+    'utf8',
+  ));
+});
+
 test('trimmed Dive preserves mixed signed freshness authority through attestation and worker reconciliation', async () => {
   const provider = 'openai-codex';
   const selectedModel = 'gpt-5.5';
