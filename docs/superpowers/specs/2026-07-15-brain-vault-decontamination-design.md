@@ -1,0 +1,463 @@
+# Brain/Vault Decontamination — Design
+
+**Date:** 2026-07-15
+**Status:** Proposed
+**Scope:** Home23 engine (ingestion, memory, cognition, agency, good-life), jerry + forrest instances
+
+---
+
+## 1. The Problem, Measured
+
+Every number below was measured against the live system on 2026-07-15. They are stated first
+because they are what make the design obvious, and because they are how a wrong design gets caught.
+
+### 1.1 The cortex is mostly the machine's diary
+
+Sampled 3,123 live brain nodes from jerry's current memory delta:
+
+| Category | Share |
+|---|---|
+| Self-referential (machine narrating itself) | **~70%** |
+| Records of non-events ("0 documents", "empty session", `NO_ACTION`) | ~25% |
+| Knowledge about jtr's actual world | **~4%** |
+
+Jerry's brain is ~65,000 nodes / ~110,000 edges. Roughly 2,500 of those nodes are about jtr's life.
+
+Verbatim node contents from the sample:
+
+```
+[STATE_SNAPSHOT] RECENT.md as of cycle 41633. # Recent Activity — covers last 48h
+[AGENT INSIGHT: agent_1783691902660] Total content analyzed: 0 words across 0 documents
+[AGENT: agent_1783710665719] {"documentCount":0,"documents":[]}
+NO_ACTION  One clear insight: this is a procedural/meta request, so no operational action is needed.
+"An empty session boundary capture for cron-agent-0a4082a3 — zero dialogue, no tool calls"
+```
+
+`RECENT.md` — the curator-generated surface that *summarizes the brain* — is ingested back into the
+brain as permanent nodes. Six copies appeared in a 3,123-node sample. The summary of the cortex
+becomes the cortex; the next summary then summarizes that.
+
+### 1.2 The signature of the garbage
+
+Every garbage node is **a durable record that nothing happened**. Not "it is about Home23" —
+conversations about Home23 are real events with real residue. The garbage is specifically the
+documentation of non-events: a loop ticked, so a record was written.
+
+This is the distinction the whole design rests on:
+
+> **Something happened** (a conversation, a run, an MRI, a memory extraction, a document) → artifact, worth keeping, any volume.
+> **A loop ticked** (cycle elapsed, pursuit selected, gate declined, 0 documents analyzed) → not an event, no record.
+
+### 1.3 Every removal mechanism is disabled or neutered
+
+The brain grew to 65,000 nodes because **each independent safeguard against exactly this was turned
+off**, each for a locally reasonable reason:
+
+1. **The feeder points at the agents' own exhaust.** 6 of jerry's 7 watch paths are his own output
+   (`workspace/sessions`, `workspace/memory`, `workspace/reports`, `workspace/cron`, ...). One is jtr's
+   world. 5 of forrest's 6 are his own output. **The 70% self-narration is exactly what those watch
+   paths predict.**
+2. **Decay explicitly exempts the garbage.** `configs/base-engine.yaml`:
+   ```yaml
+   decay:
+     exemptTags: [agent_insight, agent_finding, mission_plan, cross_agent_pattern]
+   ```
+   `[AGENT INSIGHT] Total content analyzed: 0 words` is tagged `agent_insight` and is therefore
+   **immune to decay by configuration**. jtr's real notes decay. "I analyzed zero documents" is protected.
+3. **The pruner does not prune.** `engine/src/cognition/actions/prune-stale-cluster.js`:
+   > *"Marks low-activation nodes in a cluster as stale. Does NOT delete. A subsequent memory audit
+   > pass can review the stale-flagged nodes and purge them if the user confirms."*
+
+   Asked to remove content, it emits a flag — pending a confirmation that has never occurred.
+4. **The garbage collector is disabled — by the system's own quality control.**
+   `engine/src/memory/summarizer.js`:
+   ```js
+   // Disabled by default after repeated brain_node_count_stable regressions:
+   // this routine deletes durable knowledge based on weak access heuristics...
+   if (!this.config?.memory?.enableGarbageCollection) return 0;
+   ```
+   `brain_node_count_stable` is a **live-problem verifier** — the deterministic fault-detection
+   subsystem. It encodes the assumption that a falling node count is a fault. The GC did its job, the
+   count fell, the verifier fired, and the fix was to fire the janitor. **The system is graded on the
+   size of its own record and successfully defended that number against its own cleanup.**
+5. **Dreams add prose to memory on a coin flip.** `engine/src/core/orchestrator.js:4266`:
+   ```js
+   if (Math.random() < 0.2) {
+     await this.memory.addNode(`[DREAM] ${dreamThought.hypothesis}`, 'dream');
+   }
+   ```
+   A 1-in-5 dice roll decides whether a dream becomes permanent knowledge — with no relationship to
+   whether the dream produced a goal, rewired anything, or did any work at all.
+
+**The disabled GC was correctly disabled.** Its heuristics are `weight < 0.1 && not accessed in 7
+days`, or `age > 30 days && accessCount === 0`. jtr's MRI report node — never accessed, months old,
+`accessCount: 0` — would be deleted, while freshly-written receipts survive. It deletes by *access
+frequency*, which is backwards: the most important memories are the ones rarely touched. Its own
+comment states the precondition for re-enabling: *"Re-enable only ... after a safer archival/
+compaction policy exists."* This design supplies that policy.
+
+### 1.4 Every safeguard against the theatre became a theatre
+
+`good-life-restraint-receipts.jsonl` — **12.3 MB, 14,448 records, 144 in the last 24 hours**:
+
+```json
+{"status":"throttled", "reason":"equivalent_policy_recently_routed",
+ "summary":"help - strained continuity drift",
+ "doctrine":"Restraint needs receipts when an autonomous gate prevents work."}
+```
+
+The system writes a durable record every time it decides **not** to act. It is doctrine. Since
+2026-05-11, every five minutes, jerry has recorded: *"something is wrong with my continuity, I have
+decided not to act on it, and I have written that down."*
+
+The pattern generalizes. Loops made too much work → a throttle was added → the throttle needed
+accountability → accountability was implemented as a durable record → **the throttle now produces
+work**. The editor's veto gets a receipt. The kill review gets a receipt and a consequence record.
+`good-life-operator.js` is 2,796 lines auditing whether the system's projections of its own goals are
+consistent with its own state, and it emits warnings, which are records.
+
+**There is no bottom.** Every floor built to stand above the theatre is made of the same material.
+
+Governance mass:
+
+| | lines |
+|---|---|
+| Agency spine (`engine/src/agency/`) | 4,087 |
+| Good Life + operator | 4,782 |
+| **Total** | **8,869** |
+| `editor.js` — the only component that can say *no* | **59** |
+
+The one component that can refuse is 0.7% of the governance layer, is implemented as a keyword
+blocklist (including a hardcoded veto for the literal phrase *"home23 ... becomes ... feedback
+loop"* — someone already caught it narrating its own loops and blocklisted that sentence), and its
+final line is `return { verdict: 'allow' }`. **Allow-by-default.** A blocklist cannot enumerate the
+shapes of generated prose.
+
+`orchestrator.recordGoodLifeAgendaAction()` closes the ring explicitly — an agenda item's terminal
+executor writes a receipt with `status: 'recorded'`, `verifier: 'next domain.good-life evaluation'`,
+and returns `directAction: true`. The verifier is a **string naming the loop that authored the work**.
+
+### 1.5 Corroborating evidence: the theatre is a function of the code, not the world
+
+```
+jerry/brain/good-life-restraint-receipts.jsonl     12,296,819 bytes
+forrest/brain/good-life-restraint-receipts.jsonl   12,321,836 bytes
+```
+
+**0.2% apart.** Two agents with different roles, domains, and workspaces produced statistically
+identical volumes. If this output were a function of the world, they would diverge. They do not.
+It is a function of the machinery, and they run the same machinery.
+
+*(This number was initially and wrongly read as evidence that forrest is redundant. It is not.
+Forrest is jtr's health agent — HRV, sleep, VO2, barometric sensitivity, herniated discs. The
+governance files match because the governance code is shared; forrest's real work lives elsewhere.
+See §4.6.)*
+
+### 1.6 Ingestion: what is and isn't working
+
+**Working.** Real-world sources ingest cleanly:
+
+```
+jtr_life + jtr_voice + garcia_jerry:  5,342 entries → 7,735 nodes, only 26 produced zero
+parseStatus across manifest: ok 20,922 | suspect_truncation 1,140 | conversion_failed 3
+```
+
+**Broken — `node_modules` was ingested.** The `projects` label points at
+`/Users/jtr/_JTR23_/cosmo-home_2.3/projects/`, and `**/node_modules/**` did not apply:
+
+```
+projects: 5,057 entries → 141 nodes
+  travel/node_modules/wrappy/package.json  → 1 node
+  travel/node_modules/vary/index.js        → 2 nodes
+```
+
+~141 nodes of npm package metadata are in jerry's cortex.
+
+**Broken — non-events cost LLM calls and become nodes.** 4,964 manifest entries (22%) produced zero
+nodes; 313 are quarantined. The compiler spent LLM calls synthesizing documents it correctly
+identified as empty, then stored those syntheses as permanent nodes:
+
+> *"A session-boundary stub from a Codex harness smoke-test chat — a single entry with zero dialogue,
+> no substantive content"*
+
+### 1.7 Provenance: 59% of the brain has no source
+
+```
+manifest entries        : 22,067
+entries with nodeIds    : 17,103   (4,964 empty, 313 quarantined)
+distinct nodeIds claimed: 26,454
+brain nodes             : ~65,000
+→ orphans (no source doc): ~38,500  (59%)
+```
+
+Every sampled orphan carries a literal machine-emitted prefix: `[STATE_SNAPSHOT]`, `[AGENT:`,
+`[AGENT INSIGHT:`, `NO_ACTION`, `[CONSOLIDATED]`, `[DREAM]`. The garbage announces itself in a fixed
+vocabulary from known code paths.
+
+**This is why the brain feels precious and why deleting it feels dangerous.** 38,500 nodes exist
+nowhere else on earth. They are not a projection of anything. That fear is a symptom of the
+pollution, not a property of brains.
+
+### 1.8 The feedback path — why the agent cannot stop narrating
+
+1. Loops write prose (receipts, snapshots, remarks, `NO_ACTION`)
+2. The feeder watches `workspace/` and ingests it
+3. Prose becomes brain nodes
+4. `src/agent/context-assembly.ts` queries the brain **before every turn**
+5. The query returns the diary — because the diary is 70% of the brain
+6. The diary **is** the agent's situational awareness
+7. It thinks about it, produces prose; the curator writes `RECENT.md` → **goto 2**
+
+The agent is not choosing to narrate itself. It is **fed its own diary as its picture of the world,
+every turn, by design**. When it asks "what is going on?", 70% of the answer is "you were talking
+about yourself."
+
+---
+
+## 2. Diagnosis
+
+The architectural error is not "internal signals became stimuli," and it is not a governance failure.
+
+**The brain is treated as the asset, and there is no vault.**
+
+In Obsidian, the vault is the asset and the index is disposable — you can delete the index without a
+second thought, because it contains nothing that isn't in the vault. Home23 inverted this: the brain
+is the only copy, so every cleanup is surgery.
+
+**Home23 has no vault/machinery boundary.** The feeder watches the machinery's output directory and
+files it as knowledge. There is no rule against it because nobody imagined wanting it.
+
+Corollary: **governance cannot fix this.** Every gate produces a receipt; the receipt is work; the
+work is prose; the prose is ingested. Adding a verifier gate is what the restraint receipts already
+are. The disease cannot be used to treat the disease.
+
+---
+
+## 3. The Rule
+
+> ### Permanence requires an event and a file.
+> Something happened, **and** there is a file you can open that says so.
+
+Both halves of the problem fall out of this one rule:
+
+**The engine stops making garbage** — not via a gate, charter, or verifier (those become receipt
+factories; we have 14,448 proofs). The engine simply has nowhere to put a non-event. Would a restraint
+receipt survive as a vault note? *"2026-05-11: I considered acting and decided not to"* × 14,448
+files. The absurdity does the work that 8,869 lines of governance could not.
+
+**The brain becomes a derived index** over a vault of files. Every node traces to a file, so the brain
+is **regenerable** — and the 45k-delete problem does not get solved, it evaporates. There is no
+surgery; there is a rebuild.
+
+### What is explicitly preserved
+
+We are **not** replacing the brain with Obsidian. Home23's index is richer than Obsidian's and all of
+it survives untouched: **110k weighted associative edges, Hebbian reinforcement, semantic embeddings,
+spreading activation, small-world dream bridges, clustering, decay, consolidation/summarization,
+dream rewiring.** None of that is what broke. We are giving the brain the one thing Obsidian has and
+it lacks: **a source of truth it is derived from.**
+
+Volume and breadth are welcome. Conversations, memory-extraction, checkpoints, 100k real nodes — all
+fine. They happened, and they tie back to files.
+
+---
+
+## 4. Design
+
+### 4.1 Close the door — watch paths
+
+**CAUTION — `workspace/` is not a single decision.** `workspace/sessions` (label
+`conversation_sessions`) is **kept**; the other `workspace/*` paths are **dropped**. Do not treat
+"remove workspace" as one action. The table below is authoritative; the path column is what changes,
+the label column is what the manifest calls it.
+
+| Watch path | Manifest label | Nodes | Action | Why |
+|---|---|---|---|---|
+| `/Users/jtr/life/` | `jtr_life` | 3,786 | **KEEP** | jtr's world: areas, feed, people, entities, bibliographies, MRI |
+| `workspace/sessions` | `conversation_sessions` | 4,314 | **KEEP** | Real conversations = real events. Volume is fine. |
+| *(various)* | `jtr_voice` | 670 | **KEEP** | jtr's voice notes |
+| *(various)* | `garcia_jerry` | 860 | **KEEP** | jtr's interest area (Jerry Garcia) |
+| *(various)* | `legacy_cosmo23_memory` | 271 | **KEEP** | memory-extraction work product |
+| `cosmo23/runs/trail-running` | `trail_running` | — | **KEEP** (forrest) | real research |
+| `workspace/memory` | `*_memory_snapshots` | 9 | **DROP** | source of the `[STATE_SNAPSHOT] RECENT.md` ouroboros |
+| workspace root (`SOUL.md`, `MISSION.md`, `HEARTBEAT.md`, ...) | `workspace` | 6,883 | **DROP** | identity files already loaded into the system prompt; ingesting them duplicates config as knowledge |
+| `workspace/reports` | `*_reports` | 62 | **DROP** | machine output |
+| `workspace/cron` | `*_cron_docs` | 1 | **DROP** | machine output |
+| `cosmo-home_2.3/projects/` | `projects` | 141 | **DROP / FIX** | ingested `node_modules`; 4,916 of 5,057 entries produced nothing |
+
+**Unresolved before execution:** the `workspace` label (6,883 nodes) does not correspond to an
+`additionalWatchPaths` entry in `config.yaml` — it appears to enter via the feeder's `ingestDir`
+scan (`document-feeder.js:139`, `_scanDirectory(ingestDir, null)`). **Trace the actual mechanism
+before changing it**; do not assume it is a watch-path removal. Same for `jtr_voice` and
+`garcia_jerry`, whose labels do not appear in the current `config.yaml` either — they may be legacy
+manifest entries from paths no longer watched.
+
+The keep/drop list requires jtr's confirmation before execution.
+
+### 4.2 The event gate at ingestion
+
+A document with no substantive content produces **no node and no compiler call**. Kills the
+empty-session nodes at the door and stops paying an LLM to write paragraphs about nothing.
+
+### 4.3 Stop the emitters
+
+| Emitter | Change |
+|---|---|
+| `NO_ACTION` branch (`thought-action-parser.js`) | creates no node |
+| `document_analysis_agent` with `documentCount: 0` | creates no node |
+| `good-life-restraint-receipts.jsonl` | stop writing; a gate needs no receipt |
+| `resident_tick` scratch + receipt (`resident-kernel.js:2467`) | write **only** when an action actually occurred or pursuit state changed |
+| `recordGoodLifeAgendaAction()` | remove — a receipt whose verifier is the loop that authored it is not an action |
+| `pulse-remarks.jsonl` | keep real-world content (weather, sauna); drop the self-report |
+| Dream node creation | replace `Math.random() < 0.2` with "did this dream produce a goal or rewire the graph" |
+
+`NOTIFY` becomes owner-facing only.
+
+### 4.4 Un-sabotage the janitors
+
+- **Decay:** drop `agent_insight` and `agent_finding` from `decay.exemptTags`. jtr's world should
+  outlive the machine's, not the reverse.
+- **GC:** rewrite `garbageCollect` to key on **provenance, not access-age** — *does this node trace to
+  a file?* Keep forever regardless of age or access; no file → not knowledge. This is the "safer
+  archival/compaction policy" its own comment demands, and it cannot eat the MRI because the MRI is a
+  file. **Ships with a dry-run that prints what it would remove.** Then re-enable.
+- **`prune_stale_cluster`:** make it delete, or delete it. A pruner that emits flags is worse than no
+  pruner because it looks like one.
+- **Retire `brain_node_count_stable`.** The count was never the metric. The metric is **every node
+  traces to a file** — which is checkable. Under this design a falling node count is the janitor
+  working.
+
+### 4.5 Rebuild, not clean
+
+Deletion is insufficient. Even with every garbage node gone:
+
+- **The graph stays poisoned.** 110k edges with Hebbian weights learned over 8 months where 70% of the
+  material was diary. Clusters formed *around* `STATE_SNAPSHOT`s. Dream bridges route real memories
+  *through* restraint receipts. Deleting nodes leaves topology worn by material that no longer
+  exists — paths connecting real things for reasons that were never real. That cannot be cleaned,
+  only regrown.
+- **`[CONSOLIDATED]` nodes are correct conclusions from a poisoned premise.** The summarizer worked
+  perfectly on garbage inputs. They regenerate correctly from real material.
+- **Cleanup yields a brain we *hope* is clean**, verified by a hand-written classifier, on an
+  unauditable graph. **Rebuild yields a brain that is clean by construction** — every node traces to a
+  file because a file is the only thing that made it. Not verified. Guaranteed.
+
+**The rebuild is also the test of the architecture.** If the brain can be rebuilt from the vault, the
+design is real. If it cannot, we learn that now rather than after betting on it.
+
+**The mechanism already exists — no new code:**
+
+```js
+// ingestion-manifest.js
+if (!entry) return true;              // no manifest entry → ingest
+return entry.hash !== contentHash;    // hash-gated → idempotent, resumable
+
+// document-feeder.js — on startup:
+await this._scanDirectory(watchPath, label);
+```
+
+Delete the manifest, restart the engine, everything re-ingests. This is what a fresh install already
+does on every boot.
+
+**Job size:**
+
+```
+files to reingest     : 9,939
+approx chunks/blocks  : 77,425
+nodes produced before : 15,919
+previously-bad parses : 21
+```
+
+Batched at `flush.batchSize: 20` → roughly 4,000 compiler calls. Hours, not days. Embeddings are
+local (`nomic-embed-text` via ollama) and therefore free.
+
+**Accepted loss, chosen explicitly:** the ~38,500 orphans — dreams, raw thoughts, agent insights,
+consolidations — have no source file and **cannot be regenerated**. They remain in the archive,
+read-only and intact, retrievable by hand if ever wanted. They are not in the new brain.
+
+### 4.6 Forrest gets his data
+
+Forrest is jtr's health agent. His own `DATA_MAP.md` names the canonical sources:
+
+```
+Health API (port 8091)        — HRV, resting HR, VO2, sleep stages, O2 sat, steps
+~/.health_log.jsonl           — 260 rolling snapshots
+```
+
+**Neither is on his watch paths.** His cortex has never seen jtr's HRV. He has been reasoning about
+jtr's health from his own reports about jtr's health.
+
+`MRI Report.pdf` sits in `/Users/jtr/life/feed/`. **Jerry watches that folder. Forrest does not.**
+
+Add `~/.health_log.jsonl`, the health API, and the health-relevant parts of `/Users/jtr/life/` to
+forrest's watch paths. This is the only change in this design that makes an agent **better** rather
+than quieter.
+
+*(Note: the Pi barometric-pressure sensing in the `empire` subsystem is a **real** health signal —
+jtr is barometrically sensitive and tracks it because it correlates with how he feels. It is not
+theatre. The `empire-thoughts`/`empire-traces` prose layer on top of it is.)*
+
+### 4.7 Governance demolition — last, on evidence
+
+Once the vault boundary holds, the 8,869 lines of governance write to files nobody ingests and nobody
+reads. They are **inert**. Delete them at leisure, on evidence, with no risk — rather than doing
+surgery on a live system now. `live-problems` keeps working throughout: its output was never prose,
+its verifiers are executable and dry-run before promotion, and it is the one subsystem that closes
+its own work on real evidence.
+
+---
+
+## 5. Sequence
+
+**The order is the design.** In April 2026 someone found an empty brain and "fixed" it by pointing the
+feeder at `workspace/`. The node count went up. It was logged as a repair. That is the day the
+ouroboros was installed.
+
+1. **Fix the door** — §4.1–4.4. Watch paths, event gate, emitters, decay exemptions, GC, dream dice
+   roll. **Non-negotiable and first.** Rebuilding before the door is fixed rebuilds the disease,
+   faster, and it will look like it worked for a week.
+2. **Archive** — old brain, manifest, all sidecars. Read-only. Untouched forever.
+3. **Rebuild** — delete manifest, restart, let it run.
+4. **Verify** — every node traces to a file. Node count is *derived*, not a target.
+5. **Demolish** — remove the provably-inert governance machinery.
+
+Nothing is irreversible before step 3, and step 3 is reversible because of step 2.
+
+---
+
+## 6. Risks
+
+| Risk | Mitigation |
+|---|---|
+| Orphans (38,500) are permanently lost from the live brain | Archive is read-only and intact forever; retrievable by hand. Loss is explicit and chosen. |
+| Re-enabling the GC deletes real knowledge (it was disabled for a real reason) | Provenance-keyed, not access-keyed — cannot eat an unaccessed MRI. Ships with a dry-run that prints its removal list first. |
+| Rebuild fails or produces a worse brain | Old brain archived; revert is a config change. **A failed rebuild disproves the architecture — which is information worth having now.** |
+| Door fix breaks something that depended on ingesting `workspace/` | Config-level; revertible in one minute. |
+| Reingest cost/duration | ~4,000 batched compiler calls; embeddings local/free. Hash-gated → resumable if interrupted. |
+| Keep/drop label list is wrong | Requires jtr's confirmation before execution; printed for review. |
+| Brain persistence incident during rebuild | Standard rule applies: **standalone load test before any engine restart**; verify node counts after. |
+
+---
+
+## 7. Open Questions
+
+1. **Keep/drop list confirmation.** The label-level list in §4.1 needs jtr's sign-off before execution.
+2. **Dreams.** The dreaming (goal creation + Watts-Strogatz rewiring) is real consolidation and stays.
+   Whether dream *prose* that produced a goal should become a vault note — or exist at all — is jtr's
+   call, not a technical question.
+3. **Vault write-back for syntheses.** When consolidation produces genuinely new knowledge, the rule
+   says it must become a vault file to persist. Format, location, and whether jtr wants machine-authored
+   notes sitting next to his own are undecided.
+
+---
+
+## 8. What This Does Not Do
+
+- Does not rewrite `engine/` wholesale. Root-cause fixes only.
+- Does not add a governance layer, charter, registry, or verifier gate. Those become receipt factories.
+- Does not touch the engine's real inventions: edges, Hebbian, embeddings, spreading activation,
+  clustering, dream rewiring, consolidation, decay.
+- Does not silence `live-problems`. It is the honest subsystem — executable verifiers, dry-run before
+  promotion, closes on real evidence. It only loses `brain_node_count_stable`.
+- Does not sleep or remove forrest. He is jtr's health agent and this design is the first thing that
+  gives him his actual data.
