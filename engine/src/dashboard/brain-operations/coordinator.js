@@ -1913,6 +1913,20 @@ class BrainOperationCoordinator {
           }
         }
       }
+      // Bind every embedded result-evidence view to the same durable authority
+      // used by the terminal record before publishing result bytes. Otherwise
+      // a protected result can retain worker-supplied identity/path fields even
+      // though the terminal status correctly overwrites them, and downstream
+      // notebook readback sees two conflicting evidence envelopes.
+      const canonicalSourceEvidence = enrichSourceEvidence(record, envelope.sourceEvidence);
+      if (envelope.result !== null) {
+        const evidenceFields = ['sourceEvidence', 'evidence']
+          .filter(field => Object.hasOwn(envelope.result, field));
+        if (evidenceFields.length > 0) {
+          envelope.result = { ...envelope.result };
+          for (const field of evidenceFields) envelope.result[field] = canonicalSourceEvidence;
+        }
+      }
       const artifact = envelope.resultArtifact ?? null;
       if (artifact !== null) {
         const validated = validateArtifactEnvelope(record.operationType, artifact);
@@ -1979,7 +1993,7 @@ class BrainOperationCoordinator {
           state: envelope.state,
           phase: 'terminal',
           error,
-          sourceEvidence: enrichSourceEvidence(record, envelope.sourceEvidence),
+          sourceEvidence: canonicalSourceEvidence,
         });
       } catch (transitionError) {
         const published = await this.store.get(operationId).catch(() => null);

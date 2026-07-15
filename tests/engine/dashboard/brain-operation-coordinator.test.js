@@ -3934,27 +3934,7 @@ test('source pin attach failure releases an unpublished provider pin, while a lo
 test('worker evidence identity is overwritten from durable authority while watermarks survive', async (t) => {
   const fixture = makeFixture(t);
   const operation = await fixture.coordinator.start(request({ target: { agent: 'forrest' } }));
-  fixture.worker.finish(operation.operationId, {
-    state: 'complete',
-    result: { answer: 'ok' },
-    error: null,
-    sourceEvidence: {
-      baseRevision: 3,
-      cutoffRevision: 5,
-      requesterAgent: 'mallory',
-      selectedAgent: 'mallory',
-      selectedBrain: 'brain-mallory',
-      route: '/forged',
-      canonicalRoot: '/brains/mallory',
-      brainId: 'brain-mallory',
-      ownerAgent: 'mallory',
-      target: { brainId: 'brain-mallory', canonicalRoot: '/brains/mallory' },
-      capability: 'secret-capability',
-      provenance: { cutoffRevision: 5, scratchPath: '/private/worker/path' },
-    },
-  });
-  const record = await waitForState(fixture, operation.operationId, 'complete');
-  assert.deepEqual(record.sourceEvidence, enrichSourceEvidence(record, {
+  const workerEvidence = {
     baseRevision: 3,
     cutoffRevision: 5,
     requesterAgent: 'mallory',
@@ -3967,7 +3947,16 @@ test('worker evidence identity is overwritten from durable authority while water
     target: { brainId: 'brain-mallory', canonicalRoot: '/brains/mallory' },
     capability: 'secret-capability',
     provenance: { cutoffRevision: 5, scratchPath: '/private/worker/path' },
-  }));
+  };
+  fixture.worker.finish(operation.operationId, {
+    state: 'complete',
+    result: { answer: 'ok', sourceEvidence: workerEvidence },
+    error: null,
+    sourceEvidence: workerEvidence,
+  });
+  const record = await waitForState(fixture, operation.operationId, 'complete');
+  assert.deepEqual(record.sourceEvidence, enrichSourceEvidence(record, workerEvidence));
+  assert.deepEqual(record.result.sourceEvidence, record.sourceEvidence);
   assert.equal(record.sourceEvidence.requesterAgent, 'jerry');
   assert.equal(record.sourceEvidence.selectedAgent, 'forrest');
   assert.equal(record.sourceEvidence.selectedBrain, 'brain-forrest');
