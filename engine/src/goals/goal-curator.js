@@ -195,7 +195,13 @@ class GoalCurator {
    */
   async onGoalCompleted(event) {
     const narrative = this.goalNarratives.get(event.goalId);
-    if (!narrative) return;
+    if (!narrative) {
+      await this.recordGoalResolutionMemory(event, null, 'completed');
+      this.logger?.warn?.('Goal completed without curator narrative; resolution receipt preserved', {
+        goalId: event.goalId,
+      });
+      return;
+    }
     
     // Record completion
     narrative.completion = {
@@ -238,7 +244,13 @@ class GoalCurator {
    */
   async onGoalArchived(event) {
     const narrative = this.goalNarratives.get(event.goalId);
-    if (!narrative) return;
+    if (!narrative) {
+      await this.recordGoalResolutionMemory(event, null, 'archived');
+      this.logger?.warn?.('Goal archived without curator narrative; resolution receipt preserved', {
+        goalId: event.goalId,
+      });
+      return;
+    }
     
     narrative.archived = {
       cycle: event.cycle,
@@ -275,6 +287,12 @@ class GoalCurator {
       cycle !== null ? `Resolved at cycle: ${cycle}` : null,
       `Resolved at: ${resolvedAt}`,
     ].filter(Boolean).join('\n');
+    const sourceRefs = Array.from(new Set([
+      ...(Array.isArray(goal.sourceRefs) ? goal.sourceRefs : []),
+      ...(Array.isArray(goal.metadata?.source_refs) ? goal.metadata.source_refs : []),
+    ].map((ref) => String(ref || '').trim()).filter(Boolean))).slice(0, 8)
+      .map((ref) => ref.slice(0, 240));
+    const incidentId = goal.incidentId || goal.metadata?.incidentId || goal.metadata?.incident_id || null;
 
     try {
       const node = await this.memory.addNode({
@@ -293,8 +311,21 @@ class GoalCurator {
           resolved_at: resolvedAt,
           resolved_cycle: cycle,
           supersedes_goal_id: event.goalId,
+          incidentId,
+          source_refs: sourceRefs,
           pursuitCount: goal.pursuitCount || 0,
           finalProgress: goal.progress || 0,
+          provenance: {
+            schema: 'home23.node-provenance.v1',
+            authorityClass: 'worker_receipt',
+            retrievalDomain: 'closed_incidents',
+            semanticTime: resolvedAt,
+            sourceRefs,
+            evidenceRefs: sourceRefs,
+            operationalAuthority: false,
+            requiresFreshVerification: false,
+            generationMethod: 'goal_curator_resolution',
+          },
         },
       });
       if (node && goal) {

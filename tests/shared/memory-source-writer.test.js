@@ -205,7 +205,7 @@ test('ANN completion advances only its built-from watermark', async () => {
   assert.equal(result.manifest.ann.builtFromRevision, before.currentRevision);
 });
 
-test('ANN completion rejects a newer revision in the same generation', async () => {
+test('ANN completion publishes a bridgeable revision when source advances in the same epoch', async () => {
   const { dir, lockRoot } = await createCommittedFixture();
   const pinned = await readManifest(dir);
   await appendMemoryRevision(dir, {
@@ -218,19 +218,90 @@ test('ANN completion rejects a newer revision in the same generation', async () 
   const result = await advanceAnnBuiltFromRevision(dir, {
     lockRoot,
     expectedGeneration: pinned.generation,
+    expectedBaseRevision: pinned.baseRevision,
+    expectedDeltaEpoch: pinned.activeDeltaEpoch,
     builtFromRevision: pinned.currentRevision,
     indexFile: `memory-ann.${pinned.currentRevision}.index`,
     metaFile: `memory-ann.${pinned.currentRevision}.meta.json`,
   });
 
-  assert.equal(result.advanced, false);
-  assert.equal(result.reason, 'source_changed');
+  assert.equal(result.advanced, true);
+  assert.equal(result.coverage, 'overlay-covered');
   assert.equal(result.manifest.generation, pinned.generation);
   assert.equal(result.manifest.currentRevision, pinned.currentRevision + 1);
   const after = await readManifest(dir);
-  assert.equal(after.ann.indexFile, null);
-  assert.equal(after.ann.metaFile, null);
-  assert.equal(after.ann.builtFromRevision, pinned.ann.builtFromRevision);
+  assert.equal(after.ann.indexFile, `memory-ann.${pinned.currentRevision}.index`);
+  assert.equal(after.ann.metaFile, `memory-ann.${pinned.currentRevision}.meta.json`);
+  assert.equal(after.ann.builtFromRevision, pinned.currentRevision);
+});
+
+test('ANN completion rejects a scalar-valid manifest whose committed delta records are corrupt', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const pinned = await readManifest(dir);
+  await appendMemoryRevision(dir, { nodes: [{ id: 'newer', concept: 'newer' }] }, {
+    lockRoot, summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+  });
+  const current = await readManifest(dir);
+  const deltaPath = path.join(dir, current.activeDelta.file);
+  const text = await fsp.readFile(deltaPath, 'utf8');
+  await fsp.writeFile(deltaPath, text.replace('"sequence":1', '"sequence":9'));
+  await assert.rejects(() => advanceAnnBuiltFromRevision(dir, {
+    lockRoot,
+    expectedGeneration: pinned.generation,
+    expectedBaseRevision: pinned.baseRevision,
+    expectedDeltaEpoch: pinned.activeDeltaEpoch,
+    builtFromRevision: pinned.currentRevision,
+    indexFile: `memory-ann.${pinned.currentRevision}.index`,
+    metaFile: `memory-ann.${pinned.currentRevision}.meta.json`,
+  }), { code: 'source_unavailable' });
+  assert.equal((await readManifest(dir)).ann.indexFile, null);
+});
+
+test('ANN completion refuses to regress a newer published index', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const pinned = await readManifest(dir);
+  await appendMemoryRevision(dir, {
+    nodes: [{ id: 'newer', concept: 'newer' }],
+  }, { lockRoot, summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 } });
+  const current = await readManifest(dir);
+  await advanceAnnBuiltFromRevision(dir, {
+    lockRoot,
+    expectedGeneration: current.generation,
+    expectedBaseRevision: current.baseRevision,
+    expectedDeltaEpoch: current.activeDeltaEpoch,
+    builtFromRevision: current.currentRevision,
+    indexFile: `memory-ann.${current.currentRevision}.index`,
+    metaFile: `memory-ann.${current.currentRevision}.meta.json`,
+  });
+  const result = await advanceAnnBuiltFromRevision(dir, {
+    lockRoot,
+    expectedGeneration: pinned.generation,
+    expectedBaseRevision: pinned.baseRevision,
+    expectedDeltaEpoch: pinned.activeDeltaEpoch,
+    builtFromRevision: pinned.currentRevision,
+    indexFile: `memory-ann.${pinned.currentRevision}.index`,
+    metaFile: `memory-ann.${pinned.currentRevision}.meta.json`,
+  });
+  assert.equal(result.advanced, false);
+  assert.equal(result.reason, 'ann_regression');
+  assert.equal(result.manifest.ann.builtFromRevision, current.currentRevision);
+});
+
+test('ANN completion rejects a generation epoch change', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const pinned = await readManifest(dir);
+  await rewriteMemoryBase(dir, replacementCapturedView(), { lockRoot });
+  const result = await advanceAnnBuiltFromRevision(dir, {
+    lockRoot,
+    expectedGeneration: pinned.generation,
+    expectedBaseRevision: pinned.baseRevision,
+    expectedDeltaEpoch: pinned.activeDeltaEpoch,
+    builtFromRevision: pinned.currentRevision,
+    indexFile: `memory-ann.${pinned.currentRevision}.index`,
+    metaFile: `memory-ann.${pinned.currentRevision}.meta.json`,
+  });
+  assert.equal(result.advanced, false);
+  assert.equal(result.reason, 'source_changed');
 });
 
 test('ANN completion survives a post-release observer failure after manifest commit', async () => {
@@ -276,6 +347,42 @@ test('derived-state compare-and-swap rejects a newer source revision', async () 
   assert.equal(result.reason, 'source_changed');
   assert.equal(writes, 0);
   await pinned.close();
+});
+
+test('derived-state compare-and-swap accepts a public descriptor for a chain-backed manifest', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  await rewriteMemoryBase(dir, replacementCapturedView(), { lockRoot });
+  const manifest = await readManifest(dir);
+  assert.equal(typeof manifest.activeDelta.fileIdentity, 'object');
+  assert.equal(typeof manifest.activeDelta.chainDigest, 'string');
+
+  const source = await openMemorySource(dir);
+  const descriptor = source.descriptor;
+  assert.equal(Object.hasOwn(descriptor.activeDelta, 'fileIdentity'), false);
+  assert.equal(Object.hasOwn(descriptor.activeDelta, 'chainDigest'), false);
+  assert.notEqual(descriptor.activeBase, source.manifest.activeBase);
+  assert.notEqual(descriptor.summary, source.manifest.summary);
+  assert.equal(Object.isFrozen(descriptor.activeBase), true);
+  assert.equal(Object.isFrozen(descriptor.activeBase.nodes), true);
+  assert.equal(Object.isFrozen(descriptor.activeBase.edges), true);
+  assert.equal(Object.isFrozen(descriptor.summary), true);
+  assert.throws(() => { descriptor.activeBase.nodes.file = 'redirected.gz'; }, TypeError);
+  assert.throws(() => { descriptor.summary.nodeCount = 999; }, TypeError);
+  assert.equal(source.manifest.activeBase.nodes.file, manifest.activeBase.nodes.file);
+  assert.equal(source.manifest.summary.nodeCount, manifest.summary.nodeCount);
+  await source.close();
+
+  let writes = 0;
+  const result = await compareAndSwapSourceRevision(dir, {
+    lockRoot,
+    expectedGeneration: descriptor.generation,
+    expectedRevision: descriptor.cutoffRevision,
+    expectedDigest: sourceDescriptorDigest(descriptor),
+    commit: async () => { writes += 1; },
+  });
+
+  assert.equal(result.committed, true);
+  assert.equal(writes, 1);
 });
 
 test('derived-state CAS keeps a completed commit when cancellation arrives after callback entry', async () => {

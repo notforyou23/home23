@@ -7,6 +7,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { DocumentFeeder } = require('../../../engine/src/ingestion/document-feeder');
+const { DocumentCompiler } = require('../../../engine/src/ingestion/document-compiler');
 
 function makeFeeder(config = {}, logs = []) {
   return new DocumentFeeder({
@@ -264,4 +265,177 @@ test('document feeder status exposes compile queue and circuit state', async () 
   assert.equal(status.compiler.circuit.open, true);
   assert.equal(status.compiler.circuit.failureCount, 4);
   assert.equal(status.compiler.circuit.cooldownMs, 1234);
+});
+
+test('compiled document ingestion is permanently marked narrative with bounded raw-source provenance', async (t) => {
+  const feeder = makeFeeder();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feeder-provenance-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const filePath = path.join(dir, 'operational-report.md');
+  fs.writeFileSync(filePath, '# Report\nThe service is healthy.', 'utf8');
+  const captured = [];
+
+  feeder.manifest = {
+    isStale: async () => true,
+    enqueue: async (...args) => captured.push(args),
+  };
+  feeder.converter = {
+    isNativeText: () => true,
+    isConvertible: () => false,
+  };
+  feeder.compiler = {
+    compile: async () => ({
+      synthesis: 'Generated synthesis says the service is healthy.',
+      indexUpdate: [],
+      provenance: {
+        schema: 'home23.node-provenance.v1',
+        generationMethod: 'document_compiler_synthesis',
+        authorityClass: 'narrative',
+      },
+    }),
+  };
+  feeder.chunker = {
+    maxChunkSize: 3000,
+    _buildRelationships: () => [],
+  };
+  feeder.validator = { validate: () => ({ status: 'ok', structuralSignature: 'sig', issues: [] }) };
+  feeder.classifier = { classify: () => ({ family: 'report', confidence: 0.9 }) };
+
+  await feeder._processFile(filePath, 'reports');
+
+  assert.equal(captured.length, 1);
+  const enrichment = captured[0][5];
+  assert.equal(enrichment.compiled, true);
+  assert.equal(enrichment.provenance.schema, 'home23.node-provenance.v1');
+  assert.equal(enrichment.provenance.authorityClass, 'narrative');
+  assert.equal(enrichment.provenance.retrievalDomain, 'project_history');
+  assert.equal(enrichment.provenance.generationMethod, 'document_compiler_synthesis');
+  assert.equal(enrichment.provenance.sourcePath, filePath);
+  assert.match(enrichment.provenance.contentHash, /^[a-f0-9]{64}$/);
+  assert.deepEqual(enrichment.provenance.sourceRefs, [filePath]);
+  assert.deepEqual(enrichment.provenance.evidenceRefs, [`sha256:${enrichment.provenance.contentHash}`]);
+  assert.equal(enrichment.provenance.operationalAuthority, false);
+  assert.equal(enrichment.provenance.requiresFreshVerification, true);
+  assert.equal(enrichment.provenance.semanticTime, null);
+});
+
+test('raw document ingestion preserves direct artifact provenance without granting live authority', async (t) => {
+  const feeder = makeFeeder({ compiler: { enabled: false } });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feeder-raw-provenance-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const filePath = path.join(dir, 'receipt.json');
+  fs.writeFileSync(filePath, '{"status":"ok"}', 'utf8');
+  let enrichment = null;
+
+  feeder.manifest = {
+    isStale: async () => true,
+    enqueue: async (_filePath, _label, _hash, _chunks, _relationships, value) => { enrichment = value; },
+  };
+  feeder.converter = { isNativeText: () => true, isConvertible: () => false };
+  feeder.chunker = {
+    chunk: (text) => ({
+      chunks: [{
+        blockId: 'b-1', type: 'paragraph', path: ['receipt'], text,
+        index: 0, totalChunks: 1, heading: 'receipt', depth: 0,
+      }],
+      relationships: [],
+    }),
+  };
+  feeder.validator = { validate: () => ({ status: 'ok', structuralSignature: 'sig', issues: [] }) };
+  feeder.classifier = { classify: () => ({ family: 'receipt', confidence: 0.9 }) };
+  feeder.compiler = { compile: async () => null };
+
+  await feeder._processFile(filePath, 'receipts');
+
+  assert.equal(enrichment.provenance.authorityClass, 'artifact_log');
+  assert.equal(enrichment.provenance.generationMethod, 'document_raw_ingestion');
+  assert.equal(enrichment.provenance.operationalAuthority, false);
+  assert.equal(enrichment.provenance.requiresFreshVerification, true);
+});
+
+test('document compiler labels generated synthesis as non-operational narrative', async () => {
+  const compiler = Object.create(DocumentCompiler.prototype);
+  compiler.model = 'test-model';
+  compiler.clientType = 'openai';
+  compiler.logger = { info() {}, warn() {}, error() {} };
+  compiler._readIndex = () => '';
+  compiler.client = {
+    chat: {
+      completions: {
+        create: async () => ({ choices: [{ message: { content: 'A generated synthesis.' } }] }),
+      },
+    },
+  };
+  const result = await compiler.compile('raw source', {
+    filePath: '/workspace/source.md',
+    format: 'md',
+    contentHash: 'abc123',
+    semanticTime: '2026-07-14T12:00:00.000Z',
+  });
+
+  assert.equal(result.provenance.schema, 'home23.node-provenance.v1');
+  assert.equal(result.provenance.authorityClass, 'narrative');
+  assert.equal(result.provenance.operationalAuthority, false);
+  assert.equal(result.provenance.requiresFreshVerification, true);
+  assert.equal(result.provenance.contentHash, 'abc123');
+});
+
+test('document provenance uses source time and external domain instead of touched-file freshness', async (t) => {
+  const feeder = makeFeeder({ compiler: { enabled: false } });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feeder-external-time-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const filePath = path.join(dir, 'x-digest-2025-01-02.md');
+  fs.writeFileSync(filePath, '# X digest\nOld market/news intake.', 'utf8');
+  const touchedNow = new Date('2026-07-14T12:00:00.000Z');
+  fs.utimesSync(filePath, touchedNow, touchedNow);
+  let enrichment = null;
+  feeder.manifest = {
+    isStale: async () => true,
+    enqueue: async (_path, _label, _hash, _chunks, _relationships, value) => { enrichment = value; },
+  };
+  feeder.converter = { isNativeText: () => true, isConvertible: () => false };
+  feeder.chunker = {
+    chunk: (text) => ({
+      chunks: [{ blockId: 'b-1', type: 'paragraph', path: ['digest'], text, index: 0,
+        totalChunks: 1, heading: 'digest', depth: 0 }],
+      relationships: [],
+    }),
+  };
+  feeder.validator = { validate: () => ({ status: 'ok', structuralSignature: 'sig', issues: [] }) };
+  feeder.classifier = { classify: () => ({ family: 'digest', confidence: 0.9 }) };
+  feeder.compiler = { compile: async () => { throw new Error('compiler must stay disabled'); } };
+
+  await feeder._processFile(filePath, 'news');
+
+  assert.equal(enrichment.provenance.retrievalDomain, 'external_intake');
+  assert.equal(enrichment.provenance.semanticTime, '2025-01-02T00:00:00.000Z');
+  assert.notEqual(enrichment.provenance.semanticTime, touchedNow.toISOString());
+});
+
+test('document provenance recognizes structured resolved status as a closed incident', async (t) => {
+  const feeder = makeFeeder({ compiler: { enabled: false } });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feeder-closure-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const filePath = path.join(dir, 'receipt.json');
+  fs.writeFileSync(filePath, '{"status":"resolved","receipt_id":"r-1"}', 'utf8');
+  let enrichment = null;
+  feeder.manifest = {
+    isStale: async () => true,
+    enqueue: async (_path, _label, _hash, _chunks, _relationships, value) => { enrichment = value; },
+  };
+  feeder.converter = { isNativeText: () => true, isConvertible: () => false };
+  feeder.chunker = {
+    chunk: (text) => ({
+      chunks: [{ blockId: 'b-1', type: 'paragraph', path: ['receipt'], text, index: 0,
+        totalChunks: 1, heading: 'receipt', depth: 0 }],
+      relationships: [],
+    }),
+  };
+  feeder.validator = { validate: () => ({ status: 'ok', structuralSignature: 'sig', issues: [] }) };
+  feeder.classifier = { classify: () => ({ family: 'receipt', confidence: 0.9 }) };
+  feeder.compiler = { compile: async () => null };
+
+  await feeder._processFile(filePath, 'receipts');
+
+  assert.equal(enrichment.provenance.retrievalDomain, 'closed_incidents');
 });

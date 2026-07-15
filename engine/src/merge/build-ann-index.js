@@ -18,10 +18,12 @@ const {
   throwIfAborted,
 } = require('../../../shared/memory-source');
 const { projectAnnLabel } = require('../../../shared/ann-label-contract.cjs');
+const { projectMemoryAuthority } = require('../../../shared/memory-authority.cjs');
 
 const DIM = 768;
 const HNSW_M = 16;
 const HNSW_EF_CONSTRUCTION = 200;
+const MAX_REUSE_METADATA_BYTES = 256 * 1024 * 1024;
 
 function log(...a) { console.log('[build-ann]', ...a); }
 
@@ -63,8 +65,17 @@ function createIndex(hnswlib, dimension, capacity) {
 
 function projectLabel(node) {
   const provenance = classifyMemoryProvenance(node);
+  const authority = projectMemoryAuthority(node);
   try {
-    return projectAnnLabel(node, {
+    return projectAnnLabel({
+      ...node,
+      retrievalDomain: authority.retrievalDomain,
+      authorityClass: authority.authorityClass,
+      semanticTime: authority.semanticTime,
+      status: node?.status || node?.metadata?.status
+        || (authority.retrievalDomain === 'closed_incidents' ? 'closed' : null),
+      evidencePresent: authority.sourceChain.length > 0,
+    }, {
       fallbackSourceClass: provenance.sourceClass,
       fallbackSalienceWeight: provenance.salienceWeight,
     });
@@ -224,6 +235,60 @@ async function cleanupOwnedFiles(entries) {
   return errors;
 }
 
+async function validateReusableAnn({ metaPath, indexPath, hnswlib, generation, revision, sourceNodeCount }) {
+  const stat = await fsp.lstat(metaPath);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_REUSE_METADATA_BYTES) {
+    throw memorySourceError('source_unavailable', 'fresh ANN metadata is unsafe or oversized', {
+      retryable: true,
+    });
+  }
+  let meta;
+  try {
+    meta = JSON.parse(await fsp.readFile(metaPath, 'utf8'));
+  } catch (cause) {
+    throw memorySourceError('source_unavailable', 'fresh ANN metadata is malformed', {
+      retryable: true,
+      cause,
+    });
+  }
+  const labelCount = meta.labelCount ?? meta.count;
+  if (meta.generation !== generation || meta.builtFromRevision !== revision
+      || !Number.isSafeInteger(meta.dimension) || meta.dimension < 1
+      || !Number.isSafeInteger(meta.count) || meta.count < 0
+      || !Number.isSafeInteger(meta.skipped) || meta.skipped < 0
+      || !Number.isSafeInteger(labelCount) || labelCount < 0
+      || (meta.skipped > 0 && meta.labelCount === undefined)
+      || meta.count + meta.skipped !== sourceNodeCount
+      || (meta.labelCount !== undefined && labelCount !== sourceNodeCount)
+      || !Array.isArray(meta.labels) || meta.labels.length !== labelCount) {
+    throw memorySourceError('source_unavailable', 'fresh ANN metadata does not match source', {
+      retryable: true,
+    });
+  }
+  try {
+    for (const label of meta.labels) projectAnnLabel(label);
+  } catch (cause) {
+    throw memorySourceError('source_unavailable', 'fresh ANN metadata labels are invalid', {
+      retryable: true,
+      cause,
+    });
+  }
+  try {
+    const runtime = new hnswlib.HierarchicalNSW('cosine', meta.dimension);
+    runtime.readIndexSync(indexPath);
+    if (typeof runtime.getCurrentCount === 'function'
+        && runtime.getCurrentCount() !== meta.count) {
+      throw new Error('HNSW count mismatch');
+    }
+  } catch (cause) {
+    throw memorySourceError('source_unavailable', 'fresh ANN index is unreadable', {
+      retryable: true,
+      cause,
+    });
+  }
+  return { count: meta.count, skipped: meta.skipped };
+}
+
 function assertNativeAnnSource(source) {
   const sourceMode = source?.manifest?.sourceMode;
   const implementation = source?.evidence?.implementation;
@@ -277,6 +342,8 @@ async function build(brainDir, deps = {}) {
     assertNativeAnnSource(source);
     const revision = source.revision;
     const generation = source.manifest?.generation;
+    const baseRevision = source.manifest?.baseRevision;
+    const deltaEpoch = source.manifest?.activeDeltaEpoch;
     const capacity = source.manifest?.summary?.nodeCount;
     if (!Number.isSafeInteger(capacity) || capacity < 0) {
       throw memorySourceError('invalid_memory_source', 'invalid ANN manifest capacity', {
@@ -291,15 +358,28 @@ async function build(brainDir, deps = {}) {
       const pinnedMetaPath = path.join(canonicalBrain, pinnedAnn.metaFile);
       await captureOwnedFileIdentity(pinnedIndexPath);
       await captureOwnedFileIdentity(pinnedMetaPath);
+      const counts = await validateReusableAnn({
+        metaPath: pinnedMetaPath,
+        indexPath: pinnedIndexPath,
+        hnswlib,
+        generation,
+        revision,
+        sourceNodeCount: capacity,
+      });
       return {
-        total: null,
-        skipped: null,
+        total: counts.count,
+        skipped: counts.skipped,
         indexPath: pinnedIndexPath,
         metaPath: pinnedMetaPath,
         generation,
         builtFromRevision: revision,
         reused: true,
         advanced: { advanced: true, reason: 'already_fresh' },
+        coverage: 'fresh',
+        currentRevision: revision,
+        bridgeableGap: 0,
+        semanticCoverage: { indexed: counts.count, skipped: counts.skipped },
+        stageDurations: { totalMs: 0 },
       };
     }
     const indexFile = `memory-ann.${revision}.index`;
@@ -311,6 +391,7 @@ async function build(brainDir, deps = {}) {
     const indexTmpPath = uniqueTempPath(indexPath);
     const metaTmpPath = uniqueTempPath(metaPath);
     const labels = [];
+    const skippedLabels = [];
     let skipped = 0;
     let dimension = null;
     let index = null;
@@ -325,6 +406,7 @@ async function build(brainDir, deps = {}) {
         const embedding = node?.embedding;
         if (!Array.isArray(embedding) || embedding.length === 0) {
           skipped += 1;
+          skippedLabels.push(projectLabel(node));
           continue;
         }
         if (dimension === null) {
@@ -333,6 +415,7 @@ async function build(brainDir, deps = {}) {
         }
         if (embedding.length !== dimension) {
           skipped += 1;
+          skippedLabels.push(projectLabel(node));
           continue;
         }
         const label = projectLabel(node);
@@ -352,11 +435,14 @@ async function build(brainDir, deps = {}) {
       await removeOwnedFile(indexTmpPath, indexTmpIdentity);
       indexTmpIdentity = null;
       await fsyncDirectory(canonicalBrain);
+      const allLabels = labels.concat(skippedLabels);
       const meta = {
         version: 1,
         dimension,
         dim: dimension,
         count: labels.length,
+        labelCount: allLabels.length,
+        sourceNodeCount: capacity,
         skipped,
         M: HNSW_M,
         efConstruction: HNSW_EF_CONSTRUCTION,
@@ -366,7 +452,7 @@ async function build(brainDir, deps = {}) {
         builtFromRevision: revision,
         builtAt: now().toISOString(),
         buildDurationMs: Date.now() - started,
-        labels,
+        labels: allLabels,
       };
       metaTmpIdentity = await reserveOwnedTemp(metaTmpPath);
       await writeJsonOwnedTemp(metaTmpPath, metaTmpIdentity, meta);
@@ -378,6 +464,8 @@ async function build(brainDir, deps = {}) {
       await fsyncDirectory(canonicalBrain);
       const advanced = await advanceAnn(canonicalBrain, {
         expectedGeneration: generation,
+        expectedBaseRevision: baseRevision,
+        expectedDeltaEpoch: deltaEpoch,
         builtFromRevision: revision,
         indexFile,
         metaFile,
@@ -389,6 +477,9 @@ async function build(brainDir, deps = {}) {
           advanced,
         });
       }
+      const publishedCurrentRevision = advanced.manifest?.currentRevision ?? revision;
+      const coverage = advanced.coverage
+        || (publishedCurrentRevision === revision ? 'fresh' : 'overlay-covered');
       return {
         total: labels.length,
         skipped,
@@ -397,6 +488,11 @@ async function build(brainDir, deps = {}) {
         generation,
         builtFromRevision: revision,
         advanced,
+        coverage,
+        currentRevision: publishedCurrentRevision,
+        bridgeableGap: publishedCurrentRevision - revision,
+        semanticCoverage: { indexed: labels.length, skipped },
+        stageDurations: { totalMs: Date.now() - started },
       };
     } catch (error) {
       const cleanupErrors = await cleanupOwnedFiles([
@@ -421,8 +517,17 @@ if (require.main === module) {
   const brainDir = process.argv[2] || path.join(__dirname, '../../../instances/jerry/brain');
   build(brainDir)
     .then((result) => {
-      if (result.reused) log('DONE', 'existing index is fresh at revision', result.builtFromRevision);
-      else log('DONE', result.total, 'nodes indexed', result.advanced?.advanced ? 'fresh' : 'stale');
+      console.log(JSON.stringify({
+        event: 'ann_rebuild_receipt',
+        status: result.coverage,
+        builtRevision: result.builtFromRevision,
+        currentRevision: result.currentRevision,
+        bridgeableGap: result.bridgeableGap,
+        indexCount: result.total,
+        stageDurations: result.stageDurations,
+        semanticCoverage: result.semanticCoverage,
+        reused: result.reused === true,
+      }));
       process.exit(0);
     })
     .catch((error) => {

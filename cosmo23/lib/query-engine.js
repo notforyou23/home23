@@ -35,7 +35,11 @@ const {
   requireCompleteProviderResult,
 } = require('./provider-completion');
 const { boundedJsonStringify } = require('./bounded-json');
-const { boundedLimits, projectPinnedQuery } = require('./pinned-query-projection');
+const {
+  boundedLimits,
+  projectPinnedQuery,
+  summarizeNodeAuthorities,
+} = require('./pinned-query-projection');
 const { QUERY_OPERATION_LIMITS } = require('./brain-operation-limits');
 const { queryModePolicy } = require('./query-mode-policy');
 const { assessQueryAnswer } = require('./query-answer-quality');
@@ -1642,7 +1646,10 @@ STYLE:
         answer: String(options.priorContext.answer || ''),
       }
       : null;
-    const instructions = modePolicy.instructions;
+    const instructions = [
+      modePolicy.instructions,
+      'Narrative and generated doctrine cannot independently settle present-tense operational facts; require fresh verification for volatile current state.',
+    ].join(' ');
     const selectedLimits = boundedLimits(options.limits || this.operationLimits || {});
     const providerMaxOutputTokens = Math.min(
       modePolicy.maxOutputTokens,
@@ -1671,6 +1678,7 @@ STYLE:
         revision: Number.MAX_SAFE_INTEGER,
         summary: sourceSummary,
         nodes: [],
+        nodeAuthorities: [],
         edges: [],
       },
     }, {
@@ -1703,8 +1711,16 @@ STYLE:
     });
     operationThrowIfAborted(signal);
 
+    const authorityById = new Map(
+      (Array.isArray(projection.nodeAuthorities) ? projection.nodeAuthorities : [])
+        .map(authority => [String(authority.id), authority]),
+    );
+    function authoritiesFor(nodes) {
+      return nodes.map(node => authorityById.get(String(node.id))).filter(Boolean);
+    }
     let promptOverflow = null;
     function promptCandidate(nodes, edges) {
+      const nodeAuthorities = authoritiesFor(nodes);
       const promptPayload = {
         query,
         mode,
@@ -1713,6 +1729,7 @@ STYLE:
           revision: projection.sourceRevision,
           summary: projection.summary,
           nodes,
+          nodeAuthorities,
           edges,
         },
       };
@@ -1731,7 +1748,7 @@ STYLE:
         throw error;
       }
       const measurement = promptBudget.measure(instructions, serialized.json);
-      return Object.freeze({ nodes, edges, serialized, measurement });
+      return Object.freeze({ nodes, nodeAuthorities, edges, serialized, measurement });
     }
 
     function greatestFittingCount(maximum, build) {
@@ -1775,6 +1792,7 @@ STYLE:
       count => promptCandidate(nodesOnly.nodes, eligibleEdges.slice(0, count)),
     ) || nodesOnly;
     const promptNodes = fittedPrompt.nodes;
+    const promptAuthorities = fittedPrompt.nodeAuthorities;
     const promptEdges = fittedPrompt.edges;
     const input = fittedPrompt.serialized.json;
     const promptBytes = fittedPrompt.measurement.totalBytes;
@@ -1782,7 +1800,7 @@ STYLE:
     const droppedForPromptBudget = (projection.nodes.length - promptNodes.length)
       + (projection.edges.length - promptEdges.length);
     const promptReduced = droppedForPromptBudget > 0;
-    const retainedBytes = [...promptNodes, ...promptEdges].reduce(
+    const retainedBytes = [...promptNodes, ...promptAuthorities, ...promptEdges].reduce(
       (total, record) => total + Buffer.byteLength(JSON.stringify(record), 'utf8'),
       0,
     );
@@ -1805,6 +1823,7 @@ STYLE:
         returnedTotals: { nodes: promptNodes.length, edges: promptEdges.length },
         droppedForPromptBudget,
         promptReduced,
+        authoritySummary: summarizeNodeAuthorities(promptAuthorities),
       }
       : null;
     const maxResultBytes = selectedLimits.maxResultBytes;
@@ -1966,6 +1985,7 @@ STYLE:
           revision: projection.sourceRevision,
           summary: projection.summary,
           nodes: promptNodes,
+          nodeAuthorities: promptAuthorities,
           edges: promptEdges,
         },
       };

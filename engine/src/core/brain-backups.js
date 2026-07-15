@@ -240,8 +240,17 @@ async function withNativeBackupSources(brainDir, options, callback) {
         return { created: false, reason: `missing-source:${file}` };
       }
     }
+    const {
+      fileIdentity: _sourceDeltaFileIdentity,
+      appendFrom: _sourceDeltaAppendFrom,
+      ...portableActiveDelta
+    } = source.manifest.activeDelta;
     const backupSourceManifest = {
       ...source.manifest,
+      // Device/inode identities belong to the live source tree. The copied
+      // delta keeps its cryptographic chain authority but must not inherit
+      // private pathname identity from the original installation.
+      activeDelta: portableActiveDelta,
       ann: { indexFile: null, metaFile: null, builtFromRevision: null },
     };
     const manifestBytes = Buffer.from(`${JSON.stringify(backupSourceManifest, null, 2)}\n`);

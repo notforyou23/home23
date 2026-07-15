@@ -49,6 +49,23 @@ function assertRelativeBasename(value, label) {
   }
 }
 
+function assertPortableFileIdentity(value, label) {
+  assertExactKeys(value, ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'], label);
+  for (const field of ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs']) {
+    if (typeof value?.[field] !== 'string' || !/^\d{1,40}$/.test(value[field])) {
+      throw memorySourceError('invalid_memory_source', `invalid ${label} ${field}`, {
+        retryable: false,
+      });
+    }
+  }
+}
+
+function assertSha256Digest(value, label) {
+  if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) {
+    throw memorySourceError('invalid_memory_source', `invalid ${label}`, { retryable: false });
+  }
+}
+
 function validateManifest(manifest) {
   if (!manifest || typeof manifest !== 'object') {
     throw memorySourceError('invalid_memory_source', 'manifest object required', { retryable: false });
@@ -85,14 +102,21 @@ function validateManifest(manifest) {
     assertSafeNonnegativeInteger(entry.count, `${kind} count`);
     assertSafeNonnegativeInteger(entry.bytes, `${kind} bytes`);
   }
-  assertExactKeys(manifest.activeDelta, [
+  const activeDeltaKeys = [
     'epoch',
     'file',
     'fromRevision',
     'toRevision',
     'count',
     'committedBytes',
-  ], 'active delta');
+    ...(manifest.activeDelta?.fileIdentity !== undefined ? ['fileIdentity'] : []),
+    ...(manifest.activeDelta?.appendFrom !== undefined ? ['appendFrom'] : []),
+    ...(manifest.activeDelta?.chainBaseCount !== undefined ? ['chainBaseCount'] : []),
+    ...(manifest.activeDelta?.chainBaseBytes !== undefined ? ['chainBaseBytes'] : []),
+    ...(manifest.activeDelta?.chainBaseDigest !== undefined ? ['chainBaseDigest'] : []),
+    ...(manifest.activeDelta?.chainDigest !== undefined ? ['chainDigest'] : []),
+  ];
+  assertExactKeys(manifest.activeDelta, activeDeltaKeys, 'active delta');
   assertBoundedString(manifest.activeDelta.epoch, 'delta epoch');
   if (manifest.activeDelta.epoch !== manifest.activeDeltaEpoch) {
     throw memorySourceError('invalid_memory_source', 'invalid delta epoch', { retryable: false });
@@ -102,6 +126,57 @@ function validateManifest(manifest) {
   assertSafeNonnegativeInteger(manifest.activeDelta.toRevision, 'delta to revision');
   assertSafeNonnegativeInteger(manifest.activeDelta.count, 'delta count');
   assertSafeNonnegativeInteger(manifest.activeDelta.committedBytes, 'delta cutoff');
+  if (manifest.activeDelta.fileIdentity !== undefined) {
+    assertPortableFileIdentity(manifest.activeDelta.fileIdentity, 'delta file identity');
+    if (manifest.activeDelta.fileIdentity.size !== String(manifest.activeDelta.committedBytes)) {
+      throw memorySourceError('invalid_memory_source', 'delta file identity size mismatch', {
+        retryable: false,
+      });
+    }
+  }
+  if (manifest.activeDelta.appendFrom !== undefined) {
+    assertExactKeys(
+      manifest.activeDelta.appendFrom,
+      ['committedBytes', 'count', 'fileIdentity'],
+      'delta append-from authority',
+    );
+    assertSafeNonnegativeInteger(
+      manifest.activeDelta.appendFrom.committedBytes,
+      'delta append-from cutoff',
+    );
+    assertSafeNonnegativeInteger(manifest.activeDelta.appendFrom.count, 'delta append-from count');
+    assertPortableFileIdentity(
+      manifest.activeDelta.appendFrom.fileIdentity,
+      'delta append-from identity',
+    );
+    if (manifest.activeDelta.appendFrom.fileIdentity.size
+          !== String(manifest.activeDelta.appendFrom.committedBytes)
+        || manifest.activeDelta.appendFrom.committedBytes > manifest.activeDelta.committedBytes
+        || manifest.activeDelta.appendFrom.count > manifest.activeDelta.count) {
+      throw memorySourceError('invalid_memory_source', 'invalid delta append-from range', {
+        retryable: false,
+      });
+    }
+  }
+  const chainFields = ['chainBaseCount', 'chainBaseBytes', 'chainBaseDigest', 'chainDigest'];
+  const presentChainFields = chainFields.filter((field) => manifest.activeDelta[field] !== undefined);
+  if (presentChainFields.length !== 0 && presentChainFields.length !== chainFields.length) {
+    throw memorySourceError('invalid_memory_source', 'incomplete delta chain authority', {
+      retryable: false,
+    });
+  }
+  if (presentChainFields.length === chainFields.length) {
+    assertSafeNonnegativeInteger(manifest.activeDelta.chainBaseCount, 'delta chain base count');
+    assertSafeNonnegativeInteger(manifest.activeDelta.chainBaseBytes, 'delta chain base bytes');
+    assertSha256Digest(manifest.activeDelta.chainBaseDigest, 'delta chain base digest');
+    assertSha256Digest(manifest.activeDelta.chainDigest, 'delta chain digest');
+    if (manifest.activeDelta.chainBaseCount > manifest.activeDelta.count
+        || manifest.activeDelta.chainBaseBytes > manifest.activeDelta.committedBytes) {
+      throw memorySourceError('invalid_memory_source', 'invalid delta chain base range', {
+        retryable: false,
+      });
+    }
+  }
   if (manifest.activeDelta.fromRevision !== baseRevision + 1
       || manifest.activeDelta.toRevision !== currentRevision
       || manifest.activeDelta.count !== currentRevision - baseRevision) {

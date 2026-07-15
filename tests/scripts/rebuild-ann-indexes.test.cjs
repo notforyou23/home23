@@ -33,6 +33,8 @@ async function createFixture(builderSource) {
   return root;
 }
 
+const successReceipt = "console.log(JSON.stringify({event:'ann_rebuild_receipt',status:'fresh',builtRevision:1,currentRevision:1,bridgeableGap:0,indexCount:1,stageDurations:{totalMs:1},semanticCoverage:{indexed:1,skipped:0}}));\n";
+
 function runFixture(root, agents = []) {
   return spawnSync('bash', [path.join(root, 'scripts', 'rebuild-ann-indexes.sh'), ...agents], {
     cwd: root,
@@ -55,6 +57,7 @@ test('wrapper discovers every configured instance instead of hardcoding agent na
   const root = await createFixture(`
 const fs = require('node:fs');
 fs.appendFileSync(process.env.INVOCATIONS, process.argv[2] + '\\n');
+${successReceipt}
 `);
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   await fsp.rm(path.join(root, 'instances', 'jerry'), { recursive: true, force: true });
@@ -81,6 +84,7 @@ test('wrapper accepts explicit bounded agent selectors and rejects traversal', a
   const root = await createFixture(`
 const fs = require('node:fs');
 fs.appendFileSync(process.env.INVOCATIONS, process.argv[2] + '\\n');
+${successReceipt}
 `);
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const invocations = path.join(root, 'invocations.txt');
@@ -108,6 +112,7 @@ test('wrapper fails a legacy brain without invoking the builder for it', async (
   const root = await createFixture(`
 const fs = require('node:fs');
 fs.appendFileSync(process.env.INVOCATIONS, process.argv[2] + '\\n');
+${successReceipt}
 process.exit(0);
 `);
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
@@ -125,4 +130,53 @@ process.exit(0);
   assert.doesNotMatch(output, /jerry OK/);
   const invokedBrains = (await fsp.readFile(invocations, 'utf8')).trim().split('\n');
   assert.deepEqual(invokedBrains, [path.join(root, 'instances', 'forrest', 'brain')]);
+});
+
+test('wrapper emits one structured per-agent receipt', async (t) => {
+  const root = await createFixture(successReceipt);
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const result = runFixture(root, ['jerry']);
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  const rows = result.stdout.trim().split('\n').filter((line) => line.startsWith('{'));
+  assert.equal(rows.length, 1);
+  const receipt = JSON.parse(rows[0]);
+  assert.equal(receipt.agent, 'jerry');
+  assert.equal(receipt.status, 'fresh');
+  assert.equal(receipt.bridgeableGap, 0);
+  assert.deepEqual(receipt.semanticCoverage, { indexed: 1, skipped: 0 });
+});
+
+test('wrapper rejects zero-exit builder output without a semantic receipt', async (t) => {
+  const root = await createFixture("console.log('DONE but not truthful'); process.exit(0);\n");
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const result = runFixture(root, ['jerry']);
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stdout}${result.stderr}`, /ann_receipt_invalid/);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, /jerry OK/);
+});
+
+test('wrapper alerts only after a configured sustained excessive overlay gap', async (t) => {
+  const lagReceipt = "console.log(JSON.stringify({event:'ann_rebuild_receipt',status:'overlay-covered',builtRevision:1,currentRevision:11,bridgeableGap:10,indexCount:1,stageDurations:{totalMs:1},semanticCoverage:{indexed:1,skipped:0}}));\n";
+  const root = await createFixture(lagReceipt);
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const env = {
+    ...process.env,
+    ANN_SUSTAINED_GAP_THRESHOLD: '2',
+    ANN_MAX_OVERLAY_GAP_RECORDS: '5',
+  };
+  const first = spawnSync('bash', [path.join(root, 'scripts', 'rebuild-ann-indexes.sh'), 'jerry'], {
+    cwd: root, encoding: 'utf8', env,
+  });
+  assert.equal(first.status, 0, `${first.stdout}${first.stderr}`);
+  assert.doesNotMatch(`${first.stdout}${first.stderr}`, /ann_sustained_gap/);
+  const second = spawnSync('bash', [path.join(root, 'scripts', 'rebuild-ann-indexes.sh'), 'jerry'], {
+    cwd: root, encoding: 'utf8', env,
+  });
+  assert.notEqual(second.status, 0);
+  assert.match(`${second.stdout}${second.stderr}`, /ann_sustained_gap/);
+  const state = JSON.parse(await fsp.readFile(
+    path.join(root, 'instances', 'jerry', 'runtime', 'ann-index-health.json'),
+    'utf8',
+  ));
+  assert.equal(state.consecutiveExcessiveGaps, 2);
 });

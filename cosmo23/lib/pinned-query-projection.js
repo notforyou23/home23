@@ -5,7 +5,12 @@ const {
   projectQueryEvidenceEdge,
   projectQueryEvidenceNode,
   projectionRecordLimits,
+  truncateUtf8,
 } = require('./query-evidence-projector');
+const {
+  projectMemoryAuthority,
+  scoreMemoryAuthority,
+} = require('../../shared/memory-authority.cjs');
 
 const COOPERATIVE_YIELD_EVERY = 1_000;
 const CANDIDATE_OVERSAMPLE = 4;
@@ -77,14 +82,61 @@ function nodeText(node) {
   return values.filter(value => typeof value === 'string').join(' ').toLowerCase();
 }
 
-function scoreNode(node, terms) {
-  const text = nodeText(node);
+function scoreNode(projectedNode, rawNode, terms, { query, nowMs } = {}) {
+  const text = nodeText(projectedNode);
   let matched = 0;
   for (const term of terms) if (text.includes(term)) matched += 1;
   const coverage = terms.length ? matched / terms.length : 0;
-  const salience = Number(node.salience ?? node.weight ?? node.activation ?? 0);
+  const salience = Number(projectedNode.salience ?? 0);
   const boundedSalience = Number.isFinite(salience) ? Math.max(0, Math.min(1, salience)) : 0;
-  return coverage * 4 + matched * 0.25 + boundedSalience;
+  const relevance = coverage * 4 + matched * 0.25 + boundedSalience;
+  return scoreMemoryAuthority(rawNode, relevance, { query, nowMs });
+}
+
+function projectProviderAuthority(rawNode) {
+  const profile = projectMemoryAuthority(rawNode, { limit: 2 });
+  const sourceChain = [];
+  for (const entry of Array.isArray(profile.sourceChain) ? profile.sourceChain.slice(0, 2) : []) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const kind = truncateUtf8(String(entry.kind || ''), 32).value;
+    const ref = truncateUtf8(String(entry.ref || ''), 240).value;
+    if (kind && ref) sourceChain.push(Object.freeze({ kind, ref }));
+  }
+  return Object.freeze({
+    schema: profile.schema,
+    domain: profile.retrievalDomain,
+    authorityClass: profile.authorityClass,
+    semanticTime: profile.semanticTime,
+    operationalAuthority: profile.operationalAuthority === true,
+    requiresFreshVerification: profile.requiresFreshVerification === true,
+    sourceChain: Object.freeze(sourceChain),
+  });
+}
+
+function summarizeNodeAuthorities(authorities) {
+  const summary = {
+    verifiedCurrentState: 0,
+    jtrCorrection: 0,
+    artifactLog: 0,
+    workerReceipt: 0,
+    generatedDoctrine: 0,
+    narrative: 0,
+    requiresFreshVerification: 0,
+  };
+  const fields = {
+    verified_current_state: 'verifiedCurrentState',
+    jtr_correction: 'jtrCorrection',
+    artifact_log: 'artifactLog',
+    worker_receipt: 'workerReceipt',
+    generated_doctrine: 'generatedDoctrine',
+    narrative: 'narrative',
+  };
+  for (const authority of Array.isArray(authorities) ? authorities : []) {
+    const field = fields[authority?.authorityClass];
+    if (field) summary[field] += 1;
+    if (authority?.requiresFreshVerification === true) summary.requiresFreshVerification += 1;
+  }
+  return Object.freeze(summary);
 }
 
 function compareCandidate(left, right) {
@@ -224,6 +276,7 @@ async function projectPinnedQuery({
   sourceSummary,
   onNodeScanned = null,
   onEdgeScanned = null,
+  nowMs = Date.now(),
 } = {}) {
   if (!sourcePin || typeof sourcePin.iterateNodes !== 'function'
       || typeof sourcePin.iterateEdges !== 'function') {
@@ -249,11 +302,14 @@ async function projectPinnedQuery({
     nodesScanned += 1;
     const projected = projectQueryEvidenceNode(rawNode, recordLimits);
     const id = nodeId(projected.value);
+    const authority = projectProviderAuthority(rawNode);
+    const authorityRecord = Object.freeze({ id, ...authority });
     heap.add({
       id,
-      score: scoreNode(projected.value, terms),
+      score: scoreNode(projected.value, rawNode, terms, { query, nowMs }),
       record: projected.value,
-      bytes: projected.bytes,
+      authority: authorityRecord,
+      bytes: projected.bytes + Buffer.byteLength(JSON.stringify(authorityRecord), 'utf8'),
     });
     if (typeof onNodeScanned === 'function') onNodeScanned(nodesScanned);
     await yieldForCancellation(nodesScanned, signal);
@@ -272,6 +328,7 @@ async function projectPinnedQuery({
   }
   selectedRows.sort((left, right) => compareCandidate(right, left));
   const nodes = selectedRows.map(row => row.record);
+  const nodeAuthorities = selectedRows.map(row => row.authority);
   if (nodes.length === 0 && heap.rows.length > 0) {
     throw typed('result_too_large', 'No pinned query candidate fits the projection byte limit');
   }
@@ -319,6 +376,7 @@ async function projectPinnedQuery({
       filteredTotal: 0,
       byteBudgetTruncated,
       droppedForByteBudget,
+      authoritySummary: summarizeNodeAuthorities(nodeAuthorities),
     })
     : sourcePin.evidence || null;
   const sourceRevision = sourcePin.revision
@@ -328,6 +386,7 @@ async function projectPinnedQuery({
 
   return Object.freeze({
     nodes,
+    nodeAuthorities,
     edges,
     summary,
     sourceRevision,
@@ -353,4 +412,5 @@ module.exports = {
   COOPERATIVE_YIELD_EVERY,
   boundedLimits,
   projectPinnedQuery,
+  summarizeNodeAuthorities,
 };

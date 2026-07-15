@@ -131,6 +131,72 @@ test('live-shaped giant metadata retains broad diverse compact evidence', async 
   assert.equal(projection.stats.retainedBytes <= 2 * 1024 * 1024, true);
 });
 
+test('pinned Query ranks current verified evidence above freshly reingested archive text', async () => {
+  const now = '2026-07-14T20:00:00.000Z';
+  const records = [
+    {
+      id: 'archive',
+      content: 'brain retrieval is unavailable archive canary',
+      salience: 1,
+      created: now,
+      source_event_at: '2025-01-01T00:00:00.000Z',
+      metadata: { sourcePath: '/Users/jtr/private/x-timeline-archive.md' },
+      provenance: { authorityClass: 'narrative', operationalAuthority: false },
+    },
+    {
+      id: 'current',
+      content: 'brain retrieval is available current canary',
+      salience: 0.2,
+      asserted_at: '2026-07-14T19:59:00.000Z',
+      tag: 'state_snapshot',
+      provenance: {
+        authorityClass: 'verified_current_state',
+        operationalAuthority: true,
+        evidenceRefs: ['verifier:live-probe'],
+        sourceRefs: ['/Users/jtr/private/current-state.json'],
+      },
+    },
+  ];
+  const projection = await projectPinnedQuery({
+    sourcePin: createSyntheticPinnedSource({
+      nodeCount: records.length,
+      edgeCount: 0,
+      nodeFactory: index => records[index],
+    }),
+    query: 'brain retrieval canary',
+    signal: new AbortController().signal,
+    limits: { maxNodes: 2, maxEdges: 1 },
+    nowMs: Date.parse(now),
+  });
+
+  assert.deepEqual(projection.nodes.map(node => node.id), ['current', 'archive']);
+  assert.deepEqual(projection.nodeAuthorities.map(node => node.authorityClass), [
+    'verified_current_state',
+    'narrative',
+  ]);
+  assert.deepEqual(projection.nodeAuthorities.map(node => node.domain), [
+    'current_ops',
+    'external_intake',
+  ]);
+  assert.equal(projection.nodeAuthorities[0].operationalAuthority, true);
+  assert.equal(projection.nodeAuthorities[1].requiresFreshVerification, true);
+  assert.deepEqual(
+    projection.nodeAuthorities.map(authority => authority.id),
+    projection.nodes.map(node => node.id),
+  );
+  assert.equal(projection.nodeAuthorities.every(authority => authority.sourceChain.length <= 2), true);
+  assert.equal(JSON.stringify(projection.nodeAuthorities).includes('/Users/jtr/'), false);
+  assert.deepEqual(projection.sourceEvidence.authoritySummary, {
+    verifiedCurrentState: 1,
+    jtrCorrection: 0,
+    artifactLog: 0,
+    workerReceipt: 0,
+    generatedDoctrine: 0,
+    narrative: 1,
+    requiresFreshVerification: 1,
+  });
+});
+
 test('oversized textual evidence is compacted while unserializable records fail closed', async () => {
   const oversized = createSyntheticPinnedSource({
     nodeCount: 1,
@@ -370,9 +436,12 @@ test('safe projection applies record and aggregate limits after removing vector 
     limits: { maxNodes: nodeCount, maxRecordBytes: 512, maxProjectionBytes },
   });
 
-  assert.equal(projection.nodes.length, nodeCount);
   assert.equal(projection.nodes.length >= rawCapacity * 40, true);
   assert.equal(projection.nodes.every(node => !Object.hasOwn(node, 'embedding')), true);
+  assert.deepEqual(
+    projection.nodeAuthorities.map(authority => authority.id),
+    projection.nodes.map(node => node.id),
+  );
   assert.equal(projection.stats.retainedBytes <= maxProjectionBytes, true);
   assert.equal(projection.stats.maxRetainedBytes <= maxProjectionBytes, true);
 });
@@ -391,9 +460,8 @@ test('safe projection keeps UTF-8 byte accounting and truncates on code-point bo
     signal: new AbortController().signal,
     limits: { maxRecordBytes: 256, maxProjectionBytes: 512 },
   });
-  const expectedBytes = Buffer.byteLength(JSON.stringify({
-    id: keptNode.id, content: keptNode.content,
-  }), 'utf8');
+  const expectedBytes = Buffer.byteLength(JSON.stringify(kept.nodes[0]), 'utf8')
+    + Buffer.byteLength(JSON.stringify(kept.nodeAuthorities[0]), 'utf8');
   assert.equal(kept.stats.retainedBytes, expectedBytes);
   assert.equal(kept.nodes[0].content, keptNode.content);
 

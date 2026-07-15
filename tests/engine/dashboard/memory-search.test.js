@@ -21,10 +21,17 @@ const {
   createMemorySearchService,
   MAX_ANN_METADATA_BYTES,
   parseAnnMetadataChunks,
+  projectBoundedSearchNode,
 } = require('../../../engine/src/dashboard/memory-search');
+const {
+  createMemoryDeltaOverlayCache,
+} = require('../../../engine/src/dashboard/memory-delta-overlay-cache');
 const {
   sendMemorySearchError,
 } = require('../../../engine/src/dashboard/server');
+const {
+  explainMemorySalienceScore,
+} = require('../../../engine/src/memory/provenance-salience');
 
 async function tempDir(prefix) {
   return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -123,10 +130,12 @@ function zeroLabelPinnedSource(root, revision) {
 
 async function sourceSearch({ dir, embedQuery, loadAnn, query = 'canary', request = {} }) {
   const source = await openMemorySource(dir);
+  const cacheRoot = await tempDir('home23-memory-search-cache-');
   const service = createMemorySearchService({
     brainDir: dir,
     embedQuery,
     loadAnn,
+    deltaOverlayCache: createMemoryDeltaOverlayCache({ cacheRoot }),
     logger: { warn() {} },
   });
   try {
@@ -157,14 +166,227 @@ test('stale ANN cannot hide a new delta keyword canary', async () => {
     dir,
     query: 'route-watermark-canary',
     embedQuery: async () => [1, 0],
-    loadAnn: async () => ({ dimension: 2, search: () => [] }),
+    loadAnn: async () => ({
+      dimension: 2,
+      labels: [{ id: 'old', concept: 'old semantic' }],
+      search: () => [],
+    }),
   });
   assert.equal(result.results[0].id, 'canary');
-  assert.equal(result.evidence.sourceHealth, 'degraded');
+  assert.equal(result.evidence.sourceHealth, 'healthy');
   assert.equal(result.evidence.matchOutcome, 'matches');
   assert.equal(result.evidence.indexWatermark.fresh, false);
-  assert.equal(result.evidence.fallback.route, 'logical-source-scan');
-  assert.equal(result.evidence.fallback.reason, 'ann_stale');
+  assert.equal(result.evidence.fallback, null);
+  assert.equal(result.stats.retrievalMode, 'semantic-ann-delta-overlay');
+  assert.equal(result.evidence.indexCoverage.complete, true);
+  assert.equal(result.evidence.indexCoverage.coveredThroughRevision, result.evidence.deltaWatermark.revision);
+  assert.equal(result.evidence.indexCoverage.distinctUpsertedNodes, 1);
+  assert.equal(Number.isFinite(result.evidence.stageTimings.overlayScoringMs), true);
+  assert.equal(Number.isFinite(result.evidence.stageTimings.sourceOpenMs), true);
+  assert.equal(Number.isFinite(result.evidence.stageTimings.embeddingMs), true);
+  assert.equal(Number.isFinite(result.evidence.stageTimings.annLoadMs), true);
+  assert.equal(Number.isFinite(result.evidence.stageTimings.mergeMs), true);
+});
+
+test('fresh ANN search remains available when the requester overlay exceeds its retained cap', async () => {
+  const dir = await createBrain({
+    nodes: [{ id: 'base', concept: 'fresh indexed base', embedding: [1, 0] }],
+  });
+  await appendRevision(dir, {
+    nodes: [{ id: 'delta', concept: 'fresh indexed delta', embedding: [1, 0] }],
+  }, { nodeCount: 2, edgeCount: 0, clusterCount: 1 });
+  const manifest = await markAnn(dir, { builtFromRevision: (await readManifest(dir)).currentRevision });
+  const operationRoot = await tempDir('home23-memory-search-overlay-fallback-');
+  const nodeOverlayProvider = createMemoryDeltaOverlayCache({
+    cacheRoot: await tempDir('home23-memory-search-small-overlay-'),
+    maxRetainedBytes: 32,
+  });
+  const source = await openMemorySource(dir, { operationRoot, nodeOverlayProvider });
+  const labels = [
+    { id: 'base', concept: 'fresh indexed base' },
+    { id: 'delta', concept: 'fresh indexed delta' },
+  ];
+  const service = createMemorySearchService({
+    brainDir: dir,
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => ({
+      dimension: 2, count: 2, skipped: 0, labels,
+      search: () => labels.map((node) => ({ node, similarity: 1 })),
+    }),
+    logger: { warn() {} },
+  });
+  try {
+    const result = await service.search({
+      sourcePin: source,
+      identity: { operationId: 'fresh-ann-overlay-cap' },
+      query: 'fresh indexed delta',
+      topK: 2,
+      minSimilarity: 0.1,
+      noiseFloor: 0.1,
+    });
+    assert.equal(manifest.ann.builtFromRevision, manifest.currentRevision);
+    assert.equal(result.evidence.sourceHealth, 'healthy');
+    assert.equal(result.evidence.fallback, null);
+    assert.equal(result.results.some((row) => row.id === 'delta'), true);
+  } finally {
+    await source.close();
+  }
+});
+
+test('default ANN loader validates stale revision counts against build revision, not current overlay', async () => {
+  const dir = await createBrain({
+    nodes: [{ id: 'base', concept: 'base indexed canary', embedding: [1, 0] }],
+  });
+  const base = await readManifest(dir);
+  const marked = await markAnn(dir, { builtFromRevision: base.currentRevision });
+  await fsp.writeFile(path.join(dir, marked.ann.metaFile), JSON.stringify({
+    version: 1,
+    dimension: 2,
+    count: 1,
+    labelCount: 1,
+    skipped: 0,
+    sourceNodeCount: 1,
+    generation: base.generation,
+    builtFromRevision: base.currentRevision,
+    labels: [{ id: 'base', concept: 'base indexed canary' }],
+  }));
+  await appendRevision(dir, {
+    nodes: [{ id: 'delta', concept: 'delta current canary', embedding: [1, 0] }],
+  }, { nodeCount: 2, edgeCount: 0, clusterCount: 1 });
+  class FakeIndex {
+    readIndexSync() {}
+    setEf() {}
+    searchKnn() { return { neighbors: [0], distances: [0] }; }
+  }
+  const result = await sourceSearch({
+    dir,
+    query: 'current canary',
+    embedQuery: async () => [1, 0],
+    loadAnn: createDefaultLoadAnn({ hnswlibLoader: () => ({ HierarchicalNSW: FakeIndex }) }),
+  });
+  assert.deepEqual(new Set(result.results.map((row) => row.id)), new Set(['base', 'delta']));
+  assert.equal(result.stats.retrievalMode, 'semantic-ann-delta-overlay');
+});
+
+test('ANN search applies authority ranking and exposes a bounded score explanation', async () => {
+  const dir = await createBrain({
+    nodes: [
+      { id: 'current', concept: 'brain health current verified', embedding: [1, 0] },
+      { id: 'archive', concept: 'brain health old X archive', embedding: [1, 0] },
+    ],
+  });
+  const manifest = await readManifest(dir);
+  await markAnn(dir, { builtFromRevision: manifest.currentRevision });
+  const labels = [
+    {
+      id: 'archive', concept: 'brain health old X archive', retrievalDomain: 'external_intake',
+      authorityClass: 'narrative', semanticTime: '2025-01-01T00:00:00.000Z', evidencePresent: false,
+    },
+    {
+      id: 'current', concept: 'brain health current verified', retrievalDomain: 'current_ops',
+      authorityClass: 'verified_current_state', semanticTime: '2026-07-14T15:59:00.000Z', evidencePresent: true,
+    },
+  ];
+  const result = await sourceSearch({
+    dir,
+    query: 'semantic-only-query',
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => ({
+      dimension: 2,
+      labels,
+      search: () => labels.map((node) => ({ node, similarity: 0.9 })),
+    }),
+    request: { topK: 2, intent: 'current_state' },
+  });
+
+  assert.equal(result.results[0].id, 'current');
+  assert.equal(result.results[0].retrievalAuthority.authorityClass, 'verified_current_state');
+  const explanation = result.results[0].retrievalAuthority.scoreExplanation;
+  assert.ok(explanation.factors.length <= 8);
+  const factorNames = new Set(explanation.factors.map((factor) => factor.name));
+  for (const name of [
+    'base', 'legacy_salience', 'legacy_decay',
+    'domain:current_ops', 'authority:verified_current_state',
+    'freshness', 'current_state_guard', 'direct_evidence',
+  ]) assert.equal(factorNames.has(name), true, `missing ${name}`);
+  const factorProduct = explanation.factors.reduce((score, factor) => score * factor.value, 1);
+  assert.equal(Math.round(factorProduct * 10000) / 10000, result.results[0].retrievalScore);
+  assert.equal(explanation.score, result.results[0].retrievalScore);
+  assert.ok(result.results[0].retrievalScore > result.results[1].retrievalScore);
+});
+
+test('authenticated ANN narrative labels use semantic time without evidence promotion', async () => {
+  const dir = await createBrain({
+    nodes: [
+      { id: 'old', concept: 'archive narrative canary', embedding: [1, 0] },
+      { id: 'recent', concept: 'archive narrative canary', embedding: [1, 0] },
+    ],
+  });
+  const manifest = await readManifest(dir);
+  await markAnn(dir, { builtFromRevision: manifest.currentRevision });
+  const labels = [
+    {
+      id: 'old', concept: 'archive narrative canary', retrievalDomain: 'project_history',
+      authorityClass: 'narrative', semanticTime: '2024-01-01T00:00:00.000Z', evidencePresent: false,
+    },
+    {
+      id: 'recent', concept: 'archive narrative canary', retrievalDomain: 'project_history',
+      authorityClass: 'narrative', semanticTime: '2026-07-14T15:59:00.000Z', evidencePresent: false,
+    },
+  ];
+  const result = await sourceSearch({
+    dir,
+    query: 'archive narrative canary',
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => ({
+      dimension: 2, count: 2, skipped: 0, labels,
+      search: () => labels.map((node) => ({ node, similarity: 0.9 })),
+    }),
+    request: { topK: 2, intent: 'history' },
+  });
+
+  const byId = new Map(result.results.map((row) => [row.id, row]));
+  assert.equal(result.results[0].id, 'recent');
+  assert.equal(byId.get('recent').authorityClass, 'narrative');
+  assert.equal(byId.get('old').authorityClass, 'narrative');
+  assert.ok(byId.get('recent').retrievalScore > byId.get('old').retrievalScore);
+});
+
+test('bounded candidate explanation reports the published authority score without double weighting', () => {
+  const node = {
+    id: 'current',
+    concept: 'current verified route',
+    retrievalDomain: 'current_ops',
+    authorityClass: 'verified_current_state',
+    evidencePresent: true,
+    semanticTime: '2026-07-14T15:59:00.000Z',
+    retrievalQuery: 'current route',
+    _trustedAuthorityProjection: true,
+  };
+  const baseScore = 0.8;
+  const scoreExplanation = explainMemorySalienceScore(node, baseScore, {
+    query: node.retrievalQuery,
+    trustedProjection: true,
+  });
+  const row = projectBoundedSearchNode({
+    ...node,
+    retrievalBaseScore: baseScore,
+    retrievalAuthority: {
+      retrievalDomain: 'current_ops',
+      authorityClass: 'verified_current_state',
+      semanticTime: node.semanticTime,
+      scoreExplanation,
+    },
+  }, {
+    similarity: baseScore,
+    retrievalScore: scoreExplanation.score,
+    retrievalMode: 'semantic-ann',
+  });
+
+  assert.equal(row.retrievalAuthority.scoreExplanation.score, row.retrievalScore);
+  const factorProduct = row.retrievalAuthority.scoreExplanation.factors
+    .reduce((score, factor) => score * factor.value, 1);
+  assert.equal(Math.round(factorProduct * 10000) / 10000, row.retrievalScore);
 });
 
 test('a delta tombstone suppresses an ANN label', async () => {
@@ -182,12 +404,190 @@ test('a delta tombstone suppresses an ANN label', async () => {
     embedQuery: async () => [1, 0],
     loadAnn: async () => ({
       dimension: 2,
-      search: () => [{ node: { id: 'deleted', concept: 'deleted canary', embedding: [1, 0] }, similarity: 1 }],
+      labels: [{ id: 'deleted', concept: 'deleted canary' }],
+      search: () => [{ node: { id: 'deleted', concept: 'deleted canary' }, similarity: 1 }],
     }),
   });
   assert.equal(result.results.some((row) => row.id === 'deleted'), false);
-  assert.equal(result.evidence.sourceHealth, 'degraded');
+  assert.equal(result.evidence.sourceHealth, 'healthy');
   assert.equal(result.evidence.matchOutcome, 'unknown');
+  assert.equal(result.evidence.indexCoverage.distinctRemovedNodes, 1);
+});
+
+test('delta update shadows the stale ANN label without iterating base nodes', async () => {
+  const dir = await createBrain({
+    nodes: [{ id: 'same', concept: 'obsolete wording', embedding: [0, 1] }],
+  });
+  const base = await readManifest(dir);
+  await markAnn(dir, { builtFromRevision: base.currentRevision });
+  await appendRevision(dir, {
+    nodes: [{ id: 'same', concept: 'current overlay wording', embedding: [1, 0] }],
+  }, { nodeCount: 1, edgeCount: 0, clusterCount: 1 });
+  const source = await openMemorySource(dir);
+  const cacheRoot = await tempDir('home23-memory-search-cache-');
+  const guarded = Object.create(source);
+  guarded.iterateNodes = async function* forbiddenBaseIteration() {
+    throw new Error('base iteration forbidden on overlay route');
+  };
+  guarded.searchKeyword = async () => {
+    throw new Error('logical keyword scan forbidden on overlay route');
+  };
+  const service = createMemorySearchService({
+    brainDir: dir,
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => ({
+      dimension: 2,
+      labels: [{ id: 'same', concept: 'obsolete wording' }],
+      search: () => [{ node: { id: 'same', concept: 'obsolete wording' }, similarity: 1 }],
+    }),
+    deltaOverlayCache: createMemoryDeltaOverlayCache({ cacheRoot }),
+    logger: { warn() {} },
+  });
+  try {
+    const result = await service.search({
+      sourcePin: guarded,
+      identity: { operationId: 'overlay-no-base' },
+      query: 'current overlay wording',
+      topK: 5,
+      minSimilarity: 0.1,
+      noiseFloor: 0.1,
+    });
+    assert.deepEqual(result.results.map((row) => row.concept), ['current overlay wording']);
+  } finally {
+    await source.close();
+  }
+});
+
+test('edge-only delta keeps ANN vectors and reports zero node rescoring', async () => {
+  const dir = await createBrain({
+    nodes: [
+      { id: 'left', concept: 'edge-only canary', embedding: [1, 0] },
+      { id: 'right', concept: 'other', embedding: [0, 1] },
+    ],
+  });
+  const base = await readManifest(dir);
+  await markAnn(dir, { builtFromRevision: base.currentRevision });
+  await appendRevision(dir, { edges: [{ source: 'left', target: 'right', weight: 1 }] }, {
+    nodeCount: 2, edgeCount: 1, clusterCount: 1,
+  });
+  const result = await sourceSearch({
+    dir,
+    query: 'edge-only canary',
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => ({
+      dimension: 2,
+      labels: [
+        { id: 'left', concept: 'edge-only canary' },
+        { id: 'right', concept: 'other' },
+      ],
+      search: () => [{ node: { id: 'left', concept: 'edge-only canary' }, similarity: 1 }],
+    }),
+  });
+  assert.equal(result.results[0].id, 'left');
+  assert.equal(result.evidence.indexCoverage.distinctChangedNodes, 0);
+  assert.equal(result.evidence.indexCoverage.edgeOnlyRecords, 1);
+});
+
+test('indexed keyword matching uses authoritative any-token semantics', async () => {
+  const dir = await createBrain({
+    nodes: [
+      { id: 'alpha', concept: 'alpha route', embedding: [0, 1] },
+      { id: 'beta', concept: 'beta route', embedding: [0, 1] },
+    ],
+  });
+  await markAnn(dir);
+  const result = await sourceSearch({
+    dir,
+    query: 'alpha absent-token',
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => ({
+      dimension: 2,
+      skipped: 0,
+      labels: [{ id: 'alpha', concept: 'alpha route' }, { id: 'beta', concept: 'beta route' }],
+      search: () => [],
+    }),
+  });
+  assert.deepEqual(result.results.map((row) => row.id), ['alpha']);
+});
+
+test('bounded skipped-node labels avoid a base scan on common indexed keyword search', async () => {
+  const dir = await createBrain({
+    nodes: [
+      { id: 'vector', concept: 'vector node', embedding: [1, 0] },
+      { id: 'skipped', concept: 'skipped keyword canary' },
+    ],
+  });
+  await markAnn(dir);
+  const source = await openMemorySource(dir);
+  const guarded = Object.create(source);
+  guarded.iterateNodes = async function* forbidden() { throw new Error('base scan forbidden'); };
+  guarded.searchKeyword = async () => { throw new Error('base keyword scan forbidden'); };
+  const cacheRoot = await tempDir('home23-memory-search-cache-');
+  const service = createMemorySearchService({
+    brainDir: dir,
+    embedQuery: async () => [0, 1],
+    loadAnn: async () => ({
+      dimension: 2,
+      count: 1,
+      skipped: 1,
+      labels: [
+        { id: 'vector', concept: 'vector node' },
+        { id: 'skipped', concept: 'skipped keyword canary' },
+      ],
+      search: () => [],
+    }),
+    deltaOverlayCache: createMemoryDeltaOverlayCache({ cacheRoot }),
+    logger: { warn() {} },
+  });
+  try {
+    const result = await service.search({
+      sourcePin: guarded,
+      identity: { operationId: 'skipped-keyword' },
+      query: 'skipped keyword canary',
+      topK: 5,
+    });
+    assert.deepEqual(result.results.map((row) => row.id), ['skipped']);
+  } finally {
+    await source.close();
+  }
+});
+
+test('global merge lets a higher-authority keyword candidate displace a semantic narrative', async () => {
+  const current = {
+    id: 'current', concept: 'live authority canary', embedding: [0, 1], tag: 'state_snapshot',
+    provenance: { authorityClass: 'verified_current_state', operationalAuthority: true, evidenceRefs: ['receipt:live'] },
+  };
+  const narrative = { id: 'narrative', concept: 'semantic neighbor', embedding: [1, 0], tag: 'synthesis' };
+  const dir = await createBrain({ nodes: [narrative, current] });
+  await markAnn(dir);
+  const result = await sourceSearch({
+    dir,
+    query: 'live authority canary',
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => ({
+      dimension: 2, skipped: 0, labels: [narrative, current],
+      search: () => [{ node: narrative, similarity: 1 }],
+    }),
+    request: { topK: 1, minSimilarity: 0.1, noiseFloor: 0.1 },
+  });
+  assert.deepEqual(result.results.map((row) => row.id), ['current']);
+});
+
+test('explicit exhaustive search uses the logical source fallback', async () => {
+  const dir = await createBrain({
+    nodes: [{ id: 'exact', concept: 'exhaustive canary', embedding: [1, 0] }],
+  });
+  await markAnn(dir);
+  const result = await sourceSearch({
+    dir,
+    query: 'exhaustive canary',
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => ({ dimension: 2, labels: [], search: () => [] }),
+    request: { exhaustive: true },
+  });
+  assert.equal(result.evidence.fallback.route, 'logical-source-scan');
+  assert.equal(result.evidence.fallback.reason, 'exhaustive_requested');
+  assert.equal(result.evidence.fallback.completeness, 'complete');
 });
 
 test('dimension mismatch and embedding failure use keyword retrieval', async () => {
@@ -270,7 +670,7 @@ test('healthy fresh ANN stays healthy when exact keyword results supplement sema
   assert.equal(result.evidence.fallback.reason, 'exact_canary_missing');
   assert.equal(result.evidence.sourceHealth, 'healthy');
   assert.equal(result.evidence.indexWatermark.fresh, true);
-  assert.deepEqual(result.results.map((row) => row.id), ['semantic', 'exact']);
+  assert.deepEqual(result.results.map((row) => row.id), ['exact', 'semantic']);
 });
 
 test('healthy empty and healthy no-match remain distinct while unavailable fails truthfully', async () => {

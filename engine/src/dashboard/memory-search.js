@@ -21,8 +21,12 @@ const {
 } = require('../../../shared/ann-label-contract.cjs');
 const {
   classifyMemoryProvenance,
-  scoreMemorySalience,
+  explainMemorySalienceScore,
 } = require('../memory/provenance-salience');
+const {
+  projectMemoryAuthority,
+} = require('../../../shared/memory-authority.cjs');
+const { createMemoryDeltaOverlayCache } = require('./memory-delta-overlay-cache');
 
 const MAX_EMBEDDING_DIMENSIONS = 8192;
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
@@ -64,6 +68,42 @@ function projectBoundedSearchNode(node, {
   maxRecordBytes = MAX_RECORD_BYTES,
 } = {}) {
   const provenance = classifyMemoryProvenance(node);
+  const publishedRetrievalScore = retrievalScore === null ? null : roundScore(retrievalScore);
+  const carriedAuthority = Boolean(node?.retrievalAuthority);
+  let retrievalAuthority = node?.retrievalAuthority || projectMemoryAuthority(node, {
+    query: node?.retrievalQuery,
+    trustedProjection: node?._trustedAuthorityProjection === true,
+  });
+  if (!carriedAuthority && publishedRetrievalScore !== null) {
+    retrievalAuthority = {
+      ...retrievalAuthority,
+      scoreExplanation: {
+        score: publishedRetrievalScore,
+        factors: [{ name: 'base', value: publishedRetrievalScore }],
+      },
+    };
+  }
+  if (publishedRetrievalScore !== null && retrievalAuthority?.scoreExplanation) {
+    const factors = Array.isArray(retrievalAuthority.scoreExplanation.factors)
+      ? retrievalAuthority.scoreExplanation.factors
+      : [];
+    const explainedScore = factors.length > 0
+      ? roundScore(factors.reduce((score, factor) => score * Number(factor?.value), 1))
+      : null;
+    if (explainedScore !== publishedRetrievalScore) {
+      throw memorySourceError('source_unavailable', 'search candidate score explanation is inconsistent', {
+        retryable: true,
+      });
+    }
+    retrievalAuthority = {
+      ...retrievalAuthority,
+      scoreExplanation: {
+        ...retrievalAuthority.scoreExplanation,
+        score: publishedRetrievalScore,
+        factors,
+      },
+    };
+  }
   const row = {
     id: node?.id === undefined || node?.id === null ? null : String(node.id),
     concept: typeof node?.concept === 'string'
@@ -71,10 +111,16 @@ function projectBoundedSearchNode(node, {
       : (typeof node?.content === 'string' ? truncateString(node.content, 32 * 1024) : null),
     tag: node?.tag ?? null,
     similarity: similarity === null ? undefined : roundScore(similarity),
-    retrievalScore: retrievalScore === null ? undefined : roundScore(retrievalScore),
+    retrievalScore: publishedRetrievalScore === null ? undefined : publishedRetrievalScore,
     retrievalMode,
     sourceClass: provenance.sourceClass,
     salienceWeight: provenance.salienceWeight,
+    retrievalDomain: retrievalAuthority.retrievalDomain,
+    authorityClass: retrievalAuthority.authorityClass,
+    semanticTime: retrievalAuthority.semanticTime,
+    retrievalAuthority,
+    status: node?.status ?? null,
+    evidencePresent: typeof node?.evidencePresent === 'boolean' ? node.evidencePresent : null,
     weight: node?.weight ?? null,
     activation: node?.activation ?? null,
     cluster: node?.cluster ?? null,
@@ -391,19 +437,28 @@ async function parseAnnMetadataChunks(chunks, {
       fail('ANN metadata header is malformed', error);
     }
     const declaredCount = header.count;
+    const includesSkippedLabels = header.labelCount !== undefined;
+    const declaredLabelCount = header.labelCount ?? declaredCount;
     const skipped = header.skipped ?? 0;
     if (declaredCount !== undefined
         && (!Number.isSafeInteger(declaredCount) || declaredCount < 0)) {
       fail('ANN metadata label count is invalid');
     }
-    if (!Number.isSafeInteger(skipped) || skipped < 0) {
+    if (!Number.isSafeInteger(skipped) || skipped < 0
+        || (declaredLabelCount !== undefined
+          && (!Number.isSafeInteger(declaredLabelCount) || declaredLabelCount < 0))
+        || (includesSkippedLabels && declaredCount + skipped !== declaredLabelCount)) {
       fail('ANN metadata skipped count is invalid');
     }
     if (Number.isSafeInteger(expectedSourceNodeCount)
-        && (declaredCount === undefined || declaredCount + skipped !== expectedSourceNodeCount)) {
+        && declaredCount + skipped !== expectedSourceNodeCount) {
       fail('ANN metadata count does not match source');
     }
-    expectedLabelCount = declaredCount ?? null;
+    if (Number.isSafeInteger(header.sourceNodeCount)
+        && header.sourceNodeCount !== declaredCount + skipped) {
+      fail('ANN metadata source count is invalid');
+    }
+    expectedLabelCount = declaredLabelCount ?? null;
     if (expectedLabelCount !== null && expectedLabelCount > maxLabels) {
       fail('ANN metadata label count exceeds heap-safe limit');
     }
@@ -846,7 +901,10 @@ function createDefaultLoadAnn({ hnswlibLoader, indexRuntimeFactory } = {}) {
     if (metaPathForStream) {
       metaChunks = nodeFs.createReadStream(metaPathForStream, { highWaterMark: 64 * 1024 });
     }
-    const sourceNodeCount = source?.descriptor?.summary?.nodeCount;
+    const currentSourceNodeCount = source?.descriptor?.summary?.nodeCount;
+    const sourceNodeCount = annMeta.builtFromRevision === source?.revision
+      ? currentSourceNodeCount
+      : undefined;
     const meta = await parseAnnMetadataChunks(metaChunks, {
       expectedSourceNodeCount: sourceNodeCount,
       signal,
@@ -861,8 +919,10 @@ function createDefaultLoadAnn({ hnswlibLoader, indexRuntimeFactory } = {}) {
     }
     const labels = meta.labels;
     const count = meta.count ?? labels?.length;
+    const labelCount = meta.labelCount ?? count;
     if (!Array.isArray(labels) || !Number.isSafeInteger(count) || count < 0
-        || labels.length !== count) {
+        || !Number.isSafeInteger(labelCount) || labelCount < 0
+        || labels.length !== labelCount) {
       throw memorySourceError('source_unavailable', 'ANN metadata labels are inconsistent', {
         status: 503,
         retryable: true,
@@ -883,7 +943,10 @@ function createDefaultLoadAnn({ hnswlibLoader, indexRuntimeFactory } = {}) {
       });
     }
     const skipped = meta.skipped ?? 0;
+    const includesSkippedLabels = meta.labelCount !== undefined;
     if (!Number.isSafeInteger(skipped) || skipped < 0
+        || (includesSkippedLabels && count + skipped !== labelCount)
+        || (Number.isSafeInteger(meta.sourceNodeCount) && meta.sourceNodeCount !== count + skipped)
         || (Number.isSafeInteger(sourceNodeCount) && count + skipped !== sourceNodeCount)) {
       throw memorySourceError('source_changed', 'ANN metadata count does not match source', {
         status: 503,
@@ -923,6 +986,8 @@ function createDefaultLoadAnn({ hnswlibLoader, indexRuntimeFactory } = {}) {
     const loaded = {
       dimension,
       count,
+      skipped,
+      includesSkippedLabels,
       labels,
       index: nextRuntime.index || null,
       isRuntimeHealthy() { return nextRuntime.isHealthy?.() !== false; },
@@ -967,17 +1032,53 @@ function createDefaultLoadAnn({ hnswlibLoader, indexRuntimeFactory } = {}) {
 
 function mergeResults(primary, keywordRows, limit) {
   const merged = new Map();
-  for (const row of primary) merged.set(String(row.id), row);
-  for (const row of keywordRows) {
+  for (const row of [...primary, ...keywordRows]) {
     const id = String(row.id);
-    if (!merged.has(id)) {
-      merged.set(id, {
-        ...row,
-        retrievalMode: row.retrievalMode || 'keyword',
-      });
-    }
+    const normalized = { ...row, retrievalMode: row.retrievalMode || 'keyword' };
+    const existing = merged.get(id);
+    if (!existing
+        || Number(normalized.retrievalScore ?? normalized.similarity ?? 0)
+          > Number(existing.retrievalScore ?? existing.similarity ?? 0)) merged.set(id, normalized);
   }
-  return Array.from(merged.values()).slice(0, limit);
+  return Array.from(merged.values()).sort((left, right) => (
+    Number(right.retrievalScore ?? right.similarity ?? 0)
+      - Number(left.retrievalScore ?? left.similarity ?? 0)
+    || String(left.id).localeCompare(String(right.id))
+  )).slice(0, limit);
+}
+
+function keywordRelevance(node, tokens, query, tag) {
+  if (!node || (tag && node.tag !== tag)) return 0;
+  const haystack = JSON.stringify({
+    id: node.id,
+    concept: node.concept || node.content || '',
+    tag: node.tag,
+    cluster: node.cluster,
+  }).toLocaleLowerCase('en-US');
+  const matched = tokens.filter((token) => haystack.includes(token));
+  if (matched.length === 0) return 0;
+  const normalizedQuery = String(query || '').trim().toLocaleLowerCase('en-US');
+  return (matched.length / tokens.length) + (normalizedQuery && haystack.includes(normalizedQuery) ? 1 : 0);
+}
+
+function authorityScoredCandidate(node, baseScore, options, { semantic = false } = {}) {
+  if (semantic) {
+    const scoreExplanation = explainMemorySalienceScore(node, baseScore, options);
+    return {
+      retrievalScore: scoreExplanation.score,
+      retrievalBaseScore: baseScore,
+      retrievalAuthority: {
+        ...projectMemoryAuthority(node, options),
+        scoreExplanation,
+      },
+    };
+  }
+  const retrievalAuthority = projectMemoryAuthority(node, { ...options, baseScore });
+  return {
+    retrievalScore: retrievalAuthority.scoreExplanation.score,
+    retrievalBaseScore: baseScore,
+    retrievalAuthority,
+  };
 }
 
 function createMemorySearchService({
@@ -987,10 +1088,17 @@ function createMemorySearchService({
   resolveTargetContext,
   embedQuery = createDefaultEmbedQuery(),
   loadAnn = createDefaultLoadAnn(),
+  deltaOverlayCache = null,
   logger = console,
   withEphemeralSource = withEphemeralMemorySource,
 } = {}) {
+  const overlayCache = deltaOverlayCache || (home23Root && requesterAgent
+    ? createMemoryDeltaOverlayCache({
+      cacheRoot: path.join(home23Root, 'instances', requesterAgent, 'runtime', 'cache'),
+    })
+    : null);
   async function executeSearch(source, request) {
+    const responseStartedAt = performance.now();
     const {
       query,
       topK = 10,
@@ -1001,7 +1109,7 @@ function createMemorySearchService({
       identity,
     } = request;
     throwIfAborted(signal);
-    normalizeKeywordTokens(query);
+    const keywordTokens = normalizeKeywordTokens(query);
     const tag = normalizeOptionalTag(requestedTag);
     const limit = parseBoundedInteger(topK, {
       name: 'topK',
@@ -1011,6 +1119,11 @@ function createMemorySearchService({
     });
     const similarityThreshold = Number.isFinite(Number(minSimilarity)) ? Number(minSimilarity) : 0.4;
     const semanticNoiseFloor = Number.isFinite(Number(noiseFloor)) ? Number(noiseFloor) : 0.55;
+    const authorityOptions = (node, trustedProjection = false) => ({
+      query,
+      intent: request.intent || query,
+      trustedProjection,
+    });
     const initialEvidence = source.getEvidence();
     if (initialEvidence.sourceHealth === 'unavailable') {
       throw memorySourceError('source_unavailable', 'canonical memory source is unavailable', {
@@ -1025,8 +1138,35 @@ function createMemorySearchService({
       && Boolean(manifest.ann?.indexFile)
       && Boolean(manifest.ann?.metaFile);
     const annFresh = annAvailable && manifest.ann?.builtFromRevision === manifest.currentRevision;
+    const effectiveBaseRevision = Number.isSafeInteger(manifest?.baseRevision)
+      ? manifest.baseRevision
+      : manifest?.ann?.builtFromRevision;
+    const annRevisionEligible = annAvailable
+      && Number.isSafeInteger(manifest.ann?.builtFromRevision)
+      && manifest.ann.builtFromRevision >= effectiveBaseRevision
+      && manifest.ann.builtFromRevision <= manifest.currentRevision;
+    let overlay = null;
+    let overlayFailure = null;
+    const overlayStartedAt = performance.now();
+    if (annRevisionEligible && !annFresh && overlayCache) {
+      try {
+        overlay = await overlayCache.refresh({
+          canonicalRoot: source.descriptor?.canonicalRoot,
+          manifest,
+          signal,
+        });
+      } catch (error) {
+        rethrowAbort(error, signal);
+        overlayFailure = error;
+        logger.warn?.('memory search delta overlay unavailable; using logical scan', error.message);
+      }
+    }
+    const overlayRefreshMs = performance.now() - overlayStartedAt;
+    const annCovered = annRevisionEligible && (annFresh || Boolean(overlay
+      && overlay.coveredThroughRevision === manifest.currentRevision));
     let queryEmbedding = null;
     let fallback = null;
+    const embeddingStartedAt = performance.now();
     try {
       const embedded = await embedQuery(query, { signal });
       ({ embedding: queryEmbedding } = normalizeEmbedding(embedded));
@@ -1039,6 +1179,7 @@ function createMemorySearchService({
       logger.warn?.('memory search embedding unavailable; using keyword fallback', error.message);
       fallback = { route: 'logical-keyword-scan', reason: 'embedding_unavailable', completeness: 'complete' };
     }
+    const embeddingMs = performance.now() - embeddingStartedAt;
 
     const candidateLimit = Math.min(1000, Math.max(100, limit * 4));
     const semantic = createBoundedCandidateHeap({
@@ -1046,32 +1187,98 @@ function createMemorySearchService({
       maxBytes: MAX_HEAP_BYTES,
       maxRecordBytes: MAX_RECORD_BYTES,
     });
+    const boundedKeyword = createBoundedCandidateHeap({
+      maxCount: candidateLimit,
+      maxBytes: MAX_HEAP_BYTES,
+      maxRecordBytes: MAX_RECORD_BYTES,
+    });
     let semanticRoute = 'none';
-    if (queryEmbedding && annFresh) {
+    let annUsed = false;
+    let annLabelsAvailable = false;
+    let annSearchMs = 0;
+    let annLoadMs = 0;
+    let overlayScoringMs = 0;
+    if (queryEmbedding && annRevisionEligible && annCovered && request.exhaustive !== true) {
       const consumeAnn = async (ann) => {
         if (!ann || Number(ann.dimension || ann.dim) !== queryEmbedding.length) return false;
-        semanticRoute = 'semantic-ann';
+        semanticRoute = annFresh ? 'semantic-ann' : 'semantic-ann-delta-overlay';
+        const annStartedAt = performance.now();
         for (const hit of await annSearchRows(ann, queryEmbedding, candidateLimit, { signal })) {
           throwIfAborted(signal);
           const node = hit.node || hit;
           if (!node) continue;
+          if (overlay?.hasChangedNode(node.id)) continue;
           if (tag && node.tag !== tag) continue;
           const similarity = Number(hit.similarity);
           if (!Number.isFinite(similarity) || similarity < similarityThreshold) continue;
           semantic.offer({
             ...node,
             similarity,
-            retrievalScore: scoreMemorySalience(node, similarity),
+            ...authorityScoredCandidate(
+              node, similarity, authorityOptions(node, true), { semantic: true },
+            ),
+            retrievalQuery: query,
+            _trustedAuthorityProjection: true,
             retrievalMode: 'semantic-ann',
           });
         }
+        annSearchMs = performance.now() - annStartedAt;
+        if (Array.isArray(ann.labels)) {
+          annLabelsAvailable = ann.count === undefined || ann.skipped === 0 || ann.includesSkippedLabels === true
+            || ann.labels.length === Number(ann.count || 0) + Number(ann.skipped || 0);
+          for (const label of ann.labels) {
+            throwIfAborted(signal);
+            if (overlay?.hasChangedNode(label?.id)) continue;
+            const relevance = keywordRelevance(label, keywordTokens, query, tag);
+            if (relevance <= 0) continue;
+            boundedKeyword.offer({
+              ...label,
+              ...authorityScoredCandidate(label, relevance, authorityOptions(label, true)),
+              retrievalQuery: query,
+              _trustedAuthorityProjection: true,
+              retrievalMode: 'keyword-index',
+            });
+          }
+        }
+        if (overlay) {
+          const scoreStartedAt = performance.now();
+          for (const node of overlay.nodeUpserts()) {
+            throwIfAborted(signal);
+            if (tag && node.tag !== tag) continue;
+            if (Array.isArray(node.embedding) && node.embedding.length === queryEmbedding.length) {
+              const similarity = cosineSimilarity(queryEmbedding, node.embedding);
+              if (similarity >= similarityThreshold) {
+                semantic.offer({
+                  ...node,
+                  similarity,
+                  ...authorityScoredCandidate(
+                    node, similarity, authorityOptions(node), { semantic: true },
+                  ),
+                  retrievalQuery: query,
+                  retrievalMode: 'semantic-delta-overlay',
+                });
+              }
+            }
+            const relevance = keywordRelevance(node, keywordTokens, query, tag);
+            if (relevance > 0) {
+              boundedKeyword.offer({
+                ...node,
+                ...authorityScoredCandidate(node, relevance, authorityOptions(node)),
+                retrievalQuery: query,
+                retrievalMode: 'keyword-delta-overlay',
+              });
+            }
+          }
+          overlayScoringMs = performance.now() - scoreStartedAt;
+        }
         return true;
       };
-      let annUsed = false;
       try {
+        const annLoadStartedAt = performance.now();
         annUsed = typeof loadAnn.runExclusive === 'function'
           ? await loadAnn.runExclusive(source, manifest.ann, { signal }, consumeAnn)
           : await consumeAnn(await loadAnn(source, manifest.ann, { signal }));
+        annLoadMs = performance.now() - annLoadStartedAt;
       } catch (error) {
         rethrowAbort(error, signal);
         if (error?.code !== 'ann_descriptor_unsupported') throw error;
@@ -1084,15 +1291,21 @@ function createMemorySearchService({
       if (!annUsed && !fallback) {
         fallback = { route: 'logical-keyword-scan', reason: 'embedding_dimension_mismatch', completeness: 'complete' };
       }
-    } else if (queryEmbedding && !annFresh) {
+    } else if (request.exhaustive === true) {
       fallback = {
         route: 'logical-source-scan',
-        reason: annAvailable ? 'ann_stale' : 'ann_missing',
+        reason: 'exhaustive_requested',
+        completeness: 'complete',
+      };
+    } else if (queryEmbedding && !annCovered) {
+      fallback = {
+        route: 'logical-source-scan',
+        reason: overlayFailure ? 'delta_overlay_unavailable' : (annAvailable ? 'ann_stale' : 'ann_missing'),
         completeness: 'complete',
       };
     }
 
-    if (queryEmbedding && (!annFresh
+    if (queryEmbedding && (request.exhaustive === true || !annCovered
         || ['embedding_dimension_mismatch', 'ann_descriptor_unsupported'].includes(fallback?.reason))) {
       semanticRoute = 'semantic-scan';
       for await (const node of source.iterateNodes({ signal })) {
@@ -1104,7 +1317,10 @@ function createMemorySearchService({
           semantic.offer({
             ...node,
             similarity,
-            retrievalScore: scoreMemorySalience(node, similarity),
+            ...authorityScoredCandidate(
+              node, similarity, authorityOptions(node), { semantic: true },
+            ),
+            retrievalQuery: query,
             retrievalMode: 'semantic-scan',
           });
         }
@@ -1113,22 +1329,32 @@ function createMemorySearchService({
 
     const semanticCandidates = semantic.sorted().slice(0, limit);
     const semanticTop = semanticCandidates.filter((row) => Number(row.similarity || 0) >= semanticNoiseFloor);
-    const keyword = await source.searchKeyword({ query, topK: limit, tag, signal });
-    const keywordRows = (keyword.results || []).map((row) => ({
-      ...row,
-      retrievalMode: row.retrievalMode || 'keyword',
-    }));
-    const filteredTotal = Number.isSafeInteger(keyword.filtered) && keyword.filtered >= 0
+    const keywordStartedAt = performance.now();
+    let keyword = null;
+    let keywordRows;
+    if (annUsed && annLabelsAvailable && request.exhaustive !== true) {
+      keywordRows = boundedKeyword.sorted().slice(0, limit);
+    } else {
+      keyword = await source.searchKeyword({ query, topK: limit, tag, signal });
+      keywordRows = (keyword.results || []).map((row) => ({
+        ...row,
+        retrievalMode: row.retrievalMode || 'keyword',
+      }));
+    }
+    const keywordScoringMs = performance.now() - keywordStartedAt;
+    const filteredTotal = Number.isSafeInteger(keyword?.filtered) && keyword.filtered >= 0
       ? keyword.filtered
       : 0;
-    const completeCoverage = keyword.evidence?.completeCoverage === true;
+    const completeCoverage = keyword?.evidence?.completeCoverage === true;
     const exactMissing = keywordRows.some((row) => !semanticTop.some((existing) => String(existing.id) === String(row.id)));
     if (semanticCandidates.length > 0 && semanticTop.length === 0 && keywordRows.length > 0 && !fallback) {
       fallback = { route: 'logical-keyword-scan', reason: 'semantic_noise_filtered', completeness: 'complete' };
     } else if (exactMissing && !fallback) {
       fallback = { route: 'logical-keyword-supplement', reason: 'exact_canary_missing', completeness: 'complete' };
     }
+    const mergeStartedAt = performance.now();
     const results = mergeResults(semanticTop, keywordRows, limit);
+    const mergeMs = performance.now() - mergeStartedAt;
     const baseEvidence = source.getEvidence();
     const degradesSourceHealth = fallback
       && !['ann_missing', 'exact_canary_missing'].includes(fallback.reason);
@@ -1172,6 +1398,29 @@ function createMemorySearchService({
         authoritativeTotals: { nodes: summary.nodes, edges: summary.edges },
         returnedTotals: { nodes: results.length, edges: 0 },
         fallback,
+        indexCoverage: {
+          complete: annUsed && annCovered,
+          indexedRevision: manifest.ann?.builtFromRevision ?? null,
+          coveredThroughRevision: annUsed && annCovered ? manifest.currentRevision : null,
+          deltaRecords: overlay?.deltaRecords ?? manifest.activeDelta?.count ?? 0,
+          distinctChangedNodes: overlay?.changedNodeCount ?? 0,
+          distinctUpsertedNodes: overlay?.upsertedNodeCount ?? 0,
+          distinctRemovedNodes: overlay?.removedNodeCount ?? 0,
+          edgeOnlyRecords: overlay?.edgeOnlyRecords ?? 0,
+          route: annUsed ? semanticRoute : fallback?.route || 'none',
+          completeness: annUsed && annCovered ? 'complete' : fallback?.completeness || 'unknown',
+        },
+        stageTimings: {
+          sourceOpenMs: Number.isFinite(source.openDurationMs) ? roundScore(source.openDurationMs) : null,
+          embeddingMs: roundScore(embeddingMs),
+          overlayRefreshMs: roundScore(overlayRefreshMs),
+          annLoadMs: roundScore(annLoadMs),
+          annSearchMs: roundScore(annSearchMs),
+          overlayScoringMs: roundScore(overlayScoringMs),
+          keywordScoringMs: roundScore(keywordScoringMs),
+          mergeMs: roundScore(mergeMs),
+          responseMs: roundScore(performance.now() - responseStartedAt),
+        },
       },
     };
     if (utf8Bytes(response) > MAX_RESPONSE_BYTES) {
@@ -1221,6 +1470,7 @@ function createMemorySearchService({
       identity,
       signal: request.signal,
       prefix: 'dashboard-search',
+      nodeOverlayProvider: overlayCache,
     }, (source, context) => executeSearch(source, {
       ...request,
       identity: context.identity,

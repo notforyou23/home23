@@ -2,6 +2,7 @@
 
 module.exports = {
   ...require('./contracts.cjs'),
+  ...require('./descriptor.cjs'),
   ...require('./limits.cjs'),
   ...require('./confined-file.cjs'),
   ...require('./jsonl.cjs'),

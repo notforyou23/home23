@@ -389,6 +389,38 @@ export interface TriggerCondition {
   condition: string;
 }
 
+export type MemoryAuthorityClass =
+  | 'verified_current_state'
+  | 'jtr_correction'
+  | 'artifact_log'
+  | 'worker_receipt'
+  | 'generated_doctrine'
+  | 'narrative';
+
+export type MemoryRetrievalDomain =
+  | 'current_ops'
+  | 'closed_incidents'
+  | 'project_history'
+  | 'external_intake';
+
+export interface NodeProvenanceProfile {
+  schema: 'home23.node-provenance.v1';
+  authorityClass: MemoryAuthorityClass;
+  retrievalDomain: MemoryRetrievalDomain;
+  semanticTime: string | null;
+  sourceRefs: string[];
+  evidenceRefs: string[];
+  generationMethod: string | null;
+  sourcePath?: string | null;
+  contentHash?: string | null;
+  derivedNodeIds?: string[];
+  scope: string[];
+  expiresAt?: string | null;
+  operationalAuthority: boolean;
+  requiresFreshVerification: boolean;
+  missingEvidence?: string[];
+}
+
 export interface MemoryObject {
   memory_id: string;
   type: MemoryObjectType;
@@ -406,6 +438,7 @@ export interface MemoryObject {
     source_refs: string[];
     session_refs: string[];
     generation_method: string;
+    node_profile?: NodeProvenanceProfile;
     origin?: {
       agent?: string;
       peerName?: string;

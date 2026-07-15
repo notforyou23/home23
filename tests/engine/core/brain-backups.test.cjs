@@ -147,6 +147,9 @@ test('native backup omits rebuildable ANN bytes and publishes a self-consistent 
     metaFile: null,
     builtFromRevision: null,
   });
+  assert.equal(Object.hasOwn(copiedSourceManifest.activeDelta, 'fileIdentity'), false);
+  assert.equal(Object.hasOwn(copiedSourceManifest.activeDelta, 'appendFrom'), false);
+  assert.match(copiedSourceManifest.activeDelta.chainDigest, /^[a-f0-9]{64}$/);
   const backupManifest = JSON.parse(
     fs.readFileSync(path.join(backupPath, 'backup-manifest.json'), 'utf8'),
   );

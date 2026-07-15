@@ -237,6 +237,86 @@ test('safe evidence publishes only canonical memory-source enum values', () => {
   }
 });
 
+test('notebook result exposes bounded retrieval coverage, timings, and authority counts', () => {
+  const projected = projectNotebookResult(queryRecord({
+    sourceEvidence: {
+      sourceHealth: 'healthy',
+      freshness: 'known',
+      matchOutcome: 'matches',
+      retrievalMode: 'semantic-ann-delta-overlay',
+      indexCoverage: {
+        complete: true,
+        indexedRevision: 40,
+        currentRevision: 45,
+        coveredThroughRevision: 45,
+        deltaRecords: 5,
+        changedNodes: 2,
+        upsertedNodes: 1,
+        removedNodes: 1,
+      },
+      stageTimingsMs: {
+        sourceOpen: 2,
+        deltaOverlay: 3,
+        embedding: 4,
+        annLoad: 5,
+        annQuery: 6,
+        deltaSemantic: 7,
+        keyword: 8,
+        merge: 9,
+        total: 44,
+      },
+      authoritySummary: {
+        verifiedCurrentState: 2,
+        jtrCorrection: 1,
+        artifactLog: 1,
+        workerReceipt: 0,
+        generatedDoctrine: 0,
+        narrative: 1,
+        requiresFreshVerification: 1,
+      },
+      canonicalRoot: '/private/must-not-leak',
+    },
+  }), { answer: 'bounded answer' }, { now: () => NOW });
+
+  assert.deepEqual(projected.evidence, {
+    sourceHealth: 'healthy',
+    freshness: 'known',
+    matchOutcome: 'matches',
+    retrievalMode: 'semantic-ann-delta-overlay',
+    indexCoverage: {
+      complete: true,
+      indexedRevision: 40,
+      currentRevision: 45,
+      coveredThroughRevision: 45,
+      deltaRecords: 5,
+      changedNodes: 2,
+      upsertedNodes: 1,
+      removedNodes: 1,
+    },
+    stageTimingsMs: {
+      sourceOpen: 2,
+      deltaOverlay: 3,
+      embedding: 4,
+      annLoad: 5,
+      annQuery: 6,
+      deltaSemantic: 7,
+      keyword: 8,
+      merge: 9,
+      total: 44,
+    },
+    authoritySummary: {
+      verifiedCurrentState: 2,
+      jtrCorrection: 1,
+      artifactLog: 1,
+      workerReceipt: 0,
+      generatedDoctrine: 0,
+      narrative: 1,
+      requiresFreshVerification: 1,
+    },
+  });
+  assert.equal(JSON.stringify(projected).includes('/private/'), false);
+});
+
 function inventoryRecord(index, overrides = {}) {
   const suffix = String(index).padStart(32, '0');
   const minute = String(index).padStart(2, '0');

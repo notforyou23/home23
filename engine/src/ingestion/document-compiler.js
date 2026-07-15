@@ -209,7 +209,22 @@ class DocumentCompiler {
         indexUpdated: !!indexUpdate
       });
 
-      return { synthesis, indexUpdate };
+      return {
+        synthesis,
+        indexUpdate,
+        provenance: {
+          schema: 'home23.node-provenance.v1',
+          authorityClass: 'narrative',
+          retrievalDomain: 'project_history',
+          generationMethod: 'document_compiler_synthesis',
+          model: String(this.model || '').slice(0, 240) || null,
+          semanticTime: metadata.semanticTime || null,
+          sourcePath: metadata.filePath || null,
+          contentHash: metadata.contentHash || null,
+          operationalAuthority: false,
+          requiresFreshVerification: true,
+        },
+      };
     } catch (error) {
       this.logger?.error?.('Compilation failed', {
         filename,

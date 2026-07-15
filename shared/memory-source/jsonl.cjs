@@ -18,6 +18,8 @@ const {
   assertStableOpenedFile,
   assertStableOpenedFileContent,
   assertStableOpenedFilePrefix,
+  portableFileIdentity,
+  assertOpenedFilePathIdentity,
 } = require('./confined-file.cjs');
 const { getOperationScratchQuotaCleanup } = require('./scratch-quota.cjs');
 const { OPENED_JSONL_FILE } = require('./private-capabilities.cjs');
@@ -980,6 +982,114 @@ async function* readJsonl(filePath, options = {}) {
   }
 }
 
+async function* readJsonlRange(filePath, options = {}) {
+  throwIfAborted(options.signal);
+  const confinedRoot = options.confinedRoot || path.dirname(filePath);
+  const startByte = options.startByte ?? 0;
+  const endByte = options.endByte;
+  if (!Number.isSafeInteger(startByte) || startByte < 0
+      || !Number.isSafeInteger(endByte) || endByte < startByte) {
+    throw memorySourceError('invalid_request', 'invalid JSONL byte range');
+  }
+  const maxInputBytes = options.maxInputBytes ?? 2 * 1024 * 1024 * 1024;
+  const maxRecordBytes = options.maxRecordBytes ?? 16 * 1024 * 1024;
+  validatePositiveLimit(maxInputBytes, 'input limit');
+  validatePositiveLimit(maxRecordBytes, 'record limit');
+  if (endByte > maxInputBytes) throw limitError('input', maxInputBytes);
+
+  const opened = await openConfinedRegularFile(confinedRoot, filePath, {
+    flags: fs.constants.O_RDONLY,
+    maxBytes: maxInputBytes,
+    signal: options.signal,
+  });
+  const identity = portableFileIdentity(opened.stat);
+  try {
+    if (Number(opened.stat.size) < endByte) {
+      throw memorySourceError('source_unavailable', 'committed JSONL range is truncated', {
+        retryable: true,
+      });
+    }
+    if (startByte > 0) {
+      const boundary = Buffer.allocUnsafe(1);
+      const read = await opened.handle.read(boundary, 0, 1, startByte - 1);
+      if (read.bytesRead !== 1 || boundary[0] !== 0x0a) {
+        throw memorySourceError('source_unavailable', 'JSONL range starts mid-record', {
+          retryable: true,
+        });
+      }
+    }
+    if (endByte > startByte) {
+      const boundary = Buffer.allocUnsafe(1);
+      const read = await opened.handle.read(boundary, 0, 1, endByte - 1);
+      if (read.bytesRead !== 1 || boundary[0] !== 0x0a) {
+        throw memorySourceError('source_unavailable', 'JSONL range ends mid-record', {
+          retryable: true,
+        });
+      }
+    }
+
+    const decoder = new StringDecoder('utf8');
+    const chunk = Buffer.allocUnsafe(64 * 1024);
+    let position = startByte;
+    let pending = '';
+    while (position < endByte) {
+      throwIfAborted(options.signal);
+      const length = Math.min(chunk.length, endByte - position);
+      const read = await opened.handle.read(chunk, 0, length, position);
+      if (read.bytesRead <= 0) {
+        throw memorySourceError('source_unavailable', 'committed JSONL range is truncated', {
+          retryable: true,
+        });
+      }
+      position += read.bytesRead;
+      pending += decoder.write(chunk.subarray(0, read.bytesRead));
+      for (;;) {
+        const newline = pending.indexOf('\n');
+        if (newline < 0) break;
+        const line = pending.slice(0, newline).replace(/\r$/, '');
+        pending = pending.slice(newline + 1);
+        if (Buffer.byteLength(line, 'utf8') > maxRecordBytes) {
+          throw limitError('record', maxRecordBytes);
+        }
+        if (!line) continue;
+        try {
+          yield JSON.parse(line);
+        } catch (cause) {
+          throw memorySourceError('source_unavailable', 'authoritative JSONL record is malformed', {
+            cause,
+            retryable: true,
+          });
+        }
+      }
+      if (Buffer.byteLength(pending, 'utf8') > maxRecordBytes) {
+        throw limitError('record', maxRecordBytes);
+      }
+    }
+    pending += decoder.end();
+    if (pending.length !== 0) {
+      throw memorySourceError('source_unavailable', 'committed JSONL range ends mid-record', {
+        retryable: true,
+      });
+    }
+    await assertOpenedFilePathIdentity(opened, identity);
+    const after = await opened.handle.stat({ bigint: true });
+    if (Number(after.size) < endByte) {
+      throw memorySourceError('source_changed', 'JSONL range changed while reading', {
+        retryable: true,
+      });
+    }
+  } catch (error) {
+    rethrowAbort(error, options.signal);
+    if (isTypedMemorySourceError(error)) throw error;
+    throw memorySourceError('source_unavailable', 'authoritative JSONL range is unreadable', {
+      cause: error,
+      retryable: true,
+    });
+  } finally {
+    await opened.handle.close();
+  }
+}
+
 async function writeJsonlGzAtomic(filePath, records, options = {}) {
   await fsp.mkdir(path.dirname(filePath), { recursive: true });
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
@@ -1034,5 +1144,6 @@ module.exports = {
   createQuotaBackpressuredJsonlGzipWriter,
   limitError,
   readJsonl,
+  readJsonlRange,
   writeJsonlGzAtomic,
 };

@@ -150,6 +150,10 @@ async function openConfinedRegularFile(root, filePath, options = {}) {
       realpath: fileReal,
       stat: opened,
       identity: fileIdentity(opened),
+      // Preserve the exact pre-open pathname identity. Writable opens may
+      // legitimately move ctime on some platforms, but mutation authority
+      // must compare the state that existed before the descriptor was opened.
+      pathIdentity: fileIdentity(pathStat),
     };
   } catch (error) {
     if (handle) await handle.close().catch(() => {});

@@ -51,6 +51,22 @@ const SAFE_EVIDENCE_TOTALS = Object.freeze(['authoritativeTotals', 'returnedTota
 const SOURCE_HEALTH_VALUES = new Set(Object.values(SOURCE_HEALTH));
 const MATCH_OUTCOME_VALUES = new Set(Object.values(MATCH_OUTCOME));
 const FRESHNESS_VALUES = new Set(['known', 'unknown']);
+const RETRIEVAL_MODE_VALUES = new Set([
+  'semantic-ann', 'semantic-ann-delta-overlay', 'keyword-index-overlay',
+  'logical-source-scan', 'hybrid', 'semantic-scan', 'keyword', 'none',
+]);
+const INDEX_COVERAGE_COUNTERS = Object.freeze([
+  'indexedRevision', 'currentRevision', 'coveredThroughRevision', 'deltaRecords',
+  'changedNodes', 'upsertedNodes', 'removedNodes',
+]);
+const STAGE_TIMING_FIELDS = Object.freeze([
+  'sourceOpen', 'deltaOverlay', 'embedding', 'annLoad', 'annQuery',
+  'deltaSemantic', 'keyword', 'merge', 'total',
+]);
+const AUTHORITY_SUMMARY_FIELDS = Object.freeze([
+  'verifiedCurrentState', 'jtrCorrection', 'artifactLog', 'workerReceipt',
+  'generatedDoctrine', 'narrative', 'requiresFreshVerification',
+]);
 const COVERAGE_FIELDS = Object.freeze([
   'coverageLevel', 'coverageFraction', 'successfulSweeps',
   'selectedWorkUnits', 'pendingWorkUnits', 'reusedWorkUnits', 'newWorkUnits',
@@ -186,6 +202,35 @@ function projectSafeEvidence(value) {
   for (const field of SAFE_EVIDENCE_TOTALS) {
     const totals = safeTotals(value[field]);
     if (totals !== undefined) projected[field] = totals;
+  }
+  if (RETRIEVAL_MODE_VALUES.has(value.retrievalMode)) {
+    projected.retrievalMode = value.retrievalMode;
+  }
+  if (value.indexCoverage !== undefined && value.indexCoverage !== null) {
+    const coverage = plainObject(value.indexCoverage);
+    if (typeof coverage.complete !== 'boolean') throw notebookError('notebook_projection_invalid');
+    projected.indexCoverage = { complete: coverage.complete };
+    for (const field of INDEX_COVERAGE_COUNTERS) {
+      if (coverage[field] !== undefined) {
+        projected.indexCoverage[field] = safeCounter(coverage[field]);
+      }
+    }
+  }
+  if (value.stageTimingsMs !== undefined && value.stageTimingsMs !== null) {
+    const timings = plainObject(value.stageTimingsMs);
+    projected.stageTimingsMs = {};
+    for (const field of STAGE_TIMING_FIELDS) {
+      if (timings[field] !== undefined) projected.stageTimingsMs[field] = safeCounter(timings[field]);
+    }
+    if (Object.keys(projected.stageTimingsMs).length === 0) delete projected.stageTimingsMs;
+  }
+  if (value.authoritySummary !== undefined && value.authoritySummary !== null) {
+    const summary = plainObject(value.authoritySummary);
+    projected.authoritySummary = {};
+    for (const field of AUTHORITY_SUMMARY_FIELDS) {
+      if (summary[field] !== undefined) projected.authoritySummary[field] = safeCounter(summary[field]);
+    }
+    if (Object.keys(projected.authoritySummary).length === 0) delete projected.authoritySummary;
   }
   return Object.keys(projected).length === 0 ? null : projected;
 }

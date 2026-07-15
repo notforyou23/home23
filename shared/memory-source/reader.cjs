@@ -44,6 +44,11 @@ const {
   OPENED_JSONL_FILE,
   PINNED_OPENED_FILES,
 } = require('./private-capabilities.cjs');
+const {
+  projectMemoryAuthority,
+  scoreMemoryAuthority,
+} = require('../memory-authority.cjs');
+const { createDescriptor } = require('./descriptor.cjs');
 
 function normalizeOptionalTag(tag) {
   if (tag === null || tag === undefined || tag === '') return null;
@@ -118,19 +123,6 @@ function anchoredFileView(opened) {
     async assertStable() {
       await assertStableOpenedFileContent(opened);
     },
-  });
-}
-
-function createDescriptor(canonicalRoot, manifest) {
-  return Object.freeze({
-    version: 1,
-    canonicalRoot,
-    generation: manifest.generation,
-    baseRevision: manifest.baseRevision,
-    cutoffRevision: manifest.currentRevision,
-    activeBase: manifest.activeBase,
-    activeDelta: manifest.activeDelta,
-    summary: manifest.summary,
   });
 }
 
@@ -213,6 +205,49 @@ function unavailableSource(canonicalRoot, diagnostics = [], options = {}) {
 }
 
 async function loadOverlay(canonicalRoot, manifest, options) {
+  if (options.nodeOverlayProvider && !options.legacySourceFingerprint) {
+    if (typeof options.nodeOverlayProvider.refresh !== 'function') {
+      throw memorySourceError('invalid_request', 'node overlay provider is invalid');
+    }
+    try {
+      const snapshot = await options.nodeOverlayProvider.refresh({
+        canonicalRoot,
+        manifest,
+        signal: options.signal,
+      });
+      if (!snapshot || typeof snapshot.nodeUpserts !== 'function'
+          || typeof snapshot.hasNodeUpsert !== 'function'
+          || typeof snapshot.hasRemovedNode !== 'function'
+          || !Number.isSafeInteger(snapshot.deltaRecords)
+          || snapshot.deltaRecords !== manifest.activeDelta.count) {
+        throw memorySourceError('source_unavailable', 'node overlay coverage is incomplete', {
+          retryable: true,
+        });
+      }
+      const upserts = snapshot.nodeUpserts();
+      if (!Array.isArray(upserts)) {
+        throw memorySourceError('source_unavailable', 'node overlay upserts are invalid', {
+          retryable: true,
+        });
+      }
+      const overlay = {
+        nodeOnly: true,
+        hasRemovedNode(id) { return snapshot.hasRemovedNode(id); },
+        hasNodeUpsert(id) { return snapshot.hasNodeUpsert(id); },
+        async *iterateNodeUpserts() {
+          for (const node of upserts) yield node;
+        },
+        async close() {},
+      };
+      return { overlay, appliedRecords: snapshot.deltaRecords };
+    } catch (error) {
+      rethrowAbort(error, options.signal);
+      if (error?.code !== 'result_too_large') throw error;
+      // A requester-owned acceleration cache is optional. Its private retained
+      // state limit must not make the canonical logical source unavailable;
+      // fall through to the complete bounded memory/disk overlay.
+    }
+  }
   const overlay = await createBoundedOverlayStore({
     operationRoot: options.operationRoot || null,
     scratchQuota: options.scratchQuota || null,
@@ -344,6 +379,13 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
   };
   const iterateBaseEdges = async function* iterateBaseEdges() {
     try {
+      if (overlay.nodeOnly) {
+        throw memorySourceError(
+          'source_operation_required',
+          'node-search source does not expose edge overlay state',
+          { retryable: false },
+        );
+      }
       for await (const record of readJsonl(path.join(canonicalRoot, manifest.activeBase.edges.file), {
         gzip: true,
         confinedRoot: canonicalRoot,
@@ -426,7 +468,6 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
       const exactTag = normalizeOptionalTag(tag);
       const results = [];
       let filtered = 0;
-      let completeCoverage = true;
       for await (const node of this.iterateNodes({ signal })) {
         throwIfAborted(signal);
         const haystack = JSON.stringify({
@@ -435,20 +476,29 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
           tag: node.tag,
           cluster: node.cluster,
         }).toLocaleLowerCase('en-US');
-        if (tokens.some((token) => haystack.includes(token))) {
+        const matchedTokens = tokens.filter((token) => haystack.includes(token));
+        if (matchedTokens.length > 0) {
           if (exactTag !== null && node.tag !== exactTag) {
             filtered += 1;
             continue;
           }
+          const normalizedQuery = String(query || '').trim().toLocaleLowerCase('en-US');
+          const keywordRelevance = (matchedTokens.length / tokens.length)
+            + (normalizedQuery && haystack.includes(normalizedQuery) ? 1 : 0);
           results.push({
             id: normalizeId(node.id),
             concept: typeof node.concept === 'string' ? node.concept.slice(0, 1024) : null,
             tag: node.tag ?? null,
+            retrievalScore: scoreMemoryAuthority(node, keywordRelevance, { query }),
+            retrievalAuthority: projectMemoryAuthority(node, {
+              baseScore: keywordRelevance,
+              query,
+            }),
           });
-          if (results.length >= limit) {
-            completeCoverage = false;
-            break;
-          }
+          results.sort((left, right) => Number(right.retrievalScore || 0)
+            - Number(left.retrievalScore || 0)
+            || String(left.id).localeCompare(String(right.id)));
+          if (results.length > limit) results.pop();
         }
       }
       return {
@@ -456,7 +506,7 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
         filtered,
         evidence: this.getEvidence({
           returnedTotals: { nodes: results.length, edges: 0 },
-          completeCoverage,
+          completeCoverage: true,
           filteredTotal: filtered,
           filters: { tag: exactTag },
           limits: { topK: limit },
@@ -490,6 +540,7 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
 }
 
 async function openMemorySource(brainDir, options = {}) {
+  const openedAt = performance.now();
   throwIfAborted(options.signal);
   const openedFiles = options[PINNED_OPENED_FILES] || null;
   let sourceLimits;
@@ -505,10 +556,15 @@ async function openMemorySource(brainDir, options = {}) {
       ? validateManifest(options.pinnedManifest)
       : await readManifest(canonicalRoot);
     if (manifest) {
-      return await openManifestSource(canonicalRoot, manifest, {
+      const source = await openManifestSource(canonicalRoot, manifest, {
         ...options,
         ...sourceLimits,
       });
+      Object.defineProperty(source, 'openDurationMs', {
+        value: performance.now() - openedAt,
+        enumerable: false,
+      });
+      return source;
     }
     const selection = await resolveMemorySourceSelection(canonicalRoot);
     if (selection.authority === 'legacy-resident-sidecars') {

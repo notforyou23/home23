@@ -62,6 +62,21 @@ for (const [label, Manifest] of [
       hash: 'full-hash',
       ingestedAt: '2026-07-11T00:00:00.000Z',
       relationships: [],
+      provenance: {
+        schema: 'home23.node-provenance.v1',
+        authorityClass: 'generated_doctrine',
+        retrievalDomain: 'project_history',
+        semanticTime: '2026-07-10T00:00:00.000Z',
+        sourceRefs: ['/workspace/source.md'],
+        evidenceRefs: ['sha256:full-hash', 'adopted-doctrine-receipt:self-asserted'],
+        generationMethod: 'document_compiler_synthesis',
+        sourcePath: '/workspace/source.md',
+        contentHash: 'full-hash',
+        scope: ['source'],
+        expiresAt: null,
+        operationalAuthority: true,
+        requiresFreshVerification: false,
+      },
     }];
 
     await manifest.flush('barrier-regression');
@@ -70,6 +85,20 @@ for (const [label, Manifest] of [
     assert.equal(patchCalls[0].nodeId, 'node-1');
     assert.equal(patchCalls[0].patch.metadata.source, 'document-feeder');
     assert.equal(patchCalls[0].patch.metadata.chunkKey, '/workspace/source.md#chunk-0');
+    if (label === 'root') {
+      assert.equal(patchCalls[0].patch.metadata.provenance.schema, 'home23.node-provenance.v1');
+      assert.equal(patchCalls[0].patch.metadata.provenance.authorityClass, 'narrative');
+      assert.equal(patchCalls[0].patch.metadata.provenance.operationalAuthority, false);
+      assert.equal(patchCalls[0].patch.metadata.provenance.requiresFreshVerification, true);
+      assert.deepEqual(patchCalls[0].patch.metadata.provenance.derivedNodeIds, ['node-1']);
+    }
     assert.deepEqual(manifest._manifest['/workspace/source.md'].nodeIds, ['node-1']);
+    if (label === 'root') {
+      assert.equal(
+        manifest._manifest['/workspace/source.md'].provenance.generationMethod,
+        'document_compiler_synthesis'
+      );
+      assert.deepEqual(manifest._manifest['/workspace/source.md'].provenance.derivedNodeIds, ['node-1']);
+    }
   });
 }

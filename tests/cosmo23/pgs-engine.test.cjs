@@ -113,6 +113,55 @@ test('rejects model error strings as failed partition sweeps', async () => {
   assert.equal(providerRequest.maxOutputBytes, PGS_OPERATION_LIMITS.maxSweepOutputBytes);
 });
 
+test('PGS carries node authority into sweep context and forbids narrative-only current-state claims', async () => {
+  const engine = makeEngine();
+  let providerRequest = null;
+  engine.qe = {
+    resolveQueryRuntime: () => ({
+      providerId: 'alpha',
+      effectiveModel: 'sweep-model',
+      capabilities: { maxOutputTokens: 4096 },
+      client: {
+        generate: async (request) => {
+          providerRequest = request;
+          return {
+            content: '## Domain State\nBounded.\n\n## Findings\nNone.\n\n## Outbound Flags\nNone.\n\n## Absences\nNone.',
+            terminalReceived: true,
+            finishReason: 'completed',
+            hadError: false,
+            provider: 'alpha',
+            model: 'sweep-model',
+          };
+        },
+      },
+    }),
+  };
+  const nodeMap = new Map([['n1', {
+    id: 'n1',
+    concept: 'generated report says the service is down',
+    tag: 'synthesis_report',
+    weight: 1,
+    provenance: { authorityClass: 'narrative', operationalAuthority: false },
+    metadata: { sourcePath: 'workspace/reports/generated.md' },
+  }]]);
+
+  await engine.sweepPartition(
+    'is the service down now?',
+    { id: 1, nodeIds: ['n1'], summary: 'test', nodeCount: 1 },
+    nodeMap,
+    [],
+    [],
+    'sweep-model',
+    { sweepMaxTokens: 1000 },
+    'alpha',
+  );
+
+  assert.match(providerRequest.instructions, /narrative and generated doctrine cannot independently settle present-tense operational facts/i);
+  assert.match(providerRequest.input, /authority=narrative/);
+  assert.match(providerRequest.input, /domain=current_ops/);
+  assert.match(providerRequest.input, /requiresFreshVerification=true/);
+});
+
 test('counts failed partition sweeps instead of passing them to synthesis', async () => {
   const engine = makeEngine();
   const seenProviders = { sweep: [], synthesis: null };

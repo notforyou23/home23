@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { NetworkMemory } = require('../../../engine/src/memory/network-memory.js');
+const { scoreMemorySalience } = require('../../../engine/src/memory/provenance-salience.js');
 
 function makeMemory() {
   const memory = new NetworkMemory({
@@ -116,6 +117,125 @@ test('retrieval salience demotes cron conversation logs below direct user conver
   assert.equal(direct.source_class, 'conversation');
   assert.equal(cron.source_class, 'telemetry');
   assert.ok(directScore > cronScore);
+});
+
+test('current-state retrieval suppresses an older open alarm when a newer verified closure exists', async () => {
+  const memory = makeMemory();
+  const alarm = await memory.addNode({
+    concept: 'Brain endpoint incident is open and retrieval is down.',
+    tag: 'incident', status: 'open', asserted_at: '2026-07-13T12:00:00.000Z',
+    metadata: { incidentId: 'brain-fetch' },
+  }, 'incident', [1, 0]);
+  const closure = await memory.addNode({
+    concept: '[GOAL_RESOLUTION] COMPLETED brain endpoint incident after live probe.',
+    tag: 'goal_resolution', type: 'goal_resolution', status: 'completed',
+    asserted_at: '2026-07-14T15:00:00.000Z',
+    metadata: { kind: 'goal_resolution', incidentId: 'brain-fetch', resolved_at: '2026-07-14T15:00:00.000Z' },
+    provenance: { source_refs: ['receipt:brain-fetch'] },
+  }, 'goal_resolution', [1, 0]);
+
+  const results = await memory.query('current brain endpoint incident status', 5, {
+    intent: 'current_state', markAccess: false, nowMs: Date.parse('2026-07-14T16:00:00.000Z'),
+  });
+
+  assert.equal(results[0].id, closure.id);
+  assert.equal(results.some((node) => node.id === alarm.id), false);
+  assert.equal(results[0].resolutionEvidence.resolves[0], 'incident:brain-fetch');
+});
+
+test('recurrence retrieval keeps incident history but ranks the closure before the old alarm', async () => {
+  const memory = makeMemory();
+  const alarm = await memory.addNode({
+    concept: 'Brain endpoint incident is open and retrieval is down.', tag: 'incident', status: 'open',
+    asserted_at: '2026-07-13T12:00:00.000Z', metadata: { incidentId: 'brain-fetch' },
+  }, 'incident', [1, 0]);
+  const closure = await memory.addNode({
+    concept: '[GOAL_RESOLUTION] COMPLETED brain endpoint incident.', tag: 'goal_resolution',
+    type: 'goal_resolution', status: 'completed', asserted_at: '2026-07-14T15:00:00.000Z',
+    metadata: { kind: 'goal_resolution', incidentId: 'brain-fetch', resolved_at: '2026-07-14T15:00:00.000Z' },
+  }, 'goal_resolution', [1, 0]);
+
+  const results = await memory.query('brain endpoint incident recurrence history', 5, {
+    intent: 'history', markAccess: false, nowMs: Date.parse('2026-07-14T16:00:00.000Z'),
+  });
+
+  assert.equal(results[0].id, closure.id);
+  assert.equal(results.some((node) => node.id === alarm.id), true);
+});
+
+test('a progress receipt cannot suppress an open incident as if it were closure proof', async () => {
+  const memory = makeMemory();
+  const alarm = await memory.addNode({
+    concept: 'Brain endpoint incident remains open.', tag: 'incident', status: 'open',
+    asserted_at: '2026-07-13T12:00:00.000Z', metadata: { incidentId: 'brain-fetch' },
+  }, 'incident', [1, 0]);
+  await memory.addNode({
+    concept: 'Worker progress receipt: investigation started.', tag: 'worker_receipt', status: 'running',
+    asserted_at: '2026-07-14T15:00:00.000Z',
+    metadata: { incidentId: 'brain-fetch', receipt_id: 'progress-1' },
+  }, 'worker_receipt', [1, 0]);
+
+  const results = await memory.query('current brain endpoint incident status', 5, {
+    intent: 'current_state', markAccess: false, nowMs: Date.parse('2026-07-14T16:00:00.000Z'),
+  });
+
+  assert.equal(results.some((node) => node.id === alarm.id), true);
+  const progress = results.find((node) => node.metadata?.receipt_id === 'progress-1');
+  assert.ok(progress);
+  assert.equal(progress?.resolutionEvidence, undefined);
+});
+
+test('verified live telemetry is not penalized below equivalent verified state evidence', async () => {
+  const memory = makeMemory();
+  const evidence = {
+    asserted_at: '2026-07-14T15:59:00.000Z',
+    provenance: { authority: { presentTenseAuthority: true }, source_refs: ['probe:live'] },
+    evidence: { evidence_links: ['verifier:live'] },
+  };
+  const telemetry = { ...evidence, concept: 'Live metric is healthy.', tag: 'telemetry' };
+  const snapshot = { ...evidence, concept: 'Live state is healthy.', tag: 'state_snapshot' };
+  const options = { intent: 'current_state', nowMs: Date.parse('2026-07-14T16:00:00.000Z') };
+
+  const telemetryScore = scoreMemorySalience(telemetry, 1, options);
+  const snapshotScore = scoreMemorySalience(snapshot, 1, options);
+
+  assert.ok(telemetryScore >= snapshotScore * 0.95);
+});
+
+test('closure index cache survives access-only mutations but invalidates for structural node changes', async () => {
+  const memory = makeMemory();
+  const closure = await memory.addNode({
+    concept: '[GOAL_RESOLUTION] COMPLETED incident.', tag: 'goal_resolution', type: 'goal_resolution',
+    status: 'completed', metadata: { incidentId: 'brain-fetch', resolved_at: '2026-07-14T15:00:00.000Z' },
+  }, 'goal_resolution', [1, 0]);
+  const first = memory.buildClosureIndex();
+
+  memory.recordNodeAccess([closure.id]);
+  assert.equal(memory.buildClosureIndex(), first);
+
+  await memory.addNode({
+    concept: '[GOAL_RESOLUTION] COMPLETED second incident.', tag: 'goal_resolution', type: 'goal_resolution',
+    status: 'completed', metadata: { incidentId: 'second', resolved_at: '2026-07-14T15:30:00.000Z' },
+  }, 'goal_resolution', [1, 0]);
+  assert.notEqual(memory.buildClosureIndex(), first);
+});
+
+test('peripheral semantic retrieval applies authority ranking instead of returning narrative by activation alone', async () => {
+  const memory = makeMemory();
+  const narrative = await memory.addNode({
+    concept: 'Brain endpoint status report.', tag: 'synthesis_report', activation: 0.01,
+  }, 'synthesis_report', [1, 0]);
+  const verified = await memory.addNode({
+    concept: 'Brain endpoint live probe succeeded.', tag: 'state_snapshot', activation: 0.2,
+    asserted_at: new Date().toISOString(),
+    provenance: { authority: { presentTenseAuthority: true }, source_refs: ['probe:brain'] },
+    evidence: { evidence_links: ['verifier:brain'] },
+  }, 'state_snapshot', [1, 0]);
+
+  const results = await memory.queryPeripheral('brain endpoint status', 2);
+
+  assert.equal(results[0].id, verified.id);
+  assert.ok(results[0].retrievalScore > results.find((node) => node.id === narrative.id).retrievalScore);
 });
 
 test('addNode preserves temporal metadata through exportGraph', async () => {

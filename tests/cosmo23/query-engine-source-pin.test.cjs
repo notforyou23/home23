@@ -43,8 +43,21 @@ function sourcePin() {
     descriptor: { cutoffRevision: 11 },
     async *iterateNodes({ signal } = {}) {
       if (signal?.aborted) throw signal.reason;
-      yield { id: 'n1', content: 'alpha canary evidence', salience: 1 };
-      yield { id: 'n2', content: 'supporting evidence', salience: 0.5 };
+      yield {
+        id: 'n1', content: 'alpha canary evidence', salience: 1,
+        provenance: {
+          authorityClass: 'verified_current_state',
+          evidenceRefs: ['verifier:query-source-pin'],
+          sourceRefs: ['/Users/jtr/private/query-current.json'],
+        },
+      };
+      yield {
+        id: 'n2', content: 'supporting evidence', salience: 0.5,
+        provenance: {
+          authorityClass: 'narrative',
+          sourceRefs: ['/Users/jtr/private/query-history.json'],
+        },
+      };
     },
     async *iterateEdges({ signal } = {}) {
       if (signal?.aborted) throw signal.reason;
@@ -150,6 +163,23 @@ test('operation query uses only the pinned iterator and exact provider pair', as
   assert.equal(calls[0].provider, 'alpha');
   assert.equal(calls[0].model, 'answer-model');
   assert.equal(calls[0].signal, options.signal);
+  const providerInput = JSON.parse(calls[0].input);
+  assert.deepEqual(
+    providerInput.source.nodeAuthorities.map(authority => authority.id),
+    providerInput.source.nodes.map(node => node.id),
+  );
+  assert.equal(JSON.stringify(providerInput).includes('/Users/jtr/'), false);
+  assert.deepEqual(result.sourceEvidence.authoritySummary, {
+    verifiedCurrentState: 1,
+    jtrCorrection: 0,
+    artifactLog: 0,
+    workerReceipt: 0,
+    generatedDoctrine: 0,
+    narrative: 1,
+    requiresFreshVerification: 1,
+  });
+  assert.match(calls[0].instructions, /narrative and generated doctrine cannot independently settle present-tense operational facts/i);
+  assert.match(calls[0].instructions, /fresh verification/i);
   assert.deepEqual(events, [
     {
       type: 'progress', phase: 'query', stage: 'projection_complete',
@@ -264,6 +294,14 @@ test('thin Dive performs exactly one bounded expansion call', async () => {
       .map(event => event.providerCallId),
     ['query', 'query-expand'],
   );
+  for (const call of calls) {
+    const providerInput = JSON.parse(call.input);
+    assert.deepEqual(
+      providerInput.source.nodeAuthorities.map(authority => authority.id),
+      providerInput.source.nodes.map(node => node.id),
+    );
+    assert.equal(JSON.stringify(providerInput).includes('/Users/jtr/'), false);
+  }
 });
 
 test('failed Dive expansion preserves the useful first answer as Partial', async () => {
@@ -369,6 +407,16 @@ test('Jerry-shaped projection is trimmed to the prompt budget and reaches the pr
   assert.equal(result.metadata.projection.nodesRetained < 2_000, true);
   assert.equal(result.metadata.projection.retainedBytes < 8 * 1024 * 1024, true);
   assert.equal(pin.stats().recordsConsumed, 6_000);
+  const providerInput = JSON.parse(calls[0].input);
+  assert.deepEqual(
+    providerInput.source.nodeAuthorities.map(authority => authority.id),
+    providerInput.source.nodes.map(node => node.id),
+  );
+  assert.equal(providerInput.source.nodeAuthorities.length, result.metadata.projection.nodesRetained);
+  assert.equal(
+    result.sourceEvidence.authoritySummary.narrative,
+    result.metadata.projection.nodesRetained,
+  );
 });
 
 test('gpt-5.5 large-brain projection stays below its conservative model context budget', async () => {

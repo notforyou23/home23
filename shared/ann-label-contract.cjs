@@ -7,6 +7,7 @@ const MAX_ANN_LABEL_TAG_BYTES = 1024;
 const MAX_ANN_LABEL_CLUSTER_BYTES = 1024;
 const MAX_ANN_LABEL_CREATED_BYTES = 256;
 const MAX_ANN_LABEL_SOURCE_CLASS_BYTES = 128;
+const MAX_ANN_LABEL_AUTHORITY_BYTES = 128;
 
 function contractError(message) {
   const error = new TypeError(message);
@@ -73,6 +74,21 @@ function projectAnnLabel(label, {
       ? compactUtf8(sourceClass, MAX_ANN_LABEL_SOURCE_CLASS_BYTES)
       : undefined,
     salienceWeight: optionalFiniteNumber(salienceWeight),
+    retrievalDomain: typeof label.retrievalDomain === 'string'
+      ? compactUtf8(label.retrievalDomain, MAX_ANN_LABEL_AUTHORITY_BYTES)
+      : undefined,
+    authorityClass: typeof label.authorityClass === 'string'
+      ? compactUtf8(label.authorityClass, MAX_ANN_LABEL_AUTHORITY_BYTES)
+      : undefined,
+    semanticTime: typeof label.semanticTime === 'string'
+      ? compactUtf8(label.semanticTime, MAX_ANN_LABEL_AUTHORITY_BYTES)
+      : undefined,
+    status: typeof label.status === 'string'
+      ? compactUtf8(label.status, MAX_ANN_LABEL_AUTHORITY_BYTES)
+      : undefined,
+    evidencePresent: typeof label.evidencePresent === 'boolean'
+      ? label.evidencePresent
+      : undefined,
   };
   for (const key of Object.keys(projected)) {
     if (projected[key] === undefined) delete projected[key];
