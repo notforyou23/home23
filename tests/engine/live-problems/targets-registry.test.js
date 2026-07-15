@@ -1,12 +1,34 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { TargetsRegistry } = require('../../../engine/src/live-problems/registry.js');
 
-test('targets registry allows sibling-agent notification signal files', () => {
-  const registry = new TargetsRegistry();
+function testRegistry(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-targets-registry-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const filePath = path.join(root, 'targets.yaml');
+  fs.writeFileSync(filePath, JSON.stringify({
+    files: [
+      { path: '/Users/jtr/_JTR23_/release/home23/instances/jerry/brain/actions.jsonl' },
+      { path: '/Users/jtr/_JTR23_/release/home23/instances/forrest/brain/actions.jsonl' },
+      { path: '/Users/jtr/_JTR23_/release/home23/instances/forrest/brain/signals.jsonl' },
+      { path: '/Users/jtr/_JTR23_/release/home23/instances/forrest/conversations/cron-jobs.json' },
+    ],
+    urls: [],
+    pm2: [{ name: 'home23-forrest' }],
+    mounts: [],
+    sensors: [],
+  }));
+  return new TargetsRegistry({ filePath });
+}
+
+test('targets registry allows sibling-agent notification signal files', (t) => {
+  const registry = testRegistry(t);
 
   assert.deepEqual(
     registry.validateVerifier({
@@ -37,8 +59,8 @@ test('targets registry allows sibling-agent notification signal files', () => {
   );
 });
 
-test('targets registry rejects action-ledger freshness checks but allows specific receipt lookups', () => {
-  const registry = new TargetsRegistry();
+test('targets registry rejects action-ledger freshness checks but allows specific receipt lookups', (t) => {
+  const registry = testRegistry(t);
 
   assert.deepEqual(
     registry.validateVerifier({
@@ -77,8 +99,8 @@ test('targets registry rejects action-ledger freshness checks but allows specifi
   );
 });
 
-test('targets registry allows Forrest PM2 and dashboard targets', () => {
-  const registry = new TargetsRegistry();
+test('targets registry allows Forrest PM2 and dashboard targets', (t) => {
+  const registry = testRegistry(t);
 
   assert.deepEqual(
     registry.validateVerifier({
@@ -97,8 +119,8 @@ test('targets registry allows Forrest PM2 and dashboard targets', () => {
   );
 });
 
-test('targets registry allows cron job error verifiers for known agent cron state', () => {
-  const registry = new TargetsRegistry();
+test('targets registry allows cron job error verifiers for known agent cron state', (t) => {
+  const registry = testRegistry(t);
 
   assert.deepEqual(
     registry.validateVerifier({
