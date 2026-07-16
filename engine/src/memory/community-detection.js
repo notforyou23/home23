@@ -201,6 +201,7 @@ function assignStableClusterIds(groups, memory) {
         original: best.original,
         overlap: best.count,
         size: group.members.length,
+        // members pre-sorted by fold — [0] is the string-smallest.
         smallestMember: group.members[0],
       });
     }
