@@ -721,8 +721,11 @@ node --test tests/engine/memory/community-detection.test.js 2>&1 | grep -E "^✖
 cp /tmp/cd.bak engine/src/memory/community-detection.js
 ```
 
-Expected: `✖ bridge discount is load-bearing…` fails (and likely the split test).
-If zero failures: the fixture's bridges are too weak to matter — STOP, fix.
+Expected: `✖ bridge discount is load-bearing…` fails (node 900's "whispered"
+assertion — at full bridge weight it gets pulled to clique B). The split test
+still passes under this mutant (two weak cross-edges cannot fuse dense cliques
+under sum voting at any weight — that is by design). If zero failures: STOP, fix
+the fixture.
 
 - [ ] **Step 2: Mutant B — break the tie-break**
 
