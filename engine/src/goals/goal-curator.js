@@ -9,6 +9,7 @@ const {
   createStructuredOutputRequest,
   parseStructuredOutput
 } = require('../schemas/structured-outputs');
+const { isUserRequestedGoalSource, goalSourceLabel } = require('./intrinsic-goals');
 
 /**
  * Goal Cultivation Substrate
@@ -279,6 +280,26 @@ class GoalCurator {
   async recordGoalResolutionMemory(event, narrative, resolutionType) {
     if (!this.memory || typeof this.memory.addNode !== 'function') return;
     const goal = event.goal || {};
+
+    // Governing rule: "something happened" -> event, worth keeping. "A loop
+    // ticked" -> not an event, no record. Almost every goal in this system
+    // is machine-initiated (dream, sleep analysis, guided-mode startup
+    // missions, meta-coordinator gap detection, topic queue, recursive
+    // planner, LLM thought-action create_goal). Resolving one of those is
+    // the goal machinery finishing its own bookkeeping, not something jtr
+    // asked for and got. A goal jtr actually requested (MCP action queue /
+    // dashboard query interface) completing or being archived IS a real
+    // event worth a permanent receipt. isUserRequestedGoalSource() is the
+    // only structural signal available for "did jtr ask for this" -- see
+    // intrinsic-goals.js for the source labels this checks and why.
+    if (!isUserRequestedGoalSource(goal.source)) {
+      this.logger?.debug?.('Skipped goal_resolution memory write for machine-initiated goal', {
+        goalId: event.goalId,
+        resolutionType,
+        source: goalSourceLabel(goal.source) || '(none)',
+      });
+      return;
+    }
     const resolvedAt = new Date().toISOString();
     const cycle = event.cycle ?? null;
     const notes = resolutionType === 'archived'

@@ -121,7 +121,13 @@ class TrajectoryForkSystem {
       cyclesCompleted: 0,
       thoughts: [],
       insights: [],
-      memoryNodes: []
+      memoryNodes: [],
+      // Structural signal for whether this fork ever grounded itself in
+      // real memory (see exploreFork()/completeFork() below) -- mirrors
+      // AnalysisAgent's relevantKnowledge.length gate (analysis-agent.js):
+      // the only honest way to know whether a consolidation is "something
+      // happened" vs. GPT free-associating from the trigger thought alone.
+      hadGroundedContext: false
     };
 
     this.activeForks.set(forkId, fork);
@@ -173,6 +179,9 @@ class TrajectoryForkSystem {
       try {
         // Query memory with fork's context
         const memoryContext = await this.memory.query(fork.explorationPrompt, 3);
+        if (Array.isArray(memoryContext) && memoryContext.length > 0) {
+          fork.hadGroundedContext = true;
+        }
 
         // Generate thought for this fork cycle
         const context = {
@@ -191,7 +200,14 @@ class TrajectoryForkSystem {
 
         const thought = await this.quantum.collapseSuperposition(superposition);
 
-        // Store thought in fork
+        // Store thought in fork (working memory for this fork's own
+        // isForkComplete()/consolidateFork() logic below -- NOT written to
+        // permanent memory. A raw per-cycle fork thought is exploratory
+        // scratch, same as any other cognitive-cycle thought: see
+        // shouldPersistThought() in orchestrator.js. Fork cycles never run
+        // goal-capture, so under that same rule they would never qualify
+        // for persistence anyway; this makes that explicit instead of
+        // unconditionally writing every cycle to memory forever.
         fork.thoughts.push({
           cycle,
           hypothesis: thought.hypothesis,
@@ -199,16 +215,6 @@ class TrajectoryForkSystem {
           usedWebSearch: thought.usedWebSearch,
           timestamp: new Date()
         });
-
-        // Add to memory with fork tag (with validation)
-        const forkValidation = validateAndClean(`[FORK:${fork.id}] ${thought.hypothesis}`);
-        if (forkValidation.valid) {
-          const memoryNode = await this.memory.addNode(
-            forkValidation.content,
-            `fork_${fork.depth}`
-          );
-          fork.memoryNodes.push(memoryNode.id);
-        }
 
         // Extract insights
         const insight = await this.extractInsight(thought, fork);
@@ -339,10 +345,16 @@ class TrajectoryForkSystem {
     fork.endTime = new Date();
     fork.duration = fork.endTime - fork.startTime;
 
-    // Generate consolidation summary
-    if (status === 'completed' && fork.thoughts.length > 0) {
+    // Generate consolidation summary. Mirrors AnalysisAgent's grounding gate
+    // (analysis-agent.js): a fork that never found any relevant memory
+    // context across its cycles is GPT free-associating from the trigger
+    // thought alone, with nothing external to synthesize. That is not run,
+    // not run-and-discarded -- the same "not a single honest signal for
+    // 'is this insight real' other than whether there was anything to
+    // ground it in" reasoning applies here as there.
+    if (status === 'completed' && fork.thoughts.length > 0 && fork.hadGroundedContext) {
       fork.consolidation = await this.consolidateFork(fork);
-      
+
       // Add consolidated insight to memory (with validation)
       if (fork.consolidation) {
         const consolidationValidation = validateAndClean(`[FORK_RESULT:${fork.id}] ${fork.consolidation}`);
