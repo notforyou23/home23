@@ -21,6 +21,7 @@ const {
   planConsolidationBacklogCompost,
 } = require('../memory/consolidation-backlog');
 const { applyMemoryRecluster, planMemoryRecluster } = require('../memory/recluster');
+const { applyMemoryCommunities, planMemoryCommunities } = require('../memory/community-detection');
 
 class RealtimeServer {
   constructor(port = 3400, logger = null) {
@@ -545,6 +546,7 @@ class RealtimeServer {
       '/admin/memory/cleanup/compost-backlog',
       '/admin/memory/cleanup/preamble',
       '/admin/memory/cleanup/recluster',
+      '/admin/memory/cleanup/communities',
     ]);
     if (!knownRoutes.has(url)) {
       return json(404, { ok: false, error: `Unknown memory cleanup route: ${req.method} ${url}` });
@@ -657,6 +659,46 @@ class RealtimeServer {
         unclusteredBefore: plan.unclusteredBefore,
         unclusteredAfter: Math.max(0, plan.unclusteredBefore - applied.assignedToExisting - applied.assignedToNewClusters),
       });
+    }
+
+    if (url === '/admin/memory/cleanup/communities') {
+      const maxIterationsValue = body.maxIterations ?? requestUrl.searchParams.get('maxIterations');
+      const minCommunitySizeValue = body.minCommunitySize ?? requestUrl.searchParams.get('minCommunitySize');
+      const plan = planMemoryCommunities(memory, {
+        ...(maxIterationsValue != null ? { maxIterations: Number(maxIterationsValue) } : {}),
+        ...(minCommunitySizeValue != null ? { minCommunitySize: Number(minCommunitySizeValue) } : {}),
+      });
+      const summary = {
+        communityCount: plan.communityCount,
+        movedNodes: plan.movedNodes,
+        unchanged: plan.unchanged,
+        converged: plan.converged,
+        iterations: plan.iterations,
+        degenerate: plan.degenerate,
+        sizes: plan.sizes.slice(0, 50),
+        sample: plan.sample,
+      };
+
+      if (req.method === 'GET' || mode === 'dry-run') {
+        return json(200, { ok: true, mode: 'dry-run', ...summary });
+      }
+      if (req.method !== 'POST') {
+        return json(405, { ok: false, error: 'method not allowed' });
+      }
+      if (mode !== 'apply') {
+        return json(400, { ok: false, error: 'mode must be dry-run or apply' });
+      }
+      // Event rule: nothing moved — no backup, no mutation, no save.
+      if (plan.unchanged) {
+        return json(200, { ok: true, mode: 'apply', unchanged: true, movedNodes: 0 });
+      }
+
+      const backup = this._backupBrainSidecars('brain-communities');
+      const applied = applyMemoryCommunities(memory, plan);
+      if (typeof this.orchestrator.saveState === 'function') {
+        await this.orchestrator.saveState();
+      }
+      return json(200, { ok: true, mode: 'apply', backup, ...summary, ...applied });
     }
 
     const limitValue = body.limit ?? requestUrl.searchParams.get('limit');
