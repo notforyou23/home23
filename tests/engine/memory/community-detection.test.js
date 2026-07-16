@@ -184,6 +184,7 @@ test('degenerate flag: one dense blob reports honestly', () => {
 
 test('sub-floor appendage folds into its best-connected neighbor community', () => {
   // 12-node core clique + 4-node satellite clique, joined by 3 real edges.
+  // Propagation alone absorbs this fixture — the fold-specific pin is the bridge-tethered test below.
   const nodes = [];
   const edges = [];
   for (let i = 1; i <= 12; i++) nodes.push(node(i));
@@ -196,7 +197,7 @@ test('sub-floor appendage folds into its best-connected neighbor community', () 
   assert.equal(plan.communities[0].members.length, 16);
 });
 
-test('folding is load-bearing: a bridge-tethered satellite propagation keeps separate still folds', () => {
+test('folding is load-bearing: a bridge-tethered satellite that propagation keeps separate still folds', () => {
   // Same 12-core + 4-satellite shape, but the 3 connecting edges are BRIDGES
   // (vote 0.2 each). Propagation alone keeps the satellite separate — bridges
   // whisper — so only the floor fold can merge it. Red under the identity
@@ -225,4 +226,54 @@ test('an isolated island below the floor survives — it is a real island', () =
   assert.equal(plan.communityCount, 2);
   const sizes = plan.communities.map((c) => c.members.length).sort((a, b) => a - b);
   assert.deepEqual(sizes, [4, 12]);
+});
+
+test('fold target is chosen by summed connection strength, not strongest single edge', () => {
+  // Two 12-cliques A (1..12) and B (21..32), plus a 3-clique fragment F
+  // (41..43) below the floor. All tethers are bridge-typed so propagation
+  // cannot absorb F. F->A: two w=1 bridges (0.2+0.2=0.4 summed);
+  // F->B: one w=1.5 bridge (0.3). Sum semantics fold F into A; a
+  // strongest-single-edge mutant would pick B (0.3 > 0.2).
+  const nodes = [];
+  const edges = [];
+  for (let i = 1; i <= 12; i++) nodes.push(node(i));
+  for (let i = 1; i <= 12; i++) for (let j = i + 1; j <= 12; j++) edges.push(edge(i, j, 1));
+  for (let i = 21; i <= 32; i++) nodes.push(node(i));
+  for (let i = 21; i <= 32; i++) for (let j = i + 1; j <= 32; j++) edges.push(edge(i, j, 1));
+  for (let i = 41; i <= 43; i++) nodes.push(node(i));
+  for (let i = 41; i <= 43; i++) for (let j = i + 1; j <= 43; j++) edges.push(edge(i, j, 1));
+  edges.push(edge(41, 1, 1, 'bridge'));
+  edges.push(edge(42, 2, 1, 'bridge'));
+  edges.push(edge(43, 21, 1.5, 'bridge'));
+  const plan = planMemoryCommunities(makeMemory({ nodes, edges }), { minCommunitySize: 6 });
+  assert.equal(plan.communityCount, 2);
+  const withA = plan.communities.find((c) => c.members.includes(1));
+  assert.ok(withA, 'community containing node 1 missing');
+  assert.ok(withA.members.includes(41) && withA.members.includes(43),
+    'fragment must fold into A (summed 0.4) not B (single 0.3)');
+  const withB = plan.communities.find((c) => c.members.includes(21));
+  assert.equal(withB.members.length, 12, 'B must not absorb the fragment');
+});
+
+test('a fold target that crosses the floor mid-pass stops folding (live-set guard)', () => {
+  // Core 12-clique (1..12). Two 4-clique fragments F1 (51..54) and F2
+  // (61..64), floor 6. F1<->F2: three w=1 bridges (0.6 summed);
+  // F1->core: one w=1 bridge (0.2). F1 folds into F2 first (0.6 > 0.2);
+  // F2 then holds 8 members >= floor and must NOT fold anywhere.
+  const nodes = [];
+  const edges = [];
+  for (let i = 1; i <= 12; i++) nodes.push(node(i));
+  for (let i = 1; i <= 12; i++) for (let j = i + 1; j <= 12; j++) edges.push(edge(i, j, 1));
+  for (const base of [50, 60]) {
+    for (let i = 1; i <= 4; i++) nodes.push(node(base + i));
+    for (let i = 1; i <= 4; i++) for (let j = i + 1; j <= 4; j++) edges.push(edge(base + i, base + j, 1));
+  }
+  edges.push(edge(51, 61, 1, 'bridge'));
+  edges.push(edge(52, 62, 1, 'bridge'));
+  edges.push(edge(53, 63, 1, 'bridge'));
+  edges.push(edge(54, 1, 1, 'bridge'));
+  const plan = planMemoryCommunities(makeMemory({ nodes, edges }), { minCommunitySize: 6 });
+  assert.equal(plan.communityCount, 2);
+  const sizes = plan.communities.map((c) => c.members.length).sort((a, b) => a - b);
+  assert.deepEqual(sizes, [8, 12], 'fragments merge with each other, not into the core');
 });

@@ -161,6 +161,8 @@ function foldSmallCommunities(groups, adjacency, minCommunitySize) {
     }
   }
 
+  // label is plan-internal (sort tiebreak only) — not stable across runs;
+  // never key identity off it.
   return Array.from(members.entries())
     .map(([label, ids]) => ({ label, members: Array.from(ids).sort(compareAsStrings) }))
     .sort((a, b) => b.members.length - a.members.length || compareAsStrings(a.label, b.label));
