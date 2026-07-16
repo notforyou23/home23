@@ -2,6 +2,30 @@ const { BaseAgent } = require('./base-agent');
 const { parseWithFallback } = require('../core/json-repair');
 
 /**
+ * Governing rule (jtr, 2026-07-15): "Something happened" -> event, worth
+ * keeping. "A loop ticked" -> not an event, no record. AnalysisAgent runs
+ * multi-perspective GPT-5.5 reasoning (3 perspectives + synthesis +
+ * implications, all high-reasoning-effort calls) from the mission
+ * description alone -- it has no code-context fallback once relevantKnowledge
+ * comes back empty. An analysis mission with zero relevant knowledge in
+ * memory is the machine reasoning at length about something it has no
+ * information on, then filing the result forever: measured at ~10,152
+ * analysis_insight/novel_implication nodes per generation on the live brain.
+ *
+ * There is no honest "is this insight real" signal to gate the node writes
+ * on -- the generated text reads like real analysis whether or not there was
+ * anything to analyze, so gating addInsight()/addFinding() would require
+ * inventing a semantic quality heuristic. The only structural, honest signal
+ * is relevantKnowledge.length itself, known BEFORE any paid LLM call is made.
+ * So the gate lives here: the mission does not run at all when there is
+ * nothing to analyze. Not run-and-discard -- not run. This mirrors
+ * SynthesisAgent's requiresGroundedSynthesis()/allowsZeroEvidenceSynthesis()
+ * escape hatch (see synthesis-agent.js) so a mission that explicitly opts
+ * into ungrounded reasoning (mission.metadata.allowZeroEvidence, etc.) is
+ * still honored as a real, explicitly-requested event.
+ */
+
+/**
  * AnalysisAgent - Deep analysis and novel idea exploration specialist
  * 
  * Purpose:
@@ -61,6 +85,39 @@ class AnalysisAgent extends BaseAgent {
       nodesFound: relevantKnowledge.length,
       hasCodeData: relevantKnowledge.some(n => n.tags?.includes('source_code_file'))
     });
+
+    // Governing rule: an analysis mission with nothing to analyze must not
+    // run -- not run-and-discard. See the module-level comment above for why
+    // this lives here (scheduling level) rather than as a node-write gate.
+    if (relevantKnowledge.length === 0 && !this.allowsZeroEvidenceAnalysis()) {
+      const message = 'Analysis halted: zero relevant knowledge in memory. Refusing to run multi-perspective reasoning from mission text alone.';
+      this.logger.info(`🚫 ${message}`, {
+        agentId: this.agentId,
+        goal: this.mission.goalId,
+        mission: this.mission.description
+      });
+      this.results.push({
+        type: 'diagnostic',
+        status: 'needs_input',
+        reason: 'zero_evidence',
+        message,
+        timestamp: new Date()
+      });
+      await this.reportProgress(100, 'Analysis skipped: no relevant knowledge to analyze');
+      return {
+        success: false,
+        status: 'needs_input',
+        reason: 'zero_evidence',
+        perspectivesAnalyzed: 0,
+        insightsGenerated: 0,
+        implicationsIdentified: 0,
+        metadata: {
+          perspectivesAnalyzed: 0,
+          insightsGenerated: 0,
+          status: 'needs_input'
+        }
+      };
+    }
 
     // NEW: Explore knowledge domain to understand context
     if (relevantKnowledge.length > 0) {
@@ -216,6 +273,27 @@ class AnalysisAgent extends BaseAgent {
         status: 'complete'
       }
     };
+  }
+
+  /**
+   * Structural escape hatch for the zero-evidence gate above. Mirrors
+   * SynthesisAgent.allowsZeroEvidenceSynthesis() exactly (same mission-level
+   * flag names) so a caller that explicitly wants ungrounded reasoning --
+   * e.g. a mission jtr asked for where reasoning from the prompt alone is
+   * the point -- can opt in via mission metadata. No caller currently sets
+   * these flags for 'analysis' missions; the hatch exists for parity with
+   * the established pattern and so a future explicit request is not eaten
+   * by this gate.
+   */
+  allowsZeroEvidenceAnalysis() {
+    return Boolean(
+      this.mission?.allowZeroEvidence === true ||
+      this.mission?.allow_zero_evidence === true ||
+      this.mission?.metadata?.allowZeroEvidence === true ||
+      this.mission?.metadata?.allow_zero_evidence === true ||
+      this.mission?.metadata?.zeroContextAllowed === true ||
+      this.mission?.metadata?.zero_context_allowed === true
+    );
   }
 
   /**
