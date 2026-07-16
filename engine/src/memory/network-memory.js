@@ -1405,6 +1405,59 @@ class NetworkMemory {
     });
   }
 
+  applyCommunityPlan(plan) {
+    if (!plan || typeof plan !== 'object') {
+      return { movedNodes: 0, createdClusters: 0, communityCount: 0 };
+    }
+    const communities = Array.from(plan.communities || [])
+      .map((community) => ({
+        clusterId: community?.clusterId ?? null,
+        members: Array.from(new Set(community?.members || []))
+          .filter((nodeId) => this.nodes.has(nodeId)),
+      }))
+      .filter((community) => community.members.length > 0);
+    const communityCount = communities.length;
+
+    // Event rule: a plan that moves nothing must not enter the barrier or
+    // advance the persistence generation. The move test String-compares to
+    // stay consistent with the planner's movedNodes accounting — dry-run and
+    // apply must never disagree (the nightly driver's skip keys off it). A
+    // String-equal member with a type-only mismatch is skipped here BEFORE
+    // _moveNodeToClusterUnsafe, whose strict === would treat it as a move.
+    const nodeNeedsMove = (nodeId, clusterId) => {
+      const node = this.nodes.get(nodeId);
+      if (!node) return false;
+      if (clusterId === null) return true; // fresh community: every member moves
+      if (node.cluster === null || node.cluster === undefined) return true;
+      return String(node.cluster) !== String(clusterId);
+    };
+    const hasAcceptedMove = communities.some(({ clusterId, members }) =>
+      members.some((nodeId) => nodeNeedsMove(nodeId, clusterId)));
+    if (!hasAcceptedMove) {
+      return { movedNodes: 0, createdClusters: 0, communityCount };
+    }
+
+    return this.withPersistenceBarrier(() => {
+      let movedNodes = 0;
+      let createdClusters = 0;
+      for (const { clusterId, members } of communities) {
+        const moving = members.filter((nodeId) => nodeNeedsMove(nodeId, clusterId));
+        if (moving.length === 0) continue;
+        let targetClusterId = clusterId;
+        if (targetClusterId === null) {
+          targetClusterId = this._allocateClusterIdUnsafe();
+          this.clusters.set(targetClusterId, new Set());
+          this._advancePersistenceGenerationUnsafe();
+          createdClusters += 1;
+        }
+        for (const nodeId of moving) {
+          if (this._moveNodeToClusterUnsafe(nodeId, targetClusterId)) movedNodes += 1;
+        }
+      }
+      return { movedNodes, createdClusters, communityCount };
+    });
+  }
+
   _moveNodeToClusterUnsafe(nodeId, clusterId) {
     this._requirePersistenceBarrierUnsafe();
     const node = this.nodes.get(nodeId);
