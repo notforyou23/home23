@@ -113,9 +113,57 @@ function propagateLabels(nodeIds, adjacency, labels, maxIterations) {
   return { iterations, converged };
 }
 
-// Task 2 fills this in. Until then, no folding (identity).
+// Fold communities below the floor into their strongest-connected neighbor
+// community (bridge discount already applied to votes); isolated islands with
+// no external edges survive — real islands are honest data.
 function foldSmallCommunities(groups, adjacency, minCommunitySize) {
-  return groups;
+  const labelOf = new Map();
+  const members = new Map();
+  for (const group of groups) {
+    members.set(group.label, new Set(group.members));
+    for (const id of group.members) labelOf.set(id, group.label);
+  }
+
+  let folded = true;
+  while (folded) {
+    folded = false;
+    // Deterministic order: smallest community first, then label.
+    const candidates = Array.from(members.entries())
+      .filter(([, ids]) => ids.size > 0 && ids.size < minCommunitySize)
+      .sort((a, b) => a[1].size - b[1].size || compareAsStrings(a[0], b[0]));
+    for (const [label, ids] of candidates) {
+      if (!members.has(label) || members.get(label).size >= minCommunitySize) continue;
+      const external = new Map();
+      for (const id of ids) {
+        for (const [neighborId, vote] of adjacency.get(id) || []) {
+          const neighborLabel = labelOf.get(neighborId);
+          if (neighborLabel === label) continue;
+          external.set(neighborLabel, (external.get(neighborLabel) || 0) + vote);
+        }
+      }
+      if (external.size === 0) continue; // genuinely isolated island — keep it
+      let target = null;
+      let targetScore = -Infinity;
+      for (const [neighborLabel, score] of external) {
+        if (score > targetScore
+            || (score === targetScore && compareAsStrings(neighborLabel, target) < 0)) {
+          target = neighborLabel;
+          targetScore = score;
+        }
+      }
+      const targetSet = members.get(target);
+      for (const id of ids) {
+        targetSet.add(id);
+        labelOf.set(id, target);
+      }
+      members.delete(label);
+      folded = true;
+    }
+  }
+
+  return Array.from(members.entries())
+    .map(([label, ids]) => ({ label, members: Array.from(ids).sort(compareAsStrings) }))
+    .sort((a, b) => b.members.length - a.members.length || compareAsStrings(a.label, b.label));
 }
 
 // Task 3 fills this in. Until then, every community gets a fresh id.

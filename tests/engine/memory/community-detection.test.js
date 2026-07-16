@@ -181,3 +181,48 @@ test('degenerate flag: one dense blob reports honestly', () => {
   assert.equal(plan.degenerate, true);
   assert.ok(plan.communityCount < 3);
 });
+
+test('sub-floor appendage folds into its best-connected neighbor community', () => {
+  // 12-node core clique + 4-node satellite clique, joined by 3 real edges.
+  const nodes = [];
+  const edges = [];
+  for (let i = 1; i <= 12; i++) nodes.push(node(i));
+  for (let i = 1; i <= 12; i++) for (let j = i + 1; j <= 12; j++) edges.push(edge(i, j, 1));
+  for (let i = 21; i <= 24; i++) nodes.push(node(i));
+  for (let i = 21; i <= 24; i++) for (let j = i + 1; j <= 24; j++) edges.push(edge(i, j, 1));
+  edges.push(edge(1, 21, 1), edge(2, 22, 1), edge(3, 23, 1));
+  const plan = planMemoryCommunities(makeMemory({ nodes, edges }), { minCommunitySize: 6 });
+  assert.equal(plan.communityCount, 1);
+  assert.equal(plan.communities[0].members.length, 16);
+});
+
+test('folding is load-bearing: a bridge-tethered satellite propagation keeps separate still folds', () => {
+  // Same 12-core + 4-satellite shape, but the 3 connecting edges are BRIDGES
+  // (vote 0.2 each). Propagation alone keeps the satellite separate — bridges
+  // whisper — so only the floor fold can merge it. Red under the identity
+  // stub; green once foldSmallCommunities is real.
+  const nodes = [];
+  const edges = [];
+  for (let i = 1; i <= 12; i++) nodes.push(node(i));
+  for (let i = 1; i <= 12; i++) for (let j = i + 1; j <= 12; j++) edges.push(edge(i, j, 1));
+  for (let i = 21; i <= 24; i++) nodes.push(node(i));
+  for (let i = 21; i <= 24; i++) for (let j = i + 1; j <= 24; j++) edges.push(edge(i, j, 1));
+  edges.push(edge(1, 21, 1, 'bridge'), edge(2, 22, 1, 'bridge'), edge(3, 23, 1, 'bridge'));
+  const plan = planMemoryCommunities(makeMemory({ nodes, edges }), { minCommunitySize: 6 });
+  assert.equal(plan.communityCount, 1);
+  assert.equal(plan.communities[0].members.length, 16);
+});
+
+test('an isolated island below the floor survives — it is a real island', () => {
+  const nodes = [];
+  const edges = [];
+  for (let i = 1; i <= 12; i++) nodes.push(node(i));
+  for (let i = 1; i <= 12; i++) for (let j = i + 1; j <= 12; j++) edges.push(edge(i, j, 1));
+  // 4-node island with NO edges to the core
+  for (let i = 31; i <= 34; i++) nodes.push(node(i));
+  for (let i = 31; i <= 34; i++) for (let j = i + 1; j <= 34; j++) edges.push(edge(i, j, 1));
+  const plan = planMemoryCommunities(makeMemory({ nodes, edges }), { minCommunitySize: 6 });
+  assert.equal(plan.communityCount, 2);
+  const sizes = plan.communities.map((c) => c.members.length).sort((a, b) => a - b);
+  assert.deepEqual(sizes, [4, 12]);
+});
