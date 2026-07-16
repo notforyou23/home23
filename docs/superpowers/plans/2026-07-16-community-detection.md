@@ -1423,7 +1423,7 @@ Task 9 is blocked until jtr reviews this output and says go.
 
 ### Task 9: Post-approval rollout (BLOCKED until jtr approves Task 8's dry-run)
 
-- [ ] **Step 1: Apply on jerry**
+- [ ] **Step 1: Apply on jerry — then iterate to the fixed point**
 
 ```bash
 curl -s --max-time 600 -X POST -H 'Content-Type: application/json' -d '{"mode":"apply"}' \
@@ -1431,6 +1431,14 @@ curl -s --max-time 600 -X POST -H 'Content-Type: application/json' -d '{"mode":"
 ```
 
 Expected: `{ ok: true, mode: "apply", backup: {...}, movedNodes: >0, communityCount: … }`.
+
+**Then immediately dry-run again.** Final review measured (synthetic, jerry
+scale): run 1 moves ~everything into ~294 communities; run 2 on the UNCHANGED
+graph consolidates fragments (~3.9k moves, 294 → ~103); run 3 reaches the fixed
+point (0 moves). The first apply is NOT the settled partition. Repeat
+review→apply until a dry-run returns `unchanged: true` — the cron must not be
+armed before the fixed point, or night 2 silently repartitions thousands of
+nodes with nobody watching.
 
 - [ ] **Step 2: Verify downstream, all four consumers**
 
@@ -1482,15 +1490,22 @@ Expected: one line per agent; jerry `unchanged (0 moves) — skipped` (just
 applied); forrest either applies (small brain, few communities) or reports
 `degenerate` honestly — his ~300-node rebuild may legitimately be 1–2 communities.
 
-- [ ] **Step 4: Confirm the cron job is armed**
+- [ ] **Step 4: ARM the cron job (it ships disabled) and verify the import chain**
 
-```bash
-node -e "const j=JSON.parse(require('fs').readFileSync('config/cron-jobs.json','utf8'));const job=(Array.isArray(j)?j:j.jobs).find(x=>x.id==='community-detection-nightly');console.log(job.enabled, job.schedule.expr)"
-```
+The seed entry in `config/cron-jobs.json` was deliberately committed with
+`"enabled": false` — final review caught that an enabled entry would have
+bypassed the jtr gate the moment the endpoint went live. Arming it, in order:
 
-Expected: `true 45 3 * * *`. Next morning, verify `state.lastRunAtMs` mutated and
-the driver log line appeared — a scheduled job that has never fired is the
-ANN-index disease; do not declare victory until it has run once on its own.
+1. Both agents' partitions at fixed point (Steps 1–3 done, dry-runs `unchanged`).
+2. Flip `enabled` to `true` and restore the name in `config/cron-jobs.json`.
+3. The seed file imports at HARNESS boot only (`src/home.ts:831`) — restart
+   `home23-jerry-harness` (scheduler owner) and verify the job landed:
+   `instances/jerry/conversations/cron-jobs.json` contains
+   `community-detection-nightly` with `enabled: true`.
+4. Next morning, verify the LIVE state (per-agent file, NOT the seed file —
+   the seed's `state` block is a frozen copy): `state.lastRunAtMs` mutated and
+   the driver log line appeared. A scheduled job that has never fired is the
+   ANN-index disease; do not declare victory until it has run once on its own.
 
 - [ ] **Step 5: Commit any rollout adjustments + update session memory**
 
