@@ -71,10 +71,14 @@ test('bridge discount is load-bearing: bridges whisper, associative links pull',
   }
   const communityOf = (plan, id) => plan.communities.find((c) => c.members.includes(id));
   const whispered = planMemoryCommunities(withCrossType('bridge'), { minCommunitySize: 2 });
-  assert.ok(communityOf(whispered, 900).members.includes(1),
+  const w900 = communityOf(whispered, 900);
+  assert.ok(w900, 'node 900 missing from all communities (bridge case)');
+  assert.ok(w900.members.includes(1),
     'discounted bridges: 900 must stay with clique A');
   const pulled = planMemoryCommunities(withCrossType('associative'), { minCommunitySize: 2 });
-  assert.ok(communityOf(pulled, 900).members.includes(11),
+  const p900 = communityOf(pulled, 900);
+  assert.ok(p900, 'node 900 missing from all communities (associative case)');
+  assert.ok(p900.members.includes(11),
     'full-weight links: 900 must be pulled to clique B');
 });
 
@@ -91,8 +95,61 @@ test('sum voting is load-bearing: two weaker edges outvote one stronger edge', (
   add(900, 11, 1, 'associative');
   const plan = planMemoryCommunities(memory, { minCommunitySize: 2 });
   const communityOf = (id) => plan.communities.find((c) => c.members.includes(id));
-  assert.ok(communityOf(900).members.includes(1),
+  const c900 = communityOf(900);
+  assert.ok(c900, 'node 900 missing from all communities');
+  assert.ok(c900.members.includes(1),
     'summed votes (1.2) must beat the single strongest edge (1.0)');
+});
+
+test('tie handling: equal summed votes retain the current label; forced moves pick the smaller label', () => {
+  // Stage 1 (tie-break direction): three prior clusters — clique A = 7,
+  // clique B = 8, node 500 alone in cluster 9 — with ONE 1.0 edge into each
+  // clique. 500's votes are c:7 = 1 vs c:8 = 1 and its own c:9 scores 0, so
+  // it MUST move (strict improvement satisfied) and the tie breaks to the
+  // smaller label: c:7, clique A. A flipped comparator sends it to c:8.
+  // The singleton-seeded path cannot pin the comparator direction: under
+  // largest-wins, the contested node's own label ('n:500' sorts above every
+  // clique label) becomes the tie attractor clique B consolidates onto,
+  // grouping 500 with B for the wrong reason — and no node id can sort above
+  // 'n:2' yet below 'n:16', so no id choice fixes that. Cluster seeding has
+  // no singleton labels to leak.
+  const memory = twoCliquesBridged({ bridgeType: 'bridge' });
+  for (const [id, n] of memory.nodes) n.cluster = id <= 6 ? 7 : 8; // two prior clusters
+  memory.nodes.set(500, { id: 500, cluster: 9, concept: 'tied node' });
+  const add = (a, b, w, t) => memory.edges.set(`${a}->${b}`, edge(a, b, w, t));
+  add(500, 1, 1, 'associative');   // votes for c:7 — smaller label, must win the tie
+  add(500, 11, 1, 'associative');  // votes for c:8
+  const plan = planMemoryCommunities(memory, { minCommunitySize: 2 });
+  const c500 = plan.communities.find((c) => c.members.includes(500));
+  assert.ok(c500, 'node 500 missing from all communities');
+  assert.ok(c500.members.includes(1),
+    'tie between cluster labels must break to the smaller label (c:7, clique A)');
+
+  // Stage 2 (strictness guard): seed from clusters, with 500's OWN cluster
+  // being the LARGER label (c:8) and the tied competitor the SMALLER (c:7).
+  // Tie-break selects c:7 as best (≠ current), scores are equal — strict `>`
+  // keeps 500 in clique B; the `>=` mutant would move it to clique A.
+  const memory2 = twoCliquesBridged({ bridgeType: 'bridge' });
+  for (const [id, n] of memory2.nodes) n.cluster = id <= 6 ? 7 : 8; // two prior clusters
+  memory2.nodes.set(500, { id: 500, cluster: 8, concept: 'tied node' });
+  const add2 = (a, b, w, t) => memory2.edges.set(`${a}->${b}`, edge(a, b, w, t));
+  add2(500, 1, 1, 'associative');   // votes for c:7 — smaller competing label
+  add2(500, 11, 1, 'associative');  // votes for c:8 — its own
+  const plan2 = planMemoryCommunities(memory2, { minCommunitySize: 2 });
+  const c500b = plan2.communities.find((c) => c.members.includes(500));
+  assert.ok(c500b, 'node 500 missing (stage 2)');
+  assert.ok(c500b.members.includes(11),
+    'equal scores must retain the current cluster (8, clique B) — strict improvement only');
+});
+
+test('garbage edges are ignored: NaN weight, dangling endpoints, self-loops', () => {
+  const memory = twoCliquesBridged({ bridgeType: 'bridge' });
+  const add = (a, b, w, t) => memory.edges.set(`${a}->${b}`, edge(a, b, w, t));
+  add(1, 2, NaN, 'associative');       // NaN weight
+  add(1, 999, 1, 'associative');       // dangling endpoint
+  add(3, 3, 1, 'associative');         // self-loop
+  const plan = planMemoryCommunities(memory, { minCommunitySize: 2 });
+  assert.equal(plan.communityCount, 2); // unchanged split, no crash
 });
 
 test('identical input yields an identical plan (determinism)', () => {

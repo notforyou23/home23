@@ -64,6 +64,9 @@ function buildAdjacency(memory, nodeIds, { bridgeVote, minEdgeWeight }) {
     if (!(weight > 0) || weight < minEdgeWeight) continue;
     const vote = weight * (edge?.type === 'bridge' ? bridgeVote : 1);
     if (!(vote > 0)) continue;
+    // Precondition: edge keys are canonical (sorted endpoints, one key per
+    // pair) — _upsertEdgeUnsafe enforces this and legacy load validates it.
+    // A hand-built map with both A->B and B->A keys would double this vote.
     adjacency.get(source).push([target, vote]);
     adjacency.get(target).push([source, vote]);
   }
@@ -122,12 +125,14 @@ function assignStableClusterIds(groups, memory) {
 
 function planMemoryCommunities(memory, options = {}) {
   const nodes = memory?.nodes instanceof Map ? memory.nodes : new Map();
-  const bridgeVote = Number(
+  const rawBridgeVote = Number(
     options.bridgeVote ?? memory?.config?.spreading?.bridgeTraversalFactor ?? 0.2,
   );
+  const bridgeVote = Number.isFinite(rawBridgeVote) ? rawBridgeVote : 0.2;
   const maxIterations = Math.min(100, Math.max(1, Number(options.maxIterations) || DEFAULT_MAX_ITERATIONS));
   const minCommunitySize = Math.min(500, Math.max(2, Number(options.minCommunitySize) || DEFAULT_MIN_COMMUNITY_SIZE));
-  const minEdgeWeight = Number(options.minEdgeWeight ?? 0);
+  const rawMinEdgeWeight = Number(options.minEdgeWeight ?? 0);
+  const minEdgeWeight = Number.isFinite(rawMinEdgeWeight) ? rawMinEdgeWeight : 0;
 
   const nodeIds = Array.from(nodes.keys()).sort(compareAsStrings);
   const totalNodes = nodeIds.length;
@@ -170,9 +175,13 @@ function planMemoryCommunities(memory, options = {}) {
 
   const communities = assignStableClusterIds(groups, { nodes });
 
+  // Sample round-robins across communities (2 per community, 20 total) so a
+  // giant first community cannot crowd every other community out of the plan
+  // preview. movedNodes still counts every move exactly.
   let movedNodes = 0;
-  const sample = [];
+  const perCommunitySamples = [];
   for (const community of communities) {
+    const communitySamples = [];
     for (const nodeId of community.members) {
       const node = nodes.get(nodeId);
       const from = hasCluster(node) ? node.cluster : null;
@@ -181,8 +190,8 @@ function planMemoryCommunities(memory, options = {}) {
         : String(from) !== String(community.clusterId) || from === null;
       if (!moves) continue;
       movedNodes += 1;
-      if (sample.length < 20) {
-        sample.push({
+      if (communitySamples.length < 2) {
+        communitySamples.push({
           id: String(nodeId),
           from: from === null ? null : String(from),
           to: community.clusterId === null ? 'new' : String(community.clusterId),
@@ -190,6 +199,15 @@ function planMemoryCommunities(memory, options = {}) {
         });
       }
     }
+    perCommunitySamples.push(communitySamples);
+  }
+  const sample = [];
+  for (const communitySamples of perCommunitySamples) {
+    for (const s of communitySamples) {
+      if (sample.length >= 20) break;
+      sample.push(s);
+    }
+    if (sample.length >= 20) break;
   }
 
   const largest = communities.reduce((max, c) => Math.max(max, c.members.length), 0);
