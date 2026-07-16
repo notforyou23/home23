@@ -301,8 +301,7 @@ test('a community keeps the prior cluster id it inherited the plurality of membe
   assert.equal(plan.communityCount, 2);
   const ids = plan.communities.map((c) => c.clusterId).sort(compare);
   // original-typed values preserved: numeric 7 stays numeric, string '9' stays string
-  assert.ok(ids.includes(7));
-  assert.ok(ids.includes('9'));
+  assert.deepEqual(ids, [7, '9']);
   // nobody moved: the detected partition matches the prior assignment exactly
   assert.equal(plan.movedNodes, 0);
   assert.equal(plan.unchanged, true);
@@ -345,4 +344,39 @@ test('a genuinely new dense component gets clusterId null (fresh id allocated at
   const freshGroups = plan.communities.filter((c) => c.clusterId === null);
   // prior world had ONE claimable id (cluster 1) — only one community can keep it
   assert.equal(freshGroups.length, 2);
+  assert.equal(String(plan.communities.find((c) => c.clusterId !== null).clusterId), '1');
+});
+
+test('greedy claiming: the larger-overlap community wins a contested prior id; the loser gets null', () => {
+  // X: 8-clique, all prior cluster 1 → label c:1, plurality '1' (overlap 8).
+  // Y: 6 nodes, 4 with prior 1 (ids 21-24) weakly interlinked (w 0.1) and 2
+  // with prior 2 (ids 31,32) heavily linked to everyone in Y (w 5). Heavy
+  // edges pull all of Y to label c:2, but Y's member plurality is still '1'
+  // (4 > 2) — so X and Y CONTEND for prior id 1. X wins on overlap (8 > 4);
+  // Y gets null, NOT its second-choice id 2 (one claim per community).
+  // movedNodes: X keeps id 1 (0 moves) + all of Y moves (6) = 6.
+  // Minority-plurality mutant → Y claims '2' → 4 moves. Overlap-ascending
+  // mutant → Y claims '1', X gets null → 10 moves. Either flips the number.
+  const nodes = [];
+  const edges = [];
+  for (let i = 1; i <= 8; i++) nodes.push(node(i, 1));
+  for (let i = 1; i <= 8; i++) for (let j = i + 1; j <= 8; j++) edges.push(edge(i, j, 1));
+  for (const id of [21, 22, 23, 24]) nodes.push(node(id, 1));
+  for (const id of [31, 32]) nodes.push(node(id, 2));
+  const yIds = [21, 22, 23, 24, 31, 32];
+  for (let a = 0; a < yIds.length; a++) {
+    for (let b = a + 1; b < yIds.length; b++) {
+      const bothWeak = yIds[a] < 30 && yIds[b] < 30;
+      edges.push(edge(yIds[a], yIds[b], bothWeak ? 0.1 : 5));
+    }
+  }
+  const plan = planMemoryCommunities(makeMemory({ nodes, edges }), { minCommunitySize: 2 });
+  assert.equal(plan.communityCount, 2);
+  const xCommunity = plan.communities.find((c) => c.members.includes(1));
+  assert.ok(xCommunity, 'X community missing');
+  assert.equal(String(xCommunity.clusterId), '1', 'X (overlap 8) must win the contested id');
+  const yCommunity = plan.communities.find((c) => c.members.includes(21));
+  assert.ok(yCommunity, 'Y community missing');
+  assert.equal(yCommunity.clusterId, null, 'Y must get null, not fall back to id 2');
+  assert.equal(plan.movedNodes, 6);
 });
