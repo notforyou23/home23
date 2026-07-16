@@ -731,7 +731,58 @@ House rule from this project: tests have passed against weakened implementations
 four times. Each mutant below must make at least one NAMED test fail; if it
 doesn't, STOP and strengthen the test before proceeding.
 
-**Files:** none (temporary edits, always restored)
+**Files:** `tests/engine/memory/community-detection.test.js` (Step 0 strengthening), then temporary module edits, always restored
+
+- [ ] **Step 0: Add the contention fixture (kills Mutants F and G below — Task 3's quality review proved both survive the current suite)**
+
+Grouping is by LABEL, not connected component — two disconnected cliques sharing
+a prior cluster seed the same `c:` label and merge into ONE group, so plurality
+contention between two groups needs the group label to DIVERGE from the member
+plurality. Equal-weight cliques can never do that (label majority = plurality
+majority); weight asymmetry can:
+
+```js
+test('greedy claiming: the larger-overlap community wins a contested prior id; the loser gets null', () => {
+  // X: 8-clique, all prior cluster 1 → label c:1, plurality '1' (overlap 8).
+  // Y: 6 nodes, 4 with prior 1 (ids 21-24) weakly interlinked (w 0.1) and 2
+  // with prior 2 (ids 31,32) heavily linked to everyone in Y (w 5). Heavy
+  // edges pull all of Y to label c:2, but Y's member plurality is still '1'
+  // (4 > 2) — so X and Y CONTEND for prior id 1. X wins on overlap (8 > 4);
+  // Y gets null, NOT its second-choice id 2 (one claim per community).
+  // movedNodes: X keeps id 1 (0 moves) + all of Y moves (6) = 6.
+  // Minority-plurality mutant → Y claims '2' → 4 moves. Overlap-ascending
+  // mutant → Y claims '1', X gets null → 10 moves. Either flips the number.
+  const nodes = [];
+  const edges = [];
+  for (let i = 1; i <= 8; i++) nodes.push(node(i, 1));
+  for (let i = 1; i <= 8; i++) for (let j = i + 1; j <= 8; j++) edges.push(edge(i, j, 1));
+  for (const id of [21, 22, 23, 24]) nodes.push(node(id, 1));
+  for (const id of [31, 32]) nodes.push(node(id, 2));
+  const yIds = [21, 22, 23, 24, 31, 32];
+  for (let a = 0; a < yIds.length; a++) {
+    for (let b = a + 1; b < yIds.length; b++) {
+      const bothWeak = yIds[a] < 30 && yIds[b] < 30;
+      edges.push(edge(yIds[a], yIds[b], bothWeak ? 0.1 : 5));
+    }
+  }
+  const plan = planMemoryCommunities(makeMemory({ nodes, edges }), { minCommunitySize: 2 });
+  assert.equal(plan.communityCount, 2);
+  const xCommunity = plan.communities.find((c) => c.members.includes(1));
+  assert.ok(xCommunity, 'X community missing');
+  assert.equal(String(xCommunity.clusterId), '1', 'X (overlap 8) must win the contested id');
+  const yCommunity = plan.communities.find((c) => c.members.includes(21));
+  assert.ok(yCommunity, 'Y community missing');
+  assert.equal(yCommunity.clusterId, null, 'Y must get null, not fall back to id 2');
+  assert.equal(plan.movedNodes, 6);
+});
+```
+
+Also apply two review nits while in the file: in the plurality-reuse test replace
+the two `.includes()` asserts with `assert.deepEqual(ids, [7, '9'])`; in the
+fresh-component test assert the surviving claimed id is `'1'`
+(`assert.equal(String(plan.communities.find((c) => c.clusterId !== null).clusterId), '1')`).
+Run the file: 17 pass / 0 fail. Commit as
+"test(memory): contention fixture — greedy claim direction now pinned".
 
 - [ ] **Step 1: Mutant A — break the bridge discount**
 
@@ -812,6 +863,28 @@ pass-1 candidate snapshot already contains every community that can ever be
 sub-floor (folds never shrink communities), live sets accumulate mid-pass, and
 grown candidates are skipped by the floor guard — so the second pass is always
 the quiet termination check. A surviving mutant HERE is not a test gap.
+
+- [ ] **Step 3d: Mutant F — plurality direction**
+
+```bash
+cp engine/src/memory/community-detection.js /tmp/cd.bak
+sed -i '' "s/entry.count > best.count/entry.count < best.count/" engine/src/memory/community-detection.js
+node --test tests/engine/memory/community-detection.test.js 2>&1 | grep -cE "^✖"
+cp /tmp/cd.bak engine/src/memory/community-detection.js
+```
+
+Expected: ≥1 failure — the Step 0 contention test (Y claims '2' → movedNodes 4 ≠ 6).
+
+- [ ] **Step 3e: Mutant G — greedy claim order**
+
+```bash
+cp engine/src/memory/community-detection.js /tmp/cd.bak
+sed -i '' "s/claims.sort((a, b) => b.overlap - a.overlap/claims.sort((a, b) => a.overlap - b.overlap/" engine/src/memory/community-detection.js
+node --test tests/engine/memory/community-detection.test.js 2>&1 | grep -cE "^✖"
+cp /tmp/cd.bak engine/src/memory/community-detection.js
+```
+
+Expected: ≥1 failure — the Step 0 contention test (Y claims '1', X nulls → movedNodes 10 ≠ 6).
 
 - [ ] **Step 4: Verify restoration + full pass**
 
