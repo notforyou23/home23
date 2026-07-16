@@ -788,6 +788,26 @@ designated killer. If zero failures: STOP, the tie fixture regressed.
 permanently guarded by the 'sum voting is load-bearing' test; no separate Task 4
 step needed, but do not remove that test.)
 
+- [ ] **Step 3c: Mutant E — break fold target selection**
+
+```bash
+cp engine/src/memory/community-detection.js /tmp/cd.bak
+# fold tally becomes strongest-single-edge instead of summed:
+sed -i '' "s/external.set(neighborLabel, (external.get(neighborLabel) || 0) + vote)/external.set(neighborLabel, Math.max(external.get(neighborLabel) || 0, vote))/" engine/src/memory/community-detection.js
+node --test tests/engine/memory/community-detection.test.js 2>&1 | grep -cE "^✖"
+cp /tmp/cd.bak engine/src/memory/community-detection.js
+```
+
+Expected: ≥1 failure — 'fold target is chosen by summed connection strength…'
+(fragment folds to B under max, to A under sum).
+
+**Known EQUIVALENT mutant — do not chase:** deleting the fold's `while (folded)`
+loop (single working pass) passes every test and is semantically equivalent: the
+pass-1 candidate snapshot already contains every community that can ever be
+sub-floor (folds never shrink communities), live sets accumulate mid-pass, and
+grown candidates are skipped by the floor guard — so the second pass is always
+the quiet termination check. A surviving mutant HERE is not a test gap.
+
 - [ ] **Step 4: Verify restoration + full pass**
 
 ```bash
