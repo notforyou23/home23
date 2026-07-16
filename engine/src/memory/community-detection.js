@@ -80,13 +80,9 @@ function propagateLabels(nodeIds, adjacency, labels, maxIterations) {
       const neighbors = adjacency.get(id);
       if (neighbors.length === 0) continue;
       const votes = new Map();
-      // Per-label score is the strongest single edge, not the sum: a dense
-      // region cannot out-shout a full-weight link by mere edge count, so
-      // whether two regions fuse is decided by edge weight and type (the
-      // bridge discount), never by how consolidated a region already is.
       for (const [neighborId, vote] of neighbors) {
         const label = labels.get(neighborId);
-        if (vote > (votes.get(label) || 0)) votes.set(label, vote);
+        votes.set(label, (votes.get(label) || 0) + vote);
       }
       let best = null;
       let bestScore = -Infinity;
@@ -98,13 +94,10 @@ function propagateLabels(nodeIds, adjacency, labels, maxIterations) {
         }
       }
       const current = labels.get(id);
-      // Ties move toward the smallest label: full-weight links keep two
-      // regions in contention until one label conquers both (the fuse),
-      // while a discounted bridge vote can never tie a full-weight edge —
-      // the bridge discount is what separates communities. A node whose
-      // current label is already the best stays put, so cluster-seeded
-      // reruns with bridge-separated boundaries do not churn.
-      if (best !== current) {
+      const currentScore = votes.get(current) || 0;
+      // Move only on a STRICT improvement: retaining the current label on
+      // ties is what keeps successive runs stable instead of churning.
+      if (best !== current && bestScore > currentScore) {
         labels.set(id, best);
         moves += 1;
       }

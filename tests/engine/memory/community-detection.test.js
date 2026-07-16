@@ -54,12 +54,28 @@ test('virgin uniform-cluster brain splits into structural communities (singleton
   assert.equal(plan.converged, true);
 });
 
-test('bridge discount is load-bearing: full-weight associative links fuse the cliques', () => {
-  const fused = planMemoryCommunities(
-    twoCliquesBridged({ bridgeType: 'associative' }),
-    { minCommunitySize: 2 },
-  );
-  assert.equal(fused.communityCount, 1);
+test('bridge discount is load-bearing: bridges whisper, associative links pull', () => {
+  // Node 900 sits between clique A (1..6, ONE associative edge to node 1)
+  // and clique B (11..16, THREE edges to 11,12,13). At full weight the three
+  // B-side edges outvote A (3 > 1) and 900 joins B; discounted as bridges
+  // (3 x 0.2 = 0.6 < 1) the single associative edge wins and 900 joins A.
+  function withCrossType(type) {
+    const memory = twoCliquesBridged({ bridgeType: 'bridge' });
+    memory.nodes.set(900, node(900));
+    const add = (a, b, w, t) => memory.edges.set(`${a}->${b}`, edge(a, b, w, t));
+    add(900, 1, 1, 'associative');
+    add(900, 11, 1, type);
+    add(900, 12, 1, type);
+    add(900, 13, 1, type);
+    return memory;
+  }
+  const communityOf = (plan, id) => plan.communities.find((c) => c.members.includes(id));
+  const whispered = planMemoryCommunities(withCrossType('bridge'), { minCommunitySize: 2 });
+  assert.ok(communityOf(whispered, 900).members.includes(1),
+    'discounted bridges: 900 must stay with clique A');
+  const pulled = planMemoryCommunities(withCrossType('associative'), { minCommunitySize: 2 });
+  assert.ok(communityOf(pulled, 900).members.includes(11),
+    'full-weight links: 900 must be pulled to clique B');
 });
 
 test('identical input yields an identical plan (determinism)', () => {
