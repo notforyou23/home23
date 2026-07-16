@@ -99,12 +99,33 @@ test('virgin uniform-cluster brain splits into structural communities (singleton
   assert.equal(plan.converged, true);
 });
 
-test('bridge discount is load-bearing: full-weight associative links fuse the cliques', () => {
-  const fused = planMemoryCommunities(
-    twoCliquesBridged({ bridgeType: 'associative' }),
-    { minCommunitySize: 2 },
-  );
-  assert.equal(fused.communityCount, 1);
+test('bridge discount is load-bearing: bridges whisper, associative links pull', () => {
+  // Node 900 sits between clique A (1..6, ONE associative edge to node 1)
+  // and clique B (11..16, THREE edges to 11,12,13). At full weight the three
+  // B-side edges outvote A (3 > 1) and 900 joins B; discounted as bridges
+  // (3 x 0.2 = 0.6 < 1) the single associative edge wins and 900 joins A.
+  // NOTE: two cliques joined by two weak edges staying separate at ANY weight
+  // is CORRECT sum-voting behavior — do not "fix" the algorithm to fuse them
+  // (that is single-linkage clustering; it chains real brains into one blob).
+  // Node id 900 is deliberate: label 'n:900' sorts after clique labels and
+  // never wins tie-breaks.
+  function withCrossType(type) {
+    const memory = twoCliquesBridged({ bridgeType: 'bridge' });
+    memory.nodes.set(900, node(900));
+    const add = (a, b, w, t) => memory.edges.set(`${a}->${b}`, edge(a, b, w, t));
+    add(900, 1, 1, 'associative');
+    add(900, 11, 1, type);
+    add(900, 12, 1, type);
+    add(900, 13, 1, type);
+    return memory;
+  }
+  const communityOf = (plan, id) => plan.communities.find((c) => c.members.includes(id));
+  const whispered = planMemoryCommunities(withCrossType('bridge'), { minCommunitySize: 2 });
+  assert.ok(communityOf(whispered, 900).members.includes(1),
+    'discounted bridges: 900 must stay with clique A');
+  const pulled = planMemoryCommunities(withCrossType('associative'), { minCommunitySize: 2 });
+  assert.ok(communityOf(pulled, 900).members.includes(11),
+    'full-weight links: 900 must be pulled to clique B');
 });
 
 test('identical input yields an identical plan (determinism)', () => {
@@ -386,9 +407,9 @@ Expected: 5 pass, 0 fail. (The empty-brain degenerate assertion passes because
 `totalNodes > 0` guards the flag; the 20-clique test yields 1 community from
 singleton seeds via propagation — degenerate true.)
 
-Note: if the two-clique split test fails with 1 community, the epidemic ran
-through the bridge — verify the bridge discount multiplies (2 bridges × 0.2 = 0.4
-external vote vs 5 internal full-weight votes; internal must win).
+Note: if the discount test fails, check the vote arithmetic at node 900 —
+bridges: 3 × 0.2 = 0.6 vs 1.0 associative (A wins); full weight: 3.0 vs 1.0
+(B wins). Debug the arithmetic; never swap sum-voting for max-voting.
 
 - [ ] **Step 5: Commit**
 

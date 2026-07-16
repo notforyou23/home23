@@ -194,9 +194,14 @@ the endpoint.
 ## 8. Testing (house rules: TDD, mutation testing, live dry-run gate)
 
 **Planner unit tests** (`tests/engine/memory/community-detection.test.js`):
-1. Two dense components joined only by `bridge` edges → 2 communities (bridge
-   discount respected); same graph with bridges retyped `associative` at weight 1 →
-   1 community (proves the discount is load-bearing).
+1. Two dense components joined by two weak cross-edges stay **2 communities at any
+   cross-edge weight** — that is correct sum-voting behavior, not a discount test.
+   The discount test is a boundary node with ONE associative edge into community A
+   and THREE cross-edges into community B: typed `bridge` (3 × 0.2 = 0.6 < 1) it
+   stays with A; typed `associative` (3 > 1) it is pulled to B. (First
+   implementation attempt swapped in strongest-single-edge voting to force
+   clique-fusion — rejected: that is single-linkage clustering, which chains real
+   brains into one blob through any single full-weight edge.)
 2. Floor: a 5-node appendage wired to a 50-node core folds into the core; a 5-node
    island with no external edges survives.
 3. Singleton seeding on a virgin one-cluster brain: two internally-dense regions
