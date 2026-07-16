@@ -420,7 +420,7 @@ module.exports = {
 - [ ] **Step 4: Run tests**
 
 Run: `node --test tests/engine/memory/community-detection.test.js`
-Expected: 6 pass, 0 fail. (The empty-brain degenerate assertion passes because
+Expected: 8 pass, 0 fail after the quality-fix pass (tie-handling + garbage-edges tests included). (The empty-brain degenerate assertion passes because
 `totalNodes > 0` guards the flag; the 20-clique test yields 1 community from
 singleton seeds via propagation — degenerate true.)
 
@@ -538,7 +538,7 @@ function foldSmallCommunities(groups, adjacency, minCommunitySize) {
 - [ ] **Step 4: Run the full planner test file**
 
 Run: `node --test tests/engine/memory/community-detection.test.js`
-Expected: 8 pass, 0 fail (Task 1 tests must still pass — they use
+Expected: 10 pass, 0 fail (Task 1 tests must still pass — they use
 `minCommunitySize: 2`, which folding never triggers on groups ≥ 2).
 
 - [ ] **Step 5: Commit**
@@ -697,7 +697,7 @@ function assignStableClusterIds(groups, memory) {
 - [ ] **Step 4: Run the full planner file**
 
 Run: `node --test tests/engine/memory/community-detection.test.js`
-Expected: 11 pass, 0 fail. Task 1's split test still expects `movedNodes: 12` —
+Expected: 13 pass, 0 fail. Task 1's split test still expects `movedNodes: 12` —
 both cliques share prior cluster 1, only one community can claim it, and its
 members then don't move… **check the assertion**: the claiming community's 6
 members keep cluster 1 → they do NOT move. Update Task 1's split test now that id
@@ -709,7 +709,7 @@ reuse exists:
   assert.equal(plan.movedNodes, 6);
 ```
 
-Re-run. Expected: 11 pass, 0 fail.
+Re-run. Expected: 13 pass, 0 fail.
 
 - [ ] **Step 5: Commit**
 
@@ -795,7 +795,7 @@ git diff --stat engine/src/memory/community-detection.js   # must be empty
 node --test tests/engine/memory/community-detection.test.js
 ```
 
-Expected: no diff; 11 pass.
+Expected: no diff; 13 pass.
 
 - [ ] **Step 5: Commit** (test strengthening only, if any was needed)
 
