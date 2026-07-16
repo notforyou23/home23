@@ -1617,6 +1617,13 @@ ONLY use agent types from the available list above.`;
 
         const added = await this.subsystems.goals.addGoal({
           description: taskGoal.description,
+          // taskGoal.source is set to 'guided_task_phase' by
+          // generateTaskGoalsFromPhases() above -- pass it through as the
+          // real `source` field (not just `discoveredFrom`, which addGoal()
+          // never reads) so the goal is honestly labeled as machine-
+          // initiated rather than defaulting to addGoal()'s generic
+          // 'manual' fallback for unlabeled goals.
+          source: taskGoal.source,
           discoveredFrom: taskGoal.source,
           priority: taskGoal.priority,
           metadata: {

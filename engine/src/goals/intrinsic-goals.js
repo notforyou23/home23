@@ -49,6 +49,25 @@ function isAutoObservationGoalSource(source) {
 }
 
 /**
+ * Structural signal for "jtr actually asked for this goal" vs. every other
+ * goal-creation path in the system, which is machine-initiated (dream,
+ * sleep analysis, guided-mode startup missions, meta-coordinator gap
+ * detection, topic queue, recursive planner, LLM thought-action
+ * create_goal, etc.). Every user-facing entry point that creates a goal on
+ * jtr's explicit request tags it with one of these two source labels and
+ * says so in `reason` (see orchestrator.js processCreateGoalAction --
+ * 'User-requested via MCP action queue' -- and dashboard/query-engine.js
+ * handleCreateGoal -- 'User-requested via query command center'). There is
+ * no other honest signal for "did jtr ask for this": everything else is a
+ * label a caller chose for itself, not evidence of who initiated it.
+ */
+const USER_REQUESTED_GOAL_SOURCES = new Set(['mcp', 'mcp_action_queue', 'query_interface']);
+
+function isUserRequestedGoalSource(source) {
+  return USER_REQUESTED_GOAL_SOURCES.has(goalSourceLabel(source));
+}
+
+/**
  * Intrinsic Goal System
  * Self-discovered objectives based on curiosity and uncertainty
  * From: "Goal Discovery via Intrinsic Motivation" section
@@ -2117,4 +2136,4 @@ Format as JSON array: [{"description": "...", "reason": "...", "uncertainty": 0.
   }
 }
 
-module.exports = { IntrinsicGoalSystem };
+module.exports = { IntrinsicGoalSystem, goalSourceLabel, isUserRequestedGoalSource };
