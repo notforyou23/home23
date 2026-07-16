@@ -78,6 +78,23 @@ test('bridge discount is load-bearing: bridges whisper, associative links pull',
     'full-weight links: 900 must be pulled to clique B');
 });
 
+test('sum voting is load-bearing: two weaker edges outvote one stronger edge', () => {
+  // Node 900: TWO 0.6-weight associative edges into clique A vs ONE 1.0-weight
+  // associative edge into clique B. Summed votes: A 1.2 > B 1.0 → 900 joins A.
+  // Under strongest-single-edge (max) voting B's 1.0 would win — that mutant
+  // is single-linkage clustering and must stay dead.
+  const memory = twoCliquesBridged({ bridgeType: 'bridge' });
+  memory.nodes.set(900, node(900));
+  const add = (a, b, w, t) => memory.edges.set(`${a}->${b}`, edge(a, b, w, t));
+  add(900, 1, 0.6, 'associative');
+  add(900, 2, 0.6, 'associative');
+  add(900, 11, 1, 'associative');
+  const plan = planMemoryCommunities(memory, { minCommunitySize: 2 });
+  const communityOf = (id) => plan.communities.find((c) => c.members.includes(id));
+  assert.ok(communityOf(900).members.includes(1),
+    'summed votes (1.2) must beat the single strongest edge (1.0)');
+});
+
 test('identical input yields an identical plan (determinism)', () => {
   const a = planMemoryCommunities(twoCliquesBridged(), { minCommunitySize: 2 });
   const b = planMemoryCommunities(twoCliquesBridged(), { minCommunitySize: 2 });
