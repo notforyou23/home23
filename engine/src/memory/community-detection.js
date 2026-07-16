@@ -168,9 +168,61 @@ function foldSmallCommunities(groups, adjacency, minCommunitySize) {
     .sort((a, b) => b.members.length - a.members.length || compareAsStrings(a.label, b.label));
 }
 
-// Task 3 fills this in. Until then, every community gets a fresh id.
+// Each community reclaims the prior cluster id it inherited the plurality of
+// its members from; each prior id is claimable once (greedy, overlap desc).
 function assignStableClusterIds(groups, memory) {
-  return groups.map((group) => ({ clusterId: null, members: group.members }));
+  // For each group, tally members' prior cluster ids — keyed by String() so
+  // numeric 1 and '1' agree, but remembering the first-seen ORIGINAL value so
+  // reuse never hands the clusters map a type-flipped id.
+  const claims = [];
+  groups.forEach((group, index) => {
+    const priorCounts = new Map();
+    for (const id of group.members) {
+      const node = memory.nodes.get(id);
+      if (!hasCluster(node)) continue;
+      const key = String(node.cluster);
+      const entry = priorCounts.get(key) || { count: 0, original: node.cluster };
+      entry.count += 1;
+      priorCounts.set(key, entry);
+    }
+    let bestKey = null;
+    let best = null;
+    for (const [key, entry] of priorCounts) {
+      if (!best || entry.count > best.count
+          || (entry.count === best.count && compareAsStrings(key, bestKey) < 0)) {
+        best = entry;
+        bestKey = key;
+      }
+    }
+    if (best) {
+      claims.push({
+        index,
+        key: bestKey,
+        original: best.original,
+        overlap: best.count,
+        size: group.members.length,
+        smallestMember: group.members[0],
+      });
+    }
+  });
+
+  // Greedy claim: largest overlap wins each prior id; ties -> larger group,
+  // then smallest member id. One claim per prior id.
+  claims.sort((a, b) => b.overlap - a.overlap
+    || b.size - a.size
+    || compareAsStrings(a.smallestMember, b.smallestMember));
+  const claimedKeys = new Set();
+  const assigned = new Map();
+  for (const claim of claims) {
+    if (claimedKeys.has(claim.key)) continue;
+    claimedKeys.add(claim.key);
+    assigned.set(claim.index, claim.original);
+  }
+
+  return groups.map((group, index) => ({
+    clusterId: assigned.has(index) ? assigned.get(index) : null,
+    members: group.members,
+  }));
 }
 
 function planMemoryCommunities(memory, options = {}) {

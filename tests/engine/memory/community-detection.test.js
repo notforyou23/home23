@@ -27,6 +27,14 @@ function edge(source, target, weight = 1, type = 'associative') {
   return { source, target, weight, type };
 }
 
+function compare(a, b) {
+  const left = String(a);
+  const right = String(b);
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
 // Two dense 6-cliques (nodes 1-6 and 11-16), all sharing cluster 1 —
 // jerry's real starting state in miniature. Joined only by bridge edges.
 function twoCliquesBridged({ bridgeType = 'bridge', bridgeWeight = 1 } = {}) {
@@ -48,8 +56,8 @@ test('virgin uniform-cluster brain splits into structural communities (singleton
   assert.equal(plan.communityCount, 2);
   const sizes = plan.communities.map((c) => c.members.length).sort();
   assert.deepEqual(sizes, [6, 6]);
-  // every node moves: the partition differs from the uniform cluster 1
-  assert.equal(plan.movedNodes, 12);
+  // one community reclaims prior id 1 (its members stay), the other gets a fresh id
+  assert.equal(plan.movedNodes, 6);
   assert.equal(plan.unchanged, false);
   assert.equal(plan.converged, true);
 });
@@ -276,4 +284,65 @@ test('a fold target that crosses the floor mid-pass stops folding (live-set guar
   assert.equal(plan.communityCount, 2);
   const sizes = plan.communities.map((c) => c.members.length).sort((a, b) => a - b);
   assert.deepEqual(sizes, [8, 12], 'fragments merge with each other, not into the core');
+});
+
+test('a community keeps the prior cluster id it inherited the plurality of members from', () => {
+  // Clique A carries prior cluster 7 (numeric); clique B prior cluster '9' (string).
+  const nodes = [];
+  const edges = [];
+  for (let i = 1; i <= 6; i++) nodes.push(node(i, 7));
+  for (let i = 11; i <= 16; i++) nodes.push(node(i, '9'));
+  for (const base of [0, 10]) {
+    for (let i = 1; i <= 6; i++) {
+      for (let j = i + 1; j <= 6; j++) edges.push(edge(base + i, base + j, 1));
+    }
+  }
+  const plan = planMemoryCommunities(makeMemory({ nodes, edges }), { minCommunitySize: 2 });
+  assert.equal(plan.communityCount, 2);
+  const ids = plan.communities.map((c) => c.clusterId).sort(compare);
+  // original-typed values preserved: numeric 7 stays numeric, string '9' stays string
+  assert.ok(ids.includes(7));
+  assert.ok(ids.includes('9'));
+  // nobody moved: the detected partition matches the prior assignment exactly
+  assert.equal(plan.movedNodes, 0);
+  assert.equal(plan.unchanged, true);
+});
+
+test('second run seeded from first-run communities moves zero nodes on an unchanged graph', () => {
+  const memory = twoCliquesBridged();
+  const first = planMemoryCommunities(memory, { minCommunitySize: 2 });
+  assert.equal(first.communityCount, 2);
+  // Exactly one community reclaims the uniform prior id 1; the other is fresh.
+  assert.equal(first.communities.filter((c) => c.clusterId === null).length, 1);
+  // Simulate apply: fresh communities get numeric ids, claimed ids stick.
+  const assigned = first.communities.map(
+    (community, index) => (community.clusterId === null ? 100 + index : community.clusterId),
+  );
+  first.communities.forEach((community, index) => {
+    for (const id of community.members) memory.nodes.get(id).cluster = assigned[index];
+  });
+  const second = planMemoryCommunities(memory, { minCommunitySize: 2 });
+  assert.equal(second.movedNodes, 0);
+  assert.equal(second.unchanged, true);
+  // Claim-order-agnostic: the second run must keep exactly the applied ids.
+  assert.deepEqual(
+    second.communities.map((c) => String(c.clusterId)).sort(),
+    assigned.map(String).sort(),
+  );
+});
+
+test('a genuinely new dense component gets clusterId null (fresh id allocated at apply)', () => {
+  const memory = twoCliquesBridged();
+  // Add a THIRD clique whose nodes have prior cluster null.
+  for (let i = 21; i <= 26; i++) memory.nodes.set(21000 + i, { id: 21000 + i, cluster: null, concept: `c${i}` });
+  for (let i = 21; i <= 26; i++) {
+    for (let j = i + 1; j <= 26; j++) {
+      memory.edges.set(`${21000 + i}->${21000 + j}`, { source: 21000 + i, target: 21000 + j, weight: 1, type: 'associative' });
+    }
+  }
+  const plan = planMemoryCommunities(memory, { minCommunitySize: 2 });
+  assert.equal(plan.communityCount, 3);
+  const freshGroups = plan.communities.filter((c) => c.clusterId === null);
+  // prior world had ONE claimable id (cluster 1) — only one community can keep it
+  assert.equal(freshGroups.length, 2);
 });
