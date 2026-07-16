@@ -1420,14 +1420,15 @@ class NetworkMemory {
 
     // Event rule: a plan that moves nothing must not enter the barrier or
     // advance the persistence generation. The move test String-compares to
-    // stay consistent with the planner's movedNodes accounting — dry-run and
+    // stay consistent with the planner's (community-detection.js
+    // planMemoryCommunities) movedNodes accounting — dry-run and
     // apply must never disagree (the nightly driver's skip keys off it). A
     // String-equal member with a type-only mismatch is skipped here BEFORE
     // _moveNodeToClusterUnsafe, whose strict === would treat it as a move.
     const nodeNeedsMove = (nodeId, clusterId) => {
       const node = this.nodes.get(nodeId);
       if (!node) return false;
-      if (clusterId === null) return true; // fresh community: every member moves
+      if (clusterId === null) return true; // fresh community: every member moves (re-applying a plan re-allocates — plans are single-use)
       if (node.cluster === null || node.cluster === undefined) return true;
       return String(node.cluster) !== String(clusterId);
     };

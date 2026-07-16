@@ -50,7 +50,7 @@ test('applyCommunityPlan moves nodes, allocates fresh ids, and reports counts', 
   assert.equal(plan.communityCount, 2);
   const result = applyMemoryCommunities(memory, plan);
   assert.equal(result.communityCount, 2);
-  assert.ok(result.movedNodes >= 5, `expected >=5 moves, got ${result.movedNodes}`);
+  assert.equal(result.movedNodes, 5); // two 5-cliques: one reclaims id 1, the other's 5 members move
   assert.equal(result.createdClusters, 1); // one community reclaims prior id 1
   assert.equal(result.movedNodes, plan.movedNodes,
     'apply and dry-run must agree on moved count');
@@ -66,11 +66,19 @@ test('moves are captured for persistence (dirty snapshot contains moved nodes)',
   const { memory } = await seededMemory();
   memory.markPersistenceCleanIfGeneration(memory.persistenceGeneration);
   const plan = planMemoryCommunities(memory, { minCommunitySize: 2 });
+  // Compute the expected movers BEFORE applying (apply mutates node.cluster).
+  const expectedMoved = plan.communities.flatMap((c) => c.members.filter((id) => {
+    const node = memory.nodes.get(id);
+    return c.clusterId === null || node.cluster == null
+      || String(node.cluster) !== String(c.clusterId);
+  }));
   const result = applyMemoryCommunities(memory, plan);
   const snapshot = memory.capturePersistenceSnapshot();
   const dirtyIds = new Set(snapshot.changes.nodes.map((n) => String(n.id)));
-  assert.ok(dirtyIds.size >= result.movedNodes,
-    `moved ${result.movedNodes} but snapshot only carries ${dirtyIds.size}`);
+  assert.equal(expectedMoved.length, result.movedNodes);
+  for (const id of expectedMoved) {
+    assert.ok(dirtyIds.has(String(id)), `moved node ${id} missing from dirty snapshot`);
+  }
 });
 
 test('no-op plan does not advance the persistence generation (event rule)', async () => {
