@@ -128,6 +128,23 @@ test('bridge discount is load-bearing: bridges whisper, associative links pull',
     'full-weight links: 900 must be pulled to clique B');
 });
 
+test('sum voting is load-bearing: two weaker edges outvote one stronger edge', () => {
+  // Node 900: TWO 0.6-weight associative edges into clique A vs ONE 1.0-weight
+  // associative edge into clique B. Summed votes: A 1.2 > B 1.0 → 900 joins A.
+  // Under strongest-single-edge (max) voting B's 1.0 would win — that mutant
+  // is single-linkage clustering and must stay dead.
+  const memory = twoCliquesBridged({ bridgeType: 'bridge' });
+  memory.nodes.set(900, node(900));
+  const add = (a, b, w, t) => memory.edges.set(`${a}->${b}`, edge(a, b, w, t));
+  add(900, 1, 0.6, 'associative');
+  add(900, 2, 0.6, 'associative');
+  add(900, 11, 1, 'associative');
+  const plan = planMemoryCommunities(memory, { minCommunitySize: 2 });
+  const communityOf = (id) => plan.communities.find((c) => c.members.includes(id));
+  assert.ok(communityOf(900).members.includes(1),
+    'summed votes (1.2) must beat the single strongest edge (1.0)');
+});
+
 test('identical input yields an identical plan (determinism)', () => {
   const a = planMemoryCommunities(twoCliquesBridged(), { minCommunitySize: 2 });
   const b = planMemoryCommunities(twoCliquesBridged(), { minCommunitySize: 2 });
@@ -403,7 +420,7 @@ module.exports = {
 - [ ] **Step 4: Run tests**
 
 Run: `node --test tests/engine/memory/community-detection.test.js`
-Expected: 5 pass, 0 fail. (The empty-brain degenerate assertion passes because
+Expected: 6 pass, 0 fail. (The empty-brain degenerate assertion passes because
 `totalNodes > 0` guards the flag; the 20-clique test yields 1 community from
 singleton seeds via propagation — degenerate true.)
 
@@ -521,7 +538,7 @@ function foldSmallCommunities(groups, adjacency, minCommunitySize) {
 - [ ] **Step 4: Run the full planner test file**
 
 Run: `node --test tests/engine/memory/community-detection.test.js`
-Expected: 7 pass, 0 fail (Task 1 tests must still pass — they use
+Expected: 8 pass, 0 fail (Task 1 tests must still pass — they use
 `minCommunitySize: 2`, which folding never triggers on groups ≥ 2).
 
 - [ ] **Step 5: Commit**
@@ -680,7 +697,7 @@ function assignStableClusterIds(groups, memory) {
 - [ ] **Step 4: Run the full planner file**
 
 Run: `node --test tests/engine/memory/community-detection.test.js`
-Expected: 10 pass, 0 fail. Task 1's split test still expects `movedNodes: 12` —
+Expected: 11 pass, 0 fail. Task 1's split test still expects `movedNodes: 12` —
 both cliques share prior cluster 1, only one community can claim it, and its
 members then don't move… **check the assertion**: the claiming community's 6
 members keep cluster 1 → they do NOT move. Update Task 1's split test now that id
@@ -692,7 +709,7 @@ reuse exists:
   assert.equal(plan.movedNodes, 6);
 ```
 
-Re-run. Expected: 10 pass, 0 fail.
+Re-run. Expected: 11 pass, 0 fail.
 
 - [ ] **Step 5: Commit**
 
@@ -759,7 +776,7 @@ git diff --stat engine/src/memory/community-detection.js   # must be empty
 node --test tests/engine/memory/community-detection.test.js
 ```
 
-Expected: no diff; 10 pass.
+Expected: no diff; 11 pass.
 
 - [ ] **Step 5: Commit** (test strengthening only, if any was needed)
 
