@@ -585,17 +585,22 @@ test('second run seeded from first-run communities moves zero nodes on an unchan
   const memory = twoCliquesBridged();
   const first = planMemoryCommunities(memory, { minCommunitySize: 2 });
   assert.equal(first.communityCount, 2);
-  // Simulate apply: write fresh numeric ids onto the nodes.
+  // Exactly one community reclaims the uniform prior id 1; the other is fresh.
+  assert.equal(first.communities.filter((c) => c.clusterId === null).length, 1);
+  // Simulate apply: fresh communities get numeric ids, claimed ids stick.
+  const assigned = first.communities.map(
+    (community, index) => (community.clusterId === null ? 100 + index : community.clusterId),
+  );
   first.communities.forEach((community, index) => {
-    const clusterId = community.clusterId === null ? 100 + index : community.clusterId;
-    for (const id of community.members) memory.nodes.get(id).cluster = clusterId;
+    for (const id of community.members) memory.nodes.get(id).cluster = assigned[index];
   });
   const second = planMemoryCommunities(memory, { minCommunitySize: 2 });
   assert.equal(second.movedNodes, 0);
   assert.equal(second.unchanged, true);
+  // Claim-order-agnostic: the second run must keep exactly the applied ids.
   assert.deepEqual(
-    second.communities.map((c) => c.clusterId).sort(),
-    [100, 101],
+    second.communities.map((c) => String(c.clusterId)).sort(),
+    assigned.map(String).sort(),
   );
 });
 
