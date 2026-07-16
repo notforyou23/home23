@@ -769,6 +769,25 @@ cp /tmp/cd.bak engine/src/memory/community-detection.js
 
 Expected: ≥2 failures (plurality-reuse test, second-run stability test).
 
+- [ ] **Step 3b: Mutant D — break move strictness**
+
+```bash
+cp engine/src/memory/community-detection.js /tmp/cd.bak
+# ties now move instead of retaining the current label:
+sed -i '' "s/bestScore > currentScore/bestScore >= currentScore/" engine/src/memory/community-detection.js
+node --test tests/engine/memory/community-detection.test.js 2>&1 | grep -cE "^✖"
+cp /tmp/cd.bak engine/src/memory/community-detection.js
+```
+
+Expected: ≥1 failure — the tie-handling test's stage-2 assertion (equal scores
+must retain the current cluster). Quality review found this mutant surviving the
+original Task 1 suite; the tie fixture added in Task 1's quality-fix pass is its
+designated killer. If zero failures: STOP, the tie fixture regressed.
+
+(Also note: a sum→max voting mutant — the rejected single-linkage variant — is
+permanently guarded by the 'sum voting is load-bearing' test; no separate Task 4
+step needed, but do not remove that test.)
+
 - [ ] **Step 4: Verify restoration + full pass**
 
 ```bash
