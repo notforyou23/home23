@@ -52,14 +52,23 @@ planMemoryCommunities(memory, options = {}) -> plan
 - `minCommunitySize` (default 12)
 - `minEdgeWeight` (default 0) — optional noise floor; edges below it don't vote
 
-**Seeding (stability first):**
+**Seeding (stability after structure):**
 1. If the brain already has **more than one** distinct non-null cluster id, seed each
    node's label from `node.cluster`. Subsequent nightly runs therefore only move
    nodes whose neighborhood genuinely changed.
-2. Otherwise (virgin one-cluster or unclustered brain), seed by `node.tag`: nodes
-   sharing a tag start with a shared label (tags are honest provenance — the map's
-   tag-fallback showed these are the natural constellations). Untagged nodes seed as
-   singletons (own node id).
+2. Otherwise (virgin one-cluster or unclustered brain), seed **every node as a
+   singleton** (its own id) and let pure edge structure decide. Tag seeding was
+   considered and rejected: jerry's dominant tag (`vault_research`, ~60% of nodes)
+   would start as one uniform label that label propagation can never split from
+   within — freezing the exact mega-partition this project exists to break. LP can
+   only split a region whose parts get outvoted by *different* labels; a uniform
+   seed over a dense region is permanent.
+
+**Degeneracy honesty:** the plan reports `degenerate: true` when the largest
+community holds more than 50% of nodes or fewer than 3 communities emerge. That is
+honest output for a genuinely dense graph, never silently "fixed" — but the first
+production apply is gated on jtr review, so a degenerate virgin run gets looked at
+before it lands.
 
 **Propagation:** iterate nodes in ascending sorted id order (string compare of
 `String(id)`), asynchronous updates (each node sees neighbors' current labels).
@@ -82,6 +91,13 @@ community (largest overlap wins; ties break to the community with more members,
 then smallest member id). Unmatched communities get `clusterId: null` in the plan —
 fresh ids are allocated at apply time by the memory API, never invented by the
 planner.
+
+**Id normalization:** cluster ids are mixed-typed in the wild — numeric `1` on
+disk (jerry's base), string `'1'` in graph exports, and `applyReclusterPlan`
+compares with loose `!=` for this reason. The planner keys all internal grouping
+by `String(id)` but preserves the **original-typed value** for reuse in the plan,
+so `_moveNodeToClusterUnsafe`'s strict-equality guard and the clusters map never
+see a type-flipped id for an existing cluster.
 
 **Plan shape:**
 ```js
@@ -156,7 +172,7 @@ the endpoint.
 | Brain map (`home23-brain-map.js`, shipped 2026-07-16) | Auto-switches from tag-grouping to real clusters when `clusterCount > 1`. No code change. |
 | `active-clusters.js` | "Top recent clusters" context becomes a real signal. No code change. |
 | `conversation-salience.js` | Per-cluster salience becomes meaningful. No code change. |
-| New nodes intraday | Born `cluster: null` (`network-memory.js:787`), participate in the next nightly pass as singleton seeds and get adopted by their neighborhood. Interim: map's existing fallback handles null; PGS hashes null-cluster nodes into `h-` buckets for at most a day. Accepted. |
+| New nodes intraday | **Adopted at birth.** `addNode` ends with `_assignToClusterUnsafe(node.id)` (`network-memory.js:879`) — the newborn immediately adopts its neighbors' majority cluster, bridge-discounted. This is why every node to date landed in cluster 1 (one label conquered the world at birth-time, and nothing global ever corrected it), and it is also why, **once real communities exist, newborns join the right community immediately** — the engine already does incremental single-node label propagation. The nightly pass only corrects drift, splits, and merges. |
 
 ## 7. Failure handling and risks
 
@@ -183,8 +199,14 @@ the endpoint.
    1 community (proves the discount is load-bearing).
 2. Floor: a 5-node appendage wired to a 50-node core folds into the core; a 5-node
    island with no external edges survives.
-3. Tag seeding on a virgin one-cluster brain reproduces tag groups when edges agree
-   with tags.
+3. Singleton seeding on a virgin one-cluster brain: two internally-dense regions
+   that share a uniform `cluster: 1` (the real starting state) separate into two
+   communities — the case tag/uniform seeding can never produce.
+3b. Degeneracy flag: a near-complete graph yields `degenerate: true` and the plan
+   still reports honestly (no artificial splitting).
+3c. Newborn adoption (characterization): after a multi-community apply, a new node
+   wired into community A is adopted into A at birth by `_assignToClusterUnsafe` —
+   the claim §6 makes about intraday behavior, verified not assumed.
 4. Stability: run twice — second run seeded from first run's assignment moves zero
    nodes on an unchanged graph, and community ids are identical.
 5. Id stability: grow one community, re-run → it keeps its cluster id; a genuinely
