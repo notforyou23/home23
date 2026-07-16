@@ -1409,6 +1409,9 @@ class NetworkMemory {
     if (!plan || typeof plan !== 'object') {
       return { movedNodes: 0, createdClusters: 0, communityCount: 0 };
     }
+    // Plans are consumed in-process only: member ids must be the exact typed
+    // values keyed in this.nodes. A JSON-round-tripped plan (string ids for a
+    // numeric-id graph) silently matches nothing and applies zero moves.
     const communities = Array.from(plan.communities || [])
       .map((community) => ({
         clusterId: community?.clusterId ?? null,

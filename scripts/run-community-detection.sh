@@ -42,6 +42,14 @@ for CONFIG_PATH in "$HOME23_ROOT"/instances/*/config.yaml; do
 
   MOVED="$(json_field "$DRY" movedNodes)"
   UNCHANGED="$(json_field "$DRY" unchanged)"
+  # Fail CLOSED: a dry-run we can't parse must never fall through to apply.
+  case "$MOVED" in
+    ''|*[!0-9]*)
+      echo "[communities] $AGENT SKIP unparseable dry-run (movedNodes='$MOVED') — refusing to apply"
+      RC=1
+      continue
+      ;;
+  esac
   if [ "$UNCHANGED" = "true" ] || [ "$MOVED" = "0" ]; then
     echo "[communities] $AGENT unchanged (0 moves) — skipped"
     continue

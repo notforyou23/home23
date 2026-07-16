@@ -546,6 +546,7 @@ class RealtimeServer {
       '/admin/memory/cleanup/compost-backlog',
       '/admin/memory/cleanup/preamble',
       '/admin/memory/cleanup/recluster',
+      '/admin/memory/cleanup/communities',
     ]);
     if (!knownRoutes.has(url)) {
       return json(404, { ok: false, error: `Unknown memory cleanup route: ${req.method} ${url}` });
