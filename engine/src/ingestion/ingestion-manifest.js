@@ -22,9 +22,15 @@ class IngestionManifest {
     this.logger = logger;
 
     this._manifestPath = path.join(runPath, 'ingestion-manifest.json');
-    this._pendingPath = path.join(runPath, 'ingestion-pending.json');
+    // JSONL, not a single JSON array: the queue once serialized as one
+    // pretty-printed JSON.stringify and hit V8's ~536MB string ceiling at
+    // 221MB of items ("Invalid string length") — saves failed silently while
+    // the disk copy went stale. One line per item has no single-string limit
+    // on either side.
+    this._pendingPath = path.join(runPath, 'ingestion-pending.jsonl');
+    this._legacyPendingPath = path.join(runPath, 'ingestion-pending.json');
     this._manifest = this._loadJson(this._manifestPath, {});
-    this._pending = this._normalizePending(this._loadJson(this._pendingPath, []));
+    this._pending = this._normalizePending(this._loadPending());
 
     this._flushInProgress = false;
     this._queueLock = Promise.resolve();
@@ -414,11 +420,87 @@ class IngestionManifest {
     }
   }
 
-  _savePending() {
+  _loadPending() {
+    // New format first.
+    if (fs.existsSync(this._pendingPath)) {
+      return this._readJsonlSync(this._pendingPath);
+    }
+    // Legacy single-array file: migrate once, loudly, then remove it. A valid
+    // legacy file is by construction under the V8 string ceiling (bigger ones
+    // could never have been written), so a plain read/parse is safe here.
+    if (fs.existsSync(this._legacyPendingPath)) {
+      try {
+        const items = this._normalizePending(JSON.parse(fs.readFileSync(this._legacyPendingPath, 'utf8')));
+        this._pending = items;
+        this._savePending();
+        fs.unlinkSync(this._legacyPendingPath);
+        this.logger?.info?.('Migrated pending queue to JSONL', {
+          items: items.length, from: this._legacyPendingPath, to: this._pendingPath,
+        });
+        return items;
+      } catch (err) {
+        // Never silently drop queued work: preserve the unreadable file.
+        const preserved = `${this._legacyPendingPath}.unreadable`;
+        try { fs.renameSync(this._legacyPendingPath, preserved); } catch { /* keep original */ }
+        this.logger?.error?.('Legacy pending queue unreadable — preserved for inspection, starting empty', {
+          error: err.message, preserved,
+        });
+        return [];
+      }
+    }
+    return [];
+  }
+
+  _readJsonlSync(filePath) {
+    // Chunked synchronous reader: the queue file has no size bound, and a
+    // whole-file readFileSync would reintroduce the string ceiling on load.
+    const items = [];
+    let corrupt = 0;
+    const fd = fs.openSync(filePath, 'r');
     try {
-      fs.writeFileSync(this._pendingPath, JSON.stringify(this._pending, null, 2));
+      const buf = Buffer.alloc(8 * 1024 * 1024);
+      let carry = '';
+      let bytesRead;
+      while ((bytesRead = fs.readSync(fd, buf, 0, buf.length)) > 0) {
+        const text = carry + buf.toString('utf8', 0, bytesRead);
+        const lines = text.split('\n');
+        carry = lines.pop();
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try { items.push(JSON.parse(line)); } catch { corrupt += 1; }
+        }
+      }
+      if (carry.trim()) {
+        try { items.push(JSON.parse(carry)); } catch { corrupt += 1; }
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (corrupt > 0) {
+      this.logger?.error?.('Pending queue had unreadable lines — skipped, not silently lost', {
+        corrupt, loaded: items.length, file: filePath,
+      });
+    }
+    return items;
+  }
+
+  _savePending() {
+    // Atomic streamed rewrite: one write per item, never one giant string.
+    const tmpPath = `${this._pendingPath}.tmp`;
+    try {
+      const fd = fs.openSync(tmpPath, 'w');
+      try {
+        for (const item of this._pending) {
+          fs.writeSync(fd, `${JSON.stringify(item)}\n`);
+        }
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      fs.renameSync(tmpPath, this._pendingPath);
     } catch (err) {
       this.logger?.error?.('Failed to save pending queue', { error: err.message });
+      try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch { /* best effort */ }
     }
   }
 
@@ -495,4 +577,16 @@ function boundedString(value, maxBytes) {
   return bounded || null;
 }
 
-module.exports = { IngestionManifest };
+// The feeder must never ingest the pipeline's own state files — a renamed
+// queue file becoming a "document" would feed the brain its own plumbing.
+const INGESTION_INTERNAL_FILES = new Set([
+  'ingestion-manifest.json',
+  'ingestion-pending.json',
+  'ingestion-pending.jsonl',
+]);
+
+function isIngestionInternalFile(basename) {
+  return INGESTION_INTERNAL_FILES.has(basename);
+}
+
+module.exports = { IngestionManifest, isIngestionInternalFile };

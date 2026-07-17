@@ -8,7 +8,7 @@ const { DocumentConverter } = require('./document-converter');
 const { DocumentChunker } = require('./document-chunker');
 const { DocumentValidator } = require('./document-validator');
 const { DocumentClassifier } = require('./document-classifier');
-const { IngestionManifest } = require('./ingestion-manifest');
+const { IngestionManifest, isIngestionInternalFile } = require('./ingestion-manifest');
 const { DocumentCompiler } = require('./document-compiler');
 
 class DocumentFeeder {
@@ -343,7 +343,7 @@ class DocumentFeeder {
       // Skip dotfiles and our own manifest/pending files
       const basename = path.basename(filePath);
       if (basename.startsWith('.')) return;
-      if (basename === 'ingestion-manifest.json' || basename === 'ingestion-pending.json') return;
+      if (isIngestionInternalFile(basename)) return;
       if (this._shouldIgnorePath(filePath)) return;
       if (this._isManagedArtifact(basename)) {
         await this._purgeManagedArtifact(filePath, basename);
@@ -532,7 +532,7 @@ class DocumentFeeder {
   _shouldIgnorePath(candidatePath) {
     const basename = path.basename(candidatePath);
     if (basename.startsWith('.')) return true;
-    if (basename === 'ingestion-manifest.json' || basename === 'ingestion-pending.json') return true;
+    if (isIngestionInternalFile(basename)) return true;
     if (this._isVolatileOperationalArtifact(candidatePath)) return true;
 
     const normalized = String(candidatePath).replace(/\\/g, '/');
