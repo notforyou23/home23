@@ -13,6 +13,60 @@ const {
   retireUnpinnedSources,
 } = require('../../../shared/memory-source');
 
+function defaultRebuildAnnIndex({ brainDir, home23Root }) {
+  // The ANN meta binds to the manifest generation, and every base rewrite
+  // mints a new generation — so a rebase ALWAYS invalidates the index by
+  // design. Before this hook, the index was rebuilt only by the 04:30 cron
+  // and the 6-hourly rebases kept killing it within hours; both agents ran
+  // in degraded keyword-scan fallback most of every day (2026-07-17).
+  // Every rewrite now brings its own rebuild. Deltas never trigger this:
+  // the overlay covers post-build appends.
+  const { spawn } = require('node:child_process');
+  const builderPath = path.join(home23Root, 'engine', 'src', 'merge', 'build-ann-index.js');
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--max-old-space-size=4096', builderPath, brainDir], {
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (chunk) => { out += chunk; });
+    child.stderr.on('data', (chunk) => { err += chunk; });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`ann builder exited ${code}: ${(err || out).trim().slice(-300)}`));
+        return;
+      }
+      const lastLine = out.trim().split('\n').pop() || '';
+      try { resolve(JSON.parse(lastLine)); } catch { resolve({ status: 'ok', raw: lastLine.slice(-200) }); }
+    });
+  });
+}
+
+function scheduleAnnRebuild({
+  brainDir,
+  home23Root,
+  rebuildAnn = defaultRebuildAnnIndex,
+  schedule = queueMicrotask,
+  logger = console,
+}) {
+  schedule(async () => {
+    try {
+      const receipt = await rebuildAnn({ brainDir, home23Root });
+      logger.info?.('ANN index rebuilt after base rewrite', {
+        brainDir,
+        status: receipt?.status,
+        indexed: receipt?.semanticCoverage?.indexed,
+      });
+    } catch (error) {
+      logger.warn?.('ANN rebuild after base rewrite failed — 04:30 cron remains the backstop', {
+        brainDir, error: error.message,
+      });
+    }
+  });
+}
+
 function scheduleSourceRetirement({
   brainDir,
   home23Root,
@@ -146,6 +200,7 @@ async function persistMemoryRevision({
   gzipLevel,
   schedule = queueMicrotask,
   retireUnpinnedSources: retire = retireUnpinnedSources,
+  rebuildAnnIndex: rebuildAnn = defaultRebuildAnnIndex,
   logger = console,
   writer = { readManifest, appendMemoryRevision, rewriteMemoryBase },
 }) {
@@ -174,8 +229,17 @@ async function persistMemoryRevision({
       persistedChanges: snapshot.changes,
     };
   }
+  // A manifest without a parseable baseWrittenAt predates the stamp (or is
+  // damaged) and is treated as overdue: better one extra full rewrite than a
+  // delta that grows until cold load takes minutes. This clause was dead
+  // until 2026-07-16 — rewriteMemoryBase never wrote baseWrittenAt, so the
+  // periodic rewrite could not fire and jerry's delta reached 846k ops.
+  const baseWrittenAtMs = manifest?.baseWrittenAt !== undefined
+    ? Date.parse(manifest.baseWrittenAt)
+    : NaN;
   const rewrite = forceFull || !manifest
-    || (manifest.baseWrittenAt && Date.now() - Date.parse(manifest.baseWrittenAt) >= fullRewriteIntervalMs);
+    || !Number.isFinite(baseWrittenAtMs)
+    || Date.now() - baseWrittenAtMs >= fullRewriteIntervalMs;
   // A manifest-backed delta/reuse save must not clone the complete resident
   // graph merely to discover that only its dirty generation is needed. At
   // Jerry scale that redundant full materialization can exhaust the engine
@@ -224,6 +288,7 @@ async function persistMemoryRevision({
     : false;
   if (rewrite && result?.manifest) {
     scheduleSourceRetirement({ brainDir, home23Root, lockRoot, retire, schedule, logger });
+    scheduleAnnRebuild({ brainDir, home23Root, rebuildAnn, schedule, logger });
   }
   return {
     ...result,

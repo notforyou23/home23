@@ -73,7 +73,7 @@ test('writer failure preserves dirty persistence changes', async () => {
     brainDir: '/unused',
     memory,
     writer: {
-      readManifest: async () => ({ currentRevision: 1 }),
+      readManifest: async () => ({ currentRevision: 1, baseWrittenAt: new Date().toISOString() }),
       appendMemoryRevision: async () => { throw new Error('disk full'); },
       rewriteMemoryBase: async () => { throw new Error('not expected'); },
     },
@@ -88,7 +88,7 @@ test('successful delta commit clears dirty persistence changes after generation 
     brainDir: '/unused',
     memory,
     writer: {
-      readManifest: async () => ({ currentRevision: 1 }),
+      readManifest: async () => ({ currentRevision: 1, baseWrittenAt: new Date().toISOString() }),
       appendMemoryRevision: async () => {
         events.push('committed');
         return { manifest: { currentRevision: 2 }, count: 1 };
@@ -108,7 +108,7 @@ test('a mutation accepted behind the persistence barrier cannot be marked clean'
     brainDir: '/unused',
     memory,
     writer: {
-      readManifest: async () => ({ currentRevision: 1 }),
+      readManifest: async () => ({ currentRevision: 1, baseWrittenAt: new Date().toISOString() }),
       appendMemoryRevision: async () => {
         barrier.captured();
         await barrier.commitReleased;
@@ -572,16 +572,167 @@ test('a successful full rewrite schedules production retirement with global pin 
     forceFull: true,
     schedule: (task) => scheduled.push(task),
     retireUnpinnedSources: async (brainDir, options) => calls.push([brainDir, options]),
+    rebuildAnnIndex: async () => ({ status: 'fresh' }), // hermetic: no real builder spawn
     writer: {
       readManifest: async () => null,
       appendMemoryRevision: async () => { throw new Error('not expected'); },
       rewriteMemoryBase: async () => ({ manifest: { currentRevision: 1 }, count: 1 }),
     },
   });
-  assert.equal(scheduled.length, 1);
-  await scheduled[0]();
+  // A rewrite schedules retirement AND the ANN rebuild (2026-07-17: rebases
+  // invalidate the generation-bound index by design, so each brings its own).
+  assert.equal(scheduled.length, 2);
+  for (const task of scheduled) await task();
   assert.deepEqual(calls, [['/brain', {
     home23Root: '/home23',
     lockRoot: '/home23/runtime/brain-source-locks',
   }]]);
+});
+
+function fullViewMemory() {
+  const rows = [{ id: 'n1', concept: 'rewrite canary' }];
+  return {
+    capturePersistenceSnapshot() {
+      return Object.freeze({
+        generation: 5,
+        changes: Object.freeze({
+          nodes: Object.freeze(rows), edges: Object.freeze([]),
+          removedNodeIds: Object.freeze([]), removedEdgeKeys: Object.freeze([]),
+        }),
+        fullView: Object.freeze({ nodes: Object.freeze(rows), edges: Object.freeze([]) }),
+        summary: Object.freeze({ nodeCount: 1, edgeCount: 0, clusterCount: 1 }),
+      });
+    },
+    markPersistenceCleanIfGeneration() { return true; },
+  };
+}
+
+async function persistAgainstManifest(manifest) {
+  const calls = [];
+  const result = await persistMemoryRevision({
+    brainDir: '/unused',
+    memory: fullViewMemory(),
+    schedule: () => {},
+    writer: {
+      readManifest: async () => manifest,
+      appendMemoryRevision: async () => {
+        calls.push('append');
+        return { manifest: { currentRevision: 18 }, count: 1 };
+      },
+      rewriteMemoryBase: async () => {
+        calls.push('rewrite');
+        return { manifest: { currentRevision: 18 }, count: 1 };
+      },
+    },
+  });
+  return { mode: result.mode, calls };
+}
+
+test('a manifest without baseWrittenAt is due for a full rewrite', async () => {
+  const { mode, calls } = await persistAgainstManifest({
+    currentRevision: 17,
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+  });
+  assert.equal(mode, 'full');
+  assert.deepEqual(calls, ['rewrite']);
+});
+
+test('an unparseable baseWrittenAt is due for a full rewrite', async () => {
+  const { mode, calls } = await persistAgainstManifest({
+    currentRevision: 17,
+    baseWrittenAt: 'not a date',
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+  });
+  assert.equal(mode, 'full');
+  assert.deepEqual(calls, ['rewrite']);
+});
+
+test('a stale baseWrittenAt is due for a full rewrite', async () => {
+  const { mode, calls } = await persistAgainstManifest({
+    currentRevision: 17,
+    baseWrittenAt: new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString(),
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+  });
+  assert.equal(mode, 'full');
+  assert.deepEqual(calls, ['rewrite']);
+});
+
+test('a fresh baseWrittenAt saves as an ordinary delta, not a rewrite', async () => {
+  const { mode, calls } = await persistAgainstManifest({
+    currentRevision: 17,
+    baseWrittenAt: new Date().toISOString(),
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+  });
+  assert.equal(mode, 'delta');
+  assert.deepEqual(calls, ['append']);
+});
+
+test('a full base rewrite schedules an ANN rebuild for the same brain', async () => {
+  const scheduled = [];
+  const annCalls = [];
+  const result = await persistMemoryRevision({
+    brainDir: '/brain',
+    home23Root: '/home23',
+    memory: fullViewMemory(),
+    schedule: (fn) => scheduled.push(fn),
+    retireUnpinnedSources: async () => ({ retired: [], retained: [] }),
+    rebuildAnnIndex: async (options) => { annCalls.push(options); return { status: 'fresh' }; },
+    writer: {
+      readManifest: async () => null, // no manifest → forced full rewrite
+      appendMemoryRevision: async () => { throw new Error('not expected'); },
+      rewriteMemoryBase: async () => ({ manifest: { currentRevision: 1 }, count: 1 }),
+    },
+  });
+  assert.equal(result.mode, 'full');
+  for (const fn of scheduled) await fn();
+  assert.equal(annCalls.length, 1, 'rewrite must schedule exactly one ANN rebuild');
+  assert.equal(annCalls[0].brainDir, '/brain');
+  assert.equal(annCalls[0].home23Root, '/home23');
+});
+
+test('an ordinary delta save schedules NO ANN rebuild (overlay covers deltas)', async () => {
+  const scheduled = [];
+  const annCalls = [];
+  const result = await persistMemoryRevision({
+    brainDir: '/brain',
+    home23Root: '/home23',
+    memory: fullViewMemory(),
+    schedule: (fn) => scheduled.push(fn),
+    rebuildAnnIndex: async (options) => { annCalls.push(options); },
+    writer: {
+      readManifest: async () => ({
+        currentRevision: 17,
+        baseWrittenAt: new Date().toISOString(),
+        summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+      }),
+      appendMemoryRevision: async () => ({ manifest: { currentRevision: 18 }, count: 1 }),
+      rewriteMemoryBase: async () => { throw new Error('full rewrite not expected'); },
+    },
+  });
+  assert.equal(result.mode, 'delta');
+  for (const fn of scheduled) await fn();
+  assert.equal(annCalls.length, 0, 'delta saves must not trigger ANN rebuilds');
+});
+
+test('an ANN rebuild failure is loud but never breaks the save', async () => {
+  const scheduled = [];
+  const warnings = [];
+  const result = await persistMemoryRevision({
+    brainDir: '/brain',
+    home23Root: '/home23',
+    memory: fullViewMemory(),
+    schedule: (fn) => scheduled.push(fn),
+    retireUnpinnedSources: async () => ({ retired: [], retained: [] }),
+    rebuildAnnIndex: async () => { throw new Error('builder exploded'); },
+    logger: { warn: (...a) => warnings.push(a), error: (...a) => warnings.push(a), info() {}, log() {} },
+    writer: {
+      readManifest: async () => null,
+      appendMemoryRevision: async () => { throw new Error('not expected'); },
+      rewriteMemoryBase: async () => ({ manifest: { currentRevision: 1 }, count: 1 }),
+    },
+  });
+  assert.equal(result.mode, 'full');
+  for (const fn of scheduled) await fn(); // must not throw
+  assert.ok(warnings.some((w) => JSON.stringify(w).includes('builder exploded')),
+    'the failure must be reported, not swallowed');
 });
