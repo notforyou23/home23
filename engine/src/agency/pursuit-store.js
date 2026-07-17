@@ -64,10 +64,26 @@ function slugKey(input) {
     .join('-') || 'pursuit';
 }
 
+// Persisted-size bounds. jerry's ledger reached 661MB (past V8's ~536MB
+// string limit — bus init died reading it at boot, 2026-07-17). Evidence is
+// a rolling window, not an archive: consequences.jsonl holds the durable
+// trail. linkedEvidence duplicated every evidence byte in every record —
+// roughly half the ledger was that one field. It lives in memory as an
+// alias and is never serialized.
+const MAX_PERSISTED_EVIDENCE = 40;
+
 function compactPursuit(pursuit) {
   if (!pursuit || typeof pursuit !== 'object') return pursuit;
+  const evidence = Array.isArray(pursuit.evidence)
+    ? pursuit.evidence.slice(-MAX_PERSISTED_EVIDENCE)
+    : [];
   return {
     ...pursuit,
+    evidence,
+    linkedEvidence: evidence,
+    latestEvidence: Array.isArray(pursuit.latestEvidence)
+      ? pursuit.latestEvidence.slice(-3)
+      : evidence.slice(-3),
     history: Array.isArray(pursuit.history) ? pursuit.history.slice(-25) : [],
   };
 }
@@ -305,6 +321,19 @@ export class PursuitStore {
   updatePursuit(id, patch = {}, event = {}) {
     const existing = this.getPursuit(id);
     if (!existing) throw new Error(`Pursuit not found: ${id}`);
+    // Event rule: a merge that changes nothing material is a tick, not an
+    // event. "Still seeing the same thing" updates in-memory freshness only —
+    // no ledger line. (No-change merges were re-serializing 141KB pursuits
+    // thousands of times: the 661MB theatre ledger.) Freshness fields lost on
+    // restart revert to the last material record — an acceptable approximation.
+    const housekeeping = new Set(['lastSeenAt', 'lastTouched', 'seenCount', 'latestEvidence']);
+    const patchKeys = Object.keys(patch);
+    const material = patchKeys.some((key) => !housekeeping.has(key)
+      && JSON.stringify(patch[key]) !== JSON.stringify(existing[key]));
+    if (patchKeys.length > 0 && !material) {
+      for (const key of patchKeys) existing[key] = patch[key];
+      return existing;
+    }
     const at = nowIso();
     const pursuit = {
       ...existing,
@@ -399,12 +428,20 @@ export class PursuitStore {
   }
 
   appendPursuitEvent(row) {
-    const compact = row?.pursuit ? { ...row, pursuit: compactPursuit(row.pursuit) } : row;
-    appendFileSync(this.pursuitsPath, `${JSON.stringify(compact)}\n`);
-    if (compact?.pursuit?.id) {
-      this.loadPursuitIndex().set(compact.pursuit.id, compact.pursuit);
+    const pursuit = row?.pursuit ? compactPursuit(row.pursuit) : undefined;
+    let diskRow = row;
+    if (pursuit) {
+      // linkedEvidence is an in-memory alias of evidence — serializing it
+      // doubled every record. It is rehydrated by compactPursuit on load.
+      const diskPursuit = { ...pursuit };
+      delete diskPursuit.linkedEvidence;
+      diskRow = { ...row, pursuit: diskPursuit };
     }
-    return compact;
+    appendFileSync(this.pursuitsPath, `${JSON.stringify(diskRow)}\n`);
+    if (pursuit?.id) {
+      this.loadPursuitIndex().set(pursuit.id, pursuit);
+    }
+    return pursuit ? { ...row, pursuit } : row;
   }
 
   loadPursuitIndex() {
