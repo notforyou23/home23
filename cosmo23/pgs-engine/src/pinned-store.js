@@ -6,7 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const { PGS_OPERATION_LIMITS } = require('../../lib/brain-operation-limits');
-const { partitionIdForNode } = require('../../../shared/memory-source/pgs-partitions.cjs');
+const { partitionIdForNode, planPartitionCoarsening } = require('../../../shared/memory-source/pgs-partitions.cjs');
 const {
   redactPrivatePaths,
   serializeProviderRecord,
@@ -1569,6 +1569,53 @@ async function openPinnedPGSStore({
       const edgeCount = await streamBatches(
         sourcePin.iterateEdges({ signal }), 'edge', rows => edgeTransaction(rows),
       );
+
+      // Home23 Patch 66: fold sub-threshold partitions into a bounded set of
+      // shared buckets BEFORE building work units. Community detection can
+      // produce thousands of tiny partitions (jerry 2026-07-17: 1,834, of
+      // which 1,661 <=5 nodes); PGS builds >=1 LLM sweep per partition, so one
+      // query ballooned to 2,694 sweeps. Coarsening runs on the fully-inserted
+      // node table (global per-partition counts), leaving the work-unit and
+      // sweeper contracts untouched — they just see fewer, bigger partitions.
+      {
+        const partitionCounts = db.prepare(
+          'SELECT partition_id AS partitionId, COUNT(*) AS nodeCount FROM nodes GROUP BY partition_id',
+        ).all();
+        const coarsenMap = planPartitionCoarsening(partitionCounts);
+        if (coarsenMap.size) {
+          // The authority MAC binds partitionId (signPinnedProviderAuthority),
+          // so a moved node must be RE-SIGNED with its new partition — a bare
+          // UPDATE would fail integrity verification at sweep time. This runs
+          // inside the same trusted projection that signed the rows initially,
+          // so re-signing is faithful, not forgery. Unsigned rows (null MAC)
+          // are verified by a path that ignores partitionId; they just move.
+          const selectMoved = db.prepare(
+            'SELECT id, json, authority_json AS authorityJson, authority_mac AS authorityMac FROM nodes WHERE partition_id = ?',
+          );
+          const updateNode = db.prepare(
+            'UPDATE nodes SET partition_id = ?, authority_mac = ? WHERE id = ?',
+          );
+          const remapTx = db.transaction(() => {
+            for (const [from, to] of coarsenMap) {
+              for (const node of selectMoved.all(from)) {
+                const mac = node.authorityMac
+                  ? signPinnedProviderAuthority({
+                    id: node.id,
+                    json: node.json,
+                    authorityJson: node.authorityJson,
+                    sourceRevision,
+                    descriptorDigest,
+                    partitionId: to,
+                  })
+                  : node.authorityMac;
+                updateNode.run(to, mac, node.id);
+              }
+            }
+          });
+          remapTx();
+          await checkpoint();
+        }
+      }
 
       const insertWorkUnit = db.prepare(`
         INSERT INTO work_units(

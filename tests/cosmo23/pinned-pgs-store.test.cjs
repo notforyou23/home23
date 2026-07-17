@@ -2140,3 +2140,64 @@ test('PGS persists provider-safe records without mutating vector-bearing source 
   }, beforeNode);
   assert.deepEqual(edge, beforeEdge);
 });
+
+test('Patch 66: sub-threshold partitions fold into buckets so tiny communities do not each become a sweep', async (t) => {
+  const { scratchDir, quota } = await fixture(t);
+  // 1 large community (60 nodes) + 200 island communities (1 node each) — the
+  // shape community detection produced. Without coarsening: 201 partitions →
+  // 201 work units. With coarsening: 1 large + <=16 buckets.
+  const store = await openPinnedPGSStore({
+    sourcePin: syntheticSource({
+      nodeCount: 260,
+      edgeCount: 259,
+      nodeFactory: (index, fallback) => ({
+        ...fallback,
+        clusterId: index < 60 ? 'big' : `island-${index}`,
+      }),
+    }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits,
+  });
+  t.after(() => store.close());
+
+  // The invariant coarsening controls is the PARTITION count: 1 big +
+  // <=16 island buckets = <=17 (vs 201 without the fix). Work-unit count
+  // then depends on the 25-node split cap, so assert partitions, not units.
+  const pending = store.snapshotPendingWorkUnits({ attemptId: 'a', limit: 100 });
+  const partitions = new Set(pending.map((id) => store.loadWorkUnit(id).partitionId));
+  assert.ok(partitions.size <= 17,
+    `expected <=17 partitions after coarsening 201, got ${partitions.size}`);
+  assert.ok(partitions.has('c-big'), 'the large community keeps its own partition');
+  assert.ok([...partitions].some((p) => /^c-small-\d+$/.test(p)),
+    'islands fold into c-small-* buckets');
+  assert.ok(store.stats.workUnitCount < 201,
+    `coarsening must cut work units well below the 201 island count, got ${store.stats.workUnitCount}`);
+});
+
+test('Patch 66 no-op: an all-large-partition brain is unchanged (no coarsening)', async (t) => {
+  const { scratchDir, quota } = await fixture(t);
+  // 3 clusters of 200 each — all above threshold, nothing should fold.
+  const store = await openPinnedPGSStore({
+    sourcePin: syntheticSource({
+      nodeCount: 600,
+      edgeCount: 599,
+      nodeFactory: (index, fallback) => ({ ...fallback, clusterId: `cluster-${index % 3}` }),
+    }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    query,
+    signal: new AbortController().signal,
+    limits,
+  });
+  t.after(() => store.close());
+  const pending = store.snapshotPendingWorkUnits({ attemptId: 'a', limit: 100 });
+  const partitions = new Set(pending.map((id) => store.loadWorkUnit(id).partitionId));
+  for (const p of partitions) {
+    assert.match(p, /^c-cluster-[0-2]$/, `large partitions must keep their id, saw ${p}`);
+  }
+});

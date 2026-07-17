@@ -3535,3 +3535,33 @@ were not restarted and no provider operation was started.
   the recovered snapshot, preserves later stages and timestamps, and gives local
   adapter workers the same status projection. Focused verification was offline
   only; no service restart or live provider operation was performed.
+
+## Patch 66 — `cosmo23/pgs-engine/src/pinned-store.js` · sub-threshold partition coarsening (2026-07-17)
+
+**Problem.** Community detection (Home23 2026-07-17) partitions the brain by
+cluster: jerry went from 1 partition to 1,834, of which 1,661 held ≤5 nodes.
+PGS builds **≥1 LLM sweep per partition**, so a single "swim around" query
+ballooned to 2,694 sweeps (~3h). The partitioning was correct for retrieval
+*scoping*; it broke retrieval *economics*.
+
+**Fix.** Before the work-unit build loop, coarsen partitions using the pure
+Home23 planner `planPartitionCoarsening` (`shared/memory-source/pgs-partitions.cjs`,
+mutation-tested). Partitions ≥ 40 nodes keep their id (real threads); the
+sub-threshold explosion folds into ≤16 deterministic `c-small-<bucket>`
+partitions. Only triggers when small-partition count exceeds the bucket count,
+so normal brains are untouched. `listPgsPartitions` applies the same planner so
+the inventory and the projection agree.
+
+**The subtle part (caught by test).** The authority MAC signs `partitionId`
+(`signPinnedProviderAuthority`), so a bare `UPDATE partition_id` fails integrity
+verification at sweep time. Moved nodes are **re-signed** with their new
+partition inside the same trusted projection that signed them originally
+(unsigned/null-MAC rows just move — their verify path ignores partitionId).
+
+**Composes with Patch 20** (small-run Query fallback): coarsening reduces
+partition count, which makes more brains eligible for the one-partition direct-
+Query path rather than PGS.
+
+**Result (measured).** A 201-partition fixture (1 large + 200 islands) →
+17 partitions / 21 work units. Verify: `node --test tests/cosmo23/pinned-pgs-store.test.cjs`
+(the two `Patch 66:` tests) + `node --test tests/shared/pgs-partition-coarsening.test.cjs`.
