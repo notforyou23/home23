@@ -71,13 +71,21 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
         args: { mount: '/System/Volumes/Data', minGiB: 10 },
       },
       remediation: [
-        { type: 'exec_command', args: { name: 'clean_pm2_logs' }, cooldownMin: 60 },
+        { type: 'exec_command', args: { name: 'reclaim_known_safe_disk' }, cooldownMin: 60 },
+        { type: 'exec_command', args: { name: 'clean_pm2_logs' }, cooldownMin: 120 },
         { type: 'dispatch_to_agent', args: { budgetHours: 6 }, cooldownMin: 15 },
         {
           type: 'notify_jtr',
           args: {
+            fuseBox: true,
             severity: 'normal',
-            text: "Disk under 10 GiB. Agent cleaned logs and looked for space but couldn't get it back above threshold. Needs a real cleanup pass.",
+            text: "Disk under 10 GiB. Known-safe reclaim and log flush did not restore headroom. Needs a real cleanup pass (archives belong on Casey Jones).",
+            checklist: [
+              'Check current free space on the data volume',
+              'Run the safe disk reclaim if offered',
+              'Mark done once free space is back above threshold',
+            ],
+            safeAction: { id: 'reclaim_known_safe_disk', label: 'Reclaim known-safe disk', args: {} },
           },
           cooldownMin: 720,
         },
@@ -102,8 +110,14 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
         {
           type: 'notify_jtr',
           args: {
+            fuseBox: true,
             severity: 'alert',
             text: `${agent} create_file returned without durable filesystem readback. The write path needs a real patch, not another escalation document.`,
+            checklist: [
+              'Confirm create_file writes are missing from disk',
+              'Review the write path for the regression',
+              'Mark done after the probe verifier is green',
+            ],
           },
           cooldownMin: 60,
         },
@@ -125,8 +139,15 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
         {
           type: 'notify_jtr',
           args: {
+            fuseBox: true,
             severity: 'alert',
             text: `${harnessProc} wouldn't come back after a pm2 restart. Channels are down. Needs hands.`,
+            checklist: [
+              'Confirm the harness process is down',
+              'Click Restart harness if offered',
+              'Mark done once the harness verifier is green',
+            ],
+            safeAction: { id: 'restart_pm2', label: `Restart ${harnessProc}`, args: { name: harnessProc } },
           },
           cooldownMin: 60,
         },
@@ -146,8 +167,15 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
         {
           type: 'notify_jtr',
           args: {
+            fuseBox: true,
             severity: 'alert',
             text: `Dashboard ${dashProc} unreachable. pm2 restart and agent diagnosis both failed.`,
+            checklist: [
+              'Confirm the dashboard is unreachable',
+              'Click Restart dashboard if offered',
+              'Mark done once the dashboard responds again',
+            ],
+            safeAction: { id: 'restart_pm2', label: `Restart ${dashProc}`, args: { name: dashProc } },
           },
           cooldownMin: 60,
         },
@@ -167,8 +195,15 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
         {
           type: 'notify_jtr',
           args: {
+            fuseBox: true,
             severity: 'alert',
             text: `Dashboard port :${dashPort} is not owned by ${dashProc}. A stale listener may be serving old operator state.`,
+            checklist: [
+              'Confirm the dashboard port is owned by a stale listener',
+              'Click Restart dashboard if offered',
+              'Mark done once the port owner check is green',
+            ],
+            safeAction: { id: 'restart_pm2', label: `Restart ${dashProc}`, args: { name: dashProc } },
           },
           cooldownMin: 60,
         },
@@ -188,8 +223,15 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
         {
           type: 'notify_jtr',
           args: {
+            fuseBox: true,
             severity: 'alert',
             text: `Engine admin on :${realtimePort} is not responding. Dashboard may show stale/fallback state even if the process is online.`,
+            checklist: [
+              'Confirm the engine admin endpoint is unreachable',
+              'Click Restart engine if offered',
+              'Mark done once the admin ping is green',
+            ],
+            safeAction: { id: 'restart_pm2', label: `Restart home23-${agent}`, args: { name: `home23-${agent}` } },
           },
           cooldownMin: 60,
         },
@@ -231,12 +273,14 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
     },
     {
       id: `${agent}_harness_cron_jobs_healthy`,
-      claim: `${agent} harness scheduler has no enabled jobs with repeated errors`,
+      claim: `${agent} harness scheduler has no enabled house jobs with repeated errors (edge pi/imac/empire jobs excluded)`,
       verifier: {
         type: 'cron_job_errors',
         args: {
           path: cronJobsPath,
           maxConsecutiveErrors: 1,
+          // Edge-dark nodes must not poison house health / Good Life repair plot.
+          excludeNamePattern: '^(pi-|imac-|empire-)',
         },
       },
       remediation: [
@@ -352,8 +396,14 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
         {
           type: 'notify_jtr',
           args: {
+            fuseBox: true,
             severity: 'alert',
             text: 'Brain graph near-empty and the agent couldn\'t recover it. Persistence or load path is broken — please look.',
+            checklist: [
+              'Check whether the brain graph is actually empty',
+              'Review the persistence/load path for errors',
+              'Mark done once node count recovers above threshold',
+            ],
           },
           cooldownMin: 360,
         },

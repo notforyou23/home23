@@ -48,9 +48,18 @@ interface AssemblyConfig {
 const DOMAIN_SURFACES = [
   { name: 'TOPOLOGY', file: 'TOPOLOGY.md', budget: 2500, alwaysBoost: false, isFact: true },
   { name: 'PROJECTS', file: 'PROJECTS.md', budget: 3000, alwaysBoost: false, isFact: false },
-  { name: 'PERSONAL', file: 'PERSONAL.md', budget: 2500, alwaysBoost: false, isFact: false },
+  // PERSONAL is alwaysBoost: who jtr is loads every turn, unconditionally.
+  // It used to be false ("surface only on direct relevance") while RECENT was
+  // true -- so the machine's own heartbeats reached the agent every turn and
+  // jtr's life was a conditional lookup. That is why jerry greeted jtr with
+  // cron errors. Two booleans, not a personality.
+  { name: 'PERSONAL', file: 'PERSONAL.md', budget: 2500, alwaysBoost: true,  isFact: false },
   { name: 'DOCTRINE', file: 'DOCTRINE.md', budget: 2500, alwaysBoost: false, isFact: false },
-  { name: 'RECENT',   file: 'RECENT.md',   budget: 3000, alwaysBoost: true,  isFact: false },
+  // RECENT is NOT alwaysBoost. curator-llm-tools builds it from the event
+  // ledger and the machine's own cycle thoughts, so it is structurally
+  // incapable of describing jtr's world -- loading it every turn could only
+  // ever tell the agent about itself.
+  { name: 'RECENT',   file: 'RECENT.md',   budget: 3000, alwaysBoost: false, isFact: false },
 ] as const;
 
 // ─── Surface Loading ────────────────────────────────────

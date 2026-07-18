@@ -398,16 +398,24 @@ const verifiers = {
     const current = memory.nodes.size ?? memory.nodes.length ?? 0;
     const hwFile = path.join(brainDir, 'brain-high-water.json');
 
-    let hw = { maxNodeCount: 0, lastSeen: null };
+    let hw = { maxNodeCount: 0, lastSeen: null, acceptedMaxNodeCount: null };
     try {
       const raw = fs.readFileSync(hwFile, 'utf8');
       const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed.maxNodeCount === 'number') hw = parsed;
+      if (parsed && typeof parsed.maxNodeCount === 'number') hw = { ...hw, ...parsed };
     } catch { /* first run or bad file */ }
 
-    // Update high-water when current is a new maximum.
-    if (current > hw.maxNodeCount) {
-      const next = { maxNodeCount: current, lastSeen: new Date().toISOString() };
+    // Intentional rebuild / door-closure: acceptedMaxNodeCount resets the floor
+    // so a deliberate shrink is not treated as data-loss forever.
+    const hasAccepted = typeof hw.acceptedMaxNodeCount === 'number' && hw.acceptedMaxNodeCount >= 0;
+
+    // Update all-time high-water when current is a new maximum (informational).
+    if (current > (hw.maxNodeCount || 0)) {
+      const next = {
+        ...hw,
+        maxNodeCount: current,
+        lastSeen: new Date().toISOString(),
+      };
       try {
         fs.writeFileSync(hwFile + '.tmp', JSON.stringify(next, null, 2));
         fs.renameSync(hwFile + '.tmp', hwFile);
@@ -415,23 +423,40 @@ const verifiers = {
       hw = next;
     }
 
+    let effectiveHighWater = hasAccepted ? hw.acceptedMaxNodeCount : hw.maxNodeCount;
+
+    // After accepted rebuild, grow accepted baseline when we climb past it.
+    if (hasAccepted && current > hw.acceptedMaxNodeCount) {
+      const next = {
+        ...hw,
+        acceptedMaxNodeCount: current,
+        lastSeen: new Date().toISOString(),
+      };
+      try {
+        fs.writeFileSync(hwFile + '.tmp', JSON.stringify(next, null, 2));
+        fs.renameSync(hwFile + '.tmp', hwFile);
+      } catch { /* advisory */ }
+      hw = next;
+      effectiveHighWater = current;
+    }
+
     // Not enough baseline — treat as ok, keep collecting data.
-    if (hw.maxNodeCount < minBaseline) {
+    if (effectiveHighWater < minBaseline) {
       return {
         ok: true,
-        detail: `building baseline (${current} nodes, high-water ${hw.maxNodeCount})`,
-        observed: { current, highWater: hw.maxNodeCount },
+        detail: `building baseline (${current} nodes, high-water ${effectiveHighWater}${hasAccepted ? ', accepted rebuild' : ''})`,
+        observed: { current, highWater: effectiveHighWater, accepted: hasAccepted },
       };
     }
 
-    const floor = Math.floor(hw.maxNodeCount * (1 - dropThreshold));
+    const floor = Math.floor(effectiveHighWater * (1 - dropThreshold));
     const ok = current >= floor;
     return {
       ok,
       detail: ok
-        ? `stable (${current} nodes, high-water ${hw.maxNodeCount})`
-        : `regression: ${current} nodes, dropped below ${floor} (high-water ${hw.maxNodeCount})`,
-      observed: { current, highWater: hw.maxNodeCount, floor },
+        ? `stable (${current} nodes, high-water ${effectiveHighWater}${hasAccepted ? ', accepted rebuild' : ''})`
+        : `regression: ${current} nodes, dropped below ${floor} (high-water ${effectiveHighWater}${hasAccepted ? ', accepted rebuild' : ''})`,
+      observed: { current, highWater: effectiveHighWater, floor, accepted: hasAccepted, allTimeHigh: hw.maxNodeCount },
     };
   },
 };
@@ -794,6 +819,14 @@ verifiers.cron_job_errors = async function cronJobErrors(args = {}) {
     const maxConsecutiveErrors = Number.isFinite(args.maxConsecutiveErrors)
       ? args.maxConsecutiveErrors
       : 0;
+    let excludeRe = null;
+    if (args.excludeNamePattern) {
+      try {
+        excludeRe = new RegExp(args.excludeNamePattern, 'i');
+      } catch (err) {
+        return { ok: false, detail: `invalid excludeNamePattern: ${err.message}` };
+      }
+    }
     const isEnabled = (job) => {
       if (Object.prototype.hasOwnProperty.call(job, 'enabled')) return job.enabled !== false;
       if (Object.prototype.hasOwnProperty.call(job, 'status')) return job.status !== 'disabled';
@@ -807,6 +840,7 @@ verifiers.cron_job_errors = async function cronJobErrors(args = {}) {
     const failingJobs = jobs
       .filter((job) => isEnabled(job))
       .filter((job) => !nameRe || nameRe.test(String(job.name || job.id || '')))
+      .filter((job) => !excludeRe || !excludeRe.test(String(job.name || job.id || '')))
       .map((job) => {
         const consecutiveErrors = Number(jobState(job, 'consecutiveErrors') || 0);
         const lastStatus = String(jobState(job, 'lastStatus') || '').toLowerCase();

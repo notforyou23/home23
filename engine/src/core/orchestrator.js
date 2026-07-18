@@ -49,6 +49,22 @@ const { routeThoughtAction, stripActionTags, scrubToolArtifacts } = require('../
 const { classifyInertThought } = require('../cognition/hallucinated-tool-call-detector');
 const { executeAction } = require('../cognition/action-dispatcher');
 
+/** Resolve bridge token for live-problems → harness notify/diagnose (avoid 401 spine death). */
+function resolveLiveProblemsBridgeToken() {
+  const fromEnv = process.env.BRIDGE_TOKEN || process.env.HOME23_BRIDGE_TOKEN || '';
+  if (fromEnv) return fromEnv;
+  try {
+    const yaml = require('js-yaml');
+    const homeRoot = process.env.HOME23_ROOT
+      || path.resolve(__dirname, '..', '..', '..');
+    const secretsPath = path.join(homeRoot, 'config', 'secrets.yaml');
+    const secrets = yaml.load(require('fs').readFileSync(secretsPath, 'utf8')) || {};
+    return secrets.bridge?.token || secrets.channels?.webhooks?.token || '';
+  } catch {
+    return '';
+  }
+}
+
 // Cycle tools: inline MCP-style tools that cognitive cycles can call mid-thought
 // to ground their reasoning in real data (surface files, brain memory, goals,
 // pending notifications).
@@ -849,6 +865,7 @@ class Orchestrator {
           agentName: process.env.HOME23_AGENT || null,
           dashboardPort: process.env.DASHBOARD_PORT || process.env.COSMO_DASHBOARD_PORT || null,
           bridgePort: process.env.BRIDGE_PORT || null,
+          harnessNotifyToken: resolveLiveProblemsBridgeToken(),
         });
         this.liveProblems.start();
       }

@@ -38,3 +38,4 @@ Lookup chains. One or two reads per question, not fifty.
 1. **NOW.md is grounding, not the answer.** It tells me the situation. The other files tell me the details.
 2. **One or two reads.** If I'm reading more than that, I'm probably off-path — back up and re-ground.
 3. **Stale beats invented.** If NOW.md is thin or old, say so plainly. Don't manufacture certainty from accumulated context.
+4. **Finish > chronics.** Scoreboard is finished work for the owner inside this agent's dedication — not yellow chronics. Self-health is scenery. Act and close; ask only at the thin fuse box.

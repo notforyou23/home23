@@ -21,6 +21,7 @@ const { LiveProblemsLoop, shouldReverifyResolvedProblem } = require('./loop');
 const { seedAll } = require('./seed');
 const { auditProblemList } = require('./audit');
 const { TargetsRegistry } = require('./registry');
+const { getOsKernel } = require('../os-kernel');
 
 function loadActionAllowlistIntegrations() {
   try {
@@ -35,6 +36,15 @@ function loadActionAllowlistIntegrations() {
 
 function initLiveProblems({ brainDir, memory, logger, agentName, dashboardPort, bridgePort, harnessNotifyToken }) {
   const store = new LiveProblemStore({ brainDir, logger });
+  // Ensure dispatch ledger path exists so file_exists verifiers are not chronic fiction.
+  try {
+    const actionsPath = path.join(brainDir, 'actions.jsonl');
+    if (!fs.existsSync(actionsPath)) {
+      fs.writeFileSync(actionsPath, '');
+    }
+  } catch (err) {
+    logger?.warn?.('[live-problems] could not ensure actions.jsonl', { error: err.message });
+  }
   const seeded = seedAll(store, { agentName, dashboardPort, bridgePort });
   try {
     const registry = new TargetsRegistry().load();
@@ -58,11 +68,16 @@ function initLiveProblems({ brainDir, memory, logger, agentName, dashboardPort, 
   const harnessDiagnoseUrl = `http://127.0.0.1:${bport}/api/diagnose`;
   const workerConnectorBaseUrl = `http://127.0.0.1:${bport}`;
   const ownerAgent = agentName || process.env.HOME23_AGENT || 'jerry';
+  const dashPort = dashboardPort || process.env.DASHBOARD_PORT || process.env.COSMO_DASHBOARD_PORT || '5002';
+  const dashboardBaseUrl = `http://127.0.0.1:${dashPort}`;
+  const osKernel = getOsKernel(brainDir);
 
   const ctxProvider = () => ({
     memory,
     brainDir,
     agentName: ownerAgent,
+    dashboardBaseUrl,
+    osKernel,
     integrations: loadActionAllowlistIntegrations(),
     harnessNotifyUrl,
     harnessDiagnoseUrl,

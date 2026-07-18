@@ -185,12 +185,20 @@ test('RECENT.md state-snapshot writer, its callers, and its dedup-hash state are
 
 test('the RECENT.md surface is still readable by context assembly, independent of brain nodes', () => {
   // RECENT.md is declared as a domain surface, loaded straight off disk
-  // (loadSurface -> readFileSync), with alwaysBoost so it loads on every
-  // turn -- not gated on any brain query, trigger match, or memory node.
+  // (loadSurface -> readFileSync) on relevance. It is deliberately NOT
+  // alwaysBoost (2026-07-17): RECENT is built from the event ledger and the
+  // machine's own cycle thoughts, so loading it every turn could only ever
+  // tell the agent about itself. PERSONAL.md took the unconditional slot --
+  // who jtr is loads every turn instead of the machine's heartbeat.
   assert.match(
     contextAssemblySource,
-    /\{\s*name:\s*'RECENT',\s*file:\s*'RECENT\.md',[^}]*alwaysBoost:\s*true/,
-    'RECENT.md must remain an always-loaded domain surface'
+    /\{\s*name:\s*'RECENT',\s*file:\s*'RECENT\.md',[^}]*alwaysBoost:\s*false/,
+    'RECENT.md must remain a declared domain surface, relevance-gated (not always-loaded)'
+  );
+  assert.match(
+    contextAssemblySource,
+    /\{\s*name:\s*'PERSONAL',\s*file:\s*'PERSONAL\.md',[^}]*alwaysBoost:\s*true/,
+    'PERSONAL.md must hold the always-loaded slot -- jtr every turn, not the machine'
   );
   assert.match(
     contextAssemblySource,

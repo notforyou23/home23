@@ -129,7 +129,7 @@ test('GoodLifeObjective treats current Home23 PM2 offline state as repair drift'
   assert.equal(evaluation.policy.mode, 'repair');
 });
 
-test('GoodLifeObjective treats failing scheduler jobs as repair drift and preserves evidence', () => {
+test('GoodLifeObjective treats few failing scheduler jobs as friction scenery, not repair', () => {
   const objective = new GoodLifeObjective();
   const scheduler = {
     totalJobs: 5,
@@ -145,11 +145,40 @@ test('GoodLifeObjective treats failing scheduler jobs as repair drift and preser
     liveProblems: { open: 0, chronic: 0 },
     crystallization: { lastReceiptAt: '2026-05-11T13:34:00.000Z' },
     memory: { nodes: 100, edges: 180 },
+    discovery: { queueDepth: 2 },
+    scheduler,
+  });
+
+  assert.equal(evaluation.lanes.viability.status, 'healthy');
+  assert.equal(evaluation.lanes.friction.status, 'strained');
+  assert.match(evaluation.lanes.friction.reasons.join(' '), /2 failing scheduler job/);
+  assert.notEqual(evaluation.policy.mode, 'repair');
+  assert.deepEqual(evaluation.evidence.scheduler, scheduler);
+});
+
+test('GoodLifeObjective treats many failing scheduler jobs as repair drift', () => {
+  const objective = new GoodLifeObjective();
+  const scheduler = {
+    totalJobs: 8,
+    enabledJobs: 7,
+    failingJobs: 3,
+    maxConsecutiveErrors: 4,
+    worstJobs: [
+      { name: 'job-a', consecutiveErrors: 4, lastStatus: 'error' },
+      { name: 'job-b', consecutiveErrors: 3, lastStatus: 'error' },
+      { name: 'job-c', consecutiveErrors: 2, lastStatus: 'error' },
+    ],
+  };
+  const evaluation = objective.evaluate({
+    now: '2026-05-11T13:35:00.000Z',
+    liveProblems: { open: 0, chronic: 0 },
+    crystallization: { lastReceiptAt: '2026-05-11T13:34:00.000Z' },
+    memory: { nodes: 100, edges: 180 },
     scheduler,
   });
 
   assert.equal(evaluation.lanes.viability.status, 'critical');
-  assert.match(evaluation.lanes.viability.reasons.join(' '), /2 failing scheduler job/);
+  assert.match(evaluation.lanes.viability.reasons.join(' '), /3 failing scheduler job/);
   assert.equal(evaluation.policy.mode, 'repair');
   assert.deepEqual(evaluation.evidence.scheduler, scheduler);
 });

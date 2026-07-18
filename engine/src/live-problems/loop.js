@@ -12,9 +12,10 @@
  *      notify_jtr) has run and failed or was exhausted; mark escalated so we
  *      don't loop the same plan.
  *
- * Escalation is opt-in per problem: the plan's last step is typically a
- * `notify_jtr` remediator. If a problem has no plan, the loop just tracks
- * state — jtr sees it in the dashboard but nothing else happens.
+ * Escalation is opt-in per problem. `notify_jtr` is fuse-box only
+ * (`args.fuseBox: true` or severity critical/emergency). Scenery plans may
+ * still list notify_jtr; the loop starves those so the operator can walk away.
+ * Dashboard still shows open/chronic problems.
  */
 
 const fs = require('fs');
@@ -22,6 +23,7 @@ const os = require('os');
 const { runVerifier } = require('./verifiers');
 const { runRemediator } = require('./remediators');
 const { appendSignal } = require('../cognition/signals');
+const { createFromFuseNotify } = require('../os-kernel/operator-intents');
 
 const DEFAULT_INTERVAL_MS = 90 * 1000;          // 1.5 min between ticks
 const DEFAULT_STEP_COOLDOWN_MIN = 10;           // cooldown per step if not specified
@@ -206,6 +208,20 @@ class LiveProblemsLoop {
       return;
     }
 
+    // Cap auth-spine theater: repeated 401s are one wire to fix, not a plot.
+    // Prefer one clear receipt, then stop burning cycles until the token path works.
+    const recentLog = Array.isArray(p.remediationLog) ? p.remediationLog.slice(-6) : [];
+    const authFails = recentLog.filter((e) =>
+      e && (e.type === 'dispatch_to_agent' || e.type === 'dispatch_to_worker' || e.type === 'notify_jtr')
+      && e.outcome === 'failed'
+      && /401|unauthorized/i.test(String(e.detail || ''))
+    ).length;
+    if (authFails >= 2) {
+      if (!p.escalated) this.store.markEscalated(p.id);
+      this.logger.info?.(`[live-problems] ${p.id}: starving auth-failure remediation loop (${authFails} recent 401s)`);
+      return;
+    }
+
     // 2. Remediate if plan + cooldown allows
     const plan = Array.isArray(p.remediation) ? p.remediation : [];
     const step = plan[p.stepIndex || 0];
@@ -287,6 +303,44 @@ class LiveProblemsLoop {
       return;   // in cooldown — let the next tick handle it
     }
 
+    // Fuse-box only: do not page jtr for scenery remediations.
+    if (step.type === 'notify_jtr' && !isFuseBoxNotify(step)) {
+      this.logger.info?.(`[live-problems] ${p.id}: starving notify_jtr (fuse-box only)`);
+      this.store.recordRemediation(p.id, {
+        step: p.stepIndex,
+        type: step.type,
+        outcome: 'skipped',
+        detail: 'notify_jtr starved — fuse-box only (walk-away)',
+      });
+      if (!p.escalated) this.store.markEscalated(p.id);
+      this.store.advanceRemediationStep(p.id);
+      return;
+    }
+
+    // Fuse-box notify: raise a governed operator intent so the escalation
+    // shows up on the dashboard's "Needs You" rail, not just as a Telegram
+    // ping. The remediator formats its message from this intent when present.
+    if (isFuseBoxNotify(step) && ctx.osKernel) {
+      try {
+        const intent = createFromFuseNotify(ctx.osKernel.store, {
+          problemId: p.id,
+          agent: ctx.agentName || process.env.HOME23_AGENT || 'agent',
+          title: step.args?.title || p.claim || p.id,
+          why: step.args?.text || p.claim,
+          evidence: p.lastResult?.detail || '',
+          checklist: step.args?.checklist || [
+            'Review the issue',
+            'Take the safe action if offered',
+            'Mark done after verifier is green',
+          ],
+          safeAction: step.args?.safeAction || null,
+        });
+        step.args = { ...step.args, operatorIntent: intent };
+      } catch (err) {
+        this.logger.warn?.(`[live-problems] ${p.id}: operator intent create failed: ${err.message}`);
+      }
+    }
+
     // 3. Run the remediator
     this.logger.info?.(`[live-problems] ${p.id}: step ${p.stepIndex} → ${step.type}`);
     // Pass the full problem record so dispatch_to_agent has verifier spec etc.
@@ -318,6 +372,13 @@ class LiveProblemsLoop {
     // re-verifies; if the fix worked → resolved. If not, cooldown expires and
     // we try the same step again until it rolls to the next one via failure.
   }
+}
+
+function isFuseBoxNotify(step) {
+  if (!step || step.type !== 'notify_jtr') return false;
+  if (step.args?.fuseBox === true) return true;
+  const severity = String(step.args?.severity || '').toLowerCase();
+  return severity === 'critical' || severity === 'emergency';
 }
 
 function summarizeRemediation(entries) {
@@ -367,4 +428,5 @@ module.exports = {
   classifyDispatchRecipe,
   shouldAdvanceAfterIneffectiveSuccess,
   shouldReverifyResolvedProblem,
+  isFuseBoxNotify,
 };

@@ -12,7 +12,9 @@ const DEFAULT_THRESHOLDS = Object.freeze({
   hostSwapPressureHigh: 85,
   hostSwapPressureCritical: 95,
   hostDiskUsageCritical: 95,
-  schedulerFailingJobsCritical: 1,
+  // One flaky cron must not yank the house into repair / pull the operator back.
+  schedulerFailingJobsCritical: 3,
+  schedulerFailingJobsFriction: 1,
 });
 
 const LANE_ORDER = Object.freeze([
@@ -147,17 +149,24 @@ class GoodLifeObjective {
     const maintenanceRatio = Number(s.actions?.maintenanceRatio || 0);
     const loadRatio = Number(s.host?.cpu?.loadRatio);
     const swapUsedPct = Number(s.host?.swap?.usedPct);
+    const failingSchedulerJobs = Number(s.scheduler?.failingJobs || 0);
     const hostLoadHigh = Number.isFinite(loadRatio) && loadRatio >= this.thresholds.hostLoadRatioHigh;
     const hostSwapHigh = Number.isFinite(swapUsedPct) && swapUsedPct >= this.thresholds.hostSwapPressureHigh;
+    const schedulerFriction = failingSchedulerJobs >= this.thresholds.schedulerFailingJobsFriction
+      && failingSchedulerJobs < this.thresholds.schedulerFailingJobsCritical;
     if (failures >= this.thresholds.frictionFailuresHigh
       || maintenanceRatio > this.thresholds.maintenanceRatioHigh
       || hostLoadHigh
-      || hostSwapHigh) {
+      || hostSwapHigh
+      || schedulerFriction) {
       return lane('strained', [
         failures >= this.thresholds.frictionFailuresHigh ? `${failures} recent action failure(s)` : null,
         maintenanceRatio > this.thresholds.maintenanceRatioHigh ? `maintenance ratio ${(maintenanceRatio * 100).toFixed(0)}%` : null,
         hostLoadHigh ? `host load ${(loadRatio * 100).toFixed(0)}% of cores` : null,
         hostSwapHigh ? `host swap ${Math.round(swapUsedPct)}% used` : null,
+        schedulerFriction
+          ? `${failingSchedulerJobs} failing scheduler job${failingSchedulerJobs === 1 ? '' : 's'} (scenery until ${this.thresholds.schedulerFailingJobsCritical}+)`
+          : null,
       ]);
     }
     return lane('healthy', ['friction is not dominating the loop']);

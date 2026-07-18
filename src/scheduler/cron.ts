@@ -45,6 +45,8 @@ export interface JobState {
   lastDecisionAtMs?: number;
   lastDecisionAction?: JobDecisionAction;
   lastDecisionReason?: string;
+  /** Circuit breaker: withhold until this time, then auto-revive (not permanent silence). */
+  circuitOpenUntilMs?: number;
 }
 
 export interface CronJob {
@@ -648,10 +650,29 @@ export class CronScheduler {
       willExecute = false;
       nextReviewAtMs = now + 60 * 60 * 1000;
     } else if (source !== 'manual' && job.state.consecutiveErrors >= 3) {
-      action = 'escalate';
-      reason = `${job.state.consecutiveErrors} consecutive errors; withheld until operator or repair loop reviews job`;
-      willExecute = false;
-      nextReviewAtMs = now + 15 * 60 * 1000;
+      const circuitOpenUntilMs = Number(job.state.circuitOpenUntilMs) || 0;
+      const backoffMs = 15 * 60 * 1000;
+      if (circuitOpenUntilMs > now) {
+        // Still in circuit-open backoff — withhold, then revive.
+        action = 'escalate';
+        reason = `${job.state.consecutiveErrors} consecutive errors; circuit open until ${new Date(circuitOpenUntilMs).toISOString()} then auto-revive`;
+        willExecute = false;
+        nextReviewAtMs = circuitOpenUntilMs;
+      } else if (circuitOpenUntilMs > 0 && circuitOpenUntilMs <= now) {
+        // Backoff expired — clear the ghost withhold and probe once.
+        action = 'repair';
+        reason = `${job.state.consecutiveErrors} consecutive errors; circuit breaker revive probe after backoff`;
+        willExecute = true;
+        job.state.consecutiveErrors = 0;
+        delete job.state.circuitOpenUntilMs;
+      } else {
+        // First trip over the threshold — open the circuit (not permanent silence).
+        job.state.circuitOpenUntilMs = now + backoffMs;
+        action = 'escalate';
+        reason = `${job.state.consecutiveErrors} consecutive errors; circuit opened — auto-revive after ${Math.round(backoffMs / 60000)}m (not permanent silence)`;
+        willExecute = false;
+        nextReviewAtMs = now + backoffMs;
+      }
     } else if (source === 'scheduled' && overdueMs >= this.catchUpThresholdMs(job)) {
       action = 'catch_up';
       reason = `job overdue by ${overdueMs}ms; executing once as catch-up`;
@@ -800,7 +821,7 @@ export class CronScheduler {
       pressureBehavior: priority === 'background'
         ? 'defer when foreground scheduled work is due'
         : 'may run when eligible; background jobs yield first',
-      retryPosture: 'escalate after 3 consecutive errors before executing again',
+      retryPosture: 'circuit-break after 3 consecutive errors, then auto-revive after backoff',
       outputObligation,
       duplicateDetection: `job id ${job.id}; isolated cron history cron-${job.id}`,
       stopCondition: job.schedule.kind === 'at'

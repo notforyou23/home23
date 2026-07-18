@@ -106,7 +106,7 @@ test('cron preflight decisions carry a resource stewardship contract', async () 
   assert.equal(decisions[0].resourceContract.priority, 'background');
   assert.equal(decisions[0].resourceContract.maxRuntimeSeconds, 420);
   assert.match(decisions[0].resourceContract.pressureBehavior, /defer/);
-  assert.match(decisions[0].resourceContract.retryPosture, /escalate after 3 consecutive errors/);
+  assert.match(decisions[0].resourceContract.retryPosture, /circuit-break after 3 consecutive errors/);
   assert.match(decisions[0].resourceContract.outputObligation, /delivery summary/);
   assert.match(decisions[0].resourceContract.duplicateDetection, /job id job-1/);
   assert.match(decisions[0].resourceContract.stopCondition, /one eligible scheduler firing/);
@@ -139,6 +139,7 @@ test('due cron jobs with repeated errors escalate before executing again', async
   assert.equal(decisions.length, 1);
   assert.equal(decisions[0].action, 'escalate');
   assert.match(decisions[0].reason, /3 consecutive error/);
+  assert.match(decisions[0].reason, /circuit opened|auto-revive/i);
 
   const runLog = readJsonl(join(dir, 'cron-runs', 'job-1.jsonl'));
   assert.equal(runLog.length, 1);
@@ -153,6 +154,38 @@ test('due cron jobs with repeated errors escalate before executing again', async
   assert.equal(savedJobs[0].state.lastStatus, 'error');
   assert.equal(savedJobs[0].state.lastSemanticStatus, 'withheld');
   assert.ok(savedJobs[0].state.nextRunAtMs > Date.now());
+  assert.ok(Number(savedJobs[0].state.circuitOpenUntilMs) > Date.now());
+});
+
+test('cron circuit breaker auto-revives after backoff instead of permanent silence', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-revive-'));
+  let handlerCalls = 0;
+  const job = makeDueJob({
+    state: {
+      nextRunAtMs: Date.now() - 10_000,
+      lastStatus: 'error',
+      consecutiveErrors: 3,
+      circuitOpenUntilMs: Date.now() - 1_000,
+    },
+  });
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([job], null, 2));
+  const scheduler = new CronScheduler({ timezone: 'America/New_York', jobsFile: 'cron-jobs.json', runsDir: 'cron-runs' }, async (): Promise<JobResult> => {
+    handlerCalls++;
+    return { status: 'ok', response: 'revived', durationMs: 1 };
+  }, dir);
+
+  await (scheduler as any).tick();
+
+  assert.equal(handlerCalls, 1);
+  const decisions = readJsonl(join(dir, 'cron-decisions.jsonl'));
+  assert.equal(decisions[0].action, 'repair');
+  assert.match(decisions[0].reason, /revive probe/i);
+  assert.equal(decisions[0].willExecute, true);
+
+  const savedJobs = JSON.parse(readFileSync(join(dir, 'cron-jobs.json'), 'utf8'));
+  assert.equal(savedJobs[0].state.consecutiveErrors, 0);
+  assert.equal(savedJobs[0].state.circuitOpenUntilMs, undefined);
+  assert.equal(savedJobs[0].state.lastStatus, 'ok');
 });
 
 test('manual cron repair run bypasses repeated-error escalation', async () => {

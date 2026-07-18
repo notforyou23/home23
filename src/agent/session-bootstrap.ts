@@ -23,6 +23,16 @@ export interface SituationalAwarenessConfig {
 const DEFAULT_READS = ['NOW.md', 'PLAYBOOK.md'];
 const DEFAULT_MAX_BYTES = 4000;
 
+const GENERATOR_CONTRACT = [
+  '[GENERATOR CONTRACT]',
+  'Scoreboard is finished work for jtr — not yellow chronics.',
+  'Finish inside your dedication (receipts beat status theater). Jerry: life ops · ship Home23 · research→artifacts · make things. Forrest: health companion surfaces (8092 full read, ledgers, shelf/analyses, protocols).',
+  'Act and close by default. Ask only for: destructive filesystem/git, spend, public post, credentials, irreversible brain-risk, sensitive personal/health.',
+  'Self-health is scenery. Quiet house keep-alive (disk/cron/MCP) may run without asking.',
+  'Do not midwife the midwife. Prefer one finished artifact over another status narrative.',
+  '[/GENERATOR CONTRACT]',
+].join('\n');
+
 /**
  * Build the [SESSION BOOTSTRAP] block to inject into the first turn
  * of a fresh session. Returns null if disabled or no files resolvable.
@@ -33,7 +43,6 @@ export function buildBootstrapBlock(
 ): string | null {
   const reads = cfg?.bootstrap?.reads ?? DEFAULT_READS;
   const maxBytes = cfg?.bootstrap?.maxBytesPerFile ?? DEFAULT_MAX_BYTES;
-  if (!reads.length) return null;
 
   const sections: string[] = [];
   for (const filename of reads) {
@@ -48,7 +57,14 @@ export function buildBootstrapBlock(
     }
   }
 
-  if (sections.length === 0) return null;
+  // Always inject the generator contract so finish-rights outrank chronics,
+  // even when NOW/PLAYBOOK are thin or stale.
+  const body = [
+    GENERATOR_CONTRACT,
+    sections.length ? sections.join('\n\n') : null,
+  ].filter(Boolean).join('\n\n');
+
+  if (!body) return null;
 
   return [
     '[SESSION BOOTSTRAP]',
@@ -56,7 +72,7 @@ export function buildBootstrapBlock(
     'You MUST reference and use their content in your first response. Do not skip them.',
     'Do not re-request these files on later turns; they remain in history.',
     '',
-    sections.join('\n\n'),
+    body,
     '[/SESSION BOOTSTRAP]',
   ].join('\n');
 }

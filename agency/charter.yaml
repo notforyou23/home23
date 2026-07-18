@@ -1,22 +1,22 @@
 schema: home23.agency.charter.v1
 agent: jerry
-mode: bootcamp
+mode: house
 
 attention:
-  maxActivePursuits: 5
+  maxActivePursuits: 8
   maxWatchItems: 20
   maxDeferredItems: 200
   staleAfterHours: 168
   residentTickMs: 60000
 
 bootcamp:
-  enabled: true
+  enabled: false
   noOrnamentalNewsletter: true
   noTimelineDeliveryWithoutAssimilation: true
   noCurriculumWithoutBehaviorDelta: true
   noDashboardExpansionWithoutAgencyClarity: true
-  noNewCronWithoutPursuit: true
-  weeklyKillReview: true
+  noNewCronWithoutPursuit: false
+  weeklyKillReview: false
 
 authority:
   autonomous:
@@ -26,6 +26,13 @@ authority:
     - worker_delegation
     - noisy_input_discard_or_demotion
     - draft_higher_risk_changes
+    - finish_life_ops_with_receipts
+    - ship_home23_verified_changes
+    - compile_research_to_artifacts
+    - make_deliverables_jtr_asked_for
+    - quiet_house_keepalive
+    - cron_circuit_revive
+    - disk_lean_known_safe_reclaim
   requiresApproval:
     - destructive_operations
     - public_publication_or_posting
@@ -44,6 +51,11 @@ operatingContract:
     - low_risk_cron_binding_and_review
     - worker_delegation_with_receipts
     - dashboard_contract_drafts
+    - life_ops_briefs_followups_and_queued_decisions
+    - home23_product_ship_with_verification
+    - research_compile_to_vault_or_workspace
+    - make_things_deliverables
+    - quiet_house_keepalive_disk_delta_mcp_cron
   approvalDomains:
     - public_publication_or_external_posting
     - destructive_operations
@@ -60,6 +72,9 @@ operatingContract:
     - bind_or_review_recurring_crons_against_pursuits
     - delegate_worker_tasks_with_stop_conditions
     - update_dashboard_or_prompt_contract_state
+    - finish_generator_domain_work_with_receipts
+    - revive_withheld_cron_after_circuit_backoff
+    - reclaim_known_safe_disk_and_restart_home23_mcp
   hardRiskBoundaries:
     - no_l4_action_without_explicit_human_approval
     - no_public_posting_without_approval
@@ -68,7 +83,7 @@ operatingContract:
     - no_sensitive_health_or_personal_decision_without_approval
     - no_broad_production_change_without_receipt_and_approval
   decisionThresholds:
-    actAutonomously: reversible_low_risk_l0_l2_with_receipts
+    actAutonomously: finish_work_in_generator_domains_or_quiet_keepalive_with_receipts
     ask: value_depends_on_jtr_taste_judgment_or_private_context
     escalate: public_irreversible_destructive_spend_or_l4
     defer: unclear_low_value_or_attention_budget_exhausted
@@ -95,7 +110,12 @@ operatingContract:
     - operator_taste_or_private_context_controls_value
     - unresolved_high_authority_truth_contradiction_blocks_action
     - low_risk_path_is_not_reversible
-    - resident_loop_hits_repeated_blocker
+    - fuse_box_boundary_hit
+  generatorScoreboard:
+    - life_ops
+    - ship_home23
+    - research_artifacts
+    - make_things
 
 sourceTruthHierarchy:
   - current_verified_state
@@ -140,7 +160,6 @@ organs:
       - run logs
       - agency world-stream packets
     mustNeverDoAlone:
-      - create recurring work without pursuit binding
       - publish externally
       - perform destructive action
     failureSurface: cron run receipts and agency consequences
@@ -175,6 +194,7 @@ organs:
       - watch items
       - claims
       - research pursuits
+      - compiled artifacts
     reports:
       - research packets
       - artifacts
@@ -218,7 +238,7 @@ organs:
       - tool receipts
     mustNeverDoAlone:
       - be the source of truth over engine state
-      - punt low-risk reversible decisions by default
+      - punt finishable work to jtr by default
     failureSurface: conversation receipts and agency inbox
     commandSurface: agency tools and operator conversation
   dashboard:
@@ -237,6 +257,7 @@ organs:
     mustNeverDoAlone:
       - be ornamental
       - mask missing receipts
+      - make chronics the plot
     failureSurface: dashboard route checks and agency events
     commandSurface: local dashboard APIs
 

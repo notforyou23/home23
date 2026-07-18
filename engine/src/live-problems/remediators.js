@@ -77,6 +77,29 @@ const EXEC_CATALOG = {
     timeoutMs: 10000,
     description: 'pm2 flush — truncate all PM2 log files',
   },
+  reclaim_known_safe_disk: {
+    description: 'reclaim known-safe disk — runtime PGS test sessions + stale verification scratch (never touches brain)',
+    resolve() {
+      const root = home23RootFromEnv();
+      const script = [
+        'const fs=require("fs");const path=require("path");',
+        `const root=${JSON.stringify(root)};`,
+        'function rmrf(p){try{fs.rmSync(p,{recursive:true,force:true});return true;}catch{return false;}}',
+        'const removed=[];',
+        'for (const rel of ["runtime/pgs-sessions",".verification/scratch",".system-verifier"]) {',
+        '  const p=path.join(root,rel);',
+        '  if (fs.existsSync(p) && rmrf(p)) removed.push(rel);',
+        '}',
+        'console.log(JSON.stringify({ok:true,removed}));',
+      ].join('');
+      return {
+        cmd: 'node',
+        args: ['-e', script],
+        timeoutMs: 30000,
+        description: 'reclaim known-safe disk — runtime PGS test sessions + stale verification scratch (never touches brain)',
+      };
+    },
+  },
   reload_pm2_logs: {
     cmd: 'pm2',
     args: ['reloadLogs'],
@@ -397,13 +420,19 @@ const remediators = {
    * Escalate to jtr via the harness notify endpoint.
    * Only called as a last resort; gated by the loop so it fires once per problem
    * per escalation window.
-   * args: { text, severity }
-   * ctx: { harnessNotifyUrl, harnessNotifyToken }
+   * args: { text, severity, operatorIntent }
+   * ctx: { harnessNotifyUrl, harnessNotifyToken, dashboardBaseUrl }
+   *
+   * When the loop has raised a governed operator intent (fuse-box notify), it
+   * attaches it as args.operatorIntent — the message is then formatted as a
+   * "NEEDS YOU" card with a deep link back into the dashboard instead of the
+   * raw args.text. Falls back to args.text when no operatorIntent is present.
    */
-  async notify_jtr({ text, severity = 'normal' }, ctx = {}) {
+  async notify_jtr({ text, severity = 'normal', operatorIntent }, ctx = {}) {
     const url = ctx.harnessNotifyUrl;
     if (!url) return { outcome: 'rejected', detail: 'harness notify url unset' };
-    if (!text) return { outcome: 'rejected', detail: 'text required' };
+    const messageText = operatorIntent ? formatOperatorIntentNotify(operatorIntent, ctx) : text;
+    if (!messageText) return { outcome: 'rejected', detail: 'text required' };
     try {
       const res = await fetch(url, {
         method: 'POST',
@@ -411,7 +440,7 @@ const remediators = {
           'Content-Type': 'application/json',
           ...(ctx.harnessNotifyToken ? { 'Authorization': `Bearer ${ctx.harnessNotifyToken}` } : {}),
         },
-        body: JSON.stringify({ text, severity, source: 'live-problems' }),
+        body: JSON.stringify({ text: messageText, severity, source: 'live-problems' }),
       });
       if (!res.ok) {
         const body = await res.text().catch(() => '');
@@ -423,6 +452,28 @@ const remediators = {
     }
   },
 };
+
+/**
+ * Formats a governed operator intent as a "NEEDS YOU" Telegram card:
+ *   NEEDS YOU — <title>
+ *   <why>
+ *   1) <first checklist item>
+ *   → <absolute deep link>
+ */
+function formatOperatorIntentNotify(intent, ctx = {}) {
+  const title = intent.title || '';
+  const why = intent.why || '';
+  const checklist = Array.isArray(intent.checklist) ? intent.checklist : [];
+  const firstStep = checklist[0] || '';
+  const base = ctx.dashboardBaseUrl || `http://127.0.0.1:${process.env.DASHBOARD_PORT || '5002'}`;
+  const deepLinkAbsolute = `${base}${intent.deep_link || ''}`;
+  return [
+    `NEEDS YOU — ${title}`,
+    why,
+    `1) ${firstStep}`,
+    `→ ${deepLinkAbsolute}`,
+  ].join('\n');
+}
 
 function listRemediatorTypes() {
   return Object.keys(remediators);
@@ -447,4 +498,5 @@ module.exports = {
   EXEC_CATALOG,
   isRestartableProcess,
   isSelfProcess,
+  formatOperatorIntentNotify,
 };
