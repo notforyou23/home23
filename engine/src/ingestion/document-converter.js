@@ -147,8 +147,10 @@ class DocumentConverter {
           env.MLM_MODEL = this.visionModel;
         }
 
+        // 300s: scanned-PDF OCR renders and vision-reads up to 20 pages —
+        // a plain text-layer conversion never gets near this.
         const output = execFileSync(this.pythonPath, [CONVERT_SCRIPT, filePath], {
-          timeout: 120000,
+          timeout: 300000,
           maxBuffer: 50 * 1024 * 1024,
           encoding: 'utf8',
           env,

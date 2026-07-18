@@ -190,6 +190,23 @@ class DocumentFeeder {
   }
 
   /**
+   * Resolve the label a file would receive from the active watcher that
+   * covers it (deepest watch root wins). Falls back to the parent directory
+   * name — the same default ingestFile uses.
+   */
+  labelForPath(filePath) {
+    const resolved = path.resolve(filePath);
+    let best = null;
+    for (const w of this._watchers) {
+      const root = path.resolve(w.path);
+      if (resolved === root || resolved.startsWith(`${root}${path.sep}`)) {
+        if (!best || root.length > best.root.length) best = { root, label: w.label };
+      }
+    }
+    return best ? best.label : path.basename(path.dirname(resolved));
+  }
+
+  /**
    * Remove an ingested file's nodes from memory.
    */
   async removeFile(filePath) {

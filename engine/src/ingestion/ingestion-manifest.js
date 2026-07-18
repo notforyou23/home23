@@ -346,6 +346,14 @@ class IngestionManifest {
   }
 
   /**
+   * Read a single manifest entry (or null). Public so admin surfaces can
+   * report a file's ingestion state without reaching into internals.
+   */
+  getEntry(filePath) {
+    return this._manifest[filePath] || null;
+  }
+
+  /**
    * Get manifest stats.
    */
   getStats() {

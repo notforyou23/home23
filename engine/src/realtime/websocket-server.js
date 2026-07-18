@@ -292,6 +292,31 @@ class RealtimeServer {
       return json(200, { ok: true, removed, path: body.path });
     }
 
+    // POST /admin/feeder/reingest  { path, label? }
+    // A failed conversion is pinned by its unchanged content hash — isStale
+    // reports the file fresh forever, so a fixed converter never gets a
+    // second look on its own. Drop the manifest entry (and any nodes) and
+    // run the file through the pipeline again.
+    if (req.method === 'POST' && url === '/admin/feeder/reingest') {
+      const body = await this._readJsonBody(req);
+      if (!body.path || typeof body.path !== 'string') {
+        return json(400, { ok: false, error: 'path is required' });
+      }
+      const label = typeof body.label === 'string' && body.label.trim()
+        ? body.label.trim()
+        : feeder.labelForPath(body.path);
+      await feeder.removeFile(body.path);
+      await feeder.ingestFile(body.path, label);
+      const entry = feeder.manifest?.getEntry ? feeder.manifest.getEntry(body.path) : null;
+      return json(200, {
+        ok: true,
+        path: body.path,
+        label,
+        parseStatus: entry?.parseStatus ?? null,
+        nodeCount: entry?.nodeIds?.length ?? 0,
+      });
+    }
+
     // POST /admin/feeder/updateCompiler  { enabled?, model? }
     if (req.method === 'POST' && url === '/admin/feeder/updateCompiler') {
       const body = await this._readJsonBody(req);
