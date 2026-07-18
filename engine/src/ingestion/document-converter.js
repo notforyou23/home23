@@ -164,7 +164,10 @@ class DocumentConverter {
 
         return { ok: true, text: output, format: 'md' };
       } catch (err) {
-        const error = (err.stderr || err.message || '').slice(0, 200);
+        // Keep the TAIL of stderr: a python traceback puts the actual
+        // exception on its last line — the first 200 chars are just frames.
+        const raw = String(err.stderr || err.message || '').trim();
+        const error = raw.length > 600 ? `…${raw.slice(-600)}` : raw;
         this.logger?.error?.('MarkItDown conversion failed', {
           filePath,
           error

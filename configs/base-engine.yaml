@@ -657,7 +657,7 @@ feeder:
     intervalSeconds: 30
   converter:
     enabled: true
-    visionModel: MiniMax-M3
+    visionModel: gpt-4o-mini
     pythonPath: python3
   compiler:
     enabled: true
