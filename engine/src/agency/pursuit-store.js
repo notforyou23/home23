@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
@@ -71,6 +71,10 @@ function slugKey(input) {
 // roughly half the ledger was that one field. It lives in memory as an
 // alias and is never serialized.
 const MAX_PERSISTED_EVIDENCE = 40;
+
+// Boot compaction threshold: live state (latest row per pursuit) is ~1-2MB;
+// past this the file is mostly superseded history.
+const COMPACT_LEDGER_MIN_BYTES = 8 * 1024 * 1024;
 
 function compactPursuit(pursuit) {
   if (!pursuit || typeof pursuit !== 'object') return pursuit;
@@ -453,6 +457,47 @@ export class PursuitStore {
     }
     this.pursuitIndex = latest;
     return latest;
+  }
+
+  // Boot-time ledger compaction. The ledger is append-only and only the
+  // latest row per pursuit id is live state, so history is dead weight that
+  // regrows a few MB per day even with the no-op door. Must run before any
+  // appends in this process; the external drain script exists for the
+  // engine-stopped case. No backup copy: the rewrite keeps the latest row
+  // per id (all the kernel ever reads) and lands via tmp+fsync+rename, so
+  // a crash mid-compact leaves the original untouched.
+  compactLedgerIfBloated({ minBytes = COMPACT_LEDGER_MIN_BYTES } = {}) {
+    let beforeBytes = 0;
+    try { beforeBytes = statSync(this.pursuitsPath).size; } catch { beforeBytes = 0; }
+    if (beforeBytes < minBytes) return { compacted: false, beforeBytes };
+    const latest = new Map();
+    let orphanRowsDropped = 0;
+    for (const row of readJsonl(this.pursuitsPath)) {
+      const id = row?.pursuit?.id;
+      if (!id) { orphanRowsDropped += 1; continue; }
+      latest.set(id, row);
+    }
+    const tmpPath = `${this.pursuitsPath}.compact-tmp`;
+    const fd = openSync(tmpPath, 'w');
+    try {
+      for (const row of latest.values()) {
+        const pursuit = compactPursuit(row.pursuit);
+        delete pursuit.linkedEvidence;
+        writeSync(fd, `${JSON.stringify({ ...row, pursuit })}\n`);
+      }
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmpPath, this.pursuitsPath);
+    this.pursuitIndex = null;
+    return {
+      compacted: true,
+      beforeBytes,
+      afterBytes: statSync(this.pursuitsPath).size,
+      pursuits: latest.size,
+      orphanRowsDropped,
+    };
   }
 
   readState() {

@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { AgencyKernel } from '../../../engine/src/agency/resident-kernel.js';
 import { AuthorityPolicy } from '../../../engine/src/agency/authority-policy.js';
+import { PursuitStore } from '../../../engine/src/agency/pursuit-store.js';
 
 function readJsonl(path) {
   return readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
@@ -743,7 +744,7 @@ test('AgencyKernel loads a charter and enforces active/watch attention caps', as
 
   const state = kernel.state();
   assert.equal(state.charter.attention.maxActivePursuits, 2);
-  assert.equal(state.bootcamp.enabled, true);
+  assert.equal(state.bootcamp.enabled, true); // fixture charter enables bootcamp hygiene for this test
   assert.equal(state.attention.activePursuits, 2);
   assert.equal(state.attention.watchItems, 1);
   assert.equal(state.attention.deferredItems >= 1, true);
@@ -763,7 +764,7 @@ test('AgencyKernel exposes the body organ contract in canonical state', async ()
   assert.equal(organs.crons.kind, 'scheduler');
   assert.equal(organs.crons.canSense.includes('cron reports'), true);
   assert.equal(organs.crons.canChange.includes('bounded schedules'), true);
-  assert.equal(organs.crons.mustNeverDoAlone.includes('create recurring work without pursuit binding'), true);
+  assert.equal(organs.crons.mustNeverDoAlone.includes('publish externally'), true);
   assert.equal(organs.workers.failureSurface, 'worker receipts and agency consequences');
   assert.match(organs.chat.commandSurface, /agency tools/);
 });
@@ -784,10 +785,12 @@ test('AgencyKernel exposes the agency charter operating contract in canonical st
   assert.equal(contract.approvalDomains.includes('public_publication_or_external_posting'), true);
   assert.equal(contract.hardRiskBoundaries.includes('no_l4_action_without_explicit_human_approval'), true);
   assert.equal(contract.acceptableAutonomousChanges.includes('discard_or_demote_noisy_inputs_with_receipts'), true);
-  assert.equal(contract.decisionThresholds.actAutonomously, 'reversible_low_risk_l0_l2_with_receipts');
+  assert.equal(contract.decisionThresholds.actAutonomously, 'finish_work_in_generator_domains_or_quiet_keepalive_with_receipts');
   assert.equal(contract.decisionThresholds.discard, 'noisy_stale_or_no_declared_consequence');
   assert.equal(contract.goodPursuit.requiredFields.includes('what_would_change_my_mind'), true);
   assert.equal(contract.interruptJtrWhen.includes('authority_level_l3_or_l4_is_needed'), true);
+  assert.equal(contract.generatorScoreboard.includes('life_ops'), true);
+  assert.equal(contract.autonomousDomains.includes('make_things_deliverables'), true);
 });
 
 test('AgencyKernel canonical state projects active pursuits and recent consequences, not only counts', async () => {
@@ -2187,9 +2190,17 @@ test('AgencyKernel attaches non-closing world-stream receipts to named pursuits'
 
 test('AgencyKernel bootcamp kill review demotes stale watch loops even while advancing an active pursuit', async () => {
   const dir = brainDir();
+  const charterPath = join(dir, 'agency-charter.yaml');
+  writeFileSync(charterPath, [
+    'bootcamp:',
+    '  enabled: true',
+    '  weeklyKillReview: true',
+    '',
+  ].join('\n'));
   const kernel = new AgencyKernel({
     brainDir: dir,
     agentName: 'jerry',
+    charterPath,
     config: { enabled: true, mode: 'dry_run' },
   });
 
@@ -2371,4 +2382,23 @@ test('AgencyKernel caps pursuit history snapshots so startup review cannot infla
 
   assert.equal(pursuit.history.length <= 25, true);
   assert.equal(lastRow.pursuit.history.length <= 25, true);
+});
+
+test('AgencyKernel compacts a bloated pursuits ledger at boot', () => {
+  const dir = brainDir();
+  const seed = new PursuitStore({ brainDir: dir, agentName: 'jerry' });
+  const p = seed.createPursuit({ summary: 'the one live pursuit' }, { route: 'active', reason: 'test' });
+  // Bloat the ledger past the boot threshold with superseded rows for the
+  // same pursuit, then land the live row last.
+  const deadRow = `${JSON.stringify({ type: 'merged', at: '2026-07-18T00:00:00.000Z', pursuit: { ...p, currentTheory: `superseded ${'x'.repeat(2048)}` } })}\n`;
+  const ledgerPath = join(dir, 'agency', 'pursuits.jsonl');
+  const bloat = deadRow.repeat(Math.ceil((9 * 1024 * 1024) / deadRow.length));
+  writeFileSync(ledgerPath, `${bloat}${JSON.stringify({ type: 'updated', at: '2026-07-18T01:00:00.000Z', pursuit: { ...p, currentTheory: 'live theory' } })}\n`);
+  assert.ok(statSync(ledgerPath).size > 8 * 1024 * 1024);
+
+  const kernel = new AgencyKernel({ brainDir: dir, agentName: 'jerry', config: { enabled: true, mode: 'dry_run' } });
+
+  const after = statSync(ledgerPath).size;
+  assert.ok(after < 1024 * 1024, `ledger should be compacted at boot, still ${after} bytes`);
+  assert.equal(kernel.store.getPursuit(p.id).currentTheory, 'live theory');
 });

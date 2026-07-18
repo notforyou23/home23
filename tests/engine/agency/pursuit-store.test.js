@@ -80,3 +80,53 @@ test('door: status transitions still append (material change)', () => {
   assert.equal(lastDiskRow(store).count, before + 1);
   assert.equal(store.getPursuit(created.id).status, 'closed');
 });
+
+// ── boot compaction (2026-07-18): the ledger regrows ~4-5MB/day ───────
+// Only the latest row per pursuit id is live state; history is dead weight.
+// The external drain script needs the engine stopped, so the store compacts
+// itself at boot (before any appends — no writer race in-process).
+
+test('compaction: below-threshold ledger is untouched', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-pursuit-compact-'));
+  const store = new PursuitStore({ brainDir: dir, agentName: 'jerry' });
+  store.createPursuit({ summary: 'small ledger pursuit' }, { route: 'active', reason: 'test' });
+  const { statSync } = require('node:fs');
+  const before = statSync(store.pursuitsPath).size;
+
+  const report = store.compactLedgerIfBloated(); // default threshold is MBs
+
+  assert.equal(report.compacted, false);
+  assert.equal(statSync(store.pursuitsPath).size, before);
+});
+
+test('compaction: bloated ledger keeps only the latest row per pursuit and drops orphans', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-pursuit-compact-'));
+  const store = new PursuitStore({ brainDir: dir, agentName: 'jerry' });
+  const a = store.createPursuit({ summary: 'pursuit a' }, { route: 'active', reason: 'test' });
+  store.updatePursuit(a.id, { currentTheory: 'first revision' }, { type: 'merged', reason: 'test' });
+  store.updatePursuit(a.id, { currentTheory: 'final revision' }, { type: 'status_changed', reason: 'test' });
+  const b = store.createPursuit({ summary: 'pursuit b' }, { route: 'watch', reason: 'test' });
+  const { appendFileSync, readFileSync, existsSync } = require('node:fs');
+  appendFileSync(store.pursuitsPath, `${JSON.stringify({ type: 'noise', note: 'row without pursuit id' })}\n`);
+
+  const report = store.compactLedgerIfBloated({ minBytes: 1 });
+
+  assert.equal(report.compacted, true);
+  assert.equal(report.pursuits, 2);
+  assert.equal(report.orphanRowsDropped, 1);
+  assert.ok(report.afterBytes < report.beforeBytes);
+  const rows = readFileSync(store.pursuitsPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(rows.length, 2);
+  const rowA = rows.find((row) => row.pursuit.id === a.id);
+  const rowB = rows.find((row) => row.pursuit.id === b.id);
+  assert.ok(rowA && rowB);
+  assert.equal(rowA.pursuit.currentTheory, 'final revision');
+  assert.equal(rowA.type, 'status_changed');
+  assert.ok(!('linkedEvidence' in rowA.pursuit));
+  assert.ok(!existsSync(`${store.pursuitsPath}.compact-tmp`));
+
+  // disk truth: a fresh store sees the compacted state
+  const reloaded = new PursuitStore({ brainDir: dir, agentName: 'jerry' });
+  assert.equal(reloaded.getPursuit(a.id).currentTheory, 'final revision');
+  assert.equal(reloaded.getPursuit(b.id).summary, 'pursuit b');
+});

@@ -37,8 +37,11 @@ def main():
         try:
             from openai import OpenAI
             client = OpenAI(api_key=api_key)
-            kwargs["mlm_client"] = client
-            kwargs["mlm_model"] = os.environ.get("MLM_MODEL", "gpt-4o-mini")
+            # Patch 68: MarkItDown >=0.1 renamed mlm_* to llm_* — the old
+            # names were silently swallowed by **kwargs, so vision OCR never
+            # engaged for image documents.
+            kwargs["llm_client"] = client
+            kwargs["llm_model"] = os.environ.get("MLM_MODEL", "gpt-4o-mini")
         except ImportError:
             pass  # openai package not installed, proceed without vision
 

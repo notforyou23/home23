@@ -3565,3 +3565,51 @@ Query path rather than PGS.
 **Result (measured).** A 201-partition fixture (1 large + 200 islands) →
 17 partitions / 21 work units. Verify: `node --test tests/cosmo23/pinned-pgs-store.test.cjs`
 (the two `Patch 66:` tests) + `node --test tests/shared/pgs-partition-coarsening.test.cjs`.
+
+## Patch 67 — ingestion pending queue as JSONL (2026-07-18)
+
+**Files.** `cosmo23/engine/src/ingestion/ingestion-manifest.js`,
+`cosmo23/engine/src/ingestion/document-feeder.js`,
+`cosmo23/server/index.js` (`/api/feeder/status`).
+
+**Problem.** The vendored twin of Home23's ingestion pending queue still
+persisted as ONE `JSON.stringify(array, null, 2)`. Home23 hit V8's ~536MB
+string ceiling at 221MB of queued items on 2026-07-16 ("Invalid string
+length"): the save fails, the disk copy goes silently stale, and a restart in
+that window loses queued chunks. The twin carries the identical landmine for
+any research run with a large ingestion corpus.
+
+**Fix (port of Home23's 2026-07-17 cure, same semantics).**
+- Queue file is `ingestion-pending.jsonl` — one line per item, no
+  single-string limit on either side.
+- Load: chunked 8MB reader (`_readJsonlSync`); corrupt lines are skipped
+  loudly, never silently lost.
+- Legacy `ingestion-pending.json` migrates once on load (write jsonl, unlink
+  legacy); an unreadable legacy file is preserved as `.unreadable`.
+- Save: atomic streamed rewrite (tmp + one `writeSync` per item + fsync +
+  rename).
+- Feeder ignore-site uses exported `isIngestionInternalFile` so the watcher
+  never ingests either queue filename as a document.
+- Server `/api/feeder/status` counts queue length by streaming the JSONL
+  (newline count), legacy array fallback for pre-patch runs.
+
+**Effect timing.** The feeder runs inside the per-run engine subprocess, so
+the patch takes effect at the next run launch; no cosmo23 server restart
+required (the status route is read on request).
+
+**Verify:** `node --test tests/cosmo23/ingestion-pending-jsonl.test.cjs`
+(5 tests: JSONL persistence, round-trip, legacy migration, corrupt-line
+survival, feeder ignore-list).
+
+## Patch 68 — convert-file.py vision kwarg name (2026-07-18)
+
+**File.** `cosmo23/engine/src/ingestion/convert-file.py`.
+
+**Problem.** The MarkItDown wrapper passed `mlm_client`/`mlm_model`;
+MarkItDown >=0.1 renamed these to `llm_client`/`llm_model`, and the old names
+are silently swallowed by `**kwargs`. Vision OCR for image documents never
+engaged — a scanned/image document converted to empty text and the feeder
+recorded `conversion_failed`. Same two-line fix applied to the Home23 twin
+(`engine/src/ingestion/convert-file.py`). Note: MarkItDown uses the LLM for
+image files only — scanned PDFs (no text layer) still convert empty; a
+render-and-OCR fallback is a separate, unbuilt feature.

@@ -1745,12 +1745,29 @@ app.get('/api/feeder/status', async (_req, res) => {
     }
     const runPath = activeContext.runPath;
     const manifestPath = path.join(runPath, 'ingestion-manifest.json');
-    const pendingPath = path.join(runPath, 'ingestion-pending.json');
+    // Patch 67: the queue is JSONL now (one line per item — the single-string
+    // JSON array hit V8's string ceiling). Count lines with a stream; fall
+    // back to the legacy array file for pre-patch runs.
+    const pendingJsonlPath = path.join(runPath, 'ingestion-pending.jsonl');
+    const pendingLegacyPath = path.join(runPath, 'ingestion-pending.json');
 
     let manifest = {};
-    let pending = [];
+    let pendingCount = 0;
     try { manifest = JSON.parse(await fsp.readFile(manifestPath, 'utf8')); } catch {}
-    try { pending = JSON.parse(await fsp.readFile(pendingPath, 'utf8')); } catch {}
+    try {
+      if (fs.existsSync(pendingJsonlPath)) {
+        pendingCount = await new Promise((resolve) => {
+          let count = 0;
+          const stream = fs.createReadStream(pendingJsonlPath);
+          stream.on('data', (chunk) => { for (let i = 0; i < chunk.length; i += 1) if (chunk[i] === 10) count += 1; });
+          stream.on('end', () => resolve(count));
+          stream.on('error', () => resolve(0));
+        });
+      } else {
+        const pending = JSON.parse(await fsp.readFile(pendingLegacyPath, 'utf8'));
+        pendingCount = Array.isArray(pending) ? pending.length : 0;
+      }
+    } catch {}
 
     const fileCount = Object.keys(manifest).length;
     const nodeCount = Object.values(manifest).reduce((sum, e) => sum + (e.nodeIds?.length || 0), 0);
@@ -1761,7 +1778,7 @@ app.get('/api/feeder/status', async (_req, res) => {
         enabled: true,
         started: !!activeContext.engineProcess,
         manifest: { fileCount, nodeCount, files: manifest },
-        pending: { queueLength: pending.length },
+        pending: { queueLength: pendingCount },
         ingestDir: path.join(runPath, 'ingestion', 'documents')
       }
     });

@@ -7,7 +7,7 @@ const { DocumentConverter } = require('./document-converter');
 const { DocumentChunker } = require('./document-chunker');
 const { DocumentValidator } = require('./document-validator');
 const { DocumentClassifier } = require('./document-classifier');
-const { IngestionManifest } = require('./ingestion-manifest');
+const { IngestionManifest, isIngestionInternalFile } = require('./ingestion-manifest');
 
 class DocumentFeeder {
   /**
@@ -273,7 +273,7 @@ class DocumentFeeder {
       // Skip dotfiles and our own manifest/pending files
       const basename = path.basename(filePath);
       if (basename.startsWith('.')) return;
-      if (basename === 'ingestion-manifest.json' || basename === 'ingestion-pending.json') return;
+      if (isIngestionInternalFile(basename)) return;
 
       // Read file and check staleness
       let fileContent;
