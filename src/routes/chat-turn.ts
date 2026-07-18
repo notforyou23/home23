@@ -24,11 +24,13 @@ const PERSISTED_PENDING_MAX_AGE_MS = 10 * 60 * 1000;
 function checkAuth(req: Request, res: Response, token?: string): boolean {
   if (!token) return true;
   const h = req.headers.authorization;
-  if (!h || h !== `Bearer ${token}`) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return false;
-  }
-  return true;
+  if (h === `Bearer ${token}`) return true;
+  // EventSource cannot set headers, so the stream authenticates via query
+  // param. Enrolling a query-notebook bridge token silently locked out the
+  // dashboard chat (2026-07-16) — every UI call 401'd with no way to comply.
+  if (typeof req.query.token === 'string' && req.query.token === token) return true;
+  res.status(401).json({ error: 'Unauthorized' });
+  return false;
 }
 
 /** POST /api/chat/turn — start a turn, return turn_id immediately. Agent runs detached. */

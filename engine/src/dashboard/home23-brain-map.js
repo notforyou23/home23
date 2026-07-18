@@ -61,10 +61,33 @@
     return `hsl(${hue}, 55%, 60%)`;
   }
 
+  // ── Tag communities ──────────────────────────────────────────────
+  // The engine has never partitioned clusters — every brain to date is one
+  // cluster, which rendered as a single green ball (2026-07-16). Until real
+  // community detection exists, group and color by tag: the rebuilt brains
+  // carry honest provenance tags (vault_research, vault_voice, trail_running…)
+  // that ARE the natural constellations. If a future brain arrives with >1
+  // real cluster, cluster grouping takes back over automatically.
+  let useTagCommunities = false;
+
+  function communityOf(node) {
+    return useTagCommunities ? (node.tag || 'general') : node.cluster;
+  }
+
+  // Stable hue per tag name — golden-angle walk over a string hash, so any
+  // new tag gets a distinct, permanent color with zero palette maintenance.
+  function tagHashColor(tag) {
+    let h = 0;
+    const s = String(tag);
+    for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+    const hue = (Math.abs(h) * 137.508) % 360;
+    return `hsl(${hue}, 58%, 62%)`;
+  }
+
   // Fibonacci-sphere centroids — one fixed anchor per cluster so communities
   // settle into distinct spatial regions instead of collapsing at origin.
   function computeClusterCentroids(nodes) {
-    const unique = Array.from(new Set(nodes.map(n => n.cluster).filter(c => c != null)));
+    const unique = Array.from(new Set(nodes.map(n => communityOf(n)).filter(c => c != null)));
     const N = unique.length;
     if (N === 0) return {};
     const R = Math.max(260, 70 * Math.cbrt(nodes.length) + N * 14);
@@ -85,7 +108,7 @@
 
   function seedPositions(nodes, centroids) {
     nodes.forEach(n => {
-      const c = centroids[n.cluster];
+      const c = centroids[communityOf(n)];
       if (!c) return;
       const jitter = 45;
       n.x = c.x + (Math.random() - 0.5) * jitter;
@@ -98,6 +121,9 @@
     if (node.tag === 'breakthrough') return '#ffd700';
     if (node.tag === 'agent_failure') return '#e74c3c';
     if (node.tag === 'goal' || node.tag === 'milestone') return '#ff8c42';
+    if (useTagCommunities) {
+      return TAG_COLORS[node.tag] || tagHashColor(node.tag || 'general');
+    }
     return clusterColor(node.cluster);
   }
 
@@ -265,7 +291,7 @@
       if (!graphData) return;
       const strength = alpha * 0.55;
       graphData.nodes.forEach(n => {
-        const c = clusterCentroids[n.cluster];
+        const c = clusterCentroids[communityOf(n)];
         if (!c) return;
         n.vx = (n.vx || 0) + (c.x - (n.x || 0)) * strength;
         n.vy = (n.vy || 0) + (c.y - (n.y || 0)) * strength;
@@ -435,9 +461,20 @@
     }
 
     try {
-      const res = await fetch('/home23/api/brain/graph?nodeLimit=2000&edgeLimit=8000');
-      if (!res.ok) throw new Error('Failed to load graph: ' + res.status);
-      const data = await res.json();
+      // The brain source lock is held during saves, ANN rebuilds, and heavy
+      // ingestion, returning a retryable 503 source_busy. Without retry the map
+      // just died mid-ingestion (2026-07-16). Back off and retry a few times.
+      let data;
+      for (let attempt = 0; ; attempt++) {
+        const res = await fetch('/home23/api/brain/graph?nodeLimit=2000&edgeLimit=8000');
+        if (res.ok) { data = await res.json(); break; }
+        const retryable = res.status === 503 || res.status === 429;
+        if (!retryable || attempt >= 5) throw new Error('Failed to load graph: ' + res.status);
+        if (container) {
+          container.innerHTML = '<div class="h23-brain-map-loading"><div>Brain busy (indexing…), retrying…</div></div>';
+        }
+        await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+      }
 
       if (!data.success || !data.nodes?.length) {
         if (container) container.innerHTML = '<div class="h23-brain-map-empty">No graph data available.</div>';
@@ -452,6 +489,15 @@
       );
 
       assignFallbackClusters(data.nodes);
+
+      // Decide the community basis: real clusters if the engine actually
+      // partitioned the graph, otherwise tags. A single cluster carrying many
+      // tags is the "one green ball" case — group by tag so the provenance
+      // constellations become visible.
+      const realClusters = new Set(data.nodes.map(n => n.cluster).filter(c => c != null));
+      const realTags = new Set(data.nodes.map(n => n.tag).filter(Boolean));
+      useTagCommunities = realClusters.size <= 1 && realTags.size > 1;
+
       graphData = { nodes: data.nodes, edges: validEdges, clusters: data.clusters, meta: data.meta };
 
       clusterCentroids = computeClusterCentroids(data.nodes);
@@ -534,7 +580,14 @@
     const edgeLabel = meta.limited
       ? `${meta.displayedEdgeCount} / ${meta.edgeCount} edges`
       : `${meta.edgeCount || 0} edges`;
-    statsEl.textContent = nodeLabel + ' \u00b7 ' + edgeLabel + ' \u00b7 ' + (meta.clusterCount || 0) + ' clusters';
+    // Report what the map is actually grouped by, so the count isn't a lie
+    // ("1 clusters" while showing many tag regions).
+    let groupLabel = (meta.clusterCount || 0) + ' clusters';
+    if (useTagCommunities && graphData) {
+      const tags = new Set(graphData.nodes.map(n => n.tag || 'general'));
+      groupLabel = tags.size + ' tag groups';
+    }
+    statsEl.textContent = nodeLabel + ' \u00b7 ' + edgeLabel + ' \u00b7 ' + groupLabel;
   }
 
   function waitForGraphLibrary(timeoutMs = 12000) {

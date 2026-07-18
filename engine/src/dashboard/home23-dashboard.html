@@ -161,7 +161,7 @@
       <section class="h23-human-home" id="human-home">
         <section class="h23-human-hero" aria-labelledby="human-jerry-remark">
           <div class="h23-human-hero-copy">
-            <p class="h23-human-hero-kicker" id="human-jerry-kicker">JERRY · LISTENING</p>
+            <p class="h23-human-hero-kicker" id="human-jerry-kicker">LISTENING</p>
             <h1 class="h23-human-jerry-remark" id="human-jerry-remark">Loading Home23 signal…</h1>
             <button class="h23-human-jerry-status" id="human-jerry-status" type="button" onclick="openBrainStoragePanel()">Loading brain status…</button>
             <p class="h23-human-jerry-context" id="human-jerry-context"></p>
@@ -175,6 +175,22 @@
               <div class="h23-human-time" id="tz2-time">--:--</div>
               <div class="h23-human-place" id="tz2-label">Florence</div>
             </div>
+          </div>
+        </section>
+
+        <section id="os-control-plane" class="h23-os-control-plane" aria-label="Operator control plane">
+          <h2 class="h23-os-control-plane-title">Control Plane</h2>
+          <div class="h23-os-lane-group" data-os-lane="needs-you">
+            <h3 class="h23-os-lane-label">Needs you</h3>
+            <div id="os-needs-you" class="h23-os-lane"></div>
+          </div>
+          <div class="h23-os-lane-group" data-os-lane="in-flight">
+            <h3 class="h23-os-lane-label">In flight</h3>
+            <div id="os-in-flight" class="h23-os-lane"></div>
+          </div>
+          <div class="h23-os-lane-group" data-os-lane="verified">
+            <h3 class="h23-os-lane-label">Verified</h3>
+            <div id="os-verified" class="h23-os-lane"></div>
           </div>
         </section>
 
@@ -641,8 +657,8 @@
 
   <script async src="https://unpkg.com/3d-force-graph@1.73.3/dist/3d-force-graph.min.js"></script>
   <script type="module" src="/home23-chat.js?v=20260526-dashboard-repair6"></script>
-  <script src="/home23-brain-map.js?v=20260526-dashboard-repair6"></script>
+  <script src="/home23-brain-map.js?v=20260716-tag-communities-2"></script>
   <script src="/home23-query.js?v=20260712-durable-pgs1"></script>
-  <script src="/home23-dashboard.js?v=20260612-briefs-compact"></script>
+  <script src="/home23-dashboard.js?v=20260717-agent-kicker"></script>
 </body>
 </html>

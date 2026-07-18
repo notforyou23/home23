@@ -39,10 +39,10 @@ function parseArgs(argv) {
   return opts;
 }
 
-function touchFreshnessFile(path) {
-  if (!path) return;
-  const now = new Date();
-  fs.utimesSync(path, now, now);
+function freshnessAgeMs(path) {
+  if (!path) return null;
+  const stat = fs.statSync(path);
+  return Math.max(0, Date.now() - stat.mtimeMs);
 }
 
 async function fetchJson(url, options = {}) {
@@ -71,18 +71,13 @@ async function main() {
   const startedAt = Date.now();
   const freshAfter = startedAt - 5000;
 
-  if (opts.maxAgeMs > 0) {
-    const currentState = await fetchJson(`${opts.baseUrl}/api/synthesis/state`, { timeoutMs: 15000 });
-    const generatedAtMs = Date.parse(currentState.generatedAt || '');
-    if (Number.isFinite(generatedAtMs)) {
-      const ageMs = Date.now() - generatedAtMs;
-      touchFreshnessFile(opts.touchPath);
-      if (ageMs >= 0 && ageMs <= opts.maxAgeMs) {
-        console.log(`synthesis already fresh: generatedAt=${currentState.generatedAt}, age=${Math.round(ageMs / 1000)}s`);
-        return;
-      }
-      console.log(`synthesis stale: generatedAt=${currentState.generatedAt}, age=${Math.round(ageMs / 1000)}s; touched verifier file before refresh`);
+  if (opts.maxAgeMs > 0 && opts.touchPath) {
+    const ageMs = freshnessAgeMs(opts.touchPath);
+    if (ageMs <= opts.maxAgeMs) {
+      console.log(`synthesis already fresh: verifierPath=${opts.touchPath}, age=${Math.round(ageMs / 1000)}s`);
+      return;
     }
+    console.log(`synthesis stale: verifierPath=${opts.touchPath}, age=${Math.round(ageMs / 1000)}s`);
   }
 
   const start = await fetchJson(`${opts.baseUrl}/api/synthesis/run`, {
@@ -100,10 +95,14 @@ async function main() {
     await sleep(opts.pollMs);
     lastState = await fetchJson(`${opts.baseUrl}/api/synthesis/state`, { timeoutMs: 15000 });
     const generatedAtMs = Date.parse(lastState.generatedAt || '');
-    if (Number.isFinite(generatedAtMs) && generatedAtMs >= freshAfter) {
-      touchFreshnessFile(opts.touchPath);
-      const ageSec = Math.max(0, Math.round((Date.now() - generatedAtMs) / 1000));
-      console.log(`synthesis fresh: generatedAt=${lastState.generatedAt}, age=${ageSec}s`);
+    const completed = lastState?.latestOperation?.state === 'complete' &&
+      Date.parse(lastState?.latestOperation?.startedAt || '') >= freshAfter;
+    const verifierAgeMs = opts.touchPath ? freshnessAgeMs(opts.touchPath) : null;
+    if ((Number.isFinite(generatedAtMs) && generatedAtMs >= freshAfter) ||
+        completed ||
+        (verifierAgeMs !== null && verifierAgeMs <= 5000)) {
+      const ageSec = verifierAgeMs === null ? null : Math.max(0, Math.round(verifierAgeMs / 1000));
+      console.log(`synthesis fresh: operation=${lastState?.latestOperation?.operationId || 'unknown'}, verifierAge=${ageSec === null ? 'unverified' : `${ageSec}s`}`);
       return;
     }
   }

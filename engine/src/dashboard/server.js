@@ -3238,10 +3238,27 @@ class DashboardServer {
       }
 
       const config = yaml.load(fsSync.readFileSync(configPath, 'utf8'));
+      // The bridge authenticates chat when a query-notebook bridge token is
+      // enrolled (merged from secrets.yaml). The dashboard is the same trust
+      // domain — it reads secrets — so hand the token to its chat UI, which
+      // otherwise 401s with no way to comply. Same precedence as
+      // resolveQueryNotebookBridgeToken in the harness.
+      let bridgeToken = '';
+      try {
+        const secrets = yaml.load(fsSync.readFileSync(
+          path.join(home23Root, 'config', 'secrets.yaml'), 'utf8',
+        )) || {};
+        bridgeToken = config.channels?.webhooks?.token
+          || secrets.channels?.webhooks?.token
+          || config.bridge?.token
+          || secrets.bridge?.token
+          || '';
+      } catch { /* no secrets = no auth = empty token is correct */ }
       res.json({
         bridgePort: config.ports?.bridge || 5004,
         agentName,
         displayName: config.agent?.displayName || agentName,
+        ...(bridgeToken ? { bridgeToken } : {}),
       });
     });
 
@@ -7321,6 +7338,22 @@ Be specific, actionable, and maintain research continuity.`;
         }
       })();
     });
+
+    // ── OS Kernel API ──
+    // Control-plane operator intents (Needs you / In flight / Verified).
+    try {
+      const { mountOsKernelApi } = require('./os-kernel-api.js');
+      mountOsKernelApi(this.app, {
+        getBrainDir: (req) => {
+          const target = this.getHome23AgentContext(req.query?.agent || req.body?.agent);
+          return target.runtimeDir || this.logsDir || '';
+        },
+        getAgentContext: (req) => this.getHome23AgentContext(req.query?.agent || req.body?.agent),
+        loadLiveProblems,
+      });
+    } catch (err) {
+      console.warn('[OS Kernel API] Failed to mount:', err.message);
+    }
 
     // ── Signals API ──
     // Positive-signal stream: resolved problems (with fix recipe), successful

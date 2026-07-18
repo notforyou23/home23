@@ -151,6 +151,10 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`  OPENAI_CODEX_AUTH_TOKEN: secrets.providers?.['openai-codex']?.apiKey || '',`);
   lines.push(`  OPENAI_API_KEY: secrets.providers?.openai?.apiKey || '',`);
   lines.push(`  XAI_API_KEY: secrets.providers?.xai?.apiKey || '',`);
+  // Engine live-problems dispatch/notify must share the harness bridge token.
+  // Without this, remediations 401 forever and autonomy spine is dead.
+  lines.push(`  BRIDGE_TOKEN: secrets.bridge?.token || secrets.channels?.webhooks?.token || '',`);
+  lines.push(`  HOME23_BRIDGE_TOKEN: secrets.bridge?.token || secrets.channels?.webhooks?.token || '',`);
   lines.push(`};`);
   lines.push(``);
   lines.push(`const sharedServiceEnv = {`);
@@ -173,6 +177,7 @@ export function generateEcosystem(home23Root, options = {}) {
     const wsPort = ports.engine || 5001;
     const dashPort = ports.dashboard || 5002;
     const mcpPort = ports.mcp || 5003;
+    const bridgePort = ports.bridge || 5004;
     const brainDir = `path.join(HOME23, 'instances', '${agent.name}', 'brain')`;
     const workspaceDir = `path.join(HOME23, 'instances', '${agent.name}', 'workspace')`;
     const logsDir = `path.join(HOME23, 'instances', '${agent.name}', 'logs')`;
@@ -189,13 +194,17 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      filter_env: ['HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
     // Heap sized for a cognitive engine with a growing brain — see commit
     // 174c76c (Step: engine OOM fix). 768MB caused a restart loop at ~7k nodes.
-    lines.push(`      node_args: '--expose-gc --max-old-space-size=4096',`);
-    lines.push(`      max_memory_restart: '5G',`);
+    // 8192, not 4096: the 6-hourly full base rewrite materializes the whole
+    // graph before streaming it out, and forrest (119k nodes / 461k edges)
+    // OOM-crash-looped at 4096 the first time it fired (2026-07-16). The cap
+    // is a ceiling, not a reservation — idle engines stay under ~1GB.
+    lines.push(`      node_args: '--expose-gc --max-old-space-size=8192',`);
+    lines.push(`      max_memory_restart: '10G',`);
     lines.push(`      kill_timeout: ENGINE_KILL_TIMEOUT_MS,`);
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${logsDir} + '/engine-out.log',`);
     lines.push(`      error_file: ${logsDir} + '/engine-err.log',`);
-    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
+    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
 
     // Dashboard
@@ -243,12 +252,12 @@ export function generateEcosystem(home23Root, options = {}) {
     // graceful exit. cpu-prof shows JS main-thread time; heap-prof shows
     // allocation hot paths — needed because the harness CPU climb manifests as
     // V8 background-GC churn, invisible to cpu-prof.
-    lines.push(`      node_args: '--expose-gc --max-old-space-size=4096 --cpu-prof --cpu-prof-dir=' + ${logsDir} + ' --cpu-prof-interval=1000 --heap-prof --heap-prof-dir=' + ${logsDir},`);
-    lines.push(`      max_memory_restart: '5G',`);
+    lines.push(`      node_args: '--expose-gc --max-old-space-size=8192 --cpu-prof --cpu-prof-dir=' + ${logsDir} + ' --cpu-prof-interval=1000 --heap-prof --heap-prof-dir=' + ${logsDir},`);
+    lines.push(`      max_memory_restart: '10G',`);
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${logsDir} + '/harness-out.log',`);
     lines.push(`      error_file: ${logsDir} + '/harness-err.log',`);
-    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
+    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
   }
 

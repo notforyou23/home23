@@ -228,10 +228,18 @@ function createSettingsRouter(home23Root, options = {}) {
 
   function seedCosmo23Config() {
     const { execSync } = require('child_process');
+    // loadHome23ModelAuthority requires an absolute root; '.' broke every
+    // provider-key save through the Settings UI (2026-07-16). Passed via env
+    // to avoid shell-quoting the path.
     execSync(`node --input-type=module -e "
       import { seedCosmo23Config } from './cli/lib/cosmo23-config.js';
-      await seedCosmo23Config('.');
-    "`, { cwd: home23Root, stdio: 'pipe', timeout: 10000 });
+      await seedCosmo23Config(process.env.HOME23_SEED_ROOT);
+    "`, {
+      cwd: home23Root,
+      stdio: 'pipe',
+      timeout: 10000,
+      env: { ...process.env, HOME23_SEED_ROOT: home23Root },
+    });
   }
 
   function discoverAgents() {

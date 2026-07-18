@@ -35,6 +35,16 @@ let activeTurnId = null;
 let activeChatId = null;
 let activeCursor = -1;
 let activeEventSource = null;
+
+// The bridge authenticates when a query-notebook token is enrolled; the dash
+// passes it through /api/chat/config. EventSource cannot set headers, so the
+// stream uses the query param the bridge also accepts.
+function bridgeAuthHeaders() {
+  return chatAgent?.bridgeToken ? { Authorization: `Bearer ${chatAgent.bridgeToken}` } : {};
+}
+function bridgeTokenParam() {
+  return chatAgent?.bridgeToken ? `&token=${encodeURIComponent(chatAgent.bridgeToken)}` : '';
+}
 // UI render state per turn — reset when a turn starts, reused by both live streaming and reconnect.
 let currentTurnCtx = null;
 let chatConversationId = null;  // current conversation ID
@@ -782,7 +792,7 @@ async function resumePendingTurns() {
   if (!chatAgent?.bridgePort || !chatConversationId) return;
   try {
     const bridgeBase = `http://${window.location.hostname}:${chatAgent.bridgePort}`;
-    const res = await fetch(`${bridgeBase}/api/chat/pending?chatId=${encodeURIComponent(chatConversationId)}`);
+    const res = await fetch(`${bridgeBase}/api/chat/pending?chatId=${encodeURIComponent(chatConversationId)}`, { headers: bridgeAuthHeaders() });
     if (!res.ok) return;
     const data = await res.json();
     const pending = data.pending || [];
@@ -960,7 +970,7 @@ async function sendMessage(source) {
     }));
     const res = await fetch(`${bridgeBase}/api/chat/turn`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...bridgeAuthHeaders() },
       body: JSON.stringify({
         chatId: activeChatId,
         message: text,
@@ -1038,7 +1048,7 @@ function openTurnStream({ bridgeBase, chatId, turnId, cursor }) {
   // Close any existing stream
   if (activeEventSource) { try { activeEventSource.close(); } catch {} activeEventSource = null; }
 
-  const url = `${bridgeBase}/api/chat/stream?chatId=${encodeURIComponent(chatId)}&turn_id=${encodeURIComponent(turnId)}&cursor=${cursor}`;
+  const url = `${bridgeBase}/api/chat/stream?chatId=${encodeURIComponent(chatId)}&turn_id=${encodeURIComponent(turnId)}&cursor=${cursor}${bridgeTokenParam()}`;
   const es = new EventSource(url);
   activeEventSource = es;
 
@@ -1118,7 +1128,7 @@ async function stopChat() {
     try {
       await fetch(`http://${window.location.hostname}:${chatAgent.bridgePort}/api/chat/stop-turn`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...bridgeAuthHeaders() },
         body: JSON.stringify({ chatId: activeChatId }),
       });
     } catch { /* bridge might be unreachable */ }

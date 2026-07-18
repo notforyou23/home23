@@ -30,6 +30,9 @@ let goodLifeOverlayState = {
 };
 let residentHomeLatestState = null;
 let humanHomeRefreshPromise = null;
+let osControlPlaneState = { needsYou: [], inFlight: [], verified: [] };
+let osControlPlanePendingAction = null;
+let osControlPlaneRefreshPromise = null;
 let humanSaunaConfirmedPayload = null;
 let humanSaunaPendingAction = null;
 let humanSaunaActionRevision = 0;
@@ -1891,6 +1894,15 @@ function setupHumanHomeSurface() {
   setupHomeTileLayoutControls();
   refreshHomeTileLayout().catch(() => {});
   setupVibeActions();
+  document.getElementById('os-needs-you')?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-os-action]');
+    if (!button) return;
+    event.preventDefault();
+    runOsIntentAction(button.dataset.osAction, button.dataset.osIntentId, button).catch((err) => {
+      console.warn('[os control plane] action failed', err);
+    });
+  });
+  window.addEventListener('hashchange', focusNeedsYouFromHash);
   document.getElementById('human-sauna-actions')?.addEventListener('click', (event) => {
     const preset = event.target.closest('[data-sauna-preset]');
     if (preset) {
@@ -2142,6 +2154,11 @@ async function loadHumanHomeSurface() {
       latest.problems = { available: false };
       renderHumanIssues(latest.problems);
       renderLatestJerryVoice(latest);
+    });
+    scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/os-kernel/state`, { timeoutMs: 8000 }), (data) => {
+      renderOsControlPlane(data);
+    }, () => {
+      renderOsControlPlane(null);
     });
     scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/good-life`, { timeoutMs: GOOD_LIFE_API_TIMEOUT_MS }), (data) => {
       latest.goodLife = data;
@@ -2436,6 +2453,154 @@ function renderHumanIssues(payload) {
   setText('human-issues-subtitle', detail);
 }
 
+// ── OS Kernel Control Plane (Needs You / In Flight / Verified) ──
+
+function renderOsControlPlane(payload) {
+  const snapshot = payload?.available === false ? null : payload?.snapshot;
+  osControlPlaneState = {
+    needsYou: Array.isArray(snapshot?.needsYou) ? snapshot.needsYou : [],
+    inFlight: Array.isArray(snapshot?.inFlight) ? snapshot.inFlight : [],
+    verified: Array.isArray(snapshot?.verified) ? snapshot.verified : [],
+  };
+  renderOsNeedsYou(osControlPlaneState.needsYou);
+  renderOsInFlight(osControlPlaneState.inFlight);
+  renderOsVerified(osControlPlaneState.verified);
+  focusNeedsYouFromHash();
+}
+
+function renderOsNeedsYou(intents) {
+  if (!intents.length) {
+    setHtml('os-needs-you', '<div class="h23-os-empty">Nothing needs you</div>');
+    return;
+  }
+  setHtml('os-needs-you', intents.map(osIntentCardHtml).join(''));
+}
+
+function osIntentCardHtml(intent) {
+  const id = String(intent.id || '');
+  const checklist = Array.isArray(intent.checklist) ? intent.checklist : [];
+  const hasAuthorizePreview = Boolean(
+    String(intent.authorize?.action_preview || intent.authorize?.actionPreview || '').trim(),
+  );
+  const buttons = [
+    intent.safe_action
+      ? `<button class="h23-os-btn primary" type="button" data-os-action="safe-action" data-os-intent-id="${escapeAttr(id)}">Do safe action</button>`
+      : '',
+    `<button class="h23-os-btn" type="button" data-os-action="mark-done" data-os-intent-id="${escapeAttr(id)}">Mark done</button>`,
+    `<button class="h23-os-btn" type="button" data-os-action="snooze" data-os-intent-id="${escapeAttr(id)}">Not now</button>`,
+    hasAuthorizePreview
+      ? `<button class="h23-os-btn danger" type="button" data-os-action="deny" data-os-intent-id="${escapeAttr(id)}">Deny</button>`
+      : '',
+  ].join('');
+  return `
+    <div class="h23-os-card" data-os-intent-id="${escapeAttr(id)}" tabindex="-1">
+      <div class="h23-os-card-head">
+        <span class="h23-os-card-title">${escapeHtml(intent.title || id || 'Untitled')}</span>
+        <time class="h23-os-card-time">${escapeHtml(timeSinceSafe(intent.createdAt))}</time>
+      </div>
+      ${intent.why ? `<p class="h23-os-card-why">${escapeHtml(intent.why)}</p>` : ''}
+      ${intent.evidence ? `<p class="h23-os-card-evidence">${escapeHtml(intent.evidence)}</p>` : ''}
+      ${checklist.length ? `<ol class="h23-os-card-checklist">${checklist.map((step) => `<li>${escapeHtml(step)}</li>`).join('')}</ol>` : ''}
+      ${intent.lastError ? `<p class="h23-os-card-error">${escapeHtml(intent.lastError)}</p>` : ''}
+      <div class="h23-os-card-actions">${buttons}</div>
+    </div>
+  `;
+}
+
+function renderOsInFlight(actions) {
+  if (!actions.length) {
+    setHtml('os-in-flight', '<div class="h23-os-empty">Nothing in flight</div>');
+    return;
+  }
+  setHtml('os-in-flight', actions.map((action) => `
+    <div class="h23-os-card">
+      <div class="h23-os-card-head">
+        <span class="h23-os-card-title">${escapeHtml(action.title || action.label || action.id || 'Running action')}</span>
+        <time class="h23-os-card-time">${escapeHtml(timeSinceSafe(action.startedAt || action.createdAt))}</time>
+      </div>
+      ${action.agent ? `<p class="h23-os-card-why">${escapeHtml(action.agent)}</p>` : ''}
+    </div>
+  `).join(''));
+}
+
+function renderOsVerified(goals) {
+  if (!goals.length) {
+    setHtml('os-verified', '<div class="h23-os-empty">Nothing verified yet</div>');
+    return;
+  }
+  setHtml('os-verified', goals.map((goal) => `
+    <div class="h23-os-card h23-os-card-verified">
+      <div class="h23-os-card-head">
+        <span class="h23-os-card-title">${escapeHtml(goal.title || goal.id || 'Goal')}</span>
+        <time class="h23-os-card-time">${escapeHtml(timeSinceSafe(goal.completedAt))}</time>
+      </div>
+      ${goal.deliverable ? `<p class="h23-os-card-evidence">${escapeHtml(goal.deliverable)}</p>` : ''}
+    </div>
+  `).join(''));
+}
+
+async function refreshOsControlPlane() {
+  if (osControlPlaneRefreshPromise) return osControlPlaneRefreshPromise;
+  osControlPlaneRefreshPromise = (async () => {
+    try {
+      const data = await apiFetch(`${dashboardBaseUrl()}/api/os-kernel/state`, { timeoutMs: 8000 });
+      renderOsControlPlane(data);
+    } catch {
+      // best effort; leave prior state rendered
+    }
+  })().finally(() => {
+    osControlPlaneRefreshPromise = null;
+  });
+  return osControlPlaneRefreshPromise;
+}
+
+async function runOsIntentAction(action, intentId, button) {
+  if (!action || !intentId || osControlPlanePendingAction) return;
+  const endpoints = {
+    'safe-action': { path: 'safe-action', method: 'POST', body: {} },
+    'mark-done': { path: 'mark-done', method: 'POST', body: {} },
+    snooze: { path: 'snooze', method: 'POST', body: { hours: 12 } },
+    deny: { path: 'deny', method: 'POST', body: { actor: 'dashboard' } },
+  };
+  const spec = endpoints[action];
+  if (!spec) return;
+
+  osControlPlanePendingAction = { action, intentId };
+  if (button) button.disabled = true;
+  try {
+    const result = await apiFetch(
+      `${dashboardBaseUrl()}/api/os-kernel/intents/${encodeURIComponent(intentId)}/${spec.path}`,
+      { method: spec.method, body: JSON.stringify(spec.body), timeoutMs: 15000 },
+    );
+    if (!result || result.ok === false) {
+      throw new Error(result?.error || `${action} failed`);
+    }
+  } finally {
+    osControlPlanePendingAction = null;
+    if (button) button.disabled = false;
+    await refreshOsControlPlane();
+  }
+}
+
+function focusNeedsYouFromHash() {
+  const hash = String(window.location.hash || '');
+  const match = hash.match(/^#needs-you=(.+)$/);
+  if (!match) return;
+  const id = decodeURIComponent(match[1]);
+  const card = document.querySelector(`#os-needs-you [data-os-intent-id="${cssEscape(id)}"]`);
+  if (!card) return;
+  selectDashboardTab('home');
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  card.classList.add('h23-os-card-focus');
+  card.focus?.();
+  setTimeout(() => card.classList.remove('h23-os-card-focus'), 4000);
+}
+
+function cssEscape(value) {
+  if (typeof window.CSS?.escape === 'function') return window.CSS.escape(value);
+  return String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+}
+
 function renderHumanGoodLife(payload) {
   const hasStateEnvelope = payload
     && typeof payload === 'object'
@@ -2513,7 +2678,10 @@ function renderJerryVoiceTile(pulsePayload, homeSummary, statePayload, agencyPay
   const voice = remark?.text
     || humanizeJerryFallback(thought, homeSummary)
     || 'I am here, watching the house breathe. Nothing needs your hands yet.';
-  setText('human-jerry-kicker', `JERRY · ${kickerAge}`);
+  // Label the hero with THIS dashboard's agent (Forrest on :5012, Jerry on :5002),
+  // not a hardcoded house-primary name — the pulse/state APIs are already per-dashboard.
+  const agentLabel = String(currentAgentLabel('Agent')).toUpperCase();
+  setText('human-jerry-kicker', `${agentLabel} · ${kickerAge}`);
   setText('human-jerry-status', footerParts.join(' · '));
   setText('human-jerry-remark', voice);
   setText('human-jerry-context', contextParts.join(' · '));

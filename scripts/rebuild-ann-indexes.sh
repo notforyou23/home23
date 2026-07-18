@@ -11,6 +11,27 @@ MAX_EXPLICIT_AGENTS=64
 AGENTS=()
 RC=0
 
+# The builder verifies node authority attestations and needs the same key the
+# engines get via PM2 env. Without it every run failed with "ANN authority
+# verifier context is unavailable" — this script had never once succeeded
+# (found 2026-07-16). Derive it exactly the way generate-ecosystem.js does.
+if [ -z "${HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY:-}" ]; then
+  DERIVED_KEY="$(cd "$HOME23_ROOT" && node -e '
+    const yaml = require("js-yaml");
+    const fs = require("node:fs");
+    const { deriveMemoryAuthorityAttestationKey } = require("./shared/memory-authority-attestation.cjs");
+    const secrets = yaml.load(fs.readFileSync("config/secrets.yaml", "utf8")) || {};
+    const cap = secrets.brainOperations?.capabilityKey || "";
+    process.stdout.write(/^[a-f0-9]{64}$/i.test(cap) ? deriveMemoryAuthorityAttestationKey(cap) : "");
+  ' 2>/dev/null)"
+  if [ -n "$DERIVED_KEY" ]; then
+    export HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY="$DERIVED_KEY"
+  else
+    echo "[rebuild-ann] FAILED code=ann_attestation_key_unavailable — no brainOperations.capabilityKey in secrets" >&2
+    exit 1
+  fi
+fi
+
 record_health() {
   local agent="$1"
   local outcome="$2"
