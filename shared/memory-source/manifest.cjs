@@ -74,6 +74,8 @@ function validateManifest(manifest) {
     'formatVersion',
     'generation',
     'baseRevision',
+    // Optional: manifests written before 2026-07-16 predate the stamp.
+    ...(manifest.baseWrittenAt !== undefined ? ['baseWrittenAt'] : []),
     'currentRevision',
     'activeDeltaEpoch',
     'activeBase',
@@ -81,6 +83,14 @@ function validateManifest(manifest) {
     'ann',
     'summary',
   ], 'manifest');
+  if (manifest.baseWrittenAt !== undefined) {
+    assertBoundedString(manifest.baseWrittenAt, 'base written at');
+    if (!Number.isFinite(Date.parse(manifest.baseWrittenAt))) {
+      throw memorySourceError('invalid_memory_source', 'invalid base written at', {
+        retryable: false,
+      });
+    }
+  }
   if (manifest.formatVersion !== 1) {
     throw memorySourceError('invalid_memory_source', 'unsupported memory manifest', {
       retryable: false,

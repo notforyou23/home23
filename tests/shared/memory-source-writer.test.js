@@ -599,3 +599,34 @@ test('retirement fails closed on an oversized discovered pin record', async (t) 
   );
   assert.deepEqual(await fsp.readFile(stalePath), before);
 });
+
+test('rewriteMemoryBase stamps baseWrittenAt and appends preserve it', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  await rewriteMemoryBase(dir, replacementCapturedView(), { lockRoot });
+  const rewritten = await readManifest(dir);
+  const stampMs = Date.parse(rewritten.baseWrittenAt);
+  assert.ok(Number.isFinite(stampMs), 'baseWrittenAt must be a parseable date');
+  assert.ok(Math.abs(Date.now() - stampMs) < 60_000, 'baseWrittenAt must be freshly stamped');
+  await appendMemoryRevision(dir, {
+    nodes: [{ id: 'after-stamp', concept: 'append preserves the stamp' }],
+  }, { lockRoot, summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 } });
+  const appended = await readManifest(dir);
+  assert.equal(appended.baseWrittenAt, rewritten.baseWrittenAt,
+    'delta appends must not reset the base age clock');
+});
+
+test('readManifest accepts a legacy manifest without baseWrittenAt', async () => {
+  const { dir } = await createCommittedFixture();
+  const manifest = await readManifest(dir);
+  assert.equal(manifest.baseWrittenAt, undefined);
+});
+
+test('readManifest rejects an unparseable baseWrittenAt', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  await rewriteMemoryBase(dir, replacementCapturedView(), { lockRoot });
+  const manifestPath = path.join(dir, 'memory-manifest.json');
+  const manifest = JSON.parse(await fsp.readFile(manifestPath, 'utf8'));
+  manifest.baseWrittenAt = 'not a date';
+  await fsp.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  await assert.rejects(() => readManifest(dir), /invalid base written at/);
+});

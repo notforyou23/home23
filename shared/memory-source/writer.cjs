@@ -399,6 +399,11 @@ async function rewriteMemoryBase(brainDir, capturedView, options = {}) {
       formatVersion: 1,
       generation,
       baseRevision,
+      // Stamped so persistMemoryRevision can age the base and fold the delta
+      // back in. Without it the periodic full rewrite can never trigger and
+      // the delta grows unbounded (846k ops / 1.5GB on jerry, 2026-07-16 —
+      // every cold load replayed the whole chain, ~7 minutes).
+      baseWrittenAt: new Date().toISOString(),
       currentRevision: baseRevision,
       activeDeltaEpoch: epoch,
       activeBase: {
