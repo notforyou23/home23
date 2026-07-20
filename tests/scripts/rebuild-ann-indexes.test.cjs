@@ -40,12 +40,34 @@ async function createFixture(builderSource) {
 const successReceipt = "console.log(JSON.stringify({event:'ann_rebuild_receipt',status:'fresh',builtRevision:1,currentRevision:1,bridgeableGap:0,indexCount:1,stageDurations:{sourceOpenMs:1,sourceScanMs:1,indexWriteMs:1,metadataWriteMs:1,publishMs:1,reuseValidationMs:0,cleanupMs:1,totalMs:7},stageStatuses:{sourceOpen:'completed',sourceScan:'completed',indexWrite:'completed',metadataWrite:'completed',publish:'completed',reuseValidation:'skipped',cleanup:'completed',total:'completed'},semanticCoverage:{status:'complete',sourceNodes:1,indexed:1,skipped:0,usable:true,vectorCoverageBps:10000,minimumVectorCoverageBps:5000},reused:false}));\n";
 const incompleteReceipt = "console.log(JSON.stringify({event:'ann_rebuild_receipt',status:'fresh',builtRevision:1,currentRevision:1,bridgeableGap:0,indexCount:1,stageDurations:{totalMs:1},semanticCoverage:{indexed:1,skipped:0}}));\n";
 
-function runFixture(root, agents = []) {
+function runFixture(root, agents = [], { env = {} } = {}) {
   return spawnSync('bash', [path.join(root, 'scripts', 'rebuild-ann-indexes.sh'), ...agents], {
     cwd: root,
     encoding: 'utf8',
+    env: {
+      ...process.env,
+      // The wrapper hard-requires the ANN authority attestation key
+      // (2026-07-17: it had silently never succeeded without one). Tests
+      // provide it via env so the secrets-derivation path is skipped —
+      // fixture roots have no config/secrets.yaml or node_modules.
+      HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: 'f'.repeat(64),
+      ...env,
+    },
   });
 }
+
+test('wrapper fails closed without an attestation key or derivable secret', async (t) => {
+  const root = await createFixture(successReceipt);
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const result = spawnSync('bash', [path.join(root, 'scripts', 'rebuild-ann-indexes.sh')], {
+    cwd: root,
+    encoding: 'utf8',
+    env: { ...process.env, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: '' },
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /ann_attestation_key_unavailable/);
+  assert.doesNotMatch(result.stdout, /OK/);
+});
 
 test('wrapper propagates a nonzero builder exit and never prints agent OK', async (t) => {
   const root = await createFixture("console.error('typed_builder_failure'); process.exit(7);\n");
@@ -75,7 +97,7 @@ ${successReceipt}
   const result = spawnSync('bash', [path.join(root, 'scripts', 'rebuild-ann-indexes.sh')], {
     cwd: root,
     encoding: 'utf8',
-    env: { ...process.env, INVOCATIONS: invocations },
+    env: { ...process.env, INVOCATIONS: invocations, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: 'f'.repeat(64) },
   });
   assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
   const invokedBrains = (await fsp.readFile(invocations, 'utf8')).trim().split('\n');
@@ -97,7 +119,7 @@ ${successReceipt}
   const selected = spawnSync('bash', [path.join(root, 'scripts', 'rebuild-ann-indexes.sh'), 'forrest'], {
     cwd: root,
     encoding: 'utf8',
-    env: { ...process.env, INVOCATIONS: invocations },
+    env: { ...process.env, INVOCATIONS: invocations, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: 'f'.repeat(64) },
   });
   assert.equal(selected.status, 0, `${selected.stdout}${selected.stderr}`);
   assert.equal((await fsp.readFile(invocations, 'utf8')).trim(), path.join(root, 'instances', 'forrest', 'brain'));
@@ -106,7 +128,7 @@ ${successReceipt}
   const invalid = spawnSync('bash', [path.join(root, 'scripts', 'rebuild-ann-indexes.sh'), '../jerry'], {
     cwd: root,
     encoding: 'utf8',
-    env: { ...process.env, INVOCATIONS: invocations },
+    env: { ...process.env, INVOCATIONS: invocations, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: 'f'.repeat(64) },
   });
   assert.notEqual(invalid.status, 0);
   assert.match(`${invalid.stdout}${invalid.stderr}`, /FAILED code=ann_agent_selector_invalid/);
@@ -127,7 +149,7 @@ process.exit(0);
   const result = spawnSync('bash', [path.join(root, 'scripts', 'rebuild-ann-indexes.sh')], {
     cwd: root,
     encoding: 'utf8',
-    env: { ...process.env, INVOCATIONS: invocations },
+    env: { ...process.env, INVOCATIONS: invocations, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: 'f'.repeat(64) },
   });
   const output = `${result.stdout}${result.stderr}`;
   assert.notEqual(result.status, 0, output);
@@ -285,6 +307,7 @@ test('wrapper alerts only after a configured sustained excessive overlay gap', a
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const env = {
     ...process.env,
+    HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: 'f'.repeat(64),
     ANN_SUSTAINED_GAP_THRESHOLD: '2',
     ANN_MAX_OVERLAY_GAP_RECORDS: '5',
   };
