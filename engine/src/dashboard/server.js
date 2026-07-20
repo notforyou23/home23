@@ -1000,7 +1000,10 @@ class DashboardServer {
     );
     const remoteWorker = createCosmoBrainOperationWorkerClient({
       baseUrl: `http://127.0.0.1:${configuredCosmoPort}`,
-      sourceOperationTypes: ['query', 'pgs', 'research_compile', 'research_intelligence'],
+      sourceOperationTypes: [
+        'query', 'pgs', 'research_compile', 'research_intelligence',
+        'research_launch', 'research_continue', 'research_stop', 'research_watch',
+      ],
     });
     const worker = new BrainOperationWorkerAdapter({
       remoteWorker,
@@ -1051,7 +1054,28 @@ class DashboardServer {
       home23Root,
       requesterAgent,
     });
-    const researchRuns = createResearchRunsReader({ home23Root, requesterAgent });
+    const researchRuns = createResearchRunsReader({
+      home23Root,
+      requesterAgent,
+      // Only cosmo23 knows which run is actually live — its restarts kill
+      // subprocess runs without touching any metadata record.
+      probeLiveRun: async () => {
+        try {
+          const response = await fetch(`http://127.0.0.1:${configuredCosmoPort}/api/status`, {
+            signal: AbortSignal.timeout(2_000),
+          });
+          if (!response.ok) return { active: false, runName: null };
+          const body = await response.json();
+          const active = body?.running === true || body?.health?.activeRun === true;
+          const run = body?.health?.run || body?.run || null;
+          const runName = typeof run?.runName === 'string' ? run.runName
+            : typeof run?.name === 'string' ? run.name : null;
+          return { active, runName };
+        } catch {
+          return { active: false, runName: null };
+        }
+      },
+    });
     let coordinator = null;
     let synthesisOperationRuntime = null;
     let synthesisOperationError = null;

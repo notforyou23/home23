@@ -489,11 +489,20 @@ async function readCanonicalRunLifecycle(canonicalRoot, activeRunPath) {
     loadJsonIfPresent(path.join(canonicalRoot, 'plans', 'plan:main.json')),
     loadJsonIfPresent(path.join(canonicalRoot, 'run.json'))
   ]);
-  const completed = plan?.status === 'COMPLETED'
+  const planCompleted = plan?.status === 'COMPLETED'
     && typeof plan.completedAt === 'number'
     && Number.isFinite(plan.completedAt);
+  // Patch 69: a completed plan is sufficient but not necessary. Imported
+  // and killed runs never mark plan:main COMPLETED, yet a committed
+  // manifest-v1 memory proves a saved, queryable corpus — without this,
+  // brains like labor23 sat 'unavailable' forever while the catalog showed
+  // their node counts (jerry's 2026-07-19 session).
+  const manifestCompleted = planCompleted
+    ? false
+    : await fsp.access(path.join(canonicalRoot, 'memory-manifest.json'))
+      .then(() => true, () => false);
   return {
-    lifecycle: completed ? 'completed' : 'unavailable',
+    lifecycle: planCompleted || manifestCompleted ? 'completed' : 'unavailable',
     ownerAgent: typeof run?.owner === 'string' && run.owner.trim() ? run.owner.trim() : null
   };
 }

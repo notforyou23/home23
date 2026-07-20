@@ -366,3 +366,35 @@ test('custom control limits preserve envelope headroom at exact Query and PGS re
     assert.equal(Buffer.byteLength(JSON.stringify(envelope.result), 'utf8'), resultBytes);
   }
 });
+
+// ── research run lifecycle transport (2026-07-20) ─────────────────────
+// The four research run ops were missing from the default source-operation
+// list while cosmo23 accepted them, and start() validated AFTER posting —
+// so a launch started the run on COSMO and then reported transport-invalid
+// to the operator (the 2026-07-19 orphaned run).
+
+test('research run lifecycle operation types are couriered, not rejected', async () => {
+  for (const operationType of [
+    'research_launch', 'research_continue', 'research_stop', 'research_watch',
+  ]) {
+    const client = createCosmoBrainOperationWorkerClient({
+      fetchImpl: async () => jsonResponse({ ok: true }),
+    });
+    const result = await client.start(
+      { operationId: OPERATION_ID, operationType }, CAPABILITY,
+    );
+    assert.equal(result.ok, true, operationType);
+  }
+});
+
+test('an unsupported operation type is rejected BEFORE anything reaches COSMO', async () => {
+  let fetches = 0;
+  const client = createCosmoBrainOperationWorkerClient({
+    fetchImpl: async () => { fetches += 1; return jsonResponse({ ok: true }); },
+  });
+  await assert.rejects(
+    client.start({ operationId: OPERATION_ID, operationType: 'made_up_type' }, CAPABILITY),
+    { code: 'worker_transport_invalid' },
+  );
+  assert.equal(fetches, 0, 'the start must never be sent for a type the client will disown');
+});

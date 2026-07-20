@@ -18,6 +18,14 @@ const DEFAULT_SOURCE_OPERATION_TYPES = Object.freeze([
   'pgs',
   'research_compile',
   'research_intelligence',
+  // Research run lifecycle ops are couriered to COSMO like the rest. They
+  // were missing from this list while cosmo23 accepted them — the client
+  // then declared its own transport invalid AFTER the run had started
+  // (2026-07-19: jerry's launch was reported failed while the run ran on).
+  'research_launch',
+  'research_continue',
+  'research_stop',
+  'research_watch',
 ]);
 
 function clientError(code, message = code, options = {}) {
@@ -232,17 +240,19 @@ function createCosmoBrainOperationWorkerClient({
       return supportedSourceOperations.has(operationType);
     },
     async start(context, capability) {
+      if (typeof context?.operationType !== 'string' || !context.operationType) {
+        throw clientError('worker_transport_invalid');
+      }
+      // Validate BEFORE the POST: rejecting an unsupported type after the
+      // request has been sent leaves COSMO running work home23 disowns.
+      rememberOperationType(context.operationId, context.operationType);
       const result = await requestJson(context?.operationId, 'start', capability, {
         method: 'POST',
         body: context,
       });
-      if (typeof context?.operationType !== 'string' || !context.operationType) {
-        throw clientError('worker_transport_invalid');
-      }
       if (result?.operationType !== undefined && result.operationType !== context.operationType) {
         throw clientError('worker_transport_invalid');
       }
-      rememberOperationType(context.operationId, context.operationType);
       if (result?.reference !== undefined && result?.reference !== null) {
         rememberStatusOperationType(context.operationId, result);
       }

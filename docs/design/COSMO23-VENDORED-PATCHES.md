@@ -3613,3 +3613,24 @@ recorded `conversion_failed`. Same two-line fix applied to the Home23 twin
 (`engine/src/ingestion/convert-file.py`). Note: MarkItDown uses the LLM for
 image files only — scanned PDFs (no text layer) still convert empty; a
 render-and-OCR fallback is a separate, unbuilt feature.
+
+## Patch 69 — brain-registry lifecycle: manifest memory is completion authority (2026-07-20)
+
+**File.** `cosmo23/server/lib/brain-registry.js` (`readCanonicalRunLifecycle`).
+
+**Problem.** Catalog lifecycle `completed` (the only queryable state besides
+`resident`) required `plans/plan:main.json` with `status: COMPLETED`.
+Imported corpora (labor23, crossfit-import, jtr-jerry-merge1…) and killed
+runs never mark a plan completed, so they sat `unavailable` forever — the
+catalog showed their node counts while every query was refused. Half of the
+2026-07-19 research-tool failures.
+
+**Fix.** A committed `memory-manifest.json` at the run root is accepted as
+completion authority when the plan is not COMPLETED: manifest-v1 memory
+proves a saved, queryable corpus. Runs with neither stay `unavailable`.
+Pairs with `scripts/migrate-legacy-research-runs.cjs` (additive migration of
+legacy `state.json.gz` memories to manifest-v1 sidecars; originals
+byte-identical — 27 run brains migrated 2026-07-20).
+
+**Verify:** `node --test tests/cosmo23/brain-catalog-contract.test.cjs`
+(the `Patch 69:` test).

@@ -377,3 +377,41 @@ test('shared legacy resolver rejects duplicate names but prefers canonical ids a
     assert.equal(await fsp.realpath(byLegacyRouteKey.path), entry.canonicalRoot);
   }
 });
+
+// ── Patch 69: manifest-v1 memory is completion authority too ──────────
+// Imported and killed runs never mark plan:main COMPLETED, yet a committed
+// memory-manifest.json proves a saved queryable corpus. Without this,
+// migrated brains (labor23 etc.) sat 'unavailable' forever.
+
+test('Patch 69: a plan-less run with committed manifest memory is completed and resolvable', async (t) => {
+  const root = await makeTempDir();
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const instancesRoot = path.join(root, 'instances');
+  const localRunsPath = path.join(root, 'runs');
+  await fsp.mkdir(instancesRoot, { recursive: true });
+  await fsp.mkdir(localRunsPath, { recursive: true });
+
+  const migratedRunPath = path.join(localRunsPath, 'migrated-import');
+  await writeResearchRun(migratedRunPath, { status: 'ACTIVE', owner: 'jerry', nodeCount: 5 });
+  await fsp.writeFile(path.join(migratedRunPath, 'memory-manifest.json'), '{}');
+
+  const stillLegacyRunPath = path.join(localRunsPath, 'still-legacy');
+  await writeResearchRun(stillLegacyRunPath, { status: 'ACTIVE', owner: 'jerry', nodeCount: 3 });
+
+  const catalog = await buildCanonicalCatalog({
+    instancesRoot,
+    localRunsPath,
+    referenceRunsPaths: [],
+    configuredAgentNames: ['jerry'],
+    activeRunPath: null,
+  });
+  const byRoot = new Map(catalog.brains.map((brain) => [brain.canonicalRoot, brain]));
+  const migrated = byRoot.get(await fsp.realpath(migratedRunPath));
+  const legacy = byRoot.get(await fsp.realpath(stillLegacyRunPath));
+  assert.equal(migrated.lifecycle, 'completed', 'manifest memory must make the brain queryable');
+  assert.equal(legacy.lifecycle, 'unavailable', 'no plan and no manifest stays unavailable');
+  assert.equal(
+    resolveCanonicalTarget(catalog, 'jerry', { brainId: migrated.id }).lifecycle,
+    'completed',
+  );
+});

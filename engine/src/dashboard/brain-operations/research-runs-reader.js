@@ -8,7 +8,9 @@ const {
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const ACTIVE_STATES = new Set(['starting', 'active', 'stopping']);
-const CONTINUABLE_STATES = new Set(['paused', 'failed', 'completed']);
+// 'interrupted' is continuable: COSMO resumes from the run's saved state, so
+// a run orphaned by a cosmo23 restart can be picked back up.
+const CONTINUABLE_STATES = new Set(['paused', 'failed', 'completed', 'interrupted']);
 const STOPPABLE_STATES = new Set(['starting', 'active', 'stopping']);
 const MAX_SCAN_ENTRIES = 1_000;
 
@@ -18,11 +20,12 @@ function typed(code, message = code) {
 
 function validateOptions(options) {
   if (!options || Array.isArray(options) || typeof options !== 'object'
-      || Reflect.ownKeys(options).some((key) => !['home23Root', 'requesterAgent'].includes(key))
+      || Reflect.ownKeys(options).some((key) => !['home23Root', 'requesterAgent', 'probeLiveRun'].includes(key))
       || typeof options.home23Root !== 'string' || !path.isAbsolute(options.home23Root)
       || path.normalize(options.home23Root) !== options.home23Root
       || typeof options.requesterAgent !== 'string'
-      || !IDENTIFIER.test(options.requesterAgent)) {
+      || !IDENTIFIER.test(options.requesterAgent)
+      || (options.probeLiveRun !== undefined && typeof options.probeLiveRun !== 'function')) {
     throw typed('reader_configuration_invalid');
   }
 }
@@ -73,6 +76,12 @@ function createResearchRunsReader(options) {
     const entries = await fs.readdir(runsRoot, { withFileTypes: true });
     if (entries.length > MAX_SCAN_ENTRIES) throw typed('result_too_large');
     const rows = [];
+    // Run metadata says what the run WAS; only cosmo23 knows what is live.
+    // A cosmo23 restart kills its subprocess runs without updating any
+    // record, so a stale 'active' would otherwise be reported forever
+    // (jerry's 2026-07-19 run showed active for 30 hours after the fact).
+    // Lazily probe once per listing; demote only on confident non-liveness.
+    let liveRun;
     for (const entry of entries) {
       if (!entry.isDirectory() || entry.isSymbolicLink() || !IDENTIFIER.test(entry.name)) continue;
       const runRoot = path.join(runsRoot, entry.name);
@@ -88,6 +97,22 @@ function createResearchRunsReader(options) {
           || record.canonicalRoot !== runRoot
           || typeof record.updatedAt !== 'string') {
         throw typed('run_metadata_invalid');
+      }
+      if (ACTIVE_STATES.has(record.state) && typeof options.probeLiveRun === 'function') {
+        if (liveRun === undefined) liveRun = await options.probeLiveRun();
+        const confirmedDead = !liveRun?.active
+          || (typeof liveRun.runName === 'string' && liveRun.runName
+              && liveRun.runName !== record.runId);
+        if (confirmedDead) {
+          record = {
+            ...record,
+            state: 'interrupted',
+            error: {
+              code: 'run_not_live',
+              message: 'COSMO reports no live run for this record; state reconciled from active to interrupted',
+            },
+          };
+        }
       }
       if (state === 'active' && !ACTIVE_STATES.has(record.state)) continue;
       rows.push(project(record));
