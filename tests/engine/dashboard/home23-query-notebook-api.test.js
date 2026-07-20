@@ -114,6 +114,108 @@ function durableNotebookRecord() {
   };
 }
 
+function canonicalSavedDirectRecord() {
+  return {
+    operationId: OPERATION_ID,
+    requestId: 'query-notebook-canonical-saved-result',
+    operationType: 'query',
+    requesterAgent: 'jerry',
+    requestParameters: { query: 'Map durable truth', mode: 'dive' },
+    parameters: {
+      query: 'Map durable truth', mode: 'dive',
+      modelSelection: { provider: 'openai-codex', model: 'gpt-5.5' },
+    },
+    acceptedAt: '2026-07-13T19:00:00.000Z',
+    target: {
+      domain: 'brain', brainId: 'brain-jerry', displayName: 'Jerry',
+      canonicalRoot: '/private/brain', ownerAgent: 'jerry',
+    },
+    state: 'complete',
+    startedAt: '2026-07-13T19:00:01.000Z',
+    updatedAt: '2026-07-13T19:10:00.000Z',
+    completedAt: '2026-07-13T19:10:00.000Z',
+    progressSnapshot: {
+      version: 1, stage: 'terminal', eventSequence: 5,
+      sourceNodes: 142764, sourceEdges: 468230,
+      lastProgressAt: '2026-07-13T19:10:00.000Z',
+    },
+    error: null,
+    result: { answer: 'stored private result' },
+    resultHandle: `brres_${'H'.repeat(32)}`,
+    resultArtifact: null,
+    resultExpiresAt: '2026-07-20T19:10:00.000Z',
+    resultExpiredAt: null,
+    notebookResultSummary: {
+      version: 1, resultVersion: `qrv1_${'V'.repeat(43)}`,
+      answerAvailable: true, coverage: null, continuation: null,
+    },
+    pgsSession: null,
+    sourceEvidence: {
+      sourceHealth: 'healthy',
+      freshness: 'known',
+      matchOutcome: 'matches',
+      completeCoverage: true,
+      filteredTotal: 0,
+      authoritativeTotals: { nodes: 142764, edges: 468230 },
+      returnedTotals: { nodes: 80, edges: 14 },
+      retrievalMode: 'semantic-ann-delta-overlay',
+      indexCoverage: {
+        complete: true, indexedRevision: 142760, currentRevision: 142764,
+        coveredThroughRevision: 142764, deltaRecords: 4, distinctChangedNodes: 2,
+        distinctUpsertedNodes: 1, distinctRemovedNodes: 1, edgeOnlyRecords: 0,
+        changedNodes: 2, upsertedNodes: 1, removedNodes: 1,
+        route: 'pinned-query-projection', completeness: 'complete',
+      },
+      stageTimingsMs: {
+        sourceOpen: 2, embedding: 4, overlayRefresh: 3, annLoad: 5, annSearch: 6,
+        overlayScoring: 7, keywordScoring: 8, merge: 9, response: 44,
+        deltaOverlay: 3, annQuery: 6, deltaSemantic: 7, keyword: 8, total: 44,
+      },
+      authoritySummary: {
+        total: 80,
+        authorityClasses: {
+          verified_current_state: 2, jtr_correction: 1, artifact_log: 30,
+          worker_receipt: 4, generated_doctrine: 3, narrative: 40,
+        },
+        retrievalDomains: {
+          current_ops: 20, closed_incidents: 10, project_history: 30, external_intake: 20,
+        },
+        sourceChain: {
+          withEvidence: 50, withoutEvidence: 30,
+          referenceCounts: {
+            source: 10, evidence: 10, artifact: 10, trace: 5, generation: 5,
+            lineage: 5, verification: 3, closure: 2,
+          },
+        },
+        requiresFreshVerification: 40,
+        verifiedCurrentState: 2,
+        jtrCorrection: 1,
+        artifactLog: 30,
+        workerReceipt: 4,
+        generatedDoctrine: 3,
+        narrative: 40,
+      },
+      canonicalRoot: '/private/brain',
+    },
+    sourcePinDescriptor: null,
+    sourcePinDigest: null,
+  };
+}
+
+function canonicalSavedDirectResult() {
+  return {
+    answer: 'The canonical saved result is available to the Apple client.',
+    projection: {
+      nodesScanned: 142764, nodesRetained: 80,
+      edgesScanned: 468230, edgesRetained: 14,
+      droppedForPromptBudget: 1920, promptReduced: true,
+    },
+    answerQuality: {
+      requestedMode: 'dive', state: 'substantial', expansionAttempted: true,
+    },
+  };
+}
+
 function acceptedAuth() {
   return {
     requireCredential(req, _res, next) {
@@ -196,6 +298,82 @@ test('protected Query notebook modules publish their construction seams', () => 
   assert.equal(typeof api?.createHome23QueryNotebookRouter, 'function');
   assert.equal(typeof auth?.createQueryNotebookAuth, 'function');
   assert.equal(typeof subscriptions?.createQueryNotebookSubscriptions, 'function');
+});
+
+test('publishes the canonical Apple saved-result contract', async (t) => {
+  const { createHome23QueryNotebookRouter } = require(
+    '../../../engine/src/dashboard/home23-query-notebook-api.js'
+  );
+  const { createQueryNotebookService } = require(
+    '../../../engine/src/dashboard/query-notebook-service.js'
+  );
+  const record = canonicalSavedDirectRecord();
+  const service = createQueryNotebookService({
+    reader: {
+      expectedRequester: 'jerry',
+      async listAuthorized() { return [record]; },
+      async getAuthorized(operationId) {
+        assert.equal(operationId, OPERATION_ID);
+        return record;
+      },
+      async getResultAuthorized(operationId) {
+        assert.equal(operationId, OPERATION_ID);
+        return canonicalSavedDirectResult();
+      },
+    },
+    now: () => NOW,
+  });
+  const app = express();
+  app.use('/home23/api/query', express.json({ limit: '64kb', strict: true }),
+    createHome23QueryNotebookRouter({
+      requesterAgent: 'jerry',
+      auth: acceptedAuth(),
+      notebookService: service,
+      getStatusAuthorized: (operationId) => service.getQueryNotebookStatusAuthorized(operationId),
+      coordinator: {
+        async cancel() {},
+        async attach() { throw new Error('not used'); },
+        async detach() {},
+      },
+      subscriptions: {
+        async listActive() { return []; },
+      },
+    }));
+  const server = await listen(app);
+  t.after(server.close);
+
+  const { response, body } = await jsonRequest(
+    server.base,
+    `/home23/api/query/operations/${OPERATION_ID}/result`,
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(Object.keys(body.evidence).sort(), [
+    'authoritySummary',
+    'authoritativeTotals',
+    'completeCoverage',
+    'filteredTotal',
+    'freshness',
+    'indexCoverage',
+    'matchOutcome',
+    'retrievalMode',
+    'returnedTotals',
+    'sourceHealth',
+    'stageTimingsMs',
+  ].sort());
+  assert.deepEqual(body.notification, {
+    subscribed: false,
+    deliveryState: null,
+  });
+
+  const manifest = JSON.parse(fs.readFileSync(
+    path.join(process.cwd(), 'contracts', 'manifest.json'),
+    'utf8',
+  ));
+  const entry = manifest.entries.find(({ id }) => id === 'query-notebook-result');
+  assert.ok(entry, 'query-notebook-result manifest entry must exist');
+  const { createContractValidator } = require('../../../tests/contracts/contract-validator.cjs');
+  const validation = createContractValidator(process.cwd()).validateValue(entry, body);
+  assert.equal(validation.valid, true, validation.errorsText);
 });
 
 test('Task4 service exposes one requester-bound status with executable action authority', async () => {

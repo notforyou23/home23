@@ -806,3 +806,24 @@ test('Query notebook fixtures are locked to actual runtime projections', async (
   assert.equal(digest, EXPECTED_FIXTURE_CORPUS_SHA256,
     'Query notebook fixture corpus changed without an explicit contract review');
 });
+
+test('saved-result fixture retains the canonical Apple evidence and notification contract', () => {
+  const result = fixture('query-notebook-result');
+  assert.deepEqual(Object.keys(result.evidence).sort(), [
+    'authoritySummary',
+    'authoritativeTotals',
+    'completeCoverage',
+    'filteredTotal',
+    'freshness',
+    'indexCoverage',
+    'matchOutcome',
+    'retrievalMode',
+    'returnedTotals',
+    'sourceHealth',
+    'stageTimingsMs',
+  ].sort());
+  assert.deepEqual(result.notification, {
+    subscribed: false,
+    deliveryState: null,
+  });
+});
