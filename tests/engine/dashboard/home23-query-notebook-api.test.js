@@ -1193,7 +1193,12 @@ test('facade rejects foreign status and atomically subscribes an already-termina
       method: 'POST', body: { enabled: false },
     });
   assert.equal(removed.response.status, 200);
-  assert.equal(removed.body.subscribed, false);
+  assert.deepEqual(removed.body, {
+    schemaVersion: 1,
+    operationId: OPERATION_ID,
+    subscribed: false,
+    deliveryState: null,
+  });
   const webRejected = await jsonRequest(server.base,
     `/home23/api/query/operations/${OPERATION_ID}/notifications`, {
       method: 'POST', body: { enabled: true }, headers: { 'x-test-web': '1' },

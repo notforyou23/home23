@@ -212,6 +212,21 @@ test('Query notebook fixtures are bounded, redacted, strict, and version-consist
     ...notification,
     routeId: `qroute_${'x'.repeat(33)}`,
   }).valid, false, 'notification route IDs must have exactly 32 suffix characters');
+  const unsubscribedNotification = {
+    schemaVersion: 1,
+    operationId: notification.operationId,
+    subscribed: false,
+    deliveryState: null,
+  };
+  assert.equal(validator.validateValue(notificationEntry, unsubscribedNotification).valid, true,
+    'unsubscribed notification responses must carry an explicit null deliveryState');
+  const { deliveryState: _deliveryState, ...missingDeliveryState } = unsubscribedNotification;
+  assert.equal(validator.validateValue(notificationEntry, missingDeliveryState).valid, false,
+    'unsubscribed notification responses must not omit deliveryState');
+  assert.equal(validator.validateValue(notificationEntry, {
+    ...unsubscribedNotification,
+    routeId: notification.routeId,
+  }).valid, false, 'unsubscribed notification responses must not expose routeId');
 
   const result = loadJson(repoPath('contracts/fixtures/query-notebook-result.json'));
   assert.equal(page.omittedIncompatibleCount, 1);

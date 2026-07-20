@@ -725,11 +725,12 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["schemaVersion", "operationId", "subscribed"],
+          "required": ["schemaVersion", "operationId", "subscribed", "deliveryState"],
           "properties": {
             "schemaVersion": { "const": 1 },
             "operationId": { "$ref": "#/$defs/operationId" },
-            "subscribed": { "const": false }
+            "subscribed": { "const": false },
+            "deliveryState": { "type": "null" }
           }
         },
         {

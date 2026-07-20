@@ -540,6 +540,7 @@ function createHome23QueryNotebookRouter(options = {}) {
       });
       res.json({
         schemaVersion: 1, operationId: req.params.operationId, subscribed: false,
+        deliveryState: null,
       });
       return;
     }
