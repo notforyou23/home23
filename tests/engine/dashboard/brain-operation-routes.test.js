@@ -823,3 +823,69 @@ test('graph artifact result route returns metadata and handle but never graph by
   assert.equal(copied.length, graphBytes.length);
   assert.equal(fixture.sha256(copied), status.resultArtifact.sha256);
 });
+
+// ── synthesis result join (2026-07-20) ────────────────────────────────
+// A synthesis result is a durable metadata claim; the product lives in the
+// committed brain state it points at. Before the join, action:"result"
+// handed the operator a receipt with no answer body.
+
+test('a synthesis result read joins the committed answer instead of returning a bare receipt', async () => {
+  const envelope = { generationMarker: `generation-42-${'a'.repeat(24)}`, operationId: OPERATION_ID };
+  const joins = [];
+  const deps = fakes({
+    reader: {
+      getAuthorized: async () => record({ operationType: 'synthesis', state: 'complete', resultHandle: RESULT_HANDLE }),
+      listNonterminalAuthorized: async () => [],
+      getResultAuthorized: async () => ({ ...envelope }),
+    },
+    resolveSynthesisAnswer: async (operation, result) => {
+      joins.push([operation.operationType, result.generationMarker]);
+      return { answer: 'joined synthesis product' };
+    },
+  });
+  await withRouter(deps, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/${OPERATION_ID}/result`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.result.answer, 'joined synthesis product');
+    assert.equal(body.result.generationMarker, envelope.generationMarker, 'the claim survives beside the answer');
+  });
+  assert.deepEqual(joins, [['synthesis', envelope.generationMarker]]);
+});
+
+test('non-synthesis result reads never invoke the synthesis join', async () => {
+  const joins = [];
+  const deps = fakes({
+    reader: {
+      getAuthorized: async () => record({ operationType: 'query', state: 'complete', resultHandle: RESULT_HANDLE }),
+      listNonterminalAuthorized: async () => [],
+      getResultAuthorized: async () => ({ answer: 'stored answer' }),
+    },
+    resolveSynthesisAnswer: async () => { joins.push('called'); return { answer: 'wrong' }; },
+  });
+  await withRouter(deps, async (baseUrl) => {
+    const body = await (await fetch(`${baseUrl}/${OPERATION_ID}/result`)).json();
+    assert.equal(body.result.answer, 'stored answer');
+  });
+  assert.deepEqual(joins, []);
+});
+
+test('a failing synthesis join degrades to answerUnavailableReason, not an error', async () => {
+  const deps = fakes({
+    reader: {
+      getAuthorized: async () => record({ operationType: 'synthesis', state: 'complete', resultHandle: RESULT_HANDLE }),
+      listNonterminalAuthorized: async () => [],
+      getResultAuthorized: async () => ({ generationMarker: `generation-42-${'b'.repeat(24)}` }),
+    },
+    resolveSynthesisAnswer: async () => {
+      throw Object.assign(new Error('state gone'), { code: 'synthesis_state_invalid' });
+    },
+  });
+  await withRouter(deps, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/${OPERATION_ID}/result`);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.match(body.result.answerUnavailableReason, /synthesis_state_invalid/);
+    assert.equal(body.result.generationMarker, `generation-42-${'b'.repeat(24)}`);
+  });
+});

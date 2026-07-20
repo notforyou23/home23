@@ -264,3 +264,74 @@ test('provider branches cannot bypass centralized tool result execution', () => 
   assert.ok((source.match(/executeAndFormatTool\(/g) || []).length >= 4);
   assert.doesNotMatch(source, /tool_result[^\n]+success:\s*true/);
 });
+
+// ── recoverable excerpts must teach paging (2026-07-20) ───────────────
+// jerry's 26k-char consciousness answer was fully stored while the display
+// cap re-clipped every fetch at the same 4,000 chars: the old marker named
+// the operation but not how to get the rest. At production limits the
+// marker now spells out the exact brain_status paging call; at tiny limits
+// it degrades to the compact locator so small displays keep working.
+
+test('at production limits the truncation marker spells out the paging call', () => {
+  const content = 'a'.repeat(26_185);
+  const excerpt = recoverableExcerpt(content, 4000, {
+    operationId: 'brop_EybSxmo77gQWHb3odPB_sKjjzYTqJsGh',
+    resultHandle: null,
+  });
+  assert.ok(excerpt.length <= 4000);
+  const match = excerpt.match(/\[OUTPUT TRUNCATED: chars 0-(\d+) of 26185; continue with brain_status \{"action":"result","operationId":"brop_EybSxmo77gQWHb3odPB_sKjjzYTqJsGh","offset":(\d+)\}\]$/);
+  assert.ok(match, `marker must teach the exact paging call, got tail: ${excerpt.slice(-220)}`);
+  assert.equal(match![1], match![2], 'shown-end and next offset must agree');
+  const shownEnd = Number(match![1]);
+  assert.ok(shownEnd > 3000 && shownEnd < 4000, 'each page must make real progress');
+});
+
+test('paging a sliced result carries the offset through the marker math', () => {
+  const total = 26_185;
+  const offset = 3_800;
+  const remainder = 'b'.repeat(total - offset);
+  const excerpt = recoverableExcerpt(remainder, 4000, {
+    operationId: 'brop_EybSxmo77gQWHb3odPB_sKjjzYTqJsGh',
+    resultHandle: null,
+    contentOffset: offset,
+  });
+  const match = excerpt.match(/chars 3800-(\d+) of 26185;.*"offset":(\d+)\}\]$/);
+  assert.ok(match, `marker must window from the base offset, got tail: ${excerpt.slice(-220)}`);
+  assert.equal(match![1], match![2]);
+  assert.ok(Number(match![1]) > offset, 'next offset must advance past the base');
+});
+
+test('repeated paging terminates and covers the full content', () => {
+  const content = Array.from({ length: 26_000 }, (_, i) => String.fromCharCode(97 + (i % 26))).join('');
+  let offset = 0;
+  let reconstructed = '';
+  for (let page = 0; page < 40; page += 1) {
+    const remainder = content.slice(offset);
+    const excerpt = recoverableExcerpt(remainder, 4000, {
+      operationId: 'brop_EybSxmo77gQWHb3odPB_sKjjzYTqJsGh',
+      contentOffset: offset,
+    });
+    const match = excerpt.match(/"offset":(\d+)\}\]$/);
+    if (!match) {
+      reconstructed += excerpt; // final page arrives whole
+      offset = content.length;
+      break;
+    }
+    const next = Number(match[1]);
+    reconstructed += excerpt.slice(0, excerpt.indexOf('\n\n[OUTPUT TRUNCATED'));
+    assert.ok(next > offset, 'every page must advance');
+    offset = next;
+  }
+  assert.equal(offset, content.length, 'paging must reach the end');
+  assert.equal(reconstructed, content, 'concatenated pages must equal the original');
+});
+
+test('tiny display limits fall back to the compact locator instead of failing', () => {
+  const excerpt = recoverableExcerpt('x'.repeat(1000), 160, {
+    operationId: 'brop_EybSxmo77gQWHb3odPB_sKjjzYTqJsGh',
+    resultHandle: 'brres_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  });
+  assert.equal(excerpt.length, 160);
+  assert.match(excerpt, /OUTPUT TRUNCATED; full result: handle=/);
+  assert.equal(/"offset"/.test(excerpt), false, 'no paging promise it cannot keep');
+});

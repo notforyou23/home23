@@ -213,10 +213,36 @@ function validateDisplayLimit(limit: number): void {
 export function recoverableExcerpt(
   content: string,
   limit: number,
-  reference: { resultHandle?: string | null; operationId?: string | null },
+  reference: { resultHandle?: string | null; operationId?: string | null; contentOffset?: number },
 ): string {
   validateDisplayLimit(limit);
   if (content.length <= limit) return content;
+  // The marker must teach recovery, not just admit truncation: a bare
+  // "full result: operation=X" pointer sent the model back through the same
+  // display cap forever (the 2026-07-19 jerry session looped on an answer
+  // that was fully stored the whole time). With an operationId and room to
+  // make forward progress, the marker spells out the exact paging call;
+  // otherwise it degrades to the compact locator form.
+  const base = Number.isSafeInteger(reference.contentOffset) && (reference.contentOffset as number) > 0
+    ? (reference.contentOffset as number)
+    : 0;
+  const total = base + content.length;
+  const handleSegment = reference.resultHandle ? ` handle=${reference.resultHandle};` : '';
+  const teachingMarker = (shownEnd: number): string =>
+    `\n\n[OUTPUT TRUNCATED: chars ${base}-${shownEnd} of ${total};${handleSegment} continue with brain_status {"action":"result","operationId":"${reference.operationId}","offset":${shownEnd}}]`;
+  // Budget with both counters at maximum width so the final string can
+  // never exceed the limit; require enough prefix that each page advances.
+  const teachingBudget = reference.operationId ? teachingMarker(total).length : Infinity;
+  if (reference.operationId && limit - teachingBudget >= 64) {
+    const prefixLength = limit - teachingBudget;
+    let prefix = content.slice(0, prefixLength);
+    let consumed = prefix.length;
+    if (/[\uD800-\uDBFF]$/.test(prefix)) {
+      prefix = `${prefix.slice(0, -1)}…`;
+      consumed -= 1;
+    }
+    return `${prefix}${teachingMarker(base + consumed)}`;
+  }
   const locator = [
     reference.resultHandle ? `handle=${reference.resultHandle}` : null,
     reference.operationId ? `operation=${reference.operationId}` : null,
@@ -336,9 +362,13 @@ function visibleContent(result: ToolResult, limit: number): string {
   const operationId = typeof result.metadata?.operationId === 'string'
     ? result.metadata.operationId
     : null;
+  const contentOffset = typeof result.metadata?.contentOffset === 'number'
+    ? result.metadata.contentOffset
+    : 0;
   return recoverableExcerpt(result.content, limit, {
     resultHandle: result.resultHandle,
     operationId,
+    contentOffset,
   });
 }
 

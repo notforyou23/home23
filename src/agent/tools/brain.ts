@@ -379,7 +379,9 @@ async function executeBrainOperationsList(
       optionalEnum(value, 'state', ['nonterminal', 'recent'] as const)) ?? 'recent';
     const limit = parsedWhenPresent(input, 'limit', (value) =>
       optionalFiniteInteger(value, 'limit', 1, 100)) ?? 20;
-    if (state === 'nonterminal' && hasOwn(input, 'limit')) throw invalidRequest();
+    // limit only applies to state:'recent'; a nonterminal listing is
+    // unbounded by design. A redundant limit is ignored, not rejected —
+    // rejecting it cost a live session a working call for zero protection.
     const operations = await turn.brainOperations.listOperations({
       state,
       ...(state === 'recent' ? { limit } : {}),
@@ -649,19 +651,33 @@ async function executeBrainStatus(
   ctx: ToolContext,
 ): Promise<ToolResult> {
   try {
-    assertToolKeys(input, ['target', 'operationId', 'action']);
+    assertToolKeys(input, ['target', 'operationId', 'action', 'offset']);
     const turn = runtime(ctx);
     if (hasOwn(input, 'operationId')) {
       if (hasOwn(input, 'target')) throw invalidRequest();
       const operationId = requiredOperationId(input);
       const action = parsedWhenPresent(input, 'action', (value) =>
         optionalEnum(value, 'action', ['status', 'result', 'wait', 'cancel'] as const)) ?? 'status';
+      const offset = parsedWhenPresent(input, 'offset', (value) =>
+        optionalFiniteInteger(value, 'offset', 0, 100_000_000)) ?? 0;
       const value = action === 'wait'
         ? await turn.brainOperations.resumeOperation(operationId, turn.signal)
         : await turn.brainOperations.inspectOperation(operationId, action, turn.signal);
-      return 'attachmentState' in value
-        ? operationToolResult(value as BrainOperationResult)
-        : operationControlResult(action, value);
+      if ('attachmentState' in value) {
+        const rendered = operationToolResult(value as BrainOperationResult);
+        // Paging: results larger than the display cap are stored whole; an
+        // offset re-reads the same canonical content from that character on.
+        if (action === 'result' && offset > 0 && rendered.is_error !== true) {
+          if (offset >= rendered.content.length) {
+            rendered.content = `offset ${offset} is past the end of this result (${rendered.content.length} chars total; offsets are 0-based)`;
+          } else {
+            rendered.content = rendered.content.slice(offset);
+            rendered.metadata = { ...rendered.metadata, contentOffset: offset };
+          }
+        }
+        return rendered;
+      }
+      return operationControlResult(action, value);
     }
     if (hasOwn(input, 'action')) throw invalidRequest();
     const target = targetFrom(input);
@@ -827,6 +843,10 @@ export const brainStatusTool: ToolDefinition = {
         description: 'Exact operation ID returned by a prior brain tool call; never invent one.',
       },
       action: { type: 'string', enum: ['status', 'result', 'wait', 'cancel'] },
+      offset: {
+        type: 'integer', minimum: 0,
+        description: 'With action:"result": start reading the stored result at this character. Use the offset given in an [OUTPUT TRUNCATED...] marker to page through long results.',
+      },
     },
   },
   execute: executeBrainStatus,

@@ -436,6 +436,7 @@ function createBrainOperationsPlaceholderRouter(options = {}) {
 function createBrainOperationsRouter(options = {}) {
   const {
     requesterAgent, coordinator, reader, exporter, buildCatalog, providerReadiness, researchRuns,
+    resolveSynthesisAnswer,
   } = options;
   assertIdentifier(requesterAgent, 'requesterAgent');
   if (!coordinator || !reader || !exporter || typeof buildCatalog !== 'function') {
@@ -581,6 +582,23 @@ function createBrainOperationsRouter(options = {}) {
         && storedResult?.resultHandle === operation.resultHandle
         ? null
         : storedResult;
+    }
+    // A synthesis result is a durable metadata claim — the product lives in
+    // the committed brain state it points at. Join it at read time so
+    // action:"result" returns the answer, not a bare receipt.
+    if (result && operation.operationType === 'synthesis'
+        && typeof resolveSynthesisAnswer === 'function') {
+      try {
+        const joined = await resolveSynthesisAnswer(operation, result);
+        if (joined && typeof joined === 'object' && !Array.isArray(joined)) {
+          result = { ...result, ...joined };
+        }
+      } catch (error) {
+        result = {
+          ...result,
+          answerUnavailableReason: `committed synthesis state unreadable: ${error?.code || error?.message || 'unknown'}`,
+        };
+      }
     }
     res.json({
       operationId: operation.operationId,

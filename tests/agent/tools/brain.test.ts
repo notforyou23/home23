@@ -168,18 +168,22 @@ test('brain discovery tools expose exact model pairs, recent operations, and can
   ]);
 });
 
-test('brain_operations_list rejects a nonterminal limit instead of silently ignoring it', async () => {
-  let calls = 0;
+test('brain_operations_list ignores a redundant limit on nonterminal instead of rejecting it', async () => {
+  // limit only applies to state:'recent'. Rejecting the combination cost a
+  // live session a working call for zero protection (2026-07-19) — the
+  // redundant field is now dropped, not punished.
+  const requests: Record<string, unknown>[] = [];
   const ctx = makeCtx({ brainOperations: {
-    listOperations: async () => { calls += 1; return []; },
+    listOperations: async (request: Record<string, unknown>) => { requests.push(request); return []; },
   } });
   assert.equal(schemaAccepts(brainOperationsListTool.input_schema, {
     state: 'nonterminal', limit: 5,
   }), true);
   const result = await brainOperationsListTool.execute({ state: 'nonterminal', limit: 5 }, ctx);
-  assert.equal(result.is_error, true);
-  assert.match(result.content, /invalid_request|invalid/i);
-  assert.equal(calls, 0);
+  assert.notEqual(result.is_error, true);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].state, 'nonterminal');
+  assert.equal('limit' in requests[0], false, 'limit must not be forwarded for nonterminal');
 });
 
 test('brain_search uses the turn-scoped client and forwards an explicit sibling target', async () => {
@@ -675,7 +679,6 @@ test('every provider-bound tool schema in the active registry has a plain object
 
 test('provider-compatible brain schemas retain action-specific runtime rejection', async () => {
   const invalidCases: Array<[ToolDefinition, Record<string, unknown>]> = [
-    [brainOperationsListTool, { state: 'nonterminal', limit: 1 }],
     [brainQueryTool, pgsRequest({ pgsMode: 'continue' })],
     [brainQueryExportTool, {
       operationId: CONTINUE_OPERATION_ID, query: 'mixed', answer: 'invalid',
@@ -1213,4 +1216,40 @@ test('runtime prompt teaches durable brain waits without obsolete short latency 
   assert.doesNotMatch(CORE_RUNTIME_PROMPT, /brain_search[^\n]*~500ms/i);
   assert.doesNotMatch(CORE_RUNTIME_PROMPT, /brain_query[^\n]*1-6 min/i);
   assert.doesNotMatch(CORE_RUNTIME_PROMPT, /PGS[^\n]*5-10\+ min/i);
+});
+
+// ── brain_status paging (2026-07-20) ──────────────────────────────────
+// Long stored results were re-clipped identically on every fetch; offset
+// re-reads the same canonical rendered content from any character.
+
+test('brain_status offset slices the rendered result and stamps contentOffset', async () => {
+  const answer = `HEAD${'m'.repeat(20_000)}TAIL`;
+  const ctx = makeCtx({ brainOperations: {
+    inspectOperation: async () => completeOperation(CONTINUE_OPERATION_ID, answer),
+  } });
+  const full = await brainStatusTool.execute(
+    { operationId: CONTINUE_OPERATION_ID, action: 'result' }, ctx);
+  assert.notEqual(full.is_error, true);
+  assert.ok(full.content.startsWith('HEAD'));
+  assert.equal(full.metadata && 'contentOffset' in (full.metadata as object), false);
+
+  const paged = await brainStatusTool.execute(
+    { operationId: CONTINUE_OPERATION_ID, action: 'result', offset: 5000 }, ctx);
+  assert.notEqual(paged.is_error, true);
+  assert.equal(paged.content, full.content.slice(5000), 'offset must window the same canonical content');
+  assert.equal((paged.metadata as Record<string, unknown>).contentOffset, 5000);
+
+  const past = await brainStatusTool.execute(
+    { operationId: CONTINUE_OPERATION_ID, action: 'result', offset: 10_000_000 }, ctx);
+  assert.match(past.content, /past the end/, 'out-of-range offsets explain themselves');
+});
+
+test('brain_status offset is ignored for non-result actions', async () => {
+  const ctx = makeCtx({ brainOperations: {
+    inspectOperation: async () => completeOperation(CONTINUE_OPERATION_ID, 'short answer'),
+  } });
+  const result = await brainStatusTool.execute(
+    { operationId: CONTINUE_OPERATION_ID, action: 'status', offset: 50 }, ctx);
+  assert.notEqual(result.is_error, true);
+  assert.ok(result.content.startsWith('short answer'));
 });

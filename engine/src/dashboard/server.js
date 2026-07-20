@@ -774,6 +774,9 @@ class DashboardServer {
       buildCatalog: dependencies.buildCatalog,
       providerReadiness: dependencies.providerReadiness,
       researchRuns: dependencies.researchRuns,
+      resolveSynthesisAnswer: typeof dependencies.synthesisOperationRuntime?.readCommittedAnswer === 'function'
+        ? (operation, result) => dependencies.synthesisOperationRuntime.readCommittedAnswer(result)
+        : undefined,
     });
     this.brainOperationsPlaceholder.attach(route.router);
     this.brainOperationsCoordinator = dependencies.coordinator;
