@@ -415,6 +415,25 @@ test('start enforces operation authority domains and exact operation-specific sc
         parameters: { query: 'canary', provider: 'openai', model: 'same-name' } },
       { requestId: 'query-pgs-pair', operationType: 'query',
         parameters: { query: 'canary', pgsSweep: { provider: 'openai', model: 'same-name' } } },
+      { requestId: 'query-protected-follow-up', operationType: 'query',
+        parameters: {
+          kind: 'verifiedFollowUp', schemaVersion: 1,
+          followUpFrom: {
+            operationId: `brop_${'P'.repeat(32)}`,
+            resultVersion: `qrv1_${'V'.repeat(43)}`,
+          },
+          query: 'canary', mode: 'dive',
+          modelSelection: { provider: 'openai', model: 'same-name' },
+          enableSynthesis: true, includeOutputs: true, includeThoughts: true,
+          includeCoordinatorInsights: true, allowActions: false,
+        } },
+      { requestId: 'query-private-context', operationType: 'query',
+        parameters: {
+          query: 'canary',
+          verifiedConversationContext: {
+            version: 1, exchanges: [{ query: 'private', answer: 'private' }],
+          },
+        } },
       { requestId: 'pgs-query-pair', operationType: 'pgs',
         parameters: { query: 'canary', modelSelection: { provider: 'openai', model: 'same-name' } } },
       { requestId: 'synthesis-pair', operationType: 'synthesis',
@@ -522,6 +541,77 @@ test('catalog, requester collection, status, result, cancel, detach, and export 
   assert.ok(deps.calls.some((call) => call[0] === 'result' && call[2] === RESULT_HANDLE));
   assert.ok(deps.calls.some((call) => call[0] === 'export'
     && call[1].requesterAgent === 'jerry' && call[1].operationId === OPERATION_ID));
+});
+
+test('generic operation routes never serialize durable verified follow-up authority', async (t) => {
+  const fixture = await makeRouteFixture(t);
+  const parentOperationId = `brop_${'P'.repeat(32)}`;
+  const parentResultVersion = `qrv1_${'V'.repeat(43)}`;
+  const lineage = {
+    rootOperationId: parentOperationId,
+    parentOperationId,
+    parentResultVersion,
+    depth: 1,
+    availableExchangeCount: 1,
+    includedExchangeCount: 1,
+    contextTruncated: false,
+    sourceAnswerTruncated: false,
+  };
+  const requestParameters = {
+    kind: 'verifiedFollowUp',
+    schemaVersion: 1,
+    followUpFrom: { operationId: parentOperationId, resultVersion: parentResultVersion },
+    query: 'What changed after that?',
+    mode: 'dive',
+    modelSelection: { provider: 'openai', model: 'same-name' },
+    enableSynthesis: true,
+    includeOutputs: true,
+    includeThoughts: true,
+    includeCoordinatorInsights: true,
+    allowActions: false,
+  };
+  const created = await fixture.store.create({
+    requestId: 'route-private-follow-up',
+    requesterAgent: 'jerry',
+    target: realTarget(fixture.home23Root),
+    operationType: 'query',
+    requestParameters,
+    parameters: {
+      query: requestParameters.query,
+      mode: requestParameters.mode,
+      modelSelection: requestParameters.modelSelection,
+      enableSynthesis: true,
+      includeOutputs: true,
+      includeThoughts: true,
+      includeCoordinatorInsights: true,
+      allowActions: false,
+    },
+    sourcePinDescriptor: null,
+    sourcePinDigest: null,
+    canonicalEvidence: true,
+    queryFollowUpLineage: lineage,
+    _queryFollowUpContext: {
+      version: 1,
+      ...lineage,
+      exchanges: [{
+        operationId: parentOperationId,
+        resultVersion: parentResultVersion,
+        query: 'First question',
+        answer: 'Never serialize these private answer bytes.',
+      }],
+    },
+  });
+
+  const status = await fixture.getJson(`/${created.record.operationId}`);
+  assert.equal(status.status, 200);
+  const listed = await fixture.getJson('?state=nonterminal');
+  assert.equal(listed.status, 200);
+  for (const payload of [status.body, listed.body]) {
+    const serialized = JSON.stringify(payload);
+    assert.equal(serialized.includes('queryFollowUpLineage'), false);
+    assert.equal(serialized.includes('_queryFollowUpContext'), false);
+    assert.equal(serialized.includes('Never serialize these private answer bytes.'), false);
+  }
 });
 
 test('requester collection lists bounded recent operations for recovery after context loss', async () => {

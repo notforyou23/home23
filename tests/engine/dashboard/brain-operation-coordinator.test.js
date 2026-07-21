@@ -42,6 +42,55 @@ const {
 
 const INITIAL_NOW = Date.parse('2026-07-10T16:00:00.000Z');
 const TERMINAL = new Set(['complete', 'partial', 'failed', 'cancelled', 'interrupted']);
+const VERIFIED_PARENT_ID = `brop_${'P'.repeat(32)}`;
+const VERIFIED_PARENT_VERSION = `qrv1_${'V'.repeat(43)}`;
+
+function verifiedFollowUpRequest(overrides = {}) {
+  return {
+    kind: 'verifiedFollowUp',
+    schemaVersion: 1,
+    followUpFrom: {
+      operationId: VERIFIED_PARENT_ID,
+      resultVersion: VERIFIED_PARENT_VERSION,
+    },
+    query: 'What changed after that?',
+    mode: 'dive',
+    modelSelection: { provider: 'fake', model: 'query-model' },
+    enableSynthesis: true,
+    includeOutputs: true,
+    includeThoughts: true,
+    includeCoordinatorInsights: true,
+    allowActions: false,
+    ...overrides,
+  };
+}
+
+function verifiedFollowUpAcceptance() {
+  const queryFollowUpLineage = {
+    rootOperationId: VERIFIED_PARENT_ID,
+    parentOperationId: VERIFIED_PARENT_ID,
+    parentResultVersion: VERIFIED_PARENT_VERSION,
+    depth: 1,
+    availableExchangeCount: 1,
+    includedExchangeCount: 1,
+    contextTruncated: false,
+    sourceAnswerTruncated: false,
+  };
+  return {
+    target: { brainId: 'brain-jerry' },
+    queryFollowUpLineage,
+    privateContext: {
+      version: 1,
+      ...queryFollowUpLineage,
+      exchanges: [{
+        operationId: VERIFIED_PARENT_ID,
+        resultVersion: VERIFIED_PARENT_VERSION,
+        query: 'First question',
+        answer: 'First verified answer',
+      }],
+    },
+  };
+}
 
 function typedCode(code) {
   return (error) => error?.code === code;
@@ -672,6 +721,8 @@ async function directQueuedRecord(fixture, {
   target,
   requestParameters = { query: 'canary' },
   parameters,
+  queryFollowUpLineage,
+  privateContext,
 } = {}) {
   const selected = target || {
     domain: 'brain',
@@ -699,6 +750,8 @@ async function directQueuedRecord(fixture, {
     sourcePinDescriptor: null,
     sourcePinDigest: null,
     canonicalEvidence: true,
+    ...(queryFollowUpLineage === undefined ? {} : { queryFollowUpLineage }),
+    ...(privateContext === undefined ? {} : { _queryFollowUpContext: privateContext }),
   });
 }
 
@@ -800,6 +853,231 @@ test('start normalizes query enablePGS to durable pgs and rejects caller authori
       typedCode('invalid_request'),
     );
   }
+});
+
+test('verified follow-up acceptance persists private authority and exact replay bypasses resolver and catalog loss', async (t) => {
+  const resolverInputs = [];
+  const fixture = makeFixture(t, {
+    operationModelResolver: async (input) => {
+      fixture.counters.model += 1;
+      resolverInputs.push(structuredClone(input));
+      return { ...input.requestParameters };
+    },
+  });
+  const requestParameters = verifiedFollowUpRequest();
+  const acceptance = verifiedFollowUpAcceptance();
+  let acceptanceCalls = 0;
+  const first = await fixture.coordinator.startVerifiedFollowUp({
+    requestId: 'verified-follow-up-acceptance',
+    requestParameters,
+    resolveAcceptance: async () => {
+      acceptanceCalls += 1;
+      return acceptance;
+    },
+  });
+
+  assert.equal(acceptanceCalls, 1);
+  assert.deepEqual(first.requestParameters, requestParameters);
+  assert.equal(Object.hasOwn(first, 'queryFollowUpLineage'), false);
+  assert.equal(Object.hasOwn(first, '_queryFollowUpContext'), false);
+  assert.equal(Object.hasOwn(first.parameters, 'kind'), false);
+  assert.equal(Object.hasOwn(first.parameters, 'schemaVersion'), false);
+  assert.equal(Object.hasOwn(first.parameters, 'followUpFrom'), false);
+  assert.equal(Object.hasOwn(first.parameters, 'verifiedConversationContext'), false);
+  assert.deepEqual(resolverInputs[0].requestParameters, {
+    query: requestParameters.query,
+    mode: requestParameters.mode,
+    modelSelection: requestParameters.modelSelection,
+    enableSynthesis: requestParameters.enableSynthesis,
+    includeOutputs: requestParameters.includeOutputs,
+    includeThoughts: requestParameters.includeThoughts,
+    includeCoordinatorInsights: requestParameters.includeCoordinatorInsights,
+    allowActions: false,
+  });
+  assert.deepEqual(
+    fixture.worker.startCalls[0].context.parameters.verifiedConversationContext,
+    { version: 1, exchanges: [{ query: 'First question', answer: 'First verified answer' }] },
+  );
+  assert.deepEqual(
+    await fixture.store.getQueryFollowUpLineageAuthorized(first.operationId, 'jerry'),
+    acceptance.queryFollowUpLineage,
+  );
+  assert.deepEqual(
+    await fixture.store.getVerifiedFollowUpContextAuthorized(first.operationId, 'jerry'),
+    acceptance.privateContext,
+  );
+
+  const baseline = {
+    catalog: fixture.counters.catalog,
+    model: fixture.counters.model,
+    pin: fixture.counters.pin,
+    starts: fixture.worker.startCalls.length,
+  };
+  const unavailable = Object.assign(new Error('catalog_unavailable'), { code: 'catalog_unavailable' });
+  fixture.setCatalog(unavailable);
+  const replay = await fixture.coordinator.startVerifiedFollowUp({
+    requestId: 'verified-follow-up-acceptance',
+    requestParameters: structuredClone(requestParameters),
+    resolveAcceptance: async () => {
+      acceptanceCalls += 1;
+      throw new Error('parent must not be read on exact replay');
+    },
+  });
+  assert.equal(replay.operationId, first.operationId);
+  assert.equal(acceptanceCalls, 1);
+  assert.deepEqual({
+    catalog: fixture.counters.catalog,
+    model: fixture.counters.model,
+    pin: fixture.counters.pin,
+    starts: fixture.worker.startCalls.length,
+  }, baseline);
+  await assert.rejects(
+    () => fixture.coordinator.start({
+      requestId: 'verified-follow-up-acceptance',
+      operationType: 'query',
+      target: { brainId: 'brain-jerry' },
+      parameters: structuredClone(requestParameters),
+    }),
+    typedCode('invalid_request'),
+  );
+
+  const changedRequests = [
+    verifiedFollowUpRequest({
+      followUpFrom: { ...requestParameters.followUpFrom, operationId: `brop_${'Q'.repeat(32)}` },
+    }),
+    verifiedFollowUpRequest({
+      followUpFrom: { ...requestParameters.followUpFrom, resultVersion: `qrv1_${'W'.repeat(43)}` },
+    }),
+    verifiedFollowUpRequest({ query: 'A different follow-up question' }),
+    verifiedFollowUpRequest({ modelSelection: { provider: 'fake', model: 'other-model' } }),
+    verifiedFollowUpRequest({ mode: 'quick' }),
+    ...['enableSynthesis', 'includeOutputs', 'includeThoughts', 'includeCoordinatorInsights']
+      .map((field) => verifiedFollowUpRequest({ [field]: !requestParameters[field] })),
+  ];
+  for (const changed of changedRequests) {
+    await assert.rejects(
+      () => fixture.coordinator.startVerifiedFollowUp({
+        requestId: 'verified-follow-up-acceptance',
+        requestParameters: changed,
+        resolveAcceptance: async () => {
+          acceptanceCalls += 1;
+          return acceptance;
+        },
+      }),
+      typedCode('idempotency_conflict'),
+    );
+  }
+  assert.equal(acceptanceCalls, 1);
+});
+
+test('concurrent identical verified follow-up acceptance creates and dispatches exactly one child', async (t) => {
+  const fixture = makeFixture(t);
+  const bothResolving = deferred();
+  const releaseResolvers = deferred();
+  let resolverCalls = 0;
+  const resolveAcceptance = async () => {
+    resolverCalls += 1;
+    if (resolverCalls === 2) bothResolving.resolve();
+    await releaseResolvers.promise;
+    return verifiedFollowUpAcceptance();
+  };
+  const input = {
+    requestId: 'verified-follow-up-concurrent',
+    requestParameters: verifiedFollowUpRequest(),
+    resolveAcceptance,
+  };
+  const starts = [
+    fixture.coordinator.startVerifiedFollowUp(input),
+    fixture.coordinator.startVerifiedFollowUp(input),
+  ];
+  await bothResolving.promise;
+  releaseResolvers.resolve();
+  const [left, right] = await Promise.all(starts);
+
+  assert.equal(resolverCalls, 2);
+  assert.equal(left.operationId, right.operationId);
+  assert.equal((await fixture.store.list()).length, 1);
+  assert.equal(fixture.counters.pin, 1);
+  assert.equal(fixture.worker.startCalls.length, 1);
+  assert.deepEqual(
+    await fixture.store.getVerifiedFollowUpContextAuthorized(left.operationId, 'jerry'),
+    verifiedFollowUpAcceptance().privateContext,
+  );
+});
+
+test('concurrent verified follow-up loss rejects a resolver snapshot that differs from the durable winner', async (t) => {
+  const fixture = makeFixture(t);
+  const bothResolving = deferred();
+  const releaseResolvers = deferred();
+  let resolverCalls = 0;
+  const resolveWithAnswer = (answer) => async () => {
+    resolverCalls += 1;
+    if (resolverCalls === 2) bothResolving.resolve();
+    await releaseResolvers.promise;
+    const acceptance = verifiedFollowUpAcceptance();
+    acceptance.privateContext.exchanges[0].answer = answer;
+    return acceptance;
+  };
+  const base = {
+    requestId: 'verified-follow-up-concurrent-context-conflict',
+    requestParameters: verifiedFollowUpRequest(),
+  };
+  const starts = [
+    fixture.coordinator.startVerifiedFollowUp({
+      ...base,
+      resolveAcceptance: resolveWithAnswer('First immutable answer'),
+    }),
+    fixture.coordinator.startVerifiedFollowUp({
+      ...base,
+      resolveAcceptance: resolveWithAnswer('Conflicting immutable answer'),
+    }),
+  ];
+  await bothResolving.promise;
+  releaseResolvers.resolve();
+  const settled = await Promise.allSettled(starts);
+
+  assert.equal(settled.filter(({ status }) => status === 'fulfilled').length, 1);
+  const rejected = settled.find(({ status }) => status === 'rejected');
+  assert.equal(rejected.reason.code, 'idempotency_conflict');
+  assert.equal((await fixture.store.list()).length, 1);
+  assert.equal(fixture.worker.startCalls.length, 1);
+});
+
+test('recovery injects stripped verified context without mutating durable executor parameters', async (t) => {
+  const fixture = makeFixture(t);
+  const acceptance = verifiedFollowUpAcceptance();
+  const requestParameters = verifiedFollowUpRequest();
+  const queued = await directQueuedRecord(fixture, {
+    requestId: 'verified-follow-up-recovery',
+    requestParameters,
+    parameters: {
+      query: requestParameters.query,
+      mode: requestParameters.mode,
+      modelSelection: requestParameters.modelSelection,
+      enableSynthesis: requestParameters.enableSynthesis,
+      includeOutputs: requestParameters.includeOutputs,
+      includeThoughts: requestParameters.includeThoughts,
+      includeCoordinatorInsights: requestParameters.includeCoordinatorInsights,
+      allowActions: false,
+      operationControl: {
+        hardDeadlineAt: new Date(fixture.timers.now + 7_200_000).toISOString(),
+      },
+    },
+    queryFollowUpLineage: acceptance.queryFollowUpLineage,
+    privateContext: acceptance.privateContext,
+  });
+  assert.equal(fixture.worker.startCalls.length, 0);
+
+  await fixture.coordinator.reconcile();
+
+  assert.equal(fixture.worker.startCalls.length, 1);
+  assert.deepEqual(
+    fixture.worker.startCalls[0].context.parameters.verifiedConversationContext,
+    { version: 1, exchanges: [{ query: 'First question', answer: 'First verified answer' }] },
+  );
+  const persisted = await fixture.store.get(queued.record.operationId);
+  assert.equal(Object.hasOwn(persisted.parameters, 'verifiedConversationContext'), false);
+  assert.equal(JSON.stringify(persisted).includes('First verified answer'), false);
 });
 
 test('PGS continuation resolves only a same-target prior session into trusted worker parameters', async (t) => {

@@ -22,11 +22,62 @@ const {
   buildBrainOperationIdempotencyKey,
 } = require('../../../engine/src/dashboard/brain-operations/operation-contract.js');
 const { BrainOperationStore } = require('../../../engine/src/dashboard/brain-operations/operation-store.js');
+const {
+  createBrainOperationStoreReader,
+} = require('../../../engine/src/dashboard/brain-operations/store-reader.js');
 const { canonicalJson } = require('../../../shared/brain-operations/canonical-json.cjs');
 const execFileAsync = promisify(execFile);
 
 const DAY = 24 * 60 * 60 * 1000;
 const INITIAL_NOW = Date.parse('2026-07-10T12:00:00.000Z');
+const FOLLOW_UP_PARENT_ID = `brop_${'P'.repeat(32)}`;
+const FOLLOW_UP_PARENT_VERSION = `qrv1_${'V'.repeat(43)}`;
+
+function verifiedFollowUpAuthority() {
+  const queryFollowUpLineage = {
+    rootOperationId: FOLLOW_UP_PARENT_ID,
+    parentOperationId: FOLLOW_UP_PARENT_ID,
+    parentResultVersion: FOLLOW_UP_PARENT_VERSION,
+    depth: 1,
+    availableExchangeCount: 1,
+    includedExchangeCount: 1,
+    contextTruncated: false,
+    sourceAnswerTruncated: false,
+  };
+  return {
+    queryFollowUpLineage,
+    privateContext: {
+      version: 1,
+      ...queryFollowUpLineage,
+      exchanges: [{
+        operationId: FOLLOW_UP_PARENT_ID,
+        resultVersion: FOLLOW_UP_PARENT_VERSION,
+        query: 'What was the first answer?',
+        answer: 'The durable private answer bytes.',
+      }],
+    },
+  };
+}
+
+function verifiedFollowUpRequestParameters(overrides = {}) {
+  return {
+    kind: 'verifiedFollowUp',
+    schemaVersion: 1,
+    followUpFrom: {
+      operationId: FOLLOW_UP_PARENT_ID,
+      resultVersion: FOLLOW_UP_PARENT_VERSION,
+    },
+    query: 'What changed after that?',
+    mode: 'dive',
+    modelSelection: { provider: 'openai', model: 'gpt-5.2' },
+    enableSynthesis: true,
+    includeOutputs: true,
+    includeThoughts: true,
+    includeCoordinatorInsights: true,
+    allowActions: false,
+    ...overrides,
+  };
+}
 
 function validMutationBoundaries(canonicalRoot) {
   return [
@@ -734,6 +785,127 @@ test('public projections are exact while idempotency, worker, result-kind, and j
   assert.deepEqual(privateRecord._worker, { workerId: 'private-worker', route: '/internal/private-worker' });
   assert.equal(privateRecord._resultKind, null);
   assert.equal(typeof privateRecord._eventBytes, 'number');
+});
+
+test('verified follow-up authority survives reload but every generic public projection redacts it', async (t) => {
+  const fixture = makeFixture(t);
+  const authority = verifiedFollowUpAuthority();
+  const requestParameters = verifiedFollowUpRequestParameters();
+  const created = await fixture.store.create(validRequest({
+    requestId: 'verified-follow-up-private-authority',
+    requestParameters,
+    parameters: {
+      query: requestParameters.query,
+      mode: requestParameters.mode,
+      modelSelection: requestParameters.modelSelection,
+      enableSynthesis: requestParameters.enableSynthesis,
+      includeOutputs: requestParameters.includeOutputs,
+      includeThoughts: requestParameters.includeThoughts,
+      includeCoordinatorInsights: requestParameters.includeCoordinatorInsights,
+      allowActions: requestParameters.allowActions,
+    },
+    queryFollowUpLineage: authority.queryFollowUpLineage,
+    _queryFollowUpContext: authority.privateContext,
+  }));
+  const idempotencyKey = buildBrainOperationIdempotencyKey(
+    'jerry',
+    'verified-follow-up-private-authority',
+    'query',
+  );
+  const publicRecords = [
+    created.record,
+    await fixture.store.get(created.record.operationId),
+    ...(await fixture.store.list()),
+    await fixture.store.findByIdempotencyKey(idempotencyKey),
+  ];
+  for (const record of publicRecords) {
+    assert.deepEqual(Object.keys(record).sort(), [...PUBLIC_RECORD_FIELDS].sort());
+    assert.equal(Object.hasOwn(record, 'queryFollowUpLineage'), false);
+    assert.equal(Object.hasOwn(record, '_queryFollowUpContext'), false);
+    assert.equal(JSON.stringify(record).includes('durable private answer bytes'), false);
+  }
+  const reopened = anotherStore(fixture);
+  const lineage = await reopened.getQueryFollowUpLineageAuthorized(
+    created.record.operationId,
+    'jerry',
+  );
+  const privateContext = await reopened.getVerifiedFollowUpContextAuthorized(
+    created.record.operationId,
+    'jerry',
+  );
+  assert.deepEqual(lineage, authority.queryFollowUpLineage);
+  assert.deepEqual(privateContext, authority.privateContext);
+  lineage.depth = 99;
+  privateContext.exchanges[0].answer = 'mutated';
+  assert.deepEqual(
+    await reopened.getQueryFollowUpLineageAuthorized(created.record.operationId, 'jerry'),
+    authority.queryFollowUpLineage,
+  );
+  assert.deepEqual(
+    await reopened.getVerifiedFollowUpContextAuthorized(created.record.operationId, 'jerry'),
+    authority.privateContext,
+  );
+  await assert.rejects(
+    () => reopened.getVerifiedFollowUpContextAuthorized(created.record.operationId, 'forrest'),
+    typedCode('access_denied'),
+  );
+
+  const reader = createBrainOperationStoreReader({
+    operationsRoot: fixture.root,
+    expectedRequester: 'jerry',
+    liveStore: reopened,
+  });
+  assert.deepEqual(
+    await reader.getQueryFollowUpLineageAuthorized(created.record.operationId),
+    authority.queryFollowUpLineage,
+  );
+  assert.deepEqual(
+    await reader.getVerifiedFollowUpContextAuthorized(created.record.operationId),
+    authority.privateContext,
+  );
+
+  const privateRecord = JSON.parse(fs.readFileSync(
+    statusPath(fixture.root, created.record.operationId),
+    'utf8',
+  ));
+  assert.deepEqual(privateRecord.queryFollowUpLineage, authority.queryFollowUpLineage);
+  assert.deepEqual(privateRecord._queryFollowUpContext, authority.privateContext);
+});
+
+test('verified follow-up durable authority rejects malformed or unpaired private snapshots', async (t) => {
+  const fixture = makeFixture(t);
+  const authority = verifiedFollowUpAuthority();
+  const base = {
+    requestId: 'verified-follow-up-invalid-authority',
+    requestParameters: verifiedFollowUpRequestParameters(),
+    parameters: { query: 'What changed after that?' },
+  };
+  for (const overrides of [
+    { queryFollowUpLineage: authority.queryFollowUpLineage },
+    { _queryFollowUpContext: authority.privateContext },
+    {
+      queryFollowUpLineage: authority.queryFollowUpLineage,
+      _queryFollowUpContext: { ...authority.privateContext, depth: 2 },
+    },
+    {
+      queryFollowUpLineage: authority.queryFollowUpLineage,
+      _queryFollowUpContext: {
+        ...authority.privateContext,
+        exchanges: [{ ...authority.privateContext.exchanges[0], requesterAgent: 'jerry' }],
+      },
+    },
+    {
+      queryFollowUpLineage: authority.queryFollowUpLineage,
+      _queryFollowUpContext: authority.privateContext,
+      parameters: { query: 'A different executor question' },
+    },
+  ]) {
+    await assert.rejects(
+      () => fixture.store.create(validRequest({ ...base, ...overrides })),
+      typedCode('request_invalid'),
+    );
+  }
+  assert.equal((await fixture.store.list()).length, 0);
 });
 
 test('legacy status without a progress snapshot loads as an explicit null', async (t) => {

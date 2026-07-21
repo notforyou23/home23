@@ -110,6 +110,28 @@ class BrainOperationStoreReader {
     return this._authorizeRecord(await this.store.get(operationId), operationId);
   }
 
+  async getQueryFollowUpLineageAuthorized(operationId) {
+    assertOperationId(operationId);
+    if (typeof this.store.getQueryFollowUpLineageAuthorized !== 'function') {
+      throw operationError('operation_unavailable');
+    }
+    return this.store.getQueryFollowUpLineageAuthorized(
+      operationId,
+      this.expectedRequester,
+    );
+  }
+
+  async getVerifiedFollowUpContextAuthorized(operationId) {
+    assertOperationId(operationId);
+    if (typeof this.store.getVerifiedFollowUpContextAuthorized !== 'function') {
+      throw operationError('operation_unavailable');
+    }
+    return this.store.getVerifiedFollowUpContextAuthorized(
+      operationId,
+      this.expectedRequester,
+    );
+  }
+
   async listNonterminalAuthorized() {
     const source = await this.store.listNonterminal();
     if (!Array.isArray(source)) throw operationError('operation_corrupt');

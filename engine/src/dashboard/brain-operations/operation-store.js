@@ -33,6 +33,9 @@ const {
   safeJsonClone,
   validateCreateInput,
   validateResultObject,
+  validateQueryFollowUpAuthority,
+  validateQueryFollowUpLineage,
+  validateVerifiedFollowUpContext,
   validateSourceEvidence,
   validateSourcePin,
   validatePgsSessionMetadata,
@@ -80,6 +83,8 @@ const PRIVATE_RECORD_FIELDS = Object.freeze([
   'operationType',
   'requestParameters',
   'parameters',
+  'queryFollowUpLineage',
+  '_queryFollowUpContext',
   'pgsSession',
   'canonicalEvidence',
   'recordVersion',
@@ -646,6 +651,8 @@ class BrainOperationStore {
     if (!Object.hasOwn(record, 'progressSnapshot')) record.progressSnapshot = null;
     if (!Object.hasOwn(record, 'acceptedAt')) record.acceptedAt = null;
     if (!Object.hasOwn(record, 'notebookResultSummary')) record.notebookResultSummary = null;
+    if (!Object.hasOwn(record, 'queryFollowUpLineage')) record.queryFollowUpLineage = null;
+    if (!Object.hasOwn(record, '_queryFollowUpContext')) record._queryFollowUpContext = null;
     exactInputKeys(record, PRIVATE_RECORD_FIELDS, 'operation_corrupt');
     if (record.operationId !== expectedOperationId || !OPERATION_ID_PATTERN.test(record.operationId)) {
       throw operationError('operation_corrupt');
@@ -672,6 +679,17 @@ class BrainOperationStore {
     try {
       assertPlainObject(record.requestParameters);
       assertPlainObject(record.parameters);
+      validateQueryFollowUpAuthority(
+        record.queryFollowUpLineage,
+        record._queryFollowUpContext,
+        {
+          operationType: record.operationType,
+          requestParameters: record.requestParameters,
+          parameters: record.parameters,
+          target: record.target,
+        },
+        'operation_corrupt',
+      );
       if (record.pgsSession !== null) {
         const session = validatePgsSessionMetadata(record.pgsSession, 'operation_corrupt');
         const expectedSourceOperationId = record.requestParameters.continueFromOperationId ?? null;
@@ -1069,6 +1087,8 @@ class BrainOperationStore {
       operationType: input.operationType,
       requestParameters: input.requestParameters,
       parameters: input.parameters,
+      queryFollowUpLineage: input.queryFollowUpLineage,
+      _queryFollowUpContext: input.privateContext,
       pgsSession: null,
       canonicalEvidence: input.canonicalEvidence,
       recordVersion: 1,
@@ -1160,6 +1180,31 @@ class BrainOperationStore {
 
   async get(operationId) {
     return projectPublicRecord(await this._readPrivateRecord(operationId));
+  }
+
+  _assertInternalRequester(expectedRequester) {
+    try {
+      assertIdentifier(expectedRequester, 'expectedRequester');
+    } catch (error) {
+      throw operationError('access_denied', error);
+    }
+    if (expectedRequester !== this.requesterAgent) throw operationError('access_denied');
+  }
+
+  async getQueryFollowUpLineageAuthorized(operationId, expectedRequester) {
+    assertOperationId(operationId);
+    this._assertInternalRequester(expectedRequester);
+    const record = await this._readPrivateRecord(operationId);
+    if (record.requesterAgent !== expectedRequester) throw operationError('access_denied');
+    return validateQueryFollowUpLineage(record.queryFollowUpLineage, 'operation_corrupt');
+  }
+
+  async getVerifiedFollowUpContextAuthorized(operationId, expectedRequester) {
+    assertOperationId(operationId);
+    this._assertInternalRequester(expectedRequester);
+    const record = await this._readPrivateRecord(operationId);
+    if (record.requesterAgent !== expectedRequester) throw operationError('access_denied');
+    return validateVerifiedFollowUpContext(record._queryFollowUpContext, 'operation_corrupt');
   }
 
   async getWorker(operationId) {

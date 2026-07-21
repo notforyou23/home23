@@ -21,9 +21,13 @@ const {
   buildBrainOperationIdempotencyKey,
   operationError,
   safeJsonClone,
+  validateQueryFollowUpAuthority,
   validateSourcePin,
   validatePgsSessionMetadata,
 } = require('./operation-contract.js');
+const {
+  normalizeVerifiedFollowUpRequest,
+} = require('../query-notebook-follow-up.js');
 const {
   validateActiveProviderCalls,
   validateWorkerEvent,
@@ -80,6 +84,8 @@ const CALLER_FORBIDDEN_PARAMETER_KEYS = new Set([
   'sourcePinDescriptor', 'sourcePinDigest', 'lockRoot', 'projectionRoot',
   'operationRoot', 'operationPath', 'scratchDir', 'scratchPath', 'writeScope',
   'writes', 'mutationBoundaries', 'operationControl', 'pgsSessionId',
+  'kind', 'schemaVersion', 'followUpFrom', 'queryFollowUpLineage',
+  '_queryFollowUpContext', 'verifiedConversationContext',
 ]);
 const PGS_SESSION_ID_PATTERN = /^pgss_[A-Za-z0-9_-]{32}$/;
 
@@ -567,6 +573,59 @@ class BrainOperationCoordinator {
     };
   }
 
+  _normalizeVerifiedFollowUpStartInput(rawInput) {
+    exactKeys(rawInput, ['requestId', 'requestParameters', 'resolveAcceptance']);
+    assertIdentifier(rawInput.requestId, 'requestId');
+    if (typeof rawInput.resolveAcceptance !== 'function') {
+      throw coordinatorError('invalid_request');
+    }
+    let requestParameters;
+    try {
+      requestParameters = normalizeVerifiedFollowUpRequest(rawInput.requestParameters);
+    } catch (error) {
+      throw coordinatorError('invalid_request', error);
+    }
+    return {
+      requestId: rawInput.requestId,
+      requestParameters,
+      resolveAcceptance: rawInput.resolveAcceptance,
+    };
+  }
+
+  _ordinaryVerifiedFollowUpParameters(requestParameters) {
+    const ordinary = clone(requestParameters, 'invalid_request');
+    delete ordinary.kind;
+    delete ordinary.schemaVersion;
+    delete ordinary.followUpFrom;
+    return ordinary;
+  }
+
+  _normalizeVerifiedFollowUpAcceptance(rawAcceptance, requestParameters) {
+    exactKeys(rawAcceptance, ['target', 'queryFollowUpLineage', 'privateContext']);
+    const target = validateSelectorForDomain('brain', rawAcceptance.target);
+    if (Object.keys(target).length !== 1 || target.brainId === undefined) {
+      throw coordinatorError('invalid_request');
+    }
+    const parameters = this._ordinaryVerifiedFollowUpParameters(requestParameters);
+    const authority = validateQueryFollowUpAuthority(
+      rawAcceptance.queryFollowUpLineage,
+      rawAcceptance.privateContext,
+      {
+        operationType: 'query',
+        requestParameters,
+        parameters,
+        target: { domain: 'brain' },
+      },
+      'invalid_request',
+    );
+    return {
+      target,
+      queryFollowUpLineage: authority.queryFollowUpLineage,
+      privateContext: authority.privateContext,
+      parameters,
+    };
+  }
+
   async resolveTargetContext(selector = {}) {
     const catalog = await this.buildCanonicalCatalog();
     const selected = this.resolveCanonicalTarget(catalog, this.requesterAgent, selector);
@@ -604,6 +663,23 @@ class BrainOperationCoordinator {
       && record.operationType === normalized.operationType
       && sameJson(record.requestParameters, normalized.requestParameters)
       && persistedSelectorMatches(record, normalized.target);
+  }
+
+  async _matchesExistingVerifiedFollowUp(record, normalized, expectedAuthority = null) {
+    if (record.requesterAgent !== this.requesterAgent
+        || record.operationType !== 'query'
+        || !sameJson(record.requestParameters, normalized.requestParameters)) return false;
+    if (typeof this.store.getQueryFollowUpLineageAuthorized !== 'function'
+        || typeof this.store.getVerifiedFollowUpContextAuthorized !== 'function') return false;
+    const [lineage, privateContext] = await Promise.all([
+      this.store.getQueryFollowUpLineageAuthorized(record.operationId, this.requesterAgent),
+      this.store.getVerifiedFollowUpContextAuthorized(record.operationId, this.requesterAgent),
+    ]);
+    return lineage !== null
+      && privateContext !== null
+      && (expectedAuthority === null
+        || (sameJson(lineage, expectedAuthority.queryFollowUpLineage)
+          && sameJson(privateContext, expectedAuthority.privateContext)));
   }
 
   async _resolveExecutorParameters(normalized, target) {
@@ -1033,6 +1109,18 @@ class BrainOperationCoordinator {
       const parameters = clone(record.parameters, 'operation_corrupt');
       const operationControl = parameters.operationControl;
       delete parameters.operationControl;
+      if (typeof this.store.getVerifiedFollowUpContextAuthorized === 'function') {
+        const privateContext = await this.store.getVerifiedFollowUpContextAuthorized(
+          record.operationId,
+          this.requesterAgent,
+        );
+        if (privateContext !== null) {
+          parameters.verifiedConversationContext = {
+            version: 1,
+            exchanges: privateContext.exchanges.map(({ query, answer }) => ({ query, answer })),
+          };
+        }
+      }
       return {
         operationId: record.operationId,
         operationType: record.operationType,
@@ -1160,41 +1248,7 @@ class BrainOperationCoordinator {
     return this._publishStartedWorkerLocked(current, workerRecord);
   }
 
-  async start(rawInput) {
-    if (this.stopped) throw coordinatorError('coordinator_stopped');
-    const normalized = this._normalizeStartInput(rawInput);
-    const idempotencyKey = buildBrainOperationIdempotencyKey(
-      this.requesterAgent,
-      normalized.requestId,
-      normalized.operationType,
-    );
-    const existing = await this.store.findByIdempotencyKey(idempotencyKey);
-    if (existing) {
-      if (!this._matchesExisting(existing, normalized)) throw coordinatorError('idempotency_conflict');
-      return existing;
-    }
-    if (normalized.policy.requiresSourcePin
-        && !this._sourceOperationsReady(normalized.operationType)) {
-      throw coordinatorError('source_operations_unavailable');
-    }
-    const target = await this._resolveTarget(normalized);
-    const policy = this.authorizeBrainOperation({
-      requesterAgent: this.requesterAgent,
-      operationType: normalized.operationType,
-      target: clone(target),
-    });
-    const parameters = await this._resolveExecutorParameters(normalized, target);
-    const created = await this.store.create({
-      requestId: normalized.requestId,
-      requesterAgent: this.requesterAgent,
-      target,
-      operationType: normalized.operationType,
-      requestParameters: normalized.requestParameters,
-      parameters,
-      sourcePinDescriptor: null,
-      sourcePinDigest: null,
-      canonicalEvidence: policy.canonicalEvidence !== false,
-    });
+  async _dispatchCreatedOperation(created, policy) {
     if (!created.created) return created.record;
     let record = created.record;
     this._ensureRuntime(record);
@@ -1251,6 +1305,102 @@ class BrainOperationCoordinator {
       return this._enqueue(record.operationId, () =>
         this._publishStartedWorkerLocked(record, workerRecord));
     });
+  }
+
+  async start(rawInput) {
+    if (this.stopped) throw coordinatorError('coordinator_stopped');
+    const normalized = this._normalizeStartInput(rawInput);
+    const idempotencyKey = buildBrainOperationIdempotencyKey(
+      this.requesterAgent,
+      normalized.requestId,
+      normalized.operationType,
+    );
+    const existing = await this.store.findByIdempotencyKey(idempotencyKey);
+    if (existing) {
+      if (!this._matchesExisting(existing, normalized)) throw coordinatorError('idempotency_conflict');
+      return existing;
+    }
+    if (normalized.policy.requiresSourcePin
+        && !this._sourceOperationsReady(normalized.operationType)) {
+      throw coordinatorError('source_operations_unavailable');
+    }
+    const target = await this._resolveTarget(normalized);
+    const policy = this.authorizeBrainOperation({
+      requesterAgent: this.requesterAgent,
+      operationType: normalized.operationType,
+      target: clone(target),
+    });
+    const parameters = await this._resolveExecutorParameters(normalized, target);
+    const created = await this.store.create({
+      requestId: normalized.requestId,
+      requesterAgent: this.requesterAgent,
+      target,
+      operationType: normalized.operationType,
+      requestParameters: normalized.requestParameters,
+      parameters,
+      sourcePinDescriptor: null,
+      sourcePinDigest: null,
+      canonicalEvidence: policy.canonicalEvidence !== false,
+    });
+    return this._dispatchCreatedOperation(created, policy);
+  }
+
+  async startVerifiedFollowUp(rawInput) {
+    if (this.stopped) throw coordinatorError('coordinator_stopped');
+    const normalized = this._normalizeVerifiedFollowUpStartInput(rawInput);
+    const idempotencyKey = buildBrainOperationIdempotencyKey(
+      this.requesterAgent,
+      normalized.requestId,
+      'query',
+    );
+    const existing = await this.store.findByIdempotencyKey(idempotencyKey);
+    if (existing) {
+      if (!await this._matchesExistingVerifiedFollowUp(existing, normalized)) {
+        throw coordinatorError('idempotency_conflict');
+      }
+      return existing;
+    }
+
+    const acceptance = this._normalizeVerifiedFollowUpAcceptance(
+      await normalized.resolveAcceptance(),
+      normalized.requestParameters,
+    );
+    const policy = this._policy('query');
+    const ordinary = {
+      requestId: normalized.requestId,
+      operationType: 'query',
+      target: acceptance.target,
+      requestParameters: acceptance.parameters,
+      policy,
+    };
+    const target = await this._resolveTarget(ordinary);
+    const authorizedPolicy = this.authorizeBrainOperation({
+      requesterAgent: this.requesterAgent,
+      operationType: 'query',
+      target: clone(target),
+    });
+    const parameters = await this._resolveExecutorParameters(ordinary, target);
+    if (policy.requiresSourcePin && !this._sourceOperationsReady('query')) {
+      throw coordinatorError('source_operations_unavailable');
+    }
+    const created = await this.store.create({
+      requestId: normalized.requestId,
+      requesterAgent: this.requesterAgent,
+      target,
+      operationType: 'query',
+      requestParameters: normalized.requestParameters,
+      parameters,
+      sourcePinDescriptor: null,
+      sourcePinDigest: null,
+      canonicalEvidence: authorizedPolicy.canonicalEvidence !== false,
+      queryFollowUpLineage: acceptance.queryFollowUpLineage,
+      _queryFollowUpContext: acceptance.privateContext,
+    });
+    if (!created.created
+        && !await this._matchesExistingVerifiedFollowUp(created.record, normalized, acceptance)) {
+      throw coordinatorError('idempotency_conflict');
+    }
+    return this._dispatchCreatedOperation(created, authorizedPolicy);
   }
 
   async status(operationId) {

@@ -109,6 +109,21 @@ test('invalid or operation-inappropriate provider fields fail closed', () => {
     ['pgs', { query: 'x', pgsConfig: { sweepFraction: 0 } }],
     ['query', { query: 'x', topK: 0 }],
     ['query', { query: 'x', invented: true }],
+    ['query', {
+      kind: 'verifiedFollowUp', schemaVersion: 1,
+      followUpFrom: {
+        operationId: `brop_${'P'.repeat(32)}`,
+        resultVersion: `qrv1_${'V'.repeat(43)}`,
+      },
+      query: 'x', mode: 'dive',
+      modelSelection: { provider: 'anthropic', model: 'shared' },
+      enableSynthesis: true, includeOutputs: true, includeThoughts: true,
+      includeCoordinatorInsights: true, allowActions: false,
+    }],
+    ['query', {
+      query: 'x',
+      verifiedConversationContext: { version: 1, exchanges: [{ query: 'q', answer: 'a' }] },
+    }],
   ]) {
     assert.throws(
       () => resolver.resolve(operationType, parameters),

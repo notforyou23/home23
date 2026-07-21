@@ -6,6 +6,12 @@ const {
   canonicalJson,
   canonicalSha256,
 } = require('../../../../shared/brain-operations/canonical-json.cjs');
+const {
+  validateVerifiedConversationContext,
+} = require('../../../../shared/query/verified-follow-up-context.cjs');
+const {
+  normalizeVerifiedFollowUpRequest,
+} = require('../query-notebook-follow-up.js');
 
 const EXECUTION_STATES = Object.freeze([
   'queued',
@@ -57,6 +63,18 @@ const NOTEBOOK_COVERAGE_COUNTER_FIELDS = new Set([
 const NOTEBOOK_PARTITION_ID_PATTERN = /^(?:c|h)-[A-Za-z0-9._-]{1,253}$/;
 const NOTEBOOK_RETRYABLE_PARTITION_ID_PATTERN = IDENTIFIER_PATTERN;
 const NOTEBOOK_PARTITION_ARRAY_LIMIT = 256;
+const QUERY_FOLLOW_UP_LINEAGE_FIELDS = Object.freeze([
+  'rootOperationId', 'parentOperationId', 'parentResultVersion', 'depth',
+  'availableExchangeCount', 'includedExchangeCount', 'contextTruncated',
+  'sourceAnswerTruncated',
+]);
+const QUERY_FOLLOW_UP_PRIVATE_FIELDS = Object.freeze([
+  'version', ...QUERY_FOLLOW_UP_LINEAGE_FIELDS, 'exchanges',
+]);
+const QUERY_FOLLOW_UP_EXCHANGE_FIELDS = Object.freeze([
+  'operationId', 'resultVersion', 'query', 'answer',
+]);
+const VERIFIED_CONTEXT_OMISSION_MARKER = '\n\n[... middle of immediate parent answer omitted by Home23 verified follow-up context budget ...]\n\n';
 
 const PUBLIC_RECORD_FIELDS = Object.freeze([
   'operationId',
@@ -352,6 +370,133 @@ function validateBoundedJsonObject(value, code) {
     throw operationError(code);
   }
   return copy;
+}
+
+function validateQueryFollowUpLineage(value, code = 'verified_follow_up_lineage_invalid') {
+  if (value === null) return null;
+  const lineage = assertJsonObject(value, code);
+  try {
+    assertExactKeys(lineage, QUERY_FOLLOW_UP_LINEAGE_FIELDS, code);
+    assertOperationId(lineage.rootOperationId);
+    assertOperationId(lineage.parentOperationId);
+  } catch (error) {
+    if (error?.code === code) throw error;
+    throw operationError(code, error);
+  }
+  if (typeof lineage.parentResultVersion !== 'string'
+      || !NOTEBOOK_RESULT_VERSION_PATTERN.test(lineage.parentResultVersion)
+      || !Number.isSafeInteger(lineage.depth) || lineage.depth < 1
+      || !Number.isSafeInteger(lineage.availableExchangeCount)
+      || lineage.availableExchangeCount !== lineage.depth
+      || !Number.isSafeInteger(lineage.includedExchangeCount)
+      || lineage.includedExchangeCount < 1
+      || lineage.includedExchangeCount > lineage.availableExchangeCount
+      || typeof lineage.contextTruncated !== 'boolean'
+      || lineage.contextTruncated !== (lineage.includedExchangeCount < lineage.availableExchangeCount)
+      || typeof lineage.sourceAnswerTruncated !== 'boolean') {
+    throw operationError(code);
+  }
+  return lineage;
+}
+
+function validateVerifiedFollowUpContext(value, code = 'verified_follow_up_context_invalid') {
+  if (value === null) return null;
+  const context = assertJsonObject(value, code);
+  assertExactKeys(context, QUERY_FOLLOW_UP_PRIVATE_FIELDS, code);
+  if (context.version !== 1 || !Array.isArray(context.exchanges)) throw operationError(code);
+  const lineage = validateQueryFollowUpLineage(Object.fromEntries(
+    QUERY_FOLLOW_UP_LINEAGE_FIELDS.map((field) => [field, context[field]]),
+  ), code);
+  const exchanges = context.exchanges.map((rawExchange) => {
+    const exchange = assertJsonObject(rawExchange, code);
+    assertExactKeys(exchange, QUERY_FOLLOW_UP_EXCHANGE_FIELDS, code);
+    try {
+      assertOperationId(exchange.operationId);
+    } catch (error) {
+      throw operationError(code, error);
+    }
+    if (typeof exchange.resultVersion !== 'string'
+        || !NOTEBOOK_RESULT_VERSION_PATTERN.test(exchange.resultVersion)
+        || typeof exchange.query !== 'string' || !exchange.query.trim()
+        || exchange.query.length > 12_000
+        || typeof exchange.answer !== 'string' || !exchange.answer.trim()) {
+      throw operationError(code);
+    }
+    return exchange;
+  });
+  if (exchanges.length !== lineage.includedExchangeCount
+      || new Set(exchanges.map(({ operationId }) => operationId)).size !== exchanges.length) {
+    throw operationError(code);
+  }
+  const newest = exchanges.at(-1);
+  if (!newest
+      || newest.operationId !== lineage.parentOperationId
+      || newest.resultVersion !== lineage.parentResultVersion
+      || (!lineage.contextTruncated && exchanges[0].operationId !== lineage.rootOperationId)
+      || (lineage.contextTruncated
+        && exchanges.some(({ operationId }) => operationId === lineage.rootOperationId))
+      || (lineage.sourceAnswerTruncated
+        && !newest.answer.includes(VERIFIED_CONTEXT_OMISSION_MARKER))) {
+    throw operationError(code);
+  }
+  try {
+    validateVerifiedConversationContext({
+      version: 1,
+      exchanges: exchanges.map(({ query, answer }) => ({ query, answer })),
+    });
+  } catch (error) {
+    throw operationError(code, error);
+  }
+  return { version: 1, ...lineage, exchanges };
+}
+
+function validateQueryFollowUpAuthority(
+  rawLineage,
+  rawPrivateContext,
+  { operationType, requestParameters, parameters, target } = {},
+  code = 'request_invalid',
+) {
+  const hasLineage = rawLineage !== undefined && rawLineage !== null;
+  const hasPrivateContext = rawPrivateContext !== undefined && rawPrivateContext !== null;
+  const protectedRequest = requestParameters?.kind === 'verifiedFollowUp';
+  if (hasLineage !== hasPrivateContext || protectedRequest !== hasLineage) {
+    throw operationError(code);
+  }
+  if (!hasLineage) return { queryFollowUpLineage: null, privateContext: null };
+  let normalizedRequest;
+  try {
+    normalizedRequest = normalizeVerifiedFollowUpRequest(requestParameters);
+  } catch (error) {
+    throw operationError(code, error);
+  }
+  const lineage = validateQueryFollowUpLineage(rawLineage, code);
+  const privateContext = validateVerifiedFollowUpContext(rawPrivateContext, code);
+  if (operationType !== 'query' || target?.domain !== 'brain'
+      || normalizedRequest.followUpFrom.operationId !== lineage.parentOperationId
+      || normalizedRequest.followUpFrom.resultVersion !== lineage.parentResultVersion) {
+    throw operationError(code);
+  }
+  for (const field of QUERY_FOLLOW_UP_LINEAGE_FIELDS) {
+    if (lineage[field] !== privateContext[field]) throw operationError(code);
+  }
+  const ordinaryRequest = { ...normalizedRequest };
+  delete ordinaryRequest.kind;
+  delete ordinaryRequest.schemaVersion;
+  delete ordinaryRequest.followUpFrom;
+  const allowedParameterFields = new Set([...Object.keys(ordinaryRequest), 'operationControl']);
+  if (Object.keys(parameters).some((field) => !allowedParameterFields.has(field))) {
+    throw operationError(code);
+  }
+  for (const [field, expected] of Object.entries(ordinaryRequest)) {
+    if (!Object.hasOwn(parameters, field)) throw operationError(code);
+    try {
+      if (canonicalJson(parameters[field]) !== canonicalJson(expected)) throw operationError(code);
+    } catch (error) {
+      if (error?.code === code) throw error;
+      throw operationError(code, error);
+    }
+  }
+  return { queryFollowUpLineage: lineage, privateContext };
 }
 
 function validateResultObject(value) {
@@ -660,6 +805,7 @@ function validateCreateInput(rawInput, expectedRequester) {
   const allowed = new Set([
     'requestId', 'requesterAgent', 'target', 'operationType', 'requestParameters', 'parameters',
     'sourcePinDescriptor', 'sourcePinDigest', 'canonicalEvidence',
+    'queryFollowUpLineage', '_queryFollowUpContext',
   ]);
   for (const key of Object.keys(input)) {
     if (!allowed.has(key)) throw operationError('request_invalid');
@@ -676,6 +822,12 @@ function validateCreateInput(rawInput, expectedRequester) {
   const requestParameters = assertJsonObject(input.requestParameters, 'request_parameters_invalid');
   const parameters = assertJsonObject(input.parameters, 'parameters_invalid');
   const target = validateTargetSnapshot(input.target, input.requesterAgent);
+  const followUpAuthority = validateQueryFollowUpAuthority(
+    input.queryFollowUpLineage,
+    input._queryFollowUpContext,
+    { operationType: input.operationType, requestParameters, parameters, target },
+    'request_invalid',
+  );
   if (input.canonicalEvidence !== undefined && typeof input.canonicalEvidence !== 'boolean') {
     throw operationError('request_invalid');
   }
@@ -696,6 +848,8 @@ function validateCreateInput(rawInput, expectedRequester) {
     target,
     requestParameters,
     parameters,
+    queryFollowUpLineage: followUpAuthority.queryFollowUpLineage,
+    privateContext: followUpAuthority.privateContext,
     canonicalEvidence: input.canonicalEvidence !== false,
     idempotencyKey,
     requestFingerprint,
@@ -746,6 +900,9 @@ module.exports = {
   safeJsonClone,
   stableTargetIdentity,
   validateResultObject,
+  validateQueryFollowUpAuthority,
+  validateQueryFollowUpLineage,
+  validateVerifiedFollowUpContext,
   validateSourceEvidence,
   validateTargetSnapshot,
   validateTransitionError,
