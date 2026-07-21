@@ -15,8 +15,12 @@ const Ajv2020 = require('ajv/dist/2020');
 const SCHEMA = JSON.parse(readFileSync(
   path.join(REPO_ROOT, 'contracts/schemas/query-notebook.schema.json'), 'utf8',
 ));
+const QUERY_SCHEMA = JSON.parse(readFileSync(
+  path.join(REPO_ROOT, 'contracts/schemas/query.schema.json'), 'utf8',
+));
 const ajv = new Ajv2020({ strict: false, allErrors: true, allowUnionTypes: true });
 ajv.addSchema(SCHEMA, SCHEMA.$id);
+ajv.addSchema(QUERY_SCHEMA, QUERY_SCHEMA.$id);
 const validators = new Map();
 
 const OPERATION_ID = /^brop_[A-Za-z0-9_-]{32}$/u;
@@ -156,6 +160,20 @@ function validateProjection(definition, value) {
     if (!Object.hasOwn(SCHEMA.$defs, definition)) throw errorWithCode('public_projection_invalid');
     validate = ajv.compile({ $ref: `${SCHEMA.$id}#/$defs/${definition}` });
     validators.set(definition, validate);
+  }
+  if (!validate(value)) throw errorWithCode('public_projection_invalid');
+  return value;
+}
+
+function validateQueryProjection(definition, value) {
+  const key = `query:${definition}`;
+  let validate = validators.get(key);
+  if (!validate) {
+    if (!Object.hasOwn(QUERY_SCHEMA.$defs, definition)) {
+      throw errorWithCode('public_projection_invalid');
+    }
+    validate = ajv.compile({ $ref: `${QUERY_SCHEMA.$id}#/$defs/${definition}` });
+    validators.set(key, validate);
   }
   if (!validate(value)) throw errorWithCode('public_projection_invalid');
   return value;
@@ -320,26 +338,50 @@ function assertCatalog(catalog, agent) {
 }
 
 async function genericProtectedFieldProbe(options, catalog, credential, signal) {
-  const response = await requestJson(route(options.dashboardUrl, '/home23/api/query/run'), {
-    ...requestDefaults(options, signal), method: 'POST',
-    headers: {
-      ...deviceHeaders(credential), 'content-type': 'application/json',
-      'x-home23-query-request-id': requestId(), prefer: 'respond-async',
-    },
-    body: JSON.stringify({
+  const protectedFields = new Map([
+    ['kind', 'verifiedFollowUp'],
+    ['schemaVersion', 1],
+    ['followUpFrom', { operationId: `brop_${'F'.repeat(32)}`,
+      resultVersion: `qrv1_${'F'.repeat(43)}` }],
+    ['queryFollowUpLineage', {
+      rootOperationId: `brop_${'F'.repeat(32)}`,
+      parentOperationId: `brop_${'F'.repeat(32)}`,
+      parentResultVersion: `qrv1_${'F'.repeat(43)}`,
+      depth: 1, availableExchangeCount: 1, includedExchangeCount: 1,
+      contextTruncated: false, sourceAnswerTruncated: false,
+    }],
+    ['_queryFollowUpContext', { version: 1, exchanges: [] }],
+    ['verifiedConversationContext', { version: 1, exchanges: [] }],
+  ]);
+  const base = {
       agent: options.agent, brainId: catalog.brainId,
       query: 'This generic request must reject protected fields.',
       enablePGS: false, mode: catalog.mode, modelSelection: catalog.pair,
-      kind: 'verifiedFollowUp', schemaVersion: 1,
-      followUpFrom: { operationId: `brop_${'F'.repeat(32)}`,
-        resultVersion: `qrv1_${'F'.repeat(43)}` },
-      priorContext: { query: 'forbidden', answer: 'forbidden' },
-      _queryFollowUpContext: { version: 1, exchanges: [] },
-      verifiedConversationContext: { version: 1, exchanges: [] },
-    }),
-    expectedStatuses: [400],
-  });
-  return { status: response.response.status };
+  };
+  const receipts = [];
+  for (const [field, value] of protectedFields) {
+    const response = await requestJson(route(options.dashboardUrl, '/home23/api/query/run'), {
+      ...requestDefaults(options, signal), method: 'POST',
+      headers: {
+        ...deviceHeaders(credential), 'content-type': 'application/json',
+        'x-home23-query-request-id': requestId(), prefer: 'respond-async',
+      },
+      body: JSON.stringify({ ...base, [field]: value }),
+      expectedStatuses: [400],
+    });
+    validateQueryProjection('queryRunResponse', response.value);
+    if (response.value?.ok !== false
+        || Reflect.ownKeys(response.value).length !== 2
+        || response.value.error?.code !== 'invalid_request'
+        || response.value.error?.retryable !== false
+        || typeof response.value.error?.message !== 'string'
+        || !response.value.error.message
+        || Reflect.ownKeys(response.value.error).length !== 3) {
+      throw errorWithCode('generic_protected_field_error_invalid');
+    }
+    receipts.push({ field, status: response.response.status, code: response.value.error.code });
+  }
+  return receipts;
 }
 
 async function startRoot(options, catalog, credential, signal) {
@@ -396,7 +438,7 @@ async function waitForTerminal(options, credential, operationId, signal) {
   }
 }
 
-async function readResult(options, credential, operationId, signal) {
+async function readResult(options, credential, operationId, expectedResultVersion, signal) {
   const response = await requestJson(route(
     options.dashboardUrl,
     `/home23/api/query/operations/${encodeURIComponent(operationId)}/result`,
@@ -404,6 +446,9 @@ async function readResult(options, credential, operationId, signal) {
   const result = validateProjection('queryNotebookResult', response.value);
   if (result.operationId !== operationId || Object.hasOwn(result, 'followUpLineage')) {
     throw errorWithCode('public_projection_invalid');
+  }
+  if (result.resultVersion !== expectedResultVersion) {
+    throw errorWithCode('result_version_mismatch');
   }
   return {
     resultVersion: result.resultVersion,
@@ -528,6 +573,36 @@ async function verifyCompatibility(options, credential, operations, signal) {
   });
 
   const [root, child, grandchild] = operations;
+  const legacyById = new Map(legacyInventory.items.map((item) => [item.operationId, item]));
+  const optedById = new Map(optedInventory.items.map((item) => [item.operationId, item]));
+  try {
+    for (const operation of operations) {
+      const legacy = legacyById.get(operation.operationId);
+      const opted = optedById.get(operation.operationId);
+      if (!legacy || !opted || Object.hasOwn(legacy, 'followUpLineage')) {
+        throw errorWithCode('inventory_chain_unproven');
+      }
+    }
+    assertLineage(root.operationId, optedById.get(root.operationId).followUpLineage, {
+      rootOperationId: root.operationId,
+    });
+    assertLineage(child.operationId, optedById.get(child.operationId).followUpLineage, {
+      rootOperationId: root.operationId, parentOperationId: root.operationId,
+      parentResultVersion: root.resultVersion, depth: 1,
+      availableExchangeCount: 1, includedExchangeCount: 1,
+      contextTruncated: false, sourceAnswerTruncated: false,
+    });
+    assertLineage(grandchild.operationId, optedById.get(grandchild.operationId).followUpLineage, {
+      rootOperationId: root.operationId, parentOperationId: child.operationId,
+      parentResultVersion: child.resultVersion, depth: 2,
+      availableExchangeCount: 2, includedExchangeCount: 2,
+      contextTruncated: false, sourceAnswerTruncated: false,
+    });
+  } catch (error) {
+    if (error?.code === 'inventory_chain_unproven') throw error;
+    throw errorWithCode('inventory_chain_unproven', undefined, { cause: error });
+  }
+
   const legacyStatus = await readStatus(options, credential, root.operationId, false, signal);
   const projectedRoot = await readStatus(options, credential, root.operationId, true, signal);
   const projectedChild = await readStatus(options, credential, child.operationId, true, signal);
@@ -559,6 +634,12 @@ async function verifyCompatibility(options, credential, operations, signal) {
     options, credential, grandchild.operationId, true, signal,
   );
   validateProjection('querySnapshotEvent', withoutLineage(projectedSnapshot));
+  assertLineage(grandchild.operationId, projectedSnapshot.followUpLineage, {
+    rootOperationId: root.operationId, parentOperationId: child.operationId,
+    parentResultVersion: child.resultVersion, depth: 2,
+    availableExchangeCount: 2, includedExchangeCount: 2,
+    contextTruncated: false, sourceAnswerTruncated: false,
+  });
 
   return {
     legacyInventory: { schema: 'queryNotebookPage', hasFollowUpLineage: false,
@@ -652,7 +733,8 @@ export async function runVerifier(options) {
       throw errorWithCode('follow_up_result_version_conflict');
     }
     const rootResult = await readResult(
-      options, credential, rootStart.operationId, overallController.signal,
+      options, credential, rootStart.operationId, rootStatus.resultVersion,
+      overallController.signal,
     );
     const root = {
       ...operationReceipt(rootStatus, rootResult, 0), source: rootStart.source,
@@ -665,7 +747,8 @@ export async function runVerifier(options) {
       options, credential, childStart.operationId, overallController.signal,
     );
     const childResult = await readResult(
-      options, credential, childStart.operationId, overallController.signal,
+      options, credential, childStart.operationId, childStatus.resultVersion,
+      overallController.signal,
     );
     const child = {
       ...operationReceipt(childStatus, childResult, 1),
@@ -679,7 +762,8 @@ export async function runVerifier(options) {
       options, credential, grandchildStart.operationId, overallController.signal,
     );
     const grandchildResult = await readResult(
-      options, credential, grandchildStart.operationId, overallController.signal,
+      options, credential, grandchildStart.operationId, grandchildStatus.resultVersion,
+      overallController.signal,
     );
     const grandchild = {
       ...operationReceipt(grandchildStatus, grandchildResult, 2),

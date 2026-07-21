@@ -18,6 +18,10 @@ const VERSIONS = new Map([
   [CHILD, `qrv1_${'B'.repeat(43)}`],
   [GRANDCHILD, `qrv1_${'C'.repeat(43)}`],
 ]);
+const PROTECTED_GENERIC_FIELDS = [
+  'kind', 'schemaVersion', 'followUpFrom', 'queryFollowUpLineage',
+  '_queryFollowUpContext', 'verifiedConversationContext',
+];
 
 async function verifier() {
   return import(verifierUrl.href);
@@ -60,10 +64,10 @@ function summary(operationId, projected = false) {
   return value;
 }
 
-function result(operationId) {
+function result(operationId, versionOverride) {
   const value = structuredClone(fixture('query-notebook-result'));
   value.operationId = operationId;
-  value.resultVersion = VERSIONS.get(operationId);
+  value.resultVersion = versionOverride ?? VERSIONS.get(operationId);
   value.answer = `TOP SECRET ANSWER ${operationId} ${PRIVATE_CONTEXT}`;
   return value;
 }
@@ -102,7 +106,13 @@ async function listen(handler) {
   };
 }
 
-function fakeSystem({ keepRootRunning = false } = {}) {
+function fakeSystem({
+  keepRootRunning = false,
+  resultVersionMismatch = null,
+  inventoryMode = 'complete',
+  mutateSnapshot = false,
+  silentlyAcceptGenericField = null,
+} = {}) {
   const observations = {
     protectedStarts: [], genericRejected: false, genericRootStarts: 0,
     enrollmentAuthorization: null,
@@ -138,10 +148,17 @@ function fakeSystem({ keepRootRunning = false } = {}) {
       });
     }
     if (req.method === 'POST' && url.pathname === '/home23/api/query/run') {
-      if (body.priorContext !== undefined || body.followUpFrom !== undefined
-          || body.kind === 'verifiedFollowUp') {
+      const presentProtected = PROTECTED_GENERIC_FIELDS.filter((field) => (
+        Object.hasOwn(body, field)
+      ));
+      if (presentProtected.length > 0
+          && !(presentProtected.length === 1
+            && presentProtected[0] === silentlyAcceptGenericField)) {
         observations.genericRejected = true;
-        return json(res, 400, { ok: false, error: { code: 'invalid_request', retryable: false } });
+        return json(res, 400, { ok: false, error: {
+          code: 'invalid_request', message: 'request contains an unsupported field',
+          retryable: false,
+        } });
       }
       observations.genericRootStarts += 1;
       return json(res, 202, {
@@ -153,7 +170,14 @@ function fakeSystem({ keepRootRunning = false } = {}) {
     if (!authorized) return json(res, 401, { ok: false, error: { code: 'unauthorized' } });
 
     if (req.method === 'GET' && url.pathname === '/home23/api/query/notebook') {
-      return json(res, 200, page(url.searchParams.get('projection') === 'follow-up-v1'));
+      const projected = url.searchParams.get('projection') === 'follow-up-v1';
+      const value = page(projected);
+      if (inventoryMode === 'empty') value.items = [];
+      if (inventoryMode === 'mutated' && projected) {
+        value.items.find((item) => item.operationId === CHILD)
+          .followUpLineage.parentOperationId = GRANDCHILD;
+      }
+      return json(res, 200, value);
     }
     if (req.method === 'POST' && url.pathname === '/home23/api/query/operations') {
       const requestId = req.headers['x-home23-query-request-id'];
@@ -168,7 +192,10 @@ function fakeSystem({ keepRootRunning = false } = {}) {
     const match = /^\/home23\/api\/query\/operations\/(brop_[A-Za-z0-9_-]{32})(?:\/(result|events))?$/u.exec(url.pathname);
     if (!match) return json(res, 404, { error: 'not_found' });
     const operationId = match[1];
-    if (match[2] === 'result') return json(res, 200, result(operationId));
+    if (match[2] === 'result') return json(res, 200, result(
+      operationId,
+      resultVersionMismatch === operationId ? `qrv1_${'Z'.repeat(43)}` : undefined,
+    ));
     if (match[2] === 'events') {
       const projectedSnapshot = url.searchParams.get('projection') === 'follow-up-v1';
       const snapshot = {
@@ -179,6 +206,9 @@ function fakeSystem({ keepRootRunning = false } = {}) {
         notification: { subscribed: false, deliveryState: null },
         ...(projectedSnapshot ? { followUpLineage: lineage(operationId) } : {}),
       };
+      if (mutateSnapshot && projectedSnapshot && operationId === GRANDCHILD) {
+        snapshot.followUpLineage.parentOperationId = ROOT;
+      }
       const encoded = `id: 8\nevent: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`;
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       return res.end(encoded);
@@ -243,7 +273,9 @@ test('proves legacy and opted shapes plus a real root-child-grandchild chain wit
   assert.equal(receipt.compatibility.optedChild.lineage.depth, 1);
   assert.equal(receipt.compatibility.optedGrandchild.lineage.depth, 2);
   assert.equal(receipt.compatibility.resultHasLineage, false);
-  assert.equal(receipt.genericRunProtectedFields.status, 400);
+  assert.deepEqual(receipt.genericRunProtectedFields, PROTECTED_GENERIC_FIELDS.map((field) => ({
+    field, status: 400, code: 'invalid_request',
+  })));
   assert.equal(fake.observations.genericRejected, true);
   assert.equal(fake.observations.enrollmentAuthorization, `Bearer ${BRIDGE_SECRET}`);
 
@@ -344,5 +376,53 @@ test('fails closed on malformed public contract shapes', async (t) => {
   const { runVerifier } = await verifier();
   await assert.rejects(runVerifier(options(server.origin, files)), {
     code: 'public_projection_invalid',
+  });
+});
+
+test('rejects a terminal status/result version mismatch before chaining', async (t) => {
+  const files = await tokenFixture(t);
+  for (const resultVersionMismatch of [ROOT, CHILD, GRANDCHILD]) {
+    const fake = fakeSystem({ resultVersionMismatch });
+    const server = await fake.serverPromise;
+    t.after(server.close);
+    const { runVerifier } = await verifier();
+    await assert.rejects(runVerifier(options(server.origin, files)), {
+      code: 'result_version_mismatch',
+    }, resultVersionMismatch);
+  }
+});
+
+test('rejects empty or lineage-mutated chain inventory pages', async (t) => {
+  const files = await tokenFixture(t);
+  for (const inventoryMode of ['empty', 'mutated']) {
+    const fake = fakeSystem({ inventoryMode });
+    const server = await fake.serverPromise;
+    t.after(server.close);
+    const { runVerifier } = await verifier();
+    await assert.rejects(runVerifier(options(server.origin, files)), {
+      code: 'inventory_chain_unproven',
+    });
+  }
+});
+
+test('rejects a schema-valid but ancestry-mutated projected snapshot', async (t) => {
+  const files = await tokenFixture(t);
+  const fake = fakeSystem({ mutateSnapshot: true });
+  const server = await fake.serverPromise;
+  t.after(server.close);
+  const { runVerifier } = await verifier();
+  await assert.rejects(runVerifier(options(server.origin, files)), {
+    code: 'lineage_invalid',
+  });
+});
+
+test('fails if any protected generic field is silently accepted', async (t) => {
+  const files = await tokenFixture(t);
+  const fake = fakeSystem({ silentlyAcceptGenericField: 'queryFollowUpLineage' });
+  const server = await fake.serverPromise;
+  t.after(server.close);
+  const { runVerifier } = await verifier();
+  await assert.rejects(runVerifier(options(server.origin, files)), {
+    code: 'unexpected_http_status',
   });
 });
