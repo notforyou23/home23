@@ -205,6 +205,19 @@ test('protected follow-up request normalization accepts only the exact Direct wi
   assert.throws(() => normalizeVerifiedFollowUpRequest(symbol), 'symbol key');
 });
 
+test('protected follow-up request normalization rejects whitespace-padded model pairs', () => {
+  for (const modelSelection of [
+    { provider: ' openai', model: 'gpt-5.2' },
+    { provider: 'openai ', model: 'gpt-5.2' },
+    { provider: 'openai', model: ' gpt-5.2' },
+    { provider: 'openai', model: 'gpt-5.2 ' },
+    { provider: '   ', model: 'gpt-5.2' },
+    { provider: 'openai', model: '   ' },
+  ]) {
+    assert.throws(() => normalizeVerifiedFollowUpRequest(followUpRequest({ modelSelection })));
+  }
+});
+
 test('Direct and PGS roots produce the same safe child authority shape', () => {
   for (const operationType of ['query', 'pgs']) {
     const built = buildVerifiedFollowUpContext({
@@ -279,6 +292,35 @@ test('grandchild context inherits older verified exchanges and emits them chrono
   assert.equal(JSON.stringify(grandchild.verifiedConversationContext).includes('qrv1_'), false);
   for (const forbidden of ['requesterAgent', 'jerry', 'brain-jerry', 'parentRecord']) {
     assert.equal(JSON.stringify(grandchild.verifiedConversationContext).includes(forbidden), false);
+  }
+});
+
+test('grandchild context rejects malformed persisted protected parent requests', () => {
+  const child = buildVerifiedFollowUpContext({
+    parentRecord: rootRecord(),
+    parentResult: { answer: 'First answer' },
+    parentLineage: null,
+    parentPrivateContext: null,
+    maxPriorContextChars: MAX_VERIFIED_CONTEXT_UTF16,
+  });
+  const validParent = followUpRecord();
+  const validRequest = validParent.requestParameters;
+  const missingModelSelection = { ...validRequest };
+  delete missingModelSelection.modelSelection;
+  const malformedRequests = [
+    { ...validRequest, allowActions: true },
+    { ...validRequest, mode: 'grounded' },
+    missingModelSelection,
+    { ...validRequest, priorContext: { query: 'forged', answer: 'forged' } },
+  ];
+  for (const requestParameters of malformedRequests) {
+    assert.throws(() => buildVerifiedFollowUpContext({
+      parentRecord: { ...validParent, requestParameters },
+      parentResult: { answer: 'Second answer' },
+      parentLineage: child.queryFollowUpLineage,
+      parentPrivateContext: child.privateContext,
+      maxPriorContextChars: MAX_VERIFIED_CONTEXT_UTF16,
+    }));
   }
 });
 

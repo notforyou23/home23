@@ -88,9 +88,11 @@ function normalizeReference(value, code) {
 
 function normalizeModelPair(value, code) {
   assertExactKeys(value, MODEL_KEYS, code);
-  if (typeof value.provider !== 'string' || value.provider.length === 0
+  if (typeof value.provider !== 'string' || value.provider.trim() !== value.provider
+      || value.provider.length === 0
       || value.provider.length > 256
-      || typeof value.model !== 'string' || value.model.length === 0
+      || typeof value.model !== 'string' || value.model.trim() !== value.model
+      || value.model.length === 0
       || value.model.length > 256) fail(code);
   return { provider: value.provider, model: value.model };
 }
@@ -255,12 +257,13 @@ function buildVerifiedFollowUpContext(options) {
   let inheritedPrivate = null;
   if (hasLineage) {
     if (options.parentRecord.operationType !== 'query') fail('verified_follow_up_context_invalid');
+    parent.request = normalizeVerifiedFollowUpRequest(parent.request);
+    parent.query = parent.request.query;
     inheritedLineage = normalizeLineage(options.parentLineage);
     inheritedPrivate = normalizePrivateContext(options.parentPrivateContext);
     assertMatchingAncestry(inheritedLineage, inheritedPrivate);
-    const source = normalizeReference(parent.request.followUpFrom, 'verified_follow_up_context_invalid');
-    if (parent.request.kind !== 'verifiedFollowUp' || parent.request.schemaVersion !== 1
-        || source.operationId !== inheritedLineage.parentOperationId
+    const source = parent.request.followUpFrom;
+    if (source.operationId !== inheritedLineage.parentOperationId
         || source.resultVersion !== inheritedLineage.parentResultVersion) {
       fail('verified_follow_up_context_invalid');
     }
