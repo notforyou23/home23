@@ -39,6 +39,9 @@ const {
 const {
   readDurableOperationLockCapability,
 } = require('../../../shared/memory-source/durable-lock-authority.cjs');
+const {
+  hasExactVerifiedFollowUpComponentSupport,
+} = require('../../../shared/query/verified-follow-up-support.cjs');
 
 const INITIAL_NOW = Date.parse('2026-07-10T16:00:00.000Z');
 const TERMINAL = new Set(['complete', 'partial', 'failed', 'cancelled', 'interrupted']);
@@ -697,6 +700,33 @@ function makeFixture(t, overrides = {}) {
     setCatalog(value) { catalog = value; },
   };
 }
+
+test('coordinator exposes exact immutable specialized start, injection, and recovery support', (t) => {
+  const fixture = makeFixture(t);
+  assert.equal(
+    hasExactVerifiedFollowUpComponentSupport(fixture.coordinator, 'coordinator'),
+    true,
+  );
+});
+
+test('worker adapter delegates verified follow-up support only to its remote COSMO client', async () => {
+  const receipt = Object.freeze({ version: 1, authenticated: true });
+  const calls = [];
+  const adapter = new BrainOperationWorkerAdapter({
+    remoteWorker: {
+      async readVerifiedFollowUpSupport() {
+        calls.push('support');
+        return receipt;
+      },
+    },
+  });
+  assert.equal(await adapter.readVerifiedFollowUpSupport(), receipt);
+  assert.deepEqual(calls, ['support']);
+  await assert.rejects(
+    () => new BrainOperationWorkerAdapter().readVerifiedFollowUpSupport(),
+    { code: 'worker_transport_invalid' },
+  );
+});
 
 function request(overrides = {}) {
   return {

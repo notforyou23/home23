@@ -47,6 +47,12 @@ const {
   createBrainOperationRouteHandlers,
   createBrainOperationRoutes,
 } = require('../../cosmo23/server/lib/brain-operation-routes');
+const {
+  VERIFIED_FOLLOW_UP_RUNTIME_SUPPORT,
+  createVerifiedFollowUpSupportRequest,
+  isAuthenticatedVerifiedFollowUpRuntimeSupport,
+  verifyVerifiedFollowUpSupportResponse,
+} = require('../../shared/query/verified-follow-up-support.cjs');
 
 const KEY = 'brain-operation-worker-test-key';
 const INITIAL_NOW = Date.UTC(2026, 6, 10, 12, 0, 0);
@@ -364,6 +370,8 @@ async function makeFixture(t, overrides = {}) {
     processStartIdentity: 'test-process-start',
     randomBytes: (size) => Buffer.alloc(size, 7),
     pgsSessionAuthorityFactory,
+    nonceStore: overrides.nonceStore,
+    verifiedFollowUpSupport: overrides.verifiedFollowUpSupport,
   });
   let nonce = 0;
   const token = (request, claimOverrides = {}, tokenNow = clock.wall) => issueCapability(
@@ -397,6 +405,52 @@ test('worker helpers derive stable trusted process and operation identities', ()
   assert.throws(() => createProcessPinIdentity({ pid: 0, processStartIdentity: 'x' }), typed('source_unavailable'));
   assert.equal(operationRootFromScratch('/tmp/op/scratch'), '/tmp/op');
   assert.throws(() => operationRootFromScratch('/tmp/op/not-scratch'), typed('invalid_request'));
+});
+
+test('actual COSMO worker returns an authenticated exact verified follow-up support receipt', async (t) => {
+  let operationNonceConsumes = 0;
+  const fixture = await makeFixture(t, {
+    nonceStore: {
+      consume() { operationNonceConsumes += 1; },
+    },
+    verifiedFollowUpSupport: VERIFIED_FOLLOW_UP_RUNTIME_SUPPORT,
+  });
+  const requestEnvelope = createVerifiedFollowUpSupportRequest({
+    key: KEY,
+    now: fixture.clock.wall,
+    randomBytes: () => Buffer.alloc(24, 3),
+  });
+  const response = await fixture.worker.readVerifiedFollowUpSupport(
+    requestEnvelope.request,
+    requestEnvelope.authorization,
+  );
+  const receipt = verifyVerifiedFollowUpSupportResponse({
+    key: KEY,
+    request: requestEnvelope.request,
+    response: JSON.parse(JSON.stringify(response)),
+    now: fixture.clock.wall,
+  });
+  assert.equal(isAuthenticatedVerifiedFollowUpRuntimeSupport(receipt), true);
+  assert.deepEqual(receipt, VERIFIED_FOLLOW_UP_RUNTIME_SUPPORT);
+  assert.equal(Object.hasOwn(receipt, 'authentication'), false);
+  assert.equal(operationNonceConsumes, 0, 'support authentication must not consume operation nonces');
+
+  await assert.rejects(
+    () => fixture.worker.readVerifiedFollowUpSupport(
+      requestEnvelope.request,
+      `${requestEnvelope.authorization.slice(0, -1)}A`,
+    ),
+    { code: 'capability_invalid' },
+  );
+  assert.equal(operationNonceConsumes, 0, 'invalid support auth must not consume operation nonces');
+  const unsupported = await makeFixture(t);
+  await assert.rejects(
+    () => unsupported.worker.readVerifiedFollowUpSupport(
+      requestEnvelope.request,
+      requestEnvelope.authorization,
+    ),
+    { code: 'verified_follow_up_support_unavailable' },
+  );
 });
 
 test('PGS worker creates or continues a protected session and gives only trusted storage to executor', async (t) => {
@@ -2551,6 +2605,7 @@ test('internal route handlers require bearer capabilities on start/status/events
     methods: Object.keys(layer.route.methods),
   }));
   assert.deepEqual(routes, [
+    { path: '/api/internal/brain-operations/support', methods: ['post'] },
     { path: '/api/internal/brain-operations/:id/start', methods: ['post'] },
     { path: '/api/internal/brain-operations/:id/status', methods: ['get'] },
     { path: '/api/internal/brain-operations/:id/events', methods: ['get'] },

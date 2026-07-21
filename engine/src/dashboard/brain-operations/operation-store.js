@@ -51,6 +51,9 @@ const {
   canonicalJson,
   canonicalSha256,
 } = require('../../../../shared/brain-operations/canonical-json.cjs');
+const {
+  VERIFIED_FOLLOW_UP_COMPONENT_SUPPORT,
+} = require('../../../../shared/query/verified-follow-up-support.cjs');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RESULT_RETENTION_MS = 7 * DAY_MS;
@@ -372,6 +375,12 @@ class BrainOperationStore {
     this.handleIndexQueue = new Map();
     this.synthesisCommitQueue = new Map();
     this.eventCache = new Map();
+    Object.defineProperty(this, 'verifiedFollowUpSupport', {
+      value: VERIFIED_FOLLOW_UP_COMPONENT_SUPPORT.store,
+      enumerable: true,
+      writable: false,
+      configurable: false,
+    });
   }
 
   _nowMs(explicit) {

@@ -10,9 +10,16 @@ const { createBrainOperationRoutes } = require(
 
 const OPERATION_ID = `brop_${'a'.repeat(32)}`;
 
-async function withServer(callback) {
+async function withServer(callback, options = {}) {
   const calls = [];
   const worker = {
+    async readVerifiedFollowUpSupport(body, capability) {
+      if (options.supportError) throw Object.assign(new Error(options.supportError), {
+        code: options.supportError,
+      });
+      calls.push(['support', body, capability]);
+      return { ok: true };
+    },
     async start(_id, _capability, body) { calls.push(['start', body]); return { ok: true }; },
     async status() { return { ok: true }; },
     async *events() {},
@@ -35,6 +42,14 @@ async function withServer(callback) {
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+}
+
+function postSupport(baseUrl, body, authorization = 'Bearer vfh1.test-signature') {
+  return fetch(`${baseUrl}/api/internal/brain-operations/support`, {
+    method: 'POST',
+    headers: { authorization, 'content-type': 'application/json' },
+    body,
+  });
 }
 
 function post(baseUrl, action, body) {
@@ -70,4 +85,38 @@ test('protected start and cancel bodies are bounded before any broad parser', as
     assert.equal(calls.filter(([kind]) => kind === 'cancel').length, 1);
     assert.equal(broadCalls(), 0);
   });
+});
+
+test('protected support handshake is loopback-only, bearer-authenticated, and narrowly bounded', async () => {
+  await withServer(async ({ baseUrl, calls, broadCalls }) => {
+    const body = JSON.stringify({ version: 1, issuedAt: Date.now(), nonce: `vfhs_${'a'.repeat(32)}` });
+    const accepted = await postSupport(baseUrl, body);
+    assert.equal(accepted.status, 200);
+    assert.deepEqual(await accepted.json(), { ok: true });
+    assert.equal(calls[0][0], 'support');
+    assert.equal(calls[0][2], 'vfh1.test-signature');
+
+    const missing = await postSupport(baseUrl, body, '');
+    assert.equal(missing.status, 401);
+    assert.equal((await missing.json()).error.code, 'capability_invalid');
+
+    const oversized = await postSupport(baseUrl, JSON.stringify({
+      value: 'x'.repeat(4 * 1024 + 1),
+    }));
+    assert.equal(oversized.status, 413);
+    assert.equal((await oversized.json()).error.code, 'request_too_large');
+    assert.equal(calls.filter(([kind]) => kind === 'support').length, 1);
+    assert.equal(broadCalls(), 0);
+  });
+});
+
+test('support handshake reports absent auth authority or runtime support as unavailable', async () => {
+  const body = JSON.stringify({ version: 1, issuedAt: Date.now(), nonce: `vfhs_${'a'.repeat(32)}` });
+  for (const code of ['capability_unavailable', 'verified_follow_up_support_unavailable']) {
+    await withServer(async ({ baseUrl }) => {
+      const response = await postSupport(baseUrl, body);
+      assert.equal(response.status, 503, code);
+      assert.equal((await response.json()).error.code, code);
+    }, { supportError: code });
+  }
 });

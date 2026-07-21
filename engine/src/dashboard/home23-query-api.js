@@ -8,6 +8,10 @@ const {
   assertOperationId,
   assertResultHandle,
 } = require('./brain-operations/operation-contract.js');
+const {
+  hasExactVerifiedFollowUpComponentSupport,
+  isAuthenticatedVerifiedFollowUpRuntimeSupport,
+} = require('../../../shared/query/verified-follow-up-support.cjs');
 
 const DEFAULT_ENDPOINTS = {
   catalog: '/home23/api/query/catalog',
@@ -59,16 +63,27 @@ async function isVerifiedFollowUpRuntimeReady(options = {}) {
     const provider = typeof options.providerReadiness === 'function'
       ? await options.providerReadiness()
       : null;
-    return options.catalog?.available === true
+    const localReady = options.catalog?.available === true
       && options.catalog?.limits?.maxPriorContextChars === MAX_PRIOR_CONTEXT_CHARS
       && provider?.ready === true
       && typeof options.protectedStarter?.startVerifiedFollowUpAuthorized === 'function'
+      && hasExactVerifiedFollowUpComponentSupport(
+        options.protectedStarter,
+        'protectedStarter',
+      )
       && typeof options.coordinator?.startVerifiedFollowUp === 'function'
+      && hasExactVerifiedFollowUpComponentSupport(options.coordinator, 'coordinator')
       && typeof options.reader?.getQueryFollowUpLineageAuthorized === 'function'
       && typeof options.reader?.getVerifiedFollowUpContextAuthorized === 'function'
+      && hasExactVerifiedFollowUpComponentSupport(options.reader, 'reader')
       && typeof options.store?.getQueryFollowUpLineageAuthorized === 'function'
       && typeof options.store?.getVerifiedFollowUpContextAuthorized === 'function'
-      && options.worker?.supportsVerifiedFollowUp === true;
+      && hasExactVerifiedFollowUpComponentSupport(options.store, 'store')
+      && typeof options.worker?.readVerifiedFollowUpSupport === 'function';
+    if (!localReady) return false;
+    return isAuthenticatedVerifiedFollowUpRuntimeSupport(
+      await options.worker.readVerifiedFollowUpSupport(),
+    );
   } catch {
     return false;
   }

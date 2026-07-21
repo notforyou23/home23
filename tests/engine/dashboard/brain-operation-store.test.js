@@ -26,6 +26,9 @@ const {
   createBrainOperationStoreReader,
 } = require('../../../engine/src/dashboard/brain-operations/store-reader.js');
 const { canonicalJson } = require('../../../shared/brain-operations/canonical-json.cjs');
+const {
+  hasExactVerifiedFollowUpComponentSupport,
+} = require('../../../shared/query/verified-follow-up-support.cjs');
 const execFileAsync = promisify(execFile);
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -223,6 +226,17 @@ function statusPath(root, operationId) {
 function resultPath(root, operationId) {
   return path.join(operationDirectory(root, operationId), 'result.json');
 }
+
+test('operation store and requester-bound reader expose exact immutable follow-up support', (t) => {
+  const fixture = makeFixture(t);
+  const reader = createBrainOperationStoreReader({
+    operationsRoot: fixture.root,
+    expectedRequester: 'jerry',
+    liveStore: fixture.store,
+  });
+  assert.equal(hasExactVerifiedFollowUpComponentSupport(fixture.store, 'store'), true);
+  assert.equal(hasExactVerifiedFollowUpComponentSupport(reader, 'reader'), true);
+});
 
 async function createOne(fixture, overrides = {}) {
   return fixture.store.create(validRequest(overrides));

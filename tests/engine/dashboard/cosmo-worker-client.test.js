@@ -7,6 +7,12 @@ const {
   createCosmoBrainOperationWorkerClient,
   normalizeLoopbackBaseUrl,
 } = require('../../../engine/src/dashboard/brain-operations/cosmo-worker-client.js');
+const {
+  VERIFIED_FOLLOW_UP_RUNTIME_SUPPORT,
+  createVerifiedFollowUpSupportRequest,
+  createVerifiedFollowUpSupportResponse,
+  isAuthenticatedVerifiedFollowUpRuntimeSupport,
+} = require('../../../shared/query/verified-follow-up-support.cjs');
 
 const OPERATION_ID = `brop_${'a'.repeat(32)}`;
 const CAPABILITY = 'header.payload.signature';
@@ -64,6 +70,121 @@ test('control calls use exact protected routes and a fresh bearer without leakin
   assert.deepEqual(JSON.parse(calls[3].options.body), {});
   assert.equal(client.supportsSourceOperation('query'), true);
   assert.equal(client.supportsSourceOperation('search'), false);
+});
+
+test('COSMO client authenticates exact support from the running loopback worker', async () => {
+  const key = 'cosmo-worker-client-support-test-key';
+  const now = Date.parse('2026-07-21T16:00:00.000Z');
+  let observed;
+  const client = createCosmoBrainOperationWorkerClient({
+    capabilityKey: key,
+    clock: { now: () => now },
+    randomBytes: () => Buffer.alloc(24, 8),
+    fetchImpl: async (url, options) => {
+      observed = { url, options };
+      const request = JSON.parse(options.body);
+      const authorization = options.headers.authorization.replace(/^Bearer /, '');
+      return jsonResponse(createVerifiedFollowUpSupportResponse({
+        key,
+        request,
+        authorization,
+        runtimeSupport: VERIFIED_FOLLOW_UP_RUNTIME_SUPPORT,
+        now,
+      }));
+    },
+  });
+  const receipt = await client.readVerifiedFollowUpSupport();
+  assert.equal(observed.url, 'http://127.0.0.1:43210/api/internal/brain-operations/support');
+  assert.equal(observed.options.method, 'POST');
+  assert.match(observed.options.headers.authorization, /^Bearer vfh1\.[A-Za-z0-9_-]{43}$/);
+  assert.equal(observed.options.body.includes(key), false);
+  assert.deepEqual(JSON.parse(observed.options.body), {
+    version: 1,
+    issuedAt: now,
+    nonce: `vfhs_${Buffer.alloc(24, 8).toString('base64url')}`,
+  });
+  assert.equal(isAuthenticatedVerifiedFollowUpRuntimeSupport(receipt), true);
+  assert.deepEqual(receipt, VERIFIED_FOLLOW_UP_RUNTIME_SUPPORT);
+  assert.equal(Object.hasOwn(receipt, 'authentication'), false);
+});
+
+test('COSMO support readback fails closed for no key, old or unreachable workers, and invalid auth', async () => {
+  const key = 'cosmo-worker-client-support-test-key';
+  const now = Date.parse('2026-07-21T16:00:00.000Z');
+  const noKey = createCosmoBrainOperationWorkerClient({
+    fetchImpl: async () => { throw new Error('must not call'); },
+  });
+  await assert.rejects(() => noKey.readVerifiedFollowUpSupport(), {
+    code: 'capability_unavailable',
+  });
+
+  const old = createCosmoBrainOperationWorkerClient({
+    capabilityKey: key,
+    clock: { now: () => now },
+    fetchImpl: async () => jsonResponse({
+      success: false, error: { code: 'worker_not_found', message: 'old runtime' },
+    }, { status: 404 }),
+  });
+  await assert.rejects(() => old.readVerifiedFollowUpSupport(), {
+    code: 'worker_not_found', statusCode: 404,
+  });
+
+  const unreachable = createCosmoBrainOperationWorkerClient({
+    capabilityKey: key,
+    clock: { now: () => now },
+    fetchImpl: async () => { throw new Error('connection refused'); },
+  });
+  await assert.rejects(() => unreachable.readVerifiedFollowUpSupport(), {
+    code: 'worker_transport_failed', retryable: true,
+  });
+
+  const wrongKey = 'cosmo-worker-client-wrong-support-key';
+  const invalidAuth = createCosmoBrainOperationWorkerClient({
+    capabilityKey: key,
+    clock: { now: () => now },
+    randomBytes: () => Buffer.alloc(24, 8),
+    fetchImpl: async (_url, options) => {
+      const request = JSON.parse(options.body);
+      const foreign = createVerifiedFollowUpSupportRequest({
+        key: wrongKey, now, randomBytes: () => Buffer.alloc(24, 8),
+      });
+      return jsonResponse(createVerifiedFollowUpSupportResponse({
+        key: wrongKey,
+        request,
+        authorization: foreign.authorization,
+        runtimeSupport: VERIFIED_FOLLOW_UP_RUNTIME_SUPPORT,
+        now,
+      }));
+    },
+  });
+  await assert.rejects(() => invalidAuth.readVerifiedFollowUpSupport(), {
+    code: 'worker_transport_invalid', retryable: true,
+  });
+});
+
+test('COSMO support response signed for another request nonce cannot be substituted', async () => {
+  const key = 'cosmo-worker-client-support-test-key';
+  const now = Date.parse('2026-07-21T16:00:00.000Z');
+  const client = createCosmoBrainOperationWorkerClient({
+    capabilityKey: key,
+    clock: { now: () => now },
+    randomBytes: () => Buffer.alloc(24, 8),
+    fetchImpl: async () => {
+      const foreign = createVerifiedFollowUpSupportRequest({
+        key, now, randomBytes: () => Buffer.alloc(24, 9),
+      });
+      return jsonResponse(createVerifiedFollowUpSupportResponse({
+        key,
+        request: foreign.request,
+        authorization: foreign.authorization,
+        runtimeSupport: VERIFIED_FOLLOW_UP_RUNTIME_SUPPORT,
+        now,
+      }));
+    },
+  });
+  await assert.rejects(() => client.readVerifiedFollowUpSupport(), {
+    code: 'worker_transport_invalid', retryable: true,
+  });
 });
 
 test('events parse chunked NDJSON incrementally and preserve exact cancellation identity', async () => {

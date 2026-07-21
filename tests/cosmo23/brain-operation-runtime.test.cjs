@@ -14,6 +14,11 @@ const {
   createDurableOperationLockCapability,
   readDurableOperationLockCapability,
 } = require('../../shared/memory-source/durable-lock-authority.cjs');
+const { QueryEngine } = require('../../cosmo23/lib/query-engine.js');
+const {
+  VERIFIED_FOLLOW_UP_RUNTIME_SUPPORT,
+  isExactVerifiedFollowUpRuntimeSupport,
+} = require('../../shared/query/verified-follow-up-support.cjs');
 
 const root = '/tmp/home23-runtime-fixture';
 const boundaries = (canonicalRoot) => [
@@ -118,4 +123,42 @@ test('COSMO operation runtime registers query and PGS exactly once with extra ex
     sourcePins: { async openPinnedSource() {} },
     extraExecutors: new Map([['query', async () => ({})]]),
   }), { code: 'executor_conflict' });
+});
+
+test('COSMO runtime exposes verified follow-up support only when its actual engine contract is exact', (t) => {
+  const home23Root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-cosmo-support-runtime-'));
+  t.after(() => fs.rmSync(home23Root, { recursive: true, force: true }));
+  const base = {
+    home23Root,
+    capabilityKey: 'a'.repeat(64),
+    buildCatalog: async () => ({ catalogRevision: 'c', brains: [] }),
+    resolveCanonicalTarget() {},
+    modelCatalog: { providers: { alpha: { models: [] } } },
+    providerRegistry: {},
+    sourcePins: { async openPinnedSource() {} },
+  };
+  const supportedEngine = Object.create(QueryEngine.prototype);
+  const supported = createCosmoBrainOperationRuntime({ ...base, queryEngine: supportedEngine });
+  assert.equal(
+    isExactVerifiedFollowUpRuntimeSupport(supported.worker.verifiedFollowUpSupport),
+    true,
+  );
+  assert.deepEqual(supported.worker.verifiedFollowUpSupport, VERIFIED_FOLLOW_UP_RUNTIME_SUPPORT);
+
+  const markerBearingStub = {
+    constructor: { verifiedFollowUpSupport: QueryEngine.verifiedFollowUpSupport },
+    async executeEnhancedQuery() { return {}; },
+  };
+  const stubbed = createCosmoBrainOperationRuntime({ ...base, queryEngine: markerBearingStub });
+  assert.equal(stubbed.worker.verifiedFollowUpSupport, null);
+
+  const oldEngine = {
+    constructor: { verifiedFollowUpSupport: Object.freeze({
+      ...QueryEngine.verifiedFollowUpSupport,
+      expansionPrompt: false,
+    }) },
+    async executeEnhancedQuery() { return {}; },
+  };
+  const unsupported = createCosmoBrainOperationRuntime({ ...base, queryEngine: oldEngine });
+  assert.equal(unsupported.worker.verifiedFollowUpSupport, null);
 });

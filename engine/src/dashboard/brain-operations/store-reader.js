@@ -11,6 +11,9 @@ const {
   operationError,
   safeJsonClone,
 } = require('./operation-contract.js');
+const {
+  VERIFIED_FOLLOW_UP_COMPONENT_SUPPORT,
+} = require('../../../../shared/query/verified-follow-up-support.cjs');
 
 function assertConfiguration(options) {
   if (!options || Array.isArray(options) || typeof options !== 'object') {
@@ -65,6 +68,12 @@ class BrainOperationStoreReader {
       operationsRoot: { writable: false },
       expectedRequester: { writable: false },
       store: { writable: false },
+      verifiedFollowUpSupport: {
+        value: VERIFIED_FOLLOW_UP_COMPONENT_SUPPORT.reader,
+        enumerable: true,
+        writable: false,
+        configurable: false,
+      },
     });
   }
 

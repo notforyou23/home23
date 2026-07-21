@@ -1,8 +1,28 @@
 'use strict';
 
 const { BrainOperationWorker } = require('./brain-operation-worker');
-const { createQueryOperationExecutor } = require('./query-operation-worker');
+const {
+  VERIFIED_FOLLOW_UP_WORKER_SUPPORT,
+  createQueryOperationExecutor,
+} = require('./query-operation-worker');
+const { QueryEngine } = require('../../lib/query-engine');
 const { createMemorySourcePinProvider } = require('../../../shared/memory-source');
+const {
+  VERIFIED_FOLLOW_UP_RUNTIME_SUPPORT,
+} = require('../../../shared/query/verified-follow-up-support.cjs');
+
+const EXPECTED_QUERY_WORKER_SUPPORT = Object.freeze({
+  version: 1,
+  maxUtf16: 20_000,
+  validatesCanonicalContext: true,
+});
+const EXPECTED_QUERY_ENGINE_SUPPORT = Object.freeze({
+  version: 1,
+  maxUtf16: 20_000,
+  initialPrompt: true,
+  expansionPrompt: true,
+  cacheIdentity: true,
+});
 
 function runtimeError(code, message = code, retryable = false) {
   return Object.assign(new Error(message), { code, retryable });
@@ -10,6 +30,25 @@ function runtimeError(code, message = code, retryable = false) {
 
 function clone(value) {
   return structuredClone(value);
+}
+
+function exactFrozenSupport(value, expected) {
+  if (!value || Array.isArray(value) || typeof value !== 'object'
+      || Object.getPrototypeOf(value) !== Object.prototype
+      || !Object.isFrozen(value)) return false;
+  const actual = Reflect.ownKeys(value);
+  const wanted = Object.keys(expected);
+  if (actual.some((key) => typeof key !== 'string') || actual.length !== wanted.length) return false;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  return wanted.every((key) => {
+    const descriptor = descriptors[key];
+    return descriptor
+      && Object.hasOwn(descriptor, 'value')
+      && descriptor.enumerable === true
+      && descriptor.writable === false
+      && descriptor.configurable === false
+      && Object.is(descriptor.value, expected[key]);
+  });
 }
 
 function createSharedWorkerSourcePins({ home23Root, providerFactory = createMemorySourcePinProvider } = {}) {
@@ -108,6 +147,16 @@ function createCosmoBrainOperationRuntime({
   queryEngine.modelCatalog = modelCatalog;
   queryEngine.providerRegistry = providerRegistry;
   const queryExecutor = createQueryOperationExecutor({ queryEngine });
+  const verifiedFollowUpSupport = Object.getPrototypeOf(queryEngine)?.constructor === QueryEngine
+    && exactFrozenSupport(
+      VERIFIED_FOLLOW_UP_WORKER_SUPPORT,
+      EXPECTED_QUERY_WORKER_SUPPORT,
+    ) && exactFrozenSupport(
+      queryEngine.constructor?.verifiedFollowUpSupport,
+      EXPECTED_QUERY_ENGINE_SUPPORT,
+    )
+    ? VERIFIED_FOLLOW_UP_RUNTIME_SUPPORT
+    : null;
   const executors = new Map([
     ['query', queryExecutor],
     ['pgs', queryExecutor],
@@ -127,6 +176,7 @@ function createCosmoBrainOperationRuntime({
     }),
     sourcePins,
     executors,
+    verifiedFollowUpSupport,
     nonceStore,
     clock,
   });

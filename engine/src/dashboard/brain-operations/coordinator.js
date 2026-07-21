@@ -29,6 +29,9 @@ const {
   normalizeVerifiedFollowUpRequest,
 } = require('../query-notebook-follow-up.js');
 const {
+  VERIFIED_FOLLOW_UP_COMPONENT_SUPPORT,
+} = require('../../../../shared/query/verified-follow-up-support.cjs');
+const {
   validateActiveProviderCalls,
   validateWorkerEvent,
   validateWorkerRecord,
@@ -503,6 +506,12 @@ class BrainOperationCoordinator {
     this.terminalNotificationsStarted = new Set();
     this.stopped = false;
     this.stopPromise = null;
+    Object.defineProperty(this, 'verifiedFollowUpSupport', {
+      value: VERIFIED_FOLLOW_UP_COMPONENT_SUPPORT.coordinator,
+      enumerable: true,
+      writable: false,
+      configurable: false,
+    });
   }
 
   async _enqueue(operationId, callback) {

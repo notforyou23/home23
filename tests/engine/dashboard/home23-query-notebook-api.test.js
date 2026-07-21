@@ -1915,6 +1915,17 @@ test('DashboardServer binds Query visibility authority to the selected runtime d
   assert.match(source, /this\.queryNotebookVisibilityStore = visibilityStore/);
 });
 
+test('DashboardServer reads verified follow-up support from authenticated remote COSMO runtime', () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), 'engine/src/dashboard/server.js'), 'utf8',
+  );
+  assert.doesNotMatch(source, /VERIFIED_FOLLOW_UP_WORKER_SUPPORT/);
+  assert.doesNotMatch(source, /CosmoQueryEngine\.verifiedFollowUpSupport/);
+  assert.doesNotMatch(source, /supportsVerifiedFollowUp/);
+  assert.match(source, /createCosmoBrainOperationWorkerClient\(\{[\s\S]*?capabilityKey:\s*process\.env\.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY\s*\|\|\s*null/);
+  assert.match(source, /isVerifiedFollowUpRuntimeReady\(\{[\s\S]*?worker:\s*this\.brainOperationsWorker/);
+});
+
 test('DashboardServer wires protected follow-up start independently of PGS action tokens', async (t) => {
   const { DashboardServer } = require('../../../engine/src/dashboard/server.js');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-follow-up-wiring-'));

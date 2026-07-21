@@ -36,6 +36,10 @@ const {
   createPgsSessionAuthority,
   SESSION_ID_PATTERN: PGS_SESSION_ID_PATTERN,
 } = require('../../../engine/src/dashboard/brain-operations/pgs-session-authority.js');
+const {
+  createVerifiedFollowUpSupportResponse,
+  isExactVerifiedFollowUpRuntimeSupport,
+} = require('../../../shared/query/verified-follow-up-support.cjs');
 
 const WORKER_EVENT_MAX_COUNT = 4096;
 const WORKER_EVENT_MAX_BYTES = 8 * 1024 * 1024;
@@ -535,6 +539,27 @@ class BrainOperationWorker {
     this.startLocks = new Map();
     this.inflightStarts = new Set();
     this.stopped = false;
+    const verifiedFollowUpSupport = options.verifiedFollowUpSupport ?? null;
+    if (verifiedFollowUpSupport !== null
+        && !isExactVerifiedFollowUpRuntimeSupport(verifiedFollowUpSupport)) {
+      throw workerError('worker_configuration_invalid');
+    }
+    Object.defineProperty(this, 'verifiedFollowUpSupport', {
+      value: verifiedFollowUpSupport,
+      enumerable: true,
+      writable: false,
+      configurable: false,
+    });
+  }
+
+  async readVerifiedFollowUpSupport(request, authorization) {
+    return createVerifiedFollowUpSupportResponse({
+      key: this.capabilityKey,
+      request,
+      authorization,
+      runtimeSupport: this.verifiedFollowUpSupport,
+      now: this.now(),
+    });
   }
 
   async _pgsSessionAuthority(requesterAgent) {

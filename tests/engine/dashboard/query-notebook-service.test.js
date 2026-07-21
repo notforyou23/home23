@@ -29,6 +29,9 @@ const {
   SOURCE_HEALTH,
   createEvidence,
 } = require('../../../shared/memory-source/contracts.cjs');
+const {
+  hasExactVerifiedFollowUpComponentSupport,
+} = require('../../../shared/query/verified-follow-up-support.cjs');
 
 const OPERATION_ID = `brop_${'N'.repeat(32)}`;
 const NOW = '2026-07-13T16:00:00.000Z';
@@ -229,6 +232,15 @@ function followUpServiceFixture({ parent, parentResult, parentLineage = null,
     setReadiness(value) { readiness.value = value; },
   };
 }
+
+test('protected notebook starter exposes exact immutable acceptance and replay support', () => {
+  const { record, result } = canonicalParent();
+  const fixture = followUpServiceFixture({ parent: record, parentResult: result });
+  assert.equal(
+    hasExactVerifiedFollowUpComponentSupport(fixture.service, 'protectedStarter'),
+    true,
+  );
+});
 
 test('summary and result projections are exact, bounded, and redacted', () => {
   const record = queryRecord();

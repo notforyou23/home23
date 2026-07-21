@@ -642,6 +642,13 @@ class BrainOperationWorkerAdapter {
       : false;
   }
 
+  async readVerifiedFollowUpSupport() {
+    if (typeof this.remoteWorker?.readVerifiedFollowUpSupport !== 'function') {
+      throw workerError('worker_transport_invalid');
+    }
+    return this.remoteWorker.readVerifiedFollowUpSupport();
+  }
+
   _publicRecord(record) {
     const monotonic = this.monotonicNow();
     const activeProviderCalls = [...record.activeProviderCalls.values()]

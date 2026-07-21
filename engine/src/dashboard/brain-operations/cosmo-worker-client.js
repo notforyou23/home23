@@ -5,10 +5,16 @@ const {
   PGS_OPERATION_LIMITS,
   QUERY_OPERATION_LIMITS,
 } = require('../../../../cosmo23/lib/brain-operation-limits');
+const {
+  createVerifiedFollowUpSupportRequest,
+  verifyVerifiedFollowUpSupportResponse,
+} = require('../../../../shared/query/verified-follow-up-support.cjs');
 
 const DEFAULT_MAX_JSON_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MAX_EVENT_BYTES = 512 * 1024;
 const DEFAULT_MAX_OPERATION_TYPE_ENTRIES = 4096;
+const DEFAULT_MAX_SUPPORT_BYTES = 4 * 1024;
+const DEFAULT_SUPPORT_TIMEOUT_MS = 2_000;
 const RESULT_CONTROL_HEADROOM_BYTES = 256 * 1024;
 const TERMINAL_RESULT_STATES = new Set([
   'complete', 'partial', 'failed', 'cancelled', 'interrupted',
@@ -140,12 +146,21 @@ function createCosmoBrainOperationWorkerClient({
   maxEventBytes = DEFAULT_MAX_EVENT_BYTES,
   maxOperationTypeEntries = DEFAULT_MAX_OPERATION_TYPE_ENTRIES,
   sourceOperationTypes = DEFAULT_SOURCE_OPERATION_TYPES,
+  capabilityKey = null,
+  clock = { now: Date.now },
+  randomBytes,
+  maxSupportBytes = DEFAULT_MAX_SUPPORT_BYTES,
+  supportTimeoutMs = DEFAULT_SUPPORT_TIMEOUT_MS,
 } = {}) {
   const origin = normalizeLoopbackBaseUrl(baseUrl);
   if (typeof fetchImpl !== 'function'
       || !Number.isSafeInteger(maxJsonBytes) || maxJsonBytes < 1024
       || !Number.isSafeInteger(maxEventBytes) || maxEventBytes < 1024
       || !Number.isSafeInteger(maxOperationTypeEntries) || maxOperationTypeEntries < 1
+      || !Number.isSafeInteger(maxSupportBytes) || maxSupportBytes < 1024
+      || !Number.isSafeInteger(supportTimeoutMs) || supportTimeoutMs < 1
+      || typeof clock?.now !== 'function'
+      || (randomBytes !== undefined && typeof randomBytes !== 'function')
       || !Array.isArray(sourceOperationTypes)
       || sourceOperationTypes.some((value) => typeof value !== 'string' || !value)) {
     throw clientError('worker_configuration_invalid');
@@ -234,11 +249,54 @@ function createCosmoBrainOperationWorkerClient({
     return result;
   }
 
+  async function readVerifiedFollowUpSupport() {
+    const requestEnvelope = createVerifiedFollowUpSupportRequest({
+      key: capabilityKey,
+      now: clock.now(),
+      ...(randomBytes === undefined ? {} : { randomBytes }),
+    });
+    let response;
+    try {
+      response = await fetchImpl(`${origin}/api/internal/brain-operations/support`, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          authorization: `Bearer ${requestEnvelope.authorization}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(requestEnvelope.request),
+        redirect: 'error',
+        signal: AbortSignal.timeout(supportTimeoutMs),
+      });
+    } catch (error) {
+      throw clientError('worker_transport_failed', 'COSMO worker support is unavailable', {
+        retryable: true,
+        cause: error,
+      });
+    }
+    const envelope = await readBoundedJson(response, maxSupportBytes);
+    if (!response.ok) throw remoteError(response, envelope);
+    try {
+      return verifyVerifiedFollowUpSupportResponse({
+        key: capabilityKey,
+        request: requestEnvelope.request,
+        response: envelope,
+        now: clock.now(),
+      });
+    } catch (error) {
+      throw clientError('worker_transport_invalid', 'COSMO worker support is invalid', {
+        retryable: true,
+        cause: error,
+      });
+    }
+  }
+
   return Object.freeze({
     supportsSourceOperations: true,
     supportsSourceOperation(operationType) {
       return supportedSourceOperations.has(operationType);
     },
+    readVerifiedFollowUpSupport,
     async start(context, capability) {
       if (typeof context?.operationType !== 'string' || !context.operationType) {
         throw clientError('worker_transport_invalid');

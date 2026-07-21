@@ -28,6 +28,9 @@ const {
   normalizeVerifiedFollowUpRequest,
   projectFollowUpLineage,
 } = require('./query-notebook-follow-up.js');
+const {
+  VERIFIED_FOLLOW_UP_COMPONENT_SUPPORT,
+} = require('../../../shared/query/verified-follow-up-support.cjs');
 
 const QUERY_MAX_CHARS = 12_000;
 const QUESTION_TITLE_MAX_CHARS = 160;
@@ -1302,6 +1305,7 @@ function createQueryNotebookService(options) {
     listQueryNotebookAuthorized,
     resolveAction,
     startVerifiedFollowUpAuthorized,
+    verifiedFollowUpSupport: VERIFIED_FOLLOW_UP_COMPONENT_SUPPORT.protectedStarter,
   });
 }
 

@@ -50,7 +50,8 @@ function errorStatus(error) {
   if (['worker_not_found', 'target_not_found'].includes(code)) return 404;
   if (['worker_operation_conflict', 'worker_result_unavailable'].includes(code)) return 409;
   if (code === 'operation_timeout') return 504;
-  if (['executor_unavailable', 'source_unavailable'].includes(code)) return 503;
+  if (['executor_unavailable', 'source_unavailable', 'capability_unavailable',
+    'verified_follow_up_support_unavailable'].includes(code)) return 503;
   if (['invalid_request', 'operation_id_invalid', 'source_pin_invalid',
     'worker_event_cursor_invalid'].includes(code)) return 400;
   return 500;
@@ -107,6 +108,21 @@ function createBrainOperationRouteHandlers({ worker } = {}) {
     if (typeof worker[method] !== 'function') throw routeError('worker_configuration_invalid');
   }
   return Object.freeze({
+    async support(req, res) {
+      try {
+        assertLoopbackRequest(req);
+        const capability = bearerCapability(req);
+        if (typeof worker.readVerifiedFollowUpSupport !== 'function') {
+          throw routeError('executor_unavailable');
+        }
+        const result = await worker.readVerifiedFollowUpSupport(req.body, capability);
+        res.set('cache-control', 'no-store');
+        res.json(result);
+      } catch (error) {
+        sendError(res, error);
+      }
+    },
+
     async start(req, res) {
       try {
         assertLoopbackRequest(req);
@@ -189,6 +205,11 @@ function createBrainOperationRouteHandlers({ worker } = {}) {
 function createBrainOperationRoutes(options) {
   const handlers = createBrainOperationRouteHandlers(options);
   const router = express.Router();
+  router.post(
+    '/api/internal/brain-operations/support',
+    boundedJson('4kb'),
+    handlers.support,
+  );
   router.post(
     '/api/internal/brain-operations/:id/start',
     boundedJson('2mb'),

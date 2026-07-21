@@ -19,6 +19,13 @@ const { buildClientCapabilities } = require('../../engine/src/dashboard/client-c
 const {
   MAX_VERIFIED_CONTEXT_UTF16,
 } = require('../helpers/query-verified-follow-up-context-vectors.cjs');
+const {
+  VERIFIED_FOLLOW_UP_COMPONENT_SUPPORT,
+  VERIFIED_FOLLOW_UP_RUNTIME_SUPPORT,
+  createVerifiedFollowUpSupportRequest,
+  createVerifiedFollowUpSupportResponse,
+  verifyVerifiedFollowUpSupportResponse,
+} = require('../../shared/query/verified-follow-up-support.cjs');
 
 const MAX_JSON_ESCAPED_UTF16_UNIT_BYTES = 6;
 const MAX_AGENT_SELECTOR_CHARS = 256;
@@ -64,24 +71,26 @@ function makeFetch(routes) {
 }
 
 async function postJson(app, route, body, headers = {}) {
-  return await new Promise((resolve, reject) => {
-    const server = app.listen(0, async () => {
-      try {
-        const port = server.address().port;
-        const res = await fetch(`http://127.0.0.1:${port}${route}`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', ...headers },
-          body: JSON.stringify(body),
-        });
-        const json = await res.json();
-        server.close();
-        resolve({ status: res.status, body: json });
-      } catch (err) {
-        server.close();
-        reject(err);
-      }
-    });
+  // Bind the same IPv4 namespace that fetch uses so an ephemeral IPv6 port cannot
+  // collide with an unrelated loopback service, and finish close before reuse.
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve, reject) => {
+    server.once('listening', resolve);
+    server.once('error', reject);
   });
+  try {
+    const port = server.address().port;
+    const res = await fetch(`http://127.0.0.1:${port}${route}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, body: await res.json() };
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
 }
 
 async function postJsonWithRawHeaders(app, route, body, rawHeaders) {
@@ -2017,8 +2026,8 @@ test('catalog capability and compatibility request schemas keep verified follow-
   }
 });
 
-test('verified follow-up catalog capability requires every runtime dependency and a ready catalog', async () => {
-  const complete = {
+test('verified follow-up readiness rejects method stubs and a worker Boolean without support receipts', async () => {
+  const stubs = {
     catalog: {
       available: true,
       limits: { maxPriorContextChars: MAX_VERIFIED_CONTEXT_UTF16 },
@@ -2036,7 +2045,67 @@ test('verified follow-up catalog capability requires every runtime dependency an
     },
     worker: { supportsVerifiedFollowUp: true },
   };
+  assert.equal(await isVerifiedFollowUpRuntimeReady(stubs), false);
+});
+
+function supportedComponent(kind, methods) {
+  const component = { ...methods };
+  Object.defineProperty(component, 'verifiedFollowUpSupport', {
+    value: VERIFIED_FOLLOW_UP_COMPONENT_SUPPORT[kind],
+    enumerable: true,
+    writable: false,
+    configurable: false,
+  });
+  return component;
+}
+
+function authenticatedRuntimeSupport() {
+  const key = 'query-facade-runtime-support-key';
+  const now = Date.parse('2026-07-21T16:00:00.000Z');
+  const request = createVerifiedFollowUpSupportRequest({
+    key, now, randomBytes: () => Buffer.alloc(24, 5),
+  });
+  const response = createVerifiedFollowUpSupportResponse({
+    key,
+    request: request.request,
+    authorization: request.authorization,
+    runtimeSupport: VERIFIED_FOLLOW_UP_RUNTIME_SUPPORT,
+    now,
+  });
+  return verifyVerifiedFollowUpSupportResponse({
+    key, request: request.request, response: JSON.parse(JSON.stringify(response)), now,
+  });
+}
+
+test('verified follow-up catalog capability requires every runtime dependency and a ready catalog', async () => {
+  let workerReads = 0;
+  const complete = {
+    catalog: {
+      available: true,
+      limits: { maxPriorContextChars: MAX_VERIFIED_CONTEXT_UTF16 },
+    },
+    providerReadiness: async () => ({ ready: true }),
+    protectedStarter: supportedComponent('protectedStarter', {
+      startVerifiedFollowUpAuthorized() {},
+    }),
+    coordinator: supportedComponent('coordinator', { startVerifiedFollowUp() {} }),
+    reader: supportedComponent('reader', {
+      getQueryFollowUpLineageAuthorized() {},
+      getVerifiedFollowUpContextAuthorized() {},
+    }),
+    store: supportedComponent('store', {
+      getQueryFollowUpLineageAuthorized() {},
+      getVerifiedFollowUpContextAuthorized() {},
+    }),
+    worker: {
+      async readVerifiedFollowUpSupport() {
+        workerReads += 1;
+        return authenticatedRuntimeSupport();
+      },
+    },
+  };
   assert.equal(await isVerifiedFollowUpRuntimeReady(complete), true);
+  assert.equal(workerReads, 1);
   for (const field of [
     'providerReadiness', 'protectedStarter', 'coordinator', 'reader', 'store', 'worker',
   ]) {
@@ -2061,6 +2130,53 @@ test('verified follow-up catalog capability requires every runtime dependency an
     ...complete,
     providerReadiness: async () => { throw new Error('provider offline'); },
   }), false);
+
+  for (const [kind, field] of [
+    ['protectedStarter', 'protectedStarter'],
+    ['coordinator', 'coordinator'],
+    ['reader', 'reader'],
+    ['store', 'store'],
+  ]) {
+    const malformed = { ...complete[field] };
+    Object.defineProperty(malformed, 'verifiedFollowUpSupport', {
+      value: Object.freeze({
+        ...VERIFIED_FOLLOW_UP_COMPONENT_SUPPORT[kind],
+        version: 2,
+      }),
+      enumerable: true,
+      writable: false,
+      configurable: false,
+    });
+    assert.equal(
+      await isVerifiedFollowUpRuntimeReady({ ...complete, [field]: malformed }),
+      false,
+      `drifted ${kind} receipt`,
+    );
+  }
+  assert.equal(await isVerifiedFollowUpRuntimeReady({
+    ...complete,
+    worker: {
+      async readVerifiedFollowUpSupport() {
+        return Object.freeze({ ...VERIFIED_FOLLOW_UP_RUNTIME_SUPPORT });
+      },
+    },
+  }), false, 'unverified runtime receipt');
+  assert.equal(await isVerifiedFollowUpRuntimeReady({
+    ...complete,
+    worker: {
+      async readVerifiedFollowUpSupport() {
+        throw Object.assign(new Error('support auth unavailable'), {
+          code: 'capability_unavailable',
+        });
+      },
+    },
+  }), false, 'missing shared capability key');
+  assert.equal(await isVerifiedFollowUpRuntimeReady({
+    ...complete,
+    worker: {
+      async readVerifiedFollowUpSupport() { throw new Error('remote old or unreachable'); },
+    },
+  }), false, 'remote old or unreachable');
 
   assert.deepEqual(applyVerifiedFollowUpCatalogCapability(complete.catalog, true).limits, {
     maxPriorContextChars: MAX_VERIFIED_CONTEXT_UTF16,

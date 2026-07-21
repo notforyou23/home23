@@ -1027,6 +1027,7 @@ class DashboardServer {
     );
     const remoteWorker = createCosmoBrainOperationWorkerClient({
       baseUrl: `http://127.0.0.1:${configuredCosmoPort}`,
+      capabilityKey: process.env.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY || null,
       sourceOperationTypes: [
         'query', 'pgs', 'research_compile', 'research_intelligence',
         'research_launch', 'research_continue', 'research_stop', 'research_watch',
@@ -1040,20 +1041,6 @@ class DashboardServer {
         'query', 'pgs', 'synthesis', 'research_compile', 'research_intelligence',
       ],
     });
-    const {
-      VERIFIED_FOLLOW_UP_WORKER_SUPPORT,
-    } = require('../../../cosmo23/server/lib/query-operation-worker.js');
-    const {
-      QueryEngine: CosmoQueryEngine,
-    } = require('../../../cosmo23/lib/query-engine.js');
-    worker.supportsVerifiedFollowUp = VERIFIED_FOLLOW_UP_WORKER_SUPPORT?.version === 1
-      && VERIFIED_FOLLOW_UP_WORKER_SUPPORT?.maxUtf16 === 20_000
-      && VERIFIED_FOLLOW_UP_WORKER_SUPPORT?.validatesCanonicalContext === true
-      && CosmoQueryEngine.verifiedFollowUpSupport?.version === 1
-      && CosmoQueryEngine.verifiedFollowUpSupport?.maxUtf16 === 20_000
-      && CosmoQueryEngine.verifiedFollowUpSupport?.initialPrompt === true
-      && CosmoQueryEngine.verifiedFollowUpSupport?.expansionPrompt === true
-      && CosmoQueryEngine.verifiedFollowUpSupport?.cacheIdentity === true;
     worker.registerLocalExecutor('ad_hoc_export', async (context) => ({
       state: 'complete',
       result: await exporter.exportAdHoc({
