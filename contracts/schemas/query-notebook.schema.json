@@ -350,6 +350,289 @@
       }
     },
     "queryNotebookStatus": { "$ref": "#/$defs/queryNotebookSummary" },
+    "queryFollowUpReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operationId", "resultVersion"],
+      "properties": {
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "resultVersion": {
+          "type": "string",
+          "pattern": "^qrv1_[A-Za-z0-9_-]{43}$"
+        }
+      }
+    },
+    "queryNotebookFollowUpStartRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind", "schemaVersion", "followUpFrom", "query", "mode", "modelSelection",
+        "enableSynthesis", "includeOutputs", "includeThoughts", "includeCoordinatorInsights",
+        "allowActions"
+      ],
+      "properties": {
+        "kind": { "const": "verifiedFollowUp" },
+        "schemaVersion": { "const": 1 },
+        "followUpFrom": { "$ref": "#/$defs/queryFollowUpReference" },
+        "query": { "type": "string", "minLength": 1, "maxLength": 12000 },
+        "mode": { "enum": ["quick", "full", "expert", "dive"] },
+        "modelSelection": { "$ref": "#/$defs/providerModelPair" },
+        "enableSynthesis": { "type": "boolean" },
+        "includeOutputs": { "type": "boolean" },
+        "includeThoughts": { "type": "boolean" },
+        "includeCoordinatorInsights": { "type": "boolean" },
+        "allowActions": { "const": false }
+      }
+    },
+    "queryNotebookFollowUpAcceptedResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "requestId", "operationId"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "requestId": {
+          "type": "string",
+          "pattern": "^qreq_[A-Za-z0-9_-]{32}$"
+        },
+        "operationId": { "$ref": "#/$defs/operationId" }
+      }
+    },
+    "queryNotebookProtectedErrorResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "error"],
+      "properties": {
+        "ok": { "const": false },
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "retryable"],
+          "properties": {
+            "code": {
+              "enum": [
+                "invalid_request",
+                "follow_up_source_not_found",
+                "follow_up_source_unavailable",
+                "follow_up_source_expired",
+                "follow_up_result_version_conflict",
+                "follow_up_source_not_terminal",
+                "follow_up_source_empty",
+                "follow_up_model_unavailable",
+                "verified_follow_up_unavailable",
+                "idempotency_conflict"
+              ]
+            },
+            "retryable": { "type": "boolean" }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": { "code": { "enum": ["invalid_request", "follow_up_result_version_conflict"] } },
+                "required": ["code"]
+              },
+              "then": { "properties": { "retryable": { "const": false } } }
+            },
+            {
+              "if": {
+                "properties": { "code": { "const": "idempotency_conflict" } },
+                "required": ["code"]
+              },
+              "then": { "properties": { "retryable": { "const": true } } }
+            }
+          ]
+        }
+      }
+    },
+    "queryNotebookFollowUpLineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rootOperationId", "parentOperationId", "parentResultVersion", "depth",
+        "availableExchangeCount", "includedExchangeCount", "contextTruncated",
+        "sourceAnswerTruncated"
+      ],
+      "properties": {
+        "rootOperationId": { "$ref": "#/$defs/operationId" },
+        "parentOperationId": { "$ref": "#/$defs/operationId" },
+        "parentResultVersion": {
+          "type": "string",
+          "pattern": "^qrv1_[A-Za-z0-9_-]{43}$"
+        },
+        "depth": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "availableExchangeCount": { "$ref": "#/$defs/safeCounter" },
+        "includedExchangeCount": { "$ref": "#/$defs/safeCounter" },
+        "contextTruncated": { "type": "boolean" },
+        "sourceAnswerTruncated": { "type": "boolean" }
+      }
+    },
+    "queryNotebookFollowUpProjectedSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "operationId", "requestKind", "requesterAgent", "brain",
+        "question", "questionTitle", "configuration", "executionState",
+        "humanClassification", "acceptedAt", "startedAt", "updatedAt", "completedAt",
+        "progress", "error", "resultAvailability", "expiresAt",
+        "answerPreviewAvailable", "resultVersion", "coverage", "continuation",
+        "actions", "notification", "followUpLineage"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "requestKind": { "enum": ["direct", "pgs"] },
+        "requesterAgent": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "brain": { "$ref": "#/$defs/brainIdentity" },
+        "question": { "type": "string", "minLength": 1, "maxLength": 12000 },
+        "questionTitle": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "configuration": {
+          "oneOf": [
+            { "$ref": "#/$defs/directConfiguration" },
+            { "$ref": "#/$defs/pgsConfiguration" }
+          ]
+        },
+        "executionState": {
+          "enum": ["queued", "running", "complete", "partial", "failed", "cancelled", "interrupted"]
+        },
+        "humanClassification": { "enum": ["running", "finished"] },
+        "acceptedAt": { "$ref": "#/$defs/canonicalTimestamp" },
+        "startedAt": { "$ref": "#/$defs/nullableTimestamp" },
+        "updatedAt": { "$ref": "#/$defs/nullableTimestamp" },
+        "completedAt": { "$ref": "#/$defs/nullableTimestamp" },
+        "progress": {
+          "oneOf": [
+            { "$ref": "#/$defs/queryProgressSnapshotV1" },
+            { "type": "null" }
+          ]
+        },
+        "error": { "$ref": "#/$defs/typedError" },
+        "resultAvailability": { "enum": ["available", "expired", "absent"] },
+        "expiresAt": { "$ref": "#/$defs/nullableTimestamp" },
+        "answerPreviewAvailable": { "type": "boolean" },
+        "resultVersion": {
+          "oneOf": [
+            { "type": "string", "pattern": "^qrv1_[A-Za-z0-9_-]{43}$" },
+            { "type": "null" }
+          ]
+        },
+        "coverage": { "$ref": "#/$defs/coverage" },
+        "continuation": { "$ref": "#/$defs/continuation" },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 7,
+          "items": { "$ref": "#/$defs/recoveryAction" }
+        },
+        "notification": { "$ref": "#/$defs/notificationState" },
+        "followUpLineage": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/queryNotebookFollowUpLineage" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "executionState": { "enum": ["queued", "running"] } },
+            "required": ["executionState"]
+          },
+          "then": { "properties": { "humanClassification": { "const": "running" } } },
+          "else": { "properties": { "humanClassification": { "const": "finished" } } }
+        },
+        {
+          "if": {
+            "properties": { "resultAvailability": { "const": "available" } },
+            "required": ["resultAvailability"]
+          },
+          "then": {
+            "properties": {
+              "resultVersion": { "type": "string", "pattern": "^qrv1_[A-Za-z0-9_-]{43}$" }
+            }
+          },
+          "else": {
+            "properties": {
+              "resultVersion": { "type": "null" },
+              "answerPreviewAvailable": { "const": false }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "followUpLineage": { "type": "object" } },
+            "required": ["followUpLineage"]
+          },
+          "then": {
+            "properties": {
+              "requestKind": { "const": "direct" },
+              "configuration": { "$ref": "#/$defs/directConfiguration" }
+            }
+          }
+        }
+      ]
+    },
+    "queryNotebookFollowUpProjectedPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "items", "nextCursor", "omittedIncompatibleCount"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "items": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/queryNotebookFollowUpProjectedSummary" }
+        },
+        "nextCursor": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 1368,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        },
+        "omittedIncompatibleCount": { "$ref": "#/$defs/safeCounter" }
+      }
+    },
+    "queryNotebookFollowUpProjectedSnapshotEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type", "operationId", "eventSequence", "executionState", "progress", "error",
+        "resultAvailability", "resultVersion", "actions", "notification", "followUpLineage"
+      ],
+      "properties": {
+        "type": { "const": "snapshot" },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "eventSequence": { "$ref": "#/$defs/safeCounter" },
+        "executionState": {
+          "enum": ["queued", "running", "complete", "partial", "failed", "cancelled", "interrupted"]
+        },
+        "progress": {
+          "oneOf": [
+            { "$ref": "#/$defs/queryProgressSnapshotV1" },
+            { "type": "null" }
+          ]
+        },
+        "error": { "$ref": "#/$defs/typedError" },
+        "resultAvailability": { "enum": ["available", "expired", "absent"] },
+        "resultVersion": {
+          "oneOf": [
+            { "type": "string", "pattern": "^qrv1_[A-Za-z0-9_-]{43}$" },
+            { "type": "null" }
+          ]
+        },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 7,
+          "items": { "$ref": "#/$defs/recoveryAction" }
+        },
+        "notification": { "$ref": "#/$defs/notificationState" },
+        "followUpLineage": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/queryNotebookFollowUpLineage" }
+          ]
+        }
+      }
+    },
     "queryProgressEvent": {
       "type": "object",
       "additionalProperties": false,

@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const express = require('express');
+const Ajv2020 = require('ajv/dist/2020');
 
 require('tsx/cjs');
 
@@ -69,7 +70,6 @@ const FIXTURE_NAMES = Object.freeze([
   'query-notebook-device-credential',
   'query-notebook-web-session',
 ]);
-
 // This independent corpus pin makes coordinated runtime+fixture shape drift fail until
 // a reviewer deliberately accepts a new public contract.
 const EXPECTED_FIXTURE_CORPUS_SHA256 =
@@ -79,6 +79,14 @@ function fixture(name) {
   return JSON.parse(fs.readFileSync(
     path.join(process.cwd(), 'contracts', 'fixtures', `${name}.json`), 'utf8',
   ));
+}
+
+function compileNotebookDefinition(definition) {
+  const schema = JSON.parse(fs.readFileSync(
+    path.join(process.cwd(), 'contracts', 'schemas', 'query-notebook.schema.json'), 'utf8',
+  ));
+  const ajv = new Ajv2020({ strict: false, allErrors: true });
+  return ajv.compile({ ...schema, $ref: `#/$defs/${definition}` });
 }
 
 function pgsRecord(overrides = {}) {
@@ -826,4 +834,133 @@ test('saved-result fixture retains the canonical Apple evidence and notification
     subscribed: false,
     deliveryState: null,
   });
+});
+
+test('verified follow-up start and accepted receipts have exact bounded wire shapes', () => {
+  const manifest = JSON.parse(fs.readFileSync(
+    path.join(process.cwd(), 'contracts', 'manifest.json'), 'utf8',
+  ));
+  const expectedEntries = {
+    'query-notebook-follow-up-start-request': [
+      'POST', '/home23/api/query/operations', 'queryNotebookFollowUpStartRequest',
+    ],
+    'query-notebook-follow-up-accepted-response': [
+      'POST', '/home23/api/query/operations', 'queryNotebookFollowUpAcceptedResponse',
+    ],
+    'query-notebook-page-follow-up-projection': [
+      'GET', '/home23/api/query/notebook', 'queryNotebookFollowUpProjectedPage',
+    ],
+    'query-notebook-status-follow-up-projection': [
+      'GET', '/home23/api/query/operations/:operationId', 'queryNotebookFollowUpProjectedSummary',
+    ],
+    'query-notebook-snapshot-follow-up-projection': [
+      'GET', '/home23/api/query/operations/:operationId/events', 'queryNotebookFollowUpProjectedSnapshotEvent',
+    ],
+  };
+  for (const [id, [method, route, definition]] of Object.entries(expectedEntries)) {
+    const entry = manifest.entries.find((candidate) => candidate.id === id);
+    assert.ok(entry, `manifest must publish ${id}`);
+    assert.equal(entry.method, method, `${id}.method`);
+    assert.equal(entry.route, route, `${id}.route`);
+    assert.equal(entry.definition, definition, `${id}.definition`);
+    assert.equal(entry.fixture, `fixtures/${id}.json`, `${id}.fixture`);
+    assert.equal(entry.auth, 'required', `${id}.auth`);
+  }
+
+  const start = fixture('query-notebook-follow-up-start-request');
+  assert.deepEqual(start, {
+    kind: 'verifiedFollowUp',
+    schemaVersion: 1,
+    followUpFrom: {
+      operationId: `brop_${'A'.repeat(32)}`,
+      resultVersion: `qrv1_${'A'.repeat(43)}`,
+    },
+    query: 'What changed after that?',
+    mode: 'dive',
+    modelSelection: { provider: 'openai', model: 'gpt-5.2' },
+    enableSynthesis: true,
+    includeOutputs: true,
+    includeThoughts: true,
+    includeCoordinatorInsights: true,
+    allowActions: false,
+  });
+  const validateStart = compileNotebookDefinition('queryNotebookFollowUpStartRequest');
+  assert.equal(validateStart(start), true, JSON.stringify(validateStart.errors));
+  for (const field of ['agent', 'brainId', 'priorContext', 'enablePGS', 'pgsMode', 'answer']) {
+    assert.equal(validateStart({ ...start, [field]: true }), false, field);
+  }
+
+  const accepted = fixture('query-notebook-follow-up-accepted-response');
+  assert.deepEqual(Object.keys(accepted).sort(), ['operationId', 'requestId', 'schemaVersion']);
+  const validateAccepted = compileNotebookDefinition('queryNotebookFollowUpAcceptedResponse');
+  assert.equal(validateAccepted(accepted), true, JSON.stringify(validateAccepted.errors));
+  assert.equal(validateAccepted({ ...accepted, state: 'queued' }), false,
+    'accepted receipt must reject unknown keys');
+
+  const validateError = compileNotebookDefinition('queryNotebookProtectedErrorResponse');
+  const conflict = {
+    ok: false,
+    error: { code: 'follow_up_result_version_conflict', retryable: false },
+  };
+  assert.equal(validateError(conflict), true, JSON.stringify(validateError.errors));
+  assert.equal(validateError({ ...conflict, operationId: accepted.operationId }), false,
+    'bounded protected errors must not expose durable source metadata');
+  assert.equal(validateError({
+    ok: false,
+    error: { code: 'idempotency_conflict', retryable: true },
+  }), true, 'idempotency conflicts remain generically recoverable');
+});
+
+test('opted follow-up projections require lineage without widening legacy notebook shapes', () => {
+  const projected = [
+    ['queryNotebookFollowUpProjectedPage', 'query-notebook-page-follow-up-projection'],
+    ['queryNotebookFollowUpProjectedSummary', 'query-notebook-status-follow-up-projection'],
+    ['queryNotebookFollowUpProjectedSnapshotEvent', 'query-notebook-snapshot-follow-up-projection'],
+  ];
+  for (const [definition, name] of projected) {
+    const validate = compileNotebookDefinition(definition);
+    const value = fixture(name);
+    assert.equal(validate(value), true, `${name}: ${JSON.stringify(validate.errors)}`);
+  }
+
+  const projectedPage = fixture('query-notebook-page-follow-up-projection');
+  assert.equal(projectedPage.items.some((item) => item.followUpLineage === null), true,
+    'projected roots must carry an explicit null lineage');
+  const child = projectedPage.items.find((item) => item.followUpLineage && typeof item.followUpLineage === 'object');
+  assert.ok(child, 'projected page must include a child lineage receipt');
+  assert.deepEqual(Object.keys(child.followUpLineage).sort(), [
+    'availableExchangeCount',
+    'contextTruncated',
+    'depth',
+    'includedExchangeCount',
+    'parentOperationId',
+    'parentResultVersion',
+    'rootOperationId',
+    'sourceAnswerTruncated',
+  ]);
+  const validateProjectedChild = compileNotebookDefinition('queryNotebookFollowUpProjectedSummary');
+  assert.equal(validateProjectedChild({ ...child, requestKind: 'pgs' }), false,
+    'lineage-bearing children must retain the ordinary Direct projection');
+
+  const validateProjectedStatus = compileNotebookDefinition('queryNotebookFollowUpProjectedSummary');
+  const status = fixture('query-notebook-status-follow-up-projection');
+  const { followUpLineage: _lineage, ...legacyStatusShape } = status;
+  assert.equal(validateProjectedStatus(legacyStatusShape), false,
+    'opted status must require the lineage key even for a root');
+
+  const validateLegacyPage = compileNotebookDefinition('queryNotebookPage');
+  const legacyPage = fixture('query-notebook-page');
+  assert.equal(validateLegacyPage({ ...legacyPage, followUpLineage: null }), false,
+    'legacy page remains byte-shape compatible and must reject projection keys');
+  const validateLegacyStatus = compileNotebookDefinition('queryNotebookStatus');
+  assert.equal(validateLegacyStatus({ ...fixture('query-notebook-status'), followUpLineage: null }), false,
+    'legacy status must reject projection keys');
+  const validateLegacySnapshot = compileNotebookDefinition('querySnapshotEvent');
+  assert.equal(validateLegacySnapshot({
+    ...fixture('query-notebook-snapshot-follow-up-projection'),
+    followUpLineage: null,
+  }), false, 'legacy snapshots must reject projection keys');
+  const validateResult = compileNotebookDefinition('queryNotebookResult');
+  assert.equal(validateResult({ ...fixture('query-notebook-result'), followUpLineage: null }), false,
+    'results never expose lineage');
 });

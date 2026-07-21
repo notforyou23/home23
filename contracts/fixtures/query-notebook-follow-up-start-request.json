@@ -1,0 +1,19 @@
+{
+  "kind": "verifiedFollowUp",
+  "schemaVersion": 1,
+  "followUpFrom": {
+    "operationId": "brop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "resultVersion": "qrv1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  },
+  "query": "What changed after that?",
+  "mode": "dive",
+  "modelSelection": {
+    "provider": "openai",
+    "model": "gpt-5.2"
+  },
+  "enableSynthesis": true,
+  "includeOutputs": true,
+  "includeThoughts": true,
+  "includeCoordinatorInsights": true,
+  "allowActions": false
+}

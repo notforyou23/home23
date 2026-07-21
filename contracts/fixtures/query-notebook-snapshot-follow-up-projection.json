@@ -1,0 +1,27 @@
+{
+  "type": "snapshot",
+  "operationId": "brop_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+  "eventSequence": 8,
+  "executionState": "complete",
+  "progress": {
+    "version": 1,
+    "stage": "terminal",
+    "eventSequence": 8,
+    "lastProgressAt": "2026-07-13T20:12:00.000Z"
+  },
+  "error": null,
+  "resultAvailability": "available",
+  "resultVersion": "qrv1_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+  "actions": [{ "kind": "openResult" }, { "kind": "export" }],
+  "notification": { "subscribed": false, "deliveryState": null },
+  "followUpLineage": {
+    "rootOperationId": "brop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "parentOperationId": "brop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "parentResultVersion": "qrv1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "depth": 1,
+    "availableExchangeCount": 1,
+    "includedExchangeCount": 1,
+    "contextTruncated": false,
+    "sourceAnswerTruncated": false
+  }
+}

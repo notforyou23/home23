@@ -1950,6 +1950,51 @@ test('query request schema enforces direct requests and every named PGS mode/lev
   ]) assert.equal(validate(invalid), false, JSON.stringify(invalid));
 });
 
+test('catalog capability and compatibility request schemas keep verified follow-ups protected', () => {
+  const catalogFixture = JSON.parse(fs.readFileSync(
+    path.join(process.cwd(), 'contracts/fixtures/query-catalog.json'), 'utf8',
+  ));
+  assert.deepEqual({
+    verifiedFollowUp: catalogFixture.limits.verifiedFollowUp,
+    followUpProjection: catalogFixture.limits.followUpProjection,
+  }, {
+    verifiedFollowUp: true,
+    followUpProjection: 'follow-up-v1',
+  });
+  const validateCatalog = compileQueryDefinition('queryCatalogResponse');
+  assert.equal(validateCatalog(catalogFixture), true, JSON.stringify(validateCatalog.errors));
+  assert.equal(validateCatalog({
+    ...catalogFixture,
+    limits: { ...catalogFixture.limits, verifiedFollowUp: false },
+  }), false, 'verifiedFollowUp capability must be exact when advertised');
+  assert.equal(validateCatalog({
+    ...catalogFixture,
+    limits: { ...catalogFixture.limits, followUpProjection: 'follow-up-v2' },
+  }), false, 'follow-up projection capability must be exact when advertised');
+
+  const protectedFields = {
+    followUpFrom: {
+      operationId: `brop_${'A'.repeat(32)}`,
+      resultVersion: `qrv1_${'A'.repeat(43)}`,
+    },
+    kind: 'verifiedFollowUp',
+    schemaVersion: 1,
+  };
+  const validateDirect = compileQueryDefinition('directQueryRequest');
+  const direct = {
+    query: 'x', enablePGS: false,
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+  };
+  const validatePgs = compileQueryDefinition('pgsQueryRequest');
+  const pgs = {
+    query: 'x', enablePGS: true, pgsMode: 'fresh', pgsLevel: 'sample', ...PGS_PAIRS,
+  };
+  for (const [field, value] of Object.entries(protectedFields)) {
+    assert.equal(validateDirect({ ...direct, [field]: value }), false, `direct ${field}`);
+    assert.equal(validatePgs({ ...pgs, [field]: value }), false, `pgs ${field}`);
+  }
+});
+
 test('query response schema distinguishes terminal, detached, and typed failure shapes', async () => {
   const validate = compileQueryDefinition('queryRunResponse');
   const terminalFixture = makeQueryApp();

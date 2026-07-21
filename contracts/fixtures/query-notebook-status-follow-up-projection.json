@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "operationId": "brop_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+  "requestKind": "direct",
+  "requesterAgent": "jerry",
+  "brain": { "id": "brain-jerry", "displayName": "Jerry" },
+  "question": "What changed after that?",
+  "questionTitle": "What changed after that?",
+  "configuration": {
+    "directMode": "dive",
+    "directModel": { "provider": "openai", "model": "gpt-5.2" }
+  },
+  "executionState": "complete",
+  "humanClassification": "finished",
+  "acceptedAt": "2026-07-13T20:10:00.000Z",
+  "startedAt": "2026-07-13T20:10:01.000Z",
+  "updatedAt": "2026-07-13T20:12:00.000Z",
+  "completedAt": "2026-07-13T20:12:00.000Z",
+  "progress": {
+    "version": 1,
+    "stage": "terminal",
+    "eventSequence": 8,
+    "lastProgressAt": "2026-07-13T20:12:00.000Z"
+  },
+  "error": null,
+  "resultAvailability": "available",
+  "expiresAt": "2026-07-20T20:12:00.000Z",
+  "answerPreviewAvailable": true,
+  "resultVersion": "qrv1_CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+  "coverage": null,
+  "continuation": null,
+  "actions": [{ "kind": "openResult" }, { "kind": "export" }],
+  "notification": { "subscribed": false, "deliveryState": null },
+  "followUpLineage": {
+    "rootOperationId": "brop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "parentOperationId": "brop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "parentResultVersion": "qrv1_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "depth": 1,
+    "availableExchangeCount": 1,
+    "includedExchangeCount": 1,
+    "contextTruncated": false,
+    "sourceAnswerTruncated": false
+  }
+}

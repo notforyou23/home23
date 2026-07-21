@@ -298,6 +298,30 @@
       "consumers": ["ios", "mac", "query"]
     },
     {
+      "id": "query-notebook-follow-up-start-request",
+      "method": "POST",
+      "base": "dashboard",
+      "route": "/home23/api/query/operations",
+      "schema": "schemas/query-notebook.schema.json",
+      "definition": "queryNotebookFollowUpStartRequest",
+      "fixture": "fixtures/query-notebook-follow-up-start-request.json",
+      "auth": "required",
+      "liveValidation": "fixture-only",
+      "consumers": ["ios", "mac", "query"]
+    },
+    {
+      "id": "query-notebook-follow-up-accepted-response",
+      "method": "POST",
+      "base": "dashboard",
+      "route": "/home23/api/query/operations",
+      "schema": "schemas/query-notebook.schema.json",
+      "definition": "queryNotebookFollowUpAcceptedResponse",
+      "fixture": "fixtures/query-notebook-follow-up-accepted-response.json",
+      "auth": "required",
+      "liveValidation": "fixture-only",
+      "consumers": ["ios", "mac", "query"]
+    },
+    {
       "id": "query-notebook-page",
       "method": "GET",
       "base": "dashboard",
@@ -305,6 +329,18 @@
       "schema": "schemas/query-notebook.schema.json",
       "definition": "queryNotebookPage",
       "fixture": "fixtures/query-notebook-page.json",
+      "auth": "required",
+      "liveValidation": "fixture-only",
+      "consumers": ["ios", "mac", "query"]
+    },
+    {
+      "id": "query-notebook-page-follow-up-projection",
+      "method": "GET",
+      "base": "dashboard",
+      "route": "/home23/api/query/notebook",
+      "schema": "schemas/query-notebook.schema.json",
+      "definition": "queryNotebookFollowUpProjectedPage",
+      "fixture": "fixtures/query-notebook-page-follow-up-projection.json",
       "auth": "required",
       "liveValidation": "fixture-only",
       "consumers": ["ios", "mac", "query"]
@@ -322,6 +358,18 @@
       "consumers": ["ios", "mac", "query"]
     },
     {
+      "id": "query-notebook-status-follow-up-projection",
+      "method": "GET",
+      "base": "dashboard",
+      "route": "/home23/api/query/operations/:operationId",
+      "schema": "schemas/query-notebook.schema.json",
+      "definition": "queryNotebookFollowUpProjectedSummary",
+      "fixture": "fixtures/query-notebook-status-follow-up-projection.json",
+      "auth": "required",
+      "liveValidation": "fixture-only",
+      "consumers": ["ios", "mac", "query"]
+    },
+    {
       "id": "query-notebook-progress-event",
       "method": "GET",
       "base": "dashboard",
@@ -329,6 +377,18 @@
       "schema": "schemas/query-notebook.schema.json",
       "definition": "queryProgressEvent",
       "fixture": "fixtures/query-notebook-progress-event.json",
+      "auth": "required",
+      "liveValidation": "fixture-only",
+      "consumers": ["ios", "mac", "query"]
+    },
+    {
+      "id": "query-notebook-snapshot-follow-up-projection",
+      "method": "GET",
+      "base": "dashboard",
+      "route": "/home23/api/query/operations/:operationId/events",
+      "schema": "schemas/query-notebook.schema.json",
+      "definition": "queryNotebookFollowUpProjectedSnapshotEvent",
+      "fixture": "fixtures/query-notebook-snapshot-follow-up-projection.json",
       "auth": "required",
       "liveValidation": "fixture-only",
       "consumers": ["ios", "mac", "query"]

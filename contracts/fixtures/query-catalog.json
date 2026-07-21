@@ -53,7 +53,9 @@
   "streaming": false,
   "limits": {
     "maxQueryChars": 12000,
-    "maxPriorContextChars": 20000
+    "maxPriorContextChars": 20000,
+    "verifiedFollowUp": true,
+    "followUpProjection": "follow-up-v1"
   },
   "lastRouteError": null
 }

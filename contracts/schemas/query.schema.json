@@ -110,7 +110,11 @@
         "streaming": { "type": "boolean" },
         "limits": {
           "type": ["object", "null"],
-          "additionalProperties": true
+          "additionalProperties": true,
+          "properties": {
+            "verifiedFollowUp": { "const": true },
+            "followUpProjection": { "const": "follow-up-v1" }
+          }
         },
         "lastRouteError": { "type": ["string", "null"] }
       }
