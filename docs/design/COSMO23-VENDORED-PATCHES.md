@@ -3640,7 +3640,10 @@ byte-identical — 27 run brains migrated 2026-07-20).
 **Files.** `cosmo23/server/lib/query-operation-worker.js`,
 `cosmo23/lib/query-engine.js`, with Home23 readiness and compatibility gates in
 `engine/src/dashboard/home23-query-api.js` and
-`engine/src/dashboard/server.js`.
+`engine/src/dashboard/server.js`. Authenticated readiness additionally uses
+`shared/query/verified-follow-up-support.cjs`, the COSMO operation
+runtime/worker/routes, and the Home23 coordinator, operation store/reader,
+protected notebook starter, remote worker client, and worker adapter.
 
 **Problem.** The protected notebook coordinator could construct the canonical
 version-1 verified follow-up projection, but COSMO did not yet accept that
@@ -3668,6 +3671,20 @@ all present. Fallback and incomplete runtimes omit both keys. Public Query and
 generic Direct/PGS starts continue to reject follow-up control fields and the
 private projection.
 
+The readiness follow-up at
+`bbcc1cb389557c0ca18c0001c18b5cb28e3e78dd` removes Home23's local-source
+inference. Each local dependency now publishes an exact frozen versioned
+support receipt, and the real loopback COSMO worker composes runtime support
+only from the exact `QueryEngine` class and exact worker/engine contracts.
+Home23 performs a fresh nonce- and timestamp-bound HMAC-SHA256 handshake over a
+bounded loopback-only endpoint using the shared
+`HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY`. The dashboard accepts only the exact
+authenticated v1 receipt; copied markers, method stubs, booleans, mutable or
+drifted receipts, a missing key, an old or unreachable worker, invalid auth,
+and response substitution all fail closed. The support handshake does not use
+or consume the operation capability nonce store, and accepted idempotent
+follow-up replay remains available before live readiness checks.
+
 **Verify (offline only).** At implementation commit
 `6614b10dc247db6c966c831b5eef6866b2305412`, the focused Task 6 command passed
 124/124 tests, including the legacy adapter. The golden-vector consumers prove
@@ -3678,3 +3695,13 @@ facade/runtime-capability, and source-pin regressions additionally passed
 install, so suites that load the real Query engine used `NODE_PATH` pointing to
 the main checkout's `cosmo23/node_modules`. No service restart, deploy, or live
 provider operation was performed.
+
+For the authenticated-readiness follow-up, the affected aggregate passed
+413/413 twice consecutively after repairing its test helper to bind and fetch
+the same IPv4 loopback namespace and await server closure; after the final
+exact-engine-identity hardening it passed 413/413 again. The query-facade file
+also passed 10 consecutive 50/50 runs. The original Task 6 suite passed
+125/125, adjacent notebook/runtime regressions passed 69/69, and the final
+COSMO activation/runtime check passed 7/7. All changed JavaScript passed syntax
+checks and `git diff --check`. Verification remained offline: no restart,
+deployment, or live provider operation was performed.
