@@ -1323,6 +1323,40 @@ test('verified follow-up returns exact bounded source, result, and model failure
 
 test('missing, foreign, cross-scope, and corrupt source references are indistinguishable', async () => {
   const base = canonicalParent();
+  const inheritedFixture = followUpServiceFixture({
+    parent: base.record,
+    parentResult: base.result,
+  });
+  await inheritedFixture.service.startVerifiedFollowUpAuthorized({
+    requestId: `qreq_${'I'.repeat(32)}`,
+    body: followUpBody(base.record),
+  });
+  const inherited = inheritedFixture.calls.at(-1)[1];
+  const followUpResult = { answer: 'Verified child answer.' };
+  const followUpBase = queryRecord({
+    operationId: FOLLOW_UP_CHILD_ID,
+    requestParameters: followUpBody(base.record),
+    parameters: {
+      query: 'What changed after that?',
+      mode: 'dive',
+      modelSelection: { provider: 'openai', model: 'gpt-5.2' },
+      enableSynthesis: true,
+      includeOutputs: true,
+      includeThoughts: true,
+      includeCoordinatorInsights: true,
+      allowActions: false,
+    },
+    target: { ...base.record.target },
+    result: followUpResult,
+  });
+  const followUpSha = crypto.createHash('sha256')
+    .update(canonicalJson(followUpResult), 'utf8').digest('hex');
+  const followUpParent = {
+    ...followUpBase,
+    notebookResultSummary: deriveNotebookResultSummary(
+      followUpBase, followUpResult, followUpSha,
+    ),
+  };
   const hidden = { code: 'follow_up_source_not_found', httpStatus: 404, retryable: false };
   const notFound = new Error('operation_not_found');
   notFound.code = 'operation_not_found';
@@ -1353,11 +1387,30 @@ test('missing, foreign, cross-scope, and corrupt source references are indisting
       },
       parentPrivateContext: null,
     },
+    {
+      name: 'safe and private lineage mismatch',
+      parent: followUpParent,
+      parentResult: followUpResult,
+      requestRecord: followUpParent,
+      parentLineage: {
+        ...inherited.queryFollowUpLineage,
+        rootOperationId: FOLLOW_UP_GRANDCHILD_ID,
+      },
+      parentPrivateContext: inherited.privateContext,
+    },
+    {
+      name: 'cyclic lineage',
+      parent: { ...followUpParent, operationId: base.record.operationId },
+      parentResult: followUpResult,
+      requestRecord: { ...followUpParent, operationId: base.record.operationId },
+      parentLineage: inherited.queryFollowUpLineage,
+      parentPrivateContext: inherited.privateContext,
+    },
   ];
   for (const row of variants) {
     const fixture = followUpServiceFixture({
       parent: row.parent ?? base.record,
-      parentResult: base.result,
+      parentResult: row.parentResult ?? base.result,
       parentLineage: row.parentLineage,
       parentPrivateContext: row.parentPrivateContext,
       catalog: row.catalog,
@@ -1366,7 +1419,7 @@ test('missing, foreign, cross-scope, and corrupt source references are indisting
     await assert.rejects(
       () => fixture.service.startVerifiedFollowUpAuthorized({
         requestId: `qreq_${row.name[0].toUpperCase().repeat(32)}`,
-        body: followUpBody(base.record),
+        body: followUpBody(row.requestRecord ?? base.record),
       }),
       (error) => {
         assert.deepEqual({

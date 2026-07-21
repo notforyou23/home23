@@ -268,6 +268,62 @@ function acceptedAuth() {
   };
 }
 
+function realNotebookAuthFixture(t) {
+  require('tsx/cjs');
+  const { DeviceRegistry } = require('../../../src/push/device-registry.ts');
+  const {
+    createQueryNotebookAuth,
+    createQueryNotebookCredentialLookup,
+  } = require('../../../engine/src/dashboard/query-notebook-auth.js');
+  const { createQueryNotebookCredentialAuthority } = require(
+    '../../../shared/query-notebook-credential.cjs'
+  );
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-query-route-auth-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const filePath = path.join(root, 'device-registry.json');
+  let current = NOW;
+  const registry = new DeviceRegistry(filePath, {
+    now: () => current,
+    randomBytes: () => Buffer.alloc(24, 0x31),
+  });
+  const enrollment = registry.enrollQueryCredential({
+    installationId: DEVICE_INSTALLATION_ID,
+    requesterAgent: 'jerry',
+  });
+  const bridgeToken = `bridge_${'r'.repeat(64)}`;
+  const authority = createQueryNotebookCredentialAuthority({
+    bridgeToken, requesterAgent: 'jerry', now: () => current,
+  });
+  const deviceToken = authority.issue({
+    audience: 'device',
+    credentialId: enrollment.credential_id,
+    requesterKind: 'device',
+    generation: enrollment.credential_generation,
+    expiresAt: '2026-07-14T20:00:00.000Z',
+  });
+  const auth = createQueryNotebookAuth({
+    requesterAgent: 'jerry',
+    credentialAuthority: authority,
+    lookupDeviceCredential: createQueryNotebookCredentialLookup({
+      filePath, requesterAgent: 'jerry',
+    }),
+    verifyBridgeBearer: async (token) => token === bridgeToken,
+    now: () => current,
+    randomBytes: () => Buffer.alloc(24, 0x41),
+  });
+  return {
+    auth,
+    bridgeToken,
+    enrollment,
+    registry,
+    deviceHeaders: {
+      authorization: `Bearer ${deviceToken}`,
+      'x-home23-device-id': enrollment.credential_id,
+    },
+    setNow(value) { current = value; },
+  };
+}
+
 async function jsonRequest(base, route, { method = 'GET', body, headers = {} } = {}) {
   const response = await fetch(`${base}${route}`, {
     method,
@@ -788,7 +844,7 @@ test('subscription registry rejects foreign requester and bounded-capacity overf
   }), { code: 'access_denied' });
 });
 
-test('protected collection POST requires one raw request ID and returns one bounded receipt', async (t) => {
+test('protected collection POST enforces real auth, one raw request ID, and a bounded receipt', async (t) => {
   const { createHome23QueryNotebookRouter } = require(
     '../../../engine/src/dashboard/home23-query-notebook-api.js'
   );
@@ -807,8 +863,9 @@ test('protected collection POST requires one raw request ID and returns one boun
       };
     },
   };
+  const authFixture = realNotebookAuthFixture(t);
   const router = createHome23QueryNotebookRouter({
-    requesterAgent: 'jerry', auth: acceptedAuth(), notebookService,
+    requesterAgent: 'jerry', auth: authFixture.auth, notebookService,
     getStatusAuthorized: async () => { throw new Error('not used'); },
     coordinator: { async cancel() {}, async attach() {}, async detach() {} },
   });
@@ -819,7 +876,7 @@ test('protected collection POST requires one raw request ID and returns one boun
   const body = followUpStartBody();
 
   const absent = await jsonRequest(server.base, '/home23/api/query/operations', {
-    method: 'POST', body,
+    method: 'POST', body, headers: authFixture.deviceHeaders,
   });
   assert.equal(absent.response.status, 400);
   assert.equal(starts.length, 0);
@@ -828,11 +885,14 @@ test('protected collection POST requires one raw request ID and returns one boun
     `${FOLLOW_UP_REQUEST_ID},${FOLLOW_UP_REQUEST_ID}`,
   ]) {
     const invalid = await jsonRequest(server.base, '/home23/api/query/operations', {
-      method: 'POST', body, headers: { 'x-home23-query-request-id': requestId },
+      method: 'POST', body,
+      headers: { ...authFixture.deviceHeaders, 'x-home23-query-request-id': requestId },
     });
     assert.equal(invalid.response.status, 400, requestId);
   }
   const duplicated = await rawJsonPost(server.base, '/home23/api/query/operations', [
+    'authorization', authFixture.deviceHeaders.authorization,
+    'x-home23-device-id', authFixture.deviceHeaders['x-home23-device-id'],
     'X-Home23-Query-Request-Id', FOLLOW_UP_REQUEST_ID,
     'x-home23-query-request-id', FOLLOW_UP_REQUEST_ID,
   ], body);
@@ -840,14 +900,41 @@ test('protected collection POST requires one raw request ID and returns one boun
 
   const extra = await jsonRequest(server.base, '/home23/api/query/operations', {
     method: 'POST', body: { ...body, agent: 'forrest' },
-    headers: { 'x-home23-query-request-id': FOLLOW_UP_REQUEST_ID },
+    headers: { ...authFixture.deviceHeaders, 'x-home23-query-request-id': FOLLOW_UP_REQUEST_ID },
   });
   assert.equal(extra.response.status, 400);
   assert.equal(starts.length, 0);
 
+  const missingBearer = await jsonRequest(server.base, '/home23/api/query/operations', {
+    method: 'POST', body,
+    headers: {
+      'x-home23-device-id': authFixture.enrollment.credential_id,
+      'x-home23-query-request-id': FOLLOW_UP_REQUEST_ID,
+    },
+  });
+  assert.equal(missingBearer.response.status, 401);
+  const missingDevice = await jsonRequest(server.base, '/home23/api/query/operations', {
+    method: 'POST', body,
+    headers: {
+      authorization: authFixture.deviceHeaders.authorization,
+      'x-home23-query-request-id': FOLLOW_UP_REQUEST_ID,
+    },
+  });
+  assert.equal(missingDevice.response.status, 401);
+  const mismatchedDevice = await jsonRequest(server.base, '/home23/api/query/operations', {
+    method: 'POST', body,
+    headers: {
+      ...authFixture.deviceHeaders,
+      'x-home23-device-id': `qncred_${'X'.repeat(32)}`,
+      'x-home23-query-request-id': FOLLOW_UP_REQUEST_ID,
+    },
+  });
+  assert.equal(mismatchedDevice.response.status, 401);
+  assert.equal(starts.length, 0);
+
   const accepted = await jsonRequest(server.base, '/home23/api/query/operations', {
     method: 'POST', body,
-    headers: { 'x-home23-query-request-id': FOLLOW_UP_REQUEST_ID },
+    headers: { ...authFixture.deviceHeaders, 'x-home23-query-request-id': FOLLOW_UP_REQUEST_ID },
   });
   assert.equal(accepted.response.status, 202);
   assert.deepEqual(accepted.body, {
@@ -857,14 +944,59 @@ test('protected collection POST requires one raw request ID and returns one boun
   });
   assert.deepEqual(starts, [{ requestId: FOLLOW_UP_REQUEST_ID, body }]);
 
+  authFixture.registry.enrollQueryCredential({
+    installationId: DEVICE_INSTALLATION_ID,
+    requesterAgent: 'jerry',
+  });
+  const staleDevice = await jsonRequest(server.base, '/home23/api/query/operations', {
+    method: 'POST', body,
+    headers: {
+      ...authFixture.deviceHeaders,
+      'x-home23-query-request-id': `qreq_${'S'.repeat(32)}`,
+    },
+  });
+  assert.equal(staleDevice.response.status, 401);
+  assert.equal(starts.length, 1);
+
+  const session = await fetch(`${server.base}/home23/api/query/session`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${authFixture.bridgeToken}`,
+      origin: server.base,
+      'sec-fetch-site': 'same-origin',
+      'sec-fetch-mode': 'cors',
+      'sec-fetch-dest': 'empty',
+    },
+  });
+  assert.equal(session.status, 200);
+  const cookie = session.headers.get('set-cookie').split(';')[0];
   const web = await jsonRequest(server.base, '/home23/api/query/operations', {
     method: 'POST', body,
     headers: {
       'x-home23-query-request-id': `qreq_${'W'.repeat(32)}`,
-      'x-test-web': '1',
+      cookie,
     },
   });
   assert.equal(web.response.status, 202, 'existing protected web-session semantics remain valid');
+  assert.equal(starts.length, 2);
+  const tamperedWeb = await jsonRequest(server.base, '/home23/api/query/operations', {
+    method: 'POST', body,
+    headers: {
+      'x-home23-query-request-id': `qreq_${'T'.repeat(32)}`,
+      cookie: `${cookie}X`,
+    },
+  });
+  assert.equal(tamperedWeb.response.status, 401);
+  authFixture.setNow(Date.parse('2026-07-13T20:15:00.001Z'));
+  const expiredWeb = await jsonRequest(server.base, '/home23/api/query/operations', {
+    method: 'POST', body,
+    headers: {
+      'x-home23-query-request-id': `qreq_${'E'.repeat(32)}`,
+      cookie,
+    },
+  });
+  assert.equal(expiredWeb.response.status, 401);
+  assert.equal(starts.length, 2);
 });
 
 test('protected follow-up failures keep exact status, retryability, and no source metadata', async (t) => {
