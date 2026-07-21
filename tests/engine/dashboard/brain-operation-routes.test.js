@@ -434,6 +434,39 @@ test('start enforces operation authority domains and exact operation-specific sc
             version: 1, exchanges: [{ query: 'private', answer: 'private' }],
           },
         } },
+      { requestId: 'query-private-store-context', operationType: 'query',
+        parameters: {
+          query: 'canary',
+          _queryFollowUpContext: {
+            version: 1, exchanges: [{ query: 'private', answer: 'private' }],
+          },
+        } },
+      { requestId: 'pgs-protected-follow-up', operationType: 'pgs',
+        parameters: {
+          query: 'canary',
+          kind: 'verifiedFollowUp',
+          followUpFrom: {
+            operationId: `brop_${'P'.repeat(32)}`,
+            resultVersion: `qrv1_${'V'.repeat(43)}`,
+          },
+          pgsMode: 'fresh', pgsLevel: 'sample',
+          pgsSweep: { provider: 'openai', model: 'same-name' },
+          pgsSynth: { provider: 'openai', model: 'same-name' },
+        } },
+      { requestId: 'pgs-private-context', operationType: 'pgs',
+        parameters: {
+          query: 'canary',
+          verifiedConversationContext: {
+            version: 1, exchanges: [{ query: 'private', answer: 'private' }],
+          },
+        } },
+      { requestId: 'pgs-private-store-context', operationType: 'pgs',
+        parameters: {
+          query: 'canary',
+          _queryFollowUpContext: {
+            version: 1, exchanges: [{ query: 'private', answer: 'private' }],
+          },
+        } },
       { requestId: 'pgs-query-pair', operationType: 'pgs',
         parameters: { query: 'canary', modelSelection: { provider: 'openai', model: 'same-name' } } },
       { requestId: 'synthesis-pair', operationType: 'synthesis',

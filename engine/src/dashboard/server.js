@@ -46,8 +46,10 @@ const { createSourceOperationExecutors } = require('./brain-operations/source-ex
 const { createResearchRunsReader } = require('./brain-operations/research-runs-reader.js');
 const { createGraphExportExecutor } = require('./brain-operations/graph-export-executor.js');
 const {
+  applyVerifiedFollowUpCatalogCapability,
   buildQueryCatalog,
   createQueryCompatibilityBodyParser,
+  isVerifiedFollowUpRuntimeReady,
 } = require('./home23-query-api.js');
 const {
   createHome23QueryNotebookRouter,
@@ -814,17 +816,23 @@ class DashboardServer {
       return;
     }
     const requesterAgent = this.getHome23AgentName();
-    const verifiedFollowUpReadiness = dependencies.verifiedFollowUpReadiness || (async () => {
-      const provider = await this.brainOperationsProviderReadiness();
-      return provider?.ready === true
-        && this.brainOperationsWorker?.supportsVerifiedFollowUp === true;
-    });
     const queryCatalogProvider = dependencies.queryCatalogProvider || (() => buildQueryCatalog({
       home23Root: this.getHome23Root(),
       agent: requesterAgent,
       getDefaultAgent: () => requesterAgent,
       operationAdapter: this.brainOperationsCompatibilityAdapter,
     }));
+    const verifiedFollowUpReadiness = dependencies.verifiedFollowUpReadiness || (async () => (
+      isVerifiedFollowUpRuntimeReady({
+        catalog: await queryCatalogProvider(),
+        providerReadiness: this.brainOperationsProviderReadiness,
+        protectedStarter: this.queryNotebookService,
+        coordinator: this.brainOperationsCoordinator,
+        reader: this.brainOperationsReader,
+        store: this.brainOperationsStore,
+        worker: this.brainOperationsWorker,
+      })
+    ));
     const configuredBridgeToken = loadQueryNotebookBridgeToken({
       home23Root: this.getHome23Root(), requesterAgent,
     });
@@ -1032,6 +1040,20 @@ class DashboardServer {
         'query', 'pgs', 'synthesis', 'research_compile', 'research_intelligence',
       ],
     });
+    const {
+      VERIFIED_FOLLOW_UP_WORKER_SUPPORT,
+    } = require('../../../cosmo23/server/lib/query-operation-worker.js');
+    const {
+      QueryEngine: CosmoQueryEngine,
+    } = require('../../../cosmo23/lib/query-engine.js');
+    worker.supportsVerifiedFollowUp = VERIFIED_FOLLOW_UP_WORKER_SUPPORT?.version === 1
+      && VERIFIED_FOLLOW_UP_WORKER_SUPPORT?.maxUtf16 === 20_000
+      && VERIFIED_FOLLOW_UP_WORKER_SUPPORT?.validatesCanonicalContext === true
+      && CosmoQueryEngine.verifiedFollowUpSupport?.version === 1
+      && CosmoQueryEngine.verifiedFollowUpSupport?.maxUtf16 === 20_000
+      && CosmoQueryEngine.verifiedFollowUpSupport?.initialPrompt === true
+      && CosmoQueryEngine.verifiedFollowUpSupport?.expansionPrompt === true
+      && CosmoQueryEngine.verifiedFollowUpSupport?.cacheIdentity === true;
     worker.registerLocalExecutor('ad_hoc_export', async (context) => ({
       state: 'complete',
       result: await exporter.exportAdHoc({
@@ -2891,15 +2913,9 @@ class DashboardServer {
             getDefaultAgent: () => this.getHome23AgentName(),
             operationAdapter: this.brainOperationsCompatibilityAdapter,
           });
-          const limits = { ...catalog.limits };
-          delete limits.verifiedFollowUp;
-          delete limits.followUpProjection;
-          if (agent === this.getHome23AgentName()
-              && await this.queryVerifiedFollowUpReadiness?.() === true) {
-            limits.verifiedFollowUp = true;
-            limits.followUpProjection = 'follow-up-v1';
-          }
-          return { ...catalog, limits };
+          const ready = agent === this.getHome23AgentName()
+            && await this.queryVerifiedFollowUpReadiness?.() === true;
+          return applyVerifiedFollowUpCatalogCapability(catalog, ready);
         },
       });
       const { router: settingsRouter } = createSettingsRouter(home23Root, {

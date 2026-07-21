@@ -54,6 +54,39 @@ const NONTERMINAL_STATES = new Set(['queued', 'running']);
 const SUCCESS_STATES = new Set(['complete', 'partial']);
 const TERMINAL_STATES = new Set(['complete', 'partial', 'failed', 'cancelled', 'interrupted']);
 
+async function isVerifiedFollowUpRuntimeReady(options = {}) {
+  try {
+    const provider = typeof options.providerReadiness === 'function'
+      ? await options.providerReadiness()
+      : null;
+    return options.catalog?.available === true
+      && options.catalog?.limits?.maxPriorContextChars === MAX_PRIOR_CONTEXT_CHARS
+      && provider?.ready === true
+      && typeof options.protectedStarter?.startVerifiedFollowUpAuthorized === 'function'
+      && typeof options.coordinator?.startVerifiedFollowUp === 'function'
+      && typeof options.reader?.getQueryFollowUpLineageAuthorized === 'function'
+      && typeof options.reader?.getVerifiedFollowUpContextAuthorized === 'function'
+      && typeof options.store?.getQueryFollowUpLineageAuthorized === 'function'
+      && typeof options.store?.getVerifiedFollowUpContextAuthorized === 'function'
+      && options.worker?.supportsVerifiedFollowUp === true;
+  } catch {
+    return false;
+  }
+}
+
+function applyVerifiedFollowUpCatalogCapability(catalog, ready) {
+  const limits = { ...(catalog?.limits || {}) };
+  delete limits.verifiedFollowUp;
+  delete limits.followUpProjection;
+  if (catalog?.available === true
+      && limits.maxPriorContextChars === MAX_PRIOR_CONTEXT_CHARS
+      && ready === true) {
+    limits.verifiedFollowUp = true;
+    limits.followUpProjection = 'follow-up-v1';
+  }
+  return { ...catalog, limits };
+}
+
 function getDefaultCosmoBaseUrl() {
   return `http://localhost:${process.env.COSMO23_PORT || '43210'}`;
 }
@@ -1403,8 +1436,10 @@ function registerQueryApiRoutes(app, options = {}) {
 module.exports = {
   DEFAULT_ENDPOINTS,
   QUERY_COMPATIBILITY_BODY_LIMIT_BYTES,
+  applyVerifiedFollowUpCatalogCapability,
   buildQueryCatalog,
   createQueryCompatibilityBodyParser,
   createQueryApiRouter,
+  isVerifiedFollowUpRuntimeReady,
   registerQueryApiRoutes,
 };

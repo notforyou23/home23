@@ -9,11 +9,16 @@ const os = require('os');
 const path = require('path');
 const {
   QUERY_COMPATIBILITY_BODY_LIMIT_BYTES,
+  applyVerifiedFollowUpCatalogCapability,
   buildQueryCatalog,
   createQueryCompatibilityBodyParser,
   createQueryApiRouter,
+  isVerifiedFollowUpRuntimeReady,
 } = require('../../engine/src/dashboard/home23-query-api.js');
 const { buildClientCapabilities } = require('../../engine/src/dashboard/client-capabilities.js');
+const {
+  MAX_VERIFIED_CONTEXT_UTF16,
+} = require('../helpers/query-verified-follow-up-context-vectors.cjs');
 
 const MAX_JSON_ESCAPED_UTF16_UNIT_BYTES = 6;
 const MAX_AGENT_SELECTOR_CHARS = 256;
@@ -1950,7 +1955,7 @@ test('query request schema enforces direct requests and every named PGS mode/lev
   ]) assert.equal(validate(invalid), false, JSON.stringify(invalid));
 });
 
-test('catalog capability and compatibility request schemas keep verified follow-ups protected', () => {
+test('catalog capability and compatibility request schemas keep verified follow-ups protected', async () => {
   const catalogFixture = JSON.parse(fs.readFileSync(
     path.join(process.cwd(), 'contracts/fixtures/query-catalog.json'), 'utf8',
   ));
@@ -1961,6 +1966,7 @@ test('catalog capability and compatibility request schemas keep verified follow-
     verifiedFollowUp: true,
     followUpProjection: 'follow-up-v1',
   });
+  assert.equal(catalogFixture.limits.maxPriorContextChars, MAX_VERIFIED_CONTEXT_UTF16);
   const validateCatalog = compileQueryDefinition('queryCatalogResponse');
   assert.equal(validateCatalog(catalogFixture), true, JSON.stringify(validateCatalog.errors));
   assert.equal(validateCatalog({
@@ -1979,6 +1985,14 @@ test('catalog capability and compatibility request schemas keep verified follow-
     },
     kind: 'verifiedFollowUp',
     schemaVersion: 1,
+    _queryFollowUpContext: {
+      version: 1,
+      exchanges: [{ query: 'private', answer: 'private' }],
+    },
+    verifiedConversationContext: {
+      version: 1,
+      exchanges: [{ query: 'private', answer: 'private' }],
+    },
   };
   const validateDirect = compileQueryDefinition('directQueryRequest');
   const direct = {
@@ -1992,6 +2006,79 @@ test('catalog capability and compatibility request schemas keep verified follow-
   for (const [field, value] of Object.entries(protectedFields)) {
     assert.equal(validateDirect({ ...direct, [field]: value }), false, `direct ${field}`);
     assert.equal(validatePgs({ ...pgs, [field]: value }), false, `pgs ${field}`);
+    const directResponse = await postJson(makeQueryApp().app, '/home23/api/query/run', {
+      ...direct, [field]: value,
+    });
+    const pgsResponse = await postJson(makeQueryApp().app, '/home23/api/query/run', {
+      ...pgs, [field]: value,
+    });
+    assert.equal(directResponse.status, 400, `direct route ${field}`);
+    assert.equal(pgsResponse.status, 400, `pgs route ${field}`);
+  }
+});
+
+test('verified follow-up catalog capability requires every runtime dependency and a ready catalog', async () => {
+  const complete = {
+    catalog: {
+      available: true,
+      limits: { maxPriorContextChars: MAX_VERIFIED_CONTEXT_UTF16 },
+    },
+    providerReadiness: async () => ({ ready: true }),
+    protectedStarter: { startVerifiedFollowUpAuthorized() {} },
+    coordinator: { startVerifiedFollowUp() {} },
+    reader: {
+      getQueryFollowUpLineageAuthorized() {},
+      getVerifiedFollowUpContextAuthorized() {},
+    },
+    store: {
+      getQueryFollowUpLineageAuthorized() {},
+      getVerifiedFollowUpContextAuthorized() {},
+    },
+    worker: { supportsVerifiedFollowUp: true },
+  };
+  assert.equal(await isVerifiedFollowUpRuntimeReady(complete), true);
+  for (const field of [
+    'providerReadiness', 'protectedStarter', 'coordinator', 'reader', 'store', 'worker',
+  ]) {
+    assert.equal(
+      await isVerifiedFollowUpRuntimeReady({ ...complete, [field]: null }),
+      false,
+      field,
+    );
+  }
+  assert.equal(await isVerifiedFollowUpRuntimeReady({
+    ...complete,
+    catalog: {
+      available: false,
+      limits: { maxPriorContextChars: MAX_VERIFIED_CONTEXT_UTF16 },
+    },
+  }), false);
+  assert.equal(await isVerifiedFollowUpRuntimeReady({
+    ...complete,
+    catalog: { available: true, limits: { maxPriorContextChars: 19_999 } },
+  }), false);
+  assert.equal(await isVerifiedFollowUpRuntimeReady({
+    ...complete,
+    providerReadiness: async () => { throw new Error('provider offline'); },
+  }), false);
+
+  assert.deepEqual(applyVerifiedFollowUpCatalogCapability(complete.catalog, true).limits, {
+    maxPriorContextChars: MAX_VERIFIED_CONTEXT_UTF16,
+    verifiedFollowUp: true,
+    followUpProjection: 'follow-up-v1',
+  });
+  for (const [catalog, ready] of [
+    [complete.catalog, false],
+    [{ available: false, limits: {
+      maxPriorContextChars: MAX_VERIFIED_CONTEXT_UTF16,
+      verifiedFollowUp: true,
+      followUpProjection: 'follow-up-v1',
+    } }, true],
+    [{ available: true, limits: { maxPriorContextChars: 19_999 } }, true],
+  ]) {
+    const projected = applyVerifiedFollowUpCatalogCapability(catalog, ready);
+    assert.equal(Object.hasOwn(projected.limits, 'verifiedFollowUp'), false);
+    assert.equal(Object.hasOwn(projected.limits, 'followUpProjection'), false);
   }
 });
 

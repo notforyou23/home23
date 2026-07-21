@@ -47,6 +47,21 @@ const {
   summarizeRetrievalAuthority,
   attestRetrievalAuthoritySummary,
 } = require('../../shared/memory-source/contracts.cjs');
+const {
+  renderVerifiedConversation,
+  validateVerifiedConversationContext,
+} = require('../../shared/query/verified-follow-up-context.cjs');
+
+// HOME23 PATCH 70 — render protected verified exchanges identically in every
+// Query prompt path and bind their normalized structure into cache identity.
+const VERIFIED_PRIOR_CONVERSATION_LABEL = '# Verified Prior Conversation\n\n';
+const VERIFIED_FOLLOW_UP_ENGINE_SUPPORT = Object.freeze({
+  version: 1,
+  maxUtf16: 20_000,
+  initialPrompt: true,
+  expansionPrompt: true,
+  cacheIdentity: true,
+});
 
 const CLUSTER_SNAPSHOT_DEFAULT_TTL = Number.parseInt(
   process.env.COSMO_CLUSTER_SNAPSHOT_TTL || '4000',
@@ -118,6 +133,22 @@ function hashCachePart(value) {
     .slice(0, 16);
 }
 
+function canonicalVerifiedConversation(value) {
+  if (value === undefined || value === null) return null;
+  const validated = validateVerifiedConversationContext(value);
+  return Object.freeze({
+    context: validated,
+    rendered: renderVerifiedConversation(validated.exchanges),
+  });
+}
+
+function hashCanonicalVerifiedConversation(value) {
+  return crypto
+    .createHash('sha256')
+    .update(JSON.stringify(value), 'utf8')
+    .digest('hex');
+}
+
 function operationError(code, message, retryable = false) {
   return Object.assign(new Error(message), { code, retryable });
 }
@@ -183,12 +214,23 @@ class QueryEngine {
     synthesisCommitConfig = null,
     artifactContext = null,
     artifactFingerprint = null,
-    priorContext = null
+    priorContext = null,
+    verifiedConversationContext = null
   }) {
+    if (priorContext && verifiedConversationContext) {
+      throw operationError(
+        'invalid_request',
+        'priorContext and verifiedConversationContext are mutually exclusive',
+      );
+    }
     const artifactContextHash = artifactContext ? hashCachePart(artifactContext) : '';
     const artifactCacheKey = artifactFingerprint || artifactContextHash;
     const priorContextHash = hashCachePart(priorContext);
-    return `${stateHash}:${query}:${model}:${mode}:${synthesisCommitConfig ? JSON.stringify(synthesisCommitConfig) : ''}:artifact=${artifactCacheKey}:prior=${priorContextHash}`;
+    const legacyKey = `${stateHash}:${query}:${model}:${mode}:${synthesisCommitConfig ? JSON.stringify(synthesisCommitConfig) : ''}:artifact=${artifactCacheKey}:prior=${priorContextHash}`;
+    const verified = canonicalVerifiedConversation(verifiedConversationContext);
+    return verified
+      ? `${legacyKey}:verified=${hashCanonicalVerifiedConversation(verified.context)}`
+      : legacyKey;
   }
 
   static buildCodexInputItems(text) {
@@ -1649,6 +1691,16 @@ STYLE:
         answer: String(options.priorContext.answer || ''),
       }
       : null;
+    const verified = canonicalVerifiedConversation(options.verifiedConversationContext);
+    if (priorContext && verified) {
+      throw operationError(
+        'invalid_request',
+        'priorContext and verifiedConversationContext are mutually exclusive',
+      );
+    }
+    const verifiedPriorConversation = verified
+      ? `${VERIFIED_PRIOR_CONVERSATION_LABEL}${verified.rendered}`
+      : null;
     const instructions = [
       modePolicy.instructions,
       'Narrative and generated doctrine cannot independently settle present-tense operational facts; require fresh verification for volatile current state.',
@@ -1674,6 +1726,7 @@ STYLE:
       query,
       mode,
       priorContext,
+      ...(verifiedPriorConversation ? { verifiedPriorConversation } : {}),
       source: {
         // projectPinnedQuery may obtain an evidence-only revision after the
         // scan. Reserve the longest valid numeric revision here so that path
@@ -1728,6 +1781,7 @@ STYLE:
         query,
         mode,
         priorContext,
+        ...(verifiedPriorConversation ? { verifiedPriorConversation } : {}),
         source: {
           revision: projection.sourceRevision,
           summary: projection.summary,
@@ -2006,6 +2060,7 @@ STYLE:
           query,
           mode,
           priorContext,
+          ...(verifiedPriorConversation ? { verifiedPriorConversation } : {}),
           qualityGaps: firstAssessment.reasons,
           firstAnswer,
           source: {
@@ -2190,6 +2245,7 @@ STYLE:
       outputFiles = null, // NEW: Output files from executeEnhancedQuery
       baseAnswer = null, // NEW: For executive mode - compress existing answer instead of re-querying
       priorContext = null, // NEW: For follow-up queries - includes prior query and answer
+      verifiedConversationContext = null,
       onChunk = null, // NEW (2026-01-21): Optional streaming callback
       explicitProvider = null, // NEW: Explicit provider override (e.g. 'openai-codex')
       artifactContext = null, // HOME23 PATCH — authoritative artifact inventory
@@ -2208,6 +2264,13 @@ STYLE:
 
     const client = resolvedClient;
     const model = effectiveModel;
+    const verified = canonicalVerifiedConversation(verifiedConversationContext);
+    if (priorContext && verified) {
+      throw operationError(
+        'invalid_request',
+        'priorContext and verifiedConversationContext are mutually exclusive',
+      );
+    }
     const synthesisCommitConfig = mode === 'dive'
       ? resolveSynthesisCommitConfig(synthesis || this.runConfig?.synthesis || this.runMetadata?.synthesis, 'dive')
       : null;
@@ -2233,7 +2296,8 @@ STYLE:
       synthesisCommitConfig,
       artifactContext,
       artifactFingerprint,
-      priorContext
+      priorContext,
+      verifiedConversationContext
     });
 
     if (this.queryCache.has(cacheKey)) {
@@ -2293,6 +2357,9 @@ STYLE:
 
     if (artifactContext) {
       context = `${artifactContext}\n\n---\n\n${context}`;
+    }
+    if (verified) {
+      context = `${context}\n\n---\n\n${VERIFIED_PRIOR_CONVERSATION_LABEL}${verified.rendered}`;
     }
     
     // Emit progress: generating response
@@ -4801,6 +4868,7 @@ This is STRATEGIC BRAINSTORMING informed by research insights. Be bold, creative
       baseAnswer = null, // For executive mode compression
       baseMetadata = null,
       priorContext = null, // For follow-up queries
+      verifiedConversationContext = null,
       onChunk = null, // NEW (2026-01-21): Optional streaming callback
       explicitProvider = null, // NEW: Explicit provider override (e.g. 'openai-codex')
       artifactContext = null, // HOME23 PATCH — authoritative artifact inventory
@@ -4906,6 +4974,7 @@ This is STRATEGIC BRAINSTORMING informed by research insights. Be bold, creative
       baseAnswer, // Pass through for executive mode
       baseMetadata,
       priorContext, // Pass through for follow-up queries
+      verifiedConversationContext,
       onChunk, // NEW (2026-01-21): Pass through streaming callback
       explicitProvider, // NEW: Pass through explicit provider override
       artifactContext,
@@ -5665,5 +5734,7 @@ This is STRATEGIC BRAINSTORMING informed by research insights. Be bold, creative
     }
   }
 }
+
+QueryEngine.verifiedFollowUpSupport = VERIFIED_FOLLOW_UP_ENGINE_SUPPORT;
 
 module.exports = { QueryEngine };

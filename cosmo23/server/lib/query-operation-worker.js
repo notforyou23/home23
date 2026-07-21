@@ -6,9 +6,13 @@ const {
   normalizeAuthoritySummary,
   getAttestedRetrievalAuthoritySummary,
 } = require('../../../shared/memory-source/contracts.cjs');
+const {
+  validateVerifiedConversationContext,
+} = require('../../../shared/query/verified-follow-up-context.cjs');
 
 const QUERY_PARAMETER_KEYS = Object.freeze([
-  'query', 'mode', 'modelSelection', 'topK', 'priorContext', 'enableSynthesis',
+  'query', 'mode', 'modelSelection', 'topK', 'priorContext', 'verifiedConversationContext',
+  'enableSynthesis',
   'includeOutputs', 'includeThoughts', 'includeCoordinatorInsights', 'allowActions',
 ]);
 const PGS_PARAMETER_KEYS = Object.freeze([
@@ -31,6 +35,13 @@ const TERMINAL_STATES = new Set(['complete', 'partial', 'failed']);
 const MAX_QUERY_CHARS = 12_000;
 const MAX_PRIOR_CONTEXT_CHARS = 20_000;
 const MAX_PAIR_PART_CHARS = 256;
+// HOME23 PATCH 70 — the protected coordinator may inject only the stripped,
+// shared-renderer-validated verified follow-up projection into Direct Query.
+const VERIFIED_FOLLOW_UP_WORKER_SUPPORT = Object.freeze({
+  version: 1,
+  maxUtf16: 20_000,
+  validatesCanonicalContext: true,
+});
 
 function typed(code, message, retryable = false) {
   return Object.assign(new Error(message), { code, retryable });
@@ -112,6 +123,23 @@ function optionalPriorContext(value) {
   return Object.freeze({ query: value.query, answer: value.answer });
 }
 
+function optionalVerifiedConversationContext(value) {
+  if (value === undefined) return undefined;
+  let validated;
+  try {
+    validated = validateVerifiedConversationContext(value);
+  } catch (error) {
+    throw invalid('verifiedConversationContext is invalid');
+  }
+  return Object.freeze({
+    version: 1,
+    exchanges: Object.freeze(validated.exchanges.map((exchange) => Object.freeze({
+      query: exchange.query,
+      answer: exchange.answer,
+    }))),
+  });
+}
+
 function validateQueryText(value) {
   if (typeof value !== 'string' || !value.trim() || value.length > MAX_QUERY_CHARS) {
     throw invalid('query is invalid');
@@ -128,6 +156,13 @@ function validateQueryParameters(parameters) {
   );
   const mode = optionalMode(parameters.mode);
   const priorContext = optionalPriorContext(parameters.priorContext);
+  const verifiedConversationContext = optionalVerifiedConversationContext(
+    parameters.verifiedConversationContext,
+  );
+  if (Object.hasOwn(parameters, 'priorContext')
+      && Object.hasOwn(parameters, 'verifiedConversationContext')) {
+    throw invalid('priorContext and verifiedConversationContext are mutually exclusive');
+  }
   let topK;
   if (Object.hasOwn(parameters, 'topK')) {
     topK = parameters.topK;
@@ -143,7 +178,7 @@ function validateQueryParameters(parameters) {
     booleans[key] = optionalBoolean(parameters[key], key);
   }
   return {
-    query, mode, modelSelection, topK, priorContext, ...booleans,
+    query, mode, modelSelection, topK, priorContext, verifiedConversationContext, ...booleans,
   };
 }
 
@@ -766,6 +801,9 @@ function createQueryOperationExecutor({ queryEngine } = {}) {
       enablePGS: context.operationType === 'pgs',
       mode: parameters.mode,
       priorContext: parameters.priorContext,
+      ...(parameters.verifiedConversationContext !== undefined
+        ? { verifiedConversationContext: parameters.verifiedConversationContext }
+        : {}),
       mutationPolicy,
       allowActions,
       ...(context.operationType === 'query'
@@ -811,5 +849,6 @@ function createQueryOperationExecutor({ queryEngine } = {}) {
 }
 
 module.exports = {
+  VERIFIED_FOLLOW_UP_WORKER_SUPPORT,
   createQueryOperationExecutor,
 };

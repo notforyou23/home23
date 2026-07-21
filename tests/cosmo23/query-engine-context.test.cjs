@@ -5,6 +5,12 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { QueryEngine } = require('../../cosmo23/lib/query-engine');
+const {
+  MAX_VERIFIED_CONTEXT_UTF16,
+  vectors: verifiedContextVectors,
+} = require('../helpers/query-verified-follow-up-context-vectors.cjs');
+
+const VERIFIED_SECTION_LABEL = '# Verified Prior Conversation\n\n';
 
 function createStubQueryEngine(runtimeDir, answer, capture) {
   const engine = Object.create(QueryEngine.prototype);
@@ -38,6 +44,7 @@ function createStubQueryEngine(runtimeDir, answer, capture) {
     client: {
       generate: async (request) => {
         capture.instructions = request.instructions;
+        capture.input = request.input;
         capture.maxOutputTokens = request.maxOutputTokens;
         capture.reasoningEffort = request.reasoningEffort;
         return {
@@ -69,6 +76,137 @@ function createStubQueryEngine(runtimeDir, answer, capture) {
 
   return engine;
 }
+
+function substantialPinnedAnswer() {
+  const headings = [
+    '# Findings', '# Evidence and inference', '# Themes', '# Non-obvious connections',
+    '# Convergence', '# Contradictions', '# Confidence', '# Actionable implications',
+    '# Gaps and unresolved questions',
+    'Projection limits: this uses the retained prompt subset, not the entire brain.',
+  ].join('\n\n');
+  return `${headings}\n\n${'Detailed supported analysis. '.repeat(240)}`;
+}
+
+function createPinnedPromptHarness(answers = ['pinned answer']) {
+  const calls = [];
+  const client = {
+    providerId: 'alpha',
+    async generate(options) {
+      calls.push(options);
+      return {
+        content: answers[Math.min(calls.length - 1, answers.length - 1)],
+        terminalReceived: true,
+        finishReason: 'completed',
+        hadError: false,
+        provider: 'alpha',
+        model: 'answer-model',
+      };
+    },
+  };
+  const engine = new QueryEngine({
+    operationMode: true,
+    providerRegistry: { get: () => client },
+    modelCatalog: {
+      version: 1,
+      providers: {
+        alpha: { models: [{
+          id: 'answer-model',
+          kind: 'chat',
+          contextWindowTokens: 256_000,
+          maxOutputTokens: 50_000,
+          providerStallMs: 900_000,
+          transport: 'responses',
+        }] },
+      },
+      defaults: {},
+    },
+  });
+  engine.projectPinnedQuery = async () => ({
+    sourceRevision: 17,
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 0 },
+    nodes: [{ id: 'verified-node', content: 'Current verified evidence.' }],
+    nodeAuthorities: [{
+      id: 'verified-node',
+      authorityClass: 'artifact_log',
+      retrievalDomain: 'current_ops',
+      requiresFreshVerification: false,
+      sourceChain: [{ kind: 'artifact', ref: 'artifact:verified-node' }],
+    }],
+    edges: [],
+    stats: {
+      nodesScanned: 1,
+      edgesScanned: 0,
+      nodesRetained: 1,
+      edgesRetained: 0,
+      droppedForByteBudget: 0,
+      byteBudgetTruncated: false,
+    },
+    sourceEvidence: {
+      sourceHealth: 'healthy',
+      freshness: 'known',
+      deltaWatermark: { revision: 17 },
+    },
+  });
+  return { engine, calls };
+}
+
+function pinnedOptions(vector, mode = 'quick') {
+  return {
+    sourcePin: {
+      revision: 17,
+      descriptor: { cutoffRevision: 17 },
+      async summarize() { return { nodeCount: 1, edgeCount: 0, clusterCount: 0 }; },
+    },
+    modelSelection: { provider: 'alpha', model: 'answer-model' },
+    mode,
+    signal: new AbortController().signal,
+    verifiedConversationContext: { version: 1, exchanges: vector.exchanges },
+  };
+}
+
+test('operation Query renders one canonical verified section in initial and expansion prompts', async () => {
+  const harness = createPinnedPromptHarness(['thin first answer', substantialPinnedAnswer()]);
+
+  await harness.engine.executeQuery(
+    'What changed?', pinnedOptions(verifiedContextVectors.simple, 'dive'),
+  );
+
+  assert.equal(harness.calls.length, 2);
+  const prompts = harness.calls.map(call => JSON.parse(call.input));
+  for (const prompt of prompts) {
+    assert.equal(
+      prompt.verifiedPriorConversation,
+      `${VERIFIED_SECTION_LABEL}${verifiedContextVectors.simple.rendered}`,
+    );
+    assert.equal(JSON.stringify(prompt).includes('operationId'), false);
+    assert.equal(JSON.stringify(prompt).includes('resultVersion'), false);
+    assert.equal(JSON.stringify(prompt).includes('_queryFollowUpContext'), false);
+    assert.equal(
+      Object.keys(prompt).indexOf('verifiedPriorConversation'),
+      Object.keys(prompt).indexOf('priorContext') + 1,
+    );
+  }
+});
+
+test('operation Query preserves Task 3 UTF-16 vectors and exact JSON byte framing', async () => {
+  for (const vector of [
+    verifiedContextVectors.simple,
+    verifiedContextVectors.exactBoundary,
+    verifiedContextVectors.emoji,
+  ]) {
+    const harness = createPinnedPromptHarness();
+    const result = await harness.engine.executeQuery('What changed?', pinnedOptions(vector));
+    assert.equal(harness.calls.length, 1);
+    const prompt = JSON.parse(harness.calls[0].input);
+    assert.equal(prompt.verifiedPriorConversation, `${VERIFIED_SECTION_LABEL}${vector.rendered}`);
+    assert.equal(prompt.verifiedPriorConversation.slice(VERIFIED_SECTION_LABEL.length).length, vector.utf16);
+    assert.equal(
+      result.metadata.promptBytes,
+      Buffer.byteLength(harness.calls[0].instructions + harness.calls[0].input, 'utf8'),
+    );
+  }
+  assert.equal(verifiedContextVectors.exactBoundary.utf16, MAX_VERIFIED_CONTEXT_UTF16);
+});
 
 test('quick query mode stays bounded on large brains', () => {
   const limit = QueryEngine.calculateMemoryNodeLimit({
@@ -183,6 +321,27 @@ test('full query mode uses the deep answer contract', async () => {
   assert.match(capture.instructions, /COMPLETE DEEP ACCESS/);
   assert.equal(capture.maxOutputTokens, 25000);
   assert.equal(capture.reasoningEffort, 'high');
+});
+
+test('legacy internal Query path renders verified context without exposing private authority', async () => {
+  const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cosmo-query-verified-context-'));
+  const capture = {};
+  const engine = createStubQueryEngine(runtimeDir, 'verified answer', capture);
+
+  await engine.executeQuery('What changed?', {
+    mode: 'quick',
+    verifiedConversationContext: {
+      version: 1,
+      exchanges: verifiedContextVectors.simple.exchanges,
+    },
+  });
+
+  assert.match(
+    capture.input,
+    new RegExp(`${VERIFIED_SECTION_LABEL}${verifiedContextVectors.simple.rendered}`),
+  );
+  assert.equal(capture.input.includes('operationId'), false);
+  assert.equal(capture.input.includes('resultVersion'), false);
 });
 
 test('dive query prompt includes commit step and records synthesis receipt when enabled', async () => {

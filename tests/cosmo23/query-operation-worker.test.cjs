@@ -4,11 +4,16 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  VERIFIED_FOLLOW_UP_WORKER_SUPPORT,
   createQueryOperationExecutor,
 } = require('../../cosmo23/server/lib/query-operation-worker.js');
 const {
   attestRetrievalAuthoritySummary,
 } = require('../../shared/memory-source/contracts.cjs');
+const {
+  MAX_VERIFIED_CONTEXT_UTF16,
+  vectors: verifiedContextVectors,
+} = require('../helpers/query-verified-follow-up-context-vectors.cjs');
 
 function createSourcePin() {
   const evidenceCalls = [];
@@ -214,6 +219,97 @@ test('direct Query forwards only the trusted projection and returns a canonical 
   assert.deepEqual(envelope.sourceEvidence.returnedTotals, { nodes: 2, edges: 1 });
   assert.equal(envelope.sourceEvidence.matchOutcome, 'matches');
   assert.equal(context.sourcePin.releaseCount(), 0);
+});
+
+test('direct Query validates and separately forwards Task 3 canonical verified exchanges', async () => {
+  assert.deepEqual(VERIFIED_FOLLOW_UP_WORKER_SUPPORT, {
+    version: 1,
+    maxUtf16: MAX_VERIFIED_CONTEXT_UTF16,
+    validatesCanonicalContext: true,
+  });
+  for (const vector of [
+    verifiedContextVectors.simple,
+    verifiedContextVectors.exactBoundary,
+    verifiedContextVectors.emoji,
+  ]) {
+    const harness = createHarness();
+    const parameters = queryParameters();
+    delete parameters.priorContext;
+    parameters.verifiedConversationContext = {
+      version: 1,
+      exchanges: vector.exchanges,
+    };
+    const context = operationContext('query', parameters);
+
+    await harness.executor(context);
+
+    assert.equal(harness.calls.length, 1);
+    assert.equal(harness.calls[0].options.priorContext, undefined);
+    assert.deepEqual(harness.calls[0].options.verifiedConversationContext, {
+      version: 1,
+      exchanges: vector.exchanges,
+    });
+    assert.notEqual(
+      harness.calls[0].options.verifiedConversationContext,
+      parameters.verifiedConversationContext,
+    );
+  }
+});
+
+test('direct Query rejects noncanonical, private, oversized, or legacy-mixed verified context', async () => {
+  const harness = createHarness();
+  const base = queryParameters();
+  delete base.priorContext;
+  const simpleExchange = { query: 'First question', answer: 'First answer' };
+  const invalidContexts = [
+    { version: 2, exchanges: [simpleExchange] },
+    { version: 1, exchanges: [] },
+    { version: 1, exchanges: [simpleExchange], operationId: `brop_${'A'.repeat(32)}` },
+    { version: 1, exchanges: [simpleExchange], resultVersion: `qrv1_${'A'.repeat(43)}` },
+    { version: 1, exchanges: [simpleExchange], _queryFollowUpContext: {} },
+    { version: 1, exchanges: [{ ...simpleExchange, operationId: `brop_${'B'.repeat(32)}` }] },
+    { version: 1, exchanges: [{ ...simpleExchange, resultVersion: `qrv1_${'B'.repeat(43)}` }] },
+    { version: 1, exchanges: [{ ...simpleExchange, private: true }] },
+    { version: 1, exchanges: [{ query: '', answer: 'answer' }] },
+    { version: 1, exchanges: [{ query: 'query', answer: '' }] },
+    {
+      version: 1,
+      exchanges: [{
+        query: verifiedContextVectors.exactBoundary.exchanges[0].query,
+        answer: `${verifiedContextVectors.exactBoundary.exchanges[0].answer}a`,
+      }],
+    },
+  ];
+
+  assert.equal(verifiedContextVectors.exactBoundary.utf16, MAX_VERIFIED_CONTEXT_UTF16);
+  for (const verifiedConversationContext of invalidContexts) {
+    await assert.rejects(
+      harness.executor(operationContext('query', {
+        ...base,
+        verifiedConversationContext,
+      })),
+      error => error?.code === 'invalid_request',
+    );
+  }
+  await assert.rejects(
+    harness.executor(operationContext('query', queryParameters({
+      verifiedConversationContext: {
+        version: 1,
+        exchanges: verifiedContextVectors.simple.exchanges,
+      },
+    }))),
+    error => error?.code === 'invalid_request',
+  );
+  await assert.rejects(
+    harness.executor(operationContext('pgs', pgsParameters({
+      verifiedConversationContext: {
+        version: 1,
+        exchanges: verifiedContextVectors.simple.exchanges,
+      },
+    }))),
+    error => error?.code === 'invalid_request',
+  );
+  assert.equal(harness.calls.length, 0);
 });
 
 test('Query expansion failure preserves a useful first answer and rejects resultless Partial', async () => {
