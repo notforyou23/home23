@@ -70,22 +70,32 @@ function makeFetch(routes) {
   };
 }
 
-async function postJson(app, route, body, headers = {}) {
-  // Bind the same IPv4 namespace that fetch uses so an ephemeral IPv6 port cannot
-  // collide with an unrelated loopback service, and finish close before reuse.
+test('local HTTP helper binds IPv4 and resolves only after server closure', async () => {
+  const app = express();
+  let observedAddress;
+  let observedServer;
+  const value = await withLoopbackServer(app, async (server) => {
+    observedServer = server;
+    observedAddress = server.address();
+    return 'complete';
+  });
+  assert.equal(value, 'complete');
+  assert.equal(observedAddress.address, '127.0.0.1');
+  assert.equal(observedAddress.family, 'IPv4');
+  assert.equal(observedServer.listening, false);
+  assert.equal(observedServer.address(), null);
+});
+
+async function withLoopbackServer(app, callback) {
+  // Bind the same IPv4 namespace every client below uses, then finish close
+  // before a later helper can reuse the ephemeral port.
   const server = app.listen(0, '127.0.0.1');
   await new Promise((resolve, reject) => {
     server.once('listening', resolve);
     server.once('error', reject);
   });
   try {
-    const port = server.address().port;
-    const res = await fetch(`http://127.0.0.1:${port}${route}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...headers },
-      body: JSON.stringify(body),
-    });
-    return { status: res.status, body: await res.json() };
+    return await callback(server);
   } finally {
     await new Promise((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
@@ -93,49 +103,55 @@ async function postJson(app, route, body, headers = {}) {
   }
 }
 
-async function postJsonWithRawHeaders(app, route, body, rawHeaders) {
-  return await new Promise((resolve, reject) => {
-    const server = app.listen(0, '127.0.0.1', () => {
-      const payload = JSON.stringify(body);
-      const headers = {
-        'content-type': 'application/json',
-        'content-length': String(Buffer.byteLength(payload)),
-      };
-      for (let index = 0; index < rawHeaders.length; index += 2) {
-        const name = rawHeaders[index];
-        const value = rawHeaders[index + 1];
-        headers[name] = Object.hasOwn(headers, name)
-          ? [headers[name], value].flat()
-          : value;
-      }
-      const request = http.request({
-        host: '127.0.0.1',
-        port: server.address().port,
-        path: route,
-        method: 'POST',
-        headers,
-      }, (response) => {
-        const chunks = [];
-        response.on('data', (chunk) => chunks.push(chunk));
-        response.on('end', () => {
-          server.close();
-          try {
-            resolve({
-              status: response.statusCode,
-              body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
-            });
-          } catch (error) {
-            reject(error);
-          }
-        });
-      });
-      request.once('error', (error) => {
-        server.close();
-        reject(error);
-      });
-      request.end(payload);
+async function postJson(app, route, body, headers = {}) {
+  return withLoopbackServer(app, async (server) => {
+    const port = server.address().port;
+    const res = await fetch(`http://127.0.0.1:${port}${route}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
     });
+    return { status: res.status, body: await res.json() };
   });
+}
+
+async function postJsonWithRawHeaders(app, route, body, rawHeaders) {
+  return withLoopbackServer(app, async (server) => new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const headers = {
+      'content-type': 'application/json',
+      'content-length': String(Buffer.byteLength(payload)),
+    };
+    for (let index = 0; index < rawHeaders.length; index += 2) {
+      const name = rawHeaders[index];
+      const value = rawHeaders[index + 1];
+      headers[name] = Object.hasOwn(headers, name)
+        ? [headers[name], value].flat()
+        : value;
+    }
+    const request = http.request({
+      host: '127.0.0.1',
+      port: server.address().port,
+      path: route,
+      method: 'POST',
+      headers,
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => {
+        try {
+          resolve({
+            status: response.statusCode,
+            body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+          });
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    request.once('error', reject);
+    request.end(payload);
+  }));
 }
 
 test('respond-async Query start returns durable identity without waiting for provider work', async () => {
@@ -398,23 +414,14 @@ test('lost-start replay is not blocked by a renamed live catalog target', async 
 });
 
 async function postRawJson(app, route, body) {
-  return await new Promise((resolve, reject) => {
-    const server = app.listen(0, async () => {
-      try {
-        const port = server.address().port;
-        const res = await fetch(`http://127.0.0.1:${port}${route}`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body,
-        });
-        const json = await res.json();
-        server.close();
-        resolve({ status: res.status, body: json });
-      } catch (err) {
-        server.close();
-        reject(err);
-      }
+  return withLoopbackServer(app, async (server) => {
+    const port = server.address().port;
+    const res = await fetch(`http://127.0.0.1:${port}${route}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
     });
+    return { status: res.status, body: await res.json() };
   });
 }
 
@@ -432,19 +439,10 @@ function metadataObjectAtJsonBytes(bytes) {
 }
 
 async function getJson(app, route) {
-  return await new Promise((resolve, reject) => {
-    const server = app.listen(0, async () => {
-      try {
-        const port = server.address().port;
-        const res = await fetch(`http://127.0.0.1:${port}${route}`);
-        const json = await res.json();
-        server.close();
-        resolve({ status: res.status, body: json });
-      } catch (err) {
-        server.close();
-        reject(err);
-      }
-    });
+  return withLoopbackServer(app, async (server) => {
+    const port = server.address().port;
+    const res = await fetch(`http://127.0.0.1:${port}${route}`);
+    return { status: res.status, body: await res.json() };
   });
 }
 
@@ -1038,12 +1036,7 @@ function makeQueryApp({
 }
 
 async function postRaw(app, pathname, body) {
-  const server = app.listen(0, '127.0.0.1');
-  await new Promise((resolve, reject) => {
-    server.once('listening', resolve);
-    server.once('error', reject);
-  });
-  try {
+  return withLoopbackServer(app, async (server) => {
     const address = server.address();
     const response = await fetch(`http://127.0.0.1:${address.port}${pathname}`, {
       method: 'POST',
@@ -1051,9 +1044,7 @@ async function postRaw(app, pathname, body) {
       body: JSON.stringify(body),
     });
     return { status: response.status, text: await response.text() };
-  } finally {
-    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-  }
+  });
 }
 
 function parseSseData(text) {
