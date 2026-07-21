@@ -32,6 +32,14 @@ const DAY = 24 * 60 * 60 * 1000;
 const INITIAL_NOW = Date.parse('2026-07-10T12:00:00.000Z');
 const FOLLOW_UP_PARENT_ID = `brop_${'P'.repeat(32)}`;
 const FOLLOW_UP_PARENT_VERSION = `qrv1_${'V'.repeat(43)}`;
+const BRAIN_OPERATION_TYPES = Object.freeze([
+  'search', 'graph', 'status', 'query', 'pgs', 'graph_export', 'synthesis',
+  'research_compile', 'research_launch', 'research_continue', 'research_stop',
+  'research_watch', 'research_intelligence', 'ad_hoc_export',
+]);
+const DURABLE_PARAMETER_FORBIDDEN_FIELDS = Object.freeze([
+  'queryFollowUpLineage', '_queryFollowUpContext', 'verifiedConversationContext',
+]);
 
 function verifiedFollowUpAuthority() {
   const queryFollowUpLineage = {
@@ -906,6 +914,70 @@ test('verified follow-up durable authority rejects malformed or unpaired private
     );
   }
   assert.equal((await fixture.store.list()).length, 0);
+});
+
+test('every operation type rejects follow-up authority keys nested in durable parameters', async (t) => {
+  const fixture = makeFixture(t);
+  const authority = verifiedFollowUpAuthority();
+  const forbiddenValues = {
+    queryFollowUpLineage: authority.queryFollowUpLineage,
+    _queryFollowUpContext: authority.privateContext,
+    verifiedConversationContext: {
+      version: 1,
+      exchanges: [{ query: 'Private question', answer: 'Private answer' }],
+    },
+  };
+  for (const operationType of BRAIN_OPERATION_TYPES) {
+    for (const field of DURABLE_PARAMETER_FORBIDDEN_FIELDS) {
+      await assert.rejects(
+        () => fixture.store.create(validRequest({
+          requestId: `nested-${operationType}-${field.replaceAll('_', '-')}`,
+          operationType,
+          requestParameters: { probe: true },
+          parameters: { probe: true, [field]: forbiddenValues[field] },
+        })),
+        typedCode('request_invalid'),
+        `${operationType}:${field}`,
+      );
+    }
+  }
+  assert.equal((await fixture.store.list()).length, 0);
+});
+
+test('reopen rejects generic records corrupted with follow-up authority keys in parameters', async (t) => {
+  const fixture = makeFixture(t);
+  const authority = verifiedFollowUpAuthority();
+  const forbiddenValues = {
+    queryFollowUpLineage: authority.queryFollowUpLineage,
+    _queryFollowUpContext: authority.privateContext,
+    verifiedConversationContext: {
+      version: 1,
+      exchanges: [{ query: 'Private question', answer: 'Private answer' }],
+    },
+  };
+  const createdByField = new Map();
+  for (const field of DURABLE_PARAMETER_FORBIDDEN_FIELDS) {
+    const created = await createOne(fixture, {
+      requestId: `corrupt-nested-${field.replaceAll('_', '-')}`,
+      operationType: 'search',
+      requestParameters: { query: 'canary' },
+      parameters: { query: 'canary' },
+    });
+    createdByField.set(field, created);
+  }
+  for (const field of DURABLE_PARAMETER_FORBIDDEN_FIELDS) {
+    const created = createdByField.get(field);
+    const recordPath = statusPath(fixture.root, created.record.operationId);
+    const privateRecord = JSON.parse(fs.readFileSync(recordPath, 'utf8'));
+    privateRecord.parameters[field] = forbiddenValues[field];
+    fs.writeFileSync(recordPath, JSON.stringify(privateRecord));
+
+    await assert.rejects(
+      () => anotherStore(fixture).get(created.record.operationId),
+      typedCode('operation_corrupt'),
+      field,
+    );
+  }
 });
 
 test('legacy status without a progress snapshot loads as an explicit null', async (t) => {

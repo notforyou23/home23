@@ -74,6 +74,9 @@ const QUERY_FOLLOW_UP_PRIVATE_FIELDS = Object.freeze([
 const QUERY_FOLLOW_UP_EXCHANGE_FIELDS = Object.freeze([
   'operationId', 'resultVersion', 'query', 'answer',
 ]);
+const QUERY_FOLLOW_UP_DURABLE_PARAMETER_FORBIDDEN_FIELDS = Object.freeze([
+  'queryFollowUpLineage', '_queryFollowUpContext', 'verifiedConversationContext',
+]);
 const VERIFIED_CONTEXT_OMISSION_MARKER = '\n\n[... middle of immediate parent answer omitted by Home23 verified follow-up context budget ...]\n\n';
 
 const PUBLIC_RECORD_FIELDS = Object.freeze([
@@ -456,6 +459,12 @@ function validateQueryFollowUpAuthority(
   { operationType, requestParameters, parameters, target } = {},
   code = 'request_invalid',
 ) {
+  if (!parameters || Array.isArray(parameters) || typeof parameters !== 'object') {
+    throw operationError(code);
+  }
+  for (const field of QUERY_FOLLOW_UP_DURABLE_PARAMETER_FORBIDDEN_FIELDS) {
+    if (Object.hasOwn(parameters, field)) throw operationError(code);
+  }
   const hasLineage = rawLineage !== undefined && rawLineage !== null;
   const hasPrivateContext = rawPrivateContext !== undefined && rawPrivateContext !== null;
   const protectedRequest = requestParameters?.kind === 'verifiedFollowUp';
