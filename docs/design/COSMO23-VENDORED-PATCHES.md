@@ -3634,3 +3634,47 @@ byte-identical — 27 run brains migrated 2026-07-20).
 
 **Verify:** `node --test tests/cosmo23/brain-catalog-contract.test.cjs`
 (the `Patch 69:` test).
+
+## Patch 70 — verified follow-up execution and readiness (2026-07-21)
+
+**Files.** `cosmo23/server/lib/query-operation-worker.js`,
+`cosmo23/lib/query-engine.js`, with Home23 readiness and compatibility gates in
+`engine/src/dashboard/home23-query-api.js` and
+`engine/src/dashboard/server.js`.
+
+**Problem.** The protected notebook coordinator could construct the canonical
+version-1 verified follow-up projection, but COSMO did not yet accept that
+private payload, carry it into every Query model path, or separate answers by
+the verified chain in cache identity. Advertising support before the protected
+starter, private reader/store accessors, coordinator injection, worker
+validation, and engine behavior were all installed would also let clients start
+an operation that the runtime could not honor safely.
+
+**Fix.** The internal Direct Query worker alone accepts
+`verifiedConversationContext`, validates its exact shared shape and 20,000
+UTF-16-unit rendered budget, rejects legacy `priorContext` coexistence, and
+forwards the stripped value separately to COSMO. The engine uses the shared
+deterministic renderer in the same labeled position in both the initial and
+answer-expansion prompts. Its cache key binds the normalized version and
+chronological exchange structure, so distinct chains cannot collide even if
+their plain rendered text is ambiguous. Legacy `priorContext` behavior and
+legacy cache keys are unchanged when the verified projection is absent.
+
+The Home23 catalog adds exactly `verifiedFollowUp: true` and
+`followUpProjection: "follow-up-v1"` only when the selected-agent catalog and
+provider are ready and the protected starter, coordinator, both private
+reader/store accessors, worker validation, and engine prompt/cache support are
+all present. Fallback and incomplete runtimes omit both keys. Public Query and
+generic Direct/PGS starts continue to reject follow-up control fields and the
+private projection.
+
+**Verify (offline only).** At implementation commit
+`6614b10dc247db6c966c831b5eef6866b2305412`, the focused Task 6 command passed
+124/124 tests, including the legacy adapter. The golden-vector consumers prove
+the exact boundary, emoji UTF-16 accounting, chronological framing, prompt byte
+measurement, and cache separation. Related notebook, coordinator/store/model,
+facade/runtime-capability, and source-pin regressions additionally passed
+72/72, 255/255, 58/58, and 22/22. The worktree has no vendored COSMO dependency
+install, so suites that load the real Query engine used `NODE_PATH` pointing to
+the main checkout's `cosmo23/node_modules`. No service restart, deploy, or live
+provider operation was performed.
