@@ -45,7 +45,10 @@ const {
 const { createSourceOperationExecutors } = require('./brain-operations/source-executors.js');
 const { createResearchRunsReader } = require('./brain-operations/research-runs-reader.js');
 const { createGraphExportExecutor } = require('./brain-operations/graph-export-executor.js');
-const { createQueryCompatibilityBodyParser } = require('./home23-query-api.js');
+const {
+  buildQueryCatalog,
+  createQueryCompatibilityBodyParser,
+} = require('./home23-query-api.js');
 const {
   createHome23QueryNotebookRouter,
   createQueryNotebookPlaceholderRouter,
@@ -811,6 +814,17 @@ class DashboardServer {
       return;
     }
     const requesterAgent = this.getHome23AgentName();
+    const verifiedFollowUpReadiness = dependencies.verifiedFollowUpReadiness || (async () => {
+      const provider = await this.brainOperationsProviderReadiness();
+      return provider?.ready === true
+        && this.brainOperationsWorker?.supportsVerifiedFollowUp === true;
+    });
+    const queryCatalogProvider = dependencies.queryCatalogProvider || (() => buildQueryCatalog({
+      home23Root: this.getHome23Root(),
+      agent: requesterAgent,
+      getDefaultAgent: () => requesterAgent,
+      operationAdapter: this.brainOperationsCompatibilityAdapter,
+    }));
     const configuredBridgeToken = loadQueryNotebookBridgeToken({
       home23Root: this.getHome23Root(), requesterAgent,
     });
@@ -861,6 +875,9 @@ class DashboardServer {
     const notebookService = dependencies.notebookService || createQueryNotebookService({
       reader: this.brainOperationsReader,
       visibilityStore,
+      coordinator: this.brainOperationsCoordinator,
+      verifiedFollowUpReadiness,
+      queryCatalogProvider,
       ...(actionTokens ? {
         actionTokens,
         startOperation: (request) => this.brainOperationsCoordinator.start(request),
@@ -901,8 +918,8 @@ class DashboardServer {
       requesterAgent,
       auth,
       notebookService,
-      getStatusAuthorized: (operationId) => (
-        notebookService.getQueryNotebookStatusAuthorized(operationId)
+      getStatusAuthorized: (operationId, projectionOptions) => (
+        notebookService.getQueryNotebookStatusAuthorized(operationId, projectionOptions)
       ),
       coordinator: this.brainOperationsCoordinator,
       subscriptions,
@@ -914,6 +931,8 @@ class DashboardServer {
     this.queryNotebookVisibilityStore = visibilityStore;
     this.queryNotebookSubscriptions = subscriptions;
     this.queryNotebookNotificationDelivery = notificationDelivery;
+    this.queryVerifiedFollowUpReadiness = verifiedFollowUpReadiness;
+    this.queryNotebookCatalogProvider = queryCatalogProvider;
     const startNotificationDelivery = typeof notificationDelivery.start === 'function'
       ? notificationDelivery.start()
       : notificationDelivery.replay?.();
@@ -2865,6 +2884,23 @@ class DashboardServer {
         getDefaultAgent: () => this.getHome23AgentName(),
         resolveAgent: (candidate) => this.resolveRequestedHome23Agent(candidate),
         operationAdapter: this.brainOperationsCompatibilityAdapter,
+        catalogProvider: async ({ agent }) => {
+          const catalog = await buildQueryCatalog({
+            home23Root,
+            agent,
+            getDefaultAgent: () => this.getHome23AgentName(),
+            operationAdapter: this.brainOperationsCompatibilityAdapter,
+          });
+          const limits = { ...catalog.limits };
+          delete limits.verifiedFollowUp;
+          delete limits.followUpProjection;
+          if (agent === this.getHome23AgentName()
+              && await this.queryVerifiedFollowUpReadiness?.() === true) {
+            limits.verifiedFollowUp = true;
+            limits.followUpProjection = 'follow-up-v1';
+          }
+          return { ...catalog, limits };
+        },
       });
       const { router: settingsRouter } = createSettingsRouter(home23Root, {
         getOrchestrator: () => this.orchestrator,

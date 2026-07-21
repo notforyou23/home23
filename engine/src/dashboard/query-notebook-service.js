@@ -12,6 +12,7 @@ const {
   EXECUTION_STATES,
   OPERATION_ID_PATTERN,
   assertOperationId,
+  deriveNotebookResultSummary,
   operationError,
   validatePgsSessionMetadata,
   validateNotebookResultSummary,
@@ -22,6 +23,11 @@ const {
 const {
   normalizeNotebookRecordForProjection,
 } = require('./query-notebook-compatibility.js');
+const {
+  buildVerifiedFollowUpContext,
+  normalizeVerifiedFollowUpRequest,
+  projectFollowUpLineage,
+} = require('./query-notebook-follow-up.js');
 
 const QUERY_MAX_CHARS = 12_000;
 const QUESTION_TITLE_MAX_CHARS = 160;
@@ -40,6 +46,22 @@ const QUERY_MODES = new Set([
 ]);
 const DIRECT_QUERY_MODES = new Set(['quick', 'full', 'expert', 'dive']);
 const ANSWER_QUALITY_STATES = new Set(['substantial', 'constrained', 'not-required']);
+const PROTECTED_FOLLOW_UP_ERROR_CODES = new Set([
+  'follow_up_source_not_found',
+  'follow_up_source_unavailable',
+  'follow_up_source_expired',
+  'follow_up_result_version_conflict',
+  'follow_up_source_not_terminal',
+  'follow_up_source_empty',
+  'follow_up_model_unavailable',
+  'verified_follow_up_unavailable',
+]);
+const FOLLOW_UP_MODEL_RESOLUTION_ERROR_CODES = new Set([
+  'model_not_found',
+  'provider_model_mismatch',
+  'model_capability_invalid',
+  'model_ambiguous',
+]);
 const QUERY_PROJECTION_FIELDS = Object.freeze([
   'nodesScanned', 'nodesRetained', 'edgesScanned', 'edgesRetained',
   'droppedForPromptBudget', 'promptReduced',
@@ -106,6 +128,13 @@ const PROGRESS_FIELDS = Object.freeze([
 
 function notebookError(code, cause) {
   return operationError(code, cause);
+}
+
+function protectedFollowUpError(code, httpStatus, retryable, cause) {
+  const error = notebookError(code, cause);
+  error.httpStatus = httpStatus;
+  error.retryable = retryable;
+  return error;
 }
 
 function plainObject(value, code = 'notebook_projection_invalid') {
@@ -656,15 +685,29 @@ function matchesFilters(record, filters) {
   return true;
 }
 
+function useFollowUpProjection(options) {
+  if (options === undefined) return false;
+  exactKeys(options, ['followUpProjection'], 'invalid_request');
+  if (Reflect.ownKeys(options).length !== 1 || options.followUpProjection !== true) {
+    throw notebookError('invalid_request');
+  }
+  return true;
+}
+
 function createQueryNotebookService(options) {
-  exactKeys(options, ['reader', 'now', 'actionTokens', 'startOperation', 'visibilityStore'],
-    'notebook_configuration_invalid');
+  exactKeys(options, [
+    'reader', 'now', 'actionTokens', 'startOperation', 'visibilityStore',
+    'coordinator', 'verifiedFollowUpReadiness', 'queryCatalogProvider',
+  ], 'notebook_configuration_invalid');
   const {
-    reader, actionTokens, startOperation, visibilityStore,
+    reader, actionTokens, startOperation, visibilityStore, coordinator,
+    verifiedFollowUpReadiness, queryCatalogProvider,
   } = options;
   const now = options.now ?? Date.now;
   const actionsConfigured = actionTokens !== undefined || startOperation !== undefined;
   const visibilityConfigured = visibilityStore !== undefined;
+  const followUpConfigured = coordinator !== undefined
+    || verifiedFollowUpReadiness !== undefined || queryCatalogProvider !== undefined;
   if (!reader || typeof reader.expectedRequester !== 'string'
       || !reader.expectedRequester
       || typeof reader.listAuthorized !== 'function'
@@ -679,7 +722,13 @@ function createQueryNotebookService(options) {
         || typeof visibilityStore.hiddenOperationIds !== 'function'
         || typeof visibilityStore.isHidden !== 'function'
         || typeof visibilityStore.hide !== 'function'
-        || typeof visibilityStore.prune !== 'function'))) {
+        || typeof visibilityStore.prune !== 'function'))
+      || (followUpConfigured && (!coordinator
+        || typeof coordinator.startVerifiedFollowUp !== 'function'
+        || typeof verifiedFollowUpReadiness !== 'function'
+        || typeof queryCatalogProvider !== 'function'
+        || typeof reader.getQueryFollowUpLineageAuthorized !== 'function'
+        || typeof reader.getVerifiedFollowUpContextAuthorized !== 'function'))) {
     throw notebookError('notebook_configuration_invalid');
   }
 
@@ -832,10 +881,27 @@ function createQueryNotebookService(options) {
     }
   }
 
-  function projectSummaryWithActions(record) {
+  async function projectSummaryWithActions(record, projectionOptions) {
+    const followUpProjection = useFollowUpProjection(projectionOptions);
     const summary = projectNotebookSummary(record, { now });
     const actions = executableActions(record, summary);
-    return actions === undefined ? summary : { ...summary, actions };
+    const projected = actions === undefined ? summary : { ...summary, actions };
+    if (!followUpProjection) return projected;
+    if (typeof reader.getQueryFollowUpLineageAuthorized !== 'function') {
+      throw notebookError('operation_unavailable');
+    }
+    try {
+      const queryFollowUpLineage = await reader.getQueryFollowUpLineageAuthorized(
+        record.operationId,
+      );
+      return {
+        ...projected,
+        followUpLineage: projectFollowUpLineage({ queryFollowUpLineage }),
+      };
+    } catch (error) {
+      if (error?.code === 'operation_unavailable' || error?.code === 'access_denied') throw error;
+      throw notebookError('notebook_projection_invalid', error);
+    }
   }
 
   async function ensureVisibleSummary(record) {
@@ -873,7 +939,8 @@ function createQueryNotebookService(options) {
     projectNotebookSummary(record, { now });
   }
 
-  async function listQueryNotebookAuthorized(rawInput = {}) {
+  async function listQueryNotebookAuthorized(rawInput = {}, projectionOptions) {
+    useFollowUpProjection(projectionOptions);
     const filters = normalizeListInput(rawInput);
     const filterDigest = notebookFilterDigest(filters);
     const cursor = filters.cursor === null ? null : decodeNotebookCursor(filters.cursor);
@@ -938,7 +1005,7 @@ function createQueryNotebookService(options) {
           break;
         }
         const visible = await ensureVisibleSummary(record);
-        page.push({ record, item: projectSummaryWithActions(visible) });
+        page.push({ record, item: await projectSummaryWithActions(visible, projectionOptions) });
       } catch (error) {
         if (error?.code !== 'notebook_projection_invalid') throw error;
         if (page.length < filters.limit) omittedIncompatibleCount += 1;
@@ -994,13 +1061,181 @@ function createQueryNotebookService(options) {
     };
   }
 
-  async function getQueryNotebookStatusAuthorized(operationId) {
+  async function getQueryNotebookStatusAuthorized(operationId, projectionOptions) {
+    useFollowUpProjection(projectionOptions);
     assertOperationId(operationId);
     let record = await reader.getAuthorized(operationId);
     if (record.requesterAgent !== reader.expectedRequester) throw notebookError('access_denied');
     validateNotebookRecord(record);
     record = await ensureVisibleSummary(record);
-    return projectSummaryWithActions(record);
+    return projectSummaryWithActions(record, projectionOptions);
+  }
+
+  async function resolveVerifiedFollowUpAcceptance(body) {
+    let ready;
+    try {
+      ready = await verifiedFollowUpReadiness();
+    } catch (error) {
+      throw protectedFollowUpError('verified_follow_up_unavailable', 503, true, error);
+    }
+    if (ready !== true) {
+      throw protectedFollowUpError('verified_follow_up_unavailable', 503, true);
+    }
+
+    const sourceOperationId = body.followUpFrom.operationId;
+    let parent;
+    try {
+      parent = await reader.getAuthorized(sourceOperationId);
+    } catch (error) {
+      throw protectedFollowUpError('follow_up_source_not_found', 404, false, error);
+    }
+    if (!parent || Array.isArray(parent) || typeof parent !== 'object'
+        || parent.operationId !== sourceOperationId
+        || parent.requesterAgent !== reader.expectedRequester
+        || (parent.operationType !== 'query' && parent.operationType !== 'pgs')
+        || parent.target?.domain !== 'brain'
+        || typeof parent.target.brainId !== 'string' || !parent.target.brainId
+        || (parent.target.ownerAgent !== undefined
+          && parent.target.ownerAgent !== null
+          && parent.target.ownerAgent !== reader.expectedRequester)) {
+      throw protectedFollowUpError('follow_up_source_not_found', 404, false);
+    }
+    if (!['complete', 'partial'].includes(parent.state)) {
+      throw protectedFollowUpError('follow_up_source_not_terminal', 409, true);
+    }
+    const nowValue = actionNow();
+    if (parent.resultExpiredAt !== null && parent.resultExpiredAt !== undefined) {
+      throw protectedFollowUpError('follow_up_source_expired', 410, false);
+    }
+    if (parent.resultExpiresAt !== null && parent.resultExpiresAt !== undefined) {
+      const expiresAt = Date.parse(parent.resultExpiresAt);
+      if (!Number.isFinite(expiresAt)) {
+        throw protectedFollowUpError('follow_up_source_not_found', 404, false);
+      }
+      if (expiresAt <= nowValue) {
+        throw protectedFollowUpError('follow_up_source_expired', 410, false);
+      }
+    }
+    if (deriveResultAvailability(parent) !== 'available') {
+      throw protectedFollowUpError('follow_up_source_unavailable', 404, true);
+    }
+
+    let parentResult;
+    try {
+      parentResult = await reader.getResultAuthorized(sourceOperationId);
+    } catch (error) {
+      if (error?.code === 'result_expired') {
+        throw protectedFollowUpError('follow_up_source_expired', 410, false, error);
+      }
+      if (error?.code === 'result_unavailable' || error?.code === 'result_not_found') {
+        throw protectedFollowUpError('follow_up_source_unavailable', 404, true, error);
+      }
+      throw protectedFollowUpError('follow_up_source_not_found', 404, false, error);
+    }
+    let canonicalSummary;
+    try {
+      const serializedSha256 = crypto.createHash('sha256')
+        .update(canonicalJson(parentResult), 'utf8').digest('hex');
+      canonicalSummary = deriveNotebookResultSummary(parent, parentResult, serializedSha256);
+    } catch (error) {
+      throw protectedFollowUpError('follow_up_source_not_found', 404, false, error);
+    }
+    const persistedVersion = parent.notebookResultSummary?.resultVersion;
+    if (!canonicalSummary || !RESULT_VERSION_PATTERN.test(canonicalSummary.resultVersion)
+        || (persistedVersion !== undefined && persistedVersion !== null
+          && persistedVersion !== canonicalSummary.resultVersion)
+        || body.followUpFrom.resultVersion !== canonicalSummary.resultVersion) {
+      throw protectedFollowUpError('follow_up_result_version_conflict', 409, false);
+    }
+    if (typeof parentResult.answer !== 'string' || !parentResult.answer.trim()) {
+      throw protectedFollowUpError('follow_up_source_empty', 422, false);
+    }
+
+    let parentLineage;
+    let parentPrivateContext;
+    try {
+      parentLineage = await reader.getQueryFollowUpLineageAuthorized(sourceOperationId);
+      parentPrivateContext = await reader.getVerifiedFollowUpContextAuthorized(sourceOperationId);
+    } catch (error) {
+      throw protectedFollowUpError('follow_up_source_not_found', 404, false, error);
+    }
+
+    let catalog;
+    try {
+      catalog = await queryCatalogProvider();
+    } catch (error) {
+      throw protectedFollowUpError('verified_follow_up_unavailable', 503, true, error);
+    }
+    if (!catalog || Array.isArray(catalog) || typeof catalog !== 'object'
+        || catalog.available !== true
+        || catalog.agent !== reader.expectedRequester
+        || !Array.isArray(catalog.models)
+        || !Array.isArray(catalog.brains)
+        || catalog.limits?.maxPriorContextChars !== 20_000) {
+      throw protectedFollowUpError('verified_follow_up_unavailable', 503, true);
+    }
+    if (!catalog.brains.some((brain) => brain && brain.id === parent.target.brainId)) {
+      throw protectedFollowUpError('follow_up_source_not_found', 404, false);
+    }
+    if (!catalog.models.some((model) => model
+        && model.kind !== 'embedding'
+        && model.provider === body.modelSelection.provider
+        && (model.id ?? model.model) === body.modelSelection.model)) {
+      throw protectedFollowUpError('follow_up_model_unavailable', 422, false);
+    }
+
+    try {
+      const built = buildVerifiedFollowUpContext({
+        parentRecord: { ...parent, notebookResultSummary: canonicalSummary },
+        parentResult,
+        parentLineage,
+        parentPrivateContext,
+        maxPriorContextChars: catalog.limits.maxPriorContextChars,
+      });
+      return {
+        target: { brainId: parent.target.brainId },
+        queryFollowUpLineage: built.queryFollowUpLineage,
+        privateContext: built.privateContext,
+      };
+    } catch (error) {
+      throw protectedFollowUpError('follow_up_source_not_found', 404, false, error);
+    }
+  }
+
+  async function startVerifiedFollowUpAuthorized(rawInput) {
+    if (!followUpConfigured) {
+      throw protectedFollowUpError('verified_follow_up_unavailable', 503, true);
+    }
+    exactKeys(rawInput, ['requestId', 'body'], 'invalid_request');
+    if (Reflect.ownKeys(rawInput).length !== 2
+        || typeof rawInput.requestId !== 'string'
+        || !QUERY_REQUEST_ID_PATTERN.test(rawInput.requestId)) {
+      throw protectedFollowUpError('invalid_request', 400, false);
+    }
+    let body;
+    try {
+      body = normalizeVerifiedFollowUpRequest(rawInput.body);
+    } catch (error) {
+      throw protectedFollowUpError('invalid_request', 400, false, error);
+    }
+    try {
+      return await coordinator.startVerifiedFollowUp({
+        requestId: rawInput.requestId,
+        requestParameters: body,
+        resolveAcceptance: () => resolveVerifiedFollowUpAcceptance(body),
+      });
+    } catch (error) {
+      if (error?.code === 'idempotency_conflict') {
+        error.httpStatus = 409;
+        error.retryable = true;
+        throw error;
+      }
+      if (PROTECTED_FOLLOW_UP_ERROR_CODES.has(error?.code)) throw error;
+      if (FOLLOW_UP_MODEL_RESOLUTION_ERROR_CODES.has(error?.code)) {
+        throw protectedFollowUpError('follow_up_model_unavailable', 422, false, error);
+      }
+      throw protectedFollowUpError('verified_follow_up_unavailable', 503, true, error);
+    }
   }
 
   async function hideQueryNotebookOperationAuthorized(operationId) {
@@ -1066,6 +1301,7 @@ function createQueryNotebookService(options) {
     hideQueryNotebookOperationAuthorized,
     listQueryNotebookAuthorized,
     resolveAction,
+    startVerifiedFollowUpAuthorized,
   });
 }
 

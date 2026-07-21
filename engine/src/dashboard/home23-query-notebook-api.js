@@ -6,6 +6,10 @@ const {
   assertIdentifier,
   assertOperationId,
 } = require('./brain-operations/operation-contract.js');
+const {
+  normalizeVerifiedFollowUpRequest,
+  projectFollowUpLineage,
+} = require('./query-notebook-follow-up.js');
 
 const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const DEFAULT_BODY_LIMIT_BYTES = 64 * 1024;
@@ -19,6 +23,7 @@ const RESULT_VERSION_PATTERN = /^qrv1_[A-Za-z0-9_-]{43}$/;
 const EXPORT_FILENAME_PATTERN = /^home23-query-[A-Za-z0-9_-]{8}\.md$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const EXPORT_CONTENT_MAX_BYTES = (1024 * 1024) + 64;
+const QUERY_REQUEST_ID_HEADER = 'x-home23-query-request-id';
 
 function apiError(code, httpStatus, retryable = false, cause) {
   const error = new Error(code, cause ? { cause } : undefined);
@@ -41,13 +46,17 @@ function sendError(res, error) {
   const code = typeof error?.code === 'string' ? error.code : 'query_notebook_internal';
   const status = Number.isInteger(error?.httpStatus) ? error.httpStatus
     : code === 'access_denied' ? 403
-      : ['operation_not_found', 'result_not_found', 'result_unavailable'].includes(code) ? 404
-        : code === 'result_expired' ? 410
-          : ['operation_terminal', 'operation_not_terminal', 'idempotency_conflict'].includes(code)
+      : ['operation_not_found', 'result_not_found', 'result_unavailable',
+        'follow_up_source_not_found', 'follow_up_source_unavailable'].includes(code) ? 404
+        : ['result_expired', 'follow_up_source_expired'].includes(code) ? 410
+          : ['operation_terminal', 'operation_not_terminal', 'idempotency_conflict',
+            'follow_up_result_version_conflict', 'follow_up_source_not_terminal'].includes(code)
             ? 409
-            : ['operation_unavailable', 'query_notebook_auth_unavailable'].includes(code) ? 503
-              : code === 'request_too_large' ? 413
-                : code === 'invalid_request' || code.endsWith('_invalid') ? 400 : 500;
+            : ['follow_up_source_empty', 'follow_up_model_unavailable'].includes(code) ? 422
+              : ['operation_unavailable', 'query_notebook_auth_unavailable',
+                'verified_follow_up_unavailable'].includes(code) ? 503
+                : code === 'request_too_large' ? 413
+                  : code === 'invalid_request' || code.endsWith('_invalid') ? 400 : 500;
   return res.status(status).json({
     ok: false,
     error: { code, retryable: error?.retryable === true },
@@ -110,7 +119,7 @@ function createQueryNotebookPlaceholderRouter(options = {}) {
 
 function listInput(query) {
   const keys = Reflect.ownKeys(query || {});
-  const allowed = new Set(['limit', 'cursor', 'q', 'state', 'kind']);
+  const allowed = new Set(['limit', 'cursor', 'q', 'state', 'kind', 'projection']);
   if (keys.some((key) => typeof key !== 'string' || !allowed.has(key))) {
     throw apiError('invalid_request', 400);
   }
@@ -136,6 +145,39 @@ function listInput(query) {
     else input.executionState = state;
   }
   return input;
+}
+
+function followUpProjection(query, allowedKeys) {
+  const keys = Reflect.ownKeys(query || {});
+  const allowed = new Set(allowedKeys);
+  if (keys.some((key) => typeof key !== 'string' || !allowed.has(key))) {
+    throw apiError('invalid_request', 400);
+  }
+  if (!Object.hasOwn(query || {}, 'projection')) return false;
+  if (typeof query.projection !== 'string' || query.projection !== 'follow-up-v1') {
+    throw apiError('invalid_request', 400);
+  }
+  return true;
+}
+
+function projectionOptions(enabled) {
+  return enabled ? { followUpProjection: true } : undefined;
+}
+
+function protectedRequestId(req) {
+  const rawHeaders = Array.isArray(req.rawHeaders) ? req.rawHeaders : [];
+  const values = [];
+  for (let index = 0; index < rawHeaders.length; index += 2) {
+    if (String(rawHeaders[index]).toLowerCase() === QUERY_REQUEST_ID_HEADER) {
+      values.push(rawHeaders[index + 1]);
+    }
+  }
+  if (values.length !== 1
+      || typeof values[0] !== 'string'
+      || !QUERY_REQUEST_ID_PATTERN.test(values[0])) {
+    throw apiError('invalid_request', 400);
+  }
+  return values[0];
 }
 
 function waitForDrain(res, signal) {
@@ -325,11 +367,13 @@ function createHome23QueryNotebookRouter(options = {}) {
   }
   const router = express.Router();
 
-  async function status(operationId) {
+  async function status(operationId, options) {
     try { assertOperationId(operationId); } catch (error) {
       throw apiError('operation_id_invalid', 400, false, error);
     }
-    return validateRequester(await getStatusAuthorized(operationId), requesterAgent, operationId);
+    return validateRequester(
+      await getStatusAuthorized(operationId, options), requesterAgent, operationId,
+    );
   }
 
   async function loadActiveSubscriptions(identity, operationId) {
@@ -343,8 +387,12 @@ function createHome23QueryNotebookRouter(options = {}) {
     return entries;
   }
 
-  async function decorateForRequest(value, identity, current = value, activeSubscriptions) {
-    const decorated = decorateActions(value, current, exportConfigured);
+  async function decorateForRequest(value, identity, current = value, activeSubscriptions,
+    includeFollowUpLineage = false) {
+    const hasLineage = Object.hasOwn(value, 'followUpLineage');
+    const { followUpLineage: rawLineage, ...legacyValue } = value;
+    const { followUpLineage: _currentLineage, ...legacyCurrent } = current;
+    const decorated = decorateActions(legacyValue, legacyCurrent, exportConfigured);
     const entries = activeSubscriptions ?? await loadActiveSubscriptions(
       identity, current.operationId
     );
@@ -352,13 +400,23 @@ function createHome23QueryNotebookRouter(options = {}) {
       entry.operationId === current.operationId
         && entry.credentialId === identity?.credentialId
     )) ?? null;
-    return {
+    const projected = {
       ...decorated,
       notification: {
         subscribed: subscription !== null,
         deliveryState: subscription?.deliveryState ?? null,
       },
     };
+    if (!includeFollowUpLineage) return projected;
+    if (!hasLineage) throw apiError('notebook_projection_invalid', 500);
+    try {
+      return {
+        ...projected,
+        followUpLineage: projectFollowUpLineage({ queryFollowUpLineage: rawLineage }),
+      };
+    } catch (error) {
+      throw apiError('notebook_projection_invalid', 500, false, error);
+    }
   }
 
   router.post('/session', (req, res, next) => {
@@ -374,7 +432,12 @@ function createHome23QueryNotebookRouter(options = {}) {
   router.use((req, res, next) => auth.requireCredential(req, res, next));
 
   router.get('/notebook', asyncRoute(async (req, res) => {
-    const result = await notebookService.listQueryNotebookAuthorized(listInput(req.query));
+    const includeFollowUpLineage = followUpProjection(
+      req.query, ['limit', 'cursor', 'q', 'state', 'kind', 'projection'],
+    );
+    const result = await notebookService.listQueryNotebookAuthorized(
+      listInput(req.query), projectionOptions(includeFollowUpLineage),
+    );
     if (!result || !Array.isArray(result.items)) throw apiError('notebook_projection_invalid', 500);
     const activeSubscriptions = await loadActiveSubscriptions(req.queryNotebookIdentity);
     res.json({
@@ -384,14 +447,42 @@ function createHome23QueryNotebookRouter(options = {}) {
         req.queryNotebookIdentity,
         item,
         activeSubscriptions,
+        includeFollowUpLineage,
       ))),
     });
   }));
 
-  router.get('/operations/:operationId', asyncRoute(async (req, res) => {
+  router.post('/operations', asyncRoute(async (req, res) => {
     assertNoQuery(req);
-    const current = await status(req.params.operationId);
-    res.json(await decorateForRequest(current, req.queryNotebookIdentity));
+    if (typeof notebookService.startVerifiedFollowUpAuthorized !== 'function') {
+      throw apiError('verified_follow_up_unavailable', 503, true);
+    }
+    const requestId = protectedRequestId(req);
+    let body;
+    try {
+      body = normalizeVerifiedFollowUpRequest(req.body);
+    } catch (error) {
+      throw apiError('invalid_request', 400, false, error);
+    }
+    const started = await notebookService.startVerifiedFollowUpAuthorized({ requestId, body });
+    validateRequester(started, requesterAgent, started.operationId);
+    try { assertOperationId(started.operationId); } catch (error) {
+      throw apiError('notebook_projection_invalid', 500, false, error);
+    }
+    if (started.operationType !== 'query') {
+      throw apiError('notebook_projection_invalid', 500);
+    }
+    res.status(202).json({ schemaVersion: 1, requestId, operationId: started.operationId });
+  }));
+
+  router.get('/operations/:operationId', asyncRoute(async (req, res) => {
+    const includeFollowUpLineage = followUpProjection(req.query, ['projection']);
+    const current = await status(
+      req.params.operationId, projectionOptions(includeFollowUpLineage),
+    );
+    res.json(await decorateForRequest(
+      current, req.queryNotebookIdentity, current, undefined, includeFollowUpLineage,
+    ));
   }));
 
   router.get('/operations/:operationId/result', asyncRoute(async (req, res) => {
@@ -581,7 +672,12 @@ function createHome23QueryNotebookRouter(options = {}) {
 
   router.get('/operations/:operationId/events', asyncRoute(async (req, res) => {
     const keys = Reflect.ownKeys(req.query || {}).sort();
-    if (keys.length !== 2 || keys[0] !== 'after' || keys[1] !== 'attachmentId'
+    const includeFollowUpLineage = followUpProjection(
+      req.query, ['after', 'attachmentId', 'projection'],
+    );
+    if ((keys.length !== 2 && keys.length !== 3)
+        || keys[0] !== 'after' || keys[1] !== 'attachmentId'
+        || (keys.length === 3 && keys[2] !== 'projection')
         || typeof req.query.after !== 'string'
         || !/^(?:0|[1-9]\d*)$/.test(req.query.after)
         || typeof req.query.attachmentId !== 'string') {
@@ -593,9 +689,12 @@ function createHome23QueryNotebookRouter(options = {}) {
     try { attachmentId = assertIdentifier(req.query.attachmentId, 'attachmentId'); } catch (error) {
       throw apiError('invalid_request', 400, false, error);
     }
-    const currentStatus = await status(req.params.operationId);
+    const currentStatus = await status(
+      req.params.operationId, projectionOptions(includeFollowUpLineage),
+    );
     const current = await decorateForRequest(
-      currentStatus, req.queryNotebookIdentity, currentStatus,
+      currentStatus, req.queryNotebookIdentity, currentStatus, undefined,
+      includeFollowUpLineage,
     );
     const controller = new AbortController();
     const close = () => controller.abort(apiError('attachment_closed', 499));
@@ -628,6 +727,7 @@ function createHome23QueryNotebookRouter(options = {}) {
         resultVersion: current.resultVersion,
         actions: current.actions,
         notification: current.notification,
+        ...(includeFollowUpLineage ? { followUpLineage: current.followUpLineage } : {}),
       };
       if (!await writeNotebookSseFrame(
         res, sseFrame('snapshot', snapshotSequence, snapshot), controller.signal,

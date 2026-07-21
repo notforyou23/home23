@@ -16,6 +16,40 @@ const OPERATION_ID = `brop_${'A'.repeat(32)}`;
 const CREDENTIAL_ID = `qncred_${'D'.repeat(32)}`;
 const DEVICE_INSTALLATION_ID = 'install_0123456789abcdef01234567';
 const CHILD_OPERATION_ID = `brop_${'B'.repeat(32)}`;
+const FOLLOW_UP_REQUEST_ID = `qreq_${'F'.repeat(32)}`;
+
+function followUpStartBody(overrides = {}) {
+  return {
+    kind: 'verifiedFollowUp',
+    schemaVersion: 1,
+    followUpFrom: {
+      operationId: OPERATION_ID,
+      resultVersion: `qrv1_${'V'.repeat(43)}`,
+    },
+    query: 'What changed after that?',
+    mode: 'dive',
+    modelSelection: { provider: 'openai', model: 'gpt-5.2' },
+    enableSynthesis: true,
+    includeOutputs: true,
+    includeThoughts: true,
+    includeCoordinatorInsights: true,
+    allowActions: false,
+    ...overrides,
+  };
+}
+
+function followUpLineage() {
+  return {
+    rootOperationId: OPERATION_ID,
+    parentOperationId: OPERATION_ID,
+    parentResultVersion: `qrv1_${'V'.repeat(43)}`,
+    depth: 1,
+    availableExchangeCount: 1,
+    includedExchangeCount: 1,
+    contextTruncated: false,
+    sourceAnswerTruncated: false,
+  };
+}
 
 function notebookSummary(overrides = {}) {
   return {
@@ -241,6 +275,28 @@ async function jsonRequest(base, route, { method = 'GET', body, headers = {} } =
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return { response, body: await response.json() };
+}
+
+async function rawJsonPost(base, route, rawHeaders, body) {
+  const target = new URL(`${base}${route}`);
+  return new Promise((resolve, reject) => {
+    const request = http.request(target, {
+      method: 'POST',
+      headers: ['content-type', 'application/json', ...rawHeaders],
+    }, (response) => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        resolve({
+          status: response.statusCode,
+          body: text ? JSON.parse(text) : null,
+        });
+      });
+    });
+    request.on('error', reject);
+    request.end(JSON.stringify(body));
+  });
 }
 
 async function listen(app) {
@@ -730,6 +786,244 @@ test('subscription registry rejects foreign requester and bounded-capacity overf
   await assert.rejects(() => store.subscribe({
     ...base, requesterAgent: 'forrest',
   }), { code: 'access_denied' });
+});
+
+test('protected collection POST requires one raw request ID and returns one bounded receipt', async (t) => {
+  const { createHome23QueryNotebookRouter } = require(
+    '../../../engine/src/dashboard/home23-query-notebook-api.js'
+  );
+  const starts = [];
+  const notebookService = {
+    async listQueryNotebookAuthorized() { return { schemaVersion: 1, items: [], nextCursor: null }; },
+    async getQueryNotebookResultAuthorized() { throw new Error('not used'); },
+    async resolveAction() { throw new Error('not used'); },
+    async startVerifiedFollowUpAuthorized(input) {
+      starts.push(input);
+      return {
+        operationId: CHILD_OPERATION_ID,
+        operationType: 'query',
+        requesterAgent: 'jerry',
+        state: 'queued',
+      };
+    },
+  };
+  const router = createHome23QueryNotebookRouter({
+    requesterAgent: 'jerry', auth: acceptedAuth(), notebookService,
+    getStatusAuthorized: async () => { throw new Error('not used'); },
+    coordinator: { async cancel() {}, async attach() {}, async detach() {} },
+  });
+  const app = express();
+  app.use('/home23/api/query', express.json({ limit: '64kb', strict: true }), router);
+  const server = await listen(app);
+  t.after(server.close);
+  const body = followUpStartBody();
+
+  const absent = await jsonRequest(server.base, '/home23/api/query/operations', {
+    method: 'POST', body,
+  });
+  assert.equal(absent.response.status, 400);
+  assert.equal(starts.length, 0);
+  for (const requestId of [
+    'generated-not-allowed',
+    `${FOLLOW_UP_REQUEST_ID},${FOLLOW_UP_REQUEST_ID}`,
+  ]) {
+    const invalid = await jsonRequest(server.base, '/home23/api/query/operations', {
+      method: 'POST', body, headers: { 'x-home23-query-request-id': requestId },
+    });
+    assert.equal(invalid.response.status, 400, requestId);
+  }
+  const duplicated = await rawJsonPost(server.base, '/home23/api/query/operations', [
+    'X-Home23-Query-Request-Id', FOLLOW_UP_REQUEST_ID,
+    'x-home23-query-request-id', FOLLOW_UP_REQUEST_ID,
+  ], body);
+  assert.equal(duplicated.status, 400);
+
+  const extra = await jsonRequest(server.base, '/home23/api/query/operations', {
+    method: 'POST', body: { ...body, agent: 'forrest' },
+    headers: { 'x-home23-query-request-id': FOLLOW_UP_REQUEST_ID },
+  });
+  assert.equal(extra.response.status, 400);
+  assert.equal(starts.length, 0);
+
+  const accepted = await jsonRequest(server.base, '/home23/api/query/operations', {
+    method: 'POST', body,
+    headers: { 'x-home23-query-request-id': FOLLOW_UP_REQUEST_ID },
+  });
+  assert.equal(accepted.response.status, 202);
+  assert.deepEqual(accepted.body, {
+    schemaVersion: 1,
+    requestId: FOLLOW_UP_REQUEST_ID,
+    operationId: CHILD_OPERATION_ID,
+  });
+  assert.deepEqual(starts, [{ requestId: FOLLOW_UP_REQUEST_ID, body }]);
+
+  const web = await jsonRequest(server.base, '/home23/api/query/operations', {
+    method: 'POST', body,
+    headers: {
+      'x-home23-query-request-id': `qreq_${'W'.repeat(32)}`,
+      'x-test-web': '1',
+    },
+  });
+  assert.equal(web.response.status, 202, 'existing protected web-session semantics remain valid');
+});
+
+test('protected follow-up failures keep exact status, retryability, and no source metadata', async (t) => {
+  const { createHome23QueryNotebookRouter } = require(
+    '../../../engine/src/dashboard/home23-query-notebook-api.js'
+  );
+  let failure = null;
+  const notebookService = {
+    async listQueryNotebookAuthorized() { return { schemaVersion: 1, items: [], nextCursor: null }; },
+    async getQueryNotebookResultAuthorized() { throw new Error('not used'); },
+    async resolveAction() { throw new Error('not used'); },
+    async startVerifiedFollowUpAuthorized() { throw failure; },
+  };
+  const router = createHome23QueryNotebookRouter({
+    requesterAgent: 'jerry', auth: acceptedAuth(), notebookService,
+    getStatusAuthorized: async () => { throw new Error('not used'); },
+    coordinator: { async cancel() {}, async attach() {}, async detach() {} },
+  });
+  const app = express();
+  app.use('/home23/api/query', express.json(), router);
+  const server = await listen(app);
+  t.after(server.close);
+  const rows = [
+    ['follow_up_source_not_found', 404, false],
+    ['follow_up_source_unavailable', 404, true],
+    ['follow_up_source_expired', 410, false],
+    ['follow_up_result_version_conflict', 409, false],
+    ['follow_up_source_not_terminal', 409, true],
+    ['follow_up_source_empty', 422, false],
+    ['follow_up_model_unavailable', 422, false],
+    ['verified_follow_up_unavailable', 503, true],
+    ['idempotency_conflict', 409, true],
+  ];
+  for (const [code, status, retryable] of rows) {
+    failure = Object.assign(new Error(code), {
+      code, retryable,
+      operationId: OPERATION_ID,
+      brainId: 'private-brain',
+      requesterAgent: 'forrest',
+    });
+    const response = await jsonRequest(server.base, '/home23/api/query/operations', {
+      method: 'POST', body: followUpStartBody(),
+      headers: { 'x-home23-query-request-id': FOLLOW_UP_REQUEST_ID },
+    });
+    assert.equal(response.response.status, status, code);
+    assert.deepEqual(response.body, { ok: false, error: { code, retryable } });
+    assert.equal(JSON.stringify(response.body).includes(OPERATION_ID), false);
+    assert.equal(JSON.stringify(response.body).includes('private-brain'), false);
+    assert.equal(JSON.stringify(response.body).includes('forrest'), false);
+  }
+});
+
+test('follow-up-v1 is an opt-in inventory/status/SSE projection and never widens results', async (t) => {
+  const { createHome23QueryNotebookRouter } = require(
+    '../../../engine/src/dashboard/home23-query-notebook-api.js'
+  );
+  const calls = [];
+  const lineage = followUpLineage();
+  let projectedLineage = lineage;
+  const summary = notebookSummary({
+    requestKind: 'direct',
+    configuration: {
+      directMode: 'dive', directModel: { provider: 'openai', model: 'gpt-5.2' },
+    },
+    continuation: null,
+  });
+  function project(value, options) {
+    return options?.followUpProjection === true
+      ? { ...value, followUpLineage: projectedLineage }
+      : value;
+  }
+  const notebookService = {
+    async listQueryNotebookAuthorized(input, options) {
+      calls.push(['list', input, options]);
+      return { schemaVersion: 1, items: [project(summary, options)], nextCursor: null,
+        omittedIncompatibleCount: 0 };
+    },
+    async getQueryNotebookResultAuthorized(operationId) {
+      calls.push(['result', operationId]);
+      return {
+        schemaVersion: 1, operationId, resultVersion: summary.resultVersion,
+        answer: 'bounded answer', coverage: null, evidence: null,
+        projection: null, answerQuality: null, continuation: null,
+      };
+    },
+    async resolveAction() { throw new Error('not used'); },
+  };
+  const getStatusAuthorized = async (operationId, options) => {
+    calls.push(['status', operationId, options]);
+    return project(summary, options);
+  };
+  const coordinator = {
+    async cancel() {},
+    async attach() {
+      const events = [{ sequence: 6, type: 'state', state: 'complete' }];
+      return { async nextEvent() { return events.shift() ?? null; } };
+    },
+    async detach() {},
+  };
+  const router = createHome23QueryNotebookRouter({
+    requesterAgent: 'jerry', auth: acceptedAuth(), notebookService,
+    getStatusAuthorized, coordinator,
+  });
+  const app = express();
+  app.use('/home23/api/query', router);
+  const server = await listen(app);
+  t.after(server.close);
+
+  const legacyPage = await jsonRequest(server.base, '/home23/api/query/notebook?limit=1');
+  assert.equal(legacyPage.response.status, 200);
+  assert.equal(Object.hasOwn(legacyPage.body.items[0], 'followUpLineage'), false);
+  const projectedPage = await jsonRequest(
+    server.base, '/home23/api/query/notebook?limit=1&projection=follow-up-v1'
+  );
+  assert.equal(projectedPage.response.status, 200);
+  assert.deepEqual(projectedPage.body.items[0].followUpLineage, lineage);
+  assert.deepEqual(calls[0][1], calls[1][1], 'projection is not part of filter/cursor identity');
+  assert.equal(calls[0][2], undefined);
+  assert.deepEqual(calls[1][2], { followUpProjection: true });
+
+  const legacyStatus = await jsonRequest(
+    server.base, `/home23/api/query/operations/${OPERATION_ID}`
+  );
+  assert.equal(Object.hasOwn(legacyStatus.body, 'followUpLineage'), false);
+  const projectedStatus = await jsonRequest(
+    server.base, `/home23/api/query/operations/${OPERATION_ID}?projection=follow-up-v1`
+  );
+  assert.deepEqual(projectedStatus.body.followUpLineage, lineage);
+  projectedLineage = null;
+  const projectedRoot = await jsonRequest(
+    server.base, `/home23/api/query/operations/${OPERATION_ID}?projection=follow-up-v1`
+  );
+  assert.equal(projectedRoot.body.followUpLineage, null);
+  projectedLineage = lineage;
+
+  for (const route of [
+    '/home23/api/query/notebook?projection=follow-up-v2',
+    `/home23/api/query/operations/${OPERATION_ID}?projection=`,
+    `/home23/api/query/operations/${OPERATION_ID}/events?after=0&attachmentId=projection&projection=other`,
+    `/home23/api/query/operations/${OPERATION_ID}/result?projection=follow-up-v1`,
+  ]) {
+    assert.equal((await jsonRequest(server.base, route)).response.status, 400, route);
+  }
+  assert.equal(calls.some(([kind]) => kind === 'result'), false,
+    'result projection is rejected before result access');
+
+  const legacyEvents = await fetch(
+    `${server.base}/home23/api/query/operations/${OPERATION_ID}/events?after=0&attachmentId=legacy`
+  );
+  const legacyText = await legacyEvents.text();
+  assert.equal(legacyText.includes('followUpLineage'), false);
+  const projectedEvents = await fetch(
+    `${server.base}/home23/api/query/operations/${OPERATION_ID}/events?after=0&attachmentId=projected&projection=follow-up-v1`
+  );
+  const projectedText = await projectedEvents.text();
+  const frames = projectedText.trim().split('\n\n');
+  assert.equal(frames[0].includes('followUpLineage'), true);
+  assert.equal(frames.slice(1).some(frame => frame.includes('followUpLineage')), false,
+    'only the initial snapshot carries opted lineage');
 });
 
 test('protected facade serves only requester-bound redacted list, status, result, cancel, and action shapes', async (t) => {
@@ -1487,6 +1781,125 @@ test('DashboardServer binds Query visibility authority to the selected runtime d
     /path\.join\(this\.defaultRunDir, 'query-notebook-visibility\.json'\)/);
   assert.match(source, /createQueryNotebookService\(\{[\s\S]*visibilityStore/);
   assert.match(source, /this\.queryNotebookVisibilityStore = visibilityStore/);
+});
+
+test('DashboardServer wires protected follow-up start independently of PGS action tokens', async (t) => {
+  const { DashboardServer } = require('../../../engine/src/dashboard/server.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-follow-up-wiring-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const runtimeDir = path.join(root, 'instances', 'jerry', 'runtime');
+  fs.mkdirSync(runtimeDir, { recursive: true });
+  const calls = [];
+  const dashboard = Object.create(DashboardServer.prototype);
+  dashboard.defaultRunDir = runtimeDir;
+  dashboard.getHome23AgentName = () => 'jerry';
+  dashboard.getHome23Root = () => root;
+  dashboard.brainOperationsReader = {
+    expectedRequester: 'jerry',
+    async listAuthorized() { return []; },
+    async getAuthorized() { throw new Error('resolver must not run on coordinator replay'); },
+    async getResultAuthorized() { throw new Error('resolver must not run on coordinator replay'); },
+    async getQueryFollowUpLineageAuthorized() { return null; },
+    async getVerifiedFollowUpContextAuthorized() { return null; },
+  };
+  dashboard.brainOperationsCoordinator = {
+    async startVerifiedFollowUp(input) {
+      calls.push(input);
+      return {
+        operationId: CHILD_OPERATION_ID, operationType: 'query',
+        requesterAgent: 'jerry', state: 'queued',
+      };
+    },
+    async cancel() {},
+    async attach() {},
+    async detach() {},
+  };
+  let notebookRouter;
+  dashboard.queryNotebookPlaceholder = { attach(value) { notebookRouter = value; } };
+  dashboard.initializeQueryNotebook({
+    bridgeToken: '',
+    auth: acceptedAuth(),
+    verifiedFollowUpReadiness: async () => true,
+    queryCatalogProvider: async () => ({
+      available: true,
+      agent: 'jerry',
+      models: [{ id: 'gpt-5.2', provider: 'openai', kind: 'chat' }],
+      brains: [{ id: 'brain-jerry', displayName: 'Jerry' }],
+      limits: { maxQueryChars: 12_000, maxPriorContextChars: 20_000 },
+    }),
+    visibilityStore: {
+      async hiddenOperationIds() { return []; },
+      async isHidden() { return false; },
+      async hide() {},
+      async prune() {},
+    },
+    subscriptions: { async listActive() { return []; } },
+    notificationDelivery: { async enqueue() {} },
+  });
+  const app = express();
+  app.use('/home23/api/query', express.json(), notebookRouter);
+  const server = await listen(app);
+  t.after(server.close);
+  const response = await jsonRequest(server.base, '/home23/api/query/operations', {
+    method: 'POST', body: followUpStartBody(),
+    headers: { 'x-home23-query-request-id': FOLLOW_UP_REQUEST_ID },
+  });
+  assert.equal(response.response.status, 202);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].requestId, FOLLOW_UP_REQUEST_ID);
+  assert.equal(typeof calls[0].resolveAcceptance, 'function');
+});
+
+test('DashboardServer preserves protected follow-up projection options through status wiring', async (t) => {
+  const { DashboardServer } = require('../../../engine/src/dashboard/server.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-follow-up-projection-wiring-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const runtimeDir = path.join(root, 'instances', 'jerry', 'runtime');
+  fs.mkdirSync(runtimeDir, { recursive: true });
+  const statusOptions = [];
+  const dashboard = Object.create(DashboardServer.prototype);
+  dashboard.defaultRunDir = runtimeDir;
+  dashboard.getHome23AgentName = () => 'jerry';
+  dashboard.getHome23Root = () => root;
+  dashboard.brainOperationsCoordinator = {
+    async cancel() {}, async attach() {}, async detach() {},
+  };
+  let notebookRouter;
+  dashboard.queryNotebookPlaceholder = { attach(value) { notebookRouter = value; } };
+  dashboard.initializeQueryNotebook({
+    bridgeToken: '',
+    auth: acceptedAuth(),
+    notebookService: {
+      async listQueryNotebookAuthorized() {
+        return { schemaVersion: 1, items: [], nextCursor: null };
+      },
+      async getQueryNotebookStatusAuthorized(_operationId, options) {
+        statusOptions.push(options);
+        return { ...notebookSummary(), followUpLineage: followUpLineage() };
+      },
+      async getQueryNotebookResultAuthorized() { return {}; },
+      async resolveAction() { return {}; },
+    },
+    visibilityStore: {
+      async hiddenOperationIds() { return []; },
+      async isHidden() { return false; },
+      async hide() {},
+      async prune() {},
+    },
+    subscriptions: { async listActive() { return []; } },
+    notificationDelivery: { async enqueue() {} },
+  });
+  const app = express();
+  app.use('/home23/api/query', express.json(), notebookRouter);
+  const server = await listen(app);
+  t.after(server.close);
+  const response = await jsonRequest(
+    server.base,
+    `/home23/api/query/operations/${OPERATION_ID}?projection=follow-up-v1`,
+  );
+  assert.equal(response.response.status, 200);
+  assert.deepEqual(response.body.followUpLineage, followUpLineage());
+  assert.deepEqual(statusOptions, [{ followUpProjection: true }]);
 });
 
 test('DashboardServer verifies shared credentials from agent or secrets config before env', async (t) => {

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,6 +19,12 @@ const {
   createBrainOperationStoreReader,
 } = require('../../../engine/src/dashboard/brain-operations/store-reader.js');
 const {
+  deriveNotebookResultSummary,
+} = require('../../../engine/src/dashboard/brain-operations/operation-contract.js');
+const {
+  canonicalJson,
+} = require('../../../shared/brain-operations/canonical-json.cjs');
+const {
   MATCH_OUTCOME,
   SOURCE_HEALTH,
   createEvidence,
@@ -25,6 +32,9 @@ const {
 
 const OPERATION_ID = `brop_${'N'.repeat(32)}`;
 const NOW = '2026-07-13T16:00:00.000Z';
+const FOLLOW_UP_PARENT_ID = `brop_${'P'.repeat(32)}`;
+const FOLLOW_UP_CHILD_ID = `brop_${'C'.repeat(32)}`;
+const FOLLOW_UP_GRANDCHILD_ID = `brop_${'G'.repeat(32)}`;
 
 function queryRecord(overrides = {}) {
   return {
@@ -97,6 +107,127 @@ function pgsRecord(overrides = {}) {
     },
     ...overrides,
   });
+}
+
+function canonicalParent({ operationId = FOLLOW_UP_PARENT_ID, operationType = 'query',
+  answer = 'Verified parent answer.', overrides = {} } = {}) {
+  const base = operationType === 'pgs'
+    ? pgsRecord({ operationId })
+    : queryRecord({ operationId });
+  const result = { answer };
+  const serializedSha256 = crypto.createHash('sha256')
+    .update(canonicalJson(result), 'utf8').digest('hex');
+  return {
+    record: {
+      ...base,
+      operationId,
+      result,
+      notebookResultSummary: deriveNotebookResultSummary(base, result, serializedSha256),
+      ...overrides,
+    },
+    result,
+  };
+}
+
+function followUpBody(record, overrides = {}) {
+  return {
+    kind: 'verifiedFollowUp',
+    schemaVersion: 1,
+    followUpFrom: {
+      operationId: record.operationId,
+      resultVersion: record.notebookResultSummary.resultVersion,
+    },
+    query: 'What changed after that?',
+    mode: 'dive',
+    modelSelection: { provider: 'openai', model: 'gpt-5.2' },
+    enableSynthesis: true,
+    includeOutputs: true,
+    includeThoughts: true,
+    includeCoordinatorInsights: true,
+    allowActions: false,
+    ...overrides,
+  };
+}
+
+function followUpCatalog(overrides = {}) {
+  return {
+    agent: 'jerry',
+    available: true,
+    models: [{ id: 'gpt-5.2', provider: 'openai', kind: 'chat' }],
+    brains: [{ id: 'brain-jerry', displayName: 'Jerry' }],
+    limits: { maxQueryChars: 12_000, maxPriorContextChars: 20_000 },
+    ...overrides,
+  };
+}
+
+function followUpServiceFixture({ parent, parentResult, parentLineage = null,
+  parentPrivateContext = null, ready = true, catalog = followUpCatalog(),
+  readError = null } = {}) {
+  const calls = [];
+  const readiness = { value: ready };
+  let accepted = null;
+  const coordinator = {
+    async startVerifiedFollowUp(input) {
+      calls.push(['coordinator', input.requestId, input.requestParameters]);
+      if (accepted !== null) {
+        if (accepted.requestId !== input.requestId
+            || canonicalJson(accepted.body) !== canonicalJson(input.requestParameters)) {
+          const error = new Error('idempotency_conflict');
+          error.code = 'idempotency_conflict';
+          throw error;
+        }
+        return accepted.record;
+      }
+      const acceptance = await input.resolveAcceptance();
+      calls.push(['acceptance', acceptance]);
+      const record = {
+        operationId: FOLLOW_UP_CHILD_ID,
+        operationType: 'query',
+        requesterAgent: 'jerry',
+        state: 'queued',
+      };
+      accepted = { requestId: input.requestId, body: input.requestParameters, record };
+      return record;
+    },
+  };
+  const reader = {
+    expectedRequester: 'jerry',
+    async listAuthorized() { return []; },
+    async getAuthorized(operationId) {
+      calls.push(['parent', operationId]);
+      if (readError) throw readError;
+      return parent;
+    },
+    async getResultAuthorized(operationId) {
+      calls.push(['result', operationId]);
+      return parentResult;
+    },
+    async getQueryFollowUpLineageAuthorized(operationId) {
+      calls.push(['lineage', operationId]);
+      return parentLineage;
+    },
+    async getVerifiedFollowUpContextAuthorized(operationId) {
+      calls.push(['private', operationId]);
+      return parentPrivateContext;
+    },
+  };
+  const service = createQueryNotebookService({
+    reader,
+    now: () => NOW,
+    coordinator,
+    verifiedFollowUpReadiness: async () => {
+      calls.push(['readiness']);
+      return readiness.value;
+    },
+    queryCatalogProvider: async () => {
+      calls.push(['catalog']);
+      return catalog;
+    },
+  });
+  return {
+    service, calls, coordinator,
+    setReadiness(value) { readiness.value = value; },
+  };
 }
 
 test('summary and result projections are exact, bounded, and redacted', () => {
@@ -971,6 +1102,321 @@ test('protected export rejects absent, expired, and non-text stored results', as
   await assert.rejects(
     () => service.exportQueryNotebookResultAuthorized(OPERATION_ID, { format: 'markdown' }),
     { code: 'result_unavailable' },
+  );
+});
+
+test('protected verified follow-up accepts terminal Direct and PGS sources on their exact brain', async () => {
+  for (const operationType of ['query', 'pgs']) {
+    const { record, result } = canonicalParent({ operationType });
+    const { service, calls } = followUpServiceFixture({
+      parent: record,
+      parentResult: result,
+    });
+    const requestId = `qreq_${operationType === 'query' ? 'D' : 'P'}`.padEnd(37, operationType === 'query' ? 'D' : 'P');
+    const started = await service.startVerifiedFollowUpAuthorized({
+      requestId,
+      body: followUpBody(record),
+    });
+    assert.equal(started.operationId, FOLLOW_UP_CHILD_ID);
+    assert.equal(started.operationType, 'query');
+    assert.equal(calls[0][0], 'coordinator');
+    assert.deepEqual(calls.slice(1).map(([kind]) => kind), [
+      'readiness', 'parent', 'result', 'lineage', 'private', 'catalog', 'acceptance',
+    ]);
+    const acceptance = calls.at(-1)[1];
+    assert.deepEqual(acceptance.target, { brainId: 'brain-jerry' });
+    assert.deepEqual(acceptance.queryFollowUpLineage, {
+      rootOperationId: record.operationId,
+      parentOperationId: record.operationId,
+      parentResultVersion: record.notebookResultSummary.resultVersion,
+      depth: 1,
+      availableExchangeCount: 1,
+      includedExchangeCount: 1,
+      contextTruncated: false,
+      sourceAnswerTruncated: false,
+    });
+    assert.equal(acceptance.privateContext.exchanges[0].answer, result.answer);
+  }
+});
+
+test('verified follow-up carries the requester-bound private chain into a grandchild', async () => {
+  const root = canonicalParent();
+  const first = followUpServiceFixture({ parent: root.record, parentResult: root.result });
+  await first.service.startVerifiedFollowUpAuthorized({
+    requestId: `qreq_${'C'.repeat(32)}`,
+    body: followUpBody(root.record),
+  });
+  const firstAcceptance = first.calls.at(-1)[1];
+  const childResult = { answer: 'Verified child answer.' };
+  const childBase = queryRecord({
+    operationId: FOLLOW_UP_CHILD_ID,
+    requestParameters: followUpBody(root.record),
+    parameters: {
+      query: 'What changed after that?', mode: 'dive',
+      modelSelection: { provider: 'openai', model: 'gpt-5.2' },
+    },
+    target: { ...root.record.target },
+  });
+  const childSha = crypto.createHash('sha256')
+    .update(canonicalJson(childResult), 'utf8').digest('hex');
+  const child = {
+    ...childBase,
+    result: childResult,
+    notebookResultSummary: deriveNotebookResultSummary(childBase, childResult, childSha),
+  };
+  const second = followUpServiceFixture({
+    parent: child,
+    parentResult: childResult,
+    parentLineage: firstAcceptance.queryFollowUpLineage,
+    parentPrivateContext: firstAcceptance.privateContext,
+  });
+  await second.service.startVerifiedFollowUpAuthorized({
+    requestId: `qreq_${'G'.repeat(32)}`,
+    body: followUpBody(child, { query: 'And what changed next?' }),
+  });
+  const grandchild = second.calls.at(-1)[1];
+  assert.equal(grandchild.queryFollowUpLineage.rootOperationId, root.record.operationId);
+  assert.equal(grandchild.queryFollowUpLineage.parentOperationId, child.operationId);
+  assert.equal(grandchild.queryFollowUpLineage.depth, 2);
+  assert.deepEqual(grandchild.privateContext.exchanges.map(({ operationId }) => operationId), [
+    root.record.operationId, child.operationId,
+  ]);
+  assert.equal(grandchild.privateContext.exchanges[1].answer, childResult.answer);
+});
+
+test('exact replay wins before readiness, source, result, lineage, or catalog reads', async () => {
+  const { record, result } = canonicalParent();
+  const fixture = followUpServiceFixture({ parent: record, parentResult: result });
+  const originalReadiness = fixture.service;
+  const input = {
+    requestId: `qreq_${'R'.repeat(32)}`,
+    body: followUpBody(record),
+  };
+  const first = await originalReadiness.startVerifiedFollowUpAuthorized(input);
+  const readsAfterFirst = fixture.calls.length;
+  fixture.setReadiness(false);
+  const replay = await originalReadiness.startVerifiedFollowUpAuthorized(input);
+  assert.deepEqual(replay, first);
+  assert.deepEqual(fixture.calls.slice(readsAfterFirst).map(([kind]) => kind), ['coordinator']);
+
+  const unavailable = followUpServiceFixture({
+    parent: record, parentResult: result, ready: false,
+  });
+  await assert.rejects(
+    () => unavailable.service.startVerifiedFollowUpAuthorized({
+      requestId: `qreq_${'U'.repeat(32)}`,
+      body: followUpBody(record),
+    }),
+    { code: 'verified_follow_up_unavailable', httpStatus: 503, retryable: true },
+  );
+  assert.deepEqual(unavailable.calls.map(([kind]) => kind), ['coordinator', 'readiness']);
+
+  await assert.rejects(
+    () => fixture.service.startVerifiedFollowUpAuthorized({
+      ...input, body: followUpBody(record, { query: 'Different body' }),
+    }),
+    { code: 'idempotency_conflict', retryable: true },
+  );
+  assert.deepEqual(fixture.calls.slice(readsAfterFirst + 1).map(([kind]) => kind), ['coordinator']);
+});
+
+test('verified follow-up bounds coordinator drift behind its public error algebra', async () => {
+  const base = canonicalParent();
+  for (const [internalCode, expected] of [
+    [
+      'source_operations_unavailable',
+      { code: 'verified_follow_up_unavailable', httpStatus: 503, retryable: true },
+    ],
+    [
+      'model_not_found',
+      { code: 'follow_up_model_unavailable', httpStatus: 422, retryable: false },
+    ],
+  ]) {
+    const fixture = followUpServiceFixture({ parent: base.record, parentResult: base.result });
+    fixture.coordinator.startVerifiedFollowUp = async () => {
+      throw Object.assign(new Error(internalCode), { code: internalCode });
+    };
+    await assert.rejects(
+      () => fixture.service.startVerifiedFollowUpAuthorized({
+        requestId: `qreq_${internalCode[0].toUpperCase().repeat(32)}`,
+        body: followUpBody(base.record),
+      }),
+      expected,
+      internalCode,
+    );
+  }
+});
+
+test('verified follow-up returns exact bounded source, result, and model failures', async () => {
+  const base = canonicalParent();
+  const cases = [
+    {
+      name: 'nonterminal',
+      parent: { ...base.record, state: 'running', completedAt: null },
+      result: base.result,
+      expected: { code: 'follow_up_source_not_terminal', httpStatus: 409, retryable: true },
+    },
+    {
+      name: 'unavailable',
+      parent: {
+        ...base.record,
+        result: null,
+        resultHandle: null,
+        resultArtifact: null,
+        resultExpiresAt: null,
+        notebookResultSummary: null,
+      },
+      result: base.result,
+      requestRecord: base.record,
+      expected: { code: 'follow_up_source_unavailable', httpStatus: 404, retryable: true },
+    },
+    {
+      name: 'expired',
+      parent: { ...base.record, resultExpiredAt: NOW },
+      result: base.result,
+      expected: { code: 'follow_up_source_expired', httpStatus: 410, retryable: false },
+    },
+    {
+      name: 'empty',
+      parent: canonicalParent({ answer: '   ' }).record,
+      result: { answer: '   ' },
+      expected: { code: 'follow_up_source_empty', httpStatus: 422, retryable: false },
+    },
+    {
+      name: 'model',
+      parent: base.record,
+      result: base.result,
+      catalog: followUpCatalog({ models: [{ id: 'different', provider: 'openai' }] }),
+      expected: { code: 'follow_up_model_unavailable', httpStatus: 422, retryable: false },
+    },
+  ];
+  for (const row of cases) {
+    const fixture = followUpServiceFixture({
+      parent: row.parent,
+      parentResult: row.result,
+      catalog: row.catalog,
+    });
+    await assert.rejects(
+      () => fixture.service.startVerifiedFollowUpAuthorized({
+        requestId: `qreq_${row.name[0].toUpperCase().repeat(32)}`,
+        body: followUpBody(row.requestRecord ?? row.parent),
+      }),
+      row.expected,
+      row.name,
+    );
+  }
+
+  const stale = followUpServiceFixture({ parent: base.record, parentResult: base.result });
+  await assert.rejects(
+    () => stale.service.startVerifiedFollowUpAuthorized({
+      requestId: `qreq_${'S'.repeat(32)}`,
+      body: followUpBody(base.record, {
+        followUpFrom: {
+          operationId: base.record.operationId,
+          resultVersion: `qrv1_${'X'.repeat(43)}`,
+        },
+      }),
+    }),
+    { code: 'follow_up_result_version_conflict', httpStatus: 409, retryable: false },
+  );
+});
+
+test('missing, foreign, cross-scope, and corrupt source references are indistinguishable', async () => {
+  const base = canonicalParent();
+  const hidden = { code: 'follow_up_source_not_found', httpStatus: 404, retryable: false };
+  const notFound = new Error('operation_not_found');
+  notFound.code = 'operation_not_found';
+  const variants = [
+    { name: 'missing', readError: notFound },
+    { name: 'foreign requester', parent: { ...base.record, requesterAgent: 'forrest' } },
+    {
+      name: 'cross-agent source',
+      parent: { ...base.record, target: { ...base.record.target, ownerAgent: 'forrest' } },
+    },
+    {
+      name: 'cross-brain source',
+      parent: base.record,
+      catalog: followUpCatalog({ brains: [{ id: 'brain-forrest', displayName: 'Forrest' }] }),
+    },
+    {
+      name: 'malformed lineage pair',
+      parent: base.record,
+      parentLineage: {
+        rootOperationId: base.record.operationId,
+        parentOperationId: base.record.operationId,
+        parentResultVersion: base.record.notebookResultSummary.resultVersion,
+        depth: 1,
+        availableExchangeCount: 1,
+        includedExchangeCount: 1,
+        contextTruncated: false,
+        sourceAnswerTruncated: false,
+      },
+      parentPrivateContext: null,
+    },
+  ];
+  for (const row of variants) {
+    const fixture = followUpServiceFixture({
+      parent: row.parent ?? base.record,
+      parentResult: base.result,
+      parentLineage: row.parentLineage,
+      parentPrivateContext: row.parentPrivateContext,
+      catalog: row.catalog,
+      readError: row.readError,
+    });
+    await assert.rejects(
+      () => fixture.service.startVerifiedFollowUpAuthorized({
+        requestId: `qreq_${row.name[0].toUpperCase().repeat(32)}`,
+        body: followUpBody(base.record),
+      }),
+      (error) => {
+        assert.deepEqual({
+          code: error.code, httpStatus: error.httpStatus, retryable: error.retryable,
+        }, hidden);
+        assert.equal(Object.hasOwn(error, 'operationId'), false);
+        assert.equal(Object.hasOwn(error, 'brainId'), false);
+        return true;
+      },
+      row.name,
+    );
+  }
+});
+
+test('verified follow-up derives current result identity and exact 20,000-unit context from catalog truth', async () => {
+  const base = canonicalParent({ answer: 'A'.repeat(19_000) });
+  const fixture = followUpServiceFixture({ parent: base.record, parentResult: base.result });
+  await fixture.service.startVerifiedFollowUpAuthorized({
+    requestId: `qreq_${'B'.repeat(32)}`,
+    body: followUpBody(base.record),
+  });
+  const acceptance = fixture.calls.at(-1)[1];
+  assert.ok(acceptance.privateContext.exchanges[0].answer.length <= 20_000);
+
+  const tamperedResult = { answer: `${base.result.answer}!` };
+  const tampered = followUpServiceFixture({
+    parent: base.record,
+    parentResult: tamperedResult,
+  });
+  await assert.rejects(
+    () => tampered.service.startVerifiedFollowUpAuthorized({
+      requestId: `qreq_${'T'.repeat(32)}`,
+      body: followUpBody(base.record),
+    }),
+    { code: 'follow_up_result_version_conflict', retryable: false },
+  );
+
+  const wrongLimit = followUpServiceFixture({
+    parent: base.record,
+    parentResult: base.result,
+    catalog: followUpCatalog({
+      limits: { maxQueryChars: 12_000, maxPriorContextChars: 19_999 },
+    }),
+  });
+  await assert.rejects(
+    () => wrongLimit.service.startVerifiedFollowUpAuthorized({
+      requestId: `qreq_${'L'.repeat(32)}`,
+      body: followUpBody(base.record),
+    }),
+    { code: 'verified_follow_up_unavailable', httpStatus: 503, retryable: true },
   );
 });
 
