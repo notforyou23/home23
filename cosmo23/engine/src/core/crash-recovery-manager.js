@@ -67,16 +67,24 @@ class CrashRecoveryManager {
       return false;
     } catch (error) {
       // File doesn't exist = previous shutdown was clean OR first run
-      // Check if state.json exists to differentiate
-      const statePath = path.join(this.logsDir, 'state.json');
-      try {
-        await fs.access(statePath);
-        // State exists but no clean marker = crash
-        return true;
-      } catch (error) {
-        // No state file = first run
-        return false;
+      // Check if a persisted state artifact exists to differentiate. The
+      // engine saves the real runtime state as state.json.gz; older runs
+      // (and some tests) may still have a plain state.json.
+      const stateArtifacts = [
+        path.join(this.logsDir, 'state.json.gz'),
+        path.join(this.logsDir, 'state.json'),
+      ];
+      for (const statePath of stateArtifacts) {
+        try {
+          await fs.access(statePath);
+          // State exists but no clean marker = crash
+          return true;
+        } catch (accessError) {
+          // Try the next known state artifact
+        }
       }
+      // No state file = first run
+      return false;
     }
   }
 
@@ -339,8 +347,10 @@ class CrashRecoveryManager {
         // State snapshot (high-level metrics only, not full state)
         state_snapshot: {
           cycleCount: state.cycleCount || 0,
-          memoryNodes: state.memory?.nodes?.length || 0,
-          memoryEdges: state.memory?.edges?.length || 0,
+          // Scalar checkpoints carry counts in memorySummary; legacy
+          // full-graph checkpoints carried the arrays themselves.
+          memoryNodes: state.memorySummary?.nodes ?? (state.memory?.nodes?.length || 0),
+          memoryEdges: state.memorySummary?.edges ?? (state.memory?.edges?.length || 0),
           activeGoals: state.goals?.goals?.size || 0,
           completedGoals: state.goals?.completedGoals?.length || 0,
           agentStats: {

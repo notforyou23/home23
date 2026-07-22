@@ -438,6 +438,104 @@ class Orchestrator {
   }
 
   /**
+   * Restore persisted state at startup.
+   *
+   * loadState() ALWAYS runs — state.json.gz is the only memory source. When
+   * a crash was detected, the recovered checkpoint is applied strictly as a
+   * scalar overlay (cycleCount, journal, lastSummarization,
+   * guidedMissionPlan, completionTracker) and only when fresher than what
+   * loadState() restored. Checkpoint memory payloads (legacy full-graph
+   * checkpoints) are deliberately ignored — hydrating memory from a
+   * checkpoint is the memory=0 bug class.
+   */
+  async restoreFromPersistence() {
+    let recoveredState = null;
+    if (this.crashRecovery.crashDetected) {
+      this.logger.warn('🔄 Crash detected, attempting recovery from checkpoint...');
+      recoveredState = await this.crashRecovery.recover();
+      if (recoveredState) {
+        this.logger.info('✅ Checkpoint scalars recovered — loading full brain from state file next');
+      } else {
+        this.logger.warn('⚠️  No checkpoint available, loading from state file only');
+      }
+    }
+
+    // ALWAYS hydrate from the persisted state file. Skipping loadState() on
+    // checkpoint recovery boots with memory=0.
+    await this.loadState();
+
+    if (!recoveredState) {
+      return;
+    }
+
+    const checkpointIsFresher =
+      typeof recoveredState.cycleCount === 'number' &&
+      recoveredState.cycleCount > (this.cycleCount || 0);
+
+    // Scalar overlay — only when strictly fresher than what loadState()
+    // just restored. Never regress backward.
+    if (checkpointIsFresher) {
+      this.cycleCount = recoveredState.cycleCount;
+    }
+    if (Array.isArray(recoveredState.journal) &&
+        recoveredState.journal.length > (this.journal?.length || 0)) {
+      this.journal = recoveredState.journal;
+    }
+    if (typeof recoveredState.lastSummarization === 'number' &&
+        recoveredState.lastSummarization > (this.lastSummarization || 0)) {
+      this.lastSummarization = recoveredState.lastSummarization;
+    }
+
+    // Guided plan + completion tracker are small JSON payloads; restore them
+    // when the checkpoint is fresher or loadState() left them empty. This
+    // preserves the original fix preventing plan recreation on restart.
+    if (recoveredState.guidedMissionPlan && (checkpointIsFresher || !this.guidedMissionPlan)) {
+      this.guidedMissionPlan = recoveredState.guidedMissionPlan.plan || recoveredState.guidedMissionPlan;
+      this.logger.info('✅ Guided mission plan restored from checkpoint', {
+        phaseCount: this.guidedMissionPlan?.taskPhases?.length || this.guidedMissionPlan?.phases?.length || 0
+      });
+    }
+    if (recoveredState.completionTracker && (checkpointIsFresher || !this.completionTracker)) {
+      this.completionTracker = recoveredState.completionTracker;
+    }
+
+    if (recoveredState.memory) {
+      // Legacy full-graph checkpoint — its memory payload is NOT applied.
+      this.logger.warn('⚠️  Legacy checkpoint carried a memory payload — ignored (checkpoints are scalar overlays only)', {
+        checkpointNodes: Array.isArray(recoveredState.memory.nodes) ? recoveredState.memory.nodes.length : 0,
+        loadedNodes: this.memory?.nodes?.size || 0
+      });
+    }
+  }
+
+  /**
+   * Build the crash-recovery checkpoint payload — SCALARS ONLY.
+   *
+   * The authoritative brain (memory graph + embeddings) is persisted every
+   * cycle by saveState() into state.json.gz; checkpoints exist so a crashed
+   * run can resume at the right cycle with its guided plan intact. They must
+   * NEVER carry the graph: recovery applies them only as a scalar overlay
+   * (see restoreFromPersistence()), and full-graph checkpoints were the
+   * multi-hundred-MB JSON.stringify-every-5-cycles bug.
+   */
+  buildCheckpointState() {
+    return {
+      cycleCount: this.cycleCount,
+      journal: this.journal.slice(-100),
+      lastSummarization: this.lastSummarization,
+      guidedMissionPlan: this.guidedMissionPlan || null,
+      completionTracker: this.completionTracker || null,
+      savedAt: new Date().toISOString(),
+      recoverySource: 'state.json.gz',
+      memorySummary: {
+        nodes: this.memory?.nodes?.size || 0,
+        edges: this.memory?.edges?.size || 0,
+        clusters: this.memory?.clusters?.size || 0
+      }
+    };
+  }
+
+  /**
    * Initialize
    */
   async initialize() {
@@ -455,36 +553,10 @@ class Orchestrator {
     // Phase A: Initialize crash recovery (detect crashes)
     await this.crashRecovery.initialize();
     
-    // Phase A: Attempt recovery if crash detected
-    if (this.crashRecovery.crashDetected) {
-      this.logger.warn('🔄 Crash detected, attempting recovery from checkpoint...');
-      const recoveredState = await this.crashRecovery.recover();
-      if (recoveredState) {
-        this.logger.info('✅ State recovered from checkpoint');
-        // Import recovered state
-        this.cycleCount = recoveredState.cycleCount || 0;
-        this.journal = recoveredState.journal || [];
-        this.lastSummarization = recoveredState.lastSummarization || 0;
-
-        // FIX: Import guidedMissionPlan to prevent plan recreation on restart
-        if (recoveredState.guidedMissionPlan) {
-          this.guidedMissionPlan = recoveredState.guidedMissionPlan.plan || recoveredState.guidedMissionPlan;
-          this.logger.info('✅ Guided mission plan restored from checkpoint', {
-            phaseCount: this.guidedMissionPlan?.taskPhases?.length || this.guidedMissionPlan?.phases?.length || 0
-          });
-        }
-
-        // FIX: Import completionTracker to preserve progress tracking
-        if (recoveredState.completionTracker) {
-          this.completionTracker = recoveredState.completionTracker;
-        }
-      } else {
-        this.logger.warn('⚠️  No checkpoint available, loading from state file');
-        await this.loadState();
-      }
-    } else {
-      await this.loadState();
-    }
+    // Phase A: Attempt recovery if crash detected.
+    // loadState() ALWAYS runs — a recovered checkpoint is applied only as a
+    // scalar overlay, never as a memory source (see restoreFromPersistence).
+    await this.restoreFromPersistence();
     
     // Phase A: Initialize telemetry
     await this.telemetry.initialize();
@@ -3224,24 +3296,12 @@ class Orchestrator {
       // Phase A: Save checkpoint periodically (every 5 cycles)
       if (this.cycleCount % 5 === 0) {
         try {
-          // Build checkpoint state (same structure as saveState())
-          const checkpointState = {
-            cycleCount: this.cycleCount,
-            journal: this.journal.slice(-100),
-            memory: this.memory.exportGraph(),
-            goals: this.goals.export(),
-            roles: this.roles.getRoles(),
-            reflection: this.reflection.export(),
-            oscillator: this.oscillator.getStats(),
-            coordinator: this.coordinator ? this.coordinator.export() : null,
-            agentExecutor: this.agentExecutor ? this.agentExecutor.exportState() : null,
-            forkSystem: this.forkSystem ? this.forkSystem.export() : null,
-            topicQueue: this.topicQueue ? this.topicQueue.export() : null,
-            goalCurator: this.goalCurator ? this.goalCurator.export() : null,
-            guidedMissionPlan: this.guidedMissionPlan || null,
-            completionTracker: this.completionTracker || null,
-            lastSummarization: this.lastSummarization
-          };
+          // Build checkpoint state — SCALARS ONLY (checkpoints are a scalar
+          // overlay for recovery, never a memory source). The full brain is
+          // already persisted every cycle by saveState() → state.json.gz;
+          // serializing memory.exportGraph() here through JSON.stringify was
+          // the multi-hundred-MB checkpoint bug.
+          const checkpointState = this.buildCheckpointState();
           await this.crashRecovery.saveCheckpoint(checkpointState, this.cycleCount);
         } catch (error) {
           this.logger.error('[Phase A] Checkpoint save failed (non-fatal)', {

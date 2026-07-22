@@ -19,6 +19,7 @@ test('default package test authority registers each new lightweight COSMO suite 
     'tests/cosmo23/bounded-json.test.cjs',
     'tests/cosmo23/cluster-aware-memory-persistence.test.cjs',
     'tests/cosmo23/cluster-snapshot-merger-parity.test.cjs',
+    'tests/cosmo23/crash-recovery-scalar-checkpoints.test.cjs',
     'tests/cosmo23/codex-responses-client.test.cjs',
     'tests/cosmo23/cross-brain-readonly.test.cjs',
     'tests/cosmo23/graceful-shutdown-honesty.test.cjs',
