@@ -41,6 +41,7 @@ test('default package test authority registers each new lightweight COSMO suite 
     'tests/cosmo23/community-detection.test.cjs',
     'tests/cosmo23/spend-meter.test.cjs',
     'tests/cosmo23/progress-lane-starvation.test.cjs',
+    'tests/cosmo23/run-vitals-governance.test.cjs',
     'tests/cosmo23/pgs-cancellation.test.cjs',
     'tests/cosmo23/brain-backups.test.cjs',
     'tests/cosmo23/pgs-engine.test.cjs',

@@ -185,6 +185,12 @@ class AgentExecutor {
     // written by ResourceMonitor). READ ONLY here. Null in standalone/CLI
     // contexts → treated as level 'none'.
     this.backpressure = null;
+    // Phase 4 (4.1): governance concurrency cap — written by the
+    // orchestrator's regulator (runGovernanceTick) while a WARN lane is
+    // active (one notch below the configured limit); null when released.
+    // READ ONLY here, applied in getEffectiveMaxConcurrent(). Can only
+    // LOWER effective concurrency, never raise it.
+    this.governanceConcurrencyCap = null;
     this.initialized = false;
     
     // Agent type constructors (will be populated when agent types are implemented)
@@ -293,10 +299,18 @@ class AgentExecutor {
    * NEVER throttled by backpressure — this only shapes agent spawning.
    */
   getEffectiveMaxConcurrent() {
+    let effective = this.maxConcurrent;
     if (this.backpressure?.level === 'elevated') {
-      return Math.max(1, Math.ceil(this.maxConcurrent / 2));
+      effective = Math.max(1, Math.ceil(effective / 2));
     }
-    return this.maxConcurrent;
+    // Phase 4 (4.1): governance cap composes with the H4 halving — the
+    // LOWER bound wins. Bounded: a cap at or above the current effective
+    // limit changes nothing (the regulator can never raise concurrency).
+    const governorCap = Number(this.governanceConcurrencyCap);
+    if (Number.isFinite(governorCap) && governorCap >= 1 && governorCap < effective) {
+      effective = Math.floor(governorCap);
+    }
+    return effective;
   }
 
   isApprovedStrategicBypass(missionSpec = {}) {

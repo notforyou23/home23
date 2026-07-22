@@ -29,6 +29,7 @@ const { MemoryGovernor } = require('../system/memory-governor');
 const { planMemoryCommunities } = require('../memory/community-detection');
 const { resolveGcCriteria, resolveGovernorEnforcement } = require('../memory/gc-policy');
 const { RunCommitmentGovernor } = require('./run-commitment-governor');
+const { RunVitals, PARK_EXIT_CODE, writeParkState, archiveParkState } = require('./run-vitals');
 const { ProgressLaneTracker } = require('./progress-lane');
 const { getSpendMeter } = require('./spend-meter');
 const { UnifiedClient } = require('./unified-client');
@@ -299,6 +300,32 @@ class Orchestrator {
       spendConfig: config.spend || {},
       logger,
     });
+    // ── Phase 4 (Component 4.1): run vitals + regulator ──────────────────
+    // Native research governance. RunVitals computes progress/spend/health
+    // lanes each SETTLED cycle from in-memory Phase 2 signals and proposes
+    // BOUNDED actions; the orchestrator applies them (pace / park). The
+    // class is pure computation — no fs access, no engine-state writes (R1).
+    // Providers are late-bound closures so Component 4.2's spend meter
+    // (this.spendMeter, getSnapshot()) and Component 4.3's commitment
+    // tracker (this.progressCommitments, assessProgress()) wire in without
+    // touching this constructor again. Default behavior with neither wired
+    // and no budget configured is observe-and-report ONLY (pinned by test).
+    this.runVitals = new RunVitals({
+      config,
+      logger,
+      spendProvider: () => (this.spendMeter && typeof this.spendMeter.getSnapshot === 'function')
+        ? this.spendMeter.getSnapshot()
+        : null,
+      progressAssessor: (input) => (this.progressCommitments && typeof this.progressCommitments.assessProgress === 'function')
+        ? this.progressCommitments.assessProgress(input)
+        : null
+    });
+    this.spendMeter = null;            // Component 4.2 wires the real meter here
+    this.progressCommitments = null;   // Component 4.3 wires the tracker here
+    // Applied pacing — the regulator's only standing effect. Read by
+    // calculateNextInterval (factor) and mirrored onto the agent executor
+    // (governanceConcurrencyCap). Neutral until a WARN lane engages.
+    this.governancePacing = { factor: 1, concurrencyCap: null };
     this.shutdownHandler = null; // Created after initialization
   }
 
@@ -1015,6 +1042,11 @@ class Orchestrator {
     this.running = true;
     this.runStartTime = Date.now(); // Track when this run started
 
+    // Phase 4 (4.1): a deliberately-parked run that is starting again is,
+    // by definition, resuming — archive the park marker (evidence is never
+    // silently deleted) so status surfaces stop reporting 'parked'.
+    this.archiveParkStateOnStart();
+
     // Phase 2 (H1): first heartbeat stamp + unref'd interval. Interval
     // stamps prove liveness only; cycle start/end stamps carry progress.
     this.heartbeatWriter?.start({ cycle: this.cycleCount, phase: 'loop_start' });
@@ -1135,6 +1167,13 @@ class Orchestrator {
       }
       const cycleForSync = this.cycleCount;
       await this.handleClusterCycleSync(cycleForSync);
+
+      // Phase 4 (4.1): governance tick — compute run vitals lanes and apply
+      // bounded regulator actions. Runs only on settled cycles (breaker
+      // cooloffs and abandoned cycles skip it — health remediation belongs
+      // to the watchdog/sentinel, never the regulator). A PARK performs the
+      // graceful stop and exits 81 — it does not return.
+      await this.runGovernanceTick();
       
       // Check maxCycles limit (if configured)
       const maxCyclesRaw = this.config.execution?.maxCycles;
@@ -4785,6 +4824,201 @@ class Orchestrator {
       return this.lastCommitmentDecision;
     }
     return await this.evaluateCommitmentGovernor();
+  }
+
+  /**
+   * Phase 4 (Component 4.1): collect the cheap, synchronous, in-memory
+   * signals RunVitals needs. No disk reads, no awaits — this runs every
+   * settled cycle. Artifact counts ride the LAST commitment-governor
+   * decision's cached summary (may lag by a review interval; the lane
+   * evidence records that provenance honestly).
+   */
+  collectVitalsSignals() {
+    return {
+      cycle: this.cycleCount,
+      nodes: this.memory?.nodes?.size ?? null,
+      committedArtifacts: this.lastCommitmentDecision?.summary?.committedArtifacts ?? null,
+      activeAgents: this.agentExecutor?.registry?.getActiveCount?.() || 0,
+      maxConcurrent: this.agentExecutor?.maxConcurrent ?? null,
+      backpressureLevel: this.backpressure?.level || 'none',
+      watchdog: this.cycleWatchdog ? this.cycleWatchdog.getStatus() : null,
+      heartbeatRunning: Boolean(this.heartbeatWriter?.timer)
+    };
+  }
+
+  /**
+   * Phase 4 (4.1): one governance tick per settled cycle. Never throws into
+   * the loop. Division of labor (explicit, pinned by test):
+   *   - WARN spend / WARN tracked-progress → pacing ONLY: stretch the
+   *     inter-cycle interval and cap agent concurrency one notch. Never park.
+   *   - CRITICAL spend → park ('spend_critical').
+   *   - CRITICAL tracked-progress → park ('progress_starvation', fed by
+   *     Component 4.3's commitment tracker).
+   *   - Health at ANY level → observe only. Backpressure already shapes
+   *     spawning, and the CycleWatchdog + server sentinel own health
+   *     remediation (breaker, cooloff, exit 86). The regulator acting on
+   *     health would double-govern the same signals.
+   * Every applied action writes a ledger receipt (never awaited) and shows
+   * in getStats().governance; park also lands in the heartbeat phase and
+   * <logsDir>/.park.json.
+   */
+  async runGovernanceTick() {
+    if (!this.runVitals) return null;
+    let assessment = null;
+    try {
+      assessment = this.runVitals.evaluateCycle(this.collectVitalsSignals());
+    } catch (error) {
+      this.logger.warn('[Governance] vitals evaluation failed (non-fatal)', { error: error.message });
+      return null;
+    }
+    if (!assessment || assessment.enabled === false) return assessment;
+
+    for (const transition of assessment.transitions) {
+      if (transition.type === 'pacing_engaged') {
+        this.eventLedger?.log('governance_pacing_engaged', {
+          cycle: this.cycleCount,
+          factor: assessment.pacing.factor,
+          concurrencyCap: assessment.pacing.concurrencyCap,
+          reasons: assessment.actionReasons,
+          lanes: this.runVitals.summarizeLanes(assessment.lanes)
+        });
+        this.heartbeatWriter?.stamp({ phase: 'governance_pacing' });
+        this._emitGovernanceStatus('governance_pacing', 'Run vitals WARN — pacing engaged (slower cycles, capped concurrency)');
+      } else if (transition.type === 'pacing_released') {
+        this.eventLedger?.log('governance_pacing_released', { cycle: this.cycleCount });
+        this._emitGovernanceStatus('governance_pacing_released', 'Run vitals recovered — pacing released');
+      } else if (transition.type === 'health_deferred') {
+        this.eventLedger?.log('governance_health_deferred', {
+          cycle: this.cycleCount,
+          watchdog: transition.watchdog || null,
+          backpressureLevel: transition.backpressureLevel || null
+        });
+      }
+    }
+
+    // Apply (or clear) the standing pacing effect — the regulator's ONLY
+    // continuous influence. It can only slow cycles and lower the spawn
+    // cap, never speed up or raise limits (R1 bounded autonomy).
+    this.governancePacing = {
+      factor: assessment.pacing.factor,
+      concurrencyCap: assessment.pacing.concurrencyCap
+    };
+    if (this.agentExecutor) {
+      this.agentExecutor.governanceConcurrencyCap = assessment.pacing.concurrencyCap;
+    }
+
+    if (assessment.action === 'park') {
+      await this.parkRun(assessment.park);
+      // Unreachable in production (parkRun exits the process); reached only
+      // by tests that install the _governanceExit seam.
+      return assessment;
+    }
+    return assessment;
+  }
+
+  _emitGovernanceStatus(status, message) {
+    try {
+      this._getEvents().emitRunStatus({
+        status,
+        message,
+        cycle: this.cycleCount,
+        details: this.runVitals ? this.runVitals.getStats() : null
+      });
+    } catch (error) {
+      this.logger.debug?.('[Governance] status emit failed (non-fatal)', { error: error.message });
+    }
+  }
+
+  /**
+   * Phase 4 (4.1, contract R2): PARK — a graceful, deliberately-resumable
+   * pause. Order matters:
+   *   1. Persist <logsDir>/.park.json FIRST (tmp+rename) so the parked
+   *      verdict survives even if the stop below wedges and the backstop
+   *      fires (same doctrine as the watchdog persisting restartRequested
+   *      before exit 86).
+   *   2. Ledger receipt (never awaited) + run-status emit + heartbeat
+   *      phase 'parking'.
+   *   3. stop(): the EXISTING Phase 1/2 machinery — guarded shutdown save
+   *      via saveStateForShutdown(), clean marker only on a CONFIRMED
+   *      save. No new save path. metadata.json + the memory manifest are
+   *      left intact, so the normal continuation path
+   *      (launchPreparedResearch direct-runPath) resumes the run as-is.
+   *   4. Exit with the DISTINCT park code (81 — never the watchdog's 86):
+   *      the server must read a park as deliberately-stopped, not a crash
+   *      and not a wedge.
+   */
+  async parkRun(park = {}) {
+    const governance = this.config.governance || {};
+    const rawExit = Number(governance.park?.exitCode ?? PARK_EXIT_CODE);
+    const exitCode = Number.isFinite(rawExit) && rawExit >= 1 && rawExit <= 255 ? Math.floor(rawExit) : PARK_EXIT_CODE;
+    const stopBudgetMs = Number(governance.park?.stopTimeoutMs) > 0 ? Number(governance.park.stopTimeoutMs) : 180000;
+    // Test seam: production always exits; prototype-driven fakes install
+    // _governanceExit to observe ordering without killing the test runner.
+    const exit = typeof this._governanceExit === 'function' ? this._governanceExit : (code) => process.exit(code);
+
+    const parkState = {
+      version: 1,
+      parked: true,
+      reason: park.reason || 'unspecified',
+      lane: park.lane || null,
+      at: new Date().toISOString(),
+      cycle: this.cycleCount,
+      evidence: park.evidence || null,
+      resumable: true,
+      exitCode
+    };
+    try {
+      writeParkState(this.logsDir, parkState);
+    } catch (error) {
+      this.logger.error('[Governance] Failed to persist park state (parking anyway)', { error: error.message });
+    }
+
+    this.logger.warn('🅿️ [Governance] PARKING run — graceful pause with resumable state', {
+      reason: parkState.reason,
+      lane: parkState.lane,
+      cycle: this.cycleCount,
+      exitCode,
+      stopBudgetMs
+    });
+    this.eventLedger?.log('governance_park', {
+      cycle: this.cycleCount,
+      reason: parkState.reason,
+      lane: parkState.lane,
+      evidence: parkState.evidence
+    });
+    this._emitGovernanceStatus('parked', `Run parked (${parkState.reason}) — resumable`);
+    this.heartbeatWriter?.stamp({ phase: 'parking' });
+
+    // Backstop: parking must terminate even if stop() wedges on the same
+    // machinery it bounds. The park verdict is already durable (step 1).
+    const backstop = setTimeout(() => exit(exitCode), stopBudgetMs);
+    if (typeof backstop.unref === 'function') backstop.unref();
+
+    this.running = false;
+    try {
+      await this.stop();
+    } catch (error) {
+      this.logger.error('[Governance] stop() failed during park (park state already durable)', { error: error.message });
+    }
+    // Terminal heartbeat phase: stop() stamps 'stopped'; overwrite with the
+    // park-specific phase so status surfaces can tell a park from a plain
+    // stop without reading .park.json.
+    this.heartbeatWriter?.stamp({ phase: 'parked' });
+    exit(exitCode);
+  }
+
+  /**
+   * Phase 4 (4.1): starting (or resuming) a run clears the parked verdict.
+   * The marker is archived to .park.json.last — evidence is never silently
+   * deleted (same convention as the sentinel's .sentinel.json.last).
+   */
+  archiveParkStateOnStart() {
+    const archived = archiveParkState(this.logsDir);
+    if (archived) {
+      this.eventLedger?.log('governance_park_cleared', { cycle: this.cycleCount });
+      this.logger.info('🅿️ [Governance] Cleared park marker on start (archived to .park.json.last)');
+    }
+    return archived;
   }
 
   async getArtifactAuditSummary() {
@@ -8589,7 +8823,18 @@ OUTPUT FORMAT (JSON ONLY):
     }
 
     const minInterval = this.config.execution?.adaptiveTimingEnabled === false ? 1000 : 30000;
-    return Math.max(minInterval, Math.min(600000, interval)); // 1s/30s - 10min range
+    let bounded = Math.max(minInterval, Math.min(600000, interval)); // 1s/30s - 10min range
+
+    // Phase 4 (4.1): governance pacing — a WARN lane stretches the
+    // inter-cycle interval by governance.pacing.warnSlowdownFactor. Bounded
+    // by construction: only SLOWS (a factor <= 1 is ignored) and never
+    // exceeds the existing 10-minute ceiling. Neutral (factor 1) whenever
+    // the regulator has released pacing.
+    const paceFactor = Number(this.governancePacing?.factor);
+    if (Number.isFinite(paceFactor) && paceFactor > 1) {
+      bounded = Math.min(600000, Math.round(bounded * paceFactor));
+    }
+    return bounded;
   }
 
   sleep(ms) {
@@ -10764,6 +11009,8 @@ OUTPUT FORMAT (JSON ONLY):
       cycleCount: this.cycleCount,
       running: this.running,
       uptime: Date.now() - this.lastCycleTime.getTime(),
+      // Phase 4 (4.1): additive governance surface — lanes, pacing, counters.
+      governance: this.runVitals ? this.runVitals.getStats() : null,
       oscillator: this.oscillator.getStats(),
       coordinator: this.coordinator ? this.coordinator.getStats() : null,
       forkSystem: this.forkSystem ? this.forkSystem.getStats() : null,
