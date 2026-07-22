@@ -105,6 +105,16 @@ const {
 const { buildStatusContract } = require('./lib/status-contract');
 const { createRunSentinel, createContinuationRelauncher } = require('./lib/run-sentinel');
 const {
+  PARK_EXIT_CODE,
+  SPEND_STATE_FILENAME,
+  readParkFile,
+  archiveParkFile,
+  normalizeParkDetail,
+  deriveOperatorIntents,
+  createParkedRunResolver,
+  createResumeHandler,
+} = require('./lib/operator-intents');
+const {
   buildInteractiveLiveStatus,
   isInteractiveSessionRequestValid,
   shouldReuseInteractiveSession
@@ -213,6 +223,11 @@ function registerBrainOperationWorkerRoutes(worker, targetApp = app) {
 
 let activeContext = null;
 let isLaunching = false;
+// Phase 4 (component 4.5): the most recent park exit (engine exit code 81
+// with <runDir>/.park.json present). In-memory fast path only — the parked
+// run resolver re-verifies the park file on disk every read and falls back
+// to scanning the runs dir, so a server restart does not forget a parked run.
+let lastParkedRun = null;
 let brainOperationRuntime = null;
 
 function initializeProtectedBrainOperations({
@@ -350,6 +365,17 @@ function initializeProtectedBrainOperations({
 // wedge drill), and escalates through the status contract (health.wedged /
 // health.sentinel) after bounded attempts. Ladder state persists in
 // <runDir>/.sentinel.json.
+// Phase 4 (component 4.5): the resume path reuses the SAME direct-runPath
+// continuation relauncher the sentinel uses (metadata.json replay through
+// launchPreparedResearch — Patch 71) — hoisted so POST /api/resume and the
+// sentinel cannot drift.
+const continuationRelauncher = createContinuationRelauncher({
+  getActiveContext: () => activeContext,
+  getIsLaunching: () => isLaunching,
+  setIsLaunching: (value) => { isLaunching = value; },
+  launchPreparedResearch: (brain, payload, req) => launchPreparedResearch(brain, payload, req),
+  readJsonFile: readJsonFileIfPresent,
+});
 const sentinelSettings = initialConfig?.config?.sentinel || {};
 const runSentinel = createRunSentinel({
   getActiveContext: () => activeContext,
@@ -362,13 +388,7 @@ const runSentinel = createRunSentinel({
     await processManager.stopAll();
     activeContext = null; // mirror /api/stop's finally
   },
-  relaunch: createContinuationRelauncher({
-    getActiveContext: () => activeContext,
-    getIsLaunching: () => isLaunching,
-    setIsLaunching: (value) => { isLaunching = value; },
-    launchPreparedResearch: (brain, payload, req) => launchPreparedResearch(brain, payload, req),
-    readJsonFile: readJsonFileIfPresent,
-  }),
+  relaunch: continuationRelauncher,
   log: (level, message) => processManager.recordLog('Sentinel', level, message),
   config: {
     checkIntervalMs: parsePositiveInt(process.env.COSMO23_SENTINEL_CHECK_INTERVAL_MS,
@@ -386,17 +406,52 @@ const runSentinel = createRunSentinel({
   },
 });
 
+// Phase 4 (component 4.5) — Needs-You intents plumbing. Intents are derived
+// on every status read, never stored; the resolver finds "the parked run"
+// (active context -> last recorded park -> TTL-cached runs-dir scan).
+const intentSettings = initialConfig?.config?.intents || {};
+const spendWarnRatioRaw = Number.parseFloat(
+  process.env.COSMO23_INTENT_SPEND_WARN_RATIO ?? String(intentSettings.spendWarnRatio ?? ''),
+);
+const intentConfig = {
+  spendWarnRatio: Number.isFinite(spendWarnRatioRaw) && spendWarnRatioRaw > 0
+    ? spendWarnRatioRaw
+    : 0.8,
+};
+const parkedRunResolver = createParkedRunResolver({
+  getActiveContext: () => activeContext,
+  getLastParked: () => lastParkedRun,
+  runsPath: LOCAL_RUNS_PATH,
+  scanTtlMs: parsePositiveInt(process.env.COSMO23_INTENT_SCAN_TTL_MS,
+    parsePositiveInt(intentSettings.scanTtlMs, 30 * 1000)),
+});
+
 processManager.on('cosmo-exit', ({ code, signal }) => {
-  if (activeContext) {
-    const runName = activeContext.runName;
-    const runPath = activeContext.runPath;
-    activeContext = null;
-    processManager.recordLog('Launcher', 'info',
-      `Run "${runName}" ended (code: ${code}, signal: ${signal || 'none'}) — cleared activeContext`);
+  if (!activeContext) return;
+  const runName = activeContext.runName;
+  const runPath = activeContext.runPath;
+  const brainId = activeContext.brainId || null;
+  activeContext = null;
+  (async () => {
+    // Phase 4 (R2) park recognition: exit code 81 WITH <runDir>/.park.json
+    // is a deliberate, resumable pause — not a crash, not wedged. Anything
+    // else keeps the original semantics (no exit-code special-casing,
+    // Patch 71 S1: the sentinel handles every real death uniformly).
+    const park = code === PARK_EXIT_CODE ? await readParkFile(runPath) : null;
+    if (park) {
+      lastParkedRun = { runPath, runName, brainId };
+      parkedRunResolver.invalidate();
+      processManager.recordLog('Launcher', 'info',
+        `Run "${runName}" parked (exit ${PARK_EXIT_CODE}, reason: ${park.reason || 'unrecorded'}, `
+        + `lane: ${park.lane || 'unrecorded'}) — resumable via POST /api/resume`);
+    } else {
+      processManager.recordLog('Launcher', 'info',
+        `Run "${runName}" ended (code: ${code}, signal: ${signal || 'none'}) — cleared activeContext`);
+    }
     // Run completion cleans up sentinel state; the sentinel keeps it when the
-    // exit was its own remediation stop.
+    // exit was its own remediation stop (and skips parked runs entirely).
     runSentinel.notifyRunEnded({ runPath, runName }).catch(() => {});
-  }
+  })().catch(() => {});
 });
 
 if (process.env.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY) {
@@ -1025,6 +1080,24 @@ async function launchPreparedResearch(brain, payload, req) {
   processManager.clearLogs();
   processManager.recordLog('Launcher', 'info', `Preparing run ${brain.name}`);
 
+  // Phase 4 (component 4.5): ANY launch of this run dir clears stale park
+  // state (archive, never delete). A .park.json left beside a live engine
+  // would make the sentinel treat the run as parked and skip wedge
+  // monitoring. /api/resume archives explicitly before it gets here; this
+  // covers manual /api/launch continuations of a parked run.
+  try {
+    const clearedStalePark = await archiveParkFile(brain.path);
+    if (clearedStalePark) {
+      if (lastParkedRun && lastParkedRun.runPath === brain.path) lastParkedRun = null;
+      parkedRunResolver.invalidate();
+      processManager.recordLog('Launcher', 'info',
+        `Cleared stale park state for run ${brain.name} (.park.json archived)`);
+    }
+  } catch (error) {
+    processManager.recordLog('Launcher', 'error',
+      `Could not clear stale park state for run ${brain.name}: ${error?.message || error}`);
+  }
+
   await ensureRuntimeLink(brain.name);
   process.env.COSMO_RUNTIME_PATH = path.join(LOCAL_RUNS_PATH, brain.name);
   await configGenerator.writeConfig(launchSettings);
@@ -1097,11 +1170,14 @@ function extractCallbackParams(input) {
 
 app.get('/api/health', async (_req, res) => {
   const processStatus = processManager.getStatus();
+  const operatorSignals = await assembleOperatorSignals();
   const health = buildStatusContract({
     activeContext,
     processStatus,
     isLaunching,
     sentinel: runSentinel.getPublicState(),
+    park: operatorSignals.park,
+    intents: operatorSignals.intents,
     ports: { app: PORT, websocket: WS_PORT, dashboard: DASHBOARD_PORT, mcpHttp: MCP_HTTP_PORT },
   });
   res.json({
@@ -2030,9 +2106,33 @@ app.post('/api/stop', async (_req, res) => {
     // on a later tick. A user stop is FINAL either way — force-clear the
     // sentinel's ladder (it falls back to its tracked run for the path).
     runSentinel.notifyRunEnded({ userInitiated: true }).catch(() => {});
+    // Phase 4 (component 4.5): a user stop is also the 'stop' action on a
+    // run_parked intent — dismiss the parked run by archiving its park file
+    // (.park.json -> .park.json.last, evidence preserved; the run stays a
+    // plain resumable continuation via /api/launch).
+    let parkCleared = false;
+    let parkedRunName = null;
+    try {
+      const parkedRun = await parkedRunResolver.resolve();
+      if (parkedRun) {
+        parkCleared = await archiveParkFile(parkedRun.runPath);
+        if (parkCleared) {
+          parkedRunName = parkedRun.runName;
+          if (lastParkedRun && lastParkedRun.runPath === parkedRun.runPath) lastParkedRun = null;
+          parkedRunResolver.invalidate();
+          processManager.recordLog('Launcher', 'info',
+            `User stop dismissed parked run "${parkedRun.runName}" — park state archived`);
+        }
+      }
+    } catch {
+      parkCleared = false;
+    }
     return res.json({
       status: 'not_running',
-      message: 'No research running'
+      message: parkCleared
+        ? `No research running — parked run "${parkedRunName}" dismissed`
+        : 'No research running',
+      parkCleared
     });
   }
 
@@ -2063,8 +2163,39 @@ app.post('/api/stop', async (_req, res) => {
     // silently deleted). Also covers escalated dead runs, whose stop produces
     // no cosmo-exit and would otherwise stay wedged until a server restart.
     runSentinel.notifyRunEnded({ runPath, runName, userInitiated: true }).catch(() => {});
+    // Phase 4 (component 4.5): if the engine had parked (or was parking) in
+    // this run dir, the user stop also dismisses the park — best-effort and
+    // fire-and-forget, mirroring notifyRunEnded above.
+    archiveParkFile(runPath).then((cleared) => {
+      if (cleared) {
+        if (lastParkedRun && lastParkedRun.runPath === runPath) lastParkedRun = null;
+        parkedRunResolver.invalidate();
+        processManager.recordLog('Launcher', 'info',
+          `User stop dismissed park state for run "${runName}"`);
+      }
+    }).catch(() => {});
   }
 });
+
+// Phase 4 (component 4.5) — resume a parked run (the 'resume' action on a
+// run_parked intent). Validates parked state, archives <runDir>/.park.json
+// to .park.json.last, then relaunches through the SAME direct-runPath
+// continuation the sentinel uses (metadata.json replay — Patch 71); a
+// failed relaunch restores the park file so the run stays visibly parked.
+// 409 when nothing is parked (code 'not_parked') or a run is already
+// active/launching (code 'already_running'). Optional body { runPath }
+// disambiguates when multiple parked runs exist.
+app.post('/api/resume', createResumeHandler({
+  getActiveContext: () => activeContext,
+  getIsLaunching: () => isLaunching,
+  resolveParkedRun: () => parkedRunResolver.resolve(),
+  relaunch: (info) => continuationRelauncher(info),
+  onResumed: (parkedRun) => {
+    if (lastParkedRun && lastParkedRun.runPath === parkedRun.runPath) lastParkedRun = null;
+    parkedRunResolver.invalidate();
+  },
+  log: (level, message) => processManager.recordLog('Launcher', level, message),
+}));
 
 async function readJsonFileIfPresent(filePath) {
   try {
@@ -2101,9 +2232,34 @@ async function loadActiveRunTruth(context) {
   };
 }
 
+// Phase 4 (component 4.5): operator signals for the status contract —
+// resolved parked run (normalized detail) + derived Needs-You intents.
+// Never throws: a resolver or spend-meter read problem degrades to "no
+// signals" — the status endpoints must stay available regardless.
+async function assembleOperatorSignals() {
+  let parkedRun = null;
+  try {
+    parkedRun = await parkedRunResolver.resolve();
+  } catch {
+    parkedRun = null;
+  }
+  let spend = null;
+  if (activeContext && activeContext.runPath) {
+    spend = await readJsonFileIfPresent(path.join(activeContext.runPath, SPEND_STATE_FILENAME));
+  }
+  const intents = deriveOperatorIntents({
+    parked: parkedRun,
+    sentinel: runSentinel.getPublicState(),
+    spend,
+    config: intentConfig,
+  });
+  return { park: normalizeParkDetail(parkedRun), intents };
+}
+
 app.get('/api/status', async (req, res) => {
   const processStatus = processManager.getStatus();
   const runTruth = await loadActiveRunTruth(activeContext);
+  const operatorSignals = await assembleOperatorSignals();
   // HOME23 PATCH — explicit health contract. Preserve legacy `running` while
   // exposing the individual truths so Home23 does not confuse API reachability,
   // launcher context, and child process state.
@@ -2113,6 +2269,8 @@ app.get('/api/status', async (req, res) => {
     isLaunching,
     runTruth,
     sentinel: runSentinel.getPublicState(),
+    park: operatorSignals.park,
+    intents: operatorSignals.intents,
     ports: { app: PORT, websocket: WS_PORT, dashboard: DASHBOARD_PORT, mcpHttp: MCP_HTTP_PORT },
   });
   const running = health.activeRun;
@@ -2129,6 +2287,9 @@ app.get('/api/status', async (req, res) => {
     isLaunching: health.isLaunching,
     lastHeartbeat: health.lastHeartbeat,
     wedged: health.wedged,
+    parked: health.parked,
+    park: health.park,
+    intents: health.intents,
     heartbeat: health.heartbeat,
     activeContext,
     processStatus,

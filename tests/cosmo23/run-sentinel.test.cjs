@@ -849,18 +849,35 @@ test('sentinel end-to-end: a wedged non-catalog run relaunches via the direct pa
 
 test('index.js wires the sentinel relaunch through the direct-path relauncher, not catalog resolution', async () => {
   const src = await fs.readFile(path.resolve(__dirname, '../../cosmo23/server/index.js'), 'utf8');
+  // Live-drill regression pin: catalog-backed launchResearch throws
+  // "Brain not found" for young mid-run brains (ensureLocalBrainForLaunch →
+  // resolveCatalogBrainBySelector only sees completed/queryable brains). The
+  // relaunch leg must go straight to launchPreparedResearch from the tracked
+  // run directory. Phase 4 (component 4.5) hoisted the relauncher so the
+  // sentinel and POST /api/resume share the SAME instance and cannot drift.
+  const relauncherStart = src.indexOf('const continuationRelauncher = createContinuationRelauncher({');
+  assert.notEqual(relauncherStart, -1, 'hoisted direct-path relauncher present');
+  const relauncherEnd = src.indexOf('\n});', relauncherStart);
+  assert.notEqual(relauncherEnd, -1, 'relauncher block closed');
+  const relauncherBlock = src.slice(relauncherStart, relauncherEnd);
+  assert.ok(relauncherBlock.includes('launchPreparedResearch'),
+    'relauncher must replay through launchPreparedResearch');
+  assert.ok(!relauncherBlock.includes('launchResearch('),
+    'relauncher must not route through catalog-backed launchResearch');
   const start = src.indexOf('const runSentinel = createRunSentinel({');
   assert.notEqual(start, -1, 'sentinel wiring block present');
   const end = src.indexOf('\n});', start);
   assert.notEqual(end, -1, 'sentinel wiring block closed');
   const block = src.slice(start, end);
-  // Live-drill regression pin: catalog-backed launchResearch throws
-  // "Brain not found" for young mid-run brains (ensureLocalBrainForLaunch →
-  // resolveCatalogBrainBySelector only sees completed/queryable brains). The
-  // relaunch leg must go straight to launchPreparedResearch from the tracked
-  // run directory.
-  assert.ok(block.includes('createContinuationRelauncher({'),
-    'relaunch must use the direct-path relauncher');
+  assert.ok(block.includes('relaunch: continuationRelauncher'),
+    'sentinel relaunch must be the shared direct-path relauncher');
   assert.ok(!block.includes('launchResearch('),
     'relaunch must not route through catalog-backed launchResearch');
+  const resumeStart = src.indexOf("app.post('/api/resume', createResumeHandler({");
+  assert.notEqual(resumeStart, -1, 'resume endpoint present');
+  const resumeEnd = src.indexOf('}));', resumeStart);
+  assert.notEqual(resumeEnd, -1, 'resume wiring block closed');
+  const resumeBlock = src.slice(resumeStart, resumeEnd);
+  assert.ok(resumeBlock.includes('continuationRelauncher(info)'),
+    'resume must relaunch through the shared direct-path relauncher');
 });

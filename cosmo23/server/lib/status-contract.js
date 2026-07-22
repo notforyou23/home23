@@ -33,6 +33,8 @@ function buildStatusContract({
   ports = {},
   runTruth = {},
   sentinel = null,
+  park = null,
+  intents = null,
   heartbeat = undefined,
   now = new Date(),
   uptimeMs = Math.round(process.uptime() * 1000),
@@ -60,6 +62,15 @@ function buildStatusContract({
   else if (hasActiveContext) lifecycle = 'context_without_process';
   else if (cosmoMainOnline) lifecycle = 'process_without_context';
 
+  // Phase 4 (component 4.5): parked/park/intents are additive (Patch 9
+  // compat), mirroring the wedged/sentinel pattern — `lifecycle` keeps its
+  // original value set. `park` is the normalized park detail of the
+  // active-or-last parked run; `parked` is true only when that run is not
+  // superseded by a DIFFERENT active run.
+  const parkDetail = park && typeof park === 'object' ? park : null;
+  const parked = !!parkDetail
+    && (!hasActiveContext || parkDetail.runPath === (activeContext?.runPath || null));
+
   return {
     apiReachable: true,
     lifecycle,
@@ -71,6 +82,9 @@ function buildStatusContract({
     // its original value set; a wedged run is flagged in parallel.
     wedged: sentinel?.escalated === true,
     sentinel: sentinel || null,
+    parked,
+    park: parkDetail,
+    intents: Array.isArray(intents) ? intents : [],
     lastHeartbeat: runHeartbeat?.lastHeartbeat || null,
     heartbeat: runHeartbeat,
     generatedAt: now instanceof Date ? now.toISOString() : String(now),

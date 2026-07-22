@@ -54,6 +54,7 @@ test('default package test authority registers each new lightweight COSMO suite 
     'tests/cosmo23/research-memory-manifest.test.cjs',
     'tests/cosmo23/memory-sidecar-streamed-capture.test.cjs',
     'tests/cosmo23/run-sentinel.test.cjs',
+    'tests/cosmo23/operator-intents.test.cjs',
     'tests/cosmo23/state-hydration.test.cjs',
     'tests/cosmo23/runtime-dependency-compatibility.test.cjs',
     'tests/cosmo23/state-compression-atomicity.test.cjs',

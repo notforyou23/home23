@@ -58,6 +58,10 @@ const crypto = require('crypto');
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
+// Phase 4 (component 4.5): the server-side park-file contract is owned by
+// operator-intents.js — a parked run (<runDir>/.park.json, engine exit 81)
+// is deliberately stopped and must never be remediated by the sentinel.
+const { readParkFile: defaultReadParkFile } = require('./operator-intents');
 
 const SENTINEL_STATE_FILENAME = '.sentinel.json';
 // User-stopped runs archive their ladder state here (evidence is never
@@ -203,6 +207,7 @@ class RunSentinel {
     this.deps = deps;
     this.readHeartbeat = typeof deps.readHeartbeat === 'function' ? deps.readHeartbeat : defaultReadHeartbeat;
     this.readWatchdog = typeof deps.readWatchdog === 'function' ? deps.readWatchdog : defaultReadWatchdog;
+    this.readParkFile = typeof deps.readParkFile === 'function' ? deps.readParkFile : defaultReadParkFile;
     this.log = typeof deps.log === 'function' ? deps.log : () => {};
     this.now = typeof deps.now === 'function' ? deps.now : () => Date.now();
     this.config = {
@@ -221,6 +226,7 @@ class RunSentinel {
     this.lastCheck = null;
     this.missingHeartbeatLogged = false;
     this.watchdogPhaseLogged = false;
+    this.parkedSkipLogged = false;
     // Epoch ms of the most recent user-initiated stop. USER INTENT IS FINAL:
     // an in-flight remediation re-checks this between its stop and relaunch
     // and aborts if a user stop arrived. Superseded by any launch whose
@@ -442,6 +448,16 @@ class RunSentinel {
     const context = this.deps.getActiveContext();
     if (!context || !context.runPath) {
       if (this.pendingRelaunch && this.tracked && this.state) {
+        // Phase 4 (R2): a park that lands while a relaunch retry is pending
+        // cancels the retry — parked runs resume only by operator intent
+        // (POST /api/resume), never by the sentinel.
+        const retryPark = await this.readParkFile(this.tracked.runPath);
+        if (retryPark) {
+          this.pendingRelaunch = false;
+          this.log('info',
+            `Sentinel: run "${this.tracked.runName}" is parked — pending relaunch retry cancelled`);
+          return { outcome: 'parked', reason: 'run_parked' };
+        }
         return this._remediate(
           { runPath: this.tracked.runPath, runName: this.tracked.runName, brainId: this.tracked.brainId },
           'relaunch_retry',
@@ -465,6 +481,24 @@ class RunSentinel {
     }
 
     const state = await this.loadStateFor(context);
+
+    // Phase 4 (R2): <runDir>/.park.json means the engine parked itself —
+    // graceful pause with resumable state (guarded save, exit code 81). A
+    // parked run is deliberately stopped: NOT wedged, NOT a crash. Every
+    // remediation below (context_without_process death, progress-stale
+    // wedge) must stand down, or the sentinel would resurrect a run that
+    // governance chose to pause. Resume goes through POST /api/resume only.
+    const park = await this.readParkFile(context.runPath);
+    if (park) {
+      if (!this.parkedSkipLogged) {
+        this.parkedSkipLogged = true;
+        this.log('info',
+          `Sentinel: run "${context.runName}" is parked (${park.reason || 'no reason recorded'}) — `
+          + 'skipping wedge/death remediation until it is resumed');
+      }
+      return { outcome: 'parked', reason: 'run_parked' };
+    }
+    this.parkedSkipLogged = false;
 
     const startedAtMs = parseTimestampMs(context.startedAt);
     if (startedAtMs !== null && now - startedAtMs < this.config.launchGraceMs) {
