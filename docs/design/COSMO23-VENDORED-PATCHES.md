@@ -7,6 +7,17 @@ cosmo23 runs as an embedded sub-system instead of standalone.
 **Note:** cosmo23 is now fully bundled — it updates with `home23 update`, not separately.
 These patches are tracked here for reference when pulling upstream changes into the bundle.
 
+> **Doctrine change (2026-07-21, approved by jtr):** cosmo23/ is now a
+> first-class editable engine — the same transition engine/ made on
+> 2026-07-15. Structural engine improvements land as normal code with normal
+> tests and are NOT logged here. This log remains authoritative ONLY for
+> integration-boundary changes: config plumbing, OAuth, env-var contracts,
+> and server API surfaces that Home23/agents consume. Upstream resync is
+> retired — cosmo23 updates only via `home23 update`. The Home23 sacred
+> persistence rules (standalone load test before restart after
+> persistence-adjacent changes; node-count verification after) apply to
+> cosmo23 in full. See docs/superpowers/specs/2026-07-21-cosmo23-parity-program-design.md.
+
 All patches are marked in-source with a `HOME23 PATCH` comment for greppability:
 
 ```bash

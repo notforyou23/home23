@@ -156,10 +156,14 @@ async function sweepStaleTmpDirs(logsDir, now, logger) {
 }
 
 /**
- * Create a backup if one is due. Never throws — returns a structured result:
- *   { created: true, path, rotated }
- *   { created: false, skipped: 'interval' | 'low_disk', ... }
- *   { created: false, error }
+ * Create a backup if one is due. Never throws — returns a structured result.
+ * Every shape carries sweptTmp (count of stale backup-*.tmp staging dirs
+ * removed this call):
+ *   { created: true, path, rotated, sweptTmp }
+ *   { created: false, skipped: 'interval', lastBackupAt, sweptTmp }
+ *   { created: false, skipped: 'low_disk', freeBytes, sweptTmp }                  // pre-lock bare floor
+ *   { created: false, skipped: 'low_disk', freeBytes, projectedBytes, sweptTmp }  // in-lock: floor + copy-set size
+ *   { created: false, error, sweptTmp }
  */
 async function maybeBackupBrain(logsDir, options = {}) {
   const logger = options.logger || console;

@@ -52,7 +52,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working on the 
 
 **Phase 15 — Thought generation:** Role-based LLM calls. In guided mode, skipped until `guidedPlanReady`.
 
-**End of cycle:** Cancel cycle timer. `saveState()` writes `state.json` (compressed) and `cosmo-progress.md`. Emit `cycleComplete`.
+**End of cycle:** Cancel cycle timer. `saveState()` runs the every-cycle save-safety guard, then `persistResearchState()` commits the memory graph as an immutable manifest generation (`memory-manifest.json` + base sidecars) and writes a manifest-backed shell to `state.json.gz` (atomic tmp + fsync + rename); on success it stamps `brain-snapshot.json`, writes `cosmo-progress.md`, and fires an interval-gated backup check (`maybeBackupBrain`, non-blocking). Emit `cycleComplete`.
 
 ---
 
@@ -156,7 +156,16 @@ Provider routing by assignment: `openai-codex` provider tag routes to `generateC
 ## Resilience
 
 ### Crash Recovery (`crash-recovery-manager.js`)
-Marker-file protocol: `.clean_shutdown` file is removed at startup, written at clean shutdown. If missing AND `state.json` exists → crash detected. Checkpoints written every N cycles (default 5) atomically (temp file + rename). Recovery tries checkpoints newest-first.
+Marker-file protocol: `.clean_shutdown` file is removed at startup, written at clean shutdown. Detection covers BOTH `state.json.gz` AND `state.json` (`detectCrash()`): marker missing AND either state artifact present → crash detected.
+
+Checkpoints are written every N cycles (default 5) atomically (temp file + rename) and are **scalar-only** (`buildCheckpointState()` in orchestrator.js): `cycleCount`, journal tail, `lastSummarization`, `guidedMissionPlan`, `completionTracker`, plus a `memorySummary` of node/edge/cluster counts — never the graph (full-graph checkpoints were the multi-hundred-MB JSON.stringify bug). Each checkpoint gets a `checkpoint-N_audit.json` tamper-evidence sidecar; audit sidecars are excluded from recovery candidates and are deleted together with their checkpoint during rotation.
+
+Recovery tries checkpoints newest-first, and recovery **ALWAYS runs `loadState()`** (`restoreFromPersistence()`): a recovered checkpoint is applied strictly as a scalar overlay — only fields strictly fresher than what `loadState()` restored — and NEVER as a memory source. A legacy full-graph checkpoint's memory payload is logged and ignored. Skipping `loadState()` after checkpoint recovery is the memory=0 bug class.
+
+### Load Path (`state-hydration.js`)
+Manifest-backed saves store an EMPTY memory shell inside `state.json.gz` (`memorySource: 'manifest'`). `loadState()` hydrates the shell back through the streaming sidecar reader (`hydrateOrchestratorState()` → `lib/memory-sidecar.hydrateStateMemory`) before any import — never a single-string JSON parse of sidecar files.
+
+**BRAIN_LOAD_EMPTY contract (fail-loud):** if `brain-snapshot.json` / `memory-manifest.json` / shell counters expect nodes > 0 but the loaded+hydrated graph has 0 nodes, an error with `code: 'BRAIN_LOAD_EMPTY'` is thrown. `loadState()` matches it code-first (message-prefix `BRAIN_LOAD_EMPTY` as fallback for message-wrapping intermediaries) and re-throws — the error propagates out of `initialize()`, the process exits 1, and the run is visible as failed. The brain stays intact on disk; the engine must NOT continue as a fresh brain. Documented gap: a legacy run dir with no snapshot AND no manifest has nothing to detect against — it boots fresh.
 
 ### Timeout Protection (`timeout-manager.js`)
 **Cycle-level:** `startCycleTimer()` sets a setTimeout. Fires callback on timeout but does NOT abort the cycle — monitoring only, not a circuit breaker.
@@ -165,11 +174,13 @@ Marker-file protocol: `.clean_shutdown` file is removed at startup, written at c
 ### Graceful Shutdown (`graceful-shutdown-handler.js`)
 Listens on SIGINT, SIGTERM, SIGHUP. Idempotent. Sequence:
 1. Wait for active agents (up to 150s)
-2. Stop orchestrator
-3. Dump final state
-4. Mark clean shutdown
+2. Stop orchestrator (`orchestrator.stop()` performs the bounded final save itself via `saveStateForShutdown()` and records the result in `shutdownStateResult`)
+3. Dump final state — only if the orchestrator didn't already handle it
+4. Mark clean shutdown — **ONLY when the final save result is `saved === true`.** A refused, failed, or timed-out save leaves the marker DIRTY so the next boot runs crash recovery and re-hydrates from the durable sidecars. `saved: 'existing'` (save timed out but a durable state artifact is on disk, reason `shutdown_save_timeout_existing_state`) ALSO stays dirty.
 5. Run custom cleanup tasks
-6. Exit
+6. Cleanup resources, exit
+
+The shutdown save is bounded (`shutdownSaveTimeoutMs`, default 60s; 15s grace when joining an already-in-progress save with durable state on disk). **Alert-worthy signal:** `shutdown_save_timeout_existing_state` recurring in logs means the brain has outgrown the 60s shutdown save bound.
 
 Hard-timeout kills process at 180s. Must exceed agent wait timeout (150s).
 
@@ -199,15 +210,18 @@ Also strips leading `runtime/` (a known GPT-5.2 hallucination). MCP accessibilit
 
 | File | Contents |
 |---|---|
-| `state.json` / `state.json.gz` | Full serialized runtime state (gzip compressed) |
+| `state.json` / `state.json.gz` | Serialized runtime state (gzip, atomic tmp + fsync + rename; reads tolerate trailing garbage via first-gzip-member salvage). Manifest-backed saves carry an EMPTY memory shell with authoritative counts (`memorySource: 'manifest'`); legacy runs carry the full inline graph |
+| `memory-manifest.json` + `memory-nodes.jsonl.gz` / `memory-edges.jsonl.gz` | Immutable manifest generation + base sidecars — the authoritative memory graph for manifest-backed runs; hydrated back on load via the streaming reader |
+| `brain-snapshot.json` | Last known-good node/edge counts, stamped after every successful save. Save-guard baseline (top precedence) + fail-loud load check. ALSO the operator escape hatch: a legitimate >50% prune of a >100-node brain is refused every cycle — the intended intervention is editing this file's counts down |
 | `cosmo-progress.md` | Human-readable progress log |
-| `checkpoints/checkpoint-{cycle}.json` | Checkpoint at cycle boundaries (last 3 kept) |
-| `.clean_shutdown` | Clean shutdown marker |
+| `checkpoints/checkpoint-{cycle}.json` | Scalar-only checkpoint (memorySummary counts, no graph) at cycle boundaries (last 3 kept); its `checkpoint-{cycle}_audit.json` sidecar rotates with it |
+| `backups/backup-<stamp>/` | Interval-gated coherent brain backups (6h default, retention 2), copied under the memory-source write lock with a 4GB + projected-copy-size disk floor; stale `backup-*.tmp` staging dirs are swept. Restore note: a backup can pair manifest revision R+1 with a shell/snapshot from R — benign, the manifest is authoritative for hydration |
+| `.clean_shutdown` | Clean shutdown marker (written ONLY after a confirmed final save) |
 | `.pause_requested` | Pause signal from external control |
 | `outputs/` | Agent deliverables |
 | `coordinator/` | Review plans, strategic snapshots |
 
-Save guard: cycles 0-1 skip overwrite if existing file has more nodes (protects brain merges).
+Save guard (every save, `brain-snapshot.js`): the known-good baseline resolves snapshot → manifest → streamed sidecar count → legacy inline state; a save dropping a >100-node brain below 50% of that baseline is refused with a structured result (`reason: 'catastrophic_node_drop'`). Existing-but-unreadable state fails closed as `persistence_guard_failed` — mapping it to "fresh" would bless an overwrite of a real brain. The old cycles-0-1 guard was dead code (it read `state.json` while saves write `state.json.gz`).
 
 ---
 
@@ -219,7 +233,7 @@ Save guard: cycles 0-1 skip overwrite if existing file has more nodes (protects 
 4. **SpawnGate runs before every agent spawn.**
 5. **Checkpoint writes are atomic** (temp file + rename).
 6. **Shutdown timeout (180s) must exceed agent wait timeout (150s).**
-7. **State save guard at cycle <= 1** prevents merged-brain overwrite.
+7. **Save-safety guard runs on EVERY save** — `brain-snapshot.json` is the known-good baseline; a save dropping a >100-node brain below 50% is refused with a structured result (brain-snapshot.js). Baseline resolution: snapshot → manifest → sidecar count → legacy inline; existing-but-unreadable state fails closed as `persistence_guard_failed`.
 8. **Deferred spawn must happen after plan display.**
 
 ---
@@ -247,6 +261,8 @@ Key test files for this directory:
 - `tests/unit/path-resolver.test.js`
 - `tests/integration/orchestrator-plan-execution.test.js`
 - `tests/single-instance/crash-recovery.test.js`
+
+Phase 1 persistence-integrity suites live in the Home23 root harness (run from the repo root with `npm test`): `tests/cosmo23/state-compression-atomicity.test.cjs`, `brain-snapshot-guard.test.cjs`, `graceful-shutdown-honesty.test.cjs`, `crash-recovery-scalar-checkpoints.test.cjs`, `state-hydration.test.cjs`, `brain-backups.test.cjs`.
 
 ---
 
