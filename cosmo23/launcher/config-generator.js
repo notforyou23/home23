@@ -645,6 +645,14 @@ resources:
   memoryLimitMB: 1024
   memoryWarningThreshold: 0.8
   cpuWarningThreshold: 0.9
+  rssBudgetMb: 4096
+  backpressure:
+    intervalMs: 10000
+    elevatedEnterPct: 0.70
+    elevatedExitPct: 0.60
+    criticalEnterPct: 0.85
+    criticalExitPct: 0.75
+    heapMinTotalMb: 512
 
 cluster:
   enabled: ${cluster_enabled}

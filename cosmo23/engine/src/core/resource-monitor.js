@@ -35,6 +35,29 @@ class ResourceMonitor {
     // GC stats tracking
     this.lastGCTime = Date.now();
     this.gcCount = 0;
+
+    // H4 backpressure: single-source-of-truth object. Producers (this monitor)
+    // WRITE it in place; consumers (AgentExecutor spawn gate) hold a reference
+    // and READ it. NEVER reassign this.backpressure — the orchestrator and the
+    // agent executor alias the same object instance.
+    const bp = config.resources?.backpressure || {};
+    this.rssBudgetMb = config.resources?.rssBudgetMb
+      ?? config.resourceLimits?.rssBudgetMb
+      ?? 4096; // engine child runs with default V8 heap (~4GB old space)
+    this.bpIntervalMs = bp.intervalMs ?? 10000;
+    this.bpThresholds = {
+      elevatedEnterPct: bp.elevatedEnterPct ?? 0.70,
+      elevatedExitPct: bp.elevatedExitPct ?? 0.60,
+      criticalEnterPct: bp.criticalEnterPct ?? 0.85,
+      criticalExitPct: bp.criticalExitPct ?? 0.75
+    };
+    // Heap fraction is meaningless on tiny heaps (V8 keeps heapTotal tight);
+    // only count it once heapTotal crosses this floor. RSS-vs-budget always counts.
+    this.bpHeapMinTotalMb = bp.heapMinTotalMb ?? 512;
+    this.backpressure = { level: 'none', reasons: [] };
+    this._bpElevatedActive = false;
+    this._bpCriticalActive = false;
+    this._bpTimer = null;
   }
 
   /**
@@ -84,6 +107,14 @@ class ResourceMonitor {
 
     // Check limits
     this.checkLimits(snapshot);
+
+    // H4: refresh backpressure at cycle boundaries too (interval timer covers
+    // long gaps between cycles; this covers fast cycles between ticks)
+    this.evaluateBackpressure({
+      heapUsed: memUsage.heapUsed,
+      heapTotal: memUsage.heapTotal,
+      rss: memUsage.rss
+    });
 
     this.lastCheck = Date.now();
 
@@ -154,6 +185,109 @@ class ResourceMonitor {
   }
 
   /**
+   * H4 backpressure evaluation with hysteresis.
+   *
+   * Pressure = max(heapUsed/heapTotal [only when heapTotal >= heapMinTotalMb],
+   *                rss / rssBudgetMb).
+   * Two-flag hysteresis: enter elevated at 70%, exit at 60%; enter critical at
+   * 85%, exit at 75%. Exiting critical drops into the elevated band unless
+   * pressure also cleared the elevated exit threshold. Logs on level CHANGE only.
+   *
+   * Writes this.backpressure IN PLACE (same object identity) so consumers
+   * holding the reference observe updates. Saves are never gated on this —
+   * enforcement is spawn-side only (AgentExecutor).
+   *
+   * @param {Object|null} reading - optional injected {heapUsed, heapTotal, rss} in BYTES (tests)
+   * @returns {string} the new level: 'none' | 'elevated' | 'critical'
+   */
+  evaluateBackpressure(reading = null) {
+    const mem = reading || process.memoryUsage();
+    const heapTotalMb = mem.heapTotal / 1024 / 1024;
+    const rawHeapFraction = mem.heapTotal > 0 ? mem.heapUsed / mem.heapTotal : 0;
+    const heapFraction = heapTotalMb >= this.bpHeapMinTotalMb ? rawHeapFraction : 0;
+    const rssMb = mem.rss / 1024 / 1024;
+    const rssFraction = this.rssBudgetMb > 0 ? rssMb / this.rssBudgetMb : 0;
+    const pressure = Math.max(heapFraction, rssFraction);
+    const t = this.bpThresholds;
+
+    // Two-flag hysteresis; critical implies elevated
+    this._bpCriticalActive = this._bpCriticalActive
+      ? pressure >= t.criticalExitPct
+      : pressure >= t.criticalEnterPct;
+    this._bpElevatedActive = (this._bpElevatedActive || this._bpCriticalActive)
+      ? pressure >= t.elevatedExitPct
+      : pressure >= t.elevatedEnterPct;
+    if (this._bpCriticalActive) this._bpElevatedActive = true;
+
+    const level = this._bpCriticalActive ? 'critical'
+      : (this._bpElevatedActive ? 'elevated' : 'none');
+    const reasons = [];
+    if (level !== 'none') {
+      const driver = heapFraction >= rssFraction ? 'heap' : 'rss';
+      reasons.push(`pressure=${(pressure * 100).toFixed(1)}% driver=${driver}`);
+      reasons.push(`heap ${(rawHeapFraction * 100).toFixed(1)}% of ${heapTotalMb.toFixed(0)}MB heapTotal${heapTotalMb < this.bpHeapMinTotalMb ? ' (below floor, ignored)' : ''}`);
+      reasons.push(`rss ${rssMb.toFixed(0)}MB / ${this.rssBudgetMb}MB budget (${(rssFraction * 100).toFixed(1)}%)`);
+    }
+
+    const previousLevel = this.backpressure.level;
+    // Mutate in place — consumers hold this object reference (H4)
+    this.backpressure.level = level;
+    this.backpressure.reasons = reasons;
+
+    if (level !== previousLevel) {
+      const line = '[ResourceMonitor] Backpressure level change';
+      const detail = {
+        from: previousLevel,
+        to: level,
+        pressurePct: (pressure * 100).toFixed(1),
+        heapPct: (rawHeapFraction * 100).toFixed(1),
+        heapTotalMb: heapTotalMb.toFixed(0),
+        rssMb: rssMb.toFixed(0),
+        rssBudgetMb: this.rssBudgetMb,
+        reasons
+      };
+      if (level === 'none') {
+        this.logger.info(line, detail);
+      } else {
+        this.logger.warn(line, detail);
+      }
+    }
+
+    return level;
+  }
+
+  /**
+   * Start the periodic backpressure evaluator (unref'd — never holds the
+   * process open). Idempotent. Cycle boundaries also refresh via snapshot().
+   */
+  startBackpressureMonitor() {
+    if (this._bpTimer) return;
+    this._bpTimer = setInterval(() => {
+      try {
+        this.evaluateBackpressure();
+      } catch (err) {
+        this.logger.warn('[ResourceMonitor] Backpressure evaluation failed', { error: err.message });
+      }
+    }, this.bpIntervalMs);
+    if (typeof this._bpTimer.unref === 'function') this._bpTimer.unref();
+    this.logger.info('[ResourceMonitor] Backpressure monitor started', {
+      intervalMs: this.bpIntervalMs,
+      rssBudgetMb: this.rssBudgetMb,
+      thresholds: this.bpThresholds
+    });
+  }
+
+  /**
+   * Stop the periodic backpressure evaluator. Level/reasons are left as-is.
+   */
+  stopBackpressureMonitor() {
+    if (this._bpTimer) {
+      clearInterval(this._bpTimer);
+      this._bpTimer = null;
+    }
+  }
+
+  /**
    * Check if resources are healthy
    */
   isHealthy() {
@@ -190,6 +324,10 @@ class ResourceMonitor {
         memoryWarnings: this.warningCount,
         limitExceeded: this.limitExceededCount,
         gcForced: this.gcCount
+      },
+      backpressure: {
+        level: this.backpressure.level,
+        reasons: this.backpressure.reasons.slice()
       },
       healthy: this.isHealthy(),
       snapshotCount: this.memorySnapshots.length
@@ -245,6 +383,11 @@ class ResourceMonitor {
     this.limitExceededCount = 0;
     this.gcCount = 0;
     this.startTime = Date.now();
+    this._bpElevatedActive = false;
+    this._bpCriticalActive = false;
+    // In place — never reassign (H4 shared object identity)
+    this.backpressure.level = 'none';
+    this.backpressure.reasons = [];
   }
 }
 

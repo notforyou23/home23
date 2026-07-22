@@ -277,6 +277,8 @@ test('Orchestrator.prototype.stop clears the heartbeat interval and stamps a fin
     running: true,
     stopImmediateActionPoller() {},
     stopGuardianControlPoller() {},
+    // H4 (Fix 2.3): stop() now stops the backpressure interval too
+    resourceMonitor: { stopBackpressureMonitor() {} },
     clusterOrchestrator: null,
     clusterStateStore: null,
     feeder: null,

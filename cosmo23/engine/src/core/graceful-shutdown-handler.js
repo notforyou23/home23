@@ -338,8 +338,12 @@ class GracefulShutdownHandler {
         this.logger.info('[GracefulShutdown] TimeoutManager cleaned up');
       }
 
-      // Cleanup resource monitor (no active timers, just state)
+      // Cleanup resource monitor (stop the H4 backpressure interval; stats
+      // state itself is preserved)
       if (this.orchestrator.resourceMonitor) {
+        if (typeof this.orchestrator.resourceMonitor.stopBackpressureMonitor === 'function') {
+          this.orchestrator.resourceMonitor.stopBackpressureMonitor();
+        }
         this.logger.info('[GracefulShutdown] ResourceMonitor state preserved');
       }
 

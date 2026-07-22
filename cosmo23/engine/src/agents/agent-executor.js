@@ -180,6 +180,11 @@ class AgentExecutor {
     
     // Configuration
     this.maxConcurrent = config.coordinator?.maxConcurrent || 2;
+    // H4: backpressure single source of truth — injected by the Orchestrator
+    // after construction (same object instance as orchestrator.backpressure,
+    // written by ResourceMonitor). READ ONLY here. Null in standalone/CLI
+    // contexts → treated as level 'none'.
+    this.backpressure = null;
     this.initialized = false;
     
     // Agent type constructors (will be populated when agent types are implemented)
@@ -281,6 +286,19 @@ class AgentExecutor {
    * @param {Object} missionSpec - Mission specification from Meta-Coordinator
    * @returns {string|null} Agent ID if spawned, null if unable
    */
+  /**
+   * H4: effective concurrency under backpressure.
+   * 'elevated' halves the configured limit (ceil, floor 1). 'critical' is a
+   * hard no-new-spawns gate enforced separately in spawnAgent(). Saves are
+   * NEVER throttled by backpressure — this only shapes agent spawning.
+   */
+  getEffectiveMaxConcurrent() {
+    if (this.backpressure?.level === 'elevated') {
+      return Math.max(1, Math.ceil(this.maxConcurrent / 2));
+    }
+    return this.maxConcurrent;
+  }
+
   isApprovedStrategicBypass(missionSpec = {}) {
     const metadata = missionSpec.metadata || {};
     const isRepair = metadata.systemRepair === true ||
@@ -319,22 +337,45 @@ class AgentExecutor {
     }
 
     const isStrategic = this.isApprovedStrategicBypass(missionSpec);
-    
+
+    // H4 backpressure gate — single source of truth (orchestrator.backpressure,
+    // written by ResourceMonitor, injected as this.backpressure).
+    // 'critical' blocks ALL new spawns, including strategic bypass; agents
+    // already running finish normally. State saves are NEVER throttled here —
+    // backpressure only shapes nonessential work (new agent spawns).
+    const backpressureLevel = this.backpressure?.level || 'none';
+    if (backpressureLevel === 'critical') {
+      this.logger.warn('🧯 Backpressure CRITICAL — refusing new agent spawn', {
+        reasons: this.backpressure?.reasons || [],
+        active: this.registry.getActiveCount(),
+        isStrategic,
+        missionGoal: missionSpec.goalId
+      }, 3);
+      return null;
+    }
+
+    // 'elevated' halves effective concurrency (ceil(maxConcurrent / 2))
+    const effectiveMaxConcurrent = this.getEffectiveMaxConcurrent();
+
     // Check concurrency limit (but skip for strategic goals)
-    if (!isStrategic && !this.registry.canSpawnMore(this.maxConcurrent)) {
+    if (!isStrategic && !this.registry.canSpawnMore(effectiveMaxConcurrent)) {
       this.logger.warn('❌ Max concurrent agents reached, cannot spawn', {
-        limit: this.maxConcurrent,
+        limit: effectiveMaxConcurrent,
+        configuredLimit: this.maxConcurrent,
+        backpressure: backpressureLevel,
         active: this.registry.getActiveCount(),
         missionGoal: missionSpec.goalId
       }, 3);
       return null;
     }
-    
+
     // Log if bypassing limit for strategic goal
-    if (isStrategic && this.registry.getActiveCount() >= this.maxConcurrent) {
+    if (isStrategic && this.registry.getActiveCount() >= effectiveMaxConcurrent) {
       this.logger.info('🚨 Spawning strategic agent (bypassing maxConcurrent limit)', {
         active: this.registry.getActiveCount(),
-        limit: this.maxConcurrent,
+        limit: effectiveMaxConcurrent,
+        configuredLimit: this.maxConcurrent,
+        backpressure: backpressureLevel,
         missionGoal: missionSpec.goalId,
         reason: 'strategic_priority'
       }, 3);

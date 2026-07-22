@@ -246,6 +246,14 @@ class Orchestrator {
     // Phase A: Hardening modules
     this.stateValidator = new StateValidator(logger);
     this.resourceMonitor = new ResourceMonitor(config, logger);
+    // H4: backpressure single source of truth. ResourceMonitor owns the writes;
+    // the orchestrator exposes the SAME object instance (alias — never
+    // reassigned) and injects the reference into consumers. Saves are never
+    // gated on backpressure; only nonessential work (agent spawns) throttles.
+    this.backpressure = this.resourceMonitor.backpressure;
+    if (this.agentExecutor) {
+      this.agentExecutor.backpressure = this.backpressure;
+    }
     this.crashRecovery = new CrashRecoveryManager(config, logger, this.logsDir);
     this.timeoutManager = new TimeoutManager(config, logger);
     this.telemetry = new TelemetryCollector(config, logger, this.logsDir);
@@ -981,6 +989,10 @@ class Orchestrator {
     // Start Guardian control file poller (checks for wake/restart/consolidate commands)
     // Guardian writes these files when it detects COSMO is stuck or needs intervention
     this.startGuardianControlPoller();
+
+    // H4: periodic backpressure evaluation (unref'd interval; cycle boundaries
+    // also refresh via resourceMonitor.snapshot() at end of executeCycle)
+    this.resourceMonitor.startBackpressureMonitor();
 
     // Log maxCycles and maxRuntime configuration for debugging
     const maxCyclesConfig = this.config.execution?.maxCycles;
@@ -9473,6 +9485,9 @@ OUTPUT FORMAT (JSON ONLY):
 
     // Stop Guardian control file poller
     this.stopGuardianControlPoller();
+
+    // H4: stop periodic backpressure evaluation
+    this.resourceMonitor.stopBackpressureMonitor();
 
     // Cluster cleanup (if enabled)
     if (this.clusterOrchestrator) {
