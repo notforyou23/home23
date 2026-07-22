@@ -29,6 +29,7 @@ const { MemoryGovernor } = require('../system/memory-governor');
 const { planMemoryCommunities } = require('../memory/community-detection');
 const { resolveGcCriteria, resolveGovernorEnforcement } = require('../memory/gc-policy');
 const { RunCommitmentGovernor } = require('./run-commitment-governor');
+const { ProgressLaneTracker } = require('./progress-lane');
 const { getSpendMeter } = require('./spend-meter');
 const { UnifiedClient } = require('./unified-client');
 const { persistResearchState } = require('../../../lib/memory-sidecar');
@@ -106,6 +107,10 @@ class Orchestrator {
     this.agentExecutor = subsystems.agentExecutor;
     this.commitmentGovernor = new RunCommitmentGovernor(this.config.commitmentGovernor || {}, this.logger);
     this.lastCommitmentDecision = null;
+    // Phase 4 (4.3): computed progress lane — commitments + starvation
+    // detection over a trailing cycle window. Config under
+    // governance.starvation (windowCycles default 20). Never writes state.
+    this.progressLane = new ProgressLaneTracker(this.config.governance?.starvation || {}, this.logger);
     this.providerErrorEvents = [];
     this.unregisterProviderErrorHandler = UnifiedClient.onProviderError(event => this.recordProviderError(event));
     
@@ -3745,6 +3750,30 @@ class Orchestrator {
       const cycleDuration = Date.now() - cycleStart.getTime();
       this.logger.info(`✓ Cycle completed in ${cycleDuration}ms (GPT-5.2)`);
       this.eventLedger?.log('cycle_complete', { cycle: this.cycleCount, durationMs: cycleDuration });
+
+      // Phase 4 (4.3): sample cumulative progress counters and recompute the
+      // progress lane. Level transitions get a durable ledger receipt (R1,
+      // never awaited); the lane itself changes no engine behavior — acting
+      // on it is the governance regulator's job.
+      try {
+        const previousProgressLevel = this.progressLane.getLane().level;
+        const progressLaneState = this.progressLane.sample(this.collectProgressCounters());
+        if (progressLaneState.level !== previousProgressLevel) {
+          this.eventLedger?.log('progress_lane_transition', {
+            cycle: this.cycleCount,
+            from: previousProgressLevel,
+            to: progressLaneState.level,
+            reason: progressLaneState.evidence?.reason || null,
+            evidence: progressLaneState.evidence || null
+          });
+          this.logger.info(`[ProgressLane] ${previousProgressLevel} -> ${progressLaneState.level}`, {
+            reason: progressLaneState.evidence?.reason || null,
+            window: progressLaneState.evidence?.window || null
+          });
+        }
+      } catch (error) {
+        this.logger.debug('[ProgressLane] sample skipped', { error: error.message });
+      }
       // Fix 3.1: at most ONE aggregated intake-gate ledger event per cycle
       // (fire-and-forget; no event when the gate is off or idle).
       this.memory?.intakeGate?.flushToLedger?.(this.eventLedger, this.cycleCount);
@@ -4721,6 +4750,34 @@ class Orchestrator {
     }
 
     return appliedActions;
+  }
+
+  /**
+   * Phase 4 (4.3): cumulative progress counters for the progress lane.
+   *
+   * Real completion events only — no per-cycle disk scans:
+   * - tasksDone / milestonesDone: PlanExecutor plan state (cluster state
+   *   store authority, advanced by the completeTask/advancePhase path).
+   *   null when the run has no plan (autonomous, or guided pre-plan).
+   * - artifactsRegistered: graph-native ArtifactRegistry in-memory record
+   *   count (registerArtifact upserts at agent result integration; records
+   *   are never removed).
+   * - nodesCreated: NetworkMemory.nextNodeId — monotone id counter, immune
+   *   to decay/prune shrinking nodes.size.
+   */
+  collectProgressCounters() {
+    const planStatus = this.planExecutor?.plan ? this.planExecutor.getStatus() : null;
+    const registryRecords = this.agentExecutor?.artifactRegistry?.records;
+    const nextNodeId = Number(this.memory?.nextNodeId);
+    return {
+      cycle: this.cycleCount,
+      guided: this.isGuidedExclusiveRun?.() || false,
+      planStatus: planStatus?.planStatus || null,
+      tasksDone: planStatus ? (Number(planStatus.completedTasks) || 0) : null,
+      milestonesDone: planStatus ? (Number(planStatus.completedPhases) || 0) : null,
+      artifactsRegistered: registryRecords instanceof Map ? registryRecords.size : null,
+      nodesCreated: Number.isFinite(nextNodeId) ? nextNodeId : null
+    };
   }
 
   async getCommitmentDecisionForCycle() {
@@ -10718,6 +10775,11 @@ OUTPUT FORMAT (JSON ONLY):
         usingWebSearch: true
       },
       clusterCoordinator: this.clusterCoordinator ? this.clusterCoordinator.getStats() : null,
+      governance: {
+        lanes: {
+          progress: this.progressLane ? this.progressLane.getLane() : null
+        }
+      },
       // Phase 4 (R4): additive spend snapshot — computed, never stored
       // authority; lanes and the status contract read from here.
       spend: this.spendMeter ? this.spendMeter.getSnapshot() : null,
