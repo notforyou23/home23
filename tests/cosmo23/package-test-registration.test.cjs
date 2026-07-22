@@ -15,6 +15,7 @@ test('default package test authority registers each new lightweight COSMO suite 
   for (const file of [
     'tests/cosmo23/brain-operation-runtime.test.cjs',
     'tests/cosmo23/brain-operation-worker.test.cjs',
+    'tests/cosmo23/brain-snapshot-guard.test.cjs',
     'tests/cosmo23/bounded-json.test.cjs',
     'tests/cosmo23/cluster-aware-memory-persistence.test.cjs',
     'tests/cosmo23/cluster-snapshot-merger-parity.test.cjs',

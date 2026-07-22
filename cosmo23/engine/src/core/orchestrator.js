@@ -27,6 +27,7 @@ const { MemoryGovernor } = require('../system/memory-governor');
 const { RunCommitmentGovernor } = require('./run-commitment-governor');
 const { UnifiedClient } = require('./unified-client');
 const { persistResearchState } = require('../../../lib/memory-sidecar');
+const { writeSnapshot, resolveKnownGoodNodeCount, evaluateSaveSafety } = require('./brain-snapshot');
 
 // EXECUTIVE RING: Executive function layer (dlPFC)
 const { ExecutiveCoordinator } = require('../coordinator/executive-coordinator');
@@ -8069,35 +8070,62 @@ OUTPUT FORMAT (JSON ONLY):
     };
 
     const statePath = path.join(this.logsDir, 'state.json');
+    const totalNodes = state.memory?.nodes?.length || 0;
+    const totalEdges = state.memory?.edges?.length || 0;
+    const nodesWithEmbeddings = state.memory?.nodes?.filter(n => n.embedding).length || 0;
+
+    // SAFEGUARD (every save): resolve the last-known-good node count without
+    // trusting a giant state.json.gz first, then refuse any save that would
+    // wipe out more than half of a >100-node brain. Replaces the dead
+    // cycle<=1 guard that read the uncompressed state.json (saves write
+    // state.json.gz, so its readFile always threw and every save passed).
+    let knownGood;
+    try {
+      knownGood = await resolveKnownGoodNodeCount(this.logsDir, statePath);
+    } catch (error) {
+      this.logger.error('🛑 REFUSING STATE SAVE — persistence guard could not establish known-good baseline', {
+        error: error.message,
+        currentNodes: totalNodes,
+        cycle: this.cycleCount
+      });
+      this.lastSaveResult = {
+        saved: false,
+        reason: 'persistence_guard_failed',
+        error: error.message,
+        currentNodes: totalNodes,
+        existingNodes: null,
+        cycle: this.cycleCount
+      };
+      return this.lastSaveResult;
+    }
+
+    const safety = evaluateSaveSafety({
+      currentNodes: totalNodes,
+      existingNodes: knownGood.count,
+      source: knownGood.source,
+      cycle: this.cycleCount
+    });
+    if (!safety.ok) {
+      this.logger.error('🛑 REFUSING STATE SAVE — catastrophic node drop detected', {
+        currentNodes: safety.currentNodes,
+        existingNodes: safety.existingNodes,
+        safeguardSource: safety.source,
+        dropPercent: safety.dropPercent,
+        cycle: safety.cycle
+      });
+      this.lastSaveResult = {
+        saved: false,
+        reason: 'catastrophic_node_drop',
+        currentNodes: safety.currentNodes,
+        existingNodes: safety.existingNodes,
+        dropPercent: safety.dropPercent,
+        safeguardSource: safety.source,
+        cycle: safety.cycle
+      };
+      return this.lastSaveResult; // Don't save, preserve the existing brain
+    }
 
     try {
-      const nodesWithEmbeddings = state.memory?.nodes?.filter(n => n.embedding).length || 0;
-      const totalNodes = state.memory?.nodes?.length || 0;
-
-      // SAFEGUARD: Don't overwrite a properly merged state with a smaller state
-      // If current state has more nodes than 10 (our merged state), preserve it
-      // FIX (Jan 23, 2026): Only apply on cycle 0-1, not after cycles have progressed
-      // This was blocking ALL saves on forked/merged brains!
-      if (totalNodes < 10 && nodesWithEmbeddings < 10 && this.cycleCount <= 1) {
-        // Check if there's an existing state file with more nodes
-        try {
-          const existingData = await fs.readFile(statePath, 'utf8');
-          const existingState = JSON.parse(existingData);
-          const existingNodes = existingState.memory?.nodes?.length || 0;
-
-          if (existingNodes > totalNodes) {
-            this.logger.warn('Preventing overwrite of merged state (cycle <= 1 only)', {
-              currentNodes: totalNodes,
-              existingNodes,
-              cycle: this.cycleCount
-            });
-            return; // Don't save, preserve the merged state
-          }
-        } catch (error) {
-          // If we can't read existing state, proceed with save
-        }
-      }
-
       // Publish the immutable memory generation before replacing the compressed
       // graph with its small manifest-backed shell. Manifest failure degrades
       // to the complete captured inline state, never a truncated shell.
@@ -8110,7 +8138,20 @@ OUTPUT FORMAT (JSON ONLY):
         }),
       });
       const saveResult = persistence.saveResult;
-      
+
+      // Stamp the last-known-good sidecar AFTER the successful save. Contract
+      // shape { nodes, edges, savedAt, generation }; nodeCount/edgeCount are
+      // compatibility aliases for the lib/memory-sidecar.js hydration guard.
+      writeSnapshot(this.logsDir, {
+        nodes: totalNodes,
+        edges: totalEdges,
+        savedAt: new Date().toISOString(),
+        generation: Number.isSafeInteger(persistence.revision) ? persistence.revision : null,
+        nodeCount: totalNodes,
+        edgeCount: totalEdges,
+        cycle: this.cycleCount
+      });
+
       this.logger.info('State saved (GPT-5.2)', {
         cycle: this.cycleCount,
         nodesWithEmbeddings,
@@ -8136,9 +8177,23 @@ OUTPUT FORMAT (JSON ONLY):
         .catch(error => {
           this.logger.warn('Backup rotation failed', { error: error.message });
         });
-      
+
+      this.lastSaveResult = {
+        saved: true,
+        reason: null,
+        currentNodes: totalNodes,
+        existingNodes: knownGood.count
+      };
+      return this.lastSaveResult;
     } catch (error) {
       this.logger.error('Save failed', { error: error.message });
+      this.lastSaveResult = {
+        saved: false,
+        reason: `save_error:${error.message}`,
+        currentNodes: totalNodes,
+        existingNodes: knownGood.count
+      };
+      return this.lastSaveResult;
     }
   }
 
