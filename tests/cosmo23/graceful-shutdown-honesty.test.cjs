@@ -154,6 +154,27 @@ test('saveStateForShutdown bounds a hung in-progress save and never fakes saved:
   assert.notEqual(result.saved, true, 'timeout with durable state must not report a confirmed save');
 });
 
+test('saveStateForShutdown timeout with no durable artifact reports shutdown_save_timeout_no_state', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cosmo23-shutdown-nostate-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  // Deliberately NO state.json / state.json.gz in dir.
+
+  const fake = {
+    logger: quietLogger,
+    logsDir: dir,
+    config: { shutdownSaveTimeoutMs: 40 },
+    _saveStatePromise: null,
+    saveState: () => new Promise(() => {}), // hangs past the timeout
+    hasDurableStateArtifact: Orchestrator.prototype.hasDurableStateArtifact,
+  };
+
+  const result = await Orchestrator.prototype.saveStateForShutdown.call(fake);
+
+  assert.equal(result.saved, false,
+    'timeout with no durable artifact must not claim any form of saved state');
+  assert.equal(result.reason, 'shutdown_save_timeout_no_state');
+});
+
 test('saveStateForShutdown surfaces save errors as saved:false', async () => {
   const fake = {
     logger: quietLogger,

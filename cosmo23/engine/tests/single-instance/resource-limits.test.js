@@ -140,7 +140,10 @@ describe('Single-Instance: Resource Limits', () => {
   });
 
   describe('Uptime Tracking', () => {
-    it('should track uptime', () => {
+    it('should track uptime', async () => {
+      // getStats() in the same millisecond as construction reports uptimeMs 0;
+      // let the clock tick so the > 0 assertion is deterministic.
+      await new Promise(resolve => setTimeout(resolve, 5));
       const stats = monitor.getStats();
       expect(stats).to.have.property('uptimeMs');
       expect(stats).to.have.property('uptimeHuman');

@@ -277,6 +277,64 @@ test('buildCheckpointState emits scalars plus memory count summary, never graph 
   assert.equal(audit.state_snapshot.memoryEdges, 1);
 });
 
+test('recover() ignores checkpoint audit artifacts', async (t) => {
+  const dir = await makeRuntimeDir(t);
+  const manager = new CrashRecoveryManager({}, silentLogger, dir);
+
+  // A real checkpoint written through saveCheckpoint also writes the
+  // checkpoint-20_audit.json sidecar next to it.
+  await manager.saveCheckpoint(
+    { cycleCount: 20, memorySummary: { nodes: 1, edges: 0, clusters: 0 } },
+    20,
+  );
+
+  const listed = await manager.listCheckpoints();
+  assert.deepEqual(listed, ['checkpoint-20.json'],
+    'audit sidecar must not be listed as a checkpoint');
+
+  const recovered = await manager.recover();
+  assert.equal(recovered.cycleCount, 20, 'real checkpoint state must be recovered');
+
+  // A directory containing ONLY an audit artifact has no recoverable
+  // checkpoint: recover() must return null, not a spurious success parsed
+  // out of the audit file.
+  const auditOnlyDir = await makeRuntimeDir(t);
+  const auditOnly = new CrashRecoveryManager({}, silentLogger, auditOnlyDir);
+  await fsp.mkdir(path.join(auditOnlyDir, 'checkpoints'), { recursive: true });
+  await fsp.writeFile(
+    path.join(auditOnlyDir, 'checkpoints', 'checkpoint-5_audit.json'),
+    JSON.stringify({
+      schema_version: 'cosmo-audit-v1',
+      checkpoint_cycle: 5,
+      state_snapshot: { cycleCount: 5, memoryNodes: 0 },
+    }),
+  );
+
+  const result = await auditOnly.recover();
+  assert.equal(result, null,
+    'audit-only checkpoints dir must not produce a spurious recovery');
+});
+
+test('recover() falls back to an older valid checkpoint when the newest is corrupt', async (t) => {
+  const dir = await makeRuntimeDir(t);
+  const manager = new CrashRecoveryManager({}, silentLogger, dir);
+
+  await manager.saveCheckpoint(
+    { cycleCount: 10, memorySummary: { nodes: 2, edges: 1, clusters: 0 } },
+    10,
+  );
+  // A newer checkpoint that crashed mid-write: invalid JSON on disk.
+  await fsp.writeFile(
+    path.join(dir, 'checkpoints', 'checkpoint-15.json'),
+    '{"cycle": 15, "state": {truncated',
+  );
+
+  const recovered = await manager.recover();
+  assert.notEqual(recovered, null, 'an older valid checkpoint must be usable');
+  assert.equal(recovered.cycleCount, 10,
+    'recovery must fall back to the older valid checkpoint');
+});
+
 test('orchestrator wiring uses restoreFromPersistence and buildCheckpointState', () => {
   const source = fs.readFileSync(
     path.resolve(__dirname, '../../cosmo23/engine/src/core/orchestrator.js'),

@@ -12,8 +12,17 @@ describe('Single-Instance: Graceful Shutdown', () => {
   let mockOrchestrator;
   let mockLogger;
   let mockConfig;
+  let originalProcessExit;
+  let exitCodes;
 
   beforeEach(() => {
+    // GracefulShutdownHandler.shutdown() ends in process.exit(). Without this
+    // stub a successful shutdown() kills the mocha process with exit code 0,
+    // silently truncating the single-instance suite mid-run.
+    originalProcessExit = process.exit;
+    exitCodes = [];
+    process.exit = (code) => { exitCodes.push(code ?? 0); };
+
     mockLogger = {
       info: () => {},
       warn: () => {},
@@ -49,6 +58,8 @@ describe('Single-Instance: Graceful Shutdown', () => {
   });
 
   afterEach(() => {
+    process.exit = originalProcessExit;
+
     // Cleanup any registered signal handlers
     for (const [signal, h] of handler.signalHandlers.entries()) {
       process.removeListener(signal, h);

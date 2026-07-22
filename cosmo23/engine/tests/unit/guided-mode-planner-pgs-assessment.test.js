@@ -416,7 +416,22 @@ describe('GuidedModePlanner.assessKnowledgeState()', () => {
 
     it('passes distinct exact sweep and synthesis pairs through the real compatibility wiring', async () => {
       const tmpDir = await createTempDir();
-      const modelCatalog = loadModelCatalogSync();
+      // Hermetic catalog load: without this override loadModelCatalogSync()
+      // reads the developer's live ~/.cosmo2.3/model-catalog.json, coupling
+      // the test to machine state (any live entry failing capability
+      // validation breaks this test). An absent path loads the built-ins.
+      const priorCatalogPath = process.env.COSMO23_MODEL_CATALOG_PATH;
+      process.env.COSMO23_MODEL_CATALOG_PATH = path.join(tmpDir, 'model-catalog.json');
+      let modelCatalog;
+      try {
+        modelCatalog = loadModelCatalogSync();
+      } finally {
+        if (priorCatalogPath === undefined) {
+          delete process.env.COSMO23_MODEL_CATALOG_PATH;
+        } else {
+          process.env.COSMO23_MODEL_CATALOG_PATH = priorCatalogPath;
+        }
+      }
       const providerRegistry = { get: () => { throw new Error('provider call should be stubbed'); } };
       let captured = null;
       const executeStub = sinon.stub(PGSEngine.prototype, 'execute').callsFake(async function(query, options) {

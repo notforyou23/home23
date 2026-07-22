@@ -215,9 +215,12 @@ class CrashRecoveryManager {
       await fs.mkdir(checkpointsDir, { recursive: true });
       const files = await fs.readdir(checkpointsDir);
       
-      // Filter and sort checkpoint files
+      // Filter and sort checkpoint files. Audit sidecars
+      // (checkpoint-N_audit.json) are tamper-evidence artifacts, not
+      // recoverable checkpoints — they parse to cycle 0 and would let
+      // recover() log a spurious RECOVERY_SUCCESS with no state.
       return files
-        .filter(f => f.startsWith('checkpoint-') && f.endsWith('.json'))
+        .filter(f => f.startsWith('checkpoint-') && f.endsWith('.json') && !f.endsWith('_audit.json'))
         .sort((a, b) => {
           const cycleA = parseInt(a.match(/checkpoint-(\d+)\.json/)?.[1] || '0');
           const cycleB = parseInt(b.match(/checkpoint-(\d+)\.json/)?.[1] || '0');
@@ -243,6 +246,9 @@ class CrashRecoveryManager {
         for (const file of toDelete) {
           const filePath = path.join(this.logsDir, 'checkpoints', file);
           await fs.unlink(filePath);
+          // Remove the audit sidecar with its checkpoint so audit artifacts
+          // do not accumulate unbounded now that listCheckpoints() excludes them.
+          await fs.unlink(filePath.replace(/\.json$/, '_audit.json')).catch(() => {});
           this.logger.info('[CrashRecovery] Deleted old checkpoint', { file });
         }
       }
