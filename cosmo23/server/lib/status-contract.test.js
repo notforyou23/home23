@@ -112,3 +112,42 @@ test('buildStatusContract reports blocked guided plans ahead of process-running 
   assert.equal(status.run.blockedReason, 'Research contract failed: missing_source_evidence');
   assert.equal(status.supervision.shouldStopForBlockedRun, true);
 });
+
+test('buildStatusContract populates heartbeat block and staleness math from injected raw heartbeat', () => {
+  const status = buildStatusContract({
+    activeContext: { runName: 'run-1', runPath: '/tmp/run-1' },
+    processStatus: { running: [{ name: 'cosmo-main', pid: 1234, killed: false }], count: 1 },
+    heartbeat: {
+      ts: '2026-04-24T14:59:55.000Z',
+      pid: 4242,
+      cycle: 17,
+      lastCycleStartTs: '2026-04-24T14:59:40.000Z',
+      lastCycleEndTs: '2026-04-24T14:49:00.000Z',
+      phase: 'cycle_start'
+    },
+    ports,
+    now,
+  });
+
+  assert.equal(status.lastHeartbeat, '2026-04-24T14:59:55.000Z');
+  assert.equal(status.heartbeat.cycle, 17);
+  assert.equal(status.heartbeat.pid, 4242);
+  assert.equal(status.heartbeat.phase, 'cycle_start');
+  assert.equal(status.heartbeat.heartbeatAgeMs, 5000);
+  // The wedge signature: fresh ts (liveness) but stale lastCycleEndTs
+  // (progress). Wedge detection must key off cycleProgressAgeMs.
+  assert.equal(status.heartbeat.cycleProgressAgeMs, 11 * 60 * 1000);
+});
+
+test('buildStatusContract reports null heartbeat when none is available', () => {
+  const status = buildStatusContract({
+    activeContext: { runName: 'run-1', runPath: '/tmp/run-1' },
+    processStatus: { running: [], count: 0 },
+    heartbeat: null,
+    ports,
+    now,
+  });
+
+  assert.equal(status.lastHeartbeat, null);
+  assert.equal(status.heartbeat, null);
+});

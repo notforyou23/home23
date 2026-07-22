@@ -30,6 +30,7 @@ const { persistResearchState } = require('../../../lib/memory-sidecar');
 const { writeSnapshot, readSnapshot, snapshotNodeCount, resolveKnownGoodNodeCount, evaluateSaveSafety } = require('./brain-snapshot');
 const { hydrateOrchestratorState } = require('./state-hydration');
 const { maybeBackupBrain } = require('./brain-backups');
+const { HeartbeatWriter } = require('./heartbeat');
 
 // EXECUTIVE RING: Executive function layer (dlPFC)
 const { ExecutiveCoordinator } = require('../coordinator/executive-coordinator');
@@ -247,6 +248,14 @@ class Orchestrator {
     this.crashRecovery = new CrashRecoveryManager(config, logger, this.logsDir);
     this.timeoutManager = new TimeoutManager(config, logger);
     this.telemetry = new TelemetryCollector(config, logger, this.logsDir);
+    // Phase 2 (H1): liveness/progress heartbeat — <logsDir>/.heartbeat via
+    // tmp+rename, stamped by an unref'd interval (default 15s, config
+    // heartbeat.intervalMs) plus at cycle start/end. Best-effort by design:
+    // it never throws into the cycle and cannot hold the process open.
+    this.heartbeatWriter = new HeartbeatWriter(this.logsDir, {
+      intervalMs: config.heartbeat?.intervalMs,
+      logger
+    });
     this.shutdownHandler = null; // Created after initialization
   }
 
@@ -944,6 +953,10 @@ class Orchestrator {
     this.running = true;
     this.runStartTime = Date.now(); // Track when this run started
 
+    // Phase 2 (H1): first heartbeat stamp + unref'd interval. Interval
+    // stamps prove liveness only; cycle start/end stamps carry progress.
+    this.heartbeatWriter?.start({ cycle: this.cycleCount, phase: 'loop_start' });
+
     // Start high-frequency poller for immediate actions (runs independently of cycle loop)
     // This allows user-injected actions to execute within ~500ms instead of waiting for next cycle
     this.startImmediateActionPoller();
@@ -1227,6 +1240,15 @@ class Orchestrator {
     const cycleStart = new Date();
     this.cycleCount++;
 
+    // Phase 2 (H1): stamp cycle start — opens the progress window. A cycle
+    // that never stamps an end (hung LLM await) shows fresh ts with stale
+    // lastCycleEndTs: the wedge signature. Detection MUST use progress.
+    this.heartbeatWriter?.stamp({
+      cycle: this.cycleCount,
+      lastCycleStartTs: cycleStart.toISOString(),
+      phase: 'cycle_start'
+    });
+
     // ═══════════════════════════════════════════════════════════════════════════
     // CONSOLIDATION MODE CHECK - MUST BE FIRST
     // Skip ALL normal processing - go straight to sleep consolidation
@@ -1277,6 +1299,10 @@ class Orchestrator {
         });
       }
       
+      // Phase 2 (H1): consolidation cycles complete too — stamp progress
+      // (this return path is before the main try/finally end-stamp).
+      this.heartbeatWriter?.stamp({ lastCycleEndTs: new Date().toISOString(), phase: 'cycle_end' });
+
       // RETURN - skip ALL normal cycle processing
       return;
     }
@@ -3403,6 +3429,10 @@ class Orchestrator {
     } finally {
       // Phase A: Always cancel cycle timeout (success or failure)
       this.timeoutManager.cancelCycleTimer();
+      // Phase 2 (H1): stamp cycle end on every exit from the cycle body —
+      // success, in-try early return, or handled error. Progress
+      // (lastCycleEndTs freshness) is the wedge-detection signal, not ts.
+      this.heartbeatWriter?.stamp({ lastCycleEndTs: new Date().toISOString(), phase: 'cycle_end' });
     }
 
     this.lastCycleTime = new Date();
@@ -9377,6 +9407,10 @@ OUTPUT FORMAT (JSON ONLY):
   async stop() {
     this.logger.info('Stopping GPT-5.2 system...');
     this.running = false;
+
+    // Phase 2 (H1): clear the heartbeat interval; the final stamp marks a
+    // deliberate stop (a stopped run's heartbeat then goes stale naturally).
+    this.heartbeatWriter?.stop('stopped');
 
     // Stop immediate action poller
     this.stopImmediateActionPoller();

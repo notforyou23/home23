@@ -2057,6 +2057,7 @@ app.get('/api/status', async (req, res) => {
     hasActiveContext: health.hasActiveContext,
     isLaunching: health.isLaunching,
     lastHeartbeat: health.lastHeartbeat,
+    heartbeat: health.heartbeat,
     activeContext,
     processStatus,
     ports: {

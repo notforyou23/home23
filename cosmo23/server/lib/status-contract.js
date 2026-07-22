@@ -1,6 +1,29 @@
+const { readHeartbeat, computeHeartbeatAges } = require('../../engine/src/core/heartbeat');
+
 function hasProcess(processStatus, name) {
   return Array.isArray(processStatus?.running)
     && processStatus.running.some((process) => process?.name === name);
+}
+
+// Phase 2 (H2): shape a raw .heartbeat payload into the status-contract
+// heartbeat block, with staleness math computed against `now`.
+// heartbeatAgeMs tracks liveness (ts); cycleProgressAgeMs tracks progress
+// (lastCycleEndTs) — wedge detection must use progress, not liveness.
+function summarizeHeartbeat(raw, now = new Date()) {
+  if (!raw || typeof raw !== 'object') return null;
+  const nowMsCandidate = now instanceof Date ? now.getTime() : Date.parse(String(now));
+  const nowMs = Number.isFinite(nowMsCandidate) ? nowMsCandidate : Date.now();
+  const { heartbeatAgeMs, cycleProgressAgeMs } = computeHeartbeatAges(raw, nowMs);
+  return {
+    lastHeartbeat: typeof raw.ts === 'string' ? raw.ts : null,
+    lastCycleStartTs: typeof raw.lastCycleStartTs === 'string' ? raw.lastCycleStartTs : null,
+    lastCycleEndTs: typeof raw.lastCycleEndTs === 'string' ? raw.lastCycleEndTs : null,
+    cycle: Number.isFinite(Number(raw.cycle)) ? Number(raw.cycle) : null,
+    pid: Number.isFinite(Number(raw.pid)) ? Number(raw.pid) : null,
+    phase: typeof raw.phase === 'string' ? raw.phase : null,
+    heartbeatAgeMs,
+    cycleProgressAgeMs,
+  };
 }
 
 function buildStatusContract({
@@ -9,6 +32,7 @@ function buildStatusContract({
   isLaunching = false,
   ports = {},
   runTruth = {},
+  heartbeat = undefined,
   now = new Date(),
   uptimeMs = Math.round(process.uptime() * 1000),
 } = {}) {
@@ -19,6 +43,14 @@ function buildStatusContract({
   const blockedByGovernor = runTruth?.commitmentDecision?.shouldStopForBlockedRun === true;
   const blockedRun = blockedByPlan || blockedByGovernor;
   const activeRun = hasActiveContext && cosmoMainOnline && !blockedRun;
+
+  // Phase 2 (H2): heartbeat truth comes from the active run's .heartbeat
+  // file. `heartbeat` (raw payload or null) can be injected for tests;
+  // undefined means "read from disk at activeContext.runPath".
+  const heartbeatRaw = heartbeat !== undefined
+    ? heartbeat
+    : (activeContext?.runPath ? readHeartbeat(activeContext.runPath) : null);
+  const runHeartbeat = summarizeHeartbeat(heartbeatRaw, now);
 
   let lifecycle = 'idle';
   if (isLaunching) lifecycle = 'launching';
@@ -34,7 +66,8 @@ function buildStatusContract({
     processOnline: cosmoMainOnline,
     hasActiveContext,
     isLaunching,
-    lastHeartbeat: null,
+    lastHeartbeat: runHeartbeat?.lastHeartbeat || null,
+    heartbeat: runHeartbeat,
     generatedAt: now instanceof Date ? now.toISOString() : String(now),
     uptimeMs,
     process: {
@@ -67,4 +100,4 @@ function buildStatusContract({
   };
 }
 
-module.exports = { buildStatusContract };
+module.exports = { buildStatusContract, summarizeHeartbeat };

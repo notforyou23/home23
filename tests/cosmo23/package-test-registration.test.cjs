@@ -23,6 +23,7 @@ test('default package test authority registers each new lightweight COSMO suite 
     'tests/cosmo23/codex-responses-client.test.cjs',
     'tests/cosmo23/cross-brain-readonly.test.cjs',
     'tests/cosmo23/graceful-shutdown-honesty.test.cjs',
+    'tests/cosmo23/engine-heartbeat.test.cjs',
     'tests/cosmo23/legacy-query-operation-adapter.test.cjs',
     'tests/cosmo23/managed-query-defaults.test.cjs',
     'tests/cosmo23/public-query-exact-pair.test.cjs',
