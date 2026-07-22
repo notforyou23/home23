@@ -103,7 +103,7 @@ const {
   resolveConfiguredProviderPairs,
 } = require('./lib/provider-pair-probe');
 const { buildStatusContract } = require('./lib/status-contract');
-const { createRunSentinel } = require('./lib/run-sentinel');
+const { createRunSentinel, createContinuationRelauncher } = require('./lib/run-sentinel');
 const {
   buildInteractiveLiveStatus,
   isInteractiveSessionRequestValid,
@@ -342,11 +342,14 @@ function initializeProtectedBrainOperations({
 
 // Fix 2.5 — server-side wedge detection → bounded remediation → escalation.
 // The sentinel watches the active run's <runDir>/.heartbeat progress signal
-// (lastCycleEndTs — progress, never liveness ts), kills+relaunches a wedged
-// or dead engine through the same internal continuation path POST /api/launch
-// uses (launchResearch with brainId), and escalates through the status
-// contract (health.wedged / health.sentinel) after bounded attempts. Ladder
-// state persists in <runDir>/.sentinel.json.
+// (lastCycleEndTs — progress, never liveness ts), kills a wedged or dead
+// engine, relaunches it DIRECTLY from the tracked run directory
+// (metadata.json replay through launchPreparedResearch — never catalog-backed
+// launchResearch, which only sees completed/queryable brains and fails young
+// mid-run relaunches with "Brain not found"; proven in the 2026-07-22 live
+// wedge drill), and escalates through the status contract (health.wedged /
+// health.sentinel) after bounded attempts. Ladder state persists in
+// <runDir>/.sentinel.json.
 const sentinelSettings = initialConfig?.config?.sentinel || {};
 const runSentinel = createRunSentinel({
   getActiveContext: () => activeContext,
@@ -359,13 +362,13 @@ const runSentinel = createRunSentinel({
     await processManager.stopAll();
     activeContext = null; // mirror /api/stop's finally
   },
-  relaunch: async ({ runPath, runName, brainId }) => {
-    if (!brainId) {
-      throw new Error(`Cannot relaunch run "${runName}" — no brainId available`);
-    }
-    const storedSettings = await readJsonFileIfPresent(path.join(runPath, 'metadata.json'));
-    return launchResearch({ ...(storedSettings || {}), brainId }, null);
-  },
+  relaunch: createContinuationRelauncher({
+    getActiveContext: () => activeContext,
+    getIsLaunching: () => isLaunching,
+    setIsLaunching: (value) => { isLaunching = value; },
+    launchPreparedResearch: (brain, payload, req) => launchPreparedResearch(brain, payload, req),
+    readJsonFile: readJsonFileIfPresent,
+  }),
   log: (level, message) => processManager.recordLog('Sentinel', level, message),
   config: {
     checkIntervalMs: parsePositiveInt(process.env.COSMO23_SENTINEL_CHECK_INTERVAL_MS,

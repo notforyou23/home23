@@ -54,6 +54,7 @@
 // launchGraceMs of the active run's startedAt, and never re-enters while a
 // remediation is already running.
 
+const crypto = require('crypto');
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
@@ -119,6 +120,77 @@ async function defaultReadWatchdog(runPath) {
   } catch {
     return null;
   }
+}
+
+async function defaultReadJsonFile(filePath) {
+  try {
+    const parsed = JSON.parse(await fsp.readFile(filePath, 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// Live wedge drill finding (2026-07-22): the sentinel's relaunch must NEVER
+// resolve the brain through the catalog. Catalog-backed launchResearch goes
+// ensureLocalBrainForLaunch → resolveCatalogBrainBySelector, and the brain
+// catalog only lists completed/queryable brains (Patch 69 lifecycle
+// authority: COMPLETED plan or committed memory-manifest). A young, mid-run,
+// just-killed brain — the sentinel's primary clientele — is in neither state,
+// so both live-drill relaunch attempts failed with "Brain not found".
+//
+// The sentinel already knows the exact run directory, so this factory builds
+// a relauncher that constructs the prepared-launch brain object directly from
+// the tracked runPath + <runDir>/metadata.json (the camelCase launch settings
+// writeRuntimeMetadata persists) and hands it to launchPreparedResearch — the
+// same function POST /api/launch ends in. launchResearch's guard semantics
+// are mirrored exactly: 409 when a user launch owns the context or the
+// isLaunching flag (recorded upstream as a normal failed attempt; the
+// pendingRelaunch path self-clears when it next sees an active context), and
+// the isLaunching bracket is only set/cleared by a relaunch that passed the
+// guard — a losing relaunch must not clobber the user launch's flag.
+function createContinuationRelauncher(deps = {}) {
+  for (const method of ['getActiveContext', 'getIsLaunching', 'setIsLaunching', 'launchPreparedResearch']) {
+    if (typeof deps[method] !== 'function') {
+      throw new TypeError(`createContinuationRelauncher requires a ${method}() dependency`);
+    }
+  }
+  const readJsonFile = typeof deps.readJsonFile === 'function' ? deps.readJsonFile : defaultReadJsonFile;
+
+  return async function relaunchFromRunDir({ runPath, runName, brainId } = {}) {
+    if (typeof runPath !== 'string' || !runPath) {
+      throw new Error('Cannot relaunch — no runPath available');
+    }
+    if (deps.getActiveContext() || deps.getIsLaunching()) {
+      const error = new Error('COSMO is already running — sentinel relaunch yields');
+      error.statusCode = 409;
+      throw error;
+    }
+    deps.setIsLaunching(true);
+    try {
+      const storedSettings = await readJsonFile(path.join(runPath, 'metadata.json'));
+      const name = (typeof runName === 'string' && runName) ? runName : path.basename(runPath);
+      // Same id convention ensureLocalBrainForLaunch uses for local runs
+      // (sha1 of the run path, 16 hex chars) when the tracked id is missing.
+      const id = (typeof brainId === 'string' && brainId)
+        ? brainId
+        : crypto.createHash('sha1').update(runPath).digest('hex').slice(0, 16);
+      const brain = {
+        id,
+        routeKey: id,
+        name,
+        path: runPath,
+        sourceType: 'local',
+        sourceLabel: 'Local',
+        topic: (storedSettings && typeof storedSettings.topic === 'string' && storedSettings.topic) || name,
+        hasState: true, // a relaunch of an existing run dir is a continuation
+        cycleCount: 0,
+      };
+      return await deps.launchPreparedResearch(brain, { ...(storedSettings || {}), brainId: id }, null);
+    } finally {
+      deps.setIsLaunching(false);
+    }
+  };
 }
 
 class RunSentinel {
@@ -596,6 +668,7 @@ function createRunSentinel(deps) {
 module.exports = {
   RunSentinel,
   createRunSentinel,
+  createContinuationRelauncher,
   DEFAULT_CONFIG,
   SENTINEL_STATE_FILENAME,
   SENTINEL_ARCHIVE_SUFFIX,

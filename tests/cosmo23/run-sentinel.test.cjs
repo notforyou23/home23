@@ -9,6 +9,7 @@ const path = require('node:path');
 
 const {
   createRunSentinel,
+  createContinuationRelauncher,
   SENTINEL_STATE_FILENAME,
 } = require('../../cosmo23/server/lib/run-sentinel');
 const { buildStatusContract } = require('../../cosmo23/server/lib/status-contract');
@@ -705,4 +706,161 @@ test('status contract exposes wedged and sentinel as additive fields', () => {
   assert.equal(plainStatus.wedged, false);
   assert.equal(plainStatus.sentinel, null);
   assert.equal(plainStatus.lifecycle, 'idle');
+});
+
+// --- Live-drill fix (2026-07-22): direct-path relaunch, never the catalog ---
+// The Phase 2 live wedge drill proved detection, stopAll, ladder bounds and
+// escalation — but BOTH relaunch attempts failed with "Brain not found". The
+// old wiring replayed metadata through catalog-backed launchResearch
+// (ensureLocalBrainForLaunch → resolveCatalogBrainBySelector), and the brain
+// catalog only lists completed/queryable brains (Patch 69 lifecycle
+// authority: memory-manifest + COMPLETED plan). A young, mid-run, just-killed
+// brain — the sentinel's primary clientele — is not in it. The relauncher
+// must build the continuation directly from the tracked run directory.
+
+function makeRelauncherFixture() {
+  const fx = {
+    activeContext: null,
+    isLaunching: false,
+    preparedCalls: [],
+  };
+  fx.relauncher = createContinuationRelauncher({
+    getActiveContext: () => fx.activeContext,
+    getIsLaunching: () => fx.isLaunching,
+    setIsLaunching: (value) => { fx.isLaunching = value; },
+    launchPreparedResearch: async (brain, payload, req) => {
+      fx.preparedCalls.push({ brain, payload, req, isLaunchingDuring: fx.isLaunching });
+      fx.activeContext = {
+        runName: brain.name,
+        runPath: brain.path,
+        brainId: brain.id,
+        topic: brain.topic,
+        startedAt: new Date().toISOString(),
+      };
+      return { success: true, runName: brain.name };
+    },
+  });
+  return fx;
+}
+
+test('direct relauncher continues a non-catalog run from its run directory', async (t) => {
+  const runPath = await fs.mkdtemp(path.join(os.tmpdir(), 'cosmo23-relaunch-'));
+  t.after(() => fs.rm(runPath, { recursive: true, force: true }));
+  await fs.writeFile(path.join(runPath, 'metadata.json'), JSON.stringify({
+    topic: 'vector database indexing strategies compared',
+    executionMode: 'agentic',
+    cycles: 12,
+    enableWebSearch: true,
+  }), 'utf8');
+
+  const fx = makeRelauncherFixture();
+  const result = await fx.relauncher({
+    runPath, runName: path.basename(runPath), brainId: '4ef0f7b02fb77c4b',
+  });
+  assert.equal(result.success, true);
+  assert.equal(fx.preparedCalls.length, 1);
+  const { brain, payload, isLaunchingDuring } = fx.preparedCalls[0];
+  assert.equal(brain.path, runPath); // exact run dir — no catalog indirection
+  assert.equal(brain.name, path.basename(runPath));
+  assert.equal(brain.id, '4ef0f7b02fb77c4b');
+  assert.equal(brain.hasState, true); // a relaunch is a continuation by definition
+  assert.equal(brain.topic, 'vector database indexing strategies compared');
+  // metadata.json launch settings replay into the payload
+  assert.equal(payload.executionMode, 'agentic');
+  assert.equal(payload.cycles, 12);
+  assert.equal(payload.enableWebSearch, true);
+  assert.equal(payload.brainId, '4ef0f7b02fb77c4b');
+  // launchResearch's isLaunching bracket is preserved
+  assert.equal(isLaunchingDuring, true);
+  assert.equal(fx.isLaunching, false);
+});
+
+test('409 race: a user launch that wins the stop→relaunch gap fails the relaunch without clobbering isLaunching', async () => {
+  const fx = makeRelauncherFixture();
+  fx.activeContext = { runName: 'user-run', runPath: '/tmp/user-run', startedAt: new Date().toISOString() };
+  await assert.rejects(
+    fx.relauncher({ runPath: '/tmp/old-run', runName: 'old-run', brainId: 'abc' }),
+    (error) => error.statusCode === 409,
+  );
+  assert.equal(fx.preparedCalls.length, 0);
+
+  fx.activeContext = null;
+  fx.isLaunching = true; // user launch mid-preparation
+  await assert.rejects(
+    fx.relauncher({ runPath: '/tmp/old-run', runName: 'old-run', brainId: 'abc' }),
+    (error) => error.statusCode === 409,
+  );
+  assert.equal(fx.preparedCalls.length, 0);
+  assert.equal(fx.isLaunching, true); // the user's flag must NOT be reset by the loser
+});
+
+test('missing metadata.json: relaunch still proceeds with a brainId-only payload and name fallbacks', async (t) => {
+  const runPath = await fs.mkdtemp(path.join(os.tmpdir(), 'cosmo23-relaunch-'));
+  t.after(() => fs.rm(runPath, { recursive: true, force: true }));
+
+  const fx = makeRelauncherFixture();
+  const result = await fx.relauncher({ runPath, runName: 'labor23', brainId: 'brain-abc123' });
+  assert.equal(result.success, true);
+  const { brain, payload } = fx.preparedCalls[0];
+  assert.equal(brain.path, runPath);
+  assert.equal(brain.name, 'labor23');
+  assert.equal(brain.topic, 'labor23'); // falls back to the run name
+  assert.deepEqual(payload, { brainId: 'brain-abc123' });
+});
+
+test('missing brainId: relaunch derives the id from the run path (server sha1 convention)', async (t) => {
+  const runPath = await fs.mkdtemp(path.join(os.tmpdir(), 'cosmo23-relaunch-'));
+  t.after(() => fs.rm(runPath, { recursive: true, force: true }));
+
+  const fx = makeRelauncherFixture();
+  await fx.relauncher({ runPath, runName: 'labor23', brainId: null });
+  const { brain, payload } = fx.preparedCalls[0];
+  assert.match(brain.id, /^[0-9a-f]{16}$/);
+  assert.equal(brain.routeKey, brain.id);
+  assert.equal(payload.brainId, brain.id);
+});
+
+test('sentinel end-to-end: a wedged non-catalog run relaunches via the direct path', async (t) => {
+  const fixture = await makeFixture(t);
+  const prepared = [];
+  const relauncher = createContinuationRelauncher({
+    getActiveContext: () => fixture.activeContext,
+    getIsLaunching: () => fixture.isLaunching,
+    setIsLaunching: (value) => { fixture.isLaunching = value; },
+    launchPreparedResearch: async (brain, payload) => {
+      prepared.push({ brain, payload });
+      fixture.activeContext = {
+        runName: brain.name, runPath: brain.path, brainId: brain.id,
+        startedAt: '2026-07-22T11:00:00.000Z',
+      };
+      fixture.processRunning = [{ name: 'cosmo-main', pid: 4243, killed: false }];
+      return { success: true };
+    },
+  });
+  fixture.relaunchImpl = (info) => relauncher(info);
+
+  wedgeHeartbeat(fixture);
+  const result = await fixture.sentinel.check();
+  assert.equal(result.outcome, 'remediated');
+  assert.equal(prepared.length, 1);
+  assert.equal(prepared[0].brain.path, fixture.runPath);
+  assert.equal(prepared[0].payload.brainId, 'brain-abc123');
+});
+
+test('index.js wires the sentinel relaunch through the direct-path relauncher, not catalog resolution', async () => {
+  const src = await fs.readFile(path.resolve(__dirname, '../../cosmo23/server/index.js'), 'utf8');
+  const start = src.indexOf('const runSentinel = createRunSentinel({');
+  assert.notEqual(start, -1, 'sentinel wiring block present');
+  const end = src.indexOf('\n});', start);
+  assert.notEqual(end, -1, 'sentinel wiring block closed');
+  const block = src.slice(start, end);
+  // Live-drill regression pin: catalog-backed launchResearch throws
+  // "Brain not found" for young mid-run brains (ensureLocalBrainForLaunch →
+  // resolveCatalogBrainBySelector only sees completed/queryable brains). The
+  // relaunch leg must go straight to launchPreparedResearch from the tracked
+  // run directory.
+  assert.ok(block.includes('createContinuationRelauncher({'),
+    'relaunch must use the direct-path relauncher');
+  assert.ok(!block.includes('launchResearch('),
+    'relaunch must not route through catalog-backed launchResearch');
 });
