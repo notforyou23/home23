@@ -3667,6 +3667,9 @@ class Orchestrator {
       const cycleDuration = Date.now() - cycleStart.getTime();
       this.logger.info(`✓ Cycle completed in ${cycleDuration}ms (GPT-5.2)`);
       this.eventLedger?.log('cycle_complete', { cycle: this.cycleCount, durationMs: cycleDuration });
+      // Fix 3.1: at most ONE aggregated intake-gate ledger event per cycle
+      // (fire-and-forget; no event when the gate is off or idle).
+      this.memory?.intakeGate?.flushToLedger?.(this.eventLedger, this.cycleCount);
       
       // Phase A: Take resource snapshot
       const resourceSnapshot = this.resourceMonitor.snapshot();

@@ -2,6 +2,7 @@ const { getOpenAIClient, getEnvEmbeddingClient } = require('../core/openai-clien
 const fs = require('node:fs');
 const { ExtractiveSummarizer } = require('../utils/extractive-summarizer');
 const { classifyContent } = require('../core/validation');
+const { NodeIntakeGate } = require('./node-intake-gate');
 
 // Real-time event streaming - fallback singleton for CLI mode
 let _singletonEvents = null;
@@ -386,6 +387,11 @@ class NetworkMemory {
     this._consecutiveEmbeddingFailures = 0;
     this._lastEmbeddingError = null;
 
+    // Fix 3.1: anti-slop node intake gate (config memory.intake.*, master
+    // gate DEFAULT OFF). Applied inside addNode() only — hydration, merge,
+    // and load paths write this.nodes directly and never pass through it.
+    this.intakeGate = new NodeIntakeGate({ logger });
+
     // Initialize extractive summarizer for memory compression
     this.extractiveSummarizer = new ExtractiveSummarizer(logger);
     
@@ -726,6 +732,35 @@ class NetworkMemory {
           preview: concept.substring(0, 80)
         });
         return null;
+      }
+    }
+
+    // Fix 3.1: anti-slop intake gate (config memory.intake.*, default OFF).
+    // Runs AFTER the legacy quality gate so every rejection that exists
+    // today still happens first on the original bytes, and ONLY for
+    // live-created nodes: pre-embedded inserts (feeder batches) keep the
+    // existing "pre-embedded = intentional" exemption above, and
+    // hydration/merge/load never call addNode at all.
+    if (!embedding && this.intakeGate) {
+      const intake = this.intakeGate.apply(concept, tag, this.config?.intake);
+      if (intake.action === 'reject') {
+        this.logger?.debug?.('Node rejected by intake gate', {
+          tag,
+          reason: intake.reason,
+          preview: String(concept).substring(0, 80),
+        });
+        return null;
+      }
+      if (intake.stripped || intake.truncated) {
+        concept = intake.concept;
+        metadata = {
+          ...(metadata || {}),
+          intake: {
+            ...(intake.stripped ? { stripped: true } : {}),
+            ...(intake.truncated ? { truncated: true } : {}),
+            originalChars: intake.originalChars,
+          },
+        };
       }
     }
 
@@ -2409,7 +2444,9 @@ class NetworkMemory {
         .reduce((sum, n) => sum + n.weight, 0) / this.nodes.size || 0,
       activeNodes: Array.from(this.nodes.values())
         .filter(n => n.weight >= this.config.decay.minimumWeight).length,
-      averageDegree: (this.edges.size * 2) / this.nodes.size || 0
+      averageDegree: (this.edges.size * 2) / this.nodes.size || 0,
+      // Fix 3.1: additive intake-gate counters (zeros while the gate is off).
+      intake: this.intakeGate ? this.intakeGate.getStats(this.config?.intake) : null
     };
   }
 

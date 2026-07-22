@@ -35,6 +35,7 @@ test('default package test authority registers each new lightweight COSMO suite 
     'tests/cosmo23/mcp-http-loopback.test.cjs',
     'tests/cosmo23/mcp-memory-tools.test.cjs',
     'tests/cosmo23/network-memory-embedding-batch.test.cjs',
+    'tests/cosmo23/node-intake-gate.test.cjs',
     'tests/cosmo23/pgs-cancellation.test.cjs',
     'tests/cosmo23/brain-backups.test.cjs',
     'tests/cosmo23/pgs-engine.test.cjs',
