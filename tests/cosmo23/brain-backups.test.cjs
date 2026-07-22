@@ -179,3 +179,86 @@ test('manifest file entries with path traversal are ignored, not copied', async 
   assert.equal(fs.existsSync(path.join(runDir, 'backups', 'evil.jsonl')), false,
     'traversal must not write outside the staging dir');
 });
+
+// --- shutdown-await coverage (live-proof finding 2026-07-22: the only save on
+// short guided runs is the shutdown save, so a purely fire-and-forget backup
+// dies with the process ~10ms later and never lands) ---
+
+const { Orchestrator } = require('../../cosmo23/engine/src/core/orchestrator');
+
+test('_saveStateUnlocked stashes the backup promise for shutdown to await', async (t) => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'cosmo23-backup-stash-'));
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const runDir = path.join(root, 'run');
+  const lockRoot = path.join(root, 'locks');
+  await fsp.mkdir(runDir, { recursive: true });
+  await fsp.mkdir(lockRoot, { recursive: true });
+
+  const graph = {
+    nodes: [{ id: 1, concept: 'stash me', embedding: [0.2, 0.8], weight: 1 }],
+    edges: [], clusters: [], nextNodeId: 2, nextClusterId: 1,
+  };
+  const fake = {
+    evaluation: null,
+    cycleCount: 1,
+    journal: [],
+    memory: { exportGraph: () => graph },
+    goals: { export: () => [], goals: new Map(), completedGoals: [] },
+    roles: { getRoles: () => [] },
+    reflection: { export: () => ({}) },
+    oscillator: { getStats: () => ({}) },
+    stateModulator: { getState: () => ({}) },
+    temporal: null, coordinator: null, agentExecutor: null, forkSystem: null,
+    topicQueue: null, goalCurator: null, executiveRing: null,
+    guidedMissionPlan: null, completionTracker: null, planProgressEvents: [],
+    lastSummarization: 0, reasoningHistory: [], webSearchCount: 0,
+    goalAllocator: null, clusterSync: null, clusterCoordinator: null,
+    sessionNumber: 0, logsDir: runDir,
+    logger: silentLogger,
+    config: { memorySource: { lockRoot } },
+    generateSessionSummary: () => ({ cycleCount: 1 }),
+    getProgressMarkers: () => [],
+    writeProgressFile: async () => {},
+    _saveStatePromise: null,
+  };
+
+  const result = await Orchestrator.prototype._saveStateUnlocked.call(fake);
+  assert.equal(result.saved, true);
+  assert.ok(fake._backupPromise && typeof fake._backupPromise.then === 'function',
+    'successful save must stash the backup promise on this._backupPromise');
+  const backupOutcome = await fake._backupPromise;
+  assert.equal(backupOutcome.created, true, 'stashed promise resolves to the backup result');
+  assert.equal(listBackups(runDir).length, 1);
+});
+
+test('awaitPendingBackupForShutdown awaits a pending backup and is bounded', async () => {
+  const logs = [];
+  const logger = { info(m, f) { logs.push(m); }, warn(m, f) { logs.push(m); }, error() {} };
+
+  // No pending backup: no-op.
+  const idle = { logger, config: {}, _backupPromise: null };
+  await Orchestrator.prototype.awaitPendingBackupForShutdown.call(idle);
+
+  // Pending backup that resolves quickly: awaited to completion.
+  let settled = false;
+  const quick = {
+    logger, config: {},
+    _backupPromise: new Promise((resolve) => setTimeout(() => {
+      settled = true;
+      resolve({ created: true, path: '/tmp/x', rotated: 0 });
+    }, 30)),
+  };
+  await Orchestrator.prototype.awaitPendingBackupForShutdown.call(quick);
+  assert.equal(settled, true, 'shutdown must wait for a fast in-flight backup');
+
+  // Hung backup: bounded by shutdownBackupTimeoutMs, never blocks shutdown.
+  const hung = {
+    logger,
+    config: { shutdownBackupTimeoutMs: 40 },
+    _backupPromise: new Promise(() => {}),
+  };
+  const started = Date.now();
+  await Orchestrator.prototype.awaitPendingBackupForShutdown.call(hung);
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 2000, `bounded wait must not hang (took ${elapsed}ms)`);
+});

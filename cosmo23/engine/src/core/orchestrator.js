@@ -8247,8 +8247,12 @@ OUTPUT FORMAT (JSON ONLY):
 
       // Periodic coherent backup (interval-gated, default 6h). Replaces the
       // legacy rotateBackups call that governed backups nothing ever created.
-      // Fire-and-forget: a backup failure must never fail a save.
-      maybeBackupBrain(this.logsDir, {
+      // Fire-and-forget on the cycle path — a backup failure must never fail
+      // a save — but the promise is stashed so the SHUTDOWN path can await it
+      // bounded: short guided runs often make their only save at shutdown,
+      // and the process exits milliseconds later (live-proof finding
+      // 2026-07-22 — the backup never landed without this).
+      this._backupPromise = maybeBackupBrain(this.logsDir, {
         lockRoot: this.config?.memorySource?.lockRoot,
         logger: this.logger,
         intervalMs: this.config?.backups?.intervalMs,
@@ -8262,9 +8266,11 @@ OUTPUT FORMAT (JSON ONLY):
               rotated: result.rotated
             });
           }
+          return result;
         })
         .catch(error => {
-          this.logger.warn('Backup failed (non-fatal)', { error: error.message });
+          this.logger.warn('Backup failed (non-fatal)', { error: error?.message || String(error) });
+          return { created: false, error: error?.message || String(error) };
         });
 
       this.lastSaveResult = {
@@ -9295,6 +9301,28 @@ OUTPUT FORMAT (JSON ONLY):
     return { saved: false, reason: 'shutdown_save_timeout_no_state', currentNodes: null, existingNodes: null };
   }
 
+  /**
+   * Await an in-flight fire-and-forget backup during shutdown, bounded so a
+   * hung copy can never block exit. Without this, a run whose only save is
+   * the shutdown save exits before the backup's copies land.
+   */
+  async awaitPendingBackupForShutdown() {
+    if (!this._backupPromise || typeof this._backupPromise.then !== 'function') return;
+
+    const timeoutMs = this.config.shutdownBackupTimeoutMs || 10000;
+    let timeoutId = null;
+    const timeoutPromise = new Promise(resolve => {
+      timeoutId = setTimeout(() => resolve({ created: false, timedOut: true }), timeoutMs);
+    });
+
+    const outcome = await Promise.race([this._backupPromise, timeoutPromise]);
+    if (timeoutId) clearTimeout(timeoutId);
+
+    if (outcome?.timedOut) {
+      this.logger.warn('⚠️ In-flight brain backup did not finish before shutdown bound; continuing', { timeoutMs });
+    }
+  }
+
   async stop() {
     this.logger.info('Stopping GPT-5.2 system...');
     this.running = false;
@@ -9353,6 +9381,7 @@ OUTPUT FORMAT (JSON ONLY):
         });
       }
       await this.cleanupTelemetryForShutdown();
+      await this.awaitPendingBackupForShutdown();
     } else {
       // Fallback to original behavior
       await this.saveState();
