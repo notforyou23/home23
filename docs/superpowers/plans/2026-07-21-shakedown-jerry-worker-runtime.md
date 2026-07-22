@@ -901,12 +901,10 @@ const workerManifestV2Schema = {
     safetyReserve: {
       type: 'object',
       additionalProperties: false,
-      required: ['maxRuntimeMinutes', 'maxToolCalls', 'maxArtifactBytes', 'retryAttempts'],
+      required: ['verify', 'rollback'],
       properties: {
-        maxRuntimeMinutes: { type: 'integer', minimum: 0 },
-        maxToolCalls: { type: 'integer', minimum: 0 },
-        maxArtifactBytes: { type: 'integer', minimum: 0 },
-        retryAttempts: { type: 'integer', minimum: 0 },
+        verify: { $ref: '#/$defs/safetyReserveOperation' },
+        rollback: { $ref: '#/$defs/safetyReserveOperation' },
       },
     },
     retry: {
@@ -956,6 +954,17 @@ const workerManifestV2Schema = {
         maxConcurrentRuns: { type: 'integer', minimum: 1, maximum: 8 },
         maxTokens: { type: 'integer', minimum: 1 },
         maxArtifactBytes: { type: 'integer', minimum: 1 },
+      },
+    },
+    safetyReserveOperation: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['maxRuntimeMilliseconds', 'maxToolCalls', 'maxArtifactBytes', 'retryAttempts'],
+      properties: {
+        maxRuntimeMilliseconds: { type: 'integer', minimum: 0 },
+        maxToolCalls: { type: 'integer', minimum: 0 },
+        maxArtifactBytes: { type: 'integer', minimum: 0 },
+        retryAttempts: { type: 'integer', minimum: 0 },
       },
     },
   },
@@ -1259,6 +1268,17 @@ test('profile preserves a hard-stop ceiling without granting standing authority'
     /hard-stop.*standing|grant.*ceiling/i,
   );
 });
+
+test('profile hash binds reserve, audience, retry, prompt, and owner-runtime inputs', async () => {
+  const baseline = await resolveShakedownFixture();
+  for (const changed of [changedSafetyReserveFixture, changedVisibleToFixture,
+    changedFeedsBrainsFixture, changedRetryFixture, changedPromptBytesFixture,
+    changedIdentityLayersFixture, changedEnginePortFixture]) {
+    const resolved = await resolveShakedownFixture(changed);
+    assert.notEqual(resolved.profileHash, baseline.profileHash);
+  }
+  assert.match(baseline.profileHash, /^[a-f0-9]{64}$/);
+});
 ```
 
 Also make the RED suite prove these integration invariants before implementation: existing synchronous `listWorkers(projectRoot)` and `loadWorker(projectRoot, name)` callers remain source-compatible; `scanWorkerRegistry(projectRoot)` returns valid v1/v2 workers plus per-worker errors without hiding siblings; `workerRoot` and `<workerRoot>/workspace` are distinct and the closed `worker-workspace` alias resolves only to the latter; prompt bytes are opened and hashed with no-follow/stable-file checks; immutable `IDENTITY.md`/`PLAYBOOK.md` bindings are distinct from per-attempt hashes of mutable `NOW.md`/`MEMORY.md`; operator-authority and runtime-dispatch key IDs cannot be interchanged; RFC 8785 official vectors pass and lone surrogates fail; and every CLI subcommand rejects unknown flags and missing values. The six current v1 templates remain byte-compatible and their temporary migration copies gain the fourth `MEMORY.md` prompt plus complete v2 fields.
@@ -1288,19 +1308,31 @@ export interface WorkerExecutionProfile {
   ownerAgent: string;
   manifestHash: string;
   authorityGrantHash: string;
+  profileHash: string;
   provider: string;
   model: string;
   credentialAuthorityId: string;
   workerRoot: string;
   workspaceRoot: string;
+  identityLayers: readonly IdentityLayerConfig[];
+  enginePort: number;
   history: 'fresh' | 'persistent';
+  visibleTo: readonly string[];
+  feedsBrains: readonly string[];
   brainReadScopes: readonly string[];
   capabilities: readonly string[];
   hardStopCapabilities: readonly string[];
   promptDocuments: readonly Array<{ path: string; sha256: string }>;
+  promptDocumentHashes: Readonly<Record<string, string>>;
   collectionConfigHash?: string;
   collectionTargets: Readonly<Record<string, string>>;
   limits: Readonly<WorkerLimitsV2>;
+  safetyReserve: Readonly<Record<'verify' | 'rollback', WorkerSafetyReserveLimits>>;
+  retry: Readonly<{
+    transientAttempts: number;
+    initialBackoffSeconds: number;
+    maxBackoffSeconds: number;
+  }>;
   authority: Readonly<WorkerEffectiveAuthority>;
   collectionAvailability: Readonly<WorkerCollectionAvailability>;
 }
@@ -1320,8 +1352,11 @@ export async function resolveWorkerExecutionProfile(
       path,
     })),
   );
-  const concreteProvider = resolveOwnerProviderTuple(manifest, input.ownerDefaults);
+  const ownerRuntime = resolveOwnerRuntimeTuple(manifest, input.ownerDefaults);
   const collection = await resolvePinnedCollectionConfig(input.collectionConfigPath, verifiedGrant);
+  const promptDocumentHashes = Object.freeze(Object.fromEntries(
+    promptDocuments.map(({ path, sha256 }) => [path, sha256]),
+  ));
   const standingCapabilities = intersectCapabilities(manifest.capabilities, verifiedGrant.capabilities);
   const capabilities = collection && !collection.availability.writeAllowed
     ? narrowCapabilitiesForCollectionDegradation(standingCapabilities, {
@@ -1329,17 +1364,21 @@ export async function resolveWorkerExecutionProfile(
         removePrefixes: ['shakedown.collection.'],
       })
     : standingCapabilities;
-  return deepFreeze({
+  const profileWithoutHash: Omit<WorkerExecutionProfile, 'profileHash'> = {
     worker: manifest.name,
     ownerAgent: manifest.ownerAgent,
     manifestHash: sha256Canonical(manifest),
     authorityGrantHash: verifiedGrant.documentHash,
-    provider: concreteProvider.provider,
-    model: concreteProvider.model,
+    provider: ownerRuntime.provider,
+    model: ownerRuntime.model,
     credentialAuthorityId: input.credentialAuthorityId,
     workerRoot: await realpath(input.workerRoot),
     workspaceRoot: await realpath(join(input.workerRoot, 'workspace')),
+    identityLayers: ownerRuntime.identityLayers,
+    enginePort: ownerRuntime.enginePort,
     history: manifest.context.sessionHistory,
+    visibleTo: manifest.visibleTo,
+    feedsBrains: manifest.feedsBrains,
     brainReadScopes: intersectBrainReadScopes(
       manifest.context.ownerBrainRead.flatMap((read) => read.scopes),
       verifiedGrant.brainReadScopes,
@@ -1347,16 +1386,23 @@ export async function resolveWorkerExecutionProfile(
     capabilities,
     hardStopCapabilities: resolveRegisteredHardStopCapabilities(manifest.hardStopCapabilities),
     promptDocuments,
+    promptDocumentHashes,
     collectionConfigHash: collection?.configHash,
     collectionTargets: collection?.targets ?? {},
     collectionAvailability: collection?.availability ?? { writeAllowed: false, reason: 'not_configured' },
     limits: narrowLimits(manifest.limits, verifiedGrant.limits),
+    safetyReserve: manifest.safetyReserve,
+    retry: manifest.retry,
     authority: resolveEffectiveAuthority(verifiedGrant),
+  };
+  return deepFreeze({
+    ...profileWithoutHash,
+    profileHash: sha256Canonical(profileWithoutHash),
   });
 }
 ```
 
-The strict grant schema/finalizer must carry the fields consumed here: `brainReadScopes`, `limits`, effective path/service/host/account/action-class scopes, hard denies, rate policy, communications policy, immutable prompt hashes, collection config hash, and collection target hash. Verify both collection hashes. Keep these effective scopes in the immutable profile, or load and reverify the exact same signed document at action time; never reconstruct them from the manifest alone. Load YAML using `js-yaml` `JSON_SCHEMA` so ISO strings cannot silently become `Date` objects.
+The strict grant schema/finalizer must carry the fields consumed here: `brainReadScopes`, `limits`, effective path/service/host/account/action-class scopes, hard denies, rate policy, communications policy, immutable prompt hashes, collection config hash, and collection target hash. Verify both collection hashes. `resolveOwnerRuntimeTuple()` validates the concrete provider/model, existing owner's `IdentityLayerConfig[]`, and the fixed owner-engine port together; all four values are copied into the frozen attempt profile rather than re-reading mutable owner config during a run. The schema-validated manifest's exact `visibleTo`, `feedsBrains`, retry policy, and two four-dimensional `safetyReserve` rows are likewise deep-frozen in this profile; `manifestHash` and the canonical pinned profile hash therefore bind them, and no later loader may initialize or widen them. `promptDocumentHashes` is derived only from the same no-follow `promptDocuments` result before the profile is frozen, so the snapshot materializer has no second hash authority. Keep these effective scopes in the immutable profile, or load and reverify the exact same signed document at action time; never reconstruct them from the manifest alone. Load YAML using `js-yaml` `JSON_SCHEMA` so ISO strings cannot silently become `Date` objects.
 
 `hardStopCapabilities` is a declaration ceiling, not effective standing authority. It is hash-bound into the profile and immutable runner catalog, but it is excluded from `capabilities`, excluded from every standing-grant intersection, and absent from the normal model tool registry. Task 6 may expose one of these definitions for a run only when the trusted stored request carries a server-resolved active exact hard-stop authorization hash for that same principal/capability; every action-time check can only narrow or revoke it. The six built-in v2 templates and every legacy translation explicitly set `hardStopCapabilities: []`.
 
@@ -2004,7 +2050,7 @@ const rows = [
   ['run.enqueue-hard-stop', 'POST', '/api/workers/:worker/hard-stop-runs', 'run', 'worker:hard-stop', 'operator', 'public'],
   ['run.list', 'GET', '/api/workers/:worker/runs', 'run-collection', 'worker:read', 'audience', 'public'],
   ['request.inspect', 'GET', '/api/workers/:worker/requests/:requestId', 'request', 'worker:read', 'audience', 'public'],
-  ['request.events', 'GET', '/api/workers/:worker/requests/:requestId/events', 'request-events', 'worker:read', 'audience', 'public'],
+  ['request.events', 'GET', '/api/workers/:worker/requests/:requestId/events', 'request-events', 'worker:read', 'audience', 'public', 'event-stream'],
   ['run.inspect', 'GET', '/api/workers/:worker/runs/:runId', 'run', 'worker:read', 'audience', 'public'],
   ['run.receipt.get', 'GET', '/api/workers/:worker/runs/:runId/receipt', 'receipt', 'worker:read', 'audience', 'public'],
   ['run.artifacts.list', 'GET', '/api/workers/:worker/runs/:runId/artifacts', 'artifact-collection', 'worker:read', 'audience', 'public'],
@@ -2070,8 +2116,8 @@ const rows = [
 ];
 
 const WORKER_MANAGEMENT_OPERATION_CATALOG = Object.freeze(rows.map(
-  ([operationId, method, route, resourceKind, scope, ownerPolicy, exposure]) => Object.freeze({
-    operationId, method, route, resourceKind, scope, ownerPolicy, exposure,
+  ([operationId, method, route, resourceKind, scope, ownerPolicy, exposure, responseTransport = 'json']) => Object.freeze({
+    operationId, method, route, resourceKind, scope, ownerPolicy, exposure, responseTransport,
   }),
 ));
 const WORKER_ROUTE_SCOPES = Object.freeze(Object.fromEntries(
@@ -2740,22 +2786,42 @@ test('settlement observation claim is obligation-only, due-window exact, fenced,
   assert.equal(providerReadCountFor(reclaimed.reservationId), 1);
 });
 
-test('safety reserve consumption is one conditional decrement and zero is never recreated', () => {
-  seedSafetyReserve({ ownerAgent: 'jerry', attemptId, operation: 'verify', remaining: 2 });
+test('claim atomically initializes the pinned four-dimensional reserve exactly once', () => {
+  const lease = store.claimNext(claimFixtureWithPinnedSafetyReserve);
+  assert.deepEqual(store.getSafetyReserve({
+    ownerAgent: 'jerry', attemptId: lease.attemptId, operation: 'verify',
+  }), expectedPinnedVerifyReserve);
+  assert.deepEqual(store.getSafetyReserve({
+    ownerAgent: 'jerry', attemptId: lease.attemptId, operation: 'rollback',
+  }), expectedPinnedRollbackReserve);
+  store.close();
+  const restarted = createTestStore(databasePath);
+  restarted.reconcileExpiredLeases({ ownerAgent: 'jerry', now: afterLeaseExpiry });
+  assert.equal(restarted.safetyReserveInitializationCount({
+    ownerAgent: 'jerry', attemptId: lease.attemptId,
+  }), 2);
+  assert.equal(typeof (restarted as any).initializeOrTopUpSafetyReserve, 'undefined');
+});
+
+test('safety reserve consumption is one fenced four-dimensional CAS and zero is never recreated', () => {
+  const cost = { runtimeMilliseconds: 10_000, toolCalls: 2, artifactBytes: 4096, retryAttempts: 1 };
   assert.deepEqual(store.consumeSafetyReserve({
-    ownerAgent: 'jerry', attemptId, lease: activeLease, operation: 'verify', amount: 1,
-  }), { consumed: 1, remaining: 1 });
-  assert.deepEqual(store.consumeSafetyReserve({
-    ownerAgent: 'jerry', attemptId, lease: activeLease, operation: 'verify', amount: 1,
-  }), { consumed: 1, remaining: 0 });
-  assert.deepEqual(store.consumeSafetyReserve(sameConsumptionAtZero), { consumed: 0, remaining: 0 });
-  assert.deepEqual(store.consumeSafetyReserve(amountGreaterThanRemaining), { consumed: 0, remaining: 0 });
+    ownerAgent: 'jerry', attemptId, lease: activeLease, operation: 'verify', cost,
+  }), { consumed: true, remaining: zeroSafetyReserveCost });
+  assert.deepEqual(store.consumeSafetyReserve(sameConsumptionAtZero), {
+    consumed: false, remaining: zeroSafetyReserveCost,
+  });
+  assert.deepEqual(store.consumeSafetyReserve(anyDimensionGreaterThanRemaining), {
+    consumed: false, remaining: zeroSafetyReserveCost,
+  });
   assert.throws(() => store.consumeSafetyReserve(wrongOwnerConsumption), /owner|scope/i);
   for (const stale of [expiredLeaseConsumption, wrongAttemptLeaseConsumption,
     wrongTokenLeaseConsumption, staleFencingEpochConsumption]) {
     assert.throws(() => store.consumeSafetyReserve(stale), /lease|token|fencing|expired/i);
   }
-  assert.equal(store.getSafetyReserve({ ownerAgent: 'jerry', attemptId, operation: 'verify' }).remaining, 0);
+  assert.deepEqual(store.getSafetyReserve({
+    ownerAgent: 'jerry', attemptId, operation: 'verify',
+  }).remaining, zeroSafetyReserveCost);
 });
 
 test('hard-stop close suffix atomically registers settlement and resumes after every failpoint', () => {
@@ -3611,7 +3677,24 @@ CREATE TABLE worker_safety_reserve (
   owner_agent TEXT NOT NULL,
   attempt_id TEXT NOT NULL,
   operation TEXT NOT NULL CHECK (operation IN ('verify', 'rollback')),
-  remaining INTEGER NOT NULL CHECK (remaining >= 0),
+  pinned_profile_hash TEXT NOT NULL,
+  initial_runtime_ms INTEGER NOT NULL CHECK (initial_runtime_ms >= 0),
+  remaining_runtime_ms INTEGER NOT NULL CHECK (
+    remaining_runtime_ms >= 0 AND remaining_runtime_ms <= initial_runtime_ms
+  ),
+  initial_tool_calls INTEGER NOT NULL CHECK (initial_tool_calls >= 0),
+  remaining_tool_calls INTEGER NOT NULL CHECK (
+    remaining_tool_calls >= 0 AND remaining_tool_calls <= initial_tool_calls
+  ),
+  initial_artifact_bytes INTEGER NOT NULL CHECK (initial_artifact_bytes >= 0),
+  remaining_artifact_bytes INTEGER NOT NULL CHECK (
+    remaining_artifact_bytes >= 0 AND remaining_artifact_bytes <= initial_artifact_bytes
+  ),
+  initial_retry_attempts INTEGER NOT NULL CHECK (initial_retry_attempts >= 0),
+  remaining_retry_attempts INTEGER NOT NULL CHECK (
+    remaining_retry_attempts >= 0 AND remaining_retry_attempts <= initial_retry_attempts
+  ),
+  initialized_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (owner_agent, attempt_id, operation),
   FOREIGN KEY (owner_agent, attempt_id)
@@ -3807,9 +3890,16 @@ export interface BillingTerminalizationReceipt {
 - [ ] **Step 4: Implement transactional APIs**
 
 ```ts
+export interface WorkerSafetyReserveCost {
+  readonly runtimeMilliseconds: number;
+  readonly toolCalls: number;
+  readonly artifactBytes: number;
+  readonly retryAttempts: number;
+}
+
 export interface ConsumeWorkerSafetyReserveResult {
-  readonly consumed: number;
-  readonly remaining: number;
+  readonly consumed: boolean;
+  readonly remaining: WorkerSafetyReserveCost;
 }
 
 export interface IncrementWorkerBudgetInput {
@@ -3826,7 +3916,7 @@ export interface ConsumeWorkerSafetyReserveInput {
   readonly attemptId: string;
   readonly lease: WorkerLease;
   readonly operation: 'verify' | 'rollback';
-  readonly amount: number;
+  readonly cost: WorkerSafetyReserveCost;
 }
 
 export interface CanonicalWorkerTriggerAuditEvent {
@@ -3870,6 +3960,19 @@ export interface RetryWorkerOutboxInput {
   readonly claimEpoch: number;
   readonly error: string;
   readonly nextAttemptAt: string;
+}
+
+export interface ReservedSettlementObserverAction {
+  readonly kind: 'payment-settlement-observer';
+  readonly ownerAgent: string;
+  readonly reservationId: string;
+  readonly obligationId: string;
+  readonly observationWindow: 'short' | 'medium';
+  readonly fencingGeneration: number;
+  readonly provenanceKind: 'payment-settlement-obligation-dispatch';
+  readonly provenanceHash: string;
+  readonly actionIntentHash: string;
+  readonly action: WorkerActionEnvelope;
 }
 
 export interface ClaimedPaymentSettlementObservation {
@@ -4090,9 +4193,9 @@ interface WorkerRuntimeStore {
 
 Every store input type named above carries a required `ownerAgent` unless the trusted object it accepts (`TrustedWorkerRunEnvelope`, `WorkerLease`, or a store-issued opaque claim) already carries it. `DenyWorkerTriggerInput`, every retry/reconciliation/recovered-terminal input, every scheduler mutation input, every outbox claim/transition input, and every journal/cutover recovery input include `ownerAgent` explicitly. Each SQL read, update, delete, uniqueness lookup, CAS, and recovery predicate includes the same `owner_agent`; a wrong owner returns not found/denied and cannot observe whether another owner's ID exists. There are no positional or ID-only recovery overloads. `enqueue()` verifies `envelope.ownerAgent` against the registered Worker before its first insert, while `enqueueFenced()` also byte-compares its explicit owner with the envelope and fence owner.
 
-Persist requests before execution. Idempotency is scoped to Worker plus the stable registered principal identity. The canonical comparison projection excludes only the deterministic request ID and the first-admission credential generation/audit record; an identical stable principal/source/public-input/authorization intent returns the original stored request, including across restart and fresh short-lived credentials, while the same key with any other changed byte conflicts. The store never replaces the original admission evidence on reuse. Claim atomically records attempt, claimant, a random lease-token hash, monotonically increasing fencing epoch, expiry/heartbeat, provider/model/credential tuple, all resolved hashes, and immutable audience snapshot. Every renewal, action begin/complete, cancellation, completion, history/resource-lock mutation, budget/reserve change, and retry performs an owner+status+lease-token+fencing-epoch CAS.
+Persist requests before execution. Idempotency is scoped to Worker plus the stable registered principal identity. The canonical comparison projection excludes only the deterministic request ID and the first-admission credential generation/audit record; an identical stable principal/source/public-input/authorization intent returns the original stored request, including across restart and fresh short-lived credentials, while the same key with any other changed byte conflicts. The store never replaces the original admission evidence on reuse. Claim resolves the immutable pinned attempt profile and, in the same `BEGIN IMMEDIATE` transaction that records attempt, claimant, random lease-token hash, monotonically increasing fencing epoch, expiry/heartbeat, provider/model/credential tuple, all resolved hashes, and immutable audience snapshot, inserts exactly one `verify` and one `rollback` reserve row from that profile. Each row stores the pinned profile hash and initial/remaining runtime milliseconds, tool calls, artifact bytes, and retry attempts. A retried claim may reuse only byte-identical rows in that same transaction; absent, partial, extra, or different rows abort the claim. No post-claim initializer or top-up API exists. Every renewal, action begin/complete, cancellation, completion, history/resource-lock mutation, budget/reserve change, and retry performs an owner+status+lease-token+fencing-epoch CAS.
 
-`consumeSafetyReserve()` validates an integer `amount > 0`, first rejects an owner-scope mismatch without disclosing another owner's row, and validates that `lease` is the exact current, unexpired store-issued lease for the same owner and attempt. It executes one `BEGIN IMMEDIATE` conditional decrement equivalent to `UPDATE worker_safety_reserve SET remaining = remaining - :amount ... WHERE owner_agent = :ownerAgent AND attempt_id = :attemptId AND operation = :operation AND remaining >= :amount AND remaining > 0 AND EXISTS (SELECT 1 FROM worker_attempts WHERE owner_agent = :ownerAgent AND attempt_id = :attemptId AND fencing_epoch = :leaseFencingEpoch AND lease_token_hash = :leaseTokenHash AND status = 'running' AND lease_expires_at > :storeNow) RETURNING remaining`. Exactly one updated row returns `{ consumed: amount, remaining }`; a stale, expired, wrong-owner, wrong-attempt, wrong-token, or wrong-epoch lease fails closed without mutation. An in-owner absent, zero, or insufficient row returns `{ consumed: 0, remaining: priorRemainingOrZero }` without inserting or updating. It never initializes, tops up, or converts an absent/zero prior row into new reserve, so concurrent consumers cannot both spend the same unit and a zero reserve remains zero across restart.
+`consumeSafetyReserve()` validates a nonnegative integer four-dimensional cost with at least one positive dimension, rejects an owner-scope mismatch without disclosing another owner's row, and validates that `lease` is the exact current, unexpired store-issued lease for the same owner and attempt. One `BEGIN IMMEDIATE` conditional `UPDATE` subtracts runtime milliseconds, tool calls, artifact bytes, and retry attempts together only when all four remaining columns cover the request, the operation is exactly `verify` or `rollback`, the stored pinned profile hash equals the attempt profile hash, and the owner/attempt/status/lease-token/fencing-epoch/expiry predicate still holds. Exactly one updated row returns `{ consumed: true, remaining: { ...fourDimensions } }`; stale lease identity fails closed without mutation, while an in-owner absent/zero/insufficient row returns `{ consumed: false, remaining: priorRemainingOrZero }` with no partial decrement. It never inserts, initializes, refunds, tops up, or converts an absent/zero row into reserve, so concurrent consumers cannot spend the same dimension and zero remains zero across restart.
 
 The canonical receipt/action surface used by Task 9 is `getCanonicalReceipt({ ownerAgent, runId })` plus `listActionsForAttempt({ ownerAgent, attemptId })`; both load only canonical SQLite bytes/rows. `ClaimWorkerOutboxInput` is exactly `{ ownerAgent, rowId, claimant, now, leaseExpiresAt }`. `AcknowledgeWorkerOutboxInput` and `RetryWorkerOutboxInput` are exactly the owner, `rowId`, store-issued `claimToken`, `claimEpoch`, and their terminal acknowledgement/error timing fields. None has `destination`, payload, adapter, or idempotency as a caller field. The claimed row is the only source of destination, canonical payload bytes/hash, and idempotency key, and each transition rechecks owner/row/token/epoch/status/expiry in one CAS.
 
@@ -4540,6 +4643,19 @@ export interface BillingSettlementObservationDispatch {
   deterministicActionKey: string;
 }
 
+export type WorkerInternalActionReservation =
+  | {
+      kind: 'trusted-child';
+      reservationId: string;
+    }
+  | {
+      kind: 'payment-settlement-observer';
+      reservationId: string;
+      obligationId: string;
+      observationWindow: 'short' | 'medium';
+      fencingGeneration: number;
+    };
+
 export interface WorkerActionEnvelope {
   actionId: string;
   ownerAgent: string;
@@ -4565,7 +4681,7 @@ export interface WorkerActionEnvelope {
   capabilityId: string;
   actionClass: WorkerActionClass;
   hardStopAuthorizationHash?: string;
-  trustedChildReservationId?: string;
+  internalActionReservation?: WorkerInternalActionReservation;
   internalDispatch?: BillingCanaryLeafDispatch | BillingCleanupSafetyLeafDispatch |
     BillingSettlementObservationDispatch;
   arguments: unknown;
@@ -4629,11 +4745,11 @@ export type AuthorizedAdapterInvocation =
 
 `CapabilityExecutor.execute()` first asks the Task 5 store for the active maintenance-fence decision using the trusted action class/target and current fence generation. A blocked action returns durable `fenced` evidence before action-id reservation, hard-stop leaf reservation, adapter selection, network access, or filesystem write. It rechecks the same generation in the action-start transaction so a race between queue admission and execution cannot cross the fence. Mandatory cleanup-safety and rollback actions are allowed only when the active fence explicitly names their exact recovery class and subject; a caller cannot self-label an exception.
 
-Normalize arguments and resolve every filesystem/process/URL/account/data target before policy evaluation. Re-evaluate current grant activation, revocation, expiry, hard denies, and machine gates immediately before every consequential action. Only `allow` invokes the adapter. `hardStopAuthorizationHash` and `internalDispatch` are trusted-envelope fields, never public/model arguments. The connector copies a hard-stop hash only from the persisted `TrustedHardStopBinding`; only Task 18's `adapter-dispatch.ts` may derive a main billing leaf, only `billing-cleanup-controller.ts` may derive a cleanup-safety leaf, and only Task 5's due-obligation dispatcher may derive a `billing-settlement-observer` action. Main and safety leaves inherit the exact parent hash, principal, correlation, identity, account, maximum charge, maximum net cost, currency, runner hash, catalog hash, four private identity descriptors/fingerprints and their set hash, identity-binding key ID, mailbox target and mailbox-adapter hashes, pinned Stripe API version, Checkout host/callback hashes, signup-confirmation redirect hash, private checkout/idempotency/session-journal hashes, cleanup-safety policy hash, and cleanup safety ID/status. The observer instead inherits the exact owner, obligation/authorization/linkage identities, due window/time, reservation, observation lease-token hash/expiry/fencing generation, immutable policy, deterministic action key, runner/catalog/module hashes, and registered settlement-scheduler principal. A public/spoofed internal dispatch, a child that replaces the parent hash, or action-time drift in any inherited record/API-version/target/contract/cost/safety/obligation binding is denied before reservation or adapter invocation. Derived arguments and action evidence carry only non-secret hashes and bounds; action-time resolution recomputes them from canonical state and the Task 4 authority resolver.
+Normalize arguments and resolve every filesystem/process/URL/account/data target before policy evaluation. Re-evaluate current grant activation, revocation, expiry, hard denies, and machine gates immediately before every consequential action. Only `allow` invokes the adapter. `hardStopAuthorizationHash`, `internalActionReservation`, and `internalDispatch` are trusted-envelope fields, never public/model arguments. The connector copies a hard-stop hash only from the persisted `TrustedHardStopBinding`; only Task 18's `adapter-dispatch.ts` may derive a main billing leaf, only `billing-cleanup-controller.ts` may derive a cleanup-safety leaf, and only Task 5's due-obligation dispatcher may derive a `billing-settlement-observer` action. Main and safety leaves inherit the exact parent hash, principal, correlation, identity, account, maximum charge, maximum net cost, currency, runner hash, catalog hash, four private identity descriptors/fingerprints and their set hash, identity-binding key ID, mailbox target and mailbox-adapter hashes, pinned Stripe API version, Checkout host/callback hashes, signup-confirmation redirect hash, private checkout/idempotency/session-journal hashes, cleanup-safety policy hash, and cleanup safety ID/status. The observer instead inherits the exact owner, obligation/authorization/linkage identities, due window/time, reservation, observation lease-token hash/expiry/fencing generation, immutable policy, deterministic action key, runner/catalog/module hashes, and registered settlement-scheduler principal. A public/spoofed internal dispatch, a child that replaces the parent hash, or action-time drift in any inherited record/API-version/target/contract/cost/safety/obligation binding is denied before reservation or adapter invocation. Derived arguments and action evidence carry only non-secret hashes and bounds; action-time resolution recomputes them from canonical state and the Task 4 authority resolver.
 
 Adapters never infer billing role from optional envelope fields. After authorization, `CapabilityExecutor.execute()` constructs the required `AuthorizedAdapterInvocation` discriminated union from persisted provenance. A billing root requires stored `worker-tool-root` provenance, no parent, and no internal marker; a main leaf requires stored `billing-router-child` provenance; a safety leaf requires stored `billing-cleanup-controller-child` provenance, the exact armed lease, server-controller generation, and deterministic safety action ID. Both child kinds require the exact root journal, inherited authorization hash, and reserved transition. A settlement observer requires stored `payment-settlement-obligation-dispatch` provenance and a current exact `claimPaymentSettlementObservation()` row; it requires both `authorityGrantHash` and `hardStopAuthorizationHash` to be absent, has no billing parent, and cannot enter the root/leaf/safety adapters. Missing/stripped markers, a root with a parent, a leaf without a parent, a child of a leaf, an observer with a parent or either ordinary authority field, an unknown route, or any lineage mismatch is denied rather than falling back to another route.
 
-Before normalization, the executor reloads the owner-scoped request, attempt, current lease, immutable profile, trusted binding, and audience/provenance hashes from the Task 5 store and rejects any mismatch with the caller's lease/action identifiers. For a parented internal child it reloads the one atomic `ReservedTrustedChildAction`; for an observer it instead reloads the exact parentless `worker_payment_settlement_observations` reservation and its store-issued claim. It byte-compares the reserved action intent and every observation lease/fencing/policy/linkage field. The model never supplies identity or provenance. After authorization and target locking, it calls the store's fenced `beginAction()` with a closed reservation discriminator: `{ kind: 'trusted-child', reservationId }` or `{ kind: 'payment-settlement-observer', reservationId, obligationId, observationWindow, fencingGeneration }`. That transaction atomically changes only the matching owner-scoped reservation and action row to `started`; it rejects an observer passed through the trusted-child branch or any parent on the observer action. Adapter lookup and effects occur only after it commits. Terminal evidence is committed through the matching fenced `completeAction()` CAS, so a stale process cannot finish or replace a newer attempt.
+Before normalization, the executor reloads the owner-scoped request, attempt, current lease, immutable profile, trusted binding, and audience/provenance hashes from the Task 5 store and rejects any mismatch with the caller's lease/action identifiers. For a parented internal child it reloads the one atomic `ReservedTrustedChildAction`; for an observer it instead calls `getSettlementObserverActionReservation()` and reloads the exact parentless `ReservedSettlementObserverAction` from the canonical owner-scoped `worker_payment_settlement_observations` row plus its store-issued observation claim. No separate observer-reservation table exists. It byte-compares the reserved action intent and every observation lease/fencing/policy/linkage field. The model never supplies identity or provenance. After authorization and target locking, it calls the store's fenced `beginAction()` with the action's exact `internalActionReservation` discriminator: `{ kind: 'trusted-child', reservationId }` or `{ kind: 'payment-settlement-observer', reservationId, obligationId, observationWindow, fencingGeneration }`. That transaction atomically changes only the matching owner-scoped reservation and action row to `started`; it rejects an observer passed through the trusted-child branch or any parent on the observer action. Adapter lookup and effects occur only after it commits. Terminal evidence is committed through the matching fenced `completeAction()` CAS, so a stale process cannot finish or replace a newer attempt.
 
 The executor obtains trigger/source/idempotency/event/occurrence/origin and hard-stop/obligation binding fields from the trusted stored request and action journal, never from model arguments. Authorization precedence is explicit: enforce non-overridable repository/data invariants first; classify the capability lane; for the normal lane require the active standing grant and its hard denies; for the hard-stop lane require a manifest hard-stop declaration plus the exact active authorization and ignore standing-grant authority; for the settlement-observer lane require only the exact open due-obligation claim and explicitly reject both standing and hard-stop authority; then enforce machine preconditions and invoke the adapter. The observer lane permits only its cataloged GET/readback policies and can neither create a billing orchestration nor reserve a main/safety/provider mutation. The sole exception to main hard-stop expiry/revocation is a store-derived `billing-cleanup-safety-leaf` backed by an armed lease and either an authoritative mapped open Checkout Session or an authoritative charge. For a mapped Session with no charge the only suffix is `expire-session, cleanup`; after charge the only suffix is `cancel, refund, cleanup`. It can only reduce or verify that same consequence and never revives the root or authorizes a forward/spend operation. No lane can override destructive-data prohibitions, target confinement, consent/privacy, mandatory readback, reconciliation, rollback, or immutable-release checks. An inactive, expired, revoked, or hash-mismatched live/public grant returns `require-human-authorization` unless the exact cleanup-safety rule applies; an invalid target, undeclared hard-stop capability, caller-supplied safety/observer field, hard deny, replay, bypass, or malformed provenance returns `deny`.
 
@@ -5139,7 +5255,7 @@ test('persistent history requires one durable lease while fresh histories do not
 });
 
 test('finite reserve permits verifier and rollback only, then freezes the affected target', async () => {
-  const budget = exhaustedOrdinaryBudgetWithReserve(2);
+  const budget = exhaustedOrdinaryBudgetWithPinnedReserve();
   assert.equal(budget.authorize('verify').allowed, true);
   assert.equal(budget.authorize('rollback').allowed, true);
   assert.equal(budget.authorize('publish').allowed, false);
@@ -5149,17 +5265,21 @@ test('finite reserve permits verifier and rollback only, then freezes the affect
     status: 'reserve_exhausted_target_frozen',
     freezeTarget: true,
   });
-  assert.equal(store.getSafetyReserve({ ownerAgent, attemptId, operation: 'verify' }).remaining, 0);
+  assert.deepEqual(store.getSafetyReserve({
+    ownerAgent, attemptId, operation: 'verify',
+  }).remaining, zeroSafetyReserveCost);
   assert.equal(store.safetyReserveConsumptionCount({ ownerAgent, attemptId, operation: 'verify' }), 1);
 });
 
 test('a zero prior safety balance never authorizes one more operation', () => {
-  const budget = exhaustedOrdinaryBudgetWithReserve(0);
+  const budget = exhaustedOrdinaryBudgetWithPinnedReserve(zeroSafetyReserveProfile);
   const decision = budget.authorize('rollback');
   assert.equal(decision.allowed, false);
   assert.equal(decision.freezeTarget, true);
   assert.equal(adapterInvocationCount(), 0);
-  assert.equal(store.getSafetyReserve({ ownerAgent, attemptId, operation: 'rollback' }).remaining, 0);
+  assert.deepEqual(store.getSafetyReserve({
+    ownerAgent, attemptId, operation: 'rollback',
+  }).remaining, zeroSafetyReserveCost);
 });
 
 test('factory exposes an exact authorized hard stop only from the persisted trusted run binding', async () => {
@@ -5216,6 +5336,7 @@ export class WorkerRuntimeFactory {
       : undefined;
     const budget = new WorkerBudget(
       profile.limits,
+      profile.safetyReserve,
       this.dependencies.store,
       attempt.ownerAgent,
       attempt.attemptId,
@@ -5306,6 +5427,7 @@ Persist ordinary and reserve runtime/tool/artifact/retry consumption in SQLite. 
 export class WorkerBudget {
   constructor(
     private readonly limits: WorkerLimits,
+    private readonly safetyReserve: Readonly<Record<'verify' | 'rollback', WorkerSafetyReserveLimits>>,
     private readonly store: WorkerRuntimeStore,
     private readonly ownerAgent: string,
     private readonly attemptId: string,
@@ -5331,14 +5453,33 @@ export class WorkerBudget {
     });
     if (!counters.ordinaryExhausted) return { allowed: true, source: 'ordinary' };
     if (kind !== 'verify' && kind !== 'rollback') return { allowed: false, status: 'budget_exhausted' };
+    const pinnedReserve = this.safetyReserve[kind];
+    if (
+      pinnedReserve.maxRuntimeMilliseconds === 0 &&
+      pinnedReserve.maxToolCalls === 0 &&
+      pinnedReserve.maxArtifactBytes === 0 &&
+      pinnedReserve.retryAttempts === 0
+    ) {
+      return {
+        allowed: false,
+        status: 'reserve_exhausted_target_frozen',
+        freezeTarget: true,
+      };
+    }
+    const cost = Object.freeze({
+      runtimeMilliseconds: pinnedReserve.maxRuntimeMilliseconds,
+      toolCalls: pinnedReserve.maxToolCalls,
+      artifactBytes: pinnedReserve.maxArtifactBytes,
+      retryAttempts: pinnedReserve.retryAttempts,
+    });
     const reserve = this.store.consumeSafetyReserve({
       ownerAgent: this.ownerAgent,
       attemptId: this.attemptId,
       lease: this.lease,
       operation: kind,
-      amount: 1,
+      cost,
     });
-    if (reserve.consumed !== 1) {
+    if (!reserve.consumed) {
       return {
         allowed: false,
         status: 'reserve_exhausted_target_frozen',
@@ -5350,12 +5491,13 @@ export class WorkerBudget {
 }
 ```
 
-`consumeSafetyReserve()` is Task 5's one atomic conditional decrement. It updates only the exact
-`{ ownerAgent, attemptId, operation }` row under the exact current unexpired lease token and fencing
-epoch when the prior balance is at least `amount`, returns
-`{ consumed: 0, remaining: 0 }` for a zero prior balance, and never creates or tops up a reserve row.
-The executor must persist the affected-target freeze before returning a decision whose
-`freezeTarget` is true; it must not invoke a verifier or rollback adapter when `consumed !== 1`.
+`consumeSafetyReserve()` is Task 5's one atomic four-dimensional conditional decrement. `WorkerBudget`
+derives the requested runtime-millisecond/tool-call/artifact-byte/retry-attempt allocation only from the
+pinned immutable profile; a model or adapter cannot understate it. The deterministic verifier/rollback is
+wrapped in a meter that aborts before crossing any reserved dimension and cannot call a model or publish.
+The executor persists the affected-target freeze before returning `freezeTarget: true`, and invokes no
+verifier/rollback adapter when `consumed` is false. Reserve rows are created only by the claim transaction;
+there is no retry, restart, recovery, verifier, rollback, or operator path that initializes or tops them up.
 
 - [ ] **Step 6: Implement scoped owner-brain delegation**
 
@@ -5491,7 +5633,7 @@ test('two harnesses claim one due settlement observation and restart resumes wit
   assert.equal(readOnlyProviderReadbackCount('short'), 1);
   crashAt('after_authoritative_readback_before_observation_commit');
   await restartHarness();
-  await settlementObserver.reconcileDueObligations({ claimant: 'restarted-harness' });
+  await settlementObserver.reconcileDueObligations({ ownerAgent: 'jerry', claimant: 'restarted-harness' });
   assert.equal(providerMutationCount(), 0);
   assert.equal(store.getSettlementObservation({
     ownerAgent: 'jerry', obligationId, observationWindow: 'short',
@@ -5501,7 +5643,9 @@ test('two harnesses claim one due settlement observation and restart resumes wit
 
 test('healthy process schedules due settlement wake and never releases block after short observation only', async () => {
   const obligation = seedSettlementObligation({ shortDueAt: soon, mediumDueAt: later });
-  await settlementObserver.startDueTimer();
+  const stopDueTimer = await settlementObserver.startDueTimer({
+    ownerAgent: 'jerry', claimant: 'healthy-harness', signal: healthyHarnessAbortSignal,
+  });
   await clock.advanceTo(soon);
   assert.equal(store.getSettlementObservation({
     ownerAgent: 'jerry', obligationId: obligation.id, observationWindow: 'short',
@@ -5516,6 +5660,7 @@ test('healthy process schedules due settlement wake and never releases block aft
   assert.equal(store.authorizeAdmission({
     ownerAgent: 'jerry', action: backendDeployAction,
   }).decision, 'allow');
+  stopDueTimer();
 });
 
 test('settlement observer identity cannot claim a mutation capability', async () => {
@@ -5569,6 +5714,18 @@ Start one lightweight broker supervisor inside each owner harness after provider
 `start()` awaits database open, owner-scoped recovery, reconciliation, and initial poll before setting Worker management ready. It retains and observes the broker loop promise; an unexpected loop exit sets readiness to `503`, records a canonical incident, and performs only bounded transient restarts. Integrity/auth/configuration failures remain failed closed. `stop()` prevents claims, aborts active optional work, drains mandatory post-cutover verification/rollback within the finite reserve, records unreconciled leases, and awaits the loop and every attempt before Home23 exits. Do not launch a detached/unobserved promise from `home.ts`.
 
 ```ts
+export interface PaymentSettlementObserver {
+  reconcileDueObligations(input: Readonly<{
+    ownerAgent: string;
+    claimant: string;
+  }>): Promise<void>;
+  startDueTimer(input: Readonly<{
+    ownerAgent: string;
+    claimant: string;
+    signal: AbortSignal;
+  }>): Promise<() => void>;
+}
+
 export async function startOwnerWorkerBrokerSupervisor(input: {
   agentName: string;
   instanceId: string;
@@ -5596,8 +5753,12 @@ export async function startOwnerWorkerBrokerSupervisor(input: {
     beforeReady: async () => {
       await broker.recover();
       await broker.resumePendingGrantManagementProofsBeforeAdmission();
-      await input.settlementObserver.reconcileDueObligations({ claimant: input.instanceId });
+      await input.settlementObserver.reconcileDueObligations({
+        ownerAgent: input.agentName,
+        claimant: input.instanceId,
+      });
       const stopSettlementTimer = await input.settlementObserver.startDueTimer({
+        ownerAgent: input.agentName,
         claimant: input.instanceId,
         signal: input.abortSignal,
       });
@@ -5672,10 +5833,16 @@ export class WorkerDispatcher {
       if (readback.status === 'uncertain') {
         this.store.requireReconciliation({ ownerAgent, requestId: run.requestId, readback });
       } else if (readback.retryClass === 'transient') {
+        const profile = await this.profiles.resolvePinnedByHash({
+          ownerAgent,
+          worker: run.worker,
+          profileHash: run.profileHash,
+        });
         this.store.scheduleRetry({
           ownerAgent,
           requestId: run.requestId,
-          dueAt: boundedBackoff(run.attemptCount),
+          expectedProfileHash: run.profileHash,
+          dueAt: boundedBackoff(run.attemptCount, profile.retry),
           retryClass: readback.retryClass,
           reasonHash: readback.reasonHash,
         });
@@ -5691,6 +5858,8 @@ export class WorkerDispatcher {
   }
 }
 ```
+
+`boundedBackoff()` accepts only the attempt's frozen `profile.retry`: it refuses scheduling once `transientAttempts` is exhausted, computes the capped exponential delay from `initialBackoffSeconds` and `maxBackoffSeconds`, and persists `expectedProfileHash` in the same owner-scoped retry CAS. Dispatcher recovery never reloads the current manifest's retry values for an existing attempt.
 
 Every dispatcher-to-store call uses Task 5's owner-scoped object input. The store includes
 `owner_agent = @ownerAgent` in the same SQL statement as every request/attempt/status/lease-token/
@@ -6255,6 +6424,38 @@ test('catalog, codecs, handlers, routes, client, CLI, and contract coverage are 
     Object.keys(WORKER_LOCAL_ONLY_CLI_COMMAND_SPECS),
   );
 });
+
+test('catalog and codec response transports are exact and request.events is the sole stream', () => {
+  for (const row of WORKER_MANAGEMENT_OPERATION_CATALOG) {
+    const codec = requireWorkerManagementOperationCodec(row.operationId);
+    assert.equal(codec.response.kind, row.responseTransport, row.operationId);
+    assert.equal(row.responseTransport,
+      row.operationId === 'request.events' ? 'event-stream' : 'json');
+  }
+});
+
+test('request.events is a validated cancellable async stream and never calls response.json', async () => {
+  const fixture = chunkedEventStreamResponse([
+    ': heartbeat\n\n',
+    'id: 7\nevent: worker-request-event\ndata: {"schema":"home23.worker-request-event.v1",',
+    '"requestId":"request-1","sequence":7,"type":"claimed"}\n\n',
+    'id: 8\nevent: worker-request-event\ndata: {"schema":"home23.worker-request-event.v1",',
+    '"requestId":"request-1","sequence":8,"type":"completed"}\n\n',
+  ]);
+  const events = [];
+  for await (const event of await clientFromResponse(fixture.response)
+    .streamRequestEvents({ worker: 'shakedown-jerry', requestId: 'request-1', afterSequence: 6 })) {
+    events.push(event);
+  }
+  assert.deepEqual(events.map((event) => event.sequence), [7, 8]);
+  assert.equal(fixture.jsonReadCount, 0);
+  assert.equal(fixture.readerCancelCount, 1);
+  for (const bad of [wrongRequestIdFrame, repeatedSequenceFrame, malformedJsonFrame,
+    oversizedFrame, wrongContentTypeResponse]) {
+    await assert.rejects(() => consumeRequestEventStream(bad),
+      /request|sequence|event stream|content-type|frame|schema/i);
+  }
+});
 ```
 
 - [ ] **Step 2: Run — expect FAIL**
@@ -6273,6 +6474,11 @@ Expected: FAIL because the canonical management client and route-level scope enf
 Support list/inspect/create/validate/reload, effective profiles, run-now, queued/active/stale/completed runs, progress streaming, receipt/artifact read, cancel, retry, shared-pursuit redirect/focus, schedules, event bindings, verified memory promotion, standing-grant activate/revoke, exact hard-stop authorization register/revoke/status, transactional automation-cutover recording, disable, and recoverable archive. There is no normal hard-delete. `POST /api/workers/:worker/runs` returns `202` only after durable enqueue/idempotency reservation; status is `GET /api/workers/:worker/requests/:requestId`.
 
 The tested CLI grammar is closed and consistent: worker-scoped commands use the worker name as the first positional argument (`worker validate <worker>`, `worker migrate <worker>`, `worker run <worker>`, `worker install <worker>`); `grant finalize`, `grant validate-candidate`, and `grant verify` take the document positionally, while `grant sign` always uses explicit `--input` plus `--key-id`; worker grant state uses `worker grant <activate|revoke|show|preflight> <worker>`; and hard-stop service commands use `worker hard-stop <verb> <worker>` plus explicit document/hash/receipt flags. Commands in `WORKER_LOCAL_ONLY_CLI_COMMAND_CATALOG` never contact the service. Local `worker hard-stop approve-local <worker> --document ... --key-id home23-operator-primary --receipt-root ... --prompt-exact-hash --require-interactive-operator --receipt-path-only` displays the exact billing authorization-request hash and creates a signed single-use `home23.worker-hard-stop-local-approval.v1` receipt without HTTP. `--receipt-root` must realpath-equal `/Users/jtr/_JTR23_/release/home23/instances/workers/<worker>/authorizations/local-approvals`, with owner-only directory/file modes and no symlink component; no caller-selected sibling/preservation/temp root is accepted. After a pause or fresh shell, local `worker hard-stop inspect <worker> --local-approval-for-request-hash <hash> --approval-root <that-exact-root> --approval-receipt-path-only` re-resolves the single content-addressed receipt, verifies its request hash, worker, schema, signature, expiry, and unconsumed local state, and returns only its canonical path. Local `worker schema-hard-stop approve <worker>` similarly creates only the distinct `home23.schema-hard-stop-approval.v1` receipt used by the migration workflow; the schemas are not interchangeable. Public operation `hard-stop.approve` is different: service-backed `worker hard-stop approve <worker> --approved-request-hash ... --approval-receipt ... --consume-single-use-local-approval` accepts only the billing local-approval schema, verifies and atomically consumes/registers that already-created receipt, and returns an `approvalRecordHash` used by `hard-stop.register`. It never signs or creates an approval. Every service-backed grant, hard-stop, schedule, and cutover verb requires the explicit tested tuple `--service-url http://127.0.0.1:5004 --credential-keychain-service home23.worker-management --credential-account operator`; it resolves the secret from Keychain, obtains a short-lived operator credential, and calls `WorkerManagementClient`. Missing transport, environment-only credentials, mutable worktree URLs, direct SQLite/store access, or an alternate fallback are rejected. `worker channels inventory`, `worker automation inventory`, and `worker migrations verify` are read-only queries backed respectively by the fixed tracked registry/account preflight, the fixed `/Users/jtr/.codex/automations` definition/status/receipt root, and the tracked matrix joined to fresh PM2/launchd/scheduler truth. `worker grant preflight` reads the active immutable release/profile/grant/target hashes from the deployed service and writes only its canonical receipt. Aliases that alternate `--worker`, `authority validate-candidate`, or multiple forms for the same verb are not implemented. Contract tests extract every later plan invocation, parse every flag against the registered command-specific schema, and reject an unowned command or flag before Task 29. Fixture-only denial probes call an in-process test helper or a cataloged management operation; there is no uncataloged service-backed `worker action test-denial` production command.
+
+The canonical receipt written by `worker grant preflight` includes the hash-bound absolute
+`activeRunnerReleasePath` selected by the deployed grant/profile binding. The service rejects a
+mutable worktree, a path outside the immutable runner-release authority, or any path/hash drift
+before writing that receipt.
 
 Read-only `worker grant show <worker> --active-runner-release-path-only` resolves the active grant,
 profile, immutable runner manifest, and release hash through the deployed service, verifies their exact
@@ -6507,7 +6713,7 @@ const WORKER_CLI_COMMAND_SPEC_OVERRIDES = Object.freeze({
   ), { required: ['--definition', '--activation-disposition', '--require-deployed-profile',
     '--require-inactive-or-fenced', '--idempotent'] }),
   'bindings list': serviceCommand(['worker'], flags(
-    value('--compare-definition'), bool('--require-exact-hash', '--no-write'),
+    value('--compare-definition', '--require-active-epoch'), bool('--require-exact-hash', '--no-write'),
   ), { required: ['--compare-definition', '--require-exact-hash', '--no-write'] }),
   validate: serviceCommand(['worker'], flags(
     value('--runtime-root', '--require-release-commit', '--require-target-pin-projection', '--activation-disposition'),
@@ -6734,7 +6940,10 @@ const WORKER_CLI_COMMAND_SPEC_OVERRIDES = Object.freeze({
       '--authoritative-state-receipt-path-only'),
   )),
   'automation-cutover append': serviceCommand(['worker'], flags(
-    value('--cutover-id', '--transition-receipt'), bool('--read-back-authoritative-state'),
+    value('--cutover-id', '--transition-receipt', '--event-binding-definition',
+      '--activation-epoch'),
+    bool('--read-back-authoritative-state', '--activate-exact-event-bindings',
+      '--require-exact-binding-profile-grant-hashes'),
   )),
   'automation-cutover begin-rollback': serviceCommand(['worker'], flags(
     value('--cutover-id', '--authoritative-state-hash'), bool('--operations-receipt-path-only'),
@@ -7065,6 +7274,7 @@ export function createWorkerManagementClient(input: {
     const response = await input.fetch(new URL(path, input.baseUrl), {
       method: row.method,
       redirect: 'manual',
+      signal: compiled.abortSignal,
       headers: {
         authorization: `Bearer ${credential}`,
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
@@ -7072,7 +7282,19 @@ export function createWorkerManagementClient(input: {
       ...(body === undefined ? {} : { body }),
     });
     if (!response.ok) throw new WorkerManagementError(response.status, await response.text());
-    return codec.parseResponse(await response.json());
+    if (codec.response.kind !== row.responseTransport) {
+      throw new WorkerManagementContractError(`response transport mismatch: ${operationId}`);
+    }
+    if (codec.response.kind === 'event-stream') {
+      return openValidatedRequestEventStream({
+        response,
+        parseEvent: codec.response.parseEvent,
+        expectedRequestId: compiled.pathParameters.requestId,
+        afterSequence: compiled.query.afterSequence ?? 0,
+        abortSignal: compiled.abortSignal,
+      }) as WorkerManagementOperationOutput<K>;
+    }
+    return codec.response.parseResponse(await response.json());
   };
   return bindTypedWorkerClientMethods({
     invoke,
@@ -7082,7 +7304,11 @@ export function createWorkerManagementClient(input: {
 }
 ```
 
-`WORKER_MANAGEMENT_OPERATION_CODECS` is keyed by every catalog operation ID and supplies exact path-parameter names, query schema, body schema, response parser, typed wrapper argument mapping, and closed CLI metadata (`valueFlags`, `booleanFlags`, `repeatableValueFlags`, and constraints). `commandSpecFromPublicOperation()` combines that metadata with the generated operation-to-command row, so the displayed grammar and registered handlers cover all 72 public bindings without a second hand-maintained service-command table. Operation-specific overrides may only tighten a generated descriptor and are rejected if their command key is not generated. The 20 local-only specs are built solely from `WORKER_LOCAL_ONLY_CLI_COMMAND_CATALOG` and excluded from HTTP/public-contract equality. Startup and tests require exact key equality among the 79-row catalog, codecs, service handlers, route registrations, `WORKER_CLIENT_METHOD_BINDINGS`, and `WORKER_CLI_COMMAND_CATALOG`; a partially implemented client cannot compile or boot. The CJS engine client in Task 13 calls this HTTP contract and does not receive an in-process service object.
+`WORKER_MANAGEMENT_OPERATION_CODECS` is keyed by every catalog operation ID and supplies exact path-parameter names, query schema, body schema, typed wrapper argument mapping, closed CLI metadata (`valueFlags`, `booleanFlags`, `repeatableValueFlags`, and constraints), and a discriminated response contract. A JSON codec has exactly `{ kind: 'json', parseResponse }`; an event codec has exactly `{ kind: 'event-stream', mediaType: 'text/event-stream', parseEvent }`, and its generated output type is `AsyncIterable<WorkerRequestEvent>`. Startup byte-compares every codec's response kind with its catalog row. `request.events` is the only event-stream row; all other rows are JSON.
+
+`openValidatedRequestEventStream()` requires a present response body and a normalized `Content-Type` of `text/event-stream`, uses one fatal incremental UTF-8 decoder, and parses bounded SSE frames without buffering the complete response. It ignores comment heartbeats, rejects unknown fields, multiline ambiguity, invalid JSON/schema/event names, a frame or pending buffer above the cataloged byte ceilings, a request ID other than the path-bound request, and any sequence that is not strictly greater than both `afterSequence` and the last yielded sequence. It always releases/cancels the reader in `finally`; consumer return, supplied abort, connection loss, malformed framing, and schema failure close the body. Neither this path nor its typed wrapper calls `response.json()`. The route emits the same schema/request/sequence-bound frames and closes on terminal request state or authenticated disconnect.
+
+`commandSpecFromPublicOperation()` combines codec CLI metadata with the generated operation-to-command row, so the displayed grammar and registered handlers cover all 72 public bindings without a second hand-maintained service-command table. Operation-specific overrides may only tighten a generated descriptor and are rejected if their command key is not generated. The 20 local-only specs are built solely from `WORKER_LOCAL_ONLY_CLI_COMMAND_CATALOG` and excluded from HTTP/public-contract equality. Startup and tests require exact key equality among the 79-row catalog, codecs, service handlers, route registrations, `WORKER_CLIENT_METHOD_BINDINGS`, and `WORKER_CLI_COMMAND_CATALOG`; a partially implemented client cannot compile or boot. The CJS engine client in Task 13 calls this HTTP contract and does not receive an in-process service object.
 
 - [ ] **Step 6: Promote the implemented Worker v2 contract catalog**
 
@@ -9668,10 +9894,16 @@ limits:
   maxTokens: 140000
   maxArtifactBytes: 2147483648
 safetyReserve:
-  maxRuntimeMinutes: 30
-  maxToolCalls: 24
-  maxArtifactBytes: 268435456
-  retryAttempts: 2
+  verify:
+    maxRuntimeMilliseconds: 600000
+    maxToolCalls: 8
+    maxArtifactBytes: 67108864
+    retryAttempts: 1
+  rollback:
+    maxRuntimeMilliseconds: 1200000
+    maxToolCalls: 16
+    maxArtifactBytes: 201326592
+    retryAttempts: 1
 retry:
   transientAttempts: 3
   initialBackoffSeconds: 15
@@ -10067,6 +10299,42 @@ test('every credential use resolves one exact canonical authority through the co
     wrongValidationProfileAuthority, rawSecretObjectAuthority]) {
     await assert.rejects(() => resolveTask18CredentialAuthorityUse(request),
       /authority|schema|consumer|host|operation|generation|profile|nonserializable/i);
+  }
+});
+
+test('settlement observer credential uses equal the Task 4 authority rows and reject cross-products', async () => {
+  const definition = await loadWorkerCredentialAuthorityDefinition(task4AuthorityDefinitionPath);
+  const authorityIds = [
+    'shakedown-api-readonly',
+    'shakedown-supabase-readonly',
+    'shakedown-stripe-restricted-read',
+  ];
+  for (const authorityId of authorityIds) {
+    const task4 = definition.authorities.find((row) => row.id === authorityId);
+    assert.ok(task4);
+    const exactUses = TASK18_AUTHORITY_REQUIREMENTS[authorityId].uses
+      .filter((use) => use.consumer === 'billing-settlement-observer');
+    for (const use of exactUses) {
+      assert.equal(task4.consumers.includes(use.consumer), true);
+      assert.equal(task4.hosts.includes(use.host), true);
+      assert.equal(task4.operations.includes(use.operation), true);
+      await assert.doesNotReject(() => resolveTask18CredentialAuthorityUse({
+        authorityId, ...use, validationProfile: 'production-canary',
+        activeProfile: exactCanaryProfile,
+      }));
+    }
+    const exactKeys = new Set(exactUses.map(({ consumer, host, operation }) =>
+      canonicalJson([consumer, host, operation])));
+    const consumer = 'billing-settlement-observer';
+    for (const host of task4.hosts) {
+      for (const operation of task4.operations) {
+        if (exactKeys.has(canonicalJson([consumer, host, operation]))) continue;
+        await assert.rejects(() => resolveTask18CredentialAuthorityUse({
+          authorityId, consumer, host, operation, validationProfile: 'production-canary',
+          activeProfile: exactCanaryProfile,
+        }), /consumer|host|operation|authority/i);
+      }
+    }
   }
 });
 
@@ -10719,6 +10987,14 @@ const TASK18_AUTHORITY_REQUIREMENTS = deepFreeze({
       { consumer: 'billing-production-canary', host: 'oauth2.googleapis.com', operation: 'gmail-readonly-confirmation-read' },
     ],
   },
+  'matomo-reporting-readonly': {
+    kind: 'provider-read-token', schema: 'home23.external-authority.matomo-reporting-readonly.v1',
+    profiles: ['through-task31', 'production-canary'],
+    uses: [
+      'VisitsSummary.get', 'Actions.getPageUrls', 'Referrers.getCampaigns',
+      'Referrers.getWebsites', 'Events.getCategory', 'Goals.get',
+    ].map((operation) => ({ consumer: 'shakedown.observe', host: 'stats.shakedownshuffle.com', operation })),
+  },
   'shakedown-api-readonly': {
     kind: 'loopback-read-token', schema: 'home23.external-authority.shakedown-api-readonly.v1',
     profiles: ['through-task31', 'production-canary'],
@@ -10760,6 +11036,50 @@ const TASK18_AUTHORITY_REQUIREMENTS = deepFreeze({
       { consumer: 'shakedown.observe', host: 'api.stripe.com', operation: 'GET /v1/payment_intents/:paymentIntentId' },
       { consumer: 'shakedown.observe', host: 'api.stripe.com', operation: 'GET /v1/checkout/sessions/:checkoutSessionId' },
     ],
+  },
+  'shakedown-communications-readonly': {
+    kind: 'loopback-recipient-status-read-token',
+    schema: 'home23.external-authority.shakedown-communications-readonly.v1',
+    profiles: ['through-task31', 'production-canary'],
+    uses: [
+      'GET /api/internal/communications/eligibility/:opaqueRecipientId',
+      'GET /api/internal/communications/suppression/:opaqueRecipientId',
+      'GET /api/internal/communications/bounce-state/:opaqueRecipientId',
+      'GET /api/internal/communications/unsubscribe-state/:opaqueRecipientId',
+    ].flatMap((operation) => [
+      { consumer: 'shakedown.observe', host: '127.0.0.1:3005', operation },
+      { consumer: 'shakedown.communications.consented', host: '127.0.0.1:3005', operation },
+    ]),
+  },
+  'shakedown-search-readonly': {
+    kind: 'oauth-webmasters-readonly', schema: 'home23.external-authority.shakedown-search-readonly.v1',
+    profiles: ['through-task31', 'production-canary'],
+    uses: [
+      'GET sites/sc-domain:shakedownshuffle.com',
+      'READONLY searchAnalytics.query/sc-domain:shakedownshuffle.com',
+    ].flatMap((operation) => [
+      { consumer: 'shakedown.observe', host: 'searchconsole.googleapis.com', operation },
+      { consumer: 'shakedown.indexing', host: 'searchconsole.googleapis.com', operation },
+    ]),
+  },
+  'shakedown-operator-readonly': {
+    kind: 'loopback-status-read-token', schema: 'home23.external-authority.shakedown-operator-readonly.v1',
+    profiles: ['through-task31', 'production-canary'],
+    uses: [
+      'GET /health', 'GET /api/internal/operator/api-status',
+      'GET /api/internal/operator/audio-status', 'GET /api/internal/operator/caddy-status',
+      'GET /api/internal/operator/pm2-status', 'GET /api/internal/operator/release-journal',
+      'GET /api/internal/operator/automation-inventory',
+    ].map((operation) => ({ consumer: 'shakedown.observe', host: '127.0.0.1:3005', operation })),
+  },
+  'shakedown-indexnow': {
+    kind: 'fixed-public-key-descriptor', schema: 'home23.external-authority.shakedown-indexnow.v1',
+    profiles: ['through-task31', 'production-canary'],
+    uses: [{
+      consumer: 'shakedown.indexing',
+      host: 'api.indexnow.org',
+      operation: 'POST /indexnow',
+    }],
   },
 });
 
@@ -10979,6 +11299,7 @@ export function compileSettlementObserverExecutionEnvelope(input: {
     ownerAgent: input.claim.ownerAgent,
     reservationId: input.claim.reservationId,
   });
+  if (!reserved) throw new Error('settlement observer action reservation is missing');
   assertExactSettlementClaimReservation(input.claim, reserved, lease);
   assert.equal(reserved.action.parentActionId, undefined);
   return Object.freeze({ lease, action: reserved.action });
@@ -11711,6 +12032,25 @@ test('funnel contradiction circuits only the broken destination and shifts activ
   assert.equal(result.unaffectedLanes.includes('collection'), true);
   assert.equal(result.unaffectedLanes.includes('observation'), true);
 });
+
+test('every observation call resolves one complete Task 18 authority use and exposes only its opaque handle', async () => {
+  for (const fixture of everyObservationAuthorityOperationFixture()) {
+    const result = await readObservationSource(fixture.source, fixture.input, authorityDependencies);
+    assert.deepEqual(authorityResolverCalls.at(-1), {
+      ...fixture.expectedAuthorityUse,
+      activeProfile: throughTask31ActiveProfile,
+    });
+    assert.equal(fixture.readerReceived.length, 1);
+    assert.equal(isNonSerializableCredentialUseHandle(fixture.readerReceived[0]), true);
+    assert.equal(redactionScan(result).length, 0);
+  }
+  for (const bad of [unknownOperationKey, wrongHostTuple, wrongConsumerTuple,
+    changedValidationProfile, staleActiveProfile]) {
+    await assert.rejects(() => readObservationSource(bad.source, bad.input, authorityDependencies),
+      /authority|operation|host|consumer|profile|generation/i);
+    assert.equal(bad.readerCallCount(), 0);
+  }
+});
 ```
 
 - [ ] **Step 2: Run in the worker clone — expect FAIL**
@@ -11780,27 +12120,104 @@ The adapter must also assert that authorization policies do not rely on `raw_use
 If a least-privilege runtime read path does not exist, mark the source `unavailable_least_privilege` and create a Jerry-visible setup action; never fall back to a broader credential inside the model runtime.
 
 ```js
-export const OBSERVATION_READERS = Object.freeze({
-  matomo: { reader: readMatomoReport, credentialAlias: 'matomo-reporting-readonly' },
-  listenerInterest: { reader: readListenerInterestAggregates, credentialAlias: 'shakedown-api-readonly' },
-  supabase: { reader: readSupabaseServerProjection, credentialAlias: 'shakedown-supabase-readonly' },
-  stripe: { reader: readStripeCorrelationState, credentialAlias: 'shakedown-stripe-restricted-read' },
-  funnel: { reader: readSubscriberFunnel, credentialAlias: 'shakedown-api-readonly' },
-  communications: { reader: readCommunicationsSuppression, credentialAlias: 'shakedown-communications-readonly' },
-  search: { reader: readSearchDemand, credentialAlias: 'shakedown-search-readonly' },
-  operator: { reader: readOperatorState, credentialAlias: 'shakedown-operator-readonly' },
+const observationUse = (authorityId, host, operation) => Object.freeze({
+  authorityId,
+  consumer: 'shakedown.observe',
+  host,
+  operation,
+  validationProfile: 'through-task31',
 });
 
-export async function readObservationSource(name, input, credentials) {
+export const OBSERVATION_READERS = Object.freeze({
+  matomo: { reader: readMatomoReport, authorityUses: Object.freeze({
+    visits: observationUse('matomo-reporting-readonly', 'stats.shakedownshuffle.com', 'VisitsSummary.get'),
+    pages: observationUse('matomo-reporting-readonly', 'stats.shakedownshuffle.com', 'Actions.getPageUrls'),
+    campaigns: observationUse('matomo-reporting-readonly', 'stats.shakedownshuffle.com', 'Referrers.getCampaigns'),
+    websites: observationUse('matomo-reporting-readonly', 'stats.shakedownshuffle.com', 'Referrers.getWebsites'),
+    events: observationUse('matomo-reporting-readonly', 'stats.shakedownshuffle.com', 'Events.getCategory'),
+    goals: observationUse('matomo-reporting-readonly', 'stats.shakedownshuffle.com', 'Goals.get'),
+  }) },
+  listenerInterest: { reader: readListenerInterestAggregates, authorityUses: Object.freeze({
+    aggregate: observationUse('shakedown-api-readonly', '127.0.0.1:3005',
+      'GET /api/internal/worker/listener-interest'),
+  }) },
+  supabase: { reader: readSupabaseServerProjection, authorityUses: Object.freeze({
+    funnel: observationUse('shakedown-supabase-readonly', 'pkbnsqnkuoifudvbbdbe.supabase.co',
+      'GET /rest/v1/worker_funnel_readonly'),
+    pendingSubscription: observationUse('shakedown-supabase-readonly', 'pkbnsqnkuoifudvbbdbe.supabase.co',
+      'GET /rest/v1/worker_pending_subscription_readonly'),
+  }) },
+  stripe: { reader: readStripeCorrelationState, authorityUses: Object.freeze({
+    customer: observationUse('shakedown-stripe-restricted-read', 'api.stripe.com',
+      'GET /v1/customers/:customerId'),
+    subscription: observationUse('shakedown-stripe-restricted-read', 'api.stripe.com',
+      'GET /v1/subscriptions/:subscriptionId'),
+    paymentIntent: observationUse('shakedown-stripe-restricted-read', 'api.stripe.com',
+      'GET /v1/payment_intents/:paymentIntentId'),
+    checkoutSession: observationUse('shakedown-stripe-restricted-read', 'api.stripe.com',
+      'GET /v1/checkout/sessions/:checkoutSessionId'),
+  }) },
+  funnel: { reader: readSubscriberFunnel, authorityUses: Object.freeze({
+    summary: observationUse('shakedown-api-readonly', '127.0.0.1:3005',
+      'GET /api/internal/worker/funnel-summary'),
+  }) },
+  communications: { reader: readCommunicationsSuppression, authorityUses: Object.freeze({
+    eligibility: observationUse('shakedown-communications-readonly', '127.0.0.1:3005',
+      'GET /api/internal/communications/eligibility/:opaqueRecipientId'),
+    suppression: observationUse('shakedown-communications-readonly', '127.0.0.1:3005',
+      'GET /api/internal/communications/suppression/:opaqueRecipientId'),
+    bounce: observationUse('shakedown-communications-readonly', '127.0.0.1:3005',
+      'GET /api/internal/communications/bounce-state/:opaqueRecipientId'),
+    unsubscribe: observationUse('shakedown-communications-readonly', '127.0.0.1:3005',
+      'GET /api/internal/communications/unsubscribe-state/:opaqueRecipientId'),
+  }) },
+  search: { reader: readSearchDemand, authorityUses: Object.freeze({
+    property: observationUse('shakedown-search-readonly', 'searchconsole.googleapis.com',
+      'GET sites/sc-domain:shakedownshuffle.com'),
+    demand: observationUse('shakedown-search-readonly', 'searchconsole.googleapis.com',
+      'READONLY searchAnalytics.query/sc-domain:shakedownshuffle.com'),
+  }) },
+  operator: { reader: readOperatorState, authorityUses: Object.freeze({
+    health: observationUse('shakedown-operator-readonly', '127.0.0.1:3005', 'GET /health'),
+    api: observationUse('shakedown-operator-readonly', '127.0.0.1:3005',
+      'GET /api/internal/operator/api-status'),
+    audio: observationUse('shakedown-operator-readonly', '127.0.0.1:3005',
+      'GET /api/internal/operator/audio-status'),
+    caddy: observationUse('shakedown-operator-readonly', '127.0.0.1:3005',
+      'GET /api/internal/operator/caddy-status'),
+    pm2: observationUse('shakedown-operator-readonly', '127.0.0.1:3005',
+      'GET /api/internal/operator/pm2-status'),
+    releaseJournal: observationUse('shakedown-operator-readonly', '127.0.0.1:3005',
+      'GET /api/internal/operator/release-journal'),
+    automations: observationUse('shakedown-operator-readonly', '127.0.0.1:3005',
+      'GET /api/internal/operator/automation-inventory'),
+  }) },
+});
+
+export async function readObservationSource(name, input, dependencies) {
   const contract = OBSERVATION_READERS[name];
   if (!contract) throw new Error(`Unknown observation source: ${name}`);
-  const credential = await credentials.resolveLeastPrivilege(contract.credentialAlias);
-  if (!credential) return { status: 'unavailable_least_privilege', source: name };
-  return redactObservation(await contract.reader(input, credential));
+  const authorityUse = contract.authorityUses[input.authorityOperation];
+  if (!authorityUse) throw new Error(`Unknown observation authority operation: ${name}:${input.authorityOperation}`);
+  let credentialUseHandle;
+  try {
+    credentialUseHandle = await resolveTask18CredentialAuthorityUse({
+      ...authorityUse,
+      activeProfile: dependencies.activeProfile,
+    }, dependencies.credentialAuthorityDependencies);
+  } catch (error) {
+    if (isCredentialAuthorityUnavailableError(error)) {
+      return { status: 'unavailable_least_privilege', source: name };
+    }
+    throw error;
+  }
+  return redactObservation(await contract.reader(input, credentialUseHandle));
 }
 ```
 
-`credentialAlias` above means the exact Task 4 credential-authority ID, not a free-form runtime alias. Startup requires the Task 17 `through-task31` validation receipt and definition hash, proves the reader ID set equals exactly `matomo-reporting-readonly`, `shakedown-api-readonly`, `shakedown-supabase-readonly`, `shakedown-stripe-restricted-read`, `shakedown-communications-readonly`, `shakedown-search-readonly`, and `shakedown-operator-readonly`, and binds each reader's expected kind, provider/account scope, and read-only probe hash. `shakedown-indexnow` is reserved to Task 20's indexing writer and cannot resolve as an observation reader. An unknown/shorthand alias, changed service/account/kind, broader OAuth/database/provider scope, missing validation row, or mutation-capable probe fails before any reader call and before grant activation.
+The runner's typed observation schema, not model text, selects one closed `authorityOperation`; every selected row carries the complete fixed `{ authorityId, consumer, host, operation, validationProfile }` tuple. `readObservationSource()` supplies the current immutable Task 17 active profile and calls only `resolveTask18CredentialAuthorityUse()`, which rechecks kind/schema/generation/profile binding and returns one nonserializable opaque use handle. The reader receives only that handle—never an alias, secret, active profile, resolver, service/account tuple, or raw credential—and the handle is dropped after the one call. Only a typed missing-record error becomes `unavailable_least_privilege`; tuple/profile drift is a hard failure and never triggers fallback.
+
+Startup requires the Task 17 `through-task31` validation receipt and definition hash, proves the reader authority-ID set equals exactly `matomo-reporting-readonly`, `shakedown-api-readonly`, `shakedown-supabase-readonly`, `shakedown-stripe-restricted-read`, `shakedown-communications-readonly`, `shakedown-search-readonly`, and `shakedown-operator-readonly`, and binds each reader's expected kind, provider/account scope, exact operations, and read-only probe hash. `shakedown-indexnow` is reserved to Task 20's indexing writer and cannot resolve as an observation reader. An unknown/shorthand alias, changed service/account/kind, broader OAuth/database/provider scope, missing validation row, or mutation-capable probe fails before any reader call and before grant activation.
 
 - [ ] **Step 5: Make snapshots point-in-time and comparable**
 
@@ -13277,7 +13694,7 @@ node --test --test-concurrency=1 \
 
 Accept only a tested commit at an exact dedicated ref in the independent worker clone. Export that ref as a run-scoped Git bundle, bind its SHA-256 into the normalized action and receipt, verify the bundle, and fetch it into a unique temporary `refs/codex-import/*` namespace in the operator repository. Only then prove the imported tip, expected baseline, ancestry, and patch identities; re-run the operator-checkout invariant; atomically create/update one configured `refs/heads/codex/shakedown-worker/*` ref; delete the temporary ref; and recheck the invariant. A missing prior canonical ref uses Git's zero object ID for compare-and-swap. No branch switch, worktree edit, index change, merge into the user's branch, hardlink/object sharing, or remote push is allowed.
 
-```js
+```ts
 const ZERO_OID = '0'.repeat(40);
 
 export async function integrateTestedCommit({
@@ -16391,8 +16808,25 @@ test('prepared Home23 release boots all six entrypoints from its own dependency 
   assert.notEqual(release.manifest.restartScriptSha256, release.manifest.restartCommandArgvSha256);
   assert.equal(release.manifest.workerVerifierPath, 'scripts/verify-worker-runtime-live.mjs');
   assert.equal(release.manifest.shakedownVerifierPath, 'scripts/verify-shakedown-jerry-live.mjs');
+  assert.equal(release.manifest.cloneBootstrapPath, 'scripts/bootstrap-shakedown-worker-clone.mjs');
+  assert.match(release.manifest.cloneBootstrapSha256, /^[a-f0-9]{64}$/);
   assert.equal(release.manifest.home23CliPath, 'cli/home23.js');
   assert.match(release.manifest.home23CliSha256, /^[a-f0-9]{64}$/);
+  assert.equal(release.manifest.credentialAuthorityDefinitionPath,
+    'config/worker-credential-authorities/shakedown-jerry.yaml');
+  assert.match(release.manifest.credentialAuthorityDefinitionSha256, /^[a-f0-9]{64}$/);
+  assert.equal(release.manifest.shakedownCloneRoot, fixtureCloneRoot);
+  assert.equal(release.manifest.shakedownSourceCommit, fixtureCloneCommit);
+  assert.equal(release.manifest.supabasePrivilegeMigrationRelativePath,
+    'jerry-api/supabase/migrations/20260721160000_acquisition_privilege_closure.sql');
+  assert.match(release.manifest.supabasePrivilegeMigrationSha256, /^[a-f0-9]{64}$/);
+  assert.equal(release.manifest.proofBundlePath, fixturePredeployProofPath);
+  assert.equal(release.manifest.proofBundleSha256, await sha256File(fixturePredeployProofPath));
+  assert.equal(release.preparedPointer.releaseManifestPath, release.manifestPath);
+  assert.equal(release.preparedPointer.releaseManifestSha256, await sha256File(release.manifestPath));
+  assert.equal(release.preparedPointer.implementationCommit, release.manifest.implementationCommit);
+  assert.equal(release.preparedPointer.proofBundlePath, release.manifest.proofBundlePath);
+  assert.equal(release.preparedPointer.proofBundleSha256, release.manifest.proofBundleSha256);
   assert.equal(release.manifest.guardedPm2SavePath, 'scripts/guarded-pm2-save.mjs');
   assert.match(release.manifest.guardedPm2SaveSha256, /^[a-f0-9]{64}$/);
   assert.equal(release.manifest.keychainHelperPath, 'native/worker-keychain-helper');
@@ -16413,6 +16847,12 @@ test('prepared Home23 release boots all six entrypoints from its own dependency 
     /keychain helper|immutable release|hash/i);
   await assert.rejects(() => verifyPreparedRelease(worktreeOrAlternateHome23CliFixture),
     /home23 cli|immutable release|hash/i);
+  await assert.rejects(() => verifyPreparedRelease(tamperedCloneBootstrapCredentialOrProofFixture),
+    /clone bootstrap|credential authority|proof bundle|hash/i);
+  await assert.rejects(() => verifyPreparedRelease(dirtyOrWrongCommitCloneMigrationFixture),
+    /clone|commit|migration|hash/i);
+  await assert.rejects(() => verifyPreparedPointer(swappedManifestOrProofPointerFixture),
+    /prepared pointer|manifest|proof bundle|hash/i);
 });
 
 test('active release pointer is committed by the deployment journal and cannot self-assert a manifest', async () => {
@@ -16575,7 +17015,7 @@ export function resolveHome23RuntimeRoots(env: NodeJS.ProcessEnv): Readonly<Home
 
 Refactor `src/config.ts`, `src/home.ts`, `engine/src/index.js`, `engine/src/dashboard/server.js`, PM2 identity guards, watchdogs, and generated ecosystem code to consume this resolver. Add a generated path-usage inventory and AST/runtime tests that reject remaining `import.meta.dirname`/`__dirname`-derived mutable writes or unclassified root joins in the six entrypoint dependency closures. Smoke all six plus the production Worker CLI/management credential path against a read-only release and copied fixture state/public-config/private-config roots, capture every open-for-write, and require none beneath code root. The CLI resolves `native/worker-keychain-helper` only from immutable `HOME23_CODE_ROOT`, checks the manifest hash before spawn, performs a real fixture-keychain round trip through the native protocol, and proves `InMemoryKeychain` is unavailable in production mode; an environment/worktree/system-path helper is rejected. Tests prove tracked channel/grant/key/template hashes come from the candidate release, while private secrets/ignored cron/device state come only from the allowlisted private root. Configuration secrets and `.env` values remain outside the release behind the private config authority/Keychain; the release manifest binds only names and value hashes.
 
-The immutable `home23.worker-runtime-release.v1` manifest is content-addressed outside the code tree at `instances/workers/runtime/release-manifests/<manifest-sha256>.json`, mode `0400`. It declares `implementationCommit`, absolute `codeRoot`, `payloadTreeSha256`, `treeHashAlgorithm: home23.sorted-path-mode-content.v1`, `payloadFileCount`, `nodeExecutablePath`, `nodeExecutableSha256`, `restartScriptPath`, `restartScriptSha256`, `restartCommandArgv`, `restartCommandArgvCanonicalJson`, `restartCommandArgvSha256`, `restartCommandSha256`, `workerVerifierPath`, `workerVerifierSha256`, `shakedownVerifierPath`, `shakedownVerifierSha256`, `home23CliPath`, `home23CliSha256`, `guardedPm2SavePath`, `guardedPm2SaveSha256`, `keychainHelperPath`, `keychainHelperSha256`, and a closed `verifierProfiles` map whose entries each contain a fixed `family`, `argv`, `argvCanonicalJson`, and `argvSha256`. `restartScriptSha256` hashes only the script bytes. `restartCommandArgvSha256` hashes the exact UTF-8 `restartCommandArgvCanonicalJson` scalar, and `restartCommandSha256` hashes the domain-separated tuple of Node executable hash, restart-script hash, and argv hash; none is reused for another field. The manifest builder proves each canonical JSON scalar decodes to exactly its adjacent array, and that `restartCommandArgv` starts with `restartScriptPath`. Every declared command/helper/CLI path is nonempty, relative, segment-normalized, and resolves beneath the immutable `codeRoot`; every verifier profile is closed and test-enumerated. The deployment process spawns the resolved Node executable with the resolved script plus the selected manifest argv using `shell: false`; all post-deploy management and PM2-save commands execute only the resolved `home23CliPath`/`guardedPm2SavePath` with exact hashes; production CLI Keychain access spawns only the resolved immutable helper with its exact file hash and rejects `InMemoryKeychain` or a helper beneath mutable state/worktree paths. No caller command string, alternate path, extra flag, environment expansion, or mutable-worktree executable is accepted.
+The immutable `home23.worker-runtime-release.v1` manifest is content-addressed outside the code tree at `instances/workers/runtime/release-manifests/<manifest-sha256>.json`, mode `0400`. It declares `implementationCommit`, absolute `codeRoot`, `payloadTreeSha256`, `treeHashAlgorithm: home23.sorted-path-mode-content.v1`, `payloadFileCount`, `nodeExecutablePath`, `nodeExecutableSha256`, `restartScriptPath`, `restartScriptSha256`, `restartCommandArgv`, `restartCommandArgvCanonicalJson`, `restartCommandArgvSha256`, `restartCommandSha256`, `workerVerifierPath`, `workerVerifierSha256`, `shakedownVerifierPath`, `shakedownVerifierSha256`, `cloneBootstrapPath`, `cloneBootstrapSha256`, `home23CliPath`, `home23CliSha256`, `credentialAuthorityDefinitionPath`, `credentialAuthorityDefinitionSha256`, `guardedPm2SavePath`, `guardedPm2SaveSha256`, `keychainHelperPath`, `keychainHelperSha256`, absolute `proofBundlePath`, `proofBundleSha256`, absolute `shakedownCloneRoot`, `shakedownSourceCommit`, `supabasePrivilegeMigrationRelativePath`, `supabasePrivilegeMigrationSha256`, and a closed `verifierProfiles` map whose entries each contain a fixed `family`, `argv`, `argvCanonicalJson`, and `argvSha256`. `restartScriptSha256` hashes only the script bytes. `restartCommandArgvSha256` hashes the exact UTF-8 `restartCommandArgvCanonicalJson` scalar, and `restartCommandSha256` hashes the domain-separated tuple of Node executable hash, restart-script hash, and argv hash; none is reused for another field. The manifest builder proves each canonical JSON scalar decodes to exactly its adjacent array, and that `restartCommandArgv` starts with `restartScriptPath`. Every declared command/helper/CLI/config path is nonempty, relative, segment-normalized, and resolves beneath the immutable `codeRoot`; the migration path is separately relative/segment-normalized beneath the exact clean clone root; the proof path is canonical beneath the content-addressed predeploy authority; and every verifier profile is closed and test-enumerated. The deployment process spawns the resolved Node executable with the resolved script plus the selected manifest argv using `shell: false`; all post-deploy management and PM2-save commands execute only the resolved `home23CliPath`/`guardedPm2SavePath` with exact hashes; production CLI Keychain access spawns only the resolved immutable helper with its exact file hash and rejects `InMemoryKeychain` or a helper beneath mutable state/worktree paths. No caller command string, alternate path, extra flag, environment expansion, or mutable-worktree executable is accepted.
 
 The active pointer has schema `home23.worker-runtime-active-pointer.v1` and contains `deploymentJournalId`, `deploymentJournalPath`, `releaseManifestPath`, `releaseManifestSha256`, `codeRoot`, `implementationCommit`, `payloadTreeSha256`, `home23CliSha256`, `guardedPm2SaveSha256`, `keychainHelperSha256`, and the predecessor pointer hash. Its referenced mode-`0600` deployment journal must have schema `home23.worker-runtime-deployment.v1`, the same `deploymentId`, terminal state `committed`, and exact `activePointerSha256`, `committedManifestSha256`, `committedCodeRoot`, `committedImplementationCommit`, `committedPayloadTreeSha256`, `committedHome23CliSha256`, `committedGuardedPm2SaveSha256`, `committedKeychainHelperSha256`, `verifierProfile`, `verifierPath`, `verifierSha256`, `verifierArgv`, `verifierArgvCanonicalJson`, and `verifierArgvSha256`. A pointer cannot make a manifest authoritative by naming it: authority is the protected pointer bytes/hash -> committed journal -> exact content-addressed manifest chain. The pointer/journal/manifest schema, owner, mode, regular-file identity, pointer hash, realpath roots, implementation commit, tree hash, and CLI/helper/verifier profile/path/hash/argv bindings are checked before any release byte executes. The resolver fixture mutates one otherwise-valid pointer byte and proves all 55 copies fail against the journal's `activePointerSha256` before resolving any release executable.
 
@@ -16967,8 +17407,8 @@ The deployment CLI has a closed tested subcommand/flag registry covering every l
 - [ ] **Step 4: Run deployment tests, full tests, and commit machinery before live use — expect PASS**
 
 ```bash
-node --test --test-concurrency=1 tests/cli/worker-runtime-deploy.test.js
-node --test --test-concurrency=1 \
+"$node_executable" --test --test-concurrency=1 tests/cli/worker-runtime-deploy.test.js
+"$node_executable" --test --test-concurrency=1 \
   tests/scripts/guarded-pm2-save.test.cjs \
   tests/scripts/home23-pm2-watchdog.test.cjs \
   tests/scripts/home23-pm2-watchdog-daemon.test.cjs \
@@ -17101,24 +17541,81 @@ proof_bundle=$("$node_executable" scripts/verify-shakedown-jerry-live.mjs --mode
 test -f "$proof_bundle"
 ```
 
-Expected: PASS, a clean tracked worktree, a valid exact grant that is either newly inactive or the unchanged exact currently active hash, and an immutable content-addressed proof bundle naming `final_home_commit`. The mutable current pointer is a compare-and-swap record containing only that exact path/hash/commit and is read back before use; reruns reuse exact bytes, while a later commit produces a successor object instead of colliding at a fixed file. A changed hash can never inherit the prior activation. This Step supersedes Task 28's earlier bundle for deployment authority.
+Expected: PASS, a clean tracked worktree, a valid exact grant that is either newly inactive or the unchanged exact currently active hash, and an owner-matched, non-symlink, mode-`0400` immutable content-addressed proof bundle naming `final_home_commit`. The bundle also binds the exact source-baseline SHA-256, Node/Bun/npm executable and npm-CLI hashes, their exact versions and platform, and command-trace proof that every Node, npm, and Bun invocation in this matrix used only those pinned identities. The mutable current pointer is a compare-and-swap record containing only that exact path/hash/commit and is read back before use; reruns reuse exact bytes, while a later commit produces a successor object instead of colliding at a fixed file. A changed hash can never inherit the prior activation. This Step supersedes Task 28's earlier bundle for deployment authority.
 
 - [ ] **Step 6: Capture fresh runtime truth and materialize an immutable release**
 
-Record PM2 process names, IDs, scripts, cwd values, uptime, daemon/pid/socket/child ownership, launchd/resurrection owners, listening routes, current dump, and predecessor hashes. Store the raw PM2 dump/environment/config backup only in the restricted preservation root with mode `0600`; the release/receipt gets a hash-only redacted manifest after secret/PII scan. Online-backup Worker SQLite and rehearse restoration, but mark the backup unusable after the first successful post-migration write; production rollback never restores stale state. Build from the tested committed isolated branch into a same-filesystem staging directory under exact disjoint `/Users/jtr/_JTR23_/release/home23-code-releases/worker-runtime`: install both root and `engine/package-lock.json` closures, compile/copy the native Worker Keychain helper, build, prune/freeze production dependencies, hash each closure, unset `NODE_PATH`, and prohibit resolution outside the staged root. Generate the exact six-process candidate ecosystem there. Boot-smoke all six plus the production CLI native-Keychain bridge against copied fixture state/config/Keychain roots with the release read-only and ancestor dependencies/ignored source config hidden; prove every write lands in fixture state/Keychain and the release hash remains fixed, and prove production selection cannot instantiate `InMemoryKeychain`. Reject control characters in payload paths, compute the complete `home23.sorted-path-mode-content.v1` tree hash and file count, fsync every payload file and directory, remove all write bits, then atomically rename to the commit-addressed release and re-hash it. Bind code/state/config/worker roots, implementation commit, preserved patches, tests, both locks/closures, Node/runtime versions, forward-compatible state schema, PM2 definitions, and the full immutable-command schema: Node executable path/hash; separate restart script path/file hash; exact restart argv/canonical-JSON/argv hash; domain-separated restart command hash; independent Worker/Shakedown verifier paths/file hashes; immutable Home23 CLI and native Keychain helper safe relative paths/file hashes; and closed verifier-profile argv/hashes. Materialize the canonical manifest itself at `instances/workers/runtime/release-manifests/<manifest-sha256>.json`, fsync it and its parent, chmod it `0400`, and read it back by content hash without changing the user's dirty `main` worktree or index. The release is tested with `.git` absent.
+Record PM2 process names, IDs, scripts, cwd values, uptime, daemon/pid/socket/child ownership, launchd/resurrection owners, listening routes, current dump, and predecessor hashes. Store the raw PM2 dump/environment/config backup only in the restricted preservation root with mode `0600`; the release/receipt gets a hash-only redacted manifest after secret/PII scan. Online-backup Worker SQLite and rehearse restoration, but mark the backup unusable after the first successful post-migration write; production rollback never restores stale state. Build from the tested committed isolated branch into a same-filesystem staging directory under exact disjoint `/Users/jtr/_JTR23_/release/home23-code-releases/worker-runtime`: install both root and `engine/package-lock.json` closures, compile/copy the native Worker Keychain helper, build, prune/freeze production dependencies, hash each closure, unset `NODE_PATH`, and prohibit resolution outside the staged root. Generate the exact six-process candidate ecosystem there. Boot-smoke all six plus the production CLI native-Keychain bridge against copied fixture state/config/Keychain roots with the release read-only and ancestor dependencies/ignored source config hidden; prove every write lands in fixture state/Keychain and the release hash remains fixed, and prove production selection cannot instantiate `InMemoryKeychain`. Reject control characters in payload paths, compute the complete `home23.sorted-path-mode-content.v1` tree hash and file count, fsync every payload file and directory, remove all write bits, then atomically rename to the commit-addressed release and re-hash it. Bind code/state/config/worker roots, implementation commit, preserved patches, tests, both locks/closures, Node/runtime versions, forward-compatible state schema, PM2 definitions, and the full immutable-command schema: Node executable path/hash; separate restart script path/file hash; exact restart argv/canonical-JSON/argv hash; domain-separated restart command hash; independent Worker/Shakedown verifier paths/file hashes; immutable clone-bootstrap, Home23 CLI, native Keychain helper, and Worker credential-authority definition safe relative paths/file hashes; closed verifier-profile argv/hashes; the exact content-addressed predeploy proof path/hash; and the clean Shakedown clone root/commit plus the sole privilege-migration safe relative path/hash. Materialize the canonical manifest itself at `instances/workers/runtime/release-manifests/<manifest-sha256>.json`, fsync it and its parent, chmod it `0400`, and read it back by content hash without changing the user's dirty `main` worktree or index. The release is tested with `.git` absent.
 
 ```bash
-final_home_commit=$(git rev-parse HEAD)
+set -euo pipefail
+source_baseline=/Users/jtr/_JTR23_/release/home23/instances/workers/shakedown-jerry/state/source-baseline.json
+/bin/test -f "$source_baseline" && /bin/test ! -L "$source_baseline"
+/bin/test "$(/bin/realpath "$source_baseline")" = "$source_baseline"
+source_baseline_sha256=$(/usr/bin/shasum -a 256 "$source_baseline" | /usr/bin/awk '{print $1}')
+node_executable=$(/usr/bin/plutil -extract predeployToolchains.node.executablePath raw -o - "$source_baseline")
+node_executable_sha256=$(/usr/bin/plutil -extract predeployToolchains.node.executableSha256 raw -o - "$source_baseline")
+node_version=$(/usr/bin/plutil -extract predeployToolchains.node.version raw -o - "$source_baseline")
+node_platform=$(/usr/bin/plutil -extract predeployToolchains.node.platform raw -o - "$source_baseline")
+bun_executable=$(/usr/bin/plutil -extract predeployToolchains.bun.executablePath raw -o - "$source_baseline")
+bun_executable_sha256=$(/usr/bin/plutil -extract predeployToolchains.bun.executableSha256 raw -o - "$source_baseline")
+bun_version=$(/usr/bin/plutil -extract predeployToolchains.bun.version raw -o - "$source_baseline")
+bun_platform=$(/usr/bin/plutil -extract predeployToolchains.bun.platform raw -o - "$source_baseline")
+npm_executable=$(/usr/bin/plutil -extract predeployToolchains.npm.executablePath raw -o - "$source_baseline")
+npm_executable_sha256=$(/usr/bin/plutil -extract predeployToolchains.npm.executableSha256 raw -o - "$source_baseline")
+npm_cli_path=$(/usr/bin/plutil -extract predeployToolchains.npm.cliPath raw -o - "$source_baseline")
+npm_cli_sha256=$(/usr/bin/plutil -extract predeployToolchains.npm.cliSha256 raw -o - "$source_baseline")
+npm_version=$(/usr/bin/plutil -extract predeployToolchains.npm.version raw -o - "$source_baseline")
+npm_platform=$(/usr/bin/plutil -extract predeployToolchains.npm.platform raw -o - "$source_baseline")
+for pinned_executable in "$node_executable" "$bun_executable" "$npm_executable"; do
+  case "$pinned_executable" in /*) ;; *) exit 64 ;; esac
+  /bin/test "$(/bin/realpath "$pinned_executable")" = "$pinned_executable"
+  /bin/test -x "$pinned_executable" && /bin/test -f "$pinned_executable" && /bin/test ! -L "$pinned_executable"
+done
+case "$npm_cli_path" in /*) ;; *) exit 64 ;; esac
+/bin/test "$(/bin/realpath "$npm_cli_path")" = "$npm_cli_path"
+/bin/test -f "$npm_cli_path" && /bin/test ! -L "$npm_cli_path"
+/bin/test "$(/usr/bin/shasum -a 256 "$node_executable" | /usr/bin/awk '{print $1}')" = "$node_executable_sha256"
+/bin/test "$(/usr/bin/shasum -a 256 "$bun_executable" | /usr/bin/awk '{print $1}')" = "$bun_executable_sha256"
+/bin/test "$(/usr/bin/shasum -a 256 "$npm_executable" | /usr/bin/awk '{print $1}')" = "$npm_executable_sha256"
+/bin/test "$(/usr/bin/shasum -a 256 "$npm_cli_path" | /usr/bin/awk '{print $1}')" = "$npm_cli_sha256"
+/bin/test "$("$node_executable" --version)" = "$node_version"
+/bin/test "$("$bun_executable" --version)" = "$bun_version"
+/bin/test "$("$node_executable" "$npm_cli_path" --version)" = "$npm_version"
+current_platform=$("$node_executable" -p 'process.platform + "-" + process.arch')
+/bin/test "$node_platform" = "$current_platform"
+/bin/test "$bun_platform" = "$current_platform"
+/bin/test "$npm_platform" = "$current_platform"
+implementation_worktree=/Users/jtr/_JTR23_/release/home23-worktrees/shakedown-jerry-runtime
+/bin/test "$(/bin/realpath "$implementation_worktree")" = "$implementation_worktree"
+final_home_commit=$(/usr/bin/git -C "$implementation_worktree" rev-parse HEAD)
+/bin/test -z "$(/usr/bin/git -C "$implementation_worktree" status --porcelain=v1 --untracked-files=all)"
+clone_root=/Users/jtr/_JTR23_/release/home23/instances/workers/shakedown-jerry/workspace/source-clones/shakedownshuffle
+/bin/test "$(/bin/realpath "$clone_root")" = "$clone_root" && /bin/test -d "$clone_root" && /bin/test ! -L "$clone_root"
+final_clone_commit=$(/usr/bin/git -C "$clone_root" rev-parse HEAD)
+/bin/test -z "$(/usr/bin/git -C "$clone_root" status --porcelain=v1 --untracked-files=all)"
+migration_relative=jerry-api/supabase/migrations/20260721160000_acquisition_privilege_closure.sql
+migration=$(/bin/realpath "$clone_root/$migration_relative")
+case "$migration" in "$clone_root"/*) ;; *) exit 64 ;; esac
+/bin/test -f "$migration" && /bin/test ! -L "$migration"
+migration_sha=$(/usr/bin/shasum -a 256 "$migration" | /usr/bin/awk '{print $1}')
 predeploy_root=/Users/jtr/_JTR23_/release/home23/instances/workers/verification/predeploy
 predeploy_current=/Users/jtr/_JTR23_/release/home23/instances/workers/verification/final-predeploy.current.json
-proof_bundle=$(node scripts/verify-shakedown-jerry-live.mjs --mode resolve-predeploy-proof \
+proof_bundle=$("$node_executable" "$implementation_worktree/scripts/verify-shakedown-jerry-live.mjs" --mode resolve-predeploy-proof \
   --expected-home-commit "$final_home_commit" \
   --output-root "$predeploy_root" --current-pointer "$predeploy_current" \
   --read-back-exact-bindings --print-path)
+/bin/test "$(/bin/realpath "$proof_bundle")" = "$proof_bundle"
+case "$proof_bundle" in "$predeploy_root"/*.json) ;; *) exit 64 ;; esac
+/bin/test -f "$proof_bundle" && /bin/test ! -L "$proof_bundle"
+proof_bundle_sha256=$(/usr/bin/shasum -a 256 "$proof_bundle" | /usr/bin/awk '{print $1}')
 prepared_release_pointer=/Users/jtr/_JTR23_/release/home23/instances/workers/verification/prepared-home23-release.json
-node scripts/deploy-home23-worker-runtime.mjs prepare \
-  --source /Users/jtr/_JTR23_/release/home23-worktrees/shakedown-jerry-runtime \
+"$node_executable" "$implementation_worktree/scripts/deploy-home23-worker-runtime.mjs" prepare \
+  --source "$implementation_worktree" \
   --expected-commit "$final_home_commit" \
+  --shakedown-clone-root "$clone_root" --expected-shakedown-commit "$final_clone_commit" \
+  --pin-supabase-privilege-migration-relative-path "$migration_relative" \
+  --pin-supabase-privilege-migration-sha256 "$migration_sha" \
   --release-parent /Users/jtr/_JTR23_/release/home23-code-releases/worker-runtime \
   --home-state-root /Users/jtr/_JTR23_/release/home23 \
   --public-config-root-from-release config \
@@ -17126,11 +17623,14 @@ node scripts/deploy-home23-worker-runtime.mjs prepare \
   --worker-root /Users/jtr/_JTR23_/release/home23/instances/workers \
   --preservation-root /Users/jtr/_JTR23_/preservation/shakedown-jerry-runtime \
   --require-proof-bundle "$proof_bundle" \
+  --require-proof-bundle-sha256 "$proof_bundle_sha256" --pin-proof-bundle-path-and-hash \
   --install-root-and-engine-from-lock --prune-production-dependencies \
   --generate-release-specific-ecosystem \
   --manifest-schema home23.worker-runtime-release.v1 \
   --tree-hash-algorithm home23.sorted-path-mode-content.v1 \
   --pin-node-executable-and-hash \
+  --pin-clone-bootstrap-and-hash --pin-shakedown-verifier-and-hash \
+  --pin-worker-credential-authority-definition-and-hash \
   --pin-home23-cli-and-hash \
   --pin-guarded-pm2-save-and-hash \
   --pin-native-keychain-helper-and-hash \
@@ -17144,35 +17644,153 @@ node scripts/deploy-home23-worker-runtime.mjs prepare \
   --require-read-only-code-root --require-zero-code-root-writes
 ```
 
-Expected: a mode-`0400` content-addressed release manifest with a freshly verified full payload-tree hash/non-writability proof, distinct executable/script/argv/command/CLI/helper hashes, production dependency-closure hashes, six relocated-entrypoint smoke receipts, and a real native-Keychain CLI bridge receipt proving the immutable CLI/helper pair and rejection of worktree CLI or `InMemoryKeychain`; a verified SQLite/state backup outside it; and a redacted receipt that names the restricted predecessor snapshot without exposing its contents. The mode-`0600` prepared pointer is only a compare-and-swap locator containing the exact manifest path/hash/commit/proof-bundle hash; Step 9 revalidates and resolves it with OS tools before trusting the manifest.
+Expected: a mode-`0400` content-addressed release manifest with a freshly verified full payload-tree hash/non-writability proof, distinct executable/script/argv/command/CLI/helper hashes, production dependency-closure hashes, six relocated-entrypoint smoke receipts, and a real native-Keychain CLI bridge receipt proving the immutable CLI/helper pair and rejection of worktree CLI or `InMemoryKeychain`; a verified SQLite/state backup outside it; and a redacted receipt that names the restricted predecessor snapshot without exposing its contents. The manifest pins `implementationCommit`, `shakedownCloneRoot`, `shakedownSourceCommit`, `supabasePrivilegeMigrationRelativePath`, `supabasePrivilegeMigrationSha256`, `proofBundlePath`, `proofBundleSha256`, `nodeExecutablePath`, `nodeExecutableSha256`, `cloneBootstrapPath`, `cloneBootstrapSha256`, `shakedownVerifierPath`, `shakedownVerifierSha256`, `home23CliPath`, `home23CliSha256`, `credentialAuthorityDefinitionPath`, and `credentialAuthorityDefinitionSha256`. The mode-`0600` prepared pointer is only a compare-and-swap locator containing the exact manifest path/hash/commit and the same proof-bundle path/hash; Step 7 and Step 9 revalidate and resolve it with OS tools before trusting the manifest.
 
 - [ ] **Step 7: Apply the separately approved exact Supabase privilege closure before broader rollout**
 
-This is a distinct schema-mutation hard stop. The standing grant, approved design, Home23 deployment approval, and billing canary authorization do not authorize it. It has exactly two reentrant dispositions. `pending_exact` requires a fresh read-only snapshot, a new content-addressed request, explicit user approval, and one journaled application. `already_applied_same_bytes_and_readback` verifies the stored statement hash, exact effective grants/policies/functions/triggers/rows/advisors, the prior application journal, and its consumed approval receipt, then performs zero remote mutation and requests no new approval. Any third state is a blocker. From the final committed clone, recapture the migration ledger, `role_table_grants`, `column_privileges`, table/RLS policy state, function/trigger ownership and ACLs, security advisors, row counts, and a protected canonical row-inventory hash for project `pkbnsqnkuoifudvbbdbe`. Require the three immutable applied versions to match exact stored bytes. For `pending_exact`, require `20260721160000` to be the sole pending migration and generate an unsigned request naming the exact project, migration/version/SHA-256, pre-grant snapshot hash, expected post-grant hash, zero-row-mutation invariant, transactional apply command hash, expiry/nonce, and a complete inverse grant-definition snapshot. The inverse is recovery material only; restoring destructive privileges requires a new additive forward migration and authorization and never happens automatically.
+This is a distinct schema-mutation hard stop. The standing grant, approved design, Home23 deployment approval, and billing canary authorization do not authorize it. It has exactly two reentrant dispositions. `pending_exact` requires a fresh read-only snapshot, a new content-addressed request, explicit user approval, and one journaled application. `already_applied_same_bytes_and_readback` verifies the stored statement hash, exact effective grants/policies/functions/triggers/rows/advisors, the prior application journal, and its consumed approval receipt, then performs zero remote mutation and requests no new approval. Any third state is a blocker. Each shell begins from only fixed OS tools and the Task 16 source-baseline record, then validates the protected prepared pointer, content-addressed manifest, non-writable code root, pinned Node, immutable clone-bootstrap/verifier/CLI/credential-definition bytes, exact proof bundle, clean implementation `HEAD`, clean Shakedown clone `HEAD`, and migration bytes. No Step 7 command is resolved from the mutable worktree. From that exact final committed clone, recapture the migration ledger, `role_table_grants`, `column_privileges`, table/RLS policy state, function/trigger ownership and ACLs, security advisors, row counts, and a protected canonical row-inventory hash for project `pkbnsqnkuoifudvbbdbe`. Require the three immutable applied versions to match exact stored bytes. For `pending_exact`, require `20260721160000` to be the sole pending migration and generate an unsigned request naming the exact project, migration/version/SHA-256, pre-grant snapshot hash, expected post-grant hash, zero-row-mutation invariant, transactional apply command hash, expiry/nonce, and a complete inverse grant-definition snapshot. The inverse is recovery material only; restoring destructive privileges requires a new additive forward migration and authorization and never happens automatically.
 
 ```bash
+set -euo pipefail
+source_baseline=/Users/jtr/_JTR23_/release/home23/instances/workers/shakedown-jerry/state/source-baseline.json
+/bin/test -f "$source_baseline" && /bin/test ! -L "$source_baseline"
+/bin/test "$(/bin/realpath "$source_baseline")" = "$source_baseline"
+source_baseline_sha256=$(/usr/bin/shasum -a 256 "$source_baseline" | /usr/bin/awk '{print $1}')
+node_executable=$(/usr/bin/plutil -extract predeployToolchains.node.executablePath raw -o - "$source_baseline")
+node_executable_sha256=$(/usr/bin/plutil -extract predeployToolchains.node.executableSha256 raw -o - "$source_baseline")
+node_version=$(/usr/bin/plutil -extract predeployToolchains.node.version raw -o - "$source_baseline")
+node_platform=$(/usr/bin/plutil -extract predeployToolchains.node.platform raw -o - "$source_baseline")
+bun_executable=$(/usr/bin/plutil -extract predeployToolchains.bun.executablePath raw -o - "$source_baseline")
+bun_executable_sha256=$(/usr/bin/plutil -extract predeployToolchains.bun.executableSha256 raw -o - "$source_baseline")
+bun_version=$(/usr/bin/plutil -extract predeployToolchains.bun.version raw -o - "$source_baseline")
+bun_platform=$(/usr/bin/plutil -extract predeployToolchains.bun.platform raw -o - "$source_baseline")
+npm_executable=$(/usr/bin/plutil -extract predeployToolchains.npm.executablePath raw -o - "$source_baseline")
+npm_executable_sha256=$(/usr/bin/plutil -extract predeployToolchains.npm.executableSha256 raw -o - "$source_baseline")
+npm_cli_path=$(/usr/bin/plutil -extract predeployToolchains.npm.cliPath raw -o - "$source_baseline")
+npm_cli_sha256=$(/usr/bin/plutil -extract predeployToolchains.npm.cliSha256 raw -o - "$source_baseline")
+npm_version=$(/usr/bin/plutil -extract predeployToolchains.npm.version raw -o - "$source_baseline")
+npm_platform=$(/usr/bin/plutil -extract predeployToolchains.npm.platform raw -o - "$source_baseline")
+for pinned_executable in "$node_executable" "$bun_executable" "$npm_executable"; do
+  case "$pinned_executable" in /*) ;; *) exit 64 ;; esac
+  /bin/test "$(/bin/realpath "$pinned_executable")" = "$pinned_executable"
+  /bin/test -x "$pinned_executable" && /bin/test -f "$pinned_executable" && /bin/test ! -L "$pinned_executable"
+done
+case "$npm_cli_path" in /*) ;; *) exit 64 ;; esac
+/bin/test "$(/bin/realpath "$npm_cli_path")" = "$npm_cli_path"
+/bin/test -f "$npm_cli_path" && /bin/test ! -L "$npm_cli_path"
+/bin/test "$(/usr/bin/shasum -a 256 "$node_executable" | /usr/bin/awk '{print $1}')" = "$node_executable_sha256"
+/bin/test "$(/usr/bin/shasum -a 256 "$bun_executable" | /usr/bin/awk '{print $1}')" = "$bun_executable_sha256"
+/bin/test "$(/usr/bin/shasum -a 256 "$npm_executable" | /usr/bin/awk '{print $1}')" = "$npm_executable_sha256"
+/bin/test "$(/usr/bin/shasum -a 256 "$npm_cli_path" | /usr/bin/awk '{print $1}')" = "$npm_cli_sha256"
+/bin/test "$("$node_executable" --version)" = "$node_version"
+/bin/test "$("$bun_executable" --version)" = "$bun_version"
+/bin/test "$("$node_executable" "$npm_cli_path" --version)" = "$npm_version"
+current_platform=$("$node_executable" -p 'process.platform + "-" + process.arch')
+/bin/test "$node_platform" = "$current_platform"
+/bin/test "$bun_platform" = "$current_platform"
+/bin/test "$npm_platform" = "$current_platform"
+
+sha256_file() { /usr/bin/shasum -a 256 "$1" | /usr/bin/awk '{print $1}'; }
+prepared_release_pointer=/Users/jtr/_JTR23_/release/home23/instances/workers/verification/prepared-home23-release.json
+/bin/test "$(/bin/realpath "$prepared_release_pointer")" = "$prepared_release_pointer"
+/bin/test -f "$prepared_release_pointer" && /bin/test ! -L "$prepared_release_pointer"
+/bin/test "$(/usr/bin/stat -f '%u' "$prepared_release_pointer")" = "$(/usr/bin/id -u)"
+/bin/test "$(/usr/bin/stat -f '%Lp' "$prepared_release_pointer")" = 600
+prepared_release=$(/usr/bin/plutil -extract releaseManifestPath raw -o - "$prepared_release_pointer")
+prepared_release_sha256=$(/usr/bin/plutil -extract releaseManifestSha256 raw -o - "$prepared_release_pointer")
+case "$prepared_release" in /Users/jtr/_JTR23_/release/home23/instances/workers/runtime/release-manifests/*.json) ;; *) exit 64 ;; esac
+/bin/test "$(/bin/realpath "$prepared_release")" = "$prepared_release"
+/bin/test -f "$prepared_release" && /bin/test ! -L "$prepared_release"
+/bin/test "$(/usr/bin/stat -f '%u' "$prepared_release")" = "$(/usr/bin/id -u)"
+/bin/test "$(/usr/bin/stat -f '%Lp' "$prepared_release")" = 400
+/bin/test "$(/usr/bin/basename "$prepared_release")" = "$prepared_release_sha256.json"
+/bin/test "$(sha256_file "$prepared_release")" = "$prepared_release_sha256"
+prepared_code_root=$(/bin/realpath "$(/usr/bin/plutil -extract codeRoot raw -o - "$prepared_release")")
+case "$prepared_code_root" in /Users/jtr/_JTR23_/release/home23-code-releases/worker-runtime/*) ;; *) exit 64 ;; esac
+/bin/test -d "$prepared_code_root" && /bin/test ! -L "$prepared_code_root"
+/bin/test -z "$(/usr/bin/find "$prepared_code_root" -perm +0222 -print -quit)"
+prepared_home_commit=$(/usr/bin/plutil -extract implementationCommit raw -o - "$prepared_release")
+/bin/test "$prepared_home_commit" = "$(/usr/bin/plutil -extract implementationCommit raw -o - "$prepared_release_pointer")"
+implementation_worktree=/Users/jtr/_JTR23_/release/home23-worktrees/shakedown-jerry-runtime
+/bin/test "$prepared_home_commit" = "$(/usr/bin/git -C "$implementation_worktree" rev-parse HEAD)"
+/bin/test -z "$(/usr/bin/git -C "$implementation_worktree" status --porcelain=v1 --untracked-files=all)"
+prepared_node=$(/bin/realpath "$(/usr/bin/plutil -extract nodeExecutablePath raw -o - "$prepared_release")")
+prepared_node_sha256=$(/usr/bin/plutil -extract nodeExecutableSha256 raw -o - "$prepared_release")
+/bin/test "$prepared_node" = "$node_executable" && /bin/test "$prepared_node_sha256" = "$node_executable_sha256"
+/bin/test -x "$prepared_node" && /bin/test -f "$prepared_node" && /bin/test ! -L "$prepared_node"
+/bin/test "$(sha256_file "$prepared_node")" = "$prepared_node_sha256"
+
+require_prepared_relative_file() {
+  prepared_relative_path=$1
+  prepared_expected_sha256=$2
+  case "$prepared_relative_path" in ''|/*|*//*|./*|*/./*|../*|*/../*|*/..|.) return 1 ;; esac
+  prepared_resolved_path=$(/bin/realpath "$prepared_code_root/$prepared_relative_path")
+  case "$prepared_resolved_path" in "$prepared_code_root"/*) ;; *) return 1 ;; esac
+  /bin/test -f "$prepared_resolved_path" && /bin/test ! -L "$prepared_resolved_path"
+  /bin/test "$(sha256_file "$prepared_resolved_path")" = "$prepared_expected_sha256"
+  /usr/bin/printf '%s\n' "$prepared_resolved_path"
+}
+prepared_clone_bootstrap=$(require_prepared_relative_file \
+  "$(/usr/bin/plutil -extract cloneBootstrapPath raw -o - "$prepared_release")" \
+  "$(/usr/bin/plutil -extract cloneBootstrapSha256 raw -o - "$prepared_release")")
+prepared_shakedown_verifier=$(require_prepared_relative_file \
+  "$(/usr/bin/plutil -extract shakedownVerifierPath raw -o - "$prepared_release")" \
+  "$(/usr/bin/plutil -extract shakedownVerifierSha256 raw -o - "$prepared_release")")
+prepared_home23_cli=$(require_prepared_relative_file \
+  "$(/usr/bin/plutil -extract home23CliPath raw -o - "$prepared_release")" \
+  "$(/usr/bin/plutil -extract home23CliSha256 raw -o - "$prepared_release")")
+prepared_credential_authority=$(require_prepared_relative_file \
+  "$(/usr/bin/plutil -extract credentialAuthorityDefinitionPath raw -o - "$prepared_release")" \
+  "$(/usr/bin/plutil -extract credentialAuthorityDefinitionSha256 raw -o - "$prepared_release")")
+proof_bundle=$(/usr/bin/plutil -extract proofBundlePath raw -o - "$prepared_release")
+proof_bundle_sha256=$(/usr/bin/plutil -extract proofBundleSha256 raw -o - "$prepared_release")
+/bin/test "$proof_bundle" = "$(/usr/bin/plutil -extract proofBundlePath raw -o - "$prepared_release_pointer")"
+/bin/test "$proof_bundle_sha256" = "$(/usr/bin/plutil -extract proofBundleSha256 raw -o - "$prepared_release_pointer")"
+case "$proof_bundle" in /Users/jtr/_JTR23_/release/home23/instances/workers/verification/predeploy/*.json) ;; *) exit 64 ;; esac
+/bin/test "$(/bin/realpath "$proof_bundle")" = "$proof_bundle"
+/bin/test -f "$proof_bundle" && /bin/test ! -L "$proof_bundle"
+/bin/test "$(/usr/bin/stat -f '%u' "$proof_bundle")" = "$(/usr/bin/id -u)"
+/bin/test "$(/usr/bin/stat -f '%Lp' "$proof_bundle")" = 400
+/bin/test "$(sha256_file "$proof_bundle")" = "$proof_bundle_sha256"
 clone_root=/Users/jtr/_JTR23_/release/home23/instances/workers/shakedown-jerry/workspace/source-clones/shakedownshuffle
+/bin/test "$clone_root" = "$(/usr/bin/plutil -extract shakedownCloneRoot raw -o - "$prepared_release")"
+/bin/test "$(/bin/realpath "$clone_root")" = "$clone_root" && /bin/test -d "$clone_root" && /bin/test ! -L "$clone_root"
+prepared_clone_commit=$(/usr/bin/plutil -extract shakedownSourceCommit raw -o - "$prepared_release")
+/bin/test "$prepared_clone_commit" = "$(/usr/bin/git -C "$clone_root" rev-parse HEAD)"
+/bin/test -z "$(/usr/bin/git -C "$clone_root" status --porcelain=v1 --untracked-files=all)"
+migration_relative=$(/usr/bin/plutil -extract supabasePrivilegeMigrationRelativePath raw -o - "$prepared_release")
+case "$migration_relative" in ''|/*|*//*|./*|*/./*|../*|*/../*|*/..|.) exit 64 ;; esac
+migration=$(/bin/realpath "$clone_root/$migration_relative")
+case "$migration" in "$clone_root"/*) ;; *) exit 64 ;; esac
+/bin/test -f "$migration" && /bin/test ! -L "$migration"
+migration_sha=$(/usr/bin/plutil -extract supabasePrivilegeMigrationSha256 raw -o - "$prepared_release")
+/bin/test "$(sha256_file "$migration")" = "$migration_sha"
+predeploy_root=/Users/jtr/_JTR23_/release/home23/instances/workers/verification/predeploy
+predeploy_current=/Users/jtr/_JTR23_/release/home23/instances/workers/verification/final-predeploy.current.json
+resolved_proof_bundle=$("$node_executable" "$prepared_shakedown_verifier" --mode resolve-predeploy-proof \
+  --expected-home-commit "$prepared_home_commit" --output-root "$predeploy_root" \
+  --current-pointer "$predeploy_current" --read-back-exact-bindings --print-path)
+/bin/test "$resolved_proof_bundle" = "$proof_bundle"
+
 schema_auth_root=/Users/jtr/_JTR23_/release/home23/instances/workers/shakedown-jerry/authorizations/supabase-privilege-hardening
 grant_snapshot=/Users/jtr/_JTR23_/preservation/shakedown-jerry-runtime/supabase-profile-grants.pre.json
-migration="$clone_root/jerry-api/supabase/migrations/20260721160000_acquisition_privilege_closure.sql"
-migration_sha=$(shasum -a 256 "$migration" | awk '{print $1}')
-schema_disposition=$(node scripts/bootstrap-shakedown-worker-clone.mjs \
+schema_disposition=$("$node_executable" "$prepared_clone_bootstrap" \
   --classify-supabase-privilege-application --project-ref pkbnsqnkuoifudvbbdbe \
   --migration "$migration" --require-migration-sha256 "$migration_sha" \
   --application-journal /Users/jtr/_JTR23_/preservation/shakedown-jerry-runtime/supabase-privilege-application.json \
-  --credential-authority-definition config/worker-credential-authorities/shakedown-jerry.yaml \
+  --credential-authority-definition "$prepared_credential_authority" \
   --credential-authority-id supabase-cli-production --read-only --status-only)
-test "$schema_disposition" = pending_exact || \
-  test "$schema_disposition" = already_applied_same_bytes_and_readback
-node scripts/bootstrap-shakedown-worker-clone.mjs \
+/bin/test "$schema_disposition" = pending_exact || \
+  /bin/test "$schema_disposition" = already_applied_same_bytes_and_readback
+"$node_executable" "$prepared_clone_bootstrap" \
   --capture-supabase-privilege-snapshot --project-ref pkbnsqnkuoifudvbbdbe \
-  --credential-authority-definition config/worker-credential-authorities/shakedown-jerry.yaml \
+  --credential-authority-definition "$prepared_credential_authority" \
   --credential-authority-id supabase-cli-production \
   --output "$grant_snapshot" --read-only --redacted --mode 0600 \
   --require-applied-version 20260719150258 --require-applied-version 20260719150411 \
   --require-applied-version 20260719154129 \
   --require-disposition "$schema_disposition"
-node scripts/verify-shakedown-jerry-live.mjs --mode supabase-privilege-hardening-preflight \
+"$node_executable" "$prepared_shakedown_verifier" --mode supabase-privilege-hardening-preflight \
   --project-ref pkbnsqnkuoifudvbbdbe --migration "$migration" \
   --migration-sha256 "$migration_sha" --grant-snapshot "$grant_snapshot" \
   --disposition "$schema_disposition" \
@@ -17183,7 +17801,7 @@ node scripts/verify-shakedown-jerry-live.mjs --mode supabase-privilege-hardening
 if test "$schema_disposition" = pending_exact; then
   schema_request="$schema_auth_root/current-request.json"
 else
-  schema_request=$(node scripts/bootstrap-shakedown-worker-clone.mjs \
+  schema_request=$("$node_executable" "$prepared_clone_bootstrap" \
     --resolve-prior-supabase-privilege-request \
     --application-journal /Users/jtr/_JTR23_/preservation/shakedown-jerry-runtime/supabase-privilege-application.json \
     --require-consumed-approval --require-exact-readback --path-only)
@@ -17192,59 +17810,177 @@ fi
 
 If `schema_disposition` is `already_applied_same_bytes_and_readback`, the preflight verifier above runs in readback-only mode, resolves the prior request/application/consumed-approval hashes, and skips the request-generation, approval, and apply blocks below. It must return the exact prior expected grant hash and zero remote mutation. Only `pending_exact` may proceed into the following approval/application block; the script refuses to generate a second request for the already-applied state.
 
-Present the canonical request hash, exact before/after privileges, migration hash, project, and recovery definition to the user, then pause. Resume only after the user explicitly approves that exact hash. The local `schema-hard-stop approve` command runs at the interactive console, uses only `home23-operator-primary`, writes a signed content-addressed approval receipt, and does not depend on the not-yet-deployed management service.
+Present the canonical request hash, exact before/after privileges, migration hash, project, and recovery definition to the user, then pause. Resume only after the user explicitly approves that exact hash. The resumed shell repeats the entire source-baseline and prepared-release resolution from disk and rechecks the proof bundle, both clean commits, and migration hash before it can even classify or approve the request; it inherits no executable path or hash from the pre-pause shell. The local immutable-release `schema-hard-stop approve` command runs at the interactive console, uses only `home23-operator-primary`, writes a signed content-addressed approval receipt, and does not depend on the not-yet-deployed management service.
 
 ```bash
+set -euo pipefail
+source_baseline=/Users/jtr/_JTR23_/release/home23/instances/workers/shakedown-jerry/state/source-baseline.json
+/bin/test -f "$source_baseline" && /bin/test ! -L "$source_baseline"
+/bin/test "$(/bin/realpath "$source_baseline")" = "$source_baseline"
+source_baseline_sha256=$(/usr/bin/shasum -a 256 "$source_baseline" | /usr/bin/awk '{print $1}')
+node_executable=$(/usr/bin/plutil -extract predeployToolchains.node.executablePath raw -o - "$source_baseline")
+node_executable_sha256=$(/usr/bin/plutil -extract predeployToolchains.node.executableSha256 raw -o - "$source_baseline")
+node_version=$(/usr/bin/plutil -extract predeployToolchains.node.version raw -o - "$source_baseline")
+node_platform=$(/usr/bin/plutil -extract predeployToolchains.node.platform raw -o - "$source_baseline")
+bun_executable=$(/usr/bin/plutil -extract predeployToolchains.bun.executablePath raw -o - "$source_baseline")
+bun_executable_sha256=$(/usr/bin/plutil -extract predeployToolchains.bun.executableSha256 raw -o - "$source_baseline")
+bun_version=$(/usr/bin/plutil -extract predeployToolchains.bun.version raw -o - "$source_baseline")
+bun_platform=$(/usr/bin/plutil -extract predeployToolchains.bun.platform raw -o - "$source_baseline")
+npm_executable=$(/usr/bin/plutil -extract predeployToolchains.npm.executablePath raw -o - "$source_baseline")
+npm_executable_sha256=$(/usr/bin/plutil -extract predeployToolchains.npm.executableSha256 raw -o - "$source_baseline")
+npm_cli_path=$(/usr/bin/plutil -extract predeployToolchains.npm.cliPath raw -o - "$source_baseline")
+npm_cli_sha256=$(/usr/bin/plutil -extract predeployToolchains.npm.cliSha256 raw -o - "$source_baseline")
+npm_version=$(/usr/bin/plutil -extract predeployToolchains.npm.version raw -o - "$source_baseline")
+npm_platform=$(/usr/bin/plutil -extract predeployToolchains.npm.platform raw -o - "$source_baseline")
+for pinned_executable in "$node_executable" "$bun_executable" "$npm_executable"; do
+  case "$pinned_executable" in /*) ;; *) exit 64 ;; esac
+  /bin/test "$(/bin/realpath "$pinned_executable")" = "$pinned_executable"
+  /bin/test -x "$pinned_executable" && /bin/test -f "$pinned_executable" && /bin/test ! -L "$pinned_executable"
+done
+case "$npm_cli_path" in /*) ;; *) exit 64 ;; esac
+/bin/test "$(/bin/realpath "$npm_cli_path")" = "$npm_cli_path"
+/bin/test -f "$npm_cli_path" && /bin/test ! -L "$npm_cli_path"
+/bin/test "$(/usr/bin/shasum -a 256 "$node_executable" | /usr/bin/awk '{print $1}')" = "$node_executable_sha256"
+/bin/test "$(/usr/bin/shasum -a 256 "$bun_executable" | /usr/bin/awk '{print $1}')" = "$bun_executable_sha256"
+/bin/test "$(/usr/bin/shasum -a 256 "$npm_executable" | /usr/bin/awk '{print $1}')" = "$npm_executable_sha256"
+/bin/test "$(/usr/bin/shasum -a 256 "$npm_cli_path" | /usr/bin/awk '{print $1}')" = "$npm_cli_sha256"
+/bin/test "$("$node_executable" --version)" = "$node_version"
+/bin/test "$("$bun_executable" --version)" = "$bun_version"
+/bin/test "$("$node_executable" "$npm_cli_path" --version)" = "$npm_version"
+current_platform=$("$node_executable" -p 'process.platform + "-" + process.arch')
+/bin/test "$node_platform" = "$current_platform"
+/bin/test "$bun_platform" = "$current_platform"
+/bin/test "$npm_platform" = "$current_platform"
+
+sha256_file() { /usr/bin/shasum -a 256 "$1" | /usr/bin/awk '{print $1}'; }
+prepared_release_pointer=/Users/jtr/_JTR23_/release/home23/instances/workers/verification/prepared-home23-release.json
+/bin/test "$(/bin/realpath "$prepared_release_pointer")" = "$prepared_release_pointer"
+/bin/test -f "$prepared_release_pointer" && /bin/test ! -L "$prepared_release_pointer"
+/bin/test "$(/usr/bin/stat -f '%u' "$prepared_release_pointer")" = "$(/usr/bin/id -u)"
+/bin/test "$(/usr/bin/stat -f '%Lp' "$prepared_release_pointer")" = 600
+prepared_release=$(/usr/bin/plutil -extract releaseManifestPath raw -o - "$prepared_release_pointer")
+prepared_release_sha256=$(/usr/bin/plutil -extract releaseManifestSha256 raw -o - "$prepared_release_pointer")
+case "$prepared_release" in /Users/jtr/_JTR23_/release/home23/instances/workers/runtime/release-manifests/*.json) ;; *) exit 64 ;; esac
+/bin/test "$(/bin/realpath "$prepared_release")" = "$prepared_release"
+/bin/test -f "$prepared_release" && /bin/test ! -L "$prepared_release"
+/bin/test "$(/usr/bin/stat -f '%u' "$prepared_release")" = "$(/usr/bin/id -u)"
+/bin/test "$(/usr/bin/stat -f '%Lp' "$prepared_release")" = 400
+/bin/test "$(/usr/bin/basename "$prepared_release")" = "$prepared_release_sha256.json"
+/bin/test "$(sha256_file "$prepared_release")" = "$prepared_release_sha256"
+prepared_code_root=$(/bin/realpath "$(/usr/bin/plutil -extract codeRoot raw -o - "$prepared_release")")
+case "$prepared_code_root" in /Users/jtr/_JTR23_/release/home23-code-releases/worker-runtime/*) ;; *) exit 64 ;; esac
+/bin/test -d "$prepared_code_root" && /bin/test ! -L "$prepared_code_root"
+/bin/test -z "$(/usr/bin/find "$prepared_code_root" -perm +0222 -print -quit)"
+prepared_home_commit=$(/usr/bin/plutil -extract implementationCommit raw -o - "$prepared_release")
+/bin/test "$prepared_home_commit" = "$(/usr/bin/plutil -extract implementationCommit raw -o - "$prepared_release_pointer")"
+implementation_worktree=/Users/jtr/_JTR23_/release/home23-worktrees/shakedown-jerry-runtime
+/bin/test "$prepared_home_commit" = "$(/usr/bin/git -C "$implementation_worktree" rev-parse HEAD)"
+/bin/test -z "$(/usr/bin/git -C "$implementation_worktree" status --porcelain=v1 --untracked-files=all)"
+prepared_node=$(/bin/realpath "$(/usr/bin/plutil -extract nodeExecutablePath raw -o - "$prepared_release")")
+prepared_node_sha256=$(/usr/bin/plutil -extract nodeExecutableSha256 raw -o - "$prepared_release")
+/bin/test "$prepared_node" = "$node_executable" && /bin/test "$prepared_node_sha256" = "$node_executable_sha256"
+/bin/test -x "$prepared_node" && /bin/test -f "$prepared_node" && /bin/test ! -L "$prepared_node"
+/bin/test "$(sha256_file "$prepared_node")" = "$prepared_node_sha256"
+
+require_prepared_relative_file() {
+  prepared_relative_path=$1
+  prepared_expected_sha256=$2
+  case "$prepared_relative_path" in ''|/*|*//*|./*|*/./*|../*|*/../*|*/..|.) return 1 ;; esac
+  prepared_resolved_path=$(/bin/realpath "$prepared_code_root/$prepared_relative_path")
+  case "$prepared_resolved_path" in "$prepared_code_root"/*) ;; *) return 1 ;; esac
+  /bin/test -f "$prepared_resolved_path" && /bin/test ! -L "$prepared_resolved_path"
+  /bin/test "$(sha256_file "$prepared_resolved_path")" = "$prepared_expected_sha256"
+  /usr/bin/printf '%s\n' "$prepared_resolved_path"
+}
+prepared_clone_bootstrap=$(require_prepared_relative_file \
+  "$(/usr/bin/plutil -extract cloneBootstrapPath raw -o - "$prepared_release")" \
+  "$(/usr/bin/plutil -extract cloneBootstrapSha256 raw -o - "$prepared_release")")
+prepared_shakedown_verifier=$(require_prepared_relative_file \
+  "$(/usr/bin/plutil -extract shakedownVerifierPath raw -o - "$prepared_release")" \
+  "$(/usr/bin/plutil -extract shakedownVerifierSha256 raw -o - "$prepared_release")")
+prepared_home23_cli=$(require_prepared_relative_file \
+  "$(/usr/bin/plutil -extract home23CliPath raw -o - "$prepared_release")" \
+  "$(/usr/bin/plutil -extract home23CliSha256 raw -o - "$prepared_release")")
+prepared_credential_authority=$(require_prepared_relative_file \
+  "$(/usr/bin/plutil -extract credentialAuthorityDefinitionPath raw -o - "$prepared_release")" \
+  "$(/usr/bin/plutil -extract credentialAuthorityDefinitionSha256 raw -o - "$prepared_release")")
+proof_bundle=$(/usr/bin/plutil -extract proofBundlePath raw -o - "$prepared_release")
+proof_bundle_sha256=$(/usr/bin/plutil -extract proofBundleSha256 raw -o - "$prepared_release")
+/bin/test "$proof_bundle" = "$(/usr/bin/plutil -extract proofBundlePath raw -o - "$prepared_release_pointer")"
+/bin/test "$proof_bundle_sha256" = "$(/usr/bin/plutil -extract proofBundleSha256 raw -o - "$prepared_release_pointer")"
+case "$proof_bundle" in /Users/jtr/_JTR23_/release/home23/instances/workers/verification/predeploy/*.json) ;; *) exit 64 ;; esac
+/bin/test "$(/bin/realpath "$proof_bundle")" = "$proof_bundle"
+/bin/test -f "$proof_bundle" && /bin/test ! -L "$proof_bundle"
+/bin/test "$(/usr/bin/stat -f '%u' "$proof_bundle")" = "$(/usr/bin/id -u)"
+/bin/test "$(/usr/bin/stat -f '%Lp' "$proof_bundle")" = 400
+/bin/test "$(sha256_file "$proof_bundle")" = "$proof_bundle_sha256"
 clone_root=/Users/jtr/_JTR23_/release/home23/instances/workers/shakedown-jerry/workspace/source-clones/shakedownshuffle
+/bin/test "$clone_root" = "$(/usr/bin/plutil -extract shakedownCloneRoot raw -o - "$prepared_release")"
+/bin/test "$(/bin/realpath "$clone_root")" = "$clone_root" && /bin/test -d "$clone_root" && /bin/test ! -L "$clone_root"
+prepared_clone_commit=$(/usr/bin/plutil -extract shakedownSourceCommit raw -o - "$prepared_release")
+/bin/test "$prepared_clone_commit" = "$(/usr/bin/git -C "$clone_root" rev-parse HEAD)"
+/bin/test -z "$(/usr/bin/git -C "$clone_root" status --porcelain=v1 --untracked-files=all)"
+migration_relative=$(/usr/bin/plutil -extract supabasePrivilegeMigrationRelativePath raw -o - "$prepared_release")
+case "$migration_relative" in ''|/*|*//*|./*|*/./*|../*|*/../*|*/..|.) exit 64 ;; esac
+migration=$(/bin/realpath "$clone_root/$migration_relative")
+case "$migration" in "$clone_root"/*) ;; *) exit 64 ;; esac
+/bin/test -f "$migration" && /bin/test ! -L "$migration"
+migration_sha=$(/usr/bin/plutil -extract supabasePrivilegeMigrationSha256 raw -o - "$prepared_release")
+/bin/test "$(sha256_file "$migration")" = "$migration_sha"
+predeploy_root=/Users/jtr/_JTR23_/release/home23/instances/workers/verification/predeploy
+predeploy_current=/Users/jtr/_JTR23_/release/home23/instances/workers/verification/final-predeploy.current.json
+resolved_proof_bundle=$("$node_executable" "$prepared_shakedown_verifier" --mode resolve-predeploy-proof \
+  --expected-home-commit "$prepared_home_commit" --output-root "$predeploy_root" \
+  --current-pointer "$predeploy_current" --read-back-exact-bindings --print-path)
+/bin/test "$resolved_proof_bundle" = "$proof_bundle"
+
 schema_auth_root=/Users/jtr/_JTR23_/release/home23/instances/workers/shakedown-jerry/authorizations/supabase-privilege-hardening
 schema_apply_journal=/Users/jtr/_JTR23_/preservation/shakedown-jerry-runtime/supabase-privilege-application.json
-migration="$clone_root/jerry-api/supabase/migrations/20260721160000_acquisition_privilege_closure.sql"
-migration_sha=$(shasum -a 256 "$migration" | awk '{print $1}')
-schema_disposition=$(node scripts/bootstrap-shakedown-worker-clone.mjs \
+schema_disposition=$("$node_executable" "$prepared_clone_bootstrap" \
   --classify-supabase-privilege-application --project-ref pkbnsqnkuoifudvbbdbe \
   --migration "$migration" --require-migration-sha256 "$migration_sha" \
   --application-journal "$schema_apply_journal" \
-  --credential-authority-definition config/worker-credential-authorities/shakedown-jerry.yaml \
+  --credential-authority-definition "$prepared_credential_authority" \
   --credential-authority-id supabase-cli-production --read-only --status-only)
-if test "$schema_disposition" = pending_exact; then
+if /bin/test "$schema_disposition" = pending_exact; then
   schema_request="$schema_auth_root/current-request.json"
 else
-  test "$schema_disposition" = already_applied_same_bytes_and_readback
-  schema_request=$(node scripts/bootstrap-shakedown-worker-clone.mjs \
+  /bin/test "$schema_disposition" = already_applied_same_bytes_and_readback
+  schema_request=$("$node_executable" "$prepared_clone_bootstrap" \
     --resolve-prior-supabase-privilege-request --application-journal "$schema_apply_journal" \
     --require-consumed-approval --require-exact-readback --path-only)
 fi
-if test "$schema_disposition" = pending_exact; then
-  schema_approval=$(node cli/home23.js worker schema-hard-stop approve shakedown-jerry \
+if /bin/test "$schema_disposition" = pending_exact; then
+  schema_approval=$("$node_executable" "$prepared_home23_cli" worker schema-hard-stop approve shakedown-jerry \
     --request "$schema_request" --key-id home23-operator-primary \
     --receipt-root "$schema_auth_root" --prompt-exact-hash \
     --require-interactive-operator --receipt-path-only)
-  node scripts/bootstrap-shakedown-worker-clone.mjs \
+  "$node_executable" "$prepared_clone_bootstrap" \
     --apply-exact-forward-supabase-migration \
     --project-ref pkbnsqnkuoifudvbbdbe --clone "$clone_root" \
     --migration "$migration" --require-migration-sha256 "$migration_sha" \
     --require-sole-pending-version 20260721160000 \
-    --credential-authority-definition config/worker-credential-authorities/shakedown-jerry.yaml \
+    --credential-authority-definition "$prepared_credential_authority" \
     --credential-authority-id supabase-cli-production \
     --approval-receipt "$schema_approval" --single-use --journaled \
     --require-transactional --forbid-row-mutation --read-back-exact
 else
-  test "$schema_disposition" = already_applied_same_bytes_and_readback
-  node scripts/bootstrap-shakedown-worker-clone.mjs \
+  /bin/test "$schema_disposition" = already_applied_same_bytes_and_readback
+  "$node_executable" "$prepared_clone_bootstrap" \
     --verify-prior-supabase-privilege-application \
     --application-journal /Users/jtr/_JTR23_/preservation/shakedown-jerry-runtime/supabase-privilege-application.json \
     --request "$schema_request" --require-consumed-approval \
     --require-same-migration-bytes --read-only --require-exact-readback
 fi
-expected_grant_hash=$(node scripts/bootstrap-shakedown-worker-clone.mjs \
+expected_grant_hash=$("$node_executable" "$prepared_clone_bootstrap" \
   --schema-application-expected-grant-hash "$schema_apply_journal")
-node scripts/verify-shakedown-jerry-live.mjs --mode supabase-privilege-hardening-readback \
+"$node_executable" "$prepared_shakedown_verifier" --mode supabase-privilege-hardening-readback \
   --project-ref pkbnsqnkuoifudvbbdbe --migration-version 20260721160000 \
   --expected-grant-hash "$expected_grant_hash" --preflight-receipt "$schema_request" \
   --require-exact-table-and-column-grants --require-rls-policy-identity \
   --require-cross-owner-denial --require-security-advisors --require-zero-row-delta
-node cli/home23.js worker schema-hard-stop status shakedown-jerry \
-  --request-hash "$(node scripts/bootstrap-shakedown-worker-clone.mjs --request-hash "$schema_request")" \
+"$node_executable" "$prepared_home23_cli" worker schema-hard-stop status shakedown-jerry \
+  --request-hash "$("$node_executable" "$prepared_clone_bootstrap" --request-hash "$schema_request")" \
   --application-journal "$schema_apply_journal" --require-single-use-consumed --require-readback-bound
 ```
 
@@ -18030,7 +18766,7 @@ event_binding_definition="$active_code_root/config/worker-event-bindings/shakedo
 test "$("$node_executable" "$clone_bootstrap" --hash-only --clone "$clone_root")" = "$clone_hash_before"
 ```
 
-Expected: the active immutable release is exactly `final_home_commit`; tracked/live channel and automation authorities compare exactly; the migration journal names exactly six `changed_or_already_v2` receipts, six immediate `no_change` receipts, six content-addressed recovery copies for only the rows actually changed, and six deployed read-only continuity-run receipts; installation, signed knowledge import, pursuit upsert, and event-binding install/readback each produce a canonical idempotent receipt; the importer retains every source hash/status and its second invocation creates no new item; the installer creates canonical `state/resolved-target-hashes.json` from the committed final target-pin projection and validation proves exact semantic equality; the source clone hash is unchanged; validation and observation pass through the deployed authenticated route. A first/changed hash and its bindings remain inactive; an exact already-active hash retains the same activation and binding-epoch receipts while the maintenance fence proves zero consequence.
+Expected: the active immutable release is exactly `final_home_commit`; tracked/live channel and automation authorities compare exactly; the migration journal names exactly six first-pass receipts, each classified `changed` or `already_v2`, six immediate `no_change` receipts, exactly one content-addressed recovery copy for each `changed` first pass and none for `already_v2`, and six deployed read-only continuity-run receipts; installation, signed knowledge import, pursuit upsert, and event-binding install/readback each produce a canonical idempotent receipt; the importer retains every source hash/status and its second invocation creates no new item; the installer creates canonical `state/resolved-target-hashes.json` from the committed final target-pin projection and validation proves exact semantic equality; the source clone hash is unchanged; validation and observation pass through the deployed authenticated route. A first/changed hash and its bindings remain inactive; an exact already-active hash retains the same activation and binding-epoch receipts while the maintenance fence proves zero consequence.
 
 - [ ] **Step 11: Prove repository, stable-state, and live/runtime truth separately**
 
@@ -18539,8 +19275,8 @@ deployment_disposition=$("$node_executable" "$worker_verifier" \
   --mode read-shakedown-deployment-disposition \
   --worker shakedown-jerry --expected-release "$final_home_commit" \
   --require-step9-classification-and-fence-if-active --print-disposition)
-node --test --test-concurrency=1 tests/cli/worker-runtime-deploy.test.js
-node --test --test-concurrency=1 \
+"$node_executable" --test --test-concurrency=1 tests/cli/worker-runtime-deploy.test.js
+"$node_executable" --test --test-concurrency=1 \
   tests/scripts/guarded-pm2-save.test.cjs \
   tests/scripts/home23-pm2-watchdog.test.cjs \
   tests/scripts/home23-pm2-watchdog-daemon.test.cjs \
@@ -20856,7 +21592,7 @@ Expected: stable data and the new backend are authoritative before frontend cuto
 
 - [ ] **Step 6: Activate replacement schedules at one epoch boundary and prove first consequences before releasing the fence**
 
-Compute one signed `activationEpoch` from the deployed data/backend/frontend/profile/grant hashes and one `activationNotBefore` instant after all Step 5 readbacks. Compare-and-swap the same four schedule IDs/profile hashes from disabled to enabled, atomically setting each first natural due to the first cron instant strictly after activation. Zero preactivation catch-up is permitted. Run one explicit `cutover-canary` occurrence for each mapped replacement lane with a distinct epoch-bound occurrence key; it is not a missed cron occurrence and does not replace the first natural wake. Require real scan and collection/enrichment consequences, pursuit/Jerry projections, and valid future next wakes, append the schedule-phase receipt, and release the maintenance locks/fence. The canonical cutover remains `applying` through Steps 7–10; only Step 10 appends the full-epoch proof and authenticates the final `applied` transition.
+Compute one signed `activationEpoch` from the deployed data/backend/frontend/profile/grant hashes and one `activationNotBefore` instant after all Step 5 readbacks. Compare-and-swap the same four schedule IDs/profile hashes from disabled to enabled, atomically setting each first natural due to the first cron instant strictly after activation. Zero preactivation catch-up is permitted. Run one explicit `cutover-canary` occurrence for each mapped replacement lane with a distinct epoch-bound occurrence key; it is not a missed cron occurrence and does not replace the first natural wake. Require real scan and collection/enrichment consequences, pursuit/Jerry projections, and valid future next wakes, append the schedule-phase receipt, and release the maintenance locks/fence. The authenticated schedule-phase append atomically activates exactly the Task 29 event-binding rows at the same `activationEpoch`; any definition, profile, or grant hash drift aborts the whole append, and an exact active-binding readback is required before the fence can release. The canonical cutover remains `applying` through Steps 7–10; only Step 10 appends the full-epoch proof and authenticates the final `applied` transition.
 
 If any activation/consequence/readback fails, fence replacement dispatch first. Before stable-data commit the epoch may use its full legacy inverse. After stable-data commit it must disable replacements and roll back to the prior replacement epoch or leave both ingress families paused; it must not re-enable legacy writers against stable data. Every phase failure calls the authenticated `begin-rollback`, appends exact local/product readbacks, and reaches `rolled_back` or `reconciliation_required`—never an ambiguous applied state.
 
@@ -21042,6 +21778,9 @@ if test "$next_phase" = replacement-schedule-activation; then
     --receipt-path-only)
   "$node_executable" "$home23_cli" worker automation-cutover append shakedown-jerry \
     --cutover-id "$cutover_id" --transition-receipt "$schedule_phase_receipt" \
+    --event-binding-definition "$active_code_root/config/worker-event-bindings/shakedown-jerry.yaml" \
+    --activation-epoch "$activation_epoch" --activate-exact-event-bindings \
+    --require-exact-binding-profile-grant-hashes \
     --read-back-authoritative-state \
     --service-url "$service_url" --credential-keychain-service home23.worker-management \
     --credential-account operator
@@ -21054,6 +21793,14 @@ elif /usr/bin/plutil -extract completedPhases raw -o - "$epoch_context" | grep -
 else
   exit 1
 fi
+activation_epoch=$("$node_executable" "$shakedown_verifier" \
+  --mode derive-deployment-activation-epoch --cutover-id "$cutover_id" --print-hash)
+event_binding_definition="$active_code_root/config/worker-event-bindings/shakedown-jerry.yaml"
+"$node_executable" "$home23_cli" worker bindings list shakedown-jerry \
+  --compare-definition "$event_binding_definition" --require-exact-hash \
+  --require-active-epoch "$activation_epoch" --no-write \
+  --service-url "$service_url" --credential-keychain-service home23.worker-management \
+  --credential-account operator
 epoch_context=$("$node_executable" "$home23_cli" worker automation-cutover show shakedown-jerry \
   --cutover-id "$cutover_id" --context-receipt-path-only --service-url "$service_url" \
   --credential-keychain-service home23.worker-management --credential-account operator)
@@ -21077,7 +21824,7 @@ else
 fi
 ```
 
-Expected: two legacy automations remain `PAUSED`; the same four schedules are enabled exactly once with epoch-bound first future dues; the two mapped cutover canaries have real consequences; no preactivation catch-up or duplicate schedule exists; rerunning Task 31 at the same hashes is no-op, while a bound-code upgrade creates a successor epoch and can roll back only to the prior replacement epoch.
+Expected: two legacy automations remain `PAUSED`; the same four schedules are enabled exactly once with epoch-bound first future dues; the exact Task 29 event bindings are active at that same epoch with unchanged definition/profile/grant hashes; the two mapped cutover canaries have real consequences; no preactivation catch-up or duplicate schedule exists; rerunning Task 31 at the same hashes is no-op, while a bound-code upgrade creates a successor epoch and can roll back only to the prior replacement epoch.
 
 - [ ] **Step 7: Prove every configured distribution lane and one actual correction**
 
@@ -21785,7 +22532,7 @@ Expected: PASS only with completed live consequences and mature joined evidence;
 
 - [ ] **Step 10: Prove event exact-once, denial, rollback, restart, and lane isolation**
 
-Deliver one safe live event twice and replay it, then prove exactly one request, one attempt, one canonical receipt, and one attached Shakedown pursuit consequence. Attempt one destructive website/data action and prove denial before effects. Force one channel adapter failure and prove observation, collection, and other lanes continue. That Worker action plan cannot revoke its own authority. After its receipt is terminal, use the operator-authenticated management CLI to revoke the exact standing-grant hash, prove new live work becomes authorization-required, and reactivate only that same hash; then use a read-only verifier to bind the action and operator-management receipt chains. Bind every restart/rollback receipt to the canonical source/release hashes. Finally, hash the complete data/backend/frontend/schedule/channel/distribution/acquisition/event proof set, append it to the still-open epoch, and call the authenticated cutover completion transition. A crash before that transition resumes `applying`; it never masquerades as an already-applied exact rerun.
+The completed `replacement-schedule-activation` phase already activated the exact Task 29 bindings at its signed epoch. Re-read that epoch and the binding definition/profile/grant hashes before delivering any event; this step cannot install, activate, or repair bindings implicitly. Deliver one safe live event twice and replay it, then prove exactly one request, one attempt, one canonical receipt, and one attached Shakedown pursuit consequence. Attempt one destructive website/data action and prove denial before effects. Force one channel adapter failure and prove observation, collection, and other lanes continue. That Worker action plan cannot revoke its own authority. After its receipt is terminal, use the operator-authenticated management CLI to revoke the exact standing-grant hash, prove new live work becomes authorization-required, and reactivate only that same hash; then use a read-only verifier to bind the action and operator-management receipt chains. Bind every restart/rollback receipt to the canonical source/release hashes. Finally, hash the complete data/backend/frontend/schedule/channel/distribution/acquisition/event proof set, append it to the still-open epoch, and call the authenticated cutover completion transition. A crash before that transition resumes `applying`; it never masquerades as an already-applied exact rerun.
 
 ```bash
 set -euo pipefail
@@ -21943,6 +22690,14 @@ epoch_context=$("$node_executable" "$home23_cli" worker automation-cutover show 
 cutover_id=$(/usr/bin/plutil -extract cutoverId raw -o - "$epoch_context")
 cutover_mode=$(/usr/bin/plutil -extract disposition raw -o - "$epoch_context")
 next_phase=$(/usr/bin/plutil -extract nextIncompletePhase raw -o - "$epoch_context" 2>/dev/null || true)
+pre_event_activation_epoch=$("$node_executable" "$shakedown_verifier" \
+  --mode derive-deployment-activation-epoch --cutover-id "$cutover_id" --print-hash)
+event_binding_definition="$active_code_root/config/worker-event-bindings/shakedown-jerry.yaml"
+"$node_executable" "$home23_cli" worker bindings list shakedown-jerry \
+  --compare-definition "$event_binding_definition" --require-exact-hash \
+  --require-active-epoch "$pre_event_activation_epoch" --no-write \
+  --service-url "$service_url" --credential-keychain-service home23.worker-management \
+  --credential-account operator
 if test "$next_phase" = event-isolation; then
   event_phase_receipt=$("$node_executable" "$shakedown_verifier" --mode event-and-isolation-production-proof \
     --cutover-id "$cutover_id" --deliver-safe-event-count 2 --replay-safe-event \
@@ -21970,6 +22725,14 @@ elif /usr/bin/plutil -extract completedPhases raw -o - "$epoch_context" | grep -
 else
   exit 1
 fi
+event_activation_epoch=$("$node_executable" "$shakedown_verifier" \
+  --mode derive-deployment-activation-epoch --cutover-id "$cutover_id" --print-hash)
+test "$event_activation_epoch" = "$pre_event_activation_epoch"
+"$node_executable" "$home23_cli" worker bindings list shakedown-jerry \
+  --compare-definition "$event_binding_definition" --require-exact-hash \
+  --require-active-epoch "$event_activation_epoch" --no-write \
+  --service-url "$service_url" --credential-keychain-service home23.worker-management \
+  --credential-account operator
 "$node_executable" "$shakedown_verifier" --mode event-and-isolation-production-readback \
   --cutover-id "$cutover_id" --cutover-mode "$cutover_mode" \
   --same-epoch-read-only-when-applied \
@@ -22004,7 +22767,7 @@ else
 fi
 ```
 
-Expected: exactly one request/attempt/receipt/consequence, a pre-effect denial, unaffected independent lanes, and restored original-hash activation.
+Expected: the exact same-epoch binding readback passes before delivery; exactly one request/attempt/receipt/consequence, a pre-effect denial, unaffected independent lanes, and restored original-hash activation.
 
 - [ ] **Step 11: Run the strict live verifier — expect PASS except the separately authorized payment row**
 
