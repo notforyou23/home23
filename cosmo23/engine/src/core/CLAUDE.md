@@ -141,6 +141,12 @@ Provider routing by assignment: `openai-codex` provider tag routes to `generateC
 | `execution.maxRuntimeMinutes` | Wall-clock termination |
 | `execution.consolidationMode` | Perpetual sleep/consolidation |
 | `timeouts.cycleTimeoutMs` | Default 60000 (60s) per-cycle |
+| `shutdownSaveTimeoutMs` | Bound on the final shutdown save, default 60000 (60s) |
+| `shutdownInProgressSaveTimeoutMs` | Grace when shutdown joins an already-in-progress save with durable state on disk, default 15000 (15s) |
+| `shutdownTelemetryTimeoutMs` | Bound on telemetry cleanup during shutdown, default 5000 (5s) |
+| `backups.intervalMs` | Brain backup interval, default 21600000 (6h) |
+| `backups.retention` | Backups kept after rotation, default 2 |
+| `backups.minFreeBytes` | Free-disk floor below which backups are skipped, default 4294967296 (4GB) |
 | `recovery.checkpointInterval` | Cycles between checkpoints, default 5 |
 | `planning.maxRetries` | PlanExecutor task retry limit, default 3 |
 | `planning.agentTimeout` | Default 720000 (12 min) |

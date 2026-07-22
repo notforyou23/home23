@@ -5,7 +5,7 @@ in the Home23 repo. These fix structural integration bugs that surface only when
 cosmo23 runs as an embedded sub-system instead of standalone.
 
 **Note:** cosmo23 is now fully bundled — it updates with `home23 update`, not separately.
-These patches are tracked here for reference when pulling upstream changes into the bundle.
+These entries are the historical record of integration-boundary changes; see the doctrine note below for what belongs here now.
 
 > **Doctrine change (2026-07-21, approved by jtr):** cosmo23/ is now a
 > first-class editable engine — the same transition engine/ made on

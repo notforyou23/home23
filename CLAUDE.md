@@ -31,7 +31,7 @@ node cli/home23.js start <name>
 - `src/` - TypeScript harness, agent loop, tools, and scheduler.
 - `engine/src/` - engine, dashboard, cognition, memory, live-problem, and sensor modules.
 - `cli/` - installer, PM2 management, agent creation, updates, and templates.
-- `cosmo23/` - vendored COSMO 2.3 integration. Read `docs/design/COSMO23-VENDORED-PATCHES.md` before editing.
+- `cosmo23/` - bundled COSMO 2.3 engine, first-class editable. Read `docs/design/COSMO23-VENDORED-PATCHES.md` before touching integration boundaries (config, OAuth, env vars, server API).
 - `evobrew/` - bundled Evobrew integration.
 - `config/*.example` - public config seeds.
 - `instances/` - generated per-agent runtime state. Ignored by Git.
