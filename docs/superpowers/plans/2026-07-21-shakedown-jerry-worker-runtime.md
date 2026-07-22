@@ -7586,6 +7586,14 @@ test('trigger acceptance is atomic across inbox, mapping, causal edge, request, 
   }
 });
 
+test('post-commit infrastructure failure is never relabeled as a trigger denial', async () => {
+  const fixture = triggerFixture({ brokerSignalFailure: true,
+    brokerFailureReceiptFailure: true });
+  await assert.rejects(() => fixture.router.accept(fixture.event), /broker|infrastructure/i);
+  assert.equal(fixture.store.countRequests(), 1);
+  assert.equal(fixture.store.countTriggerDenials(), 0);
+});
+
 test('durable ancestry suppresses A to B to C to A loops despite correlation changes', async () => {
   const chain = await seedCausalWorkerChain(['worker-a', 'worker-b', 'worker-c']);
   assert.equal((await router.accept(eventReturningTo('worker-a', chain, newCorrelationId()))).status,
@@ -7683,7 +7691,7 @@ export class WorkerTriggerRouter {
     try {
       return await this.acceptVerified(event, mapping, input.ancestryHash);
     } catch (error) {
-      if (isInjectedAtomicityFailpoint(error)) throw error;
+      if (!isTrustedTriggerValidationDenial(error)) throw error;
       return this.store.denyTrigger({
         ownerAgent: this.ownerAgent,
         event: canonicalizeVerifiedTriggerForAudit(event),
@@ -7771,7 +7779,7 @@ export class WorkerTriggerRouter {
         canonicalRequestHash: immutable.canonicalRequestHash,
       });
     } catch (error) {
-      if (isInjectedAtomicityFailpoint(error)) throw error;
+      if (!isPinnedReplayValidationDenial(error)) throw error;
       return this.store.denyTrigger({
         ownerAgent: this.ownerAgent,
         event: immutable.canonicalAuditEvent,
@@ -7793,7 +7801,7 @@ pursuit, occurrence, origin, correlation, causation, idempotency, and canonical-
 The builder receives a mapping-derived `PublicWorkerRunInputV2` containing only Task 4's six legal
 public fields.
 
-`acceptMappedTrigger()` is one synchronous owner-scoped store transaction. It inserts or verifies the immutable inbox envelope, mapping/debounce/cooldown selection, bounded causal edge and ancestry hash, canonical trusted request, initial request event, and durable broker wakeup before commit. Every call includes `ownerAgent`, and every SQL/CAS predicate includes that owner. `denyTrigger()` always receives the canonical object input `{ ownerAgent, event, sourceReceiptId, mappingVersion, authenticatedSourceRef, reason, deniedAt }`; invalid, unmapped, untrusted, ancestry-conflicting, cooldown, reflexive-loop, and pinned-replay validation paths use that same durable denial seam. A rejected signature carries a branded canonical redacted audit event plus `mappingVersion: null` and `authenticatedSourceRef: null`; an authenticated but unmapped event is canonicalized into the same audit-event schema and retains its verified source reference. Trusted ancestry/source resolution and pinned replay validation have one typed catch/classification seam each; they persist a denial and create no request or wakeup. Only the explicit test-only atomicity failpoint error class is rethrown so transaction rollback tests remain observable; ordinary validation errors cannot escape as undocumented 500s. There is no dispatcher callback or other side effect inside the transaction. The post-commit signal is only a latency optimization; polling and the durable wakeup guarantee eventual claim if signaling fails. `acceptPinned()` re-verifies the immutable signed envelope and byte-compares its stored authenticated source reference, ancestry hash, mapping version/hash, and canonical request hash; it resolves only that version from the immutable mapping registry and never calls the current-mapping selector. An exact source/mapping replay returns the same request, while an unavailable historical mapping or differing canonical bytes is durably denied without creating a new inbox/request key.
+`acceptMappedTrigger()` is one synchronous owner-scoped store transaction. It inserts or verifies the immutable inbox envelope, mapping/debounce/cooldown selection, bounded causal edge and ancestry hash, canonical trusted request, initial request event, and durable broker wakeup before commit. Every call includes `ownerAgent`, and every SQL/CAS predicate includes that owner. `denyTrigger()` always receives the canonical object input `{ ownerAgent, event, sourceReceiptId, mappingVersion, authenticatedSourceRef, reason, deniedAt }`; invalid, unmapped, untrusted, ancestry-conflicting, cooldown, reflexive-loop, and pinned-replay validation paths use that same durable denial seam. A rejected signature carries a branded canonical redacted audit event plus `mappingVersion: null` and `authenticatedSourceRef: null`; an authenticated but unmapped event is canonicalized into the same audit-event schema and retains its verified source reference. Trusted ancestry/source resolution and pinned replay validation have one closed typed error class each; only `isTrustedTriggerValidationDenial()` or `isPinnedReplayValidationDenial()` may enter the durable denial seam. Store/commit errors, failpoints, broker-wakeup persistence errors, and unexpected infrastructure errors are rethrown and can never append a denial after a request exists. Typed validation denials occur before the acceptance transaction, persist a denial, and create no request or wakeup. There is no dispatcher callback or other side effect inside the transaction. The post-commit signal is only a latency optimization; polling and the durable wakeup guarantee eventual claim if signaling fails. `acceptPinned()` re-verifies the immutable signed envelope and byte-compares its stored authenticated source reference, ancestry hash, mapping version/hash, and canonical request hash; it resolves only that version from the immutable mapping registry and never calls the current-mapping selector. An exact source/mapping replay returns the same request, while an unavailable historical mapping or differing canonical bytes is durably denied without creating a new inbox/request key.
 
 `canonicalizeRejectedTriggerForAudit()` and `canonicalizeVerifiedTriggerForAudit()` are fail-closed: they size-bound the submitted or verified bytes,
 stores only a canonical redacted rejection projection plus their hash, and derives a stable
@@ -17028,7 +17036,7 @@ current_platform=$("$node_executable" -p 'process.platform + "-" + process.arch'
 "$node_executable" cli/home23.js worker grant finalize \
   config/worker-authority-grants/shakedown-jerry-standing.yaml --write
 if ! git diff --quiet -- config/worker-authority-grants/shakedown-jerry-standing.yaml; then
-  node cli/home23.js worker grant sign \
+  "$node_executable" cli/home23.js worker grant sign \
     --key-id home23-operator-primary \
     --input config/worker-authority-grants/shakedown-jerry-standing.yaml
   git add config/worker-authority-grants/shakedown-jerry-standing.yaml
@@ -17036,52 +17044,57 @@ if ! git diff --quiet -- config/worker-authority-grants/shakedown-jerry-standing
   git commit -m "chore(shakedown): rebind final deployed authority"
 fi
 final_home_commit=$(git rev-parse HEAD)
-npm ci
-npm run test:contracts
-npm test
-npm run build
-node --test --test-concurrency=1 \
+"$node_executable" "$npm_cli_path" ci
+"$node_executable" "$npm_cli_path" run test:contracts
+"$node_executable" "$npm_cli_path" test
+"$node_executable" "$npm_cli_path" run build
+"$node_executable" --test --test-concurrency=1 \
   tests/scripts/verify-worker-runtime-live.test.mjs \
   tests/scripts/verify-shakedown-jerry-live.test.mjs \
   tests/cli/worker-runtime-deploy.test.js
 clone_root=/Users/jtr/_JTR23_/release/home23/instances/workers/shakedown-jerry/workspace/source-clones/shakedownshuffle
 final_clone_commit=$(git -C "$clone_root" rev-parse HEAD)
-node scripts/verify-shakedown-jerry-live.mjs --mode runner-release \
+"$node_executable" scripts/verify-shakedown-jerry-live.mjs --mode runner-release \
   --runner-release "/Users/jtr/websites/shakedownshuffle.com/releases/code/shakedown-worker/$final_clone_commit" \
   --expected-commit "$final_clone_commit" --require-read-only --require-byte-identical-tree
-node cli/home23.js worker grant verify \
+"$node_executable" cli/home23.js worker grant verify \
   config/worker-authority-grants/shakedown-jerry-standing.yaml \
   --require-runner-commit "$final_clone_commit" \
   --require-future-canonical-import-commit "$final_clone_commit"
-(cd "$clone_root" && npm --prefix shakedown-v2 ci)
-(cd "$clone_root" && node --test --test-concurrency=1 shakedown-v2/test/*.test.mjs)
-(cd "$clone_root" && npm --prefix shakedown-v2 run lint)
+(cd "$clone_root" && "$node_executable" "$npm_cli_path" --prefix shakedown-v2 ci)
+(cd "$clone_root" && "$node_executable" --test --test-concurrency=1 shakedown-v2/test/*.test.mjs)
+(cd "$clone_root" && "$node_executable" "$npm_cli_path" --prefix shakedown-v2 run lint)
 (cd "$clone_root" && mkdir -p /Users/jtr/_JTR23_/worker-artifacts)
 final_site_parent=$(mktemp -d /Users/jtr/_JTR23_/worker-artifacts/shakedown-final-head.XXXXXXXX)
 final_site_build="$final_site_parent/complete-owned-site"
-(cd "$clone_root" && node shakedown-v2/scripts/build-owned-site-artifacts.mjs \
+(cd "$clone_root" && "$node_executable" shakedown-v2/scripts/build-owned-site-artifacts.mjs \
   --out-dir "$final_site_build" \
   --api-projection /Users/jtr/_JTR23_/shakedown-runtime-data/api/jerrydatabasemaster_v2.json \
   --normalized-details /Users/jtr/_JTR23_/shakedown-runtime-data/show-enrichment/artifacts/normalized/normalized-show-details.json \
   --source-manifest /Users/jtr/_JTR23_/shakedown-runtime-data/show-enrichment/artifacts/reports/source-manifest.json \
   --require-protected-trees-unchanged)
 chmod -R a-w "$final_site_build"
-(cd "$clone_root" && bun --cwd jerry-api install --frozen-lockfile)
-(cd "$clone_root" && bun --cwd jerry-api test)
-(cd "$clone_root" && bun --cwd jerry-api run type-check)
-(cd "$clone_root" && bun --cwd jerry-api run build)
-(cd "$clone_root" && node --test --test-concurrency=1 ops/shakedown-worker/tests/*.test.mjs)
-node scripts/verify-worker-runtime-live.mjs --mode adversarial --expected-home-commit "$final_home_commit"
-node scripts/verify-worker-runtime-live.mjs --mode crash-matrix --expected-home-commit "$final_home_commit"
+(cd "$clone_root" && "$bun_executable" --cwd jerry-api install --frozen-lockfile)
+(cd "$clone_root" && "$bun_executable" --cwd jerry-api test)
+(cd "$clone_root" && "$bun_executable" --cwd jerry-api run type-check)
+(cd "$clone_root" && "$bun_executable" --cwd jerry-api run build)
+(cd "$clone_root" && "$node_executable" --test --test-concurrency=1 ops/shakedown-worker/tests/*.test.mjs)
+"$node_executable" scripts/verify-worker-runtime-live.mjs --mode adversarial --expected-home-commit "$final_home_commit"
+"$node_executable" scripts/verify-worker-runtime-live.mjs --mode crash-matrix --expected-home-commit "$final_home_commit"
 predeploy_root=/Users/jtr/_JTR23_/release/home23/instances/workers/verification/predeploy
 predeploy_current=/Users/jtr/_JTR23_/release/home23/instances/workers/verification/final-predeploy.current.json
-node scripts/verify-shakedown-jerry-live.mjs --mode complete-predeploy \
+"$node_executable" scripts/verify-shakedown-jerry-live.mjs --mode complete-predeploy \
   --expected-home-commit "$final_home_commit" \
   --output-root "$predeploy_root" --content-addressed \
   --atomic-create-or-verify-exact \
   --current-pointer "$predeploy_current" --compare-and-swap-current-pointer \
-  --read-back-exact-bindings
-proof_bundle=$(node scripts/verify-shakedown-jerry-live.mjs --mode resolve-predeploy-proof \
+  --source-baseline-sha256 "$source_baseline_sha256" \
+  --node-executable-sha256 "$node_executable_sha256" \
+  --bun-executable-sha256 "$bun_executable_sha256" \
+  --npm-executable-sha256 "$npm_executable_sha256" --npm-cli-sha256 "$npm_cli_sha256" \
+  --node-version "$node_version" --bun-version "$bun_version" --npm-version "$npm_version" \
+  --toolchain-platform "$current_platform" --read-back-exact-bindings
+proof_bundle=$("$node_executable" scripts/verify-shakedown-jerry-live.mjs --mode resolve-predeploy-proof \
   --expected-home-commit "$final_home_commit" \
   --output-root "$predeploy_root" --current-pointer "$predeploy_current" \
   --read-back-exact-bindings --print-path)
