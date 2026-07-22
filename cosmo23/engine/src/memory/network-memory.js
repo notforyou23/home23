@@ -1,4 +1,4 @@
-const { getOpenAIClient } = require('../core/openai-client');
+const { getOpenAIClient, getEnvEmbeddingClient } = require('../core/openai-client');
 const fs = require('node:fs');
 const { ExtractiveSummarizer } = require('../utils/extractive-summarizer');
 const { classifyContent } = require('../core/validation');
@@ -381,7 +381,10 @@ class NetworkMemory {
     this.config = config;
     this.logger = logger;
     this.events = eventEmitter;  // Multi-tenant event emitter
-    this.getEmbeddingClient = deps.getEmbeddingClient || getOpenAIClient;
+    this._injectedEmbeddingClient = deps.getEmbeddingClient || null;
+    this.getEmbeddingClient = () => this.resolveEmbeddingRouting().client;
+    this._consecutiveEmbeddingFailures = 0;
+    this._lastEmbeddingError = null;
 
     // Initialize extractive summarizer for memory compression
     this.extractiveSummarizer = new ExtractiveSummarizer(logger);
@@ -426,56 +429,146 @@ class NetworkMemory {
   }
 
   getEmbeddingModel() {
-    return process.env.EMBEDDING_MODEL || this.config.embedding?.model || 'nomic-embed-text';
+    return this.resolveEmbeddingRouting().model;
   }
 
   getEmbeddingDimensions() {
-    const envDims = Number.parseInt(process.env.EMBEDDING_DIMENSIONS || '', 10);
-    if (Number.isSafeInteger(envDims) && envDims > 0) return envDims;
-    let dims = this.config.embedding?.dimensions;
-    if (typeof dims === 'object') dims = dims.default || 512;
-    return Number.isFinite(Number(dims)) ? Number(dims) : 512;
+    return this.resolveEmbeddingRouting().dimensions;
   }
 
   isOllamaEmbeddingEndpoint() {
+    return this.resolveEmbeddingRouting().isOllama;
+  }
+
+  _envSaysOllamaEndpoint() {
     return (process.env.EMBEDDING_PROVIDER || '').includes('ollama')
       || (process.env.EMBEDDING_BASE_URL || '').includes('11434');
   }
 
-  buildEmbeddingCreateParams(input) {
-    const params = { model: this.getEmbeddingModel(), input };
-    if (!this.isOllamaEmbeddingEndpoint()) {
+  _normalizeEmbeddingDimensions(raw, fallback) {
+    let dims = raw;
+    if (typeof dims === 'object' && dims !== null) dims = dims.default;
+    const parsed = Number(dims);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  }
+
+  /**
+   * Resolve the full embedding routing profile — model, dimensions, endpoint
+   * flavor, and client — from ONE source so they can never disagree.
+   *
+   * Priority: run config → EMBEDDING_* env as a coherent set (model + base
+   * URL + key together) → legacy default. Ambient env must never override an
+   * explicit run config: under Home23 the PM2 commonEnv carries Home23's OWN
+   * engine embedding profile (local-Ollama nomic-embed-text), and letting the
+   * env model win while the client stayed on api.openai.com 404'd every embed
+   * call and silently persisted a 0-node brain (2026-07-22 live proof).
+   *
+   * `client` is a lazy getter — resolving the profile never constructs a
+   * client (getOpenAIClient throws without OPENAI_API_KEY).
+   */
+  resolveEmbeddingRouting() {
+    const injected = this._injectedEmbeddingClient;
+    const embeddingConfig = this.config?.embedding || {};
+    if (embeddingConfig.model) {
+      return {
+        source: 'config',
+        model: embeddingConfig.model,
+        dimensions: this._normalizeEmbeddingDimensions(embeddingConfig.dimensions, 512),
+        isOllama: false,
+        get client() { return injected ? injected() : getOpenAIClient(); },
+      };
+    }
+    if (process.env.EMBEDDING_MODEL) {
+      return {
+        source: 'env',
+        model: process.env.EMBEDDING_MODEL,
+        dimensions: this._normalizeEmbeddingDimensions(process.env.EMBEDDING_DIMENSIONS, 512),
+        isOllama: this._envSaysOllamaEndpoint(),
+        get client() { return injected ? injected() : getEnvEmbeddingClient(); },
+      };
+    }
+    return {
+      source: 'default',
+      model: 'nomic-embed-text',
+      dimensions: 512,
+      isOllama: this._envSaysOllamaEndpoint(),
+      get client() { return injected ? injected() : getOpenAIClient(); },
+    };
+  }
+
+  buildEmbeddingCreateParams(input, routing = this.resolveEmbeddingRouting()) {
+    const params = { model: routing.model, input };
+    if (!routing.isOllama) {
       params.encoding_format = 'float';
-      params.dimensions = this.getEmbeddingDimensions();
+      params.dimensions = routing.dimensions;
     }
     return params;
   }
 
-  prepareEmbeddingText(text) {
+  prepareEmbeddingText(text, routing = this.resolveEmbeddingRouting()) {
     const value = String(text || '');
     if (this.tokenizer) {
       const tokens = this.tokenizer.encode(value);
-      const maxTokens = this.isOllamaEmbeddingEndpoint() ? 512 : 8000;
+      const maxTokens = routing.isOllama ? 512 : 8000;
       if (tokens.length > maxTokens) {
         const decoded = this.tokenizer.decode(tokens.slice(0, maxTokens));
         return typeof decoded === 'string' ? decoded : new TextDecoder().decode(decoded);
       }
     }
-    const maxChars = this.isOllamaEmbeddingEndpoint() ? 2000 : 30000;
+    const maxChars = routing.isOllama ? 2000 : 30000;
     return value.length > maxChars ? value.slice(0, maxChars) : value;
   }
 
   /**
-   * Generate embedding using OpenAI
-   * @param {string} text - Text to embed
-   * Note: All embeddings use same dimensions (512) for network consistency
+   * Generate embedding via the resolved embedding routing profile.
+   * Returns null on an isolated failure; throws EMBEDDING_FAILURE_CASCADE
+   * once failures are consecutive past the threshold — a run whose embeds
+   * are all failing must not keep silently dropping every node.
    */
   async embed(text) {
+    const embedding = await this._embedInternal(text);
+    if (embedding) {
+      this._consecutiveEmbeddingFailures = 0;
+      this._lastEmbeddingError = null;
+      return embedding;
+    }
+    return this._recordEmbeddingFailure();
+  }
+
+  _recordEmbeddingFailure() {
+    this._consecutiveEmbeddingFailures += 1;
+    const raw = this.config?.embedding?.maxConsecutiveFailures;
+    const threshold = raw === undefined ? 20 : Number(raw);
+    if (threshold > 0 && this._consecutiveEmbeddingFailures >= threshold) {
+      const lastMessage = this._lastEmbeddingError?.message || 'unknown error';
+      const routing = this.resolveEmbeddingRouting();
+      const error = new Error(
+        `EMBEDDING_FAILURE_CASCADE: ${this._consecutiveEmbeddingFailures} consecutive embedding failures `
+        + `(model=${routing.model}, source=${routing.source}) — every new node is being dropped and the `
+        + `brain would persist empty. Last error: ${lastMessage}`
+      );
+      error.code = 'EMBEDDING_FAILURE_CASCADE';
+      error.consecutiveFailures = this._consecutiveEmbeddingFailures;
+      this.logger?.error?.('Embedding failure cascade — failing loud', {
+        consecutiveFailures: this._consecutiveEmbeddingFailures,
+        threshold,
+        model: routing.model,
+        routingSource: routing.source,
+        lastError: lastMessage,
+      });
+      throw error;
+    }
+    return null;
+  }
+
+  async _embedInternal(text) {
     const originalText = String(text || '');
     try {
-      const preparedText = this.prepareEmbeddingText(originalText);
-      const client = this.getEmbeddingClient();
-      const response = await client.embeddings.create(this.buildEmbeddingCreateParams(preparedText));
+      const routing = this.resolveEmbeddingRouting();
+      const preparedText = this.prepareEmbeddingText(originalText, routing);
+      const response = await routing.client.embeddings.create(
+        this.buildEmbeddingCreateParams(preparedText, routing),
+      );
 
       if (!response?.data?.[0]?.embedding) {
         this.logger?.error?.('Embedding API returned invalid response', {
@@ -484,34 +577,36 @@ class NetworkMemory {
           dataLength: response?.data?.length,
           hasEmbedding: Boolean(response?.data?.[0]?.embedding)
         });
+        this._lastEmbeddingError = new Error('Embedding API returned invalid response');
         return null;
       }
 
       return response.data[0].embedding;
     } catch (error) {
+      this._lastEmbeddingError = error;
       // If embedding fails even after truncation, try extractive summary as last resort
       if (originalText.length > 5000 && this.extractiveSummarizer) {
-        this.logger?.warn?.('Embedding failed, trying extractive summary', { 
+        this.logger?.warn?.('Embedding failed, trying extractive summary', {
           error: error.message,
           textLength: originalText.length
         });
-        
+
         try {
           const extracted = this.extractiveSummarizer.summarize(originalText);
           if (extracted.quality >= 0.5) {
             // Retry embedding with much shorter summary (recursive call with safety)
             const summaryText = extracted.summary;
             if (summaryText.length < originalText.length) {
-              return await this.embed(summaryText);
+              return await this._embedInternal(summaryText);
             }
           }
         } catch (summaryError) {
-          this.logger?.error?.('Extractive summarization also failed', { 
-            error: summaryError.message 
+          this.logger?.error?.('Extractive summarization also failed', {
+            error: summaryError.message
           });
         }
       }
-      
+
       this.logger?.error?.('Embedding API call failed', {
         error: error.message,
         textLength: originalText.length
@@ -530,13 +625,14 @@ class NetworkMemory {
     if (!Array.isArray(texts) || texts.length === 0) return [];
     const output = new Array(texts.length).fill(null);
     const batchSize = 2048;
+    const routing = this.resolveEmbeddingRouting();
     for (let offset = 0; offset < texts.length; offset += batchSize) {
       const original = texts.slice(offset, offset + batchSize);
-      const input = original.map(text => this.prepareEmbeddingText(text));
+      const input = original.map(text => this.prepareEmbeddingText(text, routing));
       const missing = new Set(input.map((_text, index) => index));
       try {
-        const response = await this.getEmbeddingClient().embeddings.create(
-          this.buildEmbeddingCreateParams(input),
+        const response = await routing.client.embeddings.create(
+          this.buildEmbeddingCreateParams(input, routing),
         );
         for (const item of response?.data || []) {
           if (!Number.isInteger(item?.index)

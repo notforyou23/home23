@@ -95,6 +95,28 @@ async function getOpenAIClientAsync() {
   return getOpenAIClient();
 }
 
+let cachedEnvEmbeddingClient;
+let cachedEnvEmbeddingClientKey;
+
+/**
+ * Client for the env-configured embedding endpoint (EMBEDDING_BASE_URL +
+ * EMBEDDING_API_KEY as a coherent set). Only used when the run config has no
+ * embedding block — launcher-generated configs always pin the model, which
+ * routes to the OpenAI client instead.
+ */
+function getEnvEmbeddingClient() {
+  const baseURL = (process.env.EMBEDDING_BASE_URL || '').trim();
+  if (!baseURL) return getOpenAIClient();
+  const apiKey = process.env.EMBEDDING_API_KEY || 'ollama';
+  const cacheKey = `${baseURL}|${apiKey}`;
+  if (!cachedEnvEmbeddingClient || cachedEnvEmbeddingClientKey !== cacheKey) {
+    const OpenAI = loadOpenAI();
+    cachedEnvEmbeddingClient = new OpenAI({ apiKey, baseURL });
+    cachedEnvEmbeddingClientKey = cacheKey;
+  }
+  return cachedEnvEmbeddingClient;
+}
+
 /**
  * Get OpenAI configuration for debugging
  */
@@ -126,6 +148,7 @@ if (process.env.OPENAI_OAUTH_ENABLED === 'true') {
 module.exports = {
   getOpenAIClient,
   getOpenAIClientAsync,
+  getEnvEmbeddingClient,
   initOpenAIClientOAuth,
   getOpenAIConfig,
 };
