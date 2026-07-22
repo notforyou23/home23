@@ -26,6 +26,7 @@ const { RealityLayer } = require('../system/reality-layer');
 const { IntrospectionRouter } = require('../system/introspection-router');
 const { AgentRouter } = require('../system/agent-routing');
 const { MemoryGovernor } = require('../system/memory-governor');
+const { planMemoryCommunities } = require('../memory/community-detection');
 const { resolveGcCriteria, resolveGovernorEnforcement } = require('../memory/gc-policy');
 const { RunCommitmentGovernor } = require('./run-commitment-governor');
 const { UnifiedClient } = require('./unified-client');
@@ -3701,6 +3702,14 @@ class Orchestrator {
         }
       }
       
+      // Fix 3.5: community detection (seeded label propagation) — config-gated
+      // via architecture.memory.communityDetection, default OFF. Synchronous
+      // and placed immediately before the end-of-cycle save so cluster moves
+      // are serialized with saves and land in this cycle's manifest
+      // generation. Sleep/consolidation cycles return earlier and never
+      // reach this pass.
+      this._maybeRunCommunityDetection();
+
       // PRODUCTION: Save state EVERY cycle for real-time tracking
       // Modern SSDs handle this fine, and real-time dashboard is worth it
       // State is compressed (6-10MB) and saved async
@@ -3948,6 +3957,88 @@ class Orchestrator {
         cycle,
         error: error.message
       });
+    }
+  }
+
+  /**
+   * Fix 3.5 — in-cycle community detection (seeded label propagation).
+   *
+   * `_assignToClusterUnsafe` adopts every newborn node into its neighbors'
+   * majority cluster at birth time, so the first cluster conquers the graph
+   * and nothing global ever corrects it (the lineage one-blob bug). This
+   * pass is the global correction: every `intervalCycles` cycles it derives
+   * communities from actual edge structure (planMemoryCommunities) and
+   * applies them through NetworkMemory.applyCommunityPlan.
+   *
+   * Composition contract:
+   * - Config-gated (architecture.memory.communityDetection.enabled), default
+   *   OFF, armed only at/above minNodes (default 5000). Gates off = the
+   *   birth-time behavior is untouched, bit for bit.
+   * - Synchronous, called INSIDE executeCycle immediately before the
+   *   end-of-cycle saveState(), so cluster moves are serialized with saves
+   *   and land in the same cycle's manifest generation (moved nodes are
+   *   dirty-marked by _moveNodeToClusterUnsafe for the delta chain).
+   * - Pure relabeling: only node.cluster and the memory.clusters index move.
+   *   No node or edge is created, deleted, or reweighted — execution_result
+   *   and execution_failure nodes keep every field except cluster.
+   * - Bounded runtime: planner iterations are clamped (default 20, hard cap
+   *   100) over adjacency built in one edge pass — O(iterations x edges);
+   *   measured ~106ms for 10k nodes / 40k edges.
+   * - Durable evidence: ledger event with move counts (never awaited).
+   */
+  _maybeRunCommunityDetection() {
+    const settings = this.config?.architecture?.memory?.communityDetection;
+    if (!settings?.enabled) return { ran: false, reason: 'disabled' };
+    const memory = this.memory;
+    if (!(memory?.nodes instanceof Map) || typeof memory.applyCommunityPlan !== 'function') {
+      return { ran: false, reason: 'memory_unavailable' };
+    }
+    const rawMinNodes = Number(settings.minNodes);
+    const minNodes = Number.isFinite(rawMinNodes) && rawMinNodes >= 0 ? rawMinNodes : 5000;
+    if (memory.nodes.size < minNodes) {
+      return { ran: false, reason: 'below_min_nodes', nodes: memory.nodes.size, minNodes };
+    }
+    const rawInterval = Number(settings.intervalCycles);
+    const intervalCycles = Number.isSafeInteger(rawInterval) && rawInterval > 0 ? rawInterval : 50;
+    if (this.cycleCount % intervalCycles !== 0) {
+      return { ran: false, reason: 'off_interval', intervalCycles };
+    }
+
+    const startedAt = Date.now();
+    try {
+      const plan = planMemoryCommunities(memory, {
+        ...(settings.maxIterations != null ? { maxIterations: settings.maxIterations } : {}),
+        ...(settings.minCommunitySize != null ? { minCommunitySize: settings.minCommunitySize } : {}),
+        ...(settings.minEdgeWeight != null ? { minEdgeWeight: settings.minEdgeWeight } : {}),
+      });
+      const applied = plan.unchanged
+        ? { movedNodes: 0, createdClusters: 0, communityCount: plan.communityCount }
+        : memory.applyCommunityPlan(plan);
+      const durationMs = Date.now() - startedAt;
+      const summary = {
+        cycle: this.cycleCount,
+        nodes: memory.nodes.size,
+        communities: plan.communityCount,
+        movedNodes: applied.movedNodes,
+        createdClusters: applied.createdClusters,
+        iterations: plan.iterations,
+        converged: plan.converged,
+        degenerate: plan.degenerate,
+        largestCommunity: plan.sizes.length > 0 ? plan.sizes[0].size : 0,
+        durationMs,
+      };
+      this.eventLedger?.log('community_detection', summary);
+      this.logger.info('🧩 Community detection pass complete', summary);
+      return { ran: true, ...summary };
+    } catch (error) {
+      const durationMs = Date.now() - startedAt;
+      this.eventLedger?.log('community_detection_failed', {
+        cycle: this.cycleCount,
+        error: error.message,
+        durationMs,
+      });
+      this.logger.warn('Community detection pass failed', { error: error.message, durationMs });
+      return { ran: false, reason: 'error', error: error.message };
     }
   }
 

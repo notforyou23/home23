@@ -38,6 +38,7 @@ test('default package test authority registers each new lightweight COSMO suite 
     'tests/cosmo23/node-intake-gate.test.cjs',
     'tests/cosmo23/memory-gc-governor.test.cjs',
     'tests/cosmo23/research-memory-delta-compaction.test.cjs',
+    'tests/cosmo23/community-detection.test.cjs',
     'tests/cosmo23/pgs-cancellation.test.cjs',
     'tests/cosmo23/brain-backups.test.cjs',
     'tests/cosmo23/pgs-engine.test.cjs',

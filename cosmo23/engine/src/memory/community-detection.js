@@ -1,0 +1,350 @@
+'use strict';
+
+/**
+ * Graph community detection — seeded label propagation (Fix 3.5).
+ *
+ * Every brain to date lived in a single cluster: `_assignToClusterUnsafe`
+ * adopts each newborn into its neighbors' majority cluster, so the first
+ * cluster conquered the world at birth-time and nothing global ever
+ * corrected it. This planner is the global correction: it derives
+ * communities from actual edge structure, keeps ids stable across runs,
+ * and reports honestly when the graph is one dense blob.
+ *
+ * Pure module — no mutation. Apply via NetworkMemory.applyCommunityPlan.
+ * Ported from the Home23 engine donor (live on jerry since 2026-07-16);
+ * scheduled in-cycle by Orchestrator._maybeRunCommunityDetection.
+ */
+
+const DEFAULT_MAX_ITERATIONS = 20;
+const DEFAULT_MIN_COMMUNITY_SIZE = 12;
+
+function compareAsStrings(a, b) {
+  const left = String(a);
+  const right = String(b);
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+function normalizeNodeId(memory, rawId) {
+  if (memory.nodes.has(rawId)) return rawId;
+  const text = String(rawId);
+  if (/^\d+$/.test(text)) {
+    const numeric = Number(text);
+    if (memory.nodes.has(numeric)) return numeric;
+  }
+  if (memory.nodes.has(text)) return text;
+  return rawId;
+}
+
+function edgeEndpoints(key, edge, memory) {
+  let source = edge?.source;
+  let target = edge?.target;
+  if ((source === undefined || target === undefined) && typeof key === 'string') {
+    const parts = key.split('->');
+    source = parts[0];
+    target = parts[1];
+  }
+  if (source === undefined || target === undefined) return null;
+  return [normalizeNodeId(memory, source), normalizeNodeId(memory, target)];
+}
+
+function hasCluster(node) {
+  return node?.cluster !== null && node?.cluster !== undefined;
+}
+
+function buildAdjacency(memory, nodeIds, { bridgeVote, minEdgeWeight }) {
+  const adjacency = new Map(nodeIds.map((id) => [id, []]));
+  for (const [key, edge] of memory.edges) {
+    const endpoints = edgeEndpoints(key, edge, memory);
+    if (!endpoints) continue;
+    const [source, target] = endpoints;
+    if (source === target) continue;
+    if (!adjacency.has(source) || !adjacency.has(target)) continue;
+    const weight = Number(edge?.weight ?? 0);
+    if (!(weight > 0) || weight < minEdgeWeight) continue;
+    const vote = weight * (edge?.type === 'bridge' ? bridgeVote : 1);
+    if (!(vote > 0)) continue;
+    // Precondition: edge keys are canonical (sorted endpoints, one key per
+    // pair) — _upsertEdgeUnsafe enforces this and legacy load validates it.
+    // A hand-built map with both A->B and B->A keys would double this vote.
+    adjacency.get(source).push([target, vote]);
+    adjacency.get(target).push([source, vote]);
+  }
+  return adjacency;
+}
+
+function propagateLabels(nodeIds, adjacency, labels, maxIterations) {
+  let iterations = 0;
+  let converged = false;
+  while (iterations < maxIterations) {
+    iterations += 1;
+    let moves = 0;
+    for (const id of nodeIds) {
+      const neighbors = adjacency.get(id);
+      if (neighbors.length === 0) continue;
+      const votes = new Map();
+      for (const [neighborId, vote] of neighbors) {
+        const label = labels.get(neighborId);
+        votes.set(label, (votes.get(label) || 0) + vote);
+      }
+      let best = null;
+      let bestScore = -Infinity;
+      for (const [label, score] of votes) {
+        if (score > bestScore
+            || (score === bestScore && compareAsStrings(label, best) < 0)) {
+          best = label;
+          bestScore = score;
+        }
+      }
+      const current = labels.get(id);
+      const currentScore = votes.get(current) || 0;
+      // Move only on a STRICT improvement: retaining the current label on
+      // ties is what keeps successive runs stable instead of churning.
+      if (best !== current && bestScore > currentScore) {
+        labels.set(id, best);
+        moves += 1;
+      }
+    }
+    if (moves === 0) {
+      converged = true;
+      break;
+    }
+  }
+  return { iterations, converged };
+}
+
+// Fold communities below the floor into their strongest-connected neighbor
+// community (bridge discount already applied to votes); isolated islands with
+// no external edges survive — real islands are honest data.
+function foldSmallCommunities(groups, adjacency, minCommunitySize) {
+  const labelOf = new Map();
+  const members = new Map();
+  for (const group of groups) {
+    members.set(group.label, new Set(group.members));
+    for (const id of group.members) labelOf.set(id, group.label);
+  }
+
+  let folded = true;
+  while (folded) {
+    folded = false;
+    // Deterministic order: smallest community first, then label.
+    const candidates = Array.from(members.entries())
+      .filter(([, ids]) => ids.size > 0 && ids.size < minCommunitySize)
+      .sort((a, b) => a[1].size - b[1].size || compareAsStrings(a[0], b[0]));
+    for (const [label, ids] of candidates) {
+      if (!members.has(label) || members.get(label).size >= minCommunitySize) continue;
+      const external = new Map();
+      for (const id of ids) {
+        for (const [neighborId, vote] of adjacency.get(id) || []) {
+          const neighborLabel = labelOf.get(neighborId);
+          if (neighborLabel === label) continue;
+          external.set(neighborLabel, (external.get(neighborLabel) || 0) + vote);
+        }
+      }
+      if (external.size === 0) continue; // genuinely isolated island — keep it
+      let target = null;
+      let targetScore = -Infinity;
+      for (const [neighborLabel, score] of external) {
+        if (score > targetScore
+            || (score === targetScore && compareAsStrings(neighborLabel, target) < 0)) {
+          target = neighborLabel;
+          targetScore = score;
+        }
+      }
+      const targetSet = members.get(target);
+      for (const id of ids) {
+        targetSet.add(id);
+        labelOf.set(id, target);
+      }
+      members.delete(label);
+      folded = true;
+    }
+  }
+
+  // label is plan-internal (sort tiebreak only) — not stable across runs;
+  // never key identity off it.
+  return Array.from(members.entries())
+    .map(([label, ids]) => ({ label, members: Array.from(ids).sort(compareAsStrings) }))
+    .sort((a, b) => b.members.length - a.members.length || compareAsStrings(a.label, b.label));
+}
+
+// Each community reclaims the prior cluster id it inherited the plurality of
+// its members from; each prior id is claimable once (greedy, overlap desc).
+function assignStableClusterIds(groups, memory) {
+  // For each group, tally members' prior cluster ids — keyed by String() so
+  // numeric 1 and '1' agree, but remembering the first-seen ORIGINAL value so
+  // reuse never hands the clusters map a type-flipped id.
+  const claims = [];
+  groups.forEach((group, index) => {
+    const priorCounts = new Map();
+    for (const id of group.members) {
+      const node = memory.nodes.get(id);
+      if (!hasCluster(node)) continue;
+      const key = String(node.cluster);
+      const entry = priorCounts.get(key) || { count: 0, original: node.cluster };
+      entry.count += 1;
+      priorCounts.set(key, entry);
+    }
+    let bestKey = null;
+    let best = null;
+    for (const [key, entry] of priorCounts) {
+      if (!best || entry.count > best.count
+          || (entry.count === best.count && compareAsStrings(key, bestKey) < 0)) {
+        best = entry;
+        bestKey = key;
+      }
+    }
+    if (best) {
+      claims.push({
+        index,
+        key: bestKey,
+        original: best.original,
+        overlap: best.count,
+        size: group.members.length,
+        // members pre-sorted by fold — [0] is the string-smallest.
+        smallestMember: group.members[0],
+      });
+    }
+  });
+
+  // Greedy claim: largest overlap wins each prior id; ties -> larger group,
+  // then smallest member id. One claim per prior id.
+  claims.sort((a, b) => b.overlap - a.overlap
+    || b.size - a.size
+    || compareAsStrings(a.smallestMember, b.smallestMember));
+  const claimedKeys = new Set();
+  const assigned = new Map();
+  for (const claim of claims) {
+    if (claimedKeys.has(claim.key)) continue;
+    claimedKeys.add(claim.key);
+    assigned.set(claim.index, claim.original);
+  }
+
+  return groups.map((group, index) => ({
+    clusterId: assigned.has(index) ? assigned.get(index) : null,
+    members: group.members,
+  }));
+}
+
+function planMemoryCommunities(memory, options = {}) {
+  const nodes = memory?.nodes instanceof Map ? memory.nodes : new Map();
+  const rawBridgeVote = Number(
+    options.bridgeVote ?? memory?.config?.spreading?.bridgeTraversalFactor ?? 0.2,
+  );
+  const bridgeVote = Number.isFinite(rawBridgeVote) ? rawBridgeVote : 0.2;
+  const maxIterations = Math.min(100, Math.max(1, Number(options.maxIterations) || DEFAULT_MAX_ITERATIONS));
+  const minCommunitySize = Math.min(500, Math.max(2, Number(options.minCommunitySize) || DEFAULT_MIN_COMMUNITY_SIZE));
+  const rawMinEdgeWeight = Number(options.minEdgeWeight ?? 0);
+  const minEdgeWeight = Number.isFinite(rawMinEdgeWeight) ? rawMinEdgeWeight : 0;
+
+  const nodeIds = Array.from(nodes.keys()).sort(compareAsStrings);
+  const totalNodes = nodeIds.length;
+  const scopedMemory = { nodes, edges: memory?.edges instanceof Map ? memory.edges : new Map() };
+  const adjacency = buildAdjacency(scopedMemory, nodeIds, { bridgeVote, minEdgeWeight });
+
+  // Seeding: stability after structure. >1 distinct prior cluster → seed from
+  // clusters (subsequent runs move only genuinely re-wired nodes). Otherwise
+  // (virgin uniform/unclustered brain) seed singletons — a uniform seed over a
+  // dense region can never split from within, which is exactly the mega-ball
+  // this module exists to break.
+  const distinctPriorClusters = new Set();
+  for (const node of nodes.values()) {
+    if (hasCluster(node)) distinctPriorClusters.add(String(node.cluster));
+  }
+  const seededFromClusters = distinctPriorClusters.size > 1;
+  const labels = new Map();
+  for (const id of nodeIds) {
+    const node = nodes.get(id);
+    labels.set(
+      id,
+      seededFromClusters && hasCluster(node) ? `c:${String(node.cluster)}` : `n:${String(id)}`,
+    );
+  }
+
+  const { iterations, converged } = propagateLabels(nodeIds, adjacency, labels, maxIterations);
+
+  // Group by final label (deterministic member order).
+  const byLabel = new Map();
+  for (const id of nodeIds) {
+    const label = labels.get(id);
+    if (!byLabel.has(label)) byLabel.set(label, []);
+    byLabel.get(label).push(id);
+  }
+  let groups = Array.from(byLabel.entries())
+    .map(([label, members]) => ({ label, members }))
+    .sort((a, b) => b.members.length - a.members.length || compareAsStrings(a.label, b.label));
+
+  groups = foldSmallCommunities(groups, adjacency, minCommunitySize);
+
+  const communities = assignStableClusterIds(groups, { nodes });
+
+  // Sample round-robins across communities (2 per community, 20 total) so a
+  // giant first community cannot crowd every other community out of the plan
+  // preview. movedNodes still counts every move exactly.
+  let movedNodes = 0;
+  const perCommunitySamples = [];
+  for (const community of communities) {
+    const communitySamples = [];
+    for (const nodeId of community.members) {
+      const node = nodes.get(nodeId);
+      const from = hasCluster(node) ? node.cluster : null;
+      const moves = community.clusterId === null
+        ? true
+        : String(from) !== String(community.clusterId) || from === null;
+      if (!moves) continue;
+      movedNodes += 1;
+      if (communitySamples.length < 2) {
+        communitySamples.push({
+          id: String(nodeId),
+          from: from === null ? null : String(from),
+          to: community.clusterId === null ? 'new' : String(community.clusterId),
+          preview: String(node?.concept || '').slice(0, 120),
+        });
+      }
+    }
+    perCommunitySamples.push(communitySamples);
+  }
+  const sample = [];
+  for (const communitySamples of perCommunitySamples) {
+    for (const s of communitySamples) {
+      if (sample.length >= 20) break;
+      sample.push(s);
+    }
+    if (sample.length >= 20) break;
+  }
+
+  const largest = communities.reduce((max, c) => Math.max(max, c.members.length), 0);
+  const degenerate = totalNodes > 0
+    && (largest > totalNodes * 0.5 || communities.length < 3);
+
+  return {
+    communityCount: communities.length,
+    movedNodes,
+    unchanged: movedNodes === 0,
+    converged,
+    iterations,
+    degenerate,
+    communities,
+    sizes: communities
+      .map((c) => ({ clusterId: c.clusterId, size: c.members.length }))
+      .sort((a, b) => b.size - a.size),
+    sample,
+  };
+}
+
+function applyMemoryCommunities(memory, plan) {
+  if (!memory?.nodes || !plan) {
+    return { movedNodes: 0, createdClusters: 0, communityCount: 0 };
+  }
+  if (typeof memory.applyCommunityPlan !== 'function') {
+    throw new Error('memory_communities_mutation_api_required');
+  }
+  return memory.applyCommunityPlan(plan);
+}
+
+module.exports = {
+  applyMemoryCommunities,
+  planMemoryCommunities,
+};
+
