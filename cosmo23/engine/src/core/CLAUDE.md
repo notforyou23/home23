@@ -164,6 +164,20 @@ Provider routing by assignment: `openai-codex` provider tag routes to `generateC
 | `memory.deltaCompaction.enabled` | Fix 3.4 gate, default false — armed saves append changes-only manifest deltas instead of rewriting the full base sidecars every cycle |
 | `memory.deltaCompaction.minNodes` | Node floor below which saves stay full-rewrite even when enabled, default 10000 |
 | `memory.deltaCompaction.fullRewriteIntervalMs` | Max base age before an armed save rebases with a full rewrite (folds the delta chain back in), default 21600000 (6h) |
+| `architecture.memory.intake.enabled` | Fix 3.1 anti-slop node-intake gate, default false — armed: strips prompt-preamble, rejects hallucinated tool-call transcripts, diets oversized concepts at addNode birth time (creation-time only; hydration/merge exempt; execution_result/failure tags immune) |
+| `architecture.memory.intake.maxConceptChars` | Node-diet cap, default 4000; oversize concepts truncated with a `[truncated]` marker |
+| `memory.gc.enabled` / `memory.gc.maxAgeDays` | Fix 3.2 research-timescale GC, default off / 14 days — armed: prunes nodes below `decay.minimumWeight` untouched past maxAgeDays; protected tags exempt |
+| `memory.governor.applyPruning` / `memory.governor.maxPrunesPerEval` | Fix 3.2 governor enforcement (distinct from the inert legacy `memoryGovernance` knob), default false / 50 — armed: bounded in-cycle pruning through the shared removal path, never protected tags, never mid-save |
+| `architecture.memory.communityDetection.enabled` | Fix 3.5 seeded-label-propagation reclustering, default false — armed at/above minNodes, relabels `node.cluster` from edge structure every intervalCycles (pure relabel, moves dirty-marked for the delta chain) |
+| `architecture.memory.communityDetection.minNodes` / `.intervalCycles` | Community-detection arming floor / cadence, default 5000 / 50 |
+| `governance.enabled` | Component 4.1 run vitals/regulator master gate, default true but observe-only without a budget or tracker (every lane `ok`) |
+| `governance.windowCycles` | Trailing window for progress/spend lane evidence, default 10 |
+| `governance.pacing.warnSlowdownFactor` / `.concurrencyNotch` | Warn-lane pacing: inter-cycle interval stretch (min 1) / concurrency cap notch, default 1.5 / 1 |
+| `governance.spend.warnRatio` / `.criticalRatio` | Spend-lane thresholds vs budget, default 0.70 / 0.95 (≥critical → PARK) |
+| `governance.park.exitCode` / `.stopTimeoutMs` | Park escalation exit code (clamped 1..255; watchdog restart stays 86) / guarded-save bound, default 81 / 180000 |
+| `governance.starvation.enabled` / `.windowCycles` | Component 4.3 progress-lane starvation detector, default true / 20 |
+| `spend.maxTokens` / `spend.maxUsd` / `spend.prices` | Component 4.2 run budget (from launch keys, round-tripped through metadata → sentinel replay); USD lane reads `unpriced` without a `prices` table |
+| `spend.persistIntervalMs` / `shutdownSpendMeterTimeoutMs` | Spend-meter debounced persist cadence / bounded shutdown flush, default 30000 / 3000 |
 | `recovery.checkpointInterval` | Cycles between checkpoints, default 5 |
 | `planning.maxRetries` | PlanExecutor task retry limit, default 3 |
 | `governance.sleepPolicy.mode` | Consolidation trigger authority: `legacy` (default — dual-system fatigue/rhythm trigger, bit-identical) or `policy` (idle / post-milestone triggers, Component 4.4) |
@@ -257,6 +271,8 @@ Also strips leading `runtime/` (a known GPT-5.2 hallucination). MCP accessibilit
 | `.heartbeat` | Liveness/progress stamp `{ ts, pid, cycle, lastCycleStartTs, lastCycleEndTs, phase }`, tmp+rename, every `heartbeat.intervalMs` + cycle boundaries |
 | `.watchdog.json` | Circuit-breaker state (tmp+rename), survives restarts; `restartRequested` persisted before exit-86 escalation, cleared only by the first successful cycle |
 | `.sentinel.json` (+ `.sentinel.json.last`) | SERVER-side remediation-ladder state for the run (written by `cosmo23/server/lib/run-sentinel.js`, not the engine); archived to `.last` on user stop — evidence is never silently deleted |
+| `.spend.json` (+ `.spend.json.corrupt-<ts>`) | Component 4.2 cumulative token/USD spend meter, debounced tmp+fsync+rename, boot-resumed; corrupt files preserved aside, never deleted |
+| `.park.json` (+ `.park.json.last`) | Component 4.1 park state — a run the regulator deliberately paused (exit 81) for critical spend or progress starvation; `resumable:true`. The server treats this as parked (NOT wedged/crashed); `POST /api/resume` archives it to `.last` and relaunches via the continuation path |
 | `events.jsonl` + `events-<stamp>.jsonl.gz` | Hash-chained event ledger + gzipped rotation rolls (`ledger.maxBytes` / `ledger.keepRolls`); broken-chain tails preserved as `events-<stamp>.unchained.jsonl` |
 | `outputs/` | Agent deliverables |
 | `coordinator/` | Review plans, strategic snapshots |
