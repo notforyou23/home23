@@ -2,6 +2,7 @@ const { GPT5Client } = require('./gpt5-client');
 const { MCPClient } = require('./mcp-client');
 const { ChatCompletionsClient } = require('./chat-completions-client');
 const { wrapSystemPrompt } = require('./provider-prompts');
+const { recordCompletionSpend } = require('./spend-meter');
 
 function loadAnthropicClient() {
   return require('./anthropic-client');
@@ -633,7 +634,9 @@ class UnifiedClient extends GPT5Client {
       reasoningSummary = '';
     }
     
-    return {
+    // Phase 4 (R4): leaf metering — xAI Responses stream (usage only arrives
+    // when response.completed delivered it; absent usage counts unmetered).
+    return recordCompletionSpend({
       content: aggregatedText,
       reasoning: reasoningSummary,
       responseId: finalResponse?.id,
@@ -642,7 +645,7 @@ class UnifiedClient extends GPT5Client {
       output: finalResponse?.output || null,  // CRITICAL: tool calls for agentic loop
       hadError,
       errorType
-    };
+    }, 'xai', assignment.model);
   }
 
   /**
@@ -792,7 +795,9 @@ class UnifiedClient extends GPT5Client {
       aggregatedText = reasoningSummary;
     }
 
-    return {
+    // Phase 4 (R4): leaf metering — Codex zero-fills usage when its stream
+    // never delivered it; all-zero usage counts as an unmetered call.
+    return recordCompletionSpend({
       content: aggregatedText,
       reasoning: reasoningSummary || undefined,
       usage: {
@@ -802,7 +807,7 @@ class UnifiedClient extends GPT5Client {
       },
       model: assignment.model,
       provider: 'openai-codex'
-    };
+    }, 'openai-codex', assignment.model);
   }
 
   /**

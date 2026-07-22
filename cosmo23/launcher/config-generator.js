@@ -41,6 +41,36 @@ function parsePositiveInt(value, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+// Phase 4 (R4) — Patch 72: optional launch spend budget (positive finite
+// number or null; null = metering without that budget dimension).
+function parseSpendLimit(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+// Phase 4 (R4) — Patch 72: config-provided price table (per million tokens,
+// keys "provider/model" or "provider"). NO hardcoded prices; capped at 64.
+function sanitizeSpendPrices(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const entries = {};
+  let count = 0;
+  for (const [rawKey, rawPrice] of Object.entries(value)) {
+    if (count >= 64) break;
+    const key = typeof rawKey === 'string' ? rawKey.trim().slice(0, 200) : '';
+    if (!key || !rawPrice || typeof rawPrice !== 'object') continue;
+    const inPerMTok = Number(rawPrice.inPerMTok);
+    const outPerMTok = Number(rawPrice.outPerMTok);
+    const entry = {};
+    if (Number.isFinite(inPerMTok) && inPerMTok >= 0) entry.inPerMTok = inPerMTok;
+    if (Number.isFinite(outPerMTok) && outPerMTok >= 0) entry.outPerMTok = outPerMTok;
+    if (Object.keys(entry).length === 0) continue;
+    entries[key] = entry;
+    count += 1;
+  }
+  return count > 0 ? entries : null;
+}
+
 function buildModelMappingBlock(defaultModel, fastModel) {
   return [
     `gpt-5.6: "${defaultModel}"`,
@@ -144,7 +174,10 @@ class ConfigGenerator {
       strategic_provider = null,
       strategic_model = null,
       synthesis_commit_step = true,
-      synthesis_spine_cap = 5
+      synthesis_spine_cap = 5,
+      spend_max_tokens = null,
+      spend_max_usd = null,
+      spend_prices = null
     } = settings || {};
 
     const enable_feeder = settings.enable_feeder !== false;
@@ -206,6 +239,14 @@ class ConfigGenerator {
     const usesCodexModels = selectedProviders.includes('openai-codex') || enable_openai_codex;
     const synthesisCommitStep = parseBoolean(synthesis_commit_step, true);
     const synthesisSpineCap = parsePositiveInt(synthesis_spine_cap, 5);
+    // Phase 4 (R4) — Patch 72: spend block values. JSON is valid YAML, so the
+    // sanitized price table is emitted as a single-line flow mapping.
+    const spendMaxTokens = parseSpendLimit(spend_max_tokens);
+    const spendMaxUsd = parseSpendLimit(spend_max_usd);
+    const spendPrices = sanitizeSpendPrices(spend_prices);
+    const spendMaxTokensYaml = spendMaxTokens === null ? 'null' : String(spendMaxTokens);
+    const spendMaxUsdYaml = spendMaxUsd === null ? 'null' : String(spendMaxUsd);
+    const spendPricesYaml = spendPrices ? JSON.stringify(spendPrices) : 'null';
 
     const anthropicAvailableModelsBlock = availableAnthropicModels.length > 0
       ? availableAnthropicModels.map(model => [
@@ -545,6 +586,15 @@ commitmentGovernor:
   rateLimitCooldownCycles: 5
   maxStrategicSpawnsPerCycle: 1
   maxUrgentSpawnsPerCycle: 1
+
+# Phase 4 (R4): run spend budget — token metering is always on inside the
+# engine; USD is computed only from this config-provided price table
+# (per-million-token prices keyed "provider/model" or "provider") — never
+# from hardcoded prices. null = metering without that budget dimension.
+spend:
+  maxTokens: ${spendMaxTokensYaml}
+  maxUsd: ${spendMaxUsdYaml}
+  prices: ${spendPricesYaml}
 
 coordinator:
   enabled: ${(dream_mode || enable_consolidation_mode) ? 'false' : 'true'}

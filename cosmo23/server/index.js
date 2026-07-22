@@ -489,6 +489,37 @@ function parsePositiveInt(value, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+// Phase 4 (R4) — Patch 72: optional launch spend budget. Positive finite
+// number or null; never coerced defaults (absent budget = metering only).
+function parseSpendLimit(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+// Phase 4 (R4) — Patch 72: config-provided price table, per million tokens,
+// keyed "provider/model" or "provider" -> { inPerMTok, outPerMTok }. NO
+// hardcoded prices anywhere; invalid entries dropped; capped at 64.
+function sanitizeSpendPrices(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const entries = {};
+  let count = 0;
+  for (const [rawKey, rawPrice] of Object.entries(value)) {
+    if (count >= 64) break;
+    const key = typeof rawKey === 'string' ? rawKey.trim().slice(0, 200) : '';
+    if (!key || !rawPrice || typeof rawPrice !== 'object') continue;
+    const inPerMTok = Number(rawPrice.inPerMTok);
+    const outPerMTok = Number(rawPrice.outPerMTok);
+    const entry = {};
+    if (Number.isFinite(inPerMTok) && inPerMTok >= 0) entry.inPerMTok = inPerMTok;
+    if (Number.isFinite(outPerMTok) && outPerMTok >= 0) entry.outPerMTok = outPerMTok;
+    if (Object.keys(entry).length === 0) continue;
+    entries[key] = entry;
+    count += 1;
+  }
+  return count > 0 ? entries : null;
+}
+
 function getReferenceRunsPaths() {
   const envPaths = process.env.COSMO_REFERENCE_RUNS_PATHS || process.env.COSMO_REFERENCE_RUNS_PATH || '';
 
@@ -927,7 +958,14 @@ function serializeLaunchSettings(payload, setupConfig) {
     enable_openai_codex: usesCodex,
     enable_xai: usesXai,
     xai_default_model: xaiDefaultModel,
-    xai_strategic_model: xaiStrategicModel
+    xai_strategic_model: xaiStrategicModel,
+    // Phase 4 (R4) — Patch 72: optional run spend budget + price table.
+    // Persisted into metadata.json (writeRuntimeMetadata) so the sentinel's
+    // metadata replay (launchPreparedResearch) regenerates the same spend
+    // config after a restart. Additive: absent keys serialize as null.
+    spend_max_tokens: parseSpendLimit(payload.spendMaxTokens),
+    spend_max_usd: parseSpendLimit(payload.spendMaxUsd),
+    spend_prices: sanitizeSpendPrices(payload.spendPrices)
   };
 }
 
@@ -981,6 +1019,9 @@ async function writeRuntimeMetadata(runPath, payload, launchSettings) {
     xaiStrategicModel: launchSettings.xai_strategic_model,
     synthesisCommitStep: launchSettings.synthesis_commit_step,
     synthesisSpineCap: launchSettings.synthesis_spine_cap,
+    spendMaxTokens: launchSettings.spend_max_tokens,
+    spendMaxUsd: launchSettings.spend_max_usd,
+    spendPrices: launchSettings.spend_prices,
     savedAt: new Date().toISOString()
   };
 

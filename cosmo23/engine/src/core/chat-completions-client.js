@@ -28,6 +28,7 @@ function loadOpenAI() {
 }
 
 const { normalizeProviderCompletion } = require('../../../lib/provider-completion');
+const { recordCompletionSpend } = require('./spend-meter');
 const {
   abortableDelay,
   awaitWithCancellation,
@@ -518,7 +519,10 @@ class ChatCompletionsClient {
 
     if (!content && reasoning) content = reasoning;
     throwIfAborted(signal);
-    return normalizeProviderCompletion({
+    // Phase 4 (R4): leaf metering — streaming servers frequently omit usage
+    // (no stream_options.include_usage in the payload); null usage counts as
+    // an unmetered call, never an estimate.
+    return recordCompletionSpend(normalizeProviderCompletion({
       content, terminalReceived, finishReason, hadError, error: streamError,
       responseId, model: originalModel, observedModel: responseModel,
       provider: this.config.providerId,
@@ -531,7 +535,7 @@ class ChatCompletionsClient {
         type: 'function_call', id: toolCall.id,
         name: toolCall.name, arguments: toolCall.arguments,
       })) : null,
-    });
+    }), this.config.providerId, originalModel);
   }
 
   /**
@@ -573,7 +577,10 @@ class ChatCompletionsClient {
         ), 'Provider tool call',
       );
     }
-    return normalizeProviderCompletion({
+    // Phase 4 (R4): leaf metering — non-streaming usage passes through RAW
+    // chat-completions shape (prompt_tokens/completion_tokens); the meter
+    // normalizes both shape families.
+    return recordCompletionSpend(normalizeProviderCompletion({
       content,
       terminalReceived: Boolean(choice?.finish_reason),
       finishReason: choice?.finish_reason || null,
@@ -584,7 +591,7 @@ class ChatCompletionsClient {
       provider: this.config.providerId,
       usage: response.usage,
       output: choice?.message?.tool_calls || null,
-    });
+    }), this.config.providerId, originalModel);
   }
 
   /**

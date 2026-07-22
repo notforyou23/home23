@@ -14,6 +14,7 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 const { getAnthropicApiKey, prepareSystemPrompt, isOAuthToken, getStealthHeaders } = require('../services/anthropic-oauth-engine');
+const { recordCompletionSpend } = require('./spend-meter');
 
 // HOME23 PATCH — current Sonnet 4.7 and Opus 4.8 models reject legacy sampling
 // params such as temperature and use adaptive thinking instead.
@@ -799,7 +800,12 @@ class AnthropicClient {
         this.logger?.info?.('[AnthropicClient] Citations extracted:', citations.length);
       }
 
-      return response;
+      // Phase 4 (R4): leaf metering — generate() and generateWithWebSearch()
+      // both funnel through this stream processor; providerId keeps
+      // anthropic vs minimax attribution honest. Error-shaped results
+      // (_buildErrorResponse) are deliberately NOT metered: they zero-fill
+      // usage by construction and include pre-call failures.
+      return recordCompletionSpend(response, this.providerId, response.model);
 
     } catch (error) {
       this.logger?.error?.('[AnthropicClient] Stream processing error:', error.message);

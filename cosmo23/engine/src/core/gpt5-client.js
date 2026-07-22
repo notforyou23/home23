@@ -1,4 +1,5 @@
 const { getOpenAIClient, getOpenAIClientAsync } = require('./openai-client');
+const { recordCompletionSpend } = require('./spend-meter');
 
 function loadOpenAI() {
   try {
@@ -247,7 +248,9 @@ class GPT5Client {
         });
         // Return a meaningful error message instead of empty string
         // BUT still include output for any partial data
-        return {
+        // Phase 4 (R4): error-shaped returns can still carry real usage
+        // (tokens were consumed) — meter them; missing usage counts unmetered.
+        return recordCompletionSpend({
           content: `[Error: ${errorMsg}]`,
           reasoning: reasoningSummary,
           responseId: finalResponse?.id,
@@ -257,7 +260,7 @@ class GPT5Client {
           hadError: true,
           errorType,
           output: finalResponse?.output // CRITICAL: Always pass through output for tool calls
-        };
+        }, 'openai', model);
       }
       
       // If we have function calls but no text, that's OK - just use empty content
@@ -269,7 +272,8 @@ class GPT5Client {
         aggregatedText = ''; // Empty content is fine for tool-use responses
       }
 
-      return {
+      // Phase 4 (R4): leaf metering — every returned OpenAI Responses call.
+      return recordCompletionSpend({
         content: aggregatedText,
         reasoning: reasoningSummary,
         responseId: finalResponse?.id,
@@ -281,7 +285,7 @@ class GPT5Client {
         webSearchSources, // NEW: Return web search sources
         citations, // NEW: Return URL citations
         output: finalResponse?.output // CRITICAL: Pass through for code_interpreter file annotations
-      };
+      }, 'openai', model);
     } catch (error) {
       this.logger?.error?.('GPT-5.2 API call failed', { 
         error: error.message,

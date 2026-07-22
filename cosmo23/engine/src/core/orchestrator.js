@@ -29,6 +29,7 @@ const { MemoryGovernor } = require('../system/memory-governor');
 const { planMemoryCommunities } = require('../memory/community-detection');
 const { resolveGcCriteria, resolveGovernorEnforcement } = require('../memory/gc-policy');
 const { RunCommitmentGovernor } = require('./run-commitment-governor');
+const { getSpendMeter } = require('./spend-meter');
 const { UnifiedClient } = require('./unified-client');
 const { persistResearchState } = require('../../../lib/memory-sidecar');
 const { writeSnapshot, readSnapshot, snapshotNodeCount, resolveKnownGoodNodeCount, evaluateSaveSafety } = require('./brain-snapshot');
@@ -280,6 +281,17 @@ class Orchestrator {
     this.eventLedger = new EventLedger(this.logsDir, {
       maxBytes: config.ledger?.maxBytes,
       keepRolls: config.ledger?.keepRolls,
+      logger,
+    });
+    // Phase 4 (R4): bind the process-global spend meter to this run —
+    // <logsDir>/.spend.json persistence, budget from config.spend
+    // (maxTokens/maxUsd/prices — NO hardcoded prices). Metering itself
+    // happens inside the provider clients (leaf response returns); the
+    // orchestrator only attaches the sink and exposes the snapshot.
+    this.spendMeter = getSpendMeter();
+    this.spendMeter.configure({
+      logsDir: this.logsDir,
+      spendConfig: config.spend || {},
       logger,
     });
     this.shutdownHandler = null; // Created after initialization
@@ -615,6 +627,16 @@ class Orchestrator {
       await this.eventLedger.initialize();
     } catch (error) {
       this.logger.warn('Event ledger init failed (non-fatal)', { error: error.message });
+    }
+
+    // Phase 4 (R4): boot-resume the cumulative spend meter from
+    // <logsDir>/.spend.json (tmp+rename persisted; corrupt files are
+    // preserved aside, never deleted). Non-fatal — metering must never
+    // block a run.
+    try {
+      await this.spendMeter.resumeFromDisk();
+    } catch (error) {
+      this.logger.warn('Spend meter resume failed (non-fatal)', { error: error.message });
     }
     
     // Initialize evaluation framework
@@ -9972,6 +9994,27 @@ OUTPUT FORMAT (JSON ONLY):
     }
   }
 
+  /**
+   * Phase 4 (R4): flush the spend meter's last debounced window during
+   * shutdown, bounded by the shutdown budget (same pattern as
+   * closeLedgerForShutdown). Best-effort by design — a wedged fs can cost
+   * at most the bound, and the meter itself never throws.
+   */
+  async flushSpendMeterForShutdown() {
+    if (!this.spendMeter) return;
+    const timeoutMs = shutdownBudgetMs(this.shutdownDeadline, this.config.shutdownSpendMeterTimeoutMs || 3000);
+    try {
+      const outcome = await this.spendMeter.flushForShutdown(timeoutMs);
+      if (outcome?.status === 'timeout') {
+        this.logger.warn('⚠️ Spend meter flush timed out during shutdown; continuing', { timeoutMs });
+      } else if (outcome?.status === 'error') {
+        this.logger.warn('Spend meter flush failed (non-fatal)', { reason: outcome?.reason || null });
+      }
+    } catch (error) {
+      this.logger.warn('Spend meter flush failed (non-fatal)', { error: error?.message });
+    }
+  }
+
   async stop() {
     this.logger.info('Stopping GPT-5.2 system...');
     this.running = false;
@@ -10049,6 +10092,12 @@ OUTPUT FORMAT (JSON ONLY):
     // test fakes without a ledger skip cleanly.
     if (this.eventLedger) {
       await this.closeLedgerForShutdown();
+    }
+
+    // Phase 4 (R4): persist the final spend window (bounded). After the
+    // ledger close so ledger evidence lands first under a tight budget.
+    if (this.spendMeter) {
+      await this.flushSpendMeterForShutdown();
     }
 
     this.logger.info('GPT-5.2 system stopped');
@@ -10669,6 +10718,9 @@ OUTPUT FORMAT (JSON ONLY):
         usingWebSearch: true
       },
       clusterCoordinator: this.clusterCoordinator ? this.clusterCoordinator.getStats() : null,
+      // Phase 4 (R4): additive spend snapshot — computed, never stored
+      // authority; lanes and the status contract read from here.
+      spend: this.spendMeter ? this.spendMeter.getSnapshot() : null,
       subsystems: {
         memory: this.memory.getStats(),
         roles: this.roles.getStats(),
