@@ -5,19 +5,66 @@ const { promisify } = require('util');
 const gzip = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
 
+function uniqueTmpPath(targetPath) {
+  const suffix = `${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
+  return `${targetPath}.${suffix}.tmp`;
+}
+
+/**
+ * Salvage the first gzip member from a buffer with trailing garbage.
+ *
+ * A mid-write kill or a concatenating writer can leave extra bytes after a
+ * complete gzip stream; plain gunzip rejects the whole file. This parses the
+ * gzip header (RFC 1952) to find the deflate payload, then inflates it with
+ * Z_SYNC_FLUSH so decompression stops cleanly at the end of the first stream
+ * instead of erroring on the trailing bytes.
+ *
+ * @param {Buffer} buffer - Raw file contents starting with a gzip header
+ * @returns {Buffer} - Decompressed payload of the first gzip member
+ */
+function salvageFirstGzipMember(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 18) {
+    throw new Error('Buffer too short to contain a gzip stream');
+  }
+  if (buffer[0] !== 0x1f || buffer[1] !== 0x8b || buffer[2] !== 0x08) {
+    throw new Error('Not a gzip (deflate) stream');
+  }
+  const flg = buffer[3];
+  let offset = 10;
+  if (flg & 0x04) { // FEXTRA
+    if (buffer.length < offset + 2) throw new Error('Truncated gzip header (FEXTRA)');
+    offset += 2 + buffer.readUInt16LE(offset);
+  }
+  if (flg & 0x08) { // FNAME (zero-terminated)
+    while (offset < buffer.length && buffer[offset] !== 0x00) offset++;
+    offset++;
+  }
+  if (flg & 0x10) { // FCOMMENT (zero-terminated)
+    while (offset < buffer.length && buffer[offset] !== 0x00) offset++;
+    offset++;
+  }
+  if (flg & 0x02) offset += 2; // FHCRC
+  if (offset >= buffer.length) {
+    throw new Error('Truncated gzip header');
+  }
+  return zlib.inflateRawSync(buffer.subarray(offset), {
+    finishFlush: zlib.constants.Z_SYNC_FLUSH
+  });
+}
+
 /**
  * State Compression Utilities
- * 
+ *
  * Handles compression/decompression of large state files
  * to reduce disk usage without changing data structure.
- * 
+ *
  * Backward compatible: can read both compressed and uncompressed files.
  */
 class StateCompression {
-  
+
   /**
-   * Compress and save state to file
-   * 
+   * Compress and save state to file (atomic: temp file + rename)
+   *
    * @param {string} filepath - Target file path
    * @param {Object} state - State object to save
    * @param {Object} options - Compression options
@@ -29,27 +76,29 @@ class StateCompression {
       pretty = false,
       level = zlib.constants.Z_BEST_COMPRESSION
     } = options;
-    
+
     // Serialize state to JSON
-    const jsonString = pretty 
+    const jsonString = pretty
       ? JSON.stringify(state, null, 2)
       : JSON.stringify(state);
-    
+
     if (!compress) {
-      // Save uncompressed (backward compatibility)
-      await fs.writeFile(filepath, jsonString, 'utf8');
+      // Save uncompressed (backward compatibility) — atomic write
+      await StateCompression._writeAtomic(filepath, jsonString, 'utf8');
       return {
         size: Buffer.byteLength(jsonString, 'utf8'),
         compressed: false
       };
     }
-    
+
     // Compress with gzip
     const compressed = await gzip(jsonString, { level });
-    
-    // Save compressed data
-    await fs.writeFile(filepath + '.gz', compressed);
-    
+
+    // Atomic write: unique temp file in the same directory, then rename.
+    // A mid-write kill leaves the previous intact .gz in place, never a
+    // truncated one.
+    await StateCompression._writeAtomic(filepath + '.gz', compressed);
+
     return {
       size: compressed.length,
       compressed: true,
@@ -57,35 +106,89 @@ class StateCompression {
       ratio: (compressed.length / Buffer.byteLength(jsonString, 'utf8')).toFixed(2)
     };
   }
-  
+
+  /**
+   * Write data to targetPath atomically (temp file + rename).
+   * The temp file lives in the same directory so rename stays atomic.
+   */
+  static async _writeAtomic(targetPath, data, encoding) {
+    const tempPath = uniqueTmpPath(targetPath);
+    try {
+      await fs.writeFile(tempPath, data, encoding);
+      await fs.rename(tempPath, targetPath);
+    } catch (error) {
+      try { await fs.rm(tempPath, { force: true }); } catch (_) { /* best effort */ }
+      throw error;
+    }
+  }
+
   /**
    * Load state from file (handles both compressed and uncompressed)
-   * 
+   *
+   * Load order:
+   *   1. filepath + '.gz' via gunzip
+   *   2. same bytes via first-gzip-member salvage (tolerates trailing garbage)
+   *   3. uncompressed filepath
+   *   4. structured empty-state fallback when neither file exists, or when the
+   *      .gz is unrecoverable and no uncompressed file exists (the caller's
+   *      brain-snapshot guard is responsible for refusing an empty brain)
+   *
    * @param {string} filepath - File path (without .gz extension)
    * @returns {Promise<Object>} - Parsed state object
    */
   static async loadCompressed(filepath) {
     // Try compressed file first
     const compressedPath = filepath + '.gz';
-    
+
+    let compressedError = null;
     try {
       const compressed = await fs.readFile(compressedPath);
-      const decompressed = await gunzip(compressed);
-      return JSON.parse(decompressed.toString('utf8'));
+      try {
+        // Standard gunzip (works for clean files)
+        const decompressed = await gunzip(compressed);
+        return JSON.parse(decompressed.toString('utf8'));
+      } catch (gzipError) {
+        // Trailing garbage or a corrupted tail: salvage the first valid
+        // gzip member (mid-write kills and appenders leave junk after it)
+        const decompressed = salvageFirstGzipMember(compressed);
+        const state = JSON.parse(decompressed.toString('utf8'));
+        console.warn(`⚠️ Salvaged first gzip member from ${compressedPath} (gunzip failed: ${gzipError.message})`);
+        return state;
+      }
     } catch (error) {
+      if (error.code !== 'ENOENT') {
+        // Compressed file exists but is unrecoverable — remember why,
+        // then still try the uncompressed fallback
+        compressedError = error;
+      }
+
       // Fall back to uncompressed file
       try {
         const data = await fs.readFile(filepath, 'utf8');
         return JSON.parse(data);
       } catch (fallbackError) {
+        if (fallbackError.code === 'ENOENT') {
+          if (compressedError) {
+            console.warn(`⚠️ Corrupt compressed state at ${compressedPath} (${compressedError.message}) and no uncompressed fallback — returning structured empty state`);
+          }
+          // Neither file readable — structured empty state. Callers that
+          // know the brain should be non-empty (brain-snapshot.json) must
+          // fail loud instead of accepting this.
+          return {
+            cycleCount: 0,
+            journal: [],
+            lastSummarization: 0,
+            memory: { nodes: [], edges: [], clusters: [] },
+          };
+        }
         throw new Error(`Failed to load state from ${filepath} or ${compressedPath}: ${fallbackError.message}`);
       }
     }
   }
-  
+
   /**
    * Rotate old backup files, keeping only the most recent N
-   * 
+   *
    * @param {string} logsDir - Logs directory path
    * @param {string} pattern - Filename pattern (e.g., 'state.backup')
    * @param {number} keepCount - Number of recent backups to keep
@@ -94,7 +197,7 @@ class StateCompression {
   static async rotateBackups(logsDir, pattern = 'state.backup', keepCount = 5) {
     try {
       const files = await fs.readdir(logsDir);
-      
+
       // Find all backup files matching pattern
       const backups = files
         .filter(f => f.startsWith(pattern))
@@ -105,15 +208,15 @@ class StateCompression {
         }))
         .filter(f => f.timestamp > 0)
         .sort((a, b) => b.timestamp - a.timestamp); // Newest first
-      
+
       if (backups.length <= keepCount) {
         return { removed: 0, kept: backups.length };
       }
-      
+
       // Remove old backups
       const toRemove = backups.slice(keepCount);
       let removed = 0;
-      
+
       for (const backup of toRemove) {
         try {
           await fs.unlink(backup.path);
@@ -128,7 +231,7 @@ class StateCompression {
           // Continue even if one file fails to delete
         }
       }
-      
+
       return {
         removed,
         kept: backups.length - removed
@@ -138,10 +241,10 @@ class StateCompression {
       return { removed: 0, kept: 0, error: error.message };
     }
   }
-  
+
   /**
    * Create a timestamped backup of current state
-   * 
+   *
    * @param {string} filepath - Source file path
    * @param {string} logsDir - Logs directory
    * @returns {Promise<string>} - Backup file path
@@ -149,7 +252,7 @@ class StateCompression {
   static async createBackup(filepath, logsDir) {
     const timestamp = Date.now();
     const backupPath = require('path').join(logsDir, `state.backup.${timestamp}.json`);
-    
+
     try {
       // Try to copy compressed version first
       const compressedSource = filepath + '.gz';
@@ -167,5 +270,4 @@ class StateCompression {
   }
 }
 
-module.exports = { StateCompression };
-
+module.exports = { StateCompression, uniqueTmpPath, salvageFirstGzipMember };
