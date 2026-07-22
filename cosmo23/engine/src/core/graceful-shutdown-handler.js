@@ -17,7 +17,14 @@ class GracefulShutdownHandler {
 
     // Shutdown settings
     // CRITICAL: Must be longer than maxAgentWait to allow downloads to complete
-    this.shutdownTimeout = config.shutdownTimeoutMs || 180000; // 3 minutes (allows 2min agent wait + 1min cleanup)
+    // O3 (Fix 2.2 review obligation): sanitize — a non-finite or <= 0
+    // configured value (e.g. '3m') would arm the hard-kill setTimeout with a
+    // NaN/0 delay and force-exit ~immediately after shutdown starts, killing
+    // the final save mid-write.
+    const configuredShutdownTimeoutMs = Number(config.shutdownTimeoutMs);
+    this.shutdownTimeout = Number.isFinite(configuredShutdownTimeoutMs) && configuredShutdownTimeoutMs > 0
+      ? configuredShutdownTimeoutMs
+      : 180000; // 3 minutes (allows 2min agent wait + 1min cleanup)
     this.isShuttingDown = false;
     this.shutdownComplete = false;
     this.shutdownStartTime = null;

@@ -100,6 +100,54 @@ test('heartbeat stamp merges patches — cycle-end stamp preserves cycle-start f
   assert.equal(readBack.phase, 'cycle_end');
 });
 
+// O1 (Fix 2.2 review obligation): a watchdog-abandoned cycle's finally block
+// eventually fires a LATE end-stamp. Without cycle-awareness that late stamp
+// is indistinguishable from genuine progress (false-recovery signal for
+// wedge detection). End-stamps carry their cycle number; a stamp whose cycle
+// is OLDER than the writer's current cycle must not advance any merged field.
+
+test('a stale end-stamp (cycle older than the writer) cannot advance lastCycleEndTs', async (t) => {
+  const dir = await makeTmpRunDir(t);
+  const writer = new HeartbeatWriter(dir, { pid: 1 });
+  t.after(() => writer.stop());
+
+  writer.stamp({ cycle: 7, lastCycleStartTs: '2026-07-22T10:00:00.000Z', phase: 'cycle_start' });
+  writer.stamp({ lastCycleEndTs: '2026-07-22T10:00:05.000Z', phase: 'cycle_end', cycle: 7 });
+  // A newer cycle starts (revive probe after the orphan settled)...
+  writer.stamp({ cycle: 8, lastCycleStartTs: '2026-07-22T10:01:00.000Z', phase: 'cycle_start' });
+  // ...then an abandoned cycle 7's finally block fires late:
+  const payload = writer.stamp({ lastCycleEndTs: '2026-07-22T10:01:30.000Z', phase: 'cycle_end', cycle: 7 });
+
+  assert.ok(payload, 'stale stamp still writes (liveness ts refreshes)');
+  assert.equal(payload.lastCycleEndTs, '2026-07-22T10:00:05.000Z',
+    'stale end-stamp must NOT advance lastCycleEndTs');
+  assert.equal(payload.cycle, 8, 'stale stamp must not regress the cycle');
+  assert.equal(payload.phase, 'cycle_start', 'stale stamp must not fake a cycle_end phase');
+
+  const readBack = readHeartbeat(dir);
+  assert.equal(readBack.lastCycleEndTs, '2026-07-22T10:00:05.000Z');
+  assert.equal(readBack.cycle, 8);
+  assert.ok(Number.isFinite(Date.parse(readBack.ts)), 'liveness ts still written');
+});
+
+test('same-cycle end-stamps and cycle-less patches still apply (no false rejections)', async (t) => {
+  const dir = await makeTmpRunDir(t);
+  const writer = new HeartbeatWriter(dir, { pid: 1 });
+  t.after(() => writer.stop());
+
+  writer.stamp({ cycle: 4, lastCycleStartTs: '2026-07-22T10:00:00.000Z', phase: 'cycle_start' });
+  // Same-cycle end stamp (the normal path) applies.
+  writer.stamp({ lastCycleEndTs: '2026-07-22T10:00:09.000Z', phase: 'cycle_end', cycle: 4 });
+  assert.equal(readHeartbeat(dir).lastCycleEndTs, '2026-07-22T10:00:09.000Z');
+
+  // Cycle-less patches (watchdog phase stamps, stop()) always apply.
+  writer.stamp({ phase: 'breaker_cooloff' });
+  const readBack = readHeartbeat(dir);
+  assert.equal(readBack.phase, 'breaker_cooloff');
+  assert.equal(readBack.cycle, 4);
+  assert.equal(readBack.lastCycleEndTs, '2026-07-22T10:00:09.000Z');
+});
+
 test('staleness math distinguishes liveness (ts) from progress (lastCycleEndTs)', () => {
   const nowMs = Date.parse('2026-07-22T10:10:00.000Z');
 
@@ -314,7 +362,15 @@ test('orchestrator cycle loop is wired to the heartbeat at start, cycle start/en
     'executeCycle stamps cycle start'
   );
 
-  const endStamp = "this.heartbeatWriter?.stamp({ lastCycleEndTs: new Date().toISOString(), phase: 'cycle_end' });";
+  // O1 (Fix 2.2): end-stamps are cycle-aware — they carry the lexically
+  // captured cycle number so the writer can reject a late stamp from a
+  // watchdog-abandoned cycle. This pin was DELIBERATELY updated from the
+  // original cycle-less stamp string when Fix 2.2 landed.
+  assert.ok(
+    ORCHESTRATOR_SOURCE.includes('const cycleNumber = this.cycleCount;'),
+    'executeCycle captures its cycle number lexically for the end-stamps'
+  );
+  const endStamp = "this.heartbeatWriter?.stamp({ lastCycleEndTs: new Date().toISOString(), phase: 'cycle_end', cycle: cycleNumber });";
   assert.equal(
     countOccurrences(ORCHESTRATOR_SOURCE, endStamp),
     2,

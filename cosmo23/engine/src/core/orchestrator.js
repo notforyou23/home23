@@ -12,6 +12,7 @@ const { StateValidator } = require('./state-validator');
 const { ResourceMonitor } = require('./resource-monitor');
 const { CrashRecoveryManager } = require('./crash-recovery-manager');
 const { TimeoutManager } = require('./timeout-manager');
+const { CycleWatchdog } = require('./cycle-watchdog');
 const { GracefulShutdownHandler } = require('./graceful-shutdown-handler');
 const { TelemetryCollector } = require('./telemetry-collector');
 const { EventLedger } = require('./event-ledger');
@@ -256,6 +257,13 @@ class Orchestrator {
     }
     this.crashRecovery = new CrashRecoveryManager(config, logger, this.logsDir);
     this.timeoutManager = new TimeoutManager(config, logger);
+    // Fix 2.2: acting cycle watchdog + circuit breaker (state persisted in
+    // <logsDir>/.watchdog.json so restarts don't amnesia an open breaker).
+    this.cycleWatchdog = new CycleWatchdog({ logsDir: this.logsDir, config, logger });
+    this._abandonedCyclePromise = null;
+    this._lastCycleError = null;
+    this._watchdogPauseAnnounced = false;
+    this._criticalStallSince = null; // O2: sustained-critical continuity clock
     this.telemetry = new TelemetryCollector(config, logger, this.logsDir);
     // Phase 2 (H1): liveness/progress heartbeat — <logsDir>/.heartbeat via
     // tmp+rename, stamped by an unref'd interval (default 15s, config
@@ -1081,10 +1089,16 @@ class Orchestrator {
         continue;
       }
       
-      await this.executeCycle();
+      const cycled = await this.runCycleWithWatchdog();
       if (this.runCompletionRequested) {
         await this.finishRequestedRunCompletion();
         return;
+      }
+      if (!cycled) {
+        // Watchdog paused or abandoned this iteration (bounded sleep already
+        // happened inside runCycleWithWatchdog) — skip post-cycle work,
+        // mirroring the dashboard-pause `continue` above.
+        continue;
       }
       const cycleForSync = this.cycleCount;
       await this.handleClusterCycleSync(cycleForSync);
@@ -1263,11 +1277,290 @@ class Orchestrator {
   }
 
   /**
+   * Fix 2.2: run one cycle under the acting cycle watchdog.
+   *
+   * - Breaker OPEN (cooloff) → pause: no cycle this iteration (returns false).
+   * - Cooloff elapsed → the next cycle is the revive probe (half-open).
+   * - The cycle races a hard deadline (cycleWatchdog.hardDeadlineMs). On hard
+   *   timeout the cycle is ABANDONED at the boundary: the orphaned promise is
+   *   contained — no new executeCycle may start while it is pending, because
+   *   two concurrent executeCycle bodies interleave over cycleCount, the
+   *   cluster diff tracker, taskStateQueue, planExecutor and the memory
+   *   graph — and the breaker trips immediately. If the orphan settles during
+   *   cooloff (slow LLM calls usually do), in-process revive proceeds; if it
+   *   is STILL pending when cooloff expires, the process is wedged on an
+   *   un-abortable await and we escalate to a supervisor restart. State is
+   *   safe either way: saves are guarded + atomic and boot re-hydrates from
+   *   the durable sidecars (Phase 1).
+   *
+   * @returns {boolean} true if executeCycle settled this iteration; false if
+   *   the watchdog paused, abandoned, or escalated (caller should `continue`).
+   */
+  async runCycleWithWatchdog() {
+    const wd = this.cycleWatchdog;
+    if (!wd) {
+      await this.executeCycle();
+      return true;
+    }
+
+    // 1. Containment: never start a new cycle while an abandoned one is pending.
+    if (this._abandonedCyclePromise) {
+      if (wd.shouldPause()) {
+        this._announceWatchdogPause();
+        await this.sleep(Math.min(Math.max(wd.cooloffRemainingMs(), 1), wd.pauseSleepMs));
+        return false;
+      }
+      await this.escalateWatchdogRestart('abandoned_cycle_never_settled');
+      return false;
+    }
+
+    // 2. Breaker open → pause cycling for the cooloff window.
+    if (wd.shouldPause()) {
+      this._announceWatchdogPause();
+      await this.sleep(Math.min(Math.max(wd.cooloffRemainingMs(), 1), wd.pauseSleepMs));
+      return false;
+    }
+
+    // 3. Cooloff elapsed → this cycle is the revive probe.
+    if (wd.canProbe()) {
+      wd.beginProbe();
+      this._watchdogPauseAnnounced = false;
+      this.eventLedger?.log('watchdog_cooloff_end', { cycle: this.cycleCount, tripCount: wd.tripCount });
+      this._emitWatchdogStatus('watchdog_probe', 'Cooloff elapsed — revive probe cycle');
+      this.heartbeatWriter?.stamp({ phase: 'revive_probe' });
+    }
+
+    // 3b. O2: sustained-critical wedge — backpressure critical with zero
+    // active agents for watchdog.criticalStallMs trips the breaker even
+    // though cycles keep settling "successfully".
+    if (this._checkCriticalStall()) {
+      return false;
+    }
+
+    // 4. Run the cycle against the hard abandonment deadline.
+    const cycleTimeoutMs = this.config.timeouts?.cycleTimeoutMs || 60000;
+    const hardMs = wd.hardDeadlineMs(cycleTimeoutMs);
+    this._lastCycleError = null;
+    const startedAt = Date.now();
+    const cyclePromise = this.executeCycle();
+
+    // executeCycle swallows its own errors by design; this rejection guard is
+    // belt-and-braces so an unexpected rejection cannot escape the loop.
+    const guarded = Promise.resolve(cyclePromise).then(
+      () => 'COMPLETED',
+      (error) => {
+        this._lastCycleError = {
+          message: error?.message || String(error),
+          code: error?.code || null,
+          cycle: this.cycleCount,
+          at: Date.now()
+        };
+        return 'COMPLETED';
+      }
+    );
+
+    let hardTimer = null;
+    const deadline = new Promise((resolve) => {
+      hardTimer = setTimeout(() => resolve('HARD_TIMEOUT'), hardMs);
+      if (typeof hardTimer.unref === 'function') hardTimer.unref();
+    });
+
+    const outcome = await Promise.race([guarded, deadline]);
+    if (hardTimer) clearTimeout(hardTimer);
+
+    if (outcome === 'HARD_TIMEOUT') {
+      const cycle = this.cycleCount;
+      this.logger.error('⛔ [CycleWatchdog] Cycle exceeded hard deadline — ABANDONED at cycle boundary', {
+        cycle,
+        hardDeadlineMs: hardMs,
+        cycleTimeoutMs
+      });
+      this._abandonedCyclePromise = cyclePromise;
+      guarded.then(() => {
+        this._abandonedCyclePromise = null;
+        this.logger.warn('[CycleWatchdog] Abandoned cycle finally settled', {
+          cycle,
+          settledAfterMs: Date.now() - startedAt
+        });
+      });
+      this._watchdogPauseAnnounced = false;
+      this.eventLedger?.log('watchdog_hard_timeout', { cycle, hardDeadlineMs: hardMs, cycleTimeoutMs });
+      this._recordWatchdogFailure({
+        type: 'hard_timeout',
+        message: `cycle ${cycle} exceeded hard deadline ${hardMs}ms`,
+        cycle
+      });
+      return false;
+    }
+
+    const durationMs = Date.now() - startedAt;
+    if (this._lastCycleError) {
+      this._recordWatchdogFailure({
+        type: 'error',
+        message: this._lastCycleError.message,
+        cycle: this._lastCycleError.cycle
+      });
+    } else if (wd.countSoftTimeouts && durationMs > cycleTimeoutMs) {
+      this._recordWatchdogFailure({
+        type: 'soft_timeout',
+        message: `cycle took ${durationMs}ms (> ${cycleTimeoutMs}ms)`,
+        cycle: this.cycleCount
+      });
+    } else {
+      const wasProbe = wd.state === 'half-open';
+      wd.recordSuccess();
+      if (wasProbe) {
+        this.eventLedger?.log('watchdog_revive_success', { cycle: this.cycleCount, tripCount: wd.tripCount });
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Fix 2.2: announce the cooloff pause once per open window (log + run
+   * status + heartbeat phase). Used by BOTH pause branches — containment
+   * (orphan pending) and plain breaker-open.
+   */
+  _announceWatchdogPause() {
+    if (this._watchdogPauseAnnounced) return;
+    this._watchdogPauseAnnounced = true;
+    this.logger.warn('⛔ [CycleWatchdog] Breaker open — pausing cycles', this.cycleWatchdog.getStatus());
+    this._emitWatchdogStatus('watchdog_cooloff', 'Cycle circuit breaker open — cooling off');
+    // H1 composition: the cooloff window is visible in the heartbeat.
+    this.heartbeatWriter?.stamp({ phase: 'breaker_cooloff' });
+  }
+
+  /**
+   * Fix 2.2: record a cycle failure on the breaker; when the failure TRIPS
+   * it (tripCount advanced), emit the durable ledger event + run status and
+   * re-arm the pause announcement. Ledger logs are never awaited in-cycle.
+   */
+  _recordWatchdogFailure(failure) {
+    const wd = this.cycleWatchdog;
+    const tripsBefore = wd.tripCount;
+    const status = wd.recordFailure(failure);
+    if (status.tripCount > tripsBefore) {
+      this._watchdogPauseAnnounced = false;
+      this.eventLedger?.log('watchdog_trip', {
+        cycle: this.cycleCount,
+        reason: failure.type,
+        consecutiveFailures: status.consecutiveFailures,
+        tripCount: status.tripCount,
+        cooloffUntil: status.cooloffUntil
+      });
+      this._emitWatchdogStatus('watchdog_tripped',
+        `Breaker open (${failure.type}) after ${status.consecutiveFailures} consecutive cycle failures`);
+    }
+    return status;
+  }
+
+  /**
+   * O2 (Fix 2.2 review obligation): sustained-critical wedge detection.
+   * Backpressure 'critical' blocks every agent spawn (including the
+   * strategic bypass), so "level === 'critical' continuously for
+   * watchdog.criticalStallMs AND zero active agents" means the run is
+   * parked: cycles may keep settling but no research can happen and heap
+   * headroom is not recovering. Counts as a HARD failure — trips the
+   * breaker immediately; the cooloff pause is also the remediation (no
+   * cycling → no new allocation pressure). The continuity clock uses the
+   * watchdog's injectable clock and resets whenever the condition breaks,
+   * the breaker is already tripped, or a trip fires (a re-trip demands a
+   * fresh continuous window).
+   * @returns {boolean} true when this check just tripped the breaker.
+   */
+  _checkCriticalStall() {
+    const wd = this.cycleWatchdog;
+    if (!wd) return false;
+    const level = this.backpressure?.level || 'none';
+    const activeAgents = this.agentExecutor?.registry?.getActiveCount?.() || 0;
+    if (wd.isTripped() || level !== 'critical' || activeAgents > 0) {
+      this._criticalStallSince = null;
+      return false;
+    }
+    const now = wd.now();
+    if (this._criticalStallSince == null) {
+      this._criticalStallSince = now;
+      return false;
+    }
+    const stalledMs = now - this._criticalStallSince;
+    if (stalledMs < wd.criticalStallMs) return false;
+    this._criticalStallSince = null;
+    this.logger.error('⛔ [CycleWatchdog] Sustained-critical stall — backpressure critical with zero active agents', {
+      cycle: this.cycleCount,
+      stalledMs,
+      criticalStallMs: wd.criticalStallMs
+    });
+    this.eventLedger?.log('watchdog_critical_stall', { cycle: this.cycleCount, stalledMs });
+    this._recordWatchdogFailure({
+      type: 'critical_stall',
+      message: `backpressure critical for ${stalledMs}ms with zero active agents`,
+      cycle: this.cycleCount
+    });
+    return true;
+  }
+
+  /**
+   * Fix 2.2: the process is wedged on an un-abortable in-flight await (an
+   * abandoned cycle that never settled through a full cooloff). Persist the
+   * breaker (so the restarted process honors the remaining cooloff), do a
+   * bounded stop() — which performs the guarded shutdown save and only marks
+   * the clean-shutdown marker on a CONFIRMED save — then exit with a distinct
+   * code for the process-level supervisor (Fix 2.5). Restart is the safe
+   * remediation: saves are guarded + atomic and boot re-hydrates from the
+   * durable sidecars (Phase 1).
+   */
+  async escalateWatchdogRestart(reason) {
+    const wd = this.cycleWatchdog;
+    const exitCode = wd?.restartExitCode ?? 86;
+    const stopBudgetMs = wd?.restartStopTimeoutMs ?? 30000;
+    if (wd) wd.markRestartRequested(reason);
+
+    this.logger.error('⛔ [CycleWatchdog] Restart escalation — engine wedged, exiting for supervisor restart', {
+      reason,
+      exitCode,
+      stopBudgetMs
+    });
+    this.eventLedger?.log('watchdog_restart_escalation', { reason, exitCode, cycle: this.cycleCount });
+    this._emitWatchdogStatus('watchdog_restart', `Engine wedged (${reason}) — exiting for restart`);
+
+    // Backstop: if stop() itself hangs (it can await the same wedged
+    // machinery), exit anyway once the budget expires.
+    const backstop = setTimeout(() => process.exit(exitCode), stopBudgetMs);
+    if (typeof backstop.unref === 'function') backstop.unref();
+
+    this.running = false;
+    try {
+      await this.stop();
+    } catch (error) {
+      this.logger.error('[CycleWatchdog] stop() failed during restart escalation', { error: error.message });
+    }
+    process.exit(exitCode);
+  }
+
+  _emitWatchdogStatus(status, message) {
+    try {
+      this._getEvents().emitRunStatus({
+        status,
+        message,
+        cycle: this.cycleCount,
+        details: this.cycleWatchdog ? this.cycleWatchdog.getStatus() : null
+      });
+    } catch (error) {
+      this.logger.debug?.('[CycleWatchdog] Status emit failed (non-fatal)', { error: error.message });
+    }
+  }
+
+  /**
    * Execute one cognitive cycle with GPT-5
    */
   async executeCycle() {
     const cycleStart = new Date();
     this.cycleCount++;
+    // O1 (heartbeat interplay): capture this cycle's number lexically — the
+    // end-stamps below carry it so the HeartbeatWriter can REJECT a late
+    // end-stamp from a watchdog-abandoned cycle (a stale stamp would read
+    // as fresh progress to wedge detection).
+    const cycleNumber = this.cycleCount;
     this.eventLedger?.log('cycle_start', { cycle: this.cycleCount });
 
     // Phase 2 (H1): stamp cycle start — opens the progress window. A cycle
@@ -1323,15 +1616,22 @@ class Orchestrator {
         });
         
       } catch (error) {
-        this.logger.error('Consolidation cycle failed', { 
+        this.logger.error('Consolidation cycle failed', {
           error: error.message,
-          stack: error.stack 
+          stack: error.stack
         });
+        // Fix 2.2: consolidation cycles count toward the watchdog breaker too.
+        this._lastCycleError = {
+          message: error.message,
+          code: error.code || null,
+          cycle: this.cycleCount,
+          at: Date.now()
+        };
       }
       
       // Phase 2 (H1): consolidation cycles complete too — stamp progress
       // (this return path is before the main try/finally end-stamp).
-      this.heartbeatWriter?.stamp({ lastCycleEndTs: new Date().toISOString(), phase: 'cycle_end' });
+      this.heartbeatWriter?.stamp({ lastCycleEndTs: new Date().toISOString(), phase: 'cycle_end', cycle: cycleNumber });
 
       // RETURN - skip ALL normal cycle processing
       return;
@@ -3452,6 +3752,16 @@ class Orchestrator {
     } catch (error) {
       this.logger.error('Cycle error', { error: error.message, stack: error.stack });
 
+      // Fix 2.2: flag the failure for the cycle watchdog (errors are
+      // deliberately swallowed here so the loop survives; the watchdog reads
+      // this flag after the cycle settles to count consecutive failures).
+      this._lastCycleError = {
+        message: error.message,
+        code: error.code || null,
+        cycle: this.cycleCount,
+        at: Date.now()
+      };
+
       this.stateModulator.updateState({
         type: 'error',
         success: false,
@@ -3463,7 +3773,7 @@ class Orchestrator {
       // Phase 2 (H1): stamp cycle end on every exit from the cycle body —
       // success, in-try early return, or handled error. Progress
       // (lastCycleEndTs freshness) is the wedge-detection signal, not ts.
-      this.heartbeatWriter?.stamp({ lastCycleEndTs: new Date().toISOString(), phase: 'cycle_end' });
+      this.heartbeatWriter?.stamp({ lastCycleEndTs: new Date().toISOString(), phase: 'cycle_end', cycle: cycleNumber });
     }
 
     this.lastCycleTime = new Date();

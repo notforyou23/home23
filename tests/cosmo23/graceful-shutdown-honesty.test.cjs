@@ -285,8 +285,28 @@ test('agent wait is capped by the remaining shutdown budget, save still gets its
   assert.deepEqual(exitCodes, [0]);
 });
 
+// O3 (Fix 2.2 review obligation): the constructor sanitizes shutdownTimeout —
+// a non-finite or <= 0 configured value would arm the hard-kill setTimeout
+// with NaN/0 and force-exit ~immediately, killing the final save mid-write.
+test('constructor sanitizes a garbage shutdownTimeoutMs to the 180s default', () => {
+  const orchestrator = makeFakeOrchestrator({ saved: true, reason: null });
+  for (const garbage of ['3m', NaN, 0, -5000, Infinity, 'soon']) {
+    const handler = new GracefulShutdownHandler(orchestrator, quietLogger, { shutdownTimeoutMs: garbage });
+    assert.equal(handler.shutdownTimeout, 180000,
+      `garbage shutdownTimeoutMs (${String(garbage)}) must fall back to 180000`);
+  }
+  const valid = new GracefulShutdownHandler(orchestrator, quietLogger, { shutdownTimeoutMs: 5000 });
+  assert.equal(valid.shutdownTimeout, 5000, 'a finite positive value passes through unchanged');
+  const absent = new GracefulShutdownHandler(orchestrator, quietLogger, {});
+  assert.equal(absent.shutdownTimeout, 180000, 'absent config uses the default');
+});
+
 test('a garbage shutdown timeout cannot NaN-poison the agent-wait cap and starve the save', async (t) => {
-  stubProcessExit(t); // the NaN-delay hard-kill timer fires immediately; the stub absorbs it
+  // Since O3 the constructor sanitizes '3m' → 180000, so the deadline is
+  // finite and the budget cap applies; the non-finite-deadline fallback
+  // below it stays as defense in depth. Either way the assertions hold:
+  // the wait breaks at the configured cap and the save still runs.
+  stubProcessExit(t);
   const orchestrator = makeFakeOrchestrator({ saved: true, reason: null });
   const drainAt = Date.now() + 5000; // agents drain on their own only after 5s
   orchestrator.agentExecutor = {

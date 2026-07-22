@@ -131,11 +131,28 @@ class HeartbeatWriter {
    * the in-memory state and write the heartbeat file with a fresh `ts`.
    * Best-effort: returns the payload on success, null on failure. NEVER
    * throws into the cycle.
+   *
+   * Stale-stamp rejection (O1, Fix 2.2): a watchdog-abandoned cycle's
+   * finally block eventually fires a LATE end-stamp. If a newer cycle has
+   * already advanced the writer, that late stamp would be indistinguishable
+   * from genuine progress — a false-recovery signal for wedge detection. A
+   * patch carrying a cycle number OLDER than the writer's current cycle is
+   * therefore dropped entirely: the write still happens (fresh `ts` =
+   * liveness), but no merged field (cycle/lastCycleEndTs/phase) moves.
+   * Patches without a `cycle` field (interval stamps, watchdog phase
+   * stamps, stop()) always apply.
    */
   stamp(patch = {}) {
-    for (const key of ['cycle', 'lastCycleStartTs', 'lastCycleEndTs', 'phase']) {
-      if (Object.prototype.hasOwnProperty.call(patch, key)) {
-        this.state[key] = patch[key];
+    const patchCycle = Number(patch && patch.cycle);
+    const stale = Object.prototype.hasOwnProperty.call(patch || {}, 'cycle')
+      && Number.isFinite(patchCycle)
+      && Number.isFinite(Number(this.state.cycle))
+      && patchCycle < this.state.cycle;
+    if (!stale) {
+      for (const key of ['cycle', 'lastCycleStartTs', 'lastCycleEndTs', 'phase']) {
+        if (Object.prototype.hasOwnProperty.call(patch, key)) {
+          this.state[key] = patch[key];
+        }
       }
     }
     const payload = {
