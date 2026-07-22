@@ -32,6 +32,7 @@ function buildStatusContract({
   isLaunching = false,
   ports = {},
   runTruth = {},
+  sentinel = null,
   heartbeat = undefined,
   now = new Date(),
   uptimeMs = Math.round(process.uptime() * 1000),
@@ -66,6 +67,10 @@ function buildStatusContract({
     processOnline: cosmoMainOnline,
     hasActiveContext,
     isLaunching,
+    // Sentinel fields are additive (Patch 9 compat rules): `lifecycle` keeps
+    // its original value set; a wedged run is flagged in parallel.
+    wedged: sentinel?.escalated === true,
+    sentinel: sentinel || null,
     lastHeartbeat: runHeartbeat?.lastHeartbeat || null,
     heartbeat: runHeartbeat,
     generatedAt: now instanceof Date ? now.toISOString() : String(now),

@@ -103,6 +103,7 @@ const {
   resolveConfiguredProviderPairs,
 } = require('./lib/provider-pair-probe');
 const { buildStatusContract } = require('./lib/status-contract');
+const { createRunSentinel } = require('./lib/run-sentinel');
 const {
   buildInteractiveLiveStatus,
   isInteractiveSessionRequestValid,
@@ -339,12 +340,59 @@ function initializeProtectedBrainOperations({
   });
 }
 
+// Fix 2.5 — server-side wedge detection → bounded remediation → escalation.
+// The sentinel watches the active run's <runDir>/.heartbeat progress signal
+// (lastCycleEndTs — progress, never liveness ts), kills+relaunches a wedged
+// or dead engine through the same internal continuation path POST /api/launch
+// uses (launchResearch with brainId), and escalates through the status
+// contract (health.wedged / health.sentinel) after bounded attempts. Ladder
+// state persists in <runDir>/.sentinel.json.
+const sentinelSettings = initialConfig?.config?.sentinel || {};
+const runSentinel = createRunSentinel({
+  getActiveContext: () => activeContext,
+  getIsLaunching: () => isLaunching,
+  getProcessStatus: () => processManager.getStatus(),
+  stopEngine: async () => {
+    // ProcessManager has no engine-only stop; stopAll() is the scoped child
+    // shutdown (SIGINT → bounded wait → SIGKILL, tracked ports only) and the
+    // relaunch restarts MCP/dashboard/engine anyway.
+    await processManager.stopAll();
+    activeContext = null; // mirror /api/stop's finally
+  },
+  relaunch: async ({ runPath, runName, brainId }) => {
+    if (!brainId) {
+      throw new Error(`Cannot relaunch run "${runName}" — no brainId available`);
+    }
+    const storedSettings = await readJsonFileIfPresent(path.join(runPath, 'metadata.json'));
+    return launchResearch({ ...(storedSettings || {}), brainId }, null);
+  },
+  log: (level, message) => processManager.recordLog('Sentinel', level, message),
+  config: {
+    checkIntervalMs: parsePositiveInt(process.env.COSMO23_SENTINEL_CHECK_INTERVAL_MS,
+      parsePositiveInt(sentinelSettings.checkIntervalMs, 60 * 1000)),
+    wedgeThresholdMs: parsePositiveInt(process.env.COSMO23_SENTINEL_WEDGE_THRESHOLD_MS,
+      parsePositiveInt(sentinelSettings.wedgeThresholdMs, 15 * 60 * 1000)),
+    launchGraceMs: parsePositiveInt(process.env.COSMO23_SENTINEL_LAUNCH_GRACE_MS,
+      parsePositiveInt(sentinelSettings.launchGraceMs, 5 * 60 * 1000)),
+    maxAttempts: parsePositiveInt(process.env.COSMO23_SENTINEL_MAX_ATTEMPTS,
+      parsePositiveInt(sentinelSettings.maxAttempts, 2)),
+    attemptTtlMs: parsePositiveInt(process.env.COSMO23_SENTINEL_ATTEMPT_TTL_MS,
+      parsePositiveInt(sentinelSettings.attemptTtlMs, 6 * 60 * 60 * 1000)),
+    breakerStuckMs: parsePositiveInt(process.env.COSMO23_SENTINEL_BREAKER_STUCK_MS,
+      parsePositiveInt(sentinelSettings.breakerStuckMs, 30 * 60 * 1000)),
+  },
+});
+
 processManager.on('cosmo-exit', ({ code, signal }) => {
   if (activeContext) {
     const runName = activeContext.runName;
+    const runPath = activeContext.runPath;
     activeContext = null;
     processManager.recordLog('Launcher', 'info',
       `Run "${runName}" ended (code: ${code}, signal: ${signal || 'none'}) — cleared activeContext`);
+    // Run completion cleans up sentinel state; the sentinel keeps it when the
+    // exit was its own remediation stop.
+    runSentinel.notifyRunEnded({ runPath, runName }).catch(() => {});
   }
 });
 
@@ -1050,6 +1098,7 @@ app.get('/api/health', async (_req, res) => {
     activeContext,
     processStatus,
     isLaunching,
+    sentinel: runSentinel.getPublicState(),
     ports: { app: PORT, websocket: WS_PORT, dashboard: DASHBOARD_PORT, mcpHttp: MCP_HTTP_PORT },
   });
   res.json({
@@ -2042,6 +2091,7 @@ app.get('/api/status', async (req, res) => {
     processStatus,
     isLaunching,
     runTruth,
+    sentinel: runSentinel.getPublicState(),
     ports: { app: PORT, websocket: WS_PORT, dashboard: DASHBOARD_PORT, mcpHttp: MCP_HTTP_PORT },
   });
   const running = health.activeRun;
@@ -2057,6 +2107,7 @@ app.get('/api/status', async (req, res) => {
     hasActiveContext: health.hasActiveContext,
     isLaunching: health.isLaunching,
     lastHeartbeat: health.lastHeartbeat,
+    wedged: health.wedged,
     heartbeat: health.heartbeat,
     activeContext,
     processStatus,
@@ -2081,6 +2132,7 @@ app.get('/api/watch/logs', async (req, res) => {
       activeContext,
       processStatus,
       isLaunching,
+      sentinel: runSentinel.getPublicState(),
       ports: { app: PORT, websocket: WS_PORT, dashboard: DASHBOARD_PORT, mcpHttp: MCP_HTTP_PORT },
     });
     res.json({
@@ -2725,6 +2777,8 @@ function startServer() {
     console.log(`[cosmo_2.3] local config: ${getConfigPath()}`);
     console.log(`[cosmo_2.3] reference runs: ${getReferenceRunsPaths().join(', ') || 'none'}`);
     console.log(`[cosmo_2.3] run metadata repair: ${repairSummary.repaired}/${repairSummary.scanned} repaired`);
+    runSentinel.start();
+    console.log(`[cosmo_2.3] run sentinel active (check ${runSentinel.config.checkIntervalMs}ms, wedge threshold ${runSentinel.config.wedgeThresholdMs}ms, max attempts ${runSentinel.config.maxAttempts})`);
   });
 }
 
@@ -2734,6 +2788,7 @@ function installMainProcessShutdown(server) {
     if (stopping) return;
     stopping = true;
     try {
+      runSentinel.stop();
       await brainOperationRuntime?.worker?.stop?.();
       await new Promise((resolve) => server.close(resolve));
       process.exitCode = 0;
@@ -2756,5 +2811,6 @@ module.exports = {
   installMainProcessShutdown,
   launchPreparedResearch,
   registerBrainOperationWorkerRoutes,
+  runSentinel,
   startServer,
 };
