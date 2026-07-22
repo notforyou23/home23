@@ -262,3 +262,20 @@ test('awaitPendingBackupForShutdown awaits a pending backup and is bounded', asy
   const elapsed = Date.now() - started;
   assert.ok(elapsed < 2000, `bounded wait must not hang (took ${elapsed}ms)`);
 });
+
+test('awaitPendingBackupForShutdown caps its bound at the remaining shutdown budget', async () => {
+  // Phase-1 polish (a): with a handler-stamped deadline nearly exhausted,
+  // the backup wait shrinks to the 1s floor instead of its 4s config —
+  // the sum of shutdown steps must stay inside the hard-kill budget.
+  const hung = {
+    logger: silentLogger,
+    config: { shutdownBackupTimeoutMs: 4000 },
+    shutdownDeadline: Date.now() + 50, // almost no budget left → 1s floor
+    _backupPromise: new Promise(() => {}),
+  };
+  const started = Date.now();
+  await Orchestrator.prototype.awaitPendingBackupForShutdown.call(hung);
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 2500,
+    `deadline-capped wait must fire near the 1s floor, not the 4s config (took ${elapsed}ms)`);
+});

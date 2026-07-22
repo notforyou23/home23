@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { GracefulShutdownHandler } = require('../../cosmo23/engine/src/core/graceful-shutdown-handler');
-const { Orchestrator } = require('../../cosmo23/engine/src/core/orchestrator');
+const { Orchestrator, shutdownBudgetMs } = require('../../cosmo23/engine/src/core/orchestrator');
 
 const quietLogger = { info() {}, warn() {}, error() {}, debug() {} };
 
@@ -189,4 +189,141 @@ test('saveStateForShutdown surfaces save errors as saved:false', async () => {
 
   assert.equal(result.saved, false);
   assert.equal(result.reason, 'shutdown_save_failed');
+});
+
+// --- Phase-1 polish (a): shutdown budget arithmetic ------------------------
+// The per-step defaults (150s agent wait + 60s save + 5s telemetry + 10s
+// backup) sum past the 180s hard-kill. The handler stamps a single deadline
+// on the orchestrator; every bounded step caps its timeout at the remaining
+// budget, with the configured default as the ceiling.
+
+test('shutdownBudgetMs keeps defaults as ceilings and floors the remaining budget at 1s', () => {
+  assert.equal(shutdownBudgetMs(undefined, 60000), 60000, 'no deadline: default applies unchanged');
+  assert.equal(shutdownBudgetMs(NaN, 5000), 5000, 'non-finite deadline: default applies unchanged');
+  assert.equal(shutdownBudgetMs(Date.now() + 3600000, 10000), 10000, 'far deadline: default stays the ceiling');
+  const capped = shutdownBudgetMs(Date.now() + 30000, 60000);
+  assert.ok(capped > 28000 && capped <= 30000, `near deadline caps the bound (got ${capped})`);
+  assert.equal(shutdownBudgetMs(Date.now() - 5000, 60000), 1000, 'expired deadline floors at 1s');
+  assert.equal(shutdownBudgetMs(Date.now() - 5000, 500), 500, 'default stays the ceiling even under the floor');
+});
+
+test('shutdown stamps a hard-kill-derived deadline on the orchestrator before any waiting', async (t) => {
+  stubProcessExit(t);
+  const orchestrator = makeFakeOrchestrator({ saved: true, reason: null });
+  const handler = new GracefulShutdownHandler(orchestrator, quietLogger, {
+    shutdownTimeoutMs: 5000,
+    shutdownDeadlineMarginMs: 1000,
+  });
+
+  const before = Date.now();
+  await handler.shutdown('test');
+  const after = Date.now();
+
+  assert.ok(Number.isFinite(orchestrator.shutdownDeadline),
+    'handler must pass the deadline via orchestrator.shutdownDeadline');
+  assert.ok(orchestrator.shutdownDeadline >= before + 4000 - 50,
+    'deadline = start + shutdownTimeoutMs - margin');
+  assert.ok(orchestrator.shutdownDeadline <= after + 4000);
+});
+
+test('agent wait is capped by the remaining shutdown budget, save still gets its slice', async (t) => {
+  const exitCodes = stubProcessExit(t);
+  const orchestrator = makeFakeOrchestrator({ saved: true, reason: null });
+  orchestrator.agentExecutor = {
+    registry: {
+      getActiveCount: () => 1, // never drains — worst case
+      getActiveAgents: () => [],
+    },
+  };
+  const handler = new GracefulShutdownHandler(orchestrator, quietLogger, {
+    shutdownTimeoutMs: 10000,
+    shutdownDeadlineMarginMs: 8000, // deadline at +2s
+    agentWaitTimeoutMs: 7000,       // configured wait would blow past the deadline
+  });
+
+  const started = Date.now();
+  await handler.shutdown('test');
+  const elapsed = Date.now() - started;
+
+  assert.ok(elapsed < 6000,
+    `agent wait must break at the deadline, not run its configured 7s (took ${elapsed}ms)`);
+  assert.equal(orchestrator.calls.saveState, 1, 'final save still runs after the capped wait');
+  assert.deepEqual(exitCodes, [0]);
+});
+
+test('saveStateForShutdown caps its bound at the remaining shutdown budget', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cosmo23-shutdown-budget-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  // Deliberately NO durable artifact — timeout resolves fast either way.
+
+  const fake = {
+    logger: quietLogger,
+    logsDir: dir,
+    config: { shutdownSaveTimeoutMs: 8000 },
+    shutdownDeadline: Date.now() + 1200, // ~1.2s of budget left
+    _saveStatePromise: null,
+    saveState: () => new Promise(() => {}), // hangs
+    hasDurableStateArtifact: Orchestrator.prototype.hasDurableStateArtifact,
+  };
+
+  const started = Date.now();
+  const result = await Orchestrator.prototype.saveStateForShutdown.call(fake);
+  const elapsed = Date.now() - started;
+
+  assert.equal(result.saved, false);
+  assert.equal(result.reason, 'shutdown_save_timeout_no_state');
+  assert.ok(elapsed < 5000,
+    `budget-capped bound must fire near the deadline, not the 8s default (took ${elapsed}ms)`);
+});
+
+// --- Phase-1 polish (b): saveStateForShutdown TOCTOU -----------------------
+
+test('saveStateForShutdown races the CAPTURED in-flight save, never a fresh save under the grace', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cosmo23-shutdown-toctou-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await fs.writeFile(path.join(dir, 'state.json.gz'), 'durable');
+
+  // The in-flight save has ALREADY settled by the time the race is set up —
+  // exactly the TOCTOU window: the lock slot would be null on a re-read, and
+  // the old code started a FRESH full save truncated to the 15s grace.
+  const inflightResult = { saved: true, reason: null, currentNodes: 500, existingNodes: 400 };
+  let freshSaves = 0;
+  const fake = {
+    logger: quietLogger,
+    logsDir: dir,
+    config: { shutdownSaveTimeoutMs: 60000, shutdownInProgressSaveTimeoutMs: 60 },
+    _saveStatePromise: Promise.resolve(inflightResult),
+    saveState() {
+      freshSaves += 1;
+      return new Promise(() => {}); // a fresh save here would hang out the grace
+    },
+    hasDurableStateArtifact: Orchestrator.prototype.hasDurableStateArtifact,
+  };
+
+  const result = await Orchestrator.prototype.saveStateForShutdown.call(fake);
+
+  assert.equal(freshSaves, 0,
+    'joined path must race the captured in-flight reference, never start a fresh save');
+  assert.deepEqual(result, inflightResult,
+    'the in-flight save result is the shutdown save result');
+});
+
+test('saveStateForShutdown without an in-flight save runs a fresh save under the full budget', async () => {
+  let freshSaves = 0;
+  const fake = {
+    logger: quietLogger,
+    logsDir: path.join(os.tmpdir(), 'cosmo23-shutdown-fresh-' + process.pid),
+    config: { shutdownSaveTimeoutMs: 60000 },
+    _saveStatePromise: null,
+    saveState: async () => {
+      freshSaves += 1;
+      return { saved: true, reason: null, currentNodes: 7, existingNodes: 7 };
+    },
+    hasDurableStateArtifact: Orchestrator.prototype.hasDurableStateArtifact,
+  };
+
+  const result = await Orchestrator.prototype.saveStateForShutdown.call(fake);
+
+  assert.equal(freshSaves, 1);
+  assert.equal(result.saved, true);
 });

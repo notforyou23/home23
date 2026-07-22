@@ -27,7 +27,7 @@ const { MemoryGovernor } = require('../system/memory-governor');
 const { RunCommitmentGovernor } = require('./run-commitment-governor');
 const { UnifiedClient } = require('./unified-client');
 const { persistResearchState } = require('../../../lib/memory-sidecar');
-const { writeSnapshot, resolveKnownGoodNodeCount, evaluateSaveSafety } = require('./brain-snapshot');
+const { writeSnapshot, readSnapshot, snapshotNodeCount, resolveKnownGoodNodeCount, evaluateSaveSafety } = require('./brain-snapshot');
 const { hydrateOrchestratorState } = require('./state-hydration');
 const { maybeBackupBrain } = require('./brain-backups');
 
@@ -479,8 +479,17 @@ class Orchestrator {
     if (checkpointIsFresher) {
       this.cycleCount = recoveredState.cycleCount;
     }
-    if (Array.isArray(recoveredState.journal) &&
-        recoveredState.journal.length > (this.journal?.length || 0)) {
+    // The journal rides the SAME freshness predicate as cycleCount. Both the
+    // state file and checkpoints cap the journal at the last 100 entries
+    // (saveState / buildCheckpointState `.slice(-100)`), so length is NOT a
+    // freshness signal: a stale checkpoint can carry a LONGER journal than a
+    // fresher state file (and a fresher checkpoint a SHORTER one). Overlaying
+    // by length produced a mixed-provenance head — cycleCount from the state
+    // file, journal from an older boot. Empty checkpoint journals never
+    // clobber a loaded journal.
+    if (checkpointIsFresher &&
+        Array.isArray(recoveredState.journal) &&
+        recoveredState.journal.length > 0) {
       this.journal = recoveredState.journal;
     }
     if (typeof recoveredState.lastSummarization === 'number' &&
@@ -8157,7 +8166,26 @@ OUTPUT FORMAT (JSON ONLY):
     // state.json.gz, so its readFile always threw and every save passed).
     let knownGood;
     try {
-      knownGood = await resolveKnownGoodNodeCount(this.logsDir, statePath);
+      // Tier 1 (brain-snapshot.json) is a tiny always-parseable file and is
+      // re-read on EVERY save: it is the documented operator escape hatch —
+      // editing its counts down approves a legitimate >50% prune without a
+      // process restart, so it must never be hidden behind a memo. Only the
+      // expensive cold-path tiers (manifest read, streaming the node
+      // sidecar, legacy inline state load) are memoized on
+      // this._knownGoodCache: a legacy run with no snapshot would otherwise
+      // re-stream memory-nodes.jsonl.gz on every refused save, every cycle.
+      // The cache refreshes on each successful save (new truth) and is
+      // reused as-is by refused saves.
+      const snapshotCount = snapshotNodeCount(readSnapshot(this.logsDir));
+      if (snapshotCount !== null) {
+        knownGood = { count: snapshotCount, source: 'snapshot' };
+        this._knownGoodCache = knownGood;
+      } else if (this._knownGoodCache) {
+        knownGood = this._knownGoodCache;
+      } else {
+        knownGood = await resolveKnownGoodNodeCount(this.logsDir, statePath);
+        this._knownGoodCache = knownGood;
+      }
     } catch (error) {
       this.logger.error('🛑 REFUSING STATE SAVE — persistence guard could not establish known-good baseline', {
         error: error.message,
@@ -8272,6 +8300,11 @@ OUTPUT FORMAT (JSON ONLY):
           this.logger.warn('Backup failed (non-fatal)', { error: error?.message || String(error) });
           return { created: false, error: error?.message || String(error) };
         });
+
+      // Successful save is the ONLY event that refreshes the memoized
+      // baseline: the just-saved counts are the new known-good truth
+      // (mirrors the brain-snapshot.json stamp above).
+      this._knownGoodCache = { count: totalNodes, source: 'snapshot' };
 
       this.lastSaveResult = {
         saved: true,
@@ -9205,7 +9238,7 @@ OUTPUT FORMAT (JSON ONLY):
   async cleanupTelemetryForShutdown() {
     if (!this.telemetry || typeof this.telemetry.cleanup !== 'function') return;
 
-    const timeoutMs = this.config.shutdownTelemetryTimeoutMs || 5000;
+    const timeoutMs = shutdownBudgetMs(this.shutdownDeadline, this.config.shutdownTelemetryTimeoutMs || 5000);
     let timeoutId = null;
     const cleanupPromise = this.telemetry.cleanup()
       .then(() => ({ status: 'ok' }))
@@ -9247,15 +9280,29 @@ OUTPUT FORMAT (JSON ONLY):
 
   async saveStateForShutdown() {
     const defaultTimeoutMs = this.config.shutdownSaveTimeoutMs || 60000;
-    const saveAlreadyInProgress = Boolean(this._saveStatePromise);
-    let durableStateBeforeWait = false;
-    let timeoutMs = defaultTimeoutMs;
+    // Cap the bound at the remaining shutdown budget (handler-stamped
+    // deadline). Default stays the ceiling; without a deadline it applies
+    // unchanged.
+    const budgetMs = shutdownBudgetMs(this.shutdownDeadline, defaultTimeoutMs);
 
-    if (saveAlreadyInProgress) {
+    // TOCTOU guard: capture the in-flight save promise EXACTLY ONCE. The
+    // lock slot (this._saveStatePromise) clears the moment the in-flight
+    // save settles, so re-reading it later can silently turn "join the
+    // in-flight save under the short grace" into "start a fresh full save
+    // under the short grace" — a fresh save truncated to 15s. When we decide
+    // to join, we race THIS captured reference; a fresh save only runs on
+    // the non-joined path, under the full remaining budget.
+    const inflight = this._saveStatePromise;
+    let durableStateBeforeWait = false;
+    let joinedInflight = false;
+    let timeoutMs = budgetMs;
+
+    if (inflight) {
       durableStateBeforeWait = await this.hasDurableStateArtifact();
       if (durableStateBeforeWait) {
         const inProgressTimeoutMs = Number(this.config.shutdownInProgressSaveTimeoutMs ?? 15000);
-        timeoutMs = Math.min(defaultTimeoutMs, Math.max(1, inProgressTimeoutMs));
+        timeoutMs = Math.min(budgetMs, Math.max(1, inProgressTimeoutMs));
+        joinedInflight = true;
         this.logger.warn('💾 Shutdown joining in-progress state save with bounded grace', {
           timeoutMs,
           defaultTimeoutMs,
@@ -9265,7 +9312,7 @@ OUTPUT FORMAT (JSON ONLY):
     }
 
     let timeoutId = null;
-    const savePromise = this.saveState()
+    const savePromise = Promise.resolve(joinedInflight ? inflight : this.saveState())
       .then(result => ({ status: 'ok', result }))
       .catch(error => ({ status: 'error', error }));
 
@@ -9291,7 +9338,8 @@ OUTPUT FORMAT (JSON ONLY):
     this.logger.warn('⚠️ Shutdown state save timed out', {
       timeoutMs,
       hasDurableState,
-      saveAlreadyInProgress,
+      saveAlreadyInProgress: Boolean(inflight),
+      joinedInflight,
     });
     savePromise.catch(() => {});
 
@@ -9309,7 +9357,7 @@ OUTPUT FORMAT (JSON ONLY):
   async awaitPendingBackupForShutdown() {
     if (!this._backupPromise || typeof this._backupPromise.then !== 'function') return;
 
-    const timeoutMs = this.config.shutdownBackupTimeoutMs || 10000;
+    const timeoutMs = shutdownBudgetMs(this.shutdownDeadline, this.config.shutdownBackupTimeoutMs || 10000);
     let timeoutId = null;
     const timeoutPromise = new Promise(resolve => {
       timeoutId = setTimeout(() => resolve({ created: false, timedOut: true }), timeoutMs);
@@ -10100,4 +10148,22 @@ OUTPUT FORMAT (JSON ONLY):
   }
 }
 
-module.exports = { Orchestrator };
+/**
+ * Cap a shutdown step's timeout at the remaining shutdown budget.
+ *
+ * The graceful-shutdown handler stamps orchestrator.shutdownDeadline
+ * (hard-kill instant minus a cleanup margin) at the start of shutdown; each
+ * bounded step derives its timeout as min(configured default, max(1s,
+ * deadline - now)). Without this, the per-step defaults (150s agent wait +
+ * 60s save + 5s telemetry + 10s backup) sum past the 180s hard-kill and a
+ * slow shutdown dies mid-save with exit 1. When no deadline is set (direct
+ * stop() without the handler, tests), the configured default applies
+ * unchanged — defaults are ceilings, never raised.
+ */
+function shutdownBudgetMs(deadline, defaultMs) {
+  const numericDeadline = Number(deadline);
+  if (!Number.isFinite(numericDeadline)) return defaultMs;
+  return Math.min(defaultMs, Math.max(1000, numericDeadline - Date.now()));
+}
+
+module.exports = { Orchestrator, shutdownBudgetMs };

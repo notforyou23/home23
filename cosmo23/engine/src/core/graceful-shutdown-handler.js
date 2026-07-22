@@ -117,6 +117,18 @@ class GracefulShutdownHandler {
     this.isShuttingDown = true;
     this.shutdownStartTime = Date.now();
 
+    // Budget arithmetic fix: the historical per-step defaults (150s agent
+    // wait + 60s save + 5s telemetry + 10s backup) sum past the 180s
+    // hard-kill, so a slow shutdown was killed mid-save with exit 1. Derive
+    // every bound from ONE deadline instead: each bounded step caps its
+    // timeout at the remaining budget (defaults stay ceilings), so the
+    // pipeline always finishes — or times out honestly — before the
+    // hard-kill timer fires. The margin reserves room for the clean-shutdown
+    // marker, cleanup tasks, and process exit after the bounded steps.
+    const deadlineMarginMs = this.config.shutdownDeadlineMarginMs || 5000;
+    this.shutdownDeadline = this.shutdownStartTime + this.shutdownTimeout - deadlineMarginMs;
+    this.orchestrator.shutdownDeadline = this.shutdownDeadline;
+
     this.logger.info('[GracefulShutdown] Starting graceful shutdown', { trigger });
 
     // Setup shutdown timeout (force exit)
@@ -152,7 +164,11 @@ class GracefulShutdownHandler {
           this.logger.info('[GracefulShutdown] Shutdown signal sent to active agents');
         }
         
-        const maxAgentWait = this.config.agentWaitTimeoutMs || 150000; // 2.5 minutes (allows for container downloads)
+        // Configured wait (default 2.5 minutes, allows for container
+        // downloads) capped at the remaining shutdown budget so the wait can
+        // never starve the final save of its slice before the hard kill.
+        const configuredAgentWait = this.config.agentWaitTimeoutMs || 150000;
+        const maxAgentWait = Math.min(configuredAgentWait, Math.max(1000, this.shutdownDeadline - Date.now()));
         const startWait = Date.now();
         
         while (this.orchestrator.agentExecutor?.registry?.getActiveCount() > 0) {

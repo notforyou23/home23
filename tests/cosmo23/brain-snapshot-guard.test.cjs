@@ -346,3 +346,104 @@ test('real saveState refuses with persistence_guard_failed when the existing sta
     'refused save must not create sidecar artifacts');
   assert.equal(readSnapshot(runDir), null, 'refused save must not stamp a snapshot');
 });
+
+// --- Phase-1 polish (c): save-guard cold-path memoization -------------------
+// A legacy run with no brain-snapshot.json resolves its baseline by streaming
+// memory-nodes.jsonl.gz. Without the memo, EVERY refused save re-streams the
+// sidecar every cycle. The memo caches the cold-path resolution on the
+// orchestrator; refused saves reuse it, and only a successful save refreshes
+// it. brain-snapshot.json itself stays un-memoized — it is the operator
+// escape hatch and must be re-read every save.
+
+test('refused saves reuse the memoized cold-path baseline instead of re-resolving sidecars', async (t) => {
+  const home23Root = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo23-guard-memo-'));
+  t.after(() => fs.rmSync(home23Root, { recursive: true, force: true }));
+  const runDir = path.join(home23Root, 'brains', 'runs', 'memo-run');
+  const lockRoot = path.join(home23Root, 'runtime', 'brain-source-locks');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.mkdirSync(lockRoot, { recursive: true });
+  const logs = [];
+
+  // Legacy shape: sidecars only — NO snapshot, NO manifest, NO state file.
+  writeJsonlGz(
+    path.join(runDir, 'memory-nodes.jsonl.gz'),
+    Array.from({ length: 200 }, (_, i) => ({ id: `n${i + 1}`, concept: `c${i + 1}` })),
+  );
+  writeJsonlGz(path.join(runDir, 'memory-edges.jsonl.gz'), []);
+
+  // ONE orchestrator instance across both saves — the memo lives on `this`.
+  const fake = makeOrchestratorFake(runDir, lockRoot, memoryGraph('shrunk', 20), 50, logs);
+
+  const first = await Orchestrator.prototype.saveState.call(fake);
+  assert.equal(first.saved, false);
+  assert.equal(first.reason, 'catastrophic_node_drop');
+  assert.equal(first.existingNodes, 200);
+  assert.equal(first.safeguardSource, 'memory-sidecar', 'cold path streamed the sidecar once');
+  assert.deepEqual(fake._knownGoodCache, { count: 200, source: 'memory-sidecar' },
+    'cold-path resolution must be memoized on the orchestrator');
+
+  // Remove the sidecars. If the second refused save re-resolved from disk it
+  // would now see a fresh dir (count 0, guard passes) and bless the shrunken
+  // overwrite — so a still-refused second save proves the memo was used.
+  fs.rmSync(path.join(runDir, 'memory-nodes.jsonl.gz'));
+  fs.rmSync(path.join(runDir, 'memory-edges.jsonl.gz'));
+
+  const second = await Orchestrator.prototype.saveState.call(fake);
+  assert.equal(second.saved, false, 'refused save must reuse the memoized baseline, not re-stream');
+  assert.equal(second.reason, 'catastrophic_node_drop');
+  assert.equal(second.existingNodes, 200);
+});
+
+test('a successful save refreshes the memoized baseline to the just-saved counts', async (t) => {
+  const home23Root = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo23-guard-memo-refresh-'));
+  t.after(() => fs.rmSync(home23Root, { recursive: true, force: true }));
+  const runDir = path.join(home23Root, 'brains', 'runs', 'memo-run');
+  const lockRoot = path.join(home23Root, 'runtime', 'brain-source-locks');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.mkdirSync(lockRoot, { recursive: true });
+  const logs = [];
+
+  const fake = makeOrchestratorFake(runDir, lockRoot, memoryGraph('grow', 200), 2, logs);
+  const result = await Orchestrator.prototype.saveState.call(fake);
+
+  assert.equal(result.saved, true);
+  assert.deepEqual(fake._knownGoodCache, { count: 200, source: 'snapshot' },
+    'successful save must set the cache to the new truth (mirrors the snapshot stamp)');
+});
+
+test('operator escape hatch survives memoization: editing brain-snapshot.json down is honored without a restart', async (t) => {
+  const home23Root = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo23-guard-hatch-'));
+  t.after(() => fs.rmSync(home23Root, { recursive: true, force: true }));
+  const runDir = path.join(home23Root, 'brains', 'runs', 'hatch-run');
+  const lockRoot = path.join(home23Root, 'runtime', 'brain-source-locks');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.mkdirSync(lockRoot, { recursive: true });
+  const logs = [];
+
+  // ONE long-lived orchestrator instance: warm cache, then a legitimate prune.
+  const fake = makeOrchestratorFake(runDir, lockRoot, memoryGraph('big', 200), 2, logs);
+  const grow = await Orchestrator.prototype.saveState.call(fake);
+  assert.equal(grow.saved, true);
+
+  // Legitimate prune to 60 nodes: refused every cycle (60 < 50% of 200).
+  fake.cycleCount = 50;
+  fake.memory = { exportGraph: () => memoryGraph('pruned', 60) };
+  const refused = await Orchestrator.prototype.saveState.call(fake);
+  assert.equal(refused.saved, false);
+  assert.equal(refused.reason, 'catastrophic_node_drop');
+  assert.equal(refused.existingNodes, 200);
+
+  // Documented intervention: the operator edits the snapshot counts down.
+  // The snapshot tier must be re-read every save — a memo that hides it
+  // would dead-end the escape hatch until a process restart.
+  writeSnapshot(runDir, {
+    nodes: 60, edges: 59, savedAt: new Date().toISOString(), generation: null,
+    nodeCount: 60, edgeCount: 59,
+  });
+
+  fake.cycleCount = 51;
+  const approved = await Orchestrator.prototype.saveState.call(fake);
+  assert.equal(approved.saved, true,
+    'edited snapshot must take effect on the very next save, no restart');
+  assert.equal(approved.existingNodes, 60, 'baseline comes from the operator-edited snapshot');
+});

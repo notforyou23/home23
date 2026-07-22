@@ -358,6 +358,132 @@ test('recover() falls back to an older valid checkpoint when the newest is corru
     'recovery must fall back to the older valid checkpoint');
 });
 
+// --- Phase-1 polish (d): journal overlay rides the checkpoint freshness
+// predicate. Both the state file and checkpoints cap the journal at
+// slice(-100), so LENGTH is not a freshness signal — the overlay must gate on
+// the same cycleCount comparison as the other scalars, or recovery builds a
+// mixed-provenance head (cycleCount from the state file, journal from an
+// older boot).
+
+async function writeScalarCheckpoint(dir, cycle, state) {
+  const checkpointsDir = path.join(dir, 'checkpoints');
+  await fsp.mkdir(checkpointsDir, { recursive: true });
+  await fsp.writeFile(
+    path.join(checkpointsDir, `checkpoint-${cycle}.json`),
+    JSON.stringify({ cycle, timestamp: new Date().toISOString(), state }),
+  );
+}
+
+function makeOverlayStub(manager, loaded) {
+  return {
+    crashRecovery: manager,
+    logger: silentLogger,
+    cycleCount: 0,
+    journal: [],
+    lastSummarization: 0,
+    guidedMissionPlan: null,
+    completionTracker: null,
+    memory: { nodes: new Map(), edges: new Map(), clusters: new Map() },
+    loadStateCalls: 0,
+    async loadState() {
+      this.loadStateCalls += 1;
+      this.cycleCount = loaded.cycleCount;
+      this.journal = loaded.journal.slice();
+      this.lastSummarization = loaded.lastSummarization;
+    },
+  };
+}
+
+test('a stale checkpoint with a LONGER journal must not overlay the fresher loadState journal', async (t) => {
+  const dir = await makeRuntimeDir(t);
+  await writeGzState(dir, { cycleCount: 40 });
+  // Stale checkpoint (cycle 15) carrying MORE journal entries than the state
+  // file restored — e.g. the state file's journal was recently summarized and
+  // trimmed. Length says overlay; provenance says never.
+  await writeScalarCheckpoint(dir, 15, {
+    cycleCount: 15,
+    journal: Array.from({ length: 10 }, (_, i) => ({ cycle: 6 + i, thought: `stale ${i}` })),
+    lastSummarization: 5,
+  });
+
+  const manager = new CrashRecoveryManager({}, silentLogger, dir);
+  await manager.initialize();
+  assert.equal(manager.crashDetected, true);
+
+  const freshJournal = [
+    { cycle: 38, thought: 'fresh a' },
+    { cycle: 39, thought: 'fresh b' },
+    { cycle: 40, thought: 'fresh c' },
+  ];
+  const stub = makeOverlayStub(manager, { cycleCount: 40, journal: freshJournal, lastSummarization: 35 });
+
+  await Orchestrator.prototype.restoreFromPersistence.call(stub);
+
+  assert.equal(stub.loadStateCalls, 1);
+  assert.equal(stub.cycleCount, 40, 'stale checkpoint must not roll the cycle counter back');
+  assert.deepEqual(stub.journal, freshJournal,
+    'stale checkpoint journal must not produce a mixed-provenance head');
+});
+
+test('a fresher checkpoint journal overlays even when 100-capped SHORTER than the loaded journal', async (t) => {
+  const dir = await makeRuntimeDir(t);
+  await writeGzState(dir, { cycleCount: 10 });
+  // Fresher checkpoint (cycle 50) whose slice(-100) journal happens to be
+  // SHORTER than what loadState restored. It is the later slice — it wins.
+  const checkpointJournal = [
+    { cycle: 49, thought: 'later x' },
+    { cycle: 50, thought: 'later y' },
+  ];
+  await writeScalarCheckpoint(dir, 50, {
+    cycleCount: 50,
+    journal: checkpointJournal,
+    lastSummarization: 45,
+  });
+
+  const manager = new CrashRecoveryManager({}, silentLogger, dir);
+  await manager.initialize();
+  assert.equal(manager.crashDetected, true);
+
+  const stub = makeOverlayStub(manager, {
+    cycleCount: 10,
+    journal: [
+      { cycle: 7, thought: 'old a' },
+      { cycle: 8, thought: 'old b' },
+      { cycle: 9, thought: 'old c' },
+      { cycle: 10, thought: 'old d' },
+    ],
+    lastSummarization: 8,
+  });
+
+  await Orchestrator.prototype.restoreFromPersistence.call(stub);
+
+  assert.equal(stub.cycleCount, 50);
+  assert.deepEqual(stub.journal, checkpointJournal,
+    'fresher checkpoint journal must overlay regardless of length (both sides are 100-capped)');
+});
+
+test('a fresher checkpoint with an EMPTY journal never clobbers the loaded journal', async (t) => {
+  const dir = await makeRuntimeDir(t);
+  await writeGzState(dir, { cycleCount: 10 });
+  await writeScalarCheckpoint(dir, 50, {
+    cycleCount: 50,
+    journal: [],
+    lastSummarization: 45,
+  });
+
+  const manager = new CrashRecoveryManager({}, silentLogger, dir);
+  await manager.initialize();
+  assert.equal(manager.crashDetected, true);
+
+  const loadedJournal = [{ cycle: 10, thought: 'keep me' }];
+  const stub = makeOverlayStub(manager, { cycleCount: 10, journal: loadedJournal, lastSummarization: 8 });
+
+  await Orchestrator.prototype.restoreFromPersistence.call(stub);
+
+  assert.equal(stub.cycleCount, 50, 'fresher scalars still overlay');
+  assert.deepEqual(stub.journal, loadedJournal, 'an empty checkpoint journal is never an overlay');
+});
+
 test('orchestrator wiring uses restoreFromPersistence and buildCheckpointState', () => {
   const source = fs.readFileSync(
     path.resolve(__dirname, '../../cosmo23/engine/src/core/orchestrator.js'),
