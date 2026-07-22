@@ -69,12 +69,15 @@ function readSnapshot(brainDir) {
 
 /**
  * Contract shape stores counts as `nodes`/`edges`; older Home23-style
- * snapshots use `nodeCount`/`edgeCount`. Accept both. Returns null when the
- * snapshot carries no usable count.
+ * snapshots use `nodeCount`/`edgeCount`. Accept both. Counts are clamped to
+ * safe non-negative integers — a corrupt-but-parseable snapshot carrying a
+ * negative or fractional count must not become the guard baseline. Returns
+ * null when the snapshot carries no usable count, so resolution falls
+ * through to the manifest tier.
  */
 function snapshotNodeCount(snapshot) {
-  if (Number.isFinite(snapshot?.nodes)) return snapshot.nodes;
-  if (Number.isFinite(snapshot?.nodeCount)) return snapshot.nodeCount;
+  if (Number.isSafeInteger(snapshot?.nodes) && snapshot.nodes >= 0) return snapshot.nodes;
+  if (Number.isSafeInteger(snapshot?.nodeCount) && snapshot.nodeCount >= 0) return snapshot.nodeCount;
   return null;
 }
 
@@ -142,12 +145,13 @@ async function resolveKnownGoodNodeCount(brainDir, statePath, options = {}) {
     return { count: 0, source: 'fresh' };
   }
 
-  let existingState = null;
-  try {
-    existingState = await stateLoader(statePath);
-  } catch {
-    return { count: 0, source: 'fresh' };
-  }
+  // A state file EXISTS past this point (pre-check above). If it cannot be
+  // read or parsed (corrupt .gz with an unparseable uncompressed fallback,
+  // EACCES/EIO), let the error propagate — the orchestrator's guard-resolution
+  // catch fails closed with a 'persistence_guard_failed' refusal. Mapping
+  // this to 'fresh' (count 0) would let the guard bless an overwrite of a
+  // real brain, the exact refuse-rather-than-destroy scenario.
+  const existingState = await stateLoader(statePath);
   const inlineCount = existingState?.memory?.nodes?.length || 0;
   if (inlineCount > 0) {
     return { count: inlineCount, source: 'state-file' };

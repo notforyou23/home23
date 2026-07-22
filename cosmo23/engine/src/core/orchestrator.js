@@ -8142,7 +8142,7 @@ OUTPUT FORMAT (JSON ONLY):
       // Stamp the last-known-good sidecar AFTER the successful save. Contract
       // shape { nodes, edges, savedAt, generation }; nodeCount/edgeCount are
       // compatibility aliases for the lib/memory-sidecar.js hydration guard.
-      writeSnapshot(this.logsDir, {
+      const snapshotStamped = writeSnapshot(this.logsDir, {
         nodes: totalNodes,
         edges: totalEdges,
         savedAt: new Date().toISOString(),
@@ -8151,6 +8151,9 @@ OUTPUT FORMAT (JSON ONLY):
         edgeCount: totalEdges,
         cycle: this.cycleCount
       });
+      if (!snapshotStamped) {
+        this.logger.warn('⚠️ brain-snapshot.json write failed — save guard baseline is now stale', { path: this.logsDir });
+      }
 
       this.logger.info('State saved (GPT-5.2)', {
         cycle: this.cycleCount,

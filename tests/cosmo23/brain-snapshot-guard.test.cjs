@@ -136,6 +136,12 @@ test('snapshotNodeCount accepts both the contract shape and legacy nodeCount sha
   assert.equal(snapshotNodeCount(null), null);
 });
 
+test('snapshotNodeCount clamps corrupt counts to safe non-negative integers', () => {
+  assert.equal(snapshotNodeCount({ nodes: -5 }), null, 'negative counts are corrupt, not a baseline');
+  assert.equal(snapshotNodeCount({ nodeCount: 3.7 }), null, 'non-integer counts are corrupt, not a baseline');
+  assert.equal(snapshotNodeCount({ nodes: 0 }), 0, 'zero is a valid count');
+});
+
 test('resolveKnownGoodNodeCount prefers brain-snapshot.json over sidecars', async (t) => {
   const dir = makeBrainDir(t, 'precedence');
   writeSnapshot(dir, { nodes: 500, edges: 900, savedAt: new Date().toISOString(), generation: 7 });
@@ -195,6 +201,20 @@ test('resolveKnownGoodNodeCount treats a completely fresh run as zero known-good
   const dir = makeBrainDir(t, 'fresh');
   const resolved = await resolveKnownGoodNodeCount(dir, path.join(dir, 'state.json'));
   assert.deepEqual({ count: resolved.count, source: resolved.source }, { count: 0, source: 'fresh' });
+});
+
+test('resolveKnownGoodNodeCount fails closed when a state file exists but cannot be loaded', async (t) => {
+  const dir = makeBrainDir(t, 'unreadable');
+  // A state file EXISTS, so this is NOT a fresh run — an unreadable existing
+  // brain must throw (the orchestrator turns that into persistence_guard_failed)
+  // rather than resolve to a zero baseline that would bless an overwrite.
+  writeCompressedState(dir, { memory: { nodes: [], edges: [] } });
+  await assert.rejects(
+    resolveKnownGoodNodeCount(dir, path.join(dir, 'state.json'), {
+      loadCompressed: async () => { throw new Error('EIO: i/o error, read'); },
+    }),
+    /EIO/,
+  );
 });
 
 test('evaluateSaveSafety refuses a 90 percent drop and passes growth, small brains, and the exact floor', () => {
@@ -285,4 +305,40 @@ test('real saveState: growth stamps brain-snapshot.json and a 90 percent drop at
   assert.equal(restamped.nodes, 210);
   assert.equal(restamped.edges, 209);
   assert.equal(readCompressedState(runDir).memory.nodeCount, 210);
+});
+
+test('real saveState refuses with persistence_guard_failed when the existing state is unreadable', async (t) => {
+  const home23Root = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo23-guard-unreadable-'));
+  t.after(() => fs.rmSync(home23Root, { recursive: true, force: true }));
+  const runDir = path.join(home23Root, 'brains', 'runs', 'guard-run');
+  const lockRoot = path.join(home23Root, 'runtime', 'brain-source-locks');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.mkdirSync(lockRoot, { recursive: true });
+  // Corrupt .gz (salvage-proof) AND corrupt uncompressed fallback: Task 1's
+  // loadCompressed throws for this pair instead of returning an empty state.
+  // No snapshot/manifest/sidecars, so resolution reaches the state tier.
+  fs.writeFileSync(path.join(runDir, 'state.json.gz'), Buffer.from('not gzip at all'));
+  fs.writeFileSync(path.join(runDir, 'state.json'), '{not json');
+  const logs = [];
+  const stateBefore = fs.readFileSync(path.join(runDir, 'state.json.gz'));
+
+  const refused = await Orchestrator.prototype.saveState.call(
+    makeOrchestratorFake(runDir, lockRoot, memoryGraph('unreadable', 20), 5, logs),
+  );
+  assert.equal(refused.saved, false);
+  assert.equal(refused.reason, 'persistence_guard_failed');
+  assert.equal(refused.existingNodes, null);
+  assert.equal(refused.currentNodes, 20);
+  assert.ok(
+    logs.some((entry) => entry.level === 'error' && /REFUSING STATE SAVE/.test(entry.message)),
+    'baseline failure must be logged loudly',
+  );
+  assert.deepEqual(
+    fs.readFileSync(path.join(runDir, 'state.json.gz')),
+    stateBefore,
+    'refused save must not rewrite the unreadable state file',
+  );
+  assert.equal(fs.existsSync(path.join(runDir, 'memory-manifest.json')), false,
+    'refused save must not create sidecar artifacts');
+  assert.equal(readSnapshot(runDir), null, 'refused save must not stamp a snapshot');
 });
