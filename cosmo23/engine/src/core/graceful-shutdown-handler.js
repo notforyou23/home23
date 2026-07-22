@@ -125,7 +125,17 @@ class GracefulShutdownHandler {
     // pipeline always finishes — or times out honestly — before the
     // hard-kill timer fires. The margin reserves room for the clean-shutdown
     // marker, cleanup tasks, and process exit after the bounded steps.
-    const deadlineMarginMs = this.config.shutdownDeadlineMarginMs || 5000;
+    // Margin is clamped to [5s, timeout/2]: a negative/garbage margin would
+    // stamp a deadline BEYOND the hard-kill (the pre-fix overrun returns),
+    // and a margin >= the timeout would pin every bounded step at its 1s
+    // floor forever (save-less shutdowns). A non-finite shutdownTimeout
+    // yields a non-finite deadline — every consumer falls back to its
+    // configured default in that case (see shutdownBudgetMs).
+    const rawMarginMs = Number(this.config.shutdownDeadlineMarginMs);
+    const deadlineMarginMs = Math.min(
+      Math.max(Number.isFinite(rawMarginMs) ? rawMarginMs : 5000, 5000),
+      Math.floor(this.shutdownTimeout / 2)
+    );
     this.shutdownDeadline = this.shutdownStartTime + this.shutdownTimeout - deadlineMarginMs;
     this.orchestrator.shutdownDeadline = this.shutdownDeadline;
 
@@ -167,8 +177,15 @@ class GracefulShutdownHandler {
         // Configured wait (default 2.5 minutes, allows for container
         // downloads) capped at the remaining shutdown budget so the wait can
         // never starve the final save of its slice before the hard kill.
+        // Non-finite deadline (garbage shutdownTimeoutMs config) falls back
+        // to the configured wait exactly as pre-fix: a NaN cap would make
+        // `elapsed > maxAgentWait` never true and starve the save entirely.
+        // (Finite-guard duplicated from orchestrator.js shutdownBudgetMs to
+        // avoid a handler→orchestrator require cycle.)
         const configuredAgentWait = this.config.agentWaitTimeoutMs || 150000;
-        const maxAgentWait = Math.min(configuredAgentWait, Math.max(1000, this.shutdownDeadline - Date.now()));
+        const maxAgentWait = Number.isFinite(this.shutdownDeadline)
+          ? Math.min(configuredAgentWait, Math.max(1000, this.shutdownDeadline - Date.now()))
+          : configuredAgentWait;
         const startWait = Date.now();
         
         while (this.orchestrator.agentExecutor?.registry?.getActiveCount() > 0) {

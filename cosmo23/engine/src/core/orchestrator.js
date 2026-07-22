@@ -8303,8 +8303,11 @@ OUTPUT FORMAT (JSON ONLY):
 
       // Successful save is the ONLY event that refreshes the memoized
       // baseline: the just-saved counts are the new known-good truth
-      // (mirrors the brain-snapshot.json stamp above).
-      this._knownGoodCache = { count: totalNodes, source: 'snapshot' };
+      // (mirrors the brain-snapshot.json stamp above). Provenance stays
+      // honest: when the snapshot stamp failed, no snapshot exists on disk,
+      // so the cache is labeled 'last-save' — never a source that isn't
+      // really there.
+      this._knownGoodCache = { count: totalNodes, source: snapshotStamped ? 'snapshot' : 'last-save' };
 
       this.lastSaveResult = {
         saved: true,

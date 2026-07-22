@@ -411,6 +411,29 @@ test('a successful save refreshes the memoized baseline to the just-saved counts
     'successful save must set the cache to the new truth (mirrors the snapshot stamp)');
 });
 
+test('cache provenance is honest when the snapshot stamp fails: last-save, not snapshot', async (t) => {
+  const home23Root = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo23-guard-provenance-'));
+  t.after(() => fs.rmSync(home23Root, { recursive: true, force: true }));
+  const runDir = path.join(home23Root, 'brains', 'runs', 'provenance-run');
+  const lockRoot = path.join(home23Root, 'runtime', 'brain-source-locks');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.mkdirSync(lockRoot, { recursive: true });
+  const logs = [];
+
+  // Force the post-save snapshot stamp to fail: brain-snapshot.json is a
+  // DIRECTORY, so writeSnapshot's tmp→target rename throws and it returns
+  // false. readSnapshot on the directory returns null, so the guard's tier-1
+  // read stays a clean miss too.
+  fs.mkdirSync(path.join(runDir, 'brain-snapshot.json'));
+
+  const fake = makeOrchestratorFake(runDir, lockRoot, memoryGraph('grow', 200), 2, logs);
+  const result = await Orchestrator.prototype.saveState.call(fake);
+
+  assert.equal(result.saved, true);
+  assert.deepEqual(fake._knownGoodCache, { count: 200, source: 'last-save' },
+    'no snapshot landed on disk — the cache must not claim snapshot provenance');
+});
+
 test('operator escape hatch survives memoization: editing brain-snapshot.json down is honored without a restart', async (t) => {
   const home23Root = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo23-guard-hatch-'));
   t.after(() => fs.rmSync(home23Root, { recursive: true, force: true }));

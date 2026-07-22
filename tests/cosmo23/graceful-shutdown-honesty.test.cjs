@@ -210,9 +210,11 @@ test('shutdownBudgetMs keeps defaults as ceilings and floors the remaining budge
 test('shutdown stamps a hard-kill-derived deadline on the orchestrator before any waiting', async (t) => {
   stubProcessExit(t);
   const orchestrator = makeFakeOrchestrator({ saved: true, reason: null });
+  // Clamp-neutral values: margin 6000 is above the 5s floor and below
+  // timeout/2, so deadline = start + shutdownTimeoutMs - margin exactly.
   const handler = new GracefulShutdownHandler(orchestrator, quietLogger, {
-    shutdownTimeoutMs: 5000,
-    shutdownDeadlineMarginMs: 1000,
+    shutdownTimeoutMs: 60000,
+    shutdownDeadlineMarginMs: 6000,
   });
 
   const before = Date.now();
@@ -221,9 +223,41 @@ test('shutdown stamps a hard-kill-derived deadline on the orchestrator before an
 
   assert.ok(Number.isFinite(orchestrator.shutdownDeadline),
     'handler must pass the deadline via orchestrator.shutdownDeadline');
-  assert.ok(orchestrator.shutdownDeadline >= before + 4000 - 50,
+  assert.ok(orchestrator.shutdownDeadline >= before + 54000 - 50,
     'deadline = start + shutdownTimeoutMs - margin');
-  assert.ok(orchestrator.shutdownDeadline <= after + 4000);
+  assert.ok(orchestrator.shutdownDeadline <= after + 54000);
+});
+
+test('shutdownDeadlineMarginMs is clamped to [5s, timeout/2]', async (t) => {
+  stubProcessExit(t);
+
+  // Negative margin would push the deadline BEYOND the hard-kill instant —
+  // the pre-fix 225s overrun arithmetic returns. Clamp floors it at 5s.
+  const negOrch = makeFakeOrchestrator({ saved: true, reason: null });
+  const negHandler = new GracefulShutdownHandler(negOrch, quietLogger, {
+    shutdownTimeoutMs: 60000,
+    shutdownDeadlineMarginMs: -600000,
+  });
+  const negBefore = Date.now();
+  await negHandler.shutdown('test');
+  const negAfter = Date.now();
+  assert.ok(negOrch.shutdownDeadline <= negAfter + 55000,
+    'negative margin must clamp to the 5s floor, never extend the deadline past the hard-kill');
+  assert.ok(negOrch.shutdownDeadline >= negBefore + 55000 - 50);
+
+  // Margin at/above the whole timeout would leave every bounded step at its
+  // 1s floor forever — save-less shutdowns. Clamp caps it at timeout/2.
+  const bigOrch = makeFakeOrchestrator({ saved: true, reason: null });
+  const bigHandler = new GracefulShutdownHandler(bigOrch, quietLogger, {
+    shutdownTimeoutMs: 60000,
+    shutdownDeadlineMarginMs: 59000,
+  });
+  const bigBefore = Date.now();
+  await bigHandler.shutdown('test');
+  const bigAfter = Date.now();
+  assert.ok(bigOrch.shutdownDeadline >= bigBefore + 30000 - 50,
+    'margin must cap at timeout/2 so bounded steps keep a real budget');
+  assert.ok(bigOrch.shutdownDeadline <= bigAfter + 30000);
 });
 
 test('agent wait is capped by the remaining shutdown budget, save still gets its slice', async (t) => {
@@ -236,8 +270,8 @@ test('agent wait is capped by the remaining shutdown budget, save still gets its
     },
   };
   const handler = new GracefulShutdownHandler(orchestrator, quietLogger, {
-    shutdownTimeoutMs: 10000,
-    shutdownDeadlineMarginMs: 8000, // deadline at +2s
+    shutdownTimeoutMs: 4000,
+    shutdownDeadlineMarginMs: 2000, // clamped to timeout/2 = 2000 → deadline at +2s
     agentWaitTimeoutMs: 7000,       // configured wait would blow past the deadline
   });
 
@@ -249,6 +283,31 @@ test('agent wait is capped by the remaining shutdown budget, save still gets its
     `agent wait must break at the deadline, not run its configured 7s (took ${elapsed}ms)`);
   assert.equal(orchestrator.calls.saveState, 1, 'final save still runs after the capped wait');
   assert.deepEqual(exitCodes, [0]);
+});
+
+test('a garbage shutdown timeout cannot NaN-poison the agent-wait cap and starve the save', async (t) => {
+  stubProcessExit(t); // the NaN-delay hard-kill timer fires immediately; the stub absorbs it
+  const orchestrator = makeFakeOrchestrator({ saved: true, reason: null });
+  const drainAt = Date.now() + 5000; // agents drain on their own only after 5s
+  orchestrator.agentExecutor = {
+    registry: {
+      getActiveCount: () => (Date.now() < drainAt ? 1 : 0),
+      getActiveAgents: () => [],
+    },
+  };
+  const handler = new GracefulShutdownHandler(orchestrator, quietLogger, {
+    shutdownTimeoutMs: '3m',   // garbage config → NaN shutdownDeadline
+    agentWaitTimeoutMs: 1200,  // the pre-fix fallback cap — must still apply
+  });
+
+  const started = Date.now();
+  await handler.shutdown('test');
+  const elapsed = Date.now() - started;
+
+  assert.ok(elapsed < 3500,
+    `non-finite deadline must fall back to the configured agent wait, not a never-true NaN cap (took ${elapsed}ms)`);
+  assert.equal(orchestrator.calls.saveState, 1,
+    'the final save must still be attempted after the capped wait');
 });
 
 test('saveStateForShutdown caps its bound at the remaining shutdown budget', async (t) => {
@@ -274,6 +333,25 @@ test('saveStateForShutdown caps its bound at the remaining shutdown budget', asy
   assert.equal(result.reason, 'shutdown_save_timeout_no_state');
   assert.ok(elapsed < 5000,
     `budget-capped bound must fire near the deadline, not the 8s default (took ${elapsed}ms)`);
+});
+
+test('cleanupTelemetryForShutdown caps its bound at the remaining shutdown budget', async () => {
+  // Pin (mirrors the backup-budget test): with a handler-stamped deadline
+  // nearly exhausted, a hung telemetry cleanup shrinks to the 1s floor
+  // instead of its 4s config — the step sum stays inside the hard-kill.
+  const hung = {
+    logger: quietLogger,
+    config: { shutdownTelemetryTimeoutMs: 4000 },
+    shutdownDeadline: Date.now() + 50, // almost no budget left → 1s floor
+    telemetry: { cleanup: () => new Promise(() => {}) },
+  };
+
+  const started = Date.now();
+  await Orchestrator.prototype.cleanupTelemetryForShutdown.call(hung);
+  const elapsed = Date.now() - started;
+
+  assert.ok(elapsed < 2500,
+    `deadline-capped telemetry cleanup must fire near the 1s floor, not the 4s config (took ${elapsed}ms)`);
 });
 
 // --- Phase-1 polish (b): saveStateForShutdown TOCTOU -----------------------
