@@ -1,4 +1,5 @@
 const { UnifiedClient } = require('../core/unified-client');
+const { GC_PROTECTED_TAGS } = require('./gc-policy');
 
 /**
  * Memory Summarizer - GPT-5.2 Version
@@ -420,13 +421,10 @@ The result should be a standalone insight valuable to someone who never saw the 
     const toRemove = [];
     const minAccessAgeMs = minAccessAgeDays * 24 * 60 * 60 * 1000;
 
-    // Protected tags that should NEVER be garbage collected
-    const protectedTags = new Set([
-      'agent_insight', 'agent_finding', 'mission_plan', 'cross_agent_pattern',
-      'consolidated', 'breakthrough', 'synthesis', 'goal', 'milestone',
-      'research', 'analysis', 'important', 'core', 'foundation',
-      'execution_result', 'execution_failure', 'capability_gap', 'disconfirmation'
-    ]);
+    // Protected tags that should NEVER be garbage collected — canonical set
+    // shared with MemoryGovernor enforcement (see ./gc-policy.js). Contents
+    // are byte-identical to the inline set that used to live here.
+    const protectedTags = GC_PROTECTED_TAGS;
 
     let skippedProtected = 0;
     let skippedConsolidated = 0;

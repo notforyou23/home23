@@ -26,6 +26,7 @@ const { RealityLayer } = require('../system/reality-layer');
 const { IntrospectionRouter } = require('../system/introspection-router');
 const { AgentRouter } = require('../system/agent-routing');
 const { MemoryGovernor } = require('../system/memory-governor');
+const { resolveGcCriteria, resolveGovernorEnforcement } = require('../memory/gc-policy');
 const { RunCommitmentGovernor } = require('./run-commitment-governor');
 const { UnifiedClient } = require('./unified-client');
 const { persistResearchState } = require('../../../lib/memory-sidecar');
@@ -1916,6 +1917,37 @@ class Orchestrator {
         }
       }
 
+      // Memory Governance ENFORCEMENT (Fix 3.2) — opt-in, default OFF via
+      // memory.governor.applyPruning. Runs SYNCHRONOUSLY inside the cycle:
+      // the cycle loop already serializes phase 6 with the end-of-cycle
+      // saveState() capture (exportGraph + captureResearchState are
+      // synchronous), so a sync prune can never tear a save. The
+      // saveInFlight guard additionally stands enforcement down while an
+      // out-of-band save's async write window is open (shutdown join, etc.).
+      if (this.memoryGovernor && this.cycleCount % 20 === 0
+          && resolveGovernorEnforcement(this.config).applyPruning) {
+        const enforcement = this.memoryGovernor.enforce(this.cycleCount, {
+          saveInFlight: Boolean(this._saveStatePromise)
+        });
+        if (enforcement.skipped && enforcement.skipped !== 'not_armed') {
+          this.eventLedger?.log('memory_governor_prune_skipped', {
+            cycle: this.cycleCount,
+            reason: enforcement.skipped
+          });
+        } else if (enforcement.removedNodes > 0) {
+          this.eventLedger?.log('memory_governor_prune', {
+            cycle: this.cycleCount,
+            removedNodes: enforcement.removedNodes,
+            removedEdges: enforcement.removedEdges,
+            candidateCount: enforcement.candidateCount,
+            batchLimit: enforcement.batchLimit,
+            minWeight: enforcement.criteria?.minWeight,
+            maxAgeDays: enforcement.criteria?.maxAgeDays,
+            nodeIds: enforcement.nodeIds
+          });
+        }
+      }
+
       // STRATEGIC GOALS TRACKING - Monitor urgent goals each cycle
       if (this.coordinator?.strategicTracker) {
         this.coordinator.strategicTracker.setCurrentCycle(this.cycleCount);
@@ -3626,11 +3658,26 @@ class Orchestrator {
         await this.memory.rewire(0.01);
         await this.memory.applyDecay();
         
-        // Ultra-conservative garbage collection - only removes truly abandoned nodes
-        // Requires ALL: weight < 0.01 AND not accessed in 2+ YEARS
-        // Protected tags, consolidated nodes, and merged nodes are NEVER deleted
-        const removed = this.summarizer.garbageCollect(this.memory);
-        // Logging is handled inside garbageCollect now
+        // Garbage collection (Fix 3.2): legacy ultra-conservative criteria by
+        // default (weight < 0.01 AND not accessed in 730+ days — protected
+        // tags, consolidated nodes, and merged nodes are NEVER deleted).
+        // memory.gc.enabled=true opts this run into research-lifetime
+        // criteria: weight < decay.minimumWeight AND untouched >
+        // memory.gc.maxAgeDays (default 14).
+        const gcCriteria = resolveGcCriteria(this.config);
+        const removed = this.summarizer.garbageCollect(
+          this.memory, gcCriteria.minWeight, gcCriteria.maxAgeDays
+        );
+        if (removed > 0) {
+          this.eventLedger?.log('memory_gc', {
+            cycle: this.cycleCount,
+            removed,
+            minWeight: gcCriteria.minWeight,
+            maxAgeDays: gcCriteria.maxAgeDays,
+            mode: gcCriteria.enabled ? 'research' : 'legacy'
+          });
+        }
+        // Detailed skip/remove logging is handled inside garbageCollect
 
         const pruned = this.roles.pruneRoles();
         if (pruned > 0) {
@@ -4184,7 +4231,20 @@ class Orchestrator {
     // 5. Memory cleanup
     this.logger.info('🗑️  Memory cleanup...');
     this._getEvents().emitEvent('dream_phase', { phase: 'cleanup', status: 'started' });
-    const removed = this.summarizer.garbageCollect(this.memory);
+    const gcCriteria = resolveGcCriteria(this.config);
+    const removed = this.summarizer.garbageCollect(
+      this.memory, gcCriteria.minWeight, gcCriteria.maxAgeDays
+    );
+    if (removed > 0) {
+      this.eventLedger?.log('memory_gc', {
+        cycle: this.cycleCount,
+        removed,
+        minWeight: gcCriteria.minWeight,
+        maxAgeDays: gcCriteria.maxAgeDays,
+        mode: gcCriteria.enabled ? 'research' : 'legacy',
+        phase: 'dream_cleanup'
+      });
+    }
     this.logger.info('✓ Cleanup complete', { removed });
     this._getEvents().emitEvent('dream_phase', { phase: 'cleanup', status: 'complete', nodesRemoved: removed });
 
