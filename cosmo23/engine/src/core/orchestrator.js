@@ -9423,6 +9423,43 @@ OUTPUT FORMAT (JSON ONLY):
     }
   }
 
+  /**
+   * Fix 2.4 (H5) / review I1: flush and close the events ledger during
+   * shutdown, bounded by the shutdown budget so a wedged fs can never turn
+   * a clean shutdown into the 180s hard kill. The ledger is best-effort by
+   * design — on timeout we warn and abandon the flush, consistent with
+   * log() never throwing into cycles.
+   */
+  async closeLedgerForShutdown() {
+    if (!this.eventLedger) return;
+
+    const timeoutMs = shutdownBudgetMs(this.shutdownDeadline, this.config.shutdownLedgerTimeoutMs || 5000);
+    let timeoutId = null;
+    const closePromise = Promise.resolve()
+      .then(() => this.eventLedger.close())
+      .then(() => ({ status: 'ok' }))
+      .catch(error => ({ status: 'error', error }));
+
+    const timeoutPromise = new Promise(resolve => {
+      timeoutId = setTimeout(() => resolve({ status: 'timeout' }), timeoutMs);
+    });
+
+    const result = await Promise.race([closePromise, timeoutPromise]);
+    if (timeoutId) clearTimeout(timeoutId);
+
+    if (result.status === 'timeout') {
+      this.logger.warn('⚠️ Event ledger close timed out during shutdown; continuing', { timeoutMs });
+      closePromise.catch(() => {});
+      return;
+    }
+
+    if (result.status === 'error') {
+      this.logger.warn('Event ledger close failed (non-fatal)', {
+        error: result.error?.message || String(result.error),
+      });
+    }
+  }
+
   async stop() {
     this.logger.info('Stopping GPT-5.2 system...');
     this.running = false;
@@ -9492,13 +9529,11 @@ OUTPUT FORMAT (JSON ONLY):
     }
     
     // Fix 2.4 (H5): flush and close the events ledger (queued appends +
-    // background gzip jobs; never throws into shutdown).
+    // background gzip jobs), budget-capped so a wedged fs cannot stall the
+    // shutdown path (review I1). Guarded on the instance so prototype-driven
+    // test fakes without a ledger skip cleanly.
     if (this.eventLedger) {
-      try {
-        await this.eventLedger.close();
-      } catch (error) {
-        this.logger.warn('Event ledger close failed (non-fatal)', { error: error.message });
-      }
+      await this.closeLedgerForShutdown();
     }
 
     this.logger.info('GPT-5.2 system stopped');

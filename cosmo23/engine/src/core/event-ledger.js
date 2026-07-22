@@ -6,8 +6,10 @@
  *
  *   - seq        — numeric event id, monotonic ACROSS restarts. Resumed on
  *                  boot by reading the tail of the current events.jsonl
- *                  (last 4KB, widened to 64KB, then full scan as last
- *                  resort) and parsing the final complete line.
+ *                  (last 4KB, widened to 64KB — a deliberate bound; a file
+ *                  whose final 64KB holds no recoverable line is preserved
+ *                  aside as .unchained.jsonl and the chain restarts at
+ *                  GENESIS) and parsing the final complete line.
  *   - prevHash   — sha256 hex of the previous serialized line (the exact
  *                  JSON string as written, WITHOUT the trailing newline).
  *                  'GENESIS' for the first record of a fresh ledger. The
@@ -228,11 +230,13 @@ class EventLedger {
 
   async _append(type, data) {
     const seq = this.seq + 1;
-    // Reserved fields always win over payload fields of the same name.
+    // Reserved fields always win over payload fields of the same name —
+    // including ts: a tamper-evident ledger records WRITE time, so payload
+    // data can never spoof seq, prevHash, type, or ts.
     const record = Object.assign(
-      { type, ts: new Date().toISOString() },
+      { type },
       data,
-      { seq, prevHash: this.prevHash, type }
+      { seq, prevHash: this.prevHash, type, ts: new Date().toISOString() }
     );
     const line = JSON.stringify(record);
     const lineBytes = Buffer.byteLength(line, 'utf8') + 1;

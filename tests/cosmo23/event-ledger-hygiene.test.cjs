@@ -289,13 +289,16 @@ test('reserved fields cannot be spoofed by payload data', async (t) => {
   const dir = await makeTmpDir(t, 'cosmo23-ledger-spoof-');
   const ledger = new EventLedger(dir);
   await ledger.initialize();
-  await ledger.log('evt', { seq: 999999, prevHash: 'spoofed', type: 'other' });
+  await ledger.log('evt', { seq: 999999, prevHash: 'spoofed', type: 'other', ts: 'spoofed' });
   await ledger.close();
 
   const records = readRecords(path.join(dir, 'events.jsonl'));
   assert.equal(records[1].seq, 2);
   assert.notEqual(records[1].prevHash, 'spoofed');
   assert.equal(records[1].type, 'evt');
+  // ts is reserved too: a tamper-evident ledger records WRITE time.
+  assert.notEqual(records[1].ts, 'spoofed');
+  assert.ok(Number.isFinite(Date.parse(records[1].ts)), 'ts must be the real write timestamp');
 
   const result = verifyLedgerFile(path.join(dir, 'events.jsonl'), {
     expectedPrevHash: GENESIS,
@@ -333,15 +336,29 @@ test('orchestrator and compat facade are wired to the durable ledger', () => {
   );
 
   // Shutdown ordering: the ledger closes AFTER the bounded shutdown save +
-  // crash-marker logic and before the final stopped log line.
+  // crash-marker logic and before the final stopped log line — and the close
+  // itself is budget-capped (I1): the ledger is the last place allowed to
+  // hold an unbounded await in the shutdown path.
   const saveIdx = src.indexOf('const saveResult = await this.saveStateForShutdown();');
-  const closeIdx = src.indexOf('await this.eventLedger.close();');
+  const closeIdx = src.indexOf('await this.closeLedgerForShutdown();');
   const stoppedIdx = src.indexOf("this.logger.info('GPT-5.2 system stopped');");
   assert.ok(saveIdx > -1, 'shutdown save call present');
-  assert.ok(closeIdx > -1, 'stop() closes the ledger');
+  assert.ok(closeIdx > -1, 'stop() closes the ledger via the bounded helper');
   assert.ok(stoppedIdx > -1, 'stop() logs the stopped line');
   assert.ok(saveIdx < closeIdx, 'ledger close must come AFTER the shutdown state save');
   assert.ok(closeIdx < stoppedIdx, 'ledger close must come before the final stopped log');
+  assert.ok(
+    src.includes('shutdownBudgetMs(this.shutdownDeadline, this.config.shutdownLedgerTimeoutMs || 5000)'),
+    'closeLedgerForShutdown must race the close against the shutdown budget'
+  );
+
+  // The raw unchained legacy writer (realtime/event-logger.js) must stay
+  // deleted: if ever revived against the ledger dir it would silently
+  // corrupt the hash chain (cleanStart unlink + chainless appends).
+  assert.ok(
+    !fs.existsSync(path.resolve(__dirname, '../../cosmo23/engine/src/realtime/event-logger.js')),
+    'legacy realtime/event-logger.js must not exist'
+  );
 
   // The dead unbounded EventLogger must now delegate to the H5 ledger and
   // must no longer unlink history on clean start.
@@ -354,4 +371,45 @@ test('orchestrator and compat facade are wired to the durable ledger', () => {
     !/\bunlink(Sync)?\s*\(/.test(facade),
     'facade must not unlink ledger history'
   );
+});
+
+test('shutdown ledger close is budget-capped — a wedged close cannot stall stop()', async () => {
+  // I1: eventLedger.close() was the only unbounded await left in the
+  // shutdown path. Drive the real bounded helper with a close() that never
+  // settles (wedged fs) and require it to return within the budget, warn,
+  // and continue — the ledger is best-effort by design.
+  const { Orchestrator } = require('../../cosmo23/engine/src/core/orchestrator.js');
+  const warns = [];
+  const fake = {
+    eventLedger: { close: () => new Promise(() => {}) }, // never settles
+    config: { shutdownLedgerTimeoutMs: 150 },
+    shutdownDeadline: undefined,
+    logger: {
+      warn: (message, meta) => warns.push({ message, meta }),
+      info: () => {},
+    },
+  };
+
+  const started = Date.now();
+  await Orchestrator.prototype.closeLedgerForShutdown.call(fake);
+  const elapsed = Date.now() - started;
+
+  assert.ok(elapsed < 2000, `bounded close must respect the budget, took ${elapsed}ms`);
+  assert.ok(
+    warns.some((w) => /ledger/i.test(w.message) && /timed out/i.test(w.message)),
+    `timeout must be warned, got ${JSON.stringify(warns.map((w) => w.message))}`
+  );
+
+  // And a fast, healthy close passes straight through without a warn.
+  let closed = false;
+  const healthy = {
+    eventLedger: { close: async () => { closed = true; } },
+    config: {},
+    shutdownDeadline: undefined,
+    logger: { warn: (message, meta) => warns.push({ message, meta }), info: () => {} },
+  };
+  const warnsBefore = warns.length;
+  await Orchestrator.prototype.closeLedgerForShutdown.call(healthy);
+  assert.equal(closed, true, 'healthy close must actually close the ledger');
+  assert.equal(warns.length, warnsBefore, 'healthy close must not warn');
 });
