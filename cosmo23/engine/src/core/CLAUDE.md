@@ -158,8 +158,6 @@ Provider routing by assignment: `openai-codex` provider tag routes to `generateC
 | `shutdownTelemetryTimeoutMs` | Bound on telemetry cleanup during shutdown, default 5000 (5s) |
 | `shutdownDeadlineMarginMs` | Room reserved before the hard-kill when deriving the shutdown deadline, default 5000, clamped [5s, shutdownTimeout/2] |
 | `shutdownLedgerTimeoutMs` | Bound on the event-ledger close during shutdown, default 5000 (5s) |
-
-Note: `sentinel.*` settings and the `COSMO23_SENTINEL_*` env overrides are SERVER-side config (`cosmo23/server/index.js`, Patch 71 in `docs/design/COSMO23-VENDORED-PATCHES.md`) — the engine never reads them.
 | `backups.intervalMs` | Brain backup interval, default 21600000 (6h) |
 | `backups.retention` | Backups kept after rotation, default 2 |
 | `backups.minFreeBytes` | Free-disk floor below which backups are skipped, default 4294967296 (4GB) |
@@ -169,6 +167,8 @@ Note: `sentinel.*` settings and the `COSMO23_SENTINEL_*` env overrides are SERVE
 | `cluster.enabled` | Multi-instance cooperative mode |
 | `capabilities.enabled` | Direct tool access |
 | `executiveRing.enabled` | ExecutiveCoordinator (dlPFC layer) |
+
+Note: `sentinel.*` settings and the `COSMO23_SENTINEL_*` env overrides are SERVER-side config (`cosmo23/server/index.js`, Patch 71 in `docs/design/COSMO23-VENDORED-PATCHES.md`) — the engine never reads them.
 
 ### Validator
 `ConfigValidator` is non-breaking: produces `{ valid, warnings, errors, info }` but never throws. Errors indicate invalid cluster backends, bad capabilities modes, malformed booleans.
