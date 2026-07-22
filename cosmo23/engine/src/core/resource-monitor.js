@@ -9,6 +9,8 @@
  * - Provide telemetry for baseline metrics
  */
 
+const v8 = require('v8');
+
 class ResourceMonitor {
   constructor(config, logger) {
     this.config = config;
@@ -42,7 +44,6 @@ class ResourceMonitor {
     // agent executor alias the same object instance.
     const bp = config.resources?.backpressure || {};
     this.rssBudgetMb = config.resources?.rssBudgetMb
-      ?? config.resourceLimits?.rssBudgetMb
       ?? 4096; // engine child runs with default V8 heap (~4GB old space)
     this.bpIntervalMs = bp.intervalMs ?? 10000;
     this.bpThresholds = {
@@ -51,9 +52,13 @@ class ResourceMonitor {
       criticalEnterPct: bp.criticalEnterPct ?? 0.85,
       criticalExitPct: bp.criticalExitPct ?? 0.75
     };
-    // Heap fraction is meaningless on tiny heaps (V8 keeps heapTotal tight);
-    // only count it once heapTotal crosses this floor. RSS-vs-budget always counts.
+    // Heap leg floor: a live set below this cannot meaningfully threaten the
+    // ~multi-GB heap_size_limit, so below it the heap term contributes 0
+    // (keeps tiny heaps from flapping). RSS-vs-budget always counts.
     this.bpHeapMinTotalMb = bp.heapMinTotalMb ?? 512;
+    // Injectable for tests (never monkey-patch the v8 module globally);
+    // readings may also carry heapSizeLimit directly.
+    this._heapStatsProvider = () => v8.getHeapStatistics();
     this.backpressure = { level: 'none', reasons: [] };
     this._bpElevatedActive = false;
     this._bpCriticalActive = false;
@@ -187,8 +192,12 @@ class ResourceMonitor {
   /**
    * H4 backpressure evaluation with hysteresis.
    *
-   * Pressure = max(heapUsed/heapTotal [only when heapTotal >= heapMinTotalMb],
+   * Pressure = max(heapUsed / v8 heap_size_limit [only when heapUsed >= heapMinTotalMb],
    *                rss / rssBudgetMb).
+   * heapUsed/heapTotal deliberately NOT used: V8 keeps heapTotal ~1.1-1.5x the
+   * live set, so that ratio measures GC slack and chronically false-flags
+   * healthy large heaps. heap_size_limit is the actual OOM boundary and
+   * self-adapts to any --max-old-space-size.
    * Two-flag hysteresis: enter elevated at 70%, exit at 60%; enter critical at
    * 85%, exit at 75%. Exiting critical drops into the elevated band unless
    * pressure also cleared the elevated exit threshold. Logs on level CHANGE only.
@@ -197,14 +206,19 @@ class ResourceMonitor {
    * holding the reference observe updates. Saves are never gated on this —
    * enforcement is spawn-side only (AgentExecutor).
    *
-   * @param {Object|null} reading - optional injected {heapUsed, heapTotal, rss} in BYTES (tests)
+   * @param {Object|null} reading - optional injected {heapUsed, heapTotal, rss[, heapSizeLimit]} in BYTES (tests)
    * @returns {string} the new level: 'none' | 'elevated' | 'critical'
    */
   evaluateBackpressure(reading = null) {
     const mem = reading || process.memoryUsage();
-    const heapTotalMb = mem.heapTotal / 1024 / 1024;
-    const rawHeapFraction = mem.heapTotal > 0 ? mem.heapUsed / mem.heapTotal : 0;
-    const heapFraction = heapTotalMb >= this.bpHeapMinTotalMb ? rawHeapFraction : 0;
+    const heapLimitBytes = mem.heapSizeLimit ?? this._heapStatsProvider().heap_size_limit;
+    const heapLimitMb = heapLimitBytes / 1024 / 1024;
+    const heapUsedMb = mem.heapUsed / 1024 / 1024;
+    const rawHeapFraction = heapLimitBytes > 0 ? mem.heapUsed / heapLimitBytes : 0;
+    // Floor gates on heapUsed: heap_size_limit is a fixed multi-GB boundary,
+    // so heapTotal no longer identifies tiny heaps — a live set under the
+    // floor cannot meaningfully threaten the limit.
+    const heapFraction = heapUsedMb >= this.bpHeapMinTotalMb ? rawHeapFraction : 0;
     const rssMb = mem.rss / 1024 / 1024;
     const rssFraction = this.rssBudgetMb > 0 ? rssMb / this.rssBudgetMb : 0;
     const pressure = Math.max(heapFraction, rssFraction);
@@ -225,7 +239,7 @@ class ResourceMonitor {
     if (level !== 'none') {
       const driver = heapFraction >= rssFraction ? 'heap' : 'rss';
       reasons.push(`pressure=${(pressure * 100).toFixed(1)}% driver=${driver}`);
-      reasons.push(`heap ${(rawHeapFraction * 100).toFixed(1)}% of ${heapTotalMb.toFixed(0)}MB heapTotal${heapTotalMb < this.bpHeapMinTotalMb ? ' (below floor, ignored)' : ''}`);
+      reasons.push(`heap ${heapUsedMb.toFixed(0)}MB / ${heapLimitMb.toFixed(0)}MB heap_size_limit (${(rawHeapFraction * 100).toFixed(1)}%)${heapUsedMb < this.bpHeapMinTotalMb ? ' (below floor, ignored)' : ''}`);
       reasons.push(`rss ${rssMb.toFixed(0)}MB / ${this.rssBudgetMb}MB budget (${(rssFraction * 100).toFixed(1)}%)`);
     }
 
@@ -241,7 +255,8 @@ class ResourceMonitor {
         to: level,
         pressurePct: (pressure * 100).toFixed(1),
         heapPct: (rawHeapFraction * 100).toFixed(1),
-        heapTotalMb: heapTotalMb.toFixed(0),
+        heapUsedMb: heapUsedMb.toFixed(0),
+        heapLimitMb: heapLimitMb.toFixed(0),
         rssMb: rssMb.toFixed(0),
         rssBudgetMb: this.rssBudgetMb,
         reasons

@@ -38,14 +38,15 @@ function makeMonitor(overrides = {}) {
   return { monitor, logger };
 }
 
-// Heap-driven reading: heapTotal 1024MB (above the 512MB floor), heapUsed = pct of it.
+// Heap-driven reading: heapUsed = pct of a 1024MB heap_size_limit (heapUsed
+// 563-921MB across the walk — above the 512MB floor), low RSS.
 function heapReading(pct) {
-  return { heapUsed: 1024 * pct * MB, heapTotal: 1024 * MB, rss: 100 * MB };
+  return { heapUsed: 1024 * pct * MB, heapTotal: 1024 * MB, heapSizeLimit: 1024 * MB, rss: 100 * MB };
 }
 
 // RSS-driven reading: tiny heap (below floor, ignored), rss = mb against the 1000MB budget.
 function rssReading(mb) {
-  return { heapUsed: 40 * MB, heapTotal: 50 * MB, rss: mb * MB };
+  return { heapUsed: 40 * MB, heapTotal: 50 * MB, heapSizeLimit: 4096 * MB, rss: mb * MB };
 }
 
 test('backpressure hysteresis: elevated 70/60, critical 85/75, exit-critical lands in elevated band', () => {
@@ -78,9 +79,25 @@ test('rss vs rssBudgetMb drives backpressure even when heap is below the floor',
 
 test('heap fraction is ignored below heapMinTotalMb floor (tiny heaps do not flap)', () => {
   const { monitor } = makeMonitor();
-  // 90% of a 100MB heapTotal, rss well under budget → none
-  const level = monitor.evaluateBackpressure({ heapUsed: 90 * MB, heapTotal: 100 * MB, rss: 100 * MB });
+  // heapUsed 90MB is below the 512MB floor: even at 90% of a tiny 100MB
+  // heap_size_limit the heap leg must contribute 0; rss well under budget → none
+  const level = monitor.evaluateBackpressure({ heapUsed: 90 * MB, heapTotal: 100 * MB, heapSizeLimit: 100 * MB, rss: 100 * MB });
   assert.equal(level, 'none');
+});
+
+test('healthy large heap is not false-flagged: GC slack (heapUsed/heapTotal) must not read as pressure', () => {
+  const { monitor } = makeMonitor();
+  // 1.2GB live set in a 1.5GB heapTotal looks like 80% under the old
+  // heapUsed/heapTotal metric, but the real OOM boundary is heap_size_limit
+  // 4.3GB → 27.9% headroom used. Low RSS. Must be level none.
+  const level = monitor.evaluateBackpressure({
+    heapUsed: 1200 * MB,
+    heapTotal: 1500 * MB,
+    heapSizeLimit: 4300 * MB,
+    rss: 100 * MB,
+  });
+  assert.equal(level, 'none');
+  assert.equal(monitor.backpressure.level, 'none');
 });
 
 test('backpressure object identity is preserved across transitions (H4 mutate-in-place)', () => {
