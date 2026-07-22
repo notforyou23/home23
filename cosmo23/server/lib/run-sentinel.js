@@ -59,6 +59,9 @@ const fsp = fs.promises;
 const path = require('path');
 
 const SENTINEL_STATE_FILENAME = '.sentinel.json';
+// User-stopped runs archive their ladder state here (evidence is never
+// silently deleted): <runDir>/.sentinel.json.last
+const SENTINEL_ARCHIVE_SUFFIX = '.last';
 const HEARTBEAT_FILENAME = '.heartbeat';
 const WATCHDOG_STATE_FILENAME = '.watchdog.json';
 const SENTINEL_STATE_VERSION = 1;
@@ -146,6 +149,11 @@ class RunSentinel {
     this.lastCheck = null;
     this.missingHeartbeatLogged = false;
     this.watchdogPhaseLogged = false;
+    // Epoch ms of the most recent user-initiated stop. USER INTENT IS FINAL:
+    // an in-flight remediation re-checks this between its stop and relaunch
+    // and aborts if a user stop arrived. Superseded by any launch whose
+    // startedAt is newer (see _evaluate).
+    this.userStopEpoch = null;
   }
 
   start() {
@@ -190,10 +198,39 @@ class RunSentinel {
     };
   }
 
-  // The run ended (cosmo-exit or /api/stop). Clean up sentinel state unless
-  // the sentinel itself is mid-remediation or still owes a relaunch retry.
+  // The run ended. Two very different callers, two very different contracts:
+  //
+  // USER-INITIATED (/api/stop, info.userInitiated === true): a user stop is
+  // FINAL. Force-clear the ladder — pendingRelaunch, tracked run, in-memory
+  // escalated/wedged state — even while a remediation is in flight (the
+  // remediation re-checks userStopEpoch between its stop and relaunch and
+  // aborts). The on-disk .sentinel.json is archived to .sentinel.json.last,
+  // never silently deleted, so escalation evidence survives the stop.
+  //
+  // NON-USER (cosmo-exit): clean up unless the sentinel itself is
+  // mid-remediation (the exit is its own stopEngine) or still owes a
+  // relaunch retry.
   async notifyRunEnded(info = {}) {
     try {
+      if (info.userInitiated === true) {
+        this.userStopEpoch = this.now();
+        const runPath = info.runPath || (this.tracked ? this.tracked.runPath : null);
+        const hadState = !!this.state;
+        this.state = null;
+        this.tracked = null;
+        this.pendingRelaunch = false;
+        this.missingHeartbeatLogged = false;
+        this.watchdogPhaseLogged = false;
+        if (!runPath) return { cleaned: true, reason: 'user_stop_idle' };
+        await this._archiveStateFile(runPath);
+        if (hadState) {
+          this.log('info',
+            `Sentinel: user stop for run "${info.runName || runPath}" — remediation ladder cleared, `
+            + `state archived to ${SENTINEL_STATE_FILENAME}${SENTINEL_ARCHIVE_SUFFIX}`);
+        }
+        return { cleaned: true, reason: 'user_stop' };
+      }
+
       if (this.actionInFlight) return { cleaned: false, reason: 'remediation_in_flight' };
       const runPath = info.runPath || (this.tracked ? this.tracked.runPath : null);
       if (!runPath) return { cleaned: false, reason: 'no_run_path' };
@@ -212,6 +249,17 @@ class RunSentinel {
     } catch (error) {
       this.log('error', `Sentinel cleanup failed: ${error?.message || error}`);
       return { cleaned: false, reason: 'cleanup_error' };
+    }
+  }
+
+  async _archiveStateFile(runPath) {
+    const src = this.statePath(runPath);
+    try {
+      await fsp.rename(src, `${src}${SENTINEL_ARCHIVE_SUFFIX}`);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        this.log('error', `Sentinel state archive failed: ${error?.message || error}`);
+      }
     }
   }
 
@@ -244,6 +292,23 @@ class RunSentinel {
         const atMs = parseTimestampMs(entry ? entry.at : null);
         return atMs !== null && now - atMs <= this.config.attemptTtlMs;
       });
+      // Fresh-launch amnesty (I2): a NEW launch — startedAt after the last
+      // recorded attempt/escalation — must not wear the previous run's ladder
+      // or wedged flag; a real wedge then gets a fresh bounded ladder. This
+      // only applies on DISK loads: the sentinel's own relaunches keep the
+      // in-memory state (loadStateFor early-returns above), so the ladder
+      // stays bounded across remediations.
+      const launchMs = parseTimestampMs(context.startedAt);
+      const lastAttemptEntry = onDisk.attempts[onDisk.attempts.length - 1] || null;
+      const ladderMarkerMs = Math.max(
+        parseTimestampMs(lastAttemptEntry ? lastAttemptEntry.at : null) ?? 0,
+        parseTimestampMs(onDisk.escalatedAt) ?? 0,
+      );
+      if (launchMs !== null && ladderMarkerMs > 0 && launchMs > ladderMarkerMs) {
+        onDisk.attempts = [];
+        onDisk.escalated = false;
+        onDisk.escalatedAt = null;
+      }
       if (onDisk.attempts.length === 0 && onDisk.escalated) {
         onDisk.escalated = false;
         onDisk.escalatedAt = null;
@@ -308,6 +373,16 @@ class RunSentinel {
     this.pendingRelaunch = false;
 
     const now = this.now();
+
+    // A launch newer than the last user stop supersedes it — the stop was
+    // aimed at the previous run, not this one.
+    if (this.userStopEpoch !== null) {
+      const launchedMs = parseTimestampMs(context.startedAt);
+      if (launchedMs !== null && launchedMs > this.userStopEpoch) {
+        this.userStopEpoch = null;
+      }
+    }
+
     const state = await this.loadStateFor(context);
 
     const startedAtMs = parseTimestampMs(context.startedAt);
@@ -424,8 +499,9 @@ class RunSentinel {
     }
 
     const attemptNumber = state.attempts.length + 1;
+    const attemptStartMs = this.now();
     const attempt = {
-      at: new Date(this.now()).toISOString(),
+      at: new Date(attemptStartMs).toISOString(),
       reason,
       progressAgeMs: Number.isFinite(opts.progressAgeMs) ? opts.progressAgeMs : null,
       ok: false,
@@ -445,6 +521,19 @@ class RunSentinel {
     try {
       if (opts.skipStop !== true) {
         await this.deps.stopEngine({ runPath: context.runPath, runName: context.runName, reason });
+      }
+      // USER INTENT IS FINAL (I1): if a user stop arrived while this attempt
+      // was in flight (notifyRunEnded already force-cleared the ladder and
+      // archived the state file), the relaunch would resurrect a run the
+      // user killed. Abort — no relaunch, no retry. `>=` on purpose: a stop
+      // in the same millisecond as the attempt start still wins the tie.
+      if (this.userStopEpoch !== null && this.userStopEpoch >= attemptStartMs) {
+        attempt.error = 'aborted_user_stop';
+        this.pendingRelaunch = false;
+        this.log('info',
+          `Sentinel remediation ${attemptNumber}/${this.config.maxAttempts} aborted — `
+          + `user stop arrived during remediation of run "${context.runName}"`);
+        return { outcome: 'aborted_user_stop', reason, attempt: attemptNumber };
       }
       await this.deps.relaunch({
         runPath: context.runPath,
@@ -479,6 +568,7 @@ module.exports = {
   createRunSentinel,
   DEFAULT_CONFIG,
   SENTINEL_STATE_FILENAME,
+  SENTINEL_ARCHIVE_SUFFIX,
   HEARTBEAT_FILENAME,
   WATCHDOG_STATE_FILENAME,
 };

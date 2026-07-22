@@ -2021,6 +2021,12 @@ app.post('/api/launch', async (req, res) => {
 
 app.post('/api/stop', async (_req, res) => {
   if (!activeContext) {
+    // No active context does NOT mean the sentinel is idle: a sentinel
+    // remediation mid-flight has already cleared the context, and a failed
+    // sentinel relaunch leaves a pending retry that would resurrect the run
+    // on a later tick. A user stop is FINAL either way — force-clear the
+    // sentinel's ladder (it falls back to its tracked run for the path).
+    runSentinel.notifyRunEnded({ userInitiated: true }).catch(() => {});
     return res.json({
       status: 'not_running',
       message: 'No research running'
@@ -2028,6 +2034,7 @@ app.post('/api/stop', async (_req, res) => {
   }
 
   const runName = activeContext.runName;
+  const runPath = activeContext.runPath; // capture BEFORE the finally clears context
   try {
     processManager.recordLog('Launcher', 'info', `Stopping run ${runName}`);
     await processManager.stopAll();
@@ -2042,6 +2049,11 @@ app.post('/api/stop', async (_req, res) => {
     });
   } finally {
     activeContext = null;
+    // User stop is FINAL: force-clears the remediation ladder and the wedged
+    // flag even mid-remediation (state archived to .sentinel.json.last, never
+    // silently deleted). Also covers escalated dead runs, whose stop produces
+    // no cosmo-exit and would otherwise stay wedged until a server restart.
+    runSentinel.notifyRunEnded({ runPath, runName, userInitiated: true }).catch(() => {});
   }
 });
 

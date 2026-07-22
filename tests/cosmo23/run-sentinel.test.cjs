@@ -285,7 +285,14 @@ test('run completion cleans up sentinel state', async (t) => {
   assert.equal(fixture.sentinel.getPublicState(), null);
 });
 
-test('run-ended notification during an in-flight remediation does not wipe ladder state', async (t) => {
+// PIN SCOPE CHANGE (fix-first follow-up to d7b76f86): this pin originally
+// covered EVERY run-ended notification during remediation — including user
+// stops, which wrongly let the sentinel resurrect a run jtr had killed. It
+// now pins only the NON-user path (cosmo-exit fired by the sentinel's own
+// remediation stop must not wipe the ladder). User-initiated stops take the
+// force path instead — see the 'user stop during an in-flight remediation'
+// test below.
+test('run-ended notification (cosmo-exit) during an in-flight remediation does not wipe ladder state', async (t) => {
   const fixture = await makeFixture(t);
   const stopStarted = deferred();
   const stopGate = deferred();
@@ -354,6 +361,127 @@ test('stale attempts beyond the TTL are pruned on load', async (t) => {
   const state = await fixture.readStateFile();
   assert.equal(state.attempts.length, 1);
   assert.equal(state.escalated, false);
+});
+
+// --- I1/I2 (fix-first follow-up to d7b76f86): user intent is final -----------
+// A user /api/stop must never be undone by the sentinel: no zombie
+// resurrection mid-remediation, no pending-relaunch retry afterwards, and the
+// wedged flag must not outlive the run the user stopped. Evidence is archived
+// (.sentinel.json → .sentinel.json.last), never silently deleted.
+
+test('I1: user stop during an in-flight remediation aborts the relaunch and clears state', async (t) => {
+  const fixture = await makeFixture(t);
+  const stopStarted = deferred();
+  const stopGate = deferred();
+  fixture.stopImpl = async () => {
+    stopStarted.resolve();
+    await stopGate.promise;
+    fixture.activeContext = null;
+    fixture.processRunning = [];
+  };
+
+  wedgeHeartbeat(fixture);
+  const inFlight = fixture.sentinel.check();
+  await stopStarted.promise;
+
+  // jtr hits /api/stop while the sentinel is mid-stopAll. The context is
+  // already gone (the sentinel's own stopEngine cleared it), but the stop
+  // must still be FINAL.
+  const cleaned = await fixture.sentinel.notifyRunEnded({ runPath: fixture.runPath, userInitiated: true });
+  assert.equal(cleaned.cleaned, true);
+
+  stopGate.resolve();
+  const result = await inFlight;
+  assert.equal(result.outcome, 'aborted_user_stop');
+  assert.equal(fixture.relaunchCalls.length, 0);
+  assert.equal(fixture.sentinel.getPublicState(), null);
+  assert.equal(await fixture.stateFileExists(), false);
+  // Evidence archived, never silently deleted.
+  const archived = JSON.parse(await fs.readFile(`${fixture.statePath}.last`, 'utf8'));
+  assert.equal(archived.attempts.length, 1);
+});
+
+test('I1: user stop after a failed relaunch cancels the pending retry', async (t) => {
+  const fixture = await makeFixture(t);
+  fixture.relaunchImpl = async () => {
+    fixture.activeContext = null;
+    throw new Error('launch refused: provider offline');
+  };
+  wedgeHeartbeat(fixture);
+  assert.equal((await fixture.sentinel.check()).outcome, 'remediation_failed');
+
+  // /api/stop sees no active run (not_running branch) so it has no runPath —
+  // the sentinel must fall back to its tracked run and stand down anyway.
+  const cleaned = await fixture.sentinel.notifyRunEnded({ userInitiated: true });
+  assert.equal(cleaned.cleaned, true);
+
+  const next = await fixture.sentinel.check();
+  assert.equal(next.outcome, 'idle');
+  assert.equal(fixture.relaunchCalls.length, 1); // no retry resurrection
+  assert.equal(fixture.sentinel.getPublicState(), null);
+});
+
+test('I2: user stop of an escalated (dead) run clears the wedged flag and archives evidence', async (t) => {
+  const fixture = await makeFixture(t);
+  // Exhaust the ladder → escalated.
+  wedgeHeartbeat(fixture);
+  await fixture.sentinel.check();
+  fixture.nowMs += 30 * MINUTE;
+  wedgeHeartbeat(fixture);
+  await fixture.sentinel.check();
+  fixture.nowMs += 30 * MINUTE;
+  wedgeHeartbeat(fixture);
+  assert.equal((await fixture.sentinel.check()).outcome, 'escalated');
+  assert.equal(fixture.sentinel.getPublicState().escalated, true);
+
+  // An escalated run's engine is dead — no cosmo-exit will ever fire for it,
+  // so without the user-stop path wedged:true would persist until a server
+  // restart. jtr stops the run.
+  const cleaned = await fixture.sentinel.notifyRunEnded({
+    runPath: fixture.runPath, runName: 'labor23', userInitiated: true,
+  });
+  assert.equal(cleaned.cleaned, true);
+  // Status contract now reports wedged:false / sentinel:null.
+  assert.equal(fixture.sentinel.getPublicState(), null);
+  assert.equal(await fixture.stateFileExists(), false);
+  const archived = JSON.parse(await fs.readFile(`${fixture.statePath}.last`, 'utf8'));
+  assert.equal(archived.escalated, true); // evidence preserved
+});
+
+test('I2: a fresh launch gets ladder amnesty — no inherited wedged flag, fresh ladder on a real wedge', async (t) => {
+  const fixture = await makeFixture(t);
+  // A previous run in the same directory escalated 90 minutes ago (well
+  // within attemptTtlMs) and its state file survived — e.g. the server
+  // crashed, so neither cosmo-exit cleanup nor a user stop ever ran.
+  await fs.writeFile(fixture.statePath, JSON.stringify({
+    version: 1,
+    runPath: fixture.runPath,
+    runName: 'labor23',
+    brainId: 'brain-abc123',
+    attempts: [
+      { at: new Date(fixture.nowMs - 120 * MINUTE).toISOString(), reason: 'wedged_no_cycle_progress', ok: true, error: null },
+      { at: new Date(fixture.nowMs - 90 * MINUTE).toISOString(), reason: 'wedged_no_cycle_progress', ok: true, error: null },
+    ],
+    recoveries: 0,
+    escalated: true,
+    escalatedAt: new Date(fixture.nowMs - 90 * MINUTE).toISOString(),
+  }, null, 2), 'utf8');
+
+  // A NEW launch of the same run, 2 minutes ago (still inside launch grace).
+  fixture.activeContext.startedAt = new Date(fixture.nowMs - 2 * MINUTE).toISOString();
+  const inGrace = await fixture.sentinel.check();
+  assert.equal(inGrace.reason, 'launch_grace');
+  // The fresh launch must not wear the old run's wedged flag.
+  assert.equal(fixture.sentinel.getPublicState().escalated, false);
+  assert.equal(fixture.sentinel.getPublicState().attempts, 0);
+
+  // Past grace, a REAL wedge gets a fresh bounded ladder (attempt 1, not a
+  // silent escalated no-op).
+  fixture.nowMs += 30 * MINUTE;
+  wedgeHeartbeat(fixture);
+  const result = await fixture.sentinel.check();
+  assert.equal(result.outcome, 'remediated');
+  assert.equal(result.attempt, 1);
 });
 
 // --- S1: watchdog hand-off contract -----------------------------------------
