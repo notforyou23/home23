@@ -166,6 +166,9 @@ Provider routing by assignment: `openai-codex` provider tag routes to `generateC
 | `memory.deltaCompaction.fullRewriteIntervalMs` | Max base age before an armed save rebases with a full rewrite (folds the delta chain back in), default 21600000 (6h) |
 | `recovery.checkpointInterval` | Cycles between checkpoints, default 5 |
 | `planning.maxRetries` | PlanExecutor task retry limit, default 3 |
+| `governance.sleepPolicy.mode` | Consolidation trigger authority: `legacy` (default — dual-system fatigue/rhythm trigger, bit-identical) or `policy` (idle / post-milestone triggers, Component 4.4) |
+| `governance.sleepPolicy.idleCycles` | Policy mode: consecutive cycles with zero new agent spawns AND zero task completions before idle-triggered consolidation, default 10 |
+| `governance.sleepPolicy.minGapCycles` | Policy mode: minimum cycles between policy-triggered consolidations, default 30 |
 | `planning.agentTimeout` | Default 720000 (12 min) |
 | `cluster.enabled` | Multi-instance cooperative mode |
 | `capabilities.enabled` | Direct tool access |

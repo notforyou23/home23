@@ -15,6 +15,10 @@ class AgentRegistry {
     this.activeAgents = new Set(); // Set of active agent IDs
     this.completedAgents = new Map(); // agentId -> completedAgentState
     this.failedAgents = new Map(); // agentId -> failedAgentState
+    // GOVERNANCE (Component 4.4): monotonic per-process spawn counter for the
+    // sleep policy's idle signal. Never decremented — cleanupOldAgents prunes
+    // the maps above, so their sizes cannot serve as activity counters.
+    this.totalRegistered = 0;
   }
 
   /**
@@ -35,6 +39,7 @@ class AgentRegistry {
 
     this.agents.set(agent.agentId, agentState);
     this.activeAgents.add(agent.agentId);
+    this.totalRegistered += 1;
 
     // Listen to agent lifecycle events
     agent.on('complete', () => this.onAgentComplete(agent));
@@ -422,6 +427,7 @@ class AgentRegistry {
     
     return {
       total: this.agents.size,
+      totalRegistered: this.totalRegistered,
       active: this.activeAgents.size,
       completed: this.completedAgents.size,
       failed: this.failedAgents.size,

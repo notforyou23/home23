@@ -29,6 +29,7 @@ const { MemoryGovernor } = require('../system/memory-governor');
 const { planMemoryCommunities } = require('../memory/community-detection');
 const { resolveGcCriteria, resolveGovernorEnforcement } = require('../memory/gc-policy');
 const { RunCommitmentGovernor } = require('./run-commitment-governor');
+const { SleepPolicy } = require('./sleep-policy');
 const { RunVitals, PARK_EXIT_CODE, writeParkState, archiveParkState } = require('./run-vitals');
 const { ProgressLaneTracker } = require('./progress-lane');
 const { getSpendMeter } = require('./spend-meter');
@@ -108,6 +109,11 @@ class Orchestrator {
     this.agentExecutor = subsystems.agentExecutor;
     this.commitmentGovernor = new RunCommitmentGovernor(this.config.commitmentGovernor || {}, this.logger);
     this.lastCommitmentDecision = null;
+    // GOVERNANCE (Component 4.4): consolidation-by-policy decision unit.
+    // mode 'legacy' (default) keeps Phase 11 sleep triggering bit-identical.
+    this.sleepPolicy = new SleepPolicy(this.config.governance?.sleepPolicy || {}, this.logger);
+    this._sleepPolicySignals = null;
+    this._sleepPolicyEntryReason = null;
     // Phase 4 (4.3): computed progress lane — commitments + starvation
     // detection over a trailing cycle window. Config under
     // governance.starvation (windowCycles default 20). Never writes state.
@@ -1790,6 +1796,13 @@ class Orchestrator {
       // Skip in dream mode (no agents should be running)
       if (this.agentExecutor && !this.config.execution?.dreamMode) {
         const processed = await this.agentExecutor.processCompletedResults();
+
+        // GOVERNANCE (Component 4.4): cycle-stamped completion signal for the
+        // sleep policy; stale stamps self-invalidate on the next cycle.
+        this._sleepPolicySignals = {
+          cycle: this.cycleCount,
+          tasksCompleted: Number.isFinite(processed?.processed) ? processed.processed : 0
+        };
         
         // EXECUTIVE RING: Record completed agents for pattern detection
         // Check each completed agent's accomplishment and update coherence
@@ -2134,8 +2147,37 @@ class Orchestrator {
         this.temporal.enterSleep();
       }
 
+      // GOVERNANCE SLEEP POLICY (Component 4.4): in 'policy' mode, NEW sleep
+      // sessions start only on idle / post-milestone policy decisions
+      // (rate-limited, suppressed while any governance lane is critical).
+      // 'legacy' mode (default) keeps the dual-system trigger bit-identical.
+      // Dream mode and already-active sessions always take the legacy path.
+      const sleepDecision = this._resolveSleepTrigger({
+        shouldSleepCognitive,
+        shouldSleepTemporal,
+        dreamMode: Boolean(this.config.execution?.dreamMode),
+        planAction
+      });
+      if (sleepDecision.source === 'policy' && sleepDecision.triggered) {
+        this.logger.info('🌙 Sleep policy triggering consolidation', {
+          trigger: sleepDecision.policyDecision.trigger,
+          idleStreak: sleepDecision.policyDecision.idleStreak,
+          cycle: this.cycleCount
+        });
+        this._sleepPolicyEntryReason = 'sleep_policy_' + sleepDecision.policyDecision.trigger;
+        // Synchronize BOTH systems so the existing session machinery
+        // (consolidate-once, energy recovery, wake, safety net) flows
+        // unchanged from here.
+        if (this.stateModulator.getState().mode !== 'sleeping') {
+          this.stateModulator.transitionToMode('sleeping');
+        }
+        if (this.temporal.getState().state !== 'sleeping') {
+          this.temporal.enterSleep();
+        }
+      }
+
       // Sleep if EITHER system triggers (intentional dual-system design)
-      if (shouldSleepCognitive || shouldSleepTemporal || this.config.execution?.dreamMode) {
+      if (sleepDecision.triggered) {
         // Initialize sleep session if just starting
         if (!this.sleepSession.active) {
           this.sleepSession.active = true;
@@ -2149,11 +2191,12 @@ class Orchestrator {
 
           // Emit real-time sleep event
           this._getEvents().emitSleepTriggered({
-            reason: shouldSleepCognitive ? 'cognitive_fatigue' : 'temporal_rhythm',
+            reason: this._sleepPolicyEntryReason || (shouldSleepCognitive ? 'cognitive_fatigue' : 'temporal_rhythm'),
             energy: cognitiveState.energy,
             fatigue: rhythmState.fatigue || 0,
             cycle: this.cycleCount
           });
+          this._sleepPolicyEntryReason = null;
         }
 
         // Calculate sleep progress
@@ -4136,6 +4179,100 @@ class Orchestrator {
    * Deep sleep with GPT-5.2 enhanced processing
    * Returns: { consolidated: boolean, deferred: boolean, reason: string, nextAvailableIn: string }
    */
+  /**
+   * GOVERNANCE SLEEP POLICY (Component 4.4) — resolve whether Phase 11
+   * (sleep management) should run the sleep/consolidation block this cycle.
+   *
+   * 'legacy' mode (default) reproduces the historical dual-system trigger
+   * EXACTLY: cognitive fatigue OR temporal rhythm OR dream mode. 'policy'
+   * mode gates NEW sleep sessions on the SleepPolicy decision (idle /
+   * post-milestone, rate-limited, critical-lane suppressed); an already
+   * active sleep session and dream mode always take the legacy path so the
+   * wake machinery (consolidate-once, energy recovery, minimumCycles,
+   * 50-cycle safety net, active-plan override) is untouched in both modes.
+   *
+   * Pure with respect to engine state except for one bounded action: a
+   * consolidate:true decision writes the durable ledger receipt
+   * ('sleep_policy_consolidation', fire-and-forget, never awaited).
+   */
+  _resolveSleepTrigger(inputs = {}) {
+    const dreamMode = Boolean(inputs.dreamMode);
+    const legacyTrigger = Boolean(inputs.shouldSleepCognitive || inputs.shouldSleepTemporal || dreamMode);
+    if (!this.sleepPolicy || !this.sleepPolicy.isPolicyMode() || dreamMode) {
+      return { triggered: legacyTrigger, source: 'legacy', policyDecision: null };
+    }
+    if (this.sleepSession?.active) {
+      return { triggered: true, source: 'active_session', policyDecision: null };
+    }
+    const planAction = inputs.planAction || null;
+    const policyDecision = this.sleepPolicy.evaluate({
+      cycleCount: this.cycleCount,
+      totalAgentsSpawned: this.agentExecutor?.registry?.totalRegistered ?? null,
+      tasksCompletedThisCycle: this._sleepPolicyCompletionsThisCycle(planAction),
+      milestoneCompletedThisCycle: Boolean(planAction &&
+        (planAction.action === 'PHASE_ADVANCED' || planAction.action === 'PLAN_COMPLETED')),
+      criticalLanes: this._governanceCriticalLanes()
+    });
+    if (policyDecision.consolidate) {
+      // Durable governance receipt (bounded autonomy) — never awaited.
+      this.eventLedger?.log('sleep_policy_consolidation', {
+        cycle: this.cycleCount,
+        trigger: policyDecision.trigger,
+        idleStreak: policyDecision.idleStreak,
+        cyclesSinceLastConsolidation: policyDecision.cyclesSinceLastConsolidation
+      });
+      return { triggered: true, source: 'policy', policyDecision };
+    }
+    if (policyDecision.suppressed) {
+      this.logger.info('⏭️  Sleep policy suppressing consolidation', {
+        reason: policyDecision.reason,
+        trigger: policyDecision.trigger,
+        criticalLanes: policyDecision.criticalLanes,
+        cycle: this.cycleCount
+      });
+    }
+    return { triggered: false, source: 'policy', policyDecision };
+  }
+
+  /**
+   * GOVERNANCE (Component 4.4): task completions visible this cycle — the
+   * per-cycle stamp recorded when agent results were processed (Phase 2),
+   * cycle-stamped so stale values self-invalidate, plus PlanExecutor task
+   * completion actions from this cycle's tick.
+   */
+  _sleepPolicyCompletionsThisCycle(planAction) {
+    const stamped = (this._sleepPolicySignals && this._sleepPolicySignals.cycle === this.cycleCount)
+      ? this._sleepPolicySignals.tasksCompleted
+      : 0;
+    const planCompletion = planAction &&
+      (planAction.action === 'TASK_COMPLETED' || planAction.action === 'PLAN_COMPLETED') ? 1 : 0;
+    return stamped + planCompletion;
+  }
+
+  /**
+   * GOVERNANCE (Component 4.4): names of governance lanes currently at level
+   * 'critical'. Lanes are COMPUTED by the research governance regulator
+   * (Components 4.1-4.3) when one is wired onto the orchestrator; absent
+   * regulator means no suppression (empty list). This reads lane levels and
+   * nothing else.
+   */
+  _governanceCriticalLanes() {
+    for (const source of [this.researchRegulator, this.governanceRegulator]) {
+      if (!source) continue;
+      let lanes = null;
+      if (typeof source.getLaneStates === 'function') {
+        lanes = source.getLaneStates();
+      } else if (typeof source.getLanes === 'function') {
+        lanes = source.getLanes();
+      }
+      if (!lanes || typeof lanes !== 'object') continue;
+      return Object.entries(lanes)
+        .filter(([, lane]) => lane && String(lane.level).toLowerCase() === 'critical')
+        .map(([name]) => name);
+    }
+    return [];
+  }
+
   async performDeepSleepConsolidation() {
     // Rate limit consolidations to prevent thrashing (skip in dream mode)
     if (!this.config.execution?.dreamModeSettings?.disableConsolidationRateLimit) {
@@ -11022,6 +11159,7 @@ OUTPUT FORMAT (JSON ONLY):
         usingWebSearch: true
       },
       clusterCoordinator: this.clusterCoordinator ? this.clusterCoordinator.getStats() : null,
+      sleepPolicy: this.sleepPolicy ? this.sleepPolicy.getStats() : null,
       governance: {
         lanes: {
           progress: this.progressLane ? this.progressLane.getLane() : null
