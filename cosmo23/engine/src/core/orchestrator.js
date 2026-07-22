@@ -29,6 +29,7 @@ const { UnifiedClient } = require('./unified-client');
 const { persistResearchState } = require('../../../lib/memory-sidecar');
 const { writeSnapshot, resolveKnownGoodNodeCount, evaluateSaveSafety } = require('./brain-snapshot');
 const { hydrateOrchestratorState } = require('./state-hydration');
+const { maybeBackupBrain } = require('./brain-backups');
 
 // EXECUTIVE RING: Executive function layer (dlPFC)
 const { ExecutiveCoordinator } = require('../coordinator/executive-coordinator');
@@ -8244,16 +8245,26 @@ OUTPUT FORMAT (JSON ONLY):
       // Write human-readable progress file
       await this.writeProgressFile(state);
 
-      // Rotate old backups (keep last 5)
-      // Run in background to not slow down save
-      StateCompression.rotateBackups(this.logsDir, 'state.backup', 5)
+      // Periodic coherent backup (interval-gated, default 6h). Replaces the
+      // legacy rotateBackups call that governed backups nothing ever created.
+      // Fire-and-forget: a backup failure must never fail a save.
+      maybeBackupBrain(this.logsDir, {
+        lockRoot: this.config?.memorySource?.lockRoot,
+        logger: this.logger,
+        intervalMs: this.config?.backups?.intervalMs,
+        retention: this.config?.backups?.retention,
+        minFreeBytes: this.config?.backups?.minFreeBytes,
+      })
         .then(result => {
-          if (result.removed > 0) {
-            this.logger.info('Rotated old backups', result);
+          if (result.created) {
+            this.logger.info('🗄️ Brain backup created', {
+              path: result.path,
+              rotated: result.rotated
+            });
           }
         })
         .catch(error => {
-          this.logger.warn('Backup rotation failed', { error: error.message });
+          this.logger.warn('Backup failed (non-fatal)', { error: error.message });
         });
 
       this.lastSaveResult = {
