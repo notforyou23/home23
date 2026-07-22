@@ -248,7 +248,13 @@ class CrashRecoveryManager {
           await fs.unlink(filePath);
           // Remove the audit sidecar with its checkpoint so audit artifacts
           // do not accumulate unbounded now that listCheckpoints() excludes them.
-          await fs.unlink(filePath.replace(/\.json$/, '_audit.json')).catch(() => {});
+          await fs.unlink(filePath.replace(/\.json$/, '_audit.json')).catch((err) => {
+            if (err.code !== 'ENOENT') {
+              this.logger.debug('[CrashRecovery] Failed to delete audit sidecar', {
+                file, error: err.message
+              });
+            }
+          });
           this.logger.info('[CrashRecovery] Deleted old checkpoint', { file });
         }
       }

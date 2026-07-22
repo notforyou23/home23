@@ -315,6 +315,29 @@ test('recover() ignores checkpoint audit artifacts', async (t) => {
     'audit-only checkpoints dir must not produce a spurious recovery');
 });
 
+test('checkpoint rotation deletes the audit sidecar with its checkpoint', async (t) => {
+  const dir = await makeRuntimeDir(t);
+  const manager = new CrashRecoveryManager(
+    { recovery: { maxCheckpoints: 3 } },
+    silentLogger,
+    dir,
+  );
+
+  for (const cycle of [5, 10, 15, 20, 25]) {
+    await manager.saveCheckpoint(
+      { cycleCount: cycle, memorySummary: { nodes: 1, edges: 0, clusters: 0 } },
+      cycle,
+    );
+  }
+
+  const remaining = (await fsp.readdir(path.join(dir, 'checkpoints'))).sort();
+  assert.deepEqual(remaining, [
+    'checkpoint-15.json', 'checkpoint-15_audit.json',
+    'checkpoint-20.json', 'checkpoint-20_audit.json',
+    'checkpoint-25.json', 'checkpoint-25_audit.json',
+  ], 'rotated cycles must lose BOTH the checkpoint and its audit sidecar; retained pairs stay');
+});
+
 test('recover() falls back to an older valid checkpoint when the newest is corrupt', async (t) => {
   const dir = await makeRuntimeDir(t);
   const manager = new CrashRecoveryManager({}, silentLogger, dir);

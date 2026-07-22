@@ -97,8 +97,10 @@ describe('Single-Instance: Graceful Shutdown', () => {
       
       // Both should complete without error
       await Promise.all([p1, p2]);
-      
+
       expect(handler.shutdownComplete).to.be.true;
+      // The stubbed process.exit must have been invoked exactly once, cleanly.
+      expect(exitCodes).to.deep.equal([0]);
     });
 
     it('should ignore shutdown if already in progress', async () => {
