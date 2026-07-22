@@ -91,9 +91,12 @@ async function safeReadManifest(brainDir) {
 }
 
 /**
- * Stream-count unique node ids in memory-nodes.jsonl.gz. cosmo23 rewrites
- * the base sidecar in full on every save (no delta files), so the base
- * count is authoritative.
+ * Stream-count unique node ids in memory-nodes.jsonl.gz. This tier only
+ * matters for legacy-resident layouts: manifest-backed runs name their
+ * bases memory-nodes.base-N.jsonl.gz (this path does not exist there), and
+ * with delta compaction armed (Fix 3.4) a base-only count would undercount
+ * anyway — the manifest tier ABOVE this one carries the authoritative
+ * summary totals, refreshed by every delta append.
  */
 async function countSidecarNodes(brainDir) {
   const nodeIds = new Set();

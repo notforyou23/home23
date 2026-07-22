@@ -330,6 +330,52 @@ function summarizePersistenceView(nodes, edges) {
 }
 
 /**
+ * Persisted-graph projections (Fix 3.4 delta compaction). Delta appends put
+ * dirty records into the manifest delta chain; those records MUST match
+ * what a full save persists — exportGraph()'s exact field set — or the
+ * hydrated brain would change shape depending on which save path last
+ * touched a node (full saves drop summary/keyPhrase/metadata/type today).
+ * Keep these field lists in exact sync with exportGraph();
+ * tests/cosmo23/research-memory-delta-compaction.test.cjs pins the parity.
+ */
+function projectExportedNodeRecord(n) {
+  return {
+    id: n.id,
+    concept: n.concept,
+    tag: n.tag,
+    embedding: n.embedding,
+    weight: n.weight,
+    activation: n.activation,
+    cluster: n.cluster,
+    accessCount: n.accessCount,
+    created: n.created,
+    accessed: n.accessed,
+    consolidatedAt: n.consolidatedAt
+  };
+}
+
+function projectExportedEdgeRecord(edgeKey, edge) {
+  let source;
+  let target;
+  if (edge.source !== undefined && edge.target !== undefined) {
+    source = edge.source;
+    target = edge.target;
+  } else {
+    const parts = String(edgeKey).split('->');
+    source = Number.isNaN(Number(parts[0])) ? parts[0] : Number(parts[0]);
+    target = Number.isNaN(Number(parts[1])) ? parts[1] : Number(parts[1]);
+  }
+  return {
+    source,
+    target,
+    weight: edge.weight,
+    type: edge.type,
+    created: edge.created,
+    accessed: edge.accessed
+  };
+}
+
+/**
  * Network Memory Graph
  * Implements spreading activation, Hebbian learning, and small-world topology
  * From: "Network Theory and Emergent Idea Graphs" section
@@ -1532,6 +1578,49 @@ class NetworkMemory {
         changes,
         fullView: { nodes, edges },
         summary: summarizePersistenceView(nodes, edges),
+      });
+    });
+  }
+
+  /**
+   * Changes-only capture for manifest delta appends (Fix 3.4). Unlike
+   * capturePersistenceSnapshot() this never materializes the full graph —
+   * bounded work at large-brain scale is the whole point of delta
+   * compaction — and it projects records through the exportGraph() field
+   * set so delta-written and base-written records hydrate identically.
+   * Summary counts mirror researchSummary() over exportGraph() output:
+   * clusterCount is the cluster-map size, NOT the distinct node.cluster
+   * count summarizePersistenceView() reports — the persistence layer
+   * compares this summary against its captured export to decide delta
+   * eligibility, so the two must count the same way.
+   */
+  capturePersistenceChangesSnapshot() {
+    return this.withPersistenceBarrier(() => {
+      const changes = {
+        nodes: Array.from(this.dirtyNodeIds)
+          .map((nodeId) => {
+            const node = this.nodes.get(nodeId);
+            return node ? clonePersistenceValue(projectExportedNodeRecord(node)) : null;
+          })
+          .filter(Boolean),
+        edges: Array.from(this.dirtyEdgeKeys)
+          .map((edgeKey) => {
+            const edge = this.edges.get(edgeKey);
+            return edge ? clonePersistenceValue(projectExportedEdgeRecord(edgeKey, edge)) : null;
+          })
+          .filter(Boolean),
+        removedNodeIds: Array.from(this.deletedNodeIds),
+        removedEdgeKeys: Array.from(this.deletedEdgeKeys),
+        revision: this.persistenceRevision,
+      };
+      return deepFreezePersistenceValue({
+        generation: this.persistenceGeneration,
+        changes,
+        summary: {
+          nodeCount: this.nodes.size,
+          edgeCount: this.edges.size,
+          clusterCount: this.clusters.size,
+        },
       });
     });
   }

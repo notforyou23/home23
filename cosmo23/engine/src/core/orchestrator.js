@@ -8680,12 +8680,38 @@ OUTPUT FORMAT (JSON ONLY):
       const persistence = await persistResearchState(this.logsDir, state, {
         lockRoot: this.config?.memorySource?.lockRoot,
         logger: this.logger,
+        // Fix 3.4 (config-gated, default OFF): the live dirty tracking plus
+        // the manifest identity committed by this process's previous save
+        // let persistResearchState append changes-only deltas instead of
+        // rewriting the full base sidecars every cycle. Absent config
+        // leaves the legacy full-rewrite path untouched.
+        liveMemory: this.memory,
+        deltaCompaction: this.config?.memory?.deltaCompaction,
+        deltaExpected: this._memoryDeltaExpected,
         saveState: (capturedState) => StateCompression.saveCompressed(statePath, capturedState, {
           compress: true,
           pretty: false  // Compact JSON for better compression
         }),
       });
       const saveResult = persistence.saveResult;
+
+      // Fix 3.4: remember the manifest identity this save committed so the
+      // next armed save can CAS-append onto it (a degraded save clears the
+      // lineage — the next save rebases), and ledger the compaction outcome
+      // durably. eventLedger.log is fire-and-forget — never awaited.
+      this._memoryDeltaExpected = persistence.deltaExpected || null;
+      if (persistence.compaction) {
+        this.eventLedger?.log('memory_delta_compaction', {
+          cycle: this.cycleCount,
+          mode: persistence.compaction.mode,
+          reason: persistence.compaction.reason || null,
+          cleaned: persistence.compaction.cleaned,
+          revision: persistence.revision,
+          nodes: totalNodes,
+          edges: totalEdges,
+          ...(persistence.compaction.counts || {}),
+        });
+      }
 
       // Stamp the last-known-good sidecar AFTER the successful save. Contract
       // shape { nodes, edges, savedAt, generation }; nodeCount/edgeCount are

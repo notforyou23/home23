@@ -161,6 +161,9 @@ Provider routing by assignment: `openai-codex` provider tag routes to `generateC
 | `backups.intervalMs` | Brain backup interval, default 21600000 (6h) |
 | `backups.retention` | Backups kept after rotation, default 2 |
 | `backups.minFreeBytes` | Free-disk floor below which backups are skipped, default 4294967296 (4GB) |
+| `memory.deltaCompaction.enabled` | Fix 3.4 gate, default false — armed saves append changes-only manifest deltas instead of rewriting the full base sidecars every cycle |
+| `memory.deltaCompaction.minNodes` | Node floor below which saves stay full-rewrite even when enabled, default 10000 |
+| `memory.deltaCompaction.fullRewriteIntervalMs` | Max base age before an armed save rebases with a full rewrite (folds the delta chain back in), default 21600000 (6h) |
 | `recovery.checkpointInterval` | Cycles between checkpoints, default 5 |
 | `planning.maxRetries` | PlanExecutor task retry limit, default 3 |
 | `planning.agentTimeout` | Default 720000 (12 min) |
