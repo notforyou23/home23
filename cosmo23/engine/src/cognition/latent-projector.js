@@ -174,6 +174,39 @@ class LatentProjector {
   }
 
   /**
+   * Count non-blank dataset lines without materializing the file as one
+   * string. The training dataset is append-only JSONL with no rotation, so a
+   * whole-file readFile(utf-8) re-introduces V8's ~536MB single-string
+   * ceiling (the failure class Patch 67 removed from the ingestion pending
+   * queue) and costs O(file) heap on every per-cycle auto-train check.
+   * Semantics match content.split('\n').filter(l => l.trim().length > 0):
+   * blank/whitespace-only lines are ignored, an unterminated non-blank tail
+   * counts as one line, and a missing file rejects with code ENOENT so
+   * existing catch paths behave exactly as before.
+   */
+  _countDatasetSamples() {
+    const { createReadStream } = require('fs');
+    return new Promise((resolve, reject) => {
+      let count = 0;
+      let tailHasContent = false;
+      const stream = createReadStream(this.datasetPath);
+      stream.on('data', (chunk) => {
+        for (let i = 0; i < chunk.length; i += 1) {
+          const byte = chunk[i];
+          if (byte === 10) {
+            if (tailHasContent) count += 1;
+            tailHasContent = false;
+          } else if (byte !== 13 && byte !== 32 && byte !== 9) {
+            tailHasContent = true;
+          }
+        }
+      });
+      stream.on('end', () => resolve(tailHasContent ? count + 1 : count));
+      stream.on('error', reject);
+    });
+  }
+
+  /**
    * Check if auto-training should be triggered
    * Returns true if we have enough new samples since last training
    */
@@ -187,10 +220,7 @@ class LatentProjector {
     }
 
     try {
-      const fs = require('fs').promises;
-      const content = await fs.readFile(this.datasetPath, 'utf-8');
-      const lines = content.split('\n').filter(line => line.trim().length > 0);
-      const currentCount = lines.length;
+      const currentCount = await this._countDatasetSamples();
 
       // Check if we have enough samples total
       if (currentCount < this.config.autoTrainThreshold) {
@@ -265,10 +295,7 @@ class LatentProjector {
 
           // Update sample count to avoid re-training immediately
           try {
-            const fs = require('fs').promises;
-            const content = await fs.readFile(this.datasetPath, 'utf-8');
-            const lines = content.split('\n').filter(line => line.trim().length > 0);
-            this.lastTrainingSampleCount = lines.length;
+            this.lastTrainingSampleCount = await this._countDatasetSamples();
 
             // Reload weights
             this.initialized = false;
