@@ -161,7 +161,7 @@ test('spend lane thresholds: ok below warn ratio, pace on warn, park on critical
   const vitals = new RunVitals({
     config: { spend: { maxTokens: 1000 } },
     logger: quietLogger,
-    spendProvider: () => ({ totalTokens: tokens, totalUsd: null, unmeteredCalls: 2 })
+    spendProvider: () => ({ totals: { totalTokens: tokens }, usd: null, unmeteredCalls: 2 })
   });
 
   tokens = 699;
@@ -217,7 +217,7 @@ test('spend lane honesty: unmetered (budget, no 4.2 meter) and unpriced (USD bud
   const unpriced = new RunVitals({
     config: { spend: { maxUsd: 10 } },
     logger: quietLogger,
-    spendProvider: () => ({ totalTokens: 5e6, totalUsd: null, unmeteredCalls: 0 })
+    spendProvider: () => ({ totals: { totalTokens: 5e6 }, usd: null, unmeteredCalls: 0 })
   });
   a = unpriced.evaluateCycle(baseSignals());
   assert.equal(a.lanes.spend.state, 'unpriced');
@@ -308,7 +308,7 @@ test('pacing releases with a receipt transition when the warn clears', () => {
   const vitals = new RunVitals({
     config: { spend: { maxTokens: 1000 } },
     logger: quietLogger,
-    spendProvider: () => ({ totalTokens: tokens })
+    spendProvider: () => ({ totals: { totalTokens: tokens } })
   });
   let a = vitals.evaluateCycle(baseSignals({ cycle: 1 }));
   assert.deepEqual(a.transitions, [{ type: 'pacing_engaged' }]);
@@ -335,7 +335,7 @@ test('config sanitizers: slowdown below 1 rejected, criticalRatio never below wa
       spend: { maxTokens: 1000 }
     },
     logger: quietLogger,
-    spendProvider: () => ({ totalTokens: 800 })
+    spendProvider: () => ({ totals: { totalTokens: 800 } })
   });
   const a = vitals.evaluateCycle(baseSignals());
   // 0.8 utilization: warnRatio 0.8 → warn; criticalRatio clamped up to 0.8
@@ -355,7 +355,7 @@ test('runGovernanceTick applies pacing to interval factor + executor cap, receip
   const vitals = new RunVitals({
     config: { spend: { maxTokens: 1000 } },
     logger: quietLogger,
-    spendProvider: () => ({ totalTokens: tokens })
+    spendProvider: () => ({ totals: { totalTokens: tokens } })
   });
   const fake = makeFakeOrchestrator(t, { vitals });
 
@@ -400,7 +400,7 @@ test('park flow (R2): durable .park.json first, existing stop() machinery, termi
   const vitals = new RunVitals({
     config: { spend: { maxTokens: 1000 } },
     logger: quietLogger,
-    spendProvider: () => ({ totalTokens: tokens })
+    spendProvider: () => ({ totals: { totalTokens: tokens } })
   });
   const fake = makeFakeOrchestrator(t, { vitals });
 
@@ -532,3 +532,53 @@ test('getStats().governance surfaces lanes additively after evaluation', () => {
   assert.doesNotThrow(() => JSON.stringify(stats));
 });
 
+
+// --- Regression: real SpendMeter snapshot integration (live-proof finding
+// 2026-07-22). The unit tests above used synthetic snapshots that happened to
+// dodge two D1/D2 composition bugs: (1) the orchestrator constructor nulled
+// this.spendMeter after binding it, and (2) RunVitals read snapshot.totalTokens
+// while the meter nests it under snapshot.totals.totalTokens. Both let a run
+// blow its token budget without ever parking. This drives the REAL meter. ---
+const { getSpendMeter, resetSpendMeterForTests } = require('../../cosmo23/engine/src/core/spend-meter');
+const fsp = require('node:fs/promises');
+
+test('real SpendMeter snapshot drives the spend lane critical → park', async (t) => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'run-vitals-realmeter-'));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  const meter = getSpendMeter();
+  resetSpendMeterForTests();
+  meter.configure({ logsDir: dir, spendConfig: { maxTokens: 4000 }, logger: { debug() {} } });
+  meter.recordUsage({ provider: 'openai', model: 'gpt-5.2', inputTokens: 2359, outputTokens: 4300 }); // 6659 > 4000*0.95
+
+  const rv = new RunVitals({
+    config: { governance: { enabled: true }, spend: { maxTokens: 4000 } },
+    logger: { info() {}, warn() {}, debug() {} },
+    spendProvider: () => meter.getSnapshot(),
+    progressAssessor: () => null,
+  });
+  const a = rv.evaluateCycle({ cycle: 5, nodes: 100, backpressureLevel: 'none', watchdog: null, activeAgents: 0 });
+  assert.equal(rv.summarizeLanes(a.lanes).spend.level, 'critical', 'over-budget token usage must read critical');
+  assert.ok(a.park, 'critical spend must produce a park decision');
+  assert.equal(a.park.reason, 'spend_critical');
+  assert.equal(a.park.evidence.totalTokens, 6659, 'lane must read the nested totals.totalTokens');
+});
+
+test('real SpendMeter under budget reads warn → pacing, not park', async (t) => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'run-vitals-realmeter-warn-'));
+  t.after(() => fsp.rm(dir, { recursive: true, force: true }));
+  const meter = getSpendMeter();
+  resetSpendMeterForTests();
+  meter.configure({ logsDir: dir, spendConfig: { maxTokens: 8000 }, logger: { debug() {} } });
+  meter.recordUsage({ provider: 'openai', model: 'gpt-5.2', inputTokens: 2359, outputTokens: 4300 }); // 6659 / 8000 = 0.83
+
+  const rv = new RunVitals({
+    config: { governance: { enabled: true }, spend: { maxTokens: 8000 } },
+    logger: { info() {}, warn() {}, debug() {} },
+    spendProvider: () => meter.getSnapshot(),
+    progressAssessor: () => null,
+  });
+  const a = rv.evaluateCycle({ cycle: 5, nodes: 100, backpressureLevel: 'none', watchdog: null, activeAgents: 0 });
+  assert.equal(rv.summarizeLanes(a.lanes).spend.level, 'warn');
+  assert.equal(a.park, null, 'warn must never park');
+  assert.ok((a.transitions || []).some((tr) => tr.type === 'pacing_engaged'), 'warn must engage pacing');
+});

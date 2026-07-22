@@ -322,12 +322,21 @@ class Orchestrator {
       spendProvider: () => (this.spendMeter && typeof this.spendMeter.getSnapshot === 'function')
         ? this.spendMeter.getSnapshot()
         : null,
-      progressAssessor: (input) => (this.progressCommitments && typeof this.progressCommitments.assessProgress === 'function')
-        ? this.progressCommitments.assessProgress(input)
-        : null
+      // Component 4.3's progress lane (this.progressLane, constructed above)
+      // is fed by the end-of-cycle sampler; the regulator READS its current
+      // verdict via getLane() and adapts it to the vitals assessor shape.
+      // Reasons that mean "not enough to judge" report tracked:false so the
+      // lane stays observe-only (untracked/ok) until real progress signal.
+      progressAssessor: () => {
+        if (!this.progressLane || typeof this.progressLane.getLane !== 'function') return null;
+        const lane = this.progressLane.getLane();
+        if (!lane) return null;
+        const reason = lane.evidence?.reason;
+        const untracked = reason === 'no_samples' || reason === 'window_filling'
+          || reason === 'no_signals_available' || reason === 'plan_completed';
+        return { tracked: !untracked, level: lane.level, reason, evidence: lane.evidence };
+      }
     });
-    this.spendMeter = null;            // Component 4.2 wires the real meter here
-    this.progressCommitments = null;   // Component 4.3 wires the tracker here
     // Applied pacing — the regulator's only standing effect. Read by
     // calculateNextInterval (factor) and mirrored onto the agent executor
     // (governanceConcurrencyCap). Neutral until a WARN lane engages.

@@ -304,8 +304,11 @@ class RunVitals {
       return { level: 'ok', state: 'unmetered', reason: null, evidence: { budget } };
     }
 
-    const totalTokens = finiteOrNull(snapshot.totalTokens);
-    const totalUsd = finiteOrNull(snapshot.totalUsd);
+    // The 4.2 meter nests usage under snapshot.totals and reports USD as
+    // snapshot.usd (null without a price table) — read its real shape, not a
+    // flat {totalTokens,totalUsd} guess.
+    const totalTokens = finiteOrNull(snapshot.totals?.totalTokens);
+    const totalUsd = finiteOrNull(snapshot.usd);
     const unmeteredCalls = finiteOrNull(snapshot.unmeteredCalls) ?? 0;
 
     const ratios = [];
