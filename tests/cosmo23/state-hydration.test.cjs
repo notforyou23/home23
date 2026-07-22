@@ -113,7 +113,13 @@ test('throws BRAIN_LOAD_EMPTY when brain-snapshot expects nodes but hydration fi
   const state = { cycleCount: 9, memory: { nodes: [], edges: [] }, memorySource: 'manifest' };
   await assert.rejects(
     hydrateOrchestratorState(runDir, state, { logger: silentLogger() }),
-    /^Error: BRAIN_LOAD_EMPTY: /,
+    (err) => {
+      assert.match(err.message, /^BRAIN_LOAD_EMPTY: /);
+      // The halt contract is the code property, not the message prefix — a
+      // message-wrapping intermediary must not convert a halt into a fresh boot.
+      assert.equal(err.code, 'BRAIN_LOAD_EMPTY');
+      return true;
+    },
   );
 });
 
@@ -129,7 +135,11 @@ test('throws BRAIN_LOAD_EMPTY when manifest totals expect nodes but sidecars are
   const logs = [];
   await assert.rejects(
     hydrateOrchestratorState(runDir, shell, { logger: silentLogger(logs) }),
-    /^Error: BRAIN_LOAD_EMPTY: /,
+    (err) => {
+      assert.match(err.message, /^BRAIN_LOAD_EMPTY: /);
+      assert.equal(err.code, 'BRAIN_LOAD_EMPTY');
+      return true;
+    },
   );
   assert.equal(logs.some(({ level }) => level === 'warn'), true, 'hydration failure must be logged before the guard fires');
 });

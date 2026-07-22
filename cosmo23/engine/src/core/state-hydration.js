@@ -143,12 +143,16 @@ async function hydrateOrchestratorState(logsDir, state, options = {}) {
     const detail = hydrationError
       ? ` Hydration error: ${hydrationError.message}.`
       : '';
-    throw new Error(
+    const error = new Error(
       `BRAIN_LOAD_EMPTY: brain-snapshot/manifest for ${logsDir} expects `
       + `${expectedNodes} nodes but the loaded/hydrated graph has 0. Refusing `
       + 'to boot as a fresh brain — the manifest generation and memory '
       + `sidecars are the authoritative data. Do NOT restart until this is investigated.${detail}`,
     );
+    // The halt contract rides on the code property; the message prefix is a
+    // human-readable fallback that message-wrapping intermediaries may lose.
+    error.code = 'BRAIN_LOAD_EMPTY';
+    throw error;
   }
 
   return {

@@ -8896,8 +8896,9 @@ OUTPUT FORMAT (JSON ONLY):
       }
     } catch (error) {
       // Fail-loud contract: a brain that should have nodes but loaded empty
-      // must HALT the engine, never continue as a fresh brain.
-      if (String(error.message || '').startsWith('BRAIN_LOAD_EMPTY')) {
+      // must HALT the engine, never continue as a fresh brain. Match the code
+      // property first — a wrapped/reworded message must still halt.
+      if (error.code === 'BRAIN_LOAD_EMPTY' || String(error.message || '').startsWith('BRAIN_LOAD_EMPTY')) {
         this.logger.error('🛑 BRAIN_LOAD_EMPTY — refusing to continue with an empty brain', {
           error: error.message,
           path: this.logsDir
