@@ -14,6 +14,7 @@ const { CrashRecoveryManager } = require('./crash-recovery-manager');
 const { TimeoutManager } = require('./timeout-manager');
 const { GracefulShutdownHandler } = require('./graceful-shutdown-handler');
 const { TelemetryCollector } = require('./telemetry-collector');
+const { EventLedger } = require('./event-ledger');
 
 // Planning modules
 const PlanScheduler = require('../planning/plan-scheduler');
@@ -255,6 +256,13 @@ class Orchestrator {
     this.heartbeatWriter = new HeartbeatWriter(this.logsDir, {
       intervalMs: config.heartbeat?.intervalMs,
       logger
+    });
+    // Fix 2.4 (H5): durable events ledger — monotonic seq across restarts,
+    // sha256 prevHash chain, size-capped rotation + gzip + retention.
+    this.eventLedger = new EventLedger(this.logsDir, {
+      maxBytes: config.ledger?.maxBytes,
+      keepRolls: config.ledger?.keepRolls,
+      logger,
     });
     this.shutdownHandler = null; // Created after initialization
   }
@@ -581,6 +589,15 @@ class Orchestrator {
     // Phase A: Initialize telemetry
     await this.telemetry.initialize();
     this.telemetry.emitLifecycleEvent('initialized');
+
+    // Fix 2.4 (H5): open the durable events ledger (seq resume from the tail
+    // of events.jsonl + hash chain + rotation). Non-fatal — the ledger must
+    // never block a run.
+    try {
+      await this.eventLedger.initialize();
+    } catch (error) {
+      this.logger.warn('Event ledger init failed (non-fatal)', { error: error.message });
+    }
     
     // Initialize evaluation framework
     this.evaluation = new EvaluationFramework(
@@ -1239,6 +1256,7 @@ class Orchestrator {
   async executeCycle() {
     const cycleStart = new Date();
     this.cycleCount++;
+    this.eventLedger?.log('cycle_start', { cycle: this.cycleCount });
 
     // Phase 2 (H1): stamp cycle start — opens the progress window. A cycle
     // that never stamps an end (hung LLM await) shows fresh ts with stale
@@ -3326,6 +3344,7 @@ class Orchestrator {
 
       const cycleDuration = Date.now() - cycleStart.getTime();
       this.logger.info(`✓ Cycle completed in ${cycleDuration}ms (GPT-5.2)`);
+      this.eventLedger?.log('cycle_complete', { cycle: this.cycleCount, durationMs: cycleDuration });
       
       // Phase A: Take resource snapshot
       const resourceSnapshot = this.resourceMonitor.snapshot();
@@ -9472,6 +9491,16 @@ OUTPUT FORMAT (JSON ONLY):
       await this.saveState();
     }
     
+    // Fix 2.4 (H5): flush and close the events ledger (queued appends +
+    // background gzip jobs; never throws into shutdown).
+    if (this.eventLedger) {
+      try {
+        await this.eventLedger.close();
+      } catch (error) {
+        this.logger.warn('Event ledger close failed (non-fatal)', { error: error.message });
+      }
+    }
+
     this.logger.info('GPT-5.2 system stopped');
   }
 

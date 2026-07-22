@@ -1,43 +1,44 @@
 /**
- * Event Logger - Simple append-only event log
- * Writes events to events.jsonl for SSE streaming
+ * Event Logger — compatibility facade over the durable EventLedger (H5).
+ *
+ * The legacy implementation appended to events.jsonl without bound and
+ * reset eventCount every process. It now delegates to
+ * core/event-ledger.js: monotonic seq across restarts, sha256 prevHash
+ * chain, size-capped rotation with gzip + retention.
+ *
+ * API changes vs the legacy class (zero callers exist — grep-verified):
+ *   - initialize() and close() are async.
+ *   - initialize() no longer accepts cleanStart: the ledger is append-only;
+ *     hygiene comes from rotation, never from unlinking history.
  */
 
-const fs = require('fs');
-const path = require('path');
+'use strict';
+
+const { EventLedger } = require('./core/event-ledger');
 
 class EventLogger {
-  constructor(runPath) {
+  constructor(runPath, opts = {}) {
     this.runPath = runPath;
-    this.filePath = path.join(runPath, 'events.jsonl');
-    this.stream = null;
-    this.eventCount = 0;
+    this.ledger = new EventLedger(runPath, opts);
+    this.filePath = this.ledger.filePath;
   }
 
-  initialize(cleanStart = false) {
-    // Clear file on clean start
-    if (cleanStart && fs.existsSync(this.filePath)) {
-      fs.unlinkSync(this.filePath);
-    }
-    
-    // Open append stream
-    this.stream = fs.createWriteStream(this.filePath, { flags: 'a' });
-    this.log({ type: 'session_start', timestamp: Date.now() });
+  get eventCount() {
+    return this.ledger.seq;
+  }
+
+  async initialize() {
+    await this.ledger.initialize();
+    this.log({ type: 'session_start' });
   }
 
   log(event) {
-    if (!this.stream) return;
-    
-    const entry = {
-      ...event,
-      eventId: ++this.eventCount,
-      timestamp: event.timestamp || Date.now()
-    };
-    
-    this.stream.write(JSON.stringify(entry) + '\n');
+    if (!event || typeof event !== 'object') return;
+    const { type, ...data } = event;
+    this.ledger.log(type || 'event', data);
   }
 
-  // Convenience methods matching event emitter API
+  // Convenience methods matching the event emitter API
   emitThought(data) { this.log({ type: 'thought_generated', ...data }); }
   emitCycle(data) { this.log({ type: 'cycle_start', ...data }); }
   emitGoal(data) { this.log({ type: 'goal_created', ...data }); }
@@ -46,11 +47,9 @@ class EventLogger {
   emitCode(data) { this.log({ type: 'code_generation', ...data }); }
   emit(type, data) { this.log({ type, ...data }); }
 
-  close() {
-    if (this.stream) {
-      this.log({ type: 'session_end', totalEvents: this.eventCount });
-      this.stream.end();
-    }
+  async close() {
+    this.log({ type: 'session_end' });
+    await this.ledger.close();
   }
 }
 

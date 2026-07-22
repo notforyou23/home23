@@ -49,6 +49,7 @@ test('default package test authority registers each new lightweight COSMO suite 
     'tests/cosmo23/state-hydration.test.cjs',
     'tests/cosmo23/runtime-dependency-compatibility.test.cjs',
     'tests/cosmo23/state-compression-atomicity.test.cjs',
+    'tests/cosmo23/event-ledger-hygiene.test.cjs',
     'tests/cosmo23/package-test-registration.test.cjs',
     'tests/security/child-process-env.test.ts',
     'tests/security/cosmo-child-process-env.test.cjs',
