@@ -123,3 +123,59 @@ test('a dir with no state artifacts fails cleanly with no tmp leftovers', async 
   const leftovers = fs.readdirSync(path.join(runDir, 'backups')).filter((n) => n.endsWith('.tmp'));
   assert.deepEqual(leftovers, [], 'failed backup must clean its tmp staging dir');
 });
+
+test('low free disk accounts for the projected copy size, not just the floor', async (t) => {
+  const { runDir, lockRoot } = await makeFixture(t);
+  // free (10) clears the bare floor (5) but cannot hold the copy set too:
+  // the skip must come from the size-aware in-lock check and report the
+  // projected bytes it computed.
+  const result = await maybeBackupBrain(runDir, {
+    lockRoot, logger: silentLogger, now: Date.now(),
+    minFreeBytes: 5,
+    freeBytesOverride: 10,
+  });
+  assert.equal(result.created, false);
+  assert.equal(result.skipped, 'low_disk');
+  assert.equal(result.freeBytes, 10);
+  assert.equal(
+    Number.isSafeInteger(result.projectedBytes) && result.projectedBytes > 0, true,
+    'size-aware skip must report the projected copy size',
+  );
+  assert.equal(listBackups(runDir).length, 0);
+});
+
+test('stale kill-9 orphaned tmp staging dirs are swept; fresh ones survive', async (t) => {
+  const { runDir, lockRoot } = await makeFixture(t);
+  const backupsDir = path.join(runDir, 'backups');
+  const stale = path.join(backupsDir, 'backup-stale.tmp');
+  const fresh = path.join(backupsDir, 'backup-fresh.tmp');
+  await fsp.mkdir(stale, { recursive: true });
+  await fsp.mkdir(fresh, { recursive: true });
+  const oldTime = new Date(Date.now() - 2 * HOUR);
+  fs.utimesSync(stale, oldTime, oldTime);
+
+  const result = await maybeBackupBrain(runDir, { lockRoot, logger: silentLogger, now: Date.now() });
+  assert.equal(result.created, true);
+  assert.equal(result.sweptTmp, 1, 'exactly the stale tmp dir must be swept');
+  assert.equal(fs.existsSync(stale), false, 'stale orphaned tmp dir must be removed');
+  assert.equal(fs.existsSync(fresh), true, 'fresh tmp dir may belong to a live copy and must survive');
+});
+
+test('manifest file entries with path traversal are ignored, not copied', async (t) => {
+  const { runDir, lockRoot } = await makeFixture(t);
+  const manifestPath = path.join(runDir, 'memory-manifest.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  manifest.activeDelta.file = '../evil.jsonl';
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+  await fsp.writeFile(path.join(path.dirname(runDir), 'evil.jsonl'), 'evil');
+
+  const result = await maybeBackupBrain(runDir, { lockRoot, logger: silentLogger, now: Date.now() });
+  assert.equal(result.created, true, 'backup must still succeed without the bad entry');
+  const backups = listBackups(runDir);
+  assert.equal(backups.length, 1);
+  const contents = fs.readdirSync(backups[0].path, { recursive: true }).map(String);
+  assert.equal(contents.some((name) => name.includes('evil')), false,
+    'traversal entry must not be copied into the backup');
+  assert.equal(fs.existsSync(path.join(runDir, 'backups', 'evil.jsonl')), false,
+    'traversal must not write outside the staging dir');
+});

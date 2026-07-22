@@ -25,6 +25,10 @@ const BACKUPS_DIR = 'backups';
 const DEFAULT_RETENTION = 2;
 const DEFAULT_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_MIN_FREE_BYTES = 4 * 1024 ** 3;
+// A kill -9 mid-copy orphans the backup-*.tmp staging dir forever (rotation
+// only sees finished backups). Sweep tmp dirs older than this — generous
+// against copy durations, safe against a concurrent in-flight copy.
+const TMP_SWEEP_AGE_MS = 60 * 60 * 1000;
 
 // Same default lock root the save path applies (cosmo23/lib/memory-sidecar.js
 // DEFAULT_LOCK_ROOT — resolves to <home23>/runtime/brain-source-locks). The
@@ -81,17 +85,22 @@ function readManifestFiles(logsDir) {
       fs.readFileSync(path.join(logsDir, 'memory-manifest.json'), 'utf8'),
     );
     const files = [];
+    const accept = (file) => {
+      if (typeof file !== 'string' || !file) return;
+      // Canonical manifests only ever carry bare basenames
+      // (shared/memory-source/manifest.cjs assertRelativeBasename), so
+      // reject anything else — this read skips validateManifest, and a
+      // corrupt manifest entry must not traverse out of logsDir.
+      if (path.isAbsolute(file) || file !== path.basename(file)
+          || file === '.' || file === '..') return;
+      files.push(file);
+    };
     for (const side of ['nodes', 'edges']) {
-      const file = manifest?.activeBase?.[side]?.file;
-      if (typeof file === 'string' && file) files.push(file);
+      accept(manifest?.activeBase?.[side]?.file);
     }
-    const deltas = Array.isArray(manifest?.deltas) ? manifest.deltas : [];
-    for (const delta of deltas) {
-      if (typeof delta?.file === 'string' && delta.file) files.push(delta.file);
-    }
-    if (typeof manifest?.activeDelta?.file === 'string' && manifest.activeDelta.file) {
-      files.push(manifest.activeDelta.file);
-    }
+    // The canonical manifest schema has no `deltas` array — only activeDelta
+    // exists (shared/memory-source/manifest.cjs exact-keys validation).
+    accept(manifest?.activeDelta?.file);
     return files;
   } catch {
     return [];
@@ -105,6 +114,45 @@ async function freeBytes(logsDir) {
   } catch {
     return null; // statfs unavailable — do not block backups on it
   }
+}
+
+// Test seam: freeBytesOverride stands in for statfs when finite, so the
+// size-aware floor can be exercised deterministically. Production callers
+// never set it.
+async function resolveFreeBytes(logsDir, options) {
+  if (Number.isFinite(options.freeBytesOverride)) return options.freeBytesOverride;
+  return freeBytes(logsDir);
+}
+
+/**
+ * Remove backup-*.tmp staging dirs orphaned by a hard kill mid-copy.
+ * Fresh tmp dirs (younger than TMP_SWEEP_AGE_MS) are left alone — they may
+ * belong to a concurrent in-flight copy. Never throws.
+ */
+async function sweepStaleTmpDirs(logsDir, now, logger) {
+  let swept = 0;
+  try {
+    const root = backupsRoot(logsDir);
+    const entries = fs.existsSync(root) ? fs.readdirSync(root) : [];
+    for (const name of entries) {
+      if (!name.startsWith('backup-') || !name.endsWith('.tmp')) continue;
+      const full = path.join(root, name);
+      try {
+        const stat = fs.statSync(full);
+        if (now - stat.mtimeMs < TMP_SWEEP_AGE_MS) continue;
+        await fsp.rm(full, { recursive: true, force: true });
+        swept += 1;
+      } catch {
+        // Non-fatal: a vanished or unreadable entry is not our problem here.
+      }
+    }
+    if (swept > 0) {
+      logger?.info?.('🧹 Swept stale backup tmp staging dirs', { count: swept, logsDir });
+    }
+  } catch {
+    // Non-fatal by contract.
+  }
+  return swept;
 }
 
 /**
@@ -121,52 +169,90 @@ async function maybeBackupBrain(logsDir, options = {}) {
   const now = options.now ?? Date.now();
   const lockRoot = options.lockRoot || DEFAULT_LOCK_ROOT;
 
+  let sweptTmp = 0;
   try {
+    await fsp.mkdir(backupsRoot(logsDir), { recursive: true });
+    sweptTmp = await sweepStaleTmpDirs(logsDir, now, logger);
+
     const last = mostRecentBackupTime(logsDir);
     if (last && now - last < intervalMs) {
-      return { created: false, skipped: 'interval', lastBackupAt: last };
+      return { created: false, skipped: 'interval', lastBackupAt: last, sweptTmp };
     }
 
-    const free = await freeBytes(logsDir);
+    // Cheap fast path: don't even take the lock when the bare floor is
+    // already breached. The authoritative size-aware check runs in the lock.
+    const free = await resolveFreeBytes(logsDir, options);
     if (free !== null && free < minFreeBytes) {
       logger.warn?.('⚠️ Skipping brain backup — free disk below floor', {
         freeBytes: free,
         minFreeBytes,
         logsDir,
       });
-      return { created: false, skipped: 'low_disk', freeBytes: free };
+      return { created: false, skipped: 'low_disk', freeBytes: free, sweptTmp };
     }
 
     const stamp = new Date(now).toISOString().replace(/[:.]/g, '-');
     const dest = path.join(backupsRoot(logsDir), `backup-${stamp}`);
     const tmp = `${dest}.tmp`;
 
+    let lowDisk = null;
     try {
       await withMemorySourceLock(logsDir, { lockRoot }, async () => {
         const files = new Set([...CANDIDATE_FILES, ...readManifestFiles(logsDir)]);
-        await fsp.mkdir(tmp, { recursive: true });
-        let copied = 0;
+
+        // Resolve the copy set and its projected size before staging anything
+        // (donor parity: the floor must hold the copy set too, not just the
+        // fixed reserve).
+        const sources = [];
+        let projectedBytes = 0;
         for (const name of files) {
+          try {
+            const stat = await fsp.stat(path.join(logsDir, name));
+            if (!stat.isFile()) continue;
+            projectedBytes += stat.size;
+            sources.push(name);
+          } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+          }
+        }
+        if (sources.length === 0) {
+          throw new Error(`no state artifacts found to back up in ${logsDir}`);
+        }
+
+        const freeInLock = await resolveFreeBytes(logsDir, options);
+        if (freeInLock !== null && freeInLock < projectedBytes + minFreeBytes) {
+          logger.warn?.('⚠️ Skipping brain backup — free disk cannot hold the copy set', {
+            freeBytes: freeInLock,
+            projectedBytes,
+            minFreeBytes,
+            logsDir,
+          });
+          lowDisk = {
+            created: false, skipped: 'low_disk', freeBytes: freeInLock, projectedBytes, sweptTmp,
+          };
+          return;
+        }
+
+        await fsp.mkdir(tmp, { recursive: true });
+        for (const name of sources) {
           const src = path.join(logsDir, name);
           const target = path.join(tmp, name);
           try {
             await fsp.mkdir(path.dirname(target), { recursive: true });
             await fsp.copyFile(src, target);
-            copied += 1;
           } catch (error) {
             if (error.code !== 'ENOENT') throw error;
           }
-        }
-        if (copied === 0) {
-          throw new Error(`no state artifacts found to back up in ${logsDir}`);
         }
         await fsp.rename(tmp, dest);
       });
     } catch (error) {
       await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
-      logger.warn?.('⚠️ Brain backup failed (non-fatal)', { error: error.message, logsDir });
-      return { created: false, error: error.message };
+      const message = error?.message || String(error);
+      logger.warn?.('⚠️ Brain backup failed (non-fatal)', { error: message, logsDir });
+      return { created: false, error: message, sweptTmp };
     }
+    if (lowDisk) return lowDisk;
 
     const all = listBackups(logsDir);
     const excess = all.slice(0, Math.max(0, all.length - retention));
@@ -174,10 +260,11 @@ async function maybeBackupBrain(logsDir, options = {}) {
       await fsp.rm(old.path, { recursive: true, force: true }).catch(() => {});
     }
 
-    return { created: true, path: dest, rotated: excess.length };
+    return { created: true, path: dest, rotated: excess.length, sweptTmp };
   } catch (error) {
-    logger.warn?.('⚠️ Brain backup errored (non-fatal)', { error: error.message, logsDir });
-    return { created: false, error: error.message };
+    const message = error?.message || String(error);
+    logger.warn?.('⚠️ Brain backup errored (non-fatal)', { error: message, logsDir });
+    return { created: false, error: message, sweptTmp };
   }
 }
 
