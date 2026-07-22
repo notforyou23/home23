@@ -24,14 +24,29 @@ const EDGES_FILE = 'memory-edges.jsonl.gz';
 const SNAPSHOT_FILE = 'brain-snapshot.json';
 const DEFAULT_LOCK_ROOT = path.resolve(__dirname, '..', '..', 'runtime', 'brain-source-locks');
 
+function typedArrayToPlain(_key, candidate) {
+  return ArrayBuffer.isView(candidate) && !(candidate instanceof DataView)
+    ? Array.from(candidate)
+    : candidate;
+}
+
 function jsonCapture(value) {
-  const encoded = JSON.stringify(value, (_key, candidate) => (
-    ArrayBuffer.isView(candidate) && !(candidate instanceof DataView)
-      ? Array.from(candidate)
-      : candidate
-  ));
+  const encoded = JSON.stringify(value, typedArrayToPlain);
   if (encoded === undefined) throw new TypeError('research state must be JSON serializable');
   return JSON.parse(encoded);
+}
+
+/**
+ * Capture ONE record with the exact semantics the legacy whole-graph
+ * JSON.stringify round-trip gave array elements: undefined / function /
+ * symbol slots become null, typed arrays become plain arrays, toJSON
+ * applies, and the result shares no references with the live record.
+ * Keeping the round-trip per record bounds peak single-string size by the
+ * largest record instead of the whole graph.
+ */
+function jsonCaptureRecord(record) {
+  const encoded = JSON.stringify(record, typedArrayToPlain);
+  return encoded === undefined ? null : JSON.parse(encoded);
 }
 
 function deepFreeze(value) {
@@ -50,25 +65,77 @@ function deepFreeze(value) {
   return value;
 }
 
+/**
+ * Capture a research graph without ever serializing it as ONE string.
+ *
+ * The legacy implementation JSON.stringify'd the entire graph (nodes +
+ * edges + embeddings) as a single V8 string — the exact ceiling the
+ * sidecars were built to avoid, surviving at capture time. Records are now
+ * round-tripped one at a time (identical normalization semantics) and only
+ * the graph's scalar shell is captured whole, so peak single-string size is
+ * bounded by the largest record, never the graph.
+ *
+ * The capture stays fully synchronous and still returns a deep-frozen,
+ * plain-JSON copy that shares NO references with the live graph. Passing
+ * exportGraph() output through uncopied is not safe: its records share
+ * nested references (embeddings) with live nodes, so mutation during async
+ * writes would bleed into the committed generation, deepFreeze would freeze
+ * live engine internals (Object.freeze throws on a non-empty typed array),
+ * and the manifest writer's own per-record clone lacks the typed-array
+ * replacer (a Float32Array embedding would corrupt to {"0":...}).
+ */
 function normalizeResearchGraph(memory) {
   const graph = typeof memory?.exportGraph === 'function' ? memory.exportGraph() : memory;
-  const captured = jsonCapture(graph);
-  if (!captured || !Array.isArray(captured.nodes) || !Array.isArray(captured.edges)) {
+  if (!graph || typeof graph !== 'object' || Array.isArray(graph)
+      || !Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) {
     throw new TypeError('research memory must contain node and edge arrays');
   }
-  if (captured.clusters !== undefined && !Array.isArray(captured.clusters)) {
+  if (graph.clusters !== undefined && !Array.isArray(graph.clusters)) {
     throw new TypeError('research memory clusters must be an array when present');
   }
-  if (!Array.isArray(captured.clusters)) captured.clusters = [];
+  // Scalar shell first — null placeholders keep the original key order so
+  // a degraded inline save serializes byte-identically to the legacy
+  // capture — then the three record arrays, one record at a time.
+  // Array.from (not .map) so sparse-array holes become null exactly like a
+  // whole-array JSON.stringify emitted them.
+  const shell = Object.create(null);
+  for (const [key, value] of Object.entries(graph)) {
+    shell[key] = (key === 'nodes' || key === 'edges' || key === 'clusters') ? null : value;
+  }
+  const captured = jsonCapture(shell);
+  if (!captured || typeof captured !== 'object' || Array.isArray(captured)) {
+    throw new TypeError('research memory must contain node and edge arrays');
+  }
+  captured.nodes = Array.from(graph.nodes, jsonCaptureRecord);
+  captured.edges = Array.from(graph.edges, jsonCaptureRecord);
+  captured.clusters = Array.isArray(graph.clusters)
+    ? Array.from(graph.clusters, jsonCaptureRecord)
+    : [];
   return deepFreeze(captured);
 }
 
+/**
+ * Capture one research state generation without a full-state stringify.
+ * The non-memory fields (cycle counters, journal tail, goal/coordinator
+ * exports) are small and still round-trip as one object; the memory graph
+ * streams through per-record capture. Peak single-string size during a
+ * save is therefore bounded by the SHELL, not the graph.
+ */
 function captureResearchState(state) {
-  const captured = jsonCapture(state);
+  if (!state || typeof state !== 'object' || Array.isArray(state)) {
+    throw new TypeError('research state object required');
+  }
+  // Null placeholder keeps `memory` at its original key position so the
+  // persisted shell's key order matches the legacy full capture.
+  const rest = Object.create(null);
+  for (const [key, value] of Object.entries(state)) {
+    rest[key] = key === 'memory' ? null : value;
+  }
+  const captured = jsonCapture(rest);
   if (!captured || typeof captured !== 'object' || Array.isArray(captured)) {
     throw new TypeError('research state object required');
   }
-  captured.memory = normalizeResearchGraph(captured.memory);
+  captured.memory = normalizeResearchGraph(state.memory);
   return deepFreeze(captured);
 }
 
