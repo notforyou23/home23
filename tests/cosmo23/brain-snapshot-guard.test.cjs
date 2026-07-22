@@ -66,6 +66,10 @@ function memoryGraph(label, count) {
 
 function makeOrchestratorFake(runDir, lockRoot, graph, cycleCount, logs) {
   return {
+    // Task 3 lock wrapper: saveState() delegates to _saveStateUnlocked(), so the
+    // fake carries the real unlocked body and an idle lock slot.
+    _saveStatePromise: null,
+    _saveStateUnlocked: Orchestrator.prototype._saveStateUnlocked,
     evaluation: null,
     cycleCount,
     journal: [],

@@ -8026,6 +8026,20 @@ OUTPUT FORMAT (JSON ONLY):
   // ═══════════════════════════════════════════════════════════════════════════
 
   async saveState() {
+    if (this._saveStatePromise) {
+      this.logger?.warn?.('💾 State save already in progress — joining existing save');
+      return this._saveStatePromise;
+    }
+
+    this._saveStatePromise = this._saveStateUnlocked();
+    try {
+      return await this._saveStatePromise;
+    } finally {
+      this._saveStatePromise = null;
+    }
+  }
+
+  async _saveStateUnlocked() {
     // Save evaluation metrics
     if (this.evaluation) {
       await this.evaluation.save();
@@ -9085,6 +9099,105 @@ OUTPUT FORMAT (JSON ONLY):
     };
   }
 
+  async cleanupTelemetryForShutdown() {
+    if (!this.telemetry || typeof this.telemetry.cleanup !== 'function') return;
+
+    const timeoutMs = this.config.shutdownTelemetryTimeoutMs || 5000;
+    let timeoutId = null;
+    const cleanupPromise = this.telemetry.cleanup()
+      .then(() => ({ status: 'ok' }))
+      .catch(error => ({ status: 'error', error }));
+
+    const timeoutPromise = new Promise(resolve => {
+      timeoutId = setTimeout(() => resolve({ status: 'timeout' }), timeoutMs);
+    });
+
+    const result = await Promise.race([cleanupPromise, timeoutPromise]);
+    if (timeoutId) clearTimeout(timeoutId);
+
+    if (result.status === 'timeout') {
+      this.logger.warn('⚠️ [Telemetry] Cleanup timed out during shutdown; continuing', { timeoutMs });
+      cleanupPromise.catch(() => {});
+      return;
+    }
+
+    if (result.status === 'error') {
+      this.logger.warn('⚠️ [Telemetry] Cleanup failed during shutdown; continuing', {
+        error: result.error?.message || String(result.error),
+      });
+    }
+  }
+
+  async hasDurableStateArtifact() {
+    const candidates = [
+      path.join(this.logsDir, 'state.json.gz'),
+      path.join(this.logsDir, 'state.json'),
+    ];
+    for (const candidate of candidates) {
+      try {
+        await fs.access(candidate);
+        return true;
+      } catch {}
+    }
+    return false;
+  }
+
+  async saveStateForShutdown() {
+    const defaultTimeoutMs = this.config.shutdownSaveTimeoutMs || 60000;
+    const saveAlreadyInProgress = Boolean(this._saveStatePromise);
+    let durableStateBeforeWait = false;
+    let timeoutMs = defaultTimeoutMs;
+
+    if (saveAlreadyInProgress) {
+      durableStateBeforeWait = await this.hasDurableStateArtifact();
+      if (durableStateBeforeWait) {
+        const inProgressTimeoutMs = Number(this.config.shutdownInProgressSaveTimeoutMs ?? 15000);
+        timeoutMs = Math.min(defaultTimeoutMs, Math.max(1, inProgressTimeoutMs));
+        this.logger.warn('💾 Shutdown joining in-progress state save with bounded grace', {
+          timeoutMs,
+          defaultTimeoutMs,
+          hasDurableState: true,
+        });
+      }
+    }
+
+    let timeoutId = null;
+    const savePromise = this.saveState()
+      .then(result => ({ status: 'ok', result }))
+      .catch(error => ({ status: 'error', error }));
+
+    const timeoutPromise = new Promise(resolve => {
+      timeoutId = setTimeout(() => resolve({ status: 'timeout' }), timeoutMs);
+    });
+
+    const outcome = await Promise.race([savePromise, timeoutPromise]);
+    if (timeoutId) clearTimeout(timeoutId);
+
+    if (outcome.status === 'ok') {
+      return outcome.result || { saved: true, reason: null, currentNodes: null, existingNodes: null };
+    }
+
+    if (outcome.status === 'error') {
+      this.logger.error('❌ Shutdown state save failed', {
+        error: outcome.error?.message || String(outcome.error),
+      });
+      return { saved: false, reason: 'shutdown_save_failed', currentNodes: null, existingNodes: null };
+    }
+
+    const hasDurableState = durableStateBeforeWait || await this.hasDurableStateArtifact();
+    this.logger.warn('⚠️ Shutdown state save timed out', {
+      timeoutMs,
+      hasDurableState,
+      saveAlreadyInProgress,
+    });
+    savePromise.catch(() => {});
+
+    if (hasDurableState) {
+      return { saved: 'existing', reason: 'shutdown_save_timeout_existing_state', currentNodes: null, existingNodes: null };
+    }
+    return { saved: false, reason: 'shutdown_save_timeout_no_state', currentNodes: null, existingNodes: null };
+  }
+
   async stop() {
     this.logger.info('Stopping GPT-5.2 system...');
     this.running = false;
@@ -9127,12 +9240,22 @@ OUTPUT FORMAT (JSON ONLY):
 
     // Phase A: Use graceful shutdown handler if available
     if (this.shutdownHandler) {
-      // Shutdown handler will save state, cleanup resources, etc.
-      // Don't call process.exit here - let handler do it
-      // For manual stop (not signal), just save state
-      await this.saveState();
-      await this.telemetry.cleanup();
-      await this.crashRecovery.markCleanShutdown();
+      // Shutdown handler will cleanup resources and exit — don't process.exit here.
+      // Save exactly once (bounded), record the outcome for the handler, and only
+      // mark the crash-recovery marker clean when the save is CONFIRMED.
+      const saveResult = await this.saveStateForShutdown();
+      this.shutdownStateHandled = true;
+      this.shutdownStateResult = saveResult;
+      if (saveResult?.saved === true) {
+        await this.crashRecovery.markCleanShutdown();
+        this.shutdownCleanMarked = true;
+      } else {
+        this.logger.warn('⚠️ Shutdown state save was not confirmed; leaving crash recovery marker dirty', {
+          saved: saveResult?.saved ?? null,
+          reason: saveResult?.reason || null,
+        });
+      }
+      await this.cleanupTelemetryForShutdown();
     } else {
       // Fallback to original behavior
       await this.saveState();

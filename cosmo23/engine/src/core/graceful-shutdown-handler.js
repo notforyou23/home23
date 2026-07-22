@@ -197,13 +197,31 @@ class GracefulShutdownHandler {
         await this.orchestrator.stop();
       }
 
-      // Step 2: Save final state
-      this.logger.info('[GracefulShutdown] Dumping final state...');
-      await this.dumpState();
+      // Step 2: Save final state unless orchestrator.stop() already handled it.
+      let dumpResult = this.orchestrator.shutdownStateResult || null;
+      if (this.orchestrator.shutdownStateHandled) {
+        this.logger.info('[GracefulShutdown] Final state already handled by orchestrator stop', {
+          saved: dumpResult?.saved ?? null,
+          reason: dumpResult?.reason || null,
+        });
+      } else {
+        this.logger.info('[GracefulShutdown] Dumping final state...');
+        dumpResult = await this.dumpState();
+      }
 
-      // Step 3: Mark clean shutdown (for crash recovery)
-      this.logger.info('[GracefulShutdown] Marking clean shutdown...');
-      if (this.orchestrator.crashRecovery) {
+      // Step 3: Mark clean shutdown (for crash recovery) ONLY when the final
+      // save is confirmed (saved === true). A refused, failed, or timed-out
+      // save leaves the shutdown DIRTY so the next boot runs crash recovery
+      // and re-hydrates the brain from the durable sidecars.
+      if (dumpResult?.saved !== true) {
+        this.logger.warn('[GracefulShutdown] ⚠️ Final state was NOT saved — leaving shutdown DIRTY for crash recovery', {
+          saved: dumpResult?.saved ?? null,
+          reason: dumpResult?.reason || null,
+        });
+      } else if (this.orchestrator.shutdownCleanMarked) {
+        this.logger.info('[GracefulShutdown] Clean shutdown already marked by orchestrator stop');
+      } else if (this.orchestrator.crashRecovery) {
+        this.logger.info('[GracefulShutdown] Marking clean shutdown...');
         await this.orchestrator.crashRecovery.markCleanShutdown();
       }
 
@@ -249,10 +267,21 @@ class GracefulShutdownHandler {
   async dumpState() {
     try {
       if (this.orchestrator && typeof this.orchestrator.saveState === 'function') {
-        await this.orchestrator.saveState();
+        const result = await this.orchestrator.saveState();
+        if (result && result.saved !== true) {
+          this.logger.warn('[GracefulShutdown] State dump was not confirmed by persistence layer', {
+            saved: result.saved ?? null,
+            reason: result.reason || null,
+            currentNodes: result.currentNodes ?? null,
+            existingNodes: result.existingNodes ?? null,
+          });
+          return result;
+        }
         this.logger.info('[GracefulShutdown] State dumped successfully');
+        return result || { saved: true };
       } else {
         this.logger.warn('[GracefulShutdown] No saveState method available');
+        return { saved: false, reason: 'saveState_unavailable' };
       }
     } catch (error) {
       this.logger.error('[GracefulShutdown] Failed to dump state', { error: error.message });
