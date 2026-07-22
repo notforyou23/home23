@@ -77,12 +77,34 @@ test('rss vs rssBudgetMb drives backpressure even when heap is below the floor',
   assert.equal(monitor.evaluateBackpressure(rssReading(100)), 'none');
 });
 
-test('heap fraction is ignored below heapMinTotalMb floor (tiny heaps do not flap)', () => {
+// PIN SCOPE CHANGE (Task 7 polish (d), deliberate): this test originally used
+// a tiny 100MB heap_size_limit to prove the floor — which was exactly the
+// flaw: with any limit below the 512MB floor the heap leg was permanently
+// disarmed. The floor's intent (tiny live sets do not flap) is now pinned
+// against the DEFAULT multi-GB limit; the tiny-limit case is pinned below as
+// "keeps the heap leg armed".
+test('heap fraction is ignored below the effective floor (tiny live sets do not flap)', () => {
   const { monitor } = makeMonitor();
-  // heapUsed 90MB is below the 512MB floor: even at 90% of a tiny 100MB
-  // heap_size_limit the heap leg must contribute 0; rss well under budget → none
-  const level = monitor.evaluateBackpressure({ heapUsed: 90 * MB, heapTotal: 100 * MB, heapSizeLimit: 100 * MB, rss: 100 * MB });
+  // heapUsed 90MB is below the 512MB floor (effective floor = min(512, 2150)
+  // = 512 at a default-sized 4.3GB limit): heap leg contributes 0; rss well
+  // under budget → none.
+  const level = monitor.evaluateBackpressure({ heapUsed: 90 * MB, heapTotal: 100 * MB, heapSizeLimit: 4300 * MB, rss: 100 * MB });
   assert.equal(level, 'none');
+});
+
+test('tiny --max-old-space-size keeps the heap leg armed: effective floor is min(configured, 50% of limit)', () => {
+  const { monitor } = makeMonitor();
+  // 256MB limit: the raw 512MB floor sits ABOVE the whole heap and would
+  // disarm the heap leg forever. Effective floor = min(512, 128) = 128MB, so
+  // 200MB used (78.1% of the real OOM boundary) must register.
+  const level = monitor.evaluateBackpressure({ heapUsed: 200 * MB, heapTotal: 220 * MB, heapSizeLimit: 256 * MB, rss: 100 * MB });
+  assert.equal(level, 'elevated');
+  // Unchanged at the default ~4.3GB limit: same live set reads as none.
+  const { monitor: defaultMonitor } = makeMonitor();
+  assert.equal(
+    defaultMonitor.evaluateBackpressure({ heapUsed: 200 * MB, heapTotal: 220 * MB, heapSizeLimit: 4300 * MB, rss: 100 * MB }),
+    'none',
+  );
 });
 
 test('healthy large heap is not false-flagged: GC slack (heapUsed/heapTotal) must not read as pressure', () => {

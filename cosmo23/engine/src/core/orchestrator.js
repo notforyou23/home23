@@ -1097,7 +1097,11 @@ class Orchestrator {
       if (!cycled) {
         // Watchdog paused or abandoned this iteration (bounded sleep already
         // happened inside runCycleWithWatchdog) — skip post-cycle work,
-        // mirroring the dashboard-pause `continue` above.
+        // mirroring the dashboard-pause `continue` above. NOTE: this also
+        // skips the maxCycles/maxRuntimeMinutes checks below, so a breaker
+        // cooloff can overshoot a wall-clock limit by the cooloff window.
+        // Bounded (cooloff is finite) and self-correcting: the first settled
+        // post-cooloff cycle reaches the limit checks.
         continue;
       }
       const cycleForSync = this.cycleCount;
@@ -1337,8 +1341,14 @@ class Orchestrator {
       return false;
     }
 
-    // 4. Run the cycle against the hard abandonment deadline.
-    const cycleTimeoutMs = this.config.timeouts?.cycleTimeoutMs || 60000;
+    // 4. Run the cycle against the hard abandonment deadline. Sanitize the
+    // raw config read the same way hardDeadlineMs() does internally
+    // (positiveInt): a garbage timeouts.cycleTimeoutMs (negative/NaN/string)
+    // must not arm false soft timeouts below or skew ledger telemetry.
+    const rawCycleTimeoutMs = Number(this.config.timeouts?.cycleTimeoutMs);
+    const cycleTimeoutMs = Number.isFinite(rawCycleTimeoutMs) && rawCycleTimeoutMs > 0
+      ? Math.floor(rawCycleTimeoutMs)
+      : 60000;
     const hardMs = wd.hardDeadlineMs(cycleTimeoutMs);
     this._lastCycleError = null;
     const startedAt = Date.now();

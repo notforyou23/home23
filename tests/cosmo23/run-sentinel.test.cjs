@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const fsSync = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
@@ -419,6 +420,69 @@ test('I1: user stop after a failed relaunch cancels the pending retry', async (t
   assert.equal(next.outcome, 'idle');
   assert.equal(fixture.relaunchCalls.length, 1); // no retry resurrection
   assert.equal(fixture.sentinel.getPublicState(), null);
+});
+
+// Task 7 polish (a): the pre-relaunch epoch check has a blind spot — a stop
+// that lands while deps.relaunch() itself is resolving passes the check but
+// still resurrects the run. The epoch is re-checked AFTER relaunch resolves;
+// a late stop kills the fresh child (stopEngine again, 'aborted_user_stop_late').
+test('I1: user stop during the relaunch window kills the fresh run (aborted_user_stop_late)', async (t) => {
+  const fixture = await makeFixture(t);
+  const relaunchStarted = deferred();
+  const relaunchGate = deferred();
+  fixture.relaunchImpl = async (info) => {
+    relaunchStarted.resolve();
+    await relaunchGate.promise;
+    fixture.activeContext = {
+      runName: info.runName, runPath: info.runPath, brainId: info.brainId,
+      startedAt: '2026-07-22T11:00:00.000Z',
+    };
+    fixture.processRunning = [{ name: 'cosmo-main', pid: 4243, killed: false }];
+    return { success: true };
+  };
+
+  wedgeHeartbeat(fixture);
+  const inFlight = fixture.sentinel.check();
+  await relaunchStarted.promise;
+
+  // jtr hits /api/stop after the pre-relaunch check already passed.
+  const cleaned = await fixture.sentinel.notifyRunEnded({ runPath: fixture.runPath, userInitiated: true });
+  assert.equal(cleaned.cleaned, true);
+
+  relaunchGate.resolve();
+  const result = await inFlight;
+  assert.equal(result.outcome, 'aborted_user_stop_late');
+  assert.equal(fixture.stopCalls.length, 2, 'remediation stop + fresh-run kill');
+  assert.equal(fixture.stopCalls[1].reason, 'user_stop_during_relaunch');
+  assert.equal(fixture.relaunchCalls.length, 1);
+  assert.equal(fixture.sentinel.getPublicState(), null);
+  assert.equal(fixture.activeContext, null, 'the resurrected run must be dead');
+});
+
+// Task 7 polish (a): /api/stop's ACTIVE branch used to stamp userStopEpoch
+// only in its finally (via notifyRunEnded) — AFTER an awaited stopAll. A
+// remediation between its own stop and relaunch during that window saw no
+// epoch and relaunched. The intent stamp now lands BEFORE stopAll.
+test('server /api/stop ACTIVE branch stamps user-stop intent BEFORE stopAll (sub-second race)', () => {
+  const src = fsSync.readFileSync(path.resolve(__dirname, '../../cosmo23/server/index.js'), 'utf8');
+  const handlerIdx = src.indexOf("app.post('/api/stop'");
+  assert.ok(handlerIdx >= 0, '/api/stop handler present');
+  const handler = src.slice(handlerIdx, handlerIdx + 2600);
+  const stampIdx = handler.indexOf('runSentinel.recordUserStopIntent()');
+  const stopAllIdx = handler.indexOf('processManager.stopAll()');
+  assert.ok(stampIdx >= 0, 'ACTIVE branch must stamp user-stop intent');
+  assert.ok(stopAllIdx >= 0, 'stopAll call present in the handler window');
+  assert.ok(stampIdx < stopAllIdx, 'intent stamp must precede stopAll');
+});
+
+test('recordUserStopIntent stamps the epoch without touching ladder state', async (t) => {
+  const fixture = await makeFixture(t);
+  wedgeHeartbeat(fixture);
+  assert.equal((await fixture.sentinel.check()).outcome, 'remediated'); // ladder has 1 attempt
+  fixture.sentinel.recordUserStopIntent();
+  assert.equal(fixture.sentinel.userStopEpoch, fixture.nowMs);
+  assert.equal(fixture.sentinel.getPublicState().attempts, 1, 'ladder untouched');
+  assert.equal(await fixture.stateFileExists(), true, 'state file untouched (finally still archives it)');
 });
 
 test('I2: user stop of an escalated (dead) run clears the wedged flag and archives evidence', async (t) => {

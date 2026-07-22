@@ -218,7 +218,12 @@ class ResourceMonitor {
     // Floor gates on heapUsed: heap_size_limit is a fixed multi-GB boundary,
     // so heapTotal no longer identifies tiny heaps — a live set under the
     // floor cannot meaningfully threaten the limit.
-    const heapFraction = heapUsedMb >= this.bpHeapMinTotalMb ? rawHeapFraction : 0;
+    // Effective floor = min(configured floor, 50% of the actual limit): with
+    // a small --max-old-space-size (e.g. 256MB) the raw 512MB floor would sit
+    // ABOVE the whole heap and permanently disarm the heap leg. Unchanged at
+    // the default ~4.3GB limit, where min() returns the configured floor.
+    const effectiveHeapFloorMb = Math.min(this.bpHeapMinTotalMb, 0.5 * heapLimitMb);
+    const heapFraction = heapUsedMb >= effectiveHeapFloorMb ? rawHeapFraction : 0;
     const rssMb = mem.rss / 1024 / 1024;
     const rssFraction = this.rssBudgetMb > 0 ? rssMb / this.rssBudgetMb : 0;
     const pressure = Math.max(heapFraction, rssFraction);
@@ -239,7 +244,7 @@ class ResourceMonitor {
     if (level !== 'none') {
       const driver = heapFraction >= rssFraction ? 'heap' : 'rss';
       reasons.push(`pressure=${(pressure * 100).toFixed(1)}% driver=${driver}`);
-      reasons.push(`heap ${heapUsedMb.toFixed(0)}MB / ${heapLimitMb.toFixed(0)}MB heap_size_limit (${(rawHeapFraction * 100).toFixed(1)}%)${heapUsedMb < this.bpHeapMinTotalMb ? ' (below floor, ignored)' : ''}`);
+      reasons.push(`heap ${heapUsedMb.toFixed(0)}MB / ${heapLimitMb.toFixed(0)}MB heap_size_limit (${(rawHeapFraction * 100).toFixed(1)}%)${heapUsedMb < effectiveHeapFloorMb ? ' (below floor, ignored)' : ''}`);
       reasons.push(`rss ${rssMb.toFixed(0)}MB / ${this.rssBudgetMb}MB budget (${(rssFraction * 100).toFixed(1)}%)`);
     }
 

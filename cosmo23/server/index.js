@@ -2035,6 +2035,12 @@ app.post('/api/stop', async (_req, res) => {
 
   const runName = activeContext.runName;
   const runPath = activeContext.runPath; // capture BEFORE the finally clears context
+  // Stamp user-stop intent BEFORE the awaited stopAll (Task 7 polish): the
+  // finally's notifyRunEnded lands only after stopAll resolves, and a sentinel
+  // remediation already past its own stopEngine would otherwise see no epoch
+  // in that sub-second window and relaunch a run the user just killed. The
+  // sentinel re-checks this epoch both before AND after its relaunch.
+  runSentinel.recordUserStopIntent();
   try {
     processManager.recordLog('Launcher', 'info', `Stopping run ${runName}`);
     await processManager.stopAll();

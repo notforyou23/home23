@@ -82,7 +82,12 @@ class CycleWatchdog {
     this.countSoftTimeouts = wd.countSoftTimeouts === true || wd.countSoftTimeouts === 'true';
     this.criticalStallMs = positiveInt(wd.criticalStallMs, WATCHDOG_DEFAULTS.criticalStallMs);
     this.pauseSleepMs = positiveInt(wd.pauseSleepMs, WATCHDOG_DEFAULTS.pauseSleepMs);
-    this.restartExitCode = positiveInt(wd.restartExitCode, WATCHDOG_DEFAULTS.restartExitCode);
+    // Clamp to 1..255: exit codes wrap mod 256 at the OS (300 exits as 44,
+    // 256 aliases 0 = success) and would fool the supervisor's restart logic.
+    this.restartExitCode = Math.min(
+      positiveInt(wd.restartExitCode, WATCHDOG_DEFAULTS.restartExitCode),
+      255
+    );
     this.restartStopTimeoutMs = positiveInt(wd.restartStopTimeoutMs, WATCHDOG_DEFAULTS.restartStopTimeoutMs);
     this.statePath = path.join(
       logsDir,

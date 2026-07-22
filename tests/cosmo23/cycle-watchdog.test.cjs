@@ -212,6 +212,55 @@ test('hardDeadlineMs = max(multiplier * cycleTimeout, floor)', (t) => {
   assert.equal(pure.hardDeadlineMs(60_000), 180_000);
 });
 
+// Task 7 polish (b): exit codes wrap mod 256 at the OS — 300 exits as 44,
+// and 256 aliases 0 (success), fooling the supervisor.
+test('restartExitCode is clamped to 1..255 (exit codes wrap mod 256 at the OS)', (t) => {
+  const dir = makeTmpDir(t);
+  const clamped = new CycleWatchdog({
+    logsDir: dir, config: { watchdog: { restartExitCode: 300 } }, logger: quietLogger
+  });
+  assert.equal(clamped.restartExitCode, 255);
+  const zero = new CycleWatchdog({
+    logsDir: dir, config: { watchdog: { restartExitCode: 0 } }, logger: quietLogger
+  });
+  assert.equal(zero.restartExitCode, WATCHDOG_DEFAULTS.restartExitCode); // 0 is not positive → default
+  assert.equal(new CycleWatchdog({
+    logsDir: dir, config: { watchdog: { restartExitCode: 86 } }, logger: quietLogger
+  }).restartExitCode, 86);
+});
+
+// Task 7 polish (c): freeze the constructor sanitizers — garbage watchdog.*
+// values must land on the documented defaults, never NaN/negative state.
+test('constructor sanitizers survive garbage watchdog.* config values', (t) => {
+  const wd = new CycleWatchdog({
+    logsDir: makeTmpDir(t),
+    config: {
+      watchdog: {
+        tripThreshold: 'banana', cooloffMs: -5, hardMultiplier: null,
+        minHardTimeoutMs: 'NaN', countSoftTimeouts: 'yes', criticalStallMs: {},
+        pauseSleepMs: 0, restartExitCode: 'nope', restartStopTimeoutMs: -1, stateFile: 42
+      }
+    },
+    logger: quietLogger
+  });
+  assert.deepEqual(
+    {
+      tripThreshold: wd.tripThreshold, cooloffMs: wd.cooloffMs, hardMultiplier: wd.hardMultiplier,
+      minHardTimeoutMs: wd.minHardTimeoutMs, countSoftTimeouts: wd.countSoftTimeouts,
+      criticalStallMs: wd.criticalStallMs, pauseSleepMs: wd.pauseSleepMs,
+      restartExitCode: wd.restartExitCode, restartStopTimeoutMs: wd.restartStopTimeoutMs
+    },
+    {
+      tripThreshold: WATCHDOG_DEFAULTS.tripThreshold, cooloffMs: WATCHDOG_DEFAULTS.cooloffMs,
+      hardMultiplier: WATCHDOG_DEFAULTS.hardMultiplier, minHardTimeoutMs: WATCHDOG_DEFAULTS.minHardTimeoutMs,
+      countSoftTimeouts: false, criticalStallMs: WATCHDOG_DEFAULTS.criticalStallMs,
+      pauseSleepMs: WATCHDOG_DEFAULTS.pauseSleepMs, restartExitCode: WATCHDOG_DEFAULTS.restartExitCode,
+      restartStopTimeoutMs: WATCHDOG_DEFAULTS.restartStopTimeoutMs
+    }
+  );
+  assert.ok(wd.statePath.endsWith('.watchdog.json'), 'non-string stateFile falls back to the default');
+});
+
 // ─── orchestrator wiring (real behavior via Orchestrator.prototype.<method>.call(fake)) ───
 
 test('hard-timeout path: hung executeCycle is abandoned at the boundary and trips the breaker', async (t) => {
@@ -347,6 +396,21 @@ test('consecutive swallowed cycle errors trip breaker; pause skips cycles; probe
   assert.equal(fake.calls.executeCycle, 4);
   assert.equal(wd.state, 'closed');
   assert.equal(wd.consecutiveFailures, 0);
+});
+
+// Task 7 polish (f): the soft-timeout comparison reads timeouts.cycleTimeoutMs
+// raw from config. A garbage negative value made EVERY settled cycle read as
+// a soft timeout (durationMs > -5), silently tripping the breaker when
+// countSoftTimeouts is on. The read is now sanitized like hardDeadlineMs.
+test('garbage timeouts.cycleTimeoutMs cannot arm false soft timeouts (sanitized like hardDeadlineMs)', async (t) => {
+  const { fake, wd } = makeFakeOrchestrator(t, {
+    watchdogConfig: { countSoftTimeouts: true },
+    cycleTimeoutMs: -5
+  });
+  assert.equal(await runCycle(fake), true);
+  assert.equal(wd.consecutiveFailures, 0, 'negative config must not turn every cycle into a soft timeout');
+  assert.equal(wd.state, 'closed');
+  assert.equal(wd.lastFailure, null);
 });
 
 test('open breaker restored from disk pauses a fresh orchestrator (restart honors cooloff)', async (t) => {

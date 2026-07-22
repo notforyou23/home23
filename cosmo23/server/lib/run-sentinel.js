@@ -198,6 +198,15 @@ class RunSentinel {
     };
   }
 
+  // Stamp user-stop intent WITHOUT touching ladder state. /api/stop's ACTIVE
+  // branch calls this at the TOP of the branch — BEFORE its awaited stopAll —
+  // so a remediation already past its own stopEngine cannot slip a relaunch
+  // through the sub-second window before the finally's notifyRunEnded runs.
+  // notifyRunEnded (finally) still does the full cleanup + archive.
+  recordUserStopIntent() {
+    this.userStopEpoch = this.now();
+  }
+
   // The run ended. Two very different callers, two very different contracts:
   //
   // USER-INITIATED (/api/stop, info.userInitiated === true): a user stop is
@@ -542,6 +551,27 @@ class RunSentinel {
         reason,
         attempt: attemptNumber,
       });
+      // USER INTENT IS FINAL, part 2 (Task 7 polish): a stop that lands while
+      // relaunch() itself is resolving misses the pre-relaunch check above —
+      // the fresh child is already up by the time we see the epoch. Kill it.
+      if (this.userStopEpoch !== null && this.userStopEpoch >= attemptStartMs) {
+        attempt.error = 'aborted_user_stop_late';
+        this.pendingRelaunch = false;
+        try {
+          await this.deps.stopEngine({
+            runPath: context.runPath,
+            runName: context.runName,
+            reason: 'user_stop_during_relaunch',
+          });
+        } catch (stopError) {
+          this.log('error',
+            `Sentinel late-abort stop failed for run "${context.runName}": ${stopError?.message || stopError}`);
+        }
+        this.log('info',
+          `Sentinel remediation ${attemptNumber}/${this.config.maxAttempts} aborted late — `
+          + `user stop arrived during the relaunch of run "${context.runName}"; fresh run stopped`);
+        return { outcome: 'aborted_user_stop_late', reason, attempt: attemptNumber };
+      }
       attempt.ok = true;
       this.pendingRelaunch = false;
       this.log('info',

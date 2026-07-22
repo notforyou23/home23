@@ -14,7 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working on the 
 
 ### Entry Point
 
-`Orchestrator.start()` sets `this.running = true`, launches background pollers (`startImmediateActionPoller`, `startGuardianControlPoller`), then enters a `while (this.running)` loop calling `executeCycle()` each iteration. Inter-cycle sleep is computed by `calculateNextInterval()`.
+`Orchestrator.start()` sets `this.running = true`, launches background pollers (`startImmediateActionPoller`, `startGuardianControlPoller`), then enters a `while (this.running)` loop calling `runCycleWithWatchdog()` each iteration (which runs `executeCycle()` under the CycleWatchdog's hard abandonment deadline — never `executeCycle()` directly). A `false` return (breaker pause / abandoned cycle) skips post-cycle work including the maxCycles/maxRuntimeMinutes checks — bounded overshoot, self-correcting on the first settled cycle. Inter-cycle sleep is computed by `calculateNextInterval()`.
 
 ### `executeCycle()` Phase Order
 
@@ -140,10 +140,26 @@ Provider routing by assignment: `openai-codex` provider tag routes to `generateC
 | `execution.maxCycles` | Loop termination limit |
 | `execution.maxRuntimeMinutes` | Wall-clock termination |
 | `execution.consolidationMode` | Perpetual sleep/consolidation |
-| `timeouts.cycleTimeoutMs` | Default 60000 (60s) per-cycle |
+| `timeouts.cycleTimeoutMs` | Default 60000 (60s) per-cycle; also feeds the watchdog hard deadline (sanitized at every read — garbage values fall back to 60000) |
+| `heartbeat.intervalMs` | Heartbeat interval stamps, default 15000 (15s) |
+| `watchdog.hardMultiplier` / `watchdog.minHardTimeoutMs` | Hard abandonment deadline = max(cycleTimeoutMs × 3, 600000 (10 min)) |
+| `watchdog.tripThreshold` | Consecutive cycle failures that trip the breaker, default 3 (hard timeouts + critical stalls trip immediately) |
+| `watchdog.cooloffMs` | Breaker-open pause before the revive probe, default 900000 (15 min) |
+| `watchdog.criticalStallMs` | Sustained-critical backpressure + zero-agents window before a `critical_stall` trip, default 600000 (10 min) |
+| `watchdog.countSoftTimeouts` | Count settled-but-slow cycles as breaker failures, default false |
+| `watchdog.restartExitCode` | Supervisor-restart escalation exit code, default 86, clamped 1..255 (codes wrap mod 256 at the OS) |
+| `watchdog.pauseSleepMs` | Sleep granularity while the breaker is open, default 5000 |
+| `resources.rssBudgetMb` | RSS backpressure budget, default 4096 |
+| `resources.backpressure.*` | Hysteresis enter/exit thresholds: elevated 0.70/0.60, critical 0.85/0.75; `heapMinTotalMb` (512) — the heap leg gates heapUsed against min(floor, 0.5 × heap_size_limit), so small `--max-old-space-size` limits keep the heap leg armed |
+| `ledger.maxBytes` | Event ledger rotation threshold, default 52428800 (50MB) |
+| `ledger.keepRolls` | Gzipped ledger rolls kept after rotation, default 5 |
 | `shutdownSaveTimeoutMs` | Bound on the final shutdown save, default 60000 (60s) |
 | `shutdownInProgressSaveTimeoutMs` | Grace when shutdown joins an already-in-progress save with durable state on disk, default 15000 (15s) |
 | `shutdownTelemetryTimeoutMs` | Bound on telemetry cleanup during shutdown, default 5000 (5s) |
+| `shutdownDeadlineMarginMs` | Room reserved before the hard-kill when deriving the shutdown deadline, default 5000, clamped [5s, shutdownTimeout/2] |
+| `shutdownLedgerTimeoutMs` | Bound on the event-ledger close during shutdown, default 5000 (5s) |
+
+Note: `sentinel.*` settings and the `COSMO23_SENTINEL_*` env overrides are SERVER-side config (`cosmo23/server/index.js`, Patch 71 in `docs/design/COSMO23-VENDORED-PATCHES.md`) — the engine never reads them.
 | `backups.intervalMs` | Brain backup interval, default 21600000 (6h) |
 | `backups.retention` | Backups kept after rotation, default 2 |
 | `backups.minFreeBytes` | Free-disk floor below which backups are skipped, default 4294967296 (4GB) |
@@ -173,9 +189,15 @@ Manifest-backed saves store an EMPTY memory shell inside `state.json.gz` (`memor
 
 **BRAIN_LOAD_EMPTY contract (fail-loud):** if `brain-snapshot.json` / `memory-manifest.json` / shell counters expect nodes > 0 but the loaded+hydrated graph has 0 nodes, an error with `code: 'BRAIN_LOAD_EMPTY'` is thrown. `loadState()` matches it code-first (message-prefix `BRAIN_LOAD_EMPTY` as fallback for message-wrapping intermediaries) and re-throws — the error propagates out of `initialize()`, the process exits 1, and the run is visible as failed. The brain stays intact on disk; the engine must NOT continue as a fresh brain. Documented gap: a legacy run dir with no snapshot AND no manifest has nothing to detect against — it boots fresh.
 
-### Timeout Protection (`timeout-manager.js`)
-**Cycle-level:** `startCycleTimer()` sets a setTimeout. Fires callback on timeout but does NOT abort the cycle — monitoring only, not a circuit breaker.
-**Operation-level:** `wrapWithTimeout(promise, timeoutMs)` rejects on timeout with `error.code = 'OPERATION_TIMEOUT'`.
+### Heartbeat (`heartbeat.js`)
+`<logsDir>/.heartbeat`, written tmp+rename every `heartbeat.intervalMs` (default 15s) plus at cycle start/end. **Liveness vs progress:** `ts` freshness = event loop alive (interval stamps keep it fresh); `lastCycleEndTs` freshness = cycles actually completing. A hung LLM await keeps `ts` fresh while `lastCycleEndTs` goes stale — wedge detection (the server-side run sentinel) keys on PROGRESS, never liveness. Watchdog phases `breaker_cooloff` / `revive_probe` mark deliberate non-cycling (cooloff time is not wedge time). Stale-stamp rejection: a late end-stamp from a watchdog-abandoned cycle (older cycle number) never overwrites newer progress — a false-recovery signal would mask a wedge.
+
+### Timeout Protection (`cycle-watchdog.js` + `timeout-manager.js`)
+**Cycle-level (ACTS — Fix 2.2):** `runCycleWithWatchdog()` races every cycle against the hard abandonment deadline `max(cycleTimeoutMs × watchdog.hardMultiplier, watchdog.minHardTimeoutMs)`. A cycle past the deadline is ABANDONED at the boundary — contained: the orphan promise blocks new cycles until it settles (in-flight LLM calls cannot be aborted). Hard timeouts and sustained-critical stalls trip the circuit breaker immediately; `watchdog.tripThreshold` consecutive cycle errors trip it too. An open breaker pauses cycling for `watchdog.cooloffMs`, then runs exactly one revive probe (success closes, failure re-trips). An orphan still pending when cooloff expires escalates to a supervisor restart: `restartRequested` persisted to `.watchdog.json` first, bounded `stop()`, then exit `watchdog.restartExitCode` (86). Breaker state survives restarts via `.watchdog.json`. The legacy timeout-manager cycle timer (`startCycleTimer()`) still exists and is monitoring-only.
+**Operation-level:** timeout-manager remains authoritative — `wrapWithTimeout(promise, timeoutMs)` rejects on timeout with `error.code = 'OPERATION_TIMEOUT'`.
+
+### Event Ledger (`event-ledger.js`)
+Hash-chained append-only `events.jsonl` (seq survives restarts by re-reading the tail). Rotates when a write would exceed `ledger.maxBytes` (default 50MB): renamed to `events-<stamp>.jsonl`, gzipped asynchronously to `events-<stamp>.jsonl.gz`, newest `ledger.keepRolls` (default 5) gzipped rolls kept. A broken chain tail is preserved aside as `events-<stamp>.unchained.jsonl`, never silently dropped. Shutdown close is bounded by `shutdownLedgerTimeoutMs`.
 
 ### Graceful Shutdown (`graceful-shutdown-handler.js`)
 Listens on SIGINT, SIGTERM, SIGHUP. Idempotent. Sequence:
@@ -187,6 +209,8 @@ Listens on SIGINT, SIGTERM, SIGHUP. Idempotent. Sequence:
 6. Cleanup resources, exit
 
 The shutdown save is bounded (`shutdownSaveTimeoutMs`, default 60s; 15s grace when joining an already-in-progress save with durable state on disk). **Alert-worthy signal:** `shutdown_save_timeout_existing_state` recurring in logs means the brain has outgrown the 60s shutdown save bound.
+
+**Budget-derived bounds:** the historical per-step defaults (150s agent wait + 60s save + 5s telemetry + …) sum past the 180s hard-kill, so a slow shutdown used to be killed mid-save. Every bound now derives from ONE deadline: `shutdownDeadline = shutdownStartTime + shutdownTimeout − margin`, where the margin (`shutdownDeadlineMarginMs`, default 5000) is clamped to [5s, shutdownTimeout/2]. Each bounded step caps its timeout at the remaining budget (its configured default stays a ceiling), so the worst case finishes — or times out honestly — before the hard-kill fires. A non-finite deadline (garbage `shutdownTimeoutMs`) makes every consumer fall back to its configured default (`shutdownBudgetMs`).
 
 Hard-timeout kills process at 180s. Must exceed agent wait timeout (150s).
 
@@ -224,10 +248,14 @@ Also strips leading `runtime/` (a known GPT-5.2 hallucination). MCP accessibilit
 | `backups/backup-<stamp>/` | Interval-gated coherent brain backups (6h default, retention 2), copied under the memory-source write lock with a 4GB + projected-copy-size disk floor; stale `backup-*.tmp` staging dirs are swept. Restore note: a backup can pair manifest revision R+1 with a shell/snapshot from R — benign, the manifest is authoritative for hydration |
 | `.clean_shutdown` | Clean shutdown marker (written ONLY after a confirmed final save) |
 | `.pause_requested` | Pause signal from external control |
+| `.heartbeat` | Liveness/progress stamp `{ ts, pid, cycle, lastCycleStartTs, lastCycleEndTs, phase }`, tmp+rename, every `heartbeat.intervalMs` + cycle boundaries |
+| `.watchdog.json` | Circuit-breaker state (tmp+rename), survives restarts; `restartRequested` persisted before exit-86 escalation, cleared only by the first successful cycle |
+| `.sentinel.json` (+ `.sentinel.json.last`) | SERVER-side remediation-ladder state for the run (written by `cosmo23/server/lib/run-sentinel.js`, not the engine); archived to `.last` on user stop — evidence is never silently deleted |
+| `events.jsonl` + `events-<stamp>.jsonl.gz` | Hash-chained event ledger + gzipped rotation rolls (`ledger.maxBytes` / `ledger.keepRolls`); broken-chain tails preserved as `events-<stamp>.unchained.jsonl` |
 | `outputs/` | Agent deliverables |
 | `coordinator/` | Review plans, strategic snapshots |
 
-Save guard (every save, `brain-snapshot.js`): the known-good baseline resolves snapshot → manifest → streamed sidecar count → legacy inline state; a save dropping a >100-node brain below 50% of that baseline is refused with a structured result (`reason: 'catastrophic_node_drop'`). Existing-but-unreadable state fails closed as `persistence_guard_failed` — mapping it to "fresh" would bless an overwrite of a real brain. The old cycles-0-1 guard was dead code (it read `state.json` while saves write `state.json.gz`).
+Save guard (every save, `brain-snapshot.js`): the known-good baseline resolves snapshot → manifest → streamed sidecar count → legacy inline state; a save dropping a >100-node brain below 50% of that baseline is refused with a structured result (`reason: 'catastrophic_node_drop'`). Existing-but-unreadable state fails closed as `persistence_guard_failed` — mapping it to "fresh" would bless an overwrite of a real brain. The old cycles-0-1 guard was dead code (it read `state.json` while saves write `state.json.gz`). The in-memory memoized baseline is refreshed ONLY by a successful save; its provenance can read `'last-save'` when the post-save `brain-snapshot.json` stamp failed (no snapshot exists on disk, so the cache is never labeled with a source that isn't really there — orchestrator.js `_knownGoodCache`).
 
 ---
 
@@ -270,13 +298,15 @@ Key test files for this directory:
 
 Phase 1 persistence-integrity suites live in the Home23 root harness (run from the repo root with `npm test`): `tests/cosmo23/state-compression-atomicity.test.cjs`, `brain-snapshot-guard.test.cjs`, `graceful-shutdown-honesty.test.cjs`, `crash-recovery-scalar-checkpoints.test.cjs`, `state-hydration.test.cjs`, `brain-backups.test.cjs`.
 
+Phase 2 self-awareness suites (also Home23 root harness): `tests/cosmo23/engine-heartbeat.test.cjs`, `event-ledger-hygiene.test.cjs`, `resource-backpressure.test.cjs`, `cycle-watchdog.test.cjs`, `run-sentinel.test.cjs`.
+
 ---
 
 ## Common Pitfalls
 
 1. **Guided mode does NOT allow `mixed` execution.** `normalizeExecutionMode()` always returns `guided-exclusive`.
 2. **Plan not created if `stateStore` is null.** Plan is generated in memory but never persisted.
-3. **Cycle timeouts don't abort cycles.** Long LLM calls hold up the cycle beyond timeout. It's monitoring only.
+3. **Cycle timeouts now ACT — but only at the hard deadline, and nothing aborts an in-flight LLM call.** `timeout-manager`'s cycle timer is still monitoring-only, and there is no AbortSignal plumbing. What changed (Fix 2.2): at `max(cycleTimeoutMs × 3, 10 min)` the CycleWatchdog abandons the cycle at the boundary (orphan contained — no new cycle until it settles), trips the breaker, and escalates a never-settling orphan to a supervisor restart (exit 86).
 4. **xAI `grok-4` crashes if `reasoning_effort` is passed.** Guard at `unified-client.js:404`.
 5. **Sleep blocks plan execution** unless `activePlan.status === 'ACTIVE'` in ClusterStateStore.
 6. **`UnifiedClient` with no `modelAssignments`** silently falls to `super.generate()` — this is by design.
