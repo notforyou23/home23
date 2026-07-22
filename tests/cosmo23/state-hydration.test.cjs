@@ -178,6 +178,9 @@ test('Orchestrator.loadState imports a hydrated manifest brain with nodes and ed
     goals: { import() {}, goals: new Map(), completedGoals: [] },
     clusterStateStore: null,
     webSearchCount: 0,
+    // loadState fires replayAgentJournals() as a non-blocking recovery pass;
+    // the fixture run has no agents dir, so an empty replay is the true result.
+    replayAgentJournals: async () => [],
   };
 
   await Orchestrator.prototype.loadState.call(fake);

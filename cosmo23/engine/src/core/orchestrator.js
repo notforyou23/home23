@@ -28,6 +28,7 @@ const { RunCommitmentGovernor } = require('./run-commitment-governor');
 const { UnifiedClient } = require('./unified-client');
 const { persistResearchState } = require('../../../lib/memory-sidecar');
 const { writeSnapshot, resolveKnownGoodNodeCount, evaluateSaveSafety } = require('./brain-snapshot');
+const { hydrateOrchestratorState } = require('./state-hydration');
 
 // EXECUTIVE RING: Executive function layer (dlPFC)
 const { ExecutiveCoordinator } = require('../coordinator/executive-coordinator');
@@ -8512,7 +8513,22 @@ OUTPUT FORMAT (JSON ONLY):
 
     try {
       // Load state (handles both compressed and uncompressed)
-      const state = await StateCompression.loadCompressed(statePath);
+      let state = await StateCompression.loadCompressed(statePath);
+
+      // Manifest-backed saves store an EMPTY memory shell in state.json.gz —
+      // hydrate the real graph back through the streaming reader before any
+      // import below. Throws BRAIN_LOAD_EMPTY when the snapshot/manifest
+      // expect nodes but hydration produced none (fail-loud contract).
+      const hydration = await hydrateOrchestratorState(this.logsDir, state, { logger: this.logger });
+      state = hydration.state;
+      if (hydration.hydrated) {
+        this.logger.info('🧠 Memory hydrated from manifest sidecars', {
+          source: hydration.source,
+          nodes: hydration.nodes,
+          edges: hydration.edges,
+          expectedNodes: hydration.expectedNodes
+        });
+      }
 
       // Getting up to speed protocol (Anthropic pattern)
       this.logger.info('');
@@ -8879,6 +8895,15 @@ OUTPUT FORMAT (JSON ONLY):
         await this.migrateGoalsToTasks();
       }
     } catch (error) {
+      // Fail-loud contract: a brain that should have nodes but loaded empty
+      // must HALT the engine, never continue as a fresh brain.
+      if (String(error.message || '').startsWith('BRAIN_LOAD_EMPTY')) {
+        this.logger.error('🛑 BRAIN_LOAD_EMPTY — refusing to continue with an empty brain', {
+          error: error.message,
+          path: this.logsDir
+        });
+        throw error;
+      }
       // CRITICAL FIX: Don't silently swallow state loading errors!
       // This was causing merged brains to start with empty memory
       if (error.code === 'ENOENT') {
