@@ -448,7 +448,16 @@ architecture:
       maxContextNodes: 3
       peripheralSamplingRate: 0.20
       minSimilarityThreshold: 0.3
-  
+    # Phase 3 parity (Home23 engine) — armed defaults. Read by NetworkMemory as
+    # architecture.memory.intake / .communityDetection.
+    intake:
+      enabled: true
+      maxConceptChars: 4000
+    communityDetection:
+      enabled: ${enable_consolidation_mode ? false : true}
+      minNodes: 5000
+      intervalCycles: 50
+
   reasoning:
     mode: quantum
     parallelBranches: ${enable_local_llm ? 2 : ((enable_stabilization || enable_consolidation_mode) ? 2 : 5)}  # Reduced for local LLM (single GPU)
@@ -755,6 +764,44 @@ memoryGovernance:
   decayHalfLifeCycles: 200
   pruneThreshold: 0.1
   maxNodesConsidered: 200
+
+# Phase 3/4 parity (Home23 engine) — armed defaults. Read paths verified against
+# the orchestrator: this.config.memory.deltaCompaction/gc/governor, this.config.governance.
+# (spend budget lives in the existing top-level spend: block above.) Destructive gates
+# (gc prune, governor pruning, community relabel) stand down in consolidation-sleep mode;
+# delta compaction + governance stay on.
+memory:
+  deltaCompaction:
+    enabled: true
+    minNodes: 10000
+    fullRewriteIntervalMs: 21600000
+  gc:
+    enabled: ${enable_consolidation_mode ? false : true}
+    minWeight: 0.1
+    maxAgeDays: 14
+  governor:
+    applyPruning: ${enable_consolidation_mode ? false : true}
+    maxPrunesPerEval: 50
+
+governance:
+  enabled: true
+  windowCycles: 10
+  pacing:
+    warnSlowdownFactor: 1.5
+    concurrencyNotch: 1
+  spend:
+    warnRatio: 0.70
+    criticalRatio: 0.95
+  park:
+    exitCode: 81
+    stopTimeoutMs: 180000
+  starvation:
+    enabled: true
+    windowCycles: 20
+  sleepPolicy:
+    mode: policy
+    idleCycles: 10
+    minGapCycles: 30
 
 recursiveMode:
   enabled: ${enable_consolidation_mode ? false : enable_recursive_mode}

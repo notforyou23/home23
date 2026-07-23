@@ -349,7 +349,11 @@ class ChatCompletionsClient {
   async generate(options = {}) {
     const {
       model = 'gpt-5.5',
-      maxOutputTokens,
+      // Accept the engine-wide `maxTokens` alias. unified-client's ollama-cloud
+      // path (and others) pass maxTokens, not maxOutputTokens — without this the
+      // requireMaxOutputTokens guard below sees undefined and throws on every
+      // ollama-cloud chat call (e.g. glm-5.2:cloud). maxTokens IS the output cap.
+      maxOutputTokens = options.maxTokens,
       tools = [],
       toolChoice,
       tool_choice,
@@ -439,8 +443,10 @@ class ChatCompletionsClient {
   async generateStreaming(payload, originalModel, options = {}) {
     const {
       signal = null, onChunk = null, onProviderActivity = null,
-      maxOutputTokens = null, maxOutputBytes = null,
+      maxOutputBytes = null,
     } = options;
+    // maxTokens alias (see generate()): callers across the engine pass maxTokens.
+    const maxOutputTokens = options.maxOutputTokens ?? options.maxTokens ?? null;
     const requestPayload = {
       ...payload,
       max_tokens: requireMaxOutputTokens(
@@ -546,7 +552,7 @@ class ChatCompletionsClient {
       ...payload,
       stream: false,
       max_tokens: requireMaxOutputTokens(
-        options.maxOutputTokens, this.config.providerId, originalModel,
+        options.maxOutputTokens ?? options.maxTokens, this.config.providerId, originalModel,
       ),
     };
     throwIfAborted(options.signal);
