@@ -100,7 +100,9 @@ try {
     activeStripeSubscriptions: funnel.conversion?.activeStripeSubscriptions ?? findKey(op, "activeStripeSubscriptions"),
     checkoutPaidRate: funnel.conversion?.checkoutPaidRate ?? findKey(op, "checkoutPaidRate"),
     actionableLeads: leads.actionableLeads ?? findKey(op, "actionableLeads"),
-    note: "from newest operator report; listener starts unmeasured (site-analytics plan unimplemented)",
+    visitsToday: findKey(op, "visitsToday"),
+    visits7d: findKey(op, "visits7d"),
+    note: "from newest operator report; listener starts land once the SPA adapter deploys to production",
   };
   status.sources.operator = opPath;
 } catch (e) { status.warnings.push(`operator/funnel: ${e.message}`); }
@@ -140,6 +142,7 @@ Enrichment: cursor ${status.enrichment?.cursorNextIndex ?? "?"}, updated ${statu
 Publishing: total ${p?.total ?? "?"} | ownedLive ${p?.alreadyOwnedLive ?? "?"} | distributed ${p?.alreadyDistributed ?? "?"} | readyBuild ${p?.readyOwnedBuild ?? "?"} | readySubstack ${p?.readySubstackDistribution ?? "?"}
 Site: operator ${s?.operatorStatus ?? "?"} (${s?.checksPassed ?? "?"}/${s?.checksTotal ?? "?"} checks, report ${s?.reportAgeHours ?? "?"}h old)
 Money path: ${f?.authUsers ?? "?"} auth users (+${f?.recentSignups7d ?? "?"} 7d) | ${f?.emailSignups ?? "?"} email signups | ${f?.activeStripeSubscriptions ?? "?"} active subs | paid-rate ${f?.checkoutPaidRate ?? "?"} | ${f?.actionableLeads ?? "?"} actionable leads
+Traffic: ${f?.visitsToday ?? "?"} visits today | ${f?.visits7d ?? "?"} last 7d (Matomo reporting live)
 Listener starts: UNMEASURED (site-analytics plan not implemented)
 
 Cron: ${jobLine("shakedown-collection-daily")}
