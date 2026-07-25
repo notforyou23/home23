@@ -91,13 +91,33 @@ const after = await health();
 const filesDelta = before && after ? (after.database?.totalFiles ?? 0) - (before.database?.totalFiles ?? 0) : null;
 const showsDelta = before && after ? (after.database?.totalShows ?? 0) - (before.database?.totalShows ?? 0) : null;
 
+// resolve promoted shows to human metadata for the public feed
+let shows = [];
+if (promoted?.receiptPath) {
+  try {
+    const receipt = readJson(promoted.receiptPath);
+    const ids = (receipt.shows ?? []).map((s) => s.showId ?? s.show_id).filter(Boolean);
+    for (const id of ids.slice(0, 20)) {
+      try {
+        const r = await (await fetch(`https://api.shakedownshuffle.com/api/v1/shows/${id}`)).json();
+        const s = r.data ?? r;
+        shows.push({ show_id: id, date: s.date ?? null, venue: s.venue ?? null,
+          band_name: s.band_name ?? s.band ?? null,
+          fileCount: Array.isArray(s.audio_files ?? s.files) ? (s.audio_files ?? s.files).length : null });
+      } catch { shows.push({ show_id: id }); }
+    }
+  } catch {}
+}
+
 const entry = {
-  at: new Date().toISOString(), type: "audio",
+  at: new Date().toISOString(), type: "audio", shows,
+  summary: shows.length ? null : "Collection release promoted.",
   acquired: acquired?.gate ?? null,
   promoted: promoted ? { runId: promoted.runId, manifestSha256: promoted.manifestSha256, receipt: promoted.receiptPath } : null,
   filesAdded: filesDelta, showsAdded: showsDelta,
 };
 appendFileSync(LEDGER, JSON.stringify(entry) + "\n");
+try { execFileSync("node", [join(H23, "scripts/shakedown-updates-feed.mjs")]); } catch {}
 
 // refresh the status surface so Jerry's next turn knows
 try { execFileSync("node", [join(H23, "scripts/shakedown-status.mjs")], { cwd: H23 }); } catch {}
