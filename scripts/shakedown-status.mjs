@@ -104,6 +104,7 @@ try {
     activeStripeSubscriptions: funnel.conversion?.activeStripeSubscriptions ?? findKey(op, "activeStripeSubscriptions"),
     checkoutPaidRate: funnel.conversion?.checkoutPaidRate ?? findKey(op, "checkoutPaidRate"),
     actionableLeads: leads.actionableLeads ?? findKey(op, "actionableLeads"),
+    pendingUnclaimed: funnel.supabase?.pendingSubscriptions?.byStatus?.active ?? findKey(op, "pendingSubscriptions") ?? 0,
     visitsToday: findKey(op, "visitsToday"),
     visits7d: findKey(op, "visits7d"),
     note: "from newest operator report; listener starts land once the SPA adapter deploys to production",
@@ -170,7 +171,7 @@ Last run: ${c?.lastRun ? `${c.lastRun.status} at ${c.lastRun.completedAt} (repla
 Enrichment: cursor ${status.enrichment?.cursorNextIndex ?? "?"}, updated ${status.enrichment?.ageHours ?? "?"}h ago
 Publishing: total ${p?.total ?? "?"} | ownedLive ${p?.alreadyOwnedLive ?? "?"} | distributed ${p?.alreadyDistributed ?? "?"} | readyBuild ${p?.readyOwnedBuild ?? "?"} | readySubstack ${p?.readySubstackDistribution ?? "?"} | backlinkRepair ${p?.readySubstackBacklinkRepair ?? "?"}
 Site: operator ${s?.operatorStatus ?? "?"} (${s?.checksPassed ?? "?"}/${s?.checksTotal ?? "?"} checks, report ${s?.reportAgeHours ?? "?"}h old)
-Money path: ${f?.authUsers ?? "?"} auth users (+${f?.recentSignups7d ?? "?"} 7d) | ${f?.emailSignups ?? "?"} email signups | ${f?.activeStripeSubscriptions ?? "?"} active subs | paid-rate ${f?.checkoutPaidRate ?? "?"} | ${f?.actionableLeads ?? "?"} actionable leads
+${Number(f?.pendingUnclaimed) ? `ATTENTION: ${f.pendingUnclaimed} PAID subscription(s) awaiting account claim — priority zero until resolved\n` : ""}Money path: ${f?.authUsers ?? "?"} auth users (+${f?.recentSignups7d ?? "?"} 7d) | ${f?.emailSignups ?? "?"} email signups | ${f?.activeStripeSubscriptions ?? "?"} active subs | paid-rate ${f?.checkoutPaidRate ?? "?"} | ${f?.actionableLeads ?? "?"} actionable leads
 Traffic: ${f?.visitsToday ?? "?"} visits today | ${f?.visits7d ?? "?"} last 7d (Matomo reporting live)
 Listener starts: SPA adapter LIVE in production (deployed 2026-07-25) — events accruing
 
