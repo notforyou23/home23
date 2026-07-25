@@ -56,7 +56,29 @@ import {
 export class ToolRegistry {
   private tools: Map<string, ToolDefinition> = new Map();
 
+  /**
+   * 'generic' registries (the full shared toolset) refuse to execute for
+   * restricted chat ids even if one is reached through an unexpected path —
+   * restricted agents must only ever run against a 'seeded' registry built by
+   * createSeededToolRegistry. Defense in depth, ported in shape from
+   * codex/shakedown-jerry-recovery-port.
+   */
+  constructor(private readonly boundary: 'generic' | 'seeded' = 'generic') {}
+
   register(tool: ToolDefinition): void {
+    if (this.boundary === 'generic') {
+      const execute = tool.execute.bind(tool);
+      this.tools.set(tool.name, Object.freeze({
+        ...tool,
+        async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+          if (ctx.chatId?.startsWith('proposer:') || ctx.chatId?.startsWith('worker:')) {
+            return { content: `refused: generic tool '${tool.name}' is unavailable to restricted chat '${ctx.chatId}'`, is_error: true };
+          }
+          return execute(input, ctx);
+        },
+      }));
+      return;
+    }
     this.tools.set(tool.name, tool);
   }
 
@@ -105,6 +127,13 @@ export class ToolRegistry {
   get size(): number {
     return this.tools.size;
   }
+}
+
+/** Create a registry containing ONLY the given tools (for restricted agents). */
+export function createSeededToolRegistry(tools: readonly ToolDefinition[]): ToolRegistry {
+  const registry = new ToolRegistry('seeded');
+  for (const tool of tools) registry.register(tool);
+  return registry;
 }
 
 /** Create a fully loaded registry with all tools. */
