@@ -25,8 +25,11 @@ contributed narration only (verified in OPERATIONS.md, "Script vs judgment").
   matches the counts trajectory in the Codex automation's memory.md (total 25, alreadyOwnedLive 6,
   alreadyDistributed 24).
 
-- [ ] First cron-fired collection receipt (expected 2026-07-25 ~19:06Z) confirmed same shape,
-      `nextRunAtMs` advanced. ← final stamp for this record
+- [x] First cron-fired collection receipt confirmed: `daily-collection-2026-07-25T18-20-50.022Z.json`
+      — `waiting_for_batch_pair`, `replayVerified: true`, `acquisition: null`, `release: null`,
+      `lastStatus: ok`, 333s duration, `nextRunAtMs` advanced. Fired via the Home23 scheduler
+      (schedule temporarily advanced to 14:10 ET for supervised verification, then restored
+      to 15:00). **This record is complete; the cutover is proven.**
 
 ## The 19 never-migrated automations
 
