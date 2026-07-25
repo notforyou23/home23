@@ -145,6 +145,7 @@ const jobLine = (id) => {
 let md = `# Shakedown Status
 Generated ${status.generatedAt} by scripts/shakedown-status.mjs. Read the files in
 sources (projects/shakedownshuffle/status/latest.json) before acting; this is a digest.
+YOU OWN SHAKEDOWN OPERATIONS — runbook: projects/shakedownshuffle/RUNBOOK.md · Desk: http://127.0.0.1:7788
 
 ${status.needsYou?.proposedCount ? `NEEDS YOU: ${status.needsYou.proposedCount} proposal(s) awaiting decision in content/article-editorial-queue.md:
 ${status.needsYou.proposed.map((t) => `  - ${t}`).join("\n")}
