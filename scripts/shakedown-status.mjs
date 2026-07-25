@@ -107,6 +107,16 @@ try {
   status.sources.operator = opPath;
 } catch (e) { status.warnings.push(`operator/funnel: ${e.message}`); }
 
+// --- pending proposals (the approval surface) ---
+try {
+  const queuePath = join(WS, "projects/shakedownshuffle/content/article-editorial-queue.md");
+  const queue = readFileSync(queuePath, "utf-8");
+  const proposed = [...queue.matchAll(/^### \[proposed\] (.+)$/gm)].map((m) => m[1].slice(0, 100));
+  const approved = [...queue.matchAll(/^### \[approved\] (.+)$/gm)].map((m) => m[1].slice(0, 100));
+  status.needsYou = { proposedCount: proposed.length, proposed, approvedAwaitingRun: approved };
+  status.sources.queue = queuePath;
+} catch (e) { status.warnings.push(`queue: ${e.message}`); }
+
 // --- Home23 cron jobs ---
 try {
   const store = readJson(join(H23, "instances/jerry/conversations/cron-jobs.json"));
@@ -136,6 +146,9 @@ let md = `# Shakedown Status
 Generated ${status.generatedAt} by scripts/shakedown-status.mjs. Read the files in
 sources (projects/shakedownshuffle/status/latest.json) before acting; this is a digest.
 
+${status.needsYou?.proposedCount ? `NEEDS YOU: ${status.needsYou.proposedCount} proposal(s) awaiting decision in content/article-editorial-queue.md:
+${status.needsYou.proposed.map((t) => `  - ${t}`).join("\n")}
+` : "NEEDS YOU: nothing pending"}${status.needsYou?.approvedAwaitingRun?.length ? `\nAPPROVED, not yet run: ${status.needsYou.approvedAwaitingRun.join("; ")}\n` : ""}
 Collection: cursor ${c?.cursorNextIndex ?? "?"} pass ${c?.passNumber ?? "?"} | wanted ${c?.wanted?.wanted ?? "?"} / have_audio ${c?.wanted?.have_audio ?? "?"} / discovered ${c?.wanted?.discovered ?? "?"}
 Last run: ${c?.lastRun ? `${c.lastRun.status} at ${c.lastRun.completedAt} (replayVerified=${c.lastRun.replayVerified}, candidates=${c.lastRun.candidates})` : "none"}
 Enrichment: cursor ${status.enrichment?.cursorNextIndex ?? "?"}, updated ${status.enrichment?.ageHours ?? "?"}h ago
