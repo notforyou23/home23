@@ -1,5 +1,19 @@
 # Home23 Worker Runtime + ShakedownJerry Implementation Plan
 
+> **SUPERSEDED 2026-07-25 from Task 14 onward.**
+> Tasks 1–13 are built and retained on `codex/shakedown-jerry-recovery-port` (139 commits,
+> 642 worker tests passing). **Tasks 14–33 are withdrawn** and replaced by
+> `docs/superpowers/plans/2026-07-25-shakedown-jerry-proposer.md`, against
+> `docs/superpowers/specs/2026-07-25-shakedown-jerry-proposer-design.md`.
+>
+> Reason: this plan fused deterministic operations, agent judgment, and irreversible public
+> actions into one worker under one authority model, then required cryptographic grants,
+> fencing epochs, three two-phase-commit journals, and a non-model safety reserve to make that
+> fusion safe — against a threat model with no adversary and no concurrency. Its first useful
+> output arrived at Task 31 of 33. The replacement splits the three concerns instead of
+> defending the fusion. This document is retained as the reference for the built runtime and
+> for the automation migration matrix.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Repair the generic Home23 Worker runtime completely and deliver ShakedownJerry as Jerry's resident, production-operating worker for the full observe -> discover -> improve -> publish -> distribute -> convert -> learn -> recover loop.
