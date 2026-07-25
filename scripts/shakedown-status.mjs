@@ -156,7 +156,7 @@ Publishing: total ${p?.total ?? "?"} | ownedLive ${p?.alreadyOwnedLive ?? "?"} |
 Site: operator ${s?.operatorStatus ?? "?"} (${s?.checksPassed ?? "?"}/${s?.checksTotal ?? "?"} checks, report ${s?.reportAgeHours ?? "?"}h old)
 Money path: ${f?.authUsers ?? "?"} auth users (+${f?.recentSignups7d ?? "?"} 7d) | ${f?.emailSignups ?? "?"} email signups | ${f?.activeStripeSubscriptions ?? "?"} active subs | paid-rate ${f?.checkoutPaidRate ?? "?"} | ${f?.actionableLeads ?? "?"} actionable leads
 Traffic: ${f?.visitsToday ?? "?"} visits today | ${f?.visits7d ?? "?"} last 7d (Matomo reporting live)
-Listener starts: pending production deploy of the SPA analytics adapter
+Listener starts: SPA adapter LIVE in production (deployed 2026-07-25) — events accruing
 
 Cron: ${jobLine("shakedown-collection-daily")}
       ${jobLine("shakedown-publish-scan")}
