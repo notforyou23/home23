@@ -74,8 +74,12 @@ try {
   status.publishing = {
     total: findKey(scan, "total"), readyOwnedBuild: findKey(scan, "readyOwnedBuild"),
     readySubstackDistribution: findKey(scan, "readySubstackDistribution"),
+    readySubstackBacklinkRepair: findKey(scan, "readySubstackBacklinkRepair"),
     alreadyOwnedLive: findKey(scan, "alreadyOwnedLive"), alreadyDistributed: findKey(scan, "alreadyDistributed"),
     scanAt: basename(scanPath).replace(/-scan\.json$/, ""),
+    pendingItems: (scan.queue?.items ?? [])
+      .filter((i) => i.state && i.state !== "already-distributed" && i.state !== "already-owned-live")
+      .map((i) => `${i.slug} [${i.state}] ${i.nextAction ?? ""}`.trim()),
   };
   status.sources.publishing = scanPath;
 } catch (e) { status.warnings.push(`publishing: ${e.message}`); }
@@ -122,7 +126,7 @@ try {
   const store = readJson(join(H23, "instances/jerry/conversations/cron-jobs.json"));
   const jobs = Array.isArray(store) ? store : store.jobs ?? [];
   status.jobs = {};
-  for (const id of ["shakedown-collection-daily", "shakedown-editorial-leads", "shakedown-operator-check", "shakedown-publish-scan"]) {
+  for (const id of ["shakedown-collection-daily", "shakedown-editorial-leads", "shakedown-operator-check", "shakedown-publish-scan", "shakedown-proposer-cycle", "shakedown-collection-promote"]) {
     const j = jobs.find((x) => x.id === id);
     status.jobs[id] = j ? { enabled: j.enabled, lastStatus: j.state?.lastStatus ?? null,
       nextRunAt: j.state?.nextRunAtMs ? new Date(j.state.nextRunAtMs).toISOString() : null,
@@ -146,14 +150,25 @@ let md = `# Shakedown Status
 Generated ${status.generatedAt} by scripts/shakedown-status.mjs. Read the files in
 sources (projects/shakedownshuffle/status/latest.json) before acting; this is a digest.
 YOU OWN SHAKEDOWN OPERATIONS — runbook: projects/shakedownshuffle/RUNBOOK.md · Desk: http://127.0.0.1:7788
+Editorial source corpus: jtr/jerry-garcia-deep-dive/MINING-INDEX.md (on disk, NOT the brain
+catalog). 🔒 cosmo-content/_private/ is never read by anything unattended.
 
-${status.needsYou?.proposedCount ? `NEEDS YOU: ${status.needsYou.proposedCount} proposal(s) awaiting decision in content/article-editorial-queue.md:
-${status.needsYou.proposed.map((t) => `  - ${t}`).join("\n")}
-` : "NEEDS YOU: nothing pending"}${status.needsYou?.approvedAwaitingRun?.length ? `\nAPPROVED, not yet run: ${status.needsYou.approvedAwaitingRun.join("; ")}\n` : ""}
+${(() => {
+  const lines = [];
+  if (status.needsYou?.proposedCount) {
+    lines.push(`${status.needsYou.proposedCount} proposal(s) awaiting decision in content/article-editorial-queue.md:`);
+    lines.push(...status.needsYou.proposed.map((t) => `  - ${t}`));
+  }
+  if (p?.pendingItems?.length) {
+    lines.push(`${p.pendingItems.length} publishing item(s) pending:`);
+    lines.push(...p.pendingItems.map((t) => `  - ${t}`));
+  }
+  return lines.length ? `NEEDS YOU: ${lines.join("\n")}\n` : "NEEDS YOU: nothing pending";
+})()}${status.needsYou?.approvedAwaitingRun?.length ? `\nAPPROVED, not yet run: ${status.needsYou.approvedAwaitingRun.join("; ")}\n` : ""}
 Collection: cursor ${c?.cursorNextIndex ?? "?"} pass ${c?.passNumber ?? "?"} | wanted ${c?.wanted?.wanted ?? "?"} / have_audio ${c?.wanted?.have_audio ?? "?"} / discovered ${c?.wanted?.discovered ?? "?"}
 Last run: ${c?.lastRun ? `${c.lastRun.status} at ${c.lastRun.completedAt} (replayVerified=${c.lastRun.replayVerified}, candidates=${c.lastRun.candidates})` : "none"}
 Enrichment: cursor ${status.enrichment?.cursorNextIndex ?? "?"}, updated ${status.enrichment?.ageHours ?? "?"}h ago
-Publishing: total ${p?.total ?? "?"} | ownedLive ${p?.alreadyOwnedLive ?? "?"} | distributed ${p?.alreadyDistributed ?? "?"} | readyBuild ${p?.readyOwnedBuild ?? "?"} | readySubstack ${p?.readySubstackDistribution ?? "?"}
+Publishing: total ${p?.total ?? "?"} | ownedLive ${p?.alreadyOwnedLive ?? "?"} | distributed ${p?.alreadyDistributed ?? "?"} | readyBuild ${p?.readyOwnedBuild ?? "?"} | readySubstack ${p?.readySubstackDistribution ?? "?"} | backlinkRepair ${p?.readySubstackBacklinkRepair ?? "?"}
 Site: operator ${s?.operatorStatus ?? "?"} (${s?.checksPassed ?? "?"}/${s?.checksTotal ?? "?"} checks, report ${s?.reportAgeHours ?? "?"}h old)
 Money path: ${f?.authUsers ?? "?"} auth users (+${f?.recentSignups7d ?? "?"} 7d) | ${f?.emailSignups ?? "?"} email signups | ${f?.activeStripeSubscriptions ?? "?"} active subs | paid-rate ${f?.checkoutPaidRate ?? "?"} | ${f?.actionableLeads ?? "?"} actionable leads
 Traffic: ${f?.visitsToday ?? "?"} visits today | ${f?.visits7d ?? "?"} last 7d (Matomo reporting live)
@@ -163,6 +178,8 @@ Cron: ${jobLine("shakedown-collection-daily")}
       ${jobLine("shakedown-publish-scan")}
       ${jobLine("shakedown-operator-check")}
       ${jobLine("shakedown-editorial-leads")}
+      ${jobLine("shakedown-proposer-cycle")}
+      ${jobLine("shakedown-collection-promote")}
 ${status.warnings.length ? `\nWARNINGS: ${status.warnings.join(" | ")}\n` : ""}`;
 if (md.length > MD_CAP) md = md.slice(0, MD_CAP - 25) + "\n[truncated at cap]\n";
 const mdTmp = OUT_MD + ".tmp";
