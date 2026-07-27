@@ -33,9 +33,22 @@ const run = (args, label) => {
     throw new Error(`${label} failed: ${tail}`);
   }
 };
+// Health must be read from ONE origin across the whole run. The old version let
+// `before` come from localhost and `after` fall back to the public API (or vice
+// versa), which produced a delta between two different databases and reported it
+// to jtr as fact. Pick a source once, then stay on it or report nothing.
+let healthOrigin = null;
+const HEALTH_ORIGINS = ["http://127.0.0.1:3005", "https://api.shakedownshuffle.com"];
 const health = async () => {
-  try { return await (await fetch("http://127.0.0.1:3005/health")).json(); }
-  catch { try { return await (await fetch("https://api.shakedownshuffle.com/health")).json(); } catch { return null; } }
+  const origins = healthOrigin ? [healthOrigin] : HEALTH_ORIGINS;
+  for (const origin of origins) {
+    try {
+      const json = await (await fetch(`${origin}/health`)).json();
+      healthOrigin = origin;
+      return json;
+    } catch { /* try the next origin only while unpinned */ }
+  }
+  return null;
 };
 
 const note = (lines) => console.log(lines.join("\n"));
@@ -117,16 +130,47 @@ const entry = {
   filesAdded: filesDelta, showsAdded: showsDelta,
 };
 appendFileSync(LEDGER, JSON.stringify(entry) + "\n");
-try { execFileSync("node", [join(H23, "scripts/shakedown-updates-feed.mjs")]); } catch {}
 
-// refresh the status surface so Jerry's next turn knows
-try { execFileSync("node", [join(H23, "scripts/shakedown-status.mjs")], { cwd: H23 }); } catch {}
+// These two publish the change to the world and to Jerry's next turn. They used
+// to be `try {} catch {}` — swallowed whole — while the run still reported
+// "SITE UPDATED / Listeners can hear it now". A silent failure here means the
+// public feed never regenerated and nobody was told. Collect and report instead.
+const postFailures = [];
+const step = (label, fn) => {
+  try { fn(); } catch (e) { postFailures.push(`${label}: ${String(e.message || e).slice(0, 300)}`); }
+};
+step("public updates feed (shakedown-updates-feed.mjs)", () =>
+  execFileSync("node", [join(H23, "scripts/shakedown-updates-feed.mjs")]));
+step("status surface refresh (shakedown-status.mjs)", () =>
+  execFileSync("node", [join(H23, "scripts/shakedown-status.mjs")], { cwd: H23 }));
+
+// Only claim listeners can hear it when the numbers actually moved. A promotion
+// that added zero files is not a site update, and saying "+0" as if it were one
+// is the kind of fake progress that makes the whole report untrustworthy.
+const movedForward = filesDelta !== null && (filesDelta > 0 || showsDelta > 0);
+const headline = postFailures.length
+  ? "PROMOTION LANDED BUT PUBLISH STEPS FAILED — needs a look."
+  : movedForward
+    ? "SITE UPDATED — new audio promoted to the live collection."
+    : filesDelta === null
+      ? "PROMOTION RAN — health readback unavailable, NOT verified."
+      : "PROMOTION RAN — but the collection counts did not move. Verify before claiming an update.";
 
 note([
-  "SITE UPDATED — new audio promoted to the live collection.",
+  headline,
   promoted ? `  release: ${promoted.runId} (receipt: ${promoted.receiptPath})` : "",
   acquired ? `  acquisition gate: ${acquired.gate}` : "",
-  filesDelta !== null ? `  audio files: +${filesDelta} (now ${after.database?.totalFiles}) · shows: +${showsDelta} (now ${after.database?.totalShows})` : "  (health readback unavailable — verify manually)",
+  filesDelta !== null
+    ? `  audio files: ${filesDelta >= 0 ? "+" : ""}${filesDelta} (now ${after.database?.totalFiles}) · shows: ${showsDelta >= 0 ? "+" : ""}${showsDelta} (now ${after.database?.totalShows}) · source ${healthOrigin}`
+    : "  (health readback unavailable — verify manually)",
   `  ledger: ${LEDGER}`,
-  "  Listeners can hear it now. Rollback snapshots were taken pre-promotion.",
+  ...postFailures.map((f) => `  POST-PROMOTION STEP FAILED — ${f}`),
+  postFailures.length
+    ? "  The release is promoted, but the public feed and/or status surface may be stale."
+    : movedForward
+      ? "  Listeners can hear it now. Rollback snapshots were taken pre-promotion."
+      : "  Rollback snapshots were taken pre-promotion.",
 ].filter(Boolean));
+
+// Exit nonzero so cron delivery escalates instead of filing this under "summary".
+if (postFailures.length) process.exit(1);
