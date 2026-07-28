@@ -1185,6 +1185,109 @@ verifiers.fix_recipe_recorded = async function fixRecipeRecorded(args = {}, ctx 
   }
 };
 
+/**
+ * OAuth credential lineage is still ours, and not about to lapse.
+ *
+ * Providers that rotate refresh tokens (OpenAI Codex, notably) invalidate every
+ * older copy the moment any client re-mints for that account. The access token
+ * keeps working for its full life regardless — 10 days for Codex — so the break
+ * is invisible until something finally attempts a refresh, at which point every
+ * consumer fails simultaneously. That is exactly how 2026-07-27 played out: the
+ * Codex CLI re-minted on 07-22 and Home23 ran on borrowed time for 4.5 days.
+ *
+ * Comparing issue times catches the takeover the same day it happens, without
+ * spending the refresh token to find out.
+ *
+ * args: {
+ *   profilePath,             // credential store Home23 depends on
+ *   profileKey,              // profile within that store
+ *   rivalPath?,              // another client's store for the same account
+ *   warnDaysBeforeExpiry?    // default 3
+ * }
+ */
+verifiers.oauth_token_lineage_fresh = function oauthTokenLineageFresh(args = {}) {
+  const { profilePath, profileKey, rivalPath } = args;
+  const warnDays = Number.isFinite(args.warnDaysBeforeExpiry) ? args.warnDaysBeforeExpiry : 3;
+  if (!profilePath || !profileKey) return { ok: false, detail: 'profilePath and profileKey required' };
+
+  const decodeIat = (jwt) => {
+    try {
+      const payload = JSON.parse(Buffer.from(String(jwt).split('.')[1], 'base64url').toString('utf8'));
+      return { iat: payload.iat ?? null, exp: payload.exp ?? null };
+    } catch {
+      return { iat: null, exp: null };
+    }
+  };
+
+  let profile;
+  try {
+    const full = expandPath(profilePath);
+    if (!fs.existsSync(full)) return { ok: false, detail: `missing: ${profilePath}` };
+    profile = JSON.parse(fs.readFileSync(full, 'utf8'))?.profiles?.[profileKey];
+  } catch (err) {
+    return { ok: false, detail: `unreadable profile store: ${err.message}` };
+  }
+  if (!profile?.accessToken) return { ok: false, detail: `missing profile: ${profileKey}` };
+
+  const claims = decodeIat(profile.accessToken);
+  const expiresMs = Number.isFinite(profile.expires)
+    ? profile.expires
+    : (claims.exp ? claims.exp * 1000 : null);
+  if (!expiresMs) return { ok: false, detail: 'profile token has no decodable expiry' };
+
+  const now = Date.now();
+  const hoursLeft = (expiresMs - now) / 3600000;
+  const observed = {
+    expiresAt: new Date(expiresMs).toISOString(),
+    hoursLeft: Number(hoursLeft.toFixed(1)),
+    superseded: false,
+  };
+
+  if (hoursLeft <= 0) {
+    return { ok: false, detail: `access token expired ${Math.abs(hoursLeft).toFixed(1)}h ago`, observed };
+  }
+
+  // The early signal: another client re-minted for this same account, so our
+  // refresh token is already dead even though the access token still works.
+  if (rivalPath) {
+    try {
+      const rivalFull = expandPath(rivalPath);
+      if (fs.existsSync(rivalFull)) {
+        const rival = JSON.parse(fs.readFileSync(rivalFull, 'utf8'))?.tokens;
+        const sameAccount = rival?.account_id && profile.accountId
+          && String(rival.account_id) === String(profile.accountId);
+        if (sameAccount && rival.access_token) {
+          const rivalClaims = decodeIat(rival.access_token);
+          if (rivalClaims.iat && claims.iat && rivalClaims.iat > claims.iat) {
+            observed.superseded = true;
+            observed.rivalIssuedAt = new Date(rivalClaims.iat * 1000).toISOString();
+            observed.profileIssuedAt = new Date(claims.iat * 1000).toISOString();
+            return {
+              ok: false,
+              detail: `lineage superseded: ${rivalPath} re-minted at ${observed.rivalIssuedAt}, `
+                + `after ours at ${observed.profileIssuedAt} — our refresh token is presumed dead. `
+                + `Access token still valid for ${hoursLeft.toFixed(1)}h.`,
+              observed,
+            };
+          }
+        }
+      }
+    } catch {
+      // A rival store we cannot read is not evidence of takeover; fall through.
+    }
+  }
+
+  if (hoursLeft < warnDays * 24) {
+    return {
+      ok: false,
+      detail: `access token expires in ${hoursLeft.toFixed(1)}h (warn window ${warnDays}d)`,
+      observed,
+    };
+  }
+
+  return { ok: true, detail: `lineage current, ${(hoursLeft / 24).toFixed(1)}d until expiry`, observed };
+};
+
 function listVerifierTypes() {
   return Object.keys(verifiers);
 }

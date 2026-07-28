@@ -2207,6 +2207,27 @@ function showOAuthMessage(kind, text, isError = false) {
   el.innerHTML = `<span style="color:${color};">${text}</span>`;
 }
 
+// The OAuth call and the mirror into secrets.yaml succeed or fail independently.
+// A stored token the agents never received is a real half-failure, so say so
+// rather than showing a clean success the operator would trust.
+function showOAuthSyncOutcome(kind, data, successText) {
+  const sync = data?.sync;
+  if (sync && sync.ok === false) {
+    showOAuthMessage(
+      kind,
+      `${successText}, but propagating it to the agents failed: ${sync.error || 'unknown'}. `
+      + 'They keep using the previous token until this is resolved.',
+      true,
+    );
+    return;
+  }
+  if (sync && sync.warn) {
+    showOAuthMessage(kind, `${successText}, but ${sync.warn}`, true);
+    return;
+  }
+  showOAuthMessage(kind, successText);
+}
+
 async function anthropicOAuthImportCli() {
   showOAuthMessage('anthropic', 'Importing from Claude CLI…');
   try {
@@ -2214,7 +2235,7 @@ async function anthropicOAuthImportCli() {
     const data = await r.json();
     if (!data.ok) return showOAuthMessage('anthropic', `Import failed: ${data.error || 'unknown'}`, true);
     await loadOAuthStatus();
-    if (data.warn) console.warn('[oauth]', data.warn);
+    showOAuthSyncOutcome('anthropic', data, 'Imported from Claude CLI');
   } catch (err) {
     showOAuthMessage('anthropic', `Import error: ${err.message}`, true);
   }
@@ -2251,6 +2272,7 @@ async function anthropicOAuthComplete() {
     document.getElementById('anthropic-oauth-flow').hidden = true;
     document.getElementById('anthropic-oauth-callback').value = '';
     await loadOAuthStatus();
+    showOAuthSyncOutcome('anthropic', data, 'Signed in to Anthropic');
   } catch (err) {
     showOAuthMessage('anthropic', `OAuth error: ${err.message}`, true);
   }
@@ -2275,6 +2297,7 @@ async function codexOAuthImportEvobrew() {
     const data = await r.json();
     if (!data.ok) return showOAuthMessage('codex', `Import failed: ${data.error || 'unknown'}`, true);
     await loadOAuthStatus();
+    showOAuthSyncOutcome('codex', data, 'Imported from Evobrew');
   } catch (err) {
     showOAuthMessage('codex', `Import error: ${err.message}`, true);
   }
@@ -2290,6 +2313,7 @@ async function codexOAuthStart() {
     if (!data.ok) return showOAuthMessage('codex', `OAuth failed: ${data.error || 'unknown'}`, true);
     document.getElementById('codex-oauth-note').hidden = true;
     await loadOAuthStatus();
+    showOAuthSyncOutcome('codex', data, 'Signed in to OpenAI Codex');
   } catch (err) {
     showOAuthMessage('codex', `OAuth error: ${err.message}`, true);
   }

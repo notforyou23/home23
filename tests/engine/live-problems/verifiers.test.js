@@ -579,3 +579,124 @@ test('jsonpath_http marks repeated missing selected array element in detail', as
     globalThis.fetch = originalFetch;
   }
 });
+
+// ── oauth_token_lineage_fresh ──
+// Regression guard for the 2026-07-27 Codex outage: the Codex CLI refreshed the
+// shared account on 07-22, silently invalidating the refresh token Home23 held,
+// but nothing surfaced until the 10-day access token aged out 4.5 days later.
+
+function fakeJwt({ iat, exp }) {
+  const b64 = obj => Buffer.from(JSON.stringify(obj)).toString('base64url');
+  return `${b64({ alg: 'RS256', typ: 'JWT' })}.${b64({ iat, exp })}.sig`;
+}
+
+function writeLineageFixture(dir, { profileIat, profileExp, rivalIat, account = 'acct-1', rivalAccount }) {
+  const profilePath = path.join(dir, 'auth-profiles.json');
+  fs.writeFileSync(profilePath, JSON.stringify({
+    version: 1,
+    profiles: {
+      'openai-codex:default': {
+        accessToken: fakeJwt({ iat: profileIat, exp: profileExp }),
+        refreshToken: 'rt.profile',
+        expires: profileExp * 1000,
+        accountId: account,
+      },
+    },
+  }));
+
+  let rivalPath = null;
+  if (rivalIat !== undefined) {
+    rivalPath = path.join(dir, 'codex-auth.json');
+    fs.writeFileSync(rivalPath, JSON.stringify({
+      tokens: {
+        access_token: fakeJwt({ iat: rivalIat, exp: rivalIat + 864000 }),
+        refresh_token: 'rt.rival',
+        account_id: rivalAccount || account,
+      },
+    }));
+  }
+  return { profilePath, rivalPath };
+}
+
+test('oauth_token_lineage_fresh passes when the profile holds the newest credential', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-lineage-ok-'));
+  const nowSec = Math.floor(Date.now() / 1000);
+  const { profilePath, rivalPath } = writeLineageFixture(dir, {
+    profileIat: nowSec - 3600,
+    profileExp: nowSec + 864000,
+    rivalIat: nowSec - 7200,
+  });
+
+  const result = await runVerifier({
+    type: 'oauth_token_lineage_fresh',
+    args: { profilePath, profileKey: 'openai-codex:default', rivalPath },
+  });
+
+  assert.equal(result.ok, true, result.detail);
+});
+
+test('oauth_token_lineage_fresh fails when a rival client minted a newer token for the same account', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-lineage-superseded-'));
+  const nowSec = Math.floor(Date.now() / 1000);
+  // The exact 07-22 shape: profile access token still valid for days, but the
+  // CLI already re-minted, so the profile's refresh token is dead on arrival.
+  const { profilePath, rivalPath } = writeLineageFixture(dir, {
+    profileIat: nowSec - 864000 + 400000,
+    profileExp: nowSec + 400000,
+    rivalIat: nowSec - 3600,
+  });
+
+  const result = await runVerifier({
+    type: 'oauth_token_lineage_fresh',
+    args: { profilePath, profileKey: 'openai-codex:default', rivalPath },
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /supersed/i);
+  assert.equal(result.observed.superseded, true);
+});
+
+test('oauth_token_lineage_fresh ignores a rival credential for a different account', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-lineage-other-acct-'));
+  const nowSec = Math.floor(Date.now() / 1000);
+  const { profilePath, rivalPath } = writeLineageFixture(dir, {
+    profileIat: nowSec - 3600,
+    profileExp: nowSec + 864000,
+    rivalIat: nowSec - 60,
+    rivalAccount: 'acct-other',
+  });
+
+  const result = await runVerifier({
+    type: 'oauth_token_lineage_fresh',
+    args: { profilePath, profileKey: 'openai-codex:default', rivalPath },
+  });
+
+  assert.equal(result.ok, true, result.detail);
+});
+
+test('oauth_token_lineage_fresh warns before the access token actually expires', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-lineage-expiring-'));
+  const nowSec = Math.floor(Date.now() / 1000);
+  const { profilePath } = writeLineageFixture(dir, {
+    profileIat: nowSec - 864000,
+    profileExp: nowSec + 3600, // 1h left, inside the default 3-day warn window
+  });
+
+  const result = await runVerifier({
+    type: 'oauth_token_lineage_fresh',
+    args: { profilePath, profileKey: 'openai-codex:default' },
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /expir/i);
+});
+
+test('oauth_token_lineage_fresh reports a missing profile rather than throwing', async () => {
+  const result = await runVerifier({
+    type: 'oauth_token_lineage_fresh',
+    args: { profilePath: '/nonexistent/auth-profiles.json', profileKey: 'openai-codex:default' },
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /missing/i);
+});

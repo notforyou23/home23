@@ -18,8 +18,15 @@ const os = require('os');
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const AUTHORIZE_URL = 'https://auth.openai.com/oauth/authorize';
 const TOKEN_URL = 'https://auth.openai.com/oauth/token';
-const REDIRECT_URI = 'http://localhost:1455/auth/callback';
+// Registered with OpenAI, so the port is not ours to choose at runtime — the
+// `port` option on startCallbackServer exists for tests only.
+const CALLBACK_PORT = 1455;
+const REDIRECT_URI = `http://localhost:${CALLBACK_PORT}/auth/callback`;
 const SCOPE = 'openid profile email offline_access';
+
+// Long enough for a real person to finish a browser sign-in, short enough that
+// an abandoned attempt frees the port on its own.
+const CALLBACK_TIMEOUT_MS = 5 * 60 * 1000;
 
 // Backward-compatible alias
 const APP_ID = CLIENT_ID;
@@ -65,9 +72,42 @@ function openBrowser(url) {
   spawn(cmd, [url], { detached: true, stdio: 'ignore' }).unref();
 }
 
-// Start local callback server
-function startCallbackServer(expectedState) {
+// Start local callback server.
+//
+// This lives inside the long-running cosmo23 server process, so a listener that
+// outlives its flow is not reclaimed by process exit the way it would be in a
+// CLI. Every exit path therefore funnels through settle(), and the promise
+// resolves only once the port is genuinely released — so the caller can retry
+// immediately without racing the previous socket.
+function startCallbackServer(expectedState, options = {}) {
+  const port = options.port || CALLBACK_PORT;
+  const timeoutMs = options.timeoutMs || CALLBACK_TIMEOUT_MS;
+
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let listening = false;
+    let timer = null;
+
+    function settle(err, code) {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+
+      // Nothing to unwind if listen() never succeeded — and closing here would
+      // be closing somebody else's listener.
+      if (!listening) {
+        if (err) reject(err); else resolve(code);
+        return;
+      }
+
+      // A browser keeps its connection alive, and plain close() waits on open
+      // sockets — which is precisely how the port stayed bound.
+      if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+      server.close(() => {
+        if (err) reject(err); else resolve(code);
+      });
+    }
+
     const server = http.createServer((req, res) => {
       const url = new URL(req.url, 'http://localhost');
 
@@ -84,16 +124,14 @@ function startCallbackServer(expectedState) {
       if (state !== expectedState) {
         res.statusCode = 400;
         res.end('State mismatch');
-        server.close();
-        reject(new Error('State mismatch'));
+        res.on('finish', () => settle(new Error('State mismatch')));
         return;
       }
 
       if (!code) {
         res.statusCode = 400;
         res.end('Missing authorization code');
-        server.close();
-        reject(new Error('Missing code'));
+        res.on('finish', () => settle(new Error('Missing code')));
         return;
       }
 
@@ -111,20 +149,29 @@ function startCallbackServer(expectedState) {
         </html>
       `);
 
-      server.close();
-      resolve(code);
-    });
-
-    server.listen(1455, '127.0.0.1', () => {
-      // Server ready
+      // Tear down only after the page has actually reached the browser.
+      res.on('finish', () => settle(null, code));
     });
 
     server.on('error', (err) => {
       if (err.code === 'EADDRINUSE') {
-        reject(new Error('Port 1455 already in use. Close other apps and try again.'));
+        settle(new Error(
+          `Port ${port} already in use — another sign-in attempt may still be waiting. `
+          + 'Give it a moment and try again.',
+        ));
       } else {
-        reject(err);
+        settle(err);
       }
+    });
+
+    server.listen(port, '127.0.0.1', () => {
+      listening = true;
+      timer = setTimeout(() => {
+        settle(new Error(
+          `OAuth callback timed out after ${Math.round(timeoutMs / 1000)}s — `
+          + 'the browser sign-in was never completed.',
+        ));
+      }, timeoutMs);
     });
   });
 }
@@ -301,6 +348,9 @@ module.exports = {
   TOKEN_URL,
   REDIRECT_URI,
   SCOPE,
+  CALLBACK_PORT,
+  CALLBACK_TIMEOUT_MS,
+  startCallbackServer,
   loginWithCodexOAuth,
   getCredentials,
   saveCredentials,

@@ -15,6 +15,14 @@ const { readJsonlGz, sidecarsExist, nodesPath } = require('../core/memory-sideca
 const { buildAgentConfig, buildFeederConfig } = require('../../../cli/lib/agent-config-builder.cjs');
 const { buildHome23ModelAuthority } = require('./home23-model-catalog.js');
 
+// Interactive OAuth proxies block on a human at a browser. This must stay
+// greater than cosmo23's CALLBACK_TIMEOUT_MS (cosmo23/lib/oauth-codex.cjs) so
+// its specific error surfaces instead of our abort — see the
+// /oauth/openai-codex/start route. Deliberately duplicated rather than
+// required across the vendored boundary; the ordering is pinned by
+// tests/engine/dashboard/oauth-import-reporting.test.js.
+const OAUTH_INTERACTIVE_FLOW_TIMEOUT_MS = 5.5 * 60 * 1000;
+
 const PM2_ENV_BLOCKLIST = [
   'cron_restart',
   'watch',
@@ -2366,11 +2374,11 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
 
   const COSMO23_BASE = `http://localhost:${process.env.COSMO23_PORT || '43210'}`;
 
-  async function cosmoFetch(path, init) {
+  async function cosmoFetch(path, init, { timeoutMs = 15_000 } = {}) {
     const url = `${COSMO23_BASE}${path}`;
     const res = await fetch(url, {
       ...init,
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     const contentType = res.headers.get('content-type') || '';
     const body = contentType.includes('application/json') ? await res.json() : { success: false, error: await res.text() };
@@ -2447,7 +2455,9 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
       const { status, body } = await cosmoFetch('/api/oauth/anthropic/import-cli', { method: 'POST' });
       if (!body?.success) return res.status(status || 500).json({ ok: false, error: body?.error || 'import failed' });
       const sync = await syncOAuthTokenToSecrets('anthropic');
-      res.json({ ok: true, expiresAt: body.expiresAt, ...sync });
+      // `sync` stays nested: spreading it let a failed secrets mirror overwrite
+      // `ok` and report a successful OAuth call as a failed one.
+      res.json({ ok: true, expiresAt: body.expiresAt, sync });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
     }
@@ -2473,7 +2483,9 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
       );
       if (!body?.success) return res.status(status || 500).json({ ok: false, error: body?.error || 'callback failed' });
       const sync = await syncOAuthTokenToSecrets('anthropic');
-      res.json({ ok: true, expiresAt: body.expiresAt, ...sync });
+      // `sync` stays nested: spreading it let a failed secrets mirror overwrite
+      // `ok` and report a successful OAuth call as a failed one.
+      res.json({ ok: true, expiresAt: body.expiresAt, sync });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
     }
@@ -2496,22 +2508,32 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
       const { status, body } = await cosmoFetch('/api/oauth/openai-codex/import', { method: 'POST' });
       if (!body?.success) return res.status(status || 500).json({ ok: false, error: body?.error || 'import failed' });
       const sync = await syncOAuthTokenToSecrets('openai-codex');
-      res.json({ ok: true, accountId: body.accountId, expiresAt: body.expiresAt, ...sync });
+      // `sync` stays nested: spreading it let a failed secrets mirror overwrite
+      // `ok` and report a successful OAuth call as a failed one.
+      res.json({ ok: true, accountId: body.accountId, expiresAt: body.expiresAt, sync });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
     }
   });
 
-  // Note: Codex OAuth /start on cosmo23 blocks until its local callback server
+  // Codex OAuth /start on cosmo23 blocks until its local callback server
   // receives the code (it runs its own loopback server on port 1455 and opens
-  // the browser server-side). That's fine for localhost use — the UI just
-  // shows a "completing OAuth..." spinner while this call is outstanding.
+  // the browser server-side), so this request stays outstanding for as long as
+  // the sign-in takes. It must outlast cosmo23's own callback timeout —
+  // otherwise we abort first and the operator sees a bare "operation aborted"
+  // instead of cosmo23's explanation of what actually went wrong.
   router.post('/oauth/openai-codex/start', async (_req, res) => {
     try {
-      const { status, body } = await cosmoFetch('/api/oauth/openai-codex/start', { method: 'POST' });
+      const { status, body } = await cosmoFetch(
+        '/api/oauth/openai-codex/start',
+        { method: 'POST' },
+        { timeoutMs: OAUTH_INTERACTIVE_FLOW_TIMEOUT_MS },
+      );
       if (!body?.success) return res.status(status || 500).json({ ok: false, error: body?.error || 'start failed' });
       const sync = await syncOAuthTokenToSecrets('openai-codex');
-      res.json({ ok: true, accountId: body.accountId, expiresAt: body.expiresAt, ...sync });
+      // `sync` stays nested: spreading it let a failed secrets mirror overwrite
+      // `ok` and report a successful OAuth call as a failed one.
+      res.json({ ok: true, accountId: body.accountId, expiresAt: body.expiresAt, sync });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
     }
@@ -2816,6 +2838,7 @@ module.exports = {
   applyModelAuthorityRuntimeRefresh,
   assertNoSharedPm2Targets,
   createSettingsRouter,
+  OAUTH_INTERACTIVE_FLOW_TIMEOUT_MS,
   planModelAuthorityRuntimeTargets,
   updateSettingsSecrets,
 };

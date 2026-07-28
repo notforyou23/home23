@@ -627,6 +627,41 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
       ],
       seedOrigin: 'system',
     },
+    {
+      id: 'codex_oauth_lineage_current',
+      claim: 'Home23 holds the newest OpenAI Codex credential for its account, with refresh headroom',
+      verifier: {
+        type: 'oauth_token_lineage_fresh',
+        args: {
+          profilePath: '~/.evobrew/auth-profiles.json',
+          profileKey: 'openai-codex:default',
+          // The Codex CLI shares this account and OAuth client. Whichever side
+          // re-mints last silently invalidates the other's refresh token.
+          rivalPath: '~/.codex/auth.json',
+          warnDaysBeforeExpiry: 3,
+        },
+      },
+      // Codex access tokens live 10 days, so a dead refresh token stays hidden
+      // until the access token lapses and every consumer fails at once (see
+      // 2026-07-27). Re-syncing from whichever store holds the newest token is
+      // mechanical, so the agent gets first crack; only a fully dead pair — both
+      // stores stale — needs jtr at a terminal for `codex login`.
+      remediation: [
+        { type: 'dispatch_to_agent', args: { budgetHours: 1 }, cooldownMin: 30 },
+        {
+          type: 'notify_jtr',
+          args: {
+            severity: 'normal',
+            text: "OpenAI Codex credentials need a human. Home23's copy is stale or expiring and "
+              + "couldn't be re-synced from ~/.codex/auth.json — run `codex login`, then re-import "
+              + 'in Settings → Providers. Codex is the default provider, so brain queries, PGS and '
+              + 'chat all go down when this lapses.',
+          },
+          cooldownMin: 720,
+        },
+      ],
+      seedOrigin: 'system',
+    },
   ];
 }
 
