@@ -99,7 +99,7 @@ class DataAcquisitionAgent extends ExecutionBaseAgent {
 
     // ── Acquisition manifest ────────────────────────────────────────────────
     this.acquisitionManifest = {
-      sources: [],           // { url, status, timestamp, contentHash }
+      sources: [],           // { url, status, route?, timestamp, contentHash }
       pagesAcquired: 0,
       filesDownloaded: 0,
       bytesAcquired: 0,
@@ -112,6 +112,7 @@ class DataAcquisitionAgent extends ExecutionBaseAgent {
 
     // ── Crawl log (JSONL entries) ───────────────────────────────────────────
     this._crawlLog = [];
+    this._creditedFetchReceiptIds = new Set();
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -123,6 +124,16 @@ class DataAcquisitionAgent extends ExecutionBaseAgent {
   }
 
   getDomainKnowledge() {
+    const requiredRoutes = deriveResearchContract(this.mission || {}).sourceProviderHints || [];
+    const routeInstructions = requiredRoutes.length > 0
+      ? `
+
+## Required Source Routes
+The task contract requires these exact source route IDs:
+${requiredRoutes.map(route => `- \`${route}\``).join('\n')}
+When a fetch satisfies one of these routes, you MUST pass that exact route ID in \`route\` when calling \`log_source\`.`
+      : '';
+
     return `## Role: Data Acquisition Specialist
 
 You acquire data from external sources: websites, APIs, files, feeds.
@@ -159,7 +170,7 @@ Start simple: curl → wget → cheerio/node → beautiful-soup/python → playw
 - raw/           — original downloaded content (HTML, JSON, files)
 - extracted/     — cleaned, structured data
 - manifest.json  — acquisition summary (auto-maintained via save_manifest)
-- sources.json   — all URLs contacted with status codes`;
+- sources.json   — all URLs contacted with status codes${routeInstructions}`;
   }
 
   /**
@@ -285,6 +296,7 @@ Start simple: curl → wget → cheerio/node → beautiful-soup/python → playw
             properties: {
               url: { type: 'string', description: 'Source URL' },
               status: { type: 'number', description: 'HTTP status code (0 for connection error)' },
+              route: { type: 'string', description: 'Exact source-provider route ID satisfied by this fetch (optional)' },
               content_hash: { type: 'string', description: 'SHA-256 hash of content (optional)' },
               content_type: { type: 'string', description: 'Content-Type header value (optional)' },
               bytes: { type: 'number', description: 'Content length in bytes (optional)' },
@@ -757,41 +769,61 @@ Start simple: curl → wget → cheerio/node → beautiful-soup/python → playw
    * Record a source URL in the manifest.
    */
   _logSource(args) {
+    const annotatedAt = new Date().toISOString();
+    const receipt = this.findMeasuredFetchReceipt(args.url);
+    const measured = Boolean(receipt);
     const entry = {
       url: args.url,
-      status: args.status,
-      timestamp: new Date().toISOString(),
-      contentHash: args.content_hash || null,
+      status: measured ? receipt.status : args.status,
+      ...(args.route ? { route: args.route } : {}),
+      provenance: measured ? 'measured' : 'asserted',
+      timestamp: measured ? receipt.timestamp : annotatedAt,
+      annotatedAt,
+      contentHash: measured ? receipt.sha256 : (args.content_hash || null),
       contentType: args.content_type || null,
-      bytes: args.bytes || 0,
-      error: args.error || null
+      bytes: measured ? receipt.bytes : (args.bytes || 0),
+      error: measured ? (receipt.error || args.error || null) : (args.error || null),
+      ...(measured ? {
+        fetchReceiptId: receipt.id,
+        rawPath: receipt.path
+      } : {})
     };
 
     this.acquisitionManifest.sources.push(entry);
 
     // Track successful acquisitions
-    if (args.status >= 200 && args.status < 400) {
-      if (args.bytes) {
-        this.acquisitionManifest.bytesAcquired += args.bytes;
+    if (
+      measured &&
+      entry.status >= 200 &&
+      entry.status < 400 &&
+      !entry.error
+    ) {
+      if (!this._creditedFetchReceiptIds.has(receipt.id)) {
+        this.acquisitionManifest.bytesAcquired += receipt.bytes;
+        this._creditedFetchReceiptIds.add(receipt.id);
       }
-    } else if (args.error) {
+    } else if (measured && (entry.error || entry.status < 200 || entry.status >= 400)) {
       this.acquisitionManifest.errors.push({
         url: args.url,
-        status: args.status,
-        error: args.error,
+        status: entry.status,
+        error: entry.error || `HTTP ${entry.status}`,
         timestamp: entry.timestamp
       });
     }
 
     this._logCrawlEntry('log_source', {
       url: args.url,
-      status: args.status,
-      bytes: args.bytes || 0
+      status: entry.status,
+      ...(args.route ? { route: args.route } : {}),
+      provenance: entry.provenance,
+      bytes: entry.bytes,
+      ...(measured ? { fetchReceiptId: receipt.id } : {})
     });
 
     return {
       success: true,
-      status: args.status,
+      status: entry.status,
+      provenance: entry.provenance,
       totalSources: this.acquisitionManifest.sources.length,
       totalBytes: this.acquisitionManifest.bytesAcquired,
       totalErrors: this.acquisitionManifest.errors.length
@@ -887,12 +919,49 @@ Start simple: curl → wget → cheerio/node → beautiful-soup/python → playw
     // Data acquisition succeeds if ANY data was acquired
     const pagesAcquired = manifest.pagesAcquired || 0;
     const filesDownloaded = manifest.filesDownloaded || 0;
-    const sourcesContacted = manifest.sources.length;
-    const successfulSources = manifest.sources.filter(source =>
-      Number(source.status) >= 200 && Number(source.status) < 400
+    const measuredSources = [];
+    const sourceAttempts = manifest.sources.map(source => {
+      if (source.provenance !== 'measured' || !source.fetchReceiptId) {
+        return source;
+      }
+      const receipt = this.findMeasuredFetchReceipt(source.url, source.fetchReceiptId);
+      if (!receipt) {
+        return {
+          ...source,
+          provenance: 'asserted'
+        };
+      }
+      const measuredSource = {
+        ...source,
+        status: receipt.status,
+        bytes: receipt.bytes,
+        contentHash: receipt.sha256,
+        rawPath: receipt.path,
+        error: receipt.error || source.error || null
+      };
+      measuredSources.push(measuredSource);
+      return measuredSource;
+    });
+    const assertedSources = manifest.sources.length - measuredSources.length;
+    const sourcesContacted = measuredSources.length;
+    const successfulSources = measuredSources.filter(source =>
+      !source.error &&
+      Number(source.status) >= 200 &&
+      Number(source.status) < 400
     ).length;
     const schemaDiscovered = manifest.discoveredSchema !== null;
-    const bytesAcquired = manifest.bytesAcquired || 0;
+    const measuredBytesAcquired = [...new Map(
+      measuredSources
+        .filter(source =>
+          !source.error &&
+          Number(source.status) >= 200 &&
+          Number(source.status) < 400
+        )
+        .map(source => [source.fetchReceiptId, Number(source.bytes) || 0])
+    ).values()].reduce((sum, bytes) => sum + bytes, 0);
+    const bytesAcquired = researchContract.required
+      ? measuredBytesAcquired
+      : (manifest.bytesAcquired || 0);
 
     // Also check base metrics (files written, commands run)
     const baseAssessment = super.assessAccomplishment(executeResult, results);
@@ -901,10 +970,11 @@ Start simple: curl → wget → cheerio/node → beautiful-soup/python → playw
     const contractValidation = evaluateResearchEvidence(researchContract, {
       sourcesContacted,
       successfulSources,
-      pagesAcquired,
-      filesDownloaded,
+      pagesAcquired: successfulSources > 0 ? pagesAcquired : 0,
+      filesDownloaded: successfulSources > 0 ? filesDownloaded : 0,
       bytesAcquired,
       errors: manifest.errors,
+      sourceAttempts,
       commandsRun: baseAssessment.metrics.commandsRun,
       filesCreated: baseAssessment.metrics.filesCreated
     });
@@ -925,6 +995,7 @@ Start simple: curl → wget → cheerio/node → beautiful-soup/python → playw
         bytesAcquired,
         sourcesContacted,
         successfulSources,
+        assertedSources,
         schemaDiscovered,
         errorsEncountered: manifest.errors.length,
         researchContractRequired: researchContract.required,

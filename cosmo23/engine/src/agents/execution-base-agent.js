@@ -19,9 +19,15 @@ const { BaseAgent } = require('./base-agent');
 const fs = require('fs');
 const fsPromises = require('fs').promises;
 const path = require('path');
+const crypto = require('crypto');
 const { execSync, exec } = require('child_process');
 const os = require('os');
 const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
+
+// Fetch receipts are authoritative only while held in this module-private
+// state. The JSONL file is an audit copy; contract evaluation never trusts
+// model-written files as measured fetch evidence.
+const fetchReceiptState = new WeakMap();
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Blocked command patterns — reused from IDEAgent safety boundary
@@ -79,6 +85,10 @@ class ExecutionBaseAgent extends BaseAgent {
 
     // ── Audit log ─────────────────────────────────────────────────────────
     this.auditLog = [];
+    fetchReceiptState.set(this, {
+      receipts: [],
+      nextId: 1
+    });
 
     // ── Sandbox: allowed paths ────────────────────────────────────────────
     const sandboxCfg = config?.execution?.sandbox || {};
@@ -245,6 +255,108 @@ class ExecutionBaseAgent extends BaseAgent {
     } catch (err) {
       this.logger.warn('Failed to write audit trail', { error: err.message });
     }
+  }
+
+  /**
+   * Return defensive copies of receipts emitted by this agent's real
+   * httpFetch boundary.
+   */
+  getMeasuredFetchReceipts() {
+    const state = fetchReceiptState.get(this);
+    return (state?.receipts || []).map(receipt => ({ ...receipt }));
+  }
+
+  /**
+   * Resolve the most recent intact measured receipt for an exact URL.
+   * The on-disk response is re-hashed so later file mutation cannot turn a
+   * stale receipt into contract credit.
+   */
+  findMeasuredFetchReceipt(url, receiptId = null) {
+    const state = fetchReceiptState.get(this);
+    const receipts = state?.receipts || [];
+    for (let index = receipts.length - 1; index >= 0; index--) {
+      const receipt = receipts[index];
+      if (receipt.url !== String(url)) continue;
+      if (receiptId && receipt.id !== receiptId) continue;
+      if (receipt.path) {
+        if (!this._outputDir) continue;
+        try {
+          const absolutePath = this.validatePath(path.join(this._outputDir, receipt.path));
+          const body = fs.readFileSync(absolutePath);
+          const sha256 = crypto.createHash('sha256').update(body).digest('hex');
+          if (body.length !== receipt.bytes || sha256 !== receipt.sha256) continue;
+        } catch {
+          continue;
+        }
+      }
+      return { ...receipt };
+    }
+    return null;
+  }
+
+  async _ensureFetchOutputDir() {
+    if (!this._outputDir) {
+      if (this.pathResolver) {
+        this._outputDir = path.join(
+          this.pathResolver.getOutputsRoot(),
+          this.getAgentType(),
+          this.agentId
+        );
+      } else if (this.config.logsDir) {
+        this._outputDir = path.join(
+          this.config.logsDir,
+          'outputs',
+          this.getAgentType(),
+          this.agentId
+        );
+      } else {
+        this._outputDir = path.join(os.tmpdir(), 'cosmo-exec', this.agentId);
+      }
+      this._allowedPaths.push(path.resolve(this._outputDir));
+    }
+    await fsPromises.mkdir(this.validatePath(this._outputDir), { recursive: true });
+  }
+
+  async _persistFetchedBody(body, sha256) {
+    await this._ensureFetchOutputDir();
+    const relativePath = path.join('raw', sha256);
+    const absolutePath = this.validatePath(path.join(this._outputDir, relativePath));
+    await fsPromises.mkdir(path.dirname(absolutePath), { recursive: true });
+
+    let created = false;
+    try {
+      this._checkBytesLimit(body.length);
+      this._checkFilesLimit();
+      await fsPromises.writeFile(absolutePath, body, { flag: 'wx', mode: 0o600 });
+      created = true;
+      this.totalBytesWritten += body.length;
+      this.totalFilesCreated++;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      const existing = await fsPromises.readFile(absolutePath);
+      const existingHash = crypto.createHash('sha256').update(existing).digest('hex');
+      if (existing.length !== body.length || existingHash !== sha256) {
+        throw new Error(`Content-addressed fetch file failed integrity check: ${relativePath}`);
+      }
+    }
+
+    return { relativePath, absolutePath, created };
+  }
+
+  async _recordMeasuredFetchReceipt(receipt) {
+    await this._ensureFetchOutputDir();
+    const state = fetchReceiptState.get(this);
+    const recorded = Object.freeze({
+      id: `${this.agentId}:fetch:${state.nextId++}`,
+      ...receipt
+    });
+    const receiptLogPath = this.validatePath(path.join(this._outputDir, 'fetch-receipts.jsonl'));
+    await fsPromises.appendFile(receiptLogPath, `${JSON.stringify(recorded)}\n`, {
+      encoding: 'utf8',
+      mode: 0o600
+    });
+    state.receipts.push(recorded);
+    return { ...recorded };
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -493,8 +605,11 @@ class ExecutionBaseAgent extends BaseAgent {
     const start = Date.now();
     const method = (options.method || 'GET').toUpperCase();
     const timeoutSec = Math.ceil((options.timeout || 30000) / 1000);
+    const tempDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), `cosmo-http-${this.agentId}-`));
+    const responseFile = path.join(tempDir, 'response.body');
+    const requestBodyFile = path.join(tempDir, 'request.body');
 
-    let cmd = `curl -s -w "\\n__HTTP_STATUS__%{http_code}" -X ${method} --max-time ${timeoutSec}`;
+    let cmd = `curl -sS -o "${responseFile}" -w "%{http_code}" -X ${method} --max-time ${timeoutSec}`;
 
     // Headers
     if (options.headers) {
@@ -507,41 +622,75 @@ class ExecutionBaseAgent extends BaseAgent {
     }
 
     // Body
-    let bodyFile = null;
     if (options.body) {
       // Write body to temp file to avoid shell escaping issues
-      bodyFile = path.join(os.tmpdir(), `cosmo-http-body-${Date.now()}.tmp`);
-      await fsPromises.writeFile(bodyFile, options.body, 'utf8');
-      cmd += ` -d @"${bodyFile}"`;
+      await fsPromises.writeFile(requestBodyFile, options.body, 'utf8');
+      cmd += ` -d @"${requestBodyFile}"`;
     }
 
     cmd += ` "${url}"`;
 
-    const execResult = await this.executeBash(cmd, { timeout: (options.timeout || 30000) + 5000 });
+    try {
+      const execResult = await this.executeBash(cmd, {
+        timeout: (options.timeout || 30000) + 5000
+      });
+      let bodyBuffer;
+      try {
+        bodyBuffer = await fsPromises.readFile(responseFile);
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        bodyBuffer = Buffer.alloc(0);
+      }
 
-    // Clean up body temp file
-    if (bodyFile) {
-      try { await fsPromises.unlink(bodyFile); } catch (e) { /* ignore */ }
+      const statusText = String(execResult.stdout || '').trim();
+      const status = /^\d{3}$/.test(statusText) ? parseInt(statusText, 10) : 0;
+      const sha256 = crypto.createHash('sha256').update(bodyBuffer).digest('hex');
+      const successful = (
+        execResult.exitCode === 0 &&
+        status >= 200 &&
+        status < 400
+      );
+      let persisted = null;
+      if (successful) {
+        persisted = await this._persistFetchedBody(bodyBuffer, sha256);
+      }
+
+      try {
+        await this._recordMeasuredFetchReceipt({
+          url: String(url),
+          method,
+          status,
+          bytes: bodyBuffer.length,
+          sha256,
+          timestamp: new Date().toISOString(),
+          path: persisted?.relativePath || null,
+          error: execResult.exitCode === 0
+            ? null
+            : (execResult.stderr || `curl exited ${execResult.exitCode}`)
+        });
+      } catch (error) {
+        if (persisted?.created) {
+          await fsPromises.unlink(persisted.absolutePath).catch(() => {});
+          this.totalBytesWritten -= bodyBuffer.length;
+          this.totalFilesCreated--;
+        }
+        throw error;
+      }
+
+      const result = {
+        status,
+        body: bodyBuffer.toString('utf8'),
+        headers: '' // curl -s doesn't include headers; use -i if needed
+      };
+
+      this._audit('httpFetch', { url, method }, {
+        success: successful,
+        duration: Date.now() - start
+      });
+      return result;
+    } finally {
+      await this._cleanupDir(tempDir);
     }
-
-    // Parse status from output
-    let body = execResult.stdout;
-    let status = 0;
-
-    const statusMatch = body.match(/__HTTP_STATUS__(\d+)$/);
-    if (statusMatch) {
-      status = parseInt(statusMatch[1], 10);
-      body = body.replace(/__HTTP_STATUS__\d+$/, '').trimEnd();
-    }
-
-    const result = {
-      status,
-      body,
-      headers: '' // curl -s doesn't include headers; use -i if needed
-    };
-
-    this._audit('httpFetch', { url, method }, { success: status >= 200 && status < 400, duration: Date.now() - start });
-    return result;
   }
 
   /**

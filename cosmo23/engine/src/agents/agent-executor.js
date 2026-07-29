@@ -1316,6 +1316,42 @@ class AgentExecutor {
     }
   }
 
+  async listFilesRecursive(fs, dir, maxFiles = 500, maxDepth = 8) {
+    const files = [];
+    const pending = [{ absoluteDir: dir, relativeDir: '', depth: 0 }];
+
+    while (pending.length > 0 && files.length < maxFiles) {
+      const current = pending.shift();
+      let entries;
+      try {
+        entries = await fs.readdir(current.absoluteDir, { withFileTypes: true });
+      } catch (_) {
+        continue;
+      }
+
+      entries.sort((left, right) => left.name.localeCompare(right.name));
+      for (const entry of entries) {
+        if (files.length >= maxFiles) break;
+        if (entry.isSymbolicLink()) continue;
+
+        const relativePath = path.join(current.relativeDir, entry.name);
+        if (entry.isFile()) {
+          files.push(relativePath);
+          continue;
+        }
+        if (entry.isDirectory() && current.depth < maxDepth) {
+          pending.push({
+            absoluteDir: path.join(current.absoluteDir, entry.name),
+            relativeDir: relativePath,
+            depth: current.depth + 1
+          });
+        }
+      }
+    }
+
+    return files;
+  }
+
   async ensureManifestAndCompletion(outputDir, { agentId, agentType, mission, taskId } = {}) {
     const fs = require('fs').promises;
     const path = require('path');
@@ -1325,8 +1361,9 @@ class AgentExecutor {
     const manifestPath = path.join(outputDir, 'manifest.json');
     const completePath = path.join(outputDir, '.complete');
 
-    // Build file listing (shallow; directory should be per-agent)
-    const fileNames = await this.listFilesShallow(fs, outputDir, 500);
+    // Agent output contracts explicitly include nested raw/ and extracted/
+    // directories. Walk them with hard depth/count bounds and skip symlinks.
+    const fileNames = await this.listFilesRecursive(fs, outputDir, 500, 8);
     const files = [];
     for (const name of fileNames) {
       if (name === '.complete') continue;

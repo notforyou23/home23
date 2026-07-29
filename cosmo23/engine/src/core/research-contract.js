@@ -389,6 +389,79 @@ function routeStatus(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+const SOURCE_URL_ROUTE_RULES = [
+  {
+    routes: ['archive.advancedsearch'],
+    matches: url => url.hostname === 'archive.org' && url.pathname === '/advancedsearch.php'
+  },
+  {
+    // The canonical Archive metadata, reviews, and files providers all fetch
+    // this endpoint and select their respective fields from the same payload.
+    routes: ['archive.metadata', 'archive.reviews', 'archive.files'],
+    matches: url => url.hostname === 'archive.org' && url.pathname.startsWith('/metadata/')
+  },
+  {
+    routes: ['archive.reviews'],
+    matches: url => url.hostname === 'archive.org' && (
+      url.pathname.startsWith('/reviews') ||
+      (url.pathname.startsWith('/details/') && url.hash.toLowerCase() === '#reviews')
+    )
+  },
+  {
+    routes: ['archive.files'],
+    matches: url => url.hostname === 'archive.org' && url.pathname.startsWith('/download/')
+  },
+  {
+    routes: ['wayback.availability'],
+    matches: url => url.hostname === 'archive.org' && url.pathname === '/wayback/available'
+  },
+  {
+    routes: ['wayback.cdx'],
+    matches: url => url.hostname === 'web.archive.org' && url.pathname.startsWith('/cdx')
+  },
+  {
+    routes: ['commoncrawl.cdx'],
+    matches: url => url.hostname === 'index.commoncrawl.org' && (
+      url.pathname === '/collinfo.json' ||
+      url.pathname.endsWith('-index')
+    )
+  },
+  {
+    routes: ['wikidata.entity_search'],
+    matches: url => url.hostname === 'www.wikidata.org' && url.pathname === '/w/api.php'
+  },
+  {
+    routes: ['wikidata.sparql'],
+    matches: url => url.hostname === 'query.wikidata.org' && url.pathname === '/sparql'
+  },
+  {
+    routes: ['openalex.works'],
+    matches: url => url.hostname === 'api.openalex.org' && url.pathname === '/works'
+  },
+  {
+    routes: ['crossref.works'],
+    matches: url => url.hostname === 'api.crossref.org' && url.pathname === '/works'
+  },
+  {
+    routes: ['semantic_scholar.paper_search'],
+    matches: url => url.hostname === 'api.semanticscholar.org' &&
+      url.pathname === '/graph/v1/paper/search'
+  },
+  {
+    routes: ['arxiv.query'],
+    matches: url => url.hostname === 'export.arxiv.org' && url.pathname === '/api/query'
+  },
+  {
+    routes: ['pubmed.esearch_summary'],
+    matches: url => url.hostname === 'eutils.ncbi.nlm.nih.gov' &&
+      /^\/entrez\/eutils\/e(?:search|summary)\.fcgi$/.test(url.pathname)
+  },
+  {
+    routes: ['feed.sitemap', 'sitemap.xml'],
+    matches: url => url.pathname.toLowerCase().endsWith('/sitemap.xml')
+  }
+];
+
 function isRouteAttempt(value) {
   return Boolean(value) &&
     typeof value === 'object' &&
@@ -396,18 +469,88 @@ function isRouteAttempt(value) {
     Boolean(value.route || value.backend || value.provider || value.providerId);
 }
 
-function collectRouteAttempts(source = {}) {
+function isMeasuredSourceAttempt(value) {
+  return Boolean(value) &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    value.provenance === 'measured' &&
+    Boolean(value.fetchReceiptId || value.receiptId || value.id);
+}
+
+function hasRecordedSourceOutcome(value = {}) {
+  return (
+    (typeof value.status === 'number' && Number.isFinite(value.status)) ||
+    positiveNumber(value.bytes) > 0 ||
+    Boolean(value.error)
+  );
+}
+
+function inferredAttemptStatus(attempt = {}) {
+  if (attempt.error) return 'failed';
+  if (typeof attempt.status === 'number' && Number.isFinite(attempt.status)) {
+    return attempt.status >= 200 && attempt.status < 400 ? 'accepted' : 'failed';
+  }
+  return positiveNumber(attempt.bytes) > 0 ? 'accepted' : null;
+}
+
+function normalizeSourceReceiptAttempt(attempt = {}) {
+  if (typeof attempt.status === 'number' && Number.isFinite(attempt.status)) {
+    return {
+      ...attempt,
+      status: inferredAttemptStatus(attempt)
+    };
+  }
+  return attempt;
+}
+
+function inferRouteAttempts(attempt = {}, requestedRoutes = []) {
+  if (
+    isRouteAttempt(attempt) ||
+    !attempt.url ||
+    !hasRecordedSourceOutcome(attempt)
+  ) {
+    return [];
+  }
+
+  let url;
+  try {
+    url = new URL(attempt.url);
+  } catch {
+    return [];
+  }
+
+  const requested = new Set(normalizeArray(requestedRoutes).map(String));
+  const inferred = [];
+  for (const rule of SOURCE_URL_ROUTE_RULES) {
+    if (!rule.matches(url)) continue;
+    for (const route of rule.routes) {
+      if (!requested.has(route)) continue;
+      inferred.push({
+        ...attempt,
+        route,
+        status: inferredAttemptStatus(attempt)
+      });
+    }
+  }
+  return inferred;
+}
+
+function collectRouteAttempts(source = {}, requestedRoutes = []) {
   const attempts = [];
   for (const key of ['routeAttempts', 'sourceAttempts', 'providerAttempts']) {
     for (const attempt of normalizeArray(source[key])) {
-      if (isRouteAttempt(attempt)) attempts.push(attempt);
+      if (key === 'sourceAttempts' && !isMeasuredSourceAttempt(attempt)) continue;
+      if (isRouteAttempt(attempt)) attempts.push(normalizeSourceReceiptAttempt(attempt));
+      else attempts.push(...inferRouteAttempts(attempt, requestedRoutes));
     }
   }
   for (const attempt of normalizeArray(source.attempts)) {
-    if (isRouteAttempt(attempt)) attempts.push(attempt);
+    if (isRouteAttempt(attempt)) attempts.push(normalizeSourceReceiptAttempt(attempt));
+    else attempts.push(...inferRouteAttempts(attempt, requestedRoutes));
   }
   for (const attempt of normalizeArray(source.route_receipts?.attempts || source.routeReceipts?.attempts)) {
-    if (isRouteAttempt(attempt)) attempts.push(attempt);
+    if (isRouteAttempt(attempt)) attempts.push(normalizeSourceReceiptAttempt(attempt));
+    else attempts.push(...inferRouteAttempts(attempt, requestedRoutes));
   }
   return attempts;
 }
@@ -446,7 +589,7 @@ function recordRouteAttempt(evidence, attempt = {}) {
   }
 }
 
-function mergeEvidence(target, source = {}) {
+function mergeEvidence(target, source = {}, requestedRoutes = []) {
   target.queriesAttempted += positiveNumber(source.queriesAttempted, source.queryCount);
   target.queriesExecuted += positiveNumber(source.queriesExecuted);
   target.searchFailures += normalizeArray(source.searchFailures).length || positiveNumber(source.searchFailures);
@@ -468,34 +611,39 @@ function mergeEvidence(target, source = {}) {
   if (source.reason) target.reasons.push(source.reason);
   if (source.error) target.errors.push(source.error);
 
+  for (const attempt of normalizeArray(source.sourceAttempts)) {
+    if (attempt && typeof attempt === 'object' && !Array.isArray(attempt)) {
+      target.sourceAttempts.push(attempt);
+    }
+  }
   for (const route of normalizeArray(source.requiredRoutes)) addUnique(target.requiredRoutes, route);
   for (const route of normalizeArray(source.attemptedRoutes || source.routesAttempted)) addUnique(target.attemptedRoutes, route);
   for (const route of normalizeArray(source.successfulRoutes || source.acceptedRoutes)) addUnique(target.successfulRoutes, route);
   for (const route of normalizeArray(source.acceptedEmptyRoutes || source.emptyRoutes)) addUnique(target.acceptedEmptyRoutes, route);
   for (const route of normalizeArray(source.failedRoutes)) addUnique(target.failedRoutes, route);
-  for (const attempt of collectRouteAttempts(source)) recordRouteAttempt(target, attempt);
+  for (const attempt of collectRouteAttempts(source, requestedRoutes)) recordRouteAttempt(target, attempt);
 }
 
 function evidenceFromManifest(manifest = {}) {
   const sources = normalizeArray(manifest.sources);
+  const measuredSources = sources.filter(isMeasuredSourceAttempt);
   return {
-    sourcesContacted: sources.length,
-    successfulSources: sources.filter(source => Number(source.status) >= 200 && Number(source.status) < 400).length,
+    sourcesContacted: measuredSources.length,
+    successfulSources: measuredSources.filter(source =>
+      !source.error &&
+      Number(source.status) >= 200 &&
+      Number(source.status) < 400
+    ).length,
     pagesAcquired: manifest.pagesAcquired || 0,
     filesDownloaded: manifest.filesDownloaded || 0,
     bytesAcquired: manifest.bytesAcquired || 0,
     errors: manifest.errors || [],
-    routeAttempts: sources
-      .filter(source => source.route || source.provider || source.providerId)
-      .map(source => ({
-        route: source.route || source.provider || source.providerId,
-        status: Number(source.status) >= 200 && Number(source.status) < 400 ? 'accepted' : 'failed',
-        error: source.error || null
-      }))
+    sourceAttempts: sources
   };
 }
 
-function collectResearchEvidence(agentStates = [], extraEvidence = {}) {
+function collectResearchEvidence(agentStates = [], extraEvidence = {}, options = {}) {
+  const requestedRoutes = normalizeArray(options.sourceProviderHints);
   const evidence = {
     queriesAttempted: 0,
     queriesExecuted: 0,
@@ -512,6 +660,7 @@ function collectResearchEvidence(agentStates = [], extraEvidence = {}) {
     statuses: [],
     reasons: [],
     errors: [],
+    sourceAttempts: [],
     requiredRoutes: [],
     attemptedRoutes: [],
     successfulRoutes: [],
@@ -524,13 +673,13 @@ function collectResearchEvidence(agentStates = [], extraEvidence = {}) {
     const agent = state?.agent || state;
     if (!agent) continue;
 
-    mergeEvidence(evidence, agent.metadata);
-    mergeEvidence(evidence, agent.agentSpecificData);
-    mergeEvidence(evidence, agent.agentSpecificData?.metadata);
-    mergeEvidence(evidence, agent.accomplishment?.metrics);
+    mergeEvidence(evidence, agent.metadata, requestedRoutes);
+    mergeEvidence(evidence, agent.agentSpecificData, requestedRoutes);
+    mergeEvidence(evidence, agent.agentSpecificData?.metadata, requestedRoutes);
+    mergeEvidence(evidence, agent.accomplishment?.metrics, requestedRoutes);
 
     if (agent.acquisitionManifest) {
-      mergeEvidence(evidence, evidenceFromManifest(agent.acquisitionManifest));
+      mergeEvidence(evidence, evidenceFromManifest(agent.acquisitionManifest), requestedRoutes);
     }
 
     if (agent.status) evidence.statuses.push(agent.status);
@@ -538,14 +687,14 @@ function collectResearchEvidence(agentStates = [], extraEvidence = {}) {
     if (agent.agentSpecificData?.reason) evidence.reasons.push(agent.agentSpecificData.reason);
 
     for (const result of normalizeArray(agent.results)) {
-      mergeEvidence(evidence, result);
-      mergeEvidence(evidence, result.metadata);
+      mergeEvidence(evidence, result, requestedRoutes);
+      mergeEvidence(evidence, result.metadata, requestedRoutes);
       if (result.status) evidence.statuses.push(result.status);
       if (result.reason) evidence.reasons.push(result.reason);
     }
   }
 
-  mergeEvidence(evidence, extraEvidence);
+  mergeEvidence(evidence, extraEvidence, requestedRoutes);
   return evidence;
 }
 
@@ -555,7 +704,9 @@ function evaluateResearchEvidence(contractInput, evidenceInput = {}) {
     return { passed: true, reasonCode: 'not_required', contract, evidence: evidenceInput };
   }
 
-  const evidence = collectResearchEvidence([], evidenceInput);
+  const evidence = collectResearchEvidence([], evidenceInput, {
+    sourceProviderHints: contract.sourceProviderHints
+  });
   const statuses = new Set(evidence.statuses.filter(Boolean));
   const blockedStatus = [...statuses].find(status =>
     ['blocked_search_failed', 'blocked_no_sources', 'completed_unproductive', 'failed', 'timeout'].includes(status)
