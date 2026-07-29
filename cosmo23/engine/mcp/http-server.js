@@ -35,6 +35,25 @@ function loadMcpSdk() {
 
 // Configuration
 const COSMO_ROOT = path.join(__dirname, '..');
+
+// HOME23 PATCH: derive the Home23 root instead of requiring HOME23_ROOT in env.
+// cosmo23 is vendored at <home23Root>/cosmo23, and this file lives at
+// <home23Root>/cosmo23/engine/mcp, so the root is three levels up. Requiring an
+// env var for a value that is structurally knowable made a shared pm2 service
+// fail closed at boot ("trusted MCP source environment required") whenever
+// HOME23_ROOT was absent. Honor an explicit absolute override when provided,
+// otherwise derive and validate by confirming the instances/ directory exists.
+function resolveHome23Root() {
+  const explicit = process.env.HOME23_ROOT;
+  if (typeof explicit === 'string' && path.isAbsolute(explicit)
+      && fs.existsSync(path.join(explicit, 'instances'))) {
+    return explicit;
+  }
+  const derived = path.resolve(__dirname, '../../..');
+  if (fs.existsSync(path.join(derived, 'instances'))) return derived;
+  return null;
+}
+const HOME23_ROOT = resolveHome23Root();
 // PRODUCTION: accept the Home23 per-agent COSMO_RUNTIME_DIR contract first,
 // while retaining COSMO_RUNTIME_PATH for the legacy unified server.
 // FALLBACK: Use engine/runtime symlink for local development
@@ -1134,7 +1153,8 @@ function createMcpHttpApp(options = {}) {
   // dependencies must fail process startup instead of producing a false-green
   // health endpoint that cannot execute tools.
   const sdk = options.sdk || loadMcpSdk();
-  const memoryTools = options.memoryTools || createDefaultMcpMemoryTools();
+  const memoryTools = options.memoryTools
+    || createDefaultMcpMemoryTools({ home23Root: HOME23_ROOT ?? undefined });
   const readScalarState = options.readScalarState
     || createSnapshotScalarStateReader({ brainDir: LOGS_DIR });
   const readiness = options.readiness || createMcpReadinessController({
