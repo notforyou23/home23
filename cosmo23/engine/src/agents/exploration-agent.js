@@ -191,6 +191,21 @@ in evidence. Output: hypotheses with supporting evidence and falsification crite
       timestamp: new Date()
     }, 3);
 
+    // Persist output to disk for downstream discovery
+    try {
+      await this.persistOutput('exploration-output.json', JSON.stringify({
+        agentId: this.agentId,
+        agentType: 'ExplorationAgent',
+        goalId: this.mission.goalId,
+        taskId: this.mission.taskId,
+        timestamp: new Date().toISOString(),
+        description: this.mission.description,
+        explorations, connections, hypotheses, promisingDirections
+      }, null, 2));
+    } catch (e) {
+      this.logger.error('Failed to persist exploration output', { error: e.message });
+    }
+
     await this.reportProgress(100, 'Exploration complete');
 
     this.logger.info('✅ ExplorationAgent: Mission complete', {

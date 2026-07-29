@@ -2444,7 +2444,73 @@ class AgentExecutor {
             }
           }
         }
-        
+
+        // Fallback: scan the agent's output directory on disk.
+        // Memory tags don't cover all agent types (e.g., 'analysis' vs
+        // 'code_creation_output_files'). Directory scan catches agents that
+        // persist via BaseAgent.persistOutput() but don't tag memory with
+        // one of the four expected tags above.
+        if (files.length === 0) {
+          const fsSync = require('fs').promises;
+          const pathSync = require('path');
+
+          // Try to locate the agent's output directory
+          // Structure: outputs/{agentType}/{agentId}
+          let agentOutputDir = null;
+          if (this.pathResolver) {
+            const outputsRoot = this.pathResolver.getOutputsRoot();
+            // Search known agent type subdirectories for this agentId
+            try {
+              const typeDirs = await fsSync.readdir(outputsRoot, { withFileTypes: true });
+              for (const typeDir of typeDirs) {
+                if (!typeDir.isDirectory()) continue;
+                const candidate = pathSync.join(outputsRoot, typeDir.name, agentId);
+                try {
+                  await fsSync.access(candidate);
+                  agentOutputDir = candidate;
+                  break;
+                } catch (_) {}
+              }
+            } catch (_) {}
+          } else if (this.config?.logsDir) {
+            const outputsRoot = pathSync.join(this.config.logsDir, 'outputs');
+            try {
+              const typeDirs = await fsSync.readdir(outputsRoot, { withFileTypes: true });
+              for (const typeDir of typeDirs) {
+                if (!typeDir.isDirectory()) continue;
+                const candidate = pathSync.join(outputsRoot, typeDir.name, agentId);
+                try {
+                  await fsSync.access(candidate);
+                  agentOutputDir = candidate;
+                  break;
+                } catch (_) {}
+              }
+            } catch (_) {}
+          }
+
+          if (agentOutputDir) {
+            try {
+              const discovered = await this.listFilesRecursive(fsSync, agentOutputDir, 500, 8);
+              for (const relPath of discovered) {
+                if (relPath === '.complete' || relPath === 'manifest.json') continue;
+                const absPath = pathSync.join(agentOutputDir, relPath);
+                try {
+                  const stat = await fsSync.stat(absPath);
+                  if (!stat.isFile()) continue;
+                  files.push({
+                    filename: pathSync.basename(relPath),
+                    relativePath: relPath,
+                    absolutePath: absPath,
+                    size: stat.size,
+                    sourceAgentId: agentId,
+                    tag: 'directory_scan'
+                  });
+                } catch (_) {}
+              }
+            } catch (_) {}
+          }
+        }
+
         return files;
       } catch (error) {
         this.logger.warn('Failed to discover files from agent', {
@@ -2454,8 +2520,6 @@ class AgentExecutor {
         return [];
       }
     };
-    
-    // Recursive function to gather from task and its dependencies
     const gatherRecursive = async (taskId, depth = 0) => {
       // Limit recursion depth
       if (depth > MAX_RECURSION_DEPTH) {

@@ -70,6 +70,22 @@ class ConsistencyAgent extends BaseAgent {
       timestamp: new Date()
     });
 
+    // Persist output to disk for downstream discovery
+    try {
+      await this.persistOutput('consistency-output.json', JSON.stringify({
+        agentId: this.agentId,
+        agentType: 'ConsistencyAgent',
+        goalId: this.mission.goalId,
+        taskId: this.mission.taskId,
+        timestamp: new Date().toISOString(),
+        cycle: this.cycle,
+        divergence: this.divergence,
+        summary
+      }, null, 2));
+    } catch (e) {
+      this.logger.error('Failed to persist consistency output', { error: e.message });
+    }
+
     return {
       status: 'completed',
       cycle: this.cycle,

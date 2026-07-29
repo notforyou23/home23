@@ -3,6 +3,7 @@ const { classifyContent } = require('../core/validation');
 const EventEmitter = require('events');
 const fs = require('fs').promises;
 const path = require('path');
+const os = require('os');
 
 /**
  * BaseAgent - Foundation class for all specialist agents
@@ -1432,7 +1433,10 @@ Domain: ${domain} | Workspace: ${workspace}`;
    * @returns {Object} - { accomplished: boolean, reason: string|null, metrics: object }
    */
   assessAccomplishment(executeResult, results) {
-    // Base implementation: check for substantive output
+    // Base implementation: require on-disk output, not just memory findings.
+    // Memory-only findings are necessary but not sufficient — agents that
+    // produce thoughts without persisting artifacts leave downstream phases
+    // with nothing to discover.
     const hasFindings = results.filter(r => r.type === 'finding').length > 0;
     const hasInsights = results.filter(r => r.type === 'insight').length > 0;
     
@@ -1442,20 +1446,110 @@ Domain: ${domain} | Workspace: ${workspace}`;
                       || metadata.artifactsCreated > 0
                       || metadata.filesCreated > 0
                       || metadata.tasksCompleted > 0;
+
+    // Check for persisted output on disk
+    const hasPersistedOutput = !!(this._persistedOutputPath && this._persistedOutputFiles > 0);
     
-    const accomplished = hasFindings || hasInsights || hasArtifacts;
+    const accomplished = (hasFindings || hasInsights || hasArtifacts) && hasPersistedOutput;
+    
+    let reason = null;
+    if (!accomplished) {
+      if (!hasFindings && !hasInsights && !hasArtifacts) {
+        reason = 'No substantive output produced (0 findings, 0 insights, 0 artifacts)';
+      } else if (!hasPersistedOutput) {
+        reason = `Agent produced ${results.filter(r => r.type === 'finding').length} finding(s) but persisted 0 files to disk — output invisible to downstream phases`;
+      }
+    }
     
     return {
       accomplished,
-      reason: accomplished ? null : 'No substantive output produced (0 findings, 0 insights, 0 artifacts)',
+      reason,
       metrics: {
         findings: results.filter(r => r.type === 'finding').length,
         insights: results.filter(r => r.type === 'insight').length,
         documentsAnalyzed: metadata.documentsAnalyzed || 0,
         artifactsCreated: metadata.artifactsCreated || 0,
-        filesCreated: metadata.filesCreated || 0
+        filesCreated: metadata.filesCreated || 0,
+        persistedFiles: this._persistedOutputFiles || 0
       }
     };
+  }
+
+  /**
+   * Persist agent output to disk in the run's outputs directory.
+   * Available to all agent types via BaseAgent — not just execution agents.
+   * 
+   * Writes content to outputs/{agentType}/{agentId}/{filename}, then writes
+   * a manifest and .complete marker so discoverFilesFromAgent can find it.
+   * 
+   * @param {string} filename - Name of the output file (e.g., 'analysis.json')
+   * @param {string|Buffer} content - File content
+   * @param {Object} options - { subdir: 'extracted', encoding: 'utf8' }
+   * @returns {Promise<{path: string, size: number}>}
+   */
+  async persistOutput(filename, content, options = {}) {
+    const fsLocal = require('fs').promises;
+    const pathLocal = require('path');
+
+    // Resolve output directory using same logic as ExecutionBaseAgent
+    let outputDir;
+    if (this.pathResolver) {
+      outputDir = pathLocal.join(
+        this.pathResolver.getOutputsRoot(),
+        this.getAgentType(),
+        this.agentId
+      );
+    } else if (this.config.logsDir) {
+      outputDir = pathLocal.join(
+        this.config.logsDir,
+        'outputs',
+        this.getAgentType(),
+        this.agentId
+      );
+    } else {
+      outputDir = pathLocal.join(os.tmpdir(), 'cosmo-agent', this.agentId);
+    }
+
+    // Apply subdir if specified (e.g., 'extracted', 'raw')
+    if (options.subdir) {
+      outputDir = pathLocal.join(outputDir, options.subdir);
+    }
+
+    await fsLocal.mkdir(outputDir, { recursive: true });
+
+    const filePath = pathLocal.join(outputDir, filename);
+    const encoding = options.encoding || 'utf8';
+    
+    if (this.writeFileAtomic) {
+      await this.writeFileAtomic(filePath, content, { encoding });
+    } else {
+      await fsLocal.writeFile(filePath, content, { encoding });
+    }
+
+    const stat = await fsLocal.stat(filePath);
+
+    // Track persisted output for assessAccomplishment
+    this._persistedOutputPath = outputDir;
+    this._persistedOutputFiles = (this._persistedOutputFiles || 0) + 1;
+
+    // Write/update manifest and completion marker
+    await this.writeCompletionMarker(
+      this.pathResolver
+        ? pathLocal.join(this.pathResolver.getOutputsRoot(), this.getAgentType(), this.agentId)
+        : (this.config.logsDir
+           ? pathLocal.join(this.config.logsDir, 'outputs', this.getAgentType(), this.agentId)
+           : outputDir),
+      { agentId: this.agentId, agentType: this.constructor.name, fileCount: this._persistedOutputFiles }
+    );
+
+    this.logger?.info?.('✓ Output persisted', {
+      filename,
+      path: filePath,
+      size: stat.size,
+      agentType: this.getAgentType()
+    });
+
+    return { path: filePath, size: stat.size };
   }
 
   /**

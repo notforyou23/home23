@@ -157,6 +157,20 @@ class CodebaseExplorationAgent extends BaseAgent {
 
     await this.reportProgress(100, 'Codebase exploration complete');
 
+    // Persist output to disk for downstream discovery
+    try {
+      await this.persistOutput('codebase-exploration-output.json', JSON.stringify({
+        agentId: this.agentId,
+        agentType: 'CodebaseExplorationAgent',
+        goalId: this.mission.goalId,
+        taskId: this.mission.taskId,
+        timestamp: new Date().toISOString(),
+        inventory, keyFiles, patterns, auditReport
+      }, null, 2));
+    } catch (e) {
+      this.logger.error('Failed to persist codebase exploration output', { error: e.message });
+    }
+
     this.logger.info('✅ CodebaseExplorationAgent: Exploration complete', {
       agentId: this.agentId,
       filesScanned: inventory.totalFiles,

@@ -567,6 +567,24 @@ Generate 5-10 key findings/insights that address the mission.`;
         'analysis'
       );
       
+      // Persist output to disk for downstream discovery
+      try {
+        await this.persistOutput('analysis-output.json', JSON.stringify({
+          agentId: this.agentId,
+          agentType: 'AnalysisAgent',
+          goalId: this.mission.goalId,
+          taskId: this.mission.taskId,
+          timestamp: new Date().toISOString(),
+          description: this.mission.description,
+          mode: 'code_context',
+          filesAnalyzed: codeFiles.length,
+          insights,
+          summary: response.content
+        }, null, 2));
+      } catch (e) {
+        this.logger.error('Failed to persist analysis output', { error: e.message });
+      }
+
       await this.reportProgress(100, 'Analysis complete');
       
       return {
@@ -639,6 +657,29 @@ Generate 5-10 key findings/insights that address the mission.`;
     
     for (const implication of implications) {
       await this.addInsight(implication, 'novel_implication');
+    }
+
+    // Step 6: Persist output to disk so downstream phases can discover it
+    const analysisOutput = {
+      agentId: this.agentId,
+      agentType: 'AnalysisAgent',
+      goalId: this.mission.goalId,
+      taskId: this.mission.taskId,
+      timestamp: new Date().toISOString(),
+      description: this.mission.description,
+      synthesis: synthesis,
+      perspectives: perspectives.map(p => ({ framework: p.framework, analysis: p.analysis })),
+      implications: implications
+    };
+
+    try {
+      await this.persistOutput('analysis-output.json', JSON.stringify(analysisOutput, null, 2));
+      this.logger.info('📄 Analysis output persisted to disk', {
+        agentId: this.agentId,
+        perspectives: perspectives.length
+      });
+    } catch (persistError) {
+      this.logger.error('Failed to persist analysis output', { error: persistError.message });
     }
 
     await this.reportProgress(100, 'Analysis complete');

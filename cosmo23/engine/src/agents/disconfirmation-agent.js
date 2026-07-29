@@ -148,6 +148,21 @@ Produce your three outputs now.`;
 
     await this.reportProgress(90, 'Disconfirmation analysis complete');
 
+    // Persist output to disk for downstream discovery
+    try {
+      await this.persistOutput('disconfirmation-output.json', JSON.stringify({
+        agentId: this.agentId,
+        agentType: 'DisconfirmationAgent',
+        goalId: this.mission.goalId,
+        taskId: this.mission.taskId,
+        timestamp: new Date().toISOString(),
+        description: this.mission.description,
+        content, sections
+      }, null, 2));
+    } catch (e) {
+      this.logger.error('Failed to persist disconfirmation output', { error: e.message });
+    }
+
     return {
       content,
       findings: this.results,

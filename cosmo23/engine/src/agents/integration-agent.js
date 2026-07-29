@@ -148,6 +148,21 @@ Output: integration matrix showing agreements, contradictions, and novel connect
 
     await this.reportProgress(100, 'Integration complete');
 
+    // Persist output to disk for downstream discovery
+    try {
+      await this.persistOutput('integration-output.json', JSON.stringify({
+        agentId: this.agentId,
+        agentType: 'IntegrationAgent',
+        goalId: this.mission.goalId,
+        taskId: this.mission.taskId,
+        timestamp: new Date().toISOString(),
+        patterns, contradictions, metaInsights,
+        landscapeSummary
+      }, null, 2));
+    } catch (e) {
+      this.logger.error('Failed to persist integration output', { error: e.message });
+    }
+
     this.logger.info('✅ IntegrationAgent: Mission complete', {
       agentId: this.agentId,
       goal: this.mission.goalId,
