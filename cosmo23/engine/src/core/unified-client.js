@@ -686,10 +686,27 @@ class UnifiedClient extends GPT5Client {
     } else if (query) {
       resolvedInput = [toCodexMessage('user', query)];
     } else if (messages && messages.length > 0) {
-      resolvedInput = messages.map(msg => toCodexMessage(msg.role, msg.content));
+      // HOME23 PATCH: the ChatGPT Codex backend rejects system-role items with
+      // 400 "System messages are not allowed". Mirror createCompletion() and
+      // hoist any system messages into `instructions` instead of forwarding
+      // them as conversation items. Callers such as MetaCoordinator.reviewPlan
+      // legitimately pass a system message, and forwarding it caused the whole
+      // call to fail soft (plan review silently skipped) rather than loudly.
+      resolvedInput = messages
+        .filter(msg => msg.role !== 'system')
+        .map(msg => toCodexMessage(msg.role, msg.content));
+      if (resolvedInput.length === 0) {
+        throw new Error('Codex request requires at least one non-system message');
+      }
     } else {
       throw new Error('Either input, messages, or query must be provided');
     }
+
+    // Collect system-role content so it can be merged into `instructions`.
+    const systemFromMessages = (Array.isArray(messages) ? messages : [])
+      .filter(msg => msg.role === 'system' && typeof msg.content === 'string')
+      .map(msg => msg.content.trim())
+      .filter(Boolean);
 
     // Build request body matching the Home23 Codex agent loop. The ChatGPT
     // Codex backend rejects public Responses-only parameters like
@@ -701,8 +718,15 @@ class UnifiedClient extends GPT5Client {
       input: resolvedInput,
     };
 
-    if (instructions && instructions.trim().length > 0) {
-      body.instructions = instructions.trim();
+    // Explicit `instructions` wins first position; hoisted system messages
+    // follow in their original order. Either source alone is sufficient.
+    const mergedInstructions = [
+      typeof instructions === 'string' ? instructions.trim() : '',
+      ...systemFromMessages,
+    ].filter(Boolean).join('\n\n');
+
+    if (mergedInstructions.length > 0) {
+      body.instructions = mergedInstructions;
     }
 
     if (tools.length > 0) {
