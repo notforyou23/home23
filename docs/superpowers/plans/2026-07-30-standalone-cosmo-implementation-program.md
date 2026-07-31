@@ -691,7 +691,7 @@ Implementation file ownership is exclusive except for these three ordered integr
 
 | Shared file | Bootstrap owner | Later authorized changes |
 | --- | --- | --- |
-| `package.json` and `package-lock.json` | Program A Task 1 | The workspace/dependency/script task that explicitly names the change in any later Program B–H; every new workspace runs `npm install` and commits its lockfile entry before dependent tests |
+| `package.json` and `package-lock.json` | Program A Task 1 | The workspace/dependency/script task that explicitly names the change in any later task of this planning set (Programs A–H); every new workspace runs `npm install` and commits its lockfile entry before dependent tests |
 | `packages/contracts/src/index.ts` | Program A Task 1 | Programs B–G contract-freeze tasks may append only their reviewed exports; Program G then hashes and freezes the package as accepted core, and Program H may not modify it |
 | `packages/product-contracts/src/index.ts` | Program H Task 1 | Program H alone; it imports accepted core schemas and owns only product/status/transport contracts |
 
@@ -707,12 +707,12 @@ No other cross-program implementation path may have more than one owning program
 | §§6–7 architecture and non-negotiable invariants | A1–A3 foundation; B1–B6 authority; C1/C5/C9 evidence policy; D7 quarantine; E6/E9 atomic metabolism; F2 mutation-free Ask; H5–H6 honest lifecycle |
 | §8 canonical cognitive model and separations | B/C/D/E owner-only genesis builders and E parentless transaction; B1/B6 commit authority; C1–C7 epistemic objects; D1–D3 program/relationship/questions; E1–E4 Living Brain; F1 assertion contracts |
 | §9 Principal Researcher and Research Relationship | D2 Relationship, D6 durable Principal, D11 integration flow; G9 Relationship and self-research proofs |
-| §10 Question Ecology and autonomous rhythm | D3 Question lifecycle and causal-origin attestation; D4 allocations and recomputed autonomy floor; E5 default-mode rhythm and E-owned durable lifecycle engine; E8 dream/incubation questions; G9 observe-only autonomous and Pure Mode gates |
+| §10 Question Ecology and autonomous rhythm | D3 Question lifecycle and causal-origin attestation; D4 allocations and recomputed autonomy floor; E5 default-mode rhythm and E-owned durable lifecycle engine; E8 dream/incubation questions; G9 observe-only autonomous gates; G1/G6/G7/G12 Pure Mode gates |
 | §11 Expedition Engine and WorkerRuntime | D4 ExpeditionContracts; D5 COSMO-owned ContextBundles; D7 admission; D8 capability-checked discovery/acquisition/experiment registry plus deterministic adapter; D9 recovery; D10 production adapter |
 | §12 Evidence Corpus and epistemic promotion | C2 receipted acquisition bridge and immutable child snapshots; C3–C6 identity, spans, policy, claims, reviews; C7 negative knowledge; C8 experiment bench; C9 injection boundary; C10 consequences; G live absent-evidence acquisition case |
 | §13 Living Brain | E2 typed graph and formation; E3 topology/activation; E4 self-model; E7 consolidation/contradiction; E9 wake state |
 | §14 sleep/dream metabolism | E5 trigger policy; E6 fenced transaction; E7 reversible consolidation; E8 dream/challenge; E9 pruning/wake; E10 paired proof; G9 release proof |
-| §15 Brain Repository and Git for Brains | B4 journal; B5 refs/leases plus status/log/tag; B6 commits and heritage root; B7 fork/diff; B8 recursively materializable lossless union; B9 federation; B10 export/import; B11 encryption/redaction; B12 settle/wake and recovery |
+| §15 Brain Repository and Git for Brains | B4 journal; B5 refs/leases; B7/B12 status/log/tag; B6 commits and heritage root; B7 fork/diff; B8 recursively materializable lossless union; B9 federation; B10 export/import; B11 encryption/redaction; B12 settle/wake and recovery |
 | §16 Inquiry and Workbench | F1–F9 pinned Ask/Steer/Invent, authority-free public DTOs, production generator/verifier port, assertion types, formation, comparison, Brain-over-files; F10–F13 workbench; H3/H8 API and packaging |
 | §17 trust, security, continuity, and failures | A2 trust; B3 grants; B12 recovery; C5/C9 policy and injection; D7/D9 fenced admission/recovery; E6 transaction; H2 auth; H6 lifecycle; H10 separation |
 | §18 historical preservation and migration | A4–A8 preservation gate; G1–G5 import classes, staging, reconciliation, and CAS publication |

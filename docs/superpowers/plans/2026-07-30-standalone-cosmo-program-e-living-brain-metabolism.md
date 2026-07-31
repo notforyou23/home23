@@ -184,7 +184,7 @@ interface LeaseProof {
 }
 ```
 
-Program E consumes these Program D services and does not reimplement them:
+Program E consumes these contracts-package exports and does not reimplement them; their declared owners vary (master §2 types are program-map-owned; D-owned entries are those frozen under Program D's **Program E Integration Surface**):
 
 ```ts
 import {
@@ -290,7 +290,7 @@ interface ResearchGenesisBuilderPort {
 }
 ```
 
-The four imported DTOs and schemas above are Program D-owned identity exports, not Program E aliases or lookalike schemas. Their exact fields, strict unknown-key rejection, authorization requirements, and cross-field refinements are the definitions frozen under Program D's **Program E Integration Surface**. Program E may construct and parse those DTOs, but may not redeclare, `pick`, extend, or weaken them.
+The imported DTOs and schemas above are identity exports of their declared owners, not Program E aliases or lookalike schemas. For the D-owned entries, the exact fields, strict unknown-key rejection, authorization requirements, and cross-field refinements are the definitions frozen under Program D's **Program E Integration Surface**. Program E may construct and parse those DTOs, but may not redeclare, `pick`, extend, or weaken them.
 
 Program E produces these stable interfaces for Programs F and G:
 
@@ -6049,8 +6049,13 @@ test('treatment wins at least sixty percent without a guardrail breach', async (
     ),
     scorer: deterministicBlindScorer(),
   });
+  // fixturePairCount deliberately does not reuse Program G's profile
+  // identifier pairedTrialCount (candidate-vs-baseline replicates, exactly 3
+  // at first release). G's live release bar for sleep_dream_cognitive_effect
+  // is these same five fixtures times three replicates: fifteen preregistered
+  // fixture-pairs, at least nine treatment wins, ties counting against.
   const result = await proof.run({
-    pairedTrialCount: 5,
+    fixturePairCount: 5,
     targetDimension: 'formation_trace_recall',
     minimumWinRate: 0.60,
     requireDreamOutcomeChain: true,
@@ -7252,25 +7257,49 @@ before this extension; Program G cannot issue its migration/release receipt
 until this task passes.
 
 **Files:**
+- Create: `packages/cognition/src/legacy-import-proposal.ts`
 - Create: `packages/cognition/src/legacy-import-candidate-service.ts`
+- Create: `packages/cognition/test/legacy-import-proposal.test.ts`
 - Create: `packages/cognition/test/legacy-import-candidate-service.test.ts`
 - Modify: `packages/cognition/src/index.ts`
+
+E is the sole owner of every file above. Program G Task 5 consumes these
+implementations and creates nothing inside `packages/cognition`. The sibling
+owner extensions — Program C Task 12 (corpus proposal builder) and Program D
+Task 13 (question/artifact-index proposal builders) — execute in the same
+Program G window; G Task 5 requires all three receipts before it begins.
 
 **Interfaces:**
 - Consumes by identity from Program G's shared-contract freeze:
   `LegacyImportMappingSchema`,
   `LegacyImportCandidateProposalBundleSchema`,
   `PublishStagedImportInputSchema`,
-  `LegacyImportCandidateReceiptSchema`, and their inferred types.
+  `LegacyImportCandidateReceiptSchema`,
+  `BuildLegacyTopologyImportProposalInputSchema`,
+  `LegacyTopologyImportProposalSchema`, and their inferred types.
 - Produces only:
 
 ```ts
+export interface LegacyTopologyImportProposalBuilder {
+  build(
+    input: BuildLegacyTopologyImportProposalInput,
+  ): Promise<LegacyTopologyImportProposalBuildResult>;
+}
+
 export interface LegacyImportCandidateService {
   commitCandidate(
     input: PublishStagedImportInput,
   ): Promise<LegacyImportCandidateReceipt>;
 }
 ```
+
+The topology builder parses the exact G-owned input/proposal/result schemas.
+Every topology entry has one non-null mapping ref, `origin='legacy_import'`,
+and `epistemicStatus='legacy_unverified'`; the builder cannot update
+Activation or invoke reviewed-candidate acceptance, and it accepts only
+`legacy_topology`, `process_history`, or mapped legacy-claim/question
+projections. It returns one exact stored `LegacyTopologyImportProposal` and
+has no ref/CAS/promotion method.
 
 - [ ] **Step 1: Write failing identity, quarantine, scope, and recovery tests**
 
@@ -7417,12 +7446,21 @@ reconciles staged roots, the Program B transaction, ref, and receipt; exact
 replay returns the same `LegacyImportCandidateReceipt`, while changed input
 conflicts.
 
+- [ ] **Step 3B: Implement the E-owned topology import proposal builder**
+
+Write the failing `test/legacy-import-proposal.test.ts` first (schema-identity
+with the G-frozen contracts, `legacy_unverified`/`legacy_import` forcing,
+mapping-ref coverage, rejection of Activation updates and unmapped kinds),
+verify it fails, then implement `legacy-import-proposal.ts` to the frozen
+interface above and export it from `packages/cognition/src/index.ts`.
+
 - [ ] **Step 4: Run focused and cross-owner tests**
 
 Run:
 
 ```bash
 npm exec --workspace @cosmo/cognition -- tsx --test \
+  test/legacy-import-proposal.test.ts \
   test/legacy-import-candidate-service.test.ts
 npm exec --workspace @cosmo/corpus -- tsx --test \
   test/legacy-import-proposal.test.ts
@@ -7430,14 +7468,20 @@ npm exec --workspace @cosmo/research -- tsx --test \
   test/legacy-import-proposals.test.ts
 ```
 
+The corpus and research suites are owned and created by Program C Task 12 and
+Program D Task 13 (the sibling owner extensions); this step verifies the three
+extensions compose, and fails honestly if either sibling has not landed.
+
 Expected: PASS; the import branch is valid, quarantined, replay-safe, and
 incapable of canonical mutation.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/cognition/src/legacy-import-candidate-service.ts \
+git add packages/cognition/src/legacy-import-proposal.ts \
+  packages/cognition/src/legacy-import-candidate-service.ts \
   packages/cognition/src/index.ts \
+  packages/cognition/test/legacy-import-proposal.test.ts \
   packages/cognition/test/legacy-import-candidate-service.test.ts
 git commit -m "feat(cognition): accept quarantined legacy candidates"
 ```

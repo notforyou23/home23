@@ -427,7 +427,7 @@ Run:
 npm test -- tests/product/contracts.test.ts
 ```
 
-Expected: FAIL because `@cosmo/product-contracts`, `ProductStatusSchema`, and `ApiV1RouteManifestSchema` do not exist.
+Expected: FAIL because the run fails with an unresolvable workspace specifier (`ERR_MODULE_NOT_FOUND` for `@cosmo/product-contracts`) until implementation lands.
 
 - [ ] **Step 3: Create the H-owned contract workspace and define the exact product status contract**
 
@@ -492,6 +492,16 @@ export const ProductStatusSchema = z.object({
 ```
 
 Declare `LifecycleIdentitySchema` before `ProductStatusSchema`; the reverse order creates a module-evaluation temporal-dead-zone failure. `completionDeliveryPendingRunIds` contains Program D runs with `status='completed' && completionDelivered===false`; it is not a synthetic runtime status.
+
+- [ ] **Step 3B: Register the workspace in the root lockfile before any dependent test**
+
+Run `npm install` at the repo root, then commit the registry change before any test that imports the new workspace:
+
+```bash
+npm install
+git add package.json package-lock.json packages/product-contracts/package.json packages/product-contracts/tsconfig.json
+git commit -m "chore(product-contracts): register workspace"
+```
 
 - [ ] **Step 4: Define authorization and operation contracts**
 
@@ -675,7 +685,7 @@ export type ApiError = z.infer<typeof ApiErrorSchema>;
 
 - [ ] **Step 5: Define every authority-free public request and response DTO**
 
-Program E's frozen `CreateGenesisBrainDraftSchema` and `GenesisBrainReceiptSchema` and Program F's frozen public DTOs are reused unchanged: `WorkbenchBrainSummarySchema`, `InquiryExecutionInputSchema`, `InquiryAnswerSchema`, `WorkbenchSteerDraftSchema`, `WorkbenchInventDraftSchema`, `WorkbenchMutationPreviewSchema`, `WorkbenchSteerCommitRequestSchema`, `WorkbenchInventCommitRequestSchema`, `SteerReceiptSchema`, `InventReceiptSchema`, `CompareInputSchema`, `ComparisonResultSchema`, `FederatedInquiryInputSchema`, `FederatedInquiryResultSchema`, and `WakeBriefingSchema`. `POST /brains` wraps only the exact authority-free genesis draft and returns the exact authority-free genesis receipt. In particular, `/steering/previews` and `/inventions/previews` accept only the exact authority-free drafts; `/steering` and `/inventions` accept only the exact four-field commit requests; none accepts internal `CreateGenesisBrainInput`, `SteerInput`, or `InventInput`.
+Program E's frozen `CreateGenesisBrainDraftSchema`, `GenesisBrainReceiptSchema`, and `WakeBriefingSchema` (Program E produces `WakeBriefing`/`WakeBriefingSchema`; Program F only reads it) and Program F's frozen public DTOs are reused unchanged: `WorkbenchBrainSummarySchema`, `InquiryExecutionInputSchema`, `InquiryAnswerSchema`, `WorkbenchSteerDraftSchema`, `WorkbenchInventDraftSchema`, `WorkbenchMutationPreviewSchema`, `WorkbenchSteerCommitRequestSchema`, `WorkbenchInventCommitRequestSchema`, `SteerReceiptSchema`, `InventReceiptSchema`, `CompareInputSchema`, `ComparisonResultSchema`, `FederatedInquiryInputSchema`, and `FederatedInquiryResultSchema`. `POST /brains` wraps only the exact authority-free genesis draft and returns the exact authority-free genesis receipt. In particular, `/steering/previews` and `/inventions/previews` accept only the exact authority-free drafts; `/steering` and `/inventions` accept only the exact four-field commit requests; none accepts internal `CreateGenesisBrainInput`, `SteerInput`, or `InventInput`.
 
 Define strict product DTOs:
 
@@ -851,10 +861,22 @@ export const BrainLogRequestSchema = HttpRequestSchema(
   EmptyHttpPartSchema,
 );
 
+// H-owned public projection of the accepted-core BrainCommit. Program B's
+// produced log interface is BrainLogPage { commits: BrainCommit[] }; no core
+// package exports a "BrainLogEntry". Route handlers derive each entry from
+// one BrainCommit in the page and never invent fields absent from the core
+// commit payload.
+export const PublicBrainLogEntrySchema = z.object({
+  schema: z.literal('cosmo.public-brain-log-entry.v1'),
+  commitId: BrainCommitIdSchema,
+  parentCommitIds: z.array(BrainCommitIdSchema).max(16),
+  createdAt: z.string().datetime(),
+}).strict();
+
 export const BrainLogResponseSchema = z.object({
   schema: z.literal('cosmo.brain-log-response.v1'),
   commitId: BrainCommitIdSchema,
-  entries: z.array(BrainLogEntrySchema).max(200),
+  entries: z.array(PublicBrainLogEntrySchema).max(200),
   nextCursor: z.string().min(1).max(512).nullable(),
 }).strict();
 
@@ -1379,7 +1401,7 @@ export const PublicEventProjectionSchema = z.discriminatedUnion('kind', [
     programId: ResearchProgramIdSchema,
     runId: RunIdSchema,
     status: z.enum([
-      'queued', 'running', 'paused', 'completed', 'failed', 'cancelled',
+      'authorized', 'running', 'paused', 'completed', 'failed', 'cancelled',
     ]),
   }).strict(),
   z.object({
@@ -1433,7 +1455,7 @@ export const EventStreamFrameSchema = z.discriminatedUnion('type', [
 ]);
 ```
 
-The SSE contract contains no arbitrary `data`, summary text, prompt, source locator, source excerpt, artifact body, provider payload, grant, lease, fence, token, filesystem path, or private trust descriptor. `EventReadPort` authorizes the principal against the underlying event before mapping it to one closed projection. Unknown internal event types are not serialized; clients discover the durable state through the relevant read route instead.
+The `research_run` status members are Program D's frozen `RuntimeRunState.status` values verbatim; the total mapping for the D statuses not surfaced is: `pausing` projects as `running`, `resuming` projects as `paused`, and `lost` projects as `failed`. The SSE contract contains no arbitrary `data`, summary text, prompt, source locator, source excerpt, artifact body, provider payload, grant, lease, fence, token, filesystem path, or private trust descriptor. `EventReadPort` authorizes the principal against the underlying event before mapping it to one closed projection. Unknown internal event types are not serialized; clients discover the durable state through the relevant read route instead.
 
 - [ ] **Step 8: Run focused and contract tests**
 
@@ -1528,7 +1550,7 @@ Run:
 npm test -- tests/api/auth.test.ts
 ```
 
-Expected: FAIL because the authentication modules do not exist.
+Expected: FAIL because the run fails with an unresolvable workspace specifier (`ERR_MODULE_NOT_FOUND` for `@cosmo/api`) until implementation lands.
 
 - [ ] **Step 3: Create the API workspace and implement bearer-token issuance**
 
@@ -1549,6 +1571,16 @@ interface StoredTokenRecord {
 ```
 
 Derive hashes with `scrypt` using `N=16384`, `r=8`, `p=1`, compare with `timingSafeEqual`, write `auth/tokens.json` atomically with mode `0600`, and return plaintext only from the issuance call.
+
+- [ ] **Step 3B: Register the workspace in the root lockfile before any dependent test**
+
+Run `npm install` at the repo root, then commit the registry change before any test that imports the new workspace:
+
+```bash
+npm install
+git add package.json package-lock.json packages/api/package.json packages/api/tsconfig.json
+git commit -m "chore(api): register workspace"
+```
 
 - [ ] **Step 4: Implement exact scope and origin enforcement**
 
@@ -1630,7 +1662,11 @@ Run:
 npm install --workspace @cosmo/api fastify@5
 ```
 
-Expected: the exact resolved Fastify version is recorded in `package-lock.json`; no Home23 package or process library is introduced.
+Expected: the exact resolved Fastify version is recorded in `package-lock.json`; no Home23 package or process library is introduced. Commit the lockfile change immediately so it is committed before later steps run tests:
+
+```bash
+git add packages/api/package.json package-lock.json && git commit -m "chore(api): pin fastify"
+```
 
 - [ ] **Step 2: Write failing route-boundary tests**
 
@@ -2899,6 +2935,16 @@ No method accepts Program B `ForkRequest`, `UnionRequest`, `MutationAuthorizatio
 
 `tests/client/client.test.ts` table-drives all 36 manifest rows: 35 are exact `CosmoClient` operations, while the sole `POST /session/exchange` bootstrap row is exercised by Program F's exact browser-session exchange adapter and is intentionally absent from the bearer-oriented client surface. For each operation it captures the exact method/path/params/query/body, reconstructs the named strict HTTP envelope, parses it through the manifest request schema, returns the positive response fixture through the named response schema, and asserts no unconsumed argument remains. It proves `createBrain()` sends the exact Program E draft and parses the exact genesis receipt; `listBrains()` first parses Program F's exact request, omits the schema discriminator from the URL, maps `cursor:null` to an absent query parameter, and receives the exact `WorkbenchBrainCatalogSchema`; the server-side transport transform reconstructs the same explicit null request. The table also proves formation identity, exact human Invent receipt promotion, candidate-agenda activation, browser session code input plus idempotency, the separate Program F draft-preview and commit calls, and pause/resume/cancel `expectedStatus`/`expectedControlEpoch`/`reason` bodies are serialized rather than silently defaulted.
 
+- [ ] **Step 3B: Register the workspace in the root lockfile before any dependent test**
+
+Run `npm install` at the repo root, then commit the registry change before any test that imports the new workspace:
+
+```bash
+npm install
+git add package.json package-lock.json packages/client/package.json packages/client/tsconfig.json
+git commit -m "chore(client): register workspace"
+```
+
 - [ ] **Step 4: Enforce the package boundary**
 
 The dependency test reads `packages/client/package.json` and its source import graph. It permits `@cosmo/product-contracts` and platform modules only. It fails on direct `@cosmo/contracts`, `@cosmo/repository`, `@cosmo/corpus`, `@cosmo/runtime`, `@cosmo/research`, `@cosmo/cognition`, local instance paths, or any Home23 identifier.
@@ -3170,8 +3216,8 @@ Run:
 npm test -- tests/service/config.test.ts tests/service/composition.test.ts tests/service/research-operation-adapter.test.ts tests/service/status.test.ts
 ```
 
-Expected: FAIL because service composition and the authority-bound research
-operation adapter do not exist.
+Expected: FAIL because the run fails with an unresolvable workspace specifier
+(`ERR_MODULE_NOT_FOUND` for `@cosmo/service`) until implementation lands.
 
 - [ ] **Step 3: Define exact standalone configuration**
 
@@ -3184,7 +3230,7 @@ export const StandaloneConfigSchema = z.object({
   repositoryRoot: z.string().min(1),
   http: z.object({
     host: z.string().default('127.0.0.1'),
-    port: z.number().int().min(1024).max(65535).default(43210),
+    port: z.number().int().min(1024).max(65535).default(43610),
     allowedOrigins: z.array(z.string().url()).default([]),
     transportSecurity: z.enum(['loopback_only', 'external_tls_terminated'])
       .default('loopback_only'),
@@ -3207,7 +3253,17 @@ export const StandaloneConfigSchema = z.object({
 }).strict();
 ```
 
-`stateRoot` defaults to the platform-resolved `~/.cosmo` only in the CLI initializer; tests and clean-room runs pass an explicit absolute root.
+`stateRoot` defaults to the platform-resolved `~/.cosmo` only in the CLI initializer; tests and clean-room runs pass an explicit absolute root. The HTTP port defaults to 43610 (avoids the operator-machine collision with a Home23-managed cosmo23 on 43210 and standalone cosmo 2.3 on 431xx).
+
+- [ ] **Step 3B: Register the workspace in the root lockfile before any dependent test**
+
+Run `npm install` at the repo root, then commit the registry change before any test that imports the new workspace:
+
+```bash
+npm install
+git add package.json package-lock.json apps/service/package.json apps/service/tsconfig.json
+git commit -m "chore(service): register workspace"
+```
 
 - [ ] **Step 4: Compose only COSMO-owned services**
 
@@ -3489,7 +3545,7 @@ Run:
 npm test -- tests/cli/init.test.ts tests/cli/lifecycle.test.ts tests/cli/commands.test.ts
 ```
 
-Expected: FAIL because the standalone CLI commands do not exist.
+Expected: FAIL because the run fails with an unresolvable workspace specifier (`ERR_MODULE_NOT_FOUND` for `@cosmo/cli`) until implementation lands.
 
 - [ ] **Step 3: Implement initialization**
 
@@ -3507,6 +3563,16 @@ Create private ESM `@cosmo/cli` with development export `./src/index.ts`, develo
 8. prints the token once to the attached terminal without logging it;
 9. performs no model call, research launch, or canonical commit; and
 10. prints the exact next steps `cosmo start`, `cosmo brain create --request <file>`, and then `cosmo research start --program <file>` without inventing IDs.
+
+- [ ] **Step 3B: Register the workspace in the root lockfile before any dependent test**
+
+Run `npm install` at the repo root, then commit the registry change before any test that imports the new workspace:
+
+```bash
+npm install
+git add package.json package-lock.json packages/cli/package.json packages/cli/tsconfig.json
+git commit -m "chore(cli): register workspace"
+```
 
 - [ ] **Step 4: Implement exact lifecycle commands**
 

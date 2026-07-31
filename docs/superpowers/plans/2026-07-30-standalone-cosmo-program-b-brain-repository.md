@@ -1170,7 +1170,7 @@ Also define strict schemas and types for:
 - `BrainStatus`, `BrainLogPage`, `TagBrainInput`, `SettleBrainInput`,
   `WakeBrainInput`, `HeritageGenesisBuildInput`, `HeritageGenesisRoots`, and
   their receipts;
-- `CurationEventPayload`, `CurationEventRecord`, decoded `CurationEvent`, `HeritageSnapshot`, and ledger verification/materialization;
+- `CurationEventPayload`, `CurationEventRecord`, decoded `CurationEvent`, `HeritageSnapshot` (its Zod object exported verbatim as `HeritageSnapshotSchema`), and ledger verification/materialization;
 - `EncryptedBlobEnvelope`, `BlobStorageIdentity`, key rotation, and key erasure inputs/receipts;
 - `FederatedReadRequest`, `BrainSet`, and attributed federated object results;
 - `ExportBundleInput`, `ExportReceipt`, `ImportBundleInput`, `ImportReceipt`;
@@ -1825,6 +1825,8 @@ npm exec -- node --import tsx --test \
 
 Expected: all identity, at-rest encryption, cross-domain isolation, rotation, erasure, race, and corruption tests pass.
 
+Run the full repository suite before committing: `npm exec -- node --import tsx --test packages/repository/test/`
+
 - [ ] **Step 7: Commit object identity and envelope encryption**
 
 ```bash
@@ -2169,6 +2171,8 @@ npm exec -- node --import tsx --test packages/repository/test/journal-store.test
 
 Expected: all journal tests pass; unauthorized append creates no record; gap/corruption reports degraded mode.
 
+Run the full repository suite before committing: `npm exec -- node --import tsx --test packages/repository/test/`
+
 - [ ] **Step 5: Commit the journal**
 
 ```bash
@@ -2256,6 +2260,8 @@ npm exec -- node --import tsx --test packages/repository/test/refs-leases.test.t
 ```
 
 Expected: stale-fence, exact-one-winner, CAS conflict, and every crash-point test pass.
+
+Run the full repository suite before committing: `npm exec -- node --import tsx --test packages/repository/test/`
 
 - [ ] **Step 6: Commit leases and refs**
 
@@ -3205,6 +3211,8 @@ npm exec -- node --import tsx --test packages/repository/test/federation.test.ts
 
 Expected: exact attribution, denied-member, duplicate-commit, and zero-mutation tests pass.
 
+Run the full repository suite before committing: `npm exec -- node --import tsx --test packages/repository/test/`
+
 - [ ] **Step 5: Commit federation**
 
 ```bash
@@ -3345,6 +3353,8 @@ npm exec -- node --import tsx --test packages/repository/test/bundle.test.ts
 ```
 
 Expected: exact public/private round trip, recipient mismatch, no-plaintext/no-raw-key, duplicate idempotence, missing object, corrupt ciphertext, crash during admission, and explicit-ref-only tests pass.
+
+Run the full repository suite before committing: `npm exec -- node --import tsx --test packages/repository/test/`
 
 - [ ] **Step 5: Commit bundle portability**
 

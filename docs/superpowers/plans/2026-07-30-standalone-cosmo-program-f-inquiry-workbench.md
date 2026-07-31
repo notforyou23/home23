@@ -1045,22 +1045,16 @@ Expected: FAIL because the Program F schemas are not exported.
 
 - [ ] **Step 3: Implement the exact request and five assertion types**
 
+These five ID schemas are Program A-owned; inquiry.ts imports them by identity and declares no lookalikes.
+
 ```ts
-const BrainCommitIdSchema = Sha256Schema.transform(
-  (value) => value as BrainCommitId,
-);
-const CorpusSnapshotIdSchema = Sha256Schema.transform(
-  (value) => value as CorpusSnapshotId,
-);
-const ClaimIdSchema = z.string()
-  .regex(/^claim_[A-Za-z0-9_-]+$/)
-  .transform((value) => value as ClaimId);
-const RelationshipEventIdSchema = z.string()
-  .regex(/^rel_[A-Za-z0-9_-]+$/)
-  .transform((value) => value as RelationshipEventId);
-const EventIdSchema = z.string()
-  .regex(/^evt_[A-Za-z0-9_-]+$/)
-  .transform((value) => value as EventId);
+import {
+  BrainCommitIdSchema,
+  ClaimIdSchema,
+  CorpusSnapshotIdSchema,
+  EventIdSchema,
+  RelationshipEventIdSchema,
+} from './ids.js';
 
 export const AssertionClaimSupportSchema = z.object({
   claimId: ClaimIdSchema,
@@ -3704,6 +3698,7 @@ git commit -m "test(inquiry): prove brain over files"
 ## Task 10: Scaffold the restrained React/Vite workbench and stable gateway
 
 **Files:**
+- Modify: `package-lock.json`
 - Create: `apps/workbench/package.json`
 - Create: `apps/workbench/tsconfig.json`
 - Create: `apps/workbench/vite.config.ts`

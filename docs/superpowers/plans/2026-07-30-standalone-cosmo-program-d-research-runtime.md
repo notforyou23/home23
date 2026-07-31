@@ -1996,6 +1996,8 @@ export interface DEVerticalGateResearchPort {
   ): Promise<DECommittedCandidateReviewReceipt>;
 }
 
+// `DESeedQuestionDraftSchema` (the Zod object for this interface) is exported
+// from `@cosmo/contracts` with the same identity.
 export interface DESeedQuestionDraft {
   schema: 'cosmo.de-seed-question-draft.v1';
   wording: string;
@@ -2199,7 +2201,10 @@ commit and receipt ref. Program D alone always returns `cosmoAccepted:false`.
   `PrincipalDecisionRecording` schemas, the Principal survey/proposal/attempt/
   review schemas and execution port, the Question/Program/Relationship root
   and root-update schemas, `ArtifactRecordPayloadSchema`/decoded wrapper/
-  Artifact-index root/update schemas, `OriginateQuestionInputSchema`,
+  Artifact-index root/update schemas (the root payload schemas are exported
+  verbatim as `QuestionRootPayloadSchema`, `ProgramRootPayloadSchema`,
+  `RelationshipRootPayloadSchema`, and `ArtifactIndexRootPayloadSchema`),
+  `OriginateQuestionInputSchema`,
   `TransitionQuestionInputSchema`, `RecordRelationshipEventInputSchema`,
   `BuildExpeditionInputSchema`, `ExecuteExpeditionInputSchema`,
   `ProgramRunControlInputSchema`, `RuntimeReceiptRecordingSchema`, the
@@ -5119,7 +5124,11 @@ Run:
 npm install --workspace @cosmo/runtime --save-exact @openai/agents@0.14.1 zod@4.4.3
 ```
 
-Expected: `packages/runtime/package.json` and root `package-lock.json` pin those exact versions. No API call occurs.
+Expected: `packages/runtime/package.json` and root `package-lock.json` pin those exact versions. No API call occurs. Commit the pinned dependency immediately so the lockfile change is committed before later steps run tests:
+
+```bash
+git add packages/runtime/package.json package-lock.json && git commit -m "chore(runtime): pin agents sdk"
+```
 
 - [ ] **Step 2: Write the failing mocked-adapter tests**
 
@@ -6218,6 +6227,98 @@ git diff --cached --check
 test "$(git status --porcelain)" = "A  docs/receipts/program-d-gate.json"
 git commit -m "docs(research): receipt Program D contract gate"
 test -z "$(git status --porcelain)"
+```
+
+### Task 13: Owner Extension — Legacy Question and Artifact Index Proposal Builders (executes during Program G)
+
+This is a D-owned extension implemented when Program G Task 1 has frozen the
+shared legacy contracts in `@cosmo/contracts`. It adds no dependency from
+`@cosmo/research` to a migration package: both sides import the sole
+schema/type objects from `@cosmo/contracts`. Core Program D verification
+(Task 12) issues its non-acceptance receipt before this extension; Program G
+Task 5 cannot begin until this task's commit lands. C Task 12 and E Task 11B
+are the sibling owner extensions in the same window.
+
+**Files:**
+- Create: `packages/research/src/legacy-import-proposals.ts`
+- Create: `packages/research/test/legacy-import-proposals.test.ts`
+- Modify: `packages/research/src/index.ts`
+
+**Interfaces:**
+- Consumes by identity from Program G's shared-contract freeze:
+  `BuildLegacyQuestionBatchProposalInputSchema`,
+  `BuildArtifactIndexBatchUpdateProposalInputSchema`, the two proposal and
+  strict result schemas, and `LegacyImportMappingSchema`, with their inferred
+  types.
+- Produces only:
+
+```ts
+export interface LegacyQuestionBatchProposalBuilder {
+  build(
+    input: BuildLegacyQuestionBatchProposalInput,
+  ): Promise<LegacyQuestionBatchProposalBuildResult>;
+}
+
+export interface ArtifactIndexBatchUpdateProposalBuilder {
+  build(
+    input: BuildArtifactIndexBatchUpdateProposalInput,
+  ): Promise<ArtifactIndexBatchUpdateProposalBuildResult>;
+}
+```
+
+- [ ] **Step 1: Write the failing builder tests**
+
+Cover both builders: schema-identity with the G-frozen contract objects; the
+Question builder admitting only `legacy_question` mappings, forcing
+`origin='legacy_import'` and `status='incubating'`, and unable to create an
+active Question or any Program mutation; the Artifact builder admitting only
+`legacy_artifact` mappings, requiring each `curationEventId` to be a Program B
+`ObjectId`, and forcing `disposition='legacy_unverified'`; equal-length,
+unique, canonically ordered `mappingRefs`/`mappings` with byte-identical
+stored mapping bytes; the empty-subset no-op proposal whose next root equals
+its previous root; the exact shared candidate scope/trust; typed journal
+events appended before the next root is proposed; and rejection paths for
+unmapped kinds, widened trust, Principal decisions, and promotion fields.
+Neither builder has a ref/CAS/promotion method.
+
+- [ ] **Step 2: Run the focused test and verify it fails**
+
+Run:
+
+```bash
+npm exec --workspace @cosmo/research -- tsx --test \
+  test/legacy-import-proposals.test.ts
+```
+
+Expected: FAIL because the builders do not exist.
+
+- [ ] **Step 3: Implement both builders and export them**
+
+Implement both interfaces exactly as frozen: parse the G-owned input schemas
+first, validate mapping ledgers as tested, and return one exact stored
+proposal object per builder whose parent/previous-root pin, mapping coverage,
+scope, trust, and selected events are verifiable by Program E's acceptance
+transaction. Export from `packages/research/src/index.ts`.
+
+- [ ] **Step 4: Run focused and package suites**
+
+Run:
+
+```bash
+npm exec --workspace @cosmo/research -- tsx --test \
+  test/legacy-import-proposals.test.ts
+npm exec --workspace @cosmo/research -- tsx --test test/
+```
+
+Expected: PASS with no regression in the research suite.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/research/src/legacy-import-proposals.ts \
+  packages/research/src/index.ts \
+  packages/research/test/legacy-import-proposals.test.ts
+git commit -m "feat(research): owner-built legacy question and artifact proposals"
 ```
 
 ## Joint D+E Handoff

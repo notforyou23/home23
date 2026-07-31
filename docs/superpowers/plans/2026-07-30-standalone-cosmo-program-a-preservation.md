@@ -115,6 +115,8 @@ export interface TrustDescriptor {
 
 export function canonicalJson(value: JsonValue): string;
 export function canonicalBytes(value: JsonValue): Uint8Array;
+// UTF-8 bytes of canonicalJson(value); the byte form consumed by C, G, and H.
+export function canonicalJsonBytes(value: unknown): Uint8Array;
 export function sha256(bytes: Uint8Array | string): Sha256;
 export function hashCanonical(value: JsonValue): Sha256;
 export async function atomicWriteFile(

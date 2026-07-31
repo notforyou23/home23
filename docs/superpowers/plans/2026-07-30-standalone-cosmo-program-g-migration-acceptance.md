@@ -1268,22 +1268,29 @@ export const AcceptanceExecutionIdentitySchema = z.object({
   signatures: z.array(DetachedSignatureSchema).min(1),
 }).strict();
 
-export const RequiredHistoricalCaseIdSchema = z.enum([
-  'original-deep-code-self-audit',
-  'autoscombo2',
-  'jerryg',
-  'standalone-jerryshows',
-  'june-30-controlled-receipt',
-  'degraded-home23',
-  'old-new-jtr-brains',
-  'terrapin-collapse',
-  'bigmerge-cross-domain',
-  'catastrophic-stem-humanities-aesthetic-merges',
-  'menlo-park-zero-metrics',
-  'truncated-checkpoint-unicode',
-  'clawd-openclaw-continuity',
-  'subject-brain-federation-merge',
-]);
+// Program A Task 2 is the sole declarer of RequiredHistoricalCaseIdSchema
+// (packages/contracts/src/heritage.ts); acceptance.ts imports it by identity
+// and never redefines it. The fourteen literals are repeated here only as the
+// frozen consumer copy of A's declaration:
+import { RequiredHistoricalCaseIdSchema } from './heritage';
+
+// A-owned members (consumer copy, byte-identical to Program A Task 2):
+// z.enum([
+//   'original-deep-code-self-audit',
+//   'autoscombo2',
+//   'jerryg',
+//   'standalone-jerryshows',
+//   'june-30-controlled-receipt',
+//   'degraded-home23',
+//   'old-new-jtr-brains',
+//   'terrapin-collapse',
+//   'bigmerge-cross-domain',
+//   'catastrophic-stem-humanities-aesthetic-merges',
+//   'menlo-park-zero-metrics',
+//   'truncated-checkpoint-unicode',
+//   'clawd-openclaw-continuity',
+//   'subject-brain-federation-merge',
+// ]);
 
 export type RequiredHistoricalCaseId =
   z.infer<typeof RequiredHistoricalCaseIdSchema>;
@@ -1365,7 +1372,17 @@ export const AcceptanceProfileSchema = z.object({
 export const SignedAcceptanceProfileSchema = AcceptanceProfileSchema;
 ```
 
-This field list and order are byte-for-byte identical to the master `AcceptanceProfile` contract. `SignedAcceptanceProfile` is a type alias of `AcceptanceProfile`; no package-local extension may add, remove, or rename a root field. `AcceptanceProfileSchema`, its inferred type, `RequiredHistoricalCaseIdSchema`, `RequiredHistoricalCaseId`, `RequiredReleaseScenarioIdSchema`, `RequiredReleaseScenarioId`, the dimension enum, and the mandatory subset are exported from `packages/contracts/src/index.ts`.
+`pairedTrialCount` counts signed candidate-versus-baseline replicates per
+comparison (a trial schedule holds exactly `pairedTrialCount * 2` runs) and is
+exactly three for the first release. It is NOT a fixture count: the
+`sleep_dream_cognitive_effect` dimension is scored over the five frozen
+Program E metabolism fixtures times these three replicates — fifteen
+preregistered fixture-pair executions — against the Task 6 frozen threshold
+(at least nine treatment wins, ties counting against treatment). Program E
+Task 10's five-fixture deterministic proof is the mechanism gate and uses its
+own `fixturePairCount` identifier, never this profile field.
+
+This field list and order are byte-for-byte identical to the master `AcceptanceProfile` contract. `SignedAcceptanceProfile` is a type alias of `AcceptanceProfile`; no package-local extension may add, remove, or rename a root field. `AcceptanceProfileSchema`, its inferred type, `RequiredReleaseScenarioIdSchema`, `RequiredReleaseScenarioId`, the dimension enum, and the mandatory subset are exported from `packages/contracts/src/index.ts`. `RequiredHistoricalCaseIdSchema` and `RequiredHistoricalCaseId` are already exported there by Program A Task 2 (heritage) and are not re-exported by this task.
 
 - [ ] **Step 5: Define signed trial and release receipt schemas**
 
@@ -1981,7 +1998,7 @@ Run:
 npm test -- tests/migration/adapter.test.ts tests/migration/classify.test.ts
 ```
 
-Expected: FAIL because the adapter and classifier do not exist.
+Expected: FAIL because the run fails with an unresolvable workspace specifier (`ERR_MODULE_NOT_FOUND` for `@cosmo/migration`) until implementation lands.
 
 - [ ] **Step 4: Implement the boundary and exhaustive classifier**
 
@@ -2007,6 +2024,16 @@ export function classifyLegacyDescriptor(
 ```
 
 Every adapter parses `LegacySourceSchema` before resolving its casebook through `LegacySourceReaderPort`; it receives no path, grant, lease, actor, or fence from caller data. Every discovered entry is normalized to `LegacyDescriptorSchema` before classification and every emitted record is parsed through `LegacyRecordSchema`. The injected reader verifies the manifest's canonical object ID, `bundleId`, `payload.sourceCatalogId`, case ID/fixture identity, selected entry set, and content hashes against the exact `casebookManifestId`, `casebookBundleId`, `sourceCatalogId`, and source fixture before returning bytes. Unknown fields at the source, locator, descriptor, content-ref, and record levels fail closed.
+
+- [ ] **Step 4B: Register the workspace in the root lockfile before any dependent test**
+
+Run `npm install` at the repo root, then commit the registry change before any test that imports the new workspace:
+
+```bash
+npm install
+git add package.json package-lock.json packages/migration/package.json packages/migration/tsconfig.json
+git commit -m "chore(migration): register workspace"
+```
 
 - [ ] **Step 5: Verify tests and public exports**
 
@@ -2233,26 +2260,32 @@ git commit -m "feat: separate operational and cognitive legacy imports"
 
 ### Task 5: Stage, Reconcile, and Atomically Publish Imports
 
+**Prerequisites:** Program C Task 12, Program D Task 13, and Program E Task 11B
+(the owner extensions, executed during Program G after Task 1's shared-contract
+freeze) must have committed their owner-implemented proposal builders and the
+E candidate acceptance service before this task begins. Their suites are
+already green when this task starts; G owns no file inside
+`packages/corpus`, `packages/research`, or `packages/cognition`.
+
 **Files:**
 - Create: `packages/migration/src/staged-import.ts`
 - Create: `packages/migration/src/reconcile.ts`
-- Create: `packages/corpus/src/legacy-import-proposal.ts`
-- Create: `packages/research/src/legacy-import-proposals.ts`
-- Create: `packages/cognition/src/legacy-import-proposal.ts`
-- Create: `packages/cognition/src/legacy-import-candidate-service.ts`
-- Modify: `packages/corpus/src/index.ts`
-- Modify: `packages/research/src/index.ts`
-- Modify: `packages/cognition/src/index.ts`
 - Create: `tests/migration/staged-import.test.ts`
 - Create: `tests/migration/reconcile.test.ts`
-- Create: `packages/corpus/test/legacy-import-proposal.test.ts`
-- Create: `packages/research/test/legacy-import-proposals.test.ts`
-- Create: `packages/cognition/test/legacy-import-proposal.test.ts`
-- Create: `packages/cognition/test/legacy-import-candidate-service.test.ts`
 
 **Interfaces:**
 - Consumes: `LegacyAdapter`; Program B `ObjectStore`, `JournalStore`, `BrainRepository`, root codecs, Heritage builder, canonical transaction/recovery primitives, and exact `journalEventIds` validation; Program C's inert corpus-batch builder; Program D's owner-only legacy Question and Artifact Index batch builders; Program E's owner-only legacy Topology builder and new `LegacyImportCandidateService`; no Program C promotion service.
 - Produces:
+
+```ts
+export async function publishStagedImport(
+  input: PublishStagedImportInput,
+  candidates: LegacyImportCandidateService,
+): Promise<MigrationReceipt>;
+```
+
+`LegacyImportCandidateService` is produced by Program E (Task 11B) and is
+repeated below only as the frozen interface this task consumes:
 
 ```ts
 export interface LegacyImportCandidateService {
@@ -2260,18 +2293,15 @@ export interface LegacyImportCandidateService {
     input: PublishStagedImportInput,
   ): Promise<LegacyImportCandidateReceipt>;
 }
-
-export async function publishStagedImport(
-  input: PublishStagedImportInput,
-  candidates: LegacyImportCandidateService,
-): Promise<MigrationReceipt>;
 ```
 
 The owner builders are exact, storage-producing proposal boundaries rather
 than G-authored root encoders. All DTO/type/schema identities in the following
 signatures were already frozen by G Task 1 in `@cosmo/contracts`; owner packages
 import them by object identity and export only their implementation
-interfaces/constructors. Program C implements:
+interfaces/constructors. The interface blocks below are frozen consumer copies:
+the implementations are owner-executed in Program C Task 12, Program D Task 13,
+and Program E Task 11B. Program C implements (in C Task 12):
 
 ```ts
 import type {
@@ -2295,7 +2325,7 @@ or disconfirmed and never accompanied by a Claim-transition decision.
 “Candidate-only” describes the isolated import Brain ref, not a second Claim
 status.
 
-Program E implements:
+Program E implements (in E Task 11B):
 
 ```ts
 import type {
@@ -2317,8 +2347,8 @@ entry has one non-null mapping ref, `origin='legacy_import'`, and
 `epistemicStatus='legacy_unverified'`; the builder cannot update Activation or
 invoke reviewed-candidate acceptance.
 
-Program D implements these two interfaces against the strict G-owned
-input/proposal/result schemas:
+Program D implements (in D Task 13) these two interfaces against the strict
+G-owned input/proposal/result schemas:
 
 ```ts
 import type {
@@ -2421,12 +2451,10 @@ test('all nine root plans are owner-produced and close one candidate', async () 
 npm test -- tests/migration/staged-import.test.ts tests/migration/reconcile.test.ts
 ```
 
-Expected: FAIL because staging, owner proposal builders, and candidate
-reconciliation are absent. The full failing invocation is:
-
-```bash
-npm test -- tests/migration/staged-import.test.ts tests/migration/reconcile.test.ts packages/corpus/test/legacy-import-proposal.test.ts packages/research/test/legacy-import-proposals.test.ts packages/cognition/test/legacy-import-proposal.test.ts packages/cognition/test/legacy-import-candidate-service.test.ts
-```
+Expected: FAIL because G's staging and reconciliation are absent. The owner
+builder and E candidate-service suites (C Task 12, D Task 13, E Task 11B) are
+already green and are not part of this red phase; they are re-run in Step 8
+as integration verification only.
 
 - [ ] **Step 4: Implement append-only staging**
 
@@ -2463,8 +2491,11 @@ After accounting, re-read every stored mapping and normalized projection, valida
 
 Derive one exact `brain_lineage` scope from parent, import candidate ref, deterministic migration lineage, and effective trust. `effectiveTrust` is no broader than the intersection of parent, source, mapping, and destination-object trust; its encryption domain equals the scope trust domain. Ask C, D, and E owner builders for their exact stored proposal/recording objects. Construct the nine-entry tuple in `BrainCommitPayload` order. Program/Relationship/Activation entries are literal `copy_parent`; Heritage derives from one Program B typed migration `CurationEvent`, whose `curationEventId` is an `ObjectId` and whose `curationEventRef.objectId` is identical. A separate typed `migrationJournalEventId: EventId` carries the mutation record in the exact B scope and must appear in `selectedJournalEventIds`; the two ID domains are never aliased. Both records link the Program A manifest, staged import, reconciliation, mappings, and selected events. G never encodes a root payload or calls a root codec directly.
 
-- [ ] **Step 6: Implement E's candidate-only acceptance transaction**
+- [ ] **Step 6: Integrate E's candidate-only acceptance transaction (implemented in E Task 11B)**
 
+G does not implement this service; the behavior below is the frozen Program E
+contract that `publishStagedImport()` composes with and that this task's
+integration tests assert against.
 `LegacyImportCandidateService.commitCandidate()` schema-parses `PublishStagedImportInputSchema` before reads. It reloads the staged import and proposal bundle and requires byte-identical stored values/refs; reconciles all four casebook identities, parent/ref/head, mappings, proposal pins, trust, scope, selected events, and idempotency; verifies the lease fences that exact absent import ref; and materializes/verifies the parent through all nine accepted codecs.
 
 E then:
@@ -2496,7 +2527,7 @@ Expected: PASS.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add packages/migration/src/staged-import.ts packages/migration/src/reconcile.ts packages/corpus/src/legacy-import-proposal.ts packages/corpus/src/index.ts packages/corpus/test/legacy-import-proposal.test.ts packages/research/src/legacy-import-proposals.ts packages/research/src/index.ts packages/research/test/legacy-import-proposals.test.ts packages/cognition/src/legacy-import-proposal.ts packages/cognition/src/legacy-import-candidate-service.ts packages/cognition/src/index.ts packages/cognition/test/legacy-import-proposal.test.ts packages/cognition/test/legacy-import-candidate-service.test.ts tests/migration
+git add packages/migration/src/staged-import.ts packages/migration/src/reconcile.ts tests/migration
 git commit -m "feat: publish reconciled legacy imports atomically"
 ```
 
@@ -2670,7 +2701,7 @@ test('recorded transport cannot satisfy a semantic release role', async () => {
 npm test -- tests/acceptance/profile.test.ts tests/acceptance/signing.test.ts
 ```
 
-Expected: FAIL because signing functions do not exist.
+Expected: FAIL because the run fails with an unresolvable workspace specifier (`ERR_MODULE_NOT_FOUND` for `@cosmo/acceptance`) until implementation lands.
 
 - [ ] **Step 3: Implement canonical profile identity**
 
@@ -2679,6 +2710,16 @@ Create `@cosmo/acceptance` as a private ESM workspace with `build` and `test` sc
 Run `npm install` immediately after adding the workspace manifest and commit the resulting `package-lock.json`.
 
 For the historical-case manifest, parse its strict schema, canonicalize it, and verify `requiredHistoricalCaseManifestId = sha256(canonicalBytes)`. For each of the 18 `ObjectRef` fields in the root, resolve the corresponding canonical object, parse its declared strict schema, verify its object ID, payload hash, media type, byte length, and links, then retain its object ID in the verified profile result. Canonicalize the root with `profileId` and `signatures` omitted, compute `profileId`, and verify at least one trusted human release-authority Ed25519 signature over those exact canonical root bytes. A raw file hash, pretty-printed JSON bytes, unresolved ref, or signature over only a path is invalid.
+
+- [ ] **Step 3B: Register the workspace in the root lockfile before any dependent test**
+
+Run `npm install` at the repo root, then commit the registry change before any test that imports the new workspace:
+
+```bash
+npm install
+git add package.json package-lock.json packages/acceptance/package.json packages/acceptance/tsconfig.json
+git commit -m "chore(acceptance): register workspace"
+```
 
 - [ ] **Step 4: Freeze the historical manifest and all 18 referenced profile objects**
 
@@ -3489,7 +3530,7 @@ export async function publishTrialReceipt(
 }
 ```
 
-`canonicalJsonBytes()` is the Program B canonical serializer. `receiptObjectLinks()` returns the sorted unique object IDs named by the receipt. Program G never calls an unchecked or nonexistent convenience writer. The receipt writer's capability grant is scoped to the acceptance receipt namespace and cannot write Brain roots, refs, claims, or journal events.
+`canonicalJsonBytes()` is Program A's foundation canonical serializer. `receiptObjectLinks()` returns the sorted unique object IDs named by the receipt. Program G never calls an unchecked or nonexistent convenience writer. The receipt writer's capability grant is scoped to the acceptance receipt namespace and cannot write Brain roots, refs, claims, or journal events.
 
 - [ ] **Step 7: Verify cleanup and failure truth**
 
@@ -3540,9 +3581,9 @@ Assert zero accepted non-entailing citations, aliases counted as corroboration, 
 ```ts
 test('new answer-time connection earns no accumulated cognition credit', async () => {
   const result = await runBrainOverFilesProbe(queryTimeConnectionFixture());
-  assert.equal(result.assertions[0].type, 'new_connection_in_answer');
-  assert.equal(result.accumulatedCognitionCredit, 0);
-  assert.equal(result.refChanged, false);
+  assert.equal(result.assertions[0].assertionType, 'new_connection_in_answer');
+  assert.equal(result.assertions[0].accumulatedCognitionCredit, 0);
+  assert.equal(result.refValueAfter, result.refValueBefore);
 });
 ```
 
@@ -3694,7 +3735,7 @@ git commit -m "feat: enforce acceptance hard gates"
 
 - [ ] **Step 1: Write failing paired-metabolism tests**
 
-Require same parent/corpus/model class/budget, at least five fixtures, three paired trials, at least 60% non-tied treatment wins, zero structural regression, one complete dream-to-outcome path, and a typed loser for simultaneous metabolism.
+Require same parent/corpus/model class/budget, the five frozen Program E metabolism fixtures, three paired trials per fixture (fifteen preregistered fixture-pair executions — the profile's `pairedTrialCount: 3` replicates times five fixtures), at least nine treatment wins across the fifteen with ties counting against treatment (byte-identical to Task 6's frozen `sleep_dream_cognitive_effect` threshold), zero structural regression, one complete dream-to-outcome path, and a typed loser for simultaneous metabolism.
 
 - [ ] **Step 2: Write failing autonomous-origin tests**
 

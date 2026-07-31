@@ -3928,6 +3928,93 @@ git commit -m "docs(corpus): receipt Program C evidence gate"
 test -z "$(git status --porcelain)"
 ```
 
+### Task 12: Owner Extension — Legacy Corpus Import Proposal Builder (executes during Program G)
+
+This is a C-owned extension implemented when Program G Task 1 has frozen the
+shared legacy contracts in `@cosmo/contracts`. It adds no dependency from
+`@cosmo/corpus` to a migration package: both sides import the sole
+schema/type objects from `@cosmo/contracts`. Core Program C verification
+(Task 11) issues its receipt before this extension; Program G Task 5 cannot
+begin until this task's commit lands. E Task 11B and D Task 13 are the
+sibling owner extensions in the same window.
+
+**Files:**
+- Create: `packages/corpus/src/legacy-import-proposal.ts`
+- Create: `packages/corpus/test/legacy-import-proposal.test.ts`
+- Modify: `packages/corpus/src/index.ts`
+
+**Interfaces:**
+- Consumes by identity from Program G's shared-contract freeze:
+  `BuildLegacyCorpusImportProposalInputSchema`,
+  `LegacyCorpusImportProposalSchema`, the strict result schema, and
+  `LegacyImportMappingSchema`, with their inferred types.
+- Produces only:
+
+```ts
+export interface LegacyCorpusImportProposalBuilder {
+  build(
+    input: BuildLegacyCorpusImportProposalInput,
+  ): Promise<LegacyCorpusImportProposalBuildResult>;
+}
+```
+
+- [ ] **Step 1: Write the failing builder tests**
+
+Cover: schema-identity with the G-frozen contract objects; admission of only
+`evidence_source` and `legacy_claim` mappings; every imported legacy Claim
+carrying the single exact status `legacy_unverified` (never `candidate`,
+supported, or disconfirmed, and never accompanied by a Claim-transition
+decision); equal-length, unique, canonically ordered `mappingRefs`/`mappings`
+with each ref's object ID equal to the paired mapping ID and byte-identical
+stored bytes; the empty-subset case returning a fully validated no-op proposal
+whose next root equals its previous root; typed journal events appended before
+the next root is proposed; `canonicalMutationAllowed:false` on the stored
+proposal; and rejection paths for unmapped kinds, widened trust, and any
+promotion field. The builder has no ref/CAS/promotion method and never calls a
+canonical promotion service.
+
+- [ ] **Step 2: Run the focused test and verify it fails**
+
+Run:
+
+```bash
+npm exec --workspace @cosmo/corpus -- tsx --test \
+  test/legacy-import-proposal.test.ts
+```
+
+Expected: FAIL because the builder does not exist.
+
+- [ ] **Step 3: Implement the builder and export it**
+
+Implement `LegacyCorpusImportProposalBuilder` to the frozen interface: parse
+the G-owned input schema first, validate the mapping ledger exactly as tested,
+produce both C root-plan entries (Epistemic and Negative Knowledge) against
+one stored `LegacyCorpusImportProposal` whose inner
+`batchRecordingRef`/bytes, scope, trust, parent/root pins, mapping/event sets,
+and `canonicalMutationAllowed:false` are verifiable by Program E's acceptance
+transaction. Export from `packages/corpus/src/index.ts`.
+
+- [ ] **Step 4: Run focused and package suites**
+
+Run:
+
+```bash
+npm exec --workspace @cosmo/corpus -- tsx --test \
+  test/legacy-import-proposal.test.ts
+npm exec --workspace @cosmo/corpus -- tsx --test test/
+```
+
+Expected: PASS with no regression in the corpus suite.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/corpus/src/legacy-import-proposal.ts \
+  packages/corpus/src/index.ts \
+  packages/corpus/test/legacy-import-proposal.test.ts
+git commit -m "feat(corpus): owner-built legacy corpus import proposals"
+```
+
 ## Program C Handoff
 
 Program D may consume only committed Program C identities and services:
