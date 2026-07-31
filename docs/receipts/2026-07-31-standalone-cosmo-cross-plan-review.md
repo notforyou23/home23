@@ -51,6 +51,20 @@ Map attributions (Pure Mode → G1/G6/G7/G12 not G9; status/log/tag → B7/B12 n
 - **G-3 (decision):** no legacy-corpus/cosmo23 maintenance-freeze date exists anywhere; every day of live Jerry/cosmo23 activity widens G's import surface.
 - **B (clean at plan level):** catastrophe-oracle union fixture and three-way redaction verification (`valid` / `valid_with_authorized_redactions` / `corrupt_missing_object`) are the strongest designs in the set. Unverified at this depth: B4/B6 journal no-omission mechanics, union performance at 65k-node scale — moved to the implementation drill list.
 
-## Gate state
+## Gate state (revision 1)
 
 §6 is **not satisfied** until BLK-1, BLK-2, and Majors 1–4 land as plan edits (all are document surgery — no code exists yet; estimated well under a session). Minors may be batched or fixed on contact. Per the master: "Do not begin implementation until all Program A–H plans have passed the cross-plan review." The planning-freeze release remains an explicit operator decision after those edits.
+
+---
+
+# Revision 2 (2026-07-31, same day)
+
+**Surgery applied at `5a448906`** (9 files, +436/−90): BLK-1/BLK-2 resolved by making G Task 5 consumer-only and adding owner extensions **C Task 12** and **D Task 13** (patterned on E Task 11B, executed in the Program G window after G T1's contract freeze), with E Task 11B absorbing the E-owned topology proposal builder; MAJ-1 harmonized (the three sleep numbers were one design — 5 frozen fixtures × 3 replicates = 15 preregistered fixture-pairs, ≥9 wins ties-against; the defects were T9's weaker tie handling and the `pairedTrialCount` identifier collision, fixed by aligning T9 to T6 verbatim and renaming E's option to `fixturePairCount`); MAJ-2 (H-owned `PublicBrainLogEntrySchema` projected from B's `BrainCommit`); MAJ-3 (A sole declarer, G imports by identity); MAJ-4 (executable lockfile-registration steps in all seven G/H workspace tasks); plus all 15 revision-1 minors.
+
+**Re-review fleet** (10 reviewers, same clusters, revision-2 prompts requiring semantic verification of each prior finding + a sweep of the ~430 new lines): **0 fail / 1 concern / 9 pass.** Both blockers and all four majors verified resolved on semantics — the ownership reviewer re-extracted all 718 Create/Modify declarations across the eight plans and confirmed zero cross-program collisions outside the three declared registries, with the extension ordering acyclic (G T1 → C12/D13/E11B → G T5). The marker sweep stayed at zero across the enlarged set.
+
+**R2 residue** (16 new minors — chiefly consistency fallout of the surgery itself: File Map inventories, master §7/§18 silence on the extensions, duplicate lockfile prose — plus carried-over old minors including F's frozen-copy param renames and the not-applicable reason field) **landed at `63c6322e`**, orchestrator-spot-verified: E T11B's test aligned to the frozen receipt fields (`previousCandidateHead`/`candidateRef`), the tie rule now present at all three G sites, H's `parentCommitIds` bound removed, `notApplicableReasons` with pre-output case-level reasons added to `VectorThresholdsDocumentSchema`, and the seven G/H registration steps left as the single authority on lockfile commits.
+
+## Gate state (final)
+
+**§6 is SATISFIED** at `63c6322e`: no fail verdicts, no blockers, no majors outstanding; every revision-1 and revision-2 finding is either fixed or (three wording-level items) fixed in the residue batch. Per the master's own rule, what remains before implementation is not review work but **operator decisions**: (1) release the planning freeze; (2) confirm OpenAI-only-at-birth as deliberate (ledger D-1); (3) set the cosmo23 maintenance-freeze date (ledger G-3). Ledger E-2 (early off-plan soul spike) stands as a build-phase recommendation.
