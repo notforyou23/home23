@@ -101,7 +101,7 @@ All paths below are relative to `/Users/jtr/_JTR23_/cosmo`.
 | `packages/contracts/test/research-runtime-contracts.test.ts` | Frozen-shape and strict-rejection tests | 1 |
 | `packages/research/package.json` | Research package dependencies and scripts | 1 |
 | `packages/research/tsconfig.json` | Research package TypeScript configuration | 1 |
-| `packages/research/src/index.ts` | Public research exports | 1–11 |
+| `packages/research/src/index.ts` | Public research exports | 1–11, 13 |
 | `packages/research/test/support.ts` | Deterministic research fixtures and spies | 1 |
 | `packages/runtime/package.json` | Runtime package dependencies and scripts | 1, modified 10 |
 | `packages/runtime/tsconfig.json` | Runtime package TypeScript configuration | 1 |
@@ -147,6 +147,8 @@ All paths below are relative to `/Users/jtr/_JTR23_/cosmo`.
 | `packages/research/test/program-d-gate.test.ts` | Program D aggregate contract gate | 12 |
 | `scripts/verify-program-d.mjs` | Runs Program D suites and emits non-acceptance receipt | 12 |
 | `docs/receipts/program-d-gate.json` | Generated, committed Program D contract receipt | 12 |
+| `packages/research/src/legacy-import-proposals.ts` | D-owned legacy question and artifact-index proposal builders (Task 13 owner extension) | 13 |
+| `packages/research/test/legacy-import-proposals.test.ts` | Legacy question and artifact-index proposal builder tests (Task 13 owner extension) | 13 |
 
 ## Frozen Program D Interfaces
 
@@ -2192,7 +2194,8 @@ commit and receipt ref. Program D alone always returns `cosmoAccepted:false`.
   dedicated genesis contracts use the genesis object; `CognitiveEvent` alone
   uses the full union.
 - Produces: every frozen Program D interface and strict Zod schema above,
-  including `ResearchProgramIdSchema`, `ResearchProgramModeSchema`, the
+  including `ResearchProgramIdSchema`, `ResearchProgramModeSchema`,
+  `ResearchProgramStatusSchema`, the
   Research Program direction/state/create/control/settlement/finalization/
   receipt/result/notice/list/page schemas, the exact initial/revision Covenant
   input and revision-proposal schemas, the D genesis seed/input/root-bundle

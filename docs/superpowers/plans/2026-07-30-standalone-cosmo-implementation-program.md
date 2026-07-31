@@ -692,7 +692,7 @@ Implementation file ownership is exclusive except for these three ordered integr
 | Shared file | Bootstrap owner | Later authorized changes |
 | --- | --- | --- |
 | `package.json` and `package-lock.json` | Program A Task 1 | The workspace/dependency/script task that explicitly names the change in any later task of this planning set (Programs A–H); every new workspace runs `npm install` and commits its lockfile entry before dependent tests |
-| `packages/contracts/src/index.ts` | Program A Task 1 | Programs B–G contract-freeze tasks may append only their reviewed exports; Program G then hashes and freezes the package as accepted core, and Program H may not modify it |
+| `packages/contracts/src/index.ts` | Program A Task 1 | Program A's own later tasks and Programs B–G contract-freeze tasks may append only their reviewed exports; Program G then hashes and freezes the package as accepted core, and Program H may not modify it |
 | `packages/product-contracts/src/index.ts` | Program H Task 1 | Program H alone; it imports accepted core schemas and owns only product/status/transport contracts |
 
 No other cross-program implementation path may have more than one owning program. Generated build output and receipts do not transfer source ownership.
@@ -715,7 +715,7 @@ No other cross-program implementation path may have more than one owning program
 | §15 Brain Repository and Git for Brains | B4 journal; B5 refs/leases; B7/B12 status/log/tag; B6 commits and heritage root; B7 fork/diff; B8 recursively materializable lossless union; B9 federation; B10 export/import; B11 encryption/redaction; B12 settle/wake and recovery |
 | §16 Inquiry and Workbench | F1–F9 pinned Ask/Steer/Invent, authority-free public DTOs, production generator/verifier port, assertion types, formation, comparison, Brain-over-files; F10–F13 workbench; H3/H8 API and packaging |
 | §17 trust, security, continuity, and failures | A2 trust; B3 grants; B12 recovery; C5/C9 policy and injection; D7/D9 fenced admission/recovery; E6 transaction; H2 auth; H6 lifecycle; H10 separation |
-| §18 historical preservation and migration | A4–A8 preservation gate; G1–G5 import classes, staging, reconciliation, and CAS publication |
+| §18 historical preservation and migration | A4–A8 preservation gate; G1–G5 import classes, staging, reconciliation, and CAS publication, with owner-implemented builders and candidate acceptance via C Task 12, D Task 13, and E Task 11B |
 | §19 evaluation and acceptance | A7 closed fourteen-case portable historical casebook; G6 exact signed profile and all referenced pins plus the model-free genesis structural scenario; G7 external observe-only harness; G8 all hard gates, new-source acquisition, real semantic providers, and Brain-over-files; G9 vector/behavior/ablation proofs; G10 continuity/core isolation; H11 clean install → genesis → first Research Program and final clean release |
 | §20 delivery decomposition | This master map and the eight detailed plans |
 | §21 first restoration boundary and deferrals | Program A–H stop/go gates; E establishes one model-free genesis boundary; H10 keeps deferred adapters out; H11 proves clean install → genesis → first Research Program before the named first-release lifecycle |
@@ -802,5 +802,7 @@ A
                   -> G
                       -> H
 ```
+
+Owner extensions C Task 12, D Task 13, and E Task 11B are C/D/E-owned tasks that execute inside the Program G window after G Task 1's shared-contract freeze and before G Task 5; they do not alter this gate order.
 
 No later program starts merely because an earlier task produced files. Its explicit stop/go gate must pass and its receipt must be committed.

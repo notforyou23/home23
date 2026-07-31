@@ -82,7 +82,7 @@ All paths below are relative to `/Users/jtr/_JTR23_/cosmo`.
 | `packages/corpus/src/provenance-index.ts` | Append-only reverse provenance index reconstructed from Program B journal records | 1 |
 | `packages/corpus/src/brain-root-codecs.ts` | Program B leaf codecs for canonical Epistemic and Negative Knowledge root verification/materialization | 1 |
 | `packages/corpus/src/corpus-genesis-builder.ts` | Dedicated parentless Corpus/Epistemic/Negative Knowledge root-set builder consumed only by E genesis | 1 |
-| `packages/corpus/src/index.ts` | Public package exports | 1–10, extended by the task owning each export |
+| `packages/corpus/src/index.ts` | Public package exports | 1–10, 12 — extended by the task owning each export |
 | `packages/corpus/test/support.ts` | Deterministic IDs, trust descriptors, in-memory Program B ports, and fixture builders | 1 |
 | `packages/corpus/test/brain-root-codecs.test.ts` | Typed root sorting, closure, reference-integrity, and materialization tests | 1 |
 | `packages/corpus/test/corpus-genesis-builder.test.ts` | Empty-root exactness, idempotency, recovery, and no-commit traps | 1 |
@@ -119,6 +119,8 @@ All paths below are relative to `/Users/jtr/_JTR23_/cosmo`.
 | `packages/corpus/test/program-c-gate.test.ts` | End-to-end Program C hard-gate suite | 11 |
 | `scripts/verify-program-c.mjs` | Runs the gate and writes a deterministic receipt | 11 |
 | `docs/receipts/program-c-gate.json` | Generated, committed stop/go receipt | 11 |
+| `packages/corpus/src/legacy-import-proposal.ts` | C-owned legacy corpus import proposal builder (Task 12 owner extension) | 12 |
+| `packages/corpus/test/legacy-import-proposal.test.ts` | Legacy corpus import proposal builder tests (Task 12 owner extension) | 12 |
 
 ## Frozen Program C Interfaces
 

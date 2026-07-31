@@ -90,6 +90,7 @@ Program E is not independently releasable. A green graph suite without autonomou
 - Create `packages/cognition/src/paired-sleep-proof.ts` — deterministic control/treatment comparison used by the Program E gate.
 - Create `packages/cognition/src/de-vertical-gate.ts` — mandatory Program D+E flow and receipt.
 - Create `packages/cognition/src/legacy-import-candidate-service.ts` — G-proposed, candidate-only nine-root import acceptance.
+- Create `packages/cognition/src/legacy-import-proposal.ts` — E-owned legacy topology import proposal builder (Task 11B owner extension).
 
 ### Tests and frozen fixtures
 
@@ -109,6 +110,7 @@ Program E is not independently releasable. A green graph suite without autonomou
 - Create `packages/cognition/test/metabolism-faults.test.ts`.
 - Create `packages/cognition/test/paired-sleep-proof.test.ts`.
 - Create `packages/cognition/test/legacy-import-candidate-service.test.ts`.
+- Create `packages/cognition/test/legacy-import-proposal.test.ts`.
 - Create `tests/vertical/d-e-cognitive-flow.test.ts`.
 - Create `tests/vertical/d-e-production-adapter.test.ts`.
 - Create `tests/vertical/e-autonomous-lifecycle.test.ts`.
@@ -184,7 +186,7 @@ interface LeaseProof {
 }
 ```
 
-Program E consumes these contracts-package exports and does not reimplement them; their declared owners vary (master §2 types are program-map-owned; D-owned entries are those frozen under Program D's **Program E Integration Surface**):
+Program E consumes these contracts-package exports and does not reimplement them; their declared owners vary (master §2 types are program-map-owned; D-owned entries are those frozen in Program D's plan (its **Frozen Program D Interfaces** and **Program E Integration Surface** sections)):
 
 ```ts
 import {
@@ -290,7 +292,7 @@ interface ResearchGenesisBuilderPort {
 }
 ```
 
-The imported DTOs and schemas above are identity exports of their declared owners, not Program E aliases or lookalike schemas. For the D-owned entries, the exact fields, strict unknown-key rejection, authorization requirements, and cross-field refinements are the definitions frozen under Program D's **Program E Integration Surface**. Program E may construct and parse those DTOs, but may not redeclare, `pick`, extend, or weaken them.
+The imported DTOs and schemas above are identity exports of their declared owners, not Program E aliases or lookalike schemas. For the D-owned entries, the exact fields, strict unknown-key rejection, authorization requirements, and cross-field refinements are the definitions frozen in Program D's plan (its **Frozen Program D Interfaces** and **Program E Integration Surface** sections). Program E may construct and parse those DTOs, but may not redeclare, `pick`, extend, or weaken them.
 
 Program E produces these stable interfaces for Programs F and G:
 
@@ -6149,6 +6151,8 @@ Run: `npm exec --workspace @cosmo/cognition -- tsx --test test/paired-sleep-proo
 
 Expected: both runs PASS with identical proof receipt hashes.
 
+Run the broader cognition suite before committing: `npm test --workspace @cosmo/cognition`
+
 - [ ] **Step 6: Commit**
 
 ```bash
@@ -7267,7 +7271,7 @@ E is the sole owner of every file above. Program G Task 5 consumes these
 implementations and creates nothing inside `packages/cognition`. The sibling
 owner extensions — Program C Task 12 (corpus proposal builder) and Program D
 Task 13 (question/artifact-index proposal builders) — execute in the same
-Program G window; G Task 5 requires all three receipts before it begins.
+Program G window; G Task 5 requires all three commits before it begins.
 
 **Interfaces:**
 - Consumes by identity from Program G's shared-contract freeze:
@@ -7276,7 +7280,8 @@ Program G window; G Task 5 requires all three receipts before it begins.
   `PublishStagedImportInputSchema`,
   `LegacyImportCandidateReceiptSchema`,
   `BuildLegacyTopologyImportProposalInputSchema`,
-  `LegacyTopologyImportProposalSchema`, and their inferred types.
+  `LegacyTopologyImportProposalSchema`,
+  `LegacyTopologyImportProposalBuildResultSchema`, and their inferred types.
 - Produces only:
 
 ```ts
@@ -7342,8 +7347,8 @@ test('legacy bundle closes all nine roots on an absent import ref only', async (
       'artifactIndexRoot',
     ],
   );
-  assert.equal(receipt.previousHead, null);
-  assert.equal(receipt.targetBranch, fixture.bundle.candidateRef);
+  assert.equal(receipt.previousCandidateHead, null);
+  assert.equal(receipt.candidateRef, fixture.bundle.candidateRef);
   assert.deepEqual(
     (await fixture.repository.commits.eventClosure(commit.commitId))
       .directJournalEventIds,
@@ -7466,6 +7471,7 @@ npm exec --workspace @cosmo/corpus -- tsx --test \
   test/legacy-import-proposal.test.ts
 npm exec --workspace @cosmo/research -- tsx --test \
   test/legacy-import-proposals.test.ts
+npm test --workspace @cosmo/cognition
 ```
 
 The corpus and research suites are owned and created by Program C Task 12 and

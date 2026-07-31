@@ -133,7 +133,7 @@ docs/operations/
 
 **Interfaces:**
 - Consumes: `ObjectId`, `BrainCommitId`, `CorpusSnapshotId`, `EventId`, `ClaimId`, `QuestionId`, `ReviewFindingId`, `ResearchProgramMode`, `ResearchProgramModeSchema`, `BrainRootKind`, Program B's exact `BrainLineageEventScopeSchema`/`BrainLineageEventScope`, `BrainRefName`, `LeaseProof`, `ObjectRef`, `TrustDescriptor`, `DetachedSignature`, `MutationAuthorization`, and Program C's already-frozen `CorpusRootMutationBatchRecordingSchema` from the accepted Programs B–F contracts.
-- Produces and exports from `@cosmo/contracts`: `LegacySource`, `LegacyRecord`, `LegacyImportClass`, `LegacyImportMapping`; the exact-B-refined `LegacyImportBrainLineageEventScope`; the G-owned legacy bridge DTOs `LegacyCorpusMapping`, `BuildLegacyCorpusImportProposalInput`, `LegacyCorpusImportProposal`, `LegacyCorpusImportProposalBuildResult`, `LegacyQuestionMapping`, `BuildLegacyQuestionBatchProposalInput`, `LegacyQuestionBatchProposal`, `LegacyQuestionBatchProposalBuildResult`, `LegacyArtifactMapping`, `BuildArtifactIndexBatchUpdateProposalInput`, `ArtifactIndexBatchUpdateProposal`, `ArtifactIndexBatchUpdateProposalBuildResult`, `LegacyTopologyMapping`, `BuildLegacyTopologyImportProposalInput`, `LegacyTopologyImportProposal`, and `LegacyTopologyImportProposalBuildResult`; `LegacyImportCandidateProposalBundle`, `StagedImport`, `PublishStagedImportInput`, `LegacyImportCandidateReceipt`, `MigrationReceipt`, `AcceptanceDimensionId`, `AcceptanceExecutionIdentity`, `RequiredHistoricalCaseId`, `RequiredReleaseScenarioId`, `AcceptanceScenarioClass`, `RequiredReleaseScenarioClassById`, `TrialScheduleIdentity`, `AcceptanceProfile`, `SignedAcceptanceProfile`, `TrialReceipt`, `GenesisBrainAcceptanceResult`, `ReleaseAcceptanceReceipt`, and every Zod schema named below.
+- Produces and exports from `@cosmo/contracts`: `LegacySource`, `LegacyRecord`, `LegacyImportClass`, `LegacyImportMapping`; the exact-B-refined `LegacyImportBrainLineageEventScope`; the G-owned legacy bridge DTOs `LegacyCorpusMapping`, `BuildLegacyCorpusImportProposalInput`, `LegacyCorpusImportProposal`, `LegacyCorpusImportProposalBuildResult`, `LegacyQuestionMapping`, `BuildLegacyQuestionBatchProposalInput`, `LegacyQuestionBatchProposal`, `LegacyQuestionBatchProposalBuildResult`, `LegacyArtifactMapping`, `BuildArtifactIndexBatchUpdateProposalInput`, `ArtifactIndexBatchUpdateProposal`, `ArtifactIndexBatchUpdateProposalBuildResult`, `LegacyTopologyMapping`, `BuildLegacyTopologyImportProposalInput`, `LegacyTopologyImportProposal`, and `LegacyTopologyImportProposalBuildResult`; `LegacyImportCandidateProposalBundle`, `StagedImport`, `PublishStagedImportInput`, `LegacyImportCandidateReceipt`, `MigrationReceipt`, `AcceptanceDimensionId`, `AcceptanceExecutionIdentity`, `RequiredReleaseScenarioId`, `AcceptanceScenarioClass`, `RequiredReleaseScenarioClassById`, `TrialScheduleIdentity`, `AcceptanceProfile`, `SignedAcceptanceProfile`, `TrialReceipt`, `GenesisBrainAcceptanceResult`, `ReleaseAcceptanceReceipt`, and every Zod schema named below (imports `RequiredHistoricalCaseIdSchema`/`RequiredHistoricalCaseId` by identity from Program A's heritage contracts).
 
 - [ ] **Step 1: Write failing migration-contract tests**
 
@@ -2004,8 +2004,6 @@ Expected: FAIL because the run fails with an unresolvable workspace specifier (`
 
 Create `@cosmo/migration` as a private ESM workspace with `build` and `test` scripts using `tsc` and `node ../../scripts/run-tests.mjs test`. Its workspace dependencies are `"@cosmo/contracts": "*"`, `"@cosmo/foundation": "*"`, `"@cosmo/heritage": "*"`, `"@cosmo/repository": "*"`, and `"@cosmo/corpus": "*"`. The development workspace export points at `./src/index.ts`; Program H alone rewrites a staged release copy to `./dist/index.js`.
 
-Run `npm install` immediately after adding the workspace manifest and commit the resulting `package-lock.json`. A plan step that adds a workspace but leaves the lockfile stale is incomplete.
-
 ```ts
 export function classifyLegacyDescriptor(
   descriptor: LegacyDescriptor
@@ -2707,8 +2705,6 @@ Expected: FAIL because the run fails with an unresolvable workspace specifier (`
 
 Create `@cosmo/acceptance` as a private ESM workspace with `build` and `test` scripts using `tsc` and `node ../../scripts/run-tests.mjs test`. Its workspace dependencies are the public packages from Programs A–F plus `"@cosmo/migration": "*"`. At this task, the sole development export points at `./src/index.ts`; that barrel exports the profile and signing surface. Task 7 adds the core-candidate subpath only when its source file exists. Program H alone rewrites the staged release copies to compiled `dist/` targets.
 
-Run `npm install` immediately after adding the workspace manifest and commit the resulting `package-lock.json`.
-
 For the historical-case manifest, parse its strict schema, canonicalize it, and verify `requiredHistoricalCaseManifestId = sha256(canonicalBytes)`. For each of the 18 `ObjectRef` fields in the root, resolve the corresponding canonical object, parse its declared strict schema, verify its object ID, payload hash, media type, byte length, and links, then retain its object ID in the verified profile result. Canonicalize the root with `profileId` and `signatures` omitted, compute `profileId`, and verify at least one trusted human release-authority Ed25519 signature over those exact canonical root bytes. A raw file hash, pretty-printed JSON bytes, unresolved ref, or signature over only a path is invalid.
 
 - [ ] **Step 3B: Register the workspace in the root lockfile before any dependent test**
@@ -2999,6 +2995,11 @@ export const VectorThresholdsDocumentSchema = z.object({
     decisionRule: z.string().min(1),
     allowNotApplicable: z.boolean(),
   }).strict()).length(21),
+  notApplicableReasons: z.array(z.object({
+    dimension: AcceptanceDimensionIdSchema,
+    caseId: z.string().min(1),
+    reason: z.string().min(1),
+  }).strict()).default([]),
 }).strict();
 
 const ScorerIdentitySchema = z.object({
@@ -3187,6 +3188,8 @@ export const AcceptanceProfileDocumentRegistry = {
 } as const;
 ```
 
+A dimension may be scored not-applicable only when a matching pre-output entry exists in the vector-thresholds document's `notApplicableReasons`; the stop/go gate rejects a not-applicable score with no frozen reason entry.
+
 The production requirements must contain `RequiredExecutionIndependencePairs` as eight unordered pairs exactly once. The first three pairs must differ on identity ID, prompt identity, context configuration, and process/session. Every pair involving `independent_challenger`, plus the inquiry generator/verifier pair, must additionally differ on signer principal, credential binding, and provider/model tuple. A role may share a provider family only where its pair does not require provider/model independence; it may never share the same signed prompt/context/process identity. `principal_researcher`, default mode, dream/consolidation, or challenger receipts cannot be substituted with `candidate_autonomous`.
 
 The historical manifest is stored as `application/vnd.cosmo.acceptance-historical-cases+json`. Verification iterates the registry's 18 entries—never a handpicked subset—and for each root field requires the referenced object's media type, `objectKind`, schema version, canonical bytes, object ID, links, and byte length to match. It then enforces these cross-object invariants before signature acceptance:
@@ -3292,7 +3295,7 @@ Every dimension is present exactly once. Mandatory dimensions cannot be `not_app
 | `perspective_diversity` | at least three materially distinct perspectives, retained dissent, blinded median at least 5/7, and no unsupported consensus |
 | `covenant_usefulness` | 1.00 Covenant constraint compliance and blinded usefulness median at least 5/7 |
 | `research_relationship_fidelity` | 1.00 of seeded corrections/preferences survive restart/export/import with exact `RelationshipEventId`; zero invented beliefs |
-| `sleep_dream_cognitive_effect` | at least 9 treatment wins across 15 preregistered fixture-pairs, zero structural regressions, and one complete dream-to-later-outcome lineage |
+| `sleep_dream_cognitive_effect` | at least 9 treatment wins across 15 preregistered fixture-pairs (ties count against treatment), zero structural regressions, and one complete dream-to-later-outcome lineage |
 | `merge_federation_quality` | 1.00 union closure materialized and resolvable, zero parent loss/rights broadening, and federation refs unchanged |
 | `autonomy_health` | external duration at least 28,800,000 ms, observer availability at least 0.99, at least three meaningful expeditions, two causally attested non-seed descendants, one later pursuit, all four lane treatments, one forced restart, one context turnover, and one sleep/wake |
 | `guided_task_fidelity` | 1.00 satisfiable criteria evidenced; deliberately impossible case ends `blocked` or `partial` with 1.00 unresolved criteria retained |
@@ -3982,7 +3985,7 @@ git commit -m "feat: prove continuity and Home23 independence"
   - `acceptance compile-profile --directory <path> --signing-key-fd <fd>`
   - `acceptance verify-profile <directory>`
   - `acceptance inventory-core --source-root <path> --source-commit <git-sha> --output <path>`
-  - `acceptance run --profile <directory> --source-commit <git-sha> --output-root <absolute-path>`
+  - `acceptance run --profile <directory> --source-commit <git-sha> --output-root <absolute-path> --core-artifact-set <path> --credential-broker-fd <fd>`
   - `acceptance report --receipt <object-id> --object-root <path> --canonical-output <path> --markdown-output <path>`
   - `acceptance verify-receipt --canonical-receipt <path> --expected-object-id <object-id> --expected-core-source <git-sha> --core-artifact-set <path>`
 

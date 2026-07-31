@@ -119,8 +119,8 @@ Program F does not create a public daemon or final API server. It freezes the in
 Program F consumes Program B without adding a write method to Ask:
 
 ```ts
-repository.commits.get(id: BrainCommitId): Promise<BrainCommit>;
-repository.refs.get(ref: BrainRefName): Promise<BrainCommitId | null>;
+repository.commits.get(commitId: BrainCommitId): Promise<BrainCommit>;
+repository.refs.get(name: BrainRefName): Promise<BrainCommitId | null>;
 repository.objects.get(
   ref: ObjectRef,
   authorization?: MutationAuthorization

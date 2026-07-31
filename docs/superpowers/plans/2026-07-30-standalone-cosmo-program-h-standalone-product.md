@@ -431,7 +431,7 @@ Expected: FAIL because the run fails with an unresolvable workspace specifier (`
 
 - [ ] **Step 3: Create the H-owned contract workspace and define the exact product status contract**
 
-Create private ESM workspace `@cosmo/product-contracts` with a `./src/index.ts` development export, `tsc -p tsconfig.json` build, root-runner tests, and only `"@cosmo/contracts": "*"` as a COSMO dependency. It imports and re-exports the exact accepted Program B–F public domain schemas/types needed by API consumers, but never edits or redeclares them. In particular, `CreateGenesisBrainDraftSchema`, `GenesisBrainReceiptSchema`, and `WritableBrainHeadRefSchema` retain Program E object identity; `WorkbenchBrainCatalogRequestSchema`, `WorkbenchBrainCatalogSchema`, `FormationInquirySchema`, `FormationExplanationSchema`, `InventReceiptSchema`, and `HumanInventPromotionReceiptSchema` retain Program F object identity; `ClientScopeSchema` is an object-identity alias of F's `WorkbenchClientScopeSchema`; `ExchangeBrowserSessionResponseSchema` is an object-identity alias of F's `WorkbenchSessionExchangeResponseSchema`; and the Steer/Invent draft, preview, and commit schemas are direct object-identity re-exports of Program F. H defines only strict HTTP envelopes around those bodies and the two authority-free activation requests below. H-owned status, other transport, route-manifest, and error contracts are defined only here. Run `npm install` after adding the workspace and commit its lockfile entry; the release builder alone rewrites the staged export to `./dist/index.js`.
+Create private ESM workspace `@cosmo/product-contracts` with a `./src/index.ts` development export, `tsc -p tsconfig.json` build, root-runner tests, and only `"@cosmo/contracts": "*"` as a COSMO dependency. It imports and re-exports the exact accepted Program B–F public domain schemas/types needed by API consumers, but never edits or redeclares them. In particular, `CreateGenesisBrainDraftSchema`, `GenesisBrainReceiptSchema`, and `WritableBrainHeadRefSchema` retain Program E object identity; `WorkbenchBrainCatalogRequestSchema`, `WorkbenchBrainCatalogSchema`, `FormationInquirySchema`, `FormationExplanationSchema`, `InventReceiptSchema`, and `HumanInventPromotionReceiptSchema` retain Program F object identity; `ClientScopeSchema` is an object-identity alias of F's `WorkbenchClientScopeSchema`; `ExchangeBrowserSessionResponseSchema` is an object-identity alias of F's `WorkbenchSessionExchangeResponseSchema`; and the Steer/Invent draft, preview, and commit schemas are direct object-identity re-exports of Program F. H defines only strict HTTP envelopes around those bodies and the two authority-free activation requests below. H-owned status, other transport, route-manifest, and error contracts are defined only here. The release builder alone rewrites the staged export to `./dist/index.js`.
 
 ```ts
 export const LifecycleIdentitySchema = z.object({
@@ -869,7 +869,7 @@ export const BrainLogRequestSchema = HttpRequestSchema(
 export const PublicBrainLogEntrySchema = z.object({
   schema: z.literal('cosmo.public-brain-log-entry.v1'),
   commitId: BrainCommitIdSchema,
-  parentCommitIds: z.array(BrainCommitIdSchema).max(16),
+  parentCommitIds: z.array(BrainCommitIdSchema),
   createdAt: z.string().datetime(),
 }).strict();
 
@@ -1455,7 +1455,7 @@ export const EventStreamFrameSchema = z.discriminatedUnion('type', [
 ]);
 ```
 
-The `research_run` status members are Program D's frozen `RuntimeRunState.status` values verbatim; the total mapping for the D statuses not surfaced is: `pausing` projects as `running`, `resuming` projects as `paused`, and `lost` projects as `failed`. The SSE contract contains no arbitrary `data`, summary text, prompt, source locator, source excerpt, artifact body, provider payload, grant, lease, fence, token, filesystem path, or private trust descriptor. `EventReadPort` authorizes the principal against the underlying event before mapping it to one closed projection. Unknown internal event types are not serialized; clients discover the durable state through the relevant read route instead.
+The `research_run` status members are Program D's frozen `RuntimeRunState.status` values verbatim; the total mapping for the D statuses not surfaced is: `pausing` projects as `running`, `resuming` projects as `paused`, and `lost` projects as `failed`. `wake_committed` and `control_converged` are H's public names for Program E's wake-commit and control-convergence settlement outcomes (Program E program-control/wake stages); the H projection maps them one-to-one from the E lifecycle engine's typed outcomes and surfaces no other lifecycle values. The SSE contract contains no arbitrary `data`, summary text, prompt, source locator, source excerpt, artifact body, provider payload, grant, lease, fence, token, filesystem path, or private trust descriptor. `EventReadPort` authorizes the principal against the underlying event before mapping it to one closed projection. Unknown internal event types are not serialized; clients discover the durable state through the relevant read route instead.
 
 - [ ] **Step 8: Run focused and contract tests**
 
@@ -1554,7 +1554,7 @@ Expected: FAIL because the run fails with an unresolvable workspace specifier (`
 
 - [ ] **Step 3: Create the API workspace and implement bearer-token issuance**
 
-Create private ESM workspace `@cosmo/api` with a `./src/index.ts` development export, `tsc -p tsconfig.json` build, and root-runner tests. Its initial COSMO dependencies are `"@cosmo/product-contracts": "*"` and `"@cosmo/foundation": "*"`; run `npm install` and commit the exact lockfile update. Task 3 adds Fastify and the remaining public service-port packages without changing this boundary.
+Create private ESM workspace `@cosmo/api` with a `./src/index.ts` development export, `tsc -p tsconfig.json` build, and root-runner tests. Its initial COSMO dependencies are `"@cosmo/product-contracts": "*"` and `"@cosmo/foundation": "*"`. Task 3 adds Fastify and the remaining public service-port packages without changing this boundary.
 
 Use 32 random bytes encoded as base64url with the `cosmo_` prefix. Persist only:
 
@@ -2875,7 +2875,7 @@ Expected: FAIL because `@cosmo/client` does not exist.
 
 - [ ] **Step 3: Implement the exact client surface**
 
-Create a private ESM `@cosmo/client` package with a `./src/index.ts` development export, `tsc -p tsconfig.json` build, root-runner tests, and only `"@cosmo/product-contracts": "*"` as a COSMO dependency. Run `npm install` after adding the workspace and commit the lockfile entry; the release builder alone rewrites the staged export to `./dist/index.js`.
+Create a private ESM `@cosmo/client` package with a `./src/index.ts` development export, `tsc -p tsconfig.json` build, root-runner tests, and only `"@cosmo/product-contracts": "*"` as a COSMO dependency. The release builder alone rewrites the staged export to `./dist/index.js`.
 
 ```ts
 export interface MutationOptions {
@@ -3221,7 +3221,7 @@ Expected: FAIL because the run fails with an unresolvable workspace specifier
 
 - [ ] **Step 3: Define exact standalone configuration**
 
-Create private ESM workspace `@cosmo/service` with a `./src/main.ts` development entry, plus `build`, `test`, and `start` scripts. Every COSMO dependency uses `"*"`; the service has no Home23, PM2, or service-discovery dependency. Run `npm install` and commit the lockfile entry. Only the staged release manifest points at compiled `dist/main.js`.
+Create private ESM workspace `@cosmo/service` with a `./src/main.ts` development entry, plus `build`, `test`, and `start` scripts. Every COSMO dependency uses `"*"`; the service has no Home23, PM2, or service-discovery dependency. Only the staged release manifest points at compiled `dist/main.js`.
 
 ```ts
 export const StandaloneConfigSchema = z.object({
@@ -3549,7 +3549,7 @@ Expected: FAIL because the run fails with an unresolvable workspace specifier (`
 
 - [ ] **Step 3: Implement initialization**
 
-Create private ESM `@cosmo/cli` with development export `./src/index.ts`, development bin entry `cosmo: ./src/main.ts`, `tsc -p tsconfig.json` build, and root-runner tests. It depends on `@cosmo/client`, `@cosmo/product-contracts`, `@cosmo/foundation`, `@cosmo/migration`, and `@cosmo/acceptance` through `"*"`. Run `npm install` and commit the lockfile entry. The release builder alone rewrites the staged export and bin to compiled `dist/` targets.
+Create private ESM `@cosmo/cli` with development export `./src/index.ts`, development bin entry `cosmo: ./src/main.ts`, `tsc -p tsconfig.json` build, and root-runner tests. It depends on `@cosmo/client`, `@cosmo/product-contracts`, `@cosmo/foundation`, `@cosmo/migration`, and `@cosmo/acceptance` through `"*"`. The release builder alone rewrites the staged export and bin to compiled `dist/` targets.
 
 `cosmo init`:
 
