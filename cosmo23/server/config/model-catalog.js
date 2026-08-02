@@ -101,6 +101,13 @@ const BUILTIN_MODEL_CATALOG = {
         { id: 'qwen3-coder:480b', label: 'Qwen 3 Coder 480B', kind: 'chat' },
         { id: 'qwen3-coder-next', label: 'Qwen 3 Coder Next', kind: 'chat' },
         { id: 'qwen3-vl:235b-instruct', label: 'Qwen 3 VL 235B Instruct', kind: 'chat' },
+        // Bare legacy IDs observed in live standalone catalogs (2026-07-22).
+        // They predate strict capability validation, so without a built-in row
+        // they resolve no execution defaults and throw model_capability_invalid
+        // at load — taking the whole catalog down over one stale entry.
+        { id: 'qwen3-vl:235b', label: 'Qwen 3 VL 235B', kind: 'chat' },
+        { id: 'qwen3-next:80b', label: 'Qwen 3 Next 80B', kind: 'chat' },
+        { id: 'cogito-2.1:671b', label: 'Cogito 2.1 671B', kind: 'chat' },
         { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro', kind: 'chat' },
         { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash', kind: 'chat' },
         { id: 'deepseek-v3.2', label: 'DeepSeek V3.2', kind: 'chat' },
@@ -148,6 +155,12 @@ const BUILTIN_MODEL_CATALOG = {
         { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', kind: 'chat', contextWindowTokens: 372000 },
         { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', kind: 'chat', contextWindowTokens: 372000 },
         { id: 'gpt-5.5', label: 'GPT-5.5', kind: 'chat', contextWindowTokens: 272000 },
+        // Legacy ID observed in live standalone catalogs (2026-07-22); see the
+        // ollama-cloud note above for why a bare row needs a built-in default.
+        // Deliberately carries NO per-model overrides: a legacy row exists to
+        // inherit the provider execution defaults, and pinning a window here
+        // would silently give a stale entry different limits from the provider.
+        { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', kind: 'chat' },
         { id: 'gpt-5.5-pro', label: 'GPT-5.5 Pro', kind: 'chat' },
         { id: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark', kind: 'chat' },
         { id: 'gpt-5.4', label: 'GPT-5.4', kind: 'chat', contextWindowTokens: 272000 },
