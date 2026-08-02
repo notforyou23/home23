@@ -71,31 +71,63 @@ Split by responsibility, each file small enough to hold in context. `consolidate
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { classifyOrigin } = require('../../scripts/vault/vault-paths.cjs');
+const { classifyOrigin, TYPES } = require('../../scripts/vault/vault-paths.cjs');
 
-test('voice notes route to voice/', () => {
-  assert.equal(classifyOrigin('/Users/jtr/_JTR23_/cosmo-home/runs/jtr/inputs/voice/voice-2026-03-04T03-24-06-127Z.md'), 'voice');
-  assert.equal(classifyOrigin('/Users/jtr/_JTR23_/cosmo-home_2.3/voice/voice-2026-02-01.md'), 'voice');
+// [input, expected] -- the whole routing contract on one screen. This doubles as
+// the precedence documentation for the next person.
+const FIXTURES = [
+  // positive: every type reachable from a real path
+  ['/Users/jtr/_JTR23_/cosmo-home/runs/jtr/inputs/voice/voice-2026-03-04T03-24-06-127Z.md', 'voice'],
+  ['/Users/jtr/_JTR23_/cosmo-home_2.3/voice/voice-2026-02-01.md', 'voice'],
+  ['/Users/jtr/_JTR23_/release/home23/instances/jerry/workspace/jtr/2026-03-23-0331-persistent-agent-team-built.md', 'sessions'],
+  ['/Users/jtr/life/areas/x/sessions/s.md', 'sessions'],
+  ['/Users/jtr/life/vault/conversations/2026-03-01-turtles.md', 'conversations'],
+  ['/Users/jtr/life/areas/jtr_antrhopic_archive/conversations.json', 'conversations'],
+  ['/Users/jtr/life/areas/jerry_garcia/outputs/notes.md', 'research'],
+  ['/Users/jtr/life/feed/MRI Report.pdf', 'health'],
+  ['/Users/jtr/life/areas/refs/paper.bib', 'reading'],
+  ['/Users/jtr/life/feed/article.md', 'reading'],
+  ['/Users/jtr/_JTR23_/cosmo-home/some/unknown/thing.md', 'notes'],
+  ['/Users/jtr/.openclaw/agents/claude/abc123.md', 'notes'],
+
+  // NEGATIVE: bare words are topics, not provenance. These are the cases that
+  // separate this implementation from a naive substring match -- the 6 original
+  // happy-path tests passed against one, which is how the health bug shipped.
+  ['/Users/jtr/_JTR23_/cosmo-home/engine/scripts/monitor-health.sh', 'notes'],
+  ['/Users/jtr/_JTR23_/cosmo-home/engine/src/cluster/health-monitor.js', 'notes'],
+  ['/Users/jtr/.openclaw/workspace/state/node-health-imac.json', 'notes'],
+  ['/Users/jtr/life/notes/my-voice-memo.md', 'notes'],
+  ['/Users/jtr/life/notes/01J9x2mriQ4.md', 'notes'],
+
+  // PRECEDENCE: research outranks health. A musician's health research is
+  // research, and must not defect out of its corpus on a filename word.
+  ['/Users/jtr/life/areas/jerry_garcia/outputs/jerry_garcia_health_report.md', 'research'],
+  ['/Users/jtr/life/areas/jerry_garcia/outputs/research/health_timeline_1986_1995_draft.md', 'research'],
+];
+
+test('routing contract', () => {
+  for (const [input, expected] of FIXTURES) {
+    assert.equal(classifyOrigin(input), expected, `${input} should route to ${expected}`);
+  }
 });
 
-test('session summaries route to sessions/', () => {
-  assert.equal(classifyOrigin('/Users/jtr/_JTR23_/release/home23/instances/jerry/workspace/jtr/2026-03-23-0331-persistent-agent-team-built.md'), 'sessions');
+test('every declared TYPE is reachable -- an unreachable type is a 0-byte dir forever', () => {
+  const reached = new Set(FIXTURES.map(([i]) => classifyOrigin(i)));
+  assert.deepEqual(TYPES.filter((t) => !reached.has(t)), []);
 });
 
-test('health material routes to health/', () => {
-  assert.equal(classifyOrigin('/Users/jtr/life/feed/MRI Report.pdf'), 'health');
+test('routing is total -- never returns a type the vault has no folder for', () => {
+  for (const [input] of FIXTURES) {
+    assert.ok(TYPES.includes(classifyOrigin(input)), `${input} produced a type not in TYPES`);
+  }
 });
 
-test('jerry_garcia research routes to research/', () => {
-  assert.equal(classifyOrigin('/Users/jtr/life/areas/jerry_garcia/outputs/notes.md'), 'research');
-});
-
-test('bibliographies route to reading/', () => {
-  assert.equal(classifyOrigin('/Users/jtr/life/areas/refs/paper.bib'), 'reading');
-});
-
-test('unclassifiable files route to notes/, never to a decide-later bucket', () => {
-  assert.equal(classifyOrigin('/Users/jtr/_JTR23_/cosmo-home/some/unknown/thing.md'), 'notes');
+test('rejects non-absolute paths loudly rather than silently filing them to notes', () => {
+  assert.throws(() => classifyOrigin('voice/v.md'), TypeError);
+  assert.throws(() => classifyOrigin(undefined), TypeError);
+  assert.throws(() => classifyOrigin(null), TypeError);
+  assert.throws(() => classifyOrigin(''), TypeError);
+  assert.throws(() => classifyOrigin(42), TypeError);
 });
 ```
 
@@ -111,23 +143,42 @@ Expected: FAIL — `Cannot find module '../../scripts/vault/vault-paths.cjs'`
 
 // Type is derived MECHANICALLY from the origin path. Provenance is a fact;
 // meaning is a judgment and lives in frontmatter tags, never in folders.
-// Order matters: first match wins.
+//
+// Precedence: MOST SPECIFIC PROVENANCE WINS.
+//   1. capture-mechanism dirs (voice/)   - how it was recorded
+//   2. agent-session dirs                - what produced it
+//   3. named-project dirs                - what body of work it belongs to
+//   4. drop-zone / sensitive dirs        - where jtr filed it
+//   5. extension rules                   - last-resort format signals
+// A rule may only match a PATH SEGMENT (delimited by /) or a FILE EXTENSION.
+// Never match a bare word: words are topics, and topics are judgments.
 const RULES = [
-  [/\/(voice)\//i, 'voice'],
+  [/\/voice\//i, 'voice'],
   [/\/workspace\/jtr\//i, 'sessions'],
-  [/\/(sessions|conversations)\//i, 'sessions'],
-  [/(MRI|health|\.health_log)/i, 'health'],
-  [/\/(jerry_garcia|trail-running|research|research-runs)\//i, 'research'],
+  [/\/sessions\//i, 'sessions'],
+  [/\/conversations\//i, 'conversations'],
+  [/(anthropic|antrhopic)_archive\/.*conversations\.json$/i, 'conversations'],
+  [/\/(jerry_garcia|trail-running|research-runs|research)\//i, 'research'],
+  [/\/(health|\.health_log)\//i, 'health'],
+  [/\/feed\/.*\.(pdf|jpg|jpeg|png|heic)$/i, 'health'],
   [/\.bib$/i, 'reading'],
   [/\/(feed|reading|refs)\//i, 'reading'],
 ];
 
-const TYPES = ['voice', 'sessions', 'conversations', 'research', 'health', 'reading', 'notes', '_archive'];
+// NOTE: '_archive' intentionally absent. The oversized artifacts it was meant to
+// hold (chat.html, checkpoint-15880.json) are not document extensions and never
+// reach this function. Plan 3 (archive + rebuild) owns them.
+const TYPES = ['voice', 'sessions', 'conversations', 'research', 'health', 'reading', 'notes'];
 
 function classifyOrigin(originPath) {
-  const p = String(originPath);
+  // Do NOT coerce. Every rule is anchored on '/', so a relative path would
+  // silently route EVERY file to notes -- a silent total misroute, which is the
+  // exact defect class this project exists to eliminate.
+  if (typeof originPath !== 'string' || !originPath.startsWith('/')) {
+    throw new TypeError(`classifyOrigin requires an absolute path, got: ${JSON.stringify(originPath)}`);
+  }
   for (const [re, type] of RULES) {
-    if (re.test(p)) return type;
+    if (re.test(originPath)) return type;
   }
   return 'notes';
 }
@@ -135,10 +186,26 @@ function classifyOrigin(originPath) {
 module.exports = { classifyOrigin, TYPES };
 ```
 
+> **Why these rules look the way they do.** A first draft used `/(MRI|health|\.health_log)/i` — an
+> unanchored substring match. Verified against 274,258 real files: **73 routed to `health/` and
+> exactly 1 was a medical record.** It captured `monitor-health.sh`, `health-monitor.js`,
+> `node-health-imac.json`, `jerry_garcia_health_report.md` (research about a musician), and
+> `01J9x2mriQ4.md` (a nanoid containing "mri"). The most privacy-sensitive folder in the vault would
+> have been 98.6% noise with jtr's real MRI buried in it.
+>
+> The same draft lumped `conversations` into the `sessions` rule, making the `conversations` type
+> **unreachable — no input could produce it.** `TYPES` seeds the vault skeleton, so it would have
+> shipped an empty `conversations/` dir forever: **the 0-byte `entities/` failure this whole project
+> diagnoses, reproduced in its own remedy.** And `jtr_antrhopic_archive/conversations.json` — the
+> densest artifact in the corpus — routed to `notes`. (`antrhopic` is a real typo in the real path;
+> match it literally, do not "fix" it.)
+>
+> Hence the hard rule: **path segments and file extensions only, never bare words.**
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `node --test tests/scripts/vault-paths.test.cjs`
-Expected: PASS — 6 tests
+Expected: PASS — 4 tests (a fixture table of 19 routes, plus reachability, totality, and input-contract invariants)
 
 - [ ] **Step 5: Commit**
 
@@ -186,9 +253,10 @@ test('different content hashes differently', () => {
 
 test('index reports first-seen vs duplicate, and records every origin', () => {
   const idx = new HashIndex();
-  assert.equal(idx.seen('h1', '/origin/one.md'), false);
-  assert.equal(idx.seen('h1', '/origin/two.md'), true);
-  assert.deepEqual(idx.origins('h1'), ['/origin/one.md', '/origin/two.md']);
+  const h = 'a'.repeat(64);   // must be a real sha256 hex digest -- non-hashes are rejected
+  assert.equal(idx.recordSighting(h, '/origin/one.md').firstSighting, true);
+  assert.equal(idx.recordSighting(h, '/origin/two.md').firstSighting, false);
+  assert.deepEqual(idx.origins(h), ['/origin/one.md', '/origin/two.md']);
 });
 ```
 
@@ -199,47 +267,33 @@ Expected: FAIL — `Cannot find module '../../scripts/vault/hash-index.cjs'`
 
 - [ ] **Step 3: Write minimal implementation**
 
-```javascript
-'use strict';
+See the committed module for the final implementation. The API is
+`{ hashFile, HashIndex }` with `recordSighting(hash, origin) -> { firstSighting }`,
+a read-only `has(hash)`, `seed(hash, originPaths)`, `origins(hash)` (returns a copy),
+and `hashes()`.
 
-const crypto = require('node:crypto');
-const fs = require('node:fs');
-
-function hashFile(filePath) {
-  const buf = fs.readFileSync(filePath);
-  return crypto.createHash('sha256').update(buf).digest('hex');
-}
-
-// Dedup is EXACT content match only (jtr, 2026-07-15). A lightly-edited
-// variant is a different document and is kept.
-class HashIndex {
-  constructor() {
-    this._origins = new Map();
-  }
-
-  // Returns true if this content hash has been seen before.
-  // Always records the origin, so a deduped file still keeps full provenance.
-  seen(hash, originPath) {
-    const existing = this._origins.get(hash);
-    if (!existing) {
-      this._origins.set(hash, [originPath]);
-      return false;
-    }
-    existing.push(originPath);
-    return true;
-  }
-
-  origins(hash) {
-    return this._origins.get(hash) || [];
-  }
-
-  hashes() {
-    return Array.from(this._origins.keys());
-  }
-}
-
-module.exports = { hashFile, HashIndex };
-```
+> **Why the API looks like this** — three defects were found by review and verified against
+> the real module, all of them silent-loss modes:
+>
+> 1. **`seen()` accepted a non-hash as a key.** `Map` takes `undefined`/`null`. A manifest entry
+>    missing `sha256` bucketed unrelated documents together; the second call returned "duplicate", so
+>    **the walker skipped the copy.** Now `recordSighting`/`has`/`seed` all reject anything that is
+>    not a lowercase sha256 hex digest — including uppercase, which otherwise split one content
+>    across two buckets and copied it twice.
+> 2. **The tests passed against a weakened implementation.** Reverting the `origins()` copy and
+>    wrapping `hashFile` in `try/catch { return null }` — a plausible "don't crash the 39k-file
+>    walk" hardening — kept all 3 tests green. Composed: 5 unreadable documents all hash to `null`,
+>    share one bucket, **1 is copied and the manifest asserts the other 4 are duplicates of it.**
+>    `hashFile`'s throw-on-error contract is load-bearing and is now pinned by a test.
+> 3. **`seen()` took exactly one origin, so seeding had no correct form.**
+>    `seen(entry.sha256, entry.origins[0])` discarded `origins[1..n]`, so every "idempotent" re-run
+>    silently erased provenance the first run captured. Hence `seed(hash, originPaths)`.
+>
+> And the verb was renamed: **`seen()` was a query verb that writes.** Any caller that "just checks"
+> — a defensive call in a log line, a second check in another branch — appended a phantom origin and
+> flipped the answer to "duplicate". `recordSighting` announces the write; `has()` is the read-only
+> question. This is the Task 1 lesson repeating: tests that pass against a naive implementation are
+> how the critical bug shipped.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -278,27 +332,31 @@ function tmpdir() {
 
 test('records a document with origin, hash, and type', () => {
   const m = new VaultManifest(path.join(tmpdir(), 'vault-manifest.json'));
-  m.record({ vaultPath: 'voice/voice-2026-03-04.md', sha256: 'abc', type: 'voice', origins: ['/src/voice-2026-03-04.md'], bytes: 120 });
+  const SHA_A = 'a'.repeat(64);   // real digests: HashIndex.seed() rejects anything else,
+  const SHA_Z = 'f'.repeat(64);   // and Task 5 seeds the index straight from this manifest.
+  m.record({ vaultPath: 'voice/voice-2026-03-04.md', sha256: SHA_A, type: 'voice', origins: ['/src/voice-2026-03-04.md'], bytes: 120 });
   const e = m.get('voice/voice-2026-03-04.md');
-  assert.equal(e.sha256, 'abc');
+  assert.equal(e.sha256, SHA_A);
   assert.equal(e.type, 'voice');
   assert.deepEqual(e.origins, ['/src/voice-2026-03-04.md']);
 });
 
 test('a deduped document accumulates multiple origins', () => {
   const m = new VaultManifest(path.join(tmpdir(), 'vault-manifest.json'));
-  m.record({ vaultPath: 'voice/v.md', sha256: 'abc', type: 'voice', origins: ['/a/v.md'], bytes: 10 });
-  m.record({ vaultPath: 'voice/v.md', sha256: 'abc', type: 'voice', origins: ['/b/v.md'], bytes: 10 });
+  const SHA_A = 'a'.repeat(64);
+  m.record({ vaultPath: 'voice/v.md', sha256: SHA_A, type: 'voice', origins: ['/a/v.md'], bytes: 10 });
+  m.record({ vaultPath: 'voice/v.md', sha256: SHA_A, type: 'voice', origins: ['/b/v.md'], bytes: 10 });
   assert.deepEqual(m.get('voice/v.md').origins, ['/a/v.md', '/b/v.md']);
 });
 
 test('round-trips through disk with schema', () => {
   const p = path.join(tmpdir(), 'vault-manifest.json');
   const m = new VaultManifest(p);
-  m.record({ vaultPath: 'notes/n.md', sha256: 'z', type: 'notes', origins: ['/o/n.md'], bytes: 5 });
+  const SHA_Z = 'f'.repeat(64);
+  m.record({ vaultPath: 'notes/n.md', sha256: SHA_Z, type: 'notes', origins: ['/o/n.md'], bytes: 5 });
   m.save();
   const loaded = new VaultManifest(p);
-  assert.equal(loaded.get('notes/n.md').sha256, 'z');
+  assert.equal(loaded.get('notes/n.md').sha256, SHA_Z);
   assert.equal(JSON.parse(fs.readFileSync(p, 'utf8')).schema, MANIFEST_SCHEMA);
 });
 ```
@@ -650,7 +708,9 @@ const { hashFile, HashIndex } = require('./hash-index.cjs');
 const { VaultManifest } = require('./vault-manifest.cjs');
 
 const DOC_EXT = new Set(['.md', '.txt', '.pdf', '.bib']);
-const EXCLUDE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.venv', '__pycache__']);
+// 'venv' and 'site-packages' added after a real-corpus scan found 89 files under
+// /venv/ and 103 under site-packages reaching the vault as Python package READMEs.
+const EXCLUDE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.venv', 'venv', 'site-packages', '__pycache__']);
 
 function* walk(root, stats) {
   let entries;
@@ -683,11 +743,13 @@ function consolidate({ sources, vaultRoot }) {
   const index = new HashIndex();
   const vaultPathByHash = new Map();
 
-  // Seed from the existing manifest so reruns are idempotent. Origins already
-  // recorded in the manifest are NOT re-added via index.seen() -- that would
-  // duplicate them on every rerun.
+  // Seed from the existing manifest so reruns are idempotent.
+  // MUST use seed(), not recordSighting(): recordSighting takes ONE origin, so
+  // seeding through it would drop origins[1..n] and every "idempotent" re-run
+  // would silently destroy provenance the first run correctly captured --
+  // across thousands of entries (cosmo-home / cosmo-home_2.3 share 3,361 paths).
   for (const [vaultPath, entry] of Object.entries(manifest.entries)) {
-    index.seen(entry.sha256, entry.origins[0]);
+    index.seed(entry.sha256, entry.origins);
     vaultPathByHash.set(entry.sha256, vaultPath);
   }
 
@@ -697,7 +759,7 @@ function consolidate({ sources, vaultRoot }) {
       const sha256 = hashFile(origin);
       const type = classifyOrigin(origin);
 
-      if (index.seen(sha256, origin)) {
+      if (!index.recordSighting(sha256, origin).firstSighting) {
         stats.deduped += 1;
         const vaultPath = vaultPathByHash.get(sha256);
         if (vaultPath) manifest.record({ vaultPath, sha256, type, origins: [origin], bytes: fs.statSync(origin).size });
@@ -882,7 +944,9 @@ const { hashFile } = require('./hash-index.cjs');
 const { VaultManifest } = require('./vault-manifest.cjs');
 
 const DOC_EXT = new Set(['.md', '.txt', '.pdf', '.bib']);
-const EXCLUDE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.venv', '__pycache__']);
+// 'venv' and 'site-packages' added after a real-corpus scan found 89 files under
+// /venv/ and 103 under site-packages reaching the vault as Python package READMEs.
+const EXCLUDE_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.venv', 'venv', 'site-packages', '__pycache__']);
 
 function* walk(root) {
   let entries;
@@ -1114,6 +1178,42 @@ default, not a decision).
   51,831 documents is deferred — spec §4.0a says let the compiler's existing key-concept extraction
   propose them free during the rebuild, and only pay for a dedicated pass if that proves insufficient.
 - **No live connectors.** Calendar, email, home/tesla devices are out of scope entirely (spec §1.15).
+
+## Known Gaps — carry these into the ChatGPT atomizer and plan 3
+
+Recorded from the final whole-implementation review and the real 33,129-document run. **None of these
+affect the live vault at `/Users/jtr/vault/`** — all were caught before or dodged by the chosen paths.
+
+1. **`renderContentBlock`'s `tool_use` / `tool_result` / `thinking` branches are dead code on the
+   Claude archive.** Every real message carrying those block types *also* has non-empty top-level
+   `text`, so the fallback never fires against real data. Synthetic tests cover it; **reality does
+   not.** The ChatGPT export is ~10× larger with a different shape and will lean on exactly that path.
+   **Treat those branches as unverified.** The `[object Object]` bug lived there and was only found by
+   reading real messages — not by any test.
+2. **80 files in the vault already contain `[object Object]`** — 73 in `notes/`, 6 in `sessions/`, 1 in
+   `research/`, **zero in `conversations/`.** This is *pre-existing damage* in cosmo-home / .openclaw /
+   jerry-workspace, faithfully copied forward. The same bug class the atomizer nearly shipped,
+   **already committed years ago by the previous systems.** Out of scope for a copy-only tool, but it
+   means the corpus itself carries old wounds that a rebuild will ingest verbatim.
+3. **`health/AUTO DRIVER LICENSE.pdf`** is typed `health` because it lives in `life/feed/` and the rule
+   is `/feed/*.pdf → health`. A licence is a sensitive ID document, so the private folder is not a
+   harmful home — but it is not health data, and a human skimming `health/` will notice immediately.
+4. **3 of 246 atomized conversations are genuine empty shells** — verified against the raw JSON (every
+   message has `text: ""`, no content blocks, no attachments). Real aborted sessions, faithfully
+   rendered, not an atomizer failure. So it is **243 real conversations**, not 246.
+5. **`.openclaw` is a live, Syncthing-backed directory, not a static archive.** Two files mutated
+   mid-run (pid 1072). Provably not this tool — the only writes ever target the vault or the manifest,
+   and both files were `.json`/`.tmp`, outside `DOC_EXT`. **Any future run against it will show
+   background drift that is not ours.** Worth knowing before archiving it to external storage.
+6. **No content-quality check exists at scale.** Coverage proves every source document has a recorded
+   origin and every vault file matches its hash. **Nothing certifies that what got copied is good
+   prose rather than garbage** — only two files were hand-read. For ~39k documents that is true of any
+   tool, but it must be named rather than assumed: **the vault is proven complete, not proven good.**
+
+**The process lesson, recorded because it produced the worst bug in this plan:** Task 4's implementer
+correctly flagged the atomizer's collision risk and was told it was Task 6's job. **Task 6 shipped and
+hardened only `consolidate.cjs`. Nobody came back.** Seven per-task reviews all missed it because it
+lived at a seam no task owned. A deferral without an owner is a silent loss of its own.
 
 ## Follow-On Plans
 
