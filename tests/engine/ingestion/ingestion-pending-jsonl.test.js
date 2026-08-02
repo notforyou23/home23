@@ -31,17 +31,18 @@ function item(i) {
   return { filePath: `/docs/file-${i}.md`, chunkIndex: i, totalChunks: 3, content: `chunk content ${i}` };
 }
 
-test('pending queue persists as JSONL: one line per item, no legacy json left behind', (t) => {
+test('pending queue persists in the append-only journal, no legacy json rewrite left behind', (t) => {
   const runPath = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-pending-jsonl-'));
   t.after(() => fs.rmSync(runPath, { recursive: true, force: true }));
   const m = makeManifest(runPath);
   m._pending = [item(0), item(1), item(2)];
   m._savePending();
 
-  const jsonlPath = path.join(runPath, 'ingestion-pending.jsonl');
-  assert.ok(fs.existsSync(jsonlPath), 'ingestion-pending.jsonl must exist');
+  const jsonlPath = path.join(runPath, 'ingestion-queue', 'events.jsonl');
+  assert.ok(fs.existsSync(jsonlPath), 'append-only events journal must exist');
   const lines = fs.readFileSync(jsonlPath, 'utf8').trim().split('\n');
-  assert.equal(lines.length, 3, 'one line per queued item');
+  assert.equal(lines.filter((line) => JSON.parse(line).type === 'item').length, 3,
+    'one compact item record per queued item');
   for (const line of lines) JSON.parse(line); // every line independently parseable
   assert.equal(fs.existsSync(path.join(runPath, 'ingestion-pending.json')), false,
     'legacy single-string file must not be written');
@@ -91,6 +92,8 @@ test('a corrupt line is skipped loudly, valid lines survive', (t) => {
 
 test('the feeder ignore-list covers both queue filenames (old and new)', () => {
   assert.equal(isIngestionInternalFile('ingestion-manifest.json'), true);
+  assert.equal(isIngestionInternalFile('ingestion-manifest.json.tmp'), true);
+  assert.equal(isIngestionInternalFile('state.json.tmp'), true);
   assert.equal(isIngestionInternalFile('ingestion-pending.json'), true);
   assert.equal(isIngestionInternalFile('ingestion-pending.jsonl'), true,
     'the feeder must never ingest its own queue file');

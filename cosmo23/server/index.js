@@ -98,6 +98,9 @@ const {
   registerRuntimeMetricsRoute,
 } = require('../../shared/runtime-metrics-route.cjs');
 const {
+  readDurableIngestionQueueStats,
+} = require('../../shared/ingestion-durable-queue.cjs');
+const {
   createProviderProbeHandler,
   probeExactProviderPair,
   resolveConfiguredProviderPairs,
@@ -1914,29 +1917,14 @@ app.get('/api/feeder/status', async (_req, res) => {
     }
     const runPath = activeContext.runPath;
     const manifestPath = path.join(runPath, 'ingestion-manifest.json');
-    // Patch 67: the queue is JSONL now (one line per item — the single-string
-    // JSON array hit V8's string ceiling). Count lines with a stream; fall
-    // back to the legacy array file for pre-patch runs.
-    const pendingJsonlPath = path.join(runPath, 'ingestion-pending.jsonl');
-    const pendingLegacyPath = path.join(runPath, 'ingestion-pending.json');
-
     let manifest = {};
-    let pendingCount = 0;
+    let queueStatus = null;
     try { manifest = JSON.parse(await fsp.readFile(manifestPath, 'utf8')); } catch {}
     try {
-      if (fs.existsSync(pendingJsonlPath)) {
-        pendingCount = await new Promise((resolve) => {
-          let count = 0;
-          const stream = fs.createReadStream(pendingJsonlPath);
-          stream.on('data', (chunk) => { for (let i = 0; i < chunk.length; i += 1) if (chunk[i] === 10) count += 1; });
-          stream.on('end', () => resolve(count));
-          stream.on('error', () => resolve(0));
-        });
-      } else {
-        const pending = JSON.parse(await fsp.readFile(pendingLegacyPath, 'utf8'));
-        pendingCount = Array.isArray(pending) ? pending.length : 0;
-      }
-    } catch {}
+      queueStatus = readDurableIngestionQueueStats(runPath);
+    } catch (error) {
+      console.warn('Durable ingestion queue status unavailable', { runPath, error: error.message });
+    }
 
     const fileCount = Object.keys(manifest).length;
     const nodeCount = Object.values(manifest).reduce((sum, e) => sum + (e.nodeIds?.length || 0), 0);
@@ -1947,7 +1935,10 @@ app.get('/api/feeder/status', async (_req, res) => {
         enabled: true,
         started: !!activeContext.engineProcess,
         manifest: { fileCount, nodeCount, files: manifest },
-        pending: { queueLength: pendingCount },
+        pending: {
+          queueLength: queueStatus?.pendingCount ?? null,
+          authority: queueStatus ? 'durable-queue-status-v1' : 'unavailable',
+        },
         ingestDir: path.join(runPath, 'ingestion', 'documents')
       }
     });

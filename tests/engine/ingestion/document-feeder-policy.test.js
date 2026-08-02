@@ -7,6 +7,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { DocumentFeeder } = require('../../../engine/src/ingestion/document-feeder');
+const { DocumentFeeder: CosmoDocumentFeeder } = require('../../../cosmo23/engine/src/ingestion/document-feeder');
 const { DocumentCompiler } = require('../../../engine/src/ingestion/document-compiler');
 
 function makeFeeder(config = {}, logs = []) {
@@ -189,6 +190,33 @@ test('document feeder watcher leaves existing files to the explicit startup scan
   const feeder = makeFeeder();
 
   assert.equal(feeder._watcherOptions().ignoreInitial, true);
+});
+
+for (const [name, Feeder] of [['Root', DocumentFeeder], ['COSMO', CosmoDocumentFeeder]]) {
+  test(`${name} maintenance mode initializes queue state without watchers, scans, or flush timers`, async (t) => {
+    const runPath = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feeder-maintenance-'));
+    t.after(() => fs.rmSync(runPath, { recursive: true, force: true }));
+    const feeder = new Feeder({
+      memory: { embed: async () => null },
+      config: { maintenanceMode: true },
+      logger: { info() {}, warn() {}, debug() {}, error() {} },
+    });
+    let scans = 0;
+    feeder._scanDirectory = async () => { scans += 1; };
+    await feeder.start(runPath);
+    assert.equal(feeder.manifest != null, true);
+    assert.equal(feeder._watchers.length, 0);
+    assert.equal(feeder._flushTimer, null);
+    assert.equal(scans, 0);
+    assert.equal((await feeder.getStatus()).maintenanceMode, true);
+    await feeder.shutdown();
+  });
+}
+
+test('COSMO feeder status endpoint reads the durable authoritative status snapshot', () => {
+  const source = fs.readFileSync(path.join(process.cwd(), 'cosmo23/server/index.js'), 'utf8');
+  assert.match(source, /readDurableIngestionQueueStats/);
+  assert.doesNotMatch(source.slice(source.indexOf("app.get('/api/feeder/status'"), source.indexOf("app.post('/api/feeder/ingest'")), /createReadStream\(pendingJsonlPath\)/);
 });
 
 test('document feeder rejects compile jobs when pending queue is full', async () => {

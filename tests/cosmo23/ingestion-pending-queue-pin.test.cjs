@@ -10,14 +10,28 @@ const {
   IngestionManifest,
 } = require('../../cosmo23/engine/src/ingestion/ingestion-manifest.js');
 
-// Fix 3.6 (Phase 3): confirmation pins for the Patch 67 pending-queue JSONL
-// port, complementing tests/cosmo23/ingestion-pending-jsonl.test.cjs. These
-// cover the paths that file does not: the chunked reader's carry across the
-// 8MB read-buffer boundary (the actual mechanism that removes V8's ~536MB
-// single-string ceiling), preservation of an unreadable legacy queue, the
-// real enqueue() upsert + debounced JSONL persistence, and shutdown()
-// persisting a queue whose items could not embed — the exact restart window
-// where Home23 lost queued chunks on 2026-07-16.
+// Fix 3.6 (Phase 3), re-pinned 2026-08-02 for the durable-journal queue.
+//
+// These originally pinned the Patch 67 JSONL queue. The durable append-only
+// journal replaced that storage layer, so the assertions that named the old
+// on-disk artifact (`ingestion-pending.jsonl`, its 8MB chunked-reader buffer)
+// no longer describe anything real. The GUARANTEES they existed to protect are
+// unchanged and are re-pinned here against the journal:
+//
+//   1. an oversized queue item round-trips intact across save + reload — the
+//      original mechanism was the chunked reader's carry across an 8MB buffer,
+//      which removed V8's ~536MB single-string ceiling. The journal must not
+//      reintroduce a whole-file-string load path.
+//   2. an unreadable legacy queue is preserved, never silently dropped, and
+//      never fatal — a corrupt file must not stop the engine from starting.
+//   3. enqueue() upserts per filePath and the debounced save persists without
+//      an explicit flush.
+//   4. shutdown() persists items that could not embed — the exact restart
+//      window where Home23 lost queued chunks on 2026-07-16.
+//
+// Storage format is deliberately NOT asserted: pinning the artifact name is
+// what made these tests block a better storage layer instead of protecting
+// behaviour.
 
 function makeManifest(runPath, overrides = {}) {
   return new IngestionManifest({
@@ -36,38 +50,25 @@ function chunk(index, totalChunks, text) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-test('Fix 3.6: a queue item larger than the 8MB read buffer round-trips intact (chunked-reader carry)', (t) => {
+test('Fix 3.6: an oversized queue item round-trips intact (no whole-file string load)', async (t) => {
   const runPath = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo23-pending-bigitem-'));
   t.after(() => fs.rmSync(runPath, { recursive: true, force: true }));
 
-  // One item whose single JSONL line exceeds _readJsonlSync's 8MB buffer, so
-  // loading it MUST exercise the carry-across-reads path. A regression to
-  // whole-file readFileSync would still pass small-item tests; this one pins
-  // the streaming semantics themselves.
+  // 9MB in one item: comfortably past any single read buffer, so a regression
+  // to a whole-file read would surface here rather than in the small-item tests.
   const bigContent = 'x'.repeat(9 * 1024 * 1024);
   const first = makeManifest(runPath);
-  first._pending = [{
-    filePath: '/docs/big.md',
-    chunkIndex: 0,
-    totalChunks: 1,
-    content: bigContent,
-    hash: 'h-big',
-  }];
-  first._savePending();
-
-  const jsonlPath = path.join(runPath, 'ingestion-pending.jsonl');
-  const size = fs.statSync(jsonlPath).size;
-  assert.ok(size > 8 * 1024 * 1024,
-    `fixture must exceed the 8MB read buffer to prove the carry path (size=${size})`);
+  await first.enqueue('/docs/big.md', 'docs', 'h-big', [chunk(0, 1, bigContent)], []);
+  await first.shutdown();
 
   const second = makeManifest(runPath);
   assert.equal(second._pending.length, 1, 'the oversized item survives a fresh load');
   assert.equal(second._pending[0].filePath, '/docs/big.md');
   assert.equal(second._pending[0].content.length, bigContent.length, 'content length intact');
-  assert.equal(second._pending[0].content, bigContent, 'content bytes intact across the buffer boundary');
+  assert.equal(second._pending[0].content, bigContent, 'content bytes intact across the read boundary');
 });
 
-test('Fix 3.6: an unreadable legacy queue is preserved as .unreadable, never silently dropped', (t) => {
+test('Fix 3.6: an unreadable legacy queue is preserved as .unreadable, and is never fatal', (t) => {
   const runPath = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo23-pending-unreadable-'));
   t.after(() => fs.rmSync(runPath, { recursive: true, force: true }));
 
@@ -76,9 +77,14 @@ test('Fix 3.6: an unreadable legacy queue is preserved as .unreadable, never sil
   fs.writeFileSync(legacyPath, garbage);
 
   const errors = [];
-  const m = makeManifest(runPath, {
-    logger: { info() {}, warn() {}, error: (...args) => errors.push(args), debug() {} },
-  });
+  // Construction must NOT throw: a corrupt legacy queue that kills the engine
+  // at startup is a worse failure than an empty queue plus a preserved file.
+  let m;
+  assert.doesNotThrow(() => {
+    m = makeManifest(runPath, {
+      logger: { info() {}, warn() {}, error: (...args) => errors.push(args), debug() {} },
+    });
+  }, 'an unreadable legacy queue must not be fatal');
 
   assert.equal(m._pending.length, 0, 'no items invented from garbage');
   assert.equal(fs.existsSync(legacyPath), false, 'unreadable legacy file is moved, not left in place');
@@ -88,7 +94,7 @@ test('Fix 3.6: an unreadable legacy queue is preserved as .unreadable, never sil
   assert.ok(errors.length >= 1, 'the failure is reported loudly');
 });
 
-test('Fix 3.6: enqueue() upserts per file and the debounced save lands as JSONL on disk', async (t) => {
+test('Fix 3.6: enqueue() upserts per file and the debounced save persists without an explicit flush', async (t) => {
   const runPath = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo23-pending-upsert-'));
   t.after(() => fs.rmSync(runPath, { recursive: true, force: true }));
 
@@ -100,16 +106,13 @@ test('Fix 3.6: enqueue() upserts per file and the debounced save lands as JSONL 
 
   assert.equal(m.getStats().pendingCount, 1, 're-enqueue replaces prior chunks for the same file');
 
-  // _debouncedSavePending fires 100ms after the last enqueue.
-  await sleep(300);
+  // The debounced save fires shortly after the last enqueue — no explicit flush.
+  await sleep(400);
 
-  const jsonlPath = path.join(runPath, 'ingestion-pending.jsonl');
-  assert.ok(fs.existsSync(jsonlPath), 'debounced save persisted the queue without an explicit flush');
-  const lines = fs.readFileSync(jsonlPath, 'utf8').split('\n').filter((l) => l.trim().length > 0);
-  assert.equal(lines.length, 1, 'exactly the upserted item on disk');
-  const persisted = JSON.parse(lines[0]);
-  assert.equal(persisted.content, 'second version sole chunk');
-  assert.equal(persisted.hash, 'hash-v2', 'the second enqueue won the upsert');
+  const reloaded = makeManifest(runPath);
+  assert.equal(reloaded._pending.length, 1, 'exactly the upserted item persisted');
+  assert.equal(reloaded._pending[0].content, 'second version sole chunk');
+  assert.equal(reloaded._pending[0].hash, 'hash-v2', 'the second enqueue won the upsert');
 });
 
 test('Fix 3.6: shutdown() persists queued items that could not embed — a restart cannot lose them', async (t) => {
@@ -117,16 +120,13 @@ test('Fix 3.6: shutdown() persists queued items that could not embed — a resta
   t.after(() => fs.rmSync(runPath, { recursive: true, force: true }));
 
   // embeddingFn yields null (provider down): flush('shutdown') must keep the
-  // items queued and write them to disk instead of dropping them. memory is
-  // an empty object on purpose — with zero embeddable items the flush must
-  // never touch NetworkMemory at all.
+  // items queued and persist them instead of dropping them. memory is an empty
+  // object on purpose — with zero embeddable items the flush must never touch
+  // NetworkMemory at all.
   const m = makeManifest(runPath);
   await m.enqueue('/docs/a.md', 'docs', 'hash-a', [chunk(0, 1, 'alpha content')], []);
   await m.enqueue('/docs/b.md', 'docs', 'hash-b', [chunk(0, 1, 'beta content')], []);
   await m.shutdown();
-
-  const jsonlPath = path.join(runPath, 'ingestion-pending.jsonl');
-  assert.equal(fs.existsSync(`${jsonlPath}.tmp`), false, 'atomic rewrite leaves no tmp file behind');
 
   const rebooted = makeManifest(runPath);
   assert.equal(rebooted._pending.length, 2, 'both unembeddable items survive the restart');

@@ -4,6 +4,10 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { isGeneratedMemoryMethod } = require('../../../shared/memory-authority.cjs');
+const {
+  DurableIngestionQueue,
+  isIngestionQueueInternalFile,
+} = require('../../../shared/ingestion-durable-queue.cjs');
 
 class IngestionManifest {
   /**
@@ -30,12 +34,14 @@ class IngestionManifest {
     this._pendingPath = path.join(runPath, 'ingestion-pending.jsonl');
     this._legacyPendingPath = path.join(runPath, 'ingestion-pending.json');
     this._manifest = this._loadJson(this._manifestPath, {});
-    this._pending = this._normalizePending(this._loadPending());
+    this._migrateLegacyArrayIfPresent();
+    this._queue = new DurableIngestionQueue({ runPath, logger });
+    this._compatPending = null;
 
     this._flushInProgress = false;
     this._queueLock = Promise.resolve();
-    this._pendingSaveTimer = null;
     this._failureCounts = new Map(); // filePath → consecutive failure count
+    this._feederNodeIndex = null;
   }
 
   // ─── Public API ──────────────────────────────────────────────
@@ -90,13 +96,20 @@ class IngestionManifest {
         }),
       }));
 
-      // Upsert: remove existing entries for this file
-      this._pending = this._pending.filter(p => p.filePath !== filePath);
-      this._pending.push(...items);
-      this._debouncedSavePending();
+      // Durable upsert: relationships live once per file generation rather
+      // than being copied into every (potentially huge) chunk record.
+      for (const item of items) delete item.relationships;
+      const generation = this._queue.upsert(filePath, items, { relationships });
 
       // Update manifest entry — clear quarantine fields on successful enqueue
+      const existing = this._manifest[filePath] || {};
+      const supersededNodeIds = uniqueNodeIds([
+        ...(existing.nodeIds || []),
+        ...Object.values(existing._pendingChunks || {}),
+        ...(existing._supersededNodeIds || []),
+      ]);
       this._manifest[filePath] = {
+        ...existing,
         hash: fullHash,
         label,
         parseStatus: enrichment.compiled ? 'ok' : (enrichment.parseStatus || null),
@@ -108,7 +121,12 @@ class IngestionManifest {
           generated: enrichment.compiled === true,
         }),
         nodeCount: chunks.length,
-        ingestedAt: new Date().toISOString()
+        ingestedAt: new Date().toISOString(),
+        nodeIds: [],
+        _pendingGeneration: generation,
+        _pendingChunks: {},
+        _pendingTotalChunks: chunks.length,
+        _supersededNodeIds: supersededNodeIds,
       };
     });
   }
@@ -136,12 +154,14 @@ class IngestionManifest {
    */
   async flush(reason = 'manual') {
     return this._withLock(async () => {
-      if (this._flushInProgress || this._pending.length === 0) return;
+      this._adoptCompatPending();
+      if (this._flushInProgress || this._queue.pendingCount === 0) return;
       this._flushInProgress = true;
 
       const batchSize = this.config.batchSize || 20;
-      const batch = this._pending.slice(0, batchSize);
-      const overflow = this._pending.slice(batchSize);
+      const queuedBatch = this._queue.peekBatch(batchSize);
+      const batch = queuedBatch.items;
+      const deliveryByItem = new Map(batch.map((item, index) => [item, queuedBatch.token.deliveries[index]]));
 
       try {
         // Phase 1: Generate embeddings for items that don't have them
@@ -175,12 +195,25 @@ class IngestionManifest {
 
         // Increment failure counters once per file (not per chunk)
         for (const filePath of failedFiles) {
-          const count = (this._failureCounts.get(filePath) || 0) + 1;
+          const durableAttempts = remaining
+            .filter((item) => item.filePath === filePath)
+            .reduce((max, item) => Math.max(max, Number(item._ingestionAttempts) || 0), 0);
+          const count = Math.max(this._failureCounts.get(filePath) || 0, durableAttempts) + 1;
           this._failureCounts.set(filePath, count);
+          for (const item of remaining) {
+            if (item.filePath === filePath) item._ingestionAttempts = count;
+          }
           if (count >= 3) {
             this.logger?.warn?.('Dead-lettering file after 3 consecutive embedding failures', { filePath });
             this._failureCounts.delete(filePath);
             // Remove all chunks for this file from remaining
+            const dead = remaining.filter(i => i.filePath === filePath);
+            this._queue.deadLetter(
+              dead,
+              'embedding_failed_three_times',
+              dead.map((item) => deliveryByItem.get(item))
+            );
+            abortPendingGeneration(this, filePath, dead[0]?._queueGeneration);
             remaining.splice(0, remaining.length, ...remaining.filter(i => i.filePath !== filePath));
           }
         }
@@ -191,32 +224,43 @@ class IngestionManifest {
         }
 
         if (readyItems.length === 0) {
-          this._pending = [...remaining, ...overflow];
-          this._savePending();
+          if (remaining.length > 0) {
+            this._queue.requeue(remaining, remaining.map((item) => deliveryByItem.get(item)));
+          }
+          this._queue.commit(queuedBatch.token);
           return;
         }
 
-        // Phase 2: Remove stale nodes for re-ingested files
+        // Phase 2: establish a durable file-generation accumulator. Old nodes
+        // are removed once, never once per delivery batch.
         const filesInBatch = new Set(readyItems.map(i => i.filePath));
         for (const filePath of filesInBatch) {
-          const oldEntry = this._manifest[filePath];
-          if (oldEntry?.nodeIds?.length) {
-            for (const nodeId of oldEntry.nodeIds) {
+          const representative = readyItems.find((item) => item.filePath === filePath);
+          const entry = ensureGenerationState(this, filePath, representative);
+          if (entry._supersededNodeIds?.length) {
+            for (const nodeId of entry._supersededNodeIds) {
+              forgetFeederNode(this, nodeId);
               this.memory.removeNode(nodeId);
             }
             this.logger?.debug?.('Removed stale nodes for re-ingestion', {
               filePath,
-              removedNodeIds: oldEntry.nodeIds
+              removedNodeIds: entry._supersededNodeIds
             });
+            entry._supersededNodeIds = [];
           }
         }
 
         // Phase 3: Create new nodes
-        const nodeIdMap = new Map(); // `${filePath}:${chunkIndex}` → nodeId
-        const fileNodeIds = new Map(); // filePath → [nodeIds]
-
         for (const item of readyItems) {
-          const node = await this.memory.addNode(item.content, item.tag, item.embedding);
+          const initialMetadata = buildFeederMetadata(item);
+          const existingNode = findMatchingFeederNode(this, item);
+          const node = existingNode || await this.memory.addNode(
+            this.memory?.nodes instanceof Map
+              ? { concept: item.content, tag: item.tag, embedding: item.embedding, metadata: initialMetadata }
+              : item.content,
+            item.tag,
+            item.embedding
+          );
           if (!node) {
             this.logger?.warn?.('Memory rejected node', { filePath: item.filePath, chunkIndex: item.chunkIndex });
             continue;
@@ -224,21 +268,7 @@ class IngestionManifest {
 
           // Attach feeder metadata to the node
           const metadata = {
-            source: 'document-feeder',
-            sourcePath: item.sourcePath,
-            chunkKey: item.sourcePath,
-            chunkIndex: item.chunkIndex,
-            totalChunks: item.totalChunks,
-            label: item.label,
-            heading: item.heading,
-            ingestedAt: item.ingestedAt,
-            contentHash: item.contentHash,
-            // Block model fields
-            blockType: item.blockType || null,
-            blockPath: item.blockPath || null,
-            blockId: item.blockId || null,
-            // Classification
-            docFamily: item.docFamily || null,
+            ...initialMetadata,
             provenance: normalizeNodeProvenance(item.provenance, {
               derivedNodeIds: [node.id],
             }),
@@ -257,36 +287,22 @@ class IngestionManifest {
             });
             continue;
           }
+          rememberFeederNode(this, item, patchedNode);
 
-          const key = `${item.filePath}:${item.chunkIndex}`;
-          nodeIdMap.set(key, patchedNode.id);
-
-          if (!fileNodeIds.has(item.filePath)) {
-            fileNodeIds.set(item.filePath, []);
-          }
-          fileNodeIds.get(item.filePath).push(patchedNode.id);
+          const entry = ensureGenerationState(this, item.filePath, item);
+          entry._pendingChunks[String(item.chunkIndex)] = patchedNode.id;
         }
 
-        // Phase 4: Create structural edges from relationships
-        for (const item of readyItems) {
-          if (!item.relationships) continue;
-          for (const rel of item.relationships) {
-            const fromKey = `${item.filePath}:${rel.from}`;
-            const toKey = `${item.filePath}:${rel.to}`;
-            const fromNodeId = nodeIdMap.get(fromKey);
-            const toNodeId = nodeIdMap.get(toKey);
-            if (fromNodeId != null && toNodeId != null) {
-              const edgeType = rel.type === 'FOLLOWS' ? 'depends_on' : 'associative';
-              this.memory.addEdge(fromNodeId, toNodeId, 0.3, edgeType);
-            }
-          }
-        }
-
-        // Phase 5: Update manifest
-        for (const [filePath, nodeIds] of fileNodeIds) {
+        // Phase 4/5: finalize complete generations and apply each relationship
+        // exactly once using the complete generation's node map.
+        for (const filePath of filesInBatch) {
           const representative = readyItems.find(i => i.filePath === filePath);
-          const existing = this._manifest[filePath] || {};
-          this._manifest[filePath] = {
+          const existing = ensureGenerationState(this, filePath, representative);
+          const totalChunks = Number(representative.totalChunks) || existing._pendingTotalChunks || 0;
+          const nodeIds = orderedGenerationNodeIds(existing._pendingChunks, totalChunks);
+          if (!nodeIds) continue;
+          applyGenerationRelationships(this.memory, existing._pendingChunks, representative.relationships);
+          const completed = {
             ...existing,
             hash: representative.hash,
             label: representative.label,
@@ -304,21 +320,28 @@ class IngestionManifest {
               { derivedNodeIds: nodeIds }
             )
           };
+          delete completed._pendingGeneration;
+          delete completed._pendingChunks;
+          delete completed._pendingTotalChunks;
+          delete completed._supersededNodeIds;
+          this._manifest[filePath] = completed;
         }
 
         // Phase 6: Persist and update queue
-        this._pending = [...remaining, ...overflow];
         this._saveManifest();
-        this._savePending();
+        if (remaining.length > 0) {
+          this._queue.requeue(remaining, remaining.map((item) => deliveryByItem.get(item)));
+        }
+        this._queue.commit(queuedBatch.token);
 
         this.logger?.info?.(`Flushed ${readyItems.length} items (${reason})`, {
           filesProcessed: filesInBatch.size,
-          nodesCreated: nodeIdMap.size,
-          remaining: this._pending.length
+          nodesCreated: readyItems.length,
+          remaining: this._queue.pendingCount
         });
 
         // Chain next flush if overflow
-        if (this._pending.length > 0) {
+        if (this._queue.pendingCount > 0) {
           setTimeout(() => this.flush('drain'), 500);
         }
       } finally {
@@ -333,15 +356,19 @@ class IngestionManifest {
   async removeFile(filePath) {
     return this._withLock(async () => {
       const entry = this._manifest[filePath];
-      if (entry?.nodeIds) {
-        for (const nodeId of entry.nodeIds) {
+      const nodeIds = uniqueNodeIds([
+        ...(entry?.nodeIds || []),
+        ...Object.values(entry?._pendingChunks || {}),
+        ...(entry?._supersededNodeIds || []),
+      ]);
+      if (nodeIds.length) {
+        for (const nodeId of nodeIds) {
           this.memory.removeNode(nodeId);
         }
       }
       delete this._manifest[filePath];
-      this._pending = this._pending.filter(p => p.filePath !== filePath);
+      this._queue.removeFile(filePath);
       this._saveManifest();
-      this._savePending();
     });
   }
 
@@ -359,20 +386,16 @@ class IngestionManifest {
   getStats() {
     const fileCount = Object.keys(this._manifest).length;
     const nodeCount = Object.values(this._manifest).reduce((sum, e) => sum + (e.nodeIds?.length || 0), 0);
-    return { fileCount, nodeCount, pendingCount: this._pending.length };
+    return { fileCount, nodeCount, pendingCount: this._queue.pendingCount };
   }
 
   /**
    * Persist and clean up.
    */
   async shutdown() {
-    if (this._pendingSaveTimer) {
-      clearTimeout(this._pendingSaveTimer);
-      this._pendingSaveTimer = null;
-    }
     await this.flush('shutdown');
     this._saveManifest();
-    this._savePending();
+    this._adoptCompatPending();
   }
 
   // ─── Static Helpers ──────────────────────────────────────────
@@ -420,102 +443,90 @@ class IngestionManifest {
     return value.filter(Boolean);
   }
 
-  _saveManifest() {
-    try {
-      fs.writeFileSync(this._manifestPath, JSON.stringify(this._manifest, null, 2));
-    } catch (err) {
-      this.logger?.error?.('Failed to save manifest', { error: err.message });
-    }
+  // Compatibility surface for older diagnostics/tests. Production queue
+  // operations use the disk-backed store and never materialize the full queue.
+  get _pending() {
+    return this._compatPending || this._queue?.readAll() || [];
   }
 
-  _loadPending() {
-    // New format first.
-    if (fs.existsSync(this._pendingPath)) {
-      return this._readJsonlSync(this._pendingPath);
-    }
-    // Legacy single-array file: migrate once, loudly, then remove it. A valid
-    // legacy file is by construction under the V8 string ceiling (bigger ones
-    // could never have been written), so a plain read/parse is safe here.
-    if (fs.existsSync(this._legacyPendingPath)) {
-      try {
-        const items = this._normalizePending(JSON.parse(fs.readFileSync(this._legacyPendingPath, 'utf8')));
-        this._pending = items;
-        this._savePending();
-        fs.unlinkSync(this._legacyPendingPath);
-        this.logger?.info?.('Migrated pending queue to JSONL', {
-          items: items.length, from: this._legacyPendingPath, to: this._pendingPath,
-        });
-        return items;
-      } catch (err) {
-        // Never silently drop queued work: preserve the unreadable file.
-        const preserved = `${this._legacyPendingPath}.unreadable`;
-        try { fs.renameSync(this._legacyPendingPath, preserved); } catch { /* keep original */ }
-        this.logger?.error?.('Legacy pending queue unreadable — preserved for inspection, starting empty', {
-          error: err.message, preserved,
-        });
-        return [];
-      }
-    }
-    return [];
+  set _pending(value) {
+    this._compatPending = this._normalizePending(value);
   }
 
-  _readJsonlSync(filePath) {
-    // Chunked synchronous reader: the queue file has no size bound, and a
-    // whole-file readFileSync would reintroduce the string ceiling on load.
-    const items = [];
-    let corrupt = 0;
-    const fd = fs.openSync(filePath, 'r');
-    try {
-      const buf = Buffer.alloc(8 * 1024 * 1024);
-      let carry = '';
-      let bytesRead;
-      while ((bytesRead = fs.readSync(fd, buf, 0, buf.length)) > 0) {
-        const text = carry + buf.toString('utf8', 0, bytesRead);
-        const lines = text.split('\n');
-        carry = lines.pop();
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try { items.push(JSON.parse(line)); } catch { corrupt += 1; }
-        }
-      }
-      if (carry.trim()) {
-        try { items.push(JSON.parse(carry)); } catch { corrupt += 1; }
-      }
-    } finally {
-      fs.closeSync(fd);
+  _adoptCompatPending() {
+    if (!this._compatPending) return;
+    const grouped = new Map();
+    for (const item of this._compatPending) {
+      if (!grouped.has(item.filePath)) grouped.set(item.filePath, []);
+      grouped.get(item.filePath).push(item);
     }
-    if (corrupt > 0) {
-      this.logger?.error?.('Pending queue had unreadable lines — skipped, not silently lost', {
-        corrupt, loaded: items.length, file: filePath,
+    for (const [filePath, rawItems] of grouped) {
+      const relationships = rawItems[0]?.relationships || [];
+      const items = rawItems.map((item) => {
+        const compact = { ...item };
+        delete compact.relationships;
+        return compact;
       });
+      this._queue.upsert(filePath, items, { relationships });
     }
-    return items;
+    this._compatPending = null;
   }
 
-  _savePending() {
-    // Atomic streamed rewrite: one write per item, never one giant string.
-    const tmpPath = `${this._pendingPath}.tmp`;
+  _saveManifest() {
+    const tmpPath = `${this._manifestPath}.tmp`;
     try {
-      const fd = fs.openSync(tmpPath, 'w');
+      const fd = fs.openSync(tmpPath, 'w', 0o600);
       try {
-        for (const item of this._pending) {
-          fs.writeSync(fd, `${JSON.stringify(item)}\n`);
-        }
+        fs.writeFileSync(fd, JSON.stringify(this._manifest, null, 2));
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      fs.renameSync(tmpPath, this._manifestPath);
+      fsyncDirectory(this.runPath);
+    } catch (err) {
+      try { fs.unlinkSync(tmpPath); } catch { /* best effort */ }
+      this.logger?.error?.('Failed to save manifest', { error: err.message });
+      throw err;
+    }
+  }
+
+  _migrateLegacyArrayIfPresent() {
+    if (fs.existsSync(this._pendingPath) || !fs.existsSync(this._legacyPendingPath)) return;
+    const tmpPath = `${this._pendingPath}.migrating`;
+    try {
+      const items = this._normalizePending(JSON.parse(fs.readFileSync(this._legacyPendingPath, 'utf8')));
+      const fd = fs.openSync(tmpPath, 'w', 0o600);
+      try {
+        for (const item of items) fs.writeSync(fd, `${JSON.stringify(item)}\n`);
         fs.fsyncSync(fd);
       } finally {
         fs.closeSync(fd);
       }
       fs.renameSync(tmpPath, this._pendingPath);
+      fsyncDirectory(this.runPath);
+      fs.unlinkSync(this._legacyPendingPath);
+      fsyncDirectory(this.runPath);
+      this.logger?.info?.('Migrated legacy pending array to durable JSONL source', { items: items.length });
     } catch (err) {
-      this.logger?.error?.('Failed to save pending queue', { error: err.message });
-      try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch { /* best effort */ }
+      try { fs.unlinkSync(tmpPath); } catch { /* best effort */ }
+      // Never silently drop queued work — AND never let one corrupt legacy
+      // file stop the engine from starting. Throwing here made an unreadable
+      // ingestion-pending.json fatal at construction; the pre-journal
+      // behaviour quarantined the bytes and started empty. Quarantine wins:
+      // the queue is recoverable from the preserved file, a dead engine is not.
+      const preserved = `${this._legacyPendingPath}.unreadable`;
+      try { fs.renameSync(this._legacyPendingPath, preserved); } catch { /* keep original */ }
+      this.logger?.error?.('Legacy pending queue unreadable — preserved for inspection, starting empty', {
+        error: err.message, preserved,
+      });
     }
   }
 
-  _debouncedSavePending() {
-    if (this._pendingSaveTimer) clearTimeout(this._pendingSaveTimer);
-    this._pendingSaveTimer = setTimeout(() => this._savePending(), 100);
+  _savePending() {
+    this._adoptCompatPending();
   }
+
 }
 
 function normalizeNodeProvenance(value, overrides = {}) {
@@ -585,16 +596,142 @@ function boundedString(value, maxBytes) {
   return bounded || null;
 }
 
+function buildFeederMetadata(item) {
+  return {
+    source: 'document-feeder',
+    sourcePath: item.sourcePath,
+    chunkKey: item.sourcePath,
+    chunkIndex: item.chunkIndex,
+    totalChunks: item.totalChunks,
+    label: item.label,
+    heading: item.heading,
+    ingestedAt: item.ingestedAt,
+    contentHash: item.contentHash,
+    blockType: item.blockType || null,
+    blockPath: item.blockPath || null,
+    blockId: item.blockId || null,
+    docFamily: item.docFamily || null,
+  };
+}
+
+function findMatchingFeederNode(manifest, item) {
+  const memory = manifest.memory;
+  if (!(memory?.nodes instanceof Map)) return null;
+  if (!manifest._feederNodeIndex) manifest._feederNodeIndex = buildFeederNodeIndex(memory.nodes);
+  const key = feederNodeKey(item.sourcePath, item.contentHash);
+  const node = manifest._feederNodeIndex.get(key) || null;
+  if (node && memory.nodes.get(node.id) === node) return node;
+  manifest._feederNodeIndex.delete(key);
+  return null;
+}
+
+function rememberFeederNode(manifest, item, node) {
+  if (manifest._feederNodeIndex) manifest._feederNodeIndex.set(feederNodeKey(item.sourcePath, item.contentHash), node);
+}
+
+function forgetFeederNode(manifest, nodeId) {
+  if (!manifest._feederNodeIndex) return;
+  const metadata = manifest.memory?.nodes?.get(nodeId)?.metadata;
+  if (metadata?.chunkKey && metadata.contentHash) {
+    manifest._feederNodeIndex.delete(feederNodeKey(metadata.chunkKey, metadata.contentHash));
+  }
+}
+
+function buildFeederNodeIndex(nodes) {
+  const index = new Map();
+  for (const node of nodes.values()) {
+    const metadata = node?.metadata;
+    if (metadata?.source === 'document-feeder' && metadata.chunkKey && metadata.contentHash) {
+      index.set(feederNodeKey(metadata.chunkKey, metadata.contentHash), node);
+    }
+  }
+  return index;
+}
+
+function feederNodeKey(sourcePath, contentHash) {
+  return `${sourcePath}\u0000${contentHash}`;
+}
+
+function ensureGenerationState(manifest, filePath, item) {
+  const generation = item?._queueGeneration || `legacy-unidentified:${filePath}`;
+  let entry = manifest._manifest[filePath] || {};
+  if (entry._pendingGeneration !== generation) {
+    entry = {
+      ...entry,
+      nodeIds: [],
+      _pendingGeneration: generation,
+      _pendingChunks: {},
+      _pendingTotalChunks: Number(item?.totalChunks) || 0,
+      _supersededNodeIds: uniqueNodeIds([
+        ...(entry.nodeIds || []),
+        ...Object.values(entry._pendingChunks || {}),
+        ...(entry._supersededNodeIds || []),
+      ]),
+    };
+    manifest._manifest[filePath] = entry;
+  }
+  if (!entry._pendingChunks || typeof entry._pendingChunks !== 'object') entry._pendingChunks = {};
+  return entry;
+}
+
+function orderedGenerationNodeIds(chunks, totalChunks) {
+  if (!Number.isSafeInteger(totalChunks) || totalChunks < 0) return null;
+  const nodeIds = [];
+  for (let index = 0; index < totalChunks; index += 1) {
+    const nodeId = chunks?.[String(index)];
+    if (!nodeId) return null;
+    nodeIds.push(nodeId);
+  }
+  return nodeIds;
+}
+
+function applyGenerationRelationships(memory, chunks, relationships) {
+  for (const rel of Array.isArray(relationships) ? relationships : []) {
+    const fromNodeId = chunks?.[String(rel.from)];
+    const toNodeId = chunks?.[String(rel.to)];
+    if (fromNodeId == null || toNodeId == null) continue;
+    const edgeType = rel.type === 'FOLLOWS' ? 'depends_on' : 'associative';
+    memory.addEdge(fromNodeId, toNodeId, 0.3, edgeType);
+  }
+}
+
+function abortPendingGeneration(manifest, filePath, generation) {
+  const entry = manifest._manifest[filePath];
+  if (!entry || (generation && entry._pendingGeneration !== generation)) return;
+  for (const nodeId of uniqueNodeIds(Object.values(entry._pendingChunks || {}))) {
+    forgetFeederNode(manifest, nodeId);
+    manifest.memory?.removeNode?.(nodeId);
+  }
+  entry.nodeIds = [];
+  entry.nodeCount = 0;
+  entry.deadLetteredAt = new Date().toISOString();
+  delete entry._pendingGeneration;
+  delete entry._pendingChunks;
+  delete entry._pendingTotalChunks;
+  delete entry._supersededNodeIds;
+}
+
+function uniqueNodeIds(values) {
+  return [...new Set(values.filter((value) => typeof value === 'string' && value))];
+}
+
+function fsyncDirectory(dirPath) {
+  const fd = fs.openSync(dirPath, 'r');
+  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+}
+
 // The feeder must never ingest the pipeline's own state files — a renamed
 // queue file becoming a "document" would feed the brain its own plumbing.
 const INGESTION_INTERNAL_FILES = new Set([
   'ingestion-manifest.json',
+  'ingestion-manifest.json.tmp',
   'ingestion-pending.json',
   'ingestion-pending.jsonl',
+  'ingestion-pending.jsonl.migrating',
 ]);
 
 function isIngestionInternalFile(basename) {
-  return INGESTION_INTERNAL_FILES.has(basename);
+  return INGESTION_INTERNAL_FILES.has(basename) || isIngestionQueueInternalFile(basename);
 }
 
 module.exports = { IngestionManifest, isIngestionInternalFile };

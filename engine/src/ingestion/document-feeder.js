@@ -94,6 +94,12 @@ class DocumentFeeder {
       logger: this.logger
     });
 
+    if (this.config.maintenanceMode === true) {
+      this._started = true;
+      this.logger?.info?.('Document feeder initialized in maintenance mode; watchers, scans, and flushes are disabled');
+      return;
+    }
+
     // Knowledge compiler — synthesizes documents before chunking
     this.compiler = new DocumentCompiler({
       workspacePath: this.config.workspacePath || path.join(runPath, '..', 'workspace'),
@@ -251,6 +257,7 @@ class DocumentFeeder {
     return {
       enabled: true,
       started: this._started,
+      maintenanceMode: this.config.maintenanceMode === true,
       watching: this._watchers.map(w => w.path),
       manifest: manifestStats,
       converter: {
@@ -281,6 +288,12 @@ class DocumentFeeder {
    */
   async shutdown() {
     if (!this._started) return;
+
+    if (this.config.maintenanceMode === true) {
+      this._started = false;
+      this.logger?.info?.('Document feeder maintenance mode shut down without flushing');
+      return;
+    }
 
     if (this._flushTimer) {
       clearInterval(this._flushTimer);
