@@ -122,8 +122,13 @@ describe('IngestionManifest', () => {
 
       await manifest.flush('test');
 
-      expect(mockMemory.removeNode.calledWith(50)).to.be.true;
-      expect(mockMemory.removeNode.calledWith(51)).to.be.true;
+      // The fixture uses legacy NUMERIC nodeIds, matching manifests written
+      // before the string-ID migration (forrest's live manifest is 595/595
+      // numeric). They must be coerced to the graph's string form: removeNode
+      // does a Map.has, so a numeric 50 never matches the node keyed "50" and
+      // the stale nodes would be orphaned in the brain on every re-ingest.
+      expect(mockMemory.removeNode.calledWith('50')).to.be.true;
+      expect(mockMemory.removeNode.calledWith('51')).to.be.true;
       expect(manifest._manifest['/test/file.md'].hash).to.equal('newhash');
     });
 
@@ -163,8 +168,10 @@ describe('IngestionManifest', () => {
 
       await manifest.removeFile('/test/file.md');
 
-      expect(mockMemory.removeNode.calledWith(10)).to.be.true;
-      expect(mockMemory.removeNode.calledWith(11)).to.be.true;
+      // Legacy numeric nodeIds coerced to the graph's string form — see the
+      // re-ingest test above.
+      expect(mockMemory.removeNode.calledWith('10')).to.be.true;
+      expect(mockMemory.removeNode.calledWith('11')).to.be.true;
       expect(manifest._manifest['/test/file.md']).to.be.undefined;
     });
   });

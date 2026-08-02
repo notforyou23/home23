@@ -711,8 +711,19 @@ function abortPendingGeneration(manifest, filePath, generation) {
   delete entry._supersededNodeIds;
 }
 
+// Node IDs are strings in the graph ("103"), but manifests written before the
+// string-ID migration hold the same IDs as NUMBERS ([6,7,8]) — forrest's live
+// manifest is 595/595 numeric. Dropping non-strings here (or passing a number
+// to removeNode, which does a Map.has and so never matches the string key)
+// silently skips stale-node removal for every one of those files: a re-ingest
+// adds the new nodes and orphans the old ones in the brain forever. Coerce to
+// the graph's string form so legacy entries resolve.
 function uniqueNodeIds(values) {
-  return [...new Set(values.filter((value) => typeof value === 'string' && value))];
+  return [...new Set(
+    values
+      .filter((value) => (typeof value === 'string' && value) || Number.isFinite(value))
+      .map((value) => String(value))
+  )];
 }
 
 function fsyncDirectory(dirPath) {
