@@ -89,6 +89,10 @@ providers:
     defaultModels:
       - gpt-5.6-sol
       - gpt-5.6-terra
+      # src/agent/text-generation.ts defaults openai-codex text generation to
+      # this model. A fresh install seeded from this example must know it, or
+      # the default resolves to a model the config never declares.
+      - gpt-5.6-luna
       - gpt-5.5
       - gpt-5.3-codex-spark
       - gpt-5.4

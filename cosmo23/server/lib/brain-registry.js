@@ -676,11 +676,32 @@ async function resolveBrainBySelector(selector, options) {
   const normalized = String(selector || '').trim();
   const canonicalMatch = resolveCanonicalCatalogAlias(options.canonicalCatalog, normalized);
   if (canonicalMatch) {
-    return inspectBrain(canonicalMatch.canonicalRoot, {
+    const inspected = await inspectBrain(canonicalMatch.canonicalRoot, {
       sourceType: canonicalMatch.sourceType,
       sourceLabel: canonicalMatch.displayName,
       includeStateSummary: true
     });
+    // The catalog entry is authoritative for IDENTITY (id, canonicalRoot,
+    // mutation boundaries, lifecycle) but its state fields — nodes, cycles,
+    // modified — are a snapshot from whenever the catalog was built. Spreading
+    // it last put those stale numbers over the inspection we just performed
+    // with includeStateSummary:true, so the fresh read was paid for and then
+    // discarded. Identity from the catalog, measurements from disk.
+    return {
+      ...inspected,
+      ...canonicalMatch,
+      nodes: inspected.nodes,
+      edges: inspected.edges,
+      cycleCount: inspected.cycleCount,
+      cycles: inspected.cycles,
+      modified: inspected.modified,
+      modifiedDate: inspected.modifiedDate,
+      hasState: inspected.hasState,
+      hasStateSummary: inspected.hasStateSummary,
+      metadata: inspected.metadata,
+      nodeCount: Number.isFinite(inspected.nodes) ? inspected.nodes : (canonicalMatch.nodeCount ?? null),
+      modifiedAt: inspected.modifiedDate || canonicalMatch.modifiedAt,
+    };
   }
   const brains = await listBrains({
     ...options,
