@@ -344,15 +344,14 @@ class FilesystemHelpers {
    */
   async atomicIncrement(counterPath, increment = 1) {
     const lockPath = `${counterPath}.lock`;
-    
+    let acquired = false;
     try {
       // Acquire lock
-      const maxRetries = 10;
-      let acquired = false;
+      const maxRetries = 100;
       for (let i = 0; i < maxRetries; i++) {
         acquired = await this.tryAcquireLock(lockPath, { pid: process.pid });
         if (acquired) break;
-        await new Promise(resolve => setTimeout(resolve, 10)); // Wait 10ms
+        await new Promise(resolve => setTimeout(resolve, Math.min(5 + i, 25)));
       }
       
       if (!acquired) {
@@ -374,8 +373,8 @@ class FilesystemHelpers {
 
       return newValue;
     } catch (error) {
-      // Ensure lock is released
-      await this.releaseLock(lockPath).catch(() => {});
+      // A failed contender must never delete the lock held by another call.
+      if (acquired) await this.releaseLock(lockPath).catch(() => {});
       throw error;
     }
   }

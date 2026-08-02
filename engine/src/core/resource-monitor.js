@@ -123,26 +123,29 @@ class ResourceMonitor {
    * Check if limits are exceeded
    */
   checkLimits(snapshot) {
-    const memUsedPercent = snapshot.memUsedMB / this.memoryLimitMB;
-    const rssUsedPercent = snapshot.rss / this.rssLimitMB;
+    const memUsedMB = Number.isFinite(snapshot?.memUsedMB) ? snapshot.memUsedMB : 0;
+    const rss = Number.isFinite(snapshot?.rss) ? snapshot.rss : 0;
+    const cpuPercent = Number.isFinite(snapshot?.cpuPercent) ? snapshot.cpuPercent : 0;
+    const memUsedPercent = memUsedMB / this.memoryLimitMB;
+    const rssUsedPercent = rss / this.rssLimitMB;
 
     // Memory warning threshold
     if (memUsedPercent >= this.memoryWarningThreshold && memUsedPercent < 1.0) {
       this.warningCount++;
       this.logger.warn('[ResourceMonitor] Memory warning', {
-        memUsedMB: snapshot.memUsedMB.toFixed(2),
+        memUsedMB: memUsedMB.toFixed(2),
         limitMB: this.memoryLimitMB,
         percent: (memUsedPercent * 100).toFixed(1)
       });
     }
 
     // Memory limit exceeded
-    if (snapshot.memUsedMB >= this.memoryLimitMB || snapshot.rss >= this.rssLimitMB) {
+    if (memUsedMB >= this.memoryLimitMB || rss >= this.rssLimitMB) {
       this.limitExceededCount++;
       this.logger.error('[ResourceMonitor] Memory limit exceeded', {
-        memUsedMB: snapshot.memUsedMB.toFixed(2),
+        memUsedMB: memUsedMB.toFixed(2),
         limitMB: this.memoryLimitMB,
-        rssMB: snapshot.rss.toFixed(2),
+        rssMB: rss.toFixed(2),
         rssLimitMB: this.rssLimitMB,
         peakMB: this.peakMemoryMB.toFixed(2)
       });
@@ -159,16 +162,16 @@ class ResourceMonitor {
     } else if (rssUsedPercent >= this.rssWarningThreshold) {
       this.warningCount++;
       this.logger.warn('[ResourceMonitor] RSS warning', {
-        rssMB: snapshot.rss.toFixed(2),
+        rssMB: rss.toFixed(2),
         rssLimitMB: this.rssLimitMB,
         percent: (rssUsedPercent * 100).toFixed(1)
       });
     }
 
     // CPU warning
-    if (snapshot.cpuPercent >= this.cpuWarningThreshold * 100) {
+    if (cpuPercent >= this.cpuWarningThreshold * 100) {
       this.logger.warn('[ResourceMonitor] High CPU usage', {
-        cpuPercent: snapshot.cpuPercent.toFixed(1),
+        cpuPercent: cpuPercent.toFixed(1),
         threshold: (this.cpuWarningThreshold * 100).toFixed(1)
       });
     }

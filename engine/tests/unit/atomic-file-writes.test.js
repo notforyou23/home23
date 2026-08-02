@@ -64,17 +64,20 @@ describe('BaseAgent Atomic File Operations', () => {
     });
 
     it('should cleanup temp file on write error', async () => {
-      const invalidPath = path.join(testDir, 'nonexistent-dir', 'file.txt');
+      const failureDir = path.join(testDir, 'simulated-write-failure');
+      const invalidPath = path.join(failureDir, 'file.txt');
       const content = 'test';
       
       await assert.rejects(
-        mockAgent.writeFileAtomic(invalidPath, content),
-        /ENOENT/
+        mockAgent.writeFileAtomic(invalidPath, content, {
+          beforeRename() { throw new Error('simulated write failure'); }
+        }),
+        /simulated write failure/
       );
       
-      // Verify no orphaned temp file
-      const tempExists = await fs.access(invalidPath + '.tmp').then(() => true).catch(() => false);
-      assert.strictEqual(tempExists, false);
+      // Verify the randomized durable-write temporary file was removed.
+      const entries = await fs.readdir(failureDir);
+      assert.deepStrictEqual(entries, []);
     });
 
     it('should overwrite existing file atomically', async () => {
@@ -268,4 +271,3 @@ describe('BaseAgent Atomic File Operations', () => {
     });
   });
 });
-

@@ -1,14 +1,10 @@
 const { expect } = require('chai');
-const path = require('path');
-const fs = require('fs');
-const yaml = require('js-yaml');
-
 const { ConfigValidator } = require('../../src/core/config-validator');
 
-const loadConfig = () => {
-  const configPath = path.join(__dirname, '../../src/config.yaml');
-  return yaml.load(fs.readFileSync(configPath, 'utf8'));
-};
+const loadConfig = () => ({
+  architecture: { reasoning: { mode: 'single' } },
+  cluster: { enabled: false },
+});
 
 const createLogger = () => ({
   info() {},
