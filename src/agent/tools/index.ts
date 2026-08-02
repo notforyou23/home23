@@ -136,6 +136,56 @@ export function createSeededToolRegistry(tools: readonly ToolDefinition[]): Tool
   return registry;
 }
 
+/**
+ * Worker tool grants: capability groups a Worker may be granted, and the exact
+ * tools each group unlocks. A Worker gets the union of its enabled groups and
+ * nothing else — this is the whole surface a restricted Worker can act through,
+ * so it is enumerated rather than filtered from the full registry.
+ */
+const WORKER_TOOL_GRANT_GROUPS = {
+  shell: () => [shellTool],
+  files: () => [readFileTool, writeFileTool, editFileTool, listFilesTool, searchFilesTool],
+  cron: () => [
+    cronScheduleTool, cronListTool, cronRunTool, cronDeleteTool,
+    cronEnableTool, cronDisableTool, cronUpdateTool,
+  ],
+  brain: () => [
+    brainSearchTool, brainCatalogTool, brainOperationsListTool, brainPgsPartitionsTool,
+    brainQueryTool, brainQueryExportTool, brainStatusTool, brainMemoryGraphTool,
+    brainSynthesizeTool,
+  ],
+  web: (opts: { web?: WebToolsConfig } = {}) => [webBrowseTool, createWebSearchTool(opts.web)],
+} as const;
+
+export type WorkerToolGrants = Partial<Record<keyof typeof WORKER_TOOL_GRANT_GROUPS, boolean>>;
+
+/**
+ * Resolve a Worker's granted capability groups into the exact tool list.
+ *
+ * Fails CLOSED on an unrecognized group: a typo'd or invented grant name must
+ * never silently resolve to "no extra tools" and read as a working grant. This
+ * is an authority boundary, so an unknown name is an error, not a no-op.
+ */
+export function resolveWorkerTools(
+  grants: WorkerToolGrants & Record<string, boolean | undefined>,
+  opts: { web?: WebToolsConfig } = {},
+): ToolDefinition[] {
+  const known = Object.keys(WORKER_TOOL_GRANT_GROUPS);
+  const unknown = Object.keys(grants ?? {}).filter((group) => !known.includes(group));
+  if (unknown.length > 0) {
+    throw new Error(`Unknown worker tool grant group(s): ${unknown.join(', ')}`);
+  }
+
+  const tools: ToolDefinition[] = [];
+  // Iterate the declaration order, not the caller's key order, so an identical
+  // grant set always produces an identical tool list.
+  for (const group of known as (keyof typeof WORKER_TOOL_GRANT_GROUPS)[]) {
+    if (grants?.[group] !== true) continue;
+    tools.push(...WORKER_TOOL_GRANT_GROUPS[group](opts));
+  }
+  return tools;
+}
+
 /** Create a fully loaded registry with all tools. */
 export function createToolRegistry(opts: { web?: WebToolsConfig } = {}): ToolRegistry {
   const registry = new ToolRegistry();
