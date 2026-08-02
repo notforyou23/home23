@@ -1432,6 +1432,34 @@ Domain: ${domain} | Workspace: ${workspace}`;
    * @param {Array} results - Findings and insights collected
    * @returns {Object} - { accomplished: boolean, reason: string|null, metrics: object }
    */
+  /**
+   * Count how many of an agent's claimed output files actually exist on disk.
+   *
+   * Returns { verifiable, claimed, count, missing }. `verifiable` is false when
+   * the agent offered no paths at all — there is nothing to check, which is not
+   * the same as checking and finding nothing.
+   */
+  measurePersistedOutputFiles(metadata = {}) {
+    const entries = Array.isArray(metadata.outputFiles) ? metadata.outputFiles : [];
+    const paths = entries
+      .map((entry) => (typeof entry === 'string' ? entry : entry?.path || entry?.absolutePath))
+      .filter((value) => typeof value === 'string' && value.length > 0);
+
+    if (paths.length === 0) return { verifiable: false, claimed: 0, count: 0, missing: 0 };
+
+    // Module-level `fs` is the promises API; assessAccomplishment is sync.
+    const fsSync = require('fs');
+    let count = 0;
+    for (const filePath of paths) {
+      try {
+        if (fsSync.statSync(filePath).isFile()) count += 1;
+      } catch {
+        // Absent or unreadable: it is not persisted output.
+      }
+    }
+    return { verifiable: true, claimed: paths.length, count, missing: paths.length - count };
+  }
+
   assessAccomplishment(executeResult, results) {
     // Base implementation: require on-disk output, not just memory findings.
     // Memory-only findings are necessary but not sufficient — agents that
@@ -1447,8 +1475,33 @@ Domain: ${domain} | Workspace: ${workspace}`;
                       || metadata.filesCreated > 0
                       || metadata.tasksCompleted > 0;
 
-    // Check for persisted output on disk
-    const hasPersistedOutput = !!(this._persistedOutputPath && this._persistedOutputFiles > 0);
+    // Persisted output must be MEASURED, not reported. A count an agent hands
+    // back is a claim about the filesystem; the filesystem is right there. The
+    // 2026-07-29 forensics found runs completing on self-reported artifact
+    // counts while the named files did not exist — the "verify a URL responded,
+    // then attach it to an unrelated claim" failure in another costume.
+    //
+    // Order of authority:
+    //   1. metadata.outputFiles — real paths, so stat them and count survivors
+    //   2. this._persistedOutputFiles — persistOutput() wrote those itself
+    //   3. a bare persistedOutputFiles number — a claim with no paths behind it,
+    //      accepted ONLY when nothing verifiable was offered, and never able to
+    //      outvote a path list that turned out to be empty on disk.
+    const measured = this.measurePersistedOutputFiles(metadata);
+    const persistedFiles = measured.verifiable
+      ? measured.count
+      : Math.max(Number(this._persistedOutputFiles) || 0, Number(metadata.persistedOutputFiles) || 0);
+    const hasPersistedOutput = persistedFiles > 0;
+
+    if (measured.verifiable && measured.missing > 0) {
+      this.logger?.warn?.('Agent reported output files that are not on disk', {
+        agentId: this.agentId,
+        agentType: this.constructor.name,
+        claimed: measured.claimed,
+        onDisk: measured.count,
+        missing: measured.missing
+      });
+    }
     
     const accomplished = (hasFindings || hasInsights || hasArtifacts) && hasPersistedOutput;
     
@@ -1470,7 +1523,7 @@ Domain: ${domain} | Workspace: ${workspace}`;
         documentsAnalyzed: metadata.documentsAnalyzed || 0,
         artifactsCreated: metadata.artifactsCreated || 0,
         filesCreated: metadata.filesCreated || 0,
-        persistedFiles: this._persistedOutputFiles || 0
+        persistedFiles
       }
     };
   }

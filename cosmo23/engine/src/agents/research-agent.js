@@ -447,11 +447,41 @@ Your output is structured findings with source URLs — not summaries or plans.
     try {
       await this.exportResearchCorpus(synthesis, searchResults);
     } catch (error) {
-      this.logger.warn('Research corpus export failed (non-fatal)', {
+      // "Optional" was never true: BaseAgent.assessAccomplishment requires
+      // persisted output, so an export failure here used to mark the whole run
+      // completed_unproductive and QA discarded findings that were real and in
+      // memory. Rather than weaken the disk-truth gate (memory-only output IS
+      // invisible downstream) or silently drop the work, persist a minimal
+      // synthesis through the engine's own writer so the findings survive AND
+      // remain discoverable.
+      this.logger.error('Research corpus export failed — falling back to minimal synthesis', {
         error: error.message,
-        note: 'Research data remains available in memory for merges'
+        agentId: this.agentId
       });
-      // Continue - memory storage is primary, file export is optional
+      try {
+        const lines = [
+          `# Research synthesis (fallback)`,
+          '',
+          `Corpus export failed: ${error.message}`,
+          `Findings and sources below were recorded in memory and are reproduced here`,
+          `so downstream phases can still discover them.`,
+          '',
+          '## Findings',
+          ...(synthesis?.findings || []).map((finding, index) =>
+            `${index + 1}. ${typeof finding === 'string' ? finding : finding?.content || JSON.stringify(finding)}`),
+          '',
+          '## Sources',
+          ...(this.sourcesFound || []).map((source) =>
+            `- ${typeof source === 'string' ? source : source?.url || JSON.stringify(source)}`),
+        ];
+        await this.persistOutput('research_synthesis_fallback.md', lines.join('\n'));
+      } catch (fallbackError) {
+        // Now it really is unproductive, and the gate will say so honestly.
+        this.logger.error('Fallback synthesis persist also failed — run will be marked unproductive', {
+          error: fallbackError.message,
+          agentId: this.agentId
+        });
+      }
     }
 
     await this.reportProgress(100, 'Research complete');
@@ -478,6 +508,7 @@ Your output is structured findings with source URLs — not summaries or plans.
         urlsValid: this.sourcesFound.length, // DoD contract: number of valid URLs
         artifactsCreated: this.exportedFiles.length,  // NEW: Track research corpus files for Executive
         filesCreated: this.exportedFiles.length,      // NEW: Files created during export
+        persistedOutputFiles: this.exportedFiles.length,
         outputFiles: this.exportedFiles,
         status: 'complete'
       }

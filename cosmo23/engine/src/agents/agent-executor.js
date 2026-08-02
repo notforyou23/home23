@@ -811,9 +811,18 @@ class AgentExecutor {
 
     const { agentId, agentType, mission, results, status } = agentResults;
 
-    // Skip QA for failed agents (already handled)
-    if (status === 'failed' || status === 'timeout') {
-      return { shouldIntegrate: false, reason: `Agent ${status}`, confidence: 0 };
+    // Fail closed for any agent the lifecycle/accomplishment gate rejected.
+    if (
+      status === 'failed' ||
+      status === 'timeout' ||
+      status === 'completed_unproductive' ||
+      agentResults.accomplishment?.accomplished === false
+    ) {
+      return {
+        shouldIntegrate: false,
+        reason: agentResults.accomplishment?.reason || `Agent ${status}`,
+        confidence: 0
+      };
     }
 
     // Skip QA for QA agents themselves (avoid recursion)
@@ -840,8 +849,13 @@ class AgentExecutor {
     const hasFindings = results.filter(r => r.type === 'finding' || r.type === 'insight').length > 0;
     
     if (!hasFindings) {
-      this.logger.info('⚠️  No findings to QA check', { agentId });
-      return { shouldIntegrate: true, confidence: 0.8, qaMetadata: { reason: 'no_findings' } };
+      this.logger.warn('❌ No findings to QA check; rejecting empty result', { agentId });
+      return {
+        shouldIntegrate: false,
+        reason: 'Agent produced no findings or insights',
+        confidence: 0,
+        qaMetadata: { reason: 'no_findings' }
+      };
     }
 
     // Decide if we need full QA agent validation
