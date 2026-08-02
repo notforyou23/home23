@@ -154,7 +154,15 @@ describe('PlanScheduler', () => {
       expect(result.id).to.equal('active-task');
     });
 
-    it('does not continue an expired in-progress task for the current instance', async () => {
+    // Behaviour changed deliberately in 8bf29fba (2026-05-10, "release expired
+    // plan task claims"), one day after this test was written against the
+    // earlier ignore-only behaviour. An expired claim that is merely ignored
+    // leaves the task stuck IN_PROGRESS behind a dead claim, so nothing —
+    // including this instance — ever picks it up again. Releasing it makes the
+    // task runnable again. tests/engine/planning/plan-scheduler.test.js covers
+    // the same contract from the state-store side; this assertion was simply
+    // never updated and had been red ever since.
+    it('does not continue an expired in-progress task, and releases the dead claim', async () => {
       allTasks = [
         {
           id: 'stale-task',
@@ -168,7 +176,9 @@ describe('PlanScheduler', () => {
 
       const result = await scheduler.nextRunnableTask();
       expect(result).to.equal(null);
-      expect(releaseCalls).to.deep.equal([]);
+      expect(releaseCalls).to.deep.equal([
+        { taskId: 'stale-task', owner: 'instance-1' }
+      ]);
     });
   });
 
