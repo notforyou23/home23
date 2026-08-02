@@ -1001,6 +1001,10 @@ export function canonicalJson(value: JsonValue): string {
 export function canonicalBytes(value: JsonValue): Uint8Array {
   return Buffer.from(canonicalJson(value), 'utf8');
 }
+
+// Cross-program alias: C, G, and H consume this exact name. Same function,
+// no second implementation.
+export const canonicalJsonBytes = canonicalBytes;
 ```
 
 ```ts

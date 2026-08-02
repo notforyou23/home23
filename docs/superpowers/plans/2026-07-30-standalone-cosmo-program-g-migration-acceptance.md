@@ -1272,7 +1272,7 @@ export const AcceptanceExecutionIdentitySchema = z.object({
 // (packages/contracts/src/heritage.ts); acceptance.ts imports it by identity
 // and never redefines it. The fourteen literals are repeated here only as the
 // frozen consumer copy of A's declaration:
-import { RequiredHistoricalCaseIdSchema } from './heritage';
+import { RequiredHistoricalCaseIdSchema } from './heritage.js';
 
 // A-owned members (consumer copy, byte-identical to Program A Task 2):
 // z.enum([
