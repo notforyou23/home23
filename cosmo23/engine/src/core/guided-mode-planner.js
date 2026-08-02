@@ -1892,6 +1892,14 @@ ${JSON.stringify(deterministic.scores || {})}`
     return this.lineNegatesWebExpansion(context);
   }
 
+  explicitExternalResearchRequested(guidedFocus = {}) {
+    const context = `${guidedFocus.domain || ''}\n${guidedFocus.context || ''}`;
+    if (this.lineNegatesWebExpansion(context)) return false;
+
+    return /\b(research|investigat|source(?:d|s)?|citation|bibliograph|primary source|external evidence|web[_ -]?search|internet|retrieve(?:d|s)?|source acquisition)\b/i.test(context) &&
+      /\b(comprehensive|timeline|deep(?:-dive)?|find|discover|collect|assemble|verify|verifiable|cite|retriev|source|evidence|record|trajectory)\b/i.test(context);
+  }
+
   prefersSecondarySourceAcquisition(guidedFocus = {}) {
     const context = `${guidedFocus.domain || ''}\n${guidedFocus.context || ''}`;
     return /\bavoid\b.{0,80}\bprimary\s+sources?\b/i.test(context) ||
@@ -1939,22 +1947,35 @@ ${JSON.stringify(deterministic.scores || {})}`
     const externalGaps = this.identifyExternalEvidenceGaps(guidedFocus, planningContext);
     const webAvailable = resources.webSearch !== false;
     const noWebRequested = this.explicitNoWebRequested(guidedFocus);
+    const externalResearchRequested = this.explicitExternalResearchRequested(guidedFocus);
 
     let evidenceMode = 'fresh_unknown';
     let webPolicy = webAvailable ? 'broad' : 'none';
     const reasons = [];
 
-    if (hasUsableLocalContext) {
+    if (externalResearchRequested && webAvailable && !noWebRequested) {
+      evidenceMode = localArtifactCount > 0 ? 'mixed' : 'external_gap';
+      webPolicy = externalGaps.length > 0 ? 'targeted' : 'broad';
+      reasons.push(localArtifactCount > 0
+        ? 'The request explicitly requires external research; local evidence may seed the work but cannot replace source acquisition.'
+        : 'The request explicitly requires external research and no usable local source artifacts were found.');
+    } else if (hasUsableLocalContext) {
       if (externalGaps.length > 0 && webAvailable && !noWebRequested) {
         evidenceMode = 'mixed';
         webPolicy = 'targeted';
         reasons.push('Existing run context is usable, but specific external evidence gaps remain.');
-      } else {
-        evidenceMode = localArtifactCount > 0 ? 'local_sufficient' : 'local_gap';
+      } else if (localArtifactCount > 0) {
+        evidenceMode = 'local_sufficient';
         webPolicy = 'none';
-        reasons.push(localArtifactCount > 0
-          ? 'Existing run artifacts/brain assessment are enough to plan the next move locally.'
-          : 'Continuation context exists but should be advanced through local inspection before any source expansion.');
+        reasons.push('Existing run artifacts/brain assessment are enough to plan the next move locally.');
+      } else if (webAvailable && !noWebRequested) {
+        evidenceMode = 'fresh_unknown';
+        webPolicy = 'broad';
+        reasons.push('Semantic continuity exists, but there are no usable local source artifacts; continue with external discovery instead of workspace inspection.');
+      } else {
+        evidenceMode = 'local_gap';
+        webPolicy = 'none';
+        reasons.push('Continuation context exists without usable local artifacts, and web research is unavailable or prohibited.');
       }
     } else if (externalGaps.length > 0 && webAvailable && !noWebRequested) {
       evidenceMode = 'external_gap';
@@ -1975,6 +1996,7 @@ ${JSON.stringify(deterministic.scores || {})}`
       evidenceMode,
       webPolicy,
       noWebRequested,
+      externalResearchRequested,
       localArtifactCount,
       externalGaps,
       hasUsableLocalContext,

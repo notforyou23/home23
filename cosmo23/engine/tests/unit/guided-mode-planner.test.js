@@ -790,6 +790,85 @@ Read @outputs/raw-anecdotes/archive-org-comments.json and @outputs/raw-anecdotes
     expect(plan.agentMissions.map(m => m.sourceScope || '').join('\n')).to.not.include('primary external sources');
   });
 
+  it('does not let semantic continuity replace external research when no local source artifacts exist', () => {
+    const planner = createPlanner();
+    const decision = planner.buildPlanningDecision(
+      {
+        domain: "Jerry Garcia's health trajectory: a comprehensive sourced timeline from 1961 through 1995",
+        context: 'Deep investigation. Assemble a verifiable sourced chronological health record. Each finding must cite a real retrieved source.'
+      },
+      { webSearch: true },
+      {
+        hasContext: true,
+        threadAnchor: { title: "Jerry Garcia's health trajectory" },
+        memoryMatches: [{ similarity: 0.92, summary: 'Prior failed run discussed the same topic.' }],
+        researchDigest: {
+          topFindings: [],
+          completedMissions: [],
+          priorityGaps: [],
+          artifactRefs: [],
+          processedSourceUrls: []
+        }
+      }
+    );
+
+    expect(decision.localArtifactCount).to.equal(0);
+    expect(decision.externalResearchRequested).to.equal(true);
+    expect(decision.evidenceMode).to.equal('external_gap');
+    expect(decision.webPolicy).to.equal('broad');
+    expect(decision.rationale).to.include('explicitly requires external research');
+  });
+
+  it('keeps external source acquisition enabled when a research request also has local seed artifacts', () => {
+    const planner = createPlanner();
+    const decision = planner.buildPlanningDecision(
+      {
+        domain: 'Comprehensive sourced health timeline',
+        context: 'Investigate and verify the timeline using retrieved external evidence and citations.'
+      },
+      { webSearch: true },
+      {
+        hasContext: true,
+        researchDigest: {
+          topFindings: ['Unverified local seed note'],
+          completedMissions: [],
+          priorityGaps: [],
+          artifactRefs: [{ path: '@outputs/seed-note.md' }],
+          processedSourceUrls: []
+        }
+      }
+    );
+
+    expect(decision.localArtifactCount).to.be.greaterThan(0);
+    expect(decision.externalResearchRequested).to.equal(true);
+    expect(decision.evidenceMode).to.equal('mixed');
+    expect(decision.webPolicy).to.equal('targeted');
+  });
+
+  it('uses external discovery for a related continuation with no artifacts even without explicit research wording', () => {
+    const planner = createPlanner();
+    const decision = planner.buildPlanningDecision(
+      { domain: 'Thread Domain', context: 'Continue this topic.' },
+      { webSearch: true },
+      {
+        hasContext: true,
+        threadAnchor: { title: 'Related prior thread' },
+        researchDigest: {
+          topFindings: [],
+          completedMissions: [],
+          priorityGaps: [],
+          artifactRefs: [],
+          processedSourceUrls: []
+        }
+      }
+    );
+
+    expect(decision.localArtifactCount).to.equal(0);
+    expect(decision.evidenceMode).to.equal('fresh_unknown');
+    expect(decision.webPolicy).to.equal('broad');
+    expect(decision.rationale).to.include('no usable local source artifacts');
+  });
+
   it('selects no-web planning decision for continuation with local artifacts', () => {
     const planner = createPlanner();
     const decision = planner.buildPlanningDecision(

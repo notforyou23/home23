@@ -332,6 +332,31 @@ export function operationToolResult(operation: BrainOperationResult): ToolResult
     };
   }
 
+  // A query/pgs run that reaches 'complete' with no answer text is a failure
+  // wearing a success label: the caller gets an empty body and a green state.
+  // Fail it closed so the emptiness is visible rather than inferred.
+  if (operation.state === 'complete'
+      && ['query', 'pgs'].includes(operation.operationType)
+      && !answer.trim()) {
+    return {
+      content: `invalid_complete_result: ${operation.operationType} completed without a final answer\n\n---\n[${stateLine}]`,
+      is_error: true,
+      resultHandle: operation.resultHandle || undefined,
+      metadata: {
+        operationId: operation.operationId,
+        operationType: operation.operationType,
+        state: operation.state,
+        attachmentState: operation.attachmentState,
+        classification: 'invalid_complete_result',
+        pgs,
+        sweepOutputs,
+        error: operation.error,
+        resultArtifact: operation.resultArtifact,
+        sourceEvidence: operation.sourceEvidence,
+      },
+    };
+  }
+
   const detachedGuidance = operation.attachmentState === 'detached'
       && (operation.state === 'queued' || operation.state === 'running')
     ? `\nStarted in the background; the durable operation is ${operation.state}. Check with brain_status {action:"status",operationId:"${operation.operationId}"}, then use action:"result" after it is terminal. Use action:"wait" only when intentionally blocking.`

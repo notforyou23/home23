@@ -257,6 +257,42 @@ test('complete operation display preserves non-answer result fields such as requ
   assert.match(rendered.content, /"bytes":42/);
 });
 
+// ── an empty 'complete' is a failure wearing a success label (2026-08-02) ──
+// Recovered from codex/brain-agent-task5 (dc2e6a13). A query/pgs run that
+// reaches state 'complete' with no answer text used to render as a successful
+// empty result: the caller saw green and nothing else. It now fails closed.
+
+test('a query that completes with no answer text is reported as an error, not success', () => {
+  for (const operationType of ['query', 'pgs'] as const) {
+    const rendered = operationToolResult({
+      ...makeBrainOperationRecord({
+        operationId: `op-empty-${operationType}`,
+        state: 'complete',
+        result: { answer: '   ' },
+      }),
+      operationType,
+      attachmentState: 'closed',
+    });
+    assert.equal(rendered.is_error, true, `${operationType} must fail closed`);
+    assert.match(rendered.content, /invalid_complete_result/);
+    assert.equal(rendered.metadata?.classification, 'invalid_complete_result');
+  }
+});
+
+test('a query that completes WITH an answer is still a success', () => {
+  const rendered = operationToolResult({
+    ...makeBrainOperationRecord({
+      operationId: 'op-real-answer',
+      state: 'complete',
+      result: { answer: 'a real answer' },
+    }),
+    operationType: 'query',
+    attachmentState: 'closed',
+  });
+  assert.notEqual(rendered.is_error, true);
+  assert.match(rendered.content, /a real answer/);
+});
+
 test('provider branches cannot bypass centralized tool result execution', () => {
   const source = readFileSync(new URL('../../src/agent/loop.ts', import.meta.url), 'utf8');
   assert.equal((source.match(/registry\.execute\(/g) || []).length, 0);

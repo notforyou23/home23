@@ -719,7 +719,11 @@ class DashboardServer {
     this.home23Vibe = new Home23VibeService({
       home23Root: this.getHome23Root(),
       agentName: this.getHome23AgentName(),
-      loadState: () => this.loadState(),
+      // Lean load only: the vibe surface reads state.goals.active and nothing
+      // else, while loadState() hydrates the full node/edge graph from the
+      // sidecars. On a 65k-143k node brain that pulled the entire graph into
+      // memory to read a goal list.
+      loadState: () => this.loadStateLean(),
       logger: this.logger,
     });
 
