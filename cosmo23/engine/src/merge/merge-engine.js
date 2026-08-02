@@ -18,6 +18,7 @@ const zlib = require('zlib');
 const crypto = require('crypto');
 const { promisify } = require('util');
 const { persistResearchState } = require('../../../lib/memory-sidecar');
+const { StateCompression } = require('../core/state-compression');
 
 const gzip = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
@@ -82,31 +83,64 @@ function getRunPrefix(runName) {
 /**
  * Load state from compressed (.gz) or uncompressed JSON file
  */
+/**
+ * Load a run's state for merging.
+ *
+ * Routes through the hardened StateCompression reader to get first-gzip-member
+ * salvage (a mid-write kill or an appender leaves trailing garbage that plain
+ * gunzip rejects, while the real state sits intact in the first member).
+ *
+ * One deliberate difference from StateCompression: where it returns a
+ * structured EMPTY state for an unreadable run, the merge engine throws. Those
+ * are opposite correct answers for opposite callers — an engine booting a fresh
+ * brain may legitimately start empty, but a merge INPUT that cannot be read is
+ * an invalid run, and silently treating it as an empty brain is how a merge
+ * quietly discards one side. The 2026-07 catastrophes (2161 nodes in, 5 out)
+ * are what that failure mode looks like at scale.
+ */
 async function loadCompressedState(statePath) {
   const gzPath = statePath + '.gz';
-
-  // Try compressed first
-  try {
-    await fs.access(gzPath);
-    const compressed = await fs.readFile(gzPath);
-    const decompressed = await gunzip(compressed);
-    return JSON.parse(decompressed.toString('utf8'));
-  } catch (e) {
-    // Fall back to uncompressed
+  const [hasGz, hasRaw] = await Promise.all([
+    fs.access(gzPath).then(() => true, () => false),
+    fs.access(statePath).then(() => true, () => false),
+  ]);
+  if (!hasGz && !hasRaw) {
+    throw Object.assign(
+      new Error(`Merge input has no readable state: ${statePath}[.gz]`),
+      { code: 'merge_state_unreadable' },
+    );
   }
 
-  // Try uncompressed
-  const raw = await fs.readFile(statePath, 'utf8');
-  return JSON.parse(raw);
+  const state = await StateCompression.loadCompressed(statePath);
+
+  // StateCompression's unreadable-input sentinel: an all-empty shell it returns
+  // rather than throwing. For a merge that is not data, it is an absence.
+  const isEmptySentinel = state
+    && state.cycleCount === 0
+    && Array.isArray(state.journal) && state.journal.length === 0
+    && state.memory
+    && Array.isArray(state.memory.nodes) && state.memory.nodes.length === 0
+    && Array.isArray(state.memory.edges) && state.memory.edges.length === 0;
+  if (isEmptySentinel && !hasRaw) {
+    throw Object.assign(
+      new Error(`Merge input state is unrecoverable: ${gzPath}`),
+      { code: 'merge_state_unreadable' },
+    );
+  }
+  return state;
 }
 
 /**
- * Save state as compressed .gz file
+ * Save merged state.
+ *
+ * Writes through StateCompression's atomic temp-file + fsync + rename, so a
+ * kill mid-write leaves the previous .gz intact instead of a truncated one.
+ * The merge engine used to write the final .gz directly — the one moment in
+ * the whole system where two brains have just become one and the old copies
+ * are about to be considered redundant.
  */
 async function saveCompressedState(statePath, state) {
-  const json = JSON.stringify(state);
-  const compressed = await gzip(Buffer.from(json, 'utf8'));
-  await fs.writeFile(statePath + '.gz', compressed);
+  await StateCompression.saveCompressed(statePath, state);
 }
 
 // ============================================================================
