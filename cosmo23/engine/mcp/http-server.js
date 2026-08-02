@@ -18,6 +18,10 @@ const {
   createMcpReadinessController,
   createSnapshotScalarStateReader,
 } = require('../../../shared/memory-source/mcp-http-runtime.cjs');
+const {
+  mcpRequestBodyDigest,
+  verifyMcpRequestIdentity,
+} = require('../../../shared/mcp-request-identity.cjs');
 const { readRecentJsonlTail } = require('../../../shared/bounded-jsonl-tail.cjs');
 
 // Initialize free web search
@@ -1161,6 +1165,25 @@ function createMcpHttpApp(options = {}) {
     memoryTools,
     logger: options.logger || console,
   });
+
+  // Per-request resident identity. Backwards compatible by construction:
+  // without a configured key and with no Authorization header, every request
+  // resolves through the fallback agent exactly as it did before. A request
+  // that DOES present a token must verify — a forged one is rejected outright
+  // rather than silently downgraded to the fallback identity.
+  const requestIdentityKey = options.requestIdentityKey
+    || process.env.HOME23_MCP_REQUEST_IDENTITY_KEY
+    || null;
+  const fallbackAgent = options.fallbackAgent || process.env.HOME23_AGENT || null;
+  const identityHome23Root = options.home23Root || HOME23_ROOT || null;
+  // Only build per-agent tool sets when the caller supplied a factory; otherwise
+  // every resident shares the single injected instance as before.
+  const memoryToolsCache = typeof options.createMemoryTools === 'function'
+    ? createMcpMemoryToolsCache({
+      maxEntries: options.memoryToolsCacheSize,
+      createMemoryTools: options.createMemoryTools,
+    })
+    : null;
   const app = express();
   app.locals.mcpReadiness = readiness;
   
@@ -1204,9 +1227,42 @@ function createMcpHttpApp(options = {}) {
   app.post('/mcp', async (req, res) => {
     const { StreamableHTTPServerTransport } = sdk;
     const requestController = new AbortController();
+
+    // Establish WHICH resident this request acts as before any tool can run.
+    //
+    // Enforcement engages only when a request-identity key is configured.
+    // Without one the server cannot verify a token at all, so it stays in the
+    // pre-identity behaviour rather than 401-ing every caller or, worse,
+    // pretending to have checked something. Once the key IS set, a request that
+    // presents a token must verify and a forged one is rejected outright.
+    let requestAgent = null;
+    if (requestIdentityKey && identityHome23Root) {
+      try {
+        requestAgent = resolveMcpRequestAgent({
+          authorization: req.headers?.authorization,
+          requestIdentityKey,
+          home23Root: identityHome23Root,
+          fallbackAgent,
+          method: 'POST',
+          path: '/mcp',
+          body: req.body,
+          now: Date.now(),
+        });
+      } catch (error) {
+        const envelope = mcpIdentityJsonRpcError(error, req.body?.id ?? null);
+        return res.status(envelope.status).json(envelope.body);
+      }
+    }
+
+    // Each resident gets its own tool target when a factory was supplied, so a
+    // signed request can never read or mutate another resident's memory.
+    const requestMemoryTools = (memoryToolsCache && requestAgent)
+      ? memoryToolsCache.get(requestAgent.agent)
+      : memoryTools;
+
     // Stateless: create new server + transport for each request
     const server = createMCPServer({
-      memoryTools,
+      memoryTools: requestMemoryTools,
       readScalarState,
       readRecentThoughts: options.readRecentThoughts,
       signal: requestController.signal,
@@ -1316,9 +1372,150 @@ if (require.main === module) {
   });
 }
 
+// ── MCP request identity ────────────────────────────────────────────────────
+// Every /mcp request used to share one memory-tool instance bound to whatever
+// agent the process env named, so any caller reaching the port acted as that
+// resident. These four functions make the caller prove which resident it is and
+// give each one its own tool target.
+
+const IDENTITY_ERROR_MESSAGES = Object.freeze({
+  mcp_request_identity_required: 'MCP request identity required',
+  mcp_request_identity_invalid: 'MCP request identity invalid',
+  mcp_request_identity_expired: 'MCP request identity expired',
+  mcp_request_identity_replayed: 'MCP request identity replayed',
+  mcp_request_identity_version: 'MCP request identity version unsupported',
+  mcp_request_identity_agent_invalid: 'MCP request identity names an unknown resident agent',
+});
+
+function mcpIdentityError(code, cause) {
+  const error = new Error(IDENTITY_ERROR_MESSAGES[code] || code);
+  error.code = code;
+  if (cause) error.cause = cause;
+  return error;
+}
+
+/**
+ * Resolve a resident agent name to itself, or throw.
+ *
+ * The name becomes a filesystem path under instances/, so it is validated as a
+ * bare directory name (no separators, no traversal, no absolute paths) AND
+ * required to exist. A name that merely looks safe but names no resident is
+ * still rejected -- it would otherwise create a phantom tenant.
+ */
+function validateResidentAgent(home23Root, agent) {
+  if (typeof agent !== 'string' || agent.length === 0 || agent.length > 128) {
+    throw mcpIdentityError('mcp_request_identity_agent_invalid');
+  }
+  if (!/^[a-z0-9][a-z0-9._-]*$/i.test(agent) || agent === '.' || agent === '..') {
+    throw mcpIdentityError('mcp_request_identity_agent_invalid');
+  }
+  const instanceDir = path.join(home23Root, 'instances', agent);
+  // Defense in depth: the regex already forbids separators, but resolve and
+  // confirm containment so a future loosening cannot become traversal.
+  const instancesRoot = path.resolve(home23Root, 'instances');
+  const resolved = path.resolve(instanceDir);
+  if (resolved !== path.join(instancesRoot, agent)) {
+    throw mcpIdentityError('mcp_request_identity_agent_invalid');
+  }
+  try {
+    if (!fs.statSync(resolved).isDirectory()) throw new Error('not a directory');
+  } catch (error) {
+    throw mcpIdentityError('mcp_request_identity_agent_invalid', error);
+  }
+  return agent;
+}
+
+/**
+ * Determine which resident agent a request is acting as.
+ *
+ * A PRESENT authorization header must verify. It is never allowed to fail over
+ * to the env fallback: falling through would mean a forged token quietly
+ * downgrades into whatever identity the process happens to hold, which is the
+ * privilege escalation this whole mechanism exists to prevent. Only a wholly
+ * ABSENT header may resolve through the fallback.
+ */
+function resolveMcpRequestAgent(options = {}) {
+  const {
+    authorization, requestIdentityKey, home23Root, fallbackAgent,
+    method, path: requestPath, body, now,
+  } = options;
+
+  const header = typeof authorization === 'string' ? authorization.trim() : '';
+  if (header) {
+    if (!requestIdentityKey) throw mcpIdentityError('mcp_request_identity_invalid');
+    const token = /^Bearer\s+/i.test(header) ? header.replace(/^Bearer\s+/i, '').trim() : header;
+    const claims = verifyMcpRequestIdentity(requestIdentityKey, token, {
+      audience: 'cosmo23-mcp',
+      method,
+      path: requestPath,
+      bodyDigest: mcpRequestBodyDigest(body),
+      now,
+    });
+    return { agent: validateResidentAgent(home23Root, claims.agent), source: 'token' };
+  }
+
+  if (fallbackAgent) {
+    return { agent: validateResidentAgent(home23Root, fallbackAgent), source: 'fallback' };
+  }
+  throw mcpIdentityError('mcp_request_identity_required');
+}
+
+/** Render an identity failure as a JSON-RPC envelope the client can act on. */
+function mcpIdentityJsonRpcError(error, id = null) {
+  const code = error?.code && IDENTITY_ERROR_MESSAGES[error.code]
+    ? error.code
+    : 'mcp_request_identity_invalid';
+  return {
+    status: 401,
+    body: {
+      jsonrpc: '2.0',
+      error: {
+        code: -32001,
+        message: IDENTITY_ERROR_MESSAGES[code],
+        data: { code },
+      },
+      id: id ?? null,
+    },
+  };
+}
+
+/**
+ * Per-agent memory-tool cache, bounded so a long-lived server cannot accumulate
+ * one tool set per name ever seen. Eviction is insertion order: the oldest
+ * resident's entry goes first.
+ */
+function createMcpMemoryToolsCache(options = {}) {
+  const maxEntries = Number.isSafeInteger(options.maxEntries) && options.maxEntries > 0
+    ? options.maxEntries
+    : 8;
+  const createMemoryTools = options.createMemoryTools;
+  if (typeof createMemoryTools !== 'function') {
+    throw new TypeError('createMcpMemoryToolsCache requires createMemoryTools(agent)');
+  }
+  const entries = new Map();
+  return {
+    get(agent) {
+      if (entries.has(agent)) return entries.get(agent);
+      const tools = createMemoryTools(agent);
+      entries.set(agent, tools);
+      while (entries.size > maxEntries) {
+        const oldest = entries.keys().next().value;
+        entries.delete(oldest);
+      }
+      return tools;
+    },
+    size() { return entries.size; },
+    has(agent) { return entries.has(agent); },
+  };
+}
+
 module.exports = {
   assertLoopbackHost,
   createMCPServer,
   createMcpHttpApp,
+  createMcpMemoryToolsCache,
+  mcpIdentityJsonRpcError,
+  resolveMcpRequestAgent,
   startMcpHttpServer,
+  validateResidentAgent,
 };
