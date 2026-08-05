@@ -5,39 +5,57 @@
  * 1. onEvent callback (streams to dashboard chat in real-time)
  * 2. Conversation history (persisted, visible on reload)
  * 3. Telegram (if available)
+ *
+ * By default each sub-agent runs under a fresh `subagent:<parent>:<hex>` chat
+ * id so its turns don't masquerade as the parent conversation; delivery always
+ * targets the PARENT chat id.
  */
 
+import { randomBytes } from 'node:crypto';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 
 export const spawnAgentTool: ToolDefinition = {
   name: 'spawn_agent',
-  description: 'Spawn a background sub-agent to handle a task in parallel. The sub-agent runs independently and delivers its result when done. Returns immediately.',
+  description: 'Spawn a background sub-agent to handle a task in parallel. The sub-agent runs independently (in its own isolated chat session by default) and delivers its result when done. Returns immediately.',
   input_schema: {
     type: 'object',
     properties: {
       task: { type: 'string', description: 'Description of the task for the sub-agent' },
+      label: { type: 'string', description: 'Short human label for the sub-agent run' },
+      isolated: { type: 'boolean', description: 'Run under a fresh sub-chat id so the sub-agent does not share the parent conversation history (default true)' },
+      model: { type: 'string', description: 'Model override for the sub-agent turn (provider inferred from the model name)' },
     },
     required: ['task'],
   },
 
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
     const task = input.task as string;
+    const label = typeof input.label === 'string' && input.label ? input.label.slice(0, 100) : undefined;
+    const isolated = input.isolated !== false;
+    const model = typeof input.model === 'string' && input.model ? input.model : undefined;
 
     if (!ctx.runAgentLoop) {
       return { content: 'Sub-agent spawning not available (agent loop runner not configured).', is_error: true };
     }
 
     const tracker = ctx.subAgentTracker;
+    const headline = label ?? task.slice(0, 100);
+    const subChatId = isolated
+      ? `subagent:${ctx.chatId}:${randomBytes(2).toString('hex')}`
+      : ctx.chatId;
 
     const runSubAgent = async (): Promise<void> => {
       tracker.active++;
       try {
-        const subCtx: ToolContext = { ...ctx, chatId: ctx.chatId };
+        const subCtx: ToolContext = { ...ctx, chatId: subChatId };
         const systemPrompt = ctx.contextManager.getSystemPrompt();
 
-        const result = await ctx.runAgentLoop!(systemPrompt, task, [], subCtx);
+        const result = await ctx.runAgentLoop!(
+          systemPrompt, task, [], subCtx,
+          model ? { modelOverride: { model } } : undefined,
+        );
 
-        const text = `[Sub-agent complete] ${task.slice(0, 100)}\n\n${result.text}`;
+        const text = `[Sub-agent complete] ${headline}\n\n${result.text}`;
         console.log(`[subagent] Result for "${task.slice(0, 50)}": ${result.text.slice(0, 200)}`);
 
         // 1. Fire onEvent so dashboard chat sees it in real-time
@@ -45,7 +63,7 @@ export const spawnAgentTool: ToolDefinition = {
           ctx.onEvent({ type: 'subagent_result', task: task.slice(0, 200), result: result.text });
         }
 
-        // 2. Append to conversation history so it persists
+        // 2. Append to conversation history so it persists — parent chat, always
         if (ctx.conversationHistory) {
           ctx.conversationHistory.append(ctx.chatId, [{
             role: 'assistant' as const,
@@ -75,7 +93,7 @@ export const spawnAgentTool: ToolDefinition = {
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         console.error(`[subagent] Error: ${errMsg}`);
-        const text = `[Sub-agent failed] ${task.slice(0, 100)}\n\nError: ${errMsg}`;
+        const text = `[Sub-agent failed] ${headline}\n\nError: ${errMsg}`;
 
         if (ctx.onEvent) {
           ctx.onEvent({ type: 'subagent_result', task: task.slice(0, 200), result: `Error: ${errMsg}` });
@@ -103,6 +121,6 @@ export const spawnAgentTool: ToolDefinition = {
     // Fire and forget — never blocks the parent
     runSubAgent().catch(console.error);
 
-    return { content: `Sub-agent spawned for: "${task.slice(0, 200)}". Results will be delivered when complete.` };
+    return { content: `Sub-agent spawned for: "${task.slice(0, 200)}"${isolated ? ` (session ${subChatId})` : ''}. Results will be delivered when complete.` };
   },
 };

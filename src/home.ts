@@ -40,6 +40,7 @@ import { executeTrackedTurn } from './agent/turn-entrypoint.js';
 import { ContextManager } from './agent/context.js';
 import { ConversationHistory } from './agent/history.js';
 import { createToolRegistry } from './agent/tools/index.js';
+import { ACPBridge, normalizeBridgeConfig } from './acp/bridge.js';
 import type { ToolContext, SubAgentTracker } from './agent/types.js';
 import { BrainOperationsClient } from './agent/brain-operations/client.js';
 import {
@@ -433,8 +434,8 @@ async function main(): Promise<void> {
   (compaction as unknown as { memory: import('./agent/memory.js').MemoryManager }).memory = agent.getMemory();
 
   // Wire sub-agent runner
-  toolContext.runAgentLoop = async (_systemPrompt, userMessage, _tools, ctx) => {
-    return (await executeTrackedTurn(agent, ctx.chatId, userMessage)).response;
+  toolContext.runAgentLoop = async (_systemPrompt, userMessage, _tools, ctx, options) => {
+    return (await executeTrackedTurn(agent, ctx.chatId, userMessage, { modelOverride: options?.modelOverride })).response;
   };
 
   // Give AgentLoop the provider map so runtime setModel can rebuild the client
@@ -887,6 +888,51 @@ async function main(): Promise<void> {
 
   // Wire scheduler into command context
   commandCtx.scheduler = scheduler;
+
+  // ── Coding-backend bridge (Step 29) ──
+  // Durable coding jobs delegated to headless Claude Code / Codex CLIs.
+  // Result delivery mirrors the spawn_agent contract: history append + Telegram.
+  let codingBridge: ACPBridge | null = null;
+  const acpConfig = normalizeBridgeConfig((config as { acp?: unknown }).acp);
+  if (acpConfig.enabled) {
+    codingBridge = new ACPBridge({
+      config: acpConfig,
+      jobsDir: join(INSTANCE_DIR, 'coding-jobs'),
+      projectRoot: PROJECT_ROOT,
+    });
+    toolContext.codingBridge = codingBridge;
+    codingBridge.addListener((event) => {
+      if (event.type === 'job_started') {
+        console.log(`[coding] job ${event.job.id} started (${event.job.backend}) in ${event.job.cwd}`);
+        return;
+      }
+      if (event.type !== 'job_finished') return;
+      const { job, receipt } = event;
+      console.log(`[coding] job ${job.id} ${job.status} (${job.backend}, ${Math.round(receipt.durationMs / 1000)}s)`);
+      const requestedBy = job.requestedBy ?? '';
+      if (!requestedBy) return;
+      const headline = job.label || job.prompt.slice(0, 100);
+      const text = `[Coding job ${job.status}] ${headline}\n\n${receipt.resultTail.slice(0, 1500)}\n(job ${job.id}; coding_result for full output)`;
+      try {
+        history.append(requestedBy, [{ role: 'assistant', content: text, ts: new Date().toISOString() }]);
+      } catch (err) {
+        console.warn(`[coding] history delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (/^-?\d+$/.test(requestedBy) && process.env.TELEGRAM_BOT_TOKEN) {
+        fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: requestedBy, text: text.slice(0, 4096) }),
+        }).catch((err) => console.warn(`[coding] Telegram delivery failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+    try {
+      const recovered = await codingBridge.recover();
+      console.log(`[coding] bridge recovery: ${recovered.resumed.length} resumed, ${recovered.finalized.length} finalized`);
+    } catch (err) {
+      console.warn(`[coding] bridge recovery failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   // ── Engine WebSocket Event Listener ──
   const engineEvents = new EngineEventListener(ENGINE_WS_PORT);
@@ -1637,6 +1683,12 @@ async function main(): Promise<void> {
 
     if (scheduler) {
       scheduler.stop();
+    }
+
+    try {
+      codingBridge?.dispose();
+    } catch (err) {
+      console.error('[home] Error disposing coding bridge:', err);
     }
 
     try {

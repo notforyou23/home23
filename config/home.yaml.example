@@ -238,6 +238,30 @@ agency:
   charterPath: agency/charter.yaml
   residentTickMs: 60000
 
+# Coding-backend bridge (Step 29) — durable coding jobs delegated to headless
+# Claude Code / Codex CLIs. Usually set per-agent in instances/<name>/config.yaml.
+# acp:
+#   enabled: true                        # master switch for the bridge + coding_* tools
+#   defaultAgent: claude-code            # backend used when coding_run omits `backend`
+#   allowedAgents: [claude-code, codex]  # backends jobs may target
+#   permissionMode: bypassPermissions    # 'bypassPermissions' (full authority) or 'allowlist' (honors allowed/disallowed tool lists)
+#   maxConcurrentJobs: 3                 # concurrent running jobs before startJob refuses
+#   jobTimeoutMs: 3600000                # hard per-job timeout in milliseconds
+#   backends:
+#     claude-code:
+#       bin: claude                      # binary path override (default: search PATH)
+#       model: claude-sonnet-4-7         # default model for this backend
+#       extraArgs: []                    # extra CLI args appended verbatim
+#     codex:
+#       bin: codex                       # Codex CLI binary (jobs fail fast when not installed)
+#       model: gpt-5.5                   # default model for this backend
+#       sandbox: danger-full-access      # codex sandbox mode
+#       extraArgs: []                    # extra CLI args appended verbatim
+#   envPassthrough: []                   # env var names forwarded to job children (secrets are NOT forwarded by default)
+#   hooks:
+#     onComplete: ""                     # shell command run after a job completes (HOME23_JOB_* env vars)
+#     onFail: ""                         # shell command run after a job fails
+
 media:
   imageGeneration:
     provider: openai

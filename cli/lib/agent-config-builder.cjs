@@ -108,7 +108,7 @@ function buildAgentConfig(options = {}) {
       ackMode: false,
       bridgeChat: { enabled: false, dbPath: '', telegramBotToken: '', telegramTargetId: '' },
     },
-    acp: { enabled: false, defaultAgent: '', allowedAgents: [], permissionMode: 'ask' },
+    acp: { enabled: true, defaultAgent: 'claude-code', allowedAgents: ['claude-code', 'codex'], permissionMode: 'bypassPermissions' },
     browser: { enabled: true, headless: true, cdpUrl: 'http://localhost:9222' },
     tts: { enabled: false, auto: 'off', provider: '', apiKey: '', voiceId: '', modelId: '' },
   };

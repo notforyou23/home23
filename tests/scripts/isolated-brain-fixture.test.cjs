@@ -646,14 +646,17 @@ test('isolated launcher rejects the primary checkout and sibling worktrees from 
     t.skip('linked-worktree-only boundary proof');
     return;
   }
+  // Sibling worktrees are transient (created and removed by other sessions);
+  // prove the sibling boundary only when one actually exists on disk. The
+  // primary-checkout refusal below is the load-bearing proof either way.
   const siblingRoot = await fs.realpath(path.join(
     primaryRoot,
     '.worktrees',
     'brain-agent-task2',
-  ));
+  )).catch(() => null);
   assert.notEqual(primaryRoot, await fs.realpath(process.cwd()));
-  assert.notEqual(siblingRoot, await fs.realpath(process.cwd()));
-  for (const candidate of [primaryRoot, siblingRoot]) {
+  if (siblingRoot) assert.notEqual(siblingRoot, await fs.realpath(process.cwd()));
+  for (const candidate of siblingRoot ? [primaryRoot, siblingRoot] : [primaryRoot]) {
     await assert.rejects(startIsolatedFixture({
       fixtureRoot: candidate,
       context: state.context,

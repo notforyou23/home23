@@ -327,6 +327,11 @@ export interface ACPConfig {
   defaultAgent: string;
   allowedAgents: string[];
   permissionMode: string;
+  maxConcurrentJobs?: number;
+  jobTimeoutMs?: number;
+  backends?: Record<string, { bin?: string; model?: string; sandbox?: string; extraArgs?: string[] }>;
+  envPassthrough?: string[];
+  hooks?: { onComplete?: string; onFail?: string };
 }
 
 export interface BrowserConfig {

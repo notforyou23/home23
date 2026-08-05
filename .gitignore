@@ -135,3 +135,6 @@ published/
 
 # Playwright CLI
 .playwright-cli/
+
+# Coding-job worktrees (Step 29)
+.home23-worktrees/

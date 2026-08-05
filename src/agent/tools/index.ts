@@ -21,6 +21,15 @@ import { spawnAgentTool } from './subagent.js';
 import { promoteToMemoryTool } from './promote.js';
 import { workerListTool, workerRunTool, workerStatusTool, workerReceiptTool, workerPromoteMemoryTool } from './workers.js';
 import {
+  codingRunTool,
+  codingContinueTool,
+  codingStatusTool,
+  codingResultTool,
+  codingCancelTool,
+  codingJobsTool,
+  codingBackendsTool,
+} from './coding.js';
+import {
   agencyBriefTool,
   agencyListTool,
   agencyCreatePursuitTool,
@@ -243,6 +252,14 @@ export function createToolRegistry(opts: { web?: WebToolsConfig } = {}): ToolReg
   registry.register(workerStatusTool);
   registry.register(workerReceiptTool);
   registry.register(workerPromoteMemoryTool);
+  // Coding-backend bridge — 7 tools (see docs/design/STEP29)
+  registry.register(codingRunTool);
+  registry.register(codingContinueTool);
+  registry.register(codingStatusTool);
+  registry.register(codingResultTool);
+  registry.register(codingCancelTool);
+  registry.register(codingJobsTool);
+  registry.register(codingBackendsTool);
   registry.register(agencyBriefTool);
   registry.register(agencyListTool);
   registry.register(agencyCreatePursuitTool);

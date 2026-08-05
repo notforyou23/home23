@@ -11,6 +11,7 @@ export async function executeTrackedTurn(
     onEvent?: AgentEventCallback;
     inactivityMs?: number;
     hardDurationMs?: number;
+    modelOverride?: { model: string; provider?: string };
   } = {},
 ): Promise<{ turnId: string; response: AgentResponse }> {
   const started = await agent.runWithTurn(chatId, userText, {
@@ -18,6 +19,7 @@ export async function executeTrackedTurn(
     onEvent: options.onEvent,
     inactivityMs: options.inactivityMs,
     hardDurationMs: options.hardDurationMs,
+    ...(options.modelOverride ? { modelOverride: options.modelOverride } : {}),
   });
   return { turnId: started.turnId, response: await started.response };
 }

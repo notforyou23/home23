@@ -11,6 +11,13 @@ import type { BrowserController } from '../browser/cdp.js';
 import type { BrainOperationsClient } from './brain-operations/client.js';
 import type { OperationActivity } from './brain-operations/types.js';
 import type { MemoryObjectStore } from './memory-objects.js';
+import type {
+  BridgeEvent,
+  CodingIsolation,
+  CodingJobReceipt,
+  CodingJobRecord,
+  CodingJobStatus,
+} from '../acp/types.js';
 
 // ─── Tool Types ─────────────────────────────────────────────
 
@@ -68,6 +75,7 @@ export interface ToolContext {
   /** Loop-owned store whose correction validator is bound to active recorded turns. */
   memoryObjectStore?: MemoryObjectStore;
   telegramAdapter: TelegramAdapterRef | null;
+  codingBridge?: CodingBridgeRef | null;
   runAgentLoop: AgentLoopRunner | null;
   workerConnectorBaseUrl?: string;
   fetch?: typeof fetch;
@@ -100,6 +108,34 @@ export interface ContextManagerRef {
   invalidate(): void;
 }
 
+/** Minimal interface to the ACP coding bridge — avoids importing the full class */
+export interface CodingBridgeRef {
+  startJob(opts: {
+    prompt: string;
+    backend?: string;
+    cwd?: string;
+    label?: string;
+    model?: string;
+    effort?: string;
+    isolation?: CodingIsolation;
+    resumeSessionId?: string;
+    resumedFromJobId?: string;
+    appendSystemPrompt?: string;
+    allowedTools?: string[];
+    disallowedTools?: string[];
+    addDirs?: string[];
+    maxBudgetUsd?: number;
+    requestedBy?: string;
+  }): Promise<CodingJobRecord>;
+  getJob(id: string): CodingJobRecord | undefined;
+  listJobs(filter?: { status?: CodingJobStatus; limit?: number }): CodingJobRecord[];
+  getReceipt(id: string): CodingJobReceipt | undefined;
+  readEventsTail(id: string, maxEvents?: number): BridgeEvent[];
+  cancelJob(id: string): Promise<CodingJobRecord>;
+  waitForJob(id: string, timeoutMs: number): Promise<CodingJobRecord>;
+  listBackends(): Array<{ id: string; available: boolean; bin: string | null; defaultModel?: string }>;
+}
+
 /** Minimal interface for TelegramAdapter — avoids importing the full class */
 export interface TelegramAdapterRef {
   sendTyping(chatId: string): Promise<void>;
@@ -114,6 +150,7 @@ export type AgentLoopRunner = (
   userMessage: string,
   tools: ToolDefinition[],
   ctx: ToolContext,
+  options?: { modelOverride?: { model: string; provider?: string } },
 ) => Promise<AgentResponse>;
 
 // ─── Agent Events (streaming) ───────────────────────────────
