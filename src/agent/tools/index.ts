@@ -19,6 +19,7 @@ import { cronScheduleTool, cronListTool, cronRunTool, cronDeleteTool, cronEnable
 import { selfUpdateTool, selfReadTool } from './identity.js';
 import { spawnAgentTool } from './subagent.js';
 import { promoteToMemoryTool } from './promote.js';
+import { relationshipTools } from './relationship.js';
 import { workerListTool, workerRunTool, workerStatusTool, workerReceiptTool, workerPromoteMemoryTool } from './workers.js';
 import {
   codingRunTool,
@@ -276,6 +277,7 @@ export function createToolRegistry(opts: { web?: WebToolsConfig } = {}): ToolReg
   registry.register(agencyScratchNoteTool);
   registry.register(agencyTickTool);
   registry.register(promoteToMemoryTool);
+  for (const tool of relationshipTools) registry.register(tool);
 
   return registry;
 }

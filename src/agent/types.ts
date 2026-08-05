@@ -10,6 +10,7 @@ import type { TTSService } from '../observability/tts.js';
 import type { BrowserController } from '../browser/cdp.js';
 import type { BrainOperationsClient } from './brain-operations/client.js';
 import type { OperationActivity } from './brain-operations/types.js';
+import type { RelationshipLedger } from './relationship-ledger.js';
 import type { MemoryObjectStore } from './memory-objects.js';
 import type {
   BridgeEvent,
@@ -74,6 +75,8 @@ export interface ToolContext {
   };
   /** Loop-owned store whose correction validator is bound to active recorded turns. */
   memoryObjectStore?: MemoryObjectStore;
+  /** Loop-owned curated working-relationship ledger (Step 30, Piece 2). */
+  relationshipLedger?: RelationshipLedger | null;
   telegramAdapter: TelegramAdapterRef | null;
   codingBridge?: CodingBridgeRef | null;
   runAgentLoop: AgentLoopRunner | null;
@@ -99,7 +102,18 @@ export interface PromptSourceInfo {
     label: string;
     exists: boolean;
     included: boolean;
+    /** Companion Layer (Step 30) inspection fields — omission is now visible. */
+    layer?: string;            // one of the six IdentityLayer names
+    rawBytes?: number;         // size of the file on disk (trimmed)
+    includedBytes?: number;    // size of the retained content actually injected
+    budget?: number;           // the char budget applied
+    truncated?: boolean;       // whether any section was dropped / boundary-cut
+    omittedSections?: string[];// heading titles of dropped sections
   }>;
+  /** Total system-prompt size and how it split across the cache boundary. */
+  systemPromptBytes?: number;
+  /** True when at least one identity file was truncated to fit its budget. */
+  anyTruncated?: boolean;
 }
 
 export interface ContextManagerRef {

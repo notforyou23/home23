@@ -124,6 +124,8 @@ export interface HomeConfig {
     memorySearch: { enabled: boolean; timeoutMs: number; topK: number };
     identityFiles: string[];
     identityLayers?: IdentityLayerConfig[];
+    /** Per-file identity char budgets (Step 30); overrides built-in defaults. */
+    identityBudgets?: Record<string, number>;
     embeddedAgent?: EmbeddedAgentConfig;
     heartbeatRefreshMs: number;
   };
@@ -161,6 +163,13 @@ export interface HomeConfig {
   deliveryProfiles?: DeliveryProfiles;
   sibling: SiblingConfig;
   acp: ACPConfig;
+  /** Attention gate (Step 30): notice broadly, interrupt narrowly on autonomous outbound. */
+  attention?: {
+    enabled?: boolean;            // default true; false = every resident message delivers as before
+    dedupeWindowMs?: number;      // suppress identical resident messages within this window
+    aggregateFlushCount?: number; // held low-materiality items before a digest flushes
+    aggregateFlushMs?: number;    // max age of a held item before a digest flushes
+  };
   browser: BrowserConfig;
   tts: TTSConfig;
 

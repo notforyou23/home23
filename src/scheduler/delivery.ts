@@ -12,6 +12,7 @@ import { randomUUID } from 'crypto';
 import type { ChannelAdapter, OutgoingResponse } from '../channels/router.js';
 import type { CronJob, JobResult } from './cron.js';
 import type { DeliveryProfiles } from '../types.js';
+import type { AttentionGate, OutboundSignal } from '../agent/attention/attention-gate.js';
 
 export type { DeliveryProfiles };
 
@@ -21,10 +22,19 @@ export class DeliveryManager {
   private adapters: Map<string, ChannelAdapter>;
   private profiles: DeliveryProfiles;
   private eventLedgerPath: string;
+  /**
+   * Optional attention gate (Step 30). Scheduler deliveries are EXPLICIT jtr
+   * config, so the gate here is dedup-only: a configured delivery is marked
+   * explicitlyWatched (always surfaces) and the gate only suppresses an
+   * identical repeat inside the dedupe window — it never withholds a delivery
+   * jtr set up. Absent gate = original behavior, unchanged.
+   */
+  private gate: AttentionGate | null;
 
-  constructor(adapters: Map<string, ChannelAdapter>, profiles: DeliveryProfiles = {}) {
+  constructor(adapters: Map<string, ChannelAdapter>, profiles: DeliveryProfiles = {}, gate: AttentionGate | null = null) {
     this.adapters = adapters;
     this.profiles = profiles;
+    this.gate = gate;
     const home23Root = resolve(import.meta.dirname, '..', '..');
     const agentName = process.env.HOME23_AGENT ?? 'test-agent';
     this.eventLedgerPath = join(home23Root, 'instances', agentName, 'brain', 'event-ledger.jsonl');
@@ -47,6 +57,29 @@ export class DeliveryManager {
     const text = this.formatText(job, result);
     if (!text) {
       return;
+    }
+
+    // Attention gate (dedup-only for configured deliveries). A configured cron
+    // delivery is explicitlyWatched → it always surfaces on first occurrence;
+    // the only way the gate suppresses is an identical repeat within the window
+    // (the "repetitive status update" the brief says to avoid). We deliberately
+    // do NOT set isFailure here — a first failure surfaces via explicitlyWatched,
+    // and identical repeated failures are what dedup is for.
+    if (this.gate) {
+      const signal: OutboundSignal = {
+        origin: 'cron',
+        text,
+        explicitlyWatched: true,
+        kind: job.delivery?.mode === 'summary' ? 'summary' : undefined,
+      };
+      const verdict = this.gate.evaluate(signal);
+      if (verdict.decision === 'suppress') {
+        console.log(`[delivery] Job ${job.id} suppressed by attention gate (${verdict.reason}${verdict.detail ? `: ${verdict.detail}` : ''})`);
+        return;
+      }
+      // 'surface' (the normal path) and 'aggregate' both proceed to send here —
+      // a jtr-configured delivery is never held. record() arms dedup for repeats.
+      this.gate.record(signal);
     }
 
     const targets: Array<{ channel: string; to: string }> = [];

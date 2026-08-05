@@ -30,6 +30,7 @@ import { assembleContext } from './context-assembly.js';
 import { EventLedger } from './event-ledger.js';
 import { TriggerIndex } from './trigger-index.js';
 import { MemoryObjectStore } from './memory-objects.js';
+import { RelationshipLedger } from './relationship-ledger.js';
 import { TurnStore } from '../chat/turn-store.js';
 import { turnBus } from '../chat/turn-bus.js';
 import { newTurnId, type TurnEvent } from '../chat/turn-types.js';
@@ -318,6 +319,7 @@ export class AgentLoop {
   private eventLedger: EventLedger;
   private triggerIndex: TriggerIndex;
   private memoryStore: MemoryObjectStore;
+  private relationshipLedger: RelationshipLedger;
   private turnStore: TurnStore;
   private turnTiming = {
     now: Date.now,
@@ -373,13 +375,25 @@ export class AgentLoop {
     this.situationalAwareness = opts.situationalAwareness;
     this.eventLedger = new EventLedger(join(this.workspacePath, '..', 'brain'));
     const brainDir = join(this.workspacePath, '..', 'brain');
+    // Correction authentication is ONE-SHOT and SHARED across both stores: one
+    // authenticated jtr correction message mints exactly one jtr-authority
+    // record, whether that lands in the memory store or the relationship ledger
+    // (whichever tool the agent calls first consumes the token). This preserves
+    // the tested anti-replay guard — a replay of the same ingress is rejected —
+    // now spanning both stores. Recording the same correction in the second
+    // store still succeeds, as an agent_note with the correct text.
+    const validateCorrection = (ingress: { messageRef: string; chatId: string; userText: string }): boolean => {
+      const recorded = this.authenticatedUserTurns.get(ingress.messageRef);
+      const valid = recorded?.chatId === ingress.chatId && recorded.userText === ingress.userText;
+      if (valid) this.authenticatedUserTurns.delete(ingress.messageRef);
+      return valid;
+    };
     this.memoryStore = new MemoryObjectStore(brainDir, {
-      validateCorrectionIngress: (ingress) => {
-        const recorded = this.authenticatedUserTurns.get(ingress.messageRef);
-        const valid = recorded?.chatId === ingress.chatId && recorded.userText === ingress.userText;
-        if (valid) this.authenticatedUserTurns.delete(ingress.messageRef);
-        return valid;
-      },
+      validateCorrectionIngress: validateCorrection,
+    });
+    // Working-relationship ledger (Step 30) — same authenticated-correction binding.
+    this.relationshipLedger = new RelationshipLedger(brainDir, {
+      validateCorrectionIngress: validateCorrection,
     });
     this.triggerIndex = new TriggerIndex();
     this.triggerIndex.loadFrom(this.memoryStore);
@@ -1016,6 +1030,7 @@ export class AgentLoop {
       chatId,
       authenticatedUserMessage: undefined,
       memoryObjectStore: this.memoryStore,
+      relationshipLedger: this.relationshipLedger,
       onEvent,
       conversationHistory: this.history,
       abortSignal: ac.signal,
@@ -1198,6 +1213,23 @@ export class AgentLoop {
 
         if (assembly.block) {
           rawSystemPrompt += `\n\n${assembly.block}`;
+        }
+
+        // ── Relationship continuity (Step 30, Piece 2 · identity layer 2) ──
+        // Selective, relevance-ranked, budget-bounded working-relationship
+        // context. Privacy: sensitive entries never enter the prompt. Failure
+        // here never blocks the turn.
+        try {
+          const rel = this.relationshipLedger.retrieveForContext(userText, {
+            budgetChars: 1400,
+            excludePrivacy: ['sensitive'],
+          });
+          if (rel.text && rel.entries.length > 0) {
+            rawSystemPrompt += `\n\n${rel.text}`;
+            this.relationshipLedger.markSurfaced(rel.entries.map(e => e.id));
+          }
+        } catch (err) {
+          console.warn('[agent] Relationship retrieval failed:', err instanceof Error ? err.message : err);
         }
 
         // Log assembly result

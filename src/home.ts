@@ -41,6 +41,7 @@ import { ContextManager } from './agent/context.js';
 import { ConversationHistory } from './agent/history.js';
 import { createToolRegistry } from './agent/tools/index.js';
 import { ACPBridge, normalizeBridgeConfig } from './acp/bridge.js';
+import { AttentionGate, type OutboundSignal } from './agent/attention/attention-gate.js';
 import type { ToolContext, SubAgentTracker } from './agent/types.js';
 import { BrainOperationsClient } from './agent/brain-operations/client.js';
 import {
@@ -220,6 +221,7 @@ async function main(): Promise<void> {
     workspacePath,
     identityFiles,
     identityLayers: config.chat.identityLayers,
+    identityBudgets: config.chat.identityBudgets,
     heartbeatRefreshMs: config.chat.heartbeatRefreshMs,
     enginePort: DASHBOARD_PORT,
     ownerName: config.agent?.owner?.name,
@@ -699,8 +701,21 @@ async function main(): Promise<void> {
     }
   }
 
+  // ── Attention gate (Step 30) — notice broadly, interrupt narrowly on
+  // autonomous, resident-originated outbound. Shared across the scheduler
+  // delivery path and the /api/notify escalation path. User replies never
+  // touch it (they flow through the channel router, not these paths).
+  const attentionCfg = config.attention ?? {};
+  const attentionGate = attentionCfg.enabled === false
+    ? null
+    : new AttentionGate({
+        dedupeWindowMs: attentionCfg.dedupeWindowMs,
+        aggregateFlushCount: attentionCfg.aggregateFlushCount,
+        aggregateFlushMs: attentionCfg.aggregateFlushMs,
+      });
+
   // ── Delivery Manager & Cron Scheduler ──
-  const delivery = new DeliveryManager(adapterMap, config.deliveryProfiles ?? {});
+  const delivery = new DeliveryManager(adapterMap, config.deliveryProfiles ?? {}, attentionGate);
   let scheduler: CronScheduler | null = null;
 
   if (config.scheduler) {
@@ -1306,6 +1321,36 @@ async function main(): Promise<void> {
     }
   });
 
+  // ── Prompt-composition inspection (Step 30, Piece 1) — a developer/debug
+  // view of exactly which identity sources and sections reached the last turn,
+  // their sizes, and anything omitted to fit budget. Bearer-token gated: this
+  // exposes private identity content, so it must never be reachable
+  // unauthenticated. Metadata-only by default; the full prompt text is returned
+  // only with ?includeText=1 (still behind the same token).
+  bridgeApp.get('/api/prompt-composition', (req: any, res: any) => {
+    if (bridgeToken) {
+      const header = req.headers.authorization || '';
+      const provided = header.startsWith('Bearer ') ? header.slice(7) : '';
+      if (provided !== bridgeToken) {
+        res.status(401).json({ error: 'unauthorized' });
+        return;
+      }
+    }
+    const info = contextManager.getPromptSourceInfo();
+    const body: Record<string, unknown> = {
+      agent: AGENT_NAME,
+      generatedAt: info.generatedAt,
+      totalSections: info.totalSections,
+      systemPromptBytes: info.systemPromptBytes,
+      anyTruncated: info.anyTruncated,
+      layers: info.loadedFiles,
+    };
+    if (String(req.query?.includeText || '') === '1') {
+      body.systemPrompt = contextManager.getSystemPrompt();
+    }
+    res.json(body);
+  });
+
   // ── Notify endpoint — the engine's live-problems loop calls this when
   // autonomous remediation has been exhausted. Routes the message to the
   // owner's default channel (Telegram DM for now). Bearer-token gated so
@@ -1319,31 +1364,91 @@ async function main(): Promise<void> {
         return;
       }
     }
-    const { text, severity = 'normal', source = 'engine' } = req.body || {};
+    const { text, severity = 'normal', source = 'engine', requiresAction, isFailure, jtrRhythm, kind } = req.body || {};
     if (!text || typeof text !== 'string') {
       res.status(400).json({ error: 'text required' });
       return;
     }
 
     const ownerTelegramId = config.agent?.owner?.telegramId || null;
-    const sigil = severity === 'alert' ? '🚨' : severity === 'low' ? '·' : '⚠️';
-    const prefix = `${sigil} [${source}]`;
-    const delivered: string[] = [];
-    const failed: Array<{channel: string; error: string}> = [];
-
     const telegramAdapter = adapterMap.get('telegram');
-    if (telegramAdapter && ownerTelegramId) {
-      try {
-        await telegramAdapter.send({
-          channel: 'telegram',
-          chatId: String(ownerTelegramId),
-          text: `${prefix} ${text}`,
-        });
-        delivered.push('telegram');
-      } catch (err) {
-        failed.push({ channel: 'telegram', error: err instanceof Error ? err.message : String(err) });
+
+    // Attention gate (Step 30). Live-problems only POSTs here after autonomous
+    // remediation is exhausted (fuse-box critical/emergency), so most traffic is
+    // high-materiality and surfaces. Routine low-severity engine pings with no
+    // action are aggregated into a digest or suppressed, so the notify channel
+    // never becomes a notification center. chatId is intentionally NOT set: the
+    // owner's Telegram id is the DESTINATION, and setting it would falsely trip
+    // the numeric-chatId user-reply guard and neuter the gate.
+    const sevMap: Record<string, OutboundSignal['severity']> = {
+      low: 'info', normal: 'notice', info: 'info', notice: 'notice',
+      alert: 'alert', urgent: 'urgent', critical: 'critical', emergency: 'emergency',
+    };
+    const signal: OutboundSignal = {
+      origin: source === 'live-problems' ? 'live-problems' : 'unknown',
+      text,
+      severity: sevMap[String(severity).toLowerCase()] ?? 'notice',
+      requiresAction: requiresAction === true || source === 'live-problems',
+      // A live-problems notify fires only after autonomous remediation is
+      // exhausted — a still-blocking failure. Mark it isFailure so it bypasses
+      // dedup (rule 3, before dedup): a repeated still-blocking escalation must
+      // stay visible. The engine already rate-limits notify_jtr (fuse-box
+      // cooldown), so this does not spam.
+      isFailure: isFailure === true || source === 'live-problems',
+      jtrRhythm: typeof jtrRhythm === 'string' ? jtrRhythm : undefined,
+      kind: typeof kind === 'string' ? kind : undefined,
+      dedupeKey: `notify:${source}:${text}`,
+    };
+    const verdict = attentionGate ? attentionGate.evaluate(signal) : { decision: 'surface' as const, reason: 'gate_disabled' };
+
+    const sendToOwner = async (body: string): Promise<{ delivered: string[]; failed: Array<{channel: string; error: string}> }> => {
+      const delivered: string[] = [];
+      const failed: Array<{channel: string; error: string}> = [];
+      if (telegramAdapter && ownerTelegramId) {
+        try {
+          await telegramAdapter.send({ channel: 'telegram', chatId: String(ownerTelegramId), text: body });
+          delivered.push('telegram');
+        } catch (err) {
+          failed.push({ channel: 'telegram', error: err instanceof Error ? err.message : String(err) });
+        }
       }
+      return { delivered, failed };
+    };
+
+    // Opportunistically flush the held-digest when it is due, so aggregated
+    // low-materiality updates still reach jtr as a single message. If delivery
+    // fails, re-enqueue the drained items rather than lose them silently.
+    const flushDigestIfDue = async (): Promise<void> => {
+      if (attentionGate && attentionGate.shouldFlushAggregate()) {
+        const held = attentionGate.drainAggregate();
+        if (held.length === 0) return;
+        const { delivered } = await sendToOwner(`🗒️ ${attentionGate.buildDigest(held)}`);
+        if (delivered.length === 0) {
+          for (const s of held) attentionGate.enqueueAggregate(s);
+          console.warn(`[notify] digest flush failed to deliver; re-queued ${held.length} held item(s)`);
+        }
+      }
+    };
+
+    if (verdict.decision === 'suppress') {
+      console.log(`[notify] suppressed by attention gate (${verdict.reason}) from ${source}`);
+      res.json({ ok: true, gated: 'suppress', reason: verdict.reason, delivered: [] });
+      return;
     }
+    if (verdict.decision === 'aggregate') {
+      attentionGate!.enqueueAggregate(signal);
+      console.log(`[notify] aggregated by attention gate (${verdict.reason}) from ${source}; ${attentionGate!.pendingAggregateCount()} held`);
+      await flushDigestIfDue();
+      res.json({ ok: true, gated: 'aggregate', reason: verdict.reason, pending: attentionGate!.pendingAggregateCount() });
+      return;
+    }
+
+    // surface
+    const sigil = signal.severity === 'critical' || signal.severity === 'emergency' ? '🚨'
+      : signal.severity === 'alert' ? '🚨' : signal.severity === 'info' ? '·' : '⚠️';
+    const { delivered, failed } = await sendToOwner(`${sigil} [${source}] ${text}`);
+    if (delivered.length > 0 && attentionGate) attentionGate.record(signal);
+    await flushDigestIfDue();
 
     if (delivered.length === 0) {
       res.status(503).json({
@@ -1353,7 +1458,7 @@ async function main(): Promise<void> {
       });
       return;
     }
-    res.json({ ok: true, delivered, failed });
+    res.json({ ok: true, gated: verdict.reason, delivered, failed });
   });
 
   // ── Diagnose endpoint — Tier 3 of live-problems. Engine POSTs a problem

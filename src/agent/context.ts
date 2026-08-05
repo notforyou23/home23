@@ -6,11 +6,20 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { hostname } from 'node:os';
 import type { ContextManagerRef, PromptSourceInfo } from './types.js';
 import type { IdentityLayerConfig } from '../types.js';
 import { buildSystemPrompt } from '../agents/system-prompt.js';
+import {
+  budgetIdentityContent,
+  classifyIdentityLayer,
+  resolveBudget,
+  IDENTITY_LAYER_ORDER,
+  IDENTITY_LAYER_LABEL,
+  type IdentityLayer,
+  type BudgetedContent,
+} from './identity-budget.js';
 
 export interface ContextConfig {
   workspacePath: string;
@@ -20,6 +29,8 @@ export interface ContextConfig {
   enginePort: number;
   ownerName?: string;
   ownerTelegramId?: string;
+  /** Per-file identity char budgets (Step 30); overrides DEFAULT_IDENTITY_BUDGETS. */
+  identityBudgets?: Record<string, number>;
 }
 
 export class ContextManager implements ContextManagerRef {
@@ -61,56 +72,58 @@ export class ContextManager implements ContextManagerRef {
   }
 
   private rebuild(provider: string = 'anthropic'): void {
-    const sections: string[] = [];
     const loadedFiles: PromptSourceInfo['loadedFiles'] = [];
+    // Collect each present identity file with its budgeted content + layer, so
+    // the identity region can be emitted grouped by the six-layer scheme
+    // instead of raw config order (Step 30).
+    interface Loaded { filename: string; label: string; layer: IdentityLayer; budgeted: BudgetedContent; }
+    const loaded: Loaded[] = [];
+    let anyTruncated = false;
 
     this.getIdentityLayers().forEach((layer, layerIndex) => {
       for (const filename of layer.files) {
         const filePath = resolve(layer.basePath, filename);
         const label = filename.replace('.md', '').toUpperCase();
-        const exists = existsSync(filePath);
+        const idLayer = classifyIdentityLayer(filename);
 
-        if (!exists) {
-          loadedFiles.push({
-            layerIndex,
-            basePath: layer.basePath,
-            filename,
-            filePath,
-            label,
-            exists: false,
-            included: false,
-          });
+        if (!existsSync(filePath)) {
+          loadedFiles.push({ layerIndex, basePath: layer.basePath, filename, filePath, label,
+            exists: false, included: false, layer: idLayer });
           continue;
         }
-
         try {
-          const content = this.readIdentityFile(filename, filePath);
-          sections.push(`[${label}]\n${content}`);
-          loadedFiles.push({
-            layerIndex,
-            basePath: layer.basePath,
-            filename,
-            filePath,
-            label,
-            exists: true,
-            included: true,
-          });
+          const raw = readFileSync(filePath, 'utf-8').trim();
+          if (filename === 'HEARTBEAT.md') this.heartbeatLastLoad = Date.now();
+          const { budget, strategy } = resolveBudget(filename, this.config.identityBudgets);
+          const budgeted = budgetIdentityContent(filename, raw, budget, strategy);
+          loaded.push({ filename, label, layer: idLayer, budgeted });
+          if (budgeted.truncated) anyTruncated = true;
+          loadedFiles.push({ layerIndex, basePath: layer.basePath, filename, filePath, label,
+            exists: true, included: true, layer: idLayer,
+            rawBytes: budgeted.rawBytes, includedBytes: budgeted.includedBytes,
+            budget: budgeted.budget, truncated: budgeted.truncated,
+            omittedSections: budgeted.omittedSections });
         } catch {
-          loadedFiles.push({
-            layerIndex,
-            basePath: layer.basePath,
-            filename,
-            filePath,
-            label,
-            exists: true,
-            included: false,
-          });
+          loadedFiles.push({ layerIndex, basePath: layer.basePath, filename, filePath, label,
+            exists: true, included: false, layer: idLayer });
           console.warn(`[context] Failed to read identity file: ${filePath}`);
         }
       }
     });
 
-    const identity = sections.join('\n\n---\n\n');
+    // Emit identity grouped and ordered by the six-layer scheme. Within a layer,
+    // config order is preserved. Each layer gets a clear header so the prompt
+    // composition is legible and inspectable.
+    const layerBlocks: string[] = [];
+    let totalSections = 0;
+    for (const idLayer of IDENTITY_LAYER_ORDER) {
+      const inLayer = loaded.filter(l => l.layer === idLayer);
+      if (inLayer.length === 0) continue;
+      const files = inLayer.map(l => `[${l.label}]\n${l.budgeted.text}`).join('\n\n');
+      layerBlocks.push(`[${IDENTITY_LAYER_LABEL[idLayer]}]\n\n${files}`);
+      totalSections += inLayer.length;
+    }
+    const identity = layerBlocks.join('\n\n---\n\n');
 
     const contextBlock = [
       `[CONTEXT]`,
@@ -126,12 +139,15 @@ export class ContextManager implements ContextManagerRef {
     this.lastProvider = provider;
     this.promptSourceInfo = {
       generatedAt: new Date().toISOString(),
-      totalSections: sections.length,
+      totalSections,
       loadedFiles,
+      systemPromptBytes: this.systemPrompt.length,
+      anyTruncated,
     };
     this.dirty = false;
 
-    console.log(`[context] System prompt built: ${this.systemPrompt.length} chars`);
+    console.log(`[context] System prompt built: ${this.systemPrompt.length} chars`
+      + (anyTruncated ? ` (some identity files truncated to budget — see /prompt or /api/prompt-composition)` : ''));
   }
 
   private refreshHeartbeatIfNeeded(): void {
@@ -150,44 +166,6 @@ export class ContextManager implements ContextManagerRef {
       return this.config.identityLayers;
     }
     return [{ basePath: this.config.workspacePath, files: this.config.identityFiles }];
-  }
-
-  private readIdentityFile(filename: string, filePath: string): string {
-    let content = readFileSync(filePath, 'utf-8').trim();
-
-    if (filename === 'HEARTBEAT.md') {
-      content = content.slice(0, 1500);
-      this.heartbeatLastLoad = Date.now();
-    } else if (filename === 'MISSION.md') {
-      content = content.slice(0, 2500);
-    } else if (filename === 'MEMORY.md') {
-      content = content.slice(0, 3000);
-    } else if (filename === 'LEARNINGS.md') {
-      const lines = content.split('\n');
-      content = lines.slice(-60).join('\n').slice(0, 2000);
-    } else if (filename === 'SOUL.md') {
-      content = content.slice(0, 3000);
-    } else if (filename === 'NOW.md') {
-      content = content.slice(0, 2200);
-    } else if (filename === 'OPEN_PROJECTS.md') {
-      content = content.slice(0, 2600);
-    } else if (filename === 'RECENT_DECISIONS.md') {
-      const lines = content.split('\n');
-      content = lines.slice(0, 80).join('\n').slice(0, 2200);
-    } else if (filename === 'AGENT_BRIEFING.md') {
-      content = content.slice(0, 1800);
-    } else if (filename === 'ARTIFACT_RECEIPTS.md') {
-      const lines = content.split('\n');
-      content = lines.slice(0, 100).join('\n').slice(0, 2200);
-    } else if (filename === 'ALIASES.json') {
-      content = content.slice(0, 1800);
-    } else if (filename === 'COSMO_RESEARCH.md') {
-      content = content.slice(0, 2800);
-    } else if (filename === 'SKILL_ROUTING.md') {
-      content = content.slice(0, 4200);
-    }
-
-    return content;
   }
 
   private findHeartbeatPath(): string | null {

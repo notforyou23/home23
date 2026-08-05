@@ -436,10 +436,15 @@ export class CommandHandler {
     const provenance = [
       '[PROMPT_SOURCE]',
       `Generated: ${sourceInfo.generatedAt}`,
-      `Sections: ${sourceInfo.totalSections}`,
+      `Sections: ${sourceInfo.totalSections}`
+        + (sourceInfo.systemPromptBytes ? ` · ${sourceInfo.systemPromptBytes} chars` : '')
+        + (sourceInfo.anyTruncated ? ' · SOME IDENTITY FILES TRUNCATED TO BUDGET' : ''),
       ...sourceInfo.loadedFiles.map(file => {
         const status = file.included ? 'loaded' : (file.exists ? 'skipped' : 'missing');
-        return `L${file.layerIndex + 1} ${file.label}: ${status} — ${file.filePath}`;
+        const size = file.included && file.rawBytes !== undefined
+          ? ` [${file.layer ?? '?'} · ${file.includedBytes ?? file.rawBytes}/${file.rawBytes}b${file.truncated ? `, omitted: ${(file.omittedSections ?? []).join(', ') || 'body'}` : ''}]`
+          : '';
+        return `L${file.layerIndex + 1} ${file.label}: ${status}${size} — ${file.filePath}`;
       }),
       '',
     ].join('\n');
