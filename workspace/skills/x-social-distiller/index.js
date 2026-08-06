@@ -405,7 +405,7 @@ async function actionPostQueued(params = {}, context = {}) {
   const common = {
     text,
     confirm: true,
-    backend: params.backend || "api",
+    backend: params.backend || "bird",
     media: params.media,
     alt: params.alt,
     generatedImage: params.generatedImage,
@@ -427,7 +427,7 @@ async function actionPostQueued(params = {}, context = {}) {
   const tweetId = extractCreatedTweetId(postResult);
   if (!tweetId) throw new Error(`X write returned no tweet id; not verified. Raw result: ${JSON.stringify(postResult)}`);
 
-  const readBack = await executeSkill("x", "read", { tweetId, backend: "api", save: false });
+  const readBack = await executeSkill("x", "read", { tweetId, backend: params.backend || "bird", save: false });
   return {
     success: true,
     verified: true,

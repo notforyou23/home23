@@ -1,6 +1,6 @@
 # Skills Registry
 
-Generated from live skill discovery. Total: 15 skills.
+Generated from live skill discovery. Total: 18 skills.
 
 ## autoresearch
 
@@ -200,6 +200,24 @@ Generated from live skill discovery. Total: 15 skills.
 - **Composes:** none
 - **Depends on:** none
 
+## substack
+
+- **ID:** `substack`
+- **Type:** rich
+- **Runtime:** nodejs
+- **Category:** publishing
+- **Operational:** yes
+- **Has SKILL.md:** yes
+- **Has manifest:** yes
+- **Has scripts:** no
+- **Hooks:** none
+- **Description:** Programmatic Substack editing for Shakedown Shuffle: read/list posts, edit draft bodies, publish without emailing, and verify canonical backlinks. Uses the dedicated publishing-v3 Chrome profile session via CDP, launched on demand. Fails loud on expired sessions or API contract changes.
+- **Actions:** status, listPosts, readDraft, editDraft, appendCanonicalFooter, publish, verifyBacklink, stopChrome
+- **Triggers:** edit the substack post | fix the substack backlink | publish to substack | check the substack draft | verify the canonical url on substack
+- **Requires tools:** none
+- **Composes:** browser-automation
+- **Depends on:** none
+
 ## workflow-automation
 
 - **ID:** `workflow-automation`
@@ -229,7 +247,7 @@ Generated from live skill discovery. Total: 15 skills.
 - **Has manifest:** yes
 - **Has scripts:** no
 - **Hooks:** beforeRun
-- **Description:** Canonical Home23 skill for X/Twitter work: official API-backed read/search/post/reply when configured, bird-backed timeline/mentions fallback. Use this instead of direct bird CLI for normal posting/replying.
+- **Description:** Canonical Home23 skill for X/Twitter work through the logged-in bird browser session by default. Official X API access is explicit opt-in only. Use this instead of direct bird CLI for normal posting/replying.
 - **Actions:** timeline, read, search, mentions, mediaUploadTest, post, delete, reply
 - **Triggers:** read this x link | search x for | check mentions | look at my timeline | reply on x
 - **Requires tools:** none
@@ -271,4 +289,40 @@ Generated from live skill discovery. Total: 15 skills.
 - **Requires tools:** none
 - **Composes:** source-validation, knowledge-structuring
 - **Depends on:** x, x-research
+
+## xai-search
+
+- **ID:** `xai-search`
+- **Type:** rich
+- **Runtime:** nodejs
+- **Category:** research
+- **Operational:** yes
+- **Has SKILL.md:** yes
+- **Has manifest:** yes
+- **Has scripts:** no
+- **Hooks:** none
+- **Description:** Search X/Twitter and the web using Grok's built-in x_search and web_search tools via the xAI API. No X developer API credits required — uses the xAI API key only.
+- **Actions:** search, web_search
+- **Triggers:** search x for | search twitter for | what are people saying on x | grok search x | search x with grok | check x discourse
+- **Requires tools:** none
+- **Composes:** source-validation
+- **Depends on:** none
+
+## xai-x-search
+
+- **ID:** `xai-x-search`
+- **Type:** rich
+- **Runtime:** nodejs
+- **Category:** research
+- **Operational:** yes
+- **Has SKILL.md:** yes
+- **Has manifest:** yes
+- **Has scripts:** no
+- **Hooks:** none
+- **Description:** Search X/Twitter in real-time using Grok's native x_search tool through the xAI API. No X developer API credits required — uses the xAI API key already configured in Home23.
+- **Actions:** search, thread, profile
+- **Triggers:** search x for | search twitter for | what are people saying on x | what's twitter saying | check x discourse | grok search x | find tweets about
+- **Requires tools:** none
+- **Composes:** source-validation, deep-research-synthesizer
+- **Depends on:** none
 

@@ -320,7 +320,11 @@ function mergeNotesIntoResult(result, notes) {
 }
 
 async function executeEntryModule(skill, action, params, context) {
-  const mod = await import(pathToFileURL(skill.entryPath).href);
+  // Cache-bust entry modules by mtime so live skill edits take effect without
+  // restarting the Home23 process. Static import caching otherwise preserves
+  // stale behavior for the lifetime of the skill runner.
+  const mtimeMs = fs.statSync(skill.entryPath).mtimeMs;
+  const mod = await import(`${pathToFileURL(skill.entryPath).href}?mtime=${mtimeMs}`);
 
   if (typeof mod.execute === "function") {
     return mod.execute(action, params, context);

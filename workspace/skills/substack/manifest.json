@@ -1,0 +1,49 @@
+{
+  "id": "substack",
+  "version": "1.0.0",
+  "name": "Substack",
+  "description": "Programmatic Substack editing for Shakedown Shuffle: read/list posts, edit draft bodies, publish without emailing, and verify canonical backlinks. Uses the dedicated publishing-v3 Chrome profile session via CDP, launched on demand. Fails loud on expired sessions or API contract changes.",
+  "layer": "skill",
+  "runtime": "nodejs",
+  "category": "publishing",
+  "author": "home23",
+  "entry": "index.js",
+  "keywords": [
+    "substack",
+    "newsletter",
+    "publish",
+    "draft",
+    "backlink",
+    "canonical",
+    "shakedown"
+  ],
+  "triggers": [
+    "edit the substack post",
+    "fix the substack backlink",
+    "publish to substack",
+    "check the substack draft",
+    "verify the canonical url on substack"
+  ],
+  "requiresTools": [],
+  "dependsOn": [],
+  "composes": [
+    "browser-automation"
+  ],
+  "sideEffects": true,
+  "actions": [
+    "status",
+    "listPosts",
+    "readDraft",
+    "editDraft",
+    "appendCanonicalFooter",
+    "publish",
+    "verifyBacklink",
+    "stopChrome"
+  ],
+  "compositionHints": [
+    "Always readDraft before editDraft to inspect the current ProseMirror body.",
+    "editDraft automatically writes a full-draft backup receipt before any PUT.",
+    "publish defaults to send:false (no subscriber email). Emailing requires confirmSend:true AND confirmSendText matching the post title.",
+    "After publish, anonymous readback may lag behind logged-in truth due to Substack origin cache TTL. verifyBacklink reports both."
+  ]
+}

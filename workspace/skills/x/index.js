@@ -45,16 +45,11 @@ function getSecretBlock(context = {}) {
 }
 
 function resolveBackend(params = {}, context = {}) {
-  const requested = params.backend || process.env.X_SKILL_BACKEND;
-  if (requested) return String(requested).toLowerCase();
-
-  try {
-    const secrets = getSecretBlock(context);
-    if (secrets.bearerToken || process.env.X_BEARER_TOKEN) return "api";
-  } catch {
-    // fall through
-  }
-
+  // Browser automation is the cost-safe default. The official X API is opt-in
+  // because configured credentials alone must not trigger metered requests.
+  // Only an explicit call may select the metered official API. Ignore process
+  // environment so a host-level X_SKILL_BACKEND cannot silently burn credits.
+  if (params.backend) return String(params.backend).toLowerCase();
   return "bird";
 }
 
@@ -565,12 +560,12 @@ async function post(params = {}, context = {}) {
   if (!params.text) {
     throw new Error("text is required");
   }
+  if (params.confirm !== true) {
+    throw new Error("confirm:true is required for public X post actions");
+  }
 
   const backend = resolveBackend(params, context);
   if (backend === "api") {
-    if (params.confirm !== true) {
-      throw new Error("confirm:true is required for public X post actions");
-    }
     const media = resolveMediaList(params, context);
     const mediaIds = await uploadMediaListApi(media, params.alt, context);
     const body = { text: String(params.text) };
@@ -625,12 +620,12 @@ async function reply(params = {}, context = {}) {
   if ((!params.url && !params.tweetId) || !params.text) {
     throw new Error("tweetId or url plus text is required");
   }
+  if (params.confirm !== true) {
+    throw new Error("confirm:true is required for public X reply actions");
+  }
 
   const backend = resolveBackend(params, context);
   if (backend === "api") {
-    if (params.confirm !== true) {
-      throw new Error("confirm:true is required for public X reply actions");
-    }
     const tweetId = extractTweetId(params.url || params.tweetId);
     const media = resolveMediaList(params, context);
     const mediaIds = await uploadMediaListApi(media, params.alt, context);

@@ -1,8 +1,8 @@
 {
   "id": "x",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "name": "X",
-  "description": "Canonical Home23 skill for X/Twitter work: official API-backed read/search/post/reply when configured, bird-backed timeline/mentions fallback. Use this instead of direct bird CLI for normal posting/replying.",
+  "description": "Canonical Home23 skill for X/Twitter work through the logged-in bird browser session by default. Official X API access is explicit opt-in only. Use this instead of direct bird CLI for normal posting/replying.",
   "layer": "skill",
   "runtime": "nodejs",
   "category": "social",

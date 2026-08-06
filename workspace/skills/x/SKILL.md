@@ -5,7 +5,7 @@ version: 1.0.0
 layer: skill
 runtime: nodejs
 author: home23
-description: Operate on X/Twitter through the canonical Home23 X skill. Supports official API-backed read/search/post/reply/media/delete plus bird-backed timeline/mentions fallback.
+description: Operate on X/Twitter through the canonical Home23 X skill. Uses the logged-in bird browser session by default; official API access is explicit opt-in.
 category: social
 keywords:
   - x
@@ -33,7 +33,7 @@ capabilities:
 
 # X
 
-Use this skill for direct X/Twitter work. It is the canonical Home23 interface for X: official API-backed read/search/post/reply when credentials are present, with `bird` retained for timeline/mentions and explicit fallback/debug use. Do not use ad hoc shell snippets for normal X work.
+Use this skill for direct X/Twitter work. It is the canonical Home23 interface for X: the logged-in `bird` browser session is the default for reads, search, posting, and replies. Use the official API only with explicit `backend:"api"`; configured credentials never select metered API access automatically. Do not use ad hoc shell snippets for normal X work.
 
 ## When to use
 
@@ -138,7 +138,8 @@ Can also attach generated media safely with `generatedImage:"latest"`, `requireM
 
 ## Gotchas
 
-- `post`, `reply`, and `delete` require `confirm: true`. The skill blocks write/delete actions without it.
+- `post`, `reply`, and `delete` require `confirm: true` on every backend. The skill blocks write/delete actions without it.
+- `bird` is the default backend. Pass `backend:"api"` only when you specifically need official API behavior and accept X API charges.
 - For normal Home23 agent work, this skill is the only approved write path for X. Do not call `bird` directly for posting/replying unless you are debugging this skill or the user explicitly asks for raw CLI diagnostics.
 - Use `x-research` for read-only target discovery, discourse scans, profiles, and thread follow-up. Come back to `x` only for authenticated account actions.
 - When doing outreach, prefer a reply queue first: candidate URL, why it fits, draft in the user's voice, include-link yes/no, priority, and posted/skipped/failed state. Avoid repeated repo-link replies that look spammy.
