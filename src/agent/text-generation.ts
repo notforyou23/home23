@@ -165,7 +165,7 @@ function defaultModelForProvider(provider: string): string {
   if (provider === 'anthropic') return 'claude-haiku-4-5';
   if (provider === 'minimax') return 'MiniMax-M3';
   if (provider === 'openai') return 'gpt-5.4-mini';
-  if (provider === 'openai-codex') return 'gpt-5.5';
+  if (provider === 'openai-codex') return 'gpt-5.6-luna';
   if (provider === 'xai') return 'grok-4.5';
   return 'kimi-k2.6';
 }
@@ -194,7 +194,7 @@ async function generateCodexText(opts: Required<Pick<TextGenerationOptions, 'pro
   if (!creds) throw new Error('openai-codex credentials not found');
 
   const body = {
-    model: opts.model || 'gpt-5.5',
+    model: opts.model || 'gpt-5.6-luna',
     instructions: opts.system || '',
     input: [{
       type: 'message',
