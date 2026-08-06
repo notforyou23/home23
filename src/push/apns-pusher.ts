@@ -6,6 +6,7 @@ import type {
   QueryPushPayload,
   QueryTerminalState,
 } from './types.js';
+import { buildAsyncWorkPayload } from './types.js';
 
 export interface QueryTerminalNotificationInput {
   operationId: string;
@@ -101,6 +102,39 @@ export class ApnsPusher {
       turnId: opts.turnId,
       agent: this.agentName,
     };
+
+    await Promise.allSettled(devices.map(async (dev) => {
+      try {
+        const result = await this.client.send(dev.device_token, payload, dev.env);
+        if (result.status === 410) {
+          console.log(`[push] ${this.agentName}: device ${dev.device_token.slice(0, 8)}… gone (410), invalidating`);
+          this.registry.invalidate(dev.device_token, dev.bundle_id);
+        } else if (result.status >= 400) {
+          console.warn(`[push] ${this.agentName}: ${result.status} ${result.reason ?? ''} for ${dev.device_token.slice(0, 8)}…`);
+        }
+      } catch (err) {
+        console.warn(`[push] ${this.agentName}: send failed for ${dev.device_token.slice(0, 8)}…:`, err instanceof Error ? err.message : err);
+      }
+    }));
+  }
+
+  /**
+   * Fire pushes for terminal async work (coding jobs, sub-agents; Step 31).
+   * Same device-lookup/410-invalidation semantics as notifyTurnComplete, but
+   * the payload carries chatId + workId — never a turnId.
+   */
+  async notifyAsyncWork(opts: { chatId: string; workId: string; status: string; body: string }): Promise<void> {
+    const devices = this.registry.lookupByChatId(opts.chatId);
+    if (devices.length === 0) return;
+    if (!opts.body.trim()) return;
+
+    const payload = buildAsyncWorkPayload({
+      agentName: this.agentName,
+      chatId: opts.chatId,
+      workId: opts.workId,
+      status: opts.status,
+      body: this.preview(opts.body),
+    });
 
     await Promise.allSettled(devices.map(async (dev) => {
       try {

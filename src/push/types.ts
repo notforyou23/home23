@@ -86,4 +86,39 @@ export interface QueryPushPayload {
   generation: number;
 }
 
-export type PushPayload = ChatPushPayload | QueryPushPayload;
+/** Terminal async-work notification (Step 31). `kind` discriminates from legacy chat pushes. */
+export interface AsyncWorkPushPayload {
+  aps: {
+    alert: { title: string; body: string };
+    'mutable-content': 1;
+    sound: 'default';
+  };
+  kind: 'async_work';
+  chatId: string;   // origin conversation to open on tap
+  workId: string;   // work receipt to surface
+  status: string;   // terminal AsyncWorkStatus
+  agent: string;
+}
+
+export function buildAsyncWorkPayload(input: {
+  agentName: string;
+  chatId: string;
+  workId: string;
+  status: string;
+  body: string;
+}): AsyncWorkPushPayload {
+  return {
+    aps: {
+      alert: { title: input.agentName, body: input.body },
+      'mutable-content': 1,
+      sound: 'default',
+    },
+    kind: 'async_work',
+    chatId: input.chatId,
+    workId: input.workId,
+    status: input.status,
+    agent: input.agentName,
+  };
+}
+
+export type PushPayload = ChatPushPayload | QueryPushPayload | AsyncWorkPushPayload;
