@@ -41,7 +41,13 @@ import { ContextManager } from './agent/context.js';
 import { ConversationHistory } from './agent/history.js';
 import { createToolRegistry } from './agent/tools/index.js';
 import { ACPBridge, normalizeBridgeConfig } from './acp/bridge.js';
-import { deliverCodingJobResult, type CodingResultSinks } from './acp/result-delivery.js';
+import type { CodingJobRecord, CodingJobReceipt } from './acp/types.js';
+import { WorkStore } from './work/work-store.js';
+import { WorkRegistry } from './work/registry.js';
+import { handleWorkCompletion, type CompletionDeps } from './work/completion.js';
+import type { ReceiptSinks } from './work/receipt-delivery.js';
+import type { AsyncWorkRecord } from './work/types.js';
+import { createAsyncWorkRouter } from './routes/async-work.js';
 import { AttentionGate, type OutboundSignal } from './agent/attention/attention-gate.js';
 import type { ToolContext, SubAgentTracker } from './agent/types.js';
 import { BrainOperationsClient } from './agent/brain-operations/client.js';
@@ -905,9 +911,77 @@ async function main(): Promise<void> {
   // Wire scheduler into command context
   commandCtx.scheduler = scheduler;
 
+  // ── Async work registry (Step 31) ──
+  // One durable contract for detached work: coding jobs + sub-agents. Records
+  // live under instances/<agent>/async-work/; delivery routes on the ROOT
+  // origin conversation via the completion pipeline.
+  const workStore = new WorkStore(join(INSTANCE_DIR, 'async-work'));
+  const workRegistry = new WorkRegistry({ store: workStore, agent: AGENT_NAME });
+  toolContext.workRegistry = workRegistry;
+
+  const asyncWorkRaw = (config as { asyncWork?: { review?: { coding?: boolean; subagent?: boolean }; reviewIdleTimeoutMs?: number } }).asyncWork ?? {};
+  const workReview = {
+    coding: asyncWorkRaw.review?.coding ?? true,
+    subagent: asyncWorkRaw.review?.subagent ?? false,
+  };
+
+  // Sinks are built per delivery, so an unconfigured token / not-yet-installed
+  // APNs pusher (e.g. during recovery before setPusher) degrades to
+  // history-only with no throw.
+  const buildWorkSinks = (): ReceiptSinks => {
+    const sinks: ReceiptSinks = {
+      appendHistory: (chatId, text) => {
+        try {
+          history.append(chatId, [{ role: 'assistant', content: text, ts: new Date().toISOString() }]);
+        } catch (err) {
+          console.warn(`[work] history delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      },
+    };
+    if (process.env.TELEGRAM_BOT_TOKEN) {
+      sinks.sendTelegram = (chatId, text) => {
+        fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: chatId, text }),
+        }).catch((err) => console.warn(`[work] Telegram delivery failed: ${err instanceof Error ? err.message : String(err)}`));
+      };
+    }
+    const pusher = agent.getPusher();
+    if (pusher) {
+      sinks.pushWork = (input) => {
+        pusher.notifyAsyncWork({ chatId: input.chatId, workId: input.workId, status: input.status, body: input.body })
+          .catch((err) => console.warn(`[work] iOS push failed: ${err instanceof Error ? err.message : String(err)}`));
+      };
+    }
+    return sinks;
+  };
+
+  const completionDeps = (): CompletionDeps => ({
+    registry: workRegistry,
+    sinks: buildWorkSinks(),
+    review: workReview,
+    isChatBusy: (chatId) => agent.isRunning(chatId),
+    waitForIdleMs: asyncWorkRaw.reviewIdleTimeoutMs ?? 120_000,
+    idlePollMs: 10_000,
+    runReviewTurn: async (chatId, prompt) =>
+      (await executeTrackedTurn(agent, chatId, prompt, { inactivityMs: 5 * 60_000 })).response.text,
+  });
+
+  const codingReceiptText = (work: AsyncWorkRecord, job: CodingJobRecord, receipt: CodingJobReceipt | undefined): string => {
+    const tail = receipt?.resultTail ? `\n\n${receipt.resultTail.slice(0, 1500)}` : '';
+    return `[Async work ${work.status}] ${work.label}${tail}\n(work ${work.workId}; job ${job.id}; coding_result for full output)`;
+  };
+
+  toolContext.onWorkTerminal = (workId, resultText) => {
+    const work = workRegistry.get(workId);
+    if (!work) return;
+    void handleWorkCompletion(work, resultText, completionDeps());
+  };
+
   // ── Coding-backend bridge (Step 29) ──
   // Durable coding jobs delegated to headless Claude Code / Codex CLIs.
-  // Result delivery mirrors the spawn_agent contract: history append + Telegram.
+  // Result delivery flows through the async-work completion pipeline (Step 31).
   let codingBridge: ACPBridge | null = null;
   const acpConfig = normalizeBridgeConfig((config as { acp?: unknown }).acp);
   if (acpConfig.enabled) {
@@ -922,44 +996,33 @@ async function main(): Promise<void> {
         console.log(`[coding] job ${event.job.id} started (${event.job.backend}) in ${event.job.cwd}`);
         return;
       }
-      if (event.type !== 'job_finished') return;
+      if (event.type === 'job_event') {
+        // Throttled progress note on the work record (meaningful milestones,
+        // not tool-call confetti — the registry writes at most every 15s).
+        const work = workRegistry.findByJobId(event.jobId);
+        if (work) {
+          const e = event.event;
+          const note = e.kind === 'tool_use' ? `tool: ${e.tool}` : e.kind;
+          workRegistry.noteProgress(work.workId, note);
+        }
+        return;
+      }
+      // job_finished — terminal transition + delivery via the completion
+      // pipeline. The work record's originChatId is the ROOT conversation
+      // (resolved at creation), so results from subagent-launched jobs reach
+      // the real owner instead of the hidden sub-chat. Jobs started before
+      // Step 31 (no work record) get one backfilled here from requestedBy.
       const { job, receipt } = event;
       console.log(`[coding] job ${job.id} ${job.status} (${job.backend}, ${Math.round(receipt.durationMs / 1000)}s)`);
-      // Route on the job's real origin (job.requestedBy — the chatId captured at
-      // coding_start), never on the agent's injected identity. deliverCodingJobResult
-      // always appends the full result to history, then fires at most one push:
-      // numeric chatIds → Telegram, ios_* chatIds → iOS/APNs. Sinks are built per
-      // event, so an unconfigured token / not-yet-installed pusher (e.g. during
-      // recover() before APNs setup) degrades to history-only with no throw.
-      const sinks: CodingResultSinks = {
-        appendHistory: (chatId, text) => {
-          try {
-            history.append(chatId, [{ role: 'assistant', content: text, ts: new Date().toISOString() }]);
-          } catch (err) {
-            console.warn(`[coding] history delivery failed: ${err instanceof Error ? err.message : String(err)}`);
-          }
-        },
-      };
-      if (process.env.TELEGRAM_BOT_TOKEN) {
-        sinks.sendTelegram = (chatId, text) => {
-          fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: chatId, text }),
-          }).catch((err) => console.warn(`[coding] Telegram delivery failed: ${err instanceof Error ? err.message : String(err)}`));
-        };
-      }
-      // getPusher() is read live (not a captured binding), so it is null until
-      // APNs is installed; notifyTurnComplete itself no-ops when no device is
-      // registered for the chatId.
-      const pusher = agent.getPusher();
-      if (pusher) {
-        sinks.pushIos = ({ chatId, turnId, body }) => {
-          pusher.notifyTurnComplete({ chatId, turnId, assistantText: body })
-            .catch((err) => console.warn(`[coding] iOS push failed: ${err instanceof Error ? err.message : String(err)}`));
-        };
-      }
-      deliverCodingJobResult(job, receipt, sinks);
+      const work = workRegistry.findByJobId(job.id)
+        ?? workRegistry.create({
+          kind: 'coding',
+          originChatId: job.requestedBy ?? 'unknown',
+          label: job.label ?? job.prompt.slice(0, 100),
+          resultHandle: { type: 'coding_job', jobId: job.id },
+        });
+      const done = workRegistry.complete(work.workId, job.status as AsyncWorkRecord['status'], job.error);
+      void handleWorkCompletion(done, codingReceiptText(done, job, receipt), completionDeps());
     });
     try {
       const recovered = await codingBridge.recover();
@@ -967,6 +1030,34 @@ async function main(): Promise<void> {
     } catch (err) {
       console.warn(`[coding] bridge recovery failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  // ── Async-work boot reconciliation (Step 31) ──
+  // Runs even when the coding bridge is disabled so lost sub-agents are still
+  // marked interrupted. Lost sub-agents → interrupted + notice; jobs that
+  // finished while the harness was down → deliver their receipts now; running
+  // jobs without records → backfill.
+  try {
+    const reconciled = workRegistry.reconcileOnBoot({ jobs: codingBridge?.listJobs() ?? [] });
+    if (reconciled.interrupted.length || reconciled.backfilled.length || reconciled.needsDelivery.length) {
+      console.log(`[work] boot reconcile: ${reconciled.interrupted.length} interrupted, ${reconciled.backfilled.length} backfilled, ${reconciled.needsDelivery.length} to deliver`);
+    }
+    for (const work of reconciled.needsDelivery) {
+      let text = `[Async work ${work.status}] ${work.label}\n(work ${work.workId})`;
+      if (work.resultHandle.type === 'coding_job' && codingBridge) {
+        const job = codingBridge.getJob(work.resultHandle.jobId);
+        const receipt = codingBridge.getReceipt(work.resultHandle.jobId);
+        if (job) text = codingReceiptText(work, job, receipt);
+      }
+      if (work.status === 'interrupted') {
+        text = `[Async work interrupted] ${work.label} — the harness restarted while this was running.` +
+          (work.resultHandle.type === 'coding_job' ? ` Job ${work.resultHandle.jobId} may be resumable via coding_continue.` : '') +
+          `\n(work ${work.workId})`;
+      }
+      void handleWorkCompletion(work, text, completionDeps());
+    }
+  } catch (err) {
+    console.warn(`[work] boot reconcile failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   // ── Engine WebSocket Event Listener ──
@@ -1095,6 +1186,27 @@ async function main(): Promise<void> {
   bridgeApp.use(createWorkerRouter({
     projectRoot: PROJECT_ROOT,
     ctx: toolContext
+  }));
+
+  // Async-work surface (Step 31): durable list/status/receipt/cancel for
+  // coding jobs + sub-agents, consumed by the iOS/Mac apps.
+  bridgeApp.use('/api/work', createAsyncWorkRouter({
+    registry: workRegistry,
+    token: bridgeToken,
+    cancelCodingJob: async (jobId) => { if (codingBridge) await codingBridge.cancelJob(jobId); },
+    stopChat: (chatId) => agent.stop(chatId).stopped,
+    readReceiptDetail: (work) => {
+      if (work.resultHandle.type === 'coding_job' && codingBridge) {
+        return {
+          receipt: codingBridge.getReceipt(work.resultHandle.jobId) ?? null,
+          events: codingBridge.readEventsTail(work.resultHandle.jobId, 30),
+        };
+      }
+      if (work.resultHandle.type === 'subagent_chat') {
+        try { return { messages: history.load(work.resultHandle.chatId).slice(-5) }; } catch { return { messages: [] }; }
+      }
+      return null;
+    },
   }));
 
   bridgeApp.get('/api/agency/state', async (_req: any, res: any) => {

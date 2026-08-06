@@ -262,6 +262,14 @@ agency:
 #     onComplete: ""                     # shell command run after a job completes (HOME23_JOB_* env vars)
 #     onFail: ""                         # shell command run after a job fails
 
+# Async work (Step 31): durable records for detached work (coding jobs +
+# sub-agents) with post-completion review + delivery behavior.
+# asyncWork:
+#   review:
+#     coding: true                       # successful coding jobs get an agent review turn before reporting
+#     subagent: false                    # sub-agent results deliver directly
+#   reviewIdleTimeoutMs: 120000          # how long the review defers to a busy origin conversation
+
 media:
   imageGeneration:
     provider: openai

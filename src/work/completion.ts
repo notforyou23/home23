@@ -50,6 +50,14 @@ async function waitForIdle(chatId: string, deps: CompletionDeps): Promise<boolea
 }
 
 /**
+ * In-flight guard: deliveredAt is stamped only at the END of an async
+ * pipeline run, so two overlapping calls for the same work item (live
+ * job_finished listener racing boot reconciliation) would both pass the
+ * deliveredAt check. Per-process set makes the second call a no-op.
+ */
+const deliveryInFlight = new Set<string>();
+
+/**
  * Deliver a terminal work record. `receiptText` is the compact durable receipt
  * (built by the caller from the job receipt / sub-agent result). Never throws.
  */
@@ -58,6 +66,8 @@ export async function handleWorkCompletion(
   receiptText: string,
   deps: CompletionDeps,
 ): Promise<void> {
+  if (deliveryInFlight.has(work.workId)) return;
+  deliveryInFlight.add(work.workId);
   try {
     const current = deps.registry.get(work.workId) ?? work;
     if (current.deliveredAt) return;
@@ -116,5 +126,7 @@ export async function handleWorkCompletion(
     deps.registry.update(current.workId, { verification: 'skipped', deliveredAt: new Date().toISOString() });
   } catch (err) {
     console.warn(`[work] completion delivery failed for ${work.workId}: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    deliveryInFlight.delete(work.workId);
   }
 }

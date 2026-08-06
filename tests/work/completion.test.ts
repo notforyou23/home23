@@ -124,3 +124,21 @@ test('reviewPrompt includes work id, label, and evidence', () => {
   assert.ok(p.includes('sched fix'));
   assert.ok(p.includes('EVIDENCE'));
 });
+
+test('concurrent delivery calls for the same work item deliver exactly once', async (t) => {
+  const { registry, calls, deps } = setup(t);
+  // slow review so both calls overlap while the first is mid-pipeline
+  deps.runReviewTurn = async (chatId, prompt) => {
+    calls.reviews.push({ chatId, prompt });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    return 'Report after slow review.';
+  };
+  const rec = registry.create({ kind: 'coding', originChatId: 'ios_conv_42', label: 'race', resultHandle: { type: 'coding_job', jobId: 'cj_r_1' } });
+  const done = registry.complete(rec.workId, 'completed');
+  await Promise.all([
+    handleWorkCompletion(done, 'receipt', deps),
+    handleWorkCompletion(done, 'receipt', deps),
+  ]);
+  assert.equal(calls.reviews.length, 1, 'review ran once');
+  assert.equal(calls.push.length, 1, 'exactly one push');
+});
