@@ -195,6 +195,16 @@ export const codingRunTool: ToolDefinition = {
         maxBudgetUsd: typeof input.max_budget_usd === 'number' ? input.max_budget_usd : undefined,
         requestedBy: ctx.chatId,
       });
+      // Register durable async work at the tool boundary, where origin context
+      // is real. The registry resolves subagent: chats to the root conversation.
+      ctx.workRegistry?.create({
+        kind: 'coding',
+        originChatId: ctx.chatId,
+        originTurnId: ctx.turnRuntime?.turnId,
+        parentWorkId: ctx.parentWorkId,
+        label: (input.label ? String(input.label) : undefined) ?? job.label ?? job.prompt.slice(0, 100),
+        resultHandle: { type: 'coding_job', jobId: job.id },
+      });
       return await awaitOrHandOff(bridge, job, waitSeconds, ctx);
     } catch (err) {
       return errorResult('coding_run failed', err);
@@ -238,6 +248,14 @@ export const codingContinueTool: ToolDefinition = {
         label: job.label,
         model: job.model,
         requestedBy: ctx.chatId,
+      });
+      ctx.workRegistry?.create({
+        kind: 'coding',
+        originChatId: ctx.chatId,
+        originTurnId: ctx.turnRuntime?.turnId,
+        parentWorkId: ctx.parentWorkId,
+        label: resumed.label ?? resumed.prompt.slice(0, 100),
+        resultHandle: { type: 'coding_job', jobId: resumed.id },
       });
       return await awaitOrHandOff(bridge, resumed, waitSeconds, ctx);
     } catch (err) {

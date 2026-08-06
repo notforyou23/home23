@@ -79,6 +79,11 @@ export interface ToolContext {
   relationshipLedger?: RelationshipLedger | null;
   telegramAdapter: TelegramAdapterRef | null;
   codingBridge?: CodingBridgeRef | null;
+  workRegistry?: WorkRegistryRef | null;
+  /** Set when this context belongs to work spawned by another work item (nesting). */
+  parentWorkId?: string;
+  /** Terminal async-work hook installed by home.ts — runs the completion pipeline. */
+  onWorkTerminal?: (workId: string, resultText: string) => void;
   runAgentLoop: AgentLoopRunner | null;
   workerConnectorBaseUrl?: string;
   fetch?: typeof fetch;
@@ -120,6 +125,19 @@ export interface ContextManagerRef {
   getSystemPrompt(): string;
   getPromptSourceInfo(): PromptSourceInfo;
   invalidate(): void;
+}
+
+/** Minimal interface to the async-work registry (Step 31) — avoids importing the full class */
+export interface WorkRegistryRef {
+  create(input: {
+    kind: 'coding' | 'subagent';
+    originChatId: string;
+    originTurnId?: string;
+    parentWorkId?: string;
+    label: string;
+    resultHandle: { type: 'coding_job'; jobId: string } | { type: 'subagent_chat'; chatId: string };
+  }): { workId: string; originChatId: string };
+  complete(workId: string, status: 'completed' | 'failed' | 'cancelled' | 'interrupted', error?: string): unknown;
 }
 
 /** Minimal interface to the ACP coding bridge — avoids importing the full class */

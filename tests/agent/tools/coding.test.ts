@@ -298,3 +298,49 @@ test('coding_backends lists availability and explains the default backend', asyn
   assert.match(result.content, /acp\.defaultAgent/);
   assert.match(result.content, /codex requires the Codex CLI/i);
 });
+
+// ─── Step 31: async-work registration at the tool boundary ──────
+
+test('coding_run creates an async-work record with raw origin, turn id, and parent link', async () => {
+  const bridge = makeFakeBridge();
+  const created: Array<Record<string, unknown>> = [];
+  const context = ctx(bridge);
+  (context as { chatId: string }).chatId = 'subagent:ios_abc_jerry_x_ff:ab12';
+  (context as { parentWorkId?: string }).parentWorkId = 'aw_parent_0001';
+  (context as { turnRuntime?: unknown }).turnRuntime = { turnId: 't_a_b' };
+  (context as { workRegistry?: unknown }).workRegistry = {
+    create: (input: Record<string, unknown>) => { created.push(input); return { workId: 'aw_c_1', originChatId: 'ios_abc_jerry_x_ff' }; },
+    complete: () => ({}),
+  };
+
+  await codingRunTool.execute({ prompt: 'fix it', wait_seconds: 0 }, context);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].kind, 'coding');
+  // the tool passes the raw chatId; the registry resolves the root itself
+  assert.equal(created[0].originChatId, 'subagent:ios_abc_jerry_x_ff:ab12');
+  assert.equal(created[0].parentWorkId, 'aw_parent_0001');
+  assert.equal(created[0].originTurnId, 't_a_b');
+  assert.equal((created[0].resultHandle as { jobId: string }).jobId, 'cj_20260805T120000_abcd');
+});
+
+test('coding_continue also registers async work for the resumed job', async () => {
+  const bridge = makeFakeBridge({ job: makeJob({ sessionId: 'sess-1' }) });
+  const created: Array<Record<string, unknown>> = [];
+  const context = ctx(bridge);
+  (context as { workRegistry?: unknown }).workRegistry = {
+    create: (input: Record<string, unknown>) => { created.push(input); return { workId: 'aw_c_2', originChatId: '12345' }; },
+    complete: () => ({}),
+  };
+
+  await codingContinueTool.execute({ job_id: 'cj_20260805T120000_abcd', prompt: 'follow up', wait_seconds: 0 }, context);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].kind, 'coding');
+  assert.equal(created[0].originChatId, '12345');
+});
+
+test('coding_run without a registry still starts the job (registry optional)', async () => {
+  const bridge = makeFakeBridge();
+  const result = await codingRunTool.execute({ prompt: 'fix it', wait_seconds: 0 }, ctx(bridge));
+  assert.ok(!result.is_error);
+  assert.equal(bridge.calls.filter(c => c.method === 'startJob').length, 1);
+});

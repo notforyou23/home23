@@ -103,3 +103,69 @@ test('spawn_agent passes no options when no model is requested', async () => {
 
   assert.equal(captured.options, undefined);
 });
+
+// ─── Step 31: async-work registration ───────────────────────────
+
+test('spawn_agent registers async work, surfaces the work id, and reports via onWorkTerminal', async () => {
+  const { ctx, captured } = makeCtx('ios_abc_jerry_x_ff');
+  const created: unknown[] = [];
+  const completed: Array<{ workId: string; status: string }> = [];
+  const terminal: Array<{ workId: string; text: string }> = [];
+  let resolveTerminal!: () => void;
+  const terminalFired = new Promise<void>((resolve) => { resolveTerminal = resolve; });
+  (ctx as { workRegistry?: unknown }).workRegistry = {
+    create: (input: unknown) => { created.push(input); return { workId: 'aw_test_0001', originChatId: 'ios_abc_jerry_x_ff' }; },
+    complete: (workId: string, status: string) => { completed.push({ workId, status }); return {}; },
+  };
+  (ctx as { onWorkTerminal?: unknown }).onWorkTerminal = (workId: string, text: string) => {
+    terminal.push({ workId, text });
+    resolveTerminal();
+  };
+
+  const result = await spawnAgentTool.execute({ task: 'do a thing' }, ctx);
+  assert.ok(result.content.includes('aw_test_0001'), `work id surfaced (got: ${result.content})`);
+
+  await terminalFired;
+  assert.equal(created.length, 1);
+  const input = created[0] as { kind: string; originChatId: string; resultHandle: { type: string; chatId: string } };
+  assert.equal(input.kind, 'subagent');
+  assert.equal(input.originChatId, 'ios_abc_jerry_x_ff');
+  assert.match(input.resultHandle.chatId, /^subagent:ios_abc_jerry_x_ff:[0-9a-f]{4}$/);
+  assert.deepEqual(completed, [{ workId: 'aw_test_0001', status: 'completed' }]);
+  assert.equal(terminal[0]?.workId, 'aw_test_0001');
+  assert.match(terminal[0]!.text, /Sub-agent complete/);
+  // pipeline owns history delivery — no direct parent append in registry mode
+  assert.equal(captured.appends.length, 0);
+});
+
+test('sub-agent context carries parentWorkId so nested work links to it', async () => {
+  const { ctx, captured } = makeCtx('ios_abc_jerry_x_ff');
+  let resolveTerminal!: () => void;
+  const terminalFired = new Promise<void>((resolve) => { resolveTerminal = resolve; });
+  (ctx as { workRegistry?: unknown }).workRegistry = {
+    create: () => ({ workId: 'aw_test_0002', originChatId: 'ios_abc_jerry_x_ff' }),
+    complete: () => ({}),
+  };
+  (ctx as { onWorkTerminal?: unknown }).onWorkTerminal = () => { resolveTerminal(); };
+
+  await spawnAgentTool.execute({ task: 'nested' }, ctx);
+  await terminalFired;
+  assert.equal((captured.ctx as { parentWorkId?: string } | null)?.parentWorkId, 'aw_test_0002');
+});
+
+test('spawn_agent failure completes the work record as failed', async () => {
+  const { ctx } = makeCtx('12345');
+  (ctx as { runAgentLoop?: unknown }).runAgentLoop = async () => { throw new Error('boom'); };
+  const completed: Array<{ status: string; error?: string }> = [];
+  let resolveTerminal!: () => void;
+  const terminalFired = new Promise<void>((resolve) => { resolveTerminal = resolve; });
+  (ctx as { workRegistry?: unknown }).workRegistry = {
+    create: () => ({ workId: 'aw_test_0003', originChatId: '12345' }),
+    complete: (_id: string, status: string, error?: string) => { completed.push({ status, error }); return {}; },
+  };
+  (ctx as { onWorkTerminal?: unknown }).onWorkTerminal = () => { resolveTerminal(); };
+
+  await spawnAgentTool.execute({ task: 'will fail' }, ctx);
+  await terminalFired;
+  assert.deepEqual(completed, [{ status: 'failed', error: 'boom' }]);
+});

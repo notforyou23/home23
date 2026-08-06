@@ -1,14 +1,15 @@
 /**
  * Sub-agent tool — spawn background agents for parallel work.
  *
- * Results are delivered back through:
- * 1. onEvent callback (streams to dashboard chat in real-time)
- * 2. Conversation history (persisted, visible on reload)
- * 3. Telegram (if available)
+ * Each spawn registers a durable async-work record (Step 31). Results are
+ * delivered back through:
+ * 1. onEvent callback (streams to the parent turn if it is still live)
+ * 2. the async-work completion pipeline (root-origin history append, Telegram
+ *    for numeric origins, iOS async_work push for ios_/mac_ origins)
  *
  * By default each sub-agent runs under a fresh `subagent:<parent>:<hex>` chat
  * id so its turns don't masquerade as the parent conversation; delivery always
- * targets the PARENT chat id.
+ * targets the ROOT origin conversation, never the sub-chat.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -44,10 +45,25 @@ export const spawnAgentTool: ToolDefinition = {
       ? `subagent:${ctx.chatId}:${randomBytes(2).toString('hex')}`
       : ctx.chatId;
 
+    if (tracker.active >= tracker.maxConcurrent) {
+      return { content: `Sub-agent limit reached (${tracker.maxConcurrent} active). Try again when a current sub-agent completes, or wait.` };
+    }
+
+    // Durable async-work record (Step 31). The registry resolves the root
+    // origin; nested spawns thread parentWorkId through subCtx below.
+    const work = ctx.workRegistry?.create({
+      kind: 'subagent',
+      originChatId: ctx.chatId,
+      originTurnId: ctx.turnRuntime?.turnId,
+      parentWorkId: ctx.parentWorkId,
+      label: headline,
+      resultHandle: { type: 'subagent_chat', chatId: subChatId },
+    }) ?? null;
+
     const runSubAgent = async (): Promise<void> => {
       tracker.active++;
       try {
-        const subCtx: ToolContext = { ...ctx, chatId: subChatId };
+        const subCtx: ToolContext = { ...ctx, chatId: subChatId, parentWorkId: work?.workId ?? ctx.parentWorkId };
         const systemPrompt = ctx.contextManager.getSystemPrompt();
 
         const result = await ctx.runAgentLoop!(
@@ -58,37 +74,24 @@ export const spawnAgentTool: ToolDefinition = {
         const text = `[Sub-agent complete] ${headline}\n\n${result.text}`;
         console.log(`[subagent] Result for "${task.slice(0, 50)}": ${result.text.slice(0, 200)}`);
 
-        // 1. Fire onEvent so dashboard chat sees it in real-time
+        // 1. Live-stream to the parent turn if it still exists
         if (ctx.onEvent) {
           ctx.onEvent({ type: 'subagent_result', task: task.slice(0, 200), result: result.text });
         }
 
-        // 2. Append to conversation history so it persists — parent chat, always
-        if (ctx.conversationHistory) {
+        // 2. Terminal delivery through the async-work pipeline: root-origin
+        //    history append, numeric-checked Telegram, iOS async_work push.
+        //    Without a registry (legacy wiring), fall back to the old direct
+        //    parent-chat append so results are never dropped.
+        if (work && ctx.onWorkTerminal) {
+          ctx.workRegistry!.complete(work.workId, 'completed');
+          ctx.onWorkTerminal(work.workId, text);
+        } else if (ctx.conversationHistory) {
           ctx.conversationHistory.append(ctx.chatId, [{
             role: 'assistant' as const,
             content: text,
             ts: new Date().toISOString(),
           }]);
-        }
-
-        // 3. Try Telegram if available
-        if (ctx.telegramAdapter) {
-          try {
-            const botToken = process.env.TELEGRAM_BOT_TOKEN;
-            if (botToken) {
-              await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  chat_id: ctx.chatId,
-                  text: text.slice(0, 4096),
-                }),
-              });
-            }
-          } catch (err) {
-            console.warn(`[subagent] Telegram delivery failed: ${err instanceof Error ? err.message : String(err)}`);
-          }
         }
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -98,7 +101,10 @@ export const spawnAgentTool: ToolDefinition = {
         if (ctx.onEvent) {
           ctx.onEvent({ type: 'subagent_result', task: task.slice(0, 200), result: `Error: ${errMsg}` });
         }
-        if (ctx.conversationHistory) {
+        if (work && ctx.onWorkTerminal) {
+          ctx.workRegistry!.complete(work.workId, 'failed', errMsg);
+          ctx.onWorkTerminal(work.workId, text);
+        } else if (ctx.conversationHistory) {
           ctx.conversationHistory.append(ctx.chatId, [{
             role: 'assistant' as const,
             content: text,
@@ -114,13 +120,13 @@ export const spawnAgentTool: ToolDefinition = {
       }
     };
 
-    if (tracker.active >= tracker.maxConcurrent) {
-      return { content: `Sub-agent limit reached (${tracker.maxConcurrent} active). Try again when a current sub-agent completes, or wait.` };
-    }
-
     // Fire and forget — never blocks the parent
     runSubAgent().catch(console.error);
 
-    return { content: `Sub-agent spawned for: "${task.slice(0, 200)}"${isolated ? ` (session ${subChatId})` : ''}. Results will be delivered when complete.` };
+    const handle = [
+      work ? `work ${work.workId}` : null,
+      isolated ? `session ${subChatId}` : null,
+    ].filter(Boolean).join(', ');
+    return { content: `Sub-agent spawned for: "${task.slice(0, 200)}"${handle ? ` (${handle})` : ''}. Results will be delivered when complete.` };
   },
 };
