@@ -17,6 +17,28 @@ export interface TextGenerationOptions {
   codexCredentialsProvider?: (signal?: AbortSignal) => Promise<CodexCredentials | null>;
 }
 
+/**
+ * OAuth stealth headers — required to use an sk-ant-oat* token with the
+ * Anthropic SDK. Mirrors createAnthropicRuntimeClient in src/agent/loop.ts.
+ */
+function oauthStealthHeaders(): Record<string, string> {
+  return {
+    'accept': 'application/json',
+    'anthropic-dangerous-direct-browser-access': 'true',
+    'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,extended-cache-ttl-2025-04-11',
+    'user-agent': 'claude-cli/2.1.32 (external, cli)',
+    'x-app': 'cli',
+  };
+}
+
+/**
+ * Newer Anthropic models reject `temperature` outright ("deprecated for this
+ * model"), so it must be omitted rather than defaulted for them.
+ */
+function anthropicSupportsTemperature(model: string): boolean {
+  return !/^claude-(opus|sonnet|haiku)-(4-8|5)/.test(model || '');
+}
+
 export function inferTextGenerationProvider(model?: string, provider?: string): string {
   if (provider) return provider;
   const value = String(model || '');
@@ -41,16 +63,38 @@ export async function generateText(opts: TextGenerationOptions): Promise<string>
   const requestSignal = combineRequestSignals(opts.signal, timeoutMs);
 
   if (provider === 'anthropic' || provider === 'minimax') {
-    const client = opts.client || new Anthropic({
-      apiKey: opts.apiKey || envApiKey(provider) || 'placeholder',
-      ...(opts.baseURL ? { baseURL: opts.baseURL } : {}),
-    });
+    // Home23's brokered Anthropic credential is an OAuth token (sk-ant-oat*),
+    // which the SDK must send as a bearer `authToken` with Claude Code stealth
+    // headers — NOT as `x-api-key` (that 401s). OAuth calls must also lead with
+    // the Claude Code system block, or they are not recognized as subscription
+    // traffic and land on a much tighter quota (observed: opus 429).
+    const credential = opts.apiKey || envApiKey(provider) || '';
+    const isOAuth = provider === 'anthropic' && credential.startsWith('sk-ant-oat');
+    const client = opts.client || (isOAuth
+      ? new Anthropic({
+          authToken: credential,
+          ...(opts.baseURL ? { baseURL: opts.baseURL } : {}),
+          defaultHeaders: oauthStealthHeaders(),
+          dangerouslyAllowBrowser: true,
+        })
+      : new Anthropic({
+          apiKey: credential || 'placeholder',
+          ...(opts.baseURL ? { baseURL: opts.baseURL } : {}),
+        }));
+
+    const system = opts.system && isOAuth
+      ? [
+          { type: 'text' as const, text: "You are Claude Code, Anthropic's official CLI for Claude." },
+          { type: 'text' as const, text: opts.system },
+        ]
+      : opts.system;
+
     const response = await client.messages.create(
       {
         model,
         max_tokens: maxTokens,
-        temperature,
-        ...(opts.system ? { system: opts.system } : {}),
+        ...(provider === 'anthropic' && !anthropicSupportsTemperature(model) ? {} : { temperature }),
+        ...(system ? { system } : {}),
         messages: [{ role: 'user', content: opts.prompt }],
       },
       { signal: requestSignal },
