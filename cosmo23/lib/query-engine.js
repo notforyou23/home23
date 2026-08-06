@@ -1742,8 +1742,23 @@ STYLE:
       reservedBytes: utf8Bytes(instructions),
       label: 'Query prompt',
     });
-    const separatorReserve = Math.max(0, selectedLimits.maxNodes - 1)
-      + Math.max(0, selectedLimits.maxEdges - 1);
+    const summarizedNodes = sourceSummary?.nodeCount ?? sourceSummary?.nodes;
+    const summarizedEdges = sourceSummary?.edgeCount ?? sourceSummary?.edges;
+    const summarizedNodeCount = Number.isSafeInteger(summarizedNodes)
+      && summarizedNodes >= 0
+      ? summarizedNodes
+      : selectedLimits.maxNodes;
+    const summarizedEdgeCount = Number.isSafeInteger(summarizedEdges)
+      && summarizedEdges >= 0
+      ? summarizedEdges
+      : selectedLimits.maxEdges;
+    const separatorReserve = Math.max(
+      0,
+      Math.min(selectedLimits.maxNodes, summarizedNodeCount) - 1,
+    ) + Math.max(
+      0,
+      Math.min(selectedLimits.maxEdges, summarizedEdgeCount) - 1,
+    );
     const promptProjectionBudget = maxPromptBytes
       - promptScaffold.totalBytes
       - separatorReserve;

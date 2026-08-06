@@ -45,7 +45,7 @@ function requireProviderId(value) {
 // HOME23 PATCH — current Sonnet 4.7 and Opus 4.8 models reject legacy sampling
 // params such as temperature and use adaptive thinking instead.
 function isAnthropicSamplingDeprecatedModel(model) {
-  return /^(?:[^/]+\/)?claude-(?:sonnet-(?:4-7|[5-9](?:-[0-9]+)*)|opus-4-8)(?:$|[-@])/.test(
+  return /^(?:[^/]+\/)?claude-(?:sonnet-(?:4-7|[5-9](?:-[0-9]+)*)|opus-(?:4-8|[5-9](?:-[0-9]+)*)|fable-[5-9](?:-[0-9]+)*)(?:$|[-@])/.test(
     String(model || '').trim(),
   );
 }

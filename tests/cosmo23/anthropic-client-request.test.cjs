@@ -127,6 +127,24 @@ for (const [name, Client] of clients) {
     assert.equal(Object.hasOwn(params, 'temperature'), false);
   });
 
+  test(`${name} omits deprecated sampling params for the Fable 5 wire model`, async () => {
+    const params = await captureGenerateParams(Client, {
+      model: 'claude-fable-5'
+    });
+
+    assert.equal(params.model, 'claude-fable-5');
+    assert.equal(Object.hasOwn(params, 'temperature'), false);
+  });
+
+  test(`${name} omits deprecated sampling params for the Opus 5 wire model`, async () => {
+    const params = await captureGenerateParams(Client, {
+      model: 'claude-opus-5'
+    });
+
+    assert.equal(params.model, 'claude-opus-5');
+    assert.equal(Object.hasOwn(params, 'temperature'), false);
+  });
+
   test(`${name} keeps temperature for models that still accept sampling params`, async () => {
     const params = await captureGenerateParams(Client, {
       model: 'claude-haiku-4-5'

@@ -1038,6 +1038,35 @@ test('operation query bounds prompt construction before serializing a huge proje
   assert.deepEqual(item.events, []);
 });
 
+test('operation query reserves separators for the pinned source size on smaller-context models', async () => {
+  const item = fixture({
+    catalog: {
+      version: 1,
+      providers: {
+        alpha: {
+          models: [model('alpha', 'answer-model', {
+            contextWindowTokens: 32_768,
+            maxOutputTokens: 8_192,
+            transport: 'chat-completions',
+          })],
+        },
+      },
+      defaults: {},
+    },
+  });
+  const pin = sourcePin();
+  pin.summarize = async () => ({ nodes: 2, edges: 1, clusters: 0 });
+
+  const result = await item.engine.executeQuery(
+    'alpha canary',
+    operationOptions(pin),
+  );
+
+  assert.equal(result.answer, 'pinned answer');
+  assert.equal(item.calls.length, 1);
+  assert.equal(item.calls[0].provider, 'alpha');
+});
+
 test('provider cancellation preserves the exact operation reason and terminal event', async () => {
   const controller = new AbortController();
   const reason = Object.assign(new Error('operator cancelled'), { code: 'cancelled' });

@@ -217,6 +217,17 @@ test('GET /api/brains exposes one canonical identity and resolves its canonical 
     assert.equal(payload.brains[0].edges, 0);
     assert.equal(payload.brains[0].isActive, false);
 
+    const selectedBrain = await resolveBrainBySelector(payload.brains[0].routeKey, {
+      instancesRoot,
+      localRunsPath,
+      referenceRunsPaths: [referenceRunsPath],
+      configuredAgentNames: ['jerry'],
+      activeRunPath: null,
+      canonicalCatalog: payload
+    });
+    assert.equal(selectedBrain.id, payload.brains[0].id);
+    assert.equal(selectedBrain.routeKey, payload.brains[0].routeKey);
+
     assert.equal(payload.brains[0].route, `/api/brain/${payload.brains[0].id}`);
     const detailResponse = await fetch(`${baseUrl}/api/brains/${payload.brains[0].id}`);
     assert.equal(detailResponse.status, 200);
