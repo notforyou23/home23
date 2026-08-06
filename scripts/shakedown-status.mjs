@@ -12,6 +12,7 @@
 //   instances/jerry/workspace/projects/shakedownshuffle/status/latest.json (full)
 
 import { readFileSync, readdirSync, statSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join, basename } from "node:path";
 
 const SITE = "/Users/jtr/websites/shakedownshuffle.com";
@@ -113,21 +114,47 @@ try {
 } catch (e) { status.warnings.push(`operator/funnel: ${e.message}`); }
 
 // --- pending proposals (the approval surface) ---
+// IMPORTANT: "approved" in the queue is NOT the same thing as "needs jtr's
+// decision". Approved-but-unstructured cards are waiting on the approval
+// runner (scripts/shakedown-approval-runner.mjs), not on jtr. Do not label
+// them needsYou — that was the confusion this fixed on 2026-07-30.
 try {
   const queuePath = join(WS, "projects/shakedownshuffle/content/article-editorial-queue.md");
   const queue = readFileSync(queuePath, "utf-8");
   const proposed = [...queue.matchAll(/^### \[proposed\] (.+)$/gm)].map((m) => m[1].slice(0, 100));
   const approved = [...queue.matchAll(/^### \[approved\] (.+)$/gm)].map((m) => m[1].slice(0, 100));
-  status.needsYou = { proposedCount: proposed.length, proposed, approvedAwaitingRun: approved };
+  status.needsYou = { proposedCount: proposed.length, proposed };
+  status.approvedQueue = { count: approved.length, titles: approved };
   status.sources.queue = queuePath;
 } catch (e) { status.warnings.push(`queue: ${e.message}`); }
+
+// --- approval runner classification (Task 9) ---
+// Read-only here: runs the runner's own --dry-run so this status assembler
+// never mutates the queue or the ledger. Source of truth for execution state
+// is the runner's ledger; this just surfaces the same inventory in the digest.
+try {
+  const runnerOut = execFileSync(
+    process.execPath,
+    [join(H23, "scripts/shakedown-approval-runner.mjs"), "--dry-run"],
+    { encoding: "utf-8", timeout: 20_000 }
+  );
+  const runner = JSON.parse(runnerOut);
+  status.approvalRunner = {
+    approvedTotal: runner.approvedTotal,
+    counts: runner.counts,
+    allowlistSize: runner.allowlistSize,
+    machineReady: runner.machineReady?.length ?? 0,
+    needsStructuring: runner.needsStructuring?.length ?? 0,
+    blocked: runner.blocked?.length ?? 0,
+  };
+} catch (e) { status.warnings.push(`approvalRunner: ${e.message}`); }
 
 // --- Home23 cron jobs ---
 try {
   const store = readJson(join(H23, "instances/jerry/conversations/cron-jobs.json"));
   const jobs = Array.isArray(store) ? store : store.jobs ?? [];
   status.jobs = {};
-  for (const id of ["shakedown-collection-daily", "shakedown-editorial-leads", "shakedown-operator-check", "shakedown-publish-scan", "shakedown-proposer-cycle", "shakedown-collection-promote"]) {
+  for (const id of ["shakedown-collection-daily", "shakedown-editorial-leads", "shakedown-operator-check", "shakedown-publish-scan", "shakedown-proposer-cycle", "shakedown-collection-promote", "shakedown-approval-runner"]) {
     const j = jobs.find((x) => x.id === id);
     status.jobs[id] = j ? { enabled: j.enabled, lastStatus: j.state?.lastStatus ?? null,
       nextRunAt: j.state?.nextRunAtMs ? new Date(j.state.nextRunAtMs).toISOString() : null,
@@ -165,7 +192,12 @@ ${(() => {
     lines.push(...p.pendingItems.map((t) => `  - ${t}`));
   }
   return lines.length ? `NEEDS YOU: ${lines.join("\n")}\n` : "NEEDS YOU: nothing pending";
-})()}${status.needsYou?.approvedAwaitingRun?.length ? `\nAPPROVED, not yet run: ${status.needsYou.approvedAwaitingRun.join("; ")}\n` : ""}
+})()}${(() => {
+  const ar = status.approvalRunner;
+  if (!ar) return "";
+  const bits = [`${ar.approvedTotal ?? 0} approved card(s) in queue`, `${ar.machineReady ?? 0} machine-ready`, `${ar.needsStructuring ?? 0} needs-structuring (prose, waiting on a structured contract, NOT waiting on you)`, `${ar.blocked ?? 0} blocked`];
+  return `\nAPPROVAL RUNNER (Lane1<-Lane3, see scripts/shakedown-approval-runner.mjs): ${bits.join(" | ")}\n`;
+})()}
 Collection: cursor ${c?.cursorNextIndex ?? "?"} pass ${c?.passNumber ?? "?"} | wanted ${c?.wanted?.wanted ?? "?"} / have_audio ${c?.wanted?.have_audio ?? "?"} / discovered ${c?.wanted?.discovered ?? "?"}
 Last run: ${c?.lastRun ? `${c.lastRun.status} at ${c.lastRun.completedAt} (replayVerified=${c.lastRun.replayVerified}, candidates=${c.lastRun.candidates})` : "none"}
 Enrichment: cursor ${status.enrichment?.cursorNextIndex ?? "?"}, updated ${status.enrichment?.ageHours ?? "?"}h ago
@@ -181,6 +213,7 @@ Cron: ${jobLine("shakedown-collection-daily")}
       ${jobLine("shakedown-editorial-leads")}
       ${jobLine("shakedown-proposer-cycle")}
       ${jobLine("shakedown-collection-promote")}
+      ${jobLine("shakedown-approval-runner")}
 ${status.warnings.length ? `\nWARNINGS: ${status.warnings.join(" | ")}\n` : ""}`;
 if (md.length > MD_CAP) md = md.slice(0, MD_CAP - 25) + "\n[truncated at cap]\n";
 const mdTmp = OUT_MD + ".tmp";
