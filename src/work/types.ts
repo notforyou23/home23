@@ -62,7 +62,7 @@ export function resolveRootChatId(chatId: string): string {
   let current = chatId;
   for (let i = 0; i < 10; i++) {
     const m = SUBAGENT_CHAT_RE.exec(current);
-    if (!m) return current;
+    if (!m || m[1] === undefined) return current;
     current = m[1];
   }
   return current;
