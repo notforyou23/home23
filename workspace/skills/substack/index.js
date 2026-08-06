@@ -185,8 +185,9 @@ function cdpEvaluate(tabId, expression, context = {}) {
 }
 
 async function pageFetch(tabId, urlPath, options = {}, context = {}) {
+  const requestUrl = urlPath.startsWith("/") ? `${PUBLICATION_HOST}${urlPath}` : urlPath;
   const expression = `(async () => {
-    const res = await fetch(${JSON.stringify(urlPath)}, ${JSON.stringify(options)});
+    const res = await fetch(${JSON.stringify(requestUrl)}, ${JSON.stringify(options)});
     const text = await res.text();
     let json = null;
     try { json = JSON.parse(text); } catch {}

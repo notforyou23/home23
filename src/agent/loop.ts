@@ -746,6 +746,15 @@ export class AgentLoop {
   }
 
   /**
+   * The installed APNs pusher, or null if push is not configured yet. Lets other
+   * result-delivery paths (e.g. the coding-job bridge) reuse the same pusher
+   * without capturing a not-yet-initialized binding.
+   */
+  getPusher(): import('../push/apns-pusher.js').ApnsPusher | null {
+    return this.pusher;
+  }
+
+  /**
    * Run a turn with lifecycle tracking. Writes a `pending` envelope, persists every
    * onEvent as a seq'd `event` record, and writes a final envelope on completion/error.
    * Returns the turn_id immediately — the agent run is awaited by the caller but can

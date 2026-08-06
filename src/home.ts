@@ -41,6 +41,7 @@ import { ContextManager } from './agent/context.js';
 import { ConversationHistory } from './agent/history.js';
 import { createToolRegistry } from './agent/tools/index.js';
 import { ACPBridge, normalizeBridgeConfig } from './acp/bridge.js';
+import { deliverCodingJobResult, type CodingResultSinks } from './acp/result-delivery.js';
 import { AttentionGate, type OutboundSignal } from './agent/attention/attention-gate.js';
 import type { ToolContext, SubAgentTracker } from './agent/types.js';
 import { BrainOperationsClient } from './agent/brain-operations/client.js';
@@ -924,22 +925,41 @@ async function main(): Promise<void> {
       if (event.type !== 'job_finished') return;
       const { job, receipt } = event;
       console.log(`[coding] job ${job.id} ${job.status} (${job.backend}, ${Math.round(receipt.durationMs / 1000)}s)`);
-      const requestedBy = job.requestedBy ?? '';
-      if (!requestedBy) return;
-      const headline = job.label || job.prompt.slice(0, 100);
-      const text = `[Coding job ${job.status}] ${headline}\n\n${receipt.resultTail.slice(0, 1500)}\n(job ${job.id}; coding_result for full output)`;
-      try {
-        history.append(requestedBy, [{ role: 'assistant', content: text, ts: new Date().toISOString() }]);
-      } catch (err) {
-        console.warn(`[coding] history delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+      // Route on the job's real origin (job.requestedBy — the chatId captured at
+      // coding_start), never on the agent's injected identity. deliverCodingJobResult
+      // always appends the full result to history, then fires at most one push:
+      // numeric chatIds → Telegram, ios_* chatIds → iOS/APNs. Sinks are built per
+      // event, so an unconfigured token / not-yet-installed pusher (e.g. during
+      // recover() before APNs setup) degrades to history-only with no throw.
+      const sinks: CodingResultSinks = {
+        appendHistory: (chatId, text) => {
+          try {
+            history.append(chatId, [{ role: 'assistant', content: text, ts: new Date().toISOString() }]);
+          } catch (err) {
+            console.warn(`[coding] history delivery failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        },
+      };
+      if (process.env.TELEGRAM_BOT_TOKEN) {
+        sinks.sendTelegram = (chatId, text) => {
+          fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId, text }),
+          }).catch((err) => console.warn(`[coding] Telegram delivery failed: ${err instanceof Error ? err.message : String(err)}`));
+        };
       }
-      if (/^-?\d+$/.test(requestedBy) && process.env.TELEGRAM_BOT_TOKEN) {
-        fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: requestedBy, text: text.slice(0, 4096) }),
-        }).catch((err) => console.warn(`[coding] Telegram delivery failed: ${err instanceof Error ? err.message : String(err)}`));
+      // getPusher() is read live (not a captured binding), so it is null until
+      // APNs is installed; notifyTurnComplete itself no-ops when no device is
+      // registered for the chatId.
+      const pusher = agent.getPusher();
+      if (pusher) {
+        sinks.pushIos = ({ chatId, turnId, body }) => {
+          pusher.notifyTurnComplete({ chatId, turnId, assistantText: body })
+            .catch((err) => console.warn(`[coding] iOS push failed: ${err instanceof Error ? err.message : String(err)}`));
+        };
       }
+      deliverCodingJobResult(job, receipt, sinks);
     });
     try {
       const recovered = await codingBridge.recover();

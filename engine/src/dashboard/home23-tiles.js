@@ -1017,7 +1017,14 @@ class Home23TileService {
         try {
           await this.getTileData(tile.id);
         } catch (err) {
+          // Even on hard failure (no last-good cache to fall back on), keep
+          // the tile sensor timestamp advancing so freshness verifiers don't
+          // trip during prolonged upstream outages. Mirror the pool-screenlogic
+          // offline-publish behavior.
           this.logger?.warn?.(`[home23-tiles] background refresh failed for ${tile.id}: ${err.message}`);
+          try {
+            publishTileSensor(tile, tile.mode || 'generic', { offline: true, error: err.message }, 'offline', { ok: false });
+          } catch { /* non-fatal */ }
         } finally {
           this.backgroundRefreshInFlight.delete(tile.id);
         }
@@ -1192,19 +1199,27 @@ class Home23TileService {
     let payload;
     if (tile.mode === 'ecowitt-weather') {
       let weather;
+      let isStale = false;
+      let staleAgeSec = 0;
+      let staleError = null;
       try {
         weather = await fetchEcowittData(connection);
         // Stash last-good weather so transient upstream failures don't make the
-        // sensor go stale. We keep it for up to LAST_GOOD_MAX_MS.
+        // sensor go stale. We keep it as long as we have any cached copy.
         this.lastGood.set(tile.id, { data: weather, at: Date.now() });
       } catch (err) {
         const fallback = this.lastGood.get(tile.id);
-        const LAST_GOOD_MAX_MS = 20 * 60 * 1000; // 20 min — well inside a 30min freshness window
-        if (fallback && (Date.now() - fallback.at) <= LAST_GOOD_MAX_MS) {
-          // Republish recent-but-valid weather to keep the sensor fresh while
-          // upstream (Ecowitt) is rate-limited or briefly unreachable.
+        if (fallback) {
+          // Always republish last-good weather on fetch failure so the
+          // tile.outside-weather sensor `ts` keeps advancing even when
+          // upstream (Ecowitt) has been unreachable for longer than 30 min.
+          // Tag the publish as stale + carry the upstream error so consumers
+          // can distinguish cached-but-fresh from cached-but-old.
           weather = fallback.data;
-          this.logger?.warn?.(`[home23-tiles] ${tile.id} fetch failed (${err.message}); republishing last-good weather aged ${Math.round((Date.now() - fallback.at) / 1000)}s`);
+          staleAgeSec = Math.round((Date.now() - fallback.at) / 1000);
+          staleError = err.message;
+          isStale = true;
+          this.logger?.warn?.(`[home23-tiles] ${tile.id} fetch failed (${err.message}); republishing last-good weather aged ${staleAgeSec}s`);
         } else {
           throw err;
         }
@@ -1212,7 +1227,10 @@ class Home23TileService {
       const summary = weather?.outdoor?.temperature != null
         ? `${weather.outdoor.temperature}°F${weather.outdoor.humidity != null ? ' · ' + weather.outdoor.humidity + '%RH' : ''}`
         : 'no readings';
-      publishTileSensor(tile, 'ecowitt-weather', weather, summary);
+      const meta = isStale
+        ? { ok: false, stale: true, ageSeconds: staleAgeSec, error: staleError }
+        : {};
+      publishTileSensor(tile, 'ecowitt-weather', weather, summary, meta);
       payload = {
         tileId,
         fetchedAt: new Date().toISOString(),

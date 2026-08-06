@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DeliveryManager } from '../../src/scheduler/delivery.ts';
+import { AttentionGate } from '../../src/agent/attention/attention-gate.ts';
 import type { ChannelAdapter, OutgoingResponse } from '../../src/channels/router.ts';
 import type { CronJob } from '../../src/scheduler/cron.ts';
 
@@ -70,4 +71,65 @@ test('summary delivery keeps the Telegram note and strips the machine intake pac
   assert.equal(sent.length, 1);
   assert.equal(sent[0].text, 'From the inside: wrote the next curriculum unit and filed one follow-up.');
   assert.doesNotMatch(sent[0].text, /AGENCY_INTAKE_PACKET/);
+});
+
+test('a failed first delivery does not suppress an identical retry (dedup armed only after a real send)', async () => {
+  let clock = 1_000;
+  const gate = new AttentionGate({ nowMs: () => clock });
+
+  let failNext = true;
+  const sent: OutgoingResponse[] = [];
+  const adapter: ChannelAdapter = {
+    name: 'telegram',
+    async start() {},
+    async stop() {},
+    async send(response) {
+      if (failNext) throw new Error('telegram send failed (transient)');
+      sent.push(response);
+    },
+  };
+  const manager = new DeliveryManager(new Map([['telegram', adapter]]), {}, gate);
+
+  const job = makeJob({ delivery: { mode: 'failures', channel: 'telegram', to: '123456789' } });
+  const result = { status: 'error' as const, error: 'Backup FAILED: disk full', durationMs: 1000 };
+
+  // Run #1: identical text, but the adapter throws — nothing reaches jtr.
+  await manager.deliver(job, result);
+  assert.equal(sent.length, 0, 'first send failed, so nothing delivered');
+
+  // Run #2, five minutes later (inside the 6h dedupe window): the transient
+  // failure must NOT have armed dedup, so the identical retry still surfaces.
+  clock += 5 * 60 * 1000;
+  failNext = false;
+  await manager.deliver(job, result);
+  assert.equal(sent.length, 1, 'identical retry after a failed send must still deliver');
+  assert.match(sent[0].text, /Backup FAILED: disk full/);
+});
+
+test('a successful delivery still suppresses an identical repeat within the dedupe window', async () => {
+  let clock = 1_000;
+  const gate = new AttentionGate({ nowMs: () => clock });
+
+  const sent: OutgoingResponse[] = [];
+  const adapter: ChannelAdapter = {
+    name: 'telegram',
+    async start() {},
+    async stop() {},
+    async send(response) {
+      sent.push(response);
+    },
+  };
+  const manager = new DeliveryManager(new Map([['telegram', adapter]]), {}, gate);
+
+  const job = makeJob({ delivery: { mode: 'summary', channel: 'telegram', to: '123456789' } });
+  const result = { status: 'ok' as const, response: 'Nightly digest: all systems nominal.', durationMs: 1000 };
+
+  // Run #1 delivers and arms dedup.
+  await manager.deliver(job, result);
+  assert.equal(sent.length, 1, 'first delivery surfaces');
+
+  // Run #2, five minutes later with identical text, is deduped/suppressed.
+  clock += 5 * 60 * 1000;
+  await manager.deliver(job, result);
+  assert.equal(sent.length, 1, 'identical repeat within the window is suppressed');
 });

@@ -65,21 +65,24 @@ export class DeliveryManager {
     // (the "repetitive status update" the brief says to avoid). We deliberately
     // do NOT set isFailure here — a first failure surfaces via explicitlyWatched,
     // and identical repeated failures are what dedup is for.
+    let gateSignal: OutboundSignal | null = null;
     if (this.gate) {
-      const signal: OutboundSignal = {
+      gateSignal = {
         origin: 'cron',
         text,
         explicitlyWatched: true,
         kind: job.delivery?.mode === 'summary' ? 'summary' : undefined,
       };
-      const verdict = this.gate.evaluate(signal);
+      const verdict = this.gate.evaluate(gateSignal);
       if (verdict.decision === 'suppress') {
         console.log(`[delivery] Job ${job.id} suppressed by attention gate (${verdict.reason}${verdict.detail ? `: ${verdict.detail}` : ''})`);
         return;
       }
       // 'surface' (the normal path) and 'aggregate' both proceed to send here —
-      // a jtr-configured delivery is never held. record() arms dedup for repeats.
-      this.gate.record(signal);
+      // a jtr-configured delivery is never held. We arm dedup (record()) only
+      // AFTER at least one adapter send succeeds (below), so a total send failure
+      // leaves an identical retry eligible instead of self-suppressing for the
+      // dedupe window.
     }
 
     const targets: Array<{ channel: string; to: string }> = [];
@@ -104,6 +107,7 @@ export class DeliveryManager {
       return;
     }
 
+    let anyDelivered = false;
     for (const target of targets) {
       // 'auto' channel: pick the first available adapter
       const adapter = target.channel === 'auto'
@@ -125,6 +129,7 @@ export class DeliveryManager {
 
       try {
         await adapter.send(response);
+        anyDelivered = true;
         this.appendDeliveryLedgerEvent(job, target, result);
         console.log(`[delivery] Job ${job.id} result delivered to ${target.channel}:${target.to}`);
       } catch (err) {
@@ -132,6 +137,14 @@ export class DeliveryManager {
         console.error(`[delivery] Failed to deliver job ${job.id} to ${target.channel}:${target.to}: ${msg}`);
         this.lastDeliveryError = msg;
       }
+    }
+
+    // Arm dedup only now that a real delivery reached jtr. A total send failure
+    // (anyDelivered === false) leaves the dedup key unset, so the next identical
+    // retry is still eligible to surface. Mirrors the /api/notify path, which
+    // also records only after a confirmed delivery.
+    if (this.gate && gateSignal && anyDelivered) {
+      this.gate.record(gateSignal);
     }
   }
 
