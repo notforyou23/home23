@@ -1206,6 +1206,7 @@ export class AgentLoop {
             contextSearch: (request, signal) =>
               runContext.turnRuntime!.brainOperations.searchContext(request, signal),
             triggerIndex: this.triggerIndex,
+            triggeredSurfaces: this.situationalAwareness?.triggeredSurfaces,
           },
           this.eventLedger,
           ac.signal,

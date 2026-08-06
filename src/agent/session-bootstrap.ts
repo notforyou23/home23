@@ -18,6 +18,14 @@ export interface SituationalAwarenessConfig {
     reads?: string[];          // relative to workspacePath, e.g. ['NOW.md', 'PLAYBOOK.md']
     maxBytesPerFile?: number;  // per-file cap; default 4000
   };
+  /** Keyword-gated workspace files loaded into situational awareness on match (Step 30 cleanup #4). */
+  triggeredSurfaces?: Array<{
+    file: string;
+    label?: string;
+    keywords?: string[];
+    domains?: string[];
+    budget?: number;
+  }>;
 }
 
 const DEFAULT_READS = ['NOW.md', 'PLAYBOOK.md'];

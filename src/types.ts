@@ -181,6 +181,14 @@ export interface HomeConfig {
       reads?: string[];
       maxBytesPerFile?: number;
     };
+    /** Keyword-gated workspace files loaded on match (Step 30 cleanup #4). */
+    triggeredSurfaces?: Array<{
+      file: string;
+      label?: string;
+      keywords?: string[];
+      domains?: string[];
+      budget?: number;
+    }>;
   };
 
   // OS-engine redesign (Step 24). Universal channel bus + verification gate +

@@ -15,6 +15,21 @@ import yaml from 'js-yaml';
 import type { AssemblyResult, EventEnvelope } from '../types.js';
 import type { EventLedger } from './event-ledger.js';
 import type { TriggerIndex } from './trigger-index.js';
+import { budgetIdentityContent } from './identity-budget.js';
+
+/**
+ * A workspace file that loads into situational awareness ONLY when its keyword
+ * cues fire (Step 30 cleanup #4). This is how large, intermittently-relevant
+ * doctrine (attention-allocation, social maintenance, carry-forward) reaches the
+ * agent exactly when it matters instead of bloating every turn.
+ */
+export interface TriggeredSurfaceConfig {
+  file: string;
+  label?: string;
+  keywords?: string[];
+  domains?: string[];
+  budget?: number;
+}
 
 // ─── Constants ──────────────────────────────────────────
 const CONTEXT_BUDGET = 6000;
@@ -42,6 +57,8 @@ interface AssemblyConfig {
     signal: AbortSignal,
   ) => Promise<Record<string, unknown>>;
   triggerIndex?: TriggerIndex;
+  /** Keyword-gated workspace files (Step 30 cleanup #4). */
+  triggeredSurfaces?: TriggeredSurfaceConfig[];
 }
 
 // ─── Domain Surfaces ────────────────────────────────────
@@ -68,7 +85,39 @@ function loadSurface(workspacePath: string, filename: string, budget: number): s
   const filePath = join(workspacePath, filename);
   if (!existsSync(filePath)) return null;
   const content = readFileSync(filePath, 'utf-8').trim();
-  return content.slice(0, budget);
+  if (!content) return null;
+  // Section-aware budgeting (Step 30): never a blind mid-sentence slice. Before,
+  // this did content.slice(0, budget), so a 10k DOCTRINE.md was silently cut to
+  // 2.5k mid-content — the same bug fixed for SOUL in the identity path.
+  return budgetIdentityContent(basename(filename), content, budget, 'head').text;
+}
+
+/**
+ * Load the triggered surfaces whose keyword/domain cues appear in the turn's
+ * text. Keyword match is a case-insensitive substring over the user message plus
+ * a little recent context; `domains` entries are treated as additional cues.
+ */
+function loadTriggeredSurfaces(
+  workspacePath: string,
+  surfaces: TriggeredSurfaceConfig[] | undefined,
+  matchText: string,
+): Array<{ label: string; text: string }> {
+  if (!surfaces || surfaces.length === 0) return [];
+  const hay = matchText.toLowerCase();
+  const out: Array<{ label: string; text: string }> = [];
+  for (const surface of surfaces) {
+    const cues = [...(surface.keywords ?? []), ...(surface.domains ?? [])]
+      .map(c => c.toLowerCase().trim())
+      .filter(Boolean);
+    if (cues.length === 0) continue;
+    if (!cues.some(cue => hay.includes(cue))) continue;
+    const content = loadSurface(workspacePath, surface.file, surface.budget ?? 2500);
+    if (!content) continue;
+    const label = surface.label
+      ?? basename(surface.file).replace(/\.md$/i, '').replace(/[^A-Za-z0-9]+/g, '_').toUpperCase();
+    out.push({ label, text: content });
+  }
+  return out;
 }
 
 // ─── Salience Ranking ───────────────────────────────────
@@ -477,6 +526,19 @@ export async function assembleContext(
       text: `\nRelevant context (${surface.name}):\n${verified}`,
       score: surface.alwaysBoost ? 0.95 : 0.7,
       source: `surface:${surface.name}`,
+    });
+  }
+
+  // Triggered surfaces (Step 30 cleanup #4): keyword-gated doctrine that loads
+  // only when the turn is about it — attention allocation, social maintenance,
+  // carry-forward — so it reaches the agent when relevant without bloating turns.
+  const triggerMatchText = `${userText} ${recentTurns.slice(-3).map(t => t.content ?? '').join(' ')}`;
+  for (const ts of loadTriggeredSurfaces(config.workspacePath, config.triggeredSurfaces, triggerMatchText)) {
+    surfacesLoaded.push(ts.label);
+    salienceItems.push({
+      text: `\nRelevant context (${ts.label}):\n${ts.text}`,
+      score: 0.92, // deliberately requested by the turn's cues → high salience
+      source: `trigger-surface:${ts.label}`,
     });
   }
 
