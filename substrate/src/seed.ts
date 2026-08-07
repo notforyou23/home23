@@ -58,6 +58,8 @@ import {
   normalizeDevelopment,
   applyCorrectionPlasticity,
   applyConsequencePlasticity,
+  applyAttenuationPlasticity,
+  applyResolutionPlasticity,
   applyConsolidation,
   developmentMagnitude,
   QUIET_GAP_SECONDS,
@@ -448,8 +450,13 @@ export class SeedProcess {
       const stagedDev = cloneDevelopment(this.development);
       const committed = this.cells.get(cellId);
       if (committed !== undefined) {
+        // "Care less" arrives on the correction channel (it is teaching, it
+        // routes like teaching) but develops with the opposite sign.
+        const isAttenuation = event.payload?.['entry_type'] === 'attenuation';
         const summary = event.category === 'correction'
-          ? applyCorrectionPlasticity(stagedDev, committed, event, readouts)
+          ? (isAttenuation
+            ? applyAttenuationPlasticity(stagedDev, committed, event, readouts)
+            : applyCorrectionPlasticity(stagedDev, committed, event, readouts))
           : applyConsequencePlasticity(stagedDev, committed, event, readouts);
         this.commitReceipted(new Map(), {
           category: 'development',
@@ -637,6 +644,36 @@ export class SeedProcess {
     this._eventCount++;
     this.accounting.recordEvent();
     this.accounting.setLedgerBytes(this.ledger.bytes);
+
+    // resolution.v1: a resolved prediction is consequence reaching development.
+    // For each applied predictions.resolve carrying a numeric error, run the
+    // resolution rule on the cell that held the prediction — receipted as its
+    // own 'development' record, zero cell-state mutation. Ambiguous or
+    // error-less resolutions develop nothing (the receipt above still has them).
+    for (const delta of applied) {
+      if (delta.field !== 'predictions.resolve') continue;
+      const body = delta.delta as { predictionId?: unknown; error?: unknown };
+      if (typeof body?.predictionId !== 'string' || typeof body?.error !== 'number') continue;
+      const committed = this.cells.get(delta.cellId);
+      if (committed === undefined) continue;
+      const stagedDev = cloneDevelopment(this.development);
+      const summary = applyResolutionPlasticity(stagedDev, committed, body.predictionId, Math.max(0, Math.min(1, body.error)));
+      if (summary === null) continue;
+      this.commitReceipted(new Map(), {
+        category: 'development',
+        sourceAuthority: 'seed.internal',
+        sourceRef: this.seedId,
+        payload: {
+          asOf,
+          lobeSeq: record.seq,
+          ...summary,
+          developmentMagnitude: developmentMagnitude(stagedDev),
+        },
+      }, stagedDev);
+      this._eventCount++;
+      this.accounting.recordEvent();
+      this.accounting.setLedgerBytes(this.ledger.bytes);
+    }
 
     return { seq: record.seq, applied, rejected, validated };
   }

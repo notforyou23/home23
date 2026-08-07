@@ -37,6 +37,14 @@ export const WAKE_STEP = 0.015;              // per-correction wake easing
 export const ROUTING_STEP = 0.05;
 export const CONSEQUENCE_ETA_FACTOR = 0.5;   // outcomes teach at half correction rate
 export const CONSEQUENCE_TRUST_STEP = 0.03;
+// attenuation.v1 — "that was noise, care less". The inverse teacher.
+export const ATTENUATION_ETA_FACTOR = 1.0;   // care-less teaches at full correction rate
+export const ATTENUATION_WAKE_STEP = 0.015;  // per-attenuation wake HARDENING
+// resolution.v1 — a resolved prediction is the purest consequence signal.
+export const RESOLUTION_ETA_FACTOR = 0.5;    // same tempo as other outcomes
+export const RESOLUTION_ACCURATE_MAX = 0.3;  // error ≤ this → corroboration
+export const RESOLUTION_WRONG_MIN = 0.7;     // error ≥ this → negative trace
+// Between the two bands, resolution teaches NOTHING — ambiguity is not a teacher.
 /** Event-time gap that counts as quiet time; consolidation fires on the
  * transition that ENDS the gap (derivable from the stream → replayable). */
 export const QUIET_GAP_SECONDS = 30 * 60;
@@ -159,7 +167,7 @@ function clip(v: number, lo: number, hi: number): number {
 
 export interface PlasticUpdateSummary {
   cellId: string;
-  rule: 'correction.v1' | 'consequence.v1';
+  rule: 'correction.v1' | 'consequence.v1' | 'attenuation.v1' | 'resolution.v1';
   salienceDeltaNorm: number;
   wakeThresholdDelta: number;
   routingKey: string;
@@ -167,6 +175,9 @@ export interface PlasticUpdateSummary {
   trustKey: string;
   trust: number;
   updateCount: number;
+  /** resolution.v1 only: which prediction resolved, and how wrong it was. */
+  predictionId?: string;
+  predictionError?: number;
 }
 
 /**
@@ -301,6 +312,111 @@ export function applyConsequencePlasticity(
     trustKey: key,
     trust: plastic.trust[key] ?? 1,
     updateCount: plastic.updateCount,
+  };
+}
+
+/**
+ * attenuation.v1 — "that was noise, care less." The inverse of correction.v1,
+ * with two deliberate asymmetries:
+ *   - the TEACHER keeps their trust and their routing: care-less is about the
+ *     CONTEXT (the current continuous state, Hebbian locality), never about
+ *     the channel that taught it;
+ *   - the update is provisional like all learning — if reality keeps making
+ *     this context matter, consolidation decays the attenuation back out.
+ * Effects: negative salience trace along current state, bounded wake
+ * HARDENING. Nothing else moves.
+ */
+export function applyAttenuationPlasticity(
+  dev: DevelopmentalState,
+  cell: SituationCell,
+  event: SourceEvent,
+  readouts: Readouts,
+): PlasticUpdateSummary {
+  const plastic = dev[cell.id] ?? emptyCellPlasticState(cell.continuousState.length);
+  dev[cell.id] = plastic;
+
+  const eta = LEARNING_RATE * ATTENUATION_ETA_FACTOR * (0.5 + readouts.novelty * 0.5);
+  let deltaNormSq = 0;
+  for (let i = 0; i < cell.continuousState.length; i++) {
+    const x = cell.continuousState[i] ?? 0;
+    const step = -eta * x;
+    const next = clip((plastic.readoutSalience[i] ?? 0) + step, -READOUT_WEIGHT_CLIP, READOUT_WEIGHT_CLIP);
+    deltaNormSq += (next - (plastic.readoutSalience[i] ?? 0)) ** 2;
+    plastic.readoutSalience[i] = next;
+  }
+
+  plastic.wakeThresholdDelta = clip(plastic.wakeThresholdDelta + ATTENUATION_WAKE_STEP, WAKE_DELTA_MIN, WAKE_DELTA_MAX);
+  plastic.updateCount += 1;
+  plastic.updatesSinceConsolidation += 1;
+
+  const key = sourcePrefix(event);
+  return {
+    cellId: cell.id,
+    rule: 'attenuation.v1',
+    salienceDeltaNorm: Math.sqrt(deltaNormSq),
+    wakeThresholdDelta: plastic.wakeThresholdDelta,
+    routingKey: key,
+    routingAffinity: plastic.routingAffinity[key] ?? 0,   // unchanged, by design
+    trustKey: key,
+    trust: plastic.trust[key] ?? 1,                        // unchanged, by design
+    updateCount: plastic.updateCount,
+  };
+}
+
+/**
+ * resolution.v1 — a resolved prediction is the purest consequence signal a
+ * Seed has: it made a falsifiable claim and reality answered.
+ *   - accurate (error ≤ RESOLUTION_ACCURATE_MAX): corroboration — positive
+ *     salience trace scaled by (1 − error), corroborations += 1 (survives
+ *     consolidation fully);
+ *   - wrong (error ≥ RESOLUTION_WRONG_MIN): negative trace scaled by error,
+ *     provisional (decays if not later corroborated);
+ *   - ambiguous middle band: returns null — NO development, no receipt.
+ * No wake change, no routing change, no trust change: being right or wrong
+ * about the world alters what this state-context is worth, not how easily
+ * the world gets in.
+ */
+export function applyResolutionPlasticity(
+  dev: DevelopmentalState,
+  cell: SituationCell,
+  predictionId: string,
+  error: number,
+): PlasticUpdateSummary | null {
+  if (!Number.isFinite(error)) return null;
+  const accurate = error <= RESOLUTION_ACCURATE_MAX;
+  const wrong = error >= RESOLUTION_WRONG_MIN;
+  if (!accurate && !wrong) return null;
+
+  const plastic = dev[cell.id] ?? emptyCellPlasticState(cell.continuousState.length);
+  dev[cell.id] = plastic;
+
+  const eta = LEARNING_RATE * RESOLUTION_ETA_FACTOR * (accurate ? (1 - error) : error);
+  const sign = accurate ? 1 : -1;
+  let deltaNormSq = 0;
+  for (let i = 0; i < cell.continuousState.length; i++) {
+    const x = cell.continuousState[i] ?? 0;
+    const step = sign * eta * x;
+    const next = clip((plastic.readoutSalience[i] ?? 0) + step, -READOUT_WEIGHT_CLIP, READOUT_WEIGHT_CLIP);
+    deltaNormSq += (next - (plastic.readoutSalience[i] ?? 0)) ** 2;
+    plastic.readoutSalience[i] = next;
+  }
+
+  plastic.updateCount += 1;
+  if (accurate) plastic.corroborations += 1;
+  else plastic.updatesSinceConsolidation += 1;
+
+  return {
+    cellId: cell.id,
+    rule: 'resolution.v1',
+    salienceDeltaNorm: Math.sqrt(deltaNormSq),
+    wakeThresholdDelta: plastic.wakeThresholdDelta,
+    routingKey: 'self.prediction',
+    routingAffinity: 0,
+    trustKey: 'self.prediction',
+    trust: 1,
+    updateCount: plastic.updateCount,
+    predictionId,
+    predictionError: error,
   };
 }
 

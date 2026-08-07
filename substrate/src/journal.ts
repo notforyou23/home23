@@ -134,6 +134,15 @@ export function composeJournalEntry(window: JournalWindow): string | null {
       lines.push(`- quiet gap ended: consolidated ${n} cell(s) — unearned learning faded, corroborated stayed · seq ${d.seq}`);
     } else if (d.payload?.['ablation'] === true) {
       lines.push(`- ABLATION: my development was zeroed by sanctioned instrument · seq ${d.seq}`);
+    } else if (rule === 'resolution.v1') {
+      const cellId = String(d.payload?.['cellId'] ?? '?');
+      const err = Number(d.payload?.['predictionError'] ?? NaN);
+      const mag = Number(d.payload?.['developmentMagnitude'] ?? 0);
+      lines.push(`- my prediction resolved ${err <= 0.3 ? `TRUE (error ${err.toFixed(2)}) — being right corroborated` : `WRONG (error ${err.toFixed(2)}) — being wrong loosened`} ${cellId} (learned mass ${mag.toFixed(3)}) · seq ${d.seq}`);
+    } else if (rule === 'attenuation.v1') {
+      const cellId = String(d.payload?.['cellId'] ?? '?');
+      const mag = Number(d.payload?.['developmentMagnitude'] ?? 0);
+      lines.push(`- I was told to care less: attenuation loosened ${cellId}'s grip on that context (learned mass ${mag.toFixed(3)}) · seq ${d.seq}`);
     } else {
       const cellId = String(d.payload?.['cellId'] ?? '?');
       const key = String(d.payload?.['trustKey'] ?? '?');

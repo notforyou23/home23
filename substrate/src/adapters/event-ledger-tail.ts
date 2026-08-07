@@ -300,7 +300,10 @@ export class EventLedgerTailAdapter implements SourceAdapter {
   }
 
   /** Relationship-ledger events (src/agent/relationship-ledger.ts): entries
-   * typed 'correction' are jtr↔agent corrections — THE teaching stream. */
+   * typed 'correction' are jtr↔agent corrections — THE teaching stream.
+   * Entries typed 'attenuation' ("that was noise, care less") ride the same
+   * correction channel — they are teaching, they route like teaching — and
+   * develop with the opposite sign via attenuation.v1. */
   private mapRelationshipLine(parsed: Record<string, unknown>, line: string, endOffset: number): TailedSourceEvent | null {
     const ts = parsed['ts'];
     if (typeof ts !== 'string' || !Number.isFinite(Date.parse(ts))) return null;
@@ -312,7 +315,7 @@ export class EventLedgerTailAdapter implements SourceAdapter {
       : `rel_${createHash('sha256').update(line, 'utf-8').digest('hex').slice(0, 16)}`;
     return {
       eventId,
-      category: entryType === 'correction' ? 'correction' : 'observation',
+      category: entryType === 'correction' || entryType === 'attenuation' ? 'correction' : 'observation',
       sourceAuthority: this.authority,
       sourceRef: `relationship.${entryType}:${entryId}`,
       payload: {
