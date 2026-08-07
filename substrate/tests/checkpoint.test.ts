@@ -214,14 +214,22 @@ test('symbolic cell state is covered by the checkpoint hash (tamper refused)', (
   );
 });
 
-test('wall-clock bookkeeping stays outside the state hash', () => {
+test('event-time state is inside the hash (Cut 2 semantics)', () => {
+  // Since transitions run on event-time, lastTransitionAt is causal,
+  // replay-reproducible state: same times → same hash, different → different.
   const cellsA = Array.from(makeInitialCells('2026-08-07T12:00:00.000Z').values()).map(serializeCell);
-  const cellsB = Array.from(makeInitialCells('2027-01-01T00:00:00.000Z').values()).map(serializeCell);
+  const cellsB = Array.from(makeInitialCells('2026-08-07T12:00:00.000Z').values()).map(serializeCell);
+  const cellsC = Array.from(makeInitialCells('2027-01-01T00:00:00.000Z').values()).map(serializeCell);
   const dispositions = makeDispositions();
   assert.equal(
     computeStateHash({ cells: cellsA, dispositions }),
     computeStateHash({ cells: cellsB, dispositions }),
-    'identical causal state at different wall-clock times must hash identically (replay reproducibility)',
+    'identical event-time state must hash identically',
+  );
+  assert.notEqual(
+    computeStateHash({ cells: cellsA, dispositions }),
+    computeStateHash({ cells: cellsC, dispositions }),
+    'different event-time state must hash differently — it is causal state now',
   );
 });
 

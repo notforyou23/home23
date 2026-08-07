@@ -24,6 +24,8 @@ import type {
   SourceEvent,
 } from './types.js';
 import { CONTINUOUS_STATE_DIM, INITIAL_CELL_IDS } from './types.js';
+import type { Reservoir, Readouts } from './metabolism.js';
+import { encodeEvent, metabolicStep, computeReadouts } from './metabolism.js';
 
 // ─── Default dispositions per cell ───────────────────────────────────────────
 
@@ -99,81 +101,69 @@ export function routeEvent(event: SourceEvent, cellIds: string[]): string {
   }
 }
 
-// ─── Continuous state update ──────────────────────────────────────────────────
-
-/**
- * Compute an 8-element fingerprint from the event. Deterministic.
- * Maps sha256 bytes → float32 values in [-1, 1].
- */
-function eventFingerprint(event: SourceEvent): Float32Array {
-  const digest = createHash('sha256')
-    .update(`${event.sourceRef}:${event.producedAt}:${event.category}`, 'utf-8')
-    .digest();
-  const fp = new Float32Array(8);
-  for (let i = 0; i < 8; i++) {
-    const byteIndex = i * 4;
-    // Read 4 bytes big-endian as int32, normalize to [-1, 1]
-    const b0 = digest[byteIndex] ?? 0;
-    const b1 = digest[byteIndex + 1] ?? 0;
-    const b2 = digest[byteIndex + 2] ?? 0;
-    const b3 = digest[byteIndex + 3] ?? 0;
-    const int32 = ((b0 << 24) | (b1 << 16) | (b2 << 8) | b3) >> 0;
-    fp[i] = int32 / 2_147_483_648; // INT32_MAX
-  }
-  return fp;
-}
+// ─── Continuous state update (Cut 2: reservoir metabolism, event-time) ───────
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
 
+/** Cell energy half-life in seconds of event-time without contact. */
+const ENERGY_HALF_LIFE_SECONDS = 2 * 3600;
+
 /**
- * Apply one deterministic transition to a cell's continuous state.
- * Mutates the cell in-place. Returns the cell for chaining.
+ * Apply one metabolic transition to a cell, in place. Deterministic given
+ * (cell state, event, Δt, reservoir): time comes from event `producedAt`
+ * deltas, never the wall clock — replaying the same events from the same
+ * checkpoint reproduces byte-identical state. Returns the step's readouts so
+ * the caller can receipt them and drive workspace admission.
  */
-export function applyTransition(cell: SituationCell, event: SourceEvent, now: string): SituationCell {
-  const decay = cell.dispositions.decayRate;
-  const state = cell.continuousState;
+export function applyMetabolicTransition(
+  cell: SituationCell,
+  event: SourceEvent,
+  reservoir: Reservoir,
+  dtSeconds: number,
+): Readouts {
+  const before = new Float32Array(cell.continuousState);
+  const input = encodeEvent(event, dtSeconds, reservoir.inputDim);
+  metabolicStep(cell.continuousState, reservoir, input, dtSeconds, cell.dispositions);
+  const readouts = computeReadouts(before, cell.continuousState, reservoir);
 
-  // Decay all floats
-  for (let i = 0; i < state.length; i++) {
-    const v = state[i] ?? 0;
-    state[i] = v * (1 - decay);
-  }
-
-  // Add event fingerprint to slots [0..7]
-  const fp = eventFingerprint(event);
-  for (let i = 0; i < 8; i++) {
-    const current = state[i] ?? 0;
-    const delta = fp[i] ?? 0;
-    state[i] = clamp(current + delta * 0.5, -1, 1);
-  }
-
-  // Energy spike
-  const prevEnergy = cell.energy.current;
-  const energyBoost = 0.1 + Math.abs(fp[0] ?? 0) * 0.2;
-  cell.energy.current = clamp(prevEnergy + energyBoost, 0, 1);
+  // Energy: event-time decay, novelty-driven boost, event-time spike stamp.
+  const energyDecay = Math.exp((-Math.LN2 * Math.max(0, dtSeconds)) / ENERGY_HALF_LIFE_SECONDS);
+  const decayed = cell.energy.current * energyDecay;
+  cell.energy.current = clamp(decayed + 0.05 + readouts.novelty * 0.25, 0, 1);
   if (cell.energy.current > cell.energy.peak) {
     cell.energy.peak = cell.energy.current;
-    cell.energy.lastSpikeAt = now;
+    cell.energy.lastSpikeAt = event.producedAt;
   }
 
-  // Workspace pressure increases with uncertainty-weighted activity
-  cell.workspacePressure = clamp(cell.workspacePressure + 0.05 * cell.uncertainty, 0, 1);
+  // Workspace pressure: salience-driven with a leaky floor; inhibition is
+  // applied by the workspace layer, not here.
+  cell.workspacePressure = clamp(
+    cell.workspacePressure * 0.8
+      + readouts.salience * cell.dispositions.salienceWeight * 0.5
+      + cell.uncertainty * 0.05,
+    0,
+    1,
+  );
+
+  // Uncertainty drifts toward observed novelty — surprising contact raises it,
+  // quiet familiar contact settles it.
+  cell.uncertainty = clamp(cell.uncertainty * 0.9 + readouts.novelty * 0.1, 0, 1);
 
   cell.generation += 1;
-  cell.status = 'living';
-  cell.lastTransitionAt = now;
+  cell.status = cell.energy.current < 0.05 ? 'quiet' : 'living';
+  cell.lastTransitionAt = event.producedAt;
 
-  return cell;
+  return readouts;
 }
 
 /**
- * Copy a cell for a staged transition. Must copy every surface applyTransition
- * mutates (continuousState, energy, and top-level scalars via the spread) so a
- * failed ledger append can discard the staged copy leaving the original
- * untouched. dispositions/modelAffinities are copied too so a staged cell never
- * aliases mutable structures with the committed one.
+ * Copy a cell for a staged transition. Must copy every surface
+ * applyMetabolicTransition mutates (continuousState, energy, and top-level
+ * scalars via the spread) so a failed ledger append can discard the staged
+ * copy leaving the original untouched. dispositions/modelAffinities are copied
+ * too so a staged cell never aliases mutable structures with the committed one.
  */
 export function cloneCell(cell: SituationCell): SituationCell {
   return {

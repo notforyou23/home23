@@ -33,11 +33,14 @@ import { ResourceAccounting } from './resource.js';
 import {
   makeInitialCells,
   routeEvent,
-  applyTransition,
+  applyMetabolicTransition,
   cloneCell,
   serializeCell,
   deserializeCell,
 } from './cells.js';
+import type { Reservoir } from './metabolism.js';
+import { generateReservoir, eventDeltaSeconds, METABOLISM_VERSION } from './metabolism.js';
+import { CONTINUOUS_STATE_DIM } from './types.js';
 
 // ─── Default dispositions ─────────────────────────────────────────────────────
 
@@ -58,6 +61,7 @@ export class SeedProcess {
   private readonly membrane: CapabilityMembrane;
   private readonly accounting: ResourceAccounting;
   private readonly cells: Map<string, SituationCell>;
+  private readonly reservoir: Reservoir;
   private dispositions: SeedDispositions;
   private readonly stateDir: string;
   private readonly seedId: string;
@@ -71,6 +75,7 @@ export class SeedProcess {
     seedId: string;
     createdAt: string;
     cells: Map<string, SituationCell>;
+    reservoir: Reservoir;
     dispositions: SeedDispositions;
     ledger: SeedLedger;
     checkpoints: CheckpointManager;
@@ -83,6 +88,7 @@ export class SeedProcess {
     this.seedId = opts.seedId;
     this.createdAt = opts.createdAt;
     this.cells = opts.cells;
+    this.reservoir = opts.reservoir;
     this.dispositions = opts.dispositions;
     this.ledger = opts.ledger;
     this.checkpoints = opts.checkpoints;
@@ -95,7 +101,11 @@ export class SeedProcess {
 
   // ─── Factory methods ───────────────────────────────────────────────────────
 
-  static initialize(stateDir: string, budget?: Partial<ResourceBudget>): SeedProcess {
+  static initialize(
+    stateDir: string,
+    budget?: Partial<ResourceBudget>,
+    opts?: { reservoirSeed?: number },
+  ): SeedProcess {
     // A stateDir with an existing ledger is an existing Seed. Initializing over
     // it would write a second genesis and continue the old chain under a new
     // seedId — a silent identity fork. Refuse; the caller wants restore().
@@ -106,6 +116,11 @@ export class SeedProcess {
     }
     const now = new Date().toISOString();
     const seedId = `seed_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
+
+    // The reservoir seed is chosen once at birth and recorded in the genesis
+    // record — restore() regenerates the identical frozen reservoir from it.
+    const reservoirSeed = opts?.reservoirSeed ?? parseInt(randomUUID().replace(/-/g, '').slice(0, 8), 16);
+    const reservoir = generateReservoir(reservoirSeed);
 
     const membrane = new CapabilityMembrane();
     const accounting = new ResourceAccounting(budget);
@@ -123,7 +138,9 @@ export class SeedProcess {
       payload: {
         seedId,
         cellIds: Array.from(cells.keys()),
-        continuousStateDim: 64,
+        continuousStateDim: CONTINUOUS_STATE_DIM,
+        reservoirSeed,
+        metabolismVersion: METABOLISM_VERSION,
         createdAt: now,
       },
     });
@@ -142,6 +159,7 @@ export class SeedProcess {
       accounting,
       eventCount: 1,
       transitionCount: 0,
+      reservoir,
     });
   }
 
@@ -186,11 +204,21 @@ export class SeedProcess {
     const accounting = new ResourceAccounting();
     accounting.restoreFromSnapshot(manifest.resourceSnapshot);
 
+    // The frozen reservoir is regenerated from the seed recorded at birth —
+    // identity continues through the same transition machinery, not a new one.
+    const genesis = extractGenesis(ledger);
+    if (typeof genesis.reservoirSeed !== 'number' || !Number.isFinite(genesis.reservoirSeed)) {
+      throw new Error(
+        'Seed ledger genesis records no reservoirSeed (pre-metabolism ledger) — cannot restore a Cut 2 Seed without its recorded reservoir',
+      );
+    }
+
     return new SeedProcess({
       stateDir,
-      seedId: extractSeedId(ledger),
+      seedId: genesis.seedId,
       createdAt: manifest.createdAt,
       cells,
+      reservoir: generateReservoir(genesis.reservoirSeed),
       dispositions: manifest.dispositions,
       ledger,
       checkpoints,
@@ -228,8 +256,10 @@ export class SeedProcess {
   }
 
   /**
-   * Ingest + apply one deterministic cell transition.
-   * Proof of Cut 1: the state and cursor advance causally from the previous state.
+   * Ingest + apply one deterministic metabolic transition.
+   * Event-TIME discipline: elapsed time comes from `producedAt` deltas against
+   * the target cell's last transition, never the wall clock. Replaying the same
+   * events from the same checkpoint reproduces byte-identical state.
    */
   transition(event: SourceEvent): TransitionResult {
     this.membrane.assert('local.source.ingest');
@@ -238,7 +268,7 @@ export class SeedProcess {
     this.accounting.assertEventBudget();
     this.accounting.assertTransitionBudget();
 
-    const now = new Date().toISOString();
+    const startedWallMs = Date.now(); // diagnostic only — never enters state
     const stateHashBefore = this.computeCurrentStateHash();
 
     // Route event to target cell
@@ -248,13 +278,15 @@ export class SeedProcess {
       throw new Error(`Cell not found: ${cellId}`);
     }
 
+    const dtSeconds = eventDeltaSeconds(cell.lastTransitionAt, event.producedAt);
+
     // Stage the transition on a copy: developmental mutation must not proceed
     // if the receipt cannot be committed, so the receipt is appended (and
     // fsynced) BEFORE the staged state replaces the live state. A failed append
     // throws here and discards the staged copy — the Seed remains exactly the
     // state its ledger can account for.
     const staged = cloneCell(cell);
-    applyTransition(staged, event, now);
+    const readouts = applyMetabolicTransition(staged, event, this.reservoir, dtSeconds);
     const stateHashAfter = this.computeStateHashWith(cellId, staged);
 
     const record = this.ledger.append({
@@ -266,6 +298,12 @@ export class SeedProcess {
         targetCellId: cellId,
         producedAt: event.producedAt,
         originalCategory: event.category,
+        dtSeconds,
+        readouts: {
+          salience: readouts.salience,
+          novelty: readouts.novelty,
+          arousal: readouts.arousal,
+        },
       },
       stateHashBefore,
       stateHashAfter,
@@ -273,7 +311,7 @@ export class SeedProcess {
 
     // Receipt is durable — commit the staged state.
     this.cells.set(cellId, staged);
-    this.lastTransitionAt = now;
+    this.lastTransitionAt = event.producedAt;
     this._transitionCount++;
     this._eventCount++;
 
@@ -288,7 +326,7 @@ export class SeedProcess {
       stateHashAfter,
       ledgerCursor: this.ledger.currentCursor,
       cellId,
-      elapsedMs: Date.now() - new Date(now).getTime(),
+      elapsedMs: Date.now() - startedWallMs,
     };
   }
 
@@ -408,11 +446,15 @@ export class SeedProcess {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function extractSeedId(ledger: SeedLedger): string {
+function extractGenesis(ledger: SeedLedger): { seedId: string; reservoirSeed: number | undefined } {
   const all = ledger.readAll();
   const genesis = all.find((r) => r.category === 'genesis');
   const seedId = genesis?.payload?.['seedId'];
-  return typeof seedId === 'string' ? seedId : `seed_restored_${Date.now().toString(36)}`;
+  const reservoirSeed = genesis?.payload?.['reservoirSeed'];
+  return {
+    seedId: typeof seedId === 'string' ? seedId : `seed_restored_${Date.now().toString(36)}`,
+    reservoirSeed: typeof reservoirSeed === 'number' ? reservoirSeed : undefined,
+  };
 }
 
 function estimateCellBytes(cell: SituationCell): number {

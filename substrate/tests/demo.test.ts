@@ -175,15 +175,19 @@ test('same events in same order produce identical state hashes (deterministic)',
     { eventId: 'e2', category: 'correction', sourceAuthority: 'seed.adapter', sourceRef: 'beta', payload: {}, producedAt: '2026-08-07T10:00:01.000Z' },
   ];
 
-  const s1 = SeedProcess.initialize(dir1);
-  const s2 = SeedProcess.initialize(dir2);
+  // Same MACHINERY + same events → identical: the frozen reservoir seed is
+  // pinned. Two unpinned seeds are different individuals by construction
+  // (each birth draws its own recorded reservoir seed) — that divergence is
+  // covered by the replay suite.
+  const s1 = SeedProcess.initialize(dir1, undefined, { reservoirSeed: 777 });
+  const s2 = SeedProcess.initialize(dir2, undefined, { reservoirSeed: 777 });
 
   for (const ev of events) {
     s1.transition({ ...ev });
     s2.transition({ ...ev });
   }
 
-  // The Float32 state update is fully deterministic (sha256 of sourceRef+producedAt+category)
+  // The Float32 metabolic update is fully deterministic given (state, event, Δt, reservoir)
   for (const cellId of s1.getState().cellIds) {
     const cs1 = s1.getContinuousState(cellId);
     const cs2 = s2.getContinuousState(cellId);

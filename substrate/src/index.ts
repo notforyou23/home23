@@ -1,5 +1,5 @@
 /**
- * Home23 Substrate OS — Cut 1 Body
+ * Home23 Substrate OS — Body (Cut 1) + Metabolism (Cut 2)
  * Public API surface.
  */
 
@@ -13,8 +13,19 @@ export {
   makeInitialCell,
   makeInitialCells,
   routeEvent,
-  applyTransition,
+  applyMetabolicTransition,
+  cloneCell,
   serializeCell,
   deserializeCell,
   continuousStateHash,
 } from './cells.js';
+export {
+  generateReservoir,
+  encodeEvent,
+  metabolicStep,
+  computeReadouts,
+  eventDeltaSeconds,
+  METABOLISM_VERSION,
+  INPUT_DIM,
+} from './metabolism.js';
+export type { Reservoir, Readouts } from './metabolism.js';

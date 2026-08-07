@@ -245,11 +245,12 @@ export class CheckpointManager {
  *
  * Intentionally excluded:
  *   - ledgerSeq/cursor — ledger position is bound separately in the manifest,
- *     so bookkeeping records (checkpoint, stop) don't move the state hash;
- *   - wall-clock bookkeeping (lastTransitionAt, energy.lastSpikeAt) — replayed
- *     histories must reproduce identical hashes; wall-clock fields are restored
- *     from the manifest but are not causal state. When Cut 2 moves transitions
- *     to event-time, these can enter the hash.
+ *     so bookkeeping records (checkpoint, stop) don't move the state hash.
+ *
+ * Since Cut 2, transitions run on EVENT-time (`producedAt` deltas), so
+ * `lastTransitionAt` and `energy.lastSpikeAt` are causal, replay-reproducible
+ * state and are INSIDE the hash. The one wall-clock stamp a cell carries is
+ * its birth time (initialize), which is part of the seed's identity.
  */
 export function computeStateHash(opts: {
   cells: SerializedCell[];
@@ -274,8 +275,9 @@ export function computeStateHash(opts: {
           workspacePressure: c.workspacePressure,
           interruptionPressure: c.interruptionPressure,
           uncertainty: c.uncertainty,
-          energy: { current: c.energy.current, peak: c.energy.peak },
+          energy: { current: c.energy.current, peak: c.energy.peak, lastSpikeAt: c.energy.lastSpikeAt ?? null },
           developmentalLineage: c.developmentalLineage,
+          lastTransitionAt: c.lastTransitionAt,
         })),
         dispositions: opts.dispositions,
       }),
