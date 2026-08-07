@@ -37,11 +37,14 @@ import { ResourceAccounting } from './resource.js';
 import {
   makeInitialCells,
   routeEvent,
+  routingFromAnatomy,
   applyMetabolicTransition,
   cloneCell,
   serializeCell,
   deserializeCell,
 } from './cells.js';
+import { DEFAULT_ANATOMY } from './types.js';
+import type { AnatomyCellSpec } from './types.js';
 import type { Reservoir } from './metabolism.js';
 import { generateReservoir, eventDeltaSeconds, METABOLISM_VERSION } from './metabolism.js';
 import { CONTINUOUS_STATE_DIM } from './types.js';
@@ -81,6 +84,7 @@ export class SeedProcess {
   private readonly accounting: ResourceAccounting;
   private readonly cells: Map<string, SituationCell>;
   private readonly reservoir: Reservoir;
+  private readonly routing: { byCategory: Record<string, string>; peripheryId: string };
   private development: DevelopmentalState;
   private dispositions: SeedDispositions;
   private readonly stateDir: string;
@@ -96,6 +100,7 @@ export class SeedProcess {
     createdAt: string;
     cells: Map<string, SituationCell>;
     reservoir: Reservoir;
+    anatomy: readonly AnatomyCellSpec[];
     development: DevelopmentalState;
     dispositions: SeedDispositions;
     ledger: SeedLedger;
@@ -111,6 +116,7 @@ export class SeedProcess {
     this.createdAt = opts.createdAt;
     this.cells = opts.cells;
     this.reservoir = opts.reservoir;
+    this.routing = routingFromAnatomy(opts.anatomy);
     this.development = opts.development;
     this.dispositions = opts.dispositions;
     this.ledger = opts.ledger;
@@ -127,7 +133,7 @@ export class SeedProcess {
   static initialize(
     stateDir: string,
     budget?: Partial<ResourceBudget>,
-    opts?: { reservoirSeed?: number },
+    opts?: { reservoirSeed?: number; anatomy?: readonly AnatomyCellSpec[]; name?: string },
   ): SeedProcess {
     // A stateDir with an existing ledger is an existing Seed. Initializing over
     // it would write a second genesis and continue the old chain under a new
@@ -145,11 +151,12 @@ export class SeedProcess {
     const reservoirSeed = opts?.reservoirSeed ?? parseInt(randomUUID().replace(/-/g, '').slice(0, 8), 16);
     const reservoir = generateReservoir(reservoirSeed);
 
+    const anatomy = opts?.anatomy ?? DEFAULT_ANATOMY;
     const membrane = new CapabilityMembrane();
     const accounting = new ResourceAccounting(budget);
     const ledger = new SeedLedger(stateDir);
     const checkpoints = new CheckpointManager(stateDir);
-    const cells = makeInitialCells(now);
+    const cells = makeInitialCells(now, anatomy);
     const dispositions = defaultDispositions();
 
     // Write GENESIS record — proves the ledger started fresh
@@ -160,7 +167,11 @@ export class SeedProcess {
       sourceRef: seedId,
       payload: {
         seedId,
+        ...(opts?.name !== undefined ? { name: opts.name } : {}),
         cellIds: Array.from(cells.keys()),
+        // Anatomy is identity: the genesis records each cell's routing role,
+        // and restore() rebuilds the routing table from exactly this record.
+        anatomy: anatomy.map((a) => ({ id: a.id, role: a.role })),
         continuousStateDim: CONTINUOUS_STATE_DIM,
         reservoirSeed,
         metabolismVersion: METABOLISM_VERSION,
@@ -183,6 +194,7 @@ export class SeedProcess {
       eventCount: 1,
       transitionCount: 0,
       reservoir,
+      anatomy,
       development: emptyDevelopment(),
     });
   }
@@ -236,6 +248,9 @@ export class SeedProcess {
         'Seed ledger genesis records no reservoirSeed (pre-metabolism ledger) — cannot restore a Cut 2 Seed without its recorded reservoir',
       );
     }
+    // Anatomy is identity: pre-anatomy geneses (the first individual) fall
+    // back to the default shape; anything born after carries its own.
+    const anatomy: readonly AnatomyCellSpec[] = genesis.anatomy ?? DEFAULT_ANATOMY;
 
     return new SeedProcess({
       stateDir,
@@ -243,6 +258,7 @@ export class SeedProcess {
       createdAt: manifest.createdAt,
       cells,
       reservoir: generateReservoir(genesis.reservoirSeed),
+      anatomy,
       // v1 manifests predate development — a pre-plasticity seed resumes with
       // an empty developmental state, not a broken restore.
       development: manifest.version >= 2
@@ -339,8 +355,8 @@ export class SeedProcess {
     this.accounting.assertTransitionBudget();
 
     const startedWallMs = Date.now(); // diagnostic only — never enters state
-    // Route event to target cell (static + earned routing affinities)
-    const cellId = routeEvent(event, Array.from(this.cells.keys()), this.development);
+    // Route event to target cell (anatomy static map + earned routing affinities)
+    const cellId = routeEvent(event, Array.from(this.cells.keys()), this.development, this.routing);
     const cell = this.cells.get(cellId);
     if (cell === undefined) {
       throw new Error(`Cell not found: ${cellId}`);
@@ -744,14 +760,33 @@ export class SeedProcess {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function extractGenesis(ledger: SeedLedger): { seedId: string; reservoirSeed: number | undefined } {
+function extractGenesis(ledger: SeedLedger): {
+  seedId: string;
+  reservoirSeed: number | undefined;
+  anatomy: AnatomyCellSpec[] | undefined;
+  name: string | undefined;
+} {
   const all = ledger.readAll();
   const genesis = all.find((r) => r.category === 'genesis');
   const seedId = genesis?.payload?.['seedId'];
   const reservoirSeed = genesis?.payload?.['reservoirSeed'];
+  const rawAnatomy = genesis?.payload?.['anatomy'];
+  const name = genesis?.payload?.['name'];
+  let anatomy: AnatomyCellSpec[] | undefined;
+  if (Array.isArray(rawAnatomy)) {
+    const parsed = rawAnatomy.filter(
+      (a): a is AnatomyCellSpec =>
+        typeof a === 'object' && a !== null
+        && typeof (a as AnatomyCellSpec).id === 'string'
+        && ['correction', 'observation', 'consequence', 'interpretation', 'periphery'].includes((a as AnatomyCellSpec).role),
+    );
+    if (parsed.length > 0) anatomy = parsed;
+  }
   return {
     seedId: typeof seedId === 'string' ? seedId : `seed_restored_${Date.now().toString(36)}`,
     reservoirSeed: typeof reservoirSeed === 'number' ? reservoirSeed : undefined,
+    anatomy,
+    name: typeof name === 'string' ? name : undefined,
   };
 }
 

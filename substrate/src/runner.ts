@@ -25,7 +25,7 @@ import { SeedLedger } from './ledger.js';
 import { EventLedgerTailAdapter } from './adapters/event-ledger-tail.js';
 import type { TailedSourceEvent, TailSourceType } from './adapters/event-ledger-tail.js';
 import type { LobeAdapter } from './lobe.js';
-import type { WorkspaceOutcome } from './types.js';
+import type { WorkspaceOutcome, AnatomyCellSpec } from './types.js';
 
 export interface SeedRunnerOptions {
   stateDir: string;
@@ -48,6 +48,11 @@ export interface SeedRunnerOptions {
     id: string;
     backfillBytes?: number;
   }>;
+  /** Birth-only: anatomy and name recorded in the genesis. Ignored when the
+   * stateDir already holds a Seed (anatomy is identity — it never changes on
+   * restore). */
+  anatomy?: readonly AnatomyCellSpec[];
+  name?: string;
   /** Optional lobe to recruit when a workspace admission happens. */
   lobe?: LobeAdapter;
   /** Minimum wall-clock ms between lobe recruitments (resident spend guard;
@@ -92,7 +97,10 @@ export class SeedRunner {
       this.seed = Seed.restore(this.opts.stateDir);
       this.log(`restored seed ${this.seed.getState().seedId} at ledgerSeq ${this.seed.getState().ledgerSeq}`);
     } else {
-      this.seed = Seed.initialize(this.opts.stateDir);
+      this.seed = Seed.initialize(this.opts.stateDir, undefined, {
+        anatomy: this.opts.anatomy,
+        name: this.opts.name,
+      });
       // Immediate checkpoint: restore() must always have a floor, even if the
       // process dies before the first cadence checkpoint.
       this.seed.checkpoint();

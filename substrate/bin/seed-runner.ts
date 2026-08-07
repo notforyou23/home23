@@ -13,6 +13,9 @@
  *   SEED_RELATIONSHIP_SOURCE — relationship-ledger events JSONL (optional)
  *   SEED_WORKER_SOURCE  — worker-runs JSONL (optional)
  *   SEED_EXTRA_BACKFILL_BYTES — backfill for extra sources (default 8192)
+ *   SEED_ANATOMY        — JSON array of {id, role} for a BIRTH (ignored on
+ *                         restore; anatomy is identity, recorded in genesis)
+ *   SEED_NAME           — name recorded in the genesis at birth
  *
  * Residency note: this file still does not self-register with PM2 — the
  * ecosystem generator emits a home23-<agent>-seed app only when the agent's
@@ -70,9 +73,17 @@ async function main(): Promise<void> {
     extraSources.push({ sourcePath: workerSource, sourceType: 'worker-runs', id: 'worker-runs', backfillBytes: extraBackfill });
   }
 
+  let anatomy;
+  const rawAnatomy = process.env['SEED_ANATOMY'];
+  if (rawAnatomy !== undefined && rawAnatomy !== '') {
+    anatomy = JSON.parse(rawAnatomy);
+  }
+
   const runner = new SeedRunner({
     stateDir: stateDir as string,
     sourcePath: sourcePath as string,
+    anatomy,
+    name: process.env['SEED_NAME'],
     maxEvents: numEnv('SEED_MAX_EVENTS'),
     backfillBytes: numEnv('SEED_BACKFILL_BYTES'),
     pollMs: numEnv('SEED_POLL_MS') ?? 2000,

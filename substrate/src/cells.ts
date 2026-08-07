@@ -23,7 +23,8 @@ import type {
   CellStatus,
   SourceEvent,
 } from './types.js';
-import { CONTINUOUS_STATE_DIM, INITIAL_CELL_IDS } from './types.js';
+import { CONTINUOUS_STATE_DIM, INITIAL_CELL_IDS, DEFAULT_ANATOMY } from './types.js';
+import type { AnatomyCellSpec } from './types.js';
 import type { Reservoir, Readouts } from './metabolism.js';
 import { encodeEvent, metabolicStep, computeReadouts } from './metabolism.js';
 import type { CellPlasticState, DevelopmentalState } from './plasticity.js';
@@ -67,18 +68,34 @@ export function makeInitialCell(id: string, now: string): SituationCell {
   };
 }
 
-export function makeInitialCells(now: string): Map<string, SituationCell> {
+export function makeInitialCells(now: string, anatomy: readonly AnatomyCellSpec[] = DEFAULT_ANATOMY): Map<string, SituationCell> {
   const cells = new Map<string, SituationCell>();
-  for (const id of INITIAL_CELL_IDS) {
-    cells.set(id, makeInitialCell(id, now));
-  }
-  // After formation, set first four to 'living'; periphery stays 'forming'
-  for (const [id, cell] of cells) {
-    if (!id.startsWith('periphery.')) {
-      cell.status = 'living';
+  for (const spec of anatomy) {
+    const cell = makeInitialCell(spec.id, now);
+    // Periphery keeps the strict default dispositions keyed off its id prefix;
+    // non-prefix peripheries get them explicitly from their ROLE.
+    if (spec.role === 'periphery' && !spec.id.startsWith('periphery.')) {
+      cell.dispositions = { wakeThreshold: 0.7, salienceWeight: 0.4, inhibitionLevel: 0.6, decayRate: 0.15, modelAffinities: {} };
     }
+    cells.set(spec.id, cell);
+  }
+  // After formation, non-periphery cells wake to 'living'; periphery forms.
+  const peripheryId = anatomy.find((a) => a.role === 'periphery')?.id;
+  for (const [id, cell] of cells) {
+    if (id !== peripheryId) cell.status = 'living';
   }
   return cells;
+}
+
+/** Category → cellId routing table from an anatomy. */
+export function routingFromAnatomy(anatomy: readonly AnatomyCellSpec[]): { byCategory: Record<string, string>; peripheryId: string } {
+  const byCategory: Record<string, string> = {};
+  let peripheryId = anatomy[anatomy.length - 1]?.id ?? 'periphery.open-field';
+  for (const spec of anatomy) {
+    if (spec.role === 'periphery') peripheryId = spec.id;
+    else byCategory[spec.role] = spec.id;
+  }
+  return { byCategory, peripheryId };
 }
 
 // ─── Routing heuristic ────────────────────────────────────────────────────────
@@ -88,23 +105,17 @@ export function makeInitialCells(now: string): Map<string, SituationCell> {
  * whose routing affinity for this source prefix was earned through receipted
  * development (≥ 0.15, clearly above the static target's own affinity) takes
  * the event instead. Deterministic — sorted iteration, explicit margins. */
-export function routeEvent(event: SourceEvent, cellIds: string[], development?: DevelopmentalState): string {
+export function routeEvent(
+  event: SourceEvent,
+  cellIds: string[],
+  development?: DevelopmentalState,
+  routing?: { byCategory: Record<string, string>; peripheryId: string },
+): string {
   if (event.targetCellId && cellIds.includes(event.targetCellId)) {
     return event.targetCellId;
   }
-  let staticTarget: string;
-  switch (event.category) {
-    case 'correction':
-      staticTarget = 'contact.jtr-jerry'; break;
-    case 'observation':
-      staticTarget = 'world.home23'; break;
-    case 'consequence':
-      staticTarget = 'project.shakedown'; break;
-    case 'interpretation':
-      staticTarget = 'frontier.substrate-os'; break;
-    default:
-      staticTarget = 'periphery.open-field';
-  }
+  const table = routing ?? routingFromAnatomy(DEFAULT_ANATOMY);
+  const staticTarget = table.byCategory[event.category] ?? table.peripheryId;
   if (development !== undefined) {
     const key = sourcePrefix(event);
     let bestId = staticTarget;

@@ -143,7 +143,27 @@ export interface SerializedCell extends Omit<SituationCell, 'continuousState'> {
 /** Dimension of the continuous state vector per cell. Fixed for Cut 1. */
 export const CONTINUOUS_STATE_DIM = 64;
 
-/** The five canonical initial cell IDs. */
+/** Anatomy as a birth parameter: each cell claims a routing role — which
+ * event category it is the static target for. Exactly one cell should carry
+ * 'periphery' (the default target for unclaimed categories). Recorded in the
+ * ledger genesis at birth; identity includes anatomy. */
+export interface AnatomyCellSpec {
+  id: string;
+  role: 'correction' | 'observation' | 'consequence' | 'interpretation' | 'periphery';
+}
+
+/** The default anatomy (the first individual's shape). Births may pass their
+ * own — a birth is a deliberate act, and cells should name the individual's
+ * OWN situations. */
+export const DEFAULT_ANATOMY: readonly AnatomyCellSpec[] = [
+  { id: 'contact.jtr-jerry', role: 'correction' },
+  { id: 'frontier.substrate-os', role: 'interpretation' },
+  { id: 'project.shakedown', role: 'consequence' },
+  { id: 'world.home23', role: 'observation' },
+  { id: 'periphery.open-field', role: 'periphery' },
+] as const;
+
+/** The five canonical initial cell IDs (default anatomy). */
 export const INITIAL_CELL_IDS = [
   'contact.jtr-jerry',
   'frontier.substrate-os',
