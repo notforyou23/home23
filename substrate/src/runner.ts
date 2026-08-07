@@ -59,6 +59,10 @@ export interface SeedRunnerOptions {
    * an operational throttle, not seed state — every recruitment that DOES
    * happen is fully receipted, so replay is unaffected). Default 0. */
   lobeMinIntervalMs?: number;
+  /** How long one recruitment may take before it's receipted as a timeout.
+   * Default 30s suits a direct model call; broker-mediated transports
+   * (SEED_LOBE=file) stack broker poll + model latency and need more. */
+  lobeTimeoutMs?: number;
   log?: (line: string) => void;
 }
 
@@ -171,7 +175,7 @@ export class SeedRunner {
           const sinceLast = Date.now() - this.lastLobeAtMs;
           if (sinceLast >= minInterval) {
             this.lastLobeAtMs = Date.now();
-            const lobeOutcome = await this.seed.recruitLobe(this.opts.lobe, outcome.packet, event.producedAt);
+            const lobeOutcome = await this.seed.recruitLobe(this.opts.lobe, outcome.packet, event.producedAt, this.opts.lobeTimeoutMs ?? 30_000);
             report.lobeRecruitments++;
             this.log(`lobe ${this.opts.lobe.id}: applied=${lobeOutcome.applied.length} rejected=${lobeOutcome.rejected.length}${lobeOutcome.error !== undefined ? ` error=${lobeOutcome.error}` : ''}`);
           } else {

@@ -156,6 +156,31 @@ test('a hanging lobe times out and is receipted with zero mutation', async (t) =
   assert.equal(seed.getState().stateHash, hashBefore);
 });
 
+test('a slow lobe succeeds under a raised timeout — the cap must fit the transport', async (t) => {
+  // The live failure mode: a broker-mediated transport (poll + model) took
+  // ~35s while the default cap was 30s — the thought arrived and was thrown
+  // away. The cap is a parameter of the transport's real latency, not a law.
+  const dir = makeDir(t);
+  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 57 });
+  const packet = admittedPacket(seed);
+
+  const echo = new EchoLobe();
+  const slow: LobeAdapter = {
+    id: 'lobe.slow',
+    modelId: 'slow',
+    provider: 'test',
+    invoke: async (p) => {
+      await new Promise((r) => setTimeout(r, 120));
+      return echo.invoke(p);
+    },
+  };
+  const timedOut = await seed.recruitLobe(slow, packet, '2026-08-07T10:14:00.000Z', 40);
+  assert.match(timedOut.error ?? '', /timed out/, 'under-sized cap wastes the thought');
+  const landed = await seed.recruitLobe(slow, packet, '2026-08-07T10:15:00.000Z', 5000);
+  assert.equal(landed.error, undefined);
+  assert.ok(landed.applied.length > 0, 'same lobe, adequate cap — deltas land');
+});
+
 test('lobe receipt carries the FULL applied deltas — replayable without a model', async (t) => {
   const dir = makeDir(t);
   const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 54 });

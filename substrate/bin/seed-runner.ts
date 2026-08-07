@@ -11,6 +11,8 @@
  *   SEED_LOBE_MODEL     — model for SEED_LOBE=model (default glm-5.2:cloud)
  *   SEED_LOBE_EXCHANGE  — exchange dir for SEED_LOBE=file (required for it)
  *   SEED_LOBE_MIN_INTERVAL_MS — resident spend guard (default 600000 = 10 min)
+ *   SEED_LOBE_TIMEOUT_MS — per-recruitment cap (default 30000; raise for
+ *                          SEED_LOBE=file, where broker poll + model stack)
  *   SEED_POLL_MS        — poll interval (default 2000)
  *   SEED_RELATIONSHIP_SOURCE — relationship-ledger events JSONL (optional)
  *   SEED_WORKER_SOURCE  — worker-runs JSONL (optional)
@@ -103,6 +105,7 @@ async function main(): Promise<void> {
     extraSources,
     lobe: await buildLobe(),
     lobeMinIntervalMs: numEnv('SEED_LOBE_MIN_INTERVAL_MS') ?? 600_000,
+    lobeTimeoutMs: numEnv('SEED_LOBE_TIMEOUT_MS'),
     log: (line) => console.log(`[seed] ${line}`),
   });
 
