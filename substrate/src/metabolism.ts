@@ -176,6 +176,10 @@ export function metabolicStep(
   input: Float64Array,
   dtSeconds: number,
   dispositions: CellDispositions,
+  /** Trust-weighted drive (Cut 3): scales how hard this event's CONTENT
+   * pushes the state. Bias, category, and Δt channels stay unscaled — trust
+   * modulates what a source says, not the passage of time. 1 = neutral. */
+  driveScale = 1,
 ): void {
   const dim = reservoir.dim;
   const lambda = Math.LN2 / DECAY_HALF_LIFE_SECONDS;
@@ -187,10 +191,14 @@ export function metabolicStep(
   for (let i = 0; i < dim; i++) x[i] = (state[i] ?? 0) * effectiveDecay;
 
   const leak = 0.35;
+  const contentChannels = reservoir.inputDim - 4;
   for (let r = 0; r < dim; r++) {
     let pre = 0;
     for (let c = 0; c < dim; c++) pre += (reservoir.weights[r * dim + c] ?? 0) * (x[c] ?? 0);
-    for (let c = 0; c < reservoir.inputDim; c++) pre += (reservoir.inputWeights[r * reservoir.inputDim + c] ?? 0) * (input[c] ?? 0);
+    for (let c = 0; c < reservoir.inputDim; c++) {
+      const scale = c < contentChannels ? driveScale : 1;
+      pre += (reservoir.inputWeights[r * reservoir.inputDim + c] ?? 0) * (input[c] ?? 0) * scale;
+    }
     state[r] = Math.fround((1 - leak) * (x[r] ?? 0) + leak * Math.tanh(pre));
   }
 }

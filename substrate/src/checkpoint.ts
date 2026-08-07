@@ -65,6 +65,7 @@ export class CheckpointManager {
     dispositions: SeedDispositions;
     resourceSnapshot: ResourceSnapshot;
     development?: Record<string, unknown>;
+    seedLastTransitionAt?: string;
   }): string {
     const checkpointId = `ckpt_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
     const manifest: CheckpointManifest = {
@@ -79,6 +80,7 @@ export class CheckpointManager {
       cells: opts.cells,
       dispositions: opts.dispositions,
       ...(opts.development !== undefined ? { development: opts.development } : {}),
+      ...(opts.seedLastTransitionAt !== undefined ? { seedLastTransitionAt: opts.seedLastTransitionAt } : {}),
     };
 
     const filePath = join(this.checkpointsDir, `${checkpointId}.json`);

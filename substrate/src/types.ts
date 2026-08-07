@@ -220,6 +220,11 @@ export interface CheckpointManifest {
    * ablation target. Shape owned by plasticity.ts; stored verbatim, inside
    * the state hash for v2 manifests. */
   development?: Record<string, unknown>;
+  /** Seed-level event-time of the last transition — restores the quiet-gap
+   * clock so consolidation triggers replay exactly. Outside the state hash
+   * (same trust tier as ledgerSeq/cursor); older manifests fall back to
+   * createdAt. */
+  seedLastTransitionAt?: string;
 }
 
 export interface CheckpointIndex {

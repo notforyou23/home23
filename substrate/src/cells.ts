@@ -27,7 +27,7 @@ import { CONTINUOUS_STATE_DIM, INITIAL_CELL_IDS } from './types.js';
 import type { Reservoir, Readouts } from './metabolism.js';
 import { encodeEvent, metabolicStep, computeReadouts } from './metabolism.js';
 import type { CellPlasticState, DevelopmentalState } from './plasticity.js';
-import { effectiveSalienceWeights, effectiveNoveltyWeights, sourcePrefix } from './plasticity.js';
+import { effectiveSalienceWeights, effectiveNoveltyWeights, sourcePrefix, trustFor } from './plasticity.js';
 
 // ─── Default dispositions per cell ───────────────────────────────────────────
 
@@ -149,7 +149,10 @@ export function applyMetabolicTransition(
 ): Readouts {
   const before = new Float32Array(cell.continuousState);
   const input = encodeEvent(event, dtSeconds, reservoir.inputDim);
-  metabolicStep(cell.continuousState, reservoir, input, dtSeconds, cell.dispositions);
+  // Learned trust in this source scales its drive into the state — a source
+  // that earned trust through corrections/consequences literally moves this
+  // cell more than a neutral one.
+  metabolicStep(cell.continuousState, reservoir, input, dtSeconds, cell.dispositions, trustFor(plastic, event));
   // Readouts run over FROZEN base weights plus the cell's plastic deltas —
   // this is where development changes what later contact means.
   const readouts = computeReadouts(before, cell.continuousState, reservoir, {

@@ -35,6 +35,15 @@ export const TRUST_MIN = 0.5;
 export const TRUST_MAX = 1.5;
 export const WAKE_STEP = 0.015;              // per-correction wake easing
 export const ROUTING_STEP = 0.05;
+export const CONSEQUENCE_ETA_FACTOR = 0.5;   // outcomes teach at half correction rate
+export const CONSEQUENCE_TRUST_STEP = 0.03;
+/** Event-time gap that counts as quiet time; consolidation fires on the
+ * transition that ENDS the gap (derivable from the stream → replayable). */
+export const QUIET_GAP_SECONDS = 30 * 60;
+/** Consolidation retention floor: fully uncorroborated learning keeps this
+ * fraction per quiet gap; fully corroborated learning keeps everything. */
+export const CONSOLIDATION_RETENTION_FLOOR = 0.6;
+export const MAX_LINEAGE_ENTRIES = 16;
 
 // ─── Structures ──────────────────────────────────────────────────────────────
 
@@ -49,6 +58,12 @@ export interface CellPlasticState {
   routingAffinity: Record<string, number>;   // source prefix → bias
   trust: Record<string, number>;             // source prefix → multiplier
   updateCount: number;
+  /** Corrections since the last consolidation — the provisional load. */
+  updatesSinceConsolidation: number;
+  /** Consequences landed since the last consolidation — corroboration that
+   * reality responded without correcting. */
+  corroborations: number;
+  consolidations: number;
 }
 
 /** Seed-level development: cellId → plastic state. THE ablation target. */
@@ -64,6 +79,9 @@ export function emptyCellPlasticState(dim = CONTINUOUS_STATE_DIM): CellPlasticSt
     routingAffinity: {},
     trust: {},
     updateCount: 0,
+    updatesSinceConsolidation: 0,
+    corroborations: 0,
+    consolidations: 0,
   };
 }
 
@@ -81,7 +99,27 @@ export function cloneCellPlasticState(p: CellPlasticState): CellPlasticState {
     routingAffinity: { ...p.routingAffinity },
     trust: { ...p.trust },
     updateCount: p.updateCount,
+    updatesSinceConsolidation: p.updatesSinceConsolidation,
+    corroborations: p.corroborations,
+    consolidations: p.consolidations,
   };
+}
+
+/** Fill counter fields missing from development stored by earlier plasticity
+ * shapes (the live resident's first v2 checkpoints) — restore-time normalize;
+ * stored bytes are validated as-written, normalization is in-memory only. */
+export function normalizeDevelopment(dev: DevelopmentalState): DevelopmentalState {
+  const out: DevelopmentalState = {};
+  for (const [cellId, p] of Object.entries(dev)) {
+    out[cellId] = {
+      ...emptyCellPlasticState(p.readoutSalience?.length ?? CONTINUOUS_STATE_DIM),
+      ...p,
+      updatesSinceConsolidation: p.updatesSinceConsolidation ?? 0,
+      corroborations: p.corroborations ?? 0,
+      consolidations: p.consolidations ?? 0,
+    };
+  }
+  return out;
 }
 
 export function cloneDevelopment(dev: DevelopmentalState): DevelopmentalState {
@@ -121,7 +159,7 @@ function clip(v: number, lo: number, hi: number): number {
 
 export interface PlasticUpdateSummary {
   cellId: string;
-  rule: 'correction.v1';
+  rule: 'correction.v1' | 'consequence.v1';
   salienceDeltaNorm: number;
   wakeThresholdDelta: number;
   routingKey: string;
@@ -172,6 +210,7 @@ export function applyCorrectionPlasticity(
   plastic.routingAffinity[key] = clip((plastic.routingAffinity[key] ?? 0) + ROUTING_STEP, 0, ROUTING_AFFINITY_CLIP);
   plastic.trust[key] = clip((plastic.trust[key] ?? 1) + 0.05, TRUST_MIN, TRUST_MAX);
   plastic.updateCount += 1;
+  plastic.updatesSinceConsolidation += 1;
 
   return {
     cellId: cell.id,
@@ -219,4 +258,117 @@ export function effectiveDispositions(
     salienceWeight: clip(dispositions.salienceWeight + plastic.salienceWeightDelta, 0.05, 1),
     inhibitionLevel: clip(dispositions.inhibitionLevel + plastic.inhibitionDelta, 0, 0.9),
   };
+}
+
+/**
+ * Consequence-driven plastic update: reality responded. Teaches at half the
+ * correction rate along the same state direction, nudges trust in the source,
+ * and — the consolidation input — counts as CORROBORATION: learning that was
+ * in play when reality responded without correcting has earned its keep.
+ * No wake easing: outcomes should not make cells trigger-happy.
+ */
+export function applyConsequencePlasticity(
+  dev: DevelopmentalState,
+  cell: SituationCell,
+  event: SourceEvent,
+  readouts: Readouts,
+): PlasticUpdateSummary {
+  const plastic = dev[cell.id] ?? emptyCellPlasticState(cell.continuousState.length);
+  dev[cell.id] = plastic;
+
+  const eta = LEARNING_RATE * CONSEQUENCE_ETA_FACTOR * (0.5 + readouts.novelty * 0.5);
+  let deltaNormSq = 0;
+  for (let i = 0; i < cell.continuousState.length; i++) {
+    const x = cell.continuousState[i] ?? 0;
+    const step = eta * x;
+    const next = clip((plastic.readoutSalience[i] ?? 0) + step, -READOUT_WEIGHT_CLIP, READOUT_WEIGHT_CLIP);
+    deltaNormSq += (next - (plastic.readoutSalience[i] ?? 0)) ** 2;
+    plastic.readoutSalience[i] = next;
+  }
+
+  const key = sourcePrefix(event);
+  plastic.trust[key] = clip((plastic.trust[key] ?? 1) + CONSEQUENCE_TRUST_STEP, TRUST_MIN, TRUST_MAX);
+  plastic.updateCount += 1;
+  plastic.corroborations += 1;
+
+  return {
+    cellId: cell.id,
+    rule: 'consequence.v1',
+    salienceDeltaNorm: Math.sqrt(deltaNormSq),
+    wakeThresholdDelta: plastic.wakeThresholdDelta,
+    routingKey: key,
+    routingAffinity: plastic.routingAffinity[key] ?? 0,
+    trustKey: key,
+    trust: plastic.trust[key] ?? 1,
+    updateCount: plastic.updateCount,
+  };
+}
+
+// ─── Quiet-time consolidation (fires on the transition that ends a gap) ──────
+
+export interface ConsolidationCellSummary {
+  cellId: string;
+  retention: number;
+  corroborationRatio: number;
+  magnitudeBefore: number;
+  magnitudeAfter: number;
+}
+
+function cellMagnitude(p: CellPlasticState): number {
+  let sum = 0;
+  for (const w of p.readoutSalience) sum += Math.abs(w);
+  for (const w of p.readoutNovelty) sum += Math.abs(w);
+  sum += Math.abs(p.wakeThresholdDelta) + Math.abs(p.salienceWeightDelta) + Math.abs(p.inhibitionDelta);
+  for (const v of Object.values(p.routingAffinity)) sum += Math.abs(v);
+  for (const v of Object.values(p.trust)) sum += Math.abs(v - 1);
+  return sum;
+}
+
+/**
+ * Consolidation rule (consolidation.v1). Pure function of the development
+ * state alone — the gap that triggers it is read from the EVENT STREAM
+ * (dt > QUIET_GAP_SECONDS on the arriving transition), never from the wall
+ * clock, so replay reproduces every consolidation exactly.
+ *
+ * Learning whose provisional load was corroborated by consequences retains
+ * fully; uncorroborated learning decays toward the retention floor. This IS
+ * the rollback path for bad deltas: unearned changes fade across quiet gaps
+ * instead of compounding. Cells with no provisional load are untouched.
+ */
+export function applyConsolidation(dev: DevelopmentalState): ConsolidationCellSummary[] {
+  const summaries: ConsolidationCellSummary[] = [];
+  for (const cellId of Object.keys(dev).sort()) {
+    const p = dev[cellId];
+    if (p === undefined || p.updatesSinceConsolidation === 0) continue;
+    const magnitudeBefore = cellMagnitude(p);
+    const corroborationRatio = Math.min(1, p.corroborations / p.updatesSinceConsolidation);
+    const retention = CONSOLIDATION_RETENTION_FLOOR + (1 - CONSOLIDATION_RETENTION_FLOOR) * corroborationRatio;
+
+    for (let i = 0; i < p.readoutSalience.length; i++) p.readoutSalience[i] = (p.readoutSalience[i] ?? 0) * retention;
+    for (let i = 0; i < p.readoutNovelty.length; i++) p.readoutNovelty[i] = (p.readoutNovelty[i] ?? 0) * retention;
+    p.wakeThresholdDelta *= retention;
+    p.salienceWeightDelta *= retention;
+    p.inhibitionDelta *= retention;
+    for (const k of Object.keys(p.routingAffinity)) p.routingAffinity[k] = (p.routingAffinity[k] ?? 0) * retention;
+    for (const k of Object.keys(p.trust)) p.trust[k] = 1 + ((p.trust[k] ?? 1) - 1) * retention;
+
+    p.updatesSinceConsolidation = 0;
+    p.corroborations = 0;
+    p.consolidations += 1;
+
+    summaries.push({
+      cellId,
+      retention,
+      corroborationRatio,
+      magnitudeBefore,
+      magnitudeAfter: cellMagnitude(p),
+    });
+  }
+  return summaries;
+}
+
+/** Trust multiplier a cell's development assigns to a source (1 = neutral). */
+export function trustFor(plastic: CellPlasticState | undefined, event: SourceEvent): number {
+  if (plastic === undefined) return 1;
+  return plastic.trust[sourcePrefix(event)] ?? 1;
 }

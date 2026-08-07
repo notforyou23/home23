@@ -212,3 +212,111 @@ test('MIGRATION: a pre-plasticity (v1) checkpoint restores cleanly with empty de
   const m2 = JSON.parse(readFileSync(join(dir, 'checkpoints', `${ck2}.json`), 'utf-8'));
   assert.equal(m2.version, 2, 'next checkpoint upgrades to v2');
 });
+
+// ─── Cut 3 tail: consequences, trust, consolidation ──────────────────────────
+
+test('consequences teach at half rate, corroborate, and never ease the wake threshold', (t) => {
+  const dir = makeDir(t, 'conseq');
+  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 777_010 });
+  seed.transition(fixedEvent('workreview:c1', 'consequence', '2026-08-07T10:00:00.000Z'));
+  seed.transition(fixedEvent('workreview:c2', 'consequence', '2026-08-07T10:01:00.000Z'));
+
+  assert.ok(seed.getState().developmentMagnitude > 0, 'outcomes produce development');
+  const ledger = new SeedLedger(dir);
+  const dev = ledger.readAll().filter((r) => r.category === 'development');
+  assert.equal(dev.length, 2);
+  const payload = dev[0]?.payload as { rule?: string; wakeThresholdDelta?: number };
+  assert.equal(payload.rule, 'consequence.v1');
+  assert.equal(payload.wakeThresholdDelta, 0, 'outcomes must not make cells trigger-happy');
+});
+
+test('trust is CAUSAL: an earned-trust source moves the cell more than a neutral one', (t) => {
+  const dirA = makeDir(t, 'trust-a');
+  const dirB = makeDir(t, 'trust-b');
+
+  // A learns trust in "workreview" through corrections; B is its ablated twin.
+  const seedA = SeedProcess.initialize(dirA, undefined, { reservoirSeed: 777_011 });
+  for (const ev of teachingEvents()) seedA.transition({ ...ev });
+  seedA.checkpoint();
+  SeedProcess.createAblatedTwin(dirA, dirB);
+  const seedB = SeedProcess.restore(dirB);
+  const liveA = SeedProcess.restore(dirA);
+
+  // Identical probe, routed to the SAME cell in both (explicit target so the
+  // routing difference is excluded — this isolates the trust-drive effect).
+  const probe: SourceEvent = {
+    ...fixedEvent('workreview:trust-probe', 'correction', '2026-08-07T10:20:00.000Z'),
+    targetCellId: 'contact.jtr-jerry',
+  };
+  liveA.transition({ ...probe });
+  seedB.transition({ ...probe });
+
+  const a = liveA.getContinuousState('contact.jtr-jerry');
+  const b = seedB.getContinuousState('contact.jtr-jerry');
+  assert.ok(a !== undefined && b !== undefined);
+  const diverged = Array.from(a).some((v, i) => !Object.is(v, b[i]));
+  assert.ok(diverged, 'earned trust must change how hard the same words land');
+});
+
+test('CONSOLIDATION: unearned learning fades across a quiet gap; corroborated learning survives', (t) => {
+  const dirU = makeDir(t, 'cons-unearned');
+  const dirC = makeDir(t, 'cons-corroborated');
+
+  // Both seeds get identical corrections; C also gets corroborating
+  // consequences before the gap. Then one event after a >30min event-time gap.
+  const sU = SeedProcess.initialize(dirU, undefined, { reservoirSeed: 777_012 });
+  const sC = SeedProcess.initialize(dirC, undefined, { reservoirSeed: 777_012 });
+  for (const ev of teachingEvents().slice(0, 3)) {
+    sU.transition({ ...ev });
+    sC.transition({ ...ev });
+  }
+  for (let i = 0; i < 3; i++) {
+    sC.transition({ ...fixedEvent(`workreview:cons-${i}`, 'consequence', `2026-08-07T10:0${6 + i}:00.000Z`), targetCellId: 'contact.jtr-jerry' });
+  }
+
+  const beforeU = sU.getState().developmentMagnitude;
+  const beforeC = sC.getState().developmentMagnitude;
+
+  // The gap-ending event (an hour later) triggers consolidation in both.
+  const wake = fixedEvent('other:wake', 'observation', '2026-08-07T11:30:00.000Z');
+  sU.transition({ ...wake });
+  sC.transition({ ...wake });
+
+  const afterU = sU.getState().developmentMagnitude;
+  const afterC = sC.getState().developmentMagnitude;
+
+  assert.ok(afterU < beforeU, 'uncorroborated learning must decay across the gap');
+  const retainedU = afterU / beforeU;
+  const retainedC = afterC / beforeC;
+  assert.ok(
+    retainedC > retainedU,
+    `corroborated learning must survive better (corroborated ${retainedC.toFixed(3)} vs unearned ${retainedU.toFixed(3)})`,
+  );
+
+  // The consolidation itself is receipted with per-cell retention.
+  const dev = new SeedLedger(dirU).readAll().filter((r) => r.category === 'development');
+  const consolidation = dev.find((r) => (r.payload as { rule?: string }).rule === 'consolidation.v1');
+  assert.ok(consolidation !== undefined, 'consolidation leaves a receipt');
+  const cells = (consolidation?.payload as { cells?: Array<{ retention: number }> }).cells ?? [];
+  assert.ok((cells[0]?.retention ?? 1) < 1, 'receipt records the retention actually applied');
+});
+
+test('consolidation is replay-deterministic across a copied checkpoint', (t) => {
+  const dirA = makeDir(t, 'cons-replay-a');
+  const dirB = makeDir(t, 'cons-replay-b');
+
+  const seedA = SeedProcess.initialize(dirA, undefined, { reservoirSeed: 777_013 });
+  for (const ev of teachingEvents().slice(0, 3)) seedA.transition({ ...ev });
+  seedA.checkpoint();
+  cpSync(dirA, dirB, { recursive: true });
+
+  const continuation = [
+    fixedEvent('other:wake', 'observation', '2026-08-07T12:00:00.000Z'), // ends a >30min gap → consolidation
+    fixedEvent('workreview:after', 'correction', '2026-08-07T12:05:00.000Z'),
+  ];
+  for (const ev of continuation) seedA.transition({ ...ev });
+  const seedB = SeedProcess.restore(dirB);
+  for (const ev of continuation) seedB.transition({ ...ev });
+
+  assert.equal(seedB.getState().stateHash, seedA.getState().stateHash, 'gap + consolidation + relearning replays byte-identically');
+});

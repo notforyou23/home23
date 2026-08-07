@@ -50,8 +50,12 @@ import type { DevelopmentalState } from './plasticity.js';
 import {
   emptyDevelopment,
   cloneDevelopment,
+  normalizeDevelopment,
   applyCorrectionPlasticity,
+  applyConsequencePlasticity,
+  applyConsolidation,
   developmentMagnitude,
+  QUIET_GAP_SECONDS,
 } from './plasticity.js';
 import type { LobeAdapter, ValidatedLobeResult, RejectedProposal } from './lobe.js';
 import { validateLobeResult, applyLobeDeltas } from './lobe.js';
@@ -100,6 +104,7 @@ export class SeedProcess {
     accounting: ResourceAccounting;
     eventCount: number;
     transitionCount: number;
+    lastTransitionAt?: string;
   }) {
     this.stateDir = opts.stateDir;
     this.seedId = opts.seedId;
@@ -114,7 +119,7 @@ export class SeedProcess {
     this.accounting = opts.accounting;
     this._eventCount = opts.eventCount;
     this._transitionCount = opts.transitionCount;
-    this.lastTransitionAt = opts.createdAt;
+    this.lastTransitionAt = opts.lastTransitionAt ?? opts.createdAt;
   }
 
   // ─── Factory methods ───────────────────────────────────────────────────────
@@ -241,7 +246,7 @@ export class SeedProcess {
       // v1 manifests predate development — a pre-plasticity seed resumes with
       // an empty developmental state, not a broken restore.
       development: manifest.version >= 2
-        ? ((manifest.development ?? {}) as DevelopmentalState)
+        ? normalizeDevelopment((manifest.development ?? {}) as DevelopmentalState)
         : emptyDevelopment(),
       dispositions: manifest.dispositions,
       ledger,
@@ -250,6 +255,7 @@ export class SeedProcess {
       accounting,
       eventCount: manifest.resourceSnapshot.eventCount,
       transitionCount: manifest.resourceSnapshot.transitionCount,
+      lastTransitionAt: manifest.seedLastTransitionAt,
     });
   }
 
@@ -342,6 +348,35 @@ export class SeedProcess {
 
     const dtSeconds = eventDeltaSeconds(cell.lastTransitionAt, event.producedAt);
 
+    // Quiet-time consolidation (Cut 3): a transition that ENDS an event-time
+    // gap consolidates first — corroborated learning is retained, unearned
+    // learning decays toward the floor. The gap is SEED-level (time since the
+    // Seed's last transition, not the routed cell's — an untouched cell's
+    // clock says nothing about how quiet the world was), derived from the
+    // stream, never the wall clock, so replay reproduces every consolidation.
+    const gapSeconds = eventDeltaSeconds(this.lastTransitionAt, event.producedAt);
+    if (gapSeconds > QUIET_GAP_SECONDS) {
+      const stagedDev = cloneDevelopment(this.development);
+      const summaries = applyConsolidation(stagedDev);
+      if (summaries.length > 0) {
+        this.commitReceipted(new Map(), {
+          category: 'development',
+          sourceAuthority: 'seed.internal',
+          sourceRef: this.seedId,
+          payload: {
+            rule: 'consolidation.v1',
+            quietSeconds: gapSeconds,
+            endedBy: event.eventId,
+            cells: summaries,
+            developmentMagnitude: developmentMagnitude(stagedDev),
+          },
+        }, stagedDev);
+        this._eventCount++;
+        this.accounting.recordEvent();
+        this.accounting.setLedgerBytes(this.ledger.bytes);
+      }
+    }
+
     // Stage the transition on a copy: developmental mutation must not proceed
     // if the receipt cannot be committed, so the receipt is appended (and
     // fsynced) BEFORE the staged state replaces the live state. A failed append
@@ -389,11 +424,13 @@ export class SeedProcess {
     // everything else — a distinct 'development' record whose payload carries
     // the rule and the applied bounded changes. Deterministic given the
     // event stream: replay reproduces identical development.
-    if (event.category === 'correction') {
+    if (event.category === 'correction' || event.category === 'consequence') {
       const stagedDev = cloneDevelopment(this.development);
       const committed = this.cells.get(cellId);
       if (committed !== undefined) {
-        const summary = applyCorrectionPlasticity(stagedDev, committed, event, readouts);
+        const summary = event.category === 'correction'
+          ? applyCorrectionPlasticity(stagedDev, committed, event, readouts)
+          : applyConsequencePlasticity(stagedDev, committed, event, readouts);
         this.commitReceipted(new Map(), {
           category: 'development',
           sourceAuthority: 'seed.internal',
@@ -563,6 +600,7 @@ export class SeedProcess {
       dispositions: this.dispositions,
       resourceSnapshot,
       development: cloneDevelopment(this.development) as unknown as Record<string, unknown>,
+      seedLastTransitionAt: this.lastTransitionAt,
     });
 
     this.accounting.recordCheckpoint();
