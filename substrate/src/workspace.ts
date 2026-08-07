@@ -20,6 +20,8 @@ import type {
   TensionProjection,
   PredictionProjection,
 } from './types.js';
+import type { CellPlasticState, DevelopmentalState } from './plasticity.js';
+import { effectiveDispositions } from './plasticity.js';
 
 /** Maximum cells admitted to the workspace per cycle. Scarcity is the point. */
 export const WORKSPACE_CAPACITY = 2;
@@ -41,7 +43,8 @@ const PACKET_REFS_PER_CELL = 8;
  * tension is an independent additive claim (unfinishedness may speak even
  * from a low-pressure cell); the cell's inhibition disposition pulls down.
  */
-export function admissionScore(cell: SituationCell): number {
+export function admissionScore(cell: SituationCell, plastic?: CellPlasticState): number {
+  const effective = effectiveDispositions(cell.dispositions, plastic);
   const openTension = Math.min(
     1,
     cell.intentions.filter((i) => i.open).reduce((s, i) => s + i.magnitude, 0),
@@ -50,20 +53,26 @@ export function admissionScore(cell: SituationCell): number {
   const score =
     cell.workspacePressure * modulation
     + 0.25 * openTension
-    - 0.25 * cell.dispositions.inhibitionLevel;
+    - 0.25 * effective.inhibitionLevel;
   return Math.max(0, Math.min(1, score));
 }
 
-export function scoreCells(cells: Iterable<SituationCell>, dispositions: SeedDispositions): CellAdmissionScore[] {
+export function scoreCells(
+  cells: Iterable<SituationCell>,
+  dispositions: SeedDispositions,
+  development?: DevelopmentalState,
+): CellAdmissionScore[] {
   const scored: CellAdmissionScore[] = [];
   for (const cell of cells) {
-    const score = admissionScore(cell);
+    const plastic = development?.[cell.id];
+    const score = admissionScore(cell, plastic);
+    const effective = effectiveDispositions(cell.dispositions, plastic);
     scored.push({
       cellId: cell.id,
       score,
       admitted:
         score >= dispositions.globalWakeThreshold
-        && score >= cell.dispositions.wakeThreshold,
+        && score >= effective.wakeThreshold,
     });
   }
   // Deterministic order: score desc, then cellId asc for exact ties.
@@ -125,8 +134,9 @@ export function evaluateWorkspace(
   cells: Map<string, SituationCell>,
   dispositions: SeedDispositions,
   cloneCell: (cell: SituationCell) => SituationCell,
+  development?: DevelopmentalState,
 ): { outcome: WorkspaceOutcome; mutations: Map<string, SituationCell> } {
-  const scores = scoreCells(cells.values(), dispositions);
+  const scores = scoreCells(cells.values(), dispositions, development);
   const admittedIds = scores.filter((s) => s.admitted).map((s) => s.cellId);
   const mutations = new Map<string, SituationCell>();
 

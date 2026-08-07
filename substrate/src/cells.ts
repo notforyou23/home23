@@ -26,6 +26,8 @@ import type {
 import { CONTINUOUS_STATE_DIM, INITIAL_CELL_IDS } from './types.js';
 import type { Reservoir, Readouts } from './metabolism.js';
 import { encodeEvent, metabolicStep, computeReadouts } from './metabolism.js';
+import type { CellPlasticState, DevelopmentalState } from './plasticity.js';
+import { effectiveSalienceWeights, effectiveNoveltyWeights, sourcePrefix } from './plasticity.js';
 
 // ─── Default dispositions per cell ───────────────────────────────────────────
 
@@ -82,23 +84,41 @@ export function makeInitialCells(now: string): Map<string, SituationCell> {
 // ─── Routing heuristic ────────────────────────────────────────────────────────
 
 /** Route an event to a cell id when targetCellId is not specified. */
-export function routeEvent(event: SourceEvent, cellIds: string[]): string {
+/** Static category routing, with a bounded LEARNED override (Cut 3): a cell
+ * whose routing affinity for this source prefix was earned through receipted
+ * development (≥ 0.15, clearly above the static target's own affinity) takes
+ * the event instead. Deterministic — sorted iteration, explicit margins. */
+export function routeEvent(event: SourceEvent, cellIds: string[], development?: DevelopmentalState): string {
   if (event.targetCellId && cellIds.includes(event.targetCellId)) {
     return event.targetCellId;
   }
-  // Simple category-based routing for Cut 1
+  let staticTarget: string;
   switch (event.category) {
     case 'correction':
-      return 'contact.jtr-jerry';
+      staticTarget = 'contact.jtr-jerry'; break;
     case 'observation':
-      return 'world.home23';
+      staticTarget = 'world.home23'; break;
     case 'consequence':
-      return 'project.shakedown';
+      staticTarget = 'project.shakedown'; break;
     case 'interpretation':
-      return 'frontier.substrate-os';
+      staticTarget = 'frontier.substrate-os'; break;
     default:
-      return 'periphery.open-field';
+      staticTarget = 'periphery.open-field';
   }
+  if (development !== undefined) {
+    const key = sourcePrefix(event);
+    let bestId = staticTarget;
+    let bestAffinity = development[staticTarget]?.routingAffinity[key] ?? 0;
+    for (const id of [...cellIds].sort()) {
+      const affinity = development[id]?.routingAffinity[key] ?? 0;
+      if (affinity >= 0.15 && affinity > bestAffinity + 0.05) {
+        bestId = id;
+        bestAffinity = affinity;
+      }
+    }
+    return bestId;
+  }
+  return staticTarget;
 }
 
 // ─── Continuous state update (Cut 2: reservoir metabolism, event-time) ───────
@@ -125,11 +145,17 @@ export function applyMetabolicTransition(
   event: SourceEvent,
   reservoir: Reservoir,
   dtSeconds: number,
+  plastic?: CellPlasticState,
 ): Readouts {
   const before = new Float32Array(cell.continuousState);
   const input = encodeEvent(event, dtSeconds, reservoir.inputDim);
   metabolicStep(cell.continuousState, reservoir, input, dtSeconds, cell.dispositions);
-  const readouts = computeReadouts(before, cell.continuousState, reservoir);
+  // Readouts run over FROZEN base weights plus the cell's plastic deltas —
+  // this is where development changes what later contact means.
+  const readouts = computeReadouts(before, cell.continuousState, reservoir, {
+    salience: effectiveSalienceWeights(reservoir.readoutSalience, plastic),
+    novelty: effectiveNoveltyWeights(reservoir.readoutNovelty, plastic),
+  });
 
   // Energy: event-time decay, novelty-driven boost, event-time spike stamp.
   const energyDecay = Math.exp((-Math.LN2 * Math.max(0, dtSeconds)) / ENERGY_HALF_LIFE_SECONDS);

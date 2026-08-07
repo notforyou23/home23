@@ -64,11 +64,12 @@ export class CheckpointManager {
     cells: SerializedCell[];
     dispositions: SeedDispositions;
     resourceSnapshot: ResourceSnapshot;
+    development?: Record<string, unknown>;
   }): string {
     const checkpointId = `ckpt_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
     const manifest: CheckpointManifest = {
       schema: 'home23.seed.checkpoint.v1',
-      version: 1,
+      version: opts.development !== undefined ? 2 : 1,
       checkpointId,
       stateHash: opts.stateHash,
       ledgerSeq: opts.ledgerSeq,
@@ -77,6 +78,7 @@ export class CheckpointManager {
       resourceSnapshot: opts.resourceSnapshot,
       cells: opts.cells,
       dispositions: opts.dispositions,
+      ...(opts.development !== undefined ? { development: opts.development } : {}),
     };
 
     const filePath = join(this.checkpointsDir, `${checkpointId}.json`);
@@ -213,6 +215,9 @@ export class CheckpointManager {
     const computedHash = computeStateHash({
       cells: manifest.cells,
       dispositions: manifest.dispositions,
+      // v1 manifests predate development; their hashes must recompute the
+      // v1 way or every pre-plasticity seed becomes unrestorable.
+      ...(manifest.version >= 2 ? { development: manifest.development ?? {} } : {}),
     });
     if (computedHash !== manifest.stateHash) {
       return { ok: false, reason: `stateHash mismatch: stored=${manifest.stateHash.slice(0, 16)}, computed=${computedHash.slice(0, 16)}` };
@@ -255,6 +260,9 @@ export class CheckpointManager {
 export function computeStateHash(opts: {
   cells: SerializedCell[];
   dispositions: SeedDispositions;
+  /** Cut 3: developmental state enters the hash (v2). Omit entirely for v1
+   * compatibility recomputes — an empty object is NOT the same as absent. */
+  development?: Record<string, unknown>;
 }): string {
   return createHash('sha256')
     .update(
@@ -280,6 +288,7 @@ export function computeStateHash(opts: {
           lastTransitionAt: c.lastTransitionAt,
         })),
         dispositions: opts.dispositions,
+        ...(opts.development !== undefined ? { development: opts.development } : {}),
       }),
       'utf-8',
     )

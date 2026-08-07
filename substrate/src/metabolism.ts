@@ -214,15 +214,18 @@ export function computeReadouts(
   before: Float32Array,
   after: Float32Array,
   reservoir: Reservoir,
+  weights?: { salience: Float64Array; novelty: Float64Array },
 ): Readouts {
+  const salienceW = weights?.salience ?? reservoir.readoutSalience;
+  const noveltyW = weights?.novelty ?? reservoir.readoutNovelty;
   let sal = 0;
   let nov = 0;
   let arousal = 0;
   let deltaMag = 0;
   for (let i = 0; i < reservoir.dim; i++) {
     const a = after[i] ?? 0;
-    sal += (reservoir.readoutSalience[i] ?? 0) * a;
-    nov += (reservoir.readoutNovelty[i] ?? 0) * a;
+    sal += (salienceW[i] ?? 0) * a;
+    nov += (noveltyW[i] ?? 0) * a;
     arousal += Math.abs(a);
     const d = a - (before[i] ?? 0);
     deltaMag += d * d;

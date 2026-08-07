@@ -16,6 +16,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
+import { cpSync } from 'node:fs';
 import type {
   SituationCell,
   SeedState,
@@ -45,6 +46,13 @@ import type { Reservoir } from './metabolism.js';
 import { generateReservoir, eventDeltaSeconds, METABOLISM_VERSION } from './metabolism.js';
 import { CONTINUOUS_STATE_DIM } from './types.js';
 import { evaluateWorkspace } from './workspace.js';
+import type { DevelopmentalState } from './plasticity.js';
+import {
+  emptyDevelopment,
+  cloneDevelopment,
+  applyCorrectionPlasticity,
+  developmentMagnitude,
+} from './plasticity.js';
 import type { LobeAdapter, ValidatedLobeResult, RejectedProposal } from './lobe.js';
 import { validateLobeResult, applyLobeDeltas } from './lobe.js';
 import type { WorkspacePacket, ProposedStateDelta } from './types.js';
@@ -69,6 +77,7 @@ export class SeedProcess {
   private readonly accounting: ResourceAccounting;
   private readonly cells: Map<string, SituationCell>;
   private readonly reservoir: Reservoir;
+  private development: DevelopmentalState;
   private dispositions: SeedDispositions;
   private readonly stateDir: string;
   private readonly seedId: string;
@@ -83,6 +92,7 @@ export class SeedProcess {
     createdAt: string;
     cells: Map<string, SituationCell>;
     reservoir: Reservoir;
+    development: DevelopmentalState;
     dispositions: SeedDispositions;
     ledger: SeedLedger;
     checkpoints: CheckpointManager;
@@ -96,6 +106,7 @@ export class SeedProcess {
     this.createdAt = opts.createdAt;
     this.cells = opts.cells;
     this.reservoir = opts.reservoir;
+    this.development = opts.development;
     this.dispositions = opts.dispositions;
     this.ledger = opts.ledger;
     this.checkpoints = opts.checkpoints;
@@ -167,6 +178,7 @@ export class SeedProcess {
       eventCount: 1,
       transitionCount: 0,
       reservoir,
+      development: emptyDevelopment(),
     });
   }
 
@@ -226,6 +238,11 @@ export class SeedProcess {
       createdAt: manifest.createdAt,
       cells,
       reservoir: generateReservoir(genesis.reservoirSeed),
+      // v1 manifests predate development — a pre-plasticity seed resumes with
+      // an empty developmental state, not a broken restore.
+      development: manifest.version >= 2
+        ? ((manifest.development ?? {}) as DevelopmentalState)
+        : emptyDevelopment(),
       dispositions: manifest.dispositions,
       ledger,
       checkpoints,
@@ -234,6 +251,46 @@ export class SeedProcess {
       eventCount: manifest.resourceSnapshot.eventCount,
       transitionCount: manifest.resourceSnapshot.transitionCount,
     });
+  }
+
+  /**
+   * THE ABLATION KNIFE. Create a twin of the seed at `sourceDir` whose
+   * DEVELOPMENT is zeroed while every episode, reality ref, estimate, cell
+   * state, and ledger record is preserved byte-for-byte. The ablation itself
+   * is receipted (category 'development', ablation: true) and finalized with
+   * a fresh v2 checkpoint — sanctioned removal is distinguishable from
+   * corruption precisely because it is on the record.
+   *
+   * The twin is the CONTROL ARM of the discriminating experiment: replay the
+   * same post-branch events into both and diff behavior. If they do not
+   * materially differ, the claimed development was decorative.
+   */
+  static createAblatedTwin(sourceDir: string, targetDir: string): {
+    checkpointId: string;
+    zeroedMagnitude: number;
+  } {
+    if (SeedLedger.exists(targetDir)) {
+      throw new Error(`Target ${targetDir} already holds a seed — refusing to overwrite`);
+    }
+    cpSync(sourceDir, targetDir, { recursive: true });
+
+    const twin = SeedProcess.restore(targetDir);
+    const zeroedMagnitude = developmentMagnitude(twin.development);
+    twin.commitReceipted(new Map(), {
+      category: 'development',
+      sourceAuthority: 'seed.internal',
+      sourceRef: twin.seedId,
+      payload: {
+        ablation: true,
+        zeroedMagnitude,
+        note: 'sanctioned developmental ablation — episodes preserved, learning removed',
+      },
+    }, emptyDevelopment());
+    twin._eventCount++;
+    twin.accounting.recordEvent();
+    twin.accounting.setLedgerBytes(twin.ledger.bytes);
+    const checkpointId = twin.checkpoint();
+    return { checkpointId, zeroedMagnitude };
   }
 
   // ─── Public API ────────────────────────────────────────────────────────────
@@ -276,8 +333,8 @@ export class SeedProcess {
     this.accounting.assertTransitionBudget();
 
     const startedWallMs = Date.now(); // diagnostic only — never enters state
-    // Route event to target cell
-    const cellId = routeEvent(event, Array.from(this.cells.keys()));
+    // Route event to target cell (static + earned routing affinities)
+    const cellId = routeEvent(event, Array.from(this.cells.keys()), this.development);
     const cell = this.cells.get(cellId);
     if (cell === undefined) {
       throw new Error(`Cell not found: ${cellId}`);
@@ -291,7 +348,7 @@ export class SeedProcess {
     // throws here and discards the staged copy — the Seed remains exactly the
     // state its ledger can account for.
     const staged = cloneCell(cell);
-    const readouts = applyMetabolicTransition(staged, event, this.reservoir, dtSeconds);
+    const readouts = applyMetabolicTransition(staged, event, this.reservoir, dtSeconds, this.development[cellId]);
 
     // Budget is a PRE-commit gate: a cell that would exceed its state ceiling
     // refuses the transition entirely rather than committing then complaining.
@@ -327,6 +384,33 @@ export class SeedProcess {
     this.accounting.setLedgerBytes(this.ledger.bytes);
     this.accounting.setCellStateBytes(cellId, stagedBytes);
 
+    // Cut 3: corrections TEACH. The plastic update is staged on a cloned
+    // development state and committed through the same receipted path as
+    // everything else — a distinct 'development' record whose payload carries
+    // the rule and the applied bounded changes. Deterministic given the
+    // event stream: replay reproduces identical development.
+    if (event.category === 'correction') {
+      const stagedDev = cloneDevelopment(this.development);
+      const committed = this.cells.get(cellId);
+      if (committed !== undefined) {
+        const summary = applyCorrectionPlasticity(stagedDev, committed, event, readouts);
+        this.commitReceipted(new Map(), {
+          category: 'development',
+          sourceAuthority: 'seed.internal',
+          sourceRef: this.seedId,
+          payload: {
+            eventId: event.eventId,
+            producedAt: event.producedAt,
+            ...summary,
+            developmentMagnitude: developmentMagnitude(stagedDev),
+          },
+        }, stagedDev);
+        this._eventCount++;
+        this.accounting.recordEvent();
+        this.accounting.setLedgerBytes(this.ledger.bytes);
+      }
+    }
+
     return {
       seq: record.seq,
       stateHashBefore,
@@ -353,7 +437,7 @@ export class SeedProcess {
     this.membrane.assert('local.ledger.append');
     this.accounting.assertEventBudget();
 
-    const { outcome, mutations } = evaluateWorkspace(this.cells, this.dispositions, cloneCell);
+    const { outcome, mutations } = evaluateWorkspace(this.cells, this.dispositions, cloneCell, this.development);
 
     const scores = outcome.scores.map((s) => ({ cellId: s.cellId, score: s.score, admitted: s.admitted }));
     const payload: Record<string, unknown> = outcome.kind === 'silence'
@@ -478,6 +562,7 @@ export class SeedProcess {
       cells: serializedCells,
       dispositions: this.dispositions,
       resourceSnapshot,
+      development: cloneDevelopment(this.development) as unknown as Record<string, unknown>,
     });
 
     this.accounting.recordCheckpoint();
@@ -531,6 +616,7 @@ export class SeedProcess {
       lastTransitionAt: this.lastTransitionAt,
       transitionCount: this._transitionCount,
       eventCount: this._eventCount,
+      developmentMagnitude: developmentMagnitude(this.development),
     };
   }
 
@@ -562,17 +648,28 @@ export class SeedProcess {
 
   private computeCurrentStateHash(): string {
     const serializedCells = Array.from(this.cells.values()).map(serializeCell);
-    return computeStateHash({ cells: serializedCells, dispositions: this.dispositions });
+    return computeStateHash({
+      cells: serializedCells,
+      dispositions: this.dispositions,
+      development: this.development as unknown as Record<string, unknown>,
+    });
   }
 
   /** State hash as it would be with the staged replacements substituted — used
    * to compute a staged mutation's hash before it is committed. Cell iteration
    * order matches computeCurrentStateHash (Map insertion order). */
-  private computeStateHashWithMany(replacements: Map<string, SituationCell>): string {
+  private computeStateHashWithMany(
+    replacements: Map<string, SituationCell>,
+    stagedDevelopment?: DevelopmentalState,
+  ): string {
     const serializedCells = Array.from(this.cells.entries()).map(([id, c]) =>
       serializeCell(replacements.get(id) ?? c),
     );
-    return computeStateHash({ cells: serializedCells, dispositions: this.dispositions });
+    return computeStateHash({
+      cells: serializedCells,
+      dispositions: this.dispositions,
+      development: (stagedDevelopment ?? this.development) as unknown as Record<string, unknown>,
+    });
   }
 
   /**
@@ -589,9 +686,10 @@ export class SeedProcess {
       sourceRef: string;
       payload: Record<string, unknown>;
     },
+    stagedDevelopment?: DevelopmentalState,
   ): { record: LedgerRecord; stateHashBefore: string; stateHashAfter: string } {
     const stateHashBefore = this.computeCurrentStateHash();
-    const stateHashAfter = this.computeStateHashWithMany(staged);
+    const stateHashAfter = this.computeStateHashWithMany(staged, stagedDevelopment);
     const rec = this.ledger.append({
       category: record.category,
       sourceAuthority: record.sourceAuthority,
@@ -601,6 +699,7 @@ export class SeedProcess {
       stateHashAfter,
     });
     for (const [id, cell] of staged) this.cells.set(id, cell);
+    if (stagedDevelopment !== undefined) this.development = stagedDevelopment;
     return { record: rec, stateHashBefore, stateHashAfter };
   }
 }

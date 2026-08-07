@@ -23,7 +23,9 @@ export type EventCategory =
   // Cut 2 receipt categories: workspace admission, explicit silence, lobe results.
   | 'workspace'
   | 'silence'
-  | 'lobe';
+  | 'lobe'
+  // Cut 3: receipted developmental deltas (plasticity, consolidation, ablation).
+  | 'development';
 
 export type SourceAuthority =
   | 'home23.engine'
@@ -214,6 +216,10 @@ export interface CheckpointManifest {
   resourceSnapshot: ResourceSnapshot;
   cells: SerializedCell[];
   dispositions: SeedDispositions;
+  /** Cut 3 (manifest version >= 2): the seed-level developmental state — the
+   * ablation target. Shape owned by plasticity.ts; stored verbatim, inside
+   * the state hash for v2 manifests. */
+  development?: Record<string, unknown>;
 }
 
 export interface CheckpointIndex {
@@ -334,6 +340,8 @@ export interface SeedState {
   lastTransitionAt: string;
   transitionCount: number;
   eventCount: number;
+  /** Total learned mass (Cut 3) — 0 on a fresh or ablated seed. */
+  developmentMagnitude: number;
 }
 
 // ─── Cut 2+ interfaces (preserved architecture) ──────────────────────────────
