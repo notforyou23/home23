@@ -160,10 +160,13 @@ export class SeedRunner {
         // The wake handle lets requestStop() resolve this sleep immediately —
         // clearing the timer alone would leave the promise pending forever and
         // turn a graceful SIGINT into a SIGKILL past the final checkpoint.
+        // The timer is deliberately NOT unref'd: during idle it is the only
+        // live handle, and an unref'd timer lets Node exit code-0 mid-sleep —
+        // the resident becomes a crash-looping cron (observed live: 50
+        // one-second lifetimes before this line was fixed).
         await new Promise<void>((resolve) => {
           this.wake = resolve;
           this.timer = setTimeout(resolve, this.opts.pollMs ?? 2000);
-          this.timer.unref?.();
         });
         this.wake = null;
       }
