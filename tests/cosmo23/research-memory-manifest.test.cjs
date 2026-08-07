@@ -126,6 +126,10 @@ test('normal Orchestrator save publishes a numeric manifest generation before an
     error(message, fields) { logs.push({ level: 'error', message, fields }); },
   };
   const fake = {
+    // Save-lock wrapper: saveState() delegates to _saveStateUnlocked(), so the
+    // fake carries the real unlocked body and an idle lock slot.
+    _saveStatePromise: null,
+    _saveStateUnlocked: Orchestrator.prototype._saveStateUnlocked,
     evaluation: null,
     cycleCount: 2,
     journal: [],
@@ -161,6 +165,9 @@ test('normal Orchestrator save publishes a numeric manifest generation before an
   };
 
   await Orchestrator.prototype.saveState.call(fake);
+  // The save fires an interval-gated backup without awaiting it; let its
+  // lock-root activity settle before the fixture's tmpdir cleanup runs.
+  await fake._backupPromise;
 
   assert.equal(logs.some(({ level }) => level === 'error'), false, JSON.stringify(logs));
   const manifest = await assertManifestGeneration(runDir, graph);
