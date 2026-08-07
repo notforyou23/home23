@@ -110,6 +110,9 @@ function clamp(v: number, lo: number, hi: number): number {
 /** Cell energy half-life in seconds of event-time without contact. */
 const ENERGY_HALF_LIFE_SECONDS = 2 * 3600;
 
+/** Reality refs a cell retains (most recent last). */
+const MAX_CELL_REALITY_REFS = 32;
+
 /**
  * Apply one metabolic transition to a cell, in place. Deterministic given
  * (cell state, event, Δt, reservoir): time comes from event `producedAt`
@@ -151,6 +154,20 @@ export function applyMetabolicTransition(
   // quiet familiar contact settles it.
   cell.uncertainty = clamp(cell.uncertainty * 0.9 + readouts.novelty * 0.1, 0, 1);
 
+  // Accumulate the reality reference (bounded) — workspace packets carry
+  // actual refs into recruited lobes, never re-narrated history.
+  cell.realityRefs.push({
+    refId: event.eventId,
+    sourceAuthority: event.sourceAuthority,
+    sourceRef: event.sourceRef,
+    observedAt: event.producedAt,
+    confidence: event.category === 'correction' ? 1 : 0.8,
+    flag: 'COLLECTED',
+  });
+  if (cell.realityRefs.length > MAX_CELL_REALITY_REFS) {
+    cell.realityRefs.splice(0, cell.realityRefs.length - MAX_CELL_REALITY_REFS);
+  }
+
   cell.generation += 1;
   cell.status = cell.energy.current < 0.05 ? 'quiet' : 'living';
   cell.lastTransitionAt = event.producedAt;
@@ -175,6 +192,16 @@ export function cloneCell(cell: SituationCell): SituationCell {
       modelAffinities: { ...cell.dispositions.modelAffinities },
     },
     lobeAffinities: { ...cell.lobeAffinities },
+    // Array copies: transitions APPEND to these on the staged copy, so sharing
+    // the array with the committed cell would leak mutations past a failed
+    // receipt. Elements are shared — staged code must REPLACE an element to
+    // change it, never mutate one in place.
+    realityRefs: [...cell.realityRefs],
+    estimates: [...cell.estimates],
+    intentions: [...cell.intentions],
+    predictions: [...cell.predictions],
+    associations: [...cell.associations],
+    developmentalLineage: [...cell.developmentalLineage],
   };
 }
 

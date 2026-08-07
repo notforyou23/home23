@@ -19,7 +19,11 @@ export type EventCategory =
   | 'transition'
   | 'checkpoint'
   | 'genesis'
-  | 'stop';
+  | 'stop'
+  // Cut 2 receipt categories: workspace admission, explicit silence, lobe results.
+  | 'workspace'
+  | 'silence'
+  | 'lobe';
 
 export type SourceAuthority =
   | 'home23.engine'
@@ -415,3 +419,28 @@ export interface SourceAdapter {
   readonly authority: SourceAuthority;
   pull(): Promise<SourceEvent[]>;
 }
+
+// ─── Workspace outcomes (Cut 2) ──────────────────────────────────────────────
+
+export interface CellAdmissionScore {
+  cellId: string;
+  score: number;
+  admitted: boolean;
+}
+
+/** Silence is a transition outcome, not a missing response. Receipted. */
+export interface SilenceOutcome {
+  kind: 'silence';
+  reason: 'below-threshold' | 'no-active-cells';
+  topScore: number;
+  threshold: number;
+  scores: CellAdmissionScore[];
+}
+
+export interface WorkspaceAdmission {
+  kind: 'workspace';
+  packet: WorkspacePacket;
+  scores: CellAdmissionScore[];
+}
+
+export type WorkspaceOutcome = WorkspaceAdmission | SilenceOutcome;

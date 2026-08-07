@@ -24,6 +24,9 @@ import type {
   LedgerRecord,
   TransitionResult,
   ResourceBudget,
+  EventCategory,
+  SourceAuthority,
+  WorkspaceOutcome,
 } from './types.js';
 import { CapabilityDeniedError } from './types.js';
 import { SeedLedger } from './ledger.js';
@@ -41,6 +44,7 @@ import {
 import type { Reservoir } from './metabolism.js';
 import { generateReservoir, eventDeltaSeconds, METABOLISM_VERSION } from './metabolism.js';
 import { CONTINUOUS_STATE_DIM } from './types.js';
+import { evaluateWorkspace } from './workspace.js';
 
 // ─── Default dispositions ─────────────────────────────────────────────────────
 
@@ -269,8 +273,6 @@ export class SeedProcess {
     this.accounting.assertTransitionBudget();
 
     const startedWallMs = Date.now(); // diagnostic only — never enters state
-    const stateHashBefore = this.computeCurrentStateHash();
-
     // Route event to target cell
     const cellId = routeEvent(event, Array.from(this.cells.keys()));
     const cell = this.cells.get(cellId);
@@ -287,30 +289,27 @@ export class SeedProcess {
     // state its ledger can account for.
     const staged = cloneCell(cell);
     const readouts = applyMetabolicTransition(staged, event, this.reservoir, dtSeconds);
-    const stateHashAfter = this.computeStateHashWith(cellId, staged);
 
-    const record = this.ledger.append({
-      category: 'transition',
-      sourceAuthority: event.sourceAuthority,
-      sourceRef: event.sourceRef,
-      payload: {
-        eventId: event.eventId,
-        targetCellId: cellId,
-        producedAt: event.producedAt,
-        originalCategory: event.category,
-        dtSeconds,
-        readouts: {
-          salience: readouts.salience,
-          novelty: readouts.novelty,
-          arousal: readouts.arousal,
+    const { record, stateHashBefore, stateHashAfter } = this.commitReceipted(
+      new Map([[cellId, staged]]),
+      {
+        category: 'transition',
+        sourceAuthority: event.sourceAuthority,
+        sourceRef: event.sourceRef,
+        payload: {
+          eventId: event.eventId,
+          targetCellId: cellId,
+          producedAt: event.producedAt,
+          originalCategory: event.category,
+          dtSeconds,
+          readouts: {
+            salience: readouts.salience,
+            novelty: readouts.novelty,
+            arousal: readouts.arousal,
+          },
         },
       },
-      stateHashBefore,
-      stateHashAfter,
-    });
-
-    // Receipt is durable — commit the staged state.
-    this.cells.set(cellId, staged);
+    );
     this.lastTransitionAt = event.producedAt;
     this._transitionCount++;
     this._eventCount++;
@@ -328,6 +327,42 @@ export class SeedProcess {
       cellId,
       elapsedMs: Date.now() - startedWallMs,
     };
+  }
+
+  /**
+   * One workspace cycle over the current cells: score every cell, admit at
+   * most WORKSPACE_CAPACITY across threshold, damp the rest, and receipt the
+   * outcome — a 'workspace' record with the packet summary, or an explicit
+   * 'silence' record. Silence is a real transition, not a missing response.
+   *
+   * `asOf` is the event-time this cycle is anchored to (typically the
+   * triggering event's producedAt) — recorded in the receipt, never taken from
+   * the wall clock, so replayed workspace cycles are reproducible.
+   */
+  workspaceCycle(asOf: string): WorkspaceOutcome {
+    this.membrane.assert('local.state.read');
+    this.membrane.assert('local.state.write');
+    this.membrane.assert('local.ledger.append');
+    this.accounting.assertEventBudget();
+
+    const { outcome, mutations } = evaluateWorkspace(this.cells, this.dispositions, cloneCell);
+
+    const scores = outcome.scores.map((s) => ({ cellId: s.cellId, score: s.score, admitted: s.admitted }));
+    const payload: Record<string, unknown> = outcome.kind === 'silence'
+      ? { asOf, reason: outcome.reason, topScore: outcome.topScore, threshold: outcome.threshold, scores }
+      : { asOf, admittedCellIds: outcome.packet.activeCellIds, uncertainty: outcome.packet.uncertainty, scores };
+
+    this.commitReceipted(mutations, {
+      category: outcome.kind === 'silence' ? 'silence' : 'workspace',
+      sourceAuthority: 'seed.internal',
+      sourceRef: this.seedId,
+      payload,
+    });
+    this._eventCount++;
+    this.accounting.recordEvent();
+    this.accounting.setLedgerBytes(this.ledger.bytes);
+
+    return outcome;
   }
 
   /**
@@ -433,14 +468,43 @@ export class SeedProcess {
     return computeStateHash({ cells: serializedCells, dispositions: this.dispositions });
   }
 
-  /** State hash as it would be with `replacement` substituted for cellId — used
-   * to compute a staged transition's hash before the state is committed. Cell
-   * iteration order matches computeCurrentStateHash (Map insertion order). */
-  private computeStateHashWith(cellId: string, replacement: SituationCell): string {
+  /** State hash as it would be with the staged replacements substituted — used
+   * to compute a staged mutation's hash before it is committed. Cell iteration
+   * order matches computeCurrentStateHash (Map insertion order). */
+  private computeStateHashWithMany(replacements: Map<string, SituationCell>): string {
     const serializedCells = Array.from(this.cells.entries()).map(([id, c]) =>
-      serializeCell(id === cellId ? replacement : c),
+      serializeCell(replacements.get(id) ?? c),
     );
     return computeStateHash({ cells: serializedCells, dispositions: this.dispositions });
+  }
+
+  /**
+   * The ONE mutation path: hash the staged state, append the receipt
+   * (fail-closed + fsynced), and only then swap the staged cells in. Every
+   * state change in the Seed — transition, workspace, and later lobe deltas
+   * and plasticity — commits through here or does not happen.
+   */
+  private commitReceipted(
+    staged: Map<string, SituationCell>,
+    record: {
+      category: EventCategory;
+      sourceAuthority: SourceAuthority;
+      sourceRef: string;
+      payload: Record<string, unknown>;
+    },
+  ): { record: LedgerRecord; stateHashBefore: string; stateHashAfter: string } {
+    const stateHashBefore = this.computeCurrentStateHash();
+    const stateHashAfter = this.computeStateHashWithMany(staged);
+    const rec = this.ledger.append({
+      category: record.category,
+      sourceAuthority: record.sourceAuthority,
+      sourceRef: record.sourceRef,
+      payload: record.payload,
+      stateHashBefore,
+      stateHashAfter,
+    });
+    for (const [id, cell] of staged) this.cells.set(id, cell);
+    return { record: rec, stateHashBefore, stateHashAfter };
   }
 }
 
