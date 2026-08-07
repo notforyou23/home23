@@ -22,6 +22,10 @@ const ALLOWED: ReadonlySet<Capability> = new Set<Capability>([
   'local.checkpoint.read',
   'local.source.ingest',
   'local.resource.account',
+  // Cut 2: model lobes recruited through the runner-injected transport, which
+  // uses Home23's existing provider contracts. The substrate holds no
+  // credentials (secret.read stays forbidden) and knows no endpoints.
+  'lobe.recruit.model',
 ]);
 
 const FORBIDDEN: ReadonlySet<Capability> = new Set<Capability>([

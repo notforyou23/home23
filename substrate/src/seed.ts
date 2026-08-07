@@ -45,6 +45,9 @@ import type { Reservoir } from './metabolism.js';
 import { generateReservoir, eventDeltaSeconds, METABOLISM_VERSION } from './metabolism.js';
 import { CONTINUOUS_STATE_DIM } from './types.js';
 import { evaluateWorkspace } from './workspace.js';
+import type { LobeAdapter, ValidatedLobeResult, RejectedProposal } from './lobe.js';
+import { validateLobeResult, applyLobeDeltas } from './lobe.js';
+import type { WorkspacePacket, ProposedStateDelta } from './types.js';
 
 // ─── Default dispositions ─────────────────────────────────────────────────────
 
@@ -363,6 +366,92 @@ export class SeedProcess {
     this.accounting.setLedgerBytes(this.ledger.bytes);
 
     return outcome;
+  }
+
+  /**
+   * Recruit a model lobe against a workspace packet. The lobe returns typed
+   * proposals; the Seed validates, stages accepted deltas on clones, and
+   * commits them through the ONE receipted path. The receipt carries the FULL
+   * applied deltas (replay re-applies receipts, never re-invokes models) plus
+   * every rejection with its reason. A lobe failure or timeout is itself
+   * receipted — with zero mutations.
+   */
+  async recruitLobe(
+    lobe: LobeAdapter,
+    packet: WorkspacePacket,
+    asOf: string,
+    timeoutMs = 30_000,
+  ): Promise<{
+    seq: number;
+    applied: ProposedStateDelta[];
+    rejected: RejectedProposal[];
+    validated?: ValidatedLobeResult;
+    error?: string;
+  }> {
+    this.membrane.assert('lobe.recruit.model');
+    this.membrane.assert('local.state.write');
+    this.membrane.assert('local.ledger.append');
+    this.accounting.assertEventBudget();
+
+    let result;
+    try {
+      result = await Promise.race([
+        lobe.invoke(packet),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`lobe ${lobe.id} timed out after ${timeoutMs}ms`)), timeoutMs).unref?.(),
+        ),
+      ]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const { record } = this.commitReceipted(new Map(), {
+        category: 'lobe',
+        sourceAuthority: 'seed.internal',
+        sourceRef: lobe.id,
+        payload: { asOf, lobeId: lobe.id, modelId: lobe.modelId, provider: lobe.provider, error: message },
+      });
+      this._eventCount++;
+      this.accounting.recordEvent();
+      this.accounting.setLedgerBytes(this.ledger.bytes);
+      return { seq: record.seq, applied: [], rejected: [], error: message };
+    }
+
+    const validated = validateLobeResult(result, packet);
+    const { staged, applied, failed } = applyLobeDeltas(
+      this.cells,
+      validated.accepted.stateDeltas,
+      asOf,
+      cloneCell,
+    );
+    const rejected = [...validated.rejected, ...failed];
+
+    const { record } = this.commitReceipted(staged, {
+      category: 'lobe',
+      sourceAuthority: 'seed.internal',
+      sourceRef: lobe.id,
+      payload: {
+        asOf,
+        lobeId: lobe.id,
+        modelId: lobe.modelId,
+        provider: lobe.provider,
+        modelReceipt: { ...validated.modelReceipt },
+        // Full applied deltas: the receipt IS the state change. Replay
+        // re-applies these without any model in the loop.
+        appliedDeltas: applied,
+        acceptedCounts: {
+          observations: validated.accepted.observations.length,
+          interpretations: validated.accepted.interpretations.length,
+          predictions: validated.accepted.predictions.length,
+          stateDeltas: applied.length,
+        },
+        rejected,
+        lobeUncertainty: validated.uncertainty,
+      },
+    });
+    this._eventCount++;
+    this.accounting.recordEvent();
+    this.accounting.setLedgerBytes(this.ledger.bytes);
+
+    return { seq: record.seq, applied, rejected, validated };
   }
 
   /**

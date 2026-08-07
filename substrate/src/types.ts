@@ -238,6 +238,8 @@ export type Capability =
   | 'local.checkpoint.read'
   | 'local.source.ingest'
   | 'local.resource.account'
+  // Cut 2 allowed: recruit an approved model lobe through injected transport
+  | 'lobe.recruit.model'
   // Forbidden — developmental authority not granted in Cut 1
   | 'home23.engine.modify'
   | 'home23.config.modify'

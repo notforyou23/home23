@@ -102,13 +102,13 @@ export function buildPacket(admitted: SituationCell[], dispositions: SeedDisposi
     tensions,
     predictions,
     uncertainty,
-    requestedCapability: 'local.state.read',
-    // Stage 2 ceiling is observe-only; stage 3 raises to 'propose' when the
-    // lobe protocol can stage typed deltas through receipted commits.
-    authorityCeiling: 'observe',
+    requestedCapability: 'lobe.recruit.model',
+    // 'propose': lobes may stage typed deltas — but only through validation
+    // and the receipted commit path. Nothing above propose exists yet.
+    authorityCeiling: 'propose',
     tokenBudget: 2000,
     outputContract: {
-      allowedOutputKinds: ['observations', 'interpretations', 'predictions'],
+      allowedOutputKinds: ['observations', 'interpretations', 'predictions', 'stateDeltas'],
       maxTokenBudget: 2000,
     },
   };

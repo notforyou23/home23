@@ -29,3 +29,20 @@ export {
   INPUT_DIM,
 } from './metabolism.js';
 export type { Reservoir, Readouts } from './metabolism.js';
+export {
+  WORKSPACE_CAPACITY,
+  admissionScore,
+  scoreCells,
+  buildPacket,
+  evaluateWorkspace,
+} from './workspace.js';
+export {
+  EchoLobe,
+  ModelLobe,
+  validateLobeResult,
+  applyLobeDeltas,
+  buildLobePrompt,
+  parseLobeResponse,
+  LOBE_DELTA_ALLOWLIST,
+} from './lobe.js';
+export type { LobeAdapter, LobeTransport, ValidatedLobeResult, RejectedProposal } from './lobe.js';
