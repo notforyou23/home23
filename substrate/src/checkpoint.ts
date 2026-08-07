@@ -17,6 +17,7 @@ import {
   readFileSync,
   renameSync,
   readdirSync,
+  statSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -102,9 +103,22 @@ export class CheckpointManager {
    */
   restore(checkpointId?: string): CheckpointManifest {
     const index = this.readIndex();
-    const candidates = checkpointId
+    const indexEntries = checkpointId
       ? index.checkpoints.filter((c) => c.checkpointId === checkpointId)
       : [...index.checkpoints].reverse(); // newest-first
+    const candidates: Array<{ checkpointId: string; path: string }> = indexEntries.map(
+      (c) => ({ checkpointId: c.checkpointId, path: c.path }),
+    );
+
+    // Fallback: a lost or corrupt index must not orphan valid checkpoints on
+    // disk. Manifests the index does not know about are tried after the index
+    // entries, newest-first; tryReadManifest still validates id + stateHash.
+    const known = new Set(candidates.map((c) => c.path));
+    for (const stray of this.scanCheckpointFiles()) {
+      if (known.has(stray.path)) continue;
+      if (checkpointId !== undefined && stray.checkpointId !== checkpointId) continue;
+      candidates.push(stray);
+    }
 
     for (const entry of candidates) {
       const result = this.tryReadManifest(entry.path, entry.checkpointId);
@@ -137,6 +151,27 @@ export class CheckpointManager {
   }
 
   // ─── Internal ─────────────────────────────────────────────────────────────
+
+  /** Checkpoint manifests present on disk, newest-first by mtime. Quarantine
+   * and the index file never match the ckpt_*.json filter. */
+  private scanCheckpointFiles(): Array<{ checkpointId: string; path: string }> {
+    let names: string[];
+    try {
+      names = readdirSync(this.checkpointsDir);
+    } catch {
+      return [];
+    }
+    return names
+      .filter((n) => n.startsWith('ckpt_') && n.endsWith('.json'))
+      .map((n) => {
+        const path = join(this.checkpointsDir, n);
+        let mtimeMs = 0;
+        try { mtimeMs = statSync(path).mtimeMs; } catch { /* vanished mid-scan */ }
+        return { checkpointId: n.slice(0, -'.json'.length), path, mtimeMs };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)
+      .map(({ checkpointId, path }) => ({ checkpointId, path }));
+  }
 
   private readIndex(): CheckpointIndex {
     if (!existsSync(this.indexPath)) {
@@ -201,10 +236,20 @@ export class CheckpointManager {
 /**
  * Compute the canonical state hash from cells and dispositions.
  *
- * Intentionally excludes ledgerSeq: the state hash tracks CELL STATE only.
- * Ledger position is captured separately in the checkpoint (ledgerSeq + ledgerCursor).
- * This ensures the same cell state produces the same hash regardless of how many
- * bookkeeping records (checkpoint, stop) were written to the ledger.
+ * Covers the ENTIRE causal cell state — symbolic and continuous. A checkpoint
+ * whose intentions, estimates, associations, or lineage were altered must fail
+ * validation, and later, sanctioned ablation must be distinguishable from
+ * corruption by exactly this hash. Field order is explicit-by-construction
+ * (the ledger's canonicalization convention); nested payloads must likewise be
+ * built with deterministic key order.
+ *
+ * Intentionally excluded:
+ *   - ledgerSeq/cursor — ledger position is bound separately in the manifest,
+ *     so bookkeeping records (checkpoint, stop) don't move the state hash;
+ *   - wall-clock bookkeeping (lastTransitionAt, energy.lastSpikeAt) — replayed
+ *     histories must reproduce identical hashes; wall-clock fields are restored
+ *     from the manifest but are not causal state. When Cut 2 moves transitions
+ *     to event-time, these can enter the hash.
  */
 export function computeStateHash(opts: {
   cells: SerializedCell[];
@@ -216,7 +261,21 @@ export function computeStateHash(opts: {
         cells: opts.cells.map((c) => ({
           id: c.id,
           generation: c.generation,
+          status: c.status,
+          realityRefs: c.realityRefs,
+          estimates: c.estimates,
+          intentions: c.intentions,
+          predictions: c.predictions,
           continuousState: c.continuousState,
+          continuousStateDimension: c.continuousStateDimension,
+          dispositions: c.dispositions,
+          associations: c.associations,
+          lobeAffinities: c.lobeAffinities,
+          workspacePressure: c.workspacePressure,
+          interruptionPressure: c.interruptionPressure,
+          uncertainty: c.uncertainty,
+          energy: { current: c.energy.current, peak: c.energy.peak },
+          developmentalLineage: c.developmentalLineage,
         })),
         dispositions: opts.dispositions,
       }),

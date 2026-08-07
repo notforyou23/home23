@@ -364,16 +364,22 @@ export class SeedProcess {
     };
   }
 
-  /** Access a cell's continuous Float32Array directly (for inspection and tests). */
+  /** A COPY of a cell's continuous Float32Array (for inspection and tests).
+   * Copy-on-read: the inspection API must not create an unreceipted mutation
+   * path into live state. */
   getContinuousState(cellId: string): Float32Array | undefined {
     this.membrane.assert('local.state.read');
-    return this.cells.get(cellId)?.continuousState;
+    const cs = this.cells.get(cellId)?.continuousState;
+    return cs === undefined ? undefined : new Float32Array(cs);
   }
 
-  /** Access a cell's full state (for inspection). */
+  /** A deep COPY of a cell's full state (for inspection). Mutating the returned
+   * object cannot touch the Seed — state changes only through receipted
+   * transitions. */
   getCell(cellId: string): Readonly<SituationCell> | undefined {
     this.membrane.assert('local.state.read');
-    return this.cells.get(cellId);
+    const cell = this.cells.get(cellId);
+    return cell === undefined ? undefined : structuredClone(cell);
   }
 
   /** Expose the membrane for assertion tests. */

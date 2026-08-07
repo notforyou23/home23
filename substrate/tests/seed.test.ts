@@ -247,3 +247,28 @@ test('restore refuses a checkpoint whose cursor does not match this ledger', (t)
     'restore must bind the checkpoint to its own chain, not any sufficiently long chain',
   );
 });
+
+test('inspection API is copy-on-read: mutating returned state cannot touch the Seed', (t) => {
+  const dir = makeDir(t);
+  const seed = SeedProcess.initialize(dir);
+  seed.transition(makeEvent({ sourceRef: 'ref-inspect' }));
+  const hashBefore = seed.getState().stateHash;
+
+  const cs = seed.getContinuousState('world.home23');
+  assert.ok(cs !== undefined);
+  cs.fill(0.99);
+
+  const cell = seed.getCell('world.home23');
+  assert.ok(cell !== undefined);
+  (cell as { uncertainty: number }).uncertainty = 0.01;
+  (cell as { intentions: unknown[] }).intentions.push({ injected: true });
+
+  assert.equal(
+    seed.getState().stateHash,
+    hashBefore,
+    'no inspection-path mutation may move the state hash — state changes only through receipted transitions',
+  );
+  const fresh = seed.getCell('world.home23');
+  assert.ok(fresh !== undefined);
+  assert.equal(fresh.intentions.length, 0, 'internal cell must not have received the injected intention');
+});

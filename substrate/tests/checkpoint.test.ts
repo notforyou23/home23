@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CheckpointManager, computeStateHash } from '../src/checkpoint.js';
@@ -182,4 +182,71 @@ test('count tracks number of written checkpoints', (t) => {
 
   mgr.write({ stateHash, ledgerSeq: 2, ledgerCursor: 'c2', cells: sc, dispositions, resourceSnapshot: makeSnapshot() });
   assert.equal(mgr.count, 2);
+});
+
+// ─── Groundwork fixes (pre-Cut 2) ────────────────────────────────────────────
+
+test('symbolic cell state is covered by the checkpoint hash (tamper refused)', (t) => {
+  const dir = makeDir(t);
+  const mgr = new CheckpointManager(dir);
+  const cells = Array.from(makeInitialCells('2026-08-07T12:00:00.000Z').values()).map(serializeCell);
+  const dispositions = makeDispositions();
+  const stateHash = computeStateHash({ cells, dispositions });
+  const id = mgr.write({
+    stateHash,
+    ledgerSeq: 1,
+    ledgerCursor: 'cursor-1',
+    cells,
+    dispositions,
+    resourceSnapshot: makeSnapshot(),
+  });
+
+  // Tamper a SYMBOLIC field only — continuous state untouched.
+  const manifestPath = join(dir, 'checkpoints', `${id}.json`);
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+  manifest.cells[0].intentions = [{ injected: 'false unfinished intention' }];
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf-8');
+
+  assert.throws(
+    () => mgr.restore(id),
+    /not found or corrupt/,
+    'a checkpoint with altered symbolic state must fail hash validation',
+  );
+});
+
+test('wall-clock bookkeeping stays outside the state hash', () => {
+  const cellsA = Array.from(makeInitialCells('2026-08-07T12:00:00.000Z').values()).map(serializeCell);
+  const cellsB = Array.from(makeInitialCells('2027-01-01T00:00:00.000Z').values()).map(serializeCell);
+  const dispositions = makeDispositions();
+  assert.equal(
+    computeStateHash({ cells: cellsA, dispositions }),
+    computeStateHash({ cells: cellsB, dispositions }),
+    'identical causal state at different wall-clock times must hash identically (replay reproducibility)',
+  );
+});
+
+test('lost index does not orphan checkpoints: restore falls back to a directory scan', async (t) => {
+  const dir = makeDir(t);
+  const mgr = new CheckpointManager(dir);
+  const cells = Array.from(makeInitialCells('2026-08-07T12:00:00.000Z').values()).map(serializeCell);
+  const dispositions = makeDispositions();
+  const stateHash = computeStateHash({ cells, dispositions });
+
+  const first = mgr.write({ stateHash, ledgerSeq: 1, ledgerCursor: 'c1', cells, dispositions, resourceSnapshot: makeSnapshot() });
+  await new Promise((r) => setTimeout(r, 10));
+  const second = mgr.write({ stateHash, ledgerSeq: 2, ledgerCursor: 'c2', cells, dispositions, resourceSnapshot: makeSnapshot() });
+
+  // Destroy the index entirely.
+  writeFileSync(join(dir, 'checkpoints', 'CHECKPOINT_INDEX.json'), 'not json at all', 'utf-8');
+
+  const restored = mgr.restore();
+  assert.ok(
+    restored.checkpointId === second || restored.checkpointId === first,
+    'restore must find on-disk checkpoints without an index',
+  );
+  assert.equal(restored.checkpointId, second, 'newest checkpoint preferred in the fallback scan');
+
+  // And restore by explicit id also works without the index.
+  const byId = mgr.restore(first);
+  assert.equal(byId.checkpointId, first);
 });
