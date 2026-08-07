@@ -34,6 +34,7 @@ import {
   makeInitialCells,
   routeEvent,
   applyTransition,
+  cloneCell,
   serializeCell,
   deserializeCell,
 } from './cells.js';
@@ -95,6 +96,14 @@ export class SeedProcess {
   // ─── Factory methods ───────────────────────────────────────────────────────
 
   static initialize(stateDir: string, budget?: Partial<ResourceBudget>): SeedProcess {
+    // A stateDir with an existing ledger is an existing Seed. Initializing over
+    // it would write a second genesis and continue the old chain under a new
+    // seedId — a silent identity fork. Refuse; the caller wants restore().
+    if (SeedLedger.exists(stateDir)) {
+      throw new Error(
+        `Seed ledger already exists in ${stateDir} — use SeedProcess.restore() to resume, or choose a fresh stateDir`,
+      );
+    }
     const now = new Date().toISOString();
     const seedId = `seed_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
 
@@ -153,6 +162,24 @@ export class SeedProcess {
     if (ledger.currentSeq < manifest.ledgerSeq) {
       throw new Error(
         `Ledger seq ${ledger.currentSeq} is behind checkpoint seq ${manifest.ledgerSeq} — ledger may be truncated`,
+      );
+    }
+    // The trusted ledger is only trusted verified: a restore that resumes on a
+    // tampered or torn chain would launder the damage into future receipts.
+    const chain = ledger.verifyChain();
+    if (!chain.ok) {
+      const first = chain.errors[0];
+      throw new Error(
+        `Seed ledger failed chain verification (${chain.errors.length} error(s); first: ${first?.type} at seq ${first?.seq}) — refusing to restore`,
+      );
+    }
+    // Bind the checkpoint to THIS chain, not merely to a chain of sufficient
+    // length: the record at manifest.ledgerSeq must hash to the cursor the
+    // checkpoint recorded.
+    const cursorAtCheckpoint = ledger.cursorAt(manifest.ledgerSeq);
+    if (cursorAtCheckpoint !== manifest.ledgerCursor) {
+      throw new Error(
+        `Checkpoint cursor mismatch at seq ${manifest.ledgerSeq}: checkpoint recorded ${manifest.ledgerCursor.slice(0, 16)}…, ledger has ${cursorAtCheckpoint.slice(0, 16)}… — this checkpoint does not belong to this ledger`,
       );
     }
 
@@ -221,15 +248,15 @@ export class SeedProcess {
       throw new Error(`Cell not found: ${cellId}`);
     }
 
-    // Apply deterministic continuous state transition
-    applyTransition(cell, event, now);
-    this.lastTransitionAt = now;
-    this._transitionCount++;
-    this._eventCount++;
+    // Stage the transition on a copy: developmental mutation must not proceed
+    // if the receipt cannot be committed, so the receipt is appended (and
+    // fsynced) BEFORE the staged state replaces the live state. A failed append
+    // throws here and discards the staged copy — the Seed remains exactly the
+    // state its ledger can account for.
+    const staged = cloneCell(cell);
+    applyTransition(staged, event, now);
+    const stateHashAfter = this.computeStateHashWith(cellId, staged);
 
-    const stateHashAfter = this.computeCurrentStateHash();
-
-    // Record in ledger — fail-closed
     const record = this.ledger.append({
       category: 'transition',
       sourceAuthority: event.sourceAuthority,
@@ -244,10 +271,16 @@ export class SeedProcess {
       stateHashAfter,
     });
 
+    // Receipt is durable — commit the staged state.
+    this.cells.set(cellId, staged);
+    this.lastTransitionAt = now;
+    this._transitionCount++;
+    this._eventCount++;
+
     this.accounting.recordEvent();
     this.accounting.recordTransition();
     this.accounting.setLedgerBytes(this.ledger.bytes);
-    this.accounting.setCellStateBytes(cellId, estimateCellBytes(cell));
+    this.accounting.setCellStateBytes(cellId, estimateCellBytes(staged));
 
     return {
       seq: record.seq,
@@ -353,6 +386,16 @@ export class SeedProcess {
 
   private computeCurrentStateHash(): string {
     const serializedCells = Array.from(this.cells.values()).map(serializeCell);
+    return computeStateHash({ cells: serializedCells, dispositions: this.dispositions });
+  }
+
+  /** State hash as it would be with `replacement` substituted for cellId — used
+   * to compute a staged transition's hash before the state is committed. Cell
+   * iteration order matches computeCurrentStateHash (Map insertion order). */
+  private computeStateHashWith(cellId: string, replacement: SituationCell): string {
+    const serializedCells = Array.from(this.cells.entries()).map(([id, c]) =>
+      serializeCell(id === cellId ? replacement : c),
+    );
     return computeStateHash({ cells: serializedCells, dispositions: this.dispositions });
   }
 }

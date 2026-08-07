@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, chmodSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SeedProcess } from '../src/seed.js';
@@ -145,4 +145,105 @@ test('stop returns checkpoint ID and ledger records a stop event', (t) => {
   const checkpointId = seed.stop();
   assert.ok(typeof checkpointId === 'string');
   assert.ok(seed.getState().ledgerSeq > 1);
+});
+
+// ─── Fail-closed integrity fixes (post-review) ───────────────────────────────
+
+test('transition append failure leaves state exactly unchanged (receipt before commit)', (t) => {
+  const dir = makeDir(t);
+  const seed = SeedProcess.initialize(dir);
+  seed.transition(makeEvent({ sourceRef: 'ref-warmup' }));
+
+  const before = seed.getState();
+  const snapshots = new Map<string, number[]>();
+  for (const id of before.cellIds) {
+    const cs = seed.getContinuousState(id);
+    assert.ok(cs !== undefined);
+    snapshots.set(id, Array.from(cs));
+  }
+
+  const ledgerPath = join(dir, 'seed-ledger.jsonl');
+  chmodSync(ledgerPath, 0o444);
+  t.after(() => {
+    try { chmodSync(ledgerPath, 0o644); } catch { /* dir already removed */ }
+  });
+
+  assert.throws(
+    () => seed.transition(makeEvent({ sourceRef: 'ref-blocked' })),
+    'transition must throw when the receipt cannot be committed',
+  );
+
+  const after = seed.getState();
+  assert.equal(after.stateHash, before.stateHash, 'stateHash must not move without a receipt');
+  assert.equal(after.transitionCount, before.transitionCount, 'transitionCount must not move without a receipt');
+  assert.equal(after.ledgerSeq, before.ledgerSeq, 'ledgerSeq must not move on a failed append');
+  for (const id of after.cellIds) {
+    const cs = seed.getContinuousState(id);
+    const snap = snapshots.get(id);
+    assert.ok(cs !== undefined && snap !== undefined);
+    for (let i = 0; i < cs.length; i++) {
+      assert.ok(Object.is(cs[i], snap[i]), `${id}[${i}] mutated despite failed receipt`);
+    }
+  }
+
+  chmodSync(ledgerPath, 0o644);
+  const resumed = seed.transition(makeEvent({ sourceRef: 'ref-resumed' }));
+  assert.equal(resumed.stateHashBefore, before.stateHash, 'recovery must chain from the receipted state');
+});
+
+test('initialize refuses a stateDir that already holds a seed ledger', (t) => {
+  const dir = makeDir(t);
+  const seed = SeedProcess.initialize(dir);
+  seed.transition(makeEvent());
+  assert.throws(
+    () => SeedProcess.initialize(dir),
+    /already exists.*restore/s,
+    'second initialize must refuse instead of forking identity with a new genesis',
+  );
+});
+
+test('restore refuses a tampered ledger (chain verified on the restore path)', (t) => {
+  const dir = makeDir(t);
+  const seed = SeedProcess.initialize(dir);
+  seed.transition(makeEvent({ sourceRef: 'ref-a' }));
+  seed.transition(makeEvent({ sourceRef: 'ref-b' }));
+  const checkpointId = seed.stop();
+
+  const ledgerPath = join(dir, 'seed-ledger.jsonl');
+  const lines = readFileSync(ledgerPath, 'utf-8').split('\n').filter((l) => l.trim());
+  const target = lines[1];
+  assert.ok(target !== undefined);
+  lines[1] = target.replace('"payload":{', '"payload":{"tampered":true,');
+  writeFileSync(ledgerPath, lines.join('\n') + '\n', 'utf-8');
+
+  assert.throws(
+    () => SeedProcess.restore(dir, checkpointId),
+    /chain verification/,
+    'restore must refuse a ledger whose chain does not verify',
+  );
+});
+
+test('restore refuses a checkpoint whose cursor does not match this ledger', (t) => {
+  const dirA = makeDir(t);
+  const dirB = makeDir(t);
+
+  const seedA = SeedProcess.initialize(dirA);
+  seedA.transition(makeEvent({ sourceRef: 'a-1', producedAt: '2026-08-07T10:00:00.000Z' }));
+  const checkpointId = seedA.stop();
+
+  const seedB = SeedProcess.initialize(dirB);
+  for (let i = 0; i < 6; i++) {
+    seedB.transition(makeEvent({ sourceRef: `b-${i}`, producedAt: `2026-08-07T10:00:0${i}.000Z` }));
+  }
+  seedB.stop();
+
+  // Swap in B's (valid, longer) ledger under A's checkpoints: chain verifies,
+  // seq is sufficient, but the cursor binding must expose the foreign chain.
+  copyFileSync(join(dirB, 'seed-ledger.jsonl'), join(dirA, 'seed-ledger.jsonl'));
+
+  assert.throws(
+    () => SeedProcess.restore(dirA, checkpointId),
+    /cursor mismatch/,
+    'restore must bind the checkpoint to its own chain, not any sufficiently long chain',
+  );
 });

@@ -168,6 +168,26 @@ export function applyTransition(cell: SituationCell, event: SourceEvent, now: st
   return cell;
 }
 
+/**
+ * Copy a cell for a staged transition. Must copy every surface applyTransition
+ * mutates (continuousState, energy, and top-level scalars via the spread) so a
+ * failed ledger append can discard the staged copy leaving the original
+ * untouched. dispositions/modelAffinities are copied too so a staged cell never
+ * aliases mutable structures with the committed one.
+ */
+export function cloneCell(cell: SituationCell): SituationCell {
+  return {
+    ...cell,
+    continuousState: new Float32Array(cell.continuousState),
+    energy: { ...cell.energy },
+    dispositions: {
+      ...cell.dispositions,
+      modelAffinities: { ...cell.dispositions.modelAffinities },
+    },
+    lobeAffinities: { ...cell.lobeAffinities },
+  };
+}
+
 // ─── Serialization ────────────────────────────────────────────────────────────
 
 export function serializeCell(cell: SituationCell): SerializedCell {

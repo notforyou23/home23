@@ -13,11 +13,14 @@
  */
 
 import {
-  appendFileSync,
   readFileSync,
   existsSync,
   mkdirSync,
   statSync,
+  openSync,
+  writeSync,
+  fsyncSync,
+  closeSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -30,7 +33,6 @@ import type {
 
 const GENESIS = 'GENESIS';
 const LEDGER_FILENAME = 'seed-ledger.jsonl';
-const TAIL_READ_SIZE = 65_536; // 64KB
 
 function sha256Line(line: string): string {
   return createHash('sha256').update(line, 'utf8').digest('hex');
@@ -52,13 +54,8 @@ function resumeFromTail(filePath: string): TailState {
     return { seq: 0, prevHash: GENESIS, lastLine: '', bytes: 0 };
   }
 
-  const readSize = Math.min(TAIL_READ_SIZE, stat.size);
-  const start = stat.size - readSize;
-  const buf = Buffer.alloc(readSize);
-
-  const fd = import('node:fs').then(() => undefined); // unused — use sync approach
-  // Synchronous tail read via readFileSync on the whole file is safe for small ledgers.
-  // For production rotation this would use a fd + pread; for Cut 1 the ledger is bounded.
+  // Whole-file read is safe for Cut 1 ledgers (bounded by resource budget).
+  // Rotation with a fd + pread tail read comes with rotation itself.
   const raw = readFileSync(filePath, 'utf-8');
   const lines = raw.split('\n').filter((l) => l.trim().length > 0);
 
@@ -141,8 +138,17 @@ export class SeedLedger {
     // The hash of this exact string is stored as the next record's prevHash.
     const line = JSON.stringify(record);
 
-    // Fail-closed: any write failure throws into the caller.
-    appendFileSync(this.ledgerPath, line + '\n');
+    // Fail-closed AND durable: any write failure throws into the caller, and the
+    // record is fsynced before append() returns — a receipt this method reported
+    // as committed must survive a crash, or developmental mutation built on it
+    // would outrun the evidence.
+    const fd = openSync(this.ledgerPath, 'a', 0o600);
+    try {
+      writeSync(fd, line + '\n', null, 'utf-8');
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
 
     this.seq = nextSeq;
     this.prevHash = sha256Line(line);
@@ -224,6 +230,36 @@ export class SeedLedger {
   /** Read all records from a given seq (inclusive) for replay from checkpoint. */
   readFrom(seq: number): LedgerRecord[] {
     return this.readAll().filter((r) => r.seq >= seq);
+  }
+
+  /**
+   * The cursor (line hash) as it stood immediately after the record with the
+   * given seq — the value a checkpoint taken at that point recorded as its
+   * ledgerCursor. seq 0 means the empty ledger (GENESIS). Throws if no record
+   * with that seq exists: a checkpoint bound to a missing record is not
+   * restorable evidence.
+   */
+  cursorAt(seq: number): string {
+    if (seq === 0) return GENESIS;
+    if (existsSync(this.ledgerPath)) {
+      const raw = readFileSync(this.ledgerPath, 'utf-8');
+      for (const line of raw.split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const parsed = JSON.parse(line) as Partial<LedgerRecord>;
+          if (parsed.seq === seq) return sha256Line(line);
+        } catch {
+          continue;
+        }
+      }
+    }
+    throw new Error(`No ledger record with seq ${seq} — cannot resolve cursor`);
+  }
+
+  /** Whether a ledger file with content already exists under stateDir. */
+  static exists(stateDir: string): boolean {
+    const p = join(stateDir, LEDGER_FILENAME);
+    return existsSync(p) && statSync(p).size > 0;
   }
 
   /** Path to the ledger file, for size checks. */

@@ -155,3 +155,27 @@ test('readFrom(seq) returns records >= seq', (t) => {
   assert.equal(tail.length, 3);
   assert.ok(tail[0] !== undefined && tail[0].seq === 3);
 });
+
+test('cursorAt(seq) equals the prevHash of the following record', (t) => {
+  const dir = makeDir(t);
+  const ledger = new SeedLedger(dir);
+  ledger.append({ category: 'genesis', sourceAuthority: 'seed.internal', sourceRef: 's', payload: {} });
+  ledger.append({ category: 'observation', sourceAuthority: 'seed.adapter', sourceRef: 'r1', payload: {} });
+  ledger.append({ category: 'observation', sourceAuthority: 'seed.adapter', sourceRef: 'r2', payload: {} });
+
+  const records = ledger.readAll();
+  assert.equal(ledger.cursorAt(0), 'GENESIS');
+  assert.equal(ledger.cursorAt(1), records[1]?.prevHash);
+  assert.equal(ledger.cursorAt(2), records[2]?.prevHash);
+  assert.equal(ledger.cursorAt(3), ledger.currentCursor);
+  assert.throws(() => ledger.cursorAt(99), /No ledger record with seq/);
+});
+
+test('exists() reports a content-bearing ledger file only', (t) => {
+  const dir = makeDir(t);
+  assert.equal(SeedLedger.exists(dir), false);
+  const ledger = new SeedLedger(dir);
+  assert.equal(SeedLedger.exists(dir), false, 'constructor alone creates no ledger file');
+  ledger.append({ category: 'genesis', sourceAuthority: 'seed.internal', sourceRef: 's', payload: {} });
+  assert.equal(SeedLedger.exists(dir), true);
+});

@@ -98,7 +98,7 @@ test('PROOF: stop → restart → exact state/hash/cursor continuation → next 
     assert.ok(original !== undefined, `No snapshot for ${cellId}`);
     for (let i = 0; i < restored.length; i++) {
       assert.ok(
-        Math.abs((restored[i] ?? 0) - (original[i] ?? 0)) < 1e-7,
+        Object.is(restored[i], original[i]),
         `${cellId} slot ${i}: ${restored[i]} !== ${original[i]} — Float32 bytes differ after restore`,
       );
     }
@@ -190,7 +190,7 @@ test('same events in same order produce identical state hashes (deterministic)',
     assert.ok(cs1 !== undefined && cs2 !== undefined);
     for (let i = 0; i < cs1.length; i++) {
       assert.ok(
-        Math.abs((cs1[i] ?? 0) - (cs2[i] ?? 0)) < 1e-7,
+        Object.is(cs1[i], cs2[i]),
         `${cellId}[${i}] differs between two seeds with identical event histories`,
       );
     }
