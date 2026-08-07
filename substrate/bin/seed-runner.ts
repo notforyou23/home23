@@ -6,8 +6,10 @@
  *   SEED_MAX_EVENTS     — stop after N transitions (transient/proof runs)
  *   SEED_BACKFILL_BYTES — start this many bytes before the source's end
  *   SEED_LOBE           — 'echo' = deterministic EchoLobe; 'model' = real model
- *                         via Home23's provider transport; unset = none
+ *                         via Home23's provider transport; 'file' = broker
+ *                         exchange (credential-free hosts); unset = none
  *   SEED_LOBE_MODEL     — model for SEED_LOBE=model (default glm-5.2:cloud)
+ *   SEED_LOBE_EXCHANGE  — exchange dir for SEED_LOBE=file (required for it)
  *   SEED_LOBE_MIN_INTERVAL_MS — resident spend guard (default 600000 = 10 min)
  *   SEED_POLL_MS        — poll interval (default 2000)
  *   SEED_RELATIONSHIP_SOURCE — relationship-ledger events JSONL (optional)
@@ -43,6 +45,17 @@ const numEnv = (name: string): number | undefined => {
 async function buildLobe(): Promise<LobeAdapter | undefined> {
   const kind = process.env['SEED_LOBE'];
   if (kind === 'echo') return new EchoLobe();
+  if (kind === 'file') {
+    // Credential-free hosts: requests go to an exchange dir; a broker on a
+    // trusted machine services them and the REAL model receipt comes back
+    // with the result. This process never holds a key or opens a port.
+    const exchangeDir = process.env['SEED_LOBE_EXCHANGE'];
+    if (exchangeDir === undefined || exchangeDir === '') {
+      throw new Error('SEED_LOBE=file requires SEED_LOBE_EXCHANGE');
+    }
+    const { createFileLobeTransport } = await import('../src/lobe-file-transport.js');
+    return new ModelLobe('lobe.broker', 'via-broker', 'home23.broker', createFileLobeTransport(exchangeDir));
+  }
   if (kind === 'model') {
     const model = process.env['SEED_LOBE_MODEL'] ?? 'glm-5.2:cloud';
     // Runtime-resolved import: the transport lives in src/ (harness territory,
