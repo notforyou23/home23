@@ -383,6 +383,10 @@ export interface PredictionProjection {
   cellId: string;
   claim: string;
   confidence: number;
+  /** The lobe needs deadline context to judge whether evidence has answered
+   * an open prediction — without these it can only restate, never resolve. */
+  horizon: string;
+  createdAt: string;
 }
 
 export type AuthorityLevel = 'observe' | 'propose' | 'propose-and-checkpoint';

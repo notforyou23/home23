@@ -388,6 +388,11 @@ export function buildLobePrompt(packet: WorkspacePacket): string {
     'predictions arrays are advisory context recorded in the receipt — anything',
     'you want REMEMBERED must be a stateDelta (a prediction you want held open',
     'must be a predictions.append delta, not just a predictions[] entry).',
+    'Open predictions in the packet are DEBTS. When current evidence answers one',
+    '(fulfilled, falsified, or past its horizon — each carries horizon+createdAt),',
+    'RESOLVE it via predictions.resolve {predictionId, error: 0..1 magnitude of',
+    'how wrong it was} instead of restating it. Resolution is how consequence',
+    'reaches development; an answered prediction left open teaches nothing.',
     '',
     `PACKET: ${JSON.stringify(packet)}`,
   ].join('\n');

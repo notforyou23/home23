@@ -97,7 +97,7 @@ export function buildPacket(admitted: SituationCell[], dispositions: SeedDisposi
     }
     for (const p of cell.predictions) {
       if (p.resolvedAt === undefined) {
-        predictions.push({ predictionId: p.predictionId, cellId: cell.id, claim: p.claim, confidence: p.confidence });
+        predictions.push({ predictionId: p.predictionId, cellId: cell.id, claim: p.claim, confidence: p.confidence, horizon: p.horizon, createdAt: p.createdAt });
       }
     }
   }
