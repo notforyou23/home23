@@ -32,7 +32,8 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { SourceAdapter, SourceEvent, EventCategory, SourceAuthority } from '../types.js';
 
-const MAX_READ_BYTES = 1024 * 1024; // 1MB per pull
+const DEFAULT_READ_WINDOW_BYTES = 1024 * 1024; // 1MB per pull
+const DEFAULT_OVERSIZED_LINE_MAX = 8 * 1024 * 1024; // single-line hard cap
 const DEFAULT_MAX_BATCH = 200;
 
 /** Map a harness event_type to a substrate category. Heuristic, documented,
@@ -74,6 +75,13 @@ export interface EventLedgerTailOptions {
    * bounded tail of recent reality (aligned forward to a line boundary). */
   backfillBytes?: number;
   maxBatch?: number;
+  /** Bytes read per pull (default 1MB). Injectable for tests. */
+  readWindowBytes?: number;
+  /** Largest single line the adapter will deliver (default 8MB). A complete
+   * line beyond this is SKIPPED — cursor advanced past it, counted, logged —
+   * so one pathological source line can never stall the reality spine. */
+  oversizedLineMax?: number;
+  log?: (line: string) => void;
 }
 
 export class EventLedgerTailAdapter implements SourceAdapter {
@@ -82,9 +90,13 @@ export class EventLedgerTailAdapter implements SourceAdapter {
   private readonly sourcePath: string;
   private readonly cursorPath: string;
   private readonly maxBatch: number;
+  private readonly readWindowBytes: number;
+  private readonly oversizedLineMax: number;
+  private readonly log: (line: string) => void;
   private offset: number;
   private pendingOffset: number | null = null;
   private skippedLines = 0;
+  private oversizedSkips = 0;
 
   constructor(opts: EventLedgerTailOptions) {
     this.sourcePath = opts.sourcePath;
@@ -92,6 +104,9 @@ export class EventLedgerTailAdapter implements SourceAdapter {
     mkdirSync(opts.cursorDir, { recursive: true });
     this.cursorPath = join(opts.cursorDir, `adapter-cursor.${this.id}.json`);
     this.maxBatch = opts.maxBatch ?? DEFAULT_MAX_BATCH;
+    this.readWindowBytes = opts.readWindowBytes ?? DEFAULT_READ_WINDOW_BYTES;
+    this.oversizedLineMax = opts.oversizedLineMax ?? DEFAULT_OVERSIZED_LINE_MAX;
+    this.log = opts.log ?? (() => {});
 
     const persisted = this.readCursor();
     if (persisted !== null) {
@@ -131,7 +146,7 @@ export class EventLedgerTailAdapter implements SourceAdapter {
     const fd = openSync(this.sourcePath, 'r');
     let buf: Buffer;
     try {
-      const readLen = Math.min(MAX_READ_BYTES, size - this.offset);
+      const readLen = Math.min(this.readWindowBytes, size - this.offset);
       buf = Buffer.alloc(readLen);
       const actuallyRead = readSync(fd, buf, 0, readLen, this.offset);
       buf = buf.subarray(0, actuallyRead);
@@ -143,7 +158,7 @@ export class EventLedgerTailAdapter implements SourceAdapter {
     let lineStart = 0;
     while (events.length < this.maxBatch) {
       const nl = buf.indexOf(0x0a, lineStart);
-      if (nl < 0) break; // torn or incomplete tail — never consume it
+      if (nl < 0) break; // no newline in the remaining window
       const line = buf.subarray(lineStart, nl).toString('utf-8').trim();
       const endOffset = this.offset + nl + 1;
       lineStart = nl + 1;
@@ -155,7 +170,75 @@ export class EventLedgerTailAdapter implements SourceAdapter {
       }
       events.push(mapped);
     }
+
+    // Liveness guard A: complete lines were consumed but none yielded events
+    // (all unparseable/blank). They were examined and rejected — advance the
+    // durable cursor past them or the same garbage is re-read forever.
+    if (events.length === 0 && lineStart > 0) {
+      this.commit(this.offset + lineStart);
+      return events;
+    }
+
+    // Liveness guard B: zero events with a FULL window and more file beyond it
+    // means the line at the cursor is larger than the window — NOT "caught
+    // up". Without this, the adapter re-reads the same window forever and the
+    // Seed silently stops perceiving reality. Deliver the oversized line via
+    // a one-off exact read if it is bounded; skip past it (durably, counted,
+    // logged) if it exceeds the hard cap; wait only if it is genuinely still
+    // being written.
+    if (events.length === 0 && buf.length === this.readWindowBytes && this.offset + buf.length < size) {
+      const nextNl = this.findNextNewline(this.offset + buf.length, size);
+      if (nextNl === null) return events; // unterminated giant tail — writer still going
+      const lineLen = nextNl - this.offset;
+      if (lineLen <= this.oversizedLineMax) {
+        const bigFd = openSync(this.sourcePath, 'r');
+        try {
+          const bigBuf = Buffer.alloc(lineLen);
+          const read = readSync(bigFd, bigBuf, 0, lineLen, this.offset);
+          const line = bigBuf.subarray(0, read).toString('utf-8').trim();
+          const mapped = this.mapLine(line, nextNl + 1);
+          if (mapped !== null) {
+            this.log(`oversized line delivered (${lineLen} bytes) at offset ${this.offset}`);
+            events.push(mapped);
+          } else {
+            this.skippedLines++;
+            this.commit(nextNl + 1);
+            this.log(`oversized unparseable line skipped (${lineLen} bytes) at offset ${this.offset}`);
+          }
+        } finally {
+          closeSync(bigFd);
+        }
+      } else {
+        this.oversizedSkips++;
+        this.skippedLines++;
+        const skippedFrom = this.offset;
+        this.commit(nextNl + 1);
+        this.log(`oversized line SKIPPED (${lineLen} bytes > cap ${this.oversizedLineMax}) at offset ${skippedFrom}`);
+      }
+    }
     return events;
+  }
+
+  get oversizedSkipCount(): number { return this.oversizedSkips; }
+
+  /** Scan forward in windows for the next newline at/after `from`. Returns its
+   * absolute offset, or null if none exists yet (line still being written). */
+  private findNextNewline(from: number, size: number): number | null {
+    const fd = openSync(this.sourcePath, 'r');
+    try {
+      let position = from;
+      const chunk = Buffer.alloc(this.readWindowBytes);
+      while (position < size) {
+        const read = readSync(fd, chunk, 0, Math.min(chunk.length, size - position), position);
+        if (read <= 0) return null;
+        const nl = chunk.subarray(0, read).indexOf(0x0a);
+        if (nl >= 0) return position + nl;
+        position += read;
+      }
+      return null;
+    } finally {
+      closeSync(fd);
+    }
   }
 
   /** Persist the durable cursor after the events up to `offset` have been

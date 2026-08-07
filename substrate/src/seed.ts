@@ -293,6 +293,11 @@ export class SeedProcess {
     const staged = cloneCell(cell);
     const readouts = applyMetabolicTransition(staged, event, this.reservoir, dtSeconds);
 
+    // Budget is a PRE-commit gate: a cell that would exceed its state ceiling
+    // refuses the transition entirely rather than committing then complaining.
+    const stagedBytes = estimateCellBytes(staged);
+    this.accounting.assertCellStateBudget(cellId, stagedBytes);
+
     const { record, stateHashBefore, stateHashAfter } = this.commitReceipted(
       new Map([[cellId, staged]]),
       {
@@ -320,7 +325,7 @@ export class SeedProcess {
     this.accounting.recordEvent();
     this.accounting.recordTransition();
     this.accounting.setLedgerBytes(this.ledger.bytes);
-    this.accounting.setCellStateBytes(cellId, estimateCellBytes(staged));
+    this.accounting.setCellStateBytes(cellId, stagedBytes);
 
     return {
       seq: record.seq,
@@ -515,7 +520,10 @@ export class SeedProcess {
       seedId: this.seedId,
       schema: 'home23.seed.state.v1',
       cellIds: Array.from(this.cells.keys()),
-      dispositions: this.dispositions,
+      // Copy-on-read: the live dispositions object drives admission and enters
+      // the state hash — leaking the reference would be an unreceipted
+      // mutation path into D (the exact bug class getCell already guards).
+      dispositions: { ...this.dispositions },
       stateHash: this.computeCurrentStateHash(),
       ledgerSeq: this.ledger.currentSeq,
       ledgerCursor: this.ledger.currentCursor,

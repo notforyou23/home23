@@ -162,3 +162,81 @@ test('RUNNER: live-shaped flow — transitions, workspace, lobe, checkpoint, sto
 
   assert.ok(lines.some((l) => l.startsWith('restored seed')), 'second start must be a restore, not an initialize');
 });
+
+// ─── Post-review fixes ───────────────────────────────────────────────────────
+
+test('REVIEW FIX: oversized line larger than the read window is delivered, not a silent stall', (t) => {
+  const srcDir = makeDir(t, 'big-src');
+  const stateDir = makeDir(t, 'big-state');
+  const sourcePath = join(srcDir, 'event-ledger.jsonl');
+  const bigPayload = 'x'.repeat(2048);
+  const bigLine = JSON.stringify({ event_id: 'he_big', event_type: 'OutcomeObserved', object_id: bigPayload, timestamp: '2026-08-07T12:00:00.000Z' });
+  writeFileSync(sourcePath, `${bigLine}\n${harnessLine(1)}\n`, 'utf-8');
+
+  const adapter = new EventLedgerTailAdapter({
+    sourcePath, cursorDir: stateDir, fromEnd: false,
+    readWindowBytes: 256, oversizedLineMax: 8192,
+  });
+  const first = adapter.pullSync();
+  assert.equal(first.length, 1, 'the oversized-but-bounded line must be delivered via exact read');
+  assert.equal(first[0]?.eventId, 'he_big');
+  adapter.commit(first[0]?.endOffset ?? 0);
+  const second = adapter.pullSync();
+  assert.equal(second[0]?.eventId, 'he_1', 'the normal line after it flows normally');
+});
+
+test('REVIEW FIX: line beyond the hard cap is SKIPPED durably with a count — never an infinite stall', (t) => {
+  const srcDir = makeDir(t, 'cap-src');
+  const stateDir = makeDir(t, 'cap-state');
+  const sourcePath = join(srcDir, 'event-ledger.jsonl');
+  const monster = JSON.stringify({ event_id: 'he_monster', event_type: 'OutcomeObserved', object_id: 'y'.repeat(4096), timestamp: '2026-08-07T12:00:00.000Z' });
+  writeFileSync(sourcePath, `${monster}\n${harnessLine(2)}\n`, 'utf-8');
+
+  const logs: string[] = [];
+  const adapter = new EventLedgerTailAdapter({
+    sourcePath, cursorDir: stateDir, fromEnd: false,
+    readWindowBytes: 256, oversizedLineMax: 1024, log: (l) => logs.push(l),
+  });
+  const first = adapter.pullSync();
+  assert.equal(first.length, 0, 'monster line yields nothing');
+  assert.equal(adapter.oversizedSkipCount, 1, 'but the skip is counted');
+  assert.ok(logs.some((l) => l.includes('SKIPPED')), 'and logged');
+  const second = adapter.pullSync();
+  assert.equal(second.length, 1, 'the adapter moved past it — liveness preserved');
+  assert.equal(second[0]?.eventId, 'he_2');
+});
+
+test('REVIEW FIX: a window of pure garbage lines advances the cursor instead of stalling', (t) => {
+  const srcDir = makeDir(t, 'junk-src');
+  const stateDir = makeDir(t, 'junk-state');
+  const sourcePath = join(srcDir, 'event-ledger.jsonl');
+  writeFileSync(sourcePath, 'not json\nalso not json\n{"no_timestamp":true}\n' + `${harnessLine(3)}\n`, 'utf-8');
+
+  const adapter = new EventLedgerTailAdapter({
+    sourcePath, cursorDir: stateDir, fromEnd: false, readWindowBytes: 40,
+  });
+  let delivered: string | undefined;
+  for (let i = 0; i < 6 && delivered === undefined; i++) {
+    const batch = adapter.pullSync();
+    if (batch.length > 0) delivered = batch[0]?.eventId;
+  }
+  assert.equal(delivered, 'he_3', 'garbage is consumed and the real event arrives');
+});
+
+test('REVIEW FIX: getState() dispositions are copy-on-read — no unreceipted mutation path into D', (t) => {
+  const srcDir = makeDir(t, 'disp-src');
+  const stateDir = makeDir(t, 'disp-state');
+  writeFixture(srcDir, [harnessLine(0)]);
+  const runner = new SeedRunner({ stateDir, sourcePath: join(srcDir, 'event-ledger.jsonl'), fromEnd: false });
+  runner.start();
+  const seed = runner.seedProcess;
+
+  const leaked = seed.getState();
+  leaked.dispositions.globalWakeThreshold = 0;
+  leaked.dispositions.quietTimeEnabled = true;
+
+  const fresh = seed.getState();
+  assert.equal(fresh.dispositions.globalWakeThreshold, 0.3, 'threshold unchanged — the returned object was a copy');
+  assert.equal(fresh.dispositions.quietTimeEnabled, false);
+  runner.stop();
+});
