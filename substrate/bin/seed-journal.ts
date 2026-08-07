@@ -15,6 +15,7 @@ import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from 
 import { join, resolve } from 'node:path';
 import { SeedLedger } from '../src/ledger.js';
 import { composeJournalEntry } from '../src/journal.js';
+import { materializeForms } from '../src/forms.js';
 import type { CheckpointManifest, LedgerRecord } from '../src/types.js';
 
 const stateDir = process.argv[2] !== undefined ? resolve(process.argv[2]) : undefined;
@@ -50,6 +51,15 @@ function writeEntryOnce(): boolean {
   const seedId = typeof genesis?.payload?.['seedId'] === 'string' ? String(genesis.payload['seedId']) : 'unknown';
   const records = all.filter((r) => r.seq > sinceSeq);
   const manifest = newestCheckpoint();
+
+  // Forms pass (Cut 4): materialize inquiry forms from weighty open
+  // intentions and render growth-proposal receipts readable. Idempotent —
+  // the manifest remembers what exists. Uses the FULL chain for lineage so
+  // forms opened for carried-over intentions still cite their receipts.
+  const formed = materializeForms(formsDir as string, name, manifest?.cells ?? [], all);
+  for (const form of formed.created) {
+    console.log(`[forms] opened ${form.kind} "${form.title}" (${form.path}, lineage seq ${form.lineageSeqs.join(',') || 'carried'})`);
+  }
 
   const entry = composeJournalEntry({
     name,

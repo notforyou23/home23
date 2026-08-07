@@ -49,6 +49,8 @@ import type { Reservoir } from './metabolism.js';
 import { generateReservoir, eventDeltaSeconds, METABOLISM_VERSION } from './metabolism.js';
 import { CONTINUOUS_STATE_DIM } from './types.js';
 import { evaluateWorkspace } from './workspace.js';
+import { evaluateGrowthPressure, proposalKey } from './growth.js';
+import type { GrowthProposal, GrowthOp } from './growth.js';
 import type { DevelopmentalState } from './plasticity.js';
 import {
   emptyDevelopment,
@@ -84,6 +86,7 @@ export class SeedProcess {
   private readonly accounting: ResourceAccounting;
   private readonly cells: Map<string, SituationCell>;
   private readonly reservoir: Reservoir;
+  private readonly anatomy: readonly AnatomyCellSpec[];
   private readonly routing: { byCategory: Record<string, string>; peripheryId: string };
   private development: DevelopmentalState;
   private dispositions: SeedDispositions;
@@ -116,6 +119,7 @@ export class SeedProcess {
     this.createdAt = opts.createdAt;
     this.cells = opts.cells;
     this.reservoir = opts.reservoir;
+    this.anatomy = opts.anatomy;
     this.routing = routingFromAnatomy(opts.anatomy);
     this.development = opts.development;
     this.dispositions = opts.dispositions;
@@ -508,6 +512,47 @@ export class SeedProcess {
     this.accounting.setLedgerBytes(this.ledger.bytes);
 
     return outcome;
+  }
+
+  /**
+   * Growth pressure evaluation (Cut 5). Reads this Seed's own recent chain,
+   * detects repeated real pressure on the anatomy, and receipts bounded
+   * split/merge/specialize/dissolve/crystallize PROPOSALS — zero mutations,
+   * like silence. Each proposal carries its typed evidence, a shadow trial
+   * run against the window's actual events, and the before-anatomy verbatim
+   * (the rollback representation). Applying a proposal is an operator
+   * decision made elsewhere; an anatomy change is an identity change and is
+   * never automatic. Deterministic given the chain.
+   */
+  evaluateGrowth(asOf: string, windowRecords = 400): GrowthProposal[] {
+    this.membrane.assert('local.state.read');
+    this.membrane.assert('local.ledger.append');
+
+    const all = this.ledger.readAll();
+    const window = all.slice(-windowRecords);
+    const priors = new Map<string, number>();
+    for (const record of all) {
+      if (record.category !== 'proposal' || record.sourceRef !== 'growth.pressure') continue;
+      const op = record.payload?.['op'];
+      const targets = record.payload?.['targetCellIds'];
+      if (typeof op === 'string' && Array.isArray(targets)) {
+        priors.set(proposalKey(op as GrowthOp, targets as string[]), record.seq);
+      }
+    }
+    const currentSeq = all[all.length - 1]?.seq ?? 0;
+    const proposals = evaluateGrowthPressure(window, this.anatomy, priors, currentSeq);
+    for (const proposal of proposals) {
+      this.commitReceipted(new Map(), {
+        category: 'proposal',
+        sourceAuthority: 'seed.internal',
+        sourceRef: 'growth.pressure',
+        payload: { asOf, ...proposal },
+      });
+      this._eventCount++;
+      this.accounting.recordEvent();
+      this.accounting.setLedgerBytes(this.ledger.bytes);
+    }
+    return proposals;
   }
 
   /**

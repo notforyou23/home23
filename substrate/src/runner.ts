@@ -185,6 +185,13 @@ export class SeedRunner {
       }
       if (this.transitionsSinceCheckpoint >= (this.opts.checkpointEveryN ?? 32)) {
         this.transitionsSinceCheckpoint = 0;
+        // Growth pressure rides the checkpoint cadence: same chain, zero
+        // mutations, receipted proposals only. Detectors have their own
+        // floors and cooldowns — most evaluations receipt nothing.
+        const proposals = this.seed.evaluateGrowth(event.producedAt);
+        for (const proposal of proposals) {
+          this.log(`growth: proposed ${proposal.op} on ${proposal.targetCellIds.join(', ')} (window ${proposal.evidence.windowTransitions}t/${proposal.evidence.windowAdmissions}a)`);
+        }
         this.seed.checkpoint();
         report.checkpoints++;
         this.log('checkpoint (cadence)');

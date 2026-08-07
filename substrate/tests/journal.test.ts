@@ -78,3 +78,28 @@ test('an empty window produces NO entry — empty essays are exhaust', () => {
   const entry = composeJournalEntry({ name: 'x', seedId: 'x', records: [], cells: [], sinceSeq: 40 });
   assert.equal(entry, null);
 });
+
+test('the journal counts only INTEGRATED deltas as change — offered arrays are not thoughts', () => {
+  // The live defect this pins: acceptedCounts said predictions:2 while zero
+  // predictions persisted (top-level arrays are advisory; only stateDeltas
+  // integrate). The diary must never repeat that overstatement.
+  const lobeRecord = {
+    schema: 'home23.seed.ledger.v1' as const,
+    seq: 41,
+    prevHash: 'x',
+    recordId: 'rec_41',
+    category: 'lobe' as const,
+    sourceAuthority: 'seed.internal' as const,
+    sourceRef: 'lobe.broker',
+    payload: {
+      acceptedCounts: { observations: 3, interpretations: 2, predictions: 2, stateDeltas: 1 },
+      appliedDeltas: [{ cellId: 'world.pi', field: 'estimates.append', delta: {}, authority: 'propose' }],
+    },
+    issuedAt: '2026-08-08T10:00:00.000Z',
+  };
+  const entry = composeJournalEntry({ name: 'x', seedId: 'x', records: [lobeRecord], cells: [], sinceSeq: 40 });
+  assert.ok(entry !== null);
+  assert.ok(entry.includes('landed 1 typed delta'), 'narrates the integrated count');
+  assert.ok(entry.includes('estimates.append'), 'names what integrated');
+  assert.ok(!entry.includes('"predictions":2'), 'never repeats un-integrated counts as change');
+});

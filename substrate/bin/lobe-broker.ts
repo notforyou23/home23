@@ -6,6 +6,9 @@
  *   BROKER_MODEL        — model to recruit (default glm-5.2:cloud)
  *   BROKER_INTERVAL_MS  — poll cadence (default 15000)
  *   BROKER_MAX_PER_TICK — spend guard: requests serviced per tick (default 2)
+ *   BROKER_FORMS_REMOTE — remote forms dir to mirror locally (optional)
+ *   BROKER_FORMS_DEST   — local mirror destination (required with above)
+ *   BROKER_FORMS_EVERY_TICKS — mirror cadence in ticks (default 30)
  *
  * Polls <remote>/requests/ over ssh, services each request with Home23's
  * provider transport (keys loaded from config/secrets.yaml into env HERE,
@@ -126,14 +129,41 @@ async function tick(transport: Transport): Promise<void> {
   }
 }
 
+// ─── Forms mirror: the conversational read aperture ──────────────────────────
+// Jerry (and anyone on the trusted machine) reads the Seed's forms with plain
+// file tools. Pull-based rsync, read-only at the source, no write path back —
+// the mirror is a window, not a channel.
+
+const formsRemote = process.env['BROKER_FORMS_REMOTE'];
+const formsDest = process.env['BROKER_FORMS_DEST'];
+const formsEveryTicks = Number(process.env['BROKER_FORMS_EVERY_TICKS'] ?? 30);
+if (formsRemote !== undefined && !/^[A-Za-z0-9._/-]+$/.test(formsRemote)) {
+  console.error('BROKER_FORMS_REMOTE contains unsafe characters');
+  process.exit(2);
+}
+
+function mirrorForms(): void {
+  if (formsRemote === undefined || formsDest === undefined) return;
+  try {
+    execFileSync('rsync', ['-a', '--delete', `${sshHost}:${formsRemote}/`, `${formsDest}/`], { timeout: 60_000 });
+    console.log(`[broker] forms mirrored to ${formsDest}`);
+  } catch (error) {
+    console.error(`[broker] forms mirror failed: ${(error as Error).message}`);
+  }
+}
+
 async function main(): Promise<void> {
   loadProviderEnv();
   const transport = await buildTransport();
   console.log(`[broker] serving ${sshHost}:${remoteDir} with ${model}, every ${intervalMs}ms`);
   await tick(transport);
+  mirrorForms();
+  let ticks = 0;
   // The interval keeps the process alive — deliberately NOT unref'd.
   setInterval(() => {
+    ticks++;
     tick(transport).catch((error) => console.error('[broker] tick error:', (error as Error).message));
+    if (ticks % formsEveryTicks === 0) mirrorForms();
   }, intervalMs);
 }
 

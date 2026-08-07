@@ -384,6 +384,10 @@ export function buildLobePrompt(packet: WorkspacePacket): string {
     'uncertainty.adjust delta: {value in [-0.2, 0.2]}.',
     'Claims are bounded at 500 chars. You are proposing typed state changes to a',
     'governed process — you are not writing memory, narrative, or identity.',
+    'ONLY stateDeltas integrate into state. The observations/interpretations/',
+    'predictions arrays are advisory context recorded in the receipt — anything',
+    'you want REMEMBERED must be a stateDelta (a prediction you want held open',
+    'must be a predictions.append delta, not just a predictions[] entry).',
     '',
     `PACKET: ${JSON.stringify(packet)}`,
   ].join('\n');

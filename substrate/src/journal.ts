@@ -52,6 +52,7 @@ export function composeJournalEntry(window: JournalWindow): string | null {
   const silences = records.filter((r) => r.category === 'silence');
   const developments = records.filter((r) => r.category === 'development');
   const lobes = records.filter((r) => r.category === 'lobe');
+  const growthProposals = records.filter((r) => r.category === 'proposal' && r.sourceRef === 'growth.pressure');
 
   const lines: string[] = [];
   const lastSeq = records[records.length - 1]?.seq ?? window.sinceSeq;
@@ -104,11 +105,19 @@ export function composeJournalEntry(window: JournalWindow): string | null {
     lines.push(`- stayed quiet ×${silences.length} (closest call ${best?.top.toFixed(2)} vs threshold ${best?.thr.toFixed(2)} · seq ${best?.seq}) — nothing earned the workspace`);
   }
   for (const l of lobes) {
-    const applied = l.payload?.['acceptedCounts'];
     const err = l.payload?.['error'];
-    lines.push(err !== undefined
-      ? `- recruited thought failed (${String(err).slice(0, 60)}) · seq ${l.seq}`
-      : `- recruited thought landed ${JSON.stringify(applied)} · seq ${l.seq}`);
+    if (err !== undefined) {
+      lines.push(`- recruited thought failed (${String(err).slice(0, 60)}) · seq ${l.seq}`);
+      continue;
+    }
+    // Only typed deltas integrate — the advisory arrays are context, and the
+    // journal must never count offered-but-unintegrated items as change.
+    const appliedDeltas = l.payload?.['appliedDeltas'];
+    const integrated = Array.isArray(appliedDeltas) ? appliedDeltas.length : 0;
+    const fields = Array.isArray(appliedDeltas)
+      ? [...new Set(appliedDeltas.map((d) => String((d as { field?: unknown }).field ?? '?')))].join(', ')
+      : '';
+    lines.push(`- recruited thought landed ${integrated} typed delta(s)${fields !== '' ? ` (${fields})` : ''} · seq ${l.seq}`);
   }
   lines.push('');
 
@@ -133,6 +142,20 @@ export function composeJournalEntry(window: JournalWindow): string | null {
     }
   }
   lines.push('');
+
+  // ── Growth pressure (anatomy under strain — proposals only, receipted) ──
+  if (growthProposals.length > 0) {
+    lines.push('## growth pressure');
+    for (const g of growthProposals) {
+      const op = String(g.payload?.['op'] ?? '?');
+      const targets = Array.isArray(g.payload?.['targetCellIds']) ? (g.payload['targetCellIds'] as string[]).join(', ') : '?';
+      const trial = g.payload?.['shadowTrial'] as { clusterCapture?: number; eventsTried?: number } | undefined;
+      lines.push(`- my anatomy strains: I proposed **${op}** on ${targets}`
+        + (trial?.eventsTried !== undefined ? ` (shadow trial over ${trial.eventsTried} of my own events${trial.clusterCapture !== undefined ? `, cluster capture ${(trial.clusterCapture * 100).toFixed(0)}%` : ''})` : '')
+        + ` — nothing changes unless an operator agrees · seq ${g.seq}`);
+    }
+    lines.push('');
+  }
 
   // ── Open expectations ──
   const open: Array<{ cellId: string; p: Prediction }> = [];
