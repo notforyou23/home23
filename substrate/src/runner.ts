@@ -23,7 +23,7 @@ import type { SeedProcess } from './seed.js';
 import { SeedProcess as Seed } from './seed.js';
 import { SeedLedger } from './ledger.js';
 import { EventLedgerTailAdapter } from './adapters/event-ledger-tail.js';
-import type { TailedSourceEvent } from './adapters/event-ledger-tail.js';
+import type { TailedSourceEvent, TailSourceType } from './adapters/event-ledger-tail.js';
 import type { LobeAdapter } from './lobe.js';
 import type { WorkspaceOutcome } from './types.js';
 
@@ -40,6 +40,14 @@ export interface SeedRunnerOptions {
   /** Start reading the source from its end minus this many bytes. */
   backfillBytes?: number;
   fromEnd?: boolean;
+  /** Additional read-only streams (relationship ledger, worker runs, …).
+   * Events from all sources merge in event-time order each tick. */
+  extraSources?: Array<{
+    sourcePath: string;
+    sourceType: TailSourceType;
+    id: string;
+    backfillBytes?: number;
+  }>;
   /** Optional lobe to recruit when a workspace admission happens. */
   lobe?: LobeAdapter;
   /** Minimum wall-clock ms between lobe recruitments (resident spend guard;
@@ -59,7 +67,7 @@ export interface TickReport {
 
 export class SeedRunner {
   private seed: SeedProcess | null = null;
-  private adapter: EventLedgerTailAdapter | null = null;
+  private adapters: EventLedgerTailAdapter[] = [];
   private transitionsSinceWorkspace = 0;
   private transitionsSinceCheckpoint = 0;
   private totalTransitions = 0;
@@ -90,28 +98,55 @@ export class SeedRunner {
       this.seed.checkpoint();
       this.log(`initialized seed ${this.seed.getState().seedId}`);
     }
-    this.adapter = new EventLedgerTailAdapter({
-      sourcePath: this.opts.sourcePath,
-      cursorDir: this.opts.stateDir,
-      fromEnd: this.opts.fromEnd,
-      backfillBytes: this.opts.backfillBytes,
-    });
-    this.log(`tailing ${this.opts.sourcePath} from offset ${this.adapter.currentOffset}`);
+    this.adapters = [
+      new EventLedgerTailAdapter({
+        sourcePath: this.opts.sourcePath,
+        cursorDir: this.opts.stateDir,
+        fromEnd: this.opts.fromEnd,
+        backfillBytes: this.opts.backfillBytes,
+        log: this.log,
+      }),
+      ...(this.opts.extraSources ?? []).map((src) =>
+        new EventLedgerTailAdapter({
+          sourcePath: src.sourcePath,
+          sourceType: src.sourceType,
+          id: src.id,
+          cursorDir: this.opts.stateDir,
+          fromEnd: this.opts.fromEnd,
+          backfillBytes: src.backfillBytes,
+          log: this.log,
+        }),
+      ),
+    ];
+    for (const adapter of this.adapters) {
+      this.log(`tailing [${adapter.id}] ${'sourcePath' in this.opts ? '' : ''}from offset ${adapter.currentOffset}`);
+    }
   }
 
   /** One poll cycle. Returns what happened — the caller (or test) decides
    * whether that constitutes progress. */
   async tick(): Promise<TickReport> {
-    if (this.seed === null || this.adapter === null) throw new Error('runner not started');
+    if (this.seed === null || this.adapters.length === 0) throw new Error('runner not started');
     const report: TickReport = { pulled: 0, transitioned: 0, workspaceOutcomes: [], lobeRecruitments: 0, checkpoints: 0 };
 
-    const events: TailedSourceEvent[] = this.adapter.pullSync();
-    report.pulled = events.length;
+    // Pull from every source, merge in EVENT-TIME order (deterministic
+    // tiebreak: adapter id, then file offset). Cursors commit per adapter at
+    // the end of the tick, up to each adapter's contiguous processed prefix —
+    // a crash mid-tick re-delivers the batch (at-least-once, as designed).
+    const perAdapter = this.adapters.map((adapter) => ({ adapter, events: adapter.pullSync() }));
+    const merged = perAdapter
+      .flatMap(({ adapter, events }) => events.map((event) => ({ adapter, event })))
+      .sort((a, b) =>
+        a.event.producedAt.localeCompare(b.event.producedAt)
+        || a.adapter.id.localeCompare(b.adapter.id)
+        || (a.event.endOffset - b.event.endOffset));
+    report.pulled = merged.length;
+    const processed = new Set<string>();
 
-    for (const event of events) {
+    for (const { event } of merged) {
       if (this.opts.maxEvents !== undefined && this.totalTransitions >= this.opts.maxEvents) break;
       const result = this.seed.transition(event);
-      this.adapter.commit(event.endOffset);
+      processed.add(event.eventId);
       this.totalTransitions++;
       this.transitionsSinceWorkspace++;
       this.transitionsSinceCheckpoint++;
@@ -142,6 +177,16 @@ export class SeedRunner {
         report.checkpoints++;
         this.log('checkpoint (cadence)');
       }
+    }
+
+    // Commit each adapter's cursor to its contiguous processed prefix.
+    for (const { adapter, events } of perAdapter) {
+      let lastContiguous: number | null = null;
+      for (const event of events) {
+        if (!processed.has(event.eventId)) break;
+        lastContiguous = event.endOffset;
+      }
+      if (lastContiguous !== null) adapter.commit(lastContiguous);
     }
     return report;
   }
@@ -182,7 +227,7 @@ export class SeedRunner {
       const checkpointId = this.seed.stop();
       this.log(`stopped at checkpoint ${checkpointId}, ledgerSeq ${this.seed.getState().ledgerSeq}`);
       this.seed = null;
-      this.adapter = null;
+      this.adapters = [];
     }
   }
 

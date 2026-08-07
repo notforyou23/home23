@@ -10,6 +10,9 @@
  *   SEED_LOBE_MODEL     — model for SEED_LOBE=model (default glm-5.2:cloud)
  *   SEED_LOBE_MIN_INTERVAL_MS — resident spend guard (default 600000 = 10 min)
  *   SEED_POLL_MS        — poll interval (default 2000)
+ *   SEED_RELATIONSHIP_SOURCE — relationship-ledger events JSONL (optional)
+ *   SEED_WORKER_SOURCE  — worker-runs JSONL (optional)
+ *   SEED_EXTRA_BACKFILL_BYTES — backfill for extra sources (default 8192)
  *
  * Residency note: this file still does not self-register with PM2 — the
  * ecosystem generator emits a home23-<agent>-seed app only when the agent's
@@ -56,12 +59,24 @@ async function buildLobe(): Promise<LobeAdapter | undefined> {
 }
 
 async function main(): Promise<void> {
+  const extraBackfill = numEnv('SEED_EXTRA_BACKFILL_BYTES') ?? 8192;
+  const extraSources: NonNullable<ConstructorParameters<typeof SeedRunner>[0]['extraSources']> = [];
+  const relationshipSource = process.env['SEED_RELATIONSHIP_SOURCE'];
+  if (relationshipSource !== undefined && relationshipSource !== '') {
+    extraSources.push({ sourcePath: relationshipSource, sourceType: 'relationship-ledger', id: 'relationship', backfillBytes: extraBackfill });
+  }
+  const workerSource = process.env['SEED_WORKER_SOURCE'];
+  if (workerSource !== undefined && workerSource !== '') {
+    extraSources.push({ sourcePath: workerSource, sourceType: 'worker-runs', id: 'worker-runs', backfillBytes: extraBackfill });
+  }
+
   const runner = new SeedRunner({
     stateDir: stateDir as string,
     sourcePath: sourcePath as string,
     maxEvents: numEnv('SEED_MAX_EVENTS'),
     backfillBytes: numEnv('SEED_BACKFILL_BYTES'),
     pollMs: numEnv('SEED_POLL_MS') ?? 2000,
+    extraSources,
     lobe: await buildLobe(),
     lobeMinIntervalMs: numEnv('SEED_LOBE_MIN_INTERVAL_MS') ?? 600_000,
     log: (line) => console.log(`[seed] ${line}`),

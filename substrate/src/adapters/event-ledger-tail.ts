@@ -63,9 +63,13 @@ export interface TailedSourceEvent extends SourceEvent {
   endOffset: number;
 }
 
+export type TailSourceType = 'harness-ledger' | 'relationship-ledger' | 'worker-runs';
+
 export interface EventLedgerTailOptions {
-  /** Absolute path of the harness event-ledger.jsonl to tail (read-only). */
+  /** Absolute path of the JSONL stream to tail (read-only). */
   sourcePath: string;
+  /** Which mapping to apply (default 'harness-ledger'). */
+  sourceType?: TailSourceType;
   /** Directory for the adapter's own durable cursor (the Seed's state dir). */
   cursorDir: string;
   id?: string;
@@ -88,6 +92,7 @@ export class EventLedgerTailAdapter implements SourceAdapter {
   readonly id: string;
   readonly authority: SourceAuthority = 'home23.event-ledger';
   private readonly sourcePath: string;
+  private readonly sourceType: TailSourceType;
   private readonly cursorPath: string;
   private readonly maxBatch: number;
   private readonly readWindowBytes: number;
@@ -100,6 +105,7 @@ export class EventLedgerTailAdapter implements SourceAdapter {
 
   constructor(opts: EventLedgerTailOptions) {
     this.sourcePath = opts.sourcePath;
+    this.sourceType = opts.sourceType ?? 'harness-ledger';
     this.id = opts.id ?? `tail_${createHash('sha256').update(opts.sourcePath, 'utf-8').digest('hex').slice(0, 8)}`;
     mkdirSync(opts.cursorDir, { recursive: true });
     this.cursorPath = join(opts.cursorDir, `adapter-cursor.${this.id}.json`);
@@ -282,12 +288,71 @@ export class EventLedgerTailAdapter implements SourceAdapter {
   }
 
   private mapLine(line: string, endOffset: number): TailedSourceEvent | null {
-    let entry: HarnessEntry;
+    let parsed: Record<string, unknown>;
     try {
-      entry = JSON.parse(line) as HarnessEntry;
+      parsed = JSON.parse(line) as Record<string, unknown>;
     } catch {
       return null;
     }
+    if (this.sourceType === 'relationship-ledger') return this.mapRelationshipLine(parsed, line, endOffset);
+    if (this.sourceType === 'worker-runs') return this.mapWorkerRunLine(parsed, line, endOffset);
+    return this.mapHarnessLine(parsed as HarnessEntry, line, endOffset);
+  }
+
+  /** Relationship-ledger events (src/agent/relationship-ledger.ts): entries
+   * typed 'correction' are jtr↔agent corrections — THE teaching stream. */
+  private mapRelationshipLine(parsed: Record<string, unknown>, line: string, endOffset: number): TailedSourceEvent | null {
+    const ts = parsed['ts'];
+    if (typeof ts !== 'string' || !Number.isFinite(Date.parse(ts))) return null;
+    const payload = (parsed['payload'] ?? {}) as Record<string, unknown>;
+    const entryType = typeof payload['type'] === 'string' ? payload['type'] : 'entry';
+    const entryId = typeof parsed['entry_id'] === 'string' ? parsed['entry_id'] : '';
+    const eventId = typeof parsed['event_id'] === 'string'
+      ? parsed['event_id']
+      : `rel_${createHash('sha256').update(line, 'utf-8').digest('hex').slice(0, 16)}`;
+    return {
+      eventId,
+      category: entryType === 'correction' ? 'correction' : 'observation',
+      sourceAuthority: this.authority,
+      sourceRef: `relationship.${entryType}:${entryId}`,
+      payload: {
+        entry_type: entryType,
+        actor: typeof payload['actor'] === 'string' ? payload['actor'] : null,
+        entry_id: entryId || null,
+      },
+      producedAt: ts,
+      endOffset,
+    };
+  }
+
+  /** Worker-run outcomes (worker-runs.jsonl): completed runs are consequences
+   * of the house acting; failed/blocked runs are reality pushing back —
+   * mapped as corrections so they TEACH rather than corroborate. */
+  private mapWorkerRunLine(parsed: Record<string, unknown>, line: string, endOffset: number): TailedSourceEvent | null {
+    const producedAt = (typeof parsed['finishedAt'] === 'string' ? parsed['finishedAt'] : parsed['startedAt']);
+    if (typeof producedAt !== 'string' || !Number.isFinite(Date.parse(producedAt))) return null;
+    const status = typeof parsed['status'] === 'string' ? parsed['status'] : 'unknown';
+    const worker = typeof parsed['worker'] === 'string' ? parsed['worker'] : 'unknown';
+    const runId = typeof parsed['runId'] === 'string'
+      ? parsed['runId']
+      : `wr_${createHash('sha256').update(line, 'utf-8').digest('hex').slice(0, 16)}`;
+    const succeeded = ['success', 'ok', 'completed', 'done'].includes(status.toLowerCase());
+    return {
+      eventId: runId,
+      category: succeeded ? 'consequence' : 'correction',
+      sourceAuthority: this.authority,
+      sourceRef: `worker.${worker}:${runId}`,
+      payload: {
+        worker,
+        status,
+        verifierStatus: typeof parsed['verifierStatus'] === 'string' ? parsed['verifierStatus'] : null,
+      },
+      producedAt,
+      endOffset,
+    };
+  }
+
+  private mapHarnessLine(entry: HarnessEntry, line: string, endOffset: number): TailedSourceEvent | null {
     const producedAt = entry.timestamp ?? entry.ts;
     if (typeof producedAt !== 'string' || !Number.isFinite(Date.parse(producedAt))) return null;
     const eventType = typeof entry.event_type === 'string' ? entry.event_type : 'unknown';

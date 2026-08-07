@@ -240,3 +240,111 @@ test('REVIEW FIX: getState() dispositions are copy-on-read — no unreceipted mu
   assert.equal(fresh.dispositions.quietTimeEnabled, false);
   runner.stop();
 });
+
+// ─── Multi-source reality spine (teaching streams) ───────────────────────────
+
+function relLine(i: number, type: string, ts: string): string {
+  return JSON.stringify({
+    event_id: `rel_evt_${i}`,
+    event_type: 'entry_added',
+    entry_id: `rel_entry_${i}`,
+    agent: 'jerry',
+    ts,
+    payload: { type, actor: 'agent', method: 'agent_note' },
+  });
+}
+
+function workerLine(i: number, status: string, finishedAt: string): string {
+  return JSON.stringify({
+    schema: 'home23.worker-run-memory.v1',
+    runId: `wr_test_${i}`,
+    worker: 'parity',
+    status,
+    verifierStatus: 'unknown',
+    startedAt: finishedAt,
+    finishedAt,
+    summary: 'fixture',
+  });
+}
+
+test('relationship mapper: corrections are corrections, threads are observations', (t) => {
+  const srcDir = makeDir(t, 'rel-src');
+  const stateDir = makeDir(t, 'rel-state');
+  const sourcePath = join(srcDir, 'relationship-ledger.events.jsonl');
+  writeFileSync(sourcePath, `${relLine(0, 'correction', '2026-08-07T10:00:00.000Z')}\n${relLine(1, 'thread', '2026-08-07T10:01:00.000Z')}\n`, 'utf-8');
+
+  const adapter = new EventLedgerTailAdapter({ sourcePath, cursorDir: stateDir, sourceType: 'relationship-ledger', fromEnd: false });
+  const events = adapter.pullSync();
+  assert.equal(events.length, 2);
+  assert.equal(events[0]?.category, 'correction');
+  assert.match(events[0]?.sourceRef ?? '', /^relationship\.correction:/);
+  assert.equal(events[1]?.category, 'observation');
+});
+
+test('worker-runs mapper: failures/blocked teach, successes corroborate', (t) => {
+  const srcDir = makeDir(t, 'wr-src');
+  const stateDir = makeDir(t, 'wr-state');
+  const sourcePath = join(srcDir, 'worker-runs.jsonl');
+  writeFileSync(sourcePath, `${workerLine(0, 'blocked', '2026-08-07T10:00:00.000Z')}\n${workerLine(1, 'success', '2026-08-07T10:01:00.000Z')}\n`, 'utf-8');
+
+  const adapter = new EventLedgerTailAdapter({ sourcePath, cursorDir: stateDir, sourceType: 'worker-runs', fromEnd: false });
+  const events = adapter.pullSync();
+  assert.equal(events.length, 2);
+  assert.equal(events[0]?.category, 'correction', 'a blocked run is reality pushing back');
+  assert.equal(events[1]?.category, 'consequence');
+  assert.match(events[0]?.sourceRef ?? '', /^worker\.parity:/);
+});
+
+test('MULTI-SOURCE: streams merge in event-time order, cursors stay independent, and a relationship correction TEACHES', async (t) => {
+  const srcDir = makeDir(t, 'multi-src');
+  const stateDir = makeDir(t, 'multi-state');
+  const harnessPath = writeFixture(srcDir, [harnessLine(0, 'RetrievalExecuted', '2026-08-07T10:00:30.000Z')]);
+  const relPath = join(srcDir, 'rel.jsonl');
+  writeFileSync(relPath, `${relLine(0, 'correction', '2026-08-07T10:00:00.000Z')}\n${relLine(1, 'correction', '2026-08-07T10:01:00.000Z')}\n`, 'utf-8');
+  const wrPath = join(srcDir, 'wr.jsonl');
+  writeFileSync(wrPath, `${workerLine(0, 'blocked', '2026-08-07T10:00:45.000Z')}\n`, 'utf-8');
+
+  const order: string[] = [];
+  const runner = new SeedRunner({
+    stateDir,
+    sourcePath: harnessPath,
+    fromEnd: false,
+    extraSources: [
+      { sourcePath: relPath, sourceType: 'relationship-ledger', id: 'relationship' },
+      { sourcePath: wrPath, sourceType: 'worker-runs', id: 'worker-runs' },
+    ],
+    log: (l) => { const m = l.match(/ref=(\S+)/); if (m?.[1] !== undefined) order.push(m[1]); },
+  });
+  runner.start();
+  const report = await runner.tick();
+
+  assert.equal(report.pulled, 4);
+  assert.equal(report.transitioned, 4);
+  assert.deepEqual(order.map((r) => r.split(':')[0]), [
+    'relationship.correction',   // 10:00:00
+    'RetrievalExecuted',         // 10:00:30
+    'worker.parity',             // 10:00:45
+    'relationship.correction',   // 10:01:00
+  ], 'events from all sources must interleave in event-time order');
+
+  assert.ok(
+    runner.seedProcess.getState().developmentMagnitude > 0,
+    'relationship corrections and worker failures must produce receipted development',
+  );
+  runner.stop();
+
+  // Restart: every cursor independent and durable — nothing re-delivered.
+  const runner2 = new SeedRunner({
+    stateDir,
+    sourcePath: harnessPath,
+    fromEnd: false,
+    extraSources: [
+      { sourcePath: relPath, sourceType: 'relationship-ledger', id: 'relationship' },
+      { sourcePath: wrPath, sourceType: 'worker-runs', id: 'worker-runs' },
+    ],
+  });
+  runner2.start();
+  const report2 = await runner2.tick();
+  assert.equal(report2.pulled, 0, 'all three cursors must have committed independently');
+  runner2.stop();
+});
