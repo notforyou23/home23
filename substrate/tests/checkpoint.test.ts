@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, utimesSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CheckpointManager, computeStateHash } from '../src/checkpoint.js';
@@ -257,4 +257,67 @@ test('lost index does not orphan checkpoints: restore falls back to a directory 
   // And restore by explicit id also works without the index.
   const byId = mgr.restore(first);
   assert.equal(byId.checkpointId, first);
+});
+
+// ─── Field-trip fixes (2026-08-08): the stateDir must survive travel ─────────
+
+test('FIELD TRIP: a traveled stateDir (foreign absolute index paths, flattened mtimes) restores the NEWEST life', (t) => {
+  const dir = makeDir(t);
+  const mgr = new CheckpointManager(dir);
+  const dispositions = makeDispositions();
+
+  // Three checkpoints of increasing age — world.home23 generation marks them.
+  let firstId = '';
+  let lastId = '';
+  for (let gen = 0; gen <= 2; gen++) {
+    const cells = Array.from(makeInitialCells('2026-08-07T12:00:00.000Z').values()).map(serializeCell);
+    const world = cells.find((c) => c.id === 'world.home23');
+    if (world !== undefined) world.generation = gen * 50;
+    const id = mgr.write({
+      stateHash: computeStateHash({ cells, dispositions }),
+      ledgerSeq: gen + 1,
+      ledgerCursor: `c${gen}`,
+      cells,
+      dispositions,
+      resourceSnapshot: makeSnapshot(),
+    });
+    if (gen === 0) firstId = id;
+    lastId = id;
+  }
+
+  // Simulate the trip: rewrite index paths to a machine that doesn't exist,
+  // and flatten every mtime to one instant (openrsync behavior).
+  const indexPath = join(dir, 'checkpoints', 'CHECKPOINT_INDEX.json');
+  const index = JSON.parse(readFileSync(indexPath, 'utf-8'));
+  for (const entry of index.checkpoints) {
+    entry.path = `/Users/other-machine/substrate/seed-01/checkpoints/${entry.checkpointId}.json`;
+  }
+  writeFileSync(indexPath, JSON.stringify(index, null, 2), 'utf-8');
+  const flat = new Date('2026-08-08T00:00:00.000Z');
+  for (const f of readdirSync(join(dir, 'checkpoints'))) {
+    if (f.endsWith('.json')) utimesSync(join(dir, 'checkpoints', f), flat, flat);
+  }
+
+  const restored = mgr.restore();
+  assert.equal(restored.checkpointId, lastId, 'must wake as the newest self, never the newborn');
+  assert.notEqual(restored.checkpointId, firstId);
+  const world = restored.cells.find((c) => c.id === 'world.home23');
+  assert.equal(world?.generation, 100, 'the restored life carries its full age');
+});
+
+test('new indexes store relative paths (machine-portable by construction)', (t) => {
+  const dir = makeDir(t);
+  const mgr = new CheckpointManager(dir);
+  const cells = Array.from(makeInitialCells('2026-08-07T12:00:00.000Z').values()).map(serializeCell);
+  const dispositions = makeDispositions();
+  mgr.write({
+    stateHash: computeStateHash({ cells, dispositions }),
+    ledgerSeq: 1,
+    ledgerCursor: 'c1',
+    cells,
+    dispositions,
+    resourceSnapshot: makeSnapshot(),
+  });
+  const index = JSON.parse(readFileSync(join(dir, 'checkpoints', 'CHECKPOINT_INDEX.json'), 'utf-8'));
+  assert.ok(!String(index.checkpoints[0].path).startsWith('/'), 'index path must be relative');
 });

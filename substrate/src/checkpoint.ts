@@ -93,7 +93,11 @@ export class CheckpointManager {
       stateHash: opts.stateHash,
       ledgerSeq: opts.ledgerSeq,
       createdAt: manifest.createdAt,
-      path: filePath,
+      // Filename only: absolute paths made the index useless on any other
+      // machine (field-trip finding, 2026-08-08 — every entry quarantined as
+      // 'file missing' on the Pi and restore silently fell back to the BIRTH
+      // checkpoint). resolveEntryPath() re-roots legacy absolute entries.
+      path: `${checkpointId}.json`,
     });
     atomicWriteJson(this.indexPath, index);
 
@@ -111,7 +115,7 @@ export class CheckpointManager {
       ? index.checkpoints.filter((c) => c.checkpointId === checkpointId)
       : [...index.checkpoints].reverse(); // newest-first
     const candidates: Array<{ checkpointId: string; path: string }> = indexEntries.map(
-      (c) => ({ checkpointId: c.checkpointId, path: c.path }),
+      (c) => ({ checkpointId: c.checkpointId, path: this.resolveEntryPath(c.path, c.checkpointId) }),
     );
 
     // Fallback: a lost or corrupt index must not orphan valid checkpoints on
@@ -156,8 +160,21 @@ export class CheckpointManager {
 
   // ─── Internal ─────────────────────────────────────────────────────────────
 
-  /** Checkpoint manifests present on disk, newest-first by mtime. Quarantine
-   * and the index file never match the ckpt_*.json filter. */
+  /** Re-root an index entry's path against THIS machine's checkpoints dir.
+   * Legacy indexes stored absolute paths; if such a path does not exist here
+   * (the stateDir traveled), fall back to the basename beside the index. */
+  private resolveEntryPath(entryPath: string, checkpointId: string): string {
+    if (entryPath.startsWith('/') || /^[A-Za-z]:\\/.test(entryPath)) {
+      if (existsSync(entryPath)) return entryPath;
+      return join(this.checkpointsDir, `${checkpointId}.json`);
+    }
+    return join(this.checkpointsDir, entryPath);
+  }
+
+  /** Checkpoint manifests present on disk, newest-first by the base36
+   * timestamp EMBEDDED IN THE ID — transport-proof ordering. mtime is only a
+   * tiebreak: rsync/cp flatten mtimes (field-trip finding: 13 checkpoints,
+   * one identical mtime, arbitrary readdir order picked the newborn). */
   private scanCheckpointFiles(): Array<{ checkpointId: string; path: string }> {
     let names: string[];
     try {
@@ -173,7 +190,7 @@ export class CheckpointManager {
         try { mtimeMs = statSync(path).mtimeMs; } catch { /* vanished mid-scan */ }
         return { checkpointId: n.slice(0, -'.json'.length), path, mtimeMs };
       })
-      .sort((a, b) => b.mtimeMs - a.mtimeMs)
+      .sort((a, b) => b.checkpointId.localeCompare(a.checkpointId) || (b.mtimeMs - a.mtimeMs))
       .map(({ checkpointId, path }) => ({ checkpointId, path }));
   }
 
