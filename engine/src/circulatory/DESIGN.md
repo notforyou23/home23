@@ -30,14 +30,47 @@ Five components, each addressing one clog. All local, no LLM calls, all bounded.
 - Log every action with counts.
 
 ### 2. Composting Pass (`composter.js`)
-**Trigger:** When sweeper detects > 500 discarded thoughts.
+**Residence-Time Admission (From The Inside — Unit 4).** A composting pass is
+admitted when **either** of two arms fires:
+
+- **Count arm** — the number of *valid* (JSON-parseable) entries reaches
+  `countThreshold` (default **500**).
+- **Age arm** — the oldest *valid, timestamped* entry has resided longer than
+  `oldestAgeThresholdMs` (default **7 days**, bounded). This keeps a small but
+  stale pile from lingering indefinitely between the rare times the count arm
+  fires.
+
+Both thresholds are constructor-configurable (`countThreshold`,
+`oldestAgeThresholdMs`) so tests can drive deterministic triggers.
+
 **Action:**
-- Read last 500 discarded thoughts.
-- Extract patterns: top discard reasons, top signals discarded, top time-of-day patterns.
-- Produce a one-paragraph summary: "Of 500 discarded thoughts, 73% were novelty signal with no content, 15% were verbatim restatements of discovery metadata, 12% other. Primary discard pattern: empty nodes discovered by novelty probe."
-- Write summary as a brain observation node (tag: `compost_receipt`).
-- Truncate the file.
-- Log the composting.
+- Read `discarded-thoughts.jsonl`, parsing line by line.
+- Compute operational evidence and report it in the return value + log:
+  - `validEntryCount` — successfully parsed entries.
+  - `oldestValidEntryAgeMs` — residence age of the oldest valid timestamped
+    entry (`null` when no entry carries a usable timestamp; clamped at ≥0).
+  - `arrivalRatePerHour` — observed rate estimated from valid timestamps as
+    `(n − 1) / span_hours`; **`null`** when there are fewer than two timestamps
+    or the span is zero, to avoid divide-by-zero and false precision.
+  - `timestampedCount`, `malformedLines`, and which arm(s) triggered.
+- Extract patterns: top discard reasons, top signals discarded, top time-of-day
+  patterns.
+- Produce a one-paragraph human-readable summary.
+- **Log the summary and evidence. This is log-only.**
+- Truncate the file (post-compost).
+
+**Malformed-input handling (explicit):**
+- Lines that fail `JSON.parse` are skipped and counted as `malformedLines`.
+- Entries with a missing or malformed timestamp still count toward the **count
+  arm** but are excluded from the age arm and the arrival-rate estimate.
+- **Missing, empty, or entirely malformed input is a safe no-op: it returns
+  without truncating**, so unreadable content is never destroyed.
+
+**No brain write.** The composter does **not** write a brain observation node
+and does **not** revive the old `compost_receipt` node. It is the janitor for
+`discarded-thoughts.jsonl` and must not file a receipt into the thing it
+cleans. A `memory` graph may still be passed in for wiring compatibility, but it
+is never called.
 
 **No LLM calls.** Pure local pattern extraction.
 
