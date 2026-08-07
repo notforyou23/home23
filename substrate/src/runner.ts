@@ -42,6 +42,10 @@ export interface SeedRunnerOptions {
   fromEnd?: boolean;
   /** Optional lobe to recruit when a workspace admission happens. */
   lobe?: LobeAdapter;
+  /** Minimum wall-clock ms between lobe recruitments (resident spend guard;
+   * an operational throttle, not seed state — every recruitment that DOES
+   * happen is fully receipted, so replay is unaffected). Default 0. */
+  lobeMinIntervalMs?: number;
   log?: (line: string) => void;
 }
 
@@ -61,6 +65,8 @@ export class SeedRunner {
   private totalTransitions = 0;
   private running = false;
   private timer: NodeJS.Timeout | null = null;
+  private wake: (() => void) | null = null;
+  private lastLobeAtMs = 0;
   private readonly log: (line: string) => void;
 
   constructor(private readonly opts: SeedRunnerOptions) {
@@ -118,9 +124,16 @@ export class SeedRunner {
         report.workspaceOutcomes.push(outcome.kind);
         this.log(`workspace: ${outcome.kind}${outcome.kind === 'workspace' ? ` [${outcome.packet.activeCellIds.join(', ')}]` : ''}`);
         if (outcome.kind === 'workspace' && this.opts.lobe !== undefined) {
-          const lobeOutcome = await this.seed.recruitLobe(this.opts.lobe, outcome.packet, event.producedAt);
-          report.lobeRecruitments++;
-          this.log(`lobe ${this.opts.lobe.id}: applied=${lobeOutcome.applied.length} rejected=${lobeOutcome.rejected.length}${lobeOutcome.error !== undefined ? ` error=${lobeOutcome.error}` : ''}`);
+          const minInterval = this.opts.lobeMinIntervalMs ?? 0;
+          const sinceLast = Date.now() - this.lastLobeAtMs;
+          if (sinceLast >= minInterval) {
+            this.lastLobeAtMs = Date.now();
+            const lobeOutcome = await this.seed.recruitLobe(this.opts.lobe, outcome.packet, event.producedAt);
+            report.lobeRecruitments++;
+            this.log(`lobe ${this.opts.lobe.id}: applied=${lobeOutcome.applied.length} rejected=${lobeOutcome.rejected.length}${lobeOutcome.error !== undefined ? ` error=${lobeOutcome.error}` : ''}`);
+          } else {
+            this.log(`lobe throttled (${Math.round((minInterval - sinceLast) / 1000)}s remaining)`);
+          }
         }
       }
       if (this.transitionsSinceCheckpoint >= (this.opts.checkpointEveryN ?? 32)) {
@@ -144,10 +157,15 @@ export class SeedRunner {
         break;
       }
       if (report.pulled === 0) {
+        // The wake handle lets requestStop() resolve this sleep immediately —
+        // clearing the timer alone would leave the promise pending forever and
+        // turn a graceful SIGINT into a SIGKILL past the final checkpoint.
         await new Promise<void>((resolve) => {
+          this.wake = resolve;
           this.timer = setTimeout(resolve, this.opts.pollMs ?? 2000);
           this.timer.unref?.();
         });
+        this.wake = null;
       }
     }
     this.stop();
@@ -168,5 +186,6 @@ export class SeedRunner {
   requestStop(): void {
     this.running = false;
     if (this.timer !== null) clearTimeout(this.timer);
+    this.wake?.();
   }
 }

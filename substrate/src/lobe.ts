@@ -95,6 +95,21 @@ export function validateLobeResult(result: LobeResult, packet: WorkspacePacket):
   const allowDeltas = packet.authorityCeiling !== 'observe'
     && packet.outputContract.allowedOutputKinds.includes('stateDeltas');
 
+  // Unambiguous attribution: when exactly ONE cell is admitted, a proposal
+  // missing its cellId can only mean that cell — default it rather than
+  // rejecting content whose target is not in question. With 2+ admitted
+  // cells the ambiguity is real and the rejection stands.
+  const soleCell = packet.activeCellIds.length === 1 ? packet.activeCellIds[0] : undefined;
+  const attribute = <T extends { cellId?: string }>(p: T): T =>
+    (p.cellId === undefined && soleCell !== undefined ? { ...p, cellId: soleCell } : p);
+  result = {
+    ...result,
+    observations: Array.isArray(result.observations) ? result.observations.map(attribute) : result.observations,
+    interpretations: Array.isArray(result.interpretations) ? result.interpretations.map(attribute) : result.interpretations,
+    predictions: Array.isArray(result.predictions) ? result.predictions.map(attribute) : result.predictions,
+    stateDeltas: Array.isArray(result.stateDeltas) ? result.stateDeltas.map(attribute) : result.stateDeltas,
+  };
+
   const observations = (Array.isArray(result.observations) ? result.observations : [])
     .slice(0, MAX_PROPOSALS_PER_KIND)
     .filter((o) => {
@@ -344,15 +359,29 @@ export class ModelLobe implements LobeAdapter {
 }
 
 export function buildLobePrompt(packet: WorkspacePacket): string {
+  const cellIds = packet.activeCellIds;
   return [
     'You are a recruited cognitive lobe for a substrate Seed. You receive a typed',
-    'workspace packet and return ONLY a JSON object — no prose around it — with',
-    'keys: observations, interpretations, predictions, stateDeltas (each an array,',
-    'max 8), uncertainty (0..1). Proposals may only reference the admitted cellIds.',
+    'workspace packet and return ONLY a JSON object — no prose around it.',
+    '',
+    `ADMITTED CELLS: ${JSON.stringify(cellIds)}`,
+    'EVERY proposal object MUST carry a "cellId" field set to one of the admitted',
+    'cells — proposals without a valid cellId are rejected unread.',
+    '',
+    'Exact response shape (arrays max 8 items each; omit empty arrays if you like):',
+    '{',
+    `  "observations": [{"cellId": "${cellIds[0] ?? 'CELL'}", "claim": "...", "confidence": 0.6, "evidenceRef": "refId"}],`,
+    `  "interpretations": [{"cellId": "${cellIds[0] ?? 'CELL'}", "interpretation": "...", "confidence": 0.6}],`,
+    `  "predictions": [{"cellId": "${cellIds[0] ?? 'CELL'}", "claim": "...", "confidence": 0.5, "horizon": "24h"}],`,
+    `  "stateDeltas": [{"cellId": "${cellIds[0] ?? 'CELL'}", "field": "estimates.append", "delta": {"claim": "...", "confidence": 0.6, "evidenceRefs": []}, "authority": "propose"}],`,
+    '  "uncertainty": 0.5',
+    '}',
+    '',
     `stateDeltas fields allowed: ${LOBE_DELTA_ALLOWLIST.join(', ')}.`,
     'estimates.append delta: {claim, confidence, evidenceRefs}. predictions.append',
     'delta: {claim, confidence, horizon}. intentions.append delta: {description,',
-    'magnitude, direction}. uncertainty.adjust delta: {value in [-0.2, 0.2]}.',
+    'magnitude (0..1), direction}. predictions.resolve delta: {predictionId, error}.',
+    'uncertainty.adjust delta: {value in [-0.2, 0.2]}.',
     'Claims are bounded at 500 chars. You are proposing typed state changes to a',
     'governed process — you are not writing memory, narrative, or identity.',
     '',

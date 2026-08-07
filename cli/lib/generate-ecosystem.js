@@ -259,6 +259,38 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      error_file: ${logsDir} + '/harness-err.log',`);
     lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
+
+    // Substrate Seed (shadow resident) — emitted ONLY when the agent's config
+    // opts in with substrate.enabled: true. The Seed tails the agent's event
+    // ledger read-only, keeps its own state under instances/<name>/substrate/,
+    // and holds no authority over canonical stores (deterministic membrane).
+    // kill_timeout is generous so SIGINT → final checkpoint always completes.
+    if (agent.config.substrate?.enabled === true) {
+      const lobeKind = agent.config.substrate?.lobe === 'model' ? 'model'
+        : agent.config.substrate?.lobe === 'echo' ? 'echo' : '';
+      const lobeModel = String(agent.config.substrate?.lobeModel || 'glm-5.2:cloud');
+      const lobeMinIntervalMs = Number(agent.config.substrate?.lobeMinIntervalMs) > 0
+        ? Number(agent.config.substrate.lobeMinIntervalMs) : 600000;
+      const seedStateDir = `path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'seed-01')`;
+      lines.push(`    {`);
+      lines.push(`      name: 'home23-${agent.name}-seed',`);
+      lines.push(`      script: 'substrate/bin/seed-runner.ts',`);
+      lines.push(`      cwd: HOME23,`);
+      lines.push(`      filter_env: ['cron_restart', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
+      // PM2 auto-selects an interpreter by extension for .ts (bun when
+      // present), which ignores node_args — pin node explicitly so
+      // --import tsx actually loads.
+      lines.push(`      interpreter: 'node',`);
+      lines.push(`      node_args: '--import tsx',`);
+      lines.push(`      max_memory_restart: '1G',`);
+      lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
+      lines.push(`      restart_delay: 15000,`);
+      lines.push(`      kill_timeout: 30000,`);
+      lines.push(`      out_file: ${logsDir} + '/seed-out.log',`);
+      lines.push(`      error_file: ${logsDir} + '/seed-err.log',`);
+      lines.push(`      env: { ...commonEnv, HOME23_AGENT: '${agent.name}', INSTANCE_ID: 'home23-${agent.name}-seed', SEED_STATE_DIR: ${seedStateDir}, SEED_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'event-ledger.jsonl'), SEED_LOBE: '${lobeKind}', SEED_LOBE_MODEL: '${lobeModel}', SEED_LOBE_MIN_INTERVAL_MS: '${lobeMinIntervalMs}' },`);
+      lines.push(`    },`);
+    }
   }
 
   // PM2 watchdog — shared supervisor for agent engine/dashboard/harness triplets.

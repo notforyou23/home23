@@ -202,3 +202,55 @@ test('ModelLobe parses a JSON-bearing response and rejects a prose-only one', as
   const parsed = parseLobeResponse('{"stateDeltas":[]}', receipt());
   assert.deepEqual(parsed.stateDeltas, []);
 });
+
+test('single-admitted-cell attribution: missing cellId defaults to the sole admitted cell; ambiguous stays rejected', () => {
+  const onePacket: WorkspacePacket = {
+    activeCellIds: ['world.home23'],
+    eventRefs: [],
+    tensions: [],
+    predictions: [],
+    uncertainty: 0.5,
+    requestedCapability: 'lobe.recruit.model',
+    authorityCeiling: 'propose',
+    tokenBudget: 2000,
+    outputContract: { allowedOutputKinds: ['observations', 'interpretations', 'predictions', 'stateDeltas'], maxTokenBudget: 2000 },
+  };
+  const noCellIds = {
+    observations: [],
+    interpretations: [{ interpretation: 'model forgot the cellId', confidence: 0.6 }],
+    predictions: [],
+    stateDeltas: [{ field: 'estimates.append', delta: { claim: 'attributed estimate', confidence: 0.5, evidenceRefs: [] }, authority: 'propose' }],
+    candidateForms: [],
+    candidateActions: [],
+    uncertainty: 0.5,
+    evidenceRefs: [],
+    modelReceipt: receipt(),
+  } as unknown as LobeResult;
+
+  const one = validateLobeResult(noCellIds, onePacket);
+  assert.equal(one.accepted.interpretations.length, 1, 'sole-cell attribution accepts the interpretation');
+  assert.equal(one.accepted.interpretations[0]?.cellId, 'world.home23');
+  assert.equal(one.accepted.stateDeltas.length, 1, 'sole-cell attribution accepts the delta');
+
+  const twoPacket: WorkspacePacket = { ...onePacket, activeCellIds: ['world.home23', 'contact.jtr-jerry'] };
+  const two = validateLobeResult(noCellIds, twoPacket);
+  assert.equal(two.accepted.interpretations.length, 0, 'ambiguous attribution stays rejected');
+  assert.equal(two.accepted.stateDeltas.length, 0);
+});
+
+test('prompt shows the exact response shape with the admitted cellId inline', () => {
+  const packet: WorkspacePacket = {
+    activeCellIds: ['world.home23'],
+    eventRefs: [],
+    tensions: [],
+    predictions: [],
+    uncertainty: 0.5,
+    requestedCapability: 'lobe.recruit.model',
+    authorityCeiling: 'propose',
+    tokenBudget: 2000,
+    outputContract: { allowedOutputKinds: ['observations', 'interpretations', 'predictions', 'stateDeltas'], maxTokenBudget: 2000 },
+  };
+  const prompt = buildLobePrompt(packet);
+  assert.match(prompt, /"cellId": "world\.home23"/, 'the example must carry the real admitted cellId');
+  assert.match(prompt, /rejected unread/);
+});
