@@ -339,7 +339,14 @@ export class EventLedgerTailAdapter implements SourceAdapter {
     const runId = typeof parsed['runId'] === 'string'
       ? parsed['runId']
       : `wr_${createHash('sha256').update(line, 'utf-8').digest('hex').slice(0, 16)}`;
-    const succeeded = ['success', 'ok', 'completed', 'done'].includes(status.toLowerCase());
+    // The live stream's actual vocabulary: 'fixed' and 'no_change' are the
+    // house acting and the outcome holding (consequences — they corroborate);
+    // 'failed' and 'blocked' are reality pushing back (corrections — they
+    // teach). The generic terms stay for other producers. Before 2026-08-08
+    // the list below missed the live vocabulary entirely — every run
+    // (including 41 successes in the recent window) taught as a correction,
+    // and both live seeds' consequence-role cells starved structurally.
+    const succeeded = ['success', 'ok', 'completed', 'done', 'fixed', 'no_change'].includes(status.toLowerCase());
     return {
       eventId: runId,
       category: succeeded ? 'consequence' : 'correction',

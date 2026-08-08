@@ -295,6 +295,29 @@ test('worker-runs mapper: failures/blocked teach, successes corroborate', (t) =>
   assert.match(events[0]?.sourceRef ?? '', /^worker\.parity:/);
 });
 
+test('worker-runs mapper speaks the LIVE stream vocabulary: fixed/no_change corroborate, failed/blocked teach', (t) => {
+  // The 2026-08-08 diet bug: the success list missed the live statuses
+  // entirely — 41 'fixed' runs in one window all taught as corrections and
+  // both live seeds' consequence-role cells starved structurally.
+  const srcDir = makeDir(t, 'wrv-src');
+  const stateDir = makeDir(t, 'wrv-state');
+  const sourcePath = join(srcDir, 'worker-runs.jsonl');
+  writeFileSync(sourcePath, [
+    workerLine(0, 'fixed', '2026-08-08T10:00:00.000Z'),
+    workerLine(1, 'no_change', '2026-08-08T10:01:00.000Z'),
+    workerLine(2, 'failed', '2026-08-08T10:02:00.000Z'),
+    workerLine(3, 'blocked', '2026-08-08T10:03:00.000Z'),
+  ].join('\n') + '\n', 'utf-8');
+
+  const adapter = new EventLedgerTailAdapter({ sourcePath, cursorDir: stateDir, sourceType: 'worker-runs', fromEnd: false });
+  const events = adapter.pullSync();
+  assert.equal(events.length, 4);
+  assert.equal(events[0]?.category, 'consequence', 'fixed = the house acted and it held');
+  assert.equal(events[1]?.category, 'consequence', 'no_change = the house checked and all was well');
+  assert.equal(events[2]?.category, 'correction', 'failed = reality pushing back');
+  assert.equal(events[3]?.category, 'correction', 'blocked = reality pushing back');
+});
+
 test('MULTI-SOURCE: streams merge in event-time order, cursors stay independent, and a relationship correction TEACHES', async (t) => {
   const srcDir = makeDir(t, 'multi-src');
   const stateDir = makeDir(t, 'multi-state');
