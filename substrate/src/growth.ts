@@ -244,10 +244,14 @@ function prefixRecord(counts: Map<string, number> | undefined): Record<string, n
   return out;
 }
 
-/** Derive a stable child cell id from a parent id and a source prefix. */
+/** Derive a stable child cell id from a parent id and a source prefix.
+ * Uses the FULL prefix slug — leaf-only naming collided when two clusters
+ * shared their last segment (baro.sample + vitals.sample both became
+ * '.sample', live bug caught 2026-08-08 by an operator approving the
+ * malformed proposal). */
 function childCellId(parentId: string, prefix: string): string {
-  const leaf = prefix.replace(/[^a-zA-Z0-9.]+/g, '-').split('.').pop() ?? prefix;
-  return `${parentId}.${leaf}`;
+  const slug = prefix.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return `${parentId}.${slug}`;
 }
 
 // ─── Shadow trial: the proposed anatomy vs the window's real events ──────────
@@ -322,6 +326,7 @@ function detectSplit(stats: WindowStats, anatomy: readonly AnatomyCellSpec[]): G
     const [clusterA, clusterB] = [clusters[0] as [string, number], clusters[1] as [string, number]];
     const childA = childCellId(spec.id, clusterA[0]);
     const childB = childCellId(spec.id, clusterB[0]);
+    if (childA === childB) continue; // never propose a malformed body
     const proposedAnatomy: AnatomyCellSpec[] = anatomy.flatMap((c) =>
       c.id === spec.id
         ? [{ id: childA, role: c.role }, { id: childB, role: c.role }]

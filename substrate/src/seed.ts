@@ -55,6 +55,7 @@ import type { GrowthProposal, GrowthOp, PriorCrystallizeProposal } from './growt
 import type { DevelopmentalState } from './plasticity.js';
 import {
   emptyDevelopment,
+  emptyCellPlasticState,
   cloneDevelopment,
   normalizeDevelopment,
   applyCorrectionPlasticity,
@@ -351,6 +352,86 @@ export class SeedProcess {
     twin.accounting.setLedgerBytes(twin.ledger.bytes);
     const checkpointId = twin.checkpoint();
     return { checkpointId, zeroedMagnitude };
+  }
+
+  /**
+   * Operator application of a receipted growth proposal (split/merge/
+   * dissolve/specialize — the operations the covenant reserves for humans).
+   * Semantics: replaced cells and their development are REMOVED (magnitude
+   * recorded — surgery has a cost; the chain keeps every receipt of what
+   * was learned), new cells start FRESH, and the proposal's seedAffinities
+   * are granted as a receipted endowment (routing only). Receipted as an
+   * 'act' with authorizedBy; checkpointed immediately.
+   */
+  applyOperatorProposal(
+    proposal: GrowthProposal,
+    proposalSeq: number,
+    authorizedBy: string,
+  ): { newCellIds: string[]; removedCellIds: string[]; removedDevelopmentMagnitude: number; actSeq: number } {
+    this.membrane.assert('local.state.write');
+    this.membrane.assert('local.ledger.append');
+
+    const currentIds = new Set(this.anatomy.map((a) => a.id));
+    for (const before of proposal.beforeAnatomy) {
+      if (!currentIds.has(before.id)) {
+        throw new Error(`stale proposal: before-anatomy cell ${before.id} is not part of the current body`);
+      }
+    }
+    const proposedIds = proposal.proposedAnatomy.map((a) => a.id);
+    if (new Set(proposedIds).size !== proposedIds.length) {
+      throw new Error('malformed proposal: duplicate cell ids');
+    }
+
+    const removedCellIds = this.anatomy.filter((a) => !proposedIds.includes(a.id)).map((a) => a.id);
+    const newCellIds = proposedIds.filter((id) => !currentIds.has(id));
+
+    const stagedDev = cloneDevelopment(this.development);
+    let removedDevelopmentMagnitude = 0;
+    for (const id of removedCellIds) {
+      const entry = stagedDev[id];
+      if (entry !== undefined) {
+        removedDevelopmentMagnitude += developmentMagnitude({ [id]: entry });
+        delete stagedDev[id];
+      }
+      this.cells.delete(id);
+    }
+    const asOf = this.lastTransitionAt;
+    for (const id of newCellIds) {
+      this.cells.set(id, makeInitialCell(id, asOf));
+      const grant = proposal.seedAffinities[id];
+      if (grant !== undefined) {
+        const plastic = stagedDev[id] ?? emptyCellPlasticState();
+        for (const [prefix, value] of Object.entries(grant)) plastic.routingAffinity[prefix] = value;
+        stagedDev[id] = plastic;
+      }
+    }
+    const beforeAnatomy = this.anatomy.map((a) => ({ ...a }));
+    this.anatomy = proposal.proposedAnatomy.map((a) => ({ ...a }));
+    this.routing = routingFromAnatomy(this.anatomy);
+
+    const { record } = this.commitReceipted(new Map(), {
+      category: 'act',
+      sourceAuthority: 'seed.internal',
+      sourceRef: 'growth.operator-application',
+      payload: {
+        growthApplication: true,
+        operatorApplication: true,
+        authorizedBy,
+        proposalSeq,
+        op: proposal.op,
+        newCellIds,
+        removedCellIds,
+        removedDevelopmentMagnitude,
+        grantedAffinities: proposal.seedAffinities,
+        beforeAnatomy,
+        resultingAnatomy: this.anatomy.map((a) => ({ ...a })),
+      },
+    }, stagedDev);
+    this._eventCount++;
+    this.accounting.recordEvent();
+    this.accounting.setLedgerBytes(this.ledger.bytes);
+    this.checkpoint();
+    return { newCellIds, removedCellIds, removedDevelopmentMagnitude, actSeq: record.seq };
   }
 
   /**

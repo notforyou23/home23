@@ -18,6 +18,7 @@ import {
   PROPOSAL_COOLDOWN_SEQS,
 } from '../src/growth.js';
 import { SeedProcess } from '../src/seed.js';
+import { SeedLedger } from '../src/ledger.js';
 import type { LedgerRecord, AnatomyCellSpec, SourceEvent } from '../src/types.js';
 
 const BOBBY_LIKE_ANATOMY: AnatomyCellSpec[] = [
@@ -230,4 +231,89 @@ test('seed.evaluateGrowth receipts proposals with ZERO state mutation and surviv
   seed.stop();
   const restored = SeedProcess.restore(dir);
   assert.equal(restored.getState().stateHash, hashBefore, 'proposal receipts do not disturb restore');
+});
+
+test('split children get DISTINCT ids even when cluster prefixes share a leaf (live bug 2026-08-08)', () => {
+  // bobby's real overload: baro.sample + vitals.sample — leaf-only naming
+  // collapsed both children into world.pi.sample and the malformed proposal
+  // reached an operator's approval before being caught.
+  seqCounter = 0;
+  const records: LedgerRecord[] = [];
+  for (let i = 0; i < 60; i++) {
+    const prefix = i % 2 === 0 ? 'baro.sample' : 'vitals.sample';
+    records.push(transitionRecord('world.pi', `${prefix}:r${i}`, '2026-08-08T14:00:00.000Z'));
+    if (i > 0 && i % 9 === 0) records.push(admissionRecord(['world.pi'], '2026-08-08T14:00:30.000Z'));
+  }
+  const anatomy: AnatomyCellSpec[] = [
+    { id: 'contact.jtr', role: 'correction' },
+    { id: 'world.pi', role: 'observation' },
+    { id: 'periphery.open-field', role: 'periphery' },
+  ];
+  const proposals = evaluateGrowthPressure(records, anatomy, new Map(), seqCounter);
+  const split = proposals.find((p) => p.op === 'split');
+  assert.ok(split !== undefined, 'the overload still proposes');
+  const ids = split.proposedAnatomy.map((c) => c.id);
+  assert.equal(new Set(ids).size, ids.length, 'no duplicate cell ids, ever');
+  assert.ok(ids.includes('world.pi.baro-sample') && ids.includes('world.pi.vitals-sample'),
+    'children carry their full cluster identity');
+  assert.equal(Object.keys(split.seedAffinities).length, 2, 'each child gets its own granted affinity');
+});
+
+test('operator application: split replaces the parent, grants receipted endowments, records the cost', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrate-opapply-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const anatomy: AnatomyCellSpec[] = [
+    { id: 'contact.jtr', role: 'correction' },
+    { id: 'world.pi', role: 'observation' },
+    { id: 'periphery.open-field', role: 'periphery' },
+  ];
+  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 99, anatomy, name: 'opapply-test' });
+  // Live the overload with bobby's real rhythm: observations + workspace
+  // cycles, so world.pi EARNS the admissions a split requires.
+  for (let i = 0; i < 48; i++) {
+    const prefix = i % 2 === 0 ? 'baro.sample' : 'vitals.sample';
+    const producedAt = `2026-08-08T14:${String(10 + Math.floor(i / 6)).padStart(2, '0')}:${String((i % 6) * 10).padStart(2, '0')}.000Z`;
+    seed.transition({
+      eventId: `evt_${i}`, category: 'observation', sourceAuthority: 'seed.adapter',
+      sourceRef: `${prefix}:r${i}`, payload: {}, producedAt,
+    });
+    if (i > 0 && i % 8 === 0) seed.workspaceCycle(producedAt);
+  }
+  const proposals = seed.evaluateGrowth('2026-08-08T14:30:00.000Z', 300);
+  const split = proposals.find((p) => p.op === 'split');
+  assert.ok(split !== undefined);
+  const proposalSeq = new SeedLedger(dir).readAll()
+    .filter((r) => r.category === 'proposal' && r.payload['op'] === 'split')
+    .map((r) => r.seq)[0] as number;
+
+  const result = seed.applyOperatorProposal(split, proposalSeq, 'jtr');
+  assert.deepEqual([...result.removedCellIds], ['world.pi'], 'the parent is replaced');
+  assert.equal(result.newCellIds.length, 2, 'two children born');
+  assert.ok(result.removedDevelopmentMagnitude >= 0, 'the cost is recorded');
+
+  // The children route their clusters via the granted endowment.
+  const routedA = seed.transition({
+    eventId: 'evt_after_a', category: 'observation', sourceAuthority: 'seed.adapter',
+    sourceRef: 'baro.sample:after', payload: {}, producedAt: '2026-08-08T14:31:00.000Z',
+  });
+  const routedB = seed.transition({
+    eventId: 'evt_after_b', category: 'observation', sourceAuthority: 'seed.adapter',
+    sourceRef: 'vitals.sample:after', payload: {}, producedAt: '2026-08-08T14:32:00.000Z',
+  });
+  assert.notEqual(routedA.cellId, routedB.cellId, 'the split is real: air and machine land apart');
+  assert.ok(result.newCellIds.includes(routedA.cellId) && result.newCellIds.includes(routedB.cellId));
+
+  // The act is receipted with authorization; restore rebuilds the new body.
+  const act = new SeedLedger(dir).readAll().find((r) => r.category === 'act' && r.payload['operatorApplication'] === true);
+  assert.ok(act !== undefined);
+  assert.equal(act.payload['authorizedBy'], 'jtr');
+  assert.equal(act.payload['proposalSeq'], proposalSeq);
+  seed.stop();
+  const restored = SeedProcess.restore(dir);
+  assert.ok(!restored.getState().cellIds.includes('world.pi'), 'restore honors the surgery');
+  assert.ok(result.newCellIds.every((id) => restored.getState().cellIds.includes(id)));
+  assert.equal(new SeedLedger(dir).verifyChain().ok, true);
+
+  // Stale re-application refuses.
+  assert.throws(() => restored.applyOperatorProposal(split, proposalSeq, 'jtr'), /stale proposal/);
 });
