@@ -78,9 +78,7 @@ export function projectEmbedding(embedding: readonly number[]): number[] {
   return out;
 }
 
-/** Embed + project a piece of text, or null (degraded-honest). Synchronous
- * and bounded — for low-frequency writer paths only. */
-export function embedTextSync(text: string): number[] | null {
+function fetchEmbedding(text: string): number[] | null {
   const trimmed = text.trim();
   if (trimmed.length < MIN_TEXT_LENGTH) return null;
   try {
@@ -91,8 +89,25 @@ export function embedTextSync(text: string): number[] | null {
     });
     const parsed = JSON.parse(raw) as { embedding?: number[] };
     if (!Array.isArray(parsed.embedding) || parsed.embedding.length !== EMBED_DIM) return null;
-    return projectEmbedding(parsed.embedding);
+    return parsed.embedding;
   } catch {
     return null;
   }
+}
+
+/** Embed + project a piece of text, or null (degraded-honest). Synchronous
+ * and bounded — for low-frequency writer paths only. This is the RECORD
+ * form: 16 dims, quantized, fit to ride a chain forever. */
+export function embedTextSync(text: string): number[] | null {
+  const embedding = fetchEmbedding(text);
+  return embedding === null ? null : projectEmbedding(embedding);
+}
+
+/** Raw 768-dim embedding, or null. For MATCHING only (e.g. the SUBSTRATE
+ * surfacing organ deciding which lived items a turn touches): full acuity,
+ * never persisted. Calibration (2026-08-08) showed the projected space is
+ * too coarse to threshold — related/unrelated turn-item cosines overlap in
+ * 16 dims but separate cleanly in the native space. */
+export function embedTextRawSync(text: string): number[] | null {
+  return fetchEmbedding(text);
 }

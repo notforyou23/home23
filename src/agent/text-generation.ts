@@ -215,9 +215,11 @@ async function generateCodexText(opts: Required<Pick<TextGenerationOptions, 'pro
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
     // Newer codex models (gpt-5.6-terra era) reject max_output_tokens
-    // outright. Retry once without the cap rather than failing the call —
+    // outright. The rejection has been observed under BOTH 400 and 503, so
+    // key on the error body, not the status. Retry once without the cap —
     // server-side defaults bound the response.
-    if (res.status === 400 && errText.includes('max_output_tokens')) {
+    const capRejected = errText.includes('max_output_tokens');
+    if (capRejected) {
       delete body['max_output_tokens'];
       res = await fetch('https://chatgpt.com/backend-api/codex/responses', {
         method: 'POST',
@@ -227,9 +229,7 @@ async function generateCodexText(opts: Required<Pick<TextGenerationOptions, 'pro
       });
     }
     if (!res.ok) {
-      const retryText = res.status === 400 && errText.includes('max_output_tokens')
-        ? await res.text().catch(() => '')
-        : errText;
+      const retryText = capRejected ? await res.text().catch(() => '') : errText;
       throw new Error(`codex HTTP ${res.status}: ${retryText.slice(0, 300)}`);
     }
   }

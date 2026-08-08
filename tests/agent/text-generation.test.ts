@@ -155,3 +155,46 @@ test('openai-codex text generation uses OAuth credentials and SSE output', async
     globalThis.fetch = prevFetch;
   }
 });
+
+test('openai-codex retries once without max_output_tokens when the endpoint rejects the cap (400 and 503)', async () => {
+  for (const rejectStatus of [400, 503]) {
+    const prevFetch = globalThis.fetch;
+    const encoder = new TextEncoder();
+    const bodies: Array<Record<string, unknown>> = [];
+
+    globalThis.fetch = (async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      bodies.push(body);
+      if (bodies.length === 1) {
+        return new Response('{"detail":"Unsupported parameter: max_output_tokens"}', { status: rejectStatus });
+      }
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"type":"response.output_text.delta","delta":"ok"}\n\n'));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const text = await generateText({
+        provider: 'openai-codex',
+        model: 'gpt-5.6-terra',
+        prompt: 'probe',
+        maxTokens: 450,
+        codexCredentialsProvider: async () => ({
+          accessToken: 'access-test', refreshToken: 'refresh-test',
+          expires: Date.now() + 60_000, accountId: 'acct-test',
+        }),
+      });
+      assert.equal(text, 'ok', `status ${rejectStatus}: retry produced the text`);
+      assert.equal(bodies.length, 2, `status ${rejectStatus}: exactly one retry`);
+      assert.equal(bodies[0]!['max_output_tokens'], 450, `status ${rejectStatus}: first attempt sent the cap`);
+      assert.ok(!('max_output_tokens' in bodies[1]!), `status ${rejectStatus}: retry dropped the cap`);
+    } finally {
+      globalThis.fetch = prevFetch;
+    }
+  }
+});

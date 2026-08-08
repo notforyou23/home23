@@ -573,18 +573,23 @@ export async function assembleContext(
     });
   }
 
-  // SUBSTRATE (Seed → situational awareness): the agent's carried state —
-  // pressurized situations, receipted development, earned trust, open
-  // expectations — from the Seed that metabolizes his real life. Loads every
-  // turn when configured: this is lived memory, not retrieval, and its
-  // causality is proven (ablation, 2026-08-08). Read-only; degraded-honest
-  // (missing/unreadable state contributes nothing rather than something fake).
+  // SUBSTRATE (Seed → situational awareness): lived, receipted facts from
+  // the Seed that metabolizes his real life — surfaced SELECTIVELY, matched
+  // to this turn's meaning through the published semantic projection
+  // (expression.v2, rebuilt after the 2026-08-08 integration knife judged
+  // the always-on v1 block decorative). Most turns surface nothing; a turn
+  // that touches carried state gets the lived facts it touches, under a
+  // usage contract. Read-only; degraded-honest (missing/unreadable state or
+  // a down embedder contributes nothing rather than something fake).
   if (config.substrateStateDir) {
-    const seedSection = composeSeedSituation(config.substrateStateDir, config.substrateBudget);
+    const seedSection = composeSeedSituation(config.substrateStateDir, {
+      budget: config.substrateBudget,
+      turnText: userText,
+    });
     if (seedSection) {
       surfacesLoaded.push('SUBSTRATE');
       salienceItems.push({
-        text: `\nCarried state (SUBSTRATE — your Seed's lived situations):\n${seedSection}`,
+        text: `\n${seedSection}`,
         score: 0.96,
         source: 'surface:SUBSTRATE',
       });
