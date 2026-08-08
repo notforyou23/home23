@@ -31,6 +31,7 @@ import {
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { SourceAdapter, SourceEvent, EventCategory, SourceAuthority } from '../types.js';
+import { sanitizeSemanticVector } from '../semantic-projection.js';
 
 const DEFAULT_READ_WINDOW_BYTES = 1024 * 1024; // 1MB per pull
 const DEFAULT_OVERSIZED_LINE_MAX = 8 * 1024 * 1024; // single-line hard cap
@@ -313,11 +314,13 @@ export class EventLedgerTailAdapter implements SourceAdapter {
     const eventId = typeof parsed['event_id'] === 'string'
       ? parsed['event_id']
       : `rel_${createHash('sha256').update(line, 'utf-8').digest('hex').slice(0, 16)}`;
+    const semanticVector = sanitizeSemanticVector(parsed['semantic_vector']);
     return {
       eventId,
       category: entryType === 'correction' || entryType === 'attenuation' ? 'correction' : 'observation',
       sourceAuthority: this.authority,
       sourceRef: `relationship.${entryType}:${entryId}`,
+      ...(semanticVector !== null ? { semanticVector } : {}),
       payload: {
         entry_type: entryType,
         actor: typeof payload['actor'] === 'string' ? payload['actor'] : null,

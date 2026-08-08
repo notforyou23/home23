@@ -340,6 +340,11 @@ export interface SourceEvent {
   targetCellId?: string;             // hint; membrane and routing may override
   payload: Record<string, unknown>;
   producedAt: string;
+  /** Meaning, perceived ONCE at contact (encoder stage 1): a small projected
+   * embedding produced by the writer's machine and carried on the event
+   * record forever. Replay never re-perceives — the record is what was seen.
+   * Absent → the event encodes by identity hash exactly as before. */
+  semanticVector?: number[];
 }
 
 export interface TransitionResult {

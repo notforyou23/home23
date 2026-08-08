@@ -153,6 +153,18 @@ export function encodeEvent(event: SourceEvent, dtSeconds: number, inputDim = IN
     const b = digest[i % digest.length] ?? 0;
     u[i] = (b / 127.5) - 1; // [-1, 1]
   }
+  // Encoder stage 1: when the event carries perceived meaning, the leading
+  // content channels speak it (identity hash keeps the remainder — WHERE an
+  // event came from still matters alongside WHAT it means). Similar sentences
+  // now drive similar state directions, so the existing Hebbian-along-state
+  // development inherits semantics without any change to the learning rules.
+  const sem = event.semanticVector;
+  if (sem !== undefined && sem.length > 0) {
+    const n = Math.min(sem.length, contentChannels);
+    for (let i = 0; i < n; i++) {
+      u[i] = Math.max(-1, Math.min(1, sem[i] ?? 0));
+    }
+  }
   u[inputDim - 4] = CATEGORY_CHANNEL[event.category] ?? 0.5;
   u[inputDim - 3] = event.sourceAuthority === 'seed.internal' ? -0.5 : 0.5;
   // Elapsed event-time, log-compressed: 1s→~0.03, 1h→~0.35, 1d→~0.49, capped 1.
