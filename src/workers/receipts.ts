@@ -1,4 +1,5 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { embedTextSync } from '../substrate/embed-at-contact.js';
 import path from 'node:path';
 import type { WorkerRunReceipt } from './types.js';
 
@@ -61,8 +62,12 @@ export function writeWorkerReceipt(projectRoot: string, runPath: string, receipt
   const ownerBrainDir = path.join(projectRoot, 'instances', receipt.ownerAgent, 'brain');
   ensureDir(ownerBrainDir);
   const ownerBrainPath = path.join(ownerBrainDir, 'worker-runs.jsonl');
+  // Perception at contact (encoder stage 2): the receipt's language becomes
+  // a semantic vector on the line every Seed eating worker-runs will taste.
+  const semanticVector = embedTextSync(`${receipt.summary}${receipt.rootCause ? `. ${receipt.rootCause}` : ''}`);
   const brainRecord = {
     schema: 'home23.worker-run-memory.v1',
+    ...(semanticVector !== null ? { semantic_vector: semanticVector } : {}),
     runId: receipt.runId,
     worker: receipt.worker,
     ownerAgent: receipt.ownerAgent,

@@ -39,6 +39,7 @@ import {
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { embedTextSync } from '../substrate/embed-at-contact.js';
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -276,8 +277,16 @@ export class RelationshipLedger {
   }
 
   // Best-effort sibling event log. Never throws — continuity annotation only.
-  private emitEvent(eventType: string, entryId: string, payload: Record<string, unknown> = {}): void {
+  // When the event carries real language (semanticText), it is perceived at
+  // contact (encoder stage 2): embedded locally, projected through the
+  // published semantic projection, and the vector rides the line — Seeds
+  // eating this stream eat meaning. Degraded-honest: no embedder, no vector.
+  private emitEvent(eventType: string, entryId: string, payload: Record<string, unknown> = {}, semanticText?: string): void {
     try {
+      let semanticVector: number[] | null = null;
+      if (semanticText !== undefined) {
+        semanticVector = embedTextSync(semanticText);
+      }
       const line = JSON.stringify({
         event_id: randomUUID(),
         event_type: eventType,
@@ -285,6 +294,7 @@ export class RelationshipLedger {
         agent: this.agent,
         ts: this.now(),
         payload,
+        ...(semanticVector !== null ? { semantic_vector: semanticVector } : {}),
       }) + '\n';
       appendFileSync(this.eventsPath, line);
     } catch { /* best-effort */ }
@@ -390,7 +400,8 @@ export class RelationshipLedger {
     this.entries.push(entry);
     this.evict();
     this.persist();
-    this.emitEvent('entry_added', entry.id, { type: entry.type, actor: entry.actor, method });
+    this.emitEvent('entry_added', entry.id, { type: entry.type, actor: entry.actor, method },
+      `${entry.title}. ${entry.statement}${entry.why ? `. ${entry.why}` : ''}`);
     return entry;
   }
 

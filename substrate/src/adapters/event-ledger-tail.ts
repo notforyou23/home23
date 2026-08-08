@@ -350,11 +350,13 @@ export class EventLedgerTailAdapter implements SourceAdapter {
     // (including 41 successes in the recent window) taught as a correction,
     // and both live seeds' consequence-role cells starved structurally.
     const succeeded = ['success', 'ok', 'completed', 'done', 'fixed', 'no_change'].includes(status.toLowerCase());
+    const semanticVector = sanitizeSemanticVector(parsed['semantic_vector']);
     return {
       eventId: runId,
       category: succeeded ? 'consequence' : 'correction',
       sourceAuthority: this.authority,
       sourceRef: `worker.${worker}:${runId}`,
+      ...(semanticVector !== null ? { semanticVector } : {}),
       payload: {
         worker,
         status,

@@ -87,6 +87,13 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`const ENGINE = path.join(HOME23, 'engine');`);
   lines.push(`const ENGINE_KILL_TIMEOUT_MS = 210000;`);
   lines.push(`const DASHBOARD_KILL_TIMEOUT_MS = 210000;`);
+  // Harness kill_timeout must be SHORT. A 210s harness kill_timeout (fossil
+  // from an older config generation) gave the 2026-08-07 forrest-harness
+  // restart a multi-minute stopping window in which racing pm2 actions
+  // spawned a duplicate and abandoned the old process alive on the bridge
+  // port. The harness self-limits graceful shutdown at 15s (ShutdownGuard),
+  // so 30s here is pure backstop for a hard-blocked event loop.
+  lines.push(`const HARNESS_KILL_TIMEOUT_MS = 30000;`);
   lines.push(`const PM2_INHERITANCE_BLOCKLIST = ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'];`);
   lines.push(`for (const key of PM2_INHERITANCE_BLOCKLIST) delete process.env[key];`);
   lines.push(``);
@@ -204,7 +211,7 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${logsDir} + '/engine-out.log',`);
     lines.push(`      error_file: ${logsDir} + '/engine-err.log',`);
-    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
+    lines.push(`      env: { ...commonEnv, HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY: brainOperationsCapabilityKey, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
 
     // Dashboard
@@ -233,7 +240,7 @@ export function generateEcosystem(home23Root, options = {}) {
       lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
       lines.push(`      out_file: ${logsDir} + '/mcp-out.log',`);
       lines.push(`      error_file: ${logsDir} + '/mcp-err.log',`);
-      lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_ROOT: HOME23, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, MCP_HTTP_HOST: '127.0.0.1', MCP_HTTP_PORT: '${mcpPort}', HOME23_MCP_AVAILABLE: 'true', INSTANCE_ID: 'home23-${agent.name}' },`);
+      lines.push(`      env: { ...commonEnv, HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY: brainOperationsCapabilityKey, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_ROOT: HOME23, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, MCP_HTTP_HOST: '127.0.0.1', MCP_HTTP_PORT: '${mcpPort}', HOME23_MCP_AVAILABLE: 'true', INSTANCE_ID: 'home23-${agent.name}' },`);
       lines.push(`    },`);
     }
 
@@ -254,10 +261,15 @@ export function generateEcosystem(home23Root, options = {}) {
     // V8 background-GC churn, invisible to cpu-prof.
     lines.push(`      node_args: '--expose-gc --max-old-space-size=8192 --cpu-prof --cpu-prof-dir=' + ${logsDir} + ' --cpu-prof-interval=1000 --heap-prof --heap-prof-dir=' + ${logsDir},`);
     lines.push(`      max_memory_restart: '10G',`);
+    lines.push(`      kill_timeout: HARNESS_KILL_TIMEOUT_MS,`);
+    // exp_backoff caps a boot-crash loop (e.g. bridge port contention) at
+    // ~15s cycles instead of the restart_delay:0 hot loop that produced
+    // 35,948 restarts overnight on 2026-08-07/08.
+    lines.push(`      exp_backoff_restart_delay: 200,`);
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${logsDir} + '/harness-out.log',`);
     lines.push(`      error_file: ${logsDir} + '/harness-err.log',`);
-    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
+    lines.push(`      env: { ...commonEnv, HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY: brainOperationsCapabilityKey, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
 
     // Substrate Seed (shadow resident) — emitted ONLY when the agent's config
@@ -268,7 +280,7 @@ export function generateEcosystem(home23Root, options = {}) {
     if (agent.config.substrate?.enabled === true) {
       const lobeKind = agent.config.substrate?.lobe === 'model' ? 'model'
         : agent.config.substrate?.lobe === 'echo' ? 'echo' : '';
-      const lobeModel = String(agent.config.substrate?.lobeModel || 'glm-5.2:cloud');
+      const lobeModel = String(agent.config.substrate?.lobeModel || 'claude-haiku-4-5');
       const lobeMinIntervalMs = Number(agent.config.substrate?.lobeMinIntervalMs) > 0
         ? Number(agent.config.substrate.lobeMinIntervalMs) : 600000;
       const seedStateDir = `path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'seed-01')`;

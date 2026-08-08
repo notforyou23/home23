@@ -19,6 +19,8 @@
  * injected LobeAdapter — by default the runner recruits nothing.
  */
 
+import { writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import type { SeedProcess } from './seed.js';
 import { SeedProcess as Seed } from './seed.js';
 import { SeedLedger } from './ledger.js';
@@ -87,6 +89,7 @@ export class SeedRunner {
   private timer: NodeJS.Timeout | null = null;
   private wake: (() => void) | null = null;
   private lastLobeAtMs = 0;
+  private lockPath: string | null = null;
   private readonly log: (line: string) => void;
 
   constructor(private readonly opts: SeedRunnerOptions) {
@@ -98,8 +101,43 @@ export class SeedRunner {
     return this.seed;
   }
 
+  /**
+   * MECHANICAL fork guard (added 2026-08-08 after clay's stillbirth: two
+   * runners on one stateDir interleaved appends and forked the chain — the
+   * fail-closed restore caught it, but the guard must exist BEFORE the
+   * damage, not after). One exclusive lock per stateDir: a second runner
+   * REFUSES loudly; a stale lock (dead pid) is taken over.
+   */
+  private acquireRunnerLock(): void {
+    const lockPath = join(this.opts.stateDir, '.runner.lock');
+    mkdirSync(this.opts.stateDir, { recursive: true });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
+        this.lockPath = lockPath;
+        return;
+      } catch {
+        let holder = NaN;
+        try { holder = Number(readFileSync(lockPath, 'utf-8').trim()); } catch { /* unreadable */ }
+        let alive = false;
+        if (Number.isFinite(holder) && holder > 0) {
+          try { process.kill(holder, 0); alive = true; } catch { alive = false; }
+        }
+        if (alive) {
+          throw new Error(
+            `stateDir ${this.opts.stateDir} is HELD by live runner pid ${holder} — `
+            + 'two writers fork the chain; refusing to start (never two live instances)',
+          );
+        }
+        try { unlinkSync(lockPath); } catch { /* raced */ }
+      }
+    }
+    throw new Error(`could not acquire runner lock at ${lockPath}`);
+  }
+
   start(): void {
     if (this.seed !== null) return;
+    this.acquireRunnerLock();
     if (SeedLedger.exists(this.opts.stateDir)) {
       this.seed = Seed.restore(this.opts.stateDir);
       this.log(`restored seed ${this.seed.getState().seedId} at ledgerSeq ${this.seed.getState().ledgerSeq}`);
@@ -139,10 +177,45 @@ export class SeedRunner {
     }
   }
 
+  /**
+   * Operator inbox: typed operator decisions (declines) appended to
+   * <stateDir>/operator-inbox.jsonl by the operator's instrument reach the
+   * individual THROUGH its own living process — the runner lock forbids
+   * side-writes to the chain, so this is the door. Cursor-tracked,
+   * at-least-once; a decline already receipted is skipped by seq.
+   */
+  private consumeOperatorInbox(): void {
+    if (this.seed === null) return;
+    const inboxPath = join(this.opts.stateDir, 'operator-inbox.jsonl');
+    const cursorPath = join(this.opts.stateDir, 'operator-inbox.cursor');
+    let raw = '';
+    try { raw = readFileSync(inboxPath, 'utf-8'); } catch { return; }
+    let offset = 0;
+    try { offset = Number(readFileSync(cursorPath, 'utf-8').trim()) || 0; } catch { /* first read */ }
+    if (offset >= raw.length) return;
+    const fresh = raw.slice(offset);
+    const lastNewline = fresh.lastIndexOf('\n');
+    if (lastNewline < 0) return;
+    for (const line of fresh.slice(0, lastNewline).split('\n')) {
+      if (line.trim() === '') continue;
+      try {
+        const cmd = JSON.parse(line) as { action?: string; proposalSeq?: number; authorizedBy?: string; reason?: string };
+        if (cmd.action === 'decline' && typeof cmd.proposalSeq === 'number' && typeof cmd.authorizedBy === 'string') {
+          const result = this.seed.recordOperatorDecision(cmd.proposalSeq, 'declined', cmd.authorizedBy, cmd.reason ?? '');
+          this.log(`operator: DECLINED proposal seq ${cmd.proposalSeq} (${result.proposalKey}) by ${cmd.authorizedBy} · act seq ${result.actSeq}`);
+        }
+      } catch (error) {
+        this.log(`operator inbox: skipped bad line (${(error as Error).message.slice(0, 80)})`);
+      }
+    }
+    writeFileSync(cursorPath, String(offset + lastNewline + 1), 'utf-8');
+  }
+
   /** One poll cycle. Returns what happened — the caller (or test) decides
    * whether that constitutes progress. */
   async tick(): Promise<TickReport> {
     if (this.seed === null || this.adapters.length === 0) throw new Error('runner not started');
+    this.consumeOperatorInbox();
     const report: TickReport = { pulled: 0, transitioned: 0, workspaceOutcomes: [], lobeRecruitments: 0, checkpoints: 0 };
 
     // Pull from every source, merge in EVENT-TIME order (deterministic
@@ -251,6 +324,10 @@ export class SeedRunner {
       this.log(`stopped at checkpoint ${checkpointId}, ledgerSeq ${this.seed.getState().ledgerSeq}`);
       this.seed = null;
       this.adapters = [];
+    }
+    if (this.lockPath !== null) {
+      try { unlinkSync(this.lockPath); } catch { /* already gone */ }
+      this.lockPath = null;
     }
   }
 

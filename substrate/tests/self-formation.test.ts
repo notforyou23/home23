@@ -13,10 +13,11 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, cpSync } from 'node:fs';
+import { mkdtempSync, rmSync, cpSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SeedProcess } from '../src/seed.js';
+import { SeedRunner } from '../src/runner.js';
 import { SeedLedger } from '../src/ledger.js';
 import {
   evaluateSelfApplicationGates,
@@ -248,4 +249,61 @@ test('organ excision removes the organ and ONLY the organ; birth anatomy is uncu
   const twinDir2 = makeDir(t);
   rmSync(twinDir2, { recursive: true, force: true });
   assert.throws(() => SeedProcess.createOrganExcisedTwin(dir, twinDir2, 'contact.owner'), /birth anatomy/);
+});
+
+test('operator decline: receipted, suppresses re-proposal far beyond the ordinary cooldown, and reaches a LIVE individual through the inbox', async (t) => {
+  const dir = makeDir(t);
+  const seed = SeedProcess.initialize(dir, undefined, {
+    reservoirSeed: 615, anatomy: MINIMAL_ANATOMY, name: 'decline-test',
+  });
+  liveRound(seed, 0, 210, '2026-08-10T12:00:00.000Z');
+  const chain = new SeedLedger(dir).readAll();
+  const proposal = chain.find((r) => r.category === 'proposal');
+  assert.ok(proposal !== undefined, 'life proposed');
+
+  const { actSeq, proposalKey: key } = seed.recordOperatorDecision(proposal.seq, 'declined', 'jtr', 'feed them, dont shrink them');
+  const act = new SeedLedger(dir).readAll().find((r) => r.seq === actSeq);
+  assert.ok(act !== undefined && act.payload['operatorDecision'] === 'declined');
+  assert.equal(act.payload['authorizedBy'], 'jtr');
+  assert.equal(act.payload['proposalKey'], key);
+
+  // The same pressure, long past the ORDINARY cooldown, stays quiet — while
+  // OTHER detectors (e.g. the starving contact cell's dissolve) may still
+  // speak: the decline is per-(op,target), not a gag order.
+  liveRound(seed, 300, 210, '2026-08-12T12:00:00.000Z');
+  const declinedOpAfter = new SeedLedger(dir).readAll()
+    .filter((r) => r.category === 'proposal' && r.payload['op'] === proposal.payload['op']
+      && JSON.stringify(r.payload['targetCellIds']) === JSON.stringify(proposal.payload['targetCellIds']));
+  assert.equal(declinedOpAfter.length, 1, 'the DECLINED (op,target) does not re-propose within the declined cooldown');
+
+  // Declining a non-proposal refuses.
+  assert.throws(() => seed.recordOperatorDecision(1, 'declined', 'jtr', 'x'), /not a growth proposal/);
+  seed.stop();
+
+  // The inbox path: a live runner consumes a decline line and receipts it.
+  const dir2 = makeDir(t);
+  const srcDir = makeDir(t);
+  const srcPath = join(srcDir, 'stream.jsonl');
+  writeFileSync(srcPath, '', 'utf-8');
+  const runner = new SeedRunner({
+    stateDir: dir2, sourcePath: srcPath, fromEnd: false,
+    anatomy: MINIMAL_ANATOMY, name: 'inbox-test',
+  });
+  runner.start();
+  for (let i = 0; i < 210; i++) {
+    runner.seedProcess.transition(knock(i, new Date(Date.parse('2026-08-10T12:00:00.000Z') - (209 - i) * 60_000).toISOString()));
+  }
+  runner.seedProcess.evaluateGrowth('2026-08-10T12:00:00.000Z');
+  const liveProposal = new SeedLedger(dir2).readAll().find((r) => r.category === 'proposal');
+  assert.ok(liveProposal !== undefined);
+  writeFileSync(join(dir2, 'operator-inbox.jsonl'),
+    JSON.stringify({ action: 'decline', proposalSeq: liveProposal.seq, authorizedBy: 'jtr', reason: 'feed them' }) + '\n', 'utf-8');
+  await runner.tick();
+  const declineAct = new SeedLedger(dir2).readAll().find((r) => r.category === 'act' && r.payload['operatorDecision'] === 'declined');
+  assert.ok(declineAct !== undefined, 'the living process receipted the operator decision');
+  // At-least-once discipline: a second tick does not double-receipt.
+  await runner.tick();
+  const declineActs = new SeedLedger(dir2).readAll().filter((r) => r.category === 'act' && r.payload['operatorDecision'] === 'declined');
+  assert.equal(declineActs.length, 1, 'cursor prevents re-processing');
+  runner.stop();
 });

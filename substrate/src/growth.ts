@@ -51,6 +51,10 @@ export const PROPOSAL_SEED_AFFINITY = 0.3;
 export const MAX_PROPOSALS_PER_EVAL = 2;
 /** A proposal for the same (op, target) within this many seqs is a duplicate. */
 export const PROPOSAL_COOLDOWN_SEQS = 200;
+/** An operator-DECLINED (op, target) stays quiet this long — the operator
+ * decided; the pressure may only re-raise the question after real time
+ * ("feed them, don't shrink them" gets its chance to work). */
+export const DECLINED_COOLDOWN_SEQS = 5000;
 
 // ─── growth.v2 — governed self-application (SELF-FORMATION-PROTOCOL v1.1) ────
 // A BIRTH property (genesis selfFormation: true). Crystallize only — strictly
@@ -531,6 +535,7 @@ export function evaluateGrowthPressure(
   anatomy: readonly AnatomyCellSpec[],
   priorProposals: ReadonlyMap<string, number>,
   currentSeq: number,
+  declined: ReadonlyMap<string, number> = new Map(),
 ): GrowthProposal[] {
   const stats = collectWindowStats(records);
   if (stats.transitions < GROWTH_MIN_WINDOW_TRANSITIONS) return [];
@@ -543,7 +548,10 @@ export function evaluateGrowthPressure(
   ].filter((p): p is GrowthProposal => p !== null);
 
   const fresh = candidates.filter((p) => {
-    const lastSeq = priorProposals.get(proposalKey(p.op, p.targetCellIds));
+    const key = proposalKey(p.op, p.targetCellIds);
+    const declinedSeq = declined.get(key);
+    if (declinedSeq !== undefined && currentSeq - declinedSeq <= DECLINED_COOLDOWN_SEQS) return false;
+    const lastSeq = priorProposals.get(key);
     return lastSeq === undefined || currentSeq - lastSeq > PROPOSAL_COOLDOWN_SEQS;
   });
   return fresh.slice(0, MAX_PROPOSALS_PER_EVAL);

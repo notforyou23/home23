@@ -355,6 +355,48 @@ export class SeedProcess {
   }
 
   /**
+   * Operator DECLINE of a receipted growth proposal — the other half of the
+   * operator's power. Zero mutations; the receipt carries the decision, the
+   * authorization, and the reason, and evaluateGrowth suppresses the same
+   * (op, target) for DECLINED_COOLDOWN_SEQS. The journal narrates it.
+   */
+  recordOperatorDecision(
+    proposalSeq: number,
+    decision: 'declined',
+    authorizedBy: string,
+    reason: string,
+  ): { actSeq: number; proposalKey: string } {
+    this.membrane.assert('local.ledger.append');
+    const record = this.ledger.readAll().find((r) => r.seq === proposalSeq);
+    if (record === undefined || record.category !== 'proposal' || record.sourceRef !== 'growth.pressure') {
+      throw new Error(`seq ${proposalSeq} is not a growth proposal on this chain`);
+    }
+    const op = String(record.payload?.['op'] ?? '?') as GrowthOp;
+    const targets = Array.isArray(record.payload?.['targetCellIds'])
+      ? (record.payload['targetCellIds'] as string[])
+      : [];
+    const key = proposalKey(op, targets);
+    const { record: act } = this.commitReceipted(new Map(), {
+      category: 'act',
+      sourceAuthority: 'seed.internal',
+      sourceRef: 'growth.operator-decision',
+      payload: {
+        operatorDecision: decision,
+        proposalSeq,
+        proposalKey: key,
+        op,
+        targetCellIds: targets,
+        authorizedBy,
+        reason: reason.slice(0, 300),
+      },
+    });
+    this._eventCount++;
+    this.accounting.recordEvent();
+    this.accounting.setLedgerBytes(this.ledger.bytes);
+    return { actSeq: act.seq, proposalKey: key };
+  }
+
+  /**
    * Operator application of a receipted growth proposal (split/merge/
    * dissolve/specialize — the operations the covenant reserves for humans).
    * Semantics: replaced cells and their development are REMOVED (magnitude
@@ -718,8 +760,16 @@ export class SeedProcess {
         priors.set(proposalKey(op as GrowthOp, targets as string[]), record.seq);
       }
     }
+    // Operator declines suppress re-proposal far longer than the ordinary
+    // cooldown — the operator decided; pressure re-raises only after real time.
+    const declined = new Map<string, number>();
+    for (const record of all) {
+      if (record.category !== 'act' || record.payload?.['operatorDecision'] !== 'declined') continue;
+      const key = record.payload?.['proposalKey'];
+      if (typeof key === 'string') declined.set(key, record.seq);
+    }
     const currentSeq = all[all.length - 1]?.seq ?? 0;
-    const proposals = evaluateGrowthPressure(window, this.anatomy, priors, currentSeq);
+    const proposals = evaluateGrowthPressure(window, this.anatomy, priors, currentSeq, declined);
     for (const proposal of proposals) {
       this.commitReceipted(new Map(), {
         category: 'proposal',

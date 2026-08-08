@@ -371,3 +371,31 @@ test('MULTI-SOURCE: streams merge in event-time order, cursors stay independent,
   assert.equal(report2.pulled, 0, 'all three cursors must have committed independently');
   runner2.stop();
 });
+
+test('MECHANICAL FORK GUARD: a second runner on the same stateDir refuses; stale locks are taken over', (t) => {
+  // clay's stillbirth (2026-08-08): two runners interleaved appends and
+  // forked the chain. The fail-closed restore caught the damage; this lock
+  // prevents it from ever being writable in the first place.
+  const srcDir = makeDir(t, 'lock-src');
+  const stateDir = makeDir(t, 'lock-state');
+  const sourcePath = writeFixture(srcDir, [harnessLine(0, 'RetrievalExecuted', '2026-08-08T16:00:00.000Z')]);
+
+  const first = new SeedRunner({ stateDir, sourcePath, fromEnd: false });
+  first.start();
+
+  const second = new SeedRunner({ stateDir, sourcePath, fromEnd: false });
+  assert.throws(() => second.start(), /HELD by live runner|never two live instances/,
+    'a second writer must refuse loudly');
+
+  first.stop();
+  // Lock released on stop — a successor may now start.
+  const third = new SeedRunner({ stateDir, sourcePath, fromEnd: false });
+  third.start();
+  third.stop();
+
+  // Stale lock (dead pid) is taken over, not fatal.
+  writeFileSync(join(stateDir, '.runner.lock'), '999999', 'utf-8');
+  const fourth = new SeedRunner({ stateDir, sourcePath, fromEnd: false });
+  fourth.start();
+  fourth.stop();
+});

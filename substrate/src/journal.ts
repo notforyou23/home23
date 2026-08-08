@@ -54,6 +54,7 @@ export function composeJournalEntry(window: JournalWindow): string | null {
   const lobes = records.filter((r) => r.category === 'lobe');
   const growthProposals = records.filter((r) => r.category === 'proposal' && r.sourceRef === 'growth.pressure');
   const growthApplications = records.filter((r) => r.category === 'act' && r.payload?.['growthApplication'] === true);
+  const operatorDecisions = records.filter((r) => r.category === 'act' && r.payload?.['operatorDecision'] !== undefined);
 
   const lines: string[] = [];
   const lastSeq = records[records.length - 1]?.seq ?? window.sinceSeq;
@@ -163,6 +164,19 @@ export function composeJournalEntry(window: JournalWindow): string | null {
       lines.push(`- **I grew an organ: ${cellId}** — my life kept insisting on ${prefix}`
         + (gates?.proposals !== undefined ? ` (${gates.proposals} proposals across ${((gates.spanMs ?? 0) / 3600000).toFixed(0)}h of my time)` : '')
         + `; it starts empty and must earn its state · seq ${g.seq}`);
+    }
+    lines.push('');
+  }
+
+  // ── Operator decisions on my proposals ──
+  if (operatorDecisions.length > 0) {
+    lines.push('## answered');
+    for (const d of operatorDecisions) {
+      const op = String(d.payload?.['op'] ?? '?');
+      const targets = Array.isArray(d.payload?.['targetCellIds']) ? (d.payload['targetCellIds'] as string[]).join(', ') : '?';
+      const by = String(d.payload?.['authorizedBy'] ?? '?');
+      const reason = String(d.payload?.['reason'] ?? '');
+      lines.push(`- ${by} DECLINED my ${op} on ${targets}${reason !== '' ? ` — "${reason.slice(0, 90)}"` : ''} · seq ${d.seq}`);
     }
     lines.push('');
   }
