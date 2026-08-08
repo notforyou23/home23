@@ -12,7 +12,6 @@
 //   instances/jerry/workspace/projects/shakedownshuffle/status/latest.json (full)
 
 import { readFileSync, readdirSync, statSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { join, basename } from "node:path";
 
 const SITE = "/Users/jtr/websites/shakedownshuffle.com";
@@ -113,41 +112,33 @@ try {
   status.sources.operator = opPath;
 } catch (e) { status.warnings.push(`operator/funnel: ${e.message}`); }
 
-// --- pending proposals (the approval surface) ---
-// IMPORTANT: "approved" in the queue is NOT the same thing as "needs jtr's
-// decision". Approved-but-unstructured cards are waiting on the approval
-// runner (scripts/shakedown-approval-runner.mjs), not on jtr. Do not label
-// them needsYou — that was the confusion this fixed on 2026-07-30.
+// --- editorial pipeline supply (three-role artifacts) ---
+// Replaces the retired proposal/approval surface. Owned-site publish no longer
+// waits on a jtr decision or an approval runner (both retired 2026-08-08). The
+// operational signal is now: ready dossiers not yet consumed, and complete
+// drafts ready for the publisher's two checks. Spine: scripts/shakedown-editorial.mjs;
+// see RUNBOOK "The editorial pipeline". article-editorial-queue.md is historical.
 try {
-  const queuePath = join(WS, "projects/shakedownshuffle/content/article-editorial-queue.md");
-  const queue = readFileSync(queuePath, "utf-8");
-  const proposed = [...queue.matchAll(/^### \[proposed\] (.+)$/gm)].map((m) => m[1].slice(0, 100));
-  const approved = [...queue.matchAll(/^### \[approved\] (.+)$/gm)].map((m) => m[1].slice(0, 100));
-  status.needsYou = { proposedCount: proposed.length, proposed };
-  status.approvedQueue = { count: approved.length, titles: approved };
-  status.sources.queue = queuePath;
-} catch (e) { status.warnings.push(`queue: ${e.message}`); }
-
-// --- approval runner classification (Task 9) ---
-// Read-only here: runs the runner's own --dry-run so this status assembler
-// never mutates the queue or the ledger. Source of truth for execution state
-// is the runner's ledger; this just surfaces the same inventory in the digest.
-try {
-  const runnerOut = execFileSync(
-    process.execPath,
-    [join(H23, "scripts/shakedown-approval-runner.mjs"), "--dry-run"],
-    { encoding: "utf-8", timeout: 20_000 }
-  );
-  const runner = JSON.parse(runnerOut);
-  status.approvalRunner = {
-    approvedTotal: runner.approvedTotal,
-    counts: runner.counts,
-    allowlistSize: runner.allowlistSize,
-    machineReady: runner.machineReady?.length ?? 0,
-    needsStructuring: runner.needsStructuring?.length ?? 0,
-    blocked: runner.blocked?.length ?? 0,
+  const dossiersDir = join(WS, "projects/shakedownshuffle/content/dossiers");
+  const draftsDir = join(WS, "projects/shakedownshuffle/content/drafts");
+  const readDir = (d) => { try { return readdirSync(d); } catch { return []; } };
+  const dossierFiles = readDir(dossiersDir);
+  const readyDossiers = dossierFiles
+    .filter((f) => f.endsWith(".md") && f !== ".gitkeep")
+    .filter((f) => !dossierFiles.includes(`${f.replace(/\.md$/, "")}.consumed.json`))
+    .filter((f) => { try { return /(^|\n)state:\s*ready\b/i.test(readFileSync(join(dossiersDir, f), "utf-8")); } catch { return false; } });
+  const completeDrafts = readDir(draftsDir)
+    .filter((f) => f.endsWith(".md") && !/^proposals?-|^proposer-/.test(f))
+    .filter((f) => { try {
+      const md = readFileSync(join(draftsDir, f), "utf-8");
+      return (/^##\s+SET\s+I\b/im.test(md) && /^##\s+ENCORE\b/im.test(md) && /sources/i.test(md)) || /(^|\n)state:\s*complete\b/i.test(md);
+    } catch { return false; } });
+  status.editorialPipeline = {
+    readyDossiers: readyDossiers.map((f) => f.replace(/\.md$/, "")),
+    completeDrafts: completeDrafts.map((f) => f.replace(/\.md$/, "")),
   };
-} catch (e) { status.warnings.push(`approvalRunner: ${e.message}`); }
+  status.sources.editorialPipeline = { dossiersDir, draftsDir };
+} catch (e) { status.warnings.push(`editorialPipeline: ${e.message}`); }
 
 // --- Home23 cron jobs ---
 try {
@@ -183,20 +174,16 @@ catalog). 🔒 cosmo-content/_private/ is never read by anything unattended.
 
 ${(() => {
   const lines = [];
-  if (status.needsYou?.proposedCount) {
-    lines.push(`${status.needsYou.proposedCount} proposal(s) awaiting decision in content/article-editorial-queue.md:`);
-    lines.push(...status.needsYou.proposed.map((t) => `  - ${t}`));
-  }
   if (p?.pendingItems?.length) {
     lines.push(`${p.pendingItems.length} publishing item(s) pending:`);
     lines.push(...p.pendingItems.map((t) => `  - ${t}`));
   }
   return lines.length ? `NEEDS YOU: ${lines.join("\n")}\n` : "NEEDS YOU: nothing pending";
 })()}${(() => {
-  const ar = status.approvalRunner;
-  if (!ar) return "";
-  const bits = [`${ar.approvedTotal ?? 0} approved card(s) in queue`, `${ar.machineReady ?? 0} machine-ready`, `${ar.needsStructuring ?? 0} needs-structuring (prose, waiting on a structured contract, NOT waiting on you)`, `${ar.blocked ?? 0} blocked`];
-  return `\nAPPROVAL RUNNER (Lane1<-Lane3, see scripts/shakedown-approval-runner.mjs): ${bits.join(" | ")}\n`;
+  const ep = status.editorialPipeline;
+  if (!ep) return "";
+  const bits = [`${ep.readyDossiers?.length ?? 0} ready dossier(s)`, `${ep.completeDrafts?.length ?? 0} complete draft(s) for the publisher's two checks`];
+  return `\nEDITORIAL PIPELINE (researcher→writer→publisher, spine scripts/shakedown-editorial.mjs; owned-site publish is authorized, no jtr gate): ${bits.join(" | ")}\n`;
 })()}
 Collection: cursor ${c?.cursorNextIndex ?? "?"} pass ${c?.passNumber ?? "?"} | wanted ${c?.wanted?.wanted ?? "?"} / have_audio ${c?.wanted?.have_audio ?? "?"} / discovered ${c?.wanted?.discovered ?? "?"}
 Last run: ${c?.lastRun ? `${c.lastRun.status} at ${c.lastRun.completedAt} (replayVerified=${c.lastRun.replayVerified}, candidates=${c.lastRun.candidates})` : "none"}
@@ -211,9 +198,7 @@ Cron: ${jobLine("shakedown-collection-daily")}
       ${jobLine("shakedown-publish-scan")}
       ${jobLine("shakedown-operator-check")}
       ${jobLine("shakedown-editorial-leads")}
-      ${jobLine("shakedown-proposer-cycle")}
       ${jobLine("shakedown-collection-promote")}
-      ${jobLine("shakedown-approval-runner")}
 ${status.warnings.length ? `\nWARNINGS: ${status.warnings.join(" | ")}\n` : ""}`;
 if (md.length > MD_CAP) md = md.slice(0, MD_CAP - 25) + "\n[truncated at cap]\n";
 const mdTmp = OUT_MD + ".tmp";
