@@ -36,6 +36,7 @@ import { CapabilityMembrane } from './membrane.js';
 import { ResourceAccounting } from './resource.js';
 import {
   makeInitialCells,
+  makeInitialCell,
   routeEvent,
   routingFromAnatomy,
   applyMetabolicTransition,
@@ -49,8 +50,8 @@ import type { Reservoir } from './metabolism.js';
 import { generateReservoir, eventDeltaSeconds, METABOLISM_VERSION } from './metabolism.js';
 import { CONTINUOUS_STATE_DIM } from './types.js';
 import { evaluateWorkspace } from './workspace.js';
-import { evaluateGrowthPressure, proposalKey } from './growth.js';
-import type { GrowthProposal, GrowthOp } from './growth.js';
+import { evaluateGrowthPressure, proposalKey, crystallizeClusterPrefix, evaluateSelfApplicationGates } from './growth.js';
+import type { GrowthProposal, GrowthOp, PriorCrystallizeProposal } from './growth.js';
 import type { DevelopmentalState } from './plasticity.js';
 import {
   emptyDevelopment,
@@ -88,8 +89,13 @@ export class SeedProcess {
   private readonly accounting: ResourceAccounting;
   private readonly cells: Map<string, SituationCell>;
   private readonly reservoir: Reservoir;
-  private readonly anatomy: readonly AnatomyCellSpec[];
-  private readonly routing: { byCategory: Record<string, string>; peripheryId: string };
+  // growth.v2: anatomy and routing are mutable ONLY through receipted growth
+  // application (self-formation covenant) — never assigned elsewhere.
+  private anatomy: readonly AnatomyCellSpec[];
+  private routing: { byCategory: Record<string, string>; peripheryId: string };
+  /** Birth property (genesis selfFormation: true): crystallize proposals
+   * passing the persistence gates may self-apply under the covenant. */
+  private readonly selfFormation: boolean;
   private development: DevelopmentalState;
   private dispositions: SeedDispositions;
   private readonly stateDir: string;
@@ -115,6 +121,7 @@ export class SeedProcess {
     eventCount: number;
     transitionCount: number;
     lastTransitionAt?: string;
+    selfFormation?: boolean;
   }) {
     this.stateDir = opts.stateDir;
     this.seedId = opts.seedId;
@@ -123,6 +130,7 @@ export class SeedProcess {
     this.reservoir = opts.reservoir;
     this.anatomy = opts.anatomy;
     this.routing = routingFromAnatomy(opts.anatomy);
+    this.selfFormation = opts.selfFormation ?? false;
     this.development = opts.development;
     this.dispositions = opts.dispositions;
     this.ledger = opts.ledger;
@@ -139,7 +147,7 @@ export class SeedProcess {
   static initialize(
     stateDir: string,
     budget?: Partial<ResourceBudget>,
-    opts?: { reservoirSeed?: number; anatomy?: readonly AnatomyCellSpec[]; name?: string },
+    opts?: { reservoirSeed?: number; anatomy?: readonly AnatomyCellSpec[]; name?: string; selfFormation?: boolean },
   ): SeedProcess {
     // A stateDir with an existing ledger is an existing Seed. Initializing over
     // it would write a second genesis and continue the old chain under a new
@@ -174,6 +182,7 @@ export class SeedProcess {
       payload: {
         seedId,
         ...(opts?.name !== undefined ? { name: opts.name } : {}),
+        ...(opts?.selfFormation === true ? { selfFormation: true } : {}),
         cellIds: Array.from(cells.keys()),
         // Anatomy is identity: the genesis records each cell's routing role,
         // and restore() rebuilds the routing table from exactly this record.
@@ -197,6 +206,7 @@ export class SeedProcess {
       checkpoints,
       membrane,
       accounting,
+      selfFormation: opts?.selfFormation === true,
       eventCount: 1,
       transitionCount: 0,
       reservoir,
@@ -255,8 +265,29 @@ export class SeedProcess {
       );
     }
     // Anatomy is identity: pre-anatomy geneses (the first individual) fall
-    // back to the default shape; anything born after carries its own.
-    const anatomy: readonly AnatomyCellSpec[] = genesis.anatomy ?? DEFAULT_ANATOMY;
+    // back to the default shape; anything born after carries its own —
+    // PLUS whatever the individual has grown since (growth.v2): the chain's
+    // receipted growth applications are the body's biography, and the last
+    // one's resulting anatomy is the current shape.
+    let anatomy: readonly AnatomyCellSpec[] = genesis.anatomy ?? DEFAULT_ANATOMY;
+    for (const record of ledger.readAll()) {
+      if (record.category !== 'act') continue;
+      const isBodyChange = record.payload?.['growthApplication'] === true || record.payload?.['organExcision'] === true;
+      if (!isBodyChange) continue;
+      const grown = record.payload?.['resultingAnatomy'];
+      if (Array.isArray(grown) && grown.every((a) => typeof (a as AnatomyCellSpec).id === 'string')) {
+        anatomy = grown as AnatomyCellSpec[];
+      }
+    }
+    // Crash-window healing: if an application was receipted but the process
+    // died before its checkpoint, the organ exists in anatomy but not in the
+    // checkpoint's cells — rebuild it fresh (its life starts over; the chain
+    // still records that it was grown).
+    for (const spec of anatomy) {
+      if (!cells.has(spec.id)) {
+        cells.set(spec.id, makeInitialCell(spec.id, manifest.createdAt));
+      }
+    }
 
     return new SeedProcess({
       stateDir,
@@ -278,6 +309,7 @@ export class SeedProcess {
       eventCount: manifest.resourceSnapshot.eventCount,
       transitionCount: manifest.resourceSnapshot.transitionCount,
       lastTransitionAt: manifest.seedLastTransitionAt,
+      selfFormation: genesis.selfFormation === true,
     });
   }
 
@@ -319,6 +351,65 @@ export class SeedProcess {
     twin.accounting.setLedgerBytes(twin.ledger.bytes);
     const checkpointId = twin.checkpoint();
     return { checkpointId, zeroedMagnitude };
+  }
+
+  /**
+   * THE SECOND KNIFE'S BLADE (SELF-FORMATION-PROTOCOL v1.1). Create a twin
+   * with ONLY a named self-grown organ surgically removed: the cell, its
+   * development entry, and its anatomy entry — episodes preserved, ALL
+   * UNRELATED development preserved. Refuses to excise birth anatomy or
+   * cells that were never grown (the instrument cuts organs, not bodies).
+   * The excision is receipted (category 'act', organExcision: true) and
+   * finalized with a fresh checkpoint.
+   */
+  static createOrganExcisedTwin(sourceDir: string, targetDir: string, organCellId: string): {
+    checkpointId: string;
+    excisedDevelopmentMagnitude: number;
+  } {
+    if (SeedLedger.exists(targetDir)) {
+      throw new Error(`Target ${targetDir} already holds a seed — refusing to overwrite`);
+    }
+    cpSync(sourceDir, targetDir, { recursive: true });
+
+    const twin = SeedProcess.restore(targetDir);
+    const genesis = extractGenesis(twin.ledger);
+    const bornWith = (genesis.anatomy ?? DEFAULT_ANATOMY).some((a) => a.id === organCellId);
+    if (bornWith) {
+      throw new Error(`${organCellId} is birth anatomy, not a grown organ — the knife cuts organs only`);
+    }
+    if (!twin.anatomy.some((a) => a.id === organCellId)) {
+      throw new Error(`${organCellId} is not part of the twin's current anatomy`);
+    }
+    const organDev = twin.development[organCellId];
+    const excisedDevelopmentMagnitude = organDev !== undefined
+      ? developmentMagnitude({ [organCellId]: organDev })
+      : 0;
+
+    const beforeAnatomy = twin.anatomy.map((a) => ({ ...a }));
+    twin.cells.delete(organCellId);
+    twin.anatomy = twin.anatomy.filter((a) => a.id !== organCellId);
+    twin.routing = routingFromAnatomy(twin.anatomy);
+    const prunedDev = cloneDevelopment(twin.development);
+    delete prunedDev[organCellId];
+
+    twin.commitReceipted(new Map(), {
+      category: 'act',
+      sourceAuthority: 'seed.internal',
+      sourceRef: 'growth.organ-excision',
+      payload: {
+        organExcision: true,
+        organCellId,
+        excisedDevelopmentMagnitude,
+        beforeAnatomy,
+        resultingAnatomy: twin.anatomy.map((a) => ({ ...a })),
+        note: 'sanctioned organ excision — episodes and unrelated development preserved',
+      },
+    }, prunedDev);
+    twin._eventCount++;
+    twin.accounting.recordEvent();
+    twin.accounting.setLedgerBytes(twin.ledger.bytes);
+    const checkpointId = twin.checkpoint();
+    return { checkpointId, excisedDevelopmentMagnitude };
   }
 
   // ─── Public API ────────────────────────────────────────────────────────────
@@ -558,8 +649,95 @@ export class SeedProcess {
       this._eventCount++;
       this.accounting.recordEvent();
       this.accounting.setLedgerBytes(this.ledger.bytes);
+
+      // growth.v2 (SELF-FORMATION-PROTOCOL v1.1): an individual born with the
+      // power may GROW the organ its life keeps demanding — crystallize only,
+      // behind persistence gates, under the covenant, receipted as an 'act'.
+      if (this.selfFormation && proposal.op === 'crystallize') {
+        this.maybeSelfApplyCrystallization(proposal, all, asOf);
+      }
     }
     return proposals;
+  }
+
+  /** growth.v2: apply a crystallize proposal that has EARNED application.
+   * Gates and covenant are pure functions in growth.ts; this method owns the
+   * receipted mutation: new cell, new anatomy, new routing, 'act' record
+   * carrying the full lineage, immediate checkpoint. */
+  private maybeSelfApplyCrystallization(
+    proposal: GrowthProposal,
+    chain: readonly LedgerRecord[],
+    asOf: string,
+  ): void {
+    const clusterPrefix = crystallizeClusterPrefix(proposal);
+    if (clusterPrefix === null) return;
+
+    // History: every receipted crystallize proposal for this same cluster
+    // (including the one just receipted this call).
+    const history: PriorCrystallizeProposal[] = [];
+    for (const record of chain) {
+      if (record.category !== 'proposal' || record.sourceRef !== 'growth.pressure') continue;
+      if (record.payload?.['op'] !== 'crystallize') continue;
+      const evidence = record.payload?.['evidence'] as { prefixCounts?: Record<string, number> } | undefined;
+      const prefixes = Object.entries(evidence?.prefixCounts ?? {});
+      const top = prefixes[0];
+      if (top === undefined || top[0] !== clusterPrefix) continue;
+      const recAsOf = record.payload?.['asOf'];
+      history.push({
+        seq: record.seq,
+        asOf: typeof recAsOf === 'string' ? recAsOf : '',
+        clusterPrefix,
+        clusterCount: top[1],
+      });
+    }
+    history.push({
+      seq: this.ledger.currentSeq,
+      asOf,
+      clusterPrefix,
+      clusterCount: Object.entries(proposal.evidence.prefixCounts)[0]?.[1] ?? 0,
+    });
+
+    const gate = evaluateSelfApplicationGates(history, proposal, this.cells.size);
+    if (!gate.qualifies) return;
+
+    const newCellSpec = proposal.proposedAnatomy.find(
+      (c) => !proposal.beforeAnatomy.some((b) => b.id === c.id),
+    );
+    if (newCellSpec === undefined || this.cells.has(newCellSpec.id)) return;
+
+    // The organ is born: a fresh cell — it must EARN its state through life.
+    this.membrane.assert('local.state.write');
+    this.membrane.assert('local.ledger.append');
+    this.cells.set(newCellSpec.id, makeInitialCell(newCellSpec.id, asOf));
+    const beforeAnatomy = this.anatomy.map((a) => ({ ...a }));
+    this.anatomy = proposal.proposedAnatomy.map((a) => ({ ...a }));
+    this.routing = routingFromAnatomy(this.anatomy);
+
+    this.commitReceipted(new Map(), {
+      category: 'act',
+      sourceAuthority: 'seed.internal',
+      sourceRef: 'growth.self-application',
+      payload: {
+        growthApplication: true,
+        asOf,
+        newCellId: newCellSpec.id,
+        clusterPrefix,
+        gateEvidence: {
+          proposals: gate.priorCount,
+          spanMs: gate.spanMs,
+          capture: proposal.shadowTrial.clusterCapture,
+          proposalSeqs: history.map((h) => h.seq),
+        },
+        appliedProposal: proposal,
+        beforeAnatomy,
+        resultingAnatomy: this.anatomy.map((a) => ({ ...a })),
+        covenant: 'crystallize-only; additive; periphery preserved; cap 8',
+      },
+    });
+    this._eventCount++;
+    this.accounting.recordEvent();
+    this.accounting.setLedgerBytes(this.ledger.bytes);
+    this.checkpoint();
   }
 
   /**
@@ -847,6 +1025,7 @@ function extractGenesis(ledger: SeedLedger): {
   reservoirSeed: number | undefined;
   anatomy: AnatomyCellSpec[] | undefined;
   name: string | undefined;
+  selfFormation: boolean;
 } {
   const all = ledger.readAll();
   const genesis = all.find((r) => r.category === 'genesis');
@@ -854,6 +1033,7 @@ function extractGenesis(ledger: SeedLedger): {
   const reservoirSeed = genesis?.payload?.['reservoirSeed'];
   const rawAnatomy = genesis?.payload?.['anatomy'];
   const name = genesis?.payload?.['name'];
+  const selfFormation = genesis?.payload?.['selfFormation'] === true;
   let anatomy: AnatomyCellSpec[] | undefined;
   if (Array.isArray(rawAnatomy)) {
     const parsed = rawAnatomy.filter(
@@ -869,6 +1049,7 @@ function extractGenesis(ledger: SeedLedger): {
     reservoirSeed: typeof reservoirSeed === 'number' ? reservoirSeed : undefined,
     anatomy,
     name: typeof name === 'string' ? name : undefined,
+    selfFormation,
   };
 }
 

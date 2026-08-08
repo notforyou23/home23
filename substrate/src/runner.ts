@@ -53,6 +53,9 @@ export interface SeedRunnerOptions {
    * restore). */
   anatomy?: readonly AnatomyCellSpec[];
   name?: string;
+  /** growth.v2 birth property: governed self-application (crystallize-only,
+   * gated, covenanted). Ignored on restore — recorded in genesis at birth. */
+  selfFormation?: boolean;
   /** Optional lobe to recruit when a workspace admission happens. */
   lobe?: LobeAdapter;
   /** Minimum wall-clock ms between lobe recruitments (resident spend guard;
@@ -104,6 +107,7 @@ export class SeedRunner {
       this.seed = Seed.initialize(this.opts.stateDir, undefined, {
         anatomy: this.opts.anatomy,
         name: this.opts.name,
+        selfFormation: this.opts.selfFormation,
       });
       // Immediate checkpoint: restore() must always have a floor, even if the
       // process dies before the first cadence checkpoint.

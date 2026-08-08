@@ -52,6 +52,84 @@ export const MAX_PROPOSALS_PER_EVAL = 2;
 /** A proposal for the same (op, target) within this many seqs is a duplicate. */
 export const PROPOSAL_COOLDOWN_SEQS = 200;
 
+// ─── growth.v2 — governed self-application (SELF-FORMATION-PROTOCOL v1.1) ────
+// A BIRTH property (genesis selfFormation: true). Crystallize only — strictly
+// additive; split/merge/dissolve/specialize remain operator-only. Passing
+// whims do not get organs: only weather that keeps returning does.
+
+/** The same periphery cluster must have been proposed at least this often… */
+export const SELF_APPLY_MIN_PROPOSALS = 3;
+/** …spanning at least this much EVENT-time between first and last proposal… */
+export const SELF_APPLY_MIN_SPAN_MS = 48 * 3600 * 1000;
+/** …with the qualifying proposal's shadow capture at least this high. */
+export const SELF_APPLY_MIN_CAPTURE = 0.9;
+/** Evidence gate tolerance: each proposal's cluster count must stay at or
+ * above this fraction of the prior maximum. Pure non-decrease is fragile to
+ * window saturation (a full window plateaus and can dip by a record or two
+ * while the pressure is entirely real); collapse below 80% of peak is the
+ * signal that the weather actually left. */
+export const SELF_APPLY_EVIDENCE_FLOOR = 0.8;
+/** Covenant: hard ceiling on total cells (born with 2 → at most 6 organs). */
+export const SELF_APPLY_MAX_CELLS = 8;
+
+/** The cluster a crystallize proposal is about (its top periphery prefix). */
+export function crystallizeClusterPrefix(proposal: GrowthProposal): string | null {
+  if (proposal.op !== 'crystallize') return null;
+  const entries = Object.entries(proposal.evidence.prefixCounts);
+  return entries.length > 0 ? (entries[0] as [string, number])[0] : null;
+}
+
+export interface PriorCrystallizeProposal {
+  seq: number;
+  asOf: string;
+  clusterPrefix: string;
+  clusterCount: number;
+}
+
+export interface SelfApplicationGateResult {
+  qualifies: boolean;
+  reason: string;
+  priorCount: number;
+  spanMs: number;
+}
+
+/** The persistence gates. Pure; the caller supplies the chain's history of
+ * crystallize proposals for the same cluster (including the current one). */
+export function evaluateSelfApplicationGates(
+  history: readonly PriorCrystallizeProposal[],
+  current: GrowthProposal,
+  currentCellCount: number,
+): SelfApplicationGateResult {
+  const no = (reason: string, spanMs = 0): SelfApplicationGateResult =>
+    ({ qualifies: false, reason, priorCount: history.length, spanMs });
+
+  if (current.op !== 'crystallize') return no('covenant: only crystallize may self-apply');
+  if (currentCellCount >= SELF_APPLY_MAX_CELLS) return no('covenant: cell ceiling reached');
+  if (!current.proposedAnatomy.some((c) => c.role === 'periphery')) return no('covenant: periphery must survive');
+  for (const before of current.beforeAnatomy) {
+    if (!current.proposedAnatomy.some((c) => c.id === before.id)) return no('covenant: self-application must be additive');
+  }
+  if (current.shadowTrial.clusterCapture < SELF_APPLY_MIN_CAPTURE) {
+    return no(`gate: capture ${current.shadowTrial.clusterCapture.toFixed(2)} < ${SELF_APPLY_MIN_CAPTURE}`);
+  }
+  if (history.length < SELF_APPLY_MIN_PROPOSALS) {
+    return no(`gate: ${history.length}/${SELF_APPLY_MIN_PROPOSALS} proposals`);
+  }
+  const times = history.map((h) => Date.parse(h.asOf)).filter((t) => Number.isFinite(t)).sort((a, b) => a - b);
+  const spanMs = (times[times.length - 1] ?? 0) - (times[0] ?? 0);
+  if (spanMs < SELF_APPLY_MIN_SPAN_MS) {
+    return no(`gate: span ${(spanMs / 3600000).toFixed(1)}h < ${SELF_APPLY_MIN_SPAN_MS / 3600000}h of event-time`, spanMs);
+  }
+  const counts = history.map((h) => h.clusterCount);
+  let peak = counts[0] ?? 0;
+  for (let i = 1; i < counts.length; i++) {
+    const count = counts[i] ?? 0;
+    if (count < peak * SELF_APPLY_EVIDENCE_FLOOR) return no('gate: cluster evidence collapsed below floor', spanMs);
+    peak = Math.max(peak, count);
+  }
+  return { qualifies: true, reason: 'all gates passed', priorCount: history.length, spanMs };
+}
+
 export type GrowthOp = 'split' | 'merge' | 'specialize' | 'dissolve' | 'crystallize';
 
 export interface GrowthEvidence {

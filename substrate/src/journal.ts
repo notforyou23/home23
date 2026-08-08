@@ -53,6 +53,7 @@ export function composeJournalEntry(window: JournalWindow): string | null {
   const developments = records.filter((r) => r.category === 'development');
   const lobes = records.filter((r) => r.category === 'lobe');
   const growthProposals = records.filter((r) => r.category === 'proposal' && r.sourceRef === 'growth.pressure');
+  const growthApplications = records.filter((r) => r.category === 'act' && r.payload?.['growthApplication'] === true);
 
   const lines: string[] = [];
   const lastSeq = records[records.length - 1]?.seq ?? window.sinceSeq;
@@ -151,6 +152,20 @@ export function composeJournalEntry(window: JournalWindow): string | null {
     }
   }
   lines.push('');
+
+  // ── Self-formation (growth.v2): the individual grew an organ ──
+  if (growthApplications.length > 0) {
+    lines.push('## I grew');
+    for (const g of growthApplications) {
+      const cellId = String(g.payload?.['newCellId'] ?? '?');
+      const prefix = String(g.payload?.['clusterPrefix'] ?? '?');
+      const gates = g.payload?.['gateEvidence'] as { proposals?: number; spanMs?: number } | undefined;
+      lines.push(`- **I grew an organ: ${cellId}** — my life kept insisting on ${prefix}`
+        + (gates?.proposals !== undefined ? ` (${gates.proposals} proposals across ${((gates.spanMs ?? 0) / 3600000).toFixed(0)}h of my time)` : '')
+        + `; it starts empty and must earn its state · seq ${g.seq}`);
+    }
+    lines.push('');
+  }
 
   // ── Growth pressure (anatomy under strain — proposals only, receipted) ──
   if (growthProposals.length > 0) {

@@ -20,6 +20,9 @@
  *   SEED_ANATOMY        — JSON array of {id, role} for a BIRTH (ignored on
  *                         restore; anatomy is identity, recorded in genesis)
  *   SEED_NAME           — name recorded in the genesis at birth
+ *   SEED_SELF_FORMATION — '1' at BIRTH grants growth.v2 governed
+ *                         self-application (SELF-FORMATION-PROTOCOL v1.1);
+ *                         a birth property, ignored on restore
  *
  * Residency note: this file still does not self-register with PM2 — the
  * ecosystem generator emits a home23-<agent>-seed app only when the agent's
@@ -99,6 +102,7 @@ async function main(): Promise<void> {
     sourcePath: sourcePath as string,
     anatomy,
     name: process.env['SEED_NAME'],
+    selfFormation: process.env['SEED_SELF_FORMATION'] === '1',
     maxEvents: numEnv('SEED_MAX_EVENTS'),
     backfillBytes: numEnv('SEED_BACKFILL_BYTES'),
     pollMs: numEnv('SEED_POLL_MS') ?? 2000,
