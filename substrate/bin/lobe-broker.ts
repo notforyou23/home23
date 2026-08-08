@@ -44,9 +44,13 @@ const intervalMs = Number(process.env['BROKER_INTERVAL_MS'] ?? 15_000);
 const maxPerTick = Number(process.env['BROKER_MAX_PER_TICK'] ?? 2);
 const FILE_PATTERN = /^req_[a-z0-9]+_[0-9]+\.json$/;
 
-/** Provider keys come from secrets.yaml exactly once, into THIS process's
- * env — the same values PM2 would inject. Nothing is written anywhere. */
-function loadProviderEnv(): void {
+/** Provider keys come from secrets.yaml into THIS process's env — the same
+ * values PM2 would inject. Nothing is written anywhere. Home23's OAuth
+ * tokens ROTATE (cosmo23 broker + the dashboard's 30-min re-sync poller
+ * keep secrets.yaml fresh), so a long-lived broker must be able to re-read:
+ * `force` overwrites the env from the current file. Proven live 2026-08-08 —
+ * a 16h-old broker held a revoked token while secrets.yaml sat fresh. */
+function loadProviderEnv(force = false): void {
   const repoRoot = resolve(import.meta.dirname, '..', '..');
   const secretsPath = resolve(repoRoot, 'config', 'secrets.yaml');
   let secrets: Record<string, { apiKey?: string } | undefined> = {};
@@ -67,10 +71,15 @@ function loadProviderEnv(): void {
   ];
   for (const [providerName, envName] of mapping) {
     const key = secrets[providerName]?.apiKey;
-    if (typeof key === 'string' && key !== '' && (process.env[envName] === undefined || process.env[envName] === '')) {
+    if (typeof key === 'string' && key !== '' && (force || process.env[envName] === undefined || process.env[envName] === '')) {
       process.env[envName] = key;
     }
   }
+}
+
+/** 401/revoked-token shaped failures mean our env snapshot went stale. */
+function isAuthFailure(message: string): boolean {
+  return /authentication_error|revoked|\b401\b/i.test(message);
 }
 
 function ssh(command: string, input?: string): string {
@@ -115,8 +124,15 @@ async function tick(transport: Transport): Promise<void> {
       const { text, modelReceipt } = await transport(request.prompt);
       result = { id, text, modelReceipt };
     } catch (error) {
-      result = { id, error: (error as Error).message.slice(0, 300) };
-      console.error(`[broker] ${id} failed: ${(error as Error).message}`);
+      const message = (error as Error).message;
+      result = { id, error: message.slice(0, 300) };
+      console.error(`[broker] ${id} failed: ${message}`);
+      if (isAuthFailure(message)) {
+        // Token rotated under us — re-read secrets.yaml so the NEXT request
+        // uses the fresh credential (generateText reads env per call).
+        loadProviderEnv(true);
+        console.log('[broker] auth failure — provider env refreshed from secrets.yaml');
+      }
     }
     const resultPath = `${remoteDir}/results/res-${id}.json`;
     try {
