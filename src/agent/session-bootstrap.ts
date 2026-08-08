@@ -26,6 +26,14 @@ export interface SituationalAwarenessConfig {
     domains?: string[];
     budget?: number;
   }>;
+  /** Seed → situational awareness: the agent's Seed (persistent developmental
+   * substrate; causality proven under ablation 2026-08-08) grounds every turn
+   * with its carried situations, earned trust, and open expectations. The
+   * stateDir may be a live mirror; reads are torn-tolerant and read-only. */
+  substrate?: {
+    stateDir: string;
+    budget?: number;
+  };
 }
 
 const DEFAULT_READS = ['NOW.md', 'PLAYBOOK.md'];

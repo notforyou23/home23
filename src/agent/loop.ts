@@ -1216,6 +1216,8 @@ export class AgentLoop {
               runContext.turnRuntime!.brainOperations.searchContext(request, signal),
             triggerIndex: this.triggerIndex,
             triggeredSurfaces: this.situationalAwareness?.triggeredSurfaces,
+            substrateStateDir: this.situationalAwareness?.substrate?.stateDir,
+            substrateBudget: this.situationalAwareness?.substrate?.budget,
           },
           this.eventLedger,
           ac.signal,

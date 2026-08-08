@@ -16,6 +16,7 @@ import type { AssemblyResult, EventEnvelope } from '../types.js';
 import type { EventLedger } from './event-ledger.js';
 import type { TriggerIndex } from './trigger-index.js';
 import { budgetIdentityContent } from './identity-budget.js';
+import { composeSeedSituation } from '../substrate/seed-context.js';
 
 /**
  * A workspace file that loads into situational awareness ONLY when its keyword
@@ -59,6 +60,10 @@ interface AssemblyConfig {
   triggerIndex?: TriggerIndex;
   /** Keyword-gated workspace files (Step 30 cleanup #4). */
   triggeredSurfaces?: TriggeredSurfaceConfig[];
+  /** Seed substrate state dir (may be a live mirror) — loads the SUBSTRATE
+   * carried-state block every turn when set. */
+  substrateStateDir?: string;
+  substrateBudget?: number;
 }
 
 // ─── Domain Surfaces ────────────────────────────────────
@@ -566,6 +571,24 @@ export async function assembleContext(
       score: 0.98,
       source: 'surface:AGENCY',
     });
+  }
+
+  // SUBSTRATE (Seed → situational awareness): the agent's carried state —
+  // pressurized situations, receipted development, earned trust, open
+  // expectations — from the Seed that metabolizes his real life. Loads every
+  // turn when configured: this is lived memory, not retrieval, and its
+  // causality is proven (ablation, 2026-08-08). Read-only; degraded-honest
+  // (missing/unreadable state contributes nothing rather than something fake).
+  if (config.substrateStateDir) {
+    const seedSection = composeSeedSituation(config.substrateStateDir, config.substrateBudget);
+    if (seedSection) {
+      surfacesLoaded.push('SUBSTRATE');
+      salienceItems.push({
+        text: `\nCarried state (SUBSTRATE — your Seed's lived situations):\n${seedSection}`,
+        score: 0.96,
+        source: 'surface:SUBSTRATE',
+      });
+    }
   }
 
   events.push({
