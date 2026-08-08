@@ -8,7 +8,7 @@
  *   SEED_LOBE           — 'echo' = deterministic EchoLobe; 'model' = real model
  *                         via Home23's provider transport; 'file' = broker
  *                         exchange (credential-free hosts); unset = none
- *   SEED_LOBE_MODEL     — model for SEED_LOBE=model (default glm-5.2:cloud)
+ *   SEED_LOBE_MODEL     — model for SEED_LOBE=model (default claude-haiku-4-5)
  *   SEED_LOBE_EXCHANGE  — exchange dir for SEED_LOBE=file (required for it)
  *   SEED_LOBE_MIN_INTERVAL_MS — resident spend guard (default 600000 = 10 min)
  *   SEED_LOBE_TIMEOUT_MS — per-recruitment cap (default 30000; raise for
@@ -62,7 +62,7 @@ async function buildLobe(): Promise<LobeAdapter | undefined> {
     return new ModelLobe('lobe.broker', 'via-broker', 'home23.broker', createFileLobeTransport(exchangeDir));
   }
   if (kind === 'model') {
-    const model = process.env['SEED_LOBE_MODEL'] ?? 'glm-5.2:cloud';
+    const model = process.env['SEED_LOBE_MODEL'] ?? 'claude-haiku-4-5';
     // Runtime-resolved import: the transport lives in src/ (harness territory,
     // where provider contracts and credentials belong). The substrate package
     // itself never links against it — this seam is the membrane's edge.

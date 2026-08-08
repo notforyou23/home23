@@ -3,7 +3,7 @@
  *
  *   BROKER_SSH_HOST     — ssh host alias for the machine hosting the Seed (required)
  *   BROKER_REMOTE_DIR   — exchange dir on that machine (required)
- *   BROKER_MODEL        — model to recruit (default glm-5.2:cloud)
+ *   BROKER_MODEL        — model to recruit (default claude-haiku-4-5)
  *   BROKER_INTERVAL_MS  — poll cadence (default 15000)
  *   BROKER_MAX_PER_TICK — spend guard: requests serviced per tick (default 2)
  *   BROKER_FORMS_REMOTE — remote forms dir to mirror locally (optional)
@@ -42,7 +42,7 @@ if (!/^[A-Za-z0-9._@-]+$/.test(sshHost) || !/^[A-Za-z0-9._/-]+$/.test(remoteDir)
   process.exit(2);
 }
 
-const model = process.env['BROKER_MODEL'] ?? 'glm-5.2:cloud';
+const model = process.env['BROKER_MODEL'] ?? 'claude-haiku-4-5';
 const intervalMs = Number(process.env['BROKER_INTERVAL_MS'] ?? 15_000);
 const maxPerTick = Number(process.env['BROKER_MAX_PER_TICK'] ?? 2);
 const FILE_PATTERN = /^req_[a-z0-9]+_[0-9]+\.json$/;

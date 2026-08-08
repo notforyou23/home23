@@ -126,7 +126,7 @@ function renderIndividual(spec: IndividualSpec): string {
     <table class="cells">${cellRows}</table>
     ${openPreds.length > 0 ? `<div class="preds"><span class="lbl">on the record:</span> ${openPreds.slice(0, 3).map((p) => `<span class="pred">${esc(p.claim.slice(0, 80))} <span class="dim">(${esc(p.horizon)})</span></span>`).join('')}</div>` : ''}
     ${resolvedPreds.length > 0 ? `<div class="preds"><span class="lbl">judged:</span> ${resolvedPreds.slice(-3).map((p) => `<span class="pred ${p.error !== undefined && p.error <= 0.3 ? 'right' : p.error !== undefined && p.error >= 0.7 ? 'wrong' : ''}">${esc(p.claim.slice(0, 60))} <b>err ${p.error?.toFixed(2)}</b></span>`).join('')}</div>` : ''}
-    ${lastLobe !== undefined ? `<div class="dim tiny">last thought: seq ${lastLobe.seq} — ${lastLobe.payload['error'] !== undefined ? 'failed: ' + esc(String(lastLobe.payload['error']).slice(0, 60)) : esc(((lastLobe.payload['appliedDeltas'] as Array<{ field: string }> | undefined) ?? []).map((d) => d.field).join(', ') || 'nothing integrated')}</div>` : ''}
+    ${lastLobe !== undefined ? `<div class="dim tiny">last thought: seq ${lastLobe.seq} · ${age(lastLobe.issuedAt)} — ${lastLobe.payload['error'] !== undefined ? 'failed: ' + esc(String(lastLobe.payload['error']).slice(0, 60)) : esc(((lastLobe.payload['appliedDeltas'] as Array<{ field: string }> | undefined) ?? []).map((d) => d.field).join(', ') || 'nothing integrated')}</div>` : ''}
     <div class="stream">${recent.map((r) => `<div class="ev"><span class="dim">${r.seq}</span> → ${esc(String(r.payload['targetCellId'] ?? '?'))} <span class="ref">${esc(r.sourceRef.slice(0, 76))}</span></div>`).join('')}</div>
   </section>`;
 }
