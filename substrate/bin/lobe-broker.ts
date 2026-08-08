@@ -9,6 +9,9 @@
  *   BROKER_FORMS_REMOTE — remote forms dir to mirror locally (optional)
  *   BROKER_FORMS_DEST   — local mirror destination (required with above)
  *   BROKER_FORMS_EVERY_TICKS — mirror cadence in ticks (default 30)
+ *   BROKER_STATE_REMOTE — remote seed state dir to mirror read-only
+ *                         (checkpoints + ledger; feeds the observatory)
+ *   BROKER_STATE_DEST   — local destination for the state mirror
  *
  * Polls <remote>/requests/ over ssh, services each request with Home23's
  * provider transport (keys loaded from config/secrets.yaml into env HERE,
@@ -165,6 +168,16 @@ function mirrorForms(): void {
     console.log(`[broker] forms mirrored to ${formsDest}`);
   } catch (error) {
     console.error(`[broker] forms mirror failed: ${(error as Error).message}`);
+  }
+  const stateRemote = process.env['BROKER_STATE_REMOTE'];
+  const stateDest = process.env['BROKER_STATE_DEST'];
+  if (stateRemote !== undefined && stateDest !== undefined && /^[A-Za-z0-9._/-]+$/.test(stateRemote)) {
+    try {
+      execFileSync('rsync', ['-az', `${sshHost}:${stateRemote}/checkpoints`, `${sshHost}:${stateRemote}/seed-ledger.jsonl`, `${stateDest}/`], { timeout: 60_000 });
+      console.log(`[broker] state mirrored to ${stateDest}`);
+    } catch (error) {
+      console.error(`[broker] state mirror failed: ${(error as Error).message}`);
+    }
   }
 }
 
