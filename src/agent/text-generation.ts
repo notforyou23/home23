@@ -193,7 +193,7 @@ async function generateCodexText(opts: Required<Pick<TextGenerationOptions, 'pro
   const creds = await credentialsProvider(opts.signal);
   if (!creds) throw new Error('openai-codex credentials not found');
 
-  const body = {
+  const body: Record<string, unknown> = {
     model: opts.model || 'gpt-5.6-luna',
     instructions: opts.system || '',
     input: [{
@@ -206,7 +206,7 @@ async function generateCodexText(opts: Required<Pick<TextGenerationOptions, 'pro
     store: false,
   };
 
-  const res = await fetch('https://chatgpt.com/backend-api/codex/responses', {
+  let res = await fetch('https://chatgpt.com/backend-api/codex/responses', {
     method: 'POST',
     headers: getCodexHeaders(creds),
     body: JSON.stringify(body),
@@ -214,7 +214,24 @@ async function generateCodexText(opts: Required<Pick<TextGenerationOptions, 'pro
   });
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
-    throw new Error(`codex HTTP ${res.status}: ${errText.slice(0, 300)}`);
+    // Newer codex models (gpt-5.6-terra era) reject max_output_tokens
+    // outright. Retry once without the cap rather than failing the call —
+    // server-side defaults bound the response.
+    if (res.status === 400 && errText.includes('max_output_tokens')) {
+      delete body['max_output_tokens'];
+      res = await fetch('https://chatgpt.com/backend-api/codex/responses', {
+        method: 'POST',
+        headers: getCodexHeaders(creds),
+        body: JSON.stringify(body),
+        signal: combineRequestSignals(opts.signal, opts.timeoutMs ?? 90_000),
+      });
+    }
+    if (!res.ok) {
+      const retryText = res.status === 400 && errText.includes('max_output_tokens')
+        ? await res.text().catch(() => '')
+        : errText;
+      throw new Error(`codex HTTP ${res.status}: ${retryText.slice(0, 300)}`);
+    }
   }
   if (!res.body) throw new Error('codex response missing body');
 
