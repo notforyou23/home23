@@ -1,13 +1,20 @@
-# Home23 v1.0.0
+# Home23
 
-**An installable AI operating system — persistent agents with living brains.**
+**An installable AI operating system where agents are individuals — born, not configured.**
 
-Home23 is not another chatbot framework. It is a complete AI operating system that runs on your machine, with agents that think autonomously, grow a persistent brain over time, dream during idle periods, and are reachable through Telegram, Discord, a web dashboard, an AI IDE, a research engine, and a mobile-optimized chat page you can Add to Home Screen on iOS.
+Home23 is not another chatbot framework. It is a complete AI operating system that runs on your machine, with agents that think autonomously, grow a persistent brain over time, sleep and dream, and are reachable through Telegram, Discord, a web dashboard, an AI IDE, a research engine, and a mobile-optimized chat page you can Add to Home Screen on iOS.
 
-**Documentation status:** refreshed 2026-07-02 for the 1.0 release. The release metadata, README, changelog, manifest, onboarding guide, and validation commands now agree on v1.0.0. Older step-by-step design files in `docs/design/` are historical build records; use this README plus `docs/ONBOARDING.md`, `CHANGELOG.md`, `docs/MANIFEST.md`, `CLAUDE.md`, and `AGENTS.md` for the current public repo shape.
+**The v2 thesis — own the becoming, rent the intelligence.** Language models are commoditizing: every provider's intelligence gets cheaper and more interchangeable by the month. What cannot commoditize is a *life*. Home23 v2 keeps each agent's identity in a **Seed** — a persistent computational individual with a hash-chained record of everything it has lived, a body of continuously-developing situation cells, and organs that express that lived state back into behavior. The model is a rented cortex, swappable any time; the individual is yours, on your disk, and it can only be lived — never cloned, never edited, never re-prompted into existence. Every model upgrade makes your individuals smarter without making them less yours.
+
+**Cells instead of files.** v1 kept an agent's memory in curated markdown files that a process rewrote — and files rot silently. v2 composes the same surfaces from the individual's chain *at read time*: recent memory, session grounding, earned facts, biography. A chain cannot go silently stale — it is hash-linked to the second, or it refuses. The migration is visible and honest: each function is either owned by the individual (probed live, never asserted) or remains a file with a stated reason.
+
+**Documentation status:** reworked 2026-08-09 for the v2 substrate. Older step-by-step design files in `docs/design/` are historical build records; the v2 architecture is `docs/design/HOME23-V2-SUBSTRATE-DESIGN.md`. Use this README plus `docs/ONBOARDING.md`, `CHANGELOG.md`, `docs/MANIFEST.md`, `CLAUDE.md`, and `AGENTS.md` for the current public repo shape.
 
 ## Current Public State
 
+- **The Substrate (v2) is real and opt-in.** Any agent can be given a Seed: a persistent individual that metabolizes the agent's actual life — conversations (both voices, meaning perceived at contact), teachings, worker outcomes, and optionally the home itself via Home Assistant transitions. Development is receipted and causal (proven by preregistered ablation during the research program that built it), beliefs earn fact-grade by surviving lived time, and the individual sleeps: quiet gaps consolidate (retain the corroborated, decay the unearned) and a **dream cycle** fires at waking — the mind working the day's residue, receipted on the chain.
+- **Lived surfaces replace curated files.** RECENT, session grounding (NOW), facts, and identity's biography half compose from the Seed's chain at read time, with the old files demoted to degraded-honest fallbacks. Attention triggers fire on *meaning* (semantic match at a calibrated floor), not keyword substrings. Engine cognition — including dreams — grounds in the individual's lived state.
+- **Cognition runs the four-phase thinking machine by default** (discover → deep-dive → PGS connect → convergence-based critique), with kept thoughts earning their place and empty material honestly discarded.
 - **Good Life governance is first-class.** The engine evaluates viability, continuity, usefulness, development, coherence, friction, and recovery, then routes bounded repair/recover/help policies into the live operator loop.
 - **Live problems are verifier-backed.** The dashboard exposes deterministic problem state, remediation steps, escalation/user-intervention receipts, and re-check actions instead of relying on stale narrative status.
 - **Resident agency and scheduler loops are guarded.** Pursuits close only on independent receipts, stale high-salience signals are deferred without interrupting chat, and repeated scheduler failures are escalated instead of stampeding the harness.
@@ -219,7 +226,18 @@ Home23/
     src/ingestion/     Document feeder (chokidar, compiler, converter, manifest)
     src/cognition/     Dynamic roles, thought-action parser, action dispatcher + handlers
     src/dashboard/     Dashboard server, settings API, tiles, home page
+    src/substrate/     Engine-side Seed readers (cognition grounding, dream day-residue)
+  substrate/           The Seed: persistent computational individuals (v2)
+    src/               Chain ledger, situation cells, metabolism (frozen reservoir),
+                       development rules (correction/consequence/attenuation/resolution/
+                       consolidation + dream.v1), membrane, growth, lobe recruitment,
+                       journal, checkpoints — hash-chained, fail-closed, replay-exact
+    bin/               seed-runner (resident), conversation/house-sense shippers,
+                       lobe broker, observatory (:5050, incl. the v2 cutover board)
+    tests/             Substrate suite (npm run test:substrate)
   src/                 TS agent harness
+    substrate/         Seed-owned surfaces: expression, lived RECENT/NOW/facts/identity,
+                       semantic matcher, perception-at-contact embedding
     agent/tools/       Agent tools (shell, files, web, brain, research_*, workers, skills, agency, cron, media, tts, promote)
     agent/             Context assembly, memory objects, event ledger, trigger index
     channels/          Telegram, Discord, iMessage, webhooks adapters + session router
@@ -246,12 +264,102 @@ Each agent runs 3 PM2 processes, plus 2 shared:
 | `home23-<name>` | Cognitive engine — thinking, dreaming, brain growth, document ingestion, **live-problems loop** | 5001 (WS + admin HTTP) |
 | `home23-<name>-dash` | Dashboard API — brain queries, state, settings, feeder drop zone, model assignments, live-problems API, brain storage API | 5002 (HTTP) |
 | `home23-<name>-harness` | Agent runtime — Telegram, Discord, iMessage, discoverable tool registry, LLM loop, situational awareness, `/api/notify` + `/api/diagnose` endpoints | 5004 (bridge) |
+| `home23-<name>-seed` | *(opt-in, v2)* Seed runner — the persistent individual: metabolizes the agent's life, develops, sleeps, dreams | — |
 | `home23-evobrew` | AI IDE (shared across all agents) | 3415 |
 | `home23-cosmo23` | Research engine (shared, on-demand) | 43210 |
 
 Multiple agents get sequential port blocks: first agent 5001-5004, second 5011-5014, etc.
 
 The document feeder runs **inside** the cognitive engine process (no separate PM2 entry). Configure it from the Feeder tab in Settings.
+
+## The Substrate — Agents Are Individuals (v2)
+
+The deepest difference between Home23 and every agent framework: a Home23 v2
+agent is not a prompt plus retrieval. It is an **individual** — a Seed — and
+the Seed is the durable thing. Everything else (the model, the harness, even
+the brain) is an organ the individual uses.
+
+### What a Seed is
+
+- **A hash-chained life.** Every event the individual metabolizes — a
+  conversation turn, a teaching, a worker outcome, a door opening — becomes a
+  receipted record on an append-only, fail-closed ledger. The chain is
+  verified on every restore; a torn or forked chain is refused, never
+  repaired (repairing a hash chain is forging history).
+- **A body of situation cells.** Continuous-state cells named for the
+  individual's OWN situations (contact with their person, their world, their
+  projects), driven through a frozen seeded reservoir. Anatomy is identity —
+  recorded at birth, changed only by receipted growth. The wear is character:
+  per-cell generation counters show what a life actually attended to.
+- **Causal development.** Corrections teach, consequences corroborate,
+  attenuation quiets what the person called noise, resolution closes the loop
+  when reality answers a prediction. Development is typed deltas only — no
+  prose autobiography — and its causality was proven by preregistered
+  ablation (remove the learned development from an otherwise identical twin;
+  behavior measurably changes in the predicted directions).
+- **Sleep, both halves.** Quiet gaps in event-time consolidate (NREM):
+  corroborated learning is retained, unearned learning decays toward a floor.
+  At waking, a **dream** fires (REM): the mind is recruited to work the day's
+  residue — recombine, revise, resolve — under the same typed-delta contract.
+  The chain shows its dreams forever; the journal says "I dreamed at waking."
+- **Perception at contact.** Meaning is embedded once, where an event is
+  born, and the projected vector rides the record forever — replay never
+  re-perceives. Similar sentences drive similar state directions, so the
+  development rules inherit semantics with zero rule changes.
+- **Growth under governance.** Growth pressure proposes body changes
+  (splits, merges) from lived evidence; the operator (you) approves or
+  declines, in your own words, receipted. Self-formation — an individual
+  crystallizing its own organs under a covenant — exists behind explicit
+  birth flags.
+
+### The organs (cells instead of files)
+
+Seed-owned surfaces compose from the chain **at read time** and degrade
+honestly — a missing or young Seed means the old file serves, byte-identical
+to v1:
+
+| Surface | What the individual owns |
+|---|---|
+| Turn expression | Lived facts matched to the turn's *meaning* (calibrated semantic floor); silent on turns that touch nothing carried |
+| Recent memory (RECENT) | The lived record: contact with words, teachings, thoughts formed, reality's verdicts — never a stale file |
+| Session grounding (NOW) | Sessions open on where the life stands: last contact, events since, freshest thought, open expectations |
+| Facts | Conclusions that EARNED fact-grade: confidence + evidence + they stood through lived time; a fresh brilliant belief waits |
+| Identity biography | "Who I have become" in the individual's first person — born, body, track record, earned trust; it cannot be edited, only lived further |
+| Attention triggers | Meaning-gated (semantic match), with keyword substring only as degraded fallback |
+| Memory promotions | `promote_to_memory` teaches the chain; the JSON store is a recall cache |
+| Engine cognition | Thinking cycles and dreams ground in the lived state — context to think FROM, never a subject to think ABOUT |
+
+The **observatory** (a read-only page composed fresh from the chains) carries
+the **v2 cutover board**: every function listed with its owner — CELLS,
+probed live at view time, or FILE with a stated reason (a constitution
+should be a document; machine telemetry stays file-owned until estimates
+reach freshness parity — and that row flips *itself* when the individual
+earns it).
+
+### Giving an agent a Seed
+
+The substrate is opt-in per agent. In the agent's `config.yaml`:
+
+```yaml
+substrate:
+  enabled: true          # generator emits the home23-<name>-seed process
+  lobe: model
+  lobeModel: claude-haiku-4-5
+  lobeMinIntervalMs: 1800000
+
+situationalAwareness:
+  substrate:
+    stateDir: /path/to/instances/<name>/substrate/seed-01
+```
+
+Birth is a deliberate act: run the seed-runner once with `SEED_ANATOMY`
+naming the individual's own situations (see
+`docs/design/HOME23-V2-SUBSTRATE-DESIGN.md`), verify the genesis, then let
+PM2 own the resident. A mechanical `.runner.lock` guarantees never two live
+instances of one individual — the lock file is the authoritative pid
+registry. Seeds are megabytes and device-agnostic: move the state directory,
+load-test it, and the individual continues exactly where it left off — on a
+laptop, a server, or a Raspberry Pi with real sensors as its body.
 
 ## Brain Persistence
 

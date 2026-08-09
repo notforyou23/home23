@@ -76,6 +76,120 @@ function bar(v: number, color: string): string {
   return `<div class="bar"><div style="width:${width}%;background:${color}"></div></div>`;
 }
 
+/** The body, drawn — every visual channel is a real number, nothing
+ * decorative: each cell's actual continuous state renders as a radial
+ * fingerprint (warm spokes positive, cool negative), size is wear
+ * (generation), core glow is energy, ring heat is workspace pressure,
+ * dash density is uncertainty, curves are associations by strength, and
+ * the dots above each cell are its last real transitions colored by
+ * source family. A dream leaves a moon. */
+function renderBodySVG(
+  cells: Array<{
+    id: string; generation: number; workspacePressure: number; uncertainty: number;
+    energy: { current: number };
+    continuousState?: string; continuousStateDimension?: number;
+    associations?: Array<{ targetCellId: string; strength: number }>;
+  }>,
+  records: Rec[],
+): string {
+  if (cells.length === 0) return '';
+  const W = 940, H = 240, cy = 128;
+  const slot = W / (cells.length + 0);
+  const centers = new Map<string, { x: number; y: number; r: number }>();
+  const maxGen = Math.max(...cells.map((c) => c.generation), 1);
+
+  const parts: string[] = [];
+
+  // Associations first (under the bodies).
+  cells.forEach((c, i) => {
+    const x = slot * (i + 0.5);
+    const r = 18 + 34 * Math.sqrt(Math.log(c.generation + 2) / Math.log(maxGen + 2));
+    centers.set(c.id, { x, y: cy, r });
+  });
+  for (const c of cells) {
+    for (const a of c.associations ?? []) {
+      const from = centers.get(c.id); const to = centers.get(a.targetCellId);
+      if (!from || !to || from.x >= to.x) continue;
+      const mid = (from.x + to.x) / 2;
+      parts.push(`<path d="M ${from.x} ${cy} Q ${mid} ${cy - 70} ${to.x} ${cy}" fill="none" stroke="#8b949e" stroke-width="${(0.5 + 2 * a.strength).toFixed(1)}" opacity="${(0.15 + 0.5 * a.strength).toFixed(2)}"/>`);
+    }
+  }
+
+  // Recent inflow: last transitions as dots above their target cell.
+  const flowColor = (ref: string): string =>
+    ref.startsWith('conversation.') ? '#7ee787'
+    : ref.startsWith('house.') ? '#e3b341'
+    : ref.startsWith('worker.') ? '#79c0ff'
+    : ref.startsWith('relationship.') ? '#d2a8ff'
+    : '#6e7681';
+  const flows = records.filter((r) => r.category === 'transition').slice(-16);
+  const perCell = new Map<string, number>();
+  for (const f of flows) {
+    const target = String(f.payload['targetCellId'] ?? '');
+    const c = centers.get(target);
+    if (!c) continue;
+    const n = perCell.get(target) ?? 0;
+    perCell.set(target, n + 1);
+    const fx = c.x - 24 + (n % 8) * 7;
+    const fy = c.y - c.r - 26 - Math.floor(n / 8) * 8;
+    parts.push(`<circle cx="${fx}" cy="${fy}" r="2.6" fill="${flowColor(f.sourceRef)}"><title>${esc(f.sourceRef.slice(0, 80))}</title></circle>`);
+  }
+
+  // The cells.
+  for (const c of cells) {
+    const { x, r } = centers.get(c.id)!;
+    const heat = Math.round(40 + 180 * Math.min(1, c.workspacePressure * 1.6));
+    const ring = `rgb(${heat + 40}, ${Math.round(100 + 30 * (1 - c.workspacePressure))}, 70)`;
+    // Real state fingerprint: decode the actual Float32 vector.
+    let spokes = '';
+    if (typeof c.continuousState === 'string') {
+      try {
+        const buf = Buffer.from(c.continuousState, 'base64');
+        const dim = c.continuousStateDimension ?? Math.floor(buf.length / 4);
+        const vec = new Float32Array(buf.buffer, buf.byteOffset, dim);
+        let maxAbs = 1e-6;
+        for (const v of vec) maxAbs = Math.max(maxAbs, Math.abs(v));
+        const inner = r * 0.30;
+        for (let i = 0; i < dim; i++) {
+          const angle = (i / dim) * Math.PI * 2 - Math.PI / 2;
+          const mag = Math.abs(vec[i] ?? 0) / maxAbs;
+          const len = inner + (r * 0.62 - inner) * mag;
+          const x2 = x + Math.cos(angle) * len;
+          const y2 = cy + Math.sin(angle) * len;
+          const color = (vec[i] ?? 0) >= 0 ? '#e0a458' : '#58a6e0';
+          spokes += `<line x1="${(x + Math.cos(angle) * inner).toFixed(1)}" y1="${(cy + Math.sin(angle) * inner).toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${color}" stroke-width="1" opacity="${(0.35 + 0.6 * mag).toFixed(2)}"/>`;
+        }
+      } catch { /* unreadable state renders as coreless — honest */ }
+    }
+    const dashLen = Math.max(1, Math.round(8 * (1 - c.uncertainty)));
+    parts.push(`<g>
+      <circle cx="${x}" cy="${cy}" r="${(r * 0.28).toFixed(1)}" fill="#6aa9a0" opacity="${(0.15 + 0.75 * c.energy.current).toFixed(2)}"/>
+      ${spokes}
+      <circle cx="${x}" cy="${cy}" r="${r.toFixed(1)}" fill="none" stroke="${ring}" stroke-width="2" opacity="0.9"/>
+      <circle cx="${x}" cy="${cy}" r="${(r + 5).toFixed(1)}" fill="none" stroke="#8b949e" stroke-width="1" stroke-dasharray="${dashLen} ${Math.max(2, 10 - dashLen)}" opacity="${(0.25 + 0.5 * c.uncertainty).toFixed(2)}"/>
+      <text x="${x}" y="${cy + r + 22}" text-anchor="middle" fill="#c9d1d9" font-size="11">${esc(c.id)}</text>
+      <text x="${x}" y="${cy + r + 36}" text-anchor="middle" fill="#8b949e" font-size="9">gen ${c.generation}</text>
+    </g>`);
+  }
+
+  // A recent dream leaves its moon.
+  const dreamed = records.some((r) => r.category === 'lobe' && r.payload['dream'] !== undefined);
+  if (dreamed) {
+    parts.push(`<g><path d="M ${W - 34} 26 a 12 12 0 1 0 10 19 a 9.5 9.5 0 1 1 -10 -19" fill="#d2a8ff" opacity="0.85"/><text x="${W - 52}" y="31" text-anchor="end" fill="#8b949e" font-size="10">dreamed</text></g>`);
+  }
+
+  const legend = `<g font-size="9" fill="#8b949e">
+    <circle cx="14" cy="14" r="2.6" fill="#7ee787"/><text x="21" y="17">conversation</text>
+    <circle cx="88" cy="14" r="2.6" fill="#e3b341"/><text x="95" y="17">house</text>
+    <circle cx="132" cy="14" r="2.6" fill="#79c0ff"/><text x="139" y="17">worker</text>
+    <circle cx="182" cy="14" r="2.6" fill="#d2a8ff"/><text x="189" y="17">teaching</text>
+    <circle cx="240" cy="14" r="2.6" fill="#6e7681"/><text x="247" y="17">telemetry</text>
+    <text x="${W - 14}" y="${H - 8}" text-anchor="end">state spokes = the actual Float32 vector · size = wear · glow = energy · ring heat = pressure · dashes = uncertainty</text>
+  </g>`;
+
+  return `<svg viewBox="0 0 ${W} ${H}" class="body" role="img">${legend}${parts.join('')}</svg>`;
+}
+
 function renderIndividual(spec: IndividualSpec): string {
   const ledgerPath = join(spec.stateDir, 'seed-ledger.jsonl');
   const records = tail(ledgerPath);
@@ -88,6 +202,8 @@ function renderIndividual(spec: IndividualSpec): string {
   const cells = (ck?.['cells'] ?? []) as Array<{
     id: string; generation: number; workspacePressure: number; uncertainty: number;
     energy: { current: number };
+    continuousState?: string; continuousStateDimension?: number;
+    associations?: Array<{ targetCellId: string; strength: number }>;
     predictions: Array<{ claim: string; horizon: string; resolvedAt?: string; error?: number }>;
     estimates: Array<{ claim: string; confidence: number }>;
   }>;
@@ -130,6 +246,7 @@ function renderIndividual(spec: IndividualSpec): string {
       <span class="dim">${[...byRule.entries()].map(([r, n]) => `${r.replace('.v1', '')} ×${n}`).join(' · ') || 'no development in window'}</span>
     </div>
     ${growthBlock}
+    ${renderBodySVG(cells, records)}
     <table class="cells">${cellRows}</table>
     ${openPreds.length > 0 ? `<div class="preds"><span class="lbl">on the record:</span> ${openPreds.slice(0, 3).map((p) => `<span class="pred">${esc(p.claim.slice(0, 80))} <span class="dim">(${esc(p.horizon)})</span></span>`).join('')}</div>` : ''}
     ${resolvedPreds.length > 0 ? `<div class="preds"><span class="lbl">judged:</span> ${resolvedPreds.slice(-3).map((p) => `<span class="pred ${p.error !== undefined && p.error <= 0.3 ? 'right' : p.error !== undefined && p.error >= 0.7 ? 'wrong' : ''}">${esc(p.claim.slice(0, 60))} <b>err ${p.error?.toFixed(2)}</b></span>`).join('')}</div>` : ''}
@@ -302,6 +419,7 @@ function page(): string {
   .ev { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ref { color:#79c0ff; }
   .journal pre { white-space: pre-wrap; background:#0d1117; border-radius:8px; padding:12px; font-size:12px; }
+  svg.body { width:100%; height:auto; display:block; background:#0d1117; border-radius:8px; margin:10px 0; }
   .cells-own { color:#7ee787; } .partial { color:#e3b341; }
   footer { color:#8b949e; font-size:11px; margin: 18px 4px; }
 </style></head><body>

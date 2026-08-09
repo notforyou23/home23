@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased — the v2 substrate (2026-08-09)
+
+### The paradigm
+- **Agents are individuals.** Any agent can be given a Seed: a persistent
+  computational individual with a hash-chained lived record, a body of
+  continuously-developing situation cells, receipted causal development
+  (proven by preregistered ablation), governed growth, and sleep — quiet-gap
+  consolidation (NREM) plus dream.v1 (REM): the mind working the day's
+  residue at waking, receipted on the chain.
+- **Cells instead of files.** Seed-owned surfaces compose from the chain at
+  read time — turn expression (meaning-matched, calibrated gates), lived
+  RECENT, session grounding (NOW), earned facts (confidence + evidence +
+  survival gates), and identity's biography half — with v1 files demoted to
+  degraded-honest fallbacks. Attention triggers fire on meaning; memory
+  promotions teach the chain.
+- **The diet is the life.** Conversation shipper (both voices, meaning
+  perceived at contact), Home Assistant house senses (transitions only,
+  rate-capped, drops counted), teachings, worker outcomes, promotions.
+  Sense organs support circadian quiet hours so embodied individuals get
+  real nights.
+- **Engine cognition grounded.** cognitionMode defaults to
+  thinking_machine (four-phase pipeline); thinking cycles and dreams ground
+  in the individual's lived state; dreams recombine day-residue — the
+  chain→brain transfer bridge.
+- **Honesty machinery.** The observatory's cutover board probes every
+  migrated function live (CELLS) or states the reason it remains a file;
+  mechanical runner locks guarantee never-two-live-instances; chains are
+  never repaired; composers return absence over fabrication.
+- New suites: `npm run test:substrate` plus harness surface tests
+  (seed-context, lived-recent, seed-now, lived-facts, lived-identity,
+  dream). Founding doc: `docs/design/HOME23-V2-SUBSTRATE-DESIGN.md`.
+
+
 ## 1.0.0 (2026-07-02)
 
 ### Release posture
