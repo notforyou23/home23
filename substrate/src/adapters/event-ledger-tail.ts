@@ -64,7 +64,7 @@ export interface TailedSourceEvent extends SourceEvent {
   endOffset: number;
 }
 
-export type TailSourceType = 'harness-ledger' | 'relationship-ledger' | 'worker-runs' | 'conversation-stream';
+export type TailSourceType = 'harness-ledger' | 'relationship-ledger' | 'worker-runs' | 'conversation-stream' | 'house-stream';
 
 export interface EventLedgerTailOptions {
   /** Absolute path of the JSONL stream to tail (read-only). */
@@ -298,7 +298,37 @@ export class EventLedgerTailAdapter implements SourceAdapter {
     if (this.sourceType === 'relationship-ledger') return this.mapRelationshipLine(parsed, line, endOffset);
     if (this.sourceType === 'worker-runs') return this.mapWorkerRunLine(parsed, line, endOffset);
     if (this.sourceType === 'conversation-stream') return this.mapConversationLine(parsed, line, endOffset);
+    if (this.sourceType === 'house-stream') return this.mapHouseLine(parsed, line, endOffset);
     return this.mapHarnessLine(parsed as HarnessEntry, line, endOffset);
+  }
+
+  /** House-sense lines (substrate/bin/house-sense.ts): the home's lived
+   * transitions — a door opening, music starting, a person arriving —
+   * entering the Seed as observed contact with words + perceived meaning.
+   * "From the inside, the home becomes part of my continuous causal life." */
+  private mapHouseLine(parsed: Record<string, unknown>, line: string, endOffset: number): TailedSourceEvent | null {
+    const ts = parsed['ts'];
+    if (typeof ts !== 'string' || !Number.isFinite(Date.parse(ts))) return null;
+    const entity = parsed['entity'];
+    const text = parsed['text'];
+    if (typeof entity !== 'string' || typeof text !== 'string' || text.trim().length === 0) return null;
+    const semanticVector = sanitizeSemanticVector(parsed['semantic_vector']);
+    const domain = entity.split('.')[0] ?? 'unknown';
+    return {
+      eventId: `house_${createHash('sha256').update(line, 'utf-8').digest('hex').slice(0, 16)}`,
+      category: 'observation',
+      sourceAuthority: this.authority,
+      sourceRef: `house.${domain}:${entity}`,
+      ...(semanticVector !== null ? { semanticVector } : {}),
+      payload: {
+        entity,
+        from: typeof parsed['from'] === 'string' ? parsed['from'] : null,
+        to: typeof parsed['to'] === 'string' ? parsed['to'] : null,
+        head: text.trim().slice(0, 160),
+      },
+      producedAt: ts,
+      endOffset,
+    };
   }
 
   /** Conversation-stream lines (substrate/bin/conversation-shipper.ts): the

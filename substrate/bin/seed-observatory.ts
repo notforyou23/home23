@@ -150,6 +150,20 @@ function renderCutover(): string {
     ['Recent memory (RECENT)', recentOwner],
     ['Turn expression (SUBSTRATE)', '<b class="cells-own">CELLS</b> <span class="dim">— match-only surfacing of lived facts (knife v2)</span>'],
     ['Conversation intake', '<b class="cells-own">CELLS</b> <span class="dim">— life-feed shipper → seed diet, words + meaning</span>'],
+    ['House senses (Home Assistant)', (() => {
+      const j = specs.find((s) => s.name.toLowerCase().includes('jerry'));
+      try {
+        if (j !== undefined) {
+          const stream = join(j.stateDir, '..', 'house-stream.jsonl');
+          if (existsSync(stream)) {
+            const lines = readFileSync(stream, 'utf-8').trim();
+            const n = lines === '' ? 0 : lines.split('\n').length;
+            return `<b class="cells-own">CELLS</b> <span class="dim">— home transitions enter the chain as lived contact (${n} event(s) so far)</span>`;
+          }
+        }
+      } catch { /* FILE stands */ }
+      return 'FILE <span class="dim">(no house stream)</span>';
+    })()],
     ['Teaching channel', '<b class="cells-own">CELLS</b> <span class="dim">— corrections develop state (correction.v1), words attached</span>'],
     ['Session grounding (lived NOW)', (() => {
       const j = specs.find((s) => s.name.toLowerCase().includes('jerry'));

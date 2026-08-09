@@ -399,3 +399,41 @@ test('MECHANICAL FORK GUARD: a second runner on the same stateDir refuses; stale
   fourth.start();
   fourth.stop();
 });
+
+test('conversation mapper: both voices observed, words + meaning ride the event', (t) => {
+  const srcDir = makeDir(t, 'conv-src');
+  const stateDir = makeDir(t, 'conv-state');
+  const sourcePath = join(srcDir, 'conversation-stream.jsonl');
+  const vec = Array.from({ length: 16 }, () => 0.1);
+  writeFileSync(sourcePath, [
+    JSON.stringify({ ts: '2026-08-09T14:00:00.000Z', role: 'user', text: 'should I do the sauna tonight?', session: 's1', semantic_vector: vec }),
+    JSON.stringify({ ts: '2026-08-09T14:00:30.000Z', role: 'assistant', text: 'Skip the heroics — HRV is depleted', session: 's1' }),
+  ].join('\n') + '\n', 'utf-8');
+
+  const adapter = new EventLedgerTailAdapter({ sourcePath, cursorDir: stateDir, sourceType: 'conversation-stream', fromEnd: false });
+  const events = adapter.pullSync();
+  assert.equal(events.length, 2);
+  assert.equal(events[0]?.category, 'observation');
+  assert.match(events[0]?.sourceRef ?? '', /^conversation\.jtr:/);
+  assert.equal(events[0]?.payload['head'], 'should I do the sauna tonight?');
+  assert.equal(events[0]?.semanticVector?.length, 16, 'perceived meaning rides the event');
+  assert.match(events[1]?.sourceRef ?? '', /^conversation\.self:/, 'agent-generic self voice');
+});
+
+test('house mapper: home transitions arrive as observed contact with words', (t) => {
+  const srcDir = makeDir(t, 'house-src');
+  const stateDir = makeDir(t, 'house-state');
+  const sourcePath = join(srcDir, 'house-stream.jsonl');
+  writeFileSync(sourcePath, [
+    JSON.stringify({ ts: '2026-08-09T15:00:00.000Z', entity: 'cover.garage_1', from: 'closed', to: 'open', text: 'Garage 1 opened' }),
+    JSON.stringify({ ts: '2026-08-09T15:01:00.000Z', entity: 'media_player.althea_kitchen', from: 'idle', to: 'playing', text: 'Althea - Kitchen playing "Ripple" — Grateful Dead' }),
+  ].join('\n') + '\n', 'utf-8');
+
+  const adapter = new EventLedgerTailAdapter({ sourcePath, cursorDir: stateDir, sourceType: 'house-stream', fromEnd: false });
+  const events = adapter.pullSync();
+  assert.equal(events.length, 2);
+  assert.equal(events[0]?.category, 'observation');
+  assert.equal(events[0]?.sourceRef, 'house.cover:cover.garage_1');
+  assert.equal(events[0]?.payload['head'], 'Garage 1 opened');
+  assert.equal(events[1]?.payload['head'], 'Althea - Kitchen playing "Ripple" — Grateful Dead');
+});

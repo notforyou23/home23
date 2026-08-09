@@ -96,6 +96,11 @@ async function main(): Promise<void> {
   if (conversationSource !== undefined && conversationSource !== '') {
     extraSources.push({ sourcePath: conversationSource, sourceType: 'conversation-stream', id: 'conversation', backfillBytes: extraBackfill });
   }
+  // The home as senses: lived house transitions (substrate/bin/house-sense.ts).
+  const houseSource = process.env['SEED_HOUSE_SOURCE'];
+  if (houseSource !== undefined && houseSource !== '') {
+    extraSources.push({ sourcePath: houseSource, sourceType: 'house-stream', id: 'house', backfillBytes: extraBackfill });
+  }
 
   let anatomy;
   const rawAnatomy = process.env['SEED_ANATOMY'];
