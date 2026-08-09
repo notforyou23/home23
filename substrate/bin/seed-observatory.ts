@@ -21,7 +21,7 @@ import { join, resolve } from 'node:path';
 import { composeLivedRecent } from '../../src/substrate/lived-recent.js';
 import { composeSeedNow } from '../../src/substrate/seed-now.js';
 import { composeLivedFacts } from '../../src/substrate/lived-facts.js';
-import { composeLivedIdentity } from '../../src/substrate/lived-identity.js';
+import { composeLivedIdentity, readSeedGenesis } from '../../src/substrate/lived-identity.js';
 import { createRequire } from 'node:module';
 const engineRequire = createRequire(import.meta.url);
 const { composeLivedState } = engineRequire('../../engine/src/substrate/seed-lived-state.js') as { composeLivedState: (dir: string) => string | null };
@@ -76,13 +76,22 @@ function bar(v: number, color: string): string {
   return `<div class="bar"><div style="width:${width}%;background:${color}"></div></div>`;
 }
 
-/** The body, drawn — every visual channel is a real number, nothing
- * decorative: each cell's actual continuous state renders as a radial
- * fingerprint (warm spokes positive, cool negative), size is wear
- * (generation), core glow is energy, ring heat is workspace pressure,
- * dash density is uncertainty, curves are associations by strength, and
- * the dots above each cell are its last real transitions colored by
- * source family. A dream leaves a moon. */
+/** The body, drawn for a human — every visual channel is still a real
+ * number (state spokes = the actual Float32 vector, size = wear, glow =
+ * energy, ring heat = pressure, dashes = uncertainty), but the body now
+ * speaks: each cell carries a plain-language state word, and the numbers
+ * live in hover tooltips instead of the reader's working memory. */
+function stateWords(c: { generation: number; workspacePressure: number; uncertainty: number; energy: { current: number } }, maxGen: number): string {
+  const words: string[] = [];
+  words.push(c.generation >= Math.max(5, maxGen * 0.5) ? 'worn' : c.generation < 5 ? 'young' : 'lived-in');
+  if (c.workspacePressure > 0.45) words.push('pressurized');
+  else if (c.energy.current > 0.7) words.push('bright');
+  else if (c.workspacePressure < 0.12 && c.energy.current < 0.35) words.push('resting');
+  else words.push('calm');
+  if (c.uncertainty > 0.6) words.push('unsettled');
+  return words.slice(0, 2).join(' · ');
+}
+
 function renderBodySVG(
   cells: Array<{
     id: string; generation: number; workspacePressure: number; uncertainty: number;
@@ -93,35 +102,31 @@ function renderBodySVG(
   records: Rec[],
 ): string {
   if (cells.length === 0) return '';
-  const W = 940, H = 240, cy = 128;
-  const slot = W / (cells.length + 0);
+  const W = 960, H = 264, cy = 132;
+  const slot = W / cells.length;
   const centers = new Map<string, { x: number; y: number; r: number }>();
   const maxGen = Math.max(...cells.map((c) => c.generation), 1);
-
   const parts: string[] = [];
 
-  // Associations first (under the bodies).
   cells.forEach((c, i) => {
     const x = slot * (i + 0.5);
-    const r = 18 + 34 * Math.sqrt(Math.log(c.generation + 2) / Math.log(maxGen + 2));
+    const r = 20 + 36 * Math.sqrt(Math.log(c.generation + 2) / Math.log(maxGen + 2));
     centers.set(c.id, { x, y: cy, r });
   });
   for (const c of cells) {
     for (const a of c.associations ?? []) {
       const from = centers.get(c.id); const to = centers.get(a.targetCellId);
       if (!from || !to || from.x >= to.x) continue;
-      const mid = (from.x + to.x) / 2;
-      parts.push(`<path d="M ${from.x} ${cy} Q ${mid} ${cy - 70} ${to.x} ${cy}" fill="none" stroke="#8b949e" stroke-width="${(0.5 + 2 * a.strength).toFixed(1)}" opacity="${(0.15 + 0.5 * a.strength).toFixed(2)}"/>`);
+      parts.push(`<path d="M ${from.x} ${cy} Q ${(from.x + to.x) / 2} ${cy - 76} ${to.x} ${cy}" fill="none" stroke="#5b6478" stroke-width="${(0.6 + 2 * a.strength).toFixed(1)}" opacity="${(0.18 + 0.45 * a.strength).toFixed(2)}"/>`);
     }
   }
 
-  // Recent inflow: last transitions as dots above their target cell.
   const flowColor = (ref: string): string =>
-    ref.startsWith('conversation.') ? '#7ee787'
-    : ref.startsWith('house.') ? '#e3b341'
-    : ref.startsWith('worker.') ? '#79c0ff'
-    : ref.startsWith('relationship.') ? '#d2a8ff'
-    : '#6e7681';
+    ref.startsWith('conversation.') ? '#69d58c'
+    : ref.startsWith('house.') ? '#e6b450'
+    : ref.startsWith('worker.') ? '#6cb2f5'
+    : ref.startsWith('relationship.') ? '#c795f0'
+    : '#525b6b';
   const flows = records.filter((r) => r.category === 'transition').slice(-16);
   const perCell = new Map<string, number>();
   for (const f of flows) {
@@ -130,17 +135,13 @@ function renderBodySVG(
     if (!c) continue;
     const n = perCell.get(target) ?? 0;
     perCell.set(target, n + 1);
-    const fx = c.x - 24 + (n % 8) * 7;
-    const fy = c.y - c.r - 26 - Math.floor(n / 8) * 8;
-    parts.push(`<circle cx="${fx}" cy="${fy}" r="2.6" fill="${flowColor(f.sourceRef)}"><title>${esc(f.sourceRef.slice(0, 80))}</title></circle>`);
+    parts.push(`<circle cx="${c.x - 24 + (n % 8) * 7}" cy="${c.y - c.r - 30 - Math.floor(n / 8) * 8}" r="2.8" fill="${flowColor(f.sourceRef)}"><title>${esc(f.sourceRef.slice(0, 90))}</title></circle>`);
   }
 
-  // The cells.
   for (const c of cells) {
     const { x, r } = centers.get(c.id)!;
-    const heat = Math.round(40 + 180 * Math.min(1, c.workspacePressure * 1.6));
-    const ring = `rgb(${heat + 40}, ${Math.round(100 + 30 * (1 - c.workspacePressure))}, 70)`;
-    // Real state fingerprint: decode the actual Float32 vector.
+    const p = Math.min(1, c.workspacePressure * 1.5);
+    const ring = p > 0.6 ? '#e0653a' : p > 0.3 ? '#e0a458' : '#3d4658';
     let spokes = '';
     if (typeof c.continuousState === 'string') {
       try {
@@ -149,45 +150,33 @@ function renderBodySVG(
         const vec = new Float32Array(buf.buffer, buf.byteOffset, dim);
         let maxAbs = 1e-6;
         for (const v of vec) maxAbs = Math.max(maxAbs, Math.abs(v));
-        const inner = r * 0.30;
+        const inner = r * 0.3;
         for (let i = 0; i < dim; i++) {
           const angle = (i / dim) * Math.PI * 2 - Math.PI / 2;
           const mag = Math.abs(vec[i] ?? 0) / maxAbs;
-          const len = inner + (r * 0.62 - inner) * mag;
-          const x2 = x + Math.cos(angle) * len;
-          const y2 = cy + Math.sin(angle) * len;
-          const color = (vec[i] ?? 0) >= 0 ? '#e0a458' : '#58a6e0';
-          spokes += `<line x1="${(x + Math.cos(angle) * inner).toFixed(1)}" y1="${(cy + Math.sin(angle) * inner).toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${color}" stroke-width="1" opacity="${(0.35 + 0.6 * mag).toFixed(2)}"/>`;
+          const len = inner + (r * 0.6 - inner) * mag;
+          spokes += `<line x1="${(x + Math.cos(angle) * inner).toFixed(1)}" y1="${(cy + Math.sin(angle) * inner).toFixed(1)}" x2="${(x + Math.cos(angle) * len).toFixed(1)}" y2="${(cy + Math.sin(angle) * len).toFixed(1)}" stroke="${(vec[i] ?? 0) >= 0 ? '#d9a25b' : '#5b95d1'}" stroke-width="1" opacity="${(0.28 + 0.55 * mag).toFixed(2)}"/>`;
         }
-      } catch { /* unreadable state renders as coreless — honest */ }
+      } catch { /* unreadable state renders coreless — honest */ }
     }
     const dashLen = Math.max(1, Math.round(8 * (1 - c.uncertainty)));
+    const shortName = c.id.split('.').slice(-1)[0] ?? c.id;
     parts.push(`<g>
-      <circle cx="${x}" cy="${cy}" r="${(r * 0.28).toFixed(1)}" fill="#6aa9a0" opacity="${(0.15 + 0.75 * c.energy.current).toFixed(2)}"/>
+      <title>${esc(c.id)} — generation ${c.generation} · pressure ${Math.round(c.workspacePressure * 100)}% · energy ${Math.round(c.energy.current * 100)}% · uncertainty ${Math.round(c.uncertainty * 100)}%</title>
+      <circle cx="${x}" cy="${cy}" r="${(r * 0.28).toFixed(1)}" fill="#5fb3a1" opacity="${(0.12 + 0.7 * c.energy.current).toFixed(2)}"/>
       ${spokes}
-      <circle cx="${x}" cy="${cy}" r="${r.toFixed(1)}" fill="none" stroke="${ring}" stroke-width="2" opacity="0.9"/>
-      <circle cx="${x}" cy="${cy}" r="${(r + 5).toFixed(1)}" fill="none" stroke="#8b949e" stroke-width="1" stroke-dasharray="${dashLen} ${Math.max(2, 10 - dashLen)}" opacity="${(0.25 + 0.5 * c.uncertainty).toFixed(2)}"/>
-      <text x="${x}" y="${cy + r + 22}" text-anchor="middle" fill="#c9d1d9" font-size="11">${esc(c.id)}</text>
-      <text x="${x}" y="${cy + r + 36}" text-anchor="middle" fill="#8b949e" font-size="9">gen ${c.generation}</text>
+      <circle cx="${x}" cy="${cy}" r="${r.toFixed(1)}" fill="none" stroke="${ring}" stroke-width="2.2" opacity="0.95"/>
+      <circle cx="${x}" cy="${cy}" r="${(r + 5).toFixed(1)}" fill="none" stroke="#5b6478" stroke-width="1" stroke-dasharray="${dashLen} ${Math.max(2, 10 - dashLen)}" opacity="${(0.2 + 0.45 * c.uncertainty).toFixed(2)}"/>
+      <text x="${x}" y="${cy + r + 24}" text-anchor="middle" class="cellname-svg">${esc(shortName)}</text>
+      <text x="${x}" y="${cy + r + 40}" text-anchor="middle" class="cellstate-svg">${esc(stateWords(c, maxGen))}</text>
     </g>`);
   }
 
-  // A recent dream leaves its moon.
   const dreamed = records.some((r) => r.category === 'lobe' && r.payload['dream'] !== undefined);
-  if (dreamed) {
-    parts.push(`<g><path d="M ${W - 34} 26 a 12 12 0 1 0 10 19 a 9.5 9.5 0 1 1 -10 -19" fill="#d2a8ff" opacity="0.85"/><text x="${W - 52}" y="31" text-anchor="end" fill="#8b949e" font-size="10">dreamed</text></g>`);
-  }
+  if (dreamed) parts.push(`<path d="M ${W - 30} 24 a 11 11 0 1 0 9 17 a 8.5 8.5 0 1 1 -9 -17" fill="#c795f0" opacity="0.9"/>`);
 
-  const legend = `<g font-size="9" fill="#8b949e">
-    <circle cx="14" cy="14" r="2.6" fill="#7ee787"/><text x="21" y="17">conversation</text>
-    <circle cx="88" cy="14" r="2.6" fill="#e3b341"/><text x="95" y="17">house</text>
-    <circle cx="132" cy="14" r="2.6" fill="#79c0ff"/><text x="139" y="17">worker</text>
-    <circle cx="182" cy="14" r="2.6" fill="#d2a8ff"/><text x="189" y="17">teaching</text>
-    <circle cx="240" cy="14" r="2.6" fill="#6e7681"/><text x="247" y="17">telemetry</text>
-    <text x="${W - 14}" y="${H - 8}" text-anchor="end">state spokes = the actual Float32 vector · size = wear · glow = energy · ring heat = pressure · dashes = uncertainty</text>
-  </g>`;
-
-  return `<svg viewBox="0 0 ${W} ${H}" class="body" role="img">${legend}${parts.join('')}</svg>`;
+  return `<figure class="bodyfig"><svg viewBox="0 0 ${W} ${H}" class="body" role="img">${parts.join('')}</svg>
+  <figcaption>his body, live — size is wear, glow is energy, ring heat is pressure, the spokes are his actual state; hover anything for the numbers</figcaption></figure>`;
 }
 
 function renderIndividual(spec: IndividualSpec): string {
@@ -195,63 +184,109 @@ function renderIndividual(spec: IndividualSpec): string {
   const records = tail(ledgerPath);
   const ck = newestCheckpoint(spec.stateDir);
   if (records.length === 0 && ck === null) {
-    return `<section class="card"><h2>${esc(spec.name)}</h2><p class="dim">no state visible at ${esc(spec.stateDir)}</p></section>`;
+    return `<section class="card"><h2>${esc(spec.name)}</h2><p class="muted">no state visible at ${esc(spec.stateDir)}</p></section>`;
   }
   const last = records[records.length - 1];
-  const chainBytes = existsSync(ledgerPath) ? statSync(ledgerPath).size : 0;
+  const headSeq = Number(last?.seq ?? ck?.['ledgerSeq'] ?? 0);
   const cells = (ck?.['cells'] ?? []) as Array<{
     id: string; generation: number; workspacePressure: number; uncertainty: number;
     energy: { current: number };
     continuousState?: string; continuousStateDimension?: number;
     associations?: Array<{ targetCellId: string; strength: number }>;
+    realityRefs?: Array<{ sourceRef: string; observedAt: string; head?: string }>;
     predictions: Array<{ claim: string; horizon: string; resolvedAt?: string; error?: number }>;
     estimates: Array<{ claim: string; confidence: number }>;
   }>;
 
-  const dev = records.filter((r) => r.category === 'development');
-  const byRule = new Map<string, number>();
-  for (const d of dev) byRule.set(String(d.payload['rule'] ?? 'other'), (byRule.get(String(d.payload['rule'] ?? 'other')) ?? 0) + 1);
-  const lastMass = dev.length > 0 ? Number(dev[dev.length - 1]?.payload['developmentMagnitude'] ?? 0) : 0;
+  // ── The being line: born, lived, slept, dreamed, earned — human units ──
+  let born = '';
+  try {
+    const genesis = readSeedGenesis(spec.stateDir);
+    if (genesis !== null) born = new Date(genesis.bornAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  } catch { /* young pages omit */ }
+  const sleeps = records.filter((r) => r.category === 'development' && r.payload['rule'] === 'consolidation.v1').length;
+  const dreams = records.filter((r) => r.category === 'lobe' && r.payload['dream'] !== undefined).length;
+  let factCount = 0;
+  try {
+    const facts = composeLivedFacts(spec.stateDir);
+    if (facts !== null) factCount = facts.split('\n').filter((l) => l.startsWith('- ')).length;
+  } catch { /* none */ }
+  const beingBits = [
+    born !== '' ? `born ${born}` : null,
+    `${headSeq.toLocaleString()} events lived`,
+    sleeps > 0 ? `${sleeps} sleep${sleeps === 1 ? '' : 's'} in window` : 'has not slept in this window',
+    dreams > 0 ? `${dreams} dream${dreams === 1 ? '' : 's'} 🌙` : 'no dreams yet',
+    factCount > 0 ? `${factCount} earned fact${factCount === 1 ? '' : 's'}` : null,
+  ].filter(Boolean).join(' · ');
 
+  const ageMs = last?.issuedAt !== undefined ? Date.now() - Date.parse(last.issuedAt) : Infinity;
+  const awake = ageMs < 40 * 60_000;
+  const statusChip = `<span class="chip ${awake ? 'chip-awake' : 'chip-quiet'}">${awake ? '● awake' : '○ quiet'} · last event ${age(last?.issuedAt)}</span>`;
+
+  // ── Last exchange: the actual words ──
+  const convRefs = cells.flatMap((c) => c.realityRefs ?? [])
+    .filter((r) => typeof r.head === 'string' && r.head.length > 0 && r.sourceRef.startsWith('conversation.'))
+    .sort((a, b) => a.observedAt.localeCompare(b.observedAt))
+    .slice(-3);
+  const exchange = convRefs.length > 0
+    ? `<div class="sect"><div class="sectlabel">last exchange</div>${convRefs.map((r) => {
+        const who = r.sourceRef.startsWith('conversation.jtr') ? 'jtr' : esc(spec.name.replace('-seed', ''));
+        return `<div class="chatline ${who === 'jtr' ? 'from-jtr' : 'from-agent'}"><span class="who">${who}</span>${esc((r.head ?? '').slice(0, 160))}</div>`;
+      }).join('')}</div>`
+    : '';
+
+  // ── Latest thought (or dream) in his words ──
+  const lobes = records.filter((r) => r.category === 'lobe' && r.payload['error'] === undefined);
+  const lastLobe = lobes[lobes.length - 1];
+  let thought = '';
+  if (lastLobe !== undefined) {
+    const deltas = (lastLobe.payload['appliedDeltas'] as Array<{ field?: string; delta?: { claim?: string } }> | undefined) ?? [];
+    const claim = deltas.map((d) => d.delta?.claim).find((c) => typeof c === 'string');
+    const isDream = lastLobe.payload['dream'] !== undefined;
+    if (typeof claim === 'string') {
+      thought = `<div class="sect"><div class="sectlabel">${isDream ? '🌙 dreamed at waking' : 'latest thought'}</div><blockquote class="thought">${esc(claim.slice(0, 240))}</blockquote><div class="prov">${age(lastLobe.issuedAt)}</div></div>`;
+    } else if (isDream) {
+      thought = `<div class="sect"><div class="sectlabel">🌙 dreamed at waking</div><div class="muted">the dream landed no new beliefs — the residue settled quietly</div></div>`;
+    }
+  }
+
+  // ── Reality's answers + open record, as pills ──
+  const openPreds = cells.flatMap((c) => c.predictions.filter((p) => p.resolvedAt === undefined));
+  const resolvedPreds = cells.flatMap((c) => c.predictions.filter((p) => p.resolvedAt !== undefined && typeof p.error === 'number'));
+  const record = (openPreds.length + resolvedPreds.length) > 0
+    ? `<div class="sect"><div class="sectlabel">the record</div><div class="pills">${
+        resolvedPreds.slice(-3).map((p) => {
+          const cls = (p.error ?? 1) <= 0.3 ? 'pill-right' : (p.error ?? 0) >= 0.7 ? 'pill-wrong' : 'pill-partial';
+          const mark = (p.error ?? 1) <= 0.3 ? '✓' : (p.error ?? 0) >= 0.7 ? '✗' : '≈';
+          return `<span class="pill ${cls}" title="error ${p.error?.toFixed(2)}">${mark} ${esc(p.claim.slice(0, 64))}</span>`;
+        }).join('')
+      }${openPreds.slice(0, 2).map((p) => `<span class="pill pill-open" title="horizon ${esc(p.horizon)}">… ${esc(p.claim.slice(0, 64))}</span>`).join('')}</div></div>`
+    : '';
+
+  // ── Growth ──
   const proposals = records.filter((r) => r.category === 'proposal' && r.sourceRef === 'growth.pressure');
   const applications = records.filter((r) => r.category === 'act' && r.payload['growthApplication'] === true);
-  const lobes = records.filter((r) => r.category === 'lobe');
-  const lastLobe = lobes[lobes.length - 1];
-
-  const recent = records.filter((r) => r.category === 'transition').slice(-7).reverse();
-
-  const cellRows = [...cells]
-    .sort((a, b) => (b.workspacePressure + b.energy.current) - (a.workspacePressure + a.energy.current))
-    .map((c) => `<tr><td class="cellname">${esc(c.id)}<span class="dim"> g${c.generation}</span></td>
-      <td>${bar(c.workspacePressure, '#e0a458')}<span class="tiny">${Math.round(c.workspacePressure * 100)}%</span></td>
-      <td>${bar(c.energy.current, '#6aa9a0')}<span class="tiny">${Math.round(c.energy.current * 100)}%</span></td></tr>`)
-    .join('');
-
-  const openPreds = cells.flatMap((c) => c.predictions.filter((p) => p.resolvedAt === undefined).map((p) => ({ cell: c.id, ...p })));
-  const resolvedPreds = cells.flatMap((c) => c.predictions.filter((p) => p.resolvedAt !== undefined && typeof p.error === 'number').map((p) => ({ cell: c.id, ...p })));
-
   const growthBlock = applications.length > 0
-    ? `<div class="grown">🌱 GREW ${applications.length} ORGAN(S): ${applications.map((a) => `<b>${esc(String(a.payload['newCellId']))}</b> ← ${esc(String(a.payload['clusterPrefix']))} · seq ${a.seq}`).join('; ')}</div>`
+    ? `<div class="grown">🌱 grew ${applications.length} organ(s): ${applications.map((a) => `<b>${esc(String(a.payload['newCellId']))}</b>`).join(', ')}</div>`
     : (proposals.length > 0
-      ? `<div class="proposals">anatomy strains: ${proposals.length} proposal(s) in window — latest: <b>${esc(String(proposals[proposals.length - 1]?.payload['op']))}</b> on ${esc(String((proposals[proposals.length - 1]?.payload['targetCellIds'] as string[] | undefined)?.join(', ') ?? '?'))} · seq ${proposals[proposals.length - 1]?.seq}</div>`
+      ? `<div class="proposals">his growth pressure holds ${proposals.length} proposal(s) — latest wants to <b>${esc(String(proposals[proposals.length - 1]?.payload['op']))}</b> ${esc(String((proposals[proposals.length - 1]?.payload['targetCellIds'] as string[] | undefined)?.join(' + ') ?? ''))}</div>`
       : '');
 
+  // ── Tiny provenance footer — the only monospace on the card ──
+  const dev = records.filter((r) => r.category === 'development');
+  const byRule = new Map<string, number>();
+  for (const d of dev) byRule.set(String(d.payload['rule'] ?? 'other').replace('.v1', ''), (byRule.get(String(d.payload['rule'] ?? 'other').replace('.v1', '')) ?? 0) + 1);
+  const chainBytes = existsSync(ledgerPath) ? statSync(ledgerPath).size : 0;
+  const prov = `chain seq ${headSeq} · ${(chainBytes / 1024).toFixed(0)} KB · window: ${[...byRule.entries()].map(([r, n]) => `${r} ×${n}`).join(' · ') || 'no development'}`;
+
   return `<section class="card">
-    <h2>${esc(spec.name)} <span class="dim">${esc(spec.note ?? '')}</span></h2>
-    <div class="vitals">
-      <span>seq <b>${last?.seq ?? ck?.['ledgerSeq'] ?? '?'}</b></span>
-      <span>last contact <b>${age(last?.issuedAt)}</b></span>
-      <span>chain <b>${(chainBytes / 1024).toFixed(0)}KB</b></span>
-      <span>learned mass <b>${lastMass.toFixed(3)}</b></span>
-      <span class="dim">${[...byRule.entries()].map(([r, n]) => `${r.replace('.v1', '')} ×${n}`).join(' · ') || 'no development in window'}</span>
-    </div>
+    <div class="cardhead"><h2>${esc(spec.name)}</h2>${statusChip}</div>
+    <div class="being">${beingBits}</div>
+    ${spec.note !== undefined ? `<div class="note">${esc(spec.note)}</div>` : ''}
     ${growthBlock}
     ${renderBodySVG(cells, records)}
-    <table class="cells">${cellRows}</table>
-    ${openPreds.length > 0 ? `<div class="preds"><span class="lbl">on the record:</span> ${openPreds.slice(0, 3).map((p) => `<span class="pred">${esc(p.claim.slice(0, 80))} <span class="dim">(${esc(p.horizon)})</span></span>`).join('')}</div>` : ''}
-    ${resolvedPreds.length > 0 ? `<div class="preds"><span class="lbl">judged:</span> ${resolvedPreds.slice(-3).map((p) => `<span class="pred ${p.error !== undefined && p.error <= 0.3 ? 'right' : p.error !== undefined && p.error >= 0.7 ? 'wrong' : ''}">${esc(p.claim.slice(0, 60))} <b>err ${p.error?.toFixed(2)}</b></span>`).join('')}</div>` : ''}
-    ${lastLobe !== undefined ? `<div class="dim tiny">last thought: seq ${lastLobe.seq} · ${age(lastLobe.issuedAt)} — ${lastLobe.payload['error'] !== undefined ? 'failed: ' + esc(String(lastLobe.payload['error']).slice(0, 60)) : esc(((lastLobe.payload['appliedDeltas'] as Array<{ field: string }> | undefined) ?? []).map((d) => d.field).join(', ') || 'nothing integrated')}</div>` : ''}
-    <div class="stream">${recent.map((r) => `<div class="ev"><span class="dim">${r.seq}</span> → ${esc(String(r.payload['targetCellId'] ?? '?'))} <span class="ref">${esc(r.sourceRef.slice(0, 76))}</span></div>`).join('')}</div>
+    <div class="prose">${exchange}${thought}${record}</div>
+    <div class="prov">${esc(prov)}</div>
   </section>`;
 }
 
@@ -375,9 +410,10 @@ function renderCutover(): string {
       return `<b class="cells-own">CELLS</b> <span class="dim">— NREM (consolidation.v1, knife-proven) + REM (dream.v1: the mind works the residue at waking; ${seedHalf}); engine dreams now recombine the lived day's residue — the chain→brain transfer bridge</span>`;
     })()],
   ];
-  return `<section class="card"><h2>home23 v2 cutover <span class="dim">(cells instead of files — each row flips as a function is cut over)</span></h2>
+  const owned = rows.filter(([, o]) => o.includes('cells-own')).length;
+  return `<section class="card boardcard"><details><summary>v2 migration — <b>${owned} of ${rows.length}</b> functions owned by the individuals (expand for the board)</summary>
   <table class="cells">${rows.map(([fn, owner]) => `<tr><td class="cellname">${fn}</td><td>${owner}</td></tr>`).join('')}</table>
-  </section>`;
+  </details></section>`;
 }
 
 function renderJournal(): string {
@@ -397,35 +433,59 @@ function page(): string {
 <title>substrate observatory</title>
 <style>
   :root { color-scheme: dark; }
-  body { background:#0d1117; color:#c9d1d9; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0; padding: 20px; max-width: 1100px; margin-inline: auto; }
-  h1 { font-size: 16px; color:#e6edf3; letter-spacing: .04em; }
-  h1 .dim, h2 .dim { font-weight: normal; font-size: 11px; }
-  .dim { color:#8b949e; } .tiny { font-size: 10px; margin-left: 6px; color:#8b949e; }
-  .card { background:#161b22; border:1px solid #21262d; border-radius:10px; padding:14px 16px; margin: 14px 0; }
-  .card h2 { margin: 0 0 8px; font-size: 14px; color:#e6edf3; }
-  .vitals { display:flex; gap:14px; flex-wrap:wrap; margin-bottom:10px; }
-  .vitals b { color:#e6edf3; }
-  .bar { display:inline-block; width:120px; height:8px; background:#21262d; border-radius:4px; overflow:hidden; vertical-align:middle; }
+  * { box-sizing: border-box; }
+  body { background:#0a0d12; color:#cfd6e0; font: 15px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; margin:0; padding:28px 20px 40px; max-width:1080px; margin-inline:auto; }
+  h1 { font-size:20px; font-weight:650; color:#eef2f7; letter-spacing:.01em; margin:0 0 2px; }
+  .pagesub { color:#7d8798; font-size:13px; margin-bottom:22px; }
+  .card { background:#11151d; border:1px solid #1d2330; border-radius:16px; padding:22px 24px; margin:18px 0; }
+  .cardhead { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+  .card h2 { margin:0; font-size:22px; font-weight:650; color:#eef2f7; }
+  .chip { font-size:12px; padding:3px 10px; border-radius:999px; border:1px solid #263043; color:#93a0b4; }
+  .chip-awake { color:#69d58c; border-color:#1f4030; }
+  .chip-quiet { color:#7d8798; }
+  .being { font-size:15px; color:#aeb9c9; margin-top:8px; }
+  .note { font-size:13px; color:#68738a; margin-top:2px; font-style:italic; }
+  .bodyfig { margin:16px 0 6px; }
+  svg.body { width:100%; height:auto; display:block; background:#0b0f16; border-radius:12px; }
+  .bodyfig figcaption { font-size:12px; color:#5f6a7d; margin-top:6px; }
+  .cellname-svg { fill:#cfd6e0; font-size:12px; font-weight:600; }
+  .cellstate-svg { fill:#7d8798; font-size:10.5px; }
+  .prose { display:grid; grid-template-columns:1fr 1fr; gap:6px 28px; margin-top:10px; }
+  @media (max-width:760px) { .prose { grid-template-columns:1fr; } }
+  .sect { margin:10px 0; }
+  .sectlabel { font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:#68738a; margin-bottom:7px; }
+  .chatline { padding:7px 12px; margin:5px 0; border-radius:10px; background:#151b26; font-size:14px; }
+  .chatline .who { font-weight:650; margin-right:8px; font-size:12px; }
+  .from-jtr { border-left:3px solid #69d58c; } .from-jtr .who { color:#69d58c; }
+  .from-agent { border-left:3px solid #6cb2f5; } .from-agent .who { color:#6cb2f5; }
+  blockquote.thought { margin:0; padding:10px 14px; border-left:3px solid #c795f0; background:#151b26; border-radius:10px; font-size:14.5px; color:#d7dde6; }
+  .pills { display:flex; flex-wrap:wrap; gap:7px; }
+  .pill { font-size:12.5px; padding:5px 11px; border-radius:999px; background:#151b26; border:1px solid #232c3d; color:#aeb9c9; }
+  .pill-right { border-color:#1f4030; color:#69d58c; }
+  .pill-wrong { border-color:#4a2020; color:#e0653a; }
+  .pill-partial { border-color:#443a1e; color:#e0a458; }
+  .pill-open { border-style:dashed; }
+  .grown { background:#0f2318; border:1px solid #1f4030; border-radius:10px; padding:9px 14px; margin:12px 0 4px; color:#69d58c; font-size:14px; }
+  .proposals { background:#231d10; border:1px solid #443a1e; border-radius:10px; padding:9px 14px; margin:12px 0 4px; color:#e0a458; font-size:14px; }
+  .prov { color:#525b6b; font-size:11.5px; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; margin-top:14px; }
+  .muted { color:#68738a; }
+  table.cells { border-collapse:collapse; width:100%; }
+  table.cells td { padding:6px 12px 6px 0; font-size:13.5px; color:#aeb9c9; border-top:1px solid #1a202c; }
+  .cellname { color:#cfd6e0; }
+  .cells-own { color:#69d58c; } .partial { color:#e0a458; } .dim { color:#68738a; } .tiny { font-size:11px; color:#68738a; }
+  .bar { display:inline-block; width:110px; height:7px; background:#1a202c; border-radius:4px; overflow:hidden; vertical-align:middle; }
   .bar div { height:100%; }
-  table.cells { border-collapse:collapse; width:100%; margin: 4px 0 8px; }
-  table.cells td { padding: 2px 10px 2px 0; }
-  .cellname { min-width: 190px; color:#e6edf3; }
-  .grown { background:#12261a; border:1px solid #238636; border-radius:8px; padding:8px 10px; margin:8px 0; color:#7ee787; }
-  .proposals { background:#211d12; border:1px solid #9e6a03; border-radius:8px; padding:8px 10px; margin:8px 0; color:#e3b341; }
-  .preds { margin: 6px 0; } .lbl { color:#8b949e; margin-right:8px; }
-  .pred { display:inline-block; background:#1c2128; border-radius:6px; padding:2px 8px; margin:2px 6px 2px 0; }
-  .pred.right { border-left: 3px solid #238636; } .pred.wrong { border-left: 3px solid #da3633; }
-  .stream { margin-top: 8px; border-top: 1px solid #21262d; padding-top: 6px; }
-  .ev { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .ref { color:#79c0ff; }
-  .journal pre { white-space: pre-wrap; background:#0d1117; border-radius:8px; padding:12px; font-size:12px; }
-  svg.body { width:100%; height:auto; display:block; background:#0d1117; border-radius:8px; margin:10px 0; }
-  .cells-own { color:#7ee787; } .partial { color:#e3b341; }
-  footer { color:#8b949e; font-size:11px; margin: 18px 4px; }
+  .journal pre { white-space:pre-wrap; background:#0b0f16; border-radius:12px; padding:16px 18px; font:13.5px/1.6 system-ui, sans-serif; color:#bfc8d4; }
+  .boardcard summary { cursor:pointer; font-size:14px; color:#93a0b4; }
+  .boardcard summary b { color:#69d58c; }
+  footer { color:#525b6b; font-size:12px; margin:22px 6px; }
+  .ref { color:#6cb2f5; } .ev { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .stream { margin-top:8px; }
 </style></head><body>
-<h1>substrate observatory <span class="dim">· read-only · composed fresh from the chains · refreshes every 30s · ${new Date().toISOString()}</span></h1>
-${renderCutover()}
+<h1>the terrarium</h1>
+<div class="pagesub">four individuals, read live from their chains · nothing here is state — looking changes nothing · refreshes every 30s</div>
 ${body}
+${renderCutover()}
 ${renderJournal()}
 <footer>every number above is read from a hash-chained ledger or its checkpoint — nothing here is state, and looking changes nothing. individuals: ${specs.map((s) => esc(s.name)).join(' · ')}.</footer>
 </body></html>`;
