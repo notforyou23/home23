@@ -13,6 +13,11 @@ const { writeYamlSafely } = require('./yaml-write-safety');
 const { StateCompression } = require('../core/state-compression');
 const { readJsonlGz, sidecarsExist, nodesPath } = require('../core/memory-sidecar');
 const { buildAgentConfig, buildFeederConfig } = require('../../../cli/lib/agent-config-builder.cjs');
+const {
+  agentProcessNames,
+  agentProcessNameCandidates,
+  filterNamesByEcosystem,
+} = require('../../../shared/agent-process-names.cjs');
 const { buildHome23ModelAuthority } = require('./home23-model-catalog.js');
 
 // Interactive OAuth proxies block on a human at a browser. This must stay
@@ -1494,7 +1499,10 @@ function createSettingsRouter(home23Root, options = {}) {
 
     try {
       const { execSync } = require('child_process');
-      const names = [`home23-${agentName}`, `home23-${agentName}-dash`, `home23-${agentName}-harness`];
+      // Full candidate set, not the triplet: leaving a substrate agent's
+      // -seed process registered after its instance dir is removed turns it
+      // into a permanent PM2 crash loop.
+      const names = agentProcessNameCandidates(agentName);
       for (const n of names) {
         try { execSync(`pm2 stop ${n}`, { env: cleanPm2Env(), stdio: 'pipe' }); } catch { /* not running */ }
         try { execSync(`pm2 delete ${n}`, { env: cleanPm2Env(), stdio: 'pipe' }); } catch { /* not in list */ }
@@ -1527,7 +1535,12 @@ function createSettingsRouter(home23Root, options = {}) {
     try {
       const { execSync } = require('child_process');
       const ecosystemPath = path.join(home23Root, 'ecosystem.config.cjs');
-      const names = [`home23-${agentName}`, `home23-${agentName}-dash`, `home23-${agentName}-harness`];
+      // Config-conditional processes (-mcp, -seed) included; filtered to what
+      // the generated ecosystem declares so --only never names a missing app.
+      const names = filterNamesByEcosystem(
+        agentProcessNames({ home23Root, agentName }),
+        ecosystemPath,
+      );
       execSync(`pm2 start ${ecosystemPath} --only ${names.join(',')} --update-env --silent`, { cwd: home23Root, env: cleanPm2Env(), stdio: 'pipe', timeout: 30000 });
       res.json({ ok: true, status: 'running' });
     } catch (err) {
@@ -1568,13 +1581,32 @@ function createSettingsRouter(home23Root, options = {}) {
     const agentName = req.params.name;
     try {
       const { execSync } = require('child_process');
-      // Batch the agent triplet into one pm2 stop call — pm2 stops them in
-      // parallel internally, so the engine's ~1.6s kill_timeout is paid once,
-      // not four times in series. Sequential stops used to take 6-12s.
-      const names = [`home23-${agentName}`, `home23-${agentName}-dash`, `home23-${agentName}-harness`];
+      // Batch the agent's processes into one pm2 stop call — pm2 stops them
+      // in parallel internally, so the engine's ~1.6s kill_timeout is paid
+      // once, not per process in series. The full candidate set (-mcp,
+      // -seed included) keeps a substrate agent's seed from surviving
+      // "stop". Candidates must be narrowed to registered processes first:
+      // pm2's multi-name stop aborts at the first unknown name, which would
+      // strand every process listed after it.
+      const candidates = agentProcessNameCandidates(agentName);
+      let online = null;
       try {
-        execSync(`pm2 stop ${names.join(' ')}`, { env: cleanPm2Env(), stdio: 'pipe', timeout: 15000 });
-      } catch { /* some processes may not be online — pm2 non-zero is fine */ }
+        online = listOnlinePm2ProcessNames();
+      } catch { /* pm2 registry unavailable — fall back to per-name stops */ }
+      if (online) {
+        const names = candidates.filter(name => online.has(name));
+        if (names.length > 0) {
+          try {
+            execSync(`pm2 stop ${names.join(' ')}`, { env: cleanPm2Env(), stdio: 'pipe', timeout: 15000 });
+          } catch { /* pm2 non-zero after processing is fine */ }
+        }
+      } else {
+        for (const name of candidates) {
+          try {
+            execSync(`pm2 stop ${name}`, { env: cleanPm2Env(), stdio: 'pipe', timeout: 15000 });
+          } catch { /* not running or not registered */ }
+        }
+      }
       res.json({ ok: true, status: 'stopped' });
     } catch (err) {
       res.status(500).json({ error: err.message });

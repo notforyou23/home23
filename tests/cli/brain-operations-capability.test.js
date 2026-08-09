@@ -178,7 +178,7 @@ function assertReceiptHasNoSecret(receipt, ...secrets) {
   }
 }
 
-test('generated ecosystem isolates one shared capability to dashboards and COSMO only', () => {
+test('generated ecosystem provisions the capability to agent processes and COSMO, never support services', () => {
   const key = 'a'.repeat(64);
   const root = makeInstall({ key });
   try {
@@ -187,13 +187,15 @@ test('generated ecosystem isolates one shared capability to dashboards and COSMO
     const apps = new Map(ecosystem.apps.map((app) => [app.name, app]));
     const authorityKey = authorityAttestation.deriveMemoryAuthorityAttestationKey(key);
     assert.deepEqual(rendered.configuredProcessNames, targetNames());
-    for (const name of capabilityTargetNames()) {
+    // Engine/mcp/harness carry the key for tool subprocess flows (checkpoint
+    // of live-deployed work); shared/support services outside COSMO never do.
+    for (const name of targetNames()) {
       assert.equal(apps.get(name)?.env?.[CAPABILITY_ENV] === key, true, name);
     }
     for (const app of ecosystem.apps) {
       assert.ok(app.filter_env?.includes(CAPABILITY_ENV), `${app.name} filters inherited capability`);
       assert.ok(app.filter_env?.includes(AUTHORITY_ENV), `${app.name} filters inherited authority key`);
-      if (!capabilityTargetNames().includes(app.name)) {
+      if (!targetNames().includes(app.name)) {
         assert.equal(app.env?.[CAPABILITY_ENV] === key, false, app.name);
       }
     }
@@ -211,6 +213,28 @@ test('generated ecosystem isolates one shared capability to dashboards and COSMO
     assert.equal(apps.get('home23-jerry-dash')?.kill_timeout, 210_000);
     assert.equal(apps.get('home23-forrest-dash')?.kill_timeout, 210_000);
     assert.match(source, /const DASHBOARD_KILL_TIMEOUT_MS = 210000;/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('generated ecosystem never provisions capability or authority keys to a seed runner', () => {
+  const key = 'a'.repeat(64);
+  const root = makeInstall({ key });
+  try {
+    const forrestConfigPath = join(root, 'instances', 'forrest', 'config.yaml');
+    const forrestConfig = yaml.load(readFileSync(forrestConfigPath, 'utf8'));
+    forrestConfig.substrate = { enabled: true };
+    writeFileSync(forrestConfigPath, yaml.dump(forrestConfig), 'utf8');
+    generateEcosystem(root);
+
+    const ecosystem = loadEcosystem(root);
+    const seed = ecosystem.apps.find((app) => app.name === 'home23-forrest-seed');
+    assert.ok(seed, 'substrate-enabled agent generates a seed runner process');
+    assert.equal(seed.env?.[CAPABILITY_ENV], undefined, 'seed env must not hold the capability key');
+    assert.equal(seed.env?.[AUTHORITY_ENV], undefined, 'seed env must not hold the authority key');
+    assert.ok(seed.filter_env?.includes(CAPABILITY_ENV), 'seed filters inherited capability');
+    assert.ok(seed.filter_env?.includes(AUTHORITY_ENV), 'seed filters inherited authority key');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

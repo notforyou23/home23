@@ -7,6 +7,7 @@ const {
   assertPm2AgentIdentity,
   validatePm2AgentIdentity,
   pm2AgentFromName,
+  parsePm2ProcessName,
   parsePm2JlistOutput,
 } = require('../../scripts/lib/pm2-agent-identity-guard.cjs');
 
@@ -17,6 +18,45 @@ test('derives the owning agent from PM2 triplet names', () => {
   assert.equal(pm2AgentFromName('home23-jerry-dash'), 'jerry');
   assert.equal(pm2AgentFromName('home23-forrest-harness'), 'forrest');
   assert.equal(pm2AgentFromName('home23-cosmo23'), 'cosmo23');
+});
+
+test('derives the owning agent from conditional mcp and seed process names', () => {
+  assert.equal(pm2AgentFromName('home23-jerry-mcp'), 'jerry');
+  assert.equal(pm2AgentFromName('home23-jerry-seed'), 'jerry');
+  assert.deepEqual(parsePm2ProcessName('home23-jerry-seed'), { agent: 'jerry', suffix: 'seed' });
+  assert.deepEqual(parsePm2ProcessName('home23-forrest-mcp'), { agent: 'forrest', suffix: 'mcp' });
+  assert.deepEqual(parsePm2ProcessName('home23-jerry'), { agent: 'jerry', suffix: '' });
+});
+
+test('accepts a seed runner row with its suffixed INSTANCE_ID and no port env', () => {
+  const result = validatePm2AgentIdentity({
+    root: ROOT,
+    pid: 4321,
+    pm2List: [{ name: 'home23-jerry-seed', pid: 4321 }],
+    env: {
+      HOME23_AGENT: 'jerry',
+      INSTANCE_ID: 'home23-jerry-seed',
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.expectedAgent, 'jerry');
+  assert.deepEqual(result.mismatches, []);
+});
+
+test('refuses a seed runner row carrying another agent env', () => {
+  assert.throws(
+    () => assertPm2AgentIdentity({
+      root: ROOT,
+      pid: 4321,
+      pm2List: [{ name: 'home23-jerry-seed', pid: 4321 }],
+      env: {
+        HOME23_AGENT: 'forrest',
+        INSTANCE_ID: 'home23-forrest-seed',
+      },
+    }),
+    /refusing startup for home23-jerry-seed.*HOME23_AGENT=forrest expected jerry/
+  );
 });
 
 test('refuses to start when a Jerry PM2 row carries Forrest env', () => {

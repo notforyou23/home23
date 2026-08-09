@@ -257,12 +257,13 @@ All systems are bundled — evobrew and cosmo23 ship with the repo and update to
 
 ### Processes (per agent)
 
-Each agent runs 3 PM2 processes, plus 2 shared:
+Each agent runs 3 core PM2 processes plus per-agent conditional ones, and 2 shared:
 
 | Process | Purpose | Default Port |
 |---|---|---|
 | `home23-<name>` | Cognitive engine — thinking, dreaming, brain growth, document ingestion, **live-problems loop** | 5001 (WS + admin HTTP) |
 | `home23-<name>-dash` | Dashboard API — brain queries, state, settings, feeder drop zone, model assignments, live-problems API, brain storage API | 5002 (HTTP) |
+| `home23-<name>-mcp` | *(default on; `mcp.enabled: false` disables)* Agent-scoped MCP HTTP server, loopback-only | 5003 |
 | `home23-<name>-harness` | Agent runtime — Telegram, Discord, iMessage, discoverable tool registry, LLM loop, situational awareness, `/api/notify` + `/api/diagnose` endpoints | 5004 (bridge) |
 | `home23-<name>-seed` | *(opt-in, v2)* Seed runner — the persistent individual: metabolizes the agent's life, develops, sleeps, dreams | — |
 | `home23-evobrew` | AI IDE (shared across all agents) | 3415 |

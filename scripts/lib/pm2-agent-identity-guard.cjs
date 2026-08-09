@@ -5,9 +5,20 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const yaml = require('js-yaml');
 
+/**
+ * Split a Home23 PM2 process name into owning agent + role suffix. The
+ * suffix set must track cli/lib/generate-ecosystem.js — an unrecognized
+ * suffix would otherwise be swallowed into the agent name and the guard
+ * would demand env for a phantom agent (e.g. "jerry-seed").
+ */
+function parsePm2ProcessName(name) {
+  const match = /^home23-([a-z0-9_-]+?)(?:-(dash|harness|mcp|seed))?$/.exec(String(name || ''));
+  if (!match) return { agent: '', suffix: '' };
+  return { agent: match[1], suffix: match[2] || '' };
+}
+
 function pm2AgentFromName(name) {
-  const match = /^home23-([a-z0-9_-]+?)(?:-dash|-harness)?$/.exec(String(name || ''));
-  return match?.[1] || '';
+  return parsePm2ProcessName(name).agent;
 }
 
 function loadAgentPorts(root, agent) {
@@ -54,21 +65,30 @@ function parsePm2JlistOutput(output) {
   throw new Error(`pm2 jlist did not return a JSON process list: ${sample || '<empty>'}`);
 }
 
-function buildExpectedEnv(root, agent) {
+function buildExpectedEnv(root, agent, suffix = '') {
+  const expected = {
+    HOME23_AGENT: agent,
+    // The seed runner is the one agent process whose INSTANCE_ID carries its
+    // suffix (see generate-ecosystem.js); every other role uses the base id.
+    INSTANCE_ID: suffix === 'seed' ? `home23-${agent}-seed` : `home23-${agent}`,
+  };
+  // The seed runner's env carries no port variables — asserting ports there
+  // would refuse a correctly-configured process.
+  if (suffix === 'seed') return expected;
+
   const ports = loadAgentPorts(root, agent);
   const dashboard = String(ports.dashboard || '');
   const realtime = String(ports.engine || '');
   const mcp = String(ports.mcp || '');
-  const expected = {
-    HOME23_AGENT: agent,
-    INSTANCE_ID: `home23-${agent}`,
-  };
+  if (mcp) expected.MCP_HTTP_PORT = mcp;
+  // The MCP server's env carries only its own port.
+  if (suffix === 'mcp') return expected;
+
   if (dashboard) {
     expected.DASHBOARD_PORT = dashboard;
     expected.COSMO_DASHBOARD_PORT = dashboard;
   }
   if (realtime) expected.REALTIME_PORT = realtime;
-  if (mcp) expected.MCP_HTTP_PORT = mcp;
   return expected;
 }
 
@@ -78,10 +98,10 @@ function validatePm2AgentIdentity({ root, env = process.env, pid = process.pid, 
   const proc = findPm2ProcessForPid(list, pid);
   if (!proc) return { ok: true, skipped: true, reason: 'pm2_process_not_found' };
 
-  const expectedAgent = pm2AgentFromName(proc.name);
+  const { agent: expectedAgent, suffix } = parsePm2ProcessName(proc.name);
   if (!expectedAgent) return { ok: true, skipped: true, reason: 'non_agent_pm2_process', pm2Name: proc.name };
 
-  const expected = buildExpectedEnv(home23Root, expectedAgent);
+  const expected = buildExpectedEnv(home23Root, expectedAgent, suffix);
   const mismatches = [];
   for (const [key, value] of Object.entries(expected)) {
     const actual = env[key] === undefined ? '' : String(env[key]);
@@ -121,5 +141,6 @@ module.exports = {
   assertPm2AgentIdentity,
   validatePm2AgentIdentity,
   pm2AgentFromName,
+  parsePm2ProcessName,
   parsePm2JlistOutput,
 };

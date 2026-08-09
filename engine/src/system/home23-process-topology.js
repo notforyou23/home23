@@ -2,9 +2,11 @@
  * Home23 process topology classification.
  *
  * Home23 can run several sibling agents side by side. Each sibling normally
- * has an engine, dashboard, and harness process. Shared/support services run
- * alongside those triplets. The classifier keeps telemetry interpretation from
- * mistaking expected sibling roles for duplicate deployments.
+ * has an engine, dashboard, and harness process, plus an agent-scoped MCP
+ * server (unless disabled) and a substrate seed runner (when the agent has a
+ * Seed). Shared/support services run alongside those sets. The classifier
+ * keeps telemetry interpretation from mistaking expected sibling roles for
+ * duplicate deployments.
  */
 
 'use strict';
@@ -22,6 +24,16 @@ const ROLE_SPECS = {
   },
   'agent-harness': {
     expectedScriptSuffix: '/dist/home.js',
+    category: 'agent',
+    expectedParallelRole: true,
+  },
+  'agent-mcp': {
+    expectedScriptSuffix: '/mcp/http-server.js',
+    category: 'agent',
+    expectedParallelRole: true,
+  },
+  'agent-seed': {
+    expectedScriptSuffix: '/substrate/bin/seed-runner.ts',
     category: 'agent',
     expectedParallelRole: true,
   },
@@ -131,12 +143,14 @@ function roleFromName(name) {
   if (SHARED_SERVICE_NAMES.has(name)) return { role: 'shared-service', agentName: null };
   if (SUPPORT_SERVICE_NAMES.has(name)) return { role: 'support-service', agentName: null };
 
-  const match = /^home23-(.+?)(?:-(dash|harness))?$/.exec(name);
+  const match = /^home23-(.+?)(?:-(dash|harness|mcp|seed))?$/.exec(name);
   if (!match) return { role: 'external-workload', agentName: null };
 
   const [, agentName, suffix] = match;
   if (suffix === 'dash') return { role: 'agent-dashboard', agentName };
   if (suffix === 'harness') return { role: 'agent-harness', agentName };
+  if (suffix === 'mcp') return { role: 'agent-mcp', agentName };
+  if (suffix === 'seed') return { role: 'agent-seed', agentName };
   return { role: 'agent-engine', agentName };
 }
 
@@ -146,6 +160,8 @@ function roleFromScript(script) {
   if (normalized.endsWith('/engine/src/index.js')) return { role: 'agent-engine' };
   if (normalized.endsWith('/engine/src/dashboard/server.js')) return { role: 'agent-dashboard' };
   if (normalized.endsWith('/dist/home.js')) return { role: 'agent-harness' };
+  if (normalized.endsWith('/mcp/http-server.js')) return { role: 'agent-mcp' };
+  if (normalized.endsWith('/substrate/bin/seed-runner.ts')) return { role: 'agent-seed' };
   if (normalized.endsWith('/evobrew/server/server.js')) return { role: 'shared-service' };
   if (normalized.endsWith('/cosmo23/server/index.js')) return { role: 'shared-service' };
   if (normalized.endsWith('/scripts/screenlogic_bridge.py')) return { role: 'support-service' };
@@ -166,6 +182,12 @@ function buildInterpretation({ name, role, agentName, nameRole, scriptRole, topo
   }
   if (role === 'agent-harness') {
     return `${agentName} harness bridge; expected compiled TypeScript agent loop, not a duplicate engine.`;
+  }
+  if (role === 'agent-mcp') {
+    return `${agentName} agent-scoped MCP HTTP server; expected sibling role for that agent.`;
+  }
+  if (role === 'agent-seed') {
+    return `${agentName} substrate seed runner; expected single resident — a second instance of this individual is a real duplicate.`;
   }
   if (role === 'shared-service') return 'Shared Home23 service used across sibling agents.';
   if (role === 'support-service') return 'Support Home23 service outside the agent triplet.';
