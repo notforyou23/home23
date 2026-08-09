@@ -9,6 +9,7 @@
 import type { MemoryObject, TriggerCondition, EventEnvelope } from '../types.js';
 import type { MemoryObjectStore } from './memory-objects.js';
 import type { EventLedger } from './event-ledger.js';
+import { semanticMatchScore, SEMANTIC_MATCH_FLOOR } from '../substrate/semantic-match.js';
 
 interface TriggerMatch {
   memoryId: string;
@@ -42,6 +43,7 @@ export class TriggerIndex {
     context: { isFirstTurn: boolean; recentDomains?: string[] },
     ledger?: EventLedger,
     sessionId?: string,
+    embed?: (text: string) => number[] | null,
   ): TriggerMatch[] {
     const matches: TriggerMatch[] = [];
     const textLower = userText.toLowerCase();
@@ -51,9 +53,16 @@ export class TriggerIndex {
 
       switch (entry.trigger.trigger_type) {
         case 'keyword': {
-          // OR-separated keywords
+          // v2 cut 3: the keyword list is a meaning-anchor, not a tripwire —
+          // the turn's meaning must genuinely pull toward the memory (title +
+          // cues, matched in the retina's native space at the calibrated
+          // floor). Substring remains the degraded fallback so a down
+          // embedder never silences reactivation entirely.
           const keywords = entry.trigger.condition.split(/\s+OR\s+/i).map(k => k.trim().toLowerCase());
-          fired = keywords.some(kw => textLower.includes(kw));
+          const score = semanticMatchScore(userText, `${entry.memory.title}: ${keywords.join(', ')}`, embed);
+          fired = score !== null
+            ? score >= SEMANTIC_MATCH_FLOOR
+            : keywords.some(kw => textLower.includes(kw));
           break;
         }
         case 'temporal': {
@@ -69,9 +78,12 @@ export class TriggerIndex {
           break;
         }
         case 'workflow_stage': {
-          // Simple keyword check for workflow stage
+          // Meaning-gated like keyword triggers; substring fallback.
           const stage = entry.trigger.condition.toLowerCase();
-          fired = textLower.includes(stage);
+          const score = semanticMatchScore(userText, `${entry.memory.title}: ${stage}`, embed);
+          fired = score !== null
+            ? score >= SEMANTIC_MATCH_FLOOR
+            : textLower.includes(stage);
           break;
         }
         case 'recurrence': {

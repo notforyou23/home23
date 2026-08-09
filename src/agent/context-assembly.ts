@@ -18,6 +18,7 @@ import type { TriggerIndex } from './trigger-index.js';
 import { budgetIdentityContent } from './identity-budget.js';
 import { composeSeedSituation } from '../substrate/seed-context.js';
 import { composeLivedRecent } from '../substrate/lived-recent.js';
+import { semanticMatchScore, SEMANTIC_MATCH_FLOOR } from '../substrate/semantic-match.js';
 
 /**
  * A workspace file that loads into situational awareness ONLY when its keyword
@@ -59,8 +60,12 @@ interface AssemblyConfig {
     signal: AbortSignal,
   ) => Promise<Record<string, unknown>>;
   triggerIndex?: TriggerIndex;
-  /** Keyword-gated workspace files (Step 30 cleanup #4). */
+  /** Meaning-gated workspace files (Step 30 keywords became meaning-anchors
+   * in v2 cut 3; substring match remains the degraded fallback). */
   triggeredSurfaces?: TriggeredSurfaceConfig[];
+  /** Injectable embedder for the semantic gates (tests); defaults to the
+   * shared retina embedder. */
+  semanticEmbed?: (text: string) => number[] | null;
   /** Seed substrate state dir (may be a live mirror) — loads the SUBSTRATE
    * carried-state block every turn when set. */
   substrateStateDir?: string;
@@ -99,14 +104,20 @@ function loadSurface(workspacePath: string, filename: string, budget: number): s
 }
 
 /**
- * Load the triggered surfaces whose keyword/domain cues appear in the turn's
- * text. Keyword match is a case-insensitive substring over the user message plus
- * a little recent context; `domains` entries are treated as additional cues.
+ * Load the triggered surfaces the turn's MEANING selects (v2 cut 3).
+ * The configured keywords/domains are no longer substring tripwires — they
+ * are the surface's meaning-anchor, embedded once and matched against the
+ * turn in the retina's native space at the calibrated floor. Degraded-
+ * honest: when meaning-matching is unavailable (embedder down, or a turn
+ * too short to carry topic), the file-era substring match serves — the
+ * organ owns the gate only while it is alive.
  */
 function loadTriggeredSurfaces(
   workspacePath: string,
   surfaces: TriggeredSurfaceConfig[] | undefined,
   matchText: string,
+  turnText?: string,
+  embed?: (t: string) => number[] | null,
 ): Array<{ label: string; text: string }> {
   if (!surfaces || surfaces.length === 0) return [];
   const hay = matchText.toLowerCase();
@@ -116,11 +127,22 @@ function loadTriggeredSurfaces(
       .map(c => c.toLowerCase().trim())
       .filter(Boolean);
     if (cues.length === 0) continue;
-    if (!cues.some(cue => hay.includes(cue))) continue;
-    const content = loadSurface(workspacePath, surface.file, surface.budget ?? 2500);
-    if (!content) continue;
     const label = surface.label
       ?? basename(surface.file).replace(/\.md$/i, '').replace(/[^A-Za-z0-9]+/g, '_').toUpperCase();
+
+    let fired: boolean;
+    const score = turnText !== undefined
+      ? semanticMatchScore(turnText, `${label}: ${cues.join(', ')}`, embed)
+      : null;
+    if (score !== null) {
+      fired = score >= SEMANTIC_MATCH_FLOOR;
+    } else {
+      fired = cues.some(cue => hay.includes(cue));
+    }
+    if (!fired) continue;
+
+    const content = loadSurface(workspacePath, surface.file, surface.budget ?? 2500);
+    if (!content) continue;
     out.push({ label, text: content });
   }
   return out;
@@ -461,6 +483,7 @@ export async function assembleContext(
         { isFirstTurn },
         ledger,
         config.sessionId,
+        config.semanticEmbed,
       );
     } catch {
       // Never block on trigger evaluation failure
@@ -559,7 +582,7 @@ export async function assembleContext(
   // only when the turn is about it — attention allocation, social maintenance,
   // carry-forward — so it reaches the agent when relevant without bloating turns.
   const triggerMatchText = `${userText} ${recentTurns.slice(-3).map(t => t.content ?? '').join(' ')}`;
-  for (const ts of loadTriggeredSurfaces(config.workspacePath, config.triggeredSurfaces, triggerMatchText)) {
+  for (const ts of loadTriggeredSurfaces(config.workspacePath, config.triggeredSurfaces, triggerMatchText, userText, config.semanticEmbed)) {
     surfacesLoaded.push(ts.label);
     salienceItems.push({
       text: `\nRelevant context (${ts.label}):\n${ts.text}`,

@@ -25,7 +25,12 @@ function ws(files: Record<string, string>): string {
 // A healthy no-op brain search so assembly runs the surface path deterministically.
 const emptySearch = async () => ({ results: [], sourceEvidence: { sourceHealth: 'healthy', matchOutcome: 'hit' } });
 
-async function assemble(workspacePath: string, userText: string, triggeredSurfaces: TriggeredSurfaceConfig[]) {
+async function assemble(
+  workspacePath: string,
+  userText: string,
+  triggeredSurfaces: TriggeredSurfaceConfig[],
+  semanticEmbed: (t: string) => number[] | null = () => null, // default: degraded → substring fallback (hermetic)
+) {
   return assembleContext(
     userText,
     'chat-1',
@@ -39,6 +44,7 @@ async function assemble(workspacePath: string, userText: string, triggeredSurfac
       brainSearchTimeoutMs: 1000,
       contextSearch: emptySearch,
       triggeredSurfaces,
+      semanticEmbed,
     },
   );
 }
@@ -110,6 +116,49 @@ test('surface loader budgets section-aware — no blind mid-sentence slice (DOCT
     // Budgeted output carries the honest omission diagnostic, not a mid-word cut.
     assert.match(withDoctrine.block, /identity-budget: kept \d+\/\d+ chars of DOCTRINE\.md/);
     void r;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+// ── v2 cut 3: the gate is MEANING, keywords are anchors (substring = fallback) ──
+
+const DIM = 16;
+function axis(i: number): number[] {
+  const v = new Array<number>(DIM).fill(0);
+  v[i] = 1;
+  return v;
+}
+/** Attention-flavored language and the ATTENTION anchor share an axis;
+ * sunset-flavored language sits elsewhere despite containing 'watch'. */
+function fakeEmbed(text: string): number[] | null {
+  if (/ATTENTION:|inquiry|prioritize/i.test(text)) return axis(0);
+  if (/sunset|evening/i.test(text)) return axis(7);
+  return null;
+}
+
+test('meaning fires the surface — no keyword substring required', async () => {
+  const dir = ws({ 'ATTENTION_DECISION_CARD.md': '# Attention\nAllocate deliberately.' });
+  try {
+    const surfaces: TriggeredSurfaceConfig[] = [
+      { file: 'ATTENTION_DECISION_CARD.md', label: 'ATTENTION', keywords: ['pursuit'], budget: 2200 },
+    ];
+    const r = await assemble(dir, 'should we spin up a new line of inquiry and prioritize it?', surfaces, fakeEmbed);
+    assert.match(r.block, /Allocate deliberately/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the tripwire is dead: a lexical accident no longer fires the surface', async () => {
+  const dir = ws({ 'ATTENTION_DECISION_CARD.md': '# Attention\nAllocate deliberately.' });
+  try {
+    const surfaces: TriggeredSurfaceConfig[] = [
+      { file: 'ATTENTION_DECISION_CARD.md', label: 'ATTENTION', keywords: ['watch', 'pursuit'], budget: 2200 },
+    ];
+    const r = await assemble(dir, 'lets watch the sunset together this evening please', surfaces, fakeEmbed);
+    assert.doesNotMatch(r.block, /Allocate deliberately/, 'meaning distant despite keyword hit');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

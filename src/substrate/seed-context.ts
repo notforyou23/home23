@@ -38,6 +38,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { embedTextRawSync } from './embed-at-contact.js';
+import { cachedEmbedRaw, cosine } from './semantic-match.js';
 
 export interface SeedCell {
   id: string;
@@ -97,7 +98,6 @@ const MIN_MATCHABLE_TURN_ALNUM = 20;
 const FRESH_CAP_BOOTSTRAP = 3;
 const LEDGER_TAIL_BYTES = 256 * 1024;
 const TRUST_SHIFT_MIN = 0.15;
-const EMBED_CACHE_MAX = 800;
 
 /** A single lived fact eligible for surfacing. `matchText` is the semantic
  * content (claim/reason) that gets embedded; `text` is the narrated line. */
@@ -332,32 +332,10 @@ function buildLivedItems(checkpoint: { cells: SeedCell[]; ledgerSeq: number }, t
 
 // ─── Semantic selection through the species retina ──────────────────────────
 
-const embedCache = new Map<string, number[]>();
-
-function cachedEmbed(text: string, embed: (t: string) => number[] | null): number[] | null {
-  const hit = embedCache.get(text);
-  if (hit !== undefined) return hit;
-  const vec = embed(text);
-  if (vec !== null) {
-    if (embedCache.size >= EMBED_CACHE_MAX) {
-      const oldest = embedCache.keys().next().value;
-      if (oldest !== undefined) embedCache.delete(oldest);
-    }
-    embedCache.set(text, vec);
-  }
-  return vec;
-}
-
-function cosine(a: readonly number[], b: readonly number[]): number {
-  let dot = 0, na = 0, nb = 0;
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) {
-    const x = a[i] ?? 0, y = b[i] ?? 0;
-    dot += x * y; na += x * x; nb += y * y;
-  }
-  const denom = Math.sqrt(na) * Math.sqrt(nb);
-  return denom === 0 ? 0 : dot / denom;
-}
+// Embedding cache + cosine live in the shared semantic-match module — the
+// expression organ, triggered surfaces, and trigger index all gate through
+// one retina, and a turn embeds once per process.
+const cachedEmbed = cachedEmbedRaw;
 
 /** Overload-compatible with the legacy (stateDir, budget) call shape. */
 export function composeSeedSituation(stateDir: string, budgetOrOpts?: number | ComposeSeedOptions): string | null {

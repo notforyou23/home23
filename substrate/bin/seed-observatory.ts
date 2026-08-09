@@ -177,7 +177,8 @@ function renderCutover(): string {
     ['Machine snapshot (NOW.md)', 'FILE <span class="dim">— cron telemetry, file-owned by design until seed estimates reach freshness parity</span>'],
     ['Identity (SOUL)', 'FILE <span class="dim">— future cut</span>'],
     ['Facts (TOPOLOGY) / owner (PERSONAL) / rules (DOCTRINE)', 'FILE <span class="dim">— future cuts</span>'],
-    ['Memory objects + triggers', 'FILE <span class="dim">(JSON stores) — future cut</span>'],
+    ['Attention triggers', '<b class="cells-own">CELLS</b> <span class="dim">— gates fire on meaning through the retina (calibrated floor); substring only as degraded fallback</span>'],
+    ['Memory objects', 'FILE <span class="dim">(JSON store) — next: facts from lived estimates</span>'],
   ];
   return `<section class="card"><h2>home23 v2 cutover <span class="dim">(cells instead of files — each row flips as a function is cut over)</span></h2>
   <table class="cells">${rows.map(([fn, owner]) => `<tr><td class="cellname">${fn}</td><td>${owner}</td></tr>`).join('')}</table>
