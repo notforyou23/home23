@@ -195,7 +195,11 @@ export function applyMetabolicTransition(
   cell.uncertainty = clamp(cell.uncertainty * 0.9 + readouts.novelty * 0.1, 0, 1);
 
   // Accumulate the reality reference (bounded) — workspace packets carry
-  // actual refs into recruited lobes, never re-narrated history.
+  // actual refs into recruited lobes, never re-narrated history. When the
+  // event's payload carries a text head (real language perceived at the
+  // source), the ref carries it too — bounded — so a recruited mind reads
+  // the life, not just its reference metadata.
+  const head = event.payload['head'];
   cell.realityRefs.push({
     refId: event.eventId,
     sourceAuthority: event.sourceAuthority,
@@ -203,6 +207,7 @@ export function applyMetabolicTransition(
     observedAt: event.producedAt,
     confidence: event.category === 'correction' ? 1 : 0.8,
     flag: 'COLLECTED',
+    ...(typeof head === 'string' && head.length > 0 ? { head: head.slice(0, 160) } : {}),
   });
   if (cell.realityRefs.length > MAX_CELL_REALITY_REFS) {
     cell.realityRefs.splice(0, cell.realityRefs.length - MAX_CELL_REALITY_REFS);

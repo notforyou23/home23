@@ -46,6 +46,12 @@ export interface RealityRef {
   observedAt: string;
   confidence: number;
   flag: VerificationFlag;
+  /** Bounded head of the referenced reality's own words, when the source
+   * line carried language (a conversation turn, a correction's text).
+   * Lifted at intake from the event payload — recruited lobes finally READ
+   * the life they are reasoning about instead of inferring rhythm from
+   * reference metadata. Optional: telemetry refs stay wordless. */
+  head?: string;
 }
 
 export interface Estimate {
@@ -429,6 +435,10 @@ export interface ModelReceipt {
   tokensIn: number;
   tokensOut: number;
   requestId?: string;
+  /** Present when the response text was cut off (output-token cap) and a
+   * valid JSON prefix was recovered; droppedChars counts the discarded tail.
+   * Absence means the response parsed whole. */
+  truncatedResponse?: { droppedChars: number };
 }
 
 /** Lobe result (Cut 2). Models return typed proposals; never direct state writes. */

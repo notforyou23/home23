@@ -293,7 +293,13 @@ export class RelationshipLedger {
         entry_id: entryId,
         agent: this.agent,
         ts: this.now(),
-        payload,
+        // The words ride the event line too (bounded head), not only the
+        // vector: a Seed's recruited lobe can only reason about a teaching
+        // it can read. The full entry stays in the ledger proper — this is
+        // a bounded projection, not a mirror.
+        payload: semanticText !== undefined
+          ? { ...payload, head: semanticText.trim().slice(0, 160) }
+          : payload,
         ...(semanticVector !== null ? { semantic_vector: semanticVector } : {}),
       }) + '\n';
       appendFileSync(this.eventsPath, line);

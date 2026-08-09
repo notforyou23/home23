@@ -64,7 +64,7 @@ export interface TailedSourceEvent extends SourceEvent {
   endOffset: number;
 }
 
-export type TailSourceType = 'harness-ledger' | 'relationship-ledger' | 'worker-runs';
+export type TailSourceType = 'harness-ledger' | 'relationship-ledger' | 'worker-runs' | 'conversation-stream';
 
 export interface EventLedgerTailOptions {
   /** Absolute path of the JSONL stream to tail (read-only). */
@@ -297,7 +297,40 @@ export class EventLedgerTailAdapter implements SourceAdapter {
     }
     if (this.sourceType === 'relationship-ledger') return this.mapRelationshipLine(parsed, line, endOffset);
     if (this.sourceType === 'worker-runs') return this.mapWorkerRunLine(parsed, line, endOffset);
+    if (this.sourceType === 'conversation-stream') return this.mapConversationLine(parsed, line, endOffset);
     return this.mapHarnessLine(parsed as HarnessEntry, line, endOffset);
+  }
+
+  /** Conversation-stream lines (substrate/bin/conversation-shipper.ts): the
+   * agent's ACTUAL conversations with his person — the life itself, not its
+   * telemetry. Both voices are observations of lived contact (teaching stays
+   * the relationship ledger's deliberate job — no manufactured corrections);
+   * the words ride as a bounded head + the perceived semantic vector, so
+   * both the reservoir AND recruited lobes finally eat meaning. */
+  private mapConversationLine(parsed: Record<string, unknown>, line: string, endOffset: number): TailedSourceEvent | null {
+    const ts = parsed['ts'];
+    if (typeof ts !== 'string' || !Number.isFinite(Date.parse(ts))) return null;
+    const role = parsed['role'];
+    if (role !== 'user' && role !== 'assistant') return null;
+    const text = parsed['text'];
+    if (typeof text !== 'string' || text.trim().length === 0) return null;
+    const session = typeof parsed['session'] === 'string' ? parsed['session'] : 'unknown';
+    const semanticVector = sanitizeSemanticVector(parsed['semantic_vector']);
+    const voice = role === 'user' ? 'jtr' : 'jerry';
+    return {
+      eventId: `conv_${createHash('sha256').update(line, 'utf-8').digest('hex').slice(0, 16)}`,
+      category: 'observation',
+      sourceAuthority: this.authority,
+      sourceRef: `conversation.${voice}:${session}`,
+      ...(semanticVector !== null ? { semanticVector } : {}),
+      payload: {
+        role,
+        session,
+        head: text.trim().slice(0, 160),
+      },
+      producedAt: ts,
+      endOffset,
+    };
   }
 
   /** Relationship-ledger events (src/agent/relationship-ledger.ts): entries
@@ -315,6 +348,7 @@ export class EventLedgerTailAdapter implements SourceAdapter {
       ? parsed['event_id']
       : `rel_${createHash('sha256').update(line, 'utf-8').digest('hex').slice(0, 16)}`;
     const semanticVector = sanitizeSemanticVector(parsed['semantic_vector']);
+    const head = payload['head'];
     return {
       eventId,
       category: entryType === 'correction' || entryType === 'attenuation' ? 'correction' : 'observation',
@@ -325,6 +359,9 @@ export class EventLedgerTailAdapter implements SourceAdapter {
         entry_type: entryType,
         actor: typeof payload['actor'] === 'string' ? payload['actor'] : null,
         entry_id: entryId || null,
+        // Writers since 2026-08-08 carry the teaching's words as a bounded
+        // head — pass them through so the ref carries readable reality.
+        ...(typeof head === 'string' && head.length > 0 ? { head } : {}),
       },
       producedAt: ts,
       endOffset,

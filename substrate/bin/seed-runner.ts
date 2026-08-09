@@ -90,6 +90,12 @@ async function main(): Promise<void> {
   if (workerSource !== undefined && workerSource !== '') {
     extraSources.push({ sourcePath: workerSource, sourceType: 'worker-runs', id: 'worker-runs', backfillBytes: extraBackfill });
   }
+  // The life itself: the agent's real conversations with his person, shipped
+  // by substrate/bin/conversation-shipper.ts with words + perceived vectors.
+  const conversationSource = process.env['SEED_CONVERSATION_SOURCE'];
+  if (conversationSource !== undefined && conversationSource !== '') {
+    extraSources.push({ sourcePath: conversationSource, sourceType: 'conversation-stream', id: 'conversation', backfillBytes: extraBackfill });
+  }
 
   let anatomy;
   const rawAnatomy = process.env['SEED_ANATOMY'];
