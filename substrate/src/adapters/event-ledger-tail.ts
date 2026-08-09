@@ -316,7 +316,10 @@ export class EventLedgerTailAdapter implements SourceAdapter {
     if (typeof text !== 'string' || text.trim().length === 0) return null;
     const session = typeof parsed['session'] === 'string' ? parsed['session'] : 'unknown';
     const semanticVector = sanitizeSemanticVector(parsed['semantic_vector']);
-    const voice = role === 'user' ? 'jtr' : 'jerry';
+    // Agent-generic voices: 'jtr' for the person, 'self' for the agent's own
+    // turns. (Chains born before 2026-08-09 carry 'jerry' for self — legacy
+    // labels stay as history; readers accept both.)
+    const voice = role === 'user' ? 'jtr' : 'self';
     return {
       eventId: `conv_${createHash('sha256').update(line, 'utf-8').digest('hex').slice(0, 16)}`,
       category: 'observation',

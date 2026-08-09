@@ -47,7 +47,9 @@ export function composeLivedRecent(stateDir: string, budget = DEFAULT_BUDGET): s
     .filter((r) => r.sourceRef.startsWith('conversation.'))
     .slice(-CONTACT_LINES)
     .map((r) => {
-      const voice = r.sourceRef.startsWith('conversation.jtr') ? 'jtr' : 'jerry';
+      // 'you' addresses the agent reading his own record; 'jerry' is the
+      // legacy self-label on chains born before 2026-08-09.
+      const voice = r.sourceRef.startsWith('conversation.jtr') ? 'jtr' : 'you';
       return `- ${voice}: "${r.head}"`;
     });
 
