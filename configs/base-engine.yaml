@@ -3,9 +3,10 @@ architecture:
   # cycle rebuild (see docs/superpowers/specs/2026-04-18-thinking-machine-cycle.md).
   # legacy_roles = current role rotation (curiosity/analyst/critic/curator/proposal).
   # thinking_machine = new 4-phase pipeline (discover → deep-dive → connect → critique).
-  # Default stays legacy_roles until Phase 8 cutover. Flag exists now so subsequent
-  # phases can branch on it without disrupting the running engine.
-  cognitionMode: legacy_roles
+  # Home23 v2 (2026-08-09, jtr: "i dont think we want legacy anything"):
+  # the four-phase thinking machine IS cognition — discover, deep-dive
+  # (grounded in the individual's lived chain), PGS connect, critique.
+  cognitionMode: thinking_machine
   roleSystem:
     type: dynamic
     explorationMode: guided

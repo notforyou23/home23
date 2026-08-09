@@ -205,7 +205,20 @@ function renderCutover(): string {
       } catch { /* FILE stands */ }
       return 'FILE <span class="dim">(no lived state composing — engine thinks from brain alone)</span>';
     })()],
-    ['Memory objects', 'FILE <span class="dim">(JSON store) — next: facts from lived estimates</span>'],
+    ['Memory objects (deliberate promotions)', (() => {
+      const j = specs.find((s) => s.name.toLowerCase().includes('jerry'));
+      try {
+        if (j !== undefined) {
+          const events = join(j.stateDir, '..', '..', 'brain', 'memory-objects.events.jsonl');
+          if (existsSync(events)) {
+            const n = readFileSync(events, 'utf-8').trim().split('\n').filter(Boolean).length;
+            return `<b class="cells-own">CELLS</b> <span class="dim">— promotions teach the chain (${n} taught); the living pipeline replaced candidate→durable, which had promoted 0 of 2500; JSON store demoted to recall cache</span>`;
+          }
+        }
+      } catch { /* FILE stands */ }
+      return 'FILE <span class="dim">(no promotion events yet)</span>';
+    })()],
+    ['Cognition mode', '<b class="cells-own">thinking_machine</b> <span class="dim">— legacy_roles retired 2026-08-09 ("we don\'t want legacy anything"); 4-phase pipeline, lived-chain grounded</span>'],
   ];
   return `<section class="card"><h2>home23 v2 cutover <span class="dim">(cells instead of files — each row flips as a function is cut over)</span></h2>
   <table class="cells">${rows.map(([fn, owner]) => `<tr><td class="cellname">${fn}</td><td>${owner}</td></tr>`).join('')}</table>

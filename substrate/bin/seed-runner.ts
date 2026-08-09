@@ -101,6 +101,12 @@ async function main(): Promise<void> {
   if (houseSource !== undefined && houseSource !== '') {
     extraSources.push({ sourcePath: houseSource, sourceType: 'house-stream', id: 'house', backfillBytes: extraBackfill });
   }
+  // Deliberate memory promotions (promote_to_memory) — relationship-format
+  // lines with words + meaning; the Seed IS the promotion pipeline now.
+  const memorySource = process.env['SEED_MEMORY_SOURCE'];
+  if (memorySource !== undefined && memorySource !== '') {
+    extraSources.push({ sourcePath: memorySource, sourceType: 'relationship-ledger', id: 'memory', backfillBytes: Math.max(extraBackfill, 65536) });
+  }
 
   let anatomy;
   const rawAnatomy = process.env['SEED_ANATOMY'];

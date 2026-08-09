@@ -7,6 +7,10 @@
  */
 
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
+import { appendFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { embedTextSync } from '../../substrate/embed-at-contact.js';
 
 export const promoteToMemoryTool: ToolDefinition = {
   name: 'promote_to_memory',
@@ -172,6 +176,31 @@ Each promotion must include: what changed (before/after/why), when it should res
         },
         privacy_class: privacy as any,
       }, correctionIngress);
+
+      // Home23 v2 cut 6: a deliberate promotion TEACHES the individual —
+      // the words + perceived meaning enter the Seed's diet, where the
+      // living promotion pipeline (metabolize → estimate → survive into
+      // fact-grade) does what candidate→durable never did. The JSON store
+      // remains the instant-recall working cache; the living copy
+      // accumulates in the chain. Best-effort: a seed-less agent promotes
+      // exactly as before.
+      try {
+        const semanticText = `${title}. ${statement}`;
+        const line = JSON.stringify({
+          event_id: randomUUID(),
+          event_type: 'memory_promoted',
+          entry_id: obj.memory_id,
+          agent: ctx.agentName ?? 'unknown',
+          ts: new Date().toISOString(),
+          payload: {
+            type: 'memory_promotion',
+            actor: 'agent',
+            head: semanticText.trim().slice(0, 160),
+          },
+          ...(() => { const v = embedTextSync(semanticText); return v !== null ? { semantic_vector: v } : {}; })(),
+        }) + '\n';
+        appendFileSync(join(brainDir, 'memory-objects.events.jsonl'), line);
+      } catch { /* the store write above is the contract; the teaching is best-effort */ }
 
       return {
         content: `Promoted to memory: "${title}" (${obj.memory_id})\nThread: ${thread.thread_id} — ${thread.title}\nTriggers: ${triggerKeywords.join(', ')}\nState delta: ${before} → ${after} (${why})`,
