@@ -12,6 +12,7 @@
  */
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { composeSeedNow } from '../substrate/seed-now.js';
 
 export interface SituationalAwarenessConfig {
   bootstrap?: {
@@ -61,6 +62,21 @@ export function buildBootstrapBlock(
   const maxBytes = cfg?.bootstrap?.maxBytesPerFile ?? DEFAULT_MAX_BYTES;
 
   const sections: string[] = [];
+
+  // Home23 v2 cutover, function 2: the session opens on the INDIVIDUAL's
+  // lived now — composed from his chain at this instant (last contact,
+  // identity events since, freshest thought, open expectations) — with the
+  // machine-snapshot files following as telemetry. Young/absent seed →
+  // files-only, exactly as before.
+  if (cfg?.substrate?.stateDir) {
+    try {
+      const lived = composeSeedNow(cfg.substrate.stateDir);
+      if (lived) sections.push(`— NOW@seed (lived, from your chain) —\n${lived}`);
+    } catch {
+      // bootstrap never blocks a turn; absence over fabrication
+    }
+  }
+
   for (const filename of reads) {
     const filePath = join(workspacePath, filename);
     if (!existsSync(filePath)) continue;

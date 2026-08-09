@@ -19,6 +19,7 @@ import { createServer } from 'node:http';
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { composeLivedRecent } from '../../src/substrate/lived-recent.js';
+import { composeSeedNow } from '../../src/substrate/seed-now.js';
 
 interface IndividualSpec { name: string; stateDir: string; formsDir?: string; note?: string }
 
@@ -150,7 +151,16 @@ function renderCutover(): string {
     ['Turn expression (SUBSTRATE)', '<b class="cells-own">CELLS</b> <span class="dim">— match-only surfacing of lived facts (knife v2)</span>'],
     ['Conversation intake', '<b class="cells-own">CELLS</b> <span class="dim">— life-feed shipper → seed diet, words + meaning</span>'],
     ['Teaching channel', '<b class="cells-own">CELLS</b> <span class="dim">— corrections develop state (correction.v1), words attached</span>'],
-    ['Session bootstrap', '<span class="partial">PARTIAL</span> <span class="dim">— seed fresh-events + NOW/PLAYBOOK files</span>'],
+    ['Session grounding (lived NOW)', (() => {
+      const j = specs.find((s) => s.name.toLowerCase().includes('jerry'));
+      try {
+        if (j !== undefined && composeSeedNow(j.stateDir) !== null) {
+          return '<b class="cells-own">CELLS</b> <span class="dim">— sessions open on the lived now, composed from the chain</span>';
+        }
+      } catch { /* FILE stands */ }
+      return 'FILE <span class="dim">(seed silent — files-only bootstrap)</span>';
+    })()],
+    ['Machine snapshot (NOW.md)', 'FILE <span class="dim">— cron telemetry, file-owned by design until seed estimates reach freshness parity</span>'],
     ['Identity (SOUL)', 'FILE <span class="dim">— future cut</span>'],
     ['Facts (TOPOLOGY) / owner (PERSONAL) / rules (DOCTRINE)', 'FILE <span class="dim">— future cuts</span>'],
     ['Memory objects + triggers', 'FILE <span class="dim">(JSON stores) — future cut</span>'],
