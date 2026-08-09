@@ -38,11 +38,14 @@ export function createSeedLobeTransport(opts: SeedLobeTransportOptions): SeedLob
   return async (prompt: string) => {
     const startedMs = Date.now();
     const invokedAt = new Date().toISOString();
+    // Default cap sized to the lobe response contract (4 arrays × 8 items,
+    // claims ≤500 chars ≈ up to ~8k tokens of JSON). The old 1200 truncated
+    // real responses mid-array — 21 wasted recruitments on bobby's ledger.
     const text = await generateText({
       model: opts.model,
       provider,
       prompt,
-      maxTokens: opts.maxTokens ?? 1200,
+      maxTokens: opts.maxTokens ?? 8192,
       temperature: 0.2,
       timeoutMs: opts.timeoutMs ?? 45_000,
     });

@@ -228,6 +228,90 @@ test('ModelLobe parses a JSON-bearing response and rejects a prose-only one', as
   assert.deepEqual(parsed.stateDeltas, []);
 });
 
+test('parseLobeResponse recovers a valid prefix from token-cap truncation', () => {
+  // The live failure signature (bobby, 21 receipts): the model hits the
+  // response-token cap mid-array; the raw slice dies with "Expected ',' or ']'
+  // after array element". Recovery trims to the last complete element and the
+  // receipt carries the truncation fact — never silent completeness.
+
+  // Truncated mid-element: the complete first observation survives.
+  const midElement =
+    '{"observations":[{"cellId":"world.pi","claim":"baro stable","confidence":0.7,"evidenceRef":"r1"},{"cellId":"world.pi","claim":"temp risi';
+  const recovered = parseLobeResponse(midElement, receipt());
+  assert.equal(recovered.observations.length, 1);
+  assert.equal(recovered.observations[0]?.claim, 'baro stable');
+  assert.equal(recovered.uncertainty, 0.5, 'lost uncertainty falls back to the default');
+  assert.ok((recovered.modelReceipt.truncatedResponse?.droppedChars ?? 0) > 0, 'receipt must carry the truncation fact');
+
+  // Truncated deep inside stateDeltas: everything complete before the cut
+  // survives — including the first, complete delta.
+  const midDelta =
+    '{"observations":[{"cellId":"world.pi","claim":"a","confidence":0.6,"evidenceRef":"r1"}],'
+    + '"interpretations":[{"cellId":"world.pi","interpretation":"steady","confidence":0.6}],'
+    + '"predictions":[],'
+    + '"stateDeltas":[{"cellId":"world.pi","field":"estimates.append","delta":{"claim":"baseline 1011","confidence":0.6,"evidenceRefs":[]},"authority":"propose"},'
+    + '{"cellId":"world.pi","field":"estim';
+  const deep = parseLobeResponse(midDelta, receipt());
+  assert.equal(deep.observations.length, 1);
+  assert.equal(deep.interpretations.length, 1);
+  assert.equal(deep.predictions.length, 0);
+  assert.equal(deep.stateDeltas.length, 1);
+  assert.equal((deep.stateDeltas[0]?.delta as { claim?: string }).claim, 'baseline 1011');
+  assert.ok((deep.modelReceipt.truncatedResponse?.droppedChars ?? 0) > 0);
+
+  // Truncated right after a comma: the dangling comma is dropped with the tail.
+  const afterComma = '{"observations":[{"cellId":"world.pi","claim":"x","confidence":0.5},';
+  assert.equal(parseLobeResponse(afterComma, receipt()).observations.length, 1);
+
+  // Escaped quotes inside claims must not confuse the scanner.
+  const withEscapes =
+    '{"observations":[{"cellId":"world.pi","claim":"said \\"hi\\" loud","confidence":0.5},{"cellId":"world.pi","claim":"unfinished \\"qu';
+  const escaped = parseLobeResponse(withEscapes, receipt());
+  assert.equal(escaped.observations.length, 1);
+  assert.equal(escaped.observations[0]?.claim, 'said "hi" loud');
+
+  // No '}' anywhere (cut before any object closed) but a complete empty array
+  // exists — still recoverable.
+  const noBrace = '{"observations":[],"interpretations":[{"cellId":"world.pi","interp';
+  const empties = parseLobeResponse(noBrace, receipt());
+  assert.deepEqual(empties.observations, []);
+  assert.deepEqual(empties.interpretations, []);
+  assert.ok((empties.modelReceipt.truncatedResponse?.droppedChars ?? 0) > 0);
+});
+
+test('parseLobeResponse stays honest: complete responses carry no truncation marker, hopeless ones still throw', () => {
+  // Complete JSON — untouched, no marker.
+  const whole = parseLobeResponse(
+    '{"observations":[{"cellId":"world.pi","claim":"x","confidence":0.5,"evidenceRef":"r1"}],"uncertainty":0.4}',
+    receipt(),
+  );
+  assert.equal(whole.observations.length, 1);
+  assert.equal(whole.uncertainty, 0.4);
+  assert.equal(whole.modelReceipt.truncatedResponse, undefined, 'whole responses must not claim truncation');
+
+  // Prose-wrapped complete JSON — existing behavior preserved, no marker.
+  const wrapped = parseLobeResponse(
+    'Sure! Here you go:\n{"interpretations":[{"cellId":"world.pi","interpretation":"ok","confidence":0.6}],"uncertainty":0.4}\nHope this helps.',
+    receipt(),
+  );
+  assert.equal(wrapped.interpretations.length, 1);
+  assert.equal(wrapped.modelReceipt.truncatedResponse, undefined);
+
+  // No JSON at all — unchanged honest failure.
+  assert.throws(() => parseLobeResponse('deeply meaningful prose', receipt()), /no JSON object/);
+
+  // Truncated before ANY element completed — nothing recoverable, honest throw.
+  assert.throws(() => parseLobeResponse('{"observations":[{"cellId":"world.pi","claim":"the baro', receipt()), /truncated/);
+
+  // Balanced but invalid JSON is NOT truncation — the original parse error
+  // surfaces (a SyntaxError), never a fabricated recovery.
+  assert.throws(
+    () => parseLobeResponse('{"observations": [oops]}', receipt()),
+    (e: unknown) => e instanceof SyntaxError,
+    'non-truncation malformation must rethrow the real parse error',
+  );
+});
+
 test('single-admitted-cell attribution: missing cellId defaults to the sole admitted cell; ambiguous stays rejected', () => {
   const onePacket: WorkspacePacket = {
     activeCellIds: ['world.home23'],

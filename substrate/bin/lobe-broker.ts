@@ -6,6 +6,12 @@
  *   BROKER_MODEL        — model to recruit (default claude-haiku-4-5)
  *   BROKER_INTERVAL_MS  — poll cadence (default 15000)
  *   BROKER_MAX_PER_TICK — spend guard: requests serviced per tick (default 2)
+ *   BROKER_MAX_TOKENS   — response token cap (default: transport's 8192 —
+ *                         must fit a full typed-delta response; 1200 truncated
+ *                         mid-array and wasted ~29% of bobby's recruitments)
+ *   BROKER_GEN_TIMEOUT_MS — model generation timeout (default 90000; keep
+ *                         poll interval + this under the Seed's
+ *                         SEED_LOBE_TIMEOUT_MS or long thoughts are lost)
  *   BROKER_FORMS_REMOTE — remote forms dir to mirror locally (optional)
  *   BROKER_FORMS_DEST   — local mirror destination (required with above)
  *   BROKER_FORMS_EVERY_TICKS — mirror cadence in ticks (default 30)
@@ -45,6 +51,9 @@ if (!/^[A-Za-z0-9._@-]+$/.test(sshHost) || !/^[A-Za-z0-9._/-]+$/.test(remoteDir)
 const model = process.env['BROKER_MODEL'] ?? 'claude-haiku-4-5';
 const intervalMs = Number(process.env['BROKER_INTERVAL_MS'] ?? 15_000);
 const maxPerTick = Number(process.env['BROKER_MAX_PER_TICK'] ?? 2);
+const maxTokensEnv = Number(process.env['BROKER_MAX_TOKENS'] ?? NaN);
+const maxTokens = Number.isFinite(maxTokensEnv) && maxTokensEnv > 0 ? maxTokensEnv : undefined;
+const genTimeoutMs = Number(process.env['BROKER_GEN_TIMEOUT_MS'] ?? 90_000);
 const FILE_PATTERN = /^req_[a-z0-9]+_[0-9]+\.json$/;
 
 /** Provider keys come from secrets.yaml into THIS process's env — the same
@@ -101,9 +110,9 @@ type Transport = (prompt: string) => Promise<{
 async function buildTransport(): Promise<Transport> {
   const transportModulePath = new URL('../../src/substrate/lobe-transport.ts', import.meta.url).href;
   const mod = (await import(transportModulePath)) as {
-    createSeedLobeTransport: (opts: { model: string }) => Transport;
+    createSeedLobeTransport: (opts: { model: string; maxTokens?: number; timeoutMs?: number }) => Transport;
   };
-  return mod.createSeedLobeTransport({ model });
+  return mod.createSeedLobeTransport({ model, ...(maxTokens !== undefined ? { maxTokens } : {}), timeoutMs: genTimeoutMs });
 }
 
 async function tick(transport: Transport): Promise<void> {
