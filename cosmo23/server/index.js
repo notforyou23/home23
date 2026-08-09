@@ -1097,21 +1097,39 @@ async function getQueryEngine(brainPath) {
   return queryEngineCache.get(brainPath);
 }
 
-async function startProcessesForRun(runPath) {
-  process.env.COSMO_RUNTIME_PATH = runPath;
-  process.env.COSMO_RUNS_PATH = LOCAL_RUNS_PATH;
-  process.env.COSMO23_WS_PORT = String(WS_PORT);
-  process.env.COSMO23_MCP_HTTP_PORT = String(MCP_HTTP_PORT);
-  process.env.COSMO23_DASHBOARD_PORT = String(DASHBOARD_PORT);
-  process.env.REALTIME_PORT = String(WS_PORT);
-  process.env.MCP_HTTP_PORT = String(MCP_HTTP_PORT);
-  process.env.MCP_PORT = String(MCP_HTTP_PORT);
-  process.env.DASHBOARD_PORT = String(DASHBOARD_PORT);
-  process.env.COSMO_DASHBOARD_PORT = String(DASHBOARD_PORT);
+async function startProcessesForRun(runPath, requesterAgent, manager = processManager) {
+  if (typeof requesterAgent !== 'string'
+      || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(requesterAgent)
+      || requesterAgent === '.') {
+    throw new Error('Exact requester agent is required to launch COSMO processes');
+  }
 
-  await processManager.startMCPServer(MCP_HTTP_PORT);
-  await processManager.startMainDashboard(DASHBOARD_PORT);
-  await processManager.startCOSMO();
+  const childEnv = {
+    HOME23_ROOT,
+    HOME23_AGENT: requesterAgent,
+    COSMO_RUNTIME_PATH: runPath,
+    COSMO_RUNTIME_DIR: runPath,
+    COSMO_WORKSPACE_PATH: path.join(HOME23_ROOT, 'instances', requesterAgent, 'workspace'),
+    COSMO_CONFIG_PATH: path.join(runPath, 'config.yaml'),
+    COSMO_RUNS_PATH: LOCAL_RUNS_PATH,
+    COSMO23_WS_PORT: String(WS_PORT),
+    COSMO23_MCP_HTTP_PORT: String(MCP_HTTP_PORT),
+    COSMO23_DASHBOARD_PORT: String(DASHBOARD_PORT),
+    REALTIME_PORT: String(WS_PORT),
+    MCP_HTTP_PORT: String(MCP_HTTP_PORT),
+    MCP_PORT: String(MCP_HTTP_PORT),
+    DASHBOARD_PORT: String(DASHBOARD_PORT),
+    COSMO_DASHBOARD_PORT: String(DASHBOARD_PORT),
+  };
+
+  try {
+    await manager.startMCPServer(MCP_HTTP_PORT, childEnv);
+    await manager.startMainDashboard(DASHBOARD_PORT, childEnv);
+    await manager.startCOSMO(childEnv);
+  } catch (error) {
+    await manager.stopAll().catch(() => {});
+    throw error;
+  }
 }
 
 // HOME23 PATCH 50 — the durable research-run adapter prepares an exact owned
@@ -1119,6 +1137,10 @@ async function startProcessesForRun(runPath) {
 // this one function so operation launches and POST /api/launch cannot drift.
 async function launchPreparedResearch(brain, payload, req) {
   const request = req || { headers: {}, secure: false, hostname: 'localhost' };
+  const requesterAgent = request.requesterAgent
+    || payload.owner
+    || payload.agentName
+    || process.env.HOME23_AGENT;
   const setupConfig = await readSetupConfig();
   const launchSettings = serializeLaunchSettings(payload, setupConfig);
   processManager.clearLogs();
@@ -1148,7 +1170,7 @@ async function launchPreparedResearch(brain, payload, req) {
   await configGenerator.writeMetadata(brain.path, launchSettings, false);
   await writeRuntimeMetadata(brain.path, payload, launchSettings);
   processManager.recordLog('Launcher', 'info', `Runtime linked to ${brain.path}`);
-  await startProcessesForRun(brain.path);
+  await startProcessesForRun(brain.path, requesterAgent);
 
   activeContext = {
     runName: brain.name,
@@ -3026,5 +3048,6 @@ module.exports = {
   launchPreparedResearch,
   registerBrainOperationWorkerRoutes,
   runSentinel,
+  startProcessesForRun,
   startServer,
 };

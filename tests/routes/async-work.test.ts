@@ -8,6 +8,9 @@ import type { AddressInfo } from 'node:net';
 import { WorkStore } from '../../src/work/work-store.ts';
 import { WorkRegistry } from '../../src/work/registry.ts';
 import { createAsyncWorkRouter } from '../../src/routes/async-work.ts';
+import { createToolRegistry } from '../../src/agent/tools/index.ts';
+import type { ToolContext } from '../../src/agent/types.ts';
+import { requestAsyncWorkCancel } from '../../src/work/cancel.ts';
 
 function startApp(t: { after(fn: () => void): void }) {
   const dir = mkdtempSync(join(tmpdir(), 'work-routes-'));
@@ -77,4 +80,59 @@ test('cancel routes by kind and records intent', async (t) => {
   registry.complete(cod.workId, 'completed');
   const r3 = await fetch(`${base}/api/work/${cod.workId}/cancel`, { method: 'POST', ...AUTH });
   assert.equal(r3.status, 409); // already terminal
+});
+
+function toolContext(registry: WorkRegistry) {
+  const stopped: string[] = [];
+  const ctx = {
+    workRegistry: registry,
+    requestWorkCancel: (workId: string) => requestAsyncWorkCancel({
+      registry,
+      cancelCodingJob: async () => {},
+      stopChat: (chatId) => { stopped.push(chatId); return true; },
+    }, workId),
+  } as unknown as ToolContext;
+  return { ctx, stopped };
+}
+
+test('agent work tools list active work, inspect an exact id, and request cancel', async (t) => {
+  const { registry } = startApp(t);
+  const { ctx, stopped } = toolContext(registry);
+  const active = registry.create({
+    kind: 'subagent', originChatId: '123', label: 'active audit',
+    resultHandle: { type: 'subagent_chat', chatId: 'subagent:123:aaaa' },
+  });
+  const terminal = registry.create({
+    kind: 'coding', originChatId: '123', label: 'finished fix',
+    resultHandle: { type: 'coding_job', jobId: 'cj_done' },
+  });
+  registry.complete(terminal.workId, 'completed');
+  const tools = createToolRegistry();
+
+  const list = tools.get('work_list');
+  const status = tools.get('work_status');
+  const cancel = tools.get('work_cancel');
+  assert.ok(list, 'work_list must be registered');
+  assert.ok(status, 'work_status must be registered');
+  assert.ok(cancel, 'work_cancel must be registered');
+
+  const activeResult = await list.execute({}, ctx);
+  assert.match(activeResult.content, new RegExp(active.workId));
+  assert.doesNotMatch(activeResult.content, new RegExp(terminal.workId));
+  const allResult = await list.execute({ include_terminal: true }, ctx);
+  assert.match(allResult.content, new RegExp(terminal.workId));
+
+  const exact = await status.execute({ work_id: active.workId }, ctx);
+  assert.match(exact.content, /active audit/);
+  const missing = await status.execute({ work_id: 'aw_missing_0000' }, ctx);
+  assert.equal(missing.is_error, true);
+  assert.match(missing.content, /unknown work id/i);
+
+  const requested = await cancel.execute({ work_id: active.workId }, ctx);
+  assert.match(requested.content, /cancel.*requested/i);
+  assert.deepEqual(stopped, ['subagent:123:aaaa']);
+  assert.equal(registry.complete(active.workId, 'failed', 'operator_stop').status, 'cancelled');
+  const alreadyTerminal = await cancel.execute({ work_id: active.workId }, ctx);
+  assert.equal(alreadyTerminal.is_error, true);
+  assert.match(alreadyTerminal.content, /already terminal/i);
 });

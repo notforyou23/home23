@@ -35,6 +35,7 @@ import { TurnStore } from '../chat/turn-store.js';
 import { turnBus } from '../chat/turn-bus.js';
 import { newTurnId, type TurnEvent } from '../chat/turn-types.js';
 import { combineRequestSignals } from './abort-signals.js';
+import { inferProviderFromModel } from './model-resolution.js';
 
 const MAX_ITERATIONS = 500;
 const TYPING_INTERVAL_MS = 4000;
@@ -78,16 +79,6 @@ function getClaudeCodeSystemPrompt(): { type: 'text'; text: string; cache_contro
     text: "You are Claude Code, Anthropic's official CLI for Claude.",
     cache_control: { type: 'ephemeral' },
   };
-}
-
-function inferProviderFromModel(model: string, provider?: string): string {
-  return provider ?? (
-    model.includes('claude') ? 'anthropic' :
-    model.includes('grok') ? 'xai' :
-    model.includes('MiniMax') ? 'minimax' :
-    model.startsWith('gpt') ? 'openai' :
-    'unknown'
-  );
 }
 
 function createAnthropicRuntimeClient(apiKey: string, baseURL?: string): { client: Anthropic; isOAuth: boolean } {
@@ -293,7 +284,7 @@ function getXaiServerToolNameFromItem(item: Record<string, unknown> | undefined)
 }
 
 function isAnthropicSamplingDeprecatedModel(model: string): boolean {
-  return /^(?:[^/]+\/)?claude-opus-4-8(?:$|[-@])/.test(String(model || '').trim());
+  return /^(?:[^/]+\/)?(?:claude-opus-4-8|claude-sonnet-5)(?:$|[-@])/.test(String(model || '').trim());
 }
 
 export class AgentLoop {

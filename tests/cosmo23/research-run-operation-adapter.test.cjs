@@ -9,6 +9,7 @@ const path = require('node:path');
 const {
   createResearchRunOperationAdapter,
 } = require('../../cosmo23/server/lib/research-run-operation-adapter');
+const { ProcessManager } = require('../../cosmo23/launcher/process-manager');
 
 function hasCode(code) {
   return (error) => {
@@ -186,6 +187,71 @@ test('server index exports the prepared launcher used by the adapter', () => {
   const server = require('../../cosmo23/server/index.js');
   assert.equal(typeof server.launchPreparedResearch, 'function');
   assert.equal(server.launchPreparedResearch.length, 3);
+  assert.equal(typeof server.startProcessesForRun, 'function');
+});
+
+test('prepared process launch passes exact owner identity in per-launch child environments', async (t) => {
+  const server = require('../../cosmo23/server/index.js');
+  const calls = [];
+  const manager = {
+    startMCPServer: async (port, env) => calls.push({ name: 'mcp-http', port, env: { ...env } }),
+    startMainDashboard: async (port, env) => calls.push({ name: 'main-dashboard', port, env: { ...env } }),
+    startCOSMO: async (env) => calls.push({ name: 'cosmo-main', env: { ...env } }),
+    stopAll: async () => calls.push({ name: 'stop-all' }),
+  };
+  const priorAgent = process.env.HOME23_AGENT;
+  const priorRuntime = process.env.COSMO_RUNTIME_PATH;
+  const priorRuntimeDir = process.env.COSMO_RUNTIME_DIR;
+  const priorWorkspace = process.env.COSMO_WORKSPACE_PATH;
+  const priorConfig = process.env.COSMO_CONFIG_PATH;
+  process.env.HOME23_AGENT = 'shared-default';
+  process.env.COSMO_RUNTIME_PATH = '/shared/runtime';
+  process.env.COSMO_RUNTIME_DIR = '/shared/resident-brain';
+  process.env.COSMO_WORKSPACE_PATH = '/shared/workspace';
+  process.env.COSMO_CONFIG_PATH = '/shared/config.yaml';
+  t.after(() => {
+    if (priorAgent === undefined) delete process.env.HOME23_AGENT;
+    else process.env.HOME23_AGENT = priorAgent;
+    if (priorRuntime === undefined) delete process.env.COSMO_RUNTIME_PATH;
+    else process.env.COSMO_RUNTIME_PATH = priorRuntime;
+    if (priorRuntimeDir === undefined) delete process.env.COSMO_RUNTIME_DIR;
+    else process.env.COSMO_RUNTIME_DIR = priorRuntimeDir;
+    if (priorWorkspace === undefined) delete process.env.COSMO_WORKSPACE_PATH;
+    else process.env.COSMO_WORKSPACE_PATH = priorWorkspace;
+    if (priorConfig === undefined) delete process.env.COSMO_CONFIG_PATH;
+    else process.env.COSMO_CONFIG_PATH = priorConfig;
+  });
+
+  await server.startProcessesForRun('/owned/run', 'forrest', manager);
+
+  assert.deepEqual(calls.map((call) => call.name), ['mcp-http', 'main-dashboard', 'cosmo-main']);
+  for (const call of calls) {
+    assert.equal(call.env.HOME23_AGENT, 'forrest');
+    assert.equal(call.env.COSMO_RUNTIME_PATH, '/owned/run');
+    assert.equal(call.env.COSMO_RUNTIME_DIR, '/owned/run');
+    assert.match(call.env.COSMO_WORKSPACE_PATH, /instances\/forrest\/workspace$/);
+    assert.equal(call.env.COSMO_CONFIG_PATH, '/owned/run/config.yaml');
+    assert.equal(path.isAbsolute(call.env.HOME23_ROOT), true);
+  }
+  assert.equal(process.env.HOME23_AGENT, 'shared-default');
+  assert.equal(process.env.COSMO_RUNTIME_PATH, '/shared/runtime');
+  assert.equal(process.env.COSMO_RUNTIME_DIR, '/shared/resident-brain');
+  assert.equal(process.env.COSMO_WORKSPACE_PATH, '/shared/workspace');
+  assert.equal(process.env.COSMO_CONFIG_PATH, '/shared/config.yaml');
+});
+
+test('MCP startup rejects when the required child exits during boot', async (t) => {
+  const cosmoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'home23-cosmo-mcp-exit-'));
+  t.after(() => fs.rm(cosmoRoot, { recursive: true, force: true }));
+  await fs.mkdir(path.join(cosmoRoot, 'mcp'), { recursive: true });
+  await fs.writeFile(path.join(cosmoRoot, 'mcp', 'http-server.js'), 'process.exit(17);\n');
+  const manager = new ProcessManager(cosmoRoot, { info() {}, error() {} });
+  manager.killPort = async () => {};
+
+  await assert.rejects(
+    () => manager.startMCPServer(49271, { HOME23_AGENT: 'jerry' }),
+    /MCP HTTP.*exited.*startup/i,
+  );
 });
 
 test('create/start derives the owner run root, persists before spawn, and activates exact identity', async (t) => {
@@ -215,6 +281,7 @@ test('create/start derives the owner run root, persists before spawn, and activa
   assert.equal(prepared.payload.runName, created.runId);
   assert.equal(prepared.payload.runRoot, expectedRoot);
   assert.equal(prepared.payload.owner, 'jerry');
+  assert.equal(prepared.request.requesterAgent, 'jerry');
   assert.equal(prepared.payload.enableWebSearch, true);
   assert.equal(prepared.payload.enableCodingAgents, false);
   assert.equal(prepared.payload.enableAgentRouting, true);
@@ -267,7 +334,7 @@ test('create rejects resolver escape and symlink ancestors before run-manager mu
   assert.equal(symlinked.calls.some((call) => call.type === 'createRun'), false);
 });
 
-test('launch failures and missing cosmo-main status become durable typed failures', async (t) => {
+test('launch failures and missing required-process status become durable typed failures', async (t) => {
   const launchFailure = await makeFixture(t, {
     launchPreparedResearch: async () => {
       const record = launchFailure.records.values().next().value;
@@ -290,8 +357,8 @@ test('launch failures and missing cosmo-main status become durable typed failure
   earlyExit.statusQueue.push({
     count: 2,
     running: [
-      { name: 'mcp-http', pid: 101, killed: false },
       { name: 'main-dashboard', pid: 102, killed: false },
+      { name: 'cosmo-main', pid: 103, killed: false },
     ],
   });
   await assert.rejects(() => earlyExit.adapter.start(earlyRun.runId), hasCode('research_process_exit'));
@@ -300,15 +367,15 @@ test('launch failures and missing cosmo-main status become durable typed failure
   assert.equal(exitedRecord.error.code, 'research_process_exit');
 });
 
-test('watch durably fails the exact active run when cosmo-main exits after activation', async (t) => {
+test('watch durably fails the exact active run when a required process exits after activation', async (t) => {
   const fixture = await makeFixture(t);
   const created = await createRun(fixture);
   await fixture.adapter.start(created.runId);
   fixture.statusQueue.push({
     count: 2,
     running: [
-      { name: 'mcp-http', pid: 101, killed: false },
       { name: 'main-dashboard', pid: 102, killed: false },
+      { name: 'cosmo-main', pid: 103, killed: false },
     ],
   });
 

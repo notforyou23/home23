@@ -150,6 +150,35 @@ class ProcessManager extends EventEmitter {
     }
   }
 
+  async waitForRequiredProcess(name, proc, options = {}) {
+    const label = options.label || name;
+    const timeoutMs = options.timeoutMs ?? 1500;
+    const pollIntervalMs = options.pollIntervalMs ?? 50;
+    const stabilityMs = options.stabilityMs ?? 0;
+    const startedAt = Date.now();
+    const deadline = startedAt + timeoutMs;
+
+    while (Date.now() <= deadline) {
+      const exited = proc.exitCode != null
+        || proc.signalCode != null
+        || proc.killed === true
+        || this.processes.get(name) !== proc;
+      if (exited) {
+        throw new Error(`${label} exited during startup`);
+      }
+
+      if (options.port !== undefined) {
+        if (await this.isPortInUse(options.port)) return;
+      } else if (Date.now() - startedAt >= stabilityMs) {
+        return;
+      }
+
+      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    }
+
+    throw new Error(`${label} failed startup readiness within ${timeoutMs}ms`);
+  }
+
   /**
    * Kill process on port
    */
@@ -178,7 +207,7 @@ class ProcessManager extends EventEmitter {
   /**
    * Start MCP HTTP server
    */
-  async startMCPServer(port = 43147) {
+  async startMCPServer(port = 43147, envOverrides = {}) {
     await this.killPort(port, 'MCP HTTP');
     this.usedPorts.add(port); // Track for cleanup
     this.recordLog('Launcher', 'info', `Starting MCP HTTP on port ${port}`);
@@ -188,7 +217,8 @@ class ProcessManager extends EventEmitter {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false,
       env: {
-        ...process.env  // This includes COSMO_RUNTIME_PATH from unified server
+        ...process.env,
+        ...envOverrides
       }
     });
 
@@ -201,8 +231,10 @@ class ProcessManager extends EventEmitter {
       this.processes.delete('mcp-http');
     });
 
-    // Wait for it to start
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    await this.waitForRequiredProcess('mcp-http', proc, {
+      label: 'MCP HTTP',
+      port,
+    });
 
     return { success: true, port, pid: proc.pid };
   }
@@ -238,7 +270,7 @@ class ProcessManager extends EventEmitter {
   /**
    * Start main COSMO dashboard
    */
-  async startMainDashboard(port = 43144) {
+  async startMainDashboard(port = 43144, envOverrides = {}) {
     await this.killPort(port, 'Main Dashboard');
     this.usedPorts.add(port); // Track for cleanup
     this.recordLog('Launcher', 'info', `Starting Dashboard on port ${port}`);
@@ -248,7 +280,8 @@ class ProcessManager extends EventEmitter {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false,
       env: {
-        ...process.env,  // This includes MCP_HTTP_PORT from launcher
+        ...process.env,
+        ...envOverrides,
         COSMO_DASHBOARD_PORT: port.toString(),
         COSMO_NO_AUTO_OPEN: 'true'  // Prevent auto-opening browser tab (for Unified mode)
         // DO NOT calculate MCP port here - use what launcher already set
@@ -264,7 +297,10 @@ class ProcessManager extends EventEmitter {
       this.processes.delete('main-dashboard');
     });
 
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    await this.waitForRequiredProcess('main-dashboard', proc, {
+      label: 'Main Dashboard',
+      port,
+    });
 
     return { success: true, port, pid: proc.pid };
   }
@@ -272,7 +308,7 @@ class ProcessManager extends EventEmitter {
   /**
    * Start COSMO core (single instance)
    */
-  async startCOSMO() {
+  async startCOSMO(envOverrides = {}) {
     // CRITICAL: Pass through all port environment variables from launcher
     // The launcher has already calculated correct ports based on COSMO_PORT_OFFSET
     this.recordLog('Launcher', 'info', 'Starting COSMO engine');
@@ -281,7 +317,8 @@ class ProcessManager extends EventEmitter {
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: false,
       env: {
-        ...process.env,  // This includes DASHBOARD_PORT, MCP_PORT, MCP_HTTP_PORT from launcher
+        ...process.env,
+        ...envOverrides,
         COSMO_TUI: 'false',
         COSMO_TUI_SPLIT: 'false'
         // DO NOT override port env vars - use what launcher calculated
@@ -296,6 +333,12 @@ class ProcessManager extends EventEmitter {
       this.logger.info(`COSMO exited (code: ${code}, signal: ${signal})`);
       this.processes.delete('cosmo-main');
       this.emit('cosmo-exit', { code, signal });
+    });
+
+    await this.waitForRequiredProcess('cosmo-main', proc, {
+      label: 'COSMO',
+      stabilityMs: 250,
+      timeoutMs: 500,
     });
 
     return { success: true, pid: proc.pid };
