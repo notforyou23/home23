@@ -196,6 +196,8 @@ async function persistMemoryRevision({
   memory,
   forceFull = false,
   fullRewriteIntervalMs = 6 * 60 * 60 * 1000,
+  fullRewriteDeltaBytes = 512 * 1024 * 1024,
+  fullRewriteDeltaCount = 250_000,
   home23Root = path.resolve(__dirname, '../../..'),
   gzipLevel,
   schedule = queueMicrotask,
@@ -237,16 +239,23 @@ async function persistMemoryRevision({
   const baseWrittenAtMs = manifest?.baseWrittenAt !== undefined
     ? Date.parse(manifest.baseWrittenAt)
     : NaN;
+  // Age alone is not a sufficient bound: feeder bursts can emit millions of
+  // edge removals in well under six hours. Fold a large delta before it fills
+  // the data volume or makes every operation snapshot clone gigabytes.
+  const deltaBytes = Number(manifest?.activeDelta?.committedBytes) || 0;
+  const deltaCount = Number(manifest?.activeDelta?.count) || 0;
   const rewrite = forceFull || !manifest
     || !Number.isFinite(baseWrittenAtMs)
-    || Date.now() - baseWrittenAtMs >= fullRewriteIntervalMs;
+    || Date.now() - baseWrittenAtMs >= fullRewriteIntervalMs
+    || deltaBytes >= fullRewriteDeltaBytes
+    || deltaCount >= fullRewriteDeltaCount;
   // A manifest-backed delta/reuse save must not clone the complete resident
   // graph merely to discover that only its dirty generation is needed. At
   // Jerry scale that redundant full materialization can exhaust the engine
   // heap before appendMemoryRevision is reached. Full views remain mandatory
   // for initial/forced/periodic base rewrites; ordinary saves capture the same
   // immutable generation through the bounded changes-only surface.
-  const snapshot = !rewrite && typeof memory.capturePersistenceChangesSnapshot === 'function'
+  let snapshot = !rewrite && typeof memory.capturePersistenceChangesSnapshot === 'function'
     ? memory.capturePersistenceChangesSnapshot()
     : memory.capturePersistenceSnapshot();
   const capturedHasChanges = hasChanges(snapshot.changes);
@@ -267,6 +276,7 @@ async function persistMemoryRevision({
       }
     : null;
   let result;
+  let performedRewrite = rewrite;
   if (rewrite) {
     result = await writer.rewriteMemoryBase(brainDir, {
       nodes: snapshot.fullView.nodes,
@@ -274,25 +284,45 @@ async function persistMemoryRevision({
       summary: snapshot.summary,
     }, { lockRoot, level: gzipLevel });
   } else if (capturedHasChanges || summaryRepair) {
-    result = await writer.appendMemoryRevision(brainDir, snapshot.changes, {
-      lockRoot,
-      summary: snapshot.summary,
-      ...(summaryRepairExpected || {}),
-    });
+    try {
+      result = await writer.appendMemoryRevision(brainDir, snapshot.changes, {
+        lockRoot,
+        summary: snapshot.summary,
+        ...(summaryRepairExpected || {}),
+      });
+    } catch (error) {
+      // A busy feeder can accumulate more than the writer's bounded 512 MiB
+      // delta transaction before the next save. Retrying the same oversized
+      // generation can never work and leaves all later state volatile. Fold
+      // the resident graph into a fresh base instead; the generation CAS below
+      // keeps mutations that arrive during the rewrite dirty for the next save.
+      if (error?.code !== 'result_too_large' || error?.limitKind !== 'delta_commit') throw error;
+      snapshot = memory.capturePersistenceSnapshot();
+      performedRewrite = true;
+      logger.warn?.('Memory delta commit exceeded writer limit — rewriting full base', {
+        nodes: snapshot.summary.nodeCount,
+        edges: snapshot.summary.edgeCount,
+      });
+      result = await writer.rewriteMemoryBase(brainDir, {
+        nodes: snapshot.fullView.nodes,
+        edges: snapshot.fullView.edges,
+        summary: snapshot.summary,
+      }, { lockRoot, level: gzipLevel });
+    }
   } else {
     result = { manifest, count: 0 };
   }
-  const committed = Boolean(result?.manifest && (rewrite || result.count > 0 || summaryRepair));
-  const cleaned = committed && (rewrite || capturedHasChanges)
+  const committed = Boolean(result?.manifest && (performedRewrite || result.count > 0 || summaryRepair));
+  const cleaned = committed && (performedRewrite || capturedHasChanges)
     ? memory.markPersistenceCleanIfGeneration(snapshot.generation)
     : false;
-  if (rewrite && result?.manifest) {
+  if (performedRewrite && result?.manifest) {
     scheduleSourceRetirement({ brainDir, home23Root, lockRoot, retire, schedule, logger });
     scheduleAnnRebuild({ brainDir, home23Root, rebuildAnn, schedule, logger });
   }
   return {
     ...result,
-    mode: rewrite ? 'full' : (result.count > 0 ? 'delta' : (summaryRepair ? 'summary-repair' : 'reused')),
+    mode: performedRewrite ? 'full' : (result.count > 0 ? 'delta' : (summaryRepair ? 'summary-repair' : 'reused')),
     cleaned,
     persistedGeneration: snapshot.generation,
     persistedChanges: snapshot.changes,

@@ -63,8 +63,9 @@ import {
   createEvobrewChatHandler,
   createHealthHandler,
   createStopHandler,
-  listenBridgeApp,
+  startBridgeWithRecovery,
 } from './routes/evobrew-bridge.js';
+import { ShutdownGuard } from './shutdown-guard.js';
 import {
   createTurnStartHandler,
   createModelsHandler,
@@ -383,7 +384,14 @@ async function main(): Promise<void> {
   const startupBaseURL = resolveBaseUrl(startupProvider);
   const compactionToken = anthropicToken || (startupProvider === 'minimax' ? authToken : '');
   const compactionBaseURL = !anthropicToken && startupProvider === 'minimax' ? startupBaseURL : undefined;
-  console.log(`[home] Provider: ${startupProvider}, auth: ${authToken ? authToken.slice(0, 15) + '...' : 'MISSING'}`);
+  // openai-codex resolves its OAuth token inside the codex client, not via
+  // resolveApiKey — the banner must not print a false MISSING for it (that
+  // false MISSING misdirected the 2026-08-09 outage investigation).
+  const bannerAuth = authToken
+    || (startupProvider === 'openai-codex'
+      ? ((config.providers as Record<string, { apiKey?: string }> | undefined)?.['openai-codex']?.apiKey ?? '')
+      : '');
+  console.log(`[home] Provider: ${startupProvider}, auth: ${bannerAuth ? bannerAuth.slice(0, 15) + '...' : 'MISSING'}`);
 
   // ── Agent Loop ──
   // Create Anthropic client for shared use (agent + compaction)
@@ -1888,8 +1896,14 @@ async function main(): Promise<void> {
     }
   });
 
-  await listenBridgeApp(bridgeApp, BRIDGE_PORT);
-  console.log(`[home] Evobrew bridge listening on port ${BRIDGE_PORT} (/api/chat, /api/stop, /api/chat/turn, /api/chat/stream, /api/chat/pending, /api/chat/stop-turn, /api/chat/history, /api/chat/conversations, /api/device/register, /api/device/registry, /api/device/query-credential, /api/query-notifications/terminal, /health)`);
+  const bridge = await startBridgeWithRecovery(bridgeApp, BRIDGE_PORT, {
+    log: (message) => console.error(message),
+  });
+  if (bridge.isDegraded()) {
+    console.error(`[home] BRIDGE DEGRADED — port ${BRIDGE_PORT} is held by another process; channels and agent loop stay live, bridge binds when the port frees`);
+  } else {
+    console.log(`[home] Evobrew bridge listening on port ${BRIDGE_PORT} (/api/chat, /api/stop, /api/chat/turn, /api/chat/stream, /api/chat/pending, /api/chat/stop-turn, /api/chat/history, /api/chat/conversations, /api/device/register, /api/device/registry, /api/device/query-credential, /api/query-notifications/terminal, /health)`);
+  }
 
   // ── Startup banner ──
   console.log('');
@@ -1908,11 +1922,17 @@ async function main(): Promise<void> {
   console.log('');
 
   // ── Graceful shutdown ──
-  let shutdownInProgress = false;
+  // Watchdog must stay below the harness PM2 kill_timeout (30s) so a hung
+  // shutdown self-terminates before PM2 has to SIGKILL; a repeated signal
+  // force-exits instead of being swallowed.
+  const shutdownGuard = new ShutdownGuard({
+    watchdogMs: 15_000,
+    log: (message) => console.error(message),
+    exit: (code) => process.exit(code),
+  });
 
   const shutdown = async (signal: string): Promise<void> => {
-    if (shutdownInProgress) return;
-    shutdownInProgress = true;
+    if (!shutdownGuard.begin(signal)) return;
 
     console.log(`\n[home] Received ${signal}, shutting down...`);
 
@@ -1926,6 +1946,12 @@ async function main(): Promise<void> {
       codingBridge?.dispose();
     } catch (err) {
       console.error('[home] Error disposing coding bridge:', err);
+    }
+
+    try {
+      await bridge.stop();
+    } catch (err) {
+      console.error('[home] Error closing bridge server:', err);
     }
 
     try {

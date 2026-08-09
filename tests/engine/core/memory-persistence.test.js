@@ -424,6 +424,101 @@ test('a clean resident snapshot repairs stale manifest summary without appending
   assert.deepEqual(events, ['changes-only', 'summary-repaired']);
 });
 
+test('large committed delta triggers a full base rewrite before the age interval', async () => {
+  const events = [];
+  const fullSnapshot = Object.freeze({
+    generation: 12,
+    changes: Object.freeze({
+      nodes: Object.freeze([]), edges: Object.freeze([]),
+      removedNodeIds: Object.freeze([]), removedEdgeKeys: Object.freeze([]),
+    }),
+    fullView: Object.freeze({
+      nodes: Object.freeze([{ id: 'live', concept: 'live' }]),
+      edges: Object.freeze([]),
+    }),
+    summary: Object.freeze({ nodeCount: 1, edgeCount: 0, clusterCount: 1 }),
+  });
+  const manifest = {
+    baseWrittenAt: new Date().toISOString(),
+    activeDelta: { committedBytes: 513 * 1024 * 1024, count: 10 },
+    summary: fullSnapshot.summary,
+  };
+  const memory = {
+    capturePersistenceChangesSnapshot() { throw new Error('changes-only snapshot not expected'); },
+    capturePersistenceSnapshot() { events.push('full'); return fullSnapshot; },
+    markPersistenceCleanIfGeneration(generation) { events.push(`clean:${generation}`); return true; },
+  };
+
+  const result = await persistMemoryRevision({
+    brainDir: '/unused',
+    memory,
+    schedule: () => {},
+    writer: {
+      readManifest: async () => manifest,
+      appendMemoryRevision: async () => { throw new Error('delta append not expected'); },
+      rewriteMemoryBase: async (_brainDir, view) => {
+        events.push(`rewrite:${view.nodes.length}`);
+        return { manifest: { ...manifest, currentRevision: 13 }, count: 1 };
+      },
+    },
+  });
+
+  assert.equal(result.mode, 'full');
+  assert.deepEqual(events, ['full', 'rewrite:1', 'clean:12']);
+});
+
+test('oversized delta commit falls back to a full base rewrite', async () => {
+  const events = [];
+  const changesSnapshot = Object.freeze({
+    generation: 7,
+    changes: Object.freeze({
+      nodes: Object.freeze([{ id: 'new', concept: 'new' }]),
+      edges: Object.freeze([]),
+      removedNodeIds: Object.freeze([]),
+      removedEdgeKeys: Object.freeze([]),
+    }),
+    summary: Object.freeze({ nodeCount: 2, edgeCount: 0, clusterCount: 1 }),
+  });
+  const fullSnapshot = Object.freeze({
+    ...changesSnapshot,
+    fullView: Object.freeze({
+      nodes: Object.freeze([{ id: 'old', concept: 'old' }, { id: 'new', concept: 'new' }]),
+      edges: Object.freeze([]),
+    }),
+  });
+  const manifest = {
+    baseWrittenAt: new Date().toISOString(),
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+  };
+  const memory = {
+    capturePersistenceChangesSnapshot() { events.push('changes'); return changesSnapshot; },
+    capturePersistenceSnapshot() { events.push('full'); return fullSnapshot; },
+    markPersistenceCleanIfGeneration(generation) { events.push(`clean:${generation}`); return true; },
+  };
+
+  const result = await persistMemoryRevision({
+    brainDir: '/unused',
+    memory,
+    schedule: () => {},
+    writer: {
+      readManifest: async () => manifest,
+      appendMemoryRevision: async () => {
+        throw Object.assign(new Error('memory source delta_commit limit exceeded'), {
+          code: 'result_too_large', limitKind: 'delta_commit',
+        });
+      },
+      rewriteMemoryBase: async (_brainDir, view) => {
+        events.push(`rewrite:${view.nodes.length}`);
+        return { manifest: { ...manifest, summary: view.summary }, count: view.nodes.length };
+      },
+    },
+  });
+
+  assert.equal(result.mode, 'full');
+  assert.equal(result.cleaned, true);
+  assert.deepEqual(events, ['changes', 'full', 'rewrite:2', 'clean:7']);
+});
+
 test('summary-only repair refuses to rewrite unrelated edge or cluster authority', async () => {
   let appendCalls = 0;
   const manifest = {

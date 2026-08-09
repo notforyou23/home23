@@ -2932,6 +2932,7 @@ class DashboardServer {
       const cosmoPort = parseInt(process.env.COSMO23_PORT || '43210', 10);
       const cosmoBase = `http://localhost:${cosmoPort}`;
       const secretsPath = path.join(home23RootForPoll, 'config', 'secrets.yaml');
+      const { readCurrentSecretToken, mayDeferRestart } = require('./oauth-token-expiry.js');
 
       const pollInterval = 30 * 60 * 1000; // 30 min
       setInterval(async () => {
@@ -2945,9 +2946,11 @@ class DashboardServer {
               researchActive = !!data.running;
             }
           } catch { /* cosmo unreachable — skip silently */ }
-          if (researchActive) {
-            return;
-          }
+          // researchActive no longer skips the tick. The raw-token fetch below
+          // is what triggers cosmo23's lazy re-mint, and the secrets sync is
+          // harmless during a run — skipping BOTH is how the codex token
+          // expired at 2026-08-09T00:26Z and both engines ran auth-dead for
+          // 8+ hours. Only the process RESTART is deferrable now.
 
           for (const provider of ['anthropic', 'openai-codex']) {
             try {
@@ -2960,6 +2963,7 @@ class DashboardServer {
               if (!newToken) continue;
 
               if (!fsSync.existsSync(secretsPath)) continue;
+              const priorToken = readCurrentSecretToken(secretsPath, provider);
               const tokenUpdate = await updateDashboardOAuthTokenSecrets(
                 home23RootForPoll,
                 provider,
@@ -2974,6 +2978,15 @@ class DashboardServer {
                   generateEcosystem('.');
                 "`, { cwd: home23RootForPoll, stdio: 'pipe', timeout: 10_000 });
               } catch { /* fallback: restart anyway, ecosystem regen is optional */ }
+
+              // Restart is the deferrable half: during an active research run
+              // we hold off ONLY while the token the fleet booted with is
+              // still comfortably valid. Expired/near-expiry prior token →
+              // restart now; a dead fleet is strictly worse than a bumped run.
+              if (researchActive && mayDeferRestart(priorToken, Date.now())) {
+                console.log(`[OAuth refresh] ${provider} token rotated + synced; restart deferred (research run active, prior token still valid)`);
+                continue;
+              }
 
               // Shared provider secrets affect every running Home23 agent/harness,
               // not just the home primary. Restart only the processes that are
@@ -3006,13 +3019,15 @@ class DashboardServer {
                       stdio: 'pipe',
                       timeout: 45_000,
                     });
-                  } catch {
-                    execFileSync('pm2', ['start', ecosystemPath, '--only', targets.join(','), '--update-env', '--silent'], {
-                      cwd: home23RootForPoll,
-                      env: cleanPm2Env(),
-                      stdio: 'pipe',
-                      timeout: 45_000,
-                    });
+                  } catch (restartErr) {
+                    // Do NOT fall back to `pm2 start` here. Targets are
+                    // filtered to online (registered) apps above, so a failed
+                    // restart is a slow/timed-out one — the PM2 daemon keeps
+                    // executing it server-side after this client gives up. A
+                    // racing `pm2 start` against that in-flight restart is
+                    // what orphaned forrest-harness on its bridge port on
+                    // 2026-08-07 (untracked live copy + EADDRINUSE crash loop).
+                    console.warn(`[OAuth refresh] pm2 restart did not confirm within timeout for ${targets.join(', ')}: ${restartErr.message} — letting the PM2 daemon finish server-side`);
                   }
                   console.log(`[OAuth refresh] rotated ${provider} token, restarted ${targets.join(', ')}`);
                 }

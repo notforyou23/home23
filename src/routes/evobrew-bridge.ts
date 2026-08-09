@@ -9,6 +9,7 @@
  * alongside the user message so the agent knows the user's workspace state.
  */
 
+import { execFile } from 'node:child_process';
 import type { Server } from 'node:http';
 import type { Express, Request, Response } from 'express';
 import type { AgentLoop } from '../agent/loop.js';
@@ -38,6 +39,146 @@ export async function listenBridgeApp(app: Express, port: number): Promise<Serve
     server.once('listening', onListening);
     server.once('error', onError);
   });
+}
+
+export interface BridgeRecoveryOptions {
+  /** Listen attempts before entering degraded mode (default 4). */
+  quickAttempts?: number;
+  /** Base delay between quick attempts; doubles each retry (default 1000ms). */
+  quickDelayMs?: number;
+  /** Retry cadence while degraded (default 30s). */
+  backgroundRetryMs?: number;
+  log?: (message: string) => void;
+  diagnose?: (port: number) => Promise<string>;
+}
+
+export interface BridgeHandle {
+  getServer(): Server | null;
+  isDegraded(): boolean;
+  stop(): Promise<void>;
+}
+
+/** Best-effort: name the pid/command currently holding the port. */
+async function diagnosePortHolder(port: number): Promise<string> {
+  return await new Promise((resolve) => {
+    execFile('lsof', ['-nP', `-tiTCP:${port}`, '-sTCP:LISTEN'], { timeout: 2000 }, (err, stdout) => {
+      const pid = String(stdout || '').trim().split('\n')[0];
+      if (err || !pid) {
+        resolve('holder unknown (lsof empty or unavailable)');
+        return;
+      }
+      execFile('ps', ['-o', 'pid=,ppid=,lstart=,command=', '-p', pid], { timeout: 2000 }, (psErr, psOut) => {
+        resolve(psErr ? `holder pid ${pid}` : `holder ${String(psOut).trim()}`);
+      });
+    });
+  });
+}
+
+/**
+ * Bind the bridge port with recovery instead of crashing on EADDRINUSE.
+ *
+ * The 2026-08-07/08 forrest incident: an orphaned predecessor held the bridge
+ * port, the replacement threw bridge_port_in_use, PM2 auto-restarted it at
+ * ~1.3s per cycle for 13 hours (35,948 restarts), and Telegram rate-limited
+ * the bot from the per-boot command registration. Port contention must not
+ * kill the whole harness: the channels and agent loop keep working without
+ * the bridge, so we retry briefly, then run degraded — loudly, with the
+ * holder identified — and rebind the moment the port frees.
+ */
+export async function startBridgeWithRecovery(
+  app: Express,
+  port: number,
+  options: BridgeRecoveryOptions = {},
+): Promise<BridgeHandle> {
+  const quickAttempts = Math.max(1, options.quickAttempts ?? 4);
+  const quickDelayMs = options.quickDelayMs ?? 1000;
+  const backgroundRetryMs = options.backgroundRetryMs ?? 30_000;
+  const log = options.log ?? ((message: string) => console.error(message));
+  const diagnose = options.diagnose ?? diagnosePortHolder;
+
+  let server: Server | null = null;
+  let degraded = false;
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let attempt = 0;
+
+  const closeServer = async (target: Server): Promise<void> => {
+    await new Promise<void>((resolve) => {
+      try {
+        (target as Server & { closeAllConnections?: () => void }).closeAllConnections?.();
+      } catch { /* best-effort */ }
+      target.close(() => resolve());
+    });
+  };
+
+  const tryListen = async (): Promise<boolean> => {
+    attempt += 1;
+    let bound: Server;
+    try {
+      bound = await listenBridgeApp(app, port);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'bridge_port_in_use') throw err;
+      let holder = '';
+      try {
+        holder = await diagnose(port);
+      } catch {
+        holder = 'holder diagnosis failed';
+      }
+      log(`[bridge] port ${port} in use (attempt ${attempt}) — ${holder}`);
+      return false;
+    }
+    if (stopped) {
+      await closeServer(bound);
+      return false;
+    }
+    server = bound;
+    if (degraded) {
+      degraded = false;
+      log(`[bridge] RECOVERED — port ${port} bound on attempt ${attempt}; bridge is live again`);
+    }
+    return true;
+  };
+
+  const scheduleBackgroundRetry = (): void => {
+    if (stopped) return;
+    timer = setTimeout(async () => {
+      timer = null;
+      try {
+        if (await tryListen()) return;
+      } catch (err) {
+        log(`[bridge] unexpected listen error while degraded: ${(err as Error)?.message}`);
+      }
+      scheduleBackgroundRetry();
+    }, backgroundRetryMs);
+    timer.unref?.();
+  };
+
+  const handle: BridgeHandle = {
+    getServer: () => server,
+    isDegraded: () => degraded,
+    stop: async () => {
+      stopped = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      const current = server;
+      server = null;
+      if (current) await closeServer(current);
+    },
+  };
+
+  for (let i = 0; i < quickAttempts; i += 1) {
+    if (await tryListen()) return handle;
+    if (i < quickAttempts - 1) {
+      await new Promise((resolve) => setTimeout(resolve, quickDelayMs * 2 ** i));
+    }
+  }
+
+  degraded = true;
+  log(`[bridge] DEGRADED — port ${port} still held after ${quickAttempts} attempts; harness continues without the bridge, retrying every ${Math.round(backgroundRetryMs / 1000)}s`);
+  scheduleBackgroundRetry();
+  return handle;
 }
 
 function writeSse(res: Response, data: Record<string, unknown>): void {
