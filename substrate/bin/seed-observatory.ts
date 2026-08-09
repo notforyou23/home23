@@ -21,6 +21,7 @@ import { join, resolve } from 'node:path';
 import { composeLivedRecent } from '../../src/substrate/lived-recent.js';
 import { composeSeedNow } from '../../src/substrate/seed-now.js';
 import { composeLivedFacts } from '../../src/substrate/lived-facts.js';
+import { composeLivedIdentity } from '../../src/substrate/lived-identity.js';
 import { createRequire } from 'node:module';
 const engineRequire = createRequire(import.meta.url);
 const { composeLivedState } = engineRequire('../../engine/src/substrate/seed-lived-state.js') as { composeLivedState: (dir: string) => string | null };
@@ -179,7 +180,16 @@ function renderCutover(): string {
       return 'FILE <span class="dim">(seed silent — files-only bootstrap)</span>';
     })()],
     ['Machine snapshot (NOW.md)', 'FILE <span class="dim">— cron telemetry, file-owned by design until seed estimates reach freshness parity</span>'],
-    ['Identity (SOUL)', 'FILE <span class="dim">— future cut</span>'],
+    ['Identity — constitution (SOUL)', 'FILE <span class="dim">by design — authored, jtr\'s voice; a constitution should be a document</span>'],
+    ['Identity — biography (who he has become)', (() => {
+      const j = specs.find((s) => s.name.toLowerCase().includes('jerry'));
+      try {
+        if (j !== undefined && composeLivedIdentity(j.stateDir) !== null) {
+          return '<b class="cells-own">CELLS</b> <span class="dim">— composed from the chain in his own first person; cannot be edited, only lived further</span>';
+        }
+      } catch { /* FILE stands */ }
+      return 'FILE <span class="dim">(no chain to compose from)</span>';
+    })()],
     ['Facts (lived conclusions)', (() => {
       const j = specs.find((s) => s.name.toLowerCase().includes('jerry'));
       try {
@@ -193,7 +203,22 @@ function renderCutover(): string {
       } catch { /* FILE stands */ }
       return 'FILE <span class="dim">(no beliefs have earned fact-grade yet)</span>';
     })()],
-    ['Facts (infrastructure: TOPOLOGY) / owner (PERSONAL) / rules (DOCTRINE)', 'FILE <span class="dim">— TOPOLOGY until estimate parity; PERSONAL/DOCTRINE are jtr\'s voice, cut last</span>'],
+    ['Facts (infrastructure: TOPOLOGY)', (() => {
+      // Auto-flipping parity probe: the row goes green the day his
+      // fact-grade conclusions carry infrastructure (ports, services,
+      // URLs) — earned, never declared.
+      const j = specs.find((s) => s.name.toLowerCase().includes('jerry'));
+      try {
+        if (j !== undefined) {
+          const facts = composeLivedFacts(j.stateDir);
+          const infra = facts === null ? 0 : facts.split('\n').filter((l) => l.startsWith('- ') && /port|:\d{4}|http|url|endpoint|service|localhost|dashboard/i.test(l)).length;
+          if (infra >= 3) return `<b class="cells-own">CELLS</b> <span class="dim">— ${infra} infrastructure facts earned fact-grade (parity reached)</span>`;
+          return `FILE <span class="dim">— parity ${infra}/3: auto-flips when his conclusions carry infrastructure at fact-grade</span>`;
+        }
+      } catch { /* FILE stands */ }
+      return 'FILE <span class="dim">— until estimate parity</span>';
+    })()],
+    ['Owner (PERSONAL) / rules (DOCTRINE)', 'FILE <span class="dim">by design — jtr\'s voice; cut last or never</span>'],
     ['Attention triggers', '<b class="cells-own">CELLS</b> <span class="dim">— gates fire on meaning through the retina (calibrated floor); substring only as degraded fallback</span>'],
     ['Engine cognition grounding', (() => {
       const j = specs.find((s) => s.name.toLowerCase().includes('jerry'));

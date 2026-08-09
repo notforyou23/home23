@@ -11,6 +11,7 @@ import { hostname } from 'node:os';
 import type { ContextManagerRef, PromptSourceInfo } from './types.js';
 import type { IdentityLayerConfig } from '../types.js';
 import { buildSystemPrompt } from '../agents/system-prompt.js';
+import { composeLivedIdentity } from '../substrate/lived-identity.js';
 import {
   budgetIdentityContent,
   classifyIdentityLayer,
@@ -123,6 +124,21 @@ export class ContextManager implements ContextManagerRef {
       layerBlocks.push(`[${IDENTITY_LAYER_LABEL[idLayer]}]\n\n${files}`);
       totalSections += inLayer.length;
     }
+
+    // Home23 v2 cut 7: identity = constitution + biography. SOUL (authored,
+    // jtr's voice) stays the enduring-self layer; the LIVED half — who the
+    // individual has become, composed from his chain — joins right behind
+    // it. Seed dir derived from the workspace sibling; degraded-honest:
+    // no seed → constitution-only, exactly as before.
+    try {
+      const seedDir = resolve(this.config.workspacePath, '..', 'substrate', 'seed-01');
+      const biography = composeLivedIdentity(seedDir);
+      if (biography) {
+        layerBlocks.splice(Math.min(1, layerBlocks.length), 0, `[WHO I HAVE BECOME — biography, composed from my chain]\n\n${biography}`);
+        totalSections += 1;
+      }
+    } catch { /* identity never blocks on the biography */ }
+
     const identity = layerBlocks.join('\n\n---\n\n');
 
     const contextBlock = [
