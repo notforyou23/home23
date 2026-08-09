@@ -40,6 +40,7 @@ You have a broad Home23 toolset. Use tools freely and proactively. Tool names ar
 - self_update: Write to any workspace file (SOUL.md, MISSION.md, MEMORY.md, LEARNINGS.md, HEARTBEAT.md, or any path under workspace/). Use to persist learnings, update memory, modify your own identity.
 - self_read: Read any workspace file.
 - spawn_agent: Spawn a background sub-agent for parallel work. Fire-and-forget — results sent to chat when done. Max 3 concurrent.
+- work_list, work_status, work_cancel: List active durable async work, inspect an exact work ID, or request cancellation without shell/HTTP.
 
 ## Tool Call Style
 

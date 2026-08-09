@@ -18,6 +18,7 @@ import { generateImageTool, generateMusicTool, ttsTool } from './media.js';
 import { cronScheduleTool, cronListTool, cronRunTool, cronDeleteTool, cronEnableTool, cronDisableTool, cronUpdateTool } from './cron.js';
 import { selfUpdateTool, selfReadTool } from './identity.js';
 import { spawnAgentTool } from './subagent.js';
+import { workCancelTool, workListTool, workStatusTool } from './work.js';
 import { promoteToMemoryTool } from './promote.js';
 import { relationshipTools } from './relationship.js';
 import { workerListTool, workerRunTool, workerStatusTool, workerReceiptTool, workerPromoteMemoryTool } from './workers.js';
@@ -235,6 +236,9 @@ export function createToolRegistry(opts: { web?: WebToolsConfig } = {}): ToolReg
   registry.register(skillsAuditTool);
   registry.register(skillsRunTool);
   registry.register(spawnAgentTool);
+  registry.register(workListTool);
+  registry.register(workStatusTool);
+  registry.register(workCancelTool);
   // COSMO 2.3 research toolkit — 11 tools (see docs/design/STEP16)
   registry.register(listBrainsTool);
   registry.register(listResearchRunsTool);

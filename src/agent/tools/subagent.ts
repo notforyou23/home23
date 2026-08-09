@@ -14,6 +14,7 @@
 
 import { randomBytes } from 'node:crypto';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
+import { resolveModelOverride } from '../model-resolution.js';
 
 export const spawnAgentTool: ToolDefinition = {
   name: 'spawn_agent',
@@ -34,6 +35,14 @@ export const spawnAgentTool: ToolDefinition = {
     const label = typeof input.label === 'string' && input.label ? input.label.slice(0, 100) : undefined;
     const isolated = input.isolated !== false;
     const model = typeof input.model === 'string' && input.model ? input.model : undefined;
+    const modelOverride = model ? resolveModelOverride(model, ctx.modelAliases) : undefined;
+
+    if (model && !modelOverride) {
+      return {
+        content: `Unable to resolve sub-agent model override "${model}". Use a configured model alias or a supported raw model name.`,
+        is_error: true,
+      };
+    }
 
     if (!ctx.runAgentLoop) {
       return { content: 'Sub-agent spawning not available (agent loop runner not configured).', is_error: true };
@@ -68,7 +77,7 @@ export const spawnAgentTool: ToolDefinition = {
 
         const result = await ctx.runAgentLoop!(
           systemPrompt, task, [], subCtx,
-          model ? { modelOverride: { model } } : undefined,
+          modelOverride ? { modelOverride } : undefined,
         );
 
         const text = `[Sub-agent complete] ${headline}\n\n${result.text}`;

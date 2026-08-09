@@ -44,6 +44,7 @@ import { ACPBridge, normalizeBridgeConfig } from './acp/bridge.js';
 import type { CodingJobRecord, CodingJobReceipt } from './acp/types.js';
 import { WorkStore } from './work/work-store.js';
 import { WorkRegistry } from './work/registry.js';
+import { requestAsyncWorkCancel } from './work/cancel.js';
 import { handleWorkCompletion, type CompletionDeps } from './work/completion.js';
 import type { ReceiptSinks } from './work/receipt-delivery.js';
 import type { AsyncWorkRecord } from './work/types.js';
@@ -353,6 +354,7 @@ async function main(): Promise<void> {
     tempDir,
     contextManager,
     subAgentTracker,
+    modelAliases: MODEL_ALIASES,
     chatId: '',
     telegramAdapter: null,   // wired after adapter creation
     runAgentLoop: null,       // wired after agent creation
@@ -1039,6 +1041,14 @@ async function main(): Promise<void> {
       console.warn(`[coding] bridge recovery failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+
+  toolContext.requestWorkCancel = (workId) => requestAsyncWorkCancel({
+    registry: workRegistry,
+    cancelCodingJob: async (jobId) => {
+      if (codingBridge) await codingBridge.cancelJob(jobId);
+    },
+    stopChat: (chatId) => agent.stop(chatId).stopped,
+  }, workId);
 
   // ── Async-work boot reconciliation (Step 31) ──
   // Runs even when the coding bridge is disabled so lost sub-agents are still
