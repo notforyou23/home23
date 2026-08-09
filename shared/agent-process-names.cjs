@@ -30,6 +30,29 @@ function loadAgentInstanceConfig(home23Root, agentName) {
   }
 }
 
+function hasInstanceConfig(home23Root, agentName) {
+  if (!home23Root || !agentName) return false;
+  try {
+    return fs.existsSync(path.join(home23Root, 'instances', agentName, 'config.yaml'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Agent names may legally end in a role suffix (`alice-seed` passes every
+ * creation validator), so `home23-alice-seed` is ambiguous: alice's seed
+ * runner or the agent alice-seed's engine. When the sibling agent exists,
+ * the name belongs to the sibling's engine — alice's lifecycle must not
+ * touch it. Returns the suffixes of `agentName` whose candidate name is
+ * actually a sibling agent's engine process.
+ */
+function siblingCollisionSuffixes(home23Root, agentName) {
+  return AGENT_PROCESS_SUFFIXES.filter(
+    (suffix) => suffix !== '' && hasInstanceConfig(home23Root, `${agentName}${suffix}`),
+  );
+}
+
 /**
  * The process names the ecosystem generator emits for this agent, derived
  * from the same config conditions the generator uses. Pass `config` to skip
@@ -39,21 +62,29 @@ function agentProcessNames({ home23Root, agentName, config } = {}) {
   const cfg = config !== undefined
     ? (config || {})
     : loadAgentInstanceConfig(home23Root, agentName);
+  const collisions = home23Root ? siblingCollisionSuffixes(home23Root, agentName) : [];
   const base = `home23-${agentName}`;
-  const names = [base, `${base}-dash`];
-  if (cfg.mcp?.enabled !== false) names.push(`${base}-mcp`);
-  names.push(`${base}-harness`);
-  if (cfg.substrate?.enabled === true) names.push(`${base}-seed`);
+  const names = [base];
+  if (!collisions.includes('-dash')) names.push(`${base}-dash`);
+  if (cfg.mcp?.enabled !== false && !collisions.includes('-mcp')) names.push(`${base}-mcp`);
+  if (!collisions.includes('-harness')) names.push(`${base}-harness`);
+  if (cfg.substrate?.enabled === true && !collisions.includes('-seed')) names.push(`${base}-seed`);
   return names;
 }
 
 /**
  * Every process name that could ever belong to this agent, regardless of
  * current config. Teardown paths (stop, delete) use this so a process from a
- * previous config state is still stopped/removed instead of stranded.
+ * previous config state is still stopped/removed instead of stranded. Pass
+ * home23Root so names that are really a sibling agent's engine (see
+ * siblingCollisionSuffixes) are excluded — stopping or deleting one agent
+ * must never reach into another.
  */
-function agentProcessNameCandidates(agentName) {
-  return AGENT_PROCESS_SUFFIXES.map((suffix) => `home23-${agentName}${suffix}`);
+function agentProcessNameCandidates(agentName, home23Root) {
+  const collisions = home23Root ? siblingCollisionSuffixes(home23Root, agentName) : [];
+  return AGENT_PROCESS_SUFFIXES
+    .filter((suffix) => !collisions.includes(suffix))
+    .map((suffix) => `home23-${agentName}${suffix}`);
 }
 
 /**
@@ -78,5 +109,7 @@ module.exports = {
   agentProcessNames,
   agentProcessNameCandidates,
   filterNamesByEcosystem,
+  hasInstanceConfig,
   loadAgentInstanceConfig,
+  siblingCollisionSuffixes,
 };

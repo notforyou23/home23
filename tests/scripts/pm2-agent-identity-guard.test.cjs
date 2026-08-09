@@ -2,6 +2,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = require('node:fs');
+const { join } = require('node:path');
+const { tmpdir } = require('node:os');
 
 const {
   assertPm2AgentIdentity,
@@ -57,6 +60,51 @@ test('refuses a seed runner row carrying another agent env', () => {
     }),
     /refusing startup for home23-jerry-seed.*HOME23_AGENT=forrest expected jerry/
   );
+});
+
+test('accepts the engine of an agent whose name ends in a role suffix', () => {
+  const root = mkdtempSync(join(tmpdir(), 'home23-guard-'));
+  try {
+    mkdirSync(join(root, 'instances', 'alice-seed'), { recursive: true });
+    writeFileSync(
+      join(root, 'instances', 'alice-seed', 'config.yaml'),
+      'ports:\n  engine: 5021\n  dashboard: 5022\n  mcp: 5023\n',
+    );
+
+    // home23-alice-seed here is agent alice-seed's ENGINE, not a seed runner
+    // of agent alice — its own env must pass the guard.
+    const result = validatePm2AgentIdentity({
+      root,
+      pid: 777,
+      pm2List: [{ name: 'home23-alice-seed', pid: 777 }],
+      env: {
+        HOME23_AGENT: 'alice-seed',
+        INSTANCE_ID: 'home23-alice-seed',
+        DASHBOARD_PORT: '5022',
+        COSMO_DASHBOARD_PORT: '5022',
+        REALTIME_PORT: '5021',
+        MCP_HTTP_PORT: '5023',
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.expectedAgent, 'alice-seed');
+
+    // Env matching neither reading is still refused.
+    const wrong = validatePm2AgentIdentity({
+      root,
+      pid: 777,
+      pm2List: [{ name: 'home23-alice-seed', pid: 777 }],
+      env: {
+        HOME23_AGENT: 'forrest',
+        INSTANCE_ID: 'home23-forrest',
+      },
+    });
+    assert.equal(wrong.ok, false);
+    assert.equal(wrong.expectedAgent, 'alice-seed');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('refuses to start when a Jerry PM2 row carries Forrest env', () => {

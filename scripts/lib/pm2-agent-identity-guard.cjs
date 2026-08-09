@@ -92,28 +92,66 @@ function buildExpectedEnv(root, agent, suffix = '') {
   return expected;
 }
 
+function hasInstanceConfig(root, agent) {
+  try {
+    return fs.existsSync(path.join(root, 'instances', agent, 'config.yaml'));
+  } catch {
+    return false;
+  }
+}
+
+function collectEnvMismatches(env, expected) {
+  const mismatches = [];
+  for (const [key, value] of Object.entries(expected)) {
+    const actual = env[key] === undefined ? '' : String(env[key]);
+    if (actual !== value) mismatches.push({ key, expected: value, actual });
+  }
+  return mismatches;
+}
+
 function validatePm2AgentIdentity({ root, env = process.env, pid = process.pid, pm2List } = {}) {
   const home23Root = root || path.resolve(__dirname, '..', '..');
   const list = pm2List || readPm2List();
   const proc = findPm2ProcessForPid(list, pid);
   if (!proc) return { ok: true, skipped: true, reason: 'pm2_process_not_found' };
 
-  const { agent: expectedAgent, suffix } = parsePm2ProcessName(proc.name);
-  if (!expectedAgent) return { ok: true, skipped: true, reason: 'non_agent_pm2_process', pm2Name: proc.name };
+  const parsed = parsePm2ProcessName(proc.name);
+  if (!parsed.agent) return { ok: true, skipped: true, reason: 'non_agent_pm2_process', pm2Name: proc.name };
 
-  const expected = buildExpectedEnv(home23Root, expectedAgent, suffix);
-  const mismatches = [];
-  for (const [key, value] of Object.entries(expected)) {
-    const actual = env[key] === undefined ? '' : String(env[key]);
-    if (actual !== value) mismatches.push({ key, expected: value, actual });
+  // Agent names may legally end in a role suffix (every creation validator
+  // accepts "alice-seed"), so home23-alice-seed is ambiguous: alice's seed
+  // runner or agent alice-seed's engine. Accept the process when its env
+  // matches either reading; check the reading whose instance config exists
+  // first so refusals report against the agent that is actually installed.
+  const interpretations = [parsed];
+  if (parsed.suffix) {
+    interpretations.push({ agent: `${parsed.agent}-${parsed.suffix}`, suffix: '' });
+  }
+  interpretations.sort(
+    (a, b) => Number(hasInstanceConfig(home23Root, b.agent)) - Number(hasInstanceConfig(home23Root, a.agent)),
+  );
+
+  let firstFailure = null;
+  for (const candidate of interpretations) {
+    const expected = buildExpectedEnv(home23Root, candidate.agent, candidate.suffix);
+    const mismatches = collectEnvMismatches(env, expected);
+    if (mismatches.length === 0) {
+      return {
+        ok: true,
+        skipped: false,
+        pm2Name: proc.name,
+        expectedAgent: candidate.agent,
+        mismatches: [],
+      };
+    }
+    if (!firstFailure) firstFailure = { expectedAgent: candidate.agent, mismatches };
   }
 
   return {
-    ok: mismatches.length === 0,
+    ok: false,
     skipped: false,
     pm2Name: proc.name,
-    expectedAgent,
-    mismatches,
+    ...firstFailure,
   };
 }
 

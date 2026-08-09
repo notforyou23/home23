@@ -344,20 +344,30 @@ function createSettingsRouter(home23Root, options = {}) {
     saveYaml(configPath, homeConfig);
   }
 
-  function listOnlinePm2ProcessNames() {
+  function readPm2Jlist() {
     const { execFileSync } = require('child_process');
     const { parsePm2JlistOutput } = require(path.join(home23Root, 'scripts', 'home23-pm2-watchdog.cjs'));
-    const jlist = parsePm2JlistOutput(execFileSync('pm2', ['jlist'], {
+    return parsePm2JlistOutput(execFileSync('pm2', ['jlist'], {
       encoding: 'utf8',
       env: cleanPm2Env(),
       stdio: 'pipe',
       timeout: 10000,
     }));
+  }
+
+  function listOnlinePm2ProcessNames() {
     return new Set(
-      jlist
+      readPm2Jlist()
         .filter(proc => proc.pm2_env?.status === 'online' && Number(proc.pid))
         .map(proc => proc.name)
     );
+  }
+
+  // Any registered process regardless of status — a stop must reach a
+  // process sitting in errored/launching/restart-delay states too, or a
+  // crash-looping seed comes back online right after the "stopped" reply.
+  function listRegisteredPm2ProcessNames() {
+    return new Set(readPm2Jlist().map(proc => proc.name));
   }
 
   function restartOnlineEcosystemProcesses(targets) {
@@ -1501,8 +1511,9 @@ function createSettingsRouter(home23Root, options = {}) {
       const { execSync } = require('child_process');
       // Full candidate set, not the triplet: leaving a substrate agent's
       // -seed process registered after its instance dir is removed turns it
-      // into a permanent PM2 crash loop.
-      const names = agentProcessNameCandidates(agentName);
+      // into a permanent PM2 crash loop. home23Root lets the helper drop
+      // names that are really a sibling agent's engine.
+      const names = agentProcessNameCandidates(agentName, home23Root);
       for (const n of names) {
         try { execSync(`pm2 stop ${n}`, { env: cleanPm2Env(), stdio: 'pipe' }); } catch { /* not running */ }
         try { execSync(`pm2 delete ${n}`, { env: cleanPm2Env(), stdio: 'pipe' }); } catch { /* not in list */ }
@@ -1588,13 +1599,13 @@ function createSettingsRouter(home23Root, options = {}) {
       // "stop". Candidates must be narrowed to registered processes first:
       // pm2's multi-name stop aborts at the first unknown name, which would
       // strand every process listed after it.
-      const candidates = agentProcessNameCandidates(agentName);
-      let online = null;
+      const candidates = agentProcessNameCandidates(agentName, home23Root);
+      let registered = null;
       try {
-        online = listOnlinePm2ProcessNames();
+        registered = listRegisteredPm2ProcessNames();
       } catch { /* pm2 registry unavailable — fall back to per-name stops */ }
-      if (online) {
-        const names = candidates.filter(name => online.has(name));
+      if (registered) {
+        const names = candidates.filter(name => registered.has(name));
         if (names.length > 0) {
           try {
             execSync(`pm2 stop ${names.join(' ')}`, { env: cleanPm2Env(), stdio: 'pipe', timeout: 15000 });

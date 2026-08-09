@@ -17,7 +17,6 @@ import {
 
 const require = createRequire(import.meta.url);
 const {
-  AGENT_PROCESS_SUFFIXES,
   agentProcessNames,
   agentProcessNameCandidates,
   filterNamesByEcosystem,
@@ -162,8 +161,9 @@ export async function runStop(home23Root, agentName) {
   if (agentName) {
     // Stop every process that could belong to the agent, not just what the
     // current config declares — a -seed/-mcp process from an earlier config
-    // state must not be left running behind a "stopped" report.
-    const names = agentProcessNameCandidates(agentName);
+    // state must not be left running behind a "stopped" report. home23Root
+    // lets the helper drop names that are really a sibling agent's engine.
+    const names = agentProcessNameCandidates(agentName, home23Root);
     console.log(`Stopping ${agentName}...`);
     for (const name of names) {
       try {
@@ -231,13 +231,20 @@ export async function runStatus() {
   }
 }
 
-export async function runLogs(agentName) {
+export async function runLogs(home23Root, agentName) {
   if (agentName) {
     // Tail logs for all of the agent's processes. A bare `home23-<name>`
     // matches only the engine; the anchored regex covers -dash/-mcp/
     // -harness/-seed without also catching agents that share the prefix.
-    const suffixAlternation = AGENT_PROCESS_SUFFIXES.filter(Boolean).join('|');
-    const pattern = `/^home23-${agentName}(${suffixAlternation})?$/`;
+    // Suffix names owned by a sibling agent (e.g. agent alice-seed's
+    // engine) are excluded from alice's alternation.
+    const suffixAlternation = agentProcessNameCandidates(agentName, home23Root)
+      .map((name) => name.slice(`home23-${agentName}`.length))
+      .filter(Boolean)
+      .join('|');
+    const pattern = suffixAlternation
+      ? `/^home23-${agentName}(${suffixAlternation})?$/`
+      : `/^home23-${agentName}$/`;
     const proc = spawn('pm2', ['logs', '--lines', '30', pattern], {
       stdio: 'inherit',
     });
