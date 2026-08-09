@@ -178,7 +178,7 @@ export class AgencyKernel {
     // Before any appends: drop superseded ledger history (regrows ~4-5MB/day).
     const ledgerCompaction = this.store.compactLedgerIfBloated();
     if (ledgerCompaction.compacted) {
-      this.logger.log(`[agency] pursuits ledger compacted at boot: ${(ledgerCompaction.beforeBytes / 1048576).toFixed(1)}MB -> ${(ledgerCompaction.afterBytes / 1048576).toFixed(2)}MB (${ledgerCompaction.pursuits} pursuits, ${ledgerCompaction.orphanRowsDropped} orphan rows dropped)`);
+      this.logger.info?.(`[agency] pursuits ledger compacted at boot: ${(ledgerCompaction.beforeBytes / 1048576).toFixed(1)}MB -> ${(ledgerCompaction.afterBytes / 1048576).toFixed(2)}MB (${ledgerCompaction.pursuits} pursuits, ${ledgerCompaction.orphanRowsDropped} orphan rows dropped)`);
     }
     this.router = new InboxRouter();
     this.selector = new AgencySelector();
