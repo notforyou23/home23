@@ -39,7 +39,7 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { embedTextRawSync } from './embed-at-contact.js';
 
-interface SeedCell {
+export interface SeedCell {
   id: string;
   generation: number;
   workspacePressure: number;
@@ -48,13 +48,16 @@ interface SeedCell {
   estimates: Array<{ claim: string; confidence: number }>;
   predictions: Array<{ claim: string; confidence: number; horizon: string; createdAt: string; resolvedAt?: string; error?: number }>;
   intentions: Array<{ description: string; magnitude: number; open: boolean }>;
+  /** Reality references; those born from language carry a bounded head. */
+  realityRefs?: Array<{ sourceRef: string; observedAt: string; head?: string }>;
 }
 
-interface LedgerLine {
+export interface LedgerLine {
   seq: number;
   category: string;
   sourceRef: string;
   payload: Record<string, unknown>;
+  issuedAt?: string;
 }
 
 export interface ComposeSeedOptions {
@@ -109,7 +112,9 @@ interface LivedItem {
   seq?: number;
 }
 
-function newestCheckpoint(stateDir: string): { cells: SeedCell[]; ledgerSeq: number } | null {
+/** Newest checkpoint, read-only — shared by the Seed-owned surfaces
+ * (expression here; the RECENT cutover in lived-recent.ts). */
+export function readSeedCheckpoint(stateDir: string): { cells: SeedCell[]; ledgerSeq: number } | null {
   const ckDir = join(stateDir, 'checkpoints');
   if (!existsSync(ckDir)) return null;
   const names = readdirSync(ckDir).filter((n) => n.startsWith('ckpt_') && n.endsWith('.json')).sort();
@@ -124,7 +129,8 @@ function newestCheckpoint(stateDir: string): { cells: SeedCell[]; ledgerSeq: num
   }
 }
 
-function ledgerTail(stateDir: string): LedgerLine[] {
+/** Ledger tail, read-only, torn-tail tolerant — shared like the above. */
+export function readSeedLedgerTail(stateDir: string): LedgerLine[] {
   const path = join(stateDir, 'seed-ledger.jsonl');
   if (!existsSync(path)) return [];
   let raw: string;
@@ -361,9 +367,9 @@ export function composeSeedSituation(stateDir: string, budgetOrOpts?: number | C
   const freshWindow = opts.freshWindowSeqs ?? DEFAULT_FRESH_WINDOW_SEQS;
   const embed = opts.embed ?? embedTextRawSync;
 
-  const checkpoint = newestCheckpoint(stateDir);
+  const checkpoint = readSeedCheckpoint(stateDir);
   if (checkpoint === null) return null;
-  const tail = ledgerTail(stateDir);
+  const tail = readSeedLedgerTail(stateDir);
   const headSeq = Math.max(checkpoint.ledgerSeq, ...tail.map((l) => l.seq), 0);
 
   const pool = buildLivedItems(checkpoint, tail);

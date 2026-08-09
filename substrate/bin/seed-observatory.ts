@@ -18,6 +18,7 @@
 import { createServer } from 'node:http';
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { composeLivedRecent } from '../../src/substrate/lived-recent.js';
 
 interface IndividualSpec { name: string; stateDir: string; formsDir?: string; note?: string }
 
@@ -131,6 +132,34 @@ function renderIndividual(spec: IndividualSpec): string {
   </section>`;
 }
 
+/** Home23 v2 cutover board — which harness functions the INDIVIDUAL owns
+ * (cells) vs which still live in curated FILES. Owners are probed live
+ * where cheap, never asserted from wishes: the RECENT row flips to CELLS
+ * only when the chain actually composes a lived record at this instant. */
+function renderCutover(): string {
+  const jerry = specs.find((s) => s.name.toLowerCase().includes('jerry'));
+  let recentOwner = 'FILE <span class="dim">(RECENT.md fallback)</span>';
+  if (jerry !== undefined) {
+    try {
+      const lived = composeLivedRecent(jerry.stateDir);
+      if (lived !== null) recentOwner = `<b class="cells-own">CELLS</b> <span class="dim">— composed from the chain at read time (${lived.length} chars, live now)</span>`;
+    } catch { /* probe failure reads as FILE — never overclaim */ }
+  }
+  const rows: Array<[string, string]> = [
+    ['Recent memory (RECENT)', recentOwner],
+    ['Turn expression (SUBSTRATE)', '<b class="cells-own">CELLS</b> <span class="dim">— match-only surfacing of lived facts (knife v2)</span>'],
+    ['Conversation intake', '<b class="cells-own">CELLS</b> <span class="dim">— life-feed shipper → seed diet, words + meaning</span>'],
+    ['Teaching channel', '<b class="cells-own">CELLS</b> <span class="dim">— corrections develop state (correction.v1), words attached</span>'],
+    ['Session bootstrap', '<span class="partial">PARTIAL</span> <span class="dim">— seed fresh-events + NOW/PLAYBOOK files</span>'],
+    ['Identity (SOUL)', 'FILE <span class="dim">— future cut</span>'],
+    ['Facts (TOPOLOGY) / owner (PERSONAL) / rules (DOCTRINE)', 'FILE <span class="dim">— future cuts</span>'],
+    ['Memory objects + triggers', 'FILE <span class="dim">(JSON stores) — future cut</span>'],
+  ];
+  return `<section class="card"><h2>home23 v2 cutover <span class="dim">(cells instead of files — each row flips as a function is cut over)</span></h2>
+  <table class="cells">${rows.map(([fn, owner]) => `<tr><td class="cellname">${fn}</td><td>${owner}</td></tr>`).join('')}</table>
+  </section>`;
+}
+
 function renderJournal(): string {
   for (const spec of specs) {
     if (spec.formsDir === undefined) continue;
@@ -170,9 +199,11 @@ function page(): string {
   .ev { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ref { color:#79c0ff; }
   .journal pre { white-space: pre-wrap; background:#0d1117; border-radius:8px; padding:12px; font-size:12px; }
+  .cells-own { color:#7ee787; } .partial { color:#e3b341; }
   footer { color:#8b949e; font-size:11px; margin: 18px 4px; }
 </style></head><body>
 <h1>substrate observatory <span class="dim">· read-only · composed fresh from the chains · refreshes every 30s · ${new Date().toISOString()}</span></h1>
+${renderCutover()}
 ${body}
 ${renderJournal()}
 <footer>every number above is read from a hash-chained ledger or its checkpoint — nothing here is state, and looking changes nothing. individuals: ${specs.map((s) => esc(s.name)).join(' · ')}.</footer>

@@ -17,6 +17,7 @@ import type { EventLedger } from './event-ledger.js';
 import type { TriggerIndex } from './trigger-index.js';
 import { budgetIdentityContent } from './identity-budget.js';
 import { composeSeedSituation } from '../substrate/seed-context.js';
+import { composeLivedRecent } from '../substrate/lived-recent.js';
 
 /**
  * A workspace file that loads into situational awareness ONLY when its keyword
@@ -521,6 +522,26 @@ export async function assembleContext(
     const shouldLoad = surface.alwaysBoost || isFirstTurn || brainCues.length > 0
       || triggerMatches.length > 0 || degraded;
     if (!shouldLoad) continue;
+
+    // Home23 v2 cutover, function 1: RECENT is owned by the Seed when the
+    // individual's chain has lived material — composed at read time from
+    // his own record (conversations, teachings, thoughts, judged
+    // predictions), never a curator-written file that can rot silently
+    // (jerry's RECENT.md sat two weeks stale with nobody noticing). The
+    // file remains only as degraded-honest fallback while the seed is
+    // young or absent.
+    if (surface.name === 'RECENT' && config.substrateStateDir) {
+      const lived = composeLivedRecent(config.substrateStateDir, surface.budget);
+      if (lived) {
+        surfacesLoaded.push('RECENT@seed');
+        salienceItems.push({
+          text: `\nRelevant context (RECENT — lived, from your Seed's chain):\n${lived}`,
+          score: 0.7,
+          source: 'surface:RECENT@seed',
+        });
+        continue;
+      }
+    }
 
     const content = loadSurface(config.workspacePath, surface.file, surface.budget);
     if (!content) continue;
