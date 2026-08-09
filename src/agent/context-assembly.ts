@@ -18,6 +18,7 @@ import type { TriggerIndex } from './trigger-index.js';
 import { budgetIdentityContent } from './identity-budget.js';
 import { composeSeedSituation } from '../substrate/seed-context.js';
 import { composeLivedRecent } from '../substrate/lived-recent.js';
+import { composeLivedFacts } from '../substrate/lived-facts.js';
 import { semanticMatchScore, SEMANTIC_MATCH_FLOOR } from '../substrate/semantic-match.js';
 
 /**
@@ -576,6 +577,28 @@ export async function assembleContext(
       score: surface.alwaysBoost ? 0.95 : 0.7,
       source: `surface:${surface.name}`,
     });
+  }
+
+  // Home23 v2 cutover, function 4 — FACTS from lived estimates: the
+  // individual's own conclusions that earned fact-grade (confidence +
+  // evidence + they stood through lived time) load as a fact surface with
+  // provenance. This is the cut where his beliefs go load-bearing; the
+  // gates are the honesty machinery, and too few gate-passers → no facts
+  // surface is claimed at all. TOPOLOGY.md keeps infrastructure facts
+  // (ports, URLs) until his estimates carry that domain at parity.
+  // Same load conditions as the other non-alwaysBoost surfaces (K2 is law:
+  // nothing new rides every turn).
+  const factsShouldLoad = isFirstTurn || brainCues.length > 0 || triggerMatches.length > 0 || degraded;
+  if (config.substrateStateDir && factsShouldLoad) {
+    const livedFacts = composeLivedFacts(config.substrateStateDir);
+    if (livedFacts) {
+      surfacesLoaded.push('FACTS@seed');
+      salienceItems.push({
+        text: `\nRelevant context (FACTS — lived, from your Seed's chain):\n${livedFacts}`,
+        score: 0.7,
+        source: 'surface:FACTS@seed',
+      });
+    }
   }
 
   // Triggered surfaces (Step 30 cleanup #4): keyword-gated doctrine that loads

@@ -20,6 +20,7 @@ import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { composeLivedRecent } from '../../src/substrate/lived-recent.js';
 import { composeSeedNow } from '../../src/substrate/seed-now.js';
+import { composeLivedFacts } from '../../src/substrate/lived-facts.js';
 
 interface IndividualSpec { name: string; stateDir: string; formsDir?: string; note?: string }
 
@@ -176,7 +177,20 @@ function renderCutover(): string {
     })()],
     ['Machine snapshot (NOW.md)', 'FILE <span class="dim">— cron telemetry, file-owned by design until seed estimates reach freshness parity</span>'],
     ['Identity (SOUL)', 'FILE <span class="dim">— future cut</span>'],
-    ['Facts (TOPOLOGY) / owner (PERSONAL) / rules (DOCTRINE)', 'FILE <span class="dim">— future cuts</span>'],
+    ['Facts (lived conclusions)', (() => {
+      const j = specs.find((s) => s.name.toLowerCase().includes('jerry'));
+      try {
+        if (j !== undefined) {
+          const facts = composeLivedFacts(j.stateDir);
+          if (facts !== null) {
+            const n = facts.split('\n').filter((l) => l.startsWith('- ')).length;
+            return `<b class="cells-own">CELLS</b> <span class="dim">— ${n} belief(s) earned fact-grade (confidence + evidence + stood through lived time)</span>`;
+          }
+        }
+      } catch { /* FILE stands */ }
+      return 'FILE <span class="dim">(no beliefs have earned fact-grade yet)</span>';
+    })()],
+    ['Facts (infrastructure: TOPOLOGY) / owner (PERSONAL) / rules (DOCTRINE)', 'FILE <span class="dim">— TOPOLOGY until estimate parity; PERSONAL/DOCTRINE are jtr\'s voice, cut last</span>'],
     ['Attention triggers', '<b class="cells-own">CELLS</b> <span class="dim">— gates fire on meaning through the retina (calibrated floor); substring only as degraded fallback</span>'],
     ['Memory objects', 'FILE <span class="dim">(JSON store) — next: facts from lived estimates</span>'],
   ];
