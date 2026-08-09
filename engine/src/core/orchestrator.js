@@ -924,6 +924,34 @@ class Orchestrator {
             workspacePath: process.env.COSMO_WORKSPACE_PATH,
             dashboardPort: this.config?.dashboard?.port || process.env.HOME23_DASHBOARD_PORT,
             logger: this.logger,
+            // The circulatory trigger runs in the engine, while durable synthesis
+            // is owned by the dashboard coordinator. Route scheduled starts to
+            // that coordinator instead of constructing an agent with no start
+            // callback (which degrades every auto-trigger to
+            // synthesis_unavailable).
+            startSynthesisOperation: async ({ trigger }) => {
+              const port = this.config?.dashboard?.port || process.env.HOME23_DASHBOARD_PORT;
+              if (!port) {
+                const error = new Error('Synthesis dashboard port is unavailable');
+                error.code = 'synthesis_unavailable';
+                error.retryable = true;
+                throw error;
+              }
+              const response = await fetch(`http://127.0.0.1:${port}/api/synthesis/run`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ trigger }),
+                signal: AbortSignal.timeout(10_000),
+              });
+              const body = await response.json().catch(() => ({}));
+              if (!response.ok) {
+                const error = new Error(body?.error?.message || body?.error || `Synthesis start failed (${response.status})`);
+                error.code = body?.error?.code || 'synthesis_unavailable';
+                error.retryable = body?.error?.retryable === true || response.status >= 500;
+                throw error;
+              }
+              return body;
+            },
           });
         } catch (e) {
           this.logger.warn?.('synthesis agent not available for auto-trigger', { error: e.message });
@@ -1003,6 +1031,20 @@ class Orchestrator {
             // Step 24 back-pressure threshold (informational warn; strict
             // gating deferred).
             cyclesWithoutReceiptThreshold: this.config.osEngine?.crystallization?.backpressure?.cyclesWithoutReceiptThreshold || 10,
+            // Home23 v2, first engine-side row: cycles ground in the
+            // individual's lived state (Seed chain, workspace sibling dir).
+            // Read-only, degraded-honest — no seed, no block, engine
+            // thinks exactly as before.
+            getLivedState: (() => {
+              const seedDir = process.env.COSMO_WORKSPACE_PATH
+                ? path.join(process.env.COSMO_WORKSPACE_PATH, '..', 'substrate', 'seed-01')
+                : null;
+              if (!seedDir) return null;
+              const { composeLivedState } = require('../substrate/seed-lived-state');
+              return () => {
+                try { return composeLivedState(seedDir); } catch { return null; }
+              };
+            })(),
           },
           logger: this.logger,
           getTemporalContext: () => this.currentTemporalContext,
@@ -2789,7 +2831,12 @@ class Orchestrator {
         }
       }
 
-      const rolePromptWithDiagnosis = focusDirective + operationalTruthDirective + role.prompt + recentRoleBlock + roleDedupPrefix + footerDiagnosis;
+      // Home23 v2, first engine-side row (active legacy_roles path): cycles
+      // ground in the individual's lived state — context to think FROM,
+      // never a subject. Degraded-honest: no seed → empty string, cycle
+      // prompt byte-identical to before.
+      const livedStateBlock = this._composeSeedLivedBlock();
+      const rolePromptWithDiagnosis = focusDirective + operationalTruthDirective + role.prompt + recentRoleBlock + roleDedupPrefix + livedStateBlock + footerDiagnosis;
       enterCyclePhase('thought_generation');
       const superposition = await this.quantum.generateSuperposition(
         rolePromptWithDiagnosis,
@@ -6412,6 +6459,43 @@ class Orchestrator {
   /**
    * Calculate divergence between branches
    */
+  /**
+   * Home23 v2 (first engine-side row): the individual's lived state as a
+   * cycle-prompt block. Composed from the Seed chain (workspace sibling
+   * dir), cached ~60s — cycles are frequent, the chain moves slower.
+   * Returns '' when no seed lives here; the prompt is then byte-identical
+   * to the pre-v2 engine. The guardrail travels with the block: lived
+   * context is thought FROM, never ABOUT (the 45:1 exhaust signature is
+   * exactly an engine ruminating on its own machinery).
+   */
+  _composeSeedLivedBlock() {
+    try {
+      const now = Date.now();
+      if (this._seedLivedCache && now - this._seedLivedCache.at < 60_000) {
+        return this._seedLivedCache.block;
+      }
+      const seedDir = process.env.COSMO_WORKSPACE_PATH
+        ? path.join(process.env.COSMO_WORKSPACE_PATH, '..', 'substrate', 'seed-01')
+        : null;
+      let block = '';
+      if (seedDir) {
+        const { composeLivedState } = require('../substrate/seed-lived-state');
+        const lived = composeLivedState(seedDir);
+        if (lived) {
+          block = `\n\n## What he is living (from his Seed's chain — context only, NEVER the subject)\n${lived}\n(Think THROUGH this lived context where it helps. Do not write about the Seed, the substrate, or this block itself.)\n`;
+          if (!this._seedLivedAnnounced) {
+            this._seedLivedAnnounced = true;
+            this.logger?.info?.(`[substrate] lived-state grounding active — cycles think from the individual's chain (${lived.length} chars)`);
+          }
+        }
+      }
+      this._seedLivedCache = { at: now, block };
+      return block;
+    } catch {
+      return '';
+    }
+  }
+
   calculateBranchDivergence(branches) {
     if (!Array.isArray(branches) || branches.length < 2) {
       return 0;

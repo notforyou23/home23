@@ -75,6 +75,7 @@ class ThinkingMachine {
       unifiedClient: this.unifiedClient,
       memory: this.memory,
       logger: this.logger,
+      getLivedState: this.config.getLivedState || null,
     });
 
     this.pgsAdapter = new PGSAdapter({

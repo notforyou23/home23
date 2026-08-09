@@ -35,6 +35,9 @@ class DeepDive {
     this.logger = opts.logger || console;
     this.config = { ...DEFAULT_CONFIG, ...(opts.config || {}) };
     this.getConversationContext = opts.getConversationContext || (() => null);
+    // v2 engine row 1: the individual's lived state (Seed chain) grounds
+    // cycles — context to think FROM, never a subject to think ABOUT.
+    this.getLivedState = opts.getLivedState || (() => null);
   }
 
   /**
@@ -288,6 +291,17 @@ ${peerNodes.slice(0, 25).map(n => `- [${n.id}${n.cluster != null ? ` · c${n.clu
       ? `## Recent conversation with jtr\n${conversation}`
       : '';
 
+    // The individual's lived state (his Seed's chain) — grounding, with the
+    // same footer discipline as discovery metadata: it frames the thinking,
+    // it must never become the thought's subject. Skipped for operational
+    // telemetry observations, whose boundaries are deliberately strict.
+    const lived = !isOperationalObservation ? this.getLivedState?.() : null;
+    const livedBlock = lived
+      ? `## What he is living (from his Seed's chain — context only, NEVER the subject)
+${lived}
+(Think about jtr's world THROUGH this lived context where it helps. Do not write about the Seed, the substrate, or this block itself.)`
+      : '';
+
     // Discovery metadata last — small footer, not a frame. Jerry should not
     // anchor on "signal: drift" or "0 edges" as the subject of the thought.
     const discoveryFooter = `## Why this surfaced (discovery metadata — context only)
@@ -306,7 +320,7 @@ ${(priorPass.critique?.gaps || []).map(g => `- ${g}`).join('\n') || '(none)'}
 
 Address these gaps concretely. If the prior thought was drifting into meta-commentary about graph topology rather than engaging with jtr's actual content, re-ground on the material above. If they expose that the thought is actually restatement or shallow, say so.` : '';
 
-    const input = [observationBlock, seedBlock, peerBlock, temporalBlock, conversationBlock, revisionBlock, discoveryFooter]
+    const input = [observationBlock, seedBlock, peerBlock, temporalBlock, conversationBlock, livedBlock, revisionBlock, discoveryFooter]
       .filter(Boolean)
       .join('\n\n') + (isRevision
         ? '\n\nThink again — addressing the gaps above. Focus on the content, not the discovery machinery.'

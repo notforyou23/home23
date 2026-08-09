@@ -21,6 +21,9 @@ import { join, resolve } from 'node:path';
 import { composeLivedRecent } from '../../src/substrate/lived-recent.js';
 import { composeSeedNow } from '../../src/substrate/seed-now.js';
 import { composeLivedFacts } from '../../src/substrate/lived-facts.js';
+import { createRequire } from 'node:module';
+const engineRequire = createRequire(import.meta.url);
+const { composeLivedState } = engineRequire('../../engine/src/substrate/seed-lived-state.js') as { composeLivedState: (dir: string) => string | null };
 
 interface IndividualSpec { name: string; stateDir: string; formsDir?: string; note?: string }
 
@@ -192,6 +195,16 @@ function renderCutover(): string {
     })()],
     ['Facts (infrastructure: TOPOLOGY) / owner (PERSONAL) / rules (DOCTRINE)', 'FILE <span class="dim">— TOPOLOGY until estimate parity; PERSONAL/DOCTRINE are jtr\'s voice, cut last</span>'],
     ['Attention triggers', '<b class="cells-own">CELLS</b> <span class="dim">— gates fire on meaning through the retina (calibrated floor); substring only as degraded fallback</span>'],
+    ['Engine cognition grounding', (() => {
+      const j = specs.find((s) => s.name.toLowerCase().includes('jerry'));
+      try {
+        if (j !== undefined) {
+          const lived = composeLivedState(j.stateDir);
+          if (lived !== null) return `<b class="cells-own">CELLS</b> <span class="dim">— engine thinking cycles ground in the lived chain (${lived.length} chars composing now)</span>`;
+        }
+      } catch { /* FILE stands */ }
+      return 'FILE <span class="dim">(no lived state composing — engine thinks from brain alone)</span>';
+    })()],
     ['Memory objects', 'FILE <span class="dim">(JSON store) — next: facts from lived estimates</span>'],
   ];
   return `<section class="card"><h2>home23 v2 cutover <span class="dim">(cells instead of files — each row flips as a function is cut over)</span></h2>
