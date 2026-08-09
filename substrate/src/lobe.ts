@@ -361,6 +361,10 @@ export class ModelLobe implements LobeAdapter {
 export function buildLobePrompt(packet: WorkspacePacket): string {
   const cellIds = packet.activeCellIds;
   return [
+    ...(packet.dream !== undefined ? [
+      `DREAM CYCLE — an event-time quiet gap of ~${Math.round(packet.dream.quietSeconds / 60)} minutes just ended; this recruitment is the mind working the day's residue at waking. The refs in the packet are what was lived before sleep (many carry the words). Recombine across cells: connect what belongs together, revise estimates the residue contradicts, RESOLVE open predictions the gap answered, propose intentions the lived day earned. The typed-delta contract below is unchanged — only the occasion is special. Work the residue; do not narrate the dream.`,
+      '',
+    ] : []),
     'You are a recruited cognitive lobe for a substrate Seed. You receive a typed',
     'workspace packet and return ONLY a JSON object — no prose around it.',
     '',
@@ -400,11 +404,36 @@ export function buildLobePrompt(packet: WorkspacePacket): string {
 
 export function parseLobeResponse(text: string, modelReceipt: ModelReceipt): LobeResult {
   const jsonStart = text.indexOf('{');
-  const jsonEnd = text.lastIndexOf('}');
-  if (jsonStart < 0 || jsonEnd <= jsonStart) {
+  if (jsonStart < 0) {
     throw new Error('lobe response contains no JSON object');
   }
-  const parsed = JSON.parse(text.slice(jsonStart, jsonEnd + 1)) as Partial<LobeResult>;
+  const jsonEnd = text.lastIndexOf('}');
+  let strictError: unknown;
+  if (jsonEnd > jsonStart) {
+    try {
+      return shapeLobeResult(JSON.parse(text.slice(jsonStart, jsonEnd + 1)) as Partial<LobeResult>, modelReceipt);
+    } catch (error) {
+      strictError = error;
+    }
+  }
+  // Strict parse failed (or no closing brace exists at all). The dominant real
+  // cause is an output-token cap cutting generation mid-array — recover the
+  // complete prefix and receipt the truncation instead of wasting the
+  // recruitment. The membrane still validates every recovered proposal; an
+  // object that lost trailing members to the cut is rejected there with a
+  // reason, never applied half-formed.
+  const recovery = recoverTruncatedLobeJson(text.slice(jsonStart));
+  if (recovery !== null) {
+    try {
+      const parsed = JSON.parse(recovery.repaired) as Partial<LobeResult>;
+      return shapeLobeResult(parsed, { ...modelReceipt, truncatedResponse: { droppedChars: recovery.droppedChars } });
+    } catch { /* repaired text still invalid — keep the honest failure below */ }
+  }
+  if (strictError !== undefined) throw strictError;
+  throw new Error('lobe response truncated: no recoverable JSON prefix');
+}
+
+function shapeLobeResult(parsed: Partial<LobeResult>, modelReceipt: ModelReceipt): LobeResult {
   return {
     observations: Array.isArray(parsed.observations) ? parsed.observations : [],
     interpretations: Array.isArray(parsed.interpretations) ? parsed.interpretations : [],
@@ -416,4 +445,43 @@ export function parseLobeResponse(text: string, modelReceipt: ModelReceipt): Lob
     evidenceRefs: [],
     modelReceipt,
   };
+}
+
+/**
+ * Recover a valid JSON prefix from a token-cap-truncated response. Walks the
+ * text with a string/escape-aware bracket stack, remembering the position
+ * after each completely-closed container (array element, object member value,
+ * or whole array) while the document remains open. Returns the repaired
+ * document (prefix + synthesized closers) plus how many characters of tail
+ * were dropped — or null when the text is not truncation-shaped: brackets
+ * mismatch (malformed, not cut off), the top-level value closes (the parse
+ * failure lies elsewhere), or no container ever completed.
+ */
+export function recoverTruncatedLobeJson(raw: string): { repaired: string; droppedChars: number } | null {
+  let inString = false;
+  let escaped = false;
+  const stack: Array<'{' | '['> = [];
+  let cutAt = -1;
+  let cutStack: Array<'{' | '['> = [];
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === '{' || ch === '[') { stack.push(ch); continue; }
+    if (ch === '}' || ch === ']') {
+      const open = stack.pop();
+      if (open !== (ch === '}' ? '{' : '[')) return null;
+      if (stack.length === 0) return null;
+      cutAt = i + 1;
+      cutStack = [...stack];
+    }
+  }
+  if (cutAt < 0) return null;
+  const closers = cutStack.map((open) => (open === '{' ? '}' : ']')).reverse().join('');
+  return { repaired: raw.slice(0, cutAt) + closers, droppedChars: raw.length - cutAt };
 }

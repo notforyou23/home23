@@ -105,6 +105,8 @@ export class SeedProcess {
   private lastTransitionAt: string;
   private _transitionCount: number = 0;
   private _eventCount: number = 0;
+  /** dream.v1: set at quiet-gap end; consumed once by the runner. */
+  private _pendingDream: { quietSeconds: number } | null = null;
 
   private constructor(opts: {
     stateDir: string;
@@ -611,6 +613,12 @@ export class SeedProcess {
         this.accounting.recordEvent();
         this.accounting.setLedgerBytes(this.ledger.bytes);
       }
+      // dream.v1 (REM): consolidation is NREM — retention and decay, pure
+      // mechanics. The other half of sleep is the mind WORKING the residue,
+      // and it fires at waking: mark a pending dream for the runner's next
+      // lobe opportunity. In-memory only — a crash across the wake moment
+      // loses the dream, never the consolidation, which is the durable half.
+      this._pendingDream = { quietSeconds: gapSeconds };
     }
 
     // Stage the transition on a copy: developmental mutation must not proceed
@@ -709,6 +717,14 @@ export class SeedProcess {
    * triggering event's producedAt) — recorded in the receipt, never taken from
    * the wall clock, so replayed workspace cycles are reproducible.
    */
+  /** dream.v1: the pending dream, consumed exactly once. Null when the
+   * seed has not just woken from an event-time quiet gap. */
+  consumePendingDream(): { quietSeconds: number } | null {
+    const dream = this._pendingDream;
+    this._pendingDream = null;
+    return dream;
+  }
+
   workspaceCycle(asOf: string): WorkspaceOutcome {
     this.membrane.assert('local.state.read');
     this.membrane.assert('local.state.write');
@@ -937,6 +953,9 @@ export class SeedProcess {
         modelId: lobe.modelId,
         provider: lobe.provider,
         modelReceipt: { ...validated.modelReceipt },
+        // dream.v1: the chain shows its dreams — a REM recruitment is
+        // distinguishable from waking thought forever.
+        ...(packet.dream !== undefined ? { dream: packet.dream } : {}),
         // Full applied deltas: the receipt IS the state change. Replay
         // re-applies these without any model in the loop.
         appliedDeltas: applied,

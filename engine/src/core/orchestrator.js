@@ -4575,12 +4575,41 @@ class Orchestrator {
   generateDreamPrompt() {
     // Check if in pure mode
     const explorationMode = this.config?.architecture?.roleSystem?.explorationMode || 'autonomous';
-    
+
     if (explorationMode === 'pure') {
       // PURE MODE: Minimal dream prompting - just continuation
       return '...';  // Ellipsis suggests continuation/drift
     }
-    
+
+    // Home23 v2: dreams consolidate the LIVED day. Real dreaming is not
+    // random surrealism — it is the day's residue recombined. When the
+    // individual's chain carries residue (his actual contact, the house's
+    // transitions, expectations reality answered), the dream works THAT
+    // material; its products (goals, brain nodes) are the transfer bridge
+    // from the episodic chain to the semantic cortex. Degraded-honest:
+    // no residue → the old generic dream prompts, exactly as before.
+    try {
+      const seedDir = process.env.COSMO_WORKSPACE_PATH
+        ? path.join(process.env.COSMO_WORKSPACE_PATH, '..', 'substrate', 'seed-01')
+        : null;
+      if (seedDir) {
+        const { composeDayResidue } = require('../substrate/seed-lived-state');
+        const residue = composeDayResidue(seedDir);
+        if (residue && residue.length > 0) {
+          return [
+            "Dream from today's residue — the day he actually lived:",
+            ...residue.map(f => `- ${f}`),
+            '',
+            'Recombine this material the way dreams do: surreal is welcome, but the',
+            'substance must be the residue — connect what the day left unconnected,',
+            'let the broken expectation and the kept one argue, let the words spoken',
+            'become landscape. Do not mention seeds, chains, or machinery; dream the',
+            'LIFE, not the system. One dream, vivid and specific.',
+          ].join('\n');
+        }
+      }
+    } catch { /* residue unavailable — dream generically */ }
+
     // NORMAL MODE: Full creative dream prompts
     const prompts = [
       "Generate a surreal scenario combining disparate concepts from recent learning",

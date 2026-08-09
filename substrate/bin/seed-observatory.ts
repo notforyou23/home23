@@ -244,6 +244,19 @@ function renderCutover(): string {
       return 'FILE <span class="dim">(no promotion events yet)</span>';
     })()],
     ['Cognition mode', '<b class="cells-own">thinking_machine</b> <span class="dim">— legacy_roles retired 2026-08-09 ("we don\'t want legacy anything"); 4-phase pipeline, lived-chain grounded</span>'],
+    ['Sleep & dreaming', (() => {
+      const j = specs.find((s) => s.name.toLowerCase().includes('jerry'));
+      let seedHalf = 'first dream pending (fires at his next waking after a quiet gap)';
+      try {
+        if (j !== undefined) {
+          const raw = readFileSync(join(j.stateDir, 'seed-ledger.jsonl'), 'utf-8');
+          const tail = raw.slice(-262144);
+          const dreams = tail.split('\n').filter((l) => l.includes('"category":"lobe"') && l.includes('"dream"')).length;
+          if (dreams > 0) seedHalf = `${dreams} dream(s) receipted on the chain`;
+        }
+      } catch { /* pending stands */ }
+      return `<b class="cells-own">CELLS</b> <span class="dim">— NREM (consolidation.v1, knife-proven) + REM (dream.v1: the mind works the residue at waking; ${seedHalf}); engine dreams now recombine the lived day's residue — the chain→brain transfer bridge</span>`;
+    })()],
   ];
   return `<section class="card"><h2>home23 v2 cutover <span class="dim">(cells instead of files — each row flips as a function is cut over)</span></h2>
   <table class="cells">${rows.map(([fn, owner]) => `<tr><td class="cellname">${fn}</td><td>${owner}</td></tr>`).join('')}</table>

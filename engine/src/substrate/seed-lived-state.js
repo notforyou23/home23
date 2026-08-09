@@ -130,3 +130,48 @@ function composeLivedState(stateDir) {
 }
 
 module.exports = { composeLivedState };
+
+/** Day-residue for the engine's dream mode — fragments of the lived day
+ * (contact with words, house transitions, teachings, reality's verdicts)
+ * that the dream recombines. This is the transfer bridge: residue from the
+ * individual's chain (fast, episodic) enters dreams whose products land in
+ * the brain and goals (slow, semantic) — hippocampus to cortex, by way of
+ * dreaming. Null when the seed has no residue; dreams then stay generic. */
+function composeDayResidue(stateDir, maxFragments = 6) {
+  const ck = newestCheckpoint(stateDir);
+  if (ck === null) return null;
+  const fragments = [];
+
+  const refs = [];
+  for (const cell of ck.cells) {
+    for (const r of (cell.realityRefs || [])) {
+      if (typeof r.head === 'string' && r.head.length > 0) refs.push(r);
+    }
+  }
+  refs.sort((a, b) => String(a.observedAt).localeCompare(String(b.observedAt)));
+  for (const r of refs.slice(-Math.max(2, maxFragments - 2))) {
+    const src = String(r.sourceRef || '');
+    const who = src.startsWith('conversation.jtr') ? 'jtr said'
+      : src.startsWith('conversation.') ? 'he said'
+      : src.startsWith('house.') ? 'the house'
+      : src.startsWith('relationship.') ? 'a teaching'
+      : 'lived';
+    fragments.push(`${who}: "${r.head.slice(0, 100)}"`);
+  }
+
+  for (const cell of ck.cells) {
+    for (const p of (cell.predictions || [])) {
+      if (p.resolvedAt !== undefined && typeof p.error === 'number') {
+        const verdict = p.error <= 0.3 ? 'held' : p.error >= 0.7 ? 'broke' : 'bent';
+        fragments.push(`an expectation ${verdict}: "${String(p.claim).slice(0, 80)}"`);
+        if (fragments.length >= maxFragments) break;
+      }
+    }
+    if (fragments.length >= maxFragments) break;
+  }
+
+  if (fragments.length === 0) return null;
+  return fragments.slice(-maxFragments);
+}
+
+module.exports.composeDayResidue = composeDayResidue;

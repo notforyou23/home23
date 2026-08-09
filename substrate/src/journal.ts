@@ -119,7 +119,11 @@ export function composeJournalEntry(window: JournalWindow): string | null {
     const fields = Array.isArray(appliedDeltas)
       ? [...new Set(appliedDeltas.map((d) => String((d as { field?: unknown }).field ?? '?')))].join(', ')
       : '';
-    lines.push(`- recruited thought landed ${integrated} typed delta(s)${fields !== '' ? ` (${fields})` : ''} · seq ${l.seq}`);
+    const dream = l.payload?.['dream'] as { quietSeconds?: number } | undefined;
+    const verb = dream !== undefined
+      ? `I dreamed at waking (after ~${Math.round(Number(dream.quietSeconds ?? 0) / 60)}min quiet) — the residue landed`
+      : 'recruited thought landed';
+    lines.push(`- ${verb} ${integrated} typed delta(s)${fields !== '' ? ` (${fields})` : ''} · seq ${l.seq}`);
   }
   lines.push('');
 

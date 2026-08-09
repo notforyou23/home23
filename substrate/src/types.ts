@@ -418,6 +418,11 @@ export interface WorkspacePacket {
   authorityCeiling: AuthorityLevel;
   tokenBudget: number;
   outputContract: LobeOutputContract;
+  /** dream.v1 (REM): set when this recruitment is the mind working the
+   * residue at the end of an event-time quiet gap — the waking dream.
+   * Same typed-delta contract; only the OCCASION differs, and the prompt
+   * says so. Rides the lobe receipt so the chain shows its dreams. */
+  dream?: { quietSeconds: number };
 }
 
 export interface ProposedObservation { cellId: string; claim: string; confidence: number; evidenceRef: string; }

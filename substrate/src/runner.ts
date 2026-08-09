@@ -242,6 +242,36 @@ export class SeedRunner {
       report.transitioned++;
       this.log(`transition seq=${result.seq} cell=${result.cellId} ref=${event.sourceRef}`);
 
+      // dream.v1 (REM): a transition that ended a quiet gap marked a
+      // pending dream — the mind works the residue at waking. Fires
+      // promptly (not on workspace cadence), under the same lobe spend
+      // guard. v1 requires at least one admissible cell; a silence outcome
+      // dissolves the dream honestly (sub-threshold deep-sleep dreaming is
+      // future work, and the silence receipt already explains itself).
+      if (this.opts.lobe !== undefined) {
+        const dream = this.seed.consumePendingDream();
+        if (dream !== null) {
+          const minInterval = this.opts.lobeMinIntervalMs ?? 0;
+          const sinceLast = Date.now() - this.lastLobeAtMs;
+          if (sinceLast >= minInterval) {
+            const outcome = this.seed.workspaceCycle(event.producedAt);
+            report.workspaceOutcomes.push(outcome.kind);
+            if (outcome.kind === 'workspace') {
+              this.lastLobeAtMs = Date.now();
+              const packet = { ...outcome.packet, dream };
+              this.log(`dream: waking after ~${Math.round(dream.quietSeconds / 60)}min quiet — working the residue [${packet.activeCellIds.join(', ')}]`);
+              const lobeOutcome = await this.seed.recruitLobe(this.opts.lobe, packet, event.producedAt, this.opts.lobeTimeoutMs ?? 30_000);
+              report.lobeRecruitments++;
+              this.log(`dream lobe ${this.opts.lobe.id}: applied=${lobeOutcome.applied.length} rejected=${lobeOutcome.rejected.length}${lobeOutcome.error !== undefined ? ` error=${lobeOutcome.error}` : ''}`);
+            } else {
+              this.log('dream dissolved — nothing admissible at waking (silence receipted)');
+            }
+          } else {
+            this.log(`dream deferred by lobe guard (${Math.round((minInterval - sinceLast) / 1000)}s remaining) — residue stays in the refs`);
+          }
+        }
+      }
+
       if (this.transitionsSinceWorkspace >= (this.opts.workspaceEveryN ?? 8)) {
         this.transitionsSinceWorkspace = 0;
         const outcome = this.seed.workspaceCycle(event.producedAt);
