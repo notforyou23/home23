@@ -187,6 +187,14 @@ function mirrorForms(): void {
     } catch (error) {
       console.error(`[broker] state mirror failed: ${(error as Error).message}`);
     }
+    // Cut 6: the motor's outbox rides its own best-effort sync — it does not
+    // exist until the individual's first reach, and a missing source must
+    // never break the ledger mirror above. Once it exists, the terrarium's
+    // "✋ he reached for you" needs it here.
+    try {
+      execFileSync('rsync', ['-az', `${sshHost}:${stateRemote}/outbox.jsonl`, `${stateDest}/`], { timeout: 60_000 });
+      console.log(`[broker] outbox mirrored to ${stateDest}`);
+    } catch { /* no outbox yet — honest absence */ }
   }
 }
 
