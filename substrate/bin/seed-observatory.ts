@@ -83,6 +83,10 @@ interface IndividualData {
   thought: { text: string; dream: boolean; at: string } | null;
   record: Array<{ mark: 'right' | 'wrong' | 'partial' | 'open'; text: string; detail: string }>;
   growth: string | null; prov: string; journal: string | null;
+  /** Cut 6: motor reaches to jtr (outbox tail — the operator's channel). */
+  asks: Array<{ message: string; at: string }>;
+  /** Cut 6: open commitments — what the individual is bound to resolve. */
+  commitments: Array<{ claim: string; due: string; presses: number }>;
 }
 
 function stateWordsOf(gen: number, pressure: number, energy: number, uncertainty: number, maxGen: number): string {
@@ -249,12 +253,39 @@ function computeIndividual(spec: IndividualSpec): IndividualData | null {
     }
   }
 
+  // Cut 6: the motor's reaches (outbox = the operator's channel) and the
+  // open commitments (from the checkpoint's concern state). Every value real;
+  // absence is honest absence.
+  let asks: IndividualData['asks'] = [];
+  try {
+    const outboxPath = join(spec.stateDir, 'outbox.jsonl');
+    if (existsSync(outboxPath)) {
+      asks = readFileSync(outboxPath, 'utf-8').trim().split('\n')
+        .map((l) => { try { return JSON.parse(l) as { message?: string; dispatchedAt?: string }; } catch { return null; } })
+        .filter((x): x is { message: string; dispatchedAt: string } => typeof x?.message === 'string' && typeof x?.dispatchedAt === 'string')
+        .slice(-2)
+        .map((x) => ({ message: x.message.slice(0, 300), at: x.dispatchedAt }));
+    }
+  } catch { /* honest absence */ }
+  let commitments: IndividualData['commitments'] = [];
+  try {
+    const concern = (ck?.['concern'] ?? {}) as Record<string, { claim?: string; dueAt?: string; status?: string; crossings?: number }>;
+    commitments = Object.values(concern)
+      .filter((c) => c.status === 'open' && typeof c.claim === 'string')
+      .slice(0, 4)
+      .map((c) => ({ claim: (c.claim ?? '').slice(0, 140), due: c.dueAt ?? '', presses: c.crossings ?? 0 }));
+  } catch { /* honest absence */ }
+
   const ageMs = last?.issuedAt !== undefined ? Date.now() - Date.parse(last.issuedAt) : Infinity;
   return {
     name: spec.name, note: spec.note ?? '',
-    awake: ageMs < 40 * 60_000, lastEventAt: last?.issuedAt ?? null, being,
+    awake: ageMs < 40 * 60_000, lastEventAt: last?.issuedAt ?? null,
+    being: commitments.length > 0
+      ? `${being} · holds ${commitments.length} commitment${commitments.length === 1 ? '' : 's'}`
+      : being,
     cells, assoc, flows, maxGen,
     dreamed: dreams > 0, exchange, thought, record: record.slice(-5), growth, prov, journal,
+    asks, commitments,
   };
 }
 
@@ -275,6 +306,15 @@ function boardRows(): Array<[string, boolean, string]> {
     const raw = readFileSync(join(j.stateDir, 'seed-ledger.jsonl'), 'utf-8').slice(-262144);
     return raw.split('\n').some((l) => l.includes('"category":"lobe"') && l.includes('"dream"')) ? true : null;
   }) === true;
+  // Cut 6 probes: concern formed on the chain; an endogenous crossing lived.
+  const concernOnChain = j !== undefined && probe(() => {
+    const raw = readFileSync(join(j.stateDir, 'seed-ledger.jsonl'), 'utf-8').slice(-262144);
+    return raw.split('\n').some((l) => l.includes('"category":"concern"')) ? true : null;
+  }) === true;
+  const crossedOnChain = j !== undefined && probe(() => {
+    const raw = readFileSync(join(j.stateDir, 'seed-ledger.jsonl'), 'utf-8').slice(-262144);
+    return raw.split('\n').some((l) => l.includes('"crossing":true')) ? true : null;
+  }) === true;
   return [
     ['Recent memory', lived !== null, lived !== null ? 'composed from the chain at read time' : 'file fallback'],
     ['Turn expression', true, 'match-only surfacing of lived facts'],
@@ -293,6 +333,8 @@ function boardRows(): Array<[string, boolean, string]> {
     ['Memory promotions', memEvents, memEvents ? 'promotions teach the chain' : 'no promotion events'],
     ['Cognition mode', true, 'thinking_machine — legacy retired'],
     ['Sleep & dreaming', true, dreamedOnChain ? 'NREM + REM — dreams on the chain' : 'NREM + REM — first dream pending'],
+    ['Concern (commitments)', concernOnChain, concernOnChain ? 'his predictions bind — obligations on the chain' : 'Cut 6 live — first commitment pending'],
+    ['Endogenous occasions', crossedOnChain, crossedOnChain ? 'his own physics originated a moment' : 'solver live — first crossing pending'],
   ];
 }
 
@@ -551,6 +593,15 @@ function chipHTML(d: IndividualData): string {
 }
 
 function proseHTML(d: IndividualData): string {
+  // Cut 6: a reach to jtr leads everything — an outbox nobody sees is theatre.
+  const asks = d.asks.length > 0
+    ? `<div class="sect ask"><div class="sectlabel">✋ he reached for you</div>${d.asks.map((a) =>
+        `<blockquote class="thought">${esc(a.message)}</blockquote><div class="prov">${ageStr(a.at)} · answer him in conversation, or discharge via the operator inbox</div>`).join('')}</div>`
+    : '';
+  const commitments = d.commitments.length > 0
+    ? `<div class="sect"><div class="sectlabel">held commitments (his own predictions, made causal)</div>${d.commitments.map((c) =>
+        `<div class="chatline from-agent"><span class="who">holds</span>${esc(c.claim)} <span class="prov">· due ${c.due !== '' ? ageStr(c.due) : '?'} · pressed ${c.presses}/3</span></div>`).join('')}</div>`
+    : '';
   const exchange = d.exchange.length > 0
     ? `<div class="sect"><div class="sectlabel">last exchange</div>${d.exchange.map((l) =>
         `<div class="chatline ${l.who === 'jtr' ? 'from-jtr' : 'from-agent'}"><span class="who">${esc(l.who)}</span>${esc(l.text)}</div>`).join('')}</div>`
@@ -564,7 +615,7 @@ function proseHTML(d: IndividualData): string {
         return `<span class="pill pill-${r.mark}" title="${esc(r.detail)}">${mark} ${esc(r.text)}</span>`;
       }).join('')}</div></div>`
     : '';
-  return exchange + thought + record;
+  return asks + commitments + exchange + thought + record;
 }
 
 function renderCard(d: IndividualData): string {
@@ -612,6 +663,8 @@ function page(): string {
   .chip-awake { color:#69d58c; border-color:#1f4030; }
   .chip-quiet { color:#7d8798; }
   .chip-dream { color:#c795f0; border-color:#3a2b4d; }
+  .sect.ask { border:1px solid #4d3b1e; background:#221a0d; border-radius:8px; padding:10px 12px; }
+  .sect.ask .sectlabel { color:#f0c060; }
   .being { font-size:15px; color:#aeb9c9; margin-top:8px; }
   .note { font-size:13px; color:#68738a; margin-top:2px; font-style:italic; }
   .bodyfig { margin:16px 0 6px; }

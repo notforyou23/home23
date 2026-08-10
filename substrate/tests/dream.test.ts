@@ -69,7 +69,7 @@ test('the DREAM CYCLE contract enters the prompt only when the packet dreams', (
   const base: WorkspacePacket = {
     activeCellIds: ['world.home23'], eventRefs: [], tensions: [], predictions: [],
     uncertainty: 0.5, requestedCapability: 'lobe.recruit.model', authorityCeiling: 'propose',
-    tokenBudget: 1000, outputContract: { allowedOutputKinds: ['stateDeltas'], schemaRef: 'x' },
+    tokenBudget: 1000, outputContract: { allowedOutputKinds: ['stateDeltas'], maxTokenBudget: 1000 },
   };
   assert.ok(!buildLobePrompt(base).includes('DREAM CYCLE'), 'waking prompt carries no dream contract');
   const dreaming = { ...base, dream: { quietSeconds: 5400 } };

@@ -66,11 +66,16 @@ export class CheckpointManager {
     resourceSnapshot: ResourceSnapshot;
     development?: Record<string, unknown>;
     seedLastTransitionAt?: string;
+    /** Cut 6: concern state. A NON-EMPTY concern makes this a v3 manifest
+     * (concern inside the state hash); empty/absent stays v2 so pre-Cut-6
+     * seeds' hashes and bytes are untouched. */
+    concern?: Record<string, unknown>;
   }): string {
     const checkpointId = `ckpt_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
+    const hasConcern = opts.concern !== undefined && Object.keys(opts.concern).length > 0;
     const manifest: CheckpointManifest = {
       schema: 'home23.seed.checkpoint.v1',
-      version: opts.development !== undefined ? 2 : 1,
+      version: hasConcern ? 3 : (opts.development !== undefined ? 2 : 1),
       checkpointId,
       stateHash: opts.stateHash,
       ledgerSeq: opts.ledgerSeq,
@@ -80,6 +85,7 @@ export class CheckpointManager {
       cells: opts.cells,
       dispositions: opts.dispositions,
       ...(opts.development !== undefined ? { development: opts.development } : {}),
+      ...(hasConcern ? { concern: opts.concern } : {}),
       ...(opts.seedLastTransitionAt !== undefined ? { seedLastTransitionAt: opts.seedLastTransitionAt } : {}),
     };
 
@@ -237,6 +243,8 @@ export class CheckpointManager {
       // v1 manifests predate development; their hashes must recompute the
       // v1 way or every pre-plasticity seed becomes unrestorable.
       ...(manifest.version >= 2 ? { development: manifest.development ?? {} } : {}),
+      // v3 manifests carry concern inside the hash; v2 recomputes without it.
+      ...(manifest.version >= 3 ? { concern: manifest.concern ?? {} } : {}),
     });
     if (computedHash !== manifest.stateHash) {
       return { ok: false, reason: `stateHash mismatch: stored=${manifest.stateHash.slice(0, 16)}, computed=${computedHash.slice(0, 16)}` };
@@ -282,6 +290,9 @@ export function computeStateHash(opts: {
   /** Cut 3: developmental state enters the hash (v2). Omit entirely for v1
    * compatibility recomputes — an empty object is NOT the same as absent. */
   development?: Record<string, unknown>;
+  /** Cut 6: concern (normative state) enters the hash (v3). Omit entirely
+   * for v1/v2 recomputes — same absent-vs-empty discipline as development. */
+  concern?: Record<string, unknown>;
 }): string {
   return createHash('sha256')
     .update(
@@ -308,6 +319,7 @@ export function computeStateHash(opts: {
         })),
         dispositions: opts.dispositions,
         ...(opts.development !== undefined ? { development: opts.development } : {}),
+        ...(opts.concern !== undefined ? { concern: opts.concern } : {}),
       }),
       'utf-8',
     )

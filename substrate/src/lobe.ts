@@ -70,6 +70,10 @@ export interface ValidatedLobeResult {
     interpretations: LobeResult['interpretations'];
     predictions: LobeResult['predictions'];
     stateDeltas: ProposedStateDelta[];
+    /** Cut 6: at most ONE reach-operator action, accepted ONLY on an
+     * endogenous occasion (packet.occasion). Acceptance is not warrant —
+     * the Seed's own law decides whether the action is authorized. */
+    actions: LobeResult['candidateActions'];
   };
   rejected: RejectedProposal[];
   modelReceipt: ModelReceipt;
@@ -152,17 +156,39 @@ export function validateLobeResult(result: LobeResult, packet: WorkspacePacket):
     stateDeltas.push(d);
   }
 
-  // Forms and actions are Cut 4 authority — receipted as rejected for now so
-  // the lobe's full output is on the record without granting anything.
+  // Forms stay Cut 4 authority — receipted as rejected so the lobe's full
+  // output is on the record without granting anything.
   for (const f of (Array.isArray(result.candidateForms) ? result.candidateForms : []).slice(0, MAX_FORMS_OR_ACTIONS)) {
     rejected.push({ kind: 'candidateForm', reason: `forms are Cut 4 authority (${f.formId ?? 'unnamed'})` });
   }
+  // Cut 6: on an ENDOGENOUS OCCASION only, at most one reach-operator action
+  // may be PROPOSED. Everything else — any action outside an occasion, any
+  // capability other than operator.reach, any second action — is rejected
+  // with its reason. The membrane protects reasons: acceptance here is
+  // proposal intake; the Seed's warrant law decides authorization.
+  const actions: LobeResult['candidateActions'] = [];
   for (const a of (Array.isArray(result.candidateActions) ? result.candidateActions : []).slice(0, MAX_FORMS_OR_ACTIONS)) {
-    rejected.push({ kind: 'candidateAction', reason: `actions are Cut 4 authority (${a.actionId ?? 'unnamed'})` });
+    if (packet.occasion === undefined) {
+      rejected.push({ kind: 'candidateAction', reason: `actions require an endogenous occasion (${a.actionId ?? 'unnamed'})` });
+      continue;
+    }
+    if (a.capability !== 'operator.reach') {
+      rejected.push({ kind: 'candidateAction', reason: `capability ${String(a.capability)} not grantable — operator.reach is the one affordance` });
+      continue;
+    }
+    if (!boundedString(a.description)) {
+      rejected.push({ kind: 'candidateAction', reason: 'reach-operator description malformed or oversized' });
+      continue;
+    }
+    if (actions.length >= 1) {
+      rejected.push({ kind: 'candidateAction', reason: 'one reach-operator proposal per occasion' });
+      continue;
+    }
+    actions.push(a);
   }
 
   return {
-    accepted: { observations, interpretations, predictions, stateDeltas },
+    accepted: { observations, interpretations, predictions, stateDeltas, actions },
     rejected,
     modelReceipt: result.modelReceipt,
     uncertainty: boundedConfidence(result.uncertainty) ? result.uncertainty : 0.5,
@@ -173,6 +199,12 @@ export function validateLobeResult(result: LobeResult, packet: WorkspacePacket):
 
 function deterministicId(prefix: string, cellId: string, content: string): string {
   return `${prefix}_${createHash('sha256').update(`${cellId}:${content}`, 'utf-8').digest('hex').slice(0, 16)}`;
+}
+
+/** The exact predictionId predictions.append computes for (cellId, claim) —
+ * concern.v1 formation binds commitments to it (Cut 6). */
+export function predictionIdFor(cellId: string, claim: string): string {
+  return deterministicId('pred', cellId, claim);
 }
 
 /**
@@ -365,6 +397,14 @@ export function buildLobePrompt(packet: WorkspacePacket): string {
       `DREAM CYCLE — an event-time quiet gap of ~${Math.round(packet.dream.quietSeconds / 60)} minutes just ended; this recruitment is the mind working the day's residue at waking. The refs in the packet are what was lived before sleep (many carry the words). Recombine across cells: connect what belongs together, revise estimates the residue contradicts, RESOLVE open predictions the gap answered, propose intentions the lived day earned. The typed-delta contract below is unchanged — only the occasion is special. Work the residue; do not narrate the dream.`,
       '',
     ] : []),
+    ...(packet.occasion !== undefined ? [
+      `ENDOGENOUS OCCASION — this recruitment was not caused by a contact or a cadence. The individual's OWN obligation dynamics crossed threshold${packet.occasion.overdue ? ' (overdue: the crossing was due earlier, materialized now)' : ''}: the commitment to resolve prediction ${packet.occasion.predictionId} — "${packet.occasion.claim}" — passed its horizon (${packet.occasion.horizon}) unanswered, and unresolved obligation reached q=${packet.occasion.q.toFixed(2)} at ${packet.occasion.crossedAt} (press ${packet.occasion.crossings + 1} of 3). Deliberate NOW, against the packet's actual evidence:`,
+      `  1. If the evidence answers the prediction, RESOLVE it: predictions.resolve {predictionId: "${packet.occasion.predictionId}", error: 0..1}. This discharges the obligation.`,
+      '  2. If the evidence is insufficient and the question genuinely matters, you may propose ONE action: {"candidateActions": [{"actionId": "reach", "description": "<a concrete, bounded question or finding for jtr — his time is a real cost>", "capability": "operator.reach"}]}. Proposing does not warrant it — the Seed\'s own law decides.',
+      '  3. If neither is warranted, silence is legitimate: return your best typed updates and let the obligation press again later, or resolve with an honest error estimate if the horizon has truly answered it.',
+      '  Never manufacture a resolution to quiet the pressure. The obligation exists because the individual predicted; only reality or the operator settles it.',
+      '',
+    ] : []),
     'You are a recruited cognitive lobe for a substrate Seed. You receive a typed',
     'workspace packet and return ONLY a JSON object — no prose around it.',
     '',
@@ -440,7 +480,9 @@ function shapeLobeResult(parsed: Partial<LobeResult>, modelReceipt: ModelReceipt
     predictions: Array.isArray(parsed.predictions) ? parsed.predictions : [],
     stateDeltas: Array.isArray(parsed.stateDeltas) ? parsed.stateDeltas : [],
     candidateForms: [],
-    candidateActions: [],
+    // Cut 6: action proposals reach validation (occasion-gated there);
+    // dropping them here would silently sever the motor's proposal path.
+    candidateActions: Array.isArray(parsed.candidateActions) ? parsed.candidateActions : [],
     uncertainty: typeof parsed.uncertainty === 'number' ? parsed.uncertainty : 0.5,
     evidenceRefs: [],
     modelReceipt,
