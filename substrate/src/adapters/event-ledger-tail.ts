@@ -441,6 +441,14 @@ export class EventLedgerTailAdapter implements SourceAdapter {
     const producedAt = entry.timestamp ?? entry.ts;
     if (typeof producedAt !== 'string' || !Number.isFinite(Date.parse(producedAt))) return null;
     const eventType = typeof entry.event_type === 'string' ? entry.event_type : 'unknown';
+    // The machine's pulse is not the individual's life. The engine
+    // heartbeats every 5 minutes forever, which held every Mac individual
+    // awake through the night of 2026-08-09 (zero overnight consolidations
+    // while the one circadian-gated individual slept 8 times). Heartbeats
+    // stay in the harness ledger — telemetry, the machine-snapshot row's
+    // material — but they no longer enter the diet or reset the sleep
+    // clock. Earned heartbeat facts remain earned; history is not edited.
+    if (eventType === 'event_ledger.heartbeat') return null;
     const eventId = typeof entry.event_id === 'string'
       ? entry.event_id
       : `harness_${createHash('sha256').update(line, 'utf-8').digest('hex').slice(0, 16)}`;

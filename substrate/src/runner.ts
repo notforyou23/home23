@@ -89,6 +89,7 @@ export class SeedRunner {
   private timer: NodeJS.Timeout | null = null;
   private wake: (() => void) | null = null;
   private lastLobeAtMs = 0;
+  private _dreamDeferralLogged = false;
   private lockPath: string | null = null;
   private readonly log: (line: string) => void;
 
@@ -248,12 +249,12 @@ export class SeedRunner {
       // guard. v1 requires at least one admissible cell; a silence outcome
       // dissolves the dream honestly (sub-threshold deep-sleep dreaming is
       // future work, and the silence receipt already explains itself).
-      if (this.opts.lobe !== undefined) {
-        const dream = this.seed.consumePendingDream();
-        if (dream !== null) {
-          const minInterval = this.opts.lobeMinIntervalMs ?? 0;
-          const sinceLast = Date.now() - this.lastLobeAtMs;
-          if (sinceLast >= minInterval) {
+      if (this.opts.lobe !== undefined && this.seed.hasPendingDream()) {
+        const minInterval = this.opts.lobeMinIntervalMs ?? 0;
+        const sinceLast = Date.now() - this.lastLobeAtMs;
+        if (sinceLast >= minInterval) {
+          const dream = this.seed.consumePendingDream();
+          if (dream !== null) {
             const outcome = this.seed.workspaceCycle(event.producedAt);
             report.workspaceOutcomes.push(outcome.kind);
             if (outcome.kind === 'workspace') {
@@ -266,10 +267,15 @@ export class SeedRunner {
             } else {
               this.log('dream dissolved — nothing admissible at waking (silence receipted)');
             }
-          } else {
-            this.log(`dream deferred by lobe guard (${Math.round((minInterval - sinceLast) / 1000)}s remaining) — residue stays in the refs`);
           }
+        } else if (!this._dreamDeferralLogged) {
+          // The dream STAYS pending — the guard delays it, never eats it
+          // (bobby lost nine dreams to the old consume-on-defer).
+          this._dreamDeferralLogged = true;
+          this.log(`dream deferred by lobe guard (${Math.round((minInterval - sinceLast) / 1000)}s remaining) — it stays pending until the guard opens`);
         }
+      } else {
+        this._dreamDeferralLogged = false;
       }
 
       if (this.transitionsSinceWorkspace >= (this.opts.workspaceEveryN ?? 8)) {

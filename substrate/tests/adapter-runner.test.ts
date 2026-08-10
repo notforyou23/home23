@@ -437,3 +437,17 @@ test('house mapper: home transitions arrive as observed contact with words', (t)
   assert.equal(events[0]?.payload['head'], 'Garage 1 opened');
   assert.equal(events[1]?.payload['head'], 'Althea - Kitchen playing "Ripple" — Grateful Dead');
 });
+
+test("the machine's heartbeat is not diet: event_ledger.heartbeat lines are filtered", (t) => {
+  const srcDir = makeDir(t, 'hb-src');
+  const stateDir = makeDir(t, 'hb-state');
+  const sourcePath = join(srcDir, 'event-ledger.jsonl');
+  writeFileSync(sourcePath, [
+    JSON.stringify({ event_id: 'hb1', event_type: 'event_ledger.heartbeat', timestamp: '2026-08-10T10:00:00.000Z', payload: {} }),
+    JSON.stringify({ event_id: 'real1', event_type: 'SessionStarted', session_id: 's', timestamp: '2026-08-10T10:01:00.000Z', payload: {} }),
+  ].join('\n') + '\n', 'utf-8');
+  const adapter = new EventLedgerTailAdapter({ sourcePath, cursorDir: stateDir, fromEnd: false });
+  const events = adapter.pullSync();
+  assert.equal(events.length, 1, 'the pulse stays in the ledger, out of the diet');
+  assert.equal(events[0]?.eventId, 'real1');
+});

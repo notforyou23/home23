@@ -725,6 +725,13 @@ export class SeedProcess {
     return dream;
   }
 
+  /** dream.v1: is a dream waiting? (Bobby's first night, 2026-08-10: nine
+   * dreams were lost because deferral CONSUMED them — the runner must peek
+   * before the spend guard, and consume only when it can actually dream.) */
+  hasPendingDream(): boolean {
+    return this._pendingDream !== null;
+  }
+
   workspaceCycle(asOf: string): WorkspaceOutcome {
     this.membrane.assert('local.state.read');
     this.membrane.assert('local.state.write');
