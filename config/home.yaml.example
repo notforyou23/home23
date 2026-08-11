@@ -358,3 +358,48 @@ skills:
     defaults:
       quick: true
       saveMarkdown: true
+
+# ── Substrate auxiliary services (optional) ──
+# Generated into ecosystem.config.cjs by cli/lib/generate-ecosystem.js, so
+# `home23 start` recreates them. Omit this block entirely and none are emitted.
+#
+# Per-agent processes are DERIVED and need nothing here: an agent with
+# substrate.enabled gets its seed runner and conversation shipper
+# automatically, and substrate.houseSense on the agent adds house sensing.
+# Only things that cannot be derived are declared below.
+substrate:
+  observatory:
+    # The terrarium — a read-only page over every individual's chain.
+    # Emitted only when at least one agent runs a seed.
+    port: 5050
+    # Individuals that are NOT agents of this install: a resident living on
+    # another machine and mirrored locally, or an archived lineage. Paths are
+    # relative to the install root.
+    extraIndividuals: []
+    #  - name: bobby
+    #    stateDir: instances/bobby/seed-01-mirror
+    #  - name: clay
+    #    stateDir: instances/clay/seed-01
+    #    note: archived
+
+  # Lobe brokers carry a remote resident's exchange over ssh. Remote paths are
+  # that machine's filesystem and are used verbatim; *Dest paths are local
+  # mirrors resolved against this install.
+  brokers: []
+  #  - name: bobby
+  #    sshHost: 192.168.1.50
+  #    remoteDir: /home/you/bobby/lobe-exchange
+  #    model: claude-haiku-4-5
+  #    intervalMs: 20000
+  #    stateDest: instances/bobby/seed-01-mirror
+  #    stateRemote: /home/you/bobby/seed-01
+  #    formsDest: instances/bobby/forms-mirror
+  #    formsRemote: /home/you/bobby/forms
+  #    formsEveryTicks: 30
+
+  # Long-running feed scripts. Keep the script itself under instances/ (which
+  # is gitignored) so nothing machine-specific enters the repository.
+  shippers: []
+  #  - name: bobby-house-shipper
+  #    script: instances/jerry/substrate/house-stream-shipper.sh
+  #    interpreter: bash
