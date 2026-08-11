@@ -324,6 +324,87 @@ export function generateEcosystem(home23Root, options = {}) {
     }
   }
 
+  // ── Substrate auxiliary services (shared) ──
+  // These ran hand-started for weeks. Two of them (the observatory and the
+  // bobby house shipper) were still on PM2's DEFAULT log paths on 2026-08-11,
+  // which is precisely how forrest's engine output went invisible on
+  // 2026-08-09 — a bare `pm2 start` writes a record nothing regenerates and
+  // no verifier can find. Generated here so `home23 start` recreates them.
+  //
+  // Everything machine-specific (a Pi address, an SSH key, a dated field-trip
+  // directory) stays in config and in the scripts themselves under
+  // instances/, which is gitignored. The public repo keeps none of it.
+  const substrateConfig = homeConfig.substrate || {};
+  const seedAgents = agents.filter(agent => agent.config?.substrate?.enabled === true);
+
+  if (seedAgents.length > 0) {
+    const observatoryConfig = substrateConfig.observatory || {};
+    // Derived first — an agent that runs a seed is watched without anyone
+    // remembering to list it. Individuals that are NOT agents (a remote
+    // resident mirrored locally, an archived lineage) cannot be derived, so
+    // they are declared. Both carry relative paths resolved against the
+    // install root at load time.
+    const individuals = [
+      ...seedAgents.map(agent => ({
+        name: `${agent.name}-seed`,
+        stateDir: `instances/${agent.name}/substrate/seed-01`,
+      })),
+      ...(Array.isArray(observatoryConfig.extraIndividuals) ? observatoryConfig.extraIndividuals : [])
+        .filter(entry => entry && entry.name && entry.stateDir),
+    ];
+    const observatoryPort = Number(observatoryConfig.port) > 0 ? Number(observatoryConfig.port) : 5050;
+
+    lines.push(``);
+    lines.push(`    // ── seed observatory (shared organ sentinel) ──`);
+    lines.push(`    {`);
+    lines.push(`      name: 'home23-seed-observatory',`);
+    lines.push(`      script: path.join(HOME23, 'substrate', 'bin', 'seed-observatory.ts'),`);
+    lines.push(`      cwd: HOME23,`);
+    // Same reason as the seed runner: PM2 picks an interpreter by extension
+    // for .ts (bun when present) and then ignores node_args.
+    lines.push(`      interpreter: 'node',`);
+    lines.push(`      node_args: '--import tsx',`);
+    lines.push(`      filter_env: ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
+    lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
+    lines.push(`      out_file: path.join(HOME23, 'logs', 'observatory-out.log'),`);
+    lines.push(`      error_file: path.join(HOME23, 'logs', 'observatory-err.log'),`);
+    // It reads OBSERVATORY_* and ORGAN_SENTINEL_* and nothing else. The
+    // hand-started process also carried HOME23_BRIDGE_TOKEN, which it never
+    // read — the same over-grant class as the brain-operations capability key
+    // (revoked 2026-08-11). Grant only what is read.
+    lines.push(`      env: {`);
+    lines.push(`        OBSERVATORY_PORT: '${observatoryPort}',`);
+    lines.push(`        OBSERVATORY_INDIVIDUALS: JSON.stringify(${JSON.stringify(individuals)}.map((i) => ({ ...i, stateDir: path.resolve(HOME23, i.stateDir) }))),`);
+    if (observatoryConfig.notifyUrl) {
+      lines.push(`        ORGAN_SENTINEL_NOTIFY_URL: ${JSON.stringify(String(observatoryConfig.notifyUrl))},`);
+    }
+    if (observatoryConfig.ignore) {
+      lines.push(`        ORGAN_SENTINEL_IGNORE: ${JSON.stringify(String(observatoryConfig.ignore))},`);
+    }
+    lines.push(`      },`);
+    lines.push(`    },`);
+  }
+
+  // Declared substrate shippers — long-running feeds to remote residents.
+  // Emitted only when declared, so a fresh install starts none.
+  for (const shipper of Array.isArray(substrateConfig.shippers) ? substrateConfig.shippers : []) {
+    if (!shipper || !shipper.name || !shipper.script) continue;
+    lines.push(``);
+    lines.push(`    // ── substrate shipper: ${shipper.name} ──`);
+    lines.push(`    {`);
+    lines.push(`      name: 'home23-${shipper.name}',`);
+    lines.push(`      script: path.resolve(HOME23, ${JSON.stringify(String(shipper.script))}),`);
+    if (shipper.interpreter) {
+      lines.push(`      interpreter: ${JSON.stringify(String(shipper.interpreter))},`);
+    }
+    lines.push(`      cwd: HOME23,`);
+    lines.push(`      filter_env: ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
+    lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
+    lines.push(`      out_file: path.join(HOME23, 'logs', '${shipper.name}-out.log'),`);
+    lines.push(`      error_file: path.join(HOME23, 'logs', '${shipper.name}-err.log'),`);
+    lines.push(`    },`);
+  }
+
   // PM2 watchdog — shared supervisor for agent engine/dashboard/harness triplets.
   // Disabled pending redesign: the daemon previously accumulated duplicate
   // waiters and could leave the live PM2 set without Jerry's required triplet.
