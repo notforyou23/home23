@@ -230,8 +230,9 @@ export class CommandHandler {
       (byProvider[val.provider] ??= []).push({ model, aliases: val.aliases });
     }
 
-    // Render each provider
-    const providerOrder = ['anthropic', 'minimax', 'openai', 'xai', 'ollama-cloud'];
+    // Render each provider — same list as the keyboard order below; /models
+    // used to omit openai-codex while the picker showed it (audit H3/H5).
+    const providerOrder = ['anthropic', 'minimax', 'openai-codex', 'openai', 'xai', 'ollama-cloud'];
     for (const p of providerOrder) {
       const entries = byProvider[p];
       if (!entries) continue;

@@ -36,6 +36,7 @@ import { DeliveryManager } from './scheduler/delivery.js';
 import { SiblingProtocol } from './sibling/protocol.js';
 import { BridgeChat } from './sibling/bridge-chat.js';
 import { AgentLoop } from './agent/loop.js';
+import { resolveModelOverride } from './agent/model-resolution.js';
 import { resolveProviderKey } from './agent/provider-credentials.js';
 import { executeTrackedTurn } from './agent/turn-entrypoint.js';
 import { ContextManager } from './agent/context.js';
@@ -363,9 +364,10 @@ async function main(): Promise<void> {
     turnRuntime: null,
   };
 
-  // ── Model from config.yaml (single source of truth) ──
-  const startupModel = config.chat.defaultModel ?? config.chat.model ?? 'kimi-k2.6';
-  const startupProvider = config.chat.defaultProvider ?? config.chat.provider ?? 'ollama-cloud';
+  // ── Model from config.yaml (single source of truth; shared floor) ──
+  const fleetDefaults = requireCjs('../shared/model-defaults.cjs') as { DEFAULT_CHAT_MODEL: string; DEFAULT_CHAT_PROVIDER: string };
+  const startupModel = config.chat.defaultModel ?? config.chat.model ?? fleetDefaults.DEFAULT_CHAT_MODEL;
+  const startupProvider = config.chat.defaultProvider ?? config.chat.provider ?? fleetDefaults.DEFAULT_CHAT_PROVIDER;
   console.log(`[home] Model: ${startupModel} (${startupProvider}) — from config.yaml`);
 
   // ── Auth tokens ──
@@ -800,11 +802,24 @@ async function main(): Promise<void> {
           if (job.payload.sessionHistory === 'fresh') {
             agent.getHistory().rotate(cronChatId);
           }
+          // payload.model was declared on agentTurn jobs and silently ignored
+          // (2026-08-11 audit D5 — only `query` jobs honored it). It now
+          // routes the turn; an unresolvable model fails the job loudly
+          // instead of running on the wrong brain.
+          let cronModelOverride: { model: string; provider?: string } | undefined;
+          if (job.payload.model) {
+            const resolved = resolveModelOverride(job.payload.model, MODEL_ALIASES);
+            if (!resolved) {
+              const durationMs = Date.now() - startMs;
+              return { status: 'error', error: `agentTurn model "${job.payload.model}" is not a known alias or routable model`, durationMs };
+            }
+            cronModelOverride = resolved;
+          }
           const { response: result } = await executeTrackedTurn(
             agent,
             cronChatId,
             resolvedMessage,
-            { hardDurationMs: timeoutMs },
+            { hardDurationMs: timeoutMs, ...(cronModelOverride ? { modelOverride: cronModelOverride } : {}) },
           );
           const durationMs = Date.now() - startMs;
 

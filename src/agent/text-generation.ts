@@ -1,7 +1,15 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { createRequire } from 'node:module';
 import { getCodexCredentials, getCodexHeaders, type CodexCredentials } from './codex-auth.js';
 import { combineRequestSignals } from './abort-signals.js';
+import { inferProviderFromModel } from './model-resolution.js';
 import { resolveProviderKey, isAuthError } from './provider-credentials.js';
+
+const requireCjs = createRequire(import.meta.url);
+const fleetDefaults = requireCjs('../../shared/model-defaults.cjs') as {
+  DEFAULT_MODEL_BY_PROVIDER: Record<string, string>;
+  DEFAULT_CHAT_MODEL: string;
+};
 
 export interface TextGenerationOptions {
   provider?: string;
@@ -41,13 +49,12 @@ function anthropicSupportsTemperature(model: string): boolean {
 }
 
 export function inferTextGenerationProvider(model?: string, provider?: string): string {
-  if (provider) return provider;
-  const value = String(model || '');
-  if (value.includes('claude')) return 'anthropic';
-  if (value.includes('MiniMax')) return 'minimax';
-  if (value.includes('grok')) return 'xai';
-  if (value.startsWith('gpt')) return 'openai';
-  return 'ollama-cloud';
+  // LENIENT caller policy over the ONE canonical rule set (model-resolution):
+  // bare unrecognized names route to ollama-cloud, the catch-all serving
+  // tier. Strict callers use resolveModelOverride, which rejects instead —
+  // same rules, declared failure modes (P2-12).
+  const inferred = inferProviderFromModel(String(model || ''), provider || undefined);
+  return inferred === 'unknown' ? 'ollama-cloud' : inferred;
 }
 
 export async function generateText(opts: TextGenerationOptions): Promise<string> {
@@ -184,12 +191,9 @@ async function generateTextAttempt(opts: TextGenerationOptions, provider: string
 }
 
 function defaultModelForProvider(provider: string): string {
-  if (provider === 'anthropic') return 'claude-haiku-4-5';
-  if (provider === 'minimax') return 'MiniMax-M3';
-  if (provider === 'openai') return 'gpt-5.4-mini';
-  if (provider === 'openai-codex') return 'gpt-5.6-luna';
-  if (provider === 'xai') return 'grok-4.5';
-  return 'kimi-k2.6';
+  // Single source: shared/model-defaults.cjs (P2-13) — this table used to be
+  // duplicated here, in the codex body default, and across the CLI.
+  return fleetDefaults.DEFAULT_MODEL_BY_PROVIDER[provider] ?? fleetDefaults.DEFAULT_CHAT_MODEL;
 }
 
 // envApiKey is gone: frozen-env credential reads were the disease (see
@@ -213,7 +217,7 @@ async function generateCodexText(
   if (!creds) throw new Error('openai-codex credentials not found');
 
   const body: Record<string, unknown> = {
-    model: opts.model || 'gpt-5.6-luna',
+    model: opts.model || fleetDefaults.DEFAULT_MODEL_BY_PROVIDER['openai-codex'],
     instructions: opts.system || '',
     input: [{
       type: 'message',

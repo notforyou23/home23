@@ -238,8 +238,9 @@ export async function runAgentCreate(home23Root, name, options = {}) {
   console.log('');
   const botToken = await promptSecret('Telegram bot token (from BotFather)');
   console.log('');
-  const defaultModel = await promptWithDefault('Default chat model', 'kimi-k2.6');
-  const defaultProvider = await promptWithDefault('Default provider', 'ollama-cloud');
+  const modelDefaults = require('../../shared/model-defaults.cjs');
+  const defaultModel = await promptWithDefault('Default chat model', modelDefaults.DEFAULT_CHAT_MODEL);
+  const defaultProvider = await promptWithDefault('Default provider', modelDefaults.DEFAULT_CHAT_PROVIDER);
 
   closePrompts();
 

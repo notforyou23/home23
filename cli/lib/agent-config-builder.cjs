@@ -1,6 +1,8 @@
-const DEFAULT_CHAT_PROVIDER = 'ollama-cloud';
-const DEFAULT_CHAT_MODEL = 'kimi-k2.6';
-const DEFAULT_ENGINE_MODEL = 'MiniMax-M3';
+const {
+  DEFAULT_CHAT_PROVIDER,
+  DEFAULT_CHAT_MODEL,
+  DEFAULT_ENGINE_MODEL,
+} = require('../../shared/model-defaults.cjs');
 
 function buildFeederWatchPaths(instanceDir, ingestPaths = []) {
   return [

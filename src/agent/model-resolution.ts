@@ -5,6 +5,20 @@ export interface ModelOverride {
   provider?: string;
 }
 
+/**
+ * The canonical model→provider inference (one rule set, 2026-08-11).
+ * Two caller policies exist on top of it:
+ *   - STRICT — resolveModelOverride below: 'unknown' → reject. For callers
+ *     about to create background work from a raw string (subagents, chat
+ *     model overrides).
+ *   - LENIENT — text-generation's inferTextGenerationProvider: 'unknown' →
+ *     'ollama-cloud', the catch-all serving tier. For bare model names from
+ *     substrate lobes and cron prompts.
+ * Case rule, deliberate: 'MiniMax-M3' (brand casing) is the MiniMax API;
+ * lowercase 'minimax-m2.7' is an ollama-served clone and must fall through
+ * to 'unknown' so the lenient policy lands it on ollama-cloud — do not
+ * "fix" this to a case-insensitive match.
+ */
 export function inferProviderFromModel(model: string, provider?: string): string {
   return provider ?? (
     model.includes('claude') ? 'anthropic' :
