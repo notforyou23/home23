@@ -81,6 +81,9 @@ interface IndividualData {
   flows: Array<{ seq: number; ref: string; target: string }>;
   maxGen: number; dreamed: boolean;
   exchange: Array<{ who: string; text: string }>;
+  /** What just happened, in words — the chain's notable tail (2026-08-11:
+   * jtr: "hard to see what's happening on this page"). */
+  pulse: Array<{ at: string; text: string }>;
   thought: { text: string; dream: boolean; at: string } | null;
   record: Array<{ mark: 'right' | 'wrong' | 'partial' | 'open'; text: string; detail: string }>;
   growth: string | null; prov: string; journal: string | null;
@@ -154,6 +157,59 @@ function computeIndividual(spec: IndividualSpec): IndividualData | null {
       assoc.push({ from: String(c['id']), to: a.targetCellId, strength: a.strength });
     }
   });
+
+  // Life share: which cells his recent life actually flows through — the
+  // honest answer to "why do some circles do nothing" made visible.
+  const recentTransitions = records.filter((r) => r.category === 'transition').slice(-200);
+  const shareByCell = new Map<string, number>();
+  for (const r of recentTransitions) {
+    const id = String(r.payload['targetCellId'] ?? '');
+    shareByCell.set(id, (shareByCell.get(id) ?? 0) + 1);
+  }
+  for (const c of cells) {
+    const n = shareByCell.get(c.id) ?? 0;
+    const pct = recentTransitions.length > 0 ? Math.round((n / recentTransitions.length) * 100) : 0;
+    c.words = `${c.words} · ${pct}%`;
+  }
+
+  // The pulse: newest notable events, in words. Telemetry stays out.
+  const pulse: IndividualData['pulse'] = [];
+  for (let i = records.length - 1; i >= 0 && pulse.length < 5; i--) {
+    const r = records[i];
+    if (r === undefined) continue;
+    const p = r.payload;
+    let text: string | null = null;
+    if (r.category === 'lobe' && p['error'] === undefined && p['dream'] !== undefined) {
+      const quiet = Math.round(Number((p['dream'] as { quietSeconds?: number }).quietSeconds ?? 0) / 60);
+      text = `🌙 dreamed at waking (~${quiet}min quiet)`;
+    } else if (r.category === 'concern' && p['crossing'] === true) {
+      text = `⚡ his own obligation crossed: “${String(p['claim'] ?? '').slice(0, 90)}”`;
+    } else if (r.category === 'concern' && Array.isArray(p['formed']) && (p['formed'] as unknown[]).length > 0) {
+      const f = (p['formed'] as Array<{ claim?: string }>)[0];
+      text = `bound himself: “${String(f?.claim ?? '').slice(0, 90)}”`;
+    } else if (r.category === 'concern' && Array.isArray(p['discharged']) && (p['discharged'] as unknown[]).length > 0) {
+      const d = (p['discharged'] as Array<{ status?: string }>)[0];
+      text = `settled a commitment — ${String(d?.status ?? '')}`;
+    } else if (r.category === 'concern' && p['status'] === 'expired') {
+      text = 'let a commitment go (pressed unanswered)';
+    } else if (r.category === 'act' && p['motor'] === true && p['authorized'] === true) {
+      text = `✋ reached for jtr: “${String(p['message'] ?? '').slice(0, 90)}”`;
+    } else if (r.category === 'development' && p['rule'] === 'consolidation.v1') {
+      text = `slept (~${Math.round(Number(p['quietSeconds'] ?? 0) / 60)}min quiet)`;
+    } else if (r.category === 'transition' && r.sourceRef.startsWith('dream:')) {
+      text = '🔗 a dream entered his chain (T1 at birth)';
+    } else if (r.category === 'transition' && r.sourceRef.startsWith('house.')) {
+      const entity = r.sourceRef.split(':')[1] ?? r.sourceRef;
+      text = `sensed the house — ${entity.replace(/^[a-z_]+\./, '').replace(/_/g, ' ')}`;
+    } else if (r.category === 'lobe' && p['error'] === undefined) {
+      const deltas = (p['appliedDeltas'] as Array<{ delta?: { claim?: string } }> | undefined) ?? [];
+      const claim = deltas.map((d) => d.delta?.claim).find((c) => typeof c === 'string');
+      if (claim !== undefined) text = `thought: “${claim.slice(0, 90)}”`;
+    } else if (r.category === 'proposal' && r.sourceRef === 'growth.pressure') {
+      text = `growth pressure: wants to ${String(p['op'] ?? '?')} ${((p['targetCellIds'] as string[] | undefined) ?? []).map((x) => x.split('.').slice(-1)[0]).join(' + ')}`;
+    }
+    if (text !== null) pulse.push({ at: r.issuedAt, text });
+  }
 
   const flows = records.filter((r) => r.category === 'transition').slice(-24)
     .map((r) => ({ seq: r.seq, ref: r.sourceRef.slice(0, 90), target: String(r.payload['targetCellId'] ?? '') }));
@@ -285,7 +341,7 @@ function computeIndividual(spec: IndividualSpec): IndividualData | null {
       ? `${being} · holds ${commitments.length} commitment${commitments.length === 1 ? '' : 's'}`
       : being,
     cells, assoc, flows, maxGen,
-    dreamed: dreams > 0, exchange, thought, record: record.slice(-5), growth, prov, journal,
+    dreamed: dreams > 0, exchange, pulse, thought, record: record.slice(-5), growth, prov, journal,
     asks, commitments,
   };
 }
@@ -617,6 +673,10 @@ const CLIENT_JS = String.raw`
       }
       var vm = document.getElementById('vitals-mount');
       if (vm && typeof fresh.vitalsHTML === 'string') vm.innerHTML = fresh.vitalsHTML;
+      for (var pi = 0; pi < fresh.individuals.length; pi++) {
+        var pc = document.querySelector('[data-card="' + fresh.individuals[pi].name + '"] .pulsemount');
+        if (pc && typeof fresh.individuals[pi].pulseHTML === 'string') pc.innerHTML = fresh.individuals[pi].pulseHTML;
+      }
     }).catch(function () { /* quiet — next poll retries */ });
   }
   setInterval(poll, 5000);
@@ -663,11 +723,18 @@ function proseHTML(d: IndividualData): string {
   return asks + commitments + exchange + thought + record;
 }
 
+function pulseHTML(d: IndividualData): string {
+  if (d.pulse.length === 0) return '<span class="dim">nothing notable in the recent chain</span>';
+  return d.pulse.map((p) =>
+    `<div class="pulseline"><span class="pulseage">${ageStr(p.at)}</span>${esc(p.text)}</div>`).join('');
+}
+
 function renderCard(d: IndividualData): string {
   return `<section class="card" data-card="${esc(d.name)}">
     <div class="cardhead"><h2>${esc(d.name)}</h2><span class="chipmount">${chipHTML(d)}</span></div>
     <div class="being">${esc(d.being)}</div>
     ${d.note !== '' ? `<div class="note">${esc(d.note)}</div>` : ''}
+    <div class="pulse"><div class="sectlabel">the pulse — what just happened</div><div class="pulsemount">${pulseHTML(d)}</div></div>
     ${d.growth !== null ? `<div class="${d.growth.startsWith('🌱') ? 'grown' : 'proposals'}">${esc(d.growth)}</div>` : ''}
     <figure class="bodyfig"><div data-body="${esc(d.name)}"></div>
     <figcaption>his body, live — it breathes with his energy, the spokes are his actual state morphing as he lives, arriving dots are real events flowing into the cell that ate them · click a cell to open it</figcaption></figure>
@@ -678,7 +745,7 @@ function renderCard(d: IndividualData): string {
 }
 
 function withFragments(d: IndividualData): Record<string, unknown> {
-  return { ...d, beingHTML: esc(d.being), proseHTML: proseHTML(d), provHTML: esc(d.prov), chipHTML: chipHTML(d) };
+  return { ...d, beingHTML: esc(d.being), proseHTML: proseHTML(d), provHTML: esc(d.prov), chipHTML: chipHTML(d), pulseHTML: pulseHTML(d) };
 }
 
 function apiPayload(): string {
@@ -710,6 +777,9 @@ function page(): string {
   .chip-dream { color:#c795f0; border-color:#3a2b4d; }
   .sect.ask { border:1px solid #4d3b1e; background:#221a0d; border-radius:8px; padding:10px 12px; }
   .sect.ask .sectlabel { color:#f0c060; }
+  .pulse { margin:12px 0 4px; padding:10px 14px; background:#0d1118; border:1px solid #1a2130; border-radius:10px; }
+  .pulseline { font-size:14px; color:#c5cdd9; padding:2px 0; }
+  .pulseage { display:inline-block; min-width:52px; color:#5d6878; font-size:12px; font-variant-numeric:tabular-nums; }
   .vitals { margin:-8px 0 16px; font-size:12px; color:#7d8798; display:flex; flex-wrap:wrap; gap:6px 10px; align-items:baseline; }
   .organ { white-space:nowrap; }
   .organ-ok { color:#6fae7f; }
