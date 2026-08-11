@@ -54,36 +54,37 @@ function mayDeferRestart(priorToken, nowMs, graceMs = 15 * 60 * 1000) {
 /**
  * Which processes still have to be restarted for a rotated token to reach them.
  *
- * The engine is deliberately NOT in this list (2026-08-11). It used to be:
- * credentials were distributed by value into PM2 env at boot, so the only way
- * to hand the engine a new token was to cycle the process. That trade was
- * always bad — an engine restart is the single most dangerous routine
- * operation in this house (it is the process that owns saveState/loadState,
- * and a shutdown racing a save has destroyed the brain before) — and a
- * routine 30-minute poller was firing it. The engine now resolves provider
- * credentials at use from config/secrets.yaml (engine/src/core/
- * provider-credentials.js), rebuilds its SDK clients when the file rotates,
- * and spends one force-fresh retry on an auth failure. Writing secrets.yaml
- * IS the delivery; the restart bought nothing and risked the brain.
+ * As of 2026-08-11: NONE. This returns an empty list, and that is the whole
+ * point — a routine token rotation no longer cycles any process in this house.
+ * The function is kept rather than deleted so the poller keeps one honest
+ * place to answer the question, and so a future consumer that genuinely
+ * cannot read-at-use has somewhere to declare itself.
  *
- * The harness IS still restarted, and that is not an oversight. Its
- * AgentLoop binds an Anthropic client in the constructor
- * (src/agent/loop.ts createAnthropicRuntimeClient at construction) and
- * rebuilds it only on an explicit provider switch — never on a rotation and
- * never on a 401. Until that client learns rebuild-on-rotation, a running
- * harness cannot see a new token, so the restart is still load-bearing.
- * The harness owns no brain, so cycling it is comparatively cheap.
+ * How each consumer got here:
+ *   - The ENGINE (dropped first). Credentials used to be distributed by value
+ *     into PM2 env at boot, so cycling the process was the only way to deliver
+ *     a new token. That trade was always bad: the engine owns saveState/
+ *     loadState, a shutdown racing a save has destroyed the brain before, and
+ *     a 30-minute timer was firing it. It now resolves at use from
+ *     config/secrets.yaml (engine/src/core/provider-credentials.js), rebuilds
+ *     its SDK clients on rotation, and spends one force-fresh retry on a 401.
+ *   - The HARNESS (dropped second). Its AgentLoop bound an Anthropic client in
+ *     the constructor and rebuilt it only on an explicit provider switch, so a
+ *     running harness genuinely could not see a new token. src/agent/loop.ts
+ *     now tracks the credential its client was built with, rebuilds per turn
+ *     when secrets.yaml rotates, and spends one force-fresh retry on an auth
+ *     failure — the same shape as the engine and text-generation.ts.
  *
- * Callers must pass only processes PM2 reports online: this list feeds
+ * Writing secrets.yaml IS the delivery. If this list ever grows again, the
+ * entry needs to say which consumer cannot read-at-use and why.
+ *
+ * Callers must still pass only processes PM2 reports online: this list feeds
  * `pm2 restart --only`, and naming an offline app is what produced the
  * 2026-08-07 orphan (a racing `pm2 start` against an in-flight restart left
  * a duplicate alive on the bridge port).
  */
-function rotationRestartTargets(agentNames, onlineNames) {
-  const online = onlineNames instanceof Set ? onlineNames : new Set(onlineNames || []);
-  return (agentNames || [])
-    .map((name) => `home23-${name}-harness`)
-    .filter((name) => online.has(name));
+function rotationRestartTargets(_agentNames, _onlineNames) {
+  return [];
 }
 
 module.exports = { jwtExpMs, readCurrentSecretToken, mayDeferRestart, rotationRestartTargets };

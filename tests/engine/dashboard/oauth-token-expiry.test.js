@@ -76,21 +76,20 @@ test('the engine is NEVER restarted for a token rotation — it resolves credent
 
   assert.equal(targets.includes('home23-jerry'), false,
     'restarting the engine risks the brain; it reads secrets.yaml at use and needs no restart');
-  assert.deepEqual(targets, ['home23-jerry-harness']);
 });
 
-test('the harness IS still restarted — its agent-loop client is bound at construction', () => {
+test('the harness is NOT restarted either — AgentLoop rebuilds on rotation as of 2026-08-11', () => {
   const online = new Set(['home23-jerry', 'home23-jerry-harness', 'home23-forrest-harness']);
-  const targets = rotationRestartTargets(['jerry', 'forrest'], online);
-  assert.deepEqual(targets.sort(), ['home23-forrest-harness', 'home23-jerry-harness']);
+  assert.deepEqual(rotationRestartTargets(['jerry', 'forrest'], online), [],
+    'the harness picks up a rotated token per turn; cycling it buys nothing');
 });
 
-test('offline processes are never targeted (no pm2 start fallback, no orphans)', () => {
-  const targets = rotationRestartTargets(['jerry', 'forrest'], new Set(['home23-jerry-harness']));
-  assert.deepEqual(targets, ['home23-jerry-harness']);
-});
-
-test('no online harness yields no targets, so the poller skips the restart entirely', () => {
-  assert.deepEqual(rotationRestartTargets(['jerry'], new Set(['home23-jerry'])), []);
+test('a token rotation now restarts NOTHING, whatever is online', () => {
+  const everything = new Set([
+    'home23-jerry', 'home23-jerry-dash', 'home23-jerry-harness', 'home23-jerry-mcp',
+    'home23-forrest', 'home23-forrest-dash', 'home23-forrest-harness', 'home23-cosmo23',
+  ]);
+  assert.deepEqual(rotationRestartTargets(['jerry', 'forrest'], everything), []);
+  assert.deepEqual(rotationRestartTargets(['jerry'], new Set()), []);
   assert.deepEqual(rotationRestartTargets([], new Set()), []);
 });

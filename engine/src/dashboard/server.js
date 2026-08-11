@@ -2924,11 +2924,12 @@ class DashboardServer {
     // ── OAuth refresh poller (STEP 18) ──
     // cosmo23 handles PKCE refresh internally. Every 30 min, check the current
     // decrypted token. If it differs from what's in secrets.yaml, sync it in.
-    // Writing secrets.yaml IS the delivery for every consumer that resolves
-    // credentials at use (the engine, since 2026-08-11). Only the harness
-    // still needs a process restart to see a new token — see
-    // rotationRestartTargets in ./oauth-token-expiry.js.
-    // Skip that restart if a COSMO research run is active (would kill it).
+    // Writing secrets.yaml IS the delivery: every consumer now resolves
+    // credentials at use, so as of 2026-08-11 a rotation restarts NOTHING —
+    // see rotationRestartTargets in ./oauth-token-expiry.js, which returns an
+    // empty list. The restart machinery below is kept (it is still correct,
+    // and still research-run aware) for whatever future consumer declares
+    // that it cannot read-at-use.
     try {
       const home23RootForPoll = this.getHome23Root();
       const fsSync = require('fs');

@@ -7,7 +7,7 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import { resolveProviderKey } from './provider-credentials.js';
+import { resolveProviderKey, isAuthError } from './provider-credentials.js';
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -82,11 +82,17 @@ function getClaudeCodeSystemPrompt(): { type: 'text'; text: string; cache_contro
   };
 }
 
-function createAnthropicRuntimeClient(configuredKey: string, baseURL?: string): { client: Anthropic; isOAuth: boolean } {
-  // Read-at-construction from the live secrets file (the token-rotation
-  // class's fix, 2026-08-10): a managed OAuth token frozen into boot config
-  // yields to the freshest mirrored value; static API keys stay as pinned.
-  const apiKey = resolveProviderKey('anthropic', configuredKey) || configuredKey;
+function createAnthropicRuntimeClient(
+  configuredKey: string,
+  baseURL?: string,
+  force = false,
+): { client: Anthropic; isOAuth: boolean; credential: string } {
+  // Read-at-use from the live secrets file (the token-rotation class's fix,
+  // 2026-08-10): a managed OAuth token frozen into boot config yields to the
+  // freshest mirrored value; static API keys stay as pinned. `force` drops the
+  // resolver cache — the auth-failure path. The credential is returned so the
+  // caller can tell whether a later resolution actually rotated.
+  const apiKey = resolveProviderKey('anthropic', configuredKey, force) || configuredKey;
   const isOAuth = apiKey.startsWith('sk-ant-oat');
   const client = isOAuth
     ? new Anthropic({
@@ -99,7 +105,7 @@ function createAnthropicRuntimeClient(configuredKey: string, baseURL?: string): 
         apiKey,
         ...(baseURL ? { baseURL } : {}),
       });
-  return { client, isOAuth };
+  return { client, isOAuth, credential: apiKey };
 }
 
 type RuntimeModelContext = {
@@ -294,6 +300,11 @@ function isAnthropicSamplingDeprecatedModel(model: string): boolean {
 
 export class AgentLoop {
   private client: Anthropic;
+  /** The credential `this.client` was built with, so a rotation is detectable. */
+  private credentialInUse: string;
+  /** Configured anthropic key from boot config — the pin/floor for resolution. */
+  private readonly configuredAnthropicKey: string;
+  private readonly configuredAnthropicBaseURL: string | undefined;
   private model: string;
   private provider: string;
   private maxTokens: number;
@@ -347,6 +358,9 @@ export class AgentLoop {
     const runtimeClient = createAnthropicRuntimeClient(opts.apiKey, opts.baseURL);
     this.isOAuth = runtimeClient.isOAuth;
     this.client = runtimeClient.client;
+    this.credentialInUse = runtimeClient.credential;
+    this.configuredAnthropicKey = opts.apiKey;
+    this.configuredAnthropicBaseURL = opts.baseURL;
     this.model = opts.model;
     this.provider = inferProviderFromModel(opts.model, opts.provider);
     this.maxTokens = opts.maxTokens ?? 16384;
@@ -523,7 +537,41 @@ export class AgentLoop {
     this.providerMap = new Map(Object.entries(map));
   }
 
+  /**
+   * Rebuild the Anthropic client if the resolved credential has rotated.
+   *
+   * Called once per turn (from createRuntimeContext), never inside the
+   * streaming path — resolveProviderKey is mtime-cached, so this is a cheap
+   * comparison in the common case. `force` drops that cache: the auth-failure
+   * path, where the rotation landed after this client was built and the cache
+   * window has not yet elapsed.
+   *
+   * An empty resolution KEEPS the working client. A secrets.yaml that briefly
+   * goes unreadable must not disarm a running agent — stale credentials beat
+   * no credentials. Returns true when the client was actually replaced.
+   */
+  private ensureFreshAnthropicClient(force = false): boolean {
+    if (this.provider !== 'anthropic' && this.provider !== 'minimax') return false;
+    const resolved = resolveProviderKey('anthropic', this.configuredAnthropicKey, force);
+    if (resolved === '' || resolved === this.credentialInUse) return false;
+    try {
+      const rebuilt = createAnthropicRuntimeClient(
+        this.configuredAnthropicKey, this.configuredAnthropicBaseURL, force);
+      this.client = rebuilt.client;
+      this.isOAuth = rebuilt.isOAuth;
+      this.credentialInUse = rebuilt.credential;
+      console.log('[agent] anthropic credential rotated in secrets.yaml — client rebuilt');
+      return true;
+    } catch (err) {
+      // Keep the working client; a failed rebuild is not worth killing a turn.
+      console.warn(`[agent] credential rebuild failed, keeping current client: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
   private createRuntimeContext(modelOverride?: { model: string; provider?: string }): RuntimeModelContext {
+    // Per-turn: a rotation reaches a RUNNING loop here, with no restart.
+    this.ensureFreshAnthropicClient();
     const model = modelOverride?.model ?? this.model;
     const provider = modelOverride?.model
       ? inferProviderFromModel(modelOverride.model, modelOverride.provider)
@@ -570,6 +618,9 @@ export class AgentLoop {
         const runtimeClient = createAnthropicRuntimeClient(cfg.apiKey, cfg.baseURL);
         this.isOAuth = runtimeClient.isOAuth;
         this.client = runtimeClient.client;
+        // Keep rotation detection honest after a provider switch, or the next
+        // ensureFreshAnthropicClient would compare against a stale credential.
+        this.credentialInUse = runtimeClient.credential;
         console.log(`[agent] provider switched to ${newProvider} (baseURL=${cfg.baseURL ?? 'default'})`);
       } else {
         console.warn(`[agent] setModel: no provider config for ${newProvider} — keeping existing client`);
@@ -2155,28 +2206,51 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             delete requestParams.temperature;
           }
 
-          const stream = runtimeClient.messages.stream(
-            requestParams as unknown as Anthropic.MessageCreateParams,
-            { signal: ac.signal },
-          );
+          // Tracks whether anything has already reached the user this attempt.
+          // A retry after visible output would duplicate text in the chat, so
+          // the credential retry below is allowed only before the first delta.
+          // In practice a 401 arrives on the request itself, before any
+          // content — this is the guard that keeps that assumption honest.
+          let emittedAny = false;
+          const streamAttempt = async (client: Anthropic): Promise<Anthropic.Message> => {
+            const stream = client.messages.stream(
+              requestParams as unknown as Anthropic.MessageCreateParams,
+              { signal: ac.signal },
+            );
 
-          for await (const event of stream) {
-            if (event.type === 'content_block_delta' && onEvent) {
-              const delta = event.delta as
-                | { type: 'text_delta'; text: string }
-                | { type: 'thinking_delta'; thinking: string }
-                | { type: 'input_json_delta'; partial_json: string };
-              if (delta.type === 'text_delta') {
-                onEvent({ type: 'response_chunk', chunk: delta.text });
-              } else if (delta.type === 'thinking_delta') {
-                onEvent({ type: 'thinking', content: delta.thinking });
+            for await (const event of stream) {
+              if (event.type === 'content_block_delta' && onEvent) {
+                const delta = event.delta as
+                  | { type: 'text_delta'; text: string }
+                  | { type: 'thinking_delta'; thinking: string }
+                  | { type: 'input_json_delta'; partial_json: string };
+                if (delta.type === 'text_delta') {
+                  emittedAny = true;
+                  onEvent({ type: 'response_chunk', chunk: delta.text });
+                } else if (delta.type === 'thinking_delta') {
+                  emittedAny = true;
+                  onEvent({ type: 'thinking', content: delta.thinking });
+                }
+                // input_json_delta accumulates tool-call arguments; surface the
+                // completed tool call at content_block_stop via finalMessage below.
               }
-              // input_json_delta accumulates tool-call arguments; surface the
-              // completed tool call at content_block_stop via finalMessage below.
             }
-          }
 
-          response = await stream.finalMessage();
+            return stream.finalMessage();
+          };
+
+          try {
+            response = await streamAttempt(runtimeClient);
+          } catch (streamErr) {
+            // One force-fresh credential retry, mirroring text-generation.ts:
+            // the token may have rotated in secrets.yaml after this client was
+            // built, and inside the resolver's cache window only a forced
+            // re-read can see it. Never loops — a second failure propagates.
+            if (ac.signal.aborted || emittedAny || !isAuthError(streamErr)) throw streamErr;
+            if (!this.ensureFreshAnthropicClient(true)) throw streamErr;
+            console.warn('[agent] auth failure — retrying once with the re-read credential');
+            response = await streamAttempt(this.client);
+          }
         } catch (err) {
           // If aborted by /stop, exit gracefully instead of throwing
           if (ac.signal.aborted) {
