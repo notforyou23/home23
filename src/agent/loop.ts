@@ -7,6 +7,7 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import { resolveProviderKey } from './provider-credentials.js';
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -81,7 +82,11 @@ function getClaudeCodeSystemPrompt(): { type: 'text'; text: string; cache_contro
   };
 }
 
-function createAnthropicRuntimeClient(apiKey: string, baseURL?: string): { client: Anthropic; isOAuth: boolean } {
+function createAnthropicRuntimeClient(configuredKey: string, baseURL?: string): { client: Anthropic; isOAuth: boolean } {
+  // Read-at-construction from the live secrets file (the token-rotation
+  // class's fix, 2026-08-10): a managed OAuth token frozen into boot config
+  // yields to the freshest mirrored value; static API keys stay as pinned.
+  const apiKey = resolveProviderKey('anthropic', configuredKey) || configuredKey;
   const isOAuth = apiKey.startsWith('sk-ant-oat');
   const client = isOAuth
     ? new Anthropic({

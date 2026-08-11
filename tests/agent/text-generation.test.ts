@@ -198,3 +198,56 @@ test('openai-codex retries once without max_output_tokens when the endpoint reje
     }
   }
 });
+
+// ─── provider-credentials: read-at-use resolution (the token-rotation fix) ───
+
+import { writeFileSync as writeCredFile, mkdtempSync as mkCredTmp, rmSync as rmCredDir } from 'node:fs';
+import { tmpdir as credTmpdir } from 'node:os';
+import { join as joinCred } from 'node:path';
+import { resolveProviderKey, freshProviderKey, isAuthError, _resetCredentialCache } from '../../src/agent/provider-credentials.js';
+
+test('a managed OAuth token resolves FRESH from secrets.yaml over stale configured/env values', (t) => {
+  const dir = mkCredTmp(joinCred(credTmpdir(), 'creds-'));
+  t.after(() => { rmCredDir(dir, { recursive: true, force: true }); delete process.env.HOME23_SECRETS_PATH; delete process.env.ANTHROPIC_AUTH_TOKEN; _resetCredentialCache(); });
+  const secretsPath = joinCred(dir, 'secrets.yaml');
+  writeCredFile(secretsPath, 'providers:\n  anthropic:\n    apiKey: sk-ant-oat01-FRESH\n');
+  process.env.HOME23_SECRETS_PATH = secretsPath;
+  process.env.ANTHROPIC_AUTH_TOKEN = 'sk-ant-oat01-STALE-ENV';
+  _resetCredentialCache();
+
+  assert.equal(resolveProviderKey('anthropic', 'sk-ant-oat01-STALE-CONFIGURED'), 'sk-ant-oat01-FRESH', 'file beats stale configured OAuth token');
+  assert.equal(resolveProviderKey('anthropic'), 'sk-ant-oat01-FRESH', 'file beats stale env');
+
+  // Rotation is a file write: force sees the new value with no restart.
+  writeCredFile(secretsPath, 'providers:\n  anthropic:\n    apiKey: sk-ant-oat01-ROTATED\n');
+  assert.equal(resolveProviderKey('anthropic', undefined, true), 'sk-ant-oat01-ROTATED', 'force re-read sees the rotation immediately');
+});
+
+test('a static (non-OAuth) configured key is a deliberate pin and stays respected', (t) => {
+  const dir = mkCredTmp(joinCred(credTmpdir(), 'creds-'));
+  t.after(() => { rmCredDir(dir, { recursive: true, force: true }); delete process.env.HOME23_SECRETS_PATH; _resetCredentialCache(); });
+  const secretsPath = joinCred(dir, 'secrets.yaml');
+  writeCredFile(secretsPath, 'providers:\n  anthropic:\n    apiKey: sk-ant-oat01-FRESH\n  openai:\n    apiKey: sk-proj-FILEKEY\n');
+  process.env.HOME23_SECRETS_PATH = secretsPath;
+  _resetCredentialCache();
+
+  assert.equal(resolveProviderKey('anthropic', 'sk-ant-api03-PINNED'), 'sk-ant-api03-PINNED', 'static anthropic key pinned');
+  assert.equal(resolveProviderKey('openai', 'sk-proj-PINNED'), 'sk-proj-PINNED', 'static openai key pinned');
+  assert.equal(resolveProviderKey('openai'), 'sk-proj-FILEKEY', 'unpinned falls to file');
+});
+
+test('no secrets file → env floor holds; nothing throws (credential-free hosts)', (t) => {
+  t.after(() => { delete process.env.HOME23_SECRETS_PATH; delete process.env.XAI_API_KEY; _resetCredentialCache(); });
+  process.env.HOME23_SECRETS_PATH = '/nonexistent/secrets.yaml';
+  process.env.XAI_API_KEY = 'xai-ENVONLY';
+  _resetCredentialCache();
+  assert.equal(freshProviderKey('xai'), '', 'missing file reads as empty, never throws');
+  assert.equal(resolveProviderKey('xai'), 'xai-ENVONLY', 'env floor serves');
+});
+
+test('isAuthError matches the real revocation shapes and nothing else', () => {
+  assert.equal(isAuthError({ status: 401 }), true);
+  assert.equal(isAuthError(new Error('error=401 {"type":"error","error":{"type":"authentication_error","message":"OAuth access token has been revoked."}}')), true);
+  assert.equal(isAuthError(new Error('anthropic HTTP 500: overloaded')), false);
+  assert.equal(isAuthError(new Error('ollama-cloud HTTP 429: slow down')), false);
+});

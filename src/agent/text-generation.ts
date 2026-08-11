@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { getCodexCredentials, getCodexHeaders, type CodexCredentials } from './codex-auth.js';
 import { combineRequestSignals } from './abort-signals.js';
+import { resolveProviderKey, isAuthError } from './provider-credentials.js';
 
 export interface TextGenerationOptions {
   provider?: string;
@@ -51,14 +52,28 @@ export function inferTextGenerationProvider(model?: string, provider?: string): 
 
 export async function generateText(opts: TextGenerationOptions): Promise<string> {
   const provider = inferTextGenerationProvider(opts.model, opts.provider);
+  if (provider === 'openai-codex') {
+    const model = opts.model || defaultModelForProvider(provider);
+    return generateCodexText({ ...opts, model, maxTokens: opts.maxTokens ?? 800, timeoutMs: opts.timeoutMs ?? 60_000 });
+  }
+  // Read-at-use credentials + one fresh retry on auth failure: rotation is a
+  // file write, never a restart list (the token class's wholesale fix,
+  // 2026-08-10). A caller-pinned client can't be rebuilt — no retry there.
+  try {
+    return await generateTextAttempt(opts, provider, false);
+  } catch (error) {
+    if (opts.client === undefined && isAuthError(error)) {
+      return generateTextAttempt(opts, provider, true);
+    }
+    throw error;
+  }
+}
+
+async function generateTextAttempt(opts: TextGenerationOptions, provider: string, forceFreshCredential: boolean): Promise<string> {
   const model = opts.model || defaultModelForProvider(provider);
   const maxTokens = opts.maxTokens ?? 800;
   const temperature = opts.temperature ?? 0.1;
   const timeoutMs = opts.timeoutMs ?? 60_000;
-
-  if (provider === 'openai-codex') {
-    return generateCodexText({ ...opts, model, maxTokens, timeoutMs });
-  }
 
   const requestSignal = combineRequestSignals(opts.signal, timeoutMs);
 
@@ -68,7 +83,7 @@ export async function generateText(opts: TextGenerationOptions): Promise<string>
     // headers — NOT as `x-api-key` (that 401s). OAuth calls must also lead with
     // the Claude Code system block, or they are not recognized as subscription
     // traffic and land on a much tighter quota (observed: opus 429).
-    const credential = opts.apiKey || envApiKey(provider) || '';
+    const credential = resolveProviderKey(provider, opts.apiKey, forceFreshCredential);
     const isOAuth = provider === 'anthropic' && credential.startsWith('sk-ant-oat');
     const client = opts.client || (isOAuth
       ? new Anthropic({
@@ -103,7 +118,7 @@ export async function generateText(opts: TextGenerationOptions): Promise<string>
   }
 
   if (provider === 'ollama-cloud') {
-    const apiKey = opts.apiKey || envApiKey(provider);
+    const apiKey = resolveProviderKey(provider, opts.apiKey, forceFreshCredential);
     if (!apiKey) throw new Error('OLLAMA_CLOUD_API_KEY not set');
     const messages = [
       ...(opts.system ? [{ role: 'system', content: opts.system }] : []),
@@ -129,7 +144,7 @@ export async function generateText(opts: TextGenerationOptions): Promise<string>
   }
 
   if (provider === 'openai' || provider === 'xai') {
-    const apiKey = opts.apiKey || envApiKey(provider);
+    const apiKey = resolveProviderKey(provider, opts.apiKey, forceFreshCredential);
     if (!apiKey) throw new Error(`${provider === 'xai' ? 'XAI_API_KEY' : 'OPENAI_API_KEY'} not set`);
     const baseURL = opts.baseURL || (provider === 'xai' ? 'https://api.x.ai/v1' : 'https://api.openai.com/v1');
     const messages = [
@@ -170,14 +185,8 @@ function defaultModelForProvider(provider: string): string {
   return 'kimi-k2.6';
 }
 
-function envApiKey(provider: string): string {
-  if (provider === 'anthropic') return process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY || '';
-  if (provider === 'minimax') return process.env.MINIMAX_API_KEY || '';
-  if (provider === 'openai') return process.env.OPENAI_API_KEY || '';
-  if (provider === 'xai') return process.env.XAI_API_KEY || '';
-  if (provider === 'ollama-cloud') return process.env.OLLAMA_CLOUD_API_KEY || '';
-  return '';
-}
+// envApiKey is gone: frozen-env credential reads were the disease (see
+// provider-credentials.ts). Env values survive only as the resolver's floor.
 
 function extractAnthropicText(response: unknown): string {
   const content = (response as { content?: Array<{ type?: string; text?: string }> }).content || [];
