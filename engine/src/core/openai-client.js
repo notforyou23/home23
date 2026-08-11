@@ -7,7 +7,10 @@ try {
   // dotenv is optional for tests and deployments that inject env directly.
 }
 
+const { resolveProviderKey } = require('./provider-credentials');
+
 let cachedClient;
+let cachedClientKey;
 
 function loadOpenAI() {
   try {
@@ -21,21 +24,24 @@ function loadOpenAI() {
 /**
  * Self-contained OpenAI client for Phase 2B
  * Replaces dependency on external cosmo backend
+ *
+ * The key resolves at use — secrets.yaml first, OPENAI_API_KEY env floor
+ * second — and the cached client is rebuilt if the resolved key changes.
  */
 function getOpenAIClient() {
-  if (!cachedClient) {
-    const apiKey = process.env.OPENAI_API_KEY;
+  const apiKey = resolveProviderKey('openai');
+  if (!apiKey) {
+    throw new Error('OpenAI API key missing: set providers.openai.apiKey in config/secrets.yaml or the OPENAI_API_KEY environment variable');
+  }
+
+  if (!cachedClient || cachedClientKey !== apiKey) {
     const baseURL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
-
-    if (!apiKey) {
-      throw new Error('OPENAI_API_KEY environment variable is required');
-    }
-
     const OpenAI = loadOpenAI();
     cachedClient = new OpenAI({
       apiKey,
       baseURL,
     });
+    cachedClientKey = apiKey;
   }
 
   return cachedClient;
@@ -68,10 +74,11 @@ function getEmbeddingClient() {
  * Get OpenAI configuration for debugging
  */
 function getOpenAIConfig() {
+  const resolved = resolveProviderKey('openai');
   return {
-    apiKey: process.env.OPENAI_API_KEY ? '[REDACTED]' : 'NOT SET',
+    apiKey: resolved ? '[REDACTED]' : 'NOT SET',
     baseURL: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
-    hasApiKey: Boolean(process.env.OPENAI_API_KEY),
+    hasApiKey: Boolean(resolved),
     envFile: path.join(__dirname, '..', '..', '.env')
   };
 }

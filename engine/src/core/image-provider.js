@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const yaml = require('js-yaml');
 const { v4: uuidv4 } = require('uuid');
 const { getOpenAIClient } = require('./openai-client');
+const { resolveProviderKey } = require('./provider-credentials');
 
 function loadOpenAI() {
   try {
@@ -619,7 +620,7 @@ async function runTextEngine(engineConfig, messages) {
   }
 
   if (provider === 'ollama-cloud') {
-    const apiKey = engineConfig?.apiKey || process.env.OLLAMA_CLOUD_API_KEY;
+    const apiKey = resolveProviderKey('ollama-cloud', engineConfig?.apiKey);
     const baseURL = engineConfig?.baseUrl || process.env.OLLAMA_CLOUD_BASE_URL || 'https://ollama.com/v1';
     if (!apiKey) throw new Error('OLLAMA_CLOUD_API_KEY missing');
     return callOpenAICompatibleChat({ apiKey, baseURL, model, messages });
@@ -718,7 +719,7 @@ function createImageProvider(runtime = {}) {
     const config = getConfig();
     const providerCfg = config.providers?.minimax || {};
     const model = options.model || providerCfg.model || 'image-01';
-    const apiKey = process.env.MINIMAX_API_KEY || '';
+    const apiKey = resolveProviderKey('minimax') || '';
     if (!apiKey) throw new Error('MINIMAX_API_KEY not configured');
 
     const body = { model, prompt, n: 1, response_format: 'url' };
@@ -765,7 +766,7 @@ function createImageProvider(runtime = {}) {
     const config = getConfig();
     const providerCfg = config.providers?.xai || {};
     const model = options.model || providerCfg.model || 'grok-imagine-image';
-    const apiKey = providerCfg.apiKey || process.env.XAI_API_KEY || '';
+    const apiKey = resolveProviderKey('xai', providerCfg.apiKey) || '';
     const baseURL = (providerCfg.baseUrl || process.env.XAI_BASE_URL || 'https://api.x.ai/v1').replace(/\/$/, '');
     if (!apiKey) throw new Error('XAI_API_KEY not configured');
 

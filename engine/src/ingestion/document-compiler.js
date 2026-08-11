@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
 const { getOpenAICodexClient } = require('../services/openai-codex-oauth-engine');
+const { resolveProviderKey } = require('../core/provider-credentials');
 let Anthropic;
 try { Anthropic = require('@anthropic-ai/sdk'); } catch { Anthropic = null; }
 
@@ -75,8 +76,11 @@ class DocumentCompiler {
    */
   _buildClient(model) {
     let baseURL = this.config.baseURL || process.env.COMPILER_LLM_BASE_URL;
-    let apiKey = this.config.apiKey || process.env.COMPILER_LLM_API_KEY;
+    const pinnedKey = this.config.apiKey || process.env.COMPILER_LLM_API_KEY;
+    let apiKey = pinnedKey;
     let providerName = null;
+    this._builtWithProvider = null;
+    this._builtWithKey = null;
 
     if (!baseURL) {
       const resolved = this._resolveProviderForModel(model);
@@ -90,24 +94,51 @@ class DocumentCompiler {
     const isAnthropicCompat = providerName && ANTHROPIC_COMPAT_PROVIDERS.has(providerName);
 
     if (providerName === 'openai-codex') {
+      // The codex client resolves its own token per request.
       this.client = getOpenAICodexClient({ providers: { 'openai-codex': { baseURL } } }, this.logger);
       this.clientType = 'codex';
       this.authMode = 'oauth';
     } else if (isAnthropicCompat && Anthropic) {
-      apiKey = apiKey || process.env.MINIMAX_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN;
+      apiKey = apiKey || resolveProviderKey('minimax') || resolveProviderKey('anthropic');
       this.client = new Anthropic({ apiKey, baseURL });
       this.clientType = 'anthropic';
     } else {
       baseURL = baseURL || 'https://ollama.com/v1';
-      apiKey = apiKey || process.env.OLLAMA_CLOUD_API_KEY || 'ollama';
+      apiKey = apiKey || resolveProviderKey('ollama-cloud') || 'ollama';
       const OpenAI = loadOpenAI();
       this.client = new OpenAI({ apiKey, baseURL });
       this.clientType = 'openai';
     }
 
+    // Track which provider credential this client was built with, so
+    // _ensureFreshClient can rebuild after a rotation. A compiler-level
+    // pinned key is deliberate and never tracked.
+    if (!pinnedKey && providerName && providerName !== 'openai-codex') {
+      const tracked = resolveProviderKey(providerName);
+      if (tracked && tracked === apiKey) {
+        this._builtWithProvider = providerName;
+        this._builtWithKey = tracked;
+      }
+    }
+
     this.logger?.info?.('Compiler client initialized', {
       model, clientType: this.clientType, baseURL, providerName: providerName || 'fallback'
     });
+  }
+
+  /**
+   * Rebuild the SDK client before use when the provider credential it was
+   * built with has rotated in secrets.yaml. Inert for pinned or
+   * provider-less clients. An empty resolution keeps the working client.
+   */
+  _ensureFreshClient() {
+    if (!this._builtWithProvider || !this._builtWithKey) return;
+    const current = resolveProviderKey(this._builtWithProvider);
+    if (current === '' || current === this._builtWithKey) return;
+    this.logger?.info?.('Compiler credential rotated, rebuilding client', {
+      provider: this._builtWithProvider
+    });
+    this._buildClient(this.model);
   }
 
   /**
@@ -123,13 +154,6 @@ class DocumentCompiler {
   }
 
   _resolveProviderForModel(model) {
-    const envKeyMap = {
-      'ollama-cloud': 'OLLAMA_CLOUD_API_KEY',
-      'anthropic': 'ANTHROPIC_AUTH_TOKEN',
-      'openai': 'OPENAI_API_KEY',
-      'xai': 'XAI_API_KEY',
-      'minimax': 'MINIMAX_API_KEY',
-    };
     try {
       const engineDir = path.resolve(__dirname, '..', '..');
       const homePath = path.join(engineDir, '..', 'config', 'home.yaml');
@@ -140,7 +164,7 @@ class DocumentCompiler {
           return {
             providerName: name,
             baseUrl: prov.baseUrl || prov.baseURL,
-            apiKey: name === 'openai-codex' ? undefined : process.env[envKeyMap[name] || ''] || undefined,
+            apiKey: name === 'openai-codex' ? undefined : resolveProviderKey(name) || undefined,
           };
         }
       }
@@ -158,6 +182,7 @@ class DocumentCompiler {
     }
 
     try {
+      this._ensureFreshClient();
       const index = this._readIndex();
 
       const prompt = COMPILE_PROMPT

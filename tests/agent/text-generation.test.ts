@@ -251,3 +251,12 @@ test('isAuthError matches the real revocation shapes and nothing else', () => {
   assert.equal(isAuthError(new Error('anthropic HTTP 500: overloaded')), false);
   assert.equal(isAuthError(new Error('ollama-cloud HTTP 429: slow down')), false);
 });
+
+test('isAuthError matches OpenAI\'s literal invalid_api_key code, not just the spaced prose', () => {
+  // OpenAI returns the machine code with underscores; the prose form appears
+  // in other providers' bodies. Both are the same revocation, and missing the
+  // underscore form costs the fresh-credential retry that would recover it.
+  assert.equal(isAuthError(new Error('{"error":{"code":"invalid_api_key","message":"Incorrect API key provided"}}')), true);
+  assert.equal(isAuthError(new Error('Invalid API key')), true);
+  assert.equal(isAuthError(new Error('invalid-api-key')), true);
+});

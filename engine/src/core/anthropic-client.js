@@ -14,6 +14,7 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 const { getAnthropicApiKey, prepareSystemPrompt, isOAuthToken } = require('../services/anthropic-oauth-engine');
+const { resolveProviderKey, isAuthError } = require('./provider-credentials');
 
 function isAnthropicSamplingDeprecatedModel(model) {
   return /^(?:[^/]+\/)?claude-opus-4-8(?:$|[-@])/.test(String(model || '').trim());
@@ -31,6 +32,7 @@ class AnthropicClient {
     this.anthropic = null;  // Lazy initialization
     this.isOAuth = false;
     this._credentialsFetchedAt = 0;  // Track when credentials were obtained
+    this._credentialInUse = null;   // The resolved credential this.anthropic was built with
     this._refreshPromise = null;    // Lock to prevent concurrent refresh
 
     // Model mapping (GPT names → Claude models)
@@ -51,26 +53,31 @@ class AnthropicClient {
 
   /**
    * Initialize Anthropic SDK client (lazy, OAuth-aware)
-   * Called before each API request. Re-initializes if OAuth credentials are stale (>50 min).
-   * API keys never expire so they skip the refresh check.
+   * Called before each API request. Credentials resolve at use from
+   * secrets.yaml (mtime-cached): the SDK client is rebuilt whenever the
+   * resolved credential differs from the one it was built with. `force`
+   * drops the resolver cache first — the auth-failure path.
    * Safe: preserves old client on refresh failure, prevents concurrent refresh races.
    */
-  async _initClient() {
-    // Fast path: client exists and credentials are fresh
-    if (this.anthropic) {
-      if (!this.isOAuth) return;  // API keys don't expire
-      const age = Date.now() - this._credentialsFetchedAt;
-      if (age < 50 * 60 * 1000) return;  // Less than 50 min old, still fresh
+  async _initClient(force = false) {
+    // Fast path: client exists and the resolved credential is unchanged.
+    // An empty resolution (file+env both gone mid-run) keeps the working
+    // client — stale credentials are better than no credentials.
+    if (!force && this.anthropic) {
+      const current = resolveProviderKey('anthropic');
+      if (current === '' || current === this._credentialInUse) return;
+      this.logger?.info?.('[AnthropicClient] Credential rotated in secrets.yaml, rebuilding client');
     }
 
-    // If another call is already refreshing, wait for it
+    // If another call is already refreshing, wait for it. A forced refresh
+    // still runs its own pass afterwards — it must observe the reread file.
     if (this._refreshPromise) {
       await this._refreshPromise;
-      return;
+      if (!force) return;
     }
 
     // Take the refresh lock
-    this._refreshPromise = this._doRefreshClient();
+    this._refreshPromise = this._doRefreshClient(force);
     try {
       await this._refreshPromise;
     } finally {
@@ -79,47 +86,57 @@ class AnthropicClient {
   }
 
   /**
+   * Build the SDK client for a resolved credential set. Seam for tests.
+   */
+  _createSdkClient(credentials) {
+    if (credentials.isOAuth) {
+      // CRITICAL: delete ANTHROPIC_API_KEY from process.env before creating the SDK
+      // The SDK auto-detects from env and an empty string causes auth resolution failure
+      delete process.env.ANTHROPIC_API_KEY;
+      return new Anthropic({
+        authToken: credentials.authToken,
+        defaultHeaders: credentials.defaultHeaders,
+        dangerouslyAllowBrowser: credentials.dangerouslyAllowBrowser
+      });
+    }
+    return new Anthropic({
+      apiKey: credentials.apiKey
+    });
+  }
+
+  /**
    * Internal: actually fetch credentials and create SDK client.
    * Preserves old client on failure so stale-but-working credentials aren't lost.
    */
-  async _doRefreshClient() {
+  async _doRefreshClient(force = false) {
     const isRefresh = !!this.anthropic;
     const oldClient = this.anthropic;
     const oldIsOAuth = this.isOAuth;
     const oldFetchedAt = this._credentialsFetchedAt;
+    const oldCredential = this._credentialInUse;
 
     if (isRefresh) {
-      this.logger?.info?.('[AnthropicClient] OAuth credentials stale, refreshing...');
+      this.logger?.info?.('[AnthropicClient] Refreshing credentials from secrets.yaml...');
     }
 
     try {
-      // Get credentials from OAuth system (auto-refreshes expired tokens)
-      const credentials = await getAnthropicApiKey();
+      // Resolve credentials at use (secrets.yaml first, env floor second)
+      const credentials = await getAnthropicApiKey(force);
       this.isOAuth = credentials.isOAuth;
       this._credentialsFetchedAt = Date.now();
+      this._credentialInUse = credentials.isOAuth ? credentials.authToken : credentials.apiKey;
 
-      if (credentials.isOAuth) {
-        this.logger?.info?.('[AnthropicClient] Initializing with OAuth token (stealth mode)');
-        // CRITICAL: delete ANTHROPIC_API_KEY from process.env before creating the SDK
-        // The SDK auto-detects from env and an empty string causes auth resolution failure
-        delete process.env.ANTHROPIC_API_KEY;
-        this.anthropic = new Anthropic({
-          authToken: credentials.authToken,
-          defaultHeaders: credentials.defaultHeaders,
-          dangerouslyAllowBrowser: credentials.dangerouslyAllowBrowser
-        });
-      } else {
-        this.logger?.info?.('[AnthropicClient] Initializing with API key');
-        this.anthropic = new Anthropic({
-          apiKey: credentials.apiKey
-        });
-      }
+      this.logger?.info?.(credentials.isOAuth
+        ? '[AnthropicClient] Initializing with OAuth token (stealth mode)'
+        : '[AnthropicClient] Initializing with API key');
+      this.anthropic = this._createSdkClient(credentials);
     } catch (error) {
       if (isRefresh) {
         // Restore old client — stale credentials are better than no credentials
         this.anthropic = oldClient;
         this.isOAuth = oldIsOAuth;
         this._credentialsFetchedAt = oldFetchedAt;
+        this._credentialInUse = oldCredential;
         this.logger?.warn?.('[AnthropicClient] Refresh failed, continuing with existing credentials:', error.message);
         return;
       }
@@ -149,9 +166,31 @@ class AnthropicClient {
    * @returns {Object} - GPT5Client-compatible response
    */
   async generate(options = {}) {
+    try {
+      return await this._generateOnce(options);
+    } catch (error) {
+      // One force-fresh retry on auth failure: the token may have rotated in
+      // secrets.yaml after this client was built. Reread the file and try
+      // once with the fresh credential; never loop.
+      if (isAuthError(error)) {
+        this.logger?.warn?.('[AnthropicClient] Auth failure — rereading credentials for one retry:', error.message);
+        try {
+          await this._initClient(true);
+          return await this._generateOnce(options);
+        } catch (retryError) {
+          this.logger?.error?.('[AnthropicClient] Generation failed after fresh-credential retry:', retryError.message);
+          return this._buildErrorResponse(retryError);
+        }
+      }
+      this.logger?.error?.('[AnthropicClient] Generation failed:', error.message);
+      return this._buildErrorResponse(error);
+    }
+  }
+
+  async _generateOnce(options = {}) {
     await this._initClient();
 
-    try {
+    {
       // Extract system prompt from messages array if present (coordinators use this pattern)
       let systemPrompt = options.instructions;
       let messagesToUse = options.input || options.messages;
@@ -257,10 +296,6 @@ class AnthropicClient {
 
       // Process streaming response
       return await this._streamResponse(stream, options);
-
-    } catch (error) {
-      this.logger?.error?.('[AnthropicClient] Generation failed:', error.message);
-      return this._buildErrorResponse(error);
     }
   }
 

@@ -8,9 +8,16 @@ function futureJwt() {
 }
 
 function loadFresh() {
-  const modulePath = require.resolve('../../../engine/src/services/openai-codex-oauth-engine');
-  delete require.cache[modulePath];
-  return require(modulePath);
+  // Isolate from the developer's real config/secrets.yaml: these tests
+  // exercise the env floor, so the resolver must find no secrets file.
+  process.env.HOME23_SECRETS_PATH = '/nonexistent/home23-test-secrets.yaml';
+  for (const key of Object.keys(require.cache)) {
+    if (key.includes('/engine/src/services/openai-codex-oauth-engine.js')
+      || key.includes('/engine/src/core/provider-credentials.js')) {
+      delete require.cache[key];
+    }
+  }
+  return require('../../../engine/src/services/openai-codex-oauth-engine');
 }
 
 test('openai-codex credentials use OAuth token and ignore OPENAI_API_KEY', () => {

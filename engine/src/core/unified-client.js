@@ -2,6 +2,7 @@ const { GPT5Client } = require('./gpt5-client');
 const { MCPClient } = require('./mcp-client');
 const { ChatCompletionsClient } = require('./chat-completions-client');
 const { getOpenAICodexClient } = require('../services/openai-codex-oauth-engine');
+const { resolveProviderKey, isAuthError } = require('./provider-credentials');
 
 function loadOpenAI() {
   try {
@@ -78,7 +79,7 @@ class UnifiedClient extends GPT5Client {
     
     // Only initialize if provider is enabled in config
     if (this.config.providers?.xai?.enabled) {
-      const apiKey = process.env.XAI_API_KEY || this.config.providers.xai.apiKey;
+      const apiKey = resolveProviderKey('xai', this.config.providers.xai.apiKey);
       if (apiKey) {
         const OpenAI = loadOpenAI();
         this.xai = new OpenAI({
@@ -91,35 +92,32 @@ class UnifiedClient extends GPT5Client {
       }
     }
     
+    // Anthropic credentials resolve AT USE from config/secrets.yaml (the
+    // file the OAuth mirror keeps fresh), with the boot env as the floor —
+    // see provider-credentials.js. The SDK client is rebuilt whenever the
+    // resolved credential rotates; generateAnthropic spends one force-fresh
+    // retry on auth failures.
+    this._anthropicConfigured = this.config.providers?.anthropic?.authToken
+      || this.config.providers?.anthropic?.apiKey;
+    this._anthropicCredential = null;
     if (this.config.providers?.anthropic?.enabled) {
-      const authToken = process.env.ANTHROPIC_AUTH_TOKEN || this.config.providers.anthropic.authToken;
-      const apiKey = process.env.ANTHROPIC_API_KEY || this.config.providers.anthropic.apiKey;
-      const isOAuth = Boolean(authToken && String(authToken).startsWith('sk-ant-oat'));
-      if (authToken || apiKey) {
+      const credential = resolveProviderKey('anthropic', this._anthropicConfigured);
+      if (credential) {
         try {
-          // Lazy load Anthropic SDK — support both OAuth token and API key.
-          // OAuth tokens (sk-ant-oat*) require stealth headers that impersonate
-          // Claude Code CLI; the SDK's raw apiKey/authToken path without these
-          // headers gets rejected with "OAuth authentication is currently not
-          // supported." Port the same header set the TS harness uses at
-          // src/agent/loop.ts getStealthHeaders().
-          this.AnthropicSDK = require('@anthropic-ai/sdk');
-          const opts = authToken ? { authToken } : { apiKey };
-          if (isOAuth) {
-            opts.defaultHeaders = getAnthropicStealthHeaders();
-          }
-          this.anthropic = new this.AnthropicSDK(opts);
-          this.logger?.info(`✅ Anthropic Claude provider initialized (${authToken ? (isOAuth ? 'OAuth + stealth headers' : 'OAuth') : 'API key'})`);
+          this.anthropic = this._createAnthropicSDK(credential);
+          this._anthropicCredential = credential;
+          const isOAuth = String(credential).startsWith('sk-ant-oat');
+          this.logger?.info(`✅ Anthropic Claude provider initialized (${isOAuth ? 'OAuth + stealth headers' : 'API key'})`);
         } catch (error) {
           this.logger?.warn('Anthropic SDK not installed. Run: npm install @anthropic-ai/sdk');
         }
       } else {
-        this.logger?.warn('Anthropic enabled in config but no API key found (ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN)');
+        this.logger?.warn('Anthropic enabled in config but no API key found (secrets.yaml providers.anthropic, ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN)');
       }
     }
 
     if (this.config.providers?.minimax?.enabled) {
-      const apiKey = process.env.MINIMAX_API_KEY || this.config.providers.minimax.apiKey;
+      const apiKey = resolveProviderKey('minimax', this.config.providers.minimax.apiKey);
       if (apiKey) {
         try {
           this.AnthropicSDK = this.AnthropicSDK || require('@anthropic-ai/sdk');
@@ -155,7 +153,7 @@ class UnifiedClient extends GPT5Client {
 
     // Initialize Groq client if enabled (OpenAI-compatible, free tier)
     if (this.config.providers?.groq?.enabled) {
-      const apiKey = process.env.GROQ_API_KEY || this.config.providers.groq.apiKey;
+      const apiKey = resolveProviderKey('groq', this.config.providers.groq.apiKey);
       if (apiKey) {
         const groqConfig = this.config.providers.groq;
         this.groqClient = new ChatCompletionsClient({
@@ -178,7 +176,7 @@ class UnifiedClient extends GPT5Client {
     // Initialize Ollama Cloud client if enabled (OpenAI-compatible, https://ollama.com/v1)
     this.ollamaCloudClient = null;
     if (this.config.providers?.['ollama-cloud']?.enabled) {
-      const apiKey = process.env.OLLAMA_CLOUD_API_KEY || this.config.providers['ollama-cloud'].apiKey;
+      const apiKey = resolveProviderKey('ollama-cloud', this.config.providers['ollama-cloud'].apiKey);
       if (apiKey) {
         const cloudConfig = this.config.providers['ollama-cloud'];
         this.ollamaCloudClient = new ChatCompletionsClient({
@@ -198,7 +196,7 @@ class UnifiedClient extends GPT5Client {
 
     // Initialize HuggingFace client if enabled (OpenAI-compatible, free tier)
     if (this.config.providers?.huggingface?.enabled) {
-      const apiKey = process.env.HF_TOKEN || process.env.HUGGINGFACE_TOKEN || this.config.providers.huggingface.apiKey;
+      const apiKey = resolveProviderKey('huggingface', this.config.providers.huggingface.apiKey);
       if (apiKey) {
         const hfConfig = this.config.providers.huggingface;
         this.hfClient = new ChatCompletionsClient({
@@ -830,14 +828,59 @@ class UnifiedClient extends GPT5Client {
   }
 
   /**
+   * Build the Anthropic SDK client for a resolved credential. OAuth tokens
+   * (sk-ant-oat*) require stealth headers that impersonate Claude Code CLI;
+   * without them Anthropic rejects with "OAuth authentication is currently
+   * not supported." Mirrors src/agent/loop.ts getStealthHeaders().
+   * Seam for tests.
+   */
+  _createAnthropicSDK(credential) {
+    this.AnthropicSDK = this.AnthropicSDK || require('@anthropic-ai/sdk');
+    const isOAuth = String(credential).startsWith('sk-ant-oat');
+    const opts = isOAuth
+      ? { authToken: credential, defaultHeaders: getAnthropicStealthHeaders() }
+      : { apiKey: credential };
+    return new this.AnthropicSDK(opts);
+  }
+
+  /**
+   * Resolve the anthropic credential right now and rebuild the SDK client if
+   * it rotated (or arrived after boot). `force` drops the resolver cache —
+   * the auth-failure path. An empty resolution keeps the working client:
+   * stale credentials are better than no credentials.
+   */
+  _ensureAnthropicClient(force = false) {
+    if (!this.config.providers?.anthropic?.enabled) return;
+    const credential = resolveProviderKey('anthropic', this._anthropicConfigured, force);
+    if (credential === '' || credential === this._anthropicCredential) return;
+    try {
+      this.anthropic = this._createAnthropicSDK(credential);
+      this._anthropicCredential = credential;
+      this.logger?.info?.('✅ Anthropic client rebuilt with rotated credential');
+    } catch (error) {
+      this.logger?.warn?.('Failed to rebuild Anthropic client', { error: error.message });
+    }
+  }
+
+  /**
    * Generate with Anthropic Claude
    * Different API structure - Messages API
    */
   async generateAnthropic(assignment, options) {
+    this._ensureAnthropicClient();
     if (!this.anthropic) {
       throw new Error('Anthropic provider not initialized');
     }
-    return await this.generateAnthropicCompatible(this.anthropic, 'Anthropic', assignment, options);
+    try {
+      return await this.generateAnthropicCompatible(this.anthropic, 'Anthropic', assignment, options);
+    } catch (error) {
+      // One force-fresh retry on auth failure: the token may have rotated in
+      // secrets.yaml after this client was built. Never loop.
+      if (!isAuthError(error)) throw error;
+      this.logger?.warn?.('Anthropic auth failure — rereading credentials for one retry', { error: error.message });
+      this._ensureAnthropicClient(true);
+      return await this.generateAnthropicCompatible(this.anthropic, 'Anthropic', assignment, options);
+    }
   }
 
   async generateMiniMax(assignment, options) {
