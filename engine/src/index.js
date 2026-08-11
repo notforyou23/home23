@@ -154,11 +154,9 @@ async function main() {
     clusterBackend: config.cluster?.backend || 'N/A',
     models: {
       primary: config.models.primary,
-      fast: config.models.fast,
-      nano: config.models.nano
+      fast: config.models.fast
     },
-    webSearch: config.models.enableWebSearch,
-    extendedReasoning: config.models.enableExtendedReasoning
+    webSearch: config.models.enableWebSearch
   });
   
   logger.info('');

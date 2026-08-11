@@ -287,7 +287,8 @@ architecture:
       # updated to supply their own concrete criteria.
       autoSynthesizeLegacy: true
       minCriterionLength: 40
-      judgeModel: gpt-5.5
+      # judgeModel removed 2026-08-11: done-when.js reads crit.judgeModel and
+      # every producer supplies its own — this key was unreachable.
       judgeTTLMs: 86400000
       vaguenessAnchors:
         - file
@@ -336,22 +337,21 @@ architecture:
     maxSleepCycleInterval: 45
   reflection:
     enabled: true
+# Dead keys removed 2026-08-11 (audit P2-14): nano + enableExtendedReasoning
+# (log-only), embeddings (real config is architecture.memory.embedding),
+# compiler (real config is feeder.compiler.model), defaultReasoningEffort
+# (no reader).
 models:
   primary: MiniMax-M3
   fast: MiniMax-M3
-  nano: MiniMax-M3
-  embeddings: nomic-embed-text
   strategicModel: MiniMax-M3
   coordinatorStrategic: MiniMax-M3
   coordinatorStandard: MiniMax-M3
   plannerModel: MiniMax-M3
   curatorModel: MiniMax-M3
   curatorStrategic: MiniMax-M3
-  compiler: MiniMax-M3
-  defaultReasoningEffort: low
   defaultMaxTokens: 4000
   enableWebSearch: true
-  enableExtendedReasoning: false
 providers:
   openai:
     enabled: false
@@ -412,32 +412,32 @@ modelAssignments:
     provider: minimax
     model: MiniMax-M3
     fallback:
-      - provider: local
-        model: qwen3.5:4b
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
   agents.research-synthesis:
     provider: minimax
     model: MiniMax-M3
     fallback:
-      - provider: local
-        model: qwen3.5:4b
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
   agents.research-fallback:
     provider: minimax
     model: MiniMax-M3
     fallback:
-      - provider: local
-        model: qwen3.5:4b
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
   agents.analytical:
     provider: minimax
     model: MiniMax-M3
     fallback:
-      - provider: local
-        model: qwen3.5:4b
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
   agents.discovery:
     provider: minimax
     model: MiniMax-M3
     fallback:
-      - provider: local
-        model: qwen3.5:4b
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
   agents.clustering:
     provider: minimax
     model: MiniMax-M3
@@ -445,38 +445,38 @@ modelAssignments:
     provider: minimax
     model: MiniMax-M3
     fallback:
-      - provider: local
-        model: qwen3.5:4b
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
   agents.quality_assurance:
     provider: minimax
     model: MiniMax-M3
     fallback:
-      - provider: local
-        model: qwen3.5:4b
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
   agents:
     provider: minimax
     model: MiniMax-M3
     fallback:
-      - provider: local
-        model: qwen3.5:4b
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
   coordinator:
     provider: minimax
     model: MiniMax-M3
     fallback:
-      - provider: local
-        model: qwen3.5:4b
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
   goalCurator:
     provider: minimax
     model: MiniMax-M3
     fallback:
-      - provider: local
-        model: qwen3.5:4b
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
   intrinsicGoals:
     provider: minimax
     model: MiniMax-M3
     fallback:
-      - provider: local
-        model: qwen3.5:4b
+      - provider: ollama-cloud
+        model: kimi-k3:cloud
 coordinator:
   enabled: true
   reviewCyclePeriod: 50

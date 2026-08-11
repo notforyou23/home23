@@ -110,12 +110,25 @@ class ConfigLoader {
     if (typeof engineOverrides.consolidation === 'string' && engineOverrides.consolidation.trim()) {
       setModel('agents.synthesis', engineOverrides.consolidation.trim());
     }
-    // Note: `dreaming` and `query` are honored by the orchestrator and memory
-    // paths respectively; we do not rewrite modelAssignments for them here.
+    // `dreaming` drives the dream slot (2026-08-11 — the old comment claimed
+    // the orchestrator honored it; nothing did. Now this does.)
+    if (typeof engineOverrides.dreaming === 'string' && engineOverrides.dreaming.trim()) {
+      setModel('quantumReasoner.singleReasoning', engineOverrides.dreaming.trim());
+    }
+    // `query` was never engine-side: dashboard/query models are governed by
+    // the model authority (the agent's query: block). Settings no longer
+    // writes engine.query; a stale key here is ignored deliberately.
 
     if (applied.length) {
       // Stash for observability without requiring a logger dependency at load time.
       this.config._instanceOverridesApplied = applied;
+      // A silently-skipped override is a lying control (2026-08-11 audit:
+      // jerry's engine.* = gpt-5.6-luna was discarded for months with no
+      // signal). Skips get one loud aggregate warning at load.
+      const skipped = applied.filter((line) => line.includes('SKIPPED'));
+      if (skipped.length) {
+        console.warn(`[config] ${skipped.length} instance engine override(s) NOT applied — model not resolvable to an enabled base-engine provider:\n  ${skipped.join('\n  ')}`);
+      }
     }
   }
 
