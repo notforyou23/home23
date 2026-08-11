@@ -21,6 +21,8 @@ import { createServer } from 'node:http';
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
+import { probeAll } from './organ-probes.js';
+import type { ProbeResult } from './organ-probes.js';
 import { composeLivedRecent } from '../../src/substrate/lived-recent.js';
 import { composeSeedNow } from '../../src/substrate/seed-now.js';
 import { composeLivedFacts } from '../../src/substrate/lived-facts.js';
@@ -383,10 +385,89 @@ function vitalsHTML(): string {
       parts.push(`<span class="organ ${stale ? 'organ-stale' : 'organ-ok'}">${esc(label)} ${ageMin < 60 ? `${ageMin}m` : `${(ageMin / 60).toFixed(1)}h`}</span>`);
     } catch { parts.push(`<span class="organ organ-dead">✖ ${esc(label)} missing</span>`); }
   }
+  // Function-probe reds (the sentinel's view): an organ can be pm2-online
+  // and still not WORKING — those failures surface here by name.
+  for (const r of sentinelResults.filter((x) => !x.ok && !x.organ.startsWith('pm2:'))) {
+    parts.push(`<span class="organ organ-dead" title="${esc(r.why)}">✖ ${esc(r.organ)}</span>`);
+  }
   const html = `<div class="vitals"><span class="sectlabel">organs</span> ${parts.join(' ')}</div>`;
   vitalsCache = { at: now, html };
   return html;
 }
+
+// ─── The organ sentinel (2026-08-11, jtr: "get to the bottom of it… rock
+// solid life"). The disease: PM2 'online' proves existence, not function;
+// every zombie was visible in receipts nobody read continuously. The cure:
+// function probes run every minute; a red persisting past the patience
+// window escalates to jtr's PHONE through the bridge notify path (the same
+// door live-problems uses); recovery posts a notice. The sentinel never
+// remediates state — it observes and it KNOCKS. ────────────────────────────
+
+const SENTINEL_INTERVAL_MS = 60_000;
+const SENTINEL_PATIENCE_MS = 10 * 60_000;      // red this long → escalate
+const SENTINEL_REESCALATE_MS = 60 * 60_000;    // still red → remind hourly
+
+let sentinelResults: ProbeResult[] = [];
+const redSince = new Map<string, number>();
+const lastEscalated = new Map<string, number>();
+
+async function sentinelNotify(text: string, severity: string): Promise<void> {
+  const url = process.env['ORGAN_SENTINEL_NOTIFY_URL'];
+  const token = process.env['ORGAN_SENTINEL_NOTIFY_TOKEN'];
+  if (url === undefined || url === '') {
+    console.log(`[sentinel] (no notify url) ${text}`);
+    return;
+  }
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token !== undefined && token !== '' ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ text, severity, source: 'organ-sentinel', requiresAction: severity === 'alert', isFailure: severity === 'alert' }),
+    });
+    console.log(`[sentinel] notified (${res.status}): ${text}`);
+  } catch (error) {
+    console.log(`[sentinel] notify FAILED (${(error as Error).message.slice(0, 60)}): ${text}`);
+  }
+}
+
+function sentinelTick(): void {
+  let results: ProbeResult[];
+  try { results = probeAll(); } catch (error) {
+    console.log(`[sentinel] probe run failed: ${(error as Error).message.slice(0, 80)}`);
+    return;
+  }
+  sentinelResults = results;
+  const now = Date.now();
+  // Deliberately-stopped organs (operator's list, csv env) don't page jtr —
+  // they still render red in the terrarium; silence is chosen, not blind.
+  const ignore = new Set((process.env['ORGAN_SENTINEL_IGNORE'] ?? '').split(',').map((s) => s.trim()).filter((s) => s !== ''));
+  for (const r of results) {
+    if (ignore.has(r.organ)) continue;
+    if (r.ok) {
+      if (lastEscalated.has(r.organ)) {
+        void sentinelNotify(`✅ [organ-sentinel] ${r.organ} recovered — ${r.why}`, 'notice');
+        lastEscalated.delete(r.organ);
+      }
+      redSince.delete(r.organ);
+      continue;
+    }
+    const since = redSince.get(r.organ) ?? now;
+    if (!redSince.has(r.organ)) redSince.set(r.organ, now);
+    const redFor = now - since;
+    const last = lastEscalated.get(r.organ);
+    const due = redFor >= SENTINEL_PATIENCE_MS && (last === undefined || now - last >= SENTINEL_REESCALATE_MS);
+    if (due) {
+      lastEscalated.set(r.organ, now);
+      void sentinelNotify(`🚨 [organ-sentinel] ${r.organ} NOT functioning for ${Math.round(redFor / 60_000)}min — ${r.why}`, 'alert');
+    }
+  }
+}
+
+setInterval(sentinelTick, SENTINEL_INTERVAL_MS);
+setTimeout(sentinelTick, 5_000);
 
 // ─── The cutover board (server-rendered; builder detail, collapsed) ─────────
 
@@ -847,6 +928,11 @@ const server = createServer((req, res) => {
   try {
     if (req.url === '/api/terrarium') {
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' }).end(apiPayload());
+      return;
+    }
+    if (req.url === '/api/organs') {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        .end(JSON.stringify({ organs: sentinelResults, at: new Date().toISOString() }));
       return;
     }
     if (req.url !== undefined && req.url !== '/' && req.url !== '/index.html') {
