@@ -24,7 +24,7 @@
  */
 
 import { readFileSync, appendFileSync, existsSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { fetchRawEmbedding } from '../src/embed-fetch.js';
 import { load as yamlLoad } from 'js-yaml';
 import { projectEmbedding, EMBED_DIM } from '../src/semantic-projection.js';
 
@@ -98,15 +98,9 @@ function narrate(entity: string, from: string, to: string, attrs: Record<string,
 }
 
 function embedText(text: string): number[] | null {
-  try {
-    const body = JSON.stringify({ model: 'nomic-embed-text', prompt: text.slice(0, 1000) });
-    const raw = execFileSync('curl', ['-s', '-m', '2', 'http://127.0.0.1:11434/api/embeddings', '-d', body], { encoding: 'utf-8', timeout: 2500 });
-    const parsed = JSON.parse(raw) as { embedding?: number[] };
-    if (!Array.isArray(parsed.embedding) || parsed.embedding.length !== EMBED_DIM) return null;
-    return projectEmbedding(parsed.embedding);
-  } catch {
-    return null;
-  }
+  // Single fetch implementation in substrate/src/embed-fetch.ts (P2-15b).
+  const raw = fetchRawEmbedding(text, EMBED_DIM);
+  return raw === null ? null : projectEmbedding(raw);
 }
 
 async function fetchStates(): Promise<HAState[] | null> {

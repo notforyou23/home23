@@ -28,10 +28,13 @@ function isOAuthToken(token) {
  * Required to make OAuth tokens work with Anthropic API
  */
 function getStealthHeaders() {
+  // Beta string single-sourced from unified-client (P2-18) — the two engine
+  // copies drifted only by luck before.
+  const { ANTHROPIC_OAUTH_BETA } = require('../core/unified-client');
   return {
     'accept': 'application/json',
     'anthropic-dangerous-direct-browser-access': 'true',
-    'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,extended-cache-ttl-2025-04-11',
+    'anthropic-beta': ANTHROPIC_OAUTH_BETA,
     'user-agent': `claude-cli/${CLAUDE_CODE_VERSION} (external, cli)`,
     'x-app': 'cli'
   };

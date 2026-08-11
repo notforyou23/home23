@@ -26,8 +26,11 @@ import { execFileSync } from 'node:child_process';
 export const SEMANTIC_PROJECTION_SEED = 20260808;
 export const SEM_DIM = 16;
 export const EMBED_DIM = 768;
-const EMBED_ENDPOINT = 'http://127.0.0.1:11434/api/embeddings';
-const EMBED_MODEL = 'nomic-embed-text';
+// Same env vocabulary as substrate/src/embed-fetch.ts — the embedder is one
+// knob across both packages (P2-15b); the fetch implementations stay
+// separate only because the membrane seam forbids substrate→harness links.
+const EMBED_ENDPOINT = process.env['SEED_EMBED_ENDPOINT'] ?? 'http://127.0.0.1:11434/api/embeddings';
+const EMBED_MODEL = process.env['SEED_EMBED_MODEL'] ?? 'nomic-embed-text';
 const MIN_TEXT_LENGTH = 8;
 const EMBED_TIMEOUT_MS = 1500;
 

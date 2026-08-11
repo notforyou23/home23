@@ -36,6 +36,7 @@ import { DeliveryManager } from './scheduler/delivery.js';
 import { SiblingProtocol } from './sibling/protocol.js';
 import { BridgeChat } from './sibling/bridge-chat.js';
 import { AgentLoop } from './agent/loop.js';
+import { anthropicOAuthStealthHeaders } from './agent/anthropic-headers.js';
 import { resolveModelOverride } from './agent/model-resolution.js';
 import { resolveProviderKey } from './agent/provider-credentials.js';
 import { executeTrackedTurn } from './agent/turn-entrypoint.js';
@@ -410,10 +411,7 @@ async function main(): Promise<void> {
       ? new AnthropicSDK({
           authToken: token,
           ...(baseURL ? { baseURL } : {}),
-          defaultHeaders: {
-            'anthropic-dangerous-direct-browser-access': 'true',
-            'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,extended-cache-ttl-2025-04-11',
-          },
+          defaultHeaders: anthropicOAuthStealthHeaders(),
           dangerouslyAllowBrowser: true,
         })
       : new AnthropicSDK({

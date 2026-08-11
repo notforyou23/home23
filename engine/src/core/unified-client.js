@@ -22,11 +22,13 @@ function loadOpenAI() {
  * the two must stay in sync. Any change here likely needs a matching change
  * there.
  */
+const ANTHROPIC_OAUTH_BETA = 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,extended-cache-ttl-2025-04-11';
+
 function getAnthropicStealthHeaders() {
   return {
     'accept': 'application/json',
     'anthropic-dangerous-direct-browser-access': 'true',
-    'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,extended-cache-ttl-2025-04-11',
+    'anthropic-beta': ANTHROPIC_OAUTH_BETA,
     'user-agent': 'claude-cli/2.1.32 (external, cli)',
     'x-app': 'cli',
   };
@@ -1209,7 +1211,7 @@ class UnifiedClient extends GPT5Client {
         this.logger?.info('🔄 Model override applied', {
           component: options.component,
           purpose: options.purpose,
-          from: 'gpt-5.4-mini',
+          from: options.model || '(unset)',
           to: assignment.model
         });
       }
@@ -1405,3 +1407,9 @@ class UnifiedClient extends GPT5Client {
 }
 
 module.exports = { UnifiedClient };
+
+// P2-18 (2026-08-11): the stealth surface is exported so the oauth engine and
+// dashboard IDE routes stop maintaining hand-copies. Harness twin:
+// src/agent/anthropic-headers.ts, pinned by provider-credentials-parity.
+module.exports.getAnthropicStealthHeaders = getAnthropicStealthHeaders;
+module.exports.ANTHROPIC_OAUTH_BETA = ANTHROPIC_OAUTH_BETA;

@@ -59,7 +59,7 @@ providers:
     defaultModels:
       - gpt-oss:120b
       - gpt-oss:20b
-      - kimi-k2.6
+      - kimi-k3:cloud
       - gemma4:31b
       - glm-5.2:cloud
       - glm-5.1
@@ -124,7 +124,7 @@ embeddings:
 
 chat:
   defaultProvider: ollama-cloud
-  defaultModel: kimi-k2.6
+  defaultModel: kimi-k3:cloud
   maxTokens: 4096
   temperature: 0.7
   historyBudget: 400000
@@ -309,10 +309,10 @@ models:
       model: grok-4.20-0309-reasoning
     kimi:
       provider: ollama-cloud
-      model: kimi-k2.6
-    kimi-k2.6:
+      model: kimi-k3:cloud
+    'kimi-k3:cloud':
       provider: ollama-cloud
-      model: kimi-k2.6
+      model: kimi-k3:cloud
     qwen:
       provider: ollama-cloud
       model: qwen3.5:397b

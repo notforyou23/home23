@@ -490,9 +490,11 @@ class NetworkMemory {
 
     let dims = this.config.embedding?.dimensions;
     if (typeof dims === 'object') {
-      dims = dims.default || 512;
+      dims = dims.default || 768;
     }
-    return Number.isFinite(Number(dims)) ? Number(dims) : 512;
+    // 768 = nomic-embed-text, the fleet default; the old 512 fallback
+    // disagreed with base-engine.yaml and every live EMBEDDING_DIMENSIONS.
+    return Number.isFinite(Number(dims)) ? Number(dims) : 768;
   }
 
   isOllamaEmbeddingEndpoint() {

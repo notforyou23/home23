@@ -7,6 +7,7 @@
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import { anthropicOAuthStealthHeaders } from './anthropic-headers.js';
 import { resolveProviderKey, isAuthError } from './provider-credentials.js';
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, appendFileSync } from 'node:fs';
@@ -63,15 +64,9 @@ export interface CacheDiagnosticsConfig {
 
 // ─── OAuth Stealth Headers ──────────────────────────────────
 // Required to use OAuth tokens (sk-ant-oat*) with the Anthropic SDK.
-// Impersonates Claude Code CLI — this is the same mechanism cosmo_2.3 uses.
+// Single source: anthropic-headers.ts (P2-18 — this was one of five copies).
 function getStealthHeaders(): Record<string, string> {
-  return {
-    'accept': 'application/json',
-    'anthropic-dangerous-direct-browser-access': 'true',
-    'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,extended-cache-ttl-2025-04-11',
-    'user-agent': 'claude-cli/2.1.32 (external, cli)',
-    'x-app': 'cli',
-  };
+  return anthropicOAuthStealthHeaders();
 }
 
 function getClaudeCodeSystemPrompt(): { type: 'text'; text: string; cache_control: { type: 'ephemeral' } } {

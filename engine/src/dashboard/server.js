@@ -8508,19 +8508,22 @@ You are empowered to explore and understand. The user trusts you to discover the
           
           try {
             if (model.startsWith('claude')) {
-              // Anthropic Claude Streaming
+              // Anthropic Claude Streaming — read-at-use credential with
+              // OAuth support (2026-08-11; this route froze a raw env API key
+              // and mapped current models onto a March-2024 Claude 3 id).
               const Anthropic = require('@anthropic-ai/sdk');
-              const anthropic = new Anthropic({
-                apiKey: process.env.ANTHROPIC_API_KEY
-              });
-              
+              const { resolveProviderKey } = require('../core/provider-credentials');
+              const { getAnthropicStealthHeaders } = require('../core/unified-client');
+              const anthropicKey = resolveProviderKey('anthropic', undefined);
+              const anthropic = anthropicKey.startsWith('sk-ant-oat')
+                ? new Anthropic({ authToken: anthropicKey, defaultHeaders: getAnthropicStealthHeaders() })
+                : new Anthropic({ apiKey: anthropicKey });
+
               const systemMsg = messages.find(m => m.role === 'system');
               const userMessages = messages.filter(m => m.role !== 'system');
-              
-              // Determine correct Claude model (December 2025)
-              const claudeModel = model === 'claude-opus-4-8'
-                ? 'claude-3-opus-20240229'  // Claude 3 Opus
-                : 'claude-sonnet-4-7-20250929';  // Claude Sonnet 4.7
+
+              // Real model ids pass through — the old mapping table lied.
+              const claudeModel = model;
               
               const stream = await anthropic.messages.create({
                 model: claudeModel,
@@ -8579,19 +8582,23 @@ You are empowered to explore and understand. The user trusts you to discover the
         } else {
           // Non-streaming (original behavior)
           if (model.startsWith('claude')) {
-            // Use Anthropic Claude
+            // Use Anthropic Claude — read-at-use credential with OAuth
+            // support (2026-08-11; see the streaming branch above).
             const Anthropic = require('@anthropic-ai/sdk');
-            const anthropic = new Anthropic({
-              apiKey: process.env.ANTHROPIC_API_KEY
-            });
-            
+            const { resolveProviderKey } = require('../core/provider-credentials');
+            const { getAnthropicStealthHeaders } = require('../core/unified-client');
+            const anthropicKey = resolveProviderKey('anthropic', undefined);
+            const anthropic = anthropicKey.startsWith('sk-ant-oat')
+              ? new Anthropic({ authToken: anthropicKey, defaultHeaders: getAnthropicStealthHeaders() })
+              : new Anthropic({ apiKey: anthropicKey });
+
             // Extract system message
             const systemMsg = messages.find(m => m.role === 'system');
             const userMessages = messages.filter(m => m.role !== 'system');
-            
+
             const claudeModel = model.startsWith('claude-')
               ? model
-              : 'claude-sonnet-4-7';
+              : 'claude-sonnet-5';
             
             const response = await anthropic.messages.create({
               model: claudeModel,
@@ -9306,15 +9313,34 @@ You are empowered to explore and understand. The user trusts you to discover the
       }
     });
 
-    // API: Get available models
+    // API: Get available models — served from the model authority
+    // (2026-08-11: the old hardcoded list named models that were neither in
+    // the catalog nor routable).
     this.app.get('/api/query/models', (req, res) => {
+      let models = [];
+      try {
+        const { loadHome23ModelAuthority } = require('./home23-model-catalog.js');
+        const authority = loadHome23ModelAuthority({ home23Root: this.getHome23Root() });
+        const provs = authority.executionCatalog.providers;
+        const providerList = Array.isArray(provs)
+          ? provs
+          : Object.entries(provs).map(([id, value]) => ({ id, ...value }));
+        for (const providerEntry of providerList) {
+          for (const row of (providerEntry.models || [])) {
+            if ((row.kind || 'chat') !== 'chat') continue;
+            models.push({
+              id: row.id,
+              name: row.label || row.id,
+              provider: providerEntry.id,
+              description: providerEntry.label || providerEntry.id,
+            });
+          }
+        }
+      } catch (error) {
+        return res.status(500).json({ error: `model authority unavailable: ${error.message}` });
+      }
       res.json({
-        models: [
-          { id: 'gpt-5.5', name: 'GPT-5.5', description: 'Current flagship for complex reasoning and coding' },
-          { id: 'gpt-5.5-pro', name: 'GPT-5.5 Pro', description: 'Highest-accuracy GPT-5.5 option for hard work' },
-          { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', description: 'Fast & economical' },
-          { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex', description: 'Coding-optimized Codex model' }
-        ],
+        models,
         modes: [
           { id: 'fast', name: 'Fast', description: 'Low reasoning (8K tokens), quick answers' },
           { id: 'normal', name: 'Normal', description: 'Medium reasoning (15K tokens), balanced (default)' },
@@ -11914,7 +11940,7 @@ You are empowered to explore and understand. The user trusts you to discover the
               completed: !!goal.completedAt,
               completedAt: goal.completedAt,
               source: 'goals',
-              model: goal.source === 'dream_gpt5' ? 'gpt-5.5' : 'gpt-5.5'
+              model: goal.model || 'unknown'
             });
           }
         });

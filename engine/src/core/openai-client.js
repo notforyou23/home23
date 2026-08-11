@@ -60,10 +60,13 @@ function getEmbeddingClient() {
     const apiKey = process.env.EMBEDDING_API_KEY || 'ollama';
 
     const OpenAI = loadOpenAI();
+    // Dimensions follow EMBEDDING_DIMENSIONS (fleet default 768/nomic) —
+    // the hardcoded 512 disagreed with every live process env (P2-15).
+    const dims = Number.parseInt(process.env.EMBEDDING_DIMENSIONS || '', 10);
     cachedEmbeddingClient = new OpenAI({
       apiKey,
       baseURL,
-      defaultQuery: { dimensions: 512 }, // Ollama honors this; keeps stored vectors compatible
+      defaultQuery: { dimensions: Number.isFinite(dims) && dims > 0 ? dims : 768 },
     });
   }
 

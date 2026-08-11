@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { createRequire } from 'node:module';
 import { getCodexCredentials, getCodexHeaders, type CodexCredentials } from './codex-auth.js';
+import { anthropicOAuthStealthHeaders } from './anthropic-headers.js';
 import { combineRequestSignals } from './abort-signals.js';
 import { inferProviderFromModel } from './model-resolution.js';
 import { resolveProviderKey, isAuthError } from './provider-credentials.js';
@@ -24,6 +25,10 @@ export interface TextGenerationOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
   codexCredentialsProvider?: (signal?: AbortSignal, force?: boolean) => Promise<CodexCredentials | null>;
+  /** P2-17: real token usage, written by branches whose provider reports it
+   * (anthropic/minimax, ollama-cloud, openai/xai). Values left at 0 mean
+   * "not measured" — never an estimate. Lobe receipts consume this. */
+  usageSink?: { tokensIn: number; tokensOut: number };
 }
 
 /**
@@ -31,13 +36,8 @@ export interface TextGenerationOptions {
  * Anthropic SDK. Mirrors createAnthropicRuntimeClient in src/agent/loop.ts.
  */
 function oauthStealthHeaders(): Record<string, string> {
-  return {
-    'accept': 'application/json',
-    'anthropic-dangerous-direct-browser-access': 'true',
-    'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,extended-cache-ttl-2025-04-11',
-    'user-agent': 'claude-cli/2.1.32 (external, cli)',
-    'x-app': 'cli',
-  };
+  // Single source: anthropic-headers.ts (P2-18 — was one of five copies).
+  return anthropicOAuthStealthHeaders();
 }
 
 /**
@@ -128,6 +128,11 @@ async function generateTextAttempt(opts: TextGenerationOptions, provider: string
       },
       { signal: requestSignal },
     );
+    const anthropicUsage = (response as { usage?: { input_tokens?: number; output_tokens?: number } }).usage;
+    if (opts.usageSink && anthropicUsage) {
+      opts.usageSink.tokensIn = anthropicUsage.input_tokens ?? 0;
+      opts.usageSink.tokensOut = anthropicUsage.output_tokens ?? 0;
+    }
     return extractAnthropicText(response);
   }
 
@@ -153,7 +158,11 @@ async function generateTextAttempt(opts: TextGenerationOptions, provider: string
       const errText = await res.text().catch(() => '');
       throw new Error(`ollama-cloud HTTP ${res.status}: ${errText.slice(0, 300)}`);
     }
-    const data = await res.json() as { message?: { content?: string } };
+    const data = await res.json() as { message?: { content?: string }; prompt_eval_count?: number; eval_count?: number };
+    if (opts.usageSink) {
+      opts.usageSink.tokensIn = data.prompt_eval_count ?? 0;
+      opts.usageSink.tokensOut = data.eval_count ?? 0;
+    }
     return (data.message?.content || '').trim();
   }
 
@@ -183,7 +192,11 @@ async function generateTextAttempt(opts: TextGenerationOptions, provider: string
       const errText = await res.text().catch(() => '');
       throw new Error(`${provider} HTTP ${res.status}: ${errText.slice(0, 300)}`);
     }
-    const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const data = await res.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+    if (opts.usageSink && data.usage) {
+      opts.usageSink.tokensIn = data.usage.prompt_tokens ?? 0;
+      opts.usageSink.tokensOut = data.usage.completion_tokens ?? 0;
+    }
     return (data.choices?.[0]?.message?.content || '').trim();
   }
 

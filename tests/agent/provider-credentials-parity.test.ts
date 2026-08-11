@@ -224,3 +224,13 @@ test('DELIBERATE: the engine env floor is a superset (groq, huggingface, codex)'
     if (saved.h === undefined) delete process.env.HF_TOKEN; else process.env.HF_TOKEN = saved.h;
   }
 });
+
+test('anthropic OAuth stealth surface is identical across the ESM/CJS boundary', async () => {
+  const { anthropicOAuthStealthHeaders, ANTHROPIC_OAUTH_BETA } = await import('../../src/agent/anthropic-headers.js');
+  const engineUnified = require('../../engine/src/core/unified-client.js') as {
+    getAnthropicStealthHeaders: () => Record<string, string>;
+    ANTHROPIC_OAUTH_BETA: string;
+  };
+  assert.equal(engineUnified.ANTHROPIC_OAUTH_BETA, ANTHROPIC_OAUTH_BETA, 'beta string drifted between harness and engine');
+  assert.deepEqual(engineUnified.getAnthropicStealthHeaders(), anthropicOAuthStealthHeaders(), 'stealth header set drifted');
+});
