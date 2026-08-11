@@ -304,7 +304,7 @@ export class SeedRunner {
         const minInterval = this.opts.lobeMinIntervalMs ?? 0;
         const sinceLast = Date.now() - this.lastLobeAtMs;
         if (sinceLast >= minInterval) {
-          const dream = this.seed.consumePendingDream();
+          const dream = this.seed.peekPendingDream();
           if (dream !== null) {
             const outcome = this.seed.workspaceCycle(event.producedAt);
             report.workspaceOutcomes.push(outcome.kind);
@@ -314,8 +314,20 @@ export class SeedRunner {
               this.log(`dream: waking after ~${Math.round(dream.quietSeconds / 60)}min quiet — working the residue [${packet.activeCellIds.join(', ')}]`);
               const lobeOutcome = await this.seed.recruitLobe(this.opts.lobe, packet, event.producedAt, this.opts.lobeTimeoutMs ?? 30_000);
               report.lobeRecruitments++;
-              this.log(`dream lobe ${this.opts.lobe.id}: applied=${lobeOutcome.applied.length} rejected=${lobeOutcome.rejected.length}${lobeOutcome.error !== undefined ? ` error=${lobeOutcome.error}` : ''}`);
+              if (lobeOutcome.error !== undefined) {
+                // The dream STAYS pending on lobe failure — deferral stopped
+                // eating dreams on 2026-08-10; a 401 or timeout must not eat
+                // one either. The error receipt is on the chain; the residue
+                // waits for the next guard opening (event or idle retry).
+                this.log(`dream lobe ${this.opts.lobe.id} FAILED (${lobeOutcome.error}) — dream stays pending`);
+              } else {
+                this.seed.consumePendingDream();
+                this.log(`dream lobe ${this.opts.lobe.id}: applied=${lobeOutcome.applied.length} rejected=${lobeOutcome.rejected.length}`);
+              }
             } else {
+              // Silence dissolves the dream DELIBERATELY — nothing admissible
+              // at waking; the silence record already receipts it.
+              this.seed.consumePendingDream();
               this.log('dream dissolved — nothing admissible at waking (silence receipted)');
             }
           }
@@ -412,7 +424,7 @@ export class SeedRunner {
     // waits for the next contact — the runner ticks, the guard opened, the
     // residue gets worked now. Anchored to the waking event's time.
     if (this.seed.hasPendingDream()) {
-      const dream = this.seed.consumePendingDream();
+      const dream = this.seed.peekPendingDream();
       if (dream !== null) {
         const asOf = this.seed.getState().lastTransitionAt;
         const outcome = this.seed.workspaceCycle(asOf);
@@ -423,8 +435,16 @@ export class SeedRunner {
           this.log(`dream (idle retry): waking after ~${Math.round(dream.quietSeconds / 60)}min quiet — working the residue [${packet.activeCellIds.join(', ')}]`);
           const lobeOutcome = await this.seed.recruitLobe(this.opts.lobe, packet, asOf, this.opts.lobeTimeoutMs ?? 30_000);
           report.lobeRecruitments++;
-          this.log(`dream lobe ${this.opts.lobe.id}: applied=${lobeOutcome.applied.length} rejected=${lobeOutcome.rejected.length}${lobeOutcome.error !== undefined ? ` error=${lobeOutcome.error}` : ''}`);
+          if (lobeOutcome.error !== undefined) {
+            // Same law as the event path: a failed recruitment never eats
+            // the dream — it stays pending for the next guard opening.
+            this.log(`dream lobe ${this.opts.lobe.id} FAILED (${lobeOutcome.error}) — dream stays pending`);
+          } else {
+            this.seed.consumePendingDream();
+            this.log(`dream lobe ${this.opts.lobe.id}: applied=${lobeOutcome.applied.length} rejected=${lobeOutcome.rejected.length}`);
+          }
         } else {
+          this.seed.consumePendingDream();
           this.log('dream dissolved — nothing admissible at idle retry (silence receipted)');
         }
         return; // one recruitment per guard opening

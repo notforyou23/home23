@@ -745,6 +745,16 @@ export class SeedProcess {
    * triggering event's producedAt) — recorded in the receipt, never taken from
    * the wall clock, so replayed workspace cycles are reproducible.
    */
+  /** dream.v1: read the pending dream WITHOUT consuming it. The runner peeks
+   * to build the waking packet and consumes only after the recruitment
+   * actually carried the dream (or silence dissolved it deliberately) — a
+   * lobe FAILURE must leave the dream pending. (Deferral-consumption lost
+   * nine of bobby's dreams on 2026-08-10; failure-consumption was the same
+   * bug one branch over, fixed 2026-08-11.) */
+  peekPendingDream(): { quietSeconds: number } | null {
+    return this._pendingDream;
+  }
+
   /** dream.v1: the pending dream, consumed exactly once. Null when the
    * seed has not just woken from an event-time quiet gap. */
   consumePendingDream(): { quietSeconds: number } | null {

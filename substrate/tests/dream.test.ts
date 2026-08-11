@@ -79,6 +79,68 @@ test('the DREAM CYCLE contract enters the prompt only when the packet dreams', (
   assert.ok(prompt.includes('RESOLVE open predictions'), 'resolution duty rides the dream');
 });
 
+test('RUNNER: a failed dream recruitment leaves the dream PENDING — retried at the next guard opening, consumed only when carried', async (t) => {
+  const srcDir = makeDir('dream-fail-src-', t);
+  const stateDir = makeDir('dream-fail-run-', t);
+  const sourcePath = join(srcDir, 'event-ledger.jsonl');
+  const before = Array.from({ length: 9 }, (_, i) => harnessLine(i, `2026-08-09T10:0${i}:00.000Z`));
+  writeFileSync(sourcePath, before.join('\n') + '\n');
+
+  // Fails the FIRST dream-carrying recruitment only (a simulated 401 at
+  // waking); normal recruitments and the retry delegate to the echo lobe.
+  const inner = new EchoLobe();
+  let dreamFailuresLeft = 1;
+  const flaky = {
+    id: 'lobe.flaky', modelId: 'flaky-echo', provider: 'test',
+    invoke: async (packet: WorkspacePacket) => {
+      if (packet.dream !== undefined && dreamFailuresLeft > 0) {
+        dreamFailuresLeft--;
+        throw new Error('simulated 401: token revoked');
+      }
+      return inner.invoke(packet);
+    },
+  };
+
+  // workspaceEveryN high: no normal recruitments interfere with the guard;
+  // lobeMinIntervalMs 300: blocks the same-tick idle retry (whose workspace
+  // cycle would evaluate cells the failed attempt just damped), so the retry
+  // happens the way it does in life — at the next contact, re-excited.
+  const runner = new SeedRunner({
+    stateDir, sourcePath, fromEnd: false, lobe: flaky,
+    workspaceEveryN: 1000, checkpointEveryN: 1000, lobeMinIntervalMs: 300,
+  });
+  runner.start();
+  await runner.tick();
+
+  // The gap, then waking — the dream recruitment FAILS.
+  writeFileSync(sourcePath, before.join('\n') + '\n' + harnessLine(99, '2026-08-09T13:00:00.000Z') + '\n');
+  await runner.tick();
+
+  const readLedger = () => readFileSync(join(stateDir, 'seed-ledger.jsonl'), 'utf-8').trim().split('\n')
+    .map((l) => JSON.parse(l) as { category: string; payload?: Record<string, unknown> });
+  const afterFailure = readLedger();
+  const failed = afterFailure.filter((r) => r.category === 'lobe' && typeof r.payload?.['error'] === 'string' && (r.payload['error'] as string).includes('simulated 401'));
+  assert.equal(failed.length, 1, 'the failure is receipted on the chain');
+  assert.equal(afterFailure.filter((r) => r.category === 'lobe' && r.payload?.['dream'] !== undefined).length, 0,
+    'no dream receipt yet — the failure must not have consumed the dream');
+
+  // The guard opens; the next contact re-excites the workspace and the
+  // pending dream rides it — this time the recruitment succeeds.
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  writeFileSync(sourcePath, before.join('\n') + '\n' + harnessLine(99, '2026-08-09T13:00:00.000Z') + '\n' + harnessLine(100, '2026-08-09T13:05:00.000Z') + '\n');
+  await runner.tick();
+  const afterRetry = readLedger();
+  const carried = afterRetry.filter((r) => r.category === 'lobe' && r.payload?.['dream'] !== undefined);
+  assert.equal(carried.length, 1, 'the retry carried the dream — receipted with payload.dream');
+
+  // Consumed exactly once: nothing further dreams.
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  await runner.tick();
+  runner.stop();
+  const finalDreams = readLedger().filter((r) => r.category === 'lobe' && r.payload?.['dream'] !== undefined);
+  assert.equal(finalDreams.length, 1, 'the dream was consumed on success — never re-dreamed');
+});
+
 test('RUNNER: waking after a gap drives a dream recruitment; the chain receipt shows it', async (t) => {
   const srcDir = makeDir('dream-src-', t);
   const stateDir = makeDir('dream-run-', t);
