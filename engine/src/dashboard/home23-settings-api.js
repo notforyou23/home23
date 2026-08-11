@@ -1720,7 +1720,14 @@ function createSettingsRouter(home23Root, options = {}) {
           const bePath = path.join(home23Root, 'configs', 'base-engine.yaml');
           let beProviders = {};
           try { beProviders = (loadYaml(bePath) || {}).providers || {}; } catch { beProviders = {}; }
-          const beEnabled = (name) => beProviders[name] && beProviders[name].enabled === true;
+          // Providers UnifiedClient routes at CALL time need no base-engine
+          // enabled flag: openai-codex is built lazily and openai is the
+          // GPT5Client base path. Must mirror CALL_TIME_PROVIDERS in
+          // engine/src/core/config-loader.js — this refused jtr's codex
+          // roles on 2026-08-11 while chat/Query/research ran codex fine.
+          const CALL_TIME_PROVIDERS = new Set(['openai-codex', 'openai']);
+          const beEnabled = (name) => CALL_TIME_PROVIDERS.has(name)
+            || (beProviders[name] && beProviders[name].enabled === true);
           const resolvableInEngine = (model) => {
             for (const [name, prov] of Object.entries(beProviders)) {
               if (beEnabled(name) && (prov.defaultModels || []).includes(model)) return name;

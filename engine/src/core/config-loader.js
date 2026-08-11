@@ -52,8 +52,17 @@ class ConfigLoader {
     // Otherwise a model listed in home.yaml under a provider that's not
     // enabled in base-engine silently slips through and the unified
     // client fails at call-time with "X provider not initialized".
+    //
+    // EXCEPT providers UnifiedClient routes at call time with no constructor
+    // gate. openai-codex is built lazily (getOpenAICodexGPT5Client) and never
+    // reads providers.*.enabled; openai is the GPT5Client base path. Gating
+    // those on a base-engine flag they never consult silently discarded
+    // jtr's codex engine roles from 2026-04-18 to 2026-08-11 — while chat,
+    // Query, and research ran codex the whole time through ungated paths.
+    const CALL_TIME_PROVIDERS = new Set(['openai-codex', 'openai']);
     const baseProviders = this.config.providers || {};
     const isProviderEnabled = (name) => {
+      if (CALL_TIME_PROVIDERS.has(name)) return true;
       const prov = baseProviders[name];
       return prov && prov.enabled === true;
     };
