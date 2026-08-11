@@ -324,6 +324,59 @@ export function generateEcosystem(home23Root, options = {}) {
     }
   }
 
+  // ── Per-agent substrate feeds ──
+  // A seed with no feed is a seed that starves. These were hand-started for
+  // weeks; nothing regenerated them and `home23 start` did not bring them back.
+  // Each writes EXACTLY the stream its seed reads — both sides are derived from
+  // the same expression below, so they cannot drift apart.
+  for (const agent of agents) {
+    if (agent.config?.substrate?.enabled !== true) continue;
+    const sub = agent.config.substrate;
+    const streamPath = `path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'conversation-stream.jsonl')`;
+    const backfillBytes = Number(sub.conversationBackfillBytes) > 0
+      ? Number(sub.conversationBackfillBytes) : 524288;
+
+    lines.push(``);
+    lines.push(`    // ── ${agent.name} conversation shipper (feeds the seed) ──`);
+    lines.push(`    {`);
+    lines.push(`      name: 'home23-${agent.name}-shipper',`);
+    lines.push(`      script: path.join(HOME23, 'substrate', 'bin', 'conversation-shipper.ts'),`);
+    lines.push(`      cwd: HOME23,`);
+    lines.push(`      interpreter: 'node',`);
+    lines.push(`      node_args: '--import tsx',`);
+    lines.push(`      filter_env: ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
+    lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
+    lines.push(`      out_file: path.join(HOME23, 'instances', '${agent.name}', 'logs', 'conversation-shipper-out.log'),`);
+    lines.push(`      error_file: path.join(HOME23, 'instances', '${agent.name}', 'logs', 'conversation-shipper-err.log'),`);
+    lines.push(`      env: {`);
+    lines.push(`        SHIPPER_CONVERSATIONS_DIR: path.join(HOME23, 'instances', '${agent.name}', 'conversations'),`);
+    lines.push(`        SHIPPER_STREAM_PATH: ${streamPath},`);
+    lines.push(`        SHIPPER_BACKFILL_BYTES: '${backfillBytes}',`);
+    lines.push(`      },`);
+    lines.push(`    },`);
+
+    // House sensing is opt-in: only an agent wired into the home has a house
+    // to sense. Its stream is the seed's SEED_HOUSE_SOURCE, same derivation.
+    if (sub.houseSense === true) {
+      lines.push(``);
+      lines.push(`    // ── ${agent.name} house sense (feeds the seed the home) ──`);
+      lines.push(`    {`);
+      lines.push(`      name: 'home23-${agent.name}-house-sense',`);
+      lines.push(`      script: path.join(HOME23, 'substrate', 'bin', 'house-sense.ts'),`);
+      lines.push(`      cwd: HOME23,`);
+      lines.push(`      interpreter: 'node',`);
+      lines.push(`      node_args: '--import tsx',`);
+      lines.push(`      filter_env: ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
+      lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
+      lines.push(`      out_file: path.join(HOME23, 'instances', '${agent.name}', 'logs', 'house-sense-out.log'),`);
+      lines.push(`      error_file: path.join(HOME23, 'instances', '${agent.name}', 'logs', 'house-sense-err.log'),`);
+      lines.push(`      env: {`);
+      lines.push(`        SHIPPER_STREAM_PATH: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'house-stream.jsonl'),`);
+      lines.push(`      },`);
+      lines.push(`    },`);
+    }
+  }
+
   // ── Substrate auxiliary services (shared) ──
   // These ran hand-started for weeks. Two of them (the observatory and the
   // bobby house shipper) were still on PM2's DEFAULT log paths on 2026-08-11,
@@ -402,6 +455,41 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: path.join(HOME23, 'logs', '${shipper.name}-out.log'),`);
     lines.push(`      error_file: path.join(HOME23, 'logs', '${shipper.name}-err.log'),`);
+    lines.push(`    },`);
+  }
+
+  // Declared lobe brokers — each carries a remote resident's exchange over ssh.
+  // A resident living on another machine is not derivable from instances/, so
+  // it is declared. The address and remote paths live in config; the repo
+  // learns nothing about anyone's network.
+  for (const broker of Array.isArray(substrateConfig.brokers) ? substrateConfig.brokers : []) {
+    if (!broker || !broker.name || !broker.sshHost || !broker.remoteDir) continue;
+    const localPath = (value) => `path.resolve(HOME23, ${JSON.stringify(String(value))})`;
+    lines.push(``);
+    lines.push(`    // ── lobe broker: ${broker.name} (remote resident) ──`);
+    lines.push(`    {`);
+    lines.push(`      name: 'home23-${broker.name}-broker',`);
+    lines.push(`      script: path.join(HOME23, 'substrate', 'bin', 'lobe-broker.ts'),`);
+    lines.push(`      cwd: HOME23,`);
+    lines.push(`      interpreter: 'node',`);
+    lines.push(`      node_args: '--import tsx',`);
+    lines.push(`      filter_env: ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
+    lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
+    lines.push(`      out_file: path.join(HOME23, 'logs', '${broker.name}-broker-out.log'),`);
+    lines.push(`      error_file: path.join(HOME23, 'logs', '${broker.name}-broker-err.log'),`);
+    lines.push(`      env: {`);
+    lines.push(`        BROKER_SSH_HOST: ${JSON.stringify(String(broker.sshHost))},`);
+    lines.push(`        BROKER_REMOTE_DIR: ${JSON.stringify(String(broker.remoteDir))},`);
+    if (broker.model) lines.push(`        BROKER_MODEL: ${JSON.stringify(String(broker.model))},`);
+    if (Number(broker.intervalMs) > 0) lines.push(`        BROKER_INTERVAL_MS: '${Number(broker.intervalMs)}',`);
+    // Remote paths stay verbatim (they are the Pi's filesystem); local
+    // mirrors resolve against this install.
+    if (broker.stateDest) lines.push(`        BROKER_STATE_DEST: ${localPath(broker.stateDest)},`);
+    if (broker.stateRemote) lines.push(`        BROKER_STATE_REMOTE: ${JSON.stringify(String(broker.stateRemote))},`);
+    if (broker.formsDest) lines.push(`        BROKER_FORMS_DEST: ${localPath(broker.formsDest)},`);
+    if (broker.formsRemote) lines.push(`        BROKER_FORMS_REMOTE: ${JSON.stringify(String(broker.formsRemote))},`);
+    if (Number(broker.formsEveryTicks) > 0) lines.push(`        BROKER_FORMS_EVERY_TICKS: '${Number(broker.formsEveryTicks)}',`);
+    lines.push(`      },`);
     lines.push(`    },`);
   }
 

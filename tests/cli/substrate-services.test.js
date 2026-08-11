@@ -155,5 +155,90 @@ test('declared substrate shippers are generated, with nothing machine-specific i
 test('no shippers declared, none emitted', (t) => {
   const root = makeInstall();
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  assert.equal(loadApps(root).some((a) => /shipper/.test(a.name)), false);
+  // Declared shippers only. The per-agent conversation shipper below is
+  // derived from substrate.enabled and is a different thing entirely.
+  assert.equal(loadApps(root).some((a) => a.name === 'home23-bobby-house-shipper'), false);
+});
+
+// ── the remaining four: per-agent feeds, and brokers for remote residents ──
+
+test('a seed-running agent gets its conversation shipper, writing exactly what the seed reads', (t) => {
+  const root = makeInstall();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const apps = loadApps(root);
+  const shipper = apps.find((a) => a.name === 'home23-jerry-shipper');
+  const seed = apps.find((a) => a.name === 'home23-jerry-seed');
+
+  assert.ok(shipper, 'a seed with no conversation feed is a seed that starves');
+  assert.match(shipper.script, /substrate\/bin\/conversation-shipper\.ts$/);
+  assert.equal(shipper.node_args, '--import tsx');
+  assert.match(shipper.env.SHIPPER_CONVERSATIONS_DIR, /instances\/jerry\/conversations$/);
+  // The writer and the reader must be the same path. Deriving both from one
+  // place is what makes them impossible to drift apart.
+  assert.equal(shipper.env.SHIPPER_STREAM_PATH, seed.env.SEED_CONVERSATION_SOURCE,
+    'shipper writes precisely the stream the seed consumes');
+  assert.equal(shipper.env.SHIPPER_BACKFILL_BYTES, '524288', 'default backfill');
+});
+
+test('no seed, no shipper', (t) => {
+  const root = makeInstall({ substrate: { enabled: false } });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.equal(loadApps(root).find((a) => a.name === 'home23-jerry-shipper'), undefined);
+});
+
+test('house-sense is opt-in per agent and feeds the seed its house stream', (t) => {
+  const root = makeInstall({ substrate: { enabled: true, houseSense: true } });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const apps = loadApps(root);
+  const sense = apps.find((a) => a.name === 'home23-jerry-house-sense');
+  const seed = apps.find((a) => a.name === 'home23-jerry-seed');
+
+  assert.ok(sense, 'declared houseSense emits the sensor');
+  assert.match(sense.script, /substrate\/bin\/house-sense\.ts$/);
+  assert.equal(sense.env.SHIPPER_STREAM_PATH, seed.env.SEED_HOUSE_SOURCE,
+    'house sensor writes precisely the stream the seed consumes');
+});
+
+test('house-sense stays off unless asked for', (t) => {
+  const root = makeInstall();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.equal(loadApps(root).find((a) => a.name === 'home23-jerry-house-sense'), undefined,
+    'a seed-running agent does not automatically sense the house');
+});
+
+test('a declared broker carries a remote resident, with the address only in config', (t) => {
+  const root = makeInstall({
+    home: {
+      substrate: {
+        brokers: [{
+          name: 'bobby',
+          sshHost: '10.0.0.9',
+          remoteDir: '/home/jtr/bobby/lobe-exchange',
+          model: 'claude-haiku-4-5',
+          intervalMs: 20000,
+          stateDest: 'instances/bobby/seed-01-mirror',
+          stateRemote: '/home/jtr/bobby/seed-01',
+        }],
+      },
+    },
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const app = loadApps(root).find((a) => a.name === 'home23-bobby-broker');
+
+  assert.ok(app, 'a declared broker is emitted');
+  assert.match(app.script, /substrate\/bin\/lobe-broker\.ts$/);
+  assert.equal(app.node_args, '--import tsx');
+  assert.equal(app.env.BROKER_SSH_HOST, '10.0.0.9');
+  assert.equal(app.env.BROKER_REMOTE_DIR, '/home/jtr/bobby/lobe-exchange');
+  assert.equal(app.env.BROKER_MODEL, 'claude-haiku-4-5');
+  assert.equal(app.env.BROKER_INTERVAL_MS, '20000');
+  assert.match(app.env.BROKER_STATE_DEST, /instances\/bobby\/seed-01-mirror$/);
+  assert.ok(app.env.BROKER_STATE_DEST.startsWith('/'), 'local dest resolves against the install');
+  assert.equal(app.env.BROKER_STATE_REMOTE, '/home/jtr/bobby/seed-01', 'remote path stays verbatim');
+});
+
+test('no brokers declared, none emitted', (t) => {
+  const root = makeInstall();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.equal(loadApps(root).some((a) => /broker/.test(a.name)), false);
 });
