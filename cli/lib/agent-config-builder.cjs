@@ -56,7 +56,8 @@ function buildAgentConfig(options = {}) {
       thought: DEFAULT_ENGINE_MODEL,
       consolidation: DEFAULT_ENGINE_MODEL,
       dreaming: DEFAULT_ENGINE_MODEL,
-      query: DEFAULT_ENGINE_MODEL,
+      // engine.query retired 2026-08-11: nothing engine-side ever read it —
+      // query models are governed by the model authority's query block.
     },
     feeder: {
       additionalWatchPaths: buildFeederWatchPaths(instanceDir, ingestPaths),

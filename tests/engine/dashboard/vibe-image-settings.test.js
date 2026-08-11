@@ -178,7 +178,13 @@ test('vibe settings expose and preserve xAI Grok image models', async () => {
 });
 
 test('settings agent creation records purpose and starter ingestion folders', async () => {
-  await withSettingsServer({ home: {} }, async (baseUrl, root) => {
+  // The fixture must look like a real install: creation now validates the
+  // chat pair against the model authority (2026-08-11), so the house needs a
+  // catalog entry + alias for the pair, exactly as a seeded home.yaml has.
+  await withSettingsServer({
+    providers: { 'ollama-cloud': { defaultModels: ['kimi-k3:cloud'] } },
+    models: { aliases: { kimi: { provider: 'ollama-cloud', model: 'kimi-k3:cloud' } } },
+  }, async (baseUrl, root) => {
     const templatesDir = path.join(root, 'cli', 'templates');
     fs.mkdirSync(templatesDir, { recursive: true });
     fs.writeFileSync(path.join(templatesDir, 'MISSION.md'), '# Mission\n\n{{purpose}}\n', 'utf8');
@@ -201,7 +207,7 @@ test('settings agent creation records purpose and starter ingestion folders', as
         personalFacts,
         ingestPaths: `${projectDir}\n${claudeDir}`,
         provider: 'ollama-cloud',
-        model: 'kimi-k2.6',
+        model: 'kimi-k3:cloud',
       }),
     });
     assert.equal(createRes.status, 200);
@@ -215,8 +221,8 @@ test('settings agent creation records purpose and starter ingestion folders', as
     const config = yaml.load(fs.readFileSync(path.join(instanceDir, 'config.yaml'), 'utf8'));
     assert.equal(config.agent.purpose, purpose);
     assert.equal(config.engine.thought, 'MiniMax-M3');
-    assert.equal(config.engine.query, 'MiniMax-M3');
-    assert.equal(config.chat.defaultModel, 'kimi-k2.6');
+    assert.equal(config.engine.query, undefined, 'engine.query is retired — creation must not seed it');
+    assert.equal(config.chat.defaultModel, 'kimi-k3:cloud');
     assert.equal(config.chat.memorySearch.enabled, true);
     assert.deepEqual(config.agent.owner.facts, ['Prefers receipts before summaries.', 'Works through Home23 and project imports.']);
     assert.ok(config.feeder.additionalWatchPaths.some((entry) => entry.path === projectDir && entry.label === 'sample-project'));
