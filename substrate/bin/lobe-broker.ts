@@ -31,9 +31,6 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { createRequire } from 'node:module';
 import { parseLobeRequest, formatLobeResult } from '../src/lobe-file-transport.js';
 import type { LobeFileResult } from '../src/lobe-file-transport.js';
 
@@ -56,43 +53,19 @@ const maxTokens = Number.isFinite(maxTokensEnv) && maxTokensEnv > 0 ? maxTokensE
 const genTimeoutMs = Number(process.env['BROKER_GEN_TIMEOUT_MS'] ?? 90_000);
 const FILE_PATTERN = /^req_[a-z0-9]+_[0-9]+\.json$/;
 
-/** Provider keys come from secrets.yaml into THIS process's env — the same
- * values PM2 would inject. Nothing is written anywhere. Home23's OAuth
- * tokens ROTATE (cosmo23 broker + the dashboard's 30-min re-sync poller
- * keep secrets.yaml fresh), so a long-lived broker must be able to re-read:
- * `force` overwrites the env from the current file. Proven live 2026-08-08 —
- * a 16h-old broker held a revoked token while secrets.yaml sat fresh. */
-function loadProviderEnv(force = false): void {
-  const repoRoot = resolve(import.meta.dirname, '..', '..');
-  const secretsPath = resolve(repoRoot, 'config', 'secrets.yaml');
-  let secrets: Record<string, { apiKey?: string } | undefined> = {};
-  try {
-    const requireFromRepo = createRequire(resolve(repoRoot, 'package.json'));
-    const yaml = requireFromRepo('js-yaml') as { load: (s: string) => unknown };
-    const parsed = yaml.load(readFileSync(secretsPath, 'utf-8')) as { providers?: typeof secrets };
-    secrets = parsed?.providers ?? {};
-  } catch (error) {
-    console.error(`[broker] could not load secrets.yaml: ${(error as Error).message}`);
-  }
-  const mapping: Array<[string, string]> = [
-    ['ollama-cloud', 'OLLAMA_CLOUD_API_KEY'],
-    ['anthropic', 'ANTHROPIC_AUTH_TOKEN'],
-    ['openai', 'OPENAI_API_KEY'],
-    ['xai', 'XAI_API_KEY'],
-    ['minimax', 'MINIMAX_API_KEY'],
-  ];
-  for (const [providerName, envName] of mapping) {
-    const key = secrets[providerName]?.apiKey;
-    if (typeof key === 'string' && key !== '' && (force || process.env[envName] === undefined || process.env[envName] === '')) {
-      process.env[envName] = key;
-    }
-  }
-}
-
-/** 401/revoked-token shaped failures mean our env snapshot went stale. */
-function isAuthFailure(message: string): boolean {
-  return /authentication_error|revoked|\b401\b/i.test(message);
-}
+/** The broker holds NO credentials and must not learn to. It reaches models
+ * only through generateText (via ../src/substrate/lobe-transport.ts), which
+ * resolves the provider key at use from config/secrets.yaml and spends its own
+ * force-fresh retry on an auth failure — see src/agent/provider-credentials.ts.
+ * Rotation is a file write; this process needs to do nothing to observe it.
+ *
+ * There WAS a loadProviderEnv()/isAuthFailure() pair here (1caf001a,
+ * 2026-08-08) that copied secrets.yaml into this process's env and re-copied
+ * it on a 401. It was correct when written — generateText then read frozen env
+ * — and became dead weight 2.5 days later when 159703ef made the resolver
+ * read-at-use. It also had the precedence backwards: env won and the file was
+ * only a fallback, so it could only ever notice a rotation reactively, after a
+ * failure. Removed 2026-08-11. Do not reintroduce a credential cache here. */
 
 function ssh(command: string, input?: string): string {
   return execFileSync('ssh', ['-o', 'ConnectTimeout=10', sshHost as string, command], {
@@ -139,12 +112,11 @@ async function tick(transport: Transport): Promise<void> {
       const message = (error as Error).message;
       result = { id, error: message.slice(0, 300) };
       console.error(`[broker] ${id} failed: ${message}`);
-      if (isAuthFailure(message)) {
-        // Token rotated under us — re-read secrets.yaml so the NEXT request
-        // uses the fresh credential (generateText reads env per call).
-        loadProviderEnv(true);
-        console.log('[broker] auth failure — provider env refreshed from secrets.yaml');
-      }
+      // No credential handling on this path. generateText resolved the key
+      // fresh for this call, and for the SDK providers this broker uses
+      // (default claude-haiku-4-5 → anthropic) it already spent its one
+      // force-fresh retry before throwing. A failure reaching here is real
+      // and belongs in the result the seed reads.
     }
     const resultPath = `${remoteDir}/results/res-${id}.json`;
     try {
@@ -199,7 +171,6 @@ function mirrorForms(): void {
 }
 
 async function main(): Promise<void> {
-  loadProviderEnv();
   const transport = await buildTransport();
   console.log(`[broker] serving ${sshHost}:${remoteDir} with ${model}, every ${intervalMs}ms`);
   await tick(transport);
