@@ -107,6 +107,13 @@ async function main(): Promise<void> {
   if (memorySource !== undefined && memorySource !== '') {
     extraSources.push({ sourcePath: memorySource, sourceType: 'relationship-ledger', id: 'memory', backfillBytes: Math.max(extraBackfill, 65536) });
   }
+  // The individual's own dreams, receipted at birth (engine saveDream →
+  // dream-events.jsonl): head + content sha256 onto the chain — T1 prose
+  // provenance from the first word.
+  const dreamSource = process.env['SEED_DREAM_SOURCE'];
+  if (dreamSource !== undefined && dreamSource !== '') {
+    extraSources.push({ sourcePath: dreamSource, sourceType: 'dream-stream', id: 'dream', backfillBytes: extraBackfill });
+  }
 
   let anatomy;
   const rawAnatomy = process.env['SEED_ANATOMY'];

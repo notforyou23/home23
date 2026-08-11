@@ -201,12 +201,14 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      filter_env: ['HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
     // Heap sized for a cognitive engine with a growing brain — see commit
     // 174c76c (Step: engine OOM fix). 768MB caused a restart loop at ~7k nodes.
-    // 8192, not 4096: the 6-hourly full base rewrite materializes the whole
-    // graph before streaming it out, and forrest (119k nodes / 461k edges)
-    // OOM-crash-looped at 4096 the first time it fired (2026-07-16). The cap
+    // 8192 → 12288 (2026-08-10): jerry (211k nodes / 498k edges) OOM-crash-looped
+    // at 8192 — ineffective mark-compacts pinned at ~8160MB, one crash per ~5.5min.
+    // 12288 is a tourniquet on a 16GB machine, not a cure; the real fix is
+    // shedding brain volume. max_memory_restart must stay above the V8 ceiling
+    // or PM2 kills the engine before V8 can even reach its own limit. The cap
     // is a ceiling, not a reservation — idle engines stay under ~1GB.
-    lines.push(`      node_args: '--expose-gc --max-old-space-size=8192',`);
-    lines.push(`      max_memory_restart: '10G',`);
+    lines.push(`      node_args: '--expose-gc --max-old-space-size=12288',`);
+    lines.push(`      max_memory_restart: '14G',`);
     lines.push(`      kill_timeout: ENGINE_KILL_TIMEOUT_MS,`);
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${logsDir} + '/engine-out.log',`);
@@ -300,7 +302,7 @@ export function generateEcosystem(home23Root, options = {}) {
       lines.push(`      kill_timeout: 30000,`);
       lines.push(`      out_file: ${logsDir} + '/seed-out.log',`);
       lines.push(`      error_file: ${logsDir} + '/seed-err.log',`);
-      lines.push(`      env: { ...commonEnv, HOME23_AGENT: '${agent.name}', INSTANCE_ID: 'home23-${agent.name}-seed', SEED_STATE_DIR: ${seedStateDir}, SEED_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'event-ledger.jsonl'), SEED_RELATIONSHIP_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'relationship-ledger.events.jsonl'), SEED_WORKER_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'worker-runs.jsonl'), SEED_CONVERSATION_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'conversation-stream.jsonl'), SEED_HOUSE_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'house-stream.jsonl'), SEED_MEMORY_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'memory-objects.events.jsonl'), SEED_LOBE: '${lobeKind}', SEED_LOBE_MODEL: '${lobeModel}', SEED_LOBE_MIN_INTERVAL_MS: '${lobeMinIntervalMs}' },`);
+      lines.push(`      env: { ...commonEnv, HOME23_AGENT: '${agent.name}', INSTANCE_ID: 'home23-${agent.name}-seed', SEED_STATE_DIR: ${seedStateDir}, SEED_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'event-ledger.jsonl'), SEED_RELATIONSHIP_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'relationship-ledger.events.jsonl'), SEED_WORKER_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'worker-runs.jsonl'), SEED_CONVERSATION_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'conversation-stream.jsonl'), SEED_HOUSE_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'house-stream.jsonl'), SEED_MEMORY_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'memory-objects.events.jsonl'), SEED_DREAM_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'dream-events.jsonl'), SEED_LOBE: '${lobeKind}', SEED_LOBE_MODEL: '${lobeModel}', SEED_LOBE_MIN_INTERVAL_MS: '${lobeMinIntervalMs}' },`);
       lines.push(`    },`);
     }
   }

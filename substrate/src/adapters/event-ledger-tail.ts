@@ -64,7 +64,7 @@ export interface TailedSourceEvent extends SourceEvent {
   endOffset: number;
 }
 
-export type TailSourceType = 'harness-ledger' | 'relationship-ledger' | 'worker-runs' | 'conversation-stream' | 'house-stream';
+export type TailSourceType = 'harness-ledger' | 'relationship-ledger' | 'worker-runs' | 'conversation-stream' | 'house-stream' | 'dream-stream';
 
 export interface EventLedgerTailOptions {
   /** Absolute path of the JSONL stream to tail (read-only). */
@@ -299,6 +299,7 @@ export class EventLedgerTailAdapter implements SourceAdapter {
     if (this.sourceType === 'worker-runs') return this.mapWorkerRunLine(parsed, line, endOffset);
     if (this.sourceType === 'conversation-stream') return this.mapConversationLine(parsed, line, endOffset);
     if (this.sourceType === 'house-stream') return this.mapHouseLine(parsed, line, endOffset);
+    if (this.sourceType === 'dream-stream') return this.mapDreamLine(parsed, line, endOffset);
     return this.mapHarnessLine(parsed as HarnessEntry, line, endOffset);
   }
 
@@ -325,6 +326,38 @@ export class EventLedgerTailAdapter implements SourceAdapter {
         from: typeof parsed['from'] === 'string' ? parsed['from'] : null,
         to: typeof parsed['to'] === 'string' ? parsed['to'] : null,
         head: text.trim().slice(0, 160),
+      },
+      producedAt: ts,
+      endOffset,
+    };
+  }
+
+  /** Dream-stream lines (engine saveDream receipts, 2026-08-11): the
+   * individual's OWN dreams entering its diet at birth — dreamId, a bounded
+   * head of the dream's words, and the content sha256 that makes the prose
+   * T1 (chain-anchored the moment it exists, before any waking conversation
+   * could reference it). Category 'interpretation': a dream is the mind's
+   * own reading of the lived day, not a world observation. */
+  private mapDreamLine(parsed: Record<string, unknown>, line: string, endOffset: number): TailedSourceEvent | null {
+    const ts = parsed['ts'];
+    if (typeof ts !== 'string' || !Number.isFinite(Date.parse(ts))) return null;
+    const dreamId = parsed['dreamId'];
+    const head = parsed['head'];
+    const contentSha256 = parsed['contentSha256'];
+    if (typeof dreamId !== 'string' || dreamId === '') return null;
+    if (typeof head !== 'string' || head.trim() === '') return null;
+    if (typeof contentSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(contentSha256)) return null;
+    return {
+      eventId: `dream_${createHash('sha256').update(line, 'utf-8').digest('hex').slice(0, 16)}`,
+      category: 'interpretation',
+      sourceAuthority: this.authority,
+      sourceRef: `dream:${dreamId}`,
+      payload: {
+        head: head.trim().slice(0, 160),
+        contentSha256,
+        ...(typeof parsed['cycle'] === 'number' ? { cycle: parsed['cycle'] } : {}),
+        ...(typeof parsed['model'] === 'string' ? { model: parsed['model'] } : {}),
+        ...(typeof parsed['contentLength'] === 'number' ? { contentLength: parsed['contentLength'] } : {}),
       },
       producedAt: ts,
       endOffset,
