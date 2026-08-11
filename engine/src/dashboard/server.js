@@ -2923,16 +2923,19 @@ class DashboardServer {
 
     // ── OAuth refresh poller (STEP 18) ──
     // cosmo23 handles PKCE refresh internally. Every 30 min, check the current
-    // decrypted token. If it differs from what's in secrets.yaml, sync it in
-    // and restart the engine + harness so the new env flows through.
-    // Skip the restart if a COSMO research run is active (would kill it).
+    // decrypted token. If it differs from what's in secrets.yaml, sync it in.
+    // Writing secrets.yaml IS the delivery for every consumer that resolves
+    // credentials at use (the engine, since 2026-08-11). Only the harness
+    // still needs a process restart to see a new token — see
+    // rotationRestartTargets in ./oauth-token-expiry.js.
+    // Skip that restart if a COSMO research run is active (would kill it).
     try {
       const home23RootForPoll = this.getHome23Root();
       const fsSync = require('fs');
       const cosmoPort = parseInt(process.env.COSMO23_PORT || '43210', 10);
       const cosmoBase = `http://localhost:${cosmoPort}`;
       const secretsPath = path.join(home23RootForPoll, 'config', 'secrets.yaml');
-      const { readCurrentSecretToken, mayDeferRestart } = require('./oauth-token-expiry.js');
+      const { readCurrentSecretToken, mayDeferRestart, rotationRestartTargets } = require('./oauth-token-expiry.js');
 
       const pollInterval = 30 * 60 * 1000; // 30 min
       setInterval(async () => {
@@ -2988,9 +2991,12 @@ class DashboardServer {
                 continue;
               }
 
-              // Shared provider secrets affect every running Home23 agent/harness,
-              // not just the home primary. Restart only the processes that are
-              // currently online so refreshed env lands everywhere.
+              // Shared provider secrets affect every running Home23 agent, not
+              // just the home primary. Restart only processes that are both
+              // currently online AND actually need a restart to see the new
+              // token — the engine no longer does (it resolves credentials at
+              // use), so it is no longer cycled here. See
+              // rotationRestartTargets for the full reasoning.
               try {
                 const { execFileSync } = require('child_process');
                 const { parsePm2JlistOutput } = require(path.join(home23RootForPoll, 'scripts', 'home23-pm2-watchdog.cjs'));
@@ -3009,7 +3015,7 @@ class DashboardServer {
                 const agentNames = fsSync.existsSync(instancesDir)
                   ? fsSync.readdirSync(instancesDir).filter(name => fsSync.existsSync(path.join(instancesDir, name, 'config.yaml')))
                   : [];
-                const targets = agentNames.flatMap(name => [`home23-${name}`, `home23-${name}-harness`]).filter(name => online.has(name));
+                const targets = rotationRestartTargets(agentNames, online);
                 if (targets.length > 0) {
                   const ecosystemPath = path.join(home23RootForPoll, 'ecosystem.config.cjs');
                   try {
@@ -3030,6 +3036,13 @@ class DashboardServer {
                     console.warn(`[OAuth refresh] pm2 restart did not confirm within timeout for ${targets.join(', ')}: ${restartErr.message} — letting the PM2 daemon finish server-side`);
                   }
                   console.log(`[OAuth refresh] rotated ${provider} token, restarted ${targets.join(', ')}`);
+                } else {
+                  // A rotation with nothing to restart is a success, not a
+                  // no-op — every consumer already reads the file. Say so:
+                  // an unlogged rotation is indistinguishable from a poller
+                  // that silently stopped running, which is the failure mode
+                  // that hid the 2026-08-09 outage for 8 hours.
+                  console.log(`[OAuth refresh] rotated ${provider} token, synced to secrets.yaml; no restart needed`);
                 }
               } catch (err) {
                 console.warn(`[OAuth refresh] ${provider} token written but restart failed:`, err.message);
@@ -7089,9 +7102,10 @@ Be specific, actionable, and maintain research continuity.`;
     };
     const saveLiveProblems = (data, candidate) => {
       const fs = require('fs');
-      const tmp = liveProblemsFile(candidate) + '.tmp';
+      const file = liveProblemsFile(candidate);
+      const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-      fs.renameSync(tmp, liveProblemsFile(candidate));
+      fs.renameSync(tmp, file);
     };
     const normalizeDispatchOutcome = (value) => {
       const v = typeof value === 'string' ? value.trim().toLowerCase() : '';
@@ -7261,6 +7275,96 @@ Be specific, actionable, and maintain research continuity.`;
       p.lastRemediationAt = null;
       saveLiveProblems({ problems: list }, targetAgent);
       res.json({ ok: true, problem: p });
+    });
+
+    // ── Operator authority ────────────────────────────────────────────────
+    // Recording an intervention above only leaves a note. These are the
+    // actions that actually change what the system does: close a problem over
+    // the verifier's objection, hand it back, stand remediation down so it
+    // stops spending agent hours, cut a wedged dispatch loose, or force the
+    // check to run right now instead of waiting for the next tick.
+    const operatorStore = (candidate) => {
+      const { LiveProblemStore } = require('../live-problems/store');
+      return new LiveProblemStore({
+        brainDir: path.dirname(liveProblemsFile(candidate)),
+        logger: this.logger,
+      });
+    };
+    const operatorAction = (verb, apply) => (req, res) => {
+      try {
+        const targetAgent = liveProblemTarget(req);
+        const store = operatorStore(targetAgent);
+        if (!store.get(req.params.id)) return res.status(404).json({ error: 'not found' });
+        const body = req.body || {};
+        const problem = apply(store, req.params.id, {
+          actor: body.actor || 'jtr',
+          reason: String(body.reason || body.note || '').slice(0, 1000),
+          body,
+        });
+        this.logger?.info?.(`[live-problems] operator ${verb}: ${req.params.id} by ${body.actor || 'jtr'}`);
+        res.json({ ok: true, problem });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    };
+
+    this.app.post('/api/live-problems/:id/close', operatorAction('close',
+      (store, id, { actor, reason }) => store.operatorClose(id, { actor, reason })));
+
+    this.app.post('/api/live-problems/:id/reopen', operatorAction('reopen',
+      (store, id, { actor, reason }) => store.operatorReopen(id, { actor, reason })));
+
+    this.app.post('/api/live-problems/:id/mute', operatorAction('mute',
+      (store, id, { actor, reason, body }) => {
+        const hours = Number(body.hours);
+        const untilIso = body.until
+          || new Date(Date.now() + (Number.isFinite(hours) && hours > 0 ? hours : 24) * 3600000).toISOString();
+        return store.operatorMute(id, { actor, reason, untilIso });
+      }));
+
+    this.app.post('/api/live-problems/:id/unmute', operatorAction('unmute',
+      (store, id, { actor, reason }) => store.operatorUnmute(id, { actor, reason })));
+
+    this.app.post('/api/live-problems/:id/cancel-dispatch', operatorAction('cancel-dispatch',
+      (store, id, { actor, reason }) => {
+        store.clearDispatch(id);
+        store.recordRemediation(id, {
+          step: Number(store.get(id)?.stepIndex || 0),
+          type: 'operator_action',
+          outcome: 'accepted',
+          actor,
+          detail: `cancel-dispatch: ${reason || 'operator cut a wedged dispatch loose'}`,
+        });
+        return store.get(id);
+      }));
+
+    // Run the verifier synchronously and write the result through the real
+    // state machine, so the answer on screen is the answer, not a promise that
+    // the engine will get to it within ~90s.
+    this.app.post('/api/live-problems/:id/verify-now', async (req, res) => {
+      try {
+        const targetAgent = liveProblemTarget(req);
+        const store = operatorStore(targetAgent);
+        const problem = store.get(req.params.id);
+        if (!problem) return res.status(404).json({ error: 'not found' });
+        if (!problem.verifier?.type) return res.status(400).json({ error: 'problem has no verifier' });
+
+        const UNSUPPORTED = new Set(['graph_not_empty', 'node_count_stable']);
+        if (UNSUPPORTED.has(problem.verifier.type)) {
+          return res.json({
+            ok: false,
+            supported: false,
+            reason: `verifier type ${problem.verifier.type} needs the engine's memory context`,
+            problem,
+          });
+        }
+        const { runVerifier } = require('../live-problems/verifiers');
+        const result = await runVerifier(problem.verifier, { brainDir: store.brainDir });
+        store.recordVerification(req.params.id, result);
+        res.json({ ok: true, supported: true, result, problem: store.get(req.params.id) });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
     });
 
     this.app.delete('/api/live-problems/:id', (req, res) => {

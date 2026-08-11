@@ -63,3 +63,34 @@ test('the poller never skips the sync for research, and defers restarts with a l
   assert.ok(block.includes('restart deferred'), 'deferred restarts must be logged');
   assert.ok(block.includes('mayDeferRestart'), 'deferral must go through the tested helper');
 });
+
+// ── rotationRestartTargets: who still needs a restart to see a rotated token ──
+
+const { rotationRestartTargets } = require(
+  join(here, '..', '..', '..', 'engine', 'src', 'dashboard', 'oauth-token-expiry.js'),
+);
+
+test('the engine is NEVER restarted for a token rotation — it resolves credentials at use', () => {
+  const online = new Set(['home23-jerry', 'home23-jerry-harness', 'home23-jerry-dash']);
+  const targets = rotationRestartTargets(['jerry'], online);
+
+  assert.equal(targets.includes('home23-jerry'), false,
+    'restarting the engine risks the brain; it reads secrets.yaml at use and needs no restart');
+  assert.deepEqual(targets, ['home23-jerry-harness']);
+});
+
+test('the harness IS still restarted — its agent-loop client is bound at construction', () => {
+  const online = new Set(['home23-jerry', 'home23-jerry-harness', 'home23-forrest-harness']);
+  const targets = rotationRestartTargets(['jerry', 'forrest'], online);
+  assert.deepEqual(targets.sort(), ['home23-forrest-harness', 'home23-jerry-harness']);
+});
+
+test('offline processes are never targeted (no pm2 start fallback, no orphans)', () => {
+  const targets = rotationRestartTargets(['jerry', 'forrest'], new Set(['home23-jerry-harness']));
+  assert.deepEqual(targets, ['home23-jerry-harness']);
+});
+
+test('no online harness yields no targets, so the poller skips the restart entirely', () => {
+  assert.deepEqual(rotationRestartTargets(['jerry'], new Set(['home23-jerry'])), []);
+  assert.deepEqual(rotationRestartTargets([], new Set()), []);
+});

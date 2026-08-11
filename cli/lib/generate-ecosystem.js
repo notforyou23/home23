@@ -213,7 +213,10 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${logsDir} + '/engine-out.log',`);
     lines.push(`      error_file: ${logsDir} + '/engine-err.log',`);
-    lines.push(`      env: { ...commonEnv, HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY: brainOperationsCapabilityKey, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
+    // No HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY here — see the note above the
+    // dashboard app. The engine performs no brain operations; it reads the key
+    // nowhere.
+    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
 
     // Dashboard
@@ -228,6 +231,16 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${logsDir} + '/dashboard-out.log',`);
     lines.push(`      error_file: ${logsDir} + '/dashboard-err.log',`);
+    // HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY is granted to EXACTLY two apps:
+    // this dashboard and home23-cosmo23. It is not a config value — it is the
+    // signing secret for /api/internal/brain-operations/*, so possession IS
+    // authorization. The dashboard needs it (server.js + brain-operations/
+    // coordinator.js read it); cosmo23 needs it (server/index.js reads it).
+    // The engine, harness, and MCP server read it nowhere and must not hold
+    // it — they held it from 2026-08-08 (ac4095a9, where it rode along with
+    // unrelated supervision fixes, undocumented and untested) until it was
+    // revoked. Every app also filter_env's and blocklists the name, but that
+    // only stops INHERITED values; the explicit grant below is the real one.
     lines.push(`      env: { ...commonEnv, HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY: brainOperationsCapabilityKey, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', HOME23_MCP_AVAILABLE: '${mcpEnabled ? 'true' : 'false'}', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
 
@@ -242,7 +255,8 @@ export function generateEcosystem(home23Root, options = {}) {
       lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
       lines.push(`      out_file: ${logsDir} + '/mcp-out.log',`);
       lines.push(`      error_file: ${logsDir} + '/mcp-err.log',`);
-      lines.push(`      env: { ...commonEnv, HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY: brainOperationsCapabilityKey, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_ROOT: HOME23, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, MCP_HTTP_HOST: '127.0.0.1', MCP_HTTP_PORT: '${mcpPort}', HOME23_MCP_AVAILABLE: 'true', INSTANCE_ID: 'home23-${agent.name}' },`);
+      // No capability key — see the note above the dashboard app.
+      lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_ROOT: HOME23, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, MCP_HTTP_HOST: '127.0.0.1', MCP_HTTP_PORT: '${mcpPort}', HOME23_MCP_AVAILABLE: 'true', INSTANCE_ID: 'home23-${agent.name}' },`);
       lines.push(`    },`);
     }
 
@@ -271,7 +285,10 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${logsDir} + '/harness-out.log',`);
     lines.push(`      error_file: ${logsDir} + '/harness-err.log',`);
-    lines.push(`      env: { ...commonEnv, HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY: brainOperationsCapabilityKey, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
+    // No capability key — see the note above the dashboard app. The harness
+    // reaches brain operations through the dashboard's HTTP API, never by
+    // signing internal envelopes itself.
+    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
 
     // Substrate Seed (shadow resident) — emitted ONLY when the agent's config
