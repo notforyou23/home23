@@ -193,11 +193,14 @@ test('DELIBERATE: only the engine treats a codex OAuth JWT as a managed token', 
     assert.equal(engine.resolveProviderKey('openai-codex', staleConfigured), fileToken,
       'engine: codex JWT is managed, the file wins');
 
-    // HARNESS: text-generation.ts returns early for openai-codex BEFORE the
-    // resolver and delegates to codex-auth.ts, which owns its own OAuth store
-    // (~/.evobrew/auth-profiles.json) with refresh. The resolver is never
-    // asked about codex, so the managed rule would be dead code here — and a
-    // configured value stays a pin, matching every other static key.
+    // HARNESS: text-generation.ts routes openai-codex to codex-auth.ts, which
+    // owns its own OAuth store (~/.evobrew/auth-profiles.json) with refresh —
+    // so this resolver is never asked about codex and the managed rule would
+    // be dead code here; a configured value stays a pin, like every other
+    // static key. (Codex DOES get the same one-shot auth retry as every other
+    // provider as of 2026-08-11, but its "fresh credential" is a forced
+    // codex-auth refresh, not a secrets.yaml re-read. Same shape, different
+    // store — which is exactly why these two resolvers still differ here.)
     assert.equal(harnessResolve('openai-codex', staleConfigured), staleConfigured,
       'harness: no codex rule, configured value is a pin');
   });

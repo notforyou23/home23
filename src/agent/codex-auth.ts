@@ -115,11 +115,27 @@ async function refreshCredentials(
 /**
  * Get valid Codex credentials, refreshing if near-expiry.
  * Returns null if not configured or refresh fails.
+ *
+ * `force` refreshes regardless of the expiry threshold. That is the
+ * REVOCATION path, and it cannot be folded into the threshold check: a
+ * revoked token's `expires` is untouched, so it looks perfectly healthy right
+ * up until the API rejects it. This fleet lost Codex twice that way — on
+ * 2026-07-27, when the Codex CLI re-minted the shared account and silently
+ * killed Home23's refresh token, and again on 2026-08-08/09. Only an actual
+ * auth failure reveals it, so only the caller that saw the 401 can ask.
  */
-export async function getCodexCredentials(signal?: AbortSignal): Promise<CodexCredentials | null> {
+export async function getCodexCredentials(
+  signal?: AbortSignal,
+  force = false,
+): Promise<CodexCredentials | null> {
   signal?.throwIfAborted();
   const creds = loadCredentials();
   if (!creds) return null;
+
+  if (force) {
+    console.log('[codex-auth] Auth failure reported — forcing refresh (a revoked token still reads as unexpired)');
+    return refreshCredentials(creds, signal);
+  }
 
   if (creds.expires - Date.now() < REFRESH_THRESHOLD_MS) {
     console.log('[codex-auth] Token near-expiry — refreshing');

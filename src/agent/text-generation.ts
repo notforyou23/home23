@@ -15,7 +15,7 @@ export interface TextGenerationOptions {
   temperature?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
-  codexCredentialsProvider?: (signal?: AbortSignal) => Promise<CodexCredentials | null>;
+  codexCredentialsProvider?: (signal?: AbortSignal, force?: boolean) => Promise<CodexCredentials | null>;
 }
 
 /**
@@ -52,13 +52,16 @@ export function inferTextGenerationProvider(model?: string, provider?: string): 
 
 export async function generateText(opts: TextGenerationOptions): Promise<string> {
   const provider = inferTextGenerationProvider(opts.model, opts.provider);
-  if (provider === 'openai-codex') {
-    const model = opts.model || defaultModelForProvider(provider);
-    return generateCodexText({ ...opts, model, maxTokens: opts.maxTokens ?? 800, timeoutMs: opts.timeoutMs ?? 60_000 });
-  }
   // Read-at-use credentials + one fresh retry on auth failure: rotation is a
   // file write, never a restart list (the token class's wholesale fix,
   // 2026-08-10). A caller-pinned client can't be rebuilt — no retry there.
+  //
+  // EVERY provider goes through this, codex included. Codex used to return
+  // before this try/catch and so had no recovery from a revoked token at all
+  // — the one gap in the token-rotation fix, and the exact failure that took
+  // the fleet down on 2026-07-27 and 2026-08-08/09. Its "fresh credential"
+  // means a forced refresh through codex-auth.ts (its own OAuth store), not
+  // a secrets.yaml re-read, but the shape is deliberately identical.
   try {
     return await generateTextAttempt(opts, provider, false);
   } catch (error) {
@@ -74,6 +77,10 @@ async function generateTextAttempt(opts: TextGenerationOptions, provider: string
   const maxTokens = opts.maxTokens ?? 800;
   const temperature = opts.temperature ?? 0.1;
   const timeoutMs = opts.timeoutMs ?? 60_000;
+
+  if (provider === 'openai-codex') {
+    return generateCodexText({ ...opts, model, maxTokens, timeoutMs }, forceFreshCredential);
+  }
 
   const requestSignal = combineRequestSignals(opts.signal, timeoutMs);
 
@@ -197,9 +204,12 @@ function extractAnthropicText(response: unknown): string {
     .trim();
 }
 
-async function generateCodexText(opts: Required<Pick<TextGenerationOptions, 'prompt'>> & TextGenerationOptions): Promise<string> {
+async function generateCodexText(
+  opts: Required<Pick<TextGenerationOptions, 'prompt'>> & TextGenerationOptions,
+  forceFreshCredential = false,
+): Promise<string> {
   const credentialsProvider = opts.codexCredentialsProvider || getCodexCredentials;
-  const creds = await credentialsProvider(opts.signal);
+  const creds = await credentialsProvider(opts.signal, forceFreshCredential);
   if (!creds) throw new Error('openai-codex credentials not found');
 
   const body: Record<string, unknown> = {
