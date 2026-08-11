@@ -36,6 +36,7 @@ import { DeliveryManager } from './scheduler/delivery.js';
 import { SiblingProtocol } from './sibling/protocol.js';
 import { BridgeChat } from './sibling/bridge-chat.js';
 import { AgentLoop } from './agent/loop.js';
+import { resolveProviderKey } from './agent/provider-credentials.js';
 import { executeTrackedTurn } from './agent/turn-entrypoint.js';
 import { ContextManager } from './agent/context.js';
 import { ConversationHistory } from './agent/history.js';
@@ -396,22 +397,50 @@ async function main(): Promise<void> {
   console.log(`[home] Provider: ${startupProvider}, auth: ${bannerAuth ? bannerAuth.slice(0, 15) + '...' : 'MISSING'}`);
 
   // ── Agent Loop ──
-  // Create Anthropic client for shared use (agent + compaction)
-  const isOAuth = anthropicToken.startsWith('sk-ant-oat');
-  const anthropicClient = isOAuth
-    ? new (await import('@anthropic-ai/sdk')).default({
-        authToken: compactionToken,
-        ...(compactionBaseURL ? { baseURL: compactionBaseURL } : {}),
-        defaultHeaders: {
-          'anthropic-dangerous-direct-browser-access': 'true',
-          'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,extended-cache-ttl-2025-04-11',
-        },
-        dangerouslyAllowBrowser: true,
-      })
-    : new (await import('@anthropic-ai/sdk')).default({
-        apiKey: compactionToken || 'placeholder',
-        ...(compactionBaseURL ? { baseURL: compactionBaseURL } : {}),
-      });
+  // Anthropic client shared by compaction + the promoter worker. Read-at-use
+  // (2026-08-11): the boot-frozen client here was the last E8 rotation gap —
+  // the Proxy re-resolves the credential (mtime-cached, cheap) on access and
+  // rebuilds the SDK client when the token rotated. An empty re-resolution
+  // keeps the current client (never downgrade mid-flight to 'placeholder').
+  const AnthropicSDK = (await import('@anthropic-ai/sdk')).default;
+  const buildCompactionClient = (token: string, baseURL: string | undefined) =>
+    token.startsWith('sk-ant-oat')
+      ? new AnthropicSDK({
+          authToken: token,
+          ...(baseURL ? { baseURL } : {}),
+          defaultHeaders: {
+            'anthropic-dangerous-direct-browser-access': 'true',
+            'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,extended-cache-ttl-2025-04-11',
+          },
+          dangerouslyAllowBrowser: true,
+        })
+      : new AnthropicSDK({
+          apiKey: token || 'placeholder',
+          ...(baseURL ? { baseURL } : {}),
+        });
+  const resolveCompactionCredential = (): { token: string; baseURL: string | undefined } => {
+    const providersCfg = config.providers as Record<string, { apiKey?: string }> | undefined;
+    const anth = resolveProviderKey('anthropic', providersCfg?.anthropic?.apiKey);
+    if (anth) return { token: anth, baseURL: undefined };
+    if (startupProvider === 'minimax') {
+      const mm = resolveProviderKey('minimax', providersCfg?.minimax?.apiKey);
+      if (mm) return { token: mm, baseURL: startupBaseURL };
+    }
+    return { token: '', baseURL: undefined };
+  };
+  let compactionCred = { token: compactionToken, baseURL: compactionBaseURL };
+  let compactionClient = buildCompactionClient(compactionCred.token, compactionCred.baseURL);
+  const anthropicClient = new Proxy(compactionClient, {
+    get(_target, prop) {
+      const fresh = resolveCompactionCredential();
+      if (fresh.token !== '' && fresh.token !== compactionCred.token) {
+        compactionCred = fresh;
+        compactionClient = buildCompactionClient(fresh.token, fresh.baseURL);
+        console.log('[home] compaction/promoter anthropic client rebuilt — credential rotated');
+      }
+      return Reflect.get(compactionClient, prop, compactionClient);
+    },
+  }) as InstanceType<typeof AnthropicSDK>;
 
   // ── Compaction Manager ──
   const compaction = new CompactionManager({

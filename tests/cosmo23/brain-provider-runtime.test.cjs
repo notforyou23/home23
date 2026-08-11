@@ -65,6 +65,49 @@ test('provider runtime merges canonical public settings and secrets into exact-p
   assert.equal(runtime.home.query.defaultModel, 'MiniMax-Test');
 });
 
+test('provider registry rebuilds when credentials rotate on disk — no restart required', async (t) => {
+  const root = await fixture();
+  t.after(() => fsp.rm(root, { recursive: true, force: true }));
+  const seen = [];
+  const silent = { info() {}, warn() {}, error() {} };
+  const runtime = createHome23BrainProviderRuntime({
+    home23Root: root,
+    catalog,
+    logger: silent,
+    credentialCheckMs: 0, // test seam: re-check on every call
+    pairFactories: {
+      minimax(options) {
+        seen.push(options.providerConfig.apiKey);
+        return { providerId: 'minimax', async generate() { return {}; } };
+      },
+    },
+  });
+  assert.equal(runtime.providerRegistry.has('minimax', 'MiniMax-Test'), true);
+  assert.deepEqual(seen, ['secret-test-key']);
+
+  // Rotate the key on disk — this is all the OAuth poller does now; nothing
+  // restarts (rotationRestartTargets is []). The registry must notice.
+  const secretsPath = path.join(root, 'config', 'secrets.yaml');
+  await fsp.writeFile(secretsPath, yaml.dump({
+    providers: { minimax: { apiKey: 'rotated-key' } },
+  }), { mode: 0o600 });
+  const bumped = new Date(Date.now() + 2000);
+  await fsp.utimes(secretsPath, bumped, bumped);
+
+  assert.equal(runtime.providerRegistry.has('minimax', 'MiniMax-Test'), true);
+  assert.deepEqual(seen, ['secret-test-key', 'rotated-key'], 'registry rebuilt with the rotated key');
+  assert.equal(runtime.providerConfig.minimax.apiKey, 'rotated-key', 'runtime accessors track the rebuild');
+
+  // A torn or invalid rewrite keeps the previous registry serving (and the
+  // fingerprint is not adopted, so the rebuild retries on later calls).
+  await fsp.writeFile(secretsPath, '{invalid yaml: [', { mode: 0o600 });
+  const bumpedAgain = new Date(Date.now() + 4000);
+  await fsp.utimes(secretsPath, bumpedAgain, bumpedAgain);
+  assert.equal(runtime.providerRegistry.has('minimax', 'MiniMax-Test'), true,
+    'previous registry keeps serving through a torn write');
+  assert.deepEqual(seen.slice(-1), ['rotated-key'], 'no client was built from the torn file');
+});
+
 test('provider runtime enables Anthropic OAuth only when no explicit credential exists', () => {
   const withoutKey = require('../../cosmo23/lib/brain-provider-runtime')
     .mergeProviderConfiguration({ providers: { anthropic: {} } }, {});

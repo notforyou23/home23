@@ -6,6 +6,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { loadConfig } from '../../config.js';
+import { resolveProviderKey } from '../provider-credentials.js';
 
 type ImageGeneratorConfig = {
   provider: string;
@@ -67,11 +68,14 @@ function resolveImageGeneratorConfig(overrides: { provider?: string; model?: str
 
   const providers = config.providers as Record<string, { apiKey?: string; baseUrl?: string }> | undefined;
 
+  // Keys resolve at use (2026-08-11): secrets.yaml via the resolver with the
+  // config value as a deliberate pin and env as the floor — media tools were
+  // rotation-blind before this.
   if (provider === 'minimax') {
     return {
       provider,
       model,
-      apiKey: providers?.minimax?.apiKey ?? process.env.MINIMAX_API_KEY ?? '',
+      apiKey: resolveProviderKey('minimax', providers?.minimax?.apiKey),
       baseUrl: normalizeMiniMaxApiBase(providers?.minimax?.baseUrl),
     };
   }
@@ -81,7 +85,7 @@ function resolveImageGeneratorConfig(overrides: { provider?: string; model?: str
     return {
       provider,
       model,
-      apiKey: xaiProvider?.apiKey ?? process.env.XAI_API_KEY ?? '',
+      apiKey: resolveProviderKey('xai', xaiProvider?.apiKey),
       baseUrl: xaiProvider?.baseUrl ?? process.env.XAI_BASE_URL ?? 'https://api.x.ai/v1',
     };
   }
@@ -90,7 +94,7 @@ function resolveImageGeneratorConfig(overrides: { provider?: string; model?: str
   return {
     provider,
     model,
-    apiKey: openaiProvider?.apiKey ?? process.env.OPENAI_API_KEY ?? '',
+    apiKey: resolveProviderKey('openai', openaiProvider?.apiKey),
     baseUrl: openaiProvider?.baseUrl ?? process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1',
   };
 }
@@ -116,7 +120,7 @@ function resolveMusicGeneratorConfig(): MusicGeneratorConfig {
     return {
       provider,
       model,
-      apiKey: providers?.minimax?.apiKey ?? process.env.MINIMAX_API_KEY ?? '',
+      apiKey: resolveProviderKey('minimax', providers?.minimax?.apiKey),
       baseUrl: normalizeMiniMaxApiBase(providers?.minimax?.baseUrl),
       textBaseUrl,
       textModel,

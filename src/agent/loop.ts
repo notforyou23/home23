@@ -1732,8 +1732,11 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             return { text: capText, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
           } else if (runtimeProvider === 'xai' || runtimeModel.includes('grok')) {
             // ── xAI Responses API path (all Grok models) ──
-            const xaiKey = process.env.XAI_API_KEY;
-            if (!xaiKey) throw new Error('XAI_API_KEY not set');
+            // Read-at-use (2026-08-11): secrets.yaml first, env floor second —
+            // the raw env read here was one of the last rotation-blind spots
+            // after 159703ef.
+            const xaiKey = resolveProviderKey('xai', undefined);
+            if (!xaiKey) throw new Error('xai credential unavailable (secrets.yaml providers.xai.apiKey or XAI_API_KEY)');
 
             const sysText = typeof systemPrompt === 'string'
               ? systemPrompt
@@ -1943,8 +1946,10 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
           const pconf = providerConfig[runtimeProvider];
           if (!pconf) throw new Error(`Unknown provider: ${runtimeProvider}`);
 
-          const apiKey = process.env[pconf.keyEnv];
-          if (!apiKey) throw new Error(`${pconf.keyEnv} not set`);
+          // Read-at-use (2026-08-11): the resolver covers secrets.yaml with
+          // pconf.keyEnv as the floor — a rotation reaches a running turn.
+          const apiKey = resolveProviderKey(runtimeProvider, undefined);
+          if (!apiKey) throw new Error(`${runtimeProvider} credential unavailable (secrets.yaml providers.${runtimeProvider}.apiKey or ${pconf.keyEnv})`);
 
           const sysText = typeof systemPrompt === 'string'
             ? systemPrompt
