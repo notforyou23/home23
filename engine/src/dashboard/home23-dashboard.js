@@ -738,8 +738,48 @@ function renderProblemEvidenceDrawer(p, { last, lastChecked, stepsLabel, recentR
   `;
 }
 
+// Operator controls. These render for every problem, not just the ones the
+// system decided to ask about — the whole point is that jtr can act on
+// anything on the board without waiting to be prompted.
+function renderProblemOperatorControls(problem = {}) {
+  const id = escapeAttr(problem.id);
+  const decision = problem.operatorDecision || {};
+  const mutedUntilMs = problem.mutedUntil ? Date.parse(problem.mutedUntil) : 0;
+  const isMuted = Boolean(mutedUntilMs) && mutedUntilMs > Date.now();
+  const isClosed = decision.kind === 'closed';
+
+  const banner = isClosed
+    ? `<div class="h23-problem-operator-state">Closed by ${escapeHtml(decision.actor || 'operator')}${
+        decision.reason ? ` — ${escapeHtml(decision.reason)}` : ''
+      }${problem.lastResult && problem.lastResult.ok === false ? ' · check still failing' : ''}</div>`
+    : isMuted
+    ? `<div class="h23-problem-operator-state">Remediation stood down until ${escapeHtml(
+        new Date(mutedUntilMs).toLocaleString()
+      )}${decision.reason ? ` — ${escapeHtml(decision.reason)}` : ''}</div>`
+    : '';
+
+  return `
+    <div class="h23-problem-operator">
+      ${banner}
+      <div class="h23-problem-operator-controls">
+        <button type="button" onclick="verifyProblemNow('${id}')">Check Now</button>
+        ${isClosed
+          ? `<button type="button" onclick="reopenProblem('${id}')">Reopen</button>`
+          : `<button type="button" onclick="closeProblem('${id}')">Close It</button>`}
+        ${isMuted
+          ? `<button type="button" onclick="unmuteProblem('${id}')">Resume Fixing</button>`
+          : `<button type="button" onclick="muteProblem('${id}')">Stand Down…</button>`}
+        ${problem.dispatchedAt
+          ? `<button type="button" onclick="cancelProblemDispatch('${id}')">Cancel Dispatch</button>`
+          : ''}
+        <button type="button" class="h23-problem-danger" onclick="deleteProblem('${id}')">Delete</button>
+      </div>
+    </div>
+  `;
+}
+
 function renderProblemUserAction(problem = {}) {
-  if (!goodLifeNeedsUser(problem)) return '';
+  if (!goodLifeNeedsUser(problem)) return renderProblemOperatorControls(problem);
   const next = goodLifeNextRemediation(problem);
   const canRecordHandled = problem.escalated || next.requiresUser;
   const stepText = problem.escalated
@@ -760,6 +800,7 @@ function renderProblemUserAction(problem = {}) {
         ${canRecordHandled ? `<button type="button" onclick="recordProblemUserIntervention('${escapeAttr(problem.id)}')">Mark Handled + Re-check</button>` : ''}
         <button type="button" onclick="tickProblemsNow()">Re-check</button>
       </div>
+      ${renderProblemOperatorControls(problem)}
     </div>
   `;
 }
@@ -777,6 +818,92 @@ async function tickProblemsNow() {
     const r = await fetch(`${dashboardBaseUrl()}/api/live-problems/tick`, { method: 'POST' });
     if (r.ok) await renderProblemsList();
   } catch { /* silent */ }
+}
+
+function showProblemsMessage(text, isError) {
+  const list = document.getElementById('problems-list');
+  if (!list) return;
+  list.insertAdjacentHTML('afterbegin',
+    `<div class="h23-overlay-message${isError ? ' error' : ''}">${escapeHtml(text)}</div>`);
+}
+
+// One path for every operator action: call it, say plainly what came back,
+// then re-render from the server rather than guessing at the new state.
+async function runProblemOperatorAction(id, path, body, describe) {
+  if (!id) return;
+  try {
+    const res = await fetch(`${dashboardBaseUrl()}/api/live-problems/${encodeURIComponent(id)}/${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ actor: 'jtr', ...body }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.error || data.reason || `HTTP ${res.status}`);
+    showProblemsMessage(describe ? describe(data) : 'Done.', false);
+    await renderProblemsList();
+  } catch (err) {
+    showProblemsMessage(`Action failed: ${err.message}`, true);
+  }
+}
+
+async function verifyProblemNow(id) {
+  return runProblemOperatorAction(id, 'verify-now', {}, (data) => {
+    if (data.supported === false) return `Can't check from here: ${data.reason}`;
+    const r = data.result || {};
+    return `Check ran just now: ${r.ok ? 'PASS' : 'FAIL'} — ${r.detail || 'no detail'}`;
+  });
+}
+
+async function closeProblem(id) {
+  const reason = window.prompt(
+    'Close this problem. Why is it settled? (the check keeps running and keeps telling the truth)',
+    ''
+  );
+  if (reason === null) return;
+  return runProblemOperatorAction(id, 'close', { reason }, () => 'Closed. It will stay closed until you reopen it.');
+}
+
+async function reopenProblem(id) {
+  const reason = window.prompt('Reopen and hand it back to the verifier. Why?', '');
+  if (reason === null) return;
+  return runProblemOperatorAction(id, 'reopen', { reason }, () => 'Reopened — the verifier decides again.');
+}
+
+async function muteProblem(id) {
+  const raw = window.prompt('Stop remediating this for how many hours?', '24');
+  if (raw === null) return;
+  const hours = Number(raw);
+  if (!Number.isFinite(hours) || hours <= 0) {
+    showProblemsMessage('Enter a positive number of hours.', true);
+    return;
+  }
+  const reason = window.prompt('Why stand it down?', '') ?? '';
+  return runProblemOperatorAction(id, 'mute', { hours, reason },
+    () => `Standing down for ${hours}h. It still gets checked; nothing gets spent fixing it.`);
+}
+
+async function unmuteProblem(id) {
+  return runProblemOperatorAction(id, 'unmute', {}, () => 'Remediation resumed.');
+}
+
+async function cancelProblemDispatch(id) {
+  return runProblemOperatorAction(id, 'cancel-dispatch', {},
+    () => 'Dispatch cancelled — it no longer waits out the budget.');
+}
+
+async function deleteProblem(id) {
+  if (!window.confirm('Delete this problem from the board entirely? This cannot be undone.')) return;
+  try {
+    const res = await fetch(`${dashboardBaseUrl()}/api/live-problems/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    showProblemsMessage(data.removed === false ? 'Nothing to delete.' : 'Deleted.', false);
+    await renderProblemsList();
+  } catch (err) {
+    showProblemsMessage(`Delete failed: ${err.message}`, true);
+  }
 }
 
 async function recordProblemUserIntervention(id) {

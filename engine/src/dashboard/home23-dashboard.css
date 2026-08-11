@@ -3080,6 +3080,47 @@ body.h23-external-focus #cosmo23-refresh-btn {
   border-color: rgba(255,190,90,0.52);
   color: var(--text-primary);
 }
+/* Operator controls on a live problem — always available, not only when the
+   system decides to ask. */
+.h23-problem-operator {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+
+.h23-problem-operator-state {
+  font-size: 11px;
+  color: rgba(255,190,90,0.82);
+  margin-bottom: 6px;
+}
+
+.h23-problem-operator-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.h23-problem-operator-controls button {
+  border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 5px;
+  padding: 5px 9px;
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.78);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.h23-problem-operator-controls button:hover {
+  border-color: rgba(255,190,90,0.52);
+  color: var(--text-primary);
+}
+
+.h23-problem-operator-controls button.h23-problem-danger:hover {
+  border-color: rgba(255,110,110,0.6);
+  color: rgb(255,150,150);
+}
+
 
 .h23-goodlife-grid {
   display: grid;

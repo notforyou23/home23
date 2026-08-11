@@ -108,11 +108,13 @@ function validateState(state, opts = {}) {
   }
 
   const slugs = new Set();
+  const topics = new Set();
   for (const ref of normalized.completed_topic_refs || []) {
     if (!ref.topic) errors.push('completed_topic_refs row missing topic');
     if (!ref.slug) errors.push(`completed_topic_refs row missing slug for ${ref.topic || '(unknown)'}`);
     if (ref.slug && slugs.has(ref.slug)) errors.push(`duplicate completed_topic_refs slug: ${ref.slug}`);
     if (ref.slug) slugs.add(ref.slug);
+    if (ref.topic) topics.add(ref.topic.trim().toLowerCase());
   }
 
   for (const topic of normalized.completed_topics || []) {
@@ -120,8 +122,8 @@ function validateState(state, opts = {}) {
       warnings.push('completed_topics should remain string-compatible for older readers');
       continue;
     }
-    const slug = slugifyTopic(topic);
-    if (slug && !slugs.has(slug)) errors.push(`completed topic lacks canonical ref: ${topic}`);
+    const topicKey = topic.trim().toLowerCase();
+    if (topicKey && !topics.has(topicKey)) errors.push(`completed topic lacks canonical ref: ${topic}`);
   }
 
   if (active?.slug && slugs.has(active.slug)) {

@@ -98,11 +98,14 @@ function parseSystemProfilerWifiJson(stdout) {
   const noiseRaw = findValueByKeyFragment(current, ['noise']);
   const channelRaw = findValueByKeyFragment(current, ['channel']);
   const signalParts = String(signalRaw || '').match(/-?\d+(?:\.\d+)?/g) || [];
+  const noiseParts = String(noiseRaw || '').match(/-?\d+(?:\.\d+)?/g) || [];
   const rssi = signalParts[0] != null ? Number(signalParts[0]) : firstFiniteNumber(findValueByKeyFragment(current, ['rssi']));
-  const noise = noiseRaw != null
-    ? firstFiniteNumber(noiseRaw)
-    : signalParts[1] != null ? Number(signalParts[1]) : null;
-  const channelMatch = String(channelRaw || '').match(/(\d+)(?:,\s*(\d+))?/);
+  const noise = signalParts[1] != null
+    ? Number(signalParts[1])
+    : noiseParts[0] != null ? Number(noiseParts[0]) : null;
+  const channelText = String(channelRaw || '');
+  const channelMatch = channelText.match(/(\d+)(?:,\s*(\d+))?/);
+  const channelWidthMatch = channelText.match(/(?:,\s*|\b)(\d+)\s*MHz\b/i);
   const statusRaw = iface.spairport_status_information || iface.status || '';
   const inactive = /inactive|off|not[_ -]?connected/i.test(String(statusRaw));
 
@@ -118,7 +121,9 @@ function parseSystemProfilerWifiJson(stdout) {
     snr: Number.isFinite(rssi) && Number.isFinite(noise) ? rssi - noise : null,
     phyMode: findValueByKeyFragment(current, ['phy']) || null,
     channel: channelMatch ? Number(channelMatch[1]) : null,
-    channelWidthMhz: channelMatch?.[2] ? Number(channelMatch[2]) : null,
+    channelWidthMhz: channelMatch?.[2]
+      ? Number(channelMatch[2])
+      : channelWidthMatch?.[1] ? Number(channelWidthMatch[1]) : null,
     channelRaw: channelRaw == null ? null : String(channelRaw),
     cardType: iface.spairport_wireless_card_type || null,
   };

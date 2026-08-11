@@ -17,6 +17,15 @@ test('PublishLedger records publications and detects starvation', async () => {
   assert.equal(ledger.listStarving({ now: Date.now() }).length, 0);
 });
 
+test('missing first publication is not reported as starvation during startup', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pl-'));
+  const ledger = new PublishLedger({
+    path: join(dir, 'publish-ledger.jsonl'),
+    starvationFloor: { workspace_insights: 6 * 3600 * 1000 },
+  });
+  assert.deepEqual(ledger.listStarving({ now: Date.now() + 24 * 3600 * 1000 }), []);
+});
+
 test('parseStarvationFloor ignores configured targets without active publishers', () => {
   const floor = parseStarvationFloor({
     workspace_insights: '6h',
