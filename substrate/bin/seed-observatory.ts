@@ -19,6 +19,7 @@
 
 import { createServer } from 'node:http';
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { composeLivedRecent } from '../../src/substrate/lived-recent.js';
 import { composeSeedNow } from '../../src/substrate/seed-now.js';
@@ -287,6 +288,48 @@ function computeIndividual(spec: IndividualSpec): IndividualData | null {
     dreamed: dreams > 0, exchange, thought, record: record.slice(-5), growth, prov, journal,
     asks, commitments,
   };
+}
+
+// ─── Organ vitals (2026-08-10: five silent organ deaths in one day — a dead
+// feed must be SEEN where jtr already looks, not found by archaeology) ───────
+
+let vitalsCache: { at: number; html: string } | null = null;
+
+function vitalsHTML(): string {
+  const now = Date.now();
+  if (vitalsCache !== null && now - vitalsCache.at < 10_000) return vitalsCache.html;
+  const parts: string[] = [];
+  // PM2-supervised organs: errored/stopped is RED; flapping shows restarts.
+  try {
+    const raw = execFileSync('pm2', ['jlist'], { timeout: 8_000 }).toString();
+    const apps = JSON.parse(raw) as Array<{ name: string; pm2_env?: { status?: string; restart_time?: number } }>;
+    for (const app of apps.filter((a) => a.name.startsWith('home23-')).sort((a, b) => a.name.localeCompare(b.name))) {
+      const status = app.pm2_env?.status ?? '?';
+      const restarts = app.pm2_env?.restart_time ?? 0;
+      const ok = status === 'online';
+      const short = app.name.replace('home23-', '');
+      parts.push(`<span class="organ ${ok ? 'organ-ok' : 'organ-dead'}" title="${esc(status)}${restarts > 3 ? `, ${restarts} restarts` : ''}">${ok ? '●' : '✖'} ${esc(short)}${restarts > 3 ? ` <b>↺${restarts}</b>` : ''}</span>`);
+    }
+  } catch { parts.push('<span class="organ organ-dead">✖ pm2 unreadable</span>'); }
+  // Feed freshness: the streams the seeds actually eat. Age is honest — a
+  // quiet feed and a dead feed look alike here; the PM2 row above tells them
+  // apart.
+  const feeds: Array<[string, string]> = [
+    ['jerry convo', 'instances/jerry/substrate/conversation-stream.jsonl'],
+    ['forrest convo', 'instances/forrest/substrate/conversation-stream.jsonl'],
+    ['house', 'instances/jerry/substrate/house-stream.jsonl'],
+    ['bobby mirror', 'instances/bobby/seed-01-mirror/seed-ledger.jsonl'],
+  ];
+  for (const [label, path] of feeds) {
+    try {
+      const ageMin = Math.round((now - statSync(path).mtimeMs) / 60_000);
+      const stale = label === 'bobby mirror' ? ageMin > 20 : ageMin > 24 * 60;
+      parts.push(`<span class="organ ${stale ? 'organ-stale' : 'organ-ok'}">${esc(label)} ${ageMin < 60 ? `${ageMin}m` : `${(ageMin / 60).toFixed(1)}h`}</span>`);
+    } catch { parts.push(`<span class="organ organ-dead">✖ ${esc(label)} missing</span>`); }
+  }
+  const html = `<div class="vitals"><span class="sectlabel">organs</span> ${parts.join(' ')}</div>`;
+  vitalsCache = { at: now, html };
+  return html;
 }
 
 // ─── The cutover board (server-rendered; builder detail, collapsed) ─────────
@@ -572,6 +615,8 @@ const CLIENT_JS = String.raw`
           setHTML(card, '.chipmount', ni.chipHTML);
         }
       }
+      var vm = document.getElementById('vitals-mount');
+      if (vm && typeof fresh.vitalsHTML === 'string') vm.innerHTML = fresh.vitalsHTML;
     }).catch(function () { /* quiet — next poll retries */ });
   }
   setInterval(poll, 5000);
@@ -641,7 +686,7 @@ function apiPayload(): string {
     const d = computeIndividual(spec);
     return d === null ? { name: spec.name, cells: [], flows: [], assoc: [], maxGen: 1 } : withFragments(d);
   });
-  return JSON.stringify({ individuals, at: new Date().toISOString() });
+  return JSON.stringify({ individuals, vitalsHTML: vitalsHTML(), at: new Date().toISOString() });
 }
 
 function page(): string {
@@ -665,6 +710,11 @@ function page(): string {
   .chip-dream { color:#c795f0; border-color:#3a2b4d; }
   .sect.ask { border:1px solid #4d3b1e; background:#221a0d; border-radius:8px; padding:10px 12px; }
   .sect.ask .sectlabel { color:#f0c060; }
+  .vitals { margin:-8px 0 16px; font-size:12px; color:#7d8798; display:flex; flex-wrap:wrap; gap:6px 10px; align-items:baseline; }
+  .organ { white-space:nowrap; }
+  .organ-ok { color:#6fae7f; }
+  .organ-dead { color:#e06c60; font-weight:600; }
+  .organ-stale { color:#d0a05a; }
   .being { font-size:15px; color:#aeb9c9; margin-top:8px; }
   .note { font-size:13px; color:#68738a; margin-top:2px; font-style:italic; }
   .bodyfig { margin:16px 0 6px; }
@@ -713,6 +763,7 @@ function page(): string {
 </style></head><body>
 <h1>the terrarium</h1>
 <div class="pagesub">${specs.length} individuals, read live from their chains · the page breathes — you never refresh · looking changes nothing</div>
+<div id="vitals-mount">${vitalsHTML()}</div>
 ${cards}
 ${renderBoard()}
 <div id="drawer"></div>
