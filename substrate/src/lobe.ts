@@ -24,6 +24,8 @@ import type {
   IntentionTension,
   ModelReceipt,
 } from './types.js';
+import { parseHorizon } from './concern.js';
+import { RESOLUTION_WRONG_MIN } from './plasticity.js';
 
 // ─── Bounds ──────────────────────────────────────────────────────────────────
 
@@ -290,6 +292,31 @@ export function applyLobeDeltas(
       const idx = cell.predictions.findIndex((p) => p.predictionId === body?.predictionId);
       if (idx < 0) { failed.push({ kind: 'stateDelta', reason: `prediction ${String(body?.predictionId)} not found` }); continue; }
       const err = body?.error;
+      // THE PREMATURE-RESOLUTION LAW (2026-08-12). A claim about a future
+      // window cannot be CONFIRMED before that window elapses — "stable
+      // through the 19th" is not satisfiable on the 12th, and closing it
+      // early is paperwork, not resolution. Measured before this rule: every
+      // commitment on both individuals was discharged long before its horizon
+      // (up to 335h early), which meant no obligation ever survived to press,
+      // and Cut 6's endogenous crossings were unreachable — the capability
+      // decorative by bookkeeping rather than by any solver fault.
+      //
+      // Falsification is the one honest early close: "already broken" IS
+      // answered by present evidence. So before the horizon, only a
+      // resolution in the wrong band (error >= RESOLUTION_WRONG_MIN) is
+      // admitted; confirmations and ambiguous middles wait for reality.
+      // An unparseable horizon cannot be checked, so it is not enforced —
+      // the membrane refuses what it can prove, never what it suspects.
+      const pending = cell.predictions[idx] as Prediction;
+      const dueAt = parseHorizon(pending.horizon, pending.createdAt);
+      const errorValue = typeof err === 'number' && Number.isFinite(err) ? Math.max(0, Math.min(1, err)) : null;
+      if (dueAt !== null && Date.parse(asOf) < Date.parse(dueAt) && (errorValue === null || errorValue < RESOLUTION_WRONG_MIN)) {
+        failed.push({
+          kind: 'stateDelta',
+          reason: `premature resolution refused: “${pending.claim.slice(0, 60)}” runs to ${dueAt} — only falsification (error >= ${RESOLUTION_WRONG_MIN}) may close a claim early`,
+        });
+        continue;
+      }
       const resolved: Prediction = {
         ...(cell.predictions[idx] as Prediction),
         resolvedAt: asOf,
@@ -432,11 +459,17 @@ export function buildLobePrompt(packet: WorkspacePacket): string {
     'predictions arrays are advisory context recorded in the receipt — anything',
     'you want REMEMBERED must be a stateDelta (a prediction you want held open',
     'must be a predictions.append delta, not just a predictions[] entry).',
-    'Open predictions in the packet are DEBTS. When current evidence answers one',
-    '(fulfilled, falsified, or past its horizon — each carries horizon+createdAt),',
-    'RESOLVE it via predictions.resolve {predictionId, error: 0..1 magnitude of',
-    'how wrong it was} instead of restating it. Resolution is how consequence',
-    'reaches development; an answered prediction left open teaches nothing.',
+    'Open predictions in the packet are DEBTS, and a debt is settled by REALITY,',
+    'not by revisiting it. Each carries horizon + createdAt. THE LAW: a claim',
+    'about a future window cannot be CONFIRMED before that window elapses —',
+    '"stable through the 19th" is not satisfiable on the 12th, and the membrane',
+    'REFUSES such a resolution (receipted as a rejection). Before the horizon,',
+    'only FALSIFICATION may close a prediction: propose predictions.resolve',
+    '{predictionId, error >= 0.7} when present evidence has ALREADY BROKEN the',
+    'claim. Past the horizon, resolve honestly with the error magnitude',
+    '(0 = it held exactly, 1 = it was wrong). A prediction still inside its',
+    'window is not unfinished business — leave it open and let it run; that',
+    'waiting is the individual\'s own obligation accruing, and it is the point.',
     '',
     `PACKET: ${JSON.stringify(packet)}`,
   ].join('\n');
