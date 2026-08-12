@@ -1933,18 +1933,21 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
           // OpenAI: /v1/chat/completions (standard OpenAI format)
 
           const isOllamaCloud = runtimeProvider === 'ollama-cloud';
+          const isOllamaLocal = runtimeProvider === 'ollama-local';
 
           const providerConfig: Record<string, { keyEnv: string; timeout: number }> = {
             'openai': { keyEnv: 'OPENAI_API_KEY', timeout: 60_000 },
             'ollama-cloud': { keyEnv: 'OLLAMA_CLOUD_API_KEY', timeout: 120_000 },
+            'ollama-local': { keyEnv: '', timeout: 300_000 },
           };
           const pconf = providerConfig[runtimeProvider];
           if (!pconf) throw new Error(`Unknown provider: ${runtimeProvider}`);
 
           // Read-at-use (2026-08-11): the resolver covers secrets.yaml with
           // pconf.keyEnv as the floor — a rotation reaches a running turn.
-          const apiKey = resolveProviderKey(runtimeProvider, undefined);
-          if (!apiKey) throw new Error(`${runtimeProvider} credential unavailable (secrets.yaml providers.${runtimeProvider}.apiKey or ${pconf.keyEnv})`);
+          // ollama-local talks to a keyless local endpoint (LOCAL_LLM_BASE_URL).
+          const apiKey = isOllamaLocal ? '' : resolveProviderKey(runtimeProvider, undefined);
+          if (!apiKey && !isOllamaLocal) throw new Error(`${runtimeProvider} credential unavailable (secrets.yaml providers.${runtimeProvider}.apiKey or ${pconf.keyEnv})`);
 
           const sysText = typeof systemPrompt === 'string'
             ? systemPrompt
@@ -2034,14 +2037,18 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               const data = await res.json() as { message?: ResponseMessage };
               respMsg = data.message ?? { role: 'assistant', content: '(no response)' };
             } else {
-              // OpenAI — standard /v1/chat/completions
-              const baseUrl = 'https://api.openai.com/v1';
+              // OpenAI-compatible /v1/chat/completions (OpenAI, or local Ollama via LOCAL_LLM_BASE_URL)
+              const baseUrl = isOllamaLocal
+                ? (process.env.LOCAL_LLM_BASE_URL || 'http://127.0.0.1:11434/v1')
+                : 'https://api.openai.com/v1';
               const isGpt5Plus = runtimeModel.includes('gpt-5') || runtimeModel.includes('gpt5');
               const tokenParam = isGpt5Plus ? { max_completion_tokens: this.maxTokens } : { max_tokens: this.maxTokens };
 
+              const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+              if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
               const res = await fetch(`${baseUrl}/chat/completions`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+                headers,
                 body: JSON.stringify({
                   model: runtimeModel,
                   messages: apiMessages,
@@ -2053,7 +2060,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               });
               if (!res.ok) {
                 const errText = await res.text().catch(() => '');
-                throw new Error(`openai HTTP ${res.status}: ${errText.slice(0, 300)}`);
+                throw new Error(`${isOllamaLocal ? 'ollama-local' : 'openai'} HTTP ${res.status}: ${errText.slice(0, 300)}`);
               }
               const data = await res.json() as { choices?: Array<{ message: ResponseMessage }> };
               respMsg = data.choices?.[0]?.message ?? { role: 'assistant', content: '(no response)' };
