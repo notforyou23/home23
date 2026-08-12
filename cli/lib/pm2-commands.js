@@ -25,6 +25,7 @@ const {
 const SHARED_SERVICE_LABELS = new Map(
   SHARED_SERVICES.map((service) => [service.name, service.label]),
 );
+const SHARED_SERVICE_NAMES = new Set(SHARED_SERVICES.map((service) => service.name));
 const AUTOSTART_SUPPORT_PROCESS_NAMES = Object.freeze(['home23-chrome-cdp']);
 
 function exec(cmd, opts = {}) {
@@ -36,16 +37,56 @@ function exec(cmd, opts = {}) {
   }
 }
 
+/**
+ * Apps the generated ecosystem declares AND wants started. `autostart: false`
+ * is the file's own statement of intent (the pm2 watchdog carries it —
+ * "disabled pending redesign"), so the ecosystem is loaded as a module and
+ * that intent is read, never pattern-guessed.
+ */
+function ecosystemAutostartNames(home23Root) {
+  try {
+    const ecosystemPath = join(home23Root, 'ecosystem.config.cjs');
+    delete require.cache[require.resolve(ecosystemPath)];
+    const loaded = require(ecosystemPath);
+    return (loaded?.apps ?? [])
+      .filter((app) => app
+        && typeof app.name === 'string'
+        && app.name.startsWith('home23-')
+        && app.autostart !== false
+        && !SHARED_SERVICE_NAMES.has(app.name))
+      .map((app) => app.name);
+  } catch {
+    return [];   // no ecosystem yet, or unreadable — the derived floor covers it
+  }
+}
+
+/**
+ * STOP AND START MUST COVER THE SAME PROCESSES. `stop` hands the whole
+ * ecosystem to PM2, so anything this list omits is stopped and never
+ * restarted. That gap was real and load-bearing: the agent-derived names plus
+ * a one-item support constant covered engines, dashboards, harnesses and
+ * (since the config-aware rewrite) seeds — while the substrate's organs went
+ * uncovered: the conversation shippers that feed the individuals their lives,
+ * house-sense, bobby's broker, the house-stream shipper, and the OBSERVATORY
+ * that watches every organ. A documented stop-then-start deploy would have
+ * left the individuals deaf and unwatched, with the alarm among the
+ * casualties.
+ *
+ * The ecosystem file is the authority on what an install actually runs, so it
+ * leads; the manifest-derived names stay as a floor so a stale or unreadable
+ * ecosystem can never drop an agent's core processes.
+ */
 function allNonSharedAutostartProcessNames(home23Root) {
   const manifestPath = join(home23Root, 'config', 'agents.json');
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
   if (!Array.isArray(manifest) || manifest.length === 0) {
     throw new Error('No agents found in config/agents.json');
   }
-  return [
+  return [...new Set([
+    ...ecosystemAutostartNames(home23Root),
     ...manifest.flatMap((agent) => agentProcessNames({ home23Root, agentName: agent.name })),
     ...AUTOSTART_SUPPORT_PROCESS_NAMES,
-  ];
+  ])];
 }
 
 export async function runStart(home23Root, agentName) {
