@@ -178,7 +178,7 @@ function assertReceiptHasNoSecret(receipt, ...secrets) {
   }
 }
 
-test('generated ecosystem provisions the capability to agent processes and COSMO, never support services', () => {
+test('generated ecosystem isolates one shared capability to dashboards and COSMO only', () => {
   const key = 'a'.repeat(64);
   const root = makeInstall({ key });
   try {
@@ -187,15 +187,16 @@ test('generated ecosystem provisions the capability to agent processes and COSMO
     const apps = new Map(ecosystem.apps.map((app) => [app.name, app]));
     const authorityKey = authorityAttestation.deriveMemoryAuthorityAttestationKey(key);
     assert.deepEqual(rendered.configuredProcessNames, targetNames());
-    // Engine/mcp/harness carry the key for tool subprocess flows (checkpoint
-    // of live-deployed work); shared/support services outside COSMO never do.
-    for (const name of targetNames()) {
+    // e0bbdf21 revoked the engine/harness/mcp capability grants as an audited
+    // accidental widening (ac4095a9); possession IS authorization for
+    // /api/internal/brain-operations/*, and only dashboards + COSMO sign.
+    for (const name of capabilityTargetNames()) {
       assert.equal(apps.get(name)?.env?.[CAPABILITY_ENV] === key, true, name);
     }
     for (const app of ecosystem.apps) {
       assert.ok(app.filter_env?.includes(CAPABILITY_ENV), `${app.name} filters inherited capability`);
       assert.ok(app.filter_env?.includes(AUTHORITY_ENV), `${app.name} filters inherited authority key`);
-      if (!targetNames().includes(app.name)) {
+      if (!capabilityTargetNames().includes(app.name)) {
         assert.equal(app.env?.[CAPABILITY_ENV] === key, false, app.name);
       }
     }
