@@ -17,6 +17,7 @@ import {
 const SHARED_SERVICE_LABELS = new Map(
   SHARED_SERVICES.map((service) => [service.name, service.label]),
 );
+const SHARED_SERVICE_NAMES = new Set(SHARED_SERVICES.map((service) => service.name));
 const AUTOSTART_SUPPORT_PROCESS_NAMES = Object.freeze(['home23-chrome-cdp']);
 
 function exec(cmd, opts = {}) {
@@ -36,16 +37,52 @@ function agentProcessNames(agentName) {
   ];
 }
 
+/**
+ * Every non-shared process the generated ecosystem declares.
+ *
+ * STOP/START MUST BE SYMMETRIC. `stop` hands the whole ecosystem file to PM2,
+ * so anything this list omits is stopped and never restarted. That asymmetry
+ * was real and dangerous: the agent-derived list plus a one-item support
+ * constant covered the engines, dashboards and harnesses, while the
+ * substrate's own organs — the conversation shippers that feed the
+ * individuals their lives, house-sense, bobby's broker, the house-stream
+ * shipper, and the OBSERVATORY that watches every organ — were declared in
+ * the ecosystem, stopped by `stop`, and left down by `start` (2026-08-12).
+ * A caretaker cycle would have found them dead hours later, with the watcher
+ * itself among the casualties.
+ *
+ * The ecosystem file is the authority on what this install runs, so derive
+ * the list from it and subtract only the shared services (started separately,
+ * with their own labels). Installs without substrate organs are unaffected —
+ * they simply declare fewer apps. The manifest read stays as a validation
+ * that agents exist at all.
+ */
 function allNonSharedAutostartProcessNames(home23Root) {
   const manifestPath = join(home23Root, 'config', 'agents.json');
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
   if (!Array.isArray(manifest) || manifest.length === 0) {
     throw new Error('No agents found in config/agents.json');
   }
-  return [
+
+  const fromEcosystem = [];
+  try {
+    const ecosystemPath = join(home23Root, 'ecosystem.config.cjs');
+    const source = readFileSync(ecosystemPath, 'utf8');
+    for (const match of source.matchAll(/name:\s*'([^']+)'/g)) {
+      const name = match[1];
+      if (name.startsWith('home23-') && !SHARED_SERVICE_NAMES.has(name)) fromEcosystem.push(name);
+    }
+  } catch {
+    // No ecosystem yet (pre-generation) — fall through to the derived set.
+  }
+
+  const derived = [
     ...manifest.flatMap((agent) => agentProcessNames(agent.name)),
     ...AUTOSTART_SUPPORT_PROCESS_NAMES,
   ];
+  // Union, order-stable: ecosystem truth first, derived names as the floor so
+  // a malformed or stale ecosystem can never drop an agent's core processes.
+  return [...new Set([...fromEcosystem, ...derived])];
 }
 
 export async function runStart(home23Root, agentName) {
