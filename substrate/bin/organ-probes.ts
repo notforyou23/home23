@@ -135,8 +135,14 @@ function probePi(): ProbeResult[] {
   }
 }
 
-// ── engine health: crash-loop velocity is visible as restart-count churn;
-// the sentinel diffs counts over time. The CLI reports uptime as the hint.
+// ── engine health. Flapping is restart-count CHURN OVER TIME, not "recently
+// restarted": the first version flagged uptime<10min with restarts>0, which
+// is precisely what a deliberate restart looks like — so a correct deploy
+// reported two engines NOT FUNCTIONING and would have paged jtr for doing the
+// right thing (2026-08-12). Real flapping is the count rising between
+// observations, so remember the last count and compare.
+const lastRestartCounts = new Map<string, { count: number; seenAt: number }>();
+
 function probeEngines(): ProbeResult[] {
   try {
     const apps = JSON.parse(execFileSync('pm2', ['jlist'], { timeout: 8_000 }).toString()) as
@@ -146,11 +152,18 @@ function probeEngines(): ProbeResult[] {
       const a = apps.find((x) => x.name === name);
       if (a === undefined) continue;
       const upMin = a.pm2_env?.pm_uptime !== undefined ? ageMin(a.pm2_env.pm_uptime) : null;
-      const flapping = upMin !== null && upMin < 10 && (a.pm2_env?.restart_time ?? 0) > 0;
+      const count = a.pm2_env?.restart_time ?? 0;
+      const prior = lastRestartCounts.get(name);
+      const now = Date.now();
+      // Churn: restarts climbing since the previous observation. A single
+      // deliberate restart never trips this; a crash loop trips it every pass.
+      const churn = prior !== undefined && count > prior.count;
+      const perMin = churn ? (count - prior.count) / Math.max(1, (now - prior.seenAt) / 60_000) : 0;
+      lastRestartCounts.set(name, { count, seenAt: now });
       out.push({
         organ: `engine:${name.replace('home23-', '')}`,
-        ok: a.pm2_env?.status === 'online' && !flapping,
-        why: `${a.pm2_env?.status} up ${upMin ?? '?'}min ↺${a.pm2_env?.restart_time ?? 0}${flapping ? ' — FLAPPING' : ''}`,
+        ok: a.pm2_env?.status === 'online' && !churn,
+        why: `${a.pm2_env?.status} up ${upMin ?? '?'}min ↺${count}${churn ? ` — RESTARTING (${perMin.toFixed(1)}/min)` : ''}`,
       });
     }
     return out;
