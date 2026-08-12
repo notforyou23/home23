@@ -13,7 +13,7 @@
 
 'use strict';
 
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, statSync } from 'node:fs';
 import chokidar from 'chokidar';
 import { dirname, join } from 'node:path';
 import { TailChannel } from '../base/tail-channel.js';
@@ -57,8 +57,16 @@ export class NotifyChannel extends TailChannel {
 
   async _startAckWatcher() {
     if (this._ackWatcher) return;
+    // Pre-create the ack file (like TailChannel does for its path): under
+    // chokidar v4's polling backend, a file created while the watcher is
+    // establishing its baseline can be folded in silently and never emit —
+    // watching an existing file avoids that startup race entirely.
+    if (!existsSync(this.ackPath)) {
+      closeSync(openSync(this.ackPath, 'a'));
+    }
+    // persistent:true — lifetime watcher, closed in stop(); see tail-channel.
     this._ackWatcher = chokidar.watch(this.ackPath, {
-      persistent: false,
+      persistent: true,
       usePolling: true,
       interval: this.pollIntervalMs,
       awaitWriteFinish: { stabilityThreshold: 50, pollInterval: 50 },
