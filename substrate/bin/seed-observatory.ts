@@ -482,19 +482,33 @@ function boardRows(): Array<[string, boolean, string]> {
   const houseStream = j !== undefined && existsSync(join(j.stateDir, '..', 'house-stream.jsonl'));
   const memEvents = j !== undefined && existsSync(join(j.stateDir, '..', '..', 'brain', 'memory-objects.events.jsonl'));
   const infra = facts === null ? 0 : facts.split('\n').filter((l) => l.startsWith('- ') && /port|:\d{4}|http|url|endpoint|service|localhost|dashboard/i.test(l)).length;
-  const dreamedOnChain = j !== undefined && probe(() => {
-    const raw = readFileSync(join(j.stateDir, 'seed-ledger.jsonl'), 'utf-8').slice(-262144);
-    return raw.split('\n').some((l) => l.includes('"category":"lobe"') && l.includes('"dream"')) ? true : null;
-  }) === true;
+  // Chain probes read the WHOLE chain, never a trailing byte window
+  // (2026-08-12: a 256KB window had already scrolled past jerry's first
+  // commitments, so the board reported "first commitment pending" days after
+  // he lived three full lifecycles — an instrument telling a false negative,
+  // the exact dishonesty this board exists to prevent). A life-event that
+  // HAPPENED is permanent; the probe for it must search permanently. Cached
+  // per render pass — the chain is read once, not once per row.
+  const chainOf = (() => {
+    let cached: string | null = null;
+    return (): string => {
+      if (cached === null) {
+        cached = j === undefined ? '' : (probe(() => readFileSync(join(j.stateDir, 'seed-ledger.jsonl'), 'utf-8')) ?? '');
+      }
+      return cached;
+    };
+  })();
+  const chainHas = (test: (line: string) => boolean): boolean => {
+    const raw = chainOf();
+    if (raw === '') return false;
+    return raw.split('\n').some(test);
+  };
+  const dreamedOnChain = chainHas((l) => l.includes('"category":"lobe"') && l.includes('"dream"'));
   // Cut 6 probes: concern formed on the chain; an endogenous crossing lived.
-  const concernOnChain = j !== undefined && probe(() => {
-    const raw = readFileSync(join(j.stateDir, 'seed-ledger.jsonl'), 'utf-8').slice(-262144);
-    return raw.split('\n').some((l) => l.includes('"category":"concern"')) ? true : null;
-  }) === true;
-  const crossedOnChain = j !== undefined && probe(() => {
-    const raw = readFileSync(join(j.stateDir, 'seed-ledger.jsonl'), 'utf-8').slice(-262144);
-    return raw.split('\n').some((l) => l.includes('"crossing":true')) ? true : null;
-  }) === true;
+  const concernOnChain = chainHas((l) => l.includes('"category":"concern"'));
+  const crossedOnChain = chainHas((l) => l.includes('"crossing":true'));
+  // Dream provenance (2026-08-11 cut): dream prose hash-chained at birth.
+  const dreamT1OnChain = chainHas((l) => l.includes('"sourceRef":"dream:'));
   return [
     ['Recent memory', lived !== null, lived !== null ? 'composed from the chain at read time' : 'file fallback'],
     ['Turn expression', true, 'match-only surfacing of lived facts'],
@@ -514,7 +528,8 @@ function boardRows(): Array<[string, boolean, string]> {
     ['Cognition mode', true, 'thinking_machine — legacy retired'],
     ['Sleep & dreaming', true, dreamedOnChain ? 'NREM + REM — dreams on the chain' : 'NREM + REM — first dream pending'],
     ['Concern (commitments)', concernOnChain, concernOnChain ? 'his predictions bind — obligations on the chain' : 'Cut 6 live — first commitment pending'],
-    ['Endogenous occasions', crossedOnChain, crossedOnChain ? 'his own physics originated a moment' : 'solver live — first crossing pending'],
+    ['Endogenous occasions', crossedOnChain, crossedOnChain ? 'his own physics originated a moment' : 'solver live — no crossing yet (predictions resolve before their horizons)'],
+    ['Dream provenance (T1)', dreamT1OnChain, dreamT1OnChain ? 'dream prose hash-chained at birth' : 'receipting live — first chained dream pending'],
   ];
 }
 
