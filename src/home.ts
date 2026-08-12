@@ -238,6 +238,7 @@ async function main(): Promise<void> {
     enginePort: DASHBOARD_PORT,
     ownerName: config.agent?.owner?.name,
     ownerTelegramId: config.agent?.owner?.telegramId,
+    timezone: config.agent?.timezone,
   });
 
   // ── Conversation History ──

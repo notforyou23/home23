@@ -89,7 +89,7 @@ Commands:
     await runStatus();
   } else if (command === 'logs') {
     const { runLogs } = await import('./lib/pm2-commands.js');
-    await runLogs(args[1]);
+    await runLogs(HOME23_ROOT, args[1]);
   } else if (command === 'evobrew' || command === 'cosmo23') {
     console.log(`${command} is now bundled with Home23 and updates automatically.`);
     console.log('Run "home23 update" to update everything.');

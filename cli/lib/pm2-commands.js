@@ -7,12 +7,20 @@
 import { execSync, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { ensureSystemHealth } from './system-health.js';
 import {
   SHARED_SERVICES,
   coordinateSharedServiceStartup,
   startEcosystemProcesses,
 } from './shared-service-start.js';
+
+const require = createRequire(import.meta.url);
+const {
+  agentProcessNames,
+  agentProcessNameCandidates,
+  filterNamesByEcosystem,
+} = require('../../shared/agent-process-names.cjs');
 
 const SHARED_SERVICE_LABELS = new Map(
   SHARED_SERVICES.map((service) => [service.name, service.label]),
@@ -28,14 +36,6 @@ function exec(cmd, opts = {}) {
   }
 }
 
-function agentProcessNames(agentName) {
-  return [
-    `home23-${agentName}`,
-    `home23-${agentName}-dash`,
-    `home23-${agentName}-harness`,
-  ];
-}
-
 function allNonSharedAutostartProcessNames(home23Root) {
   const manifestPath = join(home23Root, 'config', 'agents.json');
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
@@ -43,7 +43,7 @@ function allNonSharedAutostartProcessNames(home23Root) {
     throw new Error('No agents found in config/agents.json');
   }
   return [
-    ...manifest.flatMap((agent) => agentProcessNames(agent.name)),
+    ...manifest.flatMap((agent) => agentProcessNames({ home23Root, agentName: agent.name })),
     ...AUTOSTART_SUPPORT_PROCESS_NAMES,
   ];
 }
@@ -80,8 +80,13 @@ export async function runStart(home23Root, agentName) {
       process.exit(1);
     }
 
-    // Start specific agent's processes
-    const names = agentProcessNames(agentName);
+    // Start specific agent's processes — config-conditional processes
+    // (-mcp, -seed) included, filtered to what the generated ecosystem
+    // actually declares so `pm2 start --only` never names a missing app.
+    const names = filterNamesByEcosystem(
+      agentProcessNames({ home23Root, agentName }),
+      ecosystemPath,
+    );
     console.log(`Starting ${agentName}...`);
     try {
       startEcosystemProcesses({ home23Root, names, stdio: 'inherit' });
@@ -95,7 +100,10 @@ export async function runStart(home23Root, agentName) {
     try {
       startEcosystemProcesses({
         home23Root,
-        names: allNonSharedAutostartProcessNames(home23Root),
+        names: filterNamesByEcosystem(
+          allNonSharedAutostartProcessNames(home23Root),
+          ecosystemPath,
+        ),
         stdio: 'inherit',
       });
     } catch (err) {
@@ -151,7 +159,11 @@ export async function runStop(home23Root, agentName) {
   const ecosystemPath = join(home23Root, 'ecosystem.config.cjs');
 
   if (agentName) {
-    const names = agentProcessNames(agentName);
+    // Stop every process that could belong to the agent, not just what the
+    // current config declares — a -seed/-mcp process from an earlier config
+    // state must not be left running behind a "stopped" report. home23Root
+    // lets the helper drop names that are really a sibling agent's engine.
+    const names = agentProcessNameCandidates(agentName, home23Root);
     console.log(`Stopping ${agentName}...`);
     for (const name of names) {
       try {
@@ -219,10 +231,21 @@ export async function runStatus() {
   }
 }
 
-export async function runLogs(agentName) {
+export async function runLogs(home23Root, agentName) {
   if (agentName) {
-    // Tail logs for specific agent — use pm2 logs with regex filter
-    const proc = spawn('pm2', ['logs', '--lines', '30', `home23-${agentName}`], {
+    // Tail logs for all of the agent's processes. A bare `home23-<name>`
+    // matches only the engine; the anchored regex covers -dash/-mcp/
+    // -harness/-seed without also catching agents that share the prefix.
+    // Suffix names owned by a sibling agent (e.g. agent alice-seed's
+    // engine) are excluded from alice's alternation.
+    const suffixAlternation = agentProcessNameCandidates(agentName, home23Root)
+      .map((name) => name.slice(`home23-${agentName}`.length))
+      .filter(Boolean)
+      .join('|');
+    const pattern = suffixAlternation
+      ? `/^home23-${agentName}(${suffixAlternation})?$/`
+      : `/^home23-${agentName}$/`;
+    const proc = spawn('pm2', ['logs', '--lines', '30', pattern], {
       stdio: 'inherit',
     });
     proc.on('error', () => {
