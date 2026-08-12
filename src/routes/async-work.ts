@@ -9,8 +9,9 @@
  */
 import { Router, type Request, type Response } from 'express';
 import { timingSafeEqual } from 'node:crypto';
-import { TERMINAL_WORK_STATUSES, type AsyncWorkRecord } from '../work/types.js';
+import type { AsyncWorkRecord } from '../work/types.js';
 import type { WorkRegistry } from '../work/registry.js';
+import { requestAsyncWorkCancel } from '../work/cancel.js';
 
 export interface AsyncWorkRouterDeps {
   registry: WorkRegistry;
@@ -68,20 +69,14 @@ export function createAsyncWorkRouter(deps: AsyncWorkRouterDeps): Router {
 
   router.post('/:workId/cancel', (req, res) => {
     if (!checkAuth(req, res, deps.token)) return;
-    const work = deps.registry.get(req.params.workId);
-    if (!work) return void res.status(404).json({ error: 'unknown work id' });
-    if (TERMINAL_WORK_STATUSES.has(work.status)) {
-      return void res.status(409).json({ error: 'already terminal', status: work.status });
+    const outcome = requestAsyncWorkCancel(deps, req.params.workId);
+    if (outcome.status === 'not_found') {
+      return void res.status(404).json({ error: 'unknown work id' });
     }
-    deps.registry.requestCancel(work.workId);
-    if (work.resultHandle.type === 'coding_job') {
-      const jobId = work.resultHandle.jobId;
-      deps.cancelCodingJob(jobId).catch(err =>
-        console.warn(`[work] cancel of ${jobId} failed: ${err instanceof Error ? err.message : String(err)}`));
-    } else {
-      deps.stopChat(work.resultHandle.chatId);
+    if (outcome.status === 'already_terminal') {
+      return void res.status(409).json({ error: 'already terminal', status: outcome.work.status });
     }
-    res.status(202).json({ workId: work.workId, cancel: 'requested' });
+    res.status(202).json({ workId: outcome.work.workId, cancel: 'requested' });
   });
 
   return router;

@@ -38,6 +38,9 @@ export function createSeedLobeTransport(opts: SeedLobeTransportOptions): SeedLob
   return async (prompt: string) => {
     const startedMs = Date.now();
     const invokedAt = new Date().toISOString();
+    // Real usage when the provider reports it (P2-17) — 0 still means "not
+    // measured", never "free" and never an estimate.
+    const usageSink = { tokensIn: 0, tokensOut: 0 };
     // Default cap sized to the lobe response contract (4 arrays × 8 items,
     // claims ≤500 chars ≈ up to ~8k tokens of JSON). The old 1200 truncated
     // real responses mid-array — 21 wasted recruitments on bobby's ledger.
@@ -48,6 +51,7 @@ export function createSeedLobeTransport(opts: SeedLobeTransportOptions): SeedLob
       maxTokens: opts.maxTokens ?? 8192,
       temperature: 0.2,
       timeoutMs: opts.timeoutMs ?? 45_000,
+      usageSink,
     });
     return {
       text,
@@ -56,8 +60,8 @@ export function createSeedLobeTransport(opts: SeedLobeTransportOptions): SeedLob
         provider,
         invokedAt,
         durationMs: Date.now() - startedMs,
-        tokensIn: 0,
-        tokensOut: 0,
+        tokensIn: usageSink.tokensIn,
+        tokensOut: usageSink.tokensOut,
       },
     };
   };

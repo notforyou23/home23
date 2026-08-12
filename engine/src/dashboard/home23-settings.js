@@ -841,12 +841,15 @@ const PROVIDER_DISPLAY = {
 const PROVIDERS_WITH_API_KEYS = ['ollama-cloud', 'minimax', 'anthropic', 'openai', 'xai'];
 const SETTINGS_PROVIDER_ORDER = ['ollama-cloud', 'minimax', 'anthropic', 'openai', 'xai'];
 const MODEL_PROVIDER_ORDER = ['ollama-cloud', 'minimax', 'anthropic', 'openai', 'openai-codex', 'xai'];
+// Aligned to the live authority catalog 2026-08-11 — every pair here must
+// build (declared in defaultModels AND aliased), or the wizard offers models
+// that create unbuildable agents.
 const WIZARD_MODEL_FALLBACKS = {
-  'ollama-cloud': ['gpt-oss:120b', 'kimi-k2.6', 'qwen3.5:397b', 'deepseek-v4-pro', 'glm-5.2:cloud', 'glm-5.1'],
+  'ollama-cloud': ['kimi-k3:cloud', 'qwen3.5:122b', 'deepseek-v4-pro', 'glm-5.2:cloud', 'minimax-m2.7'],
   minimax: ['MiniMax-M3'],
-  anthropic: ['claude-sonnet-4-7', 'claude-opus-4-8'],
-  openai: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4-mini'],
-  'openai-codex': ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.5', 'gpt-5.3-codex-spark'],
+  anthropic: ['claude-fable-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'],
+  openai: ['gpt-5.5-pro'],
+  'openai-codex': ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.4-mini'],
   xai: ['grok-4.5', 'grok-4.3'],
 };
 

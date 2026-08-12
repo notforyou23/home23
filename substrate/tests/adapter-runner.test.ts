@@ -437,3 +437,38 @@ test('house mapper: home transitions arrive as observed contact with words', (t)
   assert.equal(events[0]?.payload['head'], 'Garage 1 opened');
   assert.equal(events[1]?.payload['head'], 'Althea - Kitchen playing "Ripple" — Grateful Dead');
 });
+
+test('dream mapper: the individual\'s own dreams enter the diet at birth — head + T1 content hash', (t) => {
+  const srcDir = makeDir(t, 'dream-src');
+  const stateDir = makeDir(t, 'dream-state');
+  const sourcePath = join(srcDir, 'dream-events.jsonl');
+  const sha = 'a'.repeat(64);
+  writeFileSync(sourcePath, [
+    JSON.stringify({ ts: '2026-08-11T11:38:28.279Z', dreamId: 'dream_cycle15572_1', cycle: 15572, model: 'MiniMax-M3', head: 'The kitchen hummed with a song that wasn\'t a song', contentSha256: sha, contentLength: 3408 }),
+    JSON.stringify({ ts: '2026-08-11T11:38:41.786Z', dreamId: 'dream_bad_sha', head: 'x', contentSha256: 'not-a-hash' }),
+    JSON.stringify({ ts: '2026-08-11T11:38:42.000Z', dreamId: 'dream_no_head', contentSha256: sha }),
+  ].join('\n') + '\n', 'utf-8');
+
+  const adapter = new EventLedgerTailAdapter({ sourcePath, cursorDir: stateDir, sourceType: 'dream-stream', fromEnd: false });
+  const events = adapter.pullSync();
+  assert.equal(events.length, 1, 'malformed receipts (bad sha, no head) are refused — a T1 claim must be well-formed');
+  assert.equal(events[0]?.category, 'interpretation', 'a dream is the mind\'s own reading of the day');
+  assert.equal(events[0]?.sourceRef, 'dream:dream_cycle15572_1');
+  assert.equal(events[0]?.payload['contentSha256'], sha, 'the content hash rides to the chain — the prose is T1 from birth');
+  assert.equal(events[0]?.payload['head'], 'The kitchen hummed with a song that wasn\'t a song');
+  assert.equal(events[0]?.producedAt, '2026-08-11T11:38:28.279Z');
+});
+
+test("the machine's heartbeat is not diet: event_ledger.heartbeat lines are filtered", (t) => {
+  const srcDir = makeDir(t, 'hb-src');
+  const stateDir = makeDir(t, 'hb-state');
+  const sourcePath = join(srcDir, 'event-ledger.jsonl');
+  writeFileSync(sourcePath, [
+    JSON.stringify({ event_id: 'hb1', event_type: 'event_ledger.heartbeat', timestamp: '2026-08-10T10:00:00.000Z', payload: {} }),
+    JSON.stringify({ event_id: 'real1', event_type: 'SessionStarted', session_id: 's', timestamp: '2026-08-10T10:01:00.000Z', payload: {} }),
+  ].join('\n') + '\n', 'utf-8');
+  const adapter = new EventLedgerTailAdapter({ sourcePath, cursorDir: stateDir, fromEnd: false });
+  const events = adapter.pullSync();
+  assert.equal(events.length, 1, 'the pulse stays in the ledger, out of the diet');
+  assert.equal(events[0]?.eventId, 'real1');
+});

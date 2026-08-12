@@ -95,6 +95,28 @@ test('RfChannel parses active system_profiler network details', () => {
   assert.equal(wifi.channelWidthMhz, 80);
 });
 
+test('RfChannel parses current macOS combined signal/noise and channel formats', () => {
+  const wifi = _test.parseSystemProfilerWifiJson(JSON.stringify({
+    SPAirPortDataType: [{
+      spairport_airport_interfaces: [{
+        _name: 'en1',
+        spairport_status_information: 'spairport_status_connected',
+        spairport_current_network_information: {
+          _name: 'X3',
+          spairport_network_channel: '40 (5GHz, 80MHz)',
+          spairport_signal_noise: '-15 dBm / -93 dBm',
+        },
+      }],
+    }],
+  }));
+
+  assert.equal(wifi.rssi, -15);
+  assert.equal(wifi.noise, -93);
+  assert.equal(wifi.snr, 78);
+  assert.equal(wifi.channel, 40);
+  assert.equal(wifi.channelWidthMhz, 80);
+});
+
 test('RfChannel keeps wired or clear transport informational', async () => {
   const channel = new RfChannel({
     sample: async () => ({

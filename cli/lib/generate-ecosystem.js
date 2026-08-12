@@ -201,17 +201,22 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      filter_env: ['HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
     // Heap sized for a cognitive engine with a growing brain — see commit
     // 174c76c (Step: engine OOM fix). 768MB caused a restart loop at ~7k nodes.
-    // 8192, not 4096: the 6-hourly full base rewrite materializes the whole
-    // graph before streaming it out, and forrest (119k nodes / 461k edges)
-    // OOM-crash-looped at 4096 the first time it fired (2026-07-16). The cap
+    // 8192 → 12288 (2026-08-10): jerry (211k nodes / 498k edges) OOM-crash-looped
+    // at 8192 — ineffective mark-compacts pinned at ~8160MB, one crash per ~5.5min.
+    // 12288 is a tourniquet on a 16GB machine, not a cure; the real fix is
+    // shedding brain volume. max_memory_restart must stay above the V8 ceiling
+    // or PM2 kills the engine before V8 can even reach its own limit. The cap
     // is a ceiling, not a reservation — idle engines stay under ~1GB.
-    lines.push(`      node_args: '--expose-gc --max-old-space-size=8192',`);
-    lines.push(`      max_memory_restart: '10G',`);
+    lines.push(`      node_args: '--expose-gc --max-old-space-size=12288',`);
+    lines.push(`      max_memory_restart: '14G',`);
     lines.push(`      kill_timeout: ENGINE_KILL_TIMEOUT_MS,`);
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${logsDir} + '/engine-out.log',`);
     lines.push(`      error_file: ${logsDir} + '/engine-err.log',`);
-    lines.push(`      env: { ...commonEnv, HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY: brainOperationsCapabilityKey, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
+    // No HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY here — see the note above the
+    // dashboard app. The engine performs no brain operations; it reads the key
+    // nowhere.
+    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
 
     // Dashboard
@@ -226,6 +231,16 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${logsDir} + '/dashboard-out.log',`);
     lines.push(`      error_file: ${logsDir} + '/dashboard-err.log',`);
+    // HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY is granted to EXACTLY two apps:
+    // this dashboard and home23-cosmo23. It is not a config value — it is the
+    // signing secret for /api/internal/brain-operations/*, so possession IS
+    // authorization. The dashboard needs it (server.js + brain-operations/
+    // coordinator.js read it); cosmo23 needs it (server/index.js reads it).
+    // The engine, harness, and MCP server read it nowhere and must not hold
+    // it — they held it from 2026-08-08 (ac4095a9, where it rode along with
+    // unrelated supervision fixes, undocumented and untested) until it was
+    // revoked. Every app also filter_env's and blocklists the name, but that
+    // only stops INHERITED values; the explicit grant below is the real one.
     lines.push(`      env: { ...commonEnv, HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY: brainOperationsCapabilityKey, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', HOME23_MCP_AVAILABLE: '${mcpEnabled ? 'true' : 'false'}', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
 
@@ -240,7 +255,8 @@ export function generateEcosystem(home23Root, options = {}) {
       lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
       lines.push(`      out_file: ${logsDir} + '/mcp-out.log',`);
       lines.push(`      error_file: ${logsDir} + '/mcp-err.log',`);
-      lines.push(`      env: { ...commonEnv, HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY: brainOperationsCapabilityKey, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_ROOT: HOME23, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, MCP_HTTP_HOST: '127.0.0.1', MCP_HTTP_PORT: '${mcpPort}', HOME23_MCP_AVAILABLE: 'true', INSTANCE_ID: 'home23-${agent.name}' },`);
+      // No capability key — see the note above the dashboard app.
+      lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_ROOT: HOME23, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, MCP_HTTP_HOST: '127.0.0.1', MCP_HTTP_PORT: '${mcpPort}', HOME23_MCP_AVAILABLE: 'true', INSTANCE_ID: 'home23-${agent.name}' },`);
       lines.push(`    },`);
     }
 
@@ -269,7 +285,10 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${logsDir} + '/harness-out.log',`);
     lines.push(`      error_file: ${logsDir} + '/harness-err.log',`);
-    lines.push(`      env: { ...commonEnv, HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY: brainOperationsCapabilityKey, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
+    // No capability key — see the note above the dashboard app. The harness
+    // reaches brain operations through the dashboard's HTTP API, never by
+    // signing internal envelopes itself.
+    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
 
     // Substrate Seed (shadow resident) — emitted ONLY when the agent's config
@@ -300,9 +319,178 @@ export function generateEcosystem(home23Root, options = {}) {
       lines.push(`      kill_timeout: 30000,`);
       lines.push(`      out_file: ${logsDir} + '/seed-out.log',`);
       lines.push(`      error_file: ${logsDir} + '/seed-err.log',`);
-      lines.push(`      env: { ...commonEnv, HOME23_AGENT: '${agent.name}', INSTANCE_ID: 'home23-${agent.name}-seed', SEED_STATE_DIR: ${seedStateDir}, SEED_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'event-ledger.jsonl'), SEED_RELATIONSHIP_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'relationship-ledger.events.jsonl'), SEED_WORKER_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'worker-runs.jsonl'), SEED_CONVERSATION_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'conversation-stream.jsonl'), SEED_HOUSE_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'house-stream.jsonl'), SEED_MEMORY_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'memory-objects.events.jsonl'), SEED_LOBE: '${lobeKind}', SEED_LOBE_MODEL: '${lobeModel}', SEED_LOBE_MIN_INTERVAL_MS: '${lobeMinIntervalMs}' },`);
+      lines.push(`      env: { ...commonEnv, HOME23_AGENT: '${agent.name}', INSTANCE_ID: 'home23-${agent.name}-seed', SEED_STATE_DIR: ${seedStateDir}, SEED_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'event-ledger.jsonl'), SEED_RELATIONSHIP_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'relationship-ledger.events.jsonl'), SEED_WORKER_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'worker-runs.jsonl'), SEED_CONVERSATION_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'conversation-stream.jsonl'), SEED_HOUSE_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'house-stream.jsonl'), SEED_MEMORY_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'memory-objects.events.jsonl'), SEED_DREAM_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'dream-events.jsonl'), SEED_LOBE: '${lobeKind}', SEED_LOBE_MODEL: '${lobeModel}', SEED_LOBE_MIN_INTERVAL_MS: '${lobeMinIntervalMs}' },`);
       lines.push(`    },`);
     }
+  }
+
+  // ── Per-agent substrate feeds ──
+  // A seed with no feed is a seed that starves. These were hand-started for
+  // weeks; nothing regenerated them and `home23 start` did not bring them back.
+  // Each writes EXACTLY the stream its seed reads — both sides are derived from
+  // the same expression below, so they cannot drift apart.
+  for (const agent of agents) {
+    if (agent.config?.substrate?.enabled !== true) continue;
+    const sub = agent.config.substrate;
+    const streamPath = `path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'conversation-stream.jsonl')`;
+    const backfillBytes = Number(sub.conversationBackfillBytes) > 0
+      ? Number(sub.conversationBackfillBytes) : 524288;
+
+    lines.push(``);
+    lines.push(`    // ── ${agent.name} conversation shipper (feeds the seed) ──`);
+    lines.push(`    {`);
+    lines.push(`      name: 'home23-${agent.name}-shipper',`);
+    lines.push(`      script: path.join(HOME23, 'substrate', 'bin', 'conversation-shipper.ts'),`);
+    lines.push(`      cwd: HOME23,`);
+    lines.push(`      interpreter: 'node',`);
+    lines.push(`      node_args: '--import tsx',`);
+    lines.push(`      filter_env: ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
+    lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
+    lines.push(`      out_file: path.join(HOME23, 'instances', '${agent.name}', 'logs', 'conversation-shipper-out.log'),`);
+    lines.push(`      error_file: path.join(HOME23, 'instances', '${agent.name}', 'logs', 'conversation-shipper-err.log'),`);
+    lines.push(`      env: {`);
+    lines.push(`        SHIPPER_CONVERSATIONS_DIR: path.join(HOME23, 'instances', '${agent.name}', 'conversations'),`);
+    lines.push(`        SHIPPER_STREAM_PATH: ${streamPath},`);
+    lines.push(`        SHIPPER_BACKFILL_BYTES: '${backfillBytes}',`);
+    lines.push(`      },`);
+    lines.push(`    },`);
+
+    // House sensing is opt-in: only an agent wired into the home has a house
+    // to sense. Its stream is the seed's SEED_HOUSE_SOURCE, same derivation.
+    if (sub.houseSense === true) {
+      lines.push(``);
+      lines.push(`    // ── ${agent.name} house sense (feeds the seed the home) ──`);
+      lines.push(`    {`);
+      lines.push(`      name: 'home23-${agent.name}-house-sense',`);
+      lines.push(`      script: path.join(HOME23, 'substrate', 'bin', 'house-sense.ts'),`);
+      lines.push(`      cwd: HOME23,`);
+      lines.push(`      interpreter: 'node',`);
+      lines.push(`      node_args: '--import tsx',`);
+      lines.push(`      filter_env: ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
+      lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
+      lines.push(`      out_file: path.join(HOME23, 'instances', '${agent.name}', 'logs', 'house-sense-out.log'),`);
+      lines.push(`      error_file: path.join(HOME23, 'instances', '${agent.name}', 'logs', 'house-sense-err.log'),`);
+      lines.push(`      env: {`);
+      lines.push(`        SHIPPER_STREAM_PATH: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'house-stream.jsonl'),`);
+      lines.push(`      },`);
+      lines.push(`    },`);
+    }
+  }
+
+  // ── Substrate auxiliary services (shared) ──
+  // These ran hand-started for weeks. Two of them (the observatory and the
+  // bobby house shipper) were still on PM2's DEFAULT log paths on 2026-08-11,
+  // which is precisely how forrest's engine output went invisible on
+  // 2026-08-09 — a bare `pm2 start` writes a record nothing regenerates and
+  // no verifier can find. Generated here so `home23 start` recreates them.
+  //
+  // Everything machine-specific (a Pi address, an SSH key, a dated field-trip
+  // directory) stays in config and in the scripts themselves under
+  // instances/, which is gitignored. The public repo keeps none of it.
+  const substrateConfig = homeConfig.substrate || {};
+  const seedAgents = agents.filter(agent => agent.config?.substrate?.enabled === true);
+
+  if (seedAgents.length > 0) {
+    const observatoryConfig = substrateConfig.observatory || {};
+    // Derived first — an agent that runs a seed is watched without anyone
+    // remembering to list it. Individuals that are NOT agents (a remote
+    // resident mirrored locally, an archived lineage) cannot be derived, so
+    // they are declared. Both carry relative paths resolved against the
+    // install root at load time.
+    const individuals = [
+      ...seedAgents.map(agent => ({
+        name: `${agent.name}-seed`,
+        stateDir: `instances/${agent.name}/substrate/seed-01`,
+      })),
+      ...(Array.isArray(observatoryConfig.extraIndividuals) ? observatoryConfig.extraIndividuals : [])
+        .filter(entry => entry && entry.name && entry.stateDir),
+    ];
+    const observatoryPort = Number(observatoryConfig.port) > 0 ? Number(observatoryConfig.port) : 5050;
+
+    lines.push(``);
+    lines.push(`    // ── seed observatory (shared organ sentinel) ──`);
+    lines.push(`    {`);
+    lines.push(`      name: 'home23-seed-observatory',`);
+    lines.push(`      script: path.join(HOME23, 'substrate', 'bin', 'seed-observatory.ts'),`);
+    lines.push(`      cwd: HOME23,`);
+    // Same reason as the seed runner: PM2 picks an interpreter by extension
+    // for .ts (bun when present) and then ignores node_args.
+    lines.push(`      interpreter: 'node',`);
+    lines.push(`      node_args: '--import tsx',`);
+    lines.push(`      filter_env: ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
+    lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
+    lines.push(`      out_file: path.join(HOME23, 'logs', 'observatory-out.log'),`);
+    lines.push(`      error_file: path.join(HOME23, 'logs', 'observatory-err.log'),`);
+    // It reads OBSERVATORY_* and ORGAN_SENTINEL_* and nothing else. The
+    // hand-started process also carried HOME23_BRIDGE_TOKEN, which it never
+    // read — the same over-grant class as the brain-operations capability key
+    // (revoked 2026-08-11). Grant only what is read.
+    lines.push(`      env: {`);
+    lines.push(`        OBSERVATORY_PORT: '${observatoryPort}',`);
+    lines.push(`        OBSERVATORY_INDIVIDUALS: JSON.stringify(${JSON.stringify(individuals)}.map((i) => ({ ...i, stateDir: path.resolve(HOME23, i.stateDir) }))),`);
+    if (observatoryConfig.notifyUrl) {
+      lines.push(`        ORGAN_SENTINEL_NOTIFY_URL: ${JSON.stringify(String(observatoryConfig.notifyUrl))},`);
+    }
+    if (observatoryConfig.ignore) {
+      lines.push(`        ORGAN_SENTINEL_IGNORE: ${JSON.stringify(String(observatoryConfig.ignore))},`);
+    }
+    lines.push(`      },`);
+    lines.push(`    },`);
+  }
+
+  // Declared substrate shippers — long-running feeds to remote residents.
+  // Emitted only when declared, so a fresh install starts none.
+  for (const shipper of Array.isArray(substrateConfig.shippers) ? substrateConfig.shippers : []) {
+    if (!shipper || !shipper.name || !shipper.script) continue;
+    lines.push(``);
+    lines.push(`    // ── substrate shipper: ${shipper.name} ──`);
+    lines.push(`    {`);
+    lines.push(`      name: 'home23-${shipper.name}',`);
+    lines.push(`      script: path.resolve(HOME23, ${JSON.stringify(String(shipper.script))}),`);
+    if (shipper.interpreter) {
+      lines.push(`      interpreter: ${JSON.stringify(String(shipper.interpreter))},`);
+    }
+    lines.push(`      cwd: HOME23,`);
+    lines.push(`      filter_env: ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
+    lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
+    lines.push(`      out_file: path.join(HOME23, 'logs', '${shipper.name}-out.log'),`);
+    lines.push(`      error_file: path.join(HOME23, 'logs', '${shipper.name}-err.log'),`);
+    lines.push(`    },`);
+  }
+
+  // Declared lobe brokers — each carries a remote resident's exchange over ssh.
+  // A resident living on another machine is not derivable from instances/, so
+  // it is declared. The address and remote paths live in config; the repo
+  // learns nothing about anyone's network.
+  for (const broker of Array.isArray(substrateConfig.brokers) ? substrateConfig.brokers : []) {
+    if (!broker || !broker.name || !broker.sshHost || !broker.remoteDir) continue;
+    const localPath = (value) => `path.resolve(HOME23, ${JSON.stringify(String(value))})`;
+    lines.push(``);
+    lines.push(`    // ── lobe broker: ${broker.name} (remote resident) ──`);
+    lines.push(`    {`);
+    lines.push(`      name: 'home23-${broker.name}-broker',`);
+    lines.push(`      script: path.join(HOME23, 'substrate', 'bin', 'lobe-broker.ts'),`);
+    lines.push(`      cwd: HOME23,`);
+    lines.push(`      interpreter: 'node',`);
+    lines.push(`      node_args: '--import tsx',`);
+    lines.push(`      filter_env: ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
+    lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
+    lines.push(`      out_file: path.join(HOME23, 'logs', '${broker.name}-broker-out.log'),`);
+    lines.push(`      error_file: path.join(HOME23, 'logs', '${broker.name}-broker-err.log'),`);
+    lines.push(`      env: {`);
+    lines.push(`        BROKER_SSH_HOST: ${JSON.stringify(String(broker.sshHost))},`);
+    lines.push(`        BROKER_REMOTE_DIR: ${JSON.stringify(String(broker.remoteDir))},`);
+    if (broker.model) lines.push(`        BROKER_MODEL: ${JSON.stringify(String(broker.model))},`);
+    if (Number(broker.intervalMs) > 0) lines.push(`        BROKER_INTERVAL_MS: '${Number(broker.intervalMs)}',`);
+    // Remote paths stay verbatim (they are the Pi's filesystem); local
+    // mirrors resolve against this install.
+    if (broker.stateDest) lines.push(`        BROKER_STATE_DEST: ${localPath(broker.stateDest)},`);
+    if (broker.stateRemote) lines.push(`        BROKER_STATE_REMOTE: ${JSON.stringify(String(broker.stateRemote))},`);
+    if (broker.formsDest) lines.push(`        BROKER_FORMS_DEST: ${localPath(broker.formsDest)},`);
+    if (broker.formsRemote) lines.push(`        BROKER_FORMS_REMOTE: ${JSON.stringify(String(broker.formsRemote))},`);
+    if (Number(broker.formsEveryTicks) > 0) lines.push(`        BROKER_FORMS_EVERY_TICKS: '${Number(broker.formsEveryTicks)}',`);
+    lines.push(`      },`);
+    lines.push(`    },`);
   }
 
   // PM2 watchdog — shared supervisor for agent engine/dashboard/harness triplets.

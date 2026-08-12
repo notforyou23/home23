@@ -789,6 +789,21 @@ function createSettingsRouter(home23Root, options = {}) {
         error: `${label} is selected for chat but is not configured yet. Connect it in Providers, then create the agent.`,
       };
     }
+    // Pair-vs-authority check (2026-08-11): a provider with a key but a
+    // model outside the catalog (defaultModels + alias) creates an agent
+    // whose authority build throws — and if it becomes primary, breaks
+    // cosmo23 seeding for the whole house. Refuse at creation instead.
+    try {
+      buildHome23ModelAuthority({
+        homeConfig: loadHomeConfig(),
+        agentConfig: { chat: { defaultProvider: resolvedProvider, defaultModel: resolvedModel } },
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        error: `${resolvedProvider}/${resolvedModel} is not a valid Home23 catalog pair (declared in defaultModels and aliased): ${error.message}`,
+      };
+    }
     return { ok: true };
   }
 
@@ -1741,13 +1756,50 @@ function createSettingsRouter(home23Root, options = {}) {
 
         if (engineRolesChanged) {
           if (!agentConfig.engine) agentConfig.engine = {};
-          for (const role of ['thought', 'consolidation', 'dreaming', 'query']) {
+          // Refuse a role model the engine would silently discard: enablement
+          // lives in base-engine.yaml providers, and config-loader skips any
+          // override that doesn't resolve there (2026-08-11 audit — jerry's
+          // gpt-5.6-luna roles were accepted here and ignored for months).
+          const bePath = path.join(home23Root, 'configs', 'base-engine.yaml');
+          let beProviders = {};
+          try { beProviders = (loadYaml(bePath) || {}).providers || {}; } catch { beProviders = {}; }
+          // Providers UnifiedClient routes at CALL time need no base-engine
+          // enabled flag: openai-codex is built lazily and openai is the
+          // GPT5Client base path. Must mirror CALL_TIME_PROVIDERS in
+          // engine/src/core/config-loader.js — this refused jtr's codex
+          // roles on 2026-08-11 while chat/Query/research ran codex fine.
+          const CALL_TIME_PROVIDERS = new Set(['openai-codex', 'openai']);
+          const beEnabled = (name) => CALL_TIME_PROVIDERS.has(name)
+            || (beProviders[name] && beProviders[name].enabled === true);
+          const resolvableInEngine = (model) => {
+            for (const [name, prov] of Object.entries(beProviders)) {
+              if (beEnabled(name) && (prov.defaultModels || []).includes(model)) return name;
+            }
+            for (const [name, prov] of Object.entries(homeConfig.providers || {})) {
+              if (beEnabled(name) && (prov.defaultModels || []).includes(model)) return name;
+            }
+            return null;
+          };
+          for (const role of ['thought', 'consolidation', 'dreaming']) {
+            const roleModel = roleModels[role];
+            if (roleModel && !resolvableInEngine(roleModel)) {
+              const enabledNames = Object.keys(beProviders).filter(beEnabled).join(', ') || '(none)';
+              return res.status(400).json({
+                ok: false,
+                error: `Engine role "${role}" model "${roleModel}" does not resolve to a provider enabled in base-engine.yaml — the engine would silently ignore it. Engine-enabled providers: ${enabledNames}.`,
+              });
+            }
+          }
+          for (const role of ['thought', 'consolidation', 'dreaming']) {
             if (roleModels[role]) {
               agentConfig.engine[role] = roleModels[role];
             } else {
               delete agentConfig.engine[role];
             }
           }
+          // Retired 2026-08-11: nothing engine-side ever read engine.query —
+          // query models are governed by the model authority (query: block).
+          delete agentConfig.engine.query;
         }
       }
 

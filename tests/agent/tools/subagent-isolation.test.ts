@@ -6,6 +6,7 @@ import type { ToolContext, AgentResponse } from '../../../src/agent/types.js';
 interface Captured {
   ctx: ToolContext | null;
   options: unknown;
+  loopCalls: number;
   appends: Array<{ chatId: string; records: unknown[] }>;
   delivered: Promise<void>;
 }
@@ -15,6 +16,7 @@ function makeCtx(parentChatId: string): { ctx: ToolContext; captured: Captured }
   const captured: Captured = {
     ctx: null,
     options: undefined,
+    loopCalls: 0,
     appends: [],
     delivered: new Promise<void>((resolve) => { resolveDelivered = resolve; }),
   };
@@ -41,6 +43,7 @@ function makeCtx(parentChatId: string): { ctx: ToolContext; captured: Captured }
     chatId: parentChatId,
     telegramAdapter: null,
     runAgentLoop: async (_sys: string, _msg: string, _tools: unknown[], subCtx: ToolContext, options?: unknown) => {
+      captured.loopCalls++;
       captured.ctx = subCtx;
       captured.options = options;
       return response;
@@ -93,7 +96,43 @@ test('spawn_agent threads a model override through to the loop runner', async ()
   await spawnAgentTool.execute({ task: 'model check', model: 'claude-opus-4-8' }, ctx);
   await captured.delivered;
 
-  assert.deepEqual(captured.options, { modelOverride: { model: 'claude-opus-4-8' } });
+  assert.deepEqual(captured.options, { modelOverride: { model: 'claude-opus-4-8', provider: 'anthropic' } });
+});
+
+test('spawn_agent resolves configured model aliases before dispatching the sub-agent', async () => {
+  const { ctx, captured } = makeCtx('parent-chat');
+  (ctx as ToolContext & { modelAliases: Record<string, { provider: string; model: string }> }).modelAliases = {
+    sonnet: { provider: 'anthropic', model: 'claude-sonnet-4-7' },
+  };
+
+  await spawnAgentTool.execute({ task: 'model check', model: 'sonnet' }, ctx);
+  await captured.delivered;
+
+  assert.deepEqual(captured.options, {
+    modelOverride: { model: 'claude-sonnet-4-7', provider: 'anthropic' },
+  });
+});
+
+test('spawn_agent rejects an unresolvable model override before claiming or dispatching work', async () => {
+  const { ctx, captured } = makeCtx('parent-chat');
+  let workCreates = 0;
+  (ctx as ToolContext & { workRegistry: NonNullable<ToolContext['workRegistry']> }).workRegistry = {
+    create: () => {
+      workCreates++;
+      return { workId: 'aw_should_not_exist', originChatId: 'parent-chat' };
+    },
+    complete: () => ({}),
+  };
+
+  const result = await spawnAgentTool.execute({ task: 'model check', model: 'not-a-known-model' }, ctx);
+
+  assert.equal(result.is_error, true);
+  assert.match(result.content, /model override/i);
+  assert.doesNotMatch(result.content, /Sub-agent spawned/);
+  assert.equal(workCreates, 0, 'does not create an async-work record');
+  assert.equal(captured.loopCalls, 0, 'does not invoke the sub-agent loop');
+  assert.equal(captured.ctx, null, 'does not claim a sub-agent context');
+  assert.equal(ctx.subAgentTracker.active, 0, 'does not increment the active sub-agent tracker');
 });
 
 test('spawn_agent passes no options when no model is requested', async () => {

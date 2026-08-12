@@ -12,6 +12,9 @@ import type { BrainOperationsClient } from './brain-operations/client.js';
 import type { OperationActivity } from './brain-operations/types.js';
 import type { RelationshipLedger } from './relationship-ledger.js';
 import type { MemoryObjectStore } from './memory-objects.js';
+import type { ModelAliases } from './model-resolution.js';
+import type { AsyncWorkRecord } from '../work/types.js';
+import type { WorkCancelOutcome } from '../work/cancel.js';
 import type {
   BridgeEvent,
   CodingIsolation,
@@ -66,6 +69,8 @@ export interface ToolContext {
   tempDir: string;
   contextManager: ContextManagerRef;
   subAgentTracker: SubAgentTracker;
+  /** Configured short names accepted by model-selecting tools. */
+  modelAliases?: ModelAliases;
   chatId: string;
   /** Actual channel/user turn data, set by the loop rather than tool input. */
   authenticatedUserMessage?: {
@@ -80,6 +85,8 @@ export interface ToolContext {
   telegramAdapter: TelegramAdapterRef | null;
   codingBridge?: CodingBridgeRef | null;
   workRegistry?: WorkRegistryRef | null;
+  /** In-process cancellation plumbing shared with /api/work; never HTTP/shell. */
+  requestWorkCancel?: (workId: string) => WorkCancelOutcome;
   /** Set when this context belongs to work spawned by another work item (nesting). */
   parentWorkId?: string;
   /** Terminal async-work hook installed by home.ts — runs the completion pipeline. */
@@ -137,6 +144,8 @@ export interface WorkRegistryRef {
     label: string;
     resultHandle: { type: 'coding_job'; jobId: string } | { type: 'subagent_chat'; chatId: string };
   }): { workId: string; originChatId: string };
+  get(workId: string): AsyncWorkRecord | undefined;
+  list(filter?: { originChatId?: string; active?: boolean; limit?: number }): AsyncWorkRecord[];
   complete(workId: string, status: 'completed' | 'failed' | 'cancelled' | 'interrupted', error?: string): unknown;
 }
 

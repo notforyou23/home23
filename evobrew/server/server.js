@@ -4645,6 +4645,22 @@ app.post('/api/setup/providers/ollama-cloud/test', async (req, res) => {
   }
 });
 
+// HOME23_MANAGED guard (Step 21 §2, implemented 2026-08-11): under Home23,
+// provider keys live in Home23's secrets.yaml and evobrew/config.json is
+// regenerated from it — a key saved through these routes would be silently
+// destroyed on the next `home23 start` or Settings save. Writes are refused;
+// reads (GET status/test) stay available so the UI can still show state.
+app.use('/api/setup/providers', (req, res, next) => {
+  if (process.env.HOME23_MANAGED === 'true' && (req.method === 'PUT' || req.method === 'DELETE')) {
+    return res.status(403).json({
+      success: false,
+      error: 'managed_by_home23',
+      message: 'Provider keys are managed by Home23 (Settings → Providers). Keys saved here would be destroyed on the next regeneration.',
+    });
+  }
+  return next();
+});
+
 app.put('/api/setup/providers/ollama-cloud', async (req, res) => {
   try {
     const apiKey = String(req.body?.apiKey || '').trim();

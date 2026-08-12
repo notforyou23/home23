@@ -11,8 +11,11 @@
  *   SEED_LOBE_MODEL     — model for SEED_LOBE=model (default claude-haiku-4-5)
  *   SEED_LOBE_EXCHANGE  — exchange dir for SEED_LOBE=file (required for it)
  *   SEED_LOBE_MIN_INTERVAL_MS — resident spend guard (default 600000 = 10 min)
- *   SEED_LOBE_TIMEOUT_MS — per-recruitment cap (default 30000; raise for
- *                          SEED_LOBE=file, where broker poll + model stack)
+ *   SEED_LOBE_TIMEOUT_MS — runner-side recruitment cap (default 60000 for
+ *                          model/echo, 190000 for file). The transport is set
+ *                          5-10s INSIDE this cap, so a timeout becomes an
+ *                          error receipt on the chain — never an orphaned
+ *                          call that completes unreceipted (and billed).
  *   SEED_POLL_MS        — poll interval (default 2000)
  *   SEED_RELATIONSHIP_SOURCE — relationship-ledger events JSONL (optional)
  *   SEED_WORKER_SOURCE  — worker-runs JSONL (optional)
@@ -47,8 +50,15 @@ const numEnv = (name: string): number | undefined => {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 };
 
+// Lobe timing invariant: the transport must give up BEFORE the runner's race
+// does, so a timeout is receipted by the transport's own error — not raced
+// past while the HTTP call runs on, orphaned and unreceipted. (Live defaults
+// used to invert this: runner 30s vs transport 45s.)
+const lobeKind = process.env['SEED_LOBE'];
+const lobeTimeoutMs = numEnv('SEED_LOBE_TIMEOUT_MS') ?? (lobeKind === 'file' ? 190_000 : 60_000);
+
 async function buildLobe(): Promise<LobeAdapter | undefined> {
-  const kind = process.env['SEED_LOBE'];
+  const kind = lobeKind;
   if (kind === 'echo') return new EchoLobe();
   if (kind === 'file') {
     // Credential-free hosts: requests go to an exchange dir; a broker on a
@@ -59,7 +69,8 @@ async function buildLobe(): Promise<LobeAdapter | undefined> {
       throw new Error('SEED_LOBE=file requires SEED_LOBE_EXCHANGE');
     }
     const { createFileLobeTransport } = await import('../src/lobe-file-transport.js');
-    return new ModelLobe('lobe.broker', 'via-broker', 'home23.broker', createFileLobeTransport(exchangeDir));
+    return new ModelLobe('lobe.broker', 'via-broker', 'home23.broker',
+      createFileLobeTransport(exchangeDir, { timeoutMs: Math.max(lobeTimeoutMs - 10_000, 30_000) }));
   }
   if (kind === 'model') {
     const model = process.env['SEED_LOBE_MODEL'] ?? 'claude-haiku-4-5';
@@ -68,12 +79,12 @@ async function buildLobe(): Promise<LobeAdapter | undefined> {
     // itself never links against it — this seam is the membrane's edge.
     const transportModulePath = new URL('../../src/substrate/lobe-transport.ts', import.meta.url).href;
     const mod = (await import(transportModulePath)) as {
-      createSeedLobeTransport: (opts: { model: string }) => (prompt: string) => Promise<{
+      createSeedLobeTransport: (opts: { model: string; timeoutMs?: number }) => (prompt: string) => Promise<{
         text: string;
         modelReceipt: { modelId: string; provider: string; invokedAt: string; durationMs: number; tokensIn: number; tokensOut: number };
       }>;
     };
-    const transport = mod.createSeedLobeTransport({ model });
+    const transport = mod.createSeedLobeTransport({ model, timeoutMs: Math.max(lobeTimeoutMs - 5_000, 5_000) });
     return new ModelLobe(`lobe.model.${model}`, model, 'home23.providers', (prompt) => transport(prompt));
   }
   return undefined;
@@ -107,6 +118,13 @@ async function main(): Promise<void> {
   if (memorySource !== undefined && memorySource !== '') {
     extraSources.push({ sourcePath: memorySource, sourceType: 'relationship-ledger', id: 'memory', backfillBytes: Math.max(extraBackfill, 65536) });
   }
+  // The individual's own dreams, receipted at birth (engine saveDream →
+  // dream-events.jsonl): head + content sha256 onto the chain — T1 prose
+  // provenance from the first word.
+  const dreamSource = process.env['SEED_DREAM_SOURCE'];
+  if (dreamSource !== undefined && dreamSource !== '') {
+    extraSources.push({ sourcePath: dreamSource, sourceType: 'dream-stream', id: 'dream', backfillBytes: extraBackfill });
+  }
 
   let anatomy;
   const rawAnatomy = process.env['SEED_ANATOMY'];
@@ -126,7 +144,7 @@ async function main(): Promise<void> {
     extraSources,
     lobe: await buildLobe(),
     lobeMinIntervalMs: numEnv('SEED_LOBE_MIN_INTERVAL_MS') ?? 600_000,
-    lobeTimeoutMs: numEnv('SEED_LOBE_TIMEOUT_MS'),
+    lobeTimeoutMs,
     log: (line) => console.log(`[seed] ${line}`),
   });
 

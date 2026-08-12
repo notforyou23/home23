@@ -1,4 +1,5 @@
 const os = require('os');
+const { resolveProviderKey, isAuthError } = require('../core/provider-credentials');
 
 function isOpenAIOAuthToken(token) {
   return (
@@ -18,18 +19,19 @@ function decodeJwtPayload(token) {
   }
 }
 
-function resolveCodexToken(config = {}) {
+function resolveCodexToken(config = {}, force = false) {
   config = config || {};
-  return process.env.OPENAI_CODEX_AUTH_TOKEN
-    || process.env.OPENAI_OAUTH_TOKEN
-    || config.providers?.['openai-codex']?.authToken
-    || config.providers?.['openai-codex']?.apiKey
-    || null;
+  // Read-at-use from secrets.yaml (the mirror target); configured value and
+  // OPENAI_CODEX_AUTH_TOKEN / OPENAI_OAUTH_TOKEN env stay as the floor.
+  // `force` drops the resolver cache — the auth-failure path.
+  const configured = config.providers?.['openai-codex']?.authToken
+    || config.providers?.['openai-codex']?.apiKey;
+  return resolveProviderKey('openai-codex', configured, force) || null;
 }
 
-function getOpenAICodexCredentials(config = {}) {
+function getOpenAICodexCredentials(config = {}, force = false) {
   config = config || {};
-  const token = resolveCodexToken(config);
+  const token = resolveCodexToken(config, force);
 
   if (!token) {
     throw new Error('No OpenAI Codex OAuth token configured. Refusing to use OPENAI_API_KEY for openai-codex.');
@@ -223,7 +225,21 @@ class OpenAICodexClient {
   }
 
   async generate(options = {}) {
-    const credentials = getOpenAICodexCredentials(this.config);
+    try {
+      return await this._generateAttempt(options, false);
+    } catch (error) {
+      // One force-fresh retry on auth failure: the token may have rotated in
+      // secrets.yaml after the last resolver read. Never loop.
+      if (!isAuthError(error)) throw error;
+      this.logger?.warn?.('[OpenAI-Codex] Auth failure — rereading credentials for one retry', {
+        error: error.message,
+      });
+      return await this._generateAttempt(options, true);
+    }
+  }
+
+  async _generateAttempt(options = {}, forceCredentials = false) {
+    const credentials = getOpenAICodexCredentials(this.config, forceCredentials);
     const model = options.model || this.config.providers?.['openai-codex']?.defaultModel || 'gpt-5.5';
     const tools = buildCodexTools(options.tools || []);
     const body = {

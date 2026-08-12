@@ -51,4 +51,40 @@ function mayDeferRestart(priorToken, nowMs, graceMs = 15 * 60 * 1000) {
   return expMs - nowMs > graceMs;
 }
 
-module.exports = { jwtExpMs, readCurrentSecretToken, mayDeferRestart };
+/**
+ * Which processes still have to be restarted for a rotated token to reach them.
+ *
+ * As of 2026-08-11: NONE. This returns an empty list, and that is the whole
+ * point — a routine token rotation no longer cycles any process in this house.
+ * The function is kept rather than deleted so the poller keeps one honest
+ * place to answer the question, and so a future consumer that genuinely
+ * cannot read-at-use has somewhere to declare itself.
+ *
+ * How each consumer got here:
+ *   - The ENGINE (dropped first). Credentials used to be distributed by value
+ *     into PM2 env at boot, so cycling the process was the only way to deliver
+ *     a new token. That trade was always bad: the engine owns saveState/
+ *     loadState, a shutdown racing a save has destroyed the brain before, and
+ *     a 30-minute timer was firing it. It now resolves at use from
+ *     config/secrets.yaml (engine/src/core/provider-credentials.js), rebuilds
+ *     its SDK clients on rotation, and spends one force-fresh retry on a 401.
+ *   - The HARNESS (dropped second). Its AgentLoop bound an Anthropic client in
+ *     the constructor and rebuilt it only on an explicit provider switch, so a
+ *     running harness genuinely could not see a new token. src/agent/loop.ts
+ *     now tracks the credential its client was built with, rebuilds per turn
+ *     when secrets.yaml rotates, and spends one force-fresh retry on an auth
+ *     failure — the same shape as the engine and text-generation.ts.
+ *
+ * Writing secrets.yaml IS the delivery. If this list ever grows again, the
+ * entry needs to say which consumer cannot read-at-use and why.
+ *
+ * Callers must still pass only processes PM2 reports online: this list feeds
+ * `pm2 restart --only`, and naming an offline app is what produced the
+ * 2026-08-07 orphan (a racing `pm2 start` against an in-flight restart left
+ * a duplicate alive on the bridge port).
+ */
+function rotationRestartTargets(_agentNames, _onlineNames) {
+  return [];
+}
+
+module.exports = { jwtExpMs, readCurrentSecretToken, mayDeferRestart, rotationRestartTargets };

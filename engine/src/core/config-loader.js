@@ -52,8 +52,17 @@ class ConfigLoader {
     // Otherwise a model listed in home.yaml under a provider that's not
     // enabled in base-engine silently slips through and the unified
     // client fails at call-time with "X provider not initialized".
+    //
+    // EXCEPT providers UnifiedClient routes at call time with no constructor
+    // gate. openai-codex is built lazily (getOpenAICodexGPT5Client) and never
+    // reads providers.*.enabled; openai is the GPT5Client base path. Gating
+    // those on a base-engine flag they never consult silently discarded
+    // jtr's codex engine roles from 2026-04-18 to 2026-08-11 — while chat,
+    // Query, and research ran codex the whole time through ungated paths.
+    const CALL_TIME_PROVIDERS = new Set(['openai-codex', 'openai']);
     const baseProviders = this.config.providers || {};
     const isProviderEnabled = (name) => {
+      if (CALL_TIME_PROVIDERS.has(name)) return true;
       const prov = baseProviders[name];
       return prov && prov.enabled === true;
     };
@@ -110,12 +119,25 @@ class ConfigLoader {
     if (typeof engineOverrides.consolidation === 'string' && engineOverrides.consolidation.trim()) {
       setModel('agents.synthesis', engineOverrides.consolidation.trim());
     }
-    // Note: `dreaming` and `query` are honored by the orchestrator and memory
-    // paths respectively; we do not rewrite modelAssignments for them here.
+    // `dreaming` drives the dream slot (2026-08-11 — the old comment claimed
+    // the orchestrator honored it; nothing did. Now this does.)
+    if (typeof engineOverrides.dreaming === 'string' && engineOverrides.dreaming.trim()) {
+      setModel('quantumReasoner.singleReasoning', engineOverrides.dreaming.trim());
+    }
+    // `query` was never engine-side: dashboard/query models are governed by
+    // the model authority (the agent's query: block). Settings no longer
+    // writes engine.query; a stale key here is ignored deliberately.
 
     if (applied.length) {
       // Stash for observability without requiring a logger dependency at load time.
       this.config._instanceOverridesApplied = applied;
+      // A silently-skipped override is a lying control (2026-08-11 audit:
+      // jerry's engine.* = gpt-5.6-luna was discarded for months with no
+      // signal). Skips get one loud aggregate warning at load.
+      const skipped = applied.filter((line) => line.includes('SKIPPED'));
+      if (skipped.length) {
+        console.warn(`[config] ${skipped.length} instance engine override(s) NOT applied — model not resolvable to an enabled base-engine provider:\n  ${skipped.join('\n  ')}`);
+      }
     }
   }
 

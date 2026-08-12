@@ -25,7 +25,11 @@ export type EventCategory =
   | 'silence'
   | 'lobe'
   // Cut 3: receipted developmental deltas (plasticity, consolidation, ablation).
-  | 'development';
+  | 'development'
+  // Cut 6: receipted concern events — commitment formation, obligation
+  // crossings (endogenous occasions), discharge, expiry. Concern is normative
+  // state (`c` in the canonical tuple), never development and never prose.
+  | 'concern';
 
 export type SourceAuthority =
   | 'home23.engine'
@@ -251,6 +255,10 @@ export interface CheckpointManifest {
    * (same trust tier as ledgerSeq/cursor); older manifests fall back to
    * createdAt. */
   seedLastTransitionAt?: string;
+  /** Cut 6 (manifest version >= 3): concern — the normative state `c`.
+   * Shape owned by concern.ts; stored verbatim, inside the state hash for
+   * v3 manifests. Absent/empty on every pre-Cut-6 seed (v2 hash unchanged). */
+  concern?: Record<string, unknown>;
 }
 
 export interface CheckpointIndex {
@@ -277,6 +285,10 @@ export type Capability =
   | 'local.resource.account'
   // Cut 2 allowed: recruit an approved model lobe through injected transport
   | 'lobe.recruit.model'
+  // Cut 6 allowed: the ONE safe affordance — reach the operator (jtr) through
+  // the designated outbox channel. Narrow by construction: this is the owner's
+  // own channel, never the network (net.message.external stays forbidden).
+  | 'operator.reach'
   // Forbidden — developmental authority not granted in Cut 1
   | 'home23.engine.modify'
   | 'home23.config.modify'
@@ -332,7 +344,7 @@ export const DEFAULT_RESOURCE_BUDGET: ResourceBudget = {
   maxLedgerBytes: 50 * 1024 * 1024,   // 50MB
   maxEventCount: 100_000,
   maxTransitionCount: 50_000,
-  maxCheckpointCount: 100,
+  maxCheckpointCount: 100_000,
 };
 
 // ─── Source Events & Transitions ─────────────────────────────────────────────
@@ -423,6 +435,22 @@ export interface WorkspacePacket {
    * Same typed-delta contract; only the OCCASION differs, and the prompt
    * says so. Rides the lobe receipt so the chain shows its dreams. */
   dream?: { quietSeconds: number };
+  /** concern.v1 (Cut 6): set when this recruitment is an ENDOGENOUS OCCASION —
+   * an obligation's own dynamics crossed threshold. The deliberation packet:
+   * what became salient and why, never what to think. Rides the lobe receipt
+   * so the chain shows which thoughts the individual originated itself. */
+  occasion?: {
+    commitmentId: string;
+    predictionId: string;
+    claim: string;
+    horizon: string;
+    /** Computed crossing event-time (effectiveAt) — may predate wall time
+     * when the crossing is overdue after an outage. */
+    crossedAt: string;
+    q: number;
+    crossings: number;
+    overdue: boolean;
+  };
 }
 
 export interface ProposedObservation { cellId: string; claim: string; confidence: number; evidenceRef: string; }

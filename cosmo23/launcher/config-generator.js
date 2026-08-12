@@ -281,7 +281,10 @@ class ConfigGenerator {
         '  minimax:',
         '    enabled: true',
         '    baseURL: "https://api.minimax.io/anthropic"',
-        `    apiKey: "${minimax_api_key}"`,
+        // No apiKey on disk (2026-08-11): the engine falls back to
+        // MINIMAX_API_KEY from the inherited environment (unified-client.js),
+        // same as the openai provider. Run dirs are feeder-watched trees —
+        // credentials must never be written into them.
         '    supportsTools: true',
         '    supportsStreaming: true'
       ].join('\n') : null,
@@ -306,7 +309,8 @@ class ConfigGenerator {
         '  ollama-cloud:',
         '    enabled: true',
         '    baseURL: "https://ollama.com/v1"',
-        `    apiKey: "${ollama_cloud_api_key}"`,
+        // No apiKey on disk (2026-08-11): OLLAMA_CLOUD_API_KEY env fallback
+        // in unified-client.js covers it. See minimax note above.
         '    supportsTools: true',
         '    supportsStreaming: true'
       ].join('\n') : null,

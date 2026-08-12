@@ -12,7 +12,8 @@ function clearClientModules() {
     if (key.includes('/engine/src/core/unified-client.js')
       || key.includes('/engine/src/core/gpt5-client.js')
       || key.includes('/engine/src/core/openai-client.js')
-      || key.includes('/engine/src/services/openai-codex-oauth-engine.js')) {
+      || key.includes('/engine/src/services/openai-codex-oauth-engine.js')
+      || key.includes('/engine/src/core/provider-credentials.js')) {
       delete require.cache[key];
     }
   }
@@ -27,6 +28,9 @@ test('UnifiedClient routes openai-codex assignments through OAuth, not OPENAI_AP
     const token = futureJwt();
     delete process.env.OPENAI_API_KEY;
     process.env.OPENAI_CODEX_AUTH_TOKEN = token;
+    // Isolate from the developer's real config/secrets.yaml: this test
+    // exercises the env floor, so the resolver must find no secrets file.
+    process.env.HOME23_SECRETS_PATH = '/nonexistent/home23-test-secrets.yaml';
     global.fetch = async (url, options = {}) => {
       captured = {
         url,

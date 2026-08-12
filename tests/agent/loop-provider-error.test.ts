@@ -135,9 +135,46 @@ test('unknown fallback provider errors produce terminal error envelopes', async 
   }
 });
 
-test('AgentLoop treats provider-prefixed Claude Opus 4.8 as sampling-deprecated', () => {
-  const source = readFileSync(join(process.cwd(), 'src/agent/loop.ts'), 'utf-8');
+function captureAnthropicRequest(agent: AgentLoop): { request: Record<string, unknown> | null } {
+  const captured: { request: Record<string, unknown> | null } = { request: null };
+  (agent as any).client = {
+    messages: {
+      stream(request: Record<string, unknown>) {
+        captured.request = request;
+        return {
+          async *[Symbol.asyncIterator]() {},
+          async finalMessage() {
+            return {
+              id: 'msg_replay', type: 'message', role: 'assistant', model: agent.getModel(),
+              content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', stop_sequence: null,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            };
+          },
+        };
+      },
+    },
+  };
+  return captured;
+}
 
-  assert.match(source, /function isAnthropicSamplingDeprecatedModel/);
-  assert.match(source, /\(\?:\[\^\/\]\+\\\/\)\?claude-opus-4-8/);
+async function assertDeprecatedSamplingOmitted(model: string): Promise<void> {
+  const root = join(tmpdir(), `loop-sampling-deprecated-${Date.now()}-${model.replaceAll('/', '_')}`);
+  try {
+    const agent = makeAgent(root, { model, provider: 'anthropic' });
+    const captured = captureAnthropicRequest(agent);
+    const { response } = await agent.runWithTurn(`chat-${model}`, 'reply briefly');
+    assert.equal((await response).text, 'ok');
+    assert.ok(captured.request);
+    assert.equal(Object.hasOwn(captured.request, 'temperature'), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test('AgentLoop omits deprecated sampling parameters for provider-prefixed Claude Opus 4.8', async () => {
+  await assertDeprecatedSamplingOmitted('anthropic/claude-opus-4-8');
+});
+
+test('AgentLoop omits deprecated sampling parameters for Jerry configured Claude Sonnet 5', async () => {
+  await assertDeprecatedSamplingOmitted('claude-sonnet-5');
 });

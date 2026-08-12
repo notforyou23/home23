@@ -23,7 +23,7 @@
  */
 
 import { readFileSync, writeFileSync, appendFileSync, readdirSync, statSync, openSync, readSync, closeSync, existsSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { fetchRawEmbedding } from '../src/embed-fetch.js';
 import { join, basename } from 'node:path';
 import { projectEmbedding, EMBED_DIM } from '../src/semantic-projection.js';
 
@@ -52,16 +52,10 @@ function saveCursor(cursor: Record<string, number>): void {
 function embedTurn(text: string): number[] | null {
   const trimmed = text.trim();
   if (trimmed.length < 8) return null;
-  try {
-    const body = JSON.stringify({ model: 'nomic-embed-text', prompt: trimmed.slice(0, 1000) });
-    // Bounded synchronous call to the local embedder (writer-side perception).
-    const raw = execFileSync('curl', ['-s', '-m', '2', 'http://127.0.0.1:11434/api/embeddings', '-d', body], { encoding: 'utf-8', timeout: 2500 });
-    const parsed = JSON.parse(raw) as { embedding?: number[] };
-    if (!Array.isArray(parsed.embedding) || parsed.embedding.length !== EMBED_DIM) return null;
-    return projectEmbedding(parsed.embedding);
-  } catch {
-    return null;
-  }
+  // Bounded synchronous call to the local embedder (writer-side perception)
+  // — single fetch implementation in substrate/src/embed-fetch.ts.
+  const raw = fetchRawEmbedding(trimmed, EMBED_DIM);
+  return raw === null ? null : projectEmbedding(raw);
 }
 
 function pass(cursor: Record<string, number>): number {

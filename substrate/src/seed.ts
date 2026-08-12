@@ -67,8 +67,26 @@ import {
   QUIET_GAP_SECONDS,
 } from './plasticity.js';
 import type { LobeAdapter, ValidatedLobeResult, RejectedProposal } from './lobe.js';
-import { validateLobeResult, applyLobeDeltas } from './lobe.js';
+import { validateLobeResult, applyLobeDeltas, predictionIdFor } from './lobe.js';
 import type { WorkspacePacket, ProposedStateDelta } from './types.js';
+import type { ConcernState, Commitment, FormationInput, DueCrossing } from './concern.js';
+import {
+  emptyConcern,
+  cloneConcern,
+  applyFormation,
+  applyResolutionDischarge,
+  discharge as dischargeCommitment,
+  obligationAt,
+  dueCrossings,
+  dueExpiries,
+  openCommitments,
+  OBLIGATION_THETA,
+  REACH_COOLDOWN_SECONDS,
+} from './concern.js';
+
+/** Workspace pressure a crossing stages onto its cell — the obligation
+ * seizing the stage is what a crossing IS. Law constant. */
+export const OCCASION_PRESSURE = 0.85;
 
 // ─── Default dispositions ─────────────────────────────────────────────────────
 
@@ -98,6 +116,9 @@ export class SeedProcess {
    * passing the persistence gates may self-apply under the covenant. */
   private readonly selfFormation: boolean;
   private development: DevelopmentalState;
+  /** Cut 6: the normative state `c`. Seed-owned; lobes cannot write it;
+   * changes only through receipted concern.v1 rules. */
+  private concern: ConcernState;
   private dispositions: SeedDispositions;
   private readonly stateDir: string;
   private readonly seedId: string;
@@ -116,6 +137,7 @@ export class SeedProcess {
     reservoir: Reservoir;
     anatomy: readonly AnatomyCellSpec[];
     development: DevelopmentalState;
+    concern?: ConcernState;
     dispositions: SeedDispositions;
     ledger: SeedLedger;
     checkpoints: CheckpointManager;
@@ -135,6 +157,7 @@ export class SeedProcess {
     this.routing = routingFromAnatomy(opts.anatomy);
     this.selfFormation = opts.selfFormation ?? false;
     this.development = opts.development;
+    this.concern = opts.concern ?? emptyConcern();
     this.dispositions = opts.dispositions;
     this.ledger = opts.ledger;
     this.checkpoints = opts.checkpoints;
@@ -304,6 +327,11 @@ export class SeedProcess {
       development: manifest.version >= 2
         ? normalizeDevelopment((manifest.development ?? {}) as DevelopmentalState)
         : emptyDevelopment(),
+      // v2 manifests predate concern — a pre-Cut-6 seed resumes with empty
+      // concern; its first commitment forms from its own next prediction.
+      concern: manifest.version >= 3
+        ? ((manifest.concern ?? {}) as ConcernState)
+        : emptyConcern(),
       dispositions: manifest.dispositions,
       ledger,
       checkpoints,
@@ -717,12 +745,29 @@ export class SeedProcess {
    * triggering event's producedAt) — recorded in the receipt, never taken from
    * the wall clock, so replayed workspace cycles are reproducible.
    */
+  /** dream.v1: read the pending dream WITHOUT consuming it. The runner peeks
+   * to build the waking packet and consumes only after the recruitment
+   * actually carried the dream (or silence dissolved it deliberately) — a
+   * lobe FAILURE must leave the dream pending. (Deferral-consumption lost
+   * nine of bobby's dreams on 2026-08-10; failure-consumption was the same
+   * bug one branch over, fixed 2026-08-11.) */
+  peekPendingDream(): { quietSeconds: number } | null {
+    return this._pendingDream;
+  }
+
   /** dream.v1: the pending dream, consumed exactly once. Null when the
    * seed has not just woken from an event-time quiet gap. */
   consumePendingDream(): { quietSeconds: number } | null {
     const dream = this._pendingDream;
     this._pendingDream = null;
     return dream;
+  }
+
+  /** dream.v1: is a dream waiting? (Bobby's first night, 2026-08-10: nine
+   * dreams were lost because deferral CONSUMED them — the runner must peek
+   * before the spend guard, and consume only when it can actually dream.) */
+  hasPendingDream(): boolean {
+    return this._pendingDream !== null;
   }
 
   workspaceCycle(asOf: string): WorkspaceOutcome {
@@ -906,6 +951,10 @@ export class SeedProcess {
     rejected: RejectedProposal[];
     validated?: ValidatedLobeResult;
     error?: string;
+    /** Cut 6: set when a reach-operator proposal was WARRANTED by Seed law —
+     * the runner (embodiment) dispatches it to the outbox and receipts the
+     * dispatch. Authorization is already on the chain. */
+    motorAuthorized?: { actSeq: number; commitmentId: string; message: string; idempotencyKey: string };
   }> {
     this.membrane.assert('lobe.recruit.model');
     this.membrane.assert('local.state.write');
@@ -1003,7 +1052,364 @@ export class SeedProcess {
       this.accounting.setLedgerBytes(this.ledger.bytes);
     }
 
-    return { seq: record.seq, applied, rejected, validated };
+    // concern.v1 (Cut 6): the Seed's OWN rules over what its cognition just
+    // committed. A lobe proposed predictions/resolutions; the COMMITMENTS are
+    // the Seed's act — formation from applied predictions.append (a committed
+    // prediction with a real horizon is a debt made causal), discharge from
+    // applied predictions.resolve. One 'concern' receipt when anything moved.
+    {
+      const stagedConcern = cloneConcern(this.concern);
+      const formationInputs: FormationInput[] = [];
+      const dischargeSummaries: Array<Record<string, unknown>> = [];
+      for (const delta of applied) {
+        if (delta.field === 'predictions.append') {
+          const body = delta.delta as { claim?: unknown; confidence?: unknown; horizon?: unknown };
+          if (typeof body?.claim !== 'string' || typeof body?.confidence !== 'number' || typeof body?.horizon !== 'string') continue;
+          formationInputs.push({
+            cellId: delta.cellId,
+            predictionId: predictionIdFor(delta.cellId, body.claim),
+            claim: body.claim,
+            confidence: body.confidence,
+            horizon: body.horizon,
+            createdAt: asOf,
+          });
+        } else if (delta.field === 'predictions.resolve') {
+          const body = delta.delta as { predictionId?: unknown; error?: unknown };
+          if (typeof body?.predictionId !== 'string') continue;
+          const discharged = applyResolutionDischarge(
+            stagedConcern,
+            body.predictionId,
+            typeof body.error === 'number' ? Math.max(0, Math.min(1, body.error)) : undefined,
+            asOf,
+          );
+          for (const d of discharged) dischargeSummaries.push({ ...d });
+        }
+      }
+      const { formed, skipped } = formationInputs.length > 0
+        ? applyFormation(stagedConcern, formationInputs, this.ledger.currentSeq + 1)
+        : { formed: [], skipped: [] };
+      if (formed.length > 0 || dischargeSummaries.length > 0) {
+        this.commitReceipted(new Map(), {
+          category: 'concern',
+          sourceAuthority: 'seed.internal',
+          sourceRef: this.seedId,
+          payload: {
+            rule: 'concern.v1',
+            asOf,
+            lobeSeq: record.seq,
+            formed: formed.map((c) => ({
+              commitmentId: c.commitmentId, predictionId: c.predictionId,
+              claim: c.claim, dueAt: c.dueAt, cellId: c.cellId,
+            })),
+            skipped,
+            discharged: dischargeSummaries,
+            openCommitments: openCommitments(stagedConcern).length,
+          },
+        }, undefined, stagedConcern);
+        this._eventCount++;
+        this.accounting.recordEvent();
+        this.accounting.setLedgerBytes(this.ledger.bytes);
+      }
+    }
+
+    // Cut 6 motor: a reach-operator PROPOSAL becomes an authorized act only
+    // through Seed law — never because the lobe proposed it. Warrant checks
+    // are deterministic; both outcomes are receipted.
+    let motorAuthorized: { actSeq: number; commitmentId: string; message: string; idempotencyKey: string } | undefined;
+    const proposal = packet.occasion !== undefined ? validated.accepted.actions[0] : undefined;
+    if (packet.occasion !== undefined && proposal !== undefined) {
+      const outcome = this.warrantReach(packet.occasion.commitmentId, proposal.description, asOf, record.seq);
+      if (outcome.authorized) {
+        motorAuthorized = {
+          actSeq: outcome.actSeq,
+          commitmentId: packet.occasion.commitmentId,
+          message: proposal.description,
+          idempotencyKey: outcome.idempotencyKey,
+        };
+      }
+    }
+
+    return { seq: record.seq, applied, rejected, validated, ...(motorAuthorized !== undefined ? { motorAuthorized } : {}) };
+  }
+
+  /**
+   * The warrant law (Cut 6). A reach-operator action is authorized iff:
+   *   (a) the occasion's commitment exists and is still open;
+   *   (b) its obligation is still at/above threshold at asOf (materialized
+   *       analytically — the pressure is real NOW, not historical);
+   *   (c) no prior authorized reach exists for this commitment (idempotent:
+   *       one reach per commitment, ever — jtr is not a retry queue);
+   *   (d) the seed-level reach cooldown has elapsed (event-time) since the
+   *       last authorized reach — the one affordance has a resource ceiling.
+   * Both authorization and refusal are receipted 'act' records.
+   */
+  private warrantReach(
+    commitmentId: string,
+    message: string,
+    asOf: string,
+    lobeSeq: number,
+  ): { authorized: true; actSeq: number; idempotencyKey: string } | { authorized: false; reason: string } {
+    this.membrane.assert('operator.reach');
+    const refuse = (reason: string): { authorized: false; reason: string } => {
+      this.commitReceipted(new Map(), {
+        category: 'act',
+        sourceAuthority: 'seed.internal',
+        sourceRef: 'concern.motor',
+        payload: { motor: true, authorized: false, commitmentId, reason, asOf, lobeSeq },
+      });
+      this._eventCount++;
+      this.accounting.recordEvent();
+      this.accounting.setLedgerBytes(this.ledger.bytes);
+      return { authorized: false, reason };
+    };
+
+    const commitment = this.concern[commitmentId];
+    if (commitment === undefined || commitment.status !== 'open') {
+      return refuse('commitment not open');
+    }
+    if (obligationAt(commitment, asOf) < OBLIGATION_THETA) {
+      return refuse('obligation below threshold at deliberation');
+    }
+    let lastReachAt: string | null = null;
+    for (const rec of this.ledger.readAll()) {
+      if (rec.category !== 'act' || rec.payload?.['motor'] !== true || rec.payload?.['authorized'] !== true) continue;
+      if (rec.payload?.['commitmentId'] === commitmentId) {
+        return refuse('already reached for this commitment');
+      }
+      const at = rec.payload?.['asOf'];
+      if (typeof at === 'string') lastReachAt = at;
+    }
+    if (lastReachAt !== null) {
+      const elapsed = (Date.parse(asOf) - Date.parse(lastReachAt)) / 1000;
+      if (Number.isFinite(elapsed) && elapsed < REACH_COOLDOWN_SECONDS) {
+        return refuse(`reach cooldown (${Math.round((REACH_COOLDOWN_SECONDS - elapsed) / 60)}min remaining)`);
+      }
+    }
+    const idempotencyKey = `reach_${commitmentId}`;
+    const { record } = this.commitReceipted(new Map(), {
+      category: 'act',
+      sourceAuthority: 'seed.internal',
+      sourceRef: 'concern.motor',
+      payload: {
+        motor: true,
+        authorized: true,
+        kind: 'reach-operator',
+        commitmentId,
+        message: message.slice(0, 500),
+        idempotencyKey,
+        asOf,
+        lobeSeq,
+      },
+    });
+    this._eventCount++;
+    this.accounting.recordEvent();
+    this.accounting.setLedgerBytes(this.ledger.bytes);
+    return { authorized: true, actSeq: record.seq, idempotencyKey };
+  }
+
+  // ─── Cut 6: the solver surface ─────────────────────────────────────────────
+
+  /** A COPY of the concern state (inspection; observatory; tests). */
+  getConcern(): Readonly<ConcernState> {
+    this.membrane.assert('local.state.read');
+    return structuredClone(this.concern);
+  }
+
+  /** Commitments whose solved crossing time has arrived — deterministicMin
+   * order (crossing time, then commitmentId). The runner materializes at
+   * most one per guard opening. */
+  dueObligationCrossings(nowISO: string): DueCrossing[] {
+    this.membrane.assert('local.state.read');
+    return dueCrossings(this.concern, nowISO);
+  }
+
+  /** Commitments whose let-go time has arrived (pressed MAX_CROSSINGS times,
+   * unanswered, refractory elapsed). */
+  dueObligationExpiries(nowISO: string): Array<{ commitment: Commitment; at: string }> {
+    this.membrane.assert('local.state.read');
+    return dueExpiries(this.concern, nowISO);
+  }
+
+  /**
+   * Materialize an obligation crossing: the endogenous occasion. Receipted as
+   * a 'concern' record whose effectiveAt is the SOLVED crossing time (which
+   * may predate the wall clock — overdue occasions are honest about it), with
+   * the commitment re-anchored (crossings+1, q at the crossed value) and the
+   * commitment's cell staged with OCCASION_PRESSURE — the obligation seizing
+   * the stage is what a crossing IS, and admission is then earned through the
+   * ordinary workspace, not bypassed.
+   *
+   * Returns the occasion payload for the deliberation packet, or null when
+   * the commitment is not actually due (guard against stale runner views).
+   */
+  crossObligation(commitmentId: string, nowISO: string): WorkspacePacket['occasion'] | null {
+    this.membrane.assert('local.state.write');
+    this.membrane.assert('local.ledger.append');
+    const due = dueCrossings(this.concern, nowISO).find((d) => d.commitment.commitmentId === commitmentId);
+    if (due === undefined) return null;
+
+    const stagedConcern = cloneConcern(this.concern);
+    const staged = stagedConcern[commitmentId];
+    if (staged === undefined) return null;
+    const q = Math.max(OBLIGATION_THETA, obligationAt(staged, due.at));
+    staged.crossings += 1;
+    staged.lastCrossingAt = due.at;
+    staged.qAnchor = q;
+    staged.anchorAt = due.at;
+
+    const stagedCells = new Map<string, SituationCell>();
+    const cell = this.cells.get(staged.cellId);
+    if (cell !== undefined) {
+      const clone = cloneCell(cell);
+      clone.workspacePressure = Math.max(clone.workspacePressure, OCCASION_PRESSURE);
+      stagedCells.set(staged.cellId, clone);
+    }
+
+    this.commitReceipted(stagedCells, {
+      category: 'concern',
+      sourceAuthority: 'seed.internal',
+      sourceRef: 'concern.crossing',
+      payload: {
+        crossing: true,
+        commitmentId,
+        predictionId: staged.predictionId,
+        claim: staged.claim,
+        cellId: staged.cellId,
+        effectiveAt: due.at,
+        q,
+        crossings: staged.crossings,
+        overdue: due.overdue,
+      },
+    }, undefined, stagedConcern);
+    this._eventCount++;
+    this.accounting.recordEvent();
+    this.accounting.setLedgerBytes(this.ledger.bytes);
+
+    return {
+      commitmentId,
+      predictionId: staged.predictionId,
+      claim: staged.claim,
+      horizon: staged.dueAt,
+      crossedAt: due.at,
+      q,
+      crossings: staged.crossings - 1,
+      overdue: due.overdue,
+    };
+  }
+
+  /** Let go of a commitment that pressed MAX_CROSSINGS times unanswered —
+   * receipted expiry at its solved let-go time. */
+  expireObligation(commitmentId: string, atISO: string): boolean {
+    this.membrane.assert('local.state.write');
+    this.membrane.assert('local.ledger.append');
+    const stagedConcern = cloneConcern(this.concern);
+    const summary = dischargeCommitment(stagedConcern, commitmentId, 'expired', 'pressed unanswered — released', atISO);
+    if (summary === null) return false;
+    this.commitReceipted(new Map(), {
+      category: 'concern',
+      sourceAuthority: 'seed.internal',
+      sourceRef: 'concern.expiry',
+      payload: { rule: 'concern.v1', effectiveAt: atISO, ...summary },
+    }, undefined, stagedConcern);
+    this._eventCount++;
+    this.accounting.recordEvent();
+    this.accounting.setLedgerBytes(this.ledger.bytes);
+    return true;
+  }
+
+  /**
+   * Sweep: commitments whose prediction no longer exists unresolved in its
+   * cell (the 32-per-cell prediction window evicted it) discharge as expired —
+   * an obligation to resolve a prediction that cannot be resolved is an
+   * immortal source of pressure, refused by law. Receipted per commitment.
+   */
+  sweepEvictedCommitments(asOf: string): number {
+    this.membrane.assert('local.state.write');
+    let swept = 0;
+    for (const c of openCommitments(this.concern)) {
+      const cell = this.cells.get(c.cellId);
+      const stillThere = cell?.predictions.some((p) => p.predictionId === c.predictionId && p.resolvedAt === undefined) ?? false;
+      if (stillThere) continue;
+      const stagedConcern = cloneConcern(this.concern);
+      const summary = dischargeCommitment(stagedConcern, c.commitmentId, 'expired', 'prediction evicted or gone from cell', asOf);
+      if (summary === null) continue;
+      this.commitReceipted(new Map(), {
+        category: 'concern',
+        sourceAuthority: 'seed.internal',
+        sourceRef: 'concern.sweep',
+        payload: { rule: 'concern.v1', effectiveAt: asOf, ...summary },
+      }, undefined, stagedConcern);
+      this._eventCount++;
+      this.accounting.recordEvent();
+      this.accounting.setLedgerBytes(this.ledger.bytes);
+      swept++;
+    }
+    return swept;
+  }
+
+  /** Transactional motor, dispatch half: the runner receipts the outbox write.
+   * Idempotent per (authorizedSeq): a dispatch already receipted is a no-op. */
+  recordMotorDispatch(authorizedSeq: number, idempotencyKey: string): number | null {
+    this.membrane.assert('local.ledger.append');
+    for (const rec of this.ledger.readAll()) {
+      if (rec.category === 'act' && rec.payload?.['motor'] === true
+          && rec.payload?.['dispatched'] === true && rec.payload?.['authorizedSeq'] === authorizedSeq) {
+        return null;
+      }
+    }
+    const { record } = this.commitReceipted(new Map(), {
+      category: 'act',
+      sourceAuthority: 'seed.internal',
+      sourceRef: 'concern.motor',
+      payload: { motor: true, dispatched: true, authorizedSeq, idempotencyKey },
+    });
+    this._eventCount++;
+    this.accounting.recordEvent();
+    this.accounting.setLedgerBytes(this.ledger.bytes);
+    return record.seq;
+  }
+
+  /** Boot reconcile: authorized reaches with no dispatch receipt — the crash
+   * window between authorization and outbox write. The runner re-drives each
+   * (idempotently, by key) and receipts the dispatch. */
+  pendingMotorDispatches(): Array<{ actSeq: number; commitmentId: string; message: string; idempotencyKey: string }> {
+    this.membrane.assert('local.state.read');
+    const authorized = new Map<number, { actSeq: number; commitmentId: string; message: string; idempotencyKey: string }>();
+    const dispatched = new Set<number>();
+    for (const rec of this.ledger.readAll()) {
+      if (rec.category !== 'act' || rec.payload?.['motor'] !== true) continue;
+      if (rec.payload?.['authorized'] === true) {
+        const commitmentId = rec.payload?.['commitmentId'];
+        const message = rec.payload?.['message'];
+        const idempotencyKey = rec.payload?.['idempotencyKey'];
+        if (typeof commitmentId === 'string' && typeof message === 'string' && typeof idempotencyKey === 'string') {
+          authorized.set(rec.seq, { actSeq: rec.seq, commitmentId, message, idempotencyKey });
+        }
+      } else if (rec.payload?.['dispatched'] === true) {
+        const seq = rec.payload?.['authorizedSeq'];
+        if (typeof seq === 'number') dispatched.add(seq);
+      }
+    }
+    return Array.from(authorized.values()).filter((a) => !dispatched.has(a.actSeq));
+  }
+
+  /** Operator authority over concern: jtr may discharge any commitment
+   * (cancellation authority is constitutionally his). Receipted. */
+  recordOperatorDischarge(commitmentId: string, authorizedBy: string, reason: string): boolean {
+    this.membrane.assert('local.ledger.append');
+    const stagedConcern = cloneConcern(this.concern);
+    const summary = dischargeCommitment(stagedConcern, commitmentId, 'abandoned', `operator: ${reason}`, this.lastTransitionAt);
+    if (summary === null) return false;
+    this.commitReceipted(new Map(), {
+      category: 'concern',
+      sourceAuthority: 'seed.internal',
+      sourceRef: 'concern.operator-discharge',
+      payload: { rule: 'concern.v1', authorizedBy, ...summary },
+    }, undefined, stagedConcern);
+    this._eventCount++;
+    this.accounting.recordEvent();
+    this.accounting.setLedgerBytes(this.ledger.bytes);
+    return true;
   }
 
   /**
@@ -1026,6 +1432,7 @@ export class SeedProcess {
       dispositions: this.dispositions,
       resourceSnapshot,
       development: cloneDevelopment(this.development) as unknown as Record<string, unknown>,
+      concern: cloneConcern(this.concern) as unknown as Record<string, unknown>,
       seedLastTransitionAt: this.lastTransitionAt,
     });
 
@@ -1116,6 +1523,12 @@ export class SeedProcess {
       cells: serializedCells,
       dispositions: this.dispositions,
       development: this.development as unknown as Record<string, unknown>,
+      // Cut 6: concern enters the hash ONLY once non-empty — every pre-Cut-6
+      // seed's hashes are byte-identical until its first commitment forms
+      // (matching the checkpoint's v2/v3 recompute split).
+      ...(Object.keys(this.concern).length > 0
+        ? { concern: this.concern as unknown as Record<string, unknown> }
+        : {}),
     });
   }
 
@@ -1125,14 +1538,19 @@ export class SeedProcess {
   private computeStateHashWithMany(
     replacements: Map<string, SituationCell>,
     stagedDevelopment?: DevelopmentalState,
+    stagedConcern?: ConcernState,
   ): string {
     const serializedCells = Array.from(this.cells.entries()).map(([id, c]) =>
       serializeCell(replacements.get(id) ?? c),
     );
+    const concern = stagedConcern ?? this.concern;
     return computeStateHash({
       cells: serializedCells,
       dispositions: this.dispositions,
       development: (stagedDevelopment ?? this.development) as unknown as Record<string, unknown>,
+      ...(Object.keys(concern).length > 0
+        ? { concern: concern as unknown as Record<string, unknown> }
+        : {}),
     });
   }
 
@@ -1151,9 +1569,10 @@ export class SeedProcess {
       payload: Record<string, unknown>;
     },
     stagedDevelopment?: DevelopmentalState,
+    stagedConcern?: ConcernState,
   ): { record: LedgerRecord; stateHashBefore: string; stateHashAfter: string } {
     const stateHashBefore = this.computeCurrentStateHash();
-    const stateHashAfter = this.computeStateHashWithMany(staged, stagedDevelopment);
+    const stateHashAfter = this.computeStateHashWithMany(staged, stagedDevelopment, stagedConcern);
     const rec = this.ledger.append({
       category: record.category,
       sourceAuthority: record.sourceAuthority,
@@ -1164,6 +1583,7 @@ export class SeedProcess {
     });
     for (const [id, cell] of staged) this.cells.set(id, cell);
     if (stagedDevelopment !== undefined) this.development = stagedDevelopment;
+    if (stagedConcern !== undefined) this.concern = stagedConcern;
     return { record: rec, stateHashBefore, stateHashAfter };
   }
 }

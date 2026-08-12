@@ -72,7 +72,7 @@ test('agent create records fresh onboarding purpose, imports, and primary agent'
       `${starter}, ${claudeExport}`,
       '',
       'America/New_York',
-      'kimi-k2.6',
+      'kimi-k3:cloud',
       'ollama-cloud',
     ];
 
@@ -88,9 +88,9 @@ test('agent create records fresh onboarding purpose, imports, and primary agent'
     assert.deepEqual(agentConfig.agent.owner.facts, ['Prefers direct evidence before claims.', 'Works across active project folders.']);
     assert.equal(agentConfig.ports.bridge, 5004);
     assert.equal(agentConfig.chat.defaultProvider, 'ollama-cloud');
-    assert.equal(agentConfig.chat.defaultModel, 'kimi-k2.6');
+    assert.equal(agentConfig.chat.defaultModel, 'kimi-k3:cloud');
     assert.equal(agentConfig.engine.thought, 'MiniMax-M3');
-    assert.equal(agentConfig.engine.query, 'MiniMax-M3');
+    assert.equal(agentConfig.engine.query, undefined, 'engine.query is retired — creation must not seed it');
     assert.equal(agentConfig.chat.memorySearch.enabled, true);
 
     const watchPaths = agentConfig.feeder.additionalWatchPaths.map((entry) => entry.path);

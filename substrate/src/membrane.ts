@@ -26,6 +26,11 @@ const ALLOWED: ReadonlySet<Capability> = new Set<Capability>([
   // uses Home23's existing provider contracts. The substrate holds no
   // credentials (secret.read stays forbidden) and knows no endpoints.
   'lobe.recruit.model',
+  // Cut 6: the ONE safe affordance — reach the operator through the outbox.
+  // The owner's own channel; never the network. Warranted by Seed law
+  // (obligation still pressurized, no undischarged prior reach, cooldown),
+  // never by the lobe proposing it.
+  'operator.reach',
 ]);
 
 const FORBIDDEN: ReadonlySet<Capability> = new Set<Capability>([

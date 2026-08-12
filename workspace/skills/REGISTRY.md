@@ -1,6 +1,6 @@
 # Skills Registry
 
-Generated from live skill discovery. Total: 18 skills.
+Generated from live skill discovery. Total: 19 skills.
 
 ## autoresearch
 
@@ -163,6 +163,24 @@ Generated from live skill discovery. Total: 18 skills.
 - **Requires tools:** none
 - **Composes:** minimax-music-gen
 - **Depends on:** none
+
+## shakedown-feature-forge
+
+- **ID:** `shakedown-feature-forge`
+- **Type:** rich
+- **Runtime:** docs
+- **Category:** research
+- **Operational:** no
+- **Has SKILL.md:** yes
+- **Has manifest:** yes
+- **Has scripts:** no
+- **Hooks:** none
+- **Description:** Research and write a straight Shakedown feature by finding one governing idea, proving it through authoritative sources, and building the story before any voice rewrite or publishing pipeline.
+- **Actions:** forge
+- **Triggers:** research a Shakedown feature | write this up for Shakedown | give this the Rubin and Cherise treatment | find the story in this Garcia song | straight up Shakedown piece | make this into a sourced Shakedown article
+- **Requires tools:** search_files, read_file, brain_search, research_list_brains, web_search, web_browse
+- **Composes:** jtr-voicepack
+- **Depends on:** source-validation
 
 ## social-distiller
 

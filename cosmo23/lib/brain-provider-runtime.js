@@ -103,6 +103,30 @@ function defaultCodexCredentialsProvider() {
   };
 }
 
+/**
+ * Rotation awareness (2026-08-11): clients used to bind credentials once, at
+ * registry construction — the one consumer of secrets.yaml that bypassed
+ * read-at-use. Since a token rotation now restarts NOTHING (the poller's
+ * rotationRestartTargets is []), a frozen registry would serve a revoked
+ * sk-ant-oat until an unrelated restart. The registry facade below stats the
+ * config files (throttled) and rebuilds the inner registry when they change;
+ * a failed rebuild keeps serving the previous registry and retries.
+ */
+const CREDENTIAL_CHECK_MS = 15_000;
+
+function credentialFingerprint(configDir) {
+  const parts = [];
+  for (const name of ['secrets.yaml', 'home.yaml']) {
+    try {
+      const stat = fs.statSync(path.join(configDir, name));
+      parts.push(`${name}:${stat.mtimeMs}:${stat.size}`);
+    } catch {
+      parts.push(`${name}:absent`);
+    }
+  }
+  return parts.join('|');
+}
+
 function createHome23BrainProviderRuntime({
   home23Root,
   catalog,
@@ -111,23 +135,52 @@ function createHome23BrainProviderRuntime({
   yamlImpl = yaml,
   credentialsProviders = {},
   pairFactories = {},
+  credentialCheckMs = CREDENTIAL_CHECK_MS,
 } = {}) {
-  const loaded = loadHome23BrainProviderConfig({ home23Root, yamlImpl });
   const exactCredentialsProviders = {
     'openai-codex': defaultCodexCredentialsProvider(),
     ...credentialsProviders,
   };
-  const providerRegistry = createBrainProviderClientRegistry({
-    catalog,
-    providerConfig: loaded.providerConfig,
-    credentialsProviders: exactCredentialsProviders,
-    fetchImpl,
-    logger,
-    pairFactories,
+  const build = () => {
+    const loaded = loadHome23BrainProviderConfig({ home23Root, yamlImpl });
+    const registry = createBrainProviderClientRegistry({
+      catalog,
+      providerConfig: loaded.providerConfig,
+      credentialsProviders: exactCredentialsProviders,
+      fetchImpl,
+      logger,
+      pairFactories,
+    });
+    return { loaded, registry };
+  };
+  let current = build();
+  const configDir = path.join(fs.realpathSync(home23Root), 'config');
+  let fingerprint = credentialFingerprint(configDir);
+  let lastCheck = Date.now();
+  const ensureFresh = () => {
+    const now = Date.now();
+    if (now - lastCheck < credentialCheckMs) return;
+    lastCheck = now;
+    const next = credentialFingerprint(configDir);
+    if (next === fingerprint) return;
+    try {
+      current = build();
+      fingerprint = next; // adopted only on success — a torn write keeps the old registry serving
+      logger?.info?.('[brain-providers] provider credentials changed on disk — registry rebuilt');
+    } catch (error) {
+      logger?.warn?.(`[brain-providers] credential change detected but rebuild failed (${error?.message}); serving previous registry`);
+    }
+  };
+  const providerRegistry = Object.freeze({
+    get: (provider, model) => { ensureFresh(); return current.registry.get(provider, model); },
+    getExact: (provider, model) => { ensureFresh(); return current.registry.getExact(provider, model); },
+    has: (provider, model) => { ensureFresh(); return current.registry.has(provider, model); },
+    availability: (provider, model) => { ensureFresh(); return current.registry.availability(provider, model); },
+    assertPairAvailable: (provider, model) => { ensureFresh(); return current.registry.assertPairAvailable(provider, model); },
   });
   return Object.freeze({
-    home: loaded.home,
-    providerConfig: loaded.providerConfig,
+    get home() { return current.loaded.home; },
+    get providerConfig() { return current.loaded.providerConfig; },
     providerRegistry,
   });
 }

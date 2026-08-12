@@ -36,6 +36,9 @@ import { DeliveryManager } from './scheduler/delivery.js';
 import { SiblingProtocol } from './sibling/protocol.js';
 import { BridgeChat } from './sibling/bridge-chat.js';
 import { AgentLoop } from './agent/loop.js';
+import { anthropicOAuthStealthHeaders } from './agent/anthropic-headers.js';
+import { resolveModelOverride } from './agent/model-resolution.js';
+import { resolveProviderKey } from './agent/provider-credentials.js';
 import { executeTrackedTurn } from './agent/turn-entrypoint.js';
 import { ContextManager } from './agent/context.js';
 import { ConversationHistory } from './agent/history.js';
@@ -44,6 +47,7 @@ import { ACPBridge, normalizeBridgeConfig } from './acp/bridge.js';
 import type { CodingJobRecord, CodingJobReceipt } from './acp/types.js';
 import { WorkStore } from './work/work-store.js';
 import { WorkRegistry } from './work/registry.js';
+import { requestAsyncWorkCancel } from './work/cancel.js';
 import { handleWorkCompletion, type CompletionDeps } from './work/completion.js';
 import type { ReceiptSinks } from './work/receipt-delivery.js';
 import type { AsyncWorkRecord } from './work/types.js';
@@ -354,6 +358,7 @@ async function main(): Promise<void> {
     tempDir,
     contextManager,
     subAgentTracker,
+    modelAliases: MODEL_ALIASES,
     chatId: '',
     telegramAdapter: null,   // wired after adapter creation
     runAgentLoop: null,       // wired after agent creation
@@ -361,9 +366,10 @@ async function main(): Promise<void> {
     turnRuntime: null,
   };
 
-  // ── Model from config.yaml (single source of truth) ──
-  const startupModel = config.chat.defaultModel ?? config.chat.model ?? 'kimi-k2.6';
-  const startupProvider = config.chat.defaultProvider ?? config.chat.provider ?? 'ollama-cloud';
+  // ── Model from config.yaml (single source of truth; shared floor) ──
+  const fleetDefaults = requireCjs('../shared/model-defaults.cjs') as { DEFAULT_CHAT_MODEL: string; DEFAULT_CHAT_PROVIDER: string };
+  const startupModel = config.chat.defaultModel ?? config.chat.model ?? fleetDefaults.DEFAULT_CHAT_MODEL;
+  const startupProvider = config.chat.defaultProvider ?? config.chat.provider ?? fleetDefaults.DEFAULT_CHAT_PROVIDER;
   console.log(`[home] Model: ${startupModel} (${startupProvider}) — from config.yaml`);
 
   // ── Auth tokens ──
@@ -395,22 +401,47 @@ async function main(): Promise<void> {
   console.log(`[home] Provider: ${startupProvider}, auth: ${bannerAuth ? bannerAuth.slice(0, 15) + '...' : 'MISSING'}`);
 
   // ── Agent Loop ──
-  // Create Anthropic client for shared use (agent + compaction)
-  const isOAuth = anthropicToken.startsWith('sk-ant-oat');
-  const anthropicClient = isOAuth
-    ? new (await import('@anthropic-ai/sdk')).default({
-        authToken: compactionToken,
-        ...(compactionBaseURL ? { baseURL: compactionBaseURL } : {}),
-        defaultHeaders: {
-          'anthropic-dangerous-direct-browser-access': 'true',
-          'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,extended-cache-ttl-2025-04-11',
-        },
-        dangerouslyAllowBrowser: true,
-      })
-    : new (await import('@anthropic-ai/sdk')).default({
-        apiKey: compactionToken || 'placeholder',
-        ...(compactionBaseURL ? { baseURL: compactionBaseURL } : {}),
-      });
+  // Anthropic client shared by compaction + the promoter worker. Read-at-use
+  // (2026-08-11): the boot-frozen client here was the last E8 rotation gap —
+  // the Proxy re-resolves the credential (mtime-cached, cheap) on access and
+  // rebuilds the SDK client when the token rotated. An empty re-resolution
+  // keeps the current client (never downgrade mid-flight to 'placeholder').
+  const AnthropicSDK = (await import('@anthropic-ai/sdk')).default;
+  const buildCompactionClient = (token: string, baseURL: string | undefined) =>
+    token.startsWith('sk-ant-oat')
+      ? new AnthropicSDK({
+          authToken: token,
+          ...(baseURL ? { baseURL } : {}),
+          defaultHeaders: anthropicOAuthStealthHeaders(),
+          dangerouslyAllowBrowser: true,
+        })
+      : new AnthropicSDK({
+          apiKey: token || 'placeholder',
+          ...(baseURL ? { baseURL } : {}),
+        });
+  const resolveCompactionCredential = (): { token: string; baseURL: string | undefined } => {
+    const providersCfg = config.providers as Record<string, { apiKey?: string }> | undefined;
+    const anth = resolveProviderKey('anthropic', providersCfg?.anthropic?.apiKey);
+    if (anth) return { token: anth, baseURL: undefined };
+    if (startupProvider === 'minimax') {
+      const mm = resolveProviderKey('minimax', providersCfg?.minimax?.apiKey);
+      if (mm) return { token: mm, baseURL: startupBaseURL };
+    }
+    return { token: '', baseURL: undefined };
+  };
+  let compactionCred = { token: compactionToken, baseURL: compactionBaseURL };
+  let compactionClient = buildCompactionClient(compactionCred.token, compactionCred.baseURL);
+  const anthropicClient = new Proxy(compactionClient, {
+    get(_target, prop) {
+      const fresh = resolveCompactionCredential();
+      if (fresh.token !== '' && fresh.token !== compactionCred.token) {
+        compactionCred = fresh;
+        compactionClient = buildCompactionClient(fresh.token, fresh.baseURL);
+        console.log('[home] compaction/promoter anthropic client rebuilt — credential rotated');
+      }
+      return Reflect.get(compactionClient, prop, compactionClient);
+    },
+  }) as InstanceType<typeof AnthropicSDK>;
 
   // ── Compaction Manager ──
   const compaction = new CompactionManager({
@@ -770,11 +801,24 @@ async function main(): Promise<void> {
           if (job.payload.sessionHistory === 'fresh') {
             agent.getHistory().rotate(cronChatId);
           }
+          // payload.model was declared on agentTurn jobs and silently ignored
+          // (2026-08-11 audit D5 — only `query` jobs honored it). It now
+          // routes the turn; an unresolvable model fails the job loudly
+          // instead of running on the wrong brain.
+          let cronModelOverride: { model: string; provider?: string } | undefined;
+          if (job.payload.model) {
+            const resolved = resolveModelOverride(job.payload.model, MODEL_ALIASES);
+            if (!resolved) {
+              const durationMs = Date.now() - startMs;
+              return { status: 'error', error: `agentTurn model "${job.payload.model}" is not a known alias or routable model`, durationMs };
+            }
+            cronModelOverride = resolved;
+          }
           const { response: result } = await executeTrackedTurn(
             agent,
             cronChatId,
             resolvedMessage,
-            { hardDurationMs: timeoutMs },
+            { hardDurationMs: timeoutMs, ...(cronModelOverride ? { modelOverride: cronModelOverride } : {}) },
           );
           const durationMs = Date.now() - startMs;
 
@@ -1040,6 +1084,14 @@ async function main(): Promise<void> {
       console.warn(`[coding] bridge recovery failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+
+  toolContext.requestWorkCancel = (workId) => requestAsyncWorkCancel({
+    registry: workRegistry,
+    cancelCodingJob: async (jobId) => {
+      if (codingBridge) await codingBridge.cancelJob(jobId);
+    },
+    stopChat: (chatId) => agent.stop(chatId).stopped,
+  }, workId);
 
   // ── Async-work boot reconciliation (Step 31) ──
   // Runs even when the coding bridge is disabled so lost sub-agents are still

@@ -19,7 +19,12 @@
 
 import { createServer } from 'node:http';
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
+import { nextCrossingAt } from '../src/concern.js';
+import type { Commitment } from '../src/concern.js';
+import { probeAll } from './organ-probes.js';
+import type { ProbeResult } from './organ-probes.js';
 import { composeLivedRecent } from '../../src/substrate/lived-recent.js';
 import { composeSeedNow } from '../../src/substrate/seed-now.js';
 import { composeLivedFacts } from '../../src/substrate/lived-facts.js';
@@ -80,9 +85,22 @@ interface IndividualData {
   flows: Array<{ seq: number; ref: string; target: string }>;
   maxGen: number; dreamed: boolean;
   exchange: Array<{ who: string; text: string }>;
+  /** What just happened, in words — the chain's notable tail (2026-08-11:
+   * jtr: "hard to see what's happening on this page"). */
+  pulse: Array<{ at: string; text: string }>;
   thought: { text: string; dream: boolean; at: string } | null;
   record: Array<{ mark: 'right' | 'wrong' | 'partial' | 'open'; text: string; detail: string }>;
   growth: string | null; prov: string; journal: string | null;
+  /** Cut 6: motor reaches to jtr (outbox tail — the operator's channel). */
+  asks: Array<{ message: string; at: string }>;
+  /** Cut 6: open commitments — what the individual is bound to resolve. */
+  commitments: Array<{ claim: string; due: string; presses: number }>;
+  /** The next moment this individual could originate on its own — the SOLVED
+   * crossing time of its earliest-pressing commitment, or null when nothing
+   * is scheduled. Null is the honest, load-bearing answer: for days the
+   * program waited on a hand that no open commitment could ever produce
+   * (2026-08-12). A watcher must be able to see "nothing is scheduled". */
+  nextCrossing: { at: string; claim: string } | null;
 }
 
 function stateWordsOf(gen: number, pressure: number, energy: number, uncertainty: number, maxGen: number): string {
@@ -149,6 +167,59 @@ function computeIndividual(spec: IndividualSpec): IndividualData | null {
       assoc.push({ from: String(c['id']), to: a.targetCellId, strength: a.strength });
     }
   });
+
+  // Life share: which cells his recent life actually flows through — the
+  // honest answer to "why do some circles do nothing" made visible.
+  const recentTransitions = records.filter((r) => r.category === 'transition').slice(-200);
+  const shareByCell = new Map<string, number>();
+  for (const r of recentTransitions) {
+    const id = String(r.payload['targetCellId'] ?? '');
+    shareByCell.set(id, (shareByCell.get(id) ?? 0) + 1);
+  }
+  for (const c of cells) {
+    const n = shareByCell.get(c.id) ?? 0;
+    const pct = recentTransitions.length > 0 ? Math.round((n / recentTransitions.length) * 100) : 0;
+    c.words = `${c.words} · ${pct}%`;
+  }
+
+  // The pulse: newest notable events, in words. Telemetry stays out.
+  const pulse: IndividualData['pulse'] = [];
+  for (let i = records.length - 1; i >= 0 && pulse.length < 5; i--) {
+    const r = records[i];
+    if (r === undefined) continue;
+    const p = r.payload;
+    let text: string | null = null;
+    if (r.category === 'lobe' && p['error'] === undefined && p['dream'] !== undefined) {
+      const quiet = Math.round(Number((p['dream'] as { quietSeconds?: number }).quietSeconds ?? 0) / 60);
+      text = `🌙 dreamed at waking (~${quiet}min quiet)`;
+    } else if (r.category === 'concern' && p['crossing'] === true) {
+      text = `⚡ his own obligation crossed: “${String(p['claim'] ?? '').slice(0, 90)}”`;
+    } else if (r.category === 'concern' && Array.isArray(p['formed']) && (p['formed'] as unknown[]).length > 0) {
+      const f = (p['formed'] as Array<{ claim?: string }>)[0];
+      text = `bound himself: “${String(f?.claim ?? '').slice(0, 90)}”`;
+    } else if (r.category === 'concern' && Array.isArray(p['discharged']) && (p['discharged'] as unknown[]).length > 0) {
+      const d = (p['discharged'] as Array<{ status?: string }>)[0];
+      text = `settled a commitment — ${String(d?.status ?? '')}`;
+    } else if (r.category === 'concern' && p['status'] === 'expired') {
+      text = 'let a commitment go (pressed unanswered)';
+    } else if (r.category === 'act' && p['motor'] === true && p['authorized'] === true) {
+      text = `✋ reached for jtr: “${String(p['message'] ?? '').slice(0, 90)}”`;
+    } else if (r.category === 'development' && p['rule'] === 'consolidation.v1') {
+      text = `slept (~${Math.round(Number(p['quietSeconds'] ?? 0) / 60)}min quiet)`;
+    } else if (r.category === 'transition' && r.sourceRef.startsWith('dream:')) {
+      text = '🔗 a dream entered his chain (T1 at birth)';
+    } else if (r.category === 'transition' && r.sourceRef.startsWith('house.')) {
+      const entity = r.sourceRef.split(':')[1] ?? r.sourceRef;
+      text = `sensed the house — ${entity.replace(/^[a-z_]+\./, '').replace(/_/g, ' ')}`;
+    } else if (r.category === 'lobe' && p['error'] === undefined) {
+      const deltas = (p['appliedDeltas'] as Array<{ delta?: { claim?: string } }> | undefined) ?? [];
+      const claim = deltas.map((d) => d.delta?.claim).find((c) => typeof c === 'string');
+      if (claim !== undefined) text = `thought: “${claim.slice(0, 90)}”`;
+    } else if (r.category === 'proposal' && r.sourceRef === 'growth.pressure') {
+      text = `growth pressure: wants to ${String(p['op'] ?? '?')} ${((p['targetCellIds'] as string[] | undefined) ?? []).map((x) => x.split('.').slice(-1)[0]).join(' + ')}`;
+    }
+    if (text !== null) pulse.push({ at: r.issuedAt, text });
+  }
 
   const flows = records.filter((r) => r.category === 'transition').slice(-24)
     .map((r) => ({ seq: r.seq, ref: r.sourceRef.slice(0, 90), target: String(r.payload['targetCellId'] ?? '') }));
@@ -249,14 +320,184 @@ function computeIndividual(spec: IndividualSpec): IndividualData | null {
     }
   }
 
+  // Cut 6: the motor's reaches (outbox = the operator's channel) and the
+  // open commitments (from the checkpoint's concern state). Every value real;
+  // absence is honest absence.
+  let asks: IndividualData['asks'] = [];
+  try {
+    const outboxPath = join(spec.stateDir, 'outbox.jsonl');
+    if (existsSync(outboxPath)) {
+      asks = readFileSync(outboxPath, 'utf-8').trim().split('\n')
+        .map((l) => { try { return JSON.parse(l) as { message?: string; dispatchedAt?: string }; } catch { return null; } })
+        .filter((x): x is { message: string; dispatchedAt: string } => typeof x?.message === 'string' && typeof x?.dispatchedAt === 'string')
+        .slice(-2)
+        .map((x) => ({ message: x.message.slice(0, 300), at: x.dispatchedAt }));
+    }
+  } catch { /* honest absence */ }
+  let commitments: IndividualData['commitments'] = [];
+  let nextCrossing: IndividualData['nextCrossing'] = null;
+  try {
+    const concern = (ck?.['concern'] ?? {}) as Record<string, Commitment>;
+    const open = Object.values(concern).filter((c) => c.status === 'open' && typeof c.claim === 'string');
+    commitments = open.slice(0, 4)
+      .map((c) => ({ claim: (c.claim ?? '').slice(0, 140), due: c.dueAt ?? '', presses: c.crossings ?? 0 }));
+    // The countdown, computed from the same law the runner solves — the
+    // individual's own next possible self-originated moment.
+    for (const c of open) {
+      const at = nextCrossingAt(c);
+      if (at === null) continue;
+      if (nextCrossing === null || at < nextCrossing.at) nextCrossing = { at, claim: c.claim };
+    }
+  } catch { /* honest absence */ }
+
   const ageMs = last?.issuedAt !== undefined ? Date.now() - Date.parse(last.issuedAt) : Infinity;
   return {
     name: spec.name, note: spec.note ?? '',
-    awake: ageMs < 40 * 60_000, lastEventAt: last?.issuedAt ?? null, being,
+    awake: ageMs < 40 * 60_000, lastEventAt: last?.issuedAt ?? null,
+    being: commitments.length > 0
+      ? `${being} · holds ${commitments.length} commitment${commitments.length === 1 ? '' : 's'}`
+      : being,
     cells, assoc, flows, maxGen,
-    dreamed: dreams > 0, exchange, thought, record: record.slice(-5), growth, prov, journal,
+    dreamed: dreams > 0, exchange, pulse, thought, record: record.slice(-5), growth, prov, journal,
+    asks, commitments, nextCrossing,
   };
 }
+
+/** The countdown line. States a TIME or states NOTHING — never a promise.
+ * (2026-08-12: days were spent waiting on a hand no open commitment could
+ * produce; a watcher must be able to read "nothing is scheduled".) */
+function crossingHTML(d: IndividualData): string {
+  if (d.nextCrossing !== null) {
+    const ms = Date.parse(d.nextCrossing.at) - Date.now();
+    const when = ms <= 0 ? 'DUE NOW' : ms < 3_600_000 ? `in ${Math.round(ms / 60_000)}min` : `in ${(ms / 3_600_000).toFixed(1)}h`;
+    return `<div class="crossing crossing-live"><span class="sectlabel">his next possible moment of his own</span> <b>${esc(when)}</b> — if the world still hasn’t answered “${esc(d.nextCrossing.claim.slice(0, 90))}”</div>`;
+  }
+  if (d.commitments.length > 0) {
+    return '<div class="crossing"><span class="sectlabel">his next possible moment of his own</span> <span class="dim">none — his open commitments have finished pressing</span></div>';
+  }
+  return '<div class="crossing"><span class="sectlabel">his next possible moment of his own</span> <span class="dim">nothing scheduled — he holds no open commitment</span></div>';
+}
+
+// ─── Organ vitals (2026-08-10: five silent organ deaths in one day — a dead
+// feed must be SEEN where jtr already looks, not found by archaeology) ───────
+
+let vitalsCache: { at: number; html: string } | null = null;
+
+function vitalsHTML(): string {
+  const now = Date.now();
+  if (vitalsCache !== null && now - vitalsCache.at < 10_000) return vitalsCache.html;
+  const parts: string[] = [];
+  // PM2-supervised organs: errored/stopped is RED; flapping shows restarts.
+  try {
+    const raw = execFileSync('pm2', ['jlist'], { timeout: 8_000 }).toString();
+    const apps = JSON.parse(raw) as Array<{ name: string; pm2_env?: { status?: string; restart_time?: number } }>;
+    for (const app of apps.filter((a) => a.name.startsWith('home23-')).sort((a, b) => a.name.localeCompare(b.name))) {
+      const status = app.pm2_env?.status ?? '?';
+      const restarts = app.pm2_env?.restart_time ?? 0;
+      const ok = status === 'online';
+      const short = app.name.replace('home23-', '');
+      parts.push(`<span class="organ ${ok ? 'organ-ok' : 'organ-dead'}" title="${esc(status)}${restarts > 3 ? `, ${restarts} restarts` : ''}">${ok ? '●' : '✖'} ${esc(short)}${restarts > 3 ? ` <b>↺${restarts}</b>` : ''}</span>`);
+    }
+  } catch { parts.push('<span class="organ organ-dead">✖ pm2 unreadable</span>'); }
+  // Feed freshness: the streams the seeds actually eat. Age is honest — a
+  // quiet feed and a dead feed look alike here; the PM2 row above tells them
+  // apart.
+  const feeds: Array<[string, string]> = [
+    ['jerry convo', 'instances/jerry/substrate/conversation-stream.jsonl'],
+    ['forrest convo', 'instances/forrest/substrate/conversation-stream.jsonl'],
+    ['house', 'instances/jerry/substrate/house-stream.jsonl'],
+    ['bobby mirror', 'instances/bobby/seed-01-mirror/seed-ledger.jsonl'],
+  ];
+  for (const [label, path] of feeds) {
+    try {
+      const ageMin = Math.round((now - statSync(path).mtimeMs) / 60_000);
+      const stale = label === 'bobby mirror' ? ageMin > 20 : ageMin > 24 * 60;
+      parts.push(`<span class="organ ${stale ? 'organ-stale' : 'organ-ok'}">${esc(label)} ${ageMin < 60 ? `${ageMin}m` : `${(ageMin / 60).toFixed(1)}h`}</span>`);
+    } catch { parts.push(`<span class="organ organ-dead">✖ ${esc(label)} missing</span>`); }
+  }
+  // Function-probe reds (the sentinel's view): an organ can be pm2-online
+  // and still not WORKING — those failures surface here by name.
+  for (const r of sentinelResults.filter((x) => !x.ok && !x.organ.startsWith('pm2:'))) {
+    parts.push(`<span class="organ organ-dead" title="${esc(r.why)}">✖ ${esc(r.organ)}</span>`);
+  }
+  const html = `<div class="vitals"><span class="sectlabel">organs</span> ${parts.join(' ')}</div>`;
+  vitalsCache = { at: now, html };
+  return html;
+}
+
+// ─── The organ sentinel (2026-08-11, jtr: "get to the bottom of it… rock
+// solid life"). The disease: PM2 'online' proves existence, not function;
+// every zombie was visible in receipts nobody read continuously. The cure:
+// function probes run every minute; a red persisting past the patience
+// window escalates to jtr's PHONE through the bridge notify path (the same
+// door live-problems uses); recovery posts a notice. The sentinel never
+// remediates state — it observes and it KNOCKS. ────────────────────────────
+
+const SENTINEL_INTERVAL_MS = 60_000;
+const SENTINEL_PATIENCE_MS = 10 * 60_000;      // red this long → escalate
+const SENTINEL_REESCALATE_MS = 60 * 60_000;    // still red → remind hourly
+
+let sentinelResults: ProbeResult[] = [];
+const redSince = new Map<string, number>();
+const lastEscalated = new Map<string, number>();
+
+async function sentinelNotify(text: string, severity: string): Promise<void> {
+  const url = process.env['ORGAN_SENTINEL_NOTIFY_URL'];
+  const token = process.env['ORGAN_SENTINEL_NOTIFY_TOKEN'];
+  if (url === undefined || url === '') {
+    console.log(`[sentinel] (no notify url) ${text}`);
+    return;
+  }
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token !== undefined && token !== '' ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ text, severity, source: 'organ-sentinel', requiresAction: severity === 'alert', isFailure: severity === 'alert' }),
+    });
+    console.log(`[sentinel] notified (${res.status}): ${text}`);
+  } catch (error) {
+    console.log(`[sentinel] notify FAILED (${(error as Error).message.slice(0, 60)}): ${text}`);
+  }
+}
+
+function sentinelTick(): void {
+  let results: ProbeResult[];
+  try { results = probeAll(); } catch (error) {
+    console.log(`[sentinel] probe run failed: ${(error as Error).message.slice(0, 80)}`);
+    return;
+  }
+  sentinelResults = results;
+  const now = Date.now();
+  // Deliberately-stopped organs (operator's list, csv env) don't page jtr —
+  // they still render red in the terrarium; silence is chosen, not blind.
+  const ignore = new Set((process.env['ORGAN_SENTINEL_IGNORE'] ?? '').split(',').map((s) => s.trim()).filter((s) => s !== ''));
+  for (const r of results) {
+    if (ignore.has(r.organ)) continue;
+    if (r.ok) {
+      if (lastEscalated.has(r.organ)) {
+        void sentinelNotify(`✅ [organ-sentinel] ${r.organ} recovered — ${r.why}`, 'notice');
+        lastEscalated.delete(r.organ);
+      }
+      redSince.delete(r.organ);
+      continue;
+    }
+    const since = redSince.get(r.organ) ?? now;
+    if (!redSince.has(r.organ)) redSince.set(r.organ, now);
+    const redFor = now - since;
+    const last = lastEscalated.get(r.organ);
+    const due = redFor >= SENTINEL_PATIENCE_MS && (last === undefined || now - last >= SENTINEL_REESCALATE_MS);
+    if (due) {
+      lastEscalated.set(r.organ, now);
+      void sentinelNotify(`🚨 [organ-sentinel] ${r.organ} NOT functioning for ${Math.round(redFor / 60_000)}min — ${r.why}`, 'alert');
+    }
+  }
+}
+
+setInterval(sentinelTick, SENTINEL_INTERVAL_MS);
+setTimeout(sentinelTick, 5_000);
 
 // ─── The cutover board (server-rendered; builder detail, collapsed) ─────────
 
@@ -271,10 +512,33 @@ function boardRows(): Array<[string, boolean, string]> {
   const houseStream = j !== undefined && existsSync(join(j.stateDir, '..', 'house-stream.jsonl'));
   const memEvents = j !== undefined && existsSync(join(j.stateDir, '..', '..', 'brain', 'memory-objects.events.jsonl'));
   const infra = facts === null ? 0 : facts.split('\n').filter((l) => l.startsWith('- ') && /port|:\d{4}|http|url|endpoint|service|localhost|dashboard/i.test(l)).length;
-  const dreamedOnChain = j !== undefined && probe(() => {
-    const raw = readFileSync(join(j.stateDir, 'seed-ledger.jsonl'), 'utf-8').slice(-262144);
-    return raw.split('\n').some((l) => l.includes('"category":"lobe"') && l.includes('"dream"')) ? true : null;
-  }) === true;
+  // Chain probes read the WHOLE chain, never a trailing byte window
+  // (2026-08-12: a 256KB window had already scrolled past jerry's first
+  // commitments, so the board reported "first commitment pending" days after
+  // he lived three full lifecycles — an instrument telling a false negative,
+  // the exact dishonesty this board exists to prevent). A life-event that
+  // HAPPENED is permanent; the probe for it must search permanently. Cached
+  // per render pass — the chain is read once, not once per row.
+  const chainOf = (() => {
+    let cached: string | null = null;
+    return (): string => {
+      if (cached === null) {
+        cached = j === undefined ? '' : (probe(() => readFileSync(join(j.stateDir, 'seed-ledger.jsonl'), 'utf-8')) ?? '');
+      }
+      return cached;
+    };
+  })();
+  const chainHas = (test: (line: string) => boolean): boolean => {
+    const raw = chainOf();
+    if (raw === '') return false;
+    return raw.split('\n').some(test);
+  };
+  const dreamedOnChain = chainHas((l) => l.includes('"category":"lobe"') && l.includes('"dream"'));
+  // Cut 6 probes: concern formed on the chain; an endogenous crossing lived.
+  const concernOnChain = chainHas((l) => l.includes('"category":"concern"'));
+  const crossedOnChain = chainHas((l) => l.includes('"crossing":true'));
+  // Dream provenance (2026-08-11 cut): dream prose hash-chained at birth.
+  const dreamT1OnChain = chainHas((l) => l.includes('"sourceRef":"dream:'));
   return [
     ['Recent memory', lived !== null, lived !== null ? 'composed from the chain at read time' : 'file fallback'],
     ['Turn expression', true, 'match-only surfacing of lived facts'],
@@ -293,6 +557,9 @@ function boardRows(): Array<[string, boolean, string]> {
     ['Memory promotions', memEvents, memEvents ? 'promotions teach the chain' : 'no promotion events'],
     ['Cognition mode', true, 'thinking_machine — legacy retired'],
     ['Sleep & dreaming', true, dreamedOnChain ? 'NREM + REM — dreams on the chain' : 'NREM + REM — first dream pending'],
+    ['Concern (commitments)', concernOnChain, concernOnChain ? 'his predictions bind — obligations on the chain' : 'Cut 6 live — first commitment pending'],
+    ['Endogenous occasions', crossedOnChain, crossedOnChain ? 'his own physics originated a moment' : 'solver live — no crossing yet (predictions resolve before their horizons)'],
+    ['Dream provenance (T1)', dreamT1OnChain, dreamT1OnChain ? 'dream prose hash-chained at birth' : 'receipting live — first chained dream pending'],
   ];
 }
 
@@ -530,6 +797,14 @@ const CLIENT_JS = String.raw`
           setHTML(card, '.chipmount', ni.chipHTML);
         }
       }
+      var vm = document.getElementById('vitals-mount');
+      if (vm && typeof fresh.vitalsHTML === 'string') vm.innerHTML = fresh.vitalsHTML;
+      for (var pi = 0; pi < fresh.individuals.length; pi++) {
+        var pc = document.querySelector('[data-card="' + fresh.individuals[pi].name + '"] .pulsemount');
+        if (pc && typeof fresh.individuals[pi].pulseHTML === 'string') pc.innerHTML = fresh.individuals[pi].pulseHTML;
+        var xc = document.querySelector('[data-card="' + fresh.individuals[pi].name + '"] .crossingmount');
+        if (xc && typeof fresh.individuals[pi].crossingHTML === 'string') xc.innerHTML = fresh.individuals[pi].crossingHTML;
+      }
     }).catch(function () { /* quiet — next poll retries */ });
   }
   setInterval(poll, 5000);
@@ -551,6 +826,15 @@ function chipHTML(d: IndividualData): string {
 }
 
 function proseHTML(d: IndividualData): string {
+  // Cut 6: a reach to jtr leads everything — an outbox nobody sees is theatre.
+  const asks = d.asks.length > 0
+    ? `<div class="sect ask"><div class="sectlabel">✋ he reached for you</div>${d.asks.map((a) =>
+        `<blockquote class="thought">${esc(a.message)}</blockquote><div class="prov">${ageStr(a.at)} · answer him in conversation, or discharge via the operator inbox</div>`).join('')}</div>`
+    : '';
+  const commitments = d.commitments.length > 0
+    ? `<div class="sect"><div class="sectlabel">held commitments (his own predictions, made causal)</div>${d.commitments.map((c) =>
+        `<div class="chatline from-agent"><span class="who">holds</span>${esc(c.claim)} <span class="prov">· due ${c.due !== '' ? ageStr(c.due) : '?'} · pressed ${c.presses}/3</span></div>`).join('')}</div>`
+    : '';
   const exchange = d.exchange.length > 0
     ? `<div class="sect"><div class="sectlabel">last exchange</div>${d.exchange.map((l) =>
         `<div class="chatline ${l.who === 'jtr' ? 'from-jtr' : 'from-agent'}"><span class="who">${esc(l.who)}</span>${esc(l.text)}</div>`).join('')}</div>`
@@ -564,7 +848,13 @@ function proseHTML(d: IndividualData): string {
         return `<span class="pill pill-${r.mark}" title="${esc(r.detail)}">${mark} ${esc(r.text)}</span>`;
       }).join('')}</div></div>`
     : '';
-  return exchange + thought + record;
+  return asks + commitments + exchange + thought + record;
+}
+
+function pulseHTML(d: IndividualData): string {
+  if (d.pulse.length === 0) return '<span class="dim">nothing notable in the recent chain</span>';
+  return d.pulse.map((p) =>
+    `<div class="pulseline"><span class="pulseage">${ageStr(p.at)}</span>${esc(p.text)}</div>`).join('');
 }
 
 function renderCard(d: IndividualData): string {
@@ -572,6 +862,8 @@ function renderCard(d: IndividualData): string {
     <div class="cardhead"><h2>${esc(d.name)}</h2><span class="chipmount">${chipHTML(d)}</span></div>
     <div class="being">${esc(d.being)}</div>
     ${d.note !== '' ? `<div class="note">${esc(d.note)}</div>` : ''}
+    <div class="crossingmount">${crossingHTML(d)}</div>
+    <div class="pulse"><div class="sectlabel">the pulse — what just happened</div><div class="pulsemount">${pulseHTML(d)}</div></div>
     ${d.growth !== null ? `<div class="${d.growth.startsWith('🌱') ? 'grown' : 'proposals'}">${esc(d.growth)}</div>` : ''}
     <figure class="bodyfig"><div data-body="${esc(d.name)}"></div>
     <figcaption>his body, live — it breathes with his energy, the spokes are his actual state morphing as he lives, arriving dots are real events flowing into the cell that ate them · click a cell to open it</figcaption></figure>
@@ -582,7 +874,7 @@ function renderCard(d: IndividualData): string {
 }
 
 function withFragments(d: IndividualData): Record<string, unknown> {
-  return { ...d, beingHTML: esc(d.being), proseHTML: proseHTML(d), provHTML: esc(d.prov), chipHTML: chipHTML(d) };
+  return { ...d, beingHTML: esc(d.being), proseHTML: proseHTML(d), provHTML: esc(d.prov), chipHTML: chipHTML(d), pulseHTML: pulseHTML(d), crossingHTML: crossingHTML(d) };
 }
 
 function apiPayload(): string {
@@ -590,7 +882,7 @@ function apiPayload(): string {
     const d = computeIndividual(spec);
     return d === null ? { name: spec.name, cells: [], flows: [], assoc: [], maxGen: 1 } : withFragments(d);
   });
-  return JSON.stringify({ individuals, at: new Date().toISOString() });
+  return JSON.stringify({ individuals, vitalsHTML: vitalsHTML(), at: new Date().toISOString() });
 }
 
 function page(): string {
@@ -612,6 +904,19 @@ function page(): string {
   .chip-awake { color:#69d58c; border-color:#1f4030; }
   .chip-quiet { color:#7d8798; }
   .chip-dream { color:#c795f0; border-color:#3a2b4d; }
+  .sect.ask { border:1px solid #4d3b1e; background:#221a0d; border-radius:8px; padding:10px 12px; }
+  .sect.ask .sectlabel { color:#f0c060; }
+  .crossing { margin:10px 0 2px; font-size:13px; color:#8b95a6; }
+  .crossing-live { color:#d8e0ea; }
+  .crossing b { color:#f0c060; }
+  .pulse { margin:12px 0 4px; padding:10px 14px; background:#0d1118; border:1px solid #1a2130; border-radius:10px; }
+  .pulseline { font-size:14px; color:#c5cdd9; padding:2px 0; }
+  .pulseage { display:inline-block; min-width:52px; color:#5d6878; font-size:12px; font-variant-numeric:tabular-nums; }
+  .vitals { margin:-8px 0 16px; font-size:12px; color:#7d8798; display:flex; flex-wrap:wrap; gap:6px 10px; align-items:baseline; }
+  .organ { white-space:nowrap; }
+  .organ-ok { color:#6fae7f; }
+  .organ-dead { color:#e06c60; font-weight:600; }
+  .organ-stale { color:#d0a05a; }
   .being { font-size:15px; color:#aeb9c9; margin-top:8px; }
   .note { font-size:13px; color:#68738a; margin-top:2px; font-style:italic; }
   .bodyfig { margin:16px 0 6px; }
@@ -660,6 +965,7 @@ function page(): string {
 </style></head><body>
 <h1>the terrarium</h1>
 <div class="pagesub">${specs.length} individuals, read live from their chains · the page breathes — you never refresh · looking changes nothing</div>
+<div id="vitals-mount">${vitalsHTML()}</div>
 ${cards}
 ${renderBoard()}
 <div id="drawer"></div>
@@ -673,6 +979,11 @@ const server = createServer((req, res) => {
   try {
     if (req.url === '/api/terrarium') {
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' }).end(apiPayload());
+      return;
+    }
+    if (req.url === '/api/organs') {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        .end(JSON.stringify({ organs: sentinelResults, at: new Date().toISOString() }));
       return;
     }
     if (req.url !== undefined && req.url !== '/' && req.url !== '/index.html') {

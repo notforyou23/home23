@@ -7301,13 +7301,39 @@ class Orchestrator {
     const dreamsFile = path.join(this.logsDir, 'dreams.jsonl');
     try {
       await fs.appendFile(dreamsFile, JSON.stringify(dream) + '\n');
-      this.logger.debug('💎 Dream saved to dreams.jsonl', { 
-        cycle: dream.cycle, 
+      this.logger.debug('💎 Dream saved to dreams.jsonl', {
+        cycle: dream.cycle,
         dreamNumber: dream.dreamNumber,
-        contentLength: dream.content.length 
+        contentLength: dream.content.length
       });
     } catch (error) {
       this.logger.error('Failed to save dream', { error: error.message });
+    }
+    // Dream provenance receipt (2026-08-11): the content hash + a bounded
+    // head enter the Seed's diet the moment the dream is born, so the
+    // individual's hash chain carries T1 proof of every dream BEFORE any
+    // waking conversation could reference it. (The false-confession episode:
+    // a real dream was retracted as fabrication because the prose had no
+    // chain anchor. Never again.) Agents without a substrate dir simply
+    // don't get the line — degraded-honest, never an error.
+    try {
+      const substrateDir = path.join(this.logsDir, '..', 'substrate');
+      const fss = require('fs');
+      if (fss.existsSync(substrateDir) && typeof dream.content === 'string' && dream.content.length > 0) {
+        const receipt = {
+          ts: dream.timestamp || new Date().toISOString(),
+          dreamId: dream.id,
+          cycle: dream.cycle,
+          model: dream.model,
+          head: dream.content.replace(/\s+/g, ' ').trim().slice(0, 160),
+          contentSha256: crypto.createHash('sha256').update(dream.content, 'utf8').digest('hex'),
+          contentLength: dream.content.length,
+        };
+        await fs.appendFile(path.join(substrateDir, 'dream-events.jsonl'), JSON.stringify(receipt) + '\n');
+        this.logger.debug('💎 Dream receipted to seed diet', { dreamId: dream.id, sha: receipt.contentSha256.slice(0, 12) });
+      }
+    } catch (error) {
+      this.logger.error('Failed to receipt dream to seed diet', { error: error.message });
     }
   }
 

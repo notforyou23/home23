@@ -60,6 +60,21 @@ test('normalizeState preserves string compatibility while adding completed topic
   ]);
 });
 
+test('validateState accepts an explicit artifact slug longer than the generated slug limit', () => {
+  const topic = 'Study architectures, materials, and practices for software and hardware meant to live for years — low-complexity protocols, graceful degradation, and repairability';
+  const result = validateState({
+    active_topic: null,
+    completed_topics: [topic],
+    completed_topic_refs: [{
+      topic,
+      slug: 'architectures-materials-and-practices-for-software-and-hardware-meant-to-live-for-years-low-complexity-protocols-graceful-degradation-and-repairability',
+      issue: 166,
+    }],
+  });
+
+  assert.equal(result.ok, true);
+});
+
 test('validateState catches active topics that are already completed by slug', () => {
   const result = validateState({
     active_topic: {

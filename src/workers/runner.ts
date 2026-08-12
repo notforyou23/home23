@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { resolveModelOverride } from '../agent/model-resolution.js';
 import { loadWorker } from './registry.js';
 import { writeWorkerReceipt } from './receipts.js';
 import type { ToolContext, ToolDefinition } from '../agent/types.js';
@@ -218,12 +219,24 @@ export async function runWorker(input: RunWorkerInput): Promise<RunWorkerResult>
       '[WORKER TASK]',
       input.request.prompt
     ].join('\n'));
+    // WorkerConfig.provider/model were parsed by the registry and consumed by
+    // nothing (2026-08-11 audit D6). A worker that declares them now actually
+    // runs on them; a declared-but-unroutable model fails the run loudly.
+    let workerModelOverride: { model: string; provider?: string } | undefined;
+    if (worker.model) {
+      workerModelOverride = worker.provider
+        ? { model: worker.model, provider: worker.provider }
+        : resolveModelOverride(worker.model, input.ctx.modelAliases) ?? undefined;
+      if (!workerModelOverride) {
+        throw new Error(`Worker ${worker.name} declares model "${worker.model}" which is not a known alias or routable model`);
+      }
+    }
     const response = await input.ctx.runAgentLoop(systemPrompt, mission, input.tools || [], {
       ...input.ctx,
       agentName: owner,
       workspacePath: path.join(worker.rootPath, 'workspace'),
       chatId: `worker:${worker.name}:${id}`
-    });
+    }, workerModelOverride ? { modelOverride: workerModelOverride } : undefined);
     const finishedAt = new Date().toISOString();
     writeFileSync(path.join(runPath, 'transcript.md'), response.text);
 

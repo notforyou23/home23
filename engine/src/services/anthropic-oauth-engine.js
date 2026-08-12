@@ -1,13 +1,17 @@
 /**
  * Anthropic Auth Module — Simplified for COSMO Home 2.3
  *
- * Supports:
- * 1. OAuth token via ANTHROPIC_AUTH_TOKEN env var (from OpenClaw)
- * 2. API key fallback via ANTHROPIC_API_KEY env var
+ * Credentials resolve AT USE TIME from config/secrets.yaml (the file the
+ * OAuth mirror keeps fresh), via the shared provider-credentials resolver.
+ * ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY remain the env floor for
+ * credential-free hosts. Pass force=true after an auth failure to drop the
+ * resolver cache and reread the file.
  *
  * The full PKCE OAuth flow from cosmo_2.3 is not needed here —
- * we import the token from OpenClaw's auth-profiles.
+ * the token is mirrored into secrets.yaml by the dashboard's OAuth sync.
  */
+
+const { resolveProviderKey } = require('../core/provider-credentials');
 
 // Claude Code version for stealth mode headers
 const CLAUDE_CODE_VERSION = '2.1.32';
@@ -24,10 +28,13 @@ function isOAuthToken(token) {
  * Required to make OAuth tokens work with Anthropic API
  */
 function getStealthHeaders() {
+  // Beta string single-sourced from unified-client (P2-18) — the two engine
+  // copies drifted only by luck before.
+  const { ANTHROPIC_OAUTH_BETA } = require('../core/unified-client');
   return {
     'accept': 'application/json',
     'anthropic-dangerous-direct-browser-access': 'true',
-    'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,extended-cache-ttl-2025-04-11',
+    'anthropic-beta': ANTHROPIC_OAUTH_BETA,
     'user-agent': `claude-cli/${CLAUDE_CODE_VERSION} (external, cli)`,
     'x-app': 'cli'
   };
@@ -35,32 +42,31 @@ function getStealthHeaders() {
 
 /**
  * Get Anthropic credentials — OAuth token or API key
- * Checks env vars. No database, no PKCE flow.
+ * Resolves at use: secrets.yaml first, env floor second. No database, no
+ * PKCE flow. `force` drops the resolver cache (the auth-failure path).
  */
-async function getAnthropicApiKey() {
-  // 1. OAuth token (preferred)
-  const authToken = process.env.ANTHROPIC_AUTH_TOKEN;
-  if (authToken && isOAuthToken(authToken)) {
+async function getAnthropicApiKey(force = false) {
+  const key = resolveProviderKey('anthropic', undefined, force);
+
+  if (key && isOAuthToken(key)) {
     console.log('[OAuth-Engine] Using OAuth token (stealth mode)');
     return {
-      authToken: authToken,
+      authToken: key,
       defaultHeaders: getStealthHeaders(),
       dangerouslyAllowBrowser: true,
       isOAuth: true
     };
   }
 
-  // 2. API key fallback
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (apiKey && apiKey.length > 0) {
-    console.log('[OAuth-Engine] Using API key from env');
+  if (key && key.length > 0) {
+    console.log('[OAuth-Engine] Using API key');
     return {
-      apiKey: apiKey,
+      apiKey: key,
       isOAuth: false
     };
   }
 
-  throw new Error('No Anthropic credentials. Set ANTHROPIC_AUTH_TOKEN (OAuth) or ANTHROPIC_API_KEY');
+  throw new Error('No Anthropic credentials. Set providers.anthropic.apiKey in config/secrets.yaml, or ANTHROPIC_AUTH_TOKEN (OAuth) / ANTHROPIC_API_KEY in the environment');
 }
 
 /**

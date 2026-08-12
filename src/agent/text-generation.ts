@@ -1,6 +1,16 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { createRequire } from 'node:module';
 import { getCodexCredentials, getCodexHeaders, type CodexCredentials } from './codex-auth.js';
+import { anthropicOAuthStealthHeaders } from './anthropic-headers.js';
 import { combineRequestSignals } from './abort-signals.js';
+import { inferProviderFromModel } from './model-resolution.js';
+import { resolveProviderKey, isAuthError } from './provider-credentials.js';
+
+const requireCjs = createRequire(import.meta.url);
+const fleetDefaults = requireCjs('../../shared/model-defaults.cjs') as {
+  DEFAULT_MODEL_BY_PROVIDER: Record<string, string>;
+  DEFAULT_CHAT_MODEL: string;
+};
 
 export interface TextGenerationOptions {
   provider?: string;
@@ -14,7 +24,11 @@ export interface TextGenerationOptions {
   temperature?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
-  codexCredentialsProvider?: (signal?: AbortSignal) => Promise<CodexCredentials | null>;
+  codexCredentialsProvider?: (signal?: AbortSignal, force?: boolean) => Promise<CodexCredentials | null>;
+  /** P2-17: real token usage, written by branches whose provider reports it
+   * (anthropic/minimax, ollama-cloud, openai/xai). Values left at 0 mean
+   * "not measured" — never an estimate. Lobe receipts consume this. */
+  usageSink?: { tokensIn: number; tokensOut: number };
 }
 
 /**
@@ -22,13 +36,8 @@ export interface TextGenerationOptions {
  * Anthropic SDK. Mirrors createAnthropicRuntimeClient in src/agent/loop.ts.
  */
 function oauthStealthHeaders(): Record<string, string> {
-  return {
-    'accept': 'application/json',
-    'anthropic-dangerous-direct-browser-access': 'true',
-    'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,extended-cache-ttl-2025-04-11',
-    'user-agent': 'claude-cli/2.1.32 (external, cli)',
-    'x-app': 'cli',
-  };
+  // Single source: anthropic-headers.ts (P2-18 — was one of five copies).
+  return anthropicOAuthStealthHeaders();
 }
 
 /**
@@ -40,24 +49,44 @@ function anthropicSupportsTemperature(model: string): boolean {
 }
 
 export function inferTextGenerationProvider(model?: string, provider?: string): string {
-  if (provider) return provider;
-  const value = String(model || '');
-  if (value.includes('claude')) return 'anthropic';
-  if (value.includes('MiniMax')) return 'minimax';
-  if (value.includes('grok')) return 'xai';
-  if (value.startsWith('gpt')) return 'openai';
-  return 'ollama-cloud';
+  // LENIENT caller policy over the ONE canonical rule set (model-resolution):
+  // bare unrecognized names route to ollama-cloud, the catch-all serving
+  // tier. Strict callers use resolveModelOverride, which rejects instead —
+  // same rules, declared failure modes (P2-12).
+  const inferred = inferProviderFromModel(String(model || ''), provider || undefined);
+  return inferred === 'unknown' ? 'ollama-cloud' : inferred;
 }
 
 export async function generateText(opts: TextGenerationOptions): Promise<string> {
   const provider = inferTextGenerationProvider(opts.model, opts.provider);
+  // Read-at-use credentials + one fresh retry on auth failure: rotation is a
+  // file write, never a restart list (the token class's wholesale fix,
+  // 2026-08-10). A caller-pinned client can't be rebuilt — no retry there.
+  //
+  // EVERY provider goes through this, codex included. Codex used to return
+  // before this try/catch and so had no recovery from a revoked token at all
+  // — the one gap in the token-rotation fix, and the exact failure that took
+  // the fleet down on 2026-07-27 and 2026-08-08/09. Its "fresh credential"
+  // means a forced refresh through codex-auth.ts (its own OAuth store), not
+  // a secrets.yaml re-read, but the shape is deliberately identical.
+  try {
+    return await generateTextAttempt(opts, provider, false);
+  } catch (error) {
+    if (opts.client === undefined && isAuthError(error)) {
+      return generateTextAttempt(opts, provider, true);
+    }
+    throw error;
+  }
+}
+
+async function generateTextAttempt(opts: TextGenerationOptions, provider: string, forceFreshCredential: boolean): Promise<string> {
   const model = opts.model || defaultModelForProvider(provider);
   const maxTokens = opts.maxTokens ?? 800;
   const temperature = opts.temperature ?? 0.1;
   const timeoutMs = opts.timeoutMs ?? 60_000;
 
   if (provider === 'openai-codex') {
-    return generateCodexText({ ...opts, model, maxTokens, timeoutMs });
+    return generateCodexText({ ...opts, model, maxTokens, timeoutMs }, forceFreshCredential);
   }
 
   const requestSignal = combineRequestSignals(opts.signal, timeoutMs);
@@ -68,7 +97,7 @@ export async function generateText(opts: TextGenerationOptions): Promise<string>
     // headers — NOT as `x-api-key` (that 401s). OAuth calls must also lead with
     // the Claude Code system block, or they are not recognized as subscription
     // traffic and land on a much tighter quota (observed: opus 429).
-    const credential = opts.apiKey || envApiKey(provider) || '';
+    const credential = resolveProviderKey(provider, opts.apiKey, forceFreshCredential);
     const isOAuth = provider === 'anthropic' && credential.startsWith('sk-ant-oat');
     const client = opts.client || (isOAuth
       ? new Anthropic({
@@ -99,11 +128,16 @@ export async function generateText(opts: TextGenerationOptions): Promise<string>
       },
       { signal: requestSignal },
     );
+    const anthropicUsage = (response as { usage?: { input_tokens?: number; output_tokens?: number } }).usage;
+    if (opts.usageSink && anthropicUsage) {
+      opts.usageSink.tokensIn = anthropicUsage.input_tokens ?? 0;
+      opts.usageSink.tokensOut = anthropicUsage.output_tokens ?? 0;
+    }
     return extractAnthropicText(response);
   }
 
   if (provider === 'ollama-cloud') {
-    const apiKey = opts.apiKey || envApiKey(provider);
+    const apiKey = resolveProviderKey(provider, opts.apiKey, forceFreshCredential);
     if (!apiKey) throw new Error('OLLAMA_CLOUD_API_KEY not set');
     const messages = [
       ...(opts.system ? [{ role: 'system', content: opts.system }] : []),
@@ -124,12 +158,16 @@ export async function generateText(opts: TextGenerationOptions): Promise<string>
       const errText = await res.text().catch(() => '');
       throw new Error(`ollama-cloud HTTP ${res.status}: ${errText.slice(0, 300)}`);
     }
-    const data = await res.json() as { message?: { content?: string } };
+    const data = await res.json() as { message?: { content?: string }; prompt_eval_count?: number; eval_count?: number };
+    if (opts.usageSink) {
+      opts.usageSink.tokensIn = data.prompt_eval_count ?? 0;
+      opts.usageSink.tokensOut = data.eval_count ?? 0;
+    }
     return (data.message?.content || '').trim();
   }
 
   if (provider === 'openai' || provider === 'xai') {
-    const apiKey = opts.apiKey || envApiKey(provider);
+    const apiKey = resolveProviderKey(provider, opts.apiKey, forceFreshCredential);
     if (!apiKey) throw new Error(`${provider === 'xai' ? 'XAI_API_KEY' : 'OPENAI_API_KEY'} not set`);
     const baseURL = opts.baseURL || (provider === 'xai' ? 'https://api.x.ai/v1' : 'https://api.openai.com/v1');
     const messages = [
@@ -154,7 +192,11 @@ export async function generateText(opts: TextGenerationOptions): Promise<string>
       const errText = await res.text().catch(() => '');
       throw new Error(`${provider} HTTP ${res.status}: ${errText.slice(0, 300)}`);
     }
-    const data = await res.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const data = await res.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } };
+    if (opts.usageSink && data.usage) {
+      opts.usageSink.tokensIn = data.usage.prompt_tokens ?? 0;
+      opts.usageSink.tokensOut = data.usage.completion_tokens ?? 0;
+    }
     return (data.choices?.[0]?.message?.content || '').trim();
   }
 
@@ -162,22 +204,13 @@ export async function generateText(opts: TextGenerationOptions): Promise<string>
 }
 
 function defaultModelForProvider(provider: string): string {
-  if (provider === 'anthropic') return 'claude-haiku-4-5';
-  if (provider === 'minimax') return 'MiniMax-M3';
-  if (provider === 'openai') return 'gpt-5.4-mini';
-  if (provider === 'openai-codex') return 'gpt-5.6-luna';
-  if (provider === 'xai') return 'grok-4.5';
-  return 'kimi-k2.6';
+  // Single source: shared/model-defaults.cjs (P2-13) — this table used to be
+  // duplicated here, in the codex body default, and across the CLI.
+  return fleetDefaults.DEFAULT_MODEL_BY_PROVIDER[provider] ?? fleetDefaults.DEFAULT_CHAT_MODEL;
 }
 
-function envApiKey(provider: string): string {
-  if (provider === 'anthropic') return process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY || '';
-  if (provider === 'minimax') return process.env.MINIMAX_API_KEY || '';
-  if (provider === 'openai') return process.env.OPENAI_API_KEY || '';
-  if (provider === 'xai') return process.env.XAI_API_KEY || '';
-  if (provider === 'ollama-cloud') return process.env.OLLAMA_CLOUD_API_KEY || '';
-  return '';
-}
+// envApiKey is gone: frozen-env credential reads were the disease (see
+// provider-credentials.ts). Env values survive only as the resolver's floor.
 
 function extractAnthropicText(response: unknown): string {
   const content = (response as { content?: Array<{ type?: string; text?: string }> }).content || [];
@@ -188,13 +221,16 @@ function extractAnthropicText(response: unknown): string {
     .trim();
 }
 
-async function generateCodexText(opts: Required<Pick<TextGenerationOptions, 'prompt'>> & TextGenerationOptions): Promise<string> {
+async function generateCodexText(
+  opts: Required<Pick<TextGenerationOptions, 'prompt'>> & TextGenerationOptions,
+  forceFreshCredential = false,
+): Promise<string> {
   const credentialsProvider = opts.codexCredentialsProvider || getCodexCredentials;
-  const creds = await credentialsProvider(opts.signal);
+  const creds = await credentialsProvider(opts.signal, forceFreshCredential);
   if (!creds) throw new Error('openai-codex credentials not found');
 
   const body: Record<string, unknown> = {
-    model: opts.model || 'gpt-5.6-luna',
+    model: opts.model || fleetDefaults.DEFAULT_MODEL_BY_PROVIDER['openai-codex'],
     instructions: opts.system || '',
     input: [{
       type: 'message',

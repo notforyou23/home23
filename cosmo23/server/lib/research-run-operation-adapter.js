@@ -29,6 +29,7 @@ const TRUSTED_LAUNCH_DEFAULTS = Object.freeze({
 const WATCH_FILTERS = new Set(['all', 'errors', 'progress', 'cycles']);
 const MAX_WATCH_LIMIT = 1_000;
 const MAX_LOG_RING_ENTRIES = 1_500;
+const REQUIRED_PROCESS_NAMES = Object.freeze(['mcp-http', 'main-dashboard', 'cosmo-main']);
 
 function operationError(code, message, options = {}) {
   const error = new Error(message);
@@ -150,6 +151,11 @@ function processNames(status) {
   return status.running
     .filter((entry) => entry && entry.killed !== true && typeof entry.name === 'string')
     .map((entry) => entry.name);
+}
+
+function missingRequiredProcesses(status) {
+  const running = new Set(processNames(status));
+  return REQUIRED_PROCESS_NAMES.filter((name) => !running.has(name));
 }
 
 function childrenAreDown(status) {
@@ -491,7 +497,7 @@ function createResearchRunOperationAdapter(options) {
     let launchResult;
     try {
       launchResult = await launchPreparedResearch(brain, effectiveLaunchOptions, {
-        headers: {}, secure: false, hostname: 'localhost',
+        headers: {}, secure: false, hostname: 'localhost', requesterAgent: record.ownerAgent,
       });
       throwIfAborted(signal);
     } catch (error) {
@@ -515,8 +521,10 @@ function createResearchRunOperationAdapter(options) {
     }
 
     const status = processManager.getStatus();
-    if (!processNames(status).includes('cosmo-main')) {
-      const error = operationError('research_process_exit', 'COSMO engine exited during research launch', {
+    const missingProcesses = missingRequiredProcesses(status);
+    if (missingProcesses.length > 0) {
+      const error = operationError('research_process_exit',
+        `Required COSMO process exited during research launch: ${missingProcesses.join(', ')}`, {
         retryable: true,
       });
       await markFailed(current, error.code, error);
@@ -762,14 +770,16 @@ function createResearchRunOperationAdapter(options) {
       return record;
     }
     const status = processManager.getStatus();
-    if (processNames(status).includes('cosmo-main')) return record;
+    const missingProcesses = missingRequiredProcesses(status);
+    if (missingProcesses.length === 0) return record;
     if (locks.has(record.runId)) return knownRecord(record.runId);
     try {
       return await withRunLock(record.runId, async () => {
         const current = await knownRecord(record.runId);
         if (current.state !== 'active') return current;
         return markFailed(current, 'research_process_exit',
-          operationError('research_process_exit', 'COSMO engine exited while the research run was active', {
+          operationError('research_process_exit',
+            `Required COSMO process exited while the research run was active: ${missingProcesses.join(', ')}`, {
             retryable: true,
           }));
       });

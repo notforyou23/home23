@@ -43,7 +43,11 @@ export class PublishLedger {
     const starving = [];
     for (const [target, maxQuietMs] of Object.entries(this.starvationFloor)) {
       const last = this.lastAt(target);
-      if (last === null || (now - last) > maxQuietMs) starving.push(target);
+      // A missing receipt is not starvation yet: a fresh process may not have
+      // reached this publisher's first eligible cadence. Only measure quiet
+      // time after the target has published at least once; otherwise a restart
+      // turns normal startup latency into a false alarm.
+      if (last !== null && (now - last) > maxQuietMs) starving.push(target);
     }
     return starving;
   }

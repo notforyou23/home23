@@ -22,6 +22,7 @@ const fs = require('fs');
 const os = require('os');
 const { runVerifier } = require('./verifiers');
 const { runRemediator } = require('./remediators');
+const { isOperatorSuppressed } = require('./store');
 const { appendSignal } = require('../cognition/signals');
 const { createFromFuseNotify } = require('../os-kernel/operator-intents');
 
@@ -205,6 +206,17 @@ class LiveProblemsLoop {
       // If an agent was dispatched, clear dispatch state so a future re-opening
       // starts fresh.
       if (p.dispatchedAt) this.store.clearDispatch(p.id);
+      return;
+    }
+
+    // The operator has stood this one down. Keep verifying so the truth stays
+    // current on the dashboard, but spend nothing on remediating it.
+    if (isOperatorSuppressed(p)) {
+      const decision = p.operatorDecision || {};
+      this.logger.info?.(
+        `[live-problems] ${p.id}: remediation suppressed by operator `
+        + `(${decision.kind || 'muted'}${p.mutedUntil ? ` until ${p.mutedUntil}` : ''})`
+      );
       return;
     }
 

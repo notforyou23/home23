@@ -39,6 +39,20 @@ const { TrustKernel } = require('../trust/trust-kernel');
 const RESOLVED_KEEP_MS = 24 * 60 * 60 * 1000;   // keep resolved 24h so pulse can mention once
 const CHRONIC_AFTER_MS = 6 * 60 * 60 * 1000;    // open >6h with no progress → chronic
 
+/**
+ * Operator authority: jtr's decision about a problem, held alongside — never
+ * inside — the verifier's result. A closed problem stays resolved while its
+ * verifier keeps failing honestly in `lastResult`; a muted problem keeps its
+ * real state and only stops consuming remediation budget. Neither one is ever
+ * allowed to rewrite what the check actually observed.
+ */
+function isOperatorSuppressed(problem, nowMs = Date.now()) {
+  if (!problem) return false;
+  if (problem.operatorDecision?.kind === 'closed') return true;
+  const untilMs = problem.mutedUntil ? Date.parse(problem.mutedUntil) : 0;
+  return Boolean(untilMs) && untilMs > nowMs;
+}
+
 function isTransientVerifierFailure(result) {
   if (result?.ok) return false;
   const detail = String(result?.detail || '').toLowerCase();
@@ -95,7 +109,7 @@ class LiveProblemStore {
   save() {
     try {
       const list = [...this.problems.values()];
-      const tmp = this.filePath + '.tmp';
+      const tmp = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
       fs.writeFileSync(tmp, JSON.stringify({ problems: list }, null, 2));
       fs.renameSync(tmp, this.filePath);
       try { this._lastLoadMtimeMs = fs.statSync(this.filePath).mtimeMs; } catch {}
@@ -188,11 +202,20 @@ class LiveProblemStore {
         p.stepIndex = 0;
         this.logger.info?.(`[live-problems] resolved: ${id}`);
       }
+      // The condition is genuinely healthy, so the override has nothing left
+      // to override — drop it rather than let a stale decision linger.
+      delete p.operatorDecision;
       p.escalated = false;
       delete p.escalatedAt;
     } else {
       delete p.transientFailureCount;
       delete p.lastTransientFailure;
+      // Operator closed this one. lastResult above already recorded the real
+      // failure; state stays closed until they reopen it.
+      if (p.operatorDecision?.kind === 'closed') {
+        this.save();
+        return;
+      }
       // Re-open if previously resolved
       if (p.state === 'resolved') {
         p.state = 'open';
@@ -209,6 +232,91 @@ class LiveProblemStore {
     }
     this.save();
     if (resolvedTransition) this._writeResolutionReceipt(p, result, priorState, now);
+  }
+
+  _recordOperatorAction(p, kind, { actor, reason } = {}, now) {
+    p.remediationLog = (p.remediationLog || []).concat([{
+      step: Number(p.stepIndex || 0),
+      type: 'operator_action',
+      outcome: 'accepted',
+      actor: actor || 'operator',
+      detail: `${kind}: ${reason || '(no reason given)'}`,
+      at: now,
+    }]);
+    if (p.remediationLog.length > 50) p.remediationLog = p.remediationLog.slice(-50);
+  }
+
+  /**
+   * Operator closes the problem: their judgment outranks the verifier for
+   * state, and only for state. The failing `lastResult` is left untouched so
+   * the dashboard can show "closed by jtr — check still failing".
+   */
+  operatorClose(id, { actor, reason } = {}) {
+    const p = this.problems.get(id);
+    if (!p) return null;
+    const now = this._touch(p);
+    p.operatorDecision = { kind: 'closed', at: now, actor: actor || 'operator', reason: reason || '' };
+    p.state = 'resolved';
+    p.resolvedAt = now;
+    p.stepIndex = 0;
+    p.escalated = false;
+    delete p.escalatedAt;
+    delete p.dispatchedAt;
+    delete p.dispatchedTurnId;
+    this._recordOperatorAction(p, 'close', { actor, reason }, now);
+    this.save();
+    return p;
+  }
+
+  /** Hand the problem back to the verifier. */
+  operatorReopen(id, { actor, reason } = {}) {
+    const p = this.problems.get(id);
+    if (!p) return null;
+    const now = this._touch(p);
+    delete p.operatorDecision;
+    delete p.mutedUntil;
+    p.state = 'open';
+    p.openedAt = now;
+    p.resolvedAt = null;
+    p.stepIndex = 0;
+    p.escalated = false;
+    delete p.escalatedAt;
+    this._recordOperatorAction(p, 'reopen', { actor, reason }, now);
+    this.save();
+    return p;
+  }
+
+  /**
+   * Stand down remediation until `untilIso` without pretending the problem is
+   * gone. State is deliberately left alone — this is a budget control, not a
+   * claim about the world.
+   */
+  operatorMute(id, { actor, reason, untilIso } = {}) {
+    const p = this.problems.get(id);
+    if (!p) return null;
+    const now = this._touch(p);
+    p.mutedUntil = untilIso || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    p.operatorDecision = {
+      kind: 'muted', at: now, actor: actor || 'operator', reason: reason || '', until: p.mutedUntil,
+    };
+    // A muted problem must not keep a dispatch open, or it spends the whole
+    // wall-clock budget on a turn nobody is waiting for.
+    delete p.dispatchedAt;
+    delete p.dispatchedTurnId;
+    this._recordOperatorAction(p, 'mute', { actor, reason: `${reason || ''} (until ${p.mutedUntil})` }, now);
+    this.save();
+    return p;
+  }
+
+  operatorUnmute(id, { actor, reason } = {}) {
+    const p = this.problems.get(id);
+    if (!p) return null;
+    const now = this._touch(p);
+    delete p.mutedUntil;
+    if (p.operatorDecision?.kind === 'muted') delete p.operatorDecision;
+    this._recordOperatorAction(p, 'unmute', { actor, reason }, now);
+    this.save();
+    return p;
   }
 
   recordRemediation(id, entry) {
@@ -409,4 +517,4 @@ class LiveProblemStore {
   }
 }
 
-module.exports = { LiveProblemStore, RESOLVED_KEEP_MS, CHRONIC_AFTER_MS };
+module.exports = { LiveProblemStore, isOperatorSuppressed, RESOLVED_KEEP_MS, CHRONIC_AFTER_MS };
