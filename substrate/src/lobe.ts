@@ -328,6 +328,19 @@ export function applyLobeDeltas(
       const value = (d.delta as { value?: number }).value ?? 0;
       cell.uncertainty = Math.max(0, Math.min(1, cell.uncertainty + value));
       applied.push(d);
+    } else {
+      // ALLOWLISTED BUT UNIMPLEMENTED — the silent-drop hole (closed 2026-08-13).
+      // `ProposedStateDelta.field` is typed `string`, not the allowlist union
+      // (types.ts:459), so TypeScript gives no exhaustiveness check here. Before
+      // this branch existed, adding a field to LOBE_DELTA_ALLOWLIST without an
+      // apply branch made the delta fall off the end of the chain: neither
+      // applied nor failed, no receipt, invisible to the chain, the journal and
+      // the observatory. A field can now drift out of sync with its apply
+      // branch, but never SILENTLY — the receipt says so.
+      failed.push({
+        kind: 'stateDelta',
+        reason: `field ${d.field} is allowlisted but has no apply branch — refused (this is a code defect, not a lobe error)`,
+      });
     }
   }
 
