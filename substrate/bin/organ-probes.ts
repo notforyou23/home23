@@ -16,6 +16,7 @@
 
 import { readFileSync, readdirSync, statSync, existsSync, openSync, readSync, closeSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 
 const ROOT = '/Users/jtr/_JTR23_/release/home23';
@@ -43,41 +44,92 @@ function tailLines(path: string, n: number): string[] {
   } catch { return []; }
 }
 
-// ── pm2: every home23-* app online (existence — necessary, never sufficient)
-function probePm2(): ProbeResult[] {
+export interface Pm2App { name: string; pm2_env?: { status?: string; restart_time?: number; pm_uptime?: number } }
+
+/**
+ * The organs an install is SUPPOSED to run, from the generated ecosystem —
+ * the same authority `home23 start` uses. Without this the suite can only
+ * grade organs pm2 still remembers, and an organ deleted from pm2 produces
+ * no row at all: silence, which the suite prints as "all organs
+ * FUNCTIONING". This probe suite was BORN from five silent organ deaths and
+ * shipped unable to see a sixth (2026-08-13 audit).
+ */
+export function expectedOrgans(root: string = ROOT): string[] {
   try {
-    const apps = JSON.parse(execFileSync('pm2', ['jlist'], { timeout: 8_000 }).toString()) as
-      Array<{ name: string; pm2_env?: { status?: string; restart_time?: number } }>;
-    const out: ProbeResult[] = [];
-    for (const a of apps.filter((x) => x.name.startsWith('home23-'))) {
-      const status = a.pm2_env?.status ?? '?';
-      out.push({
-        organ: `pm2:${a.name.replace('home23-', '')}`,
-        ok: status === 'online',
-        why: status === 'online' ? `online (↺${a.pm2_env?.restart_time ?? 0})` : status,
-      });
-    }
-    return out;
-  } catch (e) {
-    return [{ organ: 'pm2', ok: false, why: `pm2 unreadable: ${(e as Error).message.slice(0, 60)}` }];
+    const require = createRequire(import.meta.url);
+    const path = join(root, 'ecosystem.config.cjs');
+    delete require.cache[require.resolve(path)];
+    const loaded = require(path) as { apps?: Array<{ name?: string; autostart?: boolean }> };
+    // `autostart: false` is the file's own statement of intent — home23-watchdog
+    // carries it ("disabled pending redesign"). A deliberately-stopped organ
+    // reported as GONE is the flapping mistake again: an alarm that fires on
+    // correct operator action trains people to ignore the alarm. The ecosystem
+    // is loaded as a module so the intent is READ, never pattern-guessed.
+    return [...new Set((loaded.apps ?? [])
+      .filter((a) => typeof a.name === 'string' && a.name.startsWith('home23-') && a.autostart !== false)
+      .map((a) => a.name as string))];
+  } catch { return []; }
+}
+
+/** Pure judgment — proven against synthetic input; see the audit harness. */
+export function judgePm2(apps: Pm2App[] | null, expected: string[]): ProbeResult[] {
+  if (apps === null) return [{ organ: 'pm2', ok: false, why: 'pm2 unreadable — cannot confirm ANY organ is alive' }];
+  const seen = new Map(apps.filter((x) => x.name.startsWith('home23-')).map((a) => [a.name, a]));
+  const out: ProbeResult[] = [];
+  for (const a of seen.values()) {
+    const status = a.pm2_env?.status ?? '?';
+    out.push({
+      organ: `pm2:${a.name.replace('home23-', '')}`,
+      ok: status === 'online',
+      why: status === 'online' ? `online (↺${a.pm2_env?.restart_time ?? 0})` : status,
+    });
   }
+  // THE HOLE THIS CLOSES: an organ the ecosystem declares but pm2 has never
+  // heard of is GONE, not absent-from-the-report.
+  for (const name of expected) {
+    if (seen.has(name)) continue;
+    out.push({ organ: `pm2:${name.replace('home23-', '')}`, ok: false, why: 'DECLARED BY ECOSYSTEM BUT ABSENT FROM PM2 — organ is gone' });
+  }
+  if (out.length === 0) return [{ organ: 'pm2', ok: false, why: 'no home23 organs found at all' }];
+  return out;
+}
+
+function probePm2(): ProbeResult[] {
+  let apps: Pm2App[] | null = null;
+  try { apps = JSON.parse(execFileSync('pm2', ['jlist'], { timeout: 8_000 }).toString()) as Pm2App[]; } catch { apps = null; }
+  return judgePm2(apps, expectedOrgans());
 }
 
 // ── shipper flow: output follows input. If a real conversation file is newer
 // than the stream's tail by more than the window, the life-feed is BEHIND.
 const REAL_SESSION = /^[a-z0-9-]+__(ios_|dashboard-|-?\d+\.jsonl$)/;
-function probeShipperFlow(agent: string): ProbeResult {
+export function probeShipperFlow(agent: string, root: string = ROOT): ProbeResult {
   const organ = `${agent}-shipper-flow`;
   try {
-    const convDir = join(ROOT, 'instances', agent, 'conversations');
+    const convDir = join(root, 'instances', agent, 'conversations');
+    const entries = readdirSync(convDir);
     let newestInput = 0;
-    for (const name of readdirSync(convDir)) {
+    let matched = 0;
+    for (const name of entries) {
       if (!name.endsWith('.jsonl') || !REAL_SESSION.test(name)) continue;
+      matched++;
       const m = statSync(join(convDir, name)).mtimeMs;
       if (m > newestInput) newestInput = m;
     }
-    if (newestInput === 0) return { organ, ok: true, why: 'no conversation files' };
-    const streamPath = join(ROOT, 'instances', agent, 'substrate', 'conversation-stream.jsonl');
+    // Audit 2026-08-13: this branch used to return GREEN. An empty
+    // conversations dir — or REAL_SESSION drifting out of match after a
+    // naming change — meant the life-feed probe reported health while
+    // measuring nothing. A shipper with no input to follow is unproven,
+    // not proven-good.
+    if (matched === 0) {
+      return {
+        organ, ok: false,
+        why: entries.length === 0
+          ? 'conversations dir EMPTY — no input to prove the feed against'
+          : `${entries.length} file(s) present but NONE match the session pattern — probe is measuring nothing`,
+      };
+    }
+    const streamPath = join(root, 'instances', agent, 'substrate', 'conversation-stream.jsonl');
     const lines = tailLines(streamPath, 1);
     const tailTs = lines.length > 0 ? Date.parse((JSON.parse(lines[0] as string) as { ts?: string }).ts ?? '') : NaN;
     const inputAge = ageMin(newestInput);
@@ -88,8 +140,8 @@ function probeShipperFlow(agent: string): ProbeResult {
 }
 
 // ── bobby's mirror: the broker mirrors every ~10min while the exchange runs.
-function probeBobbyMirror(): ProbeResult {
-  const age = fileAgeMin(join(ROOT, 'instances', 'bobby', 'seed-01-mirror', 'seed-ledger.jsonl'));
+export function probeBobbyMirror(root: string = ROOT): ProbeResult {
+  const age = fileAgeMin(join(root, 'instances', 'bobby', 'seed-01-mirror', 'seed-ledger.jsonl'));
   if (age === null) return { organ: 'bobby-mirror', ok: false, why: 'mirror missing' };
   return { organ: 'bobby-mirror', ok: age <= 15, why: `${age}min old${age > 15 ? ' — broker mirror stalled' : ''}` };
 }
@@ -203,17 +255,29 @@ function probePi(): ProbeResult[] {
       'OLD=$(find /home/jtr/bobby/lobe-exchange/requests -name "*.json" -mmin +10 2>/dev/null | wc -l); echo stale_requests=$OLD',
     ].join('; ');
     const out = execFileSync('ssh', ['-o', 'ConnectTimeout=6', PI, script], { timeout: 15_000 }).toString();
-    const get = (k: string): string => (out.match(new RegExp(`${k}=(\\S+)`)) ?? [])[1] ?? '?';
-    const staleReq = Number(get('stale_requests'));
-    return [
-      { organ: 'bobby-runner', ok: get('runner') === 'ok', why: get('runner') },
-      { organ: 'bobby-sense', ok: get('sense') === 'ok', why: get('sense') },
-      { organ: 'bobby-journal', ok: get('journal') === 'ok', why: get('journal') },
-      { organ: 'bobby-exchange', ok: !(staleReq > 0), why: staleReq > 0 ? `${staleReq} request(s) unanswered >10min — broker service dead` : 'serviced' },
-    ];
+    return judgePi(out);
   } catch (e) {
     return [{ organ: 'pi', ok: false, why: `unreachable: ${(e as Error).message.slice(0, 60)}` }];
   }
+}
+
+/** Pure judgment. Audit 2026-08-13: `Number('?')` is NaN and `!(NaN > 0)` is
+ * TRUE, so malformed or truncated ssh output graded bobby-exchange GREEN. An
+ * unparseable answer is not a healthy answer. */
+export function judgePi(out: string | null): ProbeResult[] {
+  if (out === null) return [{ organ: 'pi', ok: false, why: 'no response — cannot confirm any Pi organ' }];
+  const get = (k: string): string => (out.match(new RegExp(`${k}=(\\S+)`)) ?? [])[1] ?? '?';
+  const raw = get('stale_requests');
+  const staleReq = Number(raw);
+  const parsed = raw !== '?' && Number.isFinite(staleReq);
+  return [
+    { organ: 'bobby-runner', ok: get('runner') === 'ok', why: get('runner') === '?' ? 'no answer for runner — output malformed' : get('runner') },
+    { organ: 'bobby-sense', ok: get('sense') === 'ok', why: get('sense') === '?' ? 'no answer for sense — output malformed' : get('sense') },
+    { organ: 'bobby-journal', ok: get('journal') === 'ok', why: get('journal') === '?' ? 'no answer for journal — output malformed' : get('journal') },
+    parsed
+      ? { organ: 'bobby-exchange', ok: staleReq === 0, why: staleReq > 0 ? `${staleReq} request(s) unanswered >10min — broker service dead` : 'serviced' }
+      : { organ: 'bobby-exchange', ok: false, why: 'exchange depth unparseable — cannot confirm the broker is servicing' },
+  ];
 }
 
 // ── engine health. Flapping is restart-count CHURN OVER TIME, not "recently
@@ -224,14 +288,21 @@ function probePi(): ProbeResult[] {
 // observations, so remember the last count and compare.
 const lastRestartCounts = new Map<string, { count: number; seenAt: number }>();
 
-function probeEngines(): ProbeResult[] {
-  try {
-    const apps = JSON.parse(execFileSync('pm2', ['jlist'], { timeout: 8_000 }).toString()) as
-      Array<{ name: string; pm2_env?: { status?: string; restart_time?: number; pm_uptime?: number } }>;
+/** Pure judgment. Two holes closed in the 2026-08-13 audit: `catch { return [] }`
+ * meant a pm2 failure reported NOTHING rather than red, and a missing engine
+ * was `continue`d silently — both of which the suite prints as full health. */
+export function judgeEngines(apps: Pm2App[] | null, names: string[] = ['home23-jerry', 'home23-forrest']): ProbeResult[] {
+  if (apps === null) {
+    return names.map((name) => ({ organ: `engine:${name.replace('home23-', '')}`, ok: false, why: 'pm2 unreadable — cannot confirm the engine is alive' }));
+  }
+  {
     const out: ProbeResult[] = [];
-    for (const name of ['home23-jerry', 'home23-forrest']) {
+    for (const name of names) {
       const a = apps.find((x) => x.name === name);
-      if (a === undefined) continue;
+      if (a === undefined) {
+        out.push({ organ: `engine:${name.replace('home23-', '')}`, ok: false, why: 'ABSENT FROM PM2 — the engine is gone' });
+        continue;
+      }
       const upMin = a.pm2_env?.pm_uptime !== undefined ? ageMin(a.pm2_env.pm_uptime) : null;
       const count = a.pm2_env?.restart_time ?? 0;
       const prior = lastRestartCounts.get(name);
@@ -248,7 +319,13 @@ function probeEngines(): ProbeResult[] {
       });
     }
     return out;
-  } catch { return []; }
+  }
+}
+
+function probeEngines(): ProbeResult[] {
+  let apps: Pm2App[] | null = null;
+  try { apps = JSON.parse(execFileSync('pm2', ['jlist'], { timeout: 8_000 }).toString()) as Pm2App[]; } catch { apps = null; }
+  return judgeEngines(apps);
 }
 
 export function probeAll(): ProbeResult[] {
