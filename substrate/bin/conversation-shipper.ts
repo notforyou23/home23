@@ -138,11 +138,19 @@ function main(): void {
 }
 
 /**
- * Run ONLY when invoked as the process, never on import. The shipper-flow
- * probe imports `shippableTurn` from this module; without this guard that
- * import would start a SECOND shipper inside the probe — two writers appending
- * to one stream, which is the fork this house forbids everywhere else.
+ * Run ONLY when invoked as the process, never on import — an import must not
+ * become a SECOND writer appending to one stream, the fork this house forbids
+ * everywhere else.
+ *
+ * Ask the question in a way a SUPERVISED process can answer. Under PM2 fork
+ * mode argv[1] is PM2's own `ProcessContainerFork.js` and the real entry point
+ * is named in `pm_exec_path`; an argv[1]-only check therefore reads the live
+ * shipper as an import, main() never runs, and the process exits 0 in seconds
+ * with its banner unprinted — `pm2 list` says "online" while the life-feed is
+ * gone. That cost 3,939 restarts and ~3.2h of unshipped conversation on
+ * 2026-08-13. Either name being this file means we ARE the shipper.
  */
-const invokedDirectly = process.argv[1]?.endsWith('conversation-shipper.ts') === true
-  || process.argv[1]?.endsWith('conversation-shipper.js') === true;
+const SELF = /conversation-shipper\.(ts|js)$/;
+const invokedDirectly = SELF.test(process.argv[1] ?? '')
+  || SELF.test(process.env['pm_exec_path'] ?? '');
 if (invokedDirectly) main();
