@@ -46,9 +46,16 @@ const TOOL_EVENT_RESULT_LIMIT_CHARS = 4000;
 const DEFAULT_TURN_TIMEOUT_MS = 15 * 60 * 1000;
 const DEFAULT_TURN_HARD_DURATION_MS = 8 * 60 * 60 * 1000;
 const DEFAULT_FIRST_TOKEN_TIMEOUT_MS = 30 * 1000;
+const XAI_THINKING_CHUNK_TARGET_CHARS = 96;
+const XAI_THINKING_CHUNK_MAX_CHARS = 240;
 
 function hashText(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 16);
+}
+
+function shouldFlushXaiThinkingBuffer(content: string): boolean {
+  return content.length >= XAI_THINKING_CHUNK_MAX_CHARS
+    || (content.length >= XAI_THINKING_CHUNK_TARGET_CHARS && /(?:\n|[.!?]\s*)$/.test(content));
 }
 
 function stringifyContent(content: string | ContentBlock[]): string {
@@ -1761,8 +1768,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             ];
 
             type ToolCallObj = { id?: string; type?: string; function: { name: string; arguments: string | Record<string, unknown> } };
-            let previousResponseId: string | null = null;
-            let nextInputItems: Array<Record<string, unknown>> | null = null;
+            const xaiInputItems: Array<Record<string, unknown>> = [...initialInput];
 
             for (let i = 0; i < MAX_ITERATIONS; i++) {
               if (ac.signal.aborted) {
@@ -1772,11 +1778,9 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 return { text: interruptText, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
               }
 
-              const inputItems = nextInputItems ?? initialInput;
-
               const xaiBody = {
                 model: runtimeModel,
-                input: inputItems,
+                input: xaiInputItems,
                 tools: xaiTools.length > 0 ? xaiTools : undefined,
                 tool_choice: xaiTools.length > 0 ? 'auto' : undefined,
                 parallel_tool_calls: true,
@@ -1785,7 +1789,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 temperature: this.temperature,
                 tool_stream: true,
                 stream: true,
-                ...(previousResponseId ? { previous_response_id: previousResponseId } : {}),
+                include: ['reasoning.encrypted_content'],
               };
 
               const xaiTimeout = 120_000;
@@ -1807,30 +1811,34 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               // Parse SSE stream
               let textContent = '';
               let reasoningSummary = '';
+              let pendingThinking = '';
               let streamedAnswer = false;
               type FunctionCallItem = { call_id: string; name: string; arguments: string };
               const functionCallItems: FunctionCallItem[] = [];
+              const completedOutputItems: Array<Record<string, unknown>> = [];
               const serverToolNames: string[] = [];
-              let responseId: string | null = null;
+              const flushThinking = (): void => {
+                if (!pendingThinking) return;
+                if (onEvent) onEvent({ type: 'thinking', content: pendingThinking });
+                pendingThinking = '';
+              };
 
               for await (const event of parseSSE(res.body)) {
                 const evType = event.type as string | undefined;
-                const maybeResponse = event.response as Record<string, unknown> | undefined;
-                if (typeof maybeResponse?.id === 'string') {
-                  responseId = maybeResponse.id;
-                } else if (typeof event.id === 'string') {
-                  responseId = event.id as string;
-                }
                 if (evType === 'response.output_text.delta') {
+                  flushThinking();
                   textContent += (event.delta as string) ?? '';
                   if (onEvent && event.delta) {
                     streamedAnswer = true;
                     onEvent({ type: 'response_chunk', chunk: event.delta as string });
                   }
                 } else if (evType === 'response.output_text.done') {
+                  flushThinking();
                   textContent = (event.text as string) ?? textContent;
                 } else if (evType === 'response.output_item.done') {
                   const item = event.item as Record<string, unknown> | undefined;
+                  flushThinking();
+                  if (item) completedOutputItems.push(item);
                   if (item?.type === 'function_call') {
                     functionCallItems.push({ call_id: item.call_id as string, name: item.name as string, arguments: (item.arguments as string) ?? '{}' });
                   } else {
@@ -1851,12 +1859,24 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                     }
                   }
                 } else if (evType === 'response.reasoning_summary_text.delta') {
-                  reasoningSummary += (event.delta as string) ?? '';
-                  if (onEvent) onEvent({ type: 'thinking', content: (event.delta as string) ?? '' });
+                  const delta = (event.delta as string) ?? '';
+                  reasoningSummary += delta;
+                  pendingThinking += delta;
+                  if (shouldFlushXaiThinkingBuffer(pendingThinking)) flushThinking();
                 } else if (evType === 'response.reasoning_summary_text.done') {
-                  reasoningSummary = (event.text as string) ?? reasoningSummary;
+                  const completedSummary = (event.text as string) ?? '';
+                  if (completedSummary) {
+                    if (!reasoningSummary) {
+                      pendingThinking += completedSummary;
+                    } else if (completedSummary.startsWith(reasoningSummary)) {
+                      pendingThinking += completedSummary.slice(reasoningSummary.length);
+                    }
+                    reasoningSummary = completedSummary;
+                  }
+                  flushThinking();
                 }
               }
+              flushThinking();
 
               const answerText = (textContent || reasoningSummary || '').trim();
               const toolCalls: ToolCallObj[] = functionCallItems.map(fc => ({
@@ -1883,15 +1903,13 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 return { text: answer, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
               }
 
-              if (!responseId) {
-                throw new Error('xai responses missing response id for tool continuation');
-              }
-
-              previousResponseId = responseId;
-              nextInputItems = [];
+              // ZDR organizations cannot hydrate previous_response_id. Replay the
+              // complete response output (including encrypted reasoning and the
+              // completed function_call items) before appending matching outputs.
+              xaiInputItems.push(...completedOutputItems);
               for (const tc of toolCalls) {
                 if (ac.signal.aborted) {
-                  nextInputItems.push({ type: 'function_call_output', call_id: tc.id, output: 'Interrupted by /stop' });
+                  xaiInputItems.push({ type: 'function_call_output', call_id: tc.id, output: 'Interrupted by /stop' });
                   continue;
                 }
                 toolCallCount++;
@@ -1911,10 +1929,10 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   });
                   const { result } = formatted;
                   if (result.media?.length) { allMedia.push(...result.media); if (onEvent) for (const m of result.media) onEvent({ type: 'media', mediaType: m.type || 'image', path: m.path, caption: m.caption }); }
-                  nextInputItems.push({ type: 'function_call_output', call_id: tc.id, output: formatted.modelContent });
+                  xaiInputItems.push({ type: 'function_call_output', call_id: tc.id, output: formatted.modelContent });
                 } catch (toolErr) {
                   const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
-                  nextInputItems.push({ type: 'function_call_output', call_id: tc.id, output: `Error: ${errMsg}` });
+                  xaiInputItems.push({ type: 'function_call_output', call_id: tc.id, output: `Error: ${errMsg}` });
                   if (onEvent) onEvent({ type: 'tool_result', tool: tc.function.name, result: errMsg, success: false });
                 }
               }

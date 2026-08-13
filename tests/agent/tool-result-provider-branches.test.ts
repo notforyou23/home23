@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentLoop } from '../../src/agent/loop.js';
@@ -291,4 +291,234 @@ test('xAI receives an object-root schema without unsupported composition keyword
   for (const keyword of ['oneOf', 'anyOf', 'allOf', 'not', 'if', 'then', 'else']) {
     assert.doesNotMatch(serialized, new RegExp(`"${keyword}"`));
   }
+});
+
+const GROK_ZDR_TOOL = 'lookup_local_fact';
+
+async function runGrokZdrScenario(rejectPreviousResponseId: boolean): Promise<{
+  resultText: string;
+  requests: Array<Record<string, unknown>>;
+  events: Array<Record<string, unknown>>;
+  persistedEvents: Array<Record<string, unknown>>;
+  terminalRecord: Record<string, unknown>;
+}> {
+  const root = join(tmpdir(), `grok-zdr-${process.pid}-${Math.random()}`);
+  mkdirSync(join(root, 'workspace'), { recursive: true });
+  const history = new ConversationHistory(join(root, 'conversations'), 400_000, 'test-agent');
+  const requests: Array<Record<string, unknown>> = [];
+  const events: Array<Record<string, unknown>> = [];
+  const tool = {
+    name: GROK_ZDR_TOOL,
+    description: 'Look up one local fact',
+    input_schema: {
+      type: 'object',
+      properties: { topic: { type: 'string' } },
+      required: ['topic'],
+    },
+    execute: async () => ({ content: 'local result for ZDR' }),
+  };
+  const registry = {
+    getAnthropicTools: () => [{
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.input_schema,
+    }],
+    getOpenAITools: () => [{
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.input_schema,
+      },
+    }],
+    get: (name: string) => name === tool.name ? tool : undefined,
+    execute: async (name: string) => {
+      assert.equal(name, tool.name);
+      return tool.execute();
+    },
+  };
+  const agent = new AgentLoop({
+    apiKey: 'test-key',
+    model: 'grok-test',
+    provider: 'xai',
+    registry: registry as never,
+    contextManager: {
+      getSystemPrompt: () => 'You are a test agent.',
+      getPromptSourceInfo: () => ({ loadedFiles: [] }),
+    } as never,
+    history,
+    toolContext: {
+      brainOperations: makeBrainOperations(),
+      turnRuntime: null,
+    } as never,
+    workspacePath: join(root, 'workspace'),
+  });
+
+  const originalFetch = globalThis.fetch;
+  const previousXaiKey = process.env.XAI_API_KEY;
+  process.env.XAI_API_KEY = 'test-key';
+  let xaiCall = 0;
+  const chatId = `chat-grok-zdr-${rejectPreviousResponseId ? 'strict' : 'events'}`;
+
+  try {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === 'string' || input instanceof URL
+        ? String(input)
+        : input.url);
+      if (url.hostname === '127.0.0.1' || url.hostname === 'localhost') {
+        return new Response('{}', { status: 503 });
+      }
+      assert.equal(url.href, 'https://api.x.ai/v1/responses');
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requests.push(structuredClone(body));
+      xaiCall += 1;
+
+      if (xaiCall === 1) {
+        return sse([
+          { type: 'response.created', response: { id: 'xai-response-zdr-1' } },
+          { type: 'response.reasoning_summary_text.delta', delta: 'Need' },
+          { type: 'response.reasoning_summary_text.delta', delta: ' the' },
+          { type: 'response.reasoning_summary_text.delta', delta: ' local' },
+          { type: 'response.reasoning_summary_text.delta', delta: ' result.' },
+          { type: 'response.reasoning_summary_text.done', text: 'Need the local result.' },
+          {
+            type: 'response.output_item.done',
+            item: {
+              type: 'reasoning',
+              id: 'reasoning-1',
+              encrypted_content: 'opaque-reasoning-1',
+            },
+          },
+          {
+            type: 'response.output_item.done',
+            item: {
+              type: 'function_call',
+              id: 'function-call-1',
+              status: 'completed',
+              call_id: 'call-1',
+              name: GROK_ZDR_TOOL,
+              arguments: '{"topic":"zdr"}',
+            },
+          },
+        ]);
+      }
+
+      if (rejectPreviousResponseId && Object.hasOwn(body, 'previous_response_id')) {
+        return new Response(
+          'Previous response cannot be used for this organization due to Zero Data Retention',
+          { status: 404 },
+        );
+      }
+
+      return sse([
+        { type: 'response.reasoning_summary_text.delta', delta: 'Use' },
+        { type: 'response.reasoning_summary_text.delta', delta: ' that' },
+        { type: 'response.reasoning_summary_text.delta', delta: ' result.' },
+        { type: 'response.reasoning_summary_text.done', text: 'Use that result.' },
+        {
+          type: 'response.output_item.done',
+          item: {
+            type: 'reasoning',
+            id: 'reasoning-2',
+            encrypted_content: 'opaque-reasoning-2',
+          },
+        },
+        { type: 'response.output_text.delta', delta: 'Final ' },
+        { type: 'response.output_text.delta', delta: 'answer.' },
+        { type: 'response.output_text.done', text: 'Final answer.' },
+      ]);
+    }) as typeof fetch;
+
+    const started = await agent.runWithTurn(chatId, 'Use the local lookup', {
+      firstTokenTimeoutMs: 60_000,
+      inactivityMs: 60_000,
+      hardDurationMs: 120_000,
+      onEvent: event => events.push(event as unknown as Record<string, unknown>),
+    });
+    const result = await started.response;
+    const records = readFileSync(
+      join(root, 'conversations', `test-agent__${chatId}.jsonl`),
+      'utf8',
+    ).trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>);
+    const persistedEvents = records.filter(record => record.type === 'event');
+    const terminalRecord = records.findLast(record =>
+      record.type === 'turn' && record.status === 'complete')!;
+    return {
+      resultText: result.text,
+      requests,
+      events,
+      persistedEvents,
+      terminalRecord,
+    };
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousXaiKey === undefined) delete process.env.XAI_API_KEY;
+    else process.env.XAI_API_KEY = previousXaiKey;
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test('xAI Grok continues a local tool call statelessly under ZDR', async () => {
+  const result = await runGrokZdrScenario(true);
+  assert.equal(result.resultText, 'Final answer.');
+  assert.equal(result.requests.length, 2);
+  for (const request of result.requests) {
+    assert.equal(Object.hasOwn(request, 'previous_response_id'), false);
+    assert.deepEqual(request.include, ['reasoning.encrypted_content']);
+  }
+
+  const initialInput = result.requests[0]!.input as Array<Record<string, unknown>>;
+  const followupInput = result.requests[1]!.input as Array<Record<string, unknown>>;
+  assert.deepEqual(followupInput.slice(0, initialInput.length), initialInput);
+  assert.deepEqual(followupInput.slice(initialInput.length), [
+    {
+      type: 'reasoning',
+      id: 'reasoning-1',
+      encrypted_content: 'opaque-reasoning-1',
+    },
+    {
+      type: 'function_call',
+      id: 'function-call-1',
+      status: 'completed',
+      call_id: 'call-1',
+      name: GROK_ZDR_TOOL,
+      arguments: '{"topic":"zdr"}',
+    },
+    {
+      type: 'function_call_output',
+      call_id: 'call-1',
+      output: 'local result for ZDR',
+    },
+  ]);
+});
+
+test('xAI Grok coalesces thinking while preserving tool/result/final-answer event order', async () => {
+  const result = await runGrokZdrScenario(false);
+  assert.deepEqual(result.events, [
+    { type: 'thinking', content: 'Need the local result.' },
+    { type: 'tool_start', tool: GROK_ZDR_TOOL, args: { topic: 'zdr' } },
+    {
+      type: 'tool_result',
+      tool: GROK_ZDR_TOOL,
+      result: 'local result for ZDR',
+      success: true,
+    },
+    { type: 'thinking', content: 'Use that result.' },
+    { type: 'response_chunk', chunk: 'Final ' },
+    { type: 'response_chunk', chunk: 'answer.' },
+  ]);
+
+  const responseChunks = result.events
+    .filter(event => event.type === 'response_chunk')
+    .map(event => event.chunk);
+  assert.equal(responseChunks.join(''), result.resultText);
+  assert.ok(
+    result.events.findIndex(event => event.type === 'response_chunk')
+      > result.events.findIndex(event => event.type === 'tool_result'),
+  );
+  assert.deepEqual(
+    result.persistedEvents.map(event => event.seq),
+    result.persistedEvents.map((_, index) => index + 1),
+  );
+  assert.equal(result.terminalRecord.last_seq, result.persistedEvents.length);
 });
