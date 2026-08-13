@@ -464,7 +464,10 @@ export function buildLobePrompt(packet: WorkspacePacket): string {
     // refused, never ASKED. Usage tracked prompt real estate almost exactly:
     // estimates.append was the only field with a worked example and took 37%
     // of all deltas; intentions.append appeared once, mid-sentence, in a list
-    // of shapes. It is the ONLY lobe-writable term in admissionScore — the
+    // of shapes. It is the only lobe-writable term that can RAISE a cell's claim
+    // (uncertainty.adjust also reaches admissionScore, via modulation — but across
+    // both lives 170 of its 208 applications were NEGATIVE: they could settle
+    // themselves down and never speak up). It is the
     // only way thinking can change what this individual attends to next — and
     // it sat unused since Cut 2 for want of a sentence.
     `                   {"cellId": "${cellIds[0] ?? 'CELL'}", "field": "intentions.append", "delta": {"description": "...", "magnitude": 0.5, "direction": "..."}, "authority": "propose"}],`,

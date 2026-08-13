@@ -370,7 +370,10 @@ test('prompt shows the exact response shape with the admitted cellId inline', ()
  * 24 predictions.resolve — `intentions.append` was proposed ZERO times. Never
  * refused; never asked. Usage tracked prompt real estate almost exactly, and
  * intentions.append had one mid-sentence mention in a list of shapes and no
- * worked example. It is the ONLY lobe-writable term in admissionScore — the
+ * worked example. It is the only lobe-writable term that can RAISE a cell's
+ * claim (uncertainty.adjust also reaches admissionScore via modulation, but 170
+ * of its 208 applications across both lives were NEGATIVE — they could settle
+ * themselves and never speak up). It is the
  * one delta by which thinking changes what the individual attends to next.
  *
  * These pin the ask, because a capability nobody is invited to use is
