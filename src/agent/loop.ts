@@ -1817,6 +1817,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               const functionCallItems: FunctionCallItem[] = [];
               const completedOutputItems: Array<Record<string, unknown>> = [];
               const serverToolNames: string[] = [];
+              let terminalEvent: Record<string, unknown> | null = null;
               const flushThinking = (): void => {
                 if (!pendingThinking) return;
                 if (onEvent) onEvent({ type: 'thinking', content: pendingThinking });
@@ -1825,7 +1826,12 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
 
               for await (const event of parseSSE(res.body)) {
                 const evType = event.type as string | undefined;
-                if (evType === 'response.output_text.delta') {
+                if (evType === 'response.completed'
+                    || evType === 'response.failed'
+                    || evType === 'response.incomplete') {
+                  terminalEvent = event;
+                  break;
+                } else if (evType === 'response.output_text.delta') {
                   flushThinking();
                   textContent += (event.delta as string) ?? '';
                   if (onEvent && event.delta) {
@@ -1877,6 +1883,39 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 }
               }
               flushThinking();
+
+              if (!terminalEvent) {
+                throw new Error('xai responses stream ended before response.completed');
+              }
+              if (terminalEvent.type === 'response.failed') {
+                const response = terminalEvent.response && typeof terminalEvent.response === 'object'
+                  ? terminalEvent.response as Record<string, unknown>
+                  : undefined;
+                const rawError = response?.error ?? terminalEvent.error;
+                const error = rawError && typeof rawError === 'object'
+                  ? rawError as Record<string, unknown>
+                  : undefined;
+                const detail = [
+                  typeof error?.code === 'string' ? error.code : '',
+                  typeof error?.message === 'string'
+                    ? error.message
+                    : (typeof rawError === 'string' ? rawError : ''),
+                ].filter(Boolean).join(': ');
+                throw new Error(`xai responses failed${detail ? `: ${detail}` : ''}`);
+              }
+              if (terminalEvent.type === 'response.incomplete') {
+                const response = terminalEvent.response && typeof terminalEvent.response === 'object'
+                  ? terminalEvent.response as Record<string, unknown>
+                  : undefined;
+                const rawDetails = response?.incomplete_details ?? terminalEvent.incomplete_details;
+                const details = rawDetails && typeof rawDetails === 'object'
+                  ? rawDetails as Record<string, unknown>
+                  : undefined;
+                const reason = typeof details?.reason === 'string'
+                  ? details.reason
+                  : (typeof rawDetails === 'string' ? rawDetails : '');
+                throw new Error(`xai responses incomplete${reason ? `: ${reason}` : ''}`);
+              }
 
               const answerText = (textContent || reasoningSummary || '').trim();
               const toolCalls: ToolCallObj[] = functionCallItems.map(fc => ({
