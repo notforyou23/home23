@@ -14,7 +14,7 @@
  * escalates persistent reds to jtr's phone via the bridge notify path.
  */
 
-import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, existsSync, openSync, readSync, closeSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
@@ -94,20 +94,101 @@ function probeBobbyMirror(): ProbeResult {
   return { organ: 'bobby-mirror', ok: age <= 15, why: `${age}min old${age > 15 ? ' — broker mirror stalled' : ''}` };
 }
 
-// ── seed thought-health: the last lobe outcomes in the runner log. Two
-// consecutive errors = the mind is failing (the 401 class, seen in receipts).
-function probeSeedThought(agent: string): ProbeResult {
-  const organ = `${agent}-seed-thought`;
-  const lines = tailLines(join(ROOT, 'instances', agent, 'logs', 'seed-out.log'), 400)
-    .filter((l) => / lobe .*applied=/.test(l));
-  if (lines.length === 0) return { organ, ok: true, why: 'no recruitments in window' };
-  const recent = lines.slice(-2);
-  const errors = recent.filter((l) => l.includes('error='));
-  if (errors.length === recent.length && recent.length >= 2) {
-    const detail = (errors[errors.length - 1] ?? '').split('error=')[1]?.slice(0, 60) ?? 'unknown';
-    return { organ, ok: false, why: `last ${recent.length} recruitments failed: ${detail}` };
+/**
+ * Seed thought-health — CAN THIS INDIVIDUAL STILL FORM A THOUGHT?
+ *
+ * Rewritten 2026-08-13 after this probe read GREEN through a 43% lifetime
+ * thought-failure rate on jerry and 33% on forrest, including 10-of-10
+ * blackout windows on both and a 21-hour silence. Three holes, each proven
+ * against synthetic input before this rewrite:
+ *
+ *   1. It examined the LAST TWO recruitments and required BOTH to fail. An
+ *      80%-failure interleave (fail,fail,ok,fail,fail,ok…) never presents two
+ *      failures at the tail, so chronic degradation read as perfect health.
+ *   2. No recruitments found -> `ok: true, 'no recruitments in window'`. An
+ *      individual that had STOPPED THINKING ENTIRELY read green. Absence of
+ *      evidence returned as evidence of health — the cardinal sin, and the
+ *      house's own standing rule broken in the instrument that enforces it.
+ *   3. It read a 400-line tail of seed-out.log. Logs rotate; the chain does
+ *      not. A rotated log read green.
+ *
+ * Now: reads the CHAIN (authoritative, append-only), scores a RATE over a
+ * window rather than a pair, treats SILENCE as a failure mode in its own
+ * right, and returns RED — never green — when it cannot see.
+ *
+ * Thresholds are taken from the live distributions, not invented: gaps
+ * between recruitments run median 36-43min, p99 59-65min, so a 180min
+ * silence is ~3x p99 and cannot be ordinary throttling. Failure rate is
+ * scored over 10 recruitments because the observed cadence (~33/day) makes
+ * that roughly a third of a day of thinking.
+ */
+const THOUGHT_WINDOW = 10;          // recruitments scored
+const THOUGHT_FAIL_RED = 0.5;       // >= half the window failing = the mind is failing
+const THOUGHT_SILENCE_MIN = 180;    // ~3x the p99 inter-recruitment gap
+
+/** Byte-tail a large append-only file without reading all of it. */
+function tailBytes(path: string, bytes: number): string {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, 'r');
+    const size = statSync(path).size;
+    const start = Math.max(0, size - bytes);
+    const buf = Buffer.alloc(Math.min(bytes, size));
+    readSync(fd, buf, 0, buf.length, start);
+    return buf.toString('utf-8');
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
-  return { organ, ok: true, why: `last recruitment ok (${lines.length} in window)` };
+}
+
+/** `root` is injectable ONLY so this can be proven against synthetic chains.
+ * The first version of this probe shipped untested because it was untestable,
+ * and it then read green through a 43% thought-failure rate. */
+export function probeSeedThought(agent: string, root: string = ROOT): ProbeResult {
+  const organ = `${agent}-seed-thought`;
+  const chain = join(root, 'instances', agent, 'substrate', 'seed-01', 'seed-ledger.jsonl');
+  let raw: string;
+  try {
+    raw = tailBytes(chain, 512 * 1024);
+  } catch (e) {
+    // Cannot see is NOT healthy. This is the branch the old probe got wrong.
+    return { organ, ok: false, why: `chain unreadable: ${(e as Error).message.slice(0, 60)}` };
+  }
+
+  const outcomes: Array<{ at: number; failed: boolean; error?: string }> = [];
+  for (const line of raw.split('\n')) {
+    if (!line.includes('"category":"lobe"')) continue;
+    try {
+      const r = JSON.parse(line) as { issuedAt?: string; payload?: { error?: string } };
+      const at = Date.parse(r.issuedAt ?? '');
+      if (Number.isNaN(at)) continue;
+      const error = r.payload?.error;
+      outcomes.push({ at, failed: typeof error === 'string' && error.length > 0, ...(error !== undefined ? { error } : {}) });
+    } catch { /* partial first line from the byte-tail cut — skip */ }
+  }
+
+  if (outcomes.length === 0) {
+    return { organ, ok: false, why: 'NO THOUGHT ON RECORD in the chain window — cannot confirm this individual thinks' };
+  }
+
+  const last = outcomes[outcomes.length - 1] as { at: number; failed: boolean; error?: string };
+  const silentMin = Math.round((Date.now() - last.at) / 60_000);
+  if (silentMin > THOUGHT_SILENCE_MIN) {
+    return { organ, ok: false, why: `HAS NOT THOUGHT in ${silentMin}min (p99 gap is ~65min) — recruitment has stopped` };
+  }
+
+  const window = outcomes.slice(-THOUGHT_WINDOW);
+  const failed = window.filter((o) => o.failed).length;
+  const rate = failed / window.length;
+  const detail = window.filter((o) => o.failed).pop()?.error?.slice(0, 50) ?? '';
+  if (rate >= THOUGHT_FAIL_RED) {
+    return { organ, ok: false, why: `${failed}/${window.length} recent thoughts FAILED (${Math.round(rate * 100)}%): ${detail}` };
+  }
+  return {
+    organ,
+    ok: true,
+    why: `${window.length - failed}/${window.length} thoughts ok, last ${silentMin}min ago${failed > 0 ? ` (${failed} failed — watch)` : ''}`,
+  };
 }
 
 // ── Pi organs, one ssh round-trip: runner lock alive, sense + journal
