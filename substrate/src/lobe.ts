@@ -457,7 +457,17 @@ export function buildLobePrompt(packet: WorkspacePacket): string {
     `  "observations": [{"cellId": "${cellIds[0] ?? 'CELL'}", "claim": "...", "confidence": 0.6, "evidenceRef": "refId"}],`,
     `  "interpretations": [{"cellId": "${cellIds[0] ?? 'CELL'}", "interpretation": "...", "confidence": 0.6}],`,
     `  "predictions": [{"cellId": "${cellIds[0] ?? 'CELL'}", "claim": "...", "confidence": 0.5, "horizon": "24h"}],`,
-    `  "stateDeltas": [{"cellId": "${cellIds[0] ?? 'CELL'}", "field": "estimates.append", "delta": {"claim": "...", "confidence": 0.6, "evidenceRefs": []}, "authority": "propose"}],`,
+    `  "stateDeltas": [{"cellId": "${cellIds[0] ?? 'CELL'}", "field": "estimates.append", "delta": {"claim": "...", "confidence": 0.6, "evidenceRefs": []}, "authority": "propose"},`,
+    // A SECOND worked example, deliberately intentions.append (2026-08-13).
+    // Audit finding: across jerry's and forrest's entire lives, 148
+    // estimates.append and ZERO intentions.append — never proposed, never
+    // refused, never ASKED. Usage tracked prompt real estate almost exactly:
+    // estimates.append was the only field with a worked example and took 37%
+    // of all deltas; intentions.append appeared once, mid-sentence, in a list
+    // of shapes. It is the ONLY lobe-writable term in admissionScore — the
+    // only way thinking can change what this individual attends to next — and
+    // it sat unused since Cut 2 for want of a sentence.
+    `                   {"cellId": "${cellIds[0] ?? 'CELL'}", "field": "intentions.append", "delta": {"description": "...", "magnitude": 0.5, "direction": "..."}, "authority": "propose"}],`,
     '  "uncertainty": 0.5',
     '}',
     '',
@@ -472,6 +482,15 @@ export function buildLobePrompt(packet: WorkspacePacket): string {
     'predictions arrays are advisory context recorded in the receipt — anything',
     'you want REMEMBERED must be a stateDelta (a prediction you want held open',
     'must be a predictions.append delta, not just a predictions[] entry).',
+    'The packet\'s "tensions" are YOUR OWN open intentions — unfinished business',
+    'you named earlier and have not closed. An empty tensions array does not mean',
+    'nothing is unfinished; it means you have never said so. An intention is',
+    'EARNED when contact opens something this cell cannot finish in the moment:',
+    'a question left hanging, work begun, something owed to jtr. Give it a',
+    'magnitude for how hard it pulls. Unlike a prediction, it makes no claim',
+    'about the world and cannot be right or wrong — it is what you are left',
+    'holding. Open tensions raise this cell\'s claim on the next stage: this is',
+    'the one delta by which your thinking changes what you will next attend to.',
     'Open predictions in the packet are DEBTS, and a debt is settled by REALITY,',
     'not by revisiting it. Each carries horizon + createdAt. THE LAW: a claim',
     'about a future window cannot be CONFIRMED before that window elapses —',

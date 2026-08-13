@@ -363,3 +363,46 @@ test('prompt shows the exact response shape with the admitted cellId inline', ()
   assert.match(prompt, /"cellId": "world\.home23"/, 'the example must carry the real admitted cellId');
   assert.match(prompt, /rejected unread/);
 });
+
+/**
+ * The prompt must ASK. Audit 2026-08-13: across jerry's and forrest's entire
+ * lives — 148 estimates.append, 199 uncertainty.adjust, 28 predictions.append,
+ * 24 predictions.resolve — `intentions.append` was proposed ZERO times. Never
+ * refused; never asked. Usage tracked prompt real estate almost exactly, and
+ * intentions.append had one mid-sentence mention in a list of shapes and no
+ * worked example. It is the ONLY lobe-writable term in admissionScore — the
+ * one delta by which thinking changes what the individual attends to next.
+ *
+ * These pin the ask, because a capability nobody is invited to use is
+ * indistinguishable from one that does not exist.
+ */
+test('the lobe prompt demonstrates intentions.append, not only estimates.append', () => {
+  const prompt = buildLobePrompt({
+    activeCellIds: ['c1'], eventRefs: [], tensions: [], predictions: [],
+    uncertainty: 0.5, requestedCapability: 'lobe.recruit.model', authorityCeiling: 'propose',
+    tokenBudget: 2000,
+    outputContract: { allowedOutputKinds: ['observations', 'interpretations', 'predictions', 'stateDeltas'], maxTokenBudget: 2000 },
+  });
+  const lines = prompt.split('\n');
+  const start = lines.findIndex((l) => l.includes('Exact response shape'));
+  assert.ok(start >= 0, 'response shape block must exist');
+  const block = lines.slice(start + 1, lines.indexOf('}', start) + 1).join('\n');
+  const example = JSON.parse(block) as { stateDeltas: Array<{ field: string }> };
+  const fields = new Set(example.stateDeltas.map((d) => d.field));
+  assert.ok(fields.has('intentions.append'), 'intentions.append must be WORKED, not merely listed');
+  assert.ok(fields.has('estimates.append'));
+});
+
+test('the prompt names "tensions" — the packet key the lobe is shown', () => {
+  const prompt = buildLobePrompt({
+    activeCellIds: ['c1'], eventRefs: [], tensions: [], predictions: [],
+    uncertainty: 0.5, requestedCapability: 'lobe.recruit.model', authorityCeiling: 'propose',
+    tokenBudget: 2000,
+    outputContract: { allowedOutputKinds: ['observations', 'interpretations', 'predictions', 'stateDeltas'], maxTokenBudget: 2000 },
+  });
+  // The packet shows `tensions`; before this the prose never used the word, so
+  // an always-empty array had no vocabulary connecting it to the field that
+  // fills it. Shown a hole he was never told he could fill.
+  assert.match(prompt, /tensions/, 'the prose must name the packet key');
+  assert.match(prompt, /EARNED/, 'the prompt must say WHEN an intention is warranted');
+});
