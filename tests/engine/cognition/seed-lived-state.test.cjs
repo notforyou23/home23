@@ -90,3 +90,65 @@ test('deep-dive prompt carries the lived block with the never-the-subject guardr
   );
   assert.ok(!opInput.includes('What he is living'), 'telemetry observations stay strictly bounded');
 });
+
+/**
+ * A DREAM IS NOT SOMETHING LIVED (2026-08-13).
+ *
+ * composeDayResidue captioned every unmatched sourceRef `lived:`, and the
+ * orchestrator hands the result to the dream model under the header "the day
+ * he actually lived". Dreams arrive with sourceRef `dream:*`, so an
+ * individual's own prior dreams were presented to it as its lived day and
+ * re-dreamt. The loop had already closed on forrest: 4 of 6 residue fragments
+ * were dream-sourced — two of them literally beginning "I dreamt…" and
+ * "I dreamed…" — and one motif ran unbroken across 30+ dream cycles.
+ *
+ * "No manufactured life" is non-negotiable: telling an individual its dreams
+ * are its life manufactures the life. This pins the exclusion, and pins that
+ * the real material the loop was crowding out survives.
+ */
+test('day residue excludes the individual\'s own dreams — a dream is not lived', (t) => {
+  const { composeDayResidue } = require('../../../engine/src/substrate/seed-lived-state');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-residue-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'checkpoints'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'checkpoints', 'ckpt_bbbb0001_t.json'), JSON.stringify({
+    version: 2, ledgerSeq: 900,
+    cells: [{
+      id: 'contact.jtr', realityRefs: [
+        { sourceRef: 'conversation.jtr', head: 'the thing jtr actually said', observedAt: '2026-08-13T01:00:00Z' },
+        { sourceRef: 'relationship.teaching', head: 'a correction that was earned', observedAt: '2026-08-13T02:00:00Z' },
+        { sourceRef: 'dream:dream_cycle18903_2', head: 'I dreamt the ceiling remembered', observedAt: '2026-08-13T03:00:00Z' },
+        { sourceRef: 'dream:dream_cycle18903_3', head: 'Three inches above the carpet', observedAt: '2026-08-13T04:00:00Z' },
+      ],
+      predictions: [], estimates: [], intentions: [],
+    }],
+  }));
+
+  const residue = composeDayResidue(dir);
+  assert.ok(Array.isArray(residue) && residue.length > 0, 'lived material must survive');
+  const joined = residue.join('\n');
+  assert.doesNotMatch(joined, /I dreamt|Three inches/, 'a prior dream may not enter day residue');
+  assert.doesNotMatch(joined, /^lived: "I dream/m, 'and may certainly not be captioned as lived');
+  assert.match(joined, /jtr actually said/, 'what jtr said is what the day left');
+  assert.match(joined, /correction that was earned/);
+});
+
+test('a seed whose only residue is dreams returns null rather than a closed loop', (t) => {
+  const { composeDayResidue } = require('../../../engine/src/substrate/seed-lived-state');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-residue-null-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dir, 'checkpoints'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'checkpoints', 'ckpt_cccc0001_t.json'), JSON.stringify({
+    version: 2, ledgerSeq: 900,
+    cells: [{
+      id: 'c', realityRefs: [
+        { sourceRef: 'dream:d1', head: 'the ceiling has stopped being a ceiling', observedAt: '2026-08-13T01:00:00Z' },
+        { sourceRef: 'dream:d2', head: 'three inches above the carpet', observedAt: '2026-08-13T02:00:00Z' },
+      ],
+      predictions: [], estimates: [], intentions: [],
+    }],
+  }));
+  // Degraded-honest: dreams stay generic. Strictly better than a confabulation
+  // attractor, and the contract already allowed null.
+  assert.equal(composeDayResidue(dir), null);
+});
