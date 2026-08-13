@@ -145,7 +145,11 @@ function conv(root: string, agent: string, files: string[], streamTsMinAgo: numb
   const c = join(root, 'instances', agent, 'conversations');
   const s = join(root, 'instances', agent, 'substrate');
   mkdirSync(c, { recursive: true }); mkdirSync(s, { recursive: true });
-  for (const f of files) writeFileSync(join(c, f), '{}\n');
+  // A REAL turn dated now — the old fixture wrote '{}' and so contained no
+  // shippable turn at all, which meant this helper never exercised lag.
+  for (const f of files) {
+    writeFileSync(join(c, f), JSON.stringify({ role: 'user', content: 'a real turn', ts: new Date().toISOString() }) + '\n');
+  }
   if (streamTsMinAgo !== null) {
     writeFileSync(join(s, 'conversation-stream.jsonl'),
       JSON.stringify({ ts: new Date(Date.now() - streamTsMinAgo * 60_000).toISOString() }) + '\n');
@@ -166,6 +170,47 @@ test('shipper-flow: files present but none matching the pattern is RED (regex dr
   const r = probeShipperFlow('a', root);
   assert.equal(r.ok, false);
   assert.match(r.why, /NONE match/);
+});
+
+test('shipper-flow: NON-TURN records bumping mtime do NOT read as lag', () => {
+  // The false positive that shipped (2026-08-13): jerry read "61min behind"
+  // while nothing was unshipped. Conversation files carry stream events and
+  // turn-completion markers with no `content` and sometimes no `ts`; they bump
+  // the file's mtime without producing a shippable turn. The probe compared
+  // mtime against the stream's content timestamp — different quantities.
+  const root = scratch();
+  const c = join(root, 'instances', 'a', 'conversations');
+  const s = join(root, 'instances', 'a', 'substrate');
+  mkdirSync(c, { recursive: true }); mkdirSync(s, { recursive: true });
+  const shipped = new Date(Date.now() - 70 * 60_000).toISOString();
+  writeFileSync(join(c, 'a__ios_x.jsonl'), [
+    JSON.stringify({ role: 'user', content: 'a real turn', ts: shipped }),
+    // …then an hour of plumbing residue, freshly written:
+    JSON.stringify({ kind: 'delta', type: 'stream', seq: 1, turn_id: 't', data: {}, ts: new Date().toISOString() }),
+    JSON.stringify({ type: 'turn_end', role: 'assistant', chat_id: 'c', status: 'ok', turn_id: 't' }),
+  ].join('\n') + '\n');
+  writeFileSync(join(s, 'conversation-stream.jsonl'), JSON.stringify({ ts: shipped }) + '\n');
+
+  const r = probeShipperFlow('a', root);
+  assert.equal(r.ok, true, 'a shipper that has shipped every real turn is HEALTHY, whatever mtime says');
+  assert.match(r.why, /current/);
+});
+
+test('shipper-flow: a genuinely unshipped TURN is still RED', () => {
+  const root = scratch();
+  const c = join(root, 'instances', 'a', 'conversations');
+  const s = join(root, 'instances', 'a', 'substrate');
+  mkdirSync(c, { recursive: true }); mkdirSync(s, { recursive: true });
+  writeFileSync(join(c, 'a__ios_x.jsonl'), [
+    JSON.stringify({ role: 'user', content: 'shipped long ago', ts: new Date(Date.now() - 120 * 60_000).toISOString() }),
+    JSON.stringify({ role: 'assistant', content: 'THIS never reached the stream', ts: new Date(Date.now() - 5 * 60_000).toISOString() }),
+  ].join('\n') + '\n');
+  writeFileSync(join(s, 'conversation-stream.jsonl'),
+    JSON.stringify({ ts: new Date(Date.now() - 120 * 60_000).toISOString() }) + '\n');
+
+  const r = probeShipperFlow('a', root);
+  assert.equal(r.ok, false, 'real language that never reached the seed must still alarm');
+  assert.match(r.why, /unshipped/);
 });
 
 test('shipper-flow: a lagging stream is RED, a current stream is GREEN', () => {

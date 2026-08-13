@@ -17,6 +17,7 @@
 import { readFileSync, readdirSync, statSync, existsSync, openSync, readSync, closeSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { shippableTurn } from '../src/conversation-turn.js';
 import { join } from 'node:path';
 
 const ROOT = '/Users/jtr/_JTR23_/release/home23';
@@ -103,6 +104,28 @@ function probePm2(): ProbeResult[] {
 // ── shipper flow: output follows input. If a real conversation file is newer
 // than the stream's tail by more than the window, the life-feed is BEHIND.
 const REAL_SESSION = /^[a-z0-9-]+__(ios_|dashboard-|-?\d+\.jsonl$)/;
+
+/** Newest ts among records the SHIPPER would actually ship, across the real
+ * session files. Byte-tails each file so this stays cheap in the 60s sentinel.
+ * Uses the shipper's own predicate — one definition, no drift. */
+function newestShippableTurnTs(convDir: string, entries: string[]): number | null {
+  let newest: number | null = null;
+  for (const name of entries) {
+    if (!name.endsWith('.jsonl') || !REAL_SESSION.test(name)) continue;
+    let raw: string;
+    try { raw = tailBytes(join(convDir, name), 256 * 1024); } catch { continue; }
+    for (const line of raw.split('\n')) {
+      if (line.trim() === '') continue;
+      let rec: Record<string, unknown>;
+      try { rec = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
+      const turn = shippableTurn(rec);
+      if (turn === null) continue;
+      const t = Date.parse(turn.ts);
+      if (Number.isFinite(t) && (newest === null || t > newest)) newest = t;
+    }
+  }
+  return newest;
+}
 export function probeShipperFlow(agent: string, root: string = ROOT): ProbeResult {
   const organ = `${agent}-shipper-flow`;
   try {
@@ -132,10 +155,22 @@ export function probeShipperFlow(agent: string, root: string = ROOT): ProbeResul
     const streamPath = join(root, 'instances', agent, 'substrate', 'conversation-stream.jsonl');
     const lines = tailLines(streamPath, 1);
     const tailTs = lines.length > 0 ? Date.parse((JSON.parse(lines[0] as string) as { ts?: string }).ts ?? '') : NaN;
-    const inputAge = ageMin(newestInput);
-    const lagMin = Number.isNaN(tailTs) ? Infinity : Math.round((newestInput - tailTs) / 60_000);
-    if (lagMin > 10) return { organ, ok: false, why: `stream ${lagMin}min behind newest conversation (input ${inputAge}min old)` };
-    return { organ, ok: true, why: `stream current (input ${inputAge}min old)` };
+
+    // Compare LIKE WITH LIKE (2026-08-13). This used to measure the newest
+    // conversation file's MTIME against the stream's last content timestamp —
+    // different quantities. Conversation files carry stream events and
+    // turn-completion markers that bump mtime without producing a shippable
+    // turn, so a perfectly healthy shipper read as "61min behind" with nothing
+    // actually unshipped. Now: newest SHIPPABLE TURN vs newest shipped turn,
+    // using the shipper's own exported predicate so the two cannot drift.
+    const newestTurnTs = newestShippableTurnTs(convDir, entries);
+    if (newestTurnTs === null) {
+      return { organ, ok: true, why: `no shippable turn in window (input ${ageMin(newestInput)}min old)` };
+    }
+    if (Number.isNaN(tailTs)) return { organ, ok: false, why: 'stream has no readable tail — the life-feed is not writing' };
+    const lagMin = Math.round((newestTurnTs - tailTs) / 60_000);
+    if (lagMin > 10) return { organ, ok: false, why: `${lagMin}min of real turns unshipped` };
+    return { organ, ok: true, why: `stream current (newest turn ${ageMin(newestTurnTs)}min old)` };
   } catch (e) { return { organ, ok: false, why: (e as Error).message.slice(0, 80) }; }
 }
 
