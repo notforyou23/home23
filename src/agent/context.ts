@@ -30,8 +30,38 @@ export interface ContextConfig {
   enginePort: number;
   ownerName?: string;
   ownerTelegramId?: string;
+  /** Agent's IANA timezone (config `agent.timezone`) — renders the prompt
+   * timestamp agent-local so the model never reads UTC as the local clock. */
+  timezone?: string;
   /** Per-file identity char budgets (Step 30); overrides DEFAULT_IDENTITY_BUDGETS. */
   identityBudgets?: Record<string, number>;
+}
+
+/**
+ * Render a prompt timestamp that cannot be misread as the wrong clock:
+ * agent-local first with an explicit zone label, UTC clearly marked after.
+ * A bare toISOString() here was read as local time on 2026-08-11 — 23:43Z
+ * became "late night" in a greeting at 7:41 PM EDT. Invalid/missing
+ * timezone degrades to the labeled UTC form rather than an unlabeled one.
+ */
+export function formatContextTimestamp(date: Date, timezone?: string): string {
+  const iso = date.toISOString();
+  if (!timezone) return `${iso} (UTC — no agent timezone configured)`;
+  try {
+    const local = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZoneName: 'short',
+    }).format(date);
+    return `${local} (${timezone}) — UTC ${iso}`;
+  } catch {
+    return `${iso} (UTC — configured timezone "${timezone}" is invalid)`;
+  }
 }
 
 export class ContextManager implements ContextManagerRef {
@@ -141,9 +171,12 @@ export class ContextManager implements ContextManagerRef {
 
     const identity = layerBlocks.join('\n\n---\n\n');
 
+    // The system prompt is cached between rebuilds, so this timestamp is the
+    // BUILD time, not the current turn's time — label it as such and point
+    // at the live sources so a stale value is never mistaken for "now".
     const contextBlock = [
       `[CONTEXT]`,
-      `Current time: ${new Date().toISOString()}`,
+      `Time at prompt build: ${formatContextTimestamp(new Date(), this.config.timezone)} — static; for the current moment trust session context (NOW) or the machine clock`,
       `Machine: ${hostname()}`,
       `User: ${this.config.ownerName ?? 'unknown'}${this.config.ownerTelegramId ? ` (Telegram ID: ${this.config.ownerTelegramId})` : ''}`,
       `Engine: http://localhost:${this.config.enginePort}`,
