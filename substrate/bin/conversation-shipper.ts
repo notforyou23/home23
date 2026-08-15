@@ -26,6 +26,7 @@ import { readFileSync, writeFileSync, appendFileSync, readdirSync, statSync, ope
 import { fetchRawEmbedding } from '../src/embed-fetch.js';
 import { join, basename } from 'node:path';
 import { projectEmbedding, EMBED_DIM } from '../src/semantic-projection.js';
+import { shippableTurn } from '../src/conversation-turn.js';
 
 const conversationsDir = process.env['SHIPPER_CONVERSATIONS_DIR'];
 const streamPath = process.env['SHIPPER_STREAM_PATH'];
@@ -100,15 +101,9 @@ function pass(cursor: Record<string, number>): number {
       if (line.trim() === '') continue;
       let rec: Record<string, unknown>;
       try { rec = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
-      const role = rec['role'];
-      if (role !== 'user' && role !== 'assistant') continue;
-      const text = rec['content'];
-      if (typeof text !== 'string' || text.trim().length < 3) continue;
-      // Language only — tool-use placeholders and attachment markers are
-      // plumbing residue, not the life. ("[Used tools: shell]", "[image]" …)
-      if (/^\[[^\]]{1,200}\]$/.test(text.trim())) continue;
-      const ts = typeof rec['ts'] === 'string' ? rec['ts'] : null;
-      if (ts === null || !Number.isFinite(Date.parse(ts))) continue;
+      const turn = shippableTurn(rec);
+      if (turn === null) continue;
+      const { role, text, ts } = turn;
       const vector = embedTurn(text);
       const out = {
         ts,
@@ -142,4 +137,20 @@ function main(): void {
   setInterval(tick, pollMs);
 }
 
-main();
+/**
+ * Run ONLY when invoked as the process, never on import — an import must not
+ * become a SECOND writer appending to one stream, the fork this house forbids
+ * everywhere else.
+ *
+ * Ask the question in a way a SUPERVISED process can answer. Under PM2 fork
+ * mode argv[1] is PM2's own `ProcessContainerFork.js` and the real entry point
+ * is named in `pm_exec_path`; an argv[1]-only check therefore reads the live
+ * shipper as an import, main() never runs, and the process exits 0 in seconds
+ * with its banner unprinted — `pm2 list` says "online" while the life-feed is
+ * gone. That cost 3,939 restarts and ~3.2h of unshipped conversation on
+ * 2026-08-13. Either name being this file means we ARE the shipper.
+ */
+const SELF = /conversation-shipper\.(ts|js)$/;
+const invokedDirectly = SELF.test(process.argv[1] ?? '')
+  || SELF.test(process.env['pm_exec_path'] ?? '');
+if (invokedDirectly) main();

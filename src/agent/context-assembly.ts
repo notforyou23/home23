@@ -91,6 +91,73 @@ const DOMAIN_SURFACES = [
   { name: 'RECENT',   file: 'RECENT.md',   budget: 3000, alwaysBoost: false, isFact: false },
 ] as const;
 
+/**
+ * Meaning anchors for the operational AGENCY / WORKERS surfaces.
+ * Same shape as triggered surfaces (v2 cut 3): the labels are anchors for
+ * semantic match; substring match is the degraded-honest fallback when the
+ * embedder is down or the turn is too short to carry topic.
+ *
+ * These used to ride every turn at 0.98/0.9 salience. On 2026-08-11 that
+ * always-on operational briefing steered a simple greeting (Chronesthesia /
+ * pursuits into "what's good"). K2 is law: nothing new rides every turn —
+ * first-turn wake-up stays, later turns must earn admission.
+ */
+export const AGENCY_MEANING_ANCHORS = [
+  'agency',
+  'pursuit',
+  'pursuits',
+  'next move',
+  'autonomous',
+  'resident agency',
+  'what are you working on',
+  'open contradiction',
+  'authority',
+  'agenda',
+] as const;
+
+export const WORKER_MEANING_ANCHORS = [
+  'worker',
+  'workers',
+  'worker run',
+  'worker receipt',
+  'dispatch worker',
+  'verifier',
+  'reusable worker',
+] as const;
+
+export interface OperationalSurfaceGateInput {
+  isFirstTurn: boolean;
+  degraded: boolean;
+  brainCueCount: number;
+  triggerCount: number;
+  turnText: string;
+  /** Turn + recent context for substring fallback (same haystack as triggered surfaces). */
+  matchText: string;
+  label: string;
+  anchors: readonly string[];
+  semanticEmbed?: (t: string) => number[] | null;
+}
+
+/**
+ * Gate for AGENCY / WORKERS — mirrors non-alwaysBoost DOMAIN_SURFACES for the
+ * wake/cue path, then admits mid-session turns only when their meaning pulls
+ * on the surface's anchors (triggered-surface pattern).
+ */
+export function shouldLoadOperationalSurface(input: OperationalSurfaceGateInput): boolean {
+  // Same load conditions as DOMAIN_SURFACES / FACTS@seed (first-turn wake-up,
+  // brain/trigger cues, or degraded retrieval that must not starve the turn).
+  if (input.isFirstTurn || input.degraded || input.brainCueCount > 0 || input.triggerCount > 0) {
+    return true;
+  }
+
+  const anchorText = `${input.label}: ${input.anchors.join(', ')}`;
+  const score = semanticMatchScore(input.turnText, anchorText, input.semanticEmbed);
+  if (score !== null) return score >= SEMANTIC_MATCH_FLOOR;
+
+  const hay = input.matchText.toLowerCase();
+  return input.anchors.some(anchor => hay.includes(anchor.toLowerCase()));
+}
+
 // ─── Surface Loading ────────────────────────────────────
 
 function loadSurface(workspacePath: string, filename: string, budget: number): string | null {
@@ -614,30 +681,51 @@ export async function assembleContext(
     });
   }
 
-  const workerSection = buildWorkerContextSection(
-    projectRootFromWorkspace(config.workspacePath),
-    agentNameFromWorkspace(config.workspacePath),
-  );
-  if (workerSection) {
-    surfacesLoaded.push('WORKERS');
-    salienceItems.push({
-      text: `\nRelevant context (WORKERS):\n${workerSection}`,
-      score: 0.9,
-      source: 'surface:WORKERS',
-    });
+  // AGENCY / WORKERS — operational spine, not always-on narration.
+  // First turn keeps the wake-up brief; later turns earn admission the same
+  // way triggered surfaces do (cues, or meaning against the anchors above).
+  const opsGateBase = {
+    isFirstTurn,
+    degraded,
+    brainCueCount: brainCues.length,
+    triggerCount: triggerMatches.length,
+    turnText: userText,
+    matchText: triggerMatchText,
+    semanticEmbed: config.semanticEmbed,
+  };
+  const projectRoot = projectRootFromWorkspace(config.workspacePath);
+  const agentName = agentNameFromWorkspace(config.workspacePath);
+
+  if (shouldLoadOperationalSurface({
+    ...opsGateBase,
+    label: 'WORKERS',
+    anchors: WORKER_MEANING_ANCHORS,
+  })) {
+    const workerSection = buildWorkerContextSection(projectRoot, agentName);
+    if (workerSection) {
+      surfacesLoaded.push('WORKERS');
+      salienceItems.push({
+        text: `\nRelevant context (WORKERS):\n${workerSection}`,
+        score: 0.9,
+        source: 'surface:WORKERS',
+      });
+    }
   }
 
-  const agencySection = buildAgencyContextSection(
-    projectRootFromWorkspace(config.workspacePath),
-    agentNameFromWorkspace(config.workspacePath),
-  );
-  if (agencySection) {
-    surfacesLoaded.push('AGENCY');
-    salienceItems.push({
-      text: `\nRelevant context (AGENCY):\n${agencySection}`,
-      score: 0.98,
-      source: 'surface:AGENCY',
-    });
+  if (shouldLoadOperationalSurface({
+    ...opsGateBase,
+    label: 'AGENCY',
+    anchors: AGENCY_MEANING_ANCHORS,
+  })) {
+    const agencySection = buildAgencyContextSection(projectRoot, agentName);
+    if (agencySection) {
+      surfacesLoaded.push('AGENCY');
+      salienceItems.push({
+        text: `\nRelevant context (AGENCY):\n${agencySection}`,
+        score: 0.98,
+        source: 'surface:AGENCY',
+      });
+    }
   }
 
   // SUBSTRATE (Seed → situational awareness): lived, receipted facts from
