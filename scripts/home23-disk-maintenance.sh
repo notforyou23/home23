@@ -4,7 +4,11 @@
 set -euo pipefail
 
 ROOT="${HOME23_ROOT:-/Users/jtr/_JTR23_/release/home23}"
-DATA_MOUNT="${HOME23_DATA_MOUNT:-/System/Volumes/Data}"
+# macOS keeps user data on /System/Volumes/Data; elsewhere default to /.
+# HOME23_DATA_MOUNT overrides both.
+DEFAULT_DATA_MOUNT="/"
+[[ -d /System/Volumes/Data ]] && DEFAULT_DATA_MOUNT="/System/Volumes/Data"
+DATA_MOUNT="${HOME23_DATA_MOUNT:-$DEFAULT_DATA_MOUNT}"
 BRAIN_ROOTS=(
   "$ROOT/instances/jerry/brain"
   "$ROOT/instances/forrest/brain"
