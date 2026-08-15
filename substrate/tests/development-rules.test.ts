@@ -171,7 +171,9 @@ test('end-to-end: a lobe resolving a prediction produces a resolution.v1 develop
       { cellId, field: 'predictions.resolve', delta: { predictionId, error: 0.05 }, authority: 'propose' },
     ])),
   };
-  const resolved = await seed.recruitLobe(resolver, outcome.packet, '2026-08-08T02:20:00.000Z');
+  // Past the prediction's 1h horizon: the premature-resolution law admits a
+  // confirmation only once the claimed window has actually elapsed.
+  const resolved = await seed.recruitLobe(resolver, outcome.packet, '2026-08-08T03:20:00.000Z');
   assert.equal(resolved.applied.length, 1, 'the resolution landed');
 
   const receipts = devReceipts(dir);
@@ -201,6 +203,6 @@ test('end-to-end: a lobe resolving a prediction produces a resolution.v1 develop
     ])),
   };
   const before = devReceipts(dir).length;
-  await seed.recruitLobe(ambiguous, outcome.packet, '2026-08-08T02:40:00.000Z');
+  await seed.recruitLobe(ambiguous, outcome.packet, '2026-08-08T03:40:00.000Z');
   assert.equal(devReceipts(dir).length, before, 'the ambiguous band produced no development receipt');
 });

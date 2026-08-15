@@ -24,6 +24,8 @@ import type {
   IntentionTension,
   ModelReceipt,
 } from './types.js';
+import { parseHorizon } from './concern.js';
+import { RESOLUTION_WRONG_MIN } from './plasticity.js';
 
 // ─── Bounds ──────────────────────────────────────────────────────────────────
 
@@ -290,6 +292,31 @@ export function applyLobeDeltas(
       const idx = cell.predictions.findIndex((p) => p.predictionId === body?.predictionId);
       if (idx < 0) { failed.push({ kind: 'stateDelta', reason: `prediction ${String(body?.predictionId)} not found` }); continue; }
       const err = body?.error;
+      // THE PREMATURE-RESOLUTION LAW (2026-08-12). A claim about a future
+      // window cannot be CONFIRMED before that window elapses — "stable
+      // through the 19th" is not satisfiable on the 12th, and closing it
+      // early is paperwork, not resolution. Measured before this rule: every
+      // commitment on both individuals was discharged long before its horizon
+      // (up to 335h early), which meant no obligation ever survived to press,
+      // and Cut 6's endogenous crossings were unreachable — the capability
+      // decorative by bookkeeping rather than by any solver fault.
+      //
+      // Falsification is the one honest early close: "already broken" IS
+      // answered by present evidence. So before the horizon, only a
+      // resolution in the wrong band (error >= RESOLUTION_WRONG_MIN) is
+      // admitted; confirmations and ambiguous middles wait for reality.
+      // An unparseable horizon cannot be checked, so it is not enforced —
+      // the membrane refuses what it can prove, never what it suspects.
+      const pending = cell.predictions[idx] as Prediction;
+      const dueAt = parseHorizon(pending.horizon, pending.createdAt);
+      const errorValue = typeof err === 'number' && Number.isFinite(err) ? Math.max(0, Math.min(1, err)) : null;
+      if (dueAt !== null && Date.parse(asOf) < Date.parse(dueAt) && (errorValue === null || errorValue < RESOLUTION_WRONG_MIN)) {
+        failed.push({
+          kind: 'stateDelta',
+          reason: `premature resolution refused: “${pending.claim.slice(0, 60)}” runs to ${dueAt} — only falsification (error >= ${RESOLUTION_WRONG_MIN}) may close a claim early`,
+        });
+        continue;
+      }
       const resolved: Prediction = {
         ...(cell.predictions[idx] as Prediction),
         resolvedAt: asOf,
@@ -301,6 +328,19 @@ export function applyLobeDeltas(
       const value = (d.delta as { value?: number }).value ?? 0;
       cell.uncertainty = Math.max(0, Math.min(1, cell.uncertainty + value));
       applied.push(d);
+    } else {
+      // ALLOWLISTED BUT UNIMPLEMENTED — the silent-drop hole (closed 2026-08-13).
+      // `ProposedStateDelta.field` is typed `string`, not the allowlist union
+      // (types.ts:459), so TypeScript gives no exhaustiveness check here. Before
+      // this branch existed, adding a field to LOBE_DELTA_ALLOWLIST without an
+      // apply branch made the delta fall off the end of the chain: neither
+      // applied nor failed, no receipt, invisible to the chain, the journal and
+      // the observatory. A field can now drift out of sync with its apply
+      // branch, but never SILENTLY — the receipt says so.
+      failed.push({
+        kind: 'stateDelta',
+        reason: `field ${d.field} is allowlisted but has no apply branch — refused (this is a code defect, not a lobe error)`,
+      });
     }
   }
 
@@ -417,7 +457,20 @@ export function buildLobePrompt(packet: WorkspacePacket): string {
     `  "observations": [{"cellId": "${cellIds[0] ?? 'CELL'}", "claim": "...", "confidence": 0.6, "evidenceRef": "refId"}],`,
     `  "interpretations": [{"cellId": "${cellIds[0] ?? 'CELL'}", "interpretation": "...", "confidence": 0.6}],`,
     `  "predictions": [{"cellId": "${cellIds[0] ?? 'CELL'}", "claim": "...", "confidence": 0.5, "horizon": "24h"}],`,
-    `  "stateDeltas": [{"cellId": "${cellIds[0] ?? 'CELL'}", "field": "estimates.append", "delta": {"claim": "...", "confidence": 0.6, "evidenceRefs": []}, "authority": "propose"}],`,
+    `  "stateDeltas": [{"cellId": "${cellIds[0] ?? 'CELL'}", "field": "estimates.append", "delta": {"claim": "...", "confidence": 0.6, "evidenceRefs": []}, "authority": "propose"},`,
+    // A SECOND worked example, deliberately intentions.append (2026-08-13).
+    // Audit finding: across jerry's and forrest's entire lives, 148
+    // estimates.append and ZERO intentions.append — never proposed, never
+    // refused, never ASKED. Usage tracked prompt real estate almost exactly:
+    // estimates.append was the only field with a worked example and took 37%
+    // of all deltas; intentions.append appeared once, mid-sentence, in a list
+    // of shapes. It is the only lobe-writable term that can RAISE a cell's claim
+    // (uncertainty.adjust also reaches admissionScore, via modulation — but across
+    // both lives 170 of its 208 applications were NEGATIVE: they could settle
+    // themselves down and never speak up). It is the
+    // only way thinking can change what this individual attends to next — and
+    // it sat unused since Cut 2 for want of a sentence.
+    `                   {"cellId": "${cellIds[0] ?? 'CELL'}", "field": "intentions.append", "delta": {"description": "...", "magnitude": 0.5, "direction": "..."}, "authority": "propose"}],`,
     '  "uncertainty": 0.5',
     '}',
     '',
@@ -432,11 +485,26 @@ export function buildLobePrompt(packet: WorkspacePacket): string {
     'predictions arrays are advisory context recorded in the receipt — anything',
     'you want REMEMBERED must be a stateDelta (a prediction you want held open',
     'must be a predictions.append delta, not just a predictions[] entry).',
-    'Open predictions in the packet are DEBTS. When current evidence answers one',
-    '(fulfilled, falsified, or past its horizon — each carries horizon+createdAt),',
-    'RESOLVE it via predictions.resolve {predictionId, error: 0..1 magnitude of',
-    'how wrong it was} instead of restating it. Resolution is how consequence',
-    'reaches development; an answered prediction left open teaches nothing.',
+    'The packet\'s "tensions" are YOUR OWN open intentions — unfinished business',
+    'you named earlier and have not closed. An empty tensions array does not mean',
+    'nothing is unfinished; it means you have never said so. An intention is',
+    'EARNED when contact opens something this cell cannot finish in the moment:',
+    'a question left hanging, work begun, something owed to jtr. Give it a',
+    'magnitude for how hard it pulls. Unlike a prediction, it makes no claim',
+    'about the world and cannot be right or wrong — it is what you are left',
+    'holding. Open tensions raise this cell\'s claim on the next stage: this is',
+    'the one delta by which your thinking changes what you will next attend to.',
+    'Open predictions in the packet are DEBTS, and a debt is settled by REALITY,',
+    'not by revisiting it. Each carries horizon + createdAt. THE LAW: a claim',
+    'about a future window cannot be CONFIRMED before that window elapses —',
+    '"stable through the 19th" is not satisfiable on the 12th, and the membrane',
+    'REFUSES such a resolution (receipted as a rejection). Before the horizon,',
+    'only FALSIFICATION may close a prediction: propose predictions.resolve',
+    '{predictionId, error >= 0.7} when present evidence has ALREADY BROKEN the',
+    'claim. Past the horizon, resolve honestly with the error magnitude',
+    '(0 = it held exactly, 1 = it was wrong). A prediction still inside its',
+    'window is not unfinished business — leave it open and let it run; that',
+    'waiting is the individual\'s own obligation accruing, and it is the point.',
     '',
     `PACKET: ${JSON.stringify(packet)}`,
   ].join('\n');

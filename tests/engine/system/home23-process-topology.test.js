@@ -38,6 +38,38 @@ test('classifies arbitrary Home23 sibling triplets without hardcoding Jerry', ()
   }
 });
 
+test('classifies conditional mcp and seed processes as agent roles, not phantom agents', () => {
+  const mcp = classifyHome23Process({
+    name: 'home23-jerry-mcp',
+    script: `${ROOT}/engine/mcp/http-server.js`,
+  });
+  assert.equal(mcp.role, 'agent-mcp');
+  assert.equal(mcp.agentName, 'jerry');
+  assert.equal(mcp.topologyWarning, null);
+
+  const seed = classifyHome23Process({
+    name: 'home23-jerry-seed',
+    script: `${ROOT}/substrate/bin/seed-runner.ts`,
+  });
+  assert.equal(seed.role, 'agent-seed');
+  assert.equal(seed.agentName, 'jerry');
+  assert.equal(seed.category, 'agent');
+  assert.equal(seed.topologyWarning, null);
+  assert.match(seed.interpretation, /seed runner/i);
+});
+
+test('two seed processes for one agent are duplicate candidates — never two live instances', () => {
+  const annotated = annotateHome23ProcessList([
+    { name: 'home23-jerry-seed', script: `${ROOT}/substrate/bin/seed-runner.ts` },
+    { name: 'home23-jerry-seed', script: `${ROOT}/substrate/bin/seed-runner.ts` },
+    { name: 'home23-forrest-seed', script: `${ROOT}/substrate/bin/seed-runner.ts` },
+  ]);
+
+  assert.equal(annotated[0].topology.duplicateCandidate, true);
+  assert.equal(annotated[1].topology.duplicateCandidate, true);
+  assert.equal(annotated[2].topology.duplicateCandidate, false);
+});
+
 test('side-by-side agents using the same role scripts are expected, not duplicates', () => {
   const annotated = annotateHome23ProcessList([
     { name: 'home23-jerry', script: `${ROOT}/engine/src/index.js` },
