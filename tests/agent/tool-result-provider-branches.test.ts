@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentLoop } from '../../src/agent/loop.js';
@@ -200,10 +200,14 @@ async function runProvider(provider: typeof PROVIDERS[number]): Promise<{
           { type: 'response.output_item.done', item: {
             type: 'function_call', call_id: 'call-1', name: TOOL_NAME, arguments: '{}',
           } },
+          { type: 'response.completed', response: { id: 'xai-response-1', status: 'completed' } },
         ]);
         const items = body.input as Array<Record<string, unknown>>;
         nativeToolResult = items.find(item => item.type === 'function_call_output');
-        return sse([{ type: 'response.output_text.done', text: 'done' }]);
+        return sse([
+          { type: 'response.output_text.done', text: 'done' },
+          { type: 'response.completed', response: { id: 'xai-response-2', status: 'completed' } },
+        ]);
       }
 
       const toolCall = {
@@ -292,3 +296,432 @@ test('xAI receives an object-root schema without unsupported composition keyword
     assert.doesNotMatch(serialized, new RegExp(`"${keyword}"`));
   }
 });
+
+const GROK_ZDR_TOOL = 'lookup_local_fact';
+
+async function runGrokZdrScenario(rejectPreviousResponseId: boolean): Promise<{
+  resultText: string;
+  requests: Array<Record<string, unknown>>;
+  events: Array<Record<string, unknown>>;
+  persistedEvents: Array<Record<string, unknown>>;
+  terminalRecord: Record<string, unknown>;
+}> {
+  const root = join(tmpdir(), `grok-zdr-${process.pid}-${Math.random()}`);
+  mkdirSync(join(root, 'workspace'), { recursive: true });
+  const history = new ConversationHistory(join(root, 'conversations'), 400_000, 'test-agent');
+  const requests: Array<Record<string, unknown>> = [];
+  const events: Array<Record<string, unknown>> = [];
+  const tool = {
+    name: GROK_ZDR_TOOL,
+    description: 'Look up one local fact',
+    input_schema: {
+      type: 'object',
+      properties: { topic: { type: 'string' } },
+      required: ['topic'],
+    },
+    execute: async () => ({ content: 'local result for ZDR' }),
+  };
+  const registry = {
+    getAnthropicTools: () => [{
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.input_schema,
+    }],
+    getOpenAITools: () => [{
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.input_schema,
+      },
+    }],
+    get: (name: string) => name === tool.name ? tool : undefined,
+    execute: async (name: string) => {
+      assert.equal(name, tool.name);
+      return tool.execute();
+    },
+  };
+  const agent = new AgentLoop({
+    apiKey: 'test-key',
+    model: 'grok-test',
+    provider: 'xai',
+    registry: registry as never,
+    contextManager: {
+      getSystemPrompt: () => 'You are a test agent.',
+      getPromptSourceInfo: () => ({ loadedFiles: [] }),
+    } as never,
+    history,
+    toolContext: {
+      brainOperations: makeBrainOperations(),
+      turnRuntime: null,
+    } as never,
+    workspacePath: join(root, 'workspace'),
+  });
+
+  const originalFetch = globalThis.fetch;
+  const previousXaiKey = process.env.XAI_API_KEY;
+  process.env.XAI_API_KEY = 'test-key';
+  let xaiCall = 0;
+  const chatId = `chat-grok-zdr-${rejectPreviousResponseId ? 'strict' : 'events'}`;
+
+  try {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === 'string' || input instanceof URL
+        ? String(input)
+        : input.url);
+      if (url.hostname === '127.0.0.1' || url.hostname === 'localhost') {
+        return new Response('{}', { status: 503 });
+      }
+      assert.equal(url.href, 'https://api.x.ai/v1/responses');
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requests.push(structuredClone(body));
+      xaiCall += 1;
+
+      if (xaiCall === 1) {
+        return sse([
+          { type: 'response.created', response: { id: 'xai-response-zdr-1' } },
+          { type: 'response.reasoning_summary_text.delta', delta: 'Need' },
+          { type: 'response.reasoning_summary_text.delta', delta: ' the' },
+          { type: 'response.reasoning_summary_text.delta', delta: ' local' },
+          { type: 'response.reasoning_summary_text.delta', delta: ' result.' },
+          { type: 'response.reasoning_summary_text.done', text: 'Need the local result.' },
+          {
+            type: 'response.output_item.done',
+            item: {
+              type: 'reasoning',
+              id: 'reasoning-1',
+              encrypted_content: 'opaque-reasoning-1',
+            },
+          },
+          {
+            type: 'response.output_item.done',
+            item: {
+              type: 'function_call',
+              id: 'function-call-1',
+              status: 'completed',
+              call_id: 'call-1',
+              name: GROK_ZDR_TOOL,
+              arguments: '{"topic":"zdr"}',
+            },
+          },
+          { type: 'response.completed', response: { id: 'xai-response-zdr-1', status: 'completed' } },
+        ]);
+      }
+
+      if (rejectPreviousResponseId && Object.hasOwn(body, 'previous_response_id')) {
+        return new Response(
+          'Previous response cannot be used for this organization due to Zero Data Retention',
+          { status: 404 },
+        );
+      }
+
+      return sse([
+        { type: 'response.reasoning_summary_text.delta', delta: 'Use' },
+        { type: 'response.reasoning_summary_text.delta', delta: ' that' },
+        { type: 'response.reasoning_summary_text.delta', delta: ' result.' },
+        { type: 'response.reasoning_summary_text.done', text: 'Use that result.' },
+        {
+          type: 'response.output_item.done',
+          item: {
+            type: 'reasoning',
+            id: 'reasoning-2',
+            encrypted_content: 'opaque-reasoning-2',
+          },
+        },
+        { type: 'response.output_text.delta', delta: 'Final ' },
+        { type: 'response.output_text.delta', delta: 'answer.' },
+        { type: 'response.output_text.done', text: 'Final answer.' },
+        { type: 'response.completed', response: { id: 'xai-response-zdr-2', status: 'completed' } },
+      ]);
+    }) as typeof fetch;
+
+    const started = await agent.runWithTurn(chatId, 'Use the local lookup', {
+      firstTokenTimeoutMs: 60_000,
+      inactivityMs: 60_000,
+      hardDurationMs: 120_000,
+      onEvent: event => events.push(event as unknown as Record<string, unknown>),
+    });
+    const result = await started.response;
+    const records = readFileSync(
+      join(root, 'conversations', `test-agent__${chatId}.jsonl`),
+      'utf8',
+    ).trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>);
+    const persistedEvents = records.filter(record => record.type === 'event');
+    const terminalRecord = records.findLast(record =>
+      record.type === 'turn' && record.status === 'complete')!;
+    return {
+      resultText: result.text,
+      requests,
+      events,
+      persistedEvents,
+      terminalRecord,
+    };
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousXaiKey === undefined) delete process.env.XAI_API_KEY;
+    else process.env.XAI_API_KEY = previousXaiKey;
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test('xAI Grok continues a local tool call statelessly under ZDR', async () => {
+  const result = await runGrokZdrScenario(true);
+  assert.equal(result.resultText, 'Final answer.');
+  assert.equal(result.requests.length, 2);
+  for (const request of result.requests) {
+    assert.equal(Object.hasOwn(request, 'previous_response_id'), false);
+    assert.deepEqual(request.include, ['reasoning.encrypted_content']);
+  }
+
+  const initialInput = result.requests[0]!.input as Array<Record<string, unknown>>;
+  const followupInput = result.requests[1]!.input as Array<Record<string, unknown>>;
+  assert.deepEqual(followupInput.slice(0, initialInput.length), initialInput);
+  assert.deepEqual(followupInput.slice(initialInput.length), [
+    {
+      type: 'reasoning',
+      id: 'reasoning-1',
+      encrypted_content: 'opaque-reasoning-1',
+    },
+    {
+      type: 'function_call',
+      id: 'function-call-1',
+      status: 'completed',
+      call_id: 'call-1',
+      name: GROK_ZDR_TOOL,
+      arguments: '{"topic":"zdr"}',
+    },
+    {
+      type: 'function_call_output',
+      call_id: 'call-1',
+      output: 'local result for ZDR',
+    },
+  ]);
+});
+
+test('xAI Grok coalesces thinking while preserving tool/result/final-answer event order', async () => {
+  const result = await runGrokZdrScenario(false);
+  assert.deepEqual(result.events, [
+    { type: 'thinking', content: 'Need the local result.' },
+    { type: 'tool_start', tool: GROK_ZDR_TOOL, args: { topic: 'zdr' } },
+    {
+      type: 'tool_result',
+      tool: GROK_ZDR_TOOL,
+      result: 'local result for ZDR',
+      success: true,
+    },
+    { type: 'thinking', content: 'Use that result.' },
+    { type: 'response_chunk', chunk: 'Final ' },
+    { type: 'response_chunk', chunk: 'answer.' },
+  ]);
+
+  const responseChunks = result.events
+    .filter(event => event.type === 'response_chunk')
+    .map(event => event.chunk);
+  assert.equal(responseChunks.join(''), result.resultText);
+  assert.ok(
+    result.events.findIndex(event => event.type === 'response_chunk')
+      > result.events.findIndex(event => event.type === 'tool_result'),
+  );
+  assert.deepEqual(
+    result.persistedEvents.map(event => event.seq),
+    result.persistedEvents.map((_, index) => index + 1),
+  );
+  assert.equal(result.terminalRecord.last_seq, result.persistedEvents.length);
+});
+
+type GrokTerminalCase = 'completed' | 'failed' | 'incomplete' | 'eof';
+
+async function runGrokTerminalCase(terminalCase: GrokTerminalCase): Promise<{
+  resultText: string | null;
+  error: Error | null;
+  requestCount: number;
+  toolExecutions: number;
+  responseChunks: string[];
+  records: Array<Record<string, unknown>>;
+}> {
+  const root = join(tmpdir(), `grok-terminal-${terminalCase}-${process.pid}-${Math.random()}`);
+  mkdirSync(join(root, 'workspace'), { recursive: true });
+  const history = new ConversationHistory(join(root, 'conversations'), 400_000, 'test-agent');
+  let toolExecutions = 0;
+  const tool = {
+    name: GROK_ZDR_TOOL,
+    description: 'Look up one local fact',
+    input_schema: {
+      type: 'object',
+      properties: { topic: { type: 'string' } },
+      required: ['topic'],
+    },
+    execute: async () => {
+      toolExecutions += 1;
+      return { content: 'local result that must not run' };
+    },
+  };
+  const registry = {
+    getAnthropicTools: () => [],
+    getOpenAITools: () => [{
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.input_schema,
+      },
+    }],
+    get: (name: string) => name === tool.name ? tool : undefined,
+    execute: async (name: string) => {
+      assert.equal(name, tool.name);
+      return tool.execute();
+    },
+  };
+  const agent = new AgentLoop({
+    apiKey: 'test-key',
+    model: 'grok-test',
+    provider: 'xai',
+    registry: registry as never,
+    contextManager: {
+      getSystemPrompt: () => 'You are a test agent.',
+      getPromptSourceInfo: () => ({ loadedFiles: [] }),
+    } as never,
+    history,
+    toolContext: {
+      brainOperations: makeBrainOperations(),
+      turnRuntime: null,
+    } as never,
+    workspacePath: join(root, 'workspace'),
+  });
+
+  const originalFetch = globalThis.fetch;
+  const previousXaiKey = process.env.XAI_API_KEY;
+  process.env.XAI_API_KEY = 'test-key';
+  let requestCount = 0;
+  const responseChunks: string[] = [];
+  const chatId = `chat-grok-terminal-${terminalCase}`;
+
+  try {
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = new URL(typeof input === 'string' || input instanceof URL
+        ? String(input)
+        : input.url);
+      if (url.hostname === '127.0.0.1' || url.hostname === 'localhost') {
+        return new Response('{}', { status: 503 });
+      }
+      assert.equal(url.href, 'https://api.x.ai/v1/responses');
+      requestCount += 1;
+
+      if (requestCount > 1) {
+        return sse([
+          { type: 'response.output_text.delta', delta: 'unsafe retry answer' },
+          { type: 'response.output_text.done', text: 'unsafe retry answer' },
+          { type: 'response.completed', response: { id: 'xai-unsafe-retry', status: 'completed' } },
+        ]);
+      }
+
+      if (terminalCase === 'completed') {
+        return sse([
+          { type: 'response.created', response: { id: 'xai-completed' } },
+          { type: 'response.output_text.delta', delta: 'Complete answer.' },
+          { type: 'response.output_text.done', text: 'Complete answer.' },
+          { type: 'response.completed', response: { id: 'xai-completed', status: 'completed' } },
+        ]);
+      }
+
+      const events: Array<Record<string, unknown>> = [
+        { type: 'response.created', response: { id: `xai-${terminalCase}` } },
+        { type: 'response.output_text.delta', delta: 'Partial output.' },
+        {
+          type: 'response.output_item.done',
+          item: {
+            type: 'function_call',
+            id: 'function-call-terminal',
+            status: 'completed',
+            call_id: 'call-terminal',
+            name: GROK_ZDR_TOOL,
+            arguments: '{"topic":"terminal"}',
+          },
+        },
+      ];
+      if (terminalCase === 'failed') {
+        events.push({
+          type: 'response.failed',
+          response: {
+            id: 'xai-failed',
+            status: 'failed',
+            error: { code: 'server_error', message: 'upstream exploded' },
+          },
+        });
+      } else if (terminalCase === 'incomplete') {
+        events.push({
+          type: 'response.incomplete',
+          response: {
+            id: 'xai-incomplete',
+            status: 'incomplete',
+            incomplete_details: { reason: 'max_output_tokens' },
+          },
+        });
+      }
+      return sse(events);
+    }) as typeof fetch;
+
+    const started = await agent.runWithTurn(chatId, 'Give me a terminal response', {
+      firstTokenTimeoutMs: 60_000,
+      inactivityMs: 60_000,
+      hardDurationMs: 120_000,
+      onEvent: event => {
+        if (event.type === 'response_chunk') responseChunks.push(event.chunk);
+      },
+    });
+    let resultText: string | null = null;
+    let error: Error | null = null;
+    try {
+      resultText = (await started.response).text;
+    } catch (caught) {
+      error = caught instanceof Error ? caught : new Error(String(caught));
+    }
+    return {
+      resultText,
+      error,
+      requestCount,
+      toolExecutions,
+      responseChunks,
+      records: history.loadRaw(chatId) as Array<Record<string, unknown>>,
+    };
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (previousXaiKey === undefined) delete process.env.XAI_API_KEY;
+    else process.env.XAI_API_KEY = previousXaiKey;
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test('xAI Grok accepts output only after response.completed', async () => {
+  const result = await runGrokTerminalCase('completed');
+  assert.equal(result.error, null);
+  assert.equal(result.resultText, 'Complete answer.');
+  assert.equal(result.requestCount, 1);
+  assert.equal(result.toolExecutions, 0);
+  assert.deepEqual(result.responseChunks, ['Complete answer.']);
+  assert.equal(result.records.findLast(record => record.type === 'turn')?.status, 'complete');
+  assert.ok(result.records.some(record =>
+    record.role === 'assistant' && record.content === 'Complete answer.' && !Object.hasOwn(record, 'type')));
+});
+
+for (const terminalCase of ['failed', 'incomplete', 'eof'] as const) {
+  test(`xAI Grok rejects partial output on ${terminalCase} before executing tools`, async () => {
+    const result = await runGrokTerminalCase(terminalCase);
+    assert.equal(result.resultText, null);
+    assert.ok(result.error);
+    if (terminalCase === 'failed') {
+      assert.match(result.error.message, /xai responses failed.*server_error.*upstream exploded/i);
+    } else if (terminalCase === 'incomplete') {
+      assert.match(result.error.message, /xai responses incomplete.*max_output_tokens/i);
+    } else {
+      assert.match(result.error.message, /xai responses stream ended before response\.completed/i);
+    }
+    assert.equal(result.requestCount, 1);
+    assert.equal(result.toolExecutions, 0);
+    assert.deepEqual(result.responseChunks, ['Partial output.']);
+    assert.equal(result.records.findLast(record => record.type === 'turn')?.status, 'error');
+    assert.equal(result.records.some(record => record.type === 'turn' && record.status === 'complete'), false);
+    assert.equal(result.records.some(record =>
+      record.role === 'assistant' && !Object.hasOwn(record, 'type')), false);
+  });
+}

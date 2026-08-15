@@ -27,8 +27,8 @@ import { join } from 'node:path';
 import { SeedProcess } from '../src/seed.js';
 import { SeedRunner } from '../src/runner.js';
 import type { LobeAdapter } from '../src/lobe.js';
-import { buildLobePrompt, predictionIdFor } from '../src/lobe.js';
-import type { WorkspacePacket, LobeResult } from '../src/types.js';
+import { buildLobePrompt, predictionIdFor, applyLobeDeltas } from '../src/lobe.js';
+import type { WorkspacePacket, LobeResult, SituationCell } from '../src/types.js';
 import {
   parseHorizon,
   obligationAt,
@@ -317,6 +317,53 @@ test('RUNNER: unanswered pressing ends in a receipted release — no immortal pr
   assert.ok(reasons.every((x) => x.includes('already reached')), 'refusal names the law');
   const outbox = readFileSync(join(stateDir, 'outbox.jsonl'), 'utf-8').trim().split('\n');
   assert.equal(outbox.length, 1, 'the outbox holds one message, not a retry queue');
+});
+
+test('THE PREMATURE-RESOLUTION LAW: a claim cannot be confirmed before its window elapses; falsification may close early', (t) => {
+  const stateDir = makeDir('premature-', t);
+  const seed = SeedProcess.initialize(stateDir);
+  t.after(() => { try { seed.stop(); } catch { /* stopped */ } });
+
+  // Give the cell a prediction whose window runs a week out.
+  const cellId = 'world.home23';
+  const cells = new Map([[cellId, structuredClone(seed.getCell(cellId)) as SituationCell]]);
+  const born = '2026-08-12T00:00:00.000Z';
+  const staged = applyLobeDeltas(cells, [{
+    cellId, field: 'predictions.append',
+    delta: { claim: 'hip soreness remains stable', confidence: 0.9, horizon: '7 days' },
+    authority: 'propose',
+  }], born, (c) => structuredClone(c));
+  const withPred = staged.staged.get(cellId) as SituationCell;
+  const predictionId = withPred.predictions[0]?.predictionId as string;
+  const live = new Map([[cellId, withPred]]);
+  const clone = (c: SituationCell): SituationCell => structuredClone(c);
+  const midWindow = '2026-08-14T00:00:00.000Z';   // 5 days before the horizon
+  const pastWindow = '2026-08-20T00:00:00.000Z';  // after it
+
+  const confirmEarly = applyLobeDeltas(live, [{ cellId, field: 'predictions.resolve', delta: { predictionId, error: 0.05 }, authority: 'propose' }], midWindow, clone);
+  assert.equal(confirmEarly.applied.length, 0, 'a confirmation inside the window is refused');
+  assert.match(confirmEarly.failed[0]?.reason ?? '', /premature resolution refused/, 'and says why, on the record');
+
+  const ambiguousEarly = applyLobeDeltas(live, [{ cellId, field: 'predictions.resolve', delta: { predictionId, error: 0.5 }, authority: 'propose' }], midWindow, clone);
+  assert.equal(ambiguousEarly.applied.length, 0, 'an ambiguous middle is also premature — reality has not spoken');
+
+  const falsifyEarly = applyLobeDeltas(live, [{ cellId, field: 'predictions.resolve', delta: { predictionId, error: 0.9 }, authority: 'propose' }], midWindow, clone);
+  assert.equal(falsifyEarly.applied.length, 1, 'FALSIFICATION may close early — “already broken” is answered by present evidence');
+
+  const confirmLate = applyLobeDeltas(live, [{ cellId, field: 'predictions.resolve', delta: { predictionId, error: 0.05 }, authority: 'propose' }], pastWindow, clone);
+  assert.equal(confirmLate.applied.length, 1, 'past the horizon, an honest confirmation lands');
+
+  // An unparseable horizon cannot be checked — the membrane refuses only what
+  // it can prove (such a prediction binds no commitment either).
+  const vague = applyLobeDeltas(live, [{
+    cellId, field: 'predictions.append',
+    delta: { claim: 'things will improve', confidence: 0.9, horizon: 'someday' },
+    authority: 'propose',
+  }], born, clone);
+  const vagueCell = vague.staged.get(cellId) as SituationCell;
+  const vagueId = vagueCell.predictions[vagueCell.predictions.length - 1]?.predictionId as string;
+  const vagueResolve = applyLobeDeltas(new Map([[cellId, vagueCell]]), [{ cellId, field: 'predictions.resolve', delta: { predictionId: vagueId, error: 0.05 }, authority: 'propose' }], midWindow, clone);
+  assert.equal(vagueResolve.applied.length, 1, 'unenforceable horizon is not refused — the membrane proves, never suspects');
 });
 
 test('the membrane protects reasons: actions outside an occasion are rejected; concern is not lobe-writable; concern survives restore exactly', async (t) => {

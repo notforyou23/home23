@@ -11,7 +11,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { ContextManager } from '../../src/agent/context.js';
+import { ContextManager, formatContextTimestamp } from '../../src/agent/context.js';
 
 function workspace(files: Record<string, string>): string {
   const ws = mkdtempSync(path.join(tmpdir(), 'home23-identity-'));
@@ -111,6 +111,43 @@ test('a missing identity file is recorded as not-included, not silently absent',
     assert.equal(missing.included, false);
     assert.equal(missing.layer, 'role');
     assert.ok(typeof info.systemPromptBytes === 'number' && info.systemPromptBytes > 0);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+  }
+});
+
+// ─── Prompt timestamp (2026-08-11 greeting failure) ─────────────────────────
+// A bare toISOString() in [CONTEXT] was read as local time — 23:43Z became
+// "late night" at 7:41 PM EDT. The timestamp must be agent-local first with
+// an explicit zone label, and degraded forms must still be labeled.
+
+test('formatContextTimestamp renders agent-local time first with the zone labeled', () => {
+  const date = new Date('2026-08-11T23:41:00.000Z'); // 7:41 PM EDT
+  const rendered = formatContextTimestamp(date, 'America/New_York');
+  assert.ok(rendered.includes('Tuesday, August 11, 2026'), `local date present: ${rendered}`);
+  assert.ok(/7:41[\s\u202f]PM/.test(rendered), `local clock present: ${rendered}`);
+  assert.ok(rendered.includes('EDT'), `short zone name present: ${rendered}`);
+  assert.ok(rendered.includes('(America/New_York)'), `IANA zone labeled: ${rendered}`);
+  assert.ok(rendered.includes('UTC 2026-08-11T23:41:00.000Z'), `UTC form explicitly labeled: ${rendered}`);
+});
+
+test('formatContextTimestamp labels the degraded UTC forms instead of emitting a bare ISO string', () => {
+  const date = new Date('2026-08-11T23:41:00.000Z');
+  assert.ok(formatContextTimestamp(date, undefined).includes('(UTC — no agent timezone configured)'));
+  assert.ok(formatContextTimestamp(date, 'Not/AZone').includes('is invalid'));
+});
+
+test('the system prompt context block carries the agent-local build time, not a bare UTC stamp', () => {
+  const ws = workspace({ 'SOUL.md': SOUL });
+  try {
+    const cm = new ContextManager({
+      workspacePath: ws, identityFiles: ['SOUL.md'], heartbeatRefreshMs: 60000, enginePort: 5002,
+      timezone: 'America/New_York',
+    });
+    const prompt = cm.getSystemPrompt('anthropic');
+    assert.ok(prompt.includes('Time at prompt build:'), 'timestamp is labeled as build time');
+    assert.ok(prompt.includes('(America/New_York)'), 'agent timezone labeled in the context block');
+    assert.ok(!/Current time: \d{4}-\d{2}-\d{2}T[\d:.]+Z\n/.test(prompt), 'the old bare-UTC line is gone');
   } finally {
     rmSync(ws, { recursive: true, force: true });
   }
