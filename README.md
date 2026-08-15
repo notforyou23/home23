@@ -4,9 +4,9 @@
 
 Home23 is not another chatbot framework. It is a complete AI operating system that runs on your machine, with agents that think autonomously, grow a persistent brain over time, sleep and dream, and are reachable through Telegram, Discord, a web dashboard, an AI IDE, a research engine, and a mobile-optimized chat page you can Add to Home Screen on iOS.
 
-**The v2 thesis — own the becoming, rent the intelligence.** Language models are commoditizing: every provider's intelligence gets cheaper and more interchangeable by the month. What cannot commoditize is a *life*. Home23 v2 keeps each agent's identity in a **Seed** — a persistent computational individual with a hash-chained record of everything it has lived, a body of continuously-developing situation cells, and organs that express that lived state back into behavior. The model is a rented cortex, swappable any time; the individual is yours, on your disk, and it can only be lived — never cloned, never edited, never re-prompted into existence. Every model upgrade makes your individuals smarter without making them less yours.
+**The v2 thesis — own the becoming, rent the intelligence.** Models are commoditizing; a *life* is not. Home23 keeps each agent's identity in a **Seed** — a persistent individual with a hash-chained record of everything it has lived, a body of continuously-developing situation cells, and organs that express that lived state as behavior. The model is a swappable rented cortex; the individual is yours, on your disk. Model upgrades make your agents smarter without making them less yours.
 
-**Cells instead of files.** v1 kept an agent's memory in curated markdown files that a process rewrote — and files rot silently. v2 composes the same surfaces from the individual's chain *at read time*: recent memory, session grounding, earned facts, biography. A chain cannot go silently stale — it is hash-linked to the second, or it refuses. The migration is visible and honest: each function is either owned by the individual (probed live, never asserted) or remains a file with a stated reason.
+**Cells instead of files.** Where v1 kept memory in curated markdown files that a process rewrote, v2 composes those surfaces — recent memory, session grounding, earned facts, biography — from the individual's hash-chained record at read time, falling back to the old files only when the chain can't serve. Each surface is either owned by the individual (probed live) or a file with a stated reason.
 
 **Documentation status:** reworked 2026-08-09 for the v2 substrate. Older step-by-step design files in `docs/design/` are historical build records; the v2 architecture is `docs/design/HOME23-V2-SUBSTRATE-DESIGN.md`. Use this README plus `docs/ONBOARDING.md`, `CHANGELOG.md`, `docs/MANIFEST.md`, `CLAUDE.md`, and `AGENTS.md` for the current public repo shape.
 
@@ -35,7 +35,7 @@ Four integrated systems, one install:
 
 - **Node.js 20+** (LTS recommended)
 - **PM2** — process manager (`npm install -g pm2`)
-- **Python 3** — for the document feeder's binary-format converter (MarkItDown installed automatically by init)
+- **Python 3** — for the document feeder's binary-format converter (MarkItDown installed automatically by init). On Debian/Ubuntu also install the matching `python3-venv` package (e.g. `python3.12-venv`) so init can create the MarkItDown virtualenv.
 - **An LLM provider** — at least one of: Ollama Cloud (free), Anthropic, OpenAI, xAI, MiniMax
 - **Recommended: an embedding provider** — Ollama local (free), OpenAI API, or Ollama Cloud. Without embeddings, Home23 runs in Memory Lite mode: it stores text memory and uses keyword retrieval until semantic embeddings are configured.
 
@@ -177,7 +177,7 @@ Unlike embeddings, you can switch LLM providers freely. Configure providers from
 | **Ollama Cloud** | API key from ollama.com | kimi-k2.6, qwen3.5, deepseek-v4, nemotron-3, gemma4, GLM-5.1, and more |
 | **MiniMax** | API key | MiniMax-M3 |
 | **xAI** | API key | Grok-4.3, Grok-4.20 variants |
-| **Ollama Local** | Ollama running locally | Any pulled model |
+| **Ollama Local** | Ollama running locally | Any pulled model (use a tool-capable model, e.g. `qwen2.5:7b`; a GPU is recommended — the full tool-using agent is slow on CPU-only) |
 
 Model aliases are defined in `config/home.yaml` — use short names like `sonnet`, `gpt`, `kimi` instead of full model IDs.
 
@@ -507,7 +507,7 @@ The pulse brief includes a **live-problems block** (ground truth, re-verified ev
 
 The agent doesn't just respond to messages — it **shows up already knowing what it needs to know**. Before every LLM call, a context assembly layer:
 
-1. **Queries the brain** via semantic search (the maintainer's live Jerry brain was ~74,000 nodes on 2026-05-16; installed agents grow over time)
+1. **Queries the brain** via semantic search (installed agents grow their brain over time)
 2. **Evaluates trigger conditions** on durable memory objects (keyword, temporal, domain-entry triggers)
 3. **Loads domain surfaces** — living workspace documents maintained by the curator cycle:
    - `TOPOLOGY.md` — active ports, services, URLs (fact surface, registry-backed)
