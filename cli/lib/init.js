@@ -9,12 +9,11 @@ import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { seedCosmo23Config } from './cosmo23-config.js';
-import { generateEcosystem } from './generate-ecosystem.js';
-import {
-  ensureBrainOperationsCapabilityKey,
-  updateHome23Secrets,
-} from './brain-operations-capability.js';
+
+// Modules that depend on root npm packages (js-yaml, proper-lockfile, ...)
+// must be imported lazily, after `npm install` has run. On a fresh clone
+// there is no node_modules yet, and a static import here would crash init
+// before it ever gets the chance to install anything.
 
 function seedLocalConfig(home23Root) {
   const seeds = [
@@ -98,27 +97,7 @@ export async function runInit(home23Root, options = {}) {
   console.log('Preparing local config files...');
   seedLocalConfig(home23Root);
 
-  const brainOperationsCapability = await ensureBrainOperationsCapabilityKey(home23Root);
-  console.log(`  Brain operations capability: configured${brainOperationsCapability.permissionsRepaired ? ' (permissions repaired)' : ''}`);
-
-  // Merge secrets.yaml — never clobber existing provider keys or agent bot tokens
-  console.log('Preparing config/secrets.yaml...');
-  const encryptionUpdate = await updateHome23Secrets(home23Root, (secrets) => {
-    if (!secrets.cosmo23) secrets.cosmo23 = {};
-    if (!secrets.cosmo23.encryptionKey) {
-      secrets.cosmo23.encryptionKey = randomBytes(32).toString('hex');
-      return { changed: true, value: true };
-    }
-    return { changed: false, value: false };
-  });
-  if (encryptionUpdate.value) {
-    console.log('  Generated cosmo23 encryption key');
-  } else {
-    console.log('  Encryption key exists');
-  }
-  console.log('  done');
-
-  // Install dependencies
+  // Install root/harness dependencies before anything that needs them.
   console.log('');
   console.log('Installing dependencies...');
 
@@ -140,6 +119,30 @@ export async function runInit(home23Root, options = {}) {
       }
     }
   }
+  console.log('');
+
+  const { ensureBrainOperationsCapabilityKey, updateHome23Secrets } =
+    await import('./brain-operations-capability.js');
+
+  const brainOperationsCapability = await ensureBrainOperationsCapabilityKey(home23Root);
+  console.log(`  Brain operations capability: configured${brainOperationsCapability.permissionsRepaired ? ' (permissions repaired)' : ''}`);
+
+  // Merge secrets.yaml — never clobber existing provider keys or agent bot tokens
+  console.log('Preparing config/secrets.yaml...');
+  const encryptionUpdate = await updateHome23Secrets(home23Root, (secrets) => {
+    if (!secrets.cosmo23) secrets.cosmo23 = {};
+    if (!secrets.cosmo23.encryptionKey) {
+      secrets.cosmo23.encryptionKey = randomBytes(32).toString('hex');
+      return { changed: true, value: true };
+    }
+    return { changed: false, value: false };
+  });
+  if (encryptionUpdate.value) {
+    console.log('  Generated cosmo23 encryption key');
+  } else {
+    console.log('  Encryption key exists');
+  }
+  console.log('  done');
 
   const cosmo23Dir = join(home23Root, 'cosmo23');
   const cosmo23EngineDir = join(cosmo23Dir, 'engine');
@@ -184,6 +187,7 @@ export async function runInit(home23Root, options = {}) {
   console.log('');
   console.log('Seeding COSMO 2.3 config...');
   try {
+    const { seedCosmo23Config } = await import('./cosmo23-config.js');
     await seedCosmo23Config(home23Root);
   } catch (err) {
     if (String(err?.code || '').startsWith('capability_') || err?.code === 'preparation_state_changed') throw err;
@@ -195,6 +199,7 @@ export async function runInit(home23Root, options = {}) {
   console.log('');
   console.log('Generating ecosystem config...');
   try {
+    const { generateEcosystem } = await import('./generate-ecosystem.js');
     generateEcosystem(home23Root);
   } catch (err) {
     console.log('  FAILED (non-fatal, will regenerate on first agent create)');
