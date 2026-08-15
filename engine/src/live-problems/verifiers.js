@@ -342,15 +342,13 @@ const verifiers = {
    * Mount has >= minGiB free.
    * args: { mount, minGiB }
    */
-  disk_free({ mount = '/', minGiB = 5 }) {
+  async disk_free({ mount = '/', minGiB = 5 }) {
     try {
-      const out = execSync(`df -g ${JSON.stringify(mount)}`, { encoding: 'utf8', timeout: 5000 });
-      const lines = out.trim().split('\n');
-      if (lines.length < 2) return { ok: false, detail: 'df output unparseable' };
-      const cols = lines[1].split(/\s+/);
-      // macOS df -g columns: Filesystem Size Used Avail Capacity iused ifree %iused Mounted
-      const availGi = parseFloat(cols[3]);
-      if (isNaN(availGi)) return { ok: false, detail: `cannot parse avail from: ${lines[1]}` };
+      // statfs works on both Linux and macOS; `df -g` was a BSD-only flag
+      // that failed with "invalid option" on GNU coreutils.
+      const st = await fs.promises.statfs(mount);
+      const availGi = Number(((Number(st.bavail) * Number(st.bsize)) / (1024 ** 3)).toFixed(2));
+      if (!Number.isFinite(availGi)) return { ok: false, detail: `cannot compute free space for ${mount}` };
       const ok = availGi >= minGiB;
       return {
         ok,
@@ -358,7 +356,7 @@ const verifiers = {
         observed: { availGi },
       };
     } catch (err) {
-      return { ok: false, detail: `df failed: ${err.message}` };
+      return { ok: false, detail: `statfs failed: ${err.message}` };
     }
   },
 
