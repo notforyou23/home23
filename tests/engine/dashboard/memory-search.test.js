@@ -1901,6 +1901,53 @@ test('isolated ANN worker survives a corrupt pinned-index replacement and can re
   assert.equal(recovered[0].node.id, 'node-1');
 });
 
+test('isolated ANN worker clamps the candidate limit to small-index element counts', async (t) => {
+  const targetDir = await createBrain({ nodes: [] });
+  const root = await fsp.realpath(targetDir);
+  const hnswlib = require('hnswlib-node');
+  const indexPath = path.join(root, 'memory-ann.small.index');
+  const metaPath = path.join(root, 'memory-ann.small.meta.json');
+  const index = new hnswlib.HierarchicalNSW('cosine', 2);
+  index.initIndex(8);
+  for (let i = 0; i < 8; i += 1) {
+    const angle = (i / 8) * Math.PI;
+    index.addPoint([Math.cos(angle), Math.sin(angle)], i);
+  }
+  index.writeIndexSync(indexPath);
+  await fsp.writeFile(metaPath, JSON.stringify({
+    authorityProjectionSchema: CURRENT_ANN_AUTHORITY_PROJECTION_SCHEMA,
+    authorityAttestationKeyId: AUTHORITY_KEY_ID,
+    dimension: 2,
+    count: 8,
+    skipped: 0,
+    generation: 'g-small',
+    builtFromRevision: 1,
+    labels: Array.from({ length: 8 }, (_, i) => (
+      { id: `node-${i}`, concept: `small brain canary ${i}` }
+    )),
+  }));
+  const source = {
+    descriptor: {
+      canonicalRoot: root,
+      generation: 'g-small',
+      cutoffRevision: 1,
+      summary: { nodeCount: 8 },
+    },
+  };
+  const loadAnn = createDefaultLoadAnn();
+  t.after(() => loadAnn.close());
+  // memory-search's candidate limit is always >= 100; on an 8-node brain
+  // the worker must clamp k to the element count instead of failing the
+  // whole search (hnswlib-node throws when k exceeds it).
+  const rows = await loadAnn.runExclusive(source, {
+    indexFile: path.basename(indexPath),
+    metaFile: path.basename(metaPath),
+    builtFromRevision: 1,
+  }, {}, (ann) => ann.search([1, 0], 100));
+  assert.equal(rows.length, 8);
+  assert.equal(rows[0].node.id, 'node-0');
+});
+
 test('distinct pinned ANN loads cannot replace a runtime during an exclusive consumer', async (t) => {
   const targetDir = await createBrain({ nodes: [] });
   const root = await fsp.realpath(targetDir);
