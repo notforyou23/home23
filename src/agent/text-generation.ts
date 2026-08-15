@@ -4,7 +4,7 @@ import { getCodexCredentials, getCodexHeaders, type CodexCredentials } from './c
 import { anthropicOAuthStealthHeaders } from './anthropic-headers.js';
 import { combineRequestSignals } from './abort-signals.js';
 import { inferProviderFromModel } from './model-resolution.js';
-import { resolveProviderKey, isAuthError } from './provider-credentials.js';
+import { resolveProviderKey, isAuthError, refreshFromBroker } from './provider-credentials.js';
 
 const requireCjs = createRequire(import.meta.url);
 const fleetDefaults = requireCjs('../../shared/model-defaults.cjs') as {
@@ -73,6 +73,14 @@ export async function generateText(opts: TextGenerationOptions): Promise<string>
     return await generateTextAttempt(opts, provider, false);
   } catch (error) {
     if (opts.client === undefined && isAuthError(error)) {
+      // A 401 is proof the token is dead. Re-reading secrets.yaml is not
+      // enough: only the dashboard's 30-min poller writes that file, and its
+      // raw-token fetch is what makes cosmo23 mint. So ASK THE BROKER first —
+      // otherwise the "fresh" retry re-reads the same dead token for up to
+      // half an hour (jerry, 2026-08-13: 401 at 17:11:43Z, recovery 17:42:10Z,
+      // exactly one poller cycle, one thought lost). Broker unreachable is not
+      // fatal — the retry then behaves exactly as it did before.
+      await refreshFromBroker(provider);
       return generateTextAttempt(opts, provider, true);
     }
     throw error;

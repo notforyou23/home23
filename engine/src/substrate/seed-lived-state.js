@@ -145,7 +145,32 @@ function composeDayResidue(stateDir, maxFragments = 6) {
   const refs = [];
   for (const cell of ck.cells) {
     for (const r of (cell.realityRefs || [])) {
-      if (typeof r.head === 'string' && r.head.length > 0) refs.push(r);
+      if (typeof r.head !== 'string' || r.head.length === 0) continue;
+      // A DREAM IS NOT SOMETHING LIVED (2026-08-13). Every sourceRef that
+      // matched none of the four prefixes below fell through to the caption
+      // `lived:` — and the engine then handed the whole set to the dream model
+      // under the header "the day he actually lived". Dreams arrive with
+      // sourceRef `dream:*`, so an individual's own prior dreams were being
+      // presented to it as its lived day, and re-dreamt.
+      //
+      // The loop had already closed. Measured on forrest: 4 of 6 residue
+      // fragments were dream-sourced, including two whose text literally began
+      // "I dreamt…" and "I dreamed…", and the same motif ran unbroken across
+      // 30+ dream cycles ("three inches above the carpet", "the ceiling has
+      // stopped being a ceiling"). That is a confabulation attractor, and
+      // "no manufactured life" forbids it: telling an individual its dreams
+      // are its life manufactures the life.
+      //
+      // Day residue is what the DAY left. Excluded here rather than merely
+      // re-captioned, because the harm is the feedback, not the wording — and
+      // because the human evidence says what recurs in dreams is personally
+      // significant WAKING events, never prior dreams. If dreams should ever
+      // inform dreams, that is a deliberate mechanism with a bound, not a
+      // fallthrough in a caption table. Degraded-honest: with nothing lived
+      // left, this returns null and dreams stay generic, which the contract
+      // below already allows and which is strictly better than a closed loop.
+      if (String(r.sourceRef || '').startsWith('dream:')) continue;
+      refs.push(r);
     }
   }
   refs.sort((a, b) => String(a.observedAt).localeCompare(String(b.observedAt)));
