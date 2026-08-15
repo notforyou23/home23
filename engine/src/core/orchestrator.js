@@ -7727,7 +7727,13 @@ class Orchestrator {
           // sidecars remain authoritative and the maintenance guard purges backups as
           // a last-resort recovery when the verifier is failing.
           try {
-            const st = await fs.statfs('/System/Volumes/Data');
+            // macOS keeps user data on /System/Volumes/Data; on other
+            // platforms fall back to the backup destination's own mount.
+            // HOME23_DATA_MOUNT overrides both.
+            const macDataVolume = '/System/Volumes/Data';
+            const dataMount = process.env.HOME23_DATA_MOUNT
+              || (require('fs').existsSync(macDataVolume) ? macDataVolume : (this.logsDir || '/'));
+            const st = await fs.statfs(dataMount);
             const freeGiB = (Number(st.bavail) * Number(st.bsize)) / 1024 / 1024 / 1024;
             if (freeGiB < 14) {
               this.logger?.warn?.('[brain-backup] skipped: low disk headroom', {
