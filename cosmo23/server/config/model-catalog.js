@@ -44,6 +44,15 @@ const BUILTIN_EXECUTION_DEFAULTS = Object.freeze({
     providerStallMs: 900000,
     transport: 'chat-completions',
   }),
+  // Local Ollama (OpenAI-compatible /v1) — keyless models served from
+  // LOCAL_LLM_BASE_URL. Mirrors the cloud transport; per-boot models are
+  // declared via home.yaml providers.ollama-local.defaultModels.
+  'ollama-local': Object.freeze({
+    maxOutputTokens: 8192,
+    contextWindowTokens: 32768,
+    providerStallMs: 900000,
+    transport: 'chat-completions',
+  }),
 });
 
 const REVIEWED_LEGACY_MODEL_DEFAULTS = Object.freeze({
