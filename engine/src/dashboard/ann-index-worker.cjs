@@ -34,7 +34,12 @@ try {
           || !Number.isSafeInteger(candidateLimit) || candidateLimit < 1 || candidateLimit > 1000) {
         throw new TypeError('ANN worker search request is invalid');
       }
-      const result = index.searchKnn(embedding, candidateLimit);
+      // hnswlib-node throws when k exceeds the number of indexed elements;
+      // candidateLimit is always >= 100, so clamp k to the element count or
+      // small brains can never be searched. No-op on large brains.
+      const count = index.getCurrentCount();
+      const k = Math.max(1, Math.min(candidateLimit, count));
+      const result = index.searchKnn(embedding, k);
       process.send?.({
         type: 'result',
         id,

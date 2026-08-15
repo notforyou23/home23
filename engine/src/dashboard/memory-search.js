@@ -239,13 +239,24 @@ function normalizeEmbedding(value) {
   return { embedding: value, reason: null };
 }
 
+// hnswlib-node throws when k exceeds the number of indexed elements, and
+// candidateLimit is always >= 100 — so without this clamp every ANN search
+// fails outright on brains with fewer than ~100 nodes. Clamp k at each
+// searchKnn call site; a no-op on large brains. (Guarded because injected
+// test indexes do not always implement getCurrentCount.)
+function clampAnnCandidateLimit(index, candidateLimit) {
+  const count = typeof index?.getCurrentCount === 'function' ? index.getCurrentCount() : null;
+  if (!Number.isSafeInteger(count) || count < 0) return candidateLimit;
+  return Math.max(1, Math.min(candidateLimit, count));
+}
+
 async function annSearchRows(ann, queryEmbedding, candidateLimit, options = {}) {
   if (!ann) return [];
   if (typeof ann.search === 'function') {
     return await ann.search(queryEmbedding, candidateLimit, options) || [];
   }
   if (ann.index && typeof ann.index.searchKnn === 'function') {
-    const knn = ann.index.searchKnn(queryEmbedding, candidateLimit);
+    const knn = ann.index.searchKnn(queryEmbedding, clampAnnCandidateLimit(ann.index, candidateLimit));
     return (knn.neighbors || []).map((neighbor, index) => ({
       node: ann.labels?.[neighbor],
       similarity: 1 - Number(knn.distances?.[index] || 0),
@@ -775,7 +786,7 @@ function createInProcessAnnRuntimeFactory(hnswlibLoader) {
       index,
       async search(embedding, candidateLimit) {
         if (closed) throw annWorkerError('Injected ANN test runtime is closed');
-        return index.searchKnn(embedding, candidateLimit);
+        return index.searchKnn(embedding, clampAnnCandidateLimit(index, candidateLimit));
       },
       async terminate() { closed = true; },
     };

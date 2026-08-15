@@ -97,7 +97,7 @@ node cli/home23.js stop <name>
 node cli/home23.js update --check
 ```
 
-PM2 process names are generated from agent names as `home23-<name>`, `home23-<name>-dash`, and `home23-<name>-harness`.
+PM2 process names are generated from agent names as `home23-<name>`, `home23-<name>-dash`, `home23-<name>-mcp` (unless `mcp.enabled: false`), `home23-<name>-harness`, and `home23-<name>-seed` (when `substrate.enabled: true`). Lifecycle code must derive an agent's process set from `shared/agent-process-names.cjs`, never a hardcoded triplet.
 
 ## Development Checks
 

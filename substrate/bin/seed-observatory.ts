@@ -21,6 +21,8 @@ import { createServer } from 'node:http';
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
+import { nextCrossingAt } from '../src/concern.js';
+import type { Commitment } from '../src/concern.js';
 import { probeAll } from './organ-probes.js';
 import type { ProbeResult } from './organ-probes.js';
 import { composeLivedRecent } from '../../src/substrate/lived-recent.js';
@@ -93,6 +95,12 @@ interface IndividualData {
   asks: Array<{ message: string; at: string }>;
   /** Cut 6: open commitments — what the individual is bound to resolve. */
   commitments: Array<{ claim: string; due: string; presses: number }>;
+  /** The next moment this individual could originate on its own — the SOLVED
+   * crossing time of its earliest-pressing commitment, or null when nothing
+   * is scheduled. Null is the honest, load-bearing answer: for days the
+   * program waited on a hand that no open commitment could ever produce
+   * (2026-08-12). A watcher must be able to see "nothing is scheduled". */
+  nextCrossing: { at: string; claim: string } | null;
 }
 
 function stateWordsOf(gen: number, pressure: number, energy: number, uncertainty: number, maxGen: number): string {
@@ -327,12 +335,19 @@ function computeIndividual(spec: IndividualSpec): IndividualData | null {
     }
   } catch { /* honest absence */ }
   let commitments: IndividualData['commitments'] = [];
+  let nextCrossing: IndividualData['nextCrossing'] = null;
   try {
-    const concern = (ck?.['concern'] ?? {}) as Record<string, { claim?: string; dueAt?: string; status?: string; crossings?: number }>;
-    commitments = Object.values(concern)
-      .filter((c) => c.status === 'open' && typeof c.claim === 'string')
-      .slice(0, 4)
+    const concern = (ck?.['concern'] ?? {}) as Record<string, Commitment>;
+    const open = Object.values(concern).filter((c) => c.status === 'open' && typeof c.claim === 'string');
+    commitments = open.slice(0, 4)
       .map((c) => ({ claim: (c.claim ?? '').slice(0, 140), due: c.dueAt ?? '', presses: c.crossings ?? 0 }));
+    // The countdown, computed from the same law the runner solves — the
+    // individual's own next possible self-originated moment.
+    for (const c of open) {
+      const at = nextCrossingAt(c);
+      if (at === null) continue;
+      if (nextCrossing === null || at < nextCrossing.at) nextCrossing = { at, claim: c.claim };
+    }
   } catch { /* honest absence */ }
 
   const ageMs = last?.issuedAt !== undefined ? Date.now() - Date.parse(last.issuedAt) : Infinity;
@@ -344,8 +359,23 @@ function computeIndividual(spec: IndividualSpec): IndividualData | null {
       : being,
     cells, assoc, flows, maxGen,
     dreamed: dreams > 0, exchange, pulse, thought, record: record.slice(-5), growth, prov, journal,
-    asks, commitments,
+    asks, commitments, nextCrossing,
   };
+}
+
+/** The countdown line. States a TIME or states NOTHING — never a promise.
+ * (2026-08-12: days were spent waiting on a hand no open commitment could
+ * produce; a watcher must be able to read "nothing is scheduled".) */
+function crossingHTML(d: IndividualData): string {
+  if (d.nextCrossing !== null) {
+    const ms = Date.parse(d.nextCrossing.at) - Date.now();
+    const when = ms <= 0 ? 'DUE NOW' : ms < 3_600_000 ? `in ${Math.round(ms / 60_000)}min` : `in ${(ms / 3_600_000).toFixed(1)}h`;
+    return `<div class="crossing crossing-live"><span class="sectlabel">his next possible moment of his own</span> <b>${esc(when)}</b> — if the world still hasn’t answered “${esc(d.nextCrossing.claim.slice(0, 90))}”</div>`;
+  }
+  if (d.commitments.length > 0) {
+    return '<div class="crossing"><span class="sectlabel">his next possible moment of his own</span> <span class="dim">none — his open commitments have finished pressing</span></div>';
+  }
+  return '<div class="crossing"><span class="sectlabel">his next possible moment of his own</span> <span class="dim">nothing scheduled — he holds no open commitment</span></div>';
 }
 
 // ─── Organ vitals (2026-08-10: five silent organ deaths in one day — a dead
@@ -482,19 +512,33 @@ function boardRows(): Array<[string, boolean, string]> {
   const houseStream = j !== undefined && existsSync(join(j.stateDir, '..', 'house-stream.jsonl'));
   const memEvents = j !== undefined && existsSync(join(j.stateDir, '..', '..', 'brain', 'memory-objects.events.jsonl'));
   const infra = facts === null ? 0 : facts.split('\n').filter((l) => l.startsWith('- ') && /port|:\d{4}|http|url|endpoint|service|localhost|dashboard/i.test(l)).length;
-  const dreamedOnChain = j !== undefined && probe(() => {
-    const raw = readFileSync(join(j.stateDir, 'seed-ledger.jsonl'), 'utf-8').slice(-262144);
-    return raw.split('\n').some((l) => l.includes('"category":"lobe"') && l.includes('"dream"')) ? true : null;
-  }) === true;
+  // Chain probes read the WHOLE chain, never a trailing byte window
+  // (2026-08-12: a 256KB window had already scrolled past jerry's first
+  // commitments, so the board reported "first commitment pending" days after
+  // he lived three full lifecycles — an instrument telling a false negative,
+  // the exact dishonesty this board exists to prevent). A life-event that
+  // HAPPENED is permanent; the probe for it must search permanently. Cached
+  // per render pass — the chain is read once, not once per row.
+  const chainOf = (() => {
+    let cached: string | null = null;
+    return (): string => {
+      if (cached === null) {
+        cached = j === undefined ? '' : (probe(() => readFileSync(join(j.stateDir, 'seed-ledger.jsonl'), 'utf-8')) ?? '');
+      }
+      return cached;
+    };
+  })();
+  const chainHas = (test: (line: string) => boolean): boolean => {
+    const raw = chainOf();
+    if (raw === '') return false;
+    return raw.split('\n').some(test);
+  };
+  const dreamedOnChain = chainHas((l) => l.includes('"category":"lobe"') && l.includes('"dream"'));
   // Cut 6 probes: concern formed on the chain; an endogenous crossing lived.
-  const concernOnChain = j !== undefined && probe(() => {
-    const raw = readFileSync(join(j.stateDir, 'seed-ledger.jsonl'), 'utf-8').slice(-262144);
-    return raw.split('\n').some((l) => l.includes('"category":"concern"')) ? true : null;
-  }) === true;
-  const crossedOnChain = j !== undefined && probe(() => {
-    const raw = readFileSync(join(j.stateDir, 'seed-ledger.jsonl'), 'utf-8').slice(-262144);
-    return raw.split('\n').some((l) => l.includes('"crossing":true')) ? true : null;
-  }) === true;
+  const concernOnChain = chainHas((l) => l.includes('"category":"concern"'));
+  const crossedOnChain = chainHas((l) => l.includes('"crossing":true'));
+  // Dream provenance (2026-08-11 cut): dream prose hash-chained at birth.
+  const dreamT1OnChain = chainHas((l) => l.includes('"sourceRef":"dream:'));
   return [
     ['Recent memory', lived !== null, lived !== null ? 'composed from the chain at read time' : 'file fallback'],
     ['Turn expression', true, 'match-only surfacing of lived facts'],
@@ -514,7 +558,8 @@ function boardRows(): Array<[string, boolean, string]> {
     ['Cognition mode', true, 'thinking_machine — legacy retired'],
     ['Sleep & dreaming', true, dreamedOnChain ? 'NREM + REM — dreams on the chain' : 'NREM + REM — first dream pending'],
     ['Concern (commitments)', concernOnChain, concernOnChain ? 'his predictions bind — obligations on the chain' : 'Cut 6 live — first commitment pending'],
-    ['Endogenous occasions', crossedOnChain, crossedOnChain ? 'his own physics originated a moment' : 'solver live — first crossing pending'],
+    ['Endogenous occasions', crossedOnChain, crossedOnChain ? 'his own physics originated a moment' : 'solver live — no crossing yet (predictions resolve before their horizons)'],
+    ['Dream provenance (T1)', dreamT1OnChain, dreamT1OnChain ? 'dream prose hash-chained at birth' : 'receipting live — first chained dream pending'],
   ];
 }
 
@@ -757,6 +802,8 @@ const CLIENT_JS = String.raw`
       for (var pi = 0; pi < fresh.individuals.length; pi++) {
         var pc = document.querySelector('[data-card="' + fresh.individuals[pi].name + '"] .pulsemount');
         if (pc && typeof fresh.individuals[pi].pulseHTML === 'string') pc.innerHTML = fresh.individuals[pi].pulseHTML;
+        var xc = document.querySelector('[data-card="' + fresh.individuals[pi].name + '"] .crossingmount');
+        if (xc && typeof fresh.individuals[pi].crossingHTML === 'string') xc.innerHTML = fresh.individuals[pi].crossingHTML;
       }
     }).catch(function () { /* quiet — next poll retries */ });
   }
@@ -815,6 +862,7 @@ function renderCard(d: IndividualData): string {
     <div class="cardhead"><h2>${esc(d.name)}</h2><span class="chipmount">${chipHTML(d)}</span></div>
     <div class="being">${esc(d.being)}</div>
     ${d.note !== '' ? `<div class="note">${esc(d.note)}</div>` : ''}
+    <div class="crossingmount">${crossingHTML(d)}</div>
     <div class="pulse"><div class="sectlabel">the pulse — what just happened</div><div class="pulsemount">${pulseHTML(d)}</div></div>
     ${d.growth !== null ? `<div class="${d.growth.startsWith('🌱') ? 'grown' : 'proposals'}">${esc(d.growth)}</div>` : ''}
     <figure class="bodyfig"><div data-body="${esc(d.name)}"></div>
@@ -826,7 +874,7 @@ function renderCard(d: IndividualData): string {
 }
 
 function withFragments(d: IndividualData): Record<string, unknown> {
-  return { ...d, beingHTML: esc(d.being), proseHTML: proseHTML(d), provHTML: esc(d.prov), chipHTML: chipHTML(d), pulseHTML: pulseHTML(d) };
+  return { ...d, beingHTML: esc(d.being), proseHTML: proseHTML(d), provHTML: esc(d.prov), chipHTML: chipHTML(d), pulseHTML: pulseHTML(d), crossingHTML: crossingHTML(d) };
 }
 
 function apiPayload(): string {
@@ -858,6 +906,9 @@ function page(): string {
   .chip-dream { color:#c795f0; border-color:#3a2b4d; }
   .sect.ask { border:1px solid #4d3b1e; background:#221a0d; border-radius:8px; padding:10px 12px; }
   .sect.ask .sectlabel { color:#f0c060; }
+  .crossing { margin:10px 0 2px; font-size:13px; color:#8b95a6; }
+  .crossing-live { color:#d8e0ea; }
+  .crossing b { color:#f0c060; }
   .pulse { margin:12px 0 4px; padding:10px 14px; background:#0d1118; border:1px solid #1a2130; border-radius:10px; }
   .pulseline { font-size:14px; color:#c5cdd9; padding:2px 0; }
   .pulseage { display:inline-block; min-width:52px; color:#5d6878; font-size:12px; font-variant-numeric:tabular-nums; }
