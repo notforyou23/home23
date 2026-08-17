@@ -315,3 +315,78 @@ test('embedding backfill request is queued safely when no live engine is attache
     assert.ok(fs.existsSync(path.join(instanceDir, 'brain', 'embedding-backfill-request.json')));
   }, { providers: { openai: { apiKey: 'sk-test' } } });
 });
+
+test('settings routes honor configured external instance roots for workspace and brain writes', async () => {
+  await withSettingsServer({
+    home: { primaryAgent: 'ada' },
+    embeddings: {
+      providers: [{ provider: 'openai', model: 'text-embedding-3-small', dimensions: 1536 }],
+    },
+  }, async (baseUrl, root) => {
+    const templatesDir = path.join(root, 'cli', 'templates');
+    fs.mkdirSync(templatesDir, { recursive: true });
+    fs.writeFileSync(path.join(templatesDir, 'MISSION.md'), '# Mission\n\n{{purpose}}\n', 'utf8');
+
+    const instanceDir = path.join(root, 'instances', 'ada');
+    const externalRoot = path.join(root, 'external-instances', 'ada');
+    fs.mkdirSync(instanceDir, { recursive: true });
+    fs.mkdirSync(path.join(externalRoot, 'brain'), { recursive: true });
+    fs.mkdirSync(path.join(externalRoot, 'workspace'), { recursive: true });
+    fs.writeFileSync(
+      path.join(instanceDir, 'config.yaml'),
+      yaml.dump({
+        system: { instanceRoot: externalRoot },
+        agent: { name: 'ada', owner: { name: 'JTR' }, purpose: 'Original purpose' },
+        chat: { defaultProvider: 'openai', defaultModel: 'gpt-5' },
+        ports: { engine: 5001, dashboard: 5002 },
+      }),
+      'utf8',
+    );
+
+    const updateRes = await fetch(`${baseUrl}/home23/api/settings/agents/ada`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ purpose: 'Keep the external instance tree authoritative.' }),
+    });
+    assert.equal(updateRes.status, 200);
+    assert.match(
+      fs.readFileSync(path.join(externalRoot, 'workspace', 'MISSION.md'), 'utf8'),
+      /Keep the external instance tree authoritative\./,
+    );
+    assert.equal(fs.existsSync(path.join(instanceDir, 'workspace', 'MISSION.md')), false);
+
+    const backfillRes = await fetch(`${baseUrl}/home23/api/settings/memory/backfill-embeddings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: 'ada' }),
+    });
+    assert.equal(backfillRes.status, 200);
+    assert.equal(fs.existsSync(path.join(externalRoot, 'brain', 'embedding-backfill-request.json')), true);
+    assert.equal(fs.existsSync(path.join(instanceDir, 'brain', 'embedding-backfill-request.json')), false);
+  }, { providers: { openai: { apiKey: 'sk-test' } } });
+});
+
+test('settings start refuses an unavailable configured external instance root', async () => {
+  await withSettingsServer({
+    home: { primaryAgent: 'ada' },
+  }, async (baseUrl, root) => {
+    const instanceDir = path.join(root, 'instances', 'ada');
+    fs.mkdirSync(instanceDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(instanceDir, 'config.yaml'),
+      yaml.dump({
+        system: { instanceRoot: path.join(root, 'Volumes', 'Missing', 'ada') },
+        agent: { name: 'ada' },
+        ports: { engine: 5001, dashboard: 5002 },
+      }),
+      'utf8',
+    );
+
+    const res = await fetch(`${baseUrl}/home23/api/settings/agents/ada/start`, {
+      method: 'POST',
+    });
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.equal(body.code, 'instance_storage_unavailable');
+  });
+});

@@ -25,6 +25,9 @@ const { projectMemoryAuthority } = require('../../../shared/memory-authority.cjs
 const {
   memoryAuthorityAttestationKeyId,
 } = require('../../../shared/memory-authority-attestation.cjs');
+const {
+  resolveAgentInstancePaths,
+} = require('../../../shared/agent-instance-paths.cjs');
 
 const DIM = 768;
 const HNSW_M = 16;
@@ -129,7 +132,10 @@ async function bindDefaultOwnBrain({ brainDir, home23Root, requesterAgent }) {
     throw memorySourceError('invalid_request', 'safe ANN requester agent required', { retryable: false });
   }
   const canonicalHome = await fsp.realpath(home23Root);
-  const expectedBrain = path.join(canonicalHome, 'instances', requesterAgent, 'brain');
+  const requesterPaths = resolveAgentInstancePaths(canonicalHome, requesterAgent, {
+    requireConfig: false,
+  });
+  const expectedBrain = requesterPaths.brainDir;
   if (path.resolve(brainDir) !== expectedBrain) {
     throw memorySourceError(
       'invalid_memory_source',
@@ -140,8 +146,7 @@ async function bindDefaultOwnBrain({ brainDir, home23Root, requesterAgent }) {
   const bindings = [];
   for (const [directory, label] of [
     [canonicalHome, 'Home23 root'],
-    [path.join(canonicalHome, 'instances'), 'instances root'],
-    [path.join(canonicalHome, 'instances', requesterAgent), 'agent root'],
+    [requesterPaths.instanceRoot, 'agent root'],
     [expectedBrain, 'canonical nonsymlink own-brain target'],
   ]) {
     bindings.push(await bindCanonicalDirectory(directory, label));

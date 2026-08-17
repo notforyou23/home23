@@ -13,6 +13,7 @@ import type { ChannelAdapter, OutgoingResponse } from '../channels/router.js';
 import type { CronJob, JobResult } from './cron.js';
 import type { DeliveryProfiles } from '../types.js';
 import type { AttentionGate, OutboundSignal } from '../agent/attention/attention-gate.js';
+import { getAgentDir } from '../config.js';
 
 export type { DeliveryProfiles };
 
@@ -35,9 +36,11 @@ export class DeliveryManager {
     this.adapters = adapters;
     this.profiles = profiles;
     this.gate = gate;
-    const home23Root = resolve(import.meta.dirname, '..', '..');
     const agentName = process.env.HOME23_AGENT ?? 'test-agent';
-    this.eventLedgerPath = join(home23Root, 'instances', agentName, 'brain', 'event-ledger.jsonl');
+    const brainDir = process.env.COSMO_RUNTIME_DIR
+      ? resolve(process.env.COSMO_RUNTIME_DIR)
+      : join(getAgentDir(agentName), 'brain');
+    this.eventLedgerPath = join(brainDir, 'event-ledger.jsonl');
   }
 
   /**

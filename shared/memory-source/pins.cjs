@@ -40,6 +40,11 @@ const { assertOperationRoot, createOperationScratchQuota } = require('./scratch-
 const {
   readDurableOperationLockCapability,
 } = require('./durable-lock-authority.cjs');
+const {
+  assertAgentInstanceStorageReady,
+  discoverAgentInstancePaths,
+  resolveAgentInstancePaths,
+} = require('../agent-instance-paths.cjs');
 
 const TRUSTED_PROVIDER_CONTEXT = Symbol('trusted-memory-source-provider-context');
 const TRUSTED_DURABLE_OPERATION_LOCK_CONTROL = Symbol(
@@ -239,6 +244,49 @@ function validateOperationId(operationId) {
   return operationId;
 }
 
+function resolveRequesterStorage(home23Root, requesterAgent) {
+  const resolved = resolveAgentInstancePaths(home23Root, requesterAgent, {
+    requireConfig: false,
+  });
+  if (resolved.hasConfig) {
+    return assertAgentInstanceStorageReady(resolved, { requireConfig: false });
+  }
+  if (fs.existsSync(resolved.instanceRoot)) {
+    const stat = fs.lstatSync(resolved.instanceRoot);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw memorySourceError('invalid_request', 'trusted durable operation root required');
+    }
+  }
+  let canonicalRoot = path.resolve(resolved.instanceRoot);
+  try {
+    canonicalRoot = fs.realpathSync.native(resolved.instanceRoot);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  return Object.freeze({ ...resolved, canonicalRoot });
+}
+
+function discoverOperationAgents(home23Root) {
+  const configured = discoverAgentInstancePaths(home23Root, { requireConfig: true });
+  const seen = new Set(configured.map((entry) => entry.agentName));
+  const legacy = [];
+  const instancesRoot = path.join(home23Root, 'instances');
+  let entries = [];
+  try {
+    entries = fs.readdirSync(instancesRoot, { withFileTypes: true });
+  } catch {
+    entries = [];
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^[A-Za-z0-9_.-]+$/.test(entry.name) || seen.has(entry.name)) continue;
+    legacy.push({
+      agentName: entry.name,
+      runtimeDir: path.join(instancesRoot, entry.name, 'runtime'),
+    });
+  }
+  return configured.concat(legacy);
+}
+
 function durableBrainOperationRoot(home23Root, requesterAgent, operationId) {
   if (typeof home23Root !== 'string' || !path.isAbsolute(home23Root)
       || path.normalize(home23Root) !== home23Root || home23Root.includes('\0')
@@ -248,10 +296,9 @@ function durableBrainOperationRoot(home23Root, requesterAgent, operationId) {
     throw memorySourceError('invalid_request', 'trusted durable operation root required');
   }
   validateOperationId(operationId);
+  const requesterStorage = resolveRequesterStorage(home23Root, requesterAgent);
   return path.join(
-    home23Root,
-    'instances',
-    requesterAgent,
+    requesterStorage.instanceRoot,
     'runtime',
     'brain-operations',
     'operations',
@@ -742,6 +789,9 @@ async function defaultIsProcessPinAlive(record) {
 }
 
 function trustedLockRootForOperation(operationRoot) {
+  if (typeof process.env.HOME23_ROOT === 'string' && path.isAbsolute(process.env.HOME23_ROOT)) {
+    return path.join(path.resolve(process.env.HOME23_ROOT), 'runtime', 'brain-source-locks');
+  }
   const operationContainer = path.dirname(operationRoot);
   const brainOperationsRoot = path.basename(operationContainer) === 'operations'
     ? path.dirname(operationContainer)
@@ -1933,12 +1983,9 @@ async function withMemorySourceLock(canonicalRoot, options = {}, callback) {
 
 async function discoverOperationPinFiles(home23Root) {
   const root = await fsp.realpath(home23Root);
-  const instances = path.join(root, 'instances');
   const results = [];
-  const agents = await fsp.readdir(instances, { withFileTypes: true }).catch(() => []);
-  for (const agent of agents) {
-    if (!agent.isDirectory() || !/^[A-Za-z0-9_.-]+$/.test(agent.name)) continue;
-    const brainOperationsRoot = path.join(instances, agent.name, 'runtime', 'brain-operations');
+  for (const agent of discoverOperationAgents(root)) {
+    const brainOperationsRoot = path.join(agent.runtimeDir, 'brain-operations');
     const containers = [
       { root: path.join(brainOperationsRoot, 'operations'), excludedName: null },
       { root: brainOperationsRoot, excludedName: 'operations' },
@@ -1961,7 +2008,7 @@ async function discoverOperationPinFiles(home23Root) {
         if (coordinatorStat?.isFile() && !coordinatorStat.isSymbolicLink()) {
           results.push({
             kind: 'coordinator',
-            requesterAgent: agent.name,
+            requesterAgent: agent.agentName,
             operationId: operation.name,
             path: coordinator,
           });
@@ -1982,7 +2029,7 @@ async function discoverOperationPinFiles(home23Root) {
             if (file.isFile() && /^[a-f0-9]{64}\.json$/.test(file.name)) {
               results.push({
                 kind: 'process',
-                requesterAgent: agent.name,
+                requesterAgent: agent.agentName,
                 operationId: operation.name,
                 processIdentity: processDir.name,
                 path: path.join(processRoot, file.name),
@@ -2278,7 +2325,7 @@ function createMemorySourcePinProvider({
     throw memorySourceError('invalid_request', 'safe requester required');
   }
   const lockRoot = path.join(home23Root, 'runtime', 'brain-source-locks');
-  const ownBrainPath = path.join(home23Root, 'instances', requesterAgent, 'brain');
+  const ownBrainPath = resolveRequesterStorage(home23Root, requesterAgent).brainDir;
   if ((_durableLockClock !== undefined && typeof _durableLockClock?.now !== 'function')
       || (_durableLockRetryMs !== undefined
         && (!Number.isSafeInteger(_durableLockRetryMs) || _durableLockRetryMs < 0))

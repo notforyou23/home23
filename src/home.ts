@@ -24,7 +24,7 @@ const execAsync = promisify(exec);
 setDefaultResultOrder('ipv4first');
 import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { loadConfig } from './config.js';
+import { getAgentDir, loadConfig } from './config.js';
 import { CompactionManager } from './agent/compaction.js';
 import { TelegramAdapter } from './channels/telegram.js';
 import { DiscordAdapter } from './channels/discord.js';
@@ -105,26 +105,42 @@ import {
 } from './agency/world-stream.js';
 import {
   auditExistingRecurringCronJobsForAgency,
-  mergeExternalCronJobPreservingAgency,
   reviewBoundRecurringCronJobsForAgency,
 } from './agency/cron-bootcamp.js';
+import { mergeInstallCronJobs, shouldLoadInstallCronJobs } from './install-cron-jobs.js';
 
 // ─── Constants ──────────────────────────────────────────────
 
 const requireCjs = createRequire(import.meta.url);
 const { assertPm2AgentIdentity } = requireCjs('../scripts/lib/pm2-agent-identity-guard.cjs');
 const { createQueryNotebookCredentialAuthority } = requireCjs('../shared/query-notebook-credential.cjs');
+const {
+  assertAgentInstanceStorageReady,
+  resolveAgentInstancePaths,
+} = requireCjs('../shared/agent-instance-paths.cjs');
 assertPm2AgentIdentity();
 
 const AGENT_NAME = process.env.HOME23_AGENT ?? 'test-agent';
-const HOME23_ROOT = resolve(import.meta.dirname, '..');
+const HOME23_ROOT = process.env.HOME23_ROOT
+  ? resolve(process.env.HOME23_ROOT)
+  : resolve(import.meta.dirname, '..');
 const PROJECT_ROOT = HOME23_ROOT;
-const INSTANCE_DIR = join(HOME23_ROOT, 'instances', AGENT_NAME);
-const WORKSPACE_PATH = join(INSTANCE_DIR, 'workspace');
-const BRAIN_DIR = join(INSTANCE_DIR, 'brain');
-const CONVERSATIONS_DIR = join(INSTANCE_DIR, 'conversations');
+const INSTANCE_DIR = process.env.HOME23_INSTANCE_DIR
+  ? resolve(process.env.HOME23_INSTANCE_DIR)
+  : getAgentDir(AGENT_NAME);
+const WORKSPACE_PATH = process.env.COSMO_WORKSPACE_PATH
+  ? resolve(process.env.COSMO_WORKSPACE_PATH)
+  : join(INSTANCE_DIR, 'workspace');
+const BRAIN_DIR = process.env.COSMO_RUNTIME_DIR
+  ? resolve(process.env.COSMO_RUNTIME_DIR)
+  : join(INSTANCE_DIR, 'brain');
+const CONVERSATIONS_DIR = process.env.HOME23_CONVERSATIONS_DIR
+  ? resolve(process.env.HOME23_CONVERSATIONS_DIR)
+  : join(INSTANCE_DIR, 'conversations');
 const SESSIONS_DIR = join(CONVERSATIONS_DIR, 'sessions');
-const LOGS_DIR = join(INSTANCE_DIR, 'logs');
+const LOGS_DIR = process.env.HOME23_LOGS_DIR
+  ? resolve(process.env.HOME23_LOGS_DIR)
+  : join(INSTANCE_DIR, 'logs');
 const RUNTIME_DIR = CONVERSATIONS_DIR; // backwards compat for modules that use RUNTIME_DIR
 const HOME_PORT = parseInt(process.env.HOME_PORT ?? '4610', 10);
 const CACHE_DIAGNOSTICS_ENABLED = /^(1|true|yes|on)$/i.test(process.env.CACHE_DIAGNOSTICS ?? '');
@@ -190,6 +206,10 @@ async function queryEngine(
 // ─── Main ───────────────────────────────────────────────────
 
 async function main(): Promise<void> {
+  const instancePaths = assertAgentInstanceStorageReady(
+    resolveAgentInstancePaths(HOME23_ROOT, AGENT_NAME, { requireConfig: true }),
+  );
+
   // ── Load config ──
   const config = loadConfig(AGENT_NAME);
   console.log(`[home] Config loaded for agent: ${AGENT_NAME}`);
@@ -205,7 +225,7 @@ async function main(): Promise<void> {
   console.log('═══════════════════════════════════════════════════');
   console.log(`  Dashboard:    ${ENGINE_BASE}`);
   console.log(`  Engine WS:    ws://localhost:${ENGINE_WS_PORT}`);
-  console.log(`  Instance:     ${INSTANCE_DIR}`);
+  console.log(`  Instance:     ${instancePaths.instanceRoot}`);
   console.log('');
 
   // Ensure directories exist
@@ -905,26 +925,20 @@ async function main(): Promise<void> {
 
     // Load external cron jobs from config dir if file exists
     const externalJobsPath = join(PROJECT_ROOT, 'config', 'cron-jobs.json');
-    if (existsSync(externalJobsPath)) {
+    if (shouldLoadInstallCronJobs(config) && existsSync(externalJobsPath)) {
       try {
         const raw = readFileSync(externalJobsPath, 'utf-8');
         const externalJobs: CronJob[] = JSON.parse(raw);
-        let added = 0;
-        let updated = 0;
-        for (const job of externalJobs) {
-          const existing = scheduler.getJob(job.id);
-          if (!existing) {
-            scheduler.addJob(job);
-            added++;
-          } else {
-            scheduler.saveJob(mergeExternalCronJobPreservingAgency(existing, job));
-            updated++;
-          }
-        }
+        const { added, updated } = mergeInstallCronJobs({
+          scheduler,
+          jobs: externalJobs,
+        });
         console.log(`[home] Loaded ${added} new and updated ${updated} cron job(s) from config/cron-jobs.json (${externalJobs.length} total in file)`);
       } catch (err) {
         console.error('[home] Failed to load external cron jobs:', err);
       }
+    } else if (!shouldLoadInstallCronJobs(config)) {
+      console.log('[home] Skipping install-level cron jobs for this agent (scheduler.loadInstallJobs=false)');
     }
 
     const bootcampScheduler = scheduler;

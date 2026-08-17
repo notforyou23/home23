@@ -4,6 +4,10 @@ const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
 const {
+  discoverAgentInstancePaths,
+  resolveAgentInstancePaths,
+} = require('../../../shared/agent-instance-paths.cjs');
+const {
   assertIdentifier,
   assertOperationId,
   assertResultHandle,
@@ -112,12 +116,8 @@ function readYaml(filePath) {
 }
 
 function discoverAgents(home23Root) {
-  const instancesDir = path.join(home23Root, 'instances');
-  if (!fs.existsSync(instancesDir)) return [];
-  return fs.readdirSync(instancesDir).filter((name) => {
-    const dir = path.join(instancesDir, name);
-    return fs.statSync(dir).isDirectory() && fs.existsSync(path.join(dir, 'config.yaml'));
-  });
+  return discoverAgentInstancePaths(home23Root, { requireConfig: true })
+    .map((entry) => entry.agentName);
 }
 
 function resolveAgentFromRoot(home23Root, candidate, fallback = 'jerry') {
@@ -140,7 +140,9 @@ function loadQueryDefaults(home23Root, agent) {
     };
   }
   const homeConfig = readYaml(path.join(home23Root, 'config', 'home.yaml'));
-  const agentConfig = agent ? readYaml(path.join(home23Root, 'instances', agent, 'config.yaml')) : {};
+  const agentConfig = agent
+    ? readYaml(resolveAgentInstancePaths(home23Root, agent, { requireConfig: false }).configPath)
+    : {};
   const q = agentConfig.query || homeConfig.query || {};
   const agentChat = agentConfig.chat || homeConfig.chat || {};
   return {
@@ -216,11 +218,12 @@ function normalizeBrains(payload) {
 
 function buildResidentBrain(home23Root, agent) {
   if (!home23Root || !agent) return null;
-  const brainPath = path.resolve(home23Root, 'instances', agent, 'brain');
+  const agentPaths = resolveAgentInstancePaths(home23Root, agent, { requireConfig: false });
+  const brainPath = agentPaths.brainDir;
   const canonicalRoot = fs.existsSync(brainPath)
     ? fs.realpathSync(brainPath)
     : brainPath;
-  const config = readYaml(path.join(home23Root, 'instances', agent, 'config.yaml'));
+  const config = readYaml(agentPaths.configPath);
   const displayName = config.agent?.displayName || config.agent?.name || agent;
   return {
     id: `brain-${crypto.createHash('sha256').update(canonicalRoot).digest('hex').slice(0, 16)}`,
@@ -241,12 +244,14 @@ function findSelectedBrain(brains, agent) {
   const target = String(agent || '').toLowerCase();
   if (!target) return null;
   return brains.find((brain) => {
-    const source = String(brain.sourceLabel || '').toLowerCase();
-    const display = String(brain.displayName || '').toLowerCase();
+    const source = String(brain.sourceLabel || brain.ownerAgent || '').toLowerCase();
+    const display = String(brain.displayName || brain.name || '').toLowerCase();
     const p = String(brain.path || '').toLowerCase();
     return source === target
       || display === `${target} brain`
-      || p.endsWith(`/instances/${target}/brain`);
+      || p.endsWith(`/instances/${target}/brain`)
+      || p.endsWith(`/${target}/brain`)
+      || p.endsWith(`\\${target}\\brain`);
   }) || null;
 }
 

@@ -351,6 +351,45 @@ test('catalog rejects canonical-root and per-entry boundary symlink escapes', as
   }), /catalog_boundary_invalid/);
 });
 
+test('canonical catalog supports configured external resident roots without a local brain symlink', async (t) => {
+  const root = await makeTempDir();
+  const instancesRoot = path.join(root, 'instances');
+  const localRunsPath = path.join(root, 'runs');
+  const externalResidentParent = await makeTempDir();
+  const externalResidentRoot = path.join(externalResidentParent, 'grokbot', 'brain');
+  await Promise.all([
+    fsp.mkdir(instancesRoot, { recursive: true }),
+    fsp.mkdir(localRunsPath, { recursive: true }),
+    writeState(path.join(instancesRoot, 'jerry', 'brain'), 5),
+    writeState(externalResidentRoot, 7),
+  ]);
+  t.after(async () => {
+    await Promise.all([
+      fsp.rm(root, { recursive: true, force: true }),
+      fsp.rm(externalResidentParent, { recursive: true, force: true }),
+    ]);
+  });
+
+  const catalog = await buildCanonicalCatalog({
+    instancesRoot,
+    localRunsPath,
+    referenceRunsPaths: [],
+    configuredAgentNames: ['jerry', 'grokbot'],
+    configuredResidentRoots: {
+      jerry: path.join(instancesRoot, 'jerry', 'brain'),
+      grokbot: externalResidentRoot,
+    },
+  });
+
+  const canonicalExternal = await fsp.realpath(externalResidentRoot);
+  const grokbot = catalog.brains.find((brain) => brain.canonicalRoot === canonicalExternal);
+  assert.ok(grokbot);
+  assert.equal(grokbot.ownerAgent, 'grokbot');
+  assert.equal(grokbot.kind, 'resident');
+  assert.equal(grokbot.lifecycle, 'resident');
+  assert.equal(grokbot.nodeCount, 7);
+});
+
 test('shared legacy resolver rejects duplicate names but prefers canonical ids and unique route keys', async (t) => {
   const fixture = await buildFixture();
   t.after(() => fsp.rm(fixture.root, { recursive: true, force: true }));

@@ -5,6 +5,9 @@ const path = require('node:path');
 const {
   loadCanonicalRunMetadata,
 } = require('../../../../cosmo23/server/lib/research-run-metadata.js');
+const {
+  resolveAgentInstancePaths,
+} = require('../../../../shared/agent-instance-paths.cjs');
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const ACTIVE_STATES = new Set(['starting', 'active', 'stopping']);
@@ -51,10 +54,9 @@ function project(record) {
 function createResearchRunsReader(options) {
   validateOptions(options);
   const runsRoot = path.join(
-    options.home23Root,
-    'instances',
-    options.requesterAgent,
-    'workspace',
+    resolveAgentInstancePaths(options.home23Root, options.requesterAgent, {
+      requireConfig: false,
+    }).workspaceDir,
     'research-runs',
   );
 

@@ -1,6 +1,9 @@
 const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
+const {
+  resolveAgentInstancePaths,
+} = require('../../../shared/agent-instance-paths.cjs');
 
 /**
  * Configuration Loader
@@ -22,10 +25,66 @@ class ConfigLoader {
    * so the per-agent config lives one directory up.
    */
   resolveInstanceConfigPath() {
+    const home23Root = process.env.HOME23_ROOT;
+    const agentName = process.env.HOME23_AGENT;
+    if (home23Root && agentName) {
+      try {
+        return resolveAgentInstancePaths(path.resolve(home23Root), agentName, {
+          requireConfig: false,
+        }).configPath;
+      } catch {
+        // Fall back to legacy workspace-relative lookup below.
+      }
+    }
     const wp = process.env.COSMO_WORKSPACE_PATH;
     if (!wp) return null;
     const candidate = path.join(path.dirname(wp), 'config.yaml');
     return fs.existsSync(candidate) ? candidate : null;
+  }
+
+  resolveRunningAgentPaths() {
+    const home23Root = process.env.HOME23_ROOT;
+    const agentName = process.env.HOME23_AGENT;
+    if (!home23Root || !agentName) return null;
+    try {
+      return resolveAgentInstancePaths(path.resolve(home23Root), agentName, {
+        requireConfig: false,
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  normalizeManagedInstanceConfig(instanceConfig) {
+    if (!instanceConfig || typeof instanceConfig !== 'object') return instanceConfig;
+    const agentPaths = this.resolveRunningAgentPaths();
+    if (!agentPaths || agentPaths.instanceRoot === agentPaths.localInstanceRoot) {
+      return instanceConfig;
+    }
+
+    const rewriteManagedPath = (candidatePath) => {
+      if (typeof candidatePath !== 'string' || !path.isAbsolute(candidatePath)) return candidatePath;
+      const relative = path.relative(agentPaths.localInstanceRoot, path.resolve(candidatePath));
+      if (relative.startsWith('..') || path.isAbsolute(relative)) return candidatePath;
+      return path.join(agentPaths.instanceRoot, relative);
+    };
+
+    if (Array.isArray(instanceConfig.feeder?.additionalWatchPaths)) {
+      instanceConfig.feeder.additionalWatchPaths = instanceConfig.feeder.additionalWatchPaths.map((entry) => {
+        if (typeof entry === 'string') return rewriteManagedPath(entry);
+        if (!entry || typeof entry !== 'object') return entry;
+        return {
+          ...entry,
+          path: rewriteManagedPath(entry.path),
+        };
+      });
+    }
+
+    if (typeof instanceConfig.feeder?.workspacePath === 'string') {
+      instanceConfig.feeder.workspacePath = rewriteManagedPath(instanceConfig.feeder.workspacePath);
+    }
+
+    return instanceConfig;
   }
 
   /**
@@ -290,7 +349,9 @@ class ConfigLoader {
       const instancePath = this.resolveInstanceConfigPath();
       if (instancePath) {
         try {
-          const instanceConfig = yaml.load(fs.readFileSync(instancePath, 'utf8')) || {};
+          const instanceConfig = this.normalizeManagedInstanceConfig(
+            yaml.load(fs.readFileSync(instancePath, 'utf8')) || {},
+          );
           this.applyInstanceEngineOverrides(instanceConfig);
           // Per-slot overrides run AFTER the blunt `engine.thought` shortcut so
           // specific assignments win over the sweep.

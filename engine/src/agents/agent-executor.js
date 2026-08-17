@@ -13,6 +13,9 @@ const path = require('path');
 const {
   createInstalledLocalSourceContext,
 } = require('../../../shared/memory-source/operation-context.cjs');
+const {
+  resolveAgentInstancePaths,
+} = require('../../../shared/agent-instance-paths.cjs');
 
 function sourceContextError(message) {
   return Object.assign(new Error(message), { code: 'mcp_source_context_required' });
@@ -65,17 +68,18 @@ function createTrustedAgentBrainSourceContext({
   const canonicalHome = canonicalDirectory(home23Root, 'Home23 root');
   const canonicalBrain = canonicalDirectory(brainDir, 'brain directory');
   if (sourceKind === 'resident') {
-    const expected = path.join(canonicalHome, 'instances', requesterAgent, 'brain');
+    const expected = resolveAgentInstancePaths(canonicalHome, requesterAgent, {
+      requireConfig: false,
+    }).brainDir;
     if (canonicalBrain !== expected) {
       throw sourceContextError('resident brain does not match requester layout');
     }
   }
 
   const operationBase = path.join(
-    canonicalHome,
-    'instances',
-    requesterAgent,
-    'runtime',
+    resolveAgentInstancePaths(canonicalHome, requesterAgent, {
+      requireConfig: false,
+    }).runtimeDir,
     'brain-operations',
   );
   const lockRoot = path.join(canonicalHome, 'runtime', 'brain-source-locks');

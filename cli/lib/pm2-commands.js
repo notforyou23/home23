@@ -21,6 +21,11 @@ const {
   agentProcessNameCandidates,
   filterNamesByEcosystem,
 } = require('../../shared/agent-process-names.cjs');
+const {
+  assertAgentInstanceStorageReady,
+  discoverAgentInstancePaths,
+  resolveAgentInstancePaths,
+} = require('../../shared/agent-instance-paths.cjs');
 
 const SHARED_SERVICE_LABELS = new Map(
   SHARED_SERVICES.map((service) => [service.name, service.label]),
@@ -89,6 +94,28 @@ function allNonSharedAutostartProcessNames(home23Root) {
   ])];
 }
 
+function verifyAgentStorage(home23Root, agentName) {
+  return assertAgentInstanceStorageReady(
+    resolveAgentInstancePaths(home23Root, agentName, { requireConfig: true }),
+  );
+}
+
+function preflightAllAgentStorage(home23Root) {
+  const ready = [];
+  const blocked = [];
+  for (const paths of discoverAgentInstancePaths(home23Root, { requireConfig: true })) {
+    try {
+      ready.push(verifyAgentStorage(home23Root, paths.agentName));
+    } catch (error) {
+      blocked.push({
+        agentName: paths.agentName,
+        error,
+      });
+    }
+  }
+  return { ready, blocked };
+}
+
 export async function runStart(home23Root, agentName) {
   if (agentName && !/^[a-z0-9][a-z0-9-]*$/.test(agentName)) {
     console.error('Agent name must be lowercase alphanumeric with hyphens.');
@@ -115,8 +142,18 @@ export async function runStart(home23Root, agentName) {
   }
 
   if (agentName) {
-    const agentConfigPath = join(home23Root, 'instances', agentName, 'config.yaml');
-    if (!existsSync(agentConfigPath)) {
+    let instancePaths;
+    try {
+      instancePaths = verifyAgentStorage(home23Root, agentName);
+    } catch (error) {
+      const missingConfig = error?.code === 'agent_config_missing';
+      console.error(missingConfig
+        ? `Agent "${agentName}" does not exist. Run "node cli/home23.js agent create ${agentName}" first.`
+        : `Refusing to start ${agentName}: ${error.message}`);
+      process.exit(1);
+    }
+
+    if (!existsSync(instancePaths.configPath)) {
       console.error(`Agent "${agentName}" does not exist. Run "node cli/home23.js agent create ${agentName}" first.`);
       process.exit(1);
     }
@@ -136,15 +173,29 @@ export async function runStart(home23Root, agentName) {
       process.exit(1);
     }
   } else {
+    const { blocked } = preflightAllAgentStorage(home23Root);
+    const blockedNames = new Set(blocked.map((entry) => entry.agentName));
+    for (const entry of blocked) {
+      console.warn(`Skipping ${entry.agentName}: ${entry.error.message}`);
+    }
+
     // Start all
     console.log('Starting all agents...');
     try {
+      const names = allNonSharedAutostartProcessNames(home23Root).filter((name) => {
+        for (const blockedAgent of blockedNames) {
+          const blockedProcessNames = new Set([
+            ...agentProcessNameCandidates(blockedAgent, home23Root),
+            `home23-${blockedAgent}-shipper`,
+            `home23-${blockedAgent}-house-sense`,
+          ]);
+          if (blockedProcessNames.has(name)) return false;
+        }
+        return true;
+      });
       startEcosystemProcesses({
         home23Root,
-        names: filterNamesByEcosystem(
-          allNonSharedAutostartProcessNames(home23Root),
-          ecosystemPath,
-        ),
+        names: filterNamesByEcosystem(names, ecosystemPath),
         stdio: 'inherit',
       });
     } catch (err) {

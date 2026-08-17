@@ -7,6 +7,10 @@ const { openMemorySource } = require('./reader.cjs');
 const { withMemorySourceLock } = require('./pins.cjs');
 const { createOperationScratchQuota } = require('./scratch-quota.cjs');
 const { memorySourceError, throwIfAborted } = require('./contracts.cjs');
+const {
+  assertAgentInstanceStorageReady,
+  resolveAgentInstancePaths,
+} = require('../agent-instance-paths.cjs');
 
 function safeSegment(value, label) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(value)
@@ -69,10 +73,10 @@ async function createCanonicalDirectoryChild(parent, segment, label) {
   return bindCanonicalDirectory(child, label);
 }
 
-function assertOperationPlacement(homeRoot, canonicalBrain, candidate) {
-  const beneathHome = path.relative(homeRoot, candidate);
+function assertOperationPlacement(instanceRoot, canonicalBrain, candidate) {
+  const beneathInstance = path.relative(instanceRoot, candidate);
   const crossingBrain = path.relative(canonicalBrain, candidate);
-  if (!beneathHome || beneathHome.startsWith('..') || path.isAbsolute(beneathHome)
+  if (!beneathInstance || beneathInstance.startsWith('..') || path.isAbsolute(beneathInstance)
       || !crossingBrain
       || (!crossingBrain.startsWith('..') && !path.isAbsolute(crossingBrain))) {
     throw invalidOperationTree('operation scratch placement is invalid');
@@ -178,13 +182,21 @@ async function withEphemeralMemorySource({
     await fsp.mkdir(home23Root, { recursive: true, mode: 0o700 });
     return fsp.realpath(home23Root);
   });
-  const canonicalBrain = await fsp.realpath(brainDir);
   const safeRequester = safeSegment(requesterAgent, 'requester');
+  const requesterPaths = resolveAgentInstancePaths(homeRoot, safeRequester, {
+    requireConfig: false,
+  });
+  const requesterStorage = requesterPaths.hasConfig
+    ? assertAgentInstanceStorageReady(requesterPaths, { requireConfig: false })
+    : null;
+  const canonicalInstanceRoot = requesterStorage?.canonicalRoot || requesterPaths.instanceRoot;
+  if (!requesterPaths.hasConfig) {
+    await fsp.mkdir(canonicalInstanceRoot, { recursive: true, mode: 0o700 });
+  }
+  const canonicalBrain = await fsp.realpath(brainDir);
   const safePrefix = safeSegment(prefix, 'prefix');
   const intendedOperationsRoot = path.join(
-    homeRoot,
-    'instances',
-    safeRequester,
+    canonicalInstanceRoot,
     'runtime',
     'brain-operations',
   );
@@ -193,11 +205,9 @@ async function withEphemeralMemorySource({
     throw memorySourceError('invalid_request', 'operation root must not cross target');
   }
   const homeDirectory = await bindCanonicalDirectory(homeRoot, 'home root');
-  const instancesDirectory = await createCanonicalDirectoryChild(
-    homeDirectory, 'instances', 'instances root',
-  );
-  const requesterDirectory = await createCanonicalDirectoryChild(
-    instancesDirectory, safeRequester, 'requester runtime root',
+  const requesterDirectory = await bindCanonicalDirectory(
+    canonicalInstanceRoot,
+    'requester instance root',
   );
   const requesterRuntimeDirectory = await createCanonicalDirectoryChild(
     requesterDirectory, 'runtime', 'requester runtime directory',
@@ -205,7 +215,7 @@ async function withEphemeralMemorySource({
   const operationsDirectory = await createCanonicalDirectoryChild(
     requesterRuntimeDirectory, 'brain-operations', 'operations root',
   );
-  assertOperationPlacement(homeRoot, canonicalBrain, operationsDirectory.path);
+  assertOperationPlacement(canonicalInstanceRoot, canonicalBrain, operationsDirectory.path);
   const runtimeDirectory = await createCanonicalDirectoryChild(
     homeDirectory, 'runtime', 'home runtime root',
   );
@@ -256,7 +266,7 @@ async function withEphemeralMemorySource({
     try {
       operationIdentity = await createOwnedOperationRoot(operationsDirectory, operationId);
       const operationRoot = operationIdentity.path;
-      assertOperationPlacement(homeRoot, canonicalBrain, operationRoot);
+      assertOperationPlacement(canonicalInstanceRoot, canonicalBrain, operationRoot);
       scratchQuota = await createOperationScratchQuota({ operationRoot, signal });
       const effectiveIdentity = Object.freeze({
         ...identity,

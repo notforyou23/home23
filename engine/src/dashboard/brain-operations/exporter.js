@@ -20,6 +20,9 @@ const {
   authorityError,
   authorizeBrainOperation,
 } = require('../../../../shared/brain-operations/authority.cjs');
+const {
+  resolveAgentInstancePaths,
+} = require('../../../../shared/agent-instance-paths.cjs');
 
 const EXPORT_HANDLE_PATTERN = /^brexp_[A-Za-z0-9_-]{32}$/;
 const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/;
@@ -173,9 +176,12 @@ class BrainOperationExporter {
     this.randomBytes = options.randomBytes || crypto.randomBytes;
     this.crashInjector = options.crashInjector || (async () => {});
     this.instancesRoot = path.join(this.home23Root, 'instances');
-    this.instanceRoot = path.join(this.instancesRoot, this.requesterAgent);
-    this.workspaceRoot = path.join(this.instanceRoot, 'workspace');
-    this.runtimeRoot = path.join(this.instanceRoot, 'runtime');
+    const agentPaths = resolveAgentInstancePaths(this.home23Root, this.requesterAgent, {
+      requireConfig: false,
+    });
+    this.instanceRoot = agentPaths.instanceRoot;
+    this.workspaceRoot = agentPaths.workspaceDir;
+    this.runtimeRoot = agentPaths.runtimeDir;
     this.exportRoot = path.join(this.workspaceRoot, 'brain-exports');
     this.receiptRoot = path.join(this.runtimeRoot, 'brain-export-receipts');
   }

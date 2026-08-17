@@ -8,6 +8,9 @@ const {
 const {
   buildResearchRunTarget,
 } = require('../../../../shared/brain-operations/research-run-target.cjs');
+const {
+  resolveAgentInstancePaths,
+} = require('../../../../shared/agent-instance-paths.cjs');
 
 const AGENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -36,11 +39,11 @@ function createResearchRunTargetResolver({
     if (typeof runId !== 'string' || !RUN_ID_PATTERN.test(runId)) {
       throw resolverError('invalid_request', 'Invalid research run target');
     }
+    const requesterPaths = resolveAgentInstancePaths(home23Root, requesterAgent, {
+      requireConfig: false,
+    });
     const canonicalRoot = path.join(
-      home23Root,
-      'instances',
-      requesterAgent,
-      'workspace',
+      requesterPaths.workspaceDir,
       'research-runs',
       runId,
     );

@@ -15,6 +15,7 @@ import { generateEcosystem } from './generate-ecosystem.js';
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
 const { deriveMemoryAuthorityAttestationKey } = require('../../shared/memory-authority-attestation.cjs');
+const { discoverAgentInstancePaths } = require('../../shared/agent-instance-paths.cjs');
 const CAPABILITY_ENV = 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY';
 const AUTHORITY_ENV = 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY';
 const DRY_RUN_CAPABILITY = '0'.repeat(64);
@@ -347,8 +348,6 @@ async function readCanonicalDirectory(directoryPath, { optional = false } = {}) 
 }
 
 async function listBrainOperations(home23Root, dependencies) {
-  const instancesRoot = path.join(home23Root, 'instances');
-  const instanceEntries = await readCanonicalDirectory(instancesRoot, { optional: true });
   const createStoreReader = dependencies.createStoreReader
     || require('../../engine/src/dashboard/brain-operations/store-reader.js')
       .createBrainOperationStoreReader;
@@ -356,17 +355,9 @@ async function listBrainOperations(home23Root, dependencies) {
 
   const requesters = [];
   const operations = [];
-  for (const entry of (instanceEntries || []).sort((left, right) => left.name.localeCompare(right.name))) {
-    if (entry.isSymbolicLink()) throw commandError('brain_operations_store_invalid');
-    if (!entry.isDirectory()) continue;
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(entry.name)) {
-      throw commandError('brain_operations_store_invalid');
-    }
-    const instanceRoot = path.join(instancesRoot, entry.name);
-    if (await readCanonicalDirectory(instanceRoot, { optional: false }) === null) {
-      throw commandError('brain_operations_store_invalid');
-    }
-    const runtimeRoot = path.join(instanceRoot, 'runtime');
+  const requestersWithPaths = discoverAgentInstancePaths(home23Root, { requireConfig: true });
+  for (const requester of requestersWithPaths.sort((left, right) => left.agentName.localeCompare(right.agentName))) {
+    const runtimeRoot = requester.runtimeDir;
     if (await readCanonicalDirectory(runtimeRoot, { optional: true }) === null) continue;
     const operationsRoot = path.join(runtimeRoot, 'brain-operations');
     if (await readCanonicalDirectory(operationsRoot, { optional: true }) === null) continue;
@@ -375,17 +366,17 @@ async function listBrainOperations(home23Root, dependencies) {
     try {
       records = await createStoreReader({
         operationsRoot,
-        expectedRequester: entry.name,
+        expectedRequester: requester.agentName,
       }).listNonterminalAuthorized();
     } catch (error) {
       throw commandError('brain_operations_store_invalid', error);
     }
     if (!Array.isArray(records)
-        || records.some((record) => record?.requesterAgent !== entry.name
+        || records.some((record) => record?.requesterAgent !== requester.agentName
           || (record.state !== 'queued' && record.state !== 'running'))) {
       throw commandError('brain_operations_store_invalid');
     }
-    requesters.push(entry.name);
+    requesters.push(requester.agentName);
     for (const record of records) operations.push(projectOperatorOperation(record));
   }
 

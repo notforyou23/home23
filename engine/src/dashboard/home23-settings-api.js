@@ -18,6 +18,11 @@ const {
   agentProcessNameCandidates,
   filterNamesByEcosystem,
 } = require('../../../shared/agent-process-names.cjs');
+const {
+  assertAgentInstanceStorageReady,
+  discoverAgentInstancePaths,
+  resolveAgentInstancePaths,
+} = require('../../../shared/agent-instance-paths.cjs');
 const { buildHome23ModelAuthority } = require('./home23-model-catalog.js');
 
 // Interactive OAuth proxies block on a human at a browser. This must stay
@@ -256,18 +261,23 @@ function createSettingsRouter(home23Root, options = {}) {
   }
 
   function discoverAgents() {
-    const instancesDir = path.join(home23Root, 'instances');
-    if (!fs.existsSync(instancesDir)) return [];
-    return fs.readdirSync(instancesDir).filter(name => {
-      const dir = path.join(instancesDir, name);
-      return fs.statSync(dir).isDirectory() && fs.existsSync(path.join(dir, 'config.yaml'));
-    });
+    return discoverAgentInstancePaths(home23Root, { requireConfig: true })
+      .map((entry) => entry.agentName);
+  }
+
+  function resolveAgentPaths(agentName, { requireConfig = false } = {}) {
+    if (!agentName) return null;
+    try {
+      return resolveAgentInstancePaths(home23Root, agentName, { requireConfig });
+    } catch {
+      return null;
+    }
   }
 
   function chooseFallbackPrimaryAgent(agentNames = discoverAgents()) {
     if (!Array.isArray(agentNames) || agentNames.length === 0) return null;
     const ranked = agentNames.map(name => {
-      const config = loadYaml(path.join(home23Root, 'instances', name, 'config.yaml'));
+      const config = loadAgentConfig(name);
       return {
         name,
         dashboardPort: Number(config.ports?.dashboard) || Number.MAX_SAFE_INTEGER,
@@ -332,8 +342,8 @@ function createSettingsRouter(home23Root, options = {}) {
 
   function loadAgentConfig(agentName) {
     if (!agentName) return {};
-    const configPath = path.join(home23Root, 'instances', agentName, 'config.yaml');
-    return fs.existsSync(configPath) ? (loadYaml(configPath) || {}) : {};
+    const configPath = resolveAgentPaths(agentName, { requireConfig: false })?.configPath;
+    return configPath && fs.existsSync(configPath) ? (loadYaml(configPath) || {}) : {};
   }
 
   function setPrimaryAgent(name) {
@@ -439,13 +449,15 @@ function createSettingsRouter(home23Root, options = {}) {
 
   function syncAgentDefaultModelFiles(agentName, provider, model) {
     if (!agentName || !provider || !model) return;
+    const agentPaths = resolveAgentPaths(agentName, { requireConfig: false });
+    if (!agentPaths) return;
     const modelJson = JSON.stringify({
       model: String(model).trim(),
       provider: String(provider).trim(),
     });
     const directories = [
-      path.join(home23Root, 'instances', agentName, 'conversations'),
-      path.join(home23Root, 'instances', agentName, 'brain'),
+      agentPaths.conversationsDir,
+      agentPaths.brainDir,
     ];
     for (const dir of directories) {
       try { fs.writeFileSync(path.join(dir, 'default-model.json'), modelJson); } catch { /* best-effort */ }
@@ -719,7 +731,10 @@ function createSettingsRouter(home23Root, options = {}) {
       status: 'pending_next_engine_load',
       note: 'The engine regenerates missing embeddings in the background when it loads memory with an embedding provider configured.',
     };
-    const brainDir = path.join(home23Root, 'instances', targetAgent, 'brain');
+    const brainDir = resolveAgentPaths(targetAgent, { requireConfig: true })?.brainDir;
+    if (!brainDir) {
+      return res.status(404).json({ ok: false, error: `Agent "${targetAgent}" not found` });
+    }
     fs.mkdirSync(brainDir, { recursive: true });
     fs.appendFileSync(path.join(brainDir, 'embedding-backfill-requests.jsonl'), JSON.stringify(request) + '\n', 'utf8');
     fs.writeFileSync(path.join(brainDir, 'embedding-backfill-request.json'), JSON.stringify(request, null, 2), 'utf8');
@@ -855,7 +870,10 @@ function createSettingsRouter(home23Root, options = {}) {
     if (!agentName) {
       return { agent: null, total: 0, embedded: 0, missing: 0, source: 'none' };
     }
-    const logsDir = path.join(home23Root, 'instances', agentName, 'logs');
+    const logsDir = resolveAgentPaths(agentName, { requireConfig: true })?.logsDir;
+    if (!logsDir) {
+      return { agent: agentName, total: 0, embedded: 0, missing: 0, source: 'unavailable', error: 'agent not found' };
+    }
     const counts = { agent: agentName, total: 0, embedded: 0, missing: 0, source: 'none' };
 
     try {
@@ -1088,7 +1106,7 @@ function createSettingsRouter(home23Root, options = {}) {
     const currentAgent = getCurrentDashboardAgent();
     const secretsForDisplay = loadYaml(path.join(home23Root, 'config', 'secrets.yaml'));
     const agents = discoverAgents().map(name => {
-      const config = loadYaml(path.join(home23Root, 'instances', name, 'config.yaml'));
+      const config = loadAgentConfig(name);
       const agentSec = secretsForDisplay.agents?.[name] || {};
       return {
         name,
@@ -1123,7 +1141,7 @@ function createSettingsRouter(home23Root, options = {}) {
     if (!fs.existsSync(instancesDir)) return { engine: 5001, dashboard: 5002, mcp: 5003, bridge: 5004 };
     let maxBase = 4991;
     for (const name of discoverAgents()) {
-      const config = loadYaml(path.join(instancesDir, name, 'config.yaml'));
+      const config = loadAgentConfig(name);
       const enginePort = config.ports?.engine || 0;
       if (enginePort > maxBase) maxBase = enginePort;
     }
@@ -1376,10 +1394,11 @@ function createSettingsRouter(home23Root, options = {}) {
 
   router.put('/agents/:name', async (req, res) => {
     const agentName = req.params.name;
-    const configPath = path.join(home23Root, 'instances', agentName, 'config.yaml');
-    if (!fs.existsSync(configPath)) {
+    const agentPaths = resolveAgentPaths(agentName, { requireConfig: true });
+    if (!agentPaths || !fs.existsSync(agentPaths.configPath)) {
       return res.status(404).json({ error: `Agent "${agentName}" not found` });
     }
+    const configPath = agentPaths.configPath;
 
     const config = loadYaml(configPath);
     if (!config.agent) config.agent = {};
@@ -1466,7 +1485,7 @@ function createSettingsRouter(home23Root, options = {}) {
 
     saveYaml(configPath, config);
     if (identityChanged) {
-      writeMissionFile(path.dirname(configPath), {
+      writeMissionFile(agentPaths.instanceRoot, {
         displayName: config.agent.displayName || agentName,
         name: agentName,
         ownerName: config.agent.owner?.name || 'owner',
@@ -1480,10 +1499,8 @@ function createSettingsRouter(home23Root, options = {}) {
       const m = model || config.chat?.defaultModel || config.chat?.model;
       const p = provider || config.chat?.defaultProvider || config.chat?.provider;
       // Write to all locations the harness checks
-      const convDir = path.join(home23Root, 'instances', agentName, 'conversations');
-      const brainDir = path.join(home23Root, 'instances', agentName, 'brain');
       const modelJson = JSON.stringify({ model: m, provider: p });
-      for (const dir of [convDir, brainDir]) {
+      for (const dir of [agentPaths.conversationsDir, agentPaths.brainDir]) {
         try { fs.writeFileSync(path.join(dir, 'default-model.json'), modelJson); } catch { /* ok */ }
       }
       // Chat model change is harness-scoped. Do NOT touch the engine's
@@ -1500,8 +1517,8 @@ function createSettingsRouter(home23Root, options = {}) {
 
   router.post('/agents/:name/primary', (req, res) => {
     const agentName = req.params.name;
-    const configPath = path.join(home23Root, 'instances', agentName, 'config.yaml');
-    if (!fs.existsSync(configPath)) {
+    const agentPaths = resolveAgentPaths(agentName, { requireConfig: true });
+    if (!agentPaths || !fs.existsSync(agentPaths.configPath)) {
       return res.status(404).json({ error: `Agent "${agentName}" not found` });
     }
 
@@ -1553,9 +1570,13 @@ function createSettingsRouter(home23Root, options = {}) {
 
   router.post('/agents/:name/start', (req, res) => {
     const agentName = req.params.name;
-    const configPath = path.join(home23Root, 'instances', agentName, 'config.yaml');
-    if (!fs.existsSync(configPath)) {
-      return res.status(404).json({ error: `Agent "${agentName}" not found` });
+    try {
+      assertAgentInstanceStorageReady(
+        resolveAgentInstancePaths(home23Root, agentName, { requireConfig: true }),
+      );
+    } catch (error) {
+      const status = error?.code === 'agent_config_missing' ? 404 : 409;
+      return res.status(status).json({ error: error.message, code: error?.code || 'agent_start_preflight_failed' });
     }
 
     try {
@@ -1576,8 +1597,8 @@ function createSettingsRouter(home23Root, options = {}) {
 
   router.post('/agents/:name/restart-engine', (req, res) => {
     const agentName = req.params.name;
-    const configPath = path.join(home23Root, 'instances', agentName, 'config.yaml');
-    if (!fs.existsSync(configPath)) {
+    const agentPaths = resolveAgentPaths(agentName, { requireConfig: true });
+    if (!agentPaths || !fs.existsSync(agentPaths.configPath)) {
       return res.status(404).json({ error: `Agent "${agentName}" not found` });
     }
 
@@ -1738,8 +1759,8 @@ function createSettingsRouter(home23Root, options = {}) {
         if (!targetAgent) {
           return res.status(400).json({ ok: false, error: 'No target agent selected' });
         }
-        agentConfigPath = path.join(home23Root, 'instances', targetAgent, 'config.yaml');
-        if (!fs.existsSync(agentConfigPath)) {
+        agentConfigPath = resolveAgentPaths(targetAgent, { requireConfig: true })?.configPath || null;
+        if (!agentConfigPath || !fs.existsSync(agentConfigPath)) {
           return res.status(404).json({ ok: false, error: `Agent "${targetAgent}" not found` });
         }
         previousAgentConfig = loadYaml(agentConfigPath);
@@ -1934,7 +1955,10 @@ function createSettingsRouter(home23Root, options = {}) {
       if (!targetAgent) {
         return res.status(400).json({ ok: false, error: 'No target agent selected' });
       }
-      const configPath = path.join(home23Root, 'instances', targetAgent, 'config.yaml');
+      const configPath = resolveAgentPaths(targetAgent, { requireConfig: true })?.configPath;
+      if (!configPath) {
+        return res.status(404).json({ ok: false, error: `Agent "${targetAgent}" not found` });
+      }
       const previousAgentConfig = loadYaml(configPath);
       const agentConfig = cloneConfig(previousAgentConfig);
       if (!agentConfig.query) agentConfig.query = {};
@@ -1982,7 +2006,7 @@ function createSettingsRouter(home23Root, options = {}) {
     let instanceAssignments = {};
     if (targetAgent) {
       try {
-        const agentConfig = loadYaml(path.join(home23Root, 'instances', targetAgent, 'config.yaml'));
+        const agentConfig = loadAgentConfig(targetAgent);
         instanceAssignments = agentConfig.modelAssignments || {};
       } catch { /* ok */ }
     }
@@ -2032,8 +2056,8 @@ function createSettingsRouter(home23Root, options = {}) {
       return res.status(400).json({ error: 'No target agent (and no primary configured)' });
     }
 
-    const configPath = path.join(home23Root, 'instances', targetAgent, 'config.yaml');
-    if (!fs.existsSync(configPath)) {
+    const configPath = resolveAgentPaths(targetAgent, { requireConfig: true })?.configPath;
+    if (!configPath || !fs.existsSync(configPath)) {
       return res.status(404).json({ error: `Agent "${targetAgent}" config not found` });
     }
 
@@ -2109,7 +2133,7 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
     let systemPrompt = '';
     if (targetAgent) {
       try {
-        const agentConfig = loadYaml(path.join(home23Root, 'instances', targetAgent, 'config.yaml'));
+        const agentConfig = loadAgentConfig(targetAgent);
         instancePulse = agentConfig?.modelAssignments?.pulseVoice || {};
         agentLabel = agentConfig?.agent?.displayName || agentConfig?.agent?.name || targetAgent;
         ownerName = agentConfig?.agent?.owner?.name || ownerName;
@@ -2140,8 +2164,8 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
       return res.status(400).json({ error: 'No target agent selected' });
     }
 
-    const configPath = path.join(home23Root, 'instances', targetAgent, 'config.yaml');
-    if (fs.existsSync(configPath)) {
+    const configPath = resolveAgentPaths(targetAgent, { requireConfig: true })?.configPath;
+    if (configPath && fs.existsSync(configPath)) {
       const agentConfig = loadYaml(configPath);
       agentConfig.modelAssignments = agentConfig.modelAssignments || {};
       if (provider && model) {
@@ -2207,7 +2231,9 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
   router.get('/agency/recent', (req, res) => {
     const targetAgent = resolveRequestedAgent(req.query.agent);
     if (!targetAgent) return res.json({ agent: null, actions: [] });
-    const logPath = path.join(home23Root, 'instances', targetAgent, 'brain', 'actions.jsonl');
+    const brainDir = resolveAgentPaths(targetAgent, { requireConfig: true })?.brainDir;
+    if (!brainDir) return res.json({ agent: targetAgent, actions: [] });
+    const logPath = path.join(brainDir, 'actions.jsonl');
     const limit = Math.min(parseInt(req.query.limit || '50', 10) || 50, 500);
     const actions = [];
     if (fs.existsSync(logPath)) {
@@ -2224,7 +2250,9 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
   router.get('/agency/requested', (req, res) => {
     const targetAgent = resolveRequestedAgent(req.query.agent);
     if (!targetAgent) return res.json({ agent: null, requests: [] });
-    const p = path.join(home23Root, 'instances', targetAgent, 'brain', 'requested-actions.jsonl');
+    const brainDir = resolveAgentPaths(targetAgent, { requireConfig: true })?.brainDir;
+    if (!brainDir) return res.json({ agent: targetAgent, requests: [] });
+    const p = path.join(brainDir, 'requested-actions.jsonl');
     const limit = Math.min(parseInt(req.query.limit || '50', 10) || 50, 500);
     const requests = [];
     if (fs.existsSync(p)) {
@@ -2700,13 +2728,17 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
       return res.status(400).json({ ok: false, error: 'No target agent selected' });
     }
     const baseEngine = loadYaml(BASE_ENGINE_PATH);
-    const agentConfigPath = path.join(home23Root, 'instances', targetAgent, 'config.yaml');
+    const agentPaths = resolveAgentPaths(targetAgent, { requireConfig: true });
+    if (!agentPaths) {
+      return res.status(404).json({ ok: false, error: 'Agent not found' });
+    }
+    const agentConfigPath = agentPaths.configPath;
     const agentConfig = loadYaml(agentConfigPath);
     const feeder = mergeFeederConfig(baseEngine.feeder || {}, agentConfig.feeder || {});
     // Also surface the auto-added watch paths that the orchestrator wires on startup
     const autoWatchPaths = [];
-    const targetRuntimeDir = path.join(home23Root, 'instances', targetAgent, 'brain');
-    const targetWorkspacePath = path.join(home23Root, 'instances', targetAgent, 'workspace');
+    const targetRuntimeDir = agentPaths.brainDir;
+    const targetWorkspacePath = agentPaths.workspaceDir;
     if (targetRuntimeDir) {
       autoWatchPaths.push({
         path: path.join(targetRuntimeDir, 'ingestion', 'documents'),
@@ -2744,7 +2776,10 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
     }
 
     const baseEngine = loadYaml(BASE_ENGINE_PATH);
-    const agentConfigPath = path.join(home23Root, 'instances', targetAgent, 'config.yaml');
+    const agentConfigPath = resolveAgentPaths(targetAgent, { requireConfig: true })?.configPath;
+    if (!agentConfigPath) {
+      return res.status(404).json({ ok: false, error: 'Agent not found' });
+    }
     const agentConfig = loadYaml(agentConfigPath);
     const current = mergeFeederConfig(baseEngine.feeder || {}, agentConfig.feeder || {});
     const incoming = mergeFeederConfig(baseEngine.feeder || {}, input);

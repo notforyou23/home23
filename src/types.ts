@@ -94,7 +94,7 @@ export interface EmbeddedAgentConfig {
 export interface HomeConfig {
   home?: { name: string; version: string };
   bridge?: { token?: string };
-  system: { name: string; version: string; workspace: string };
+  system: { name: string; version: string; workspace: string; instanceRoot?: string };
 
   agent?: {
     name: string;
@@ -319,6 +319,7 @@ export interface SchedulerConfig {
   timezone: string;
   jobsFile: string;
   runsDir: string;
+  loadInstallJobs?: boolean;
   ownershipLeaseMs?: number;
   initialTickDelayMs?: number;
   maxConcurrentJobsPerTick?: number;

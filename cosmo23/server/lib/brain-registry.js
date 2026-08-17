@@ -301,6 +301,7 @@ async function listBrains(options) {
     activeRunPath = null,
     includeStateSummary = true,
     configuredAgentNames = [],
+    configuredResidentRoots = {},
     includeUnavailableConfiguredResidents = false
   } = options;
   const brains = [];
@@ -339,7 +340,8 @@ async function listBrains(options) {
 
   if (includeUnavailableConfiguredResidents && instancesRoot) {
     for (const agentName of configuredAgentNames) {
-      const residentRoot = path.join(instancesRoot, agentName, 'brain');
+      const residentRoot = configuredResidentRoots[agentName]
+        || path.join(instancesRoot, agentName, 'brain');
       if (!(await pathExists(residentRoot))) {
         continue;
       }
@@ -508,13 +510,17 @@ async function readCanonicalRunLifecycle(canonicalRoot, activeRunPath) {
 }
 
 async function toCanonicalEntry(brain, canonicalRoot, options) {
+  const configuredResidentOwner = options.configuredResidentOwnersByRoot.get(canonicalRoot) || null;
   const relative = path.relative(options.instancesRoot, canonicalRoot).split(path.sep);
-  const resident = relative.length === 2
+  const resident = Boolean(configuredResidentOwner) || (
+    relative.length === 2
     && relative[1] === 'brain'
     && !relative[0].startsWith('..')
-    && options.configuredAgentNames.includes(relative[0]);
+    && options.configuredAgentNames.includes(relative[0])
+  );
+  const residentOwner = configuredResidentOwner || relative[0];
   const runLifecycle = resident
-    ? { lifecycle: brain.hasState === false ? 'unavailable' : 'resident', ownerAgent: relative[0] }
+    ? { lifecycle: brain.hasState === false ? 'unavailable' : 'resident', ownerAgent: residentOwner }
     : await readCanonicalRunLifecycle(canonicalRoot, options.activeRunPath);
   const id = `brain-${crypto.createHash('sha256').update(canonicalRoot).digest('hex').slice(0, 16)}`;
   const mutationBoundaries = await buildMutationBoundaries({
@@ -536,7 +542,7 @@ async function toCanonicalEntry(brain, canonicalRoot, options) {
     mutationBoundaries,
     routeKey: brain.routeKey,
     name: brain.name,
-    path: brain.path,
+    path: canonicalRoot,
     sourceLabel: brain.sourceLabel,
     isReference: brain.isReference,
     modified: brain.modified,
@@ -572,32 +578,62 @@ async function buildCanonicalCatalog(options = {}) {
   if (options.referenceRunsPaths.some(root => typeof root !== 'string' || !root)) {
     throw catalogError('catalog_configuration_invalid');
   }
+  if (options.configuredResidentRoots !== undefined
+      && (!options.configuredResidentRoots
+        || Array.isArray(options.configuredResidentRoots)
+        || typeof options.configuredResidentRoots !== 'object')) {
+    throw catalogError('catalog_configuration_invalid');
+  }
 
-  const configuredRoots = [options.instancesRoot, options.localRunsPath, ...options.referenceRunsPaths];
+  const configuredResidentRoots = {};
+  for (const agentName of configuredAgentNames) {
+    const configuredRoot = options.configuredResidentRoots?.[agentName];
+    if (configuredRoot !== undefined
+        && (typeof configuredRoot !== 'string' || !configuredRoot)) {
+      throw catalogError('catalog_configuration_invalid');
+    }
+    configuredResidentRoots[agentName] = configuredRoot || path.join(options.instancesRoot, agentName, 'brain');
+  }
+
+  const configuredRoots = [
+    options.instancesRoot,
+    options.localRunsPath,
+    ...options.referenceRunsPaths,
+    ...Object.values(configuredResidentRoots),
+  ];
   const allowedCanonicalRoots = await Promise.all(configuredRoots.map(root =>
     fsp.realpath(root).catch(() => path.resolve(root))));
   const instancesRoot = allowedCanonicalRoots[0];
+  const configuredResidentOwnersByRoot = new Map();
+  await Promise.all(configuredAgentNames.map(async (agentName) => {
+    const residentRoot = configuredResidentRoots[agentName];
+    const canonicalResidentRoot = await fsp.realpath(residentRoot).catch(() => path.resolve(residentRoot));
+    configuredResidentOwnersByRoot.set(canonicalResidentRoot, agentName);
+  }));
   const inspected = await listBrains({
     ...options,
     instancesRoot,
     configuredAgentNames,
+    configuredResidentRoots,
     includeStateSummary: true,
     includeUnavailableConfiguredResidents: true
   });
   const byRoot = new Map();
   for (const brain of inspected) {
     const canonicalRoot = await fsp.realpath(brain.path).catch(() => path.resolve(brain.path));
+    const configuredResidentOwner = configuredResidentOwnersByRoot.get(canonicalRoot) || null;
     const residentParts = path.relative(instancesRoot, canonicalRoot).split(path.sep);
     const exactResidentRoot = residentParts.length === 2
       && residentParts[1] === 'brain'
       && !residentParts[0].startsWith('..');
-    if (exactResidentRoot && !configuredAgentNames.includes(residentParts[0])) {
+    if (!configuredResidentOwner && exactResidentRoot && !configuredAgentNames.includes(residentParts[0])) {
       continue;
     }
     const entry = await toCanonicalEntry(brain, canonicalRoot, {
       ...options,
       instancesRoot,
       configuredAgentNames,
+      configuredResidentOwnersByRoot,
       allowedCanonicalRoots
     });
     const prior = byRoot.get(canonicalRoot);

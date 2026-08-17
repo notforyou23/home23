@@ -9,8 +9,10 @@ import { readFileSync, writeFileSync, readdirSync, existsSync, statSync } from '
 import { join } from 'node:path';
 import yaml from 'js-yaml';
 import authorityAttestation from '../../shared/memory-authority-attestation.cjs';
+import instancePaths from '../../shared/agent-instance-paths.cjs';
 
 const { deriveMemoryAuthorityAttestationKey } = authorityAttestation;
+const { discoverAgentInstancePaths } = instancePaths;
 
 function loadYaml(filePath) {
   if (!existsSync(filePath)) return {};
@@ -18,18 +20,12 @@ function loadYaml(filePath) {
 }
 
 function discoverAgents(home23Root) {
-  const instancesDir = join(home23Root, 'instances');
-  if (!existsSync(instancesDir)) return [];
-
-  return readdirSync(instancesDir)
-    .filter((name) => {
-      const dir = join(instancesDir, name);
-      return statSync(dir).isDirectory() && existsSync(join(dir, 'config.yaml'));
-    })
-    .map((name) => {
-      const config = loadYaml(join(instancesDir, name, 'config.yaml'));
-      return { name, config };
-    });
+  return discoverAgentInstancePaths(home23Root, { requireConfig: true })
+    .map((paths) => ({
+      name: paths.agentName,
+      config: paths.config,
+      paths,
+    }));
 }
 
 function resolvePrimaryAgent(agents, homeConfig) {
@@ -83,7 +79,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`const path = require('path');`);
   lines.push(`const yaml = require('js-yaml');`);
   lines.push(``);
-  lines.push(`const HOME23 = __dirname;`);
+  lines.push(`const HOME23 = ${JSON.stringify(home23Root)};`);
   lines.push(`const ENGINE = path.join(HOME23, 'engine');`);
   lines.push(`const ENGINE_KILL_TIMEOUT_MS = 210000;`);
   lines.push(`const DASHBOARD_KILL_TIMEOUT_MS = 210000;`);
@@ -144,6 +140,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`const cosmo23DbUrl = 'file:' + path.join(HOME23, 'cosmo23', '.cosmo23-config', 'database.db');`);
   lines.push(``);
   lines.push(`const commonEnv = {`);
+  lines.push(`  HOME23_ROOT: HOME23,`);
   lines.push(`  NODE_ENV: 'production',`);
   lines.push(`  COSMO_CONFIG_PATH: path.join(HOME23, 'configs', 'base-engine.yaml'),`);
   lines.push(`  EMBEDDING_PROVIDER: embeddingConfig.providerName,`);
@@ -165,6 +162,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`};`);
   lines.push(``);
   lines.push(`const sharedServiceEnv = {`);
+  lines.push(`  HOME23_ROOT: HOME23,`);
   lines.push(`  HOME23_AGENT: '',`);
   lines.push(`  INSTANCE_ID: '',`);
   lines.push(`  DASHBOARD_PORT: '',`);
@@ -185,9 +183,11 @@ export function generateEcosystem(home23Root, options = {}) {
     const dashPort = ports.dashboard || 5002;
     const mcpPort = ports.mcp || 5003;
     const bridgePort = ports.bridge || 5004;
-    const brainDir = `path.join(HOME23, 'instances', '${agent.name}', 'brain')`;
-    const workspaceDir = `path.join(HOME23, 'instances', '${agent.name}', 'workspace')`;
-    const logsDir = `path.join(HOME23, 'instances', '${agent.name}', 'logs')`;
+    const instanceDir = JSON.stringify(agent.paths.instanceRoot);
+    const brainDir = JSON.stringify(agent.paths.brainDir);
+    const workspaceDir = JSON.stringify(agent.paths.workspaceDir);
+    const conversationsDir = JSON.stringify(agent.paths.conversationsDir);
+    const logsDir = JSON.stringify(agent.paths.logsDir);
     const mcpEnabled = agent.config.mcp?.enabled !== false;
 
     lines.push(``);
@@ -211,12 +211,12 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      max_memory_restart: '14G',`);
     lines.push(`      kill_timeout: ENGINE_KILL_TIMEOUT_MS,`);
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
-    lines.push(`      out_file: ${logsDir} + '/engine-out.log',`);
-    lines.push(`      error_file: ${logsDir} + '/engine-err.log',`);
+    lines.push(`      out_file: ${JSON.stringify(join(agent.paths.logsDir, 'engine-out.log'))},`);
+    lines.push(`      error_file: ${JSON.stringify(join(agent.paths.logsDir, 'engine-err.log'))},`);
     // No HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY here — see the note above the
     // dashboard app. The engine performs no brain operations; it reads the key
     // nowhere.
-    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
+    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
 
     // Dashboard
@@ -229,8 +229,8 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      max_memory_restart: '3G',`);
     lines.push(`      kill_timeout: DASHBOARD_KILL_TIMEOUT_MS,`);
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
-    lines.push(`      out_file: ${logsDir} + '/dashboard-out.log',`);
-    lines.push(`      error_file: ${logsDir} + '/dashboard-err.log',`);
+    lines.push(`      out_file: ${JSON.stringify(join(agent.paths.logsDir, 'dashboard-out.log'))},`);
+    lines.push(`      error_file: ${JSON.stringify(join(agent.paths.logsDir, 'dashboard-err.log'))},`);
     // HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY is granted to EXACTLY two apps:
     // this dashboard and home23-cosmo23. It is not a config value — it is the
     // signing secret for /api/internal/brain-operations/*, so possession IS
@@ -241,7 +241,7 @@ export function generateEcosystem(home23Root, options = {}) {
     // unrelated supervision fixes, undocumented and untested) until it was
     // revoked. Every app also filter_env's and blocklists the name, but that
     // only stops INHERITED values; the explicit grant below is the real one.
-    lines.push(`      env: { ...commonEnv, HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY: brainOperationsCapabilityKey, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', HOME23_MCP_AVAILABLE: '${mcpEnabled ? 'true' : 'false'}', INSTANCE_ID: 'home23-${agent.name}' },`);
+    lines.push(`      env: { ...commonEnv, HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY: brainOperationsCapabilityKey, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', HOME23_MCP_AVAILABLE: '${mcpEnabled ? 'true' : 'false'}', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
 
     // Agent-scoped MCP HTTP server. It is loopback-only; the dashboard still
@@ -253,10 +253,10 @@ export function generateEcosystem(home23Root, options = {}) {
       lines.push(`      cwd: ENGINE,`);
       lines.push(`      filter_env: ['HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
       lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
-      lines.push(`      out_file: ${logsDir} + '/mcp-out.log',`);
-      lines.push(`      error_file: ${logsDir} + '/mcp-err.log',`);
+      lines.push(`      out_file: ${JSON.stringify(join(agent.paths.logsDir, 'mcp-out.log'))},`);
+      lines.push(`      error_file: ${JSON.stringify(join(agent.paths.logsDir, 'mcp-err.log'))},`);
       // No capability key — see the note above the dashboard app.
-      lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_ROOT: HOME23, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, MCP_HTTP_HOST: '127.0.0.1', MCP_HTTP_PORT: '${mcpPort}', HOME23_MCP_AVAILABLE: 'true', INSTANCE_ID: 'home23-${agent.name}' },`);
+      lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, MCP_HTTP_HOST: '127.0.0.1', MCP_HTTP_PORT: '${mcpPort}', HOME23_MCP_AVAILABLE: 'true', INSTANCE_ID: 'home23-${agent.name}' },`);
       lines.push(`    },`);
     }
 
@@ -283,12 +283,12 @@ export function generateEcosystem(home23Root, options = {}) {
     // 35,948 restarts overnight on 2026-08-07/08.
     lines.push(`      exp_backoff_restart_delay: 200,`);
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
-    lines.push(`      out_file: ${logsDir} + '/harness-out.log',`);
-    lines.push(`      error_file: ${logsDir} + '/harness-err.log',`);
+    lines.push(`      out_file: ${JSON.stringify(join(agent.paths.logsDir, 'harness-out.log'))},`);
+    lines.push(`      error_file: ${JSON.stringify(join(agent.paths.logsDir, 'harness-err.log'))},`);
     // No capability key — see the note above the dashboard app. The harness
     // reaches brain operations through the dashboard's HTTP API, never by
     // signing internal envelopes itself.
-    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
+    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
 
     // Substrate Seed (shadow resident) — emitted ONLY when the agent's config
@@ -302,7 +302,7 @@ export function generateEcosystem(home23Root, options = {}) {
       const lobeModel = String(agent.config.substrate?.lobeModel || 'claude-haiku-4-5');
       const lobeMinIntervalMs = Number(agent.config.substrate?.lobeMinIntervalMs) > 0
         ? Number(agent.config.substrate.lobeMinIntervalMs) : 600000;
-      const seedStateDir = `path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'seed-01')`;
+      const seedStateDir = JSON.stringify(join(agent.paths.instanceRoot, 'substrate', 'seed-01'));
       lines.push(`    {`);
       lines.push(`      name: 'home23-${agent.name}-seed',`);
       lines.push(`      script: 'substrate/bin/seed-runner.ts',`);
@@ -317,9 +317,9 @@ export function generateEcosystem(home23Root, options = {}) {
       lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
       lines.push(`      restart_delay: 15000,`);
       lines.push(`      kill_timeout: 30000,`);
-      lines.push(`      out_file: ${logsDir} + '/seed-out.log',`);
-      lines.push(`      error_file: ${logsDir} + '/seed-err.log',`);
-      lines.push(`      env: { ...commonEnv, HOME23_AGENT: '${agent.name}', INSTANCE_ID: 'home23-${agent.name}-seed', SEED_STATE_DIR: ${seedStateDir}, SEED_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'event-ledger.jsonl'), SEED_RELATIONSHIP_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'relationship-ledger.events.jsonl'), SEED_WORKER_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'worker-runs.jsonl'), SEED_CONVERSATION_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'conversation-stream.jsonl'), SEED_HOUSE_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'house-stream.jsonl'), SEED_MEMORY_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'memory-objects.events.jsonl'), SEED_DREAM_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'dream-events.jsonl'), SEED_LOBE: '${lobeKind}', SEED_LOBE_MODEL: '${lobeModel}', SEED_LOBE_MIN_INTERVAL_MS: '${lobeMinIntervalMs}' },`);
+      lines.push(`      out_file: ${JSON.stringify(join(agent.paths.logsDir, 'seed-out.log'))},`);
+      lines.push(`      error_file: ${JSON.stringify(join(agent.paths.logsDir, 'seed-err.log'))},`);
+      lines.push(`      env: { ...commonEnv, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, INSTANCE_ID: 'home23-${agent.name}-seed', SEED_STATE_DIR: ${seedStateDir}, SEED_SOURCE: ${JSON.stringify(join(agent.paths.brainDir, 'event-ledger.jsonl'))}, SEED_RELATIONSHIP_SOURCE: ${JSON.stringify(join(agent.paths.brainDir, 'relationship-ledger.events.jsonl'))}, SEED_WORKER_SOURCE: ${JSON.stringify(join(agent.paths.brainDir, 'worker-runs.jsonl'))}, SEED_CONVERSATION_SOURCE: ${JSON.stringify(join(agent.paths.instanceRoot, 'substrate', 'conversation-stream.jsonl'))}, SEED_HOUSE_SOURCE: ${JSON.stringify(join(agent.paths.instanceRoot, 'substrate', 'house-stream.jsonl'))}, SEED_MEMORY_SOURCE: ${JSON.stringify(join(agent.paths.brainDir, 'memory-objects.events.jsonl'))}, SEED_DREAM_SOURCE: ${JSON.stringify(join(agent.paths.instanceRoot, 'substrate', 'dream-events.jsonl'))}, SEED_LOBE: '${lobeKind}', SEED_LOBE_MODEL: '${lobeModel}', SEED_LOBE_MIN_INTERVAL_MS: '${lobeMinIntervalMs}' },`);
       lines.push(`    },`);
     }
   }
@@ -332,7 +332,7 @@ export function generateEcosystem(home23Root, options = {}) {
   for (const agent of agents) {
     if (agent.config?.substrate?.enabled !== true) continue;
     const sub = agent.config.substrate;
-    const streamPath = `path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'conversation-stream.jsonl')`;
+    const streamPath = JSON.stringify(join(agent.paths.instanceRoot, 'substrate', 'conversation-stream.jsonl'));
     const backfillBytes = Number(sub.conversationBackfillBytes) > 0
       ? Number(sub.conversationBackfillBytes) : 524288;
 
@@ -346,10 +346,10 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      node_args: '--import tsx',`);
     lines.push(`      filter_env: ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
-    lines.push(`      out_file: path.join(HOME23, 'instances', '${agent.name}', 'logs', 'conversation-shipper-out.log'),`);
-    lines.push(`      error_file: path.join(HOME23, 'instances', '${agent.name}', 'logs', 'conversation-shipper-err.log'),`);
+    lines.push(`      out_file: ${JSON.stringify(join(agent.paths.logsDir, 'conversation-shipper-out.log'))},`);
+    lines.push(`      error_file: ${JSON.stringify(join(agent.paths.logsDir, 'conversation-shipper-err.log'))},`);
     lines.push(`      env: {`);
-    lines.push(`        SHIPPER_CONVERSATIONS_DIR: path.join(HOME23, 'instances', '${agent.name}', 'conversations'),`);
+    lines.push(`        SHIPPER_CONVERSATIONS_DIR: ${JSON.stringify(agent.paths.conversationsDir)},`);
     lines.push(`        SHIPPER_STREAM_PATH: ${streamPath},`);
     lines.push(`        SHIPPER_BACKFILL_BYTES: '${backfillBytes}',`);
     lines.push(`      },`);
@@ -368,10 +368,10 @@ export function generateEcosystem(home23Root, options = {}) {
       lines.push(`      node_args: '--import tsx',`);
       lines.push(`      filter_env: ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
       lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
-      lines.push(`      out_file: path.join(HOME23, 'instances', '${agent.name}', 'logs', 'house-sense-out.log'),`);
-      lines.push(`      error_file: path.join(HOME23, 'instances', '${agent.name}', 'logs', 'house-sense-err.log'),`);
+      lines.push(`      out_file: ${JSON.stringify(join(agent.paths.logsDir, 'house-sense-out.log'))},`);
+      lines.push(`      error_file: ${JSON.stringify(join(agent.paths.logsDir, 'house-sense-err.log'))},`);
       lines.push(`      env: {`);
-      lines.push(`        SHIPPER_STREAM_PATH: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'house-stream.jsonl'),`);
+      lines.push(`        SHIPPER_STREAM_PATH: ${JSON.stringify(join(agent.paths.instanceRoot, 'substrate', 'house-stream.jsonl'))},`);
       lines.push(`      },`);
       lines.push(`    },`);
     }
@@ -618,7 +618,16 @@ export function generateEcosystem(home23Root, options = {}) {
     displayName: a.config.agent?.displayName || a.name,
     dashboardPort: a.config.ports?.dashboard || 5002,
     enginePort: a.config.ports?.engine || 5001,
+    mcpPort: a.config.ports?.mcp || 5003,
+    bridgePort: a.config.ports?.bridge || 5004,
     isPrimary: a.name === primaryAgent,
+    configPath: a.paths.configPath,
+    instanceRoot: a.paths.instanceRoot,
+    storageMode: a.paths.storageMode,
+    brainPath: a.paths.brainDir,
+    workspacePath: a.paths.workspaceDir,
+    conversationsPath: a.paths.conversationsDir,
+    logsPath: a.paths.logsDir,
   }));
   const ecosystemSource = lines.join('\n');
   if (options.writeEcosystem !== false) {

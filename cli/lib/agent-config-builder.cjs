@@ -30,8 +30,10 @@ function buildAgentConfig(options = {}) {
     provider = DEFAULT_CHAT_PROVIDER,
     model = DEFAULT_CHAT_MODEL,
     instanceDir,
+    instanceRoot = instanceDir,
     ingestPaths = [],
     botToken = '',
+    loadInstallJobs = true,
   } = options;
 
   const resolvedProvider = provider || DEFAULT_CHAT_PROVIDER;
@@ -75,7 +77,12 @@ function buildAgentConfig(options = {}) {
         ? { enabled: true, streaming: 'partial', dmPolicy: 'open', groupPolicy: 'restricted', groups: {}, ackReaction: true }
         : { enabled: false },
     },
-    system: { name: 'home23', version: home23Version, workspace: 'workspace' },
+    system: {
+      name: 'home23',
+      version: home23Version,
+      workspace: 'workspace',
+      ...(instanceRoot && instanceRoot !== instanceDir ? { instanceRoot } : {}),
+    },
     chat: {
       provider: resolvedProvider,
       model: resolvedModel,
@@ -101,7 +108,12 @@ function buildAgentConfig(options = {}) {
         queueDuringRun: true,
       },
     },
-    scheduler: { timezone, jobsFile: 'cron-jobs.json', runsDir: 'cron-runs' },
+    scheduler: {
+      timezone,
+      jobsFile: 'cron-jobs.json',
+      runsDir: 'cron-runs',
+      ...(loadInstallJobs === false ? { loadInstallJobs: false } : {}),
+    },
     sibling: {
       enabled: false,
       name: '',
@@ -117,11 +129,12 @@ function buildAgentConfig(options = {}) {
   };
 }
 
-function buildFeederConfig(name) {
+function buildFeederConfig(name, options = {}) {
+  const instanceRoot = options.instanceRoot || `../instances/${name}`;
   return {
     member: name,
-    state_file: `../instances/${name}/brain/state.json.gz`,
-    watch: [{ path: `../instances/${name}/workspace`, label: 'workspace', glob: '*.md' }],
+    state_file: `${instanceRoot}/brain/state.json.gz`,
+    watch: [{ path: `${instanceRoot}/workspace`, label: 'workspace', glob: '*.md' }],
     ollama: { endpoint: 'http://127.0.0.1:11434', model: 'nomic-embed-text', dims: 768 },
     flush_interval_seconds: 300,
     flush_batch_size: 20,

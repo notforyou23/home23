@@ -16,6 +16,7 @@ import type { AssemblyResult, EventEnvelope } from '../types.js';
 import type { EventLedger } from './event-ledger.js';
 import type { TriggerIndex } from './trigger-index.js';
 import { budgetIdentityContent } from './identity-budget.js';
+import { getAgentDir } from '../config.js';
 import { composeSeedSituation } from '../substrate/seed-context.js';
 import { composeLivedRecent } from '../substrate/lived-recent.js';
 import { composeLivedFacts } from '../substrate/lived-facts.js';
@@ -304,7 +305,7 @@ export function buildWorkerContextSection(projectRoot: string, agentName: string
     : [];
 
   const visibleWorkers = workers.filter(worker => worker.ownerAgent === agentName || worker.visibleTo.includes(agentName));
-  const brainPath = join(projectRoot, 'instances', agentName, 'brain', 'worker-runs.jsonl');
+  const brainPath = join(getAgentDir(agentName), 'brain', 'worker-runs.jsonl');
   const recent = readJsonlTail(brainPath, 5);
   if (visibleWorkers.length === 0 && recent.length === 0) return '';
 
@@ -327,7 +328,7 @@ export function buildWorkerContextSection(projectRoot: string, agentName: string
 }
 
 export function buildAgencyContextSection(projectRoot: string, agentName: string): string {
-  const agencyDir = join(projectRoot, 'instances', agentName, 'brain', 'agency');
+  const agencyDir = join(getAgentDir(agentName), 'brain', 'agency');
   const statePath = join(agencyDir, 'state.json');
   const pursuitsPath = join(agencyDir, 'pursuits.jsonl');
   if (!existsSync(statePath) && !existsSync(pursuitsPath)) return '';
@@ -412,11 +413,13 @@ export function buildAgencyContextSection(projectRoot: string, agentName: string
 }
 
 function projectRootFromWorkspace(workspacePath: string): string {
-  return resolve(workspacePath, '..', '..', '..');
+  return process.env.HOME23_ROOT
+    ? resolve(process.env.HOME23_ROOT)
+    : resolve(workspacePath, '..', '..', '..');
 }
 
 function agentNameFromWorkspace(workspacePath: string): string {
-  return basename(dirname(workspacePath));
+  return process.env.HOME23_AGENT || basename(dirname(workspacePath));
 }
 
 // ─── Main Assembly Function ─────────────────────────────

@@ -12,6 +12,10 @@ const fs = require('fs');
 const path = require('path');
 const { promisify } = require('util');
 const yaml = require('js-yaml');
+const {
+  discoverAgentInstancePaths,
+  resolveAgentInstancePaths,
+} = require('../../shared/agent-instance-paths.cjs');
 const { FreeWebSearch } = require('../src/tools/web-search-free');
 const {
   createDefaultMcpMemoryTools,
@@ -204,6 +208,10 @@ async function buildInstalledBrainCatalog(home23Root) {
       code: 'catalog_configuration_invalid',
     });
   }
+  const agentPaths = discoverAgentInstancePaths(home23Root, { requireConfig: true });
+  const configuredResidentRoots = Object.fromEntries(
+    agentPaths.map((entry) => [entry.agentName, entry.brainDir]),
+  );
   const cosmoRoot = path.join(home23Root, 'cosmo23');
   const localRunsPath = path.join(cosmoRoot, 'runs');
   return buildCanonicalCatalog({
@@ -215,6 +223,7 @@ async function buildInstalledBrainCatalog(home23Root) {
       localRunsPath,
     ),
     configuredAgentNames: manifest.map((agent) => agent?.name),
+    configuredResidentRoots,
     activeRunPath: path.join(cosmoRoot, 'runtime'),
   });
 }
@@ -264,7 +273,10 @@ function createProductionMcpMemoryTools({
     });
   };
   const nodeOverlayProvider = createOverlayCache({
-    cacheRoot: path.join(home23Root, 'instances', requesterAgent, 'runtime', 'cache'),
+    cacheRoot: path.join(
+      resolveAgentInstancePaths(home23Root, requesterAgent, { requireConfig: false }).runtimeDir,
+      'cache',
+    ),
   });
   if (!nodeOverlayProvider || typeof nodeOverlayProvider.refresh !== 'function') {
     throw Object.assign(new Error('MCP overlay provider required'), {

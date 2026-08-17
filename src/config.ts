@@ -6,11 +6,14 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { resolve, join } from 'node:path';
 import yaml from 'js-yaml';
 import type { HomeConfig, IdentityLayerConfig, EmbeddedAgentConfig } from './types.js';
 
 const HOME23_ROOT = resolve(import.meta.dirname, '..');
+const require = createRequire(import.meta.url);
+const { resolveAgentInstancePaths } = require('../shared/agent-instance-paths.cjs');
 
 function deepMerge<T extends Record<string, unknown>>(target: T, source: Record<string, unknown>): T {
   const result = { ...target } as Record<string, unknown>;
@@ -54,9 +57,13 @@ function normalizeEmbeddedAgentLayers(embeddedAgent?: EmbeddedAgentConfig): Iden
   return layers.length > 0 ? layers : undefined;
 }
 
+export function getAgentPaths(agentName: string) {
+  return resolveAgentInstancePaths(HOME23_ROOT, agentName, { requireConfig: false });
+}
+
 function buildDefaultIdentityLayers(agentName: string, identityFiles: string[]): IdentityLayerConfig[] {
   return [{
-    basePath: join(HOME23_ROOT, 'instances', agentName, 'workspace'),
+    basePath: getAgentPaths(agentName).workspaceDir,
     files: identityFiles,
   }];
 }
@@ -88,7 +95,7 @@ export function loadConfig(agentName: string): HomeConfig {
   const homeConfig = loadYaml(join(HOME23_ROOT, 'config', 'home.yaml'));
 
   // Layer 2: Agent-specific overrides
-  const agentConfig = loadYaml(join(HOME23_ROOT, 'instances', agentName, 'config.yaml'));
+  const agentConfig = loadYaml(getAgentPaths(agentName).configPath);
 
   // Layer 3: Secrets (API keys, bot tokens — never committed)
   const secrets = loadYaml(join(HOME23_ROOT, 'config', 'secrets.yaml'));
@@ -128,5 +135,5 @@ export function getHome23Root(): string {
 }
 
 export function getAgentDir(agentName: string): string {
-  return join(HOME23_ROOT, 'instances', agentName);
+  return getAgentPaths(agentName).instanceRoot;
 }

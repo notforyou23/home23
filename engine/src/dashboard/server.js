@@ -70,6 +70,10 @@ const {
   deriveQueryNotebookCredentialKey,
 } = require('../../../shared/query-notebook-credential.cjs');
 const {
+  discoverAgentInstancePaths,
+  resolveAgentInstancePaths,
+} = require('../../../shared/agent-instance-paths.cjs');
+const {
   createLegacyQueryRetirementRouter,
 } = require('./legacy-query-retirement.js');
 const {
@@ -134,7 +138,7 @@ function loadQueryNotebookBridgeToken({ home23Root, requesterAgent }) {
     }
   }
   return readToken(
-    path.join(home23Root, 'instances', requesterAgent, 'config.yaml'),
+    resolveAgentInstancePaths(home23Root, requesterAgent, { requireConfig: false }).configPath,
     (config) => config?.channels?.webhooks?.token,
   ) || readToken(
     path.join(home23Root, 'config', 'secrets.yaml'),
@@ -729,10 +733,7 @@ class DashboardServer {
 
     this.memoryDeltaOverlayCache = createMemoryDeltaOverlayCache({
       cacheRoot: path.join(
-        this.getHome23Root(),
-        'instances',
-        this.getHome23AgentName(),
-        'runtime',
+        this.getHome23AgentContext().runtimeRoot,
         'cache',
       ),
     });
@@ -980,8 +981,10 @@ class DashboardServer {
     const { createResearchRunTargetResolver } =
       require('./brain-operations/research-run-target-resolver.js');
     const home23Root = this.getHome23Root();
+    const requesterContext = this.getHome23AgentContext(requesterAgent);
     const operationRoot = path.join(
-      home23Root, 'instances', requesterAgent, 'runtime', 'brain-operations',
+      requesterContext.runtimeRoot,
+      'brain-operations',
     );
     const store = new BrainOperationStore({ root: operationRoot, requesterAgent });
     const reader = createBrainOperationStoreReader({
@@ -1079,6 +1082,7 @@ class DashboardServer {
         localRunsPath,
         referenceRunsPaths,
         configuredAgentNames,
+        configuredResidentRoots: this.getConfiguredResidentRoots(),
         activeRunPath: path.join(cosmoRoot, 'runtime'),
       });
     };
@@ -1114,7 +1118,7 @@ class DashboardServer {
     try {
       if (!providerRuntime || !providerOperationRuntime) throw providerOperationError;
       const workspacePath = process.env.COSMO_WORKSPACE_PATH
-        || path.join(home23Root, 'instances', requesterAgent, 'workspace');
+        || this.getHome23AgentContext(requesterAgent).workspacePath;
       synthesisOperationRuntime = createDashboardSynthesisOperationRuntime({
         brainDir: this.logsDir,
         workspacePath,
@@ -1855,20 +1859,40 @@ class DashboardServer {
     return 'agent';
   }
 
-  resolveRequestedHome23Agent(candidate) {
-    const requested = String(candidate || '').replace(/^home23-/, '').trim();
-    if (!requested) return this.getHome23AgentName();
+  resolveHome23AgentPaths(candidate, { strict = false } = {}) {
     const home23Root = this.getHome23Root();
-    const configPath = path.join(home23Root, 'instances', requested, 'config.yaml');
-    return require('fs').existsSync(configPath) ? requested : this.getHome23AgentName();
+    const requested = String(candidate || '').replace(/^home23-/, '').trim();
+    const agentName = requested || this.getHome23AgentName();
+    try {
+      return resolveAgentInstancePaths(home23Root, agentName, {
+        requireConfig: strict,
+      });
+    } catch (error) {
+      if (strict) return null;
+      return resolveAgentInstancePaths(home23Root, this.getHome23AgentName(), {
+        requireConfig: false,
+      });
+    }
+  }
+
+  getConfiguredResidentRoots() {
+    return Object.fromEntries(
+      discoverAgentInstancePaths(this.getHome23Root(), { requireConfig: true })
+        .map((entry) => [entry.agentName, entry.brainDir]),
+    );
+  }
+
+  resolveRequestedHome23Agent(candidate) {
+    return this.resolveHome23AgentPaths(candidate, { strict: false }).agentName;
   }
 
   getHome23AgentContext(candidate) {
     const fsSync = require('fs');
     const yaml = require('js-yaml');
     const home23Root = this.getHome23Root();
-    const agentName = this.resolveRequestedHome23Agent(candidate);
-    const configPath = path.join(home23Root, 'instances', agentName, 'config.yaml');
+    const agentPaths = this.resolveHome23AgentPaths(candidate, { strict: false });
+    const agentName = agentPaths.agentName;
+    const configPath = agentPaths.configPath;
     const config = fsSync.existsSync(configPath)
       ? (yaml.load(fsSync.readFileSync(configPath, 'utf8')) || {})
       : {};
@@ -1876,8 +1900,13 @@ class DashboardServer {
     return {
       home23Root,
       agentName,
-      runtimeDir: path.join(home23Root, 'instances', agentName, 'brain'),
-      workspacePath: path.join(home23Root, 'instances', agentName, 'workspace'),
+      configPath,
+      instanceRoot: agentPaths.instanceRoot,
+      runtimeDir: agentPaths.brainDir,
+      runtimeRoot: agentPaths.runtimeDir,
+      workspacePath: agentPaths.workspaceDir,
+      conversationsPath: agentPaths.conversationsDir,
+      logsPath: agentPaths.logsDir,
       realtimePort: Number(config.ports?.engine) || Number(process.env.REALTIME_PORT || '5001'),
       bridgePort: Number(config.ports?.bridge) || Number(process.env.HOME23_BRIDGE_PORT || process.env.BRIDGE_PORT || '5004'),
     };
@@ -2418,10 +2447,10 @@ class DashboardServer {
       try {
         const crypto = require('crypto');
         const fsSync = require('fs');
-        const home23Root = this.getHome23Root();
         const agentName = this.getHome23AgentName();
-        const brainPath = path.join(home23Root, 'instances', agentName, 'brain');
-        const configPath = path.join(home23Root, 'instances', agentName, 'config.yaml');
+        const agentPaths = this.resolveHome23AgentPaths(agentName, { strict: false });
+        const brainPath = agentPaths.brainDir;
+        const configPath = agentPaths.configPath;
         let displayName = agentName;
         if (fsSync.existsSync(configPath)) {
           try {
@@ -3210,12 +3239,13 @@ class DashboardServer {
     this.app.get('/home23/api/chat/conversations/:agent', (req, res) => {
       const fsSync = require('fs');
       const agentName = req.params.agent;
-      const home23Root = this.getHome23Root();
+      const agentPaths = this.resolveHome23AgentPaths(agentName, { strict: true });
+      if (!agentPaths) return res.status(404).json({ error: 'Agent not found' });
 
       // Conversations are stored in two places:
       // 1. conversations/<namespace>__<chatId>.jsonl (harness writes here)
       // 2. conversations/sessions/<uuid>.jsonl (thread-bound Telegram sessions)
-      const convDir = path.join(home23Root, 'instances', agentName, 'conversations');
+      const convDir = agentPaths.conversationsDir;
       const sessionsDir = path.join(convDir, 'sessions');
 
       if (!fsSync.existsSync(convDir)) return res.json({ conversations: [] });
@@ -3295,8 +3325,9 @@ class DashboardServer {
       const agentName = req.params.agent;
       const rawConvId = req.query.conversation || `dashboard-${agentName}`;
       const limit = parseInt(req.query.limit) || 50;
-      const home23Root = this.getHome23Root();
-      const convDir = path.join(home23Root, 'instances', agentName, 'conversations');
+      const agentPaths = this.resolveHome23AgentPaths(agentName, { strict: true });
+      if (!agentPaths) return res.status(404).json({ error: 'Agent not found' });
+      const convDir = agentPaths.conversationsDir;
       const sessionsDir = path.join(convDir, 'sessions');
 
       // Normalize: strip any leading `${agentName}__` prefix(es) from the
@@ -3330,13 +3361,12 @@ class DashboardServer {
       const yaml = require('js-yaml');
       const agentName = req.params.agent;
       const home23Root = this.getHome23Root();
-
-      const configPath = path.join(home23Root, 'instances', agentName, 'config.yaml');
-      if (!fsSync.existsSync(configPath)) {
+      const agentPaths = this.resolveHome23AgentPaths(agentName, { strict: true });
+      if (!agentPaths || !fsSync.existsSync(agentPaths.configPath)) {
         return res.status(404).json({ error: 'Agent not found' });
       }
 
-      const config = yaml.load(fsSync.readFileSync(configPath, 'utf8'));
+      const config = yaml.load(fsSync.readFileSync(agentPaths.configPath, 'utf8'));
       // The bridge authenticates chat when a query-notebook bridge token is
       // enrolled (merged from secrets.yaml). The dashboard is the same trust
       // domain — it reads secrets — so hand the token to its chat UI, which
@@ -6784,7 +6814,7 @@ Be specific, actionable, and maintain research continuity.`;
           : null;
         const yaml = require('js-yaml');
         const providerConfigPath = path.join(this.getHome23Root(), 'config', 'home.yaml');
-        const agentConfigPath = path.join(this.getHome23Root(), 'instances', targetContext.agentName, 'config.yaml');
+        const agentConfigPath = this.getHome23AgentContext(targetContext.agentName).configPath;
         const homeProviderConfig = fsSync.existsSync(providerConfigPath)
           ? (yaml.load(fsSync.readFileSync(providerConfigPath, 'utf8')) || {})
           : {};

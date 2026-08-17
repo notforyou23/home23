@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -72,4 +72,49 @@ test('engine and dashboard keep their generous kill_timeout for brain persistenc
   const dash = apps.find((app) => app.name === 'home23-jerry-dash');
   assert.equal(engine.kill_timeout, 210000);
   assert.equal(dash.kill_timeout, 210000);
+});
+
+test('ecosystem generation uses a configured external instance root for runtime paths and manifest metadata', (t) => {
+  const root = makeInstall();
+  const externalRoot = mkdtempSync(join(tmpdir(), 'home23-external-instance-root-'));
+  t.after(() => {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(externalRoot, { recursive: true, force: true });
+  });
+
+  mkdirSync(join(externalRoot, 'brain'), { recursive: true });
+  mkdirSync(join(externalRoot, 'workspace'), { recursive: true });
+  mkdirSync(join(externalRoot, 'logs'), { recursive: true });
+  mkdirSync(join(externalRoot, 'conversations'), { recursive: true });
+
+  writeFileSync(join(root, 'instances', 'jerry', 'config.yaml'), yaml.dump({
+    agent: { displayName: 'jerry' },
+    ports: { engine: 5001, dashboard: 5002, mcp: 5003, bridge: 5004 },
+    system: {
+      name: 'home23',
+      version: '1.0.0',
+      workspace: 'workspace',
+      instanceRoot: externalRoot,
+    },
+  }), 'utf8');
+  generateEcosystem(root);
+
+  const apps = loadApps(root);
+  const engine = apps.find((app) => app.name === 'home23-jerry');
+  const dash = apps.find((app) => app.name === 'home23-jerry-dash');
+  const harness = apps.find((app) => app.name === 'home23-jerry-harness');
+  const manifest = JSON.parse(readFileSync(join(root, 'config', 'agents.json'), 'utf8'));
+  const jerry = manifest.find((agent) => agent.name === 'jerry');
+
+  assert.equal(engine.env.HOME23_ROOT, root);
+  assert.equal(engine.env.HOME23_INSTANCE_DIR, externalRoot);
+  assert.equal(engine.env.COSMO_RUNTIME_DIR, join(externalRoot, 'brain'));
+  assert.equal(engine.env.COSMO_WORKSPACE_PATH, join(externalRoot, 'workspace'));
+  assert.equal(engine.out_file, join(externalRoot, 'logs', 'engine-out.log'));
+  assert.equal(dash.env.HOME23_INSTANCE_DIR, externalRoot);
+  assert.equal(harness.env.HOME23_INSTANCE_DIR, externalRoot);
+  assert.equal(jerry.instanceRoot, externalRoot);
+  assert.equal(jerry.storageMode, 'external');
+  assert.equal(jerry.brainPath, join(externalRoot, 'brain'));
+  assert.equal(jerry.workspacePath, join(externalRoot, 'workspace'));
 });

@@ -34,6 +34,9 @@ const {
 const {
   memoryAuthorityAttestationKeyId,
 } = require('../../../shared/memory-authority-attestation.cjs');
+const {
+  resolveAgentInstancePaths,
+} = require('../../../shared/agent-instance-paths.cjs');
 const { createMemoryDeltaOverlayCache } = require('./memory-delta-overlay-cache');
 
 const MAX_EMBEDDING_DIMENSIONS = 8192;
@@ -1142,7 +1145,10 @@ function createMemorySearchService({
 } = {}) {
   const overlayCache = deltaOverlayCache || (home23Root && requesterAgent
     ? createMemoryDeltaOverlayCache({
-      cacheRoot: path.join(home23Root, 'instances', requesterAgent, 'runtime', 'cache'),
+      cacheRoot: path.join(
+        resolveAgentInstancePaths(home23Root, requesterAgent, { requireConfig: false }).runtimeDir,
+        'cache',
+      ),
     })
     : null);
   async function executeSearch(source, request) {
