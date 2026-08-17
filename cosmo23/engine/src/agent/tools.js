@@ -10,6 +10,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const { tools: interactiveTools, executeTool: executeInteractiveTool } = require('../interactive/interactive-tools');
 const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
+const { getSearchGovernor } = require('./search-governor');
 
 const INTERACTIVE_ONLY = new Set([
   'spawn_agent',
@@ -137,45 +138,121 @@ async function journalSearchSources(context, query, resultText) {
 }
 
 const extraExecutors = {
+  /**
+   * Governed web search. The per-run SearchGovernor owns the backend chain:
+   * each backend (MCP, SearXNG, Brave, DuckDuckGo) is tried at most once per
+   * query under a hard timeout, circuit-breaks after bounded failures, and a
+   * near-duplicate of an already-failed query is blocked before any backend
+   * is touched — the model gets a structured strategy-change instruction
+   * instead of another multi-second stall.
+   */
   async web_search(args, context) {
     const query = String(args.query || '').trim();
     if (!query) return 'web_search requires query.';
 
+    const governor = getSearchGovernor(context);
     const orchestrator = context.orchestrator;
+    const searchConfig = orchestrator?.config?.search || {};
     const mcp = orchestrator?.mcp || orchestrator?.agentExecutor?.mcp || context.mcp;
-    if (mcp && typeof mcp.callTool === 'function') {
+    const searxngUrl = orchestrator?.config?.providers?.local?.searxngUrl
+      || searchConfig.searxngUrl
+      || process.env.SEARXNG_URL;
+    const braveApiKey = searchConfig.braveApiKey || process.env.BRAVE_API_KEY || '';
+    const allowDuckDuckGo = searchConfig.allowDuckDuckGoFallback !== false;
+
+    const configuredBackends = [
+      mcp && typeof mcp.callTool === 'function' ? 'mcp' : null,
+      searxngUrl ? 'searxng' : null,
+      braveApiKey ? 'brave' : null,
+      allowDuckDuckGo ? 'duckduckgo' : null
+    ].filter(Boolean);
+
+    const gate = governor.checkQuery(query, configuredBackends);
+    if (gate.blocked) {
+      return governor.strategyMessage(query, gate.reason, configuredBackends);
+    }
+
+    const searcherFactory = context.createSearcher || (() => {
+      const { FreeWebSearch } = require('../tools/web-search-free');
+      return new FreeWebSearch(context.logger, {
+        searxngUrl,
+        braveApiKey,
+        allowDuckDuckGoFallback: allowDuckDuckGo
+      });
+    });
+    let searcher = null;
+    const getSearcher = () => {
+      if (!searcher) searcher = searcherFactory();
+      return searcher;
+    };
+
+    const succeed = async (backend, payload) => {
+      governor.recordSuccess(backend);
+      const text = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+      await journalSearchSources(context, query, text);
+      return text;
+    };
+
+    // Backend 1: MCP web_search (whatever provider it routes internally).
+    if (configuredBackends.includes('mcp') && !governor.isOpen('mcp')) {
       try {
-        const mcpResponse = await mcp.callTool('web_search', {
-          query,
-          maxResults: 10,
-          allowDuckDuckGoFallback: true
-        });
+        const mcpResponse = await governor.withTimeout(
+          () => mcp.callTool('web_search', { query, maxResults: 10, allowDuckDuckGoFallback: allowDuckDuckGo }),
+          'mcp web_search'
+        );
         const text = mcpResponse?.content?.[0]?.text;
-        if (text) {
-          await journalSearchSources(context, query, text);
-          return text;
-        }
+        if (text) return await succeed('mcp', text);
+        governor.recordFailure('mcp', 'empty response');
       } catch (err) {
-        context.logger?.warn?.('web_search MCP failed, trying FreeWebSearch', { error: err.message });
+        governor.recordFailure('mcp', err);
+        context.logger?.warn?.('web_search MCP failed', { error: err.message });
       }
     }
 
-    try {
-      const { FreeWebSearch } = require('../tools/web-search-free');
-      const searcher = new FreeWebSearch(context.logger, {
-        searxngUrl: orchestrator?.config?.providers?.local?.searxngUrl
-          || orchestrator?.config?.search?.searxngUrl
-          || process.env.SEARXNG_URL,
-        braveApiKey: orchestrator?.config?.search?.braveApiKey,
-        allowDuckDuckGoFallback: true
-      });
-      const result = await searcher.search(query, { maxResults: 10 });
-      const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
-      await journalSearchSources(context, query, text);
-      return text;
-    } catch (err) {
-      return `web_search failed: ${err.message}`;
+    // Backends 2-4: direct FreeWebSearch backends, one bounded attempt each.
+    const directBackends = [
+      { name: 'searxng', run: () => getSearcher().searchSearXNG(query, 10) },
+      { name: 'brave', run: () => getSearcher().searchBrave(query, 10) },
+      { name: 'duckduckgo', run: () => getSearcher().searchDuckDuckGo(query, 10) }
+    ];
+    let sawEmptyHealthyBackend = false;
+    for (const backend of directBackends) {
+      if (!configuredBackends.includes(backend.name) || governor.isOpen(backend.name)) continue;
+      try {
+        const results = await governor.withTimeout(backend.run, `${backend.name} search`);
+        if (Array.isArray(results) && results.length > 0) {
+          return await succeed(backend.name, {
+            success: true,
+            query,
+            source: backend.name,
+            resultCount: results.length,
+            results
+          });
+        }
+        // A healthy backend with zero hits is a query problem, not a
+        // backend failure — do not trip the breaker for it.
+        governor.recordSuccess(backend.name);
+        sawEmptyHealthyBackend = true;
+      } catch (err) {
+        governor.recordFailure(backend.name, err);
+        context.logger?.warn?.(`web_search ${backend.name} failed`, { error: err.message });
+      }
     }
+
+    governor.recordFailedQuery(query);
+    if (sawEmptyHealthyBackend) {
+      return JSON.stringify({
+        web_search: 'no_results',
+        query,
+        backends: governor.statusSummary(configuredBackends),
+        instruction: 'The search ran but found nothing. Do not retry a similar query — change the query substantially, fetch a known URL directly with run_command (curl -sL <url>), or proceed from your own knowledge and mark it as unverified.'
+      }, null, 2);
+    }
+    return governor.strategyMessage(
+      query,
+      'all available search backends failed for this query',
+      configuredBackends
+    );
   },
 
   async remember(args, context) {
