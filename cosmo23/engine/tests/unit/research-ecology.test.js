@@ -709,6 +709,86 @@ describe('Questions are not tasks', () => {
   });
 });
 
+describe('End to end with the real worker loop', () => {
+  it('the real LaunchLoop worker researches, journals candidates, finishes — and the ecology keeps living', async function () {
+    this.timeout(15000);
+    const runtimePath = tempRuntime('cosmo-e2e-');
+    const orchestrator = makeOrchestrator(runtimePath);
+
+    // One scripted model serves BOTH the worker tool loop (tool calls) and
+    // the ecology's reflection/dream/principal calls (JSON), routed on the
+    // request shape: worker calls carry tools.
+    let workerCallCount = 0;
+    const client = {
+      async createCompletion({ messages, tools }) {
+        if (Array.isArray(tools) && tools.length > 0) {
+          workerCallCount += 1;
+          if (workerCallCount % 2 === 1) {
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  tool_calls: [{
+                    id: `call_${workerCallCount}`,
+                    function: {
+                      name: 'remember',
+                      arguments: JSON.stringify({ content: `Worker finding ${workerCallCount}` })
+                    }
+                  }]
+                }
+              }]
+            };
+          }
+          return {
+            choices: [{
+              message: {
+                role: 'assistant',
+                tool_calls: [{
+                  id: `call_${workerCallCount}`,
+                  function: {
+                    name: 'finish',
+                    arguments: JSON.stringify({ summary: 'Wrote outputs/report.md' })
+                  }
+                }]
+              }
+            }]
+          };
+        }
+        return scriptedClient().createCompletion({ messages });
+      }
+    };
+
+    const ecology = makeEcology({
+      runtimePath,
+      client,
+      orchestrator,
+      ecologyConfig: { budgetTurns: 16, sleepAfterExpeditions: 1, workerMaxTurns: 4 }
+    });
+    // Default createWorker — the REAL LaunchLoop.
+    ecology.start();
+    await ecology._promise;
+
+    // The real worker journaled candidates with provenance and finished;
+    // the run did not end there.
+    const candidates = readJsonl(path.join(runtimePath, 'outputs', 'candidates', 'findings.jsonl'));
+    const workerCandidates = candidates.filter((candidate) => candidate.origin === 'worker');
+    expect(workerCandidates.length).to.be.greaterThan(1);
+    for (const candidate of workerCandidates) {
+      expect(candidate.expeditionId).to.be.a('string');
+      expect(candidate.lane).to.be.a('string');
+    }
+    expect(ecology.expeditions.length).to.be.greaterThan(1);
+    expect(ecology.expeditions[0].workerFinished).to.equal(true);
+
+    // Sleep committed, promotions happened through the gate, and the run
+    // settled with a queryable Brain.
+    expect(ecology.sleepCount).to.be.greaterThan(0);
+    expect(orchestrator.memory.added.length).to.be.greaterThan(0);
+    expect(ecology.mode).to.equal('settled');
+    expect(orchestrator.completions[0].reason).to.equal('ecology_settled');
+  });
+});
+
 describe('Launch starts the ecology (planner wiring)', () => {
   it('startLaunchLoop default loop is the research ecology with four lanes, not a bare worker', async function () {
     this.timeout(10000);
