@@ -2386,6 +2386,152 @@ app.get('/api/watch/logs', async (req, res) => {
   }
 });
 
+// ── Drill control-center surface ──────────────────────────────────────────
+// The drill is goal -> phases -> next goal, for the cycles or time set.
+// These routes power the control center: see the drill, steer it.
+
+async function resolveDrillRunPath() {
+  if (activeContext?.runPath) {
+    return { runPath: activeContext.runPath, runName: activeContext.runName, running: true };
+  }
+  try {
+    const resolved = await fsp.realpath(RUNTIME_PATH);
+    return { runPath: resolved, runName: path.basename(resolved), running: false };
+  } catch {
+    return { runPath: null, runName: null, running: false };
+  }
+}
+
+async function readJsonlTail(file, limit) {
+  try {
+    const raw = await fsp.readFile(file, 'utf8');
+    return raw.trim().split('\n').filter(Boolean).slice(-limit).map((line) => {
+      try { return JSON.parse(line); } catch { return null; }
+    }).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function listWriteups(runPath) {
+  const outputsDir = path.join(runPath, 'outputs');
+  const writeups = [];
+  async function walk(dir, depth) {
+    if (depth > 2 || writeups.length >= 80) return;
+    let entries;
+    try {
+      entries = await fsp.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (writeups.length >= 80) break;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === 'candidates') continue; // findings journal, not a writeup
+        await walk(full, depth + 1);
+      } else if (entry.isFile() && entry.name !== 'sources.jsonl') {
+        try {
+          const stat = await fsp.stat(full);
+          writeups.push({
+            file: path.relative(outputsDir, full),
+            size: stat.size,
+            modified: stat.mtimeMs
+          });
+        } catch { /* skip unreadable */ }
+      }
+    }
+  }
+  await walk(outputsDir, 0);
+  return writeups.sort((left, right) => right.modified - left.modified).slice(0, 40);
+}
+
+app.get('/api/drill/status', async (_req, res) => {
+  try {
+    const { runPath, runName, running } = await resolveDrillRunPath();
+    if (!runPath) {
+      return res.json({ success: true, running: false, runName: null, drill: null });
+    }
+
+    let drill = null;
+    try {
+      drill = JSON.parse(await fsp.readFile(path.join(runPath, 'drill', 'state.json'), 'utf8'));
+    } catch { /* run predates the drill or has not written state yet */ }
+
+    const [sources, notes, candidates, writeups] = await Promise.all([
+      readJsonlTail(path.join(runPath, 'outputs', 'sources.jsonl'), 20),
+      readJsonlTail(path.join(runPath, 'drill', 'notes.jsonl'), 10),
+      readJsonlTail(path.join(runPath, 'outputs', 'candidates', 'findings.jsonl'), 12),
+      listWriteups(runPath)
+    ]);
+
+    res.json({
+      success: true,
+      running,
+      runName,
+      topic: activeContext?.topic || null,
+      startedAt: activeContext?.startedAt || null,
+      wsUrl: activeContext?.wsUrl || null,
+      drill,
+      sources: sources.reverse(),
+      notes: notes.reverse(),
+      findings: candidates.reverse(),
+      writeups
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/drill/note', async (req, res) => {
+  try {
+    if (!activeContext?.runPath) {
+      return res.status(409).json({ success: false, error: 'No drill is running.' });
+    }
+    const text = String(req.body?.text || '').trim();
+    if (!text) {
+      return res.status(400).json({ success: false, error: 'Note text is required.' });
+    }
+    const note = {
+      id: `note_${Date.now().toString(36)}`,
+      text: text.slice(0, 2000),
+      at: Date.now()
+    };
+    const dir = path.join(activeContext.runPath, 'drill');
+    await fsp.mkdir(dir, { recursive: true });
+    await fsp.appendFile(path.join(dir, 'notes.jsonl'), `${JSON.stringify(note)}\n`);
+    res.json({ success: true, note, message: 'Note queued — the drill picks it up on its next cycle.' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/drill/output', async (req, res) => {
+  try {
+    const { runPath } = await resolveDrillRunPath();
+    if (!runPath) {
+      return res.status(404).json({ success: false, error: 'No run available.' });
+    }
+    const requested = String(req.query.file || '');
+    const outputsDir = path.resolve(runPath, 'outputs');
+    const target = path.resolve(outputsDir, requested);
+    if (!target.startsWith(outputsDir + path.sep)) {
+      return res.status(400).json({ success: false, error: 'Path is outside outputs/.' });
+    }
+    const stat = await fsp.stat(target);
+    if (stat.size > 300 * 1024) {
+      return res.status(413).json({ success: false, error: `File is ${(stat.size / 1024).toFixed(0)}KB — exceeds the 300KB inline view limit.` });
+    }
+    const content = await fsp.readFile(target, 'utf8');
+    res.json({ success: true, file: requested, size: stat.size, content });
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return res.status(404).json({ success: false, error: 'File not found.' });
+    }
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.post('/api/brain/:name/query', async (req, res) => {
   let responseFinished = false;
   const controller = new AbortController();

@@ -29,7 +29,7 @@ const {
 } = require('../../../server/config/model-catalog');
 const { deriveResearchContract } = require('./research-contract');
 const { composeShortLaunchPlan, isToolLoopPlan, isLegacySpecialistPlan } = require('../agent/short-plan');
-const { LaunchLoop } = require('../agent/loop');
+const { DrillLoop } = require('../drill/drill-loop');
 const {
   RESEARCH_PRODUCT_LOOP,
   INTERACTIVE_PRODUCT_LOOP,
@@ -454,7 +454,13 @@ class GuidedModePlanner {
   }
 
   /**
-   * Start the Cosmo research Launch tool loop.
+   * Start the Cosmo research drill behind Launch.
+   *
+   * The drill is goal -> phases -> next goal, for the cycles or time set.
+   * The tool loop is the drill bit working each phase; a worker finishing a
+   * writeup completes a phase, never the run. The drill keeps going until
+   * cycles or time are spent or the human stops it.
+   *
    * Interactive is a chat add-on. It is never the product loop.
    * Leftover collapse flags that mark Interactive as productLoop are ignored.
    */
@@ -495,7 +501,7 @@ class GuidedModePlanner {
     }
 
     const orchestrator = options.orchestrator || this.subsystems.orchestrator;
-    const createLoop = options.createLoop || ((args) => new LaunchLoop(args));
+    const createLoop = options.createLoop || ((args) => new DrillLoop(args));
     const loop = createLoop({
       orchestrator,
       config: this.config,
@@ -513,7 +519,7 @@ class GuidedModePlanner {
     }
 
     const startResult = loop.start();
-    this.logger?.info('Fresh Launch: short plan → research tool loop', {
+    this.logger?.info('Fresh Launch: drill started (goal → phases → next goal, until cycles or time are spent)', {
       started: startResult?.started !== false,
       productLoop: RESEARCH_PRODUCT_LOOP
     });

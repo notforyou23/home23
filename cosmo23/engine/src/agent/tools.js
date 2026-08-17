@@ -95,7 +95,7 @@ const extraTools = [
   },
   {
     name: 'finish',
-    description: 'Mark the research run complete after the deliverable is written.',
+    description: 'Mark THIS phase\'s deliverable complete. The drill keeps going after you — finishing a writeup never ends the run.',
     parameters: {
       type: 'object',
       properties: {
@@ -112,6 +112,29 @@ const tools = uniqueToolsByName([
   ...extraTools
 ]);
 
+async function journalSearchSources(context, query, resultText) {
+  // The control center's Sources feed: every web search leaves a receipt in
+  // outputs/sources.jsonl with the query and the URLs it surfaced.
+  try {
+    const runtimePath = context.runtimePath
+      || context.orchestrator?.logsDir
+      || process.cwd();
+    const urls = [...new Set(String(resultText || '').match(/https?:\/\/[^\s)\]"'<>]+/g) || [])].slice(0, 8);
+    const drill = context.loop?.drill || null;
+    const entry = {
+      at: Date.now(),
+      tool: 'web_search',
+      query,
+      urls,
+      cycle: drill?.cycle ?? null,
+      goalNumber: drill?.goalNumber ?? null,
+      phaseNumber: drill?.phaseNumber ?? null
+    };
+    await fs.mkdir(path.join(runtimePath, 'outputs'), { recursive: true });
+    await fs.appendFile(path.join(runtimePath, 'outputs', 'sources.jsonl'), `${JSON.stringify(entry)}\n`);
+  } catch { /* the search result itself is unaffected */ }
+}
+
 const extraExecutors = {
   async web_search(args, context) {
     const query = String(args.query || '').trim();
@@ -127,7 +150,10 @@ const extraExecutors = {
           allowDuckDuckGoFallback: true
         });
         const text = mcpResponse?.content?.[0]?.text;
-        if (text) return text;
+        if (text) {
+          await journalSearchSources(context, query, text);
+          return text;
+        }
       } catch (err) {
         context.logger?.warn?.('web_search MCP failed, trying FreeWebSearch', { error: err.message });
       }
@@ -143,7 +169,9 @@ const extraExecutors = {
         allowDuckDuckGoFallback: true
       });
       const result = await searcher.search(query, { maxResults: 10 });
-      return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+      const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+      await journalSearchSources(context, query, text);
+      return text;
     } catch (err) {
       return `web_search failed: ${err.message}`;
     }
@@ -158,16 +186,22 @@ const extraExecutors = {
       || process.cwd();
     const dir = path.join(runtimePath, 'outputs', 'candidates');
     await fs.mkdir(dir, { recursive: true });
+    // Drill provenance: which cycle/goal/phase this finding came from.
+    const drill = context.loop?.drill || null;
     const entry = {
+      id: `cand_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
       type: 'candidate_finding',
       content,
       tag,
       at: Date.now(),
       source: 'launch_loop',
+      cycle: drill?.cycle ?? null,
+      goalNumber: drill?.goalNumber ?? null,
+      phaseNumber: drill?.phaseNumber ?? null,
       promoted: false
     };
     await fs.appendFile(path.join(dir, 'findings.jsonl'), `${JSON.stringify(entry)}\n`);
-    return 'Journaled candidate finding. Brain changes at promotion.';
+    return 'Journaled candidate finding. The drill writes it into the Brain at cycle end.';
   },
 
   async list_skills(args, context) {

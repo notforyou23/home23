@@ -682,7 +682,11 @@ execution:
   container:
     timeout: 600000  # 10 minutes
     maxFiles: 50
-  maxCycles: ${dream_mode ? dream_cycles : (enable_consolidation_mode ? (settings.consolidation_cycles || 50) : maxCyclesValue)}
+  # Guided runs: the DRILL owns the cycle budget (one cycle = one bit
+  # descent on a phase). Engine cognitive cycles stay unbounded so they
+  # cannot end the run before the drill's budget is spent; the time budget
+  # remains a shared backstop.
+  maxCycles: ${dream_mode ? dream_cycles : (enable_consolidation_mode ? (settings.consolidation_cycles || 50) : (exploration_mode === 'guided' ? 'null' : maxCyclesValue))}
   maxRuntimeMinutes: ${settings.max_runtime_minutes || 0}
   adaptiveTimingEnabled: ${!enable_consolidation_mode && enable_sleep}
   consolidationMode: ${enable_consolidation_mode}${enable_consolidation_mode ? `
@@ -699,6 +703,13 @@ execution:
     preventWake: true
     preventEnergyRestoration: true
     disableConsolidationRateLimit: true` : '')}
+
+# The drill: goal -> phases -> next goal, for the cycles or time set.
+# Cycles and time are how long the drill may run; they are not the work.
+drill:
+  cycles: ${maxCyclesValue}
+  maxRuntimeMinutes: ${settings.max_runtime_minutes || 0}
+  workerTurnsPerCycle: ${settings.drill_worker_turns || 24}
 
 timeouts:
   cycleTimeoutMs: ${enable_local_llm ? 300000 : 180000}  # 5min for local LLM, 3min for cloud
