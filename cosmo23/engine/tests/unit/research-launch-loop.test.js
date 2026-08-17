@@ -73,8 +73,8 @@ function createPlanner(overrides = {}) {
 }
 
 describe('Cosmo research Launch contract', () => {
-  it('Launch destination is Watch, never Interactive', () => {
-    expect(launchDestination()).to.equal('watch');
+  it('Launch destination is the drill board, never Interactive', () => {
+    expect(launchDestination()).to.equal('drill');
     expect(launchDestination()).to.equal(RESEARCH_LAUNCH_VIEW);
     expect(RESEARCH_LAUNCH_VIEW).to.not.equal('interactive');
   });
@@ -86,12 +86,12 @@ describe('Cosmo research Launch contract', () => {
     expect(resolveProductLoop(undefined)).to.equal(RESEARCH_PRODUCT_LOOP);
   });
 
-  it('desk Launch and Continue stay on Watch in app.js', () => {
+  it('control center Launch and Continue land on the drill board in app.js', () => {
     const appSource = fs.readFileSync(path.join(__dirname, '../../../public/app.js'), 'utf8');
-    expect(appSource).to.match(/const RESEARCH_LAUNCH_VIEW = 'watch'/);
+    expect(appSource).to.match(/const RESEARCH_LAUNCH_VIEW = 'drill'/);
     expect(appSource).to.match(/this\.switchView\(RESEARCH_LAUNCH_VIEW\)/);
-    expect(appSource).to.not.match(/startResearch[\s\S]{0,800}switchView\('interactive'\)/);
-    expect(appSource).to.not.match(/continueResearch[\s\S]{0,800}switchView\('interactive'\)/);
+    expect(appSource).to.not.match(/startDrill[\s\S]{0,900}switchView\('chat'\)/);
+    expect(appSource).to.not.match(/continueDrill[\s\S]{0,900}switchView\('chat'\)/);
     expect(appSource).to.not.include('/api/launch/go');
   });
 
@@ -339,7 +339,7 @@ describe('Research Launch loop and harness', () => {
     expect(calls[0].toolCount).to.be.greaterThan(5);
   });
 
-  it('journals remember() as a candidate — Brain changes at promotion', async () => {
+  it('journals remember() as a candidate — the DRILL writes the Brain at cycle end, not the worker mid-turn', async () => {
     const runtimePath = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo-launch-remember-'));
     let added = 0;
     const result = await executeTool('remember', { content: 'Garcia once played a 3-hour set.' }, {
@@ -348,20 +348,23 @@ describe('Research Launch loop and harness', () => {
         memory: {
           addNode: async () => {
             added += 1;
-            return { id: 'should-not-promote' };
+            return { id: 'should-not-write-mid-turn' };
           }
         }
       },
-      logger
+      logger,
+      loop: { drill: { cycle: 2, goalNumber: 1, phaseNumber: 1 } }
     });
     expect(result).to.include('Journaled candidate finding');
-    expect(result).to.include('Brain changes at promotion');
     expect(added).to.equal(0);
     const journal = fs.readFileSync(path.join(runtimePath, 'outputs', 'candidates', 'findings.jsonl'), 'utf8');
     const row = JSON.parse(journal.trim());
     expect(row.type).to.equal('candidate_finding');
     expect(row.promoted).to.equal(false);
     expect(row.content).to.include('Garcia');
+    expect(row.cycle).to.equal(2);
+    expect(row.goalNumber).to.equal(1);
+    expect(row.phaseNumber).to.equal(1);
   });
 
   it('classifies leftover tool_loop plans as research, not legacy specialists', () => {

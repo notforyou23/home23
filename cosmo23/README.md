@@ -2,7 +2,7 @@
 
 COSMO 2.3 is the standalone carve-out of COSMO Unified.
 
-It keeps the COSMO engine, local Launch + Watch + Query, filesystem brains, EVOBREW-style local provider setup, Anthropic OAuth, and the upgraded Research/PGS query surface.
+It keeps the COSMO engine, the drill control center (Launch + live drill board + Query), filesystem brains, EVOBREW-style local provider setup, Anthropic OAuth, and the upgraded Research/PGS query surface.
 
 Unified and Big COSMO stay untouched and can be scanned as read-only references while you build against this standalone.
 
@@ -108,13 +108,28 @@ Important:
 - Chat can still run on Anthropic, xAI, or local models while embeddings remain on OpenAI
 - The local Ollama embedding model is still tracked internally for provider capability purposes, but it is not the core COSMO brain embedding path in v1
 
-## Launch / Watch / Query flow
+## The drill control center
 
-1. Configure providers in the setup panel.
-2. Adjust the model catalog if you want different chat model versions.
-3. Launch a run with topic, context, mode, and model-role selections.
-4. Use Watch to follow the active run and open the dashboard.
-5. Use Query to work against finished local brains or imported reference brains.
+Cosmo at heart is a drill that keeps drilling for the cycles or the time you
+give it. Cycles and time are how long the drill may run — the work is:
+take or invent a goal, work it through its phases, and when that goal is
+done, create the next goal. The tool loop is the drill bit working each
+phase; a worker finishing a writeup completes a phase, never the run. The
+drill stops when the budget is spent or you stop it, and the Brain stays
+queryable afterwards.
+
+The control center (`public/`) is what you open:
+
+1. **Drill** — start a drill (question, cycles, time, model) or continue an
+   existing brain with a fresh budget; see the current goal, which phase it
+   is in, the next goal when one completes, remaining cycles/time, live
+   activity, sources, writeups, and Brain writes; steer with stop, continue,
+   and operator notes the drill reads on its next cycle.
+2. **Query** — ask a finished or running brain what it knows (synthesis,
+   PGS, follow-ups, exports).
+3. **Chat** — the Interactive chat add-on over a brain. It is chat only and
+   can never be the product loop.
+4. **Setup** — providers, OAuth, and the model catalog.
 
 The Query tab includes the EVOBREW-style Research surface with:
 
