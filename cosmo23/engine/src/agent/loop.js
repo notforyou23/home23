@@ -8,6 +8,7 @@
 
 const { tools, executeTool, toChatTools } = require('./tools');
 const { RESEARCH_PRODUCT_LOOP } = require('../../../lib/research-launch');
+const { AUTH_REVOKED_WATCH_MESSAGE, isFatalAuthError } = require('../../../lib/auth-error');
 
 const DEFAULT_MAX_TURNS = 80;
 
@@ -26,6 +27,7 @@ class LaunchLoop {
     this.finishSummary = null;
     this.turns = 0;
     this.productLoop = RESEARCH_PRODUCT_LOOP;
+    this.fatalError = null;
     this._promise = null;
   }
 
@@ -49,6 +51,10 @@ class LaunchLoop {
       goal: this.plan?.shortPlan?.goal || this.plan?.goal || this.plan?.title || null
     });
     this._promise = this.run().catch((err) => {
+      if (isFatalAuthError(err)) {
+        this.stopFatalAuth(err);
+        return;
+      }
       this.logger?.error?.('Research Launch loop failed', { error: err.message, stack: err.stack });
       this.running = false;
     });
@@ -64,6 +70,26 @@ class LaunchLoop {
     this.finished = true;
     this.finishSummary = summary || 'done';
     this.running = false;
+  }
+
+  stopFatalAuth(detail) {
+    this.running = false;
+    this.fatalError = AUTH_REVOKED_WATCH_MESSAGE;
+    const detailText = typeof detail === 'string'
+      ? detail
+      : (detail?.message || detail?.errorType || detail?.error?.message || null);
+    this.logger?.error?.(AUTH_REVOKED_WATCH_MESSAGE, {
+      productLoop: RESEARCH_PRODUCT_LOOP,
+      errorType: 'authentication_error',
+      detail: detailText,
+      turns: this.turns
+    });
+    this.emitProgress({
+      type: 'launch_loop_error',
+      fatal: true,
+      errorType: 'authentication_error',
+      message: AUTH_REVOKED_WATCH_MESSAGE
+    });
   }
 
   async run() {
@@ -89,6 +115,11 @@ class LaunchLoop {
 
       const response = await this.callLLM();
       const assistantMsg = response?.choices?.[0]?.message;
+      const content = assistantMsg?.content || '';
+      if (isFatalAuthError(response) || isFatalAuthError(content)) {
+        this.stopFatalAuth(response || content);
+        break;
+      }
       if (!assistantMsg) {
         this.logger?.warn?.('Research Launch loop: empty model response', { turn: this.turns });
         continue;
@@ -125,7 +156,6 @@ class LaunchLoop {
         continue;
       }
 
-      const content = assistantMsg.content || '';
       this.messages.push({ role: 'assistant', content });
       this.logger?.info?.('Research Launch model turn', {
         turn: this.turns,
@@ -210,7 +240,9 @@ class LaunchLoop {
       finished: this.finished,
       turns: this.turns,
       productLoop: RESEARCH_PRODUCT_LOOP,
-      summary: this.finishSummary
+      summary: this.finishSummary,
+      fatalError: this.fatalError || null,
+      status: this.fatalError ? 'error' : (this.finished ? 'finished' : (this.running ? 'running' : 'stopped'))
     };
   }
 }

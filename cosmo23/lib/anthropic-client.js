@@ -15,6 +15,7 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const { getAnthropicApiKey, prepareSystemPrompt, isOAuthToken, getStealthHeaders } = require('../server/services/anthropic-oauth');
 const { normalizeProviderCompletion } = require('./provider-completion');
+const { AUTH_REVOKED_WATCH_MESSAGE, isFatalAuthError } = require('./auth-error');
 const {
   abortableDelay,
   awaitWithCancellation,
@@ -363,6 +364,16 @@ class AnthropicClient {
           return result;
         }
 
+        if (isFatalAuthError(result)) {
+          this.logger?.error?.(`[AnthropicClient] ${AUTH_REVOKED_WATCH_MESSAGE}`, {
+            component: options.component,
+            purpose: options.purpose,
+            errorType: result.errorType || result.error?.type,
+            retryable: false
+          });
+          return result;
+        }
+
         if (result.error?.retryable === false) return result;
 
         // If we have an error and retries left, wait and retry
@@ -393,6 +404,14 @@ class AnthropicClient {
 
       } catch (error) {
         rethrowCancellation(error, options.signal);
+        if (isFatalAuthError(error)) {
+          this.logger?.error?.(`[AnthropicClient] ${AUTH_REVOKED_WATCH_MESSAGE}`, {
+            component: options.component,
+            purpose: options.purpose,
+            retryable: false
+          });
+          return this._buildErrorResponse(error);
+        }
         rethrowNonRetryable(error);
         lastError = error;
         this.logger?.error?.('[AnthropicClient] Exception during generation', {
@@ -1128,8 +1147,14 @@ class AnthropicClient {
    * Build error response (matches GPT5Client format)
    */
   _buildErrorResponse(error) {
+    const authFatal = isFatalAuthError(error);
     return normalizeProviderCompletion({
-      content: '', terminalReceived: false, hadError: true, error,
+      content: '',
+      terminalReceived: false,
+      hadError: true,
+      error,
+      retryable: authFatal ? false : undefined,
+      errorType: authFatal ? 'authentication_error' : undefined,
       provider: this.providerId,
     });
   }

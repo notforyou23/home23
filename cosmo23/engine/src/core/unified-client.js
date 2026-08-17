@@ -1431,7 +1431,10 @@ class UnifiedClient extends GPT5Client {
           finish_reason: toolCalls.length > 0 ? 'tool_calls' : 'stop'
         }],
         model: response.model || selectedModel,
-        usage: response.usage
+        usage: response.usage,
+        hadError: response.hadError === true,
+        errorType: response.errorType || response.error?.type || null,
+        retryable: response.retryable !== false && response.error?.retryable !== false
       };
     } catch (error) {
       this.logger?.error?.('createCompletion failed', { error: error.message });

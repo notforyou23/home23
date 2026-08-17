@@ -23,6 +23,8 @@ const { LaunchLoop } = require('../../src/agent/loop');
 const { tools, INTERACTIVE_ONLY, executeTool } = require('../../src/agent/tools');
 const { GuidedModePlanner } = require('../../src/core/guided-mode-planner');
 const { PlanExecutor } = require('../../src/core/plan-executor');
+const AnthropicClient = require('../../src/core/anthropic-client');
+const { AUTH_REVOKED_WATCH_MESSAGE, isFatalAuthError } = require('../../../lib/auth-error');
 
 const logger = {
   info: () => {},
@@ -269,7 +271,7 @@ describe('PlanExecutor tool_loop', () => {
 });
 
 describe('Research Launch loop and harness', () => {
-  it('exposes files, shell, web, skills, coding, and Brain write — not Interactive specialist spawn', () => {
+  it('exposes files, shell, web, skills, coding, and candidate journal — not Interactive specialist spawn', () => {
     const names = tools.map((tool) => tool.name);
     expect(names).to.include.members([
       'read_file', 'write_file', 'run_command', 'web_search',
@@ -346,5 +348,181 @@ describe('Research Launch loop and harness', () => {
     expect(isToolLoopPlan({ executionKind: 'tool_loop', claimedBy: 'plan_executor' })).to.equal(true);
     expect(isLegacySpecialistPlan({ id: 'plan:main', status: 'ACTIVE' })).to.equal(true);
     expect(isLegacySpecialistPlan({ executionKind: 'tool_loop' })).to.equal(false);
+  });
+});
+
+describe('Fatal Anthropic OAuth / 401', () => {
+  it('classifies 401, authentication_error, and revoked OAuth as fatal', () => {
+    expect(isFatalAuthError({ status: 401, message: 'Unauthorized' })).to.equal(true);
+    expect(isFatalAuthError({ type: 'authentication_error' })).to.equal(true);
+    expect(isFatalAuthError(new Error('OAuth access token has been revoked'))).to.equal(true);
+    expect(isFatalAuthError('[Error: OAuth access token has been revoked]')).to.equal(true);
+    expect(isFatalAuthError({
+      hadError: true,
+      errorType: 'unknown_error',
+      content: '[Error: OAuth access token has been revoked]'
+    })).to.equal(true);
+    expect(isFatalAuthError('Garcia once got a 401 at the Fillmore')).to.equal(false);
+    expect(isFatalAuthError({ hadError: true, errorType: 'rate_limit_error' })).to.equal(false);
+  });
+
+  it('stops the Launch loop after one revoked-OAuth turn — no 80-turn retry storm', async () => {
+    const events = [];
+    const errors = [];
+    const loop = new LaunchLoop({
+      logger: {
+        ...logger,
+        error: (message, meta) => errors.push({ message, meta })
+      },
+      plan: composeShortLaunchPlan({ domain: 'Jerry Garcia anecdotes', context: 'Collect stories.' }),
+      config: { models: { primary: 'claude-fable' } },
+      maxTurns: 80,
+      orchestrator: {
+        _getEvents: () => ({
+          emitEvent: (type, event) => events.push({ type, event })
+        })
+      },
+      client: {
+        createCompletion: async () => ({
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: '[Error: OAuth access token has been revoked]'
+            }
+          }],
+          hadError: true,
+          errorType: 'authentication_error',
+          retryable: false
+        })
+      }
+    });
+
+    let calls = 0;
+    const original = loop.client.createCompletion;
+    loop.client.createCompletion = async (...args) => {
+      calls += 1;
+      return original(...args);
+    };
+
+    loop.start();
+    await loop._promise;
+
+    expect(calls).to.equal(1);
+    expect(loop.turns).to.equal(1);
+    expect(loop.running).to.equal(false);
+    expect(loop.finished).to.equal(false);
+    expect(loop.fatalError).to.equal(AUTH_REVOKED_WATCH_MESSAGE);
+    expect(loop.getStatus().status).to.equal('error');
+    expect(loop.messages.some((msg) => msg.content === 'Continue. Use tools. Call finish when the deliverable is written.')).to.equal(false);
+    expect(errors.some((row) => row.message === AUTH_REVOKED_WATCH_MESSAGE)).to.equal(true);
+    expect(events.some((row) => row.type === 'launch_loop_error' && row.event.message === AUTH_REVOKED_WATCH_MESSAGE)).to.equal(true);
+  });
+
+  it('stops the Launch loop when createCompletion throws 401', async () => {
+    let calls = 0;
+    const loop = new LaunchLoop({
+      logger,
+      plan: composeShortLaunchPlan({ domain: 'Jerry Garcia anecdotes', context: 'Collect stories.' }),
+      config: { models: { primary: 'claude-fable' } },
+      maxTurns: 80,
+      client: {
+        createCompletion: async () => {
+          calls += 1;
+          const err = new Error('OAuth access token has been revoked');
+          err.status = 401;
+          err.type = 'authentication_error';
+          throw err;
+        }
+      }
+    });
+
+    loop.start();
+    await loop._promise;
+
+    expect(calls).to.equal(1);
+    expect(loop.turns).to.equal(1);
+    expect(loop.running).to.equal(false);
+    expect(loop.fatalError).to.equal(AUTH_REVOKED_WATCH_MESSAGE);
+  });
+
+  it('does not treat a research mention of 401 as a dead token', async () => {
+    let calls = 0;
+    const loop = new LaunchLoop({
+      logger,
+      plan: composeShortLaunchPlan({ domain: 'Test topic', context: 'Write a note.' }),
+      config: { models: { primary: 'test' } },
+      maxTurns: 3,
+      client: {
+        createCompletion: async () => {
+          calls += 1;
+          if (calls === 1) {
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  content: 'Garcia once got a 401 at the Fillmore. Writing that down.'
+                }
+              }]
+            };
+          }
+          return {
+            choices: [{
+              message: {
+                role: 'assistant',
+                tool_calls: [{
+                  id: 'call_finish',
+                  function: { name: 'finish', arguments: JSON.stringify({ summary: 'Wrote the anecdote' }) }
+                }]
+              }
+            }]
+          };
+        }
+      }
+    });
+
+    loop.start();
+    await loop._promise;
+    expect(loop.fatalError).to.equal(null);
+    expect(loop.finished).to.equal(true);
+    expect(calls).to.equal(2);
+  });
+
+  it('AnthropicClient does not Retry 1/3 a revoked OAuth token', async () => {
+    const logs = [];
+    let calls = 0;
+    const client = Object.create(AnthropicClient.prototype);
+    client.logger = {
+      info: (message) => logs.push(String(message)),
+      warn: (message) => logs.push(String(message)),
+      error: (message) => logs.push(String(message)),
+      debug: () => {}
+    };
+    client.generate = async () => {
+      calls += 1;
+      const err = new Error('OAuth access token has been revoked');
+      err.status = 401;
+      return client._buildErrorResponse(err);
+    };
+
+    const result = await client.generateWithRetry({ component: 'execution', purpose: 'agentic_loop' }, 3);
+
+    expect(calls).to.equal(1);
+    expect(result.hadError).to.equal(true);
+    expect(result.errorType).to.equal('authentication_error');
+    expect(result.retryable).to.equal(false);
+    expect(logs.some((line) => /Retry 1\/3/.test(line))).to.equal(false);
+    expect(logs.some((line) => /All retries exhausted/.test(line))).to.equal(false);
+    expect(logs.some((line) => line.includes(AUTH_REVOKED_WATCH_MESSAGE))).to.equal(true);
+  });
+
+  it('classifies SDK 401 without error.type as authentication_error, not unknown_error', () => {
+    const client = Object.create(AnthropicClient.prototype);
+    const err = new Error('OAuth access token has been revoked');
+    err.status = 401;
+    const built = client._buildErrorResponse(err);
+    expect(built.errorType).to.equal('authentication_error');
+    expect(built.errorType).to.not.equal('unknown_error');
+    expect(built.retryable).to.equal(false);
+    expect(isFatalAuthError(built)).to.equal(true);
   });
 });

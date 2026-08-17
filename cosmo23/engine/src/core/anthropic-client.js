@@ -15,6 +15,7 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const { getAnthropicApiKey, prepareSystemPrompt, isOAuthToken, getStealthHeaders } = require('../services/anthropic-oauth-engine');
 const { recordCompletionSpend } = require('./spend-meter');
+const { AUTH_REVOKED_WATCH_MESSAGE, isFatalAuthError } = require('../../../lib/auth-error');
 
 // HOME23 PATCH — current Sonnet 4.7 and Opus 4.8 models reject legacy sampling
 // params such as temperature and use adaptive thinking instead.
@@ -312,6 +313,20 @@ class AnthropicClient {
         const result = await this.generate(options);
         lastResult = result;
 
+        // Dead OAuth / 401 is fatal. Do not Retry 1/3 the same revoked token.
+        if (isFatalAuthError(result)) {
+          this.logger?.error?.(`[AnthropicClient] ${AUTH_REVOKED_WATCH_MESSAGE}`, {
+            component: options.component,
+            purpose: options.purpose,
+            errorType: result.errorType,
+            retryable: false
+          });
+          return result;
+        }
+        if (result.retryable === false) {
+          return result;
+        }
+
         // Success: non-empty content without error, OR tool calls present
         const hasContent = result.content && result.content.trim().length > 0 && !result.hadError;
         const hasToolCalls = result.output && result.output.length > 0;
@@ -354,6 +369,18 @@ class AnthropicClient {
           attempt: attempt + 1,
           error: error.message
         });
+
+        if (isFatalAuthError(error)) {
+          this.logger?.error?.(`[AnthropicClient] ${AUTH_REVOKED_WATCH_MESSAGE}`, {
+            component: options.component,
+            purpose: options.purpose,
+            retryable: false
+          });
+          return this._buildErrorResponse(error);
+        }
+        if (error.retryable === false) {
+          return this._buildErrorResponse(error);
+        }
 
         if (attempt === maxRetries - 1) {
           throw error;
@@ -989,6 +1016,10 @@ class AnthropicClient {
    * Build error response (matches GPT5Client format)
    */
   _buildErrorResponse(error) {
+    const authFatal = isFatalAuthError(error);
+    const errorType = authFatal
+      ? 'authentication_error'
+      : (error.type || error.error?.type || 'unknown_error');
     return {
       content: `[Error: ${error.message}]`,
       reasoning: null,
@@ -997,7 +1028,14 @@ class AnthropicClient {
       usage: { input_tokens: 0, output_tokens: 0 },
       output: null,
       hadError: true,
-      errorType: error.type || 'unknown_error'
+      errorType,
+      retryable: !authFatal,
+      error: {
+        message: error.message,
+        type: errorType,
+        retryable: !authFatal,
+        status: error.status || error.statusCode || null
+      }
     };
   }
 
