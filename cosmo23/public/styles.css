@@ -991,3 +991,53 @@ a { color: var(--info); }
   .cc-header { gap: 12px; }
   .drill-board-head { flex-direction: column; }
 }
+
+/* ── Parallel bits in flight ────────────────────────────────────────── */
+
+.worker-strip {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.worker-strip:empty { display: none; }
+
+.worker-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid rgba(232, 163, 61, 0.45);
+  border-radius: var(--radius-sm);
+  background: rgba(232, 163, 61, 0.07);
+  font-size: 0.76rem;
+}
+
+.worker-chip-id {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 1px 9px;
+  flex: none;
+  animation: cc-pulse 1.8s ease-in-out infinite;
+}
+
+.worker-chip-detail {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.phase-worker-chip {
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  color: var(--accent);
+  border: 1px solid rgba(232, 163, 61, 0.5);
+  border-radius: 999px;
+  padding: 0 7px;
+  margin-left: 8px;
+  vertical-align: middle;
+}
