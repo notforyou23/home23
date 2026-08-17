@@ -127,6 +127,7 @@ async function journalSearchSources(context, query, resultText) {
       query,
       urls,
       cycle: drill?.cycle ?? null,
+      workerId: drill?.workerId ?? null,
       goalNumber: drill?.goalNumber ?? null,
       phaseNumber: drill?.phaseNumber ?? null
     };
@@ -196,6 +197,7 @@ const extraExecutors = {
       at: Date.now(),
       source: 'launch_loop',
       cycle: drill?.cycle ?? null,
+      workerId: drill?.workerId ?? null,
       goalNumber: drill?.goalNumber ?? null,
       phaseNumber: drill?.phaseNumber ?? null,
       promoted: false

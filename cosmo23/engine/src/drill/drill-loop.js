@@ -7,15 +7,18 @@
  * specified. Cycles and time are how long the drill is allowed to run — they
  * are not the work. The work is:
  *
- *   invent / take a GOAL
- *     -> work it through its PHASES (each phase worked by the tool-loop bit)
- *     -> when the goal is done, CREATE THE NEXT GOAL
+ *   take / invent a GOAL
+ *     -> work its PHASES — open phases run IN PARALLEL, one worker per phase
+ *        (the proven tool loop is the bit)
+ *     -> the coordinator merges the phase results and, when the goal is
+ *        done, CREATES THE NEXT GOAL
  *     -> keep going until cycles or time are spent, or the human stops it
  *
- * One drill cycle = one descent of the bit: a worker tool loop (model sees
- * tools, decides, executes, loops) on the current phase. A worker finishing
+ * One drill cycle = one descent of one bit: a worker tool loop on one phase.
+ * Cycles and time bound the WHOLE drill, not each worker. A worker finishing
  * a writeup completes a phase or a hole — never the goal chain, never the
- * drill. Interactive is chat only. Query asks the Brain afterwards.
+ * drill. A slow worker never starves its siblings: the pool tops up as each
+ * bit settles. Interactive is chat only. Query asks the Brain afterwards.
  */
 
 const fs = require('fs');
@@ -24,32 +27,16 @@ const path = require('path');
 const crypto = require('crypto');
 
 const { LaunchLoop } = require('../agent/loop');
-const { FORBIDDEN_PLAN_PHRASES } = require('../agent/short-plan');
+const { DrillCoordinator } = require('./coordinator');
 const { RESEARCH_PRODUCT_LOOP } = require('../../../lib/research-launch');
 const { AUTH_REVOKED_WATCH_MESSAGE, isFatalAuthError } = require('../../../lib/auth-error');
 
 const DEFAULT_CYCLES = 80;
 const DEFAULT_WORKER_TURNS_PER_CYCLE = 24;
-const MAX_PHASES_PER_GOAL = 4;
+const DEFAULT_MAX_CONCURRENT = 3;
 
 function shortId(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`;
-}
-
-function extractJson(text) {
-  if (!text || typeof text !== 'string') return null;
-  try { return JSON.parse(text); } catch { /* fall through */ }
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start >= 0 && end > start) {
-    try { return JSON.parse(text.slice(start, end + 1)); } catch { /* fall through */ }
-  }
-  return null;
-}
-
-function containsForbiddenPhrase(value) {
-  const blob = JSON.stringify(value || '').toLowerCase();
-  return FORBIDDEN_PLAN_PHRASES.some((phrase) => blob.includes(phrase.toLowerCase()));
 }
 
 class DrillLoop {
@@ -61,6 +48,11 @@ class DrillLoop {
     this.plan = options.plan || null;
     this.createWorker = options.createWorker || ((args) => new LaunchLoop(args));
     this.now = options.now || (() => Date.now());
+    this.coordinator = options.coordinator || new DrillCoordinator({
+      client: this.client,
+      config: this.config,
+      logger: this.logger
+    });
 
     const drillConfig = this.config.drill || {};
     const cycles = Number(drillConfig.cycles ?? this.config.execution?.maxCycles);
@@ -74,6 +66,9 @@ class DrillLoop {
     this.workerTurnsPerCycle = Number(drillConfig.workerTurnsPerCycle) > 0
       ? Math.floor(Number(drillConfig.workerTurnsPerCycle))
       : DEFAULT_WORKER_TURNS_PER_CYCLE;
+    this.maxConcurrent = Number(drillConfig.maxConcurrent) > 0
+      ? Math.floor(Number(drillConfig.maxConcurrent))
+      : DEFAULT_MAX_CONCURRENT;
 
     // LaunchLoop-compatible surface (planner + status consumers read these).
     this.running = false;
@@ -91,8 +86,8 @@ class DrillLoop {
     this.startedAtMs = null;
     this.currentGoal = null;
     this.goalHistory = [];
-    this.currentWorker = null;
-    this.currentActivity = null;
+    this.lastMerge = null;
+    this.activeWorkers = new Map(); // workerId -> { workerId, worker, phase, goal, cycle, startedAt, settled, done }
     this.notesConsumedBytes = 0;
     this.candidatesHarvestedBytes = 0;
     this.brainWrites = 0;
@@ -141,7 +136,8 @@ class DrillLoop {
       productLoop: RESEARCH_PRODUCT_LOOP,
       question: this.question,
       cycles: this.cyclesTotal,
-      timeBudgetMinutes: this.timeBudgetMs ? this.timeBudgetMs / 60000 : null
+      timeBudgetMinutes: this.timeBudgetMs ? this.timeBudgetMs / 60000 : null,
+      maxConcurrent: this.maxConcurrent
     });
     this._promise = this.run().catch(async (err) => {
       if (isFatalAuthError(err)) {
@@ -159,8 +155,8 @@ class DrillLoop {
   stop() {
     this.running = false;
     if (this.mode === 'drilling') this.mode = 'stopped';
-    if (this.currentWorker && typeof this.currentWorker.stop === 'function') {
-      this.currentWorker.stop();
+    for (const entry of this.activeWorkers.values()) {
+      if (typeof entry.worker.stop === 'function') entry.worker.stop();
     }
     this.logger?.info?.('Drill stopped', { cyclesUsed: this.cyclesUsed, mode: this.mode });
   }
@@ -169,8 +165,9 @@ class DrillLoop {
     this.running = false;
     this.mode = 'error';
     this.fatalError = AUTH_REVOKED_WATCH_MESSAGE;
-    if (this.currentWorker && typeof this.currentWorker.stop === 'function') {
-      this.currentWorker.stop();
+    // One fatal auth error stops every bit — siblings included.
+    for (const entry of this.activeWorkers.values()) {
+      if (typeof entry.worker.stop === 'function') entry.worker.stop();
     }
     const detailText = typeof detail === 'string'
       ? detail
@@ -205,7 +202,7 @@ class DrillLoop {
     };
   }
 
-  // ── Budgets ────────────────────────────────────────────────────────────
+  // ── Budgets: they bound the WHOLE drill, not each worker ─────────────
 
   elapsedMs() {
     return this.startedAtMs === null ? 0 : Math.max(0, this.now() - this.startedAtMs);
@@ -233,6 +230,7 @@ class DrillLoop {
       mode: this.mode,
       doneReason: this.doneReason,
       fatalError: this.fatalError,
+      maxConcurrent: this.maxConcurrent,
       budgets: {
         cyclesTotal: this.cyclesTotal,
         cyclesUsed: this.cyclesUsed,
@@ -254,16 +252,26 @@ class DrillLoop {
           title: phase.title,
           status: phase.status,
           cyclesUsed: phase.cyclesUsed,
-          summary: phase.summary || null
+          summary: phase.summary || null,
+          workerId: this.workerOnPhase(phase)?.workerId || null
         }))
       } : null,
       goalHistory: this.goalHistory.slice(-10).map((goal) => ({
         number: goal.number,
         title: goal.title,
         status: goal.status,
-        completedAt: goal.completedAt || null
+        completedAt: goal.completedAt || null,
+        mergedSummary: goal.mergedSummary ? String(goal.mergedSummary).slice(0, 240) : null
       })),
-      currentActivity: this.currentActivity,
+      activeWorkers: [...this.activeWorkers.values()].map((entry) => ({
+        workerId: entry.workerId,
+        cycle: entry.cycle,
+        goalNumber: entry.goal.number,
+        phaseNumber: entry.phase.number,
+        phaseTitle: entry.phase.title,
+        startedAt: entry.startedAt,
+        turns: Number(entry.worker.turns) || 0
+      })),
       counts: {
         goalsCompleted: this.goalHistory.filter((goal) => goal.status === 'completed').length,
         brainWrites: this.brainWrites
@@ -272,6 +280,13 @@ class DrillLoop {
       startedAt: this.startedAtMs,
       updatedAt: this.now()
     };
+  }
+
+  workerOnPhase(phase) {
+    for (const entry of this.activeWorkers.values()) {
+      if (entry.phase === phase) return entry;
+    }
+    return null;
   }
 
   emitEvent(type, payload = {}) {
@@ -303,7 +318,7 @@ class DrillLoop {
     }
   }
 
-  // ── The drill run ──────────────────────────────────────────────────────
+  // ── The drill run: a rolling pool of bits ──────────────────────────────
 
   async run() {
     await this.loadResumableState();
@@ -311,23 +326,27 @@ class DrillLoop {
       question: this.question,
       cyclesTotal: this.cyclesTotal,
       timeBudgetMs: this.timeBudgetMs,
+      maxConcurrent: this.maxConcurrent,
       resumedGoal: this.currentGoal ? this.currentGoal.number : null
     });
     this.emitEvent('drill_started', {
       question: this.question,
       cycles: this.cyclesTotal,
-      timeBudgetMs: this.timeBudgetMs
+      timeBudgetMs: this.timeBudgetMs,
+      maxConcurrent: this.maxConcurrent,
+      message: `Drill started: up to ${this.maxConcurrent} workers in parallel`
     });
     await this.persistState();
 
     while (this.running) {
       const exhausted = this.budgetExhaustedReason();
-      if (exhausted) {
+
+      if (exhausted && this.activeWorkers.size === 0) {
         await this.finishDrill(exhausted);
         return;
       }
 
-      if (!this.currentGoal || this.currentGoal.status === 'completed') {
+      if (!exhausted && (!this.currentGoal || this.currentGoal.status === 'completed')) {
         const previous = this.currentGoal;
         const goal = await this.nextGoal(previous);
         if (!goal) {
@@ -341,20 +360,45 @@ class DrillLoop {
         });
         this.emitEvent('drill_goal_created', {
           number: goal.number, title: goal.title, phases: goal.phases.length,
-          message: `Goal ${goal.number}: ${goal.title}`
+          message: `Goal ${goal.number}: ${goal.title} (${goal.phases.length} phases)`
         });
         await this.persistState();
         continue;
       }
 
-      const phase = this.currentGoal.phases.find((entry) => entry.status !== 'done');
-      if (!phase) {
-        await this.completeGoal(this.currentGoal);
-        continue;
+      if (this.currentGoal && this.currentGoal.status !== 'completed') {
+        const openPhases = this.currentGoal.phases.filter(
+          (phase) => phase.status !== 'done' && !this.workerOnPhase(phase)
+        );
+
+        if (openPhases.length === 0 && this.activeWorkers.size === 0) {
+          await this.mergeAndCompleteGoal(this.currentGoal);
+          continue;
+        }
+
+        // Top up the pool: the coordinator assigns open phases to free
+        // slots. A slow worker never starves its siblings — every settle
+        // reopens this top-up.
+        if (!exhausted) {
+          const slots = this.maxConcurrent - this.activeWorkers.size;
+          const assigned = this.coordinator.assignPhases(openPhases, slots);
+          for (const phase of assigned) {
+            if (this.budgetExhaustedReason()) break;
+            await this.launchWorker(this.currentGoal, phase);
+          }
+        }
       }
 
-      await this.runCycle(this.currentGoal, phase);
-      if (this.fatalError) return;
+      if (this.activeWorkers.size === 0) {
+        await this.finishDrill(this.budgetExhaustedReason() || 'no_launchable_work');
+        return;
+      }
+
+      // Wait for the FIRST bit to settle, then loop: settle, harvest,
+      // top up. Never wait for the slowest.
+      await Promise.race([...this.activeWorkers.values()].map((entry) => entry.settled));
+      const fatal = await this.settleFinishedWorkers();
+      if (fatal) return;
       await this.persistState();
     }
 
@@ -393,45 +437,29 @@ class DrillLoop {
       if (Array.isArray(saved?.goalHistory)) {
         this.goalHistory = saved.goalHistory.map((goal) => ({
           number: goal.number, title: goal.title, status: goal.status || 'completed',
-          completedAt: goal.completedAt || null
+          completedAt: goal.completedAt || null, mergedSummary: goal.mergedSummary || null
         }));
       }
     } catch { /* fresh run */ }
   }
 
-  // ── Goals ──────────────────────────────────────────────────────────────
+  // ── Goals: the coordinator composes, merges, and chains ───────────────
 
   async nextGoal(previousGoal) {
     const number = previousGoal ? previousGoal.number + 1 : (this.goalHistory.length + 1);
     const origin = previousGoal || this.goalHistory.length > 0 ? 'chain' : 'seed';
 
-    let spec = null;
-    try {
-      spec = await this.composeGoalSpec({ previousGoal, number, origin });
-    } catch (err) {
-      if (isFatalAuthError(err)) throw err;
-      this.logger?.warn?.('Goal generation failed — using deterministic fallback', { error: err.message });
-    }
-
-    if (!spec) {
-      // Degraded-honest fallback: the drill keeps drilling on the question
-      // rather than dying because one planning call failed.
-      this.degradedGoalGeneration = true;
-      spec = {
-        title: origin === 'seed'
-          ? this.question
-          : `Go deeper on ${this.question} (round ${number})`,
-        why: origin === 'seed'
-          ? 'Seed goal from the launch question.'
-          : 'Continue the drill beyond completed rounds without repeating finished work.',
-        phases: [{
-          title: origin === 'seed' ? 'Research and write up' : `Deepen round ${number}`,
-          mission: origin === 'seed'
-            ? `${this.question}${this.questionContext ? ` — ${this.questionContext}` : ''}`
-            : `Advance the research on "${this.question}" beyond what earlier goals covered. Do not repeat completed work. Find what is missing, verify what is weak, and write it up.`
-        }]
-      };
-    }
+    const { spec, degraded } = await this.coordinator.composeGoal({
+      question: this.question,
+      questionContext: this.questionContext,
+      previousGoal,
+      goalHistory: this.goalHistory,
+      number,
+      origin,
+      mergedSummary: this.lastMerge?.summary || null
+    });
+    if (degraded) this.degradedGoalGeneration = true;
+    if (!spec) return null;
 
     return {
       id: shortId('goal'),
@@ -441,7 +469,7 @@ class DrillLoop {
       origin,
       status: 'active',
       previousGoalId: previousGoal?.id || null,
-      phases: spec.phases.slice(0, MAX_PHASES_PER_GOAL).map((phase, index) => ({
+      phases: spec.phases.map((phase, index) => ({
         id: shortId('phase'),
         number: index + 1,
         title: phase.title,
@@ -454,71 +482,20 @@ class DrillLoop {
     };
   }
 
-  async composeGoalSpec({ previousGoal, number, origin }) {
-    if (!this.client || typeof this.client.createCompletion !== 'function') return null;
-
-    const completedSummaries = this.goalHistory
-      .filter((goal) => goal.status === 'completed')
-      .slice(-5)
-      .map((goal) => `- Goal ${goal.number}: ${goal.title}`);
-    const previousPhases = previousGoal
-      ? previousGoal.phases.map((phase) => `- ${phase.title}: ${String(phase.summary || 'done').slice(0, 160)}`)
-      : [];
-
-    const system = [
-      'You are Cosmo, an autonomous research drill. You define research GOALS with concrete PHASES.',
-      'A goal is one round of the drill; each phase is one hole the tool-loop worker drills',
-      '(searching, reading, verifying, writing artifacts). Rules:',
-      '- 1 to 4 phases, each a concrete executable mission, not a vague theme.',
-      '- Never tell the worker to review or inventory what is already here.',
-      '- Never repeat completed work; go deeper, wider, or into what is missing.',
-      'Reply as JSON only: {"title":"...","why":"...","phases":[{"title":"...","mission":"..."}]}'
-    ].join('\n');
-
-    const user = [
-      `Research question: ${this.question}`,
-      this.questionContext ? `Context: ${this.questionContext}` : null,
-      origin === 'seed'
-        ? 'Define the FIRST goal of the drill.'
-        : `Goal ${number - 1} is complete. Define goal ${number} — the NEXT goal that advances the research.`,
-      completedSummaries.length ? `Completed goals so far:\n${completedSummaries.join('\n')}` : null,
-      previousPhases.length ? `Phases just completed:\n${previousPhases.join('\n')}` : null
-    ].filter(Boolean).join('\n\n');
-
-    const response = await this.client.createCompletion({
-      model: this.config.models?.fast || this.config.models?.primary,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user }
-      ],
-      temperature: 0.5,
-      maxTokens: 900
-    });
-    if (isFatalAuthError(response)) {
-      const err = new Error('Goal generation failed: authentication_error');
-      err.type = 'authentication_error';
-      throw err;
+  async mergeAndCompleteGoal(goal) {
+    const findings = await this.recentFindings(12);
+    let merge;
+    try {
+      merge = await this.coordinator.mergeGoal(goal, { findings });
+    } catch (err) {
+      if (isFatalAuthError(err)) {
+        await this.stopFatalAuth(err);
+        return;
+      }
+      merge = { summary: goal.phases.map((phase) => phase.summary || phase.title).join('\n'), gaps: [], degraded: true };
     }
-
-    const parsed = extractJson(response?.choices?.[0]?.message?.content);
-    if (!parsed?.title || !Array.isArray(parsed.phases) || parsed.phases.length === 0) return null;
-    if (containsForbiddenPhrase(parsed)) {
-      this.logger?.warn?.('Goal spec contained a forbidden review-what-is-here phrase — rejected');
-      return null;
-    }
-    const phases = parsed.phases.filter((phase) => phase?.title || phase?.mission);
-    if (phases.length === 0) return null;
-    return {
-      title: String(parsed.title),
-      why: parsed.why ? String(parsed.why) : null,
-      phases: phases.map((phase) => ({
-        title: String(phase.title || phase.mission),
-        mission: String(phase.mission || phase.title)
-      }))
-    };
-  }
-
-  async completeGoal(goal) {
+    this.lastMerge = merge;
+    goal.mergedSummary = merge.summary;
     goal.status = 'completed';
     goal.completedAt = this.now();
     this.goalHistory.push({
@@ -526,7 +503,15 @@ class DrillLoop {
       title: goal.title,
       status: 'completed',
       completedAt: goal.completedAt,
+      mergedSummary: merge.summary,
       phases: goal.phases.map((phase) => ({ title: phase.title, summary: phase.summary }))
+    });
+    await this.journal('goal_merged', {
+      goalId: goal.id,
+      number: goal.number,
+      summary: String(merge.summary).slice(0, 600),
+      gaps: merge.gaps,
+      degraded: merge.degraded === true
     });
     await this.journal('goal_completed', {
       goalId: goal.id, number: goal.number, title: goal.title,
@@ -535,42 +520,53 @@ class DrillLoop {
     this.emitEvent('drill_goal_complete', {
       number: goal.number,
       title: goal.title,
-      message: `Goal ${goal.number} complete: ${goal.title} — creating the next goal`
+      message: `Goal ${goal.number} complete: ${goal.title} — merged ${goal.phases.length} phases, creating the next goal`
     });
     await this.persistState();
   }
 
-  // ── Cycles: the bit descends ───────────────────────────────────────────
+  async recentFindings(limit) {
+    try {
+      const raw = await fsp.readFile(path.join(this.runtimePath, 'outputs', 'candidates', 'findings.jsonl'), 'utf8');
+      return raw.trim().split('\n').filter(Boolean).slice(-limit).map((line) => {
+        try { return JSON.parse(line).content || null; } catch { return null; }
+      }).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
 
-  async runCycle(goal, phase) {
+  // ── Cycles: bits descend in parallel ───────────────────────────────────
+
+  async launchWorker(goal, phase) {
     this.cyclesUsed += 1;
+    const cycle = this.cyclesUsed;
+    const workerId = `w${cycle}`;
     phase.status = 'active';
     phase.cyclesUsed += 1;
-    const cycle = this.cyclesUsed;
 
     const notes = await this.consumeNotes();
-    this.currentActivity = {
+    const siblings = this.currentGoal.phases
+      .filter((entry) => entry !== phase && this.workerOnPhase(entry))
+      .map((entry) => entry.title);
+
+    await this.journal('cycle_started', {
       cycle,
+      workerId,
+      goalId: goal.id,
       goalNumber: goal.number,
-      goalTitle: goal.title,
       phaseNumber: phase.number,
       phaseTitle: phase.title,
-      startedAt: this.now()
-    };
-    await this.journal('cycle_started', {
-      cycle, goalId: goal.id, goalNumber: goal.number,
-      phaseNumber: phase.number, phaseTitle: phase.title,
+      parallelWith: siblings,
       notes: notes.map((note) => note.text)
     });
     this.emitEvent('drill_cycle_start', {
       cycle,
+      workerId,
       remainingCycles: this.remainingCycles(),
       remainingMs: this.remainingMs(),
-      message: `Cycle ${cycle}: goal ${goal.number} phase ${phase.number} — ${phase.title}`
+      message: `Cycle ${cycle} (${workerId}): goal ${goal.number} phase ${phase.number} — ${phase.title}${siblings.length ? ` (parallel with ${siblings.length} other phase${siblings.length > 1 ? 's' : ''})` : ''}`
     });
-    await this.persistState();
-
-    const candidatesBefore = await this.candidatesLength();
 
     const worker = this.createWorker({
       orchestrator: this.orchestrator,
@@ -578,59 +574,90 @@ class DrillLoop {
       logger: this.logger,
       client: this.client,
       maxTurns: this.workerTurnsPerCycle,
-      plan: { shortPlan: this.buildPhaseMission(goal, phase, notes) },
-      drill: { cycle, goalId: goal.id, goalNumber: goal.number, phaseNumber: phase.number }
+      plan: { shortPlan: this.buildPhaseMission(goal, phase, notes, siblings) },
+      drill: { cycle, workerId, goalId: goal.id, goalNumber: goal.number, phaseNumber: phase.number }
     });
-    this.currentWorker = worker;
-    worker.start();
-    if (worker._promise) await worker._promise;
-    this.currentWorker = null;
 
-    this.turns += Math.max(1, Number(worker.turns) || 0);
-
-    if (worker.fatalError) {
-      await this.stopFatalAuth(worker.fatalError);
-      return;
-    }
-
-    const harvested = await this.harvestCandidates(candidatesBefore, { goal, phase, cycle });
-
-    if (worker.finished) {
-      // The worker finished ITS hole: the phase is done. The drill continues.
-      phase.status = 'done';
-      phase.summary = worker.finishSummary || 'done';
-      this.emitEvent('drill_phase_complete', {
-        cycle,
-        goalNumber: goal.number,
-        phaseNumber: phase.number,
-        message: `Phase ${phase.number} of goal ${goal.number} done: ${String(worker.finishSummary || '').slice(0, 160)}`
-      });
-    } else {
-      this.emitEvent('drill_phase_continues', {
-        cycle,
-        goalNumber: goal.number,
-        phaseNumber: phase.number,
-        message: `Phase ${phase.number} of goal ${goal.number} continues next cycle`
-      });
-    }
-
-    await this.journal('cycle_completed', {
+    const entry = {
+      workerId,
+      worker,
+      phase,
+      goal,
       cycle,
-      goalNumber: goal.number,
-      phaseNumber: phase.number,
-      workerFinished: worker.finished === true,
-      workerTurns: worker.turns,
-      workerSummary: worker.finishSummary || null,
-      candidatesHarvested: harvested
-    });
+      startedAt: this.now(),
+      done: false,
+      settled: null
+    };
+    worker.start();
+    entry.settled = Promise.resolve(worker._promise)
+      .catch(() => {})
+      .then(() => { entry.done = true; });
+    this.activeWorkers.set(workerId, entry);
+    await this.persistState();
+    return entry;
   }
 
-  buildPhaseMission(goal, phase, notes) {
+  async settleFinishedWorkers() {
+    for (const [workerId, entry] of [...this.activeWorkers.entries()]) {
+      if (!entry.done) continue;
+      this.activeWorkers.delete(workerId);
+
+      const { worker, phase, goal, cycle } = entry;
+      this.turns += Math.max(1, Number(worker.turns) || 0);
+
+      if (worker.fatalError) {
+        await this.stopFatalAuth(worker.fatalError);
+        return true;
+      }
+
+      const harvested = await this.harvestCandidates();
+
+      if (worker.finished) {
+        // The worker finished ITS hole: the phase is done. The drill and
+        // its sibling bits keep going.
+        phase.status = 'done';
+        phase.summary = worker.finishSummary || 'done';
+        this.emitEvent('drill_phase_complete', {
+          cycle,
+          workerId,
+          goalNumber: goal.number,
+          phaseNumber: phase.number,
+          message: `${workerId} done — phase ${phase.number} of goal ${goal.number}: ${String(worker.finishSummary || '').slice(0, 140)}`
+        });
+      } else {
+        phase.status = 'pending';
+        this.emitEvent('drill_phase_continues', {
+          cycle,
+          workerId,
+          goalNumber: goal.number,
+          phaseNumber: phase.number,
+          message: `${workerId} paused — phase ${phase.number} of goal ${goal.number} continues in a later cycle`
+        });
+      }
+
+      await this.journal('cycle_completed', {
+        cycle,
+        workerId,
+        goalNumber: goal.number,
+        phaseNumber: phase.number,
+        workerFinished: worker.finished === true,
+        workerTurns: worker.turns,
+        workerSummary: worker.finishSummary || null,
+        candidatesHarvested: harvested
+      });
+    }
+    return false;
+  }
+
+  buildPhaseMission(goal, phase, notes, siblings = []) {
     const constraints = [];
     if (this.questionContext) constraints.push(this.questionContext);
     constraints.push(`Goal ${goal.number}: ${goal.title}${goal.why ? ` — ${goal.why}` : ''}`);
     if (goal.phases.length > 1) {
       constraints.push(`This is phase ${phase.number} of ${goal.phases.length}: ${phase.title}`);
+    }
+    if (siblings.length > 0) {
+      constraints.push(`Phases running in parallel right now: ${siblings.join('; ')}. Stay in YOUR phase's lane — do not duplicate their work.`);
     }
     const doneSummaries = goal.phases
       .filter((entry) => entry.status === 'done' && entry.summary)
@@ -686,11 +713,13 @@ class DrillLoop {
   }
 
   /**
-   * After each cycle, journaled candidates from the bit are written into the
-   * run's Brain so Query has something real to ask. Degraded-honest: a
-   * failed embed/write leaves the candidate journaled on disk.
+   * On every settle, journaled candidates are written into the run's Brain.
+   * Parallel bits interleave in the journal, so each row's OWN provenance
+   * (cycle / goal / phase / worker) is what reaches the Brain — never the
+   * provenance of whichever worker happened to settle last. Degraded-honest:
+   * a failed embed/write leaves the candidate journaled on disk.
    */
-  async harvestCandidates(fromByte, { goal, phase, cycle }) {
+  async harvestCandidates() {
     const memory = this.orchestrator?.memory;
     let raw;
     try {
@@ -698,7 +727,7 @@ class DrillLoop {
     } catch {
       return 0;
     }
-    const fresh = raw.slice(Math.max(fromByte, this.candidatesHarvestedBytes));
+    const fresh = raw.slice(this.candidatesHarvestedBytes);
     this.candidatesHarvestedBytes = raw.length;
     if (!fresh.trim()) return 0;
 
@@ -713,9 +742,10 @@ class DrillLoop {
         try {
           await memory.addNode(row.content, 'drill_finding', null, {
             source: 'drill',
-            cycle,
-            goalNumber: goal.number,
-            phaseNumber: phase.number
+            cycle: row.cycle ?? null,
+            workerId: row.workerId ?? null,
+            goalNumber: row.goalNumber ?? null,
+            phaseNumber: row.phaseNumber ?? null
           });
           this.brainWrites += 1;
         } catch (err) {
@@ -762,4 +792,4 @@ class DrillLoop {
   }
 }
 
-module.exports = { DrillLoop, DEFAULT_CYCLES, DEFAULT_WORKER_TURNS_PER_CYCLE };
+module.exports = { DrillLoop, DEFAULT_CYCLES, DEFAULT_WORKER_TURNS_PER_CYCLE, DEFAULT_MAX_CONCURRENT };
