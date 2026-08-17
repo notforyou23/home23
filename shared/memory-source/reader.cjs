@@ -434,10 +434,16 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
         signal: options.signal,
       })) {
         throwIfAborted(options.signal);
-        if (overlay.hasRemovedEdge(record) || overlay.hasRemovedNode(record.source)
-            || overlay.hasRemovedNode(record.target)) continue;
-        if (overlay.hasEdgeUpsert(record)) continue;
-        yield Object.freeze({ ...record });
+        const normalizedRecord = Object.freeze({
+          ...record,
+          source: normalizeId(record.source ?? record.from),
+          target: normalizeId(record.target ?? record.to),
+        });
+        if (overlay.hasRemovedEdge(normalizedRecord)
+            || overlay.hasRemovedNode(normalizedRecord.source)
+            || overlay.hasRemovedNode(normalizedRecord.target)) continue;
+        if (overlay.hasEdgeUpsert(normalizedRecord)) continue;
+        yield normalizedRecord;
       }
       for await (const record of overlay.iterateEdgeUpserts({ signal: options.signal })) {
         if (!overlay.hasRemovedNode(record.source) && !overlay.hasRemovedNode(record.target)) yield record;

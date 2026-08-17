@@ -212,6 +212,89 @@ test('projects base plus ordered delta upserts and tombstones at one pinned revi
   await source.close();
 });
 
+test('normalizes base edge endpoints to yielded node ID strings for engine-compatible lookups', async (t) => {
+  const fixture = await createManifestFixture({
+    nodes: [
+      { id: 1, concept: 'numeric node' },
+      { id: '2', concept: 'string node' },
+      { id: 3, concept: 'second numeric node' },
+    ],
+    edges: [
+      {
+        source: 1,
+        target: '2',
+        weight: 0.5,
+        type: 'canonical-endpoints',
+        metadata: { origin: 'base' },
+      },
+      {
+        from: '2',
+        to: 3,
+        weight: 0.75,
+        type: 'alias-endpoints',
+        created: '2026-08-17T00:00:00.000Z',
+      },
+    ],
+    delta: [],
+    currentRevision: 2,
+    summary: { nodeCount: 3, edgeCount: 2, clusterCount: 0 },
+  });
+  t.after(() => fsp.rm(fixture.dir, { recursive: true, force: true }));
+  const source = await openMemorySource(fixture.dir);
+  t.after(() => source.close());
+
+  const nodes = await collect(source.iterateNodes());
+  const edges = await collect(source.iterateEdges());
+
+  assert.deepEqual(nodes.map((node) => [node.id, typeof node.id]), [
+    ['1', 'string'],
+    ['2', 'string'],
+    ['3', 'string'],
+  ]);
+  assert.deepEqual(edges, [
+    {
+      source: '1',
+      target: '2',
+      weight: 0.5,
+      type: 'canonical-endpoints',
+      metadata: { origin: 'base' },
+    },
+    {
+      from: '2',
+      to: 3,
+      weight: 0.75,
+      type: 'alias-endpoints',
+      created: '2026-08-17T00:00:00.000Z',
+      source: '2',
+      target: '3',
+    },
+  ]);
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  assert.equal(
+    edges.filter((edge) => nodesById.has(edge.source) && nodesById.has(edge.target)).length,
+    edges.length,
+  );
+});
+
+test('rejects base edges with invalid endpoints as an unavailable source', async (t) => {
+  const fixture = await createManifestFixture({
+    nodes: [{ id: 1, concept: 'valid node' }],
+    edges: [{ source: 1, weight: 0.5 }],
+    delta: [],
+    currentRevision: 2,
+    summary: { nodeCount: 1, edgeCount: 1, clusterCount: 0 },
+  });
+  t.after(() => fsp.rm(fixture.dir, { recursive: true, force: true }));
+  const source = await openMemorySource(fixture.dir);
+  t.after(() => source.close());
+
+  await assert.rejects(() => collect(source.iterateEdges()), {
+    code: 'source_unavailable',
+    retryable: true,
+  });
+  assert.equal(source.getEvidence().sourceHealth, 'unavailable');
+});
+
 test('manifest delta loading uses bounded durable batches instead of one quota cycle per record', async () => {
   const entryCount = 32;
   const delta = Array.from({ length: entryCount }, (_, index) => ({
