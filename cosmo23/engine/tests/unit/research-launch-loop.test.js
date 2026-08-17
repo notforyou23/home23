@@ -20,7 +20,7 @@ const {
   FORBIDDEN_PLAN_PHRASES
 } = require('../../src/agent/short-plan');
 const { LaunchLoop } = require('../../src/agent/loop');
-const { tools, INTERACTIVE_ONLY, executeTool } = require('../../src/agent/tools');
+const { tools, INTERACTIVE_ONLY, executeTool, toChatTools, uniqueToolsByName } = require('../../src/agent/tools');
 const { GuidedModePlanner } = require('../../src/core/guided-mode-planner');
 const { PlanExecutor } = require('../../src/core/plan-executor');
 const AnthropicClient = require('../../src/core/anthropic-client');
@@ -282,6 +282,26 @@ describe('Research Launch loop and harness', () => {
     }
   });
 
+  it('toChatTools has unique function names and exactly one web_search', () => {
+    const chatTools = toChatTools();
+    const names = chatTools.map((tool) => tool.function.name);
+    expect(new Set(names).size).to.equal(names.length);
+    expect(names.filter((name) => name === 'web_search')).to.have.length(1);
+    expect(names.filter((name) => name === 'coding_run')).to.have.length(1);
+  });
+
+  it('dedupes research tools by name when the imported list already has web_search', () => {
+    const deduped = uniqueToolsByName([
+      { name: 'web_search', description: 'first' },
+      { name: 'read_file' },
+      { name: 'web_search', description: 'second' },
+      { name: 'coding_run' },
+      { name: 'coding_run' }
+    ]);
+    expect(deduped.map((tool) => tool.name)).to.deep.equal(['web_search', 'read_file', 'coding_run']);
+    expect(deduped[0].description).to.equal('first');
+  });
+
   it('runs a model turn that calls tools and can finish', async () => {
     const calls = [];
     const loop = new LaunchLoop({
@@ -485,6 +505,34 @@ describe('Fatal Anthropic OAuth / 401', () => {
     expect(loop.fatalError).to.equal(null);
     expect(loop.finished).to.equal(true);
     expect(calls).to.equal(2);
+  });
+
+  it('does not retry hadError authentication_error — fail closed after one attempt', async () => {
+    const logs = [];
+    let calls = 0;
+    const client = Object.create(AnthropicClient.prototype);
+    client.logger = {
+      info: (message) => logs.push(String(message)),
+      warn: (message) => logs.push(String(message)),
+      error: (message) => logs.push(String(message)),
+      debug: () => {}
+    };
+    client.generate = async () => {
+      calls += 1;
+      return {
+        content: '[Error: OAuth access token has been revoked]',
+        hadError: true,
+        errorType: 'authentication_error',
+        retryable: false
+      };
+    };
+
+    const result = await client.generateWithRetry({ component: 'execution', purpose: 'agentic_loop' }, 3);
+
+    expect(calls).to.equal(1);
+    expect(result.errorType).to.equal('authentication_error');
+    expect(logs.some((line) => /Retry 1\/3/.test(line))).to.equal(false);
+    expect(logs.some((line) => /All retries exhausted/.test(line))).to.equal(false);
   });
 
   it('AnthropicClient does not Retry 1/3 a revoked OAuth token', async () => {

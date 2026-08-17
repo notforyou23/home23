@@ -20,6 +20,18 @@ const INTERACTIVE_ONLY = new Set([
   'get_executive_state'
 ]);
 
+function uniqueToolsByName(list) {
+  const seen = new Set();
+  const unique = [];
+  for (const tool of list) {
+    const name = tool?.name;
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    unique.push(tool);
+  }
+  return unique;
+}
+
 const extraTools = [
   {
     name: 'web_search',
@@ -95,10 +107,10 @@ const extraTools = [
   }
 ];
 
-const tools = [
+const tools = uniqueToolsByName([
   ...interactiveTools.filter((tool) => !INTERACTIVE_ONLY.has(tool.name)),
   ...extraTools
-];
+]);
 
 const extraExecutors = {
   async web_search(args, context) {
@@ -276,7 +288,7 @@ async function executeTool(name, args, context) {
 }
 
 function toChatTools() {
-  return tools.map((tool) => ({
+  return uniqueToolsByName(tools).map((tool) => ({
     type: 'function',
     function: {
       name: tool.name,
@@ -290,5 +302,6 @@ module.exports = {
   tools,
   executeTool,
   toChatTools,
+  uniqueToolsByName,
   INTERACTIVE_ONLY
 };
