@@ -1,9 +1,12 @@
 'use strict';
 
 /**
- * Cosmo research Launch tool loop.
- * The model sees Cosmo tools, calls them, and writes into the run/Brain.
- * This is not Interactive chat.
+ * Cosmo research worker tool loop.
+ * The model sees Cosmo tools, calls them, decides, executes, loops — the
+ * proven one-agent shape. It is a WORKER inside the research ecology, not
+ * the whole product: its `finish` completes this worker's mission only.
+ * Workers emit candidates; they never write canonical Brain state, and a
+ * worker finishing never settles the run. This is not Interactive chat.
  */
 
 const { tools, executeTool, toChatTools } = require('./tools');
@@ -19,6 +22,9 @@ class LaunchLoop {
     this.logger = options.logger || console;
     this.client = options.client || null;
     this.plan = options.plan || null;
+    // Expedition context set by the ecology: { id, lane, questionId }.
+    // Candidates journaled by this worker carry this provenance.
+    this.expedition = options.expedition || null;
     this.maxTurns = Number(options.maxTurns) > 0 ? Number(options.maxTurns) : DEFAULT_MAX_TURNS;
     this.messages = [];
     this.running = false;
@@ -67,6 +73,9 @@ class LaunchLoop {
   }
 
   markFinished(summary) {
+    // Worker-level completion proposal: this worker's mission is done.
+    // The ecology decides what that means; it does not settle the run and
+    // it does not close the question.
     this.finished = true;
     this.finishSummary = summary || 'done';
     this.running = false;

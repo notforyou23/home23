@@ -95,7 +95,7 @@ const extraTools = [
   },
   {
     name: 'finish',
-    description: 'Mark the research run complete after the deliverable is written.',
+    description: 'Mark THIS worker\'s deliverable complete. The research run continues while lanes, questions, and cycles remain.',
     parameters: {
       type: 'object',
       properties: {
@@ -158,12 +158,20 @@ const extraExecutors = {
       || process.cwd();
     const dir = path.join(runtimePath, 'outputs', 'candidates');
     await fs.mkdir(dir, { recursive: true });
+    // Provenance: which expedition/lane/question emitted this candidate.
+    // Workers emit typed candidates; they never write canonical Brain state.
+    const expedition = context.loop?.expedition || null;
     const entry = {
+      id: `cand_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
       type: 'candidate_finding',
       content,
       tag,
       at: Date.now(),
       source: 'launch_loop',
+      origin: 'worker',
+      lane: expedition?.lane || null,
+      expeditionId: expedition?.id || null,
+      questionId: expedition?.questionId || null,
       promoted: false
     };
     await fs.appendFile(path.join(dir, 'findings.jsonl'), `${JSON.stringify(entry)}\n`);
