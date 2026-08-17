@@ -3,13 +3,14 @@
 /**
  * Cosmo research Launch contract.
  *
- * Launch starts a research RUN. Watch is the run. Query asks the Brain later.
- * Interactive is a CHAT ADD-ON on the desk. It is not Cosmo research.
- * Launch and Continue never route into Interactive.
+ * Launch starts a DRILL: goal -> phases -> next goal, for the cycles or
+ * time set. The control center's drill board is the run surface. Query asks
+ * the Brain later. Interactive is a CHAT ADD-ON on the desk. It is not
+ * Cosmo research. Launch and Continue never route into Interactive.
  */
 
 const RESEARCH_PRODUCT_LOOP = 'research';
-const RESEARCH_LAUNCH_VIEW = 'watch';
+const RESEARCH_LAUNCH_VIEW = 'drill';
 const INTERACTIVE_PRODUCT_LOOP = 'interactive';
 
 function launchDestination() {

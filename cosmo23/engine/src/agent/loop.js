@@ -1,9 +1,11 @@
 'use strict';
 
 /**
- * Cosmo research Launch tool loop.
- * The model sees Cosmo tools, calls them, and writes into the run/Brain.
- * This is not Interactive chat.
+ * Cosmo research worker tool loop — the drill bit.
+ * The model sees Cosmo tools, calls them, decides, executes, loops.
+ * It is one descent of the drill, not the drill: its `finish` completes
+ * this worker's phase, and the drill keeps going until cycles or time are
+ * spent or the human stops it. This is not Interactive chat.
  */
 
 const { tools, executeTool, toChatTools } = require('./tools');
@@ -19,6 +21,10 @@ class LaunchLoop {
     this.logger = options.logger || console;
     this.client = options.client || null;
     this.plan = options.plan || null;
+    // Drill context set by the DrillLoop: { cycle, goalId, goalNumber,
+    // phaseNumber }. Candidates and sources journaled by this worker carry
+    // this provenance.
+    this.drill = options.drill || null;
     this.maxTurns = Number(options.maxTurns) > 0 ? Number(options.maxTurns) : DEFAULT_MAX_TURNS;
     this.messages = [];
     this.running = false;
@@ -67,6 +73,8 @@ class LaunchLoop {
   }
 
   markFinished(summary) {
+    // Worker-level completion: this bit's phase is done. The drill decides
+    // what happens next — a worker finishing is never the end of the run.
     this.finished = true;
     this.finishSummary = summary || 'done';
     this.running = false;
