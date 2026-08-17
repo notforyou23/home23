@@ -116,6 +116,19 @@ Important:
 4. Use Watch to follow the active run and open the dashboard.
 5. Use Query to work against finished local brains or imported reference brains.
 
+A research Launch starts the full research ecology, not one agent that
+writes a document and stops. The seed question is yours; after that the
+ecology writes its own next questions. Every run keeps four lanes alive —
+Directed, Adjacent, Wildcard, and Incubation — as allocations of the run's
+cognitive budget (autonomous exploration cannot silently decay to zero).
+Workers are tool loops that journal candidate findings; the Brain changes
+only at promotion. Sleep/dream is a real transaction that consolidates
+candidates, generates dream hypotheses, and wakes with a briefing. A worker
+finishing its deliverable does not end the run; the run settles when the
+Principal proposes it or the budget is spent, and the settled Brain stays
+fully queryable with no process left running. The Watch view shows the
+ecology: mode, lanes, questions, and sleep/dream state.
+
 The Query tab includes the EVOBREW-style Research surface with:
 
 - normal query and streaming query
