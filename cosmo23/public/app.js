@@ -494,14 +494,17 @@ class CosmoStandaloneApp {
     for (const phase of goal?.phases || []) {
       const item = document.createElement('li');
       item.className = `phase-item phase-${phase.status}`;
+      const workerChip = phase.workerId
+        ? `<span class="phase-worker-chip">${escapeHtml(phase.workerId)}</span>`
+        : '';
       item.innerHTML = `
         <span class="phase-marker"></span>
         <div class="phase-body">
-          <strong>${escapeHtml(phase.title)}</strong>
+          <strong>${escapeHtml(phase.title)}${workerChip}</strong>
           ${phase.status === 'done' && phase.summary
             ? `<small>${escapeHtml(String(phase.summary).slice(0, 140))}</small>`
             : phase.status === 'active'
-              ? '<small>drilling this phase now</small>'
+              ? `<small>${phase.workerId ? `worker ${escapeHtml(phase.workerId)} is drilling this phase now` : 'drilling this phase now'}</small>`
               : ''}
         </div>
         <span class="phase-status">${escapeHtml(phase.status)}</span>
@@ -525,10 +528,26 @@ class CosmoStandaloneApp {
       nextNote.textContent = '';
     }
 
-    const activity = drill.currentActivity;
-    document.getElementById('activity-now').textContent = activity && drill.mode === 'drilling'
-      ? `cycle ${activity.cycle} · goal ${activity.goalNumber} · phase ${activity.phaseNumber}: ${activity.phaseTitle}`
-      : '—';
+    this.renderWorkers(drill);
+  }
+
+  renderWorkers(drill) {
+    const workers = Array.isArray(drill.activeWorkers) ? drill.activeWorkers : [];
+    const now = document.getElementById('activity-now');
+    if (drill.mode === 'drilling' && workers.length > 0) {
+      now.textContent = workers.length === 1
+        ? `1 worker in flight (of ${drill.maxConcurrent || 1})`
+        : `${workers.length} workers in flight (of ${drill.maxConcurrent || workers.length})`;
+    } else {
+      now.textContent = '—';
+    }
+
+    const strip = document.getElementById('worker-strip');
+    strip.innerHTML = workers.map(worker => `
+      <div class="worker-chip">
+        <span class="worker-chip-id">${escapeHtml(worker.workerId)}</span>
+        <span class="worker-chip-detail">cycle ${escapeHtml(String(worker.cycle))} · goal ${escapeHtml(String(worker.goalNumber))} phase ${escapeHtml(String(worker.phaseNumber))} — ${escapeHtml(String(worker.phaseTitle).slice(0, 48))}</span>
+      </div>`).join('');
   }
 
   renderSteerAndFeeds(payload) {

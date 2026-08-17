@@ -706,10 +706,13 @@ execution:
 
 # The drill: goal -> phases -> next goal, for the cycles or time set.
 # Cycles and time are how long the drill may run; they are not the work.
+# A goal's open phases run in parallel — one worker (bit) per phase, up to
+# maxConcurrent; cycles/time bound the whole drill, not each worker.
 drill:
   cycles: ${maxCyclesValue}
   maxRuntimeMinutes: ${settings.max_runtime_minutes || 0}
   workerTurnsPerCycle: ${settings.drill_worker_turns || 24}
+  maxConcurrent: ${usesLocalModels ? 2 : max_concurrent}
 
 timeouts:
   cycleTimeoutMs: ${enable_local_llm ? 300000 : 180000}  # 5min for local LLM, 3min for cloud

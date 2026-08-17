@@ -113,8 +113,11 @@ Important:
 Cosmo at heart is a drill that keeps drilling for the cycles or the time you
 give it. Cycles and time are how long the drill may run — the work is:
 take or invent a goal, work it through its phases, and when that goal is
-done, create the next goal. The tool loop is the drill bit working each
-phase; a worker finishing a writeup completes a phase, never the run. The
+done, create the next goal. A goal's open phases run in parallel — one
+worker per phase, the tool loop as the bit, up to the concurrency cap — and
+a coordinator assigns phases, merges the parallel results, and invents the
+next goal from what was learned. A worker finishing a writeup completes a
+phase, never the run, and one slow worker never starves its siblings. The
 drill stops when the budget is spent or you stop it, and the Brain stays
 queryable afterwards.
 

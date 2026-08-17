@@ -141,7 +141,7 @@ function makeOrchestrator(runtimePath) {
   };
 }
 
-function makeDrill({ runtimePath, client, createWorker, cycles = 6, minutes = 0, now, orchestrator } = {}) {
+function makeDrill({ runtimePath, client, createWorker, cycles = 6, minutes = 0, maxConcurrent = 3, now, orchestrator } = {}) {
   const orch = orchestrator || makeOrchestrator(runtimePath);
   const drill = new DrillLoop({
     orchestrator: orch,
@@ -152,7 +152,7 @@ function makeDrill({ runtimePath, client, createWorker, cycles = 6, minutes = 0,
     config: {
       logsDir: runtimePath,
       models: { primary: 'test-primary', fast: 'test-fast' },
-      drill: { cycles, maxRuntimeMinutes: minutes, workerTurnsPerCycle: 6 }
+      drill: { cycles, maxRuntimeMinutes: minutes, workerTurnsPerCycle: 6, maxConcurrent }
     },
     plan: {
       shortPlan: {
@@ -275,7 +275,8 @@ describe('The drill: goal → phases → next goal', () => {
   it('a worker that does not finish keeps its phase active — the next cycle continues it', async function () {
     this.timeout(10000);
     const createWorker = scriptedWorkerFactory(runtimePath, { finish: false });
-    const drill = makeDrill({ runtimePath, createWorker, cycles: 3 });
+    // Serial mode (one bit) still works: maxConcurrent 1.
+    const drill = makeDrill({ runtimePath, createWorker, cycles: 3, maxConcurrent: 1 });
 
     drill.start();
     await drill._promise;
@@ -340,7 +341,10 @@ describe('The drill: goal → phases → next goal', () => {
     drill.start();
     await drill._promise;
 
-    expect(createWorker.spawned.length).to.equal(1);
+    // Only the first parallel wave ever launched — the first fatal error
+    // stopped the drill; no retry storm across the remaining budget.
+    expect(createWorker.spawned.length).to.be.at.most(drill.maxConcurrent);
+    expect(drill.cyclesUsed).to.be.lessThan(10);
     expect(drill.running).to.equal(false);
     expect(drill.mode).to.equal('error');
     expect(drill.fatalError).to.equal(AUTH_REVOKED_WATCH_MESSAGE);
