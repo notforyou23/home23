@@ -6,6 +6,8 @@
  */
 
 const { spawn } = require('child_process');
+const fs = require('fs').promises;
+const path = require('path');
 const { tools: interactiveTools, executeTool: executeInteractiveTool } = require('../interactive/interactive-tools');
 const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
 
@@ -33,7 +35,7 @@ const extraTools = [
   },
   {
     name: 'remember',
-    description: 'Write a finding into the Brain memory graph.',
+    description: 'Journal a candidate finding in this run. Brain changes at promotion, not here.',
     parameters: {
       type: 'object',
       properties: {
@@ -138,17 +140,22 @@ const extraExecutors = {
   async remember(args, context) {
     const content = String(args.content || '').trim();
     if (!content) return 'remember requires content.';
-    const memory = context.orchestrator?.memory;
-    if (!memory || typeof memory.addNode !== 'function') {
-      return 'Brain memory is not available.';
-    }
     const tag = String(args.tag || 'finding').trim() || 'finding';
-    const node = await memory.addNode(content, tag, null, {
+    const runtimePath = context.runtimePath
+      || context.orchestrator?.logsDir
+      || process.cwd();
+    const dir = path.join(runtimePath, 'outputs', 'candidates');
+    await fs.mkdir(dir, { recursive: true });
+    const entry = {
+      type: 'candidate_finding',
+      content,
+      tag,
+      at: Date.now(),
       source: 'launch_loop',
-      createdAt: Date.now()
-    });
-    if (!node) return 'Brain rejected the finding (quality gate). Rewrite it as a concrete research finding.';
-    return `Remembered as ${node.id || 'node'} [${tag}].`;
+      promoted: false
+    };
+    await fs.appendFile(path.join(dir, 'findings.jsonl'), `${JSON.stringify(entry)}\n`);
+    return 'Journaled candidate finding. Brain changes at promotion.';
   },
 
   async list_skills(args, context) {

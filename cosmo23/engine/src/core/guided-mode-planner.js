@@ -515,15 +515,19 @@ class GuidedModePlanner {
     const startResult = loop.start();
     this.logger?.info('Fresh Launch: short plan → research tool loop', {
       started: startResult?.started !== false,
-      productLoop
+      productLoop: RESEARCH_PRODUCT_LOOP
     });
 
-    return {
+    const result = {
       started: startResult?.started !== false,
       productLoop: RESEARCH_PRODUCT_LOOP,
       subordinate: false,
       reused: Boolean(startResult?.reused)
     };
+    if (result.productLoop === INTERACTIVE_PRODUCT_LOOP || result.subordinate === true) {
+      throw new Error('Interactive cannot be the Launch product loop');
+    }
+    return result;
   }
 
   /**

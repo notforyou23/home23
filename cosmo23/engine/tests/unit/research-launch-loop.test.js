@@ -2,6 +2,7 @@
 
 const { expect } = require('chai');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const {
@@ -19,7 +20,7 @@ const {
   FORBIDDEN_PLAN_PHRASES
 } = require('../../src/agent/short-plan');
 const { LaunchLoop } = require('../../src/agent/loop');
-const { tools, INTERACTIVE_ONLY } = require('../../src/agent/tools');
+const { tools, INTERACTIVE_ONLY, executeTool } = require('../../src/agent/tools');
 const { GuidedModePlanner } = require('../../src/core/guided-mode-planner');
 const { PlanExecutor } = require('../../src/core/plan-executor');
 
@@ -89,6 +90,22 @@ describe('Cosmo research Launch contract', () => {
     expect(appSource).to.match(/this\.switchView\(RESEARCH_LAUNCH_VIEW\)/);
     expect(appSource).to.not.match(/startResearch[\s\S]{0,800}switchView\('interactive'\)/);
     expect(appSource).to.not.match(/continueResearch[\s\S]{0,800}switchView\('interactive'\)/);
+    expect(appSource).to.not.include('/api/launch/go');
+  });
+
+  it('refuses the living Mini leftover that emptied tonight\'s run', () => {
+    const planner = fs.readFileSync(path.join(__dirname, '../../src/core/guided-mode-planner.js'), 'utf8');
+    const executor = fs.readFileSync(path.join(__dirname, '../../src/core/plan-executor.js'), 'utf8');
+    const app = fs.readFileSync(path.join(__dirname, '../../../public/app.js'), 'utf8');
+
+    expect(planner).to.not.include('Interactive is the product loop; engine Launch loop will not start');
+    expect(planner).to.not.include('Fresh Launch: short plan → Interactive tool loop');
+    expect(planner).to.not.include("productLoop: 'interactive'");
+    expect(planner).to.not.include('subordinate: true');
+    expect(executor).to.not.include('Launch tool loop owns this plan — not assigning a specialist');
+    expect(executor).to.not.match(/executionKind === 'tool_loop'[\s\S]{0,400}return null;/);
+    expect(app).to.match(/api\('\/api\/launch'/);
+    expect(app).to.match(/api\(`\/api\/continue\//);
   });
 });
 
@@ -298,6 +315,31 @@ describe('Research Launch loop and harness', () => {
     expect(loop.finishSummary).to.equal('Wrote outputs/note.md');
     expect(loop.turns).to.be.at.least(1);
     expect(calls[0].toolCount).to.be.greaterThan(5);
+  });
+
+  it('journals remember() as a candidate — Brain changes at promotion', async () => {
+    const runtimePath = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo-launch-remember-'));
+    let added = 0;
+    const result = await executeTool('remember', { content: 'Garcia once played a 3-hour set.' }, {
+      runtimePath,
+      orchestrator: {
+        memory: {
+          addNode: async () => {
+            added += 1;
+            return { id: 'should-not-promote' };
+          }
+        }
+      },
+      logger
+    });
+    expect(result).to.include('Journaled candidate finding');
+    expect(result).to.include('Brain changes at promotion');
+    expect(added).to.equal(0);
+    const journal = fs.readFileSync(path.join(runtimePath, 'outputs', 'candidates', 'findings.jsonl'), 'utf8');
+    const row = JSON.parse(journal.trim());
+    expect(row.type).to.equal('candidate_finding');
+    expect(row.promoted).to.equal(false);
+    expect(row.content).to.include('Garcia');
   });
 
   it('classifies leftover tool_loop plans as research, not legacy specialists', () => {

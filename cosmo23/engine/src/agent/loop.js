@@ -131,6 +131,12 @@ class LaunchLoop {
         turn: this.turns,
         chars: content.length
       });
+      if (!this.finished && this.running && this.turns < this.maxTurns) {
+        this.messages.push({
+          role: 'user',
+          content: 'Continue. Use tools. Call finish when the deliverable is written.'
+        });
+      }
     }
 
     this.running = false;
