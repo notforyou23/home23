@@ -17,6 +17,32 @@ function loadOpenAI() {
   }
 }
 
+const XAI_SEARCH_FALLBACK_MODEL = 'grok-4.6';
+
+function isXaiModel(model) {
+  return typeof model === 'string' && /^grok-/i.test(model.trim());
+}
+
+function isWebSearchRequest(options = {}) {
+  const tools = options.tools;
+  if (Array.isArray(tools) && tools.some((tool) => (
+    tool?.type === 'web_search'
+    || tool?.name === 'web_search'
+    || tool?.function?.name === 'web_search'
+  ))) {
+    return true;
+  }
+  return false;
+}
+
+function resolveXaiSearchFallback(assignment) {
+  const fallback = assignment?.fallback;
+  if (fallback?.provider === 'xai' && isXaiModel(fallback.model)) {
+    return { provider: 'xai', model: fallback.model };
+  }
+  return { provider: 'xai', model: XAI_SEARCH_FALLBACK_MODEL };
+}
+
 /**
  * UnifiedClient - Extends GPT5Client with multi-provider and MCP support
  * 
@@ -452,14 +478,16 @@ class UnifiedClient extends GPT5Client {
       }
     }
     
-    // All retries exhausted, try fallback
-    if (assignment.fallback) {
+    // All retries exhausted, try fallback.
+    // xAI search must stay on an xAI model (grok-4.6). Never claude-fable-5.
+    const fallbackAssignment = assignment.provider === 'xai' && isWebSearchRequest(options)
+      ? resolveXaiSearchFallback(assignment)
+      : assignment.fallback;
+    if (fallbackAssignment) {
       this.logger?.info('Attempting fallback after all retries failed', {
-        fallbackProvider: assignment.fallback.provider,
-        fallbackModel: assignment.fallback.model
+        fallbackProvider: fallbackAssignment.provider,
+        fallbackModel: fallbackAssignment.model
       });
-      
-      const fallbackAssignment = assignment.fallback;
       
       if (fallbackAssignment.provider === 'openai') {
         // Fallback to GPT-5
@@ -1443,4 +1471,10 @@ class UnifiedClient extends GPT5Client {
   }
 }
 
-module.exports = { UnifiedClient };
+module.exports = {
+  UnifiedClient,
+  XAI_SEARCH_FALLBACK_MODEL,
+  isXaiModel,
+  isWebSearchRequest,
+  resolveXaiSearchFallback
+};
