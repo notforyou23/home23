@@ -3383,3 +3383,93 @@ button {
 #view-ingest {
   position: relative;
 }
+
+/* ── Research ecology panel (Watch) ─────────────────────────────────── */
+
+.ecology-mode {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(47, 107, 93, 0.12);
+  color: var(--accent);
+}
+
+.ecology-mode[data-mode="sleep_dream"] {
+  background: rgba(84, 74, 158, 0.14);
+  color: #544a9e;
+}
+
+.ecology-mode[data-mode="settled"] {
+  background: rgba(60, 60, 60, 0.1);
+  color: #444;
+}
+
+.ecology-mode[data-mode="error"] {
+  background: rgba(158, 70, 56, 0.14);
+  color: var(--danger);
+}
+
+.ecology-empty {
+  color: rgba(30, 42, 38, 0.55);
+  font-size: 0.9rem;
+}
+
+.ecology-lanes {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.ecology-lane-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  color: rgba(30, 42, 38, 0.7);
+  margin-bottom: 4px;
+}
+
+.ecology-lane-track {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(30, 42, 38, 0.08);
+  overflow: hidden;
+}
+
+.ecology-lane-alloc {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: rgba(47, 107, 93, 0.22);
+  border-radius: 999px;
+}
+
+.ecology-lane-spent {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--accent);
+  border-radius: 999px;
+}
+
+.ecology-lane[data-lane="incubation"] .ecology-lane-spent {
+  background: #544a9e;
+}
+
+.ecology-lane[data-lane="wildcard"] .ecology-lane-spent {
+  background: #b07a2f;
+}
+
+.ecology-stats {
+  margin-top: 4px;
+}
+
+.ecology-note {
+  margin-top: 12px;
+  font-size: 0.82rem;
+  color: rgba(30, 42, 38, 0.7);
+}
+
+.ecology-note.error {
+  color: var(--danger);
+  font-weight: 600;
+}

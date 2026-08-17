@@ -29,7 +29,7 @@ const {
 } = require('../../../server/config/model-catalog');
 const { deriveResearchContract } = require('./research-contract');
 const { composeShortLaunchPlan, isToolLoopPlan, isLegacySpecialistPlan } = require('../agent/short-plan');
-const { LaunchLoop } = require('../agent/loop');
+const { ResearchEcology } = require('../ecology/ecology');
 const {
   RESEARCH_PRODUCT_LOOP,
   INTERACTIVE_PRODUCT_LOOP,
@@ -454,7 +454,13 @@ class GuidedModePlanner {
   }
 
   /**
-   * Start the Cosmo research Launch tool loop.
+   * Start the Cosmo research ecology behind Launch.
+   *
+   * The product is the ecology: a Principal organizer, a Question Ecology,
+   * four lanes (Directed, Adjacent, Wildcard, Incubation), worker tool
+   * loops, transactional sleep/dream, and promotion as the only Brain
+   * change. A single worker finishing a deliverable does not end the run.
+   *
    * Interactive is a chat add-on. It is never the product loop.
    * Leftover collapse flags that mark Interactive as productLoop are ignored.
    */
@@ -495,7 +501,7 @@ class GuidedModePlanner {
     }
 
     const orchestrator = options.orchestrator || this.subsystems.orchestrator;
-    const createLoop = options.createLoop || ((args) => new LaunchLoop(args));
+    const createLoop = options.createLoop || ((args) => new ResearchEcology(args));
     const loop = createLoop({
       orchestrator,
       config: this.config,
@@ -513,7 +519,7 @@ class GuidedModePlanner {
     }
 
     const startResult = loop.start();
-    this.logger?.info('Fresh Launch: short plan → research tool loop', {
+    this.logger?.info('Fresh Launch: short plan → research ecology (lanes, questions, sleep/dream)', {
       started: startResult?.started !== false,
       productLoop: RESEARCH_PRODUCT_LOOP
     });
