@@ -39,6 +39,13 @@ const {
   loadModelCatalogSync
 } = require('../../../server/config/model-catalog');
 const { deriveResearchContract } = require('./research-contract');
+const { composeShortLaunchPlan, isToolLoopPlan, isLegacySpecialistPlan } = require('../agent/short-plan');
+const { LaunchLoop } = require('../agent/loop');
+const {
+  RESEARCH_PRODUCT_LOOP,
+  INTERACTIVE_PRODUCT_LOOP,
+  resolveProductLoop
+} = require('../../../lib/research-launch');
 
 function normalizeList(value) {
   if (!value) return [];
@@ -325,7 +332,10 @@ class GuidedModePlanner {
       return {
         taskPhases: [],
         executionMode,
-        spawnAgents: false  // Don't spawn agents on resume
+        spawnAgents: false,  // Don't spawn specialists on resume
+        executionKind: existingPlan.executionKind || null,
+        claimedBy: existingPlan.claimedBy || null,
+        shortPlan: existingPlan.shortPlan || null
       };
     } else if (existingPlan && !hasActiveTasks && !hasActiveAgents) {
       this.logger?.warn('📋 Found plan with no active work - will regenerate', {
@@ -340,405 +350,190 @@ class GuidedModePlanner {
       // Fall through to generate new plan
     }
     
-    // Only generate plan if this is a NEW run
-    this.logger?.info('📋 Generating new mission plan...');
+    // Fresh / regenerated Launch: short plan → research tool loop.
+    // Old inventory/verdict/mission recipes are not the execution path.
+    this.logger?.info('📋 Composing short research plan...');
     this.logger?.info('');
-
-    // Analyze what resources are available
-    const resources = await this.analyzeAvailableResources();
-    
-    // NEW: Parse structured task phases from context
-    const taskPhases = this.parseTaskPhases(guidedFocus.context);
-    const hasExplicitTaskPhases = taskPhases.some(phase => phase.source === 'explicit_phase');
-    
-    if (taskPhases.length > 0) {
-      this.logger?.info(`📋 Detected ${taskPhases.length} structured task phases`);
-      taskPhases.forEach((phase, i) => {
-        this.logger?.info(`   Phase ${i + 1}: ${phase.name}`);
-      });
-      this.logger?.info('');
-    }
-    
-    // If task mentions specific files to read, read them via MCP before planning
-    let filesRead = [];
-    if (resources.mcp.tools.includes('read_file')) {
-      filesRead = await this.readFilesIfNeeded(guidedFocus);
-    }
-    
-    const planningContext = await this.buildPlanningContext(guidedFocus, { contextRedirect });
-    planningContext.taskPhases = taskPhases;
-    if (hasExplicitTaskPhases) {
-      planningContext.explicitTaskPlan = true;
-      planningContext.hasContext = false;
-      planningContext.threadAnchor = null;
-      planningContext.researchDigest = this.buildResearchDigest(planningContext);
-    }
-    // If context changed, override hasContext so the planner treats this as fresh
-    if (contextRedirect) {
-      planningContext.contextRedirect = true;
-    }
-
-    if (planningContext.threadAnchor) {
-      this.logger?.info('🧵 Resuming research thread anchor', {
-        source: planningContext.threadAnchor.source,
-        similarity: planningContext.threadAnchor.similarity?.toFixed(2),
-        title: planningContext.threadAnchor.title
-      });
-    }
-
-    // Run PGS knowledge assessment for brain-aware planning (with timeout)
-    const runPath = this.getLogsDir();
-    let knowledgeAssessment = null;
-    const assessmentTimeoutMs = 10 * 60 * 1000; // 10 minutes
-    try {
-      knowledgeAssessment = await Promise.race([
-        this.assessKnowledgeState(guidedFocus, runPath),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error(`PGS assessment timed out after ${assessmentTimeoutMs / 60000} minutes`)), assessmentTimeoutMs)
-        )
-      ]);
-    } catch (err) {
-      this.logger?.warn('Knowledge assessment failed (non-fatal)', { error: err.message });
-    }
-
-    // Attach to planning context for downstream use
-    if (knowledgeAssessment) {
-      planningContext.knowledgeAssessment = knowledgeAssessment;
-      planningContext.assessmentPath = knowledgeAssessment.jsonPath;
-    }
-
-    planningContext.planningDecision = this.buildPlanningDecision(guidedFocus, resources, planningContext);
-    await this.persistPlanningDecision(planningContext.planningDecision);
-    this.logger?.info('🧭 Planning evidence policy selected', {
-      threadRelation: planningContext.planningDecision.threadRelation,
-      evidenceMode: planningContext.planningDecision.evidenceMode,
-      webPolicy: planningContext.planningDecision.webPolicy,
-      localArtifactCount: planningContext.planningDecision.localArtifactCount,
-      externalGapCount: planningContext.planningDecision.externalGaps.length
+    return this.composeAndPersistShortLaunchPlan({
+      guidedFocus,
+      executionMode,
+      contextRedirect
     });
+  }
 
-    if (planningContext.hasContext) {
-      this.logger?.info('🧠 Brain-informed planning context loaded', {
-        memoryMatches: planningContext.memoryMatches.length,
-        completedTasks: planningContext.completedTasks.length,
-        reviewGaps: planningContext.reviewGaps.length,
-        processedSources: planningContext.processedSourceUrls.length
-      });
-    }
+  /**
+   * Short Launch plan only: goal, constraints, deliverable.
+   * Persists plan:main as executionKind tool_loop claimed by the research loop.
+   */
+  async composeAndPersistShortLaunchPlan({ guidedFocus, executionMode, contextRedirect = false }) {
+    const shortPlan = composeShortLaunchPlan(guidedFocus);
+    const stateStore = this.subsystems.clusterStateStore;
+    const now = Date.now();
 
-    let plan;
-    try {
-      // Generate mission plan (with file content if files were read)
-      plan = await this.generateMissionPlan(guidedFocus, resources, filesRead, taskPhases, planningContext);
-      await this.clearPlanningFailure();
-    } catch (error) {
-      await this.persistPlanningFailure('initial_plan', error, {
-        domain: guidedFocus.domain,
-        hasPlanningContext: planningContext.hasContext
-      });
-      throw error;
-    }
-
-    plan.executionMode = executionMode;
-    plan.effectiveExecutionMode = executionMode;
-    plan.requestedExecutionMode = executionModeInfo.requestedMode;
-    plan.researchDigest = planningContext.researchDigest;
-    plan.planningDecision = planningContext.planningDecision;
-
-    if (knowledgeAssessment) {
-      plan._planningAssessment = {
-        path: knowledgeAssessment.jsonPath,
-        timestamp: knowledgeAssessment.data.timestamp,
-        nodeCount: knowledgeAssessment.data.nodeCount,
-        partitionsSwept: knowledgeAssessment.data.partitionsSwept
-      };
-    }
-
-    // Create Plan from task phases OR generated agent missions
-    // (We already checked for existing plan above, so this is only for NEW runs)
-    const phasesToUse = taskPhases.length > 0 ? taskPhases : 
-      (plan.agentMissions || []).map((mission, idx) => {
-        const desc = mission.description || mission.mission || mission.instructions || 'Generated mission';
-        return {
-          name: desc.substring(0, 100),
-          description: desc,
-          deliverables: mission.expectedOutput ? [mission.expectedOutput] : []
-        };
-      });
-    
-    // Mission→goalId mapping for task→goal→agent linkage.
-    // IMPORTANT: This must be consistent between:
-    // - tasks persisted in the plan (metadata.goalId)
-    // - agents spawned by GuidedModePlanner (missionSpec.goalId)
-    // If these diverge, PlanScheduler cannot detect "goal already pursued" and will spawn duplicates.
-    let missionGoalIds = null;
-
-    // DEBUG: Log why structured plan might not be saved
-    this.logger?.info(`📋 Structured plan check: phasesToUse=${phasesToUse.length}, stateStore=${!!stateStore}`);
-    if (phasesToUse.length === 0) {
-      this.logger?.warn('⚠️  No phases to persist - structured plan will NOT be saved!');
-    }
-    if (!stateStore) {
-      this.logger?.warn('⚠️  No state store available - structured plan will NOT be saved!');
-    }
-
-    if (phasesToUse.length > 0 && stateStore) {
-      this.logger?.info(`📋 Creating Plan from ${phasesToUse.length} ${taskPhases.length > 0 ? 'explicit phases' : 'generated missions'}`);
-      
-      // Create Plan
-      const guidedPlan = {
-        id: 'plan:main',  // Use plan:main so orchestrator picks it up
-        title: guidedFocus.domain,
-        context: guidedFocus.context || '',
-        researchDomain: planningContext.threadAnchor?.title || guidedFocus.researchDomain || guidedFocus.domain,
-        researchContext: guidedFocus.researchContext || guidedFocus.context || '',
-        // Stamp source context/domain for continuation context-change detection
-        _sourceContext: (guidedFocus?.context || '').trim(),
-        _sourceDomain: (guidedFocus?.domain || '').trim(),
-        version: 1,
-        status: 'ACTIVE',
-        milestones: [],
-        createdAt: Date.now(),
-        updatedAt: Date.now()
-      };
-      
-      // Create Milestones
-      const milestones = phasesToUse.map((phase, idx) => ({
-        id: `ms:phase${idx + 1}`,
-        planId: guidedPlan.id,
-        title: phase.name,
-        order: idx + 1,
-        status: idx === 0 ? 'ACTIVE' : 'LOCKED',
-        createdAt: Date.now(),
-        updatedAt: Date.now()
-      }));
-      
-      guidedPlan.milestones = milestones.map(m => m.id);
-      guidedPlan.activeMilestone = milestones[0].id;
-      
-      // Create Tasks
-      // Store mission→goalId mapping for later
-      const baseTimestamp = Date.now();
-      missionGoalIds = (plan.agentMissions || []).map((mission, idx) => ({
-        missionIdx: idx,
-        missionType: mission.type,
-        goalId: `goal_guided_${mission.type}_${baseTimestamp + idx}`
-      }));
-      
-      const tasks = phasesToUse.map((phase, idx) => {
-        const correspondingMission = Array.isArray(plan.agentMissions) ? plan.agentMissions[idx] : null;
-
-        // AGENT TYPE DETERMINATION (Mar 22, 2026)
-        // Trust the LLM-generated mission type when it's a known agent type.
-        // Fall back to keyword-based inference only when no valid type is specified.
-        const VALID_AGENT_TYPES = [
-          'research', 'ide', 'dataacquisition', 'datapipeline', 'infrastructure', 'automation',
-          'analysis', 'synthesis', 'exploration', 'planning', 'code_execution', 'code_creation',
-          'document_creation', 'document_analysis', 'document_compiler', 'codebase_exploration',
-          'quality_assurance', 'completion', 'consistency', 'disconfirmation', 'integration',
-          'specialized_binary'
-        ];
-        const missionType = correspondingMission?.type || correspondingMission?.agentType;
-        const localArtifactPhase = this.isLocalArtifactValidationPhase(phase);
-        let agentType = this.determineAgentTypeForPhase(phase);
-        if (!localArtifactPhase && missionType && VALID_AGENT_TYPES.includes(missionType)) {
-          agentType = missionType;
-        }
-        const sourceScope = correspondingMission?.sourceScope || correspondingMission?.metadata?.sourceScope || null;
-        const phaseArtifactInputs = this.getPhaseArtifactInputs(phase);
-        const artifactInputs = phaseArtifactInputs.length > 0
-          ? phaseArtifactInputs
-          : (correspondingMission?.artifactInputs || correspondingMission?.metadata?.artifactInputs || []);
-        const phaseExpectedOutput = this.getPhaseExpectedOutput(phase);
-        const expectedOutput = phaseExpectedOutput || correspondingMission?.expectedOutput || correspondingMission?.metadata?.expectedOutput || null;
-        // HOME23 PATCH — Patch 28: source obligations become task metadata.
-        const researchContract = deriveResearchContract({
-          ...phase,
-          type: correspondingMission?.type,
-          agentType,
-          tools: correspondingMission?.tools,
-          sourceScope,
-          expectedOutput,
-          successCriteria: correspondingMission?.successCriteria,
-          metadata: {
-            ...(correspondingMission?.metadata || {}),
-            sourceScope,
-            expectedOutput
-          }
-        });
-        
-        return {
-          id: `task:phase${idx + 1}`,
-          planId: guidedPlan.id,
-          milestoneId: milestones[idx].id,
-          title: phase.name,
-          description: phase.rawText || phase.description || guidedFocus.context,
-          tags: [guidedFocus.domain, 'guided', 'sequential'],
-          deps: idx > 0 ? [`task:phase${idx}`] : [], // Sequential dependency
-          priority: 10, // High priority for guided tasks
-          state: 'PENDING',
-          acceptanceCriteria: this.generateAcceptanceCriteria(phase),
-          artifacts: [],
-          metadata: {
-            // NO goalId - tasks execute directly via taskId
-            agentType: agentType,
-            spawningSource: 'guided_mode',
-            baseTimestamp: baseTimestamp,
-            phaseNumber: idx + 1,  // Store phase number for logging
-            guidedMission: true,
-            sourceScope,
-            artifactInputs,
-            expectedOutput,
-            researchContract,
-            researchDigest: plan.researchDigest || null
-          },
-          createdAt: Date.now(),
-          updatedAt: Date.now()
-        };
-      });
-      
-      // NEW: Add synthesis task if deliverable requires assembly.
-      // If the user supplied an explicit final deliverable phase, that phase is
-      // the synthesis contract; adding task:synthesis_final creates duplicate
-      // work and lets the run drift away from the requested execution plan.
-      const explicitFinalDeliverablePhase = this.hasExplicitFinalDeliverablePhase(phasesToUse);
-      const needsSynthesis =
-        !explicitFinalDeliverablePhase &&
-        this.deliverableRequiresSynthesis(plan.deliverable, phasesToUse);
-      
-      // ✅ FIX P1.3: Check if synthesis task already exists before creating
-      // Prevents synthesis loop when plans are re-injected
-      let shouldCreateSynthesis = needsSynthesis;
-      
-      if (needsSynthesis && stateStore) {
-        try {
-          const existingSynthesis = await stateStore.getTask('task:synthesis_final');
-          
-          if (existingSynthesis) {
-            const taskState = existingSynthesis.state;
-            const isActive = ['PENDING', 'CLAIMED', 'IN_PROGRESS'].includes(taskState);
-            const isDone = taskState === 'DONE';
-            const isFailed = taskState === 'FAILED';
-            
-            if (isActive) {
-              // Task exists and is actively being worked on - don't recreate
-              this.logger?.info('⏭️  Synthesis task already active, skipping creation', {
-                taskId: 'task:synthesis_final',
-                state: taskState,
-                assignedAgent: existingSynthesis.assignedAgentId
-              });
-              shouldCreateSynthesis = false;
-            } else if (isDone) {
-              // Task completed - don't recreate
-              this.logger?.info('✅ Synthesis task already completed, skipping creation', {
-                taskId: 'task:synthesis_final',
-                completedAt: existingSynthesis.updatedAt
-              });
-              shouldCreateSynthesis = false;
-            } else if (isFailed) {
-              // Task failed - allow recreation with potential fixes
-              this.logger?.warn('🔄 Synthesis task failed previously, will recreate with fresh attempt', {
-                taskId: 'task:synthesis_final',
-                failureReason: existingSynthesis.failureReason,
-                failedAt: existingSynthesis.updatedAt
-              });
-              
-              // Archive the failed attempt before recreating
-              existingSynthesis.state = 'ARCHIVED';
-              existingSynthesis.archivedReason = 'failed_synthesis_recreated';
-              existingSynthesis.archivedAt = Date.now();
-              await stateStore.upsertTask(existingSynthesis);
-              
-              shouldCreateSynthesis = true;  // Allow recreation
-            }
-          } else {
-            // Task doesn't exist - safe to create
-            shouldCreateSynthesis = true;
-          }
-        } catch (error) {
-          // Task doesn't exist or error reading - safe to create
-          this.logger?.debug('Synthesis task check failed, will create', { 
-            error: error.message 
-          });
-          shouldCreateSynthesis = true;
-        }
-      }
-      
-      if (shouldCreateSynthesis) {
-        const synthesisTask = {
-          id: `task:synthesis_final`,
-          planId: guidedPlan.id,
-          milestoneId: milestones[milestones.length - 1].id, // Same milestone as last phase
-          title: 'Assemble Final Deliverable',
-          description: `Combine all phase outputs into final ${plan.deliverable.type || 'document'} deliverable: ${plan.deliverable.filename || 'output'}. Required sections: ${plan.deliverable.requiredSections?.join(', ') || 'all phase outputs'}. ${plan.deliverable.minimumContent || ''}`,
-          tags: [guidedFocus.domain, 'guided', 'synthesis', 'final_deliverable'],
-          deps: tasks.map(t => t.id), // Depends on ALL previous tasks
-          priority: 11, // Higher than phase tasks to ensure it runs last
-          state: 'PENDING',
-          acceptanceCriteria: [{
-            type: 'qa',
-            rubric: `Final deliverable exists at ${plan.deliverable.location || 'runtime/outputs/'}${plan.deliverable.filename || 'output'} and contains all required sections with minimum content requirements met`,
-            threshold: 0.9
-          }],
-          artifacts: [],
-          metadata: {
-            isFinalSynthesis: true,
-            inputTasks: tasks.map(t => t.id),
-            deliverableSpec: plan.deliverable
-          },
-          createdAt: Date.now(),
-          updatedAt: Date.now()
-        };
-        
-        tasks.push(synthesisTask);
-        
-        this.logger?.info('📦 Final synthesis task added to plan', {
-          taskId: synthesisTask.id,
-          dependsOn: synthesisTask.deps.length,
-          deliverableType: plan.deliverable.type
-        });
-      }  // Close shouldCreateSynthesis block
-      
-      // Persist to state store
-      await stateStore.createPlan(guidedPlan);
-      for (const milestone of milestones) {
-        await stateStore.upsertMilestone(milestone);
-      }
-      for (const task of tasks) {
-        await stateStore.upsertTask(task);
-      }
-      
-      this.logger?.info('✅ Plan initialized from guided mode', {
-        tasks: tasks.length,
-        milestones: milestones.length,
-        source: taskPhases.length > 0 ? 'explicit_phases' : 'generated_missions'
-      });
-    }
-    
-    this.logger?.info('');
-    this.logger?.info('✅ Guided mode planning complete');
-    this.logger?.info(`   Task phases: ${taskPhases.length}`);
-    this.logger?.info(`   Execution mode: ${executionMode}`);
-    this.logger?.info('');
-
-    // Prepare missionGoalIds for deferred spawning (after plan is displayed)
-    const missionGoalIdsToUse = missionGoalIds || (plan.agentMissions || []).map((mission, idx) => ({
-      missionIdx: idx,
-      missionType: mission.type,
-      goalId: `goal_guided_${mission.type}_${Date.now() + idx}`
-    }));
-
-    // Store for deferred spawning - agents will be spawned AFTER plan is displayed
-    plan._deferredSpawn = {
-      shouldSpawn: plan.spawnAgents && plan.agentMissions?.length > 0,
-      missionGoalIds: missionGoalIdsToUse
+    const guidedPlan = {
+      id: 'plan:main',
+      title: shortPlan.goal,
+      context: guidedFocus.context || '',
+      researchDomain: guidedFocus.researchDomain || guidedFocus.domain,
+      researchContext: guidedFocus.researchContext || guidedFocus.context || '',
+      _sourceContext: (guidedFocus?.context || '').trim(),
+      _sourceDomain: (guidedFocus?.domain || '').trim(),
+      version: 1,
+      status: 'ACTIVE',
+      executionKind: shortPlan.executionKind,
+      claimedBy: shortPlan.claimedBy,
+      shortPlan,
+      milestones: [],
+      createdAt: now,
+      updatedAt: now
     };
 
+    const milestone = {
+      id: 'ms:research',
+      planId: guidedPlan.id,
+      title: shortPlan.goal,
+      order: 1,
+      status: 'ACTIVE',
+      createdAt: now,
+      updatedAt: now
+    };
+    guidedPlan.milestones = [milestone.id];
+    guidedPlan.activeMilestone = milestone.id;
+
+    const task = {
+      id: 'task:research',
+      planId: guidedPlan.id,
+      milestoneId: milestone.id,
+      title: shortPlan.goal,
+      description: [
+        shortPlan.goal,
+        shortPlan.constraints.length ? `Constraints: ${shortPlan.constraints.join(' | ')}` : null,
+        `Deliverable: ${shortPlan.deliverable}`
+      ].filter(Boolean).join('\n'),
+      tags: [guidedFocus.domain, 'guided', 'tool_loop'].filter(Boolean),
+      deps: [],
+      priority: 10,
+      state: 'IN_PROGRESS',
+      assignedAgentId: 'launch_loop',
+      artifacts: [],
+      metadata: {
+        executionKind: 'tool_loop',
+        claimedBy: 'launch_loop',
+        spawningSource: 'guided_mode',
+        guidedMission: true
+      },
+      createdAt: now,
+      updatedAt: now
+    };
+
+    if (stateStore && typeof stateStore.createPlan === 'function') {
+      await stateStore.createPlan(guidedPlan);
+      if (typeof stateStore.upsertMilestone === 'function') {
+        await stateStore.upsertMilestone(milestone);
+      }
+      if (typeof stateStore.upsertTask === 'function') {
+        await stateStore.upsertTask(task);
+      }
+    } else {
+      this.logger?.warn('⚠️  No state store — short plan will not persist');
+    }
+
+    this._shortPlan = shortPlan;
+    this.logger?.info('✅ Short research plan ready', {
+      goal: shortPlan.goal,
+      constraintCount: shortPlan.constraints.length,
+      executionKind: shortPlan.executionKind,
+      claimedBy: shortPlan.claimedBy
+    });
+
     return {
-      ...plan,
-      taskPhases,
+      strategy: shortPlan.goal,
+      executionKind: shortPlan.executionKind,
+      claimedBy: shortPlan.claimedBy,
+      shortPlan,
+      spawnAgents: false,
+      agentMissions: [],
+      taskPhases: [],
       executionMode,
-      planningContext
+      deliverable: { type: 'artifact', filename: 'research', location: '@outputs/' },
+      _deferredSpawn: { shouldSpawn: false, missionGoalIds: [] },
+      planningContext: {
+        contextRedirect: Boolean(contextRedirect),
+        hasContext: false
+      }
+    };
+  }
+
+  /**
+   * Start the Cosmo research Launch tool loop.
+   * Interactive is a chat add-on. It is never the product loop.
+   * Leftover collapse flags that mark Interactive as productLoop are ignored.
+   */
+  async startLaunchLoop(options = {}) {
+    const requested = options.productLoop;
+    const productLoop = resolveProductLoop(requested);
+    if (requested === INTERACTIVE_PRODUCT_LOOP || options.subordinate === true) {
+      this.logger?.warn('Interactive is a chat add-on — Launch starts the research engine loop');
+    }
+
+    const plan = options.plan
+      || this._shortPlan
+      || (this.subsystems.clusterStateStore && typeof this.subsystems.clusterStateStore.getPlan === 'function'
+        ? await this.subsystems.clusterStateStore.getPlan('plan:main')
+        : null);
+
+    if (isLegacySpecialistPlan(plan) && !isToolLoopPlan(plan) && !options.force) {
+      this.logger?.info('Legacy specialist plan — PlanExecutor keeps assigning agents', {
+        planId: plan?.id || null
+      });
+      return {
+        started: false,
+        productLoop: RESEARCH_PRODUCT_LOOP,
+        subordinate: false,
+        reason: 'legacy_specialist_plan'
+      };
+    }
+
+    const existing = this._launchLoop || this.subsystems.orchestrator?.launchLoop;
+    if (existing?.running || existing?.started) {
+      this._launchLoop = existing;
+      return {
+        started: true,
+        productLoop: RESEARCH_PRODUCT_LOOP,
+        subordinate: false,
+        reused: true
+      };
+    }
+
+    const orchestrator = options.orchestrator || this.subsystems.orchestrator;
+    const createLoop = options.createLoop || ((args) => new LaunchLoop(args));
+    const loop = createLoop({
+      orchestrator,
+      config: this.config,
+      logger: this.logger,
+      client: options.client || this.client || this.subsystems.client,
+      plan: {
+        ...(plan || {}),
+        shortPlan: plan?.shortPlan || this._shortPlan || (isToolLoopPlan(plan) ? plan : null)
+      }
+    });
+
+    this._launchLoop = loop;
+    if (orchestrator && typeof orchestrator === 'object') {
+      orchestrator.launchLoop = loop;
+    }
+
+    const startResult = loop.start();
+    this.logger?.info('Fresh Launch: short plan → research tool loop', {
+      started: startResult?.started !== false,
+      productLoop
+    });
+
+    return {
+      started: startResult?.started !== false,
+      productLoop: RESEARCH_PRODUCT_LOOP,
+      subordinate: false,
+      reused: Boolean(startResult?.reused)
     };
   }
 

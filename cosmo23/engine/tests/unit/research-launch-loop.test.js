@@ -1,0 +1,308 @@
+'use strict';
+
+const { expect } = require('chai');
+const fs = require('fs');
+const path = require('path');
+
+const {
+  RESEARCH_PRODUCT_LOOP,
+  RESEARCH_LAUNCH_VIEW,
+  INTERACTIVE_PRODUCT_LOOP,
+  launchDestination,
+  resolveProductLoop,
+  isInteractiveProductLoop
+} = require('../../../lib/research-launch');
+const {
+  composeShortLaunchPlan,
+  isToolLoopPlan,
+  isLegacySpecialistPlan,
+  FORBIDDEN_PLAN_PHRASES
+} = require('../../src/agent/short-plan');
+const { LaunchLoop } = require('../../src/agent/loop');
+const { tools, INTERACTIVE_ONLY } = require('../../src/agent/tools');
+const { GuidedModePlanner } = require('../../src/core/guided-mode-planner');
+const { PlanExecutor } = require('../../src/core/plan-executor');
+
+const logger = {
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+  debug: () => {}
+};
+
+function createPlanner(overrides = {}) {
+  const stored = { plan: null, milestones: [], tasks: [] };
+  const config = {
+    logsDir: '/tmp/cosmo-research-launch-test',
+    architecture: {
+      roleSystem: {
+        explorationMode: 'guided',
+        guidedFocus: {
+          domain: 'Jerry Garcia anecdotes',
+          context: 'Collect and write notable Jerry Garcia anecdotes.',
+          executionMode: 'guided-exclusive',
+          depth: 'normal'
+        }
+      }
+    },
+    models: { primary: 'test-primary' },
+    mcp: { client: { enabled: false, servers: [] } },
+    ...overrides.config
+  };
+  const subsystems = {
+    client: { generate: async () => ({ content: '{}' }), createCompletion: async () => ({ choices: [] }) },
+    clusterStateStore: {
+      getPlan: async () => stored.plan,
+      listTasks: async () => stored.tasks,
+      listMilestones: async () => stored.milestones,
+      createPlan: async (plan) => { stored.plan = plan; },
+      upsertMilestone: async (ms) => { stored.milestones.push(ms); },
+      upsertTask: async (task) => { stored.tasks.push(task); },
+      updatePlan: async (id, update) => { stored.plan = { ...stored.plan, ...update }; }
+    },
+    agentExecutor: { registry: { getActiveCount: () => 0 } },
+    memory: { query: async () => [], nodes: new Map(), addNode: async () => ({ id: 'n1' }) },
+    ...overrides.subsystems
+  };
+  const planner = new GuidedModePlanner(config, subsystems, logger);
+  planner._stored = stored;
+  return planner;
+}
+
+describe('Cosmo research Launch contract', () => {
+  it('Launch destination is Watch, never Interactive', () => {
+    expect(launchDestination()).to.equal('watch');
+    expect(launchDestination()).to.equal(RESEARCH_LAUNCH_VIEW);
+    expect(RESEARCH_LAUNCH_VIEW).to.not.equal('interactive');
+  });
+
+  it('Interactive is never the product loop, even if a leftover collapse asks for it', () => {
+    expect(isInteractiveProductLoop()).to.equal(false);
+    expect(resolveProductLoop(INTERACTIVE_PRODUCT_LOOP)).to.equal(RESEARCH_PRODUCT_LOOP);
+    expect(resolveProductLoop('research')).to.equal(RESEARCH_PRODUCT_LOOP);
+    expect(resolveProductLoop(undefined)).to.equal(RESEARCH_PRODUCT_LOOP);
+  });
+
+  it('desk Launch and Continue stay on Watch in app.js', () => {
+    const appSource = fs.readFileSync(path.join(__dirname, '../../../public/app.js'), 'utf8');
+    expect(appSource).to.match(/const RESEARCH_LAUNCH_VIEW = 'watch'/);
+    expect(appSource).to.match(/this\.switchView\(RESEARCH_LAUNCH_VIEW\)/);
+    expect(appSource).to.not.match(/startResearch[\s\S]{0,800}switchView\('interactive'\)/);
+    expect(appSource).to.not.match(/continueResearch[\s\S]{0,800}switchView\('interactive'\)/);
+  });
+});
+
+describe('Short Launch plan', () => {
+  it('is only goal, constraints, and deliverable', () => {
+    const plan = composeShortLaunchPlan({
+      domain: 'Jerry Garcia anecdotes',
+      context: 'Collect notable stories. Write them up.'
+    });
+    expect(plan.goal).to.equal('Jerry Garcia anecdotes');
+    expect(plan.constraints).to.deep.equal(['Collect notable stories. Write them up.']);
+    expect(plan.deliverable).to.be.a('string').and.not.empty;
+    expect(plan.executionKind).to.equal('tool_loop');
+    expect(plan.claimedBy).to.equal('launch_loop');
+    expect(Object.keys(plan)).to.have.members([
+      'goal', 'constraints', 'deliverable', 'executionKind', 'claimedBy'
+    ]);
+  });
+
+  it('never tells the model to review what is already here', () => {
+    const plan = composeShortLaunchPlan({
+      domain: 'Forrest research',
+      context: 'Continue from last night'
+    });
+    const blob = JSON.stringify(plan).toLowerCase();
+    for (const phrase of FORBIDDEN_PLAN_PHRASES) {
+      expect(blob).to.not.include(phrase);
+    }
+  });
+
+  it('planMission writes a tool_loop plan, not a 3-phase specialist recipe', async () => {
+    const planner = createPlanner();
+    const result = await planner.planMission({ forceNew: true });
+    expect(result.executionKind).to.equal('tool_loop');
+    expect(result.claimedBy).to.equal('launch_loop');
+    expect(result.spawnAgents).to.equal(false);
+    expect(result.agentMissions).to.deep.equal([]);
+    expect(result.taskPhases).to.deep.equal([]);
+    expect(result.shortPlan.goal).to.equal('Jerry Garcia anecdotes');
+    expect(planner._stored.plan.executionKind).to.equal('tool_loop');
+    expect(planner._stored.tasks).to.have.length(1);
+    expect(planner._stored.tasks[0].assignedAgentId).to.equal('launch_loop');
+    expect(planner._stored.milestones).to.have.length(1);
+  });
+
+  it('planMission does not run PGS review-what-is-here assessment', async () => {
+    const planner = createPlanner();
+    let assessed = false;
+    planner.assessKnowledgeState = async () => {
+      assessed = true;
+      return { answer: 'should not run' };
+    };
+    planner.generateMissionPlan = async () => {
+      throw new Error('old mission recipes are not the execution path');
+    };
+    const result = await planner.planMission({ forceNew: true });
+    expect(assessed).to.equal(false);
+    expect(result.executionKind).to.equal('tool_loop');
+  });
+});
+
+describe('startLaunchLoop', () => {
+  it('starts the research loop and never returns Interactive as the product loop', async () => {
+    const planner = createPlanner();
+    await planner.planMission({ forceNew: true });
+    const started = [];
+    const result = await planner.startLaunchLoop({
+      productLoop: 'interactive',
+      subordinate: true,
+      createLoop: (args) => ({
+        start() {
+          started.push(args);
+          this.running = true;
+          this.started = true;
+          return { started: true, productLoop: RESEARCH_PRODUCT_LOOP };
+        }
+      })
+    });
+    expect(result.started).to.equal(true);
+    expect(result.productLoop).to.equal('research');
+    expect(result.subordinate).to.equal(false);
+    expect(started).to.have.length(1);
+  });
+
+  it('does not no-op a tool_loop plan', async () => {
+    const planner = createPlanner();
+    const plan = await planner.planMission({ forceNew: true });
+    const result = await planner.startLaunchLoop({
+      plan,
+      createLoop: () => ({
+        running: false,
+        started: false,
+        start() {
+          this.running = true;
+          this.started = true;
+          return { started: true };
+        }
+      })
+    });
+    expect(result).to.deep.include({
+      started: true,
+      productLoop: 'research',
+      subordinate: false
+    });
+  });
+});
+
+describe('PlanExecutor tool_loop', () => {
+  it('does not assign nobody and do nothing', async () => {
+    let ensured = 0;
+    const pe = new PlanExecutor(
+      {
+        getPlan: async () => ({
+          id: 'plan:main',
+          status: 'ACTIVE',
+          executionKind: 'tool_loop',
+          claimedBy: 'launch_loop'
+        }),
+        listMilestones: async () => [{ id: 'ms:research', status: 'ACTIVE', order: 1, title: 'Research' }],
+        listTasks: async () => [{
+          id: 'task:research',
+          state: 'IN_PROGRESS',
+          title: 'Research',
+          assignedAgentId: 'launch_loop',
+          metadata: { executionKind: 'tool_loop' }
+        }]
+      },
+      { registry: { getAgentIncludingCompleted: () => null, getTaskAgentStatus: () => ({}) } },
+      logger,
+      {
+        ensureLaunchLoop: async () => {
+          ensured += 1;
+          return { started: true, productLoop: 'research', reused: false };
+        }
+      }
+    );
+
+    const tick = await pe.tick(1);
+    expect(ensured).to.equal(1);
+    expect(tick.action).to.equal('LAUNCH_LOOP_OWNS');
+    expect(tick.productLoop).to.equal('research');
+
+    pe.activeTask = { id: 'task:research', metadata: { executionKind: 'tool_loop' } };
+    pe.plan = { executionKind: 'tool_loop' };
+    const assigned = await pe.assignAgent();
+    expect(assigned.action).to.equal('LAUNCH_LOOP_OWNS');
+    expect(assigned.action).to.not.equal(null);
+  });
+
+  it('fails loud when the research loop cannot start', async () => {
+    const pe = new PlanExecutor(
+      { getPlan: async () => null },
+      { registry: {} },
+      logger,
+      {}
+    );
+    pe.plan = { executionKind: 'tool_loop', status: 'ACTIVE' };
+    const assigned = await pe.assignAgent();
+    expect(assigned.action).to.equal('LAUNCH_LOOP_MISSING');
+  });
+});
+
+describe('Research Launch loop and harness', () => {
+  it('exposes files, shell, web, skills, coding, and Brain write — not Interactive specialist spawn', () => {
+    const names = tools.map((tool) => tool.name);
+    expect(names).to.include.members([
+      'read_file', 'write_file', 'run_command', 'web_search',
+      'remember', 'list_skills', 'run_skill', 'coding_run', 'finish'
+    ]);
+    for (const blocked of INTERACTIVE_ONLY) {
+      expect(names).to.not.include(blocked);
+    }
+  });
+
+  it('runs a model turn that calls tools and can finish', async () => {
+    const calls = [];
+    const loop = new LaunchLoop({
+      logger,
+      plan: composeShortLaunchPlan({ domain: 'Test topic', context: 'Write a note.' }),
+      config: { models: { primary: 'test' } },
+      client: {
+        createCompletion: async ({ tools: modelTools, messages }) => {
+          calls.push({ toolCount: modelTools.length, messages });
+          if (calls.length === 1) {
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  tool_calls: [{
+                    id: 'call_1',
+                    function: { name: 'finish', arguments: JSON.stringify({ summary: 'Wrote outputs/note.md' }) }
+                  }]
+                }
+              }]
+            };
+          }
+          return { choices: [{ message: { role: 'assistant', content: 'done' } }] };
+        }
+      }
+    });
+
+    const start = loop.start();
+    expect(start.started).to.equal(true);
+    expect(start.productLoop).to.equal('research');
+    await loop._promise;
+    expect(loop.finished).to.equal(true);
+    expect(loop.finishSummary).to.equal('Wrote outputs/note.md');
+    expect(loop.turns).to.be.at.least(1);
+    expect(calls[0].toolCount).to.be.greaterThan(5);
+  });
+
+  it('classifies leftover tool_loop plans as research, not legacy specialists', () => {
+    expect(isToolLoopPlan({ executionKind: 'tool_loop', claimedBy: 'plan_executor' })).to.equal(true);
+    expect(isLegacySpecialistPlan({ id: 'plan:main', status: 'ACTIVE' })).to.equal(true);
+    expect(isLegacySpecialistPlan({ executionKind: 'tool_loop' })).to.equal(false);
+  });
+});
