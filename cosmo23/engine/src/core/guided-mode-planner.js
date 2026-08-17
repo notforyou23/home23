@@ -1,22 +1,11 @@
 /**
  * Guided Mode Planner
- * 
- * Runs ONCE at startup when explorationMode: guided
- * 
- * Purpose:
- * - Understand the guided task (domain + context)
- * - Identify required resources (MCP files, web search, code execution)
- * - Create initial agent missions
- * - Spawn agents in dependency order (tier-based)
- * - Set up cognitive loop with appropriate context
- * 
- * Agent Tier System:
- * - Tier 0: Data collectors (can work with empty memory)
- * - Tier 1: Processors (need source data)
- * - Tier 2: Creators (need processed results)
- * - Tier 3: Validators (need created outputs)
- * 
- * Only Tier 0 spawns immediately; subsequent tiers spawn via coordinator as dependencies complete.
+ *
+ * Fresh Launch: short plan (goal, constraints, deliverable) then startLaunchLoop().
+ * Interactive is a chat add-on. It is not the research product loop.
+ *
+ * Legacy generateMissionPlan / specialist recipes remain as helpers only.
+ * They are not the Launch execution path.
  */
 
 const fs = require('fs').promises;
