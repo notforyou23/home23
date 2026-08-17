@@ -415,7 +415,10 @@ class CosmoStandaloneApp {
 
     idle.hidden = Boolean(hasBoard);
     live.hidden = !hasBoard;
-    doneBanner.hidden = !(hasBoard && !running && drill.mode !== 'drilling');
+    // Any board without a live engine gets the banner — done, stopped,
+    // errored, or interrupted mid-drill — so New drill / Continue / Query
+    // are always reachable.
+    doneBanner.hidden = !(hasBoard && !running);
 
     if (!hasBoard) return;
 
@@ -430,7 +433,7 @@ class CosmoStandaloneApp {
     this.renderGoal(drill);
     this.renderSteerAndFeeds(payload);
 
-    if (!running && drill.mode !== 'drilling') {
+    if (!running) {
       const title = document.getElementById('drill-done-title');
       const detail = document.getElementById('drill-done-detail');
       if (drill.fatalError) {
@@ -439,6 +442,9 @@ class CosmoStandaloneApp {
       } else if (drill.mode === 'done') {
         title.textContent = `Drill done — ${String(drill.doneReason || '').replace(/_/g, ' ')}`;
         detail.textContent = `${drill.budgets?.cyclesUsed ?? 0} cycles, ${drill.counts?.goalsCompleted ?? 0} goals completed. The Brain stays queryable from Query.`;
+      } else if (drill.mode === 'drilling') {
+        title.textContent = 'Drill interrupted — the engine is not running';
+        detail.textContent = 'Continue this brain with a fresh budget to resume the goal chain, or query what it learned.';
       } else {
         title.textContent = 'Drill stopped';
         detail.textContent = 'Continue it with a fresh budget, or query what it learned.';
