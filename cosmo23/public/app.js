@@ -1818,6 +1818,8 @@ class CosmoStandaloneApp {
   }
 
   startWatchLogPolling() {
+    this.startWatchEcologyPolling();
+
     if (!this.watchLogSupported) {
       return;
     }
@@ -1832,6 +1834,114 @@ class CosmoStandaloneApp {
     if (this.watchLogTimer) {
       window.clearInterval(this.watchLogTimer);
       this.watchLogTimer = null;
+    }
+    this.stopWatchEcologyPolling();
+  }
+
+  startWatchEcologyPolling() {
+    if (this.watchEcologySupported === false) {
+      return;
+    }
+    if (!this.watchEcologyTimer) {
+      this.loadWatchEcology();
+      this.watchEcologyTimer = window.setInterval(() => this.loadWatchEcology(), 5000);
+    }
+  }
+
+  stopWatchEcologyPolling() {
+    if (this.watchEcologyTimer) {
+      window.clearInterval(this.watchEcologyTimer);
+      this.watchEcologyTimer = null;
+    }
+  }
+
+  async loadWatchEcology() {
+    try {
+      const result = await this.api('/api/watch/ecology');
+      this.renderWatchEcology(result.ecology || null);
+    } catch (error) {
+      if (/404|Not Found/i.test(error.message || '')) {
+        this.watchEcologySupported = false;
+        this.stopWatchEcologyPolling();
+        return;
+      }
+      // Transient failures: keep the last rendered state.
+    }
+  }
+
+  renderWatchEcology(ecology) {
+    const modeEl = document.getElementById('ecology-mode');
+    const emptyEl = document.getElementById('ecology-empty');
+    const bodyEl = document.getElementById('ecology-body');
+    if (!modeEl || !emptyEl || !bodyEl) return;
+
+    if (!ecology) {
+      modeEl.textContent = '—';
+      modeEl.dataset.mode = '';
+      emptyEl.hidden = false;
+      bodyEl.hidden = true;
+      return;
+    }
+
+    emptyEl.hidden = true;
+    bodyEl.hidden = false;
+
+    const modeLabels = {
+      awake: 'Awake',
+      sleep_dream: 'Sleep / Dream',
+      settled: 'Settled',
+      error: 'Error'
+    };
+    modeEl.textContent = modeLabels[ecology.mode] || ecology.mode || '—';
+    modeEl.dataset.mode = ecology.mode || '';
+
+    const lanesEl = document.getElementById('ecology-lanes');
+    const lanes = Array.isArray(ecology.lanes) ? ecology.lanes : [];
+    lanesEl.innerHTML = lanes.map(entry => {
+      const allocation = Number(entry.allocation) || 0;
+      const spentPct = Math.min(100, Number(entry.spentPct) || 0);
+      const label = entry.lane.charAt(0).toUpperCase() + entry.lane.slice(1);
+      return `
+        <div class="ecology-lane" data-lane="${escapeHtml(entry.lane)}">
+          <div class="ecology-lane-head">
+            <span>${escapeHtml(label)}</span>
+            <span>${escapeHtml(String(entry.spentTurns || 0))} turns · ${allocation.toFixed(0)}%</span>
+          </div>
+          <div class="ecology-lane-track">
+            <div class="ecology-lane-alloc" style="width: ${allocation}%"></div>
+            <div class="ecology-lane-spent" style="width: ${spentPct}%"></div>
+          </div>
+        </div>`;
+    }).join('');
+
+    const questions = ecology.questions || {};
+    const byStatus = questions.byStatus || {};
+    document.getElementById('ecology-questions').textContent =
+      `${questions.total || 0} (${byStatus.incubating || 0} incubating)`;
+    document.getElementById('ecology-autonomous').textContent = String(questions.autonomous || 0);
+    const sleep = ecology.sleep || {};
+    document.getElementById('ecology-sleep').textContent = sleep.lastWakeBriefing
+      ? `${sleep.count || 0} · ${sleep.lastWakeBriefing}`
+      : String(sleep.count || 0);
+    const budget = ecology.budget || {};
+    document.getElementById('ecology-budget').textContent =
+      `${budget.spentTurns || 0} / ${budget.totalTurns || 0} turns`;
+
+    const noteEl = document.getElementById('ecology-note');
+    if (ecology.fatalError) {
+      noteEl.textContent = ecology.fatalError;
+      noteEl.hidden = false;
+      noteEl.classList.add('error');
+    } else if (ecology.mode === 'settled') {
+      noteEl.textContent = `Settled (${ecology.settledReason || 'done'}) — the Brain stays queryable from Query.`;
+      noteEl.hidden = false;
+      noteEl.classList.remove('error');
+    } else if (ecology.autonomyEnforced) {
+      noteEl.textContent = `Autonomy floor enforced at ${ecology.autonomyFloor}% — autonomous exploration cannot silently decay to zero.`;
+      noteEl.hidden = false;
+      noteEl.classList.remove('error');
+    } else {
+      noteEl.hidden = true;
     }
   }
 

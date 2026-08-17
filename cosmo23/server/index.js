@@ -2386,6 +2386,41 @@ app.get('/api/watch/logs', async (req, res) => {
   }
 });
 
+// Watch surface for the research ecology: mode, lanes, questions, sleep and
+// dream state, settled reason. Reads the active run's ecology/state.json,
+// written by the engine's ResearchEcology on every transition. When no run
+// is active it falls back to the most recent run so a settled ecology stays
+// visible (degraded-honest: returns ecology null rather than fabricating).
+app.get('/api/watch/ecology', async (_req, res) => {
+  try {
+    let runPath = activeContext?.runPath || null;
+    let runName = activeContext?.runName || null;
+    if (!runPath) {
+      const runtimeLink = RUNTIME_PATH;
+      try {
+        const resolved = await fsp.realpath(runtimeLink);
+        runPath = resolved;
+        runName = path.basename(resolved);
+      } catch { /* no runtime link — no run to show */ }
+    }
+    if (!runPath) {
+      return res.json({ success: true, running: Boolean(activeContext), ecology: null });
+    }
+    let ecology = null;
+    try {
+      ecology = JSON.parse(await fsp.readFile(path.join(runPath, 'ecology', 'state.json'), 'utf8'));
+    } catch { /* run predates the ecology or has not written state yet */ }
+    res.json({
+      success: true,
+      running: Boolean(activeContext),
+      runName,
+      ecology
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.post('/api/brain/:name/query', async (req, res) => {
   let responseFinished = false;
   const controller = new AbortController();
