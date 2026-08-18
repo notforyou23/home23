@@ -929,7 +929,7 @@ class CosmoStandaloneApp {
     });
     document.getElementById('sources-count').textContent = String(filtered.length);
     document.getElementById('source-list').innerHTML = filtered.length === 0
-      ? '<p class="cc-empty">No fetch receipts match this view.</p>'
+      ? `<p class="cc-empty">${this.sourceReceipts.length === 0 ? 'No fetches yet.' : 'No fetch receipts match this view.'}</p>`
       : filtered.map(source => {
         const at = Number(source.at);
         const time = Number.isFinite(at) && at > 0 ? new Date(at).toLocaleString() : 'time unknown';
