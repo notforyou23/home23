@@ -96,7 +96,7 @@ describe('Expanded drill control center', () => {
     expect(app).to.include('outputs/stream.jsonl');
     expect(app).to.include('outputs/sources.jsonl');
     expect(app).to.include('payload.stream');
-    expect(app).to.include('payload.sources');
+    expect(app).to.include('payload?.sources');
     expect(app).to.not.include('localStorage.setItem(\'cosmo.drill');
     expect(app).to.not.include('/api/drill/delete');
     expect(app).to.not.include('/api/drill/write');

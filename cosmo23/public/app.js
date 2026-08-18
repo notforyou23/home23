@@ -831,7 +831,7 @@ class CosmoStandaloneApp {
 
     const list = document.getElementById('finding-list');
     list.innerHTML = filtered.length === 0
-      ? '<p class="cc-empty">No tape entries match this view.</p>'
+      ? `<p class="cc-empty">${this.brainStream.length === 0 ? 'Nothing on the tape yet.' : 'No tape entries match this view.'}</p>`
       : filtered.map(entry => {
         const key = encodeURIComponent(this.streamEntryKey(entry));
         const state = entry.brain || 'journaled';
