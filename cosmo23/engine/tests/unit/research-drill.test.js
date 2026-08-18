@@ -371,7 +371,7 @@ describe('The drill: goal → phases → next goal', () => {
     expect(drill.mode).to.not.equal('done');
   });
 
-  it('goal generation failure degrades honestly: the drill keeps drilling on the question', async function () {
+  it('a degraded coordinator seeds once, then stops instead of minting deepen rounds', async function () {
     this.timeout(10000);
     const createWorker = scriptedWorkerFactory(runtimePath);
     const brokenClient = {
@@ -385,8 +385,15 @@ describe('The drill: goal → phases → next goal', () => {
     await drill._promise;
 
     expect(drill.degradedGoalGeneration).to.equal(true);
-    expect(drill.cyclesUsed).to.equal(3);
+    expect(drill.cyclesUsed).to.equal(1);
     expect(drill.mode).to.equal('done');
+    expect(drill.doneReason).to.equal('goal_generation_failed');
+    expect(drill._orchestrator.completions[0].reason).to.equal('drill_goal_generation_failed');
+    const progress = readJsonl(path.join(runtimePath, 'drill', 'progress.jsonl'));
+    const goals = progress.filter((entry) => entry.type === 'goal_created');
+    expect(goals).to.have.length(1);
+    expect(goals[0].title).to.equal('Jerry Garcia anecdotes');
+    expect(JSON.stringify(goals)).to.not.include('Go deeper');
     // No forbidden review-what-is-here phrasing in any mission.
     for (const worker of createWorker.spawned) {
       const blob = JSON.stringify(worker.plan).toLowerCase();
@@ -394,6 +401,49 @@ describe('The drill: goal → phases → next goal', () => {
         expect(blob).to.not.include(phrase.toLowerCase());
       }
     }
+  });
+
+  it('the coordinator can close a completed hunt before the cycle cap', async function () {
+    this.timeout(10000);
+    let goalCalls = 0;
+    const client = {
+      async createCompletion({ messages }) {
+        const system = messages?.[0]?.content || '';
+        if (/define research goals with concrete phases/i.test(system)) {
+          goalCalls += 1;
+          const content = goalCalls === 1
+            ? {
+                title: 'Resolve the 1973 source gap',
+                why: 'One named hole remains.',
+                phases: [{ title: '1973 primary sources', mission: 'Find and write up the missing 1973 primary sources.' }]
+              }
+            : { done: true, reason: 'The completed goal resolved the last distinct gap.' };
+          return { choices: [{ message: { role: 'assistant', content: JSON.stringify(content) } }] };
+        }
+        return {
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: JSON.stringify({ summary: 'The 1973 source gap is resolved.', gaps: [] })
+            }
+          }]
+        };
+      }
+    };
+    const createWorker = scriptedWorkerFactory(runtimePath);
+    const drill = makeDrill({ runtimePath, createWorker, client, cycles: 10 });
+
+    drill.start();
+    await drill._promise;
+
+    expect(createWorker.spawned).to.have.length(1);
+    expect(drill.cyclesUsed).to.equal(1);
+    expect(drill.doneReason).to.equal('research_complete');
+    expect(drill.degradedGoalGeneration).to.equal(false);
+    expect(drill._orchestrator.completions[0].reason).to.equal('drill_research_complete');
+    const progress = readJsonl(path.join(runtimePath, 'drill', 'progress.jsonl'));
+    expect(progress.filter((entry) => entry.type === 'goal_created')).to.have.length(1);
+    expect(progress.find((entry) => entry.type === 'drill_done')?.reason).to.equal('research_complete');
   });
 
   it('drill state on disk shows the board: goal, phases, budgets, activity', async function () {

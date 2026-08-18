@@ -442,6 +442,80 @@ describe('Coordinator (Principal-shaped, not a desk panel)', () => {
     expect(coordinator.assignPhases([], 3)).to.deep.equal([]);
   });
 
+  it('fails a degraded chain closed instead of inventing a deepen-round goal', async () => {
+    const coordinator = new DrillCoordinator({
+      logger,
+      config: { models: { fast: 'test' } },
+      client: {
+        async createCompletion() {
+          return { choices: [{ message: { role: 'assistant', content: 'not json' } }] };
+        }
+      }
+    });
+    const result = await coordinator.composeGoal({
+      question: 'Where did the 1973 account originate?',
+      questionContext: '',
+      previousGoal: { number: 1, phases: [{ title: 'Trace the account', summary: 'done' }] },
+      goalHistory: [{ number: 1, title: 'Trace the account', status: 'completed' }],
+      number: 2,
+      origin: 'chain'
+    });
+
+    expect(result.degraded).to.equal(true);
+    expect(result.spec).to.equal(null);
+    expect(result.done).to.equal(false);
+    expect(result.doneReason).to.equal('goal_generation_failed');
+    expect(JSON.stringify(result)).to.not.include('Go deeper');
+  });
+
+  it('accepts an explicit completed hunt and rejects generic or restated next goals', async () => {
+    const responses = [
+      { done: true, reason: 'No distinct research hole remains.' },
+      {
+        title: 'Go deeper on the launch question',
+        phases: [{ title: 'Deepen', mission: 'Keep looking.' }]
+      },
+      {
+        title: 'Where did the 1973 account originate? (round 4)',
+        phases: [{ title: 'Repeat', mission: 'Research the launch question again.' }]
+      }
+    ];
+    const coordinator = new DrillCoordinator({
+      logger,
+      config: { models: { fast: 'test' } },
+      client: {
+        async createCompletion() {
+          const content = responses.shift();
+          return { choices: [{ message: { role: 'assistant', content: JSON.stringify(content) } }] };
+        }
+      }
+    });
+    const input = {
+      question: 'Where did the 1973 account originate?',
+      questionContext: '',
+      previousGoal: { number: 3, phases: [{ title: 'Resolve sources', summary: 'done' }] },
+      goalHistory: [{ number: 3, title: 'Resolve sources', status: 'completed' }],
+      number: 4,
+      origin: 'chain'
+    };
+
+    const complete = await coordinator.composeGoal(input);
+    expect(complete).to.include({
+      spec: null,
+      degraded: false,
+      done: true,
+      doneReason: 'research_complete'
+    });
+
+    const generic = await coordinator.composeGoal(input);
+    expect(generic.spec).to.equal(null);
+    expect(generic.doneReason).to.equal('goal_generation_failed');
+
+    const restated = await coordinator.composeGoal(input);
+    expect(restated.spec).to.equal(null);
+    expect(restated.doneReason).to.equal('goal_generation_failed');
+  });
+
   it('never composes review-what-is-already-here goals; degraded merge is honest concatenation', async () => {
     const coordinator = new DrillCoordinator({
       logger,
