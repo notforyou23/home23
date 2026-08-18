@@ -952,9 +952,6 @@ class DrillLoop {
     const workerId = `w${cycle}`;
     phase.status = 'active';
     phase.cyclesUsed += 1;
-    // #region agent log
-    fs.appendFileSync('/opt/cursor/logs/debug.log', `${JSON.stringify({ hypothesisId: 'B', location: 'drill-loop.js:launchWorker', message: 'descent counted before worker starts', data: { cycle, cyclesUsed: this.cyclesUsed, phaseCyclesUsed: phase.cyclesUsed }, timestamp: Date.now() })}\n`);
-    // #endregion
 
     const notes = await this.readNotes();
     const siblings = this.currentGoal.phases
@@ -1027,9 +1024,6 @@ class DrillLoop {
       if (!entry.done) continue;
 
       const { worker, phase, goal, cycle } = entry;
-      // #region agent log
-      fs.appendFileSync('/opt/cursor/logs/debug.log', `${JSON.stringify({ hypothesisId: 'A,C', location: 'drill-loop.js:settleFinishedWorkers', message: 'settling worker terminal state', data: { cycle, cyclesUsed: this.cyclesUsed, finished: worker.finished === true, protocolError: worker.protocolError || null, providerError: worker.providerError || null, turns: worker.turns }, timestamp: Date.now() })}\n`);
-      // #endregion
       if (worker.providerError) {
         await this.stopProviderRefusal(worker.providerError);
         return true;
@@ -1148,9 +1142,6 @@ class DrillLoop {
           { cycle, workerId, goalNumber: goal.number, phaseNumber: phase.number });
       } else {
         phase.status = 'pending';
-        // #region agent log
-        fs.appendFileSync('/opt/cursor/logs/debug.log', `${JSON.stringify({ hypothesisId: 'A,C', location: 'drill-loop.js:settleFinishedWorkers:unfinished', message: 'protocol failure treated as ordinary unfinished descent', data: { cycle, cyclesUsed: this.cyclesUsed, protocolError: worker.protocolError || null, nextPhaseStatus: phase.status }, timestamp: Date.now() })}\n`);
-        // #endregion
         this.emitEvent('drill_phase_continues', {
           cycle,
           workerId,
@@ -1420,9 +1411,6 @@ class DrillLoop {
   }
 
   async finishDrill(reason) {
-    // #region agent log
-    fs.appendFileSync('/opt/cursor/logs/debug.log', `${JSON.stringify({ hypothesisId: 'D', location: 'drill-loop.js:finishDrill', message: 'terminal closeout entered', data: { reason, cyclesUsed: this.cyclesUsed, goalsCompleted: this.goalHistory.filter((goal) => goal.status === 'completed').length, writeups: listWriteups(this.runtimePath) }, timestamp: Date.now() })}\n`);
-    // #endregion
     this.running = false;
     this.mode = 'done';
     this.doneReason = reason;

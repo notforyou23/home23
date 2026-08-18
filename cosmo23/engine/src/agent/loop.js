@@ -410,9 +410,6 @@ class LaunchLoop {
         this.running = false;
         this.protocolError = 'Model returned empty replies without doing work';
         this.protocolErrorType = 'empty_model_reply';
-        // #region agent log
-        require('fs').appendFileSync('/opt/cursor/logs/debug.log', `${JSON.stringify({ hypothesisId: 'A', location: 'loop.js:repeated-empty', message: 'worker classified repeated empty replies', data: { turn: this.turns, stage: policy.stage, finished: this.finished, protocolError: this.protocolError }, timestamp: Date.now() })}\n`);
-        // #endregion
         this.logger?.error?.('Research Launch loop stopped: repeated empty model reply', {
           turn: this.turns,
           stage: policy.stage
