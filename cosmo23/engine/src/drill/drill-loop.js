@@ -176,9 +176,6 @@ class DrillLoop {
 
   stop() {
     if (this._stopPromise) return this._stopPromise;
-    // #region agent log
-    try { fs.appendFileSync('/opt/cursor/logs/debug.log', `${JSON.stringify({ hypothesisId: 'A|B', location: 'engine/src/drill/drill-loop.js:stop:entry', message: 'Drill stop entered before terminal mutation', data: { mode: this.mode, running: this.running, activeWorkers: this.activeWorkers.size, finished: this.finished }, timestamp: Date.now() })}\n`); } catch {}
-    // #endregion
     const wasDrilling = this.mode === 'drilling';
     this.running = false;
     if (wasDrilling) this.mode = 'stopped';
@@ -199,9 +196,6 @@ class DrillLoop {
         });
       }
     }
-    // #region agent log
-    try { fs.appendFileSync('/opt/cursor/logs/debug.log', `${JSON.stringify({ hypothesisId: 'A|B', location: 'engine/src/drill/drill-loop.js:stop:exit', message: 'Drill stop completed in-memory mutation', data: { mode: this.mode, running: this.running, activeWorkers: this.activeWorkers.size, finished: this.finished }, timestamp: Date.now() })}\n`); } catch {}
-    // #endregion
     const interruptedPhases = [];
     for (const phase of this.currentGoal?.phases || []) {
       if (phase.status !== 'active') continue;
@@ -388,9 +382,6 @@ class DrillLoop {
       const tmp = `${file}.tmp`;
       await fsp.writeFile(tmp, JSON.stringify(this.snapshot(), null, 2));
       await fsp.rename(tmp, file);
-      // #region agent log
-      try { fs.appendFileSync('/opt/cursor/logs/debug.log', `${JSON.stringify({ hypothesisId: 'A|C', location: 'engine/src/drill/drill-loop.js:persistState:renamed', message: 'Drill state atomically persisted', data: { mode: this.mode, running: this.running, activeWorkers: this.activeWorkers.size, finished: this.finished, doneReason: this.doneReason }, timestamp: Date.now() })}\n`); } catch {}
-      // #endregion
     };
     const queued = this._persistTail.catch(() => {}).then(persist);
     this._persistTail = queued;
@@ -544,9 +535,6 @@ class DrillLoop {
     }
 
     if (this.mode === 'stopped') {
-      // #region agent log
-      try { fs.appendFileSync('/opt/cursor/logs/debug.log', `${JSON.stringify({ hypothesisId: 'B', location: 'engine/src/drill/drill-loop.js:run:stopped-branch', message: 'Drill run reached stopped persistence branch', data: { mode: this.mode, running: this.running, activeWorkers: this.activeWorkers.size }, timestamp: Date.now() })}\n`); } catch {}
-      // #endregion
       if (this._stopPromise) {
         await this._stopPromise;
       } else {
@@ -1105,9 +1093,6 @@ class DrillLoop {
     this.doneReason = reason;
     this.finished = true;
     this.finishSummary = `Drill done: ${reason} after ${this.cyclesUsed} cycles, ${this.goalHistory.filter((goal) => goal.status === 'completed').length} goals completed`;
-    // #region agent log
-    try { fs.appendFileSync('/opt/cursor/logs/debug.log', `${JSON.stringify({ hypothesisId: 'C', location: 'engine/src/drill/drill-loop.js:finishDrill:terminal', message: 'Budget or work completion set terminal drill state', data: { reason, mode: this.mode, running: this.running, activeWorkers: this.activeWorkers.size, finished: this.finished }, timestamp: Date.now() })}\n`); } catch {}
-    // #endregion
 
     await this.journal('drill_done', {
       reason,
