@@ -179,8 +179,7 @@ describe('Product drill lifecycle isolation', () => {
           goal: 'Garcia partnership',
           seedPhases: [{
             title: 'Garcia interviews',
-            mission: 'Collect finished interview evidence.',
-            expectedOutput: '@outputs/garcia_interview_sources.json'
+            mission: 'Collect finished interview evidence and write outputs/garcia_interview_sources.json.'
           }]
         }
       }
@@ -221,6 +220,7 @@ describe('Product drill lifecycle isolation', () => {
 
     expect(phase.status).to.equal('done');
     expect(state.goal.phases[0].expectedOutput).to.equal('outputs/garcia_interview_sources.json');
+    expect(state.goal.phases[0].expectedOutputSource).to.equal('mission');
     expect(state.goal.phases[0].clearance).to.include({
       reason: 'finished_json',
       path: 'outputs/garcia_interview_sources.json'
@@ -294,6 +294,71 @@ describe('Product drill lifecycle isolation', () => {
     expect(resumed.currentGoal.phases[0].clearance).to.equal(null);
     const progress = fs.readFileSync(path.join(runtimePath, 'drill', 'progress.jsonl'), 'utf8');
     expect(progress).to.include('phase_clearance_invalidated');
+    expect(progress).to.include('receipt_changed');
+  });
+
+  it('revalidates cleared receipts immediately before merging the goal', async () => {
+    const runtimePath = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo-drill-pre-merge-'));
+    let mergeCalls = 0;
+    const drill = new DrillLoop({
+      logger,
+      orchestrator: { logsDir: runtimePath },
+      coordinator: {
+        async mergeGoal() {
+          mergeCalls += 1;
+          return { summary: 'should not merge', gaps: [] };
+        }
+      },
+      config: { logsDir: runtimePath, drill: { cycles: 2 } }
+    });
+    const expectedOutput = 'outputs/garcia_interview_sources.json';
+    const writer = {
+      drill: { goalNumber: 1, phaseNumber: 1 },
+      expectedOutput,
+      evidence: { streamed: 1 }
+    };
+    await executeTool('write_file', {
+      path: 'garcia_interview_sources.json',
+      content: JSON.stringify({
+        entries: [{ quote: 'A finished quote.', source: 'Interview' }],
+        status: 'complete'
+      })
+    }, { runtimePath, logger, loop: writer });
+    const goal = {
+      id: 'goal-1',
+      number: 1,
+      title: 'Garcia interviews',
+      status: 'active',
+      phases: [{
+        id: 'phase-1',
+        number: 1,
+        title: 'Interview sources',
+        mission: 'Write the interview sources.',
+        expectedOutput,
+        status: 'done',
+        summary: 'Finished.',
+        writeups: [expectedOutput],
+        clearance: { path: expectedOutput },
+        cyclesUsed: 1,
+        evidence: { streamed: 1 },
+        rejections: 0
+      }]
+    };
+    fs.writeFileSync(
+      path.join(runtimePath, expectedOutput),
+      JSON.stringify({ entries: [], status: 'in-progress' })
+    );
+
+    const result = await drill.mergeAndCompleteGoal(goal);
+
+    expect(result.completed).to.equal(false);
+    expect(mergeCalls).to.equal(0);
+    expect(goal.status).to.equal('active');
+    expect(goal.phases[0].status).to.equal('pending');
+    expect(goal.phases[0].clearance).to.equal(null);
+    expect(drill.goalHistory).to.have.length(0);
+    const progress = fs.readFileSync(path.join(runtimePath, 'drill', 'progress.jsonl'), 'utf8');
+    expect(progress).to.include('before_goal_merge');
     expect(progress).to.include('receipt_changed');
   });
 });

@@ -1831,9 +1831,12 @@ class CosmoStandaloneApp {
       const expected = Array.isArray(phase.expectedOutput)
         ? phase.expectedOutput.join(', ')
         : (phase.expectedOutput || 'No named receipt');
+      const receiptSource = phase.expectedOutputSource === 'mission'
+        ? 'named in mission'
+        : (phase.expectedOutputSource === 'expected_output' ? 'declared output' : 'generated phase receipt');
       receipt.textContent = phase.clearance
-        ? `Cleared by ${phase.clearance.path} · ${phase.clearance.reason}`
-        : `Receipt required: ${expected}`;
+        ? `Cleared by ${phase.clearance.path} · ${phase.clearance.reason} · ${receiptSource}`
+        : `Receipt required: ${expected} · ${receiptSource}`;
       card.append(heading, detail, mission, receipt);
       phasesContainer?.appendChild(card);
     });

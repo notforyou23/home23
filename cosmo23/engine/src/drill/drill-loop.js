@@ -60,22 +60,45 @@ function fileSlug(value) {
     .slice(0, 64) || 'phase';
 }
 
+function missionOutputPaths(runtimePath, mission) {
+  const text = String(mission || '');
+  const pathPattern = /@?outputs\/[a-z0-9][a-z0-9._/-]*/ig;
+  const directed = [...text.matchAll(
+    /\b(?:create|deliver|persist|produce|save|write)\b[\s\S]{0,100}?(@?outputs\/[a-z0-9][a-z0-9._/-]*)/ig
+  )].map(match => match[1].replace(/[.,;:!?]+$/, ''));
+  if (directed.length > 0) return expectedOutputPaths(runtimePath, directed);
+  const all = [...text.matchAll(pathPattern)]
+    .map(match => match[0].replace(/[.,;:!?]+$/, ''));
+  return all.length === 1 ? expectedOutputPaths(runtimePath, all) : [];
+}
+
 function normalizePhaseOutputs(runtimePath, phases, goalNumber) {
   const used = new Set();
   return phases.map((phase, index) => {
     const phaseNumber = index + 1;
-    const requested = expectedOutputPaths(runtimePath, phase.expectedOutput);
+    const declared = expectedOutputPaths(runtimePath, phase.expectedOutput);
+    const missionNamed = declared.length === 0
+      ? missionOutputPaths(runtimePath, phase.mission)
+      : [];
+    const requested = declared.length > 0 ? declared : missionNamed;
     const collides = requested.some(output => used.has(output));
     const expectedOutput = requested.length > 0 && !collides
       ? (requested.length === 1 ? requested[0] : requested)
       : `outputs/drill/goal-${goalNumber}/phase-${phaseNumber}-${fileSlug(phase.title)}.md`;
+    const expectedOutputSource = phase.expectedOutputSource
+      || (declared.length > 0
+        ? 'expected_output'
+        : (missionNamed.length > 0 && !collides ? 'mission' : 'generated'));
     for (const output of Array.isArray(expectedOutput) ? expectedOutput : [expectedOutput]) {
       used.add(output);
     }
     return {
       ...phase,
-      requestedOutput: collides ? (phase.expectedOutput || null) : null,
-      expectedOutput
+      requestedOutput: collides
+        ? (phase.expectedOutput || (missionNamed.length === 1 ? missionNamed[0] : missionNamed))
+        : null,
+      expectedOutput,
+      expectedOutputSource
     };
   });
 }
@@ -367,6 +390,7 @@ class DrillLoop {
           title: phase.title,
           mission: phase.mission,
           expectedOutput: phase.expectedOutput || null,
+          expectedOutputSource: phase.expectedOutputSource || null,
           status: phase.status,
           cyclesUsed: phase.cyclesUsed,
           summary: phase.summary || null,
@@ -637,6 +661,7 @@ class DrillLoop {
               title: phase.title,
               mission: phase.mission || phase.title,
               expectedOutput: phase.expectedOutput,
+              expectedOutputSource: phase.expectedOutputSource,
               requestedOutput: phase.requestedOutput || null,
               status: receipt.accepted ? 'done' : 'pending',
               summary: receipt.accepted ? (phase.summary || null) : null,
@@ -737,6 +762,7 @@ class DrillLoop {
         title: phase.title,
         mission: phase.mission || phase.title,
         expectedOutput: phase.expectedOutput || null,
+        expectedOutputSource: phase.expectedOutputSource || null,
         requestedOutput: phase.requestedOutput || null,
         status: 'pending',
         summary: null,
@@ -751,6 +777,41 @@ class DrillLoop {
   }
 
   async mergeAndCompleteGoal(goal) {
+    const invalidated = [];
+    for (const phase of goal.phases) {
+      if (phase.status !== 'done') continue;
+      const receipt = assessPhaseReceipt(this.runtimePath, phase.expectedOutput, {
+        goalNumber: goal.number,
+        phaseNumber: phase.number
+      });
+      if (receipt.accepted) continue;
+      phase.status = 'pending';
+      phase.summary = null;
+      phase.writeups = [];
+      phase.clearance = null;
+      phase.rejections = (Number(phase.rejections) || 0) + 1;
+      invalidated.push({
+        goalNumber: goal.number,
+        phaseNumber: phase.number,
+        expectedOutput: phase.expectedOutput,
+        reason: receipt.reason,
+        checkpoint: 'before_goal_merge'
+      });
+    }
+    if (invalidated.length > 0) {
+      for (const invalidation of invalidated) {
+        await this.journal('phase_clearance_invalidated', invalidation);
+        this.emitEvent('drill_phase_rejected', {
+          goalNumber: invalidation.goalNumber,
+          phaseNumber: invalidation.phaseNumber,
+          reason: invalidation.reason,
+          message: `Phase ${invalidation.phaseNumber} receipt changed before goal merge — phase stays open`
+        });
+      }
+      await this.persistState();
+      return { completed: false, invalidated };
+    }
+
     const findings = await this.recentFindings(12);
     let merge;
     try {
