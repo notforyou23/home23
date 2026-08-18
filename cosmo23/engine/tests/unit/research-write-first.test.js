@@ -322,6 +322,190 @@ describe('Research worker write nudges', () => {
     ))).to.equal(true);
   });
 
+  it('takes a drafted writeup out of model prose and lands it at the phase path', async () => {
+    const runtimePath = tempRuntime();
+    const writeupPath = 'drill/goal-3/phase-2-partnership.md';
+    const draftedWriteup = [
+      '# Garcia partnership',
+      '',
+      ...Array.from(
+        { length: 260 },
+        (_, index) => `## Evidence ${index + 1}\n\nDocumented partnership finding ${index + 1} with source context and analysis.`
+      )
+    ].join('\n');
+    const stages = [];
+    const loop = new LaunchLoop({
+      logger,
+      plan: {
+        shortPlan: {
+          goal: 'Land the partnership paper',
+          constraints: [],
+          deliverable: 'Write the phase paper.',
+          writeupPath,
+          writeFirst: true
+        }
+      },
+      drill: { goalNumber: 3, phaseNumber: 2, workerId: 'w10', cycle: 1 },
+      config: { models: { primary: 'test' }, logsDir: runtimePath },
+      maxTurns: 24,
+      client: {
+        createCompletion: async options => {
+          const allowed = (options.tools || []).map(tool => tool.function.name);
+          stages.push(allowed.join(','));
+          if (allowed.join(',') === 'write_file') {
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  content: draftedWriteup
+                }
+              }]
+            };
+          }
+          if (allowed.join(',') === 'remember') {
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  tool_calls: [{
+                    id: 'remember-drafted-paper',
+                    function: {
+                      name: 'remember',
+                      arguments: JSON.stringify({ content: 'The partnership paper landed with evidence.' })
+                    }
+                  }]
+                }
+              }]
+            };
+          }
+          return {
+            choices: [{
+              message: {
+                role: 'assistant',
+                tool_calls: [{
+                  id: 'finish-drafted-paper',
+                  function: {
+                    name: 'finish',
+                    arguments: JSON.stringify({ summary: 'Partnership paper landed.' })
+                  }
+                }]
+              }
+            }]
+          };
+        }
+      }
+    });
+
+    loop.start();
+    await loop._promise;
+
+    expect(stages).to.deep.equal(['write_file', 'remember', 'finish']);
+    expect(loop.finished).to.equal(true);
+    expect(fs.readFileSync(path.join(runtimePath, 'outputs', writeupPath), 'utf8')).to.equal(draftedWriteup);
+    const stream = fs.readFileSync(path.join(runtimePath, 'outputs', 'stream.jsonl'), 'utf8')
+      .trim().split('\n').map(line => JSON.parse(line));
+    expect(stream.some(entry => entry.kind === 'writeup')).to.equal(true);
+    expect(stream.some(entry => entry.kind === 'thought'
+      && String(entry.content).includes('Documented partnership finding'))).to.equal(false);
+  });
+
+  it('takes an earlier full drafted thought back off the phase tape when write becomes required', async () => {
+    const runtimePath = tempRuntime();
+    const writeupPath = 'drill/goal-3/phase-2-tape-paper.md';
+    const draftedWriteup = [
+      '# Tape-owned paper',
+      '',
+      ...Array.from(
+        { length: 220 },
+        (_, index) => `Evidence paragraph ${index + 1}: the archive record supports the phase conclusion in detail.`
+      )
+    ].join('\n\n');
+    const stages = [];
+    const loop = new LaunchLoop({
+      logger,
+      plan: {
+        shortPlan: {
+          goal: 'Research, then land the paper',
+          constraints: [],
+          deliverable: 'Write the phase paper.',
+          writeupPath
+        }
+      },
+      drill: { goalNumber: 3, phaseNumber: 2, workerId: 'w8', cycle: 1 },
+      config: { models: { primary: 'test' }, logsDir: runtimePath },
+      maxTurns: 7,
+      client: {
+        createCompletion: async options => {
+          const allowed = (options.tools || []).map(tool => tool.function.name);
+          stages.push(allowed);
+          if (allowed.length > 1) {
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  content: draftedWriteup
+                }
+              }]
+            };
+          }
+          if (allowed[0] === 'write_file') {
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  content: 'I am writing now.'
+                }
+              }]
+            };
+          }
+          if (allowed[0] === 'remember') {
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  tool_calls: [{
+                    id: 'remember-tape-paper',
+                    function: {
+                      name: 'remember',
+                      arguments: JSON.stringify({ content: 'The tape-owned paper landed.' })
+                    }
+                  }]
+                }
+              }]
+            };
+          }
+          return {
+            choices: [{
+              message: {
+                role: 'assistant',
+                tool_calls: [{
+                  id: 'finish-tape-paper',
+                  function: {
+                    name: 'finish',
+                    arguments: JSON.stringify({ summary: 'Tape-owned paper landed.' })
+                  }
+                }]
+              }
+            }]
+          };
+        }
+      }
+    });
+
+    loop.start();
+    await loop._promise;
+
+    expect(stages.map(names => names.length === 1 ? names[0] : 'research'))
+      .to.deep.equal(['research', 'write_file', 'remember', 'finish']);
+    expect(loop.finished).to.equal(true);
+    expect(fs.readFileSync(path.join(runtimePath, 'outputs', writeupPath), 'utf8')).to.equal(draftedWriteup);
+    const stream = fs.readFileSync(path.join(runtimePath, 'outputs', 'stream.jsonl'), 'utf8')
+      .trim().split('\n').map(line => JSON.parse(line));
+    const draftedThought = stream.find(entry => entry.kind === 'thought');
+    expect(draftedThought.content).to.equal(draftedWriteup);
+    expect(stream.some(entry => entry.kind === 'writeup')).to.equal(true);
+  });
+
   it('fails the worker after one same-turn retry when write_file is still refused', async () => {
     const runtimePath = tempRuntime();
     const calls = [];
