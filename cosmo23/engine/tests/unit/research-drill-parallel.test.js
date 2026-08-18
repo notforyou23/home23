@@ -442,13 +442,25 @@ describe('Coordinator (Principal-shaped, not a desk panel)', () => {
     expect(coordinator.assignPhases([], 3)).to.deep.equal([]);
   });
 
-  it('fails a degraded chain closed instead of inventing a deepen-round goal', async () => {
+  it('fails a degraded chain closed after one retry instead of minting a deepen-round goal', async () => {
+    let calls = 0;
     const coordinator = new DrillCoordinator({
       logger,
       config: { models: { fast: 'test' } },
       client: {
         async createCompletion() {
-          return { choices: [{ message: { role: 'assistant', content: 'not json' } }] };
+          calls += 1;
+          return {
+            choices: [{
+              message: {
+                role: 'assistant',
+                content: JSON.stringify({
+                  title: `Go deeper on the launch question (round ${calls})`,
+                  phases: [{ title: 'Deepen', mission: 'Keep looking.' }]
+                })
+              }
+            }]
+          };
         }
       }
     });
@@ -461,23 +473,28 @@ describe('Coordinator (Principal-shaped, not a desk panel)', () => {
       origin: 'chain'
     });
 
+    expect(calls).to.equal(2);
     expect(result.degraded).to.equal(true);
     expect(result.spec).to.equal(null);
     expect(result.done).to.equal(false);
     expect(result.doneReason).to.equal('goal_generation_failed');
-    expect(JSON.stringify(result)).to.not.include('Go deeper');
+    expect(result.rejections).to.have.length(2);
+    expect(result.rejections.map((entry) => entry.reason)).to.deep.equal([
+      'non_distinct_goal_title',
+      'non_distinct_goal_title'
+    ]);
   });
 
-  it('accepts an explicit completed hunt and rejects generic or restated next goals', async () => {
+  it('accepts a named hole from the tighter second call', async () => {
     const responses = [
-      { done: true, reason: 'No distinct research hole remains.' },
       {
         title: 'Go deeper on the launch question',
         phases: [{ title: 'Deepen', mission: 'Keep looking.' }]
       },
       {
-        title: 'Where did the 1973 account originate? (round 4)',
-        phases: [{ title: 'Repeat', mission: 'Research the launch question again.' }]
+        title: 'Resolve the missing 1973 archive provenance',
+        why: 'The archive chain is still unverified.',
+        phases: [{ title: 'Trace the archive', mission: 'Find primary records establishing the archive provenance.' }]
       }
     ];
     const coordinator = new DrillCoordinator({
@@ -499,21 +516,52 @@ describe('Coordinator (Principal-shaped, not a desk panel)', () => {
       origin: 'chain'
     };
 
-    const complete = await coordinator.composeGoal(input);
-    expect(complete).to.include({
+    const result = await coordinator.composeGoal(input);
+
+    expect(result.degraded).to.equal(false);
+    expect(result.spec.title).to.equal('Resolve the missing 1973 archive provenance');
+    expect(result.done).to.equal(false);
+    expect(result.rejections).to.deep.include({
+      attempt: 1,
+      reason: 'non_distinct_goal_title',
+      payload: 'Go deeper on the launch question'
+    });
+  });
+
+  it('accepts research_complete from the tighter second call', async () => {
+    const responses = [
+      'not json',
+      JSON.stringify({ done: true, reason: 'No distinct research hole remains.' })
+    ];
+    const coordinator = new DrillCoordinator({
+      logger,
+      config: { models: { fast: 'test' } },
+      client: {
+        async createCompletion() {
+          return { choices: [{ message: { role: 'assistant', content: responses.shift() } }] };
+        }
+      }
+    });
+    const result = await coordinator.composeGoal({
+      question: 'Where did the 1973 account originate?',
+      questionContext: '',
+      previousGoal: { number: 1, phases: [{ title: 'Resolve sources', summary: 'done' }] },
+      goalHistory: [{ number: 1, title: 'Resolve sources', status: 'completed' }],
+      number: 2,
+      origin: 'chain'
+    });
+
+    expect(result).to.include({
       spec: null,
       degraded: false,
       done: true,
       doneReason: 'research_complete'
     });
-
-    const generic = await coordinator.composeGoal(input);
-    expect(generic.spec).to.equal(null);
-    expect(generic.doneReason).to.equal('goal_generation_failed');
-
-    const restated = await coordinator.composeGoal(input);
-    expect(restated.spec).to.equal(null);
-    expect(restated.doneReason).to.equal('goal_generation_failed');
+    expect(result.rejections).to.deep.equal([{
+      attempt: 1,
+      reason: 'non_json_response',
+      payload: 'not json'
+    }]);
   });
 
   it('never composes review-what-is-already-here goals; degraded merge is honest concatenation', async () => {
