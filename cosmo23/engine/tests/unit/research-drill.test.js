@@ -103,11 +103,11 @@ function scriptedWorkerFactory(runtimePath, { finish = true, fatalAuth = false, 
           }, { runtimePath, logger, loop: this });
           if (finish) {
             await executeTool('write_file', {
-              path: `level-${this.drill.goalNumber}-p${this.drill.phaseNumber}.md`,
+              path: String(this.plan.shortPlan.expectedOutput).replace(/^outputs\//, ''),
               content: `# Phase ${this.drill.phaseNumber}\n\nFinding from cycle ${this.drill.cycle}.`
             }, { runtimePath, logger, loop: this });
             this.finished = true;
-            this.finishSummary = `Wrote outputs/level-${this.drill.goalNumber}-p${this.drill.phaseNumber}.md`;
+            this.finishSummary = `Wrote ${this.plan.shortPlan.expectedOutput}`;
           }
           this.running = false;
         })();
@@ -581,6 +581,8 @@ describe('The control center is what you open', () => {
     expect(appSource).to.include("api('/api/drill/status')");
     expect(appSource).to.include("'/api/drill/note'");
     expect(appSource).to.include("api('/api/stop'");
+    expect(appSource).to.include('Receipt required:');
+    expect(appSource).to.include('Cleared by');
   });
 });
 
@@ -633,7 +635,7 @@ describe('Write-first close and persisted notes', () => {
 
     expect(drill.currentGoal.phases[0].status).to.not.equal('done');
     const progress = readJsonl(path.join(runtimePath, 'drill', 'progress.jsonl'));
-    const rejected = progress.filter((entry) => entry.type === 'cycle_completed' && entry.rejectedReason === 'missing_writeup');
+    const rejected = progress.filter((entry) => entry.type === 'cycle_completed' && entry.rejectedReason === 'missing_receipt');
     expect(rejected.length).to.be.greaterThan(0);
   });
 });
