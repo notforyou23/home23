@@ -272,7 +272,10 @@ describe('Writeup gate', () => {
       { findings: [], count: 0, status: 'complete' },
       { findings: ['One draft quote'], complete: false },
       { findings: [], status: 'complete', generatedAt: '2026-08-18T16:00:00Z' },
-      { findings: [], status: 'complete', note: 'Source collection was attempted.' }
+      { findings: [], status: 'complete', note: 'Source collection was attempted.' },
+      { findings: ['One quote'], finished: false },
+      { findings: ['One quote'], success: false },
+      { findings: ['One quote'], status: 'failed' }
     ];
     for (const [index, content] of cases.entries()) {
       const runtimePath = tempRuntime();

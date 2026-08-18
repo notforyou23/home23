@@ -29,7 +29,7 @@ const UNFINISHED_STATUS_PATTERN = /\b(?:in[\s-]*progress|incomplete|pending|draf
 const PROGRESS_BASENAME_PATTERN = /(?:^|[-_.])progress(?:[-_.]|$)/i;
 const EMPTY_SECTION_PATTERN = /^(?:findings?|results?|evidence|quotes?|sources?)$/i;
 const JSON_RESULT_KEY_PATTERN = /^(?:data|entries|evidence|findings?|items|quotes?|records?|results?|sources?)$/i;
-const JSON_METADATA_KEY_PATTERN = /^(?:at|bytes|complete|completed|count|createdAt|done|fileName|generatedAt|id|name|path|sha256|state|status|timestamp|total|updatedAt|version)$/i;
+const JSON_METADATA_KEY_PATTERN = /^(?:at|bytes|complete|completed|count|createdAt|done|fileName|finished|generatedAt|id|name|path|sha256|state|status|success|timestamp|total|updatedAt|valid|verified|version)$/i;
 
 function isInside(root, target) {
   const relative = path.relative(root, target);
@@ -103,10 +103,13 @@ function jsonHasFinishedWork(value, key = '') {
     const entries = Object.entries(value);
     if (entries.length === 0) return false;
     for (const [entryKey, entryValue] of entries) {
-      if (/status/i.test(entryKey) && UNFINISHED_STATUS_PATTERN.test(String(entryValue || ''))) {
+      if (/^(?:state|status)$/i.test(entryKey)
+          && (UNFINISHED_STATUS_PATTERN.test(String(entryValue || ''))
+            || /^(?:error|failed|failure)$/i.test(String(entryValue || '').trim()))) {
         return false;
       }
-      if (/^(?:complete|completed|done)$/i.test(entryKey) && entryValue === false) {
+      if (/^(?:complete|completed|done|finished|success|valid|verified)$/i.test(entryKey)
+          && entryValue === false) {
         return false;
       }
     }
