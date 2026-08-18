@@ -10567,7 +10567,7 @@ OUTPUT FORMAT (JSON ONLY):
     try { require('fs').appendFileSync('/opt/cursor/logs/debug.log', `${JSON.stringify({ hypothesisId: 'A|B', location: 'engine/src/core/orchestrator.js:stop:before-launch-loop', message: 'Orchestrator stopping product loop', data: { hasLaunchLoop: Boolean(this.launchLoop), loopMode: this.launchLoop?.mode ?? null, loopRunning: this.launchLoop?.running ?? null, activeWorkers: this.launchLoop?.activeWorkers?.size ?? null }, timestamp: Date.now() })}\n`); } catch {}
     // #endregion
     if (this.launchLoop && typeof this.launchLoop.stop === 'function') {
-      this.launchLoop.stop();
+      await this.launchLoop.stop();
     }
     // #region agent log
     try { require('fs').appendFileSync('/opt/cursor/logs/debug.log', `${JSON.stringify({ hypothesisId: 'A|B', location: 'engine/src/core/orchestrator.js:stop:after-launch-loop', message: 'Orchestrator observed loop after stop call', data: { loopMode: this.launchLoop?.mode ?? null, loopRunning: this.launchLoop?.running ?? null, activeWorkers: this.launchLoop?.activeWorkers?.size ?? null, loopFinished: this.launchLoop?.finished ?? null }, timestamp: Date.now() })}\n`); } catch {}

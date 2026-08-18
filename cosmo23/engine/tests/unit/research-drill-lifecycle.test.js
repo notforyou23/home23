@@ -92,4 +92,76 @@ describe('Product drill lifecycle isolation', () => {
     expect(calls[1].value.status).to.equal('COMPLETED');
     expect(calls[2].patch.status).to.equal('COMPLETED');
   });
+
+  it('persists an immediate stop and normalizes in-flight workers and phases', async () => {
+    const runtimePath = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo-drill-stop-'));
+    const harvestPath = path.join(runtimePath, 'outputs', 'candidates', 'findings.jsonl');
+    fs.mkdirSync(path.dirname(harvestPath), { recursive: true });
+    fs.writeFileSync(harvestPath, `${JSON.stringify({ content: 'durable partial harvest' })}\n`);
+    const stopped = [];
+    const drill = new DrillLoop({
+      orchestrator: { logsDir: runtimePath },
+      logger: { info() {}, warn() {}, error() {} },
+      plan: { shortPlan: { goal: 'Research', constraints: [] } },
+      config: { logsDir: runtimePath, drill: { cycles: 5 } }
+    });
+    const activePhase = {
+      id: 'phase-1',
+      number: 1,
+      title: 'Active phase',
+      mission: 'Keep drilling',
+      status: 'active',
+      cyclesUsed: 1,
+      evidence: { streamed: 1 },
+      writeups: []
+    };
+    const donePhase = {
+      id: 'phase-2',
+      number: 2,
+      title: 'Done phase',
+      mission: 'Already complete',
+      status: 'done',
+      cyclesUsed: 1,
+      evidence: { streamed: 1 },
+      writeups: ['outputs/done.md']
+    };
+    drill.running = true;
+    drill.started = true;
+    drill.mode = 'drilling';
+    drill.currentGoal = {
+      id: 'goal-1',
+      number: 1,
+      title: 'Research',
+      status: 'active',
+      phases: [activePhase, donePhase]
+    };
+    drill.activeWorkers.set('w1', {
+      workerId: 'w1',
+      worker: {
+        turns: 2,
+        stop() { stopped.push('w1'); }
+      },
+      phase: activePhase,
+      goal: drill.currentGoal,
+      cycle: 1,
+      startedAt: Date.now()
+    });
+    await drill.persistState();
+
+    const result = await drill.stop();
+    const state = JSON.parse(fs.readFileSync(path.join(runtimePath, 'drill', 'state.json'), 'utf8'));
+    const progress = fs.readFileSync(path.join(runtimePath, 'drill', 'progress.jsonl'), 'utf8')
+      .trim().split('\n').map((line) => JSON.parse(line));
+
+    expect(result.workersNormalized).to.equal(1);
+    expect(result.phasesNormalized).to.equal(1);
+    expect(stopped).to.deep.equal(['w1']);
+    expect(drill.activeWorkers.size).to.equal(0);
+    expect(state.mode).to.equal('stopped');
+    expect(state.activeWorkers).to.deep.equal([]);
+    expect(state.goal.phases.map((phase) => phase.status)).to.deep.equal(['pending', 'done']);
+    expect(progress.at(-1).type).to.equal('drill_stopped');
+    expect(progress.at(-1).interruptedWorkers[0].workerId).to.equal('w1');
+    expect(fs.readFileSync(harvestPath, 'utf8')).to.include('durable partial harvest');
+  });
 });

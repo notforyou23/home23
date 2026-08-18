@@ -135,6 +135,10 @@ const {
   readJsonlTape
 } = require('./lib/drill-inspector');
 const {
+  deriveDrillStatusTruth,
+  reconcileDrillStateOnExit
+} = require('./lib/drill-state-reconciliation');
+const {
   getModelCatalogPath,
   loadModelCatalogSync,
   saveModelCatalogSync,
@@ -452,6 +456,22 @@ processManager.on('cosmo-exit', ({ code, signal }) => {
     // else keeps the original semantics (no exit-code special-casing,
     // Patch 71 S1: the sentinel handles every real death uniformly).
     const park = code === PARK_EXIT_CODE ? await readParkFile(runPath) : null;
+    if (!park) {
+      await reconcileDrillStateOnExit(runPath, { code, signal }).then((result) => {
+        if (result.status === 'reconciled') {
+          processManager.recordLog('Launcher', 'info',
+            `Reconciled interrupted drill state for "${runName}" `
+            + `(${result.workersNormalized} workers, ${result.phasesNormalized} phases)`);
+        }
+        if (result.evidenceAppended === false) {
+          processManager.recordLog('Launcher', 'error',
+            `Drill exit state reconciled but interruption evidence append failed: ${result.evidenceError}`);
+        }
+      }).catch((error) => {
+        processManager.recordLog('Launcher', 'error',
+          `Drill exit reconciliation failed for "${runName}": ${error.message}`);
+      });
+    }
     if (park) {
       lastParkedRun = { runPath, runName, brainId };
       parkedRunResolver.invalidate();
@@ -2386,7 +2406,7 @@ app.get('/api/drill/status', async (_req, res) => {
       });
     }
 
-    const [drill, runner, sourceTape, brainTape, findings, notes, fileInventory] = await Promise.all([
+    const [diskDrill, runner, sourceTape, brainTape, findings, notes, fileInventory] = await Promise.all([
       fsp.readFile(path.join(runPath, 'drill', 'state.json'), 'utf8')
         .then(raw => JSON.parse(raw))
         .catch(() => null),
@@ -2401,21 +2421,17 @@ app.get('/api/drill/status', async (_req, res) => {
     ]);
     const processOnline = isCosmoRunnerOnline();
     const recordedRunnerAlive = isRecordedRunnerAlive(runner);
-    const orphanedRunner = recordedRunnerAlive && !processOnline;
-    const running = processOnline && drill?.mode === 'drilling';
-    const lifecycle = running
-      ? 'drilling'
-      : orphanedRunner
-        ? 'orphaned'
-      : drill?.mode === 'done'
-        ? 'completed'
-        : drill?.mode === 'error'
-          ? 'error'
-          : drill?.mode === 'stopped'
-            ? 'stopped'
-            : processOnline
-              ? (drill ? 'launching' : 'running')
-              : 'idle';
+    const {
+      drill,
+      running,
+      lifecycle,
+      orphanedRunner,
+      derivedInterrupted
+    } = deriveDrillStatusTruth({
+      drill: diskDrill,
+      processOnline,
+      recordedRunnerAlive
+    });
     const writeups = fileInventory.files.filter(file => file.kind === 'writeup');
 
     return res.json({
@@ -2425,6 +2441,7 @@ app.get('/api/drill/status', async (_req, res) => {
       processOnline,
       recordedRunnerAlive,
       orphanedRunner,
+      stateReconciliation: derivedInterrupted ? 'derived' : 'persisted',
       canSteer: running && activeContext?.runPath === runPath,
       runName,
       topic: activeContext?.topic || drill?.question || null,
