@@ -7,6 +7,7 @@ import { SeedProcess } from '../src/seed.js';
 import { WORKSPACE_CAPACITY, scoreCells, admissionScore } from '../src/workspace.js';
 import { makeInitialCells } from '../src/cells.js';
 import type { SourceEvent } from '../src/types.js';
+import { TEST_ANATOMY } from './named-anatomy.js';
 
 function makeDir(t: { after(fn: () => void): void }): string {
   const dir = mkdtempSync(join(tmpdir(), 'substrate-workspace-'));
@@ -27,7 +28,7 @@ function fixedEvent(ref: string, category: SourceEvent['category'], producedAt: 
 
 test('a fresh quiet seed is SILENT, and the silence is receipted', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 31 });
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 31 });
 
   const outcome = seed.workspaceCycle('2026-08-07T10:00:00.000Z');
   assert.equal(outcome.kind, 'silence', 'no pressure, no admission — silence is the correct transition');
@@ -38,7 +39,7 @@ test('a fresh quiet seed is SILENT, and the silence is receipted', (t) => {
 
 test('pressure from real contact admits the pressured cell; admission spends the pressure', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 32 });
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 32 });
 
   // A burst of corrections routed to contact.jtr-jerry builds pressure there.
   for (let i = 0; i < 8; i++) {
@@ -68,7 +69,7 @@ test('pressure from real contact admits the pressured cell; admission spends the
 
 test('scarcity: never more than WORKSPACE_CAPACITY cells admitted', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 33 });
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 33 });
 
   // Pump three different cells via their routing categories.
   const pump: Array<[string, SourceEvent['category']]> = [
@@ -96,7 +97,7 @@ test('scarcity: never more than WORKSPACE_CAPACITY cells admitted', (t) => {
 
 test('inhibition damps non-admitted pressure — repeated silence cycles shrink pressure monotonically', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 34 });
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 34 });
 
   // One mild event: some pressure, below admission threshold.
   seed.transition(fixedEvent('mild', 'interpretation', '2026-08-07T10:00:00.000Z'));
@@ -116,8 +117,8 @@ test('inhibition damps non-admitted pressure — repeated silence cycles shrink 
 });
 
 test('workspace outcomes are deterministic pure functions of cell state', () => {
-  const cellsA = makeInitialCells('2026-08-07T10:00:00.000Z');
-  const cellsB = makeInitialCells('2026-08-07T10:00:00.000Z');
+  const cellsA = makeInitialCells('2026-08-07T10:00:00.000Z', TEST_ANATOMY);
+  const cellsB = makeInitialCells('2026-08-07T10:00:00.000Z', TEST_ANATOMY);
   const dispositions = { globalWakeThreshold: 0.3, silencePolicy: 'default' as const, modelRecruitmentPolicy: 'none' as const, quietTimeEnabled: false };
   const s1 = scoreCells(cellsA.values(), dispositions);
   const s2 = scoreCells(cellsB.values(), dispositions);
@@ -130,7 +131,7 @@ test('workspace outcomes are deterministic pure functions of cell state', () => 
 
 test('workspace and silence receipts carry before/after state hashes that verify', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 35 });
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 35 });
   seed.transition(fixedEvent('x', 'correction', '2026-08-07T10:00:00.000Z'));
   seed.workspaceCycle('2026-08-07T10:01:00.000Z');
   seed.stop();

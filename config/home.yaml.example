@@ -377,6 +377,8 @@ skills:
 # Per-agent processes are DERIVED and need nothing here: an agent with
 # substrate.enabled gets its seed runner and conversation shipper
 # automatically, and substrate.houseSense on the agent adds house sensing.
+# Birth still requires the operator to name anatomy (SEED_ANATOMY or
+# substrate.anatomy). Missing anatomy refuses birth — no invented person.
 # Only things that cannot be derived are declared below.
 substrate:
   observatory:

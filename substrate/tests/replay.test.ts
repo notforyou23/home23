@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SeedProcess } from '../src/seed.js';
 import type { SourceEvent } from '../src/types.js';
+import { TEST_ANATOMY } from './named-anatomy.js';
 
 function makeDir(t: { after(fn: () => void): void }, label: string): string {
   const dir = mkdtempSync(join(tmpdir(), `substrate-replay-${label}-`));
@@ -37,7 +38,7 @@ test('PROOF: replaying the same events from a copied checkpoint reproduces byte-
   const dirA = makeDir(t, 'a');
   const dirB = makeDir(t, 'b');
 
-  const seedA = SeedProcess.initialize(dirA, undefined, { reservoirSeed: 424242 });
+  const seedA = SeedProcess.initialize(dirA, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 424242 });
   seedA.transition(fixedEvent('warm-1', 'observation', '2026-08-07T10:00:00.000Z'));
   seedA.transition(fixedEvent('warm-2', 'correction', '2026-08-07T10:05:00.000Z'));
   seedA.transition(fixedEvent('warm-3', 'consequence', '2026-08-07T11:00:00.000Z'));
@@ -76,7 +77,7 @@ test('replay with a DIFFERENT event ordering reaches a different state (order is
   const dirA = makeDir(t, 'ord-a');
   const dirB = makeDir(t, 'ord-b');
 
-  const seedA = SeedProcess.initialize(dirA, undefined, { reservoirSeed: 424242 });
+  const seedA = SeedProcess.initialize(dirA, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 424242 });
   seedA.transition(fixedEvent('base', 'observation', '2026-08-07T10:00:00.000Z'));
   const checkpointId = seedA.checkpoint();
   cpSync(dirA, dirB, { recursive: true });
@@ -106,8 +107,8 @@ test('a restored seed uses the SAME frozen reservoir: fresh seed with a differen
     fixedEvent('e2', 'correction', '2026-08-07T10:30:00.000Z'),
   ];
 
-  const seedA = SeedProcess.initialize(dirA, undefined, { reservoirSeed: 1000 });
-  const seedB = SeedProcess.initialize(dirB, undefined, { reservoirSeed: 2000 });
+  const seedA = SeedProcess.initialize(dirA, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 1000 });
+  const seedB = SeedProcess.initialize(dirB, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 2000 });
   for (const ev of events) {
     seedA.transition({ ...ev });
     seedB.transition({ ...ev });

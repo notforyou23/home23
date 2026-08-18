@@ -143,6 +143,13 @@ export class SeedRunner {
     throw new Error(`could not acquire runner lock at ${lockPath}`);
   }
 
+  private releaseRunnerLock(): void {
+    if (this.lockPath !== null) {
+      try { unlinkSync(this.lockPath); } catch { /* already gone */ }
+      this.lockPath = null;
+    }
+  }
+
   start(): void {
     if (this.seed !== null) return;
     this.acquireRunnerLock();
@@ -150,15 +157,26 @@ export class SeedRunner {
       this.seed = Seed.restore(this.opts.stateDir);
       this.log(`restored seed ${this.seed.getState().seedId} at ledgerSeq ${this.seed.getState().ledgerSeq}`);
     } else {
-      this.seed = Seed.initialize(this.opts.stateDir, undefined, {
-        anatomy: this.opts.anatomy,
-        name: this.opts.name,
-        selfFormation: this.opts.selfFormation,
-      });
-      // Immediate checkpoint: restore() must always have a floor, even if the
-      // process dies before the first cadence checkpoint.
-      this.seed.checkpoint();
-      this.log(`initialized seed ${this.seed.getState().seedId}`);
+      if (this.opts.anatomy === undefined || this.opts.anatomy.length === 0) {
+        this.releaseRunnerLock();
+        throw new Error(
+          'birth requires named anatomy (SEED_ANATOMY) — refusing to invent a person',
+        );
+      }
+      try {
+        this.seed = Seed.initialize(this.opts.stateDir, undefined, {
+          anatomy: this.opts.anatomy,
+          name: this.opts.name,
+          selfFormation: this.opts.selfFormation,
+        });
+        // Immediate checkpoint: restore() must always have a floor, even if the
+        // process dies before the first cadence checkpoint.
+        this.seed.checkpoint();
+        this.log(`initialized seed ${this.seed.getState().seedId}`);
+      } catch (error) {
+        this.releaseRunnerLock();
+        throw error;
+      }
     }
     this.adapters = [
       new EventLedgerTailAdapter({
@@ -518,10 +536,7 @@ export class SeedRunner {
       this.seed = null;
       this.adapters = [];
     }
-    if (this.lockPath !== null) {
-      try { unlinkSync(this.lockPath); } catch { /* already gone */ }
-      this.lockPath = null;
-    }
+    this.releaseRunnerLock();
   }
 
   requestStop(): void {

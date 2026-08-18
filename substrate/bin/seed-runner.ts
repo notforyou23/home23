@@ -20,8 +20,10 @@
  *   SEED_RELATIONSHIP_SOURCE — relationship-ledger events JSONL (optional)
  *   SEED_WORKER_SOURCE  — worker-runs JSONL (optional)
  *   SEED_EXTRA_BACKFILL_BYTES — backfill for extra sources (default 8192)
- *   SEED_ANATOMY        — JSON array of {id, role} for a BIRTH (ignored on
- *                         restore; anatomy is identity, recorded in genesis)
+ *   SEED_ANATOMY        — JSON array of {id, role}. Required for a BIRTH;
+ *                         ignored on restore. Anatomy is identity, recorded
+ *                         in genesis. Missing anatomy refuses birth — the
+ *                         runner will not invent a person.
  *   SEED_NAME           — name recorded in the genesis at birth
  *   SEED_SELF_FORMATION — '1' at BIRTH grants growth.v2 governed
  *                         self-application (SELF-FORMATION-PROTOCOL v1.1);
@@ -129,7 +131,12 @@ async function main(): Promise<void> {
   let anatomy;
   const rawAnatomy = process.env['SEED_ANATOMY'];
   if (rawAnatomy !== undefined && rawAnatomy !== '') {
-    anatomy = JSON.parse(rawAnatomy);
+    try {
+      anatomy = JSON.parse(rawAnatomy);
+    } catch {
+      console.error('SEED_ANATOMY must be a JSON array of {id, role}');
+      process.exit(2);
+    }
   }
 
   const runner = new SeedRunner({

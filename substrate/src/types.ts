@@ -162,10 +162,23 @@ export interface AnatomyCellSpec {
   role: 'correction' | 'observation' | 'consequence' | 'interpretation' | 'periphery';
 }
 
-/** The default anatomy (the first individual's shape). Births may pass their
- * own — a birth is a deliberate act, and cells should name the individual's
- * OWN situations. */
-export const DEFAULT_ANATOMY: readonly AnatomyCellSpec[] = [
+export type AnatomyRole = AnatomyCellSpec['role'];
+
+const ANATOMY_ROLES: readonly AnatomyRole[] = [
+  'correction',
+  'observation',
+  'consequence',
+  'interpretation',
+  'periphery',
+];
+
+/**
+ * Historical shape of the first individual's pre-anatomy genesis.
+ * Restore-only: geneses written before anatomy was identity fall back here
+ * so that one life continues. Birth must not use this. Inventing a person
+ * is forbidden; the operator names anatomy at birth.
+ */
+export const PRE_ANATOMY_GENESIS_FALLBACK: readonly AnatomyCellSpec[] = [
   { id: 'contact.jtr-jerry', role: 'correction' },
   { id: 'frontier.substrate-os', role: 'interpretation' },
   { id: 'project.shakedown', role: 'consequence' },
@@ -173,16 +186,42 @@ export const DEFAULT_ANATOMY: readonly AnatomyCellSpec[] = [
   { id: 'periphery.open-field', role: 'periphery' },
 ] as const;
 
-/** The five canonical initial cell IDs (default anatomy). */
-export const INITIAL_CELL_IDS = [
-  'contact.jtr-jerry',
-  'frontier.substrate-os',
-  'project.shakedown',
-  'world.home23',
-  'periphery.open-field',
-] as const;
+export class AnatomyNotNamedError extends Error {
+  constructor(message = 'birth requires named anatomy — refusing to invent a person') {
+    super(message);
+    this.name = 'AnatomyNotNamedError';
+  }
+}
 
-export type InitialCellId = (typeof INITIAL_CELL_IDS)[number];
+/** Fail-closed birth gate: no anatomy named → refuse. Does not invent cells. */
+export function requireNamedAnatomy(
+  anatomy: readonly AnatomyCellSpec[] | undefined | null,
+): AnatomyCellSpec[] {
+  if (anatomy === undefined || anatomy === null || anatomy.length === 0) {
+    throw new AnatomyNotNamedError();
+  }
+  const named: AnatomyCellSpec[] = [];
+  const seen = new Set<string>();
+  let peripheryCount = 0;
+  for (const spec of anatomy) {
+    if (spec === undefined || spec === null || typeof spec.id !== 'string' || spec.id.trim() === '') {
+      throw new AnatomyNotNamedError('birth anatomy cell is missing an id');
+    }
+    if (!ANATOMY_ROLES.includes(spec.role)) {
+      throw new AnatomyNotNamedError(`birth anatomy cell ${spec.id} has an unknown role`);
+    }
+    if (seen.has(spec.id)) {
+      throw new AnatomyNotNamedError(`birth anatomy repeats cell id ${spec.id}`);
+    }
+    seen.add(spec.id);
+    if (spec.role === 'periphery') peripheryCount += 1;
+    named.push({ id: spec.id, role: spec.role });
+  }
+  if (peripheryCount !== 1) {
+    throw new AnatomyNotNamedError('birth anatomy must name exactly one periphery cell');
+  }
+  return named;
+}
 
 // ─── Seed Dispositions ────────────────────────────────────────────────────────
 

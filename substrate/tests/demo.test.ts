@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SeedProcess } from '../src/seed.js';
 import type { SourceEvent } from '../src/types.js';
+import { TEST_ANATOMY } from './named-anatomy.js';
 
 function makeDir(t: { after(fn: () => void): void }): string {
   const dir = mkdtempSync(join(tmpdir(), 'substrate-demo-'));
@@ -35,7 +36,7 @@ test('PROOF: stop → restart → exact state/hash/cursor continuation → next 
 
   // ── Phase 1: Initialize and run transitions ──────────────────────────────
 
-  const seed1 = SeedProcess.initialize(dir);
+  const seed1 = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY });
 
   // Three transitions across different cell types
   const r1 = seed1.transition(makeEvent('ref-alpha', 'observation'));       // → world.home23
@@ -145,8 +146,8 @@ test('two independent seeds in different directories have different state hashes
     rmSync(dir2, { recursive: true, force: true });
   });
 
-  const seed1 = SeedProcess.initialize(dir1);
-  const seed2 = SeedProcess.initialize(dir2);
+  const seed1 = SeedProcess.initialize(dir1, undefined, { anatomy: TEST_ANATOMY });
+  const seed2 = SeedProcess.initialize(dir2, undefined, { anatomy: TEST_ANATOMY });
 
   const e1: SourceEvent = { eventId: 'x', category: 'observation', sourceAuthority: 'seed.adapter', sourceRef: 'ref-x', payload: {}, producedAt: '2026-08-07T12:00:00.000Z' };
   const e2: SourceEvent = { eventId: 'y', category: 'correction', sourceAuthority: 'seed.adapter', sourceRef: 'ref-y', payload: {}, producedAt: '2026-08-07T12:00:00.000Z' };
@@ -179,8 +180,8 @@ test('same events in same order produce identical state hashes (deterministic)',
   // pinned. Two unpinned seeds are different individuals by construction
   // (each birth draws its own recorded reservoir seed) — that divergence is
   // covered by the replay suite.
-  const s1 = SeedProcess.initialize(dir1, undefined, { reservoirSeed: 777 });
-  const s2 = SeedProcess.initialize(dir2, undefined, { reservoirSeed: 777 });
+  const s1 = SeedProcess.initialize(dir1, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 777 });
+  const s2 = SeedProcess.initialize(dir2, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 777 });
 
   for (const ev of events) {
     s1.transition({ ...ev });

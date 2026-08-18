@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import { SeedProcess } from '../src/seed.js';
 import { SeedLedger } from '../src/ledger.js';
 import type { SourceEvent } from '../src/types.js';
+import { TEST_ANATOMY } from './named-anatomy.js';
 
 function makeDir(t: { after(fn: () => void): void }, label: string): string {
   const dir = mkdtempSync(join(tmpdir(), `substrate-ablation-${label}-`));
@@ -46,7 +47,7 @@ test('PROOF: development changes later handling; ablation removes the change; ep
   const dirB = makeDir(t, 'b');
 
   // ── Teach ────────────────────────────────────────────────────────────────
-  const seedA = SeedProcess.initialize(dirA, undefined, { reservoirSeed: 777_001 });
+  const seedA = SeedProcess.initialize(dirA, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 777_001 });
   for (const ev of teachingEvents()) seedA.transition({ ...ev });
 
   const taughtMagnitude = seedA.getState().developmentMagnitude;
@@ -96,8 +97,8 @@ test('PROOF: identical teaching reproduces identical development (the learning i
   const dir1 = makeDir(t, 'det-1');
   const dir2 = makeDir(t, 'det-2');
 
-  const s1 = SeedProcess.initialize(dir1, undefined, { reservoirSeed: 777_002 });
-  const s2 = SeedProcess.initialize(dir2, undefined, { reservoirSeed: 777_002 });
+  const s1 = SeedProcess.initialize(dir1, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 777_002 });
+  const s2 = SeedProcess.initialize(dir2, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 777_002 });
   for (const ev of teachingEvents()) {
     s1.transition({ ...ev });
     s2.transition({ ...ev });
@@ -128,7 +129,7 @@ test('PROOF: replay from a copied checkpoint reproduces development too (ablatio
   const dirA = makeDir(t, 'replay-a');
   const dirB = makeDir(t, 'replay-b');
 
-  const seedA = SeedProcess.initialize(dirA, undefined, { reservoirSeed: 777_003 });
+  const seedA = SeedProcess.initialize(dirA, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 777_003 });
   seedA.transition(fixedEvent('warm:1', 'observation', '2026-08-07T09:00:00.000Z'));
   seedA.checkpoint();
   cpSync(dirA, dirB, { recursive: true });
@@ -146,7 +147,7 @@ test('PROOF: replay from a copied checkpoint reproduces development too (ablatio
 test('development receipts carry the rule and bounded changes; ablation is receipted, never silent', (t) => {
   const dir = makeDir(t, 'receipts');
   const twin = makeDir(t, 'receipts-twin');
-  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 777_004 });
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 777_004 });
   for (const ev of teachingEvents().slice(0, 2)) seed.transition({ ...ev });
   seed.checkpoint();
 
@@ -166,7 +167,7 @@ test('development receipts carry the rule and bounded changes; ablation is recei
 
 test('bounds hold under heavy teaching: no runaway weights, thresholds, or trust', (t) => {
   const dir = makeDir(t, 'bounds');
-  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 777_005 });
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 777_005 });
   for (let i = 0; i < 60; i++) {
     const mm = String(i % 60).padStart(2, '0');
     const hh = String(10 + Math.floor(i / 60)).padStart(2, '0');
@@ -184,7 +185,7 @@ test('bounds hold under heavy teaching: no runaway weights, thresholds, or trust
 
 test('MIGRATION: a pre-plasticity (v1) checkpoint restores cleanly with empty development', async (t) => {
   const dir = makeDir(t, 'migrate');
-  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 777_006 });
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 777_006 });
   seed.transition(fixedEvent('warm:m1', 'observation', '2026-08-07T09:00:00.000Z'));
 
   // Forge a v1 checkpoint the way Cut 2 wrote them: no development field.
@@ -217,7 +218,7 @@ test('MIGRATION: a pre-plasticity (v1) checkpoint restores cleanly with empty de
 
 test('consequences teach at half rate, corroborate, and never ease the wake threshold', (t) => {
   const dir = makeDir(t, 'conseq');
-  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 777_010 });
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 777_010 });
   seed.transition(fixedEvent('workreview:c1', 'consequence', '2026-08-07T10:00:00.000Z'));
   seed.transition(fixedEvent('workreview:c2', 'consequence', '2026-08-07T10:01:00.000Z'));
 
@@ -235,7 +236,7 @@ test('trust is CAUSAL: an earned-trust source moves the cell more than a neutral
   const dirB = makeDir(t, 'trust-b');
 
   // A learns trust in "workreview" through corrections; B is its ablated twin.
-  const seedA = SeedProcess.initialize(dirA, undefined, { reservoirSeed: 777_011 });
+  const seedA = SeedProcess.initialize(dirA, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 777_011 });
   for (const ev of teachingEvents()) seedA.transition({ ...ev });
   seedA.checkpoint();
   SeedProcess.createAblatedTwin(dirA, dirB);
@@ -264,8 +265,8 @@ test('CONSOLIDATION: unearned learning fades across a quiet gap; corroborated le
 
   // Both seeds get identical corrections; C also gets corroborating
   // consequences before the gap. Then one event after a >30min event-time gap.
-  const sU = SeedProcess.initialize(dirU, undefined, { reservoirSeed: 777_012 });
-  const sC = SeedProcess.initialize(dirC, undefined, { reservoirSeed: 777_012 });
+  const sU = SeedProcess.initialize(dirU, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 777_012 });
+  const sC = SeedProcess.initialize(dirC, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 777_012 });
   for (const ev of teachingEvents().slice(0, 3)) {
     sU.transition({ ...ev });
     sC.transition({ ...ev });
@@ -305,7 +306,7 @@ test('consolidation is replay-deterministic across a copied checkpoint', (t) => 
   const dirA = makeDir(t, 'cons-replay-a');
   const dirB = makeDir(t, 'cons-replay-b');
 
-  const seedA = SeedProcess.initialize(dirA, undefined, { reservoirSeed: 777_013 });
+  const seedA = SeedProcess.initialize(dirA, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 777_013 });
   for (const ev of teachingEvents().slice(0, 3)) seedA.transition({ ...ev });
   seedA.checkpoint();
   cpSync(dirA, dirB, { recursive: true });

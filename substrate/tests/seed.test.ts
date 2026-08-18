@@ -4,8 +4,11 @@ import { mkdtempSync, rmSync, chmodSync, readFileSync, writeFileSync, copyFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SeedProcess } from '../src/seed.js';
-import { CapabilityDeniedError, ResourceBudgetExceededError, INITIAL_CELL_IDS } from '../src/types.js';
+import { AnatomyNotNamedError, CapabilityDeniedError, ResourceBudgetExceededError } from '../src/types.js';
 import type { SourceEvent } from '../src/types.js';
+import { TEST_ANATOMY } from './named-anatomy.js';
+
+const TEST_CELL_IDS = TEST_ANATOMY.map((a) => a.id);
 
 function makeDir(t: { after(fn: () => void): void }): string {
   const dir = mkdtempSync(join(tmpdir(), 'substrate-seed-'));
@@ -25,17 +28,25 @@ function makeEvent(overrides: Partial<SourceEvent> = {}): SourceEvent {
   };
 }
 
-test('five initial cells with correct IDs', (t) => {
+test('birth without named anatomy refuses — no invented person', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir);
+  assert.throws(
+    () => SeedProcess.initialize(dir),
+    (err) => err instanceof AnatomyNotNamedError,
+  );
+});
+
+test('named anatomy is recorded as the birth body', (t) => {
+  const dir = makeDir(t);
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY });
   const state = seed.getState();
-  assert.deepEqual(state.cellIds.sort(), [...INITIAL_CELL_IDS].sort());
+  assert.deepEqual(state.cellIds.sort(), [...TEST_CELL_IDS].sort());
 });
 
 test('cells start with forming or living status (not dormant/dissolving)', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir);
-  for (const id of INITIAL_CELL_IDS) {
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY });
+  for (const id of TEST_CELL_IDS) {
     const cell = seed.getCell(id);
     assert.ok(cell !== undefined, `cell ${id} missing`);
     assert.ok(
@@ -47,8 +58,8 @@ test('cells start with forming or living status (not dormant/dissolving)', (t) =
 
 test('initial continuous state is all zeros', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir);
-  for (const id of INITIAL_CELL_IDS) {
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY });
+  for (const id of TEST_CELL_IDS) {
     const cs = seed.getContinuousState(id);
     assert.ok(cs !== undefined, `continuous state missing for ${id}`);
     const allZero = Array.from(cs).every((v) => v === 0);
@@ -58,7 +69,7 @@ test('initial continuous state is all zeros', (t) => {
 
 test('ingest writes to ledger and increments event count', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir);
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY });
   const before = seed.getState().eventCount;
   seed.ingest(makeEvent());
   const after = seed.getState().eventCount;
@@ -67,7 +78,7 @@ test('ingest writes to ledger and increments event count', (t) => {
 
 test('transition updates continuous state (non-zero after event)', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir);
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY });
   const event = makeEvent({ category: 'observation' });
   seed.transition(event);
   // world.home23 is the default route for 'observation'
@@ -79,7 +90,7 @@ test('transition updates continuous state (non-zero after event)', (t) => {
 
 test('state hash changes after each transition', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir);
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY });
   const h0 = seed.getState().stateHash;
   seed.transition(makeEvent({ sourceRef: 'e1', producedAt: '2026-01-01T00:00:00.000Z' }));
   const h1 = seed.getState().stateHash;
@@ -91,7 +102,7 @@ test('state hash changes after each transition', (t) => {
 
 test('transition result carries correct stateHashBefore and stateHashAfter', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir);
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY });
   const stateBefore = seed.getState().stateHash;
   const result = seed.transition(makeEvent());
   assert.equal(result.stateHashBefore, stateBefore);
@@ -102,7 +113,7 @@ test('transition result carries correct stateHashBefore and stateHashAfter', (t)
 
 test('transition routes corrections to contact.jtr-jerry', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir);
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY });
   const before = seed.getContinuousState('contact.jtr-jerry')!.slice();
   seed.transition(makeEvent({ category: 'correction' }));
   const after = seed.getContinuousState('contact.jtr-jerry')!;
@@ -112,7 +123,7 @@ test('transition routes corrections to contact.jtr-jerry', (t) => {
 
 test('budget ceiling: maxEventCount exceeded throws ResourceBudgetExceededError', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir, { maxEventCount: 2 });
+  const seed = SeedProcess.initialize(dir, { maxEventCount: 2 }, { anatomy: TEST_ANATOMY });
   // GENESIS event already consumed 1 slot
   seed.ingest(makeEvent()); // 2nd event — hits ceiling next
   assert.throws(
@@ -123,7 +134,7 @@ test('budget ceiling: maxEventCount exceeded throws ResourceBudgetExceededError'
 
 test('membrane: forbidden capability throws even when called from within seed context', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir);
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY });
   assert.throws(
     () => seed.mem.assert('home23.engine.modify'),
     (err) => err instanceof CapabilityDeniedError,
@@ -132,7 +143,7 @@ test('membrane: forbidden capability throws even when called from within seed co
 
 test('checkpoint returns a string ID', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir);
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY });
   seed.transition(makeEvent());
   const id = seed.checkpoint();
   assert.ok(typeof id === 'string' && id.startsWith('ckpt_'));
@@ -140,7 +151,7 @@ test('checkpoint returns a string ID', (t) => {
 
 test('stop returns checkpoint ID and ledger records a stop event', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir);
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY });
   seed.transition(makeEvent());
   const checkpointId = seed.stop();
   assert.ok(typeof checkpointId === 'string');
@@ -151,7 +162,7 @@ test('stop returns checkpoint ID and ledger records a stop event', (t) => {
 
 test('transition append failure leaves state exactly unchanged (receipt before commit)', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir);
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY });
   seed.transition(makeEvent({ sourceRef: 'ref-warmup' }));
 
   const before = seed.getState();
@@ -193,10 +204,10 @@ test('transition append failure leaves state exactly unchanged (receipt before c
 
 test('initialize refuses a stateDir that already holds a seed ledger', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir);
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY });
   seed.transition(makeEvent());
   assert.throws(
-    () => SeedProcess.initialize(dir),
+    () => SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY }),
     /already exists.*restore/s,
     'second initialize must refuse instead of forking identity with a new genesis',
   );
@@ -204,7 +215,7 @@ test('initialize refuses a stateDir that already holds a seed ledger', (t) => {
 
 test('restore refuses a tampered ledger (chain verified on the restore path)', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir);
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY });
   seed.transition(makeEvent({ sourceRef: 'ref-a' }));
   seed.transition(makeEvent({ sourceRef: 'ref-b' }));
   const checkpointId = seed.stop();
@@ -227,11 +238,11 @@ test('restore refuses a checkpoint whose cursor does not match this ledger', (t)
   const dirA = makeDir(t);
   const dirB = makeDir(t);
 
-  const seedA = SeedProcess.initialize(dirA);
+  const seedA = SeedProcess.initialize(dirA, undefined, { anatomy: TEST_ANATOMY });
   seedA.transition(makeEvent({ sourceRef: 'a-1', producedAt: '2026-08-07T10:00:00.000Z' }));
   const checkpointId = seedA.stop();
 
-  const seedB = SeedProcess.initialize(dirB);
+  const seedB = SeedProcess.initialize(dirB, undefined, { anatomy: TEST_ANATOMY });
   for (let i = 0; i < 6; i++) {
     seedB.transition(makeEvent({ sourceRef: `b-${i}`, producedAt: `2026-08-07T10:00:0${i}.000Z` }));
   }
@@ -250,7 +261,7 @@ test('restore refuses a checkpoint whose cursor does not match this ledger', (t)
 
 test('inspection API is copy-on-read: mutating returned state cannot touch the Seed', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir);
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY });
   seed.transition(makeEvent({ sourceRef: 'ref-inspect' }));
   const hashBefore = seed.getState().stateHash;
 

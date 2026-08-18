@@ -15,6 +15,7 @@ import { SeedLedger } from '../src/ledger.js';
 import { materializeForms, deleteForm, readManifest, INQUIRY_MIN_MAGNITUDE } from '../src/forms.js';
 import type { LobeAdapter } from '../src/lobe.js';
 import type { SourceEvent, LobeResult, SerializedCell } from '../src/types.js';
+import { TEST_ANATOMY } from './named-anatomy.js';
 
 function makeDirs(t: { after(fn: () => void): void }): { stateDir: string; formsDir: string } {
   const stateDir = mkdtempSync(join(tmpdir(), 'substrate-forms-state-'));
@@ -76,7 +77,7 @@ function liveALittle(seed: SeedProcess): void {
 
 test('an intention with weight opens an inquiry form with lineage to its lobe receipt', async (t) => {
   const { stateDir, formsDir } = makeDirs(t);
-  const seed = SeedProcess.initialize(stateDir, undefined, { reservoirSeed: 91, name: 'form-test' });
+  const seed = SeedProcess.initialize(stateDir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 91, name: 'form-test' });
   liveALittle(seed);
   const outcome = seed.workspaceCycle('2026-08-07T20:09:00.000Z');
   assert.equal(outcome.kind, 'workspace');
@@ -114,7 +115,7 @@ test('an intention with weight opens an inquiry form with lineage to its lobe re
 
 test('weightless intentions get no stationery', async (t) => {
   const { stateDir, formsDir } = makeDirs(t);
-  const seed = SeedProcess.initialize(stateDir, undefined, { reservoirSeed: 92, name: 'form-test' });
+  const seed = SeedProcess.initialize(stateDir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 92, name: 'form-test' });
   liveALittle(seed);
   const outcome = seed.workspaceCycle('2026-08-07T20:09:00.000Z');
   if (outcome.kind !== 'workspace') return;
@@ -137,7 +138,7 @@ test('weightless intentions get no stationery', async (t) => {
 
 test('deleting a form deletes ONLY the form — cell, intention, and chain survive; tombstone remains', async (t) => {
   const { stateDir, formsDir } = makeDirs(t);
-  const seed = SeedProcess.initialize(stateDir, undefined, { reservoirSeed: 93, name: 'form-test' });
+  const seed = SeedProcess.initialize(stateDir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 93, name: 'form-test' });
   liveALittle(seed);
   const outcome = seed.workspaceCycle('2026-08-07T20:09:00.000Z');
   if (outcome.kind !== 'workspace') return;

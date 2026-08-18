@@ -48,6 +48,39 @@ function resolvePrimaryAgent(agents, homeConfig) {
   return ranked[0]?.name || null;
 }
 
+const ANATOMY_ROLES = new Set(['correction', 'observation', 'consequence', 'interpretation', 'periphery']);
+
+/** Emit SEED_ANATOMY only when the operator named it. Never invent a person. */
+function seedAnatomyEnvFragment(substrate, agentName) {
+  const raw = substrate?.anatomy;
+  if (raw === undefined || raw === null || raw === '') return '';
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error(`substrate.anatomy for ${agentName} must be a non-empty array of {id, role}`);
+  }
+  const seen = new Set();
+  let peripheryCount = 0;
+  for (const spec of raw) {
+    if (!spec || typeof spec.id !== 'string' || spec.id.trim() === '') {
+      throw new Error(`substrate.anatomy for ${agentName} has a cell missing id`);
+    }
+    if (!ANATOMY_ROLES.has(spec.role)) {
+      throw new Error(`substrate.anatomy for ${agentName} cell ${spec.id} has an unknown role`);
+    }
+    if (seen.has(spec.id)) {
+      throw new Error(`substrate.anatomy for ${agentName} repeats cell id ${spec.id}`);
+    }
+    seen.add(spec.id);
+    if (spec.role === 'periphery') peripheryCount += 1;
+  }
+  if (peripheryCount !== 1) {
+    throw new Error(`substrate.anatomy for ${agentName} must name exactly one periphery cell`);
+  }
+  const nameEnv = typeof substrate?.name === 'string' && substrate.name.trim() !== ''
+    ? `, SEED_NAME: ${JSON.stringify(substrate.name)}`
+    : '';
+  return `, SEED_ANATOMY: ${JSON.stringify(JSON.stringify(raw))}${nameEnv}`;
+}
+
 export function generateEcosystem(home23Root, options = {}) {
   const agents = discoverAgents(home23Root);
 
@@ -296,6 +329,9 @@ export function generateEcosystem(home23Root, options = {}) {
     // ledger read-only, keeps its own state under instances/<name>/substrate/,
     // and holds no authority over canonical stores (deterministic membrane).
     // kill_timeout is generous so SIGINT → final checkpoint always completes.
+    // Birth is a separate operator act: SEED_ANATOMY is emitted only when the
+    // operator named substrate.anatomy. An empty state dir without named
+    // anatomy refuses birth — the runner will not invent a person.
     if (agent.config.substrate?.enabled === true) {
       const lobeKind = agent.config.substrate?.lobe === 'model' ? 'model'
         : agent.config.substrate?.lobe === 'echo' ? 'echo' : '';
@@ -303,6 +339,7 @@ export function generateEcosystem(home23Root, options = {}) {
       const lobeMinIntervalMs = Number(agent.config.substrate?.lobeMinIntervalMs) > 0
         ? Number(agent.config.substrate.lobeMinIntervalMs) : 600000;
       const seedStateDir = `path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'seed-01')`;
+      const namedAnatomyEnv = seedAnatomyEnvFragment(agent.config.substrate, agent.name);
       lines.push(`    {`);
       lines.push(`      name: 'home23-${agent.name}-seed',`);
       lines.push(`      script: 'substrate/bin/seed-runner.ts',`);
@@ -319,7 +356,7 @@ export function generateEcosystem(home23Root, options = {}) {
       lines.push(`      kill_timeout: 30000,`);
       lines.push(`      out_file: ${logsDir} + '/seed-out.log',`);
       lines.push(`      error_file: ${logsDir} + '/seed-err.log',`);
-      lines.push(`      env: { ...commonEnv, HOME23_AGENT: '${agent.name}', INSTANCE_ID: 'home23-${agent.name}-seed', SEED_STATE_DIR: ${seedStateDir}, SEED_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'event-ledger.jsonl'), SEED_RELATIONSHIP_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'relationship-ledger.events.jsonl'), SEED_WORKER_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'worker-runs.jsonl'), SEED_CONVERSATION_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'conversation-stream.jsonl'), SEED_HOUSE_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'house-stream.jsonl'), SEED_MEMORY_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'memory-objects.events.jsonl'), SEED_DREAM_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'dream-events.jsonl'), SEED_LOBE: '${lobeKind}', SEED_LOBE_MODEL: '${lobeModel}', SEED_LOBE_MIN_INTERVAL_MS: '${lobeMinIntervalMs}' },`);
+      lines.push(`      env: { ...commonEnv, HOME23_AGENT: '${agent.name}', INSTANCE_ID: 'home23-${agent.name}-seed', SEED_STATE_DIR: ${seedStateDir}, SEED_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'event-ledger.jsonl'), SEED_RELATIONSHIP_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'relationship-ledger.events.jsonl'), SEED_WORKER_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'worker-runs.jsonl'), SEED_CONVERSATION_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'conversation-stream.jsonl'), SEED_HOUSE_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'house-stream.jsonl'), SEED_MEMORY_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'brain', 'memory-objects.events.jsonl'), SEED_DREAM_SOURCE: path.join(HOME23, 'instances', '${agent.name}', 'substrate', 'dream-events.jsonl'), SEED_LOBE: '${lobeKind}', SEED_LOBE_MODEL: '${lobeModel}', SEED_LOBE_MIN_INTERVAL_MS: '${lobeMinIntervalMs}'${namedAnatomyEnv} },`);
       lines.push(`    },`);
     }
   }

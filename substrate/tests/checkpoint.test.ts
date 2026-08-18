@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { CheckpointManager, computeStateHash } from '../src/checkpoint.js';
 import { makeInitialCells, serializeCell } from '../src/cells.js';
 import type { SeedDispositions } from '../src/types.js';
+import { TEST_ANATOMY } from './named-anatomy.js';
 
 function makeDir(t: { after(fn: () => void): void }): string {
   const dir = mkdtempSync(join(tmpdir(), 'substrate-checkpoint-'));
@@ -37,7 +38,7 @@ test('write and restore: exact state hash, ledgerSeq, ledgerCursor match', (t) =
   const mgr = new CheckpointManager(dir);
 
   const now = new Date().toISOString();
-  const cells = makeInitialCells(now);
+  const cells = makeInitialCells(now, TEST_ANATOMY);
   const serializedCells = Array.from(cells.values()).map(serializeCell);
   const dispositions = makeDispositions();
   const ledgerSeq = 3;
@@ -66,7 +67,7 @@ test('exact Float32Array bytes survive checkpoint round-trip', (t) => {
   const mgr = new CheckpointManager(dir);
 
   const now = new Date().toISOString();
-  const cells = makeInitialCells(now);
+  const cells = makeInitialCells(now, TEST_ANATOMY);
 
   // Write known values into one cell's Float32Array
   const cell = cells.get('contact.jtr-jerry')!;
@@ -106,7 +107,7 @@ test('corrupt checkpoint is quarantined; fallback to previous valid one', (t) =>
   const mgr = new CheckpointManager(dir);
 
   const now = new Date().toISOString();
-  const cells = makeInitialCells(now);
+  const cells = makeInitialCells(now, TEST_ANATOMY);
   const serializedCells = Array.from(cells.values()).map(serializeCell);
   const dispositions = makeDispositions();
 
@@ -143,7 +144,7 @@ test('restore by specific checkpointId', (t) => {
   const mgr = new CheckpointManager(dir);
 
   const now = new Date().toISOString();
-  const cells = makeInitialCells(now);
+  const cells = makeInitialCells(now, TEST_ANATOMY);
   const sc = Array.from(cells.values()).map(serializeCell);
   const dispositions = makeDispositions();
   const stateHash = computeStateHash({ cells: sc, dispositions });
@@ -172,7 +173,7 @@ test('count tracks number of written checkpoints', (t) => {
   assert.equal(mgr.count, 0);
 
   const now = new Date().toISOString();
-  const cells = makeInitialCells(now);
+  const cells = makeInitialCells(now, TEST_ANATOMY);
   const sc = Array.from(cells.values()).map(serializeCell);
   const dispositions = makeDispositions();
   const stateHash = computeStateHash({ cells: sc, dispositions });
@@ -189,7 +190,7 @@ test('count tracks number of written checkpoints', (t) => {
 test('symbolic cell state is covered by the checkpoint hash (tamper refused)', (t) => {
   const dir = makeDir(t);
   const mgr = new CheckpointManager(dir);
-  const cells = Array.from(makeInitialCells('2026-08-07T12:00:00.000Z').values()).map(serializeCell);
+  const cells = Array.from(makeInitialCells('2026-08-07T12:00:00.000Z', TEST_ANATOMY).values()).map(serializeCell);
   const dispositions = makeDispositions();
   const stateHash = computeStateHash({ cells, dispositions });
   const id = mgr.write({
@@ -217,9 +218,9 @@ test('symbolic cell state is covered by the checkpoint hash (tamper refused)', (
 test('event-time state is inside the hash (Cut 2 semantics)', () => {
   // Since transitions run on event-time, lastTransitionAt is causal,
   // replay-reproducible state: same times → same hash, different → different.
-  const cellsA = Array.from(makeInitialCells('2026-08-07T12:00:00.000Z').values()).map(serializeCell);
-  const cellsB = Array.from(makeInitialCells('2026-08-07T12:00:00.000Z').values()).map(serializeCell);
-  const cellsC = Array.from(makeInitialCells('2027-01-01T00:00:00.000Z').values()).map(serializeCell);
+  const cellsA = Array.from(makeInitialCells('2026-08-07T12:00:00.000Z', TEST_ANATOMY).values()).map(serializeCell);
+  const cellsB = Array.from(makeInitialCells('2026-08-07T12:00:00.000Z', TEST_ANATOMY).values()).map(serializeCell);
+  const cellsC = Array.from(makeInitialCells('2027-01-01T00:00:00.000Z', TEST_ANATOMY).values()).map(serializeCell);
   const dispositions = makeDispositions();
   assert.equal(
     computeStateHash({ cells: cellsA, dispositions }),
@@ -236,7 +237,7 @@ test('event-time state is inside the hash (Cut 2 semantics)', () => {
 test('lost index does not orphan checkpoints: restore falls back to a directory scan', async (t) => {
   const dir = makeDir(t);
   const mgr = new CheckpointManager(dir);
-  const cells = Array.from(makeInitialCells('2026-08-07T12:00:00.000Z').values()).map(serializeCell);
+  const cells = Array.from(makeInitialCells('2026-08-07T12:00:00.000Z', TEST_ANATOMY).values()).map(serializeCell);
   const dispositions = makeDispositions();
   const stateHash = computeStateHash({ cells, dispositions });
 
@@ -270,7 +271,7 @@ test('FIELD TRIP: a traveled stateDir (foreign absolute index paths, flattened m
   let firstId = '';
   let lastId = '';
   for (let gen = 0; gen <= 2; gen++) {
-    const cells = Array.from(makeInitialCells('2026-08-07T12:00:00.000Z').values()).map(serializeCell);
+    const cells = Array.from(makeInitialCells('2026-08-07T12:00:00.000Z', TEST_ANATOMY).values()).map(serializeCell);
     const world = cells.find((c) => c.id === 'world.home23');
     if (world !== undefined) world.generation = gen * 50;
     const id = mgr.write({
@@ -308,7 +309,7 @@ test('FIELD TRIP: a traveled stateDir (foreign absolute index paths, flattened m
 test('new indexes store relative paths (machine-portable by construction)', (t) => {
   const dir = makeDir(t);
   const mgr = new CheckpointManager(dir);
-  const cells = Array.from(makeInitialCells('2026-08-07T12:00:00.000Z').values()).map(serializeCell);
+  const cells = Array.from(makeInitialCells('2026-08-07T12:00:00.000Z', TEST_ANATOMY).values()).map(serializeCell);
   const dispositions = makeDispositions();
   mgr.write({
     stateHash: computeStateHash({ cells, dispositions }),

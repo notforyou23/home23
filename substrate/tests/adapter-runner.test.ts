@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, appendFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, appendFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventLedgerTailAdapter, mapHarnessCategory } from '../src/adapters/event-ledger-tail.js';
 import { SeedRunner } from '../src/runner.js';
 import { EchoLobe } from '../src/lobe.js';
+import { TEST_ANATOMY } from './named-anatomy.js';
 
 function makeDir(t: { after(fn: () => void): void }, label: string): string {
   const dir = mkdtempSync(join(tmpdir(), `substrate-${label}-`));
@@ -127,6 +128,7 @@ test('RUNNER: live-shaped flow — transitions, workspace, lobe, checkpoint, sto
     fromEnd: false,
     workspaceEveryN: 8,
     checkpointEveryN: 6,
+    anatomy: TEST_ANATOMY,
     lobe: new EchoLobe(),
     log: (l) => lines.push(l),
   });
@@ -227,7 +229,7 @@ test('REVIEW FIX: getState() dispositions are copy-on-read — no unreceipted mu
   const srcDir = makeDir(t, 'disp-src');
   const stateDir = makeDir(t, 'disp-state');
   writeFixture(srcDir, [harnessLine(0)]);
-  const runner = new SeedRunner({ stateDir, sourcePath: join(srcDir, 'event-ledger.jsonl'), fromEnd: false });
+  const runner = new SeedRunner({ stateDir, sourcePath: join(srcDir, 'event-ledger.jsonl'), fromEnd: false, anatomy: TEST_ANATOMY });
   runner.start();
   const seed = runner.seedProcess;
 
@@ -332,6 +334,7 @@ test('MULTI-SOURCE: streams merge in event-time order, cursors stay independent,
     stateDir,
     sourcePath: harnessPath,
     fromEnd: false,
+    anatomy: TEST_ANATOMY,
     extraSources: [
       { sourcePath: relPath, sourceType: 'relationship-ledger', id: 'relationship' },
       { sourcePath: wrPath, sourceType: 'worker-runs', id: 'worker-runs' },
@@ -380,7 +383,7 @@ test('MECHANICAL FORK GUARD: a second runner on the same stateDir refuses; stale
   const stateDir = makeDir(t, 'lock-state');
   const sourcePath = writeFixture(srcDir, [harnessLine(0, 'RetrievalExecuted', '2026-08-08T16:00:00.000Z')]);
 
-  const first = new SeedRunner({ stateDir, sourcePath, fromEnd: false });
+  const first = new SeedRunner({ stateDir, sourcePath, fromEnd: false, anatomy: TEST_ANATOMY });
   first.start();
 
   const second = new SeedRunner({ stateDir, sourcePath, fromEnd: false });
@@ -398,6 +401,15 @@ test('MECHANICAL FORK GUARD: a second runner on the same stateDir refuses; stale
   const fourth = new SeedRunner({ stateDir, sourcePath, fromEnd: false });
   fourth.start();
   fourth.stop();
+});
+
+test('empty state dir without named anatomy refuses birth and leaves no lock', (t) => {
+  const srcDir = makeDir(t, 'birth-src');
+  const stateDir = makeDir(t, 'birth-state');
+  const sourcePath = writeFixture(srcDir, [harnessLine(0)]);
+  const runner = new SeedRunner({ stateDir, sourcePath, fromEnd: false });
+  assert.throws(() => runner.start(), /SEED_ANATOMY|refusing to invent a person/);
+  assert.equal(existsSync(join(stateDir, '.runner.lock')), false, 'a refused birth must not hold the one-life lock');
 });
 
 test('conversation mapper: both voices observed, words + meaning ride the event', (t) => {
