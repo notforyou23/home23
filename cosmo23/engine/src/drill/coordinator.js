@@ -16,77 +16,15 @@ const { isFatalAuthError } = require('../../../lib/auth-error');
 
 const MAX_PHASES_PER_GOAL = 4;
 
-function jsonClosers(stack) {
-  return stack.slice().reverse().map((token) => token === '{' ? '}' : ']').join('');
-}
-
-function recoverJsonObjectAt(text, start) {
-  const stack = [];
-  const candidates = [];
-  let inString = false;
-  let escaped = false;
-
-  for (let index = start; index < text.length; index += 1) {
-    const char = text[index];
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (char === '\\') {
-        escaped = true;
-      } else if (char === '"') {
-        inString = false;
-        candidates.push({ end: index + 1, stack: stack.slice() });
-      }
-      continue;
-    }
-
-    if (char === '"') {
-      inString = true;
-    } else if (char === '{' || char === '[') {
-      stack.push(char);
-    } else if (char === '}' || char === ']') {
-      const opener = char === '}' ? '{' : '[';
-      if (stack.pop() !== opener) return null;
-      if (stack.length === 0) {
-        try {
-          return { value: JSON.parse(text.slice(start, index + 1)), length: index + 1 - start };
-        } catch {
-          return null;
-        }
-      }
-    }
-
-    if (!inString && stack.length > 0) {
-      candidates.push({ end: index + 1, stack: stack.slice() });
-    }
-  }
-
-  // Work backward to the largest syntactically complete prefix. This drops
-  // an unfinished property value but preserves completed goal/phase fields.
-  for (let index = candidates.length - 1; index >= 0; index -= 1) {
-    const candidate = candidates[index];
-    try {
-      return {
-        value: JSON.parse(text.slice(start, candidate.end) + jsonClosers(candidate.stack)),
-        length: candidate.end - start
-      };
-    } catch {
-      // Keep looking for an earlier complete value boundary.
-    }
-  }
-  return null;
-}
-
 function extractJson(text) {
   if (!text || typeof text !== 'string') return null;
   try { return JSON.parse(text); } catch { /* fall through */ }
-
-  let best = null;
-  for (let start = text.indexOf('{'); start >= 0; start = text.indexOf('{', start + 1)) {
-    const recovered = recoverJsonObjectAt(text, start);
-    if (recovered && (!best || recovered.length > best.length)) best = recovered;
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try { return JSON.parse(text.slice(start, end + 1)); } catch { /* fall through */ }
   }
-  return best?.value || null;
+  return null;
 }
 
 function containsForbiddenPhrase(value) {
