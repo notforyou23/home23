@@ -402,7 +402,7 @@ describe('The drill: goal → phases → next goal', () => {
     expect(drill.remainingCycles()).to.equal(40);
     expect(drill.mode).to.equal('error');
     expect(drill.providerError).to.equal(
-      "400 Invalid schema for function 'run_skill': In context=('properties', 'inputs', 'type', '0'), 'additionalProperties' is required to be supplied and to be false."
+      "Provider refused Cosmo's tool schema: 400 Invalid schema for function 'run_skill': In context=('properties', 'inputs', 'type', '0'), 'additionalProperties' is required to be supplied and to be false."
     );
     expect(drill.getStatus().status).to.equal('error');
     expect(drill._orchestrator.completions).to.have.length(0);
