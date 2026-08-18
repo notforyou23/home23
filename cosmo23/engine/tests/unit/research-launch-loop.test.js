@@ -21,9 +21,11 @@ const {
 } = require('../../src/agent/short-plan');
 const { LaunchLoop } = require('../../src/agent/loop');
 const { tools, INTERACTIVE_ONLY, executeTool, toChatTools, uniqueToolsByName } = require('../../src/agent/tools');
+const { tools: interactiveToolSchemas } = require('../../src/interactive/interactive-tools');
 const { GuidedModePlanner } = require('../../src/core/guided-mode-planner');
 const { PlanExecutor } = require('../../src/core/plan-executor');
 const AnthropicClient = require('../../src/core/anthropic-client');
+const { normalizeCodexFunctionTools } = require('../../src/core/unified-client');
 const { AUTH_REVOKED_WATCH_MESSAGE, isFatalAuthError } = require('../../../lib/auth-error');
 
 const logger = {
@@ -323,6 +325,40 @@ describe('Research Launch loop and harness', () => {
     expect(new Set(names).size).to.equal(names.length);
     expect(names.filter((name) => name === 'web_search')).to.have.length(1);
     expect(names.filter((name) => name === 'coding_run')).to.have.length(1);
+  });
+
+  it('declares every interactive and research function property as required for Codex strict schemas', () => {
+    const brainQuery = interactiveToolSchemas.find(tool => tool.name === 'brain_query');
+    expect(brainQuery.parameters.required).to.deep.equal(['query', 'limit']);
+
+    for (const [surface, schemas] of [
+      ['interactive', interactiveToolSchemas],
+      ['research', toChatTools().map(tool => tool.function)]
+    ]) {
+      for (const tool of schemas) {
+        const properties = Object.keys(tool.parameters?.properties || {});
+        expect(tool.parameters, `${surface}.${tool.name} parameters`).to.have.own.property('required');
+        expect(tool.parameters.required, `${surface}.${tool.name} required`).to.deep.equal(properties);
+      }
+    }
+  });
+
+  it('normalizes any function schema at the Codex transport boundary', () => {
+    const [tool] = normalizeCodexFunctionTools([{
+      type: 'function',
+      name: 'dynamic_tool',
+      parameters: {
+        type: 'object',
+        properties: {
+          first: { type: 'string' },
+          second: { type: 'number' }
+        },
+        required: ['first']
+      }
+    }]);
+    expect(tool.parameters.required).to.deep.equal(['first', 'second']);
+    expect(tool.parameters.additionalProperties).to.equal(false);
+    expect(tool.strict).to.equal(true);
   });
 
   it('dedupes research tools by name when the imported list already has web_search', () => {

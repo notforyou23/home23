@@ -141,6 +141,7 @@ class DrillLoop {
     this.finishSummary = null;
     this.turns = 0;
     this.fatalError = null;
+    this.providerError = null;
     this.productLoop = RESEARCH_PRODUCT_LOOP;
     this._promise = null;
     this._persistTail = Promise.resolve();
@@ -323,6 +324,56 @@ class DrillLoop {
     await this.persistState().catch(() => {});
   }
 
+  async stopProviderRefusal(detail) {
+    this.running = false;
+    this.mode = 'error';
+    this.providerError = typeof detail === 'string'
+      ? detail
+      : (detail?.message || String(detail));
+
+    const refusedCycles = [...this.activeWorkers.values()].map((entry) => {
+      entry.phase.cyclesUsed = Math.max(0, (Number(entry.phase.cyclesUsed) || 0) - 1);
+      entry.phase.status = 'pending';
+      return {
+        cycle: entry.cycle,
+        workerId: entry.workerId,
+        goalNumber: entry.goal?.number ?? null,
+        phaseNumber: entry.phase?.number ?? null
+      };
+    });
+    this.cyclesUsed = Math.max(0, this.cyclesUsed - refusedCycles.length);
+    for (const refused of refusedCycles) {
+      await this.journal('cycle_refused', {
+        ...refused,
+        errorType: 'tool_schema_error',
+        countedAsResearchCycle: false
+      });
+    }
+
+    const { interruptedWorkers, interruptedPhases } = this.normalizeActiveWorkForTerminal();
+    this.logger?.error?.('Drill stopped: provider refused Cosmo tool schema', {
+      productLoop: RESEARCH_PRODUCT_LOOP,
+      errorType: 'tool_schema_error',
+      detail: this.providerError,
+      cyclesUsed: this.cyclesUsed,
+      refusedCycles: refusedCycles.length
+    });
+    await this.journal('drill_error', {
+      cyclesUsed: this.cyclesUsed,
+      errorType: 'tool_schema_error',
+      message: this.providerError,
+      refusedCycles,
+      interruptedWorkers,
+      interruptedPhases
+    }).catch(() => {});
+    this.emitEvent('launch_loop_error', {
+      fatal: true,
+      errorType: 'tool_schema_error',
+      message: this.providerError
+    });
+    await this.persistState().catch(() => {});
+  }
+
   getStatus() {
     return {
       running: this.running,
@@ -332,7 +383,8 @@ class DrillLoop {
       productLoop: RESEARCH_PRODUCT_LOOP,
       summary: this.finishSummary,
       fatalError: this.fatalError || null,
-      status: this.fatalError
+      providerError: this.providerError || null,
+      status: (this.fatalError || this.providerError || this.mode === 'error')
         ? 'error'
         : (this.mode === 'done' ? 'done' : (this.running ? 'running' : 'stopped')),
       drill: this.snapshot()
@@ -367,6 +419,7 @@ class DrillLoop {
       mode: this.mode,
       doneReason: this.doneReason,
       fatalError: this.fatalError,
+      providerError: this.providerError,
       maxConcurrent: this.maxConcurrent,
       budgets: {
         cyclesTotal: this.cyclesTotal,
@@ -960,9 +1013,14 @@ class DrillLoop {
   async settleFinishedWorkers() {
     for (const [workerId, entry] of [...this.activeWorkers.entries()]) {
       if (!entry.done) continue;
-      this.activeWorkers.delete(workerId);
 
       const { worker, phase, goal, cycle } = entry;
+      if (worker.providerError) {
+        await this.stopProviderRefusal(worker.providerError);
+        return true;
+      }
+
+      this.activeWorkers.delete(workerId);
       this.turns += Math.max(1, Number(worker.turns) || 0);
 
       if (worker.fatalError) {

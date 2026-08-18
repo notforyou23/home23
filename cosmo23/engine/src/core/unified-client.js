@@ -4,6 +4,40 @@ const { ChatCompletionsClient } = require('./chat-completions-client');
 const { wrapSystemPrompt } = require('./provider-prompts');
 const { recordCompletionSpend } = require('./spend-meter');
 
+function normalizeStrictSchema(schema) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return schema;
+  const normalized = { ...schema };
+  for (const keyword of ['anyOf', 'oneOf', 'allOf']) {
+    if (Array.isArray(normalized[keyword])) {
+      normalized[keyword] = normalized[keyword].map(normalizeStrictSchema);
+    }
+  }
+  if (normalized.items) normalized.items = normalizeStrictSchema(normalized.items);
+  if (normalized.properties && typeof normalized.properties === 'object') {
+    normalized.properties = Object.fromEntries(
+      Object.entries(normalized.properties).map(([key, value]) => [key, normalizeStrictSchema(value)])
+    );
+    normalized.required = Object.keys(normalized.properties);
+    normalized.additionalProperties = false;
+  }
+  return normalized;
+}
+
+function normalizeCodexFunctionTools(tools = []) {
+  return tools.map((tool) => {
+    if (!tool || tool.type !== 'function' || !tool.name) return tool;
+    const parameters = normalizeStrictSchema(tool.parameters || {
+      type: 'object',
+      properties: {}
+    });
+    return {
+      ...tool,
+      parameters,
+      strict: true
+    };
+  });
+}
+
 function loadAnthropicClient() {
   return require('./anthropic-client');
 }
@@ -733,7 +767,7 @@ class UnifiedClient extends GPT5Client {
     }
 
     if (tools.length > 0) {
-      body.tools = tools;
+      body.tools = normalizeCodexFunctionTools(tools);
       body.tool_choice = toResponsesToolChoice(options.tool_choice ?? options.toolChoice ?? 'auto');
     }
 
@@ -758,7 +792,11 @@ class UnifiedClient extends GPT5Client {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`${response.status} ${errorText.substring(0, 200)}`);
+      const error = new Error(`${response.status} ${errorText.substring(0, 200)}`);
+      error.status = response.status;
+      error.provider = 'openai-codex';
+      error.responseBody = errorText;
+      throw error;
     }
 
     // Parse SSE stream
@@ -1356,10 +1394,10 @@ class UnifiedClient extends GPT5Client {
       .filter(t => t && t.type === 'function' && t.function && t.function.name)
       .map(t => {
         // Ensure parameters have additionalProperties: false (required for strict mode)
-        const params = t.function.parameters ? {
-          ...t.function.parameters,
-          additionalProperties: false
-        } : null;
+        const params = normalizeStrictSchema(t.function.parameters || {
+          type: 'object',
+          properties: {}
+        });
         
         return {
           type: 'function',
@@ -1443,4 +1481,8 @@ class UnifiedClient extends GPT5Client {
   }
 }
 
-module.exports = { UnifiedClient };
+module.exports = {
+  UnifiedClient,
+  normalizeStrictSchema,
+  normalizeCodexFunctionTools
+};

@@ -99,7 +99,7 @@ const tools = [
         query: { type: 'string', description: 'Semantic search query' },
         limit: { type: 'number', description: 'Max results to return (default 10)' }
       },
-      required: ['query'],
+      required: ['query', 'limit'],
       additionalProperties: false
     }
   },
@@ -110,6 +110,7 @@ const tools = [
     parameters: {
       type: 'object',
       properties: {},
+      required: [],
       additionalProperties: false
     }
   },
@@ -120,6 +121,7 @@ const tools = [
     parameters: {
       type: 'object',
       properties: {},
+      required: [],
       additionalProperties: false
     }
   },
@@ -130,6 +132,7 @@ const tools = [
     parameters: {
       type: 'object',
       properties: {},
+      required: [],
       additionalProperties: false
     }
   },
@@ -142,6 +145,7 @@ const tools = [
       properties: {
         count: { type: 'number', description: 'Number of recent thoughts to return (default 10)' }
       },
+      required: ['count'],
       additionalProperties: false
     }
   },
@@ -183,6 +187,7 @@ const tools = [
       properties: {
         path: { type: 'string', description: 'Directory path relative to the run directory (default: root)' }
       },
+      required: ['path'],
       additionalProperties: false
     }
   },
@@ -196,7 +201,7 @@ const tools = [
         pattern: { type: 'string', description: 'Text pattern to search for' },
         path: { type: 'string', description: 'Directory path relative to run directory to search in (default: root)' }
       },
-      required: ['pattern'],
+      required: ['pattern', 'path'],
       additionalProperties: false
     }
   },
@@ -212,7 +217,7 @@ const tools = [
         command: { type: 'string', description: 'Shell command to execute' },
         cwd: { type: 'string', description: 'Working directory (relative to run dir, default: run root)' }
       },
-      required: ['command'],
+      required: ['command', 'cwd'],
       additionalProperties: false
     }
   },
@@ -229,7 +234,7 @@ const tools = [
         description: { type: 'string', description: 'Mission description for the agent' },
         priority: { type: 'number', description: 'Priority level 1-10 (default 5)' }
       },
-      required: ['type', 'description'],
+      required: ['type', 'description', 'priority'],
       additionalProperties: false
     }
   },
@@ -253,6 +258,7 @@ const tools = [
     parameters: {
       type: 'object',
       properties: {},
+      required: [],
       additionalProperties: false
     }
   },
@@ -265,6 +271,7 @@ const tools = [
     parameters: {
       type: 'object',
       properties: {},
+      required: [],
       additionalProperties: false
     }
   },
@@ -275,6 +282,7 @@ const tools = [
     parameters: {
       type: 'object',
       properties: {},
+      required: [],
       additionalProperties: false
     }
   },
@@ -288,7 +296,7 @@ const tools = [
         description: { type: 'string', description: 'What the goal should accomplish' },
         priority: { type: 'number', description: 'Priority 0-1 (higher = more important). Default 0.8' }
       },
-      required: ['description'],
+      required: ['description', 'priority'],
       additionalProperties: false
     }
   },
@@ -302,7 +310,7 @@ const tools = [
         new_focus: { type: 'string', description: 'The new focus or direction for the run' },
         archive_goals: { type: 'boolean', description: 'Archive all existing goals (default true)' }
       },
-      required: ['new_focus'],
+      required: ['new_focus', 'archive_goals'],
       additionalProperties: false
     }
   }
