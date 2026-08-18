@@ -127,9 +127,10 @@ function deriveDrillStatusTruth({
   drill,
   processOnline,
   recordedRunnerAlive = false,
+  parked = false,
   at
 } = {}) {
-  const normalized = processOnline
+  const normalized = processOnline || parked
     ? { changed: false, drill }
     : normalizeInactiveDrillState(drill, {
       at,
@@ -143,6 +144,8 @@ function deriveDrillStatusTruth({
     ? 'drilling'
     : orphanedRunner
       ? 'orphaned'
+      : parked
+        ? 'parked'
       : effectiveDrill?.mode === 'done'
         ? 'completed'
         : effectiveDrill?.mode === 'error'

@@ -2406,13 +2406,14 @@ app.get('/api/drill/status', async (_req, res) => {
       });
     }
 
-    const [diskDrill, runner, sourceTape, brainTape, findings, notes, fileInventory] = await Promise.all([
+    const [diskDrill, runner, park, sourceTape, brainTape, findings, notes, fileInventory] = await Promise.all([
       fsp.readFile(path.join(runPath, 'drill', 'state.json'), 'utf8')
         .then(raw => JSON.parse(raw))
         .catch(() => null),
       fsp.readFile(path.join(runPath, 'drill', 'runner.json'), 'utf8')
         .then(raw => JSON.parse(raw))
         .catch(() => null),
+      readParkFile(runPath),
       readJsonlTape(runPath, 'sources', { limit: 80 }),
       readJsonlTape(runPath, 'stream', { limit: 120 }),
       readJsonlTail(path.join(runPath, 'outputs', 'candidates', 'findings.jsonl'), 40),
@@ -2430,7 +2431,8 @@ app.get('/api/drill/status', async (_req, res) => {
     } = deriveDrillStatusTruth({
       drill: diskDrill,
       processOnline,
-      recordedRunnerAlive
+      recordedRunnerAlive,
+      parked: Boolean(park)
     });
     const writeups = fileInventory.files.filter(file => file.kind === 'writeup');
 
@@ -2441,6 +2443,7 @@ app.get('/api/drill/status', async (_req, res) => {
       processOnline,
       recordedRunnerAlive,
       orphanedRunner,
+      parked: Boolean(park),
       stateReconciliation: derivedInterrupted ? 'derived' : 'persisted',
       canSteer: running && activeContext?.runPath === runPath,
       runName,

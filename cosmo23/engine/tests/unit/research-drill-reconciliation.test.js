@@ -101,6 +101,22 @@ describe('Drill state reconciliation after cosmo-main exit', () => {
     expect(fs.existsSync(path.join(runPath, 'drill', 'progress.jsonl'))).to.equal(false);
   });
 
+  it('keeps deliberate park exits distinct from interruptions', () => {
+    const drill = activeState();
+    const status = deriveDrillStatusTruth({
+      drill,
+      processOnline: false,
+      recordedRunnerAlive: false,
+      parked: true,
+      at: 350
+    });
+
+    expect(status.lifecycle).to.equal('parked');
+    expect(status.running).to.equal(false);
+    expect(status.derivedInterrupted).to.equal(false);
+    expect(status.drill).to.equal(drill);
+  });
+
   it('derives interrupted API truth when disk reconciliation cannot commit', async () => {
     const runPath = makeRun('cosmo-drill-reconcile-fail-');
     const statePath = path.join(runPath, 'drill', 'state.json');
