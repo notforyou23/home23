@@ -102,8 +102,12 @@ function scriptedWorkerFactory(runtimePath, { finish = true, fatalAuth = false, 
             content: `Finding from cycle ${this.drill.cycle} (goal ${this.drill.goalNumber} phase ${this.drill.phaseNumber})`
           }, { runtimePath, logger, loop: this });
           if (finish) {
+            await executeTool('write_file', {
+              path: `level-${this.drill.goalNumber}-p${this.drill.phaseNumber}.md`,
+              content: `# Phase ${this.drill.phaseNumber}\n\nFinding from cycle ${this.drill.cycle}.`
+            }, { runtimePath, logger, loop: this });
             this.finished = true;
-            this.finishSummary = `Wrote outputs/level-${this.drill.goalNumber}.md`;
+            this.finishSummary = `Wrote outputs/level-${this.drill.goalNumber}-p${this.drill.phaseNumber}.md`;
           }
           this.running = false;
         })();
@@ -306,13 +310,14 @@ describe('The drill: goal → phases → next goal', () => {
     drill.start();
     await drill._promise;
 
-    const firstWorker = createWorker.spawned[0];
-    expect(JSON.stringify(firstWorker.plan)).to.include('Operator note: Focus on 1973 tour legs');
+    for (const worker of createWorker.spawned) {
+      expect(JSON.stringify(worker.plan)).to.include('Operator note: Focus on 1973 tour legs');
+    }
 
     const progress = readJsonl(path.join(runtimePath, 'drill', 'progress.jsonl'));
-    expect(progress.some((entry) => entry.type === 'note_consumed' && entry.text === 'Focus on 1973 tour legs')).to.equal(true);
-    // Consumed once, not on every cycle.
-    expect(progress.filter((entry) => entry.type === 'note_consumed')).to.have.length(1);
+    const delivered = progress.filter((entry) => entry.type === 'note_delivered' && entry.text === 'Focus on 1973 tour legs');
+    expect(delivered.length).to.equal(createWorker.spawned.length);
+    expect(progress.some((entry) => entry.type === 'note_consumed')).to.equal(false);
   });
 
   it('journaled candidates reach the Brain at cycle end — and the drill\'s own life streams live', async function () {
@@ -520,5 +525,59 @@ describe('The control center is what you open', () => {
     expect(appSource).to.include("api('/api/drill/status')");
     expect(appSource).to.include("'/api/drill/note'");
     expect(appSource).to.include("api('/api/stop'");
+  });
+});
+
+describe('Write-first close and persisted notes', () => {
+  it('a later worker on a taped phase is told WRITE FIRST and sees the harvest digest', async function () {
+    this.timeout(10000);
+    const runtimePath = tempRuntime();
+    const createWorker = scriptedWorkerFactory(runtimePath, { finish: false });
+    const drill = makeDrill({ runtimePath, createWorker, cycles: 2, maxConcurrent: 1 });
+
+    drill.start();
+    await drill._promise;
+
+    expect(createWorker.spawned).to.have.length(2);
+    const second = JSON.stringify(createWorker.spawned[1].plan);
+    expect(second).to.include('WRITE FIRST');
+    expect(second).to.include('Harvest digest from this phase');
+    expect(second).to.include('Finding from cycle 1');
+  });
+
+  it('tape without a writeup cannot close a phase — /tmp dumps never count', async function () {
+    this.timeout(10000);
+    const runtimePath = tempRuntime();
+    const createWorker = scriptedWorkerFactory(runtimePath, { finish: false });
+    const originalCreate = createWorker;
+    // First descent harvests onto the tape. Second claims done with a /tmp dump.
+    let descents = 0;
+    const factory = (args) => {
+      descents += 1;
+      const worker = originalCreate(args);
+      const body = worker.start;
+      worker.start = function start() {
+        const result = body.call(this);
+        const prior = this._promise;
+        this._promise = prior.then(async () => {
+          if (descents === 1) return;
+          fs.writeFileSync(path.join(os.tmpdir(), `hidden-writeup-${Date.now()}.md`), '# hidden\n');
+          this.finished = true;
+          this.finishSummary = 'dumped to /tmp';
+        });
+        return result;
+      };
+      return worker;
+    };
+    factory.spawned = createWorker.spawned;
+    const drill = makeDrill({ runtimePath, createWorker: factory, cycles: 2, maxConcurrent: 1 });
+
+    drill.start();
+    await drill._promise;
+
+    expect(drill.currentGoal.phases[0].status).to.not.equal('done');
+    const progress = readJsonl(path.join(runtimePath, 'drill', 'progress.jsonl'));
+    const rejected = progress.filter((entry) => entry.type === 'cycle_completed' && entry.rejectedReason === 'missing_writeup');
+    expect(rejected.length).to.be.greaterThan(0);
   });
 });

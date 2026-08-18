@@ -132,6 +132,10 @@ function concurrencyWorkerFactory(runtimePath, { holdPhase = null, expectParalle
           await executeTool('remember', {
             content: `Finding from ${this.drill.workerId} (goal ${this.drill.goalNumber} phase ${this.drill.phaseNumber})`
           }, { runtimePath, logger, loop: this });
+          await executeTool('write_file', {
+            path: `g${this.drill.goalNumber}p${this.drill.phaseNumber}.md`,
+            content: `# Goal ${this.drill.goalNumber} phase ${this.drill.phaseNumber}\n\nFinding from ${this.drill.workerId}.`
+          }, { runtimePath, logger, loop: this });
           this.finished = true;
           this.finishSummary = `Wrote outputs/g${this.drill.goalNumber}p${this.drill.phaseNumber}.md`;
           inFlight -= 1;

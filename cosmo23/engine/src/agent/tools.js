@@ -12,6 +12,7 @@ const { tools: interactiveTools, executeTool: executeInteractiveTool } = require
 const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
 const { getSearchGovernor } = require('./search-governor');
 const { writeBrainStream, bumpStreamEvidence } = require('./brain-stream');
+const { hasPhaseWriteup } = require('../drill/writeup-gate');
 
 const INTERACTIVE_ONLY = new Set([
   'spawn_agent',
@@ -97,7 +98,7 @@ const extraTools = [
   },
   {
     name: 'finish',
-    description: 'Mark THIS phase\'s deliverable complete. The drill keeps going after you — finishing a writeup never ends the run. Refused while nothing from this phase has reached the record: fetch something, write something, think in a normal turn, or remember a finding first.',
+    description: 'Mark THIS phase\'s deliverable complete. The drill keeps going after you — finishing a writeup never ends the run. Refused until a markdown writeup exists under outputs/. Tape, thoughts, receipts, and /tmp dumps cannot close a phase.',
     parameters: {
       type: 'object',
       properties: {
@@ -425,17 +426,23 @@ const extraExecutors = {
   async finish(args, context) {
     const summary = String(args.summary || '').trim();
     if (context.loop && typeof context.loop.markFinished === 'function') {
-      // Hidden work is the failure: a worker whose whole descent left
-      // NOTHING on the record — no receipt, no stream entry, no journaled
-      // finding — cannot close its phase. Anything that reached the tape
-      // (thoughts, harvests, findings, writeups) counts; remember() is one
-      // channel, not the gate.
+      // A phase cannot close on tape alone. Hidden work (nothing on the
+      // record) is still refused. Harvest without a writeup under
+      // outputs/*.md is also refused. /tmp dumps never count.
       const streamed = Number(context.loop.evidence?.streamed) || 0;
-      if (streamed === 0) {
+      const writeupOnDisk = hasPhaseWriteup(resolveRuntimePath(context));
+      if (!writeupOnDisk) {
+        if (streamed === 0) {
+          return JSON.stringify({
+            finish: 'refused',
+            reason: 'hidden_work',
+            instruction: 'Nothing from this phase has reached the record yet. write_file a markdown writeup under outputs/, remember() the findings, then call finish. Hidden /tmp dumps cannot close a phase.'
+          }, null, 2);
+        }
         return JSON.stringify({
           finish: 'refused',
-          reason: 'hidden_work',
-          instruction: 'Nothing from this phase has reached the record yet. Put the work on the tape first: fetch a URL (web_search, curl via run_command, coding_run), write harvested material or a writeup with write_file, journal a finding with remember, or think it through in a normal turn — then call finish.'
+          reason: 'missing_writeup',
+          instruction: 'This phase has tape but no writeup on disk. Stop fetching. write_file a markdown writeup under outputs/, remember() the findings, then call finish. Tape alone cannot close a phase.'
         }, null, 2);
       }
       context.loop.markFinished(summary);

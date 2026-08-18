@@ -39,6 +39,7 @@ const { writeSnapshot, readSnapshot, snapshotNodeCount, resolveKnownGoodNodeCoun
 const { hydrateOrchestratorState } = require('./state-hydration');
 const { maybeBackupBrain } = require('./brain-backups');
 const { HeartbeatWriter } = require('./heartbeat');
+const { shouldHonorLeftoverEngineLimits } = require('../drill/writeup-gate');
 
 // EXECUTIVE RING: Executive function layer (dlPFC)
 const { ExecutiveCoordinator } = require('../coordinator/executive-coordinator');
@@ -1214,10 +1215,12 @@ class Orchestrator {
       // graceful stop and exits 81 — it does not return.
       await this.runGovernanceTick();
       
+      // Leftover engine maxCycles/maxRuntime must not stop a product drill.
+      // The drill owns cycles and time while it is running.
       // Check maxCycles limit (if configured)
       const maxCyclesRaw = this.config.execution?.maxCycles;
       const maxCycles = maxCyclesRaw ? parseInt(maxCyclesRaw, 10) : null;
-      if (maxCycles && maxCycles > 0 && this.cycleCount >= maxCycles) {
+      if (shouldHonorLeftoverEngineLimits(this) && maxCycles && maxCycles > 0 && this.cycleCount >= maxCycles) {
         this.logger.info('');
         this.logger.info(`🏁 Reached maxCycles limit (${maxCycles})`);
         this.logger.info(`   Total cycles completed: ${this.cycleCount}`);
@@ -1278,7 +1281,7 @@ class Orchestrator {
       // Check maxRuntimeMinutes limit (if configured)
       const maxRuntimeRaw = this.config.execution?.maxRuntimeMinutes;
       const maxRuntimeMinutes = maxRuntimeRaw ? parseInt(maxRuntimeRaw, 10) : null;
-      if (maxRuntimeMinutes && maxRuntimeMinutes > 0) {
+      if (shouldHonorLeftoverEngineLimits(this) && maxRuntimeMinutes && maxRuntimeMinutes > 0) {
         const elapsedMinutes = (Date.now() - this.runStartTime) / (1000 * 60);
         if (elapsedMinutes >= maxRuntimeMinutes) {
           this.logger.info('');
@@ -11317,4 +11320,4 @@ function shutdownBudgetMs(deadline, defaultMs) {
   return Math.min(defaultMs, Math.max(1000, numericDeadline - Date.now()));
 }
 
-module.exports = { Orchestrator, shutdownBudgetMs };
+module.exports = { Orchestrator, shutdownBudgetMs, shouldHonorLeftoverEngineLimits };

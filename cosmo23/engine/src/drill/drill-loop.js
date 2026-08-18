@@ -29,6 +29,12 @@ const crypto = require('crypto');
 const { LaunchLoop } = require('../agent/loop');
 const { writeBrainStream } = require('../agent/brain-stream');
 const { DrillCoordinator } = require('./coordinator');
+const {
+  buildHarvestDigest,
+  hasPhaseWriteup,
+  phaseHasTape,
+  readPersistedNotes
+} = require('./writeup-gate');
 const { RESEARCH_PRODUCT_LOOP } = require('../../../lib/research-launch');
 const { AUTH_REVOKED_WATCH_MESSAGE, isFatalAuthError } = require('../../../lib/auth-error');
 
@@ -89,7 +95,6 @@ class DrillLoop {
     this.goalHistory = [];
     this.lastMerge = null;
     this.activeWorkers = new Map(); // workerId -> { workerId, worker, phase, goal, cycle, startedAt, settled, done }
-    this.notesConsumedBytes = 0;
     this.candidatesHarvestedBytes = 0;
     this.brainWrites = 0;
     this.degradedGoalGeneration = false;
@@ -579,7 +584,7 @@ class DrillLoop {
     phase.status = 'active';
     phase.cyclesUsed += 1;
 
-    const notes = await this.consumeNotes();
+    const notes = await this.readNotes();
     const siblings = this.currentGoal.phases
       .filter((entry) => entry !== phase && this.workerOnPhase(entry))
       .map((entry) => entry.title);
@@ -661,10 +666,17 @@ class DrillLoop {
         Number(worker.evidence?.streamed) || 0
       );
       const phaseOnRecord = phase.evidence.streamed > 0;
+      const writeupOnDisk = hasPhaseWriteup(this.runtimePath);
+      const rejectedReason = !worker.finished
+        ? null
+        : (!phaseOnRecord && !writeupOnDisk
+          ? 'hidden_work'
+          : (writeupOnDisk ? null : 'missing_writeup'));
 
-      if (worker.finished && phaseOnRecord) {
-        // The worker finished ITS hole: the phase is done. The drill and
-        // its sibling bits keep going.
+      if (worker.finished && writeupOnDisk) {
+        // The worker finished ITS hole AND left a writeup on disk. Tape
+        // alone cannot close a phase — hunter-glm-1 harvested for 14
+        // cycles with nothing under outputs/*.md.
         phase.status = 'done';
         phase.summary = worker.finishSummary || 'done';
         this.emitEvent('drill_phase_complete', {
@@ -678,20 +690,23 @@ class DrillLoop {
           `Phase ${phase.number} of goal ${goal.number} done (cycle ${cycle}, ${workerId}): ${String(worker.finishSummary || 'done').slice(0, 300)}`,
           { cycle, workerId, goalNumber: goal.number, phaseNumber: phase.number });
       } else if (worker.finished) {
-        // Hidden work is a failed close: the worker claims done but its
-        // whole descent left nothing on the tape — no receipt, no stream
-        // entry, no journaled finding. The phase stays open.
+        // Failed close: hidden work, or tape/receipts without a writeup.
+        // Hidden /tmp dumps never count. The phase stays open.
         phase.status = 'pending';
         phase.rejections = (Number(phase.rejections) || 0) + 1;
+        const why = rejectedReason === 'missing_writeup'
+          ? 'finished with tape but no writeup under outputs/'
+          : 'finished with nothing on the record';
         this.emitEvent('drill_phase_rejected', {
           cycle,
           workerId,
           goalNumber: goal.number,
           phaseNumber: phase.number,
-          message: `${workerId} finished with nothing on the record — phase ${phase.number} of goal ${goal.number} stays open`
+          reason: rejectedReason,
+          message: `${workerId} ${why} — phase ${phase.number} of goal ${goal.number} stays open`
         });
         await this.streamEvent('phase',
-          `Phase ${phase.number} of goal ${goal.number} NOT accepted (cycle ${cycle}, ${workerId}): finished with nothing on the record`,
+          `Phase ${phase.number} of goal ${goal.number} NOT accepted (cycle ${cycle}, ${workerId}): ${why}`,
           { cycle, workerId, goalNumber: goal.number, phaseNumber: phase.number });
       } else {
         phase.status = 'pending';
@@ -711,7 +726,7 @@ class DrillLoop {
         phaseNumber: phase.number,
         workerFinished: worker.finished === true,
         phaseDone: phase.status === 'done',
-        rejectedReason: worker.finished && !phaseOnRecord ? 'hidden_work' : null,
+        rejectedReason,
         workerTurns: worker.turns,
         workerSummary: worker.finishSummary || null,
         streamedEvidence: phase.evidence.streamed,
@@ -739,7 +754,21 @@ class DrillLoop {
       constraints.push('This phase was started in an earlier cycle. Continue it; do not start over.');
     }
     if ((Number(phase.rejections) || 0) > 0) {
-      constraints.push('An earlier worker on this phase claimed done with nothing on the record. Everything you do must land in files: fetches leave receipts, thoughts and harvests stream, findings go through remember, writeups through write_file.');
+      constraints.push('An earlier worker on this phase claimed done without a writeup under outputs/. write_file a markdown writeup, remember() the findings, then finish. Tape or /tmp dumps cannot close this phase.');
+    }
+    const alreadyHasTape = phaseHasTape(phase, this.runtimePath, {
+      goalNumber: goal.number,
+      phaseNumber: phase.number
+    });
+    if (alreadyHasTape) {
+      constraints.push('WRITE FIRST: this phase already has tape. write_file a markdown writeup under outputs/ and remember() the findings BEFORE any more fetching. More harvest cannot close this phase.');
+      const digest = buildHarvestDigest(this.runtimePath, {
+        goalNumber: goal.number,
+        phaseNumber: phase.number
+      });
+      if (digest) {
+        constraints.push(`Harvest digest from this phase's stream:\n${digest}`);
+      }
     }
     for (const note of notes) {
       constraints.push(`Operator note: ${note.text}`);
@@ -747,7 +776,7 @@ class DrillLoop {
     return {
       goal: phase.mission,
       constraints,
-      deliverable: 'Research however works — search, curl known URLs, archives, forums, coding_run, scripts — every fetch leaves a receipt and your work streams to the Brain as it happens. Journal findings with remember and leave concrete artifacts in outputs/. Call finish when THIS phase\'s deliverable is done — the drill continues after you. A phase with nothing on the record cannot close.',
+      deliverable: 'Research however works — search, curl known URLs, archives, forums, coding_run, scripts — every fetch leaves a receipt and your work streams to the Brain as it happens. Journal findings with remember and write_file a markdown writeup under outputs/. Call finish when THIS phase\'s deliverable is done — the drill continues after you. A phase cannot close on tape alone; hidden /tmp dumps never count.',
       executionKind: 'tool_loop',
       claimedBy: 'launch_loop'
     };
@@ -755,23 +784,21 @@ class DrillLoop {
 
   // ── Steering notes ─────────────────────────────────────────────────────
 
-  async consumeNotes() {
-    const file = path.join(this.drillDir, 'notes.jsonl');
-    let raw;
-    try {
-      raw = await fsp.readFile(file, 'utf8');
-    } catch {
-      return [];
-    }
-    const fresh = raw.slice(this.notesConsumedBytes);
-    if (!fresh.trim()) return [];
-    this.notesConsumedBytes = raw.length;
-    const notes = fresh.split('\n').filter(Boolean).map((line) => {
-      try { return JSON.parse(line); } catch { return null; }
-    }).filter((note) => note?.text);
+  /**
+   * Operator notes persist on disk. Every new worker reads the whole
+   * notes.jsonl — they are not one-shot consume. Later bits still see
+   * the operator's steering.
+   */
+  async readNotes() {
+    const notes = await readPersistedNotes(path.join(this.drillDir, 'notes.jsonl'));
     for (const note of notes) {
-      await this.journal('note_consumed', { noteId: note.id || null, text: note.text });
-      this.emitEvent('drill_note_consumed', { message: `Operator note picked up: ${String(note.text).slice(0, 160)}` });
+      await this.journal('note_delivered', {
+        noteId: note.id || null,
+        text: note.text
+      });
+      this.emitEvent('drill_note_delivered', {
+        message: `Operator note delivered: ${String(note.text).slice(0, 160)}`
+      });
     }
     return notes;
   }
