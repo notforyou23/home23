@@ -42,6 +42,7 @@ import {
   CONCERN_MIN_CONFIDENCE,
 } from '../src/concern.js';
 import type { Commitment } from '../src/concern.js';
+import { TEST_ANATOMY } from './named-anatomy.js';
 
 function makeDir(prefix: string, t: { after(fn: () => void): void }): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -187,7 +188,7 @@ test('RUNNER: a committed prediction becomes an obligation; the crossing is an e
   });
 
   const runner = new SeedRunner({
-    stateDir, sourcePath, fromEnd: false, lobe,
+    stateDir, sourcePath, fromEnd: false, lobe, anatomy: TEST_ANATOMY,
     workspaceEveryN: 4, checkpointEveryN: 1000, lobeMinIntervalMs: 0,
   });
   runner.start();
@@ -289,7 +290,7 @@ test('RUNNER: unanswered pressing ends in a receipted release — no immortal pr
   });
 
   const runner = new SeedRunner({
-    stateDir, sourcePath, fromEnd: false, lobe,
+    stateDir, sourcePath, fromEnd: false, lobe, anatomy: TEST_ANATOMY,
     workspaceEveryN: 4, checkpointEveryN: 1000, lobeMinIntervalMs: 0,
   });
   runner.start();
@@ -321,7 +322,7 @@ test('RUNNER: unanswered pressing ends in a receipted release — no immortal pr
 
 test('THE PREMATURE-RESOLUTION LAW: a claim cannot be confirmed before its window elapses; falsification may close early', (t) => {
   const stateDir = makeDir('premature-', t);
-  const seed = SeedProcess.initialize(stateDir);
+  const seed = SeedProcess.initialize(stateDir, undefined, { anatomy: TEST_ANATOMY });
   t.after(() => { try { seed.stop(); } catch { /* stopped */ } });
 
   // Give the cell a prediction whose window runs a week out.
@@ -389,7 +390,7 @@ test('the membrane protects reasons: actions outside an occasion are rejected; c
   });
 
   const runner = new SeedRunner({
-    stateDir, sourcePath, fromEnd: false, lobe,
+    stateDir, sourcePath, fromEnd: false, lobe, anatomy: TEST_ANATOMY,
     workspaceEveryN: 4, checkpointEveryN: 1000, lobeMinIntervalMs: 0,
   });
   runner.start();

@@ -27,6 +27,7 @@ import {
 import { EventLedgerTailAdapter } from '../src/adapters/event-ledger-tail.js';
 import type { LobeAdapter } from '../src/lobe.js';
 import type { SourceEvent, LobeResult } from '../src/types.js';
+import { TEST_ANATOMY } from './named-anatomy.js';
 
 function makeDir(t: { after(fn: () => void): void }): string {
   const dir = mkdtempSync(join(tmpdir(), 'substrate-dev-rules-'));
@@ -56,7 +57,7 @@ function devReceipts(stateDir: string): Array<Record<string, unknown>> {
 
 test('attenuation reverses correction: grip loosens, wake hardens, teacher keeps trust and routing', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 611 });
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 611 });
 
   // Teach twice in a context, then attenuate twice in the same context.
   seed.transition(ev({ category: 'correction', sourceRef: 'owner:that-mattered', producedAt: '2026-08-08T02:01:00.000Z' }));
@@ -81,7 +82,7 @@ test('attenuation reverses correction: grip loosens, wake hardens, teacher keeps
 test('attenuation is deterministic: same genesis, same stream, identical development', (t) => {
   const dirA = makeDir(t);
   const dirB = makeDir(t);
-  const born = SeedProcess.initialize(dirA, undefined, { reservoirSeed: 612 });
+  const born = SeedProcess.initialize(dirA, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 612 });
   born.checkpoint();
   born.stop();
   cpSync(dirA, dirB, { recursive: true });
@@ -113,7 +114,7 @@ test('the relationship mapper routes attenuation entries onto the correction cha
 
 test('resolution bands: accurate corroborates, wrong loosens provisionally, ambiguity teaches nothing', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 613 });
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 613 });
   const routed = seed.transition(ev({ sourceRef: 'baro.sample:x', producedAt: '2026-08-08T02:01:00.000Z' }));
   const anyCell = seed.getCell(routed.cellId);
   assert.ok(anyCell !== undefined);
@@ -136,7 +137,7 @@ test('resolution bands: accurate corroborates, wrong loosens provisionally, ambi
 
 test('end-to-end: a lobe resolving a prediction produces a resolution.v1 development receipt', async (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 614 });
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 614 });
   for (let i = 0; i < 8; i++) {
     seed.transition(ev({ category: 'correction', sourceRef: `owner:c${i}`, eventId: `evt_${i}`, producedAt: `2026-08-08T02:0${i}:00.000Z` }));
   }

@@ -11,7 +11,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SeedProcess } from '../src/seed.js';
 import { SeedLedger } from '../src/ledger.js';
-import type { SourceEvent, AnatomyCellSpec } from '../src/types.js';
+import { CheckpointManager, computeStateHash } from '../src/checkpoint.js';
+import { makeInitialCells, serializeCell } from '../src/cells.js';
+import { AnatomyNotNamedError, PRE_ANATOMY_GENESIS_FALLBACK } from '../src/types.js';
+import type { SourceEvent, AnatomyCellSpec, SeedDispositions } from '../src/types.js';
+import { METABOLISM_VERSION } from '../src/metabolism.js';
 
 function makeDir(t: { after(fn: () => void): void }): string {
   const dir = mkdtempSync(join(tmpdir(), 'substrate-anatomy-'));
@@ -67,9 +71,56 @@ test('anatomy survives restore: routing comes from the genesis, not the code def
   assert.ok(restored.getState().developmentMagnitude > 0, 'and learns into its own cells');
 });
 
-test('default births are unchanged (the first individual is untouched by anatomy support)', (t) => {
+test('birth without named anatomy refuses — no invented person', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 888_003 });
-  const r = seed.transition(ev('x', 'correction', '2026-08-08T10:00:00.000Z'));
-  assert.equal(r.cellId, 'contact.jtr-jerry');
+  assert.throws(
+    () => SeedProcess.initialize(dir, undefined, { reservoirSeed: 888_003 }),
+    (err) => err instanceof AnatomyNotNamedError,
+  );
+});
+
+test('pre-anatomy genesis restores through the historical fallback, not a new person', (t) => {
+  const dir = makeDir(t);
+  const now = '2026-08-08T10:00:00.000Z';
+  const ledger = new SeedLedger(dir);
+  ledger.append({
+    category: 'genesis',
+    sourceAuthority: 'seed.internal',
+    sourceRef: 'seed_legacy',
+    payload: {
+      seedId: 'seed_legacy',
+      cellIds: PRE_ANATOMY_GENESIS_FALLBACK.map((a) => a.id),
+      reservoirSeed: 888_004,
+      continuousStateDim: 64,
+      metabolismVersion: METABOLISM_VERSION,
+      createdAt: now,
+    },
+  });
+  const dispositions: SeedDispositions = {
+    globalWakeThreshold: 0.3,
+    silencePolicy: 'default',
+    modelRecruitmentPolicy: 'none',
+    quietTimeEnabled: false,
+  };
+  const cells = Array.from(makeInitialCells(now, PRE_ANATOMY_GENESIS_FALLBACK).values()).map(serializeCell);
+  const mgr = new CheckpointManager(dir);
+  mgr.write({
+    stateHash: computeStateHash({ cells, dispositions }),
+    ledgerSeq: ledger.currentSeq,
+    ledgerCursor: ledger.currentCursor,
+    cells,
+    dispositions,
+    resourceSnapshot: {
+      stateBytesPerCell: {},
+      ledgerBytes: ledger.bytes,
+      eventCount: 1,
+      transitionCount: 0,
+      checkpointCount: 0,
+    },
+  });
+
+  const restored = SeedProcess.restore(dir);
+  assert.deepEqual(restored.getState().cellIds.sort(), PRE_ANATOMY_GENESIS_FALLBACK.map((a) => a.id).sort());
+  const r = restored.transition(ev('x', 'correction', '2026-08-08T10:01:00.000Z'));
+  assert.equal(r.cellId, 'contact.jtr-jerry', 'the first individual continues as itself');
 });

@@ -13,6 +13,7 @@ import { SeedProcess } from '../src/seed.js';
 import { SeedLedger } from '../src/ledger.js';
 import { composeJournalEntry } from '../src/journal.js';
 import type { SourceEvent, CheckpointManifest } from '../src/types.js';
+import { TEST_ANATOMY } from './named-anatomy.js';
 
 function makeDir(t: { after(fn: () => void): void }): string {
   const dir = mkdtempSync(join(tmpdir(), 'substrate-journal-'));
@@ -42,7 +43,7 @@ function windowFor(dir: string, seed: SeedProcess, sinceSeq: number) {
 
 test('journal cites a real receipt for every seq it mentions', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 999_001, name: 'testling' });
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 999_001, name: 'testling' });
   seed.transition(ev('baro.sample:p=1010hPa', 'observation', '2026-08-08T10:00:00.000Z'));
   seed.transition(ev('owner:fix-this', 'correction', '2026-08-08T10:01:00.000Z'));
   seed.workspaceCycle('2026-08-08T10:02:00.000Z');
@@ -63,7 +64,7 @@ test('journal cites a real receipt for every seq it mentions', (t) => {
 
 test('silence is explained with its score and threshold', (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 999_002, name: 'quietling' });
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 999_002, name: 'quietling' });
   seed.transition(ev('noise:1', 'interpretation', '2026-08-08T10:00:00.000Z'));
   const outcome = seed.workspaceCycle('2026-08-08T10:01:00.000Z');
   assert.equal(outcome.kind, 'silence');

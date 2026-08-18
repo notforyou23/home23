@@ -7,6 +7,7 @@ import { SeedProcess } from '../src/seed.js';
 import { EchoLobe, ModelLobe, validateLobeResult, buildLobePrompt, parseLobeResponse } from '../src/lobe.js';
 import type { LobeAdapter } from '../src/lobe.js';
 import type { SourceEvent, WorkspacePacket, LobeResult, ModelReceipt } from '../src/types.js';
+import { TEST_ANATOMY } from './named-anatomy.js';
 
 function makeDir(t: { after(fn: () => void): void }): string {
   const dir = mkdtempSync(join(tmpdir(), 'substrate-lobe-'));
@@ -35,7 +36,7 @@ function admittedPacket(seed: SeedProcess): WorkspacePacket {
 
 test('echo lobe end-to-end: recruit → validate → staged deltas → receipted commit', async (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 51 });
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 51 });
   const packet = admittedPacket(seed);
   const hashBefore = seed.getState().stateHash;
 
@@ -120,7 +121,7 @@ test('observe-ceiling packet rejects ALL state deltas', (t) => {
 
 test('a failing lobe is receipted with zero mutation', async (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 52 });
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 52 });
   const packet = admittedPacket(seed);
   const hashBefore = seed.getState().stateHash;
   const seqBefore = seed.getState().ledgerSeq;
@@ -141,7 +142,7 @@ test('a failing lobe is receipted with zero mutation', async (t) => {
 
 test('a hanging lobe times out and is receipted with zero mutation', async (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 53 });
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 53 });
   const packet = admittedPacket(seed);
   const hashBefore = seed.getState().stateHash;
 
@@ -161,7 +162,7 @@ test('a slow lobe succeeds under a raised timeout — the cap must fit the trans
   // ~35s while the default cap was 30s — the thought arrived and was thrown
   // away. The cap is a parameter of the transport's real latency, not a law.
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 57 });
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 57 });
   const packet = admittedPacket(seed);
 
   const echo = new EchoLobe();
@@ -183,7 +184,7 @@ test('a slow lobe succeeds under a raised timeout — the cap must fit the trans
 
 test('lobe receipt carries the FULL applied deltas — replayable without a model', async (t) => {
   const dir = makeDir(t);
-  const seed = SeedProcess.initialize(dir, undefined, { reservoirSeed: 54 });
+  const seed = SeedProcess.initialize(dir, undefined, { anatomy: TEST_ANATOMY, reservoirSeed: 54 });
   const packet = admittedPacket(seed);
   await seed.recruitLobe(new EchoLobe(), packet, '2026-08-07T10:11:00.000Z');
   seed.stop();

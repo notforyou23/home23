@@ -242,3 +242,54 @@ test('no brokers declared, none emitted', (t) => {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   assert.equal(loadApps(root).some((a) => /broker/.test(a.name)), false);
 });
+
+test('enabling a seed does not invent Jerry anatomy', (t) => {
+  const root = makeInstall({ substrate: { enabled: true } });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const seed = loadApps(root).find((a) => a.name === 'home23-jerry-seed');
+  assert.ok(seed, 'substrate.enabled still emits the seed process');
+  assert.equal(seed.env.SEED_ANATOMY, undefined, 'anatomy is operator-named, never defaulted');
+  assert.doesNotMatch(JSON.stringify(seed.env), /jtr-jerry|shakedown/);
+});
+
+test('operator-named substrate.anatomy becomes SEED_ANATOMY', (t) => {
+  const anatomy = [
+    { id: 'contact.owner', role: 'correction' },
+    { id: 'world.place', role: 'observation' },
+    { id: 'periphery.open-field', role: 'periphery' },
+  ];
+  const root = makeInstall({
+    substrate: { enabled: true, name: 'mabel', anatomy },
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const seed = loadApps(root).find((a) => a.name === 'home23-jerry-seed');
+  assert.equal(seed.env.SEED_NAME, 'mabel');
+  assert.deepEqual(JSON.parse(seed.env.SEED_ANATOMY), anatomy);
+});
+
+test('invalid substrate.anatomy refuses to generate', () => {
+  const root = mkdtempSync(join(tmpdir(), 'home23-bad-anatomy-'));
+  try {
+    mkdirSync(join(root, 'config'), { recursive: true });
+    mkdirSync(join(root, 'instances', 'jerry'), { recursive: true });
+    symlinkSync(TEST_NODE_MODULES, join(root, 'node_modules'), 'dir');
+    writeFileSync(join(root, 'config', 'home.yaml'), yaml.dump({
+      home: { primaryAgent: 'jerry' },
+      providers: { openai: { defaultModels: ['gpt-test'] } },
+      chat: { defaultProvider: 'openai', defaultModel: 'gpt-test' },
+    }), 'utf8');
+    writeFileSync(join(root, 'config', 'secrets.yaml'), yaml.dump({
+      providers: {},
+      bridge: { token: 'bridge-token-should-not-leak' },
+      cosmo23: { encryptionKey: 'not-a-real-secret' },
+    }), 'utf8');
+    writeFileSync(join(root, 'instances', 'jerry', 'config.yaml'), yaml.dump({
+      agent: { displayName: 'jerry' },
+      ports: { engine: 5001, dashboard: 5002, mcp: 5003 },
+      substrate: { enabled: true, anatomy: [{ id: 'only', role: 'correction' }] },
+    }), 'utf8');
+    assert.throws(() => generateEcosystem(root), /exactly one periphery/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

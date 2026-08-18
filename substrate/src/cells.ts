@@ -23,7 +23,7 @@ import type {
   CellStatus,
   SourceEvent,
 } from './types.js';
-import { CONTINUOUS_STATE_DIM, INITIAL_CELL_IDS, DEFAULT_ANATOMY } from './types.js';
+import { CONTINUOUS_STATE_DIM, requireNamedAnatomy } from './types.js';
 import type { AnatomyCellSpec } from './types.js';
 import type { Reservoir, Readouts } from './metabolism.js';
 import { encodeEvent, metabolicStep, computeReadouts } from './metabolism.js';
@@ -68,9 +68,10 @@ export function makeInitialCell(id: string, now: string): SituationCell {
   };
 }
 
-export function makeInitialCells(now: string, anatomy: readonly AnatomyCellSpec[] = DEFAULT_ANATOMY): Map<string, SituationCell> {
+export function makeInitialCells(now: string, anatomy: readonly AnatomyCellSpec[]): Map<string, SituationCell> {
+  const named = requireNamedAnatomy(anatomy);
   const cells = new Map<string, SituationCell>();
-  for (const spec of anatomy) {
+  for (const spec of named) {
     const cell = makeInitialCell(spec.id, now);
     // Periphery keeps the strict default dispositions keyed off its id prefix;
     // non-prefix peripheries get them explicitly from their ROLE.
@@ -80,7 +81,7 @@ export function makeInitialCells(now: string, anatomy: readonly AnatomyCellSpec[
     cells.set(spec.id, cell);
   }
   // After formation, non-periphery cells wake to 'living'; periphery forms.
-  const peripheryId = anatomy.find((a) => a.role === 'periphery')?.id;
+  const peripheryId = named.find((a) => a.role === 'periphery')?.id;
   for (const [id, cell] of cells) {
     if (id !== peripheryId) cell.status = 'living';
   }
@@ -114,7 +115,10 @@ export function routeEvent(
   if (event.targetCellId && cellIds.includes(event.targetCellId)) {
     return event.targetCellId;
   }
-  const table = routing ?? routingFromAnatomy(DEFAULT_ANATOMY);
+  if (routing === undefined) {
+    throw new Error('routeEvent requires routing from named anatomy — refusing to invent a person');
+  }
+  const table = routing;
   const staticTarget = table.byCategory[event.category] ?? table.peripheryId;
   if (development !== undefined) {
     const key = sourcePrefix(event);

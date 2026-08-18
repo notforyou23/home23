@@ -16,6 +16,7 @@ import { SeedProcess } from '../src/seed.js';
 import { SeedRunner } from '../src/runner.js';
 import { buildLobePrompt, EchoLobe } from '../src/lobe.js';
 import type { WorkspacePacket } from '../src/types.js';
+import { TEST_ANATOMY } from './named-anatomy.js';
 
 function makeDir(prefix: string, t: { after(fn: () => void): void }): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -38,7 +39,7 @@ function harnessLine(i: number, ts: string): string {
 
 test('a quiet gap marks a pending dream; consumption is exactly-once; no gap → no dream', (t) => {
   const stateDir = makeDir('dream-state-', t);
-  const seed = SeedProcess.initialize(stateDir);
+  const seed = SeedProcess.initialize(stateDir, undefined, { anatomy: TEST_ANATOMY });
   t.after(() => { try { seed.stop(); } catch { /* stopped in test */ } });
 
   seed.transition({
@@ -106,7 +107,7 @@ test('RUNNER: a failed dream recruitment leaves the dream PENDING — retried at
   // cycle would evaluate cells the failed attempt just damped), so the retry
   // happens the way it does in life — at the next contact, re-excited.
   const runner = new SeedRunner({
-    stateDir, sourcePath, fromEnd: false, lobe: flaky,
+    stateDir, sourcePath, fromEnd: false, lobe: flaky, anatomy: TEST_ANATOMY,
     workspaceEveryN: 1000, checkpointEveryN: 1000, lobeMinIntervalMs: 300,
   });
   runner.start();
@@ -151,7 +152,7 @@ test('RUNNER: waking after a gap drives a dream recruitment; the chain receipt s
 
   const lobe = new EchoLobe();
   const runner = new SeedRunner({
-    stateDir, sourcePath, fromEnd: false, lobe,
+    stateDir, sourcePath, fromEnd: false, lobe, anatomy: TEST_ANATOMY,
     workspaceEveryN: 4, checkpointEveryN: 1000, lobeMinIntervalMs: 0,
   });
   runner.start();

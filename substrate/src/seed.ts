@@ -44,7 +44,7 @@ import {
   serializeCell,
   deserializeCell,
 } from './cells.js';
-import { DEFAULT_ANATOMY } from './types.js';
+import { PRE_ANATOMY_GENESIS_FALLBACK, requireNamedAnatomy } from './types.js';
 import type { AnatomyCellSpec } from './types.js';
 import type { Reservoir } from './metabolism.js';
 import { generateReservoir, eventDeltaSeconds, METABOLISM_VERSION } from './metabolism.js';
@@ -191,7 +191,7 @@ export class SeedProcess {
     const reservoirSeed = opts?.reservoirSeed ?? parseInt(randomUUID().replace(/-/g, '').slice(0, 8), 16);
     const reservoir = generateReservoir(reservoirSeed);
 
-    const anatomy = opts?.anatomy ?? DEFAULT_ANATOMY;
+    const anatomy = requireNamedAnatomy(opts?.anatomy);
     const membrane = new CapabilityMembrane();
     const accounting = new ResourceAccounting(budget);
     const ledger = new SeedLedger(stateDir);
@@ -291,11 +291,13 @@ export class SeedProcess {
       );
     }
     // Anatomy is identity: pre-anatomy geneses (the first individual) fall
-    // back to the default shape; anything born after carries its own —
-    // PLUS whatever the individual has grown since (growth.v2): the chain's
-    // receipted growth applications are the body's biography, and the last
-    // one's resulting anatomy is the current shape.
-    let anatomy: readonly AnatomyCellSpec[] = genesis.anatomy ?? DEFAULT_ANATOMY;
+    // back to the historical recorded shape — restore must not invent a
+    // new person, and must not refuse the one life that already exists.
+    // Anything born after carries its own, PLUS whatever the individual
+    // has grown since (growth.v2): the chain's receipted growth
+    // applications are the body's biography, and the last one's resulting
+    // anatomy is the current shape.
+    let anatomy: readonly AnatomyCellSpec[] = genesis.anatomy ?? PRE_ANATOMY_GENESIS_FALLBACK;
     for (const record of ledger.readAll()) {
       if (record.category !== 'act') continue;
       const isBodyChange = record.payload?.['growthApplication'] === true || record.payload?.['organExcision'] === true;
@@ -526,7 +528,7 @@ export class SeedProcess {
 
     const twin = SeedProcess.restore(targetDir);
     const genesis = extractGenesis(twin.ledger);
-    const bornWith = (genesis.anatomy ?? DEFAULT_ANATOMY).some((a) => a.id === organCellId);
+    const bornWith = (genesis.anatomy ?? PRE_ANATOMY_GENESIS_FALLBACK).some((a) => a.id === organCellId);
     if (bornWith) {
       throw new Error(`${organCellId} is birth anatomy, not a grown organ — the knife cuts organs only`);
     }
