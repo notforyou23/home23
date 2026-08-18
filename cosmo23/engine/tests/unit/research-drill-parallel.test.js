@@ -534,6 +534,57 @@ describe('Coordinator (Principal-shaped, not a desk panel)', () => {
     });
   });
 
+  it('salvages hunter-glm-9 truncated JSON when it already names the next hole', async () => {
+    let calls = 0;
+    const firstReply = 'I need to synthesize the gathered material into outputs/garcia_partnership.md and cover Garcia on the collaboration process, but first';
+    const responses = [
+      firstReply,
+      '{"title":"Garcia on the mechanics and evolution of the Hunter collaboration, synthesized into the final deliverable","why":"Goal 1 gathered raw materials but never produced outputs/garcia_partnership.md.","phases":[{"title":"Synthesize existing files into outputs/garcia_partnership.md","mission":"Read outputs/garcia_interview_quotes.md'
+    ];
+    const coordinator = new DrillCoordinator({
+      logger,
+      config: { models: { fast: 'hunter-glm-9' } },
+      client: {
+        async createCompletion() {
+          calls += 1;
+          return { choices: [{ message: { role: 'assistant', content: responses.shift() } }] };
+        }
+      }
+    });
+
+    const result = await coordinator.composeGoal({
+      question: 'How did Garcia and Hunter develop their songwriting partnership?',
+      questionContext: '',
+      previousGoal: {
+        number: 1,
+        phases: [
+          { title: 'Interview quotes', summary: 'Wrote outputs/garcia_interview_quotes.md' },
+          { title: 'Written accounts', summary: 'Wrote outputs/garcia_written_accounts.md' },
+          { title: 'Song-specific evidence', summary: 'Wrote outputs/garcia_song_specific.md' }
+        ]
+      },
+      goalHistory: [{ number: 1, title: 'Gather Garcia source material', status: 'completed' }],
+      number: 2,
+      origin: 'chain'
+    });
+
+    expect(calls).to.equal(2);
+    expect(result.degraded).to.equal(false);
+    expect(result.done).to.equal(false);
+    expect(result.spec.title).to.equal(
+      'Garcia on the mechanics and evolution of the Hunter collaboration, synthesized into the final deliverable'
+    );
+    expect(result.spec.phases).to.deep.equal([{
+      title: 'Synthesize existing files into outputs/garcia_partnership.md',
+      mission: 'Synthesize existing files into outputs/garcia_partnership.md'
+    }]);
+    expect(result.rejections).to.deep.equal([{
+      attempt: 1,
+      reason: 'non_json_response',
+      payload: firstReply
+    }]);
+  });
+
   it('accepts research_complete from the tighter second call', async () => {
     const responses = [
       'not json',
