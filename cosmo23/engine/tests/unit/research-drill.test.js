@@ -251,7 +251,7 @@ describe('The drill: goal → phases → next goal', () => {
 
   it('the time budget is real: the drill stops on the clock even with cycles remaining', async function () {
     this.timeout(10000);
-    let clock = 1000000;
+    let clock = Date.now();
     const createWorker = scriptedWorkerFactory(runtimePath);
     const drill = makeDrill({
       runtimePath,
