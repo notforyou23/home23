@@ -28,6 +28,8 @@ const MIN_WRITEUP_CHARS = 20;
 const UNFINISHED_STATUS_PATTERN = /\b(?:in[\s-]*progress|incomplete|pending|draft|collecting|partial|still\s+(?:collecting|researching|working)|not\s+(?:started|finished|complete)|to\s+be\s+(?:populated|completed|added)|tbd|todo)\b/i;
 const PROGRESS_BASENAME_PATTERN = /(?:^|[-_.])progress(?:[-_.]|$)/i;
 const EMPTY_SECTION_PATTERN = /^(?:findings?|results?|evidence|quotes?|sources?)$/i;
+const JSON_RESULT_KEY_PATTERN = /^(?:data|entries|evidence|findings?|items|quotes?|records?|results?|sources?)$/i;
+const JSON_METADATA_KEY_PATTERN = /^(?:at|bytes|complete|completed|count|createdAt|done|fileName|generatedAt|id|name|path|sha256|state|status|timestamp|total|updatedAt|version)$/i;
 
 function isInside(root, target) {
   const relative = path.relative(root, target);
@@ -108,8 +110,13 @@ function jsonHasFinishedWork(value, key = '') {
         return false;
       }
     }
+    const resultEntries = entries.filter(([entryKey]) => JSON_RESULT_KEY_PATTERN.test(entryKey));
+    if (resultEntries.length > 0
+        && !resultEntries.some(([entryKey, entryValue]) => jsonHasFinishedWork(entryValue, entryKey))) {
+      return false;
+    }
     return entries.some(([entryKey, entryValue]) => {
-      if (/^(?:status|state|complete|completed|done)$/i.test(entryKey)) return false;
+      if (JSON_METADATA_KEY_PATTERN.test(entryKey)) return false;
       return jsonHasFinishedWork(entryValue, entryKey);
     });
   }

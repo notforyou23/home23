@@ -270,7 +270,9 @@ describe('Writeup gate', () => {
   it('does not treat zero counts or explicit incomplete flags as finished JSON', async () => {
     const cases = [
       { findings: [], count: 0, status: 'complete' },
-      { findings: ['One draft quote'], complete: false }
+      { findings: ['One draft quote'], complete: false },
+      { findings: [], status: 'complete', generatedAt: '2026-08-18T16:00:00Z' },
+      { findings: [], status: 'complete', note: 'Source collection was attempted.' }
     ];
     for (const [index, content] of cases.entries()) {
       const runtimePath = tempRuntime();
