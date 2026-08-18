@@ -6,6 +6,9 @@ const os = require('os');
 const path = require('path');
 const { Orchestrator } = require('../../src/core/orchestrator');
 const { DrillLoop } = require('../../src/drill/drill-loop');
+const { executeTool } = require('../../src/agent/tools');
+
+const logger = { info() {}, warn() {}, error() {}, debug() {} };
 
 describe('Product drill lifecycle isolation', () => {
   it('tracks drill progress and settles without entering a cognitive cycle', async () => {
@@ -163,5 +166,65 @@ describe('Product drill lifecycle isolation', () => {
     expect(progress.at(-1).type).to.equal('drill_stopped');
     expect(progress.at(-1).interruptedWorkers[0].workerId).to.equal('w1');
     expect(fs.readFileSync(harvestPath, 'utf8')).to.include('durable partial harvest');
+  });
+
+  it('persists the named receipt and the evidence that cleared the phase', async () => {
+    const runtimePath = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo-drill-clearance-'));
+    const drill = new DrillLoop({
+      logger,
+      orchestrator: { logsDir: runtimePath },
+      config: { logsDir: runtimePath, drill: { cycles: 2 } },
+      plan: {
+        shortPlan: {
+          goal: 'Garcia partnership',
+          seedPhases: [{
+            title: 'Garcia interviews',
+            mission: 'Collect finished interview evidence.',
+            expectedOutput: '@outputs/garcia_interview_sources.json'
+          }]
+        }
+      }
+    });
+    const goal = await drill.nextGoal(null);
+    const phase = goal.phases[0];
+    const worker = {
+      drill: { goalNumber: 1, phaseNumber: 1 },
+      plan: { shortPlan: { expectedOutput: phase.expectedOutput } },
+      expectedOutput: phase.expectedOutput,
+      evidence: { streamed: 0 },
+      turns: 2,
+      finished: true,
+      finishSummary: 'Interview evidence complete.',
+      fatalError: null
+    };
+    await executeTool('write_file', {
+      path: 'garcia_interview_sources.json',
+      content: JSON.stringify({
+        entries: [{ quote: 'Hunter and I passed the words back and forth.', source: 'Interview' }],
+        status: 'complete'
+      })
+    }, { runtimePath, logger, loop: worker });
+    phase.status = 'active';
+    drill.currentGoal = goal;
+    drill.activeWorkers.set('w1', {
+      workerId: 'w1',
+      worker,
+      phase,
+      goal,
+      cycle: 1,
+      done: true
+    });
+
+    await drill.settleFinishedWorkers();
+    await drill.persistState();
+    const state = JSON.parse(fs.readFileSync(path.join(runtimePath, 'drill', 'state.json'), 'utf8'));
+
+    expect(phase.status).to.equal('done');
+    expect(state.goal.phases[0].expectedOutput).to.equal('outputs/garcia_interview_sources.json');
+    expect(state.goal.phases[0].clearance).to.include({
+      reason: 'finished_json',
+      path: 'outputs/garcia_interview_sources.json'
+    });
+    expect(state.goal.phases[0].clearance.sha256).to.match(/^[a-f0-9]{64}$/);
   });
 });

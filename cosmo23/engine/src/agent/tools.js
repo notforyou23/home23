@@ -464,7 +464,9 @@ const extraExecutors = {
           && provenance.phaseNumber == null
         ? {
             accepted: hasPhaseWriteup(resolveRuntimePath(context)),
-            reason: 'legacy_unscoped_writeup'
+            reason: hasPhaseWriteup(resolveRuntimePath(context))
+              ? 'legacy_unscoped_writeup'
+              : 'missing_writeup'
           }
         : assessPhaseReceipt(
             resolveRuntimePath(context),

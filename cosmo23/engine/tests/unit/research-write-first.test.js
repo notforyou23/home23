@@ -710,12 +710,14 @@ describe('finish refuses tape-only and /tmp-only closes', () => {
     const runtimePath = tempRuntime();
     const phaseOne = {
       drill: { goalNumber: 1, phaseNumber: 1, workerId: 'w1', cycle: 1 },
+      expectedOutput: 'outputs/drill/goal-1/phase-1.md',
       evidence: { streamed: 1 },
       finished: false,
       markFinished(summary) { this.finished = true; this.summary = summary; }
     };
     const phaseTwo = {
       drill: { goalNumber: 1, phaseNumber: 2, workerId: 'w2', cycle: 2 },
+      expectedOutput: 'outputs/drill/goal-1/phase-2.md',
       evidence: { streamed: 1 },
       finished: false,
       markFinished(summary) { this.finished = true; this.summary = summary; }
@@ -730,7 +732,7 @@ describe('finish refuses tape-only and /tmp-only closes', () => {
       { summary: 'Phase two done' },
       { runtimePath, logger, loop: phaseTwo }
     ));
-    expect(refused.reason).to.equal('missing_writeup');
+    expect(refused.reason).to.equal('missing_receipt');
     expect(phaseTwo.finished).to.equal(false);
 
     await executeTool(
@@ -746,6 +748,7 @@ describe('finish refuses tape-only and /tmp-only closes', () => {
     const wrongRun = tempRuntime('cosmo-wrong-run-');
     const provenance = {
       drill: { goalNumber: 2, phaseNumber: 1, workerId: 'w10', cycle: 10 },
+      expectedOutput: 'outputs/garcia_partnership.md',
       evidence: { streamed: 4 },
       finished: false,
       markFinished(summary) { this.finished = true; this.summary = summary; }
@@ -760,7 +763,7 @@ describe('finish refuses tape-only and /tmp-only closes', () => {
       { summary: 'Partnership phase done' },
       { runtimePath: correctRun, logger, loop: provenance }
     ));
-    expect(refused.reason).to.equal('missing_writeup');
+    expect(refused.reason).to.equal('missing_receipt');
     expect(provenance.finished).to.equal(false);
     expect(fs.existsSync(path.join(correctRun, 'outputs', 'garcia_partnership.md'))).to.equal(false);
     expect(fs.existsSync(path.join(wrongRun, 'outputs', 'garcia_partnership.md'))).to.equal(true);

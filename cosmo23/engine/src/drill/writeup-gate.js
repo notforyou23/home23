@@ -88,6 +88,7 @@ function canonicalOutputPath(runtimePath, candidatePath) {
 function expectedOutputPaths(runtimePath, expectedOutput) {
   const candidates = Array.isArray(expectedOutput) ? expectedOutput : [expectedOutput];
   return [...new Set(candidates
+    .filter(candidate => typeof candidate === 'string' && candidate.trim())
     .map(candidate => canonicalOutputPath(runtimePath, candidate))
     .filter(Boolean))];
 }

@@ -166,7 +166,14 @@ describe('The Brain gets the working stream as it happens', () => {
     const loop = new LaunchLoop({
       logger,
       orchestrator: { logsDir: runtimePath, memory },
-      plan: { shortPlan: { goal: 'Wembley 1972', constraints: [], deliverable: 'Write it.' } },
+      plan: {
+        shortPlan: {
+          goal: 'Wembley 1972',
+          constraints: [],
+          deliverable: 'Write it.',
+          expectedOutput: 'outputs/wembley.md'
+        }
+      },
       config: { models: { primary: 'test' } },
       drill: { cycle: 5, workerId: 'w5', goalNumber: 3, phaseNumber: 2 },
       maxTurns: 4,
@@ -342,7 +349,7 @@ describe('The Brain gets the working stream as it happens', () => {
             runtimePath, logger, loop: this
           });
           await executeTool('write_file', {
-            path: `lane-${this.drill.cycle}.md`,
+            path: String(this.plan.shortPlan.expectedOutput).replace(/^outputs\//, ''),
             content: `# Lane\n\nFound in cycle ${this.drill.cycle}.`
           }, { runtimePath, logger, loop: this });
           this.finished = true;
@@ -368,7 +375,7 @@ describe('The Brain gets the working stream as it happens', () => {
     const kinds = new Set(streamAt(runtimePath).map((entry) => entry.kind));
     expect(kinds.has('goal')).to.equal(true);
     expect(kinds.has('phase')).to.equal(true);
-    expect(kinds.has('offshoot')).to.equal(true);
+    expect(kinds.has('offshoot'), JSON.stringify(readJsonl(path.join(runtimePath, 'drill', 'progress.jsonl')))).to.equal(true);
     // The same stream reached the Brain live.
     expect(memory.added.some((node) => node.tag === 'drill_goal')).to.equal(true);
     expect(memory.added.some((node) => node.tag === 'drill_phase')).to.equal(true);
@@ -525,7 +532,7 @@ describe('Hidden work cannot close a phase — anything on the record can', () =
     }
     expect(orchestrator.events.some((event) => event.type === 'drill_phase_rejected')).to.equal(true);
     // The relaunched worker was told why.
-    expect(JSON.stringify(spawned[1].plan)).to.include('without a writeup under outputs');
+    expect(JSON.stringify(spawned[1].plan)).to.include('without finishing this phase');
   });
 
   it('a worker whose only record is a curl harvest CANNOT close the phase — writeup required', async function () {
@@ -547,7 +554,7 @@ describe('Hidden work cannot close a phase — anything on the record can', () =
     const progress = readJsonl(path.join(runtimePath, 'drill', 'progress.jsonl'));
     const settle = progress.find((entry) => entry.type === 'cycle_completed');
     expect(settle.phaseDone).to.equal(false);
-    expect(settle.rejectedReason).to.equal('missing_writeup');
+    expect(settle.rejectedReason).to.equal('missing_receipt');
     // The harvest is still on every surface: receipt, tape, Brain.
     expect(sourcesAt(runtimePath)[0].tool).to.equal('run_command');
     expect(streamAt(runtimePath).some((entry) => entry.kind === 'harvest')).to.equal(true);
@@ -570,7 +577,7 @@ describe('Hidden work cannot close a phase — anything on the record can', () =
         } else {
           // Second descent writes the missing writeup, then closes.
           await executeTool('write_file', {
-            path: 'half-lane.md',
+            path: String(worker.plan.shortPlan.expectedOutput).replace(/^outputs\//, ''),
             content: '# Half the lane\n\nClosed on the earlier record.'
           }, { runtimePath, logger, loop: worker });
           worker.finished = true;
@@ -588,7 +595,7 @@ describe('Hidden work cannot close a phase — anything on the record can', () =
     expect(settles).to.have.length(2);
     expect(settles[0].phaseDone).to.equal(false);
     expect(settles[0].rejectedReason).to.equal(null);
-    expect(settles[1].phaseDone).to.equal(true);
+    expect(settles[1].phaseDone, JSON.stringify(settles[1])).to.equal(true);
     expect(settles[1].rejectedReason).to.equal(null);
   });
 });
