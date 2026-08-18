@@ -26,6 +26,7 @@ const { GuidedModePlanner } = require('../../src/core/guided-mode-planner');
 const { PlanExecutor } = require('../../src/core/plan-executor');
 const AnthropicClient = require('../../src/core/anthropic-client');
 const { normalizeCodexFunctionTools } = require('../../src/core/unified-client');
+const { COSMO_TOOLS } = require('../../src/agents/execution/cosmo-tools');
 const { AUTH_REVOKED_WATCH_MESSAGE, isFatalAuthError } = require('../../../lib/auth-error');
 
 const logger = {
@@ -382,6 +383,16 @@ describe('Research Launch loop and harness', () => {
       name: 'legacy_chat_tool',
       description: 'A directly supplied Chat Completions tool.'
     });
+
+    const normalizedExperimentalTools = normalizeCodexFunctionTools(COSMO_TOOLS);
+    expect(normalizedExperimentalTools).to.have.length(COSMO_TOOLS.length);
+    for (const experimentalTool of normalizedExperimentalTools) {
+      expect(experimentalTool).to.not.have.property('function');
+      expect(experimentalTool.strict).to.equal(true);
+      expect(experimentalTool.parameters.required)
+        .to.deep.equal(Object.keys(experimentalTool.parameters.properties));
+      expect(experimentalTool.parameters.additionalProperties).to.equal(false);
+    }
   });
 
   it('dedupes research tools by name when the imported list already has web_search', () => {
