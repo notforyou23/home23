@@ -244,7 +244,7 @@ class LaunchLoop {
           requiredTool: policy.allowedNames?.[0] || null,
           chars: String(content).length
         });
-        response = await this.callLLM({ ...policy, forceFunction: requiredToolMissing });
+        response = await this.callLLM(policy);
         assistantMsg = response?.choices?.[0]?.message;
         content = assistantMsg?.content || '';
         toolCalls = assistantMsg?.tool_calls;
