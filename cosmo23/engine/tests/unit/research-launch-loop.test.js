@@ -607,9 +607,9 @@ describe('Fatal Anthropic OAuth / 401', () => {
       logger,
       plan: composeShortLaunchPlan({ domain: 'Test topic', context: 'Write a note.' }),
       config: { models: { primary: 'test' }, logsDir: runtimePath },
-      maxTurns: 3,
+      maxTurns: 5,
       client: {
-        createCompletion: async () => {
+        createCompletion: async ({ tools: modelTools }) => {
           calls += 1;
           if (calls === 1) {
             return {
@@ -621,20 +621,41 @@ describe('Fatal Anthropic OAuth / 401', () => {
               }]
             };
           }
+          const allowed = (modelTools || []).map(tool => tool.function.name);
+          if (allowed.length === 1 && allowed[0] === 'write_file') {
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  tool_calls: [{
+                    id: 'call_write',
+                    function: { name: 'write_file', arguments: JSON.stringify({ path: 'anecdote.md', content: '# Fillmore\n\nGarcia once got a 401 at the Fillmore.' }) }
+                  }]
+                }
+              }]
+            };
+          }
+          if (allowed.length === 1 && allowed[0] === 'remember') {
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  tool_calls: [{
+                    id: 'call_remember',
+                    function: { name: 'remember', arguments: JSON.stringify({ content: 'Garcia once got a 401 at the Fillmore.' }) }
+                  }]
+                }
+              }]
+            };
+          }
           return {
             choices: [{
               message: {
                 role: 'assistant',
-                tool_calls: [
-                  {
-                    id: 'call_write',
-                    function: { name: 'write_file', arguments: JSON.stringify({ path: 'anecdote.md', content: '# Fillmore\n\nGarcia once got a 401 at the Fillmore.' }) }
-                  },
-                  {
-                    id: 'call_finish',
-                    function: { name: 'finish', arguments: JSON.stringify({ summary: 'Wrote the anecdote' }) }
-                  }
-                ]
+                tool_calls: [{
+                  id: 'call_finish',
+                  function: { name: 'finish', arguments: JSON.stringify({ summary: 'Wrote the anecdote' }) }
+                }]
               }
             }]
           };
@@ -646,7 +667,7 @@ describe('Fatal Anthropic OAuth / 401', () => {
     await loop._promise;
     expect(loop.fatalError).to.equal(null);
     expect(loop.finished).to.equal(true);
-    expect(calls).to.equal(2);
+    expect(calls).to.equal(4);
   });
 
   it('does not retry hadError authentication_error — fail closed after one attempt', async () => {
