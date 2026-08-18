@@ -28,6 +28,18 @@ const DEFAULT_CALL_TIMEOUT_MS = 120000;
 const REQUIRED_TOOL_STAGES = new Set(['write', 'remember', 'finish']);
 const MIN_AUTOLAND_DRAFT_CHARS = 800;
 
+function isToolSchemaProviderError(error) {
+  if (!error) return false;
+  const message = [
+    error.message,
+    error.responseBody,
+    error.error?.message
+  ].filter(Boolean).join(' ');
+  const status = Number(error.status || error.statusCode || message.match(/\b(400)\b/)?.[1]);
+  return status === 400
+    && /(invalid\s+schema|schema\s+for\s+function|tool(?:s|_schema)?.*schema|required.*properties|additionalProperties)/i.test(message);
+}
+
 function requiresToolCall(policy = {}) {
   return policy.toolChoice === 'required' || REQUIRED_TOOL_STAGES.has(policy.stage);
 }
@@ -94,6 +106,7 @@ class LaunchLoop {
     this.turns = 0;
     this.productLoop = RESEARCH_PRODUCT_LOOP;
     this.fatalError = null;
+    this.providerError = null;
     this.protocolError = null;
     this._promise = null;
   }
@@ -169,6 +182,10 @@ class LaunchLoop {
         this.stopFatalAuth(err);
         return;
       }
+      if (isToolSchemaProviderError(err)) {
+        this.stopProviderRefusal(err);
+        return;
+      }
       this.logger?.error?.('Research Launch loop failed', { error: err.message, stack: err.stack });
       this.running = false;
     });
@@ -205,6 +222,29 @@ class LaunchLoop {
       fatal: true,
       errorType: 'authentication_error',
       message: AUTH_REVOKED_WATCH_MESSAGE
+    });
+  }
+
+  stopProviderRefusal(detail) {
+    this.running = false;
+    this.turns = Math.max(0, this.turns - 1);
+    const detailText = typeof detail === 'string'
+      ? detail
+      : (detail?.message || detail?.error?.message || String(detail));
+    this.providerError = `Provider refused Cosmo's tool schema: ${detailText}`;
+    this.logger?.error?.('Research Launch loop stopped: provider refused tool schema', {
+      productLoop: RESEARCH_PRODUCT_LOOP,
+      errorType: 'tool_schema_error',
+      provider: detail?.provider || null,
+      detail: detailText,
+      turns: this.turns
+    });
+    this.emitProgress({
+      type: 'launch_loop_error',
+      fatal: true,
+      errorType: 'tool_schema_error',
+      provider: detail?.provider || null,
+      message: this.providerError
     });
   }
 
@@ -557,8 +597,9 @@ class LaunchLoop {
       productLoop: RESEARCH_PRODUCT_LOOP,
       summary: this.finishSummary,
       fatalError: this.fatalError || null,
+      providerError: this.providerError || null,
       protocolError: this.protocolError || null,
-      status: (this.fatalError || this.protocolError)
+      status: (this.fatalError || this.providerError || this.protocolError)
         ? 'error'
         : (this.finished ? 'finished' : (this.running ? 'running' : 'stopped'))
     };
@@ -577,6 +618,7 @@ module.exports = {
   forcedFunctionChoice,
   toolCallsSatisfyPolicy,
   isDraftedWriteupProse,
+  isToolSchemaProviderError,
   writeNudgeMessage,
   tools
 };

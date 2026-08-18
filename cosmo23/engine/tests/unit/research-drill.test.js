@@ -371,6 +371,54 @@ describe('The drill: goal → phases → next goal', () => {
     expect(drill.mode).to.not.equal('done');
   });
 
+  it('a mocked 400 tool-schema refusal consumes none of a 40-cycle hunt and surfaces the failure', async function () {
+    this.timeout(10000);
+    let calls = 0;
+    const schemaErrorClient = {
+      async createCompletion() {
+        calls += 1;
+        const error = new Error("400 Invalid schema for function 'brain_query': 'required' must include every key in properties. Missing 'limit'.");
+        error.status = 400;
+        error.provider = 'openai-codex';
+        throw error;
+      }
+    };
+    const drill = makeDrill({
+      runtimePath,
+      client: schemaErrorClient,
+      cycles: 40,
+      maxConcurrent: 1
+    });
+    drill.plan.shortPlan.seedPhases = [{
+      title: 'Schema-gated research',
+      mission: 'Research only after the provider accepts Cosmo tools.'
+    }];
+
+    drill.start();
+    await drill._promise;
+
+    expect(calls).to.equal(1);
+    expect(drill.cyclesUsed).to.equal(0);
+    expect(drill.remainingCycles()).to.equal(40);
+    expect(drill.mode).to.equal('error');
+    expect(drill.providerError).to.include('Invalid schema');
+    expect(drill.getStatus().status).to.equal('error');
+    expect(drill._orchestrator.completions).to.have.length(0);
+
+    const progress = readJsonl(path.join(runtimePath, 'drill', 'progress.jsonl'));
+    const refused = progress.filter(entry => entry.type === 'cycle_refused');
+    expect(refused).to.have.length(1);
+    expect(refused[0]).to.include({
+      errorType: 'tool_schema_error',
+      countedAsResearchCycle: false
+    });
+    expect(progress.find(entry => entry.type === 'drill_error')?.cyclesUsed).to.equal(0);
+    expect(drill._orchestrator.events.some(event =>
+      event.type === 'launch_loop_error'
+      && event.payload.errorType === 'tool_schema_error'
+    )).to.equal(true);
+  });
+
   it('a degraded coordinator seeds once, then stops instead of minting deepen rounds', async function () {
     this.timeout(10000);
     const createWorker = scriptedWorkerFactory(runtimePath);

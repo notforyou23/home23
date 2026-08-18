@@ -60,9 +60,9 @@ const extraTools = [
       type: 'object',
       properties: {
         content: { type: 'string', description: 'Finding to remember' },
-        tag: { type: 'string', description: 'Optional memory tag (default: finding)' }
+        tag: { type: ['string', 'null'], description: 'Optional memory tag (default: finding)' }
       },
-      required: ['content'],
+      required: ['content', 'tag'],
       additionalProperties: false
     }
   },
@@ -72,6 +72,7 @@ const extraTools = [
     parameters: {
       type: 'object',
       properties: {},
+      required: [],
       additionalProperties: false
     }
   },
@@ -82,9 +83,9 @@ const extraTools = [
       type: 'object',
       properties: {
         skill_id: { type: 'string', description: 'Skill id' },
-        inputs: { type: 'object', description: 'Skill inputs' }
+        inputs: { type: ['object', 'null'], description: 'Skill inputs' }
       },
-      required: ['skill_id'],
+      required: ['skill_id', 'inputs'],
       additionalProperties: false
     }
   },
@@ -95,9 +96,9 @@ const extraTools = [
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'Coding task' },
-        backend: { type: 'string', description: 'claude-code or codex (default: auto)' }
+        backend: { type: ['string', 'null'], description: 'claude-code or codex (default: auto)' }
       },
-      required: ['prompt'],
+      required: ['prompt', 'backend'],
       additionalProperties: false
     }
   },

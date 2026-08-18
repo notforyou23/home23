@@ -21,9 +21,12 @@ const {
 } = require('../../src/agent/short-plan');
 const { LaunchLoop } = require('../../src/agent/loop');
 const { tools, INTERACTIVE_ONLY, executeTool, toChatTools, uniqueToolsByName } = require('../../src/agent/tools');
+const { tools: interactiveToolSchemas } = require('../../src/interactive/interactive-tools');
 const { GuidedModePlanner } = require('../../src/core/guided-mode-planner');
 const { PlanExecutor } = require('../../src/core/plan-executor');
 const AnthropicClient = require('../../src/core/anthropic-client');
+const { normalizeCodexFunctionTools } = require('../../src/core/unified-client');
+const { COSMO_TOOLS } = require('../../src/agents/execution/cosmo-tools');
 const { AUTH_REVOKED_WATCH_MESSAGE, isFatalAuthError } = require('../../../lib/auth-error');
 
 const logger = {
@@ -323,6 +326,73 @@ describe('Research Launch loop and harness', () => {
     expect(new Set(names).size).to.equal(names.length);
     expect(names.filter((name) => name === 'web_search')).to.have.length(1);
     expect(names.filter((name) => name === 'coding_run')).to.have.length(1);
+  });
+
+  it('declares every interactive and research function property as required for Codex strict schemas', () => {
+    const brainQuery = interactiveToolSchemas.find(tool => tool.name === 'brain_query');
+    expect(brainQuery.parameters.required).to.deep.equal(['query', 'limit']);
+
+    for (const [surface, schemas] of [
+      ['interactive', interactiveToolSchemas],
+      ['research', toChatTools().map(tool => tool.function)]
+    ]) {
+      for (const tool of schemas) {
+        const properties = Object.keys(tool.parameters?.properties || {});
+        expect(tool.parameters, `${surface}.${tool.name} parameters`).to.have.own.property('required');
+        expect(tool.parameters.required, `${surface}.${tool.name} required`).to.deep.equal(properties);
+      }
+    }
+  });
+
+  it('normalizes any function schema at the Codex transport boundary', () => {
+    const schemas = [{
+        type: 'function',
+        name: 'dynamic_tool',
+        parameters: {
+          type: 'object',
+          properties: {
+            first: { type: 'string' },
+            second: { type: 'number' }
+          },
+          required: ['first']
+        }
+      }, {
+        type: 'function',
+        function: {
+          name: 'legacy_chat_tool',
+          description: 'A directly supplied Chat Completions tool.',
+          parameters: {
+            type: 'object',
+            properties: {
+              path: { type: 'string' },
+              mode: { type: 'string' }
+            },
+            required: ['path']
+          }
+        }
+      }];
+    const [tool, legacyTool] = normalizeCodexFunctionTools(schemas);
+    for (const normalized of [tool, legacyTool]) {
+      expect(normalized.parameters.required).to.deep.equal(Object.keys(normalized.parameters.properties));
+      expect(normalized.parameters.additionalProperties).to.equal(false);
+      expect(normalized.strict).to.equal(true);
+      expect(normalized).to.not.have.property('function');
+    }
+    expect(tool.name).to.equal('dynamic_tool');
+    expect(legacyTool).to.include({
+      name: 'legacy_chat_tool',
+      description: 'A directly supplied Chat Completions tool.'
+    });
+
+    const normalizedExperimentalTools = normalizeCodexFunctionTools(COSMO_TOOLS);
+    expect(normalizedExperimentalTools).to.have.length(COSMO_TOOLS.length);
+    for (const experimentalTool of normalizedExperimentalTools) {
+      expect(experimentalTool).to.not.have.property('function');
+      expect(experimentalTool.strict).to.equal(true);
+      expect(experimentalTool.parameters.required)
+        .to.deep.equal(Object.keys(experimentalTool.parameters.properties));
+      expect(experimentalTool.parameters.additionalProperties).to.equal(false);
+    }
   });
 
   it('dedupes research tools by name when the imported list already has web_search', () => {
