@@ -1825,14 +1825,26 @@ class CosmoStandaloneApp {
       const detail = document.createElement('span');
       const writeupCount = Array.isArray(phase.writeups) ? phase.writeups.length : 0;
       detail.textContent = `${phase.status || 'pending'} · ${phase.cyclesUsed || 0} descents · ${writeupCount} writeup${writeupCount === 1 ? '' : 's'}`;
-      card.append(heading, detail);
+      const mission = document.createElement('span');
+      mission.textContent = phase.mission || 'No phase mission recorded';
+      const receipt = document.createElement('span');
+      const expected = Array.isArray(phase.expectedOutput)
+        ? phase.expectedOutput.join(', ')
+        : (phase.expectedOutput || 'No named receipt');
+      receipt.textContent = phase.clearance
+        ? `Cleared by ${phase.clearance.path} · ${phase.clearance.reason}`
+        : `Receipt required: ${expected}`;
+      card.append(heading, detail, mission, receipt);
       phasesContainer?.appendChild(card);
     });
     const goalHistory = document.getElementById('drill-goal-history');
     goalHistory?.replaceChildren();
     (drill.goalHistory || []).slice(-8).forEach(historyGoal => {
       const item = document.createElement('span');
-      item.textContent = `Goal ${historyGoal.number} settled · ${historyGoal.title}`;
+      const cleared = (historyGoal.phases || [])
+        .map(phase => phase.clearance?.path)
+        .filter(Boolean);
+      item.textContent = `Goal ${historyGoal.number} settled · ${historyGoal.title}${cleared.length ? ` · cleared by ${cleared.join(', ')}` : ''}`;
       goalHistory?.appendChild(item);
     });
 

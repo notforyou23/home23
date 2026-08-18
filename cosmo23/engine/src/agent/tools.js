@@ -12,7 +12,11 @@ const { tools: interactiveTools, executeTool: executeInteractiveTool } = require
 const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
 const { getSearchGovernor } = require('./search-governor');
 const { writeBrainStream, bumpStreamEvidence } = require('./brain-stream');
-const { hasPhaseWriteup, recordWriteupReceipt } = require('../drill/writeup-gate');
+const {
+  assessPhaseReceipt,
+  hasPhaseWriteup,
+  recordWriteupReceipt
+} = require('../drill/writeup-gate');
 
 const INTERACTIVE_ONLY = new Set([
   'spawn_agent',
@@ -449,22 +453,38 @@ const extraExecutors = {
       // record) is still refused. Harvest without a writeup under
       // outputs/*.md is also refused. /tmp dumps never count.
       const streamed = Number(context.loop.evidence?.streamed) || 0;
-      const writeupOnDisk = hasPhaseWriteup(
-        resolveRuntimePath(context),
-        drillProvenance(context)
-      );
-      if (!writeupOnDisk) {
+      const expectedOutput = context.loop.expectedOutput
+        || context.loop.plan?.shortPlan?.expectedOutput
+        || (context.loop.plan?.shortPlan?.writeupPath
+          ? `outputs/${context.loop.plan.shortPlan.writeupPath}`
+          : null);
+      const provenance = drillProvenance(context);
+      const receipt = !expectedOutput
+          && provenance.goalNumber == null
+          && provenance.phaseNumber == null
+        ? {
+            accepted: hasPhaseWriteup(resolveRuntimePath(context)),
+            reason: 'legacy_unscoped_writeup'
+          }
+        : assessPhaseReceipt(
+            resolveRuntimePath(context),
+            expectedOutput,
+            provenance
+          );
+      if (!receipt.accepted) {
+        const expected = Array.isArray(expectedOutput) ? expectedOutput.join(', ') : expectedOutput;
         if (streamed === 0) {
           return JSON.stringify({
             finish: 'refused',
             reason: 'hidden_work',
-            instruction: 'Nothing from this phase has reached the record yet. write_file a markdown writeup under outputs/, remember() the findings, then call finish. Hidden /tmp dumps cannot close a phase.'
+            receiptReason: receipt.reason,
+            instruction: `Nothing complete from this phase has reached its named receipt${expected ? ` (${expected})` : ''}. write_file that exact finished artifact, remember() the findings, then call finish. Progress notes and hidden /tmp dumps cannot close a phase.`
           }, null, 2);
         }
         return JSON.stringify({
           finish: 'refused',
-          reason: 'missing_writeup',
-          instruction: 'This phase has tape but no writeup on disk. Stop fetching. write_file a markdown writeup under outputs/, remember() the findings, then call finish. Tape alone cannot close a phase.'
+          reason: receipt.reason,
+          instruction: `This phase has tape but its named receipt${expected ? ` (${expected})` : ''} is not finished. Stop fetching. write_file that exact completed artifact, remember() the findings, then call finish. Tape, progress notes, and another file cannot close this phase.`
         }, null, 2);
       }
       context.loop.markFinished(summary);

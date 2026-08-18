@@ -34,10 +34,10 @@ const {
 } = require('../agent/brain-stream');
 const { DrillCoordinator } = require('./coordinator');
 const {
+  assessPhaseReceipt,
   buildHarvestDigest,
-  hasPhaseWriteup,
+  expectedOutputPaths,
   listWriteups,
-  phaseWriteupReceipts,
   phaseHasTape,
   readPersistedNotes
 } = require('./writeup-gate');
@@ -58,6 +58,26 @@ function fileSlug(value) {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 64) || 'phase';
+}
+
+function normalizePhaseOutputs(runtimePath, phases, goalNumber) {
+  const used = new Set();
+  return phases.map((phase, index) => {
+    const phaseNumber = index + 1;
+    const requested = expectedOutputPaths(runtimePath, phase.expectedOutput);
+    const collides = requested.some(output => used.has(output));
+    const expectedOutput = requested.length > 0 && !collides
+      ? (requested.length === 1 ? requested[0] : requested)
+      : `outputs/drill/goal-${goalNumber}/phase-${phaseNumber}-${fileSlug(phase.title)}.md`;
+    for (const output of Array.isArray(expectedOutput) ? expectedOutput : [expectedOutput]) {
+      used.add(output);
+    }
+    return {
+      ...phase,
+      requestedOutput: collides ? (phase.expectedOutput || null) : null,
+      expectedOutput
+    };
+  });
 }
 
 class DrillLoop {
@@ -351,6 +371,7 @@ class DrillLoop {
           cyclesUsed: phase.cyclesUsed,
           summary: phase.summary || null,
           writeups: Array.isArray(phase.writeups) ? phase.writeups : [],
+          clearance: phase.clearance || null,
           evidence: { streamed: phase.evidence?.streamed || 0 },
           rejections: phase.rejections || 0,
           workerId: this.workerOnPhase(phase)?.workerId || null
@@ -361,7 +382,13 @@ class DrillLoop {
         title: goal.title,
         status: goal.status,
         completedAt: goal.completedAt || null,
-        mergedSummary: goal.mergedSummary ? String(goal.mergedSummary).slice(0, 240) : null
+        mergedSummary: goal.mergedSummary ? String(goal.mergedSummary).slice(0, 240) : null,
+        phases: Array.isArray(goal.phases) ? goal.phases.map(phase => ({
+          number: phase.number,
+          title: phase.title,
+          expectedOutput: phase.expectedOutput || null,
+          clearance: phase.clearance || null
+        })) : []
       })),
       activeWorkers: [...this.activeWorkers.values()].map((entry) => ({
         workerId: entry.workerId,
@@ -590,6 +617,7 @@ class DrillLoop {
             status: phase.status === 'done' ? 'done' : 'pending',
             summary: phase.summary || null,
             writeups: Array.isArray(phase.writeups) ? phase.writeups : [],
+            clearance: phase.clearance || null,
             cyclesUsed: phase.cyclesUsed || 0,
             evidence: { streamed: Number(phase.evidence?.streamed) || 0 },
             rejections: Number(phase.rejections) || 0
@@ -600,7 +628,8 @@ class DrillLoop {
       if (Array.isArray(saved?.goalHistory)) {
         this.goalHistory = saved.goalHistory.map((goal) => ({
           number: goal.number, title: goal.title, status: goal.status || 'completed',
-          completedAt: goal.completedAt || null, mergedSummary: goal.mergedSummary || null
+          completedAt: goal.completedAt || null, mergedSummary: goal.mergedSummary || null,
+          phases: Array.isArray(goal.phases) ? goal.phases : []
         }));
       }
     } catch { /* fresh run */ }
@@ -656,6 +685,7 @@ class DrillLoop {
       return null;
     }
 
+    const phases = normalizePhaseOutputs(this.runtimePath, spec.phases, number);
     return {
       id: shortId('goal'),
       number,
@@ -664,15 +694,17 @@ class DrillLoop {
       origin,
       status: 'active',
       previousGoalId: previousGoal?.id || null,
-      phases: spec.phases.map((phase, index) => ({
+      phases: phases.map((phase, index) => ({
         id: shortId('phase'),
         number: index + 1,
         title: phase.title,
         mission: phase.mission || phase.title,
         expectedOutput: phase.expectedOutput || null,
+        requestedOutput: phase.requestedOutput || null,
         status: 'pending',
         summary: null,
         writeups: [],
+        clearance: null,
         cyclesUsed: 0,
         evidence: { streamed: 0 },
         rejections: 0
@@ -706,7 +738,13 @@ class DrillLoop {
       status: 'completed',
       completedAt: goal.completedAt,
       mergedSummary: merge.summary,
-      phases: goal.phases.map((phase) => ({ title: phase.title, summary: phase.summary }))
+      phases: goal.phases.map((phase) => ({
+        number: phase.number,
+        title: phase.title,
+        summary: phase.summary,
+        expectedOutput: phase.expectedOutput,
+        clearance: phase.clearance || null
+      }))
     });
     await this.journal('goal_merged', {
       goalId: goal.id,
@@ -849,21 +887,32 @@ class DrillLoop {
         goalNumber: goal.number,
         phaseNumber: phase.number
       };
-      const writeupReceipts = phaseWriteupReceipts(this.runtimePath, phaseProvenance);
-      const writeupOnDisk = hasPhaseWriteup(this.runtimePath, phaseProvenance);
+      const receipt = assessPhaseReceipt(
+        this.runtimePath,
+        phase.expectedOutput,
+        phaseProvenance
+      );
       const rejectedReason = !worker.finished
         ? null
-        : (!phaseOnRecord && !writeupOnDisk
+        : (!phaseOnRecord && !receipt.accepted
           ? 'hidden_work'
-          : (writeupOnDisk ? null : 'missing_writeup'));
+          : (receipt.accepted ? null : receipt.reason));
 
-      if (worker.finished && writeupOnDisk) {
-        // The worker finished ITS hole AND left a writeup on disk. Tape
-        // alone cannot close a phase — hunter-glm-1 harvested for 14
-        // cycles with nothing under outputs/*.md.
+      if (worker.finished && receipt.accepted) {
+        // The worker finished ITS hole and the phase's named receipt is
+        // complete on disk. Another artifact or a progress note cannot
+        // move the phase.
         phase.status = 'done';
         phase.summary = worker.finishSummary || 'done';
-        phase.writeups = writeupReceipts.map(receipt => receipt.path);
+        phase.writeups = [receipt.path];
+        phase.clearance = {
+          at: this.now(),
+          reason: receipt.reason,
+          expectedOutput: receipt.expectedOutput,
+          path: receipt.path,
+          bytes: receipt.bytes,
+          sha256: receipt.sha256
+        };
         this.emitEvent('drill_phase_complete', {
           cycle,
           workerId,
@@ -875,13 +924,14 @@ class DrillLoop {
           `Phase ${phase.number} of goal ${goal.number} done (cycle ${cycle}, ${workerId}): ${String(worker.finishSummary || 'done').slice(0, 300)}`,
           { cycle, workerId, goalNumber: goal.number, phaseNumber: phase.number });
       } else if (worker.finished) {
-        // Failed close: hidden work, or tape/receipts without a writeup.
-        // Hidden /tmp dumps never count. The phase stays open.
+        // Failed close: hidden work, the wrong file, or an unfinished
+        // receipt. The phase stays open.
         phase.status = 'pending';
+        phase.clearance = null;
         phase.rejections = (Number(phase.rejections) || 0) + 1;
-        const why = rejectedReason === 'missing_writeup'
-          ? 'finished with tape but no writeup under outputs/'
-          : 'finished with nothing on the record';
+        const why = rejectedReason === 'hidden_work'
+          ? 'finished with nothing on the record'
+          : `did not finish the named receipt ${Array.isArray(phase.expectedOutput) ? phase.expectedOutput.join(', ') : phase.expectedOutput} (${rejectedReason})`;
         this.emitEvent('drill_phase_rejected', {
           cycle,
           workerId,
@@ -914,6 +964,8 @@ class DrillLoop {
         rejectedReason,
         workerTurns: worker.turns,
         workerSummary: worker.finishSummary || null,
+        expectedOutput: phase.expectedOutput,
+        clearance: phase.clearance,
         streamedEvidence: phase.evidence.streamed,
         candidatesHarvested: harvested
       });
@@ -939,17 +991,17 @@ class DrillLoop {
       constraints.push('This phase was started in an earlier cycle. Continue it; do not start over.');
     }
     if (phase.expectedOutput) {
-      constraints.push(`Launch requested this output: ${Array.isArray(phase.expectedOutput) ? phase.expectedOutput.join(', ') : phase.expectedOutput}`);
+      constraints.push(`THIS phase clears only when this named receipt is finished on disk: ${Array.isArray(phase.expectedOutput) ? phase.expectedOutput.join(', ') : phase.expectedOutput}`);
     }
     if ((Number(phase.rejections) || 0) > 0) {
-      constraints.push('An earlier worker on this phase claimed done without a writeup under outputs/. write_file a markdown writeup, remember() the findings, then finish. Tape or /tmp dumps cannot close this phase.');
+      constraints.push('An earlier worker claimed done without finishing this phase\'s named receipt. Complete that exact file, remember() the findings, then finish. Progress notes, another file, and /tmp dumps cannot close this phase.');
     }
     const alreadyHasTape = phaseHasTape(phase, this.runtimePath, {
       goalNumber: goal.number,
       phaseNumber: phase.number
     });
     if (alreadyHasTape) {
-      constraints.push('WRITE FIRST: this phase already has tape. write_file a markdown writeup under outputs/ and remember() the findings BEFORE any more fetching. More harvest cannot close this phase.');
+      constraints.push(`WRITE FIRST: this phase already has tape. write_file the finished receipt at ${Array.isArray(phase.expectedOutput) ? phase.expectedOutput.join(', ') : phase.expectedOutput} and remember() the findings BEFORE any more fetching. More harvest cannot close this phase.`);
       const digest = buildHarvestDigest(this.runtimePath, {
         goalNumber: goal.number,
         phaseNumber: phase.number
@@ -964,12 +1016,19 @@ class DrillLoop {
     const operatorRequestsWrite = notes.some(note =>
       /\b(write|persist|land)\b[\s\S]{0,80}\b(file|writeup|output)\b/i.test(String(note.text || ''))
     );
-    const writeupPath = `drill/goal-${goal.number}/phase-${phase.number}-${fileSlug(phase.title)}.md`;
+    const expectedOutputs = Array.isArray(phase.expectedOutput)
+      ? phase.expectedOutput
+      : [phase.expectedOutput];
+    const markdownOutput = expectedOutputs.length === 1
+      && /\.(?:md|markdown)$/i.test(expectedOutputs[0])
+      ? expectedOutputs[0].replace(/^@?outputs\//, '')
+      : null;
     return {
       goal: phase.mission,
       constraints,
-      deliverable: `Research however works — search, curl known URLs, archives, forums, coding_run, scripts — every fetch leaves a receipt and your work streams to the Brain as it happens. Journal findings with remember and write_file this phase's markdown writeup at outputs/${writeupPath}. Call finish when THIS phase's deliverable is done — the drill continues after you. A phase cannot close on another phase's file or on tape alone; hidden /tmp dumps never count.`,
-      writeupPath,
+      deliverable: `Research however works — search, curl known URLs, archives, forums, coding_run, scripts — every fetch leaves a receipt and your work streams to the Brain as it happens. Journal findings with remember and write_file the FINISHED phase receipt at ${expectedOutputs.join(', ')}. Call finish only when that exact receipt contains completed work — the drill continues after you. Progress notes, empty findings, another phase's file, and hidden /tmp dumps cannot close this phase.`,
+      expectedOutput: phase.expectedOutput,
+      writeupPath: markdownOutput,
       writeFirst: alreadyHasTape || operatorRequestsWrite,
       executionKind: 'tool_loop',
       claimedBy: 'launch_loop'

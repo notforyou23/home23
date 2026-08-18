@@ -25,6 +25,9 @@ const HARVEST_DIGEST_KINDS = new Set(['harvest', 'finding', 'thought', 'writeup'
 const DEFAULT_DIGEST_LIMIT = 8;
 const DEFAULT_DIGEST_CHARS = 1200;
 const MIN_WRITEUP_CHARS = 20;
+const UNFINISHED_STATUS_PATTERN = /\b(?:in[\s-]*progress|still\s+(?:collecting|researching|working)|not\s+(?:started|finished|complete)|to\s+be\s+(?:populated|completed|added)|tbd|todo)\b/i;
+const PROGRESS_BASENAME_PATTERN = /(?:^|[-_.])progress(?:[-_.]|$)/i;
+const EMPTY_SECTION_PATTERN = /^(?:findings?|results?|evidence|quotes?|sources?)$/i;
 
 function isInside(root, target) {
   const relative = path.relative(root, target);
@@ -38,7 +41,7 @@ function isWriteupName(fileName) {
 
 function normalizeOutputPath(runtimePath, candidatePath) {
   const outputsRoot = path.resolve(runtimePath, 'outputs');
-  const raw = String(candidatePath || '').replace(/\\/g, '/').replace(/^outputs\//, '');
+  const raw = String(candidatePath || '').trim().replace(/^@/, '').replace(/\\/g, '/').replace(/^outputs\//, '');
   const target = path.resolve(outputsRoot, raw);
   return isInside(outputsRoot, target) ? target : null;
 }
@@ -56,7 +59,93 @@ function isSubstantiveWriteupContent(content) {
     'next i will write',
     'let me write'
   ];
-  return !intentOnly.some(phrase => normalized.includes(phrase) && text.length < 400);
+  if (intentOnly.some(phrase => normalized.includes(phrase) && text.length < 400)) return false;
+  if (UNFINISHED_STATUS_PATTERN.test(text)) return false;
+
+  const markdownSections = [...text.matchAll(/^#{1,6}\s+(.+?)\s*$/gm)];
+  for (let index = 0; index < markdownSections.length; index += 1) {
+    const heading = markdownSections[index][1]
+      .replace(/[*_`:#]/g, '')
+      .trim();
+    if (!EMPTY_SECTION_PATTERN.test(heading)) continue;
+    const bodyStart = markdownSections[index].index + markdownSections[index][0].length;
+    const bodyEnd = markdownSections[index + 1]?.index ?? text.length;
+    const body = text.slice(bodyStart, bodyEnd)
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/^\s*(?:[-*]\s*)?(?:none|n\/a|pending|not yet)?\s*$/gim, '')
+      .trim();
+    if (!body) return false;
+  }
+  return true;
+}
+
+function canonicalOutputPath(runtimePath, candidatePath) {
+  const target = normalizeOutputPath(runtimePath, candidatePath);
+  if (!target) return null;
+  return `outputs/${path.relative(path.resolve(runtimePath, 'outputs'), target).split(path.sep).join('/')}`;
+}
+
+function expectedOutputPaths(runtimePath, expectedOutput) {
+  const candidates = Array.isArray(expectedOutput) ? expectedOutput : [expectedOutput];
+  return [...new Set(candidates
+    .map(candidate => canonicalOutputPath(runtimePath, candidate))
+    .filter(Boolean))];
+}
+
+function jsonHasFinishedWork(value, key = '') {
+  if (Array.isArray(value)) {
+    return value.length > 0 && value.some(entry => jsonHasFinishedWork(entry, key));
+  }
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value);
+    if (entries.length === 0) return false;
+    for (const [entryKey, entryValue] of entries) {
+      if (/status/i.test(entryKey) && UNFINISHED_STATUS_PATTERN.test(String(entryValue || ''))) {
+        return false;
+      }
+    }
+    return entries.some(([entryKey, entryValue]) => {
+      if (/^(?:status|state|complete|completed|done)$/i.test(entryKey)) return false;
+      return jsonHasFinishedWork(entryValue, entryKey);
+    });
+  }
+  if (typeof value === 'string') {
+    const text = value.trim();
+    return text.length > 0
+      && !UNFINISHED_STATUS_PATTERN.test(text)
+      && !/^(?:none|n\/a|pending|null)$/i.test(text);
+  }
+  return value !== null && value !== undefined && value !== false;
+}
+
+function validateFinishedReceiptContent(filePath, content) {
+  if (PROGRESS_BASENAME_PATTERN.test(path.basename(filePath))) {
+    return { accepted: false, reason: 'progress_receipt' };
+  }
+  const text = String(content || '').trim();
+  if (!text) return { accepted: false, reason: 'empty_receipt' };
+  if (path.extname(filePath).toLowerCase() === '.json') {
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return { accepted: false, reason: 'invalid_json_receipt' };
+    }
+    return jsonHasFinishedWork(parsed)
+      ? { accepted: true, reason: 'finished_json' }
+      : { accepted: false, reason: 'unfinished_receipt' };
+  }
+  if (isWriteupName(filePath)) {
+    return isSubstantiveWriteupContent(text)
+      ? { accepted: true, reason: 'finished_writeup' }
+      : { accepted: false, reason: 'unfinished_receipt' };
+  }
+  if (UNFINISHED_STATUS_PATTERN.test(text)) {
+    return { accepted: false, reason: 'unfinished_receipt' };
+  }
+  return text.length >= MIN_WRITEUP_CHARS
+    ? { accepted: true, reason: 'finished_artifact' }
+    : { accepted: false, reason: 'empty_receipt' };
 }
 
 function isHiddenDumpPath(filePath, runtimePath = null) {
@@ -161,6 +250,89 @@ function phaseWriteupReceipts(runtimePath, provenance = {}) {
     seen.add(key);
     return true;
   });
+}
+
+function phaseArtifactReceipts(runtimePath, provenance = {}) {
+  const writeups = readJsonl(path.join(runtimePath, 'outputs', WRITEUP_RECEIPT_BASENAME))
+    .filter(receipt => receiptMatchesPhase(receipt, provenance));
+  const writes = readJsonl(path.join(runtimePath, 'outputs', 'sources.jsonl'))
+    .filter(receipt => receipt.tool === 'write_file')
+    .filter(receipt => receiptMatchesPhase(receipt, provenance))
+    .map(receipt => ({ ...receipt, path: receipt.path || receipt.query }));
+  const seen = new Set();
+  return [...writeups, ...writes].filter((receipt) => {
+    const canonicalPath = canonicalOutputPath(runtimePath, receipt.path);
+    if (!canonicalPath) return false;
+    const key = `${receipt.goalNumber ?? ''}:${receipt.phaseNumber ?? ''}:${canonicalPath}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).map(receipt => ({
+    ...receipt,
+    path: canonicalOutputPath(runtimePath, receipt.path)
+  }));
+}
+
+function assessPhaseReceipt(runtimePath, expectedOutput, provenance = {}) {
+  const expectedPaths = expectedOutputPaths(runtimePath, expectedOutput);
+  if (expectedPaths.length === 0) {
+    return {
+      accepted: false,
+      reason: 'missing_expected_output',
+      expectedOutput: null,
+      path: null
+    };
+  }
+  const receipts = phaseArtifactReceipts(runtimePath, provenance);
+  const expectedSet = new Set(expectedPaths);
+  const matchingReceipts = receipts.filter(receipt => expectedSet.has(receipt.path));
+  if (matchingReceipts.length === 0) {
+    return {
+      accepted: false,
+      reason: receipts.length > 0 ? 'wrong_receipt' : 'missing_receipt',
+      expectedOutput: expectedPaths.length === 1 ? expectedPaths[0] : expectedPaths,
+      path: null
+    };
+  }
+
+  let lastFailure = 'missing_receipt';
+  for (const receipt of matchingReceipts) {
+    const target = normalizeOutputPath(runtimePath, receipt.path);
+    try {
+      const real = fs.realpathSync(target);
+      if (!isInside(path.resolve(runtimePath, 'outputs'), real)) {
+        lastFailure = 'outside_outputs';
+        continue;
+      }
+      const stat = fs.statSync(real);
+      if (!stat.isFile()) {
+        lastFailure = 'missing_receipt_file';
+        continue;
+      }
+      const content = fs.readFileSync(real, 'utf8');
+      const validation = validateFinishedReceiptContent(real, content);
+      if (!validation.accepted) {
+        lastFailure = validation.reason;
+        continue;
+      }
+      return {
+        accepted: true,
+        reason: validation.reason,
+        expectedOutput: expectedPaths.length === 1 ? expectedPaths[0] : expectedPaths,
+        path: receipt.path,
+        bytes: stat.size,
+        sha256: crypto.createHash('sha256').update(content).digest('hex')
+      };
+    } catch {
+      lastFailure = 'missing_receipt_file';
+    }
+  }
+  return {
+    accepted: false,
+    reason: lastFailure,
+    expectedOutput: expectedPaths.length === 1 ? expectedPaths[0] : expectedPaths,
+    path: matchingReceipts[0]?.path || null
+  };
 }
 
 async function recordWriteupReceipt(runtimePath, relativePath, provenance = {}, content = '') {
@@ -283,8 +455,12 @@ module.exports = {
   listWriteups,
   hasPhaseWriteup,
   phaseWriteupReceipts,
+  phaseArtifactReceipts,
+  assessPhaseReceipt,
   recordWriteupReceipt,
   isSubstantiveWriteupContent,
+  validateFinishedReceiptContent,
+  expectedOutputPaths,
   normalizeOutputPath,
   isHiddenDumpPath,
   phaseHasTape,

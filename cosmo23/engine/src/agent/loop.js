@@ -12,7 +12,11 @@ const fs = require('fs').promises;
 const path = require('path');
 const { tools, executeTool, toChatTools } = require('./tools');
 const { writeBrainStream, bumpStreamEvidence } = require('./brain-stream');
-const { hasPhaseWriteup, isSubstantiveWriteupContent } = require('../drill/writeup-gate');
+const {
+  assessPhaseReceipt,
+  hasPhaseWriteup,
+  isSubstantiveWriteupContent
+} = require('../drill/writeup-gate');
 const { RESEARCH_PRODUCT_LOOP } = require('../../../lib/research-launch');
 const { AUTH_REVOKED_WATCH_MESSAGE, isFatalAuthError } = require('../../../lib/auth-error');
 
@@ -101,8 +105,23 @@ class LaunchLoop {
     };
   }
 
+  get expectedOutput() {
+    const shortPlan = this.plan?.shortPlan || this.plan || {};
+    return shortPlan.expectedOutput
+      || (shortPlan.writeupPath ? `outputs/${shortPlan.writeupPath}` : null);
+  }
+
   hasCurrentPhaseWriteup() {
-    return hasPhaseWriteup(this.runtimePath, this.phaseProvenance);
+    if (!this.expectedOutput
+        && this.phaseProvenance.goalNumber == null
+        && this.phaseProvenance.phaseNumber == null) {
+      return hasPhaseWriteup(this.runtimePath);
+    }
+    return assessPhaseReceipt(
+      this.runtimePath,
+      this.expectedOutput,
+      this.phaseProvenance
+    ).accepted;
   }
 
   toolPolicy() {
