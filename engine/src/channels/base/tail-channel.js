@@ -25,6 +25,7 @@ export class TailChannel extends Channel {
     this._queue = [];
     this._waiters = [];
     this._watcher = null;
+    this._safetyPoll = null;
   }
 
   async start() {
@@ -36,8 +37,11 @@ export class TailChannel extends Channel {
     if (this._position === null) {
       try { this._position = statSync(this.path).size; } catch { this._position = 0; }
     }
+    // persistent:true — these are lifetime watchers, closed in stop().
+    // Under chokidar v4, persistent:false unrefs the poll timer, so a
+    // process (or test runner) whose event loop drains never sees events.
     this._watcher = chokidar.watch(this.path, {
-      persistent: false,
+      persistent: true,
       usePolling: true,
       interval: this.pollIntervalMs,
       awaitWriteFinish: { stabilityThreshold: 50, pollInterval: 50 },
@@ -46,11 +50,21 @@ export class TailChannel extends Channel {
     this._watcher.on('change', onChange);
     this._watcher.on('add', onChange);
     await new Promise((resolve) => this._watcher.once('ready', resolve));
+    // Safety poll: chokidar v4 can fold a write that lands while the
+    // watcher is establishing its stat baseline into that baseline and
+    // never emit a change for it. _readIncrement() is cheap (one stat,
+    // no-op unless the file grew) and position-guarded, so this interval
+    // guarantees the tail makes progress even when an event is swallowed.
+    this._safetyPoll = setInterval(() => { void this._readIncrement(); }, this.pollIntervalMs);
     await this._readIncrement();
   }
 
   async stop() {
     this._running = false;
+    if (this._safetyPoll) {
+      clearInterval(this._safetyPoll);
+      this._safetyPoll = null;
+    }
     if (this._watcher) {
       try { await this._watcher.close(); } catch {}
       this._watcher = null;

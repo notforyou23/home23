@@ -359,16 +359,18 @@ providers:
     enabled: true
   xai:
     enabled: true
+  # Local Ollama stays configured and ready — flip modelAssignments/chat to
+  # provider `local` (or set instance engine.thought: qwen2.5:7b) to run local.
   local:
-    enabled: false
-    defaultModel: qwen3.5:4b
+    enabled: true
+    defaultModel: qwen2.5:7b
     modelMapping:
-      gpt-5.5: qwen3.5:4b
-      gpt-5.5-pro: qwen3.5:4b
-      gpt-5.4: qwen3.5:4b
-      gpt-5.4-mini: qwen3.5:4b
-      gpt-5.4-nano: qwen3.5:4b
-      gpt-5: qwen3.5:4b
+      gpt-5.5: qwen2.5:7b
+      gpt-5.5-pro: qwen2.5:7b
+      gpt-5.4: qwen2.5:7b
+      gpt-5.4-mini: qwen2.5:7b
+      gpt-5.4-nano: qwen2.5:7b
+      gpt-5: qwen2.5:7b
     supportsTools: true
     supportsStreaming: true
   ollama-cloud:

@@ -72,6 +72,11 @@ providers:
       - nemotron-3-nano:30b
   ollama-local:
     baseUrl: http://127.0.0.1:11434
+    # Local models (keyless, served from baseUrl). Requires Ollama running and the
+    # model pulled; a GPU is recommended for the full tool-using agent on CPU.
+    defaultModels:
+      - qwen2.5:7b
+      - llama3.2
   anthropic:
     defaultModels:
       - claude-sonnet-4-7
@@ -277,6 +282,12 @@ media:
 
 models:
   aliases:
+    qwen2.5:
+      provider: ollama-local
+      model: qwen2.5:7b
+    llama3.2:
+      provider: ollama-local
+      model: llama3.2
     sonnet:
       provider: anthropic
       model: claude-sonnet-4-7

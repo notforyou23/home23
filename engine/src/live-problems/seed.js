@@ -9,6 +9,14 @@
  * dashboardPort so every agent gets a correct invariant without duplication.
  */
 
+// The main data volume differs by platform: macOS keeps user data on
+// /System/Volumes/Data; elsewhere the root filesystem is the sensible
+// default. HOME23_DATA_MOUNT overrides both.
+function defaultDataMount() {
+  if (process.env.HOME23_DATA_MOUNT) return process.env.HOME23_DATA_MOUNT;
+  return require('fs').existsSync('/System/Volumes/Data') ? '/System/Volumes/Data' : '/';
+}
+
 function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
   const agent = agentName || process.env.HOME23_AGENT || 'agent';
   const dashPort = dashboardPort || process.env.DASHBOARD_PORT || process.env.COSMO_DASHBOARD_PORT || '5002';
@@ -68,7 +76,7 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
       claim: 'Main data volume has at least 10 GiB free',
       verifier: {
         type: 'disk_free',
-        args: { mount: '/System/Volumes/Data', minGiB: 10 },
+        args: { mount: defaultDataMount(), minGiB: 10 },
       },
       remediation: [
         { type: 'exec_command', args: { name: 'reclaim_known_safe_disk' }, cooldownMin: 60 },
