@@ -47,6 +47,7 @@ const { AUTH_REVOKED_WATCH_MESSAGE, isFatalAuthError } = require('../../../lib/a
 const DEFAULT_CYCLES = 80;
 const DEFAULT_WORKER_TURNS_PER_CYCLE = 24;
 const DEFAULT_MAX_CONCURRENT = 3;
+const DEFAULT_EMPTY_REPLY_STREAK_LIMIT = 3;
 
 function shortId(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`;
@@ -133,6 +134,9 @@ class DrillLoop {
     this.maxConcurrent = Number(drillConfig.maxConcurrent) > 0
       ? Math.floor(Number(drillConfig.maxConcurrent))
       : DEFAULT_MAX_CONCURRENT;
+    this.emptyReplyStreakLimit = Number(drillConfig.emptyReplyStreakLimit) > 0
+      ? Math.floor(Number(drillConfig.emptyReplyStreakLimit))
+      : DEFAULT_EMPTY_REPLY_STREAK_LIMIT;
 
     // LaunchLoop-compatible surface (planner + status consumers read these).
     this.running = false;
@@ -142,6 +146,7 @@ class DrillLoop {
     this.turns = 0;
     this.fatalError = null;
     this.providerError = null;
+    this.protocolError = null;
     this.productLoop = RESEARCH_PRODUCT_LOOP;
     this._promise = null;
     this._persistTail = Promise.resolve();
@@ -159,6 +164,7 @@ class DrillLoop {
     this.brainWrites = 0;
     this.degradedGoalGeneration = false;
     this.goalChainDoneReason = null;
+    this.emptyReplyStreak = 0;
   }
 
   get runtimePath() {
@@ -384,6 +390,7 @@ class DrillLoop {
       summary: this.finishSummary,
       fatalError: this.fatalError || null,
       providerError: this.providerError || null,
+      protocolError: this.protocolError || null,
       status: (this.fatalError || this.providerError || this.mode === 'error')
         ? 'error'
         : (this.mode === 'done' ? 'done' : (this.running ? 'running' : 'stopped')),
@@ -420,6 +427,7 @@ class DrillLoop {
       doneReason: this.doneReason,
       fatalError: this.fatalError,
       providerError: this.providerError,
+      protocolError: this.protocolError,
       maxConcurrent: this.maxConcurrent,
       budgets: {
         cyclesTotal: this.cyclesTotal,
@@ -1014,6 +1022,7 @@ class DrillLoop {
   }
 
   async settleFinishedWorkers() {
+    let emptyReplyLimitReached = false;
     for (const [workerId, entry] of [...this.activeWorkers.entries()]) {
       if (!entry.done) continue;
 
@@ -1033,6 +1042,38 @@ class DrillLoop {
         await this.stopFatalAuth(worker.fatalError);
         return true;
       }
+
+      if (worker.protocolErrorType === 'empty_model_reply') {
+        this.cyclesUsed = Math.max(0, this.cyclesUsed - 1);
+        phase.cyclesUsed = Math.max(0, (Number(phase.cyclesUsed) || 0) - 1);
+        phase.status = 'pending';
+        this.emptyReplyStreak += 1;
+        this.protocolError = worker.protocolError || 'Model returned empty replies without doing work';
+        await this.journal('cycle_refused', {
+          cycle,
+          workerId,
+          goalNumber: goal.number,
+          phaseNumber: phase.number,
+          errorType: 'empty_model_reply',
+          countedAsResearchCycle: false,
+          emptyReplyStreak: this.emptyReplyStreak
+        });
+        this.emitEvent('drill_cycle_refused', {
+          cycle,
+          workerId,
+          goalNumber: goal.number,
+          phaseNumber: phase.number,
+          errorType: 'empty_model_reply',
+          countedAsResearchCycle: false,
+          message: `${workerId} returned no model work — the descent was not charged`
+        });
+        if (this.emptyReplyStreak >= this.emptyReplyStreakLimit) {
+          emptyReplyLimitReached = true;
+        }
+        continue;
+      }
+
+      if (!emptyReplyLimitReached) this.emptyReplyStreak = 0;
 
       const harvested = await this.harvestCandidates();
 
@@ -1135,7 +1176,33 @@ class DrillLoop {
         candidatesHarvested: harvested
       });
     }
+    if (emptyReplyLimitReached) {
+      await this.stopRepeatedEmptyReplies();
+      return true;
+    }
     return false;
+  }
+
+  async stopRepeatedEmptyReplies() {
+    this.running = false;
+    this.mode = 'error';
+    this.doneReason = 'empty_model_reply';
+    const { interruptedWorkers, interruptedPhases } = this.normalizeActiveWorkForTerminal();
+    await this.journal('drill_error', {
+      cyclesUsed: this.cyclesUsed,
+      errorType: 'empty_model_reply',
+      reason: this.doneReason,
+      message: this.protocolError,
+      emptyReplyStreak: this.emptyReplyStreak,
+      interruptedWorkers,
+      interruptedPhases
+    });
+    this.emitEvent('launch_loop_error', {
+      fatal: true,
+      errorType: 'empty_model_reply',
+      message: this.protocolError
+    });
+    await this.persistState();
   }
 
   buildPhaseMission(goal, phase, notes, siblings = []) {
@@ -1395,5 +1462,6 @@ module.exports = {
   DEFAULT_CYCLES,
   DEFAULT_WORKER_TURNS_PER_CYCLE,
   DEFAULT_MAX_CONCURRENT,
+  DEFAULT_EMPTY_REPLY_STREAK_LIMIT,
   fileSlug
 };

@@ -108,6 +108,7 @@ class LaunchLoop {
     this.fatalError = null;
     this.providerError = null;
     this.protocolError = null;
+    this.protocolErrorType = null;
     this._promise = null;
   }
 
@@ -253,6 +254,7 @@ class LaunchLoop {
     const chars = typeof assistantMsg?.content === 'string' ? assistantMsg.content.length : 0;
     this.running = false;
     this.protocolError = `Model refused required ${requiredTool} call`;
+    this.protocolErrorType = 'tool_protocol_error';
     this.logger?.error?.('Research Launch loop stopped: required tool was not called', {
       productLoop: RESEARCH_PRODUCT_LOOP,
       stage: policy?.stage || null,
@@ -407,6 +409,7 @@ class LaunchLoop {
       if (!assistantMsg || (!String(content).trim() && (!Array.isArray(toolCalls) || toolCalls.length === 0))) {
         this.running = false;
         this.protocolError = 'Model returned empty replies without doing work';
+        this.protocolErrorType = 'empty_model_reply';
         // #region agent log
         require('fs').appendFileSync('/opt/cursor/logs/debug.log', `${JSON.stringify({ hypothesisId: 'A', location: 'loop.js:repeated-empty', message: 'worker classified repeated empty replies', data: { turn: this.turns, stage: policy.stage, finished: this.finished, protocolError: this.protocolError }, timestamp: Date.now() })}\n`);
         // #endregion
@@ -602,6 +605,7 @@ class LaunchLoop {
       fatalError: this.fatalError || null,
       providerError: this.providerError || null,
       protocolError: this.protocolError || null,
+      protocolErrorType: this.protocolErrorType || null,
       status: (this.fatalError || this.providerError || this.protocolError)
         ? 'error'
         : (this.finished ? 'finished' : (this.running ? 'running' : 'stopped'))

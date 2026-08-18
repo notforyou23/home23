@@ -421,6 +421,79 @@ describe('The drill: goal → phases → next goal', () => {
     )).to.equal(true);
   });
 
+  it('three empty model workers consume no research cycles and stop without manufactured completion', async function () {
+    this.timeout(10000);
+    let calls = 0;
+    const stateMutations = [];
+    const emptyClient = {
+      async createCompletion() {
+        calls += 1;
+        return {
+          choices: [{
+            message: { role: 'assistant', content: '', tool_calls: [] }
+          }]
+        };
+      }
+    };
+    const orchestrator = makeOrchestrator(runtimePath);
+    orchestrator.clusterStateStore = {
+      async completeTask(id, patch) { stateMutations.push({ type: 'task', id, patch }); },
+      async upsertMilestone(value) { stateMutations.push({ type: 'milestone', value }); },
+      async updatePlan(id, patch) { stateMutations.push({ type: 'plan', id, patch }); }
+    };
+    const drill = makeDrill({
+      runtimePath,
+      client: emptyClient,
+      cycles: 40,
+      maxConcurrent: 1,
+      orchestrator
+    });
+    drill.plan.shortPlan.seedPhases = [{
+      title: 'Named evidence',
+      mission: 'Research the evidence and write the required receipt.',
+      expectedOutput: 'outputs/named-evidence.md'
+    }];
+
+    drill.start();
+    await drill._promise;
+
+    expect(calls).to.equal(6);
+    expect(drill.cyclesUsed).to.equal(0);
+    expect(drill.remainingCycles()).to.equal(40);
+    expect(drill.mode).to.equal('error');
+    expect(drill.doneReason).to.equal('empty_model_reply');
+    expect(drill.finished).to.equal(false);
+    expect(drill.getStatus().protocolError).to.equal('Model returned empty replies without doing work');
+    expect(orchestrator.completions).to.have.length(0);
+    expect(stateMutations).to.have.length(0);
+
+    const state = JSON.parse(fs.readFileSync(path.join(runtimePath, 'drill', 'state.json'), 'utf8'));
+    expect(state.goal.status).to.equal('active');
+    expect(state.goal.phases[0]).to.include({
+      expectedOutput: 'outputs/named-evidence.md',
+      status: 'pending',
+      cyclesUsed: 0
+    });
+    expect(state.goal.phases[0].clearance).to.equal(null);
+    expect(fs.existsSync(path.join(runtimePath, 'outputs', 'named-evidence.md'))).to.equal(false);
+
+    const progress = readJsonl(path.join(runtimePath, 'drill', 'progress.jsonl'));
+    expect(progress.filter(entry => entry.type === 'cycle_started')).to.have.length(3);
+    const refused = progress.filter(entry => entry.type === 'cycle_refused');
+    expect(refused).to.have.length(3);
+    expect(refused.every(entry =>
+      entry.errorType === 'empty_model_reply'
+      && entry.countedAsResearchCycle === false
+    )).to.equal(true);
+    expect(progress.filter(entry => entry.type === 'cycle_completed')).to.have.length(0);
+    expect(progress.filter(entry => entry.type === 'drill_done')).to.have.length(0);
+    expect(progress.find(entry => entry.type === 'drill_error')).to.include({
+      reason: 'empty_model_reply',
+      cyclesUsed: 0,
+      emptyReplyStreak: 3
+    });
+  });
+
   it('a degraded coordinator seeds once, then stops instead of minting deepen rounds', async function () {
     this.timeout(10000);
     const createWorker = scriptedWorkerFactory(runtimePath);
