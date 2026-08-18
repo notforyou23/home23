@@ -14,6 +14,18 @@ const { RESEARCH_PRODUCT_LOOP } = require('../../../lib/research-launch');
 const { AUTH_REVOKED_WATCH_MESSAGE, isFatalAuthError } = require('../../../lib/auth-error');
 
 const DEFAULT_MAX_TURNS = 80;
+const WRITE_NUDGE_AFTER_TURNS = 6;
+const WRITE_NUDGE_TAIL_TURNS = 5;
+
+function writeNudgeMessage(turns, maxTurns) {
+  const used = Number(turns) || 0;
+  const cap = Number(maxTurns) > 0 ? Number(maxTurns) : DEFAULT_MAX_TURNS;
+  const remaining = cap - used;
+  if (used >= WRITE_NUDGE_AFTER_TURNS || remaining <= WRITE_NUDGE_TAIL_TURNS) {
+    return 'Stop fetching. write_file a markdown writeup under outputs/, remember() the findings, then call finish. More harvest without a writeup cannot close this phase.';
+  }
+  return 'Continue. Use tools. Call finish when the deliverable is written.';
+}
 
 class LaunchLoop {
   constructor(options = {}) {
@@ -184,7 +196,7 @@ class LaunchLoop {
       if (!this.finished && this.running && this.turns < this.maxTurns) {
         this.messages.push({
           role: 'user',
-          content: 'Continue. Use tools. Call finish when the deliverable is written.'
+          content: writeNudgeMessage(this.turns, this.maxTurns)
         });
       }
     }
@@ -262,7 +274,7 @@ class LaunchLoop {
       'Nothing you do stays boxed in a turn: your thinking, fetches, and findings stream to disk and into the Brain as they happen. Hidden work is waste.',
       'Do the work. Do not ask for permission. Do not write a longer plan.',
       'Do not tell yourself to review what is already here. Query the Brain only if you need a fact.',
-      'Write artifacts into outputs/. Remember findings. Call finish when the deliverable is done.'
+      'Write artifacts into outputs/. Remember findings. After a handful of harvest turns, stop fetching: write_file a markdown writeup under outputs/, remember() the findings, and call finish. Tape alone cannot close a phase.'
     ].join('\n');
   }
 
@@ -291,4 +303,11 @@ class LaunchLoop {
   }
 }
 
-module.exports = { LaunchLoop, DEFAULT_MAX_TURNS, tools };
+module.exports = {
+  LaunchLoop,
+  DEFAULT_MAX_TURNS,
+  WRITE_NUDGE_AFTER_TURNS,
+  WRITE_NUDGE_TAIL_TURNS,
+  writeNudgeMessage,
+  tools
+};

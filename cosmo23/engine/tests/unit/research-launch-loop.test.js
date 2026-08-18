@@ -324,6 +324,10 @@ describe('Research Launch loop and harness', () => {
                     },
                     {
                       id: 'call_2',
+                      function: { name: 'write_file', arguments: JSON.stringify({ path: 'note.md', content: '# Note\n\nThe note-worthy fact.' }) }
+                    },
+                    {
+                      id: 'call_3',
                       function: { name: 'finish', arguments: JSON.stringify({ summary: 'Wrote outputs/note.md' }) }
                     }
                   ]
@@ -373,7 +377,7 @@ describe('Research Launch loop and harness', () => {
           }
           if (String(lastTool.content).includes('"refused"')) {
             refusal = String(lastTool.content);
-            // Put real work on the record, then finish.
+            // Put real work on the record, write the writeup, then finish.
             return {
               choices: [{
                 message: {
@@ -385,6 +389,10 @@ describe('Research Launch loop and harness', () => {
                     },
                     {
                       id: 'call_3',
+                      function: { name: 'write_file', arguments: JSON.stringify({ path: 'finding.md', content: '# Finding\n\nAn actual finding.' }) }
+                    },
+                    {
+                      id: 'call_4',
                       function: { name: 'finish', arguments: JSON.stringify({ summary: 'Wrote it up' }) }
                     }
                   ]
@@ -582,10 +590,16 @@ describe('Fatal Anthropic OAuth / 401', () => {
             choices: [{
               message: {
                 role: 'assistant',
-                tool_calls: [{
-                  id: 'call_finish',
-                  function: { name: 'finish', arguments: JSON.stringify({ summary: 'Wrote the anecdote' }) }
-                }]
+                tool_calls: [
+                  {
+                    id: 'call_write',
+                    function: { name: 'write_file', arguments: JSON.stringify({ path: 'anecdote.md', content: '# Fillmore\n\nGarcia once got a 401 at the Fillmore.' }) }
+                  },
+                  {
+                    id: 'call_finish',
+                    function: { name: 'finish', arguments: JSON.stringify({ summary: 'Wrote the anecdote' }) }
+                  }
+                ]
               }
             }]
           };

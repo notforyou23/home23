@@ -183,10 +183,16 @@ describe('The Brain gets the working stream as it happens', () => {
             choices: [{
               message: {
                 role: 'assistant',
-                tool_calls: [{
-                  id: 'call_f',
-                  function: { name: 'finish', arguments: JSON.stringify({ summary: 'Setlist conflict documented' }) }
-                }]
+                tool_calls: [
+                  {
+                    id: 'call_w',
+                    function: { name: 'write_file', arguments: JSON.stringify({ path: 'wembley.md', content: '# Wembley\n\nSetlist conflict documented.' }) }
+                  },
+                  {
+                    id: 'call_f',
+                    function: { name: 'finish', arguments: JSON.stringify({ summary: 'Setlist conflict documented' }) }
+                  }
+                ]
               }
             }]
           };
@@ -207,7 +213,7 @@ describe('The Brain gets the working stream as it happens', () => {
     expect(taped).to.have.length(1);
     expect(taped[0].brain).to.equal('live');
 
-    // And the thought WAS the evidence: the phase closed without remember().
+    // Thought is on the tape; the writeup is what lets finish land.
     expect(loop.finished).to.equal(true);
     expect(loop.finishSummary).to.equal('Setlist conflict documented');
   });
@@ -310,6 +316,10 @@ describe('The Brain gets the working stream as it happens', () => {
           await executeTool('remember', { content: `Found in cycle ${this.drill.cycle}` }, {
             runtimePath, logger, loop: this
           });
+          await executeTool('write_file', {
+            path: `lane-${this.drill.cycle}.md`,
+            content: `# Lane\n\nFound in cycle ${this.drill.cycle}.`
+          }, { runtimePath, logger, loop: this });
           this.finished = true;
           this.finishSummary = 'Wrote the lane up';
           this.running = false;
@@ -433,12 +443,22 @@ describe('Hidden work cannot close a phase — anything on the record can', () =
     expect(payload.reason).to.equal('hidden_work');
     expect(loop.finished).to.equal(false);
 
-    // One real fetch later, finish goes through.
+    // A fetch puts work on the tape, but tape alone still cannot finish.
     await executeTool('run_command', {
       command: 'echo harvested https://archive.org/details/gd1972-wembley'
     }, { runtimePath, logger, loop });
     expect(loop.evidence.streamed).to.equal(1);
-    const done = await executeTool('finish', { summary: 'now it is on the record' }, { runtimePath, logger, loop });
+    const stillRefused = await executeTool('finish', { summary: 'tape only' }, { runtimePath, logger, loop });
+    const missing = JSON.parse(stillRefused);
+    expect(missing.finish).to.equal('refused');
+    expect(missing.reason).to.equal('missing_writeup');
+    expect(loop.finished).to.equal(false);
+
+    await executeTool('write_file', {
+      path: 'wembley.md',
+      content: '# Wembley\n\nHarvested the 1972 show.'
+    }, { runtimePath, logger, loop });
+    const done = await executeTool('finish', { summary: 'writeup on disk' }, { runtimePath, logger, loop });
     expect(done).to.include('Research finished');
     expect(loop.finished).to.equal(true);
   });
@@ -480,10 +500,10 @@ describe('Hidden work cannot close a phase — anything on the record can', () =
     }
     expect(orchestrator.events.some((event) => event.type === 'drill_phase_rejected')).to.equal(true);
     // The relaunched worker was told why.
-    expect(JSON.stringify(spawned[1].plan)).to.include('nothing on the record');
+    expect(JSON.stringify(spawned[1].plan)).to.include('without a writeup under outputs');
   });
 
-  it('a worker whose only record is a curl harvest CAN close the phase — no remember() required', async function () {
+  it('a worker whose only record is a curl harvest CANNOT close the phase — writeup required', async function () {
     this.timeout(10000);
     const runtimePath = tempRuntime();
     const orchestrator = makeOrchestrator(runtimePath);
@@ -501,9 +521,9 @@ describe('Hidden work cannot close a phase — anything on the record can', () =
 
     const progress = readJsonl(path.join(runtimePath, 'drill', 'progress.jsonl'));
     const settle = progress.find((entry) => entry.type === 'cycle_completed');
-    expect(settle.phaseDone).to.equal(true);
-    expect(settle.rejectedReason).to.equal(null);
-    // The harvest is on every surface: receipt, tape, Brain.
+    expect(settle.phaseDone).to.equal(false);
+    expect(settle.rejectedReason).to.equal('missing_writeup');
+    // The harvest is still on every surface: receipt, tape, Brain.
     expect(sourcesAt(runtimePath)[0].tool).to.equal('run_command');
     expect(streamAt(runtimePath).some((entry) => entry.kind === 'harvest')).to.equal(true);
     expect(orchestrator.memory.added.some((node) => node.tag === 'drill_harvest')).to.equal(true);
@@ -523,9 +543,13 @@ describe('Hidden work cannot close a phase — anything on the record can', () =
           await executeTool('remember', { content: 'Half the lane dug.' }, { runtimePath, logger, loop: worker });
           worker.finished = false;
         } else {
-          // Second descent finishes on the phase's existing record.
+          // Second descent writes the missing writeup, then closes.
+          await executeTool('write_file', {
+            path: 'half-lane.md',
+            content: '# Half the lane\n\nClosed on the earlier record.'
+          }, { runtimePath, logger, loop: worker });
           worker.finished = true;
-          worker.finishSummary = 'Closed on the earlier record';
+          worker.finishSummary = 'Closed with a writeup';
         }
       });
     };
