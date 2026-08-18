@@ -345,14 +345,21 @@ describe('Research Launch loop and harness', () => {
   });
 
   it('normalizes any function schema at the Codex transport boundary', () => {
-    const schemas = [{
+    const runSkill = toChatTools().find(tool => tool.function.name === 'run_skill');
+    const schemas = [runSkill, {
         type: 'function',
         name: 'dynamic_tool',
         parameters: {
           type: 'object',
           properties: {
             first: { type: 'string' },
-            second: { type: 'number' }
+            second: { type: 'number' },
+            nullable_union: {
+              anyOf: [
+                { type: 'object' },
+                { type: 'null' }
+              ]
+            }
           },
           required: ['first']
         }
@@ -371,13 +378,22 @@ describe('Research Launch loop and harness', () => {
           }
         }
       }];
-    const [tool, legacyTool] = normalizeCodexFunctionTools(schemas);
-    for (const normalized of [tool, legacyTool]) {
+    const [normalizedRunSkill, tool, legacyTool] = normalizeCodexFunctionTools(schemas);
+    for (const normalized of [normalizedRunSkill, tool, legacyTool]) {
       expect(normalized.parameters.required).to.deep.equal(Object.keys(normalized.parameters.properties));
       expect(normalized.parameters.additionalProperties).to.equal(false);
       expect(normalized.strict).to.equal(true);
       expect(normalized).to.not.have.property('function');
     }
+    const runSkillInputs = normalizedRunSkill.parameters.properties.inputs;
+    expect(runSkillInputs.type).to.deep.equal(['object', 'null']);
+    expect(runSkillInputs.properties).to.deep.equal({});
+    expect(runSkillInputs.required).to.deep.equal([]);
+    expect(runSkillInputs.additionalProperties).to.equal(false);
+    const nullableObjectVariant = tool.parameters.properties.nullable_union.anyOf[0];
+    expect(nullableObjectVariant.properties).to.deep.equal({});
+    expect(nullableObjectVariant.required).to.deep.equal([]);
+    expect(nullableObjectVariant.additionalProperties).to.equal(false);
     expect(tool.name).to.equal('dynamic_tool');
     expect(legacyTool).to.include({
       name: 'legacy_chat_tool',

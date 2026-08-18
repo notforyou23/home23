@@ -17,6 +17,12 @@ function normalizeStrictSchema(schema) {
     normalized.properties = Object.fromEntries(
       Object.entries(normalized.properties).map(([key, value]) => [key, normalizeStrictSchema(value)])
     );
+  }
+  const types = Array.isArray(normalized.type) ? normalized.type : [normalized.type];
+  const isObjectSchema = types.includes('object')
+    || (normalized.properties && typeof normalized.properties === 'object');
+  if (isObjectSchema) {
+    normalized.properties = normalized.properties || {};
     normalized.required = Object.keys(normalized.properties);
     normalized.additionalProperties = false;
   }

@@ -371,13 +371,13 @@ describe('The drill: goal → phases → next goal', () => {
     expect(drill.mode).to.not.equal('done');
   });
 
-  it('a mocked 400 tool-schema refusal consumes none of a 40-cycle hunt and surfaces the failure', async function () {
+  it('the hunter-luna-2 run_skill schema 400 consumes none of a 40-cycle hunt', async function () {
     this.timeout(10000);
     let calls = 0;
     const schemaErrorClient = {
       async createCompletion() {
         calls += 1;
-        const error = new Error("400 Invalid schema for function 'brain_query': 'required' must include every key in properties. Missing 'limit'.");
+        const error = new Error("400 Invalid schema for function 'run_skill': In context=('properties', 'inputs', 'type', '0'), 'additionalProperties' is required to be supplied and to be false.");
         error.status = 400;
         error.provider = 'openai-codex';
         throw error;
@@ -401,7 +401,9 @@ describe('The drill: goal → phases → next goal', () => {
     expect(drill.cyclesUsed).to.equal(0);
     expect(drill.remainingCycles()).to.equal(40);
     expect(drill.mode).to.equal('error');
-    expect(drill.providerError).to.include('Invalid schema');
+    expect(drill.providerError).to.equal(
+      "400 Invalid schema for function 'run_skill': In context=('properties', 'inputs', 'type', '0'), 'additionalProperties' is required to be supplied and to be false."
+    );
     expect(drill.getStatus().status).to.equal('error');
     expect(drill._orchestrator.completions).to.have.length(0);
 
