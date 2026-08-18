@@ -348,7 +348,7 @@ Required expectedOutput: @outputs/raw-anecdotes/archive-org-comments.json.
     expect(storedTasks[0].metadata.expectedOutputs).to.deep.equal([
       '@outputs/raw-anecdotes/archive-org-comments.json'
     ]);
-    expect(storedTasks[0].metadata.seedPhases[0].title).to.equal('Research Archive.org Reviews');
+    expect(storedTasks[0].metadata.seedPhases[0].title).to.equal('Scrape Archive.org Reviews');
   });
 
   it('does not persist a generic synthesis task when an explicit final markdown phase exists', async () => {
