@@ -104,8 +104,10 @@ describe('Expanded drill control center', () => {
 
   it('reflows the operational view and inspector on narrower screens', () => {
     const css = read('styles.css');
+    expect(css).to.include('[hidden] { display: none !important; }');
     expect(css).to.include('.drill-pulse-grid');
     expect(css).to.include('.drill-operations-grid');
+    expect(css).to.match(/\.drill-operations-grid > \.drill-goal-panel[\s\S]*grid-area: auto/);
     expect(css).to.include('.drill-inspector-panel');
     expect(css).to.include('.inspector-split');
     expect(css).to.match(/@media \(max-width: 1220px\)[\s\S]*\.drill-operations-grid/);

@@ -1,14 +1,14 @@
 /* COSMO drill control center */
 
 :root {
-  --bg: #10151a;
-  --bg-raised: #171e25;
-  --bg-inset: #0b0f13;
-  --line: rgba(255, 255, 255, 0.08);
-  --line-strong: rgba(255, 255, 255, 0.16);
+  --bg: #0f1419;
+  --bg-raised: #182028;
+  --bg-inset: #0a1015;
+  --line: rgba(255, 255, 255, 0.1);
+  --line-strong: rgba(255, 255, 255, 0.2);
   --text: #e8edf2;
-  --text-dim: #93a1ad;
-  --text-faint: #5c6a75;
+  --text-dim: #aab6c0;
+  --text-faint: #74828e;
   --accent: #e8a33d;        /* drill amber */
   --accent-deep: #b97a1e;
   --good: #4cc38a;
@@ -21,6 +21,9 @@
 }
 
 * { box-sizing: border-box; }
+
+/* Author display rules must never resurrect hidden app states or tab panes. */
+[hidden] { display: none !important; }
 
 html, body {
   margin: 0;
@@ -1119,6 +1122,7 @@ body {
 
 .pulse-card small {
   color: var(--text-faint);
+  font-size: 0.72rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1131,7 +1135,15 @@ body {
   align-items: start;
 }
 
-.drill-operations-grid .cc-panel { height: 100%; }
+.drill-operations-grid > .drill-goal-panel,
+.drill-operations-grid > .drill-activity-panel,
+.drill-operations-grid > .drill-note-panel {
+  /* These panels used named areas in the retired board grid. Reset them so
+     the operational grid—and its responsive collapse—owns placement. */
+  grid-area: auto;
+  min-width: 0;
+  height: auto;
+}
 
 .drill-note-panel .cc-panel-head h3,
 .drill-activity-panel .cc-panel-head h3,
