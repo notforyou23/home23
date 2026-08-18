@@ -344,21 +344,44 @@ describe('Research Launch loop and harness', () => {
   });
 
   it('normalizes any function schema at the Codex transport boundary', () => {
-    const [tool] = normalizeCodexFunctionTools([{
-      type: 'function',
-      name: 'dynamic_tool',
-      parameters: {
-        type: 'object',
-        properties: {
-          first: { type: 'string' },
-          second: { type: 'number' }
-        },
-        required: ['first']
-      }
-    }]);
-    expect(tool.parameters.required).to.deep.equal(['first', 'second']);
-    expect(tool.parameters.additionalProperties).to.equal(false);
-    expect(tool.strict).to.equal(true);
+    const schemas = [{
+        type: 'function',
+        name: 'dynamic_tool',
+        parameters: {
+          type: 'object',
+          properties: {
+            first: { type: 'string' },
+            second: { type: 'number' }
+          },
+          required: ['first']
+        }
+      }, {
+        type: 'function',
+        function: {
+          name: 'legacy_chat_tool',
+          description: 'A directly supplied Chat Completions tool.',
+          parameters: {
+            type: 'object',
+            properties: {
+              path: { type: 'string' },
+              mode: { type: 'string' }
+            },
+            required: ['path']
+          }
+        }
+      }];
+    const [tool, legacyTool] = normalizeCodexFunctionTools(schemas);
+    for (const normalized of [tool, legacyTool]) {
+      expect(normalized.parameters.required).to.deep.equal(Object.keys(normalized.parameters.properties));
+      expect(normalized.parameters.additionalProperties).to.equal(false);
+      expect(normalized.strict).to.equal(true);
+      expect(normalized).to.not.have.property('function');
+    }
+    expect(tool.name).to.equal('dynamic_tool');
+    expect(legacyTool).to.include({
+      name: 'legacy_chat_tool',
+      description: 'A directly supplied Chat Completions tool.'
+    });
   });
 
   it('dedupes research tools by name when the imported list already has web_search', () => {

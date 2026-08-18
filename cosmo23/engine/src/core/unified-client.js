@@ -25,13 +25,17 @@ function normalizeStrictSchema(schema) {
 
 function normalizeCodexFunctionTools(tools = []) {
   return tools.map((tool) => {
-    if (!tool || tool.type !== 'function' || !tool.name) return tool;
-    const parameters = normalizeStrictSchema(tool.parameters || {
+    if (!tool || tool.type !== 'function') return tool;
+    const definition = tool.name ? tool : tool.function;
+    if (!definition?.name) return tool;
+    const parameters = normalizeStrictSchema(definition.parameters || {
       type: 'object',
       properties: {}
     });
     return {
-      ...tool,
+      type: 'function',
+      name: definition.name,
+      description: definition.description || null,
       parameters,
       strict: true
     };
