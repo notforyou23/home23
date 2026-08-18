@@ -6,13 +6,18 @@
  */
 
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs').promises;
 const path = require('path');
 const { tools: interactiveTools, executeTool: executeInteractiveTool } = require('../interactive/interactive-tools');
 const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
 const { getSearchGovernor } = require('./search-governor');
 const { writeBrainStream, bumpStreamEvidence } = require('./brain-stream');
-const { hasPhaseWriteup, recordWriteupReceipt } = require('../drill/writeup-gate');
+const {
+  assessPhaseReceipt,
+  hasPhaseWriteup,
+  recordWriteupReceipt
+} = require('../drill/writeup-gate');
 
 const INTERACTIVE_ONLY = new Set([
   'spawn_agent',
@@ -144,7 +149,14 @@ function drillProvenance(context) {
  * Search is one tool in the kit, not the research; the other paths persist
  * the same way.
  */
-async function journalSourceReceipt(context, { tool, query, urls = [], path: outputPath = null }) {
+async function journalSourceReceipt(context, {
+  tool,
+  query,
+  urls = [],
+  path: outputPath = null,
+  bytes = null,
+  sha256 = null
+}) {
   try {
     const runtimePath = resolveRuntimePath(context);
     const entry = {
@@ -153,6 +165,8 @@ async function journalSourceReceipt(context, { tool, query, urls = [], path: out
       query,
       urls,
       path: outputPath,
+      bytes,
+      sha256,
       ...drillProvenance(context)
     };
     await fs.mkdir(path.join(runtimePath, 'outputs'), { recursive: true });
@@ -206,19 +220,22 @@ async function recordInteractiveHarvest(name, args, result, context) {
       const relPath = `outputs/${args.path}`;
       const urls = extractUrls(args.content);
       const provenance = drillProvenance(context);
+      const content = String(args.content || '');
       await journalSourceReceipt(context, {
         tool: 'write_file',
         query: relPath,
         path: relPath,
-        urls
+        urls,
+        bytes: Buffer.byteLength(content, 'utf8'),
+        sha256: crypto.createHash('sha256').update(content).digest('hex')
       });
       const writeupReceipt = await recordWriteupReceipt(
         resolveRuntimePath(context),
         relPath,
         provenance,
-        String(args.content || '')
+        content
       );
-      const bytes = Buffer.byteLength(String(args.content || ''), 'utf-8');
+      const bytes = Buffer.byteLength(content, 'utf-8');
       const streamContent = writeupReceipt.recorded
         ? `Writeup ${relPath}:\n${String(args.content || '').slice(0, 2000)}`
         : `Harvested to ${relPath} (${bytes} bytes)${urls.length ? ` from ${urls.slice(0, 3).join(' ')}` : ''}`;
@@ -449,22 +466,40 @@ const extraExecutors = {
       // record) is still refused. Harvest without a writeup under
       // outputs/*.md is also refused. /tmp dumps never count.
       const streamed = Number(context.loop.evidence?.streamed) || 0;
-      const writeupOnDisk = hasPhaseWriteup(
-        resolveRuntimePath(context),
-        drillProvenance(context)
-      );
-      if (!writeupOnDisk) {
+      const expectedOutput = context.loop.expectedOutput
+        || context.loop.plan?.shortPlan?.expectedOutput
+        || (context.loop.plan?.shortPlan?.writeupPath
+          ? `outputs/${context.loop.plan.shortPlan.writeupPath}`
+          : null);
+      const provenance = drillProvenance(context);
+      const receipt = !expectedOutput
+          && provenance.goalNumber == null
+          && provenance.phaseNumber == null
+        ? {
+            accepted: hasPhaseWriteup(resolveRuntimePath(context)),
+            reason: hasPhaseWriteup(resolveRuntimePath(context))
+              ? 'legacy_unscoped_writeup'
+              : 'missing_writeup'
+          }
+        : assessPhaseReceipt(
+            resolveRuntimePath(context),
+            expectedOutput,
+            provenance
+          );
+      if (!receipt.accepted) {
+        const expected = Array.isArray(expectedOutput) ? expectedOutput.join(', ') : expectedOutput;
         if (streamed === 0) {
           return JSON.stringify({
             finish: 'refused',
             reason: 'hidden_work',
-            instruction: 'Nothing from this phase has reached the record yet. write_file a markdown writeup under outputs/, remember() the findings, then call finish. Hidden /tmp dumps cannot close a phase.'
+            receiptReason: receipt.reason,
+            instruction: `Nothing complete from this phase has reached its named receipt${expected ? ` (${expected})` : ''}. write_file that exact finished artifact, remember() the findings, then call finish. Progress notes and hidden /tmp dumps cannot close a phase.`
           }, null, 2);
         }
         return JSON.stringify({
           finish: 'refused',
-          reason: 'missing_writeup',
-          instruction: 'This phase has tape but no writeup on disk. Stop fetching. write_file a markdown writeup under outputs/, remember() the findings, then call finish. Tape alone cannot close a phase.'
+          reason: receipt.reason,
+          instruction: `This phase has tape but its named receipt${expected ? ` (${expected})` : ''} is not finished. Stop fetching. write_file that exact completed artifact, remember() the findings, then call finish. Tape, progress notes, and another file cannot close this phase.`
         }, null, 2);
       }
       context.loop.markFinished(summary);

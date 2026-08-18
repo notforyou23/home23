@@ -14,6 +14,7 @@ const os = require('os');
 const path = require('path');
 
 const {
+  assessPhaseReceipt,
   listWriteups,
   hasPhaseWriteup,
   isHiddenDumpPath,
@@ -113,6 +114,191 @@ describe('Writeup gate', () => {
 
     expect(mission.writeFirst).to.equal(true);
     expect(mission.constraints).to.include('Operator note: write files, remember, close with writeup');
+  });
+
+  it('does not accept an IN PROGRESS stub as the named phase receipt', async () => {
+    const runtimePath = tempRuntime();
+    const loop = {
+      drill: { goalNumber: 1, phaseNumber: 1 },
+      plan: { shortPlan: { expectedOutput: 'outputs/garcia_interview_sources.md' } },
+      expectedOutput: 'outputs/garcia_interview_sources.md',
+      evidence: { streamed: 1 }
+    };
+    await executeTool('write_file', {
+      path: 'garcia_interview_sources.md',
+      content: '# Phase 1: Gather Quotes\n## Status: IN PROGRESS\n## Findings\n(To be populated with verbatim quotes as sources are retrieved)\n## Next Steps\n- Need to find working archive URLs'
+    }, { runtimePath, logger, loop });
+
+    expect(assessPhaseReceipt(runtimePath, loop.expectedOutput, {
+      goalNumber: 1,
+      phaseNumber: 1
+    })).to.include({ accepted: false, reason: 'unfinished_receipt' });
+  });
+
+  it('does not accept empty findings or an empty in-progress JSON receipt', async () => {
+    const markdownRun = tempRuntime();
+    const markdownLoop = {
+      drill: { goalNumber: 1, phaseNumber: 1 },
+      expectedOutput: 'outputs/garcia_partnership.md',
+      evidence: { streamed: 1 }
+    };
+    await executeTool('write_file', {
+      path: 'garcia_partnership.md',
+      content: '# Garcia and Hunter\n\n## Findings\n\n## Next Steps\n\nSearch the print archive.'
+    }, { runtimePath: markdownRun, logger, loop: markdownLoop });
+    expect(assessPhaseReceipt(markdownRun, markdownLoop.expectedOutput, {
+      goalNumber: 1,
+      phaseNumber: 1
+    }).accepted).to.equal(false);
+
+    const jsonRun = tempRuntime();
+    const jsonLoop = {
+      drill: { goalNumber: 1, phaseNumber: 2 },
+      expectedOutput: 'outputs/garcia_book_sources.json',
+      evidence: { streamed: 1 }
+    };
+    await executeTool('write_file', {
+      path: 'garcia_book_sources.json',
+      content: JSON.stringify({ entries: [], status: 'in-progress' })
+    }, { runtimePath: jsonRun, logger, loop: jsonLoop });
+    expect(assessPhaseReceipt(jsonRun, jsonLoop.expectedOutput, {
+      goalNumber: 1,
+      phaseNumber: 2
+    })).to.include({ accepted: false, reason: 'unfinished_receipt' });
+  });
+
+  it('does not let phase-2-progress.md satisfy a different named receipt', async () => {
+    const runtimePath = tempRuntime();
+    const loop = {
+      drill: { goalNumber: 1, phaseNumber: 2 },
+      expectedOutput: 'outputs/garcia_book_sources.json',
+      evidence: { streamed: 1 }
+    };
+    await executeTool('write_file', {
+      path: 'drill/goal-1/phase-2-progress.md',
+      content: '# Source shopping list\n\nStatus: still collecting interviews and print sources.'
+    }, { runtimePath, logger, loop });
+
+    expect(assessPhaseReceipt(runtimePath, loop.expectedOutput, {
+      goalNumber: 1,
+      phaseNumber: 2
+    })).to.include({ accepted: false, reason: 'wrong_receipt' });
+  });
+
+  it('accepts finished work only at this phase named receipt', async () => {
+    const runtimePath = tempRuntime();
+    const expectedOutput = 'outputs/garcia_interview_sources.json';
+    const wrongPhase = {
+      drill: { goalNumber: 1, phaseNumber: 2 },
+      expectedOutput,
+      evidence: { streamed: 1 }
+    };
+    await executeTool('write_file', {
+      path: 'garcia_interview_sources.json',
+      content: JSON.stringify({
+        entries: [{ quote: 'We wrote together by talking it through.', source: 'Interview transcript' }],
+        status: 'complete'
+      })
+    }, { runtimePath, logger, loop: wrongPhase });
+
+    expect(assessPhaseReceipt(runtimePath, expectedOutput, {
+      goalNumber: 1,
+      phaseNumber: 1
+    }).accepted).to.equal(false);
+
+    const rightPhase = {
+      drill: { goalNumber: 1, phaseNumber: 1 },
+      expectedOutput,
+      evidence: { streamed: 1 }
+    };
+    await executeTool('write_file', {
+      path: 'garcia_interview_sources.json',
+      content: JSON.stringify({
+        entries: [{ quote: 'Hunter and I worked by passing pages back and forth.', source: 'Published interview' }],
+        status: 'complete'
+      })
+    }, { runtimePath, logger, loop: rightPhase });
+    const accepted = assessPhaseReceipt(runtimePath, expectedOutput, {
+      goalNumber: 1,
+      phaseNumber: 1
+    });
+    expect(accepted).to.include({
+      accepted: true,
+      reason: 'finished_json',
+      path: expectedOutput
+    });
+    expect(accepted.sha256).to.match(/^[a-f0-9]{64}$/);
+  });
+
+  it('does not let another phase overwrite satisfy a stale receipt', async () => {
+    const runtimePath = tempRuntime();
+    const expectedOutput = 'outputs/shared.json';
+    await executeTool('write_file', {
+      path: 'shared.json',
+      content: JSON.stringify({ entries: [], status: 'in-progress' })
+    }, {
+      runtimePath,
+      logger,
+      loop: {
+        drill: { goalNumber: 1, phaseNumber: 1 },
+        expectedOutput,
+        evidence: { streamed: 1 }
+      }
+    });
+    await executeTool('write_file', {
+      path: 'shared.json',
+      content: JSON.stringify({
+        entries: [{ quote: 'Finished by the wrong phase.' }],
+        status: 'complete'
+      })
+    }, {
+      runtimePath,
+      logger,
+      loop: {
+        drill: { goalNumber: 1, phaseNumber: 2 },
+        expectedOutput,
+        evidence: { streamed: 1 }
+      }
+    });
+
+    expect(assessPhaseReceipt(runtimePath, expectedOutput, {
+      goalNumber: 1,
+      phaseNumber: 1
+    })).to.include({ accepted: false, reason: 'receipt_changed' });
+  });
+
+  it('does not treat zero counts or explicit incomplete flags as finished JSON', async () => {
+    const cases = [
+      { findings: [], count: 0, status: 'complete' },
+      { findings: ['One draft quote'], complete: false },
+      { findings: [], status: 'complete', generatedAt: '2026-08-18T16:00:00Z' },
+      { findings: [], status: 'complete', note: 'Source collection was attempted.' },
+      { findings: ['One quote'], finished: false },
+      { findings: ['One quote'], success: false },
+      { findings: ['One quote'], status: 'failed' },
+      { findings: ['One quote'], failed: true },
+      { findings: ['One quote'], error: 'network failure' }
+    ];
+    for (const [index, content] of cases.entries()) {
+      const runtimePath = tempRuntime();
+      const expectedOutput = `outputs/case-${index}.json`;
+      await executeTool('write_file', {
+        path: `case-${index}.json`,
+        content: JSON.stringify(content)
+      }, {
+        runtimePath,
+        logger,
+        loop: {
+          drill: { goalNumber: 1, phaseNumber: index + 1 },
+          expectedOutput,
+          evidence: { streamed: 1 }
+        }
+      });
+      expect(assessPhaseReceipt(runtimePath, expectedOutput, {
+        goalNumber: 1,
+        phaseNumber: index + 1
+      }).accepted).to.equal(false);
+    }
   });
 });
 
@@ -595,12 +781,14 @@ describe('finish refuses tape-only and /tmp-only closes', () => {
     const runtimePath = tempRuntime();
     const phaseOne = {
       drill: { goalNumber: 1, phaseNumber: 1, workerId: 'w1', cycle: 1 },
+      expectedOutput: 'outputs/drill/goal-1/phase-1.md',
       evidence: { streamed: 1 },
       finished: false,
       markFinished(summary) { this.finished = true; this.summary = summary; }
     };
     const phaseTwo = {
       drill: { goalNumber: 1, phaseNumber: 2, workerId: 'w2', cycle: 2 },
+      expectedOutput: 'outputs/drill/goal-1/phase-2.md',
       evidence: { streamed: 1 },
       finished: false,
       markFinished(summary) { this.finished = true; this.summary = summary; }
@@ -615,7 +803,7 @@ describe('finish refuses tape-only and /tmp-only closes', () => {
       { summary: 'Phase two done' },
       { runtimePath, logger, loop: phaseTwo }
     ));
-    expect(refused.reason).to.equal('missing_writeup');
+    expect(refused.reason).to.equal('missing_receipt');
     expect(phaseTwo.finished).to.equal(false);
 
     await executeTool(
@@ -631,6 +819,7 @@ describe('finish refuses tape-only and /tmp-only closes', () => {
     const wrongRun = tempRuntime('cosmo-wrong-run-');
     const provenance = {
       drill: { goalNumber: 2, phaseNumber: 1, workerId: 'w10', cycle: 10 },
+      expectedOutput: 'outputs/garcia_partnership.md',
       evidence: { streamed: 4 },
       finished: false,
       markFinished(summary) { this.finished = true; this.summary = summary; }
@@ -645,7 +834,7 @@ describe('finish refuses tape-only and /tmp-only closes', () => {
       { summary: 'Partnership phase done' },
       { runtimePath: correctRun, logger, loop: provenance }
     ));
-    expect(refused.reason).to.equal('missing_writeup');
+    expect(refused.reason).to.equal('missing_receipt');
     expect(provenance.finished).to.equal(false);
     expect(fs.existsSync(path.join(correctRun, 'outputs', 'garcia_partnership.md'))).to.equal(false);
     expect(fs.existsSync(path.join(wrongRun, 'outputs', 'garcia_partnership.md'))).to.equal(true);

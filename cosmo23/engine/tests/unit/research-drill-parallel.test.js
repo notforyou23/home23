@@ -133,11 +133,11 @@ function concurrencyWorkerFactory(runtimePath, { holdPhase = null, expectParalle
             content: `Finding from ${this.drill.workerId} (goal ${this.drill.goalNumber} phase ${this.drill.phaseNumber})`
           }, { runtimePath, logger, loop: this });
           await executeTool('write_file', {
-            path: `g${this.drill.goalNumber}p${this.drill.phaseNumber}.md`,
+            path: String(this.plan.shortPlan.expectedOutput).replace(/^outputs\//, ''),
             content: `# Goal ${this.drill.goalNumber} phase ${this.drill.phaseNumber}\n\nFinding from ${this.drill.workerId}.`
           }, { runtimePath, logger, loop: this });
           this.finished = true;
-          this.finishSummary = `Wrote outputs/g${this.drill.goalNumber}p${this.drill.phaseNumber}.md`;
+          this.finishSummary = `Wrote ${this.plan.shortPlan.expectedOutput}`;
           inFlight -= 1;
           this.running = false;
         })();
@@ -308,9 +308,9 @@ describe('Parallel phases: one worker per open phase', () => {
     // Goal 1's three phases were merged...
     expect(mergeUsers.length).to.be.at.least(1);
     expect(mergeUsers[0]).to.include('Phase results:');
-    expect(mergeUsers[0]).to.include('g1p1.md');
-    expect(mergeUsers[0]).to.include('g1p2.md');
-    expect(mergeUsers[0]).to.include('g1p3.md');
+    expect(mergeUsers[0]).to.include('phase-1-l1-search.md');
+    expect(mergeUsers[0]).to.include('phase-2-l1-verify.md');
+    expect(mergeUsers[0]).to.include('phase-3-l1-writeup.md');
 
     // ...and the merged summary fed the invention of goal 2.
     const goal2Prompt = goalUsers[1] || '';

@@ -6,6 +6,9 @@ const os = require('os');
 const path = require('path');
 const { Orchestrator } = require('../../src/core/orchestrator');
 const { DrillLoop } = require('../../src/drill/drill-loop');
+const { executeTool } = require('../../src/agent/tools');
+
+const logger = { info() {}, warn() {}, error() {}, debug() {} };
 
 describe('Product drill lifecycle isolation', () => {
   it('tracks drill progress and settles without entering a cognitive cycle', async () => {
@@ -163,5 +166,199 @@ describe('Product drill lifecycle isolation', () => {
     expect(progress.at(-1).type).to.equal('drill_stopped');
     expect(progress.at(-1).interruptedWorkers[0].workerId).to.equal('w1');
     expect(fs.readFileSync(harvestPath, 'utf8')).to.include('durable partial harvest');
+  });
+
+  it('persists the named receipt and the evidence that cleared the phase', async () => {
+    const runtimePath = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo-drill-clearance-'));
+    const drill = new DrillLoop({
+      logger,
+      orchestrator: { logsDir: runtimePath },
+      config: { logsDir: runtimePath, drill: { cycles: 2 } },
+      plan: {
+        shortPlan: {
+          goal: 'Garcia partnership',
+          seedPhases: [{
+            title: 'Garcia interviews',
+            mission: 'Collect finished interview evidence and write outputs/garcia_interview_sources.json.'
+          }]
+        }
+      }
+    });
+    const goal = await drill.nextGoal(null);
+    const phase = goal.phases[0];
+    const worker = {
+      drill: { goalNumber: 1, phaseNumber: 1 },
+      plan: { shortPlan: { expectedOutput: phase.expectedOutput } },
+      expectedOutput: phase.expectedOutput,
+      evidence: { streamed: 0 },
+      turns: 2,
+      finished: true,
+      finishSummary: 'Interview evidence complete.',
+      fatalError: null
+    };
+    await executeTool('write_file', {
+      path: 'garcia_interview_sources.json',
+      content: JSON.stringify({
+        entries: [{ quote: 'Hunter and I passed the words back and forth.', source: 'Interview' }],
+        status: 'complete'
+      })
+    }, { runtimePath, logger, loop: worker });
+    phase.status = 'active';
+    drill.currentGoal = goal;
+    drill.activeWorkers.set('w1', {
+      workerId: 'w1',
+      worker,
+      phase,
+      goal,
+      cycle: 1,
+      done: true
+    });
+
+    await drill.settleFinishedWorkers();
+    await drill.persistState();
+    const state = JSON.parse(fs.readFileSync(path.join(runtimePath, 'drill', 'state.json'), 'utf8'));
+
+    expect(phase.status).to.equal('done');
+    expect(state.goal.phases[0].expectedOutput).to.equal('outputs/garcia_interview_sources.json');
+    expect(state.goal.phases[0].expectedOutputSource).to.equal('mission');
+    expect(state.goal.phases[0].clearance).to.include({
+      reason: 'finished_json',
+      path: 'outputs/garcia_interview_sources.json'
+    });
+    expect(state.goal.phases[0].clearance.sha256).to.match(/^[a-f0-9]{64}$/);
+  });
+
+  it('reopens a resumed phase when its cleared receipt changed on disk', async () => {
+    const runtimePath = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo-drill-resume-receipt-'));
+    const makeLoop = () => new DrillLoop({
+      logger,
+      orchestrator: { logsDir: runtimePath },
+      config: { logsDir: runtimePath, drill: { cycles: 2 } },
+      plan: { shortPlan: { goal: 'Resume receipt integrity' } }
+    });
+    const first = makeLoop();
+    const expectedOutput = 'outputs/drill/goal-1/phase-1-interviews.md';
+    const goal = {
+      id: 'goal-1',
+      number: 1,
+      title: 'Interviews',
+      why: 'Find direct testimony.',
+      origin: 'seed',
+      status: 'active',
+      phases: [{
+        id: 'phase-1',
+        number: 1,
+        title: 'Interviews',
+        mission: 'Land direct testimony.',
+        expectedOutput,
+        status: 'active',
+        cyclesUsed: 1,
+        evidence: { streamed: 1 },
+        rejections: 0
+      }]
+    };
+    const worker = {
+      drill: { goalNumber: 1, phaseNumber: 1 },
+      expectedOutput,
+      evidence: { streamed: 1 },
+      turns: 1,
+      finished: true,
+      finishSummary: 'Finished interviews.',
+      fatalError: null
+    };
+    await executeTool('write_file', {
+      path: 'drill/goal-1/phase-1-interviews.md',
+      content: '# Interviews\n\nA finished sourced interview finding.'
+    }, { runtimePath, logger, loop: worker });
+    first.currentGoal = goal;
+    first.activeWorkers.set('w1', {
+      workerId: 'w1',
+      worker,
+      phase: goal.phases[0],
+      goal,
+      cycle: 1,
+      done: true
+    });
+    await first.settleFinishedWorkers();
+    await first.persistState();
+
+    fs.writeFileSync(
+      path.join(runtimePath, expectedOutput),
+      '# Interviews\n\n## Status: IN PROGRESS\n\n## Findings\n\n(To be populated)'
+    );
+    const resumed = makeLoop();
+    await resumed.loadResumableState();
+
+    expect(resumed.currentGoal.status).to.equal('active');
+    expect(resumed.currentGoal.phases[0].status).to.equal('pending');
+    expect(resumed.currentGoal.phases[0].clearance).to.equal(null);
+    const progress = fs.readFileSync(path.join(runtimePath, 'drill', 'progress.jsonl'), 'utf8');
+    expect(progress).to.include('phase_clearance_invalidated');
+    expect(progress).to.include('receipt_changed');
+  });
+
+  it('revalidates cleared receipts immediately before merging the goal', async () => {
+    const runtimePath = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo-drill-pre-merge-'));
+    let mergeCalls = 0;
+    const drill = new DrillLoop({
+      logger,
+      orchestrator: { logsDir: runtimePath },
+      coordinator: {
+        async mergeGoal() {
+          mergeCalls += 1;
+          return { summary: 'should not merge', gaps: [] };
+        }
+      },
+      config: { logsDir: runtimePath, drill: { cycles: 2 } }
+    });
+    const expectedOutput = 'outputs/garcia_interview_sources.json';
+    const writer = {
+      drill: { goalNumber: 1, phaseNumber: 1 },
+      expectedOutput,
+      evidence: { streamed: 1 }
+    };
+    await executeTool('write_file', {
+      path: 'garcia_interview_sources.json',
+      content: JSON.stringify({
+        entries: [{ quote: 'A finished quote.', source: 'Interview' }],
+        status: 'complete'
+      })
+    }, { runtimePath, logger, loop: writer });
+    const goal = {
+      id: 'goal-1',
+      number: 1,
+      title: 'Garcia interviews',
+      status: 'active',
+      phases: [{
+        id: 'phase-1',
+        number: 1,
+        title: 'Interview sources',
+        mission: 'Write the interview sources.',
+        expectedOutput,
+        status: 'done',
+        summary: 'Finished.',
+        writeups: [expectedOutput],
+        clearance: { path: expectedOutput },
+        cyclesUsed: 1,
+        evidence: { streamed: 1 },
+        rejections: 0
+      }]
+    };
+    fs.writeFileSync(
+      path.join(runtimePath, expectedOutput),
+      JSON.stringify({ entries: [], status: 'in-progress' })
+    );
+
+    const result = await drill.mergeAndCompleteGoal(goal);
+
+    expect(result.completed).to.equal(false);
+    expect(mergeCalls).to.equal(0);
+    expect(goal.status).to.equal('active');
+    expect(goal.phases[0].status).to.equal('pending');
+    expect(goal.phases[0].clearance).to.equal(null);
+    expect(drill.goalHistory).to.have.length(0);
+    const progress = fs.readFileSync(path.join(runtimePath, 'drill', 'progress.jsonl'), 'utf8');
+    expect(progress).to.include('before_goal_merge');
+    expect(progress).to.include('receipt_changed');
   });
 });
