@@ -188,7 +188,7 @@ test('RUNNER: a committed prediction becomes an obligation; the crossing is an e
   });
 
   const runner = new SeedRunner({
-    stateDir, sourcePath, fromEnd: false, lobe,
+    stateDir, sourcePath, fromEnd: false, lobe, anatomy: TEST_ANATOMY,
     workspaceEveryN: 4, checkpointEveryN: 1000, lobeMinIntervalMs: 0,
   });
   runner.start();
@@ -290,7 +290,7 @@ test('RUNNER: unanswered pressing ends in a receipted release — no immortal pr
   });
 
   const runner = new SeedRunner({
-    stateDir, sourcePath, fromEnd: false, lobe,
+    stateDir, sourcePath, fromEnd: false, lobe, anatomy: TEST_ANATOMY,
     workspaceEveryN: 4, checkpointEveryN: 1000, lobeMinIntervalMs: 0,
   });
   runner.start();
@@ -390,7 +390,7 @@ test('the membrane protects reasons: actions outside an occasion are rejected; c
   });
 
   const runner = new SeedRunner({
-    stateDir, sourcePath, fromEnd: false, lobe,
+    stateDir, sourcePath, fromEnd: false, lobe, anatomy: TEST_ANATOMY,
     workspaceEveryN: 4, checkpointEveryN: 1000, lobeMinIntervalMs: 0,
   });
   runner.start();
