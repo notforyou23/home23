@@ -9,6 +9,7 @@
  */
 
 const { tools, executeTool, toChatTools } = require('./tools');
+const { writeBrainStream, bumpStreamEvidence } = require('./brain-stream');
 const { RESEARCH_PRODUCT_LOOP } = require('../../../lib/research-launch');
 const { AUTH_REVOKED_WATCH_MESSAGE, isFatalAuthError } = require('../../../lib/auth-error');
 
@@ -25,6 +26,10 @@ class LaunchLoop {
     // phaseNumber }. Candidates and sources journaled by this worker carry
     // this provenance.
     this.drill = options.drill || null;
+    // Evidence: how much of this phase's work has reached the record —
+    // thoughts, harvests, findings, writeups. Seeded by the drill from
+    // earlier cycles on the same phase; the phase gate reads it.
+    this.evidence = { streamed: Number(options.evidence?.streamed) || 0 };
     this.maxTurns = Number(options.maxTurns) > 0 ? Number(options.maxTurns) : DEFAULT_MAX_TURNS;
     this.messages = [];
     this.running = false;
@@ -136,6 +141,10 @@ class LaunchLoop {
       const toolCalls = assistantMsg.tool_calls;
       if (toolCalls && toolCalls.length > 0) {
         this.messages.push(assistantMsg);
+        // Reasoning alongside tool calls is work too — onto the tape.
+        if (typeof content === 'string' && content.trim()) {
+          await this.streamThought(content);
+        }
         for (const toolCall of toolCalls) {
           const name = toolCall.function?.name || 'unknown';
           let parsedArgs = {};
@@ -165,6 +174,9 @@ class LaunchLoop {
       }
 
       this.messages.push({ role: 'assistant', content });
+      // Nothing stays boxed in the LLM turn: the worker's thinking is part
+      // of the working stream and goes into the Brain as it happens.
+      await this.streamThought(content);
       this.logger?.info?.('Research Launch model turn', {
         turn: this.turns,
         chars: content.length
@@ -183,6 +195,28 @@ class LaunchLoop {
       finished: this.finished,
       summary: this.finishSummary
     });
+  }
+
+  async streamThought(content) {
+    const text = String(content || '').trim();
+    if (!text) return;
+    try {
+      const result = await writeBrainStream({
+        runtimePath: this.runtimePath,
+        memory: this.orchestrator?.memory || null,
+        logger: this.logger
+      }, {
+        kind: 'thought',
+        content: text.slice(0, 2000),
+        cycle: this.drill?.cycle ?? null,
+        workerId: this.drill?.workerId ?? null,
+        goalNumber: this.drill?.goalNumber ?? null,
+        phaseNumber: this.drill?.phaseNumber ?? null
+      });
+      if (result.streamed) bumpStreamEvidence(this);
+    } catch (err) {
+      this.logger?.warn?.('Thought stream write failed', { error: err.message });
+    }
   }
 
   async callLLM() {
@@ -224,6 +258,8 @@ class LaunchLoop {
       'You are Cosmo, an autonomous research mind. This is a research RUN, not a chat.',
       `Goal: ${domain}`,
       'You have files, shell, web search, skills, a coding backend, and Brain write tools.',
+      'Search is one tool, not the research: curl known URLs, hit archives and forums with run_command, use coding_run and scripts. Every successful fetch leaves a Sources receipt no matter which path it took.',
+      'Nothing you do stays boxed in a turn: your thinking, fetches, and findings stream to disk and into the Brain as they happen. Hidden work is waste.',
       'Do the work. Do not ask for permission. Do not write a longer plan.',
       'Do not tell yourself to review what is already here. Query the Brain only if you need a fact.',
       'Write artifacts into outputs/. Remember findings. Call finish when the deliverable is done.'
