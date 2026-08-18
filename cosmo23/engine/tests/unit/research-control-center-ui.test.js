@@ -38,6 +38,9 @@ describe('Expanded drill control center', () => {
     expect(app).to.include('phase.evidence?.streamed');
     expect(app).to.include('hidden-work close');
     expect(app).to.include('worker.turns');
+    expect(app).to.include('stopButton.hidden = !running');
+    expect(app).to.include('noteSubmit.disabled = !running');
+    expect(app).to.include("drill.mode === 'done'");
   });
 
   it('makes the Brain tape filterable, searchable, inspectable, and pageable', () => {
@@ -113,5 +116,10 @@ describe('Expanded drill control center', () => {
     expect(css).to.match(/@media \(max-width: 1220px\)[\s\S]*\.drill-operations-grid/);
     expect(css).to.match(/@media \(max-width: 900px\)[\s\S]*\.inspector-split/);
     expect(css).to.match(/@media \(max-width: 560px\)[\s\S]*\.drill-pulse-grid/);
+  });
+
+  it('has a self-contained favicon and no cosmetic favicon request', () => {
+    const html = read('index.html');
+    expect(html).to.include('<link rel="icon" href="data:image/svg+xml');
   });
 });

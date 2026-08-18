@@ -287,6 +287,14 @@ a { color: var(--info); }
 
 .danger-btn:hover { background: rgba(229, 83, 75, 0.12); }
 
+.primary-btn:disabled,
+.ghost-btn:disabled,
+.danger-btn:disabled,
+.note-form textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
 .toggle-chip {
   display: inline-flex;
   align-items: center;

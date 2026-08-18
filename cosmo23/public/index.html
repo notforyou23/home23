@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>COSMO — Drill Control Center</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23e8a33d' d='M8 3h16l-8 26z'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -205,11 +206,11 @@
               <div class="cc-panel-head">
                 <p class="cc-eyebrow">Operator</p>
                 <h3>Steer the next descent</h3>
-                <p>Notes are durable and picked up by the next worker cycle.</p>
+                <p id="operator-state-note">Notes are durable and picked up by the next worker cycle.</p>
               </div>
               <form id="note-form" class="note-form">
                 <textarea id="note-input" rows="3" placeholder="Focus a source, challenge an assumption, or redirect a phase"></textarea>
-                <button type="submit" class="primary-btn">Queue note</button>
+                <button type="submit" class="primary-btn" id="note-submit-btn">Queue note</button>
               </form>
               <div class="note-list" id="note-list"></div>
               <div class="operator-shortcuts" aria-label="Research workspace shortcuts">

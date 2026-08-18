@@ -553,6 +553,8 @@ class CosmoStandaloneApp {
     }
     if (runName) this.inspectorRunName = runName;
 
+    const firstBrainWindow = this.brainStream.length === 0;
+    const firstSourceWindow = this.sourceReceipts.length === 0;
     const fallbackFindings = (payload?.findings || []).map(finding => ({
       ...finding,
       kind: 'finding',
@@ -563,6 +565,8 @@ class CosmoStandaloneApp {
       (payload?.stream || []).length > 0 ? payload.stream : fallbackFindings
     );
     this.sourceReceipts = this.mergeTapeEntries(this.sourceReceipts, payload?.sources || []);
+    if (firstBrainWindow) this.brainStreamHasMore = (payload?.stream || []).length >= 40;
+    if (firstSourceWindow) this.sourcesHaveMore = (payload?.sources || []).length >= 20;
 
     const streamTimes = this.brainStream.map(entry => Number(entry.at)).filter(Number.isFinite);
     const sourceTimes = this.sourceReceipts.map(entry => Number(entry.at)).filter(Number.isFinite);
@@ -615,6 +619,15 @@ class CosmoStandaloneApp {
       drill.mode === 'drilling' && running ? 'drilling' : drill.mode,
       drill.fatalError ? drill.fatalError : null
     ].filter(Boolean).join(' · ');
+    const stopButton = document.getElementById('stop-run-btn');
+    const noteInput = document.getElementById('note-input');
+    const noteSubmit = document.getElementById('note-submit-btn');
+    stopButton.hidden = !running;
+    noteInput.disabled = !running;
+    noteSubmit.disabled = !running;
+    document.getElementById('operator-state-note').textContent = running
+      ? 'Notes are durable and picked up by the next worker cycle.'
+      : 'This run is not active. Continue the brain to steer another descent.';
 
     this.renderBudgets();
     this.renderPulse(drill);
@@ -652,7 +665,9 @@ class CosmoStandaloneApp {
     const cyclesEl = document.getElementById('budget-cycles');
     const cyclesFill = document.getElementById('budget-cycles-fill');
     if (budgets.cyclesTotal) {
-      cyclesEl.textContent = `${budgets.cyclesRemaining} of ${budgets.cyclesTotal} left`;
+      cyclesEl.textContent = drill.mode === 'done'
+        ? `${budgets.cyclesUsed} of ${budgets.cyclesTotal} used`
+        : `${budgets.cyclesRemaining} of ${budgets.cyclesTotal} left`;
       cyclesFill.style.width = `${Math.min(100, (budgets.cyclesUsed / budgets.cyclesTotal) * 100)}%`;
     } else {
       cyclesEl.textContent = `${budgets.cyclesUsed} used · no cycle limit`;
