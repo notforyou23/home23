@@ -130,6 +130,11 @@ const {
   buildArtifactFirstContext
 } = require('./lib/run-artifact-inventory');
 const {
+  listDrillFiles,
+  readDrillFile,
+  readJsonlTape
+} = require('./lib/drill-inspector');
+const {
   getModelCatalogPath,
   loadModelCatalogSync,
   saveModelCatalogSync,
@@ -2430,7 +2435,7 @@ async function listWriteups(runPath) {
       if (entry.isDirectory()) {
         if (entry.name === 'candidates') continue; // findings journal, not a writeup
         await walk(full, depth + 1);
-      } else if (entry.isFile() && entry.name !== 'sources.jsonl') {
+      } else if (entry.isFile() && entry.name !== 'sources.jsonl' && entry.name !== 'stream.jsonl') {
         try {
           const stat = await fsp.stat(full);
           writeups.push({
@@ -2458,10 +2463,11 @@ app.get('/api/drill/status', async (_req, res) => {
       drill = JSON.parse(await fsp.readFile(path.join(runPath, 'drill', 'state.json'), 'utf8'));
     } catch { /* run predates the drill or has not written state yet */ }
 
-    const [sources, notes, candidates, writeups] = await Promise.all([
+    const [sources, notes, candidates, stream, writeups] = await Promise.all([
       readJsonlTail(path.join(runPath, 'outputs', 'sources.jsonl'), 20),
       readJsonlTail(path.join(runPath, 'drill', 'notes.jsonl'), 10),
       readJsonlTail(path.join(runPath, 'outputs', 'candidates', 'findings.jsonl'), 12),
+      readJsonlTail(path.join(runPath, 'outputs', 'stream.jsonl'), 40),
       listWriteups(runPath)
     ]);
 
@@ -2476,9 +2482,78 @@ app.get('/api/drill/status', async (_req, res) => {
       sources: sources.reverse(),
       notes: notes.reverse(),
       findings: candidates.reverse(),
+      // The working stream — disk is the tape the Brain reads: goals,
+      // phases, thoughts, harvests, offshoots, findings as they happened.
+      stream: stream.reverse(),
       writeups
     });
   } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/drill/files', async (req, res) => {
+  try {
+    const { runPath, runName, running } = await resolveDrillRunPath();
+    if (!runPath) {
+      return res.status(404).json({ success: false, error: 'No run available.' });
+    }
+    const listing = await listDrillFiles(runPath, {
+      maxFiles: req.query.limit,
+      maxDepth: req.query.depth
+    });
+    res.json({ success: true, runName, running, ...listing });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/drill/file', async (req, res) => {
+  try {
+    const { runPath, runName, running } = await resolveDrillRunPath();
+    if (!runPath) {
+      return res.status(404).json({ success: false, error: 'No run available.' });
+    }
+    const file = await readDrillFile(runPath, req.query.path, {
+      maxBytes: req.query.maxBytes
+    });
+    res.json({ success: true, runName, running, ...file });
+  } catch (error) {
+    if (error.code === 'invalid_path') {
+      return res.status(400).json({ success: false, error: error.message });
+    }
+    if (error.code === 'ENOENT') {
+      return res.status(404).json({ success: false, error: 'File not found.' });
+    }
+    if (error.code === 'not_file') {
+      return res.status(400).json({ success: false, error: error.message });
+    }
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/drill/tape', async (req, res) => {
+  try {
+    const { runPath, runName, running } = await resolveDrillRunPath();
+    if (!runPath) {
+      return res.status(404).json({ success: false, error: 'No run available.' });
+    }
+    const channel = String(req.query.channel || 'stream');
+    const page = await readJsonlTape(runPath, channel, {
+      before: req.query.before,
+      limit: req.query.limit,
+      kind: req.query.kind,
+      tool: req.query.tool,
+      workerId: req.query.workerId,
+      goalNumber: req.query.goalNumber,
+      phaseNumber: req.query.phaseNumber,
+      search: req.query.search
+    });
+    res.json({ success: true, runName, running, channel, ...page });
+  } catch (error) {
+    if (error.code === 'invalid_channel') {
+      return res.status(400).json({ success: false, error: error.message });
+    }
     res.status(500).json({ success: false, error: error.message });
   }
 });

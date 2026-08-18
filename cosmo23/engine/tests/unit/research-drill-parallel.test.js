@@ -335,8 +335,9 @@ describe('Parallel phases: one worker per open phase', () => {
     await drill._promise;
 
     const memory = drill._orchestrator.memory;
-    expect(memory.added).to.have.length(3);
-    const provenance = memory.added.map((node) => node.metadata).sort((a, b) => a.phaseNumber - b.phaseNumber);
+    const findingNodes = memory.added.filter((node) => node.tag === 'drill_finding');
+    expect(findingNodes).to.have.length(3);
+    const provenance = findingNodes.map((node) => node.metadata).sort((a, b) => a.phaseNumber - b.phaseNumber);
     for (const meta of provenance) {
       expect(meta.source).to.equal('drill');
       expect(meta.workerId).to.match(/^w\d+$/);

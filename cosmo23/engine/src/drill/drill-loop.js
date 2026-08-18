@@ -27,6 +27,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const { LaunchLoop } = require('../agent/loop');
+const { writeBrainStream } = require('../agent/brain-stream');
 const { DrillCoordinator } = require('./coordinator');
 const { RESEARCH_PRODUCT_LOOP } = require('../../../lib/research-launch');
 const { AUTH_REVOKED_WATCH_MESSAGE, isFatalAuthError } = require('../../../lib/auth-error');
@@ -253,6 +254,8 @@ class DrillLoop {
           status: phase.status,
           cyclesUsed: phase.cyclesUsed,
           summary: phase.summary || null,
+          evidence: { streamed: phase.evidence?.streamed || 0 },
+          rejections: phase.rejections || 0,
           workerId: this.workerOnPhase(phase)?.workerId || null
         }))
       } : null,
@@ -318,6 +321,21 @@ class DrillLoop {
     }
   }
 
+  /**
+   * The drill's own life — goals, phase starts/closes, offshoots — is part
+   * of the working stream: onto the tape (outputs/stream.jsonl) and into
+   * the Brain as it happens, same as worker thoughts and harvests.
+   */
+  async streamEvent(kind, content, provenance = {}) {
+    const result = await writeBrainStream({
+      runtimePath: this.runtimePath,
+      memory: this.orchestrator?.memory || null,
+      logger: this.logger
+    }, { kind, content, ...provenance });
+    if (result.brain === 'live') this.brainWrites += 1;
+    return result;
+  }
+
   // ── The drill run: a rolling pool of bits ──────────────────────────────
 
   async run() {
@@ -358,6 +376,9 @@ class DrillLoop {
           goalId: goal.id, number: goal.number, title: goal.title,
           origin: goal.origin, phases: goal.phases.map((phase) => phase.title)
         });
+        await this.streamEvent('goal',
+          `Goal ${goal.number}: ${goal.title}${goal.why ? ` — ${goal.why}` : ''} (${goal.phases.length} phases: ${goal.phases.map((phase) => phase.title).join('; ')})`,
+          { goalNumber: goal.number });
         this.emitEvent('drill_goal_created', {
           number: goal.number, title: goal.title, phases: goal.phases.length,
           message: `Goal ${goal.number}: ${goal.title} (${goal.phases.length} phases)`
@@ -429,7 +450,9 @@ class DrillLoop {
             mission: phase.mission || phase.title,
             status: phase.status === 'done' ? 'done' : 'pending',
             summary: phase.summary || null,
-            cyclesUsed: phase.cyclesUsed || 0
+            cyclesUsed: phase.cyclesUsed || 0,
+            evidence: { streamed: Number(phase.evidence?.streamed) || 0 },
+            rejections: Number(phase.rejections) || 0
           })),
           createdAt: this.now()
         };
@@ -476,7 +499,9 @@ class DrillLoop {
         mission: phase.mission || phase.title,
         status: 'pending',
         summary: null,
-        cyclesUsed: 0
+        cyclesUsed: 0,
+        evidence: { streamed: 0 },
+        rejections: 0
       })),
       createdAt: this.now()
     };
@@ -513,6 +538,15 @@ class DrillLoop {
       gaps: merge.gaps,
       degraded: merge.degraded === true
     });
+    await this.streamEvent('goal',
+      `Goal ${goal.number} complete: ${goal.title} — ${String(merge.summary).slice(0, 400)}`,
+      { goalNumber: goal.number });
+    // The merge's open gaps are offshoots — branches the next goal can take.
+    for (const gap of merge.gaps || []) {
+      await this.streamEvent('offshoot',
+        `Offshoot from goal ${goal.number}: ${String(gap).slice(0, 300)}`,
+        { goalNumber: goal.number });
+    }
     await this.journal('goal_completed', {
       goalId: goal.id, number: goal.number, title: goal.title,
       cyclesUsed: goal.phases.reduce((sum, phase) => sum + phase.cyclesUsed, 0)
@@ -567,6 +601,9 @@ class DrillLoop {
       remainingMs: this.remainingMs(),
       message: `Cycle ${cycle} (${workerId}): goal ${goal.number} phase ${phase.number} — ${phase.title}${siblings.length ? ` (parallel with ${siblings.length} other phase${siblings.length > 1 ? 's' : ''})` : ''}`
     });
+    await this.streamEvent('phase',
+      `Phase ${phase.number} of goal ${goal.number} started (cycle ${cycle}, ${workerId}): ${phase.title}`,
+      { cycle, workerId, goalNumber: goal.number, phaseNumber: phase.number });
 
     const worker = this.createWorker({
       orchestrator: this.orchestrator,
@@ -575,7 +612,10 @@ class DrillLoop {
       client: this.client,
       maxTurns: this.workerTurnsPerCycle,
       plan: { shortPlan: this.buildPhaseMission(goal, phase, notes, siblings) },
-      drill: { cycle, workerId, goalId: goal.id, goalNumber: goal.number, phaseNumber: phase.number }
+      drill: { cycle, workerId, goalId: goal.id, goalNumber: goal.number, phaseNumber: phase.number },
+      // Evidence from earlier cycles on this phase: a phase that already
+      // put work on the record may close without repeating it.
+      evidence: { streamed: phase.evidence?.streamed || 0 }
     });
 
     const entry = {
@@ -612,7 +652,17 @@ class DrillLoop {
 
       const harvested = await this.harvestCandidates();
 
-      if (worker.finished) {
+      // What this descent left on the record. The worker was seeded with
+      // the phase's prior evidence, so a plain copy-forward is correct; the
+      // max() covers scripted workers that ignore the seed.
+      phase.evidence = phase.evidence || { streamed: 0 };
+      phase.evidence.streamed = Math.max(
+        Number(phase.evidence.streamed) || 0,
+        Number(worker.evidence?.streamed) || 0
+      );
+      const phaseOnRecord = phase.evidence.streamed > 0;
+
+      if (worker.finished && phaseOnRecord) {
         // The worker finished ITS hole: the phase is done. The drill and
         // its sibling bits keep going.
         phase.status = 'done';
@@ -624,6 +674,25 @@ class DrillLoop {
           phaseNumber: phase.number,
           message: `${workerId} done — phase ${phase.number} of goal ${goal.number}: ${String(worker.finishSummary || '').slice(0, 140)}`
         });
+        await this.streamEvent('phase',
+          `Phase ${phase.number} of goal ${goal.number} done (cycle ${cycle}, ${workerId}): ${String(worker.finishSummary || 'done').slice(0, 300)}`,
+          { cycle, workerId, goalNumber: goal.number, phaseNumber: phase.number });
+      } else if (worker.finished) {
+        // Hidden work is a failed close: the worker claims done but its
+        // whole descent left nothing on the tape — no receipt, no stream
+        // entry, no journaled finding. The phase stays open.
+        phase.status = 'pending';
+        phase.rejections = (Number(phase.rejections) || 0) + 1;
+        this.emitEvent('drill_phase_rejected', {
+          cycle,
+          workerId,
+          goalNumber: goal.number,
+          phaseNumber: phase.number,
+          message: `${workerId} finished with nothing on the record — phase ${phase.number} of goal ${goal.number} stays open`
+        });
+        await this.streamEvent('phase',
+          `Phase ${phase.number} of goal ${goal.number} NOT accepted (cycle ${cycle}, ${workerId}): finished with nothing on the record`,
+          { cycle, workerId, goalNumber: goal.number, phaseNumber: phase.number });
       } else {
         phase.status = 'pending';
         this.emitEvent('drill_phase_continues', {
@@ -641,8 +710,11 @@ class DrillLoop {
         goalNumber: goal.number,
         phaseNumber: phase.number,
         workerFinished: worker.finished === true,
+        phaseDone: phase.status === 'done',
+        rejectedReason: worker.finished && !phaseOnRecord ? 'hidden_work' : null,
         workerTurns: worker.turns,
         workerSummary: worker.finishSummary || null,
+        streamedEvidence: phase.evidence.streamed,
         candidatesHarvested: harvested
       });
     }
@@ -666,13 +738,16 @@ class DrillLoop {
     if (phase.cyclesUsed > 1) {
       constraints.push('This phase was started in an earlier cycle. Continue it; do not start over.');
     }
+    if ((Number(phase.rejections) || 0) > 0) {
+      constraints.push('An earlier worker on this phase claimed done with nothing on the record. Everything you do must land in files: fetches leave receipts, thoughts and harvests stream, findings go through remember, writeups through write_file.');
+    }
     for (const note of notes) {
       constraints.push(`Operator note: ${note.text}`);
     }
     return {
       goal: phase.mission,
       constraints,
-      deliverable: 'Journal findings with remember and leave concrete artifacts in outputs/. Call finish when THIS phase\'s deliverable is done — the drill continues after you.',
+      deliverable: 'Research however works — search, curl known URLs, archives, forums, coding_run, scripts — every fetch leaves a receipt and your work streams to the Brain as it happens. Journal findings with remember and leave concrete artifacts in outputs/. Call finish when THIS phase\'s deliverable is done — the drill continues after you. A phase with nothing on the record cannot close.',
       executionKind: 'tool_loop',
       claimedBy: 'launch_loop'
     };
@@ -714,10 +789,12 @@ class DrillLoop {
 
   /**
    * On every settle, journaled candidates are written into the run's Brain.
-   * Parallel bits interleave in the journal, so each row's OWN provenance
-   * (cycle / goal / phase / worker) is what reaches the Brain — never the
-   * provenance of whichever worker happened to settle last. Degraded-honest:
-   * a failed embed/write leaves the candidate journaled on disk.
+   * Most findings reach the Brain LIVE through the stream at remember()
+   * time; this settle pass is the degraded-honest catch-up for rows the
+   * live write missed (marked brain:'journaled'). Parallel bits interleave
+   * in the journal, so each row's OWN provenance (cycle / goal / phase /
+   * worker) is what reaches the Brain — never the provenance of whichever
+   * worker happened to settle last.
    */
   async harvestCandidates() {
     const memory = this.orchestrator?.memory;
@@ -738,6 +815,7 @@ class DrillLoop {
       try { row = JSON.parse(line); } catch { continue; }
       if (!row?.content) continue;
       harvested += 1;
+      if (row.brain === 'live') continue; // already in the Brain via the stream
       if (memory && typeof memory.addNode === 'function') {
         try {
           await memory.addNode(row.content, 'drill_finding', null, {

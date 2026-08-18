@@ -315,7 +315,7 @@ describe('The drill: goal → phases → next goal', () => {
     expect(progress.filter((entry) => entry.type === 'note_consumed')).to.have.length(1);
   });
 
-  it('candidates journaled by the bit are written into the Brain at cycle end', async function () {
+  it('journaled candidates reach the Brain at cycle end — and the drill\'s own life streams live', async function () {
     this.timeout(10000);
     const createWorker = scriptedWorkerFactory(runtimePath);
     const drill = makeDrill({ runtimePath, createWorker, cycles: 3 });
@@ -324,13 +324,23 @@ describe('The drill: goal → phases → next goal', () => {
     await drill._promise;
 
     const memory = drill._orchestrator.memory;
-    expect(memory.added.length).to.equal(3);
-    for (const node of memory.added) {
-      expect(node.tag).to.equal('drill_finding');
+    // The bits journaled findings without a live Brain attached to their
+    // context — the drill promoted them at settle, degraded-honest.
+    const findings = memory.added.filter((node) => node.tag === 'drill_finding');
+    expect(findings.length).to.equal(3);
+    for (const node of findings) {
       expect(node.metadata.source).to.equal('drill');
       expect(node.metadata.cycle).to.be.a('number');
     }
-    expect(drill.brainWrites).to.equal(3);
+    // The working stream wrote the Brain as it happened: goals and phase
+    // transitions are in there too, not only remember() output.
+    expect(memory.added.some((node) => node.tag === 'drill_goal')).to.equal(true);
+    expect(memory.added.some((node) => node.tag === 'drill_phase')).to.equal(true);
+    expect(drill.brainWrites).to.be.at.least(3);
+    // Disk is the tape: the same stream is on disk for the desk.
+    const stream = readJsonl(path.join(runtimePath, 'outputs', 'stream.jsonl'));
+    expect(stream.some((entry) => entry.kind === 'goal')).to.equal(true);
+    expect(stream.some((entry) => entry.kind === 'phase')).to.equal(true);
   });
 
   it('401 / revoked OAuth is fatal: one error stops the drill and tells the control center', async function () {

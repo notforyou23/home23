@@ -302,12 +302,13 @@ describe('Research Launch loop and harness', () => {
     expect(deduped[0].description).to.equal('first');
   });
 
-  it('runs a model turn that calls tools and can finish', async () => {
+  it('runs a model turn that calls tools and can finish once work is on the record', async () => {
+    const runtimePath = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo-loop-finish-'));
     const calls = [];
     const loop = new LaunchLoop({
       logger,
       plan: composeShortLaunchPlan({ domain: 'Test topic', context: 'Write a note.' }),
-      config: { models: { primary: 'test' } },
+      config: { models: { primary: 'test' }, logsDir: runtimePath },
       client: {
         createCompletion: async ({ tools: modelTools, messages }) => {
           calls.push({ toolCount: modelTools.length, messages });
@@ -316,10 +317,16 @@ describe('Research Launch loop and harness', () => {
               choices: [{
                 message: {
                   role: 'assistant',
-                  tool_calls: [{
-                    id: 'call_1',
-                    function: { name: 'finish', arguments: JSON.stringify({ summary: 'Wrote outputs/note.md' }) }
-                  }]
+                  tool_calls: [
+                    {
+                      id: 'call_1',
+                      function: { name: 'remember', arguments: JSON.stringify({ content: 'The note-worthy fact.' }) }
+                    },
+                    {
+                      id: 'call_2',
+                      function: { name: 'finish', arguments: JSON.stringify({ summary: 'Wrote outputs/note.md' }) }
+                    }
+                  ]
                 }
               }]
             };
@@ -339,32 +346,114 @@ describe('Research Launch loop and harness', () => {
     expect(calls[0].toolCount).to.be.greaterThan(5);
   });
 
-  it('journals remember() as a candidate — the DRILL writes the Brain at cycle end, not the worker mid-turn', async () => {
+  it('finish is refused while nothing has reached the record — hidden work cannot close a phase', async () => {
+    const runtimePath = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo-loop-hidden-'));
+    let refusal = null;
+    const loop = new LaunchLoop({
+      logger,
+      plan: composeShortLaunchPlan({ domain: 'Test topic', context: 'Write a note.' }),
+      config: { models: { primary: 'test' }, logsDir: runtimePath },
+      maxTurns: 4,
+      client: {
+        createCompletion: async ({ messages }) => {
+          const lastTool = [...messages].reverse().find((msg) => msg.role === 'tool');
+          if (!lastTool) {
+            // First move: try to finish with nothing on the tape.
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  tool_calls: [{
+                    id: 'call_1',
+                    function: { name: 'finish', arguments: JSON.stringify({ summary: 'done (nothing was)' }) }
+                  }]
+                }
+              }]
+            };
+          }
+          if (String(lastTool.content).includes('"refused"')) {
+            refusal = String(lastTool.content);
+            // Put real work on the record, then finish.
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  tool_calls: [
+                    {
+                      id: 'call_2',
+                      function: { name: 'remember', arguments: JSON.stringify({ content: 'An actual finding.' }) }
+                    },
+                    {
+                      id: 'call_3',
+                      function: { name: 'finish', arguments: JSON.stringify({ summary: 'Wrote it up' }) }
+                    }
+                  ]
+                }
+              }]
+            };
+          }
+          return { choices: [{ message: { role: 'assistant', content: 'done' } }] };
+        }
+      }
+    });
+
+    loop.start();
+    await loop._promise;
+
+    expect(refusal).to.be.a('string');
+    const parsed = JSON.parse(refusal);
+    expect(parsed.finish).to.equal('refused');
+    expect(parsed.reason).to.equal('hidden_work');
+    expect(parsed.instruction).to.include('remember');
+    expect(loop.finished).to.equal(true);
+    expect(loop.finishSummary).to.equal('Wrote it up');
+  });
+
+  it('remember() streams the finding into the Brain AS IT HAPPENS and journals the candidate', async () => {
     const runtimePath = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo-launch-remember-'));
-    let added = 0;
+    const added = [];
     const result = await executeTool('remember', { content: 'Garcia once played a 3-hour set.' }, {
       runtimePath,
       orchestrator: {
         memory: {
-          addNode: async () => {
-            added += 1;
-            return { id: 'should-not-write-mid-turn' };
+          addNode: async (concept, tag, embedding, metadata) => {
+            added.push({ concept, tag, metadata });
+            return { id: `node_${added.length}` };
           }
         }
       },
       logger,
       loop: { drill: { cycle: 2, goalNumber: 1, phaseNumber: 1 } }
     });
-    expect(result).to.include('Journaled candidate finding');
-    expect(added).to.equal(0);
+    // The Brain got the finding mid-turn — remember is not a gate.
+    expect(result).to.include('wrote it into the Brain');
+    expect(added).to.have.length(1);
+    expect(added[0].tag).to.equal('drill_finding');
+    expect(added[0].metadata.cycle).to.equal(2);
     const journal = fs.readFileSync(path.join(runtimePath, 'outputs', 'candidates', 'findings.jsonl'), 'utf8');
     const row = JSON.parse(journal.trim());
     expect(row.type).to.equal('candidate_finding');
-    expect(row.promoted).to.equal(false);
+    expect(row.brain).to.equal('live');
+    expect(row.promoted).to.equal(true);
     expect(row.content).to.include('Garcia');
     expect(row.cycle).to.equal(2);
     expect(row.goalNumber).to.equal(1);
     expect(row.phaseNumber).to.equal(1);
+  });
+
+  it('remember() without a live Brain stays degraded-honest: journaled, promoted at cycle end', async () => {
+    const runtimePath = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo-launch-remember-degraded-'));
+    const result = await executeTool('remember', { content: 'Garcia hated the word "Deadhead".' }, {
+      runtimePath,
+      logger,
+      loop: { drill: { cycle: 3, goalNumber: 1, phaseNumber: 2 } }
+    });
+    expect(result).to.include('cycle end');
+    const row = JSON.parse(
+      fs.readFileSync(path.join(runtimePath, 'outputs', 'candidates', 'findings.jsonl'), 'utf8').trim()
+    );
+    expect(row.brain).to.equal('journaled');
+    expect(row.promoted).to.equal(false);
   });
 
   it('classifies leftover tool_loop plans as research, not legacy specialists', () => {
@@ -469,11 +558,12 @@ describe('Fatal Anthropic OAuth / 401', () => {
   });
 
   it('does not treat a research mention of 401 as a dead token', async () => {
+    const runtimePath = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo-loop-401-mention-'));
     let calls = 0;
     const loop = new LaunchLoop({
       logger,
       plan: composeShortLaunchPlan({ domain: 'Test topic', context: 'Write a note.' }),
-      config: { models: { primary: 'test' } },
+      config: { models: { primary: 'test' }, logsDir: runtimePath },
       maxTurns: 3,
       client: {
         createCompletion: async () => {

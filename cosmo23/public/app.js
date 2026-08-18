@@ -88,6 +88,13 @@ function formatMs(ms) {
   return `${s}s`;
 }
 
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(value < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
 class CosmoStandaloneApp {
   constructor() {
     this.viewTabs = [...document.querySelectorAll('.cc-nav-btn[data-view]')];
@@ -124,6 +131,31 @@ class CosmoStandaloneApp {
     this.drillTickTimer = null;
     this.consoleCursor = 0;
     this.consoleTimer = null;
+
+    // Client-side windows over the existing disk tapes. The workspace never
+    // creates a second record; it reads outputs/stream.jsonl,
+    // outputs/sources.jsonl, outputs/, and drill/.
+    this.inspectorTab = 'brain';
+    this.inspectorRunName = null;
+    this.brainStream = [];
+    this.brainStreamBefore = null;
+    this.brainStreamHasMore = true;
+    this.brainKindFilter = 'all';
+    this.brainSearch = '';
+    this.selectedBrainEntryKey = null;
+    this.sourceReceipts = [];
+    this.sourcesBefore = null;
+    this.sourcesHaveMore = true;
+    this.sourceToolFilter = 'all';
+    this.sourceSearch = '';
+    this.drillFiles = [];
+    this.drillFileSummary = null;
+    this.filesLoadedForRun = null;
+    this.filesLoading = false;
+    this.fileKindFilter = 'all';
+    this.fileSearch = '';
+    this.selectedFilePath = null;
+    this.liveEvents = [];
   }
 
   async init() {
@@ -189,19 +221,79 @@ class CosmoStandaloneApp {
     onClick('refresh-catalog-btn', () => this.loadModelCatalog());
     onClick('save-catalog-btn', () => this.saveModelCatalog());
     onClick('open-query-btn', () => this.switchView('query'));
+    onClick('brain-query-workspace-btn', () => this.switchView('query'));
     onClick('drill-query-btn', () => this.switchView('query'));
     onClick('drill-new-btn', () => {
       this.showIdleOverride = true;
       this.renderDrill();
     });
     onClick('writeup-viewer-close', () => {
-      document.getElementById('writeup-viewer').hidden = true;
+      this.clearFileViewer();
     });
 
     document.getElementById('writeup-list').addEventListener('click', event => {
-      const row = event.target.closest('[data-writeup]');
-      if (row) this.openWriteup(row.dataset.writeup);
+      const row = event.target.closest('[data-drill-file], [data-writeup]');
+      if (!row) return;
+      this.openRunFile(row.dataset.drillFile || `outputs/${row.dataset.writeup}`);
     });
+
+    document.getElementById('finding-list').addEventListener('click', event => {
+      const row = event.target.closest('[data-brain-entry]');
+      if (row) this.selectBrainEntry(row.dataset.brainEntry);
+    });
+
+    document.getElementById('source-list').addEventListener('click', event => {
+      const file = event.target.closest('[data-drill-file]');
+      if (file) this.openRunFile(file.dataset.drillFile);
+    });
+
+    document.querySelectorAll('[data-inspector-tab]').forEach(button => {
+      button.addEventListener('click', () => this.openInspector(button.dataset.inspectorTab));
+    });
+    document.querySelectorAll('[data-inspector-target]').forEach(button => {
+      button.addEventListener('click', () => {
+        const target = button.dataset.inspectorTarget;
+        if (target === 'activity') {
+          document.getElementById('drill-activity-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          return;
+        }
+        this.openInspector(target, { scroll: true });
+      });
+    });
+
+    document.getElementById('brain-kind-filters').addEventListener('click', event => {
+      const button = event.target.closest('[data-stream-kind]');
+      if (!button) return;
+      this.brainKindFilter = button.dataset.streamKind;
+      this.renderBrainStream();
+    });
+    document.getElementById('brain-stream-search').addEventListener('input', event => {
+      this.brainSearch = event.target.value || '';
+      this.renderBrainStream();
+    });
+    onClick('brain-load-more', () => this.loadEarlierBrain());
+
+    document.getElementById('source-tool-filters').addEventListener('click', event => {
+      const button = event.target.closest('[data-source-tool]');
+      if (!button) return;
+      this.sourceToolFilter = button.dataset.sourceTool;
+      this.renderSources();
+    });
+    document.getElementById('source-search').addEventListener('input', event => {
+      this.sourceSearch = event.target.value || '';
+      this.renderSources();
+    });
+    onClick('sources-load-more', () => this.loadEarlierSources());
+
+    document.getElementById('file-search').addEventListener('input', event => {
+      this.fileSearch = event.target.value || '';
+      this.renderFiles();
+    });
+    document.getElementById('file-kind-filter').addEventListener('change', event => {
+      this.fileKindFilter = event.target.value || 'all';
+      this.renderFiles();
+    });
+    onClick('file-refresh-btn', () => this.loadDrillFiles({ force: true }));
 
     document.querySelectorAll('.provider-section').forEach(section => {
       const toggle = section.querySelector('.toggle-chip input[type="checkbox"]');
@@ -400,6 +492,104 @@ class CosmoStandaloneApp {
     const consoleFeed = document.getElementById('console-feed');
     if (consoleFeed) consoleFeed.innerHTML = '';
     this.consoleCursor = 0;
+    this.inspectorRunName = null;
+    this.brainStream = [];
+    this.brainStreamBefore = null;
+    this.brainStreamHasMore = true;
+    this.selectedBrainEntryKey = null;
+    this.sourceReceipts = [];
+    this.sourcesBefore = null;
+    this.sourcesHaveMore = true;
+    this.drillFiles = [];
+    this.drillFileSummary = null;
+    this.filesLoadedForRun = null;
+    this.selectedFilePath = null;
+    this.liveEvents = [];
+  }
+
+  openInspector(tab, { scroll = false } = {}) {
+    if (!['brain', 'files', 'sources'].includes(tab)) return;
+    this.inspectorTab = tab;
+    document.querySelectorAll('[data-inspector-tab]').forEach(button => {
+      const active = button.dataset.inspectorTab === tab;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    document.querySelectorAll('[data-inspector-pane]').forEach(pane => {
+      const active = pane.dataset.inspectorPane === tab;
+      pane.classList.toggle('active', active);
+      pane.hidden = !active;
+    });
+    if (tab === 'files') this.loadDrillFiles();
+    if (scroll) {
+      document.getElementById('drill-inspector')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+
+  streamEntryKey(entry) {
+    return [
+      Number(entry?.at) || 0,
+      entry?.kind || entry?.tool || 'entry',
+      entry?.workerId || '-',
+      String(entry?.content || entry?.query || '').slice(0, 120)
+    ].join('|');
+  }
+
+  mergeTapeEntries(current, incoming, max = 700) {
+    const merged = new Map();
+    for (const entry of [...current, ...(incoming || [])]) {
+      if (!entry || typeof entry !== 'object') continue;
+      merged.set(this.streamEntryKey(entry), entry);
+    }
+    return [...merged.values()]
+      .sort((left, right) => (Number(right.at) || 0) - (Number(left.at) || 0))
+      .slice(0, max);
+  }
+
+  absorbDrillPayload(payload) {
+    const runName = payload?.runName || null;
+    if (runName && this.inspectorRunName && this.inspectorRunName !== runName) {
+      this.resetDrillFeeds();
+    }
+    if (runName) this.inspectorRunName = runName;
+
+    const firstBrainWindow = this.brainStream.length === 0;
+    const firstSourceWindow = this.sourceReceipts.length === 0;
+    const fallbackFindings = (payload?.findings || []).map(finding => ({
+      ...finding,
+      kind: 'finding',
+      brain: finding.brain || (finding.promoted ? 'live' : 'journaled')
+    }));
+    this.brainStream = this.mergeTapeEntries(
+      this.brainStream,
+      (payload?.stream || []).length > 0 ? payload.stream : fallbackFindings
+    );
+    this.sourceReceipts = this.mergeTapeEntries(this.sourceReceipts, payload?.sources || []);
+    if (firstBrainWindow) this.brainStreamHasMore = (payload?.stream || []).length >= 40;
+    if (firstSourceWindow) this.sourcesHaveMore = (payload?.sources || []).length >= 20;
+
+    const streamTimes = this.brainStream.map(entry => Number(entry.at)).filter(Number.isFinite);
+    const sourceTimes = this.sourceReceipts.map(entry => Number(entry.at)).filter(Number.isFinite);
+    if (streamTimes.length > 0) this.brainStreamBefore = Math.min(...streamTimes);
+    if (sourceTimes.length > 0) this.sourcesBefore = Math.min(...sourceTimes);
+  }
+
+  renderPulse(drill) {
+    const workers = Array.isArray(drill?.activeWorkers) ? drill.activeWorkers : [];
+    document.getElementById('pulse-workers').textContent = String(workers.length);
+    document.getElementById('pulse-workers-note').textContent = workers.length > 0
+      ? `${workers.length} of ${drill.maxConcurrent || workers.length} slots active`
+      : 'No bits in flight';
+    document.getElementById('pulse-tape').textContent = String(this.brainStream.length);
+    document.getElementById('pulse-sources').textContent = String(this.sourceReceipts.length);
+    document.getElementById('pulse-brain').textContent = String(drill?.counts?.brainWrites ?? 0);
+    document.getElementById('brain-writes-count').textContent =
+      `${drill?.counts?.brainWrites ?? 0} live writes`;
+    document.getElementById('pulse-files').textContent =
+      this.drillFileSummary ? String(this.drillFileSummary.totalFiles) : '—';
+    document.getElementById('pulse-files-note').textContent = this.drillFileSummary
+      ? `${formatBytes(this.drillFileSummary.totalBytes)} on disk`
+      : 'Inspect the run directory';
   }
 
   renderDrill() {
@@ -422,16 +612,30 @@ class CosmoStandaloneApp {
 
     if (!hasBoard) return;
 
+    this.absorbDrillPayload(payload);
     document.getElementById('drill-question-text').textContent = drill.question || payload.topic || '—';
     document.getElementById('drill-run-meta').textContent = [
       payload.runName ? `Run ${payload.runName}` : null,
       drill.mode === 'drilling' && running ? 'drilling' : drill.mode,
       drill.fatalError ? drill.fatalError : null
     ].filter(Boolean).join(' · ');
+    const stopButton = document.getElementById('stop-run-btn');
+    const noteInput = document.getElementById('note-input');
+    const noteSubmit = document.getElementById('note-submit-btn');
+    stopButton.hidden = !running;
+    noteInput.disabled = !running;
+    noteSubmit.disabled = !running;
+    document.getElementById('operator-state-note').textContent = running
+      ? 'Notes are durable and picked up by the next worker cycle.'
+      : 'This run is not active. Continue the brain to steer another descent.';
 
     this.renderBudgets();
+    this.renderPulse(drill);
     this.renderGoal(drill);
     this.renderSteerAndFeeds(payload);
+    if (this.filesLoadedForRun !== payload.runName && !this.filesLoading) {
+      this.loadDrillFiles();
+    }
 
     if (!running) {
       const title = document.getElementById('drill-done-title');
@@ -461,7 +665,9 @@ class CosmoStandaloneApp {
     const cyclesEl = document.getElementById('budget-cycles');
     const cyclesFill = document.getElementById('budget-cycles-fill');
     if (budgets.cyclesTotal) {
-      cyclesEl.textContent = `${budgets.cyclesRemaining} of ${budgets.cyclesTotal} left`;
+      cyclesEl.textContent = drill.mode === 'done'
+        ? `${budgets.cyclesUsed} of ${budgets.cyclesTotal} used`
+        : `${budgets.cyclesRemaining} of ${budgets.cyclesTotal} left`;
       cyclesFill.style.width = `${Math.min(100, (budgets.cyclesUsed / budgets.cyclesTotal) * 100)}%`;
     } else {
       cyclesEl.textContent = `${budgets.cyclesUsed} used · no cycle limit`;
@@ -494,6 +700,9 @@ class CosmoStandaloneApp {
     for (const phase of goal?.phases || []) {
       const item = document.createElement('li');
       item.className = `phase-item phase-${phase.status}`;
+      const evidence = Number(phase.evidence?.streamed) || 0;
+      const rejections = Number(phase.rejections) || 0;
+      const evidenceWidth = Math.min(100, Math.log2(evidence + 1) * 22);
       const workerChip = phase.workerId
         ? `<span class="phase-worker-chip">${escapeHtml(phase.workerId)}</span>`
         : '';
@@ -506,8 +715,14 @@ class CosmoStandaloneApp {
             : phase.status === 'active'
               ? `<small>${phase.workerId ? `worker ${escapeHtml(phase.workerId)} is drilling this phase now` : 'drilling this phase now'}</small>`
               : ''}
+          <span class="phase-metrics">
+            <span>${escapeHtml(String(phase.cyclesUsed || 0))} descent${Number(phase.cyclesUsed) === 1 ? '' : 's'}</span>
+            <span>${escapeHtml(String(evidence))} tape entr${evidence === 1 ? 'y' : 'ies'}</span>
+            ${rejections > 0 ? `<span class="phase-rejection">${escapeHtml(String(rejections))} hidden-work close${rejections === 1 ? '' : 's'} rejected</span>` : ''}
+          </span>
         </div>
         <span class="phase-status">${escapeHtml(phase.status)}</span>
+        <span class="phase-evidence-track" aria-hidden="true"><span class="phase-evidence-fill" style="width:${evidenceWidth}%"></span></span>
       `;
       phaseList.appendChild(item);
     }
@@ -547,6 +762,7 @@ class CosmoStandaloneApp {
       <div class="worker-chip">
         <span class="worker-chip-id">${escapeHtml(worker.workerId)}</span>
         <span class="worker-chip-detail">cycle ${escapeHtml(String(worker.cycle))} · goal ${escapeHtml(String(worker.goalNumber))} phase ${escapeHtml(String(worker.phaseNumber))} — ${escapeHtml(String(worker.phaseTitle).slice(0, 48))}</span>
+        <span class="worker-chip-turns">${escapeHtml(String(worker.turns || 0))} turns</span>
       </div>`).join('');
   }
 
@@ -561,50 +777,328 @@ class CosmoStandaloneApp {
             <small>${escapeHtml(new Date(note.at).toLocaleTimeString())}</small>
           </div>`).join('');
 
-    const sources = payload.sources || [];
-    document.getElementById('sources-count').textContent = String(sources.length);
-    document.getElementById('source-list').innerHTML = sources.length === 0
-      ? '<p class="cc-empty">No web searches yet.</p>'
-      : sources.map(source => `
-          <div class="source-item">
-            <strong>${escapeHtml(source.query)}</strong>
-            ${(source.urls || []).slice(0, 3).map(url =>
-              `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url.replace(/^https?:\/\//, '').slice(0, 60))}</a>`
+    this.renderLiveActivity();
+    this.renderBrainStream();
+    this.renderSources();
+    this.renderFiles();
+  }
+
+  renderLiveActivity() {
+    const feed = document.getElementById('drill-feed');
+    if (!feed) return;
+    const socketEntries = this.liveEvents.map(event => ({
+      at: Number(event.timestamp) || Number(event.at) || Date.now(),
+      kind: String(event.type || 'event').replace(/^drill_/, ''),
+      content: this.formatEvent(event),
+      workerId: event.workerId || null,
+      cycle: event.cycle ?? null,
+      source: 'socket'
+    }));
+    const entries = this.mergeTapeEntries(this.brainStream.slice(0, 35), socketEntries, 45)
+      .filter(entry => entry.content);
+    feed.innerHTML = entries.length === 0
+      ? '<p class="cc-empty">Waiting for the first durable event…</p>'
+      : entries.map(entry => {
+        const at = Number(entry.at);
+        const time = Number.isFinite(at) && at > 0 ? new Date(at).toLocaleTimeString() : '—';
+        const kind = String(entry.kind || 'event').replace(/^drill_/, '');
+        const meta = [
+          entry.workerId || null,
+          entry.cycle ? `cycle ${entry.cycle}` : null
+        ].filter(Boolean).join(' · ');
+        return `
+          <div class="feed-item ${entry.source === 'socket' ? 'feed-drill' : ''}">
+            <span class="feed-time">${escapeHtml(time)}</span>
+            <span class="feed-kind">${escapeHtml(kind.slice(0, 14))}</span>
+            <span class="feed-body">${escapeHtml(String(entry.content).slice(0, 260))}${meta ? `<small> · ${escapeHtml(meta)}</small>` : ''}</span>
+          </div>`;
+      }).join('');
+  }
+
+  renderBrainStream() {
+    document.querySelectorAll('[data-stream-kind]').forEach(button => {
+      button.classList.toggle('active', button.dataset.streamKind === this.brainKindFilter);
+    });
+
+    const summary = this.brainStream.reduce((counts, entry) => {
+      const kind = entry.kind || 'finding';
+      counts[kind] = (counts[kind] || 0) + 1;
+      return counts;
+    }, {});
+    const summaryOrder = ['goal', 'phase', 'thought', 'harvest', 'offshoot', 'finding'];
+    document.getElementById('brain-kind-summary').innerHTML = summaryOrder
+      .filter(kind => summary[kind])
+      .map(kind => `<span class="brain-summary-chip">${escapeHtml(kind)} <strong>${summary[kind]}</strong></span>`)
+      .join('');
+
+    const needle = this.brainSearch.trim().toLowerCase();
+    const filtered = this.brainStream.filter(entry => {
+      if (this.brainKindFilter !== 'all' && entry.kind !== this.brainKindFilter) return false;
+      if (needle && !JSON.stringify(entry).toLowerCase().includes(needle)) return false;
+      return true;
+    });
+    const keys = new Set(filtered.map(entry => encodeURIComponent(this.streamEntryKey(entry))));
+    if (!this.selectedBrainEntryKey || !keys.has(this.selectedBrainEntryKey)) {
+      this.selectedBrainEntryKey = filtered[0]
+        ? encodeURIComponent(this.streamEntryKey(filtered[0]))
+        : null;
+    }
+
+    const list = document.getElementById('finding-list');
+    list.innerHTML = filtered.length === 0
+      ? `<p class="cc-empty">${this.brainStream.length === 0 ? 'Nothing on the tape yet.' : 'No tape entries match this view.'}</p>`
+      : filtered.map(entry => {
+        const key = encodeURIComponent(this.streamEntryKey(entry));
+        const state = entry.brain || 'journaled';
+        const at = Number(entry.at);
+        const time = Number.isFinite(at) && at > 0 ? new Date(at).toLocaleString() : 'time unknown';
+        const meta = [
+          entry.workerId || null,
+          entry.goalNumber ? `goal ${entry.goalNumber}` : null,
+          entry.phaseNumber ? `phase ${entry.phaseNumber}` : null,
+          entry.cycle ? `cycle ${entry.cycle}` : null
+        ].filter(Boolean);
+        return `
+          <button type="button" class="brain-entry ${key === this.selectedBrainEntryKey ? 'active' : ''}" data-brain-entry="${escapeHtml(key)}">
+            <span class="brain-entry-head">
+              <span class="brain-entry-kind">${escapeHtml(entry.kind || 'finding')}</span>
+              <span class="brain-state ${escapeHtml(state)}">${escapeHtml(state)}</span>
+            </span>
+            <span class="brain-entry-copy">${escapeHtml(String(entry.content || '').slice(0, 240))}</span>
+            <span class="brain-entry-meta">
+              <span>${escapeHtml(time)}</span>
+              ${meta.map(value => `<span>${escapeHtml(value)}</span>`).join('')}
+            </span>
+          </button>`;
+      }).join('');
+
+    const selected = filtered.find(entry =>
+      encodeURIComponent(this.streamEntryKey(entry)) === this.selectedBrainEntryKey);
+    this.renderBrainEntryDetail(selected);
+    document.getElementById('brain-load-more').hidden = !this.brainStreamHasMore;
+  }
+
+  renderBrainEntryDetail(entry) {
+    const detail = document.getElementById('brain-entry-detail');
+    if (!entry) {
+      detail.innerHTML = '<p class="cc-empty">Select a tape entry to inspect its full content and provenance.</p>';
+      return;
+    }
+    const values = [
+      ['Time', entry.at ? new Date(entry.at).toLocaleString() : 'unknown'],
+      ['Brain', entry.brain || 'journaled'],
+      ['Worker', entry.workerId || 'coordinator'],
+      ['Cycle', entry.cycle ?? '—'],
+      ['Goal', entry.goalNumber ?? '—'],
+      ['Phase', entry.phaseNumber ?? '—']
+    ];
+    detail.innerHTML = `
+      <div class="detail-kicker">
+        <span class="brain-entry-kind">${escapeHtml(entry.kind || 'finding')}</span>
+        <span class="brain-state ${escapeHtml(entry.brain || 'journaled')}">${escapeHtml(entry.brain || 'journaled')}</span>
+      </div>
+      <p class="detail-content">${escapeHtml(String(entry.content || ''))}</p>
+      <div class="detail-provenance">
+        ${values.map(([label, value]) => `
+          <div><span>${escapeHtml(label)}</span><strong>${escapeHtml(String(value))}</strong></div>`).join('')}
+      </div>`;
+  }
+
+  selectBrainEntry(key) {
+    this.selectedBrainEntryKey = key;
+    this.renderBrainStream();
+  }
+
+  async loadEarlierBrain() {
+    const button = document.getElementById('brain-load-more');
+    if (!this.brainStreamBefore || button.disabled) return;
+    button.disabled = true;
+    button.textContent = 'Loading earlier tape…';
+    try {
+      const result = await this.api(
+        `/api/drill/tape?channel=stream&before=${encodeURIComponent(this.brainStreamBefore)}&limit=150`
+      );
+      this.brainStream = this.mergeTapeEntries(this.brainStream, result.entries || []);
+      const times = this.brainStream.map(entry => Number(entry.at)).filter(Number.isFinite);
+      if (times.length > 0) this.brainStreamBefore = Math.min(...times);
+      this.brainStreamHasMore = result.hasMore === true && (result.entries || []).length > 0;
+      this.renderBrainStream();
+      this.renderPulse(this.lastDrill?.drill);
+    } catch (error) {
+      this.showToast(`Tape load failed: ${error.message}`, 'error');
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Load earlier tape';
+    }
+  }
+
+  renderSources() {
+    document.querySelectorAll('[data-source-tool]').forEach(button => {
+      button.classList.toggle('active', button.dataset.sourceTool === this.sourceToolFilter);
+    });
+    const needle = this.sourceSearch.trim().toLowerCase();
+    const filtered = this.sourceReceipts.filter(receipt => {
+      if (this.sourceToolFilter !== 'all' && receipt.tool !== this.sourceToolFilter) return false;
+      if (needle && !JSON.stringify(receipt).toLowerCase().includes(needle)) return false;
+      return true;
+    });
+    document.getElementById('sources-count').textContent = String(filtered.length);
+    document.getElementById('source-list').innerHTML = filtered.length === 0
+      ? `<p class="cc-empty">${this.sourceReceipts.length === 0 ? 'No fetches yet.' : 'No fetch receipts match this view.'}</p>`
+      : filtered.map(source => {
+        const at = Number(source.at);
+        const time = Number.isFinite(at) && at > 0 ? new Date(at).toLocaleString() : 'time unknown';
+        const provenance = [
+          source.workerId || null,
+          source.goalNumber ? `g${source.goalNumber}` : null,
+          source.phaseNumber ? `p${source.phaseNumber}` : null,
+          source.cycle ? `cycle ${source.cycle}` : null
+        ].filter(Boolean).join(' · ');
+        const query = String(source.query || '');
+        const filePath = /^(outputs|drill)\//.test(query) ? query : null;
+        return `
+          <article class="source-item">
+            <div class="source-item-head">
+              <span class="source-tool">${escapeHtml(source.tool || 'fetch')}</span>
+              <span class="source-provenance">${escapeHtml(provenance || time)}</span>
+            </div>
+            <div class="source-query">${escapeHtml(query)}</div>
+            ${(source.urls || []).slice(0, 8).map(url =>
+              `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>`
             ).join('')}
-          </div>`).join('');
+            ${filePath ? `<button class="source-file-link" type="button" data-drill-file="${escapeHtml(filePath)}">Open ${escapeHtml(filePath)}</button>` : ''}
+            <span class="brain-entry-meta"><span>${escapeHtml(time)}</span></span>
+          </article>`;
+      }).join('');
+    document.getElementById('sources-load-more').hidden = !this.sourcesHaveMore;
+  }
 
-    const writeups = payload.writeups || [];
-    document.getElementById('writeups-count').textContent = String(writeups.length);
-    document.getElementById('writeup-list').innerHTML = writeups.length === 0
-      ? '<p class="cc-empty">No writeups yet.</p>'
-      : writeups.map(writeup => `
-          <button type="button" class="writeup-item" data-writeup="${escapeHtml(writeup.file)}">
-            <span>${escapeHtml(writeup.file)}</span>
-            <small>${(writeup.size / 1024).toFixed(1)}KB</small>
+  async loadEarlierSources() {
+    const button = document.getElementById('sources-load-more');
+    if (!this.sourcesBefore || button.disabled) return;
+    button.disabled = true;
+    button.textContent = 'Loading earlier receipts…';
+    try {
+      const result = await this.api(
+        `/api/drill/tape?channel=sources&before=${encodeURIComponent(this.sourcesBefore)}&limit=150`
+      );
+      this.sourceReceipts = this.mergeTapeEntries(this.sourceReceipts, result.entries || []);
+      const times = this.sourceReceipts.map(entry => Number(entry.at)).filter(Number.isFinite);
+      if (times.length > 0) this.sourcesBefore = Math.min(...times);
+      this.sourcesHaveMore = result.hasMore === true && (result.entries || []).length > 0;
+      this.renderSources();
+      this.renderPulse(this.lastDrill?.drill);
+    } catch (error) {
+      this.showToast(`Receipt load failed: ${error.message}`, 'error');
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Load earlier receipts';
+    }
+  }
+
+  async loadDrillFiles({ force = false } = {}) {
+    const runName = this.lastDrill?.runName;
+    if (!runName || this.filesLoading) return;
+    if (!force && this.filesLoadedForRun === runName) return;
+    this.filesLoading = true;
+    document.getElementById('file-summary').textContent = 'Reading outputs/ and drill/…';
+    try {
+      const result = await this.api('/api/drill/files?limit=1000&depth=12');
+      this.drillFiles = result.files || [];
+      this.drillFileSummary = {
+        totalFiles: result.totalFiles || 0,
+        totalBytes: result.totalBytes || 0,
+        counts: result.counts || {},
+        truncated: result.truncated === true
+      };
+      this.filesLoadedForRun = runName;
+      this.renderFiles();
+      this.renderPulse(this.lastDrill?.drill);
+    } catch (error) {
+      document.getElementById('file-summary').textContent = `Files unavailable: ${error.message}`;
+    } finally {
+      this.filesLoading = false;
+    }
+  }
+
+  fileMatchesKind(file) {
+    if (this.fileKindFilter === 'all') return true;
+    if (this.fileKindFilter === 'writeup') return file.kind === 'writeup';
+    if (this.fileKindFilter === 'data') return ['data', 'findings', 'artifact'].includes(file.kind) && file.root === 'outputs';
+    if (this.fileKindFilter === 'tape') return ['brain_tape', 'source_tape', 'findings', 'drill_tape'].includes(file.kind);
+    if (this.fileKindFilter === 'drill') return file.root === 'drill';
+    return true;
+  }
+
+  renderFiles() {
+    const list = document.getElementById('writeup-list');
+    if (!list) return;
+    const needle = this.fileSearch.trim().toLowerCase();
+    const files = this.drillFiles.filter(file =>
+      this.fileMatchesKind(file)
+      && (!needle || String(file.path).toLowerCase().includes(needle))
+    );
+    const summary = this.drillFileSummary;
+    document.getElementById('file-summary').textContent = summary
+      ? `${files.length} shown · ${summary.totalFiles} files · ${formatBytes(summary.totalBytes)}${summary.truncated ? ' · listing capped' : ''}`
+      : 'Loading run files…';
+    list.innerHTML = files.length === 0
+      ? '<p class="cc-empty">No run files match this view.</p>'
+      : files.map(file => `
+          <button type="button" class="file-row ${file.path === this.selectedFilePath ? 'active' : ''}" data-drill-file="${escapeHtml(file.path)}">
+            <span class="file-row-head">
+              <span class="file-row-path">${escapeHtml(file.path)}</span>
+              <span class="file-kind">${escapeHtml(String(file.kind).replace(/_/g, ' '))}</span>
+            </span>
+            <span class="file-row-meta">
+              <span>${formatBytes(file.size)}</span>
+              <span>${escapeHtml(new Date(file.modified).toLocaleString())}</span>
+              ${file.previewable ? '<span>preview</span>' : '<span>binary</span>'}
+            </span>
           </button>`).join('');
+  }
 
-    const findings = payload.findings || [];
-    const drill = payload.drill || {};
-    document.getElementById('brain-writes-count').textContent =
-      `${drill.counts?.brainWrites ?? 0} Brain writes`;
-    document.getElementById('finding-list').innerHTML = findings.length === 0
-      ? '<p class="cc-empty">No findings journaled yet.</p>'
-      : findings.map(finding => `
-          <div class="finding-item">
-            ${escapeHtml(String(finding.content || '').slice(0, 180))}
-            ${finding.cycle ? `<small>cycle ${escapeHtml(String(finding.cycle))}</small>` : ''}
-          </div>`).join('');
+  async openRunFile(file) {
+    if (!file) return;
+    this.openInspector('files', { scroll: true });
+    this.selectedFilePath = file;
+    this.renderFiles();
+    const name = document.getElementById('writeup-viewer-name');
+    const meta = document.getElementById('file-viewer-meta');
+    const body = document.getElementById('writeup-viewer-body');
+    name.textContent = file;
+    meta.textContent = 'Loading preview…';
+    body.textContent = '';
+    try {
+      const result = await this.api(`/api/drill/file?path=${encodeURIComponent(file)}`);
+      name.textContent = result.path;
+      meta.textContent = [
+        String(result.kind || '').replace(/_/g, ' '),
+        formatBytes(result.size),
+        result.modified ? new Date(result.modified).toLocaleString() : null,
+        result.truncated ? 'preview truncated at 512 KB' : null
+      ].filter(Boolean).join(' · ');
+      body.textContent = result.previewable
+        ? (result.content || '(empty file)')
+        : 'This file is binary. The control center lists it but does not render binary data inline.';
+    } catch (error) {
+      meta.textContent = 'Preview failed';
+      body.textContent = error.message;
+      this.showToast(`Open failed: ${error.message}`, 'error');
+    }
   }
 
   async openWriteup(file) {
-    try {
-      const result = await this.api(`/api/drill/output?file=${encodeURIComponent(file)}`);
-      document.getElementById('writeup-viewer-name').textContent = result.file;
-      document.getElementById('writeup-viewer-body').textContent = result.content;
-      document.getElementById('writeup-viewer').hidden = false;
-    } catch (error) {
-      this.showToast(`Open failed: ${error.message}`, 'error');
-    }
+    return this.openRunFile(file.startsWith('outputs/') ? file : `outputs/${file}`);
+  }
+
+  clearFileViewer() {
+    this.selectedFilePath = null;
+    document.getElementById('writeup-viewer-name').textContent = 'Select a file';
+    document.getElementById('file-viewer-meta').textContent = 'Text files can be previewed here.';
+    document.getElementById('writeup-viewer-body').textContent =
+      'The file browser is read-only. It exposes outputs/ and drill/ without opening run configuration or secrets.';
+    this.renderFiles();
   }
 
   // ── Status + live event feed ──────────────────────────────────────────
@@ -682,21 +1176,10 @@ class CosmoStandaloneApp {
   }
 
   appendEvent(event) {
-    const feed = document.getElementById('drill-feed');
-    if (!feed) return;
     const text = this.formatEvent(event);
     if (!text) return;
-    const item = document.createElement('div');
-    item.className = `feed-item ${String(event.type || '').startsWith('drill_') ? 'feed-drill' : ''}`.trim();
-    const time = new Date(event.timestamp || Date.now()).toLocaleTimeString();
-    item.innerHTML = `
-      <span class="feed-time">${escapeHtml(time)}</span>
-      <span class="feed-body">${escapeHtml(text)}</span>
-    `;
-    feed.prepend(item);
-    while (feed.children.length > 250) {
-      feed.removeChild(feed.lastChild);
-    }
+    this.liveEvents = [event, ...this.liveEvents].slice(0, 120);
+    this.renderLiveActivity();
     if (String(event.type || '').startsWith('drill_')) {
       this.loadDrillStatus();
     }

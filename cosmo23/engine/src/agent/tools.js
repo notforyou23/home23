@@ -11,6 +11,7 @@ const path = require('path');
 const { tools: interactiveTools, executeTool: executeInteractiveTool } = require('../interactive/interactive-tools');
 const { unprivilegedChildEnv } = require('../../../../shared/child-process-env.cjs');
 const { getSearchGovernor } = require('./search-governor');
+const { writeBrainStream, bumpStreamEvidence } = require('./brain-stream');
 
 const INTERACTIVE_ONLY = new Set([
   'spawn_agent',
@@ -96,7 +97,7 @@ const extraTools = [
   },
   {
     name: 'finish',
-    description: 'Mark THIS phase\'s deliverable complete. The drill keeps going after you — finishing a writeup never ends the run.',
+    description: 'Mark THIS phase\'s deliverable complete. The drill keeps going after you — finishing a writeup never ends the run. Refused while nothing from this phase has reached the record: fetch something, write something, think in a normal turn, or remember a finding first.',
     parameters: {
       type: 'object',
       properties: {
@@ -113,28 +114,100 @@ const tools = uniqueToolsByName([
   ...extraTools
 ]);
 
-async function journalSearchSources(context, query, resultText) {
-  // The control center's Sources feed: every web search leaves a receipt in
-  // outputs/sources.jsonl with the query and the URLs it surfaced.
+const URL_PATTERN = /https?:\/\/[^\s)\]"'<>]+/g;
+
+function extractUrls(text, limit = 8) {
+  return [...new Set(String(text || '').match(URL_PATTERN) || [])].slice(0, limit);
+}
+
+function resolveRuntimePath(context) {
+  return context.runtimePath
+    || context.orchestrator?.logsDir
+    || process.cwd();
+}
+
+function drillProvenance(context) {
+  const drill = context.loop?.drill || null;
+  return {
+    cycle: drill?.cycle ?? null,
+    workerId: drill?.workerId ?? null,
+    goalNumber: drill?.goalNumber ?? null,
+    phaseNumber: drill?.phaseNumber ?? null
+  };
+}
+
+/**
+ * The control center's Sources feed: EVERY successful fetch leaves a receipt
+ * in outputs/sources.jsonl — web_search hits, run_command fetches of a URL,
+ * coding_run against a URL, and harvested material written into outputs/.
+ * Search is one tool in the kit, not the research; the other paths persist
+ * the same way.
+ */
+async function journalSourceReceipt(context, { tool, query, urls = [] }) {
   try {
-    const runtimePath = context.runtimePath
-      || context.orchestrator?.logsDir
-      || process.cwd();
-    const urls = [...new Set(String(resultText || '').match(/https?:\/\/[^\s)\]"'<>]+/g) || [])].slice(0, 8);
-    const drill = context.loop?.drill || null;
-    const entry = {
-      at: Date.now(),
-      tool: 'web_search',
-      query,
-      urls,
-      cycle: drill?.cycle ?? null,
-      workerId: drill?.workerId ?? null,
-      goalNumber: drill?.goalNumber ?? null,
-      phaseNumber: drill?.phaseNumber ?? null
-    };
+    const runtimePath = resolveRuntimePath(context);
+    const entry = { at: Date.now(), tool, query, urls, ...drillProvenance(context) };
     await fs.mkdir(path.join(runtimePath, 'outputs'), { recursive: true });
     await fs.appendFile(path.join(runtimePath, 'outputs', 'sources.jsonl'), `${JSON.stringify(entry)}\n`);
-  } catch { /* the search result itself is unaffected */ }
+  } catch { /* the tool result itself is unaffected */ }
+}
+
+/**
+ * The working stream: a harvest (or any other stream entry) goes onto the
+ * tape and into the Brain as it happens. Anything that reaches the record
+ * counts as this worker's evidence for the phase gate.
+ */
+async function streamFromTool(context, kind, content, extra = {}) {
+  try {
+    const result = await writeBrainStream({
+      runtimePath: resolveRuntimePath(context),
+      memory: context.orchestrator?.memory || null,
+      logger: context.logger
+    }, { kind, content, ...drillProvenance(context), ...extra });
+    if (result.streamed) bumpStreamEvidence(context.loop);
+    return result;
+  } catch (err) {
+    context.logger?.warn?.('Stream write from tool failed', { kind, error: err.message });
+    return { streamed: false, brain: 'lost' };
+  }
+}
+
+/**
+ * Non-search harvest paths leave the same trail as a search hit. Any
+ * successful run_command that touched a URL (curl, wget, scripts) and any
+ * successful write_file into outputs/ gets a Sources receipt and a stream
+ * entry — raw dumps on disk are never hidden work.
+ */
+async function recordInteractiveHarvest(name, args, result, context) {
+  if (typeof result !== 'string') return;
+  try {
+    if (name === 'run_command') {
+      if (/^(Command failed|Error:)/.test(result)) return;
+      const urls = extractUrls(args.command);
+      if (urls.length === 0) return;
+      await journalSourceReceipt(context, {
+        tool: 'run_command',
+        query: String(args.command || '').slice(0, 300),
+        urls
+      });
+      await streamFromTool(context, 'harvest', `Fetched via run_command: ${urls.join(' ')}`);
+      return;
+    }
+    if (name === 'write_file') {
+      if (!/^File written:/.test(result)) return;
+      const relPath = `outputs/${args.path}`;
+      const urls = extractUrls(args.content);
+      await journalSourceReceipt(context, { tool: 'write_file', query: relPath, urls });
+      const bytes = Buffer.byteLength(String(args.content || ''), 'utf-8');
+      await streamFromTool(
+        context,
+        'harvest',
+        `Harvested to ${relPath} (${bytes} bytes)${urls.length ? ` from ${urls.slice(0, 3).join(' ')}` : ''}`
+      );
+    }
+  } catch (err) {
+    context.logger?.warn?.('Harvest receipt failed', { tool: name, error: err.message });
+  }
 }
 
 const extraExecutors = {
@@ -189,7 +262,9 @@ const extraExecutors = {
     const succeed = async (backend, payload) => {
       governor.recordSuccess(backend);
       const text = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
-      await journalSearchSources(context, query, text);
+      const urls = extractUrls(text);
+      await journalSourceReceipt(context, { tool: 'web_search', query, urls });
+      await streamFromTool(context, 'harvest', `Search "${query}" surfaced: ${urls.join(' ') || '(no URLs in result)'}`);
       return text;
     };
 
@@ -259,13 +334,15 @@ const extraExecutors = {
     const content = String(args.content || '').trim();
     if (!content) return 'remember requires content.';
     const tag = String(args.tag || 'finding').trim() || 'finding';
-    const runtimePath = context.runtimePath
-      || context.orchestrator?.logsDir
-      || process.cwd();
+    const runtimePath = resolveRuntimePath(context);
     const dir = path.join(runtimePath, 'outputs', 'candidates');
     await fs.mkdir(dir, { recursive: true });
-    // Drill provenance: which cycle/goal/phase this finding came from.
-    const drill = context.loop?.drill || null;
+
+    // The stream writes the Brain AS IT HAPPENS — remember is not a gate.
+    // Degraded-honest: if the live write fails, the row stays journaled and
+    // the drill promotes it at settle time.
+    const streamed = await streamFromTool(context, 'finding', content, { tag: 'drill_finding' });
+
     const entry = {
       id: `cand_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
       type: 'candidate_finding',
@@ -273,14 +350,14 @@ const extraExecutors = {
       tag,
       at: Date.now(),
       source: 'launch_loop',
-      cycle: drill?.cycle ?? null,
-      workerId: drill?.workerId ?? null,
-      goalNumber: drill?.goalNumber ?? null,
-      phaseNumber: drill?.phaseNumber ?? null,
-      promoted: false
+      ...drillProvenance(context),
+      brain: streamed.brain === 'live' ? 'live' : 'journaled',
+      promoted: streamed.brain === 'live'
     };
     await fs.appendFile(path.join(dir, 'findings.jsonl'), `${JSON.stringify(entry)}\n`);
-    return 'Journaled candidate finding. The drill writes it into the Brain at cycle end.';
+    return streamed.brain === 'live'
+      ? 'Journaled finding and wrote it into the Brain.'
+      : 'Journaled candidate finding. The drill writes it into the Brain at cycle end.';
   },
 
   async list_skills(args, context) {
@@ -326,7 +403,21 @@ const extraExecutors = {
 
     for (const candidate of candidates) {
       const result = await runCodingBackend(candidate, runtimePath, context.logger);
-      if (result.ran) return result.text;
+      if (result.ran) {
+        // A coding_run descent is part of the working stream, same as a
+        // search hit: receipt for any URL it was pointed at, stream entry
+        // for the run itself. Research is bigger than search.
+        const urls = extractUrls(prompt);
+        if (urls.length > 0) {
+          await journalSourceReceipt(context, {
+            tool: 'coding_run',
+            query: prompt.slice(0, 300),
+            urls
+          });
+        }
+        await streamFromTool(context, 'harvest', `coding_run (${candidate.id}): ${prompt.slice(0, 240)}`);
+        return result.text;
+      }
     }
     return 'No coding backend installed (claude / codex). Use write_file and run_command instead.';
   },
@@ -334,6 +425,19 @@ const extraExecutors = {
   async finish(args, context) {
     const summary = String(args.summary || '').trim();
     if (context.loop && typeof context.loop.markFinished === 'function') {
+      // Hidden work is the failure: a worker whose whole descent left
+      // NOTHING on the record — no receipt, no stream entry, no journaled
+      // finding — cannot close its phase. Anything that reached the tape
+      // (thoughts, harvests, findings, writeups) counts; remember() is one
+      // channel, not the gate.
+      const streamed = Number(context.loop.evidence?.streamed) || 0;
+      if (streamed === 0) {
+        return JSON.stringify({
+          finish: 'refused',
+          reason: 'hidden_work',
+          instruction: 'Nothing from this phase has reached the record yet. Put the work on the tape first: fetch a URL (web_search, curl via run_command, coding_run), write harvested material or a writeup with write_file, journal a finding with remember, or think it through in a normal turn — then call finish.'
+        }, null, 2);
+      }
       context.loop.markFinished(summary);
     }
     return summary ? `Research finished: ${summary}` : 'Research finished.';
@@ -397,7 +501,9 @@ async function executeTool(name, args, context) {
       return `Tool "${name}" failed: ${err.message}`;
     }
   }
-  return executeInteractiveTool(name, args, context);
+  const result = await executeInteractiveTool(name, args, context);
+  await recordInteractiveHarvest(name, args || {}, result, context);
+  return result;
 }
 
 function toChatTools() {
@@ -416,5 +522,6 @@ module.exports = {
   executeTool,
   toChatTools,
   uniqueToolsByName,
+  extractUrls,
   INTERACTIVE_ONLY
 };

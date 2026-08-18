@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>COSMO — Drill Control Center</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23e8a33d' d='M8 3h16l-8 26z'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -115,7 +116,7 @@
         <div id="drill-live" class="drill-live" hidden>
           <section class="cc-panel drill-board-head">
             <div class="drill-question">
-              <p class="cc-eyebrow">Drilling</p>
+              <p class="cc-eyebrow">Research drill</p>
               <h2 id="drill-question-text">—</h2>
               <p class="drill-run-meta" id="drill-run-meta">—</p>
             </div>
@@ -131,15 +132,46 @@
                 <div class="budget-track"><div class="budget-fill" id="budget-time-fill"></div></div>
               </div>
               <div class="drill-steer">
-                <button class="danger-btn" type="button" id="stop-run-btn">Stop</button>
+                <button class="danger-btn" type="button" id="stop-run-btn">Stop drill</button>
               </div>
             </div>
           </section>
 
-          <div class="drill-board-grid">
+          <section class="drill-pulse-grid" aria-label="Run pulse">
+            <button class="pulse-card pulse-live" type="button" data-inspector-target="activity">
+              <span class="pulse-label">Workers</span>
+              <strong id="pulse-workers">0</strong>
+              <small id="pulse-workers-note">No bits in flight</small>
+            </button>
+            <button class="pulse-card" type="button" data-inspector-target="brain">
+              <span class="pulse-label">Tape</span>
+              <strong id="pulse-tape">0</strong>
+              <small>working-stream entries loaded</small>
+            </button>
+            <button class="pulse-card" type="button" data-inspector-target="sources">
+              <span class="pulse-label">Sources</span>
+              <strong id="pulse-sources">0</strong>
+              <small>fetch receipts loaded</small>
+            </button>
+            <button class="pulse-card" type="button" data-inspector-target="files">
+              <span class="pulse-label">Files</span>
+              <strong id="pulse-files">—</strong>
+              <small id="pulse-files-note">Inspect the run directory</small>
+            </button>
+            <button class="pulse-card" type="button" data-inspector-target="brain">
+              <span class="pulse-label">Brain</span>
+              <strong id="pulse-brain">0</strong>
+              <small id="brain-writes-count">0 live writes</small>
+            </button>
+          </section>
+
+          <div class="drill-operations-grid">
             <section class="cc-panel drill-goal-panel">
               <div class="cc-panel-head compact">
-                <h3>Current goal</h3>
+                <div>
+                  <p class="cc-eyebrow">Mission</p>
+                  <h3>Current goal</h3>
+                </div>
                 <span class="goal-number-chip" id="goal-number-chip">—</span>
               </div>
               <div id="goal-card">
@@ -154,62 +186,143 @@
               </div>
             </section>
 
-            <section class="cc-panel drill-activity-panel">
+            <section class="cc-panel drill-activity-panel" id="drill-activity-panel">
               <div class="cc-panel-head compact">
-                <h3>What it is doing</h3>
+                <div>
+                  <p class="cc-eyebrow">Live operation</p>
+                  <h3>What is happening</h3>
+                </div>
                 <span class="activity-now" id="activity-now">—</span>
               </div>
               <div class="worker-strip" id="worker-strip"></div>
               <div class="drill-feed" id="drill-feed"></div>
               <details class="console-disclosure">
-                <summary>Engine console</summary>
+                <summary>Engine console <span>raw process output</span></summary>
                 <div class="console-feed" id="console-feed"></div>
               </details>
             </section>
 
-            <section class="cc-panel drill-note-panel">
-              <div class="cc-panel-head compact">
-                <h3>Steer</h3>
+            <aside class="cc-panel drill-note-panel">
+              <div class="cc-panel-head">
+                <p class="cc-eyebrow">Operator</p>
+                <h3>Steer the next descent</h3>
+                <p id="operator-state-note">Notes are durable and picked up by the next worker cycle.</p>
               </div>
               <form id="note-form" class="note-form">
-                <textarea id="note-input" rows="2" placeholder="Add a note — the drill reads it on its next cycle"></textarea>
-                <button type="submit" class="primary-btn">Send note</button>
+                <textarea id="note-input" rows="3" placeholder="Focus a source, challenge an assumption, or redirect a phase"></textarea>
+                <button type="submit" class="primary-btn" id="note-submit-btn">Queue note</button>
               </form>
               <div class="note-list" id="note-list"></div>
-            </section>
-
-            <section class="cc-panel drill-sources-panel">
-              <div class="cc-panel-head compact">
-                <h3>Sources</h3>
-                <span class="mini-count" id="sources-count">0</span>
+              <div class="operator-shortcuts" aria-label="Research workspace shortcuts">
+                <button class="ghost-btn" type="button" data-inspector-target="brain">Open Brain tape</button>
+                <button class="ghost-btn" type="button" data-inspector-target="files">Browse files</button>
+                <button class="ghost-btn" type="button" id="open-query-btn">Query Brain</button>
               </div>
-              <div class="source-list" id="source-list"></div>
-            </section>
-
-            <section class="cc-panel drill-writeups-panel">
-              <div class="cc-panel-head compact">
-                <h3>Writeups</h3>
-                <span class="mini-count" id="writeups-count">0</span>
-              </div>
-              <div class="writeup-list" id="writeup-list"></div>
-              <div class="writeup-viewer" id="writeup-viewer" hidden>
-                <div class="writeup-viewer-head">
-                  <strong id="writeup-viewer-name"></strong>
-                  <button class="ghost-btn" type="button" id="writeup-viewer-close">Close</button>
-                </div>
-                <pre id="writeup-viewer-body"></pre>
-              </div>
-            </section>
-
-            <section class="cc-panel drill-brain-panel">
-              <div class="cc-panel-head compact">
-                <h3>Brain</h3>
-                <span class="mini-count" id="brain-writes-count">0 writes</span>
-              </div>
-              <div class="finding-list" id="finding-list"></div>
-              <button class="ghost-btn brain-query-jump" type="button" id="open-query-btn">Ask the Brain in Query</button>
-            </section>
+            </aside>
           </div>
+
+          <section class="cc-panel drill-inspector-panel" id="drill-inspector">
+            <div class="inspector-head">
+              <div>
+                <p class="cc-eyebrow">Research workspace</p>
+                <h3>See the record, not just the console</h3>
+                <p>The Brain, files, and Sources all read the run’s existing disk tapes.</p>
+              </div>
+              <div class="inspector-tabs" role="tablist" aria-label="Research workspace">
+                <button class="inspector-tab active" type="button" role="tab" aria-selected="true" data-inspector-tab="brain">Brain tape</button>
+                <button class="inspector-tab" type="button" role="tab" aria-selected="false" data-inspector-tab="files">Files</button>
+                <button class="inspector-tab" type="button" role="tab" aria-selected="false" data-inspector-tab="sources">Sources</button>
+              </div>
+            </div>
+
+            <div class="inspector-pane active drill-brain-panel" data-inspector-pane="brain">
+              <div class="inspector-toolbar">
+                <div class="filter-chips" id="brain-kind-filters" aria-label="Filter Brain tape">
+                  <button class="filter-chip active" type="button" data-stream-kind="all">All</button>
+                  <button class="filter-chip" type="button" data-stream-kind="goal">Goals</button>
+                  <button class="filter-chip" type="button" data-stream-kind="phase">Phases</button>
+                  <button class="filter-chip" type="button" data-stream-kind="thought">Thoughts</button>
+                  <button class="filter-chip" type="button" data-stream-kind="harvest">Harvests</button>
+                  <button class="filter-chip" type="button" data-stream-kind="offshoot">Offshoots</button>
+                  <button class="filter-chip" type="button" data-stream-kind="finding">Findings</button>
+                </div>
+                <label class="inspector-search">
+                  <span class="sr-only">Search the Brain tape</span>
+                  <input type="search" id="brain-stream-search" placeholder="Search tape…">
+                </label>
+              </div>
+              <div class="brain-kind-summary" id="brain-kind-summary"></div>
+              <div class="inspector-split brain-inspector">
+                <div>
+                  <div class="finding-list" id="finding-list"></div>
+                  <button class="load-more-btn" type="button" id="brain-load-more">Load earlier tape</button>
+                </div>
+                <article class="inspector-detail brain-entry-detail" id="brain-entry-detail">
+                  <p class="cc-empty">Select a tape entry to inspect its full content and provenance.</p>
+                </article>
+              </div>
+              <button class="ghost-btn brain-query-jump" type="button" id="brain-query-workspace-btn">Ask this Brain in Query</button>
+            </div>
+
+            <div class="inspector-pane drill-writeups-panel" data-inspector-pane="files" hidden>
+              <div class="inspector-toolbar">
+                <label class="inspector-search">
+                  <span class="sr-only">Search run files</span>
+                  <input type="search" id="file-search" placeholder="Filter files by name or path…">
+                </label>
+                <label class="compact-select">
+                  <span>Show</span>
+                  <select id="file-kind-filter">
+                    <option value="all">All run files</option>
+                    <option value="writeup">Writeups</option>
+                    <option value="data">Harvested data</option>
+                    <option value="tape">Tapes &amp; journals</option>
+                    <option value="drill">Drill state</option>
+                  </select>
+                </label>
+                <button class="ghost-btn" type="button" id="file-refresh-btn">Refresh files</button>
+              </div>
+              <div class="file-summary" id="file-summary">Loading run files…</div>
+              <div class="inspector-split file-inspector">
+                <div class="writeup-list file-list" id="writeup-list"></div>
+                <div class="writeup-viewer file-viewer" id="writeup-viewer">
+                  <div class="writeup-viewer-head">
+                    <div>
+                      <strong id="writeup-viewer-name">Select a file</strong>
+                      <small id="file-viewer-meta">Text files can be previewed here.</small>
+                    </div>
+                    <button class="ghost-btn" type="button" id="writeup-viewer-close">Clear</button>
+                  </div>
+                  <pre id="writeup-viewer-body">The file browser is read-only. It exposes outputs/ and drill/ without opening run configuration or secrets.</pre>
+                </div>
+              </div>
+            </div>
+
+            <div class="inspector-pane drill-sources-panel" data-inspector-pane="sources" hidden>
+              <div class="inspector-toolbar">
+                <div class="filter-chips" id="source-tool-filters" aria-label="Filter source receipts">
+                  <button class="filter-chip active" type="button" data-source-tool="all">All fetches</button>
+                  <button class="filter-chip" type="button" data-source-tool="web_search">Web search</button>
+                  <button class="filter-chip" type="button" data-source-tool="run_command">Curl / scripts</button>
+                  <button class="filter-chip" type="button" data-source-tool="coding_run">Coding run</button>
+                  <button class="filter-chip" type="button" data-source-tool="write_file">Harvested writes</button>
+                </div>
+                <label class="inspector-search">
+                  <span class="sr-only">Search source receipts</span>
+                  <input type="search" id="source-search" placeholder="Search receipts or URLs…">
+                </label>
+              </div>
+              <div class="source-ledger-head">
+                <div>
+                  <strong id="sources-count">0</strong>
+                  <span>receipts loaded from outputs/sources.jsonl</span>
+                </div>
+                <p>Search is one tool in the kit. Curl, archives, forums, scripts, and coding runs land here too.</p>
+              </div>
+              <div class="source-list source-ledger" id="source-list"></div>
+              <button class="load-more-btn" type="button" id="sources-load-more">Load earlier receipts</button>
+            </div>
+          </section>
         </div>
 
         <!-- Done banner (shown on the board when the drill has finished) -->
