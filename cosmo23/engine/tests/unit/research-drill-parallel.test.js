@@ -486,6 +486,7 @@ describe('Coordinator (Principal-shaped, not a desk panel)', () => {
   });
 
   it('accepts a named hole from the tighter second call', async () => {
+    const userPrompts = [];
     const responses = [
       {
         title: 'Go deeper on the launch question',
@@ -501,7 +502,8 @@ describe('Coordinator (Principal-shaped, not a desk panel)', () => {
       logger,
       config: { models: { fast: 'test' } },
       client: {
-        async createCompletion() {
+        async createCompletion({ messages }) {
+          userPrompts.push(messages[1].content);
           const content = responses.shift();
           return { choices: [{ message: { role: 'assistant', content: JSON.stringify(content) } }] };
         }
@@ -521,6 +523,10 @@ describe('Coordinator (Principal-shaped, not a desk panel)', () => {
     expect(result.degraded).to.equal(false);
     expect(result.spec.title).to.equal('Resolve the missing 1973 archive provenance');
     expect(result.done).to.equal(false);
+    expect(userPrompts).to.have.length(2);
+    expect(userPrompts[1]).to.include('Your previous reply was rejected (non_distinct_goal_title).');
+    expect(userPrompts[1]).to.include('Name one concrete unanswered hole');
+    expect(userPrompts[1]).to.include('or return {"done":true');
     expect(result.rejections).to.deep.include({
       attempt: 1,
       reason: 'non_distinct_goal_title',
