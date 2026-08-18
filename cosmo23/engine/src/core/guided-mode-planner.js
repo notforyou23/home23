@@ -830,7 +830,11 @@ class GuidedModePlanner {
         executionKind: 'tool_loop',
         claimedBy: 'launch_loop',
         spawningSource: 'guided_mode',
-        guidedMission: true
+        guidedMission: true,
+        seedPhases: shortPlan.seedPhases || [],
+        expectedOutputs: (shortPlan.seedPhases || [])
+          .map(phase => phase.expectedOutput)
+          .filter(Boolean)
       },
       createdAt: now,
       updatedAt: now
