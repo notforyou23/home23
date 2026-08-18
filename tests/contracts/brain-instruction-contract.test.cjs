@@ -23,12 +23,7 @@ test('active and public instructions expose no removed PGS invocation, raw fract
   for (const relativePath of existingInstructions) {
     const source = read(relativePath);
     const removedReferences = [...source.matchAll(/\bbrain_pgs\b/g)];
-    if (relativePath === 'README.md') {
-      assert.equal(removedReferences.length, 1, 'README may mention brain_pgs only once as migration history');
-      assert.match(source, /`brain_pgs` was merged into `brain_query`/);
-    } else {
-      assert.equal(removedReferences.length, 0, `${relativePath} still invokes brain_pgs`);
-    }
+    assert.equal(removedReferences.length, 0, `${relativePath} still invokes brain_pgs`);
     assert.doesNotMatch(source, /\bsweepFraction\b/, `${relativePath} exposes raw sweepFraction`);
     assert.doesNotMatch(source, /\b(?:wait|sleep)\s+(?:for\s+)?\d+\s*(?:seconds?|minutes?)\b/i,
       `${relativePath} prescribes a fixed sleep`);
@@ -37,27 +32,15 @@ test('active and public instructions expose no removed PGS invocation, raw fract
   }
 });
 
-test('public Brain inventory and examples describe named durable PGS and evidence scope', () => {
+test('public README is the house, not a Cosmo brochure or brain-tool inventory', () => {
   const readme = read('README.md');
-  for (const tool of [
-    'brain_catalog', 'brain_operations_list', 'brain_pgs_partitions',
-    'brain_search', 'brain_query', 'brain_query_export',
-    'brain_memory_graph', 'brain_synthesize', 'brain_status',
-  ]) {
-    const rowMarker = '| `' + tool + '` |';
-    assert.ok(readme.includes(rowMarker), `${tool} missing from README inventory`);
-  }
-  assert.match(readme, /`quick`, `full`, `expert`, and `dive`/);
-  assert.match(readme, /`skim`, `sample`, `deep`, and `full`/);
-  assert.match(readme, /`fresh`, `continue`, and `targeted`/);
-  assert.match(readme, /`continueFromOperationId`/);
-  assert.match(readme, /`fullCoverage: true`/);
-  assert.match(readme, /requested scope/i);
-  assert.match(readme, /graph-wide absence claim/i);
-  assert.match(readme, /cumulative target union/i);
-  assert.match(readme, /use `full` to run every work unit/i);
-  assert.match(readme, /include all earlier target IDs/i);
-  assert.match(readme, /catalog selection is not credential health/i);
+  assert.match(readme, /^# Home23\n/);
+  assert.match(readme, /Cosmo is not the house/);
+  assert.match(readme, /node cli\/home23\.js setup/);
+  assert.match(readme, /docs\/ONBOARDING\.md/);
+  assert.doesNotMatch(readme, /not another chatbot framework/i);
+  assert.doesNotMatch(readme, /Four integrated systems/);
+  assert.doesNotMatch(readme, /\bbrain_catalog\b/);
   assert.doesNotMatch(readme, /\b49 registered tools\b/);
 });
 
