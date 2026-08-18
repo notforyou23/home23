@@ -275,7 +275,9 @@ describe('Writeup gate', () => {
       { findings: [], status: 'complete', note: 'Source collection was attempted.' },
       { findings: ['One quote'], finished: false },
       { findings: ['One quote'], success: false },
-      { findings: ['One quote'], status: 'failed' }
+      { findings: ['One quote'], status: 'failed' },
+      { findings: ['One quote'], failed: true },
+      { findings: ['One quote'], error: 'network failure' }
     ];
     for (const [index, content] of cases.entries()) {
       const runtimePath = tempRuntime();

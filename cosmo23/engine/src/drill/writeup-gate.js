@@ -29,7 +29,7 @@ const UNFINISHED_STATUS_PATTERN = /\b(?:in[\s-]*progress|incomplete|pending|draf
 const PROGRESS_BASENAME_PATTERN = /(?:^|[-_.])progress(?:[-_.]|$)/i;
 const EMPTY_SECTION_PATTERN = /^(?:findings?|results?|evidence|quotes?|sources?)$/i;
 const JSON_RESULT_KEY_PATTERN = /^(?:data|entries|evidence|findings?|items|quotes?|records?|results?|sources?)$/i;
-const JSON_METADATA_KEY_PATTERN = /^(?:at|bytes|complete|completed|count|createdAt|done|fileName|finished|generatedAt|id|name|path|sha256|state|status|success|timestamp|total|updatedAt|valid|verified|version)$/i;
+const JSON_METADATA_KEY_PATTERN = /^(?:aborted|at|bytes|cancelled|complete|completed|count|createdAt|done|error|failed|failure|fileName|finished|generatedAt|id|name|path|sha256|state|status|success|timestamp|total|updatedAt|valid|verified|version)$/i;
 
 function isInside(root, target) {
   const relative = path.relative(root, target);
@@ -110,6 +110,12 @@ function jsonHasFinishedWork(value, key = '') {
       }
       if (/^(?:complete|completed|done|finished|success|valid|verified)$/i.test(entryKey)
           && entryValue === false) {
+        return false;
+      }
+      if (/^(?:aborted|cancelled|error|failed|failure)$/i.test(entryKey)
+          && ((typeof entryValue === 'boolean' && entryValue)
+            || (typeof entryValue === 'string' && entryValue.trim())
+            || (Array.isArray(entryValue) && entryValue.length > 0))) {
         return false;
       }
     }
