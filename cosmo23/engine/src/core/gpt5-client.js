@@ -10,6 +10,16 @@ function loadOpenAI() {
   }
 }
 
+function toResponsesToolChoice(toolChoice) {
+  if (toolChoice
+      && typeof toolChoice === 'object'
+      && toolChoice.type === 'function'
+      && toolChoice.function?.name) {
+    return { type: 'function', name: toolChoice.function.name };
+  }
+  return toolChoice;
+}
+
 /**
  * GPT-5.2 Responses API Client Wrapper
  * Uses OpenAI's new Responses API with GPT-5.2 models and tool support
@@ -125,7 +135,7 @@ class GPT5Client {
       payload.tools = tools;
       const toolChoiceValue = tool_choice ?? toolChoice ?? 'auto';
       const parallelToolCallsValue = parallel_tool_calls ?? parallelToolCalls;
-      payload.tool_choice = toolChoiceValue;
+      payload.tool_choice = toResponsesToolChoice(toolChoiceValue);
       payload.parallel_tool_calls = parallelToolCallsValue;
     }
 
@@ -928,4 +938,4 @@ class GPT5Client {
   }
 }
 
-module.exports = { GPT5Client };
+module.exports = { GPT5Client, toResponsesToolChoice };

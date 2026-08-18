@@ -19,6 +19,28 @@ const WRITE_NUDGE_AFTER_TURNS = 6;
 const WRITE_NUDGE_TAIL_TURNS = 5;
 const FORCE_FINISH_AFTER_TURNS = 8;
 const DEFAULT_CALL_TIMEOUT_MS = 120000;
+const REQUIRED_TOOL_STAGES = new Set(['write', 'remember', 'finish']);
+
+function requiresToolCall(policy = {}) {
+  return policy.toolChoice === 'required' || REQUIRED_TOOL_STAGES.has(policy.stage);
+}
+
+function forcedFunctionChoice(policy = {}) {
+  if (!requiresToolCall(policy) || policy.allowedNames?.length !== 1) {
+    return policy.toolChoice || 'auto';
+  }
+  return {
+    type: 'function',
+    function: { name: policy.allowedNames[0] }
+  };
+}
+
+function toolCallsSatisfyPolicy(toolCalls, policy = {}) {
+  if (!Array.isArray(toolCalls) || toolCalls.length === 0) return false;
+  if (!Array.isArray(policy.allowedNames)) return true;
+  const allowed = new Set(policy.allowedNames);
+  return toolCalls.every(call => allowed.has(call?.function?.name));
+}
 
 function writeNudgeMessage(turns, maxTurns) {
   const used = Number(turns) || 0;
@@ -58,6 +80,7 @@ class LaunchLoop {
     this.turns = 0;
     this.productLoop = RESEARCH_PRODUCT_LOOP;
     this.fatalError = null;
+    this.protocolError = null;
     this._promise = null;
   }
 
@@ -85,8 +108,9 @@ class LaunchLoop {
       return { allowedNames: ['write_file'], toolChoice: 'required', stage: 'write' };
     }
     if (!writeupExists
-        && (Number(this.evidence?.streamed) || 0) > 0
-        && (this.turns > WRITE_NUDGE_AFTER_TURNS || remaining <= WRITE_NUDGE_TAIL_TURNS)) {
+        && (this.turns >= FORCE_FINISH_AFTER_TURNS
+          || ((Number(this.evidence?.streamed) || 0) > 0
+            && (this.turns > WRITE_NUDGE_AFTER_TURNS || remaining <= WRITE_NUDGE_TAIL_TURNS)))) {
       return { allowedNames: ['write_file'], toolChoice: 'required', stage: 'write' };
     }
     return { allowedNames: null, toolChoice: 'auto', stage: 'research' };
@@ -155,6 +179,28 @@ class LaunchLoop {
     });
   }
 
+  stopProtocolViolation(policy, assistantMsg) {
+    const requiredTool = policy?.allowedNames?.[0] || 'required tool';
+    const chars = typeof assistantMsg?.content === 'string' ? assistantMsg.content.length : 0;
+    this.running = false;
+    this.protocolError = `Model refused required ${requiredTool} call`;
+    this.logger?.error?.('Research Launch loop stopped: required tool was not called', {
+      productLoop: RESEARCH_PRODUCT_LOOP,
+      stage: policy?.stage || null,
+      requiredTool,
+      chars,
+      turns: this.turns
+    });
+    this.emitProgress({
+      type: 'launch_loop_error',
+      fatal: true,
+      errorType: 'tool_protocol_error',
+      stage: policy?.stage || null,
+      requiredTool,
+      message: this.protocolError
+    });
+  }
+
   async run() {
     const short = this.plan?.shortPlan || this.plan || {};
     const goal = short.goal || this.plan?.title || 'Research the stated topic';
@@ -176,19 +222,52 @@ class LaunchLoop {
       this.logger?.info?.('Research Launch loop turn', { turn: this.turns, maxTurns: this.maxTurns });
       this.emitProgress({ type: 'launch_loop_turn', turn: this.turns });
 
-      const response = await this.callLLM(this.toolPolicy());
-      const assistantMsg = response?.choices?.[0]?.message;
-      const content = assistantMsg?.content || '';
+      const policy = this.toolPolicy();
+      let response = await this.callLLM(policy);
+      let assistantMsg = response?.choices?.[0]?.message;
+      let content = assistantMsg?.content || '';
       if (isFatalAuthError(response) || isFatalAuthError(content)) {
         this.stopFatalAuth(response || content);
         break;
       }
-      if (!assistantMsg) {
-        this.logger?.warn?.('Research Launch loop: empty model response', { turn: this.turns });
-        continue;
+
+      let toolCalls = assistantMsg?.tool_calls;
+      const requiredToolMissing = requiresToolCall(policy)
+        && !toolCallsSatisfyPolicy(toolCalls, policy);
+      const emptyResearchReply = !requiresToolCall(policy)
+        && (!assistantMsg || (!String(content).trim() && (!Array.isArray(toolCalls) || toolCalls.length === 0)));
+
+      if (requiredToolMissing || emptyResearchReply) {
+        this.logger?.warn?.('Research Launch loop: refusing non-work model reply', {
+          turn: this.turns,
+          stage: policy.stage,
+          requiredTool: policy.allowedNames?.[0] || null,
+          chars: String(content).length
+        });
+        response = await this.callLLM({ ...policy, forceFunction: requiredToolMissing });
+        assistantMsg = response?.choices?.[0]?.message;
+        content = assistantMsg?.content || '';
+        toolCalls = assistantMsg?.tool_calls;
+        if (isFatalAuthError(response) || isFatalAuthError(content)) {
+          this.stopFatalAuth(response || content);
+          break;
+        }
       }
 
-      const toolCalls = assistantMsg.tool_calls;
+      if (requiresToolCall(policy) && !toolCallsSatisfyPolicy(toolCalls, policy)) {
+        this.stopProtocolViolation(policy, assistantMsg);
+        break;
+      }
+      if (!assistantMsg || (!String(content).trim() && (!Array.isArray(toolCalls) || toolCalls.length === 0))) {
+        this.running = false;
+        this.protocolError = 'Model returned empty replies without doing work';
+        this.logger?.error?.('Research Launch loop stopped: repeated empty model reply', {
+          turn: this.turns,
+          stage: policy.stage
+        });
+        break;
+      }
+
       if (toolCalls && toolCalls.length > 0) {
         this.messages.push(assistantMsg);
         // Reasoning alongside tool calls is work too — onto the tape.
@@ -313,7 +392,7 @@ class LaunchLoop {
         ...this.messages
       ],
       tools: toChatTools(policy.allowedNames),
-      toolChoice: policy.toolChoice || 'auto',
+      toolChoice: forcedFunctionChoice(policy),
       temperature: 0.4,
       maxTokens: 4000
     });
@@ -372,7 +451,10 @@ class LaunchLoop {
       productLoop: RESEARCH_PRODUCT_LOOP,
       summary: this.finishSummary,
       fatalError: this.fatalError || null,
-      status: this.fatalError ? 'error' : (this.finished ? 'finished' : (this.running ? 'running' : 'stopped'))
+      protocolError: this.protocolError || null,
+      status: (this.fatalError || this.protocolError)
+        ? 'error'
+        : (this.finished ? 'finished' : (this.running ? 'running' : 'stopped'))
     };
   }
 }
@@ -384,6 +466,9 @@ module.exports = {
   WRITE_NUDGE_TAIL_TURNS,
   FORCE_FINISH_AFTER_TURNS,
   DEFAULT_CALL_TIMEOUT_MS,
+  requiresToolCall,
+  forcedFunctionChoice,
+  toolCallsSatisfyPolicy,
   writeNudgeMessage,
   tools
 };
