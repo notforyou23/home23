@@ -572,11 +572,11 @@
 
       <section class="view" id="view-watch">
         <div class="watch-layout">
-          <section class="panel">
+          <section class="panel watch-overview">
             <div class="panel-head">
               <div>
-                <p class="eyebrow">Runtime</p>
-                <h2>Watch</h2>
+                <p class="eyebrow">Research run</p>
+                <h2>The desk</h2>
               </div>
               <div class="action-row">
                 <a class="ghost-btn" id="watch-dashboard-link" href="#" target="_blank" rel="noopener noreferrer">Open Dashboard</a>
@@ -603,6 +603,60 @@
                 <strong id="watch-started-at">-</strong>
               </div>
             </div>
+
+            <div class="drill-pulse" id="drill-pulse" aria-live="polite">
+              <div class="drill-metric"><span>Lifecycle</span><strong id="drill-lifecycle">Idle</strong></div>
+              <div class="drill-metric"><span>Cycles</span><strong id="drill-cycles">0 / —</strong></div>
+              <div class="drill-metric"><span>Time left</span><strong id="drill-time-left">—</strong></div>
+              <div class="drill-metric"><span>Workers</span><strong id="drill-workers-count">0</strong></div>
+              <div class="drill-metric"><span>Sources</span><strong id="drill-sources-count">0</strong></div>
+              <div class="drill-metric"><span>Brain tape</span><strong id="drill-brain-count">0</strong></div>
+              <div class="drill-metric"><span>Writeups</span><strong id="drill-writeups-count">0</strong></div>
+              <div class="drill-metric"><span>Files</span><strong id="drill-files-count">0</strong></div>
+            </div>
+
+            <div class="drill-mission">
+              <div>
+                <p class="eyebrow">Current goal</p>
+                <h3 id="drill-goal">No active goal</h3>
+                <p class="muted-copy" id="drill-goal-why">Launch a run to begin drilling.</p>
+              </div>
+              <div class="drill-workers" id="drill-workers"></div>
+            </div>
+            <div class="drill-phases" id="drill-phases"></div>
+            <div class="drill-goal-history" id="drill-goal-history"></div>
+
+            <form class="drill-note-form" id="drill-note-form">
+              <label for="drill-note-input">Steer the next worker</label>
+              <div>
+                <input id="drill-note-input" maxlength="4000" placeholder="Add a durable operator note…" />
+                <button class="primary-btn" type="submit" id="drill-note-submit">Send note</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel drill-evidence-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Disk is the tape</p>
+                <h2>Work in the open</h2>
+              </div>
+            </div>
+            <div class="drill-evidence-grid">
+              <article>
+                <div class="drill-column-head"><h3>Brain</h3><span id="drill-brain-empty">No tape yet</span></div>
+                <div class="drill-ledger" id="drill-brain-ledger"></div>
+              </article>
+              <article>
+                <div class="drill-column-head"><h3>Sources</h3><span id="drill-sources-empty">No receipts yet</span></div>
+                <div class="drill-ledger" id="drill-sources-ledger"></div>
+              </article>
+              <article>
+                <div class="drill-column-head"><h3>Files</h3><span id="drill-files-empty">No files yet</span></div>
+                <div class="drill-ledger" id="drill-files-ledger"></div>
+              </article>
+            </div>
+            <pre class="drill-file-preview" id="drill-file-preview" hidden></pre>
           </section>
 
           <section class="panel panel-feed">

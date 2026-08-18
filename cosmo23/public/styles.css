@@ -573,7 +573,7 @@ button {
 }
 
 .watch-layout {
-  grid-template-columns: minmax(240px, 0.85fr) minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: stretch;
 }
 
@@ -2149,7 +2149,215 @@ button {
    ══════════════════════════════════════════════════════════════════════════ */
 
 .watch-status-grid {
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.watch-overview,
+.drill-evidence-panel {
+  grid-column: 1 / -1;
+}
+
+.drill-pulse {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.drill-metric {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 5%, white);
+}
+
+.drill-metric span,
+.drill-phase span,
+.drill-ledger-meta {
+  display: block;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.drill-metric strong {
+  display: block;
+  margin-top: 5px;
+  overflow: hidden;
+  font-size: 0.95rem;
+  text-overflow: ellipsis;
+}
+
+.drill-mission {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: center;
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.drill-mission h3,
+.drill-column-head h3 {
+  margin: 4px 0;
+}
+
+.drill-workers {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.drill-worker-chip {
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 9%, white);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 0.74rem;
+}
+
+.drill-phases {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.drill-phase {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--muted);
+  border-radius: var(--radius-sm);
+}
+
+.drill-phase.active {
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, white);
+}
+
+.drill-phase.done {
+  border-left-color: #477c55;
+  background: #f1f8f2;
+}
+
+.drill-phase strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.drill-goal-history {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.drill-goal-history span {
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.drill-note-form {
+  display: grid;
+  gap: 7px;
+  margin-top: 18px;
+}
+
+.drill-note-form label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.drill-note-form > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.drill-note-form input {
+  width: 100%;
+}
+
+.drill-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.drill-evidence-grid > article {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--panel) 92%, var(--accent) 2%);
+}
+
+.drill-column-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.drill-column-head span {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.drill-ledger {
+  display: grid;
+  gap: 6px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.drill-ledger-row {
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: 9px;
+  background: white;
+}
+
+.drill-ledger-row.clickable {
+  cursor: pointer;
+}
+
+.drill-ledger-row.clickable:hover,
+.drill-ledger-row.clickable:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.drill-ledger-row p {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 0.83rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.drill-file-preview {
+  max-height: 440px;
+  margin: 14px 0 0;
+  padding: 16px;
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  background: var(--console-bg);
+  color: var(--console-text);
+  white-space: pre-wrap;
 }
 
 .stat-card {
@@ -2278,6 +2486,10 @@ button {
    ══════════════════════════════════════════════════════════════════════════ */
 
 @media (max-width: 1200px) {
+  .drill-pulse {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
   .panel-feed {
     min-height: 420px;
   }
@@ -2326,6 +2538,20 @@ button {
 }
 
 @media (max-width: 900px) {
+  .drill-pulse,
+  .watch-status-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .drill-evidence-grid,
+  .drill-mission {
+    grid-template-columns: 1fr;
+  }
+
+  .drill-workers {
+    justify-content: flex-start;
+  }
+
   .app-shell {
     width: 100%;
     margin: 0;

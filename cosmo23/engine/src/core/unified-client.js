@@ -500,7 +500,9 @@ class UnifiedClient extends GPT5Client {
       query = null,  // Support query parameter
       maxTokens = 2000,
       reasoningEffort = 'medium',
-      tools = []
+      tools = [],
+      toolChoice,
+      tool_choice
     } = options;
     
     // Build payload - xAI uses same format as OpenAI Responses API
@@ -559,6 +561,7 @@ class UnifiedClient extends GPT5Client {
     } else if (tools.length > 0) {
       // Other tools pass through
       payload.tools = tools;
+      payload.tool_choice = tool_choice ?? toolChoice ?? 'auto';
     }
     
     // Call xAI (same streaming format as OpenAI)
@@ -731,7 +734,7 @@ class UnifiedClient extends GPT5Client {
 
     if (tools.length > 0) {
       body.tools = tools;
-      body.tool_choice = 'auto';
+      body.tool_choice = options.tool_choice ?? options.toolChoice ?? 'auto';
     }
 
     // POST to chatgpt.com/backend-api/codex/responses (NOT /responses)

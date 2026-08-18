@@ -39,6 +39,13 @@ const {
   loadModelCatalogSync
 } = require('../../../server/config/model-catalog');
 const { deriveResearchContract } = require('./research-contract');
+const { composeShortLaunchPlan, isToolLoopPlan, isLegacySpecialistPlan } = require('../agent/short-plan');
+const { DrillLoop } = require('../drill/drill-loop');
+const {
+  RESEARCH_PRODUCT_LOOP,
+  INTERACTIVE_PRODUCT_LOOP,
+  resolveProductLoop
+} = require('../../../lib/research-launch');
 
 function normalizeList(value) {
   if (!value) return [];
@@ -339,6 +346,17 @@ class GuidedModePlanner {
       
       // Fall through to generate new plan
     }
+
+    // Fresh guided launches are product drills. Keep the legacy planner below
+    // intact for old specialist plans and explicit compatibility callers, but
+    // do not make a new Launch wait for a paper-shaped task graph.
+    this.logger?.info('📋 Composing short research plan...');
+    this.logger?.info('');
+    return this.composeAndPersistShortLaunchPlan({
+      guidedFocus,
+      executionMode,
+      contextRedirect
+    });
     
     // Only generate plan if this is a NEW run
     this.logger?.info('📋 Generating new mission plan...');
@@ -739,6 +757,165 @@ class GuidedModePlanner {
       taskPhases,
       executionMode,
       planningContext
+    };
+  }
+
+  /**
+   * Persist the small contract the drill needs: question, constraints, and
+   * deliverable. The drill owns the phase chain; PlanExecutor only records
+   * that the research loop owns this run.
+   */
+  async composeAndPersistShortLaunchPlan({ guidedFocus, executionMode, contextRedirect = false }) {
+    const shortPlan = composeShortLaunchPlan(guidedFocus);
+    const requestedPhases = this.parseTaskPhases(guidedFocus.context)
+      .filter(phase => phase.source === 'explicit_phase');
+    if (requestedPhases.length > 0) {
+      shortPlan.seedPhases = requestedPhases.map(phase => ({
+        title: phase.name,
+        mission: phase.rawText || phase.description || phase.name,
+        expectedOutput: phase.expectedOutput || null
+      }));
+    }
+    const stateStore = this.subsystems.clusterStateStore;
+    const now = Date.now();
+    const guidedPlan = {
+      id: 'plan:main',
+      title: shortPlan.goal,
+      context: guidedFocus.context || '',
+      researchDomain: guidedFocus.researchDomain || guidedFocus.domain,
+      researchContext: guidedFocus.researchContext || guidedFocus.context || '',
+      _sourceContext: (guidedFocus.context || '').trim(),
+      _sourceDomain: (guidedFocus.domain || '').trim(),
+      version: 1,
+      status: 'ACTIVE',
+      executionKind: shortPlan.executionKind,
+      claimedBy: shortPlan.claimedBy,
+      shortPlan,
+      milestones: [],
+      createdAt: now,
+      updatedAt: now
+    };
+    const milestone = {
+      id: 'ms:research',
+      planId: guidedPlan.id,
+      title: shortPlan.goal,
+      order: 1,
+      status: 'ACTIVE',
+      createdAt: now,
+      updatedAt: now
+    };
+    guidedPlan.milestones = [milestone.id];
+    guidedPlan.activeMilestone = milestone.id;
+    const task = {
+      id: 'task:research',
+      planId: guidedPlan.id,
+      milestoneId: milestone.id,
+      title: shortPlan.goal,
+      description: [
+        shortPlan.goal,
+        shortPlan.constraints.length ? `Constraints: ${shortPlan.constraints.join(' | ')}` : null,
+        `Deliverable: ${shortPlan.deliverable}`
+      ].filter(Boolean).join('\n'),
+      tags: [guidedFocus.domain, 'guided', 'tool_loop'].filter(Boolean),
+      deps: [],
+      priority: 10,
+      state: 'IN_PROGRESS',
+      assignedAgentId: 'launch_loop',
+      artifacts: [],
+      metadata: {
+        executionKind: 'tool_loop',
+        claimedBy: 'launch_loop',
+        spawningSource: 'guided_mode',
+        guidedMission: true
+      },
+      createdAt: now,
+      updatedAt: now
+    };
+
+    if (stateStore && typeof stateStore.createPlan === 'function') {
+      await stateStore.createPlan(guidedPlan);
+      await stateStore.upsertMilestone?.(milestone);
+      await stateStore.upsertTask?.(task);
+    } else {
+      this.logger?.warn('⚠️  No state store — short plan will not persist');
+    }
+
+    this._shortPlan = shortPlan;
+    return {
+      strategy: shortPlan.goal,
+      executionKind: shortPlan.executionKind,
+      claimedBy: shortPlan.claimedBy,
+      shortPlan,
+      spawnAgents: false,
+      agentMissions: [],
+      taskPhases: [],
+      executionMode,
+      deliverable: { type: 'artifact', filename: 'research', location: '@outputs/' },
+      _deferredSpawn: { shouldSpawn: false, missionGoalIds: [] },
+      planningContext: {
+        contextRedirect: Boolean(contextRedirect),
+        hasContext: false
+      }
+    };
+  }
+
+  /**
+   * Start or recover the one research drill behind Launch. Interactive stays
+   * chat-only, and an existing specialist plan remains on its legacy executor.
+   */
+  async startLaunchLoop(options = {}) {
+    const requested = options.productLoop;
+    resolveProductLoop(requested);
+    if (requested === INTERACTIVE_PRODUCT_LOOP || options.subordinate === true) {
+      this.logger?.warn('Interactive is chat-only — Launch starts the research drill');
+    }
+
+    const plan = options.plan
+      || this._shortPlan
+      || (this.subsystems.clusterStateStore?.getPlan
+        ? await this.subsystems.clusterStateStore.getPlan('plan:main')
+        : null);
+    if (isLegacySpecialistPlan(plan) && !isToolLoopPlan(plan) && !options.force) {
+      return {
+        started: false,
+        productLoop: RESEARCH_PRODUCT_LOOP,
+        subordinate: false,
+        reason: 'legacy_specialist_plan'
+      };
+    }
+
+    const existing = this._launchLoop || this.subsystems.orchestrator?.launchLoop;
+    if (existing?.running || existing?.started) {
+      this._launchLoop = existing;
+      return {
+        started: true,
+        productLoop: RESEARCH_PRODUCT_LOOP,
+        subordinate: false,
+        reused: true
+      };
+    }
+
+    const orchestrator = options.orchestrator || this.subsystems.orchestrator;
+    const createLoop = options.createLoop || ((args) => new DrillLoop(args));
+    const loop = createLoop({
+      orchestrator,
+      config: this.config,
+      logger: this.logger,
+      client: options.client || this.client || this.subsystems.client,
+      plan: {
+        ...(plan || {}),
+        shortPlan: plan?.shortPlan || this._shortPlan || (isToolLoopPlan(plan) ? plan : null)
+      }
+    });
+    this._launchLoop = loop;
+    if (orchestrator) orchestrator.launchLoop = loop;
+
+    const startResult = loop.start();
+    return {
+      started: startResult?.started !== false,
+      productLoop: RESEARCH_PRODUCT_LOOP,
+      subordinate: false,
+      reused: Boolean(startResult?.reused)
     };
   }
 

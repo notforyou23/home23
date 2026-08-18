@@ -510,13 +510,103 @@ class Orchestrator {
         this.config,
         {
           ...this.subsystems,
-          client: this.coordinator?.gpt5
+          client: this.coordinator?.gpt5,
+          orchestrator: this,
+          clusterStateStore: this.clusterStateStore,
+          agentExecutor: this.agentExecutor,
+          pathResolver: this.pathResolver,
+          memory: this.memory
         },
         this.logger
       );
     }
 
     return this.guidedPlanner;
+  }
+
+  async ensureResearchLaunchLoop() {
+    if (this.config?.architecture?.roleSystem?.explorationMode !== 'guided') {
+      return { started: false, productLoop: 'research', reason: 'not_guided' };
+    }
+    const planner = this.getGuidedPlanner();
+    const plan = this.guidedMissionPlan
+      || (this.clusterStateStore?.getPlan
+        ? await this.clusterStateStore.getPlan('plan:main')
+        : null);
+    return planner.startLaunchLoop({
+      orchestrator: this,
+      plan,
+      client: this.coordinator?.gpt5 || this.agentExecutor?.gpt5
+    });
+  }
+
+  isProductDrill(loop = this.launchLoop) {
+    return loop?.productLoop === 'research'
+      && typeof loop?.budgetExhaustedReason === 'function'
+      && loop?.started === true;
+  }
+
+  drillProgressSignature(loop = this.launchLoop) {
+    if (!loop) return '';
+    const workers = [...(loop.activeWorkers?.values?.() || [])]
+      .map(entry => `${entry.workerId}:${Number(entry.worker?.turns) || 0}`)
+      .sort()
+      .join(',');
+    return [
+      loop.mode,
+      Number(loop.cyclesUsed) || 0,
+      Number(loop.turns) || 0,
+      workers
+    ].join('|');
+  }
+
+  /**
+   * Product drills own the engine process while they run. Do not run the
+   * legacy cognitive cycle, sleep policy, governance park, or cycle watchdog
+   * beside them. The drill has its own bounded workers and budgets.
+   */
+  async runProductDrillLifecycle() {
+    const loop = this.launchLoop;
+    let lastProgress = null;
+    this.logger.info('🔩 Research drill owns the run lifecycle');
+
+    while (this.running && loop?.running) {
+      const signature = this.drillProgressSignature(loop);
+      if (signature !== lastProgress) {
+        lastProgress = signature;
+        const now = new Date().toISOString();
+        this.heartbeatWriter?.stamp({
+          cycle: Number(loop.cyclesUsed) || 0,
+          lastCycleStartTs: now,
+          lastCycleEndTs: now,
+          phase: 'drilling'
+        });
+      }
+      await this.sleep(250);
+    }
+
+    if (loop?._promise) await loop._promise;
+    if (this.runCompletionRequested) {
+      await this.finishRequestedRunCompletion();
+      return;
+    }
+    if (loop?.finished) {
+      this.requestRunCompletion(
+        `drill_${loop.doneReason || 'done'}`,
+        { id: 'plan:main', title: loop.question },
+        'drill'
+      );
+      await this.finishRequestedRunCompletion();
+      return;
+    }
+    if (loop?.mode === 'error') {
+      this.requestRunCompletion(
+        'drill_error',
+        { id: 'plan:main', title: loop.question },
+        'drill'
+      );
+      await this.finishRequestedRunCompletion();
+    }
   }
 
   /**
@@ -736,7 +826,8 @@ class Orchestrator {
           taskStateQueue: this.taskStateQueue,
           recordPlanEvent: (type, details) => this.recordPlanEvent(type, details),
           maxRetries: this.config.planning?.maxRetries || 3,
-          agentTimeout: this.config.planning?.agentTimeout || 720000
+          agentTimeout: this.config.planning?.agentTimeout || 720000,
+          ensureLaunchLoop: () => this.ensureResearchLaunchLoop()
         }
       );
       this.logger.info('✅ Plan Executor initialized (Plan Authority)', {
@@ -1082,6 +1173,12 @@ class Orchestrator {
     const maxCyclesConfig = this.config.execution?.maxCycles;
     const maxRuntimeConfig = this.config.execution?.maxRuntimeMinutes;
     this.logger.info(`🚀 Starting GPT-5.2 cognitive loop... (maxCycles: ${maxCyclesConfig || 'unlimited'}, maxRuntime: ${maxRuntimeConfig ? maxRuntimeConfig + ' min' : 'unlimited'})`);
+
+    const launchLoopResult = await this.ensureResearchLaunchLoop();
+    if (launchLoopResult?.started && this.isProductDrill()) {
+      await this.runProductDrillLifecycle();
+      return;
+    }
     
     while (this.running) {
       // Check recursive planner halt condition
@@ -10466,6 +10563,9 @@ OUTPUT FORMAT (JSON ONLY):
   async stop() {
     this.logger.info('Stopping GPT-5.2 system...');
     this.running = false;
+    if (this.launchLoop && typeof this.launchLoop.stop === 'function') {
+      this.launchLoop.stop();
+    }
 
     // Phase 2 (H1): clear the heartbeat interval; the final stamp marks a
     // deliberate stop (a stopped run's heartbeat then goes stale naturally).
