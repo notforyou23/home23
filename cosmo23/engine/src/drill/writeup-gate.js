@@ -33,8 +33,12 @@ function isWriteupName(fileName) {
   return WRITEUP_EXTENSIONS.has(ext);
 }
 
-function isHiddenDumpPath(filePath) {
+function isHiddenDumpPath(filePath, runtimePath = null) {
   const resolved = path.resolve(String(filePath || ''));
+  if (runtimePath) {
+    const outputsRoot = path.resolve(runtimePath, 'outputs');
+    if (isInside(outputsRoot, resolved)) return false;
+  }
   if (resolved.startsWith('/tmp/') || resolved === '/tmp') return true;
   if (resolved.startsWith('/var/tmp/') || resolved === '/var/tmp') return true;
   return false;
@@ -68,7 +72,7 @@ function listWriteups(runtimePath) {
       if (!entry.isFile()) continue;
       if (TAPE_BASENAMES.has(entry.name)) continue;
       if (!isWriteupName(entry.name)) continue;
-      if (isHiddenDumpPath(full)) continue;
+      if (isHiddenDumpPath(full, runtimePath)) continue;
       try {
         const real = fs.realpathSync(full);
         if (!isInside(outputsRoot, real)) continue;

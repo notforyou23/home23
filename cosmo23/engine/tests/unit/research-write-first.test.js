@@ -52,8 +52,8 @@ describe('Writeup gate', () => {
     expect(hasPhaseWriteup(runtimePath)).to.equal(true);
     expect(listWriteups(runtimePath)).to.include('outputs/report.md');
     expect(listWriteups(runtimePath).some((file) => file.includes('stream.jsonl'))).to.equal(false);
-    expect(isHiddenDumpPath(hidden)).to.equal(true);
-    expect(isHiddenDumpPath(path.join(runtimePath, 'outputs', 'report.md'))).to.equal(false);
+    expect(isHiddenDumpPath(hidden, runtimePath)).to.equal(true);
+    expect(isHiddenDumpPath(path.join(runtimePath, 'outputs', 'report.md'), runtimePath)).to.equal(false);
   });
 
   it('builds a short harvest digest from this phase\'s stream', () => {

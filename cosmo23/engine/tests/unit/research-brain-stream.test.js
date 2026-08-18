@@ -500,7 +500,7 @@ describe('Hidden work cannot close a phase — anything on the record can', () =
     }
     expect(orchestrator.events.some((event) => event.type === 'drill_phase_rejected')).to.equal(true);
     // The relaunched worker was told why.
-    expect(JSON.stringify(spawned[1].plan)).to.include('nothing on the record');
+    expect(JSON.stringify(spawned[1].plan)).to.include('without a writeup under outputs');
   });
 
   it('a worker whose only record is a curl harvest CANNOT close the phase — writeup required', async function () {

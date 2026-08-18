@@ -590,10 +590,16 @@ describe('Fatal Anthropic OAuth / 401', () => {
             choices: [{
               message: {
                 role: 'assistant',
-                tool_calls: [{
-                  id: 'call_finish',
-                  function: { name: 'finish', arguments: JSON.stringify({ summary: 'Wrote the anecdote' }) }
-                }]
+                tool_calls: [
+                  {
+                    id: 'call_write',
+                    function: { name: 'write_file', arguments: JSON.stringify({ path: 'anecdote.md', content: '# Fillmore\n\nGarcia once got a 401 at the Fillmore.' }) }
+                  },
+                  {
+                    id: 'call_finish',
+                    function: { name: 'finish', arguments: JSON.stringify({ summary: 'Wrote the anecdote' }) }
+                  }
+                ]
               }
             }]
           };
