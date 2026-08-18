@@ -2290,6 +2290,11 @@ button {
   width: 100%;
 }
 
+.drill-note-form :disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .drill-evidence-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
