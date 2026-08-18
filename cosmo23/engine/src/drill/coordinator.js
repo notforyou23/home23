@@ -6,9 +6,9 @@
  * The coordinator organizes the drill's goal chain: it composes a goal with
  * concrete phases, assigns open phases to workers (one bit per phase, in
  * parallel up to the concurrency cap), merges phase results when a goal
- * completes, and invents the next goal from what was learned. It never does
- * the research itself and its output never tells a worker to review what is
- * already here.
+ * completes, and selects the next named hole from what was learned or closes
+ * the hunt. It never does the research itself and its output never tells a
+ * worker to review what is already here.
  */
 
 const { FORBIDDEN_PLAN_PHRASES } = require('../agent/short-plan');
@@ -30,6 +30,21 @@ function extractJson(text) {
 function containsForbiddenPhrase(value) {
   const blob = JSON.stringify(value || '').toLowerCase();
   return FORBIDDEN_PLAN_PHRASES.some((phrase) => blob.includes(phrase.toLowerCase()));
+}
+
+function normalizedGoalTitle(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\b(?:goal|round)\s*#?\d+\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function isInvalidChainGoalTitle(title, question) {
+  const normalized = normalizedGoalTitle(title);
+  if (!normalized) return true;
+  if (/\bgo deeper\b/.test(normalized)) return true;
+  return normalized === normalizedGoalTitle(question);
 }
 
 class DrillCoordinator {
@@ -109,9 +124,9 @@ class DrillCoordinator {
   }
 
   /**
-   * Compose a goal spec: { title, why, phases: [{title, mission}] }.
-   * Returns { spec, degraded } — degraded specs keep the drill drilling when
-   * the planning call fails or produces forbidden phrasing.
+   * Compose either a goal spec or a terminal result.
+   * Returns { spec, degraded, done, doneReason }. A seed call can degrade to
+   * the launch question; a chain call fails closed rather than inventing work.
    */
   async composeGoal({
     question,
@@ -123,34 +138,48 @@ class DrillCoordinator {
     mergedSummary = null,
     deadlineAt = null
   }) {
-    let spec = null;
+    let result = null;
     try {
-      spec = await this.composeGoalViaModel({
+      result = await this.composeGoalViaModel({
         question, questionContext, previousGoal, goalHistory, number, origin, mergedSummary, deadlineAt
       });
     } catch (err) {
       if (isFatalAuthError(err)) throw err;
-      this.logger?.warn?.('Goal composition failed — using deterministic fallback', { error: err.message });
+      this.logger?.warn?.('Goal composition failed', { error: err.message, origin });
     }
 
-    if (spec) {
-      return { spec, degraded: false };
+    if (result?.done) {
+      return {
+        spec: null,
+        degraded: false,
+        done: true,
+        doneReason: 'research_complete'
+      };
+    }
+
+    if (result) {
+      return { spec: result, degraded: false, done: false, doneReason: null };
+    }
+
+    if (origin !== 'seed') {
+      return {
+        spec: null,
+        degraded: true,
+        done: false,
+        doneReason: 'goal_generation_failed'
+      };
     }
 
     return {
       degraded: true,
+      done: false,
+      doneReason: null,
       spec: {
-        title: origin === 'seed'
-          ? question
-          : `Go deeper on ${question} (round ${number})`,
-        why: origin === 'seed'
-          ? 'Seed goal from the launch question.'
-          : 'Continue the drill beyond completed rounds without repeating finished work.',
+        title: question,
+        why: 'Seed goal from the launch question.',
         phases: [{
-          title: origin === 'seed' ? 'Research and write up' : `Deepen round ${number}`,
-          mission: origin === 'seed'
-            ? `${question}${questionContext ? ` — ${questionContext}` : ''}`
-            : `Advance the research on "${question}" beyond what earlier goals covered. Do not repeat completed work. Find what is missing, verify what is weak, and write it up.`
+          title: 'Research and write up',
+          mission: `${question}${questionContext ? ` — ${questionContext}` : ''}`
         }]
       }
     };
@@ -182,8 +211,12 @@ class DrillCoordinator {
       '- 1 to 4 phases, each a concrete executable mission, not a vague theme.',
       '- Phases must be parallelizable: no phase may wait on another phase of the same goal.',
       '- Never tell a worker to review or inventory what is already here.',
-      '- Never repeat completed work; go deeper, wider, or into what is missing.',
-      'Reply as JSON only: {"title":"...","why":"...","phases":[{"title":"...","mission":"..."}]}'
+      '- A next goal must name a specific unanswered hole: for example a missing source class, conflict, person, or year.',
+      '- "Go deeper" is not a goal title. Never restate the launch question as a next goal.',
+      '- If completed goals already answer the question and no concrete new hole remains, finish the hunt.',
+      'Reply as JSON only with one of:',
+      '{"title":"...","why":"...","phases":[{"title":"...","mission":"..."}]}',
+      '{"done":true,"reason":"why no distinct research goal remains"}'
     ].join('\n');
 
     const user = [
@@ -198,9 +231,16 @@ class DrillCoordinator {
     ].filter(Boolean).join('\n\n');
 
     const parsed = extractJson(await this.callModel(system, user, { deadlineAt }));
+    if (parsed?.done === true) {
+      return origin === 'chain' ? { done: true } : null;
+    }
     if (!parsed?.title || !Array.isArray(parsed.phases) || parsed.phases.length === 0) return null;
     if (containsForbiddenPhrase(parsed)) {
       this.logger?.warn?.('Goal spec contained a forbidden review-what-is-here phrase — rejected');
+      return null;
+    }
+    if (origin === 'chain' && isInvalidChainGoalTitle(parsed.title, question)) {
+      this.logger?.warn?.('Next goal did not name a distinct research hole — rejected');
       return null;
     }
     const phases = parsed.phases.filter((phase) => phase?.title || phase?.mission);

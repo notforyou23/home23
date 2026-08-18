@@ -114,6 +114,7 @@ class DrillLoop {
     this.candidatesHarvestedBytes = 0;
     this.brainWrites = 0;
     this.degradedGoalGeneration = false;
+    this.goalChainDoneReason = null;
   }
 
   get runtimePath() {
@@ -500,7 +501,7 @@ class DrillLoop {
         const previous = this.currentGoal;
         const goal = await this.nextGoal(previous);
         if (!goal) {
-          await this.finishDrill('goal_generation_failed');
+          await this.finishDrill(this.goalChainDoneReason || 'goal_generation_failed');
           return;
         }
         this.currentGoal = goal;
@@ -608,6 +609,7 @@ class DrillLoop {
   // ── Goals: the coordinator composes, merges, and chains ───────────────
 
   async nextGoal(previousGoal) {
+    this.goalChainDoneReason = null;
     const number = previousGoal ? previousGoal.number + 1 : (this.goalHistory.length + 1);
     const origin = previousGoal || this.goalHistory.length > 0 ? 'chain' : 'seed';
 
@@ -637,9 +639,14 @@ class DrillLoop {
         mergedSummary: this.lastMerge?.summary || null,
         deadlineAt: this.timeBudgetMs === null ? null : this.startedAtMs + this.timeBudgetMs
       });
-    const { spec, degraded } = composed;
+    const { spec, degraded, done, doneReason } = composed;
     if (degraded) this.degradedGoalGeneration = true;
-    if (!spec) return null;
+    if (!spec) {
+      this.goalChainDoneReason = done
+        ? (doneReason || 'research_complete')
+        : (doneReason || 'goal_generation_failed');
+      return null;
+    }
 
     return {
       id: shortId('goal'),
@@ -716,7 +723,7 @@ class DrillLoop {
     this.emitEvent('drill_goal_complete', {
       number: goal.number,
       title: goal.title,
-      message: `Goal ${goal.number} complete: ${goal.title} — merged ${goal.phases.length} phases, creating the next goal`
+      message: `Goal ${goal.number} complete: ${goal.title} — merged ${goal.phases.length} phases, deciding what remains`
     });
     await this.persistState();
   }
