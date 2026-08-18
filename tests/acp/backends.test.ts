@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import { buildChildEnv, getBackend, listBackendIds } from '../../src/acp/backends.js';
 import type { BridgeConfig, CodingBackendOptions } from '../../src/acp/types.js';
 
+const grok = getBackend('grok-build')!;
 const claude = getBackend('claude-code')!;
 const codex = getBackend('codex')!;
 
@@ -26,10 +27,35 @@ function config(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
   };
 }
 
-test('registry exposes both built-in backends', () => {
-  assert.deepEqual(listBackendIds().sort(), ['claude-code', 'codex']);
+test('registry exposes all built-in backends and Grok first', () => {
+  assert.deepEqual(listBackendIds(), ['grok-build', 'claude-code', 'codex']);
+  assert.equal(grok.supportsResume, true);
   assert.equal(claude.supportsResume, true);
   assert.equal(codex.supportsResume, true);
+});
+
+test('grok-build argv maps headless permissions, model, effort, and prompt', () => {
+  const args = grok.buildArgs(baseOpts({
+    newSessionId: 'uuid-1',
+    model: 'grok-4.6-build',
+    effort: 'high',
+    appendSystemPrompt: 'be terse',
+  }));
+  assert.deepEqual(args, [
+    '--single', 'fix the bug', '--session-id', 'uuid-1',
+    '--model', 'grok-4.6-build',
+    '--reasoning-effort', 'high',
+    '--always-approve', '--rules', 'be terse',
+    '--output-format', 'streaming-json', '--no-alt-screen',
+  ]);
+});
+
+test('grok-build parses streaming text, tool calls, and terminal session metadata', () => {
+  assert.deepEqual(grok.parseEvents?.('{"type":"text","data":"hello"}'), [{ kind: 'text', text: 'hello' }]);
+  assert.equal(grok.parseEvents?.('{"type":"tool_call","toolName":"run_terminal_command","rawInput":{"command":"pwd"}}')[0]?.kind, 'tool_use');
+  const end = grok.parseEvents?.('{"type":"end","stopReason":"end_turn","sessionId":"sess-1","total_cost_usd":0.1,"num_turns":2}') ?? [];
+  assert.equal(end[0]?.kind, 'session');
+  assert.equal(end[1]?.kind, 'result');
 });
 
 test('claude-code argv for a new job with session id, model, effort, budget', () => {

@@ -107,8 +107,8 @@ export function normalizeBridgeConfig(raw: unknown): BridgeConfig {
   return {
     // Absent block → disabled (opt-in). Present block → enabled unless explicit false.
     enabled: present && src.enabled !== false,
-    defaultAgent: typeof src.defaultAgent === 'string' && src.defaultAgent ? src.defaultAgent : 'claude-code',
-    allowedAgents: Array.isArray(src.allowedAgents) ? src.allowedAgents.map(String) : ['claude-code', 'codex'],
+    defaultAgent: typeof src.defaultAgent === 'string' && src.defaultAgent ? src.defaultAgent : 'grok-build',
+    allowedAgents: Array.isArray(src.allowedAgents) ? src.allowedAgents.map(String) : ['grok-build', 'claude-code', 'codex'],
     permissionMode,
     maxConcurrentJobs: num(src.maxConcurrentJobs, DEFAULT_MAX_CONCURRENT),
     jobTimeoutMs: num(src.jobTimeoutMs, DEFAULT_JOB_TIMEOUT_MS),
@@ -279,7 +279,7 @@ export class ACPBridge {
       else effectiveIsolation = 'none';
     }
 
-    const newSessionId = backendId === 'claude-code' && !opts.resumeSessionId ? randomUUID() : undefined;
+    const newSessionId = (backendId === 'claude-code' || backendId === 'grok-build') && !opts.resumeSessionId ? randomUUID() : undefined;
     const backendOpts: CodingBackendOptions = {
       prompt,
       cwd,

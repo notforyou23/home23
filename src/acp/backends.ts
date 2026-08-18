@@ -183,6 +183,87 @@ const claudeCodeBackend: CodingBackend = {
   },
 };
 
+// ─── grok-build ──────────────────────────────────────────────
+
+function buildGrokArgs(opts: CodingBackendOptions): string[] {
+  // --single consumes the next argv token as its prompt, so keep the prompt
+  // adjacent; placing flags between them makes Grok parse the first flag as text.
+  const args = ['--single', opts.prompt];
+  if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId);
+  else if (opts.newSessionId) args.push('--session-id', opts.newSessionId);
+  if (opts.model) args.push('--model', opts.model);
+  if (opts.effort) args.push('--reasoning-effort', opts.effort);
+  if (opts.permissionMode === 'bypassPermissions') {
+    args.push('--always-approve');
+  } else if (opts.permissionMode === 'allowlist') {
+    for (const rule of opts.allowedTools ?? []) args.push('--allow', rule);
+    for (const rule of opts.disallowedTools ?? []) args.push('--deny', rule);
+  } else {
+    args.push('--permission-mode', opts.permissionMode);
+  }
+  if (opts.appendSystemPrompt) args.push('--rules', opts.appendSystemPrompt);
+  if (opts.extraArgs?.length) args.push(...opts.extraArgs);
+  args.push('--output-format', 'streaming-json', '--no-alt-screen');
+  return args;
+}
+
+function parseGrokEvents(line: string): BridgeEvent[] {
+  const trimmed = line.trim();
+  if (!trimmed) return [];
+  let obj: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== 'object') return [otherEvent(trimmed)];
+    obj = parsed as Record<string, unknown>;
+  } catch {
+    return [otherEvent(trimmed)];
+  }
+
+  const type = String(obj.type ?? '');
+  if (type === 'thought') {
+    return typeof obj.data === 'string' && obj.data ? [{ kind: 'thinking', text: obj.data }] : [];
+  }
+  if (type === 'text') {
+    return typeof obj.data === 'string' && obj.data ? [{ kind: 'text', text: obj.data }] : [];
+  }
+  if (type === 'tool_call') {
+    return [{
+      kind: 'tool_use',
+      tool: String(obj.toolName ?? obj.title ?? 'unknown'),
+      summary: oneLine(typeof obj.rawInput === 'string' ? obj.rawInput : JSON.stringify(obj.rawInput ?? {}), SUMMARY_MAX),
+    }];
+  }
+  if (type === 'end') {
+    const usage = (obj.usage && typeof obj.usage === 'object') ? obj.usage as Record<string, unknown> : {};
+    return [
+      ...(typeof obj.sessionId === 'string' && obj.sessionId ? [{ kind: 'session', sessionId: obj.sessionId } as BridgeEvent] : []),
+      {
+        kind: 'result',
+        ok: String(obj.stopReason ?? '') !== 'error',
+        text: '',
+        costUsd: typeof obj.total_cost_usd === 'number' ? obj.total_cost_usd : undefined,
+        numTurns: typeof obj.num_turns === 'number' ? obj.num_turns : undefined,
+        durationMs: typeof obj.duration_ms === 'number' ? obj.duration_ms : undefined,
+      },
+    ];
+  }
+  return [otherEvent(trimmed)];
+}
+
+const grokBuildBackend: CodingBackend = {
+  id: 'grok-build',
+  binCandidates: ['grok', '/Users/jtr/.local/bin/grok'],
+  supportsResume: true,
+  resolveBin(configBin?: string): string | null {
+    return resolveBinFrom(this.binCandidates, configBin);
+  },
+  buildArgs: buildGrokArgs,
+  parseEvents: parseGrokEvents,
+  parseEvent(line: string): BridgeEvent | null {
+    return parseGrokEvents(line)[0] ?? null;
+  },
+};
+
 // ─── codex ───────────────────────────────────────────────────
 
 function buildCodexArgs(opts: CodingBackendOptions): string[] {
@@ -278,6 +359,7 @@ const codexBackend: CodingBackend = {
 // ─── Registry + child env ────────────────────────────────────
 
 const BACKENDS: Record<string, CodingBackend> = {
+  'grok-build': grokBuildBackend,
   'claude-code': claudeCodeBackend,
   codex: codexBackend,
 };

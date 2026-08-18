@@ -52,6 +52,8 @@ function sleepyCli(dir: string): string {
 function makeBridge(root: string, bin: string, configOverrides: Record<string, unknown> = {}): ACPBridge {
   return new ACPBridge({
     config: normalizeBridgeConfig({
+      defaultAgent: 'claude-code',
+      allowedAgents: ['claude-code', 'grok-build', 'codex'],
       backends: { 'claude-code': { bin } },
       ...configOverrides,
     }),
@@ -354,8 +356,8 @@ test('normalizeBridgeConfig fails closed when absent, defaults when present, map
   // Present-but-empty block opts in with full defaults.
   const present = normalizeBridgeConfig({});
   assert.equal(present.enabled, true);
-  assert.equal(present.defaultAgent, 'claude-code');
-  assert.deepEqual(present.allowedAgents, ['claude-code', 'codex']);
+  assert.equal(present.defaultAgent, 'grok-build');
+  assert.deepEqual(present.allowedAgents, ['grok-build', 'claude-code', 'codex']);
   assert.equal(present.permissionMode, 'bypassPermissions');
   assert.equal(present.maxConcurrentJobs, 3);
   assert.equal(present.jobTimeoutMs, 6 * 60 * 60 * 1000);
