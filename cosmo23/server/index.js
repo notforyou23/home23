@@ -440,6 +440,12 @@ processManager.on('cosmo-exit', ({ code, signal }) => {
   const runPath = activeContext.runPath;
   const brainId = activeContext.brainId || null;
   activeContext = null;
+  // #region agent log
+  try {
+    const diskDrill = JSON.parse(fs.readFileSync(path.join(runPath, 'drill', 'state.json'), 'utf8'));
+    fs.appendFileSync('/opt/cursor/logs/debug.log', `${JSON.stringify({ hypothesisId: 'D|E', location: 'server/index.js:cosmo-exit', message: 'Server cleared active context after engine exit', data: { code, signal: signal || null, diskMode: diskDrill?.mode ?? null, diskWorkers: Array.isArray(diskDrill?.activeWorkers) ? diskDrill.activeWorkers.length : null, diskGoalStatus: diskDrill?.goal?.status ?? null }, timestamp: Date.now() })}\n`);
+  } catch {}
+  // #endregion
   (async () => {
     // Phase 4 (R2) park recognition: exit code 81 WITH <runDir>/.park.json
     // is a deliberate, resumable pause — not a crash, not wedged. Anything
