@@ -44,7 +44,11 @@ class LaunchLoop {
     // Evidence: how much of this phase's work has reached the record —
     // thoughts, harvests, findings, writeups. Seeded by the drill from
     // earlier cycles on the same phase; the phase gate reads it.
-    this.evidence = { streamed: Number(options.evidence?.streamed) || 0 };
+    this.initialStreamedEvidence = Number(options.evidence?.streamed) || 0;
+    this.evidence = { streamed: this.initialStreamedEvidence };
+    const shortPlan = this.plan?.shortPlan || this.plan || {};
+    this.writeFirst = this.initialStreamedEvidence > 0 || shortPlan.writeFirst === true;
+    this.rememberedFinding = false;
     this.maxTurns = Number(options.maxTurns) > 0 ? Number(options.maxTurns) : DEFAULT_MAX_TURNS;
     this.messages = [];
     this.running = false;
@@ -71,8 +75,14 @@ class LaunchLoop {
   toolPolicy() {
     const remaining = this.maxTurns - this.turns;
     const writeupExists = this.hasCurrentPhaseWriteup();
-    if (writeupExists && (this.turns >= FORCE_FINISH_AFTER_TURNS || remaining <= 2)) {
+    if (writeupExists && this.rememberedFinding) {
       return { allowedNames: ['finish'], toolChoice: 'required', stage: 'finish' };
+    }
+    if (writeupExists) {
+      return { allowedNames: ['remember'], toolChoice: 'required', stage: 'remember' };
+    }
+    if (this.writeFirst) {
+      return { allowedNames: ['write_file'], toolChoice: 'required', stage: 'write' };
     }
     if (!writeupExists
         && (Number(this.evidence?.streamed) || 0) > 0
@@ -203,6 +213,9 @@ class LaunchLoop {
             logger: this.logger,
             loop: this
           });
+          if (name === 'remember' && !/^Tool "remember" failed:/.test(String(result))) {
+            this.rememberedFinding = true;
+          }
 
           this.messages.push({
             role: 'tool',

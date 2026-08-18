@@ -123,6 +123,44 @@ async function reconcileDrillStateOnExit(runPath, details = {}, options = {}) {
   };
 }
 
+async function reconcileOfflineDrillStatus(runPath, {
+  drill,
+  processOnline,
+  recordedRunnerAlive = false,
+  parked = false,
+  at
+} = {}, options = {}) {
+  if (processOnline || recordedRunnerAlive || parked || drill?.mode !== 'drilling') {
+    return { drill, status: 'persisted', error: null };
+  }
+  const io = options.fs || fsp;
+  try {
+    const result = await reconcileDrillStateOnExit(runPath, {
+      at,
+      source: 'api_status_reconciliation',
+      derived: true
+    }, { fs: io });
+    if (result.status !== 'reconciled') {
+      return { drill, status: 'persisted', error: null };
+    }
+    const persisted = JSON.parse(
+      await io.readFile(path.join(runPath, 'drill', 'state.json'), 'utf8')
+    );
+    return { drill: persisted, status: 'reconciled', error: null };
+  } catch (error) {
+    const normalized = normalizeInactiveDrillState(drill, {
+      at,
+      source: 'api_status_derived',
+      derived: true
+    });
+    return {
+      drill: normalized.drill,
+      status: normalized.changed ? 'derived' : 'persisted',
+      error: error.message
+    };
+  }
+}
+
 function deriveDrillStatusTruth({
   drill,
   processOnline,
@@ -170,5 +208,6 @@ function deriveDrillStatusTruth({
 module.exports = {
   deriveDrillStatusTruth,
   normalizeInactiveDrillState,
+  reconcileOfflineDrillStatus,
   reconcileDrillStateOnExit
 };

@@ -167,18 +167,12 @@ class DrillLoop {
         return;
       }
       this.logger?.error?.('Drill failed', { error: err.message, stack: err.stack });
-      this.running = false;
-      this.mode = 'error';
-      await this.persistState().catch(() => {});
+      await this.failDrill(err);
     });
     return { started: true, reused: false, productLoop: RESEARCH_PRODUCT_LOOP };
   }
 
-  stop() {
-    if (this._stopPromise) return this._stopPromise;
-    const wasDrilling = this.mode === 'drilling';
-    this.running = false;
-    if (wasDrilling) this.mode = 'stopped';
+  normalizeActiveWorkForTerminal() {
     const interruptedWorkers = [...this.activeWorkers.values()].map((entry) => ({
       workerId: entry.workerId,
       cycle: entry.cycle,
@@ -206,6 +200,15 @@ class DrillLoop {
       phase.status = 'pending';
     }
     this.activeWorkers.clear();
+    return { interruptedWorkers, interruptedPhases };
+  }
+
+  stop() {
+    if (this._stopPromise) return this._stopPromise;
+    const wasDrilling = this.mode === 'drilling';
+    this.running = false;
+    if (wasDrilling) this.mode = 'stopped';
+    const { interruptedWorkers, interruptedPhases } = this.normalizeActiveWorkForTerminal();
     const shouldPersist = wasDrilling
       || interruptedWorkers.length > 0
       || interruptedPhases.length > 0;
@@ -232,14 +235,25 @@ class DrillLoop {
     return this._stopPromise;
   }
 
+  async failDrill(error) {
+    this.running = false;
+    this.mode = 'error';
+    const { interruptedWorkers, interruptedPhases } = this.normalizeActiveWorkForTerminal();
+    await this.journal('drill_error', {
+      cyclesUsed: this.cyclesUsed,
+      message: error?.message || String(error),
+      interruptedWorkers,
+      interruptedPhases
+    }).catch(() => {});
+    await this.persistState().catch(() => {});
+  }
+
   async stopFatalAuth(detail) {
     this.running = false;
     this.mode = 'error';
     this.fatalError = AUTH_REVOKED_WATCH_MESSAGE;
     // One fatal auth error stops every bit — siblings included.
-    for (const entry of this.activeWorkers.values()) {
-      if (typeof entry.worker.stop === 'function') entry.worker.stop();
-    }
+    const { interruptedWorkers, interruptedPhases } = this.normalizeActiveWorkForTerminal();
     const detailText = typeof detail === 'string'
       ? detail
       : (detail?.message || detail?.errorType || detail?.error?.message || null);
@@ -249,6 +263,14 @@ class DrillLoop {
       detail: detailText,
       cyclesUsed: this.cyclesUsed
     });
+    await this.journal('drill_error', {
+      cyclesUsed: this.cyclesUsed,
+      errorType: 'authentication_error',
+      message: AUTH_REVOKED_WATCH_MESSAGE,
+      detail: detailText,
+      interruptedWorkers,
+      interruptedPhases
+    }).catch(() => {});
     this.emitEvent('launch_loop_error', {
       fatal: true,
       errorType: 'authentication_error',
@@ -924,12 +946,16 @@ class DrillLoop {
     for (const note of notes) {
       constraints.push(`Operator note: ${note.text}`);
     }
+    const operatorRequestsWrite = notes.some(note =>
+      /\b(write|persist|land)\b[\s\S]{0,80}\b(file|writeup|output)\b/i.test(String(note.text || ''))
+    );
     const writeupPath = `drill/goal-${goal.number}/phase-${phase.number}-${fileSlug(phase.title)}.md`;
     return {
       goal: phase.mission,
       constraints,
       deliverable: `Research however works — search, curl known URLs, archives, forums, coding_run, scripts — every fetch leaves a receipt and your work streams to the Brain as it happens. Journal findings with remember and write_file this phase's markdown writeup at outputs/${writeupPath}. Call finish when THIS phase's deliverable is done — the drill continues after you. A phase cannot close on another phase's file or on tape alone; hidden /tmp dumps never count.`,
       writeupPath,
+      writeFirst: alreadyHasTape || operatorRequestsWrite,
       executionKind: 'tool_loop',
       claimedBy: 'launch_loop'
     };

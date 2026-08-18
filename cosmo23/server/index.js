@@ -136,6 +136,7 @@ const {
 } = require('./lib/drill-inspector');
 const {
   deriveDrillStatusTruth,
+  reconcileOfflineDrillStatus,
   reconcileDrillStateOnExit
 } = require('./lib/drill-state-reconciliation');
 const {
@@ -2416,6 +2417,12 @@ app.get('/api/drill/status', async (_req, res) => {
     ]);
     const processOnline = isCosmoRunnerOnline();
     const recordedRunnerAlive = isRecordedRunnerAlive(runner);
+    const statusState = await reconcileOfflineDrillStatus(runPath, {
+      drill: diskDrill,
+      processOnline,
+      recordedRunnerAlive,
+      parked: Boolean(park)
+    });
     const {
       drill,
       running,
@@ -2423,7 +2430,7 @@ app.get('/api/drill/status', async (_req, res) => {
       orphanedRunner,
       derivedInterrupted
     } = deriveDrillStatusTruth({
-      drill: diskDrill,
+      drill: statusState.drill,
       processOnline,
       recordedRunnerAlive,
       parked: Boolean(park)
@@ -2438,7 +2445,8 @@ app.get('/api/drill/status', async (_req, res) => {
       recordedRunnerAlive,
       orphanedRunner,
       parked: Boolean(park),
-      stateReconciliation: derivedInterrupted ? 'derived' : 'persisted',
+      stateReconciliation: derivedInterrupted ? 'derived' : statusState.status,
+      stateReconciliationError: statusState.error,
       canSteer: running && activeContext?.runPath === runPath,
       runName,
       topic: activeContext?.topic || drill?.question || null,

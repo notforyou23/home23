@@ -28,6 +28,7 @@ const {
   writeNudgeMessage,
   LaunchLoop
 } = require('../../src/agent/loop');
+const { DrillLoop } = require('../../src/drill/drill-loop');
 const { executeTool } = require('../../src/agent/tools');
 const { RESEARCH_PRODUCT_LOOP } = require('../../../lib/research-launch');
 
@@ -83,6 +84,33 @@ describe('Writeup gate', () => {
     const second = await readPersistedNotes(notesPath);
     expect(first.map((note) => note.text)).to.deep.equal(['Stay on 1973', 'Prefer primary sources']);
     expect(second.map((note) => note.text)).to.deep.equal(first.map((note) => note.text));
+  });
+
+  it('turns a durable write-now operator note into an immediate write contract', () => {
+    const runtimePath = tempRuntime();
+    const drill = new DrillLoop({
+      orchestrator: { logsDir: runtimePath },
+      logger,
+      config: { logsDir: runtimePath, drill: { cycles: 1 } },
+      plan: { shortPlan: { goal: 'Hunter test', constraints: [] } }
+    });
+    const phase = {
+      number: 1,
+      title: 'Partnership evidence',
+      mission: 'Land the partnership evidence.',
+      status: 'pending',
+      cyclesUsed: 0,
+      evidence: { streamed: 0 },
+      rejections: 0
+    };
+    const mission = drill.buildPhaseMission(
+      { number: 1, title: 'Hunter test', phases: [phase] },
+      phase,
+      [{ id: 'n1', text: 'write files, remember, close with writeup' }]
+    );
+
+    expect(mission.writeFirst).to.equal(true);
+    expect(mission.constraints).to.include('Operator note: write files, remember, close with writeup');
   });
 });
 
@@ -206,6 +234,23 @@ describe('Research worker write nudges', () => {
               }]
             };
           }
+          if (names.length === 1 && names[0] === 'remember') {
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  content: '',
+                  tool_calls: [{
+                    id: 'forced-remember',
+                    function: {
+                      name: 'remember',
+                      arguments: JSON.stringify({ content: 'The phase landed a concrete result.' })
+                    }
+                  }]
+                }
+              }]
+            };
+          }
           return { choices: [{ message: { role: 'assistant', content: 'I am writing now.' } }] };
         }
       }
@@ -217,6 +262,8 @@ describe('Research worker write nudges', () => {
     expect(policies.some(policy => policy.toolChoice === 'required'
       && policy.names.join(',') === 'write_file')).to.equal(true);
     expect(policies.some(policy => policy.toolChoice === 'required'
+      && policy.names.join(',') === 'remember')).to.equal(true);
+    expect(policies.some(policy => policy.toolChoice === 'required'
       && policy.names.join(',') === 'finish')).to.equal(true);
     expect(loop.finished).to.equal(true);
     expect(fs.existsSync(path.join(
@@ -226,6 +273,33 @@ describe('Research worker write nudges', () => {
       'goal-1',
       'phase-1-land-the-work.md'
     ))).to.equal(true);
+  });
+
+  it('forces a later taped worker to write on its first model turn', () => {
+    const runtimePath = tempRuntime();
+    const loop = new LaunchLoop({
+      logger,
+      plan: {
+        shortPlan: {
+          goal: 'Stop the talk tax',
+          constraints: ['WRITE FIRST'],
+          deliverable: 'Land the writeup.',
+          writeupPath: 'drill/goal-1/phase-1-stop-talk.md',
+          writeFirst: true
+        }
+      },
+      drill: { goalNumber: 1, phaseNumber: 1, workerId: 'w2', cycle: 2 },
+      evidence: { streamed: 380 },
+      config: { models: { primary: 'test' }, logsDir: runtimePath },
+      maxTurns: 24
+    });
+
+    loop.turns = 1;
+    expect(loop.toolPolicy()).to.deep.include({
+      allowedNames: ['write_file'],
+      toolChoice: 'required',
+      stage: 'write'
+    });
   });
 });
 
@@ -277,5 +351,30 @@ describe('finish refuses tape-only and /tmp-only closes', () => {
       { runtimePath, logger, loop: phaseOne }
     );
     expect(phaseOne.finished).to.equal(true);
+  });
+
+  it('does not let a file written to another run close this run', async () => {
+    const correctRun = tempRuntime('cosmo-correct-run-');
+    const wrongRun = tempRuntime('cosmo-wrong-run-');
+    const provenance = {
+      drill: { goalNumber: 2, phaseNumber: 1, workerId: 'w10', cycle: 10 },
+      evidence: { streamed: 4 },
+      finished: false,
+      markFinished(summary) { this.finished = true; this.summary = summary; }
+    };
+    await executeTool('write_file', {
+      path: 'garcia_partnership.md',
+      content: '# Garcia partnership\n\nThis file landed in the wrong run.'
+    }, { runtimePath: wrongRun, logger, loop: provenance });
+
+    const refused = JSON.parse(await executeTool(
+      'finish',
+      { summary: 'Partnership phase done' },
+      { runtimePath: correctRun, logger, loop: provenance }
+    ));
+    expect(refused.reason).to.equal('missing_writeup');
+    expect(provenance.finished).to.equal(false);
+    expect(fs.existsSync(path.join(correctRun, 'outputs', 'garcia_partnership.md'))).to.equal(false);
+    expect(fs.existsSync(path.join(wrongRun, 'outputs', 'garcia_partnership.md'))).to.equal(true);
   });
 });

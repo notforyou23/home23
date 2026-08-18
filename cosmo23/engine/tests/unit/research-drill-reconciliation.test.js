@@ -7,6 +7,7 @@ const path = require('path');
 
 const {
   deriveDrillStatusTruth,
+  reconcileOfflineDrillStatus,
   reconcileDrillStateOnExit
 } = require('../../../server/lib/drill-state-reconciliation');
 
@@ -159,5 +160,47 @@ describe('Drill state reconciliation after cosmo-main exit', () => {
     expect(status.drill.activeWorkers).to.deep.equal([]);
     expect(status.drill.goal.phases.map((phase) => phase.status)).to.deep.equal(['pending', 'done']);
     expect(status.drill.interruption.source).to.equal('api_status_derived');
+  });
+
+  it('repairs stale disk state on status read when no runner remains', async () => {
+    const runPath = makeRun('cosmo-drill-status-repair-');
+    const statePath = path.join(runPath, 'drill', 'state.json');
+    fs.writeFileSync(statePath, JSON.stringify(activeState(), null, 2));
+
+    const result = await reconcileOfflineDrillStatus(runPath, {
+      drill: activeState(),
+      processOnline: false,
+      recordedRunnerAlive: false,
+      parked: false,
+      at: 500
+    });
+    const disk = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+
+    expect(result.status).to.equal('reconciled');
+    expect(result.error).to.equal(null);
+    expect(result.drill.mode).to.equal('interrupted');
+    expect(disk.mode).to.equal('interrupted');
+    expect(disk.activeWorkers).to.deep.equal([]);
+    expect(disk.interruption.source).to.equal('api_status_reconciliation');
+  });
+
+  it('does not rewrite drilling state while its recorded runner is alive', async () => {
+    const runPath = makeRun('cosmo-drill-status-live-');
+    const statePath = path.join(runPath, 'drill', 'state.json');
+    const active = activeState();
+    const original = JSON.stringify(active, null, 2);
+    fs.writeFileSync(statePath, original);
+
+    const result = await reconcileOfflineDrillStatus(runPath, {
+      drill: active,
+      processOnline: false,
+      recordedRunnerAlive: true,
+      parked: false,
+      at: 600
+    });
+
+    expect(result.status).to.equal('persisted');
+    expect(result.drill).to.equal(active);
+    expect(fs.readFileSync(statePath, 'utf8')).to.equal(original);
   });
 });
