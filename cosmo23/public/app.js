@@ -561,12 +561,15 @@ class CosmoStandaloneApp {
             <small>${escapeHtml(new Date(note.at).toLocaleTimeString())}</small>
           </div>`).join('');
 
+    // Sources: every successful fetch leaves a receipt — web_search hits,
+    // curl via run_command, coding_run against a URL, harvested writes.
     const sources = payload.sources || [];
     document.getElementById('sources-count').textContent = String(sources.length);
     document.getElementById('source-list').innerHTML = sources.length === 0
-      ? '<p class="cc-empty">No web searches yet.</p>'
+      ? '<p class="cc-empty">No fetches yet.</p>'
       : sources.map(source => `
           <div class="source-item">
+            ${source.tool && source.tool !== 'web_search' ? `<em class="source-tool">${escapeHtml(source.tool)}</em> ` : ''}
             <strong>${escapeHtml(source.query)}</strong>
             ${(source.urls || []).slice(0, 3).map(url =>
               `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url.replace(/^https?:\/\//, '').slice(0, 60))}</a>`
@@ -583,16 +586,25 @@ class CosmoStandaloneApp {
             <small>${(writeup.size / 1024).toFixed(1)}KB</small>
           </button>`).join('');
 
+    // The Brain feed is the working stream — goals, phases, thoughts,
+    // harvests, offshoots, findings as they happened — not only the
+    // candidates journal from remember(). Older runs without a stream file
+    // fall back to the findings journal.
+    const stream = payload.stream || [];
     const findings = payload.findings || [];
     const drill = payload.drill || {};
     document.getElementById('brain-writes-count').textContent =
       `${drill.counts?.brainWrites ?? 0} Brain writes`;
-    document.getElementById('finding-list').innerHTML = findings.length === 0
-      ? '<p class="cc-empty">No findings journaled yet.</p>'
-      : findings.map(finding => `
-          <div class="finding-item">
-            ${escapeHtml(String(finding.content || '').slice(0, 180))}
-            ${finding.cycle ? `<small>cycle ${escapeHtml(String(finding.cycle))}</small>` : ''}
+    const brainFeed = stream.length > 0
+      ? stream
+      : findings.map(finding => ({ kind: 'finding', content: finding.content, cycle: finding.cycle, workerId: finding.workerId }));
+    document.getElementById('finding-list').innerHTML = brainFeed.length === 0
+      ? '<p class="cc-empty">Nothing on the tape yet.</p>'
+      : brainFeed.map(entry => `
+          <div class="finding-item stream-${escapeHtml(String(entry.kind || 'finding'))}">
+            ${entry.kind && entry.kind !== 'finding' ? `<em class="stream-kind">${escapeHtml(String(entry.kind))}</em> ` : ''}
+            ${escapeHtml(String(entry.content || '').slice(0, 180))}
+            ${entry.workerId || entry.cycle ? `<small>${[entry.workerId ? escapeHtml(String(entry.workerId)) : null, entry.cycle ? `cycle ${escapeHtml(String(entry.cycle))}` : null].filter(Boolean).join(' · ')}</small>` : ''}
           </div>`).join('');
   }
 

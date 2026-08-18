@@ -2430,7 +2430,7 @@ async function listWriteups(runPath) {
       if (entry.isDirectory()) {
         if (entry.name === 'candidates') continue; // findings journal, not a writeup
         await walk(full, depth + 1);
-      } else if (entry.isFile() && entry.name !== 'sources.jsonl') {
+      } else if (entry.isFile() && entry.name !== 'sources.jsonl' && entry.name !== 'stream.jsonl') {
         try {
           const stat = await fsp.stat(full);
           writeups.push({
@@ -2458,10 +2458,11 @@ app.get('/api/drill/status', async (_req, res) => {
       drill = JSON.parse(await fsp.readFile(path.join(runPath, 'drill', 'state.json'), 'utf8'));
     } catch { /* run predates the drill or has not written state yet */ }
 
-    const [sources, notes, candidates, writeups] = await Promise.all([
+    const [sources, notes, candidates, stream, writeups] = await Promise.all([
       readJsonlTail(path.join(runPath, 'outputs', 'sources.jsonl'), 20),
       readJsonlTail(path.join(runPath, 'drill', 'notes.jsonl'), 10),
       readJsonlTail(path.join(runPath, 'outputs', 'candidates', 'findings.jsonl'), 12),
+      readJsonlTail(path.join(runPath, 'outputs', 'stream.jsonl'), 40),
       listWriteups(runPath)
     ]);
 
@@ -2476,6 +2477,9 @@ app.get('/api/drill/status', async (_req, res) => {
       sources: sources.reverse(),
       notes: notes.reverse(),
       findings: candidates.reverse(),
+      // The working stream — disk is the tape the Brain reads: goals,
+      // phases, thoughts, harvests, offshoots, findings as they happened.
+      stream: stream.reverse(),
       writeups
     });
   } catch (error) {

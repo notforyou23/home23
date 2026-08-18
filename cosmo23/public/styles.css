@@ -692,6 +692,18 @@ a { color: var(--info); }
   margin-top: 3px;
 }
 
+/* The working stream and non-search fetch paths carry a small kind tag. */
+.stream-kind,
+.source-tool {
+  font-style: normal;
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  margin-right: 4px;
+}
+
 .brain-query-jump { margin-top: 12px; width: 100%; }
 
 /* Done banner */
