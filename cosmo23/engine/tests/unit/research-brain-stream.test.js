@@ -171,7 +171,7 @@ describe('The Brain gets the working stream as it happens', () => {
       drill: { cycle: 5, workerId: 'w5', goalNumber: 3, phaseNumber: 2 },
       maxTurns: 4,
       client: {
-        createCompletion: async () => {
+        createCompletion: async ({ tools: modelTools }) => {
           calls += 1;
           if (calls === 1) {
             return {
@@ -183,20 +183,41 @@ describe('The Brain gets the working stream as it happens', () => {
               }]
             };
           }
+          const allowed = (modelTools || []).map(tool => tool.function.name);
+          if (allowed.length === 1 && allowed[0] === 'remember') {
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  tool_calls: [{
+                    id: 'call_r',
+                    function: { name: 'remember', arguments: JSON.stringify({ content: 'The setlist conflict is documented.' }) }
+                  }]
+                }
+              }]
+            };
+          }
+          if (allowed.length === 1 && allowed[0] === 'finish') {
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  tool_calls: [{
+                    id: 'call_f',
+                    function: { name: 'finish', arguments: JSON.stringify({ summary: 'Setlist conflict documented' }) }
+                  }]
+                }
+              }]
+            };
+          }
           return {
             choices: [{
               message: {
                 role: 'assistant',
-                tool_calls: [
-                  {
-                    id: 'call_w',
-                    function: { name: 'write_file', arguments: JSON.stringify({ path: 'wembley.md', content: '# Wembley\n\nSetlist conflict documented.' }) }
-                  },
-                  {
-                    id: 'call_f',
-                    function: { name: 'finish', arguments: JSON.stringify({ summary: 'Setlist conflict documented' }) }
-                  }
-                ]
+                tool_calls: [{
+                  id: 'call_w',
+                  function: { name: 'write_file', arguments: JSON.stringify({ path: 'wembley.md', content: '# Wembley\n\nSetlist conflict documented.' }) }
+                }]
               }
             }]
           };
