@@ -402,6 +402,17 @@ class DrillLoop {
     while (this.running) {
       const exhausted = this.budgetExhaustedReason();
 
+      // A spent budget stops new descents, not closeout. If the last in-flight
+      // wave completed every phase, merge that goal before settling the run.
+      if (this.currentGoal
+          && this.currentGoal.status !== 'completed'
+          && this.activeWorkers.size === 0
+          && this.currentGoal.phases.length > 0
+          && this.currentGoal.phases.every(phase => phase.status === 'done')) {
+        await this.mergeAndCompleteGoal(this.currentGoal);
+        continue;
+      }
+
       if (exhausted && this.activeWorkers.size === 0) {
         await this.finishDrill(exhausted);
         return;
