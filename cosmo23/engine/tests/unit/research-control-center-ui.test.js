@@ -97,4 +97,8 @@ describe('Expanded drill control center', () => {
     expect(css).to.match(/@media \(max-width: 1200px\)[\s\S]*\.drill-pulse/);
     expect(css).to.match(/@media \(max-width: 900px\)[\s\S]*\.drill-evidence-grid/);
   });
+
+  it('uses a self-contained favicon so the desk has no cosmetic 404', () => {
+    expect(read('index.html')).to.include('<link rel="icon" href="data:image/svg+xml');
+  });
 });
