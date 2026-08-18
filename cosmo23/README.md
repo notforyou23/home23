@@ -121,7 +121,8 @@ Research work is disk-backed while it happens:
 
 - `outputs/stream.jsonl` is the working Brain tape: goals, phases, thoughts, harvests, offshoots, findings, and writeups.
 - `outputs/sources.jsonl` records successful fetches from search, shell/curl, scripts, coding runs, and harvested files.
-- A phase closes only with its own phase-bound markdown writeup under `outputs/`; thoughts, receipts, another phase's file, and temporary dumps cannot close it.
+- Every phase records a concrete `expectedOutput`. It closes only when that exact phase-provenanced receipt is still on disk, matches the bytes written by the phase, and contains finished work; progress notes, empty findings, another phase's file, changed receipts, and temporary dumps cannot close it.
+- `drill/state.json` records the accepted receipt path, validation reason, byte count, and digest, and Watch shows both the required receipt and the evidence that cleared it.
 - One worker runs per open phase up to the launch concurrency limit. A slow phase does not block its siblings from settling.
 
 The Query tab includes the EVOBREW-style Research surface with:

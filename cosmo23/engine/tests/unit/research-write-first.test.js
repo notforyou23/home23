@@ -229,6 +229,70 @@ describe('Writeup gate', () => {
     });
     expect(accepted.sha256).to.match(/^[a-f0-9]{64}$/);
   });
+
+  it('does not let another phase overwrite satisfy a stale receipt', async () => {
+    const runtimePath = tempRuntime();
+    const expectedOutput = 'outputs/shared.json';
+    await executeTool('write_file', {
+      path: 'shared.json',
+      content: JSON.stringify({ entries: [], status: 'in-progress' })
+    }, {
+      runtimePath,
+      logger,
+      loop: {
+        drill: { goalNumber: 1, phaseNumber: 1 },
+        expectedOutput,
+        evidence: { streamed: 1 }
+      }
+    });
+    await executeTool('write_file', {
+      path: 'shared.json',
+      content: JSON.stringify({
+        entries: [{ quote: 'Finished by the wrong phase.' }],
+        status: 'complete'
+      })
+    }, {
+      runtimePath,
+      logger,
+      loop: {
+        drill: { goalNumber: 1, phaseNumber: 2 },
+        expectedOutput,
+        evidence: { streamed: 1 }
+      }
+    });
+
+    expect(assessPhaseReceipt(runtimePath, expectedOutput, {
+      goalNumber: 1,
+      phaseNumber: 1
+    })).to.include({ accepted: false, reason: 'receipt_changed' });
+  });
+
+  it('does not treat zero counts or explicit incomplete flags as finished JSON', async () => {
+    const cases = [
+      { findings: [], count: 0, status: 'complete' },
+      { findings: ['One draft quote'], complete: false }
+    ];
+    for (const [index, content] of cases.entries()) {
+      const runtimePath = tempRuntime();
+      const expectedOutput = `outputs/case-${index}.json`;
+      await executeTool('write_file', {
+        path: `case-${index}.json`,
+        content: JSON.stringify(content)
+      }, {
+        runtimePath,
+        logger,
+        loop: {
+          drill: { goalNumber: 1, phaseNumber: index + 1 },
+          expectedOutput,
+          evidence: { streamed: 1 }
+        }
+      });
+      expect(assessPhaseReceipt(runtimePath, expectedOutput, {
+        goalNumber: 1,
+        phaseNumber: index + 1
+      }).accepted).to.equal(false);
+    }
+  });
 });
 
 describe('The product drill owns lifecycle limits', () => {

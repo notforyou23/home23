@@ -600,30 +600,67 @@ class DrillLoop {
     try {
       const saved = JSON.parse(await fsp.readFile(path.join(this.drillDir, 'state.json'), 'utf8'));
       if (saved?.goal && saved.goal.phases) {
+        const goalNumber = saved.goal.number || 1;
+        const savedPhases = normalizePhaseOutputs(
+          this.runtimePath,
+          saved.goal.phases,
+          goalNumber
+        );
+        const invalidated = [];
         this.currentGoal = {
           id: saved.goal.id || shortId('goal'),
-          number: saved.goal.number || 1,
+          number: goalNumber,
           title: saved.goal.title,
           why: saved.goal.why || null,
           origin: saved.goal.origin || 'seed',
           status: saved.goal.status === 'completed' ? 'completed' : 'active',
           previousGoalId: null,
-          phases: saved.goal.phases.map((phase, index) => ({
-            id: phase.id || shortId('phase'),
-            number: phase.number || index + 1,
-            title: phase.title,
-            mission: phase.mission || phase.title,
-            expectedOutput: phase.expectedOutput || null,
-            status: phase.status === 'done' ? 'done' : 'pending',
-            summary: phase.summary || null,
-            writeups: Array.isArray(phase.writeups) ? phase.writeups : [],
-            clearance: phase.clearance || null,
-            cyclesUsed: phase.cyclesUsed || 0,
-            evidence: { streamed: Number(phase.evidence?.streamed) || 0 },
-            rejections: Number(phase.rejections) || 0
-          })),
+          phases: savedPhases.map((phase, index) => {
+            const phaseNumber = phase.number || index + 1;
+            const receipt = phase.status === 'done'
+              ? assessPhaseReceipt(this.runtimePath, phase.expectedOutput, {
+                  goalNumber,
+                  phaseNumber
+                })
+              : { accepted: false, reason: null };
+            if (phase.status === 'done' && !receipt.accepted) {
+              invalidated.push({
+                goalNumber,
+                phaseNumber,
+                expectedOutput: phase.expectedOutput,
+                reason: receipt.reason
+              });
+            }
+            return {
+              id: phase.id || shortId('phase'),
+              number: phaseNumber,
+              title: phase.title,
+              mission: phase.mission || phase.title,
+              expectedOutput: phase.expectedOutput,
+              requestedOutput: phase.requestedOutput || null,
+              status: receipt.accepted ? 'done' : 'pending',
+              summary: receipt.accepted ? (phase.summary || null) : null,
+              writeups: receipt.accepted ? [receipt.path] : [],
+              clearance: receipt.accepted ? {
+                at: phase.clearance?.at || this.now(),
+                reason: receipt.reason,
+                expectedOutput: receipt.expectedOutput,
+                path: receipt.path,
+                bytes: receipt.bytes,
+                sha256: receipt.sha256
+              } : null,
+              cyclesUsed: phase.cyclesUsed || 0,
+              evidence: { streamed: Number(phase.evidence?.streamed) || 0 },
+              rejections: (Number(phase.rejections) || 0)
+                + (phase.status === 'done' && !receipt.accepted ? 1 : 0)
+            };
+          }),
           createdAt: this.now()
         };
+        if (invalidated.length > 0) this.currentGoal.status = 'active';
+        for (const invalidation of invalidated) {
+          await this.journal('phase_clearance_invalidated', invalidation);
+        }
       }
       if (Array.isArray(saved?.goalHistory)) {
         this.goalHistory = saved.goalHistory.map((goal) => ({

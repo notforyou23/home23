@@ -25,7 +25,7 @@ const HARVEST_DIGEST_KINDS = new Set(['harvest', 'finding', 'thought', 'writeup'
 const DEFAULT_DIGEST_LIMIT = 8;
 const DEFAULT_DIGEST_CHARS = 1200;
 const MIN_WRITEUP_CHARS = 20;
-const UNFINISHED_STATUS_PATTERN = /\b(?:in[\s-]*progress|still\s+(?:collecting|researching|working)|not\s+(?:started|finished|complete)|to\s+be\s+(?:populated|completed|added)|tbd|todo)\b/i;
+const UNFINISHED_STATUS_PATTERN = /\b(?:in[\s-]*progress|incomplete|pending|draft|collecting|partial|still\s+(?:collecting|researching|working)|not\s+(?:started|finished|complete)|to\s+be\s+(?:populated|completed|added)|tbd|todo)\b/i;
 const PROGRESS_BASENAME_PATTERN = /(?:^|[-_.])progress(?:[-_.]|$)/i;
 const EMPTY_SECTION_PATTERN = /^(?:findings?|results?|evidence|quotes?|sources?)$/i;
 
@@ -104,6 +104,9 @@ function jsonHasFinishedWork(value, key = '') {
       if (/status/i.test(entryKey) && UNFINISHED_STATUS_PATTERN.test(String(entryValue || ''))) {
         return false;
       }
+      if (/^(?:complete|completed|done)$/i.test(entryKey) && entryValue === false) {
+        return false;
+      }
     }
     return entries.some(([entryKey, entryValue]) => {
       if (/^(?:status|state|complete|completed|done)$/i.test(entryKey)) return false;
@@ -116,6 +119,7 @@ function jsonHasFinishedWork(value, key = '') {
       && !UNFINISHED_STATUS_PATTERN.test(text)
       && !/^(?:none|n\/a|pending|null)$/i.test(text);
   }
+  if (typeof value === 'number') return value > 0;
   return value !== null && value !== undefined && value !== false;
 }
 
@@ -227,7 +231,12 @@ function validateReceiptFile(runtimePath, receipt) {
     const real = fs.realpathSync(target);
     if (!isInside(path.resolve(runtimePath, 'outputs'), real)) return false;
     if (!fs.statSync(real).isFile()) return false;
-    return isSubstantiveWriteupContent(fs.readFileSync(real, 'utf8'));
+    const content = fs.readFileSync(real, 'utf8');
+    if (receipt.sha256
+        && crypto.createHash('sha256').update(content).digest('hex') !== receipt.sha256) {
+      return false;
+    }
+    return isSubstantiveWriteupContent(content);
   } catch {
     return false;
   }
@@ -260,14 +269,9 @@ function phaseArtifactReceipts(runtimePath, provenance = {}) {
     .filter(receipt => receipt.tool === 'write_file')
     .filter(receipt => receiptMatchesPhase(receipt, provenance))
     .map(receipt => ({ ...receipt, path: receipt.path || receipt.query }));
-  const seen = new Set();
   return [...writeups, ...writes].filter((receipt) => {
     const canonicalPath = canonicalOutputPath(runtimePath, receipt.path);
-    if (!canonicalPath) return false;
-    const key = `${receipt.goalNumber ?? ''}:${receipt.phaseNumber ?? ''}:${canonicalPath}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
+    return Boolean(canonicalPath);
   }).map(receipt => ({
     ...receipt,
     path: canonicalOutputPath(runtimePath, receipt.path)
@@ -311,6 +315,15 @@ function assessPhaseReceipt(runtimePath, expectedOutput, provenance = {}) {
         continue;
       }
       const content = fs.readFileSync(real, 'utf8');
+      if (!receipt.sha256) {
+        lastFailure = 'unverifiable_receipt';
+        continue;
+      }
+      const sha256 = crypto.createHash('sha256').update(content).digest('hex');
+      if (sha256 !== receipt.sha256) {
+        lastFailure = 'receipt_changed';
+        continue;
+      }
       const validation = validateFinishedReceiptContent(real, content);
       if (!validation.accepted) {
         lastFailure = validation.reason;
@@ -322,7 +335,7 @@ function assessPhaseReceipt(runtimePath, expectedOutput, provenance = {}) {
         expectedOutput: expectedPaths.length === 1 ? expectedPaths[0] : expectedPaths,
         path: receipt.path,
         bytes: stat.size,
-        sha256: crypto.createHash('sha256').update(content).digest('hex')
+        sha256
       };
     } catch {
       lastFailure = 'missing_receipt_file';

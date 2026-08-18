@@ -227,4 +227,73 @@ describe('Product drill lifecycle isolation', () => {
     });
     expect(state.goal.phases[0].clearance.sha256).to.match(/^[a-f0-9]{64}$/);
   });
+
+  it('reopens a resumed phase when its cleared receipt changed on disk', async () => {
+    const runtimePath = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo-drill-resume-receipt-'));
+    const makeLoop = () => new DrillLoop({
+      logger,
+      orchestrator: { logsDir: runtimePath },
+      config: { logsDir: runtimePath, drill: { cycles: 2 } },
+      plan: { shortPlan: { goal: 'Resume receipt integrity' } }
+    });
+    const first = makeLoop();
+    const expectedOutput = 'outputs/drill/goal-1/phase-1-interviews.md';
+    const goal = {
+      id: 'goal-1',
+      number: 1,
+      title: 'Interviews',
+      why: 'Find direct testimony.',
+      origin: 'seed',
+      status: 'active',
+      phases: [{
+        id: 'phase-1',
+        number: 1,
+        title: 'Interviews',
+        mission: 'Land direct testimony.',
+        expectedOutput,
+        status: 'active',
+        cyclesUsed: 1,
+        evidence: { streamed: 1 },
+        rejections: 0
+      }]
+    };
+    const worker = {
+      drill: { goalNumber: 1, phaseNumber: 1 },
+      expectedOutput,
+      evidence: { streamed: 1 },
+      turns: 1,
+      finished: true,
+      finishSummary: 'Finished interviews.',
+      fatalError: null
+    };
+    await executeTool('write_file', {
+      path: 'drill/goal-1/phase-1-interviews.md',
+      content: '# Interviews\n\nA finished sourced interview finding.'
+    }, { runtimePath, logger, loop: worker });
+    first.currentGoal = goal;
+    first.activeWorkers.set('w1', {
+      workerId: 'w1',
+      worker,
+      phase: goal.phases[0],
+      goal,
+      cycle: 1,
+      done: true
+    });
+    await first.settleFinishedWorkers();
+    await first.persistState();
+
+    fs.writeFileSync(
+      path.join(runtimePath, expectedOutput),
+      '# Interviews\n\n## Status: IN PROGRESS\n\n## Findings\n\n(To be populated)'
+    );
+    const resumed = makeLoop();
+    await resumed.loadResumableState();
+
+    expect(resumed.currentGoal.status).to.equal('active');
+    expect(resumed.currentGoal.phases[0].status).to.equal('pending');
+    expect(resumed.currentGoal.phases[0].clearance).to.equal(null);
+    const progress = fs.readFileSync(path.join(runtimePath, 'drill', 'progress.jsonl'), 'utf8');
+    expect(progress).to.include('phase_clearance_invalidated');
+    expect(progress).to.include('receipt_changed');
+  });
 });

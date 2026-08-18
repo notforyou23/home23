@@ -6,6 +6,7 @@
  */
 
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs').promises;
 const path = require('path');
 const { tools: interactiveTools, executeTool: executeInteractiveTool } = require('../interactive/interactive-tools');
@@ -148,7 +149,14 @@ function drillProvenance(context) {
  * Search is one tool in the kit, not the research; the other paths persist
  * the same way.
  */
-async function journalSourceReceipt(context, { tool, query, urls = [], path: outputPath = null }) {
+async function journalSourceReceipt(context, {
+  tool,
+  query,
+  urls = [],
+  path: outputPath = null,
+  bytes = null,
+  sha256 = null
+}) {
   try {
     const runtimePath = resolveRuntimePath(context);
     const entry = {
@@ -157,6 +165,8 @@ async function journalSourceReceipt(context, { tool, query, urls = [], path: out
       query,
       urls,
       path: outputPath,
+      bytes,
+      sha256,
       ...drillProvenance(context)
     };
     await fs.mkdir(path.join(runtimePath, 'outputs'), { recursive: true });
@@ -210,19 +220,22 @@ async function recordInteractiveHarvest(name, args, result, context) {
       const relPath = `outputs/${args.path}`;
       const urls = extractUrls(args.content);
       const provenance = drillProvenance(context);
+      const content = String(args.content || '');
       await journalSourceReceipt(context, {
         tool: 'write_file',
         query: relPath,
         path: relPath,
-        urls
+        urls,
+        bytes: Buffer.byteLength(content, 'utf8'),
+        sha256: crypto.createHash('sha256').update(content).digest('hex')
       });
       const writeupReceipt = await recordWriteupReceipt(
         resolveRuntimePath(context),
         relPath,
         provenance,
-        String(args.content || '')
+        content
       );
-      const bytes = Buffer.byteLength(String(args.content || ''), 'utf-8');
+      const bytes = Buffer.byteLength(content, 'utf-8');
       const streamContent = writeupReceipt.recorded
         ? `Writeup ${relPath}:\n${String(args.content || '').slice(0, 2000)}`
         : `Harvested to ${relPath} (${bytes} bytes)${urls.length ? ` from ${urls.slice(0, 3).join(' ')}` : ''}`;
