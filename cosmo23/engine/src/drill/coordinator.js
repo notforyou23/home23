@@ -6,9 +6,9 @@
  * The coordinator organizes the drill's goal chain: it composes a goal with
  * concrete phases, assigns open phases to workers (one bit per phase, in
  * parallel up to the concurrency cap), merges phase results when a goal
- * completes, and invents the next goal from what was learned. It never does
- * the research itself and its output never tells a worker to review what is
- * already here.
+ * completes, and selects the next named hole from what was learned or closes
+ * the hunt. It never does the research itself and its output never tells a
+ * worker to review what is already here.
  */
 
 const { FORBIDDEN_PLAN_PHRASES } = require('../agent/short-plan');
@@ -145,7 +145,7 @@ class DrillCoordinator {
       });
     } catch (err) {
       if (isFatalAuthError(err)) throw err;
-      this.logger?.warn?.('Goal composition failed — using deterministic fallback', { error: err.message });
+      this.logger?.warn?.('Goal composition failed', { error: err.message, origin });
     }
 
     if (result?.done) {
