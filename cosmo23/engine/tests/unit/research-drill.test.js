@@ -394,6 +394,14 @@ describe('The drill: goal → phases → next goal', () => {
     expect(goals).to.have.length(1);
     expect(goals[0].title).to.equal('Jerry Garcia anecdotes');
     expect(JSON.stringify(goals)).to.not.include('Go deeper');
+    const rejections = progress.filter((entry) => entry.type === 'goal_generation_rejected');
+    const nextGoalRejections = rejections.filter((entry) => entry.goalNumber === 2);
+    expect(nextGoalRejections).to.have.length(2);
+    expect(nextGoalRejections.map((entry) => entry.attempt)).to.deep.equal([1, 2]);
+    expect(nextGoalRejections.every((entry) =>
+      entry.reason === 'non_json_response' && entry.payload === 'not json at all'
+    )).to.equal(true);
+    expect(progress.find((entry) => entry.type === 'drill_done')?.reason).to.equal('goal_generation_failed');
     // No forbidden review-what-is-here phrasing in any mission.
     for (const worker of createWorker.spawned) {
       const blob = JSON.stringify(worker.plan).toLowerCase();

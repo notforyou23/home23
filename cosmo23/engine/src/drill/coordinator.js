@@ -47,6 +47,13 @@ function isInvalidChainGoalTitle(title, question) {
   return normalized === normalizedGoalTitle(question);
 }
 
+function visiblePayload(raw, parsed) {
+  const title = parsed?.title ? String(parsed.title).trim() : '';
+  if (title) return title.slice(0, 1000);
+  const text = String(raw || '').trim();
+  return text ? text.slice(0, 1000) : '(empty response)';
+}
+
 class DrillCoordinator {
   constructor({ client, config, logger } = {}) {
     this.client = client || null;
@@ -125,8 +132,9 @@ class DrillCoordinator {
 
   /**
    * Compose either a goal spec or a terminal result.
-   * Returns { spec, degraded, done, doneReason }. A seed call can degrade to
-   * the launch question; a chain call fails closed rather than inventing work.
+   * Returns { spec, degraded, done, doneReason, rejections }. A seed call can
+   * degrade to the launch question; a chain call retries one rejected reply,
+   * then fails closed rather than inventing work.
    */
   async composeGoal({
     question,
@@ -139,13 +147,39 @@ class DrillCoordinator {
     deadlineAt = null
   }) {
     let result = null;
-    try {
-      result = await this.composeGoalViaModel({
-        question, questionContext, previousGoal, goalHistory, number, origin, mergedSummary, deadlineAt
-      });
-    } catch (err) {
-      if (isFatalAuthError(err)) throw err;
-      this.logger?.warn?.('Goal composition failed', { error: err.message, origin });
+    const rejections = [];
+    const maxAttempts = origin === 'chain' ? 2 : 1;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const outcome = await this.composeGoalViaModel({
+          question,
+          questionContext,
+          previousGoal,
+          goalHistory,
+          number,
+          origin,
+          mergedSummary,
+          deadlineAt,
+          retry: attempt > 1 ? rejections[rejections.length - 1] : null
+        });
+        result = outcome.result;
+        if (outcome.rejection) {
+          const rejection = { attempt, ...outcome.rejection };
+          rejections.push(rejection);
+          this.logger?.warn?.('Goal composition reply rejected', {
+            origin,
+            attempt,
+            reason: rejection.reason,
+            payload: rejection.payload
+          });
+          continue;
+        }
+        break;
+      } catch (err) {
+        if (isFatalAuthError(err)) throw err;
+        this.logger?.warn?.('Goal composition failed', { error: err.message, origin, attempt });
+        break;
+      }
     }
 
     if (result?.done) {
@@ -153,12 +187,13 @@ class DrillCoordinator {
         spec: null,
         degraded: false,
         done: true,
-        doneReason: 'research_complete'
+        doneReason: 'research_complete',
+        rejections
       };
     }
 
     if (result) {
-      return { spec: result, degraded: false, done: false, doneReason: null };
+      return { spec: result, degraded: false, done: false, doneReason: null, rejections };
     }
 
     if (origin !== 'seed') {
@@ -166,7 +201,8 @@ class DrillCoordinator {
         spec: null,
         degraded: true,
         done: false,
-        doneReason: 'goal_generation_failed'
+        doneReason: 'goal_generation_failed',
+        rejections
       };
     }
 
@@ -174,6 +210,7 @@ class DrillCoordinator {
       degraded: true,
       done: false,
       doneReason: null,
+      rejections,
       spec: {
         title: question,
         why: 'Seed goal from the launch question.',
@@ -193,7 +230,8 @@ class DrillCoordinator {
     number,
     origin,
     mergedSummary,
-    deadlineAt
+    deadlineAt,
+    retry = null
   }) {
     const completedSummaries = goalHistory
       .filter((goal) => goal.status === 'completed')
@@ -227,31 +265,74 @@ class DrillCoordinator {
         : `Goal ${number - 1} is complete. Define goal ${number} — the NEXT goal that advances the research.`,
       mergedSummary ? `Merged result of the completed goal:\n${String(mergedSummary).slice(0, 900)}` : null,
       completedSummaries.length ? `Completed goals so far:\n${completedSummaries.join('\n')}` : null,
-      previousPhases.length ? `Phases just completed:\n${previousPhases.join('\n')}` : null
+      previousPhases.length ? `Phases just completed:\n${previousPhases.join('\n')}` : null,
+      retry
+        ? [
+            `Your previous reply was rejected (${retry.reason}).`,
+            `Rejected reply: ${retry.payload}`,
+            'Try once more. Name one concrete unanswered hole and executable phases, or return {"done":true,"reason":"why the hunt is complete"}.',
+            'JSON only. Do not restate the research question and do not use a generic deepen/continue goal.'
+          ].join('\n')
+        : null
     ].filter(Boolean).join('\n\n');
 
-    const parsed = extractJson(await this.callModel(system, user, { deadlineAt }));
-    if (parsed?.done === true) {
-      return origin === 'chain' ? { done: true } : null;
+    const raw = await this.callModel(system, user, { deadlineAt });
+    if (!String(raw || '').trim()) {
+      return {
+        result: null,
+        rejection: { reason: 'empty_response', payload: '(empty response)' }
+      };
     }
-    if (!parsed?.title || !Array.isArray(parsed.phases) || parsed.phases.length === 0) return null;
+    const parsed = extractJson(raw);
+    if (!parsed) {
+      return {
+        result: null,
+        rejection: { reason: 'non_json_response', payload: visiblePayload(raw, null) }
+      };
+    }
+    if (parsed?.done === true) {
+      return origin === 'chain'
+        ? { result: { done: true }, rejection: null }
+        : {
+            result: null,
+            rejection: { reason: 'seed_cannot_finish_hunt', payload: visiblePayload(raw, parsed) }
+          };
+    }
+    if (!parsed?.title || !Array.isArray(parsed.phases) || parsed.phases.length === 0) {
+      return {
+        result: null,
+        rejection: { reason: 'invalid_goal_shape', payload: visiblePayload(raw, parsed) }
+      };
+    }
     if (containsForbiddenPhrase(parsed)) {
-      this.logger?.warn?.('Goal spec contained a forbidden review-what-is-here phrase — rejected');
-      return null;
+      return {
+        result: null,
+        rejection: { reason: 'forbidden_plan_phrase', payload: visiblePayload(raw, parsed) }
+      };
     }
     if (origin === 'chain' && isInvalidChainGoalTitle(parsed.title, question)) {
-      this.logger?.warn?.('Next goal did not name a distinct research hole — rejected');
-      return null;
+      return {
+        result: null,
+        rejection: { reason: 'non_distinct_goal_title', payload: visiblePayload(raw, parsed) }
+      };
     }
     const phases = parsed.phases.filter((phase) => phase?.title || phase?.mission);
-    if (phases.length === 0) return null;
+    if (phases.length === 0) {
+      return {
+        result: null,
+        rejection: { reason: 'empty_phases', payload: visiblePayload(raw, parsed) }
+      };
+    }
     return {
-      title: String(parsed.title),
-      why: parsed.why ? String(parsed.why) : null,
-      phases: phases.slice(0, MAX_PHASES_PER_GOAL).map((phase) => ({
-        title: String(phase.title || phase.mission),
-        mission: String(phase.mission || phase.title)
-      }))
+      result: {
+        title: String(parsed.title),
+        why: parsed.why ? String(parsed.why) : null,
+        phases: phases.slice(0, MAX_PHASES_PER_GOAL).map((phase) => ({
+          title: String(phase.title || phase.mission),
+          mission: String(phase.mission || phase.title)
+        }))
+      },
+      rejection: null
     };
   }
 

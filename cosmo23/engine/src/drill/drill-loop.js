@@ -639,7 +639,15 @@ class DrillLoop {
         mergedSummary: this.lastMerge?.summary || null,
         deadlineAt: this.timeBudgetMs === null ? null : this.startedAtMs + this.timeBudgetMs
       });
-    const { spec, degraded, done, doneReason } = composed;
+    const { spec, degraded, done, doneReason, rejections = [] } = composed;
+    for (const rejection of rejections) {
+      await this.journal('goal_generation_rejected', {
+        goalNumber: number,
+        attempt: rejection.attempt,
+        reason: rejection.reason,
+        payload: rejection.payload
+      });
+    }
     if (degraded) this.degradedGoalGeneration = true;
     if (!spec) {
       this.goalChainDoneReason = done
