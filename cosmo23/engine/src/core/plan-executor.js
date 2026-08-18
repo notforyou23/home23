@@ -244,7 +244,7 @@ class PlanExecutor {
     if (this.isResearchToolLoopPlan(this.plan)) {
       const loopResult = await this.ensureResearchLaunchLoop();
       return this.record({
-        action: loopResult?.started ? 'LAUNCH_LOOP_OWNS' : 'LAUNCH_LOOP_UNAVAILABLE',
+        action: loopResult?.started ? 'LAUNCH_LOOP_OWNS' : 'LAUNCH_LOOP_MISSING',
         productLoop: 'research',
         reused: Boolean(loopResult?.reused),
         taskId: this.activeTask?.id || 'task:research',
@@ -814,7 +814,7 @@ class PlanExecutor {
     if (this.isResearchToolLoopPlan(this.plan) || this.activeTask?.metadata?.executionKind === 'tool_loop') {
       const loopResult = await this.ensureResearchLaunchLoop();
       return this.record({
-        action: loopResult?.started ? 'LAUNCH_LOOP_OWNS' : 'LAUNCH_LOOP_UNAVAILABLE',
+        action: loopResult?.started ? 'LAUNCH_LOOP_OWNS' : 'LAUNCH_LOOP_MISSING',
         productLoop: 'research',
         reused: Boolean(loopResult?.reused),
         taskId: this.activeTask?.id || null,

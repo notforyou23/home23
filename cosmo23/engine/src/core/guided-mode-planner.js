@@ -773,7 +773,11 @@ class GuidedModePlanner {
       shortPlan.seedPhases = requestedPhases.map(phase => ({
         title: phase.name,
         mission: phase.rawText || phase.description || phase.name,
-        expectedOutput: phase.expectedOutput || null
+        expectedOutput: phase.expectedOutput || (
+          (phase.rawText || phase.description || '').match(/\boutputs\/[^\s,;]+/i)?.[0]
+            ?.replace(/[.)\]}>'"]+$/, '')
+          || null
+        )
       }));
     }
     const stateStore = this.subsystems.clusterStateStore;

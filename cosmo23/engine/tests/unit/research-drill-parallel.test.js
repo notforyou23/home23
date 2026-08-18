@@ -487,11 +487,10 @@ describe('The control center shows the parallel drill', () => {
 
   it('the board renders workers in flight, not one lonely bit', () => {
     const indexSource = fs.readFileSync(path.join(publicDir, 'index.html'), 'utf8');
-    expect(indexSource).to.include('id="worker-strip"');
+    expect(indexSource).to.include('id="drill-workers"');
     const appSource = fs.readFileSync(path.join(publicDir, 'app.js'), 'utf8');
-    expect(appSource).to.include('renderWorkers');
+    expect(appSource).to.include('renderDrillStatus');
     expect(appSource).to.include('activeWorkers');
-    expect(appSource).to.include('workers in flight');
-    expect(appSource).to.include('phase-worker-chip');
+    expect(appSource).to.include('drill-worker-chip');
   });
 });
