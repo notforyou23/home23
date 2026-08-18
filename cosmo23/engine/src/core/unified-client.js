@@ -1,4 +1,4 @@
-const { GPT5Client } = require('./gpt5-client');
+const { GPT5Client, toResponsesToolChoice } = require('./gpt5-client');
 const { MCPClient } = require('./mcp-client');
 const { ChatCompletionsClient } = require('./chat-completions-client');
 const { wrapSystemPrompt } = require('./provider-prompts');
@@ -561,7 +561,7 @@ class UnifiedClient extends GPT5Client {
     } else if (tools.length > 0) {
       // Other tools pass through
       payload.tools = tools;
-      payload.tool_choice = tool_choice ?? toolChoice ?? 'auto';
+      payload.tool_choice = toResponsesToolChoice(tool_choice ?? toolChoice ?? 'auto');
     }
     
     // Call xAI (same streaming format as OpenAI)
@@ -734,7 +734,7 @@ class UnifiedClient extends GPT5Client {
 
     if (tools.length > 0) {
       body.tools = tools;
-      body.tool_choice = options.tool_choice ?? options.toolChoice ?? 'auto';
+      body.tool_choice = toResponsesToolChoice(options.tool_choice ?? options.toolChoice ?? 'auto');
     }
 
     // POST to chatgpt.com/backend-api/codex/responses (NOT /responses)

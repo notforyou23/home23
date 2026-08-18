@@ -25,11 +25,13 @@ const {
 const {
   WRITE_NUDGE_AFTER_TURNS,
   WRITE_NUDGE_TAIL_TURNS,
+  FORCE_FINISH_AFTER_TURNS,
   writeNudgeMessage,
   LaunchLoop
 } = require('../../src/agent/loop');
 const { DrillLoop } = require('../../src/drill/drill-loop');
 const { executeTool } = require('../../src/agent/tools');
+const { toResponsesToolChoice } = require('../../src/core/gpt5-client');
 const { RESEARCH_PRODUCT_LOOP } = require('../../../lib/research-launch');
 
 const logger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
@@ -155,31 +157,56 @@ describe('Research worker write nudges', () => {
     expect(writeNudgeMessage(1, 5)).to.include('remember() the findings');
   });
 
-  it('the live worker loop injects the write nudge after six harvest turns', async () => {
+  it('forces the write stage at the hard turn limit even without streamed evidence', async () => {
     const runtimePath = tempRuntime();
+    const calls = [];
     const loop = new LaunchLoop({
       logger,
       plan: { shortPlan: { goal: 'Write first', constraints: [], deliverable: 'Write it.' } },
       config: { models: { primary: 'test' }, logsDir: runtimePath },
-      maxTurns: 8,
+      maxTurns: 24,
       client: {
-        createCompletion: async () => ({
-          choices: [{ message: { role: 'assistant', content: 'still fetching' } }]
-        })
+        createCompletion: async options => {
+          calls.push(options);
+          return {
+            choices: [{ message: { role: 'assistant', content: 'still fetching' } }]
+          };
+        }
       }
     });
+    // Keep this fixture tape-free so FORCE_FINISH_AFTER_TURNS, rather than
+    // streamed evidence, is what changes the policy.
+    loop.streamThought = async () => {};
 
     loop.start();
     await loop._promise;
 
-    const nudges = loop.messages.filter((msg) => msg.role === 'user' && String(msg.content).includes('Stop fetching'));
-    expect(nudges.length).to.be.greaterThan(0);
-    expect(loop.turns).to.equal(8);
+    expect(FORCE_FINISH_AFTER_TURNS).to.equal(8);
+    expect(loop.turns).to.equal(FORCE_FINISH_AFTER_TURNS);
+    expect(calls).to.have.length(FORCE_FINISH_AFTER_TURNS + 1);
+    expect(calls.slice(-2).every(call =>
+      call.tools.map(tool => tool.function.name).join(',') === 'write_file'
+      && call.toolChoice?.function?.name === 'write_file'
+    )).to.equal(true);
+    expect(loop.getStatus().status).to.equal('error');
+    expect(loop.protocolError).to.include('write_file');
   });
 
-  it('forces write_file and finish after prose-only turns', async () => {
+  it('adapts an exact Chat Completions function choice for Responses providers', () => {
+    expect(toResponsesToolChoice({
+      type: 'function',
+      function: { name: 'write_file' }
+    })).to.deep.equal({
+      type: 'function',
+      name: 'write_file'
+    });
+    expect(toResponsesToolChoice('required')).to.equal('required');
+  });
+
+  it('retries prose-only required stages with the exact function and never records the prose as work', async () => {
     const runtimePath = tempRuntime();
     const policies = [];
+    const attempts = new Map();
     const loop = new LaunchLoop({
       logger,
       plan: {
@@ -197,6 +224,20 @@ describe('Research worker write nudges', () => {
         createCompletion: async options => {
           const names = (options.tools || []).map(tool => tool.function.name);
           policies.push({ names, toolChoice: options.toolChoice });
+          if (names.length === 1) {
+            const attempt = (attempts.get(names[0]) || 0) + 1;
+            attempts.set(names[0], attempt);
+            if (attempt === 1) {
+              return {
+                choices: [{
+                  message: {
+                    role: 'assistant',
+                    content: `I drafted the ${names[0]} result but did not call it.`
+                  }
+                }]
+              };
+            }
+          }
           if (names.length === 1 && names[0] === 'write_file') {
             return {
               choices: [{
@@ -259,12 +300,18 @@ describe('Research worker write nudges', () => {
     loop.start();
     await loop._promise;
 
-    expect(policies.some(policy => policy.toolChoice === 'required'
+    expect(policies.some(policy => policy.toolChoice?.function?.name === 'write_file'
       && policy.names.join(',') === 'write_file')).to.equal(true);
-    expect(policies.some(policy => policy.toolChoice === 'required'
+    expect(policies.some(policy => policy.toolChoice?.function?.name === 'remember'
       && policy.names.join(',') === 'remember')).to.equal(true);
-    expect(policies.some(policy => policy.toolChoice === 'required'
+    expect(policies.some(policy => policy.toolChoice?.function?.name === 'finish'
       && policy.names.join(',') === 'finish')).to.equal(true);
+    expect(attempts.get('write_file')).to.equal(2);
+    expect(attempts.get('remember')).to.equal(2);
+    expect(attempts.get('finish')).to.equal(2);
+    expect(loop.messages.some(message =>
+      String(message.content).includes('did not call it')
+    )).to.equal(false);
     expect(loop.finished).to.equal(true);
     expect(fs.existsSync(path.join(
       runtimePath,
@@ -273,6 +320,232 @@ describe('Research worker write nudges', () => {
       'goal-1',
       'phase-1-land-the-work.md'
     ))).to.equal(true);
+  });
+
+  it('takes a drafted writeup out of model prose and lands it at the phase path', async () => {
+    const runtimePath = tempRuntime();
+    const writeupPath = 'drill/goal-3/phase-2-partnership.md';
+    const draftedWriteup = [
+      '# Garcia partnership',
+      '',
+      ...Array.from(
+        { length: 260 },
+        (_, index) => `## Evidence ${index + 1}\n\nDocumented partnership finding ${index + 1} with source context and analysis.`
+      )
+    ].join('\n');
+    const stages = [];
+    const loop = new LaunchLoop({
+      logger,
+      plan: {
+        shortPlan: {
+          goal: 'Land the partnership paper',
+          constraints: [],
+          deliverable: 'Write the phase paper.',
+          writeupPath,
+          writeFirst: true
+        }
+      },
+      drill: { goalNumber: 3, phaseNumber: 2, workerId: 'w10', cycle: 1 },
+      config: { models: { primary: 'test' }, logsDir: runtimePath },
+      maxTurns: 24,
+      client: {
+        createCompletion: async options => {
+          const allowed = (options.tools || []).map(tool => tool.function.name);
+          stages.push(allowed.join(','));
+          if (allowed.join(',') === 'write_file') {
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  content: draftedWriteup
+                }
+              }]
+            };
+          }
+          if (allowed.join(',') === 'remember') {
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  tool_calls: [{
+                    id: 'remember-drafted-paper',
+                    function: {
+                      name: 'remember',
+                      arguments: JSON.stringify({ content: 'The partnership paper landed with evidence.' })
+                    }
+                  }]
+                }
+              }]
+            };
+          }
+          return {
+            choices: [{
+              message: {
+                role: 'assistant',
+                tool_calls: [{
+                  id: 'finish-drafted-paper',
+                  function: {
+                    name: 'finish',
+                    arguments: JSON.stringify({ summary: 'Partnership paper landed.' })
+                  }
+                }]
+              }
+            }]
+          };
+        }
+      }
+    });
+
+    loop.start();
+    await loop._promise;
+
+    expect(stages).to.deep.equal(['write_file', 'remember', 'finish']);
+    expect(loop.finished).to.equal(true);
+    expect(fs.readFileSync(path.join(runtimePath, 'outputs', writeupPath), 'utf8')).to.equal(draftedWriteup);
+    const stream = fs.readFileSync(path.join(runtimePath, 'outputs', 'stream.jsonl'), 'utf8')
+      .trim().split('\n').map(line => JSON.parse(line));
+    expect(stream.some(entry => entry.kind === 'writeup')).to.equal(true);
+    expect(stream.some(entry => entry.kind === 'thought'
+      && String(entry.content).includes('Documented partnership finding'))).to.equal(false);
+  });
+
+  it('takes an earlier full drafted thought back off the phase tape when write becomes required', async () => {
+    const runtimePath = tempRuntime();
+    const writeupPath = 'drill/goal-3/phase-2-tape-paper.md';
+    const draftedWriteup = [
+      '# Tape-owned paper',
+      '',
+      ...Array.from(
+        { length: 220 },
+        (_, index) => `Evidence paragraph ${index + 1}: the archive record supports the phase conclusion in detail.`
+      )
+    ].join('\n\n');
+    const stages = [];
+    const loop = new LaunchLoop({
+      logger,
+      plan: {
+        shortPlan: {
+          goal: 'Research, then land the paper',
+          constraints: [],
+          deliverable: 'Write the phase paper.',
+          writeupPath
+        }
+      },
+      drill: { goalNumber: 3, phaseNumber: 2, workerId: 'w8', cycle: 1 },
+      config: { models: { primary: 'test' }, logsDir: runtimePath },
+      maxTurns: 7,
+      client: {
+        createCompletion: async options => {
+          const allowed = (options.tools || []).map(tool => tool.function.name);
+          stages.push(allowed);
+          if (allowed.length > 1) {
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  content: draftedWriteup
+                }
+              }]
+            };
+          }
+          if (allowed[0] === 'write_file') {
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  content: 'I am writing now.'
+                }
+              }]
+            };
+          }
+          if (allowed[0] === 'remember') {
+            return {
+              choices: [{
+                message: {
+                  role: 'assistant',
+                  tool_calls: [{
+                    id: 'remember-tape-paper',
+                    function: {
+                      name: 'remember',
+                      arguments: JSON.stringify({ content: 'The tape-owned paper landed.' })
+                    }
+                  }]
+                }
+              }]
+            };
+          }
+          return {
+            choices: [{
+              message: {
+                role: 'assistant',
+                tool_calls: [{
+                  id: 'finish-tape-paper',
+                  function: {
+                    name: 'finish',
+                    arguments: JSON.stringify({ summary: 'Tape-owned paper landed.' })
+                  }
+                }]
+              }
+            }]
+          };
+        }
+      }
+    });
+
+    loop.start();
+    await loop._promise;
+
+    expect(stages.map(names => names.length === 1 ? names[0] : 'research'))
+      .to.deep.equal(['research', 'write_file', 'remember', 'finish']);
+    expect(loop.finished).to.equal(true);
+    expect(fs.readFileSync(path.join(runtimePath, 'outputs', writeupPath), 'utf8')).to.equal(draftedWriteup);
+    const stream = fs.readFileSync(path.join(runtimePath, 'outputs', 'stream.jsonl'), 'utf8')
+      .trim().split('\n').map(line => JSON.parse(line));
+    const draftedThought = stream.find(entry => entry.kind === 'thought');
+    expect(draftedThought.content).to.equal(draftedWriteup);
+    expect(stream.some(entry => entry.kind === 'writeup')).to.equal(true);
+  });
+
+  it('fails the worker after one same-turn retry when write_file is still refused', async () => {
+    const runtimePath = tempRuntime();
+    const calls = [];
+    const loop = new LaunchLoop({
+      logger,
+      plan: {
+        shortPlan: {
+          goal: 'Land the work',
+          constraints: [],
+          deliverable: 'Write it.',
+          writeFirst: true
+        }
+      },
+      config: { models: { primary: 'test' }, logsDir: runtimePath },
+      maxTurns: 24,
+      client: {
+        createCompletion: async options => {
+          calls.push(options);
+          return {
+            choices: [{
+              message: {
+                role: 'assistant',
+                content: 'Here is a long draft that is not a tool call.'
+              }
+            }]
+          };
+        }
+      }
+    });
+
+    loop.start();
+    await loop._promise;
+
+    expect(calls).to.have.length(2);
+    expect(loop.turns).to.equal(1);
+    expect(loop.finished).to.equal(false);
+    expect(loop.getStatus().status).to.equal('error');
+    expect(loop.protocolError).to.include('write_file');
+    expect(loop.messages.some(message => message.role === 'assistant')).to.equal(false);
+    expect(fs.existsSync(path.join(runtimePath, 'outputs', 'stream.jsonl'))).to.equal(false);
   });
 
   it('forces a later taped worker to write on its first model turn', () => {
@@ -376,5 +649,42 @@ describe('finish refuses tape-only and /tmp-only closes', () => {
     expect(provenance.finished).to.equal(false);
     expect(fs.existsSync(path.join(correctRun, 'outputs', 'garcia_partnership.md'))).to.equal(false);
     expect(fs.existsSync(path.join(wrongRun, 'outputs', 'garcia_partnership.md'))).to.equal(true);
+  });
+});
+
+describe('write_file deliverable protection', () => {
+  it('normalizes a mission-style outputs/ prefix without nesting outputs twice', async () => {
+    const runtimePath = tempRuntime();
+    const args = {
+      path: 'outputs/drill/goal-3/phase-2.md',
+      content: '# Phase two\n\nThe partnership analysis is landed.'
+    };
+
+    const result = await executeTool('write_file', args, { runtimePath, logger });
+
+    expect(result).to.match(/^File written: outputs\/drill\/goal-3\/phase-2\.md/);
+    expect(args.path).to.equal('drill/goal-3/phase-2.md');
+    expect(fs.existsSync(path.join(runtimePath, 'outputs', 'drill', 'goal-3', 'phase-2.md'))).to.equal(true);
+    expect(fs.existsSync(path.join(runtimePath, 'outputs', 'outputs'))).to.equal(false);
+  });
+
+  it('refuses to replace a substantive markdown writeup with a thin same-path write', async () => {
+    const runtimePath = tempRuntime();
+    const writePath = 'garcia_partnership.md';
+    const substantive = `# Garcia partnership\n\n${'Documented evidence and analysis. '.repeat(220)}`;
+    const thin = '# Garcia partnership\n\nThin replacement.';
+
+    const first = await executeTool('write_file', {
+      path: writePath,
+      content: substantive
+    }, { runtimePath, logger });
+    const second = await executeTool('write_file', {
+      path: writePath,
+      content: thin
+    }, { runtimePath, logger });
+
+    expect(first).to.match(/^File written:/);
+    expect(second).to.include('Refusing to replace substantive');
+    expect(fs.readFileSync(path.join(runtimePath, 'outputs', writePath), 'utf8')).to.equal(substantive);
   });
 });

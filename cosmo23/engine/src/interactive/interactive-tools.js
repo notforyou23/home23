@@ -55,6 +55,34 @@ async function assertSafeWriteParent(basePath, targetPath) {
   }
 }
 
+const SUBSTANTIVE_MARKDOWN_BYTES = 1024;
+const THIN_OVERWRITE_RATIO = 0.5;
+
+function normalizeOutputPath(value) {
+  let normalized = String(value || '').replace(/\\/g, '/');
+  while (normalized.startsWith('outputs/')) {
+    normalized = normalized.slice('outputs/'.length);
+  }
+  return normalized;
+}
+
+async function refusesThinMarkdownOverwrite(targetPath, content) {
+  if (path.extname(targetPath).toLowerCase() !== '.md') return null;
+  try {
+    const existing = await fs.readFile(targetPath, 'utf-8');
+    const existingBytes = Buffer.byteLength(existing, 'utf-8');
+    const incomingBytes = Buffer.byteLength(content, 'utf-8');
+    if (existing.trim()
+        && existingBytes >= SUBSTANTIVE_MARKDOWN_BYTES
+        && incomingBytes < existingBytes * THIN_OVERWRITE_RATIO) {
+      return { existingBytes, incomingBytes };
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  return null;
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // TOOL DEFINITIONS (OpenAI function-calling format)
 // ═══════════════════════════════════════════════════════════════════════
@@ -514,10 +542,14 @@ const executors = {
     if (!runtimePath) return 'Error: Run directory not configured.';
 
     // Force writes to outputs/ subdirectory
+    const normalizedPath = normalizeOutputPath(args.path);
+    if (!normalizedPath) return 'Error: write_file path must name a file under outputs/.';
+    args.path = normalizedPath;
+    const content = String(args.content ?? '');
     const outputsRoot = path.resolve(runtimePath, 'outputs');
-    const targetPath = path.resolve(outputsRoot, args.path);
+    const targetPath = path.resolve(outputsRoot, normalizedPath);
     if (!isPathSafe(targetPath, outputsRoot)) {
-      return `Error: Path "${args.path}" resolves outside outputs/.`;
+      return `Error: Path "${normalizedPath}" resolves outside outputs/.`;
     }
 
     try {
@@ -525,12 +557,18 @@ const executors = {
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
       const realParent = await fs.realpath(path.dirname(targetPath));
       if (!isPathSafe(realParent, outputsRoot)) {
-        return `Error: Path "${args.path}" resolves outside outputs/.`;
+        return `Error: Path "${normalizedPath}" resolves outside outputs/.`;
       }
-      await fs.writeFile(targetPath, args.content, 'utf-8');
-      return `File written: outputs/${args.path} (${Buffer.byteLength(args.content, 'utf-8')} bytes)`;
+      const refused = await refusesThinMarkdownOverwrite(targetPath, content);
+      if (refused) {
+        return `Error: Refusing to replace substantive outputs/${normalizedPath} `
+          + `(${refused.existingBytes} bytes) with a thin write (${refused.incomingBytes} bytes). `
+          + 'Revise the existing writeup without discarding its substance.';
+      }
+      await fs.writeFile(targetPath, content, 'utf-8');
+      return `File written: outputs/${normalizedPath} (${Buffer.byteLength(content, 'utf-8')} bytes)`;
     } catch (err) {
-      logger?.error('write_file failed', { path: args.path, error: err.message });
+      logger?.error('write_file failed', { path: normalizedPath, error: err.message });
       return `Error writing file: ${err.message}`;
     }
   },

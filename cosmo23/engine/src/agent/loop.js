@@ -8,9 +8,11 @@
  * spent or the human stops it. This is not Interactive chat.
  */
 
+const fs = require('fs').promises;
+const path = require('path');
 const { tools, executeTool, toChatTools } = require('./tools');
 const { writeBrainStream, bumpStreamEvidence } = require('./brain-stream');
-const { hasPhaseWriteup } = require('../drill/writeup-gate');
+const { hasPhaseWriteup, isSubstantiveWriteupContent } = require('../drill/writeup-gate');
 const { RESEARCH_PRODUCT_LOOP } = require('../../../lib/research-launch');
 const { AUTH_REVOKED_WATCH_MESSAGE, isFatalAuthError } = require('../../../lib/auth-error');
 
@@ -19,6 +21,36 @@ const WRITE_NUDGE_AFTER_TURNS = 6;
 const WRITE_NUDGE_TAIL_TURNS = 5;
 const FORCE_FINISH_AFTER_TURNS = 8;
 const DEFAULT_CALL_TIMEOUT_MS = 120000;
+const REQUIRED_TOOL_STAGES = new Set(['write', 'remember', 'finish']);
+const MIN_AUTOLAND_DRAFT_CHARS = 800;
+
+function requiresToolCall(policy = {}) {
+  return policy.toolChoice === 'required' || REQUIRED_TOOL_STAGES.has(policy.stage);
+}
+
+function forcedFunctionChoice(policy = {}) {
+  if (!requiresToolCall(policy) || policy.allowedNames?.length !== 1) {
+    return policy.toolChoice || 'auto';
+  }
+  return {
+    type: 'function',
+    function: { name: policy.allowedNames[0] }
+  };
+}
+
+function toolCallsSatisfyPolicy(toolCalls, policy = {}) {
+  if (!Array.isArray(toolCalls) || toolCalls.length === 0) return false;
+  if (!Array.isArray(policy.allowedNames)) return true;
+  const allowed = new Set(policy.allowedNames);
+  return toolCalls.every(call => allowed.has(call?.function?.name));
+}
+
+function isDraftedWriteupProse(content) {
+  const text = String(content || '').trim();
+  if (!isSubstantiveWriteupContent(text)) return false;
+  return text.length >= MIN_AUTOLAND_DRAFT_CHARS
+    || (text.length >= 200 && /^#\s+\S+/m.test(text));
+}
 
 function writeNudgeMessage(turns, maxTurns) {
   const used = Number(turns) || 0;
@@ -58,6 +90,7 @@ class LaunchLoop {
     this.turns = 0;
     this.productLoop = RESEARCH_PRODUCT_LOOP;
     this.fatalError = null;
+    this.protocolError = null;
     this._promise = null;
   }
 
@@ -85,8 +118,9 @@ class LaunchLoop {
       return { allowedNames: ['write_file'], toolChoice: 'required', stage: 'write' };
     }
     if (!writeupExists
-        && (Number(this.evidence?.streamed) || 0) > 0
-        && (this.turns > WRITE_NUDGE_AFTER_TURNS || remaining <= WRITE_NUDGE_TAIL_TURNS)) {
+        && (this.turns >= FORCE_FINISH_AFTER_TURNS
+          || ((Number(this.evidence?.streamed) || 0) > 0
+            && (this.turns > WRITE_NUDGE_AFTER_TURNS || remaining <= WRITE_NUDGE_TAIL_TURNS)))) {
       return { allowedNames: ['write_file'], toolChoice: 'required', stage: 'write' };
     }
     return { allowedNames: null, toolChoice: 'auto', stage: 'research' };
@@ -155,6 +189,100 @@ class LaunchLoop {
     });
   }
 
+  stopProtocolViolation(policy, assistantMsg) {
+    const requiredTool = policy?.allowedNames?.[0] || 'required tool';
+    const chars = typeof assistantMsg?.content === 'string' ? assistantMsg.content.length : 0;
+    this.running = false;
+    this.protocolError = `Model refused required ${requiredTool} call`;
+    this.logger?.error?.('Research Launch loop stopped: required tool was not called', {
+      productLoop: RESEARCH_PRODUCT_LOOP,
+      stage: policy?.stage || null,
+      requiredTool,
+      chars,
+      turns: this.turns
+    });
+    this.emitProgress({
+      type: 'launch_loop_error',
+      fatal: true,
+      errorType: 'tool_protocol_error',
+      stage: policy?.stage || null,
+      requiredTool,
+      message: this.protocolError
+    });
+  }
+
+  async persistDraftedWriteup(content) {
+    const short = this.plan?.shortPlan || this.plan || {};
+    const writeupPath = String(short.writeupPath || '').trim();
+    if (!writeupPath) {
+      return { written: false, reason: 'missing_phase_path' };
+    }
+
+    let draft = String(content || '').trim();
+    let source = 'model_reply';
+    if (!isDraftedWriteupProse(draft)) {
+      draft = await this.latestDraftedThought();
+      source = 'phase_tape';
+    }
+    if (!draft) {
+      return { written: false, reason: 'not_substantive' };
+    }
+
+    const args = { path: writeupPath, content: draft };
+    const result = await executeTool('write_file', args, {
+      orchestrator: this.orchestrator,
+      runtimePath: this.runtimePath,
+      logger: this.logger,
+      loop: this
+    });
+    if (!/^File written:/.test(String(result))) {
+      this.logger?.warn?.('Research Launch loop could not land drafted writeup', {
+        turn: this.turns,
+        path: writeupPath,
+        result: String(result)
+      });
+      return { written: false, reason: 'write_refused', result };
+    }
+
+    this.logger?.info?.('Research Launch drafted writeup landed from model prose', {
+      turn: this.turns,
+      path: args.path,
+      chars: draft.length,
+      source
+    });
+    this.emitProgress({
+      type: 'launch_loop_tool',
+      turn: this.turns,
+      tool: 'write_file',
+      tapeOwned: true,
+      source,
+      path: `outputs/${args.path}`
+    });
+    this.messages.push({
+      role: 'user',
+      content: `Cosmo landed the drafted writeup at outputs/${args.path}. Continue with the required close tools.`
+    });
+    return { written: true, path: args.path, result };
+  }
+
+  async latestDraftedThought() {
+    let raw;
+    try {
+      raw = await fs.readFile(path.join(this.runtimePath, 'outputs', 'stream.jsonl'), 'utf8');
+    } catch {
+      return '';
+    }
+    const rows = raw.split('\n').filter(Boolean).map(line => {
+      try { return JSON.parse(line); } catch { return null; }
+    }).filter(Boolean).reverse();
+    return String(rows.find(row => {
+      if (row.kind !== 'thought') return false;
+      if (this.drill?.goalNumber != null && row.goalNumber !== this.drill.goalNumber) return false;
+      if (this.drill?.phaseNumber != null && row.phaseNumber !== this.drill.phaseNumber) return false;
+      return isDraftedWriteupProse(row.content);
+    })?.content || '').trim();
+  }
+
   async run() {
     const short = this.plan?.shortPlan || this.plan || {};
     const goal = short.goal || this.plan?.title || 'Research the stated topic';
@@ -176,19 +304,57 @@ class LaunchLoop {
       this.logger?.info?.('Research Launch loop turn', { turn: this.turns, maxTurns: this.maxTurns });
       this.emitProgress({ type: 'launch_loop_turn', turn: this.turns });
 
-      const response = await this.callLLM(this.toolPolicy());
-      const assistantMsg = response?.choices?.[0]?.message;
-      const content = assistantMsg?.content || '';
+      const policy = this.toolPolicy();
+      let response = await this.callLLM(policy);
+      let assistantMsg = response?.choices?.[0]?.message;
+      let content = assistantMsg?.content || '';
       if (isFatalAuthError(response) || isFatalAuthError(content)) {
         this.stopFatalAuth(response || content);
         break;
       }
-      if (!assistantMsg) {
-        this.logger?.warn?.('Research Launch loop: empty model response', { turn: this.turns });
-        continue;
+
+      let toolCalls = assistantMsg?.tool_calls;
+      const requiredToolMissing = requiresToolCall(policy)
+        && !toolCallsSatisfyPolicy(toolCalls, policy);
+      const emptyResearchReply = !requiresToolCall(policy)
+        && (!assistantMsg || (!String(content).trim() && (!Array.isArray(toolCalls) || toolCalls.length === 0)));
+
+      if (requiredToolMissing && policy.stage === 'write') {
+        const landed = await this.persistDraftedWriteup(content);
+        if (landed.written) continue;
       }
 
-      const toolCalls = assistantMsg.tool_calls;
+      if (requiredToolMissing || emptyResearchReply) {
+        this.logger?.warn?.('Research Launch loop: refusing non-work model reply', {
+          turn: this.turns,
+          stage: policy.stage,
+          requiredTool: policy.allowedNames?.[0] || null,
+          chars: String(content).length
+        });
+        response = await this.callLLM(policy);
+        assistantMsg = response?.choices?.[0]?.message;
+        content = assistantMsg?.content || '';
+        toolCalls = assistantMsg?.tool_calls;
+        if (isFatalAuthError(response) || isFatalAuthError(content)) {
+          this.stopFatalAuth(response || content);
+          break;
+        }
+      }
+
+      if (requiresToolCall(policy) && !toolCallsSatisfyPolicy(toolCalls, policy)) {
+        this.stopProtocolViolation(policy, assistantMsg);
+        break;
+      }
+      if (!assistantMsg || (!String(content).trim() && (!Array.isArray(toolCalls) || toolCalls.length === 0))) {
+        this.running = false;
+        this.protocolError = 'Model returned empty replies without doing work';
+        this.logger?.error?.('Research Launch loop stopped: repeated empty model reply', {
+          turn: this.turns,
+          stage: policy.stage
+        });
+        break;
+      }
+
       if (toolCalls && toolCalls.length > 0) {
         this.messages.push(assistantMsg);
         // Reasoning alongside tool calls is work too — onto the tape.
@@ -260,7 +426,7 @@ class LaunchLoop {
         logger: this.logger
       }, {
         kind: 'thought',
-        content: text.slice(0, 2000),
+        content: text,
         cycle: this.drill?.cycle ?? null,
         workerId: this.drill?.workerId ?? null,
         goalNumber: this.drill?.goalNumber ?? null,
@@ -313,7 +479,7 @@ class LaunchLoop {
         ...this.messages
       ],
       tools: toChatTools(policy.allowedNames),
-      toolChoice: policy.toolChoice || 'auto',
+      toolChoice: forcedFunctionChoice(policy),
       temperature: 0.4,
       maxTokens: 4000
     });
@@ -372,7 +538,10 @@ class LaunchLoop {
       productLoop: RESEARCH_PRODUCT_LOOP,
       summary: this.finishSummary,
       fatalError: this.fatalError || null,
-      status: this.fatalError ? 'error' : (this.finished ? 'finished' : (this.running ? 'running' : 'stopped'))
+      protocolError: this.protocolError || null,
+      status: (this.fatalError || this.protocolError)
+        ? 'error'
+        : (this.finished ? 'finished' : (this.running ? 'running' : 'stopped'))
     };
   }
 }
@@ -384,6 +553,11 @@ module.exports = {
   WRITE_NUDGE_TAIL_TURNS,
   FORCE_FINISH_AFTER_TURNS,
   DEFAULT_CALL_TIMEOUT_MS,
+  MIN_AUTOLAND_DRAFT_CHARS,
+  requiresToolCall,
+  forcedFunctionChoice,
+  toolCallsSatisfyPolicy,
+  isDraftedWriteupProse,
   writeNudgeMessage,
   tools
 };
