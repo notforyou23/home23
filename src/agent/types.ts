@@ -22,6 +22,7 @@ import type {
   CodingJobRecord,
   CodingJobStatus,
 } from '../acp/types.js';
+import type { ToolRegistry } from './tools/index.js';
 
 // ─── Tool Types ─────────────────────────────────────────────
 
@@ -54,6 +55,8 @@ export interface TurnRuntimeContext {
   signal: AbortSignal;
   brainOperations: BrainOperationsClient;
   onOperationActivity: (activity: OperationActivity) => void;
+  /** Immutable per-turn registry override. Absent means the loop's shared registry. */
+  registry?: ToolRegistry;
 }
 
 export interface ToolContext {
@@ -191,7 +194,10 @@ export type AgentLoopRunner = (
   userMessage: string,
   tools: ToolDefinition[],
   ctx: ToolContext,
-  options?: { modelOverride?: { model: string; provider?: string } },
+  options?: {
+    modelOverride?: { model: string; provider?: string };
+    registry?: ToolRegistry;
+  },
 ) => Promise<AgentResponse>;
 
 // ─── Agent Events (streaming) ───────────────────────────────

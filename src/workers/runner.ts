@@ -1,9 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { resolveModelOverride } from '../agent/model-resolution.js';
+import { createSeededToolRegistry, resolveWorkerTools } from '../agent/tools/index.js';
 import { loadWorker } from './registry.js';
 import { writeWorkerReceipt } from './receipts.js';
-import type { ToolContext, ToolDefinition } from '../agent/types.js';
+import type { ToolContext } from '../agent/types.js';
 import type { WorkerCollaborationHandoff, WorkerRunReceipt, WorkerRunRequest } from './types.js';
 
 const activeOwners = new Set<string>();
@@ -12,7 +13,6 @@ export interface RunWorkerInput {
   projectRoot: string;
   request: WorkerRunRequest;
   ctx: ToolContext;
-  tools?: ToolDefinition[];
 }
 
 export interface RunWorkerResult {
@@ -231,12 +231,17 @@ export async function runWorker(input: RunWorkerInput): Promise<RunWorkerResult>
         throw new Error(`Worker ${worker.name} declares model "${worker.model}" which is not a known alias or routable model`);
       }
     }
-    const response = await input.ctx.runAgentLoop(systemPrompt, mission, input.tools || [], {
+    const workerTools = resolveWorkerTools(worker.tools ?? {});
+    const workerRegistry = createSeededToolRegistry(workerTools);
+    const response = await input.ctx.runAgentLoop(systemPrompt, mission, workerTools, {
       ...input.ctx,
       agentName: owner,
       workspacePath: path.join(worker.rootPath, 'workspace'),
       chatId: `worker:${worker.name}:${id}`
-    }, workerModelOverride ? { modelOverride: workerModelOverride } : undefined);
+    }, {
+      ...(workerModelOverride ? { modelOverride: workerModelOverride } : {}),
+      registry: workerRegistry,
+    });
     const finishedAt = new Date().toISOString();
     writeFileSync(path.join(runPath, 'transcript.md'), response.text);
 

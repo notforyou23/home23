@@ -13,6 +13,8 @@ test('interactive, cron, and Evobrew entrypoints converge on executeTrackedTurn'
 
   assert.match(home, /executeTrackedTurn\(\s*agent,\s*message\.chatId,\s*text/);
   assert.match(home, /runAgentLoop\s*=\s*async[\s\S]{0,500}executeTrackedTurn\(\s*agent,\s*ctx\.chatId/);
+  assert.match(home, /runAgentLoop\s*=\s*async[\s\S]{0,700}registry/);
+  assert.doesNotMatch(home, /runAgentLoop\s*=\s*async \([^)]*_tools/);
   assert.match(home, /executeTrackedTurn\(\s*agent,\s*cronChatId,\s*resolvedMessage/);
   assert.match(home, /job\.payload\.kind === 'query'[\s\S]{0,900}runCronBrainQueryJob\(\s*brainOperations/);
   assert.doesNotMatch(home, /job\.payload\.kind === 'query'[\s\S]{0,900}queryEngine\(/);
@@ -32,4 +34,12 @@ test('subagent and worker paths retain the injected tracked runAgentLoop boundar
     assert.doesNotMatch(text, /\bagent\.run\(/);
     assert.doesNotMatch(text, /Promise\.race\([\s\S]{0,500}runAgentLoop/);
   }
+});
+
+test('default worker runner seeds a per-turn registry from declared grants only', () => {
+  const runner = source('src/workers/runner.ts');
+  assert.match(runner, /resolveWorkerTools\(worker\.tools/);
+  assert.match(runner, /createSeededToolRegistry\(workerTools\)/);
+  assert.match(runner, /registry:\s*workerRegistry/);
+  assert.doesNotMatch(runner, /input\.tools/);
 });

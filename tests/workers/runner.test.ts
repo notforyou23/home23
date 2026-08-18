@@ -5,6 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { runWorker } from '../../src/workers/runner.js';
 import type { AgentLoopRunner, ToolContext } from '../../src/agent/types.js';
+import type { ToolRegistry } from '../../src/agent/tools/index.js';
 
 function seedWorker(projectRoot: string) {
   const dir = path.join(projectRoot, 'instances', 'workers', 'systems');
@@ -47,6 +48,31 @@ function fakeContext(projectRoot: string, loop: AgentLoopRunner): ToolContext {
     runAgentLoop: loop
   };
 }
+
+test('runWorker with no declared grants still forwards an empty seeded registry', async () => {
+  const projectRoot = mkdtempSync(path.join(tmpdir(), 'home23-runner-empty-tools-'));
+  seedWorker(projectRoot);
+  let forwardedRegistry: ToolRegistry | undefined;
+  const loop: AgentLoopRunner = async (_systemPrompt, _userMessage, tools, _ctx, options) => {
+    forwardedRegistry = options?.registry;
+    assert.deepEqual(tools.map(tool => tool.name), []);
+    assert.ok(options?.registry, 'empty grants must still seed a registry so the generic set is never used');
+    assert.equal(options.registry.size, 0);
+    return { text: 'SUMMARY: empty grants\nVERIFIER_STATUS: pass', model: 'fake', toolCallCount: 0, durationMs: 5 };
+  };
+
+  await runWorker({
+    projectRoot,
+    request: { worker: 'systems', prompt: 'No tools needed', requestedBy: 'api' },
+    ctx: fakeContext(projectRoot, loop),
+  });
+
+  assert.ok(forwardedRegistry);
+  assert.equal(forwardedRegistry.size, 0);
+  const denied = await forwardedRegistry.execute('read_file', { path: '/tmp/x' }, { chatId: 'worker:systems:wr_empty' } as ToolContext);
+  assert.equal(denied.is_error, true);
+  assert.match(denied.content, /Unknown tool: read_file/);
+});
 
 test('runWorker writes input, transcript, receipt, and owner brain feed', async () => {
   const projectRoot = mkdtempSync(path.join(tmpdir(), 'home23-runner-'));
@@ -102,6 +128,65 @@ test('runWorker treats read-only verifier pass as no_change even when no fix was
 
   assert.equal(result.receipt.verifierStatus, 'pass');
   assert.equal(result.receipt.status, 'no_change');
+});
+
+test('runWorker resolves worker.yaml grants and forwards a seeded registry', async () => {
+  const projectRoot = mkdtempSync(path.join(tmpdir(), 'home23-runner-tools-'));
+  const dir = path.join(projectRoot, 'instances', 'workers', 'systems');
+  mkdirSync(path.join(dir, 'workspace'), { recursive: true });
+  mkdirSync(path.join(dir, 'runs'), { recursive: true });
+  writeFileSync(path.join(dir, 'worker.yaml'), [
+    'kind: worker',
+    'name: systems',
+    'displayName: Systems',
+    'ownerAgent: jerry',
+    'class: ops',
+    'purpose: Diagnose systems issues.',
+    'tools:',
+    '  files: true',
+    '  shell: true',
+    '  cron: false',
+    '  brain: false',
+    '  web: false',
+  ].join('\n'));
+  writeFileSync(path.join(dir, 'workspace', 'IDENTITY.md'), '# Systems\n');
+  writeFileSync(path.join(dir, 'workspace', 'PLAYBOOK.md'), '# Playbook\n');
+
+  let captured: { toolNames: string[]; chatId: string; registry: ToolRegistry } | null = null;
+
+  const loop: AgentLoopRunner = async (_systemPrompt, _userMessage, tools, ctx, options) => {
+    assert.ok(options?.registry, 'worker turn must receive a seeded registry override');
+    captured = {
+      toolNames: tools.map(tool => tool.name),
+      chatId: ctx.chatId,
+      registry: options.registry,
+    };
+    assert.equal(options.registry.get('shell')?.name, 'shell');
+    assert.equal(options.registry.get('read_file')?.name, 'read_file');
+    assert.equal(options.registry.get('cron_list'), undefined);
+    assert.equal(options.registry.get('spawn_agent'), undefined);
+    return { text: 'SUMMARY: forwarded\nVERIFIER_STATUS: pass', model: 'fake', toolCallCount: 0, durationMs: 5 };
+  };
+
+  await runWorker({
+    projectRoot,
+    request: { worker: 'systems', prompt: 'List workspace files', requestedBy: 'api' },
+    ctx: fakeContext(projectRoot, loop),
+  });
+
+  assert.ok(captured);
+  assert.match(captured.chatId, /^worker:systems:wr_/);
+  assert.deepEqual(captured.toolNames, ['shell', 'read_file', 'write_file', 'edit_file', 'list_files', 'search_files']);
+
+  const notePath = path.join(dir, 'workspace', 'note.txt');
+  writeFileSync(notePath, 'from-granted-files');
+  const granted = await captured.registry.execute('read_file', { path: notePath }, { chatId: captured.chatId, workspacePath: path.join(dir, 'workspace') });
+  assert.equal(granted.is_error, undefined);
+  assert.match(granted.content, /from-granted-files/);
+
+  const denied = await captured.registry.execute('cron_list', {}, { chatId: captured.chatId, workspacePath: path.join(dir, 'workspace') });
+  assert.equal(denied.is_error, true);
+  assert.match(denied.content, /Unknown tool: cron_list/);
 });
 
 test('runWorker preserves explicit collaboration handoff intent', async () => {

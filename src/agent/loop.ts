@@ -821,6 +821,7 @@ export class AgentLoop {
       hardDurationMs?: number;
       maxDurationMs?: number;
       firstTokenTimeoutMs?: number;
+      registry?: ToolRegistry;
     } = {},
   ): Promise<{ turnId: string; response: Promise<import('./types.js').AgentResponse> }> {
     const turnId = opts.turnId ?? newTurnId();
@@ -921,6 +922,7 @@ export class AgentLoop {
       signal: ac.signal,
       brainOperations: runBrainOperations as BrainOperationsClient,
       onOperationActivity,
+      ...(opts.registry ? { registry: opts.registry } : {}),
     });
     let firstTokenWatchdog: unknown = null;
     try {
@@ -1075,6 +1077,7 @@ export class AgentLoop {
     const runtimeClient = runtime.client;
     const runtimeIsOAuth = runtime.isOAuth;
     const runtimeMemory = runtime.memory;
+    const registry = turnRuntime?.registry ?? this.registry;
 
     // Abort controller for this run — checked between iterations, passed to API calls
     const ac = turnRuntime?.abortController ?? new AbortController();
@@ -1311,7 +1314,7 @@ export class AgentLoop {
 
       // ── Situational awareness: COSMO 2.3 active-run check ──
       // Keep this — it's a real-time probe, not a surface/memory concern
-      if (this.registry.get('research_launch')) {
+      if (registry.get('research_launch')) {
         try {
           const { checkCosmoActiveRun } = await import('./tools/research.js');
           const active = await checkCosmoActiveRun(runContext);
@@ -1389,7 +1392,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
       }));
 
       // Get tool definitions
-      const tools = this.registry.getAnthropicTools();
+      const tools = registry.getAnthropicTools();
 
       if (this.cacheDiagnostics?.enabled) {
         try {
@@ -1502,7 +1505,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             // Do NOT set strict:true — it requires additionalProperties:false recursively on all
             // nested schemas, which our tool definitions don't guarantee.
             type OAITool = { type: string; function: { name: string; description?: string; parameters?: unknown } };
-            const codexTools = (this.registry.getOpenAITools() as OAITool[]).map(t => ({
+            const codexTools = (registry.getOpenAITools() as OAITool[]).map(t => ({
               type: 'function',
               name: t.function.name,
               description: t.function.description ?? null,
@@ -1700,7 +1703,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
 
                 try {
                   const formatted = await executeAndFormatTool({
-                    registry: this.registry,
+                    registry,
                     name: tc.function.name,
                     input,
                     context: runContext,
@@ -1760,7 +1763,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               }
             }
 
-            const xaiTools = buildXaiResponseTools(this.registry);
+            const xaiTools = buildXaiResponseTools(registry);
 
             const initialInput: Array<Record<string, unknown>> = [
               ...(sysText ? [{ role: 'system', content: sysText }] : []),
@@ -1958,7 +1961,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 if (onEvent) onEvent({ type: 'tool_start', tool: tc.function.name, args: input });
                 try {
                   const formatted = await executeAndFormatTool({
-                    registry: this.registry,
+                    registry,
                     name: tc.function.name,
                     input,
                     context: runContext,
@@ -2048,7 +2051,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             }
           }
 
-          const oaiTools = modelSupportsTools ? this.registry.getOpenAITools() : [];
+          const oaiTools = modelSupportsTools ? registry.getOpenAITools() : [];
 
           // Build the live message array for the API (mutated during tool loop)
           const apiMessages: Array<Record<string, unknown>> = [
@@ -2187,7 +2190,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
 
               try {
                 const formatted = await executeAndFormatTool({
-                  registry: this.registry,
+                  registry,
                   name: tc.function.name,
                   input,
                   context: runContext,
@@ -2364,7 +2367,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             // Catch per-tool errors so one bad tool doesn't kill the whole turn
             try {
               const formatted = await executeAndFormatTool({
-                registry: this.registry,
+                registry,
                 name: toolCall.name,
                 input: toolCall.input,
                 context: runContext,

@@ -42,7 +42,7 @@ import { resolveProviderKey } from './agent/provider-credentials.js';
 import { executeTrackedTurn } from './agent/turn-entrypoint.js';
 import { ContextManager } from './agent/context.js';
 import { ConversationHistory } from './agent/history.js';
-import { createToolRegistry } from './agent/tools/index.js';
+import { createSeededToolRegistry, createToolRegistry } from './agent/tools/index.js';
 import { ACPBridge, normalizeBridgeConfig } from './acp/bridge.js';
 import type { CodingJobRecord, CodingJobReceipt } from './acp/types.js';
 import { WorkStore } from './work/work-store.js';
@@ -503,8 +503,13 @@ async function main(): Promise<void> {
   (compaction as unknown as { memory: import('./agent/memory.js').MemoryManager }).memory = agent.getMemory();
 
   // Wire sub-agent runner
-  toolContext.runAgentLoop = async (_systemPrompt, userMessage, _tools, ctx, options) => {
-    return (await executeTrackedTurn(agent, ctx.chatId, userMessage, { modelOverride: options?.modelOverride })).response;
+  toolContext.runAgentLoop = async (_systemPrompt, userMessage, tools, ctx, options) => {
+    const registry = options?.registry
+      ?? (tools.length > 0 ? createSeededToolRegistry(tools) : undefined);
+    return (await executeTrackedTurn(agent, ctx.chatId, userMessage, {
+      modelOverride: options?.modelOverride,
+      ...(registry ? { registry } : {}),
+    })).response;
   };
 
   // Give AgentLoop the provider map so runtime setModel can rebuild the client
