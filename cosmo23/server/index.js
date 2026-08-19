@@ -1102,7 +1102,9 @@ function resolveLaunchRequester(payload = {}, request = {}) {
     || payload.requesterAgent
     || payload.owner
     || payload.agentName
-    || process.env.HOME23_AGENT;
+    || process.env.HOME23_AGENT
+    || process.env.COSMO_OWNER_AGENT
+    || 'cosmo';
 }
 
 function resolveLaunchWorkspace(requesterAgent) {

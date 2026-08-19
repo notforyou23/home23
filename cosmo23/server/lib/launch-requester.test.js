@@ -20,6 +20,38 @@ test('Cosmo desk launch stamps its own exact requester', () => {
   ), 'cosmo');
 });
 
+test('topic-only launch defaults to Cosmo and starts against the living root', async (t) => {
+  const priorHome23Agent = process.env.HOME23_AGENT;
+  const priorCosmoOwnerAgent = process.env.COSMO_OWNER_AGENT;
+  delete process.env.HOME23_AGENT;
+  delete process.env.COSMO_OWNER_AGENT;
+  t.after(() => {
+    if (priorHome23Agent === undefined) delete process.env.HOME23_AGENT;
+    else process.env.HOME23_AGENT = priorHome23Agent;
+    if (priorCosmoOwnerAgent === undefined) delete process.env.COSMO_OWNER_AGENT;
+    else process.env.COSMO_OWNER_AGENT = priorCosmoOwnerAgent;
+  });
+
+  const requesterAgent = resolveLaunchRequester({ topic: 'desk topic' }, {});
+  const launches = [];
+  const manager = {
+    startMCPServer: async (_port, env) => launches.push({ ...env }),
+    startMainDashboard: async (_port, env) => launches.push({ ...env }),
+    startCOSMO: async (env) => launches.push({ ...env }),
+    stopAll: async () => {},
+  };
+
+  assert.equal(requesterAgent, 'cosmo');
+  await assert.doesNotReject(
+    startProcessesForRun('/runs/desk-topic', requesterAgent, manager),
+  );
+  assert.equal(launches.length, 3);
+  for (const env of launches) {
+    assert.equal(env.HOME23_AGENT, 'cosmo');
+    assert.equal(env.COSMO_WORKSPACE_PATH, COSMO_ROOT);
+  }
+});
+
 test('Cosmo requester launches with the living Cosmo root as its workspace', async () => {
   const launches = [];
   const manager = {
