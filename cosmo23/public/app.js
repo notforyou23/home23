@@ -39,7 +39,7 @@ const FORM_DEFAULTS = {
   cycles: 80,
   maxRuntimeMinutes: 0,
   reviewPeriod: 20,
-  maxConcurrent: 4,
+  maxConcurrent: 1,
   primaryModel: '',
   fastModel: '',
   strategicModel: '',
