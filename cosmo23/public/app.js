@@ -62,6 +62,7 @@ const FORM_DEFAULTS = {
 
 const HOME23_LOCAL_SOURCE_LABEL = 'Cosmo Home23';
 const HOME23_PRIMARY_SOURCE_LABELS = new Set([HOME23_LOCAL_SOURCE_LABEL, 'Local', 'Jerry', 'Forrest']);
+const COSMO_DESK_REQUESTER = 'cosmo';
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -1601,6 +1602,7 @@ class CosmoStandaloneApp {
     return {
       ...FORM_DEFAULTS,
       ...this.collectFormSettings('launch-form'),
+      requesterAgent: COSMO_DESK_REQUESTER,
       primaryProvider: this.getSelectedProvider('launch-form', 'primaryModel'),
       fastProvider: this.getSelectedProvider('launch-form', 'fastModel'),
       strategicProvider: this.getSelectedProvider('launch-form', 'strategicModel'),

@@ -1097,6 +1097,20 @@ async function getQueryEngine(brainPath) {
   return queryEngineCache.get(brainPath);
 }
 
+function resolveLaunchRequester(payload = {}, request = {}) {
+  return request.requesterAgent
+    || payload.requesterAgent
+    || payload.owner
+    || payload.agentName
+    || process.env.HOME23_AGENT;
+}
+
+function resolveLaunchWorkspace(requesterAgent) {
+  return requesterAgent === 'cosmo'
+    ? ROOT
+    : path.join(HOME23_ROOT, 'instances', requesterAgent, 'workspace');
+}
+
 async function startProcessesForRun(runPath, requesterAgent, manager = processManager) {
   if (typeof requesterAgent !== 'string'
       || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(requesterAgent)
@@ -1109,7 +1123,7 @@ async function startProcessesForRun(runPath, requesterAgent, manager = processMa
     HOME23_AGENT: requesterAgent,
     COSMO_RUNTIME_PATH: runPath,
     COSMO_RUNTIME_DIR: runPath,
-    COSMO_WORKSPACE_PATH: path.join(HOME23_ROOT, 'instances', requesterAgent, 'workspace'),
+    COSMO_WORKSPACE_PATH: resolveLaunchWorkspace(requesterAgent),
     COSMO_CONFIG_PATH: path.join(runPath, 'config.yaml'),
     COSMO_RUNS_PATH: LOCAL_RUNS_PATH,
     COSMO23_WS_PORT: String(WS_PORT),
@@ -1137,10 +1151,7 @@ async function startProcessesForRun(runPath, requesterAgent, manager = processMa
 // this one function so operation launches and POST /api/launch cannot drift.
 async function launchPreparedResearch(brain, payload, req) {
   const request = req || { headers: {}, secure: false, hostname: 'localhost' };
-  const requesterAgent = request.requesterAgent
-    || payload.owner
-    || payload.agentName
-    || process.env.HOME23_AGENT;
+  const requesterAgent = resolveLaunchRequester(payload, request);
   const setupConfig = await readSetupConfig();
   const launchSettings = serializeLaunchSettings(payload, setupConfig);
   processManager.clearLogs();
@@ -3047,6 +3058,8 @@ module.exports = {
   installMainProcessShutdown,
   launchPreparedResearch,
   registerBrainOperationWorkerRoutes,
+  resolveLaunchRequester,
+  resolveLaunchWorkspace,
   runSentinel,
   startProcessesForRun,
   startServer,
