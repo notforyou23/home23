@@ -955,7 +955,7 @@ function serializeLaunchSettings(payload, setupConfig) {
     enable_capabilities: true,
     frontier_mode: payload.frontierMode || 'observe',
     review_period: Number.parseInt(payload.reviewPeriod || 20, 10),
-    max_concurrent: Number.parseInt(payload.maxConcurrent || 4, 10),
+    max_concurrent: Number.parseInt(payload.maxConcurrent || 1, 10),
     file_access_paths: payload.fileAccessPaths || 'runtime/outputs/, runtime/exports/',
     enable_ide_first: parseBoolean(payload.enableIDEFirst, false),
     enable_direct_action: parseBoolean(payload.enableDirectAction, false),

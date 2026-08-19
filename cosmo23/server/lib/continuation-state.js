@@ -16,7 +16,7 @@ const DEFAULT_UI_SETTINGS = Object.freeze({
   cycles: 80,
   maxRuntimeMinutes: 0,
   reviewPeriod: 20,
-  maxConcurrent: 4,
+  maxConcurrent: 1,
   enableWebSearch: true,
   enableSleep: true,
   enableCodingAgents: true,
