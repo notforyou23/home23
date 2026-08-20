@@ -17,6 +17,7 @@ import type { ToolContext } from '../agent/types.js';
 import type { OutgoingResponse } from '../channels/router.js';
 import type { StoredMessage } from '../agent/history.js';
 import type { ModelAliases } from '../agent/model-resolution.js';
+import { parseReasoningEffort, type ReasoningEffort } from '../agent/reasoning-effort.js';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -38,6 +39,7 @@ export interface CommandContext {
 
 export class CommandHandler {
   private ctx: CommandContext;
+  private chatEfforts = new Map<string, ReasoningEffort>();
 
   constructor(ctx: CommandContext) {
     this.ctx = ctx;
@@ -60,6 +62,7 @@ export class CommandHandler {
       case '/help':    return reply(this.cmdHelp());
       case '/reset':   return reply(this.cmdReset(chatId));
       case '/model':   return reply(this.cmdModel(arg));
+      case '/effort':  return reply(this.cmdEffort(chatId, arg));
       case '/query':   return arg ? reply(await this.cmdQuery(arg, 'normal')) : reply('Usage: /query <question>');
       case '/deep':    return arg ? reply(await this.cmdQuery(arg, 'deep')) : reply('Usage: /deep <question>');
       case '/status':  return reply(await this.cmdStatus());
@@ -84,6 +87,7 @@ export class CommandHandler {
       'Models:',
       '  /model <alias> — switch model',
       '  /models — list all available models',
+      '  /effort [value|reset] — inspect or set this chat\'s reasoning effort',
       '',
       'Brain:',
       '  /query <q> — fast brain query',
@@ -112,6 +116,36 @@ export class CommandHandler {
     this.captureSessionMemory(chatId);
     this.ctx.history.compact(chatId, []);
     return 'Conversation cleared.';
+  }
+
+  /** Return the live per-chat effort override, if one is set. */
+  getEffort(chatId: string): ReasoningEffort | undefined {
+    return this.chatEfforts.get(chatId);
+  }
+
+  private cmdEffort(chatId: string, arg: string): string {
+    const configured = this.ctx.agent.getReasoningEffort();
+    const current = this.chatEfforts.get(chatId);
+
+    if (!arg) {
+      return current
+        ? `Reasoning effort: ${current} (chat override; reset returns to ${configured})`
+        : `Reasoning effort: ${configured} (configured default)`;
+    }
+
+    if (arg.toLowerCase() === 'reset') {
+      this.chatEfforts.delete(chatId);
+      return `Reasoning effort reset to ${configured} (configured default).`;
+    }
+
+    try {
+      const effort = parseReasoningEffort(arg, 'effort');
+      if (!effort) throw new TypeError('effort is required');
+      this.chatEfforts.set(chatId, effort);
+      return `Reasoning effort set to ${effort} for this chat.`;
+    } catch (error) {
+      return `Invalid reasoning effort. ${error instanceof Error ? error.message : String(error)}`;
+    }
   }
 
   private logCommand(chatId: string, channel: string, command: string, arg: string): void {

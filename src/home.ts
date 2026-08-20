@@ -613,7 +613,7 @@ async function main(): Promise<void> {
         agent,
         message.chatId,
         text,
-        { media: message.media },
+        { media: message.media, effort: commandHandler.getEffort(message.chatId) },
       );
       const response = {
         text: result.text,
