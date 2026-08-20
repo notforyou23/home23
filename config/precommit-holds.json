@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "kind": "home23-precommit-holds",
+  "enforced": true,
+  "updatedAt": "2026-08-15T10:51:58.542Z",
+  "purpose": "Fail closed when a tracked dependency entry is marked commit-ready without a blocker-verified edit commit reference.",
+  "holds": [
+    {
+      "id": "goal_3288",
+      "status": "pending",
+      "blockerVerifiedEditCommitRefs": []
+    },
+    {
+      "id": "goal_3291",
+      "status": "held",
+      "blockerVerifiedEditCommitRefs": []
+    },
+    {
+      "id": "goal_6306-merge",
+      "status": "held",
+      "blockerVerifiedEditCommitRefs": []
+    },
+    {
+      "id": "goal_6306-validation",
+      "status": "held",
+      "blockerVerifiedEditCommitRefs": []
+    }
+  ]
+}
