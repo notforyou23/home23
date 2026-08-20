@@ -1657,7 +1657,7 @@ function collectProviderModels() {
   return result;
 }
 
-async function saveModels() {
+function collectModelAliases() {
   const aliases = {};
   document.querySelectorAll('#aliases-body tr').forEach(row => {
     const name = row.querySelector('[data-alias-name]')?.value?.trim();
@@ -1667,18 +1667,10 @@ async function saveModels() {
       aliases[name] = { provider, model };
     }
   });
+  return aliases;
+}
 
-  const body = {
-    agent: selectedSettingsAgent,
-    chat: {
-      defaultProvider: document.getElementById('models-default-provider').value,
-      defaultModel: document.getElementById('models-default-model').value,
-      reasoningEffort: document.getElementById('models-reasoning-effort').value,
-    },
-    aliases,
-    providerModels: collectProviderModels(),
-  };
-
+async function saveModelSettings(body) {
   const statusEls = Array.from(document.querySelectorAll('[data-models-status]'));
   const setStatus = (text, color) => {
     for (const el of statusEls) {
@@ -1703,6 +1695,25 @@ async function saveModels() {
   } catch (err) {
     setStatus('Error: ' + err.message, 'var(--accent-red)');
   }
+}
+
+async function saveChatDefaults() {
+  return saveModelSettings({
+    agent: selectedSettingsAgent,
+    chat: {
+      defaultProvider: document.getElementById('models-default-provider').value,
+      defaultModel: document.getElementById('models-default-model').value,
+      reasoningEffort: document.getElementById('models-reasoning-effort').value,
+    },
+  });
+}
+
+async function saveModelCatalog() {
+  return saveModelSettings({
+    agent: selectedSettingsAgent,
+    aliases: collectModelAliases(),
+    providerModels: collectProviderModels(),
+  });
 }
 
 // ── Query ──
@@ -4912,8 +4923,8 @@ async function init() {
 
   document.getElementById('btn-save-providers').addEventListener('click', saveProviders);
   document.getElementById('btn-create-agent').addEventListener('click', showWizard);
-  document.getElementById('btn-save-models').addEventListener('click', saveModels);
-  document.getElementById('btn-save-model-catalog')?.addEventListener('click', saveModels);
+  document.getElementById('btn-save-models').addEventListener('click', saveChatDefaults);
+  document.getElementById('btn-save-model-catalog')?.addEventListener('click', saveModelCatalog);
   document.getElementById('btn-save-query')?.addEventListener('click', saveQuerySettings);
   document.getElementById('btn-save-assignments')?.addEventListener('click', saveAssignments);
   document.getElementById('btn-reset-assignments')?.addEventListener('click', resetAssignments);

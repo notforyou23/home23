@@ -422,6 +422,21 @@ test('global catalog edits cannot remove another configured agent\'s selected Ch
   });
 });
 
+test('Settings Chat Default UI does not submit the house-wide catalog', () => {
+  const source = fs.readFileSync(
+    path.resolve('engine/src/dashboard/home23-settings.js'),
+    'utf8',
+  );
+  const chatStart = source.indexOf('async function saveChatDefaults()');
+  const catalogStart = source.indexOf('async function saveModelCatalog()', chatStart);
+  assert.ok(chatStart >= 0 && catalogStart > chatStart);
+  const chatSave = source.slice(chatStart, catalogStart);
+  assert.match(chatSave, /reasoningEffort:/);
+  assert.doesNotMatch(chatSave, /aliases|providerModels|collectProviderModels/);
+  assert.match(source, /btn-save-models'\)\.addEventListener\('click', saveChatDefaults\)/);
+  assert.match(source, /btn-save-model-catalog'\)\?\.addEventListener\('click', saveModelCatalog\)/);
+});
+
 test('Settings Query UI encodes exact pairs and submits provider fields', () => {
   const source = fs.readFileSync(
     path.resolve('engine/src/dashboard/home23-settings.js'),
