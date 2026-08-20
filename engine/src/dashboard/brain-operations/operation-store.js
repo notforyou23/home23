@@ -1245,7 +1245,13 @@ class BrainOperationStore {
       if (TERMINAL_STATES.has(initial.state)) throw operationError('operation_terminal');
       for (const candidateId of await this._listOperationIds()) {
         if (candidateId === operationId) continue;
-        const candidate = await this._readPrivateRecord(candidateId);
+        let candidate;
+        try {
+          candidate = await this._readPrivateRecord(candidateId);
+        } catch (error) {
+          if (error.code === 'operation_not_found') continue;
+          throw error;
+        }
         if (candidate.operationType === 'synthesis'
             && candidate._synthesisCompletionClaim !== null
             && !TERMINAL_STATES.has(candidate.state)) {

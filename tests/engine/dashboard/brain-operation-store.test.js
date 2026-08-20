@@ -2496,6 +2496,36 @@ test('only one nonterminal synthesis operation may own the committing claim', as
   );
 });
 
+test('synthesis claim ignores a peer operation removed by concurrent metadata GC', async (t) => {
+  const fixture = makeFixture(t);
+  const peer = await createOne(fixture, { requestId: 'synthesis-claim-gc-peer' });
+  const terminalPeer = await fixture.store.transition(peer.record.operationId, {
+    expectedVersion: peer.record.recordVersion,
+    state: 'complete',
+  });
+  fixture.clock.now = Date.parse(terminalPeer.metadataExpiresAt) + 1;
+  const synthesis = await createSynthesisRecord(fixture, 'synthesis-claim-during-gc');
+  const contender = anotherStore(fixture);
+  const listOperationIds = contender._listOperationIds.bind(contender);
+  let garbageCollection = null;
+  contender._listOperationIds = async () => {
+    const operationIds = await listOperationIds();
+    garbageCollection = await fixture.store.collectGarbage();
+    return operationIds;
+  };
+
+  const claim = synthesisClaim(synthesis);
+  assert.deepEqual(
+    await contender.claimSynthesisCompletion(synthesis.operationId, claim),
+    claim,
+  );
+  assert.equal(garbageCollection.metadataDeleted, 1);
+  assert.deepEqual(
+    await fixture.store.getSynthesisCompletionClaim(synthesis.operationId),
+    claim,
+  );
+});
+
 test('events stay bounded, retain material evidence, and report a resumable gap', async (t) => {
   const fixture = makeFixture(t, { eventMaxCount: 12, eventMaxBytes: 1800 });
   const { record } = await createOne(fixture);
