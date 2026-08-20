@@ -37,7 +37,7 @@ import { SiblingProtocol } from './sibling/protocol.js';
 import { BridgeChat } from './sibling/bridge-chat.js';
 import { AgentLoop } from './agent/loop.js';
 import { anthropicOAuthStealthHeaders } from './agent/anthropic-headers.js';
-import { resolveModelOverride, type ModelAliases } from './agent/model-resolution.js';
+import { resolveModelOverride, type ModelAliases, type ModelOverride } from './agent/model-resolution.js';
 import { resolveProviderKey } from './agent/provider-credentials.js';
 import { executeTrackedTurn } from './agent/turn-entrypoint.js';
 import { ContextManager } from './agent/context.js';
@@ -833,7 +833,7 @@ async function main(): Promise<void> {
           // (2026-08-11 audit D5 — only `query` jobs honored it). It now
           // routes the turn; an unresolvable model fails the job loudly
           // instead of running on the wrong brain.
-          let cronModelOverride: { model: string; provider?: string } | undefined;
+          let cronModelOverride: ModelOverride | undefined;
           if (job.payload.model) {
             const resolved = resolveModelOverride(job.payload.model, MODEL_ALIASES);
             if (!resolved) {

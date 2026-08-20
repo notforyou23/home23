@@ -4,6 +4,7 @@ import {
   DEFAULT_REASONING_EFFORT,
   REASONING_EFFORTS,
   parseReasoningEffort,
+  resolveConfiguredReasoningEffort,
   validateReasoningEffortConfig,
 } from '../../src/agent/reasoning-effort.js';
 import { resolveModelOverride } from '../../src/agent/model-resolution.js';
@@ -25,6 +26,12 @@ test('model alias resolution carries an alias effort override', () => {
   }), {
     model: 'gpt-5.6-sol', provider: 'openai-codex', reasoningEffort: 'xhigh',
   });
+});
+
+test('model-specific configuration overrides the chat default', () => {
+  assert.equal(resolveConfiguredReasoningEffort('gpt-5.6-sol', 'low', { 'gpt-5.6-sol': 'high' }), 'high');
+  assert.equal(resolveConfiguredReasoningEffort('gpt-5.6-terra', 'low', { 'gpt-5.6-sol': 'high' }), 'low');
+  assert.equal(resolveConfiguredReasoningEffort('gpt-5.6-terra'), DEFAULT_REASONING_EFFORT);
 });
 
 test('config effort validation rejects invalid chat, model, and alias values', () => {

@@ -38,6 +38,7 @@ test('subagent and worker paths retain the injected tracked runAgentLoop boundar
 
 test('cron agentTurn forwards its configured effort through the tracked turn boundary', () => {
   const home = source('src/home.ts');
+  assert.match(home, /let cronModelOverride: ModelOverride/);
   assert.match(home, /job\.payload\.effort \? \{ effort: job\.payload\.effort \}/);
   assert.match(home, /executeTrackedTurn\(\s*agent,[\s\S]{0,500}job\.payload\.effort/);
 });
