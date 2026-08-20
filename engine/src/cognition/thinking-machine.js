@@ -45,6 +45,8 @@ class ThinkingMachine {
    * @param {Function} opts.getTemporalContext
    * @param {Function} [opts.emitThought] - optional hook; defaults to cosmoEvents.emitThought
    * @param {Function} [opts.logThought] - optional persistence hook
+   * @param {Function} [opts.onCycleComplete] - optional publish hook
+   * @param {Function} [opts.onCriticVerdict] - optional publish hook
    * @param {object} [opts.config]
    */
   constructor(opts = {}) {
@@ -62,8 +64,7 @@ class ThinkingMachine {
     // Step 24 hooks: called at the end of each cycle and on each critic
     // verdict. Used by the OS-engine publish layer to trigger workspace-
     // insights (cadence) and dream-log (critic-keep gated).
-    this.onCycleComplete = typeof opts.onCycleComplete === 'function' ? opts.onCycleComplete : null;
-    this.onCriticVerdict = typeof opts.onCriticVerdict === 'function' ? opts.onCriticVerdict : null;
+    this.setPublishHooks(opts);
     this.config = { ...DEFAULT_CONFIG, ...(opts.config || {}) };
     // Back-pressure: track cycles since last crystallization receipt. Warn
     // when over threshold so slowness is observable. Receipts land on a
@@ -112,6 +113,11 @@ class ThinkingMachine {
       lastRunDurationMs: null,
       errors: 0,
     };
+  }
+
+  setPublishHooks(hooks = {}) {
+    this.onCycleComplete = typeof hooks.onCycleComplete === 'function' ? hooks.onCycleComplete : null;
+    this.onCriticVerdict = typeof hooks.onCriticVerdict === 'function' ? hooks.onCriticVerdict : null;
   }
 
   // ─── Lifecycle ──────────────────────────────────────────────────────

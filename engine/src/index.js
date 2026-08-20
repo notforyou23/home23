@@ -1202,11 +1202,10 @@ async function main() {
     config._osEngine = { ...(config._osEngine || {}), publishLedger, workspaceInsights, dreamLog, bridgePublisher };
 
     // Step 24 — thinking-machine publisher hooks.
-    // Orchestrator reads these before constructing ThinkingMachine so they
-    // propagate cycleComplete → workspace-insights cadence + criticVerdict
-    // → dream-log (critic-keep gated). Also resets back-pressure counter
-    // whenever MemoryIngest writes a receipt.
-    orchestrator.step24Hooks = {
+    // ThinkingMachine is constructed during orchestrator.initialize(), before
+    // these publishers exist, so bind them explicitly once Phase 9 is ready.
+    // Also resets back-pressure counter whenever MemoryIngest writes a receipt.
+    orchestrator.setStep24Hooks({
       onCycleComplete: async ({ cycleIndex }) => {
         try { await workspaceInsights.onCycle({ cycleIndex }); }
         catch (err) { logger.warn?.('[publish] workspace-insights hook failed:', err?.message || err); }
@@ -1215,7 +1214,7 @@ async function main() {
         try { await dreamLog.onCriticVerdict(evt); }
         catch (err) { logger.warn?.('[publish] dream-log hook failed:', err?.message || err); }
       },
-    };
+    });
     // Also route every crystallize event back to the thinking machine so
     // it resets its cyclesWithoutReceipt counter.
     channelBus.on('crystallize', () => {

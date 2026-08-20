@@ -326,6 +326,10 @@ class Orchestrator {
     // Only starts when cognitionMode is 'thinking_machine'. Legacy roles are
     // completely untouched when flag is 'legacy_roles'.
     this.thinkingMachine = null;
+    this.step24Hooks = {
+      onCycleComplete: null,
+      onCriticVerdict: null,
+    };
     this.motorCortex = null;
     
     // Sleep session tracking (cycle-based)
@@ -382,6 +386,14 @@ class Orchestrator {
     this.timeoutManager = new TimeoutManager(config, logger);
     this.telemetry = new TelemetryCollector(config, logger, this.logsDir);
     this.shutdownHandler = null; // Created after initialization
+  }
+
+  setStep24Hooks(hooks = {}) {
+    this.step24Hooks = {
+      onCycleComplete: typeof hooks.onCycleComplete === 'function' ? hooks.onCycleComplete : null,
+      onCriticVerdict: typeof hooks.onCriticVerdict === 'function' ? hooks.onCriticVerdict : null,
+    };
+    this.thinkingMachine?.setPublishHooks(this.step24Hooks);
   }
 
   /**
