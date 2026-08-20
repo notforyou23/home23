@@ -88,6 +88,7 @@ function buildAgentConfig(options = {}) {
       model: resolvedModel,
       defaultProvider: resolvedProvider,
       defaultModel: resolvedModel,
+      reasoningEffort: 'medium',
       maxTokens: 4096,
       temperature: 0.7,
       historyDepth: 20,

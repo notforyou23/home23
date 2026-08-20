@@ -10,6 +10,7 @@ import { createRequire } from 'node:module';
 import { resolve, join } from 'node:path';
 import yaml from 'js-yaml';
 import type { HomeConfig, IdentityLayerConfig, EmbeddedAgentConfig } from './types.js';
+import { validateReasoningEffortConfig } from './agent/reasoning-effort.js';
 
 const HOME23_ROOT = resolve(import.meta.dirname, '..');
 const require = createRequire(import.meta.url);
@@ -103,6 +104,8 @@ export function loadConfig(agentName: string): HomeConfig {
   // Merge: home ← agent ← secrets (global)
   let config = deepMerge(homeConfig, agentConfig);
   config = deepMerge(config, secrets);
+
+  validateReasoningEffortConfig(config);
 
   // Layer 4: Per-agent secrets (agents.<name>.telegram.botToken → channels.telegram.botToken)
   const agentSecrets = (secrets as Record<string, unknown>).agents as Record<string, unknown> | undefined;

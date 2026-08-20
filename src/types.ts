@@ -5,6 +5,8 @@
  * The engine (JS) manages its own types internally.
  */
 
+import type { ReasoningEffort } from './agent/reasoning-effort.js';
+
 // ─── Channel Types ──────────────────────────────────────────
 
 export interface IncomingMessage {
@@ -116,6 +118,7 @@ export interface HomeConfig {
     model: string;
     defaultProvider?: string;
     defaultModel?: string;
+    reasoningEffort?: ReasoningEffort;
     maxTokens: number;
     temperature: number;
     historyDepth: number;
@@ -131,7 +134,12 @@ export interface HomeConfig {
   };
 
   models?: {
-    aliases?: Record<string, { provider: string; model: string }>;
+    aliases?: Record<string, {
+      provider: string;
+      model: string;
+      reasoningEffort?: ReasoningEffort;
+    }>;
+    reasoningEffort?: Record<string, ReasoningEffort>;
   };
 
   media?: {

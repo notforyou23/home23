@@ -130,6 +130,7 @@ embeddings:
 chat:
   defaultProvider: ollama-cloud
   defaultModel: kimi-k3:cloud
+  reasoningEffort: medium
   maxTokens: 4096
   temperature: 0.7
   historyBudget: 400000
@@ -281,6 +282,8 @@ media:
     model: gpt-image-2
 
 models:
+  reasoningEffort:
+    gpt-5.6-sol: high
   aliases:
     qwen2.5:
       provider: ollama-local
@@ -303,6 +306,10 @@ models:
     gpt5:
       provider: openai-codex
       model: gpt-5.5
+    gpt56:
+      provider: openai-codex
+      model: gpt-5.6-sol
+      reasoningEffort: xhigh
     gpt-pro:
       provider: openai
       model: gpt-5.5-pro

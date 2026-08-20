@@ -1,8 +1,15 @@
-export type ModelAliases = Record<string, { provider: string; model: string }>;
+import type { ReasoningEffort } from './reasoning-effort.js';
+
+export type ModelAliases = Record<string, {
+  provider: string;
+  model: string;
+  reasoningEffort?: ReasoningEffort;
+}>;
 
 export interface ModelOverride {
   model: string;
   provider?: string;
+  reasoningEffort?: ReasoningEffort;
 }
 
 /**
@@ -35,7 +42,13 @@ export function inferProviderFromModel(model: string, provider?: string): string
  */
 export function resolveModelOverride(model: string, aliases?: ModelAliases): ModelOverride | null {
   const alias = aliases?.[model];
-  if (alias) return { model: alias.model, provider: alias.provider };
+  if (alias) {
+    return {
+      model: alias.model,
+      provider: alias.provider,
+      ...(alias.reasoningEffort ? { reasoningEffort: alias.reasoningEffort } : {}),
+    };
+  }
 
   const provider = inferProviderFromModel(model);
   return provider === 'unknown' ? null : { model, provider };
