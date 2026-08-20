@@ -13,6 +13,7 @@ import type { OperationActivity } from './brain-operations/types.js';
 import type { RelationshipLedger } from './relationship-ledger.js';
 import type { MemoryObjectStore } from './memory-objects.js';
 import type { ModelAliases } from './model-resolution.js';
+import type { ReasoningEffort } from './reasoning-effort.js';
 import type { AsyncWorkRecord } from '../work/types.js';
 import type { WorkCancelOutcome } from '../work/cancel.js';
 import type {
@@ -196,6 +197,7 @@ export type AgentLoopRunner = (
   ctx: ToolContext,
   options?: {
     modelOverride?: { model: string; provider?: string };
+    effort?: ReasoningEffort;
     registry?: ToolRegistry;
   },
 ) => Promise<AgentResponse>;

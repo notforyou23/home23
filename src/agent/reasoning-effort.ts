@@ -4,6 +4,10 @@ export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'medium';
 
+export function isGpt56Model(model: string): boolean {
+  return /gpt-5\.6(?:$|[-:.])/.test(model);
+}
+
 const REASONING_EFFORT_SET = new Set<string>(REASONING_EFFORTS);
 
 export function isReasoningEffort(value: unknown): value is ReasoningEffort {

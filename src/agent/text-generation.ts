@@ -5,6 +5,11 @@ import { anthropicOAuthStealthHeaders } from './anthropic-headers.js';
 import { combineRequestSignals } from './abort-signals.js';
 import { inferProviderFromModel } from './model-resolution.js';
 import { resolveProviderKey, isAuthError, refreshFromBroker } from './provider-credentials.js';
+import {
+  DEFAULT_REASONING_EFFORT,
+  isGpt56Model,
+  type ReasoningEffort,
+} from './reasoning-effort.js';
 
 const requireCjs = createRequire(import.meta.url);
 const fleetDefaults = requireCjs('../../shared/model-defaults.cjs') as {
@@ -24,6 +29,7 @@ export interface TextGenerationOptions {
   temperature?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
+  reasoningEffort?: ReasoningEffort;
   codexCredentialsProvider?: (signal?: AbortSignal, force?: boolean) => Promise<CodexCredentials | null>;
   /** P2-17: real token usage, written by branches whose provider reports it
    * (anthropic/minimax, ollama-cloud, openai/xai). Values left at 0 mean
@@ -248,6 +254,9 @@ async function generateCodexText(
     max_output_tokens: opts.maxTokens ?? 800,
     stream: true,
     store: false,
+    ...(isGpt56Model(opts.model || '')
+      ? { reasoning: { effort: opts.reasoningEffort ?? DEFAULT_REASONING_EFFORT } }
+      : {}),
   };
 
   let res = await fetch('https://chatgpt.com/backend-api/codex/responses', {

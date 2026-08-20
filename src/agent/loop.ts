@@ -38,6 +38,13 @@ import { turnBus } from '../chat/turn-bus.js';
 import { newTurnId, type TurnEvent } from '../chat/turn-types.js';
 import { combineRequestSignals } from './abort-signals.js';
 import { inferProviderFromModel } from './model-resolution.js';
+import {
+  DEFAULT_REASONING_EFFORT,
+  isGpt56Model,
+  parseReasoningEffort,
+  resolveConfiguredReasoningEffort,
+  type ReasoningEffort,
+} from './reasoning-effort.js';
 
 const MAX_ITERATIONS = 500;
 const TYPING_INTERVAL_MS = 4000;
@@ -113,6 +120,7 @@ function createAnthropicRuntimeClient(
 type RuntimeModelContext = {
   model: string;
   provider: string;
+  reasoningEffort: ReasoningEffort;
   client: Anthropic;
   isOAuth: boolean;
   memory: MemoryManager;
@@ -309,6 +317,9 @@ export class AgentLoop {
   private readonly configuredAnthropicBaseURL: string | undefined;
   private model: string;
   private provider: string;
+  private reasoningEffort: ReasoningEffort;
+  private modelReasoningEfforts: Record<string, ReasoningEffort>;
+  private currentModelReasoningEffort?: ReasoningEffort;
   private maxTokens: number;
   private temperature: number;
   private registry: ToolRegistry;
@@ -344,6 +355,8 @@ export class AgentLoop {
     baseURL?: string;
     model: string;
     provider?: string;
+    reasoningEffort?: ReasoningEffort;
+    modelReasoningEfforts?: Record<string, ReasoningEffort>;
     maxTokens?: number;
     temperature?: number;
     registry: ToolRegistry;
@@ -365,6 +378,8 @@ export class AgentLoop {
     this.configuredAnthropicBaseURL = opts.baseURL;
     this.model = opts.model;
     this.provider = inferProviderFromModel(opts.model, opts.provider);
+    this.reasoningEffort = opts.reasoningEffort ?? DEFAULT_REASONING_EFFORT;
+    this.modelReasoningEfforts = opts.modelReasoningEfforts ?? {};
     this.maxTokens = opts.maxTokens ?? 16384;
     this.temperature = opts.temperature ?? 0.7;
     this.registry = opts.registry;
@@ -571,13 +586,22 @@ export class AgentLoop {
     }
   }
 
-  private createRuntimeContext(modelOverride?: { model: string; provider?: string }): RuntimeModelContext {
+  private createRuntimeContext(
+    modelOverride?: { model: string; provider?: string; reasoningEffort?: ReasoningEffort },
+    effortOverride?: ReasoningEffort,
+  ): RuntimeModelContext {
     // Per-turn: a rotation reaches a RUNNING loop here, with no restart.
     this.ensureFreshAnthropicClient();
     const model = modelOverride?.model ?? this.model;
     const provider = modelOverride?.model
       ? inferProviderFromModel(modelOverride.model, modelOverride.provider)
       : this.provider;
+    const reasoningEffort = effortOverride
+      ?? modelOverride?.reasoningEffort
+      ?? (modelOverride?.model
+        ? resolveConfiguredReasoningEffort(model, this.reasoningEffort, this.modelReasoningEfforts)
+        : (this.currentModelReasoningEffort
+          ?? resolveConfiguredReasoningEffort(model, this.reasoningEffort, this.modelReasoningEfforts)));
 
     let client = this.client;
     let isOAuth = this.isOAuth;
@@ -605,10 +629,10 @@ export class AgentLoop {
         })
       : this.memory;
 
-    return { model, provider, client, isOAuth, memory };
+    return { model, provider, reasoningEffort, client, isOAuth, memory };
   }
 
-  setModel(model: string, provider?: string): void {
+  setModel(model: string, provider?: string, reasoningEffort?: ReasoningEffort): void {
     const newProvider = inferProviderFromModel(model, provider);
 
     // Rebuild the Anthropic SDK client when switching between SDK providers
@@ -631,6 +655,7 @@ export class AgentLoop {
 
     this.model = model;
     this.provider = newProvider;
+    this.currentModelReasoningEffort = reasoningEffort;
     const cfg = this.providerMap.get(newProvider);
     this.memory = new MemoryManager({
       client: this.client,
@@ -648,6 +673,11 @@ export class AgentLoop {
 
   getProvider(): string {
     return this.provider;
+  }
+
+  getReasoningEffort(): ReasoningEffort {
+    return this.currentModelReasoningEffort
+      ?? resolveConfiguredReasoningEffort(this.model, this.reasoningEffort, this.modelReasoningEfforts);
   }
 
   /** Stop an active run. Returns true if a run was aborted. */
@@ -822,6 +852,7 @@ export class AgentLoop {
       maxDurationMs?: number;
       firstTokenTimeoutMs?: number;
       registry?: ToolRegistry;
+      effort?: ReasoningEffort;
     } = {},
   ): Promise<{ turnId: string; response: Promise<import('./types.js').AgentResponse> }> {
     const turnId = opts.turnId ?? newTurnId();
@@ -838,7 +869,8 @@ export class AgentLoop {
     const deadline_at = activity_deadline_at;
     const first_token_deadline_at = new Date(startedAtMs + firstTokenTimeoutMs).toISOString();
 
-    const runtime = this.createRuntimeContext(opts.modelOverride);
+    const effort = parseReasoningEffort(opts.effort, 'turn effort');
+    const runtime = this.createRuntimeContext(opts.modelOverride, effort);
     const model = runtime.model;
     const provider = runtime.provider;
 
@@ -1074,6 +1106,7 @@ export class AgentLoop {
     const allMedia: MediaAttachment[] = [];
     const runtimeModel = runtime.model;
     const runtimeProvider = runtime.provider;
+    const runtimeReasoningEffort = runtime.reasoningEffort;
     const runtimeClient = runtime.client;
     const runtimeIsOAuth = runtime.isOAuth;
     const runtimeMemory = runtime.memory;
@@ -1582,6 +1615,9 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 tool_choice: codexTools.length > 0 ? 'auto' : undefined,
                 stream: true,
                 store: false,
+                ...(isGpt56Model(runtimeModel)
+                  ? { reasoning: { effort: runtimeReasoningEffort } }
+                  : {}),
               };
 
               console.log(`[agent] codex request: model=${runtimeModel}, tools=${codexTools.length}, input_items=${inputItems.length}, instructions_len=${instructions.length}`);

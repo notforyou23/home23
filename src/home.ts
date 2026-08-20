@@ -482,6 +482,8 @@ async function main(): Promise<void> {
     // Note: providerMap set via setProviderMap below, after construction.
     maxTokens: 8192,
     temperature: config.chat.temperature,
+    reasoningEffort: config.chat.reasoningEffort,
+    modelReasoningEfforts: config.models?.reasoningEffort,
     registry,
     contextManager,
     history,
@@ -508,6 +510,7 @@ async function main(): Promise<void> {
       ?? (tools.length > 0 ? createSeededToolRegistry(tools) : undefined);
     return (await executeTrackedTurn(agent, ctx.chatId, userMessage, {
       modelOverride: options?.modelOverride,
+      effort: options?.effort,
       ...(registry ? { registry } : {}),
     })).response;
   };

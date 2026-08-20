@@ -80,3 +80,58 @@ test('per-turn model override does not mutate configured default while the turn 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('AgentLoop Codex OAuth GPT-5.6 turn sends Responses reasoning effort', async () => {
+  const root = join(tmpdir(), `chat-turn-reasoning-effort-${Date.now()}`);
+  mkdirSync(join(root, 'workspace'), { recursive: true });
+  const history = new ConversationHistory(join(root, 'conversations'), 400_000, 'test-agent');
+  const registry = {
+    getAnthropicTools: () => [],
+    getOpenAITools: () => [],
+    get: () => undefined,
+    execute: async () => ({ content: '' }),
+  };
+  const agent = new AgentLoop({
+    apiKey: '',
+    model: 'gpt-5.6-terra',
+    provider: 'openai-codex',
+    registry: registry as any,
+    contextManager: {
+      getSystemPrompt: () => 'You are a test agent.',
+      getPromptSourceInfo: () => ({ loadedFiles: [] }),
+    } as any,
+    history,
+    toolContext: {} as any,
+    workspacePath: join(root, 'workspace'),
+  });
+  const previousFetch = globalThis.fetch;
+  let body: Record<string, unknown> | undefined;
+
+  globalThis.fetch = (async (_url, init) => {
+    body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"type":"response.output_text.delta","delta":"ok"}\n\n'));
+        controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    });
+    return new Response(stream, { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    (agent as any).codexCredentialsProvider = async () => ({
+      accessToken: 'access-test',
+      refreshToken: 'refresh-test',
+      expires: Date.now() + 60_000,
+      accountId: 'acct-test',
+    });
+    const started = await agent.runWithTurn('reasoning-chat', 'hello', { effort: 'xhigh' });
+    await started.response;
+    assert.deepEqual(body?.reasoning, { effort: 'xhigh' });
+    assert.equal(Object.hasOwn(body ?? {}, 'reasoning_effort'), false);
+  } finally {
+    globalThis.fetch = previousFetch;
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -63,6 +63,22 @@ test('executeTrackedTurn forwards media, events, and both lease durations', asyn
   });
 });
 
+test('executeTrackedTurn forwards a per-turn reasoning effort', async () => {
+  let captured: Record<string, unknown> | null = null;
+  const agent = {
+    runWithTurn: async (_chatId: string, _userText: string, options: Record<string, unknown>) => {
+      captured = options;
+      return {
+        turnId: 'turn-effort',
+        response: Promise.resolve({ text: 'done', model: 'test', toolCallCount: 0, durationMs: 1 }),
+      };
+    },
+  };
+
+  await executeTrackedTurn(agent as never, 'chat-effort', 'hello', { effort: 'high' } as never);
+  assert.equal(captured?.effort, 'high');
+});
+
 test('executeTrackedTurn forwards a per-turn registry override and never calls raw run', async () => {
   const registry = createSeededToolRegistry([]);
   let rawRunCalls = 0;
