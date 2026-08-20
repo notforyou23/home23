@@ -7,6 +7,7 @@ import { dirname, resolve } from 'node:path';
 import { exec } from 'node:child_process';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { unprivilegedChildEnv } from '../../security/child-process-env.js';
+import { refuseResidentWrite } from './tracked-source-guard.js';
 
 function resolvePath(inputPath: string, workspacePath: string): string {
   if (inputPath.startsWith('/')) return inputPath;
@@ -49,7 +50,7 @@ export const readFileTool: ToolDefinition = {
 
 export const writeFileTool: ToolDefinition = {
   name: 'write_file',
-  description: 'Create or overwrite a file. Creates parent directories if needed. Path can be absolute or relative to your workspace.',
+  description: 'Create or overwrite a file. Creates parent directories if needed. Path can be absolute or relative to your workspace. Tracked repo source is refused; local house state (instances/, gitignored config) is allowed.',
   input_schema: {
     type: 'object',
     properties: {
@@ -60,6 +61,8 @@ export const writeFileTool: ToolDefinition = {
   },
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
     const path = resolvePath(input.path as string, ctx.workspacePath);
+    const refused = refuseResidentWrite(path, ctx.projectRoot);
+    if (refused) return refused;
     const content = input.content as string;
     try {
       mkdirSync(dirname(path), { recursive: true });
@@ -73,7 +76,7 @@ export const writeFileTool: ToolDefinition = {
 
 export const editFileTool: ToolDefinition = {
   name: 'edit_file',
-  description: 'Replace a string in an existing file. The old_string must appear exactly once (or use replace_all). Path can be absolute or relative to your workspace.',
+  description: 'Replace a string in an existing file. The old_string must appear exactly once (or use replace_all). Path can be absolute or relative to your workspace. Tracked repo source is refused; local house state (instances/, gitignored config) is allowed.',
   input_schema: {
     type: 'object',
     properties: {
@@ -86,6 +89,8 @@ export const editFileTool: ToolDefinition = {
   },
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
     const path = resolvePath(input.path as string, ctx.workspacePath);
+    const refused = refuseResidentWrite(path, ctx.projectRoot);
+    if (refused) return refused;
     const oldStr = input.old_string as string;
     const newStr = input.new_string as string;
     const replaceAll = (input.replace_all as boolean) || false;

@@ -5,6 +5,7 @@
 import { exec } from 'node:child_process';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { unprivilegedChildEnv } from '../../security/child-process-env.js';
+import { refuseShellWrite } from './shell-write-guard.js';
 
 const DEFAULT_STDOUT_LIMIT = 8000;
 const DEFAULT_STDERR_LIMIT = 4000;
@@ -32,7 +33,7 @@ function formatStream(label: 'STDOUT' | 'STDERR', text: string, limit: number): 
 
 export const shellTool: ToolDefinition = {
   name: 'shell',
-  description: 'Run a bash command on the machine. Returns bounded stdout/stderr plus exit code. Prefer narrow commands (rg, head, tail, git diff --stat) before large dumps.',
+  description: 'Run a bash command on the machine. Returns bounded stdout/stderr plus exit code. Prefer narrow commands (rg, head, tail, git diff --stat) before large dumps. Writes to tracked repo source are refused; local house state (instances/, gitignored config) is allowed.',
   input_schema: {
     type: 'object',
     properties: {
@@ -57,6 +58,9 @@ export const shellTool: ToolDefinition = {
     const timeoutMs = (input.timeout_ms as number) || 300_000;
     const stdoutLimit = boundedLimit(input.max_output_chars, DEFAULT_STDOUT_LIMIT);
     const stderrLimit = boundedLimit(input.max_stderr_chars, DEFAULT_STDERR_LIMIT);
+
+    const refused = refuseShellWrite(command, cwd, ctx.projectRoot);
+    if (refused) return refused;
 
     return new Promise((resolve) => {
       if (ctx.abortSignal?.aborted) {
