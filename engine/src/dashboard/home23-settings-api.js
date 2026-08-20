@@ -32,6 +32,9 @@ const { buildHome23ModelAuthority } = require('./home23-model-catalog.js');
 // required across the vendored boundary; the ordering is pinned by
 // tests/engine/dashboard/oauth-import-reporting.test.js.
 const OAUTH_INTERACTIVE_FLOW_TIMEOUT_MS = 5.5 * 60 * 1000;
+const REASONING_EFFORTS = Object.freeze(['none', 'low', 'medium', 'high', 'xhigh', 'max']);
+const REASONING_EFFORT_SET = new Set(REASONING_EFFORTS);
+const DEFAULT_REASONING_EFFORT = 'medium';
 
 const PM2_ENV_BLOCKLIST = [
   'cron_restart',
@@ -1708,6 +1711,8 @@ function createSettingsRouter(home23Root, options = {}) {
     const effectiveAgentChat = {
       defaultProvider: agentChat.defaultProvider || agentChat.provider || homeConfig.chat?.defaultProvider || '',
       defaultModel: agentChat.defaultModel || agentChat.model || homeConfig.chat?.defaultModel || '',
+      reasoningEffort: agentChat.reasoningEffort || homeConfig.chat?.reasoningEffort || DEFAULT_REASONING_EFFORT,
+      reasoningEffortSource: agentChat.reasoningEffort ? 'agent' : (homeConfig.chat?.reasoningEffort ? 'house' : 'default'),
     };
     res.json({
       agent: targetAgent,
@@ -1735,7 +1740,8 @@ function createSettingsRouter(home23Root, options = {}) {
     const chatChanged = !!chat;
     const engineRolesChanged = engineRoles !== undefined;
     const catalogChanged = !!providerModels;
-    const authorityChanged = chatChanged || catalogChanged;
+    let chatAuthorityChanged = false;
+    let authorityChanged = catalogChanged;
     let restartedHarness = false;
     let restartedAgent = false;
     let homeConfigDirty = false;
@@ -1767,12 +1773,29 @@ function createSettingsRouter(home23Root, options = {}) {
         agentConfig = cloneConfig(previousAgentConfig);
         if (!agentConfig.chat) agentConfig.chat = {};
         if (chatChanged && chat?.defaultProvider !== undefined) {
+          chatAuthorityChanged ||= chat.defaultProvider !== (agentConfig.chat.defaultProvider || agentConfig.chat.provider);
           agentConfig.chat.provider = chat.defaultProvider;
           agentConfig.chat.defaultProvider = chat.defaultProvider;
         }
         if (chatChanged && chat?.defaultModel !== undefined) {
+          chatAuthorityChanged ||= chat.defaultModel !== (agentConfig.chat.defaultModel || agentConfig.chat.model);
           agentConfig.chat.model = chat.defaultModel;
           agentConfig.chat.defaultModel = chat.defaultModel;
+        }
+        authorityChanged ||= chatAuthorityChanged;
+        if (chatChanged && chat?.reasoningEffort !== undefined) {
+          const reasoningEffort = chat.reasoningEffort;
+          if (reasoningEffort === null || reasoningEffort === '') {
+            delete agentConfig.chat.reasoningEffort;
+          } else if (!REASONING_EFFORT_SET.has(reasoningEffort)) {
+            return res.status(400).json({
+              ok: false,
+              code: 'reasoning_effort_invalid',
+              error: `Reasoning effort must be one of: ${REASONING_EFFORTS.join(', ')}`,
+            });
+          } else {
+            agentConfig.chat.reasoningEffort = reasoningEffort;
+          }
         }
 
         if (engineRolesChanged) {

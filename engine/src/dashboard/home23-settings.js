@@ -1547,6 +1547,8 @@ async function loadModels() {
 function renderModels(data) {
   const provSelect = document.getElementById('models-default-provider');
   const modelSelect = document.getElementById('models-default-model');
+  const effortSelect = document.getElementById('models-reasoning-effort');
+  const effortHelp = document.getElementById('models-reasoning-effort-help');
   provSelect.innerHTML = '';
   for (const name of Object.keys(data.providers || {})) {
     const opt = document.createElement('option');
@@ -1573,6 +1575,16 @@ function renderModels(data) {
     provSelect.dataset.bound = 'true';
   }
   fillModelSelect();
+  if (effortSelect) {
+    effortSelect.value = data.chat?.reasoningEffortSource === 'agent'
+      ? (data.chat?.reasoningEffort || 'medium')
+      : '';
+  }
+  if (effortHelp) {
+    effortHelp.textContent = data.chat?.reasoningEffortSource === 'agent'
+      ? `Agent override: ${data.chat.reasoningEffort}`
+      : `Inherited ${data.chat?.reasoningEffortSource === 'house' ? 'house' : 'system'} default: ${data.chat?.reasoningEffort || 'medium'}`;
+  }
   renderModelPlan(setupReadinessData);
 
   // Per-provider model lists
@@ -1661,6 +1673,7 @@ async function saveModels() {
     chat: {
       defaultProvider: document.getElementById('models-default-provider').value,
       defaultModel: document.getElementById('models-default-model').value,
+      reasoningEffort: document.getElementById('models-reasoning-effort').value,
     },
     aliases,
     providerModels: collectProviderModels(),

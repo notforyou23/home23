@@ -159,6 +159,52 @@ function readAgent(root) {
   return yaml.load(fs.readFileSync(path.join(root, 'instances', 'jerry', 'config.yaml'), 'utf8'));
 }
 
+test('Chat settings expose, persist, validate, and reset reasoning effort without refreshing model authority', async () => {
+  await withSettingsServer(async ({ baseUrl, root, calls }) => {
+    const initial = await fetch(`${baseUrl}/home23/api/settings/models?agent=jerry`).then((response) => response.json());
+    assert.equal(initial.chat.reasoningEffort, 'medium');
+    assert.equal(initial.chat.reasoningEffortSource, 'default');
+
+    const saved = await fetch(`${baseUrl}/home23/api/settings/models`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        agent: 'jerry',
+        chat: { defaultProvider: 'openai', defaultModel: 'gpt-5.5', reasoningEffort: 'xhigh' },
+      }),
+    });
+    assert.equal(saved.status, 200);
+    assert.equal(readAgent(root).chat.reasoningEffort, 'xhigh');
+    const reloaded = await fetch(`${baseUrl}/home23/api/settings/models?agent=jerry`).then((response) => response.json());
+    assert.equal(reloaded.chat.reasoningEffort, 'xhigh');
+    assert.equal(reloaded.chat.reasoningEffortSource, 'agent');
+
+    const rejected = await fetch(`${baseUrl}/home23/api/settings/models`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        agent: 'jerry',
+        chat: { defaultProvider: 'openai', defaultModel: 'gpt-5.5', reasoningEffort: 'ultra' },
+      }),
+    });
+    assert.equal(rejected.status, 400);
+    assert.equal((await rejected.json()).code, 'reasoning_effort_invalid');
+    assert.equal(readAgent(root).chat.reasoningEffort, 'xhigh');
+
+    const reset = await fetch(`${baseUrl}/home23/api/settings/models`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        agent: 'jerry',
+        chat: { defaultProvider: 'openai', defaultModel: 'gpt-5.5', reasoningEffort: '' },
+      }),
+    });
+    assert.equal(reset.status, 200);
+    assert.equal(readAgent(root).chat.reasoningEffort, undefined);
+    assert.deepEqual(calls, []);
+  });
+});
+
 test('Query settings persist exact provider and model identity for all three roles', async () => {
   await withSettingsServer(async ({ baseUrl, root, calls }) => {
     const response = await fetch(`${baseUrl}/home23/api/settings/query`, {
