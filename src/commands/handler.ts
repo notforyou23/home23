@@ -16,6 +16,7 @@ import type { CronScheduler } from '../scheduler/cron.js';
 import type { ToolContext } from '../agent/types.js';
 import type { OutgoingResponse } from '../channels/router.js';
 import type { StoredMessage } from '../agent/history.js';
+import type { ModelAliases } from '../agent/model-resolution.js';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -29,7 +30,7 @@ export interface CommandContext {
   enginePort: number;
   runtimeDir: string;
   workspacePath: string;
-  modelAliases: Record<string, { provider: string; model: string }>;
+  modelAliases: ModelAliases;
   compaction: CompactionManager | null;
 }
 
@@ -178,7 +179,7 @@ export class CommandHandler {
 
     const alias = this.ctx.modelAliases[arg.toLowerCase()];
     if (alias) {
-      this.ctx.agent.setModel(alias.model, alias.provider);
+      this.ctx.agent.setModel(alias.model, alias.provider, alias.reasoningEffort);
       this.persistModel(alias.model, alias.provider);
       return `${alias.model} (${alias.provider})`;
     }

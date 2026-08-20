@@ -846,7 +846,7 @@ export class AgentLoop {
       turnId?: string;
       media?: import('../types.js').MediaAttachment[];
       onEvent?: import('./types.js').AgentEventCallback;
-      modelOverride?: { model: string; provider?: string };
+      modelOverride?: { model: string; provider?: string; reasoningEffort?: ReasoningEffort };
       inactivityMs?: number;
       hardDurationMs?: number;
       maxDurationMs?: number;

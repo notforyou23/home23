@@ -15,6 +15,7 @@
 import { randomBytes } from 'node:crypto';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { resolveModelOverride } from '../model-resolution.js';
+import { parseReasoningEffort, REASONING_EFFORTS, type ReasoningEffort } from '../reasoning-effort.js';
 
 export const spawnAgentTool: ToolDefinition = {
   name: 'spawn_agent',
@@ -26,6 +27,7 @@ export const spawnAgentTool: ToolDefinition = {
       label: { type: 'string', description: 'Short human label for the sub-agent run' },
       isolated: { type: 'boolean', description: 'Run under a fresh sub-chat id so the sub-agent does not share the parent conversation history (default true)' },
       model: { type: 'string', description: 'Model override for the sub-agent turn (provider inferred from the model name)' },
+      effort: { type: 'string', enum: [...REASONING_EFFORTS], description: 'Reasoning effort for the sub-agent turn' },
     },
     required: ['task'],
   },
@@ -36,6 +38,12 @@ export const spawnAgentTool: ToolDefinition = {
     const isolated = input.isolated !== false;
     const model = typeof input.model === 'string' && input.model ? input.model : undefined;
     const modelOverride = model ? resolveModelOverride(model, ctx.modelAliases) : undefined;
+    let effort: ReasoningEffort | undefined;
+    try {
+      effort = parseReasoningEffort(input.effort, 'spawn_agent effort');
+    } catch (error) {
+      return { content: error instanceof Error ? error.message : 'spawn_agent effort is invalid', is_error: true };
+    }
 
     if (model && !modelOverride) {
       return {
@@ -75,9 +83,15 @@ export const spawnAgentTool: ToolDefinition = {
         const subCtx: ToolContext = { ...ctx, chatId: subChatId, parentWorkId: work?.workId ?? ctx.parentWorkId };
         const systemPrompt = ctx.contextManager.getSystemPrompt();
 
+        const options = modelOverride || effort
+          ? {
+              ...(modelOverride ? { modelOverride } : {}),
+              ...(effort ? { effort } : {}),
+            }
+          : undefined;
         const result = await ctx.runAgentLoop!(
           systemPrompt, task, [], subCtx,
-          modelOverride ? { modelOverride } : undefined,
+          options,
         );
 
         const text = `[Sub-agent complete] ${headline}\n\n${result.text}`;

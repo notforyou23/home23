@@ -8,13 +8,14 @@ import { isTurnEnvelope, isTurnEvent } from '../chat/turn-types.js';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import type { ModelAliases } from '../agent/model-resolution.js';
 
 export interface ChatTurnConfig {
   agentName: string;
   agent: AgentLoop;
   history: ConversationHistory;
   token?: string;
-  modelAliases?: Record<string, { provider: string; model: string }>;
+  modelAliases?: ModelAliases;
   /** Absolute path to instances/<agent>/. Used as upload root for chat image attachments. */
   instanceDir?: string;
 }
@@ -102,11 +103,15 @@ export function createTurnStartHandler(config: ChatTurnConfig) {
     }
 
     // Resolve model alias → { model, provider } for per-turn override.
-    let modelOverride: { model: string; provider?: string } | undefined;
+    let modelOverride: { model: string; provider?: string; reasoningEffort?: import('../agent/reasoning-effort.js').ReasoningEffort } | undefined;
     if (typeof model === 'string' && model.length > 0) {
       const alias = config.modelAliases?.[model];
       if (alias) {
-        modelOverride = { model: alias.model, provider: alias.provider };
+        modelOverride = {
+          model: alias.model,
+          provider: alias.provider,
+          ...(alias.reasoningEffort ? { reasoningEffort: alias.reasoningEffort } : {}),
+        };
       } else {
         // Accept raw model name without alias — provider inferred by setModel().
         modelOverride = { model };

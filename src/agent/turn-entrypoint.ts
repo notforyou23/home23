@@ -13,7 +13,7 @@ export async function executeTrackedTurn(
     onEvent?: AgentEventCallback;
     inactivityMs?: number;
     hardDurationMs?: number;
-    modelOverride?: { model: string; provider?: string };
+    modelOverride?: { model: string; provider?: string; reasoningEffort?: ReasoningEffort };
     effort?: ReasoningEffort;
     registry?: ToolRegistry;
   } = {},

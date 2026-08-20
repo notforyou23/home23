@@ -116,6 +116,22 @@ test('cron preflight decisions carry a resource stewardship contract', async () 
   assert.deepEqual(runLog[0].outcome.resourceContract, decisions[0].resourceContract);
 });
 
+test('scheduler skips persisted agentTurn jobs with invalid effort', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-invalid-effort-'));
+  const job = makeDueJob({
+    payload: { kind: 'agentTurn', message: 'bad persisted job', effort: 'ultra' } as never,
+  });
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([job], null, 2));
+
+  const scheduler = new CronScheduler({
+    timezone: 'America/New_York',
+    jobsFile: 'cron-jobs.json',
+    runsDir: 'cron-runs',
+  }, async (): Promise<JobResult> => ({ status: 'ok', durationMs: 1 }), dir);
+
+  assert.equal(scheduler.getJobs().length, 0);
+});
+
 test('due cron jobs with repeated errors escalate before executing again', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-cron-escalate-'));
   let handlerCalls = 0;

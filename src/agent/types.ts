@@ -196,7 +196,7 @@ export type AgentLoopRunner = (
   tools: ToolDefinition[],
   ctx: ToolContext,
   options?: {
-    modelOverride?: { model: string; provider?: string };
+    modelOverride?: { model: string; provider?: string; reasoningEffort?: ReasoningEffort };
     effort?: ReasoningEffort;
     registry?: ToolRegistry;
   },

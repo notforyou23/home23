@@ -37,7 +37,7 @@ import { SiblingProtocol } from './sibling/protocol.js';
 import { BridgeChat } from './sibling/bridge-chat.js';
 import { AgentLoop } from './agent/loop.js';
 import { anthropicOAuthStealthHeaders } from './agent/anthropic-headers.js';
-import { resolveModelOverride } from './agent/model-resolution.js';
+import { resolveModelOverride, type ModelAliases } from './agent/model-resolution.js';
 import { resolveProviderKey } from './agent/provider-credentials.js';
 import { executeTrackedTurn } from './agent/turn-entrypoint.js';
 import { ContextManager } from './agent/context.js';
@@ -349,7 +349,7 @@ async function main(): Promise<void> {
   const subAgentTracker: SubAgentTracker = { active: 0, maxConcurrent: config.agent?.maxSubAgents ?? 3, queue: [] };
 
   // Model aliases — loaded from config
-  const MODEL_ALIASES: Record<string, { provider: string; model: string }> = config.models?.aliases ?? {};
+  const MODEL_ALIASES: ModelAliases = config.models?.aliases ?? {};
 
   // ── Telegram adapter ref (captured during adapter creation) ──
   let telegramAdapterRef: TelegramAdapter | null = null;
@@ -846,7 +846,11 @@ async function main(): Promise<void> {
             agent,
             cronChatId,
             resolvedMessage,
-            { hardDurationMs: timeoutMs, ...(cronModelOverride ? { modelOverride: cronModelOverride } : {}) },
+            {
+              hardDurationMs: timeoutMs,
+              ...(cronModelOverride ? { modelOverride: cronModelOverride } : {}),
+              ...(job.payload.effort ? { effort: job.payload.effort } : {}),
+            },
           );
           const durationMs = Date.now() - startMs;
 

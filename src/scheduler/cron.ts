@@ -12,6 +12,7 @@ import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, ren
 import { join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { SchedulerConfig } from '../types.js';
+import { parseReasoningEffort } from '../agent/reasoning-effort.js';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -21,7 +22,7 @@ export type ScheduleSpec =
   | { kind: 'at'; at: string };
 
 export type JobPayload =
-  | { kind: 'agentTurn'; message?: string; messagePath?: string; model?: string; timeoutSeconds?: number; sessionHistory?: 'persistent' | 'fresh' }
+  | { kind: 'agentTurn'; message?: string; messagePath?: string; model?: string; effort?: import('../agent/reasoning-effort.js').ReasoningEffort; timeoutSeconds?: number; sessionHistory?: 'persistent' | 'fresh' }
   | { kind: 'exec'; command: string; timeoutSeconds?: number }
   | { kind: 'query'; message: string; mode?: string; model?: string; timeoutSeconds?: number }
   | { kind: 'systemEvent'; text: string };
@@ -1090,6 +1091,15 @@ export class CronScheduler {
           console.warn(`[scheduler] Skipping malformed job: ${JSON.stringify(job).slice(0, 100)}`);
           skipped++;
           continue;
+        }
+        if (job.payload.kind === 'agentTurn' && job.payload.effort !== undefined) {
+          try {
+            parseReasoningEffort(job.payload.effort, `cron job ${job.id} effort`);
+          } catch (error) {
+            console.warn(`[scheduler] Skipping job "${job.id}" with invalid effort: ${error instanceof Error ? error.message : String(error)}`);
+            skipped++;
+            continue;
+          }
         }
         // Validate schedule fields
         if (job.schedule.kind === 'cron' && !(job.schedule as { expr?: string }).expr) {

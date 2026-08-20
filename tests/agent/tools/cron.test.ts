@@ -84,6 +84,38 @@ test('cron_schedule allows one-shot jobs without pursuit binding', async () => {
   assert.equal(scheduled.length, 1);
 });
 
+test('cron_schedule stores effort on agentTurn payloads', async () => {
+  const scheduled: CronJob[] = [];
+  const result = await cronScheduleTool.execute({
+    name: 'high reasoning one shot',
+    schedule_kind: 'at',
+    at: '2026-05-26T09:00:00-04:00',
+    payload_kind: 'agentTurn',
+    message: 'think carefully',
+    effort: 'xhigh',
+  }, ctx({ addJob: (job) => scheduled.push(job) }));
+
+  assert.equal(result.is_error, undefined);
+  assert.equal(scheduled[0]?.payload.kind, 'agentTurn');
+  assert.equal((scheduled[0]?.payload as { effort?: string }).effort, 'xhigh');
+});
+
+test('cron_schedule rejects invalid agentTurn effort before persistence', async () => {
+  const scheduled: CronJob[] = [];
+  const result = await cronScheduleTool.execute({
+    name: 'invalid reasoning one shot',
+    schedule_kind: 'at',
+    at: '2026-05-26T09:00:00-04:00',
+    payload_kind: 'agentTurn',
+    message: 'do not schedule',
+    effort: 'ultra',
+  }, ctx({ addJob: (job) => scheduled.push(job) }));
+
+  assert.equal(result.is_error, true);
+  assert.match(result.content, /effort/i);
+  assert.equal(scheduled.length, 0);
+});
+
 function cronOperation(overrides: Partial<BrainOperationResult> = {}): BrainOperationResult {
   return {
     ...makeBrainOperationRecord({

@@ -10,6 +10,7 @@ import {
   CRON_TIMEOUT_MIN_SECONDS,
   validateCronTimeoutSeconds,
 } from '../cron-brain-query.js';
+import { parseReasoningEffort, REASONING_EFFORTS, type ReasoningEffort } from '../reasoning-effort.js';
 
 // ─── cron_schedule ──────────────────────────────────────────
 
@@ -46,6 +47,7 @@ Delivery:
       payload_kind: { type: 'string', enum: ['agentTurn', 'exec', 'query'], description: 'Payload type (default: agentTurn)' },
       message: { type: 'string', description: 'Prompt (agentTurn/query) or shell command (exec)' },
       model: { type: 'string', description: 'Model alias override for agentTurn/query (e.g. "sonnet"). Omit for agent default.' },
+      effort: { type: 'string', enum: [...REASONING_EFFORTS], description: 'Reasoning effort for agentTurn jobs' },
       timeout_seconds: {
         type: 'integer',
         minimum: CRON_TIMEOUT_MIN_SECONDS,
@@ -109,6 +111,15 @@ Delivery:
 
     // Build payload
     const payloadKind = (input.payload_kind as string) || 'agentTurn';
+    let effort: ReasoningEffort | undefined;
+    try {
+      effort = parseReasoningEffort(input.effort, 'cron effort');
+    } catch (error) {
+      return { content: error instanceof Error ? error.message : 'cron effort is invalid', is_error: true };
+    }
+    if (effort && payloadKind !== 'agentTurn') {
+      return { content: 'effort is only valid for payload_kind=agentTurn.', is_error: true };
+    }
     let timeoutSeconds: number | undefined;
     try {
       timeoutSeconds = validateCronTimeoutSeconds(input.timeout_seconds);
@@ -143,6 +154,7 @@ Delivery:
         ...(msg ? { message: msg } : {}),
         ...(msgPath ? { messagePath: msgPath } : {}),
         ...(model ? { model } : {}),
+        ...(effort ? { effort } : {}),
         ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),
         ...(sessionHistory ? { sessionHistory } : {}),
       };
@@ -378,6 +390,7 @@ export const cronUpdateTool: ToolDefinition = {
       announce_mode: { type: 'string', enum: ['none', 'failures', 'summary', 'full'], description: 'New delivery mode' },
       timeout_seconds: { type: 'number', description: 'New timeout in seconds' },
       model: { type: 'string', description: 'New model alias override' },
+      effort: { type: 'string', enum: [...REASONING_EFFORTS], description: 'New reasoning effort for agentTurn jobs' },
       message_path: { type: 'string', description: 'New messagePath for agentTurn jobs (clears any inline message when set)' },
       session_history: { type: 'string', enum: ['persistent', 'fresh'], description: 'New sessionHistory value' },
       delivery_profile: { type: 'string', description: 'New delivery profile name (replaces channel/to when set; pass empty string to clear and fall back to channel/to)' },
@@ -395,6 +408,18 @@ export const cronUpdateTool: ToolDefinition = {
     if (!job) return { content: `Job not found: ${id}`, is_error: true };
 
     const changes: string[] = [];
+
+    let effort: ReasoningEffort | undefined;
+    if (input.effort !== undefined) {
+      if (job.payload.kind !== 'agentTurn') {
+        return { content: 'effort is only valid for agentTurn jobs.', is_error: true };
+      }
+      try {
+        effort = parseReasoningEffort(input.effort, 'cron effort');
+      } catch (error) {
+        return { content: error instanceof Error ? error.message : 'cron effort is invalid', is_error: true };
+      }
+    }
 
     if (typeof input.name === 'string') { job.name = input.name; changes.push(`name → "${input.name}"`); }
     if (typeof input.message === 'string') {
@@ -432,6 +457,10 @@ export const cronUpdateTool: ToolDefinition = {
     if (typeof input.model === 'string') {
       (job.payload as Record<string, unknown>).model = input.model;
       changes.push(`model → "${input.model}"`);
+    }
+    if (effort) {
+      (job.payload as Record<string, unknown>).effort = effort;
+      changes.push(`effort → "${effort}"`);
     }
 
     if (typeof input.message_path === 'string' && job.payload.kind === 'agentTurn') {

@@ -99,6 +99,25 @@ test('spawn_agent threads a model override through to the loop runner', async ()
   assert.deepEqual(captured.options, { modelOverride: { model: 'claude-opus-4-8', provider: 'anthropic' } });
 });
 
+test('spawn_agent passes a valid effort to the sub-agent turn', async () => {
+  const { ctx, captured } = makeCtx('parent-chat');
+  await spawnAgentTool.execute({ task: 'effort check', effort: 'high' }, ctx);
+  await captured.delivered;
+
+  assert.deepEqual(captured.options, { effort: 'high' });
+});
+
+test('spawn_agent rejects invalid effort before claiming or dispatching work', async () => {
+  const { ctx, captured } = makeCtx('parent-chat');
+  const result = await spawnAgentTool.execute({ task: 'invalid effort', effort: 'ultra' }, ctx);
+
+  assert.equal(result.is_error, true);
+  assert.match(result.content, /effort/i);
+  assert.match(result.content, /none, low, medium, high, xhigh, max/);
+  assert.equal(captured.loopCalls, 0);
+  assert.equal(ctx.subAgentTracker.active, 0);
+});
+
 test('spawn_agent resolves configured model aliases before dispatching the sub-agent', async () => {
   const { ctx, captured } = makeCtx('parent-chat');
   (ctx as ToolContext & { modelAliases: Record<string, { provider: string; model: string }> }).modelAliases = {
