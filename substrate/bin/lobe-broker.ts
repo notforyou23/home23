@@ -33,8 +33,23 @@
 import { execFileSync } from 'node:child_process';
 import { parseLobeRequest, formatLobeResult } from '../src/lobe-file-transport.js';
 import type { LobeFileResult } from '../src/lobe-file-transport.js';
+import { resolvePiHost } from '../src/pi-host.js';
 
-const sshHost = process.env['BROKER_SSH_HOST'];
+const configuredHost = process.env['BROKER_SSH_HOST'];
+/** The Pi's address is not a constant: its wired and wireless NICs hold
+ * different leases and the one in use changes with a cable. Resolve to
+ * whichever answers, re-resolving after a failure, so a moved Pi is followed
+ * rather than reported dead (2026-08-21). */
+let activeHost: string | null = null;
+function piHost(force = false): string {
+  if (activeHost === null || force) {
+    const found = resolvePiHost({ first: configuredHost, force });
+    if (found !== null && found !== activeHost) console.log(`[broker] Pi answering at ${found}`);
+    activeHost = found;
+  }
+  return activeHost ?? configuredHost ?? '';
+}
+const sshHost = configuredHost;
 const remoteDir = process.env['BROKER_REMOTE_DIR'];
 if (sshHost === undefined || remoteDir === undefined) {
   console.error('BROKER_SSH_HOST and BROKER_REMOTE_DIR are required');
@@ -68,11 +83,19 @@ const FILE_PATTERN = /^req_[a-z0-9]+_[0-9]+\.json$/;
  * failure. Removed 2026-08-11. Do not reintroduce a credential cache here. */
 
 function ssh(command: string, input?: string): string {
-  return execFileSync('ssh', ['-o', 'ConnectTimeout=10', sshHost as string, command], {
-    encoding: 'utf-8',
-    timeout: 30_000,
-    ...(input !== undefined ? { input } : {}),
-  });
+  try {
+    return execFileSync('ssh', ['-o', 'ConnectTimeout=10', piHost(), command], {
+      encoding: 'utf-8',
+      timeout: 30_000,
+      ...(input !== undefined ? { input } : {}),
+    });
+  } catch (error) {
+    // The address may simply have moved (a cable changes which NIC holds the
+    // lease). Re-resolve so the NEXT call follows the Pi instead of retrying
+    // a dead address forever — the failure itself still propagates.
+    activeHost = null;
+    throw error;
+  }
 }
 
 type Transport = (prompt: string) => Promise<{
@@ -145,7 +168,7 @@ if (formsRemote !== undefined && !/^[A-Za-z0-9._/-]+$/.test(formsRemote)) {
 function mirrorForms(): void {
   if (formsRemote === undefined || formsDest === undefined) return;
   try {
-    execFileSync('rsync', ['-a', '--delete', `${sshHost}:${formsRemote}/`, `${formsDest}/`], { timeout: 60_000 });
+    execFileSync('rsync', ['-a', '--delete', `${piHost()}:${formsRemote}/`, `${formsDest}/`], { timeout: 60_000 });
     console.log(`[broker] forms mirrored to ${formsDest}`);
   } catch (error) {
     console.error(`[broker] forms mirror failed: ${(error as Error).message}`);
@@ -154,7 +177,7 @@ function mirrorForms(): void {
   const stateDest = process.env['BROKER_STATE_DEST'];
   if (stateRemote !== undefined && stateDest !== undefined && /^[A-Za-z0-9._/-]+$/.test(stateRemote)) {
     try {
-      execFileSync('rsync', ['-az', `${sshHost}:${stateRemote}/checkpoints`, `${sshHost}:${stateRemote}/seed-ledger.jsonl`, `${stateDest}/`], { timeout: 60_000 });
+      execFileSync('rsync', ['-az', `${piHost()}:${stateRemote}/checkpoints`, `${piHost()}:${stateRemote}/seed-ledger.jsonl`, `${stateDest}/`], { timeout: 60_000 });
       console.log(`[broker] state mirrored to ${stateDest}`);
     } catch (error) {
       console.error(`[broker] state mirror failed: ${(error as Error).message}`);
@@ -164,7 +187,7 @@ function mirrorForms(): void {
     // never break the ledger mirror above. Once it exists, the terrarium's
     // "✋ he reached for you" needs it here.
     try {
-      execFileSync('rsync', ['-az', `${sshHost}:${stateRemote}/outbox.jsonl`, `${stateDest}/`], { timeout: 60_000 });
+      execFileSync('rsync', ['-az', `${piHost()}:${stateRemote}/outbox.jsonl`, `${stateDest}/`], { timeout: 60_000 });
       console.log(`[broker] outbox mirrored to ${stateDest}`);
     } catch { /* no outbox yet — honest absence */ }
   }
@@ -172,7 +195,7 @@ function mirrorForms(): void {
 
 async function main(): Promise<void> {
   const transport = await buildTransport();
-  console.log(`[broker] serving ${sshHost}:${remoteDir} with ${model}, every ${intervalMs}ms`);
+  console.log(`[broker] serving ${piHost()}:${remoteDir} with ${model}, every ${intervalMs}ms`);
   await tick(transport);
   mirrorForms();
   let ticks = 0;

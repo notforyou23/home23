@@ -18,10 +18,12 @@ import { readFileSync, readdirSync, statSync, existsSync, openSync, readSync, cl
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { shippableTurn } from '../src/conversation-turn.js';
+import { onPi, unreachableWhy } from '../src/pi-host.js';
 import { join } from 'node:path';
 
 const ROOT = '/Users/jtr/_JTR23_/release/home23';
-const PI = '192.168.4.63';
+// The Pi's addresses now live in one place (src/pi-host.ts) and are TRIED,
+// not assumed — see that file for why this constant no longer exists here.
 
 export interface ProbeResult {
   organ: string;
@@ -182,6 +184,79 @@ export function probeBobbyMirror(root: string = ROOT): ProbeResult {
 }
 
 /**
+ * Chain advance — IS THIS INDIVIDUAL STILL LIVING AT ALL?
+ *
+ * The hole this closes (found 2026-08-21): clay's chain carries a clean
+ * `stop` at 2026-08-15T00:47:52Z and its next record at 2026-08-20T23:43:11Z
+ * — 142.9 hours in which the self-formation experiment simply did not
+ * happen. Nothing caught it. He was the one individual outside PM2, and
+ * every probe here was written around the three who are not him: shipper
+ * flow, bobby's mirror, seed-thought. clay has no lobe, so a thought probe
+ * cannot speak for him; what every individual has is a chain that advances.
+ *
+ * Threshold from the live distributions, not invented: over the last 3 days
+ * the inter-record gap runs p99 13.4min (jerry), 14.9min (forrest), 6.3min
+ * (clay), with an observed non-outage max of 39.9min. 60min is ~1.5x the
+ * worst ordinary gap and would have shown clay's hole within the hour.
+ *
+ * Deliberately NOT clever about a chain that stops for a good reason: an
+ * individual deliberately stopped still reads RED here, because the sentinel
+ * has ORGAN_SENTINEL_IGNORE for a chosen silence. Silence chosen, not blind.
+ */
+const CHAIN_SILENCE_MIN = 60;
+
+export function probeSeedChain(name: string, stateDir: string, root: string = ROOT): ProbeResult {
+  const organ = `${name}-chain`;
+  const chain = stateDir.startsWith('/') ? join(stateDir, 'seed-ledger.jsonl') : join(root, stateDir, 'seed-ledger.jsonl');
+  let raw: string;
+  try {
+    raw = tailBytes(chain, 64 * 1024);
+  } catch (e) {
+    return { organ, ok: false, why: `chain unreadable: ${(e as Error).message.slice(0, 60)}` };
+  }
+  let newest = NaN;
+  let lastCategory = '';
+  for (const line of raw.split('\n')) {
+    if (line.trim() === '') continue;
+    try {
+      const r = JSON.parse(line) as { issuedAt?: string; category?: string };
+      const at = Date.parse(r.issuedAt ?? '');
+      if (!Number.isNaN(at)) { newest = at; lastCategory = r.category ?? ''; }
+    } catch { /* partial first line from the byte-tail cut — skip */ }
+  }
+  // Cannot see is not health — the rule this suite was rewritten around.
+  if (Number.isNaN(newest)) return { organ, ok: false, why: 'no readable record in the chain tail — cannot confirm this individual is living' };
+  const silentMin = ageMin(newest);
+  if (silentMin > CHAIN_SILENCE_MIN) {
+    // A closing `stop` receipt names WHY the life ended, which is the whole
+    // difference between "crashed" and "nobody started him again".
+    const how = lastCategory === 'stop' ? ' after a clean stop — NOBODY RESTARTED HIM' : '';
+    return { organ, ok: false, why: `chain has not advanced in ${silentMin}min${how}` };
+  }
+  return { organ, ok: true, why: `advancing (last record ${silentMin}min ago)` };
+}
+
+/**
+ * The house-stream shipper's OUTPUT, not its process.
+ *
+ * Found wedged 2026-08-21: pm2 online, an rsync child hung 1h51m, and no log
+ * line since the previous day — bobby's work.house diet starved for 21 hours
+ * behind a green process light. The loop appends `HH:MM:SS rc=N` every 30s,
+ * so its own log is the receipt: stale log = wedged, nonzero rc = failing.
+ */
+export function probeHouseStream(logPath: string): ProbeResult {
+  const organ = 'bobby-house-shipper-flow';
+  const age = fileAgeMin(logPath);
+  if (age === null) return { organ, ok: false, why: 'shipper log missing — no evidence the feed runs at all' };
+  if (age > 5) return { organ, ok: false, why: `no cycle logged in ${age}min (loop is 30s) — shipper WEDGED` };
+  const last = tailLines(logPath, 20).reverse().find((l) => /rc=\d+/.test(l));
+  if (last === undefined) return { organ, ok: false, why: 'log has no rc= line — cannot confirm a cycle ever completed' };
+  const rc = Number((last.match(/rc=(\d+)/) ?? [])[1]);
+  if (rc !== 0) return { organ, ok: false, why: `last cycle failed rc=${rc}` };
+  return { organ, ok: true, why: `shipping (last cycle ${age}min ago, rc=0)` };
+}
+
+/**
  * Seed thought-health — CAN THIS INDIVIDUAL STILL FORM A THOUGHT?
  *
  * Rewritten 2026-08-13 after this probe read GREEN through a 43% lifetime
@@ -289,10 +364,14 @@ function probePi(): ProbeResult[] {
       'pgrep -f seed-journal.cjs >/dev/null && echo journal=ok || echo journal=dead',
       'OLD=$(find /home/jtr/bobby/lobe-exchange/requests -name "*.json" -mmin +10 2>/dev/null | wc -l); echo stale_requests=$OLD',
     ].join('; ');
-    const out = execFileSync('ssh', ['-o', 'ConnectTimeout=6', PI, script], { timeout: 15_000 }).toString();
-    return judgePi(out);
+    // A host has several addresses and they change (the Pi's wired NIC took a
+    // new lease the day ethernet went in, and every organ then called a live
+    // Pi "unreachable"). Try them all; report which one answered.
+    const reached = onPi(script, { connectTimeoutSec: 4 });
+    if (!reached.ok) return [{ organ: 'pi', ok: false, why: unreachableWhy(reached) }];
+    return judgePi(reached.out).map((r) => (r.organ === 'bobby-runner' ? { ...r, why: `${r.why} · via ${reached.host}` } : r));
   } catch (e) {
-    return [{ organ: 'pi', ok: false, why: `unreachable: ${(e as Error).message.slice(0, 60)}` }];
+    return [{ organ: 'pi', ok: false, why: `probe failed: ${(e as Error).message.slice(0, 60)}` }];
   }
 }
 
@@ -363,12 +442,50 @@ function probeEngines(): ProbeResult[] {
   return judgeEngines(apps);
 }
 
+/**
+ * The individuals this install runs, DERIVED from the generated ecosystem —
+ * the observatory's own roster, so the probes and jtr's board can never
+ * disagree about who exists. Hand-listing is what left clay unwatched.
+ * A mirror's freshness belongs to its own probe (bobby-mirror), not here.
+ */
+export function expectedIndividuals(root: string = ROOT): Array<{ name: string; stateDir: string }> {
+  try {
+    const require = createRequire(import.meta.url);
+    const path = join(root, 'ecosystem.config.cjs');
+    delete require.cache[require.resolve(path)];
+    const loaded = require(path) as { apps?: Array<{ name?: string; env?: Record<string, string> }> };
+    const obs = (loaded.apps ?? []).find((a) => a.name === 'home23-seed-observatory');
+    const raw = obs?.env?.['OBSERVATORY_INDIVIDUALS'];
+    if (typeof raw !== 'string') return [];
+    return (JSON.parse(raw) as Array<{ name?: string; stateDir?: string }>)
+      .filter((i): i is { name: string; stateDir: string } => typeof i.name === 'string' && typeof i.stateDir === 'string')
+      .filter((i) => !i.stateDir.includes('-mirror'));
+  } catch { return []; }
+}
+
+/** The declared house-stream shipper's log, by the convention the script
+ * itself follows: the loop logs beside its own source, <script>.log. */
+function houseStreamLog(root: string = ROOT): string | null {
+  try {
+    const require = createRequire(import.meta.url);
+    const path = join(root, 'ecosystem.config.cjs');
+    delete require.cache[require.resolve(path)];
+    const loaded = require(path) as { apps?: Array<{ name?: string; script?: string }> };
+    const app = (loaded.apps ?? []).find((a) => a.name === 'home23-bobby-house-shipper');
+    if (typeof app?.script !== 'string' || !app.script.endsWith('.sh')) return null;
+    return app.script.replace(/\.sh$/, '.log');
+  } catch { return null; }
+}
+
 export function probeAll(): ProbeResult[] {
+  const houseLog = houseStreamLog();
   return [
     ...probePm2(),
     probeShipperFlow('jerry'),
     probeShipperFlow('forrest'),
     probeBobbyMirror(),
+    ...(houseLog !== null ? [probeHouseStream(houseLog)] : []),
+    ...expectedIndividuals().map((i) => probeSeedChain(i.name, i.stateDir)),
     probeSeedThought('jerry'),
     probeSeedThought('forrest'),
     ...probeEngines(),
