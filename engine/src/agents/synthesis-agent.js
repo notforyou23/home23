@@ -757,59 +757,105 @@ Respond with JSON array:
     const fs = require('fs').promises;
     const path = require('path');
     
-    // Query memory for deliverables tagged from this run
-    const deliverableNodes = await this.memory.query('deliverable runtime/outputs', 20);
-    
-    // Also scan runtime/outputs directly
+    const inputGoalIds = new Set(
+      (this.mission.metadata?.inputGoalIds || []).filter(Boolean)
+    );
+    if (inputGoalIds.size === 0) {
+      throw new Error('Final synthesis requires metadata.inputGoalIds; refusing unscoped output scan');
+    }
+
     const outputsDir = this.config.logsDir
       ? path.join(this.config.logsDir, 'outputs')
       : path.join(process.cwd(), 'runtime', 'outputs');
-    let files = [];
-    
-    try {
-      files = await fs.readdir(outputsDir);
-    } catch (error) {
-      this.logger.warn('Could not scan outputs directory', { error: error.message }, 3);
-    }
-    
     const artifacts = [];
     const seen = new Set();
-    
-    // Combine memory-tracked and filesystem artifacts (dedupe by path)
-    for (const node of deliverableNodes) {
-      if (node.metadata?.path && !seen.has(node.metadata.path)) {
-        artifacts.push({
-          path: node.metadata.path,
-          title: node.metadata.title || node.concept,
-          format: node.metadata.format,
-          source: 'memory'
-        });
-        seen.add(node.metadata.path);
+    const agentTypes = ['code-creation', 'document-creation', 'synthesis', 'analysis', 'research'];
+
+    // Fail closed: canonical assembly may consume only manifests/metadata whose
+    // goalId belongs to this guided plan. A global memory query or top-level
+    // outputs scan can silently import unrelated work from another domain.
+    for (const agentType of agentTypes) {
+      const typeDir = path.join(outputsDir, agentType);
+      let agentDirs = [];
+      try {
+        agentDirs = await fs.readdir(typeDir);
+      } catch (error) {
+        if (error.code !== 'ENOENT') {
+          this.logger.warn('Could not scan agent output directory', { path: typeDir, error: error.message }, 3);
+        }
+        continue;
       }
-    }
-    
-    for (const file of files) {
-      const filePath = path.join(outputsDir, file);
-      if (!seen.has(filePath)) {
-        // Filter for likely phase outputs (skip metadata files, temp files, etc)
-        if (file.endsWith('.md') || file.endsWith('.html') || file.endsWith('.json')) {
+
+      for (const agentDir of agentDirs) {
+        const agentOutputDir = path.join(typeDir, agentDir);
+        let entries = [];
+        try {
+          entries = await fs.readdir(agentOutputDir);
+        } catch {
+          continue;
+        }
+
+        const provenanceFiles = entries.filter((name) =>
+          name === 'manifest.json' || name.endsWith('_metadata.json')
+        );
+        let provenance = null;
+        for (const name of provenanceFiles) {
+          try {
+            const parsed = JSON.parse(await fs.readFile(path.join(agentOutputDir, name), 'utf8'));
+            if (inputGoalIds.has(parsed.goalId)) {
+              provenance = parsed;
+              break;
+            }
+          } catch {
+            // Invalid provenance cannot authorize canonical package admission.
+          }
+        }
+        if (!provenance) continue;
+
+        const candidatePaths = Array.isArray(provenance.files)
+          ? provenance.files.map((file) => file?.path).filter(Boolean)
+          : [provenance.filePath].filter(Boolean);
+        for (const candidate of candidatePaths) {
+          const filePath = path.resolve(agentOutputDir, candidate);
+          const relativePath = path.relative(agentOutputDir, filePath);
+          if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+            this.logger.warn('Rejected artifact outside its producing agent directory', {
+              goalId: provenance.goalId,
+              manifestDir: agentOutputDir,
+              candidate,
+            }, 3);
+            continue;
+          }
+          if (seen.has(filePath)) continue;
+          const ext = path.extname(filePath).slice(1).toLowerCase();
+          if (!['md', 'html', 'json', 'txt', 'csv', 'yaml', 'yml'].includes(ext)) continue;
+          try {
+            const stat = await fs.stat(filePath);
+            if (!stat.isFile()) continue;
+          } catch {
+            continue;
+          }
           artifacts.push({
             path: filePath,
-            title: file,
-            format: path.extname(file).slice(1),
-            source: 'filesystem'
+            title: path.basename(filePath),
+            format: ext,
+            source: 'scoped-filesystem',
+            goalId: provenance.goalId,
           });
           seen.add(filePath);
         }
       }
     }
-    
-    this.logger.info('📦 Gathered artifacts for assembly', {
+
+    if (artifacts.length === 0) {
+      throw new Error(`No phase artifacts found for input goals: ${[...inputGoalIds].join(', ')}`);
+    }
+
+    this.logger.info('📦 Gathered scoped artifacts for assembly', {
       count: artifacts.length,
-      fromMemory: artifacts.filter(a => a.source === 'memory').length,
-      fromFilesystem: artifacts.filter(a => a.source === 'filesystem').length
+      inputGoalIds: [...inputGoalIds],
     }, 3);
-    
+
     return artifacts;
   }
 

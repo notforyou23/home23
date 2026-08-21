@@ -238,6 +238,7 @@ class GuidedModePlanner {
           metadata: {
             isFinalSynthesis: true,
             inputTasks: tasks.map(t => t.id),
+            inputGoalIds: tasks.map(t => t.metadata?.goalId).filter(Boolean),
             deliverableSpec: plan.deliverable
           },
           createdAt: Date.now(),
