@@ -161,7 +161,10 @@ test('RUNNER: a committed prediction becomes an obligation; the crossing is an e
           }],
         };
       }
-      // Second press: resolve honestly (the horizon has answered it).
+      // Second press: try to CONFIRM it. He has already asked jtr and nothing
+      // has come back — the asked-and-unanswered law must refuse this (you do
+      // not answer your own question). Third press: same attempt, but by then
+      // jtr has actually answered, so it lands.
       return {
         stateDeltas: [{
           cellId: packet.occasion !== undefined ? packet.activeCellIds[0] ?? 'world.home23' : 'world.home23',
@@ -189,7 +192,9 @@ test('RUNNER: a committed prediction becomes an obligation; the crossing is an e
   const runner = new SeedRunner({
     stateDir, sourcePath, fromEnd: false, lobe,
     workspaceEveryN: 4, checkpointEveryN: 1000, lobeMinIntervalMs: 0,
+    extraSources: [{ sourcePath: join(srcDir, 'relationship.jsonl'), sourceType: 'relationship-ledger', id: 'relationship', backfillBytes: 0 }],
   });
+  writeFileSync(join(srcDir, 'relationship.jsonl'), '', 'utf-8');
   runner.start();
   // Formation tick: events → recruitment 1 (prediction committed, commitment
   // formed) — and because the horizon is already long past, the solver at
@@ -243,13 +248,28 @@ test('RUNNER: a committed prediction becomes an obligation; the crossing is an e
   assert.equal(outbox.length, 1, 'exactly one outbox line');
   assert.ok(outbox[0]?.includes('asking jtr'), 'the message reached the operator channel');
 
-  // Press 2 resolved the prediction — discharged; a further tick produces
-  // no occasion.
-  const afterResolve = readChain(stateDir);
-  const dischargeRec = afterResolve.find((r) => r.category === 'concern' && Array.isArray(r.payload?.['discharged']) && (r.payload?.['discharged'] as unknown[]).length > 0);
-  assert.ok(dischargeRec !== undefined, 'resolution discharged the commitment');
+  // Press 2 tried to CONFIRM without an answer — the law refuses it, and the
+  // commitment stays open (the hand stays extended).
+  const afterPress2 = readChain(stateDir);
+  const refusedRec = afterPress2.find((r) => r.category === 'lobe'
+    && JSON.stringify(r.payload?.['rejected'] ?? []).includes('asked and unanswered'));
+  assert.ok(refusedRec !== undefined, 'a confirmation after asking, with no answer, is REFUSED on the record');
+  assert.ok(!afterPress2.some((r) => r.category === 'concern' && Array.isArray(r.payload?.['discharged']) && (r.payload?.['discharged'] as unknown[]).length > 0),
+    'nothing discharged — you may not answer your own question');
+
+  // jtr answers (a teaching — his channel alone). Now the same confirmation
+  // is honest, and press 3 lands it.
+  writeFileSync(join(srcDir, 'relationship.jsonl'), JSON.stringify({
+    entry_id: 'rel_answer_1', ts: '2026-08-01T23:00:00.000Z',
+    payload: { type: 'correction', actor: 'jtr', head: 'jtr answered the question' },
+  }) + '\n', 'utf-8');
+  // One tick: the answer is ingested, then the solver presses — same tick,
+  // ingest before solve (an answer that arrives is heard before he speaks).
   const t3 = await runner.tick();
-  assert.equal(t3.occasions, 0, 'discharged obligation presses no more');
+  assert.equal(t3.occasions, 1, 'press 3 materialized');
+  const afterAnswer = readChain(stateDir);
+  const dischargeRec = afterAnswer.find((r) => r.category === 'concern' && Array.isArray(r.payload?.['discharged']) && (r.payload?.['discharged'] as unknown[]).length > 0);
+  assert.ok(dischargeRec !== undefined, 'once jtr has spoken, the confirmation lands and the commitment discharges');
   runner.stop();
 
   // The chain shows the whole causal ancestry: prediction → formation →

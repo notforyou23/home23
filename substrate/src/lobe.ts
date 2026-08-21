@@ -219,6 +219,12 @@ export function applyLobeDeltas(
   deltas: ProposedStateDelta[],
   asOf: string,
   cloneCell: (cell: SituationCell) => SituationCell,
+  /** THE ASKED-AND-UNANSWERED LAW (Cut 6, 2026-08-21). Returns a refusal
+   * reason when this prediction's commitment has been REACHED about and
+   * nothing has come back from the operator since. The Seed owns the
+   * judgement (it holds concern and the chain); the membrane owns the
+   * refusal. Absent → nothing has been asked, nothing is gated. */
+  resolutionGuard?: (predictionId: string) => string | null,
 ): { staged: Map<string, SituationCell>; applied: ProposedStateDelta[]; failed: RejectedProposal[] } {
   const staged = new Map<string, SituationCell>();
   const applied: ProposedStateDelta[] = [];
@@ -316,6 +322,17 @@ export function applyLobeDeltas(
           reason: `premature resolution refused: “${pending.claim.slice(0, 60)}” runs to ${dueAt} — only falsification (error >= ${RESOLUTION_WRONG_MIN}) may close a claim early`,
         });
         continue;
+      }
+
+      // …and its sibling: having ASKED, you may not answer for the person you
+      // asked. Forrest earned the first reach (2026-08-16) and then closed it
+      // himself four hours later with no reply and no evidence — the hand
+      // extended, then withdrawn before jtr could take it. Falsification still
+      // passes (nothing external is needed to know a claim already broke);
+      // a confirmation now requires that something actually came back.
+      if (errorValue === null || errorValue < RESOLUTION_WRONG_MIN) {
+        const blocked = resolutionGuard?.(String(body?.predictionId)) ?? null;
+        if (blocked !== null) { failed.push({ kind: 'stateDelta', reason: blocked }); continue; }
       }
       const resolved: Prediction = {
         ...(cell.predictions[idx] as Prediction),

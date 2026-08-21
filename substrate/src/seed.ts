@@ -73,6 +73,8 @@ import type { ConcernState, Commitment, FormationInput, DueCrossing } from './co
 import {
   emptyConcern,
   cloneConcern,
+  askedUnanswered,
+  markReached,
   applyFormation,
   applyResolutionDischarge,
   discharge as dischargeCommitment,
@@ -984,11 +986,25 @@ export class SeedProcess {
     }
 
     const validated = validateLobeResult(result, packet);
+    // Build the asked-and-unanswered guard ONLY when a reach is outstanding —
+    // the chain scan costs nothing on the overwhelming majority of
+    // recruitments, where nothing has been asked.
+    const reached = Object.values(this.concern).filter((c) => c.status === 'open' && c.reachedAt !== undefined);
+    let guard: ((predictionId: string) => string | null) | undefined;
+    if (reached.length > 0) {
+      const lastContact = this.lastOperatorContactAt();
+      guard = (predictionId: string): string | null => {
+        const c = reached.find((x) => x.predictionId === predictionId);
+        if (!askedUnanswered(c, lastContact)) return null;
+        return `asked and unanswered: jtr was reached about this at ${String(c?.reachedAt)} and nothing has come back since — only falsification may close it (you may not answer your own question)`;
+      };
+    }
     const { staged, applied, failed } = applyLobeDeltas(
       this.cells,
       validated.accepted.stateDeltas,
       asOf,
       cloneCell,
+      guard,
     );
     const rejected = [...validated.rejected, ...failed];
 
@@ -1133,6 +1149,26 @@ export class SeedProcess {
   }
 
   /**
+   * The newest event-time at which the OPERATOR himself reached the
+   * individual: his voice in conversation, or a teaching (the correction
+   * channel is jtr's alone — substrate law, no manufactured corrections).
+   * Deliberately excludes worker-outcome corrections and the individual's own
+   * relationship writes: a machine consequence is not an answer from a person.
+   */
+  private lastOperatorContactAt(): string | null {
+    let latest: string | null = null;
+    for (const rec of this.ledger.readAll()) {
+      if (rec.category !== 'transition') continue;
+      const ref = rec.sourceRef;
+      if (!(ref.startsWith('conversation.jtr') || ref.startsWith('relationship.correction'))) continue;
+      const produced = rec.payload?.['producedAt'];
+      const at = typeof produced === 'string' ? produced : rec.issuedAt;
+      if (latest === null || at > latest) latest = at;
+    }
+    return latest;
+  }
+
+  /**
    * The warrant law (Cut 6). A reach-operator action is authorized iff:
    *   (a) the occasion's commitment exists and is still open;
    *   (b) its obligation is still at/above threshold at asOf (materialized
@@ -1186,6 +1222,11 @@ export class SeedProcess {
       }
     }
     const idempotencyKey = `reach_${commitmentId}`;
+    // Asked-and-unanswered law: the reach is STAMPED ON THE COMMITMENT, so
+    // from here only falsification or a real answer can close it. The stamp
+    // is state (checkpointed, restored, replayed), not a log line.
+    const stagedConcern = cloneConcern(this.concern);
+    markReached(stagedConcern, commitmentId, asOf);
     const { record } = this.commitReceipted(new Map(), {
       category: 'act',
       sourceAuthority: 'seed.internal',
@@ -1199,8 +1240,9 @@ export class SeedProcess {
         idempotencyKey,
         asOf,
         lobeSeq,
+        reachedAt: asOf,
       },
-    });
+    }, undefined, stagedConcern);
     this._eventCount++;
     this.accounting.recordEvent();
     this.accounting.setLedgerBytes(this.ledger.bytes);

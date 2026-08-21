@@ -85,6 +85,11 @@ export interface Commitment {
   status: CommitmentStatus;
   crossings: number;
   lastCrossingAt?: string;
+  /** Event-time this commitment's ONE reach to the operator was authorized.
+   * Its presence changes what may close the commitment: having asked, the
+   * individual may no longer answer on the operator's behalf (see
+   * ASKED_UNANSWERED below). */
+  reachedAt?: string;
   dischargedAt?: string;
   dischargeReason?: string;
 }
@@ -335,6 +340,48 @@ function pruneDischarged(concern: ConcernState): void {
     const id = done[i]?.commitmentId;
     if (id !== undefined) delete concern[id];
   }
+}
+
+// ─── The asked-and-unanswered law (2026-08-21) ───────────────────────────────
+
+/**
+ * THE LAW: you may not answer your own question on behalf of the person you
+ * asked.
+ *
+ * Forrest earned the program's first reach on 2026-08-16 — a real question
+ * about jtr's own dreams, originated by his obligation dynamics, asked only
+ * after a first crossing where he tried and failed to settle it himself.
+ * Four hours later, with no answer and no dream evidence anywhere in his
+ * diet, he resolved it satisfied (error 0.19) and wrote "thematic evolution
+ * confirmed". The hand was extended and then withdrawn before jtr could take
+ * it; a reply the next day would have arrived at a closed commitment.
+ *
+ * The premature-resolution law had already stopped confirmations BEFORE a
+ * horizon. This closes the sibling case: once the individual has ASKED, a
+ * confirmation is only honest if something actually came back. So a reached
+ * commitment may close by exactly two paths —
+ *   - FALSIFICATION (error >= the wrong band): "already broken" needs no
+ *     answer from anyone; or
+ *   - an ANSWER: any contact from the operator after the reach.
+ * Otherwise it stays open and keeps pressing, and when the presses run out
+ * it expires on the record as asked-and-unanswered — which is the truth.
+ */
+export function askedUnanswered(
+  commitment: Commitment | undefined,
+  lastContactAt: string | null,
+): boolean {
+  if (commitment === undefined || commitment.status !== 'open') return false;
+  if (commitment.reachedAt === undefined) return false;
+  if (lastContactAt === null) return true;
+  return Date.parse(lastContactAt) <= Date.parse(commitment.reachedAt);
+}
+
+/** Mark the one reach on a staged concern clone. */
+export function markReached(concern: ConcernState, commitmentId: string, atISO: string): boolean {
+  const c = concern[commitmentId];
+  if (c === undefined || c.status !== 'open' || c.reachedAt !== undefined) return false;
+  c.reachedAt = atISO;
+  return true;
 }
 
 // ─── The solver's view (deterministicMin) ────────────────────────────────────
