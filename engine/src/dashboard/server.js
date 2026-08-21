@@ -581,6 +581,58 @@ function readJsonlHeadLines(filePath, limit = 200, maxBytes = 256 * 1024) {
  * Phase 2B Dashboard Server
  * Real-time visualization of all Phase 2B features
  */
+const PROCESS_IDENTITY_ROUTE = '/home23/process.json';
+
+/**
+ * Read-only process identity. This is the ownership oracle for the
+ * `pm2_port_owner` live-problem verifier: whichever process is actually bound
+ * to this port answers with its own pid, so a stale listener is caught by
+ * identity rather than by reading the kernel socket table with lsof (which
+ * wedges uninterruptibly inside proc_pidfdinfo on macOS 27).
+ *
+ * Registered as a standalone function so the route — not just the payload
+ * builder — can be mounted on a bare express app in tests and probed by the
+ * real verifier over loopback.
+ */
+function registerProcessIdentityRoute(app, server) {
+  app.get(PROCESS_IDENTITY_ROUTE, (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json(buildDashboardProcessIdentity(server));
+  });
+  return app;
+}
+
+/**
+ * Build the read-only identity document served at `/home23/process.json`.
+ *
+ * The contract that matters to `pm2_port_owner` is `pid`: it is this running
+ * process's own pid, so it is true by construction and cannot be forged by a
+ * stale process claiming to be current. Everything else is context for the
+ * failure message. Never add anything sensitive here — the route is unauthenticated.
+ */
+function buildDashboardProcessIdentity(server) {
+  const uptimeSec = process.uptime();
+  const startedAtMs = Date.now() - Math.round(uptimeSec * 1000);
+  const portCandidate = Number(server?.port)
+    || Number(process.env.DASHBOARD_PORT)
+    || Number(process.env.COSMO_DASHBOARD_PORT);
+  const pm2Id = /^\d+$/.test(String(process.env.pm_id ?? '')) ? Number(process.env.pm_id) : null;
+
+  return {
+    ok: true,
+    service: 'home23-dashboard',
+    pid: process.pid,
+    ppid: Number.isFinite(process.ppid) ? process.ppid : null,
+    port: Number.isFinite(portCandidate) && portCandidate > 0 ? portCandidate : null,
+    agent: process.env.HOME23_AGENT || null,
+    instanceId: process.env.INSTANCE_ID || null,
+    pm2Name: process.env.name || null,
+    pm2Id,
+    startedAt: new Date(startedAtMs).toISOString(),
+    uptimeSec: Math.round(uptimeSec),
+  };
+}
+
 class DashboardServer {
   constructor(port = 3344, logsDir, options = {}) {
     if (!options || Array.isArray(options) || typeof options !== 'object') {
@@ -2299,6 +2351,8 @@ class DashboardServer {
         res.json([]);
       }
     });
+
+    registerProcessIdentityRoute(this.app, this);
 
     // Home23 config (ports for client-side URL construction)
     this.app.get('/home23/config.json', (req, res) => {
@@ -12778,6 +12832,9 @@ if (require.main === module) {
 
 module.exports = {
   DashboardServer,
+  PROCESS_IDENTITY_ROUTE,
+  buildDashboardProcessIdentity,
+  registerProcessIdentityRoute,
   createQueryTerminalNotificationDelivery,
   loadQueryNotebookBridgeToken,
   parseConversationLines,
