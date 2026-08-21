@@ -299,6 +299,24 @@ test('generated report cannot acquire present-tense authority and source chains 
   assert.ok(chain.every((entry) => entry.ref.length <= 240));
 });
 
+test('generated artifact-registry deliverables remain narrative despite persisted artifact metadata', () => {
+  const deliverable = {
+    id: '332086',
+    concept: 'Artifact art_incident_report: deliverable\npreview=Incomplete generated incident report.',
+    tag: 'artifact_deliverable',
+    type: 'artifact',
+    metadata: {
+      kind: 'deliverable',
+      agentId: 'document-creation-agent',
+      path: 'logs:outputs/document-creation/incident-report.md',
+      hash: 'sha256:generated-report',
+    },
+  };
+
+  assert.equal(classifyClaimAuthority(deliverable), 'narrative');
+  assert.equal(projectMemoryAuthority(deliverable).operationalAuthority, false);
+});
+
 test('shared authority resolver suppresses linked stale alarms and superseded claims for current state', () => {
   const alarm = {
     id: 'alarm-old', concept: 'Current brain route status is down.', status: 'open',

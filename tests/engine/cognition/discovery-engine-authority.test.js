@@ -54,6 +54,51 @@ test('discovery novelty applies the same authority policy as retrieval', () => {
   assert.equal(candidates.some((row) => row.nodeIds[0] === 'report'), false);
 });
 
+test('discovery novelty excludes generated deliverables but keeps raw logs and verifier-backed artifacts', () => {
+  const deliverable = node('332086', {
+    concept: 'Artifact art_incident_report: deliverable\npreview=Incomplete generated incident report.',
+    tag: 'artifact_deliverable',
+    type: 'artifact',
+    metadata: {
+      kind: 'deliverable',
+      agentId: 'document-creation-agent',
+      path: 'logs:outputs/document-creation/incident-report.md',
+      hash: 'sha256:generated-report',
+    },
+  });
+  const rawLog = node('raw-log', {
+    concept: 'Raw engine event log.',
+    tag: 'raw_log',
+    type: 'log',
+    metadata: {
+      source_path: '/var/log/home23/engine.jsonl',
+      content_hash: 'sha256:raw-log',
+    },
+  });
+  const verifiedArtifact = authoritativeNode('verified-artifact', {
+    concept: 'Verifier-backed runtime probe artifact.',
+    tag: 'artifact_runtime_probe',
+    type: 'artifact',
+    metadata: { kind: 'runtime_probe', path: 'logs:probes/runtime.json', hash: 'sha256:probe' },
+    provenance: verified('runtime-artifact'),
+    evidence: { evidence_links: ['verifier:runtime-artifact'] },
+  });
+  const memory = {
+    nodes: new Map([
+      [deliverable.id, deliverable],
+      [rawLog.id, rawLog],
+      [verifiedArtifact.id, verifiedArtifact],
+    ]),
+    edges: new Map(),
+    clusters: new Map(),
+  };
+  const discovery = new DiscoveryEngine({ memory, logger: { info() {}, warn() {} } });
+
+  const discoveredIds = discovery._probeNovelty().map((candidate) => candidate.nodeIds[0]);
+
+  assert.deepEqual(discoveredIds.sort(), ['raw-log', 'verified-artifact']);
+});
+
 test('discovery orphan age cannot promote a narrative into present-tense authority', () => {
   const old = new Date(Date.now() - 30 * 86400000).toISOString();
   const report = node('report', { tag: 'synthesis_report', created: old, accessed: old });

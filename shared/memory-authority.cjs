@@ -34,6 +34,7 @@ const GENERATED_TAGS = new Set([
   'novel_hypothesis', 'novel_implication', 'speculative_hypothesis',
   'synthesis', 'synthesis_report', 'deep_thought', 'introspection',
   'agent_insight', 'analysis_insight', 'consolidated',
+  'artifact_deliverable',
 ]);
 
 const EXTERNAL_TAGS = new Set([
