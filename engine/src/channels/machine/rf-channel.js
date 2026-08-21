@@ -5,6 +5,18 @@
  * failures. This channel records the default route plus Wi-Fi radio evidence
  * where macOS exposes it, so bridge/dashboard drift can be compared against
  * RSSI, noise, channel, and interface facts.
+ *
+ * Collection uses supported macOS interfaces only:
+ *   - /usr/sbin/networksetup -listallhardwareports  -> discovers the Wi-Fi device
+ *     (never assume en0; on this house en0 is wired Ethernet and Wi-Fi is en1)
+ *   - /sbin/ifconfig <device>                       -> link flags + status
+ *   - /usr/sbin/ipconfig getsummary <device>        -> InterfaceType/LinkStatusActive
+ *   - /usr/bin/osascript -l JavaScript (CoreWLAN)   -> optional radio values
+ *
+ * The removed private `airport` binary and the slow `system_profiler` fallback
+ * are gone. Radio detail is optional: when CoreWLAN is unavailable but the
+ * supported link/status evidence is present, the radio is readable and this
+ * channel must not claim otherwise.
  */
 
 'use strict';
@@ -15,7 +27,36 @@ import { PollChannel } from '../base/poll-channel.js';
 import { ChannelClass, makeObservation } from '../contract.js';
 
 const execFileAsync = promisify(execFile);
-const AIRPORT_PATH = '/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport';
+
+const ROUTE_PATH = '/sbin/route';
+const NETWORKSETUP_PATH = '/usr/sbin/networksetup';
+const IFCONFIG_PATH = '/sbin/ifconfig';
+const IPCONFIG_PATH = '/usr/sbin/ipconfig';
+const OSASCRIPT_PATH = '/usr/bin/osascript';
+
+const DEVICE_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9._-]{0,14}$/;
+
+// CWPHYMode -> human label. CoreWLAN returns the raw enum.
+const PHY_MODES = { 0: 'none', 1: '802.11a', 2: '802.11b', 3: '802.11g', 4: '802.11n', 5: '802.11ac', 6: '802.11ax' };
+// CWChannelWidth -> MHz. 0 is "unknown".
+const CHANNEL_WIDTHS = { 1: 20, 2: 40, 3: 80, 4: 160 };
+
+function errorMessage(reason) {
+  return reason?.message || String(reason);
+}
+
+function toFiniteNumber(value) {
+  if (value == null || value === '') return null;
+  const parsed = Number(String(value).match(/-?\d+(?:\.\d+)?/)?.[0]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** macOS redacts privileged values (SSID/BSSID) rather than failing the call. */
+function readableValue(value) {
+  const text = String(value ?? '').trim();
+  if (!text || /^<redacted>$/i.test(text) || /^<none>$/i.test(text)) return null;
+  return text;
+}
 
 function parseDefaultRoute(stdout) {
   const out = String(stdout || '');
@@ -29,104 +70,115 @@ function parseDefaultRoute(stdout) {
   };
 }
 
-function parseAirportInfo(stdout) {
-  const out = String(stdout || '');
-  const read = (key) => out.match(new RegExp(`^\\s*${key}:\\s*(.+)$`, 'mi'))?.[1]?.trim() || null;
-  const number = (value) => {
-    const parsed = Number(String(value || '').match(/-?\d+(?:\.\d+)?/)?.[0]);
-    return Number.isFinite(parsed) ? parsed : null;
-  };
-  const channelRaw = read('channel');
-  const channelMatch = String(channelRaw || '').match(/^(\d+)(?:,\s*(\d+))?/);
-  const rssi = number(read('agrCtlRSSI'));
-  const noise = number(read('agrCtlNoise'));
-
-  return {
-    ssid: read('SSID'),
-    bssid: read('BSSID'),
-    state: read('state'),
-    opMode: read('op mode'),
-    rssi,
-    noise,
-    snr: rssi != null && noise != null ? rssi - noise : null,
-    lastTxRateMbps: number(read('lastTxRate')),
-    maxRateMbps: number(read('maxRate')),
-    phyMode: read('PHY mode'),
-    channel: channelMatch ? Number(channelMatch[1]) : null,
-    channelWidthMhz: channelMatch?.[2] ? Number(channelMatch[2]) : null,
-    channelRaw,
-    raw: out.trim(),
-  };
-}
-
-function firstFiniteNumber(value) {
-  const parsed = Number(String(value || '').match(/-?\d+(?:\.\d+)?/)?.[0]);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function findValueByKeyFragment(source, fragments) {
-  if (!source || typeof source !== 'object') return null;
-  const queue = [source];
-  while (queue.length) {
-    const next = queue.shift();
-    if (!next || typeof next !== 'object') continue;
-    for (const [key, value] of Object.entries(next)) {
-      const lowered = key.toLowerCase();
-      if (fragments.some((fragment) => lowered.includes(fragment))) return value;
-      if (value && typeof value === 'object') queue.push(value);
+/** `networksetup -listallhardwareports` -> [{ port, device, macAddress }]. */
+function parseHardwarePorts(stdout) {
+  const ports = [];
+  let current = null;
+  for (const line of String(stdout || '').split('\n')) {
+    const port = line.match(/^\s*Hardware Port:\s*(.+?)\s*$/);
+    if (port) {
+      current = { port: port[1], device: null, macAddress: null };
+      ports.push(current);
+      continue;
     }
+    if (!current) continue;
+    const device = line.match(/^\s*Device:\s*(.+?)\s*$/);
+    if (device) { current.device = device[1]; continue; }
+    const mac = line.match(/^\s*Ethernet Address:\s*(.+?)\s*$/);
+    if (mac) current.macAddress = readableValue(mac[1]);
   }
-  return null;
+  return ports.filter((entry) => entry.device);
 }
 
-function parseSystemProfilerWifiJson(stdout) {
+/** The Wi-Fi hardware port, whatever device macOS assigned it. Never assume en0. */
+function findWifiPort(ports) {
+  return (ports || []).find((entry) => /wi-?fi|airport/i.test(entry.port || '')) || null;
+}
+
+function parseIfconfig(stdout) {
+  const out = String(stdout || '');
+  const header = out.match(/^(\S+):\s*flags=(\d+)?<([^>]*)>/m);
+  const flags = header?.[3] ? header[3].split(',').map((flag) => flag.trim()).filter(Boolean) : [];
+  const read = (key) => out.match(new RegExp(`^\\s*${key}:\\s*(.+)$`, 'm'))?.[1]?.trim() || null;
+  return {
+    interface: header?.[1] || null,
+    flags,
+    up: flags.includes('UP'),
+    running: flags.includes('RUNNING'),
+    status: read('status'),
+    media: read('media'),
+    inet4: out.match(/^\s*inet\s+(\d+\.\d+\.\d+\.\d+)/m)?.[1] || null,
+  };
+}
+
+/**
+ * `ipconfig getsummary <device>` prints a nested dictionary whose interface-level
+ * facts sit at the outer indent. Match only that level so DHCP packet dumps and
+ * per-service sub-dictionaries cannot masquerade as interface state.
+ */
+function parseIpconfigSummary(stdout) {
+  const summary = {};
+  for (const line of String(stdout || '').split('\n')) {
+    const entry = line.match(/^ {2}(\w+)\s*:\s*(.*)$/);
+    if (entry) summary[entry[1]] = entry[2].trim();
+  }
+  const linkRaw = summary.LinkStatusActive;
+  return {
+    interfaceType: readableValue(summary.InterfaceType),
+    linkStatusActive: linkRaw == null ? null : /^true$/i.test(linkRaw),
+    linkStatusRaw: linkRaw ?? null,
+    ssid: readableValue(summary.SSID),
+    bssid: readableValue(summary.BSSID),
+    security: readableValue(summary.Security),
+    networkId: readableValue(summary.NetworkID),
+  };
+}
+
+/** Output of the CoreWLAN JXA probe. JXA bridges ObjC numbers as strings. */
+function parseCoreWlanJson(stdout) {
   let parsed;
   try {
     parsed = typeof stdout === 'string' ? JSON.parse(stdout) : stdout;
   } catch {
-    return { error: 'system_profiler_wifi_json_parse_failed' };
+    return { error: 'corewlan_json_parse_failed' };
   }
+  if (!parsed || typeof parsed !== 'object') return { error: 'corewlan_json_empty' };
+  if (parsed.error) return { error: String(parsed.error) };
 
-  const section = Array.isArray(parsed?.SPAirPortDataType) ? parsed.SPAirPortDataType[0] : null;
-  const iface = Array.isArray(section?.spairport_airport_interfaces)
-    ? section.spairport_airport_interfaces[0]
-    : null;
-  if (!iface) return { error: 'system_profiler_wifi_interface_missing' };
-
-  const current = iface.spairport_current_network_information || {};
-  const signalRaw = findValueByKeyFragment(current, ['signal']);
-  const noiseRaw = findValueByKeyFragment(current, ['noise']);
-  const channelRaw = findValueByKeyFragment(current, ['channel']);
-  const signalParts = String(signalRaw || '').match(/-?\d+(?:\.\d+)?/g) || [];
-  const noiseParts = String(noiseRaw || '').match(/-?\d+(?:\.\d+)?/g) || [];
-  const rssi = signalParts[0] != null ? Number(signalParts[0]) : firstFiniteNumber(findValueByKeyFragment(current, ['rssi']));
-  const noise = signalParts[1] != null
-    ? Number(signalParts[1])
-    : noiseParts[0] != null ? Number(noiseParts[0]) : null;
-  const channelText = String(channelRaw || '');
-  const channelMatch = channelText.match(/(\d+)(?:,\s*(\d+))?/);
-  const channelWidthMatch = channelText.match(/(?:,\s*|\b)(\d+)\s*MHz\b/i);
-  const statusRaw = iface.spairport_status_information || iface.status || '';
-  const inactive = /inactive|off|not[_ -]?connected/i.test(String(statusRaw));
-
+  const rssi = toFiniteNumber(parsed.rssi);
+  const noise = toFiniteNumber(parsed.noise);
+  const phyModeRaw = toFiniteNumber(parsed.phyMode);
   return {
-    source: 'system_profiler',
-    interface: iface._name || null,
-    status: inactive ? 'inactive' : (statusRaw ? 'running' : null),
-    statusRaw,
-    ssid: current._name || current.spairport_network_name || null,
-    bssid: current.spairport_network_bssid || null,
-    rssi: Number.isFinite(rssi) ? rssi : null,
-    noise: Number.isFinite(noise) ? noise : null,
-    snr: Number.isFinite(rssi) && Number.isFinite(noise) ? rssi - noise : null,
-    phyMode: findValueByKeyFragment(current, ['phy']) || null,
-    channel: channelMatch ? Number(channelMatch[1]) : null,
-    channelWidthMhz: channelMatch?.[2]
-      ? Number(channelMatch[2])
-      : channelWidthMatch?.[1] ? Number(channelWidthMatch[1]) : null,
-    channelRaw: channelRaw == null ? null : String(channelRaw),
-    cardType: iface.spairport_wireless_card_type || null,
+    interface: readableValue(parsed.interface),
+    powerOn: typeof parsed.powerOn === 'boolean' ? parsed.powerOn : null,
+    serviceActive: typeof parsed.serviceActive === 'boolean' ? parsed.serviceActive : null,
+    ssid: readableValue(parsed.ssid),
+    bssid: readableValue(parsed.bssid),
+    rssi,
+    noise,
+    snr: rssi != null && noise != null ? rssi - noise : null,
+    txRateMbps: toFiniteNumber(parsed.txRateMbps),
+    phyMode: phyModeRaw == null ? null : (PHY_MODES[phyModeRaw] || `mode_${phyModeRaw}`),
+    channel: toFiniteNumber(parsed.channel),
+    channelWidthMhz: toFiniteNumber(parsed.channelWidthMhz),
   };
+}
+
+/**
+ * Supported link/status evidence exists when a named Wi-Fi device reported any
+ * of ifconfig status, ipconfig interface facts, or radio values. Optional radio
+ * detail is not part of this test - that is the whole point of the split.
+ */
+function hasSupportedWifiEvidence(wifi) {
+  if (!wifi || typeof wifi !== 'object' || wifi.error) return false;
+  return Boolean(
+    wifi.status
+    || wifi.linkStatusActive != null
+    || wifi.interfaceType
+    || wifi.state
+    || wifi.ssid
+    || wifi.rssi != null,
+  );
 }
 
 function classifyRfPosture(payload, thresholds = {}) {
@@ -139,27 +191,24 @@ function classifyRfPosture(payload, thresholds = {}) {
   const reasons = [];
   const routeInterface = route.interface || null;
   const wifiInterface = wifi.interface || null;
-  const routeMatchesWifi = routeInterface && wifiInterface
-    ? routeInterface === wifiInterface
-    : true;
-  const wifiStatusRunning = !wifi.status || /^running$/i.test(wifi.status);
+
+  // Wi-Fi carries the machine's traffic only when both interfaces are named and
+  // identical. A wired default route means an idle radio is not a transport fault.
+  const routeIsWifi = Boolean(routeInterface && wifiInterface && routeInterface === wifiInterface);
+  const wifiReadable = hasSupportedWifiEvidence(wifi);
 
   if (!routeInterface) reasons.push('default_route_unknown');
-  if (wifi.error) reasons.push('wifi_radio_unreadable');
+  if (!wifiReadable) reasons.push('wifi_radio_unreadable');
+  else if (routeIsWifi && wifi.detailsError && wifi.rssi == null) reasons.push('wifi_radio_details_unavailable');
 
-  const isLikelyWifi = routeInterface && /^en\d+$/i.test(routeInterface)
-    && routeMatchesWifi
-    && wifiStatusRunning
-    && (wifi.rssi != null || wifi.ssid || wifi.state || wifi.status);
+  if (routeIsWifi && wifi.rssi != null && wifi.rssi <= weakRssi) reasons.push('weak_rssi');
+  else if (routeIsWifi && wifi.rssi != null && wifi.rssi <= watchRssi) reasons.push('watch_rssi');
 
-  if (routeMatchesWifi && wifi.rssi != null && wifi.rssi <= weakRssi) reasons.push('weak_rssi');
-  else if (routeMatchesWifi && wifi.rssi != null && wifi.rssi <= watchRssi) reasons.push('watch_rssi');
+  if (routeIsWifi && wifi.snr != null && wifi.snr < weakSnr) reasons.push('weak_snr');
+  else if (routeIsWifi && wifi.snr != null && wifi.snr < watchSnr) reasons.push('watch_snr');
 
-  if (routeMatchesWifi && wifi.snr != null && wifi.snr < weakSnr) reasons.push('weak_snr');
-  else if (routeMatchesWifi && wifi.snr != null && wifi.snr < watchSnr) reasons.push('watch_snr');
-
-  if (wifi.state && !/^running$/i.test(wifi.state)) reasons.push('wifi_not_running');
-  if (routeMatchesWifi && wifi.status && !/^running$/i.test(wifi.status)) reasons.push('wifi_not_running');
+  if (routeIsWifi && wifi.state && !/^running$/i.test(wifi.state)) reasons.push('wifi_not_running');
+  else if (routeIsWifi && wifi.status && !/^running$/i.test(wifi.status)) reasons.push('wifi_not_running');
 
   const severity = reasons.some((reason) => reason.startsWith('weak_') || reason === 'wifi_not_running' || reason === 'default_route_unknown')
     ? 'degraded'
@@ -170,48 +219,137 @@ function classifyRfPosture(payload, thresholds = {}) {
   return {
     severity,
     reasons,
-    physicalLayer: isLikelyWifi ? 'wifi' : (route.interface ? 'wired_or_other' : 'unknown'),
+    physicalLayer: routeIsWifi ? 'wifi' : (routeInterface ? 'wired_or_other' : 'unknown'),
     sourceIssues: [81],
   };
 }
 
-async function defaultSample() {
-  const at = new Date().toISOString();
-  const [routeResult, wifiResult] = await Promise.allSettled([
-    execFileAsync('route', ['-n', 'get', 'default'], { encoding: 'utf8', timeout: 5000, maxBuffer: 128 * 1024 }),
-    execFileAsync(AIRPORT_PATH, ['-I'], { encoding: 'utf8', timeout: 5000, maxBuffer: 256 * 1024 }),
+function coreWlanScript(device) {
+  return `ObjC.import("CoreWLAN");
+function num(v) { return v === undefined || v === null ? null : Number(v); }
+var iface = $.CWWiFiClient.sharedWiFiClient.interfaceWithName($("${device}"));
+if (!iface || iface.isNil()) {
+  JSON.stringify({ error: "corewlan_interface_missing" });
+} else {
+  var channel = iface.wlanChannel;
+  var channelNumber = null;
+  var channelWidth = null;
+  if (channel && !channel.isNil()) {
+    channelNumber = num(channel.channelNumber);
+    channelWidth = num(channel.channelWidth);
+  }
+  var ssid = iface.ssid;
+  var bssid = iface.bssid;
+  JSON.stringify({
+    interface: iface.interfaceName.js,
+    powerOn: iface.powerOn === true,
+    serviceActive: iface.serviceActive === true,
+    ssid: ssid && !ssid.isNil() ? ssid.js : null,
+    bssid: bssid && !bssid.isNil() ? bssid.js : null,
+    rssi: num(iface.rssiValue),
+    noise: num(iface.noiseMeasurement),
+    txRateMbps: num(iface.transmitRate),
+    phyMode: num(iface.activePHYMode),
+    channel: channelNumber,
+    channelWidthMhz: ${JSON.stringify(CHANNEL_WIDTHS)}[channelWidth] || null
+  });
+}`;
+}
+
+async function collectWifi(exec, wifiPort, discoveryError) {
+  const device = wifiPort?.device || null;
+  if (!device || !DEVICE_NAME_PATTERN.test(device)) {
+    return {
+      source: 'networksetup',
+      error: discoveryError
+        ? `wifi_device_discovery_failed: ${discoveryError}`
+        : device
+          ? `wifi_device_name_unsupported: ${device}`
+          : 'wifi_device_not_found',
+    };
+  }
+
+  const [linkResult, summaryResult, radioResult] = await Promise.allSettled([
+    exec(IFCONFIG_PATH, [device], { encoding: 'utf8', timeout: 4000, maxBuffer: 128 * 1024 }),
+    exec(IPCONFIG_PATH, ['getsummary', device], { encoding: 'utf8', timeout: 5000, maxBuffer: 1024 * 1024 }),
+    exec(OSASCRIPT_PATH, ['-l', 'JavaScript', '-e', coreWlanScript(device)], { encoding: 'utf8', timeout: 6000, maxBuffer: 256 * 1024 }),
+  ]);
+
+  const link = linkResult.status === 'fulfilled' ? parseIfconfig(linkResult.value.stdout) : null;
+  const summary = summaryResult.status === 'fulfilled' ? parseIpconfigSummary(summaryResult.value.stdout) : null;
+  const radioRaw = radioResult.status === 'fulfilled' ? parseCoreWlanJson(radioResult.value.stdout) : null;
+  const radio = radioRaw && !radioRaw.error ? radioRaw : null;
+
+  const detailsErrors = [];
+  if (linkResult.status === 'rejected') detailsErrors.push(`ifconfig: ${errorMessage(linkResult.reason)}`);
+  if (summaryResult.status === 'rejected') detailsErrors.push(`ipconfig: ${errorMessage(summaryResult.reason)}`);
+  if (radioResult.status === 'rejected') detailsErrors.push(`corewlan: ${errorMessage(radioResult.reason)}`);
+  else if (radioRaw?.error) detailsErrors.push(`corewlan: ${radioRaw.error}`);
+
+  const statusRaw = link?.status
+    ?? (summary?.linkStatusActive == null ? null : summary.linkStatusActive ? 'active' : 'inactive');
+  const sources = ['networksetup'];
+  if (link) sources.push('ifconfig');
+  if (summary) sources.push('ipconfig');
+  if (radio) sources.push('corewlan');
+
+  const wifi = {
+    source: sources.join('+'),
+    interface: device,
+    hardwarePort: wifiPort.port || null,
+    // 'running' | 'inactive' preserves the shape earlier consumers already read.
+    status: statusRaw ? (/^active$/i.test(statusRaw) ? 'running' : 'inactive') : null,
+    statusRaw,
+    linkStatusActive: summary?.linkStatusActive ?? null,
+    interfaceType: summary?.interfaceType ?? null,
+    flags: link?.flags ?? null,
+    media: link?.media ?? null,
+    inet4: link?.inet4 ?? null,
+    security: summary?.security ?? null,
+    ssid: radio?.ssid ?? summary?.ssid ?? null,
+    bssid: radio?.bssid ?? summary?.bssid ?? null,
+    rssi: radio?.rssi ?? null,
+    noise: radio?.noise ?? null,
+    snr: radio?.snr ?? null,
+    txRateMbps: radio?.txRateMbps ?? null,
+    phyMode: radio?.phyMode ?? null,
+    channel: radio?.channel ?? null,
+    channelWidthMhz: radio?.channelWidthMhz ?? null,
+    powerOn: radio?.powerOn ?? null,
+  };
+  if (detailsErrors.length) wifi.detailsError = detailsErrors.join('; ');
+  // Only a total absence of supported link/status evidence is an unreadable radio.
+  if (!hasSupportedWifiEvidence(wifi)) {
+    wifi.error = detailsErrors.length ? detailsErrors.join('; ') : 'wifi_link_status_unavailable';
+  }
+  return wifi;
+}
+
+async function collectRfSample({ exec = execFileAsync, now = () => new Date() } = {}) {
+  const at = now().toISOString();
+  const [routeResult, portsResult] = await Promise.allSettled([
+    exec(ROUTE_PATH, ['-n', 'get', 'default'], { encoding: 'utf8', timeout: 5000, maxBuffer: 128 * 1024 }),
+    exec(NETWORKSETUP_PATH, ['-listallhardwareports'], { encoding: 'utf8', timeout: 8000, maxBuffer: 256 * 1024 }),
   ]);
 
   const defaultRoute = routeResult.status === 'fulfilled'
     ? parseDefaultRoute(routeResult.value.stdout)
-    : { error: routeResult.reason?.message || String(routeResult.reason) };
-  let wifi = wifiResult.status === 'fulfilled'
-    ? { ...parseAirportInfo(wifiResult.value.stdout), source: 'airport' }
-    : { error: wifiResult.reason?.message || String(wifiResult.reason), source: 'airport' };
-  if (wifi.error) {
-    try {
-      const { stdout } = await execFileAsync('/usr/sbin/system_profiler', ['SPAirPortDataType', '-json'], {
-        encoding: 'utf8',
-        timeout: 10_000,
-        maxBuffer: 1024 * 1024,
-      });
-      wifi = {
-        ...parseSystemProfilerWifiJson(stdout),
-        airportError: wifi.error,
-      };
-    } catch (err) {
-      wifi = {
-        error: wifi.error,
-        systemProfilerError: err?.message || String(err),
-        source: 'airport+system_profiler',
-      };
-    }
-  }
+    : { error: errorMessage(routeResult.reason) };
+  const hardwarePorts = portsResult.status === 'fulfilled'
+    ? parseHardwarePorts(portsResult.value.stdout)
+    : [];
+  const discoveryError = portsResult.status === 'rejected' ? errorMessage(portsResult.reason) : null;
+
+  const wifi = await collectWifi(exec, findWifiPort(hardwarePorts), discoveryError);
   const payload = { at, defaultRoute, wifi };
   return {
     ...payload,
     posture: classifyRfPosture(payload),
   };
+}
+
+async function defaultSample() {
+  return collectRfSample();
 }
 
 export class RfChannel extends PollChannel {
@@ -238,7 +376,7 @@ export class RfChannel extends PollChannel {
       flag: routeKnown ? 'COLLECTED' : 'UNKNOWN',
       confidence: routeKnown && wifiReadable ? 0.9 : routeKnown ? 0.7 : 0.35,
       producedAt: parsed.producedAt,
-      verifierId: 'os:route-airport-rf',
+      verifierId: 'os:route-wifi-rf',
     });
   }
 
@@ -254,4 +392,14 @@ export class RfChannel extends PollChannel {
   }
 }
 
-export const _test = { parseDefaultRoute, parseAirportInfo, parseSystemProfilerWifiJson, classifyRfPosture };
+export const _test = {
+  parseDefaultRoute,
+  parseHardwarePorts,
+  findWifiPort,
+  parseIfconfig,
+  parseIpconfigSummary,
+  parseCoreWlanJson,
+  hasSupportedWifiEvidence,
+  classifyRfPosture,
+  collectRfSample,
+};
