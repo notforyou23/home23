@@ -1107,7 +1107,11 @@ async function main() {
     // future work can route them through a dedicated publisher.
     const publishCfg = osEngineCfg?.publish || {};
     const { PublishLedger, parseStarvationFloor, publishTargetsForCognitionMode } = await import('./publish/publish-ledger.js');
-    const { WorkspaceInsightsPublisher, selectHighestConfidenceCluster } = await import('./publish/workspace-insights.js');
+    const {
+      WorkspaceInsightsPublisher,
+      attemptWorkspaceInsightsStartupCatchUp,
+      selectHighestConfidenceCluster,
+    } = await import('./publish/workspace-insights.js');
     const { DreamLogPublisher } = await import('./publish/dream-log.js');
     const { BridgeChatPublisher, computeSalience } = await import('./publish/bridge-chat-publisher.js');
     const workspacePath = process.env.COSMO_WORKSPACE_PATH
@@ -1200,6 +1204,15 @@ async function main() {
     // Expose publishers so thinking-machine cycle events can trigger them
     // once Phase 6/7 wires cycleComplete / criticVerdict emissions.
     config._osEngine = { ...(config._osEngine || {}), publishLedger, workspaceInsights, dreamLog, bridgePublisher };
+    try {
+      await attemptWorkspaceInsightsStartupCatchUp({
+        ledger: publishLedger,
+        publisher: workspaceInsights,
+        logger,
+      });
+    } catch (err) {
+      logger.warn?.('[publish] workspace-insights startup catch-up failed:', err?.message || err);
+    }
 
     // Step 24 — thinking-machine publisher hooks.
     // ThinkingMachine is constructed during orchestrator.initialize(), before

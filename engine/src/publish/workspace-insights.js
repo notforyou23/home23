@@ -21,18 +21,29 @@ export class WorkspaceInsightsPublisher {
   }
 
   async onCycle({ cycleIndex }) {
-    if (!cycleIndex || cycleIndex % this.cadenceCycles !== 0) return null;
+    if (!Number.isInteger(cycleIndex) || cycleIndex < 1) return null;
+    if (cycleIndex % this.cadenceCycles !== 0) return null;
+    return this._publish({ cycleIndex });
+  }
+
+  async forcePublish({ cycleIndex = null, reason = 'force' } = {}) {
+    return this._publish({ cycleIndex, reason });
+  }
+
+  async _publish({ cycleIndex = null, reason = 'cadence' } = {}) {
     const cluster = await this.selectCluster();
     if (!cluster) return null;
     try { mkdirSync(this.outDir, { recursive: true }); } catch {}
-    const date = new Date().toISOString().slice(0, 10);
+    const generatedAt = new Date().toISOString();
+    const date = generatedAt.slice(0, 10);
     const slug = (cluster.topic || 'insight').replace(/[^a-z0-9-]+/gi, '-').toLowerCase().slice(0, 60);
     const path = join(this.outDir, `${date}-${slug}.md`);
     const body = [
       `# Insight — ${cluster.topic}`,
       '',
-      `**Cycle:** ${cycleIndex}`,
-      `**Generated:** ${new Date().toISOString()}`,
+      ...(Number.isInteger(cycleIndex) && cycleIndex > 0 ? [`**Cycle:** ${cycleIndex}`] : []),
+      ...(reason !== 'cadence' ? [`**Trigger:** ${reason}`] : []),
+      `**Generated:** ${generatedAt}`,
       '',
       '## Summary',
       cluster.summary || '',
@@ -43,9 +54,25 @@ export class WorkspaceInsightsPublisher {
     ].join('\n');
     writeFileSync(path, body);
     await this.ledger?.record?.({ target: 'workspace_insights', artifact: path });
-    this.logger.info?.(`[publish] workspace-insights: ${path}`);
+    const triggerSuffix = reason === 'cadence' ? '' : ` (${reason})`;
+    this.logger.info?.(`[publish] workspace-insights${triggerSuffix}: ${path}`);
     return path;
   }
+}
+
+export async function attemptWorkspaceInsightsStartupCatchUp({
+  ledger,
+  publisher,
+  now = Date.now(),
+  logger = console,
+} = {}) {
+  if (!ledger?.listStarving || !publisher?.forcePublish) return null;
+  if (!ledger.listStarving({ now }).includes('workspace_insights')) return null;
+  const result = await publisher.forcePublish({ reason: 'startup-catch-up' });
+  if (!result) {
+    logger.info?.('[publish] workspace-insights startup catch-up skipped: no cluster available');
+  }
+  return result;
 }
 
 /**
