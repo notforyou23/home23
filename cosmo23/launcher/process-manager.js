@@ -1,7 +1,15 @@
 const { EventEmitter } = require('events');
 const { spawn, exec } = require('child_process');
 const { promisify } = require('util');
+const fs = require('fs');
+const fsp = fs.promises;
+const path = require('path');
 const execAsync = promisify(exec);
+
+const STARTUP_READINESS_TIMEOUT_MS = 10000;
+const RUNNER_STATE_FILENAME = 'runner.json';
+const RUNNER_HISTORY_FILENAME = 'runner.jsonl';
+const RUNNER_CLAIM_FILENAME = 'runner.claim';
 
 /**
  * ProcessManager - Manages COSMO and service processes
@@ -152,7 +160,7 @@ class ProcessManager extends EventEmitter {
 
   async waitForRequiredProcess(name, proc, options = {}) {
     const label = options.label || name;
-    const timeoutMs = options.timeoutMs ?? 1500;
+    const timeoutMs = options.timeoutMs ?? STARTUP_READINESS_TIMEOUT_MS;
     const pollIntervalMs = options.pollIntervalMs ?? 50;
     const stabilityMs = options.stabilityMs ?? 0;
     const startedAt = Date.now();
@@ -177,6 +185,156 @@ class ProcessManager extends EventEmitter {
     }
 
     throw new Error(`${label} failed startup readiness within ${timeoutMs}ms`);
+  }
+
+  isPidAlive(pid) {
+    const numericPid = Number(pid);
+    if (!Number.isInteger(numericPid) || numericPid <= 0) return false;
+    try {
+      process.kill(numericPid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  runnerStatePath(runPath) {
+    return path.join(runPath, 'drill', RUNNER_STATE_FILENAME);
+  }
+
+  runnerClaimPath(runPath) {
+    return path.join(runPath, 'drill', RUNNER_CLAIM_FILENAME);
+  }
+
+  async readRunnerState(runPath) {
+    try {
+      const parsed = JSON.parse(await fsp.readFile(this.runnerStatePath(runPath), 'utf8'));
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async writeRunnerState(runPath, state) {
+    const drillDir = path.join(runPath, 'drill');
+    await fsp.mkdir(drillDir, { recursive: true });
+    const target = this.runnerStatePath(runPath);
+    const tmp = `${target}.tmp-${process.pid}`;
+    await fsp.writeFile(tmp, JSON.stringify(state, null, 2));
+    await fsp.rename(tmp, target);
+    await fsp.appendFile(
+      path.join(drillDir, RUNNER_HISTORY_FILENAME),
+      `${JSON.stringify(state)}\n`
+    );
+  }
+
+  async acquireRunnerClaim(runPath) {
+    const drillDir = path.join(runPath, 'drill');
+    await fsp.mkdir(drillDir, { recursive: true });
+    const claimPath = this.runnerClaimPath(runPath);
+    const claim = {
+      active: true,
+      launcherPid: process.pid,
+      claimedAt: new Date().toISOString(),
+      runPath
+    };
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const handle = await fsp.open(claimPath, 'wx');
+        try {
+          await handle.writeFile(JSON.stringify(claim, null, 2));
+        } finally {
+          await handle.close();
+        }
+        return claim;
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        let existing = null;
+        try {
+          existing = JSON.parse(await fsp.readFile(claimPath, 'utf8'));
+        } catch { /* unreadable claims still fail closed when the archive races */ }
+        const ownerPid = existing?.pid || existing?.launcherPid;
+        if (this.isPidAlive(ownerPid)) {
+          const active = new Error(`COSMO runner claim already held by pid ${ownerPid}`);
+          active.code = 'COSMO_RUNNER_ACTIVE';
+          throw active;
+        }
+        const stalePath = `${claimPath}.stale-${Date.now()}-${process.pid}`;
+        try {
+          await fsp.rename(claimPath, stalePath);
+        } catch (renameError) {
+          if (renameError.code !== 'ENOENT') throw renameError;
+        }
+      }
+    }
+    const error = new Error('Could not acquire COSMO runner claim');
+    error.code = 'COSMO_RUNNER_ACTIVE';
+    throw error;
+  }
+
+  async updateRunnerClaim(runPath, patch) {
+    const target = this.runnerClaimPath(runPath);
+    let current = {};
+    try {
+      current = JSON.parse(await fsp.readFile(target, 'utf8'));
+    } catch { /* claim was just acquired; preserve a recoverable patch */ }
+    const next = { ...current, ...patch };
+    const tmp = `${target}.tmp-${process.pid}`;
+    await fsp.writeFile(tmp, JSON.stringify(next, null, 2));
+    await fsp.rename(tmp, target);
+    return next;
+  }
+
+  async releaseRunnerClaim(runPath, pid, reason = 'stopped') {
+    const claimPath = this.runnerClaimPath(runPath);
+    let current;
+    try {
+      current = JSON.parse(await fsp.readFile(claimPath, 'utf8'));
+    } catch {
+      return;
+    }
+    if (pid != null && current.pid != null && Number(current.pid) !== Number(pid)) return;
+    const archive = `${claimPath}.${reason}-${Date.now()}-${current.pid || current.launcherPid || 'unknown'}`;
+    try {
+      await fsp.rename(claimPath, archive);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+
+  async assertSingleRunner(runPath, wsPort = null) {
+    const tracked = this.processes.get('cosmo-main');
+    if (tracked && tracked.exitCode == null && tracked.signalCode == null && tracked.killed !== true) {
+      const error = new Error(`COSMO runner already active in this launcher (pid ${tracked.pid})`);
+      error.code = 'COSMO_RUNNER_ACTIVE';
+      throw error;
+    }
+    const existing = await this.readRunnerState(runPath);
+    if (existing?.active === true && this.isPidAlive(existing.pid)) {
+      const error = new Error(`COSMO runner already active for this run (pid ${existing.pid})`);
+      error.code = 'COSMO_RUNNER_ACTIVE';
+      throw error;
+    }
+    if (Number.isInteger(wsPort) && wsPort > 0 && await this.isPortInUse(wsPort)) {
+      const error = new Error(`COSMO WebSocket port ${wsPort} is already owned; refusing a dual start`);
+      error.code = 'COSMO_RUNNER_PORT_ACTIVE';
+      throw error;
+    }
+  }
+
+  async markRunnerStopped(runPath, pid, code, signal) {
+    const current = await this.readRunnerState(runPath);
+    if (current && Number(current.pid) !== Number(pid)) return;
+    if (current) {
+      await this.writeRunnerState(runPath, {
+        ...current,
+        active: false,
+        stoppedAt: new Date().toISOString(),
+        exitCode: code,
+        signal: signal || null
+      });
+    }
+    await this.releaseRunnerClaim(runPath, pid, 'stopped');
   }
 
   /**
@@ -208,7 +366,11 @@ class ProcessManager extends EventEmitter {
    * Start MCP HTTP server
    */
   async startMCPServer(port = 43147, envOverrides = {}) {
-    await this.killPort(port, 'MCP HTTP');
+    if (await this.isPortInUse(port)) {
+      throw Object.assign(new Error(`MCP HTTP port ${port} is already in use`), {
+        code: 'COSMO_SERVICE_PORT_ACTIVE'
+      });
+    }
     this.usedPorts.add(port); // Track for cleanup
     this.recordLog('Launcher', 'info', `Starting MCP HTTP on port ${port}`);
 
@@ -271,7 +433,11 @@ class ProcessManager extends EventEmitter {
    * Start main COSMO dashboard
    */
   async startMainDashboard(port = 43144, envOverrides = {}) {
-    await this.killPort(port, 'Main Dashboard');
+    if (await this.isPortInUse(port)) {
+      throw Object.assign(new Error(`Dashboard port ${port} is already in use`), {
+        code: 'COSMO_SERVICE_PORT_ACTIVE'
+      });
+    }
     this.usedPorts.add(port); // Track for cleanup
     this.recordLog('Launcher', 'info', `Starting Dashboard on port ${port}`);
 
@@ -309,6 +475,17 @@ class ProcessManager extends EventEmitter {
    * Start COSMO core (single instance)
    */
   async startCOSMO(envOverrides = {}) {
+    const runPath = envOverrides.COSMO_RUNTIME_DIR || envOverrides.COSMO_RUNTIME_PATH;
+    if (!runPath) {
+      throw new Error('COSMO_RUNTIME_DIR is required to start the COSMO runner');
+    }
+    const wsPort = Number.parseInt(
+      envOverrides.COSMO23_WS_PORT || envOverrides.REALTIME_PORT || '',
+      10
+    );
+    await this.assertSingleRunner(runPath, Number.isFinite(wsPort) ? wsPort : null);
+    await this.acquireRunnerClaim(runPath);
+
     // CRITICAL: Pass through all port environment variables from launcher
     // The launcher has already calculated correct ports based on COSMO_PORT_OFFSET
     this.recordLog('Launcher', 'info', 'Starting COSMO engine');
@@ -327,18 +504,44 @@ class ProcessManager extends EventEmitter {
 
     this.processes.set('cosmo-main', proc);
     this.attachProcessLogging(proc, 'COSMO');
-
+    proc.once('error', error => {
+      this.recordLog('COSMO', 'error', `Process spawn failed: ${error.message}`);
+      this.processes.delete('cosmo-main');
+      this.releaseRunnerClaim(runPath, proc.pid, 'spawn-failed').catch(() => {});
+    });
     proc.on('exit', (code, signal) => {
       this.recordLog('COSMO', code === 0 ? 'info' : 'error', `Process exited (code: ${code}, signal: ${signal || 'none'})`);
       this.logger.info(`COSMO exited (code: ${code}, signal: ${signal})`);
       this.processes.delete('cosmo-main');
       this.emit('cosmo-exit', { code, signal });
+      this.markRunnerStopped(runPath, proc.pid, code, signal).catch(error => {
+        this.logger.warn?.(`Could not persist runner stop state: ${error.message}`);
+      });
     });
+    try {
+      await this.updateRunnerClaim(runPath, {
+        pid: proc.pid,
+        startedAt: new Date().toISOString()
+      });
+      await this.writeRunnerState(runPath, {
+        active: true,
+        pid: proc.pid,
+        runPath,
+        startedAt: new Date().toISOString(),
+        launcherPid: process.pid
+      });
+    } catch (error) {
+      try { process.kill(proc.pid, 'SIGTERM'); } catch { /* already gone */ }
+      this.processes.delete('cosmo-main');
+      await this.releaseRunnerClaim(runPath, proc.pid, 'claim-failed').catch(() => {});
+      throw new Error(`Could not claim COSMO runner ownership: ${error.message}`);
+    }
 
     await this.waitForRequiredProcess('cosmo-main', proc, {
       label: 'COSMO',
+      port: Number.isFinite(wsPort) ? wsPort : undefined,
       stabilityMs: 250,
-      timeoutMs: 500,
+      timeoutMs: STARTUP_READINESS_TIMEOUT_MS,
     });
 
     return { success: true, pid: proc.pid };
@@ -675,4 +878,10 @@ class ProcessManager extends EventEmitter {
   }
 }
 
-module.exports = { ProcessManager };
+module.exports = {
+  ProcessManager,
+  STARTUP_READINESS_TIMEOUT_MS,
+  RUNNER_STATE_FILENAME,
+  RUNNER_HISTORY_FILENAME,
+  RUNNER_CLAIM_FILENAME
+};

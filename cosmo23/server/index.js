@@ -130,6 +130,16 @@ const {
   buildArtifactFirstContext
 } = require('./lib/run-artifact-inventory');
 const {
+  listDrillFiles,
+  readDrillFile,
+  readJsonlTape
+} = require('./lib/drill-inspector');
+const {
+  deriveDrillStatusTruth,
+  reconcileOfflineDrillStatus,
+  reconcileDrillStateOnExit
+} = require('./lib/drill-state-reconciliation');
+const {
   getModelCatalogPath,
   loadModelCatalogSync,
   saveModelCatalogSync,
@@ -441,6 +451,22 @@ processManager.on('cosmo-exit', ({ code, signal }) => {
     // else keeps the original semantics (no exit-code special-casing,
     // Patch 71 S1: the sentinel handles every real death uniformly).
     const park = code === PARK_EXIT_CODE ? await readParkFile(runPath) : null;
+    if (!park) {
+      await reconcileDrillStateOnExit(runPath, { code, signal }).then((result) => {
+        if (result.status === 'reconciled') {
+          processManager.recordLog('Launcher', 'info',
+            `Reconciled interrupted drill state for "${runName}" `
+            + `(${result.workersNormalized} workers, ${result.phasesNormalized} phases)`);
+        }
+        if (result.evidenceAppended === false) {
+          processManager.recordLog('Launcher', 'error',
+            `Drill exit state reconciled but interruption evidence append failed: ${result.evidenceError}`);
+        }
+      }).catch((error) => {
+        processManager.recordLog('Launcher', 'error',
+          `Drill exit reconciliation failed for "${runName}": ${error.message}`);
+      });
+    }
     if (park) {
       lastParkedRun = { runPath, runName, brainId };
       parkedRunResolver.invalidate();
@@ -451,6 +477,13 @@ processManager.on('cosmo-exit', ({ code, signal }) => {
       processManager.recordLog('Launcher', 'info',
         `Run "${runName}" ended (code: ${code}, signal: ${signal || 'none'}) — cleared activeContext`);
     }
+    // The engine owns the research run. Once it settles, its scoped
+    // dashboard/MCP children must settle too; do not leave support processes
+    // behind to make the next Launch look occupied or alive.
+    await processManager.stopAll().catch(error => {
+      processManager.recordLog('Launcher', 'error',
+        `Run support-process cleanup failed: ${error.message}`);
+    });
     // Run completion cleans up sentinel state; the sentinel keeps it when the
     // exit was its own remediation stop (and skips parked runs entirely).
     runSentinel.notifyRunEnded({ runPath, runName }).catch(() => {});
@@ -2309,6 +2342,217 @@ async function assembleOperatorSignals() {
   });
   return { park: normalizeParkDetail(parkedRun), intents };
 }
+
+async function resolveDrillRunPath() {
+  if (activeContext?.runPath) {
+    return { runPath: activeContext.runPath, runName: activeContext.runName };
+  }
+  try {
+    const runPath = await fsp.realpath(RUNTIME_PATH);
+    return { runPath, runName: path.basename(runPath) };
+  } catch {
+    return { runPath: null, runName: null };
+  }
+}
+
+async function readJsonlTail(filePath, limit = 40) {
+  try {
+    const raw = await fsp.readFile(filePath, 'utf8');
+    return raw.split('\n').filter(Boolean).slice(-limit).map((line) => {
+      try { return JSON.parse(line); } catch { return null; }
+    }).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function isCosmoRunnerOnline(processStatus = processManager.getStatus()) {
+  return Array.isArray(processStatus?.running)
+    && processStatus.running.some(item => item?.name === 'cosmo-main' && item.killed !== true);
+}
+
+function isRecordedRunnerAlive(runner) {
+  const pid = Number(runner?.pid);
+  if (runner?.active !== true || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+app.get('/api/drill/status', async (_req, res) => {
+  try {
+    const { runPath, runName } = await resolveDrillRunPath();
+    if (!runPath) {
+      return res.json({
+        success: true,
+        running: false,
+        lifecycle: 'idle',
+        runName: null,
+        drill: null,
+        sources: [],
+        stream: [],
+        findings: [],
+        notes: [],
+        writeups: [],
+        files: []
+      });
+    }
+
+    const [diskDrill, runner, park, sourceTape, brainTape, findings, notes, fileInventory] = await Promise.all([
+      fsp.readFile(path.join(runPath, 'drill', 'state.json'), 'utf8')
+        .then(raw => JSON.parse(raw))
+        .catch(() => null),
+      fsp.readFile(path.join(runPath, 'drill', 'runner.json'), 'utf8')
+        .then(raw => JSON.parse(raw))
+        .catch(() => null),
+      readParkFile(runPath),
+      readJsonlTape(runPath, 'sources', { limit: 80 }),
+      readJsonlTape(runPath, 'stream', { limit: 120 }),
+      readJsonlTail(path.join(runPath, 'outputs', 'candidates', 'findings.jsonl'), 40),
+      readJsonlTail(path.join(runPath, 'drill', 'notes.jsonl'), 40),
+      listDrillFiles(runPath, { maxFiles: 800, maxDepth: 10 })
+    ]);
+    const processOnline = isCosmoRunnerOnline();
+    const recordedRunnerAlive = isRecordedRunnerAlive(runner);
+    const statusState = await reconcileOfflineDrillStatus(runPath, {
+      drill: diskDrill,
+      processOnline,
+      recordedRunnerAlive,
+      parked: Boolean(park)
+    });
+    const {
+      drill,
+      running,
+      lifecycle,
+      orphanedRunner,
+      derivedInterrupted
+    } = deriveDrillStatusTruth({
+      drill: statusState.drill,
+      processOnline,
+      recordedRunnerAlive,
+      parked: Boolean(park)
+    });
+    const writeups = fileInventory.files.filter(file => file.kind === 'writeup');
+
+    return res.json({
+      success: true,
+      running,
+      lifecycle,
+      processOnline,
+      recordedRunnerAlive,
+      orphanedRunner,
+      parked: Boolean(park),
+      stateReconciliation: derivedInterrupted ? 'derived' : statusState.status,
+      stateReconciliationError: statusState.error,
+      canSteer: running && activeContext?.runPath === runPath,
+      runName,
+      topic: activeContext?.topic || drill?.question || null,
+      startedAt: activeContext?.startedAt || drill?.startedAt || null,
+      wsUrl: activeContext?.wsUrl || null,
+      drill,
+      sources: sourceTape.entries,
+      sourceCount: sourceTape.totalMatching,
+      sourceHistoryLimited: sourceTape.historyLimited,
+      stream: brainTape.entries,
+      streamCount: brainTape.totalMatching,
+      streamHistoryLimited: brainTape.historyLimited,
+      findings: findings.reverse(),
+      notes: notes.reverse(),
+      writeups,
+      files: fileInventory.files,
+      fileCounts: fileInventory.counts,
+      totalFiles: fileInventory.totalFiles,
+      totalBytes: fileInventory.totalBytes
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/drill/files', async (req, res) => {
+  try {
+    const { runPath, runName } = await resolveDrillRunPath();
+    if (!runPath) return res.status(404).json({ success: false, error: 'No run available.' });
+    const listing = await listDrillFiles(runPath, {
+      maxFiles: req.query.limit,
+      maxDepth: req.query.depth
+    });
+    return res.json({
+      success: true,
+      runName,
+      running: isCosmoRunnerOnline(),
+      ...listing
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/drill/file', async (req, res) => {
+  try {
+    const { runPath, runName } = await resolveDrillRunPath();
+    if (!runPath) return res.status(404).json({ success: false, error: 'No run available.' });
+    const file = await readDrillFile(runPath, req.query.path, { maxBytes: req.query.maxBytes });
+    return res.json({ success: true, runName, file });
+  } catch (error) {
+    const status = ['invalid_path', 'not_file'].includes(error.code) ? 400
+      : error.code === 'ENOENT' ? 404 : 500;
+    return res.status(status).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/drill/tape', async (req, res) => {
+  try {
+    const { runPath, runName } = await resolveDrillRunPath();
+    if (!runPath) return res.status(404).json({ success: false, error: 'No run available.' });
+    const tape = await readJsonlTape(runPath, req.query.channel || 'stream', {
+      limit: req.query.limit,
+      before: req.query.before,
+      kind: req.query.kind,
+      tool: req.query.tool,
+      workerId: req.query.workerId,
+      goalNumber: req.query.goalNumber,
+      phaseNumber: req.query.phaseNumber,
+      search: req.query.search
+    });
+    return res.json({ success: true, runName, ...tape });
+  } catch (error) {
+    const status = error.code === 'invalid_channel' ? 400 : 500;
+    return res.status(status).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/drill/note', async (req, res) => {
+  try {
+    const text = String(req.body?.text || '').trim();
+    if (!activeContext?.runPath || !isCosmoRunnerOnline()) {
+      return res.status(409).json({ success: false, error: 'No drill is running.' });
+    }
+    const drillState = await fsp.readFile(
+      path.join(activeContext.runPath, 'drill', 'state.json'),
+      'utf8'
+    ).then(raw => JSON.parse(raw)).catch(() => null);
+    if (drillState?.mode !== 'drilling') {
+      return res.status(409).json({ success: false, error: 'The drill is not accepting notes.' });
+    }
+    if (!text) return res.status(400).json({ success: false, error: 'A note is required.' });
+    const note = {
+      id: `note_${Date.now().toString(36)}_${crypto.randomBytes(3).toString('hex')}`,
+      at: Date.now(),
+      text: text.slice(0, 4000),
+      source: 'operator'
+    };
+    const drillDir = path.join(activeContext.runPath, 'drill');
+    await fsp.mkdir(drillDir, { recursive: true });
+    await fsp.appendFile(path.join(drillDir, 'notes.jsonl'), `${JSON.stringify(note)}\n`);
+    return res.json({ success: true, note });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 app.get('/api/status', async (req, res) => {
   const processStatus = processManager.getStatus();

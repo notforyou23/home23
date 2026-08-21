@@ -28,6 +28,7 @@ const FORM_FIELD_TYPES = {
   synthesisSpineCap: 'number',
   enableExperimental: 'boolean'
 };
+const RESEARCH_LAUNCH_VIEW = 'watch';
 
 const FORM_DEFAULTS = {
   topic: '',
@@ -163,6 +164,8 @@ class CosmoStandaloneApp {
     this.watchLogCursor = 0;
     this.watchLogTimer = null;
     this.watchLogSupported = true;
+    this.drillStatus = null;
+    this.drillStatusTimer = null;
   }
 
   async init() {
@@ -205,6 +208,10 @@ class CosmoStandaloneApp {
     document.getElementById('continue-form').addEventListener('submit', event => {
       event.preventDefault();
       this.continueResearch();
+    });
+    document.getElementById('drill-note-form')?.addEventListener('submit', event => {
+      event.preventDefault();
+      this.sendDrillNote();
     });
 
     onClick('refresh-setup-btn', () => this.loadSetupStatus());
@@ -324,8 +331,10 @@ class CosmoStandaloneApp {
 
     if (viewName === 'watch') {
       this.startWatchLogPolling();
+      this.startDrillStatusPolling();
     } else {
       this.stopWatchLogPolling();
+      this.stopDrillStatusPolling();
     }
 
     if (viewName === 'map') {
@@ -1635,7 +1644,7 @@ class CosmoStandaloneApp {
 
       this.resetWatchFeeds();
       this.showToast(result.isContinuation ? `Continuing ${result.runName}` : `Started ${result.runName}`);
-      this.switchView('watch');
+      this.switchView(RESEARCH_LAUNCH_VIEW);
       await Promise.all([this.loadStatus(), this.loadBrains({ preferredId: result.brainId })]);
     } catch (error) {
       this.showToast(`Launch failed: ${error.message}`, 'error');
@@ -1665,7 +1674,7 @@ class CosmoStandaloneApp {
 
       this.resetWatchFeeds();
       this.showToast(`Running ${result.runName}`);
-      this.switchView('watch');
+      this.switchView(RESEARCH_LAUNCH_VIEW);
       await Promise.all([this.loadStatus(), this.loadBrains({ preferredId: result.brainId })]);
     } catch (error) {
       this.showToast(`Continue failed: ${error.message}`, 'error');
@@ -1682,6 +1691,200 @@ class CosmoStandaloneApp {
       await this.loadBrains();
     } catch (error) {
       this.showToast(`Stop failed: ${error.message}`, 'error');
+    }
+  }
+
+  startDrillStatusPolling() {
+    this.stopDrillStatusPolling();
+    this.loadDrillStatus();
+    this.drillStatusTimer = window.setInterval(() => this.loadDrillStatus(), 1500);
+  }
+
+  stopDrillStatusPolling() {
+    if (this.drillStatusTimer) {
+      window.clearInterval(this.drillStatusTimer);
+      this.drillStatusTimer = null;
+    }
+  }
+
+  async loadDrillStatus() {
+    try {
+      const status = await this.api('/api/drill/status');
+      this.drillStatus = status;
+      this.renderDrillStatus(status);
+    } catch (error) {
+      if (this.activeView === 'watch') {
+        this.showToast(`Desk status failed: ${error.message}`, 'error');
+      }
+    }
+  }
+
+  formatRemainingTime(milliseconds) {
+    const value = Number(milliseconds);
+    if (!Number.isFinite(value)) return '—';
+    if (value <= 0) return '0m';
+    const totalMinutes = Math.ceil(value / 60000);
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+  }
+
+  replaceLedger(containerId, entries, renderEntry) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    container.replaceChildren();
+    entries.slice(0, 40).forEach((entry, index) => {
+      const row = document.createElement('div');
+      row.className = 'drill-ledger-row';
+      const rendered = renderEntry(entry, index);
+      const meta = document.createElement('span');
+      meta.className = 'drill-ledger-meta';
+      meta.textContent = rendered.meta || '';
+      const content = document.createElement('p');
+      content.textContent = rendered.content || '';
+      row.append(meta, content);
+      if (rendered.onClick) {
+        row.classList.add('clickable');
+        row.tabIndex = 0;
+        row.addEventListener('click', rendered.onClick);
+        row.addEventListener('keydown', event => {
+          if (event.key === 'Enter' || event.key === ' ') rendered.onClick();
+        });
+      }
+      container.appendChild(row);
+    });
+  }
+
+  renderDrillStatus(status) {
+    const drill = status.drill || {};
+    const budgets = drill.budgets || {};
+    const goal = drill.goal || null;
+    const workers = Array.isArray(drill.activeWorkers) ? drill.activeWorkers : [];
+    const sources = Array.isArray(status.sources) ? status.sources : [];
+    const stream = Array.isArray(status.stream) ? status.stream : [];
+    const writeups = Array.isArray(status.writeups) ? status.writeups : [];
+    const files = Array.isArray(status.files) ? status.files : [];
+    const lifecycle = status.lifecycle || 'idle';
+    const lifecycleLabel = lifecycle.charAt(0).toUpperCase() + lifecycle.slice(1);
+
+    const setText = (id, value) => {
+      const element = document.getElementById(id);
+      if (element) element.textContent = value;
+    };
+    setText('drill-lifecycle', lifecycleLabel);
+    setText('drill-cycles', `${budgets.cyclesUsed || 0} / ${budgets.cyclesTotal ?? '—'}`);
+    setText('drill-time-left', this.formatRemainingTime(budgets.timeRemainingMs));
+    setText('drill-workers-count', String(workers.length));
+    const sourceCount = `${status.sourceHistoryLimited ? '≥' : ''}${status.sourceCount ?? sources.length}`;
+    const streamCount = `${status.streamHistoryLimited ? '≥' : ''}${status.streamCount ?? stream.length}`;
+    setText('drill-sources-count', sourceCount);
+    setText('drill-brain-count', streamCount);
+    setText('drill-writeups-count', String(writeups.length));
+    setText('drill-files-count', String(status.totalFiles ?? files.length));
+    setText('drill-goal', goal ? `Goal ${goal.number}: ${goal.title}` : 'No active goal');
+    setText('drill-goal-why', goal?.why || (lifecycle === 'completed'
+      ? `Settled: ${drill.doneReason || 'budget complete'}`
+      : 'Launch a run to begin drilling.'));
+    setText('drill-brain-empty', stream.length ? `${streamCount} tape entries` : 'No tape yet');
+    setText('drill-sources-empty', sources.length ? `${sourceCount} source receipts` : 'No receipts yet');
+    setText('drill-files-empty', files.length ? `${files.length} files on disk` : 'No files yet');
+
+    if (status.runName && lifecycle !== 'idle') {
+      setText('hero-run-status', `${lifecycleLabel} · ${status.runName}`);
+      setText('watch-run-name', status.runName);
+      if (status.topic) setText('watch-topic', status.topic);
+    }
+
+    const stopButton = document.getElementById('stop-run-btn');
+    if (stopButton) {
+      stopButton.disabled = !['drilling', 'launching', 'running'].includes(lifecycle);
+      stopButton.hidden = lifecycle === 'completed' || lifecycle === 'idle';
+    }
+    const noteInput = document.getElementById('drill-note-input');
+    const noteButton = document.getElementById('drill-note-submit');
+    const canSteer = status.canSteer === true;
+    if (noteInput) noteInput.disabled = !canSteer;
+    if (noteButton) noteButton.disabled = !canSteer;
+
+    const workersContainer = document.getElementById('drill-workers');
+    workersContainer?.replaceChildren();
+    workers.forEach(worker => {
+      const chip = document.createElement('span');
+      chip.className = 'drill-worker-chip';
+      chip.textContent = `${worker.workerId} · G${worker.goalNumber} P${worker.phaseNumber} · turn ${worker.turns}`;
+      workersContainer?.appendChild(chip);
+    });
+
+    const phasesContainer = document.getElementById('drill-phases');
+    phasesContainer?.replaceChildren();
+    (goal?.phases || []).forEach(phase => {
+      const card = document.createElement('article');
+      card.className = `drill-phase ${phase.status || 'pending'}`;
+      const heading = document.createElement('strong');
+      heading.textContent = `Phase ${phase.number}: ${phase.title}`;
+      const detail = document.createElement('span');
+      const writeupCount = Array.isArray(phase.writeups) ? phase.writeups.length : 0;
+      detail.textContent = `${phase.status || 'pending'} · ${phase.cyclesUsed || 0} descents · ${writeupCount} writeup${writeupCount === 1 ? '' : 's'}`;
+      card.append(heading, detail);
+      phasesContainer?.appendChild(card);
+    });
+    const goalHistory = document.getElementById('drill-goal-history');
+    goalHistory?.replaceChildren();
+    (drill.goalHistory || []).slice(-8).forEach(historyGoal => {
+      const item = document.createElement('span');
+      item.textContent = `Goal ${historyGoal.number} settled · ${historyGoal.title}`;
+      goalHistory?.appendChild(item);
+    });
+
+    this.replaceLedger('drill-brain-ledger', stream, entry => ({
+      meta: [entry.kind || 'tape', entry.brain, entry.workerId, entry.phaseNumber ? `P${entry.phaseNumber}` : null]
+        .filter(Boolean).join(' · '),
+      content: String(entry.content || '').slice(0, 500)
+    }));
+    this.replaceLedger('drill-sources-ledger', sources, entry => ({
+      meta: [entry.tool || 'source', entry.workerId, entry.phaseNumber ? `P${entry.phaseNumber}` : null]
+        .filter(Boolean).join(' · '),
+      content: entry.urls?.length
+        ? entry.urls.join(' ')
+        : String(entry.query || 'Receipt recorded').slice(0, 500)
+    }));
+    this.replaceLedger('drill-files-ledger', files, file => ({
+      meta: `${file.kind || 'artifact'} · ${Math.max(1, Math.round((file.size || 0) / 1024))} KB`,
+      content: file.path,
+      onClick: () => this.previewDrillFile(file.path)
+    }));
+  }
+
+  async previewDrillFile(filePath) {
+    const preview = document.getElementById('drill-file-preview');
+    if (!preview) return;
+    try {
+      const result = await this.api(`/api/drill/file?path=${encodeURIComponent(filePath)}`);
+      const file = result.file || {};
+      preview.hidden = false;
+      preview.textContent = file.previewable
+        ? `${file.path}\n\n${file.content || ''}${file.truncated ? '\n\n[preview truncated]' : ''}`
+        : `${file.path}\n\nBinary file · ${file.size || 0} bytes`;
+      preview.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    } catch (error) {
+      this.showToast(`File preview failed: ${error.message}`, 'error');
+    }
+  }
+
+  async sendDrillNote() {
+    const input = document.getElementById('drill-note-input');
+    const text = input?.value?.trim();
+    if (!text) return;
+    try {
+      await this.api('/api/drill/note', {
+        method: 'POST',
+        body: JSON.stringify({ text })
+      });
+      input.value = '';
+      this.showToast('Steering note saved for every next worker');
+      await this.loadDrillStatus();
+    } catch (error) {
+      this.showToast(`Note failed: ${error.message}`, 'error');
     }
   }
 

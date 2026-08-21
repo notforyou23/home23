@@ -823,7 +823,9 @@ async function main() {
           agentExecutor,
           goals,
           clusterStateStore: orchestrator.clusterStateStore,
-          pathResolver
+          pathResolver,
+          memory,
+          orchestrator
         }
       });
 

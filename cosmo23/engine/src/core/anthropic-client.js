@@ -15,6 +15,10 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const { getAnthropicApiKey, prepareSystemPrompt, isOAuthToken, getStealthHeaders } = require('../services/anthropic-oauth-engine');
 const { recordCompletionSpend } = require('./spend-meter');
+const {
+  AUTH_REVOKED_WATCH_MESSAGE,
+  isFatalAuthError
+} = require('../../../lib/auth-error');
 
 // HOME23 PATCH — current Sonnet 4.7 and Opus 4.8 models reject legacy sampling
 // params such as temperature and use adaptive thinking instead.
@@ -312,6 +316,16 @@ class AnthropicClient {
         const result = await this.generate(options);
         lastResult = result;
 
+        if (isFatalAuthError(result)) {
+          this.logger?.error?.(AUTH_REVOKED_WATCH_MESSAGE);
+          return {
+            ...result,
+            hadError: true,
+            errorType: 'authentication_error',
+            retryable: false
+          };
+        }
+
         // Success: non-empty content without error, OR tool calls present
         const hasContent = result.content && result.content.trim().length > 0 && !result.hadError;
         const hasToolCalls = result.output && result.output.length > 0;
@@ -348,6 +362,10 @@ class AnthropicClient {
 
       } catch (error) {
         lastError = error;
+        if (isFatalAuthError(error)) {
+          this.logger?.error?.(AUTH_REVOKED_WATCH_MESSAGE);
+          return this._buildErrorResponse(error);
+        }
         this.logger?.error?.('[AnthropicClient] Exception during generation', {
           component: options.component,
           purpose: options.purpose,
@@ -989,6 +1007,7 @@ class AnthropicClient {
    * Build error response (matches GPT5Client format)
    */
   _buildErrorResponse(error) {
+    const authenticationError = isFatalAuthError(error);
     return {
       content: `[Error: ${error.message}]`,
       reasoning: null,
@@ -997,7 +1016,8 @@ class AnthropicClient {
       usage: { input_tokens: 0, output_tokens: 0 },
       output: null,
       hadError: true,
-      errorType: error.type || 'unknown_error'
+      errorType: authenticationError ? 'authentication_error' : (error.type || 'unknown_error'),
+      retryable: authenticationError ? false : error.retryable
     };
   }
 

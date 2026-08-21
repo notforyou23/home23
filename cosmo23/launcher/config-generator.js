@@ -700,6 +700,15 @@ execution:
     preventEnergyRestoration: true
     disableConsolidationRateLimit: true` : '')}
 
+# Fresh guided Launch is a drill: one budgeted descent per phase worker.
+# The orchestrator gives this block sole lifecycle ownership while active.
+drill:
+  cycles: ${maxCyclesValue}
+  maxRuntimeMinutes: ${settings.max_runtime_minutes || 0}
+  workerTurnsPerCycle: ${settings.drill_worker_turns || 24}
+  workerCallTimeoutMs: ${enable_local_llm ? 180000 : 120000}
+  maxConcurrent: ${usesLocalModels ? 2 : max_concurrent}
+
 timeouts:
   cycleTimeoutMs: ${enable_local_llm ? 300000 : 180000}  # 5min for local LLM, 3min for cloud
   operationTimeoutMs: ${enable_local_llm ? 180000 : 120000}  # Increased for local LLM
