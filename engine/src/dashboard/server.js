@@ -2239,7 +2239,7 @@ class DashboardServer {
 
     this.app.use(express.static(path.join(__dirname), {
       setHeaders(res, filePath) {
-        if (/\.(?:html|js|css)$/.test(filePath)) {
+        if (/\.(?:html|js|mjs|css)$/.test(filePath)) {
           res.setHeader('Cache-Control', 'no-store, max-age=0');
         }
       },
@@ -3008,7 +3008,7 @@ class DashboardServer {
                 const { execSync } = require('child_process');
                 execSync(`node --input-type=module -e "
                   import { generateEcosystem } from './cli/lib/generate-ecosystem.js';
-                  generateEcosystem('.');
+                  generateEcosystem(process.cwd());
                 "`, { cwd: home23RootForPoll, stdio: 'pipe', timeout: 10_000 });
               } catch { /* fallback: restart anyway, ecosystem regen is optional */ }
 
@@ -7925,6 +7925,8 @@ Be specific, actionable, and maintain research continuity.`;
       minSimilarity: input.minSimilarity ?? 0.4,
       noiseFloor: input.noiseFloor ?? 0.55,
       tag: input.tag || null,
+      ...(input.mode === 'context' ? { mode: 'context' } : {}),
+      ...(input.exhaustive === true ? { exhaustive: true } : {}),
     });
     const handleMemorySearch = async (req, res) => {
       const controller = requestAbortController(req, res);

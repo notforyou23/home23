@@ -1249,7 +1249,7 @@ function createSettingsRouter(home23Root, options = {}) {
     const { execSync } = require('child_process');
     execSync(`node --input-type=module -e "
       import { generateEcosystem } from './cli/lib/generate-ecosystem.js';
-      generateEcosystem('.');
+      generateEcosystem(process.cwd());
     "`, { cwd: home23Root, stdio: 'pipe', timeout: 10000 });
   }
 
