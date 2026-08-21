@@ -22,13 +22,14 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const https = require('https');
-const { PrismaClient } = require('@prisma/client');
 const { encryptApiKey, decryptApiKey } = require('./encryption');
 
-// Lazy-load Prisma client
+// Lazy-load Prisma client. Cosmo Setup stores the live login in SystemConfig.
+// `prisma generate` can fail in the engine process — never let that skip Setup.
 let prisma = null;
 function getPrisma() {
   if (!prisma) {
+    const { PrismaClient } = require('@prisma/client');
     prisma = new PrismaClient();
   }
   return prisma;
@@ -261,10 +262,8 @@ function getStealthHeaders() {
 }
 
 function getEnvCredentials() {
-  // HOME23 PATCH: Home23 injects the current Anthropic OAuth token through PM2
-  // as ANTHROPIC_AUTH_TOKEN. Engine subprocesses inherit process.env from the
-  // cosmo23 server, so check env before falling back to cosmo23's standalone
-  // Prisma OAuth store.
+  // Last resort only. Home23 PM2 may inject ANTHROPIC_AUTH_TOKEN; that token
+  // can be revoked while Cosmo Setup still holds the live login. Setup/DB wins.
   const authToken = process.env.ANTHROPIC_AUTH_TOKEN;
   if (authToken && isOAuthToken(authToken)) {
     return {
@@ -399,42 +398,127 @@ async function storeToken(token, expiresAt = null, refreshToken = null) {
   }
 }
 
+function parseStoredTokenPayload(encryptedValue) {
+  if (!encryptedValue) return null;
+  const decrypted = decryptApiKey(encryptedValue);
+  const data = JSON.parse(decrypted);
+  if (!data?.token) return null;
+  return {
+    token: data.token,
+    refreshToken: data.refreshToken || null,
+    expiresAt: data.expiresAt
+  };
+}
+
+function resolveCosmoDatabasePath() {
+  const fromEnv = process.env.DATABASE_URL;
+  if (typeof fromEnv === 'string' && fromEnv.startsWith('file:')) {
+    const filePath = fromEnv.slice('file:'.length);
+    if (filePath) return path.resolve(filePath);
+  }
+  const globalDb = path.join(os.homedir(), '.cosmo2.3', 'database.db');
+  if (fs.existsSync(globalDb)) return globalDb;
+  const localDb = path.join(__dirname, '../../../prisma/cosmo2.3.db');
+  if (fs.existsSync(localDb)) return localDb;
+  return null;
+}
+
+function readSystemConfigRow(dbPath, key) {
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      return db.prepare('SELECT value FROM SystemConfig WHERE key = ?').get(key) || null;
+    } finally {
+      db.close();
+    }
+  } catch (nodeSqliteError) {
+    try {
+      const Database = require('better-sqlite3');
+      const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+      try {
+        return db.prepare('SELECT value FROM SystemConfig WHERE key = ?').get(key) || null;
+      } finally {
+        db.close();
+      }
+    } catch (betterSqliteError) {
+      throw new Error(nodeSqliteError.message || betterSqliteError.message);
+    }
+  }
+}
+
+async function getStoredTokenFromPrisma() {
+  const db = getPrisma();
+  const config = await db.systemConfig.findUnique({
+    where: { key: OAUTH_DB_KEY }
+  });
+  if (!config) return null;
+  return parseStoredTokenPayload(config.value);
+}
+
+async function getStoredTokenFromSqlite() {
+  const dbPath = resolveCosmoDatabasePath();
+  if (!dbPath || !fs.existsSync(dbPath)) return null;
+  const row = readSystemConfigRow(dbPath, OAUTH_DB_KEY);
+  return parseStoredTokenPayload(row?.value);
+}
+
+async function getStoredTokenFromServerModule() {
+  const serverOauth = require('../../../server/services/anthropic-oauth');
+  if (typeof serverOauth.getStoredToken !== 'function') return null;
+  return serverOauth.getStoredToken();
+}
+
+let tokenReaders = {
+  prisma: getStoredTokenFromPrisma,
+  sqlite: getStoredTokenFromSqlite,
+  server: getStoredTokenFromServerModule
+};
+
+function _setTokenReadersForTests(overrides = {}) {
+  tokenReaders = { ...tokenReaders, ...overrides };
+}
+
+function _resetOAuthEngineForTests() {
+  tokenCache = null;
+  cacheExpiry = 0;
+  tokenReaders = {
+    prisma: getStoredTokenFromPrisma,
+    sqlite: getStoredTokenFromSqlite,
+    server: getStoredTokenFromServerModule
+  };
+}
+
 /**
- * Get current token from database
- * Returns { token, refreshToken, expiresAt } or null
- * Note: Does NOT auto-refresh, use getAnthropicApiKey() for that
+ * Get current token from Cosmo Setup / SystemConfig.
+ * Prisma first; if that fails (including "prisma generate"), read sqlite + decrypt,
+ * then the server oauth module. Never skip Setup because Prisma is broken.
  */
 async function getStoredToken() {
-  try {
-    // Check cache first
-    if (tokenCache && Date.now() < cacheExpiry) {
-      return tokenCache;
-    }
-
-    const db = getPrisma();
-    const config = await db.systemConfig.findUnique({
-      where: { key: OAUTH_DB_KEY }
-    });
-
-    if (!config) return null;
-
-    // Decrypt and parse
-    const decrypted = decryptApiKey(config.value);
-    const data = JSON.parse(decrypted);
-
-    // Update cache (even if expired, we might have refresh token)
-    tokenCache = {
-      token: data.token,
-      refreshToken: data.refreshToken || null,
-      expiresAt: data.expiresAt
-    };
-    cacheExpiry = data.expiresAt || Date.now() + (365 * 24 * 60 * 60 * 1000);
-
+  if (tokenCache && Date.now() < cacheExpiry) {
     return tokenCache;
-  } catch (error) {
-    console.error('[OAuth-Engine] Error reading token from database:', error.message);
-    return null;
   }
+
+  const readers = [tokenReaders.prisma, tokenReaders.sqlite, tokenReaders.server];
+  for (const reader of readers) {
+    try {
+      const stored = await reader();
+      if (stored?.token) {
+        tokenCache = stored;
+        cacheExpiry = stored.expiresAt || Date.now() + (365 * 24 * 60 * 60 * 1000);
+        return stored;
+      }
+    } catch (error) {
+      console.error('[OAuth-Engine] Setup token reader failed:', error.message);
+    }
+  }
+  return null;
+}
+
+function selectAnthropicCredentialSource({ setup, env } = {}) {
+  if (setup?.token && isOAuthToken(setup.token)) return 'setup';
+  if (env?.authToken || env?.apiKey) return 'env';
+  return null;
 }
 
 /**
@@ -477,13 +561,7 @@ async function clearToken() {
  */
 async function getAnthropicApiKey() {
   try {
-    const envCredentials = getEnvCredentials();
-    if (envCredentials) {
-      console.log(`[OAuth-Engine] Using ${envCredentials.isOAuth ? 'OAuth token' : 'API key'} from env`);
-      return envCredentials;
-    }
-
-    // Try stored token first
+    // Cosmo Setup / SystemConfig is the live login. Env is last resort only.
     let stored = await getStoredToken();
 
     if (stored && stored.token) {
@@ -506,7 +584,8 @@ async function getAnthropicApiKey() {
             authToken: refreshed.accessToken,
             defaultHeaders: getStealthHeaders(),
             dangerouslyAllowBrowser: true,
-            isOAuth: true
+            isOAuth: true,
+            source: 'setup'
           };
         } catch (refreshError) {
           console.error('[OAuth-Engine] Token refresh failed:', refreshError.message);
@@ -514,17 +593,24 @@ async function getAnthropicApiKey() {
         }
       } else if (!isExpired && isOAuth) {
         // Token still valid
-        console.log('[OAuth-Engine] Using OAuth token (stealth mode)');
+        console.log('[OAuth-Engine] Using Cosmo Setup OAuth token (stealth mode)');
         return {
           authToken: stored.token,
           defaultHeaders: getStealthHeaders(),
           dangerouslyAllowBrowser: true,
-          isOAuth: true
+          isOAuth: true,
+          source: 'setup'
         };
       }
     }
 
-    throw new Error('No Anthropic OAuth token configured. Use "Import from Claude CLI" or complete the OAuth flow.');
+    const envCredentials = getEnvCredentials();
+    if (envCredentials) {
+      console.log(`[OAuth-Engine] Setup has no token; using ${envCredentials.isOAuth ? 'OAuth token' : 'API key'} from env as last resort`);
+      return envCredentials;
+    }
+
+    throw new Error('No Anthropic OAuth token configured. Re-auth in Cosmo Setup.');
   } catch (error) {
     console.error('[OAuth-Engine] Error getting API key:', error.message);
     throw error;
@@ -572,8 +658,19 @@ function prepareSystemPrompt(systemPrompt, isOAuth) {
  * Check OAuth status
  */
 async function getOAuthStatus() {
+  const stored = await getStoredToken();
   const envCredentials = getEnvCredentials();
-  if (envCredentials) {
+  const source = selectAnthropicCredentialSource({ setup: stored, env: envCredentials });
+  if (source === 'setup') {
+    const isExpired = stored.expiresAt && stored.expiresAt < Date.now();
+    return {
+      configured: true,
+      source: 'setup',
+      valid: !isExpired,
+      expiresAt: stored.expiresAt ? new Date(stored.expiresAt).toISOString() : null
+    };
+  }
+  if (source === 'env') {
     return {
       configured: true,
       source: envCredentials.source,
@@ -581,8 +678,6 @@ async function getOAuthStatus() {
       expiresAt: null
     };
   }
-
-  const stored = await getStoredToken();
 
   if (!stored) {
     return {
@@ -618,6 +713,11 @@ module.exports = {
   storeToken,
   getStoredToken,
   clearToken,
+  getStoredTokenFromSqlite,
+  resolveCosmoDatabasePath,
+  selectAnthropicCredentialSource,
+  _setTokenReadersForTests,
+  _resetOAuthEngineForTests,
 
   // System prompt preparation
   prepareSystemPrompt,

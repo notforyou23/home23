@@ -247,8 +247,9 @@ describe('Continuation-Aware Planning — Context Change Detection Integration',
     expect(semanticRelationCalled).to.equal(true);
     // Old plan should be archived (contextRedirect = true)
     expect(archiveCalled).to.equal(true);
-    // New plan should be generated (has planningContext)
+    // New plan is a short research tool loop, not a specialist recipe
     expect(result).to.not.be.null;
+    expect(result.executionKind).to.equal('tool_loop');
     expect(result.planningContext).to.exist;
     expect(result.planningContext.contextRedirect).to.equal(true);
   });
@@ -260,7 +261,7 @@ describe('Continuation-Aware Planning — Context Change Detection Integration',
 
 describe('Continuation-Aware Planning — PGS Assessment Integration', () => {
 
-  it('assessKnowledgeState is called from planMission and populates planningContext.knowledgeAssessment', async () => {
+  it('planMission does not call assessKnowledgeState — review-what-is-here is not the Launch path', async () => {
     let assessCalled = false;
     const planner = createPlanner({}, {
       client: {
@@ -268,35 +269,20 @@ describe('Continuation-Aware Planning — PGS Assessment Integration', () => {
       }
     });
 
-    // Monkey-patch assessKnowledgeState to verify it's called and inject a mock result
-    const originalAssess = planner.assessKnowledgeState.bind(planner);
-    planner.assessKnowledgeState = async function(guidedFocus, runPath) {
+    planner.assessKnowledgeState = async function() {
       assessCalled = true;
-      return {
-        answer: 'The brain has strong coverage of X but lacks Y.',
-        data: {
-          timestamp: new Date().toISOString(),
-          nodeCount: 200,
-          partitionsSwept: 4,
-          answer: 'The brain has strong coverage of X but lacks Y.'
-        },
-        jsonPath: path.join(runPath || '/tmp', 'coordinator', 'planning-assessment-test.json'),
-        mdPath: path.join(runPath || '/tmp', 'coordinator', 'planning-assessment-test.md')
-      };
+      return { answer: 'should not run' };
     };
 
     const result = await planner.planMission();
 
-    expect(assessCalled).to.equal(true);
+    expect(assessCalled).to.equal(false);
     expect(result).to.not.be.null;
-    expect(result.planningContext).to.exist;
-    expect(result.planningContext.knowledgeAssessment).to.exist;
-    expect(result.planningContext.knowledgeAssessment.answer).to.include('strong coverage');
-    expect(result.planningContext.knowledgeAssessment.data.nodeCount).to.equal(200);
-    expect(result.planningContext.assessmentPath).to.include('planning-assessment');
+    expect(result.executionKind).to.equal('tool_loop');
+    expect(result.planningContext.knowledgeAssessment).to.be.undefined;
   });
 
-  it('planMission succeeds even when assessKnowledgeState throws', async () => {
+  it('planMission succeeds even when assessKnowledgeState would throw', async () => {
     const logger = capturingLogger();
     const config = baseConfig();
     const subsystems = baseSubsystems({
@@ -307,37 +293,26 @@ describe('Continuation-Aware Planning — PGS Assessment Integration', () => {
 
     const planner = new GuidedModePlanner(config, subsystems, logger);
 
-    // Make assessKnowledgeState throw
     planner.assessKnowledgeState = async () => {
       throw new Error('PGS engine completely broken');
     };
 
     const result = await planner.planMission();
 
-    // Plan should still be generated successfully
     expect(result).to.not.be.null;
-    expect(result.planningContext).to.exist;
-    // knowledgeAssessment should be absent (not set because it threw)
+    expect(result.executionKind).to.equal('tool_loop');
     expect(result.planningContext.knowledgeAssessment).to.be.undefined;
-
-    // Warning should be logged
-    const warnLog = logger.logs.find(
-      l => l.level === 'warn' && l.msg && l.msg.includes('Knowledge assessment failed')
-    );
-    expect(warnLog).to.exist;
   });
 
-  it('planMission succeeds when assessKnowledgeState returns null', async () => {
+  it('planMission succeeds when assessKnowledgeState would return null', async () => {
     const planner = createPlanner();
 
-    // Return null (e.g., empty brain)
     planner.assessKnowledgeState = async () => null;
 
     const result = await planner.planMission();
 
     expect(result).to.not.be.null;
-    expect(result.planningContext).to.exist;
-    // knowledgeAssessment should be absent
+    expect(result.executionKind).to.equal('tool_loop');
     expect(result.planningContext.knowledgeAssessment).to.be.undefined;
   });
 });
@@ -669,16 +644,14 @@ describe('Continuation-Aware Planning — End-to-End Prompt Flow', () => {
       mdPath: '/tmp/coordinator/planning-assessment-test.md'
     });
 
-    await planner.planMission();
+    const result = await planner.planMission();
 
-    expect(planningPromptSeen).to.not.be.null;
-    expect(planningPromptSeen).to.include('## BRAIN KNOWLEDGE ASSESSMENT (PGS Deep Sweep)');
-    expect(planningPromptSeen).to.include('Topic B has no data');
-    expect(planningPromptSeen).to.include('## PLANNING INSTRUCTION');
-    expect(planningPromptSeen).to.include('DO NOT create research phases for topics shown as well-covered');
+    expect(planningPromptSeen).to.equal(null);
+    expect(result.executionKind).to.equal('tool_loop');
+    expect(result.shortPlan.goal).to.be.a('string');
   });
 
-  it('planMission without assessment produces prompt without assessment section', async () => {
+  it('planMission without assessment does not invent a specialist planning prompt', async () => {
     let planningPromptSeen = null;
 
     const planner = createPlanner({}, {
@@ -696,14 +669,11 @@ describe('Continuation-Aware Planning — End-to-End Prompt Flow', () => {
     // Assessment returns null (empty brain or PGS failure)
     planner.assessKnowledgeState = async () => null;
 
-    await planner.planMission();
+    const result = await planner.planMission();
 
-    expect(planningPromptSeen).to.not.be.null;
-    expect(planningPromptSeen).to.not.include('## BRAIN KNOWLEDGE ASSESSMENT');
-    expect(planningPromptSeen).to.not.include('## PLANNING INSTRUCTION');
-    // Standard prompt structure should still exist
-    expect(planningPromptSeen).to.include('TASK DEFINITION:');
-    expect(planningPromptSeen).to.include('YOUR JOB:');
+    expect(planningPromptSeen).to.equal(null);
+    expect(result.executionKind).to.equal('tool_loop');
+    expect(result.agentMissions).to.deep.equal([]);
   });
 
   it('contextRedirect plan includes assessment but excludes continuation context', async () => {
@@ -771,13 +741,11 @@ describe('Continuation-Aware Planning — End-to-End Prompt Flow', () => {
       mdPath: '/tmp/test-assessment.md'
     });
 
-    await planner.planMission();
+    const result = await planner.planMission();
 
-    expect(planningPromptSeen).to.not.be.null;
-    // Assessment should be included
-    expect(planningPromptSeen).to.include('## BRAIN KNOWLEDGE ASSESSMENT');
-    expect(planningPromptSeen).to.include('very little known');
-    // Continuation context should be excluded (contextRedirect = true)
-    expect(planningPromptSeen).to.not.include('EXISTING RESEARCH THREAD CONTEXT');
+    expect(planningPromptSeen).to.equal(null);
+    expect(result.executionKind).to.equal('tool_loop');
+    expect(result.planningContext.contextRedirect).to.equal(true);
+    expect(result.shortPlan.goal).to.equal('NewDomain');
   });
 });

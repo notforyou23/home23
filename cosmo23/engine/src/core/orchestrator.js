@@ -510,13 +510,34 @@ class Orchestrator {
         this.config,
         {
           ...this.subsystems,
-          client: this.coordinator?.gpt5
+          client: this.coordinator?.gpt5,
+          orchestrator: this,
+          clusterStateStore: this.clusterStateStore,
+          agentExecutor: this.agentExecutor,
+          pathResolver: this.pathResolver,
+          memory: this.memory
         },
         this.logger
       );
     }
 
     return this.guidedPlanner;
+  }
+
+  async ensureResearchLaunchLoop() {
+    if (this.config?.architecture?.roleSystem?.explorationMode !== 'guided') {
+      return { started: false, productLoop: 'research', subordinate: false, reason: 'not_guided' };
+    }
+    const planner = this.getGuidedPlanner();
+    const plan = this.guidedMissionPlan
+      || (this.clusterStateStore && typeof this.clusterStateStore.getPlan === 'function'
+        ? await this.clusterStateStore.getPlan('plan:main')
+        : null);
+    return planner.startLaunchLoop({
+      orchestrator: this,
+      plan,
+      client: this.coordinator?.gpt5 || this.agentExecutor?.gpt5
+    });
   }
 
   /**
@@ -736,7 +757,8 @@ class Orchestrator {
           taskStateQueue: this.taskStateQueue,
           recordPlanEvent: (type, details) => this.recordPlanEvent(type, details),
           maxRetries: this.config.planning?.maxRetries || 3,
-          agentTimeout: this.config.planning?.agentTimeout || 720000
+          agentTimeout: this.config.planning?.agentTimeout || 720000,
+          ensureLaunchLoop: () => this.ensureResearchLaunchLoop()
         }
       );
       this.logger.info('✅ Plan Executor initialized (Plan Authority)', {
@@ -1082,6 +1104,8 @@ class Orchestrator {
     const maxCyclesConfig = this.config.execution?.maxCycles;
     const maxRuntimeConfig = this.config.execution?.maxRuntimeMinutes;
     this.logger.info(`🚀 Starting GPT-5.2 cognitive loop... (maxCycles: ${maxCyclesConfig || 'unlimited'}, maxRuntime: ${maxRuntimeConfig ? maxRuntimeConfig + ' min' : 'unlimited'})`);
+
+    await this.ensureResearchLaunchLoop();
     
     while (this.running) {
       // Check recursive planner halt condition
@@ -10466,6 +10490,9 @@ OUTPUT FORMAT (JSON ONLY):
   async stop() {
     this.logger.info('Stopping GPT-5.2 system...');
     this.running = false;
+    if (this.launchLoop && typeof this.launchLoop.stop === 'function') {
+      this.launchLoop.stop();
+    }
 
     // Phase 2 (H1): clear the heartbeat interval; the final stamp marks a
     // deliberate stop (a stopped run's heartbeat then goes stale naturally).

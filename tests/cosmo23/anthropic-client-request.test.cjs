@@ -632,3 +632,38 @@ test('Anthropic retries and web-search fallback never recover an overflow', asyn
   );
   assert.equal(fallbackCalls, 0);
 });
+
+test('revoked Anthropic OAuth is fatal — generateWithRetry does not Retry 1/3', async () => {
+  const { AUTH_REVOKED_WATCH_MESSAGE, isFatalAuthError } = require('../../cosmo23/lib/auth-error');
+
+  for (const [label, Client] of clients) {
+    const logs = [];
+    let calls = 0;
+    const client = Object.create(Client.prototype);
+    client.logger = {
+      ...makeLogger(),
+      warn(message) { logs.push(String(message)); },
+      error(message) { logs.push(String(message)); },
+    };
+    client.generate = async () => {
+      calls += 1;
+      const err = Object.assign(new Error('OAuth access token has been revoked'), { status: 401 });
+      return client._buildErrorResponse(err);
+    };
+
+    const result = await client.generateWithRetry({
+      component: 'execution',
+      purpose: 'agentic_loop',
+    }, 3);
+
+    assert.equal(calls, 1, `${label} retried a revoked token`);
+    assert.equal(isFatalAuthError(result), true, `${label} did not classify revoked OAuth as fatal`);
+    assert.equal(logs.some(line => /Retry 1\/3/.test(line)), false, `${label} logged Retry 1/3`);
+    assert.equal(logs.some(line => /All retries exhausted/.test(line)), false, `${label} exhausted retries`);
+    assert.equal(
+      logs.some(line => line.includes(AUTH_REVOKED_WATCH_MESSAGE)),
+      true,
+      `${label} did not surface the Watch re-auth message`,
+    );
+  }
+});

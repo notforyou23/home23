@@ -1,3 +1,5 @@
+const RESEARCH_LAUNCH_VIEW = 'watch';
+
 const FORM_FIELD_TYPES = {
   topic: 'string',
   context: 'string',
@@ -1635,7 +1637,7 @@ class CosmoStandaloneApp {
 
       this.resetWatchFeeds();
       this.showToast(result.isContinuation ? `Continuing ${result.runName}` : `Started ${result.runName}`);
-      this.switchView('watch');
+      this.switchView(RESEARCH_LAUNCH_VIEW);
       await Promise.all([this.loadStatus(), this.loadBrains({ preferredId: result.brainId })]);
     } catch (error) {
       this.showToast(`Launch failed: ${error.message}`, 'error');
@@ -1665,7 +1667,7 @@ class CosmoStandaloneApp {
 
       this.resetWatchFeeds();
       this.showToast(`Running ${result.runName}`);
-      this.switchView('watch');
+      this.switchView(RESEARCH_LAUNCH_VIEW);
       await Promise.all([this.loadStatus(), this.loadBrains({ preferredId: result.brainId })]);
     } catch (error) {
       this.showToast(`Continue failed: ${error.message}`, 'error');
