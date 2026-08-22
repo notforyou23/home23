@@ -49,6 +49,13 @@ function sleepyCli(dir: string): string {
   ].join('\n'));
 }
 
+function grokErrorCli(dir: string): string {
+  return writeFakeCli(dir, 'fake-grok-error.js', [
+    `process.stdout.write(${JSON.stringify(JSON.stringify({ type: 'error', message: '402 Payment Required: usage balance exhausted' }))} + "\\n");`,
+    'setTimeout(() => process.exit(1), 20);',
+  ].join('\n'));
+}
+
 function makeBridge(root: string, bin: string, configOverrides: Record<string, unknown> = {}): ACPBridge {
   return new ACPBridge({
     config: normalizeBridgeConfig({
@@ -141,6 +148,32 @@ test('cancelJob stops the process and labels the job cancelled', async () => {
     assert.equal(done.status, 'cancelled');
     assert.equal(pidAlive(pid), false, 'child process must actually be dead');
     assert.equal(bridge.getReceipt(started.id)?.status, 'cancelled');
+  } finally {
+    bridge.dispose();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a Grok streaming error finalizes failed with the provider message in its receipt', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-'));
+  const bin = grokErrorCli(root);
+  const bridge = makeBridge(root, bin, { backends: { 'grok-build': { bin } } });
+  try {
+    const started = await bridge.startJob({ prompt: 'do the thing', backend: 'grok-build' });
+    const done = await bridge.waitForJob(started.id, 15_000);
+    assert.equal(done.status, 'failed');
+    const receipt = bridge.getReceipt(started.id);
+    assert.equal(receipt?.status, 'failed');
+    assert.match(receipt?.resultTail ?? '', /402 Payment Required: usage balance exhausted/);
+    const result = bridge.readEventsTail(started.id, 10).at(-1);
+    assert.deepEqual(result, {
+      kind: 'result',
+      ok: false,
+      text: '402 Payment Required: usage balance exhausted',
+      costUsd: undefined,
+      numTurns: undefined,
+      durationMs: undefined,
+    });
   } finally {
     bridge.dispose();
     rmSync(root, { recursive: true, force: true });
@@ -248,6 +281,60 @@ test('maxConcurrentJobs is enforced against non-terminal jobs', async () => {
     const second = await bridge.startJob({ prompt: 'now it fits' });
     await bridge.cancelJob(second.id);
     await bridge.waitForJob(second.id, 15_000);
+  } finally {
+    bridge.dispose();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('startJob refuses a resume from a running source job', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-'));
+  const bridge = makeBridge(root, sleepyCli(root));
+  let resumedId: string | undefined;
+  try {
+    const source = await bridge.startJob({ prompt: 'keep working' });
+    try {
+      const resumed = await bridge.startJob({
+        prompt: 'follow up',
+        cwd: source.cwd,
+        isolation: 'none',
+        resumeSessionId: source.sessionId,
+        resumedFromJobId: source.id,
+      });
+      resumedId = resumed.id;
+      assert.fail('a running source job must not be resumed');
+    } catch (err) {
+      assert.match(err instanceof Error ? err.message : String(err), /source job.*running|still running/i);
+    }
+    await bridge.cancelJob(source.id);
+    await bridge.waitForJob(source.id, 15_000);
+  } finally {
+    if (resumedId) {
+      await bridge.cancelJob(resumedId);
+      await bridge.waitForJob(resumedId, 15_000);
+    }
+    bridge.dispose();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('startJob permits a resume from a terminal source job', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-'));
+  const bridge = makeBridge(root, happyCli(root));
+  try {
+    const source = await bridge.startJob({ prompt: 'finish this' });
+    const finished = await bridge.waitForJob(source.id, 15_000);
+    assert.equal(finished.status, 'completed');
+    const resumed = await bridge.startJob({
+      prompt: 'follow up',
+      cwd: source.cwd,
+      isolation: 'none',
+      resumeSessionId: source.sessionId,
+      resumedFromJobId: source.id,
+    });
+    const done = await bridge.waitForJob(resumed.id, 15_000);
+    assert.equal(done.status, 'completed');
+    assert.equal(done.resumedFromJobId, source.id);
   } finally {
     bridge.dispose();
     rmSync(root, { recursive: true, force: true });

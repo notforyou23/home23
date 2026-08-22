@@ -233,6 +233,9 @@ export const codingContinueTool: ToolDefinition = {
     if (!prompt) return { content: 'coding_continue requires a non-empty prompt.', is_error: true };
     const job = bridge.getJob(jobId);
     if (!job) return { content: `No coding job found with id ${jobId}. Use coding_jobs to list known jobs.`, is_error: true };
+    if (!isTerminal(job)) {
+      return { content: `Job ${jobId} is still ${job.status} and cannot be continued. Wait for it to finish or cancel it first; continuing now could start a second process in the same working directory.`, is_error: true };
+    }
     if (!job.sessionId) {
       return { content: `Job ${jobId} has no resumable backend session (no session id was recorded — the backend may not support resume, or the job died before the session started). Start a fresh coding_run instead.`, is_error: true };
     }
@@ -364,7 +367,7 @@ export const codingJobsTool: ToolDefinition = {
 
 export const codingBackendsTool: ToolDefinition = {
   name: 'coding_backends',
-  description: 'List available coding backends and their resolved binaries.',
+  description: 'List configured coding backend binaries. This reports installation and binary resolution only; it is not an authentication, balance, or provider-health probe.',
   input_schema: { type: 'object', properties: {}, additionalProperties: false },
   async execute(_input, ctx) {
     const bridge = getBridge(ctx);
@@ -372,9 +375,9 @@ export const codingBackendsTool: ToolDefinition = {
     const backends = bridge.listBackends();
     if (backends.length === 0) return { content: 'No coding backends configured.' };
     const lines = backends.map(b =>
-      `- ${b.id}: ${b.available ? `available (${b.bin})` : 'NOT AVAILABLE (binary not found)'}${b.defaultModel ? ` default model ${b.defaultModel}` : ''}`,
+      `- ${b.id}: ${b.available ? `installed (binary found: ${b.bin})` : 'NOT INSTALLED (binary not found)'}${b.defaultModel ? ` default model ${b.defaultModel}` : ''}`,
     );
-    lines.push('The default backend comes from acp.defaultAgent (usually claude-code); codex requires the Codex CLI to be installed before it can run jobs.');
+    lines.push('The default backend comes from acp.defaultAgent (usually claude-code); codex requires the Codex CLI to be installed before it can run jobs. This list only reports binary resolution; it does not probe authentication, balance, or provider health.');
     return { content: lines.join('\n') };
   },
 };

@@ -58,6 +58,18 @@ test('grok-build parses streaming text, tool calls, and terminal session metadat
   assert.equal(end[1]?.kind, 'result');
 });
 
+test('grok-build turns streaming error messages into failed terminal results', () => {
+  const events = grok.parseEvents?.('{"type":"error","message":"402 Payment Required: usage balance exhausted"}') ?? [];
+  assert.deepEqual(events, [{
+    kind: 'result',
+    ok: false,
+    text: '402 Payment Required: usage balance exhausted',
+    costUsd: undefined,
+    numTurns: undefined,
+    durationMs: undefined,
+  }]);
+});
+
 test('claude-code argv for a new job with session id, model, effort, budget', () => {
   const args = claude.buildArgs(baseOpts({
     newSessionId: 'uuid-1',

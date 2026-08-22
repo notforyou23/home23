@@ -233,6 +233,16 @@ function parseGrokEvents(line: string): BridgeEvent[] {
       summary: oneLine(typeof obj.rawInput === 'string' ? obj.rawInput : JSON.stringify(obj.rawInput ?? {}), SUMMARY_MAX),
     }];
   }
+  if (type === 'error') {
+    return [{
+      kind: 'result',
+      ok: false,
+      text: bounded(typeof obj.message === 'string' ? obj.message : 'Grok reported an error', RESULT_TEXT_MAX),
+      costUsd: undefined,
+      numTurns: undefined,
+      durationMs: undefined,
+    }];
+  }
   if (type === 'end') {
     const usage = (obj.usage && typeof obj.usage === 'object') ? obj.usage as Record<string, unknown> : {};
     return [

@@ -247,6 +247,13 @@ export class ACPBridge {
     if (opts.resumeSessionId && !backend.supportsResume) {
       throw new Error(`Backend "${backendId}" does not support session resume`);
     }
+    if (opts.resumeSessionId && opts.resumedFromJobId) {
+      const source = this.store.getJob(opts.resumedFromJobId);
+      if (!source) throw new Error(`Cannot resume from unknown source job ${opts.resumedFromJobId}`);
+      if (!isTerminal(source.status)) {
+        throw new Error(`Cannot resume from source job ${source.id} while it is ${source.status}; wait for it to finish or cancel it first`);
+      }
+    }
 
     const active = this.store.listJobs().filter(job => !isTerminal(job.status)).length;
     const maxConcurrent = this.config.maxConcurrentJobs ?? DEFAULT_MAX_CONCURRENT;

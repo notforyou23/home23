@@ -185,10 +185,18 @@ test('coding_run with wait_seconds still running reports job id and hand-off', a
 });
 
 test('coding_continue errors when the job has no resumable session', async () => {
-  const bridge = makeFakeBridge({ job: makeJob({ sessionId: undefined }) });
+  const bridge = makeFakeBridge({ job: makeJob({ status: 'completed', sessionId: undefined }) });
   const result = await codingContinueTool.execute({ job_id: 'cj_20260805T120000_abcd', prompt: 'now add tests' }, ctx(bridge));
   assert.equal(result.is_error, true);
   assert.match(result.content, /no resumable backend session/);
+  assert.equal(bridge.calls.some(c => c.method === 'startJob'), false);
+});
+
+test('coding_continue refuses a running source job without starting a second process', async () => {
+  const bridge = makeFakeBridge({ job: makeJob({ status: 'running', sessionId: 'sess-42' }) });
+  const result = await codingContinueTool.execute({ job_id: 'cj_20260805T120000_abcd', prompt: 'now add tests' }, ctx(bridge));
+  assert.equal(result.is_error, true);
+  assert.match(result.content, /still running.*cannot be continued/i);
   assert.equal(bridge.calls.some(c => c.method === 'startJob'), false);
 });
 
@@ -289,14 +297,15 @@ test('coding_jobs lists jobs compactly with shortened cwd', async () => {
   assert.match(result.content, /cj_b \[completed\]/);
 });
 
-test('coding_backends lists availability and explains the default backend', async () => {
+test('coding_backends reports installed binaries without claiming provider health', async () => {
   const bridge = makeFakeBridge();
   const result = await codingBackendsTool.execute({}, ctx(bridge));
-  assert.match(result.content, /claude-code: available \(\/usr\/local\/bin\/claude\)/);
+  assert.match(result.content, /claude-code: installed \(binary found: \/usr\/local\/bin\/claude\)/);
   assert.match(result.content, /default model claude-sonnet-4-7/);
-  assert.match(result.content, /codex: NOT AVAILABLE/);
+  assert.match(result.content, /codex: NOT INSTALLED \(binary not found\)/);
   assert.match(result.content, /acp\.defaultAgent/);
   assert.match(result.content, /codex requires the Codex CLI/i);
+  assert.match(result.content, /does not probe authentication, balance, or provider health/i);
 });
 
 // ─── Step 31: async-work registration at the tool boundary ──────
@@ -324,7 +333,7 @@ test('coding_run creates an async-work record with raw origin, turn id, and pare
 });
 
 test('coding_continue also registers async work for the resumed job', async () => {
-  const bridge = makeFakeBridge({ job: makeJob({ sessionId: 'sess-1' }) });
+  const bridge = makeFakeBridge({ job: makeJob({ status: 'completed', sessionId: 'sess-1' }) });
   const created: Array<Record<string, unknown>> = [];
   const context = ctx(bridge);
   (context as { workRegistry?: unknown }).workRegistry = {
