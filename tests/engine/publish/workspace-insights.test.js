@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { PublishLedger } from '../../../engine/src/publish/publish-ledger.js';
 import {
   WorkspaceInsightsPublisher,
+  createWorkspaceInsightsStarvationMonitor,
   attemptWorkspaceInsightsStartupCatchUp,
 } from '../../../engine/src/publish/workspace-insights.js';
 
@@ -97,4 +98,110 @@ test('workspace-insights startup catch-up does not write a receipt when no clust
   assert.equal(existsSync(outDir), false);
   assert.equal(ledger.lastAt('workspace_insights'), staleAt);
   assert.ok(ledger.listStarving({ now }).includes('workspace_insights'));
+});
+
+test('workspace-insights starvation monitor catches up workspace targets and leaves other starving targets reportable', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wi5-'));
+  const ledger = new PublishLedger({
+    path: join(dir, 'publish-ledger.jsonl'),
+    starvationFloor: {
+      workspace_insights: 6 * 3600 * 1000,
+      dream_log: 6 * 3600 * 1000,
+    },
+  });
+  const staleAt = 30_000;
+  const now = staleAt + (7 * 3600 * 1000);
+  await ledger.record({ target: 'workspace_insights', artifact: 'old-workspace.md', at: staleAt });
+  await ledger.record({ target: 'dream_log', artifact: 'old-dream.md', at: staleAt });
+
+  const publisher = new WorkspaceInsightsPublisher({
+    outDir: join(dir, 'insights'),
+    cadenceCycles: 50,
+    selectCluster: () => ({ topic: 'test', observations: [], summary: 's' }),
+    ledger,
+    logger: silentLogger,
+  });
+  const monitor = createWorkspaceInsightsStarvationMonitor({
+    ledger,
+    publisher,
+    logger: silentLogger,
+    now: () => now,
+  });
+
+  const starving = await monitor();
+
+  assert.deepEqual(starving, ['dream_log']);
+  assert.ok(!ledger.listStarving({ now }).includes('workspace_insights'));
+  assert.ok(ledger.listStarving({ now }).includes('dream_log'));
+});
+
+test('workspace-insights starvation monitor leaves workspace target starving when no cluster is available', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wi6-'));
+  const ledger = new PublishLedger({
+    path: join(dir, 'publish-ledger.jsonl'),
+    starvationFloor: { workspace_insights: 6 * 3600 * 1000 },
+  });
+  const staleAt = 40_000;
+  const now = staleAt + (7 * 3600 * 1000);
+  await ledger.record({ target: 'workspace_insights', artifact: 'old-workspace.md', at: staleAt });
+
+  const publisher = new WorkspaceInsightsPublisher({
+    outDir: join(dir, 'insights'),
+    cadenceCycles: 50,
+    selectCluster: () => null,
+    ledger,
+    logger: silentLogger,
+  });
+  const monitor = createWorkspaceInsightsStarvationMonitor({
+    ledger,
+    publisher,
+    logger: silentLogger,
+    now: () => now,
+  });
+
+  const starving = await monitor();
+
+  assert.deepEqual(starving, ['workspace_insights']);
+  assert.equal(ledger.lastAt('workspace_insights'), staleAt);
+});
+
+test('workspace-insights starvation monitor collapses concurrent catch-up attempts into a single forced publish', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wi7-'));
+  const ledger = new PublishLedger({
+    path: join(dir, 'publish-ledger.jsonl'),
+    starvationFloor: { workspace_insights: 6 * 3600 * 1000 },
+  });
+  const staleAt = 50_000;
+  const now = staleAt + (7 * 3600 * 1000);
+  await ledger.record({ target: 'workspace_insights', artifact: 'old-workspace.md', at: staleAt });
+
+  let publishCalls = 0;
+  let releasePublish = null;
+  const publishBlocked = new Promise((resolve) => {
+    releasePublish = resolve;
+  });
+  const publisher = {
+    async forcePublish() {
+      publishCalls += 1;
+      await publishBlocked;
+      await ledger.record({ target: 'workspace_insights', artifact: `catch-up-${publishCalls}.md`, at: now });
+      return `catch-up-${publishCalls}.md`;
+    },
+  };
+  const monitor = createWorkspaceInsightsStarvationMonitor({
+    ledger,
+    publisher,
+    logger: silentLogger,
+    now: () => now,
+  });
+
+  const first = monitor();
+  const second = monitor();
+  releasePublish();
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+
+  assert.equal(publishCalls, 1);
+  assert.deepEqual(firstResult, []);
+  assert.deepEqual(secondResult, []);
+  assert.equal(ledger.lastAt('workspace_insights'), now);
 });

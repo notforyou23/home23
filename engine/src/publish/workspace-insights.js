@@ -10,6 +10,37 @@
 import { writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
+function resolveNow(now) {
+  return typeof now === 'function' ? now() : now;
+}
+
+async function attemptWorkspaceInsightsCatchUp({
+  ledger,
+  publisher,
+  now = Date.now(),
+  reason = 'force',
+  logger = console,
+  skippedMessage = `[publish] workspace-insights ${reason} skipped: no cluster available`,
+} = {}) {
+  const effectiveNow = resolveNow(now);
+  const starvingBefore = ledger?.listStarving?.({ now: effectiveNow }) || [];
+  if (!starvingBefore.includes('workspace_insights')) {
+    return { result: null, starvingBefore, starvingAfter: starvingBefore };
+  }
+  if (!publisher?.forcePublish) {
+    return { result: null, starvingBefore, starvingAfter: starvingBefore };
+  }
+  const result = await publisher.forcePublish({ reason });
+  if (!result) {
+    logger.info?.(skippedMessage);
+  }
+  return {
+    result,
+    starvingBefore,
+    starvingAfter: ledger?.listStarving?.({ now: resolveNow(now) }) || [],
+  };
+}
+
 export class WorkspaceInsightsPublisher {
   constructor({ outDir, cadenceCycles = 50, selectCluster, ledger, logger }) {
     if (!outDir) throw new Error('WorkspaceInsightsPublisher requires outDir');
@@ -66,13 +97,43 @@ export async function attemptWorkspaceInsightsStartupCatchUp({
   now = Date.now(),
   logger = console,
 } = {}) {
-  if (!ledger?.listStarving || !publisher?.forcePublish) return null;
-  if (!ledger.listStarving({ now }).includes('workspace_insights')) return null;
-  const result = await publisher.forcePublish({ reason: 'startup-catch-up' });
-  if (!result) {
-    logger.info?.('[publish] workspace-insights startup catch-up skipped: no cluster available');
-  }
+  const { result } = await attemptWorkspaceInsightsCatchUp({
+    ledger,
+    publisher,
+    now,
+    reason: 'startup-catch-up',
+    logger,
+    skippedMessage: '[publish] workspace-insights startup catch-up skipped: no cluster available',
+  });
   return result;
+}
+
+export function createWorkspaceInsightsStarvationMonitor({
+  ledger,
+  publisher,
+  now = () => Date.now(),
+  logger = console,
+} = {}) {
+  let inFlight = null;
+  return async function monitorWorkspaceInsightsStarvation() {
+    if (inFlight) return inFlight;
+    inFlight = (async () => {
+      try {
+        const { starvingAfter } = await attemptWorkspaceInsightsCatchUp({
+          ledger,
+          publisher,
+          now,
+          reason: 'starvation-catch-up',
+          logger,
+          skippedMessage: '[publish] workspace-insights starvation catch-up skipped: no cluster available',
+        });
+        return starvingAfter;
+      } finally {
+        inFlight = null;
+      }
+    })();
+    return inFlight;
+  };
 }
 
 /**

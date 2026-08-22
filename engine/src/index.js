@@ -1110,6 +1110,7 @@ async function main() {
     const {
       WorkspaceInsightsPublisher,
       attemptWorkspaceInsightsStartupCatchUp,
+      createWorkspaceInsightsStarvationMonitor,
       selectHighestConfidenceCluster,
     } = await import('./publish/workspace-insights.js');
     const { DreamLogPublisher } = await import('./publish/dream-log.js');
@@ -1195,10 +1196,20 @@ async function main() {
         });
       } catch (err) { logger.warn?.('[publish] bridge-chat hook failed:', err?.message || err); }
     });
+    const monitorWorkspaceInsightsStarvation = createWorkspaceInsightsStarvationMonitor({
+      ledger: publishLedger,
+      publisher: workspaceInsights,
+      logger,
+    });
     // Periodic starvation check every 5m.
     setInterval(() => {
-      const starving = publishLedger.listStarving();
-      if (starving.length) logger.warn?.(`[publish] starvation: ${starving.join(', ')}`);
+      void monitorWorkspaceInsightsStarvation()
+        .then((starving) => {
+          if (starving.length) logger.warn?.(`[publish] starvation: ${starving.join(', ')}`);
+        })
+        .catch((err) => {
+          logger.warn?.('[publish] starvation monitor failed:', err?.message || err);
+        });
     }, 5 * 60 * 1000).unref?.();
     logger.info(`[publish] layer initialized — workspace=${workspacePath}, cadenceCycles=${cadenceCycles}, starvationTargets=${Object.keys(starvationFloor).join(',') || 'none'}`);
     // Expose publishers so thinking-machine cycle events can trigger them
