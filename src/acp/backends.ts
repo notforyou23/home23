@@ -366,12 +366,162 @@ const codexBackend: CodingBackend = {
   },
 };
 
+// ─── cursor ──────────────────────────────────────────────────
+
+function buildCursorArgs(opts: CodingBackendOptions): string[] {
+  // cwd comes from spawn(); never pass --workspace.
+  const args = ['-p', '--output-format', 'stream-json', '--trust'];
+  // Cursor exposes no --session-id: the CLI mints the chat id itself and
+  // reports it on the init line, so only resume can name one. The bridge must
+  // therefore NOT pre-generate a session id for this backend.
+  if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId);
+  if (opts.model) args.push('--model', opts.model);
+  if (opts.permissionMode === 'bypassPermissions') {
+    args.push('--force');
+  } else if (opts.permissionMode === 'plan' || opts.permissionMode === 'ask') {
+    args.push('--mode', opts.permissionMode);
+  }
+  // 'allowlist' and any other mode: Cursor has no allow/deny tool flags, so we
+  // simply withhold --force and let the CLI's own approval gating apply. That
+  // is never wider than what was asked for; inventing flags would be.
+  //
+  // Cursor also has no effort, system-prompt, or budget flags — reasoning
+  // effort is encoded in the model name (e.g. claude-opus-5-thinking-high),
+  // so opts.effort / appendSystemPrompt / maxBudgetUsd are not mapped.
+  for (const dir of opts.addDirs ?? []) args.push('--add-dir', dir);
+  if (opts.extraArgs?.length) args.push(...opts.extraArgs);
+  args.push(opts.prompt);
+  return args;
+}
+
+/** `{"shellToolCall": {...}}` → tool name "shell". */
+function cursorToolCall(container: Record<string, unknown>): { tool: string; body: Record<string, unknown> } {
+  for (const [key, value] of Object.entries(container)) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const tool = key.replace(/ToolCall$/, '');
+    return { tool: tool || key, body: value as Record<string, unknown> };
+  }
+  return { tool: 'unknown', body: {} };
+}
+
+function parseCursorEvents(line: string): BridgeEvent[] {
+  const trimmed = line.trim();
+  if (!trimmed) return [];
+  let obj: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== 'object') return [otherEvent(trimmed)];
+    obj = parsed as Record<string, unknown>;
+  } catch {
+    return [otherEvent(trimmed)];
+  }
+
+  if (obj.type === 'system' && obj.subtype === 'init') {
+    return [{
+      kind: 'session',
+      sessionId: String(obj.session_id ?? ''),
+      model: typeof obj.model === 'string' ? obj.model : undefined,
+    }];
+  }
+
+  if (obj.type === 'thinking') {
+    // subtype 'delta' carries text; 'completed' is a bare terminator.
+    return typeof obj.text === 'string' && obj.text ? [{ kind: 'thinking', text: obj.text }] : [];
+  }
+
+  if (obj.type === 'tool_call') {
+    // Report each call once, at 'started'. The matching 'completed' line
+    // repeats the whole call plus its result and would double the tool count.
+    if (obj.subtype !== 'started') return [];
+    const container = (obj.tool_call && typeof obj.tool_call === 'object')
+      ? obj.tool_call as Record<string, unknown>
+      : {};
+    const { tool, body } = cursorToolCall(container);
+    const args = (body.args && typeof body.args === 'object') ? body.args as Record<string, unknown> : {};
+    const command = typeof args.command === 'string' ? args.command : '';
+    const description = typeof body.description === 'string' ? body.description : '';
+    return [{
+      kind: 'tool_use',
+      tool,
+      summary: oneLine(command || description || JSON.stringify(args), SUMMARY_MAX),
+    }];
+  }
+
+  if (obj.type === 'assistant') {
+    const message = obj.message as Record<string, unknown> | undefined;
+    const content = Array.isArray(message?.content) ? (message.content as unknown[]) : [];
+    const events: BridgeEvent[] = [];
+    for (const raw of content) {
+      const block = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+      if (block.type === 'text' && typeof block.text === 'string' && block.text) {
+        events.push({ kind: 'text', text: block.text });
+      } else if (block.type === 'tool_use') {
+        events.push({
+          kind: 'tool_use',
+          tool: String(block.name ?? 'unknown'),
+          summary: oneLine(JSON.stringify(block.input ?? {}), SUMMARY_MAX),
+        });
+      }
+    }
+    return events.length ? events : [otherEvent(trimmed)];
+  }
+
+  if (obj.type === 'error') {
+    const message = typeof obj.message === 'string'
+      ? obj.message
+      : typeof obj.error === 'string'
+        ? obj.error
+        : JSON.stringify(obj.error ?? 'Cursor reported an error');
+    return [{ kind: 'result', ok: false, text: bounded(message, RESULT_TEXT_MAX) }];
+  }
+
+  if (obj.type === 'result') {
+    const subtype = String(obj.subtype ?? '');
+    const ok = !obj.is_error && !subtype.startsWith('error');
+    // On success the result text duplicates the final assistant message
+    // verbatim; leave it blank so the bridge uses its tracked lastText and the
+    // tail is not doubled. On failure it is the only description we get.
+    const text = ok
+      ? ''
+      : bounded(typeof obj.result === 'string' && obj.result ? obj.result : (subtype || 'cursor run failed'), RESULT_TEXT_MAX);
+    return [{
+      kind: 'result',
+      ok,
+      text,
+      costUsd: undefined,
+      numTurns: undefined,
+      durationMs: typeof obj.duration_ms === 'number' ? obj.duration_ms : undefined,
+    }];
+  }
+
+  return [otherEvent(trimmed)];
+}
+
+const cursorBackend: CodingBackend = {
+  id: 'cursor',
+  // `cursor-agent` only. NOT plain `cursor`: on this machine /usr/local/bin/cursor
+  // is the Cursor editor's VS Code GUI launcher, which accepts none of these
+  // flags — resolving to it would spawn a silently broken job. Set
+  // acp.backends.cursor.bin to override.
+  binCandidates: ['cursor-agent', '/Users/jtr/.local/bin/cursor-agent'],
+  supportsResume: true,
+  resolveBin(configBin?: string): string | null {
+    return resolveBinFrom(this.binCandidates, configBin);
+  },
+  buildArgs: buildCursorArgs,
+  parseEvents: parseCursorEvents,
+  parseEvent(line: string): BridgeEvent | null {
+    return parseCursorEvents(line)[0] ?? null;
+  },
+};
+
 // ─── Registry + child env ────────────────────────────────────
 
 const BACKENDS: Record<string, CodingBackend> = {
   'grok-build': grokBuildBackend,
   'claude-code': claudeCodeBackend,
   codex: codexBackend,
+  cursor: cursorBackend,
 };
 
 export function getBackend(id: string): CodingBackend | undefined {

@@ -434,6 +434,47 @@ test('a job inside the Home23 checkout auto-isolates into a worktree', async (t)
   }
 });
 
+test('a cursor job gets no pre-generated session id and adopts the one the CLI reports', async () => {
+  // cursor-agent has no --session-id: pre-generating one would record a resume
+  // handle the CLI never heard of. The init line is the only source of truth.
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-acp-bridge-'));
+  const bin = writeFakeCli(root, 'fake-cursor.js', [
+    `process.stdout.write(${JSON.stringify(JSON.stringify({
+      type: 'system', subtype: 'init', session_id: 'c33647ce-8083-463d-b464-6581e2455ff5', model: 'Auto',
+    }))} + "\\n");`,
+    `process.stdout.write(${JSON.stringify(JSON.stringify({
+      type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'patched it' }] },
+    }))} + "\\n");`,
+    `process.stdout.write(${JSON.stringify(JSON.stringify({
+      type: 'result', subtype: 'success', is_error: false, result: 'patched it', duration_ms: 4630,
+    }))} + "\\n");`,
+    'setTimeout(() => process.exit(0), 20);',
+  ].join('\n'));
+  const bridge = makeBridge(root, bin, {
+    allowedAgents: ['claude-code', 'grok-build', 'codex', 'cursor'],
+    backends: { cursor: { bin } },
+  });
+  try {
+    const started = await bridge.startJob({ prompt: 'do the thing', backend: 'cursor' });
+    assert.equal(started.sessionId, undefined);
+    assert.equal(started.argv?.includes('--session-id'), false);
+    assert.equal(started.argv?.includes('--trust'), true);
+
+    const done = await bridge.waitForJob(started.id, 15_000);
+    assert.equal(done.status, 'completed');
+    assert.equal(done.sessionId, 'c33647ce-8083-463d-b464-6581e2455ff5');
+    const receipt = bridge.getReceipt(started.id);
+    assert.equal(receipt?.sessionId, 'c33647ce-8083-463d-b464-6581e2455ff5');
+    // Success result text is blank on purpose; the tail comes from lastText and
+    // is therefore not doubled.
+    assert.equal(receipt?.resultTail, 'patched it');
+  } finally {
+    bridge.dispose();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
 test('normalizeBridgeConfig fails closed when absent, defaults when present, maps builder-era ask to allowlist', () => {
   // Absent block (agent config predating Step 29) must NOT silently enable
   // bypass-authority coding jobs on restart.
@@ -444,7 +485,7 @@ test('normalizeBridgeConfig fails closed when absent, defaults when present, map
   const present = normalizeBridgeConfig({});
   assert.equal(present.enabled, true);
   assert.equal(present.defaultAgent, 'grok-build');
-  assert.deepEqual(present.allowedAgents, ['grok-build', 'claude-code', 'codex']);
+  assert.deepEqual(present.allowedAgents, ['grok-build', 'claude-code', 'codex', 'cursor']);
   assert.equal(present.permissionMode, 'bypassPermissions');
   assert.equal(present.maxConcurrentJobs, 3);
   assert.equal(present.jobTimeoutMs, 6 * 60 * 60 * 1000);

@@ -7,6 +7,7 @@ import type { BridgeConfig, CodingBackendOptions } from '../../src/acp/types.js'
 const grok = getBackend('grok-build')!;
 const claude = getBackend('claude-code')!;
 const codex = getBackend('codex')!;
+const cursor = getBackend('cursor')!;
 
 function baseOpts(overrides: Partial<CodingBackendOptions> = {}): CodingBackendOptions {
   return {
@@ -28,10 +29,11 @@ function config(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 }
 
 test('registry exposes all built-in backends and Grok first', () => {
-  assert.deepEqual(listBackendIds(), ['grok-build', 'claude-code', 'codex']);
+  assert.deepEqual(listBackendIds(), ['grok-build', 'claude-code', 'codex', 'cursor']);
   assert.equal(grok.supportsResume, true);
   assert.equal(claude.supportsResume, true);
   assert.equal(codex.supportsResume, true);
+  assert.equal(cursor.supportsResume, true);
 });
 
 test('grok-build argv maps headless permissions, model, effort, and prompt', () => {
@@ -260,6 +262,193 @@ test('codex parseEvents handles thread, items, completion, and failure', () => {
 
   const unknown = codex.parseEvents!(JSON.stringify({ type: 'something.else' }));
   assert.equal(unknown[0]!.kind, 'other');
+});
+
+// ─── cursor ──────────────────────────────────────────────────
+//
+// Shapes below are transcribed from a live cursor-agent 2026.08.11-e8db854 run
+// (`-p --output-format stream-json --trust --force --model auto`).
+
+test('cursor resolves cursor-agent only, never the cursor editor launcher', () => {
+  assert.deepEqual(cursor.binCandidates, ['cursor-agent', '/Users/jtr/.local/bin/cursor-agent']);
+  // /usr/local/bin/cursor is the Cursor editor's VS Code GUI launcher and
+  // accepts none of the headless flags; it must not be a fallback candidate.
+  assert.equal(cursor.binCandidates.includes('cursor'), false);
+  assert.equal(cursor.resolveBin(process.execPath), process.execPath);
+  assert.equal(cursor.resolveBin('/nonexistent/cursor-agent-xyz'), cursor.resolveBin());
+  const resolved = cursor.resolveBin();
+  if (resolved !== null) assert.ok(path.isAbsolute(resolved));
+});
+
+test('cursor argv is headless stream-json with --trust and prompt last', () => {
+  const args = cursor.buildArgs(baseOpts({ model: 'auto' }));
+  assert.deepEqual(args, [
+    '-p', '--output-format', 'stream-json', '--trust',
+    '--model', 'auto',
+    '--force',
+    'fix the bug',
+  ]);
+});
+
+test('cursor never emits --session-id and pre-generated ids are ignored', () => {
+  // Cursor has no --session-id flag; the bridge must not pre-generate one and
+  // the builder must not smuggle it in if one is passed anyway.
+  const args = cursor.buildArgs(baseOpts({ newSessionId: 'uuid-1' }));
+  assert.equal(args.includes('--session-id'), false);
+  assert.equal(args.includes('uuid-1'), false);
+  assert.equal(args.includes('--resume'), false);
+});
+
+test('cursor resume passes --resume <chatId> and keeps the prompt last', () => {
+  const args = cursor.buildArgs(baseOpts({ resumeSessionId: 'c33647ce-8083', newSessionId: 'ignored' }));
+  assert.equal(args[args.indexOf('--resume') + 1], 'c33647ce-8083');
+  assert.equal(args.includes('--session-id'), false);
+  assert.equal(args.includes('ignored'), false);
+  assert.equal(args[args.length - 1], 'fix the bug');
+});
+
+test('cursor withholds --force outside bypass and invents no allow/deny or effort flags', () => {
+  const gated = cursor.buildArgs(baseOpts({
+    permissionMode: 'allowlist',
+    allowedTools: ['Bash(git:*)'],
+    disallowedTools: ['WebFetch'],
+    effort: 'high',
+    maxBudgetUsd: 5,
+    appendSystemPrompt: 'be terse',
+  }));
+  assert.equal(gated.includes('--force'), false);
+  assert.equal(gated.includes('--yolo'), false);
+  for (const unsupported of ['--allow', '--deny', '--allowedTools', '--disallowedTools',
+    '--effort', '--reasoning-effort', '--max-budget-usd', '--append-system-prompt']) {
+    assert.equal(gated.includes(unsupported), false, `unsupported flag leaked: ${unsupported}`);
+  }
+  assert.deepEqual(gated, ['-p', '--output-format', 'stream-json', '--trust', 'fix the bug']);
+
+  // plan/ask are real cursor modes and map straight through.
+  assert.equal(cursor.buildArgs(baseOpts({ permissionMode: 'plan' })).join(' ').includes('--mode plan'), true);
+  assert.equal(cursor.buildArgs(baseOpts({ permissionMode: 'ask' })).join(' ').includes('--mode ask'), true);
+});
+
+test('cursor passes repeated --add-dir and extraArgs before the final prompt', () => {
+  const args = cursor.buildArgs(baseOpts({
+    addDirs: ['/a', '/b'],
+    extraArgs: ['--approve-mcps'],
+  }));
+  assert.equal(args.filter(a => a === '--add-dir').length, 2);
+  assert.equal(args[args.indexOf('/a') - 1], '--add-dir');
+  const extraIdx = args.indexOf('--approve-mcps');
+  assert.ok(extraIdx > -1 && extraIdx < args.length - 1);
+  assert.equal(args[args.length - 1], 'fix the bug');
+  // cwd comes from spawn(); never --workspace.
+  assert.equal(args.includes('--workspace'), false);
+});
+
+test('cursor parses init, thinking deltas, assistant text, and shell tool calls', () => {
+  const init = cursor.parseEvents!(JSON.stringify({
+    type: 'system', subtype: 'init', apiKeySource: 'login',
+    session_id: 'c33647ce-8083-463d-b464-6581e2455ff5', model: 'Auto', permissionMode: 'default',
+  }));
+  assert.deepEqual(init, [{
+    kind: 'session', sessionId: 'c33647ce-8083-463d-b464-6581e2455ff5', model: 'Auto',
+  }]);
+
+  assert.deepEqual(
+    cursor.parseEvents!(JSON.stringify({ type: 'thinking', subtype: 'delta', text: 'Running cat f.txt to' })),
+    [{ kind: 'thinking', text: 'Running cat f.txt to' }],
+  );
+  // The bare 'completed' terminator carries no text and must not emit noise.
+  assert.deepEqual(cursor.parseEvents!(JSON.stringify({ type: 'thinking', subtype: 'completed' })), []);
+
+  assert.deepEqual(
+    cursor.parseEvents!(JSON.stringify({
+      type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'The contents are hi' }] },
+    })),
+    [{ kind: 'text', text: 'The contents are hi' }],
+  );
+
+  const toolStarted = cursor.parseEvents!(JSON.stringify({
+    type: 'tool_call', subtype: 'started', call_id: 'tool_1ec6',
+    tool_call: {
+      shellToolCall: {
+        args: { command: 'cat f.txt', workingDirectory: '/private/tmp/cursorprobe' },
+        description: 'Read contents of f.txt',
+      },
+    },
+  }));
+  assert.deepEqual(toolStarted, [{ kind: 'tool_use', tool: 'shell', summary: 'cat f.txt' }]);
+
+  // 'completed' repeats the same call plus its result; reporting it again
+  // would double the receipt's tool count.
+  assert.deepEqual(cursor.parseEvents!(JSON.stringify({
+    type: 'tool_call', subtype: 'completed', call_id: 'tool_1ec6',
+    tool_call: { shellToolCall: { args: { command: 'cat f.txt' }, result: { success: { exitCode: 0 } } } },
+  })), []);
+
+  // Non-shell calls fall back to the description when there is no command.
+  const readCall = cursor.parseEvents!(JSON.stringify({
+    type: 'tool_call', subtype: 'started',
+    tool_call: { readToolCall: { args: { path: 'a.ts' }, description: 'Read a.ts' } },
+  }));
+  assert.deepEqual(readCall, [{ kind: 'tool_use', tool: 'read', summary: 'Read a.ts' }]);
+});
+
+test('cursor tool_use summaries are one-line and bounded to 300 chars', () => {
+  const events = cursor.parseEvents!(JSON.stringify({
+    type: 'tool_call', subtype: 'started',
+    tool_call: { shellToolCall: { args: { command: `echo a\nb\n${'x'.repeat(500)}` } } },
+  }));
+  const summary = (events[0] as { summary: string }).summary;
+  assert.equal(summary.includes('\n'), false);
+  assert.ok(summary.length <= 300);
+});
+
+test('cursor success result blanks its text so the bridge tail is not doubled', () => {
+  // The live result line repeats the final assistant message verbatim; the
+  // bridge falls back to its tracked lastText when result.text is empty.
+  const result = cursor.parseEvents!(JSON.stringify({
+    type: 'result', subtype: 'success', duration_ms: 4630, duration_api_ms: 4630,
+    is_error: false, result: 'The contents are hi',
+    session_id: 'c33647ce', usage: { inputTokens: 14495, outputTokens: 184 },
+  }));
+  assert.deepEqual(result, [{
+    kind: 'result', ok: true, text: '', costUsd: undefined, numTurns: undefined, durationMs: 4630,
+  }]);
+});
+
+test('cursor failures produce failed results that keep their message', () => {
+  const flagged = cursor.parseEvents!(JSON.stringify({
+    type: 'result', subtype: 'success', is_error: true, result: 'auth failed', duration_ms: 12,
+  }));
+  assert.deepEqual(flagged, [{
+    kind: 'result', ok: false, text: 'auth failed', costUsd: undefined, numTurns: undefined, durationMs: 12,
+  }]);
+
+  const errorSubtype = cursor.parseEvents!(JSON.stringify({
+    type: 'result', subtype: 'error_during_execution', result: '',
+  }));
+  assert.equal((errorSubtype[0] as { ok: boolean }).ok, false);
+  assert.equal((errorSubtype[0] as { text: string }).text, 'error_during_execution');
+
+  const typed = cursor.parseEvents!(JSON.stringify({ type: 'error', message: 'rate limit exceeded' }));
+  assert.deepEqual(typed, [{ kind: 'result', ok: false, text: 'rate limit exceeded' }]);
+});
+
+test('cursor tolerates user echo lines, blank lines, and non-JSON output', () => {
+  const echo = cursor.parseEvents!(JSON.stringify({
+    type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'fix the bug' }] },
+  }));
+  assert.equal(echo[0]!.kind, 'other');
+
+  assert.deepEqual(cursor.parseEvents!(''), []);
+  assert.equal(cursor.parseEvent(''), null);
+  // A bad --model makes the CLI print plain text, not JSON.
+  assert.equal(cursor.parseEvents!('Cannot use this model: nope')[0]!.kind, 'other');
+
+  // parseEvent stays a first-event wrapper.
+  assert.deepEqual(
+    cursor.parseEvent(JSON.stringify({ type: 'thinking', subtype: 'delta', text: 'hm' })),
+    { kind: 'thinking', text: 'hm' },
+  );
 });
 
 test('resolveBin honors an existing absolute config bin and falls back to candidates otherwise', () => {

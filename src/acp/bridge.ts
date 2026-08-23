@@ -108,7 +108,7 @@ export function normalizeBridgeConfig(raw: unknown): BridgeConfig {
     // Absent block → disabled (opt-in). Present block → enabled unless explicit false.
     enabled: present && src.enabled !== false,
     defaultAgent: typeof src.defaultAgent === 'string' && src.defaultAgent ? src.defaultAgent : 'grok-build',
-    allowedAgents: Array.isArray(src.allowedAgents) ? src.allowedAgents.map(String) : ['grok-build', 'claude-code', 'codex'],
+    allowedAgents: Array.isArray(src.allowedAgents) ? src.allowedAgents.map(String) : ['grok-build', 'claude-code', 'codex', 'cursor'],
     permissionMode,
     maxConcurrentJobs: num(src.maxConcurrentJobs, DEFAULT_MAX_CONCURRENT),
     jobTimeoutMs: num(src.jobTimeoutMs, DEFAULT_JOB_TIMEOUT_MS),
@@ -242,6 +242,9 @@ export class ACPBridge {
       if (backendId === 'codex') {
         throw new Error('codex CLI not found; install with `npm i -g @openai/codex` or set acp.backends.codex.bin');
       }
+      if (backendId === 'cursor') {
+        throw new Error('cursor-agent CLI not found (the backend needs `cursor-agent`, not the `cursor` editor launcher); install it or set acp.backends.cursor.bin');
+      }
       throw new Error(`${backendId} CLI not found; set acp.backends['${backendId}'].bin to its path`);
     }
     if (opts.resumeSessionId && !backend.supportsResume) {
@@ -286,6 +289,10 @@ export class ACPBridge {
       else effectiveIsolation = 'none';
     }
 
+    // Only backends that accept an externally supplied id for a NEW session
+    // (claude --session-id, grok --session-id) get one pre-generated. Cursor
+    // has no such flag: it mints its own chat id and reports it on the init
+    // line, which the stream handler then persists as the resume handle.
     const newSessionId = (backendId === 'claude-code' || backendId === 'grok-build') && !opts.resumeSessionId ? randomUUID() : undefined;
     const backendOpts: CodingBackendOptions = {
       prompt,
