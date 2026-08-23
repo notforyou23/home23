@@ -7738,6 +7738,13 @@ class Orchestrator {
           // create a new backup while the Data volume is already tight; the live
           // sidecars remain authoritative and the maintenance guard purges backups as
           // a last-resort recovery when the verifier is failing.
+          // 2026-08-23: the permanent guard is the minFreeBytes floor below.
+          // maybeBackup projects the copy's byte size and refuses unless
+          // projectedBytes + minFreeBytes still fits the free space at the backup
+          // destination, so a backup is created only when >= 50 GiB remains free
+          // after the copy. The coarse statfs pre-check is only an early-out that
+          // avoids the source pin on an obviously tight volume; it is strictly
+          // weaker than the floor and never authorises a backup the floor refuses.
           try {
             // macOS keeps user data on /System/Volumes/Data; on other
             // platforms fall back to the backup destination's own mount.
@@ -7760,12 +7767,20 @@ class Orchestrator {
           const result = await maybeBackup(this.logsDir, {
             intervalHours: 6,
             retention: 1,
+            minFreeBytes: 50 * 1024 ** 3,
             logger: this.logger,
           });
           // Only the creation log is noisy enough to surface; 'within-interval'
           // skips are normal.
           if (!result.created && result.reason && result.reason !== 'within-interval') {
-            this.logger?.warn?.('[brain-backup] skipped', { reason: result.reason });
+            this.logger?.warn?.('[brain-backup] skipped', {
+              reason: result.reason,
+              ...(result.reason === 'insufficient-disk' && {
+                projectedBytes: result.projectedBytes,
+                minFreeBytes: result.minFreeBytes,
+                availableBytes: result.availableBytes,
+              }),
+            });
           }
         } catch (err) {
           this.logger?.warn?.('[brain-backup] task errored', { error: err.message });

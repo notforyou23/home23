@@ -273,6 +273,24 @@ test('maybeBackup refuses projected bytes that would breach the configured free-
   }
 });
 
+// The orchestrator's periodic backup is the recurrent cause of macOS disk
+// pressure, so it must hand maybeBackup a 50 GiB post-copy floor: combined with
+// the reserve check above, a backup is created only when at least 50 GiB still
+// remains free after the projected copy.
+test('the orchestrator periodic backup passes a 50 GiB free-space floor', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '../../../engine/src/core/orchestrator.js'),
+    'utf8',
+  );
+  const periodic = [...source.matchAll(/maybeBackup\(this\.logsDir, \{([^}]*)\}/g)]
+    .map((match) => match[1])
+    .filter((options) => /intervalHours:\s*6\b/.test(options));
+  assert.equal(periodic.length, 1, 'expected exactly one periodic maybeBackup call site');
+  const floor = periodic[0].match(/minFreeBytes:\s*(\d+) \* 1024 \*\* 3/);
+  assert.ok(floor, `periodic backup must pass an explicit minFreeBytes floor: ${periodic[0]}`);
+  assert.equal(Number(floor[1]) * 1024 ** 3, 50 * 1024 ** 3);
+});
+
 test('maybeBackup keeps a native source pin until rename so retirement cannot remove copied files', async () => {
   const { home23Root, brainDir } = createHomeFixture('brain-backup-native-retirement-');
   writeFileSync(path.join(brainDir, 'state.json.gz'), 'state\n');
