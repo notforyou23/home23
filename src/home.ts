@@ -93,7 +93,8 @@ import {
   createQueryNotificationJsonParser,
   createQueryTerminalNotificationHandler,
 } from './routes/query-notifications.js';
-import { createChatHistoryHandler, createChatListHandler } from './routes/chat-history.js';
+import { ConversationMetadataStore } from './chat/conversation-metadata.js';
+import { createChatHistoryHandler, createChatListHandler, createChatMetadataHandler } from './routes/chat-history.js';
 import { resolveQueryNotebookBridgeToken } from './query-notebook-credential-config.js';
 import { syncSharedSkillsRegistry } from './skills/runtime.js';
 import { PromoterWorker } from './workers/promoter.js';
@@ -1900,9 +1901,15 @@ async function main(): Promise<void> {
   bridgeApp.get('/api/device/registry', createListDevicesHandler(deviceConfig));
 
   // Chat history routes (iOS initial load + conversation list)
-  const historyRouteConfig = { agentName: AGENT_NAME, history, token: bridgeToken || undefined };
+  const historyRouteConfig = {
+    agentName: AGENT_NAME,
+    history,
+    token: bridgeToken || undefined,
+    metadata: new ConversationMetadataStore(join(CONVERSATIONS_DIR, '.conversation-metadata.json')),
+  };
   bridgeApp.get('/api/chat/history', createChatHistoryHandler(historyRouteConfig));
   bridgeApp.get('/api/chat/conversations', createChatListHandler(historyRouteConfig));
+  bridgeApp.patch('/api/chat/conversations/:chatId', createChatMetadataHandler(historyRouteConfig));
 
   // Step 24 — Bridge-chat inject route for the engine-side publisher.
   // The engine's BridgeChatPublisher POSTs salient observations here so

@@ -250,7 +250,8 @@
         "count": { "type": "integer", "minimum": 0 },
         "lastTs": { "type": ["string", "null"] },
         "agent": { "type": ["string", "null"] },
-        "title": { "type": ["string", "null"] }
+        "title": { "type": ["string", "null"] },
+        "pinned": { "type": "boolean" }
       }
     },
     "conversationsResponse": {
