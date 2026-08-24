@@ -95,6 +95,7 @@ import {
 } from './routes/query-notifications.js';
 import { ConversationMetadataStore } from './chat/conversation-metadata.js';
 import { createChatHistoryHandler, createChatListHandler, createChatMetadataHandler } from './routes/chat-history.js';
+import { createRealtimeSessionHandler, createRealtimeSessionTextParser } from './routes/chat-realtime.js';
 import { resolveQueryNotebookBridgeToken } from './query-notebook-credential-config.js';
 import { syncSharedSkillsRegistry } from './skills/runtime.js';
 import { PromoterWorker } from './workers/promoter.js';
@@ -1874,6 +1875,17 @@ async function main(): Promise<void> {
   bridgeApp.get('/api/chat/turn-status', createTurnStatusHandler(chatTurnConfig));
   bridgeApp.get('/api/chat/pending', createPendingTurnsHandler(chatTurnConfig));
   bridgeApp.get('/api/chat/models', createModelsHandler(chatTurnConfig));
+  bridgeApp.post(
+    '/api/chat/realtime/session',
+    createRealtimeSessionTextParser(),
+    createRealtimeSessionHandler({
+      agentName: AGENT_NAME,
+      agent,
+      history,
+      token: bridgeToken || undefined,
+      openaiApiKey: resolveApiKey('openai'),
+    }),
+  );
   bridgeApp.get('/api/chat/media', async (req, res) => {
     const filePath = req.query.path;
     if (!filePath || typeof filePath !== 'string') {
