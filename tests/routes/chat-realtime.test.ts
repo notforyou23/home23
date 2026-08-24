@@ -17,31 +17,60 @@ const SAMPLE_SDP = 'v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n';
 
 type AppendCall = { chatId: string; role: string; content: string };
 
-function makeWs(events: Array<Record<string, unknown>>): RealtimeWebSocketLike {
+type TestRealtimeWebSocket = RealtimeWebSocketLike & {
+  sent: string[];
+  emit(event: 'open' | 'message' | 'close' | 'error', ...args: unknown[]): void;
+  waitForSent(count: number): Promise<void>;
+};
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function makeWs(events: Array<Record<string, unknown>>): TestRealtimeWebSocket {
   const handlers = new Map<string, Array<(...args: unknown[]) => void>>();
   const sent: string[] = [];
+  const sendWaiters: Array<{ count: number; resolve(): void }> = [];
   let started = false;
+  const emit = (event: 'open' | 'message' | 'close' | 'error', ...args: unknown[]) => {
+    for (const handler of handlers.get(event) ?? []) handler(...args);
+  };
   const start = () => {
     if (started) return;
     started = true;
-    for (const h of handlers.get('open') ?? []) h();
+    emit('open');
     for (const event of events) {
-      for (const h of handlers.get('message') ?? []) h(JSON.stringify(event));
+      emit('message', JSON.stringify(event));
     }
   };
-  const ws: RealtimeWebSocketLike = {
+  const ws: TestRealtimeWebSocket = {
     on(event, handler) {
       const list = handlers.get(event) ?? [];
       list.push(handler);
       handlers.set(event, list);
       if (event === 'message') queueMicrotask(start);
     },
-    send(data) { sent.push(data); },
-    close() {
-      for (const h of handlers.get('close') ?? []) h();
+    send(data) {
+      sent.push(data);
+      for (let i = sendWaiters.length - 1; i >= 0; i--) {
+        if (sent.length < sendWaiters[i]!.count) continue;
+        sendWaiters.splice(i, 1)[0]!.resolve();
+      }
+    },
+    close() { emit('close'); },
+    sent,
+    emit,
+    waitForSent(count) {
+      if (sent.length >= count) return Promise.resolve();
+      return new Promise<void>(resolve => sendWaiters.push({ count, resolve }));
     },
   };
-  (ws as RealtimeWebSocketLike & { sent: string[] }).sent = sent;
   return ws;
 }
 
@@ -342,6 +371,170 @@ test('realtime response.done function-call output dispatches consult_home23', as
   await new Promise(r => setTimeout(r, 50));
 
   assert.equal(getConsultCalls(), 1);
+});
+
+test('realtime consult_home23 wraps the question and uses the bounded voice turn contract', async (t) => {
+  const question = 'Is the sauna heating now?\nInclude the current temperature.';
+  const infoLines: string[] = [];
+  const originalInfo = console.info;
+  console.info = (...args: unknown[]) => { infoLines.push(args.map(String).join(' ')); };
+  t.after(() => { console.info = originalInfo; });
+
+  let runCall: { chatId: unknown; prompt: unknown; options: unknown } | undefined;
+  const ws = makeWs([{
+    type: 'response.function_call_arguments.done',
+    call_id: 'fn_voice_contract',
+    arguments: JSON.stringify({ question }),
+  }]);
+  const { base } = startApp(t, {
+    fetchImpl: async () => new Response('v=0\r\nok\r\n', {
+      status: 200,
+      headers: { Location: 'https://api.openai.com/v1/realtime/calls/call_voice_contract' },
+    }),
+    createWebSocket: () => ws,
+    agent: {
+      runWithTurn: async (...args: unknown[]) => {
+        runCall = { chatId: args[0], prompt: args[1], options: args[2] };
+        return { turnId: 't_voice_contract', response: Promise.resolve({ text: 'The sauna is heating.' }) };
+      },
+    },
+  });
+
+  const res = await fetch(`${base}/api/chat/realtime/session?chatId=ios_voice`, {
+    method: 'POST',
+    ...AUTH_SDP,
+    body: SAMPLE_SDP,
+  });
+  assert.equal(res.status, 200);
+  await ws.waitForSent(2);
+
+  assert.ok(runCall);
+  assert.equal(runCall.chatId, 'voice-consult:call_voice_contract');
+  assert.equal(typeof runCall.prompt, 'string');
+  const prompt = runCall.prompt as string;
+  assert.match(prompt, /realtime voice tool consult/i);
+  assert.match(prompt, /use tools immediately/i);
+  assert.match(prompt, /do not narrate progress/i);
+  assert.match(prompt, /do not use TTS/i);
+  assert.match(prompt, /do not (?:claim|report).*pending or running/i);
+  assert.match(prompt, /at most 2 tool calls/i);
+  assert.match(prompt, /one concise factual answer/i);
+  assert.match(prompt, /cannot be obtained promptly.*say that plainly/i);
+  assert.match(prompt, /do not start.*durable.*background/i);
+  assert.ok(prompt.endsWith(`Actual user question:\n${question}`));
+  assert.deepEqual(runCall.options, {
+    modelOverride: { provider: 'openai-codex', model: 'gpt-5.4-mini' },
+    effort: 'low',
+    firstTokenTimeoutMs: 8_000,
+    inactivityMs: 20_000,
+    hardDurationMs: 30_000,
+  });
+
+  const completion = infoLines.find(line => line.includes('function_call_complete'));
+  assert.ok(completion);
+  assert.match(completion, /status=success/);
+  assert.match(completion, /elapsed_ms=\d+/);
+  assert.equal(completion.includes(question), false);
+});
+
+test('realtime consult_home23 returns a user-safe answer when the bounded turn fails', async (t) => {
+  const response = deferred<{ text: string }>();
+  const consultStarted = deferred<void>();
+  const warnLines: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnLines.push(args.map(String).join(' ')); };
+  t.after(() => { console.warn = originalWarn; });
+
+  const ws = makeWs([{
+    type: 'response.function_call_arguments.done',
+    call_id: 'fn_voice_failure',
+    arguments: JSON.stringify({ question: 'What is the current house state?' }),
+  }]);
+  const { base } = startApp(t, {
+    fetchImpl: async () => new Response('v=0\r\nok\r\n', {
+      status: 200,
+      headers: { Location: 'https://api.openai.com/v1/realtime/calls/call_voice_failure' },
+    }),
+    createWebSocket: () => ws,
+    agent: {
+      runWithTurn: async () => {
+        consultStarted.resolve();
+        return { turnId: 't_voice_failure', response: response.promise };
+      },
+    },
+  });
+
+  const res = await fetch(`${base}/api/chat/realtime/session?chatId=ios_voice`, {
+    method: 'POST',
+    ...AUTH_SDP,
+    body: SAMPLE_SDP,
+  });
+  assert.equal(res.status, 200);
+  await consultStarted.promise;
+  response.reject(new Error('private provider failure at /internal/secret-path'));
+  await ws.waitForSent(2);
+
+  const outputEvent = JSON.parse(ws.sent[0]!) as {
+    item: { output: string };
+  };
+  const output = JSON.parse(outputEvent.item.output) as { answer: string };
+  assert.match(output.answer, /could not obtain.*promptly/i);
+  assert.equal(output.answer.includes('private provider failure'), false);
+  assert.equal(output.answer.includes('/internal/secret-path'), false);
+  assert.deepEqual(JSON.parse(ws.sent[1]!), { type: 'response.create' });
+
+  const completion = warnLines.find(line => line.includes('function_call_complete'));
+  assert.ok(completion);
+  assert.match(completion, /status=failure/);
+  assert.match(completion, /elapsed_ms=\d+/);
+  assert.equal(completion.includes('private provider failure'), false);
+});
+
+test('realtime consult_home23 drops a late result after the exact session disconnects', async (t) => {
+  const response = deferred<{ text: string }>();
+  const consultStarted = deferred<void>();
+  const warnLines: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnLines.push(args.map(String).join(' ')); };
+  t.after(() => { console.warn = originalWarn; });
+
+  const ws = makeWs([{
+    type: 'response.function_call_arguments.done',
+    call_id: 'fn_voice_late',
+    arguments: JSON.stringify({ question: 'Is the sauna ready?' }),
+  }]);
+  const { base } = startApp(t, {
+    fetchImpl: async () => new Response('v=0\r\nok\r\n', {
+      status: 200,
+      headers: { Location: 'https://api.openai.com/v1/realtime/calls/call_voice_late' },
+    }),
+    createWebSocket: () => ws,
+    agent: {
+      runWithTurn: async () => {
+        consultStarted.resolve();
+        return { turnId: 't_voice_late', response: response.promise };
+      },
+    },
+  });
+
+  const res = await fetch(`${base}/api/chat/realtime/session?chatId=ios_voice`, {
+    method: 'POST',
+    ...AUTH_SDP,
+    body: SAMPLE_SDP,
+  });
+  assert.equal(res.status, 200);
+  await consultStarted.promise;
+  ws.emit('close', 1006);
+  response.resolve({ text: 'Late internal answer that must be dropped.' });
+  await response.promise;
+  await new Promise<void>(resolve => setImmediate(resolve));
+
+  assert.deepEqual(ws.sent, []);
+  const dropped = warnLines.find(line => line.includes('function_call_result_dropped'));
+  assert.ok(dropped);
+  assert.match(dropped, /reason=session_inactive/);
+  assert.match(dropped, /elapsed_ms=\d+/);
+  assert.equal(dropped.includes('Late internal answer'), false);
 });
 
 test('realtime consult_home23 dedupes the same call across event shapes', async (t) => {

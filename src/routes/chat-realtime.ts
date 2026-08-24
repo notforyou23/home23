@@ -14,6 +14,14 @@ const INSTRUCTIONS_MAX_CHARS = 12_000;
 const CONSULT_QUESTION_MAX = 4000;
 const DEFAULT_MAX_ACTIVE_SESSIONS = 8;
 const SESSION_IDLE_MS = 30 * 60_000;
+const VOICE_CONSULT_FAILURE_ANSWER = 'Home23 could not obtain a reliable answer promptly. Please try again.';
+const VOICE_CONSULT_TURN_OPTIONS = {
+  modelOverride: { provider: 'openai-codex', model: 'gpt-5.4-mini' },
+  effort: 'low',
+  firstTokenTimeoutMs: 8_000,
+  inactivityMs: 20_000,
+  hardDurationMs: 30_000,
+} as const;
 
 export interface RealtimeWebSocketLike {
   on(event: 'open' | 'message' | 'close' | 'error', handler: (...args: unknown[]) => void): void;
@@ -179,6 +187,22 @@ function logSideband(
   console[level](line);
 }
 
+function buildVoiceConsultPrompt(question: string): string {
+  return [
+    'This is a realtime voice tool consult. Treat it as a one-shot request.',
+    'Use tools immediately. Do not narrate progress. Do not use TTS. Do not claim or report work as pending or running.',
+    'Do not start durable or background work, and use at most 2 tool calls.',
+    'Return one concise factual answer. If current state cannot be obtained promptly, say that plainly.',
+    '',
+    'Actual user question:',
+    question,
+  ].join('\n');
+}
+
+function isExactSessionActive(session: ActiveRealtimeSession): boolean {
+  return activeByCallId.get(session.callId) === session;
+}
+
 function clearSession(callId: string, closeSocket = true): void {
   const session = activeByCallId.get(callId);
   if (!session) return;
@@ -268,17 +292,38 @@ async function handleConsultHome23(
   );
 
   const consultChatId = `voice-consult:${session.callId}`;
-  let answer = '';
+  const startedAtMs = Date.now();
+  let answer = VOICE_CONSULT_FAILURE_ANSWER;
+  let status: 'success' | 'failure' = 'failure';
   try {
-    const { response } = await config.agent.runWithTurn(consultChatId, question, {
-      hardDurationMs: 120_000,
-      inactivityMs: 90_000,
-    });
+    const prompt = buildVoiceConsultPrompt(question);
+    const { response } = await config.agent.runWithTurn(consultChatId, prompt, VOICE_CONSULT_TURN_OPTIONS);
     const result = await response;
-    answer = result.text?.trim() || 'No answer returned.';
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    answer = `Home23 consult failed: ${msg.slice(0, 500)}`;
+    const text = result.text?.trim();
+    if (text) {
+      answer = text;
+      status = 'success';
+    }
+  } catch {
+    // The realtime model receives only the stable user-safe answer above.
+  }
+
+  const elapsedMs = Math.max(0, Date.now() - startedAtMs);
+  logSideband(
+    status === 'success' ? 'info' : 'warn',
+    'function_call_complete',
+    session.callId,
+    `function_call_id=${diagnosticToken(callId)} source=${diagnosticToken(source)} status=${status} elapsed_ms=${elapsedMs}`,
+  );
+
+  if (!isExactSessionActive(session)) {
+    logSideband(
+      'warn',
+      'function_call_result_dropped',
+      session.callId,
+      `function_call_id=${diagnosticToken(callId)} source=${diagnosticToken(source)} status=${status} elapsed_ms=${elapsedMs} reason=session_inactive`,
+    );
+    return;
   }
 
   session.ws.send(JSON.stringify({
