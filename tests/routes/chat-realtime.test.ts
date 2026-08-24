@@ -421,6 +421,12 @@ test('realtime consult_home23 wraps the question and uses the bounded voice turn
   assert.match(prompt, /one concise factual answer/i);
   assert.match(prompt, /cannot be obtained promptly.*say that plainly/i);
   assert.match(prompt, /do not start.*durable.*background/i);
+  assert.ok(prompt.includes([
+    'For sauna/Huum temperature or status, you MUST read GET http://127.0.0.1:5002/home23/api/tiles/sauna-control/data (or the tile.sauna-control sensor).',
+    'Use content.value as current temperature and content.status as overall state.',
+    'Read Door and Heating from the content.metrics entries whose label is Door or Heating; do not use content.door or content.heating.',
+    'Never treat a missing Home Assistant area named sauna or zero entities there as evidence that the sauna is unavailable.',
+  ].join('\n')));
   assert.ok(prompt.endsWith(`Actual user question:\n${question}`));
   assert.deepEqual(runCall.options, {
     modelOverride: { provider: 'openai-codex', model: 'gpt-5.4-mini' },
