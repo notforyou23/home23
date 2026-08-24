@@ -4,6 +4,8 @@ import express from 'express';
 import type { AddressInfo } from 'node:net';
 import type { StoredMessage } from '../../src/agent/history.ts';
 import {
+  buildRealtimeInstructions,
+  buildRealtimeSessionPayload,
   createRealtimeSessionHandler,
   createRealtimeSessionTextParser,
   _resetRealtimeSessionsForTests,
@@ -112,6 +114,22 @@ const AUTH_SDP = {
     'Content-Type': 'application/sdp',
   },
 };
+
+test('realtime instructions require actual Home23 tool calls and prohibit fake pending state', () => {
+  const instructions = buildRealtimeInstructions('jerry', { load: () => [] }, 'ios_voice');
+
+  assert.match(instructions, /MUST call consult_home23 immediately/i);
+  assert.match(instructions, /current state.*tools.*files.*brain lookup.*house or device state.*actions/i);
+  assert.match(instructions, /Do not say.*checking.*running.*waiting.*unless.*emitted the function call/i);
+  assert.match(instructions, /Never invent.*pending.*stuck.*tool state/i);
+  assert.match(instructions, /Keep spoken replies concise/i);
+});
+
+test('realtime session payload enables automatic tool choice', () => {
+  const payload = buildRealtimeSessionPayload('test instructions');
+
+  assert.equal(payload.tool_choice, 'auto');
+});
 
 test('realtime session requires auth', async (t) => {
   const { base } = startApp(t);
@@ -238,19 +256,123 @@ test('realtime sideband persists transcripts exactly once', async (t) => {
   ]);
 });
 
-test('realtime consult_home23 dedupes duplicate function calls', async (t) => {
+test('realtime arguments-done event without a name dispatches consult_home23', async (t) => {
+  const ws = makeWs([{
+    type: 'response.function_call_arguments.done',
+    call_id: 'fn_no_name',
+    arguments: JSON.stringify({ question: 'what is up?' }),
+  }]);
+  const { base, getConsultCalls } = startApp(t, {
+    fetchImpl: async () => new Response('v=0\r\nok\r\n', {
+      status: 200,
+      headers: { Location: 'https://api.openai.com/v1/realtime/calls/call_fn_no_name' },
+    }),
+    createWebSocket: () => ws,
+  });
+
+  const res = await fetch(`${base}/api/chat/realtime/session?chatId=ios_voice`, {
+    method: 'POST',
+    ...AUTH_SDP,
+    body: SAMPLE_SDP,
+  });
+  assert.equal(res.status, 200);
+  await new Promise(r => setTimeout(r, 50));
+
+  assert.equal(getConsultCalls(), 1);
+});
+
+test('realtime completed output-item function call dispatches consult_home23', async (t) => {
+  const ws = makeWs([{
+    type: 'response.output_item.done',
+    item: {
+      type: 'function_call',
+      status: 'completed',
+      name: 'consult_home23',
+      call_id: 'fn_item',
+      arguments: JSON.stringify({ question: 'check the sauna' }),
+    },
+  }]);
+  const { base, getConsultCalls } = startApp(t, {
+    fetchImpl: async () => new Response('v=0\r\nok\r\n', {
+      status: 200,
+      headers: { Location: 'https://api.openai.com/v1/realtime/calls/call_fn_item' },
+    }),
+    createWebSocket: () => ws,
+  });
+
+  const res = await fetch(`${base}/api/chat/realtime/session?chatId=ios_voice`, {
+    method: 'POST',
+    ...AUTH_SDP,
+    body: SAMPLE_SDP,
+  });
+  assert.equal(res.status, 200);
+  await new Promise(r => setTimeout(r, 50));
+
+  assert.equal(getConsultCalls(), 1);
+});
+
+test('realtime response.done function-call output dispatches consult_home23', async (t) => {
+  const ws = makeWs([{
+    type: 'response.done',
+    response: {
+      status: 'completed',
+      output: [{
+        type: 'function_call',
+        status: 'completed',
+        name: 'consult_home23',
+        call_id: 'fn_response',
+        arguments: JSON.stringify({ question: 'check the brain' }),
+      }],
+    },
+  }]);
+  const { base, getConsultCalls } = startApp(t, {
+    fetchImpl: async () => new Response('v=0\r\nok\r\n', {
+      status: 200,
+      headers: { Location: 'https://api.openai.com/v1/realtime/calls/call_fn_response' },
+    }),
+    createWebSocket: () => ws,
+  });
+
+  const res = await fetch(`${base}/api/chat/realtime/session?chatId=ios_voice`, {
+    method: 'POST',
+    ...AUTH_SDP,
+    body: SAMPLE_SDP,
+  });
+  assert.equal(res.status, 200);
+  await new Promise(r => setTimeout(r, 50));
+
+  assert.equal(getConsultCalls(), 1);
+});
+
+test('realtime consult_home23 dedupes the same call across event shapes', async (t) => {
   const ws = makeWs([
     {
       type: 'response.function_call_arguments.done',
-      name: 'consult_home23',
       call_id: 'fn_1',
       arguments: JSON.stringify({ question: 'what is up?' }),
     },
     {
-      type: 'response.function_call_arguments.done',
-      name: 'consult_home23',
-      call_id: 'fn_1',
-      arguments: JSON.stringify({ question: 'what is up?' }),
+      type: 'response.output_item.done',
+      item: {
+        type: 'function_call',
+        status: 'completed',
+        name: 'consult_home23',
+        call_id: 'fn_1',
+        arguments: JSON.stringify({ question: 'what is up?' }),
+      },
+    },
+    {
+      type: 'response.done',
+      response: {
+        status: 'completed',
+        output: [{
+          type: 'function_call',
+          status: 'completed',
+          name: 'consult_home23',
+          call_id: 'fn_1',
+          arguments: JSON.stringify({ question: 'what is up?' }),
+        }],
+      },
     },
   ]);
   const { base, getConsultCalls } = startApp(t, {
@@ -273,6 +395,59 @@ test('realtime consult_home23 dedupes duplicate function calls', async (t) => {
   const sent = (ws as RealtimeWebSocketLike & { sent: string[] }).sent;
   assert.ok(sent.some(line => line.includes('function_call_output')));
   assert.ok(sent.some(line => line.includes('"type":"response.create"')));
+});
+
+test('realtime explicitly named unknown tools do not dispatch', async (t) => {
+  const ws = makeWs([
+    {
+      type: 'response.function_call_arguments.done',
+      name: 'unknown_tool',
+      call_id: 'fn_unknown_args',
+      arguments: JSON.stringify({ question: 'do not run' }),
+    },
+    {
+      type: 'response.output_item.done',
+      item: {
+        type: 'function_call',
+        status: 'completed',
+        name: 'unknown_tool',
+        call_id: 'fn_unknown_item',
+        arguments: JSON.stringify({ question: 'do not run' }),
+      },
+    },
+    {
+      type: 'response.done',
+      response: {
+        status: 'completed',
+        output: [{
+          type: 'function_call',
+          status: 'completed',
+          name: 'unknown_tool',
+          call_id: 'fn_unknown_response',
+          arguments: JSON.stringify({ question: 'do not run' }),
+        }],
+      },
+    },
+  ]);
+  const { base, getConsultCalls } = startApp(t, {
+    fetchImpl: async () => new Response('v=0\r\nok\r\n', {
+      status: 200,
+      headers: { Location: 'https://api.openai.com/v1/realtime/calls/call_fn_unknown' },
+    }),
+    createWebSocket: () => ws,
+  });
+
+  const res = await fetch(`${base}/api/chat/realtime/session?chatId=ios_voice`, {
+    method: 'POST',
+    ...AUTH_SDP,
+    body: SAMPLE_SDP,
+  });
+  assert.equal(res.status, 200);
+  await new Promise(r => setTimeout(r, 50));
+
+  assert.equal(getConsultCalls(), 0);
+  const sent = (ws as RealtimeWebSocketLike & { sent: string[] }).sent;
+  assert.equal(sent.some(line => line.includes('function_call_output')), false);
 });
 
 test('realtime upstream errors are sanitized', async (t) => {

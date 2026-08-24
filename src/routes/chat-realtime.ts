@@ -97,7 +97,10 @@ export function buildRealtimeInstructions(
     `You are ${agentName}, the Home23 voice assistant on a realtime call.`,
     VOICE_BLOCK,
     '',
-    'Use consult_home23 when the user needs tools, files, brain lookup, or anything beyond brief conversation.',
+    'You MUST call consult_home23 immediately for any request needing current state, tools, files, brain lookup, house or device state, or actions.',
+    'Do not say you are checking, running, or waiting unless you have actually emitted the function call.',
+    'Never invent pending or stuck tool state.',
+    'For brief conversation that needs none of those capabilities, answer directly.',
     'Keep spoken replies concise unless the user asks for depth.',
   ];
   const recent: string[] = [];
@@ -131,6 +134,7 @@ export function buildRealtimeSessionPayload(instructions: string): Record<string
       },
       output: { voice: 'marin' },
     },
+    tool_choice: 'auto',
     tools: [{
       type: 'function',
       name: 'consult_home23',
@@ -161,14 +165,30 @@ function defaultWebSocketFactory(url: string, options: { headers: Record<string,
   return new WebSocket(url, { headers: options.headers }) as unknown as RealtimeWebSocketLike;
 }
 
-function clearSession(callId: string): void {
+function diagnosticToken(value: unknown): string {
+  return typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,160}$/.test(value) ? value : 'invalid';
+}
+
+function logSideband(
+  level: 'info' | 'warn' | 'error',
+  event: string,
+  sessionCallId: string,
+  details = '',
+): void {
+  const line = `[chat-realtime] ${event} session_call_id=${diagnosticToken(sessionCallId)}${details ? ` ${details}` : ''}`;
+  console[level](line);
+}
+
+function clearSession(callId: string, closeSocket = true): void {
   const session = activeByCallId.get(callId);
   if (!session) return;
   clearTimeout(session.idleTimer);
-  try { session.ws.close(); } catch { /* ignore */ }
   activeByCallId.delete(callId);
   if (activeCallIdByChatId.get(session.chatId) === callId) {
     activeCallIdByChatId.delete(session.chatId);
+  }
+  if (closeSocket) {
+    try { session.ws.close(); } catch { /* ignore */ }
   }
 }
 
@@ -193,23 +213,40 @@ function persistOnce(
   touchSession(session);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 async function handleConsultHome23(
   session: ActiveRealtimeSession,
   config: ChatRealtimeConfig,
   callId: string,
   rawArgs: string,
+  source: string,
 ): Promise<void> {
   if (session.consultCallIds.has(callId)) return;
   session.consultCallIds.add(callId);
 
   let question = '';
+  let invalidReason = 'missing_question';
   try {
-    const parsed = JSON.parse(rawArgs) as { question?: unknown };
-    question = typeof parsed.question === 'string' ? parsed.question.trim() : '';
+    const parsed: unknown = JSON.parse(rawArgs);
+    if (isRecord(parsed) && typeof parsed.question === 'string') {
+      question = parsed.question.trim();
+      invalidReason = question.length > CONSULT_QUESTION_MAX ? 'question_too_long' : 'missing_question';
+    } else {
+      invalidReason = 'invalid_arguments';
+    }
   } catch {
-    question = '';
+    invalidReason = 'invalid_arguments_json';
   }
   if (!question || question.length > CONSULT_QUESTION_MAX) {
+    logSideband(
+      'warn',
+      'function_call_malformed',
+      session.callId,
+      `function_call_id=${diagnosticToken(callId)} source=${diagnosticToken(source)} reason=${invalidReason}`,
+    );
     session.ws.send(JSON.stringify({
       type: 'conversation.item.create',
       item: {
@@ -222,6 +259,13 @@ async function handleConsultHome23(
     touchSession(session);
     return;
   }
+
+  logSideband(
+    'info',
+    'function_call_dispatch',
+    session.callId,
+    `function_call_id=${diagnosticToken(callId)} source=${diagnosticToken(source)}`,
+  );
 
   const consultChatId = `voice-consult:${session.callId}`;
   let answer = '';
@@ -247,6 +291,56 @@ async function handleConsultHome23(
   }));
   session.ws.send(JSON.stringify({ type: 'response.create' }));
   touchSession(session);
+}
+
+function dispatchRealtimeFunctionCall(
+  session: ActiveRealtimeSession,
+  config: ChatRealtimeConfig,
+  source: string,
+  candidate: Record<string, unknown>,
+  allowMissingName: boolean,
+): void {
+  const hasName = Object.prototype.hasOwnProperty.call(candidate, 'name');
+  if (hasName && (typeof candidate.name !== 'string' || !candidate.name)) {
+    logSideband('warn', 'function_call_malformed', session.callId,
+      `source=${diagnosticToken(source)} reason=invalid_name`);
+    return;
+  }
+  if (!hasName && !allowMissingName) {
+    logSideband('warn', 'function_call_malformed', session.callId,
+      `source=${diagnosticToken(source)} reason=missing_name`);
+    return;
+  }
+  if (hasName && candidate.name !== 'consult_home23') {
+    logSideband('warn', 'function_call_ignored', session.callId,
+      `source=${diagnosticToken(source)} reason=unknown_tool tool=${diagnosticToken(candidate.name)}`);
+    return;
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(candidate, 'status')
+    && candidate.status !== undefined
+    && candidate.status !== 'completed'
+  ) {
+    logSideband('warn', 'function_call_ignored', session.callId,
+      `source=${diagnosticToken(source)} reason=incomplete status=${diagnosticToken(candidate.status)}`);
+    return;
+  }
+
+  const functionCallId = typeof candidate.call_id === 'string' ? candidate.call_id : '';
+  const args = typeof candidate.arguments === 'string' ? candidate.arguments : '';
+  if (!functionCallId || !args) {
+    const reason = !functionCallId ? 'missing_call_id' : 'missing_arguments';
+    logSideband('warn', 'function_call_malformed', session.callId,
+      `source=${diagnosticToken(source)} reason=${reason}`);
+    return;
+  }
+  if (session.consultCallIds.has(functionCallId)) {
+    logSideband('info', 'function_call_ignored', session.callId,
+      `function_call_id=${diagnosticToken(functionCallId)} source=${diagnosticToken(source)} reason=duplicate`);
+    return;
+  }
+
+  void handleConsultHome23(session, config, functionCallId, args, source);
 }
 
 function attachSideband(config: ChatRealtimeConfig, chatId: string, callId: string, apiKey: string): void {
@@ -275,6 +369,12 @@ function attachSideband(config: ChatRealtimeConfig, chatId: string, callId: stri
   activeByCallId.set(callId, session);
   activeCallIdByChatId.set(chatId, callId);
 
+  ws.on('open', () => {
+    if (activeByCallId.get(callId) === session) {
+      logSideband('info', 'sideband_open', callId);
+    }
+  });
+
   ws.on('message', (raw: unknown) => {
     const current = activeByCallId.get(callId);
     if (!current) return;
@@ -283,6 +383,7 @@ function attachSideband(config: ChatRealtimeConfig, chatId: string, callId: stri
       const text = typeof raw === 'string' ? raw : Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw);
       event = JSON.parse(text) as Record<string, unknown>;
     } catch {
+      logSideband('warn', 'sideband_event_malformed', callId, 'reason=invalid_json');
       return;
     }
     const type = typeof event.type === 'string' ? event.type : '';
@@ -312,17 +413,46 @@ function attachSideband(config: ChatRealtimeConfig, chatId: string, callId: stri
       }
       return;
     }
-    if (type === 'response.function_call_arguments.done' && event.name === 'consult_home23') {
-      const fnCallId = typeof event.call_id === 'string' ? event.call_id : '';
-      const args = typeof event.arguments === 'string' ? event.arguments : '';
-      if (fnCallId && args) {
-        void handleConsultHome23(current, config, fnCallId, args);
+    if (type === 'response.function_call_arguments.done') {
+      dispatchRealtimeFunctionCall(current, config, type, event, true);
+      return;
+    }
+    if (type === 'response.output_item.done') {
+      if (!isRecord(event.item)) {
+        logSideband('warn', 'sideband_event_malformed', callId,
+          'source=response.output_item.done reason=missing_item');
+        return;
+      }
+      if (event.item.type === 'function_call') {
+        dispatchRealtimeFunctionCall(current, config, type, event.item, false);
+      }
+      return;
+    }
+    if (type === 'response.done') {
+      if (!isRecord(event.response) || !Array.isArray(event.response.output)) {
+        logSideband('warn', 'sideband_event_malformed', callId,
+          'source=response.done reason=missing_output');
+        return;
+      }
+      for (const item of event.response.output) {
+        if (isRecord(item) && item.type === 'function_call') {
+          dispatchRealtimeFunctionCall(current, config, type, item, false);
+        }
       }
     }
   });
 
-  ws.on('close', () => clearSession(callId));
-  ws.on('error', () => clearSession(callId));
+  ws.on('close', (...args: unknown[]) => {
+    if (!activeByCallId.has(callId)) return;
+    const code = typeof args[0] === 'number' ? ` code=${args[0]}` : '';
+    logSideband('info', 'sideband_close', callId, code.trim());
+    clearSession(callId, false);
+  });
+  ws.on('error', () => {
+    if (!activeByCallId.has(callId)) return;
+    logSideband('error', 'sideband_error', callId);
+    clearSession(callId);
+  });
 }
 
 function mapUpstreamError(status: number, bodyText: string): { status: number; error: string; code?: string } {
@@ -420,6 +550,7 @@ export function createRealtimeSessionHandler(config: ChatRealtimeConfig) {
     try {
       attachSideband(config, chatId, callId, apiKey);
     } catch {
+      logSideband('error', 'sideband_error', callId, 'phase=attach');
       clearSession(callId);
     }
   };
