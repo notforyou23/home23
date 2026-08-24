@@ -68,10 +68,9 @@ export function createRealtimeSessionTextParser(): RequestHandler {
 
 function validateSdp(body: unknown): string | null {
   if (typeof body !== 'string') return null;
-  const trimmed = body.trim();
-  if (!trimmed) return null;
-  if (Buffer.byteLength(trimmed, 'utf8') > SDP_MAX_BYTES) return null;
-  return trimmed;
+  if (!body.trim()) return null;
+  if (Buffer.byteLength(body, 'utf8') > SDP_MAX_BYTES) return null;
+  return body;
 }
 
 function messageText(record: HistoryRecord): string {
@@ -416,7 +415,7 @@ export function createRealtimeSessionHandler(config: ChatRealtimeConfig) {
 
     res.setHeader('Content-Type', 'application/sdp');
     res.setHeader('X-Home23-Realtime-Call-ID', callId);
-    res.status(200).send(answerSdp.trim());
+    res.status(200).send(answerSdp);
 
     try {
       attachSideband(config, chatId, callId, apiKey);

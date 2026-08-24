@@ -168,6 +168,36 @@ test('realtime session returns sdp answer and call id header', async (t) => {
   assert.match(await res.text(), /answer/);
 });
 
+test('realtime session preserves exact offer and answer SDP', async (t) => {
+  const answerSdp = 'v=0\r\nanswer\r\n';
+  let forwardedSdp = '';
+  const { base } = startApp(t, {
+    fetchImpl: async (_input, init) => {
+      assert.ok(init?.body instanceof FormData);
+      const sdpPart = init.body.get('sdp');
+      assert.equal(typeof sdpPart, 'string');
+      forwardedSdp = sdpPart as string;
+      return new Response(answerSdp, {
+        status: 200,
+        headers: { Location: 'https://api.openai.com/v1/realtime/calls/call_exact_sdp' },
+      });
+    },
+    createWebSocket: () => makeWs([]),
+  });
+
+  const res = await fetch(`${base}/api/chat/realtime/session?chatId=ios_voice`, {
+    method: 'POST',
+    ...AUTH_SDP,
+    body: SAMPLE_SDP,
+  });
+  assert.equal(res.status, 200);
+  assert.equal(forwardedSdp, SAMPLE_SDP);
+  assert.equal(forwardedSdp.endsWith('\r\n'), true);
+  const downstreamSdp = await res.text();
+  assert.equal(downstreamSdp, answerSdp);
+  assert.equal(downstreamSdp.endsWith('\r\n'), true);
+});
+
 test('realtime sideband persists transcripts exactly once', async (t) => {
   const duplicateUser = {
     type: 'conversation.item.input_audio_transcription.completed',
