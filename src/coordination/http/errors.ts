@@ -2,6 +2,7 @@ import { AuthError } from "../auth/index.js";
 import { MessagingError } from "../channels/index.js";
 import { CanonicalSearchError } from "../search/index.js";
 import { CoordinationLifecycleDrainingError } from "../app/index.js";
+import { ArtifactError } from "../artifacts/index.js";
 
 export class CoordinationHttpError extends Error {
   readonly name = "CoordinationHttpError";
@@ -65,6 +66,15 @@ export function toCoordinationHttpFailure(error: unknown): CoordinationHttpFailu
       retryable: error.retryable,
       details: error.details,
       message: "Messaging request failed.",
+    };
+  }
+  if (error instanceof ArtifactError) {
+    return {
+      code: error.code,
+      httpStatus: error.httpStatus,
+      retryable: error.retryable,
+      details: {},
+      message: "Attachment request failed.",
     };
   }
   if (error instanceof CanonicalSearchError) {

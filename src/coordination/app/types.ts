@@ -2,6 +2,8 @@ import type { createAuthService } from "../auth/index.js";
 import type { BootstrapService } from "../bootstrap/index.js";
 import type { projectTrustedM11Activity } from "../activity/index.js";
 import type { MessagingActorContext } from "../channels/index.js";
+import type { ArtifactDownload, ArtifactProjection } from "../artifacts/index.js";
+import type { Readable } from "node:stream";
 import type { createLeaseService } from "../leases/index.js";
 import type { CanonicalSearchService } from "../search/index.js";
 import type { FEATURE_FLAG_REGISTRY } from "../schema/contract-registry.js";
@@ -61,6 +63,32 @@ export type CoordinationLeasePort = ReturnType<typeof createLeaseService>;
  */
 export type CoordinationActivityPort = typeof projectTrustedM11Activity;
 
+/**
+ * Complete M10 public boundary. Implementations must resolve the authenticated
+ * actor through the M10 access boundary, durably replay/conflict idempotency
+ * keys, stream bytes into M10 quarantine, and use the repository's authorized
+ * Channel-reader lookup. A raw LocalArtifactStore is intentionally not enough
+ * to activate M12 attachment routes.
+ */
+export interface CoordinationAttachmentPort {
+  create(input: {
+    context: MessagingActorContext;
+    idempotencyKey: string;
+    contentType: string;
+    contentLength: number | null;
+    body: Readable;
+  }): Promise<ArtifactProjection>;
+  getMetadata(input: {
+    context: MessagingActorContext;
+    artifactId: string;
+  }): Promise<ArtifactProjection>;
+  openDownload(input: {
+    context: MessagingActorContext;
+    artifactId: string;
+    rangeHeader?: string;
+  }): Promise<ArtifactDownload>;
+}
+
 export interface CoordinationServices {
   auth: CoordinationAuthPort;
   bootstrap?: BootstrapService;
@@ -70,6 +98,7 @@ export interface CoordinationServices {
   work?: CoordinationWorkPort;
   leases?: CoordinationLeasePort;
   activity?: CoordinationActivityPort;
+  attachments?: CoordinationAttachmentPort;
 }
 
 export interface CoordinationHttpLimits {

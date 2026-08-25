@@ -90,6 +90,8 @@ export function createCoordinationRouter(input: {
 
   const productRead = requireCoordinationAuth(application, ["product:read"]);
   const messageSend = requireCoordinationAuth(application, ["message:send"]);
+  const attachmentRead = requireCoordinationAuth(application, ["product:read"]);
+  const attachmentWrite = requireCoordinationAuth(application, ["attachment:write"]);
 
   router.get("/api/v1/bootstrap", productRead, asyncRoute(async (request, response) => {
     if (!application.capabilities().capabilities.bootstrap || !application.services.bootstrap) {
@@ -198,6 +200,86 @@ export function createCoordinationRouter(input: {
       limit: integerQuery(request.query.limit, 50),
     }));
   }));
+
+  // The complete service is the activation unit: registering partial metadata
+  // or byte routes would advertise an attachment capability that cannot safely
+  // upload/retry. With no service these paths deliberately fall through to 404.
+  if (application.capabilities().capabilities.attachments && application.services.attachments) {
+    const attachments = application.services.attachments;
+    router.post(
+      "/api/v1/attachments",
+      attachmentWrite,
+      requireIdempotencyKey(application),
+      asyncRoute(async (request, response) => {
+        const contentType = request.get("content-type");
+        if (!contentType?.toLowerCase().startsWith("multipart/form-data;")) {
+          throw new CoordinationHttpError("request_invalid", 400, false);
+        }
+        const rawLength = request.get("content-length");
+        const contentLength = rawLength === undefined ? null : Number(rawLength);
+        if (contentLength !== null && (!Number.isSafeInteger(contentLength) || contentLength < 0)) {
+          throw new CoordinationHttpError("request_invalid", 400, false);
+        }
+        const attachment = await attachments.create({
+          context: requireCoordinationContext(response),
+          idempotencyKey: coordinationIdempotencyKey(response),
+          contentType,
+          contentLength,
+          body: request,
+        });
+        const metadata = requireCoordinationMetadata(response);
+        response.status(201).json({
+          requestId: metadata.requestId,
+          correlationId: metadata.correlationId,
+          attachment,
+          throughEventSequence: attachment.throughEventSequence,
+        });
+      }),
+    );
+    router.get(
+      "/api/v1/attachments/:artifactId",
+      attachmentRead,
+      asyncRoute(async (request, response) => {
+        const attachment = await attachments.getMetadata({
+          context: requireCoordinationContext(response),
+          artifactId: pathParameter(request.params.artifactId),
+        });
+        const metadata = requireCoordinationMetadata(response);
+        response.json({
+          requestId: metadata.requestId,
+          correlationId: metadata.correlationId,
+          attachment,
+          throughEventSequence: attachment.throughEventSequence,
+        });
+      }),
+    );
+    router.get(
+      "/api/v1/attachments/:artifactId/content",
+      attachmentRead,
+      asyncRoute(async (request, response) => {
+        const rangeHeader = request.get("range");
+        const download = await attachments.openDownload({
+          context: requireCoordinationContext(response),
+          artifactId: pathParameter(request.params.artifactId),
+          ...(rangeHeader === undefined ? {} : { rangeHeader }),
+        });
+        response.status(download.status);
+        response.setHeader("accept-ranges", "bytes");
+        response.setHeader("content-type", download.contentType);
+        response.setHeader("content-length", String(download.contentLength));
+        response.setHeader("etag", `\"sha256:${download.sha256}\"`);
+        response.setHeader("content-disposition", "attachment");
+        if (download.range) {
+          response.setHeader(
+            "content-range",
+            `bytes ${download.range.start}-${download.range.end}/${download.range.total}`,
+          );
+        }
+        download.content.on("error", (error) => response.destroy(error));
+        download.content.pipe(response);
+      }),
+    );
+  }
 
   router.get("/api/v1/work/:workId", productRead, unavailableRoute("work"));
 

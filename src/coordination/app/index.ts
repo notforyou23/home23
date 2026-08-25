@@ -14,6 +14,7 @@ export type {
   CoordinationAdvertisedCapabilities,
   CoordinationActivityPort,
   CoordinationApplication,
+  CoordinationAttachmentPort,
   CoordinationAuthPort,
   CoordinationCapabilityDocument,
   CoordinationFeatureFlags,

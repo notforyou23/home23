@@ -5,6 +5,7 @@ import {
   createCoordinationApplication,
   disabledCoordinationFeatureFlags,
 } from "../../../src/coordination/app/index.js";
+import { Readable } from "node:stream";
 
 const enabledShellFlags = Object.freeze({
   ...disabledCoordinationFeatureFlags(),
@@ -116,6 +117,34 @@ test("canonical search requires both its server flag and its injected domain ser
 
   assert.equal(withoutFlag.capabilities().capabilities.search, false);
   assert.equal(withFlag.capabilities().capabilities.search, true);
+});
+
+test("attachments require the public mutation flag and one complete injected service", () => {
+  const attachments = {
+    create: async () => { throw new Error("unused"); },
+    getMetadata: async () => { throw new Error("unused"); },
+    openDownload: async () => ({
+      status: 200 as const,
+      contentType: "text/plain",
+      contentLength: 0,
+      byteCount: 0,
+      sha256: "0".repeat(64),
+      range: null,
+      content: Readable.from([]),
+    }),
+  };
+  const auth = { validateAccessToken: async () => { throw new Error("unused"); } };
+  const disabled = createCoordinationApplication({
+    flags: disabledCoordinationFeatureFlags(),
+    services: { auth, attachments },
+  });
+  const enabled = createCoordinationApplication({
+    flags: enabledShellFlags,
+    services: { auth, attachments },
+  });
+
+  assert.equal(disabled.capabilities().capabilities.attachments, false);
+  assert.equal(enabled.capabilities().capabilities.attachments, true);
 });
 
 test("read routes without a complete event-boundary contract remain unadvertised", () => {

@@ -68,7 +68,8 @@ function capabilityDocument(input: {
         input.flags["coordination.search.canonical"] === true &&
         input.services.search !== undefined,
       eventReplay: false,
-      attachments: false,
+      attachments:
+        mutationsEnabled && input.services.attachments !== undefined,
       work: false,
       workMutation: false,
       activity: false,
