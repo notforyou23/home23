@@ -1,0 +1,47 @@
+{
+  "contractVersion": 1,
+  "digest": {
+    "algorithm": "SHA-256",
+    "ordering": "canonicalFiles sorted by UTF-8 relative path",
+    "framing": "<path-byte-count>:<relative-path>\\n<content-byte-count>:<exact-file-bytes>\\n",
+    "excludes": ["generated Apple source", "receipts", "build logs", "absolute paths", "noncanonical timestamps"]
+  },
+  "canonicalFiles": [
+    "fixtures/attachment.json",
+    "fixtures/bootstrap.json",
+    "fixtures/bots.json",
+    "fixtures/channel-direct.json",
+    "fixtures/channel-group.json",
+    "fixtures/conversations.json",
+    "fixtures/error.json",
+    "fixtures/event-cursor-reset.json",
+    "fixtures/event-message-appended.json",
+    "fixtures/import-provenance.json",
+    "fixtures/messages-mentions.json",
+    "fixtures/pairing-session.json",
+    "fixtures/search.json",
+    "fixtures/unread-read-cursor.json",
+    "fixtures/work-attempt-lease-activity.json",
+    "openapi.json",
+    "pack-manifest.json",
+    "registry.json",
+    "schema.json"
+  ],
+  "fixtures": [
+    {"name": "attachment", "file": "fixtures/attachment.json", "schemaDefinition": "attachmentFixture"},
+    {"name": "bootstrap", "file": "fixtures/bootstrap.json", "schemaDefinition": "bootstrapFixture"},
+    {"name": "bots", "file": "fixtures/bots.json", "schemaDefinition": "botsFixture"},
+    {"name": "channel-direct", "file": "fixtures/channel-direct.json", "schemaDefinition": "channelFixture"},
+    {"name": "channel-group", "file": "fixtures/channel-group.json", "schemaDefinition": "channelFixture"},
+    {"name": "conversations", "file": "fixtures/conversations.json", "schemaDefinition": "conversationsFixture"},
+    {"name": "error", "file": "fixtures/error.json", "schemaDefinition": "errorFixture"},
+    {"name": "event-cursor-reset", "file": "fixtures/event-cursor-reset.json", "schemaDefinition": "eventCursorResetFixture"},
+    {"name": "event-message-appended", "file": "fixtures/event-message-appended.json", "schemaDefinition": "eventFixture"},
+    {"name": "import-provenance", "file": "fixtures/import-provenance.json", "schemaDefinition": "importFixture"},
+    {"name": "messages-mentions", "file": "fixtures/messages-mentions.json", "schemaDefinition": "messagesFixture"},
+    {"name": "pairing-session", "file": "fixtures/pairing-session.json", "schemaDefinition": "pairingSessionFixture"},
+    {"name": "search", "file": "fixtures/search.json", "schemaDefinition": "searchFixture"},
+    {"name": "unread-read-cursor", "file": "fixtures/unread-read-cursor.json", "schemaDefinition": "unreadFixture"},
+    {"name": "work-attempt-lease-activity", "file": "fixtures/work-attempt-lease-activity.json", "schemaDefinition": "workActivityFixture"}
+  ]
+}

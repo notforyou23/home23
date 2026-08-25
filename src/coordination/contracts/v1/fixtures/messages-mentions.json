@@ -1,0 +1,44 @@
+{
+  "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+  "correlationId": "cor_0198d95f-6c00-7000-8000-0000000000a2",
+  "channelId": "chn_0198d95f-6c00-7000-8000-000000000022",
+  "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000032",
+  "messages": [
+    {
+      "id": "msg_0198d95f-6c00-7000-8000-000000000043",
+      "channelId": "chn_0198d95f-6c00-7000-8000-000000000022",
+      "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000032",
+      "sequence": 1,
+      "author": {"principalId": "user_owner", "kind": "owner", "displayName": "Owner"},
+      "kind": "text",
+      "text": "Forrest, verify the source receipt.",
+      "mentions": ["bot_0198d95f-6c00-7000-8000-000000000012"],
+      "attachments": [
+        {"id": "art_0198d95f-6c00-7000-8000-000000000051", "name": "launch-notes.pdf", "contentType": "application/pdf", "byteCount": 312400, "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+      ],
+      "replyToMessageId": null,
+      "visibility": "visible",
+      "clientMessageId": "client-message-0001",
+      "provenance": {"roundId": "rnd_0198d95f-6c00-7000-8000-000000000081", "workId": "wrk_0198d95f-6c00-7000-8000-000000000082"},
+      "createdAt": "2026-08-24T15:49:00.000Z"
+    },
+    {
+      "id": "msg_0198d95f-6c00-7000-8000-000000000044",
+      "channelId": "chn_0198d95f-6c00-7000-8000-000000000022",
+      "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000032",
+      "sequence": 2,
+      "author": {"principalId": "bot_0198d95f-6c00-7000-8000-000000000012", "kind": "bot", "displayName": "Forrest"},
+      "kind": "result",
+      "text": "The source receipt matches the locked baseline.",
+      "mentions": [],
+      "attachments": [],
+      "replyToMessageId": "msg_0198d95f-6c00-7000-8000-000000000043",
+      "visibility": "visible",
+      "clientMessageId": null,
+      "provenance": {"roundId": "rnd_0198d95f-6c00-7000-8000-000000000081", "workId": "wrk_0198d95f-6c00-7000-8000-000000000082"},
+      "createdAt": "2026-08-24T15:50:00.000Z"
+    }
+  ],
+  "nextCursor": null,
+  "throughEventSequence": 127
+}

@@ -1,0 +1,25 @@
+{
+  "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+  "correlationId": "cor_0198d95f-6c00-7000-8000-0000000000a2",
+  "query": "source receipt",
+  "scope": "all",
+  "results": [
+    {"type": "message", "id": "msg_0198d95f-6c00-7000-8000-000000000044", "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000032", "channelId": "chn_0198d95f-6c00-7000-8000-000000000022", "title": "House planning", "excerpt": "The source receipt matches the locked baseline.", "sequence": 2, "createdAt": "2026-08-24T15:50:00.000Z"}
+  ],
+  "nextCursor": null,
+  "completeness": {
+    "status": "partial",
+    "respondingRoute": "/api/v1/search",
+    "authoritativeSource": "coordination.messages",
+    "sourceEventSequence": 128,
+    "indexRoute": "sqlite_fts5",
+    "indexedThroughEventSequence": 128,
+    "crossingProof": {"sourceRows": 4, "indexedRows": 4, "checkedAt": "2026-08-24T15:55:00.000Z"},
+    "filters": {"principalId": "user_owner", "scope": "all"},
+    "samePathCanary": {"id": "contract-canary", "found": true, "checkedAt": "2026-08-24T15:55:00.000Z"},
+    "importCoverage": {"bodyImported": 0, "referenceOnly": 1},
+    "verdict": "partial",
+    "reason": "One cold legacy source remains reference-only."
+  },
+  "throughEventSequence": 128
+}

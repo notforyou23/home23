@@ -1,0 +1,339 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://home23.local/contracts/connected-agents/v1/schema.json",
+  "title": "Home23 Connected Agents canonical fixture schemas",
+  "$defs": {
+    "timestamp": {"type": "string", "format": "date-time"},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "eventSequence": {"type": "integer", "minimum": 0},
+    "homeId": {"type": "string", "pattern": "^home_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "principalId": {"type": "string", "pattern": "^(user_owner|bot_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$"},
+    "botId": {"type": "string", "pattern": "^bot_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "channelId": {"type": "string", "pattern": "^chn_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "conversationId": {"type": "string", "pattern": "^cnv_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "messageId": {"type": "string", "pattern": "^msg_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "artifactId": {"type": "string", "pattern": "^art_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "eventId": {"type": "string", "pattern": "^evt_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "deviceId": {"type": "string", "pattern": "^dev_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "sessionId": {"type": "string", "pattern": "^ses_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "pairingSessionId": {"type": "string", "pattern": "^pair_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "roundId": {"type": "string", "pattern": "^rnd_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "workId": {"type": "string", "pattern": "^wrk_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "attemptId": {"type": "string", "pattern": "^att_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "leaseId": {"type": "string", "pattern": "^lse_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "contextManifestId": {"type": "string", "pattern": "^ctx_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "deliveryId": {"type": "string", "pattern": "^dlv_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "outboxId": {"type": "string", "pattern": "^obx_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "legacySourceId": {"type": "string", "pattern": "^legacy_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "importCohortId": {"type": "string", "pattern": "^imp_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "importItemId": {"type": "string", "pattern": "^imi_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "aliasId": {"type": "string", "pattern": "^alias_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "observationId": {"type": "string", "pattern": "^obs_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "requestId": {"type": "string", "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "correlationId": {"type": "string", "pattern": "^cor_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+    "fixtureHeader": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "botSummary": {
+      "type": "object",
+      "required": ["id", "name", "lifecycle", "availability", "conversationId", "version"],
+      "properties": {
+        "id": {"$ref": "#/$defs/botId"},
+        "name": {"type": "string", "minLength": 1},
+        "lifecycle": {"type": "string", "x-knownValues": ["provisioning", "active", "archived", "failed"], "x-unknownPolicy": "preserve"},
+        "availability": {"type": "string", "x-knownValues": ["offline", "starting", "available", "busy", "degraded"], "x-unknownPolicy": "preserve"},
+        "conversationId": {"anyOf": [{"$ref": "#/$defs/conversationId"}, {"type": "null"}]},
+        "version": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": true
+    },
+    "bot": {
+      "allOf": [
+        {"$ref": "#/$defs/botSummary"},
+        {
+          "type": "object",
+          "required": ["principalId", "purpose", "residentBinding", "createdAt", "updatedAt"],
+          "properties": {
+            "principalId": {"$ref": "#/$defs/botId"},
+            "purpose": {"type": "string"},
+            "residentBinding": {"type": "string", "minLength": 1},
+            "createdAt": {"$ref": "#/$defs/timestamp"},
+            "updatedAt": {"$ref": "#/$defs/timestamp"}
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "member": {
+      "type": "object",
+      "required": ["principalId", "kind", "role"],
+      "properties": {
+        "principalId": {"$ref": "#/$defs/principalId"},
+        "kind": {"enum": ["owner", "bot"]},
+        "role": {"enum": ["owner", "member"]}
+      },
+      "additionalProperties": true
+    },
+    "responderPolicy": {
+      "type": "object",
+      "required": ["mode", "coordinatorBotId", "responseOrder", "maxBotTurns"],
+      "properties": {
+        "mode": {"enum": ["mentions_only", "mention_or_coordinator"]},
+        "coordinatorBotId": {"anyOf": [{"$ref": "#/$defs/botId"}, {"type": "null"}]},
+        "responseOrder": {"enum": ["parallel", "sequential"]},
+        "maxBotTurns": {"type": "integer", "minimum": 1, "maximum": 8}
+      },
+      "additionalProperties": true
+    },
+    "channelSummary": {
+      "type": "object",
+      "required": ["id", "conversationId", "kind", "title", "lifecycle", "version"],
+      "properties": {
+        "id": {"$ref": "#/$defs/channelId"},
+        "conversationId": {"$ref": "#/$defs/conversationId"},
+        "kind": {"enum": ["direct", "group"]},
+        "title": {"type": "string", "minLength": 1},
+        "lifecycle": {"type": "string", "x-knownValues": ["active", "archived"], "x-unknownPolicy": "preserve"},
+        "version": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": true
+    },
+    "channel": {
+      "allOf": [
+        {"$ref": "#/$defs/channelSummary"},
+        {
+          "type": "object",
+          "required": ["purpose", "ownerPrincipalId", "members", "responderPolicy", "pinned", "createdAt", "updatedAt"],
+          "properties": {
+            "purpose": {"type": "string"},
+            "ownerPrincipalId": {"const": "user_owner"},
+            "members": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/member"}},
+            "responderPolicy": {"$ref": "#/$defs/responderPolicy"},
+            "pinned": {"type": "boolean"},
+            "createdAt": {"$ref": "#/$defs/timestamp"},
+            "updatedAt": {"$ref": "#/$defs/timestamp"}
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "conversationSummary": {
+      "type": "object",
+      "required": ["id", "channelId", "kind", "title", "unread", "activity", "pinned", "archived", "version", "updatedAt"],
+      "properties": {
+        "id": {"$ref": "#/$defs/conversationId"},
+        "channelId": {"$ref": "#/$defs/channelId"},
+        "kind": {"enum": ["direct", "group"]},
+        "title": {"type": "string"},
+        "latestMessage": {"type": ["object", "null"]},
+        "unread": {"type": "object", "required": ["count", "readThroughSequence"], "properties": {"count": {"type": "integer", "minimum": 0}, "readThroughSequence": {"$ref": "#/$defs/eventSequence"}}, "additionalProperties": true},
+        "activity": {"type": "object", "required": ["state", "label", "workId"], "properties": {"state": {"type": "string"}, "label": {"type": ["string", "null"]}, "workId": {"anyOf": [{"$ref": "#/$defs/workId"}, {"type": "null"}]}}, "additionalProperties": true},
+        "pinned": {"type": "boolean"},
+        "archived": {"type": "boolean"},
+        "version": {"type": "integer", "minimum": 1},
+        "updatedAt": {"$ref": "#/$defs/timestamp"}
+      },
+      "additionalProperties": true
+    },
+    "attachment": {
+      "type": "object",
+      "required": ["id", "ownerPrincipalId", "state", "name", "declaredContentType", "detectedContentType", "byteCount", "sha256", "storage", "createdAt", "expiresAt"],
+      "properties": {
+        "id": {"$ref": "#/$defs/artifactId"},
+        "ownerPrincipalId": {"$ref": "#/$defs/principalId"},
+        "state": {"type": "string", "x-knownValues": ["staging", "ready", "failed", "expired", "deleted"], "x-unknownPolicy": "preserve"},
+        "name": {"type": "string", "minLength": 1},
+        "declaredContentType": {"type": ["string", "null"]},
+        "detectedContentType": {"type": "string"},
+        "byteCount": {"type": "integer", "minimum": 0, "maximum": 26214400},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "storage": {"enum": ["content_addressed", "external_reference"]},
+        "createdAt": {"$ref": "#/$defs/timestamp"},
+        "expiresAt": {"anyOf": [{"$ref": "#/$defs/timestamp"}, {"type": "null"}]}
+      },
+      "additionalProperties": true
+    },
+    "attachmentSummary": {
+      "type": "object",
+      "required": ["id", "name", "contentType", "byteCount", "sha256"],
+      "properties": {
+        "id": {"$ref": "#/$defs/artifactId"},
+        "name": {"type": "string"},
+        "contentType": {"type": "string"},
+        "byteCount": {"type": "integer", "minimum": 0},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": true
+    },
+    "message": {
+      "type": "object",
+      "required": ["id", "channelId", "conversationId", "sequence", "author", "kind", "text", "mentions", "attachments", "replyToMessageId", "visibility", "clientMessageId", "provenance", "createdAt"],
+      "properties": {
+        "id": {"$ref": "#/$defs/messageId"},
+        "channelId": {"$ref": "#/$defs/channelId"},
+        "conversationId": {"$ref": "#/$defs/conversationId"},
+        "sequence": {"type": "integer", "minimum": 1},
+        "author": {"type": "object", "required": ["principalId", "kind", "displayName"], "properties": {"principalId": {"$ref": "#/$defs/principalId"}, "kind": {"enum": ["owner", "bot"]}, "displayName": {"type": "string"}}, "additionalProperties": true},
+        "kind": {"enum": ["text", "system", "result"]},
+        "text": {"type": ["string", "null"]},
+        "mentions": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/botId"}},
+        "attachments": {"type": "array", "maxItems": 10, "items": {"$ref": "#/$defs/attachmentSummary"}},
+        "replyToMessageId": {"anyOf": [{"$ref": "#/$defs/messageId"}, {"type": "null"}]},
+        "visibility": {"type": "string", "x-knownValues": ["visible", "tombstoned"], "x-unknownPolicy": "preserve"},
+        "clientMessageId": {"type": ["string", "null"]},
+        "provenance": {"type": "object", "required": ["roundId", "workId"], "properties": {"roundId": {"anyOf": [{"$ref": "#/$defs/roundId"}, {"type": "null"}]}, "workId": {"anyOf": [{"$ref": "#/$defs/workId"}, {"type": "null"}]}}, "additionalProperties": true},
+        "createdAt": {"$ref": "#/$defs/timestamp"}
+      },
+      "additionalProperties": true
+    },
+    "errorBody": {
+      "type": "object",
+      "required": ["code", "message", "retryable", "requestId", "details"],
+      "properties": {
+        "code": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,63}$"},
+        "message": {"type": "string", "minLength": 1, "maxLength": 512},
+        "retryable": {"type": "boolean"},
+        "requestId": {"$ref": "#/$defs/requestId"},
+        "details": {"type": "object", "additionalProperties": true}
+      },
+      "additionalProperties": true
+    },
+    "authorityEpoch": {
+      "type": "object",
+      "required": ["capability", "epoch", "mode", "writer", "effectiveAtEventSequence", "rollbackEpoch"],
+      "properties": {
+        "capability": {"enum": ["messages", "roster", "unread", "search", "attachments", "activity", "bot_lifecycle"]},
+        "epoch": {"type": "integer", "minimum": 1},
+        "mode": {"enum": ["legacy", "shadow", "canonical"]},
+        "writer": {"type": "string", "minLength": 1},
+        "effectiveAtEventSequence": {"anyOf": [{"$ref": "#/$defs/eventSequence"}, {"type": "null"}]},
+        "rollbackEpoch": {"type": ["integer", "null"], "minimum": 1}
+      },
+      "additionalProperties": true
+    },
+    "event": {
+      "type": "object",
+      "required": ["id", "sequence", "schemaVersion", "type", "durability", "aggregate", "channelId", "actorPrincipalId", "requestId", "correlationId", "createdAt", "payload"],
+      "properties": {
+        "id": {"$ref": "#/$defs/eventId"},
+        "sequence": {"$ref": "#/$defs/eventSequence"},
+        "schemaVersion": {"const": 1},
+        "type": {"type": "string", "minLength": 3, "x-knownValues": ["bot.created", "bot.updated", "channel.created", "channel.updated", "conversation.updated", "message.appended", "turn.updated", "activity.updated", "attachment.updated", "unread.updated", "device.updated", "authority.epoch_changed", "import.updated"], "x-unknownPolicy": "ignore_and_advance_cursor"},
+        "durability": {"enum": ["durable", "transient"]},
+        "aggregate": {"type": "object", "required": ["kind", "id", "version"], "properties": {"kind": {"type": "string"}, "id": {"type": "string"}, "version": {"type": "integer", "minimum": 1}}, "additionalProperties": true},
+        "channelId": {"anyOf": [{"$ref": "#/$defs/channelId"}, {"type": "null"}]},
+        "actorPrincipalId": {"anyOf": [{"$ref": "#/$defs/principalId"}, {"type": "null"}]},
+        "requestId": {"$ref": "#/$defs/requestId"},
+        "correlationId": {"$ref": "#/$defs/correlationId"},
+        "createdAt": {"$ref": "#/$defs/timestamp"},
+        "payload": {"type": "object", "additionalProperties": true}
+      },
+      "additionalProperties": true
+    },
+    "bootstrapFixture": {
+      "allOf": [
+        {"$ref": "#/$defs/fixtureHeader"},
+        {
+          "type": "object",
+          "required": ["contractVersion", "minimumClientBuild", "serverTime", "home", "client", "connection", "capabilities", "limits", "snapshot", "eventCursor", "throughEventSequence"],
+          "properties": {
+            "contractVersion": {"const": 1},
+            "minimumClientBuild": {"type": "integer", "minimum": 1},
+            "serverTime": {"$ref": "#/$defs/timestamp"},
+            "home": {"type": "object", "required": ["id", "name", "primaryBotId"], "properties": {"id": {"$ref": "#/$defs/homeId"}, "name": {"type": "string"}, "primaryBotId": {"$ref": "#/$defs/botId"}}, "additionalProperties": true},
+            "client": {"type": "object", "required": ["sessionId", "deviceId", "principalId", "scopes"], "properties": {"sessionId": {"$ref": "#/$defs/sessionId"}, "deviceId": {"$ref": "#/$defs/deviceId"}, "principalId": {"const": "user_owner"}, "scopes": {"type": "array", "items": {"type": "string"}}}, "additionalProperties": true},
+            "connection": {"type": "object", "required": ["mode", "displayName", "reachable"], "properties": {"mode": {"type": "string"}, "displayName": {"type": "string"}, "reachable": {"type": "boolean"}}, "additionalProperties": true},
+            "capabilities": {"type": "object", "required": ["channels", "attachments", "search", "push", "eventReplay", "botLifecycle"], "additionalProperties": {"type": "boolean"}},
+            "limits": {"type": "object", "required": ["attachmentBytes", "attachmentCountPerMessage", "jsonBodyBytes", "idempotencyKeyMinimum", "idempotencyKeyMaximum"], "additionalProperties": {"type": "integer", "minimum": 0}},
+            "snapshot": {"type": "object", "required": ["bots", "channels", "conversations", "unreadTotal"], "properties": {"bots": {"type": "array", "items": {"$ref": "#/$defs/botSummary"}}, "channels": {"type": "array", "items": {"$ref": "#/$defs/channelSummary"}}, "conversations": {"type": "array", "items": {"type": "object"}}, "unreadTotal": {"type": "integer", "minimum": 0}}, "additionalProperties": true},
+            "eventCursor": {"$ref": "#/$defs/eventSequence"},
+            "throughEventSequence": {"$ref": "#/$defs/eventSequence"}
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "botsFixture": {
+      "allOf": [
+        {"$ref": "#/$defs/fixtureHeader"},
+        {"type": "object", "required": ["bots", "nextCursor", "throughEventSequence"], "properties": {"fixtureKind": {"const": "bots"}, "bots": {"type": "array", "items": {"$ref": "#/$defs/bot"}}, "nextCursor": {"type": ["string", "null"]}, "throughEventSequence": {"$ref": "#/$defs/eventSequence"}}, "additionalProperties": true}
+      ]
+    },
+    "channelFixture": {
+      "allOf": [
+        {"$ref": "#/$defs/fixtureHeader"},
+        {"type": "object", "required": ["channel", "throughEventSequence"], "properties": {"fixtureKind": {"enum": ["channel-direct", "channel-group"]}, "channel": {"$ref": "#/$defs/channel"}, "throughEventSequence": {"$ref": "#/$defs/eventSequence"}}, "additionalProperties": true}
+      ]
+    },
+    "conversationsFixture": {
+      "allOf": [
+        {"$ref": "#/$defs/fixtureHeader"},
+        {"type": "object", "required": ["conversations", "nextCursor", "throughEventSequence"], "properties": {"fixtureKind": {"const": "conversations"}, "conversations": {"type": "array", "items": {"$ref": "#/$defs/conversationSummary"}}, "nextCursor": {"type": ["string", "null"]}, "throughEventSequence": {"$ref": "#/$defs/eventSequence"}}, "additionalProperties": true}
+      ]
+    },
+    "messagesFixture": {
+      "allOf": [
+        {"$ref": "#/$defs/fixtureHeader"},
+        {"type": "object", "required": ["channelId", "conversationId", "messages", "nextCursor", "throughEventSequence"], "properties": {"fixtureKind": {"const": "messages-mentions"}, "channelId": {"$ref": "#/$defs/channelId"}, "conversationId": {"$ref": "#/$defs/conversationId"}, "messages": {"type": "array", "items": {"$ref": "#/$defs/message"}}, "nextCursor": {"type": ["string", "null"]}, "throughEventSequence": {"$ref": "#/$defs/eventSequence"}}, "additionalProperties": true}
+      ]
+    },
+    "unreadFixture": {
+      "allOf": [
+        {"$ref": "#/$defs/fixtureHeader"},
+        {"type": "object", "required": ["principalId", "channelId", "conversationId", "readThroughSequence", "unreadCount", "latestSequence", "version", "updatedAt", "throughEventSequence"], "properties": {"fixtureKind": {"const": "unread-read-cursor"}, "principalId": {"const": "user_owner"}, "channelId": {"$ref": "#/$defs/channelId"}, "conversationId": {"$ref": "#/$defs/conversationId"}, "readThroughSequence": {"type": "integer", "minimum": 0}, "unreadCount": {"type": "integer", "minimum": 0}, "latestSequence": {"type": "integer", "minimum": 0}, "version": {"type": "integer", "minimum": 1}, "updatedAt": {"$ref": "#/$defs/timestamp"}, "throughEventSequence": {"$ref": "#/$defs/eventSequence"}}, "additionalProperties": true}
+      ]
+    },
+    "eventFixture": {"$ref": "#/$defs/event"},
+    "eventCursorResetFixture": {"$ref": "#/$defs/errorFixture"},
+    "attachmentFixture": {
+      "allOf": [
+        {"$ref": "#/$defs/fixtureHeader"},
+        {"type": "object", "required": ["attachment", "throughEventSequence"], "properties": {"fixtureKind": {"const": "attachment"}, "attachment": {"$ref": "#/$defs/attachment"}, "throughEventSequence": {"$ref": "#/$defs/eventSequence"}}, "additionalProperties": true}
+      ]
+    },
+    "workActivityFixture": {
+      "allOf": [
+        {"$ref": "#/$defs/fixtureHeader"},
+        {
+          "type": "object",
+          "required": ["round", "work", "attempt", "lease", "contextManifest", "workObservation", "activity", "outbox", "delivery", "authorityEpoch", "throughEventSequence"],
+          "properties": {
+            "fixtureKind": {"const": "work-attempt-lease-activity"},
+            "round": {"type": "object", "required": ["id", "channelId", "triggerMessageId", "status", "maxBotTurns", "passCount", "deadlineAt", "version"], "properties": {"id": {"$ref": "#/$defs/roundId"}, "channelId": {"$ref": "#/$defs/channelId"}, "triggerMessageId": {"$ref": "#/$defs/messageId"}, "status": {"type": "string"}, "maxBotTurns": {"type": "integer", "minimum": 1, "maximum": 8}, "passCount": {"type": "integer", "minimum": 0}, "deadlineAt": {"$ref": "#/$defs/timestamp"}, "version": {"type": "integer", "minimum": 1}}, "additionalProperties": true},
+            "work": {"type": "object", "required": ["id", "roundId", "channelId", "targetBotId", "status", "desiredResult", "version"], "properties": {"id": {"$ref": "#/$defs/workId"}, "roundId": {"$ref": "#/$defs/roundId"}, "channelId": {"$ref": "#/$defs/channelId"}, "targetBotId": {"$ref": "#/$defs/botId"}, "status": {"type": "string"}, "desiredResult": {"const": "message_or_pass"}, "version": {"type": "integer", "minimum": 1}}, "additionalProperties": true},
+            "attempt": {"type": "object", "required": ["id", "workId", "executorBotId", "status", "authoritySystem", "authorityId", "contextManifestId", "fencingToken", "startedAt"], "properties": {"id": {"$ref": "#/$defs/attemptId"}, "workId": {"$ref": "#/$defs/workId"}, "executorBotId": {"$ref": "#/$defs/botId"}, "status": {"type": "string"}, "authoritySystem": {"const": "resident_turn"}, "authorityId": {"type": "string"}, "contextManifestId": {"$ref": "#/$defs/contextManifestId"}, "fencingToken": {"type": "integer", "minimum": 1}, "startedAt": {"$ref": "#/$defs/timestamp"}}, "additionalProperties": true},
+            "lease": {"type": "object", "required": ["id", "attemptId", "holderId", "fencingToken", "status", "acquiredAt", "expiresAt"], "properties": {"id": {"$ref": "#/$defs/leaseId"}, "attemptId": {"$ref": "#/$defs/attemptId"}, "holderId": {"type": "string"}, "fencingToken": {"type": "integer", "minimum": 1}, "status": {"type": "string"}, "acquiredAt": {"$ref": "#/$defs/timestamp"}, "expiresAt": {"$ref": "#/$defs/timestamp"}}, "additionalProperties": true},
+            "contextManifest": {"type": "object", "required": ["id", "workId", "channelId", "throughSequence", "messageCount", "messageIdsDigest", "attachmentIdsDigest", "privacyBoundary"], "properties": {"id": {"$ref": "#/$defs/contextManifestId"}, "workId": {"$ref": "#/$defs/workId"}, "channelId": {"$ref": "#/$defs/channelId"}, "throughSequence": {"type": "integer", "minimum": 0}, "messageCount": {"type": "integer", "minimum": 0}, "messageIdsDigest": {"$ref": "#/$defs/sha256"}, "attachmentIdsDigest": {"$ref": "#/$defs/sha256"}, "privacyBoundary": {"const": "channel_only"}}, "additionalProperties": true},
+            "workObservation": {"type": "object", "required": ["id", "authoritySystem", "authorityId", "sourceVersion", "observedState", "observedAt", "sourceUpdatedAt", "freshness", "terminal", "safeSummary"], "properties": {"id": {"$ref": "#/$defs/observationId"}, "authoritySystem": {"type": "string"}, "authorityId": {"type": "string"}, "freshness": {"enum": ["current", "stale", "unknown", "unavailable"]}, "terminal": {"type": "boolean"}}, "additionalProperties": true},
+            "activity": {"type": "object", "required": ["state", "label", "workId", "observationId", "updatedAt"], "properties": {"state": {"type": "string"}, "label": {"type": "string"}, "workId": {"$ref": "#/$defs/workId"}, "observationId": {"$ref": "#/$defs/observationId"}, "updatedAt": {"$ref": "#/$defs/timestamp"}}, "additionalProperties": true},
+            "outbox": {"type": "object", "required": ["id", "topic", "aggregateId", "state", "attemptCount"], "properties": {"id": {"$ref": "#/$defs/outboxId"}, "aggregateId": {"$ref": "#/$defs/workId"}, "state": {"type": "string"}, "attemptCount": {"type": "integer", "minimum": 0}}, "additionalProperties": true},
+            "delivery": {"type": "object", "required": ["id", "eventSequence", "deviceId", "state", "attemptCount"], "properties": {"id": {"$ref": "#/$defs/deliveryId"}, "eventSequence": {"$ref": "#/$defs/eventSequence"}, "deviceId": {"$ref": "#/$defs/deviceId"}, "state": {"type": "string"}, "attemptCount": {"type": "integer", "minimum": 0}}, "additionalProperties": true},
+            "authorityEpoch": {"$ref": "#/$defs/authorityEpoch"},
+            "throughEventSequence": {"$ref": "#/$defs/eventSequence"}
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "errorFixture": {"type": "object", "required": ["error"], "properties": {"error": {"$ref": "#/$defs/errorBody"}}, "additionalProperties": true},
+    "pairingSessionFixture": {
+      "allOf": [
+        {"$ref": "#/$defs/fixtureHeader"},
+        {"type": "object", "required": ["pairingSession", "device", "clientSession", "tokenDelivery"], "properties": {"fixtureKind": {"const": "pairing-session"}, "pairingSession": {"type": "object", "required": ["id", "state", "expiresAt", "redeemedAt"], "properties": {"id": {"$ref": "#/$defs/pairingSessionId"}, "state": {"type": "string"}, "expiresAt": {"$ref": "#/$defs/timestamp"}, "redeemedAt": {"$ref": "#/$defs/timestamp"}}, "additionalProperties": true}, "device": {"type": "object", "required": ["id", "principalId", "platform", "name", "appBuild", "status", "lastSeenAt"], "properties": {"id": {"$ref": "#/$defs/deviceId"}, "principalId": {"const": "user_owner"}, "platform": {"enum": ["macos", "ios"]}}, "additionalProperties": true}, "clientSession": {"type": "object", "required": ["id", "deviceId", "principalId", "state", "scopes", "accessExpiresAt", "refreshExpiresAt"], "properties": {"id": {"$ref": "#/$defs/sessionId"}, "deviceId": {"$ref": "#/$defs/deviceId"}, "principalId": {"const": "user_owner"}, "state": {"type": "string"}, "scopes": {"type": "array", "items": {"type": "string"}}, "accessExpiresAt": {"$ref": "#/$defs/timestamp"}, "refreshExpiresAt": {"$ref": "#/$defs/timestamp"}}, "additionalProperties": true}, "tokenDelivery": {"const": "returned_once_and_never_logged"}}, "additionalProperties": true}
+      ]
+    },
+    "importFixture": {
+      "allOf": [
+        {"$ref": "#/$defs/fixtureHeader"},
+        {"type": "object", "required": ["legacySource", "cohort", "item", "alias", "authorityEpoch"], "properties": {"fixtureKind": {"const": "import-provenance"}, "legacySource": {"type": "object", "required": ["id", "residentBotId", "layout", "locatorDigest", "sourceWatermark", "privacyClass", "state"], "properties": {"id": {"$ref": "#/$defs/legacySourceId"}, "residentBotId": {"$ref": "#/$defs/botId"}, "locatorDigest": {"$ref": "#/$defs/sha256"}}, "additionalProperties": true}, "cohort": {"type": "object", "required": ["id", "name", "selector", "manifestDigest", "state"], "properties": {"id": {"$ref": "#/$defs/importCohortId"}, "manifestDigest": {"$ref": "#/$defs/sha256"}}, "additionalProperties": true}, "item": {"type": "object", "required": ["id", "cohortId", "sourceId", "sourceRecordDigest", "targetType", "targetId", "state", "bodyImported", "provenance"], "properties": {"id": {"$ref": "#/$defs/importItemId"}, "cohortId": {"$ref": "#/$defs/importCohortId"}, "sourceId": {"$ref": "#/$defs/legacySourceId"}, "sourceRecordDigest": {"$ref": "#/$defs/sha256"}, "targetId": {"$ref": "#/$defs/messageId"}, "state": {"type": "string"}, "bodyImported": {"type": "boolean"}}, "additionalProperties": true}, "alias": {"type": "object", "required": ["id", "namespace", "aliasDigest", "targetType", "targetId", "active"], "properties": {"id": {"$ref": "#/$defs/aliasId"}, "aliasDigest": {"$ref": "#/$defs/sha256"}, "targetId": {"$ref": "#/$defs/messageId"}, "active": {"type": "boolean"}}, "additionalProperties": true}, "authorityEpoch": {"$ref": "#/$defs/authorityEpoch"}}, "additionalProperties": true}
+      ]
+    },
+    "searchFixture": {
+      "allOf": [
+        {"$ref": "#/$defs/fixtureHeader"},
+        {"type": "object", "required": ["query", "scope", "results", "nextCursor", "completeness", "throughEventSequence"], "properties": {"fixtureKind": {"const": "search"}, "query": {"type": "string", "minLength": 1}, "scope": {"type": "string"}, "results": {"type": "array", "items": {"type": "object", "required": ["type", "id", "conversationId", "channelId", "title", "excerpt", "sequence", "createdAt"], "properties": {"id": {"$ref": "#/$defs/messageId"}, "conversationId": {"$ref": "#/$defs/conversationId"}, "channelId": {"$ref": "#/$defs/channelId"}, "sequence": {"type": "integer", "minimum": 1}, "createdAt": {"$ref": "#/$defs/timestamp"}}, "additionalProperties": true}}, "nextCursor": {"type": ["string", "null"]}, "completeness": {"type": "object", "required": ["status", "respondingRoute", "authoritativeSource", "sourceEventSequence", "indexRoute", "indexedThroughEventSequence", "crossingProof", "filters", "samePathCanary", "importCoverage", "verdict", "reason"], "properties": {"status": {"type": "string"}, "respondingRoute": {"const": "/api/v1/search"}, "sourceEventSequence": {"$ref": "#/$defs/eventSequence"}, "indexedThroughEventSequence": {"$ref": "#/$defs/eventSequence"}, "samePathCanary": {"type": "object", "required": ["id", "found", "checkedAt"], "properties": {"found": {"type": "boolean"}, "checkedAt": {"$ref": "#/$defs/timestamp"}}, "additionalProperties": true}}, "additionalProperties": true}, "throughEventSequence": {"$ref": "#/$defs/eventSequence"}}, "additionalProperties": true}
+      ]
+    }
+  }
+}

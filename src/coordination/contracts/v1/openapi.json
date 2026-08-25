@@ -1,0 +1,135 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Home23 Connected Agents API",
+    "version": "1",
+    "description": "Minimal contract-only draft. It defines no router or runtime implementation."
+  },
+  "x-connected-agents-contract-version": 1,
+  "x-home23-network-boundary": "loopback or authenticated Tailscale/VPN only; never a public listener",
+  "x-home23-compatibility": {
+    "unknownFields": "tolerate additive fields",
+    "unknownEnums": "follow registry.json publicEnums",
+    "breakingChanges": "numbered contract delta with Core and Apple owner review"
+  },
+  "x-home23-event-semantics": {
+    "cursor": "integer global sequence",
+    "resume": "strictly after the supplied sequence",
+    "delivery": "at least once",
+    "expired": "409 cursor_expired with bootstrapRequired=true",
+    "unknownType": "validate envelope, advance cursor, ignore payload"
+  },
+  "servers": [
+    {"url": "http://127.0.0.1:{port}", "description": "Explicit loopback listener", "variables": {"port": {"default": "5050"}}},
+    {"url": "https://{vpnHost}", "description": "Authenticated Tailscale/VPN route", "variables": {"vpnHost": {"default": "home23.invalid"}}}
+  ],
+  "security": [{"bearerSession": []}],
+  "paths": {
+    "/api/v1/capabilities": {
+      "get": {"operationId": "getCapabilities", "security": [], "responses": {"200": {"description": "Safe version, pairing availability, and limits", "content": {"application/json": {"schema": {"type": "object", "required": ["contractVersion", "apiBase", "pairingAvailable", "limits"], "properties": {"contractVersion": {"const": 1}, "apiBase": {"const": "/api/v1"}, "pairingAvailable": {"type": "boolean"}, "limits": {"type": "object"}}, "additionalProperties": true}}}}}}
+    },
+    "/api/v1/pairing/sessions": {
+      "post": {"operationId": "createPairingSession", "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["deviceName"], "properties": {"deviceName": {"type": "string", "minLength": 1, "maxLength": 128}}, "additionalProperties": true}}}}, "responses": {"201": {"description": "One-use short-lived pairing session; the human code is returned once", "content": {"application/json": {"schema": {"type": "object", "required": ["pairingSession", "pairingCode"], "properties": {"pairingSession": {"type": "object", "required": ["id", "state", "expiresAt"], "properties": {"id": {"$ref": "./schema.json#/$defs/pairingSessionId"}, "state": {"const": "pending"}, "expiresAt": {"$ref": "./schema.json#/$defs/timestamp"}}, "additionalProperties": true}, "pairingCode": {"type": "string", "description": "Returned once and never logged"}}, "additionalProperties": true}}}}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/pairing/sessions/{pairingSessionId}/redeem": {
+      "post": {"operationId": "redeemPairingSession", "security": [], "parameters": [{"$ref": "#/components/parameters/PairingSessionId"}, {"$ref": "#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["pairingCode", "device"], "properties": {"pairingCode": {"type": "string", "minLength": 8, "maxLength": 32}, "device": {"type": "object", "required": ["platform", "name", "appBuild"], "properties": {"platform": {"enum": ["macos", "ios"]}, "name": {"type": "string"}, "appBuild": {"type": "string"}}, "additionalProperties": true}}, "additionalProperties": true}}}}, "responses": {"200": {"description": "Paired device/session and once-returned token pair", "content": {"application/json": {"schema": {"$ref": "./schema.json#/$defs/pairingSessionFixture"}, "x-canonical-fixture": "pairing-session"}}}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/sessions/refresh": {
+      "post": {"operationId": "refreshSession", "security": [], "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["refreshToken"], "properties": {"refreshToken": {"type": "string", "minLength": 32}}, "additionalProperties": true}}}}, "responses": {"200": {"description": "Rotated access and refresh token pair"}, "401": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/sessions/current": {
+      "delete": {"operationId": "deleteCurrentSession", "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}], "responses": {"204": {"description": "Current session revoked"}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/bootstrap": {
+      "get": {"operationId": "getBootstrap", "parameters": [{"name": "after", "in": "query", "required": false, "schema": {"$ref": "#/components/schemas/EventSequence"}}], "responses": {"200": {"description": "Consistent snapshot and event cursor from one read boundary", "content": {"application/json": {"schema": {"$ref": "./schema.json#/$defs/bootstrapFixture"}, "x-canonical-fixture": "bootstrap"}}}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/bots": {
+      "get": {"operationId": "listBots", "parameters": [{"$ref": "#/components/parameters/Cursor"}, {"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Visible persistent Bot directory", "content": {"application/json": {"schema": {"$ref": "./schema.json#/$defs/botsFixture"}, "x-canonical-fixture": "bots"}}}, "default": {"$ref": "#/components/responses/Error"}}},
+      "post": {"operationId": "createBot", "x-feature-flag": "coordination.bot_lifecycle.enabled", "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}], "requestBody": {"$ref": "#/components/requestBodies/BotMutation"}, "responses": {"202": {"description": "Persistent Bot provisioning accepted"}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/bots/{botId}": {
+      "get": {"operationId": "getBot", "parameters": [{"$ref": "#/components/parameters/BotId"}], "responses": {"200": {"description": "Bot projection", "content": {"application/json": {"schema": {"$ref": "./schema.json#/$defs/bot"}}}}, "default": {"$ref": "#/components/responses/Error"}}},
+      "patch": {"operationId": "updateBot", "parameters": [{"$ref": "#/components/parameters/BotId"}, {"$ref": "#/components/parameters/IdempotencyKey"}, {"$ref": "#/components/parameters/IfMatch"}], "requestBody": {"$ref": "#/components/requestBodies/BotMutation"}, "responses": {"200": {"description": "Updated Bot projection"}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/bots/{botId}/archive": {
+      "post": {"operationId": "archiveBot", "x-feature-flag": "coordination.bot_lifecycle.enabled", "parameters": [{"$ref": "#/components/parameters/BotId"}, {"$ref": "#/components/parameters/IdempotencyKey"}], "responses": {"200": {"description": "Reversibly archived Bot; history retained"}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/bots/{botId}/restore": {
+      "post": {"operationId": "restoreBot", "x-feature-flag": "coordination.bot_lifecycle.enabled", "parameters": [{"$ref": "#/components/parameters/BotId"}, {"$ref": "#/components/parameters/IdempotencyKey"}], "responses": {"200": {"description": "Restored stable Bot identity"}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/channels": {
+      "get": {"operationId": "listChannels", "parameters": [{"$ref": "#/components/parameters/Cursor"}, {"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Direct and group Channels"}, "default": {"$ref": "#/components/responses/Error"}}},
+      "post": {"operationId": "createChannel", "x-feature-flag": "coordination.channels.enabled", "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}], "requestBody": {"$ref": "#/components/requestBodies/ChannelMutation"}, "responses": {"201": {"description": "Owner plus local persistent Bots Channel", "content": {"application/json": {"schema": {"$ref": "./schema.json#/$defs/channelFixture"}, "x-canonical-fixture": "channel-group"}}}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/channels/{channelId}": {
+      "get": {"operationId": "getChannel", "parameters": [{"$ref": "#/components/parameters/ChannelId"}], "responses": {"200": {"description": "One Channel and Conversation handle", "content": {"application/json": {"schema": {"$ref": "./schema.json#/$defs/channelFixture"}, "x-canonical-fixture": "channel-direct"}}}, "default": {"$ref": "#/components/responses/Error"}}},
+      "patch": {"operationId": "updateChannel", "parameters": [{"$ref": "#/components/parameters/ChannelId"}, {"$ref": "#/components/parameters/IdempotencyKey"}, {"$ref": "#/components/parameters/IfMatch"}], "requestBody": {"$ref": "#/components/requestBodies/ChannelMutation"}, "responses": {"200": {"description": "Updated Channel projection"}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/conversations": {
+      "get": {"operationId": "listConversations", "parameters": [{"$ref": "#/components/parameters/Cursor"}, {"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Conversation projections over Channels", "content": {"application/json": {"schema": {"$ref": "./schema.json#/$defs/conversationsFixture"}, "x-canonical-fixture": "conversations"}}}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/channels/{channelId}/messages": {
+      "get": {"operationId": "listChannelMessages", "parameters": [{"$ref": "#/components/parameters/ChannelId"}, {"name": "beforeSequence", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1}}, {"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Stable Channel-sequence page", "content": {"application/json": {"schema": {"$ref": "./schema.json#/$defs/messagesFixture"}, "x-canonical-fixture": "messages-mentions"}}}, "default": {"$ref": "#/components/responses/Error"}}},
+      "post": {"operationId": "appendChannelMessage", "parameters": [{"$ref": "#/components/parameters/ChannelId"}, {"$ref": "#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["messageId", "clientMessageId", "text", "attachmentIds", "mentions", "replyToMessageId"], "properties": {"messageId": {"$ref": "./schema.json#/$defs/messageId"}, "clientMessageId": {"type": "string", "minLength": 1}, "text": {"type": ["string", "null"]}, "attachmentIds": {"type": "array", "maxItems": 10, "items": {"$ref": "./schema.json#/$defs/artifactId"}}, "mentions": {"type": "array", "items": {"$ref": "./schema.json#/$defs/botId"}}, "replyToMessageId": {"anyOf": [{"$ref": "./schema.json#/$defs/messageId"}, {"type": "null"}]}}, "additionalProperties": true}}}}, "responses": {"202": {"description": "Message committed once with bounded Round/Work handles"}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/channels/{channelId}/read": {
+      "post": {"operationId": "updateReadCursor", "parameters": [{"$ref": "#/components/parameters/ChannelId"}, {"$ref": "#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["throughSequence"], "properties": {"throughSequence": {"type": "integer", "minimum": 0}}, "additionalProperties": true}}}}, "responses": {"200": {"description": "Monotonic read cursor", "content": {"application/json": {"schema": {"$ref": "./schema.json#/$defs/unreadFixture"}, "x-canonical-fixture": "unread-read-cursor"}}}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/unread": {
+      "get": {"operationId": "getUnread", "responses": {"200": {"description": "Server-authoritative unread projection", "content": {"application/json": {"schema": {"$ref": "./schema.json#/$defs/unreadFixture"}, "x-canonical-fixture": "unread-read-cursor"}}}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/attachments": {
+      "post": {"operationId": "createAttachment", "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}], "requestBody": {"required": true, "content": {"multipart/form-data": {"schema": {"type": "object", "required": ["metadata", "content"], "properties": {"metadata": {"type": "string", "description": "JSON metadata"}, "content": {"type": "string", "contentEncoding": "binary"}}}}}}, "responses": {"201": {"description": "Ready opaque Attachment", "content": {"application/json": {"schema": {"$ref": "./schema.json#/$defs/attachmentFixture"}, "x-canonical-fixture": "attachment"}}}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/attachments/{artifactId}": {
+      "get": {"operationId": "getAttachment", "parameters": [{"$ref": "#/components/parameters/ArtifactId"}], "responses": {"200": {"description": "Authorized Attachment metadata", "content": {"application/json": {"schema": {"$ref": "./schema.json#/$defs/attachmentFixture"}, "x-canonical-fixture": "attachment"}}}, "default": {"$ref": "#/components/responses/Error"}}},
+      "delete": {"operationId": "deleteAttachment", "parameters": [{"$ref": "#/components/parameters/ArtifactId"}, {"$ref": "#/components/parameters/IdempotencyKey"}], "responses": {"204": {"description": "Unattached owner draft removed"}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/attachments/{artifactId}/content": {
+      "get": {"operationId": "getAttachmentContent", "parameters": [{"$ref": "#/components/parameters/ArtifactId"}], "responses": {"200": {"description": "Authorized bounded bytes", "headers": {"Accept-Ranges": {"schema": {"type": "string"}}}, "content": {"application/octet-stream": {"schema": {"type": "string", "contentEncoding": "binary"}}}}, "206": {"description": "Authorized byte range"}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/search": {
+      "get": {"operationId": "search", "parameters": [{"name": "q", "in": "query", "required": true, "schema": {"type": "string", "minLength": 1}}, {"name": "scope", "in": "query", "required": false, "schema": {"type": "string", "default": "all"}}, {"$ref": "#/components/parameters/Cursor"}, {"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Results plus route/source/index/crossing/filter/canary verdict", "content": {"application/json": {"schema": {"$ref": "./schema.json#/$defs/searchFixture"}, "x-canonical-fixture": "search"}}}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/activity": {
+      "get": {"operationId": "listActivity", "parameters": [{"$ref": "#/components/parameters/Cursor"}, {"$ref": "#/components/parameters/Limit"}], "responses": {"200": {"description": "Compact Activity over canonical Work and source-stamped observations", "content": {"application/json": {"schema": {"$ref": "./schema.json#/$defs/workActivityFixture"}, "x-canonical-fixture": "work-attempt-lease-activity"}}}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/work/{workId}": {
+      "get": {"operationId": "getWork", "parameters": [{"$ref": "#/components/parameters/WorkId"}], "responses": {"200": {"description": "Consequential Work projection with exact-source freshness", "content": {"application/json": {"schema": {"$ref": "./schema.json#/$defs/workActivityFixture"}, "x-canonical-fixture": "work-attempt-lease-activity"}}}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/work/{workId}/cancel": {
+      "post": {"operationId": "cancelWork", "parameters": [{"$ref": "#/components/parameters/WorkId"}, {"$ref": "#/components/parameters/IdempotencyKey"}], "responses": {"202": {"description": "Durable cancel intent; not a false stopped claim"}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/work/{workId}/retry": {
+      "post": {"operationId": "retryWork", "parameters": [{"$ref": "#/components/parameters/WorkId"}, {"$ref": "#/components/parameters/IdempotencyKey"}], "responses": {"202": {"description": "New Attempt for eligible nonterminal Work"}, "default": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/api/v1/events": {
+      "get": {"operationId": "listEvents", "parameters": [{"name": "after", "in": "query", "required": false, "schema": {"$ref": "#/components/schemas/EventSequence"}}, {"name": "Last-Event-ID", "in": "header", "required": false, "description": "Decimal integer global event sequence", "schema": {"type": "string", "pattern": "^[0-9]+$"}}], "responses": {"200": {"description": "SSE stream; id field is the decimal integer sequence", "content": {"text/event-stream": {"schema": {"$ref": "./schema.json#/$defs/eventFixture"}, "x-canonical-fixture": "event-message-appended"}}}, "409": {"description": "Cursor predates retained event floor", "content": {"application/json": {"schema": {"$ref": "./schema.json#/$defs/eventCursorResetFixture"}, "x-canonical-fixture": "event-cursor-reset"}}}, "default": {"$ref": "#/components/responses/Error"}}}
+    }
+  },
+  "components": {
+    "securitySchemes": {"bearerSession": {"type": "http", "scheme": "bearer"}},
+    "schemas": {
+      "EventSequence": {"type": "integer", "minimum": 0},
+      "Error": {"$ref": "./schema.json#/$defs/errorFixture"}
+    },
+    "parameters": {
+      "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[ -~]+$"}},
+      "IfMatch": {"name": "If-Match", "in": "header", "required": true, "schema": {"type": "string", "pattern": "^[1-9][0-9]*$"}},
+      "Cursor": {"name": "cursor", "in": "query", "required": false, "description": "Opaque signed cursor bound to route, principal, filters, and direction", "schema": {"type": "string", "minLength": 16}},
+      "Limit": {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}},
+      "BotId": {"name": "botId", "in": "path", "required": true, "schema": {"$ref": "./schema.json#/$defs/botId"}},
+      "ChannelId": {"name": "channelId", "in": "path", "required": true, "schema": {"$ref": "./schema.json#/$defs/channelId"}},
+      "ArtifactId": {"name": "artifactId", "in": "path", "required": true, "schema": {"$ref": "./schema.json#/$defs/artifactId"}},
+      "WorkId": {"name": "workId", "in": "path", "required": true, "schema": {"$ref": "./schema.json#/$defs/workId"}},
+      "PairingSessionId": {"name": "pairingSessionId", "in": "path", "required": true, "schema": {"$ref": "./schema.json#/$defs/pairingSessionId"}}
+    },
+    "requestBodies": {
+      "BotMutation": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["name", "purpose"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 80}, "purpose": {"type": "string", "maxLength": 4000}}, "additionalProperties": true}}}},
+      "ChannelMutation": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["title", "purpose", "memberBotIds", "responderPolicy"], "properties": {"title": {"type": "string", "minLength": 1, "maxLength": 120}, "purpose": {"type": "string", "maxLength": 4000}, "memberBotIds": {"type": "array", "uniqueItems": true, "items": {"$ref": "./schema.json#/$defs/botId"}}, "responderPolicy": {"$ref": "./schema.json#/$defs/responderPolicy"}}, "additionalProperties": true}}}}
+    },
+    "responses": {
+      "Error": {"description": "Safe stable error envelope", "headers": {"X-Request-ID": {"schema": {"type": "string"}}, "X-Correlation-ID": {"schema": {"type": "string"}}}, "content": {"application/json": {"schema": {"$ref": "./schema.json#/$defs/errorFixture"}, "x-canonical-fixture": "error"}}}
+    }
+  }
+}

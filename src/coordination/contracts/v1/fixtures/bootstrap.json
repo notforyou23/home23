@@ -1,0 +1,56 @@
+{
+  "contractVersion": 1,
+  "minimumClientBuild": 1,
+  "serverTime": "2026-08-24T16:00:00.000Z",
+  "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+  "correlationId": "cor_0198d95f-6c00-7000-8000-0000000000a2",
+  "home": {
+    "id": "home_0198d95f-6c00-7000-8000-000000000001",
+    "name": "Home23",
+    "primaryBotId": "bot_0198d95f-6c00-7000-8000-000000000011"
+  },
+  "client": {
+    "sessionId": "ses_0198d95f-6c00-7000-8000-000000000072",
+    "deviceId": "dev_0198d95f-6c00-7000-8000-000000000071",
+    "principalId": "user_owner",
+    "scopes": ["product:read", "message:send", "attachment:write"]
+  },
+  "connection": {
+    "mode": "local",
+    "displayName": "Home Mac",
+    "reachable": true
+  },
+  "capabilities": {
+    "channels": false,
+    "attachments": false,
+    "search": false,
+    "push": false,
+    "eventReplay": false,
+    "botLifecycle": false
+  },
+  "limits": {
+    "attachmentBytes": 26214400,
+    "attachmentCountPerMessage": 10,
+    "jsonBodyBytes": 262144,
+    "idempotencyKeyMinimum": 16,
+    "idempotencyKeyMaximum": 128
+  },
+  "snapshot": {
+    "bots": [
+      {"id": "bot_0198d95f-6c00-7000-8000-000000000011", "name": "Jerry", "lifecycle": "active", "availability": "available", "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000031", "version": 4},
+      {"id": "bot_0198d95f-6c00-7000-8000-000000000012", "name": "Forrest", "lifecycle": "active", "availability": "available", "conversationId": null, "version": 3},
+      {"id": "bot_0198d95f-6c00-7000-8000-000000000013", "name": "Archivist", "lifecycle": "active", "availability": "offline", "conversationId": null, "version": 1}
+    ],
+    "channels": [
+      {"id": "chn_0198d95f-6c00-7000-8000-000000000021", "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000031", "kind": "direct", "title": "Jerry", "lifecycle": "active", "version": 5},
+      {"id": "chn_0198d95f-6c00-7000-8000-000000000022", "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000032", "kind": "group", "title": "House planning", "lifecycle": "active", "version": 2}
+    ],
+    "conversations": [
+      {"id": "cnv_0198d95f-6c00-7000-8000-000000000031", "channelId": "chn_0198d95f-6c00-7000-8000-000000000021", "latestSequence": 2, "unreadCount": 0, "version": 5},
+      {"id": "cnv_0198d95f-6c00-7000-8000-000000000032", "channelId": "chn_0198d95f-6c00-7000-8000-000000000022", "latestSequence": 2, "unreadCount": 1, "version": 2}
+    ],
+    "unreadTotal": 1
+  },
+  "eventCursor": 127,
+  "throughEventSequence": 127
+}

@@ -1,0 +1,18 @@
+{
+  "id": "evt_0198d95f-6c00-7000-8000-000000000061",
+  "sequence": 128,
+  "schemaVersion": 1,
+  "type": "message.appended",
+  "durability": "durable",
+  "aggregate": {"kind": "message", "id": "msg_0198d95f-6c00-7000-8000-000000000044", "version": 1},
+  "channelId": "chn_0198d95f-6c00-7000-8000-000000000022",
+  "actorPrincipalId": "bot_0198d95f-6c00-7000-8000-000000000012",
+  "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+  "correlationId": "cor_0198d95f-6c00-7000-8000-0000000000a2",
+  "createdAt": "2026-08-24T15:50:00.000Z",
+  "payload": {
+    "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000032",
+    "messageId": "msg_0198d95f-6c00-7000-8000-000000000044",
+    "channelSequence": 2
+  }
+}

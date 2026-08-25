@@ -1,0 +1,24 @@
+{
+  "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+  "correlationId": "cor_0198d95f-6c00-7000-8000-0000000000a2",
+  "channel": {
+    "id": "chn_0198d95f-6c00-7000-8000-000000000022",
+    "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000032",
+    "kind": "group",
+    "title": "House planning",
+    "purpose": "Coordinate bounded work among local persistent Bots.",
+    "ownerPrincipalId": "user_owner",
+    "members": [
+      {"principalId": "user_owner", "kind": "owner", "role": "owner"},
+      {"principalId": "bot_0198d95f-6c00-7000-8000-000000000011", "kind": "bot", "role": "member"},
+      {"principalId": "bot_0198d95f-6c00-7000-8000-000000000012", "kind": "bot", "role": "member"}
+    ],
+    "responderPolicy": {"mode": "mention_or_coordinator", "coordinatorBotId": "bot_0198d95f-6c00-7000-8000-000000000011", "responseOrder": "sequential", "maxBotTurns": 4},
+    "lifecycle": "active",
+    "pinned": false,
+    "version": 2,
+    "createdAt": "2026-08-24T15:10:00.000Z",
+    "updatedAt": "2026-08-24T15:50:00.000Z"
+  },
+  "throughEventSequence": 127
+}

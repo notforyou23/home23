@@ -1,0 +1,9 @@
+{
+  "error": {
+    "code": "cursor_expired",
+    "message": "The event cursor is no longer resumable. Bootstrap is required.",
+    "retryable": true,
+    "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+    "details": {"bootstrapRequired": true, "requestedAfterSequence": 12, "retentionFloorSequence": 100, "currentSequence": 130}
+  }
+}

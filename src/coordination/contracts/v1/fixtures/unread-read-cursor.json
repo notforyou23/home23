@@ -1,0 +1,13 @@
+{
+  "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+  "correlationId": "cor_0198d95f-6c00-7000-8000-0000000000a2",
+  "principalId": "user_owner",
+  "channelId": "chn_0198d95f-6c00-7000-8000-000000000022",
+  "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000032",
+  "readThroughSequence": 1,
+  "unreadCount": 1,
+  "latestSequence": 2,
+  "version": 3,
+  "updatedAt": "2026-08-24T15:51:00.000Z",
+  "throughEventSequence": 127
+}
