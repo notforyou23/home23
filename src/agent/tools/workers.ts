@@ -1,7 +1,8 @@
 import type { ToolContext, ToolDefinition } from '../types.js';
+import { resolveHarnessBridgeUrl } from '../harness-bridge-url.js';
 
 function baseUrl(ctx: ToolContext): string {
-  return ctx.workerConnectorBaseUrl || `http://127.0.0.1:${process.env.HOME23_BRIDGE_PORT || '5004'}`;
+  return resolveHarnessBridgeUrl(ctx);
 }
 
 function fetcher(ctx: ToolContext): typeof fetch {

@@ -20,6 +20,8 @@ import {
 } from '../brain-operations/input-validation.js';
 import { operationToolResult } from '../tool-result.js';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
+import type { RelationshipLedger } from '../relationship-ledger.js';
+import { clipToolOutput } from './clip-output.js';
 
 const DEFAULT_BRAIN_QUERY_MODE = 'quick';
 const BRAIN_OPERATION_ID_PATTERN = '^brop_[A-Za-z0-9_-]{32}$';
@@ -196,11 +198,164 @@ function toolFailure(label: string, error: unknown): ToolResult {
   };
 }
 
+const JSON_CONTENT_CAP = 3500;
+const SEARCH_SNIPPET_CHARS = 180;
+const SEARCH_CONTENT_BUDGET = 3500;
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function clipSnippet(text: string, max = SEARCH_SNIPPET_CHARS): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  if (flat.length <= max) return flat;
+  return `${flat.slice(0, max - 1).trimEnd()}…`;
+}
+
+function formatScore(value: unknown): string {
+  if (typeof value === 'number' && Number.isFinite(value)) return value.toFixed(3);
+  if (value == null) return 'n/a';
+  return String(value);
+}
+
+function formatHitLine(hit: unknown, index: number): string {
+  const rec = asRecord(hit) ?? {};
+  const id = rec.id ?? rec.nodeId ?? rec._id ?? `hit-${index + 1}`;
+  const finalRank = rec.finalRankScore ?? rec.retrievalScore ?? rec.similarity ?? rec.score ?? rec.rank;
+  const matchKind = rec.matchKind ?? 'unknown';
+  const sourceDomain = rec.sourceDomain ?? rec.sourceClass ?? rec.retrievalDomain ?? 'unknown';
+  const components = asRecord(rec.componentScores);
+  const concept = typeof rec.concept === 'string' ? rec.concept
+    : typeof rec.content === 'string' ? rec.content
+    : typeof rec.text === 'string' ? rec.text
+    : JSON.stringify(rec);
+  const parts = [
+    `${index + 1}. id=${id} finalRankScore=${formatScore(finalRank)} matchKind=${matchKind} sourceDomain=${sourceDomain}`,
+  ];
+  if (components) {
+    parts.push(
+      `   components similarity=${formatScore(components.similarity)} lexical=${formatScore(components.lexical)} `
+      + `retrieval=${formatScore(components.retrieval)} `
+      + `identityPenalty=${formatScore(components.identityPenalty ?? components.identityPenalty)} `
+      + `kindBoost=${formatScore(components.kindBoost ?? components.kindBoost)}`,
+    );
+  }
+  const tag = rec.tag ?? rec.label;
+  if (tag != null) parts.push(`   tag=${tag}`);
+  parts.push(`   ${clipSnippet(String(concept))}`);
+  return parts.join('\n');
+}
+
+function federateRelationshipHits(
+  value: Record<string, unknown>,
+  ledger: RelationshipLedger | null | undefined,
+  query: string,
+): Record<string, unknown> {
+  if (!ledger) return value;
+  const found = ledger.searchEntries(query, { status: 'active', excludePrivacy: ['sensitive'] });
+  const hits = Array.isArray(value.results) ? [...value.results]
+    : Array.isArray(value.hits) ? [...value.hits]
+    : [];
+  const existing = new Set(hits.map((hit) => String((asRecord(hit) ?? {}).id ?? '')));
+  for (const entry of found.entries) {
+    if (existing.has(entry.id)) continue;
+    hits.push({
+      id: entry.id,
+      concept: `${entry.title}: ${entry.statement}`,
+      matchKind: 'relationship',
+      sourceDomain: 'relationship',
+      finalRankScore: 900 + (entry.type === 'correction' ? 50 : 0),
+      tag: entry.type,
+      componentScores: {
+        similarity: null,
+        lexical: 1,
+        retrieval: null,
+        identityPenalty: 1,
+        kindBoost: 900,
+      },
+    });
+  }
+  hits.sort((left, right) => {
+    const a = asRecord(left) ?? {};
+    const b = asRecord(right) ?? {};
+    return Number(b.finalRankScore ?? b.retrievalScore ?? b.similarity ?? 0)
+      - Number(a.finalRankScore ?? a.retrievalScore ?? a.similarity ?? 0);
+  });
+  return {
+    ...value,
+    results: hits,
+    relationshipFederation: {
+      surfaced: found.entries.length,
+      withheldMatching: found.withheldMatching,
+    },
+  };
+}
+
+/** Hits-first search view. Pretty-printed evidence dumps starve the ranked hits at the 4k display cap. */
+export function formatBrainSearchContent(value: Record<string, unknown>): string {
+  const hits = Array.isArray(value.results) ? value.results
+    : Array.isArray(value.hits) ? value.hits
+    : [];
+  const evidence = asRecord(value.sourceEvidence) ?? asRecord(value.evidence) ?? {};
+  const health = typeof evidence.sourceHealth === 'string' ? evidence.sourceHealth : 'unknown';
+  const mode = typeof evidence.retrievalMode === 'string' ? evidence.retrievalMode
+    : typeof evidence.matchOutcome === 'string' ? evidence.matchOutcome
+    : 'unknown';
+  const completeCoverage = evidence.completeCoverage;
+  const completeness = completeCoverage === true ? 'complete'
+    : completeCoverage === false ? 'incomplete'
+    : 'unknown';
+  const federation = asRecord(value.relationshipFederation);
+  const header = [
+    `brain_search: ${hits.length} hit(s). sourceHealth=${health} retrievalMode=${mode} completeness=${completeness}`,
+    'Snippets are clipped. This is the ranked list, not a JSON dump. Re-query tighter; this tool is not pageable and has no offset.',
+  ];
+  if (completeness === 'incomplete') {
+    header.push('TYPED STATE completeness=incomplete — do not conclude absence from this ranking.');
+  }
+  if (federation) {
+    header.push(
+      `relationshipFederation surfaced=${String(federation.surfaced)} withheldMatching=${String(federation.withheldMatching)}`,
+    );
+  }
+  const lines = [...header];
+  let packed = 0;
+  for (let index = 0; index < hits.length; index++) {
+    const block = formatHitLine(hits[index], packed);
+    const candidate = [...lines, block].join('\n');
+    if (candidate.length > SEARCH_CONTENT_BUDGET) {
+      lines.push(
+        `${hits.length - packed} more hit(s) omitted to stay under the display budget. Re-query tighter. Not pageable.`,
+      );
+      break;
+    }
+    lines.push(block);
+    packed += 1;
+  }
+  if (hits.length === 0) {
+    lines.push('(no hits — empty ranking, not a truncated dump)');
+  }
+  return lines.join('\n');
+}
+
 function boundedJson(label: string, value: Record<string, unknown>): ToolResult {
   const sourceEvidence = value.sourceEvidence
     ?? (value.evidence && typeof value.evidence === 'object' ? value.evidence : undefined);
+  const pretty = JSON.stringify(value, null, 2);
+  const compact = JSON.stringify(value);
+  const raw = pretty.length <= JSON_CONTENT_CAP ? pretty : compact;
+  let content = `${label}\n${raw}`;
+  if (content.length > JSON_CONTENT_CAP) {
+    const prefix = `${label} (JSON truncated; ${compact.length} chars total. This page is incomplete. Narrow the query; do not treat this as the full result.)\n`;
+    const room = Math.max(64, JSON_CONTENT_CAP - prefix.length);
+    let slice = compact.slice(0, room);
+    if (/[\uD800-\uDBFF]$/.test(slice)) slice = slice.slice(0, -1);
+    content = `${prefix}${slice}`;
+  }
   return {
-    content: `${label}\n${JSON.stringify(value, null, 2)}`,
+    content,
     resultHandle: typeof value.resultHandle === 'string' ? value.resultHandle : undefined,
     metadata: {
       operationId: value.operationId,
@@ -303,13 +458,36 @@ async function executeBrainSearch(
     const topK = parsedWhenPresent(input, 'limit', (value) =>
       optionalFiniteInteger(value, 'limit', 1, 100)) ?? 10;
     const tag = optionalTagWhenPresent(input);
-    const value = await turn.brainOperations.search({
-      ...(target ? { target } : {}),
-      query: requiredToolText(input, 'query', 12_000),
-      topK,
-      ...(tag !== undefined ? { tag } : {}),
-    }, turn.signal);
-    return boundedJson('brain_search', value);
+    const query = requiredToolText(input, 'query', 12_000);
+    const value = federateRelationshipHits(
+      await turn.brainOperations.search({
+        ...(target ? { target } : {}),
+        query,
+        topK,
+        ...(tag !== undefined ? { tag } : {}),
+      }, turn.signal),
+      ctx.relationshipLedger,
+      query,
+    );
+    const sourceEvidence = value.sourceEvidence
+      ?? (value.evidence && typeof value.evidence === 'object' ? value.evidence : undefined);
+    return {
+      content: clipToolOutput(
+        formatBrainSearchContent(value),
+        'Re-query with a smaller limit or a tighter query. brain_search does not support offset paging.',
+      ),
+      resultHandle: typeof value.resultHandle === 'string' ? value.resultHandle : undefined,
+      metadata: {
+        operationId: value.operationId,
+        state: value.state,
+        sourceEvidence,
+        resultArtifact: value.resultArtifact,
+        pageable: false,
+        hitCount: Array.isArray(value.results) ? value.results.length
+          : Array.isArray(value.hits) ? value.hits.length
+          : 0,
+      },
+    };
   } catch (error) {
     return toolFailure('brain_search', error);
   }

@@ -1865,6 +1865,28 @@ body.h23-chat-page .h23-chat-sidebar {
   box-shadow: none;
 }
 
+.h23-chat-slot > .h23-chat-shared .h23-chat-msg.assistant ul,
+.h23-chat-slot > .h23-chat-shared .h23-chat-msg.assistant ol {
+  margin: 0.4em 0 0.8em;
+  padding-left: 1.4em;
+}
+
+.h23-chat-slot > .h23-chat-shared .h23-chat-msg.assistant ul {
+  list-style: disc;
+}
+
+.h23-chat-slot > .h23-chat-shared .h23-chat-msg.assistant ol {
+  list-style: decimal;
+}
+
+.h23-chat-slot > .h23-chat-shared .h23-chat-msg.assistant li {
+  margin: 0.25em 0;
+}
+
+.h23-chat-slot > .h23-chat-shared .h23-chat-msg.assistant li::marker {
+  color: var(--h23-paper-soft);
+}
+
 .h23-chat-slot > .h23-chat-shared .h23-chat-msg.assistant p {
   margin: 0 0 0.7em;
 }

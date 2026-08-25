@@ -371,3 +371,19 @@ test('tiny display limits fall back to the compact locator instead of failing', 
   assert.match(excerpt, /OUTPUT TRUNCATED; full result: handle=/);
   assert.equal(/"offset"/.test(excerpt), false, 'no paging promise it cannot keep');
 });
+
+test('truncation without an operationId teaches a re-call, not a missing result', () => {
+  const excerpt = recoverableExcerpt('hit-one '.repeat(800), 4000, {});
+  assert.ok(excerpt.length <= 4000);
+  assert.match(excerpt, /display cap, not a missing result/);
+  assert.match(excerpt, /Re-call this tool/);
+  assert.equal(/brain_status/.test(excerpt), false);
+  assert.equal(/no durable reference/.test(excerpt), false);
+});
+
+test('non-pageable truncation does not invent an offset argument', () => {
+  const excerpt = recoverableExcerpt('hit-one '.repeat(800), 4000, { pageable: false });
+  assert.ok(excerpt.length <= 4000);
+  assert.match(excerpt, /does not support offset paging/);
+  assert.doesNotMatch(excerpt, /offset, or limit/);
+});

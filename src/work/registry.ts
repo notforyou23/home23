@@ -16,6 +16,7 @@ import {
   type WorkResultHandle,
 } from './types.js';
 import type { WorkStore } from './work-store.js';
+import { workBus } from './work-bus.js';
 
 const PROGRESS_THROTTLE_MS = 15_000;
 
@@ -76,6 +77,7 @@ export class WorkRegistry {
       verification: 'none',
     };
     this.store.write(record);
+    this.notify(record, 'created');
     return record;
   }
 
@@ -96,7 +98,9 @@ export class WorkRegistry {
   }
 
   update(workId: string, patch: Partial<AsyncWorkRecord>): AsyncWorkRecord | undefined {
-    return this.store.update(workId, patch);
+    const next = this.store.update(workId, patch);
+    if (next) this.notify(next, 'updated');
+    return next;
   }
 
   /** Record operator cancel intent so a kill that lands as 'failed' reports 'cancelled'. */
@@ -115,11 +119,13 @@ export class WorkRegistry {
     const mapped: AsyncWorkStatus =
       status === 'failed' && this.cancelRequested.has(workId) ? 'cancelled' : status;
     this.cancelRequested.delete(workId);
-    return this.store.update(workId, {
+    const done = this.store.update(workId, {
       status: mapped,
       finishedAt: new Date().toISOString(),
       ...(error ? { error } : {}),
     })!;
+    this.notify(done, 'terminal');
+    return done;
   }
 
   /** Throttled progress note (disk write at most every 15s per work item). */
@@ -130,7 +136,12 @@ export class WorkRegistry {
     const current = this.store.read(workId);
     if (!current || TERMINAL_WORK_STATUSES.has(current.status)) return;
     this.lastProgressAt.set(workId, now);
-    this.store.update(workId, { progressSummary: summary });
+    const next = this.store.update(workId, { progressSummary: summary });
+    if (next) this.notify(next, 'progress');
+  }
+
+  private notify(record: AsyncWorkRecord, reason: string): void {
+    workBus.emit(record, reason);
   }
 
   /**
@@ -150,6 +161,10 @@ export class WorkRegistry {
       if (TERMINAL_WORK_STATUSES.has(rec.status)) continue;
       if (rec.kind === 'subagent') {
         interrupted.push(this.complete(rec.workId, 'interrupted', 'harness restarted while sub-agent was running'));
+        continue;
+      }
+      if (rec.kind === 'cron') {
+        interrupted.push(this.complete(rec.workId, 'interrupted', 'harness restarted while cron agent-turn was running'));
         continue;
       }
       const jobId = rec.resultHandle.type === 'coding_job' ? rec.resultHandle.jobId : null;

@@ -461,17 +461,18 @@ export class BrainOperationsClient {
   }
 
   async searchContext(
-    request: { query: string; topK: number },
+    request: { query: string; topK: number; mode?: 'context' },
     signal?: AbortSignal,
   ): Promise<Record<string, unknown>> {
-    assertExactKeys(request, ['query', 'topK'], 'contextSearch', { requireAll: true });
+    assertExactKeys(request, ['query', 'topK', 'mode'], 'contextSearch');
     const query = requiredBoundedText(request.query, 'query', 12_000);
     const topK = optionalFiniteInteger(request.topK, 'topK', 1, 100);
     if (topK === undefined) throw invalid('topK_invalid');
+    if (request.mode !== undefined && request.mode !== 'context') throw invalid('mode_invalid');
     const value = await this.requestJson<Record<string, unknown>>('/api/memory/search', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ query, topK }),
+      body: JSON.stringify({ query, topK, mode: 'context' }),
     }, {
       code: 'context_search_timeout',
       timeoutMs: this.options.statusReadMs ?? 10_000,

@@ -63,14 +63,16 @@ export type KeepStrategy = 'head' | 'tail';
 export const DEFAULT_IDENTITY_BUDGETS: Record<string, { budget: number; strategy: KeepStrategy }> = {
   'SOUL.md': { budget: 8000, strategy: 'head' },
   'BOOT.md': { budget: 4000, strategy: 'head' },
-  'MISSION.md': { budget: 5000, strategy: 'head' },
+  'MISSION.md': { budget: 10000, strategy: 'head' },
   'PERSONAL.md': { budget: 3000, strategy: 'head' },
   'GOOD_LIFE.md': { budget: 4200, strategy: 'head' },
   'COSMO_RESEARCH.md': { budget: 3000, strategy: 'head' },
   'SHAKEDOWN_STATUS.md': { budget: 2600, strategy: 'head' },
   'HEARTBEAT.md': { budget: 1500, strategy: 'head' },
   'MEMORY.md': { budget: 3000, strategy: 'head' },
-  'LEARNINGS.md': { budget: 2500, strategy: 'tail' },
+  // Newest-first file: head keeps the live corrections. Tail was keeping April
+  // entries and dropping July, while the diagnostic listed July as "omitted".
+  'LEARNINGS.md': { budget: 8000, strategy: 'head' },
   'NOW.md': { budget: 2500, strategy: 'head' },
   'TEMPORAL.md': { budget: 2500, strategy: 'head' },
   'RECENT.md': { budget: 3000, strategy: 'head' },
@@ -165,7 +167,7 @@ export function budgetIdentityContent(
       ? boundaryTruncate(content.split('').reverse().join(''), budget).split('').reverse().join('')
       : boundaryTruncate(content, budget);
     return {
-      text: `${kept}\n\n${diagnostic(filename, kept.length, rawBytes, 1, ['(body truncated)'])}`,
+      text: `${kept}\n\n${diagnostic(filename, kept.length, rawBytes, ['(truncated body)'], ['(body truncated)'])}`,
       rawBytes, includedBytes: kept.length, budget, truncated: true,
       omittedSections: ['(body truncated)'], omittedBytes: rawBytes - kept.length,
     };
@@ -189,20 +191,31 @@ export function budgetIdentityContent(
   const keptInOrder = sections.filter(s => kept.includes(s));
   const body = keptInOrder.map(s => s.body).join('\n');
   const includedBytes = body.length;
+  const keptTitles = keptInOrder.map(s => s.title);
   const omittedTitles = sections.filter(s => omitted.includes(s)).map(s => s.title);
   const omittedBytes = rawBytes - includedBytes;
 
   return {
-    text: `${body}\n\n${diagnostic(filename, includedBytes, rawBytes, omittedTitles.length, omittedTitles)}`,
+    text: `${body}\n\n${diagnostic(filename, includedBytes, rawBytes, keptTitles, omittedTitles)}`,
     rawBytes, includedBytes, budget, truncated: omittedTitles.length > 0,
     omittedSections: omittedTitles, omittedBytes,
   };
 }
 
-function diagnostic(filename: string, kept: number, raw: number, count: number, titles: string[]): string {
-  const list = titles.slice(0, 8).join(', ');
-  const more = titles.length > 8 ? ` (+${titles.length - 8} more)` : '';
-  return `_[identity-budget: kept ${kept}/${raw} chars of ${filename}; omitted ${count} section(s): ${list}${more}. Full file is on disk if needed.]_`;
+function diagnostic(
+  filename: string,
+  kept: number,
+  raw: number,
+  keptTitles: string[],
+  omittedTitles: string[],
+): string {
+  const keptList = keptTitles.slice(0, 6).join(', ') || '(none)';
+  const omitList = omittedTitles.slice(0, 8).join(', ');
+  const more = omittedTitles.length > 8 ? ` (+${omittedTitles.length - 8} more)` : '';
+  const omitBit = omittedTitles.length
+    ? `omitted ${omittedTitles.length} section(s): ${omitList}${more}`
+    : 'nothing omitted';
+  return `_[identity-budget: kept ${kept}/${raw} chars of ${filename}; kept sections: ${keptList}; ${omitBit}. Full file is on disk — page it with self_read offset/limit.]_`;
 }
 
 /** Resolve the effective budget + strategy for a filename, honoring config overrides. */

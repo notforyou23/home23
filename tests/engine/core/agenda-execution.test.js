@@ -37,6 +37,12 @@ test('agenda Do it queues bounded operational items into live-problems diagnosti
     const problem = store.get('agenda_ag-test');
     assert.ok(problem);
     assert.equal(problem.seedOrigin, 'agenda');
+    assert.equal(problem.problemKind, 'agenda_handoff');
+    assert.equal(problem.handoff.status, 'pending');
+    assert.equal(
+      Date.parse(problem.handoff.deadlineAt) - Date.parse(problem.handoff.startedAt),
+      4 * 60 * 60 * 1000,
+    );
     assert.equal(problem.verifier.type, 'fix_recipe_recorded');
     assert.equal(problem.verifier.args.problemId, 'agenda_ag-test');
     assert.equal(problem.remediation[0].type, 'dispatch_to_agent');

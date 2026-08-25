@@ -6,7 +6,6 @@
     "tests/agent/agency-cron-bootcamp.test.ts",
     "tests/agent/agency-world-stream.test.ts",
     "tests/agent/chat-turn-janitor-timeout.test.ts",
-    "tests/agent/chat-turn-model-override.test.ts",
     "tests/agent/chat-turn-pending.test.ts",
     "tests/agent/chat-turn-status.test.ts",
     "tests/agent/chat-turn-stop.test.ts",

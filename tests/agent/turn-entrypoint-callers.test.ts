@@ -43,6 +43,14 @@ test('cron agentTurn forwards its configured effort through the tracked turn bou
   assert.match(home, /executeTrackedTurn\(\s*agent,[\s\S]{0,500}job\.payload\.effort/);
 });
 
+test('all four AgentLoop provider iterations drain operator steer before the next model call', () => {
+  const loop = source('src/agent/loop.ts');
+  assert.equal((loop.match(/this\.consumeOperatorSteer\(/g) ?? []).length, 4);
+  assert.match(loop, /xaiInputItems\.push\(/);
+  assert.match(loop, /apiMessages\.push\(\{ role: 'user', content: text \}\)/);
+  assert.match(loop, /messages\.push\(\{ role: 'user', content: text \}\)/);
+});
+
 test('default worker runner seeds a per-turn registry from declared grants only', () => {
   const runner = source('src/workers/runner.ts');
   assert.match(runner, /resolveWorkerTools\(worker\.tools/);

@@ -2,8 +2,8 @@
  * ChatState — central source of truth for the dashboard chat UI.
  *
  * Replaces the scatter of global `let chatConversationId` / `let chatStreaming`
- * / etc. in home23-chat.js. All three modes (tile, overlay, standalone within
- * this page) read and write through this singleton.
+ * / etc. in home23-chat.js. The Chat tab and /home23/chat share this singleton;
+ * Home only reads a preview snippet.
  *
  * Emits both a generic 'change' event and topic events ('conversation:switch',
  * 'agent:switch', 'turn:start', 'turn:end') so views can subscribe to just
@@ -17,11 +17,12 @@ function defaultState() {
     provider: null,
     conversationId: null,    // clean chatId (no namespace prefix)
     conversations: [],       // [{ id, preview, source, messageCount, ... }]
-    messages: [],            // [{ role, content, ... }]
+    messages: [],            // typed rows: user | thinking | tool | assistant | media | work | error
     input: '',
     streaming: false,
     activeTurnId: null,
     activeCursor: -1,
+    activeWork: [],
     turnCtx: null,           // { responseEl, currentResponse, thinkingEl, currentThinking }
   };
 }

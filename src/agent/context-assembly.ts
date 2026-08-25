@@ -39,7 +39,7 @@ export interface TriggeredSurfaceConfig {
 // ─── Constants ──────────────────────────────────────────
 const CONTEXT_BUDGET = 6000;
 const BRAIN_SEARCH_LIMIT = 8;
-const BRAIN_SEARCH_TIMEOUT_MS = 2_000;
+const BRAIN_SEARCH_TIMEOUT_MS = 8_000;
 const STALENESS_HOURS = 24;
 
 // ─── Types ──────────────────────────────────────────────
@@ -72,6 +72,8 @@ interface AssemblyConfig {
    * carried-state block every turn when set. */
   substrateStateDir?: string;
   substrateBudget?: number;
+  /** When true, skip automatic pre-turn brain retrieval (retrieval-eval isolation). */
+  skipBrainEnrichment?: boolean;
 }
 
 // ─── Domain Surfaces ────────────────────────────────────
@@ -455,9 +457,15 @@ export async function assembleContext(
   let retrievalError: string | null = null;
   let contextRetrievalTimedOut = false;
   let successfulHybridRetrieval = false;
+  let successfulFastRetrieval = false;
   let retrievalFallback: Record<string, unknown> | null = null;
+  const retrievalStartedAt = performance.now();
+  let retrievalMs = 0;
 
   try {
+    if (config.skipBrainEnrichment) {
+      retrievalMs = 0;
+    } else {
     const contextSnippet = recentTurns
       .slice(-3)
       .map(t => (t.content ?? '').slice(0, 200))
@@ -497,8 +505,15 @@ export async function assembleContext(
       && retrievalFallback?.route === 'logical-keyword-supplement'
       && retrievalFallback.reason === 'exact_canary_missing'
       && retrievalFallback.completeness === 'complete';
-    degraded = sourceHealth !== 'healthy' && !successfulHybridRetrieval;
+    successfulFastRetrieval = sourceHealth === 'degraded'
+      && matchOutcome === 'matches'
+      && brainCues.length > 0
+      && retrievalFallback?.completeness === 'incomplete';
+    degraded = sourceHealth !== 'healthy' && !successfulHybridRetrieval && !successfulFastRetrieval;
+    retrievalMs = Math.round(performance.now() - retrievalStartedAt);
+    }
   } catch (err) {
+    retrievalMs = Math.round(performance.now() - retrievalStartedAt);
     if (config.signal.aborted) config.signal.throwIfAborted();
     degraded = true;
     contextRetrievalTimedOut = typeof err === 'object'
@@ -525,6 +540,8 @@ export async function assembleContext(
         what_unavailable: contextRetrievalTimedOut
           ? 'automatic_context_enrichment'
           : 'requester_dashboard_brain_search',
+        retrievalMs,
+        stage: 'fast',
       },
     });
   }
@@ -539,6 +556,8 @@ export async function assembleContext(
       payload: {
         reason: retrievalError,
         what_unavailable: 'requester_dashboard_brain_search',
+        retrievalMs,
+        stage: 'fast',
       },
     });
   }
@@ -578,7 +597,7 @@ export async function assembleContext(
       schema: 'home23.memory-activation-posture.v1',
       sourceIssues: [69],
       activationStatus,
-      searchAttempted: true,
+      searchAttempted: !config.skipBrainEnrichment,
       queryPreview: searchQuery.slice(0, 160),
       brainCueCount: brainCues.length,
       triggerCount: triggerMatches.length,
@@ -587,7 +606,13 @@ export async function assembleContext(
       matchOutcome,
       retrievalError,
       fallback: retrievalFallback,
-      retrievalInterpretation: successfulHybridRetrieval ? 'successful_hybrid' : null,
+      retrievalInterpretation: successfulHybridRetrieval
+        ? 'successful_hybrid'
+        : successfulFastRetrieval
+          ? 'successful_fast'
+          : null,
+      retrievalMs,
+      stage: 'fast',
     },
   });
 
@@ -704,14 +729,18 @@ export async function assembleContext(
     label: 'WORKERS',
     anchors: WORKER_MEANING_ANCHORS,
   })) {
-    const workerSection = buildWorkerContextSection(projectRoot, agentName);
-    if (workerSection) {
-      surfacesLoaded.push('WORKERS');
-      salienceItems.push({
-        text: `\nRelevant context (WORKERS):\n${workerSection}`,
-        score: 0.9,
-        source: 'surface:WORKERS',
-      });
+    try {
+      const workerSection = buildWorkerContextSection(projectRoot, agentName);
+      if (workerSection) {
+        surfacesLoaded.push('WORKERS');
+        salienceItems.push({
+          text: `\nRelevant context (WORKERS):\n${workerSection}`,
+          score: 0.9,
+          source: 'surface:WORKERS',
+        });
+      }
+    } catch {
+      // Invalid agent path or missing roster must not fail the turn.
     }
   }
 
@@ -720,14 +749,18 @@ export async function assembleContext(
     label: 'AGENCY',
     anchors: AGENCY_MEANING_ANCHORS,
   })) {
-    const agencySection = buildAgencyContextSection(projectRoot, agentName);
-    if (agencySection) {
-      surfacesLoaded.push('AGENCY');
-      salienceItems.push({
-        text: `\nRelevant context (AGENCY):\n${agencySection}`,
-        score: 0.98,
-        source: 'surface:AGENCY',
-      });
+    try {
+      const agencySection = buildAgencyContextSection(projectRoot, agentName);
+      if (agencySection) {
+        surfacesLoaded.push('AGENCY');
+        salienceItems.push({
+          text: `\nRelevant context (AGENCY):\n${agencySection}`,
+          score: 0.98,
+          source: 'surface:AGENCY',
+        });
+      }
+    } catch {
+      // Same fail-open as trigger evaluation.
     }
   }
 
@@ -768,7 +801,13 @@ export async function assembleContext(
       matchOutcome,
       retrievalError,
       fallback: retrievalFallback,
-      retrievalInterpretation: successfulHybridRetrieval ? 'successful_hybrid' : null,
+      retrievalInterpretation: successfulHybridRetrieval
+        ? 'successful_hybrid'
+        : successfulFastRetrieval
+          ? 'successful_fast'
+          : null,
+      retrievalMs,
+      stage: 'fast',
     },
   });
 
@@ -835,13 +874,24 @@ export async function assembleContext(
       'The preferred ANN route missed an exact canary; the complete logical keyword supplement ' +
       'returned matching cues. Preserve the degraded source-health evidence, but treat these matches as usable.\n' +
       '[/RETRIEVAL NOTE]\n\n'
-    : '';
+    : successfulFastRetrieval
+      ? '[RETRIEVAL NOTE: successful fast brain retrieval]\n' +
+        `sourceHealth=${sourceHealth} matchOutcome=${matchOutcome}\n` +
+        `fallback=${String(retrievalFallback?.route)} reason=${String(retrievalFallback?.reason)} ` +
+        `completeness=${String(retrievalFallback?.completeness)} retrievalMs=${retrievalMs}\n` +
+        'Turn enrichment used the fast index and skipped the full-brain scan. Coverage is incomplete; treat these matches as usable and do not claim the index is fully current.\n' +
+        '[/RETRIEVAL NOTE]\n\n'
+      : '';
 
   const surfaceSection = rankedParts
     .filter(p => p.startsWith('\nRelevant context'))
     .join('\n');
 
-  const block = `[SITUATIONAL AWARENESS]\n\n${hybridRetrievalSection}${brainSection}${surfaceSection}\n\n[/SITUATIONAL AWARENESS]`;
+  const block = `[SITUATIONAL AWARENESS]\n\n${
+    brainCues.length > 0
+      ? '[CONTINUITY ENRICHMENT] This block includes automatic pre-turn brain cues. Do not treat them as brain_search results.\n\n'
+      : ''
+  }${hybridRetrievalSection}${brainSection}${surfaceSection}\n\n[/SITUATIONAL AWARENESS]`;
 
   if (ledger) { ledger.emit(events); }
   return {

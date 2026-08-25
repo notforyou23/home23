@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_REASONING_EFFORT,
   REASONING_EFFORTS,
+  anthropicThinkingConfig,
   parseReasoningEffort,
   resolveConfiguredReasoningEffort,
+  responsesReasoningConfig,
   validateReasoningEffortConfig,
 } from '../../src/agent/reasoning-effort.js';
 import { resolveModelOverride } from '../../src/agent/model-resolution.js';
@@ -34,7 +36,7 @@ test('model-specific configuration overrides the chat default', () => {
   assert.equal(resolveConfiguredReasoningEffort('gpt-5.6-terra'), DEFAULT_REASONING_EFFORT);
 });
 
-test('config effort validation rejects invalid chat, model, and alias values', () => {
+test('config effort validation rejects invalid chat, model, and alias values', async () => {
   assert.throws(
     () => validateReasoningEffortConfig({ chat: { reasoningEffort: 'ultra' } }),
     /chat\.reasoningEffort/,
@@ -47,4 +49,18 @@ test('config effort validation rejects invalid chat, model, and alias values', (
     () => validateReasoningEffortConfig({ models: { aliases: { gpt56: { reasoningEffort: 'ultra' } } } }),
     /models\.aliases\.gpt56\.reasoningEffort/,
   );
+});
+
+test('Responses reasoning requests a visible summary except at effort none', () => {
+  assert.equal(responsesReasoningConfig('none'), undefined);
+  assert.deepEqual(responsesReasoningConfig('xhigh'), { effort: 'xhigh', summary: 'auto' });
+});
+
+test('Anthropic thinking budgets stay below max_tokens and skip effort none', () => {
+  assert.equal(anthropicThinkingConfig('none', 16384), undefined);
+  assert.deepEqual(anthropicThinkingConfig('medium', 16384), {
+    thinking: { type: 'enabled', budget_tokens: 8000 },
+    maxTokens: 16384,
+  });
+  assert.equal(anthropicThinkingConfig('high', 16384)?.maxTokens, 20096);
 });

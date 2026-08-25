@@ -8,7 +8,16 @@
  * cycles without auto-synthesis.
  *
  * This module guarantees: if brain-state.json hasn't been regenerated in
- * the last 6 hours, trigger synthesis on the next cognitive cycle.
+ * the last 5 hours, trigger synthesis on the next cognitive cycle.
+ *
+ * The five-hour proactive trigger sits deliberately below the freshness
+ * verifier, which fails brain-state.json older than 360 minutes (6 hours).
+ * The threshold alone is not the guarantee — the sampling cadence is. A state
+ * can cross the threshold immediately after a check, so the worst-case trigger
+ * time is threshold + CHECK_INTERVAL_MS. With a 30-minute check interval, a
+ * five-hour threshold guarantees the synthesis request STARTS by 5h30m, which
+ * leaves at least 30 minutes for the durable run to commit a fresh
+ * brain-state.json before the six-hour verifier looks.
  *
  * Rate limited: maximum 1 synthesis per 4 hours.
  */
@@ -16,8 +25,8 @@
 const fs = require('fs').promises;
 const path = require('path');
 
-const CHECK_INTERVAL_MS = 60 * 60 * 1000; // Check every hour
-const STALE_THRESHOLD_MS = 6 * 60 * 60 * 1000; // 6 hours
+const CHECK_INTERVAL_MS = 30 * 60 * 1000; // Check every 30 min: bounds the worst-case trigger to 5h30m
+const STALE_THRESHOLD_MS = 5 * 60 * 60 * 1000; // 5 hours: with the 30-min check, synthesis starts by 5h30m
 const RATE_LIMIT_MS = 4 * 60 * 60 * 1000; // Min 4 hours between triggers
 
 class SynthesisTrigger {
@@ -61,7 +70,10 @@ class SynthesisTrigger {
       return null;
     }
 
-    // Check staleness
+    // Check staleness against the five-hour proactive threshold, not the
+    // six-hour verifier limit. Paired with the 30-minute check interval this
+    // bounds the worst-case start at 5h30m, leaving >= 30 minutes for the
+    // durable run to commit before the verifier's 360-minute boundary.
     if (ageMs < STALE_THRESHOLD_MS) {
       return null;
     }

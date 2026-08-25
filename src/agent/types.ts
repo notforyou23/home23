@@ -141,12 +141,15 @@ export interface ContextManagerRef {
 /** Minimal interface to the async-work registry (Step 31) — avoids importing the full class */
 export interface WorkRegistryRef {
   create(input: {
-    kind: 'coding' | 'subagent';
+    kind: 'coding' | 'subagent' | 'cron';
     originChatId: string;
     originTurnId?: string;
     parentWorkId?: string;
     label: string;
-    resultHandle: { type: 'coding_job'; jobId: string } | { type: 'subagent_chat'; chatId: string };
+    resultHandle:
+      | { type: 'coding_job'; jobId: string }
+      | { type: 'subagent_chat'; chatId: string }
+      | { type: 'cron_chat'; chatId: string };
   }): { workId: string; originChatId: string };
   get(workId: string): AsyncWorkRecord | undefined;
   list(filter?: { originChatId?: string; active?: boolean; limit?: number }): AsyncWorkRecord[];
@@ -187,6 +190,7 @@ export interface TelegramAdapterRef {
   sendPhoto(chatId: string, filePath: string, caption?: string): Promise<void>;
   sendVoice(chatId: string, filePath: string): Promise<void>;
   sendDocument(chatId: string, filePath: string, caption?: string): Promise<void>;
+  sendText?(chatId: string, text: string): Promise<void>;
 }
 
 /** Function signature for spawning sub-agent loops */

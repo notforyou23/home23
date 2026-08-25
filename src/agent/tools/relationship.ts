@@ -145,23 +145,18 @@ export const relationshipRecallTool: ToolDefinition = {
         : 10;
       const query = typeof input.query === 'string' ? input.query.toLowerCase().trim() : '';
 
-      let entries = ledger.listEntries({ type: typeArg, status: 'active' });
-      // Privacy is load-bearing: a tool result becomes conversation history and
-      // re-enters the prompt on later turns, so recall must enforce the same
-      // rule as retrieveForContext — 'sensitive' entries never render.
-      const totalActive = entries.length;
-      entries = entries.filter(e => e.privacy_class !== 'sensitive');
-      const withheld = totalActive - entries.length;
-      if (query) {
-        entries = entries.filter(e =>
-          e.title.toLowerCase().includes(query) ||
-          e.statement.toLowerCase().includes(query) ||
-          e.triggers.some(t => t.includes(query)) ||
-          e.applies_to.some(a => a.toLowerCase().includes(query)));
-      }
-      entries = entries.slice(0, limit);
+      // Privacy is load-bearing: a tool result becomes conversation history.
+      // Match by tokens/phrases, not the whole query as a substring. Withheld
+      // counts only sensitive entries that matched — not every sensitive row.
+      const found = ledger.searchEntries(query, {
+        type: typeArg,
+        status: 'active',
+        excludePrivacy: ['sensitive'],
+      });
+      const withheld = found.withheldMatching;
+      const entries = found.entries.slice(0, limit);
 
-      const withheldNote = withheld > 0 ? ` (${withheld} sensitive ${withheld === 1 ? 'entry' : 'entries'} withheld)` : '';
+      const withheldNote = withheld > 0 ? ` (${withheld} matching sensitive ${withheld === 1 ? 'entry' : 'entries'} withheld)` : '';
       if (!entries.length) {
         const base = query ? `No active relationship entries match "${query}".` : 'No active relationship entries recorded yet.';
         return { content: `${base}${withheldNote}` };

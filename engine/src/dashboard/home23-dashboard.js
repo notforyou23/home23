@@ -69,7 +69,6 @@ const DASHBOARD_OVERLAY_IDS = [
   'goodlife-overlay',
   'brain-storage-overlay',
   'home-vibe-detail-modal',
-  'chat-overlay',
   'problem-editor-overlay',
 ];
 const dashboardOverlayFocusOrigins = new Map();
@@ -98,6 +97,11 @@ const DASHBOARD_SCOPE_FALLBACK = {
     kind: 'dashboard',
     chip: 'This Agent',
     summaryTemplate: '{{dashboardAgent}} is running from resident agency state. Routine organs stay hidden until they need action.',
+  },
+  chat: {
+    kind: 'dashboard',
+    chip: 'This Agent',
+    summaryTemplate: 'Chat is {{dashboardAgent}}\'s daily-driver conversation surface. Turns, tools, and background work stay on this agent.',
   },
   workers: {
     kind: 'mixed',
@@ -311,7 +315,7 @@ async function init() {
 
 function dashboardOverlayIsVisible(overlay) {
   if (!overlay || overlay.hidden || overlay.getAttribute('aria-hidden') === 'true') return false;
-  if (overlay.id === 'chat-overlay' || overlay.id === 'home-vibe-detail-modal') {
+  if (overlay.id === 'home-vibe-detail-modal') {
     return overlay.classList.contains('open');
   }
   const style = getComputedStyle(overlay);
@@ -395,7 +399,6 @@ function closeTopmostDashboardOverlay() {
   else if (overlay.id === 'goodlife-overlay') closeGoodLifeOperator();
   else if (overlay.id === 'brain-storage-overlay') closeBrainStoragePanel();
   else if (overlay.id === 'home-vibe-detail-modal') closeVibeImageDetail();
-  else if (overlay.id === 'chat-overlay') overlay.querySelector('#chat-overlay-close-btn')?.click();
   else if (overlay.id === 'problem-editor-overlay') closeProblemEditor();
 
   restoreDashboardOverlayFocus(overlay);
@@ -1886,6 +1889,10 @@ function setupTabHandlers() {
       // Query tab: initialize on first visit (resolves current dashboard agent brain via cosmo23).
       if (currentTab === 'query') {
         if (typeof initQueryTab === 'function') initQueryTab();
+      }
+
+      if (currentTab === 'work' && typeof window.openAgentWorkStream === 'function') {
+        window.openAgentWorkStream();
       }
 
       if (currentTab === 'workers') {
@@ -4126,11 +4133,20 @@ function renderAgencyRetirementProposalRow(proposal) {
   `;
 }
 
+function renderAgencyInboxEvidenceRows(evidence = []) {
+  const rows = Array.isArray(evidence) ? evidence : [];
+  if (!rows.length) return '<small>evidence: none recorded</small>';
+  return rows.map((item) => {
+    const row = item && typeof item === 'object' ? item : {};
+    return `<small>evidence: ${escapeHtml(row.type || 'unknown')} · ref: ${escapeHtml(row.ref || 'not recorded')} · state: ${escapeHtml(row.state || 'not recorded')} · verifier: ${escapeHtml(row.verifier || 'not recorded')}</small>`;
+  }).join('');
+}
+
 function renderAgencyReceiptRow(r) {
   const authority = r.authority?.reason ? ` · ${r.authority.reason}` : '';
   return `
     <div style="padding:10px 12px;margin-bottom:8px;background:rgba(255,255,255,0.03);border-left:3px solid #5ac8fa;">
-      <div style="font-size:12px;color:rgba(255,255,255,0.55);">${escapeHtml(r.at ? new Date(r.at).toLocaleString() : '')}</div>
+      <div style="font-size:12px;color:rgba(255,255,255,0.55);">${escapeHtml(r.at ? new Date(r.at).toLocaleString() : '')} · candidate: ${escapeHtml(r.candidateId || 'not linked')}</div>
       <div style="color:#fff;font-size:13px;">${escapeHtml(r.event || r.route || 'receipt')} ${r.pursuitId ? `→ ${escapeHtml(r.pursuitId)}` : ''}</div>
       <div style="font-size:12px;color:rgba(255,255,255,0.6);">${escapeHtml([r.reason, r.mode, authority].filter(Boolean).join(' · '))}</div>
     </div>
@@ -4139,11 +4155,14 @@ function renderAgencyReceiptRow(r) {
 
 function renderAgencyInboxRow(c) {
   const decision = c.decision || {};
+  const receivedAt = c.receivedAt ? new Date(c.receivedAt).toLocaleString() : 'unknown';
   return `
     <div class="h23-worker-run-row" style="cursor:default;">
-      <div><strong>${escapeHtml(decision.route || 'unrouted')}</strong> <span>${escapeHtml(c.authorityLevel || '')}</span></div>
+      <div><strong>${escapeHtml(`ingested → ${decision.route || 'unrouted'}`)}</strong> <span>${escapeHtml(c.authorityLevel || '')}</span></div>
       <div>${escapeHtml(renderAgencyCandidateTitle(c))}</div>
-      <small>${escapeHtml(c.source || '')} · ${escapeHtml(decision.reason || '')}</small>
+      <small>candidate: ${escapeHtml(c.candidateId || 'unknown')} · received: ${escapeHtml(receivedAt)}</small>
+      <small>source: ${escapeHtml(c.source || '')} · reason: ${escapeHtml(decision.reason || '')}</small>
+      ${renderAgencyInboxEvidenceRows(c.evidence)}
     </div>
   `;
 }

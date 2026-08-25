@@ -2208,7 +2208,7 @@ test('automatic context search uses the shared client canonical bounded route', 
     },
   });
   const result = await client.searchContext({ query: 'canary', topK: 8 }, controller.signal);
-  assert.deepEqual(requestBody, { query: 'canary', topK: 8 });
+  assert.deepEqual(requestBody, { query: 'canary', topK: 8, mode: 'context' });
   assert.equal((result.sourceEvidence as Record<string, unknown>).sourceHealth, 'healthy');
 });
 

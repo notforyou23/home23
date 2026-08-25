@@ -11,8 +11,8 @@
   <meta name="format-detection" content="telephone=no">
   <title>Home23 — Chat</title>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/home23-dashboard.css">
-  <link rel="stylesheet" href="/home23-chat.css">
+  <link rel="stylesheet" href="/home23-dashboard.css?v=20260820-chat-glass">
+  <link rel="stylesheet" href="/home23-chat.css?v=20260820-thought-turn-2">
   <style>
     /* ── Standalone /chat page — mobile-first, scales up ── */
 
@@ -568,14 +568,14 @@
       background: rgba(30, 26, 24, 0.9);
     }
 
-    body.h23-chat-page :is(.h23-chat-agent-select, .h23-chat-model-select) {
+    body.h23-chat-page :is(.h23-chat-agent-select, .h23-chat-model-select, .h23-chat-effort-select) {
       color: var(--h23-text-primary);
       border-color: var(--h23-input-border);
       background: var(--h23-glass-input);
       font-family: var(--h23-font-ui);
     }
 
-    body.h23-chat-page :is(.h23-chat-agent-select, .h23-chat-model-select):focus-visible {
+    body.h23-chat-page :is(.h23-chat-agent-select, .h23-chat-model-select, .h23-chat-effort-select):focus-visible {
       outline: 3px solid var(--h23-accent-tint-border);
       outline-offset: 2px;
     }
@@ -586,16 +586,16 @@
 
     @media (min-width: 820px) {
       body.h23-chat-page .sh-shell {
-        left: 50%;
-        right: auto;
-        top: 22px;
-        bottom: 22px;
-        width: min(880px, calc(100vw - 48px));
-        height: calc(100dvh - 44px);
+        left: 16px;
+        right: 16px;
+        top: 16px;
+        bottom: 16px;
+        width: auto;
+        height: auto;
         margin: 0;
-        transform: translateX(-50%);
-        border: 1px solid var(--h23-glass-border);
-        border-radius: var(--h23-radius-panel);
+        transform: none;
+        border: 1px solid var(--h23-hairline-10);
+        border-radius: var(--h23-radius-card);
         overflow: hidden;
       }
     }
@@ -619,77 +619,89 @@
   <div id="particles-js"></div>
 
   <div class="sh-shell">
-    <header class="sh-header">
-      <button class="sh-icon-btn" id="sh-menu-btn" aria-label="History" title="History">&#9776;</button>
-      <div class="sh-title" id="sh-title" role="button" aria-label="Agent and model" tabindex="0">
-        <span class="sh-title-label" id="sh-title-label">Loading…</span>
-        <span class="sh-title-sub" id="sh-title-sub">tap to change<span class="sh-title-caret">&#9662;</span></span>
-      </div>
-      <button class="sh-icon-btn" id="sh-new-btn" aria-label="New conversation" title="New conversation">+</button>
-      <a href="/home23" class="sh-dashboard-link" style="grid-column: 3;">&larr; Dashboard</a>
-    </header>
+    <div class="h23-chat-slot" id="chat-slot-standalone" data-slot="standalone"></div>
+  </div>
 
-    <section class="sh-body">
-      <div class="h23-chat-messages" id="chat-messages">
-        <div class="h23-chat-empty">Loading…</div>
-      </div>
-      <div class="sh-input-bar">
-        <div class="h23-chat-attach-tray" id="chat-attach-tray" hidden></div>
-        <div class="h23-chat-input-row">
-          <button class="h23-chat-attach-btn" id="chat-attach-btn" type="button" aria-label="Attach image" title="Attach image"><span class="h23-chat-attach-icon" aria-hidden="true">Attach</span></button>
-          <input type="file" id="chat-attach-input" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
-          <textarea class="sh-input h23-chat-input" id="chat-input" placeholder="Message your agent…" rows="1" autocapitalize="sentences" autocorrect="on" spellcheck="true"></textarea>
-          <button class="sh-send-btn h23-chat-send-btn" id="chat-send-btn" aria-label="Send">&#9654;</button>
+  <div class="h23-chat-menu" id="chat-more-menu" role="menu" hidden>
+    <button class="h23-chat-menu-item" data-action="new-conversation" role="menuitem" type="button">New conversation</button>
+    <button class="h23-chat-menu-item" data-action="copy-transcript" role="menuitem" type="button">Copy transcript</button>
+    <button class="h23-chat-menu-item" data-action="export-transcript" role="menuitem" type="button">Export transcript</button>
+    <a class="h23-chat-menu-item" href="/home23" role="menuitem">Dashboard</a>
+  </div>
+
+  <template id="chat-shared-template">
+    <div class="h23-chat-shared" id="chat-shared">
+      <aside class="h23-chat-sidebar" id="chat-sidebar">
+        <div class="h23-chat-sidebar-head">
+          <strong>Conversations</strong>
+          <button class="h23-chat-conv-nav" id="chat-conv-new-btn" type="button">New</button>
         </div>
-        <div class="h23-chat-drop-overlay" id="chat-drop-overlay" hidden>Drop images to attach</div>
-      </div>
-    </section>
-  </div>
-
-  <!-- History drawer -->
-  <div class="sh-drawer-backdrop" id="sh-drawer-backdrop"></div>
-  <aside class="sh-drawer" id="sh-drawer" aria-hidden="true">
-    <div class="sh-drawer-header">
-      <span class="sh-drawer-title">History</span>
-      <div class="sh-drawer-actions">
-        <button class="sh-icon-btn" id="sh-drawer-new" aria-label="New conversation" title="New" style="width:32px;height:32px;font-size:18px;">+</button>
-        <button class="sh-icon-btn" id="sh-drawer-close" aria-label="Close" style="width:32px;height:32px;font-size:16px;">&#10005;</button>
+        <div class="h23-chat-conv-list" id="chat-conv-list"></div>
+      </aside>
+      <div class="h23-chat-main">
+        <div class="h23-chat-header">
+          <button class="h23-chat-sidebar-toggle" id="chat-sidebar-toggle" type="button" title="Conversations" aria-label="Conversations">&#9776;</button>
+          <button class="h23-chat-agent-pill" id="chat-agent-pill" type="button" title="Change agent">
+            <span class="h23-chat-agent-avatar" id="chat-agent-avatar">?</span>
+            <span class="h23-chat-agent-name" id="chat-agent-name">Loading...</span>
+          </button>
+          <div class="h23-chat-actions">
+            <button class="h23-chat-model-pill" id="chat-model-pill" type="button" title="Change model">
+              <span id="chat-model-pill-label">model</span>
+            </button>
+            <button class="h23-chat-effort-pill" id="chat-effort-pill" type="button" title="Change reasoning effort">
+              <span id="chat-effort-pill-label">Effort</span>
+            </button>
+            <button class="h23-chat-thinking-pill" id="chat-thinking-toggle" type="button" aria-pressed="true" title="Hide thinking">
+              <span id="chat-thinking-toggle-label">Thoughts</span>
+            </button>
+            <button class="h23-chat-expand-btn" id="chat-more-btn" type="button" title="More" aria-haspopup="menu" aria-expanded="false">&#8230;</button>
+          </div>
+          <select class="h23-chat-agent-select" id="chat-agent-select" hidden></select>
+          <select class="h23-chat-model-select" id="chat-model-select" hidden></select>
+          <select class="h23-chat-effort-select" id="chat-effort-select" hidden></select>
+        </div>
+        <div class="h23-chat-turn-hud" id="chat-turn-hud" hidden>
+          <span class="h23-chat-hud-status" id="chat-hud-status">Working</span>
+          <div class="h23-chat-hud-actions">
+            <button type="button" id="chat-hud-refresh">Refresh</button>
+            <button type="button" id="chat-hud-reconnect">Reconnect</button>
+            <button type="button" id="chat-hud-stop">Stop</button>
+          </div>
+        </div>
+        <div class="h23-chat-stage">
+          <div class="h23-chat-stage-primary">
+            <div class="h23-chat-messages" id="chat-messages">
+              <div class="h23-chat-empty">Loading...</div>
+            </div>
+            <button class="h23-chat-jump-latest" id="chat-jump-latest" type="button" hidden>Latest</button>
+          </div>
+          <aside class="h23-chat-thought-dock" id="chat-thought-dock" hidden>
+            <div class="h23-chat-thought-dock-head">
+              <span class="h23-chat-thought-dock-label" id="chat-thought-dock-label">Thought</span>
+            </div>
+            <pre class="h23-chat-thought-dock-body" id="chat-thought-dock-body"></pre>
+          </aside>
+        </div>
+        <div class="h23-chat-work-strip" id="chat-work-strip" hidden></div>
+        <div class="h23-chat-input-area" id="chat-input-area">
+          <div class="h23-chat-attach-tray" id="chat-attach-tray" hidden></div>
+          <div class="h23-chat-input-row">
+            <button class="h23-chat-attach-btn" id="chat-attach-btn" type="button" aria-label="Attach image" title="Attach image"><span class="h23-chat-attach-icon" aria-hidden="true">Attach</span></button>
+            <input type="file" id="chat-attach-input" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
+            <textarea class="h23-chat-input" id="chat-input" placeholder="Message your agent..." rows="1" autocapitalize="sentences" autocorrect="on" spellcheck="true"></textarea>
+            <button class="h23-chat-stop-btn" id="chat-stop-btn" type="button" hidden aria-label="Stop this reply">Stop</button>
+            <button class="h23-chat-send-btn" id="chat-send-btn" type="button">&#9654;</button>
+          </div>
+          <div class="h23-chat-drop-overlay" id="chat-drop-overlay" hidden>Drop images to attach</div>
+        </div>
       </div>
     </div>
-    <div class="sh-drawer-list h23-chat-conv-list" id="chat-conv-list"></div>
-  </aside>
-
-  <!-- Hidden conv panel to satisfy home23-chat.js lookups (toggleConversationList targets it) -->
-  <div id="chat-conv-panel" style="display:none;"></div>
-
-  <!-- Bottom sheet for agent + model selectors -->
-  <div class="sh-sheet-backdrop" id="sh-sheet-backdrop"></div>
-  <div class="sh-sheet" id="sh-sheet" aria-hidden="true">
-    <div class="sh-sheet-grip"></div>
-    <div class="sh-sheet-body">
-      <div>
-        <div class="sh-field-label">Agent</div>
-        <select class="h23-chat-agent-select" id="chat-agent-select">
-          <option>Loading…</option>
-        </select>
-      </div>
-      <div>
-        <div class="sh-field-label">Model</div>
-        <select class="h23-chat-model-select" id="chat-model-select">
-          <option>model</option>
-        </select>
-      </div>
-      <button class="sh-sheet-action" id="sh-sheet-new">&#43;&nbsp; New conversation</button>
-      <a class="sh-sheet-action" href="/home23" style="text-decoration:none;">&larr;&nbsp; Back to Dashboard</a>
-    </div>
-  </div>
+  </template>
 
   <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
-  <script type="module" src="/home23-chat.js"></script>
+  <script type="module" src="/home23-chat.js?v=20260820-thought-turn-2"></script>
   <script>
-    // ── iOS keyboard handling ──
-    // visualViewport shrinks when the on-screen keyboard appears. Lift the input bar
-    // by the difference so the textarea stays visible above the keyboard.
     (function setupKeyboardOffset() {
       const vv = window.visualViewport;
       if (!vv) return;
@@ -703,92 +715,9 @@
       update();
     })();
 
-    // ── Drawer (history) ──
-    function openDrawer() {
-      document.getElementById('sh-drawer').classList.add('open');
-      document.getElementById('sh-drawer-backdrop').classList.add('open');
-      document.getElementById('sh-drawer').setAttribute('aria-hidden', 'false');
-      if (typeof loadConversationList === 'function' && typeof chatAgent !== 'undefined' && chatAgent) {
-        loadConversationList(chatAgent.agentName);
-      }
-    }
-    function closeDrawer() {
-      document.getElementById('sh-drawer').classList.remove('open');
-      document.getElementById('sh-drawer-backdrop').classList.remove('open');
-      document.getElementById('sh-drawer').setAttribute('aria-hidden', 'true');
-    }
-
-    // ── Sheet (agent + model) ──
-    function openSheet() {
-      document.getElementById('sh-sheet').classList.add('open');
-      document.getElementById('sh-sheet-backdrop').classList.add('open');
-      document.getElementById('sh-sheet').setAttribute('aria-hidden', 'false');
-    }
-    function closeSheet() {
-      document.getElementById('sh-sheet').classList.remove('open');
-      document.getElementById('sh-sheet-backdrop').classList.remove('open');
-      document.getElementById('sh-sheet').setAttribute('aria-hidden', 'true');
-    }
-
-    // Keep the header title label in sync with the currently selected agent + model
-    function refreshTitle() {
-      const agentSel = document.getElementById('chat-agent-select');
-      const modelSel = document.getElementById('chat-model-select');
-      const nameEl = document.getElementById('sh-title-label');
-      const subEl = document.getElementById('sh-title-sub');
-      if (!nameEl || !subEl) return;
-      const agentText = agentSel && agentSel.selectedOptions[0]
-        ? agentSel.selectedOptions[0].textContent
-        : '';
-      const modelText = modelSel?.selectedOptions?.[0]?.dataset?.model || '';
-      if (agentText) nameEl.textContent = agentText;
-      subEl.innerHTML = (modelText || 'tap to change') +
-        '<span class="sh-title-caret">&#9662;</span>';
-    }
-
     document.addEventListener('DOMContentLoaded', () => {
       initChat('standalone');
 
-      // Header actions
-      document.getElementById('sh-menu-btn').addEventListener('click', openDrawer);
-      document.getElementById('sh-new-btn').addEventListener('click', () => newConversation());
-      document.getElementById('sh-title').addEventListener('click', openSheet);
-      document.getElementById('sh-title').addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openSheet(); }
-      });
-
-      // Drawer dismiss
-      document.getElementById('sh-drawer-backdrop').addEventListener('click', closeDrawer);
-      document.getElementById('sh-drawer-close').addEventListener('click', closeDrawer);
-      document.getElementById('sh-drawer-new').addEventListener('click', () => {
-        newConversation();
-        closeDrawer();
-      });
-      // Close drawer when a conversation is tapped (the onclick handler already swaps)
-      document.getElementById('chat-conv-list').addEventListener('click', (e) => {
-        if (e.target.closest('.h23-chat-conv-item')) closeDrawer();
-      });
-
-      // Sheet dismiss
-      document.getElementById('sh-sheet-backdrop').addEventListener('click', closeSheet);
-      document.getElementById('sh-sheet-new').addEventListener('click', () => {
-        newConversation();
-        closeSheet();
-      });
-      // When agent/model change inside the sheet, refresh the header label and close
-      document.getElementById('chat-agent-select').addEventListener('change', () => {
-        refreshTitle();
-        setTimeout(closeSheet, 120);
-      });
-      document.getElementById('chat-model-select').addEventListener('change', () => {
-        refreshTitle();
-      });
-
-      // Poll briefly after init so the header picks up the loaded agent/model
-      const syncTimer = setInterval(refreshTitle, 400);
-      setTimeout(() => clearInterval(syncTimer), 4000);
-
-      // Particles — keep on all sizes unless reduced motion disables the loop
       const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
       if (!reduceMotion && typeof particlesJS !== 'undefined') {
         particlesJS('particles-js', {

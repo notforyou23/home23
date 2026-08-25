@@ -16,6 +16,7 @@ import type { ToolRegistry } from './tools/index.js';
 import type { ContextManager } from './context.js';
 import { ConversationHistory, type StoredMessage, type ContentBlock, type HistoryRecord, type SessionBoundary } from './history.js';
 import type {
+  AgentEventCallback,
   AgentResponse,
   ToolContext,
   TurnRuntimeContext,
@@ -29,6 +30,11 @@ import type { CompactionManager } from './compaction.js';
 import type { MediaAttachment } from '../types.js';
 import { getCodexCredentials, getCodexHeaders } from './codex-auth.js';
 import { assembleContext } from './context-assembly.js';
+import {
+  isRetrievalEvalTurn,
+  retrievalEvalDisclosure,
+  continuityEnrichmentDisclosure,
+} from './retrieval-eval.js';
 import { EventLedger } from './event-ledger.js';
 import { TriggerIndex } from './trigger-index.js';
 import { MemoryObjectStore } from './memory-objects.js';
@@ -40,11 +46,20 @@ import { combineRequestSignals } from './abort-signals.js';
 import { inferProviderFromModel } from './model-resolution.js';
 import {
   DEFAULT_REASONING_EFFORT,
-  isGpt56Model,
+  anthropicThinkingConfig,
   parseReasoningEffort,
   resolveConfiguredReasoningEffort,
+  responsesReasoningConfig,
   type ReasoningEffort,
 } from './reasoning-effort.js';
+import {
+  applyReasoningOutputItem,
+  applyReasoningStreamEvent,
+  createReasoningStreamState,
+  shouldFlushThinkingBuffer,
+  visibleReasoningText,
+} from './reasoning-stream.js';
+import { takeOperatorSteer } from './steer-queue.js';
 
 const MAX_ITERATIONS = 500;
 const TYPING_INTERVAL_MS = 4000;
@@ -53,21 +68,34 @@ const TOOL_EVENT_RESULT_LIMIT_CHARS = 4000;
 const DEFAULT_TURN_TIMEOUT_MS = 15 * 60 * 1000;
 const DEFAULT_TURN_HARD_DURATION_MS = 8 * 60 * 60 * 1000;
 const DEFAULT_FIRST_TOKEN_TIMEOUT_MS = 30 * 1000;
-const XAI_THINKING_CHUNK_TARGET_CHARS = 96;
-const XAI_THINKING_CHUNK_MAX_CHARS = 240;
 
 function hashText(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 16);
 }
 
-function shouldFlushXaiThinkingBuffer(content: string): boolean {
-  return content.length >= XAI_THINKING_CHUNK_MAX_CHARS
-    || (content.length >= XAI_THINKING_CHUNK_TARGET_CHARS && /(?:\n|[.!?]\s*)$/.test(content));
+function isAnthropicThinkingRejected(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /thinking|budget_tokens|extended thinking/i.test(msg);
+}
+
+function isCodexReasoningRejected(errText: string): boolean {
+  return /reasoning|summary/i.test(errText);
 }
 
 function stringifyContent(content: string | ContentBlock[]): string {
   if (typeof content === 'string') return content;
   return content.map(block => JSON.stringify(block)).join('\n');
+}
+
+function toolRoundHistoryEntry(names: string[], receipts: string[]): StoredMessage {
+  const lines = names.map((name, i) => {
+    const flat = String(receipts[i] ?? '').replace(/\s+/g, ' ').trim().slice(0, 1500);
+    return `${name}: ${flat}`;
+  });
+  return {
+    role: 'assistant',
+    content: `[Used tools: ${names.join(', ')}]\n${lines.join('\n')}`,
+  };
 }
 
 export interface CacheDiagnosticsConfig {
@@ -791,6 +819,22 @@ export class AgentLoop {
     return this.activeRuns.get(chatId)?.get(turnId) === ac;
   }
 
+  /** Drain operator steer into the next model call and persist it on the chat. */
+  private consumeOperatorSteer(
+    chatId: string,
+    turnMessages: HistoryRecord[],
+    appendToApi: (text: string) => void,
+    onEvent?: AgentEventCallback,
+  ): void {
+    const text = takeOperatorSteer(chatId);
+    if (!text) return;
+    appendToApi(text);
+    const rec = { role: 'user' as const, content: text };
+    turnMessages.push(rec);
+    this.history.append(chatId, [rec]);
+    if (onEvent) onEvent({ type: 'status', status: 'operator_steer', message: text });
+  }
+
   /** Check if the agent is currently running for a given chatId. */
   isRunning(chatId: string): boolean {
     return (this.activeRuns.get(chatId)?.size ?? 0) > 0;
@@ -1287,6 +1331,7 @@ export class AgentLoop {
             content: typeof m.content === 'string' ? m.content : stringifyContent(m.content as ContentBlock[]),
           }));
 
+        const retrievalEval = isRetrievalEvalTurn(userText);
         const assembly = await assembleContext(
           userText,
           chatId,
@@ -1303,6 +1348,7 @@ export class AgentLoop {
             triggeredSurfaces: this.situationalAwareness?.triggeredSurfaces,
             substrateStateDir: this.situationalAwareness?.substrate?.stateDir,
             substrateBudget: this.situationalAwareness?.substrate?.budget,
+            skipBrainEnrichment: retrievalEval,
           },
           this.eventLedger,
           ac.signal,
@@ -1312,6 +1358,10 @@ export class AgentLoop {
           rawSystemPrompt += `\n\n${assembly.block}`;
         }
 
+        let relationshipCount = 0;
+        if (retrievalEval) {
+          rawSystemPrompt += `\n\n${retrievalEvalDisclosure()}`;
+        } else {
         // ── Relationship continuity (Step 30, Piece 2 · identity layer 2) ──
         // Selective, relevance-ranked, budget-bounded working-relationship
         // context. Privacy: sensitive entries never enter the prompt. Failure
@@ -1322,11 +1372,19 @@ export class AgentLoop {
             excludePrivacy: ['sensitive'],
           });
           if (rel.text && rel.entries.length > 0) {
+            relationshipCount = rel.entries.length;
             rawSystemPrompt += `\n\n${rel.text}`;
             this.relationshipLedger.markSurfaced(rel.entries.map(e => e.id));
           }
         } catch (err) {
           console.warn('[agent] Relationship retrieval failed:', err instanceof Error ? err.message : err);
+        }
+        if ((assembly.brainCueCount ?? 0) > 0 || relationshipCount > 0) {
+          rawSystemPrompt += `\n\n${continuityEnrichmentDisclosure({
+            brainCueCount: assembly.brainCueCount ?? 0,
+            relationshipCount,
+          })}`;
+        }
         }
 
         // Log assembly result
@@ -1520,7 +1578,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   for (const block of blocks) {
                     if (block.type === 'text' && block.text) parts.push(block.text as string);
                     else if (block.type === 'tool_use') parts.push(`[Used tool: ${block.name}]`);
-                    else if (block.type === 'tool_result') parts.push(`[Tool result: ${((block.content as string) || '').slice(0, 200)}]`);
+                    else if (block.type === 'tool_result') parts.push(`[Tool result: ${((block.content as string) || '').slice(0, 4000)}]`);
                     else if (block.type === 'image') parts.push('[image]');
                   }
                   chatMsgs.push({ role: m.role, content: parts.join('\n') || '(empty)' });
@@ -1548,6 +1606,8 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             // ── Tool-use loop ──
             type ToolCallObj = { id?: string; type?: string; function: { name: string; arguments: string | Record<string, unknown> } };
             type ResponseMessage = { role: string; content?: string | null; tool_calls?: ToolCallObj[] };
+            const reasoning = responsesReasoningConfig(runtimeReasoningEffort);
+            let omitReasoning = false;
 
             for (let i = 0; i < MAX_ITERATIONS; i++) {
               if (ac.signal.aborted) {
@@ -1556,6 +1616,9 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 this.history.append(chatId, turnMessages);
                 return { text: interruptText, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
               }
+              this.consumeOperatorSteer(chatId, turnMessages, (text) => {
+                apiMessages.push({ role: 'user', content: text });
+              }, onEvent);
 
               // ── Convert apiMessages → Responses API input ──
               // apiMessages[0] is always the system message — extract as instructions, skip in input.
@@ -1607,7 +1670,10 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               }
 
               // ── POST to Codex endpoint ──
-              const codexBody = {
+              // Hosted Codex/GPT-5.6 models do not expose raw CoT. summary:'auto'
+              // is what makes reasoning_summary_text arrive. If the stream also
+              // has response.reasoning_text, we prefer that full channel.
+              const buildCodexBody = () => ({
                 model: runtimeModel,
                 instructions,
                 input: inputItems,
@@ -1615,42 +1681,73 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 tool_choice: codexTools.length > 0 ? 'auto' : undefined,
                 stream: true,
                 store: false,
-                ...(isGpt56Model(runtimeModel)
-                  ? { reasoning: { effort: runtimeReasoningEffort } }
-                  : {}),
-              };
+                ...(!omitReasoning && reasoning ? { reasoning } : {}),
+              });
 
               console.log(`[agent] codex request: model=${runtimeModel}, tools=${codexTools.length}, input_items=${inputItems.length}, instructions_len=${instructions.length}`);
 
               const codexTimeout = 120_000;
               const fetchSignal = combineRequestSignals(ac.signal, codexTimeout);
-
-              const res = await fetch('https://chatgpt.com/backend-api/codex/responses', {
+              const postCodex = (body: Record<string, unknown>) => fetch('https://chatgpt.com/backend-api/codex/responses', {
                 method: 'POST',
                 headers: getCodexHeaders(creds),
-                body: JSON.stringify(codexBody),
+                body: JSON.stringify(body),
                 signal: fetchSignal,
               });
 
+              let res = await postCodex(buildCodexBody());
               if (!res.ok) {
                 const errText = await res.text().catch(() => '');
-                throw new Error(`codex HTTP ${res.status}: ${errText.slice(0, 300)}`);
+                if (!omitReasoning && reasoning && isCodexReasoningRejected(errText)) {
+                  omitReasoning = true;
+                  console.warn('[agent] codex reasoning rejected — retrying once without reasoning summary');
+                  res = await postCodex(buildCodexBody());
+                }
+                if (!res.ok) {
+                  const retryText = omitReasoning ? await res.text().catch(() => '') : errText;
+                  throw new Error(`codex HTTP ${res.status}: ${retryText.slice(0, 300)}`);
+                }
               }
               if (!res.body) throw new Error('codex response missing body');
 
               // ── Parse SSE stream ──
               let textContent = '';
+              let streamedAnswer = false;
+              const thinkingState = createReasoningStreamState();
               type FunctionCallItem = { call_id: string; name: string; arguments: string };
               const functionCallItems: FunctionCallItem[] = [];
+              const flushThinking = (): void => {
+                if (!thinkingState.pendingThinking) return;
+                if (onEvent) onEvent({ type: 'thinking', content: thinkingState.pendingThinking });
+                thinkingState.pendingThinking = '';
+              };
 
               for await (const event of parseSSE(res.body)) {
                 const evType = event.type as string | undefined;
+                const reasoningKind = applyReasoningStreamEvent(event, thinkingState);
+                if (reasoningKind === 'delta') {
+                  if (shouldFlushThinkingBuffer(thinkingState.pendingThinking)) flushThinking();
+                  continue;
+                }
+                if (reasoningKind === 'done') {
+                  flushThinking();
+                  continue;
+                }
                 if (evType === 'response.output_text.delta') {
-                  textContent += (event.delta as string) ?? '';
+                  flushThinking();
+                  const delta = (event.delta as string) ?? '';
+                  textContent += delta;
+                  if (onEvent && delta) {
+                    streamedAnswer = true;
+                    onEvent({ type: 'response_chunk', chunk: delta });
+                  }
                 } else if (evType === 'response.output_text.done') {
+                  flushThinking();
                   textContent = (event.text as string) ?? textContent;
                 } else if (evType === 'response.output_item.done') {
                   const item = event.item as Record<string, unknown> | undefined;
+                  applyReasoningOutputItem(item, thinkingState);
+                  flushThinking();
                   if (item?.type === 'function_call') {
                     functionCallItems.push({
                       call_id: item.call_id as string,
@@ -1660,6 +1757,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   }
                 }
               }
+              flushThinking();
 
               // ── Build respMsg in OAI Chat Completions format ──
               const respMsg: ResponseMessage = {
@@ -1701,7 +1799,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 }
 
                 const answer = contentStr || '(no response)';
-                if (onEvent && answer) onEvent({ type: 'response_chunk', chunk: answer });
+                if (onEvent && answer && !streamedAnswer) onEvent({ type: 'response_chunk', chunk: answer });
                 turnMessages.push({ role: 'assistant', content: answer });
                 this.history.append(chatId, turnMessages);
                 if (messages.length > 10) {
@@ -1761,8 +1859,9 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 }
               }
 
-              const toolNames = toolCalls.map(tc => tc.function.name).join(', ');
-              turnMessages.push({ role: 'assistant', content: `[Used tools: ${toolNames}]` });
+              const names = toolCalls.map(tc => tc.function.name);
+              const receipts = apiMessages.slice(-toolCalls.length).map(m => String(m.content ?? ''));
+              turnMessages.push(toolRoundHistoryEntry(names, receipts));
               // continue to next iteration
             }
 
@@ -1792,7 +1891,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 for (const block of m.content as Array<Record<string, unknown>>) {
                   if (block.type === 'text' && block.text) parts.push(block.text as string);
                   else if (block.type === 'tool_use') parts.push(`[Used tool: ${block.name}]`);
-                  else if (block.type === 'tool_result') parts.push(`[Tool result: ${((block.content as string) || '').slice(0, 200)}]`);
+                    else if (block.type === 'tool_result') parts.push(`[Tool result: ${((block.content as string) || '').slice(0, 4000)}]`);
                   else if (block.type === 'image') parts.push('[image]');
                 }
                 chatMsgs.push({ role: m.role, content: parts.join('\n') || '(empty)' });
@@ -1816,6 +1915,13 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 this.history.append(chatId, turnMessages);
                 return { text: interruptText, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
               }
+              this.consumeOperatorSteer(chatId, turnMessages, (text) => {
+                xaiInputItems.push({
+                  type: 'message',
+                  role: 'user',
+                  content: [{ type: 'input_text', text }],
+                });
+              }, onEvent);
 
               const xaiBody = {
                 model: runtimeModel,
@@ -1847,20 +1953,20 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               }
               if (!res.body) throw new Error('xai responses missing body');
 
-              // Parse SSE stream
+              // Parse SSE stream. Prefer response.reasoning_text (full CoT);
+              // reasoning_summary_text is fallback only when no full channel arrives.
               let textContent = '';
-              let reasoningSummary = '';
-              let pendingThinking = '';
               let streamedAnswer = false;
+              const thinkingState = createReasoningStreamState();
               type FunctionCallItem = { call_id: string; name: string; arguments: string };
               const functionCallItems: FunctionCallItem[] = [];
               const completedOutputItems: Array<Record<string, unknown>> = [];
               const serverToolNames: string[] = [];
               let terminalEvent: Record<string, unknown> | null = null;
               const flushThinking = (): void => {
-                if (!pendingThinking) return;
-                if (onEvent) onEvent({ type: 'thinking', content: pendingThinking });
-                pendingThinking = '';
+                if (!thinkingState.pendingThinking) return;
+                if (onEvent) onEvent({ type: 'thinking', content: thinkingState.pendingThinking });
+                thinkingState.pendingThinking = '';
               };
 
               for await (const event of parseSSE(res.body)) {
@@ -1882,6 +1988,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   textContent = (event.text as string) ?? textContent;
                 } else if (evType === 'response.output_item.done') {
                   const item = event.item as Record<string, unknown> | undefined;
+                  applyReasoningOutputItem(item, thinkingState);
                   flushThinking();
                   if (item) completedOutputItems.push(item);
                   if (item?.type === 'function_call') {
@@ -1903,22 +2010,13 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                       }
                     }
                   }
-                } else if (evType === 'response.reasoning_summary_text.delta') {
-                  const delta = (event.delta as string) ?? '';
-                  reasoningSummary += delta;
-                  pendingThinking += delta;
-                  if (shouldFlushXaiThinkingBuffer(pendingThinking)) flushThinking();
-                } else if (evType === 'response.reasoning_summary_text.done') {
-                  const completedSummary = (event.text as string) ?? '';
-                  if (completedSummary) {
-                    if (!reasoningSummary) {
-                      pendingThinking += completedSummary;
-                    } else if (completedSummary.startsWith(reasoningSummary)) {
-                      pendingThinking += completedSummary.slice(reasoningSummary.length);
-                    }
-                    reasoningSummary = completedSummary;
+                } else {
+                  const reasoningKind = applyReasoningStreamEvent(event, thinkingState);
+                  if (reasoningKind === 'delta') {
+                    if (shouldFlushThinkingBuffer(thinkingState.pendingThinking)) flushThinking();
+                  } else if (reasoningKind === 'done') {
+                    flushThinking();
                   }
-                  flushThinking();
                 }
               }
               flushThinking();
@@ -1956,7 +2054,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 throw new Error(`xai responses incomplete${reason ? `: ${reason}` : ''}`);
               }
 
-              const answerText = (textContent || reasoningSummary || '').trim();
+              const answerText = (textContent || visibleReasoningText(thinkingState) || '').trim();
               const toolCalls: ToolCallObj[] = functionCallItems.map(fc => ({
                 id: fc.call_id,
                 type: 'function' as const,
@@ -2014,8 +2112,12 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   if (onEvent) onEvent({ type: 'tool_result', tool: tc.function.name, result: errMsg, success: false });
                 }
               }
-              const toolNames = [...serverToolNames, ...toolCalls.map(tc => tc.function.name)].join(', ');
-              turnMessages.push({ role: 'assistant', content: `[Used tools: ${toolNames}]` });
+              const names = [...serverToolNames, ...toolCalls.map(tc => tc.function.name)];
+              const receipts = xaiInputItems
+                .filter(item => item.type === 'function_call_output')
+                .slice(-toolCalls.length)
+                .map(item => String(item.output ?? ''));
+              turnMessages.push(toolRoundHistoryEntry(names, receipts));
             }
 
             const capText = `Hit max tool calls (${MAX_ITERATIONS}).`;
@@ -2059,7 +2161,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               for (const block of m.content as Array<Record<string, unknown>>) {
                 if (block.type === 'text' && block.text) parts.push(block.text as string);
                 else if (block.type === 'tool_use') parts.push(`[Used tool: ${block.name}]`);
-                else if (block.type === 'tool_result') parts.push(`[Tool result: ${((block.content as string) || '').slice(0, 200)}]`);
+                    else if (block.type === 'tool_result') parts.push(`[Tool result: ${((block.content as string) || '').slice(0, 4000)}]`);
                 else if (block.type === 'image') parts.push('[image]');
               }
               chatMsgs.push({ role: m.role, content: parts.join('\n') || '(empty)' });
@@ -2106,6 +2208,9 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               this.history.append(chatId, turnMessages);
               return { text: interruptText, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
             }
+            this.consumeOperatorSteer(chatId, turnMessages, (text) => {
+              apiMessages.push({ role: 'user', content: text });
+            }, onEvent);
 
             // ── Make the API call ──
             type ToolCallObj = { id?: string; function: { name: string; arguments: string | Record<string, unknown> } };
@@ -2255,9 +2360,9 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               }
             }
 
-            // Record in history for Anthropic-format persistence
-            const toolNames = toolCalls.map(tc => tc.function.name).join(', ');
-            turnMessages.push({ role: 'assistant', content: `[Used tools: ${toolNames}]` });
+            const names = toolCalls.map(tc => tc.function.name);
+            const receipts = apiMessages.slice(-toolCalls.length).map(m => String(m.content ?? ''));
+            turnMessages.push(toolRoundHistoryEntry(names, receipts));
             continue;
           }
 
@@ -2289,8 +2394,12 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             durationMs: Date.now() - startMs,
           };
         }
+        this.consumeOperatorSteer(chatId, turnMessages, (text) => {
+          messages.push({ role: 'user', content: text });
+        }, onEvent);
 
         let response: Anthropic.Message;
+        let streamedThinking = false;
         try {
           // Streaming call: emit text/thinking deltas to onEvent as they arrive,
           // then resolve the full Message at the end for tool-loop processing.
@@ -2309,6 +2418,24 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             delete requestParams.temperature;
           }
 
+          const thinkingCfg = runtimeProvider === 'anthropic'
+            ? anthropicThinkingConfig(runtimeReasoningEffort, this.maxTokens)
+            : undefined;
+          let thinkingEnabled = Boolean(thinkingCfg);
+          const applyThinking = (): void => {
+            if (thinkingEnabled && thinkingCfg) {
+              requestParams.thinking = thinkingCfg.thinking;
+              requestParams.temperature = 1;
+              requestParams.max_tokens = thinkingCfg.maxTokens;
+            } else {
+              delete requestParams.thinking;
+              requestParams.max_tokens = this.maxTokens;
+              if (omitSamplingParams) delete requestParams.temperature;
+              else requestParams.temperature = this.temperature;
+            }
+          };
+          applyThinking();
+
           // Tracks whether anything has already reached the user this attempt.
           // A retry after visible output would duplicate text in the chat, so
           // the credential retry below is allowed only before the first delta.
@@ -2322,7 +2449,14 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             );
 
             for await (const event of stream) {
-              if (event.type === 'content_block_delta' && onEvent) {
+              if (event.type === 'content_block_start' && onEvent) {
+                const block = (event as { content_block?: { type?: string; thinking?: string } }).content_block;
+                if (block?.type === 'thinking' && block.thinking) {
+                  emittedAny = true;
+                  streamedThinking = true;
+                  onEvent({ type: 'thinking', content: block.thinking });
+                }
+              } else if (event.type === 'content_block_delta' && onEvent) {
                 const delta = event.delta as
                   | { type: 'text_delta'; text: string }
                   | { type: 'thinking_delta'; thinking: string }
@@ -2332,6 +2466,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   onEvent({ type: 'response_chunk', chunk: delta.text });
                 } else if (delta.type === 'thinking_delta') {
                   emittedAny = true;
+                  streamedThinking = true;
                   onEvent({ type: 'thinking', content: delta.thinking });
                 }
                 // input_json_delta accumulates tool-call arguments; surface the
@@ -2345,14 +2480,25 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
           try {
             response = await streamAttempt(runtimeClient);
           } catch (streamErr) {
-            // One force-fresh credential retry, mirroring text-generation.ts:
-            // the token may have rotated in secrets.yaml after this client was
-            // built, and inside the resolver's cache window only a forced
-            // re-read can see it. Never loops — a second failure propagates.
-            if (ac.signal.aborted || emittedAny || !isAuthError(streamErr)) throw streamErr;
-            if (!this.ensureFreshAnthropicClient(true)) throw streamErr;
-            console.warn('[agent] auth failure — retrying once with the re-read credential');
-            response = await streamAttempt(this.client);
+            // Thinking-unsupported models 400 before any delta. Strip thinking
+            // once rather than inventing a thought stream.
+            if (!ac.signal.aborted && !emittedAny && thinkingEnabled && isAnthropicThinkingRejected(streamErr)) {
+              thinkingEnabled = false;
+              applyThinking();
+              console.warn('[agent] anthropic thinking rejected — retrying once without extended thinking');
+              response = await streamAttempt(runtimeClient);
+            } else if (ac.signal.aborted || emittedAny || !isAuthError(streamErr)) {
+              throw streamErr;
+            } else if (!this.ensureFreshAnthropicClient(true)) {
+              throw streamErr;
+            } else {
+              // One force-fresh credential retry, mirroring text-generation.ts:
+              // the token may have rotated in secrets.yaml after this client was
+              // built, and inside the resolver's cache window only a forced
+              // re-read can see it. Never loops — a second failure propagates.
+              console.warn('[agent] auth failure — retrying once with the re-read credential');
+              response = await streamAttempt(this.client);
+            }
           }
         } catch (err) {
           // If aborted by /stop, exit gracefully instead of throwing
@@ -2369,6 +2515,17 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             };
           }
           throw err;
+        }
+
+        // If the SDK only attached thinking on the completed message (no
+        // thinking_delta events), forward those blocks once. Do not invent.
+        if (onEvent && !streamedThinking) {
+          for (const block of response.content) {
+            const thinking = (block as { type?: string; thinking?: string }).type === 'thinking'
+              ? (block as { thinking?: string }).thinking
+              : undefined;
+            if (thinking) onEvent({ type: 'thinking', content: thinking });
+          }
         }
 
         // ── Handle tool_use blocks (regardless of stop_reason) ──

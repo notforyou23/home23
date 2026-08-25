@@ -1,14 +1,15 @@
 /**
  * Async Work contract (Step 31).
  *
- * One durable record shape for detached work — coding jobs and sub-agents in
- * this first slice. The record is the routing authority: originChatId is
+ * One durable record shape for detached work — coding jobs, sub-agents, and
+ * cron agent-turns. The record is the routing authority: originChatId is
  * always the ROOT human/channel conversation (never a `subagent:` chat), so
  * completion delivery can never strand a result in a hidden sub-chat.
+ * Cron agent-turns use the isolated `cron-<jobId>` chat as origin.
  */
 import { randomBytes } from 'node:crypto';
 
-export type AsyncWorkKind = 'coding' | 'subagent';
+export type AsyncWorkKind = 'coding' | 'subagent' | 'cron';
 
 export type AsyncWorkStatus =
   | 'queued' | 'running' | 'blocked'
@@ -28,7 +29,14 @@ export type VerificationStatus = 'none' | 'pending' | 'reviewed' | 'skipped';
 
 export type WorkResultHandle =
   | { type: 'coding_job'; jobId: string }
-  | { type: 'subagent_chat'; chatId: string };
+  | { type: 'subagent_chat'; chatId: string }
+  | { type: 'cron_chat'; chatId: string };
+
+export type ChatWorkHandle = Extract<WorkResultHandle, { chatId: string }>;
+
+export function isChatWorkHandle(handle: WorkResultHandle): handle is ChatWorkHandle {
+  return handle.type === 'subagent_chat' || handle.type === 'cron_chat';
+}
 
 export interface AsyncWorkRecord {
   schema: 'home23.async-work.v1';

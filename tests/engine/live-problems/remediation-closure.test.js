@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, utimesSync } from 'node:fs';
+import http from 'node:http';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -11,10 +12,10 @@ const { seedAll, defaultSeeds } = require('../../../engine/src/live-problems/see
 const { isRestartableProcess } = require('../../../engine/src/live-problems/remediators.js');
 const {
   classifyDispatchRecipe,
+  LiveProblemsLoop,
   shouldAdvanceAfterIneffectiveSuccess,
   shouldReverifyResolvedProblem,
 } = require('../../../engine/src/live-problems/loop.js');
-const { runVerifier } = require('../../../engine/src/live-problems/verifiers.js');
 
 test('seedAll prunes obsolete generic agent live-problem seeds', () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-live-problems-'));
@@ -462,13 +463,102 @@ test('thoughts_flowing seed diagnoses before restarting the engine', () => {
   }
 });
 
-test('fix_recipe_recorded verifier closes agenda diagnostics after agent report', async () => {
+test('terminal agenda dispatch failure closes the handoff without claiming the operation was fixed', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-live-problems-'));
+  const server = http.createServer((req, res) => {
+    req.resume();
+    res.statusCode = 409;
+    res.end('duplicate diagnostic handoff');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const store = new LiveProblemStore({ brainDir: dir });
+    store.upsert({
+      id: 'agenda-handoff-dispatch-failure',
+      problemKind: 'agenda_handoff',
+      seedOrigin: 'agenda',
+      claim: 'Agenda action: investigate RECENT.md',
+      handoff: { status: 'pending', startedAt: new Date().toISOString() },
+      verifier: {
+        type: 'fix_recipe_recorded',
+        args: { problemId: 'agenda-handoff-dispatch-failure' },
+      },
+      remediation: [{ type: 'dispatch_to_agent', args: { budgetHours: 4 }, cooldownMin: 0 }],
+    });
+    const loop = new LiveProblemsLoop({
+      store,
+      ctxProvider: () => ({
+        brainDir: dir,
+        harnessDiagnoseUrl: `http://127.0.0.1:${server.address().port}/api/diagnose`,
+      }),
+    });
+
+    await loop._processOne(store.get('agenda-handoff-dispatch-failure'));
+
+    const problem = store.get('agenda-handoff-dispatch-failure');
+    assert.equal(problem.state, 'resolved');
+    assert.equal(problem.lastResult.ok, false, 'the missing recipe observation remains honest');
+    assert.equal(problem.handoff.status, 'terminal');
+    assert.equal(problem.handoff.outcome, 'dispatch_failed');
+    assert.equal(problem.handoff.source, 'dispatch');
+    assert.match(problem.handoff.detail, /409.*duplicate diagnostic handoff/);
+    assert.equal(problem.remediationLog.at(-1).outcome, 'failed');
+    assert.match(problem.remediationLog.at(-1).detail, /409/);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('agenda dispatch budget exhaustion closes a missing-receipt handoff', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-live-problems-'));
+  try {
+    const store = new LiveProblemStore({ brainDir: dir });
+    store.upsert({
+      id: 'agenda-handoff-no-receipt',
+      problemKind: 'agenda_handoff',
+      seedOrigin: 'agenda',
+      claim: 'Agenda action: diagnose a missing workflow receipt',
+      handoff: { status: 'pending', startedAt: new Date().toISOString() },
+      verifier: {
+        type: 'fix_recipe_recorded',
+        args: { problemId: 'agenda-handoff-no-receipt' },
+      },
+      remediation: [{ type: 'dispatch_to_agent', args: { budgetHours: 0 }, cooldownMin: 0 }],
+    });
+    store.recordDispatch('agenda-handoff-no-receipt', { turnId: 'turn-without-receipt' });
+    const loop = new LiveProblemsLoop({ store, ctxProvider: () => ({ brainDir: dir }) });
+
+    await loop._processOne(store.get('agenda-handoff-no-receipt'));
+
+    const problem = store.get('agenda-handoff-no-receipt');
+    assert.equal(problem.state, 'resolved');
+    assert.equal(problem.handoff.status, 'terminal');
+    assert.equal(problem.handoff.outcome, 'budget_exhausted');
+    assert.equal(problem.dispatchedAt, undefined);
+    assert.equal(problem.dispatchedTurnId, undefined);
+    assert.match(problem.remediationLog.at(-1).detail, /budget exhausted/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('fix_recipe_recorded keeps successful agenda handoff closure working', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-live-problems-'));
   try {
     writeFileSync(join(dir, 'live-problems.json'), JSON.stringify({
       problems: [{
-        id: 'agenda_ag-123',
+        id: 'successful-agenda-handoff',
+        problemKind: 'agenda_handoff',
+        seedOrigin: 'agenda',
+        state: 'open',
         claim: 'Agenda action: investigate RECENT.md',
+        handoff: { status: 'pending', startedAt: '2026-04-24T11:00:00.000Z' },
+        verifier: {
+          type: 'fix_recipe_recorded',
+          args: { problemId: 'successful-agenda-handoff', since: '2026-04-24T11:00:00.000Z' },
+        },
+        remediation: [{ type: 'dispatch_to_agent', args: { budgetHours: 4 } }],
         fixRecipe: {
           at: '2026-04-24T12:00:00.000Z',
           dispatchOutcome: 'fixed',
@@ -477,14 +567,77 @@ test('fix_recipe_recorded verifier closes agenda diagnostics after agent report'
         },
       }],
     }));
+    const store = new LiveProblemStore({ brainDir: dir });
+    assert.equal(store.get('successful-agenda-handoff').state, 'open', 'load migration leaves receipt verification to the loop');
+    const loop = new LiveProblemsLoop({ store, ctxProvider: () => ({ brainDir: dir }) });
 
-    const result = await runVerifier({
-      type: 'fix_recipe_recorded',
-      args: { problemId: 'agenda_ag-123', since: '2026-04-24T11:00:00.000Z' },
-    }, { brainDir: dir });
+    await loop._processOne(store.get('successful-agenda-handoff'));
 
-    assert.equal(result.ok, true);
-    assert.equal(result.observed.turnId, 'turn-1');
+    const problem = store.get('successful-agenda-handoff');
+    assert.equal(problem.state, 'resolved');
+    assert.equal(problem.lastResult.ok, true);
+    assert.equal(problem.lastResult.observed.turnId, 'turn-1');
+    assert.equal(problem.handoff.status, 'terminal');
+    assert.equal(problem.handoff.outcome, 'fixed');
+    assert.equal(problem.handoff.source, 'fix_recipe');
+    const receipt = JSON.parse(readFileSync(problem.evidence.receiptPath, 'utf8'));
+    assert.equal(receipt.metadata.problemKind, 'agenda_handoff');
+    assert.equal(receipt.metadata.handoff.outcome, 'fixed');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('legacy exhausted agenda handoff reconciliation is idempotent and preserves history', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-live-problems-'));
+  const file = join(dir, 'live-problems.json');
+  const remediationLog = [{
+    step: 0,
+    type: 'dispatch_to_agent',
+    outcome: 'failed',
+    detail: 'dispatch 409: duplicate diagnostic handoff',
+    at: '2026-04-24T12:00:00.000Z',
+  }];
+  try {
+    writeFileSync(file, JSON.stringify({
+      problems: [{
+        id: 'historical-agenda-record',
+        seedOrigin: 'agenda',
+        state: 'chronic',
+        claim: 'Agenda action: investigate RECENT.md',
+        openedAt: '2026-04-24T11:00:00.000Z',
+        verifier: {
+          type: 'fix_recipe_recorded',
+          args: { problemId: 'historical-agenda-record', since: '2026-04-24T11:00:00.000Z' },
+        },
+        remediation: [{ type: 'dispatch_to_agent', args: { budgetHours: 4 } }],
+        stepIndex: 1,
+        remediationLog,
+        lastResult: {
+          ok: false,
+          detail: 'no diagnostic recipe recorded for historical-agenda-record',
+          at: '2026-04-24T12:01:00.000Z',
+        },
+        escalated: true,
+      }],
+    }));
+
+    const firstStore = new LiveProblemStore({ brainDir: dir });
+    const migrated = firstStore.get('historical-agenda-record');
+    assert.equal(migrated.state, 'resolved');
+    assert.equal(migrated.problemKind, 'agenda_handoff');
+    assert.equal(migrated.handoff.status, 'terminal');
+    assert.equal(migrated.handoff.outcome, 'dispatch_failed');
+    assert.equal(migrated.handoff.source, 'legacy_reconciliation');
+    assert.deepEqual(migrated.remediationLog, remediationLog);
+    assert.equal(migrated.lastResult.ok, false);
+    assert.equal(firstStore.pruneResolved(), 0, 'agenda workflow history is retained');
+
+    const afterFirstLoad = readFileSync(file, 'utf8');
+    const secondStore = new LiveProblemStore({ brainDir: dir });
+    const afterSecondLoad = readFileSync(file, 'utf8');
+    assert.equal(afterSecondLoad, afterFirstLoad);
+    assert.deepEqual(secondStore.get('historical-agenda-record'), migrated);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

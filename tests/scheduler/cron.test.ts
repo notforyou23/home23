@@ -59,6 +59,46 @@ test('due cron jobs write a preflight decision receipt before the handler runs',
   assert.equal(savedJobs[0].state.consecutiveNoConsequence, 1);
 });
 
+test('configured delivery is unknown until the handler records a delivery outcome', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-unproven-delivery-'));
+  const job = makeDueJob({ delivery: { mode: 'summary', channel: 'telegram', to: 'jtr' } });
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([job], null, 2));
+  const scheduler = new CronScheduler({ timezone: 'America/New_York', jobsFile: 'cron-jobs.json', runsDir: 'cron-runs' }, async (): Promise<JobResult> => {
+    return { status: 'ok', response: 'Morning review reminder.', durationMs: 1 };
+  }, dir);
+
+  await (scheduler as any).tick();
+
+  const runLog = readJsonl(join(dir, 'cron-runs', 'job-1.jsonl'));
+  assert.equal(runLog[0].outcome.layers.delivery.status, 'unknown');
+  assert.match(runLog[0].outcome.layers.delivery.reason, /did not record a delivery outcome/);
+});
+
+test('configured delivery receipt records a missing adapter as failed', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-no-adapter-delivery-'));
+  const job = makeDueJob({ delivery: { mode: 'summary', channel: 'telegram', to: 'jtr' } });
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([job], null, 2));
+  const scheduler = new CronScheduler({ timezone: 'America/New_York', jobsFile: 'cron-jobs.json', runsDir: 'cron-runs' }, async (): Promise<JobResult> => {
+    return {
+      status: 'error',
+      error: 'Delivery no_adapter: no configured delivery target has a registered adapter',
+      durationMs: 1,
+      deliveryOutcome: {
+        status: 'no_adapter',
+        reason: 'no configured delivery target has a registered adapter',
+        retryEligible: true,
+        unavailableTargets: [{ channel: 'telegram', to: 'jtr' }],
+      },
+    };
+  }, dir);
+
+  await (scheduler as any).tick();
+
+  const runLog = readJsonl(join(dir, 'cron-runs', 'job-1.jsonl'));
+  assert.equal(runLog[0].outcome.layers.delivery.status, 'failed');
+  assert.equal(runLog[0].outcome.layers.delivery.evidence.deliveryStatus, 'no_adapter');
+});
+
 test('scheduler start delays first automatic tick to avoid startup stampede', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-cron-start-delay-'));
   const job = makeDueJob();
@@ -246,6 +286,7 @@ test('background cron jobs defer under mixed due load without counting as failur
     id: 'background-work',
     name: 'Background work',
     queueClass: 'background',
+    delivery: { mode: 'summary', channel: 'telegram', to: 'jtr' },
   } as Partial<CronJob>);
   writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([scheduled, background], null, 2));
 
@@ -269,6 +310,8 @@ test('background cron jobs defer under mixed due load without counting as failur
   assert.equal(runLog.length, 1);
   assert.equal(runLog[0].withheld, true);
   assert.equal(runLog[0].status, 'ok');
+  assert.equal(runLog[0].outcome.layers.delivery.status, 'skipped');
+  assert.equal(runLog[0].outcome.layers.delivery.evidence.deliveryStatus, 'withheld');
 
   const savedJobs = JSON.parse(readFileSync(join(dir, 'cron-jobs.json'), 'utf8'));
   const savedBackground = savedJobs.find((job: CronJob) => job.id === 'background-work');

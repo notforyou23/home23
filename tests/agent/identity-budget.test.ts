@@ -59,7 +59,7 @@ test('over-budget content drops WHOLE low-priority sections and marks the omissi
   assert.equal(out.truncated, true);
   assert.ok(out.omittedSections.length > 0, 'named sections were dropped');
   // The diagnostic is visible in the injected text so the model knows content was withheld.
-  assert.match(out.text, /identity-budget: kept \d+\/\d+ chars of MISSION\.md; omitted \d+ section/);
+  assert.match(out.text, /identity-budget: kept \d+\/\d+ chars of MISSION\.md; kept sections:.*omitted \d+ section/);
   // Kept content ends at a section boundary, never mid-word.
   assert.ok(!/\w-$/.test(out.text.split('\n\n_[identity-budget')[0].trimEnd()));
 });
@@ -98,11 +98,27 @@ test('layer classification maps the six-layer scheme', () => {
 test('config override replaces the default budget but keeps the strategy', () => {
   const r = resolveBudget('LEARNINGS.md', { 'LEARNINGS.md': 999 });
   assert.equal(r.budget, 999);
-  assert.equal(r.strategy, 'tail');
+  assert.equal(r.strategy, 'head');
   // A file with no default falls back to the generic budget.
   assert.equal(resolveBudget('UNKNOWN_FILE.md').budget, 4000);
 });
 
 test('SOUL default budget is larger than the old 3000 cap (regression guard)', () => {
   assert.ok(DEFAULT_IDENTITY_BUDGETS['SOUL.md'].budget > 3000);
+});
+
+test('LEARNINGS.md default keeps the newest-first HEAD, not the oldest tail', () => {
+  const resolved = resolveBudget('LEARNINGS.md');
+  assert.equal(resolved.strategy, 'head');
+  assert.ok(resolved.budget >= 8000);
+  const doc = [
+    '## 2026-07-31: Newest', 'LIVE_CORRECTION the current rule',
+    '## 2026-04-09: Oldest', 'STALE_TAIL '.repeat(900),
+  ].join('\n');
+  const out = budgetIdentityContent('LEARNINGS.md', doc, resolved.budget, resolved.strategy);
+  assert.ok(out.text.includes('LIVE_CORRECTION'), 'newest-first LEARNINGS must keep the latest entry');
+  assert.equal(out.text.includes('STALE_TAIL'), false, 'oldest LEARNINGS entries must be the ones dropped');
+  assert.match(out.text, /kept sections:.*2026-07-31: Newest/);
+  assert.match(out.text, /omitted .*2026-04-09: Oldest/);
+  assert.equal(out.omittedSections.includes('2026-07-31: Newest'), false);
 });

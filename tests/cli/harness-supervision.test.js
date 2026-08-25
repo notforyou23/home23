@@ -118,3 +118,35 @@ test('ecosystem generation uses a configured external instance root for runtime 
   assert.equal(jerry.brainPath, join(externalRoot, 'brain'));
   assert.equal(jerry.workspacePath, join(externalRoot, 'workspace'));
 });
+
+test('harness node_args keep a spaced logs path as one --cpu-prof-dir value', (t) => {
+  const root = makeInstall();
+  const externalRoot = mkdtempSync(join(tmpdir(), 'home23 Casey Jones '));
+  t.after(() => {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(externalRoot, { recursive: true, force: true });
+  });
+
+  mkdirSync(join(externalRoot, 'brain'), { recursive: true });
+  mkdirSync(join(externalRoot, 'workspace'), { recursive: true });
+  mkdirSync(join(externalRoot, 'logs'), { recursive: true });
+  mkdirSync(join(externalRoot, 'conversations'), { recursive: true });
+
+  writeFileSync(join(root, 'instances', 'jerry', 'config.yaml'), yaml.dump({
+    agent: { displayName: 'jerry' },
+    ports: { engine: 5001, dashboard: 5002, mcp: 5003, bridge: 5004 },
+    system: {
+      name: 'home23',
+      version: '1.0.0',
+      workspace: 'workspace',
+      instanceRoot: externalRoot,
+    },
+  }), 'utf8');
+  generateEcosystem(root);
+
+  const harness = loadApps(root).find((app) => app.name === 'home23-jerry-harness');
+  const logsDir = join(externalRoot, 'logs');
+  assert.ok(Array.isArray(harness.node_args), 'PM2 string node_args split on spaces');
+  assert.equal(harness.node_args.find((arg) => String(arg).startsWith('--cpu-prof-dir=')), `--cpu-prof-dir=${logsDir}`);
+  assert.equal(harness.node_args.find((arg) => String(arg).startsWith('--heap-prof-dir=')), `--heap-prof-dir=${logsDir}`);
+});

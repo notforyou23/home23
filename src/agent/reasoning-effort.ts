@@ -30,6 +30,37 @@ export function resolveConfiguredReasoningEffort(
   return modelEfforts?.[model] ?? defaultEffort ?? DEFAULT_REASONING_EFFORT;
 }
 
+export const RESPONSES_REASONING_SUMMARY = 'auto' as const;
+
+/** Responses API reasoning object. `none` means do not request visible thinking. */
+export function responsesReasoningConfig(
+  effort: ReasoningEffort,
+): { effort: ReasoningEffort; summary: typeof RESPONSES_REASONING_SUMMARY } | undefined {
+  if (effort === 'none') return undefined;
+  return { effort, summary: RESPONSES_REASONING_SUMMARY };
+}
+
+const ANTHROPIC_THINKING_BUDGET: Record<Exclude<ReasoningEffort, 'none'>, number> = {
+  low: 2000,
+  medium: 8000,
+  high: 16000,
+  xhigh: 24000,
+  max: 31999,
+};
+
+/** Claude extended thinking. `max_tokens` must exceed `budget_tokens`. */
+export function anthropicThinkingConfig(
+  effort: ReasoningEffort,
+  maxTokens: number,
+): { thinking: { type: 'enabled'; budget_tokens: number }; maxTokens: number } | undefined {
+  if (effort === 'none') return undefined;
+  const budget = ANTHROPIC_THINKING_BUDGET[effort];
+  return {
+    thinking: { type: 'enabled', budget_tokens: budget },
+    maxTokens: Math.max(maxTokens, budget + 4096),
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }

@@ -24,6 +24,17 @@ Use `browser-automation` for:
 - page extraction
 - navigation checks in the live browser
 
+Use `browser_workflow` (contact tools, skill `contact`) when the job is to complete a page and verify the resulting URL/text, not just fetch it.
+
+### Contact with the actual day
+Use `contact` for:
+- calendar, reminders, notes, Mail, Finder
+- "what needs me" / attention scans
+- Home Assistant observe and closed-loop actions
+- capturing a PDF, photo, receipt, or voice memo into durable memory
+- iOS shortcuts
+- drafting or sending messages (preview first, send only with confirm)
+
 ### Coding workflows
 Use `coding-agent` for:
 - substantial coding jobs that should be delegated

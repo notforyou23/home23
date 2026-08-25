@@ -49,6 +49,7 @@ import {
   agencyTickTool,
 } from './agency.js';
 import { skillsAuditTool, skillsGetTool, skillsListTool, skillsRunTool, skillsSuggestTool } from './skills.js';
+import { contactTools } from './contact.js';
 import {
   listBrainsTool,
   listResearchRunsTool,
@@ -282,6 +283,7 @@ export function createToolRegistry(opts: { web?: WebToolsConfig } = {}): ToolReg
   registry.register(agencyTickTool);
   registry.register(promoteToMemoryTool);
   for (const tool of relationshipTools) registry.register(tool);
+  for (const tool of contactTools) registry.register(tool);
 
   return registry;
 }

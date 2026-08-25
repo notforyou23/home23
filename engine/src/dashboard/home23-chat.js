@@ -1,63 +1,163 @@
 /**
- * Home23 Dashboard Chat
- *
- * Native chat tile connecting to the agent loop via the bridge endpoint.
- * Renders in tile, overlay, or standalone mode.
- *
- * Conversation/streaming state is mirrored to chatState (home23-chat-state.mjs)
- * so newer view components (menu, overlay, standalone sidebar) can subscribe to
- * changes without reaching into this file's internals. The `let` variables
- * below remain the working copy; call _syncState() after mutating them.
+ * Home23 Chat — single transcript surface for the dashboard Chat tab and
+ * /home23/chat. Thinking, tools, work receipts, stop/resume, and cross-tab
+ * ownership live here. Home only shows a preview that opens this surface.
  */
 
 import { chatState } from './home23-chat-state.mjs';
 import { reconcileCanonicalAssistantElements } from './home23-chat-reconstruction.mjs';
+import { decodeModelPair, encodeModelPair } from './home23-model-pair.mjs';
+import { renderMarkdown } from './home23-chat-markdown.mjs';
+import { collectThinkingText, createTranscript } from './home23-chat-transcript.mjs';
 import {
-  decodeModelPair,
-  encodeModelPair,
-} from './home23-model-pair.mjs';
+  CHAT_REASONING_EFFORTS,
+  encodeChatEffortKey,
+  effectiveChatReasoningEffort,
+  effortLabel,
+  parseChatReasoningEffort,
+} from './home23-chat-effort.mjs';
 
-// Expose for classic-script consumers (home23-dashboard.js, home23-chat.html
-// onload handler) and for in-browser debugging.
-if (typeof window !== 'undefined') {
-  window.chatState = chatState;
-}
+if (typeof window !== 'undefined') window.chatState = chatState;
 
 const CHAT_API = '/home23/api/chat';
 const CHAT_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const TAB_ID = `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
 let chatAgent = null;
 let chatAgents = [];
 let chatModels = {};
 let chatModel = null;
 let chatProvider = null;
 let chatStreaming = false;
+let chatDisconnected = false;
 let activeTurnId = null;
 let activeChatId = null;
 let activeCursor = -1;
 let activeEventSource = null;
+let workEventSource = null;
+let currentTurnCtx = null;
+let chatConversationId = null;
+let chatConversations = [];
+let chatInitialized = false;
+let chatMode = 'tab';
+let transcript = null;
+let pendingAttachments = [];
+let chatPersistTimer = null;
+let chatPersistenceBound = false;
+let chatCurrentAgentName = null;
+let activeWork = [];
+let agentWork = [];
+let agentRecentWork = [];
+let attachedWorkId = null;
+let pinnedConversationIds = new Set();
+let workTabEventSource = null;
+let seenWorkReceipts = new Set();
+let hudToolName = '';
+let streamOwnerId = TAB_ID;
+let chatChannel = null;
+let lastPreviewSnippet = '';
+let chatReasoningEffort = null;
+let chatDefaultReasoningEffort = 'medium';
+let chatReasoningEfforts = CHAT_REASONING_EFFORTS.slice();
+let chatShowThinking = true;
+let conversationThinking = '';
+const SHOW_THINKING_KEY = 'home23:chat:show-thinking';
 
-// The bridge authenticates when a query-notebook token is enrolled; the dash
-// passes it through /api/chat/config. EventSource cannot set headers, so the
-// stream uses the query param the bridge also accepts.
+const ATTACH_MAX_IMAGES = 6;
+const ATTACH_MAX_BYTES = 10 * 1024 * 1024;
+const ATTACH_ALLOWED_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
 function bridgeAuthHeaders() {
   return chatAgent?.bridgeToken ? { Authorization: `Bearer ${chatAgent.bridgeToken}` } : {};
 }
 function bridgeTokenParam() {
   return chatAgent?.bridgeToken ? `&token=${encodeURIComponent(chatAgent.bridgeToken)}` : '';
 }
-// UI render state per turn — reset when a turn starts, reused by both live streaming and reconnect.
-let currentTurnCtx = null;
-let chatConversationId = null;  // current conversation ID
-let chatConversations = [];     // list of all conversations
-let chatInitialized = false;
-let chatMode = 'tile';
+function bridgeBase() {
+  if (!chatAgent?.bridgePort) return '';
+  return `http://${window.location.hostname}:${chatAgent.bridgePort}`;
+}
 
-// ── Image attachment state ──
-let pendingAttachments = []; // Array<{ id, file, dataUrl }>
+function _syncState() {
+  chatState.set({
+    agent: chatAgent,
+    model: chatModel,
+    provider: chatProvider ?? chatAgent?.provider ?? null,
+    conversationId: chatConversationId,
+    conversations: chatConversations,
+    streaming: chatStreaming,
+    activeTurnId,
+    activeCursor,
+    turnCtx: currentTurnCtx,
+    input: document.getElementById('chat-input')?.value || '',
+    activeWork,
+    disconnected: chatDisconnected,
+    previewSnippet: lastPreviewSnippet,
+    reasoningEffort: chatReasoningEffort,
+    defaultReasoningEffort: chatDefaultReasoningEffort,
+    showThinking: chatShowThinking,
+  });
+  renderHomePreview();
+}
 
-const ATTACH_MAX_IMAGES = 6;
-const ATTACH_MAX_BYTES = 10 * 1024 * 1024;
-const ATTACH_ALLOWED_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+function isStreamOwner() {
+  return streamOwnerId === TAB_ID;
+}
+
+function postChannel(payload) {
+  try { chatChannel?.postMessage({ tabId: TAB_ID, ...payload }); } catch { /* unsupported */ }
+}
+
+function claimStreamOwnership() {
+  streamOwnerId = TAB_ID;
+  postChannel({
+    type: 'own-stream',
+    chatId: chatConversationId,
+    turnId: activeTurnId,
+    cursor: activeCursor,
+  });
+  if (activeTurnId && chatConversationId && !activeEventSource && chatAgent?.bridgePort) {
+    openTurnStream({
+      bridgeBase: bridgeBase(),
+      chatId: chatConversationId,
+      turnId: activeTurnId,
+      cursor: activeCursor,
+    });
+  }
+}
+
+function setupCrossTab() {
+  if (chatChannel || typeof BroadcastChannel === 'undefined') return;
+  chatChannel = new BroadcastChannel('home23-chat');
+  chatChannel.onmessage = (event) => {
+    const msg = event.data;
+    if (!msg || msg.tabId === TAB_ID) return;
+    if (msg.type === 'own-stream') {
+      streamOwnerId = msg.tabId;
+      if (!isStreamOwner() && activeEventSource) {
+        try { activeEventSource.close(); } catch { /* ignore */ }
+        activeEventSource = null;
+      }
+    } else if (msg.type === 'selection' && msg.chatId && msg.chatId !== chatConversationId) {
+      openConversation(msg.chatId, { fromChannel: true });
+    } else if (msg.type === 'draft' && typeof msg.input === 'string') {
+      const input = document.getElementById('chat-input');
+      if (input && document.activeElement !== input) input.value = msg.input;
+    } else if (msg.type === 'send' || msg.type === 'stop' || msg.type === 'new') {
+      if (msg.chatId && msg.chatId === chatConversationId && chatAgent) {
+        loadHistory(chatAgent.agentName, chatConversationId).catch(() => {});
+      }
+    }
+  };
+  window.addEventListener('focus', () => claimStreamOwnership());
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') claimStreamOwnership();
+  });
+  window.addEventListener('hashchange', () => {
+    if (String(window.location.hash || '').replace(/^#/, '') === 'chat') claimStreamOwnership();
+  });
+  claimStreamOwnership();
+}
 
 function readFileAsDataURL(file) {
   return new Promise((resolve, reject) => {
@@ -73,41 +173,26 @@ function dataUrlToBase64(dataUrl) {
   return i >= 0 ? dataUrl.slice(i + 1) : dataUrl;
 }
 
+export function populateChatInput(prompt, input = document.getElementById('chat-input')) {
+  if (!input) return false;
+  input.value = String(prompt || '');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.focus();
+  return true;
+}
+
 async function ingestAttachmentFiles(files) {
   for (const file of files) {
-    if (pendingAttachments.length >= ATTACH_MAX_IMAGES) {
-      console.warn('[chat] attachment cap reached, dropping', file.name);
-      break;
-    }
-    if (!ATTACH_ALLOWED_MIME.has(file.type)) {
-      console.warn('[chat] unsupported mime, dropping', file.type, file.name);
-      continue;
-    }
-    if (file.size > ATTACH_MAX_BYTES) {
-      console.warn('[chat] image too big, dropping', file.size, file.name);
-      continue;
-    }
+    if (pendingAttachments.length >= ATTACH_MAX_IMAGES) break;
+    if (!ATTACH_ALLOWED_MIME.has(file.type) || file.size > ATTACH_MAX_BYTES) continue;
     try {
-      const dataUrl = await readFileAsDataURL(file);
       pendingAttachments.push({
         id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         file,
-        dataUrl,
+        dataUrl: await readFileAsDataURL(file),
       });
-    } catch (err) {
-      console.warn('[chat] failed to read attachment', err);
-    }
+    } catch { /* skip unreadable */ }
   }
-  renderAttachmentTray();
-}
-
-function removeAttachment(id) {
-  pendingAttachments = pendingAttachments.filter(a => a.id !== id);
-  renderAttachmentTray();
-}
-
-function clearAttachments() {
-  pendingAttachments = [];
   renderAttachmentTray();
 }
 
@@ -120,43 +205,25 @@ function renderAttachmentTray() {
     return;
   }
   tray.hidden = false;
-  tray.innerHTML = pendingAttachments.map(a => `
+  tray.innerHTML = pendingAttachments.map((a) => `
     <div class="h23-chat-attach-thumb">
       <img src="${a.dataUrl}" alt="${a.file.name || 'attachment'}" />
       <button class="h23-chat-attach-thumb-remove" data-att-id="${a.id}" aria-label="Remove">&times;</button>
     </div>
   `).join('');
-  tray.querySelectorAll('.h23-chat-attach-thumb-remove').forEach(btn => {
-    btn.addEventListener('click', () => removeAttachment(btn.dataset.attId));
-  });
-}
-let chatPersistTimer = null;
-let chatPersistenceBound = false;
-let chatCurrentAgentName = null;
-
-/** Push the local `let` vars into chatState. Call after any mutation block. */
-function _syncState() {
-  chatState.set({
-    agent: chatAgent,
-    model: chatModel,
-    provider: chatProvider ?? chatAgent?.provider ?? null,
-    conversationId: chatConversationId,
-    conversations: chatConversations,
-    streaming: chatStreaming,
-    activeTurnId,
-    activeCursor,
-    turnCtx: currentTurnCtx,
+  tray.querySelectorAll('.h23-chat-attach-thumb-remove').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      pendingAttachments = pendingAttachments.filter((a) => a.id !== btn.dataset.attId);
+      renderAttachmentTray();
+    });
   });
 }
 
-// ── Init ──
-
-async function initChat(mode) {
+export async function initChat(mode) {
   if (chatInitialized) return;
   chatInitialized = true;
-  chatMode = mode || 'tile';
+  chatMode = mode || 'tab';
 
-  // Load agents
   try {
     const res = await fetch('/home23/api/settings/agents');
     const data = await res.json();
@@ -164,100 +231,183 @@ async function initChat(mode) {
     chatCurrentAgentName = data.currentAgent || null;
   } catch { chatAgents = []; }
 
-  // Load models catalog
   try {
     const res = await fetch('/home23/api/settings/models');
     const data = await res.json();
     chatModels = data.providers || {};
   } catch { chatModels = {}; }
 
-  // Determine initial agent (URL param or this dashboard's agent)
-  const urlParams = new URLSearchParams(window.location.search);
-  const urlAgent = urlParams.get('agent');
-  const initialAgent = (urlAgent && chatAgents.find(a => a.name === urlAgent))
-    || (chatCurrentAgentName && chatAgents.find(a => a.name === chatCurrentAgentName))
-    || chatAgents.find(a => a.isPrimary)
+  const urlAgent = new URLSearchParams(window.location.search).get('agent');
+  const initialAgent = (urlAgent && chatAgents.find((a) => a.name === urlAgent))
+    || (chatCurrentAgentName && chatAgents.find((a) => a.name === chatCurrentAgentName))
+    || chatAgents.find((a) => a.isPrimary)
     || chatAgents[0];
 
+  mountSharedChatNodes();
+  const messages = document.getElementById('chat-messages');
+  transcript = createTranscript(messages, {
+    renderMarkdown,
+    showThinking: chatShowThinking,
+    onPromptSelect: populateChatInput,
+  });
+  transcript.setOnPinnedChange((pinned) => {
+    const jump = document.getElementById('chat-jump-latest');
+    if (jump) jump.hidden = pinned;
+  });
+  document.getElementById('chat-jump-latest')?.addEventListener('click', () => transcript?.jumpToLatest());
+  setupThinkingToggle();
+
   if (!initialAgent) {
-    const empty = document.getElementById('chat-messages');
-    if (empty) empty.innerHTML = '<div class="h23-chat-empty">No agents configured. Create one in Settings.</div>';
+    transcript?.emptyState('No agents configured. Create one in Settings.');
+    bindHomePreview();
     return;
   }
 
   bindChatPersistence();
-
-  // Mount the shared message-list + input subtree into the active slot. This
-  // is the single DOM we move between tile and overlay via appendChild —
-  // moving the same nodes preserves event bindings and mid-stream state
-  // across expand/collapse.
-  mountSharedChatNodes();
-
+  setupCrossTab();
   renderAgentSelectors(initialAgent.name);
-  const shouldResumeHistory = chatMode === 'standalone';
+  const shouldResumeHistory = chatMode !== 'preview';
   await switchAgent(initialAgent.name, {
     preferRestore: shouldResumeHistory,
     preferLatest: shouldResumeHistory,
   });
-
-  // Model selector — use agent's current model (may have been changed in settings)
   chatModel = initialAgent.model;
   chatProvider = initialAgent.provider;
   populateModelSelect(initialAgent.provider, initialAgent.model);
-
-  // Input bindings — one input now (shared). 'overlay' binding removed; the
-  // same #chat-input serves both modes since we move the node between slots.
-  bindInput('chat-input', 'chat-send-btn', '');
-
-  // Expand / close / standalone
-  const expandBtn = document.getElementById('chat-expand-btn');
-  if (expandBtn) expandBtn.addEventListener('click', openOverlay);
-  const closeBtn = document.getElementById('chat-overlay-close-btn');
-  if (closeBtn) closeBtn.addEventListener('click', closeOverlay);
-
-  // Standalone button moved to ⋯ menu ("Open in new tab"); kept the
-  // handler in handleMenuAction. No separate toolbar button needed.
-
-  // Backdrop click (on overlay wrapper but outside the panel) → close.
-  const overlay = document.getElementById('chat-overlay');
-  overlay?.addEventListener('click', (e) => {
-    if (e.target === overlay) closeOverlay();
-  });
-  // Esc key to close overlay.
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && overlay?.classList.contains('open')) closeOverlay();
-  });
-
-  // ⋯ menu + agent pill + model pill (replaces the old + / ☰ / model-select
-  // button row).
+  bindInput();
+  setupWorkTab();
   setupMoreMenu();
-  setupConversationPanelControls();
   setupAgentPill();
   setupModelPill();
+  setupEffortControls();
+  setupKeyboard();
+  setupHud();
+  setupSidebar();
+  bindHomePreview();
 
-  // Keep tile's agent pill + overlay title in sync with state. Subscribe AND
-  // apply the current snapshot immediately — switchAgent() may have already
-  // fired 'agent:switch' before we got here, and without an initial paint
-  // the header reads "Loading…" forever.
   const renderAgentHeader = (snap) => {
+    const title = snap.agent?.displayName || snap.agent?.agentName || snap.agent?.name || '…';
     const nameEl = document.getElementById('chat-agent-name');
     const avatarEl = document.getElementById('chat-agent-avatar');
-    const title = snap.agent?.displayName || snap.agent?.agentName || snap.agent?.name || '…';
     if (nameEl) nameEl.textContent = title;
-    if (avatarEl) avatarEl.textContent = String(title).trim().slice(0, 1).toUpperCase() || '●';
-    const overlayTitle = document.getElementById('chat-overlay-title-label');
-    if (overlayTitle) overlayTitle.textContent = `Talk to ${title}`;
+    if (avatarEl) avatarEl.textContent = String(title).trim().slice(0, 1).toUpperCase() || '*';
   };
   chatState.on('agent:switch', renderAgentHeader);
   renderAgentHeader(chatState.get());
+  _syncState();
+  const searchParams = new URLSearchParams(window.location.search);
+  const deepWorkId = searchParams.get('work');
+  if (deepWorkId) await openWorkById(deepWorkId);
 }
 
-/** Wire the ⋯ more-menu — click button toggles the popover near it; clicking
- *  outside or pressing Esc closes; menu item clicks dispatch to handlers. */
+function bindHomePreview() {
+  const preview = document.getElementById('chat-home-preview');
+  if (!preview || preview.dataset.bound) return;
+  preview.dataset.bound = 'true';
+  const open = () => {
+    if (typeof window.selectDashboardTab === 'function') window.selectDashboardTab('chat');
+    else window.location.hash = 'chat';
+  };
+  preview.addEventListener('click', open);
+  preview.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); open(); }
+  });
+}
+
+function renderHomePreview() {
+  const agentEl = document.getElementById('chat-preview-agent');
+  const snippetEl = document.getElementById('chat-preview-snippet');
+  const statusEl = document.getElementById('chat-preview-status');
+  const title = chatAgent?.displayName || chatAgent?.agentName || chatAgent?.name || 'Agent';
+  if (agentEl) agentEl.textContent = title;
+  if (snippetEl) snippetEl.textContent = lastPreviewSnippet || 'Open Chat to talk with your agent.';
+  if (statusEl) {
+    if (chatStreaming) statusEl.textContent = 'Live reply';
+    else if (activeWork.length) statusEl.textContent = `${activeWork.length} running`;
+    else statusEl.textContent = '';
+  }
+}
+
+function mountSharedChatNodes() {
+  if (document.getElementById('chat-shared')) return;
+  const tpl = document.getElementById('chat-shared-template');
+  const dest = document.getElementById('chat-slot-tab')
+    || document.getElementById('chat-slot-standalone');
+  if (!tpl?.content || !dest) return;
+  dest.appendChild(tpl.content.firstElementChild.cloneNode(true));
+}
+
+function setupSidebar() {
+  document.getElementById('chat-conv-new-btn')?.addEventListener('click', (event) => {
+    event.preventDefault();
+    newConversation();
+  });
+  document.getElementById('chat-sidebar-toggle')?.addEventListener('click', () => {
+    document.getElementById('chat-sidebar')?.classList.toggle('open');
+  });
+}
+
+function closeConversationList() {
+  document.getElementById('chat-sidebar')?.classList.remove('open');
+}
+
+function setupKeyboard() {
+  document.addEventListener('keydown', (event) => {
+    const mod = event.metaKey || event.ctrlKey;
+    if (event.key === 'Escape') {
+      if (chatStreaming) { event.preventDefault(); stopChat(); }
+      document.getElementById('chat-sidebar')?.classList.remove('open');
+      return;
+    }
+    if (mod && event.key.toLowerCase() === 'n') {
+      event.preventDefault();
+      newConversation();
+    }
+    if (mod && event.key.toLowerCase() === 'l') {
+      event.preventDefault();
+      document.getElementById('chat-input')?.focus();
+    }
+  });
+}
+
+function setupHud() {
+  document.getElementById('chat-hud-stop')?.addEventListener('click', () => stopChat());
+  document.getElementById('chat-hud-reconnect')?.addEventListener('click', () => {
+    if (!activeTurnId || !chatConversationId || !chatAgent?.bridgePort) return;
+    claimStreamOwnership();
+    openTurnStream({
+      bridgeBase: bridgeBase(),
+      chatId: chatConversationId,
+      turnId: activeTurnId,
+      cursor: activeCursor,
+    });
+  });
+  document.getElementById('chat-hud-refresh')?.addEventListener('click', () => refreshTurnStatus());
+}
+
+function setHud(visible, statusText) {
+  const hud = document.getElementById('chat-turn-hud');
+  const status = document.getElementById('chat-hud-status');
+  if (status && statusText) status.textContent = statusText;
+  if (hud) hud.hidden = !visible;
+}
+
+async function refreshTurnStatus() {
+  if (!chatAgent?.bridgePort || !chatConversationId || !activeTurnId) return;
+  try {
+    const res = await fetch(
+      `${bridgeBase()}/api/chat/turn-status?chatId=${encodeURIComponent(chatConversationId)}&turn_id=${encodeURIComponent(activeTurnId)}`,
+      { headers: bridgeAuthHeaders() },
+    );
+    if (!res.ok) return;
+    const data = await res.json();
+    setHud(true, data.phase || data.status || 'Working');
+  } catch { /* ignore */ }
+}
+
 function setupMoreMenu() {
   const menu = document.getElementById('chat-more-menu');
   if (!menu) return;
-
   function openAt(anchor) {
     if (!anchor) return;
     const rect = anchor.getBoundingClientRect();
@@ -269,216 +419,388 @@ function setupMoreMenu() {
   }
   function closeAll() {
     menu.hidden = true;
-    for (const id of ['chat-more-btn', 'chat-overlay-more-btn']) {
-      const b = document.getElementById(id);
-      if (b) b.setAttribute('aria-expanded', 'false');
-    }
+    document.getElementById('chat-more-btn')?.setAttribute('aria-expanded', 'false');
   }
-
-  for (const id of ['chat-more-btn', 'chat-overlay-more-btn']) {
-    const btn = document.getElementById(id);
-    if (!btn) continue;
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (menu.hidden) openAt(btn); else closeAll();
-    });
-  }
-
-  menu.addEventListener('click', (e) => {
-    const item = e.target.closest('[data-action]');
+  document.getElementById('chat-more-btn')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (menu.hidden) openAt(event.currentTarget);
+    else closeAll();
+  });
+  menu.addEventListener('click', (event) => {
+    const item = event.target.closest('[data-action]');
     if (!item) return;
+    event.preventDefault();
     closeAll();
     handleMenuAction(item.dataset.action);
   });
-
-  document.addEventListener('click', (e) => {
-    if (menu.hidden) return;
-    if (menu.contains(e.target)) return;
-    if (e.target.closest('#chat-more-btn, #chat-overlay-more-btn')) return;
+  document.addEventListener('click', (event) => {
+    if (event.target.closest('#chat-more-btn, #chat-more-menu')) return;
     closeAll();
   });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !menu.hidden) closeAll();
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !menu.hidden) closeAll();
   });
 }
 
 function handleMenuAction(action) {
-  if (action === 'new-conversation') {
-    newConversation();
-    closeConversationList();
-  } else if (action === 'toggle-conversations') {
-    toggleConversationList();
-  } else if (action === 'open-standalone') {
+  if (action === 'new-conversation') newConversation();
+  else if (action === 'copy-transcript') copyTranscript();
+  else if (action === 'export-transcript') exportTranscript();
+  else if (action === 'open-standalone') {
     cacheHistory();
-    window.open(`/home23/chat?agent=${chatAgent?.agentName || ''}`, '_blank');
+    const url = `/home23/chat?agent=${encodeURIComponent(chatAgent?.agentName || '')}`;
+    window.open(url, '_blank');
   }
 }
 
-function setupConversationPanelControls() {
-  document.getElementById('chat-conv-back-btn')?.addEventListener('click', (event) => {
-    event.preventDefault();
-    closeConversationList();
-  });
-  document.getElementById('chat-conv-new-btn')?.addEventListener('click', (event) => {
-    event.preventDefault();
-    newConversation();
-    closeConversationList();
-  });
-}
-
-/**
- * Reusable list popover. Renders `items` as clickable rows anchored near
- * `anchor`; calls onSelect(item) when a row is clicked. Closes on outside
- * click or Esc. One popover instance lives at body level and is reused.
- */
 function openListPopover({ anchor, items, onSelect, emptyText = 'Nothing to show' }) {
   if (!anchor) return;
   let pop = document.getElementById('chat-list-popover');
   if (!pop) {
     pop = document.createElement('div');
     pop.id = 'chat-list-popover';
-    pop.className = 'h23-chat-menu h23-chat-list-popover';   // reuses menu styling
+    pop.className = 'h23-chat-menu h23-chat-list-popover';
     pop.setAttribute('role', 'menu');
     document.body.appendChild(pop);
-  } else {
-    pop.className = 'h23-chat-menu h23-chat-list-popover';
   }
-  if (!items || items.length === 0) {
-    pop.innerHTML = `<div style="padding:10px 12px;color:var(--text-muted);font-size:13px;font-style:italic;">${escapeHtml(emptyText)}</div>`;
+  if (!items?.length) {
+    pop.innerHTML = `<div class="h23-chat-menu-empty">${emptyText}</div>`;
   } else {
     pop.innerHTML = items.map((it, i) => `
       <button class="h23-chat-menu-item" data-i="${i}" role="menuitem" type="button">
-        ${it.label ? escapeHtml(it.label) : escapeHtml(String(it))}${
-          it.hint ? `<span style="color:var(--text-muted);font-size:11px;margin-left:8px;">${escapeHtml(it.hint)}</span>` : ''
-        }${it.active ? ' <span style="color:var(--accent-color,#0a84ff);margin-left:6px;">●</span>' : ''}
+        ${escapeHtml(it.label || String(it))}
+        ${it.hint ? `<span class="h23-chat-menu-hint">${escapeHtml(it.hint)}</span>` : ''}
       </button>
     `).join('');
   }
   const rect = anchor.getBoundingClientRect();
-  const viewportGap = 8;
-  const menuGap = 4;
-  const maxMenuHeight = 420;
-  const belowSpace = Math.max(0, window.innerHeight - rect.bottom - viewportGap - menuGap);
-  const aboveSpace = Math.max(0, rect.top - viewportGap - menuGap);
-  const placeAbove = belowSpace < 180 && aboveSpace > belowSpace;
-  const availableSpace = placeAbove ? aboveSpace : belowSpace;
-  const constrainedHeight = Math.max(140, Math.min(maxMenuHeight, availableSpace || maxMenuHeight));
-
   pop.style.position = 'fixed';
-  pop.style.maxHeight = `${constrainedHeight}px`;
-  pop.style.overflowY = 'auto';
-  pop.style.overscrollBehavior = 'contain';
   pop.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 260))}px`;
-  pop.style.right = '';
+  pop.style.top = `${rect.bottom + 4}px`;
   pop.hidden = false;
-  const renderedHeight = Math.min(pop.scrollHeight, constrainedHeight);
-  pop.style.top = placeAbove
-    ? `${Math.max(viewportGap, rect.top - renderedHeight - menuGap)}px`
-    : `${Math.min(rect.bottom + menuGap, window.innerHeight - renderedHeight - viewportGap)}px`;
-
   const close = () => {
     pop.hidden = true;
     document.removeEventListener('click', onDocClick, true);
-    document.removeEventListener('keydown', onKey, true);
   };
-  const onDocClick = (e) => {
-    if (pop.contains(e.target) || anchor.contains(e.target)) return;
+  const onDocClick = (event) => {
+    if (pop.contains(event.target) || anchor.contains(event.target)) return;
     close();
   };
-  const onKey = (e) => { if (e.key === 'Escape') close(); };
-  // Defer attaching doc listeners to avoid the current click event immediately closing.
-  setTimeout(() => {
-    document.addEventListener('click', onDocClick, true);
-    document.addEventListener('keydown', onKey, true);
-  }, 0);
-
-  pop.onclick = (e) => {
-    const btn = e.target.closest('[data-i]');
+  setTimeout(() => document.addEventListener('click', onDocClick, true), 0);
+  pop.onclick = (event) => {
+    const btn = event.target.closest('[data-i]');
     if (!btn) return;
-    const i = Number(btn.dataset.i);
     close();
-    if (typeof onSelect === 'function') onSelect(items[i]);
+    onSelect?.(items[Number(btn.dataset.i)]);
   };
 }
 
-function showModelPicker(anchorOverride) {
-  const select = document.getElementById('chat-model-select');
-  if (!select) return;
-  let current = select.value;
-  if (!current && chatProvider && chatModel) {
-    current = encodeModelPair({ provider: chatProvider, model: chatModel });
-  }
-  const items = Array.from(select.options)
-    .filter(option => option.value)
-    .map(option => ({
-      label: option.dataset.model || option.textContent || '',
-      hint: option.dataset.provider || '',
-      active: option.value === current,
-      _value: option.value,
-    }));
-  // Prefer the model pill (tile) as anchor; fall back to the ⋯ button.
-  const anchor = anchorOverride
-    || document.getElementById('chat-model-pill')
-    || document.getElementById('chat-more-btn')
-    || document.getElementById('chat-overlay-more-btn');
-  openListPopover({
-    anchor,
-    items,
-    emptyText: 'No models available for this provider.',
-    onSelect: (it) => {
-      select.value = it._value;
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    },
-  });
-}
-
-/** Model pill: compact button next to the agent pill that shows the current
- *  model and opens the model picker on click. Label syncs to chatState.model
- *  changes so Settings-driven changes also reflect here. */
 function setupModelPill() {
   const pill = document.getElementById('chat-model-pill');
   if (!pill) return;
-  pill.addEventListener('click', () => showModelPicker(pill));
-
+  pill.addEventListener('click', () => {
+    const select = document.getElementById('chat-model-select');
+    if (!select) return;
+    const current = select.value;
+    const items = Array.from(select.options).filter((o) => o.value).map((option) => ({
+      label: option.dataset.model || option.textContent || '',
+      hint: option.dataset.provider || '',
+      _value: option.value,
+      active: option.value === current,
+    }));
+    openListPopover({
+      anchor: pill,
+      items,
+      emptyText: 'No models available for this provider.',
+      onSelect: (it) => {
+        select.value = it._value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      },
+    });
+  });
   const renderLabel = (snap) => {
     const label = document.getElementById('chat-model-pill-label');
     if (!label) return;
     const raw = snap.model || chatModel || '';
     label.textContent = shortenModelName(raw) || 'model';
-    pill.title = raw ? `Model: ${raw} — click to change` : 'Change model';
+    pill.title = raw ? `Model: ${raw}` : 'Change model';
   };
   chatState.on('change', renderLabel);
   renderLabel(chatState.get());
 }
 
-/** Compact display name for the pill. Strips common provider prefixes and
- *  truncates date-stamped suffixes so "claude-opus-4-8-20260101" fits. */
 function shortenModelName(model) {
   if (!model) return '';
-  const trimmed = String(model).trim();
-  // Drop trailing -YYYYMMDD date suffix (common on Claude model IDs).
-  const withoutDate = trimmed.replace(/-\d{8}$/, '');
-  // Cap at 22 chars with ellipsis — the pill has limited width.
-  return withoutDate.length > 22 ? withoutDate.slice(0, 21) + '…' : withoutDate;
+  const withoutDate = String(model).trim().replace(/-\d{8}$/, '');
+  return withoutDate.length > 22 ? `${withoutDate.slice(0, 21)}…` : withoutDate;
 }
 
-/** Clicking the agent pill opens an inline list popover of agents. */
+function showEffortPicker(anchorOverride) {
+  const configured = chatDefaultReasoningEffort || 'medium';
+  const effective = effectiveChatReasoningEffort(chatReasoningEffort, configured);
+  const items = [
+    {
+      label: `Default (${effortLabel(configured)})`,
+      hint: 'configured',
+      active: chatReasoningEffort === null,
+      _effort: null,
+    },
+    ...chatReasoningEfforts.map((effort) => ({
+      label: effortLabel(effort),
+      hint: effort === effective && chatReasoningEffort !== null ? 'this chat' : '',
+      active: chatReasoningEffort === effort,
+      _effort: effort,
+    })),
+  ];
+  const anchor = anchorOverride
+    || document.getElementById('chat-effort-pill')
+    || document.getElementById('chat-more-btn');
+  openListPopover({
+    anchor,
+    items,
+    emptyText: 'No reasoning efforts available.',
+    onSelect: (item) => setChatReasoningEffort(item._effort),
+  });
+}
+
+function setupEffortControls() {
+  const pill = document.getElementById('chat-effort-pill');
+  if (pill) pill.addEventListener('click', () => showEffortPicker(pill));
+
+  const select = document.getElementById('chat-effort-select');
+  if (select) {
+    select.addEventListener('change', () => {
+      setChatReasoningEffort(select.value || null);
+    });
+  }
+
+  const renderControls = (snap) => {
+    const configured = snap.defaultReasoningEffort || chatDefaultReasoningEffort || 'medium';
+    const override = snap.reasoningEffort ?? null;
+    const label = document.getElementById('chat-effort-pill-label');
+    const effective = effectiveChatReasoningEffort(override, configured);
+    if (pill) {
+      pill.disabled = false;
+      pill.dataset.override = override === null ? 'false' : 'true';
+      pill.title = override === null
+        ? `Reasoning effort: ${effortLabel(effective)} (configured default)`
+        : `Reasoning effort: ${effortLabel(effective)} (this chat)`;
+    }
+    if (label) label.textContent = effortLabel(effective);
+    if (select) {
+      select.disabled = false;
+      select.innerHTML = [
+        `<option value="">Default (${escapeHtml(effortLabel(configured))})</option>`,
+        ...chatReasoningEfforts.map((effort) => `<option value="${escapeHtml(effort)}">${escapeHtml(effortLabel(effort))}</option>`),
+      ].join('');
+      select.value = override || '';
+    }
+  };
+  chatState.on('change', renderControls);
+  renderControls(chatState.get());
+}
+
+function readShowThinking() {
+  try {
+    const stored = localStorage.getItem(SHOW_THINKING_KEY);
+    if (stored === '0') return false;
+    if (stored === '1') return true;
+  } catch { /* keep the page usable without storage */ }
+  return true;
+}
+
+function applyShowThinkingUi() {
+  const root = document.getElementById('chat-shared');
+  if (root) root.dataset.showThinking = chatShowThinking ? 'true' : 'false';
+  const btn = document.getElementById('chat-thinking-toggle');
+  if (btn) {
+    btn.setAttribute('aria-pressed', chatShowThinking ? 'true' : 'false');
+    btn.title = chatShowThinking ? 'Hide thinking' : 'Show thinking';
+  }
+  transcript?.setShowThinking(chatShowThinking);
+  if (!chatShowThinking) hideThoughtDock();
+  else updateThoughtDock(conversationThinking, { live: chatStreaming });
+}
+
+function setShowThinking(next) {
+  chatShowThinking = Boolean(next);
+  try { localStorage.setItem(SHOW_THINKING_KEY, chatShowThinking ? '1' : '0'); } catch { /* ignore */ }
+  applyShowThinkingUi();
+  _syncState();
+}
+
+function setupThinkingToggle() {
+  chatShowThinking = readShowThinking();
+  const btn = document.getElementById('chat-thinking-toggle');
+  if (btn && !btn.dataset.bound) {
+    btn.dataset.bound = 'true';
+    btn.addEventListener('click', () => setShowThinking(!chatShowThinking));
+  }
+  applyShowThinkingUi();
+}
+
+function setThoughtRailLive(live) {
+  const dock = document.getElementById('chat-thought-dock');
+  const label = document.getElementById('chat-thought-dock-label');
+  if (dock) dock.dataset.live = live ? 'true' : 'false';
+  if (label) label.textContent = live ? 'Thinking' : 'Thought';
+}
+
+function updateThoughtDock(text, { live = false } = {}) {
+  const dock = document.getElementById('chat-thought-dock');
+  const body = document.getElementById('chat-thought-dock-body');
+  if (!dock || !body) return;
+  const next = String(text || '');
+  conversationThinking = next;
+  setThoughtRailLive(Boolean(live && next.trim()));
+  if (!chatShowThinking || !next.trim()) {
+    dock.hidden = true;
+    return;
+  }
+  body.textContent = next;
+  dock.hidden = false;
+  body.scrollTop = body.scrollHeight;
+}
+
+function syncThoughtRailFromRecords(records) {
+  updateThoughtDock(collectThinkingText(records), { live: chatStreaming });
+}
+
+function pauseTurnThinking(ctx) {
+  if (!ctx) return;
+  ctx.thinkingPaused = Boolean(ctx.currentThinking && String(ctx.currentThinking).trim());
+}
+
+function appendTurnThinking(ctx, chunk) {
+  const piece = chunk || '';
+  if (!piece) return;
+  if (ctx.thinkingPaused && ctx.currentThinking) ctx.currentThinking += '\n\n';
+  ctx.thinkingPaused = false;
+  ctx.currentThinking += piece;
+  updateThoughtDock(ctx.currentThinking, { live: true });
+}
+
+function hideThoughtDock() {
+  const dock = document.getElementById('chat-thought-dock');
+  if (dock) dock.hidden = true;
+}
+
+function getChatEffortStorageKey() {
+  if (!chatAgent?.agentName || !chatConversationId) return null;
+  return encodeChatEffortKey(chatAgent.agentName, chatConversationId);
+}
+
+function restoreChatReasoningEffort() {
+  chatReasoningEffort = null;
+  const key = getChatEffortStorageKey();
+  if (!key) return;
+  try {
+    const stored = localStorage.getItem(key);
+    chatReasoningEffort = parseChatReasoningEffort(stored, { allowDefault: true });
+  } catch {
+    try { localStorage.removeItem(key); } catch { /* ignore */ }
+    chatReasoningEffort = null;
+  }
+}
+
+function setChatReasoningEffort(value) {
+  const effort = parseChatReasoningEffort(value, { allowDefault: true });
+  chatReasoningEffort = effort;
+  const key = getChatEffortStorageKey();
+  if (key) {
+    try {
+      if (effort === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, effort);
+    } catch { /* keep the page usable without storage */ }
+  }
+  _syncState();
+}
+
+async function loadReasoningEffortCatalog() {
+  chatDefaultReasoningEffort = 'medium';
+  chatReasoningEfforts = CHAT_REASONING_EFFORTS.slice();
+  if (!chatAgent?.bridgePort) return;
+  try {
+    const res = await fetch(`${bridgeBase()}/api/chat/models`, { headers: bridgeAuthHeaders() });
+    if (!res.ok) return;
+    const modelConfig = await res.json();
+    chatDefaultReasoningEffort = parseChatReasoningEffort(
+      modelConfig.defaultReasoningEffort,
+      { allowDefault: true },
+    ) ?? 'medium';
+    if (Array.isArray(modelConfig.reasoningEfforts)) {
+      chatReasoningEfforts = modelConfig.reasoningEfforts.map((value) => parseChatReasoningEffort(value));
+    }
+  } catch (err) {
+    console.warn('[chat] reasoning effort catalog unavailable', err);
+  }
+}
+
+function currentTranscriptMarkdown() {
+  const exportedAt = new Date().toISOString();
+  return transcript?.toMarkdown({
+    agent: chatAgent?.displayName || chatAgent?.agentName || '',
+    conversationId: chatConversationId || '',
+    exportedAt,
+    thinkingText: conversationThinking,
+  }) || '';
+}
+
+function transcriptFilename() {
+  const agent = String(chatAgent?.agentName || 'agent').replace(/[^a-zA-Z0-9._-]+/g, '-');
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `home23-chat-${agent}-${stamp}.md`;
+}
+
+async function copyTranscript() {
+  const markdown = currentTranscriptMarkdown();
+  if (!markdown.trim()) {
+    transcript?.appendError('Nothing to copy yet.');
+    return;
+  }
+  try {
+    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(markdown);
+    else throw new Error('clipboard unavailable');
+    const item = document.querySelector('[data-action="copy-transcript"]');
+    if (item) {
+      const previous = item.textContent;
+      item.textContent = 'Copied';
+      setTimeout(() => { item.textContent = previous; }, 1200);
+    }
+  } catch {
+    exportTranscript();
+  }
+}
+
+function exportTranscript() {
+  const markdown = currentTranscriptMarkdown();
+  if (!markdown.trim()) {
+    transcript?.appendError('Nothing to export yet.');
+    return;
+  }
+  const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = transcriptFilename();
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 function setupAgentPill() {
   const pill = document.getElementById('chat-agent-pill');
   if (!pill) return;
   pill.addEventListener('click', () => {
-    if (!Array.isArray(chatAgents) || chatAgents.length === 0) return;
     const currentName = chatAgent?.agentName;
-    const items = chatAgents.map(a => ({
-      label: a.displayName || a.name,
-      hint: a.isPrimary ? 'primary' : '',
-      active: a.name === currentName,
-      _name: a.name,
-    }));
     openListPopover({
       anchor: pill,
-      items,
-      emptyText: 'No agents configured.',
+      items: chatAgents.map((a) => ({
+        label: a.displayName || a.name,
+        hint: a.isPrimary ? 'primary' : '',
+        _name: a.name,
+      })),
       onSelect: (it) => {
         if (it?._name && it._name !== currentName) switchAgent(it._name, { preferRestore: false });
       },
@@ -486,87 +808,88 @@ function setupAgentPill() {
   });
 }
 
-function bindInput(inputId, btnId, source) {
-  const input = document.getElementById(inputId);
-  const btn = document.getElementById(btnId);
+function bindInput() {
+  const input = document.getElementById('chat-input');
+  const btn = document.getElementById('chat-send-btn');
   if (input) {
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        sendMessage(source);
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        sendMessage();
       }
     });
     input.addEventListener('input', () => {
       input.style.height = 'auto';
-      input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+      input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
+      scheduleChatPersist();
+      postChannel({ type: 'draft', input: input.value });
+      _syncState();
     });
-    input.addEventListener('paste', (e) => {
-      const items = Array.from(e.clipboardData?.items || []);
-      const files = items
-        .filter(it => it.kind === 'file' && it.type.startsWith('image/'))
-        .map(it => it.getAsFile())
-        .filter(f => !!f);
-      if (files.length > 0) {
-        e.preventDefault();
+    input.addEventListener('paste', (event) => {
+      const files = Array.from(event.clipboardData?.items || [])
+        .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
+        .map((it) => it.getAsFile())
+        .filter(Boolean);
+      if (files.length) {
+        event.preventDefault();
         ingestAttachmentFiles(files);
       }
     });
   }
-  if (btn) btn.addEventListener('click', () => sendMessage(source));
+  if (btn) {
+    btn.addEventListener('click', () => {
+      if (chatStreaming && !attachedWorkId) stopChat();
+      else sendMessage();
+    });
+  }
+  document.getElementById('chat-stop-btn')?.addEventListener('click', () => stopChat());
 
-  // Image attachments — file picker
   const attachBtn = document.getElementById('chat-attach-btn');
   const attachInput = document.getElementById('chat-attach-input');
   if (attachBtn && attachInput && !attachBtn.dataset.bound) {
     attachBtn.addEventListener('click', () => attachInput.click());
     attachInput.addEventListener('change', () => {
-      const files = Array.from(attachInput.files || []);
-      ingestAttachmentFiles(files);
+      ingestAttachmentFiles(Array.from(attachInput.files || []));
       attachInput.value = '';
     });
     attachBtn.dataset.bound = 'true';
   }
 
-  // Drag and drop onto the input area
   const inputArea = document.getElementById('chat-input-area') || document.querySelector('.sh-input-bar');
   const dropOverlay = document.getElementById('chat-drop-overlay');
   if (inputArea && dropOverlay && !inputArea.dataset.dropBound) {
     let dragDepth = 0;
-    inputArea.addEventListener('dragenter', (e) => {
-      if (!Array.from(e.dataTransfer?.types || []).includes('Files')) return;
-      dragDepth++;
+    inputArea.addEventListener('dragenter', (event) => {
+      if (!Array.from(event.dataTransfer?.types || []).includes('Files')) return;
+      dragDepth += 1;
       dropOverlay.hidden = false;
     });
-    inputArea.addEventListener('dragover', (e) => { e.preventDefault(); });
+    inputArea.addEventListener('dragover', (event) => event.preventDefault());
     inputArea.addEventListener('dragleave', () => {
       dragDepth = Math.max(0, dragDepth - 1);
       if (dragDepth === 0) dropOverlay.hidden = true;
     });
-    inputArea.addEventListener('drop', (e) => {
-      e.preventDefault();
+    inputArea.addEventListener('drop', (event) => {
+      event.preventDefault();
       dragDepth = 0;
       dropOverlay.hidden = true;
-      const files = Array.from(e.dataTransfer?.files || []).filter(f => f.type.startsWith('image/'));
-      if (files.length > 0) ingestAttachmentFiles(files);
+      ingestAttachmentFiles(Array.from(event.dataTransfer?.files || []).filter((f) => f.type.startsWith('image/')));
     });
-    // Suppress browser default of opening dropped images outside the input area
-    window.addEventListener('dragover', (e) => e.preventDefault());
-    window.addEventListener('drop', (e) => {
-      if (!inputArea.contains(e.target)) e.preventDefault();
+    window.addEventListener('dragover', (event) => event.preventDefault());
+    window.addEventListener('drop', (event) => {
+      if (!inputArea.contains(event.target)) event.preventDefault();
     });
     inputArea.dataset.dropBound = 'true';
   }
 }
 
 function renderAgentSelectors(selectedName) {
-  const options = chatAgents.map(agent =>
+  const options = chatAgents.map((agent) =>
     `<option value="${agent.name}" ${agent.name === selectedName ? 'selected' : ''}>${agent.displayName || agent.name}${agent.isPrimary ? ' (primary)' : ''}</option>`
   ).join('');
-
-  document.querySelectorAll('.h23-chat-agent-select').forEach(select => {
+  document.querySelectorAll('.h23-chat-agent-select').forEach((select) => {
     select.innerHTML = options;
     select.value = selectedName;
-    select.title = select.selectedOptions[0]?.textContent || '';
     if (!select.dataset.bound) {
       select.addEventListener('change', () => switchAgent(select.value));
       select.dataset.bound = 'true';
@@ -580,7 +903,7 @@ function populateModelSelect(provider, currentModel) {
     selectedValue = encodeModelPair({ provider, model: currentModel });
   } catch { /* invalid agent configuration stays unselected */ }
   const options = Object.entries(chatModels).map(([providerName, config]) => {
-    const providerOptions = (config.defaultModels || []).map(model => {
+    const providerOptions = (config.defaultModels || []).map((model) => {
       const modelEntry = { provider: providerName, model };
       const value = encodeModelPair(modelEntry);
       return `<option value="${escapeHtml(encodeModelPair(modelEntry))}" data-provider="${escapeHtml(modelEntry.provider)}" data-model="${escapeHtml(modelEntry.model)}" title="${escapeHtml(`${modelEntry.provider} / ${modelEntry.model}`)}" ${value === selectedValue ? 'selected' : ''}>${escapeHtml(formatModelLabel(modelEntry.model))}</option>`;
@@ -590,11 +913,10 @@ function populateModelSelect(provider, currentModel) {
       : '';
   }).join('');
 
-  document.querySelectorAll('.h23-chat-model-select').forEach(select => {
+  document.querySelectorAll('.h23-chat-model-select').forEach((select) => {
     select.innerHTML = options;
     select.value = selectedValue;
     select.title = select.selectedOptions[0]?.title || '';
-
     if (!select.dataset.bound) {
       select.addEventListener('change', async () => {
         let selectedPair;
@@ -606,19 +928,15 @@ function populateModelSelect(provider, currentModel) {
         }
         chatModel = selectedPair.model;
         chatProvider = selectedPair.provider;
-        if (chatAgent) {
-          chatAgent = { ...chatAgent, model: selectedPair.model, provider: selectedPair.provider };
-        }
-        const agentRow = chatAgents.find(agent => agent.name === chatAgent?.agentName);
+        if (chatAgent) chatAgent = { ...chatAgent, model: selectedPair.model, provider: selectedPair.provider };
+        const agentRow = chatAgents.find((agent) => agent.name === chatAgent?.agentName);
         if (agentRow) {
           agentRow.model = selectedPair.model;
           agentRow.provider = selectedPair.provider;
         }
         syncModelSelectors(selectedPair.provider, selectedPair.model);
-        // Push into chatState so the model pill label (and any other
-        // subscribers) re-render with the new model.
         _syncState();
-
+        postChannel({ type: 'selection', chatId: chatConversationId, model: chatModel });
         if (chatAgent?.agentName) {
           try {
             await fetch(`/home23/api/settings/agents/${chatAgent.agentName}`, {
@@ -643,8 +961,7 @@ function populateModelSelect(provider, currentModel) {
 function syncModelSelectors(providerName, modelName) {
   if (!providerName || !modelName) return;
   const value = encodeModelPair({ provider: providerName, model: modelName });
-
-  document.querySelectorAll('.h23-chat-model-select').forEach(select => {
+  document.querySelectorAll('.h23-chat-model-select').forEach((select) => {
     select.value = value;
     select.title = select.selectedOptions[0]?.title || '';
   });
@@ -654,101 +971,53 @@ function formatModelLabel(modelName) {
   return modelName.length > 28 ? `${modelName.slice(0, 25)}…` : modelName;
 }
 
-// ── Slash Commands ──
-
-const SLASH_COMMANDS = {
-  '/new': { description: 'Start a fresh conversation', handler: cmdNew },
-  '/clear': { description: 'Clear chat history', handler: cmdNew },
-  '/stop': { description: 'Stop the current agent run', handler: () => stopChat() },
-  '/help': { description: 'Show available commands', handler: cmdHelp },
-};
-
-function handleSlashCommand(text, source) {
-  const cmd = text.split(/\s/)[0].toLowerCase();
-  const handler = SLASH_COMMANDS[cmd];
-  if (!handler) {
-    const containerId = 'chat-messages';
-    appendError(`Unknown command: ${cmd}. Type /help for available commands.`, containerId);
-    return true;
-  }
-  handler.handler(text, source);
-  return true;
-}
-
-function cmdNew(text, source) {
-  newConversation();
-}
-
-function cmdHelp(text, source) {
-  const containerId = 'chat-messages';
-  const lines = Object.entries(SLASH_COMMANDS)
-    .map(([cmd, info]) => `**${cmd}** — ${info.description}`)
-    .join('\n');
-  appendMessage('assistant', 'Available commands:\n\n' + lines, containerId);
-  scrollContainer(containerId);
-}
-
-// ── Agent Switching ──
-
-async function switchAgent(name, options = {}) {
-  const {
-    preferRestore = false,
-    preferLatest = chatMode === 'standalone',
-  } = options;
-  if (chatAgent) cacheHistory();
-
+async function switchAgent(name, { preferRestore = false, preferLatest = true } = {}) {
+  const agentData = chatAgents.find((a) => a.name === name);
+  if (!agentData) return;
   try {
-    const res = await fetch(`${CHAT_API}/config/${name}`);
-    chatAgent = await res.json();
-  } catch (err) {
-    console.error('Failed to load agent config:', err);
-    return;
+    const res = await fetch(`${CHAT_API}/config/${encodeURIComponent(name)}`);
+    const cfg = await res.json();
+    chatAgent = {
+      ...agentData,
+      agentName: cfg.agentName || name,
+      displayName: cfg.displayName || agentData.displayName || name,
+      bridgePort: cfg.bridgePort,
+      bridgeToken: cfg.bridgeToken || '',
+    };
+  } catch {
+    chatAgent = { ...agentData, agentName: name };
   }
-
-  renderAgentSelectors(name);
-  const overlayTitle = document.getElementById('chat-overlay-title-label');
-  if (overlayTitle) {
-    overlayTitle.textContent = `Talk to ${chatAgent.displayName || chatAgent.agentName || name}`;
-  }
-
-  // Reset model to agent's default
-  chatModel = null;
-  chatProvider = null;
-  const agentData = chatAgents.find(a => a.name === name);
-  if (agentData) {
-    chatModel = agentData.model;
-    chatProvider = agentData.provider;
-    populateModelSelect(agentData.provider, agentData.model);
-  }
-
-  // Load conversation list first — we'll use it to decide whether to resume.
+  chatProvider = agentData.provider;
+  populateModelSelect(agentData.provider, agentData.model);
+  await loadReasoningEffortCatalog();
   await loadConversationList(name);
   if (preferRestore && restoreChatState(name)) {
+    restoreChatReasoningEffort();
     renderConversationList();
     resetSendButtons();
+    openWorkStream();
+    _syncState();
     return;
   }
-
-  // Standalone chat is a continuity surface. The dashboard tile is the human
-  // front door, so it starts clean and leaves old threads behind the history
-  // menu instead of flooding Home with yesterday's technical transcript.
-  const latest = Array.isArray(chatConversations)
-    ? chatConversations.find(isResumableConversation)
-    : null;
-  if (preferLatest && latest && latest.id) {
+  const latest = Array.isArray(chatConversations) ? chatConversations.find(isResumableConversation) : null;
+  if (preferLatest && latest?.id) {
     chatConversationId = latest.id;
     await loadHistory(name, latest.id);
-    renderConversationList();
   } else {
     newConversation();
     await loadHistory(name);
   }
+  restoreChatReasoningEffort();
+  renderConversationList();
+  openWorkStream();
   _syncState();
 }
 
 function isMachineConversationId(id) {
   const value = String(id || '');
   return value === 'cron-decisions'
+    || value.startsWith('cron-')
+    || value.startsWith('subagent:')
     || value.startsWith('cron-agent-')
     || value.startsWith('diagnose_')
     || value.startsWith('repair_')
@@ -762,295 +1031,318 @@ function isResumableConversation(conversation) {
   return !['cron', 'diagnostic', 'machine'].includes(conversation.source);
 }
 
-// ── History ──
-
 async function loadHistory(agentName, conversationId) {
-  const container = document.getElementById('chat-messages');
-  if (!container) return;
-
-  const convParam = conversationId ? `&conversation=${conversationId}` : '';
+  if (!transcript) return;
+  const convId = conversationId || chatConversationId;
+  if (chatAgent?.bridgePort && convId) {
+    try {
+      const res = await fetch(
+        `${bridgeBase()}/api/chat/history?chatId=${encodeURIComponent(convId)}&limit=200`,
+        { headers: bridgeAuthHeaders() },
+      );
+      if (res.ok) {
+        const data = await res.json();
+        transcript.renderHistory(data.records || []);
+        syncThoughtRailFromRecords(data.records || []);
+        const lastAssistant = [...(data.records || [])].reverse().find((r) => r?.role === 'assistant' && r.content);
+        lastPreviewSnippet = lastAssistant?.content?.slice(0, 140) || lastPreviewSnippet;
+        scheduleChatPersist();
+        await resumePendingTurns();
+        _syncState();
+        return;
+      }
+    } catch (err) {
+      console.warn('[chat] projected history failed, falling back', err);
+    }
+  }
+  const convParam = convId ? `&conversation=${encodeURIComponent(convId)}` : '';
   try {
     const res = await fetch(`${CHAT_API}/history/${agentName}?limit=100${convParam}`);
     const data = await res.json();
-    container.innerHTML = '';
-    if (data.messages && data.messages.length > 0) {
-      data.messages.forEach(m => appendMessage(m.role, m.content));
-    } else {
-      container.innerHTML = '<div class="h23-chat-empty">Start a conversation with your agent.</div>';
-    }
-    scheduleChatPersist();
-    scrollToBottom();
-  } catch (err) {
-    console.error('Failed to load history:', err);
-    container.innerHTML = '<div class="h23-chat-empty">Start a conversation with your agent.</div>';
-    scheduleChatPersist();
+    const records = (data.messages || []).map((m) => ({ role: m.role, content: m.content }));
+    transcript.renderHistory(records);
+    syncThoughtRailFromRecords(records);
+  } catch {
+    transcript.emptyState();
+    if (!chatStreaming) syncThoughtRailFromRecords([]);
   }
   await resumePendingTurns();
+  _syncState();
 }
 
 async function resumePendingTurns() {
   if (!chatAgent?.bridgePort || !chatConversationId) return;
   try {
-    const bridgeBase = `http://${window.location.hostname}:${chatAgent.bridgePort}`;
-    const res = await fetch(`${bridgeBase}/api/chat/pending?chatId=${encodeURIComponent(chatConversationId)}`, { headers: bridgeAuthHeaders() });
+    const res = await fetch(
+      `${bridgeBase()}/api/chat/pending?chatId=${encodeURIComponent(chatConversationId)}`,
+      { headers: bridgeAuthHeaders() },
+    );
     if (!res.ok) return;
     const data = await res.json();
     const pending = data.pending || [];
-    if (pending.length === 0) return;
-
+    if (!pending.length) return;
     const turn = pending[pending.length - 1];
-
-    const containerId = 'chat-messages';
     currentTurnCtx = {
-      containerId,
       turnId: turn.turn_id,
-      responseEl: null,
       currentResponse: '',
-      thinkingEl: null,
       currentThinking: '',
+      thinkingPaused: false,
     };
     activeTurnId = turn.turn_id;
     activeChatId = chatConversationId;
     activeCursor = -1;
     chatStreaming = true;
-
-    // Button swap to Stop while resuming — single shared send button.
-    const sendBtn = document.getElementById('chat-send-btn');
-    if (sendBtn) { sendBtn.innerHTML = '&#9632;'; sendBtn.disabled = false; sendBtn.onclick = stopChat; sendBtn.title = 'Stop'; sendBtn.style.background = 'var(--accent-red)'; }
-
-    openTurnStream({ bridgeBase, chatId: activeChatId, turnId: turn.turn_id, cursor: -1 });
+    setSendAsStop();
+    setHud(true, 'Resuming');
+    if (isStreamOwner()) {
+      openTurnStream({
+        bridgeBase: bridgeBase(),
+        chatId: activeChatId,
+        turnId: turn.turn_id,
+        cursor: -1,
+      });
+    }
+    _syncState();
   } catch (err) {
     console.warn('[chat] pending-turn resume failed', err);
   }
 }
 
-// ── Conversations ──
-
 function newConversation() {
+  unpinMachineChatsExcept(null);
+  attachedWorkId = null;
   chatConversationId = `dashboard-${chatAgent?.agentName || 'agent'}-${Date.now()}`;
-  const container = document.getElementById('chat-messages');
-  if (container) container.innerHTML = '<div class="h23-chat-empty">Start a conversation with your agent.</div>';
-  // Highlight active in list
+  seenWorkReceipts = new Set();
+  transcript?.emptyState();
+  lastPreviewSnippet = '';
+  updateThoughtDock('');
+  restoreChatReasoningEffort();
   updateConversationListHighlight();
   scheduleChatPersist();
+  openWorkStream();
+  postChannel({ type: 'new', chatId: chatConversationId });
   _syncState();
 }
 
 async function loadConversationList(agentName) {
   try {
-    const res = await fetch(`${CHAT_API}/conversations/${agentName || chatAgent?.agentName}`);
+    const res = await fetch(`${CHAT_API}/conversations/${encodeURIComponent(agentName)}`);
     const data = await res.json();
-    chatConversations = data.conversations || [];
+    chatConversations = (data.conversations || []).filter((c) =>
+      !isMachineConversationId(c.id) || pinnedConversationIds.has(c.id));
   } catch { chatConversations = []; }
   renderConversationList();
-  _syncState();
 }
 
 function renderConversationList() {
   const list = document.getElementById('chat-conv-list');
-  const count = document.getElementById('chat-conv-count');
   if (!list) return;
-  if (count) count.textContent = chatConversations.length
-    ? `${chatConversations.length} saved`
-    : 'History';
-
-  if (chatConversations.length === 0) {
-    list.innerHTML = '<div style="padding:8px 12px;font-size:12px;color:var(--text-muted);font-style:italic;">No previous conversations</div>';
+  if (!chatConversations.length) {
+    list.innerHTML = '<div class="h23-chat-conv-empty">No previous conversations</div>';
     return;
   }
-
-  list.innerHTML = chatConversations.map(c => {
-    const date = new Date(c.lastActivity);
-    const timeStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' +
-                    date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+  list.innerHTML = chatConversations.map((c) => {
     const isActive = c.id === chatConversationId;
-    const sourcePrefix = c.source === 'telegram'
-      ? '<span class="h23-chat-conv-source">TG</span> · '
-      : c.source === 'dashboard'
-        ? '<span class="h23-chat-conv-source">Dashboard</span> · '
-        : '';
-    const sourceLabel = c.source && c.source !== 'dashboard' ? `<span style="color:var(--text-muted);font-size:10px;text-transform:uppercase;">${c.source}</span> &middot; ` : '';
+    const timeStr = c.updatedAt ? new Date(c.updatedAt).toLocaleString() : '';
     return `
-      <div class="h23-chat-conv-item ${isActive ? 'active' : ''}" onclick="openConversation('${c.id}')" title="${c.preview}">
-        <div class="h23-chat-conv-preview">${sourcePrefix}${escapeHtml(c.preview)}</div>
-        <div class="h23-chat-conv-meta">${sourceLabel}${timeStr} &middot; ${c.messageCount} msgs</div>
-      </div>
+      <button class="h23-chat-conv-item ${isActive ? 'active' : ''}" data-conv-id="${escapeHtml(c.id)}" type="button" title="${escapeHtml(c.preview || '')}">
+        <div class="h23-chat-conv-preview">${escapeHtml(c.preview || 'Conversation')}</div>
+        <div class="h23-chat-conv-meta">${escapeHtml(timeStr)} · ${c.messageCount || 0} msgs</div>
+      </button>
     `;
   }).join('');
+  list.querySelectorAll('[data-conv-id]').forEach((el) => {
+    el.addEventListener('click', () => openConversation(el.dataset.convId));
+  });
 }
 
 function updateConversationListHighlight() {
-  document.querySelectorAll('.h23-chat-conv-item').forEach(el => el.classList.remove('active'));
-  // New conversation won't match any existing item — that's correct
+  document.querySelectorAll('.h23-chat-conv-item').forEach((el) => {
+    el.classList.toggle('active', el.dataset.convId === chatConversationId);
+  });
 }
 
-async function openConversation(convId) {
-  chatConversationId = convId;
-  await loadHistory(chatAgent?.agentName, convId);
-  renderConversationList();
-  closeConversationList();
-  scheduleChatPersist();
+async function openConversation(id, { fromChannel = false } = {}) {
+  if (!id || !chatAgent) return;
+  unpinMachineChatsExcept(id);
+  chatConversationId = id;
+  seenWorkReceipts = new Set();
+  updateConversationListHighlight();
+  await loadHistory(chatAgent.agentName, id);
+  restoreChatReasoningEffort();
+  openWorkStream();
+  document.getElementById('chat-sidebar')?.classList.remove('open');
+  if (!fromChannel) postChannel({ type: 'selection', chatId: id });
   _syncState();
 }
 
-function closeConversationList() {
-  const panel = document.getElementById('chat-conv-panel');
-  if (!panel) return;
-  panel.classList.remove('open');
-}
+const SLASH = {
+  '/new': { description: 'Start a fresh conversation', handler: () => newConversation() },
+  '/clear': { description: 'Clear chat history', handler: () => newConversation() },
+  '/stop': { description: 'Stop the current agent run', handler: () => stopChat() },
+  '/effort': {
+    description: 'Show or set this chat\'s reasoning effort',
+    handler: (arg) => handleEffortCommand(arg),
+  },
+  '/help': { description: 'Show available commands', handler: () => {
+    transcript?.appendAssistant(Object.entries(SLASH).map(([k, v]) => `**${k}** — ${v.description}`).join('\n'));
+  } },
+};
 
-function toggleConversationList(forceOpen = null) {
-  const panel = document.getElementById('chat-conv-panel');
-  if (!panel) return;
-  const willOpen = forceOpen === null ? !panel.classList.contains('open') : forceOpen === true;
-  panel.classList.toggle('open', willOpen);
-  if (willOpen && chatAgent) {
-    loadConversationList(chatAgent.agentName);
-  }
-}
-
-// ── Send Message ──
-
-async function sendMessage(source) {
-  const inputId = 'chat-input';
-  const input = document.getElementById(inputId);
-  if (!input || !chatAgent) return;
-
-  const text = input.value.trim();
-  if ((!text && pendingAttachments.length === 0) || chatStreaming) return;
-
-  // Snapshot attachments for this turn before clearing the tray.
-  const turnAttachments = pendingAttachments.slice();
-  clearAttachments();
-
-  input.value = '';
-  input.style.height = 'auto';
-  scheduleChatPersist();
-
-  // Handle slash commands (slash commands cannot carry attachments)
-  if (text.startsWith('/')) {
-    handleSlashCommand(text, source);
+function handleEffortCommand(arg) {
+  const configured = chatDefaultReasoningEffort || 'medium';
+  if (!arg) {
+    const effective = effectiveChatReasoningEffort(chatReasoningEffort, configured);
+    transcript?.appendAssistant(chatReasoningEffort
+      ? `Reasoning effort: **${effortLabel(effective)}** (this chat). \`/effort reset\` returns to ${effortLabel(configured)}.`
+      : `Reasoning effort: **${effortLabel(effective)}** (configured default).`);
     return;
   }
+  if (arg.toLowerCase() === 'reset') {
+    setChatReasoningEffort(null);
+    transcript?.appendAssistant(`Reasoning effort reset to **${effortLabel(configured)}** (configured default).`);
+    return;
+  }
+  try {
+    const effort = parseChatReasoningEffort(arg);
+    setChatReasoningEffort(effort);
+    transcript?.appendAssistant(`Reasoning effort set to **${effortLabel(effort)}** for this chat.`);
+  } catch {
+    transcript?.appendError(`Invalid effort. Use: ${CHAT_REASONING_EFFORTS.join(', ')}, or reset.`);
+  }
+}
 
-  const empty = document.querySelector('.h23-chat-empty');
-  if (empty) empty.remove();
+function handleSlashCommand(text) {
+  const [cmd, ...rest] = text.split(/\s+/);
+  const entry = SLASH[cmd];
+  if (!entry) {
+    transcript?.appendError(`Unknown command ${cmd}. Try /help.`);
+    return;
+  }
+  entry.handler(rest.join(' ').trim());
+}
 
-  // Determine which messages container to use
-  const containerId = 'chat-messages';
-  appendUserMessage(text, turnAttachments.map(a => a.dataUrl), containerId);
-  scrollContainer(containerId);
-
+async function sendMessage() {
+  const input = document.getElementById('chat-input');
+  if (!input || !chatAgent) return;
+  const text = input.value.trim();
+  if (attachedWorkId && (chatStreaming || activeTurnId) && text) {
+    input.value = '';
+    input.style.height = 'auto';
+    await injectSteer(attachedWorkId, text);
+    return;
+  }
+  if (chatStreaming) return;
+  if ((!text && pendingAttachments.length === 0)) return;
+  const turnAttachments = pendingAttachments.slice();
+  pendingAttachments = [];
+  renderAttachmentTray();
+  input.value = '';
+  input.style.height = 'auto';
+  if (text.startsWith('/')) {
+    handleSlashCommand(text);
+    return;
+  }
+  lastPreviewSnippet = text.slice(0, 140);
+  transcript?.appendUser(text, turnAttachments.map((a) => a.dataUrl));
   chatStreaming = true;
-  scheduleChatPersist();
-  // Swap send → stop button — single shared button.
-  const sendBtn = document.getElementById('chat-send-btn');
-  if (sendBtn) { sendBtn.innerHTML = '&#9632;'; sendBtn.disabled = false; sendBtn.onclick = stopChat; sendBtn.title = 'Stop'; sendBtn.style.background = 'var(--accent-red)'; }
-
-  // New turn protocol flow
+  chatDisconnected = false;
+  setSendAsStop();
+  setHud(true, 'Working');
+  conversationThinking = '';
   currentTurnCtx = {
-    containerId,
-    responseEl: null,
     currentResponse: '',
-    thinkingEl: null,
     currentThinking: '',
+    thinkingPaused: false,
   };
+  updateThoughtDock('', { live: true });
   activeChatId = chatConversationId;
   activeCursor = -1;
   _syncState();
-
-  const bridgeBase = `http://${window.location.hostname}:${chatAgent.bridgePort}`;
+  claimStreamOwnership();
 
   let turnId;
   try {
-    const imagesPayload = turnAttachments.map(a => ({
+    const imagesPayload = turnAttachments.map((a) => ({
       data: dataUrlToBase64(a.dataUrl),
       mimeType: a.file.type,
       fileName: a.file.name,
     }));
-    const res = await fetch(`${bridgeBase}/api/chat/turn`, {
+    const res = await fetch(`${bridgeBase()}/api/chat/turn`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...bridgeAuthHeaders() },
       body: JSON.stringify({
         chatId: activeChatId,
         message: text,
-        ...(imagesPayload.length > 0 ? { images: imagesPayload } : {}),
+        ...(chatReasoningEffort ? { effort: chatReasoningEffort } : {}),
+        ...(imagesPayload.length ? { images: imagesPayload } : {}),
       }),
     });
-
     if (res.status === 409) {
       const data = await res.json();
       turnId = data.turn_id;
-      console.warn('[chat] resuming in-flight turn', turnId);
     } else if (!res.ok) {
       let errBody = '';
-      try { errBody = (await res.json()).error || ''; } catch {}
+      try { errBody = (await res.json()).error || ''; } catch { /* ignore */ }
       throw new Error(`turn start failed (${res.status}) ${errBody}`);
     } else {
-      const data = await res.json();
-      turnId = data.turn_id;
+      turnId = (await res.json()).turn_id;
     }
   } catch (err) {
-    appendError('Connection failed: ' + err.message, containerId);
+    transcript?.appendError(`Connection failed: ${err.message}`);
     chatStreaming = false;
     resetSendButtons();
-    scheduleChatPersist();
+    setHud(false);
+    _syncState();
     return;
   }
-
   activeTurnId = turnId;
-  if (currentTurnCtx) currentTurnCtx.turnId = turnId;
-  openTurnStream({ bridgeBase, chatId: activeChatId, turnId, cursor: -1 });
+  currentTurnCtx.turnId = turnId;
+  postChannel({ type: 'send', chatId: activeChatId, turnId });
+  openTurnStream({ bridgeBase: bridgeBase(), chatId: activeChatId, turnId, cursor: -1 });
 }
 
 function dispatchLegacyEvent(event, ctx) {
-  const { containerId } = ctx;
   if (event.type === 'text' || event.type === 'response_chunk') {
-    ctx.thinkingEl = null;
-    ctx.currentThinking = '';
+    pauseTurnThinking(ctx);
     ctx.currentResponse += event.text || event.chunk || '';
-    if (!ctx.responseEl) {
-      ctx.responseEl = appendMessage('assistant', ctx.currentResponse, containerId, ctx.turnId);
-    } else {
-      ctx.responseEl.innerHTML = renderMarkdown(ctx.currentResponse);
-      scheduleChatPersist();
-    }
-    scrollContainer(containerId);
+    transcript?.updateAssistant(ctx.currentResponse, ctx.turnId);
+    setHud(true, hudToolName ? `Streaming · ${hudToolName}` : 'Streaming');
   } else if (event.type === 'thinking') {
-    ctx.responseEl = null;
-    ctx.currentResponse = '';
-    ctx.currentThinking += event.content || event.message || '';
-    if (!ctx.thinkingEl) {
-      ctx.thinkingEl = appendThinking(ctx.currentThinking, containerId);
-    } else {
-      ctx.thinkingEl.textContent = ctx.currentThinking;
-      scheduleChatPersist();
-    }
-    scrollContainer(containerId);
+    appendTurnThinking(ctx, event.content || event.message || '');
+    setHud(true, 'Thinking');
   } else if (event.type === 'tool_start') {
-    ctx.thinkingEl = null; ctx.currentThinking = '';
-    ctx.responseEl = null; ctx.currentResponse = '';
-    appendToolCard(event.tool || event.name, event.args, 'running', containerId);
-    scrollContainer(containerId);
+    hudToolName = event.tool || event.name || 'tool';
+    pauseTurnThinking(ctx);
+    ctx.currentResponse = '';
+    transcript?.appendTool(hudToolName, event.args, 'running');
+    setHud(true, `Running ${hudToolName}`);
+    if (hudToolName === 'spawn_agent' || hudToolName === 'coding_run' || hudToolName === 'coding_continue') {
+      refreshWorkSnapshot();
+    }
   } else if (event.type === 'tool_complete' || event.type === 'tool_result') {
-    updateToolCard(event.tool || event.name, event.result || event.summary || event.output, true);
-    scrollContainer(containerId);
+    transcript?.updateTool(event.tool || event.name, event.result || event.summary || event.output, event.success !== false);
+    hudToolName = '';
   } else if (event.type === 'media') {
-    appendMedia(event.mediaType, event.path, event.caption, containerId);
-    scrollContainer(containerId);
+    transcript?.appendMedia(event.mediaType, event.path, event.caption);
   } else if (event.type === 'subagent_result') {
-    appendMessage('assistant', `**[Sub-agent]** ${event.task}\n\n${event.result}`, containerId);
-    scrollContainer(containerId);
+    transcript?.appendWorkReceipt({
+      label: event.task || 'Sub-agent',
+      result: event.result || '',
+      status: String(event.result || '').startsWith('Error:') ? 'failed' : 'completed',
+    });
+  } else if (event.type === 'status') {
+    setHud(true, event.status || event.content || 'Working');
   }
 }
 
-function openTurnStream({ bridgeBase, chatId, turnId, cursor }) {
-  // Close any existing stream
-  if (activeEventSource) { try { activeEventSource.close(); } catch {} activeEventSource = null; }
-
-  const url = `${bridgeBase}/api/chat/stream?chatId=${encodeURIComponent(chatId)}&turn_id=${encodeURIComponent(turnId)}&cursor=${cursor}${bridgeTokenParam()}`;
+function openTurnStream({ bridgeBase: base, chatId, turnId, cursor }) {
+  if (!isStreamOwner()) return;
+  if (activeEventSource) { try { activeEventSource.close(); } catch { /* ignore */ } }
+  const url = `${base}/api/chat/stream?chatId=${encodeURIComponent(chatId)}&turn_id=${encodeURIComponent(turnId)}&cursor=${cursor}${bridgeTokenParam()}`;
   const es = new EventSource(url);
   activeEventSource = es;
+  chatDisconnected = false;
 
   es.onmessage = (msg) => {
     if (msg.data === '[DONE]') {
@@ -1061,7 +1353,6 @@ function openTurnStream({ bridgeBase, chatId, turnId, cursor }) {
     }
     let record;
     try { record = JSON.parse(msg.data); } catch { return; }
-
     if (record.type === 'event') {
       activeCursor = record.seq;
       if (currentTurnCtx) dispatchLegacyEvent(record.data, currentTurnCtx);
@@ -1073,350 +1364,473 @@ function openTurnStream({ bridgeBase, chatId, turnId, cursor }) {
   };
 
   es.onerror = () => {
-    // Don't auto-reconnect here — visibilitychange handles resume; avoid duplicate streams.
-    try { es.close(); } catch {}
+    try { es.close(); } catch { /* ignore */ }
     if (activeEventSource === es) activeEventSource = null;
+    if (activeTurnId) {
+      chatDisconnected = true;
+      chatStreaming = false;
+      resetSendButtons();
+      setHud(true, 'Disconnected — Reconnect to continue');
+      _syncState();
+    }
   };
 }
 
 function finalizeTurn(finalEnvelope) {
+  if (!chatStreaming && !activeTurnId) {
+    resetSendButtons();
+    setHud(false);
+    return;
+  }
   if (finalEnvelope?.status === 'complete' && typeof finalEnvelope.assistant_content === 'string') {
-    const containerId = (currentTurnCtx && currentTurnCtx.containerId) || 'chat-messages';
-    const container = document.getElementById(containerId);
+    const container = document.getElementById('chat-messages');
     const reconciled = reconcileCanonicalAssistantElements(
       container?.querySelectorAll('.h23-chat-msg.assistant'),
       finalEnvelope.turn_id,
       finalEnvelope.assistant_content,
       renderMarkdown,
     );
-    if (!reconciled) {
-      appendMessage(
-        'assistant',
-        finalEnvelope.assistant_content,
-        containerId,
-        finalEnvelope.turn_id,
-      );
-    }
+    if (!reconciled) transcript?.appendAssistant(finalEnvelope.assistant_content, finalEnvelope.turn_id);
+    lastPreviewSnippet = finalEnvelope.assistant_content.slice(0, 140);
   }
-  if (finalEnvelope && finalEnvelope.status === 'error') {
-    appendError(finalEnvelope.error || 'Error', (currentTurnCtx && currentTurnCtx.containerId) || 'chat-messages');
-  } else if (finalEnvelope && finalEnvelope.status === 'stopped') {
-    // quiet — the stop button already reflected the user action
-  } else if (finalEnvelope && finalEnvelope.status === 'orphaned') {
-    appendError('Previous turn was interrupted — try resending.', (currentTurnCtx && currentTurnCtx.containerId) || 'chat-messages');
+  if (finalEnvelope?.status === 'error') {
+    transcript?.appendError(finalEnvelope.error || 'Error');
+  } else if (finalEnvelope?.status === 'orphaned') {
+    transcript?.appendError('Previous turn was interrupted — try resending.');
+  } else if (finalEnvelope?.status === 'stopped' && activeWork.length) {
+    transcript?.appendError(`Stopped this reply. ${activeWork.length} background job${activeWork.length === 1 ? '' : 's'} still running.`);
   }
 
   chatStreaming = false;
+  chatDisconnected = false;
+  hudToolName = '';
   activeTurnId = null;
   activeChatId = null;
   activeCursor = -1;
   currentTurnCtx = null;
   resetSendButtons();
+  setHud(false);
+  updateThoughtDock(conversationThinking, { live: false });
   cacheHistory();
   scheduleChatPersist();
   _syncState();
 }
 
+function setStopButtonVisible(visible) {
+  const stopBtn = document.getElementById('chat-stop-btn');
+  if (stopBtn) stopBtn.hidden = !visible;
+}
+
+function setSendAsStop() {
+  const sendBtn = document.getElementById('chat-send-btn');
+  setStopButtonVisible(true);
+  if (!sendBtn) return;
+  if (attachedWorkId) {
+    resetSendButtons();
+    setStopButtonVisible(true);
+    return;
+  }
+  sendBtn.innerHTML = '&#9632;';
+  sendBtn.disabled = false;
+  sendBtn.title = 'Stop this reply';
+  sendBtn.setAttribute('aria-label', 'Stop this reply');
+  sendBtn.style.background = 'var(--accent-red, #b53f3f)';
+}
+
 function resetSendButtons() {
   const sendBtn = document.getElementById('chat-send-btn');
-  if (sendBtn) { sendBtn.innerHTML = '&#9654;'; sendBtn.disabled = false; sendBtn.onclick = () => sendMessage(''); sendBtn.title = 'Send'; sendBtn.style.background = ''; }
+  if (sendBtn) {
+    sendBtn.innerHTML = '&#9654;';
+    sendBtn.disabled = false;
+    sendBtn.title = 'Send';
+    sendBtn.setAttribute('aria-label', 'Send');
+    sendBtn.style.background = '';
+  }
+  setStopButtonVisible(Boolean(chatStreaming && attachedWorkId));
 }
 
 async function stopChat() {
-  if (activeEventSource) { try { activeEventSource.close(); } catch {} activeEventSource = null; }
-  if (chatAgent?.bridgePort && activeChatId) {
+  const turnId = activeTurnId;
+  const chatId = activeChatId || chatConversationId;
+  if (activeEventSource) { try { activeEventSource.close(); } catch { /* ignore */ } activeEventSource = null; }
+  if (chatAgent?.bridgePort && chatId) {
     try {
-      await fetch(`http://${window.location.hostname}:${chatAgent.bridgePort}/api/chat/stop-turn`, {
+      await fetch(`${bridgeBase()}/api/chat/stop-turn`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...bridgeAuthHeaders() },
-        body: JSON.stringify({ chatId: activeChatId }),
+        body: JSON.stringify({ chatId, ...(turnId ? { turn_id: turnId } : {}) }),
       });
-    } catch { /* bridge might be unreachable */ }
+    } catch { /* unreachable */ }
   }
-  // finalizeTurn will be called when the stream closes with a 'stopped' envelope,
-  // but if the stream was already closed, clean up here too.
-  if (!activeTurnId) {
-    chatStreaming = false;
-    resetSendButtons();
-    scheduleChatPersist();
+  postChannel({ type: 'stop', chatId, turnId });
+  finalizeTurn({ status: 'stopped' });
+}
+
+function workChatId(item) {
+  const handle = item?.resultHandle;
+  if (!handle || typeof handle !== 'object') return null;
+  if (handle.type === 'subagent_chat' || handle.type === 'cron_chat') return handle.chatId || null;
+  return null;
+}
+
+function unpinMachineChatsExcept(keepId) {
+  for (const id of [...pinnedConversationIds]) {
+    if (id !== keepId && isMachineConversationId(id)) pinnedConversationIds.delete(id);
+  }
+  if (attachedWorkId) {
+    const known = [...activeWork, ...agentWork, ...agentRecentWork].find((item) => item.workId === attachedWorkId);
+    if (!known || workChatId(known) !== keepId) attachedWorkId = null;
+  }
+}
+
+function pinConversation(id, label) {
+  if (!id) return;
+  pinnedConversationIds.add(id);
+  if (!chatConversations.some((c) => c.id === id)) {
+    chatConversations = [{
+      id,
+      preview: label || id,
+      updatedAt: new Date().toISOString(),
+      messageCount: 0,
+    }, ...chatConversations];
+  }
+}
+
+async function openWorkConversation(work) {
+  const chatId = workChatId(work);
+  if (!chatId || !chatAgent) return;
+  pinConversation(chatId, work.label);
+  document.querySelector('.h23-tab[data-tab="chat"]')?.click();
+  await openConversation(chatId);
+  attachedWorkId = work.workId;
+  renderConversationList();
+  if (chatStreaming) setSendAsStop();
+}
+
+async function openWorkById(workId) {
+  if (!workId || !chatAgent?.bridgePort) return;
+  const known = [...activeWork, ...agentWork, ...agentRecentWork].find((item) => item.workId === workId);
+  if (known) {
+    await openWorkConversation(known);
+    return;
+  }
+  try {
+    const res = await fetch(`${bridgeBase()}/api/work/${encodeURIComponent(workId)}`, { headers: bridgeAuthHeaders() });
+    if (!res.ok) return;
+    await openWorkConversation(await res.json());
+  } catch { /* ignore */ }
+}
+
+async function injectSteer(workId, text) {
+  if (!chatAgent?.bridgePort || !workId || !text) return;
+  transcript?.appendUser(text);
+  try {
+    const res = await fetch(`${bridgeBase()}/api/work/${encodeURIComponent(workId)}/inject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...bridgeAuthHeaders() },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      transcript?.appendError(data.error || `Steer failed (${res.status})`);
+    }
+  } catch (err) {
+    transcript?.appendError(`Steer failed: ${err.message || err}`);
+  }
+}
+
+function renderWorkStrip() {
+  const el = document.getElementById('chat-work-strip');
+  if (!el) return;
+  if (!activeWork.length) {
+    el.hidden = true;
+    el.innerHTML = '';
+    return;
+  }
+  el.hidden = false;
+  el.innerHTML = activeWork.map((item) => {
+    const canOpen = Boolean(workChatId(item));
+    return `
+    <div class="h23-chat-work-row" data-work-id="${escapeHtml(item.workId)}">
+      <span class="h23-chat-work-kind">${escapeHtml(item.kind || '')}</span>
+      <span class="h23-chat-work-label">${escapeHtml(item.label || item.kind)}</span>
+      <span class="h23-chat-work-progress">${escapeHtml(item.progressSummary || item.status)}</span>
+      ${canOpen ? `<button type="button" class="h23-chat-work-open" data-work-id="${escapeHtml(item.workId)}">Open</button>` : ''}
+      <button type="button" class="h23-chat-work-cancel" data-work-id="${escapeHtml(item.workId)}">Cancel</button>
+    </div>`;
+  }).join('');
+  el.querySelectorAll('.h23-chat-work-cancel').forEach((btn) => {
+    btn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      cancelWork(btn.dataset.workId);
+    });
+  });
+  el.querySelectorAll('.h23-chat-work-open').forEach((btn) => {
+    btn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      openWorkById(btn.dataset.workId);
+    });
+  });
+  el.querySelectorAll('.h23-chat-work-row').forEach((row) => {
+    row.addEventListener('click', (event) => {
+      if (event.target.closest('.h23-chat-work-cancel, .h23-chat-work-open')) return;
+      openWorkById(row.dataset.workId);
+    });
+  });
+}
+
+async function cancelWork(workId) {
+  if (!chatAgent?.bridgePort || !workId) return;
+  try {
+    await fetch(`${bridgeBase()}/api/work/${encodeURIComponent(workId)}/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...bridgeAuthHeaders() },
+    });
+    await refreshWorkSnapshot();
+    await refreshAgentWorkSnapshot();
+  } catch { /* ignore */ }
+}
+
+async function refreshWorkSnapshot() {
+  if (!chatAgent?.bridgePort || !chatConversationId) return;
+  try {
+    const res = await fetch(
+      `${bridgeBase()}/api/work?chatId=${encodeURIComponent(chatConversationId)}&active=1`,
+      { headers: bridgeAuthHeaders() },
+    );
+    if (!res.ok) return;
+    const data = await res.json();
+    activeWork = data.work || [];
+    renderWorkStrip();
     _syncState();
-  }
+  } catch { /* ignore */ }
 }
 
-// ── DOM Helpers ──
-
-function appendMedia(mediaType, filePath, caption, containerId) {
-  const container = document.getElementById(containerId || 'chat-messages');
-  if (!container) return;
-  const div = document.createElement('div');
-  div.className = 'h23-chat-msg assistant';
-  if (mediaType === 'image') {
-    // Serve image via the dashboard — the path is on the server filesystem
-    // Use a data endpoint or serve from tempDir
-    div.innerHTML = `
-      <div style="margin:4px 0;">
-        <img src="/home23/api/media?path=${encodeURIComponent(filePath)}"
-             style="max-width:100%;border-radius:8px;border:1px solid var(--glass-border);"
-             alt="${escapeHtml(caption || 'Generated image')}"
-             onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
-        <span style="display:none;color:var(--text-muted);font-size:12px;">Image: ${escapeHtml(filePath)}</span>
-      </div>
-      ${caption ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">${escapeHtml(caption)}</div>` : ''}
-    `;
-  } else {
-    div.textContent = `[${mediaType}: ${filePath}]${caption ? ' — ' + caption : ''}`;
-  }
-  container.appendChild(div);
-  scheduleChatPersist();
-}
-
-function renderMarkdown(text) {
-  // Simple markdown: code blocks, inline code, bold, italic, lists, paragraphs
-  let html = escapeHtml(text);
-
-  // Code blocks: ```...```
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
-    `<pre><code>${code.trim()}</code></pre>`
-  );
-
-  // Inline code: `...`
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-
-  // Bold: **...**
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-
-  // Italic: *...*
-  html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
-
-  // Unordered lists: lines starting with - or *
-  html = html.replace(/^([- *]) (.+)$/gm, '<li>$2</li>');
-  html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
-
-  // Paragraphs: double newlines
-  html = html.replace(/\n\n+/g, '</p><p>');
-  html = html.replace(/\n/g, '<br>');
-  html = `<p>${html}</p>`;
-
-  // Clean up empty paragraphs
-  html = html.replace(/<p>\s*<\/p>/g, '');
-
-  return html;
-}
-
-function appendMessage(role, content, containerId, turnId) {
-  const container = document.getElementById(containerId || 'chat-messages');
-  if (!container) return null;
-  const div = document.createElement('div');
-  div.className = `h23-chat-msg ${role}`;
-  if (turnId) div.dataset.turnId = turnId;
-  if (role === 'assistant') {
-    div.innerHTML = renderMarkdown(content);
-  } else {
-    div.textContent = content;
-  }
-  container.appendChild(div);
-  scheduleChatPersist();
-  return div;
-}
-
-function appendUserMessage(text, imageDataUrls, containerId) {
-  const container = document.getElementById(containerId || 'chat-messages');
-  if (!container) return null;
-  const div = document.createElement('div');
-  div.className = 'h23-chat-msg user';
-  if (imageDataUrls && imageDataUrls.length > 0) {
-    const wrap = document.createElement('div');
-    wrap.className = 'h23-chat-msg-images';
-    for (const url of imageDataUrls) {
-      const img = document.createElement('img');
-      img.src = url;
-      img.alt = 'attachment';
-      wrap.appendChild(img);
+function openWorkStream() {
+  if (workEventSource) { try { workEventSource.close(); } catch { /* ignore */ } workEventSource = null; }
+  if (!chatAgent?.bridgePort || !chatConversationId) return;
+  refreshWorkSnapshot();
+  const url = `${bridgeBase()}/api/work/stream?chatId=${encodeURIComponent(chatConversationId)}${bridgeTokenParam()}`;
+  const es = new EventSource(url);
+  workEventSource = es;
+  es.onmessage = (msg) => {
+    if (!msg.data || msg.data.startsWith(':')) return;
+    let record;
+    try { record = JSON.parse(msg.data); } catch { return; }
+    if (record.type === 'snapshot') {
+      activeWork = record.work || [];
+      renderWorkStrip();
+      _syncState();
+      return;
     }
-    div.appendChild(wrap);
-  }
-  if (text) {
-    const textNode = document.createElement('div');
-    textNode.textContent = text;
-    div.appendChild(textNode);
-  }
-  container.appendChild(div);
-  scheduleChatPersist();
-  return div;
-}
-
-function appendThinking(text, containerId) {
-  const container = document.getElementById(containerId || 'chat-messages');
-  if (!container) return null;
-  const div = document.createElement('div');
-  div.className = 'h23-chat-thinking';
-  div.textContent = text;
-  container.appendChild(div);
-  scheduleChatPersist();
-  return div;
-}
-
-function appendToolCard(name, args, status, containerId) {
-  const container = document.getElementById(containerId || 'chat-messages');
-  if (!container) return;
-  const div = document.createElement('div');
-  div.className = 'h23-chat-tool';
-  div.dataset.toolName = name;
-
-  let argsPreview = '';
-  if (args) {
-    try {
-      argsPreview = typeof args === 'string' ? args : JSON.stringify(args, null, 2);
-      if (argsPreview.length > 1200) argsPreview = argsPreview.slice(0, 1200) + '\n... [input truncated]';
-    } catch { argsPreview = String(args); }
-  }
-
-  div.innerHTML = `
-    <div class="h23-chat-tool-header">
-      <span class="h23-chat-tool-name">${escapeHtml(name)}</span>
-      <span class="h23-chat-tool-status">${status === 'running' ? 'running...' : 'done'}</span>
-    </div>
-    ${argsPreview ? `<div class="h23-chat-tool-args">${escapeHtml(argsPreview)}</div>` : ''}
-    <div class="h23-chat-tool-result"></div>
-  `;
-  container.appendChild(div);
-  scheduleChatPersist();
-}
-
-function updateToolCard(name, result, success) {
-  const cards = document.querySelectorAll(`.h23-chat-tool[data-tool-name="${name}"]`);
-  const card = cards[cards.length - 1];
-  if (!card) return;
-
-  const statusEl = card.querySelector('.h23-chat-tool-status');
-  if (statusEl) {
-    statusEl.textContent = success ? 'done' : 'error';
-    statusEl.className = `h23-chat-tool-status ${success ? 'done' : 'error'}`;
-  }
-
-  if (result) {
-    const resultEl = card.querySelector('.h23-chat-tool-result');
-    if (resultEl) {
-      let text = typeof result === 'string' ? result : JSON.stringify(result);
-      if (text.length > 4000) text = text.slice(0, 4000) + '\n... [result truncated]';
-      resultEl.textContent = text;
+    if (record.type === 'update' && record.work) {
+      const next = record.work;
+      const terminal = ['completed', 'failed', 'cancelled', 'interrupted'].includes(next.status);
+      if (terminal) {
+        activeWork = activeWork.filter((w) => w.workId !== next.workId);
+        if (!seenWorkReceipts.has(next.workId)) {
+          seenWorkReceipts.add(next.workId);
+          fetchWorkReceipt(next.workId, next);
+        }
+      } else {
+        const idx = activeWork.findIndex((w) => w.workId === next.workId);
+        if (idx >= 0) activeWork[idx] = next;
+        else activeWork.push(next);
+      }
+      renderWorkStrip();
+      _syncState();
     }
+  };
+  es.onerror = () => {
+    try { es.close(); } catch { /* ignore */ }
+    if (workEventSource === es) workEventSource = null;
+  };
+}
+
+async function fetchWorkReceipt(workId, work) {
+  try {
+    const res = await fetch(`${bridgeBase()}/api/work/${encodeURIComponent(workId)}/receipt`, { headers: bridgeAuthHeaders() });
+    let result = work?.error || work?.status || '';
+    if (res.ok) {
+      const data = await res.json();
+      result = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail || data.work, null, 2);
+    }
+    transcript?.appendWorkReceipt({
+      label: work?.label || 'Background work',
+      result,
+      status: work?.status || 'completed',
+    });
+  } catch {
+    transcript?.appendWorkReceipt({
+      label: work?.label || 'Background work',
+      result: work?.error || 'Finished.',
+      status: work?.status || 'completed',
+    });
   }
-  scheduleChatPersist();
-}
-
-function appendError(text, containerId) {
-  const container = document.getElementById(containerId || 'chat-messages');
-  if (!container) return;
-  const div = document.createElement('div');
-  div.className = 'h23-chat-error';
-  div.textContent = text;
-  container.appendChild(div);
-  scheduleChatPersist();
-}
-
-function scrollToBottom() {
-  scrollContainer('chat-messages');
-}
-
-function scrollContainer(containerId) {
-  const container = document.getElementById(containerId || 'chat-messages');
-  if (container) container.scrollTop = container.scrollHeight;
 }
 
 function escapeHtml(text) {
   const div = document.createElement('div');
-  div.textContent = text;
+  div.textContent = text == null ? '' : String(text);
   return div.innerHTML;
 }
 
 function cacheHistory() {
   if (!chatAgent) return;
-  const container = getActiveChatContainer();
-  if (!container) return;
-  const messages = extractMessageHistory(container);
-
   try {
-    localStorage.setItem(`home23:chat:${chatAgent.agentName}`, JSON.stringify(messages.slice(-50)));
     localStorage.setItem(getChatSessionKey(chatAgent.agentName), JSON.stringify({
       agentName: chatAgent.agentName,
       conversationId: chatConversationId,
-      html: container.innerHTML,
       streaming: chatStreaming,
       savedAt: Date.now(),
       tileInput: document.getElementById('chat-input')?.value || '',
-      // overlayInput removed — single shared input lives in the shared DOM
     }));
+  } catch { /* quota */ }
+}
+
+function getChatSessionKey(agentName) {
+  return `home23:chat:session:${agentName}`;
+}
+
+function restoreChatState(agentName) {
+  try {
+    const raw = localStorage.getItem(getChatSessionKey(agentName));
+    if (!raw) return false;
+    const saved = JSON.parse(raw);
+    if (!saved || saved.agentName !== agentName) return false;
+    if (!saved.savedAt || (Date.now() - saved.savedAt) > CHAT_SESSION_TTL_MS) {
+      localStorage.removeItem(getChatSessionKey(agentName));
+      return false;
+    }
+    const restoredId = saved.conversationId;
+    if (!restoredId || isMachineConversationId(restoredId) || String(restoredId).startsWith('codex-')) return false;
+    chatConversationId = restoredId;
+    const input = document.getElementById('chat-input');
+    if (input) input.value = saved.tileInput || '';
+    loadHistory(agentName, restoredId);
+    return true;
   } catch {
-    // LocalStorage may be unavailable or full; keep chat functional.
+    return false;
   }
 }
 
-// ── Overlay ──
+const TERMINAL_WORK = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
 
-/**
- * Mount the shared message-list + input subtree into the active slot. Called
- * once at init. The shared node is the single source of truth for rendered
- * messages and the live input — on expand/collapse we physically relocate it
- * via appendChild rather than copying innerHTML.
- */
-function mountSharedChatNodes() {
-  const existing = document.getElementById('chat-shared');
-  if (existing) return existing;
-  const tpl = document.getElementById('chat-shared-template');
-  if (!tpl || !tpl.content) return null;
-  // Prefer the standalone slot if on the standalone page; otherwise tile.
-  const dest = document.getElementById('chat-slot-standalone')
-    || document.getElementById('chat-slot-tile');
-  if (!dest) return null;
-  const node = tpl.content.firstElementChild.cloneNode(true);
-  dest.appendChild(node);
-  return node;
+function workTabRowHtml(item) {
+  const canOpen = Boolean(workChatId(item));
+  return `
+    <div class="h23-work-row" data-work-id="${escapeHtml(item.workId)}">
+      <span class="h23-work-kind">${escapeHtml(item.kind || '')}</span>
+      <span class="h23-work-label">${escapeHtml(item.label || item.kind || item.workId)}</span>
+      <span class="h23-work-origin">${escapeHtml(item.originChatId || '')}</span>
+      <span class="h23-work-progress">${escapeHtml(item.progressSummary || item.status || '')}</span>
+      ${canOpen ? `<button type="button" class="h23-chat-work-open" data-work-id="${escapeHtml(item.workId)}">Open</button>` : ''}
+      ${TERMINAL_WORK.has(item.status) ? '' : `<button type="button" class="h23-chat-work-cancel" data-work-id="${escapeHtml(item.workId)}">Cancel</button>`}
+    </div>`;
 }
 
-function openOverlay() {
-  const overlay = document.getElementById('chat-overlay');
-  const shared = document.getElementById('chat-shared');
-  const overlaySlot = document.getElementById('chat-slot-overlay');
-  if (!overlay || !shared || !overlaySlot) return;
-
-  // Move (not clone) the shared DOM into the overlay slot. appendChild
-  // relocates the existing node, preserving all event bindings and any
-  // in-flight streaming handlers pointed at #chat-messages.
-  overlaySlot.appendChild(shared);
-
-  overlay.classList.add('open');
-  document.getElementById('chat-input')?.focus();
-  scrollToBottom();
-  scheduleChatPersist();
+function bindWorkList(el) {
+  if (!el) return;
+  el.querySelectorAll('.h23-chat-work-open').forEach((btn) => {
+    btn.addEventListener('click', () => openWorkById(btn.dataset.workId));
+  });
+  el.querySelectorAll('.h23-chat-work-cancel').forEach((btn) => {
+    btn.addEventListener('click', () => cancelWork(btn.dataset.workId));
+  });
 }
 
-function closeOverlay() {
-  const overlay = document.getElementById('chat-overlay');
-  const shared = document.getElementById('chat-shared');
-  const tileSlot = document.getElementById('chat-slot-tile');
-  if (!overlay) return;
+function renderWorkTab() {
+  const activeEl = document.getElementById('work-active-list');
+  const recentEl = document.getElementById('work-recent-list');
+  if (activeEl) {
+    activeEl.innerHTML = agentWork.length
+      ? agentWork.map(workTabRowHtml).join('')
+      : '<div class="h23-work-empty">Nothing running</div>';
+    bindWorkList(activeEl);
+  }
+  if (recentEl) {
+    recentEl.innerHTML = agentRecentWork.length
+      ? agentRecentWork.map(workTabRowHtml).join('')
+      : '<div class="h23-work-empty">No recent work</div>';
+    bindWorkList(recentEl);
+  }
+}
 
-  overlay.classList.remove('open');
+async function refreshAgentWorkSnapshot() {
+  if (!chatAgent?.bridgePort) return;
+  try {
+    const res = await fetch(`${bridgeBase()}/api/work?limit=40`, { headers: bridgeAuthHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    const all = data.work || [];
+    agentWork = all.filter((item) => !TERMINAL_WORK.has(item.status));
+    agentRecentWork = all.filter((item) => TERMINAL_WORK.has(item.status)).slice(0, 8);
+    renderWorkTab();
+  } catch { /* ignore */ }
+}
 
-  // Move shared DOM back to the tile slot (or standalone, whichever exists).
-  const dest = tileSlot || document.getElementById('chat-slot-standalone');
-  if (shared && dest) dest.appendChild(shared);
+function openAgentWorkStream() {
+  if (workTabEventSource) { try { workTabEventSource.close(); } catch { /* ignore */ } workTabEventSource = null; }
+  if (!chatAgent?.bridgePort) return;
+  refreshAgentWorkSnapshot();
+  const url = `${bridgeBase()}/api/work/stream${bridgeTokenParam() ? `?${bridgeTokenParam().slice(1)}` : ''}`;
+  const es = new EventSource(url);
+  workTabEventSource = es;
+  es.onmessage = (msg) => {
+    if (!msg.data || msg.data.startsWith(':')) return;
+    let record;
+    try { record = JSON.parse(msg.data); } catch { return; }
+    if (record.type === 'snapshot') {
+      agentWork = record.work || [];
+      renderWorkTab();
+      return;
+    }
+    if (record.type === 'update' && record.work) {
+      const next = record.work;
+      if (TERMINAL_WORK.has(next.status)) {
+        agentWork = agentWork.filter((item) => item.workId !== next.workId);
+        agentRecentWork = [next, ...agentRecentWork.filter((item) => item.workId !== next.workId)].slice(0, 8);
+      } else {
+        const idx = agentWork.findIndex((item) => item.workId === next.workId);
+        if (idx >= 0) agentWork[idx] = next;
+        else agentWork.unshift(next);
+      }
+      renderWorkTab();
+    }
+  };
+  es.onerror = () => {
+    try { es.close(); } catch { /* ignore */ }
+    if (workTabEventSource === es) workTabEventSource = null;
+  };
+}
 
-  scrollToBottom();
-  scheduleChatPersist();
+function setupWorkTab() {
+  const tab = document.querySelector('.h23-tab[data-tab="work"]');
+  if (!tab) return;
+  tab.addEventListener('click', () => {
+    openAgentWorkStream();
+  });
+  if (document.getElementById('panel-work')?.classList.contains('active')) {
+    openAgentWorkStream();
+  }
 }
 
 function bindChatPersistence() {
   if (chatPersistenceBound) return;
-
   const persist = () => cacheHistory();
   window.addEventListener('beforeunload', persist);
   window.addEventListener('pagehide', persist);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') persist();
+    if (document.visibilityState === 'visible' && activeTurnId && !activeEventSource && isStreamOwner()) {
+      openTurnStream({
+        bridgeBase: bridgeBase(),
+        chatId: chatConversationId,
+        turnId: activeTurnId,
+        cursor: activeCursor,
+      });
+    }
   });
-
   chatPersistenceBound = true;
 }
 
@@ -1428,99 +1842,26 @@ function scheduleChatPersist() {
   }, 150);
 }
 
-function getChatSessionKey(agentName) {
-  return `home23:chat:session:${agentName}`;
-}
-
-function getActiveChatContainer() {
-  // The shared #chat-messages node moves between slots on expand/collapse;
-  // a single getElementById reaches it wherever it currently lives.
-  return document.getElementById('chat-messages');
-}
-
-function extractMessageHistory(container) {
-  const messages = [];
-  container.querySelectorAll('.h23-chat-msg').forEach(el => {
-    messages.push({
-      role: el.classList.contains('user') ? 'user' : 'assistant',
-      content: el.textContent,
-    });
-  });
-  return messages;
-}
-
-function restoreChatState(agentName) {
-  try {
-    const raw = localStorage.getItem(getChatSessionKey(agentName));
-    if (!raw) return false;
-
-    const saved = JSON.parse(raw);
-    if (!saved || saved.agentName !== agentName) return false;
-    if (!saved.savedAt || (Date.now() - saved.savedAt) > CHAT_SESSION_TTL_MS) {
-      localStorage.removeItem(getChatSessionKey(agentName));
-      return false;
-    }
-
-    const restoredConversationId = saved.conversationId || `dashboard-${agentName}-${Date.now()}`;
-    if (isMachineConversationId(restoredConversationId) || String(restoredConversationId).startsWith('codex-')) {
-      return false;
-    }
-
-    const messagesEl = document.getElementById('chat-messages');
-    const html = saved.html || '<div class="h23-chat-empty">Start a conversation with your agent.</div>';
-    if (/h23-chat-empty/.test(html) && /Loading/.test(html)) {
-      return false;
-    }
-    chatConversationId = restoredConversationId;
-    if (messagesEl) messagesEl.innerHTML = html;
-
-    const input = document.getElementById('chat-input');
-    if (input) input.value = saved.tileInput || '';
-
-    if (saved.streaming && messagesEl) {
-      appendError('Response interrupted by refresh.', 'chat-messages');
-    }
-
-    chatStreaming = false;
-    scrollToBottom();
-    _syncState();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// ── Reconnect on tab visibility ──
-
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible') return;
-  if (!activeTurnId || !activeChatId || activeEventSource) return;
-  if (!chatAgent?.bridgePort) return;
-
-  const bridgeBase = `http://${window.location.hostname}:${chatAgent.bridgePort}`;
-  console.log('[chat] tab visible — resuming stream from cursor', activeCursor);
-  openTurnStream({ bridgeBase, chatId: activeChatId, turnId: activeTurnId, cursor: activeCursor });
-});
-
-// Expose classic-script entry points (home23-dashboard.js calls initChat and
-// closeOverlay via typeof checks; the standalone HTML calls initChat('standalone')).
-// Module scope is not global, so bind explicitly.
 if (typeof window !== 'undefined') {
   window.initChat = initChat;
-  window.closeOverlay = closeOverlay;
-  window.openConversation = openConversation;  // called from inline onclick in conv-list HTML
+  window.openWorkById = openWorkById;
+  window.openAgentWorkStream = openAgentWorkStream;
+  window.openConversation = openConversation;
   window.newConversation = newConversation;
-  window.openOverlay = openOverlay;
   window.stopChat = stopChat;
   window.sendMessage = sendMessage;
-  window.toggleConversationList = toggleConversationList;
-
-  window.maybeAutoInitDashboardChat = function maybeAutoInitDashboardChat() {
-    if (!document.getElementById('chat-slot-tile')) return;
-    if (document.getElementById('chat-slot-standalone')) return;
-    initChat('tile');
+  window.closeOverlay = () => {};
+  window.openOverlay = () => {
+    if (typeof window.selectDashboardTab === 'function') window.selectDashboardTab('chat');
   };
-
+  window.setupConversationPanelControls = setupSidebar;
+  window.closeConversationList = closeConversationList;
+  window.toggleConversationList = () => document.getElementById('chat-sidebar')?.classList.toggle('open');
+  window.maybeAutoInitDashboardChat = function maybeAutoInitDashboardChat() {
+    if (document.getElementById('chat-slot-standalone')) return;
+    if (!document.getElementById('chat-slot-tab') && !document.getElementById('chat-home-preview')) return;
+    initChat('tab');
+  };
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', window.maybeAutoInitDashboardChat, { once: true });
   } else {

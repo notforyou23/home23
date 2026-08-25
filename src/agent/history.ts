@@ -255,26 +255,32 @@ export class ConversationHistory {
             .filter((b): b is Extract<ContentBlock, { type: 'tool_use' }> => b.type === 'tool_use')
             .map(b => b.name);
 
-          const summary: StoredMessage = {
-            role: 'assistant',
-            content: `[Used tools: ${toolNames.join(', ')}]`,
-          };
-
           rest.shift();
 
+          const receipts: string[] = [];
           while (rest.length > 0) {
             const next = rest[0]!;
             if (typeof next.content !== 'string' && Array.isArray(next.content)) {
-              const hasMatchingResult = next.content.some(
-                b => b.type === 'tool_result' && toolIds.includes((b as { tool_use_id: string }).tool_use_id)
+              const matching = next.content.filter(
+                (b): b is Extract<ContentBlock, { type: 'tool_result' }> =>
+                  b.type === 'tool_result' && toolIds.includes((b as { tool_use_id: string }).tool_use_id),
               );
-              if (hasMatchingResult) {
+              if (matching.length > 0) {
+                for (const block of matching) {
+                  receipts.push(String(block.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 400));
+                }
                 rest.shift();
                 continue;
               }
             }
             break;
           }
+
+          const receiptLines = toolNames.map((name, i) => `${name}: ${receipts[i] ?? ''}`.trim());
+          const summary: StoredMessage = {
+            role: 'assistant',
+            content: `[Used tools: ${toolNames.join(', ')}]\n${receiptLines.join('\n')}`.trim(),
+          };
 
           rest.unshift(summary);
           continue;

@@ -789,7 +789,16 @@ function semanticObservationBucket(obs) {
   }
 
   if (obs.channelId === 'machine.memory') {
-    const freePct = Number(payload.freePct);
+    const pressureFreePct = Number(payload.pressureFreePct ?? payload.memoryPressure?.freePct);
+    if (Number.isFinite(pressureFreePct)) {
+      if (pressureFreePct <= 10) return 'memory:critical';
+      if (pressureFreePct <= 20) return 'memory:severe';
+      if (pressureFreePct <= 35) return 'memory:low';
+      if (pressureFreePct <= 50) return 'memory:tight';
+      return 'memory:normal';
+    }
+
+    const freePct = Number(payload.rawFreePct ?? payload.freePct);
     if (!Number.isFinite(freePct)) return null;
     if (freePct <= 2) return 'memory:critical';
     if (freePct <= 5) return 'memory:severe';

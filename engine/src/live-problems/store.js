@@ -12,6 +12,8 @@
  * {
  *   id: string (stable slug),
  *   claim: string (human-readable),
+ *   problemKind?: 'agenda_handoff',
+ *   handoff?: { status, startedAt, deadlineAt, outcome?, source?, detail?, terminalAt? },
  *   verifier: { type, args },
  *   remediation: [ { type, args, cooldownMin } ],      // ordered plan
  *   state: 'open' | 'resolved' | 'chronic' | 'unverifiable',
@@ -38,6 +40,100 @@ const { TrustKernel } = require('../trust/trust-kernel');
 
 const RESOLVED_KEEP_MS = 24 * 60 * 60 * 1000;   // keep resolved 24h so pulse can mention once
 const CHRONIC_AFTER_MS = 6 * 60 * 60 * 1000;    // open >6h with no progress → chronic
+const AGENDA_HANDOFF_KIND = 'agenda_handoff';
+
+/**
+ * Agenda diagnostics are workflow handoffs, not claims that the underlying
+ * operational condition is itself a live problem. New records carry an
+ * explicit kind; the verifier + origin pair recognizes records written before
+ * that field existed without relying on their generated IDs.
+ */
+function isAgendaHandoffProblem(problem) {
+  if (!problem) return false;
+  if (problem.problemKind === AGENDA_HANDOFF_KIND) return true;
+  return problem.seedOrigin === 'agenda' && problem.verifier?.type === 'fix_recipe_recorded';
+}
+
+function latestAgendaFixRecipe(problem) {
+  const sinceMs = Date.parse(problem?.verifier?.args?.since || '') || 0;
+  return [
+    ...(Array.isArray(problem?.fixRecipeHistory) ? problem.fixRecipeHistory : []),
+    ...(problem?.fixRecipe ? [problem.fixRecipe] : []),
+  ]
+    .filter((recipe) => {
+      if (!recipe) return false;
+      const atMs = Date.parse(recipe.at || '') || 0;
+      return !sinceMs || atMs >= sinceMs;
+    })
+    .sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')))[0] || null;
+}
+
+function agendaBudgetHours(problem) {
+  const dispatchStep = (problem?.remediation || []).find((step) =>
+    step?.type === 'dispatch_to_agent' || step?.type === 'dispatch_to_worker'
+  );
+  const value = Number(dispatchStep?.args?.budgetHours ?? 4);
+  return Number.isFinite(value) && value >= 0 ? value : 4;
+}
+
+function agendaStartedAt(problem, fallback) {
+  return problem?.handoff?.startedAt
+    || problem?.verifier?.args?.since
+    || problem?.openedAt
+    || problem?.firstSeenAt
+    || fallback;
+}
+
+function agendaDeadlineAt(problem, startedAt) {
+  if (problem?.handoff?.deadlineAt) return problem.handoff.deadlineAt;
+  const startedMs = Date.parse(startedAt || '');
+  if (!startedMs) return null;
+  return new Date(startedMs + agendaBudgetHours(problem) * 60 * 60 * 1000).toISOString();
+}
+
+function agendaOutcomeFromRecipe(recipe) {
+  const dispatchOutcome = String(recipe?.dispatchOutcome || '').trim().toLowerCase();
+  if (dispatchOutcome) return dispatchOutcome;
+  return String(recipe?.verifierStatus || '').toLowerCase() === 'pass'
+    ? 'fixed'
+    : 'recipe_recorded';
+}
+
+function agendaOutcomeFromRemediation(problem) {
+  const last = Array.isArray(problem?.remediationLog) ? problem.remediationLog.at(-1) : null;
+  const detail = String(last?.detail || 'agenda handoff remediation exhausted');
+  if (/budget exhausted/i.test(detail)) return { outcome: 'budget_exhausted', detail };
+  if (last?.outcome === 'rejected') return { outcome: 'dispatch_rejected', detail };
+  return { outcome: 'dispatch_failed', detail };
+}
+
+function applyAgendaHandoffTerminal(problem, {
+  outcome,
+  detail,
+  source,
+  terminalAt,
+} = {}) {
+  const at = terminalAt || new Date().toISOString();
+  const startedAt = agendaStartedAt(problem, at);
+  problem.problemKind = AGENDA_HANDOFF_KIND;
+  problem.handoff = {
+    ...(problem.handoff || {}),
+    status: 'terminal',
+    startedAt,
+    deadlineAt: agendaDeadlineAt(problem, startedAt),
+    outcome: outcome || 'unknown',
+    source: source || 'workflow',
+    detail: detail || '',
+    terminalAt: at,
+  };
+  problem.state = 'resolved';
+  problem.resolvedAt = problem.resolvedAt || at;
+  problem.resolutionKind = 'workflow_terminal';
+  problem.escalated = false;
+  delete problem.escalatedAt;
+  delete problem.dispatchedAt;
+  delete problem.dispatchedTurnId;
+}
 
 /**
  * Operator authority: jtr's decision about a problem, held alongside — never
@@ -83,7 +179,12 @@ class LiveProblemStore {
       const list = raw.problems || [];
       this.problems.clear();
       for (const p of list) this.problems.set(p.id, p);
+      const reconciled = this._reconcileAgendaHandoffs();
       this.logger.info?.(`[live-problems] loaded ${this.problems.size} problems`);
+      if (reconciled > 0) {
+        this.save();
+        this.logger.info?.(`[live-problems] reconciled ${reconciled} agenda handoff record(s)`);
+      }
     } catch (err) {
       this.logger.warn?.(`[live-problems] load failed: ${err.message}`);
     }
@@ -116,6 +217,83 @@ class LiveProblemStore {
     } catch (err) {
       this.logger.warn?.(`[live-problems] save failed: ${err.message}`);
     }
+  }
+
+  /**
+   * Upgrade legacy agenda handoffs and close only those that already have a
+   * terminal receipt, exhausted plan, or expired dispatch budget. This runs on
+   * load, mutates no remediation/fix-recipe history, and becomes a no-op after
+   * the first successful reconciliation.
+   */
+  _reconcileAgendaHandoffs(nowMs = Date.now()) {
+    let reconciled = 0;
+    for (const problem of this.problems.values()) {
+      if (!isAgendaHandoffProblem(problem)) continue;
+
+      let changed = false;
+      if (problem.problemKind !== AGENDA_HANDOFF_KIND) {
+        problem.problemKind = AGENDA_HANDOFF_KIND;
+        changed = true;
+      }
+
+      if (problem.handoff?.status === 'terminal') {
+        if (changed) reconciled++;
+        continue;
+      }
+
+      const now = new Date(nowMs).toISOString();
+      const startedAt = agendaStartedAt(problem, now);
+      const pending = {
+        ...(problem.handoff || {}),
+        status: 'pending',
+        startedAt,
+        deadlineAt: agendaDeadlineAt(problem, startedAt),
+      };
+      if (JSON.stringify(problem.handoff || null) !== JSON.stringify(pending)) {
+        problem.handoff = pending;
+        changed = true;
+      }
+
+      const recipe = latestAgendaFixRecipe(problem);
+      const plan = Array.isArray(problem.remediation) ? problem.remediation : [];
+      const stepIndex = Number(problem.stepIndex || 0);
+      const exhausted = plan.length > 0 && stepIndex >= plan.length;
+      const dispatchedAtMs = Date.parse(problem.dispatchedAt || '') || 0;
+      const budgetExpired = dispatchedAtMs > 0
+        && nowMs - dispatchedAtMs >= agendaBudgetHours(problem) * 60 * 60 * 1000;
+
+      let terminal = null;
+      if (problem.state === 'resolved') {
+        terminal = recipe
+          ? {
+            outcome: agendaOutcomeFromRecipe(recipe),
+            detail: recipe.summary || `recipe recorded (${recipe.dispatchOutcome || 'unknown'})`,
+          }
+          : { outcome: 'legacy_resolved', detail: problem.lastResult?.detail || 'legacy handoff resolved' };
+      } else if (budgetExpired) {
+        terminal = {
+          outcome: 'budget_exhausted',
+          detail: `agenda handoff dispatch budget exhausted (${agendaBudgetHours(problem)}h)`,
+        };
+      } else if (exhausted) {
+        terminal = agendaOutcomeFromRemediation(problem);
+      }
+
+      if (terminal) {
+        applyAgendaHandoffTerminal(problem, {
+          ...terminal,
+          source: 'legacy_reconciliation',
+          terminalAt: problem.resolvedAt || now,
+        });
+        changed = true;
+      }
+
+      if (changed) {
+        problem.updatedAt = now;
+        reconciled++;
+      }
+    }
+    return reconciled;
   }
 
   _touch(p, now = new Date().toISOString()) {
@@ -207,6 +385,14 @@ class LiveProblemStore {
       delete p.operatorDecision;
       p.escalated = false;
       delete p.escalatedAt;
+      if (isAgendaHandoffProblem(p)) {
+        applyAgendaHandoffTerminal(p, {
+          outcome: String(result.observed?.dispatchOutcome || '').toLowerCase() || 'recipe_recorded',
+          detail: result.detail || '',
+          source: 'fix_recipe',
+          terminalAt: now,
+        });
+      }
     } else {
       delete p.transientFailureCount;
       delete p.lastTransientFailure;
@@ -361,6 +547,15 @@ class LiveProblemStore {
     this.save();
   }
 
+  completeAgendaHandoff(id, { outcome, detail, source } = {}) {
+    const p = this.problems.get(id);
+    if (!p || !isAgendaHandoffProblem(p)) return null;
+    const now = this._touch(p);
+    applyAgendaHandoffTerminal(p, { outcome, detail, source, terminalAt: now });
+    this.save();
+    return p;
+  }
+
   markEscalated(id) {
     const p = this.problems.get(id);
     if (!p) return;
@@ -426,6 +621,8 @@ class LiveProblemStore {
           problemId: problem.id,
           claim: problem.claim || null,
           seedOrigin: problem.seedOrigin || null,
+          problemKind: problem.problemKind || null,
+          handoff: problem.handoff || null,
           verifier: problem.verifier || null,
           priorState,
           resolvedAt: problem.resolvedAt || null,
@@ -506,6 +703,7 @@ class LiveProblemStore {
     let removed = 0;
     for (const [id, p] of this.problems) {
       if (p.state !== 'resolved') continue;
+      if (isAgendaHandoffProblem(p)) continue;
       const at = Date.parse(p.resolvedAt || p.lastCheckedAt || 0);
       if (!at || now - at > RESOLVED_KEEP_MS) {
         this.problems.delete(id);
@@ -517,4 +715,11 @@ class LiveProblemStore {
   }
 }
 
-module.exports = { LiveProblemStore, isOperatorSuppressed, RESOLVED_KEEP_MS, CHRONIC_AFTER_MS };
+module.exports = {
+  LiveProblemStore,
+  isAgendaHandoffProblem,
+  isOperatorSuppressed,
+  RESOLVED_KEEP_MS,
+  CHRONIC_AFTER_MS,
+  AGENDA_HANDOFF_KIND,
+};

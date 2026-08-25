@@ -148,6 +148,30 @@ function projectBoundedSearchNode(node, {
     accessed: node?.accessed ?? null,
     accessCount: node?.accessCount ?? null,
   };
+  const queryText = typeof node?.retrievalQuery === 'string' ? node.retrievalQuery : '';
+  let tokens = [];
+  try {
+    if (queryText) tokens = normalizeKeywordTokens(queryText);
+  } catch {
+    tokens = [];
+  }
+  const lexical = queryText
+    ? classifyLexicalMatch(node, queryText, tokens)
+    : { matchKind: node?.matchKind || 'none', lexicalScore: Number(node?.lexicalScore) || 0 };
+  const matchKind = lexical.matchKind === 'none'
+    ? (similarity == null ? 'keyword' : 'semantic')
+    : lexical.matchKind;
+  const ranked = decorateRank({
+    ...row,
+    matchKind,
+    lexicalScore: lexical.lexicalScore,
+    sourceDomain: provenance.sourceClass || row.retrievalDomain || 'brain',
+  }, queryText);
+  row.matchKind = ranked.matchKind;
+  row.sourceDomain = ranked.sourceDomain;
+  row.lexicalScore = roundScore(lexical.lexicalScore);
+  row.finalRankScore = ranked.finalRankScore;
+  row.componentScores = ranked.componentScores;
   for (const key of Object.keys(row)) {
     if (row[key] === undefined) delete row[key];
   }
@@ -173,8 +197,12 @@ function createBoundedCandidateHeap({
 
   function sortRows() {
     rows.sort((left, right) => {
-      const score = Number(right.retrievalScore ?? right.similarity ?? 0)
-        - Number(left.retrievalScore ?? left.similarity ?? 0);
+      const kind = matchKindRank(right.matchKind) - matchKindRank(left.matchKind);
+      if (kind) return kind;
+      const authority = authorityTiebreak(right) - authorityTiebreak(left);
+      if (authority) return authority;
+      const score = publishedRetrievalScore(right) - publishedRetrievalScore(left)
+        || Number(right.finalRankScore ?? 0) - Number(left.finalRankScore ?? 0);
       return score || String(left.id).localeCompare(String(right.id));
     });
   }
@@ -1103,35 +1131,176 @@ function createDefaultLoadAnn({ hnswlibLoader, indexRuntimeFactory, authorityKey
   return loadAnn;
 }
 
-function mergeResults(primary, keywordRows, limit) {
+const MATCH_KIND_RANK = Object.freeze({
+  exact_id: 5,
+  exact_phrase: 4,
+  relationship: 4,
+  keyword: 0,
+  semantic: 0,
+  none: 0,
+});
+const MATCH_KIND_BOOST = Object.freeze({
+  exact_id: 1000,
+  exact_phrase: 800,
+  relationship: 700,
+  keyword: 0,
+  semantic: 0,
+  none: 0,
+});
+
+function matchKindRank(kind) {
+  return MATCH_KIND_RANK[kind] || 0;
+}
+
+function normalizeLexical(text) {
+  return String(text || '')
+    .toLocaleLowerCase('en-US')
+    .replace(/[\u2010-\u2015\u2212]/g, '-')
+    .replace(/\u2026/g, '...')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function lexicalHaystack(node) {
+  return normalizeLexical([
+    node?.id,
+    node?.concept || node?.content || '',
+    node?.tag,
+    node?.cluster,
+  ].filter((value) => value !== undefined && value !== null && value !== '').join(' '));
+}
+
+function classifyLexicalMatch(node, query, tokens) {
+  if (!node) return { matchKind: 'none', lexicalScore: 0 };
+  const haystack = lexicalHaystack(node);
+  const needle = normalizeLexical(query);
+  const id = node.id === undefined || node.id === null ? '' : String(node.id);
+  if (id && (String(query).trim() === id || needle === normalizeLexical(id))) {
+    return { matchKind: 'exact_id', lexicalScore: 100 };
+  }
+  if (needle.length >= 8 && haystack.includes(needle)) {
+    return { matchKind: 'exact_phrase', lexicalScore: 80 };
+  }
+  const quoted = String(query || '').match(/["“”']([^"“”']{8,})["“”']/g) || [];
+  for (const raw of quoted) {
+    const inner = normalizeLexical(String(raw).replace(/^["“”']|["“”']$/g, ''));
+    if (inner.length >= 8 && haystack.includes(inner)) {
+      return { matchKind: 'exact_phrase', lexicalScore: 80 };
+    }
+  }
+  if (!Array.isArray(tokens) || tokens.length === 0) return { matchKind: 'none', lexicalScore: 0 };
+  const matched = tokens.filter((token) => haystack.includes(normalizeLexical(token)));
+  if (matched.length === 0) return { matchKind: 'none', lexicalScore: 0 };
+  return { matchKind: 'keyword', lexicalScore: matched.length / tokens.length };
+}
+
+function isPhraseQuery(query, tokens) {
+  const raw = String(query || '').trim();
+  if (raw.length >= 24) return true;
+  if ((raw.match(/["“”']/g) || []).length >= 2) return true;
+  if (Array.isArray(tokens) && tokens.length >= 5) return true;
+  if (/[—–…]/.test(raw)) return true;
+  return false;
+}
+
+function isIdentityQuery(query) {
+  const q = normalizeLexical(query);
+  return /\b(i am|im|who am i|identity|third person|first person|pronoun|costume|seed|lobe|this room|there is no he|i am them|i am jerry)\b/.test(q);
+}
+
+function sludgeMultiplier(node, identityQuery) {
+  if (!identityQuery) return 1;
+  const authority = String(
+    node?.authorityClass || node?.retrievalAuthority?.authorityClass || '',
+  ).toLowerCase();
+  const source = String(node?.sourceClass || '').toLowerCase();
+  const tag = String(node?.tag || '').toLowerCase();
+  const concept = String(node?.concept || node?.content || '').toLowerCase();
+  if (authority === 'artifact_log' || authority === 'generated_doctrine') return 0.12;
+  if (source === 'autonomous' || source === 'telemetry') return 0.2;
+  if (/shakedown|verifier|coz[- ]?doc|artifact_deliverable|cron.?docs/.test(`${tag} ${concept}`)) {
+    return 0.12;
+  }
+  return 1;
+}
+
+function decorateRank(row, query) {
+  const matchKind = row.matchKind || 'semantic';
+  const retrieval = publishedRetrievalScore(row);
+  const similarity = Number(row.similarity);
+  const lexical = Number(row.lexicalScore ?? 0);
+  const penalty = sludgeMultiplier(row, isIdentityQuery(query));
+  const kindBoost = MATCH_KIND_BOOST[matchKind] || 0;
+  const finalRankScore = roundScore((kindBoost + retrieval) * penalty);
+  return {
+    ...row,
+    matchKind,
+    sourceDomain: row.sourceDomain || row.retrievalDomain || row.sourceClass || 'brain',
+    finalRankScore,
+    componentScores: {
+      similarity: Number.isFinite(similarity) ? roundScore(similarity) : null,
+      lexical: roundScore(lexical),
+      retrieval: Number.isFinite(retrieval) ? roundScore(retrieval) : null,
+      identityPenalty: penalty,
+      kindBoost,
+    },
+  };
+}
+
+function mergeResults(primary, keywordRows, limit, query) {
   const merged = new Map();
   for (const row of [...primary, ...keywordRows]) {
-    const id = String(row.id);
-    const normalized = { ...row, retrievalMode: row.retrievalMode || 'logical-source-scan' };
+    const decorated = decorateRank({
+      ...row,
+      retrievalMode: row.retrievalMode || 'logical-source-scan',
+    }, query);
+    const id = String(decorated.id);
     const existing = merged.get(id);
     if (!existing
-        || Number(normalized.retrievalScore ?? normalized.similarity ?? 0)
-          > Number(existing.retrievalScore ?? existing.similarity ?? 0)) merged.set(id, normalized);
+        || matchKindRank(decorated.matchKind) > matchKindRank(existing.matchKind)
+        || (matchKindRank(decorated.matchKind) === matchKindRank(existing.matchKind)
+          && Number(decorated.finalRankScore) > Number(existing.finalRankScore))) {
+      merged.set(id, decorated);
+    }
   }
-  return Array.from(merged.values()).sort((left, right) => (
-    Number(right.retrievalScore ?? right.similarity ?? 0)
-      - Number(left.retrievalScore ?? left.similarity ?? 0)
+  return sortRankedResults(Array.from(merged.values())).slice(0, limit);
+}
+
+function authorityTiebreak(row) {
+  const cls = String(row?.authorityClass || row?.retrievalAuthority?.authorityClass || '');
+  if (cls === 'jtr_correction') return 5;
+  if (cls === 'verified_current_state') return 4;
+  if (cls === 'worker_receipt') return 3;
+  if (cls === 'artifact_log') return 1;
+  return 0;
+}
+
+function publishedRetrievalScore(row) {
+  const explained = Number(row?.retrievalAuthority?.scoreExplanation?.score);
+  if (Number.isFinite(explained)) return explained;
+  const retrieval = Number(row?.retrievalScore);
+  if (Number.isFinite(retrieval)) return retrieval;
+  const similarity = Number(row?.similarity);
+  return Number.isFinite(similarity) ? similarity : 0;
+}
+
+function sortRankedResults(rows) {
+  return [...rows].sort((left, right) => (
+    matchKindRank(right.matchKind) - matchKindRank(left.matchKind)
+    || authorityTiebreak(right) - authorityTiebreak(left)
+    || publishedRetrievalScore(right) - publishedRetrievalScore(left)
+    || Number(right.finalRankScore ?? 0) - Number(left.finalRankScore ?? 0)
     || String(left.id).localeCompare(String(right.id))
-  )).slice(0, limit);
+  ));
 }
 
 function keywordRelevance(node, tokens, query, tag) {
   if (!node || (tag && node.tag !== tag)) return 0;
-  const haystack = JSON.stringify({
-    id: node.id,
-    concept: node.concept || node.content || '',
-    tag: node.tag,
-    cluster: node.cluster,
-  }).toLocaleLowerCase('en-US');
-  const matched = tokens.filter((token) => haystack.includes(token));
-  if (matched.length === 0) return 0;
-  const normalizedQuery = String(query || '').trim().toLocaleLowerCase('en-US');
-  return (matched.length / tokens.length) + (normalizedQuery && haystack.includes(normalizedQuery) ? 1 : 0);
+  const lexical = classifyLexicalMatch(node, query, tokens);
+  if (lexical.matchKind === 'none') return 0;
+  if (lexical.matchKind === 'exact_id' || lexical.matchKind === 'exact_phrase') return 2;
+  return lexical.lexicalScore;
 }
 
 function authorityScoredCandidate(node, baseScore, options) {
@@ -1381,7 +1550,18 @@ function createMemorySearchService({
     let annSearchMs = 0;
     let annLoadMs = 0;
     let overlayScoringMs = 0;
-    if (queryEmbedding && annRevisionEligible && annCovered && request.exhaustive !== true) {
+    const contextFast = request.mode === 'context' && request.exhaustive !== true;
+    const allowLogicalScan = !contextFast;
+    const useAnn = queryEmbedding && annRevisionEligible && request.exhaustive !== true
+      && (annCovered || contextFast);
+    if (contextFast && !annCovered && !fallback) {
+      fallback = {
+        route: 'context-fast',
+        reason: overlayFailure ? 'delta_overlay_unavailable' : (annAvailable ? 'ann_stale' : 'ann_missing'),
+        completeness: 'incomplete',
+      };
+    }
+    if (useAnn) {
       const consumeAnn = async (ann) => {
         if (!ann || Number(ann.dimension || ann.dim) !== queryEmbedding.length) return false;
         semanticRoute = annFresh ? 'semantic-ann' : 'semantic-ann-delta-overlay';
@@ -1400,9 +1580,9 @@ function createMemorySearchService({
         if (!annLabelsAvailable) {
           annLabelCoverageIncomplete = true;
           fallback = {
-            route: 'logical-source-scan',
+            route: contextFast ? 'context-fast' : 'logical-source-scan',
             reason: 'exact_canary_missing',
-            completeness: 'complete',
+            completeness: contextFast ? 'incomplete' : 'complete',
           };
           return false;
         }
@@ -1493,15 +1673,19 @@ function createMemorySearchService({
               ].includes(error?.annFallbackReason))) throw error;
         const reason = error?.annFallbackReason || 'ann_descriptor_unsupported';
         fallback = {
-          route: 'logical-source-scan',
+          route: contextFast ? 'context-fast' : 'logical-source-scan',
           reason,
-          completeness: 'complete',
+          completeness: contextFast ? 'incomplete' : 'complete',
         };
       } finally {
         annLoadMs = performance.now() - annLoadStartedAt;
       }
       if (!annUsed && !fallback) {
-        fallback = { route: 'logical-keyword-scan', reason: 'embedding_dimension_mismatch', completeness: 'complete' };
+        fallback = {
+          route: contextFast ? 'context-fast' : 'logical-keyword-scan',
+          reason: 'embedding_dimension_mismatch',
+          completeness: contextFast ? 'incomplete' : 'complete',
+        };
       }
     } else if (request.exhaustive === true) {
       fallback = {
@@ -1509,7 +1693,7 @@ function createMemorySearchService({
         reason: 'exhaustive_requested',
         completeness: 'complete',
       };
-    } else if (queryEmbedding && !annCovered) {
+    } else if (queryEmbedding && !annCovered && allowLogicalScan) {
       fallback = {
         route: 'logical-source-scan',
         reason: overlayFailure ? 'delta_overlay_unavailable' : (annAvailable ? 'ann_stale' : 'ann_missing'),
@@ -1517,7 +1701,7 @@ function createMemorySearchService({
       };
     }
 
-    if (queryEmbedding && (request.exhaustive === true || !annCovered
+    if (allowLogicalScan && queryEmbedding && (request.exhaustive === true || !annCovered
         || ['embedding_dimension_mismatch', 'ann_descriptor_unsupported',
           'ann_authority_context_unavailable',
           'ann_authority_projection_schema_mismatch',
@@ -1533,9 +1717,24 @@ function createMemorySearchService({
         && indexedKeywordRows.length === 0 && !fallback) {
       // Bounded ANN label text can prove a positive match, but truncation means
       // it can never prove exact absence. Use the logical source before saying
-      // that the corpus has no match.
+      // that the corpus has no match — except turn-enrichment context mode,
+      // which must not start a full-brain scan behind a 2s deadline.
       fallback = {
-        route: 'logical-source-scan', reason: 'exact_canary_missing', completeness: 'complete',
+        route: contextFast ? 'context-fast' : 'logical-source-scan',
+        reason: 'exact_canary_missing',
+        completeness: contextFast ? 'incomplete' : 'complete',
+      };
+    }
+    const phraseQuery = isPhraseQuery(query, keywordTokens);
+    const indexedHasExact = indexedKeywordRows.some((row) => {
+      const kind = row.matchKind || classifyLexicalMatch(row, query, keywordTokens).matchKind;
+      return kind === 'exact_phrase' || kind === 'exact_id';
+    });
+    if (!contextFast && allowLogicalScan && phraseQuery && !indexedHasExact && !fallback) {
+      fallback = {
+        route: 'logical-source-scan',
+        reason: 'exact_phrase_missing',
+        completeness: 'complete',
       };
     }
     const keywordStartedAt = performance.now();
@@ -1543,10 +1742,11 @@ function createMemorySearchService({
     let keyword = null;
     let keywordRows;
     const keywordUsesIndex = annUsed && annLabelsAvailable
-      && request.exhaustive !== true && fallback?.reason !== 'exact_canary_missing';
+      && request.exhaustive !== true
+      && (contextFast || !['exact_canary_missing', 'exact_phrase_missing'].includes(fallback?.reason));
     if (keywordUsesIndex) {
       keywordRows = indexedKeywordRows.slice(0, limit);
-    } else {
+    } else if (allowLogicalScan) {
       await runLogicalSourceScan({ includeSemantic: false });
       keywordRows = boundedKeyword.sorted().slice(0, limit);
       keyword = {
@@ -1554,6 +1754,8 @@ function createMemorySearchService({
         filtered: logicalScanFiltered,
         evidence: { completeCoverage: true },
       };
+    } else {
+      keywordRows = indexedKeywordRows.slice(0, limit);
     }
     for (const row of keywordRows) authorityResolver.observe(row);
     const keywordScoringMs = (logicalScanCompleteAtKeywordStart ? logicalScanMs : 0)
@@ -1565,14 +1767,14 @@ function createMemorySearchService({
       ? annCovered
       : keyword?.evidence?.completeCoverage === true;
     const exactMissing = keywordRows.some((row) => !semanticTop.some((existing) => String(existing.id) === String(row.id)));
-    if (!keywordUsesIndex && semanticCandidates.length > 0
+    if (!keywordUsesIndex && allowLogicalScan && semanticCandidates.length > 0
         && semanticTop.length === 0 && keywordRows.length > 0 && !fallback) {
       fallback = { route: 'logical-source-scan', reason: 'semantic_noise_filtered', completeness: 'complete' };
-    } else if (!keywordUsesIndex && exactMissing && !fallback) {
+    } else if (!keywordUsesIndex && allowLogicalScan && exactMissing && !fallback) {
       fallback = { route: 'logical-source-scan', reason: 'exact_canary_missing', completeness: 'complete' };
     }
     const mergeStartedAt = performance.now();
-    const mergedResults = mergeResults(semanticTop, keywordRows, limit);
+    const mergedResults = mergeResults(semanticTop, keywordRows, limit, query);
     const mergeMs = performance.now() - mergeStartedAt;
     const baseEvidence = source.getEvidence();
     const degradesSourceHealth = Boolean(fallback);
@@ -1580,18 +1782,18 @@ function createMemorySearchService({
       ? 'degraded'
       : baseEvidence.sourceHealth;
     const retrievalMode = fallback
-      ? 'logical-source-scan'
+      ? (fallback.route === 'context-fast' ? 'context-fast' : 'logical-source-scan')
       : semanticTop.length > 0
         ? semanticRoute
         : (keywordUsesIndex ? 'keyword-index-overlay' : 'logical-source-scan');
-    const results = mergedResults.flatMap((row) => authorityResolver.apply(
+    const results = sortRankedResults(mergedResults.flatMap((row) => authorityResolver.apply(
       [row],
       { trustedProjection: row?._trustedAuthorityProjection === true },
     ))
       .map((row) => {
         const { _trustedAuthorityProjection, ...published } = row;
-        return { ...published, retrievalMode };
-      })
+        return decorateRank({ ...published, retrievalMode }, query);
+      }))
       .slice(0, limit);
     const authoritySummary = summarizeRetrievalAuthority(
       results.map(row => row.retrievalAuthority),
@@ -1759,4 +1961,7 @@ module.exports = {
   cosineSimilarity,
   parseAnnMetadataChunks,
   projectBoundedSearchNode,
+  classifyLexicalMatch,
+  isPhraseQuery,
+  isIdentityQuery,
 };

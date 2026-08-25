@@ -51,6 +51,7 @@ import { requestAsyncWorkCancel } from './work/cancel.js';
 import { handleWorkCompletion, type CompletionDeps } from './work/completion.js';
 import type { ReceiptSinks } from './work/receipt-delivery.js';
 import type { AsyncWorkRecord } from './work/types.js';
+import { finishCronAgentTurn, startCronAgentTurn } from './work/cron-work.js';
 import { createAsyncWorkRouter } from './routes/async-work.js';
 import { AttentionGate, type OutboundSignal } from './agent/attention/attention-gate.js';
 import type { ToolContext, SubAgentTracker } from './agent/types.js';
@@ -219,6 +220,7 @@ async function main(): Promise<void> {
   // ── Resolve ports and ENGINE_BASE from config ──
   const DASHBOARD_PORT = config.ports?.dashboard ?? 5002;
   const ENGINE_WS_PORT = config.ports?.engine ?? 5001;
+  const BRIDGE_PORT = config.ports?.bridge ?? 5004;
   ENGINE_BASE = `http://localhost:${DASHBOARD_PORT}`;
 
   console.log('');
@@ -276,6 +278,8 @@ async function main(): Promise<void> {
   // ── Temp dir for media ──
   const tempDir = join(RUNTIME_DIR, 'tmp');
   mkdirSync(tempDir, { recursive: true });
+  mkdirSync(join(workspacePath, 'intake'), { recursive: true });
+  mkdirSync(join(workspacePath, 'comms', 'drafts'), { recursive: true });
 
   let agencyKernelPromise: Promise<any> | null = null;
   const getAgencyKernel = async () => {
@@ -386,6 +390,7 @@ async function main(): Promise<void> {
     runAgentLoop: null,       // wired after agent creation
     brainOperations,
     turnRuntime: null,
+    workerConnectorBaseUrl: `http://127.0.0.1:${BRIDGE_PORT}`,
   };
 
   // ── Model from config.yaml (single source of truth; shared floor) ──
@@ -793,6 +798,14 @@ async function main(): Promise<void> {
 
   // ── Delivery Manager & Cron Scheduler ──
   const delivery = new DeliveryManager(adapterMap, config.deliveryProfiles ?? {}, attentionGate);
+  const deliveryFailureMessage = (outcome: Awaited<ReturnType<typeof delivery.deliver>>): string => (
+    `Delivery ${outcome.status}: ${outcome.reason}`
+  );
+  const deliverCronJobResult = async (job: CronJob, jobResult: JobResult) => {
+    const outcome = await delivery.deliver(job, jobResult);
+    jobResult.deliveryOutcome = outcome;
+    return outcome;
+  };
   let scheduler: CronScheduler | null = null;
 
   if (config.scheduler) {
@@ -844,27 +857,40 @@ async function main(): Promise<void> {
             }
             cronModelOverride = resolved;
           }
-          const { response: result } = await executeTrackedTurn(
-            agent,
-            cronChatId,
-            resolvedMessage,
-            {
-              hardDurationMs: timeoutMs,
-              ...(cronModelOverride ? { modelOverride: cronModelOverride } : {}),
-              ...(job.payload.effort ? { effort: job.payload.effort } : {}),
-            },
-          );
-          const durationMs = Date.now() - startMs;
+          const cronWork = toolContext.workRegistry
+            ? startCronAgentTurn(toolContext.workRegistry as WorkRegistry, job)
+            : null;
+          let jobResult: JobResult | undefined;
+          try {
+            const { response: result } = await executeTrackedTurn(
+              agent,
+              cronChatId,
+              resolvedMessage,
+              {
+                hardDurationMs: timeoutMs,
+                ...(cronModelOverride ? { modelOverride: cronModelOverride } : {}),
+                ...(job.payload.effort ? { effort: job.payload.effort } : {}),
+              },
+            );
+            const durationMs = Date.now() - startMs;
 
-          const jobResult: JobResult = { status: 'ok', response: result.text, durationMs };
-          delivery.lastDeliveryError = null;
-          await delivery.deliver(job, jobResult);
-          if (delivery.lastDeliveryError) {
-            jobResult.status = 'error';
-            jobResult.error = `Delivery failed: ${delivery.lastDeliveryError}`;
+            jobResult = { status: 'ok', response: result.text, durationMs };
+            const deliveryOutcome = await deliverCronJobResult(job, jobResult);
+            if (deliveryOutcome.retryEligible) {
+              jobResult.status = 'error';
+              jobResult.error = deliveryFailureMessage(deliveryOutcome);
+            }
+            await assimilateCronResult(job, jobResult);
+            return jobResult;
+          } finally {
+            if (cronWork && toolContext.workRegistry) {
+              finishCronAgentTurn(
+                toolContext.workRegistry as WorkRegistry,
+                cronWork.workId,
+                jobResult ?? { status: 'error', error: 'cron agent-turn interrupted' },
+              );
+            }
           }
-          await assimilateCronResult(job, jobResult);
-          return jobResult;
         }
 
         if (job.payload.kind === 'exec') {
@@ -880,11 +906,10 @@ async function main(): Promise<void> {
           const durationMs = Date.now() - startMs;
 
           const jobResult: JobResult = { status: 'ok', response: stdout.trim(), durationMs };
-          delivery.lastDeliveryError = null;
-          await delivery.deliver(job, jobResult);
-          if (delivery.lastDeliveryError) {
+          const deliveryOutcome = await deliverCronJobResult(job, jobResult);
+          if (deliveryOutcome.retryEligible) {
             jobResult.status = 'error';
-            jobResult.error = `Delivery failed: ${delivery.lastDeliveryError}`;
+            jobResult.error = deliveryFailureMessage(deliveryOutcome);
           }
           await assimilateCronResult(job, jobResult);
           return jobResult;
@@ -902,12 +927,11 @@ async function main(): Promise<void> {
             ...outcome,
             durationMs,
           };
-          delivery.lastDeliveryError = null;
-          await delivery.deliver(job, jobResult);
-          if (delivery.lastDeliveryError) {
+          const deliveryOutcome = await deliverCronJobResult(job, jobResult);
+          if (deliveryOutcome.retryEligible) {
             const deliveryFailure = preserveCronBrainQueryDeliveryFailure(
               outcome,
-              delivery.lastDeliveryError,
+              deliveryFailureMessage(deliveryOutcome),
             );
             jobResult.status = deliveryFailure.status;
             jobResult.error = deliveryFailure.error;
@@ -921,6 +945,11 @@ async function main(): Promise<void> {
           console.log(`[scheduler] System event: ${job.payload.text}`);
           const durationMs = Date.now() - startMs;
           const jobResult: JobResult = { status: 'ok', response: job.payload.text, durationMs };
+          const deliveryOutcome = await deliverCronJobResult(job, jobResult);
+          if (deliveryOutcome.retryEligible) {
+            jobResult.status = 'error';
+            jobResult.error = deliveryFailureMessage(deliveryOutcome);
+          }
           await assimilateCronResult(job, jobResult);
           return jobResult;
         }
@@ -1000,10 +1029,11 @@ async function main(): Promise<void> {
   const workRegistry = new WorkRegistry({ store: workStore, agent: AGENT_NAME });
   toolContext.workRegistry = workRegistry;
 
-  const asyncWorkRaw = (config as { asyncWork?: { review?: { coding?: boolean; subagent?: boolean }; reviewIdleTimeoutMs?: number } }).asyncWork ?? {};
+  const asyncWorkRaw = (config as { asyncWork?: { review?: { coding?: boolean; subagent?: boolean; cron?: boolean }; reviewIdleTimeoutMs?: number } }).asyncWork ?? {};
   const workReview = {
     coding: asyncWorkRaw.review?.coding ?? true,
     subagent: asyncWorkRaw.review?.subagent ?? false,
+    cron: asyncWorkRaw.review?.cron ?? false,
   };
 
   // Sinks are built per delivery, so an unconfigured token / not-yet-installed
@@ -1219,7 +1249,6 @@ async function main(): Promise<void> {
   }
 
   // ── Evobrew Bridge (standalone Express server) ──
-  const BRIDGE_PORT = config.ports?.bridge ?? 5004;
   const bridgeToken = resolveQueryNotebookBridgeToken(config, process.env);
   let queryCredentialAuthority;
   try {
@@ -1291,7 +1320,7 @@ async function main(): Promise<void> {
           events: codingBridge.readEventsTail(work.resultHandle.jobId, 30),
         };
       }
-      if (work.resultHandle.type === 'subagent_chat') {
+      if (work.resultHandle.type === 'subagent_chat' || work.resultHandle.type === 'cron_chat') {
         try { return { messages: history.load(work.resultHandle.chatId).slice(-5) }; } catch { return { messages: [] }; }
       }
       return null;

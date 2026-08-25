@@ -905,7 +905,8 @@ class Orchestrator {
     // Circulatory system — keeps the pipes clear so signal can flow.
     // Sweeper: removes empty agent dirs, truncates overgrown JSONL files.
     // Composter: extracts patterns from discarded thoughts before clearing.
-    // SynthesisTrigger: guarantees brain synthesis runs at least every 6h.
+    // SynthesisTrigger: proactive 5h brain-state freshness trigger, sampled
+    // every 30 min so synthesis starts before the 6h freshness verifier.
     try {
       const circBrainDir = process.env.COSMO_RUNTIME_DIR
         || (process.env.COSMO_WORKSPACE_PATH ? path.join(process.env.COSMO_WORKSPACE_PATH, '..', 'brain') : this.logsDir);
@@ -7761,6 +7762,7 @@ class Orchestrator {
             intervalHours: 6,
             retention: 1,
             logger: this.logger,
+            minFreeBytes: 50 * 1024 ** 3,
           });
           // Only the creation log is noisy enough to surface; 'within-interval'
           // skips are normal.
@@ -8473,16 +8475,23 @@ class Orchestrator {
     const existing = this.liveProblems.store.get(problemId);
 
     if (!existing) {
+      const budgetHours = 4;
       this.liveProblems.store.upsert({
         id: problemId,
+        problemKind: 'agenda_handoff',
         seedOrigin: 'agenda',
         claim: `Agenda action: ${String(item.content || '').slice(0, 500)}`,
+        handoff: {
+          status: 'pending',
+          startedAt: now,
+          deadlineAt: new Date(Date.parse(now) + budgetHours * 60 * 60 * 1000).toISOString(),
+        },
         verifier: {
           type: 'fix_recipe_recorded',
           args: { problemId, since: now },
         },
         remediation: [
-          { type: 'dispatch_to_agent', args: { budgetHours: 4 }, cooldownMin: 0 },
+          { type: 'dispatch_to_agent', args: { budgetHours }, cooldownMin: 0 },
         ],
       });
     }

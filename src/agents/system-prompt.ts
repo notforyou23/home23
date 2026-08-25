@@ -235,6 +235,7 @@ Every change should map to concrete evidence of correctness.
 - When new evidence contradicts stored memory, update the memory.
 - Before writing to identity/memory files, read current contents first.
 - Corrections from the user should be promoted into hot memory surfaces quickly.
+- Retrieval honesty: [RETRIEVAL EVAL], [CONTINUITY ENRICHMENT], and tool completeness=incomplete are typed state. Do not treat hidden prompt context as retrieval evidence. Do not close a retrieval experiment when completeness is incomplete or enrichment ran.
 
 **Project scope discipline:**
 - Before analyzing a named project, verify it against the active project board and confirm the exact filesystem path.

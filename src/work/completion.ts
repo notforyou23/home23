@@ -9,15 +9,15 @@
  * durable receipt to the ORIGIN conversation and stamps deliveredAt exactly
  * once, so boot recovery can re-run this for undelivered terminal records.
  */
-import { isHumanOrigin, type AsyncWorkRecord } from './types.js';
+import { isHumanOrigin, type AsyncWorkKind, type AsyncWorkRecord } from './types.js';
 import { deliverWorkReceipt, workPushBody, type ReceiptSinks } from './receipt-delivery.js';
 import type { WorkRegistry } from './registry.js';
 
 export interface CompletionDeps {
   registry: WorkRegistry;
   sinks: ReceiptSinks;
-  /** Per-kind review switch. Defaults wired in home.ts: { coding: true, subagent: false }. */
-  review: { coding: boolean; subagent: boolean };
+  /** Per-kind review switch. Defaults wired in home.ts: { coding: true, subagent: false, cron: false }. */
+  review: Partial<Record<AsyncWorkKind, boolean>>;
   /** True while the given chat has an active run (review defers to live turns). */
   isChatBusy: (chatId: string) => boolean;
   waitForIdleMs: number;

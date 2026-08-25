@@ -114,62 +114,278 @@ test('create_file_tool_probe fails when createFile returns without writing', asy
   }
 });
 
-test('pm2_port_owner passes when the online PM2 process owns the listening port', async () => {
+function pm2Jlist(pid, name = 'home23-jerry-dash') {
+  return JSON.stringify([{ name, pid, pm2_env: { status: 'online' } }]);
+}
+
+// Every pm2_port_owner test routes child processes through this stub. It throws
+// on anything but `pm2 jlist`, so an lsof call (or any other shell-out) fails
+// the test loudly instead of silently returning to macOS's wedged proc_pidfdinfo.
+function onlyPm2ExecFileSync(pid, calls, name) {
+  return (command, args) => {
+    calls.push([command, ...(args || [])].join(' '));
+    if (command === 'pm2') return pm2Jlist(pid, name);
+    throw new Error(`forbidden child process: ${command}`);
+  };
+}
+
+test('pm2_port_owner passes when the listener identifies itself as the PM2 pid', async () => {
+  const calls = [];
+  const requested = [];
   const result = await runVerifier({
     type: 'pm2_port_owner',
     args: { name: 'home23-jerry-dash', port: '5002' },
   }, {
-    execFileSync(command) {
-      if (command === 'pm2') {
-        return JSON.stringify([{
-          name: 'home23-jerry-dash',
+    execFileSync: onlyPm2ExecFileSync(69054, calls),
+    httpGetJson(url, timeoutMs) {
+      requested.push({ url, timeoutMs });
+      return Promise.resolve({
+        status: 200,
+        body: JSON.stringify({
+          ok: true,
+          service: 'home23-dashboard',
           pid: 69054,
-          pm2_env: { status: 'online' },
-        }]);
-      }
-      if (command === 'lsof') {
-        return [
-          'COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME',
-          'node    69054  jtr   23u  IPv4 123456      0t0  TCP *:5002 (LISTEN)',
-          '',
-        ].join('\n');
-      }
-      throw new Error(`unexpected command ${command}`);
+          port: 5002,
+          agent: 'jerry',
+          pm2Name: 'home23-jerry-dash',
+          startedAt: '2026-08-21T00:00:00.000Z',
+        }),
+      });
     },
   });
 
   assert.equal(result.ok, true);
   assert.equal(result.observed.pm2Pid, 69054);
-  assert.deepEqual(result.observed.listenerPids, [69054]);
+  assert.equal(result.observed.listenerPid, 69054);
+  assert.equal(result.observed.listenerService, 'home23-dashboard');
+  assert.equal(result.observed.listenerPm2Name, 'home23-jerry-dash');
+  assert.equal(result.observed.identityUrl, 'http://127.0.0.1:5002/home23/process.json');
+  assert.equal(requested.length, 1);
+  assert.ok(requested[0].timeoutMs > 0 && requested[0].timeoutMs <= 10000);
+  assert.deepEqual(calls, ['pm2 jlist']);
 });
 
-test('pm2_port_owner fails when a stale listener owns the dashboard port', async () => {
+test('pm2_port_owner never invokes lsof', async () => {
+  const calls = [];
   const result = await runVerifier({
     type: 'pm2_port_owner',
     args: { name: 'home23-jerry-dash', port: '5002' },
   }, {
-    execFileSync(command) {
+    execFileSync: onlyPm2ExecFileSync(69054, calls),
+    httpGetJson: () => Promise.resolve({ status: 200, body: JSON.stringify({ pid: 69054 }) }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls, ['pm2 jlist']);
+  assert.equal(calls.some(call => call.includes('lsof')), false);
+});
+
+test('pm2_port_owner never invokes lsof when the identity probe fails either', async () => {
+  const calls = [];
+  for (const probe of [
+    () => Promise.reject(new Error('connect ECONNREFUSED')),
+    () => Promise.resolve({ status: 404, body: 'Cannot GET /home23/process.json' }),
+    () => Promise.resolve({ status: 200, body: '<html>not json</html>' }),
+    () => Promise.resolve({ status: 200, body: JSON.stringify({ pid: 44914 }) }),
+  ]) {
+    const result = await runVerifier({
+      type: 'pm2_port_owner',
+      args: { name: 'home23-jerry-dash', port: '5002' },
+    }, {
+      execFileSync: onlyPm2ExecFileSync(69054, calls),
+      httpGetJson: probe,
+    });
+    assert.equal(result.ok, false);
+  }
+
+  assert.deepEqual([...new Set(calls)], ['pm2 jlist']);
+});
+
+test('pm2_port_owner fails when a stale listener answers with an older pid', async () => {
+  const calls = [];
+  const result = await runVerifier({
+    type: 'pm2_port_owner',
+    args: { name: 'home23-jerry-dash', port: '5002' },
+  }, {
+    execFileSync: onlyPm2ExecFileSync(67231, calls),
+    httpGetJson: () => Promise.resolve({
+      status: 200,
+      body: JSON.stringify({ ok: true, service: 'home23-dashboard', pid: 44914, port: 5002 }),
+    }),
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /stale pid 44914/);
+  assert.match(result.detail, /expected home23-jerry-dash pid 67231/);
+  assert.equal(result.observed.listenerPid, 44914);
+  assert.deepEqual(calls, ['pm2 jlist']);
+});
+
+test('pm2_port_owner fails when the identity endpoint is unreachable', async () => {
+  const result = await runVerifier({
+    type: 'pm2_port_owner',
+    args: { name: 'home23-jerry-dash', port: '5002' },
+  }, {
+    execFileSync: onlyPm2ExecFileSync(69054, []),
+    httpGetJson: () => Promise.reject(new Error('connect ECONNREFUSED 127.0.0.1:5002')),
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /no identity answer on port 5002/);
+  assert.equal(result.observed.reachable, false);
+  assert.equal(result.observed.pm2Pid, 69054);
+});
+
+test('pm2_port_owner fails closed when HTTP succeeds but the route is missing', async () => {
+  const result = await runVerifier({
+    type: 'pm2_port_owner',
+    args: { name: 'home23-jerry-dash', port: '5002' },
+  }, {
+    execFileSync: onlyPm2ExecFileSync(69054, []),
+    httpGetJson: () => Promise.resolve({ status: 404, body: 'Cannot GET /home23/process.json' }),
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /HTTP 404/);
+  assert.equal(result.observed.httpStatus, 404);
+});
+
+test('pm2_port_owner fails closed on a 200 that is not parseable identity JSON', async () => {
+  const malformed = await runVerifier({
+    type: 'pm2_port_owner',
+    args: { name: 'home23-jerry-dash', port: '5002' },
+  }, {
+    execFileSync: onlyPm2ExecFileSync(69054, []),
+    httpGetJson: () => Promise.resolve({ status: 200, body: '<html>dashboard</html>' }),
+  });
+
+  assert.equal(malformed.ok, false);
+  assert.match(malformed.detail, /malformed JSON/);
+
+  const nonObject = await runVerifier({
+    type: 'pm2_port_owner',
+    args: { name: 'home23-jerry-dash', port: '5002' },
+  }, {
+    execFileSync: onlyPm2ExecFileSync(69054, []),
+    httpGetJson: () => Promise.resolve({ status: 200, body: '[1,2,3]' }),
+  });
+
+  assert.equal(nonObject.ok, false);
+  assert.match(nonObject.detail, /non-object body/);
+
+  const pidless = await runVerifier({
+    type: 'pm2_port_owner',
+    args: { name: 'home23-jerry-dash', port: '5002' },
+  }, {
+    execFileSync: onlyPm2ExecFileSync(69054, []),
+    httpGetJson: () => Promise.resolve({ status: 200, body: JSON.stringify({ ok: true, service: 'home23-dashboard' }) }),
+  });
+
+  assert.equal(pidless.ok, false);
+  assert.match(pidless.detail, /no usable pid/);
+  assert.equal(pidless.observed.listenerPid, null);
+});
+
+test('pm2_port_owner reads a real dashboard identity route over loopback', async () => {
+  const server = http.createServer((req, res) => {
+    if (req.url !== '/home23/process.json') {
+      res.writeHead(404).end('Cannot GET ' + req.url);
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, service: 'home23-dashboard', pid: process.pid, port: 0 }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+
+  try {
+    const port = server.address().port;
+    const calls = [];
+
+    const owned = await runVerifier({
+      type: 'pm2_port_owner',
+      args: { name: 'home23-jerry-dash', port: String(port), timeoutMs: 2000 },
+    }, { execFileSync: onlyPm2ExecFileSync(process.pid, calls) });
+
+    assert.equal(owned.ok, true);
+    assert.equal(owned.observed.listenerPid, process.pid);
+
+    const stale = await runVerifier({
+      type: 'pm2_port_owner',
+      args: { name: 'home23-jerry-dash', port: String(port), timeoutMs: 2000 },
+    }, { execFileSync: onlyPm2ExecFileSync(process.pid + 1, calls) });
+
+    assert.equal(stale.ok, false);
+    assert.match(stale.detail, /stale pid/);
+
+    const missingRoute = await runVerifier({
+      type: 'pm2_port_owner',
+      args: { name: 'home23-jerry-dash', port: String(port), path: '/nope.json', timeoutMs: 2000 },
+    }, { execFileSync: onlyPm2ExecFileSync(process.pid, calls) });
+
+    assert.equal(missingRoute.ok, false);
+    assert.match(missingRoute.detail, /HTTP 404/);
+
+    assert.deepEqual([...new Set(calls)], ['pm2 jlist']);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('pm2_port_owner gives up on a listener that accepts but never answers', async () => {
+  // The failure this whole change exists to avoid is a probe that cannot be
+  // reaped. Prove the bound is real: a socket that is accepted and then held
+  // open forever must still resolve to ok:false, not hang the verifier tick.
+  const held = new Set();
+  const server = http.createServer((req, res) => { held.add(res); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+
+  try {
+    const port = server.address().port;
+    const startedAt = process.hrtime.bigint();
+    const result = await runVerifier({
+      type: 'pm2_port_owner',
+      args: { name: 'home23-jerry-dash', port: String(port), timeoutMs: 300 },
+    }, { execFileSync: onlyPm2ExecFileSync(process.pid, []) });
+    const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+
+    assert.equal(result.ok, false);
+    assert.equal(result.observed.reachable, false);
+    assert.match(result.detail, /no identity answer on port/);
+    assert.ok(elapsedMs < 5000, `verifier must stay bounded, took ${elapsedMs.toFixed(0)}ms`);
+  } finally {
+    for (const res of held) res.destroy();
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('pm2_port_owner does not probe anything when the PM2 process is not online', async () => {
+  const commands = [];
+  let probed = 0;
+  const result = await runVerifier({
+    type: 'pm2_port_owner',
+    args: { name: 'home23-jerry-dash', port: '5002' },
+  }, {
+    execFileSync(command, args) {
+      commands.push([command, ...(args || [])].join(' '));
       if (command === 'pm2') {
         return JSON.stringify([{
           name: 'home23-jerry-dash',
-          pid: 67231,
-          pm2_env: { status: 'online' },
+          pid: 0,
+          pm2_env: { status: 'stopped' },
         }]);
       }
-      if (command === 'lsof') {
-        return [
-          'COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME',
-          'node    44914  jtr   23u  IPv4 123456      0t0  TCP *:5002 (LISTEN)',
-          '',
-        ].join('\n');
-      }
-      throw new Error(`unexpected command ${command}`);
+      throw new Error(`forbidden child process: ${command}`);
+    },
+    httpGetJson() {
+      probed += 1;
+      throw new Error('identity probe must not run for an offline process');
     },
   });
 
   assert.equal(result.ok, false);
-  assert.match(result.detail, /expected home23-jerry-dash pid 67231/);
-  assert.deepEqual(result.observed.listenerPids, [44914]);
+  assert.match(result.detail, /status=stopped/);
+  assert.deepEqual(commands, ['pm2 jlist']);
+  assert.equal(probed, 0);
 });
 
 test('log_recent_count fails when recent bracketed log matches exceed maxCount', async () => {

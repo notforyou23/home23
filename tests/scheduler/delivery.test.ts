@@ -43,6 +43,53 @@ test('summary delivery sends the job response excerpt when a successful job prod
   assert.doesNotMatch(sent[0].text, /^\[scheduler\] field-report-cycle: ok/);
 });
 
+test('delivery returns a confirmed-send outcome only after an adapter resolves', async () => {
+  const adapter: ChannelAdapter = {
+    name: 'telegram',
+    async start() {},
+    async stop() {},
+    async send() {},
+  };
+  const manager = new DeliveryManager(new Map([['telegram', adapter]]));
+
+  const outcome = await manager.deliver(makeJob(), {
+    status: 'ok',
+    response: 'Morning review reminder.',
+    durationMs: 1000,
+  });
+
+  assert.equal(outcome.status, 'delivered');
+  assert.equal(outcome.retryEligible, false);
+  assert.deepEqual(outcome.confirmedTargets, [{ channel: 'telegram', to: '123456789' }]);
+});
+
+test('delivery reports no target when configured delivery has no channel', async () => {
+  const manager = new DeliveryManager(new Map());
+
+  const outcome = await manager.deliver(makeJob({ delivery: { mode: 'summary' } }), {
+    status: 'ok',
+    response: 'Morning review reminder.',
+    durationMs: 1000,
+  });
+
+  assert.equal(outcome.status, 'no_target');
+  assert.equal(outcome.retryEligible, true);
+});
+
+test('delivery reports no adapter when the configured channel is unavailable', async () => {
+  const manager = new DeliveryManager(new Map());
+
+  const outcome = await manager.deliver(makeJob({ delivery: { mode: 'summary', channel: 'signal', to: 'jtr' } }), {
+    status: 'ok',
+    response: 'Morning review reminder.',
+    durationMs: 1000,
+  });
+
+  assert.equal(outcome.status, 'no_adapter');
+  assert.equal(outcome.retryEligible, true);
+  assert.deepEqual(outcome.unavailableTargets, [{ channel: 'signal', to: 'jtr' }]);
+});
+
 test('summary delivery keeps the Telegram note and strips the machine intake packet', async () => {
   const sent: OutgoingResponse[] = [];
   const adapter: ChannelAdapter = {
@@ -94,16 +141,19 @@ test('a failed first delivery does not suppress an identical retry (dedup armed 
   const result = { status: 'error' as const, error: 'Backup FAILED: disk full', durationMs: 1000 };
 
   // Run #1: identical text, but the adapter throws — nothing reaches jtr.
-  await manager.deliver(job, result);
+  const firstOutcome = await manager.deliver(job, result);
   assert.equal(sent.length, 0, 'first send failed, so nothing delivered');
+  assert.equal(firstOutcome.status, 'failed');
+  assert.equal(firstOutcome.retryEligible, true);
 
   // Run #2, five minutes later (inside the 6h dedupe window): the transient
   // failure must NOT have armed dedup, so the identical retry still surfaces.
   clock += 5 * 60 * 1000;
   failNext = false;
-  await manager.deliver(job, result);
+  const secondOutcome = await manager.deliver(job, result);
   assert.equal(sent.length, 1, 'identical retry after a failed send must still deliver');
   assert.match(sent[0].text, /Backup FAILED: disk full/);
+  assert.equal(secondOutcome.status, 'delivered');
 });
 
 test('a successful delivery still suppresses an identical repeat within the dedupe window', async () => {
@@ -130,6 +180,8 @@ test('a successful delivery still suppresses an identical repeat within the dedu
 
   // Run #2, five minutes later with identical text, is deduped/suppressed.
   clock += 5 * 60 * 1000;
-  await manager.deliver(job, result);
+  const suppressed = await manager.deliver(job, result);
   assert.equal(sent.length, 1, 'identical repeat within the window is suppressed');
+  assert.equal(suppressed.status, 'suppressed');
+  assert.equal(suppressed.retryEligible, false);
 });

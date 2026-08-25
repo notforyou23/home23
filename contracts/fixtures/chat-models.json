@@ -12,5 +12,7 @@
     }
   ],
   "defaultModel": "claude-opus-4-8",
-  "defaultProvider": "anthropic"
+  "defaultProvider": "anthropic",
+  "defaultReasoningEffort": "medium",
+  "reasoningEfforts": ["none", "low", "medium", "high", "xhigh", "max"]
 }

@@ -213,7 +213,12 @@ function validateDisplayLimit(limit: number): void {
 export function recoverableExcerpt(
   content: string,
   limit: number,
-  reference: { resultHandle?: string | null; operationId?: string | null; contentOffset?: number },
+  reference: {
+    resultHandle?: string | null;
+    operationId?: string | null;
+    contentOffset?: number;
+    pageable?: boolean;
+  },
 ): string {
   validateDisplayLimit(limit);
   if (content.length <= limit) return content;
@@ -242,6 +247,24 @@ export function recoverableExcerpt(
       consumed -= 1;
     }
     return `${prefix}${teachingMarker(base + consumed)}`;
+  }
+  if (!reference.operationId) {
+    const recovery = reference.pageable === false
+      ? 'Re-call this tool with a narrower query or a smaller limit. This tool does not support offset paging.'
+      : 'Re-call this tool with a narrower query, offset, or limit.';
+    const recallMarker = (shownEnd: number): string =>
+      `\n\n[OUTPUT TRUNCATED: chars ${base}-${shownEnd} of ${total}; this is a display cap, not a missing result. ${recovery} Do not treat this page as complete.]`;
+    const recallBudget = recallMarker(total).length;
+    if (limit - recallBudget >= 64) {
+      const prefixLength = limit - recallBudget;
+      let prefix = content.slice(0, prefixLength);
+      let consumed = prefix.length;
+      if (/[\uD800-\uDBFF]$/.test(prefix)) {
+        prefix = `${prefix.slice(0, -1)}…`;
+        consumed -= 1;
+      }
+      return `${prefix}${recallMarker(base + consumed)}`;
+    }
   }
   const locator = [
     reference.resultHandle ? `handle=${reference.resultHandle}` : null,
@@ -379,21 +402,25 @@ export function operationToolResult(operation: BrainOperationResult): ToolResult
       error: operation.error,
       resultArtifact: operation.resultArtifact,
       sourceEvidence: operation.sourceEvidence,
+      pageable: true,
     },
   };
 }
 
-function visibleContent(result: ToolResult, limit: number): string {
+function visibleContent(result: ToolResult, limit: number, toolName?: string): string {
   const operationId = typeof result.metadata?.operationId === 'string'
     ? result.metadata.operationId
     : null;
   const contentOffset = typeof result.metadata?.contentOffset === 'number'
     ? result.metadata.contentOffset
     : 0;
+  const pageable = result.metadata?.pageable !== false
+    && (Boolean(operationId) || toolName === 'brain_status');
   return recoverableExcerpt(result.content, limit, {
     resultHandle: result.resultHandle,
-    operationId,
+    operationId: pageable ? operationId : null,
     contentOffset,
+    pageable: result.metadata?.pageable === false ? false : undefined,
   });
 }
 
@@ -415,8 +442,8 @@ export async function executeAndFormatTool(input: {
   validateDisplayLimit(input.eventLimit);
   const result = await input.registry.execute(input.name, input.input, input.context);
   const success = result.is_error !== true;
-  const modelContent = visibleContent(result, input.modelLimit);
-  const eventContent = visibleContent(result, input.eventLimit);
+  const modelContent = visibleContent(result, input.modelLimit, input.name);
+  const eventContent = visibleContent(result, input.eventLimit, input.name);
   const eventMetadata = projectBrainToolEventMetadata(input.name, result);
   input.onEvent?.({
     type: 'tool_result',

@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Home23</title>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/home23-dashboard.css">
-  <link rel="stylesheet" href="/home23-chat.css">
+  <link rel="stylesheet" href="/home23-dashboard.css?v=20260820-chat-glass">
+  <link rel="stylesheet" href="/home23-chat.css?v=20260820-thought-turn-2">
 </head>
 <body class="h23-dashboard-page">
   <div class="h23-app-shell">
@@ -17,14 +17,15 @@
       </a>
       <nav class="h23-tabs h23-tabs-primary" aria-label="Dashboard sections" role="tablist">
         <button class="h23-tab active" id="dashboard-tab-home" data-tab="home" data-tab-label="Home" type="button" role="tab" aria-selected="true" aria-controls="panel-home" tabindex="0">Home</button>
+        <button class="h23-tab" id="dashboard-tab-chat" data-tab="chat" data-tab-label="Chat" type="button" role="tab" aria-selected="false" aria-controls="panel-chat" tabindex="-1">Chat</button>
         <button class="h23-tab" id="dashboard-tab-agency" data-tab="agency" data-tab-label="Agency" type="button" role="tab" aria-selected="false" aria-controls="panel-agency" tabindex="-1">Agency</button>
         <button class="h23-tab" id="dashboard-tab-briefs" data-tab="briefs" data-tab-label="Briefs" type="button" role="tab" aria-selected="false" aria-controls="panel-briefs" tabindex="-1">Briefs</button>
+        <button class="h23-tab" id="dashboard-tab-work" data-tab="work" data-tab-label="Work" type="button" role="tab" aria-selected="false" aria-controls="panel-work" tabindex="-1">Work</button>
         <button class="h23-tab" id="dashboard-tab-workers" data-tab="workers" data-tab-label="Workers" type="button" role="tab" aria-selected="false" aria-controls="panel-workers" tabindex="-1">Workers</button>
         <button class="h23-tab" id="dashboard-tab-query" data-tab="query" data-tab-label="Query" type="button" role="tab" aria-selected="false" aria-controls="panel-query" tabindex="-1">Query</button>
         <button class="h23-tab" id="dashboard-tab-brain-map" data-tab="brain-map" data-tab-label="Brain Map" type="button" role="tab" aria-selected="false" aria-controls="panel-brain-map" tabindex="-1">Brain Map</button>
       </nav>
       <nav class="h23-linked-tabs" aria-label="Home23 surfaces">
-        <a class="h23-tab h23-tab-external" href="/home23/chat" data-scope-tab="chat" data-tab-label="Chat">Chat <span aria-hidden="true">↗</span></a>
         <span class="h23-linked-native-tabs" role="tablist" aria-label="Dashboard tools">
           <button class="h23-tab h23-tab-settings" id="settings-btn" data-scope-tab="settings" data-tab-label="Settings" type="button" role="tab" aria-selected="false" aria-controls="panel-settings" tabindex="-1">Settings</button>
           <button class="h23-tab h23-tab-cosmo23" id="cosmo23-btn" data-scope-tab="cosmo23" data-tab-label="cosmo23" type="button" role="tab" aria-selected="false" aria-controls="cosmo23-frame-wrap" tabindex="-1">cosmo23</button>
@@ -243,35 +244,13 @@
         </section>
 
         <section class="h23-human-main-grid" aria-label="Chat, vibe, and briefs">
-          <section class="h23-human-card h23-human-card-chat h23-tile-chat" aria-label="Chat with Home23 agents">
-            <div class="h23-chat-header">
-              <button class="h23-chat-agent-pill" id="chat-agent-pill" type="button" title="Change agent">
-                <span class="h23-chat-agent-avatar" id="chat-agent-avatar">?</span>
-                <span class="h23-chat-agent-name" id="chat-agent-name">Loading...</span>
-              </button>
-              <div class="h23-chat-actions">
-                <button class="h23-chat-model-pill" id="chat-model-pill" type="button" title="Change model">
-                  <span id="chat-model-pill-label">model</span>
-                </button>
-                <button class="h23-chat-expand-btn" id="chat-more-btn" type="button" title="More" aria-haspopup="menu" aria-expanded="false">&#8230;</button>
-                <button class="h23-chat-expand-btn" id="chat-expand-btn" type="button" title="Expand chat">&#8599;</button>
-              </div>
-            </div>
-            <select class="h23-chat-agent-select" id="chat-agent-select" hidden></select>
-            <select class="h23-chat-model-select" id="chat-model-select" hidden></select>
-            <div class="h23-chat-slot" id="chat-slot-tile" data-slot="tile"></div>
-            <div class="h23-chat-conv-panel" id="chat-conv-panel">
-              <div class="h23-chat-conv-head">
-                <button class="h23-chat-conv-nav" id="chat-conv-back-btn" type="button">Back</button>
-                <div>
-                  <strong>Conversations</strong>
-                  <span id="chat-conv-count">History</span>
-                </div>
-                <button class="h23-chat-conv-nav" id="chat-conv-new-btn" type="button">New</button>
-              </div>
-              <div class="h23-chat-conv-list" id="chat-conv-list"></div>
-            </div>
-          </section>
+          <button class="h23-human-card h23-human-card-chat h23-chat-home-preview" id="chat-home-preview" type="button" aria-label="Open Chat">
+            <div class="h23-chat-preview-kicker">Chat</div>
+            <div class="h23-chat-preview-agent" id="chat-preview-agent">Loading...</div>
+            <div class="h23-chat-preview-snippet" id="chat-preview-snippet">Open Chat to talk with your agent.</div>
+            <div class="h23-chat-preview-status" id="chat-preview-status"></div>
+            <span class="h23-chat-preview-continue" id="chat-preview-open">Continue</span>
+          </button>
 
           <div class="h23-human-main-side">
             <section class="h23-human-card h23-human-card-vibe">
@@ -295,6 +274,10 @@
           </div>
         </section>
       </section>
+    </div>
+
+    <div class="h23-panel" id="panel-chat" role="tabpanel" aria-labelledby="dashboard-tab-chat" aria-hidden="true">
+      <div class="h23-chat-slot" id="chat-slot-tab" data-slot="tab"></div>
     </div>
 
     <div class="h23-vibe-detail-modal" id="home-vibe-detail-modal" aria-hidden="true">
@@ -413,6 +396,26 @@
         <section class="h23-briefs-list" id="briefs-list"></section>
         <section class="h23-briefs-reader" id="briefs-reader">
           <div class="h23-briefs-reader-empty">Choose a brief.</div>
+        </section>
+      </div>
+    </div>
+
+    <!-- Live Work plane — attach + steer for this agent's runs. -->
+    <div class="h23-panel" id="panel-work" role="tabpanel" aria-labelledby="dashboard-tab-work" aria-hidden="true">
+      <div class="h23-work-tab">
+        <div class="h23-workers-header">
+          <div>
+            <h2>Live Work</h2>
+            <div class="h23-workers-subtitle">Running subagents, cron agent-turns, and coding jobs for this agent. Open a chat-backed run to watch it and steer.</div>
+          </div>
+        </div>
+        <section class="h23-work-section">
+          <div class="h23-workers-section-title">Active</div>
+          <div id="work-active-list" class="h23-work-list"></div>
+        </section>
+        <section class="h23-work-section">
+          <div class="h23-workers-section-title">Recent</div>
+          <div id="work-recent-list" class="h23-work-list"></div>
         </section>
       </div>
     </div>
@@ -600,63 +603,86 @@
     </div>
   </div>
 
-  <!-- Chat overlay — the message-list + input subtree lives inside
-       #chat-shared-template; it's cloned into the tile's slot at init and
-       physically moved (via appendChild) into #chat-slot-overlay when the
-       overlay opens, back when it closes. Moving the same nodes preserves
-       all event bindings and mid-stream render state. -->
-  <div class="h23-chat-overlay" id="chat-overlay">
-    <div class="h23-chat-overlay-panel" role="dialog" aria-modal="true" aria-labelledby="chat-overlay-title-label">
-      <div class="h23-chat-overlay-header">
-        <div class="h23-chat-overlay-brand">
-          <div class="h23-chat-overlay-kicker">Home23 Native Chat</div>
-          <h2 class="h23-chat-overlay-title" id="chat-overlay-title-label">Loading agent…</h2>
-        </div>
-        <div class="h23-chat-overlay-controls">
-          <div class="h23-chat-actions">
-            <button class="h23-chat-expand-btn" id="chat-overlay-more-btn" title="More" aria-haspopup="menu" aria-expanded="false">&#8230;</button>
-            <button class="h23-chat-expand-btn" id="chat-overlay-close-btn" type="button" aria-label="Close Expanded Chat" title="Close">&#10005;</button>
-          </div>
-        </div>
-      </div>
-      <div class="h23-chat-slot" id="chat-slot-overlay" data-slot="overlay">
-        <!-- Shared message-list + input moves here when overlay opens -->
-      </div>
-    </div>
-  </div>
-
-  <!-- ⋯ menu popover — shared between tile and overlay (positioned on open
-       relative to whichever button was clicked). Hidden by default. Model
-       change lives on the dedicated model pill next to the agent pill, not
-       here. -->
   <div class="h23-chat-menu" id="chat-more-menu" role="menu" hidden>
     <button class="h23-chat-menu-item" data-action="new-conversation" role="menuitem" type="button">New conversation</button>
-    <button class="h23-chat-menu-item" data-action="toggle-conversations" role="menuitem" type="button">Show conversations</button>
-    <button class="h23-chat-menu-item" data-action="open-standalone" role="menuitem" type="button">Open in new tab</button>
+    <button class="h23-chat-menu-item" data-action="copy-transcript" role="menuitem" type="button">Copy transcript</button>
+    <button class="h23-chat-menu-item" data-action="export-transcript" role="menuitem" type="button">Export transcript</button>
+    <a class="h23-chat-menu-item" data-action="open-standalone" href="/home23/chat" role="menuitem">Open standalone Chat</a>
+    <a class="h23-chat-menu-item" href="/home23" role="menuitem">Dashboard</a>
   </div>
 
-  <!-- Shared message-list + input subtree. Cloned into #chat-slot-tile on
-       init; moved via appendChild between tile and overlay slots. -->
   <template id="chat-shared-template">
     <div class="h23-chat-shared" id="chat-shared">
-      <div class="h23-chat-messages" id="chat-messages">
-        <div class="h23-chat-empty">Loading...</div>
-      </div>
-      <div class="h23-chat-input-area" id="chat-input-area">
-        <div class="h23-chat-attach-tray" id="chat-attach-tray" hidden></div>
-        <div class="h23-chat-input-row">
-          <button class="h23-chat-attach-btn" id="chat-attach-btn" type="button" aria-label="Attach image" title="Attach image"><span class="h23-chat-attach-icon" aria-hidden="true">Attach</span></button>
-          <input type="file" id="chat-attach-input" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
-          <textarea class="h23-chat-input" id="chat-input" placeholder="Message your agent..." rows="1"></textarea>
-          <button class="h23-chat-send-btn" id="chat-send-btn" type="button">&#9654;</button>
+      <aside class="h23-chat-sidebar" id="chat-sidebar">
+        <div class="h23-chat-sidebar-head">
+          <strong>Conversations</strong>
+          <button class="h23-chat-conv-nav" id="chat-conv-new-btn" type="button">New</button>
         </div>
-        <div class="h23-chat-drop-overlay" id="chat-drop-overlay" hidden>Drop images to attach</div>
+        <div class="h23-chat-conv-list" id="chat-conv-list"></div>
+      </aside>
+      <div class="h23-chat-main">
+        <div class="h23-chat-header">
+          <button class="h23-chat-sidebar-toggle" id="chat-sidebar-toggle" type="button" title="Conversations" aria-label="Conversations">&#9776;</button>
+          <button class="h23-chat-agent-pill" id="chat-agent-pill" type="button" title="Change agent">
+            <span class="h23-chat-agent-avatar" id="chat-agent-avatar">?</span>
+            <span class="h23-chat-agent-name" id="chat-agent-name">Loading...</span>
+          </button>
+          <div class="h23-chat-actions">
+            <button class="h23-chat-model-pill" id="chat-model-pill" type="button" title="Change model">
+              <span id="chat-model-pill-label">model</span>
+            </button>
+            <button class="h23-chat-effort-pill" id="chat-effort-pill" type="button" title="Change reasoning effort">
+              <span id="chat-effort-pill-label">Effort</span>
+            </button>
+            <button class="h23-chat-thinking-pill" id="chat-thinking-toggle" type="button" aria-pressed="true" title="Hide thinking">
+              <span id="chat-thinking-toggle-label">Thoughts</span>
+            </button>
+            <button class="h23-chat-expand-btn" id="chat-more-btn" type="button" title="More" aria-haspopup="menu" aria-expanded="false">&#8230;</button>
+          </div>
+          <select class="h23-chat-agent-select" id="chat-agent-select" hidden></select>
+          <select class="h23-chat-model-select" id="chat-model-select" hidden></select>
+          <select class="h23-chat-effort-select" id="chat-effort-select" hidden></select>
+        </div>
+        <div class="h23-chat-turn-hud" id="chat-turn-hud" hidden>
+          <span class="h23-chat-hud-status" id="chat-hud-status">Working</span>
+          <div class="h23-chat-hud-actions">
+            <button type="button" id="chat-hud-refresh">Refresh</button>
+            <button type="button" id="chat-hud-reconnect">Reconnect</button>
+            <button type="button" id="chat-hud-stop">Stop</button>
+          </div>
+        </div>
+        <div class="h23-chat-stage">
+          <div class="h23-chat-stage-primary">
+            <div class="h23-chat-messages" id="chat-messages">
+              <div class="h23-chat-empty">Loading...</div>
+            </div>
+            <button class="h23-chat-jump-latest" id="chat-jump-latest" type="button" hidden>Latest</button>
+          </div>
+          <aside class="h23-chat-thought-dock" id="chat-thought-dock" hidden>
+            <div class="h23-chat-thought-dock-head">
+              <span class="h23-chat-thought-dock-label" id="chat-thought-dock-label">Thought</span>
+            </div>
+            <pre class="h23-chat-thought-dock-body" id="chat-thought-dock-body"></pre>
+          </aside>
+        </div>
+        <div class="h23-chat-work-strip" id="chat-work-strip" hidden></div>
+        <div class="h23-chat-input-area" id="chat-input-area">
+          <div class="h23-chat-attach-tray" id="chat-attach-tray" hidden></div>
+          <div class="h23-chat-input-row">
+            <button class="h23-chat-attach-btn" id="chat-attach-btn" type="button" aria-label="Attach image" title="Attach image"><span class="h23-chat-attach-icon" aria-hidden="true">Attach</span></button>
+            <input type="file" id="chat-attach-input" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
+            <textarea class="h23-chat-input" id="chat-input" placeholder="Message your agent..." rows="1"></textarea>
+            <button class="h23-chat-stop-btn" id="chat-stop-btn" type="button" hidden aria-label="Stop this reply">Stop</button>
+            <button class="h23-chat-send-btn" id="chat-send-btn" type="button">&#9654;</button>
+          </div>
+          <div class="h23-chat-drop-overlay" id="chat-drop-overlay" hidden>Drop images to attach</div>
+        </div>
       </div>
     </div>
   </template>
 
   <script async src="https://unpkg.com/3d-force-graph@1.73.3/dist/3d-force-graph.min.js"></script>
-  <script type="module" src="/home23-chat.js?v=20260526-dashboard-repair6"></script>
+  <script type="module" src="/home23-chat.js?v=20260820-thought-turn-2"></script>
   <script src="/home23-brain-map.js?v=20260716-tag-communities-2"></script>
   <script src="/home23-query.js?v=20260712-durable-pgs1"></script>
   <script src="/home23-dashboard.js?v=20260717-agent-kicker"></script>

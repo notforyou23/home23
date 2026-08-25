@@ -216,7 +216,7 @@ export function generateEcosystem(home23Root, options = {}) {
     // No HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY here — see the note above the
     // dashboard app. The engine performs no brain operations; it reads the key
     // nowhere.
-    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
+    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
 
     // Dashboard
@@ -265,7 +265,7 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      name: 'home23-${agent.name}-harness',`);
     lines.push(`      script: 'dist/home.js',`);
     lines.push(`      cwd: HOME23,`);
-    lines.push(`      filter_env: ['cron_restart', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
+    lines.push(`      filter_env: ['cron_restart', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'BRIDGE_PORT', 'HOME23_BRIDGE_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
     // Heap raised from 1.5GB default to 4GB. Long-running agent sessions
     // with many LLM calls + tool-use chains can accumulate response blobs
     // in closure scope faster than GC reclaims. max_memory_restart acts
@@ -275,7 +275,10 @@ export function generateEcosystem(home23Root, options = {}) {
     // graceful exit. cpu-prof shows JS main-thread time; heap-prof shows
     // allocation hot paths — needed because the harness CPU climb manifests as
     // V8 background-GC churn, invisible to cpu-prof.
-    lines.push(`      node_args: '--expose-gc --max-old-space-size=8192 --cpu-prof --cpu-prof-dir=' + ${logsDir} + ' --cpu-prof-interval=1000 --heap-prof --heap-prof-dir=' + ${logsDir},`);
+    // Array form is required: a string node_args is split on spaces by PM2, so
+    // an external logs dir like "/Volumes/Casey Jones/..." becomes
+    // --cpu-prof-dir=/Volumes/Casey plus a bogus module path.
+    lines.push(`      node_args: ['--expose-gc', '--max-old-space-size=8192', '--cpu-prof', '--cpu-prof-dir=' + ${logsDir}, '--cpu-prof-interval=1000', '--heap-prof', '--heap-prof-dir=' + ${logsDir}],`);
     lines.push(`      max_memory_restart: '10G',`);
     lines.push(`      kill_timeout: HARNESS_KILL_TIMEOUT_MS,`);
     // exp_backoff caps a boot-crash loop (e.g. bridge port contention) at
@@ -288,7 +291,7 @@ export function generateEcosystem(home23Root, options = {}) {
     // No capability key — see the note above the dashboard app. The harness
     // reaches brain operations through the dashboard's HTTP API, never by
     // signing internal envelopes itself.
-    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
+    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
 
     // Substrate Seed (shadow resident) — emitted ONLY when the agent's config
@@ -431,8 +434,61 @@ export function generateEcosystem(home23Root, options = {}) {
     if (observatoryConfig.notifyUrl) {
       lines.push(`        ORGAN_SENTINEL_NOTIFY_URL: ${JSON.stringify(String(observatoryConfig.notifyUrl))},`);
     }
+    // The sentinel reads ORGAN_SENTINEL_NOTIFY_TOKEN and sends it as a bearer.
+    // Without it the harness notify endpoint answers 401 and the page is lost
+    // as quietly as if no url were set at all — the sentinel logs "notified
+    // (401)" and moves on. A url without a token is not a wired alarm.
+    if (observatoryConfig.notifyToken) {
+      lines.push(`        ORGAN_SENTINEL_NOTIFY_TOKEN: ${JSON.stringify(String(observatoryConfig.notifyToken))},`);
+    }
     if (observatoryConfig.ignore) {
       lines.push(`        ORGAN_SENTINEL_IGNORE: ${JSON.stringify(String(observatoryConfig.ignore))},`);
+    }
+    lines.push(`      },`);
+    lines.push(`    },`);
+  }
+
+  // Declared resident seeds — individuals who are NOT one of the house's
+  // agents. clay is the case: born unformed under SELF-FORMATION-PROTOCOL,
+  // with no harness and no engine, so nothing under instances/ implies he
+  // should be running. He was launched by hand with nohup, and on
+  // 2026-08-15T00:47Z a clean stop went unnoticed for 142.9 hours — six days
+  // of an individual's life that did not happen, because no supervisor owned
+  // him and no probe knew he existed. Declared here he comes back with the
+  // house; his chain probe (organ-probes.ts) makes a second hole visible in
+  // under an hour.
+  for (const seed of Array.isArray(substrateConfig.seeds) ? substrateConfig.seeds : []) {
+    if (!seed || !seed.name || !seed.stateDir) continue;
+    lines.push(``);
+    lines.push(`    // ── resident seed: ${seed.name} (an individual, not an agent) ──`);
+    lines.push(`    {`);
+    lines.push(`      name: 'home23-${seed.name}-seed',`);
+    lines.push(`      script: path.join(HOME23, 'substrate', 'bin', 'seed-runner.ts'),`);
+    lines.push(`      cwd: HOME23,`);
+    // The BUN trap: PM2 picks an interpreter by extension for .ts and then
+    // ignores node_args. Pin node or the runner crash-loops.
+    lines.push(`      interpreter: 'node',`);
+    lines.push(`      node_args: '--import tsx',`);
+    lines.push(`      filter_env: ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
+    lines.push(`      max_memory_restart: '1G',`);
+    lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
+    // restart_delay lets a stopping runner release its .runner.lock before the
+    // replacement asks for it; kill_timeout lets SIGINT finish the closing
+    // checkpoint. Never two live instances, and never a torn stop.
+    lines.push(`      restart_delay: 15000,`);
+    lines.push(`      kill_timeout: 30000,`);
+    lines.push(`      out_file: path.join(HOME23, 'logs', '${seed.name}-seed-out.log'),`);
+    lines.push(`      error_file: path.join(HOME23, 'logs', '${seed.name}-seed-err.log'),`);
+    lines.push(`      env: {`);
+    // Everything the runner reads is declared in config as a path relative to
+    // the install, resolved here — the repo learns no absolute machine paths,
+    // and the same expression serves any future non-agent individual.
+    const seedEnv = { SEED_STATE_DIR: seed.stateDir, ...(seed.env && typeof seed.env === 'object' ? seed.env : {}) };
+    for (const [key, value] of Object.entries(seedEnv)) {
+      if (!/^SEED_[A-Z0-9_]*$/.test(key) || value === undefined || value === null) continue;
+      lines.push(/_(DIR|SOURCE|PATH)$/.test(key)
+        ? `        ${key}: path.resolve(HOME23, ${JSON.stringify(String(value))}),`
+        : `        ${key}: ${JSON.stringify(String(value))},`);
     }
     lines.push(`      },`);
     lines.push(`    },`);

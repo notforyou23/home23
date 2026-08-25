@@ -22,7 +22,7 @@ const fs = require('fs');
 const os = require('os');
 const { runVerifier } = require('./verifiers');
 const { runRemediator } = require('./remediators');
-const { isOperatorSuppressed } = require('./store');
+const { isAgendaHandoffProblem, isOperatorSuppressed } = require('./store');
 const { appendSignal } = require('../cognition/signals');
 const { createFromFuseNotify } = require('../os-kernel/operator-intents');
 
@@ -103,6 +103,7 @@ function verifierSourceChangedSinceLastCheck(problem) {
 }
 
 function shouldReverifyResolvedProblem(problem, { force = false, nowMs = Date.now() } = {}) {
+  if (isAgendaHandoffProblem(problem) && problem?.handoff?.status === 'terminal') return false;
   if (force) return true;
   const lastMs = problem?.lastCheckedAt ? Date.parse(problem.lastCheckedAt) : 0;
   if (!lastMs) return true;
@@ -238,6 +239,17 @@ class LiveProblemsLoop {
     const plan = Array.isArray(p.remediation) ? p.remediation : [];
     const step = plan[p.stepIndex || 0];
     if (!step) {
+      if (isAgendaHandoffProblem(p)) {
+        const last = Array.isArray(p.remediationLog) ? p.remediationLog.at(-1) : null;
+        this.store.completeAgendaHandoff(p.id, {
+          outcome: /budget exhausted/i.test(String(last?.detail || ''))
+            ? 'budget_exhausted'
+            : (last?.outcome === 'rejected' ? 'dispatch_rejected' : 'dispatch_failed'),
+          detail: last?.detail || 'agenda handoff remediation plan exhausted',
+          source: 'dispatch',
+        });
+        return;
+      }
       // Plan exhausted. If the last step was notify_jtr, it has already fired.
       // Mark escalated once so we don't keep trying.
       if (!p.escalated && plan.length > 0) this.store.markEscalated(p.id);
@@ -303,8 +315,16 @@ class LiveProblemsLoop {
         step: p.stepIndex, type: step.type,
         outcome: 'failed', detail: `agent budget exhausted (${elapsedHours.toFixed(1)}h)`,
       });
-      this.store.clearDispatch(p.id);
-      this.store.advanceRemediationStep(p.id);
+      if (isAgendaHandoffProblem(p)) {
+        this.store.completeAgendaHandoff(p.id, {
+          outcome: 'budget_exhausted',
+          detail: `agent budget exhausted (${elapsedHours.toFixed(1)}h)`,
+          source: 'dispatch',
+        });
+      } else {
+        this.store.clearDispatch(p.id);
+        this.store.advanceRemediationStep(p.id);
+      }
       return;
     }
 
@@ -376,9 +396,17 @@ class LiveProblemsLoop {
       this.store.markEscalated(p.id);
       this.store.advanceRemediationStep(p.id);
     } else if (out.outcome === 'rejected' || out.outcome === 'failed') {
-      // Clear dispatch state if this was the agent step failing past budget.
-      if (isTier3Dispatch) this.store.clearDispatch(p.id);
-      this.store.advanceRemediationStep(p.id);
+      if (isTier3Dispatch && isAgendaHandoffProblem(p)) {
+        this.store.completeAgendaHandoff(p.id, {
+          outcome: out.outcome === 'rejected' ? 'dispatch_rejected' : 'dispatch_failed',
+          detail: out.detail || '',
+          source: 'dispatch',
+        });
+      } else {
+        // Clear dispatch state if this was the agent step failing past budget.
+        if (isTier3Dispatch) this.store.clearDispatch(p.id);
+        this.store.advanceRemediationStep(p.id);
+      }
     }
     // On 'success' for non-notify steps, leave stepIndex where it is. Next tick
     // re-verifies; if the fix worked → resolved. If not, cooldown expires and

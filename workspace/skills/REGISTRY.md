@@ -1,6 +1,6 @@
 # Skills Registry
 
-Generated from live skill discovery. Total: 19 skills.
+Generated from live skill discovery. Total: 20 skills.
 
 ## autoresearch
 
@@ -90,6 +90,24 @@ Generated from live skill discovery. Total: 19 skills.
 - **Triggers:** delegate this coding task | spin up a worker for this feature | use a coding agent | hand this off to codex
 - **Requires tools:** spawn_agent
 - **Composes:** workflow-automation
+- **Depends on:** none
+
+## contact
+
+- **ID:** `contact`
+- **Type:** rich
+- **Runtime:** docs
+- **Category:** contact
+- **Operational:** no
+- **Has SKILL.md:** yes
+- **Has manifest:** no
+- **Has scripts:** no
+- **Hooks:** none
+- **Description:** Use Jerry's world-contact tools for Mac, house, intake, browser completion, phone shortcuts, and governed comms.
+- **Actions:** attention, house, capture, comms
+- **Triggers:** what's on my calendar | what needs me | turn on the lights | remember this file | draft a message | run a shortcut | check the house
+- **Requires tools:** attention_scan, mac_read, house_get_entity, house_call_safe_service, capture_artifact, browser_workflow, comms_draft
+- **Composes:** none
 - **Depends on:** none
 
 ## deep-research-synthesizer

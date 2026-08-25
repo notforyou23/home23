@@ -39,6 +39,54 @@ function minutesSince(ts) {
   return (Date.now() - ts) / 60000;
 }
 
+/**
+ * GET a small JSON document over localhost with a hard wall-clock deadline and
+ * a bounded body. Used by identity probes that must never be able to hang: the
+ * socket `timeout` option only covers idle sockets, so a deadline timer backs
+ * it up and the response is capped so a wrong listener cannot stream forever.
+ */
+function simpleHttpGetJson(url, timeoutMs = 4000, maxBytes = 64 * 1024) {
+  return new Promise((resolve, reject) => {
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    const client = parsed.protocol === 'https:' ? https : http;
+    let settled = false;
+    let deadline = null;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      fn(value);
+    };
+    const req = client.get(parsed, { timeout: timeoutMs }, (res) => {
+      let body = '';
+      let bytes = 0;
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => {
+        bytes += Buffer.byteLength(chunk, 'utf8');
+        if (bytes > maxBytes) {
+          req.destroy(new Error(`response exceeded ${maxBytes} bytes`));
+          return;
+        }
+        body += chunk;
+      });
+      res.on('end', () => finish(resolve, { status: res.statusCode || 0, body }));
+      res.on('error', (err) => finish(reject, err));
+    });
+    deadline = setTimeout(() => {
+      req.destroy(new Error(`deadline exceeded after ${timeoutMs}ms`));
+    }, timeoutMs);
+    deadline.unref?.();
+    req.on('timeout', () => req.destroy(new Error(`timeout after ${timeoutMs}ms`)));
+    req.on('error', (err) => finish(reject, err));
+  });
+}
+
 function simpleHttpGet(url, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
     let parsed;
@@ -232,17 +280,41 @@ const verifiers = {
   },
 
   /**
-   * PM2 process is online and is the process that owns a listening TCP port.
+   * PM2 process is online and is the process actually serving a localhost port.
    * Catches stale/orphan listeners where HTTP still responds but an older
    * process owns the socket instead of the current PM2 child.
-   * args: { name, port }
+   *
+   * Ownership is established by asking the listener who it is, not by reading
+   * the kernel socket table. On macOS 27 `lsof` can wedge uninterruptibly
+   * inside proc_pidfdinfo: neither its own timeout nor SIGKILL reaps it, so a
+   * scoped `lsof -iTCP:<port>` is NOT safe here — one run per verifier tick
+   * accumulates unkillable processes and zombie helpers until the host is
+   * unusable. This verifier therefore never shells out to lsof and has no lsof
+   * fallback. The only child process it runs is the PM2 jlist that was already
+   * required to resolve the expected pid.
+   *
+   * Fail-closed: HTTP success alone is never enough. The identity document must
+   * parse and must report a pid equal to PM2's pid for the named process. A
+   * stale listener answers with its own (stale) pid; a listener from an older
+   * build has no identity route and answers 404; an unreachable or malformed
+   * answer is a failure, not a pass.
+   *
+   * args: { name, port, host?, path?, timeoutMs? }
+   * ctx: { execFileSync?, httpGetJson? } — injection points for tests.
    */
-  pm2_port_owner({ name, port }, ctx = {}) {
+  async pm2_port_owner({ name, port, host, path: identityPath, timeoutMs }, ctx = {}) {
     if (!name) return { ok: false, detail: 'name required' };
     if (!port) return { ok: false, detail: 'port required' };
 
     const portText = String(port).trim();
     if (!/^\d+$/.test(portText)) return { ok: false, detail: `invalid port: ${port}` };
+
+    const hostText = String(host || '127.0.0.1').trim() || '127.0.0.1';
+    const pathText = String(identityPath || '/home23/process.json').trim() || '/home23/process.json';
+    const probeTimeoutMs = Number.isFinite(Number(timeoutMs)) && Number(timeoutMs) > 0
+      ? Number(timeoutMs)
+      : 4000;
+    const identityUrl = `http://${hostText}:${portText}${pathText}`;
 
     const run = ctx.execFileSync || execFileSync;
     let pm2Pid = null;
@@ -279,39 +351,78 @@ const verifiers = {
       return { ok: false, detail: `pm2 jlist failed: ${err.message}`, observed: { name, port: portText } };
     }
 
-    let lsofOut = '';
+    const base = { name, port: portText, pm2Pid, status, identityUrl };
+    const getJson = ctx.httpGetJson || simpleHttpGetJson;
+
+    let response;
     try {
-      lsofOut = run('lsof', ['-nP', `-iTCP:${portText}`, '-sTCP:LISTEN'], { encoding: 'utf8', timeout: 5000 });
+      response = await getJson(identityUrl, probeTimeoutMs);
     } catch (err) {
       return {
         ok: false,
-        detail: `no listener on port ${portText} for ${name} pid ${pm2Pid}`,
-        observed: { name, port: portText, pm2Pid, status, listenerPids: [] },
+        detail: `no identity answer on port ${portText} for ${name} pid ${pm2Pid}: ${err.message}`,
+        observed: { ...base, reachable: false },
       };
     }
 
-    const listenerPids = [...new Set(String(lsofOut)
-      .trim()
-      .split('\n')
-      .slice(1)
-      .map(line => Number.parseInt(line.trim().split(/\s+/)[1], 10))
-      .filter(pid => Number.isFinite(pid) && pid > 0))];
-
-    if (listenerPids.length === 0) {
+    const httpStatus = Number(response?.status);
+    if (!Number.isFinite(httpStatus) || httpStatus < 200 || httpStatus >= 300) {
       return {
         ok: false,
-        detail: `no listener on port ${portText} for ${name} pid ${pm2Pid}`,
-        observed: { name, port: portText, pm2Pid, status, listenerPids },
+        detail: `identity endpoint on port ${portText} returned HTTP ${response?.status ?? '?'} — listener is not ${name} pid ${pm2Pid}`,
+        observed: { ...base, reachable: true, httpStatus: Number.isFinite(httpStatus) ? httpStatus : null },
       };
     }
 
-    const ok = listenerPids.includes(pm2Pid);
+    let identity = response?.json;
+    if (identity === undefined) {
+      try {
+        identity = JSON.parse(String(response?.body ?? ''));
+      } catch (err) {
+        return {
+          ok: false,
+          detail: `identity endpoint on port ${portText} returned malformed JSON: ${err.message}`,
+          observed: { ...base, reachable: true, httpStatus },
+        };
+      }
+    }
+
+    if (!identity || typeof identity !== 'object' || Array.isArray(identity)) {
+      return {
+        ok: false,
+        detail: `identity endpoint on port ${portText} returned a non-object body`,
+        observed: { ...base, reachable: true, httpStatus },
+      };
+    }
+
+    const listenerPid = Number.parseInt(String(identity.pid ?? ''), 10);
+    if (!Number.isFinite(listenerPid) || listenerPid <= 0) {
+      return {
+        ok: false,
+        detail: `identity endpoint on port ${portText} reported no usable pid`,
+        observed: { ...base, reachable: true, httpStatus, listenerPid: null },
+      };
+    }
+
+    const observed = {
+      ...base,
+      reachable: true,
+      httpStatus,
+      listenerPid,
+      listenerService: typeof identity.service === 'string' ? identity.service : null,
+      listenerAgent: typeof identity.agent === 'string' ? identity.agent : null,
+      listenerPm2Name: typeof identity.pm2Name === 'string' ? identity.pm2Name : null,
+      listenerPort: Number.isFinite(Number(identity.port)) ? Number(identity.port) : null,
+      listenerStartedAt: typeof identity.startedAt === 'string' ? identity.startedAt : null,
+    };
+
+    const ok = listenerPid === pm2Pid;
     return {
       ok,
       detail: ok
         ? `port ${portText} owned by ${name} pid ${pm2Pid}`
-        : `port ${portText} owned by stale pid ${listenerPids.join(',')}, expected ${name} pid ${pm2Pid}`,
-      observed: { name, port: portText, pm2Pid, status, listenerPids },
+        : `port ${portText} owned by stale pid ${listenerPid}, expected ${name} pid ${pm2Pid}`,
+      observed,
     };
   },
 

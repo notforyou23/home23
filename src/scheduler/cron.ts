@@ -13,6 +13,7 @@ import { join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { SchedulerConfig } from '../types.js';
 import { parseReasoningEffort } from '../agent/reasoning-effort.js';
+import type { DeliveryOutcome } from './delivery.js';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -76,6 +77,7 @@ export interface JobResult {
   response?: string;
   error?: string;
   durationMs: number;
+  deliveryOutcome?: DeliveryOutcome;
   semanticStatus?: Exclude<JobSemanticStatus, 'withheld'>;
   outcomeLayers?: Partial<Record<JobOutcomeLayer, JobOutcomeLayerReceipt>>;
   artifacts?: string[];
@@ -941,7 +943,6 @@ export class CronScheduler {
   ): JobOutcomeReceipt {
     const decisionAction = options.decision?.action ?? 'run';
     const deliveryConfigured = Boolean(job.delivery && job.delivery.mode !== 'none');
-    const deliveryFailed = result.error?.startsWith('Delivery failed:') ?? false;
     const processLayer: JobOutcomeLayerReceipt = options.withheld
       ? { status: 'skipped', reason: `process not invoked because scheduler decision was ${decisionAction}` }
       : result.status === 'ok'
@@ -972,13 +973,7 @@ export class CronScheduler {
       artifact: Array.isArray(result.artifacts) && result.artifacts.length > 0
         ? { status: 'success', reason: 'handler reported durable artifact output', evidence: { artifacts: result.artifacts } }
         : { status: 'unknown', reason: 'no artifact contract or artifact output was reported' },
-      delivery: !deliveryConfigured
-        ? { status: 'not_applicable', reason: 'job has no delivery target or delivery mode is none' }
-        : deliveryFailed
-          ? { status: 'failed', reason: result.error ?? 'delivery failed' }
-          : result.status === 'ok'
-            ? { status: 'success', reason: 'configured delivery completed or was skipped by delivery policy' }
-            : { status: 'unknown', reason: 'handler failed before delivery success could be established' },
+      delivery: this.deliveryOutcomeLayer(job, result, options.withheld, decisionAction, deliveryConfigured),
       intent: result.semanticStatus === 'satisfied'
         ? { status: 'success', reason: 'handler reported intended outcome satisfied' }
         : result.semanticStatus === 'failed'
@@ -987,7 +982,7 @@ export class CronScheduler {
     };
 
     for (const [layer, receipt] of Object.entries(result.outcomeLayers ?? {}) as Array<[JobOutcomeLayer, JobOutcomeLayerReceipt]>) {
-      if (receipt?.status && receipt.reason) {
+      if (layer !== 'delivery' && receipt?.status && receipt.reason) {
         layers[layer] = receipt;
       }
     }
@@ -1005,6 +1000,81 @@ export class CronScheduler {
       resourceContract: options.decision?.resourceContract ?? this.buildResourceContract(job),
       layers,
     };
+  }
+
+  private deliveryOutcomeLayer(
+    job: CronJob,
+    result: JobResult,
+    withheld: boolean,
+    decisionAction: JobDecisionAction,
+    deliveryConfigured: boolean,
+  ): JobOutcomeLayerReceipt {
+    if (!deliveryConfigured) {
+      return { status: 'not_applicable', reason: 'job has no delivery target or delivery mode is none' };
+    }
+    if (withheld) {
+      return {
+        status: 'skipped',
+        reason: `delivery not attempted because scheduler withheld execution: ${decisionAction}`,
+        evidence: { deliveryStatus: 'withheld' },
+      };
+    }
+
+    const outcome = result.deliveryOutcome;
+    if (!outcome) {
+      return {
+        status: 'unknown',
+        reason: result.status === 'error'
+          ? 'handler failed before it recorded a delivery outcome'
+          : 'handler did not record a delivery outcome',
+      };
+    }
+
+    switch (outcome.status) {
+      case 'delivered':
+        return {
+          status: 'success',
+          reason: outcome.reason,
+          evidence: {
+            deliveryStatus: outcome.status,
+            confirmedTargets: outcome.confirmedTargets,
+            unavailableTargets: outcome.unavailableTargets,
+            failedTargets: outcome.failedTargets,
+          },
+        };
+      case 'skipped_by_policy':
+      case 'suppressed':
+        return {
+          status: 'skipped',
+          reason: outcome.reason,
+          evidence: { deliveryStatus: outcome.status },
+        };
+      case 'no_target':
+        return {
+          status: 'failed',
+          reason: outcome.reason,
+          evidence: { deliveryStatus: outcome.status },
+        };
+      case 'no_adapter':
+        return {
+          status: 'failed',
+          reason: outcome.reason,
+          evidence: {
+            deliveryStatus: outcome.status,
+            unavailableTargets: outcome.unavailableTargets,
+          },
+        };
+      case 'failed':
+        return {
+          status: 'failed',
+          reason: outcome.reason,
+          evidence: {
+            deliveryStatus: outcome.status,
+            failedTargets: outcome.failedTargets,
+            unavailableTargets: outcome.unavailableTargets,
+          },
+        };
+    }
   }
 
   private deriveSemanticStatus(

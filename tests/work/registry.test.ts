@@ -88,6 +88,35 @@ test('reconcileOnBoot: subagent work interrupted, undelivered terminal coding wo
   assert.equal(backfilled!.status, 'running');
 });
 
+test('create keeps cron origin on the cron chat itself', (t) => {
+  const reg = makeRegistry(t);
+  const rec = reg.create({
+    kind: 'cron',
+    originChatId: 'cron-heartbeat',
+    label: 'Heartbeat',
+    resultHandle: { type: 'cron_chat', chatId: 'cron-heartbeat' },
+  });
+  assert.equal(rec.kind, 'cron');
+  assert.equal(rec.originChatId, 'cron-heartbeat');
+  assert.equal(rec.resultHandle.type, 'cron_chat');
+  assert.equal(rec.status, 'running');
+});
+
+test('reconcileOnBoot: leftover cron work is interrupted', (t) => {
+  const reg = makeRegistry(t);
+  const cron = reg.create({
+    kind: 'cron',
+    originChatId: 'cron-heartbeat',
+    label: 'Heartbeat',
+    resultHandle: { type: 'cron_chat', chatId: 'cron-heartbeat' },
+  });
+  const result = reg.reconcileOnBoot({ jobs: [] });
+  const done = reg.get(cron.workId)!;
+  assert.equal(done.status, 'interrupted');
+  assert.match(String(done.error || ''), /cron|harness restarted/i);
+  assert.equal(result.interrupted.some((w) => w.workId === cron.workId), true);
+});
+
 test('reconcileOnBoot: coding work whose job vanished is interrupted', (t) => {
   const reg = makeRegistry(t);
   const rec = reg.create({ kind: 'coding', originChatId: '123', label: 'gone', resultHandle: { type: 'coding_job', jobId: 'cj_gone_1' } });

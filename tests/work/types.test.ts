@@ -4,6 +4,7 @@ import {
   resolveRootChatId,
   newWorkId,
   isHumanOrigin,
+  isChatWorkHandle,
   TERMINAL_WORK_STATUSES,
 } from '../../src/work/types.ts';
 
@@ -41,6 +42,12 @@ test('isHumanOrigin', () => {
   assert.equal(isHumanOrigin('cron-agent-daily'), false);
   assert.equal(isHumanOrigin('subagent:123:ab12'), false);
   assert.equal(isHumanOrigin('worker:shakedown'), false);
+});
+
+test('isChatWorkHandle is true only for chat-backed handles', () => {
+  assert.equal(isChatWorkHandle({ type: 'subagent_chat', chatId: 'subagent:1:aaaa' }), true);
+  assert.equal(isChatWorkHandle({ type: 'cron_chat', chatId: 'cron-daily' }), true);
+  assert.equal(isChatWorkHandle({ type: 'coding_job', jobId: 'cj_1' }), false);
 });
 
 test('terminal statuses', () => {

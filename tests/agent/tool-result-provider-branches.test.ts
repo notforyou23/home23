@@ -36,9 +36,14 @@ function finalAnthropicMessage(provider: string, content: Array<Record<string, u
   };
 }
 
-function messageStream(message: Record<string, unknown>) {
+function messageStream(
+  message: Record<string, unknown>,
+  events: Array<Record<string, unknown>> = [],
+) {
   return {
-    async *[Symbol.asyncIterator]() {},
+    async *[Symbol.asyncIterator]() {
+      for (const event of events) yield event;
+    },
     async finalMessage() { return message; },
   };
 }
@@ -54,6 +59,7 @@ function makeBrainOperations() {
 
 async function runProvider(provider: typeof PROVIDERS[number]): Promise<{
   toolEvents: Array<Record<string, unknown>>;
+  thinkingEvents: Array<Record<string, unknown>>;
   contexts: Array<Record<string, unknown>>;
   providerRequests: Array<Record<string, unknown>>;
   nativeToolResult: unknown;
@@ -64,6 +70,7 @@ async function runProvider(provider: typeof PROVIDERS[number]): Promise<{
   const contexts: Array<Record<string, unknown>> = [];
   const providerRequests: Array<Record<string, unknown>> = [];
   const toolEvents: Array<Record<string, unknown>> = [];
+  const thinkingEvents: Array<Record<string, unknown>> = [];
   const tool = {
     name: TOOL_NAME,
     description: 'returns one typed failure',
@@ -156,7 +163,16 @@ async function runProvider(provider: typeof PROVIDERS[number]): Promise<{
             if (sdkCall === 1) {
               return messageStream(finalAnthropicMessage(provider, [{
                 type: 'tool_use', id: 'tool-1', name: TOOL_NAME, input: {},
-              }]));
+              }]), provider === 'anthropic' ? [
+                {
+                  type: 'content_block_delta',
+                  delta: { type: 'thinking_delta', thinking: 'Checking the local tool first. ' },
+                },
+                {
+                  type: 'content_block_delta',
+                  delta: { type: 'thinking_delta', thinking: 'Then I will report the typed failure honestly.' },
+                },
+              ] : []);
             }
             const messages = request.messages as Array<Record<string, unknown>>;
             const last = messages.at(-1) as { content?: Array<Record<string, unknown>> };
@@ -182,10 +198,14 @@ async function runProvider(provider: typeof PROVIDERS[number]): Promise<{
       providerRequests.push(body);
 
       if (provider === 'openai-codex') {
-        if (providerCall === 1) return sse([{
-          type: 'response.output_item.done',
-          item: { type: 'function_call', call_id: 'call-1', name: TOOL_NAME, arguments: '{}' },
-        }]);
+        if (providerCall === 1) return sse([
+          { type: 'response.reasoning_summary_text.delta', delta: 'Need the tool.' },
+          { type: 'response.reasoning_summary_text.done', text: 'Need the tool.' },
+          {
+            type: 'response.output_item.done',
+            item: { type: 'function_call', call_id: 'call-1', name: TOOL_NAME, arguments: '{}' },
+          },
+        ]);
         const items = body.input as Array<Record<string, unknown>>;
         nativeToolResult = items.find(item => item.type === 'function_call_output');
         return sse([{ type: 'response.output_text.done', text: 'done' }]);
@@ -244,11 +264,12 @@ async function runProvider(provider: typeof PROVIDERS[number]): Promise<{
       hardDurationMs: 120_000,
       onEvent: event => {
         if (event.type === 'tool_result') toolEvents.push(event as unknown as Record<string, unknown>);
+        if (event.type === 'thinking') thinkingEvents.push(event as unknown as Record<string, unknown>);
       },
     });
     const result = await started.response;
     assert.equal(result.text, 'done');
-    return { toolEvents, contexts, providerRequests, nativeToolResult };
+    return { toolEvents, thinkingEvents, contexts, providerRequests, nativeToolResult };
   } finally {
     globalThis.fetch = originalFetch;
     for (const key of envKeys) {
@@ -284,6 +305,27 @@ for (const provider of PROVIDERS) {
     }
   });
 }
+
+test('openai-codex requests a reasoning summary and emits thinking events', async () => {
+  const result = await runProvider('openai-codex');
+  assert.deepEqual(result.providerRequests[0]?.reasoning, { effort: 'medium', summary: 'auto' });
+  assert.equal(result.thinkingEvents.map(event => event.content).join(''), 'Need the tool.');
+});
+
+test('anthropic enables extended thinking for default effort', async () => {
+  const result = await runProvider('anthropic');
+  assert.deepEqual(result.providerRequests[0]?.thinking, { type: 'enabled', budget_tokens: 8000 });
+  assert.equal(result.providerRequests[0]?.temperature, 1);
+  assert.equal(
+    result.thinkingEvents.map(event => event.content).join(''),
+    'Checking the local tool first. Then I will report the typed failure honestly.',
+  );
+});
+
+test('minimax does not enable anthropic extended thinking', async () => {
+  const result = await runProvider('minimax');
+  assert.equal(result.providerRequests[0]?.thinking, undefined);
+});
 
 test('xAI receives an object-root schema without unsupported composition keywords', async () => {
   const result = await runProvider('xai');
@@ -380,11 +422,13 @@ async function runGrokZdrScenario(rejectPreviousResponseId: boolean): Promise<{
       if (xaiCall === 1) {
         return sse([
           { type: 'response.created', response: { id: 'xai-response-zdr-1' } },
-          { type: 'response.reasoning_summary_text.delta', delta: 'Need' },
-          { type: 'response.reasoning_summary_text.delta', delta: ' the' },
-          { type: 'response.reasoning_summary_text.delta', delta: ' local' },
-          { type: 'response.reasoning_summary_text.delta', delta: ' result.' },
-          { type: 'response.reasoning_summary_text.done', text: 'Need the local result.' },
+          { type: 'response.reasoning_text.delta', delta: 'Need' },
+          { type: 'response.reasoning_text.delta', delta: ' the' },
+          { type: 'response.reasoning_text.delta', delta: ' local' },
+          { type: 'response.reasoning_text.delta', delta: ' result.' },
+          { type: 'response.reasoning_text.done', text: 'Need the local result.' },
+          { type: 'response.reasoning_summary_text.delta', delta: '**Need the local result**' },
+          { type: 'response.reasoning_summary_text.done', text: '**Need the local result**' },
           {
             type: 'response.output_item.done',
             item: {
@@ -416,10 +460,12 @@ async function runGrokZdrScenario(rejectPreviousResponseId: boolean): Promise<{
       }
 
       return sse([
-        { type: 'response.reasoning_summary_text.delta', delta: 'Use' },
-        { type: 'response.reasoning_summary_text.delta', delta: ' that' },
-        { type: 'response.reasoning_summary_text.delta', delta: ' result.' },
-        { type: 'response.reasoning_summary_text.done', text: 'Use that result.' },
+        { type: 'response.reasoning_text.delta', delta: 'Use' },
+        { type: 'response.reasoning_text.delta', delta: ' that' },
+        { type: 'response.reasoning_text.delta', delta: ' result.' },
+        { type: 'response.reasoning_text.done', text: 'Use that result.' },
+        { type: 'response.reasoning_summary_text.delta', delta: '**Use that result**' },
+        { type: 'response.reasoning_summary_text.done', text: '**Use that result**' },
         {
           type: 'response.output_item.done',
           item: {

@@ -184,7 +184,7 @@ test('GPT-5.6 Codex text generation sends Responses reasoning and no Chat Comple
         expires: Date.now() + 60_000, accountId: 'acct-test',
       }),
     });
-    assert.deepEqual(body?.reasoning, { effort: 'xhigh' });
+    assert.deepEqual(body?.reasoning, { effort: 'xhigh', summary: 'auto' });
     assert.equal(Object.hasOwn(body ?? {}, 'reasoning_effort'), false);
   } finally {
     globalThis.fetch = prevFetch;

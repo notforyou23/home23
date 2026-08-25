@@ -14,6 +14,7 @@ describe('ChatState', () => {
     assert.equal(snap.input, '');
     assert.equal(snap.streaming, false);
     assert.equal(snap.activeTurnId, null);
+    assert.deepEqual(snap.activeWork, []);
   });
 
   it('set() merges and fires "change" listeners', () => {

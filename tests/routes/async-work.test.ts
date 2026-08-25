@@ -136,3 +136,114 @@ test('agent work tools list active work, inspect an exact id, and request cancel
   assert.equal(alreadyTerminal.is_error, true);
   assert.match(alreadyTerminal.content, /already terminal/i);
 });
+
+test('work stream accepts EventSource query tokens', async (t) => {
+  const { base } = startApp(t);
+  const res = await fetch(`${base}/api/work/stream?chatId=dash-1&token=secret`);
+  assert.equal(res.status, 200);
+  assert.match(String(res.headers.get('content-type') || ''), /text\/event-stream/);
+  await res.body?.cancel();
+});
+
+test('inject enqueues steer and rejects empty, coding, and terminal work', async (t) => {
+  const { registry, base } = startApp(t);
+  const sub = registry.create({
+    kind: 'subagent', originChatId: '123', label: 'audit',
+    resultHandle: { type: 'subagent_chat', chatId: 'subagent:123:aaaa' },
+  });
+  const cron = registry.create({
+    kind: 'cron', originChatId: 'cron-nightly', label: 'Nightly',
+    resultHandle: { type: 'cron_chat', chatId: 'cron-nightly' },
+  });
+  const coding = registry.create({
+    kind: 'coding', originChatId: '123', label: 'fix',
+    resultHandle: { type: 'coding_job', jobId: 'cj_1' },
+  });
+
+  const empty = await fetch(`${base}/api/work/${sub.workId}/inject`, {
+    method: 'POST', ...AUTH, body: JSON.stringify({ text: '  ' }),
+  });
+  assert.equal(empty.status, 400);
+
+  const codingRes = await fetch(`${base}/api/work/${coding.workId}/inject`, {
+    method: 'POST', ...AUTH, body: JSON.stringify({ text: 'please stop' }),
+  });
+  assert.equal(codingRes.status, 400);
+
+  const ok = await fetch(`${base}/api/work/${sub.workId}/inject`, {
+    method: 'POST', ...AUTH, body: JSON.stringify({ text: 'do not restart nginx' }),
+  });
+  assert.equal(ok.status, 202);
+  const okBody = await ok.json() as { pending: number; workId: string };
+  assert.equal(okBody.workId, sub.workId);
+  assert.equal(okBody.pending, 1);
+  assert.match(String(registry.get(sub.workId)?.progressSummary || ''), /steer pending/i);
+
+  const cronOk = await fetch(`${base}/api/work/${cron.workId}/inject`, {
+    method: 'POST', ...AUTH, body: JSON.stringify({ text: 'skip the weekly dump' }),
+  });
+  assert.equal(cronOk.status, 202);
+
+  registry.complete(sub.workId, 'completed');
+  const terminal = await fetch(`${base}/api/work/${sub.workId}/inject`, {
+    method: 'POST', ...AUTH, body: JSON.stringify({ text: 'too late' }),
+  });
+  assert.equal(terminal.status, 409);
+});
+
+test('inject overflow is rejected at 8 pending notes', async (t) => {
+  const { registry, base } = startApp(t);
+  const sub = registry.create({
+    kind: 'subagent', originChatId: '123', label: 'audit',
+    resultHandle: { type: 'subagent_chat', chatId: 'subagent:123:ffff' },
+  });
+  for (let i = 0; i < 8; i++) {
+    const res = await fetch(`${base}/api/work/${sub.workId}/inject`, {
+      method: 'POST', ...AUTH, body: JSON.stringify({ text: `note ${i}` }),
+    });
+    assert.equal(res.status, 202);
+  }
+  const overflow = await fetch(`${base}/api/work/${sub.workId}/inject`, {
+    method: 'POST', ...AUTH, body: JSON.stringify({ text: 'ninth' }),
+  });
+  assert.equal(overflow.status, 409);
+});
+
+test('work stream sends a snapshot then live origin updates', async (t) => {
+  const { registry, base } = startApp(t);
+  const res = await fetch(`${base}/api/work/stream?chatId=dash-1`, AUTH);
+  assert.equal(res.status, 200);
+  assert.match(String(res.headers.get('content-type') || ''), /text\/event-stream/);
+  const reader = res.body.getReader();
+  t.after(() => reader.cancel());
+  const decoder = new TextDecoder();
+  let buf = '';
+  const readJsonEvent = async () => {
+    for (;;) {
+      while (true) {
+        const idx = buf.indexOf('\n\n');
+        if (idx < 0) break;
+        const chunk = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 2);
+        if (!chunk.startsWith('data:')) continue;
+        return JSON.parse(chunk.slice(5).trim());
+      }
+      const { value, done } = await reader.read();
+      if (done) throw new Error('stream closed before event');
+      buf += decoder.decode(value, { stream: true });
+    }
+  };
+  const snap = await readJsonEvent();
+  assert.equal(snap.type, 'snapshot');
+  assert.deepEqual(snap.work, []);
+  registry.create({
+    kind: 'subagent',
+    originChatId: 'dash-1',
+    label: 'bg audit',
+    resultHandle: { type: 'subagent_chat', chatId: 'subagent:dash-1:aa' },
+  });
+  const update = await readJsonEvent();
+  assert.equal(update.type, 'update');
+  assert.equal(update.work.label, 'bg audit');
+  assert.equal(update.work.originChatId, 'dash-1');
+});

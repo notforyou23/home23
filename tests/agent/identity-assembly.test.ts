@@ -59,7 +59,7 @@ test('an over-budget file emits a visible omission diagnostic and records it', (
       identityBudgets: { 'MISSION.md': 500 },
     });
     const prompt = cm.getSystemPrompt('anthropic');
-    assert.match(prompt, /identity-budget: kept \d+\/\d+ chars of MISSION\.md; omitted \d+ section/);
+    assert.match(prompt, /identity-budget: kept \d+\/\d+ chars of MISSION\.md; kept sections:.*omitted \d+ section/);
     const info = cm.getPromptSourceInfo();
     assert.equal(info.anyTruncated, true);
     const m = info.loadedFiles.find(f => f.filename === 'MISSION.md')!;
