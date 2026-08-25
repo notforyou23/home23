@@ -4,6 +4,11 @@ export {
   disabledCoordinationFeatureFlags,
 } from "./application.js";
 export {
+  createCoordinationRuntimeComposition,
+  type CoordinationRuntimeComposition,
+  type DurableAttachmentCompositionOptions,
+} from "./composition.js";
+export {
   CoordinationLifecycleDrainingError,
   createCoordinationLifecycle,
   type CoordinationLifecycle,
