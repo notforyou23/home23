@@ -588,6 +588,9 @@ test("an event append failure rolls back Message, mentions, idempotency, and seq
   const idempotencyCountBefore = fixture.database.readOne<{ count: number }>(
     "SELECT count(*) AS count FROM idempotency_records",
   )!.count;
+  const eventCountBefore = fixture.database.readOne<{ count: number }>(
+    "SELECT count(*) AS count FROM events",
+  )!.count;
   const commit: AppendMessageCommit = {
     message: {
       id: fixtureId("message", 492),
@@ -633,5 +636,5 @@ test("an event append failure rolls back Message, mentions, idempotency, and seq
   )?.nextSequence, 1);
   assert.equal(fixture.database.readOne<{ count: number }>(
     "SELECT count(*) AS count FROM events",
-  )?.count, 1);
+  )?.count, eventCountBefore);
 });

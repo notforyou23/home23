@@ -4,7 +4,10 @@ import type {
   BotDirectoryRecord,
   BotProjection,
 } from "../bots/index.js";
-import type { CoordinationTransaction } from "../db/index.js";
+import type {
+  CoordinationEventInput,
+  CoordinationTransaction,
+} from "../db/index.js";
 
 export type ChannelKind = "direct" | "group";
 export type ChannelLifecycle = "active" | "archived";
@@ -103,12 +106,13 @@ export interface MessagingMutationReceipt {
 export interface BotConversationBindingResult {
   botId: string;
   botVersion: number;
+  event: CoordinationEventInput;
 }
 
 /**
- * M07/M04 integration seam. M08 deliberately supplies no implementation: the accepted
- * Bot authority must update its row through this M04 transaction. The enclosing M08
- * mutation emits the locked composite channel.created event containing botId/botVersion.
+ * M07/M04 integration seam. The Bot authority updates its row through this M04
+ * transaction and returns the canonical Bot event for ordered append before the
+ * Channel receipt event.
  */
 export interface BotConversationBindingTransactionPort {
   bindDirectConversation(
@@ -116,7 +120,13 @@ export interface BotConversationBindingTransactionPort {
     input: {
       botId: string;
       botPrincipalId: string;
+      residentBinding: string;
+      expectedBotVersion: number;
+      channelId: string;
       conversationId: string;
+      actorPrincipalId: string;
+      requestId: string;
+      correlationId: string;
       updatedAt: string;
     },
   ): BotConversationBindingResult;
@@ -126,6 +136,15 @@ export interface CreateChannelCommit {
   channel: ChannelRecord;
   actor: ResolvedMessagingActor;
   idempotency: MessagingIdempotencyClaim;
+}
+
+export interface CreateDirectChannelCommit extends CreateChannelCommit {
+  expectedBot: {
+    id: string;
+    principalId: string;
+    residentBinding: string;
+    version: number;
+  };
 }
 
 export type CreateDirectChannelResult =
@@ -178,7 +197,7 @@ export interface ChannelRepository {
     channel: ChannelRecord;
     receipt: MessagingMutationReceipt;
   } | null>;
-  createDirectChannel(input: CreateChannelCommit): Promise<CreateDirectChannelResult>;
+  createDirectChannel(input: CreateDirectChannelCommit): Promise<CreateDirectChannelResult>;
   createGroupChannel(input: CreateChannelCommit): Promise<CreateGroupChannelResult>;
   getChannelForActor(
     channelId: string,

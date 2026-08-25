@@ -9,6 +9,7 @@ export {
 } from "./service.js";
 export { SqliteMessagingRepository } from "./repository.js";
 export type { SqliteMessagingRepositoryOptions } from "./repository.js";
+export { SqliteBotConversationBindingAdapter } from "./bot-conversation-binding.js";
 export { resolveMessagingActor, resolveVisibleBots } from "./access.js";
 export { createMessagingIdempotencyClaim } from "./idempotency.js";
 export {
@@ -29,6 +30,7 @@ export type {
   ChannelRecord,
   ChannelRepository,
   CreateChannelCommit,
+  CreateDirectChannelCommit,
   CreateDirectChannelResult,
   CreateGroupChannelResult,
   GeneratedChannelIdKind,

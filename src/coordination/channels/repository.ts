@@ -32,6 +32,7 @@ import type {
   ChannelRecord,
   ChannelRepository,
   CreateChannelCommit,
+  CreateDirectChannelCommit,
   CreateDirectChannelResult,
   CreateGroupChannelResult,
   ListChannelsResult,
@@ -254,7 +255,7 @@ export class SqliteMessagingRepository implements ChannelRepository {
   }
 
   async createDirectChannel(
-    input: CreateChannelCommit,
+    input: CreateDirectChannelCommit,
   ): Promise<CreateDirectChannelResult> {
     this.assertCreateChannelCommit(input, "direct");
     assertStoredActorBinding(this.database, input.actor);
@@ -310,14 +311,35 @@ export class SqliteMessagingRepository implements ChannelRepository {
           {
             botId: botMember.principalId,
             botPrincipalId: botMember.principalId,
+            residentBinding: input.expectedBot.residentBinding,
+            expectedBotVersion: input.expectedBot.version,
+            channelId: input.channel.id,
             conversationId: input.channel.conversationId,
+            actorPrincipalId: input.actor.principalId,
+            requestId: input.actor.requestId,
+            correlationId: input.actor.correlationId,
             updatedAt: input.channel.createdAt,
           },
         );
         if (
           botBinding.botId !== botMember.principalId ||
           !Number.isSafeInteger(botBinding.botVersion) ||
-          botBinding.botVersion < 1
+          botBinding.botVersion !== input.expectedBot.version + 1 ||
+          !botBinding.event ||
+          botBinding.event.type !== "bot.updated" ||
+          botBinding.event.aggregateKind !== "bot" ||
+          botBinding.event.aggregateId !== botMember.principalId ||
+          botBinding.event.aggregateVersion !== botBinding.botVersion ||
+          botBinding.event.channelId !== input.channel.id ||
+          botBinding.event.actorPrincipalId !== input.actor.principalId ||
+          botBinding.event.requestId !== input.actor.requestId ||
+          botBinding.event.correlationId !== input.actor.correlationId ||
+          botBinding.event.createdAt !== input.channel.createdAt ||
+          botBinding.event.payload.botId !== botMember.principalId ||
+          botBinding.event.payload.botVersion !== botBinding.botVersion ||
+          botBinding.event.payload.channelId !== input.channel.id ||
+          botBinding.event.payload.conversationId !== input.channel.conversationId ||
+          botBinding.event.payload.change !== "direct_conversation_bound"
         ) {
           throw new MessagingError("storage_conflict");
         }
@@ -358,7 +380,10 @@ export class SqliteMessagingRepository implements ChannelRepository {
         });
         return {
           value: { outcome: "created" as const, channel: input.channel },
-          event: this.channelCreatedEvent(input, botBinding),
+          events: [
+            botBinding.event,
+            this.channelCreatedEvent(input, botBinding),
+          ],
         };
       });
       return Object.freeze({
@@ -534,7 +559,7 @@ export class SqliteMessagingRepository implements ChannelRepository {
   }
 
   private async claimExistingDirect(
-    input: CreateChannelCommit,
+    input: CreateDirectChannelCommit,
     existing: ChannelRecord,
   ): Promise<CreateDirectChannelResult> {
     try {
@@ -810,7 +835,7 @@ export class SqliteMessagingRepository implements ChannelRepository {
   }
 
   private assertCreateChannelCommit(
-    input: CreateChannelCommit,
+    input: CreateChannelCommit | CreateDirectChannelCommit,
     expectedKind: "direct" | "group",
   ): void {
     this.assertChannelMembershipShape(input.channel, expectedKind);
@@ -826,6 +851,7 @@ export class SqliteMessagingRepository implements ChannelRepository {
     );
     const memberIds = input.channel.members.map((member) => member.principalId);
     const coordinator = input.channel.responderPolicy.coordinatorBotId;
+    const expectedBot = "expectedBot" in input ? input.expectedBot : null;
     if (
       input.actor.kind !== "owner" ||
       input.actor.principalId !== "user_owner" ||
@@ -840,6 +866,17 @@ export class SqliteMessagingRepository implements ChannelRepository {
       ownerMembers.length + botMembers.length !== input.channel.members.length ||
       new Set(memberIds).size !== memberIds.length ||
       (expectedKind === "direct" && botMembers.length !== 1) ||
+      (expectedKind === "direct" && (
+        !expectedBot ||
+        expectedBot.id !== botMembers[0]?.principalId ||
+        expectedBot.principalId !== botMembers[0]?.principalId ||
+        typeof expectedBot.residentBinding !== "string" ||
+        expectedBot.residentBinding.length < 1 ||
+        expectedBot.residentBinding.length > 63 ||
+        !Number.isSafeInteger(expectedBot.version) ||
+        expectedBot.version < 1
+      )) ||
+      (expectedKind === "group" && expectedBot !== null) ||
       (expectedKind === "group" && botMembers.length < 2) ||
       (input.channel.responderPolicy.mode === "mentions_only" && coordinator !== null) ||
       (input.channel.responderPolicy.mode === "mention_or_coordinator" &&

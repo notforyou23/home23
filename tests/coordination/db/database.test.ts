@@ -10,9 +10,10 @@ import Database from "better-sqlite3";
 import { computeContractPackDigest } from "../../../src/coordination/contracts/contract-pack.js";
 import {
   COORDINATION_CONTRACT_PACK_SHA256,
-  COORDINATION_MIGRATION_PLAN_CHECKSUM,
+  COORDINATION_PRODUCT_SCHEMA_MIGRATION_CHECKSUM,
   COORDINATION_SCHEMA_CHECKSUM,
   COORDINATION_SCHEMA_VERSION,
+  COORDINATION_SPINE_MIGRATION_CHECKSUM,
   CoordinationWriterBusyError,
   SchemaCompatibilityError,
   openCoordinationDatabase,
@@ -51,7 +52,28 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
         "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
       )
       .map((row) => row.name),
-    ["authority_epochs", "events", "kernel_meta", "schema_migrations"],
+    [
+      "aliases",
+      "authority_epochs",
+      "bots",
+      "channel_members",
+      "channel_membership_history",
+      "channels",
+      "client_sessions",
+      "conversation_handles",
+      "devices",
+      "direct_channel_pairs",
+      "events",
+      "idempotency_records",
+      "kernel_meta",
+      "mentions",
+      "messages",
+      "pairing_sessions",
+      "principals",
+      "read_cursors",
+      "schema_migrations",
+      "session_refresh_tokens",
+    ],
   );
   assert.deepEqual(first.readAll("PRAGMA foreign_key_check"), []);
   assert.deepEqual(first.readAll("PRAGMA integrity_check"), [{ integrity_check: "ok" }]);
@@ -64,7 +86,10 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
     reopened.readAll<{ version: number; checksum: string }>(
       "SELECT version, checksum FROM schema_migrations ORDER BY version",
     ),
-    [{ version: 1, checksum: COORDINATION_MIGRATION_PLAN_CHECKSUM }],
+    [
+      { version: 1, checksum: COORDINATION_SPINE_MIGRATION_CHECKSUM },
+      { version: 2, checksum: COORDINATION_PRODUCT_SCHEMA_MIGRATION_CHECKSUM },
+    ],
   );
   assert.deepEqual(
     reopened.readAll<{ key: string; value: string }>(
@@ -217,7 +242,7 @@ test("state mutation and event append commit or roll back as one immediate trans
           },
         };
       }),
-    /UNIQUE constraint failed/,
+    /aggregate version.*expected 2.*received 1/,
   );
   assert.deepEqual(
     database.readOne<{ value: string }>(
@@ -249,6 +274,168 @@ test("state mutation and event append commit or roll back as one immediate trans
     "1",
   );
   assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM events")?.count, 1);
+  database.close();
+});
+
+test("ordered multi-aggregate events commit in caller order with gap-free versions", (t) => {
+  const path = temporaryDatabase(t);
+  const database = openCoordinationDatabase({ path });
+  const requestId = generateCoordinationId("request");
+  const correlationId = generateCoordinationId("correlation");
+  const botId = generateCoordinationId("bot");
+  const channelId = generateCoordinationId("channel");
+  const createdAt = "2026-08-25T12:00:00.000Z";
+
+  const committed = database.mutateWithEvent(((transaction) => {
+    transaction.run(
+      "INSERT INTO kernel_meta (key, value, updated_at) VALUES (?, ?, ?)",
+      "test.multi-aggregate",
+      "1",
+      createdAt,
+    );
+    return {
+      value: "committed",
+      events: [
+        {
+          type: "bot.updated",
+          aggregateKind: "bot",
+          aggregateId: botId,
+          aggregateVersion: 1,
+          channelId,
+          actorPrincipalId: "user_owner",
+          requestId,
+          correlationId,
+          payload: { botId, version: 1 },
+          createdAt,
+        },
+        {
+          type: "channel.created",
+          aggregateKind: "channel",
+          aggregateId: channelId,
+          aggregateVersion: 1,
+          channelId,
+          actorPrincipalId: "user_owner",
+          requestId,
+          correlationId,
+          payload: { channelId, version: 1 },
+          createdAt,
+        },
+      ],
+    };
+  }) as Parameters<typeof database.mutateWithEvent<string>>[0]);
+
+  assert.equal(committed.value, "committed");
+  assert.deepEqual(
+    committed.events.map((event) => ({
+      sequence: event.sequence,
+      type: event.type,
+      aggregateKind: event.aggregateKind,
+      aggregateVersion: event.aggregateVersion,
+    })),
+    [
+      { sequence: 1, type: "bot.updated", aggregateKind: "bot", aggregateVersion: 1 },
+      { sequence: 2, type: "channel.created", aggregateKind: "channel", aggregateVersion: 1 },
+    ],
+  );
+  assert.equal(committed.event, committed.events[1]);
+
+  assert.throws(
+    () => database.mutateWithEvent(((transaction) => {
+      transaction.run(
+        "UPDATE kernel_meta SET value = ? WHERE key = ?",
+        "must-roll-back",
+        "test.multi-aggregate",
+      );
+      return {
+        value: undefined,
+        events: [
+          {
+            type: "bot.updated",
+            aggregateKind: "bot",
+            aggregateId: botId,
+            aggregateVersion: 2,
+            channelId,
+            actorPrincipalId: "user_owner",
+            requestId,
+            correlationId,
+            payload: { botId, version: 2 },
+            createdAt,
+          },
+          {
+            type: "channel.created",
+            aggregateKind: "channel",
+            aggregateId: channelId,
+            aggregateVersion: 1,
+            channelId,
+            actorPrincipalId: "user_owner",
+            requestId,
+            correlationId,
+            payload: { channelId, duplicate: true },
+            createdAt,
+          },
+        ],
+      };
+    }) as Parameters<typeof database.mutateWithEvent<void>>[0]),
+    /aggregate version.*expected 2.*received 1/,
+  );
+  assert.equal(
+    database.readOne<{ value: string }>(
+      "SELECT value FROM kernel_meta WHERE key = ?",
+      "test.multi-aggregate",
+    )?.value,
+    "1",
+  );
+  assert.deepEqual(
+    database.readAll<{ sequence: number; aggregateKind: string; aggregateVersion: number }>(
+      `SELECT sequence, aggregate_kind AS aggregateKind,
+              aggregate_version AS aggregateVersion
+       FROM events ORDER BY sequence`,
+    ),
+    [
+      { sequence: 1, aggregateKind: "bot", aggregateVersion: 1 },
+      { sequence: 2, aggregateKind: "channel", aggregateVersion: 1 },
+    ],
+  );
+
+  assert.throws(
+    () => database.mutateWithEvent(() => ({
+      value: undefined,
+      events: [],
+    }) as never),
+    /nonempty ordered event set/,
+  );
+  assert.throws(
+    () => database.mutateWithEvent(() => ({
+      value: undefined,
+      events: [
+        {
+          type: "bot.updated",
+          aggregateKind: "bot",
+          aggregateId: botId,
+          aggregateVersion: 2,
+          channelId,
+          actorPrincipalId: "user_owner",
+          requestId,
+          correlationId,
+          payload: { botId, version: 2 },
+          createdAt,
+        },
+        {
+          type: "channel.updated",
+          aggregateKind: "channel",
+          aggregateId: channelId,
+          aggregateVersion: 2,
+          channelId,
+          actorPrincipalId: "user_owner",
+          requestId,
+          correlationId: generateCoordinationId("correlation"),
+          payload: { channelId, version: 2 },
+          createdAt,
+        },
+      ],
+    }) as never),
+    /share request and correlation IDs/,
+  );
   database.close();
 });
 

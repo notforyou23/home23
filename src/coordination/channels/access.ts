@@ -111,11 +111,19 @@ export async function resolveMessagingActor(
 
 export async function resolveVisibleBots(
   directory: MessagingParticipantDirectory,
-): Promise<ReadonlyMap<string, { id: string; principalId: string; name: string }>> {
+): Promise<ReadonlyMap<string, {
+  id: string;
+  principalId: string;
+  name: string;
+  residentBinding: string;
+  version: number;
+}>> {
   const visible = await directory.listVisibleBots();
   return new Map(visible.map((bot) => [bot.principalId, {
     id: bot.id,
     principalId: bot.principalId,
     name: bot.name,
+    residentBinding: bot.residentBinding,
+    version: bot.version,
   }]));
 }

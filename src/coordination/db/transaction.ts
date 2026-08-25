@@ -49,14 +49,27 @@ export interface StoredCoordinationEvent {
   createdAt: string;
 }
 
-export interface CoordinationMutation<T> {
+export interface CoordinationSingleEventMutation<T> {
   value: T;
   event: CoordinationEventInput;
+  events?: never;
 }
+
+export interface CoordinationEventSetMutation<T> {
+  value: T;
+  event?: never;
+  events: readonly [CoordinationEventInput, ...CoordinationEventInput[]];
+}
+
+export type CoordinationMutation<T> =
+  | CoordinationSingleEventMutation<T>
+  | CoordinationEventSetMutation<T>;
 
 export interface CoordinationMutationResult<T> {
   value: T;
+  /** The final event is the backward-compatible mutation receipt event. */
   event: StoredCoordinationEvent;
+  events: readonly StoredCoordinationEvent[];
 }
 
 const TRANSACTION_CONTROL_TOKENS = new Set([
@@ -228,11 +241,58 @@ function assertEventInput(event: CoordinationEventInput): void {
   }
 }
 
+function orderedEventInputs<T>(outcome: CoordinationMutation<T>): readonly CoordinationEventInput[] {
+  const event = outcome.event;
+  const events = outcome.events;
+  if (event !== undefined && events !== undefined) {
+    throw new Error("coordination mutation must return one event or one ordered event set");
+  }
+  if (event !== undefined) return Object.freeze([event]);
+  if (!Array.isArray(events) || events.length === 0) {
+    throw new Error("coordination mutation requires a nonempty ordered event set");
+  }
+  return Object.freeze([...events]);
+}
+
+function assertEventSetIdentity(events: readonly CoordinationEventInput[]): void {
+  const first = events[0]!;
+  for (const event of events.slice(1)) {
+    if (
+      event.requestId !== first.requestId ||
+      event.correlationId !== first.correlationId
+    ) {
+      throw new Error(
+        "coordination mutation events must share request and correlation IDs",
+      );
+    }
+  }
+}
+
+function assertNextAggregateVersion(
+  database: Database.Database,
+  input: CoordinationEventInput,
+): void {
+  const row = database
+    .prepare<[string, string], { aggregateVersion: number | null }>(
+      `SELECT max(aggregate_version) AS aggregateVersion
+       FROM events WHERE aggregate_kind = ? AND aggregate_id = ?`,
+    )
+    .get(input.aggregateKind, input.aggregateId);
+  const current = row?.aggregateVersion ?? 0;
+  const expected = current + 1;
+  if (input.aggregateVersion !== expected) {
+    throw new Error(
+      `coordination event aggregate version is not gap-free: expected ${expected}, received ${input.aggregateVersion}`,
+    );
+  }
+}
+
 function appendEvent(
   database: Database.Database,
   input: CoordinationEventInput,
 ): StoredCoordinationEvent {
   assertEventInput(input);
+  assertNextAggregateVersion(database, input);
   const id = generateCoordinationId("event");
   const payloadJson = canonicalJson(input.payload);
   const payloadDigest = createHash("sha256").update(payloadJson, "utf8").digest("hex");
@@ -294,8 +354,14 @@ export function runMutationWithEvent<T>(
     } finally {
       context.invalidate();
     }
-    const event = appendEvent(database, outcome.event);
-    return { value: outcome.value, event };
+    const inputs = orderedEventInputs(outcome);
+    assertEventSetIdentity(inputs);
+    const events = Object.freeze(inputs.map((input) => appendEvent(database, input)));
+    return {
+      value: outcome.value,
+      event: events[events.length - 1]!,
+      events,
+    };
   });
   return transaction.immediate();
 }

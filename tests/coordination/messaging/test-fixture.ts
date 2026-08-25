@@ -15,8 +15,8 @@ import { AUTH_SCHEMA_DELTA_PROPOSAL } from "../../../src/coordination/auth/index
 import {
   MESSAGING_SCHEMA_DELTA_SQL,
   MessagingError,
+  SqliteBotConversationBindingAdapter,
   SqliteMessagingRepository,
-  type BotConversationBindingTransactionPort,
   type MessagingActorContext,
 } from "../../../src/coordination/channels/index.js";
 import {
@@ -118,6 +118,7 @@ function applyAcceptedProposal(
 
 export class TestMessagingDatabase {
   readonly raw = new Database(":memory:");
+  private botSeedReceipt = 9_000;
 
   constructor(applyMessagingProposal = true) {
     this.raw.pragma("foreign_keys = ON");
@@ -140,25 +141,42 @@ export class TestMessagingDatabase {
   }
 
   seedBot(bot: BotProjection): void {
-    this.raw.prepare(
-      `INSERT INTO bots (
-        id, principal_id, name, purpose, lifecycle, conversation_id,
-        resident_binding, continuing_identity, durable_mailbox,
-        required_capabilities_json, active_instance_id, active_key_version,
-        resident_protocol_version, resident_capabilities_json,
-        resident_registered_at, last_heartbeat_at, reported_availability,
-        version, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'active', NULL, ?, 1, 1, '["messages"]',
-                NULL, NULL, NULL, '[]', NULL, NULL, NULL, 1, ?, ?)`,
-    ).run(
-      bot.id,
-      bot.principalId,
-      bot.name,
-      bot.purpose,
-      bot.residentBinding,
-      bot.createdAt,
-      bot.updatedAt,
-    );
+    const receipt = this.botSeedReceipt++;
+    this.mutateWithEvent((transaction) => {
+      transaction.run(
+        `INSERT INTO bots (
+          id, principal_id, name, purpose, lifecycle, conversation_id,
+          resident_binding, continuing_identity, durable_mailbox,
+          required_capabilities_json, active_instance_id, active_key_version,
+          resident_protocol_version, resident_capabilities_json,
+          resident_registered_at, last_heartbeat_at, reported_availability,
+          version, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'active', NULL, ?, 1, 1, '["messages"]',
+                  NULL, NULL, NULL, '[]', NULL, NULL, NULL, 1, ?, ?)`,
+        bot.id,
+        bot.principalId,
+        bot.name,
+        bot.purpose,
+        bot.residentBinding,
+        bot.createdAt,
+        bot.updatedAt,
+      );
+      return {
+        value: undefined,
+        event: {
+          type: "bot.created",
+          aggregateKind: "bot",
+          aggregateId: bot.id,
+          aggregateVersion: 1,
+          channelId: null,
+          actorPrincipalId: OWNER_ID,
+          requestId: fixtureId("request", receipt),
+          correlationId: fixtureId("correlation", receipt),
+          payload: { botId: bot.id, botVersion: 1 },
+          createdAt: bot.createdAt,
+        },
+      };
+    });
   }
 
   readOne<T>(sql: string, ...parameters: Array<string | number | bigint | Buffer | null>): T | undefined {
@@ -262,25 +280,43 @@ class MessagingBotDirectoryRepository extends TestBotDirectoryRepository {
       expectedVersion: mapCurrent.version,
     });
     if (mapResult.outcome !== "registered") return mapResult;
-    const update = this.database.raw.prepare(
-      `UPDATE bots SET
-        active_instance_id = ?, active_key_version = ?, resident_protocol_version = ?,
-        resident_capabilities_json = ?, resident_registered_at = ?, last_heartbeat_at = ?,
-        reported_availability = ?, version = version + 1, updated_at = ?
-       WHERE id = ? AND version = ?`,
-    ).run(
-      input.instanceId,
-      input.keyVersion,
-      input.protocolVersion,
-      JSON.stringify(input.capabilities),
-      input.registeredAt,
-      input.registeredAt,
-      input.reportedAvailability,
-      input.registeredAt,
-      input.botId,
-      input.expectedVersion,
-    );
-    if (update.changes !== 1) return { outcome: "conflict" };
+    const stored = this.readBot(input.botId);
+    if (!stored || stored.version !== input.expectedVersion) return { outcome: "conflict" };
+    this.database.mutateWithEvent((transaction) => {
+      const update = transaction.run(
+        `UPDATE bots SET
+          active_instance_id = ?, active_key_version = ?, resident_protocol_version = ?,
+          resident_capabilities_json = ?, resident_registered_at = ?, last_heartbeat_at = ?,
+          reported_availability = ?, version = version + 1, updated_at = ?
+         WHERE id = ? AND version = ?`,
+        input.instanceId,
+        input.keyVersion,
+        input.protocolVersion,
+        JSON.stringify(input.capabilities),
+        input.registeredAt,
+        input.registeredAt,
+        input.reportedAvailability,
+        input.registeredAt,
+        input.botId,
+        input.expectedVersion,
+      );
+      if (update.changes !== 1) throw new Error("Bot registration fixture lost its version race");
+      return {
+        value: undefined,
+        event: {
+          type: "bot.updated",
+          aggregateKind: "bot",
+          aggregateId: input.botId,
+          aggregateVersion: input.expectedVersion + 1,
+          channelId: null,
+          actorPrincipalId: input.actorPrincipalId,
+          requestId: input.requestId,
+          correlationId: input.correlationId,
+          payload: { botId: input.botId, botVersion: input.expectedVersion + 1 },
+          createdAt: input.registeredAt,
+        },
+      };
+    });
     return { outcome: "registered", bot: this.readBot(input.botId)! };
   }
 
@@ -294,18 +330,36 @@ class MessagingBotDirectoryRepository extends TestBotDirectoryRepository {
       expectedVersion: mapCurrent.version,
     });
     if (mapResult.outcome !== "recorded") return mapResult;
-    const update = this.database.raw.prepare(
-      `UPDATE bots SET last_heartbeat_at = ?, reported_availability = ?,
-                       version = version + 1, updated_at = ?
-       WHERE id = ? AND version = ?`,
-    ).run(
-      input.heartbeatAt,
-      input.reportedAvailability,
-      input.heartbeatAt,
-      input.botId,
-      input.expectedVersion,
-    );
-    if (update.changes !== 1) return { outcome: "conflict" };
+    const stored = this.readBot(input.botId);
+    if (!stored || stored.version !== input.expectedVersion) return { outcome: "conflict" };
+    this.database.mutateWithEvent((transaction) => {
+      const update = transaction.run(
+        `UPDATE bots SET last_heartbeat_at = ?, reported_availability = ?,
+                         version = version + 1, updated_at = ?
+         WHERE id = ? AND version = ?`,
+        input.heartbeatAt,
+        input.reportedAvailability,
+        input.heartbeatAt,
+        input.botId,
+        input.expectedVersion,
+      );
+      if (update.changes !== 1) throw new Error("Bot heartbeat fixture lost its version race");
+      return {
+        value: undefined,
+        event: {
+          type: "bot.updated",
+          aggregateKind: "bot",
+          aggregateId: input.botId,
+          aggregateVersion: input.expectedVersion + 1,
+          channelId: null,
+          actorPrincipalId: input.actorPrincipalId,
+          requestId: input.requestId,
+          correlationId: input.correlationId,
+          payload: { botId: input.botId, botVersion: input.expectedVersion + 1 },
+          createdAt: input.heartbeatAt,
+        },
+      };
+    });
     return { outcome: "recorded", bot: this.readBot(input.botId)! };
   }
 }
@@ -315,36 +369,6 @@ function botIdGenerator() {
   let alias = 101;
   return (kind: GeneratedBotDirectoryIdKind): string =>
     fixtureId(kind, kind === "bot" ? bot++ : alias++);
-}
-
-class TestBotConversationBinding implements BotConversationBindingTransactionPort {
-  bindDirectConversation(
-    transaction: CoordinationTransaction,
-    input: {
-      botId: string;
-      botPrincipalId: string;
-      conversationId: string;
-      updatedAt: string;
-    },
-  ) {
-    const linked = transaction.run(
-      `UPDATE bots SET conversation_id = ?, version = version + 1, updated_at = ?
-       WHERE id = ? AND principal_id = ? AND conversation_id IS NULL
-         AND lifecycle = 'active' AND continuing_identity = 1 AND durable_mailbox = 1`,
-      input.conversationId,
-      input.updatedAt,
-      input.botId,
-      input.botPrincipalId,
-    );
-    if (linked.changes !== 1) throw new MessagingError("storage_conflict");
-    const row = transaction.readOne<{ version: number }>(
-      "SELECT version FROM bots WHERE id = ? AND conversation_id = ?",
-      input.botId,
-      input.conversationId,
-    );
-    if (!row) throw new MessagingError("storage_conflict");
-    return Object.freeze({ botId: input.botId, botVersion: row.version });
-  }
 }
 
 class TestMessageProvenanceAuthority
@@ -464,7 +488,7 @@ export async function createMessagingFixture() {
   };
   const provenanceAuthority = new TestMessageProvenanceAuthority();
   const repositoryOptions = Object.freeze({
-    botConversationBinding: new TestBotConversationBinding(),
+    botConversationBinding: new SqliteBotConversationBindingAdapter(),
     messageProvenanceAuthorization: provenanceAuthority,
   });
   const repository = new SqliteMessagingRepository(database, repositoryOptions);

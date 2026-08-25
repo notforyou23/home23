@@ -80,7 +80,13 @@ function canonicalMemberBotIds(values: readonly string[]): readonly string[] {
 
 function membersFor(
   memberBotIds: readonly string[],
-  visibleBots: ReadonlyMap<string, { id: string; principalId: string; name: string }>,
+  visibleBots: ReadonlyMap<string, {
+    id: string;
+    principalId: string;
+    name: string;
+    residentBinding: string;
+    version: number;
+  }>,
 ): readonly ChannelMember[] {
   const members: ChannelMember[] = [{
     principalId: "user_owner",
@@ -237,7 +243,17 @@ export function createChannelService(options: CreateChannelServiceOptions) {
       createdAt: at,
       updatedAt: at,
     };
-    const result = await repository.createDirectChannel({ channel, actor, idempotency });
+    const result = await repository.createDirectChannel({
+      channel,
+      actor,
+      idempotency,
+      expectedBot: {
+        id: bot.id,
+        principalId: bot.principalId,
+        residentBinding: bot.residentBinding,
+        version: bot.version,
+      },
+    });
     if (result.outcome === "identity_collision") {
       throw new MessagingError("channel_id_conflict");
     }

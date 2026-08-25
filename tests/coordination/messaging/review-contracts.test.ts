@@ -243,7 +243,7 @@ test("repository callers cannot forge a Message author and rollback stays comple
   )!.next, before);
 });
 
-test("an M07 direct-binding adapter failure rolls back Bot, Channel, idempotency, and event truth", async (t) => {
+test("a noncanonical M07 binding event rolls back Bot, Channel, idempotency, and event truth", async (t) => {
   const fixture = await createMessagingFixture();
   t.after(fixture.close);
   const failingRepository = new SqliteMessagingRepository(fixture.database, {
@@ -251,12 +251,29 @@ test("an M07 direct-binding adapter failure rolls back Bot, Channel, idempotency
       bindDirectConversation: (transaction, input) => {
         transaction.run(
           `UPDATE bots SET conversation_id = ?, version = version + 1, updated_at = ?
-           WHERE id = ?`,
+           WHERE id = ? AND version = ?`,
           input.conversationId,
           input.updatedAt,
           input.botId,
+          input.expectedBotVersion,
         );
-        throw new MessagingError("storage_conflict");
+        const botVersion = input.expectedBotVersion + 1;
+        return {
+          botId: input.botId,
+          botVersion,
+          event: {
+            type: "bot.created",
+            aggregateKind: "bot",
+            aggregateId: input.botId,
+            aggregateVersion: botVersion,
+            channelId: input.channelId,
+            actorPrincipalId: input.actorPrincipalId,
+            requestId: input.requestId,
+            correlationId: input.correlationId,
+            payload: { botId: input.botId, botVersion },
+            createdAt: input.updatedAt,
+          },
+        };
       },
     },
   });
