@@ -5,6 +5,7 @@ export {
 } from "./application.js";
 export {
   createCoordinationRuntimeComposition,
+  type CoordinationProcessProjectionDependencies,
   type CoordinationRuntimeComposition,
   type DurableAttachmentCompositionOptions,
 } from "./composition.js";

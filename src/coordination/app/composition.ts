@@ -44,6 +44,16 @@ export interface CoordinationProcess {
   >;
 }
 
+/**
+ * Internal M16/M18 dependencies accepted by the canonical process. Both are
+ * absent by default and remain behind their domain capability checks; merely
+ * injecting either dependency does not register or advertise a public route.
+ */
+export type CoordinationProcessProjectionDependencies = Readonly<Pick<
+  CoordinationServices,
+  "activity" | "channelCoordinator"
+>>;
+
 function isCompleteAttachmentOptions(
   value: Partial<DurableAttachmentCompositionOptions> | undefined,
 ): value is DurableAttachmentCompositionOptions {
@@ -125,6 +135,7 @@ export async function createCoordinationRuntimeComposition(input: {
 
 export function createCoordinationProcess(
   config: CoordinationRuntimeConfig,
+  dependencies: CoordinationProcessProjectionDependencies = {},
 ): CoordinationProcess {
   if (!config.enabled) {
     throw new Error("the disabled coordination process cannot be composed");
@@ -148,6 +159,12 @@ export function createCoordinationProcess(
           throw new Error("coordination authentication is unavailable in shadow mode");
         },
       },
+      ...(dependencies.activity === undefined
+        ? {}
+        : { activity: dependencies.activity }),
+      ...(dependencies.channelCoordinator === undefined
+        ? {}
+        : { channelCoordinator: dependencies.channelCoordinator }),
     },
   });
   const server = createCoordinationHttpServer({
