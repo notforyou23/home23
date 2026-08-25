@@ -9,6 +9,7 @@ import {
   COORDINATION_SEARCH_ATTACHMENT_SCHEMA_DEPENDENCIES,
   SEARCH_ATTACHMENT_SCHEMA_MIGRATION_SQL,
 } from "./0003-search-and-attachment-schema.js";
+import { ATOMIC_IMPORT_LEDGER_MIGRATION_SQL } from "./0004-atomic-import-ledger.js";
 
 export {
   COORDINATION_PRODUCT_SCHEMA_DEPENDENCIES,
@@ -52,6 +53,9 @@ export const COORDINATION_PRODUCT_SCHEMA_MIGRATION_CHECKSUM =
 export const COORDINATION_SEARCH_ATTACHMENT_MIGRATION_CHECKSUM =
   "7176274402321c6f3e295cc3bfabbc6c9ffa2304304855334f9be31a2356da1e";
 
+export const COORDINATION_ATOMIC_IMPORT_MIGRATION_CHECKSUM =
+  "9a39082801195d0eacb60ee9fadd36a85654e5150f035c2989a3a710bb3b80db";
+
 export const COORDINATION_MIGRATIONS = Object.freeze([
   defineMigration(
     1,
@@ -74,6 +78,13 @@ export const COORDINATION_MIGRATIONS = Object.freeze([
     COORDINATION_SEARCH_ATTACHMENT_MIGRATION_CHECKSUM,
     "ddac2fb83bf73837f5200725697eff7d55a685f18a6c144fc33df17b75f113c2",
   ),
+  defineMigration(
+    4,
+    "atomic-import-ledger",
+    ATOMIC_IMPORT_LEDGER_MIGRATION_SQL,
+    COORDINATION_ATOMIC_IMPORT_MIGRATION_CHECKSUM,
+    "616c33ae48234d90acaf18fe49e3c9f6029204b7082d4d9c9dd8dfc5703d7608",
+  ),
 ]);
 
 export const COORDINATION_SCHEMA_VERSION =
@@ -93,7 +104,7 @@ export function computeCoordinationMigrationPlanChecksum(
 // Reviewed with the immutable migration bytes. A historical migration edit
 // must fail before any database is opened.
 export const COORDINATION_MIGRATION_PLAN_CHECKSUM =
-  "ed386888eabf6fb5f447fde1d181cac7e1c5c6310f740be97d7767fbd9abce9e";
+  "1c98e7046be6b007c1f33bbd427a3fe86624ffb1ee6be502b18b3cc4a4cd768e";
 
 if (computeCoordinationMigrationPlanChecksum() !== COORDINATION_MIGRATION_PLAN_CHECKSUM) {
   throw new Error("coordination migration bytes differ from the reviewed migration checksum");

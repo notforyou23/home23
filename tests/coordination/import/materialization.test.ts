@@ -184,6 +184,9 @@ test("M17 emits a proposal-only M04 transaction bound to reviewed planning and c
   assert.deepEqual(binding.planningReceipt, {
     cohortId: COHORT_ID,
     manifestDigest: planning.manifest.manifestDigest,
+    sourceRegistryDigest: planning.manifest.sourceRegistryDigest,
+    snapshotAt: planning.manifest.snapshotAt,
+    reviewedBy: planning.manifest.reviewedBy,
     planDigest: sha256(canonicalJson(planCohortImport(
       planning.manifest,
       planning.sourceRecords,

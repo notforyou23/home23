@@ -8,6 +8,7 @@ export {
   type CanonicalImportMessageBinding,
 } from "./materialization.js";
 export { planCohortImport } from "./planner.js";
+export { executeAtomicImport, type AtomicImportEvidence, type AtomicImportResult, type ExecuteAtomicImportInput } from "./executor.js";
 export {
   planImportCohortRollback,
   verifyImportCohortRollback,

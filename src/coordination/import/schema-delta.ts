@@ -1,9 +1,5 @@
 import { canonicalJson, deepFreeze, sha256 } from "./canonical.js";
-import {
-  COORDINATION_SCHEMA_CHECKSUM,
-  COORDINATION_SCHEMA_VERSION,
-  COORDINATION_SEARCH_ATTACHMENT_SCHEMA_DEPENDENCIES,
-} from "../migrations/index.js";
+import { COORDINATION_SEARCH_ATTACHMENT_SCHEMA_DEPENDENCIES } from "../migrations/index.js";
 
 interface ImportSchemaColumnProposal {
   readonly name: string;
@@ -158,8 +154,8 @@ export const IMPORT_SCHEMA_DELTA_PROPOSAL = deepFreeze({
     m17MustNotApply: true,
   },
   requires: {
-    coordinationSchemaVersion: COORDINATION_SCHEMA_VERSION,
-    coordinationSchemaChecksum: COORDINATION_SCHEMA_CHECKSUM,
+    coordinationSchemaVersion: 3,
+    coordinationSchemaChecksum: "ddac2fb83bf73837f5200725697eff7d55a685f18a6c144fc33df17b75f113c2",
     connectedAgentsContractVersion: 1,
     connectedAgentsContractPackSha256:
       "fbc20017304aed66e579a2b95facbda6bbcf8572038f7f1c0c824423c65d6be2",

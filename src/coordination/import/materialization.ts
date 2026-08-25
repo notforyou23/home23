@@ -8,11 +8,7 @@ import {
   type AliasBinding,
   type AliasBindingPlan,
 } from "../aliases/index.js";
-import {
-  COORDINATION_SCHEMA_CHECKSUM,
-  COORDINATION_SCHEMA_VERSION,
-  COORDINATION_SEARCH_ATTACHMENT_SCHEMA_DEPENDENCIES,
-} from "../migrations/index.js";
+import { COORDINATION_SEARCH_ATTACHMENT_SCHEMA_DEPENDENCIES } from "../migrations/index.js";
 import type { PendingMessage } from "../messages/index.js";
 import { validateContractId } from "../schema/contract-registry.js";
 import {
@@ -64,6 +60,9 @@ export type CanonicalImportMessageBinding =
       readonly planningReceipt: {
         readonly cohortId: string;
         readonly manifestDigest: string;
+        readonly sourceRegistryDigest: string;
+        readonly snapshotAt: string;
+        readonly reviewedBy: string;
         readonly planDigest: string;
         readonly itemIndex: number;
       };
@@ -84,6 +83,10 @@ export type CanonicalImportMessageBinding =
         readonly message: ProposedCanonicalMessage;
         readonly importProvenance: {
           readonly sourceId: string;
+          readonly segmentIdentity: string;
+          readonly recordKey: string;
+          readonly rawDigest: string;
+          readonly reviewedSourceWatermark: ImportSourceRecord["discoveredWatermark"];
           readonly importKeyDigest: string;
           readonly canonicalDigest: string;
         };
@@ -151,13 +154,6 @@ function assertActor(
 export function bindCanonicalImportMessage(
   input: BindCanonicalImportMessageInput,
 ): CanonicalImportMessageBinding {
-  if (
-    COORDINATION_SCHEMA_VERSION !== 3
-    || COORDINATION_SCHEMA_CHECKSUM
-      !== "ddac2fb83bf73837f5200725697eff7d55a685f18a6c144fc33df17b75f113c2"
-  ) {
-    throw new Error("M17 canonical materialization requires the reviewed schema-v3 base");
-  }
   if (
     !Number.isSafeInteger(input.planning.itemIndex)
     || input.planning.itemIndex < 0
@@ -269,6 +265,9 @@ export function bindCanonicalImportMessage(
     planningReceipt: {
       cohortId: plan.cohortId,
       manifestDigest: plan.manifestDigest,
+      sourceRegistryDigest: input.planning.manifest.sourceRegistryDigest,
+      snapshotAt: input.planning.manifest.snapshotAt,
+      reviewedBy: input.planning.manifest.reviewedBy,
       planDigest: sha256(canonicalJson(plan)),
       itemIndex: input.planning.itemIndex,
     },
@@ -276,8 +275,8 @@ export function bindCanonicalImportMessage(
       owner: "M04" as const,
       status: "proposal_only" as const,
       schema: {
-        version: COORDINATION_SCHEMA_VERSION as 3,
-        checksum: COORDINATION_SCHEMA_CHECKSUM,
+        version: 3 as const,
+        checksum: "ddac2fb83bf73837f5200725697eff7d55a685f18a6c144fc33df17b75f113c2",
       },
       requiredAtomicWrites: [
         "import_items",
@@ -299,6 +298,10 @@ export function bindCanonicalImportMessage(
       },
       importProvenance: {
         sourceId: item.sourceId,
+        segmentIdentity: canonical.segmentIdentity,
+        recordKey: canonical.recordKey,
+        rawDigest: canonical.rawDigest,
+        reviewedSourceWatermark: input.planning.manifest.entries[input.planning.itemIndex]!.reviewedSourceWatermark,
         importKeyDigest: item.importKeyDigest,
         canonicalDigest: item.canonicalDigest,
       },

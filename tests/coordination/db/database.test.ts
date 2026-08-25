@@ -10,6 +10,7 @@ import Database from "better-sqlite3";
 import { computeContractPackDigest } from "../../../src/coordination/contracts/contract-pack.js";
 import {
   COORDINATION_CONTRACT_PACK_SHA256,
+  COORDINATION_ATOMIC_IMPORT_MIGRATION_CHECKSUM,
   COORDINATION_PRODUCT_SCHEMA_MIGRATION_CHECKSUM,
   COORDINATION_SEARCH_ATTACHMENT_MIGRATION_CHECKSUM,
   COORDINATION_SCHEMA_CHECKSUM,
@@ -36,7 +37,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
   assert.equal(computeContractPackDigest(), COORDINATION_CONTRACT_PACK_SHA256);
   assert.equal(first.openReceipt.startupCheck, "integrity_check");
   assert.equal(first.openReceipt.migratedFrom, 0);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 3);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 4);
   assert.equal(first.openReceipt.schemaVersion, COORDINATION_SCHEMA_VERSION);
   assert.equal(first.openReceipt.schemaChecksum, COORDINATION_SCHEMA_CHECKSUM);
   assert.deepEqual(first.pragmaEvidence(), {
@@ -68,7 +69,12 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       "direct_channel_pairs",
       "events",
       "idempotency_records",
+      "import_batches",
+      "import_cohorts",
+      "import_cursors",
+      "import_items",
       "kernel_meta",
+      "legacy_sources",
       "mentions",
       "message_artifacts",
       "message_fts",
@@ -101,6 +107,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       { version: 1, checksum: COORDINATION_SPINE_MIGRATION_CHECKSUM },
       { version: 2, checksum: COORDINATION_PRODUCT_SCHEMA_MIGRATION_CHECKSUM },
       { version: 3, checksum: COORDINATION_SEARCH_ATTACHMENT_MIGRATION_CHECKSUM },
+      { version: 4, checksum: COORDINATION_ATOMIC_IMPORT_MIGRATION_CHECKSUM },
     ],
   );
   assert.deepEqual(
