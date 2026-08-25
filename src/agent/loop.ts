@@ -897,6 +897,8 @@ export class AgentLoop {
       firstTokenTimeoutMs?: number;
       registry?: ToolRegistry;
       effort?: ReasoningEffort;
+      coordinationOrigin?: import('./types.js').CoordinationTurnOrigin;
+      onDurableStart?: (start: import('./types.js').DurableTurnStart) => void | Promise<void>;
     } = {},
   ): Promise<{ turnId: string; response: Promise<import('./types.js').AgentResponse> }> {
     const turnId = opts.turnId ?? newTurnId();
@@ -1018,6 +1020,12 @@ export class AgentLoop {
         activity_deadline_at,
         hard_deadline_at,
         first_token_deadline_at,
+        coordination_origin: opts.coordinationOrigin,
+      });
+      await opts.onDurableStart?.({
+        turnId,
+        chatId,
+        persistedAt: new Date(this.turnTiming.now()).toISOString(),
       });
     } catch (err) {
       lease.close();

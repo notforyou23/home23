@@ -3,6 +3,7 @@ import type { AgentEventCallback, AgentResponse } from './types.js';
 import type { MediaAttachment } from '../types.js';
 import type { ToolRegistry } from './tools/index.js';
 import type { ReasoningEffort } from './reasoning-effort.js';
+import type { CoordinationTurnOrigin, DurableTurnStart } from './types.js';
 
 export async function executeTrackedTurn(
   agent: Pick<AgentLoop, 'runWithTurn'>,
@@ -16,6 +17,8 @@ export async function executeTrackedTurn(
     modelOverride?: { model: string; provider?: string; reasoningEffort?: ReasoningEffort };
     effort?: ReasoningEffort;
     registry?: ToolRegistry;
+    coordinationOrigin?: CoordinationTurnOrigin;
+    onDurableStart?: (start: DurableTurnStart) => void | Promise<void>;
   } = {},
 ): Promise<{ turnId: string; response: AgentResponse }> {
   const started = await agent.runWithTurn(chatId, userText, {
@@ -26,6 +29,8 @@ export async function executeTrackedTurn(
     ...(options.effort ? { effort: options.effort } : {}),
     ...(options.modelOverride ? { modelOverride: options.modelOverride } : {}),
     ...(options.registry ? { registry: options.registry } : {}),
+    ...(options.coordinationOrigin ? { coordinationOrigin: options.coordinationOrigin } : {}),
+    ...(options.onDurableStart ? { onDurableStart: options.onDurableStart } : {}),
   });
   return { turnId: started.turnId, response: await started.response };
 }

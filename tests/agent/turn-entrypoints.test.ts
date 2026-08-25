@@ -155,3 +155,33 @@ test('runWithTurn freezes a per-turn registry override without mutating the shar
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('runWithTurn awaits durable-start handoff after persistence and before resident execution', async () => {
+  const root = join(tmpdir(), `turn-durable-handoff-${process.pid}-${Math.random()}`);
+  mkdirSync(join(root, 'workspace'), { recursive: true });
+  const history = new ConversationHistory(join(root, 'conversations'), 400_000, 'test-agent');
+  const order: string[] = [];
+  const agent = new AgentLoop({
+    apiKey: 'test-key', model: 'gpt-default', provider: 'openai',
+    registry: createSeededToolRegistry([]),
+    contextManager: { getSystemPrompt: () => 'test', getPromptSourceInfo: () => ({ loadedFiles: [] }) } as never,
+    history, toolContext: {} as never, workspacePath: join(root, 'workspace'),
+  });
+  try {
+    (agent as unknown as { run: AgentLoop['run'] }).run = async () => {
+      order.push('run');
+      return { text: 'done', model: 'test', toolCallCount: 0, durationMs: 1 };
+    };
+    const started = await agent.runWithTurn('coordination:test', 'visible instruction', {
+      onDurableStart: ({ turnId }) => {
+        const persisted = history.loadRaw('coordination:test') as Array<{ turn_id?: string; status?: string }>;
+        assert.ok(persisted.some(record => record.turn_id === turnId && record.status === 'pending'));
+        order.push('handoff');
+      },
+    });
+    await started.response;
+    assert.deepEqual(order, ['handoff', 'run']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

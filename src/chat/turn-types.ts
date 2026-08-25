@@ -42,6 +42,8 @@ export interface TurnEnvelope {
   assistant_content?: string;
   /** Max seq of any event belonging to this turn. Written on status-end records. */
   last_seq?: number;
+  /** Coordination provenance only; never contains prompts or resident private state. */
+  coordination_origin?: import('../agent/types.js').CoordinationTurnOrigin;
 }
 
 export interface TurnEvent {

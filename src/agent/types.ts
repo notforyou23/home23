@@ -60,6 +60,27 @@ export interface TurnRuntimeContext {
   registry?: ToolRegistry;
 }
 
+/** Privacy-safe provenance for a turn leased from the coordination plane. */
+export interface CoordinationTurnOrigin {
+  kind: 'coordination';
+  workId: string;
+  attemptId: string;
+  leaseId: string;
+  holderPrincipalId: string;
+  holderInstanceId: string;
+  authorityReference: string;
+  fencingToken: number;
+  channelId: string;
+  originMessageId: string | null;
+  roundId: string | null;
+}
+
+export interface DurableTurnStart {
+  turnId: string;
+  chatId: string;
+  persistedAt: string;
+}
+
 export interface ToolContext {
   scheduler: CronScheduler | null;
   ttsService: TTSService | null;

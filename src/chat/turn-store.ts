@@ -22,6 +22,7 @@ export class TurnStore {
     activity_deadline_at?: string;
     hard_deadline_at?: string;
     first_token_deadline_at?: string;
+    coordination_origin?: import('../agent/types.js').CoordinationTurnOrigin;
   } = {}): TurnEnvelope {
     const env: TurnEnvelope = {
       type: 'turn',
@@ -36,9 +37,16 @@ export class TurnStore {
       first_token_deadline_at: extras.first_token_deadline_at,
       model,
       provider,
+      coordination_origin: extras.coordination_origin,
     };
     this.history.appendRecord(chatId, env);
     return env;
+  }
+
+  startEnvelope(chatId: string, turn_id: string): TurnEnvelope | null {
+    return this.history.loadRaw(chatId).find(
+      record => isTurnEnvelope(record) && record.turn_id === turn_id && record.status === 'pending',
+    ) as TurnEnvelope | undefined ?? null;
   }
 
   writeEnd(chatId: string, turn_id: string, status: Exclude<TurnStatus, 'pending'>, extras: {
