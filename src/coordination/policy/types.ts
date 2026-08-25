@@ -89,6 +89,7 @@ export type DenyReasonCode =
   | "deny.outside_standing_authority"
   | "deny.standing_authority_unresolved"
   | "deny.invalid_evaluation_time"
+  | "deny.exact_action_invalid"
   | "deny.policy_facts_untrusted"
   | "deny.policy_context_invalid"
   | "deny.unknown_impact_class"

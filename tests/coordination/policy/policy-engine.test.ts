@@ -247,6 +247,124 @@ test("structurally invalid policy facts return deterministic denials", () => {
   }
 });
 
+test("malformed runtime exact actions fail closed with one deterministic digest", () => {
+  const validAction = policyRequest("ordinary work").action;
+  const cases: Array<{ name: string; action: unknown }> = [
+    { name: "undefined action", action: undefined },
+    { name: "null action", action: null },
+    { name: "non-object action", action: "ordinary work" },
+    { name: "empty action object", action: {} },
+    {
+      name: "missing actor principal",
+      action: {
+        operation: validAction.operation,
+        target: validAction.target,
+        parameters: validAction.parameters,
+      },
+    },
+    {
+      name: "missing operation",
+      action: {
+        actorPrincipalId: validAction.actorPrincipalId,
+        target: validAction.target,
+        parameters: validAction.parameters,
+      },
+    },
+    {
+      name: "missing target",
+      action: {
+        actorPrincipalId: validAction.actorPrincipalId,
+        operation: validAction.operation,
+        parameters: validAction.parameters,
+      },
+    },
+    {
+      name: "missing parameters",
+      action: {
+        actorPrincipalId: validAction.actorPrincipalId,
+        operation: validAction.operation,
+        target: validAction.target,
+      },
+    },
+    {
+      name: "empty actor principal",
+      action: { ...validAction, actorPrincipalId: "" },
+    },
+    {
+      name: "blank operation",
+      action: { ...validAction, operation: "   " },
+    },
+    {
+      name: "empty target",
+      action: { ...validAction, target: "" },
+    },
+    {
+      name: "undefined parameters",
+      action: { ...validAction, parameters: undefined },
+    },
+    {
+      name: "non-finite numeric parameters",
+      action: { ...validAction, parameters: Number.NaN },
+    },
+    {
+      name: "non-JSON object parameters",
+      action: { ...validAction, parameters: new Date("2026-08-24T16:00:00.000Z") },
+    },
+  ];
+
+  for (const item of cases) {
+    const receipt = classifyPolicy(
+      { ...policyRequest(item.name), action: item.action } as never,
+      NOW,
+    );
+
+    assert.equal(receipt.decision, "deny", item.name);
+    assert.equal(receipt.reasonCode, "deny.exact_action_invalid", item.name);
+    assert.equal(
+      receipt.actionDigest,
+      "aa2d67dab59ca6353d0fa83efb95872abba38cb282d94e242c68028b223d254e",
+      item.name,
+    );
+  }
+});
+
+test("malformed top-level requests and policy context fail closed without throwing", () => {
+  const cases: Array<{ name: string; request: unknown }> = [
+    { name: "undefined request", request: undefined },
+    { name: "null request", request: null },
+    { name: "non-object request", request: "ordinary work" },
+    { name: "array request", request: [] },
+    {
+      name: "missing standing context",
+      request: { ...policyRequest("missing standing context"), standing: undefined },
+    },
+    {
+      name: "null standing context",
+      request: { ...policyRequest("null standing context"), standing: null },
+    },
+    {
+      name: "non-object standing context",
+      request: { ...policyRequest("non-object standing context"), standing: "within" },
+    },
+    {
+      name: "missing impact context",
+      request: { ...policyRequest("missing impact context"), impactClasses: undefined },
+    },
+    {
+      name: "non-array impact context",
+      request: { ...policyRequest("non-array impact context"), impactClasses: {} },
+    },
+  ];
+
+  for (const item of cases) {
+    const receipt = classifyPolicy(item.request as never, NOW);
+
+    assert.equal(receipt.decision, "deny", item.name);
+    assert.equal(receipt.reasonCode, "deny.policy_context_invalid", item.name);
+    assert.match(receipt.actionDigest, /^[a-f0-9]{64}$/, item.name);
+  }
+});
+
 test("implicit cross-resident private context is denied", () => {
   const receipt = classifyPolicy(
     policyRequest("read another resident context", {

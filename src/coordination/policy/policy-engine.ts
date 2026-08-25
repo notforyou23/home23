@@ -3,6 +3,7 @@ import type {
   ActionImpactClass,
   CrossResidentPrivateContextReadRequest,
   DenyReasonCode,
+  ExactAction,
   HardGateReasonCode,
   PolicyDecision,
   PolicyRequest,
@@ -22,6 +23,7 @@ const IMPACT_CLASS_ORDER: readonly ActionImpactClass[] = [
 
 const KNOWN_IMPACT_CLASSES = new Set<string>(IMPACT_CLASS_ORDER);
 const KNOWN_STANDING_STATES = new Set(["within", "outside", "unknown", "not_applicable"]);
+const INVALID_EXACT_ACTION_DIGEST = digestCanonicalJson({ invalidExactAction: true });
 const INVALID_POLICY_CONTEXT_DIGEST = digestCanonicalJson({ invalidPolicyContext: true });
 
 function isNonEmptyString(value: unknown): value is string {
@@ -37,7 +39,34 @@ function isNonEmptyStringArray(value: unknown): value is readonly string[] {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  try {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  } catch {
+    return false;
+  }
+}
+
+function validateExactAction(
+  action: unknown,
+): { valid: true; actionDigest: string } | { valid: false; actionDigest: string } {
+  try {
+    const actionDigest = digestExactAction(action as ExactAction);
+    if (
+      !isRecord(action) ||
+      !Object.hasOwn(action, "actorPrincipalId") ||
+      !Object.hasOwn(action, "operation") ||
+      !Object.hasOwn(action, "target") ||
+      !Object.hasOwn(action, "parameters") ||
+      !isNonEmptyString(action.actorPrincipalId) ||
+      !isNonEmptyString(action.operation) ||
+      !isNonEmptyString(action.target)
+    ) {
+      return { valid: false, actionDigest: INVALID_EXACT_ACTION_DIGEST };
+    }
+    return { valid: true, actionDigest };
+  } catch {
+    return { valid: false, actionDigest: INVALID_EXACT_ACTION_DIGEST };
+  }
 }
 
 function validatePrivateReadRequest(
@@ -159,29 +188,46 @@ function hardGateReason(
 }
 
 function decision(
-  request: PolicyRequest,
+  actionDigest: string,
   policyContextDigest: string,
   result: Pick<PolicyDecision, "decision" | "reasonCode">,
 ): PolicyDecision {
   return {
     policyVersion: CONNECTED_AGENTS_POLICY_VERSION,
-    actionDigest: digestExactAction(request.action),
+    actionDigest,
     policyContextDigest,
     ...result,
   } as PolicyDecision;
 }
 
-export function classifyPolicy(request: PolicyRequest, now: Date): PolicyDecision {
+function classifyPolicyAtBoundary(request: unknown, now: Date): PolicyDecision {
+  if (!isRecord(request)) {
+    return decision(INVALID_EXACT_ACTION_DIGEST, INVALID_POLICY_CONTEXT_DIGEST, {
+      decision: "deny",
+      reasonCode: "deny.policy_context_invalid",
+    });
+  }
+
+  const actionValidation = validateExactAction(request.action);
+  const standing = request.standing;
+  const impactClasses = request.impactClasses;
+  if (!isRecord(standing) || !Array.isArray(impactClasses)) {
+    return decision(actionValidation.actionDigest, INVALID_POLICY_CONTEXT_DIGEST, {
+      decision: "deny",
+      reasonCode: "deny.policy_context_invalid",
+    });
+  }
+
   let policyContextDigest: string;
   try {
     policyContextDigest = digestCanonicalJson({
       factSource: request.factSource,
-      standing: request.standing,
-      impactClasses: [...new Set(request.impactClasses)].sort(),
+      standing,
+      impactClasses: [...new Set(impactClasses)].sort(),
       contextAccess: request.contextAccess,
     } as unknown as JsonValue);
   } catch {
-    return decision(request, INVALID_POLICY_CONTEXT_DIGEST, {
+    return decision(actionValidation.actionDigest, INVALID_POLICY_CONTEXT_DIGEST, {
       decision: "deny",
       reasonCode: "deny.policy_context_invalid",
     });
@@ -189,14 +235,16 @@ export function classifyPolicy(request: PolicyRequest, now: Date): PolicyDecisio
 
   const decide = (
     result: Pick<PolicyDecision, "decision" | "reasonCode">,
-  ): PolicyDecision => decision(request, policyContextDigest, result);
+  ): PolicyDecision => decision(actionValidation.actionDigest, policyContextDigest, result);
 
-  if (!isRecord(request.standing) || !Array.isArray(request.impactClasses)) {
+  if (!actionValidation.valid) {
     return decide({
       decision: "deny",
-      reasonCode: "deny.policy_context_invalid",
+      reasonCode: "deny.exact_action_invalid",
     });
   }
+
+  const standingAuthorization = standing as unknown as StandingAuthorizationContext;
 
   if (!Number.isFinite(now.getTime())) {
     return decide({
@@ -248,27 +296,32 @@ export function classifyPolicy(request: PolicyRequest, now: Date): PolicyDecisio
     });
   }
 
-  if (request.impactClasses.some((impactClass) => !KNOWN_IMPACT_CLASSES.has(impactClass))) {
+  if (
+    impactClasses.some(
+      (impactClass) =>
+        typeof impactClass !== "string" || !KNOWN_IMPACT_CLASSES.has(impactClass),
+    )
+  ) {
     return decide({
       decision: "deny",
       reasonCode: "deny.unknown_impact_class",
     });
   }
 
-  if (hasUnresolvedStandingAuthority(request.standing)) {
+  if (hasUnresolvedStandingAuthority(standingAuthorization)) {
     return decide({
       decision: "deny",
       reasonCode: "deny.standing_authority_unresolved",
     });
   }
 
-  const impacts = new Set(request.impactClasses);
-  const gateReason = hardGateReason(impacts, request.standing);
+  const impacts = new Set(impactClasses as ActionImpactClass[]);
+  const gateReason = hardGateReason(impacts, standingAuthorization);
   if (gateReason) {
     return decide({ decision: "hard_gate", reasonCode: gateReason });
   }
 
-  if (isOutsideStandingAuthority(request.standing)) {
+  if (isOutsideStandingAuthority(standingAuthorization)) {
     return decide({
       decision: "deny",
       reasonCode: "deny.outside_standing_authority",
@@ -279,4 +332,15 @@ export function classifyPolicy(request: PolicyRequest, now: Date): PolicyDecisio
     decision: "allow",
     reasonCode: "allow.standing_authority",
   });
+}
+
+export function classifyPolicy(request: PolicyRequest, now: Date): PolicyDecision {
+  try {
+    return classifyPolicyAtBoundary(request, now);
+  } catch {
+    return decision(INVALID_EXACT_ACTION_DIGEST, INVALID_POLICY_CONTEXT_DIGEST, {
+      decision: "deny",
+      reasonCode: "deny.policy_context_invalid",
+    });
+  }
 }
