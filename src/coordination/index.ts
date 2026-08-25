@@ -1,6 +1,8 @@
 import { createCoordinationProcess } from "./app/composition.js";
 import { loadCoordinationRuntimeConfig } from "./app/runtime-config.js";
 
+export * from "./channel-coordinator/index.js";
+
 export async function runCoordinationProcess(
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<"disabled" | "listening"> {

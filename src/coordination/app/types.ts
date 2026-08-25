@@ -9,6 +9,7 @@ import type { CanonicalSearchService } from "../search/index.js";
 import type { FEATURE_FLAG_REGISTRY } from "../schema/contract-registry.js";
 import type { createUnreadService } from "../unread/index.js";
 import type { createWorkService } from "../work/index.js";
+import type { createChannelCoordinator } from "../channel-coordinator/index.js";
 
 export type CoordinationFeatureFlags = Readonly<{
   [Flag in keyof typeof FEATURE_FLAG_REGISTRY]: boolean;
@@ -99,6 +100,8 @@ export interface CoordinationServices {
   leases?: CoordinationLeasePort;
   activity?: CoordinationActivityPort;
   attachments?: CoordinationAttachmentPort;
+  /** Optional internal M16 seam. Presence never advertises or activates Channels. */
+  channelCoordinator?: ReturnType<typeof createChannelCoordinator>;
 }
 
 export interface CoordinationHttpLimits {
