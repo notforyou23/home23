@@ -1,0 +1,48 @@
+{
+  "evidenceMode": "fixture",
+  "coreBaseSha": "bec6f102b2f9f96bb05524bf1ac223833df99645",
+  "capability": "unread",
+  "capturedAt": "2026-08-25T20:00:00.000Z",
+  "directMessaging": {
+    "stable": true,
+    "macReceiptDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "iphoneReceiptDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "observationWindow": {
+      "startedAt": "2026-08-24T20:00:00.000Z",
+      "endedAt": "2026-08-25T20:00:00.000Z"
+    }
+  },
+  "incidents": { "openP0": 0, "openP1": 0 },
+  "featureFlag": {
+    "key": "connected.unread.enabled",
+    "before": false,
+    "after": false,
+    "independentKillSwitch": "disable-connected-unread"
+  },
+  "authority": {
+    "capability": "unread",
+    "currentEpoch": 20,
+    "activationEpoch": 21,
+    "writer": "fixture-canonical-unread-writer"
+  },
+  "watermarks": { "source": 100, "destination": 100 },
+  "canary": {
+    "id": "fixture-unread-canary",
+    "correlationId": "fixture-unread-correlation",
+    "verdict": "passed",
+    "evidenceKind": "missed_event_convergence",
+    "evidence": "synthetic missed-event convergence evidence"
+  },
+  "drift": {
+    "compared": 3,
+    "mismatches": 0,
+    "digest": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "rollback": {
+    "flagValue": false,
+    "targetEpoch": 22,
+    "targetWriter": "fixture-rollback-unread-writer",
+    "directMessagingRemainsAvailable": true
+  },
+  "priorCapabilityReceipt": null
+}
