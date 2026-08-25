@@ -12,6 +12,7 @@ export {
 } from "./lifecycle.js";
 export type {
   CoordinationAdvertisedCapabilities,
+  CoordinationActivityPort,
   CoordinationApplication,
   CoordinationAuthPort,
   CoordinationCapabilityDocument,

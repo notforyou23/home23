@@ -1,5 +1,6 @@
 import type { createAuthService } from "../auth/index.js";
 import type { BootstrapService } from "../bootstrap/index.js";
+import type { projectTrustedM11Activity } from "../activity/index.js";
 import type { MessagingActorContext } from "../channels/index.js";
 import type { createLeaseService } from "../leases/index.js";
 import type { CanonicalSearchService } from "../search/index.js";
@@ -53,6 +54,13 @@ export type CoordinationWorkPort = Pick<
 /** Exact M11 fenced execution boundary; no resident process is activated by injection. */
 export type CoordinationLeasePort = ReturnType<typeof createLeaseService>;
 
+/**
+ * Dependency-safe M18 projection seam. Its input still requires authenticated
+ * trusted M08 membership and complete trusted M11 fact assembly. Injection
+ * alone never advertises or exposes a public Activity route.
+ */
+export type CoordinationActivityPort = typeof projectTrustedM11Activity;
+
 export interface CoordinationServices {
   auth: CoordinationAuthPort;
   bootstrap?: BootstrapService;
@@ -61,6 +69,7 @@ export interface CoordinationServices {
   messageSubmission?: CoordinationMessageSubmissionPort;
   work?: CoordinationWorkPort;
   leases?: CoordinationLeasePort;
+  activity?: CoordinationActivityPort;
 }
 
 export interface CoordinationHttpLimits {

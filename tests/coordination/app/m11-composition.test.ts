@@ -5,6 +5,7 @@ import {
   createCoordinationApplication,
   disabledCoordinationFeatureFlags,
 } from "../../../src/coordination/app/index.js";
+import { projectTrustedM11Activity } from "../../../src/coordination/activity/index.js";
 import { createLeaseService, LeaseError } from "../../../src/coordination/leases/index.js";
 import { createWorkService, WorkError } from "../../../src/coordination/work/index.js";
 import {
@@ -62,14 +63,16 @@ test("real M11 services compose without dishonestly advertising public Work", (t
   });
   const application = createCoordinationApplication({
     flags: enabledShellFlags,
-    services: { auth: auth(), work, leases },
+    services: { auth: auth(), work, leases, activity: projectTrustedM11Activity },
   });
 
   assert.equal(application.services.work, work);
   assert.equal(application.services.leases, leases);
+  assert.equal(application.services.activity, projectTrustedM11Activity);
   assert.equal(application.capabilities().capabilities.work, false);
   assert.equal(application.capabilities().capabilities.workMutation, false);
   assert.equal(application.capabilities().capabilities.messageSubmission, false);
+  assert.equal(application.capabilities().capabilities.activity, false);
 });
 
 test("direct Work keeps M11 idempotency boundaries through the application seam", (t) => {
