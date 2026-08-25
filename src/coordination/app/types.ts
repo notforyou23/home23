@@ -1,9 +1,11 @@
 import type { createAuthService } from "../auth/index.js";
 import type { BootstrapService } from "../bootstrap/index.js";
 import type { MessagingActorContext } from "../channels/index.js";
+import type { createLeaseService } from "../leases/index.js";
 import type { CanonicalSearchService } from "../search/index.js";
-import type { createUnreadService } from "../unread/index.js";
 import type { FEATURE_FLAG_REGISTRY } from "../schema/contract-registry.js";
+import type { createUnreadService } from "../unread/index.js";
+import type { createWorkService } from "../work/index.js";
 
 export type CoordinationFeatureFlags = Readonly<{
   [Flag in keyof typeof FEATURE_FLAG_REGISTRY]: boolean;
@@ -42,23 +44,14 @@ export interface CoordinationMessageSubmissionPort {
   }): Promise<Readonly<Record<string, unknown>>>;
 }
 
-/** M11 supplies this without exposing its repository or lifecycle internals. */
-export interface CoordinationWorkPort {
-  getWork(input: {
-    context: MessagingActorContext;
-    workId: string;
-  }): Promise<Readonly<Record<string, unknown>>>;
-  cancelWork(input: {
-    context: MessagingActorContext;
-    workId: string;
-    idempotencyKey: string;
-  }): Promise<Readonly<Record<string, unknown>>>;
-  retryWork(input: {
-    context: MessagingActorContext;
-    workId: string;
-    idempotencyKey: string;
-  }): Promise<Readonly<Record<string, unknown>>>;
-}
+/** Exact M11 durable Work boundary; public DTO/auth adaptation remains later work. */
+export type CoordinationWorkPort = Pick<
+  ReturnType<typeof createWorkService>,
+  "create" | "cancelQueued" | "get"
+>;
+
+/** Exact M11 fenced execution boundary; no resident process is activated by injection. */
+export type CoordinationLeasePort = ReturnType<typeof createLeaseService>;
 
 export interface CoordinationServices {
   auth: CoordinationAuthPort;
@@ -67,6 +60,7 @@ export interface CoordinationServices {
   search?: CanonicalSearchService;
   messageSubmission?: CoordinationMessageSubmissionPort;
   work?: CoordinationWorkPort;
+  leases?: CoordinationLeasePort;
 }
 
 export interface CoordinationHttpLimits {

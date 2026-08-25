@@ -17,6 +17,7 @@ export type {
   CoordinationCapabilityDocument,
   CoordinationFeatureFlags,
   CoordinationHttpLimits,
+  CoordinationLeasePort,
   CoordinationMessageSubmissionRequest,
   CoordinationMessageSubmissionPort,
   CoordinationServices,

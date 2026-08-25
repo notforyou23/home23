@@ -1,4 +1,5 @@
 import { mkdtempSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,6 +8,7 @@ import Database from "better-sqlite3";
 import { runMutationWithEvent } from "../../../src/coordination/db/transaction.js";
 import { COORDINATION_SPINE_MIGRATION_SQL } from "../../../src/coordination/migrations/0001-coordination-spine.js";
 import { CONNECTED_AGENTS_PRODUCT_SCHEMA_MIGRATION_SQL } from "../../../src/coordination/migrations/0002-connected-agents-product-schema.js";
+import { SEARCH_ATTACHMENT_SCHEMA_MIGRATION_SQL } from "../../../src/coordination/migrations/0003-search-and-attachment-schema.js";
 import { WORK_SCHEMA_DELTA_SQL } from "../../../src/coordination/work/schema-delta.js";
 
 const PREFIX = {
@@ -47,6 +49,7 @@ export class M11TestDatabase {
     if (initialize) {
       this.raw.exec(COORDINATION_SPINE_MIGRATION_SQL);
       this.raw.exec(CONNECTED_AGENTS_PRODUCT_SCHEMA_MIGRATION_SQL);
+      this.raw.exec(SEARCH_ATTACHMENT_SCHEMA_MIGRATION_SQL);
       this.raw.exec(WORK_SCHEMA_DELTA_SQL);
       this.seedProductRows();
     }
@@ -119,6 +122,22 @@ export class M11TestDatabase {
       ) VALUES (?, ?, 1, 'user_owner', 'owner', 'Owner', 'text', 'not exposed',
                 'visible', NULL, NULL, NULL, NULL, NULL, ?)`,
     ).run(MESSAGE_ID, CHANNEL_ID, AT);
+    this.raw.prepare(
+      `INSERT INTO events (
+        id, schema_version, type, durability, aggregate_kind, aggregate_id,
+        aggregate_version, channel_id, actor_principal_id, request_id,
+        correlation_id, payload_json, payload_digest, created_at
+      ) VALUES (?, 1, 'message.appended', 'durable', 'message', ?, 1, ?,
+                'user_owner', ?, ?, '{}', ?, ?)`,
+    ).run(
+      fixtureId("event", 1),
+      MESSAGE_ID,
+      CHANNEL_ID,
+      fixtureId("request", 1),
+      fixtureId("correlation", 1),
+      createHash("sha256").update("{}", "utf8").digest("hex"),
+      AT,
+    );
   }
 }
 

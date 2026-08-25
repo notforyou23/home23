@@ -149,9 +149,9 @@ test("unfinished M11 ports cannot activate message or Work capabilities", () => 
         },
       },
       work: {
-        getWork: async () => ({}),
-        cancelWork: async () => ({}),
-        retryWork: async () => ({}),
+        create: () => { throw new Error("unused"); },
+        cancelQueued: () => { throw new Error("unused"); },
+        get: () => null,
       },
       messageSubmission: {
         submitMessage: async () => ({}),

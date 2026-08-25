@@ -502,9 +502,9 @@ export const WORK_SCHEMA_DELTA_PROPOSAL = deepFreeze({
   name: "durable-work-recovery-v1",
   landing: { owner: "M04", status: "proposal_only", m11MustNotApply: true },
   requires: {
-    exactBaseGitSha: "de1e911e3769b7d61fe6779b1650997f3991c8a6",
-    coordinationSchemaVersion: 2,
-    coordinationSchemaChecksum: "47c9045f580a020bce91d7ea64f572c7f88dc08532ff29b6f7601fdab23428a4",
+    exactBaseGitSha: "b2bdcfcd6b33fbf936bbd12388e7c829b9eeee87",
+    coordinationSchemaVersion: 3,
+    coordinationSchemaChecksum: "ddac2fb83bf73837f5200725697eff7d55a685f18a6c144fc33df17b75f113c2",
     connectedAgentsContractVersion: 1,
     connectedAgentsContractPackSha256: "fbc20017304aed66e579a2b95facbda6bbcf8572038f7f1c0c824423c65d6be2",
     m08MessagingSchemaDeltaSha256: "85695c952db6d1cfafa19296d48d241dbb7bf335342b534b1c76d51e24f74ae6",
@@ -552,7 +552,7 @@ export const WORK_SCHEMA_DELTA_PROPOSAL = deepFreeze({
 export const WORK_SCHEMA_DELTA_CANONICAL_JSON = canonicalJson(WORK_SCHEMA_DELTA_PROPOSAL);
 
 export const WORK_SCHEMA_DELTA_SHA256 =
-  "5d4eb611b79a4f449cdd6c937488b5337d3fa308364c416b7801a74179315d4a" as const;
+  "83e42621a93b7ac9418217637ec703f2980b4bdc3468af37b01b47fdeda1518f" as const;
 
 export function computeWorkSchemaDeltaDigest(): string {
   return createHash("sha256")

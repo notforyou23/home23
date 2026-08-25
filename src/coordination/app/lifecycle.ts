@@ -17,7 +17,9 @@ export class CoordinationLifecycleDrainingError extends Error {
 export interface CoordinationLifecycle {
   state(): CoordinationLifecycleState;
   activeRequests(): number;
+  activeWork(): number;
   beginRequest(): () => void;
+  beginWork(): () => void;
   drain(): Promise<void>;
 }
 
@@ -26,20 +28,23 @@ export function createCoordinationLifecycle(
 ): CoordinationLifecycle {
   let lifecycleState: CoordinationLifecycleState = "accepting";
   let activeRequests = 0;
+  let activeWork = 0;
   let resolveIdle: (() => void) | null = null;
   let drainPromise: Promise<void> | null = null;
 
-  function beginRequest(): () => void {
+  function beginActivity(kind: "request" | "work"): () => void {
     if (lifecycleState !== "accepting") {
       throw new CoordinationLifecycleDrainingError();
     }
-    activeRequests += 1;
+    if (kind === "request") activeRequests += 1;
+    else activeWork += 1;
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      activeRequests -= 1;
-      if (activeRequests === 0 && resolveIdle) {
+      if (kind === "request") activeRequests -= 1;
+      else activeWork -= 1;
+      if (activeRequests === 0 && activeWork === 0 && resolveIdle) {
         const resolve = resolveIdle;
         resolveIdle = null;
         resolve();
@@ -47,8 +52,16 @@ export function createCoordinationLifecycle(
     };
   }
 
+  function beginRequest(): () => void {
+    return beginActivity("request");
+  }
+
+  function beginWork(): () => void {
+    return beginActivity("work");
+  }
+
   function waitForIdle(): Promise<void> {
-    if (activeRequests === 0) return Promise.resolve();
+    if (activeRequests === 0 && activeWork === 0) return Promise.resolve();
     return new Promise<void>((resolve) => {
       resolveIdle = resolve;
     });
@@ -86,7 +99,9 @@ export function createCoordinationLifecycle(
   return Object.freeze({
     state: () => lifecycleState,
     activeRequests: () => activeRequests,
+    activeWork: () => activeWork,
     beginRequest,
+    beginWork,
     drain,
   });
 }

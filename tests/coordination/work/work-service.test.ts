@@ -69,7 +69,8 @@ test("Work creation and its one wake intent survive reopen and exact retry", asy
     0,
   );
   const events = database.readAll<{ type: string; payloadJson: string }>(
-    "SELECT type, payload_json AS payloadJson FROM events ORDER BY sequence",
+    `SELECT type, payload_json AS payloadJson FROM events
+     WHERE aggregate_kind IN ('work', 'outbox') ORDER BY sequence`,
   );
   assert.deepEqual(events.map((event) => event.type), ["turn.updated", "activity.updated"]);
   assert.doesNotMatch(JSON.stringify(events), /not exposed|m11-stable-create-key/);

@@ -57,3 +57,25 @@ test("request release is idempotent and an empty lifecycle drains once", async (
   assert.equal(lifecycle.activeRequests(), 0);
   assert.equal(lifecycle.state(), "stopped");
 });
+
+test("drain waits for in-flight Work and rejects new Work while draining", async () => {
+  const lifecycle = createCoordinationLifecycle();
+  const finishWork = lifecycle.beginWork();
+
+  const draining = lifecycle.drain();
+  assert.equal(lifecycle.state(), "draining");
+  assert.equal(lifecycle.activeRequests(), 0);
+  assert.equal(lifecycle.activeWork(), 1);
+  assert.throws(() => lifecycle.beginWork(), CoordinationLifecycleDrainingError);
+
+  let drained = false;
+  void draining.then(() => { drained = true; });
+  await Promise.resolve();
+  assert.equal(drained, false);
+
+  finishWork();
+  finishWork();
+  await draining;
+  assert.equal(lifecycle.activeWork(), 0);
+  assert.equal(lifecycle.state(), "stopped");
+});

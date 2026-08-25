@@ -15,6 +15,7 @@ import {
 } from "../../../src/coordination/db/index.js";
 import { COORDINATION_SPINE_MIGRATION_SQL } from "../../../src/coordination/migrations/0001-coordination-spine.js";
 import { CONNECTED_AGENTS_PRODUCT_SCHEMA_MIGRATION_SQL } from "../../../src/coordination/migrations/0002-connected-agents-product-schema.js";
+import { SEARCH_ATTACHMENT_SCHEMA_MIGRATION_SQL } from "../../../src/coordination/migrations/0003-search-and-attachment-schema.js";
 import { CANONICAL_SEARCH_SCHEMA_DELTA_SHA256 } from "../../../src/coordination/search/index.js";
 import {
   AT,
@@ -168,7 +169,7 @@ test("M11 publishes one deterministic proposal-only M04 work schema handoff", as
     m11MustNotApply: true,
   });
   assert.deepEqual(work.WORK_SCHEMA_DELTA_PROPOSAL.requires, {
-    exactBaseGitSha: "de1e911e3769b7d61fe6779b1650997f3991c8a6",
+    exactBaseGitSha: "b2bdcfcd6b33fbf936bbd12388e7c829b9eeee87",
     coordinationSchemaVersion: COORDINATION_SCHEMA_VERSION,
     coordinationSchemaChecksum: COORDINATION_SCHEMA_CHECKSUM,
     connectedAgentsContractVersion: 1,
@@ -206,6 +207,7 @@ test("the M11 owner never applies its proposal and an isolated M04 fixture may i
     database.pragma("foreign_keys = ON");
     database.exec(COORDINATION_SPINE_MIGRATION_SQL);
     database.exec(CONNECTED_AGENTS_PRODUCT_SCHEMA_MIGRATION_SQL);
+    database.exec(SEARCH_ATTACHMENT_SCHEMA_MIGRATION_SQL);
     database.exec(WORK_SCHEMA_DELTA_SQL);
 
     const tables = database.prepare(
