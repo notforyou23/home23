@@ -11,6 +11,7 @@ import {
   sha256,
 } from "./canonical.js";
 import { classifySegmentChange } from "./fingerprints.js";
+import type { CanonicalSearchResponse, SearchCompleteness } from "../search/index.js";
 import type {
   AuthorityCapability,
   AuthorityMode,
@@ -32,6 +33,7 @@ export type ShadowMismatchClassification =
   | "source_changed"
   | "projection_lag"
   | "alias_ambiguity"
+  | "search_route_blind"
   | "content_mismatch";
 
 export interface ShadowCompareInput {
@@ -64,6 +66,8 @@ export interface ShadowCompareInput {
     readonly queryDigest: string;
     readonly passed: boolean;
   };
+  /** Actual response returned by the canonical M09 same-path search service. */
+  readonly searchResponse?: CanonicalSearchResponse;
 }
 
 function nonNegativeInteger(value: number): boolean {
@@ -283,6 +287,79 @@ function validateInput(input: ShadowCompareInput): void {
     }
     requireSha256(input.samePathCanary.queryDigest, "shadow same-path canary queryDigest");
   }
+  if (input.capability === "search" && !input.searchResponse) {
+    throw new Error("search shadow comparison requires M09 search response evidence");
+  }
+  if (input.searchResponse) {
+    const response = input.searchResponse;
+    const visibility = response.completeness;
+    const expectedScope = visibility.filters.scope === "all"
+      ? "all"
+      : `channel:${visibility.filters.channelId}`;
+    if (
+      input.capability !== "search"
+      || !validateContractId("request", response.requestId)
+      || !validateContractId("correlation", response.correlationId)
+      || typeof response.query !== "string"
+      || sha256(response.query) !== input.samePathCanary?.queryDigest
+      || response.scope !== expectedScope
+      || !nonNegativeInteger(response.throughEventSequence)
+      || response.throughEventSequence < visibility.sourceEventSequence
+      || visibility.respondingRoute !== "/api/v1/search"
+      || visibility.respondingRoute !== input.samePathCanary?.route
+      || visibility.authoritativeSource !== "coordination.messages"
+      || visibility.indexRoute !== "sqlite_fts5"
+      || visibility.sourceEventSequence !== input.canonicalWatermark.eventSequence
+      || !nonNegativeInteger(visibility.sourceEventSequence)
+      || !nonNegativeInteger(visibility.indexedThroughEventSequence)
+      || !nonNegativeInteger(visibility.crossingProof.sourceRows)
+      || !nonNegativeInteger(visibility.crossingProof.indexedRows)
+      || visibility.crossingProof.sourceRows < input.canonicalRecords.length
+      || !validateContractId("principal", visibility.filters.principalId)
+      || canonicalJson(visibility.filters.sourceClasses) !== canonicalJson(["coordination.messages"])
+      || visibility.filters.membership !== "active"
+      || visibility.filters.visibility !== "visible_not_tombstoned"
+      || !visibility.samePathCanary.id
+      || typeof visibility.samePathCanary.found !== "boolean"
+      || visibility.samePathCanary.found !== input.samePathCanary?.passed
+      || !["complete", "partial"].includes(visibility.status)
+      || !["complete", "scoped_empty", "route_blind"].includes(visibility.verdict)
+      || visibility.importCoverage.bodyImported !== 0
+      || visibility.importCoverage.referenceOnly !== 0
+      || !visibility.reason
+    ) {
+      throw new Error("M09 search visibility evidence is malformed or unbound");
+    }
+    requireCanonicalTimestamp(
+      visibility.crossingProof.checkedAt,
+      "search visibility crossing checkedAt",
+    );
+    requireCanonicalTimestamp(
+      visibility.samePathCanary.checkedAt,
+      "search visibility canary checkedAt",
+    );
+    if (
+      visibility.filters.scope === "channel"
+        ? !visibility.filters.channelId
+          || !validateContractId("channel", visibility.filters.channelId)
+        : visibility.filters.scope !== "all" || visibility.filters.channelId !== null
+    ) {
+      throw new Error("M09 search visibility scope is malformed");
+    }
+  }
+}
+
+function copySearchVisibility(value: SearchCompleteness): SearchCompleteness {
+  return {
+    ...value,
+    crossingProof: { ...value.crossingProof },
+    filters: {
+      ...value.filters,
+      sourceClasses: ["coordination.messages"],
+    },
+    samePathCanary: { ...value.samePathCanary },
+    importCoverage: { ...value.importCoverage },
+  };
 }
 
 export function compareShadowRead(input: ShadowCompareInput) {
@@ -353,6 +430,22 @@ export function compareShadowRead(input: ShadowCompareInput) {
   if (input.samePathCanary && !input.samePathCanary.passed) {
     mismatches.push({ classification: "content_mismatch", stableKey: null, detail: "same-path canary failed" });
   }
+  const searchVisibility = input.searchResponse?.completeness;
+  if (searchVisibility && (
+    searchVisibility.status !== "complete"
+    || searchVisibility.verdict === "route_blind"
+    || searchVisibility.sourceEventSequence
+      !== searchVisibility.indexedThroughEventSequence
+    || searchVisibility.crossingProof.sourceRows
+      !== searchVisibility.crossingProof.indexedRows
+    || !searchVisibility.samePathCanary.found
+  )) {
+    mismatches.push({
+      classification: "search_route_blind",
+      stableKey: null,
+      detail: "M09 route, source/index watermark, crossing, or same-path canary is incomplete",
+    });
+  }
 
   const attachmentTotals = (records: readonly ShadowComparableRecord[]) => records.reduce(
     (total, record) => ({
@@ -389,6 +482,18 @@ export function compareShadowRead(input: ShadowCompareInput) {
     },
     expectedExclusions: [...excluded].sort(),
     samePathCanary: input.samePathCanary ? { ...input.samePathCanary } : null,
+    searchVisibility: searchVisibility
+      ? copySearchVisibility(searchVisibility)
+      : null,
+    searchObservation: input.searchResponse
+      ? {
+          requestId: input.searchResponse.requestId,
+          correlationId: input.searchResponse.correlationId,
+          queryDigest: input.samePathCanary!.queryDigest,
+          scope: input.searchResponse.scope,
+          throughEventSequence: input.searchResponse.throughEventSequence,
+        }
+      : null,
     lagRecords,
     collisionCount: input.collisions.length,
     quarantineCount: input.quarantines.length,

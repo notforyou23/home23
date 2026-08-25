@@ -1,5 +1,10 @@
 import { validateContractId, type ContractIdKind } from "../schema/contract-registry.js";
-import { canonicalJson, deepFreeze, sha256 } from "../import/canonical.js";
+import {
+  canonicalJson,
+  deepFreeze,
+  requireCanonicalTimestamp,
+  sha256,
+} from "../import/canonical.js";
 import type {
   AliasBinding,
   AliasBindingInput,
@@ -25,10 +30,16 @@ function validLookup(namespace: string, legacyId: string): boolean {
 }
 
 function immutableBinding(binding: AliasBinding): AliasBinding {
-  return deepFreeze({
-    ...binding,
-    provenance: { ...binding.provenance },
-  });
+  return deepFreeze({ ...binding });
+}
+
+function validTimestamp(value: string): boolean {
+  try {
+    requireCanonicalTimestamp(value, "canonical alias timestamp");
+    return value.length === 24;
+  } catch {
+    return false;
+  }
 }
 
 function validStoredBinding(
@@ -41,12 +52,13 @@ function validStoredBinding(
     && binding.aliasDigest === expectedDigest
     && NAMESPACE_PATTERN.test(binding.namespace)
     && /^[a-f0-9]{64}$/.test(binding.aliasDigest)
-    && validateContractId("alias", binding.aliasId)
+    && validateContractId("alias", binding.id)
     && idKind !== undefined
     && validateContractId(idKind, binding.targetId)
     && typeof binding.active === "boolean"
-    && validateContractId("legacySource", binding.provenance?.sourceId ?? "")
-    && /^[a-f0-9]{64}$/.test(binding.provenance?.importKeyDigest ?? "");
+    && validTimestamp(binding.createdAt)
+    && validTimestamp(binding.updatedAt)
+    && binding.updatedAt >= binding.createdAt;
 }
 
 export function digestLegacyAlias(namespace: string, legacyId: string): string {
@@ -59,7 +71,7 @@ export function digestLegacyAlias(namespace: string, legacyId: string): string {
 }
 
 function validateCandidate(input: AliasBindingInput, aliasDigest: string): AliasBindingPlan | null {
-  if (!validateContractId("alias", input.aliasId)) {
+  if (!validateContractId("alias", input.id)) {
     return deepFreeze({ decision: "denied", reason: "invalid_alias", aliasDigest });
   }
   const idKind = TARGET_ID_KIND[input.targetType];
@@ -67,10 +79,11 @@ function validateCandidate(input: AliasBindingInput, aliasDigest: string): Alias
     return deepFreeze({ decision: "denied", reason: "invalid_target", aliasDigest });
   }
   if (
-    !validateContractId("legacySource", input.provenance.sourceId)
-    || !/^[a-f0-9]{64}$/.test(input.provenance.importKeyDigest)
+    !validTimestamp(input.createdAt)
+    || !validTimestamp(input.updatedAt)
+    || input.updatedAt < input.createdAt
   ) {
-    return deepFreeze({ decision: "denied", reason: "invalid_provenance", aliasDigest });
+    return deepFreeze({ decision: "denied", reason: "invalid_timestamp", aliasDigest });
   }
   return null;
 }
@@ -109,20 +122,21 @@ export function planAliasBinding(
     }
     return deepFreeze({ decision: "already_bound", binding: immutableBinding(exact[0]!) });
   }
-  const reusedId = existingBindings.find((binding) => binding.aliasId === input.aliasId);
+  const reusedId = existingBindings.find((binding) => binding.id === input.id);
   if (reusedId) {
     return deepFreeze({ decision: "denied", reason: "alias_id_collision", aliasDigest });
   }
   return deepFreeze({
     decision: "create",
     binding: immutableBinding({
-      aliasId: input.aliasId,
+      id: input.id,
       namespace: input.namespace,
       aliasDigest,
       targetType: input.targetType,
       targetId: input.targetId,
       active: true,
-      provenance: { ...input.provenance },
+      createdAt: input.createdAt,
+      updatedAt: input.updatedAt,
     }),
   });
 }

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -6,9 +9,11 @@ import {
   createCohortManifest,
   createLegacySourceRegistry,
   createResumePlan,
+  discoverRegisteredSource,
   planCohortImport,
   planImportCohortRollback,
   sha256,
+  verifyImportCohortRollback,
   type ImportLedgerEntry,
   type ImportLedgerView,
   type ImportSourceRecord,
@@ -497,10 +502,46 @@ test("a changed record at a committed source position is quarantined", () => {
   assert.equal(plan.counts.inserted, 0);
 });
 
-test("cohort rollback preserves source, provenance, aliases, ledger, and cursors", () => {
+function createRollbackSourceFixture(t: test.TestContext, name: string) {
+  const directory = mkdtempSync(join(tmpdir(), `home23-m17-${name}-`));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, "conversation.jsonl");
+  const sourceBytes = Buffer.from("one\ntwo\n", "utf8");
+  writeFileSync(path, sourceBytes);
+  const sourceRegistry = createLegacySourceRegistry([{
+    ...sourceRegistration(),
+    locator: { kind: "exact_file", absolutePath: path },
+  }]);
+  const discovered = discoverRegisteredSource(sourceRegistry, SOURCE_ID);
+  const first = discovered.fingerprint.records[0]!;
+  const cohortManifest = createCohortManifest({
+    id: COHORT_ID,
+    snapshotAt: "2026-08-25T12:00:00.000Z",
+    selectorVersion: "m17-rollback-reviewed-v1",
+    reviewedBy: "user_owner",
+    entries: [{
+      sourceId: SOURCE_ID,
+      segmentIdentity: discovered.fingerprint.segmentIdentity,
+      recordKey: "line:0",
+      recordIndex: first.recordIndex,
+      byteOffset: first.byteOffset,
+      nextByteOffset: first.nextByteOffset,
+      rawDigest: first.digest,
+      parserVersion: "jsonl-v1",
+      reviewedSourceWatermark: discovered.watermark,
+      cohort: "H4",
+      bodyDecision: "reference_only",
+    }],
+  }, sourceRegistry);
+  return { path, sourceBytes, sourceRegistry, cohortManifest };
+}
+
+test("cohort rollback preserves source, provenance, aliases, ledger, and cursors", (t) => {
+  const { sourceRegistry, cohortManifest } = createRollbackSourceFixture(t, "rollback-plan");
   const rollback = planImportCohortRollback({
-    cohortId: COHORT_ID,
+    cohortManifest,
     batchId: "batch-1",
+    sourceRegistry,
     items: [
       { importKeyDigest: "1".repeat(64), bodyImported: true, referencedByNewActivity: false },
       { importKeyDigest: "2".repeat(64), bodyImported: true, referencedByNewActivity: true },
@@ -510,6 +551,9 @@ test("cohort rollback preserves source, provenance, aliases, ledger, and cursors
   assert.equal(rollback.batchState, "inactive");
   assert.equal(rollback.source.action, "preserve_read_only");
   assert.equal(rollback.source.overwriteAllowed, false);
+  assert.equal(rollback.source.expectedSegments.length, 1);
+  assert.equal(rollback.source.expectedSegments[0]?.sourceId, SOURCE_ID);
+  assert.match(rollback.source.expectedSegments[0]?.fingerprintDigest ?? "", /^[a-f0-9]{64}$/);
   assert.deepEqual(rollback.preserve, [
     "import_ledger",
     "aliases",
@@ -524,4 +568,62 @@ test("cohort rollback preserves source, provenance, aliases, ledger, and cursors
   );
   assert.equal(rollback.items[0]?.canonicalRecord, "preserve_audit_stub");
   assert.equal(rollback.items[1]?.canonicalAction, "preserve_referenced_record");
+});
+
+test("rollback verification fails closed unless every allowlisted legacy source is byte-identical", (t) => {
+  const {
+    path,
+    sourceBytes,
+    sourceRegistry,
+    cohortManifest,
+  } = createRollbackSourceFixture(t, "rollback-proof");
+  const rollback = planImportCohortRollback({
+    cohortManifest,
+    batchId: "batch-rollback-proof",
+    sourceRegistry,
+    items: [{
+      importKeyDigest: "1".repeat(64),
+      bodyImported: true,
+      referencedByNewActivity: false,
+    }],
+  });
+  const receipt = verifyImportCohortRollback({
+    rollback,
+    sourceRegistry,
+    cohortManifest,
+  });
+  const before = rollback.source.expectedSegments[0]!;
+
+  assert.equal(receipt.sourceMutation, "none");
+  assert.deepEqual(receipt.sources, [{
+    sourceId: SOURCE_ID,
+    segmentIdentity: before.segmentIdentity,
+    byteLength: sourceBytes.length,
+    tailDigest: before.tailDigest,
+    classification: "unchanged",
+  }]);
+  assert.deepEqual(readFileSync(path), sourceBytes);
+  assert.equal(JSON.stringify(receipt).includes(path), false);
+
+  assert.throws(
+    () => verifyImportCohortRollback({
+      rollback: {
+        ...rollback,
+        source: { ...rollback.source, expectedSegments: [] },
+      },
+      sourceRegistry,
+      cohortManifest,
+    }),
+    /source set differs from the reviewed cohort manifest/,
+  );
+
+  writeFileSync(path, Buffer.concat([sourceBytes, Buffer.from("three\n")]));
+  assert.throws(
+    () => verifyImportCohortRollback({
+      rollback,
+      sourceRegistry,
+      cohortManifest,
+    }),
+    /legacy source changed during cohort rollback/,
+  );
 });

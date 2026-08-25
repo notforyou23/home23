@@ -139,6 +139,9 @@ export function validateAuthorityEpochTransition(
   if (!validEpochRecord(current) || !validEpochRecord(proposed)) {
     return denied("invalid_epoch_record");
   }
+  if (!receipt || typeof receipt !== "object") {
+    return denied("receipt_signature_missing");
+  }
   if (current.capability !== proposed.capability) return denied("capability_mismatch");
   if (proposed.epoch !== current.epoch + 1) return denied("epoch_not_monotonic");
   const capabilityHistory = history

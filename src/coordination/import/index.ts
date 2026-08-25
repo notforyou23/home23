@@ -2,8 +2,17 @@ export { canonicalJson, deepFreeze, requireCanonicalTimestamp, requireSha256, sh
 export { assertCohortManifestIntegrity, createCohortManifest } from "./cohorts.js";
 export { createResumePlan, type ImportResumePlan } from "./cursors.js";
 export { classifySegmentChange } from "./fingerprints.js";
+export {
+  bindCanonicalImportMessage,
+  type BindCanonicalImportMessageInput,
+  type CanonicalImportMessageBinding,
+} from "./materialization.js";
 export { planCohortImport } from "./planner.js";
-export { planImportCohortRollback, type ImportRollbackItem } from "./rollback.js";
+export {
+  planImportCohortRollback,
+  verifyImportCohortRollback,
+  type ImportRollbackItem,
+} from "./rollback.js";
 export {
   computeImportSchemaDeltaDigest,
   IMPORT_SCHEMA_DELTA_CANONICAL_JSON,

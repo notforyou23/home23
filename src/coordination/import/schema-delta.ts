@@ -1,4 +1,9 @@
 import { canonicalJson, deepFreeze, sha256 } from "./canonical.js";
+import {
+  COORDINATION_SCHEMA_CHECKSUM,
+  COORDINATION_SCHEMA_VERSION,
+  COORDINATION_SEARCH_ATTACHMENT_SCHEMA_DEPENDENCIES,
+} from "../migrations/index.js";
 
 interface ImportSchemaColumnProposal {
   readonly name: string;
@@ -126,24 +131,6 @@ const tables: readonly ImportSchemaTableProposal[] = [
     uniqueConstraints: [["source_id", "segment_identity"]],
   },
   {
-    name: "legacy_aliases",
-    strict: true,
-    columns: [
-      { name: "id", affinity: "TEXT", nullable: false, primaryKey: true, check: "id LIKE 'alias_%'" },
-      { name: "namespace", affinity: "TEXT", nullable: false },
-      { name: "alias_digest", affinity: "TEXT", nullable: false, check: "length(alias_digest) = 64" },
-      { name: "target_type", affinity: "TEXT", nullable: false, check: "target_type IN ('bot', 'conversation', 'message', 'artifact', 'import_item')" },
-      { name: "target_id", affinity: "TEXT", nullable: false },
-      { name: "active", affinity: "INTEGER", nullable: false, check: "active IN (0, 1)" },
-      { name: "source_id", affinity: "TEXT", nullable: false, references: "legacy_sources(id)" },
-      { name: "import_key_digest", affinity: "TEXT", nullable: false, check: "length(import_key_digest) = 64" },
-      { name: "created_at", affinity: "TEXT", nullable: false, check: "length(created_at) = 24" },
-      { name: "deactivated_at", affinity: "TEXT", nullable: true, check: "deactivated_at IS NULL OR length(deactivated_at) = 24" },
-    ],
-    tableChecks: ["(active = 1 AND deactivated_at IS NULL) OR (active = 0 AND deactivated_at IS NOT NULL)"],
-    uniqueConstraints: [["namespace", "alias_digest"]],
-  },
-  {
     name: "shadow_compare_receipts",
     strict: true,
     columns: [
@@ -162,22 +149,43 @@ const tables: readonly ImportSchemaTableProposal[] = [
 ];
 
 export const IMPORT_SCHEMA_DELTA_PROPOSAL = deepFreeze({
-  proposalVersion: 1,
+  proposalVersion: 2,
   packageId: "M17",
-  name: "legacy-import-alias-shadow-v1",
+  name: "legacy-import-ledger-shadow-v2",
   landing: {
     owner: "M04",
     status: "proposal_only",
     m17MustNotApply: true,
   },
   requires: {
-    coordinationSchemaVersion: 1,
-    coordinationSchemaChecksum:
-      "0ce5eee85db7fe852a6e5ef970cf81d2bbc90352cd8bf4b5e09d3d02991c7dc9",
+    coordinationSchemaVersion: COORDINATION_SCHEMA_VERSION,
+    coordinationSchemaChecksum: COORDINATION_SCHEMA_CHECKSUM,
     connectedAgentsContractVersion: 1,
     connectedAgentsContractPackSha256:
       "fbc20017304aed66e579a2b95facbda6bbcf8572038f7f1c0c824423c65d6be2",
-    productionBodyMaterializationAfter: ["M08", "M09"],
+  },
+  canonicalBindings: {
+    aliases: {
+      table: "aliases",
+      identityColumns: ["namespace", "alias_digest"],
+      targetColumns: ["target_type", "target_id", "active"],
+      provenanceOwner: "import_items",
+    },
+    messages: {
+      table: "messages",
+      idempotencyTable: "idempotency_records",
+    },
+    events: {
+      table: "events",
+      orderedTypes: ["message.appended", "import.updated"],
+    },
+    search: {
+      indexTable: "message_fts",
+      watermarkTable: "search_watermarks",
+      sourceClass: "coordination.messages",
+      rebuildSqlSha256:
+        COORDINATION_SEARCH_ATTACHMENT_SCHEMA_DEPENDENCIES.m09SearchRebuildSql,
+    },
   },
   tables,
   indexes: [
@@ -185,7 +193,6 @@ export const IMPORT_SCHEMA_DELTA_PROPOSAL = deepFreeze({
     { name: "import_batches_cohort_state", table: "import_batches", columns: ["cohort_id", "state"] },
     { name: "import_items_batch_state", table: "import_items", columns: ["batch_id", "state"] },
     { name: "import_items_source_position", table: "import_items", columns: ["source_id", "segment_identity", "record_key"] },
-    { name: "legacy_aliases_target", table: "legacy_aliases", columns: ["target_type", "target_id"] },
     { name: "shadow_receipts_source_epoch", table: "shadow_compare_receipts", columns: ["source_id", "authority_epoch"] },
   ],
   transactionRequirements: [
@@ -220,7 +227,7 @@ export const IMPORT_SCHEMA_DELTA_CANONICAL_JSON = canonicalJson(
 );
 
 export const IMPORT_SCHEMA_DELTA_SHA256 =
-  "b8e499ac6a213d315645c69382cf254fea109f947f3cd7c3566b7799513de638" as const;
+  "75471d65e66f8f70708493078cb5e139e099d686fb8df04f93d9bdd29371cfe4" as const;
 
 export function computeImportSchemaDeltaDigest(): string {
   return sha256(IMPORT_SCHEMA_DELTA_CANONICAL_JSON);

@@ -1,27 +1,25 @@
 export type AliasTargetType = "bot" | "conversation" | "message" | "artifact" | "import_item";
 
-export interface AliasProvenance {
-  readonly sourceId: string;
-  readonly importKeyDigest: string;
-}
-
+/** Exact application shape of the canonical schema-v3 `aliases` row. */
 export interface AliasBinding {
-  readonly aliasId: string;
+  readonly id: string;
   readonly namespace: string;
   readonly aliasDigest: string;
   readonly targetType: AliasTargetType;
   readonly targetId: string;
   readonly active: boolean;
-  readonly provenance: AliasProvenance;
+  readonly createdAt: string;
+  readonly updatedAt: string;
 }
 
 export interface AliasBindingInput {
-  readonly aliasId: string;
+  readonly id: string;
   readonly namespace: string;
   readonly legacyId: string;
   readonly targetType: AliasTargetType;
   readonly targetId: string;
-  readonly provenance: AliasProvenance;
+  readonly createdAt: string;
+  readonly updatedAt: string;
 }
 
 export type AliasBindingPlan =
@@ -35,7 +33,7 @@ export type AliasBindingPlan =
         | "invalid_stored_alias"
         | "invalid_alias"
         | "invalid_target"
-        | "invalid_provenance";
+        | "invalid_timestamp";
       readonly aliasDigest: string;
     };
 

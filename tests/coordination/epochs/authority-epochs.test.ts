@@ -1,4 +1,9 @@
 import assert from "node:assert/strict";
+import {
+  generateKeyPairSync,
+  sign as signEd25519,
+  verify as verifyEd25519,
+} from "node:crypto";
 import test from "node:test";
 
 import {
@@ -157,6 +162,59 @@ test("a signed shadow-to-canonical receipt validates without applying the flip",
     effectiveAtEventSequence: null,
     rollbackEpoch: null,
   });
+});
+
+test("canonical labels and flags cannot authorize a transition without a signed receipt", () => {
+  const result = validateAuthorityEpochTransition({
+    current: SHADOW,
+    proposed: CANONICAL,
+    history: [LEGACY, SHADOW],
+    receipt: undefined as never,
+    activeCanonicalWriters: [],
+    verifySignature: () => true,
+  });
+
+  assert.deepEqual(result, { decision: "denied", reason: "receipt_signature_missing" });
+  assert.equal(SHADOW.mode, "shadow");
+  assert.equal(CANONICAL.mode, "canonical");
+});
+
+test("a real Ed25519 operator signature authorizes only its exact receipt payload", () => {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const fakeSigned = receipt(SHADOW, CANONICAL);
+  const { signature: _signature, ...unsigned } = fakeSigned;
+  const payload = authorityReceiptSigningPayload(unsigned);
+  const rollout: AuthorityRolloutReceipt = {
+    ...unsigned,
+    signature: {
+      algorithm: "ed25519",
+      keyId: "operator-ed25519-1",
+      value: signEd25519(null, Buffer.from(payload, "utf8"), privateKey).toString("base64"),
+    },
+  };
+  const result = validateAuthorityEpochTransition({
+    current: SHADOW,
+    proposed: CANONICAL,
+    history: [LEGACY, SHADOW],
+    receipt: rollout,
+    activeCanonicalWriters: [],
+    verifySignature: (signingPayload, signature) => verifyEd25519(
+      null,
+      Buffer.from(signingPayload, "utf8"),
+      publicKey,
+      Buffer.from(signature.value, "base64"),
+    ),
+  });
+
+  assert.equal(result.decision, "valid");
+  assert.equal(validateAuthorityEpochTransition({
+    current: SHADOW,
+    proposed: { ...CANONICAL, writer: "label-only-writer" },
+    history: [LEGACY, SHADOW],
+    receipt: rollout,
+    activeCanonicalWriters: [],
+    verifySignature: () => true,
+  }).decision, "denied");
 });
 
 test("an invalid authority transition is denied before signature can authorize it", () => {

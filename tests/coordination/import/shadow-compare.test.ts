@@ -1,11 +1,25 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
+import { createChannelService } from "../../../src/coordination/channels/index.js";
 import {
   compareShadowRead,
   type SegmentFingerprint,
   type ShadowComparableRecord,
 } from "../../../src/coordination/import/index.js";
+import { createMessageService } from "../../../src/coordination/messages/index.js";
+import {
+  CANONICAL_SEARCH_SCHEMA_DELTA_SQL,
+  SqliteCanonicalSearchRepository,
+  createCanonicalSearchService,
+} from "../../../src/coordination/search/index.js";
+import {
+  OWNER_ID,
+  createMessagingFixture,
+  fixtureId,
+  ownerContext,
+} from "../messaging/test-fixture.js";
 
 const SOURCE_ID = "legacy_0198d95f-6c00-7000-8000-000000000091";
 
@@ -187,32 +201,148 @@ test("malformed evidence cannot emit a match receipt", () => {
   );
 });
 
-test("search shadow receipts require a same-path canary", () => {
+async function observeCanonicalSearch(t: test.TestContext) {
+  const fixture = await createMessagingFixture();
+  t.after(fixture.close);
+  fixture.database.raw.exec(CANONICAL_SEARCH_SCHEMA_DELTA_SQL);
+  const channels = createChannelService({
+    repository: fixture.repository,
+    participantDirectory: fixture.directory,
+    cursorSigningKey: Buffer.alloc(32, 0x23),
+    now: () => fixture.clock.value,
+  });
+  const messages = createMessageService({
+    repository: fixture.repository,
+    participantDirectory: fixture.directory,
+    now: () => fixture.clock.value,
+  });
+  const direct = await channels.createDirectConversation({
+    context: ownerContext(801),
+    memberBotIds: [fixture.bots.jerry.id],
+    pinned: false,
+    idempotencyKey: "m17-shadow-search-channel-000801",
+  });
+  async function send(suffix: number, text: string) {
+    return messages.sendMessage({
+      context: ownerContext(suffix),
+      channelId: direct.channel.id,
+      messageId: fixtureId("message", suffix),
+      authorPrincipalId: OWNER_ID,
+      idempotencyKey: `m17-shadow-search-message-${suffix}`,
+      kind: "text",
+      text,
+      mentions: [],
+      clientMessageId: null,
+      replyToMessageId: null,
+      tombstonesMessageId: null,
+      provenance: { roundId: null, workId: null },
+    });
+  }
+  const canary = await send(802, "M17 cobalt canary crosses the canonical search route.");
+  await send(803, "The bluebird source receipt is visible through M09.");
+  const service = createCanonicalSearchService({
+    repository: new SqliteCanonicalSearchRepository(fixture.database),
+    participantDirectory: fixture.directory,
+    cursorSigningKey: Buffer.alloc(32, 0x42),
+    resolveCanary: () => ({
+      id: "m17-import-search-canary",
+      messageId: canary.message.id,
+      channelId: direct.channel.id,
+      query: "cobalt canary",
+    }),
+    now: () => new Date("2026-08-25T12:10:00.000Z"),
+  });
+  return service.search({
+    context: ownerContext(804, ["product:read"]),
+    query: "bluebird source receipt",
+    scope: { kind: "all" },
+    cursor: null,
+    limit: 10,
+  });
+}
+
+test("search shadow receipts bind an actual same-path M09 response", async (t) => {
   assert.throws(
     () => compareShadowRead({ ...comparable, capability: "search" }),
     /same-path canary/,
   );
 
+  const searchResponse = await observeCanonicalSearch(t);
+  const queryDigest = createHash("sha256")
+    .update(searchResponse.query, "utf8")
+    .digest("hex");
+  const samePathCanary = {
+    operationId: "search",
+    route: "/api/v1/search",
+    queryDigest,
+    passed: true,
+  } as const;
+  assert.throws(
+    () => compareShadowRead({
+      ...comparable,
+      capability: "search",
+      samePathCanary,
+    }),
+    /search response evidence/,
+  );
+
   const receipt = compareShadowRead({
     ...comparable,
     capability: "search",
-    samePathCanary: {
-      operationId: "search",
-      route: "/api/v1/search",
-      queryDigest: "a".repeat(64),
-      passed: true,
+    canonicalWatermark: {
+      ...comparable.canonicalWatermark,
+      eventSequence: searchResponse.completeness.sourceEventSequence,
     },
+    samePathCanary,
+    searchResponse,
   });
   assert.equal(receipt.samePathCanary?.passed, true);
+  assert.deepEqual(receipt.searchVisibility, searchResponse.completeness);
+  assert.deepEqual(receipt.searchObservation, {
+    requestId: searchResponse.requestId,
+    correlationId: searchResponse.correlationId,
+    queryDigest,
+    scope: "all",
+    throughEventSequence: searchResponse.throughEventSequence,
+  });
+  assert.equal(JSON.stringify(receipt).includes(searchResponse.query), false);
+  assert.equal(JSON.stringify(receipt).includes(searchResponse.results[0]!.excerpt), false);
+
+  const blind = compareShadowRead({
+    ...comparable,
+    capability: "search",
+    canonicalWatermark: {
+      ...comparable.canonicalWatermark,
+      eventSequence: searchResponse.completeness.sourceEventSequence,
+    },
+    samePathCanary,
+    searchResponse: {
+      ...searchResponse,
+      completeness: {
+        ...searchResponse.completeness,
+        status: "partial",
+        indexedThroughEventSequence:
+          searchResponse.completeness.indexedThroughEventSequence - 1,
+        verdict: "route_blind",
+        reason: "Index watermark is behind canonical Messages.",
+      },
+    },
+  });
+  assert.equal(blind.verdict, "blocked");
+  assert.equal(
+    blind.mismatches.some((mismatch) => mismatch.classification === "search_route_blind"),
+    true,
+  );
 
   assert.throws(
     () => compareShadowRead({
       ...comparable,
       capability: "search",
+      searchResponse,
       samePathCanary: {
         operationId: "search",
         route: "/invented",
-        queryDigest: "a".repeat(64),
+        queryDigest,
         passed: true,
       },
     }),

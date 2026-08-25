@@ -3,7 +3,6 @@ export type {
   AliasBinding,
   AliasBindingInput,
   AliasBindingPlan,
-  AliasProvenance,
   AliasResolution,
   AliasTargetType,
 } from "./types.js";

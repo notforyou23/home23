@@ -12,6 +12,11 @@ import {
   CONNECTED_AGENTS_CONTRACT_PACK_SHA256,
   computeContractPackDigest,
 } from "../../../src/coordination/contracts/contract-pack.js";
+import {
+  COORDINATION_SCHEMA_CHECKSUM,
+  COORDINATION_SCHEMA_VERSION,
+  COORDINATION_SEARCH_ATTACHMENT_SCHEMA_DEPENDENCIES,
+} from "../../../src/coordination/migrations/index.js";
 
 test("M17 publishes a deterministic proposal-only M04 import schema delta", () => {
   assert.deepEqual(IMPORT_SCHEMA_DELTA_PROPOSAL.landing, {
@@ -28,10 +33,19 @@ test("M17 publishes a deterministic proposal-only M04 import schema delta", () =
       "import_batches",
       "import_items",
       "import_cursors",
-      "legacy_aliases",
       "shadow_compare_receipts",
     ],
   );
+  assert.equal(
+    IMPORT_SCHEMA_DELTA_PROPOSAL.tables.some((table) => table.name === "legacy_aliases"),
+    false,
+  );
+  assert.deepEqual(IMPORT_SCHEMA_DELTA_PROPOSAL.canonicalBindings.aliases, {
+    table: "aliases",
+    identityColumns: ["namespace", "alias_digest"],
+    targetColumns: ["target_type", "target_id", "active"],
+    provenanceOwner: "import_items",
+  });
   const independentDigest = createHash("sha256")
     .update(IMPORT_SCHEMA_DELTA_CANONICAL_JSON, "utf8")
     .digest("hex");
@@ -39,7 +53,7 @@ test("M17 publishes a deterministic proposal-only M04 import schema delta", () =
   assert.equal(independentDigest, IMPORT_SCHEMA_DELTA_SHA256);
 });
 
-test("the proposal excludes real bodies, resident memory, raw paths, and M08/M09 product tables", () => {
+test("the proposal excludes bodies and binds materialization to canonical M08/M09 truth", () => {
   const tableNames = IMPORT_SCHEMA_DELTA_PROPOSAL.tables.map((table) => table.name);
   assert.equal(tableNames.includes("messages"), false);
   assert.equal(tableNames.includes("conversations"), false);
@@ -52,12 +66,26 @@ test("the proposal excludes real bodies, resident memory, raw paths, and M08/M09
     assert.equal(columnNames.includes(forbidden), false, forbidden);
   }
   assert.deepEqual(
-    IMPORT_SCHEMA_DELTA_PROPOSAL.requires.productionBodyMaterializationAfter,
-    ["M08", "M09"],
+    IMPORT_SCHEMA_DELTA_PROPOSAL.canonicalBindings.messages,
+    { table: "messages", idempotencyTable: "idempotency_records" },
+  );
+  assert.deepEqual(
+    IMPORT_SCHEMA_DELTA_PROPOSAL.canonicalBindings.events,
+    { table: "events", orderedTypes: ["message.appended", "import.updated"] },
+  );
+  assert.deepEqual(
+    IMPORT_SCHEMA_DELTA_PROPOSAL.canonicalBindings.search,
+    {
+      indexTable: "message_fts",
+      watermarkTable: "search_watermarks",
+      sourceClass: "coordination.messages",
+      rebuildSqlSha256:
+        COORDINATION_SEARCH_ATTACHMENT_SCHEMA_DEPENDENCIES.m09SearchRebuildSql,
+    },
   );
 });
 
-test("the M04 proposal remains bound to the accepted Connected Agents contract", () => {
+test("the M04 proposal remains bound to the accepted contract and materialized schema v3", () => {
   assert.equal(computeContractPackDigest(), CONNECTED_AGENTS_CONTRACT_PACK_SHA256);
   assert.equal(
     IMPORT_SCHEMA_DELTA_PROPOSAL.requires.connectedAgentsContractPackSha256,
@@ -66,5 +94,14 @@ test("the M04 proposal remains bound to the accepted Connected Agents contract",
   assert.equal(
     IMPORT_SCHEMA_DELTA_PROPOSAL.requires.connectedAgentsContractPackSha256,
     CONNECTED_AGENTS_CONTRACT_PACK_SHA256,
+  );
+  assert.equal(
+    IMPORT_SCHEMA_DELTA_PROPOSAL.requires.coordinationSchemaVersion,
+    COORDINATION_SCHEMA_VERSION,
+  );
+  assert.equal(COORDINATION_SCHEMA_VERSION, 3);
+  assert.equal(
+    IMPORT_SCHEMA_DELTA_PROPOSAL.requires.coordinationSchemaChecksum,
+    COORDINATION_SCHEMA_CHECKSUM,
   );
 });
