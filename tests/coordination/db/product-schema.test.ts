@@ -20,7 +20,9 @@ import {
   COORDINATION_MIGRATION_PLAN_CHECKSUM,
   COORDINATION_PRODUCT_SCHEMA_DEPENDENCIES,
   COORDINATION_PRODUCT_SCHEMA_MIGRATION_CHECKSUM,
+  COORDINATION_SEARCH_ATTACHMENT_MIGRATION_CHECKSUM,
   COORDINATION_SPINE_MIGRATION_CHECKSUM,
+  COORDINATION_SEARCH_ATTACHMENT_SCHEMA_DEPENDENCIES,
 } from "../../../src/coordination/migrations/index.js";
 
 const V1_SCHEMA_CHECKSUM =
@@ -29,6 +31,7 @@ const APPLIED_AT = "2026-08-25T12:00:00.000Z";
 
 const EXPECTED_TABLES = [
   "aliases",
+  "artifacts",
   "authority_epochs",
   "bots",
   "channel_members",
@@ -42,16 +45,26 @@ const EXPECTED_TABLES = [
   "idempotency_records",
   "kernel_meta",
   "mentions",
+  "message_artifacts",
+  "message_fts",
+  "message_fts_config",
+  "message_fts_content",
+  "message_fts_data",
+  "message_fts_docsize",
+  "message_fts_idx",
   "messages",
   "pairing_sessions",
   "principals",
   "read_cursors",
   "schema_migrations",
+  "search_watermarks",
   "session_refresh_tokens",
 ] as const;
 
 const EXPECTED_INDEXES = [
   "aliases_target",
+  "artifacts_digest_state",
+  "artifacts_owner_state_expiry",
   "authority_epochs_capability_epoch_desc",
   "bots_heartbeat",
   "bots_lifecycle_name",
@@ -67,6 +80,8 @@ const EXPECTED_INDEXES = [
   "events_type_sequence",
   "idempotency_records_created_at",
   "mentions_principal_message",
+  "message_artifacts_artifact",
+  "message_artifacts_channel",
   "messages_channel_sequence_desc",
   "messages_reply",
   "messages_tombstone",
@@ -75,12 +90,28 @@ const EXPECTED_INDEXES = [
 ] as const;
 
 const EXPECTED_TRIGGERS = [
+  "artifacts_deleted_immutable",
+  "artifacts_digest_metadata_consistent_insert",
+  "artifacts_digest_metadata_consistent_update",
+  "artifacts_linked_expiry_immutable",
+  "artifacts_linked_state_immutable",
+  "artifacts_no_delete",
+  "artifacts_ready_content_immutable",
+  "artifacts_state_transition_guard",
   "channel_members_no_delete",
   "channel_membership_history_close_only",
   "channel_membership_history_no_delete",
+  "event_requires_canonical_message_journal",
   "mentions_immutable_delete",
   "mentions_immutable_update",
   "mentions_require_active_visible_bot",
+  "message_append_event_requires_indexed_source",
+  "message_artifacts_clear_draft_expiry",
+  "message_artifacts_no_delete",
+  "message_artifacts_no_update",
+  "message_artifacts_require_ready_owner",
+  "message_fts_after_insert_nonsearchable",
+  "message_fts_after_insert_searchable",
   "messages_immutable_delete",
   "messages_immutable_update",
   "messages_require_active_author",
@@ -88,6 +119,7 @@ const EXPECTED_TRIGGERS = [
   "read_cursors_no_delete",
   "read_cursors_require_active_member_insert",
   "read_cursors_require_active_member_update",
+  "search_watermark_after_message_event",
 ] as const;
 
 function temporaryDirectory(t: test.TestContext): string {
@@ -135,7 +167,7 @@ function catalogNames(
   ).map((row) => row.name);
 }
 
-test("schema v1 migrates directly to the reconciled M06 M07 M08 final catalog", async (t) => {
+test("schema v1 migrates directly through the reconciled M06-M10 final catalog", async (t) => {
   const path = join(temporaryDirectory(t), "coordination.sqlite3");
   createSchemaV1(path);
 
@@ -145,10 +177,10 @@ test("schema v1 migrates directly to the reconciled M06 M07 M08 final catalog", 
     now: () => new Date("2026-08-25T12:01:00.000Z"),
   });
   assert.equal(database.openReceipt.migratedFrom, 1);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 2);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 3);
   assert.equal(
     COORDINATION_SCHEMA_CHECKSUM,
-    "47c9045f580a020bce91d7ea64f572c7f88dc08532ff29b6f7601fdab23428a4",
+    "ddac2fb83bf73837f5200725697eff7d55a685f18a6c144fc33df17b75f113c2",
   );
   assert.equal(
     COORDINATION_PRODUCT_SCHEMA_MIGRATION_CHECKSUM,
@@ -156,7 +188,11 @@ test("schema v1 migrates directly to the reconciled M06 M07 M08 final catalog", 
   );
   assert.equal(
     COORDINATION_MIGRATION_PLAN_CHECKSUM,
-    "cc63f92d1645ec370e344664a1ebda996f47d5a0c16c69bbdce26cdf37c63bac",
+    "ed386888eabf6fb5f447fde1d181cac7e1c5c6310f740be97d7767fbd9abce9e",
+  );
+  assert.equal(
+    COORDINATION_SEARCH_ATTACHMENT_MIGRATION_CHECKSUM,
+    "7176274402321c6f3e295cc3bfabbc6c9ffa2304304855334f9be31a2356da1e",
   );
   assert.equal(
     computeCoordinationMigrationPlanChecksum(),
@@ -191,6 +227,12 @@ test("schema v1 migrates directly to the reconciled M06 M07 M08 final catalog", 
         checksum: COORDINATION_PRODUCT_SCHEMA_MIGRATION_CHECKSUM,
         checksumLength: 64,
       },
+      {
+        version: 3,
+        name: "search-and-attachment-schema",
+        checksum: COORDINATION_SEARCH_ATTACHMENT_MIGRATION_CHECKSUM,
+        checksumLength: 64,
+      },
     ],
   );
   assert.deepEqual(
@@ -208,10 +250,28 @@ test("schema v1 migrates directly to the reconciled M06 M07 M08 final catalog", 
         "85695c952db6d1cfafa19296d48d241dbb7bf335342b534b1c76d51e24f74ae6",
     },
   );
+  assert.deepEqual(COORDINATION_SEARCH_ATTACHMENT_SCHEMA_DEPENDENCIES, {
+    coordinationSchemaV2:
+      "47c9045f580a020bce91d7ea64f572c7f88dc08532ff29b6f7601fdab23428a4",
+    contractPack:
+      "fbc20017304aed66e579a2b95facbda6bbcf8572038f7f1c0c824423c65d6be2",
+    m08MessagingProposal:
+      "85695c952db6d1cfafa19296d48d241dbb7bf335342b534b1c76d51e24f74ae6",
+    m09SearchProposal:
+      "83cbba277cb83667e9412704de922303fb87f3715be4e14dbe430adcdb089965",
+    m09SearchSql:
+      "30c7cedff6b22bce52b628b6cbf614953acba297c555a69c6321343273685179",
+    m09SearchRebuildSql:
+      "d1cbbc7729e59f36dc0bd1e26d5a92a9ac1f4648a6289ec8319e8090fb4638d7",
+    m10ArtifactProposal:
+      "9ce2f8e6e841f1ebb91b23f6cfca23dacf640086bc65ab6126cd66f35ee570b1",
+    m10ArtifactSql:
+      "a74954762fcecffa96632679c89d52dd4f6146d6d1da35248295729b25d890f3",
+  });
   database.close();
 
   const reopened = openCoordinationDatabase({ path });
-  assert.equal(reopened.openReceipt.migratedFrom, 2);
+  assert.equal(reopened.openReceipt.migratedFrom, 3);
   assert.equal(reopened.openReceipt.startupCheck, "quick_check");
   assert.deepEqual(catalogNames(reopened, "table"), EXPECTED_TABLES);
   reopened.close();
@@ -445,7 +505,7 @@ test("restoring an exact schema v1 snapshot permits a clean migration reapply", 
   copyFileSync(snapshot, path);
   const reapplied = openCoordinationDatabase({ path });
   assert.equal(reapplied.openReceipt.migratedFrom, 1);
-  assert.equal(reapplied.openReceipt.schemaVersion, 2);
+  assert.equal(reapplied.openReceipt.schemaVersion, 3);
   assert.deepEqual(catalogNames(reapplied, "table"), EXPECTED_TABLES);
   reapplied.close();
 });

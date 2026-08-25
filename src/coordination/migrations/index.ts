@@ -5,8 +5,15 @@ import {
   CONNECTED_AGENTS_PRODUCT_SCHEMA_MIGRATION_SQL,
   COORDINATION_PRODUCT_SCHEMA_DEPENDENCIES,
 } from "./0002-connected-agents-product-schema.js";
+import {
+  COORDINATION_SEARCH_ATTACHMENT_SCHEMA_DEPENDENCIES,
+  SEARCH_ATTACHMENT_SCHEMA_MIGRATION_SQL,
+} from "./0003-search-and-attachment-schema.js";
 
-export { COORDINATION_PRODUCT_SCHEMA_DEPENDENCIES };
+export {
+  COORDINATION_PRODUCT_SCHEMA_DEPENDENCIES,
+  COORDINATION_SEARCH_ATTACHMENT_SCHEMA_DEPENDENCIES,
+};
 
 export const COORDINATION_CONTRACT_PACK_SHA256 =
   "fbc20017304aed66e579a2b95facbda6bbcf8572038f7f1c0c824423c65d6be2";
@@ -42,6 +49,9 @@ export const COORDINATION_SPINE_MIGRATION_CHECKSUM =
 export const COORDINATION_PRODUCT_SCHEMA_MIGRATION_CHECKSUM =
   "40fd7ba924885a25a1ca28025d9dc907540f908dd72f1ce7e7636b1944628c2f";
 
+export const COORDINATION_SEARCH_ATTACHMENT_MIGRATION_CHECKSUM =
+  "7176274402321c6f3e295cc3bfabbc6c9ffa2304304855334f9be31a2356da1e";
+
 export const COORDINATION_MIGRATIONS = Object.freeze([
   defineMigration(
     1,
@@ -56,6 +66,13 @@ export const COORDINATION_MIGRATIONS = Object.freeze([
     CONNECTED_AGENTS_PRODUCT_SCHEMA_MIGRATION_SQL,
     COORDINATION_PRODUCT_SCHEMA_MIGRATION_CHECKSUM,
     "47c9045f580a020bce91d7ea64f572c7f88dc08532ff29b6f7601fdab23428a4",
+  ),
+  defineMigration(
+    3,
+    "search-and-attachment-schema",
+    SEARCH_ATTACHMENT_SCHEMA_MIGRATION_SQL,
+    COORDINATION_SEARCH_ATTACHMENT_MIGRATION_CHECKSUM,
+    "ddac2fb83bf73837f5200725697eff7d55a685f18a6c144fc33df17b75f113c2",
   ),
 ]);
 
@@ -76,7 +93,7 @@ export function computeCoordinationMigrationPlanChecksum(
 // Reviewed with the immutable migration bytes. A historical migration edit
 // must fail before any database is opened.
 export const COORDINATION_MIGRATION_PLAN_CHECKSUM =
-  "cc63f92d1645ec370e344664a1ebda996f47d5a0c16c69bbdce26cdf37c63bac";
+  "ed386888eabf6fb5f447fde1d181cac7e1c5c6310f740be97d7767fbd9abce9e";
 
 if (computeCoordinationMigrationPlanChecksum() !== COORDINATION_MIGRATION_PLAN_CHECKSUM) {
   throw new Error("coordination migration bytes differ from the reviewed migration checksum");

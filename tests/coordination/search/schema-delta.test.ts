@@ -10,10 +10,6 @@ import {
   CANONICAL_SEARCH_SCHEMA_DELTA_SQL,
   computeCanonicalSearchSchemaDeltaDigest,
 } from "../../../src/coordination/search/index.js";
-import {
-  COORDINATION_SCHEMA_CHECKSUM,
-  COORDINATION_SCHEMA_VERSION,
-} from "../../../src/coordination/db/index.js";
 import { MESSAGING_SCHEMA_DELTA_SHA256 } from "../../../src/coordination/channels/index.js";
 
 test("M09 publishes one deterministic proposal-only M04 FTS handoff", () => {
@@ -25,8 +21,9 @@ test("M09 publishes one deterministic proposal-only M04 FTS handoff", () => {
     gate: "M04 schema-hotspot owner review and next numbered migration integration",
   });
   assert.deepEqual(CANONICAL_SEARCH_SCHEMA_DELTA_PROPOSAL.requires, {
-    coordinationSchemaVersion: COORDINATION_SCHEMA_VERSION,
-    coordinationSchemaChecksum: COORDINATION_SCHEMA_CHECKSUM,
+    coordinationSchemaVersion: 2,
+    coordinationSchemaChecksum:
+      "47c9045f580a020bce91d7ea64f572c7f88dc08532ff29b6f7601fdab23428a4",
     connectedAgentsContractVersion: 1,
     connectedAgentsContractPackSha256:
       "fbc20017304aed66e579a2b95facbda6bbcf8572038f7f1c0c824423c65d6be2",

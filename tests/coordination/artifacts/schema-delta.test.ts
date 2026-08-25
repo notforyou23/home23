@@ -9,10 +9,6 @@ import {
   CONNECTED_AGENTS_CONTRACT_PACK_SHA256,
   computeContractPackDigest,
 } from "../../../src/coordination/contracts/contract-pack.js";
-import {
-  COORDINATION_SCHEMA_CHECKSUM,
-  COORDINATION_SCHEMA_VERSION,
-} from "../../../src/coordination/db/index.js";
 import { COORDINATION_SPINE_MIGRATION_SQL } from "../../../src/coordination/migrations/0001-coordination-spine.js";
 import { CONNECTED_AGENTS_PRODUCT_SCHEMA_MIGRATION_SQL } from "../../../src/coordination/migrations/0002-connected-agents-product-schema.js";
 
@@ -28,8 +24,9 @@ test("M10 publishes one deterministic proposal-only M04 attachment schema handof
     m10MustNotApply: true,
   });
   assert.deepEqual(artifacts.ARTIFACT_SCHEMA_DELTA_PROPOSAL.requires, {
-    coordinationSchemaVersion: COORDINATION_SCHEMA_VERSION,
-    coordinationSchemaChecksum: COORDINATION_SCHEMA_CHECKSUM,
+    coordinationSchemaVersion: 2,
+    coordinationSchemaChecksum:
+      "47c9045f580a020bce91d7ea64f572c7f88dc08532ff29b6f7601fdab23428a4",
     connectedAgentsContractVersion: 1,
     connectedAgentsContractPackSha256: CONNECTED_AGENTS_CONTRACT_PACK_SHA256,
     m08MessagingSchemaDeltaSha256: MESSAGING_SCHEMA_DELTA_SHA256,

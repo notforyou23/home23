@@ -11,6 +11,10 @@ import {
   type CreateVerifiedBackupOptions,
   type VerifiedBackupReceipt,
 } from "./backup.js";
+import {
+  rebuildCanonicalSearchIndex,
+  type CanonicalSearchRebuildReceipt,
+} from "./derived-projections.js";
 import { CoordinationWriterBusyError } from "./errors.js";
 import {
   assertDatabaseIntegrity,
@@ -186,6 +190,14 @@ export class CoordinationDatabase {
       throw new Error("coordination database mutation refused while backup is in progress");
     }
     return runMutationWithEvent(this.database, mutate);
+  }
+
+  rebuildCanonicalSearchIndex(): CanonicalSearchRebuildReceipt {
+    this.assertOpen();
+    if (this.backupInProgress) {
+      throw new Error("coordination search rebuild refused while backup is in progress");
+    }
+    return rebuildCanonicalSearchIndex(this.database);
   }
 
   async createVerifiedBackup(

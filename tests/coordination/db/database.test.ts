@@ -11,6 +11,7 @@ import { computeContractPackDigest } from "../../../src/coordination/contracts/c
 import {
   COORDINATION_CONTRACT_PACK_SHA256,
   COORDINATION_PRODUCT_SCHEMA_MIGRATION_CHECKSUM,
+  COORDINATION_SEARCH_ATTACHMENT_MIGRATION_CHECKSUM,
   COORDINATION_SCHEMA_CHECKSUM,
   COORDINATION_SCHEMA_VERSION,
   COORDINATION_SPINE_MIGRATION_CHECKSUM,
@@ -35,6 +36,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
   assert.equal(computeContractPackDigest(), COORDINATION_CONTRACT_PACK_SHA256);
   assert.equal(first.openReceipt.startupCheck, "integrity_check");
   assert.equal(first.openReceipt.migratedFrom, 0);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 3);
   assert.equal(first.openReceipt.schemaVersion, COORDINATION_SCHEMA_VERSION);
   assert.equal(first.openReceipt.schemaChecksum, COORDINATION_SCHEMA_CHECKSUM);
   assert.deepEqual(first.pragmaEvidence(), {
@@ -54,6 +56,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       .map((row) => row.name),
     [
       "aliases",
+      "artifacts",
       "authority_epochs",
       "bots",
       "channel_members",
@@ -67,11 +70,19 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       "idempotency_records",
       "kernel_meta",
       "mentions",
+      "message_artifacts",
+      "message_fts",
+      "message_fts_config",
+      "message_fts_content",
+      "message_fts_data",
+      "message_fts_docsize",
+      "message_fts_idx",
       "messages",
       "pairing_sessions",
       "principals",
       "read_cursors",
       "schema_migrations",
+      "search_watermarks",
       "session_refresh_tokens",
     ],
   );
@@ -89,6 +100,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
     [
       { version: 1, checksum: COORDINATION_SPINE_MIGRATION_CHECKSUM },
       { version: 2, checksum: COORDINATION_PRODUCT_SCHEMA_MIGRATION_CHECKSUM },
+      { version: 3, checksum: COORDINATION_SEARCH_ATTACHMENT_MIGRATION_CHECKSUM },
     ],
   );
   assert.deepEqual(
