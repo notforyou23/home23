@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://home23.local/schemas/connected-agents-first-canary-fixture.json",
+  "title": "Non-live connected-agents first-canary receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["receiptVersion", "evidenceMode", "liveCanary", "residentSuccess", "verdict", "candidateSha", "stage", "checks", "correlation", "watermark", "rollback", "redactions", "receiptDigest"],
+  "properties": {
+    "receiptVersion": { "const": 1 },
+    "evidenceMode": { "const": "fixture" },
+    "liveCanary": { "const": false },
+    "residentSuccess": { "const": false },
+    "verdict": { "enum": ["fixture_ready", "blocked"] },
+    "candidateSha": { "const": "56de45a4ab9fd3e4b5c4a29903d1bc6a346eeb09" },
+    "stage": { "enum": ["M14", "M15"] },
+    "checks": { "type": "array", "items": { "type": "object", "required": ["name", "passed", "detail"], "properties": { "name": { "type": "string" }, "passed": { "type": "boolean" }, "detail": { "type": "string" } } } },
+    "correlation": { "type": "object", "required": ["requestId", "correlationId", "workId"], "properties": { "requestId": { "type": "string" }, "correlationId": { "type": "string" }, "workId": { "type": "string" } } },
+    "watermark": { "type": "object", "required": ["lastEventId", "resumedThroughEventSequence"], "properties": { "lastEventId": { "type": "integer", "minimum": 0 }, "resumedThroughEventSequence": { "type": "integer", "minimum": 1 } } },
+    "rollback": { "type": "object", "required": ["explicit", "targetEpoch", "targetWriter", "action"], "properties": { "explicit": { "const": true }, "targetEpoch": { "type": "integer", "minimum": 1 }, "targetWriter": { "type": "string", "minLength": 1 }, "action": { "const": "restore_legacy_authority" } } },
+    "redactions": { "type": "array", "items": { "type": "string" } },
+    "receiptDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}
