@@ -228,6 +228,7 @@ implements ArtifactMetadataRepository, ArtifactMessageLinkTransactionPort {
     artifact: ReadyArtifactRecord;
     actor: ArtifactActor;
     readyAt: string;
+    idempotency?: { keyDigest: string; requestDigest: string };
   }): Promise<ArtifactProjection> {
     assertArtifactWriteActor(input.actor);
     assertArtifactId(input.artifact.id, "invalid_artifact_id");
@@ -264,6 +265,18 @@ implements ArtifactMetadataRepository, ArtifactMessageLinkTransactionPort {
           input.actor.principalId,
         );
         if (update.changes !== 1) throw new ArtifactError("storage_conflict");
+        if (input.idempotency) {
+          transaction.run(
+            `INSERT INTO attachment_create_idempotency
+             (principal_id, key_digest, request_digest, artifact_id, created_at)
+             VALUES (?, ?, ?, ?, ?)`,
+            input.actor.principalId,
+            input.idempotency.keyDigest,
+            input.idempotency.requestDigest,
+            input.artifact.id,
+            input.readyAt,
+          );
+        }
         return {
           value: Object.freeze({ ...input.artifact }),
           event: {

@@ -159,13 +159,13 @@ test("schema v2 migrates atomically to the checksummed M09 and M10 final catalog
     now: () => new Date("2026-08-25T16:01:00.000Z"),
   });
   assert.equal(database.openReceipt.migratedFrom, 2);
-  assert.equal(database.openReceipt.schemaVersion, 4);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 4);
+  assert.equal(database.openReceipt.schemaVersion, 5);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 5);
   assert.equal(database.openReceipt.schemaChecksum, COORDINATION_SCHEMA_CHECKSUM);
   const tables = database.readAll<{ name: string }>(
     "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
   ).map((row) => row.name);
-  for (const table of ["artifacts", "message_artifacts", "message_fts", "search_watermarks"]) {
+  for (const table of ["artifacts", "attachment_create_idempotency", "message_artifacts", "message_fts", "search_watermarks"]) {
     assert.equal(tables.includes(table), true, `${table} must be in schema v3`);
   }
   assert.equal(tables.includes("legacy_aliases"), false);
@@ -209,13 +209,14 @@ test("schema v2 migrates atomically to the checksummed M09 and M10 final catalog
       { version: 2, name: "connected-agents-product-schema" },
       { version: 3, name: "search-and-attachment-schema" },
       { version: 4, name: "atomic-import-ledger" },
+      { version: 5, name: "attachment-create-idempotency" },
     ],
   );
   assert.deepEqual(database.readAll("PRAGMA foreign_key_check"), []);
   database.close();
 
   const reopened = openCoordinationDatabase({ path });
-  assert.equal(reopened.openReceipt.migratedFrom, 4);
+  assert.equal(reopened.openReceipt.migratedFrom, 5);
   assert.equal(reopened.openReceipt.startupCheck, "quick_check");
   reopened.close();
 });

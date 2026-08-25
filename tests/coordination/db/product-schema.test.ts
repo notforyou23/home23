@@ -18,6 +18,7 @@ import { COORDINATION_SPINE_MIGRATION_SQL } from "../../../src/coordination/migr
 import {
   computeCoordinationMigrationPlanChecksum,
   COORDINATION_ATOMIC_IMPORT_MIGRATION_CHECKSUM,
+  COORDINATION_ATTACHMENT_IDEMPOTENCY_MIGRATION_CHECKSUM,
   COORDINATION_MIGRATION_PLAN_CHECKSUM,
   COORDINATION_PRODUCT_SCHEMA_DEPENDENCIES,
   COORDINATION_PRODUCT_SCHEMA_MIGRATION_CHECKSUM,
@@ -33,6 +34,7 @@ const APPLIED_AT = "2026-08-25T12:00:00.000Z";
 const EXPECTED_TABLES = [
   "aliases",
   "artifacts",
+  "attachment_create_idempotency",
   "authority_epochs",
   "bots",
   "channel_members",
@@ -71,6 +73,7 @@ const EXPECTED_INDEXES = [
   "aliases_target",
   "artifacts_digest_state",
   "artifacts_owner_state_expiry",
+  "attachment_create_idempotency_created_at",
   "authority_epochs_capability_epoch_desc",
   "bots_heartbeat",
   "bots_lifecycle_name",
@@ -186,10 +189,10 @@ test("schema v1 migrates directly through the reconciled M06-M10 final catalog",
     now: () => new Date("2026-08-25T12:01:00.000Z"),
   });
   assert.equal(database.openReceipt.migratedFrom, 1);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 4);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 5);
   assert.equal(
     COORDINATION_SCHEMA_CHECKSUM,
-    "616c33ae48234d90acaf18fe49e3c9f6029204b7082d4d9c9dd8dfc5703d7608",
+    "5f2eba4c6abc23f455188c88c3cad352fd31ee708458aa229e2b7da89f65f69d",
   );
   assert.equal(
     COORDINATION_PRODUCT_SCHEMA_MIGRATION_CHECKSUM,
@@ -197,7 +200,7 @@ test("schema v1 migrates directly through the reconciled M06-M10 final catalog",
   );
   assert.equal(
     COORDINATION_MIGRATION_PLAN_CHECKSUM,
-    "1c98e7046be6b007c1f33bbd427a3fe86624ffb1ee6be502b18b3cc4a4cd768e",
+    "c4a9e8a40dbf0c310181b818be9b5aa9788527cf0af4975004e70a3f9e915b9f",
   );
   assert.equal(
     COORDINATION_SEARCH_ATTACHMENT_MIGRATION_CHECKSUM,
@@ -248,6 +251,12 @@ test("schema v1 migrates directly through the reconciled M06-M10 final catalog",
         checksum: COORDINATION_ATOMIC_IMPORT_MIGRATION_CHECKSUM,
         checksumLength: 64,
       },
+      {
+        version: 5,
+        name: "attachment-create-idempotency",
+        checksum: COORDINATION_ATTACHMENT_IDEMPOTENCY_MIGRATION_CHECKSUM,
+        checksumLength: 64,
+      },
     ],
   );
   assert.deepEqual(
@@ -286,7 +295,7 @@ test("schema v1 migrates directly through the reconciled M06-M10 final catalog",
   database.close();
 
   const reopened = openCoordinationDatabase({ path });
-  assert.equal(reopened.openReceipt.migratedFrom, 4);
+  assert.equal(reopened.openReceipt.migratedFrom, 5);
   assert.equal(reopened.openReceipt.startupCheck, "quick_check");
   assert.deepEqual(catalogNames(reopened, "table"), EXPECTED_TABLES);
   reopened.close();
@@ -520,7 +529,7 @@ test("restoring an exact schema v1 snapshot permits a clean migration reapply", 
   copyFileSync(snapshot, path);
   const reapplied = openCoordinationDatabase({ path });
   assert.equal(reapplied.openReceipt.migratedFrom, 1);
-  assert.equal(reapplied.openReceipt.schemaVersion, 4);
+  assert.equal(reapplied.openReceipt.schemaVersion, 5);
   assert.deepEqual(catalogNames(reapplied, "table"), EXPECTED_TABLES);
   reapplied.close();
 });

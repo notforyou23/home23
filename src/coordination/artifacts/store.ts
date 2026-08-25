@@ -1205,6 +1205,7 @@ export class LocalArtifactStore {
             artifact: ready,
             actor: input.actor,
             readyAt: readyAt.toISOString(),
+            idempotency: input.idempotency,
           });
           return Object.freeze({ ...committed });
         } catch (error) {

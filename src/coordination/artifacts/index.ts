@@ -14,6 +14,7 @@ export {
 export { ArtifactError, type ArtifactErrorCode } from "./errors.js";
 export { resolveArtifactActor, resolveArtifactReader } from "./access.js";
 export { SqliteArtifactRepository } from "./repository.js";
+export { createDurableAttachmentService } from "./service.js";
 export {
   ARTIFACT_SCHEMA_DELTA_CANONICAL_JSON,
   ARTIFACT_SCHEMA_DELTA_PROPOSAL,
@@ -24,6 +25,7 @@ export {
 export type {
   ArtifactActor,
   ArtifactActorContext,
+  ArtifactCreateIdempotency,
   ArtifactDownload,
   ArtifactExpirationReport,
   ArtifactGarbageCollectionCandidate,
@@ -34,6 +36,7 @@ export type {
   ArtifactParticipantDirectory,
   ArtifactProjection,
   ArtifactRecoveryReport,
+  ArtifactServiceDatabase,
   ArtifactState,
   AttachmentSummary,
   LocalArtifactStoreOptions,

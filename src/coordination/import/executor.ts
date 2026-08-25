@@ -43,7 +43,7 @@ function fail(message: string): never { throw new Error(`atomic import refused: 
 export function executeAtomicImport(database: CoordinationDatabase, input: ExecuteAtomicImportInput): AtomicImportResult {
   const { binding, evidence } = input;
   const proposal = binding.m04TransactionProposal;
-  if (COORDINATION_SCHEMA_VERSION !== 4 || database.openReceipt.schemaChecksum !== COORDINATION_SCHEMA_CHECKSUM) fail("schema/checksum mismatch");
+  if (database.openReceipt.schemaVersion !== COORDINATION_SCHEMA_VERSION || database.openReceipt.schemaChecksum !== COORDINATION_SCHEMA_CHECKSUM) fail("schema/checksum mismatch");
   if (proposal.owner !== "M04" || proposal.status !== "proposal_only" || proposal.schema.version !== 3 || proposal.schema.checksum !== "ddac2fb83bf73837f5200725697eff7d55a685f18a6c144fc33df17b75f113c2") fail("transaction proposal is not the reviewed ready proposal");
   if (canonicalJson(proposal.requiredOrderedEvents) !== canonicalJson(["message.appended", "import.updated"])) fail("event order changed");
   if (evidence.source.registryDigest !== binding.planningReceipt.sourceRegistryDigest) fail("source registry differs from frozen manifest");

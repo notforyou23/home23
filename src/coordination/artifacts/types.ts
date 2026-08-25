@@ -54,6 +54,7 @@ export interface ArtifactMetadataRepository {
     artifact: ReadyArtifactRecord;
     actor: ArtifactActor;
     readyAt: string;
+    idempotency?: ArtifactCreateIdempotency;
   }): Promise<ArtifactProjection>;
   markFailed(input: {
     artifactId: string;
@@ -79,6 +80,10 @@ export interface ArtifactMetadataRepository {
     limit: number;
     dryRun: boolean;
   }): Promise<ArtifactRecoveryReport>;
+}
+
+export interface ArtifactServiceDatabase {
+  readOne<T = Record<string, unknown>>(sql: string, ...parameters: Array<string | number | bigint | Buffer | null>): T | undefined;
 }
 
 export interface AttachmentSummary {
@@ -114,6 +119,12 @@ export interface ArtifactIngestInput {
   declaredContentType: string | null;
   expectedSha256: string;
   content: AsyncIterable<Uint8Array>;
+  idempotency?: ArtifactCreateIdempotency;
+}
+
+export interface ArtifactCreateIdempotency {
+  keyDigest: string;
+  requestDigest: string;
 }
 
 export interface ArtifactDownload {
