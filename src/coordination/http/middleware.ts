@@ -27,20 +27,17 @@ function locals(response: Response): CoordinationHttpLocals {
   return response.locals as CoordinationHttpLocals;
 }
 
-function receiptId(
-  kind: "request" | "correlation",
-  header: string | undefined,
-): string {
-  if (header === undefined) return generateCoordinationId(kind);
+function correlationId(header: string | undefined): string {
+  if (header === undefined) return generateCoordinationId("correlation");
   try {
-    assertCoordinationId(kind, header);
+    assertCoordinationId("correlation", header);
     return header;
   } catch {
     throw new CoordinationHttpError(
       "request_invalid",
       400,
       false,
-      { header: kind === "request" ? "x-request-id" : "x-correlation-id" },
+      { header: "x-correlation-id" },
       "A request receipt identifier is invalid.",
     );
   }
@@ -60,8 +57,8 @@ export const coordinationRequestMetadata: RequestHandler = (request, response, n
       throw new AuthError("network_not_allowed");
     }
     const metadata = Object.freeze({
-      requestId: receiptId("request", request.get("x-request-id")),
-      correlationId: receiptId("correlation", request.get("x-correlation-id")),
+      requestId: generateCoordinationId("request"),
+      correlationId: correlationId(request.get("x-correlation-id")),
       networkEvidence: "loopback" as const,
       remoteAddress,
     });

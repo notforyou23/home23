@@ -37,6 +37,25 @@ function sourceFingerprintDigest(fingerprint: SegmentFingerprint): string {
   return sha256(canonicalJson(immutableSourceContent(fingerprint)));
 }
 
+function reviewedSourceSegments(manifest: CohortManifest) {
+  const segments = new Map<string, {
+    readonly sourceId: string;
+    readonly segmentIdentity: string;
+  }>();
+  for (const entry of manifest.entries) {
+    const segment = {
+      sourceId: entry.sourceId,
+      segmentIdentity: entry.segmentIdentity,
+    };
+    segments.set(canonicalJson(segment), segment);
+  }
+  return [...segments.values()].sort((left, right) => {
+    const leftKey = `${left.sourceId}\0${left.segmentIdentity}`;
+    const rightKey = `${right.sourceId}\0${right.segmentIdentity}`;
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+  });
+}
+
 export function planImportCohortRollback(input: {
   readonly cohortManifest: CohortManifest;
   readonly batchId: string;
@@ -45,24 +64,20 @@ export function planImportCohortRollback(input: {
 }) {
   if (!input.batchId) throw new Error("cohort rollback batch id is required");
   assertCohortManifestIntegrity(input.cohortManifest, input.sourceRegistry);
-  const sourceIds = [...new Set(
-    input.cohortManifest.entries.map((entry) => entry.sourceId),
-  )].sort();
-  if (sourceIds.length === 0) {
+  const reviewedSegments = reviewedSourceSegments(input.cohortManifest);
+  if (reviewedSegments.length === 0) {
     throw new Error("cohort rollback requires reviewed cohort sources");
   }
-  const expectedSegments = sourceIds
-    .map((sourceId) => {
+  const expectedSegments = reviewedSegments
+    .map(({ sourceId, segmentIdentity }) => {
       const fingerprint = discoverRegisteredSource(input.sourceRegistry, sourceId).fingerprint;
+      if (fingerprint.segmentIdentity !== segmentIdentity) {
+        throw new Error("legacy source segment differs from the reviewed cohort manifest");
+      }
       return {
         ...immutableSourceContent(fingerprint),
         fingerprintDigest: sourceFingerprintDigest(fingerprint),
       };
-    })
-    .sort((left, right) => {
-      const leftKey = `${left.sourceId}\0${left.segmentIdentity}`;
-      const rightKey = `${right.sourceId}\0${right.segmentIdentity}`;
-      return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
     });
   return deepFreeze({
     rollbackVersion: 1 as const,
@@ -111,13 +126,18 @@ export function verifyImportCohortRollback(input: {
   ) {
     throw new Error("cohort rollback differs from the reviewed cohort manifest");
   }
-  const manifestSourceIds = [...new Set(
-    input.cohortManifest.entries.map((entry) => entry.sourceId),
-  )].sort();
-  const rollbackSourceIds = input.rollback.source.expectedSegments
-    .map((segment) => segment.sourceId)
-    .sort();
-  if (canonicalJson(rollbackSourceIds) !== canonicalJson(manifestSourceIds)) {
+  const manifestSegments = reviewedSourceSegments(input.cohortManifest);
+  const rollbackSegments = input.rollback.source.expectedSegments
+    .map((segment) => ({
+      sourceId: segment.sourceId,
+      segmentIdentity: segment.segmentIdentity,
+    }))
+    .sort((left, right) => {
+      const leftKey = `${left.sourceId}\0${left.segmentIdentity}`;
+      const rightKey = `${right.sourceId}\0${right.segmentIdentity}`;
+      return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+    });
+  if (canonicalJson(rollbackSegments) !== canonicalJson(manifestSegments)) {
     throw new Error("cohort rollback source set differs from the reviewed cohort manifest");
   }
   if (

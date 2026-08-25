@@ -99,7 +99,7 @@ test("capabilities are public while unauthenticated protected access fails close
   assert.equal(authCalls, 0);
 });
 
-test("the canonical bootstrap fixture traverses auth, HTTP, and the real bootstrap service", async (t) => {
+test("the server owns request IDs while preserving caller correlation through bootstrap", async (t) => {
   const application = createCoordinationApplication({
     flags: enabledShellFlags,
     services: {
@@ -116,7 +116,13 @@ test("the canonical bootstrap fixture traverses auth, HTTP, and the real bootstr
   });
 
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), fixture);
+  const body = await response.json() as BootstrapResponse;
+  assert.match(body.requestId, /^req_/);
+  assert.notEqual(body.requestId, fixture.requestId);
+  assert.equal(response.headers.get("x-request-id"), body.requestId);
+  assert.equal(body.correlationId, fixture.correlationId);
+  assert.equal(response.headers.get("x-correlation-id"), fixture.correlationId);
+  assert.deepEqual({ ...body, requestId: fixture.requestId }, fixture);
 });
 
 test("bootstrap rejects an unsupported cursor instead of silently ignoring it", async (t) => {
@@ -355,13 +361,17 @@ test("oversized JSON is reported as payload too large", async (t) => {
 
 test("read cursor input is validated and the mutation receipt becomes its event boundary", async (t) => {
   let markReadCalls = 0;
+  let markReadRequestId: string | undefined;
+  let markReadCorrelationId: string | undefined;
   const application = createCoordinationApplication({
     flags: enabledShellFlags,
     services: {
       auth: { validateAccessToken: async () => authPrincipal },
       unread: {
-        markRead: async () => {
+        markRead: async ({ context }) => {
           markReadCalls += 1;
+          markReadRequestId = context.requestId;
+          markReadCorrelationId = context.correlationId;
           return {
             outcome: "committed" as const,
             unread: {
@@ -408,7 +418,11 @@ test("read cursor input is validated and the mutation receipt becomes its event 
     body: JSON.stringify({ throughSequence: 2 }),
   });
   assert.equal(valid.status, 200);
-  assert.deepEqual(await valid.json(), {
+  const validBody = await valid.json() as Record<string, unknown>;
+  assert.match(validBody.requestId as string, /^req_/);
+  assert.notEqual(validBody.requestId, fixture.requestId);
+  assert.equal(valid.headers.get("x-request-id"), validBody.requestId);
+  assert.deepEqual({ ...validBody, requestId: fixture.requestId }, {
     requestId: fixture.requestId,
     correlationId: fixture.correlationId,
     principalId: "user_owner",
@@ -422,6 +436,8 @@ test("read cursor input is validated and the mutation receipt becomes its event 
     throughEventSequence: 128,
   });
   assert.equal(markReadCalls, 1);
+  assert.equal(markReadRequestId, validBody.requestId);
+  assert.equal(markReadCorrelationId, fixture.correlationId);
 });
 
 test("search requires a nonempty query before invoking its domain service", async (t) => {

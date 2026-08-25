@@ -34,6 +34,7 @@ function validEpochRecord(epoch: AuthorityEpoch): boolean {
     && epoch.epoch >= 1
     && epoch.writer.length > 0
     && (epoch.effectiveAtEventSequence === null || nonNegativeInteger(epoch.effectiveAtEventSequence))
+    && (epoch.mode !== "shadow" || epoch.effectiveAtEventSequence === null)
     && (epoch.rollbackEpoch === null || (Number.isSafeInteger(epoch.rollbackEpoch) && epoch.rollbackEpoch >= 1));
 }
 
@@ -139,6 +140,9 @@ export function validateAuthorityEpochTransition(
   if (!validEpochRecord(current) || !validEpochRecord(proposed)) {
     return denied("invalid_epoch_record");
   }
+  if (current.mode === "canonical" && current.effectiveAtEventSequence === null) {
+    return denied("invalid_epoch_record");
+  }
   if (!receipt || typeof receipt !== "object") {
     return denied("receipt_signature_missing");
   }
@@ -151,6 +155,14 @@ export function validateAuthorityEpochTransition(
   if (!latest || canonicalJson(latest) !== canonicalJson(current)) {
     return denied("current_epoch_not_latest");
   }
+  const priorEffectiveAtEventSequence = capabilityHistory.reduce<number | null>(
+    (highest, epoch) => epoch.effectiveAtEventSequence === null
+      ? highest
+      : highest === null
+        ? epoch.effectiveAtEventSequence
+        : Math.max(highest, epoch.effectiveAtEventSequence),
+    null,
+  );
   if (!isLegalTransition("authorityEpoch", current.mode, proposed.mode)) {
     return denied("illegal_transition");
   }
@@ -177,6 +189,19 @@ export function validateAuthorityEpochTransition(
       return denied("rollback_writer_mismatch");
     }
   }
+  if (
+    proposed.mode === "legacy"
+    && proposed.effectiveAtEventSequence === null
+  ) {
+    return denied("invalid_epoch_record");
+  }
+  if (
+    proposed.effectiveAtEventSequence !== null
+    && priorEffectiveAtEventSequence !== null
+    && proposed.effectiveAtEventSequence < priorEffectiveAtEventSequence
+  ) {
+    return denied("invalid_epoch_record");
+  }
   if (!transitionBound(current, proposed, receipt)) {
     return denied("receipt_transition_mismatch");
   }
@@ -185,12 +210,15 @@ export function validateAuthorityEpochTransition(
     return denied("same_path_canary_invalid");
   }
   if (!activeFlagsValid(receipt.activeFlags)) return denied("active_flags_invalid");
+  if (
+    proposed.effectiveAtEventSequence !== null
+    && receipt.destinationWatermark.eventSequence < proposed.effectiveAtEventSequence
+  ) {
+    return denied("destination_watermark_before_effective_epoch");
+  }
   if (proposed.mode === "canonical") {
     if (proposed.effectiveAtEventSequence === null) {
       return denied("canonical_effective_sequence_required");
-    }
-    if (receipt.destinationWatermark.eventSequence < proposed.effectiveAtEventSequence) {
-      return denied("destination_watermark_before_effective_epoch");
     }
     if (receipt.driftCount !== 0) return denied("canonical_drift_present");
     if (!receipt.samePathCanary.passed) return denied("same_path_canary_failed");

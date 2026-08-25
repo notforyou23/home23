@@ -45,6 +45,24 @@ const CANONICAL: AuthorityEpoch = {
   rollbackEpoch: 1,
 };
 
+const ROLLED_BACK: AuthorityEpoch = {
+  capability: "messages",
+  epoch: 4,
+  mode: "legacy",
+  writer: "legacy-jsonl",
+  effectiveAtEventSequence: 144,
+  rollbackEpoch: 1,
+};
+
+const RESHADOW: AuthorityEpoch = {
+  capability: "messages",
+  epoch: 5,
+  mode: "shadow",
+  writer: "legacy-jsonl",
+  effectiveAtEventSequence: null,
+  rollbackEpoch: null,
+};
+
 const SIGNATURE_KEY = "operator-key-1";
 
 function sign(unsigned: UnsignedAuthorityRolloutReceipt): AuthorityRolloutReceipt {
@@ -415,4 +433,141 @@ test("rollback appends a new legacy epoch and preserves both source histories", 
     verifySignature: verify,
   });
   assert.equal(result.decision, "valid");
+});
+
+test("authority transitions reject mode-incoherent event boundaries", () => {
+  const shadowWithBoundary: AuthorityEpoch = {
+    ...SHADOW,
+    effectiveAtEventSequence: 1,
+  };
+  const rollbackWithoutBoundary: AuthorityEpoch = {
+    ...CANONICAL,
+    epoch: 4,
+    mode: "legacy",
+    writer: LEGACY.writer,
+    effectiveAtEventSequence: null,
+  };
+  const rollbackBeforeCanonical: AuthorityEpoch = {
+    ...rollbackWithoutBoundary,
+    effectiveAtEventSequence: 119,
+  };
+  const rollbackBeyondDestination: AuthorityEpoch = {
+    ...rollbackWithoutBoundary,
+    effectiveAtEventSequence: 144,
+  };
+  const rollbackAfterReshadow: AuthorityEpoch = {
+    ...ROLLED_BACK,
+    epoch: 6,
+    effectiveAtEventSequence: 1,
+    rollbackEpoch: ROLLED_BACK.epoch,
+  };
+  const canonicalAfterReshadow: AuthorityEpoch = {
+    ...CANONICAL,
+    epoch: 6,
+    effectiveAtEventSequence: 1,
+    rollbackEpoch: ROLLED_BACK.epoch,
+  };
+  const cases = [
+    {
+      name: "shadow cutover",
+      current: LEGACY,
+      proposed: shadowWithBoundary,
+      history: [LEGACY],
+      rollout: receipt(LEGACY, shadowWithBoundary),
+      reason: "invalid_epoch_record",
+    },
+    {
+      name: "missing rollback boundary",
+      current: CANONICAL,
+      proposed: rollbackWithoutBoundary,
+      history: [LEGACY, SHADOW, CANONICAL],
+      rollout: receipt(CANONICAL, rollbackWithoutBoundary),
+      reason: "invalid_epoch_record",
+    },
+    {
+      name: "backdated rollback boundary",
+      current: CANONICAL,
+      proposed: rollbackBeforeCanonical,
+      history: [LEGACY, SHADOW, CANONICAL],
+      rollout: receipt(CANONICAL, rollbackBeforeCanonical),
+      reason: "invalid_epoch_record",
+    },
+    {
+      name: "uncrossed rollback boundary",
+      current: CANONICAL,
+      proposed: rollbackBeyondDestination,
+      history: [LEGACY, SHADOW, CANONICAL],
+      rollout: receipt(CANONICAL, rollbackBeyondDestination, {
+        destinationWatermark: {
+          eventSequence: 143,
+          messageCount: 24,
+          orderedDigest: "2".repeat(64),
+        },
+      }),
+      reason: "destination_watermark_before_effective_epoch",
+    },
+    {
+      name: "rollback behind a prior cutover after reshadow",
+      current: RESHADOW,
+      proposed: rollbackAfterReshadow,
+      history: [LEGACY, SHADOW, CANONICAL, ROLLED_BACK, RESHADOW],
+      rollout: receipt(RESHADOW, rollbackAfterReshadow),
+      reason: "invalid_epoch_record",
+    },
+    {
+      name: "canonical recutover behind a prior rollback",
+      current: RESHADOW,
+      proposed: canonicalAfterReshadow,
+      history: [LEGACY, SHADOW, CANONICAL, ROLLED_BACK, RESHADOW],
+      rollout: receipt(RESHADOW, canonicalAfterReshadow),
+      reason: "invalid_epoch_record",
+    },
+  ] as const;
+
+  for (const item of cases) {
+    assert.deepEqual(validateAuthorityEpochTransition({
+      current: item.current,
+      proposed: item.proposed,
+      history: item.history,
+      receipt: item.rollout,
+      activeCanonicalWriters: [],
+      verifySignature: verify,
+    }), {
+      decision: "denied",
+      reason: item.reason,
+    }, item.name);
+  }
+});
+
+test("rollback planning cannot precede any prior authority boundary", () => {
+  assert.throws(
+    () => planAuthorityRollback({
+      current: CANONICAL,
+      rollbackTarget: LEGACY,
+      history: [LEGACY, SHADOW, CANONICAL],
+      effectiveAtEventSequence: 119,
+    }),
+    /rollback effective event sequence cannot precede current authority/,
+  );
+  assert.throws(
+    () => planAuthorityRollback({
+      current: RESHADOW,
+      rollbackTarget: ROLLED_BACK,
+      history: [LEGACY, SHADOW, CANONICAL, ROLLED_BACK, RESHADOW],
+      effectiveAtEventSequence: 1,
+    }),
+    /rollback effective event sequence cannot precede current authority/,
+  );
+});
+
+test("rollback planning rejects a shadow epoch carrying a cutover boundary", () => {
+  assert.throws(
+    () => planAuthorityRollback({
+      current: { ...RESHADOW, effectiveAtEventSequence: 145 },
+      rollbackTarget: ROLLED_BACK,
+      history: [LEGACY, SHADOW, CANONICAL, ROLLED_BACK],
+      effectiveAtEventSequence: 146,
+    }),
+    /shadow authority cannot have an effective event sequence/,
+  );
 });

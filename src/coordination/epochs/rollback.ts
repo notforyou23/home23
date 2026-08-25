@@ -26,6 +26,29 @@ export function planAuthorityRollback(input: {
   if (!Number.isSafeInteger(effectiveAtEventSequence) || effectiveAtEventSequence < 0) {
     throw new Error("rollback effective event sequence must be a non-negative integer");
   }
+  if (current.mode === "shadow" && current.effectiveAtEventSequence !== null) {
+    throw new Error("shadow authority cannot have an effective event sequence");
+  }
+  if (current.mode === "canonical" && current.effectiveAtEventSequence === null) {
+    throw new Error("canonical authority requires an effective event sequence");
+  }
+  const priorEffectiveAtEventSequence = [...history, current].reduce<number | null>(
+    (highest, epoch) => {
+      if (epoch.capability !== current.capability || epoch.effectiveAtEventSequence === null) {
+        return highest;
+      }
+      return highest === null
+        ? epoch.effectiveAtEventSequence
+        : Math.max(highest, epoch.effectiveAtEventSequence);
+    },
+    null,
+  );
+  if (
+    priorEffectiveAtEventSequence !== null
+    && effectiveAtEventSequence < priorEffectiveAtEventSequence
+  ) {
+    throw new Error("rollback effective event sequence cannot precede current authority");
+  }
   const proposedEpoch: AuthorityEpoch = {
     capability: current.capability,
     epoch: current.epoch + 1,

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -625,5 +625,33 @@ test("rollback verification fails closed unless every allowlisted legacy source 
       cohortManifest,
     }),
     /legacy source changed during cohort rollback/,
+  );
+});
+
+test("rollback planning refuses a replacement for the reviewed source segment", (t) => {
+  const {
+    path,
+    sourceBytes,
+    sourceRegistry,
+    cohortManifest,
+  } = createRollbackSourceFixture(t, "rollback-rotation");
+  const reviewedSegmentIdentity = cohortManifest.entries[0]!.segmentIdentity;
+  renameSync(path, `${path}.reviewed`);
+  writeFileSync(path, sourceBytes);
+  const replacement = discoverRegisteredSource(sourceRegistry, SOURCE_ID);
+  assert.notEqual(replacement.fingerprint.segmentIdentity, reviewedSegmentIdentity);
+
+  assert.throws(
+    () => planImportCohortRollback({
+      cohortManifest,
+      batchId: "batch-rollback-rotation",
+      sourceRegistry,
+      items: [{
+        importKeyDigest: "1".repeat(64),
+        bodyImported: true,
+        referencedByNewActivity: false,
+      }],
+    }),
+    /legacy source segment differs from the reviewed cohort manifest/,
   );
 });
