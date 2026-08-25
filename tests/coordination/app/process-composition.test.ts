@@ -1,0 +1,47 @@
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+
+import {
+  createCoordinationProcess,
+  disabledCoordinationFeatureFlags,
+} from "../../../src/coordination/app/index.js";
+import { openCoordinationDatabase } from "../../../src/coordination/db/index.js";
+
+test("shadow composition advertises no unfinished product capability and closes cleanly", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "home23-coordination-process-"));
+  const runtime = join(root, "instances", ".house", "coordination");
+  mkdirSync(runtime, { recursive: true });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const databasePath = join(runtime, "home23-coordination.sqlite3");
+  const process = createCoordinationProcess({
+    enabled: true,
+    host: "127.0.0.1",
+    port: 0,
+    databasePath,
+    socketPath: join(runtime, "coord.sock"),
+    capabilityToken: "c".repeat(64),
+    flags: {
+      ...disabledCoordinationFeatureFlags(),
+      "coordination.process.enabled": true,
+    },
+  });
+
+  assert.equal(Object.values(process.capabilities().capabilities).some(Boolean), false);
+  const address = await process.start();
+  assert.equal(address.host, "127.0.0.1");
+  const response = await fetch(`${address.origin}/api/v1/capabilities`);
+  assert.equal(response.status, 200);
+  assert.equal(
+    Object.values((await response.json() as { capabilities: Record<string, boolean> }).capabilities)
+      .some(Boolean),
+    false,
+  );
+
+  await process.drain();
+  await assert.rejects(fetch(`${address.origin}/api/v1/capabilities`));
+  const reopened = openCoordinationDatabase({ path: databasePath });
+  reopened.close();
+});

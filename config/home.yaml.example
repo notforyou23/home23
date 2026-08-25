@@ -3,6 +3,17 @@ home:
   version: 1.0.0
   primaryAgent: ""
 
+# M12 shadow composition. The process definition is generated exactly once,
+# but exits without opening its database, socket, or listener until enabled.
+# Legacy Home23 processes and routes remain authoritative.
+coordination:
+  process:
+    enabled: false
+  publicApi:
+    enabled: false
+    host: 127.0.0.1
+    port: 7346
+
 evobrew:
   port: 3415
 

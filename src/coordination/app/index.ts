@@ -31,3 +31,8 @@ export type {
   CoordinationUnreadPort,
   CoordinationWorkPort,
 } from "./types.js";
+export { createCoordinationProcess, type CoordinationProcess } from "./composition.js";
+export {
+  loadCoordinationRuntimeConfig,
+  type CoordinationRuntimeConfig,
+} from "./runtime-config.js";

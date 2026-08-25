@@ -6,8 +6,10 @@ import {
   type LocalArtifactStoreOptions,
 } from "../artifacts/index.js";
 import { openCoordinationDatabase } from "../db/index.js";
+import { createCoordinationHttpServer } from "../http/index.js";
 import { createCoordinationApplication } from "./application.js";
 import { createCoordinationLifecycle } from "./lifecycle.js";
+import type { CoordinationRuntimeConfig } from "./runtime-config.js";
 import type {
   CoordinationApplication,
   CoordinationFeatureFlags,
@@ -32,6 +34,14 @@ export interface DurableAttachmentCompositionOptions {
 export interface CoordinationRuntimeComposition {
   application: CoordinationApplication;
   lifecycle: CoordinationLifecycle;
+}
+
+export interface CoordinationProcess {
+  start(): Promise<{ host: string; port: number; origin: string }>;
+  drain(): Promise<void>;
+  capabilities(): ReturnType<
+    ReturnType<typeof createCoordinationApplication>["capabilities"]
+  >;
 }
 
 function isCompleteAttachmentOptions(
@@ -111,4 +121,44 @@ export async function createCoordinationRuntimeComposition(input: {
     database.close();
     throw error;
   }
+}
+
+export function createCoordinationProcess(
+  config: CoordinationRuntimeConfig,
+): CoordinationProcess {
+  if (!config.enabled) {
+    throw new Error("the disabled coordination process cannot be composed");
+  }
+  const database = openCoordinationDatabase({
+    path: config.databasePath,
+    applicationVersion: "home23-coordination-m12-shadow",
+  });
+  const lifecycle = createCoordinationLifecycle([{
+    name: "coordination-database",
+    drain: async () => undefined,
+    close: async () => database.close(),
+  }]);
+  const application = createCoordinationApplication({
+    flags: config.flags,
+    services: {
+      // Pairing/session composition is deliberately deferred. Until that
+      // dependency exists, every protected route fails closed.
+      auth: {
+        validateAccessToken: async () => {
+          throw new Error("coordination authentication is unavailable in shadow mode");
+        },
+      },
+    },
+  });
+  const server = createCoordinationHttpServer({
+    application,
+    lifecycle,
+    host: config.host,
+    port: config.port,
+  });
+  return Object.freeze({
+    start: () => server.start(),
+    drain: () => server.drain(),
+    capabilities: () => application.capabilities(),
+  });
 }

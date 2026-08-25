@@ -174,8 +174,36 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`  COSMO_WORKSPACE_PATH: '',`);
   lines.push(`};`);
   lines.push(``);
+  lines.push(`const coordinationConfig = homeConfig.coordination || {};`);
+  lines.push(`const coordinationEnabled = coordinationConfig.process?.enabled === true;`);
+  lines.push(`const coordinationRuntimeDir = path.join(HOME23, 'instances', '.house', 'coordination');`);
+  lines.push(``);
   lines.push(`module.exports = {`);
   lines.push(`  apps: [`);
+
+  // One installation-level SHADOW definition. Disabled is explicit and the
+  // entrypoint exits before opening state or a listener. Legacy apps remain
+  // the only configured start/stop authority until a later cutover package.
+  lines.push(`    {`);
+  lines.push(`      name: 'home23-coordination',`);
+  lines.push(`      script: 'dist/coordination/index.js',`);
+  lines.push(`      cwd: HOME23,`);
+  lines.push(`      filter_env: ['HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
+  lines.push(`      autorestart: coordinationEnabled, watch: false, merge_logs: true,`);
+  lines.push(`      kill_timeout: 30000,`);
+  lines.push(`      out_file: path.join(coordinationRuntimeDir, 'coordination-out.log'),`);
+  lines.push(`      error_file: path.join(coordinationRuntimeDir, 'coordination-err.log'),`);
+  lines.push(`      env: {`);
+  lines.push(`        HOME23_ROOT: HOME23,`);
+  lines.push(`        HOME23_COORDINATION_ENABLED: String(coordinationEnabled),`);
+  lines.push(`        HOME23_COORDINATION_PUBLIC_API_ENABLED: String(coordinationConfig.publicApi?.enabled === true),`);
+  lines.push(`        HOME23_COORDINATION_HOST: String(coordinationConfig.publicApi?.host || '127.0.0.1'),`);
+  lines.push(`        HOME23_COORDINATION_PORT: String(coordinationConfig.publicApi?.port || 7346),`);
+  lines.push(`        HOME23_COORDINATION_DB_PATH: path.join(coordinationRuntimeDir, 'home23-coordination.sqlite3'),`);
+  lines.push(`        HOME23_COORDINATION_SOCKET_PATH: path.join(coordinationRuntimeDir, 'coord.sock'),`);
+  lines.push(`        HOME23_COORDINATION_CAPABILITY_TOKEN: String(secrets.coordination?.capabilityToken || ''),`);
+  lines.push(`      },`);
+  lines.push(`    },`);
 
   for (const agent of orderedAgents) {
     const ports = agent.config.ports || {};
