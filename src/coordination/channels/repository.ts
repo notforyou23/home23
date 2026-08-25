@@ -25,6 +25,7 @@ import {
   replayReceipt,
 } from "./mutation.js";
 import type { MessagingEventReference } from "./mutation.js";
+import type { ArtifactMessageLinkTransactionPort } from "../artifacts/index.js";
 import type {
   BotConversationBindingResult,
   BotConversationBindingTransactionPort,
@@ -70,6 +71,7 @@ interface MemberRow {
 export interface SqliteMessagingRepositoryOptions {
   botConversationBinding: BotConversationBindingTransactionPort;
   messageProvenanceAuthorization?: MessageProvenanceAuthorizationTransactionPort;
+  artifactMessageLink?: ArtifactMessageLinkTransactionPort;
 }
 
 type ChannelReader = Pick<MessagingDatabase, "readOne" | "readAll"> |
@@ -185,6 +187,7 @@ export class SqliteMessagingRepository implements ChannelRepository {
     this.messages = new SqliteMessageRepository(
       database,
       options.messageProvenanceAuthorization,
+      options.artifactMessageLink,
     );
     this.unread = new SqliteUnreadRepository(database);
   }

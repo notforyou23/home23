@@ -90,6 +90,7 @@ export function createMessageService(options: CreateMessageServiceOptions) {
     kind: MessageKind;
     text: string | null;
     mentions: readonly string[];
+    attachmentIds?: readonly string[];
     clientMessageId: string | null;
     replyToMessageId: string | null;
     tombstonesMessageId: string | null;
@@ -124,6 +125,11 @@ export function createMessageService(options: CreateMessageServiceOptions) {
       }
     }
     mentions.sort();
+    const attachmentIds = input.attachmentIds === undefined ? [] : [...input.attachmentIds];
+    if (attachmentIds.length > 10 || new Set(attachmentIds).size !== attachmentIds.length) {
+      throw new MessagingError("request_invalid");
+    }
+    for (const attachmentId of attachmentIds) assertId("artifact", attachmentId);
     const replyToMessageId = canonicalNullableId("message", input.replyToMessageId);
     const tombstonesMessageId = canonicalNullableId("message", input.tombstonesMessageId);
     if (replyToMessageId && tombstonesMessageId) {
@@ -162,6 +168,7 @@ export function createMessageService(options: CreateMessageServiceOptions) {
       kind: message.kind,
       text: message.text,
       mentions: [...message.mentions],
+      attachmentIds: [...attachmentIds],
       clientMessageId: message.clientMessageId,
       replyToMessageId: message.replyToMessageId,
       tombstonesMessageId: message.tombstonesMessageId,
@@ -178,6 +185,7 @@ export function createMessageService(options: CreateMessageServiceOptions) {
     );
     return repository.appendMessage({
       message,
+      attachmentIds: Object.freeze(attachmentIds),
       actor,
       idempotency,
     });

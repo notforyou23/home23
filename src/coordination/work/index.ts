@@ -14,6 +14,7 @@ export {
 } from "./schema-delta.js";
 export { WorkError, type WorkErrorCode } from "./errors.js";
 export { createWorkService } from "./service.js";
+export { M11MessageProvenanceAuthority } from "./message-provenance.js";
 export { createRecoveryService } from "./recovery-service.js";
 export type {
   ContextManifest,

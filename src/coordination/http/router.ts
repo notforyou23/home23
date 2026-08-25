@@ -16,6 +16,8 @@ import {
   requireCoordinationMetadata,
   requireIdempotencyKey,
 } from "./middleware.js";
+import { ResumableSsePump } from "../events/index.js";
+import { once } from "node:events";
 
 type CapabilityName = keyof CoordinationAdvertisedCapabilities;
 
@@ -135,13 +137,77 @@ export function createCoordinationRouter(input: {
   );
   router.get("/api/v1/unread", productRead, unavailableRoute("unreadRead"));
   router.get("/api/v1/activity", productRead, unavailableRoute("activity"));
-  router.get("/api/v1/events", productRead, unavailableRoute("eventReplay"));
+  router.get("/api/v1/events", productRead, asyncRoute(async (request, response) => {
+    if (!application.capabilities().capabilities.eventReplay || !application.services.events) {
+      throw unavailable("eventReplay");
+    }
+    const headerCursor = request.get("last-event-id");
+    const queryCursor = request.query.after;
+    if (headerCursor !== undefined && queryCursor !== undefined) {
+      throw new CoordinationHttpError("request_invalid", 400, false);
+    }
+    const rawCursor = headerCursor ?? queryCursor ?? "0";
+    if (typeof rawCursor !== "string" || !/^[0-9]+$/.test(rawCursor)) {
+      throw new CoordinationHttpError("request_invalid", 400, false);
+    }
+    const afterSequence = Number(rawCursor);
+    if (!Number.isSafeInteger(afterSequence)) throw new CoordinationHttpError("request_invalid", 400, false);
+    const metadata = requireCoordinationMetadata(response);
+    const pump = new ResumableSsePump({
+      repository: application.services.events,
+      requestId: metadata.requestId,
+      sink: {
+        write: (chunk) => response.write(chunk),
+        waitForDrain: async () => { await once(response, "drain"); },
+      },
+    });
+    response.setHeader("content-type", "text/event-stream; charset=utf-8");
+    response.setHeader("cache-control", "no-cache, no-transform");
+    response.setHeader("connection", "keep-alive");
+    const result = await pump.replay(afterSequence);
+    if (result.kind === "reset") {
+      if (!response.headersSent) response.status(409).json(result);
+      else response.end();
+      return;
+    }
+    response.end();
+  }));
 
   router.post(
     "/api/v1/channels/:channelId/messages",
     messageSend,
     requireIdempotencyKey(application),
-    unavailableRoute("messageSubmission"),
+    jsonBody,
+    asyncRoute(async (request, response) => {
+      if (!application.capabilities().capabilities.messageSubmission || !application.services.messageSubmission) {
+        throw unavailable("messageSubmission");
+      }
+      const body = jsonObjectBody(request.body);
+      const required = ["messageId", "clientMessageId", "text", "attachmentIds", "mentions", "replyToMessageId"];
+      if (required.some((key) => !(key in body)) ||
+          typeof body.messageId !== "string" || typeof body.clientMessageId !== "string" ||
+          (typeof body.text !== "string" && body.text !== null) ||
+          !Array.isArray(body.attachmentIds) || !body.attachmentIds.every((id) => typeof id === "string") ||
+          !Array.isArray(body.mentions) || !body.mentions.every((id) => typeof id === "string") ||
+          (typeof body.replyToMessageId !== "string" && body.replyToMessageId !== null)) {
+        throw new CoordinationHttpError("request_invalid", 400, false);
+      }
+      const result = await application.services.messageSubmission.submitMessage({
+        context: requireCoordinationContext(response),
+        channelId: pathParameter(request.params.channelId),
+        idempotencyKey: coordinationIdempotencyKey(response),
+        body: {
+          messageId: body.messageId,
+          clientMessageId: body.clientMessageId,
+          text: body.text,
+          attachmentIds: body.attachmentIds,
+          mentions: body.mentions,
+          replyToMessageId: body.replyToMessageId,
+        },
+      });
+      const { response: _terminalResponse, ...accepted } = result;
+      response.status(202).json(accepted);
+    }),
   );
 
   router.post(

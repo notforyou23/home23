@@ -13,6 +13,7 @@ import {
   replayReceipt,
 } from "../channels/mutation.js";
 import type { MessagingEventReference } from "../channels/mutation.js";
+import type { ArtifactMessageLinkTransactionPort, AttachmentSummary } from "../artifacts/index.js";
 import type {
   AppendMessageCommit,
   AppendMessageResult,
@@ -79,6 +80,7 @@ export class SqliteMessageRepository implements MessageRepository {
   constructor(
     private readonly database: MessagingDatabase,
     private readonly provenanceAuthorization?: MessageProvenanceAuthorizationTransactionPort,
+    private readonly artifactMessageLink?: ArtifactMessageLinkTransactionPort,
   ) {}
 
   async appendMessage(input: AppendMessageCommit): Promise<AppendMessageResult> {
@@ -158,6 +160,10 @@ export class SqliteMessageRepository implements MessageRepository {
           );
           if (mentioned?.kind !== "bot") throw new MessagingError("invalid_mention");
         }
+        const attachmentIds = input.attachmentIds ?? [];
+        if (attachmentIds.length > 0 && !this.artifactMessageLink) {
+          throw new MessagingError("invalid_relation");
+        }
         const sequence = channel.nextSequence;
         const channelUpdate = transaction.run(
           `UPDATE channels
@@ -192,6 +198,13 @@ export class SqliteMessageRepository implements MessageRepository {
           input.message.provenance.workId,
           input.message.createdAt,
         );
+        const attachments = this.artifactMessageLink?.linkReadyArtifacts(transaction, {
+          messageId: input.message.id,
+          channelId: input.message.channelId,
+          artifactIds: attachmentIds,
+          actor: input.actor,
+          linkedAt: input.message.createdAt,
+        }) ?? Object.freeze([]);
         for (const principalId of input.message.mentions) {
           transaction.run(
             "INSERT INTO mentions (message_id, channel_id, mentioned_principal_id) VALUES (?, ?, ?)",
@@ -218,6 +231,7 @@ export class SqliteMessageRepository implements MessageRepository {
           input,
           channel.conversationId,
           sequence,
+          attachments,
         );
         return {
           value: message,
@@ -397,6 +411,16 @@ export class SqliteMessageRepository implements MessageRepository {
       "SELECT mentioned_principal_id AS principalId FROM mentions WHERE message_id = ? ORDER BY mentioned_principal_id",
       row.id,
     ).map((mention) => mention.principalId);
+    const attachments = this.artifactMessageLink
+      ? this.database.readAll<AttachmentSummary>(
+          `SELECT artifact.id, artifact.original_name AS name,
+                  artifact.detected_content_type AS contentType,
+                  artifact.byte_count AS byteCount, artifact.sha256
+           FROM message_artifacts link JOIN artifacts artifact ON artifact.id = link.artifact_id
+           WHERE link.message_id = ? ORDER BY link.ordinal ASC`,
+          row.id,
+        )
+      : [];
     return Object.freeze({
       id: row.id,
       channelId: row.channelId,
@@ -410,7 +434,7 @@ export class SqliteMessageRepository implements MessageRepository {
       kind: row.kind,
       text: row.text,
       mentions: Object.freeze(mentions),
-      attachments: Object.freeze([]),
+      attachments: Object.freeze(attachments.map((attachment) => Object.freeze({ ...attachment }))),
       replyToMessageId: row.replyToMessageId,
       tombstonesMessageId: row.tombstonesMessageId,
       visibility: row.effectiveVisibility,
@@ -424,6 +448,7 @@ export class SqliteMessageRepository implements MessageRepository {
     input: AppendMessageCommit,
     conversationId: string,
     sequence: number,
+    attachments: readonly AttachmentSummary[],
   ): MessageProjection {
     return Object.freeze({
       ...input.message,
@@ -432,7 +457,7 @@ export class SqliteMessageRepository implements MessageRepository {
       provenance: Object.freeze({ ...input.message.provenance }),
       conversationId,
       sequence,
-      attachments: Object.freeze([]),
+      attachments: Object.freeze([...attachments]),
       visibility: "visible" as const,
     });
   }

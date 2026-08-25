@@ -5,6 +5,7 @@ import type {
   ResolvedMessagingActor,
 } from "../channels/index.js";
 import type { CoordinationTransaction } from "../db/index.js";
+import type { AttachmentSummary } from "../artifacts/index.js";
 
 export type MessageKind = "text" | "system" | "result";
 export type MessageVisibility = "visible" | "tombstoned";
@@ -37,12 +38,13 @@ export interface PendingMessage {
 export interface MessageProjection extends PendingMessage {
   conversationId: string;
   sequence: number;
-  attachments: readonly never[];
+  attachments: readonly AttachmentSummary[];
   visibility: MessageVisibility;
 }
 
 export interface AppendMessageCommit {
   message: PendingMessage;
+  attachmentIds: readonly string[];
   actor: ResolvedMessagingActor;
   idempotency: MessagingIdempotencyClaim;
 }

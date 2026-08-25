@@ -61,13 +61,18 @@ function capabilityDocument(input: {
       messagesRead: false,
       unreadRead: false,
       // M11's public DTOs and authority-gated receipts are not merged yet.
-      messageSubmission: false,
+      messageSubmission:
+        mutationsEnabled &&
+        input.flags["coordination.resident.jerry.enabled"] === true &&
+        input.services.messageSubmission !== undefined &&
+        input.services.work !== undefined &&
+        input.services.leases !== undefined,
       readCursorMutation: mutationsEnabled && input.services.unread !== undefined,
       search:
         processEnabled &&
         input.flags["coordination.search.canonical"] === true &&
         input.services.search !== undefined,
-      eventReplay: false,
+      eventReplay: processEnabled && input.services.events !== undefined,
       attachments:
         mutationsEnabled && input.services.attachments !== undefined,
       work: false,

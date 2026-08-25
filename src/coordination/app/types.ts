@@ -10,6 +10,7 @@ import type { FEATURE_FLAG_REGISTRY } from "../schema/contract-registry.js";
 import type { createUnreadService } from "../unread/index.js";
 import type { createWorkService } from "../work/index.js";
 import type { createChannelCoordinator } from "../channel-coordinator/index.js";
+import type { SqliteEventRepository } from "../events/index.js";
 
 export type CoordinationFeatureFlags = Readonly<{
   [Flag in keyof typeof FEATURE_FLAG_REGISTRY]: boolean;
@@ -45,7 +46,7 @@ export interface CoordinationMessageSubmissionPort {
     channelId: string;
     idempotencyKey: string;
     body: CoordinationMessageSubmissionRequest;
-  }): Promise<Readonly<Record<string, unknown>>>;
+  }): Promise<Readonly<Record<string, unknown> & { response?: Promise<unknown> }>>;
 }
 
 /** Exact M11 durable Work boundary; public DTO/auth adaptation remains later work. */
@@ -102,6 +103,7 @@ export interface CoordinationServices {
   attachments?: CoordinationAttachmentPort;
   /** Optional internal M16 seam. Presence never advertises or activates Channels. */
   channelCoordinator?: ReturnType<typeof createChannelCoordinator>;
+  events?: SqliteEventRepository;
 }
 
 export interface CoordinationHttpLimits {

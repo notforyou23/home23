@@ -299,6 +299,10 @@ export function createLeaseService(options: CreateLeaseServiceOptions) {
   }
 
   return Object.freeze({
+    assertCurrent(input: LeaseBindingInput): LeaseMutationResult {
+      return boundRows(input);
+    },
+
     offer(input: OfferLeaseInput): OfferLeaseResult {
       assertExactKeys(
         input,

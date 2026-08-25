@@ -36,3 +36,11 @@ export {
   loadCoordinationRuntimeConfig,
   type CoordinationRuntimeConfig,
 } from "./runtime-config.js";
+export {
+  createDirectMessageSubmissionService,
+  directMessageManifest,
+  type DirectMessageChannelContext,
+  type DirectMessageContextPort,
+  type DirectMessageMessagePort,
+} from "./direct-message.js";
+export { SqliteDirectMessageContext } from "./direct-message-context.js";
