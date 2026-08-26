@@ -1,5 +1,7 @@
 import { createCoordinationProcess } from "./app/composition.js";
 import { loadCoordinationRuntimeConfig } from "./app/runtime-config.js";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 export * from "./channel-coordinator/index.js";
 
@@ -21,7 +23,7 @@ export async function runCoordinationProcess(
   return "listening";
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   runCoordinationProcess().then(
     (state) => {
       if (state === "disabled") {
