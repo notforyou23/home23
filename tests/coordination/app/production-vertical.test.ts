@@ -111,7 +111,21 @@ test("production composition authenticates one direct Message through durable Wo
     diagnostic.close();
     assert.fail(`resident was not invoked: ${JSON.stringify({ work, attempt, lease })}`);
   }
-  for (let i = 0; i < 100; i += 1) { const events = await fetch(`${address.origin}/api/v1/events?after=0`, { headers: { authorization: `Bearer ${token}` } }); const text = await events.text(); if (text.includes("message.appended") && text.includes(correlationId)) break; await new Promise((resolve) => setTimeout(resolve, 20)); }
+  const eventAbort = new AbortController();
+  const events = await fetch(`${address.origin}/api/v1/events?after=0`, {
+    headers: { authorization: `Bearer ${token}` }, signal: eventAbort.signal,
+  });
+  const reader = events.body!.getReader();
+  const decoder = new TextDecoder();
+  let eventText = "";
+  for (let i = 0; i < 100 && !eventText.includes("message.appended"); i += 1) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    eventText += decoder.decode(chunk.value, { stream: true });
+  }
+  eventAbort.abort();
+  assert.match(eventText, /message\.appended/);
+  assert.ok(eventText.includes(correlationId));
   await new Promise((resolve) => setTimeout(resolve, 500));
   const transcript = await (await fetch(`${address.origin}/api/v1/channels/${seeded.channelId}/messages`, { headers: productHeaders })).json() as { messages: Array<{ kind: string; text: string; provenance: { workId: string | null } }> };
   assert.deepEqual(transcript.messages.map((message) => message.kind), ["text", "result"]);

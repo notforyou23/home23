@@ -16,7 +16,7 @@ import {
   requireCoordinationMetadata,
   requireIdempotencyKey,
 } from "./middleware.js";
-import { ResumableSsePump } from "../events/index.js";
+import { ResumableSsePump, resolveEventResumeSequence } from "../events/index.js";
 import { once } from "node:events";
 
 type CapabilityName = keyof CoordinationAdvertisedCapabilities;
@@ -71,6 +71,24 @@ function asyncRoute(
   return (request: Request, response: Response, next: NextFunction) => {
     void handler(request, response).catch(next);
   };
+}
+
+function waitForEventPoll(request: Request, response: Response, delayMs = 250): Promise<boolean> {
+  if (request.aborted || request.destroyed || response.destroyed || response.writableEnded) {
+    return Promise.resolve(false);
+  }
+  return new Promise((resolve) => {
+    const finish = (connected: boolean) => {
+      clearTimeout(timer);
+      request.off("aborted", disconnected);
+      response.off("close", disconnected);
+      resolve(connected);
+    };
+    const disconnected = () => finish(false);
+    const timer = setTimeout(() => finish(true), delayMs);
+    request.once("aborted", disconnected);
+    response.once("close", disconnected);
+  });
 }
 
 export function createCoordinationRouter(input: {
@@ -207,7 +225,12 @@ export function createCoordinationRouter(input: {
   }));
   router.get("/api/v1/channels/:channelId", productRead, asyncRoute(async (request, response) => {
     if (!application.capabilities().capabilities.channelsRead || !application.services.channels) throw unavailable("channelsRead");
-    response.json({ channel: await application.services.channels.getChannel({ context: requireCoordinationContext(response), channelId: pathParameter(request.params.channelId) }) });
+    const metadata = requireCoordinationMetadata(response);
+    response.json({
+      ...metadata,
+      channel: await application.services.channels.getChannel({ context: requireCoordinationContext(response), channelId: pathParameter(request.params.channelId) }),
+      throughEventSequence: 0,
+    });
   }));
   router.get("/api/v1/conversations", productRead, asyncRoute(async (_request, response) => {
     if (!application.capabilities().capabilities.conversationsRead || !application.services.unread) throw unavailable("conversationsRead");
@@ -277,15 +300,18 @@ export function createCoordinationRouter(input: {
     }
     const headerCursor = request.get("last-event-id");
     const queryCursor = request.query.after;
-    if (headerCursor !== undefined && queryCursor !== undefined) {
+    if (queryCursor !== undefined && (typeof queryCursor !== "string" || !/^[0-9]+$/.test(queryCursor))) {
       throw new CoordinationHttpError("request_invalid", 400, false);
     }
-    const rawCursor = headerCursor ?? queryCursor ?? "0";
-    if (typeof rawCursor !== "string" || !/^[0-9]+$/.test(rawCursor)) {
+    let afterSequence: number;
+    try {
+      afterSequence = resolveEventResumeSequence({
+        ...(queryCursor === undefined ? {} : { after: Number(queryCursor) }),
+        ...(headerCursor === undefined ? {} : { lastEventId: headerCursor }),
+      });
+    } catch {
       throw new CoordinationHttpError("request_invalid", 400, false);
     }
-    const afterSequence = Number(rawCursor);
-    if (!Number.isSafeInteger(afterSequence)) throw new CoordinationHttpError("request_invalid", 400, false);
     const metadata = requireCoordinationMetadata(response);
     const pump = new ResumableSsePump({
       repository: application.services.events,
@@ -304,7 +330,15 @@ export function createCoordinationRouter(input: {
       else response.end();
       return;
     }
-    response.end();
+    response.flushHeaders();
+    let cursor = result.throughSequence;
+    while (lifecycle.state() === "accepting" && await waitForEventPoll(request, response)) {
+      const replay = await pump.replay(cursor);
+      if (replay.kind === "reset") break;
+      cursor = replay.throughSequence;
+      await pump.heartbeatIfDue();
+    }
+    if (!response.writableEnded && !response.destroyed) response.end();
   }));
 
   router.post(
