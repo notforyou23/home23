@@ -3,6 +3,8 @@ import { MessagingError } from "../channels/index.js";
 import { CanonicalSearchError } from "../search/index.js";
 import { CoordinationLifecycleDrainingError } from "../app/index.js";
 import { ArtifactError } from "../artifacts/index.js";
+import { BotLifecycleError } from "../bot-lifecycle/index.js";
+import { ChannelCoordinatorError } from "../channel-coordinator/index.js";
 
 export class CoordinationHttpError extends Error {
   readonly name = "CoordinationHttpError";
@@ -76,6 +78,19 @@ export function toCoordinationHttpFailure(error: unknown): CoordinationHttpFailu
       details: {},
       message: "Attachment request failed.",
     };
+  }
+  if (error instanceof BotLifecycleError) {
+    const status = error.code === "bot_not_found" || error.code === "resident_not_found" ? 404
+      : error.code === "standing_authority_denied" ? 403
+      : error.code === "capability_disabled" || error.code === "authority_unavailable" ? 503
+      : error.code === "request_invalid" ? 400 : 409;
+    return { code: error.code, httpStatus: status, retryable: false, details: {}, message: "Bot lifecycle request failed." };
+  }
+  if (error instanceof ChannelCoordinatorError) {
+    const status = error.code === "capability_off" ? 503
+      : error.code === "outside_scope" ? 403
+      : error.code === "invalid_request" ? 400 : 409;
+    return { code: error.code, httpStatus: status, retryable: false, details: {}, message: "Channel coordination request failed." };
   }
   if (error instanceof CanonicalSearchError) {
     return {

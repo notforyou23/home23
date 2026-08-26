@@ -11,7 +11,11 @@ import type { createUnreadService } from "../unread/index.js";
 import type { createWorkService } from "../work/index.js";
 import type { createChannelCoordinator } from "../channel-coordinator/index.js";
 import type { SqliteEventRepository } from "../events/index.js";
-import type { createBotLifecycleService } from "../bot-lifecycle/index.js";
+import type { BotLifecycleReceipt, createBotLifecycleService } from "../bot-lifecycle/index.js";
+import type { createBotDirectory } from "../bots/index.js";
+import type { createChannelService } from "../channels/index.js";
+import type { createMessageService } from "../messages/index.js";
+import type { ActivityBoundary, ActivityEntry, ActivityScope } from "../activity/index.js";
 
 export type CoordinationFeatureFlags = Readonly<{
   [Flag in keyof typeof FEATURE_FLAG_REGISTRY]: boolean;
@@ -26,8 +30,43 @@ export type CoordinationAuthPort = Pick<
 
 export type CoordinationUnreadPort = Pick<
   ReturnType<typeof createUnreadService>,
-  "markRead"
+  "getUnread" | "markRead" | "listInbox"
 >;
+
+export type CoordinationBotDirectoryPort = Pick<
+  ReturnType<typeof createBotDirectory>, "listVisibleBots"
+>;
+export type CoordinationChannelPort = ReturnType<typeof createChannelService>;
+export type CoordinationMessagePort = Pick<
+  ReturnType<typeof createMessageService>, "listMessages"
+>;
+
+export interface CoordinationActivityReadPort {
+  list(input: {
+    context: MessagingActorContext;
+    scope: ActivityScope;
+    after: ActivityBoundary | null;
+    limit: number;
+  }): Promise<Readonly<{
+    entries: readonly ActivityEntry[];
+    nextBoundary: ActivityBoundary | null;
+    throughEventSequence: number;
+  }>>;
+}
+
+/** M16 public adapter: policy and authority facts are resolved server-side. */
+export interface CoordinationChannelCoordinatorPort {
+  startFromMessage(input: {
+    context: MessagingActorContext;
+    channelId: string;
+    messageId: string;
+  }): Promise<Readonly<Record<string, unknown>>>;
+}
+
+export interface CoordinationBotLifecyclePort {
+  create(input: { context: MessagingActorContext; idempotencyKey: string; residentBinding: string; displayName: string; purpose: string; requiredCapabilities: readonly string[] }): Promise<BotLifecycleReceipt>;
+  control(input: { context: MessagingActorContext; idempotencyKey: string; botId: string; operation: "start" | "stop" }): Promise<BotLifecycleReceipt>;
+}
 
 /**
  * M11 owns the durable-before-start Work/Attempt/Lease transaction. M12 only
@@ -102,13 +141,17 @@ export interface CoordinationServices {
   messageSubmission?: CoordinationMessageSubmissionPort;
   work?: CoordinationWorkPort;
   leases?: CoordinationLeasePort;
-  activity?: CoordinationActivityPort;
+  activity?: CoordinationActivityReadPort;
+  bots?: CoordinationBotDirectoryPort;
+  channels?: CoordinationChannelPort;
+  messages?: CoordinationMessagePort;
   attachments?: CoordinationAttachmentPort;
   /** Optional internal M16 seam. Presence never advertises or activates Channels. */
-  channelCoordinator?: ReturnType<typeof createChannelCoordinator>;
+  channelCoordinator?: CoordinationChannelCoordinatorPort;
   events?: SqliteEventRepository;
   /** Optional internal M28 seam. Presence never advertises or registers a public route. */
   botLifecycle?: ReturnType<typeof createBotLifecycleService>;
+  botLifecycleApi?: CoordinationBotLifecyclePort;
 }
 
 export interface CoordinationHttpLimits {

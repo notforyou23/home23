@@ -140,16 +140,81 @@ export function createCoordinationRouter(input: {
     (_request: Request, _response: Response, next: NextFunction) =>
       next(unavailable(capability));
 
-  router.get("/api/v1/channels", productRead, unavailableRoute("channelsRead"));
-  router.get("/api/v1/channels/:channelId", productRead, unavailableRoute("channelsRead"));
-  router.get("/api/v1/conversations", productRead, unavailableRoute("conversationsRead"));
-  router.get(
-    "/api/v1/channels/:channelId/messages",
-    productRead,
-    unavailableRoute("messagesRead"),
-  );
-  router.get("/api/v1/unread", productRead, unavailableRoute("unreadRead"));
-  router.get("/api/v1/activity", productRead, unavailableRoute("activity"));
+  router.get("/api/v1/bots", productRead, asyncRoute(async (_request, response) => {
+    if (!application.services.bots) throw unavailable("bootstrap");
+    response.json({ bots: await application.services.bots.listVisibleBots() });
+  }));
+  router.get("/api/v1/bots/:botId", productRead, asyncRoute(async (request, response) => {
+    if (!application.services.bots) throw unavailable("bootstrap");
+    const botId = pathParameter(request.params.botId);
+    const bot = (await application.services.bots.listVisibleBots()).find((item) => item.id === botId);
+    if (!bot) throw new CoordinationHttpError("bot_not_found", 404, false);
+    response.json({ bot });
+  }));
+  router.get("/api/v1/channels", productRead, asyncRoute(async (request, response) => {
+    if (!application.capabilities().capabilities.channelsRead || !application.services.channels) throw unavailable("channelsRead");
+    response.json(await application.services.channels.listChannels({ context: requireCoordinationContext(response), cursor: nullableQuery(request.query.cursor), limit: integerQuery(request.query.limit, 50) }));
+  }));
+  router.get("/api/v1/channels/:channelId", productRead, asyncRoute(async (request, response) => {
+    if (!application.capabilities().capabilities.channelsRead || !application.services.channels) throw unavailable("channelsRead");
+    response.json({ channel: await application.services.channels.getChannel({ context: requireCoordinationContext(response), channelId: pathParameter(request.params.channelId) }) });
+  }));
+  router.get("/api/v1/conversations", productRead, asyncRoute(async (_request, response) => {
+    if (!application.capabilities().capabilities.conversationsRead || !application.services.unread) throw unavailable("conversationsRead");
+    response.json({ conversations: await application.services.unread.listInbox({ context: requireCoordinationContext(response) }) });
+  }));
+  router.get("/api/v1/inbox", productRead, asyncRoute(async (_request, response) => {
+    if (!application.capabilities().capabilities.conversationsRead || !application.services.unread) throw unavailable("conversationsRead");
+    response.json({ conversations: await application.services.unread.listInbox({ context: requireCoordinationContext(response) }) });
+  }));
+  router.get("/api/v1/channels/:channelId/messages", productRead, asyncRoute(async (request, response) => {
+    if (!application.capabilities().capabilities.messagesRead || !application.services.messages) throw unavailable("messagesRead");
+    const before = request.query.before === undefined ? undefined : integerQuery(request.query.before, 0);
+    response.json(await application.services.messages.listMessages({ context: requireCoordinationContext(response), channelId: pathParameter(request.params.channelId), ...(before === undefined ? {} : { beforeSequence: before }), limit: integerQuery(request.query.limit, 50) }));
+  }));
+  router.get("/api/v1/unread", productRead, asyncRoute(async (request, response) => {
+    if (!application.capabilities().capabilities.unreadRead || !application.services.unread) throw unavailable("unreadRead");
+    const channelId = nullableQuery(request.query.channelId);
+    if (channelId) response.json(await application.services.unread.getUnread({ context: requireCoordinationContext(response), channelId }));
+    else response.json({ conversations: await application.services.unread.listInbox({ context: requireCoordinationContext(response) }) });
+  }));
+  router.get("/api/v1/activity", productRead, asyncRoute(async (request, response) => {
+    if (!application.capabilities().capabilities.activity || !application.services.activity) throw unavailable("activity");
+    const rawScope = nullableQuery(request.query.scope) ?? "all";
+    const scope = rawScope === "all" ? { kind: "all" as const } : rawScope.startsWith("channel:") ? { kind: "channel" as const, channelId: rawScope.slice(8) } : null;
+    if (!scope) throw new CoordinationHttpError("request_invalid", 400, false);
+    const afterSequence = request.query.afterSequence === undefined ? null : integerQuery(request.query.afterSequence, 0);
+    const afterKey = nullableQuery(request.query.afterKey);
+    if ((afterSequence === null) !== (afterKey === null)) throw new CoordinationHttpError("request_invalid", 400, false);
+    response.json(await application.services.activity.list({ context: requireCoordinationContext(response), scope, after: afterSequence === null ? null : { eventSequence: afterSequence, key: afterKey! }, limit: integerQuery(request.query.limit, 50) }));
+  }));
+
+  router.post("/api/v1/channels", messageSend, requireIdempotencyKey(application), jsonBody, asyncRoute(async (request, response) => {
+    if (!application.flags["coordination.channels.enabled"] || !application.services.channels) throw unavailable("channelsRead");
+    const body = jsonObjectBody(request.body);
+    const common = { context: requireCoordinationContext(response), memberBotIds: body.memberBotIds as string[], title: body.title as string, purpose: body.purpose as string, pinned: body.pinned as boolean, responderPolicy: body.responderPolicy as any, idempotencyKey: coordinationIdempotencyKey(response) };
+    const result = body.kind === "direct" ? await application.services.channels.createDirectConversation(common) : body.kind === "group" ? await application.services.channels.createGroupChannel(common) : (() => { throw new CoordinationHttpError("request_invalid", 400, false); })();
+    response.status(result.outcome === "created" ? 201 : 200).json(result);
+  }));
+  router.post("/api/v1/bots", messageSend, requireIdempotencyKey(application), jsonBody, asyncRoute(async (request, response) => {
+    if (!application.capabilities().capabilities.botLifecycle || !application.services.botLifecycleApi) throw unavailable("botLifecycle");
+    const body = jsonObjectBody(request.body);
+    if (typeof body.residentBinding !== "string" || typeof body.displayName !== "string" || typeof body.purpose !== "string" || !Array.isArray(body.requiredCapabilities) || !body.requiredCapabilities.every((item) => typeof item === "string")) throw new CoordinationHttpError("request_invalid", 400, false);
+    const receipt = await application.services.botLifecycleApi.create({ context: requireCoordinationContext(response), idempotencyKey: coordinationIdempotencyKey(response), residentBinding: body.residentBinding, displayName: body.displayName, purpose: body.purpose, requiredCapabilities: body.requiredCapabilities });
+    response.status(201).json({ receipt });
+  }));
+  for (const operation of ["start", "stop"] as const) {
+    router.post(`/api/v1/bots/:botId/${operation}`, messageSend, requireIdempotencyKey(application), asyncRoute(async (request, response) => {
+      if (!application.capabilities().capabilities.botLifecycle || !application.services.botLifecycleApi) throw unavailable("botLifecycle");
+      response.json({ receipt: await application.services.botLifecycleApi.control({ context: requireCoordinationContext(response), idempotencyKey: coordinationIdempotencyKey(response), botId: pathParameter(request.params.botId), operation }) });
+    }));
+  }
+  router.post("/api/v1/channels/:channelId/coordinate", messageSend, jsonBody, asyncRoute(async (request, response) => {
+    if (!application.flags["coordination.channels.enabled"] || !application.services.channelCoordinator) throw unavailable("channelsRead");
+    const body = jsonObjectBody(request.body);
+    if (typeof body.messageId !== "string") throw new CoordinationHttpError("request_invalid", 400, false);
+    response.status(202).json(await application.services.channelCoordinator.startFromMessage({ context: requireCoordinationContext(response), channelId: pathParameter(request.params.channelId), messageId: body.messageId }));
+  }));
   router.get("/api/v1/events", productRead, asyncRoute(async (request, response) => {
     if (!application.capabilities().capabilities.eventReplay || !application.services.events) {
       throw unavailable("eventReplay");

@@ -56,12 +56,10 @@ function capabilityDocument(input: {
     limits: Object.freeze({ ...input.limits }),
     capabilities: Object.freeze({
       bootstrap: processEnabled && input.services.bootstrap !== undefined,
-      // Existing projection services do not yet return the public contract's
-      // single-boundary event receipt, so M12 must not advertise their routes.
-      channelsRead: false,
-      conversationsRead: false,
-      messagesRead: false,
-      unreadRead: false,
+      channelsRead: processEnabled && input.services.channels !== undefined,
+      conversationsRead: processEnabled && input.services.unread !== undefined,
+      messagesRead: processEnabled && input.services.messages !== undefined,
+      unreadRead: processEnabled && input.services.unread !== undefined,
       // M11's public DTOs and authority-gated receipts are not merged yet.
       messageSubmission:
         mutationsEnabled &&
@@ -79,8 +77,12 @@ function capabilityDocument(input: {
         mutationsEnabled && input.services.attachments !== undefined,
       work: false,
       workMutation: false,
-      activity: false,
-      botLifecycle: false,
+      activity:
+        processEnabled && typeof input.services.activity?.list === "function",
+      botLifecycle:
+        mutationsEnabled &&
+        input.flags["coordination.bot_lifecycle.enabled"] === true &&
+        input.services.botLifecycleApi !== undefined,
       importShadow: false,
     }),
   });

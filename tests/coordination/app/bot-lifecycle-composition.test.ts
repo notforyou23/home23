@@ -43,6 +43,7 @@ function fixture() {
   const createSpecs: unknown[] = [];
   const options: BotLifecycleCompositionOptions = {
     enabled: true,
+    resolveHttpPolicy: ({ operation, target }) => policy(`bot_lifecycle.${operation}`, target),
     canonicalWriter: "home23-core",
     authority: {
       enabled: () => true,
@@ -122,7 +123,7 @@ test("M28 stays absent and unadvertised unless every explicit activation conditi
   assert.equal(f.processCalls.length, 0);
 });
 
-test("raw service smuggling is rejected and explicit composition remains internal-only", async () => {
+test("raw service smuggling is rejected and explicit composition exposes the trusted API adapter", async () => {
   const f = fixture();
   const smuggled = await createCoordinationRuntimeComposition({
     flags: enabledFlags,
@@ -134,7 +135,8 @@ test("raw service smuggling is rejected and explicit composition remains interna
     flags: enabledFlags, services: { auth }, botLifecycle: f.options,
   });
   assert.ok(composition.application.services.botLifecycle);
-  assert.equal(composition.application.capabilities().capabilities.botLifecycle, false);
+  assert.equal(composition.application.capabilities().capabilities.botLifecycle, true);
+  assert.ok(composition.application.services.botLifecycleApi);
 });
 
 test("composed M28 denies noncanonical standing scope and exact-action mismatches before effects", async () => {

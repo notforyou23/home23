@@ -44,6 +44,7 @@ import {
   type RetentionReceipt,
   type RetentionStore,
 } from "../retention/index.js";
+import type { PolicyRequest } from "../policy/index.js";
 
 export interface DurableAttachmentCompositionOptions {
   /** Independent kill switch. This is deliberately not sourced from live config. */
@@ -66,7 +67,13 @@ export interface DurableAttachmentCompositionOptions {
  * must be supplied explicitly by the future owner of activation.
  */
 export type BotLifecycleCompositionOptions = Readonly<
-  CreateBotLifecycleServiceOptions & { enabled: true }
+  CreateBotLifecycleServiceOptions & {
+    enabled: true;
+    resolveHttpPolicy(input: {
+      operation: "create" | "start" | "stop";
+      target: string;
+    }): PolicyRequest;
+  }
 >;
 
 export interface CoordinationRuntimeComposition {
@@ -126,7 +133,7 @@ function isCompleteAttachmentOptions(
  */
 export async function createCoordinationRuntimeComposition(input: {
   flags: CoordinationFeatureFlags;
-  services: Omit<CoordinationServices, "attachments" | "botLifecycle">;
+  services: Omit<CoordinationServices, "attachments" | "botLifecycle" | "botLifecycleApi">;
   attachments?: Partial<DurableAttachmentCompositionOptions>;
   botLifecycle?: Partial<BotLifecycleCompositionOptions>;
 }): Promise<CoordinationRuntimeComposition> {
@@ -135,6 +142,7 @@ export async function createCoordinationRuntimeComposition(input: {
   const {
     attachments: _ignoredAttachment,
     botLifecycle: _ignoredBotLifecycle,
+    botLifecycleApi: _ignoredBotLifecycleApi,
     ...services
   } =
     input.services as CoordinationServices;
@@ -150,13 +158,42 @@ export async function createCoordinationRuntimeComposition(input: {
     lifecycleOptions.mailboxBinder !== undefined &&
     lifecycleOptions.processes !== undefined &&
     lifecycleOptions.receipts !== undefined &&
+    typeof lifecycleOptions.resolveHttpPolicy === "function" &&
     typeof lifecycleOptions.canonicalWriter === "string" &&
     lifecycleOptions.canonicalWriter.length > 0
-      ? createBotLifecycleService(lifecycleOptions as BotLifecycleCompositionOptions)
+      ? (() => {
+          const service = createBotLifecycleService(lifecycleOptions as BotLifecycleCompositionOptions);
+          const epoch = async () => {
+            const current = await lifecycleOptions.authority!.currentEpoch();
+            if (!current) throw new Error("bot lifecycle authority is unavailable");
+            return current.epoch;
+          };
+          const api = Object.freeze({
+            create: async (request: any) => service.create({
+              requestId: request.idempotencyKey, correlationId: request.context.correlationId,
+              actorPrincipalId: "user_owner", residentBinding: request.residentBinding,
+              displayName: request.displayName, purpose: request.purpose,
+              requiredCapabilities: request.requiredCapabilities,
+              policy: lifecycleOptions.resolveHttpPolicy!(
+                { operation: "create", target: request.residentBinding },
+              ),
+              expectedAuthorityEpoch: await epoch(),
+            }),
+            control: async (request: any) => service.control({
+              requestId: request.idempotencyKey, correlationId: request.context.correlationId,
+              actorPrincipalId: "user_owner", botId: request.botId, operation: request.operation,
+              policy: lifecycleOptions.resolveHttpPolicy!(
+                { operation: request.operation, target: request.botId },
+              ),
+              expectedAuthorityEpoch: await epoch(),
+            }),
+          });
+          return Object.freeze({ service, api });
+        })()
       : undefined;
   const composedServices = botLifecycle === undefined
     ? services
-    : { ...services, botLifecycle };
+    : { ...services, botLifecycle: botLifecycle.service, botLifecycleApi: botLifecycle.api };
   if (
     input.flags["coordination.process.enabled"] !== true ||
     input.flags["coordination.public_api.enabled"] !== true ||
