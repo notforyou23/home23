@@ -1,6 +1,6 @@
 # Connected Agents product API convergence
 
-This slice owns the HTTP adapters and application ports only. It deliberately does not edit the M14 composition root or duplicate canonical Bot, Channel, Message, Unread, Work, Activity, coordinator, or lifecycle logic.
+The convergence composition injects the canonical SQLite-backed Bot directory, Channels, Messages, Inbox/Unread, Search, Work, Leases, events, and Jerry message submission over one coordination database. The submitted response is the actual resident `AgentLoop` result and is appended to that same transcript with Work provenance. No second product store is introduced.
 
 ## M14 integration handoff
 
@@ -25,3 +25,13 @@ The frozen v1 contract uses recoverable archive/restore, not destructive Bot del
 5. Inject lifecycle adapters, leaving `coordination.bot_lifecycle.enabled` off until M28 acceptance.
 
 All flags default off. Missing flags or dependencies fail closed; no injection changes an authority epoch.
+
+## Bounded product-behavior blockers
+
+Bot details truthfully labels the attested default boundary as `local_mac` / `This Mac`. It reports typed, non-retryable blockers rather than implying uncomposed capabilities:
+
+- `isolated_execution_not_attested`: no attested disposable isolation adapter exists.
+- `canonical_scheduler_adapter_unavailable`: the scheduler has no reviewed canonical routine-summary adapter in this bounded convergence.
+- `consequential_action_consumer_unavailable`: the policy engine exists, but no native consequential action consumer supplies replay-safe approval persistence/action.
+
+Archive/restore remains blocked on the canonical M28 operation described above. Delegated Channel coordination remains blocked on the trusted M16 adapter. Neither is emulated through process labels, raw Work endpoints, or direct database writes. Canonical Inbox activity derives compact queued/background/stopping/attention state from durable Work after restart while withholding Work IDs.

@@ -35,8 +35,9 @@ export interface InboxConversation {
     readThroughSequence: number;
   };
   activity: {
-    state: "idle";
-    label: null;
+    state: "idle" | "accepted" | "working" | "background" | "stopping" | "attention" | "failed";
+    label: string | null;
+    /** Internal Work identity is deliberately not exposed by the Inbox projection. */
     workId: null;
   };
   pinned: boolean;

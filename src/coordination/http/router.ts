@@ -151,6 +151,44 @@ export function createCoordinationRouter(input: {
     if (!bot) throw new CoordinationHttpError("bot_not_found", 404, false);
     response.json({ bot });
   }));
+  router.get("/api/v1/bots/:botId/details", productRead, asyncRoute(async (request, response) => {
+    if (!application.services.bots) throw unavailable("bootstrap");
+    const botId = pathParameter(request.params.botId);
+    const bot = (await application.services.bots.listVisibleBots()).find((item) => item.id === botId);
+    if (!bot) throw new CoordinationHttpError("bot_not_found", 404, false);
+    response.json({
+      bot,
+      executionBoundary: {
+        kind: "local_mac",
+        label: "This Mac",
+        attested: true,
+        isolation: {
+          status: "unavailable",
+          blocker: {
+            code: "isolated_execution_not_attested",
+            capability: "isolated_execution",
+            retryable: false,
+          },
+        },
+      },
+      routineSummary: {
+        status: "unavailable",
+        blocker: {
+          code: "canonical_scheduler_adapter_unavailable",
+          capability: "routine_summary",
+          retryable: false,
+        },
+      },
+      consequentialApproval: {
+        status: "unavailable",
+        blocker: {
+          code: "consequential_action_consumer_unavailable",
+          capability: "inline_approval",
+          retryable: false,
+        },
+      },
+    });
+  }));
   router.get("/api/v1/channels", productRead, asyncRoute(async (request, response) => {
     if (!application.capabilities().capabilities.channelsRead || !application.services.channels) throw unavailable("channelsRead");
     response.json(await application.services.channels.listChannels({ context: requireCoordinationContext(response), cursor: nullableQuery(request.query.cursor), limit: integerQuery(request.query.limit, 50) }));

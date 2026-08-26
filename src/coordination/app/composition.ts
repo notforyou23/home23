@@ -11,10 +11,11 @@ import { openCoordinationDatabase } from "../db/index.js";
 import { createAuthService, SqliteAuthRepository } from "../auth/index.js";
 import { createBotDirectory, SqliteBotDirectoryRepository } from "../bots/index.js";
 import { createBootstrapService, SqliteBootstrapRepository } from "../bootstrap/index.js";
-import { SqliteBotConversationBindingAdapter, SqliteMessagingRepository } from "../channels/index.js";
+import { createChannelService, SqliteBotConversationBindingAdapter, SqliteMessagingRepository } from "../channels/index.js";
 import { SqliteEventRepository } from "../events/index.js";
 import { createLeaseService } from "../leases/index.js";
 import { createMessageService } from "../messages/index.js";
+import { createCanonicalSearchService, SqliteCanonicalSearchRepository } from "../search/index.js";
 import { createUnreadService, SqliteUnreadRepository } from "../unread/index.js";
 import { createWorkService, M11MessageProvenanceAuthority } from "../work/index.js";
 import { generateCoordinationId } from "../ids/index.js";
@@ -259,6 +260,8 @@ export function createCoordinationProcess(
     applicationVersion: "home23-coordination-m12-shadow",
   });
   const rootKey = createHash("sha256").update("home23-coordination-auth-v1\0").update(config.capabilityToken).digest();
+  const channelCursorKey = createHash("sha256").update("home23-coordination-channel-cursor-v1\0").update(config.capabilityToken).digest();
+  const searchCursorKey = createHash("sha256").update("home23-coordination-search-cursor-v1\0").update(config.capabilityToken).digest();
   const auth = createAuthService({
     repository: new SqliteAuthRepository(database), keyMaterial: rootKey,
     admissionVerifier: {
@@ -278,7 +281,16 @@ export function createCoordinationProcess(
     botConversationBinding: new SqliteBotConversationBindingAdapter(),
     messageProvenanceAuthorization: new M11MessageProvenanceAuthority(),
   });
+  const channels = createChannelService({ repository: messagingRepository, participantDirectory, cursorSigningKey: channelCursorKey });
   const messages = createMessageService({ repository: messagingRepository, participantDirectory });
+  const search = createCanonicalSearchService({
+    repository: new SqliteCanonicalSearchRepository(database),
+    participantDirectory,
+    cursorSigningKey: searchCursorKey,
+    resolveCanary: () => null,
+  });
+  channelCursorKey.fill(0);
+  searchCursorKey.fill(0);
   const unread = createUnreadService({ repository: new SqliteUnreadRepository(database), participantDirectory });
   const work = createWorkService({ database, generateId: generateCoordinationId });
   const leases = createLeaseService({ database, generateId: generateCoordinationId, leaseTtlMs: 60_000 });
@@ -326,7 +338,8 @@ export function createCoordinationProcess(
   const application = createCoordinationApplication({
     flags: config.flags,
     services: {
-      auth, bootstrap, unread, work, leases, events,
+      auth, bootstrap, bots: botDirectory, channels, messages, unread, search,
+      work, leases, events,
       ...(messageSubmission === undefined ? {} : { messageSubmission }),
       ...(dependencies.activity === undefined
         ? {}

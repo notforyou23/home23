@@ -277,6 +277,46 @@ export class SqliteUnreadRepository implements UnreadRepository {
       const latestMessage: InboxLatestMessage | null = latest
         ? Object.freeze({ ...latest })
         : null;
+      const hasWorkProjection = this.database.readOne<{ present: number }>(
+        "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'works'",
+      ) !== null;
+      let activeWork: { state: string } | null = null;
+      let failedWork: { state: string } | null = null;
+      if (hasWorkProjection) {
+        try {
+          activeWork = this.database.readOne<{ state: string }>(
+            `SELECT state FROM works
+             WHERE channel_id = ? AND state NOT IN ('succeeded', 'failed', 'cancelled')
+             ORDER BY created_at DESC, id DESC LIMIT 1`,
+            channel.id,
+          ) ?? null;
+          failedWork = activeWork ? null : (this.database.readOne<{ state: string }>(
+            `SELECT state FROM works
+             WHERE channel_id = ? AND state = 'failed'
+               AND NOT EXISTS (
+                 SELECT 1 FROM messages result
+                 WHERE result.channel_id = works.channel_id
+                   AND result.kind = 'result'
+                   AND result.work_id = works.id
+               )
+             ORDER BY terminal_at DESC, id DESC LIMIT 1`,
+            channel.id,
+          ) ?? null);
+        } catch (error) {
+          if (!(error instanceof Error) || !("code" in error) || error.code !== "SQLITE_ERROR") throw error;
+          // Pre-M11 test/legacy schemas have a different `works` table. They
+          // remain readable, but cannot honestly project canonical activity.
+        }
+      }
+      const activity = activeWork
+        ? activeWork.state === "queued"
+          ? { state: "accepted" as const, label: "Waiting to start", workId: null }
+          : activeWork.state === "cancelling"
+            ? { state: "stopping" as const, label: "Stopping", workId: null }
+            : { state: "background" as const, label: "Working in the background", workId: null }
+        : failedWork
+          ? { state: "attention" as const, label: "Needs attention", workId: null }
+          : { state: "idle" as const, label: null, workId: null };
       return Object.freeze({
         id: channel.conversationId,
         channelId: channel.id,
@@ -287,7 +327,7 @@ export class SqliteUnreadRepository implements UnreadRepository {
           count: unread.unreadCount,
           readThroughSequence: unread.readThroughSequence,
         }),
-        activity: Object.freeze({ state: "idle" as const, label: null, workId: null }),
+        activity: Object.freeze(activity),
         pinned: channel.pinned === 1,
         archived: channel.lifecycle === "archived",
         version: channel.version,

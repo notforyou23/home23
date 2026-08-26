@@ -77,6 +77,17 @@ test("production composition authenticates one direct Message through durable Wo
     residents: { jerry: { enabled: true, socketPath, serverInstanceId: "home23-jerry-harness", clientInstanceId: "home23-jerry-harness", keyVersion: 1, key: residentKey }, forrest: { enabled: false, socketPath: join(runtime, "resident-forrest.sock"), serverInstanceId: "home23-forrest-harness", clientInstanceId: "home23-forrest-harness", keyVersion: 1, key: "" } } });
   let process = createCoordinationProcess(config()); let address = await process.start();
   assert.equal((await fetch(`${address.origin}/api/v1/bootstrap`)).status, 401);
+  const productHeaders = { authorization: `Bearer ${token}` };
+  const bots = await (await fetch(`${address.origin}/api/v1/bots`, { headers: productHeaders })).json() as { bots: Array<{ id: string }> };
+  assert.deepEqual(bots.bots.map((bot) => bot.id), [seeded.botId]);
+  const details = await (await fetch(`${address.origin}/api/v1/bots/${seeded.botId}/details`, { headers: productHeaders })).json() as any;
+  assert.deepEqual(details.executionBoundary, { kind: "local_mac", label: "This Mac", attested: true, isolation: { status: "unavailable", blocker: { code: "isolated_execution_not_attested", capability: "isolated_execution", retryable: false } } });
+  assert.equal(details.routineSummary.blocker.code, "canonical_scheduler_adapter_unavailable");
+  assert.equal(details.consequentialApproval.blocker.code, "consequential_action_consumer_unavailable");
+  const channels = await (await fetch(`${address.origin}/api/v1/channels`, { headers: productHeaders })).json() as { channels: Array<{ id: string }> };
+  assert.deepEqual(channels.channels.map((channel) => channel.id), [seeded.channelId]);
+  const inbox = await (await fetch(`${address.origin}/api/v1/inbox`, { headers: productHeaders })).json() as { conversations: Array<{ channelId: string }> };
+  assert.deepEqual(inbox.conversations.map((conversation) => conversation.channelId), [seeded.channelId]);
   const correlationId = generateCoordinationId("correlation"); const body = { messageId: generateCoordinationId("message"), clientMessageId: "m14-client-message", text: "Jerry, answer canonically.", attachmentIds: [], mentions: [], replyToMessageId: null };
   const send = () => fetch(`${address.origin}/api/v1/channels/${seeded.channelId}/messages`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "idempotency-key": "m14-production-message-0001", "x-correlation-id": correlationId }, body: JSON.stringify(body) });
   const first = await send();
@@ -97,6 +108,10 @@ test("production composition authenticates one direct Message through durable Wo
   }
   for (let i = 0; i < 100; i += 1) { const events = await fetch(`${address.origin}/api/v1/events?after=0`, { headers: { authorization: `Bearer ${token}` } }); const text = await events.text(); if (text.includes("message.appended") && text.includes(correlationId)) break; await new Promise((resolve) => setTimeout(resolve, 20)); }
   await new Promise((resolve) => setTimeout(resolve, 500));
+  const transcript = await (await fetch(`${address.origin}/api/v1/channels/${seeded.channelId}/messages`, { headers: productHeaders })).json() as { messages: Array<{ kind: string; text: string; provenance: { workId: string | null } }> };
+  assert.deepEqual(transcript.messages.map((message) => message.kind), ["text", "result"]);
+  assert.equal(transcript.messages[1]?.text, "Canonical Jerry response.");
+  assert.ok(transcript.messages[1]?.provenance.workId?.startsWith("wrk_"));
   const duplicate = await send(); assert.equal(duplicate.status, 202, `duplicate: ${await duplicate.text()}`); assert.equal(calls(), 1); await process.drain();
   const db = openCoordinationDatabase({ path: databasePath });
   for (const table of ["works", "attempts", "leases", "terminal_receipts"] as const) assert.equal(db.readOne<{ count: number }>(`SELECT count(*) AS count FROM ${table}`)?.count, 1);

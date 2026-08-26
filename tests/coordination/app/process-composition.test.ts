@@ -85,7 +85,7 @@ test("M16 and M18 process dependencies stay feature-off and unreachable over HTT
   });
 
   assert.equal(process.capabilities().capabilities.activity, false);
-  assert.equal(process.capabilities().capabilities.channelsRead, false);
+  assert.equal(process.capabilities().capabilities.channelsRead, true);
   assert.equal(process.capabilities().capabilities.messageSubmission, false);
   const address = await process.start();
   t.after(() => process.drain());
