@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -85,6 +86,24 @@ const EXPECTED_FLAGS = [
   "coordination.search.canonical",
 ] as const;
 
+const CAPABILITY_KEYS = [
+  "bootstrap",
+  "channelsRead",
+  "conversationsRead",
+  "messagesRead",
+  "unreadRead",
+  "messageSubmission",
+  "readCursorMutation",
+  "search",
+  "eventReplay",
+  "attachments",
+  "work",
+  "workMutation",
+  "activity",
+  "botLifecycle",
+  "importShadow",
+] as const;
+
 test("canonical fixtures validate and the pack digest is deterministic", () => {
   assert.equal(CONNECTED_AGENTS_CONTRACT_VERSION, 1);
   assert.match(CONNECTED_AGENTS_CONTRACT_PACK_SHA256, /^[a-f0-9]{64}$/);
@@ -96,6 +115,33 @@ test("canonical fixtures validate and the pack digest is deterministic", () => {
     const result = validateCanonicalFixture(name);
     assert.equal(result.valid, true, `${name}: ${result.errors.join("\n")}`);
   }
+});
+
+test("capability OpenAPI locks every composition truth consumed by clients", () => {
+  const openApi = JSON.parse(readFileSync(
+    new URL("../../../src/coordination/contracts/v1/openapi.json", import.meta.url),
+    "utf8",
+  )) as any;
+  const schema = openApi.paths["/api/v1/capabilities"].get
+    .responses["200"].content["application/json"].schema;
+
+  assert.deepEqual(schema.required, [
+    "contractVersion",
+    "apiBase",
+    "pairingAvailable",
+    "limits",
+    "capabilities",
+  ]);
+  assert.deepEqual(schema.properties.limits.required, [
+    "jsonBodyBytes",
+    "idempotencyKeyMinimum",
+    "idempotencyKeyMaximum",
+  ]);
+  assert.deepEqual(schema.properties.capabilities.required, CAPABILITY_KEYS);
+  for (const key of CAPABILITY_KEYS) {
+    assert.equal(schema.properties.capabilities.properties[key].type, "boolean");
+  }
+  assert.equal(schema.properties.capabilities.additionalProperties, true);
 });
 
 test("registry locks IDs, flags, authority epochs, and API operations", () => {
