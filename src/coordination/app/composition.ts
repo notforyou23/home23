@@ -20,6 +20,13 @@ import type {
   CoordinationLifecycle,
   CoordinationServices,
 } from "./index.js";
+import {
+  compactRetention,
+  type RetentionBackupProvider,
+  type RetentionException,
+  type RetentionReceipt,
+  type RetentionStore,
+} from "../retention/index.js";
 
 export interface DurableAttachmentCompositionOptions {
   /** Independent kill switch. This is deliberately not sourced from live config. */
@@ -56,6 +63,21 @@ export interface CoordinationProcess {
   capabilities(): ReturnType<
     ReturnType<typeof createCoordinationApplication>["capabilities"]
   >;
+  /** Internal-only M30 invocation. No timer, route, or startup path calls this. */
+  invokeRetention(input: RetentionInvocation): Promise<RetentionReceipt>;
+}
+
+export interface RetentionInvocation {
+  enabled: true;
+  asOf: string;
+  exceptions?: readonly RetentionException[];
+}
+
+export interface RetentionCompositionOptions {
+  /** Independent kill switch; deliberately absent from runtime/live config. */
+  enabled: true;
+  store: RetentionStore;
+  backupProvider: RetentionBackupProvider;
 }
 
 /**
@@ -66,7 +88,7 @@ export interface CoordinationProcess {
 export type CoordinationProcessProjectionDependencies = Readonly<Pick<
   CoordinationServices,
   "activity" | "channelCoordinator"
->>;
+> & { retention?: RetentionCompositionOptions }>;
 
 function isCompleteAttachmentOptions(
   value: Partial<DurableAttachmentCompositionOptions> | undefined,
@@ -215,5 +237,19 @@ export function createCoordinationProcess(
     start: () => server.start(),
     drain: () => server.drain(),
     capabilities: () => application.capabilities(),
+    invokeRetention: (input: RetentionInvocation) => {
+      if (
+        config.flags["coordination.compaction.enabled"] !== true ||
+        dependencies.retention?.enabled !== true ||
+        input.enabled !== true
+      ) {
+        return Promise.reject(new Error("retention compaction is disabled"));
+      }
+      return compactRetention(
+        dependencies.retention.store,
+        dependencies.retention.backupProvider,
+        { ...input, enabled: true },
+      );
+    },
   });
 }
