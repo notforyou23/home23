@@ -151,7 +151,32 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
       text: "Jerry, answer canonically.", attachmentIds: [], mentions: [], replyToMessageId: null }),
   });
   assert.equal(accepted.status, 202);
-  assert.equal((await accepted.json() as { correlationId: string }).correlationId, owner.correlationId);
+  const acceptedBody = await accepted.json() as {
+    requestId: string; correlationId: string; channelId: string; conversationId: string;
+    message: { id: string; channelId: string; conversationId: string; clientMessageId: string;
+      author: { kind: string }; provenance: { workId: string | null } };
+    work: { id: string; state: string };
+    replayed: boolean; throughEventSequence: number; response?: unknown;
+  };
+  assert.deepEqual(Object.keys(acceptedBody).sort(), [
+    "channelId", "conversationId", "correlationId", "message", "replayed",
+    "requestId", "throughEventSequence", "work",
+  ]);
+  assert.equal(acceptedBody.requestId, accepted.headers.get("x-request-id"));
+  assert.match(acceptedBody.requestId, /^req_/);
+  assert.equal(acceptedBody.correlationId, owner.correlationId);
+  assert.equal(acceptedBody.channelId, CHANNEL_ID);
+  assert.equal(acceptedBody.message.channelId, CHANNEL_ID);
+  assert.equal(acceptedBody.message.conversationId, acceptedBody.conversationId);
+  assert.equal(acceptedBody.message.clientMessageId, "client-m14-1");
+  assert.equal(acceptedBody.message.author.kind, "owner");
+  assert.equal(acceptedBody.message.provenance.workId, null);
+  assert.equal(acceptedBody.work.id, submitted.work.id);
+  assert.match(acceptedBody.work.id, /^wrk_/);
+  assert.ok(["queued", "leased", "running"].includes(acceptedBody.work.state));
+  assert.equal(acceptedBody.replayed, false);
+  assert.ok(Number.isSafeInteger(acceptedBody.throughEventSequence));
+  assert.equal(acceptedBody.response, undefined, "the internal terminal promise must never cross HTTP");
   assert.equal(activeBackgroundWork, 1, "accepted resident execution must remain enrolled in lifecycle drain");
   for (let index = 0; index < 20 && database.readOne<{ state: string }>(
     "SELECT state FROM works WHERE id = ?", submitted.work.id,
