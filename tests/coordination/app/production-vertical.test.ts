@@ -5,17 +5,30 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createHash } from "node:crypto";
+import {
+  createHash,
+  generateKeyPairSync,
+  sign as signEd25519,
+  type KeyObject,
+} from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { AgentLoop } from "../../../src/agent/loop.js";
 import { ConversationHistory } from "../../../src/agent/history.js";
 import { createAuthService, SqliteAuthRepository } from "../../../src/coordination/auth/index.js";
-import { bootstrapJerry } from "../../../src/coordination/operations/index.js";
+import { bootstrapJerry, executeM14AuthorityTransition } from "../../../src/coordination/operations/index.js";
 import { runCoordinationProcess } from "../../../src/coordination/index.js";
 import { openCoordinationDatabase } from "../../../src/coordination/db/index.js";
 import { generateCoordinationId } from "../../../src/coordination/ids/index.js";
 import { createCoordinationProcess, disabledCoordinationFeatureFlags } from "../../../src/coordination/app/index.js";
 import { startResidentCoordinationHarness } from "../../../src/coordination-adapter/index.js";
+import {
+  COORDINATION_MESSAGES_WRITER,
+  authorityReceiptSigningPayload,
+  type AuthorityEpoch,
+  type AuthorityRolloutReceipt,
+  type UnsignedAuthorityRolloutReceipt,
+} from "../../../src/coordination/epochs/index.js";
+import { FEATURE_FLAG_REGISTRY } from "../../../src/coordination/schema/contract-registry.js";
 
 const authority = { approved: true, kind: "m14-bootstrap", operator: "user_owner", resident: "jerry", legacyWriterAuthoritative: true, coordinationFlagsAllFalse: true } as const;
 
@@ -83,6 +96,110 @@ async function accessToken(path: string, key: string) {
   return paired.accessToken;
 }
 
+function authoritySnapshot(databasePath: string) {
+  const database = openCoordinationDatabase({ path: databasePath });
+  try {
+    return {
+      eventSequence: database.readOne<{ sequence: number }>(
+        "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM events",
+      )?.sequence ?? 0,
+      messageCount: database.readOne<{ count: number }>(
+        "SELECT count(*) AS count FROM messages",
+      )?.count ?? 0,
+    };
+  } finally {
+    database.close();
+  }
+}
+
+function rolloutFlags(canonical: boolean): Record<string, boolean> {
+  const flags = Object.fromEntries(
+    Object.keys(FEATURE_FLAG_REGISTRY).map((name) => [name, false]),
+  ) as Record<string, boolean>;
+  if (canonical) {
+    flags["coordination.process.enabled"] = true;
+    flags["coordination.public_api.enabled"] = true;
+    flags["coordination.resident.jerry.enabled"] = true;
+  }
+  return flags;
+}
+
+function signedAuthorityReceipt(input: {
+  from: AuthorityEpoch;
+  to: AuthorityEpoch;
+  channelId: string;
+  snapshot: { eventSequence: number; messageCount: number };
+  privateKey: KeyObject;
+  issuedAt: string;
+}): AuthorityRolloutReceipt {
+  const unsigned: UnsignedAuthorityRolloutReceipt = {
+    receiptVersion: 1,
+    capability: "messages",
+    fromEpoch: input.from.epoch,
+    toEpoch: input.to.epoch,
+    fromAuthority: { mode: input.from.mode, writer: input.from.writer },
+    toAuthority: { mode: input.to.mode, writer: input.to.writer },
+    sourceWatermark: {
+      sourceId: "legacy_0198d95f-6c00-7000-8000-000000000091",
+      segmentIdentity: "isolated-production-vertical",
+      recordIndex: input.snapshot.messageCount,
+      byteOffset: 0,
+      tailDigest: "1".repeat(64),
+    },
+    destinationWatermark: {
+      eventSequence: input.snapshot.eventSequence,
+      messageCount: input.snapshot.messageCount,
+      orderedDigest: "2".repeat(64),
+    },
+    samePathCanary: {
+      operationId: "listChannelMessages",
+      route: `/api/v1/channels/${input.channelId}/messages`,
+      requestDigest: "3".repeat(64),
+      passed: true,
+    },
+    driftCount: 0,
+    activeFlags: rolloutFlags(input.to.mode === "canonical"),
+    rollbackTarget: input.to.rollbackEpoch,
+    operator: "user_owner",
+    effectiveAtEventSequence: input.to.effectiveAtEventSequence,
+    legacyWriterDisposition: input.to.mode === "canonical"
+      ? "disabled"
+      : input.to.mode === "shadow"
+        ? "unchanged_authoritative"
+        : "restored_authoritative",
+    issuedAt: input.issuedAt,
+  };
+  return {
+    ...unsigned,
+    signature: {
+      algorithm: "ed25519",
+      keyId: "isolated-m14-operator",
+      value: signEd25519(
+        null,
+        Buffer.from(authorityReceiptSigningPayload(unsigned), "utf8"),
+        input.privateKey,
+      ).toString("base64"),
+    },
+  };
+}
+
+function applyAuthorityTransition(input: {
+  databasePath: string;
+  receipt: AuthorityRolloutReceipt;
+  publicKey: KeyObject;
+}) {
+  return executeM14AuthorityTransition({
+    databasePath: input.databasePath,
+    receipt: input.receipt,
+    publicKeyPem: input.publicKey.export({ format: "pem", type: "spki" }).toString(),
+    activeCanonicalWriters: [],
+    requestId: generateCoordinationId("request"),
+    correlationId: generateCoordinationId("correlation"),
+    apply: true,
+    liveAuthorized: true,
+  });
+}
+
 test("feature-off resident harness returns without creating its socket", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "home23-resident-off-")); t.after(() => rmSync(root, { recursive: true, force: true }));
   const { agent, history } = actualAgent(root); const socket = join(root, "resident.sock");
@@ -142,15 +259,15 @@ test("isolated production composition traverses the generated harness and unmodi
     residents: { jerry: { enabled: true, socketPath, serverInstanceId: "home23-jerry-harness", clientInstanceId: "home23-jerry-harness", keyVersion: 1, key: residentKey }, forrest: { enabled: false, socketPath: join(runtime, "resident-forrest.sock"), serverInstanceId: "home23-forrest-harness", clientInstanceId: "home23-forrest-harness", keyVersion: 1, key: "" } } });
   let coordinationProcess = createCoordinationProcess(config()); let address = await coordinationProcess.start();
   const capabilities = await (await fetch(`${address.origin}/api/v1/capabilities`)).json() as any;
-  assert.equal(capabilities.capabilities.messageSubmission, true);
+  assert.equal(capabilities.capabilities.messageSubmission, false);
   assert.equal(capabilities.capabilities.eventReplay, true);
   assert.equal((await fetch(`${address.origin}/api/v1/bootstrap`)).status, 401);
   const productHeaders = { authorization: `Bearer ${token}` };
-  const authorityEpochs = await (await fetch(`${address.origin}/api/v1/authority-epochs`, { headers: productHeaders })).json() as any;
-  assert.deepEqual(authorityEpochs.epochs, [{ capability: "messages", epoch: 1, mode: "legacy", writer: "legacy-conversation-writer", effectiveAtEventSequence: null, rollbackEpoch: null }]);
-  assert.ok(Number.isSafeInteger(authorityEpochs.throughEventSequence));
-  assert.match(authorityEpochs.requestId, /^req_/);
-  assert.match(authorityEpochs.correlationId, /^cor_/);
+  const legacyAuthorityEpochs = await (await fetch(`${address.origin}/api/v1/authority-epochs`, { headers: productHeaders })).json() as any;
+  assert.deepEqual(legacyAuthorityEpochs.epochs, [{ capability: "messages", epoch: 1, mode: "legacy", writer: "legacy-conversation-writer", effectiveAtEventSequence: null, rollbackEpoch: null }]);
+  assert.ok(Number.isSafeInteger(legacyAuthorityEpochs.throughEventSequence));
+  assert.match(legacyAuthorityEpochs.requestId, /^req_/);
+  assert.match(legacyAuthorityEpochs.correlationId, /^cor_/);
   const bots = await (await fetch(`${address.origin}/api/v1/bots`, { headers: productHeaders })).json() as { bots: Array<{ id: string }> };
   assert.deepEqual(bots.bots.map((bot) => bot.id), [seeded.botId]);
   const details = await (await fetch(`${address.origin}/api/v1/bots/${seeded.botId}/details`, { headers: productHeaders })).json() as any;
@@ -163,6 +280,73 @@ test("isolated production composition traverses the generated harness and unmodi
   assert.deepEqual(inbox.conversations.map((conversation) => conversation.channelId), [seeded.channelId]);
   const correlationId = generateCoordinationId("correlation"); const body = { messageId: generateCoordinationId("message"), clientMessageId: "m14-client-message", text: "Jerry, answer canonically.", attachmentIds: [], mentions: [], replyToMessageId: null };
   const send = () => fetch(`${address.origin}/api/v1/channels/${seeded.channelId}/messages`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "idempotency-key": "m14-production-message-0001", "x-correlation-id": correlationId }, body: JSON.stringify(body) });
+  assert.equal((await send()).status, 503);
+  assert.equal(modelFixture.calls(), 0);
+  await coordinationProcess.drain();
+
+  const legacy: AuthorityEpoch = {
+    capability: "messages", epoch: 1, mode: "legacy",
+    writer: "legacy-conversation-writer",
+    effectiveAtEventSequence: null, rollbackEpoch: null,
+  };
+  const shadow: AuthorityEpoch = {
+    ...legacy, epoch: 2, mode: "shadow",
+  };
+  const operatorKeys = generateKeyPairSync("ed25519");
+  applyAuthorityTransition({
+    databasePath,
+    publicKey: operatorKeys.publicKey,
+    receipt: signedAuthorityReceipt({
+      from: legacy, to: shadow, channelId: seeded.channelId!,
+      snapshot: authoritySnapshot(databasePath),
+      privateKey: operatorKeys.privateKey,
+      issuedAt: "2026-08-26T12:00:00.000Z",
+    }),
+  });
+  coordinationProcess = createCoordinationProcess(config());
+  address = await coordinationProcess.start();
+  assert.equal((await (await fetch(`${address.origin}/api/v1/capabilities`)).json() as any).capabilities.messageSubmission, false);
+  assert.equal((await send()).status, 503);
+  assert.equal(modelFixture.calls(), 0);
+  await coordinationProcess.drain();
+
+  const canonicalSnapshot = authoritySnapshot(databasePath);
+  const canonical: AuthorityEpoch = {
+    capability: "messages", epoch: 3, mode: "canonical",
+    writer: COORDINATION_MESSAGES_WRITER,
+    effectiveAtEventSequence: canonicalSnapshot.eventSequence,
+    rollbackEpoch: 1,
+  };
+  const mislabeledCanonical: AuthorityEpoch = {
+    ...canonical,
+    writer: "label-only-writer",
+  };
+  assert.throws(() => applyAuthorityTransition({
+    databasePath,
+    publicKey: operatorKeys.publicKey,
+    receipt: signedAuthorityReceipt({
+      from: shadow, to: mislabeledCanonical, channelId: seeded.channelId!,
+      snapshot: canonicalSnapshot,
+      privateKey: operatorKeys.privateKey,
+      issuedAt: "2026-08-26T12:00:30.000Z",
+    }),
+  }), /canonical writer must be exactly home23-coordination/);
+  applyAuthorityTransition({
+    databasePath,
+    publicKey: operatorKeys.publicKey,
+    receipt: signedAuthorityReceipt({
+      from: shadow, to: canonical, channelId: seeded.channelId!,
+      snapshot: canonicalSnapshot,
+      privateKey: operatorKeys.privateKey,
+      issuedAt: "2026-08-26T12:01:00.000Z",
+    }),
+  });
+  coordinationProcess = createCoordinationProcess(config());
+  address = await coordinationProcess.start();
+  const canonicalCapabilities = await (await fetch(`${address.origin}/api/v1/capabilities`)).json() as any;
+  assert.equal(canonicalCapabilities.capabilities.messageSubmission, true);
+  const canonicalAuthorityEpochs = await (await fetch(`${address.origin}/api/v1/authority-epochs`, { headers: productHeaders })).json() as any;
+  assert.deepEqual(canonicalAuthorityEpochs.epochs, [canonical]);
   const first = await send();
   if (first.status !== 202) {
     const failure = await first.text(); await coordinationProcess.drain(); const diagnostic = openCoordinationDatabase({ path: databasePath });

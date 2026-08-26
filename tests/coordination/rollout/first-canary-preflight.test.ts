@@ -33,7 +33,7 @@ function fixture(stage: "M14" | "M15" = "M14"): FirstCanaryFixture {
     evidenceMode: "fixture", candidateSha: CORE_CANARY_CANDIDATE, stage,
     capturedAt: "2026-08-25T20:00:00.000Z",
     capabilities: { contractVersion: 1, apiBase: "/api/v1", capabilities: { messageSubmission: true, eventReplay: true } },
-    activeFlags, authority: { capability: "messages", epoch: 2, mode: "shadow", writer: "legacy-conversation-writer", rollbackEpoch: null },
+    activeFlags, authority: { capability: "messages", epoch: 3, mode: "canonical", writer: "home23-coordination", effectiveAtEventSequence: 40, rollbackEpoch: 1 },
     residents,
     restartResume: { lastEventId: 40, recoveryCheckpoint: "work-recovery:40", idempotencyKey: `fixture-${stage.toLowerCase()}-direct-0001` },
     apiOutputs: {
@@ -56,6 +56,7 @@ test("fixture output can never be mistaken for resident or live-canary success",
   assert.equal(receipt.evidenceMode, "fixture");
   assert.equal(receipt.liveCanary, false);
   assert.equal(receipt.residentSuccess, false);
+  assert.deepEqual(receipt.authority, fixture().authority);
   assert.deepEqual(receipt.redactions, ["message bodies omitted", "access tokens omitted", "resident credentials omitted"]);
 });
 
@@ -88,10 +89,10 @@ test("rollback is explicit and names a prior legacy authority", () => {
     error instanceof CanaryPreflightError && error.failures.includes("rollback"));
 });
 
-test("runtime bindings, shadow authority, correlations, and stage order fail closed", () => {
+test("runtime bindings, canonical authority, correlations, and stage order fail closed", () => {
   const input = fixture("M15");
   input.residents[1]!.runtime.instanceId = "";
-  input.authority.mode = "canonical" as "shadow";
+  input.authority.mode = "shadow" as "canonical";
   input.apiOutputs.result.correlationId = `cor_${uuid("999")}`;
   input.activeFlags["coordination.resident.jerry.enabled"] = false;
   delete input.priorStageReceipt;

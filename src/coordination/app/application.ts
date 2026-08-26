@@ -1,4 +1,5 @@
 import { FEATURE_FLAG_REGISTRY } from "../schema/contract-registry.js";
+import { isCanonicalMessagesAuthority } from "../epochs/index.js";
 import type {
   CoordinationApplication,
   CoordinationCapabilityDocument,
@@ -46,6 +47,9 @@ function capabilityDocument(input: {
     input.flags["coordination.process.enabled"] === true;
   const mutationsEnabled =
     processEnabled && input.flags["coordination.public_api.enabled"] === true;
+  const canonicalMessagesAuthority = isCanonicalMessagesAuthority(
+    input.services.authorityEpochs?.current("messages"),
+  );
 
   return Object.freeze({
     contractVersion: 1 as const,
@@ -68,6 +72,7 @@ function capabilityDocument(input: {
       messageSubmission:
         mutationsEnabled &&
         input.flags["coordination.resident.jerry.enabled"] === true &&
+        canonicalMessagesAuthority &&
         input.services.messageSubmission !== undefined &&
         input.services.work !== undefined &&
         input.services.leases !== undefined,

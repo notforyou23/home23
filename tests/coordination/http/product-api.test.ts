@@ -27,6 +27,10 @@ test("loopback product API traverses canonical temp-db Bots, Channels, Messages,
     bots: fixture.directory, channels, messages, unread,
     work: { create: (() => ({})) as any, cancelQueued: (() => ({})) as any, get: (() => null) as any },
     leases: {} as any,
+    authorityEpochs: {
+      current: () => ({ capability: "messages", epoch: 3, mode: "canonical", writer: "home23-coordination", effectiveAtEventSequence: 1, rollbackEpoch: 1 }),
+      listCurrent: async () => ({ epochs: [], throughEventSequence: 1 }),
+    },
     messageSubmission: { submitMessage: async ({ context, channelId, idempotencyKey, body }) => messages.sendMessage({ context, channelId, idempotencyKey, messageId: body.messageId, authorPrincipalId: "user_owner", kind: "text", text: body.text, mentions: body.mentions, attachmentIds: body.attachmentIds, clientMessageId: body.clientMessageId, replyToMessageId: body.replyToMessageId, tombstonesMessageId: null, provenance: { roundId: null, workId: null } }) },
   } });
   const server = createCoordinationHttpServer({ application, lifecycle: createCoordinationLifecycle(), port: 0 });

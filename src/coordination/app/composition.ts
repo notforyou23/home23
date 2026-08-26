@@ -46,6 +46,11 @@ import {
   type RetentionStore,
 } from "../retention/index.js";
 import type { PolicyRequest } from "../policy/index.js";
+import {
+  isCanonicalMessagesAuthority,
+  type AuthorityEpoch,
+} from "../epochs/index.js";
+import type { AuthorityCapability } from "../import/index.js";
 
 export interface DurableAttachmentCompositionOptions {
   /** Independent kill switch. This is deliberately not sourced from live config. */
@@ -296,6 +301,35 @@ export function createCoordinationProcess(
   const leases = createLeaseService({ database, generateId: generateCoordinationId, leaseTtlMs: 60_000 });
   const workControl = createProductWorkControl({ database, work, leases });
   const events = new SqliteEventRepository(database);
+  const currentAuthority = (capability: AuthorityCapability): AuthorityEpoch | null => {
+    const epoch = database.readOne<AuthorityEpoch>(
+      `SELECT capability, epoch, mode, writer,
+              effective_at_event_sequence AS effectiveAtEventSequence,
+              rollback_epoch AS rollbackEpoch
+       FROM authority_epochs
+       WHERE capability = ?
+       ORDER BY epoch DESC LIMIT 1`,
+      capability,
+    );
+    return epoch ? Object.freeze(epoch) : null;
+  };
+  const authorityEpochs = Object.freeze({
+    current: currentAuthority,
+    listCurrent: async () => Object.freeze({
+      epochs: Object.freeze(database.readAll<AuthorityEpoch>(
+        `SELECT capability, epoch, mode, writer,
+                effective_at_event_sequence AS effectiveAtEventSequence,
+                rollback_epoch AS rollbackEpoch
+         FROM authority_epochs current
+         WHERE epoch = (SELECT MAX(newest.epoch) FROM authority_epochs newest
+                        WHERE newest.capability = current.capability)
+         ORDER BY capability`,
+      ).map((epoch) => Object.freeze(epoch))),
+      throughEventSequence: database.readOne<{ sequence: number }>(
+        "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM events",
+      )?.sequence ?? 0,
+    }),
+  });
   const bootstrap = {
     getBootstrap: async (input: Parameters<ReturnType<typeof createBootstrapService>["getBootstrap"]>[0]) => {
       const primary = await botRepository.getBotByResidentBinding("jerry");
@@ -318,7 +352,10 @@ export function createCoordinationProcess(
     close: async () => database.close(),
   }]);
   let messageSubmission: ReturnType<typeof createDirectMessageSubmissionService> | undefined;
-  if (config.flags["coordination.resident.jerry.enabled"] === true) {
+  if (
+    config.flags["coordination.resident.jerry.enabled"] === true &&
+    isCanonicalMessagesAuthority(currentAuthority("messages"))
+  ) {
     const jerry = config.residents?.jerry;
     if (!jerry) throw new Error("Jerry resident configuration is required when its feature is enabled");
     const residentRootKey = Buffer.from(jerry.key, "hex");
@@ -332,6 +369,7 @@ export function createCoordinationProcess(
       prepare: async (input) => { const prepared = await context.prepare(input); if (prepared.residentBinding !== "jerry") throw new Error("target resident is not enabled"); return prepared; },
       recover: async (runningWork) => { const recovered = await context.recover(runningWork); if (recovered.prepared.residentBinding !== "jerry") throw new Error("target resident is not enabled"); return recovered; },
     }, work, leases, resident,
+      authority: { current: () => currentAuthority("messages") },
       holderInstanceId: jerry.serverInstanceId,
       beginWork: lifecycle.beginWork,
       recoveryIdentity: () => ({ requestId: generateCoordinationId("request"), correlationId: generateCoordinationId("correlation") }),
@@ -346,23 +384,7 @@ export function createCoordinationProcess(
     services: {
       auth, bootstrap, bots: botDirectory, channels, messages, unread, search,
       work, workControl, leases, events,
-      authorityEpochs: {
-        listCurrent: async () => Object.freeze({
-          epochs: Object.freeze(database.readAll<{
-            capability: string; epoch: number; mode: string; writer: string;
-            effectiveAtEventSequence: number | null; rollbackEpoch: number | null;
-          }>(`SELECT capability, epoch, mode, writer,
-                     effective_at_event_sequence AS effectiveAtEventSequence,
-                     rollback_epoch AS rollbackEpoch
-              FROM authority_epochs current
-              WHERE epoch = (SELECT MAX(newest.epoch) FROM authority_epochs newest
-                             WHERE newest.capability = current.capability)
-              ORDER BY capability`)),
-          throughEventSequence: database.readOne<{ sequence: number }>(
-            "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM events",
-          )?.sequence ?? 0,
-        }),
-      },
+      authorityEpochs,
       ...(messageSubmission === undefined ? {} : { messageSubmission }),
       ...(dependencies.activity === undefined
         ? {}

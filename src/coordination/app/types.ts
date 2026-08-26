@@ -17,6 +17,8 @@ import type { createBotDirectory } from "../bots/index.js";
 import type { createChannelService } from "../channels/index.js";
 import type { createMessageService } from "../messages/index.js";
 import type { ActivityBoundary, ActivityEntry, ActivityScope } from "../activity/index.js";
+import type { AuthorityCapability } from "../import/index.js";
+import type { AuthorityEpoch } from "../epochs/index.js";
 
 export type CoordinationFeatureFlags = Readonly<{
   [Flag in keyof typeof FEATURE_FLAG_REGISTRY]: boolean;
@@ -153,6 +155,7 @@ export interface CoordinationServices {
   channelCoordinator?: CoordinationChannelCoordinatorPort;
   events?: SqliteEventRepository;
   authorityEpochs?: {
+    current(capability: AuthorityCapability): AuthorityEpoch | null;
     listCurrent(): Promise<Readonly<{ epochs: readonly Readonly<{
       capability: string; epoch: number; mode: string; writer: string;
       effectiveAtEventSequence: number | null; rollbackEpoch: number | null;

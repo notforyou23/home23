@@ -4,15 +4,28 @@
   "title": "Non-live connected-agents first-canary receipt",
   "type": "object",
   "additionalProperties": false,
-  "required": ["receiptVersion", "evidenceMode", "liveCanary", "residentSuccess", "verdict", "candidateSha", "stage", "checks", "correlation", "watermark", "rollback", "redactions", "receiptDigest"],
+  "required": ["receiptVersion", "evidenceMode", "liveCanary", "residentSuccess", "verdict", "candidateSha", "stage", "authority", "checks", "correlation", "watermark", "rollback", "redactions", "receiptDigest"],
   "properties": {
     "receiptVersion": { "const": 1 },
     "evidenceMode": { "const": "fixture" },
     "liveCanary": { "const": false },
     "residentSuccess": { "const": false },
     "verdict": { "enum": ["fixture_ready", "blocked"] },
-    "candidateSha": { "const": "56de45a4ab9fd3e4b5c4a29903d1bc6a346eeb09" },
+    "candidateSha": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
     "stage": { "enum": ["M14", "M15"] },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capability", "epoch", "mode", "writer", "effectiveAtEventSequence", "rollbackEpoch"],
+      "properties": {
+        "capability": { "const": "messages" },
+        "epoch": { "type": "integer", "minimum": 2 },
+        "mode": { "const": "canonical" },
+        "writer": { "const": "home23-coordination" },
+        "effectiveAtEventSequence": { "type": "integer", "minimum": 0 },
+        "rollbackEpoch": { "type": "integer", "minimum": 1 }
+      }
+    },
     "checks": { "type": "array", "items": { "type": "object", "required": ["name", "passed", "detail"], "properties": { "name": { "type": "string" }, "passed": { "type": "boolean" }, "detail": { "type": "string" } } } },
     "correlation": { "type": "object", "required": ["requestId", "correlationId", "workId"], "properties": { "requestId": { "type": "string" }, "correlationId": { "type": "string" }, "workId": { "type": "string" } } },
     "watermark": { "type": "object", "required": ["lastEventId", "resumedThroughEventSequence"], "properties": { "lastEventId": { "type": "integer", "minimum": 0 }, "resumedThroughEventSequence": { "type": "integer", "minimum": 1 } } },

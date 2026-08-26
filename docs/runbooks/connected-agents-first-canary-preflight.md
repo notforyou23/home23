@@ -17,8 +17,9 @@ resident keys, or filesystem paths:
    configuration. M14 requires process, public API, and Jerry. M15 requires
    those plus Forrest and a retained M14 fixture receipt digest.
 3. The current append-only `messages` authority epoch through its supported
-   authority/operations surface. It must still be `shadow`; flags do not move
-   authority.
+   authority/operations surface. A captured public exchange must be after the
+   signed transition to `canonical`, name exact writer `home23-coordination`,
+   and retain its prior legacy rollback target. Flags do not move authority.
 4. Stable Bot, principal, direct Channel, Conversation, mailbox, and current
    resident runtime-binding identifiers for Jerry (M14), then Jerry and
    Forrest (M15). Jerry and Forrest values must not alias.
@@ -53,9 +54,14 @@ authority history, preserved legacy rollback epoch/writer, single-writer
 proof, Jerry's stable Bot/direct Conversation/mailbox mapping, a healthy and
 authenticated current resident binding, a restart recovery checkpoint,
 starting event cursor, unique idempotency key, and authorization to enable the
-already-reviewed flags and send exactly one direct canary Message. The live
-system must produce the signed authority/correlation/watermark/rollback
-receipt; this fixture receipt is not a substitute.
+already-reviewed flags and send exactly one direct canary Message. Drift and a
+read-only same-path canary happen while legacy remains authoritative. Public
+message submission must remain unavailable in both `legacy` and `shadow`.
+After the stopped exclusive writer applies the signed canonical epoch, the
+restarted process may advertise message submission and send the authorized
+user-path canary. The live system must produce the signed
+authority/correlation/watermark/rollback receipt; this fixture receipt is not
+a substitute.
 
 For M15 Forrest, retain the accepted M14 live receipt and its final event
 watermark, confirm Jerry remains healthy and distinct, then supply the same
@@ -88,3 +94,8 @@ npm run coordination:m14:authority -- --database <COORDINATION_DB> --evidence <S
 ```
 
 The evidence file supplies the Ed25519 public key, append-only receipt, active canonical-writer inventory, request ID, and correlation ID. Private signing keys and resident UDS keys remain outside Git. A successful fixture or preflight is not M14 acceptance; only the separately observed real exchange and jtr-reviewed live receipt can satisfy it.
+
+The coordination database permits one exclusive writer. Stop and drain that
+exact isolated writer before an authorized epoch apply, then restart it after
+the transition. Never use feature flags, a fixture receipt, or a writable
+shadow projection as a substitute for the canonical epoch.

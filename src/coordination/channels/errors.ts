@@ -1,4 +1,5 @@
 export type MessagingErrorCode =
+  | "authority_unavailable"
   | "channel_archived"
   | "channel_id_conflict"
   | "idempotency_conflict"
@@ -20,6 +21,7 @@ export type MessagingErrorCode =
 export const MESSAGING_FAILURE_MATRIX: Readonly<
   Record<MessagingErrorCode, { httpStatus: number; retryable: boolean }>
 > = Object.freeze({
+  authority_unavailable: { httpStatus: 503, retryable: false },
   channel_archived: { httpStatus: 409, retryable: false },
   channel_id_conflict: { httpStatus: 409, retryable: false },
   idempotency_conflict: { httpStatus: 409, retryable: false },

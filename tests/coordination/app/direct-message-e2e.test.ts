@@ -13,8 +13,17 @@ import { createUnreadService, SqliteUnreadRepository } from "../../../src/coordi
 import { createWorkService, M11MessageProvenanceAuthority } from "../../../src/coordination/work/index.js";
 import type { ResidentAgentPort } from "../../../src/coordination-adapter/index.js";
 import { AT, BOT_ID, CHANNEL_ID, M11TestDatabase, OWNER_ID, createFixtureIdGenerator, fixtureId } from "../work/test-fixture.js";
+import type { AuthorityEpoch } from "../../../src/coordination/epochs/index.js";
 
 const CONVERSATION_ID = "cnv_0198d95f-6c00-7000-8000-000000000901";
+const canonicalMessagesAuthority = Object.freeze({
+  capability: "messages" as const,
+  epoch: 3,
+  mode: "canonical" as const,
+  writer: "home23-coordination",
+  effectiveAtEventSequence: 41,
+  rollbackEpoch: 1,
+});
 
 test("authenticated direct Message follows one durable M08/M11/M13 correlation chain", async (t) => {
   const database = M11TestDatabase.temporary();
@@ -81,13 +90,42 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
       residentSlug: "jerry", role: "resident", instanceId: "resident-1", keyVersion: 1,
     } } },
   } as const);
+  let currentMessagesAuthority: AuthorityEpoch = Object.freeze({
+    ...canonicalMessagesAuthority,
+    mode: "shadow" as const,
+    writer: "legacy-conversation-writer",
+    effectiveAtEventSequence: null,
+    rollbackEpoch: null,
+  });
+  const authority = { current: () => currentMessagesAuthority };
   const service = createDirectMessageSubmissionService({
     messages, context: new SqliteDirectMessageContext(database, messages), work, leases, resident,
+    authority,
     holderInstanceId: "resident-1", beginWork, residentContext,
     recoveryIdentity: () => ({
       requestId: fixtureId("request", 904), correlationId: fixtureId("correlation", 904),
     }),
   });
+  const messageCountBeforeDeniedSubmission = database.readOne<{ count: number }>(
+    "SELECT count(*) AS count FROM messages",
+  )?.count;
+  await assert.rejects(service.submitMessage({
+    context: owner,
+    channelId: CHANNEL_ID,
+    idempotencyKey: "shadow-message-must-not-append",
+    body: {
+      messageId: fixtureId("message", 899),
+      clientMessageId: "shadow-message-899",
+      text: "must remain legacy-authoritative",
+      attachmentIds: [],
+      mentions: [],
+      replyToMessageId: null,
+    },
+  }), { code: "authority_unavailable" });
+  assert.equal(database.readOne<{ count: number }>(
+    "SELECT count(*) AS count FROM messages",
+  )?.count, messageCountBeforeDeniedSubmission);
+  currentMessagesAuthority = canonicalMessagesAuthority;
   let submitted!: Awaited<ReturnType<typeof service.submitMessage>>;
   const application = createCoordinationApplication({
     flags: { ...disabledCoordinationFeatureFlags(), "coordination.process.enabled": true,
@@ -96,6 +134,10 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
       auth: { validateAccessToken: async () => owner.identity.auth },
       messageSubmission: { submitMessage: async (input) => (submitted = await service.submitMessage(input)) },
       work, leases, events: new SqliteEventRepository(database),
+      authorityEpochs: {
+        current: () => canonicalMessagesAuthority,
+        listCurrent: async () => ({ epochs: [canonicalMessagesAuthority], throughEventSequence: 41 }),
+      },
     },
   });
   const server = createCoordinationHttpServer({ application, port: 0 });
@@ -124,6 +166,7 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
   let recoveryIdentitySuffix = 905;
   const restartedService = createDirectMessageSubmissionService({
     messages, context: new SqliteDirectMessageContext(database, messages), work, leases,
+    authority,
     resident: restartedResident, holderInstanceId: "resident-1", beginWork, residentContext,
     recoveryIdentity: () => {
       const suffix = recoveryIdentitySuffix++;

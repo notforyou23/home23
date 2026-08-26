@@ -6,11 +6,29 @@ import {
   disabledCoordinationFeatureFlags,
 } from "../../../src/coordination/app/index.js";
 import { Readable } from "node:stream";
+import type { AuthorityEpoch } from "../../../src/coordination/epochs/index.js";
 
 const enabledShellFlags = Object.freeze({
   ...disabledCoordinationFeatureFlags(),
   "coordination.process.enabled": true,
   "coordination.public_api.enabled": true,
+});
+
+const canonicalMessagesAuthority: AuthorityEpoch = Object.freeze({
+  capability: "messages",
+  epoch: 3,
+  mode: "canonical",
+  writer: "home23-coordination",
+  effectiveAtEventSequence: 41,
+  rollbackEpoch: 1,
+});
+
+const authorityEpochs = (current: AuthorityEpoch | null) => ({
+  current: () => current,
+  listCurrent: async () => ({
+    epochs: current ? [current] : [],
+    throughEventSequence: current?.effectiveAtEventSequence ?? 0,
+  }),
 });
 
 test("capability advertisement stays off for every dependency that is absent", () => {
@@ -221,6 +239,44 @@ test("unfinished M11 ports cannot activate message or Work capabilities", () => 
   assert.equal(application.capabilities().capabilities.messageSubmission, false);
   assert.equal(application.capabilities().capabilities.work, false);
   assert.equal(application.capabilities().capabilities.workMutation, false);
+});
+
+test("message submission requires the exact persisted canonical writer, not flags", () => {
+  const flags = {
+    ...enabledShellFlags,
+    "coordination.resident.jerry.enabled": true,
+  };
+  const base = {
+    auth: { validateAccessToken: async () => { throw new Error("unused"); } },
+    messageSubmission: { submitMessage: async () => ({}) },
+    work: {} as any,
+    leases: {} as any,
+  };
+  const capability = (authority: AuthorityEpoch | null) =>
+    createCoordinationApplication({
+      flags,
+      services: { ...base, authorityEpochs: authorityEpochs(authority) },
+    }).capabilities().capabilities.messageSubmission;
+
+  assert.equal(capability(null), false);
+  assert.equal(capability({
+    ...canonicalMessagesAuthority,
+    mode: "legacy",
+    effectiveAtEventSequence: null,
+    rollbackEpoch: null,
+  }), false);
+  assert.equal(capability({
+    ...canonicalMessagesAuthority,
+    mode: "shadow",
+    writer: "legacy-conversation-writer",
+    effectiveAtEventSequence: null,
+    rollbackEpoch: null,
+  }), false);
+  assert.equal(capability({
+    ...canonicalMessagesAuthority,
+    writer: "label-only-writer",
+  }), false);
+  assert.equal(capability(canonicalMessagesAuthority), true);
 });
 
 test("application construction snapshots dependencies and rejects incoherent limits", () => {

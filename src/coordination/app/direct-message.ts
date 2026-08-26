@@ -4,6 +4,7 @@ import type { ResidentCoordinationAdapter } from "../../coordination-adapter/ind
 import { MessagingError, type MessagingActorContext } from "../channels/index.js";
 import type { MessageProjection } from "../messages/index.js";
 import type { ContextManifestInput, WorkRecord } from "../work/index.js";
+import { isCanonicalMessagesAuthority, type AuthorityEpoch } from "../epochs/index.js";
 import type { CoordinationLeasePort, CoordinationWorkPort } from "./types.js";
 
 const sha256 = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
@@ -58,6 +59,7 @@ export function createDirectMessageSubmissionService(options: {
   leases: CoordinationLeasePort;
   resident: Pick<ResidentCoordinationAdapter,
     "execute" | "continueAccepted" | "reattach" | "recoverCompleted">;
+  authority: { current(): AuthorityEpoch | null };
   holderInstanceId: string;
   beginWork(): () => void;
   recoveryIdentity(): { requestId: string; correlationId: string };
@@ -71,6 +73,11 @@ export function createDirectMessageSubmissionService(options: {
       called = true;
       callback();
     };
+  };
+  const assertAuthority = () => {
+    if (!isCanonicalMessagesAuthority(options.authority.current())) {
+      throw new MessagingError("authority_unavailable");
+    }
   };
 
   function dispatch(input: {
@@ -209,6 +216,7 @@ export function createDirectMessageSubmissionService(options: {
 
   return Object.freeze({
     async recoverResidentWork() {
+      assertAuthority();
       const recoverable = [
         ...options.work.listResidentRecoverable("resident_turn", 100),
         ...options.work.listSucceededMissingResult("resident_turn", 100),
@@ -242,6 +250,7 @@ export function createDirectMessageSubmissionService(options: {
       body: { messageId: string; clientMessageId: string; text: string | null;
         attachmentIds: readonly string[]; mentions: readonly string[]; replyToMessageId: string | null };
     }) {
+      assertAuthority();
       const endWork = once(options.beginWork());
       let workTransferred = false;
       try {
