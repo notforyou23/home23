@@ -25,6 +25,8 @@
     "coordination:m31-preflight:fixture": "node scripts/coordination/m31-activation-preflight.mjs",
     "coordination:release:preflight": "node scripts/coordination/release-candidate-preflight.mjs",
     "test:coordination:release": "node --import tsx --test --test-concurrency=1 tests/coordination/release/preflight.test.ts",
+    "test:coordination:deployment-preflight": "node --import tsx --test --test-concurrency=1 tests/coordination/rollout/deployment-preflight.test.ts",
+    "coordination:deployment-preflight:fixture": "node scripts/coordination/deployment-preflight.mjs",
     "test:contracts:live": "node scripts/validate-live-contracts.mjs",
     "test:vault": "node --test --test-concurrency=1 tests/scripts/vault-*.test.cjs",
     "vault:consolidate": "node scripts/vault/consolidate.cjs",

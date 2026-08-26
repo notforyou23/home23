@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const M31_CORE_BASE_SHA = "bec6f102b2f9f96bb05524bf1ac223833df99645";
+export const M31_CORE_BASE_SHA = "9ae494591e164b11450323d058b684f7a3dbadd0";
 export const M31_CAPABILITY_ORDER = ["unread", "activity", "search", "attachments", "channel"] as const;
 
 export type M31Capability = (typeof M31_CAPABILITY_ORDER)[number];

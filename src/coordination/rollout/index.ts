@@ -17,3 +17,11 @@ export {
   type M31Capability,
   type M31PreflightReceipt,
 } from "./m31-activation-preflight.js";
+
+export {
+  CORE_DEPLOYMENT_CANDIDATE,
+  DeploymentPreflightError,
+  runDeploymentPreflightFixture,
+  type DeploymentPreflightFixture,
+  type DeploymentPreflightReceipt,
+} from "./deployment-preflight.js";

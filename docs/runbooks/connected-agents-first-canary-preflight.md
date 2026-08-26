@@ -1,7 +1,7 @@
 # Connected Agents M14/M15 first-canary preflight
 
 This is preparation tooling for Core candidate
-`56de45a4ab9fd3e4b5c4a29903d1bc6a346eeb09`. It cannot run a live canary. It
+`9ae494591e164b11450323d058b684f7a3dbadd0`. It cannot run a live canary. It
 does not call a database, change configuration, activate a resident, append an
 authority epoch, or send a Message. Its only input is a fixture assembled from
 responses already returned by supported `/api/v1` surfaces.

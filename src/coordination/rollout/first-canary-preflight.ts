@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { FEATURE_FLAG_REGISTRY } from "../schema/contract-registry.js";
 
-export const CORE_CANARY_CANDIDATE = "56de45a4ab9fd3e4b5c4a29903d1bc6a346eeb09";
+export const CORE_CANARY_CANDIDATE = "9ae494591e164b11450323d058b684f7a3dbadd0";
 
 export type CanaryStage = "M14" | "M15";
 
