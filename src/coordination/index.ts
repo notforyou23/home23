@@ -23,7 +23,8 @@ export async function runCoordinationProcess(
   return "listening";
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+const invokedScript = process.env.pm_exec_path ?? process.argv[1];
+if (invokedScript && import.meta.url === pathToFileURL(resolve(invokedScript)).href) {
   runCoordinationProcess().then(
     (state) => {
       if (state === "disabled") {
