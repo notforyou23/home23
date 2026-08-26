@@ -85,3 +85,18 @@ test("unsafe binds, malformed flags, and escaped paths are refused", (t) => {
     /must remain inside/,
   );
 });
+
+test("all eleven rollout flags default off and every projected boolean is strict", (t) => {
+  const input = fixture();
+  t.after(() => rmSync(input.root, { recursive: true, force: true }));
+  const config = loadCoordinationRuntimeConfig(input.environment);
+  assert.equal(Object.keys(config.flags).length, 11);
+  assert.ok(Object.values(config.flags).every((value) => value === false));
+  for (const variable of [
+    "HOME23_COORDINATION_PUBLIC_API_ENABLED", "HOME23_COORDINATION_RESIDENT_JERRY_ENABLED",
+    "HOME23_COORDINATION_RESIDENT_FORREST_ENABLED", "HOME23_COORDINATION_CHANNELS_ENABLED",
+    "HOME23_COORDINATION_SEARCH_CANONICAL", "HOME23_COORDINATION_IMPORT_SHADOW_ENABLED",
+    "HOME23_COORDINATION_APPLE_MAC_CUTOVER", "HOME23_COORDINATION_APPLE_IPHONE_CUTOVER",
+    "HOME23_COORDINATION_BOT_LIFECYCLE_ENABLED", "HOME23_COORDINATION_COMPACTION_ENABLED",
+  ]) assert.throws(() => loadCoordinationRuntimeConfig({ ...input.environment, [variable]: "1" }), /must be exactly true or false/);
+});

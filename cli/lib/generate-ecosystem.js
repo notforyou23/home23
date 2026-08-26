@@ -176,6 +176,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(``);
   lines.push(`const coordinationConfig = homeConfig.coordination || {};`);
   lines.push(`const coordinationEnabled = coordinationConfig.process?.enabled === true;`);
+  lines.push(`const coordinationFlags = coordinationConfig.flags || {};`);
   lines.push(`const coordinationRuntimeDir = path.join(HOME23, 'instances', '.house', 'coordination');`);
   lines.push(``);
   lines.push(`module.exports = {`);
@@ -189,7 +190,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`      script: 'dist/coordination/index.js',`);
   lines.push(`      cwd: HOME23,`);
   lines.push(`      filter_env: ['HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
-  lines.push(`      autorestart: coordinationEnabled, watch: false, merge_logs: true,`);
+  lines.push(`      autorestart: false, watch: false, merge_logs: true,`);
   lines.push(`      kill_timeout: 30000,`);
   lines.push(`      out_file: path.join(coordinationRuntimeDir, 'coordination-out.log'),`);
   lines.push(`      error_file: path.join(coordinationRuntimeDir, 'coordination-err.log'),`);
@@ -197,7 +198,16 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`        HOME23_ROOT: HOME23,`);
   lines.push(`        HOME23_COORDINATION_ENABLED: String(coordinationEnabled),`);
   lines.push(`        HOME23_COORDINATION_PUBLIC_API_ENABLED: String(coordinationConfig.publicApi?.enabled === true),`);
-  lines.push(`        HOME23_COORDINATION_HOST: String(coordinationConfig.publicApi?.host || '127.0.0.1'),`);
+  lines.push(`        HOME23_COORDINATION_RESIDENT_JERRY_ENABLED: String(coordinationFlags['coordination.resident.jerry.enabled'] === true),`);
+  lines.push(`        HOME23_COORDINATION_RESIDENT_FORREST_ENABLED: String(coordinationFlags['coordination.resident.forrest.enabled'] === true),`);
+  lines.push(`        HOME23_COORDINATION_CHANNELS_ENABLED: String(coordinationFlags['coordination.channels.enabled'] === true),`);
+  lines.push(`        HOME23_COORDINATION_SEARCH_CANONICAL: String(coordinationFlags['coordination.search.canonical'] === true),`);
+  lines.push(`        HOME23_COORDINATION_IMPORT_SHADOW_ENABLED: String(coordinationFlags['coordination.import.shadow_enabled'] === true),`);
+  lines.push(`        HOME23_COORDINATION_APPLE_MAC_CUTOVER: String(coordinationFlags['coordination.apple.mac_cutover'] === true),`);
+  lines.push(`        HOME23_COORDINATION_APPLE_IPHONE_CUTOVER: String(coordinationFlags['coordination.apple.iphone_cutover'] === true),`);
+  lines.push(`        HOME23_COORDINATION_BOT_LIFECYCLE_ENABLED: String(coordinationFlags['coordination.bot_lifecycle.enabled'] === true),`);
+  lines.push(`        HOME23_COORDINATION_COMPACTION_ENABLED: String(coordinationFlags['coordination.compaction.enabled'] === true),`);
+  lines.push(`        HOME23_COORDINATION_HOST: '127.0.0.1',`);
   lines.push(`        HOME23_COORDINATION_PORT: String(coordinationConfig.publicApi?.port || 7346),`);
   lines.push(`        HOME23_COORDINATION_DB_PATH: path.join(coordinationRuntimeDir, 'home23-coordination.sqlite3'),`);
   lines.push(`        HOME23_COORDINATION_SOCKET_PATH: path.join(coordinationRuntimeDir, 'coord.sock'),`);

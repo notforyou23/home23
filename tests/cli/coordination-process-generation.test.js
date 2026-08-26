@@ -39,6 +39,9 @@ test('fresh generation emits exactly one disabled loopback-only coordination pro
   assert.equal(matches[0].autorestart, false);
   assert.equal(matches[0].env.HOME23_COORDINATION_ENABLED, 'false');
   assert.equal(matches[0].env.HOME23_COORDINATION_PUBLIC_API_ENABLED, 'false');
+  for (const [key, value] of Object.entries(matches[0].env)) {
+    if (key.startsWith('HOME23_COORDINATION_') && key.endsWith('_ENABLED')) assert.equal(value, 'false');
+  }
   assert.equal(matches[0].env.HOME23_COORDINATION_HOST, '127.0.0.1');
   assert.match(matches[0].env.HOME23_COORDINATION_DB_PATH, /instances\/.house\/coordination/);
   assert.match(matches[0].env.HOME23_COORDINATION_SOCKET_PATH, /instances\/.house\/coordination/);
@@ -57,6 +60,7 @@ test('explicit configuration is rendered but an unsafe bind remains startup-inva
   const app = require(join(root, 'ecosystem.config.cjs')).apps
     .find((candidate) => candidate.name === 'home23-coordination');
   assert.equal(app.env.HOME23_COORDINATION_ENABLED, 'true');
-  assert.equal(app.env.HOME23_COORDINATION_HOST, '0.0.0.0');
+  assert.equal(app.env.HOME23_COORDINATION_HOST, '127.0.0.1');
+  assert.equal(app.autorestart, false);
   assert.equal(app.env.HOME23_COORDINATION_PORT, '7446');
 });

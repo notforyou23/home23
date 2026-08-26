@@ -13,6 +13,18 @@ coordination:
     enabled: false
     host: 127.0.0.1
     port: 7346
+  # Registry flags are projected literally. Every value defaults false; flags
+  # gate reachability only and never change a canonical authority epoch.
+  flags:
+    coordination.resident.jerry.enabled: false
+    coordination.resident.forrest.enabled: false
+    coordination.channels.enabled: false
+    coordination.search.canonical: false
+    coordination.import.shadow_enabled: false
+    coordination.apple.mac_cutover: false
+    coordination.apple.iphone_cutover: false
+    coordination.bot_lifecycle.enabled: false
+    coordination.compaction.enabled: false
 
 evobrew:
   port: 3415

@@ -6,6 +6,20 @@ import { disabledCoordinationFeatureFlags } from "./application.js";
 
 const TOKEN_PATTERN = /^[a-f0-9]{64}$/i;
 
+export const COORDINATION_FLAG_ENV = Object.freeze({
+  "coordination.process.enabled": "HOME23_COORDINATION_ENABLED",
+  "coordination.public_api.enabled": "HOME23_COORDINATION_PUBLIC_API_ENABLED",
+  "coordination.resident.jerry.enabled": "HOME23_COORDINATION_RESIDENT_JERRY_ENABLED",
+  "coordination.resident.forrest.enabled": "HOME23_COORDINATION_RESIDENT_FORREST_ENABLED",
+  "coordination.channels.enabled": "HOME23_COORDINATION_CHANNELS_ENABLED",
+  "coordination.search.canonical": "HOME23_COORDINATION_SEARCH_CANONICAL",
+  "coordination.import.shadow_enabled": "HOME23_COORDINATION_IMPORT_SHADOW_ENABLED",
+  "coordination.apple.mac_cutover": "HOME23_COORDINATION_APPLE_MAC_CUTOVER",
+  "coordination.apple.iphone_cutover": "HOME23_COORDINATION_APPLE_IPHONE_CUTOVER",
+  "coordination.bot_lifecycle.enabled": "HOME23_COORDINATION_BOT_LIFECYCLE_ENABLED",
+  "coordination.compaction.enabled": "HOME23_COORDINATION_COMPACTION_ENABLED",
+} as const satisfies Record<keyof CoordinationFeatureFlags, string>);
+
 export interface CoordinationRuntimeConfig {
   enabled: boolean;
   host: "127.0.0.1" | "::1";
@@ -95,13 +109,21 @@ export function loadCoordinationRuntimeConfig(
     );
   }
 
+  const parsedFlags = Object.fromEntries(
+    Object.entries(COORDINATION_FLAG_ENV).map(([flag, variable]) => [
+      flag,
+      exactBoolean(environment[variable], variable),
+    ]),
+  ) as Record<keyof CoordinationFeatureFlags, boolean>;
   const flags = {
     ...disabledCoordinationFeatureFlags(),
+    ...parsedFlags,
     "coordination.process.enabled": enabled,
-    "coordination.public_api.enabled": enabled && exactBoolean(
-      environment.HOME23_COORDINATION_PUBLIC_API_ENABLED,
-      "HOME23_COORDINATION_PUBLIC_API_ENABLED",
-    ),
+    // A subordinate flag can remove capability, never create authority while
+    // its parent gate is closed.
+    "coordination.public_api.enabled": enabled && parsedFlags["coordination.public_api.enabled"] === true,
+    "coordination.resident.jerry.enabled": enabled && parsedFlags["coordination.resident.jerry.enabled"] === true,
+    "coordination.resident.forrest.enabled": enabled && parsedFlags["coordination.resident.forrest.enabled"] === true,
   };
 
   return Object.freeze({
