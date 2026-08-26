@@ -7,6 +7,8 @@ export {
   createCoordinationRuntimeComposition,
   type BotLifecycleCompositionOptions,
   type CoordinationProcessProjectionDependencies,
+  type RetentionCompositionOptions,
+  type RetentionInvocation,
   type CoordinationRuntimeComposition,
   type DurableAttachmentCompositionOptions,
 } from "./composition.js";
