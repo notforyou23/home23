@@ -95,6 +95,17 @@ function asProtocolCode(code: string): ResidentProtocolErrorCode {
   return code as ResidentProtocolErrorCode;
 }
 
+function requestAbortError(signal: AbortSignal): ResidentProtocolError {
+  const reason = signal.reason;
+  if (
+    reason instanceof ResidentProtocolError &&
+    (reason.code === "deadline_exceeded" || reason.code === "request_cancelled")
+  ) {
+    return reason;
+  }
+  return new ResidentProtocolError("request_cancelled", "request was cancelled");
+}
+
 export class ResidentUdsServer {
   readonly #options: ResidentUdsServerOptions;
   readonly #credentialByIdentity = new Map<string, ResidentCredential>();
@@ -219,7 +230,9 @@ export class ResidentUdsServer {
       clearTimeout(state.handshakeTimer);
       for (const active of state.activeRequests.values()) {
         clearTimeout(active.deadlineTimer);
-        active.controller.abort(new Error("resident socket closed"));
+        active.controller.abort(
+          new ResidentProtocolError("connection_lost", "resident socket closed", { retryable: true }),
+        );
       }
       state.activeRequests.clear();
       this.#sockets.delete(socket);
@@ -259,7 +272,9 @@ export class ResidentUdsServer {
       const expectedPath = `/internal/v1/requests/${request.requestId}/cancel`;
       const active = state.activeRequests.get(request.requestId);
       if (request.path === expectedPath && active?.correlationId === request.correlationId) {
-        active.controller.abort(new Error("authenticated client cancellation"));
+        active.controller.abort(
+          new ResidentProtocolError("request_cancelled", "request was cancelled"),
+        );
       }
       return;
     }
@@ -382,7 +397,9 @@ export class ResidentUdsServer {
     const controller = new AbortController();
     const deadlineMs = Date.parse(request.deadlineAt);
     const deadlineTimer = setTimeout(
-      () => controller.abort(new Error("resident request deadline elapsed")),
+      () => controller.abort(
+        new ResidentProtocolError("deadline_exceeded", "request deadline elapsed"),
+      ),
       Math.max(1, deadlineMs - this.#now()),
     );
     deadlineTimer.unref();
@@ -412,12 +429,11 @@ export class ResidentUdsServer {
       });
       const payload = await Promise.race([handlerPromise, abortPromise]);
       if (controller.signal.aborted) {
-        const code = this.#now() >= deadlineMs ? "deadline_exceeded" : "request_cancelled";
         this.#sendError(
           state,
           request.requestId,
           request.correlationId,
-          new ResidentProtocolError(code, code === "deadline_exceeded" ? "request deadline elapsed" : "request was cancelled"),
+          requestAbortError(controller.signal),
         );
       } else {
         const nowMs = this.#now();
@@ -438,12 +454,11 @@ export class ResidentUdsServer {
       }
     } catch (error) {
       if (controller.signal.aborted) {
-        const code = this.#now() >= deadlineMs ? "deadline_exceeded" : "request_cancelled";
         this.#sendError(
           state,
           request.requestId,
           request.correlationId,
-          new ResidentProtocolError(code, code === "deadline_exceeded" ? "request deadline elapsed" : "request was cancelled"),
+          requestAbortError(controller.signal),
         );
       } else {
         this.#sendError(state, request.requestId, request.correlationId, safeError(error));

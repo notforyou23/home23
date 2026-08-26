@@ -257,6 +257,61 @@ test("request deadline sends authenticated cancellation to the active handler", 
   assert.equal(observedAbort, true);
 });
 
+test("authenticated caller cancellation remains distinct from deadline expiry", async (t) => {
+  const fixture = socketFixture(t);
+  const selectedCredential = fixtureCredential();
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const server = new ResidentUdsServer({
+    socketPath: fixture.socketPath,
+    serverInstanceId: "coordination-kernel-1",
+    credentials: [selectedCredential],
+    maxConcurrentRequests: 1,
+    handleRequest: async (request) => {
+      if ((request.payload as { block?: boolean }).block) {
+        markStarted();
+        return new Promise<JsonValue>(() => undefined);
+      }
+      return { accepted: true };
+    },
+  });
+  await server.start();
+  t.after(() => server.close());
+  const client = new ResidentUdsClient({
+    socketPath: fixture.socketPath,
+    serverInstanceId: "coordination-kernel-1",
+    credential: selectedCredential,
+  });
+  t.after(() => client.close());
+
+  const controller = new AbortController();
+  const blocked = client.request({
+    method: "POST",
+    path: "/internal/v1/attempts/att_1/heartbeat",
+    payload: { block: true },
+    requestId: REQUEST_ID_1,
+    deadlineAtMs: Date.now() + 2_000,
+    signal: controller.signal,
+  });
+  await started;
+  controller.abort();
+  await assert.rejects(
+    blocked,
+    (error: unknown) => protocolCode(error) === "request_cancelled",
+  );
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  const response = await client.request({
+    method: "POST",
+    path: "/internal/v1/status/check",
+    payload: {},
+    requestId: REQUEST_ID_2,
+    deadlineAtMs: Date.now() + 2_000,
+  });
+  assert.deepEqual(response.payload, { accepted: true });
+});
+
 test("bounded request rate rejects excess input without dispatch", async (t) => {
   const fixture = socketFixture(t);
   const selectedCredential = fixtureCredential();

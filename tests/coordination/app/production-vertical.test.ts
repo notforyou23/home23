@@ -76,6 +76,9 @@ test("production composition authenticates one direct Message through durable Wo
   const config = () => ({ enabled: true, host: "127.0.0.1" as const, port: 0, databasePath, socketPath: join(runtime, "coord.sock"), capabilityToken, flags,
     residents: { jerry: { enabled: true, socketPath, serverInstanceId: "home23-jerry-harness", clientInstanceId: "home23-jerry-harness", keyVersion: 1, key: residentKey }, forrest: { enabled: false, socketPath: join(runtime, "resident-forrest.sock"), serverInstanceId: "home23-forrest-harness", clientInstanceId: "home23-forrest-harness", keyVersion: 1, key: "" } } });
   let process = createCoordinationProcess(config()); let address = await process.start();
+  const capabilities = await (await fetch(`${address.origin}/api/v1/capabilities`)).json() as any;
+  assert.equal(capabilities.capabilities.messageSubmission, true);
+  assert.equal(capabilities.capabilities.eventReplay, true);
   assert.equal((await fetch(`${address.origin}/api/v1/bootstrap`)).status, 401);
   const productHeaders = { authorization: `Bearer ${token}` };
   const authorityEpochs = await (await fetch(`${address.origin}/api/v1/authority-epochs`, { headers: productHeaders })).json() as any;
@@ -137,7 +140,10 @@ test("production composition authenticates one direct Message through durable Wo
   assert.equal(db.readOne<{ count: number }>("SELECT count(*) AS count FROM messages WHERE kind='result'")?.count, 1);
   assert.ok((db.readOne<{ count: number }>("SELECT count(*) AS count FROM events WHERE correlation_id=?", correlationId)?.count ?? 0) >= 3); db.close();
   await harness.close(); harness = new ResidentTurnUdsServer({ socketPath, serverInstanceId: "home23-jerry-harness", credential, residentSlug: "jerry", agent, history }); await harness.start();
-  process = createCoordinationProcess(config()); address = await process.start(); assert.equal((await send()).status, 202); assert.equal(calls(), 1); await process.drain();
+  process = createCoordinationProcess(config()); address = await process.start();
+  const restartedCapabilities = await (await fetch(`${address.origin}/api/v1/capabilities`)).json() as any;
+  assert.equal(restartedCapabilities.capabilities.messageSubmission, true);
+  assert.equal((await send()).status, 202); assert.equal(calls(), 1); await process.drain();
 });
 
 test("bootstrap apply refuses without explicit feature-off authority evidence", async () => {
