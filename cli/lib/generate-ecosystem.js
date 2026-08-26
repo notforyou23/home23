@@ -190,7 +190,7 @@ export function generateEcosystem(home23Root, options = {}) {
   // the only configured start/stop authority until a later cutover package.
   lines.push(`    {`);
   lines.push(`      name: 'home23-coordination',`);
-  lines.push(`      script: 'dist/coordination/index.js',`);
+  lines.push(`      script: 'scripts/coordination/run.mjs',`);
   lines.push(`      cwd: HOME23,`);
   lines.push(`      filter_env: ['HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'],`);
   lines.push(`      autorestart: false, watch: false, merge_logs: true,`);
