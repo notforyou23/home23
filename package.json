@@ -21,6 +21,8 @@
     "test:contracts": "node --test --test-concurrency=1 tests/contracts/*.test.cjs",
     "test:coordination:canary": "node --import tsx --test --test-concurrency=1 tests/coordination/rollout/first-canary-preflight.test.ts",
     "coordination:canary:fixture": "node scripts/coordination/first-canary-preflight.mjs",
+    "coordination:bootstrap:jerry": "node scripts/coordination/bootstrap-jerry.mjs",
+    "coordination:m14:authority": "node scripts/coordination/m14-authority.mjs",
     "test:coordination:m31-preflight": "node --import tsx --test --test-concurrency=1 tests/coordination/rollout/m31-activation-preflight.test.ts",
     "coordination:m31-preflight:fixture": "node scripts/coordination/m31-activation-preflight.mjs",
     "coordination:release:preflight": "node scripts/coordination/release-candidate-preflight.mjs",

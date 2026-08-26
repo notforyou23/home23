@@ -64,3 +64,27 @@ Conversation/mailbox and resident binding. M15 must start from the M14 resume
 boundary, use a new idempotency key, preserve the same explicit legacy
 rollback authority, and receive separate authorization before its one direct
 canary Message.
+
+## Supported M14 operator seam
+
+Build the reviewed checkout before using either command. Discovery is read-only and works even when the coordination database does not yet exist:
+
+```bash
+npm run build
+npm run coordination:bootstrap:jerry -- --database <COORDINATION_DB>
+```
+
+Feature-off bootstrap is the only supported creation path. It requires operator evidence, seeds the legacy `messages` epoch if absent, and idempotently creates Jerry's persistent Bot, runtime binding, mailbox, and direct Conversation. It never starts a process or sends a Message:
+
+```bash
+npm run coordination:bootstrap:jerry -- --database <COORDINATION_DB> --apply --confirm APPLY_FEATURE_OFF_JERRY_BOOTSTRAP --authority-evidence <FEATURE_OFF_EVIDENCE_JSON> --server-instance home23-jerry-harness --key-version <JERRY_KEY_VERSION>
+```
+
+Validate a signed legacy-to-shadow, shadow-to-canonical, or canonical-to-legacy receipt without mutation by omitting `--apply`. Shadow and rollback receipts must contain all eleven flags as false. The M14 canonical receipt must enable exactly process, public API, and Jerry. Apply is deliberately double-gated and must be separately authorized:
+
+```bash
+npm run coordination:m14:authority -- --database <COORDINATION_DB> --evidence <SIGNED_AUTHORITY_EVIDENCE_JSON>
+npm run coordination:m14:authority -- --database <COORDINATION_DB> --evidence <SIGNED_AUTHORITY_EVIDENCE_JSON> --apply --confirm APPLY_SIGNED_M14_AUTHORITY
+```
+
+The evidence file supplies the Ed25519 public key, append-only receipt, active canonical-writer inventory, request ID, and correlation ID. Private signing keys and resident UDS keys remain outside Git. A successful fixture or preflight is not M14 acceptance; only the separately observed real exchange and jtr-reviewed live receipt can satisfy it.

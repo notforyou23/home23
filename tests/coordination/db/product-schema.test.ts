@@ -35,13 +35,17 @@ const EXPECTED_TABLES = [
   "aliases",
   "artifacts",
   "attachment_create_idempotency",
+  "attempts",
   "authority_epochs",
   "bots",
   "channel_members",
   "channel_membership_history",
   "channels",
   "client_sessions",
+  "context_manifests",
   "conversation_handles",
+  "deliveries",
+  "delivery_attempts",
   "devices",
   "direct_channel_pairs",
   "events",
@@ -51,6 +55,7 @@ const EXPECTED_TABLES = [
   "import_cursors",
   "import_items",
   "kernel_meta",
+  "leases",
   "legacy_sources",
   "mentions",
   "message_artifacts",
@@ -61,12 +66,17 @@ const EXPECTED_TABLES = [
   "message_fts_docsize",
   "message_fts_idx",
   "messages",
+  "outbox",
   "pairing_sessions",
   "principals",
   "read_cursors",
+  "rounds",
   "schema_migrations",
   "search_watermarks",
   "session_refresh_tokens",
+  "terminal_receipts",
+  "work_observations",
+  "works",
 ] as const;
 
 const EXPECTED_INDEXES = [
@@ -74,6 +84,8 @@ const EXPECTED_INDEXES = [
   "artifacts_digest_state",
   "artifacts_owner_state_expiry",
   "attachment_create_idempotency_created_at",
+  "attempts_one_live_per_work",
+  "attempts_work_history",
   "authority_epochs_capability_epoch_desc",
   "bots_heartbeat",
   "bots_lifecycle_name",
@@ -91,14 +103,19 @@ const EXPECTED_INDEXES = [
   "import_batches_cohort_state",
   "import_items_batch_state",
   "import_items_source_position",
+  "leases_expiry",
+  "leases_one_live_per_work",
   "mentions_principal_message",
   "message_artifacts_artifact",
   "message_artifacts_channel",
   "messages_channel_sequence_desc",
   "messages_reply",
   "messages_tombstone",
+  "outbox_claimable",
+  "outbox_stale_claims",
   "pairing_sessions_state_expiry",
   "session_refresh_tokens_family_state",
+  "work_observations_bounded_history",
 ] as const;
 
 const EXPECTED_TRIGGERS = [
@@ -110,10 +127,37 @@ const EXPECTED_TRIGGERS = [
   "artifacts_no_delete",
   "artifacts_ready_content_immutable",
   "artifacts_state_transition_guard",
+  "attempts_fields_insert",
+  "attempts_fields_update",
+  "attempts_no_delete",
+  "attempts_terminal_immutable",
+  "attempts_transition_guard",
   "channel_members_no_delete",
   "channel_membership_history_close_only",
   "channel_membership_history_no_delete",
+  "context_manifests_no_delete",
+  "context_manifests_no_update",
+  "deliveries_binding_insert",
+  "deliveries_binding_update",
+  "deliveries_fields_insert",
+  "deliveries_fields_update",
+  "deliveries_no_delete",
+  "deliveries_terminal_immutable",
+  "deliveries_transition_guard",
+  "delivery_attempt_final_immutable",
+  "delivery_attempts_binding_insert",
+  "delivery_attempts_binding_update",
+  "delivery_attempts_fields_insert",
+  "delivery_attempts_fields_update",
+  "delivery_attempts_no_delete",
   "event_requires_canonical_message_journal",
+  "leases_binding_insert",
+  "leases_binding_update",
+  "leases_fields_insert",
+  "leases_fields_update",
+  "leases_no_delete",
+  "leases_terminal_immutable",
+  "leases_transition_guard",
   "mentions_immutable_delete",
   "mentions_immutable_update",
   "mentions_require_active_visible_bot",
@@ -127,11 +171,29 @@ const EXPECTED_TRIGGERS = [
   "messages_immutable_delete",
   "messages_immutable_update",
   "messages_require_active_author",
+  "outbox_fields_insert",
+  "outbox_fields_update",
+  "outbox_no_delete",
+  "outbox_terminal_immutable",
+  "outbox_transition_guard",
   "read_cursors_monotonic_update",
   "read_cursors_no_delete",
   "read_cursors_require_active_member_insert",
   "read_cursors_require_active_member_update",
+  "rounds_no_delete",
+  "rounds_terminal_immutable",
+  "rounds_transition_guard",
   "search_watermark_after_message_event",
+  "terminal_receipts_binding_insert",
+  "terminal_receipts_no_delete",
+  "terminal_receipts_no_update",
+  "work_observations_no_delete",
+  "work_observations_no_update",
+  "works_current_attempt_insert",
+  "works_current_attempt_update",
+  "works_no_delete",
+  "works_terminal_immutable",
+  "works_transition_guard",
 ] as const;
 
 function temporaryDirectory(t: test.TestContext): string {
@@ -179,7 +241,7 @@ function catalogNames(
   ).map((row) => row.name);
 }
 
-test("schema v1 migrates directly through the reconciled M06-M10 final catalog", async (t) => {
+test("schema v1 migrates directly through the reconciled M06-M11 final catalog", async (t) => {
   const path = join(temporaryDirectory(t), "coordination.sqlite3");
   createSchemaV1(path);
 
@@ -189,10 +251,10 @@ test("schema v1 migrates directly through the reconciled M06-M10 final catalog",
     now: () => new Date("2026-08-25T12:01:00.000Z"),
   });
   assert.equal(database.openReceipt.migratedFrom, 1);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 5);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 6);
   assert.equal(
     COORDINATION_SCHEMA_CHECKSUM,
-    "5f2eba4c6abc23f455188c88c3cad352fd31ee708458aa229e2b7da89f65f69d",
+    "d6756d02f03d7bb4b9a3887b9de6e4d969942ecde40f9dc9fb6c128b10d4ea1e",
   );
   assert.equal(
     COORDINATION_PRODUCT_SCHEMA_MIGRATION_CHECKSUM,
@@ -200,7 +262,7 @@ test("schema v1 migrates directly through the reconciled M06-M10 final catalog",
   );
   assert.equal(
     COORDINATION_MIGRATION_PLAN_CHECKSUM,
-    "c4a9e8a40dbf0c310181b818be9b5aa9788527cf0af4975004e70a3f9e915b9f",
+    "974bae35402ec5bfe1be3cb36409dbea07d0654d572d8be156ad4dddf84ffb06",
   );
   assert.equal(
     COORDINATION_SEARCH_ATTACHMENT_MIGRATION_CHECKSUM,
@@ -257,6 +319,12 @@ test("schema v1 migrates directly through the reconciled M06-M10 final catalog",
         checksum: COORDINATION_ATTACHMENT_IDEMPOTENCY_MIGRATION_CHECKSUM,
         checksumLength: 64,
       },
+      {
+        version: 6,
+        name: "work-lifecycle-schema",
+        checksum: "c689c752ef911d9d067a60a02f368a6860a78f37483ff53fc1c0fe43c6afde22",
+        checksumLength: 64,
+      },
     ],
   );
   assert.deepEqual(
@@ -295,7 +363,7 @@ test("schema v1 migrates directly through the reconciled M06-M10 final catalog",
   database.close();
 
   const reopened = openCoordinationDatabase({ path });
-  assert.equal(reopened.openReceipt.migratedFrom, 5);
+  assert.equal(reopened.openReceipt.migratedFrom, 6);
   assert.equal(reopened.openReceipt.startupCheck, "quick_check");
   assert.deepEqual(catalogNames(reopened, "table"), EXPECTED_TABLES);
   reopened.close();
@@ -529,7 +597,7 @@ test("restoring an exact schema v1 snapshot permits a clean migration reapply", 
   copyFileSync(snapshot, path);
   const reapplied = openCoordinationDatabase({ path });
   assert.equal(reapplied.openReceipt.migratedFrom, 1);
-  assert.equal(reapplied.openReceipt.schemaVersion, 5);
+  assert.equal(reapplied.openReceipt.schemaVersion, 6);
   assert.deepEqual(catalogNames(reapplied, "table"), EXPECTED_TABLES);
   reapplied.close();
 });

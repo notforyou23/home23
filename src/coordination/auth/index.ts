@@ -37,6 +37,7 @@ export {
   type SessionTokenResult,
 } from "./service.js";
 export { redactAuthDiagnostic } from "./redaction.js";
+export { SqliteAuthRepository } from "./sqlite-repository.js";
 export {
   createCorsPolicy,
   type CorsEvaluation,

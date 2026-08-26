@@ -64,3 +64,16 @@ test('explicit configuration is rendered but an unsafe bind remains startup-inva
   assert.equal(app.autorestart, false);
   assert.equal(app.env.HOME23_COORDINATION_PORT, '7446');
 });
+
+test('Jerry and Forrest resident identities and credentials remain distinct and feature-off', (t) => {
+  const root = generate({}, { coordination: { capabilityToken: 'd'.repeat(64), residents: { jerry: { keyVersion: 2, key: 'a'.repeat(64) }, forrest: { keyVersion: 3, key: 'b'.repeat(64) } } } });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const apps = require(join(root, 'ecosystem.config.cjs')).apps;
+  const coordinator = apps.find((app) => app.name === 'home23-coordination');
+  const jerry = apps.find((app) => app.env?.HOME23_AGENT === 'jerry' && app.env?.HOME23_COORDINATION_RESIDENT_ENABLED !== undefined);
+  assert.notEqual(coordinator.env.HOME23_COORDINATION_RESIDENT_JERRY_KEY, coordinator.env.HOME23_COORDINATION_RESIDENT_FORREST_KEY);
+  assert.notEqual(coordinator.env.HOME23_COORDINATION_RESIDENT_JERRY_SERVER_INSTANCE_ID, coordinator.env.HOME23_COORDINATION_RESIDENT_FORREST_SERVER_INSTANCE_ID);
+  assert.equal(jerry.env.HOME23_COORDINATION_RESIDENT_ENABLED, 'false');
+  assert.equal(jerry.env.HOME23_COORDINATION_RESIDENT_KEY, 'a'.repeat(64));
+  assert.equal(jerry.env.HOME23_COORDINATION_RESIDENT_SERVER_INSTANCE_ID, 'home23-jerry-harness');
+});

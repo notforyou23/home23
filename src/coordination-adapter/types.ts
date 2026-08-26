@@ -45,11 +45,12 @@ export interface ResidentAgentPort {
     userText: string,
     options: {
       coordinationOrigin: CoordinationTurnOrigin;
+      coordinationRequest?: { requestId: string; correlationId: string };
       onDurableStart(start: { turnId: string; chatId: string; persistedAt: string }): void | Promise<void>;
       onEvent(event: AgentEvent): void;
     },
   ): Promise<{ turnId: string; response: Promise<AgentResponse> }>;
-  stop(chatId: string, turnId: string): { stopped: boolean };
+  stop(chatId: string, turnId: string): { stopped: boolean } | Promise<{ stopped: boolean }>;
 }
 
 export interface ResidentRun {

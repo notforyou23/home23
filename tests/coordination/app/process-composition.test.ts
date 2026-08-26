@@ -30,14 +30,18 @@ test("shadow composition advertises no unfinished product capability and closes 
     },
   });
 
-  assert.equal(Object.values(process.capabilities().capabilities).some(Boolean), false);
+  const capabilities = process.capabilities().capabilities;
+  assert.equal(capabilities.bootstrap, true);
+  assert.equal(capabilities.eventReplay, true);
+  for (const key of ["messageSubmission", "readCursorMutation", "workMutation", "attachments", "botLifecycle"] as const) {
+    assert.equal(capabilities[key], false);
+  }
   const address = await process.start();
   assert.equal(address.host, "127.0.0.1");
   const response = await fetch(`${address.origin}/api/v1/capabilities`);
   assert.equal(response.status, 200);
   assert.equal(
-    Object.values((await response.json() as { capabilities: Record<string, boolean> }).capabilities)
-      .some(Boolean),
+    (await response.json() as { pairingAvailable: boolean }).pairingAvailable,
     false,
   );
 

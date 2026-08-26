@@ -11,6 +11,7 @@ import {
 } from "./0003-search-and-attachment-schema.js";
 import { ATOMIC_IMPORT_LEDGER_MIGRATION_SQL } from "./0004-atomic-import-ledger.js";
 import { ATTACHMENT_CREATE_IDEMPOTENCY_MIGRATION_SQL } from "./0005-attachment-create-idempotency.js";
+import { WORK_LIFECYCLE_SCHEMA_MIGRATION_SQL } from "./0006-work-lifecycle-schema.js";
 
 export {
   COORDINATION_PRODUCT_SCHEMA_DEPENDENCIES,
@@ -59,6 +60,8 @@ export const COORDINATION_ATOMIC_IMPORT_MIGRATION_CHECKSUM =
 
 export const COORDINATION_ATTACHMENT_IDEMPOTENCY_MIGRATION_CHECKSUM =
   "0f59653d21c1950164b7a16f3a83c9be0b5b4b3295e77ceb22151a4d651fc536";
+export const COORDINATION_WORK_LIFECYCLE_MIGRATION_CHECKSUM =
+  "c689c752ef911d9d067a60a02f368a6860a78f37483ff53fc1c0fe43c6afde22";
 
 export const COORDINATION_MIGRATIONS = Object.freeze([
   defineMigration(
@@ -96,6 +99,13 @@ export const COORDINATION_MIGRATIONS = Object.freeze([
     COORDINATION_ATTACHMENT_IDEMPOTENCY_MIGRATION_CHECKSUM,
     "5f2eba4c6abc23f455188c88c3cad352fd31ee708458aa229e2b7da89f65f69d",
   ),
+  defineMigration(
+    6,
+    "work-lifecycle-schema",
+    WORK_LIFECYCLE_SCHEMA_MIGRATION_SQL,
+    COORDINATION_WORK_LIFECYCLE_MIGRATION_CHECKSUM,
+    "d6756d02f03d7bb4b9a3887b9de6e4d969942ecde40f9dc9fb6c128b10d4ea1e",
+  ),
 ]);
 
 export const COORDINATION_SCHEMA_VERSION =
@@ -115,7 +125,7 @@ export function computeCoordinationMigrationPlanChecksum(
 // Reviewed with the immutable migration bytes. A historical migration edit
 // must fail before any database is opened.
 export const COORDINATION_MIGRATION_PLAN_CHECKSUM =
-  "c4a9e8a40dbf0c310181b818be9b5aa9788527cf0af4975004e70a3f9e915b9f";
+  "974bae35402ec5bfe1be3cb36409dbea07d0654d572d8be156ad4dddf84ffb06";
 
 if (computeCoordinationMigrationPlanChecksum() !== COORDINATION_MIGRATION_PLAN_CHECKSUM) {
   throw new Error("coordination migration bytes differ from the reviewed migration checksum");

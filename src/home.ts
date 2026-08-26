@@ -36,6 +36,7 @@ import { DeliveryManager } from './scheduler/delivery.js';
 import { SiblingProtocol } from './sibling/protocol.js';
 import { BridgeChat } from './sibling/bridge-chat.js';
 import { AgentLoop } from './agent/loop.js';
+import { startResidentCoordinationHarness } from './coordination-adapter/index.js';
 import { anthropicOAuthStealthHeaders } from './agent/anthropic-headers.js';
 import { resolveModelOverride, type ModelAliases, type ModelOverride } from './agent/model-resolution.js';
 import { resolveProviderKey } from './agent/provider-credentials.js';
@@ -532,6 +533,7 @@ async function main(): Promise<void> {
     xai: { apiKey: resolveApiKey('xai'), baseURL: resolveBaseUrl('xai') },
     'ollama-cloud': { apiKey: resolveApiKey('ollama-cloud'), baseURL: resolveBaseUrl('ollama-cloud') },
   });
+  const residentCoordinationHarness = await startResidentCoordinationHarness({ agent, history });
 
   const CHAT_TURN_ORPHAN_MAX_AGE_MS = 10 * 60 * 1000;
   const CHAT_TURN_ORPHAN_SWEEP_MS = 60 * 1000;
@@ -2079,6 +2081,12 @@ async function main(): Promise<void> {
       await bridge.stop();
     } catch (err) {
       console.error('[home] Error closing bridge server:', err);
+    }
+
+    try {
+      await residentCoordinationHarness?.close();
+    } catch (err) {
+      console.error('[home] Error closing resident coordination socket:', err);
     }
 
     try {

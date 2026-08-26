@@ -27,6 +27,14 @@ export interface CoordinationRuntimeConfig {
   databasePath: string;
   socketPath: string;
   capabilityToken: string;
+  residents: Readonly<Record<"jerry" | "forrest", {
+    enabled: boolean;
+    socketPath: string;
+    serverInstanceId: string;
+    clientInstanceId: string;
+    keyVersion: number;
+    key: string;
+  }>>;
   flags: CoordinationFeatureFlags;
 }
 
@@ -77,6 +85,8 @@ export function loadCoordinationRuntimeConfig(
     throw new Error("HOME23_ROOT must be an absolute path");
   }
   const runtimeRoot = resolve(home23Root, "instances", ".house", "coordination");
+  const socketRoot = resolve(environment.HOME23_COORDINATION_SOCKET_ROOT ?? runtimeRoot);
+  if (!isAbsolute(socketRoot) || socketRoot === "/" || socketRoot.includes("\0")) throw new Error("HOME23_COORDINATION_SOCKET_ROOT must be an absolute dedicated directory");
   const host = environment.HOME23_COORDINATION_HOST ?? "127.0.0.1";
   if (host !== "127.0.0.1" && host !== "::1") {
     throw new Error("HOME23_COORDINATION_HOST must be an explicit loopback literal");
@@ -125,6 +135,20 @@ export function loadCoordinationRuntimeConfig(
     "coordination.resident.jerry.enabled": enabled && parsedFlags["coordination.resident.jerry.enabled"] === true,
     "coordination.resident.forrest.enabled": enabled && parsedFlags["coordination.resident.forrest.enabled"] === true,
   };
+  const residents = Object.fromEntries((["jerry", "forrest"] as const).map((slug) => {
+    const upper = slug.toUpperCase();
+    const residentEnabled = flags[`coordination.resident.${slug}.enabled`] === true;
+    const socketPath = resolve(environment[`HOME23_COORDINATION_RESIDENT_${upper}_SOCKET_PATH`] ?? resolve(socketRoot, `resident-${slug}.sock`));
+    if (socketPath === socketRoot || !socketPath.startsWith(`${socketRoot}/`) || socketPath.includes("\0")) throw new Error(`HOME23_COORDINATION_RESIDENT_${upper}_SOCKET_PATH must remain inside the dedicated socket root`);
+    const serverInstanceId = environment[`HOME23_COORDINATION_RESIDENT_${upper}_SERVER_INSTANCE_ID`] ?? `home23-${slug}-harness`;
+    const clientInstanceId = environment[`HOME23_COORDINATION_RESIDENT_${upper}_CLIENT_INSTANCE_ID`] ?? `home23-${slug}-harness`;
+    const rawVersion = environment[`HOME23_COORDINATION_RESIDENT_${upper}_KEY_VERSION`] ?? "1";
+    if (!/^[1-9][0-9]*$/.test(rawVersion) || !Number.isSafeInteger(Number(rawVersion))) throw new Error(`HOME23_COORDINATION_RESIDENT_${upper}_KEY_VERSION must be a positive integer`);
+    const key = environment[`HOME23_COORDINATION_RESIDENT_${upper}_KEY`] ?? "";
+    if (residentEnabled && !TOKEN_PATTERN.test(key)) throw new Error(`HOME23_COORDINATION_RESIDENT_${upper}_KEY must contain exactly 32 bytes of hex`);
+    if (![serverInstanceId, clientInstanceId].every((value) => /^[A-Za-z0-9._:-]{1,128}$/.test(value))) throw new Error(`HOME23_COORDINATION_RESIDENT_${upper} instance IDs are invalid`);
+    return [slug, Object.freeze({ enabled: residentEnabled, socketPath, serverInstanceId, clientInstanceId, keyVersion: Number(rawVersion), key })];
+  })) as CoordinationRuntimeConfig["residents"];
 
   return Object.freeze({
     enabled,
@@ -133,6 +157,7 @@ export function loadCoordinationRuntimeConfig(
     databasePath,
     socketPath,
     capabilityToken,
+    residents: Object.freeze(residents),
     flags: Object.freeze(flags),
   });
 }

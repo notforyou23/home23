@@ -96,6 +96,7 @@ export class ResidentCoordinationAdapter {
 
     const started = await this.agent.runWithTurn(request.chatId, request.instruction, {
       coordinationOrigin: origin,
+      coordinationRequest: { requestId: request.requestId, correlationId: request.correlationId },
       onDurableStart: async ({ turnId }) => {
         await this.coordination.assertCurrent(binding);
         await this.coordination.accept(binding);
@@ -152,6 +153,6 @@ export class ResidentCoordinationAdapter {
     await this.coordination.assertCurrent(active.binding);
     await this.coordination.revoke({ ...active.binding, reasonCode });
     active.cancelling = true;
-    return this.agent.stop(active.chatId, active.turnId).stopped;
+    return (await this.agent.stop(active.chatId, active.turnId)).stopped;
   }
 }

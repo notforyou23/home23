@@ -50,7 +50,9 @@ function capabilityDocument(input: {
   return Object.freeze({
     contractVersion: 1 as const,
     apiBase: "/api/v1" as const,
-    pairingAvailable: false,
+    pairingAvailable: mutationsEnabled &&
+      typeof input.services.auth.issuePairing === "function" &&
+      typeof input.services.auth.redeemPairing === "function",
     limits: Object.freeze({ ...input.limits }),
     capabilities: Object.freeze({
       bootstrap: processEnabled && input.services.bootstrap !== undefined,

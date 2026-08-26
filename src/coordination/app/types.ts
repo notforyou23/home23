@@ -20,7 +20,9 @@ export type CoordinationFeatureFlags = Readonly<{
 export type CoordinationAuthPort = Pick<
   ReturnType<typeof createAuthService>,
   "validateAccessToken"
->;
+> & Partial<Pick<ReturnType<typeof createAuthService>,
+  "issuePairing" | "redeemPairing" | "refreshSession" | "revokeCurrentSession"
+>>;
 
 export type CoordinationUnreadPort = Pick<
   ReturnType<typeof createUnreadService>,

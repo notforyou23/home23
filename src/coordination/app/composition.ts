@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   createDurableAttachmentService,
   LocalArtifactStore,
@@ -6,6 +8,21 @@ import {
   type LocalArtifactStoreOptions,
 } from "../artifacts/index.js";
 import { openCoordinationDatabase } from "../db/index.js";
+import { createAuthService, SqliteAuthRepository } from "../auth/index.js";
+import { createBotDirectory, SqliteBotDirectoryRepository } from "../bots/index.js";
+import { createBootstrapService, SqliteBootstrapRepository } from "../bootstrap/index.js";
+import { SqliteBotConversationBindingAdapter, SqliteMessagingRepository } from "../channels/index.js";
+import { SqliteEventRepository } from "../events/index.js";
+import { createLeaseService } from "../leases/index.js";
+import { createMessageService } from "../messages/index.js";
+import { createUnreadService, SqliteUnreadRepository } from "../unread/index.js";
+import { createWorkService, M11MessageProvenanceAuthority } from "../work/index.js";
+import { generateCoordinationId } from "../ids/index.js";
+import { createResidentCredential } from "../resident-protocol/index.js";
+import { ResidentUdsClient } from "../transport/uds/index.js";
+import { ResidentCoordinationAdapter, ResidentUdsAgentPort, createM11ResidentCoordinationPort } from "../../coordination-adapter/index.js";
+import { createDirectMessageSubmissionService } from "./direct-message.js";
+import { SqliteDirectMessageContext } from "./direct-message-context.js";
 import { createCoordinationHttpServer } from "../http/index.js";
 import { createCoordinationApplication } from "./application.js";
 import { createCoordinationLifecycle } from "./lifecycle.js";
@@ -204,7 +221,67 @@ export function createCoordinationProcess(
     path: config.databasePath,
     applicationVersion: "home23-coordination-m12-shadow",
   });
+  const rootKey = createHash("sha256").update("home23-coordination-auth-v1\0").update(config.capabilityToken).digest();
+  const auth = createAuthService({
+    repository: new SqliteAuthRepository(database), keyMaterial: rootKey,
+    admissionVerifier: {
+      verifyLocalOperator: (evidence) => evidence === "loopback" ? { allowed: true, network: "loopback", rateLimitKey: "operator:loopback" } : { allowed: false, reason: "operator_auth_required" },
+      verifyClient: (evidence) => evidence === "loopback" ? { allowed: true, network: "loopback", rateLimitKey: "client:loopback" } : { allowed: false, reason: "network_not_allowed" },
+    },
+  });
+  rootKey.fill(0);
+  const botRepository = new SqliteBotDirectoryRepository(database);
+  const botDirectory = createBotDirectory({ repository: botRepository, availabilityPolicy: { degradedAfterMs: 30_000, offlineAfterMs: 120_000 } });
+  const participantDirectory = Object.freeze({
+    listVisibleBots: botDirectory.listVisibleBots,
+    resolveAlias: botDirectory.resolveAlias,
+    getBotByResidentBinding: (binding: string) => botRepository.getBotByResidentBinding(binding),
+  });
+  const messagingRepository = new SqliteMessagingRepository(database, {
+    botConversationBinding: new SqliteBotConversationBindingAdapter(),
+    messageProvenanceAuthorization: new M11MessageProvenanceAuthority(),
+  });
+  const messages = createMessageService({ repository: messagingRepository, participantDirectory });
+  const unread = createUnreadService({ repository: new SqliteUnreadRepository(database), participantDirectory });
+  const work = createWorkService({ database, generateId: generateCoordinationId });
+  const leases = createLeaseService({ database, generateId: generateCoordinationId, leaseTtlMs: 60_000 });
+  const events = new SqliteEventRepository(database);
+  const bootstrap = {
+    getBootstrap: async (input: Parameters<ReturnType<typeof createBootstrapService>["getBootstrap"]>[0]) => {
+      const primary = await botRepository.getBotByResidentBinding("jerry");
+      if (!primary) throw new Error("primary Jerry Bot binding is unavailable");
+      return createBootstrapService({ repository: new SqliteBootstrapRepository(database), participantDirectory,
+        minimumClientBuild: 1, home: { id: "home_local", name: "Home23", primaryBotId: primary.id },
+        connection: { mode: "loopback", displayName: "This Home23", reachable: true },
+        capabilities: { channels: false, attachments: false, search: false, push: false, eventReplay: true, botLifecycle: false },
+        limits: { attachmentBytes: 0, attachmentCountPerMessage: 0, jsonBodyBytes: 262_144, idempotencyKeyMinimum: 16, idempotencyKeyMaximum: 128 },
+        availabilityPolicy: { degradedAfterMs: 30_000, offlineAfterMs: 120_000 },
+      }).getBootstrap(input);
+    },
+  };
+  let residentAgent: ResidentUdsAgentPort | undefined;
+  let messageSubmission;
+  if (config.flags["coordination.resident.jerry.enabled"] === true) {
+    const jerry = config.residents?.jerry;
+    if (!jerry) throw new Error("Jerry resident configuration is required when its feature is enabled");
+    const residentRootKey = Buffer.from(jerry.key, "hex");
+    const credential = createResidentCredential({ residentSlug: "jerry", role: "resident", instanceId: jerry.clientInstanceId, keyVersion: jerry.keyVersion, rootKey: residentRootKey });
+    residentRootKey.fill(0);
+    const client = new ResidentUdsClient({ socketPath: jerry.socketPath, serverInstanceId: jerry.serverInstanceId, credential });
+    residentAgent = new ResidentUdsAgentPort({ client, residentSlug: "jerry" });
+    const resident = new ResidentCoordinationAdapter(residentAgent, createM11ResidentCoordinationPort(leases));
+    const context = new SqliteDirectMessageContext(database, messages);
+    messageSubmission = createDirectMessageSubmissionService({ messages, context: { prepare: async (input) => { const prepared = await context.prepare(input); if (prepared.residentBinding !== "jerry") throw new Error("target resident is not enabled"); return prepared; } }, work, leases, resident,
+      holderInstanceId: jerry.serverInstanceId,
+      residentContext: ({ residentBinding, principalId, requestId, correlationId }) => {
+        if (residentBinding !== "jerry") throw new Error("target resident is not enabled");
+        return { principalId, requestId, correlationId, identity: { kind: "resident", resident: { requestId, correlationId, credential: { residentSlug: residentBinding, role: "resident", instanceId: jerry.serverInstanceId, keyVersion: jerry.keyVersion } } } };
+      },
+    });
+  }
   const lifecycle = createCoordinationLifecycle([{
+    name: "resident-uds-client", drain: async () => undefined, close: async () => residentAgent?.close(),
+  }, {
     name: "coordination-database",
     drain: async () => undefined,
     close: async () => database.close(),
@@ -212,13 +289,8 @@ export function createCoordinationProcess(
   const application = createCoordinationApplication({
     flags: config.flags,
     services: {
-      // Pairing/session composition is deliberately deferred. Until that
-      // dependency exists, every protected route fails closed.
-      auth: {
-        validateAccessToken: async () => {
-          throw new Error("coordination authentication is unavailable in shadow mode");
-        },
-      },
+      auth, bootstrap, unread, work, leases, events,
+      ...(messageSubmission === undefined ? {} : { messageSubmission }),
       ...(dependencies.activity === undefined
         ? {}
         : { activity: dependencies.activity }),

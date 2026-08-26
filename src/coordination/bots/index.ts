@@ -7,6 +7,7 @@ export {
   digestBotAlias,
   type CreateBotDirectoryOptions,
 } from "./service.js";
+export { SqliteBotDirectoryRepository } from "./sqlite-repository.js";
 export {
   BOT_DIRECTORY_SCHEMA_DELTA_CANONICAL_JSON,
   BOT_DIRECTORY_SCHEMA_DELTA_PROPOSAL,

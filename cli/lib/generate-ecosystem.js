@@ -77,6 +77,8 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(``);
   lines.push(`const fs = require('fs');`);
   lines.push(`const path = require('path');`);
+  lines.push(`const os = require('os');`);
+  lines.push(`const crypto = require('crypto');`);
   lines.push(`const yaml = require('js-yaml');`);
   lines.push(``);
   lines.push(`const HOME23 = ${JSON.stringify(home23Root)};`);
@@ -178,6 +180,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`const coordinationEnabled = coordinationConfig.process?.enabled === true;`);
   lines.push(`const coordinationFlags = coordinationConfig.flags || {};`);
   lines.push(`const coordinationRuntimeDir = path.join(HOME23, 'instances', '.house', 'coordination');`);
+  lines.push(`const coordinationSocketDir = path.join(os.tmpdir(), 'home23-coord-' + crypto.createHash('sha256').update(HOME23).digest('hex').slice(0, 12));`);
   lines.push(``);
   lines.push(`module.exports = {`);
   lines.push(`  apps: [`);
@@ -211,7 +214,16 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`        HOME23_COORDINATION_PORT: String(coordinationConfig.publicApi?.port || 7346),`);
   lines.push(`        HOME23_COORDINATION_DB_PATH: path.join(coordinationRuntimeDir, 'home23-coordination.sqlite3'),`);
   lines.push(`        HOME23_COORDINATION_SOCKET_PATH: path.join(coordinationRuntimeDir, 'coord.sock'),`);
+  lines.push(`        HOME23_COORDINATION_SOCKET_ROOT: coordinationSocketDir,`);
   lines.push(`        HOME23_COORDINATION_CAPABILITY_TOKEN: String(secrets.coordination?.capabilityToken || ''),`);
+  for (const resident of ['JERRY', 'FORREST']) {
+    const slug = resident.toLowerCase();
+    lines.push(`        HOME23_COORDINATION_RESIDENT_${resident}_SOCKET_PATH: path.join(coordinationSocketDir, 'resident-${slug}.sock'),`);
+    lines.push(`        HOME23_COORDINATION_RESIDENT_${resident}_SERVER_INSTANCE_ID: 'home23-${slug}-harness',`);
+    lines.push(`        HOME23_COORDINATION_RESIDENT_${resident}_CLIENT_INSTANCE_ID: 'home23-${slug}-harness',`);
+    lines.push(`        HOME23_COORDINATION_RESIDENT_${resident}_KEY_VERSION: String(secrets.coordination?.residents?.${slug}?.keyVersion || 1),`);
+    lines.push(`        HOME23_COORDINATION_RESIDENT_${resident}_KEY: String(secrets.coordination?.residents?.${slug}?.key || ''),`);
+  }
   lines.push(`      },`);
   lines.push(`    },`);
 
@@ -227,6 +239,8 @@ export function generateEcosystem(home23Root, options = {}) {
     const conversationsDir = JSON.stringify(agent.paths.conversationsDir);
     const logsDir = JSON.stringify(agent.paths.logsDir);
     const mcpEnabled = agent.config.mcp?.enabled !== false;
+    const residentCoordinationEnabled = homeConfig.coordination?.process?.enabled === true
+      && homeConfig.coordination?.flags?.[`coordination.resident.${agent.name}.enabled`] === true;
 
     lines.push(``);
     lines.push(`    // ── ${agent.name} ──`);
@@ -326,10 +340,10 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${JSON.stringify(join(agent.paths.logsDir, 'harness-out.log'))},`);
     lines.push(`      error_file: ${JSON.stringify(join(agent.paths.logsDir, 'harness-err.log'))},`);
-    // No capability key — see the note above the dashboard app. The harness
+    // No brain capability key — see the note above the dashboard app. The harness
     // reaches brain operations through the dashboard's HTTP API, never by
     // signing internal envelopes itself.
-    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
+    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}', HOME23_COORDINATION_RESIDENT_ENABLED: '${residentCoordinationEnabled ? 'true' : 'false'}', HOME23_COORDINATION_RESIDENT_SOCKET_PATH: path.join(coordinationSocketDir, 'resident-${agent.name}.sock'), HOME23_COORDINATION_RESIDENT_SERVER_INSTANCE_ID: 'home23-${agent.name}-harness', HOME23_COORDINATION_RESIDENT_CLIENT_INSTANCE_ID: 'home23-${agent.name}-harness', HOME23_COORDINATION_RESIDENT_KEY_VERSION: String(secrets.coordination?.residents?.['${agent.name}']?.keyVersion || 1), HOME23_COORDINATION_RESIDENT_KEY: String(secrets.coordination?.residents?.['${agent.name}']?.key || '') },`);
     lines.push(`    },`);
 
     // Substrate Seed (shadow resident) — emitted ONLY when the agent's config

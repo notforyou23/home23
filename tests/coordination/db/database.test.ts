@@ -17,6 +17,7 @@ import {
   COORDINATION_SCHEMA_CHECKSUM,
   COORDINATION_SCHEMA_VERSION,
   COORDINATION_SPINE_MIGRATION_CHECKSUM,
+  COORDINATION_WORK_LIFECYCLE_MIGRATION_CHECKSUM,
   CoordinationWriterBusyError,
   SchemaCompatibilityError,
   openCoordinationDatabase,
@@ -38,7 +39,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
   assert.equal(computeContractPackDigest(), COORDINATION_CONTRACT_PACK_SHA256);
   assert.equal(first.openReceipt.startupCheck, "integrity_check");
   assert.equal(first.openReceipt.migratedFrom, 0);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 5);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 6);
   assert.equal(first.openReceipt.schemaVersion, COORDINATION_SCHEMA_VERSION);
   assert.equal(first.openReceipt.schemaChecksum, COORDINATION_SCHEMA_CHECKSUM);
   assert.deepEqual(first.pragmaEvidence(), {
@@ -60,13 +61,17 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       "aliases",
       "artifacts",
       "attachment_create_idempotency",
+      "attempts",
       "authority_epochs",
       "bots",
       "channel_members",
       "channel_membership_history",
       "channels",
       "client_sessions",
+      "context_manifests",
       "conversation_handles",
+      "deliveries",
+      "delivery_attempts",
       "devices",
       "direct_channel_pairs",
       "events",
@@ -76,6 +81,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       "import_cursors",
       "import_items",
       "kernel_meta",
+      "leases",
       "legacy_sources",
       "mentions",
       "message_artifacts",
@@ -86,12 +92,17 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       "message_fts_docsize",
       "message_fts_idx",
       "messages",
+      "outbox",
       "pairing_sessions",
       "principals",
       "read_cursors",
+      "rounds",
       "schema_migrations",
       "search_watermarks",
       "session_refresh_tokens",
+      "terminal_receipts",
+      "work_observations",
+      "works",
     ],
   );
   assert.deepEqual(first.readAll("PRAGMA foreign_key_check"), []);
@@ -111,6 +122,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       { version: 3, checksum: COORDINATION_SEARCH_ATTACHMENT_MIGRATION_CHECKSUM },
       { version: 4, checksum: COORDINATION_ATOMIC_IMPORT_MIGRATION_CHECKSUM },
       { version: 5, checksum: COORDINATION_ATTACHMENT_IDEMPOTENCY_MIGRATION_CHECKSUM },
+      { version: 6, checksum: COORDINATION_WORK_LIFECYCLE_MIGRATION_CHECKSUM },
     ],
   );
   assert.deepEqual(
