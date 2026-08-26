@@ -76,6 +76,7 @@ const EXPECTED_TABLES = [
   "session_refresh_tokens",
   "terminal_receipts",
   "work_observations",
+  "work_retry_provenance",
   "works",
 ] as const;
 
@@ -116,6 +117,7 @@ const EXPECTED_INDEXES = [
   "pairing_sessions_state_expiry",
   "session_refresh_tokens_family_state",
   "work_observations_bounded_history",
+  "work_retry_provenance_source",
 ] as const;
 
 const EXPECTED_TRIGGERS = [
@@ -251,10 +253,10 @@ test("schema v1 migrates directly through the reconciled M06-M11 final catalog",
     now: () => new Date("2026-08-25T12:01:00.000Z"),
   });
   assert.equal(database.openReceipt.migratedFrom, 1);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 6);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 7);
   assert.equal(
     COORDINATION_SCHEMA_CHECKSUM,
-    "d6756d02f03d7bb4b9a3887b9de6e4d969942ecde40f9dc9fb6c128b10d4ea1e",
+    "770dfe1f6d418d3958c3158c843050d90724bba4641e0018a6312da51054f9b9",
   );
   assert.equal(
     COORDINATION_PRODUCT_SCHEMA_MIGRATION_CHECKSUM,
@@ -262,7 +264,7 @@ test("schema v1 migrates directly through the reconciled M06-M11 final catalog",
   );
   assert.equal(
     COORDINATION_MIGRATION_PLAN_CHECKSUM,
-    "974bae35402ec5bfe1be3cb36409dbea07d0654d572d8be156ad4dddf84ffb06",
+    "33a4ae72fadadfd0af3923998bce799238fb2cc97f611d8ac1790ed9b1be96f5",
   );
   assert.equal(
     COORDINATION_SEARCH_ATTACHMENT_MIGRATION_CHECKSUM,
@@ -325,6 +327,12 @@ test("schema v1 migrates directly through the reconciled M06-M11 final catalog",
         checksum: "c689c752ef911d9d067a60a02f368a6860a78f37483ff53fc1c0fe43c6afde22",
         checksumLength: 64,
       },
+      {
+        version: 7,
+        name: "work-product-controls",
+        checksum: "0e2da9e13c9a7e67c0f3e44a89049a6314e050d9fe530cba3cdb041dc4c67b7a",
+        checksumLength: 64,
+      },
     ],
   );
   assert.deepEqual(
@@ -363,7 +371,7 @@ test("schema v1 migrates directly through the reconciled M06-M11 final catalog",
   database.close();
 
   const reopened = openCoordinationDatabase({ path });
-  assert.equal(reopened.openReceipt.migratedFrom, 6);
+  assert.equal(reopened.openReceipt.migratedFrom, 7);
   assert.equal(reopened.openReceipt.startupCheck, "quick_check");
   assert.deepEqual(catalogNames(reopened, "table"), EXPECTED_TABLES);
   reopened.close();
@@ -597,7 +605,7 @@ test("restoring an exact schema v1 snapshot permits a clean migration reapply", 
   copyFileSync(snapshot, path);
   const reapplied = openCoordinationDatabase({ path });
   assert.equal(reapplied.openReceipt.migratedFrom, 1);
-  assert.equal(reapplied.openReceipt.schemaVersion, 6);
+  assert.equal(reapplied.openReceipt.schemaVersion, 7);
   assert.deepEqual(catalogNames(reapplied, "table"), EXPECTED_TABLES);
   reapplied.close();
 });

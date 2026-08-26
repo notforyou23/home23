@@ -10,6 +10,7 @@ import { COORDINATION_SPINE_MIGRATION_SQL } from "../../../src/coordination/migr
 import { CONNECTED_AGENTS_PRODUCT_SCHEMA_MIGRATION_SQL } from "../../../src/coordination/migrations/0002-connected-agents-product-schema.js";
 import { SEARCH_ATTACHMENT_SCHEMA_MIGRATION_SQL } from "../../../src/coordination/migrations/0003-search-and-attachment-schema.js";
 import { WORK_SCHEMA_DELTA_SQL } from "../../../src/coordination/work/schema-delta.js";
+import { WORK_PRODUCT_CONTROLS_MIGRATION_SQL } from "../../../src/coordination/migrations/0007-work-product-controls.js";
 
 const PREFIX = {
   attempt: "att",
@@ -51,6 +52,7 @@ export class M11TestDatabase {
       this.raw.exec(CONNECTED_AGENTS_PRODUCT_SCHEMA_MIGRATION_SQL);
       this.raw.exec(SEARCH_ATTACHMENT_SCHEMA_MIGRATION_SQL);
       this.raw.exec(WORK_SCHEMA_DELTA_SQL);
+      this.raw.exec(WORK_PRODUCT_CONTROLS_MIGRATION_SQL);
       this.seedProductRows();
     }
   }

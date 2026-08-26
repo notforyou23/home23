@@ -18,6 +18,7 @@ import {
   COORDINATION_SCHEMA_VERSION,
   COORDINATION_SPINE_MIGRATION_CHECKSUM,
   COORDINATION_WORK_LIFECYCLE_MIGRATION_CHECKSUM,
+  COORDINATION_WORK_PRODUCT_CONTROLS_MIGRATION_CHECKSUM,
   CoordinationWriterBusyError,
   SchemaCompatibilityError,
   openCoordinationDatabase,
@@ -39,7 +40,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
   assert.equal(computeContractPackDigest(), COORDINATION_CONTRACT_PACK_SHA256);
   assert.equal(first.openReceipt.startupCheck, "integrity_check");
   assert.equal(first.openReceipt.migratedFrom, 0);
-  assert.equal(COORDINATION_SCHEMA_VERSION, 6);
+  assert.equal(COORDINATION_SCHEMA_VERSION, 7);
   assert.equal(first.openReceipt.schemaVersion, COORDINATION_SCHEMA_VERSION);
   assert.equal(first.openReceipt.schemaChecksum, COORDINATION_SCHEMA_CHECKSUM);
   assert.deepEqual(first.pragmaEvidence(), {
@@ -102,6 +103,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       "session_refresh_tokens",
       "terminal_receipts",
       "work_observations",
+      "work_retry_provenance",
       "works",
     ],
   );
@@ -123,6 +125,7 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
       { version: 4, checksum: COORDINATION_ATOMIC_IMPORT_MIGRATION_CHECKSUM },
       { version: 5, checksum: COORDINATION_ATTACHMENT_IDEMPOTENCY_MIGRATION_CHECKSUM },
       { version: 6, checksum: COORDINATION_WORK_LIFECYCLE_MIGRATION_CHECKSUM },
+      { version: 7, checksum: COORDINATION_WORK_PRODUCT_CONTROLS_MIGRATION_CHECKSUM },
     ],
   );
   assert.deepEqual(

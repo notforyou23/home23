@@ -12,6 +12,7 @@ import {
 import { ATOMIC_IMPORT_LEDGER_MIGRATION_SQL } from "./0004-atomic-import-ledger.js";
 import { ATTACHMENT_CREATE_IDEMPOTENCY_MIGRATION_SQL } from "./0005-attachment-create-idempotency.js";
 import { WORK_LIFECYCLE_SCHEMA_MIGRATION_SQL } from "./0006-work-lifecycle-schema.js";
+import { WORK_PRODUCT_CONTROLS_MIGRATION_SQL } from "./0007-work-product-controls.js";
 
 export {
   COORDINATION_PRODUCT_SCHEMA_DEPENDENCIES,
@@ -62,6 +63,8 @@ export const COORDINATION_ATTACHMENT_IDEMPOTENCY_MIGRATION_CHECKSUM =
   "0f59653d21c1950164b7a16f3a83c9be0b5b4b3295e77ceb22151a4d651fc536";
 export const COORDINATION_WORK_LIFECYCLE_MIGRATION_CHECKSUM =
   "c689c752ef911d9d067a60a02f368a6860a78f37483ff53fc1c0fe43c6afde22";
+export const COORDINATION_WORK_PRODUCT_CONTROLS_MIGRATION_CHECKSUM =
+  "0e2da9e13c9a7e67c0f3e44a89049a6314e050d9fe530cba3cdb041dc4c67b7a";
 
 export const COORDINATION_MIGRATIONS = Object.freeze([
   defineMigration(
@@ -106,6 +109,13 @@ export const COORDINATION_MIGRATIONS = Object.freeze([
     COORDINATION_WORK_LIFECYCLE_MIGRATION_CHECKSUM,
     "d6756d02f03d7bb4b9a3887b9de6e4d969942ecde40f9dc9fb6c128b10d4ea1e",
   ),
+  defineMigration(
+    7,
+    "work-product-controls",
+    WORK_PRODUCT_CONTROLS_MIGRATION_SQL,
+    COORDINATION_WORK_PRODUCT_CONTROLS_MIGRATION_CHECKSUM,
+    "770dfe1f6d418d3958c3158c843050d90724bba4641e0018a6312da51054f9b9",
+  ),
 ]);
 
 export const COORDINATION_SCHEMA_VERSION =
@@ -125,7 +135,7 @@ export function computeCoordinationMigrationPlanChecksum(
 // Reviewed with the immutable migration bytes. A historical migration edit
 // must fail before any database is opened.
 export const COORDINATION_MIGRATION_PLAN_CHECKSUM =
-  "974bae35402ec5bfe1be3cb36409dbea07d0654d572d8be156ad4dddf84ffb06";
+  "33a4ae72fadadfd0af3923998bce799238fb2cc97f611d8ac1790ed9b1be96f5";
 
 if (computeCoordinationMigrationPlanChecksum() !== COORDINATION_MIGRATION_PLAN_CHECKSUM) {
   throw new Error("coordination migration bytes differ from the reviewed migration checksum");

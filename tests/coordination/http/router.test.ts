@@ -507,6 +507,28 @@ test("an injected M11 placeholder cannot activate Work mutation", async (t) => {
   assert.equal(cancelCalls, 0);
 });
 
+test("Work product routes expose compact DTOs and invoke authenticated idempotent controls", async (t) => {
+  const calls: string[] = [];
+  const compact = { id: "wrk_0198d95f-6c00-7000-8000-000000000082", channelId: "chn_0198d95f-6c00-7000-8000-000000000001", state: "running" as const, cancelAvailable: true, retryAvailable: false, createdAt: fixture.serverTime, updatedAt: fixture.serverTime, terminalAt: null, retryOfWorkId: null };
+  const application = createCoordinationApplication({ flags: enabledShellFlags, services: {
+    auth: { validateAccessToken: async () => authPrincipal },
+    workControl: {
+      get: ({ context }) => { calls.push(`get:${context.principalId}`); return compact; },
+      cancel: ({ idempotencyKey }) => { calls.push(`cancel:${idempotencyKey}`); return { outcome: "cancellation_requested", replayed: false, work: { ...compact, state: "stopping", cancelAvailable: false } }; },
+      retry: ({ idempotencyKey }) => { calls.push(`retry:${idempotencyKey}`); return { outcome: "retried", replayed: false, work: { ...compact, id: "wrk_0198d95f-6c00-7000-8000-000000000083", state: "queued", retryOfWorkId: compact.id } }; },
+    },
+  } });
+  const server = createCoordinationHttpServer({ application, port: 0 }); t.after(() => server.drain());
+  const address = await server.start();
+  const detail = await fetch(`${address.origin}/api/v1/work/${compact.id}`, { headers: authHeaders() });
+  assert.equal(detail.status, 200); assert.deepEqual((await detail.json() as any).work, compact);
+  const cancel = await fetch(`${address.origin}/api/v1/work/${compact.id}/cancel`, { method: "POST", headers: { ...authHeaders(), "idempotency-key": "product-cancel-route-0001" } });
+  assert.equal(cancel.status, 202); assert.equal((await cancel.json() as any).work.state, "stopping");
+  const retry = await fetch(`${address.origin}/api/v1/work/${compact.id}/retry`, { method: "POST", headers: { ...authHeaders(), "idempotency-key": "product-retry-route-0001" } });
+  assert.equal(retry.status, 201); assert.equal((await retry.json() as any).work.retryOfWorkId, compact.id);
+  assert.deepEqual(calls, ["get:user_owner", "cancel:product-cancel-route-0001", "retry:product-retry-route-0001"]);
+});
+
 test("HTTP drain is single-flight and waits for an in-flight protected route", async () => {
   let releaseBootstrap!: () => void;
   let enteredBootstrap!: () => void;

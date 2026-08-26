@@ -5,6 +5,8 @@ import { CoordinationLifecycleDrainingError } from "../app/index.js";
 import { ArtifactError } from "../artifacts/index.js";
 import { BotLifecycleError } from "../bot-lifecycle/index.js";
 import { ChannelCoordinatorError } from "../channel-coordinator/index.js";
+import { WorkError } from "../work/index.js";
+import { LeaseError } from "../leases/index.js";
 
 export class CoordinationHttpError extends Error {
   readonly name = "CoordinationHttpError";
@@ -100,6 +102,14 @@ export function toCoordinationHttpFailure(error: unknown): CoordinationHttpFailu
       details: error.details,
       message: "Search request failed.",
     };
+  }
+  if (error instanceof WorkError || error instanceof LeaseError) {
+    const status = error.code === "not_found" ? 404
+      : error.code === "ineligible" ? 403
+      : error.code === "invalid_request" || error.code === "invalid_manifest" ? 400
+      : 409;
+    return { code: error.code, httpStatus: status,
+      retryable: error.code === "stale_fence", details: {}, message: "Work request failed." };
   }
   if (error instanceof CoordinationLifecycleDrainingError) {
     return {

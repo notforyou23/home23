@@ -17,7 +17,7 @@ import { createLeaseService } from "../leases/index.js";
 import { createMessageService } from "../messages/index.js";
 import { createCanonicalSearchService, SqliteCanonicalSearchRepository } from "../search/index.js";
 import { createUnreadService, SqliteUnreadRepository } from "../unread/index.js";
-import { createWorkService, M11MessageProvenanceAuthority } from "../work/index.js";
+import { createProductWorkControl, createWorkService, M11MessageProvenanceAuthority } from "../work/index.js";
 import { generateCoordinationId } from "../ids/index.js";
 import { createResidentCredential } from "../resident-protocol/index.js";
 import { ResidentUdsClient } from "../transport/uds/index.js";
@@ -294,6 +294,7 @@ export function createCoordinationProcess(
   const unread = createUnreadService({ repository: new SqliteUnreadRepository(database), participantDirectory });
   const work = createWorkService({ database, generateId: generateCoordinationId });
   const leases = createLeaseService({ database, generateId: generateCoordinationId, leaseTtlMs: 60_000 });
+  const workControl = createProductWorkControl({ database, work, leases });
   const events = new SqliteEventRepository(database);
   const bootstrap = {
     getBootstrap: async (input: Parameters<ReturnType<typeof createBootstrapService>["getBootstrap"]>[0]) => {
@@ -339,7 +340,7 @@ export function createCoordinationProcess(
     flags: config.flags,
     services: {
       auth, bootstrap, bots: botDirectory, channels, messages, unread, search,
-      work, leases, events,
+      work, workControl, leases, events,
       ...(messageSubmission === undefined ? {} : { messageSubmission }),
       ...(dependencies.activity === undefined
         ? {}

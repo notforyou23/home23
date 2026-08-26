@@ -9,6 +9,7 @@ import type { CanonicalSearchService } from "../search/index.js";
 import type { FEATURE_FLAG_REGISTRY } from "../schema/contract-registry.js";
 import type { createUnreadService } from "../unread/index.js";
 import type { createWorkService } from "../work/index.js";
+import type { ProductWorkControlPort } from "../work/index.js";
 import type { createChannelCoordinator } from "../channel-coordinator/index.js";
 import type { SqliteEventRepository } from "../events/index.js";
 import type { BotLifecycleReceipt, createBotLifecycleService } from "../bot-lifecycle/index.js";
@@ -140,6 +141,7 @@ export interface CoordinationServices {
   search?: CanonicalSearchService;
   messageSubmission?: CoordinationMessageSubmissionPort;
   work?: CoordinationWorkPort;
+  workControl?: ProductWorkControlPort;
   leases?: CoordinationLeasePort;
   activity?: CoordinationActivityReadPort;
   bots?: CoordinationBotDirectoryPort;

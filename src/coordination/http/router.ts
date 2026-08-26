@@ -463,16 +463,19 @@ export function createCoordinationRouter(input: {
     );
   }
 
-  router.get("/api/v1/work/:workId", productRead, unavailableRoute("work"));
+  router.get("/api/v1/work/:workId", productRead, asyncRoute(async (request, response) => {
+    if (!application.capabilities().capabilities.work || !application.services.workControl) throw unavailable("work");
+    response.json({ work: application.services.workControl.get({ context: requireCoordinationContext(response), workId: pathParameter(request.params.workId) }) });
+  }));
 
-  for (const operation of ["cancel", "retry"] as const) {
-    router.post(
-      `/api/v1/work/:workId/${operation}`,
-      messageSend,
-      requireIdempotencyKey(application),
-      unavailableRoute("workMutation"),
-    );
-  }
+  for (const operation of ["cancel", "retry"] as const) router.post(
+    `/api/v1/work/:workId/${operation}`, messageSend, requireIdempotencyKey(application),
+    asyncRoute(async (request, response) => {
+      if (!application.capabilities().capabilities.workMutation || !application.services.workControl) throw unavailable("workMutation");
+      const result = application.services.workControl[operation]({ context: requireCoordinationContext(response), workId: pathParameter(request.params.workId), idempotencyKey: coordinationIdempotencyKey(response) });
+      response.status(operation === "retry" && !result.replayed ? 201 : operation === "cancel" && result.outcome === "cancellation_requested" ? 202 : 200).json(result);
+    }),
+  );
 
   router.use((_request, _response, next) => {
     next(new CoordinationHttpError(

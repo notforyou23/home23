@@ -75,8 +75,8 @@ function capabilityDocument(input: {
       eventReplay: processEnabled && input.services.events !== undefined,
       attachments:
         mutationsEnabled && input.services.attachments !== undefined,
-      work: false,
-      workMutation: false,
+      work: processEnabled && input.services.workControl !== undefined,
+      workMutation: mutationsEnabled && input.services.workControl !== undefined,
       activity:
         processEnabled && typeof input.services.activity?.list === "function",
       botLifecycle:
