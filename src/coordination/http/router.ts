@@ -269,7 +269,7 @@ export function createCoordinationRouter(input: {
   }));
 
   router.post("/api/v1/channels", messageSend, requireIdempotencyKey(application), jsonBody, asyncRoute(async (request, response) => {
-    if (!application.flags["coordination.channels.enabled"] || !application.services.channels) throw unavailable("channelsRead");
+    if (!application.capabilities().capabilities.channelMutation || !application.services.channels) throw unavailable("channelMutation");
     const body = jsonObjectBody(request.body);
     const common = { context: requireCoordinationContext(response), memberBotIds: body.memberBotIds as string[], title: body.title as string, purpose: body.purpose as string, pinned: body.pinned as boolean, responderPolicy: body.responderPolicy as any, idempotencyKey: coordinationIdempotencyKey(response) };
     const result = body.kind === "direct" ? await application.services.channels.createDirectConversation(common) : body.kind === "group" ? await application.services.channels.createGroupChannel(common) : (() => { throw new CoordinationHttpError("request_invalid", 400, false); })();

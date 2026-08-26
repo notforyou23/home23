@@ -57,6 +57,10 @@ function capabilityDocument(input: {
     capabilities: Object.freeze({
       bootstrap: processEnabled && input.services.bootstrap !== undefined,
       channelsRead: processEnabled && input.services.channels !== undefined,
+      channelMutation:
+        mutationsEnabled &&
+        input.flags["coordination.channels.enabled"] === true &&
+        input.services.channels !== undefined,
       conversationsRead: processEnabled && input.services.unread !== undefined,
       messagesRead: processEnabled && input.services.messages !== undefined,
       unreadRead: processEnabled && input.services.unread !== undefined,

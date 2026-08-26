@@ -42,6 +42,7 @@ test("capability advertisement stays off for every dependency that is absent", (
     capabilities: {
       bootstrap: true,
       channelsRead: false,
+      channelMutation: false,
       conversationsRead: false,
       messagesRead: false,
       unreadRead: false,
@@ -119,6 +120,34 @@ test("canonical search requires both its server flag and its injected domain ser
   assert.equal(withFlag.capabilities().capabilities.search, true);
 });
 
+test("Channel mutation requires public mutations, its flag, and the Channel service", () => {
+  const auth = { validateAccessToken: async () => { throw new Error("unused"); } };
+  const channels = {} as any;
+  const withoutFlag = createCoordinationApplication({
+    flags: enabledShellFlags,
+    services: { auth, channels },
+  });
+  const withFlag = createCoordinationApplication({
+    flags: {
+      ...enabledShellFlags,
+      "coordination.channels.enabled": true,
+    },
+    services: { auth, channels },
+  });
+  const withoutPublicMutations = createCoordinationApplication({
+    flags: {
+      ...enabledShellFlags,
+      "coordination.public_api.enabled": false,
+      "coordination.channels.enabled": true,
+    },
+    services: { auth, channels },
+  });
+
+  assert.equal(withoutFlag.capabilities().capabilities.channelMutation, false);
+  assert.equal(withFlag.capabilities().capabilities.channelMutation, true);
+  assert.equal(withoutPublicMutations.capabilities().capabilities.channelMutation, false);
+});
+
 test("attachments require the public mutation flag and one complete injected service", () => {
   const attachments = {
     create: async () => { throw new Error("unused"); },
@@ -160,6 +189,7 @@ test("read routes without a complete event-boundary contract remain unadvertised
   });
 
   assert.equal(application.capabilities().capabilities.channelsRead, false);
+  assert.equal(application.capabilities().capabilities.channelMutation, false);
   assert.equal(application.capabilities().capabilities.conversationsRead, false);
   assert.equal(application.capabilities().capabilities.messagesRead, false);
   assert.equal(application.capabilities().capabilities.unreadRead, false);

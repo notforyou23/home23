@@ -171,6 +171,7 @@ export interface CoordinationHttpLimits {
 export interface CoordinationAdvertisedCapabilities {
   bootstrap: boolean;
   channelsRead: boolean;
+  channelMutation: boolean;
   conversationsRead: boolean;
   messagesRead: boolean;
   unreadRead: boolean;

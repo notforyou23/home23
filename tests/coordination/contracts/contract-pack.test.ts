@@ -89,6 +89,7 @@ const EXPECTED_FLAGS = [
 const CAPABILITY_KEYS = [
   "bootstrap",
   "channelsRead",
+  "channelMutation",
   "conversationsRead",
   "messagesRead",
   "unreadRead",
