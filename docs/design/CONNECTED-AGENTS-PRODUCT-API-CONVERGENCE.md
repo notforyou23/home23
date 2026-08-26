@@ -14,7 +14,7 @@ Keep the listener at the canonical coordination port (default `7346`) and explic
 
 ## Lifecycle removal semantics
 
-The frozen v1 contract uses recoverable archive/restore, not destructive Bot deletion. This slice exposes create/list/get/start/stop. Archive/restore must converge only after the canonical M28 directory and resident adapters expose a single idempotent operation that retains mailbox/history; HTTP must not emulate deletion with process stop or filesystem removal.
+The frozen v1 contract uses recoverable archive/restore, not destructive Bot deletion. The canonical lifecycle boundary exposes create/list/get/start/stop/archive/restore. Archive and restore are owner-authorized, authority-epoch checked, idempotent receipt-backed operations: they use exact resident process names and atomically transition only the SQLite Bot lifecycle/runtime-registration projection. Stable Bot, conversation/mailbox, transcript, attachment links, aliases, resident files, and provenance are retained. There is no destructive Bot delete route.
 
 ## Activation order
 
@@ -34,4 +34,6 @@ Bot details truthfully labels the attested default boundary as `local_mac` / `Th
 - `canonical_scheduler_adapter_unavailable`: the scheduler has no reviewed canonical routine-summary adapter in this bounded convergence.
 - `consequential_action_consumer_unavailable`: the policy engine exists, but no native consequential action consumer supplies replay-safe approval persistence/action.
 
-Archive/restore remains blocked on the canonical M28 operation described above. Delegated Channel coordination remains blocked on the trusted M16 adapter. Neither is emulated through process labels, raw Work endpoints, or direct database writes. Canonical Inbox activity derives compact queued/background/stopping/attention state from durable Work after restart while withholding Work IDs.
+Archive/restore is available only when the complete canonical M28 lifecycle composition is present and its feature flag and authority epoch are active; otherwise the routes remain unavailable. Delegated Channel coordination remains blocked on the trusted M16 adapter. Neither capability is inferred from process labels or raw Work endpoints. Canonical Inbox activity derives compact queued/background/stopping/attention state from durable Work after restart while withholding Work IDs.
+
+Apple and web clients may call the contract-locked `POST /api/v1/bots/{botId}/archive` and `/restore` endpoints with an idempotency key. They should retain cached transcript/attachment projections while archived, remove the Bot from ordinary active composition, and reconcile the returned receipt plus subsequent canonical event. A successful archive receipt means exact resident processes were stopped and the directory is archived; restore means exact resident processes were started and the same stable mailbox became active. Neither response claims a VM or isolated execution boundary.

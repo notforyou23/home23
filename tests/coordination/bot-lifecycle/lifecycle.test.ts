@@ -113,6 +113,16 @@ async function fixture(options: { failMailbox?: boolean; enabled?: boolean; mode
         return bot;
       },
       getByBotId: async (id) => bots.get(id) ?? null,
+      transitionLifecycle: async (input) => {
+        const current = bots.get(input.botId);
+        if (!current) throw Object.assign(new Error("bot_not_found"), { code: "bot_not_found" });
+        if (current.lifecycle !== input.from && current.lifecycle !== input.to) {
+          throw Object.assign(new Error("lifecycle_conflict"), { code: "lifecycle_conflict" });
+        }
+        const updated = { ...current, lifecycle: input.to, version: current.version + 1, updatedAt: input.changedAt };
+        bots.set(input.botId, updated);
+        return updated;
+      },
     },
     processes: {
       startExact: async (names) => { processCalls.push({ operation: "start", names: [...names] }); },
@@ -161,6 +171,21 @@ test("exact-name stop/start/restart preserves stable Bot ID and mailbox", async 
   assert.deepEqual(f.processCalls.map((call) => call.operation), ["stop", "start", "restart"]);
   assert.ok(f.processCalls.every((call) => call.names.every((name) => name.startsWith("home23-fixture-bot"))));
   assert.equal(f.bots.get("bot_fixture")?.conversationId, "conversation_fixture");
+});
+
+test("archive and restore are authorized, idempotent, and preserve stable transcript identity", async () => {
+  const f = await fixture();
+  const created = await f.service.create(createRequest());
+  const archived = await f.service.control(controlRequest("archive", "request_archive"));
+  assert.equal(archived.mailboxId, created.mailboxId);
+  assert.equal(f.bots.get(created.botId!)?.lifecycle, "archived");
+  assert.deepEqual(f.processCalls.map((call) => call.operation), ["stop"]);
+  assert.deepEqual(await f.service.control(controlRequest("archive", "request_archive")), archived);
+
+  const restored = await f.service.control(controlRequest("restore", "request_restore"));
+  assert.equal(restored.mailboxId, created.mailboxId);
+  assert.equal(f.bots.get(created.botId!)?.lifecycle, "active");
+  assert.deepEqual(f.processCalls.map((call) => call.operation), ["stop", "start"]);
 });
 
 test("mailbox failure archives partial resident and records a retry-safe failure receipt", async () => {

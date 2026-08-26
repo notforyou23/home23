@@ -204,12 +204,26 @@ export function createBotLifecycleService(options: CreateBotLifecycleServiceOpti
     const { epoch, decision } = await authorize(request);
     const bot = await options.mailboxBinder.getByBotId(request.botId);
     if (!bot || !bot.conversationId) throw new BotLifecycleError("bot_not_found");
+    const lifecycleTarget = request.operation === "archive" ? "archived" :
+      request.operation === "restore" ? "active" : null;
+    if (lifecycleTarget !== null && bot.lifecycle === lifecycleTarget) {
+      return save({
+        requestId: request.requestId, requestDigest: digest, correlationId: request.correlationId,
+        operation: request.operation, residentBinding: bot.residentBinding,
+        botId: bot.id, mailboxId: bot.conversationId, authorityEpoch: epoch.epoch,
+        policyDecision: decision, outcome: "succeeded", completedPhases: ["authorized"],
+        processNames: [], failure: null, createdAt: validDate(now),
+      });
+    }
+    if (lifecycleTarget !== null && !(["active", "archived"] as const).includes(bot.lifecycle as "active" | "archived")) {
+      throw new BotLifecycleError("request_invalid", "Bot lifecycle cannot be transitioned");
+    }
     const resident = await options.provisioner.inspect(bot.residentBinding);
     if (!resident) throw new BotLifecycleError("resident_not_found");
     const processNames = validProcessManifest(resident);
     try {
-      if (request.operation === "start") await options.processes.startExact(processNames);
-      else if (request.operation === "stop") await options.processes.stopExact(processNames);
+      if (request.operation === "start" || request.operation === "restore") await options.processes.startExact(processNames);
+      else if (request.operation === "stop" || request.operation === "archive") await options.processes.stopExact(processNames);
       else await options.processes.restartExact(processNames);
     } catch (error) {
       const receipt = await save({
@@ -222,13 +236,41 @@ export function createBotLifecycleService(options: CreateBotLifecycleServiceOpti
       });
       throw new BotLifecycleError("operation_failed", "Exact process operation failed", receipt);
     }
+    const changedAt = validDate(now);
+    if (lifecycleTarget !== null) {
+      try {
+        await options.mailboxBinder.transitionLifecycle({
+          botId: bot.id,
+          from: request.operation === "archive" ? "active" : "archived",
+          to: lifecycleTarget,
+          requestId: request.requestId,
+          correlationId: request.correlationId,
+          actorPrincipalId: request.actorPrincipalId,
+          changedAt,
+        });
+      } catch (error) {
+        const receipt = await save({
+          requestId: request.requestId, requestDigest: digest, correlationId: request.correlationId,
+          operation: request.operation, residentBinding: bot.residentBinding,
+          botId: bot.id, mailboxId: bot.conversationId, authorityEpoch: epoch.epoch,
+          policyDecision: decision, outcome: "failed", completedPhases: ["authorized", "process_changed"],
+          processNames, failure: { phase: "mailbox_transition", code: errorCode(error), partialResidentArchived: false },
+          createdAt: changedAt,
+        });
+        throw new BotLifecycleError("operation_failed", "Mailbox lifecycle transition failed", receipt);
+      }
+    }
     return save({
       requestId: request.requestId, requestDigest: digest, correlationId: request.correlationId,
       operation: request.operation, residentBinding: bot.residentBinding,
       botId: bot.id, mailboxId: bot.conversationId, authorityEpoch: epoch.epoch,
       policyDecision: decision, outcome: "succeeded",
-      completedPhases: ["authorized", "process_changed"], processNames,
-      failure: null, createdAt: validDate(now),
+      completedPhases: lifecycleTarget === "archived"
+        ? ["authorized", "process_changed", "mailbox_archived"]
+        : lifecycleTarget === "active"
+          ? ["authorized", "process_changed", "mailbox_restored"]
+          : ["authorized", "process_changed"],
+      processNames, failure: null, createdAt: changedAt,
     });
   }
 

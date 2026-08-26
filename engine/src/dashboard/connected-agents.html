@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="light dark"><title>Home23</title>
+  <link rel="stylesheet" href="/connected-agents.css?v=20260825b">
+  <link rel="stylesheet" href="/connected-agents-fixes.css?v=20260825b">
+</head>
+<body>
+  <a class="ca-skip" href="#conversation">Skip to conversation</a>
+  <main class="ca-shell" id="app" aria-busy="true">
+    <aside class="ca-sidebar" aria-label="Inbox">
+      <header class="ca-homebar">
+        <div><h1>Home23</h1><p id="connection-label">Connecting…</p></div>
+        <button class="ca-round" id="settings-button" aria-label="Connection and settings" title="Connection and settings">•••</button>
+      </header>
+      <button class="ca-search-button" id="search-button"><span>⌕</span><span>Search</span><kbd>⌘ K</kbd></button>
+      <div class="ca-create-actions">
+        <button id="new-bot-button"><span aria-hidden="true">＋</span> New Bot</button>
+        <button id="new-channel-button"><span aria-hidden="true">＋</span> New Channel</button>
+      </div>
+      <div class="ca-roster" id="roster" aria-live="polite">
+        <section aria-labelledby="bots-heading"><div class="ca-section-head"><h2 id="bots-heading">Bots</h2></div><div id="bots-list" class="ca-rows"><div class="ca-skeleton"></div><div class="ca-skeleton"></div></div></section>
+        <section aria-labelledby="channels-heading"><div class="ca-section-head"><h2 id="channels-heading">Channels</h2></div><div id="channels-list" class="ca-rows"><div class="ca-empty-row">Loading channels…</div></div></section>
+      </div>
+      <footer><span id="unread-total">0 unread</span><a href="/home23/legacy">Legacy dashboard</a></footer>
+    </aside>
+
+    <section class="ca-conversation" id="conversation" tabindex="-1" aria-label="Conversation">
+      <div class="ca-welcome" id="welcome"><div class="ca-house-mark">H23</div><h2>Your conversations live here.</h2><p>Choose Jerry, Forrest, another Bot, or a Channel.</p></div>
+    </section>
+    <aside class="ca-details-pane" id="details-pane" aria-label="Details" hidden></aside>
+  </main>
+
+  <div class="ca-banner" id="connection-banner" role="status" hidden><span id="banner-text"></span><button id="banner-retry">Retry</button></div>
+
+  <dialog id="search-dialog" class="ca-modal ca-search-modal" aria-labelledby="search-title">
+    <form method="dialog" class="ca-dialog-head"><div><p class="ca-kicker">FIND IN HOME23</p><h2 id="search-title">Search</h2></div><button class="ca-close" value="cancel" aria-label="Close">×</button></form>
+    <form id="search-form" class="ca-search-form"><label class="ca-search-field"><span aria-hidden="true">⌕</span><input id="search-input" type="search" placeholder="Bots, Channels, messages…" autocomplete="off" aria-label="Search Home23"></label></form>
+    <div class="ca-scopes" id="search-scopes" role="tablist" aria-label="Search scope">
+      <button class="active" data-scope="all" role="tab" aria-selected="true">All</button><button data-scope="bots" role="tab">Bots</button><button data-scope="channels" role="tab">Channels</button><button data-scope="messages" role="tab">Messages</button><button data-scope="attachments" role="tab">Attachments</button>
+    </div>
+    <div id="search-status" class="ca-search-status">Type to search this Home23.</div><div id="search-results" class="ca-search-results"></div>
+  </dialog>
+
+  <dialog id="bot-dialog" class="ca-modal" aria-labelledby="bot-dialog-title">
+    <form class="ca-editor" id="bot-form">
+      <div class="ca-dialog-head"><div><p class="ca-kicker">CONTINUING SPECIALIST</p><h2 id="bot-dialog-title">New Bot</h2></div><button class="ca-close" type="button" data-close="bot-dialog" aria-label="Close">×</button></div>
+      <p class="ca-dialog-copy">Give this Bot a durable identity and its own conversation.</p>
+      <label>Name<input id="bot-name" maxlength="80" autocomplete="off" required></label>
+      <label>Purpose and instructions<textarea id="bot-purpose" maxlength="500" rows="5" required></textarea></label>
+      <label>Accent <input id="bot-accent" type="color" value="#638eb8"></label>
+      <details><summary>Advanced</summary><p>Default execution follows this Home23 installation. Additional model, notification, and connector choices are available after provisioning.</p></details>
+      <div class="ca-form-error" id="bot-form-error" role="alert"></div>
+      <div class="ca-dialog-actions"><button type="button" data-close="bot-dialog">Cancel</button><button class="primary" type="submit">Create Bot</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="channel-dialog" class="ca-modal" aria-labelledby="channel-dialog-title">
+    <form class="ca-editor" id="channel-form">
+      <div class="ca-dialog-head"><div><p class="ca-kicker">A SHARED ROOM</p><h2 id="channel-dialog-title">New Channel</h2></div><button class="ca-close" type="button" data-close="channel-dialog" aria-label="Close">×</button></div>
+      <label>Name<input id="channel-name" maxlength="100" required></label>
+      <label>Purpose <textarea id="channel-purpose" maxlength="500" rows="3" required></textarea></label>
+      <fieldset><legend>Bots in this Channel</legend><div id="channel-members" class="ca-member-picker"></div></fieldset>
+      <p class="ca-field-help">Mention a Bot to address it directly. Without a mention, the first selected Bot responds.</p>
+      <div class="ca-form-error" id="channel-form-error" role="alert"></div>
+      <div class="ca-dialog-actions"><button type="button" data-close="channel-dialog">Cancel</button><button class="primary" type="submit">Create Channel</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="connection-dialog" class="ca-modal" aria-labelledby="connection-title">
+    <form class="ca-editor" id="connection-form">
+      <div class="ca-dialog-head"><div><p class="ca-kicker">THIS BROWSER</p><h2 id="connection-title">Connection</h2></div><button class="ca-close" type="button" data-close="connection-dialog" aria-label="Close">×</button></div>
+      <p class="ca-dialog-copy">Use an access token from the Home23 pairing flow. It remains in this browser tab and is forwarded only to the authenticated product API.</p>
+      <label>Access token<input id="token-input" type="password" autocomplete="off" required></label>
+      <div class="ca-secondary-links"><button type="button" id="forget-token">Forget this token</button><a href="/home23/legacy">Open Legacy dashboard</a></div>
+      <div class="ca-dialog-actions"><button type="button" data-close="connection-dialog">Cancel</button><button class="primary" type="submit">Connect</button></div>
+    </form>
+  </dialog>
+  <div class="ca-toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/connected-agents.js?v=20260825b" defer></script>
+</body></html>

@@ -2,11 +2,13 @@ import type { BotProjection } from "../bots/index.js";
 import type { AuthorityEpoch } from "../epochs/index.js";
 import type { PolicyDecision, PolicyRequest } from "../policy/index.js";
 
-export type BotLifecycleOperation = "create" | "start" | "stop" | "restart";
+export type BotLifecycleOperation = "create" | "start" | "stop" | "restart" | "archive" | "restore";
 export type BotLifecyclePhase =
   | "authorized"
   | "resident_created"
   | "mailbox_bound"
+  | "mailbox_archived"
+  | "mailbox_restored"
   | "process_changed";
 
 export interface PersistentBotCreateRequest {
@@ -67,6 +69,16 @@ export interface PersistentMailboxBinder {
     requiredCapabilities: readonly string[];
   }): Promise<BotProjection>;
   getByBotId(botId: string): Promise<BotProjection | null>;
+  /** Atomic canonical directory transition. It must not remove transcript, aliases, or resident files. */
+  transitionLifecycle(input: {
+    botId: string;
+    from: "active" | "archived";
+    to: "active" | "archived";
+    requestId: string;
+    correlationId: string;
+    actorPrincipalId: "user_owner";
+    changedAt: string;
+  }): Promise<BotProjection>;
 }
 
 export interface ExactNameProcessController {
@@ -95,7 +107,7 @@ export interface BotLifecycleReceipt {
   readonly completedPhases: readonly BotLifecyclePhase[];
   readonly processNames: readonly string[];
   readonly failure: null | {
-    readonly phase: "resident_create" | "mailbox_bind" | "process_change";
+    readonly phase: "resident_create" | "mailbox_bind" | "process_change" | "mailbox_transition";
     readonly code: string;
     readonly partialResidentArchived: boolean;
   };

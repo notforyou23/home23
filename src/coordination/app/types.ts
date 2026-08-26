@@ -65,7 +65,7 @@ export interface CoordinationChannelCoordinatorPort {
 
 export interface CoordinationBotLifecyclePort {
   create(input: { context: MessagingActorContext; idempotencyKey: string; residentBinding: string; displayName: string; purpose: string; requiredCapabilities: readonly string[] }): Promise<BotLifecycleReceipt>;
-  control(input: { context: MessagingActorContext; idempotencyKey: string; botId: string; operation: "start" | "stop" }): Promise<BotLifecycleReceipt>;
+  control(input: { context: MessagingActorContext; idempotencyKey: string; botId: string; operation: "start" | "stop" | "restart" | "archive" | "restore" }): Promise<BotLifecycleReceipt>;
 }
 
 /**

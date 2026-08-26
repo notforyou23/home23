@@ -71,7 +71,7 @@ export type BotLifecycleCompositionOptions = Readonly<
   CreateBotLifecycleServiceOptions & {
     enabled: true;
     resolveHttpPolicy(input: {
-      operation: "create" | "start" | "stop";
+      operation: "create" | "start" | "stop" | "restart" | "archive" | "restore";
       target: string;
     }): PolicyRequest;
   }

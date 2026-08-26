@@ -87,6 +87,9 @@ test("Activity, lifecycle, and coordinator routes invoke only injected trusted p
   assert.equal((await fetch(`${address.origin}/api/v1/bots`, { method: "POST", headers: headers("product-api-create-bot"), body: JSON.stringify({ residentBinding: "specialist", displayName: "Specialist", purpose: "Continuing specialist", requiredCapabilities: ["messages"] }) })).status, 201);
   assert.equal((await fetch(`${address.origin}/api/v1/bots/bot_0198d95f-6c00-7000-8000-000000000001/start`, { method: "POST", headers: headers("product-api-start-bot") })).status, 200);
   assert.equal((await fetch(`${address.origin}/api/v1/bots/bot_0198d95f-6c00-7000-8000-000000000001/stop`, { method: "POST", headers: headers("product-api-stop-bot") })).status, 200);
+  assert.equal((await fetch(`${address.origin}/api/v1/bots/bot_0198d95f-6c00-7000-8000-000000000001/restart`, { method: "POST", headers: headers("product-api-restart-bot") })).status, 200);
+  assert.equal((await fetch(`${address.origin}/api/v1/bots/bot_0198d95f-6c00-7000-8000-000000000001/archive`, { method: "POST", headers: headers("product-api-archive-bot") })).status, 200);
+  assert.equal((await fetch(`${address.origin}/api/v1/bots/bot_0198d95f-6c00-7000-8000-000000000001/restore`, { method: "POST", headers: headers("product-api-restore-bot") })).status, 200);
   assert.equal((await fetch(`${address.origin}/api/v1/channels/chn_0198d95f-6c00-7000-8000-000000000001/coordinate`, { method: "POST", headers: headers(), body: JSON.stringify({ messageId: fixtureId("message", 1) }) })).status, 202);
-  assert.deepEqual(calls, ["activity", "bot.create", "bot.start", "bot.stop", "channel.coordinate"]);
+  assert.deepEqual(calls, ["activity", "bot.create", "bot.start", "bot.stop", "bot.restart", "bot.archive", "bot.restore", "channel.coordinate"]);
 });

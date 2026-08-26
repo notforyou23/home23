@@ -86,6 +86,7 @@ const {
   registerSynthesisCompatibilityRoutes,
 } = require('./brain-operations/synthesis-compatibility-routes.js');
 const { unprivilegedChildEnv } = require('../../../shared/child-process-env.cjs');
+const { createConnectedAgentsProxy } = require('./connected-agents-proxy.js');
 
 const PM2_ENV_BLOCKLIST = [
   'cron_restart',
@@ -2289,6 +2290,14 @@ class DashboardServer {
     // wait-aware, and backed by the shared Chat model authority.
     this.app.use(createLegacyQueryRetirementRouter());
 
+    // Same-origin, token-forwarding facade over the canonical loopback-only
+    // product API. It carries no service credential and cannot bypass product
+    // auth, capability flags, lifecycle policy, or idempotency enforcement.
+    this.app.use('/home23/api/product', createConnectedAgentsProxy({
+      origin: this._dashboardOptions.coordinationOrigin,
+      fetchImpl: this._dashboardOptions.coordinationFetch,
+    }));
+
     this.app.use(express.static(path.join(__dirname), {
       setHeaders(res, filePath) {
         if (/\.(?:html|js|mjs|css)$/.test(filePath)) {
@@ -2310,11 +2319,16 @@ class DashboardServer {
       }
       if (hasAgents) {
         res.setHeader('Cache-Control', 'no-store, max-age=0');
-        res.sendFile(path.join(__dirname, 'home23-dashboard.html'));
+        res.sendFile(path.join(__dirname, 'connected-agents.html'));
       } else {
         res.setHeader('Cache-Control', 'no-store, max-age=0');
         res.sendFile(path.join(__dirname, 'home23-welcome.html'));
       }
+    });
+
+    this.app.get('/home23/legacy', (req, res) => {
+      res.setHeader('Cache-Control', 'no-store, max-age=0');
+      res.sendFile(path.join(__dirname, 'home23-dashboard.html'));
     });
 
     // Settings page (always accessible)

@@ -160,6 +160,15 @@ export interface BotDirectoryRepository {
   commitResidentHeartbeat(
     input: CommitResidentHeartbeatInput,
   ): Promise<CommitResidentHeartbeatResult>;
+  transitionLifecycle(input: {
+    botId: string;
+    from: "active" | "archived";
+    to: "active" | "archived";
+    actorPrincipalId: "user_owner";
+    requestId: string;
+    correlationId: string;
+    changedAt: string;
+  }): Promise<BotDirectoryRecord>;
 }
 
 /** Passed directly from M05 only after UDS request authentication succeeds. */

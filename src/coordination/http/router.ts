@@ -241,7 +241,7 @@ export function createCoordinationRouter(input: {
     const receipt = await application.services.botLifecycleApi.create({ context: requireCoordinationContext(response), idempotencyKey: coordinationIdempotencyKey(response), residentBinding: body.residentBinding, displayName: body.displayName, purpose: body.purpose, requiredCapabilities: body.requiredCapabilities });
     response.status(201).json({ receipt });
   }));
-  for (const operation of ["start", "stop"] as const) {
+  for (const operation of ["start", "stop", "restart", "archive", "restore"] as const) {
     router.post(`/api/v1/bots/:botId/${operation}`, messageSend, requireIdempotencyKey(application), asyncRoute(async (request, response) => {
       if (!application.capabilities().capabilities.botLifecycle || !application.services.botLifecycleApi) throw unavailable("botLifecycle");
       response.json({ receipt: await application.services.botLifecycleApi.control({ context: requireCoordinationContext(response), idempotencyKey: coordinationIdempotencyKey(response), botId: pathParameter(request.params.botId), operation }) });
