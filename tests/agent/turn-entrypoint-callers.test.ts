@@ -19,7 +19,7 @@ test('interactive, cron, and Evobrew entrypoints converge on executeTrackedTurn'
   assert.match(home, /job\.payload\.kind === 'query'[\s\S]{0,900}runCronBrainQueryJob\(\s*brainOperations/);
   assert.doesNotMatch(home, /job\.payload\.kind === 'query'[\s\S]{0,900}queryEngine\(/);
   assert.doesNotMatch(home, /job\.payload\.kind === 'query'[\s\S]{0,900}AbortSignal\.timeout\(/);
-  assert.match(home, /job\.payload\.kind === 'query'[\s\S]{0,1200}delivery\.deliver\(job, jobResult\)/);
+  assert.match(home, /job\.payload\.kind === 'query'[\s\S]{0,1200}deliverCronJobResult\(job, jobResult\)/);
   assert.doesNotMatch(home, /const agentPromise\s*=\s*agent\.run\(/);
   assert.doesNotMatch(home, /Promise\.race\(\[agentPromise,\s*timeoutPromise\]\)/);
 

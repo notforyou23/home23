@@ -307,7 +307,7 @@ export function buildWorkerContextSection(projectRoot: string, agentName: string
     : [];
 
   const visibleWorkers = workers.filter(worker => worker.ownerAgent === agentName || worker.visibleTo.includes(agentName));
-  const brainPath = join(getAgentDir(agentName), 'brain', 'worker-runs.jsonl');
+  const brainPath = join(projectRoot, 'instances', agentName, 'brain', 'worker-runs.jsonl');
   const recent = readJsonlTail(brainPath, 5);
   if (visibleWorkers.length === 0 && recent.length === 0) return '';
 

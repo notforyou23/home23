@@ -156,7 +156,9 @@ export const relationshipRecallTool: ToolDefinition = {
       const withheld = found.withheldMatching;
       const entries = found.entries.slice(0, limit);
 
-      const withheldNote = withheld > 0 ? ` (${withheld} matching sensitive ${withheld === 1 ? 'entry' : 'entries'} withheld)` : '';
+      const withheldNote = withheld > 0
+        ? ` (${withheld} sensitive ${withheld === 1 ? 'entry' : 'entries'} withheld; matched this query)`
+        : '';
       if (!entries.length) {
         const base = query ? `No active relationship entries match "${query}".` : 'No active relationship entries recorded yet.';
         return { content: `${base}${withheldNote}` };
