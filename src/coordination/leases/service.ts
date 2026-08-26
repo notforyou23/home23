@@ -303,6 +303,39 @@ export function createLeaseService(options: CreateLeaseServiceOptions) {
       return boundRows(input);
     },
 
+    assertCompleted(input: LeaseBindingInput, resultDigest?: string): LeaseMutationResult {
+      const current = boundRows(input);
+      const receipt = options.database.readOne<ReceiptRow>(
+        `${RECEIPT_SELECT} WHERE work_id = ?`,
+        current.work.id,
+      );
+      const exact = current.work.state === "succeeded" &&
+        current.attempt.state === "succeeded" && current.lease.state === "released" &&
+        receipt?.status === "succeeded" &&
+        receipt.attemptId === current.attempt.id &&
+        receipt.fencingToken === current.attempt.fencingToken &&
+        receipt.sourceReference === current.attempt.authorityReference &&
+        (resultDigest === undefined || receipt.resultDigest === resultDigest);
+      if (!exact) throw new LeaseError("terminal_conflict", "completed resident result does not match terminal truth");
+      return current;
+    },
+
+    current(workIdInput: string): LeaseMutationResult {
+      const workId = assertId("work", workIdInput, "invalid_request");
+      const work = readWork(options.database, workId);
+      if (!work.currentAttemptId) {
+        throw new LeaseError("illegal_state", "Work does not have a current Attempt");
+      }
+      const attempt = readAttempt(options.database, work.currentAttemptId);
+      const lease = options.database.readOne<LeaseRow>(
+        `${LEASE_SELECT} WHERE work_id = ? AND attempt_id = ?`,
+        work.id,
+        attempt.id,
+      );
+      if (!lease) throw new LeaseError("not_found", "current Attempt Lease was not found");
+      return Object.freeze({ work, attempt, lease: freezeLease(lease) });
+    },
+
     offer(input: OfferLeaseInput): OfferLeaseResult {
       assertExactKeys(
         input,

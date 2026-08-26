@@ -75,8 +75,10 @@ function harness(options: { staleAfter?: number; deferred?: boolean } = {}) {
       calls.push('fence');
       if (options.staleAfter && checks >= options.staleAfter) throw new Error('stale_fence');
     },
+    assertCompleted(_binding, resultDigest) { calls.push(`completed:${resultDigest ?? 'pending'}`); },
     accept() { calls.push('accept'); },
     start() { calls.push('start'); },
+    reattach() { calls.push('reattach'); },
     revoke() { calls.push('revoke'); },
     terminalize({ receipt }) {
       calls.push(`terminal:${receipt.status}`);
@@ -105,6 +107,36 @@ test('resident turn is durable before lease acceptance/start and uses the intend
   await run.receipt;
   assert.equal(run.turnId, 'turn-resident-1');
   assert.deepEqual(h.calls.slice(0, 5), ['durable', 'fence', 'accept', 'fence', 'start']);
+});
+
+test('resident reattachment preserves the current turn and does not accept or start a second lease', async () => {
+  const h = harness();
+  const run = await h.adapter.reattach(request());
+  await run.response;
+  await run.receipt;
+  assert.deepEqual(h.calls.slice(0, 2), ['durable', 'fence']);
+  assert.ok(h.calls.includes('reattach'));
+  assert.equal(h.calls.includes('accept'), false);
+  assert.equal(h.calls.includes('start'), false);
+});
+
+test('accepted resident continuation starts the exact durable turn without accepting twice', async () => {
+  const h = harness();
+  const run = await h.adapter.continueAccepted(request());
+  await run.response;
+  await run.receipt;
+  assert.equal(h.calls.includes('accept'), false);
+  assert.ok(h.calls.includes('start'));
+  assert.equal(h.calls.includes('reattach'), false);
+});
+
+test('completed resident recovery verifies the immutable result digest without a second terminal receipt', async () => {
+  const h = harness();
+  const run = await h.adapter.recoverCompleted(request());
+  assert.equal((await run.response).text, 'exact result');
+  assert.ok(h.calls.includes('completed:pending'));
+  assert.ok(h.calls.includes(`completed:${sha256('exact result')}`));
+  assert.equal(h.calls.some((call) => call.startsWith('terminal:')), false);
 });
 
 test('a Work cannot acquire a second resident turn while its fenced turn is active', async () => {

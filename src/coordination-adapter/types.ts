@@ -25,8 +25,10 @@ export interface ResidentTerminalReceipt {
 
 export interface ResidentCoordinationPort {
   assertCurrent(binding: ResidentLeaseBinding): void | Promise<void>;
+  assertCompleted(binding: ResidentLeaseBinding, resultDigest?: string): void | Promise<void>;
   accept(binding: ResidentLeaseBinding): void | Promise<void>;
   start(binding: ResidentLeaseBinding): void | Promise<void>;
+  reattach(binding: ResidentLeaseBinding): void | Promise<void>;
   revoke(binding: ResidentLeaseBinding & { reasonCode: string }): void | Promise<void>;
   terminalize(input: ResidentLeaseBinding & { receipt: ResidentTerminalReceipt }): unknown | Promise<unknown>;
   observe?(binding: ResidentLeaseBinding, observation: ResidentObservation): void | Promise<void>;

@@ -95,7 +95,8 @@ export interface CoordinationMessageSubmissionPort {
 /** Exact M11 durable Work boundary; public DTO/auth adaptation remains later work. */
 export type CoordinationWorkPort = Pick<
   ReturnType<typeof createWorkService>,
-  "create" | "cancelQueued" | "get"
+  "create" | "cancelQueued" | "get" | "listResidentRecoverable" |
+  "listSucceededMissingResult"
 >;
 
 /** Exact M11 fenced execution boundary; no resident process is activated by injection. */

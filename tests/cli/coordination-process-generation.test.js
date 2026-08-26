@@ -77,3 +77,41 @@ test('Jerry and Forrest resident identities and credentials remain distinct and 
   assert.equal(jerry.env.HOME23_COORDINATION_RESIDENT_KEY, 'a'.repeat(64));
   assert.equal(jerry.env.HOME23_COORDINATION_RESIDENT_SERVER_INSTANCE_ID, 'home23-jerry-harness');
 });
+
+test('explicit M14 generation gives the coordinator and Jerry harness one exact resident binding', (t) => {
+  const root = generate({
+    coordination: {
+      process: { enabled: true },
+      publicApi: { enabled: true },
+      flags: { 'coordination.resident.jerry.enabled': true },
+    },
+  }, {
+    coordination: {
+      capabilityToken: 'd'.repeat(64),
+      residents: {
+        jerry: { keyVersion: 7, key: 'a'.repeat(64) },
+        forrest: { keyVersion: 8, key: 'b'.repeat(64) },
+      },
+    },
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const apps = require(join(root, 'ecosystem.config.cjs')).apps;
+  const coordinator = apps.find((app) => app.name === 'home23-coordination');
+  const jerry = apps.find((app) => app.name === 'home23-jerry-harness');
+
+  assert.equal(coordinator.env.HOME23_COORDINATION_ENABLED, 'true');
+  assert.equal(coordinator.env.HOME23_COORDINATION_PUBLIC_API_ENABLED, 'true');
+  assert.equal(coordinator.env.HOME23_COORDINATION_RESIDENT_JERRY_ENABLED, 'true');
+  assert.equal(coordinator.env.HOME23_COORDINATION_RESIDENT_FORREST_ENABLED, 'false');
+  assert.equal(jerry.env.HOME23_COORDINATION_RESIDENT_ENABLED, 'true');
+  assert.equal(jerry.env.HOME23_COORDINATION_RESIDENT_SOCKET_PATH,
+    coordinator.env.HOME23_COORDINATION_RESIDENT_JERRY_SOCKET_PATH);
+  assert.equal(jerry.env.HOME23_COORDINATION_RESIDENT_SERVER_INSTANCE_ID,
+    coordinator.env.HOME23_COORDINATION_RESIDENT_JERRY_SERVER_INSTANCE_ID);
+  assert.equal(jerry.env.HOME23_COORDINATION_RESIDENT_CLIENT_INSTANCE_ID,
+    coordinator.env.HOME23_COORDINATION_RESIDENT_JERRY_CLIENT_INSTANCE_ID);
+  assert.equal(jerry.env.HOME23_COORDINATION_RESIDENT_KEY_VERSION,
+    coordinator.env.HOME23_COORDINATION_RESIDENT_JERRY_KEY_VERSION);
+  assert.equal(jerry.env.HOME23_COORDINATION_RESIDENT_KEY,
+    coordinator.env.HOME23_COORDINATION_RESIDENT_JERRY_KEY);
+});

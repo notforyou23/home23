@@ -310,7 +310,14 @@ export function createCoordinationProcess(
     },
   };
   let residentAgent: ResidentUdsAgentPort | undefined;
-  let messageSubmission;
+  const lifecycle = createCoordinationLifecycle([{
+    name: "resident-uds-client", drain: async () => undefined, close: async () => residentAgent?.close(),
+  }, {
+    name: "coordination-database",
+    drain: async () => undefined,
+    close: async () => database.close(),
+  }]);
+  let messageSubmission: ReturnType<typeof createDirectMessageSubmissionService> | undefined;
   if (config.flags["coordination.resident.jerry.enabled"] === true) {
     const jerry = config.residents?.jerry;
     if (!jerry) throw new Error("Jerry resident configuration is required when its feature is enabled");
@@ -321,21 +328,19 @@ export function createCoordinationProcess(
     residentAgent = new ResidentUdsAgentPort({ client, residentSlug: "jerry" });
     const resident = new ResidentCoordinationAdapter(residentAgent, createM11ResidentCoordinationPort(leases));
     const context = new SqliteDirectMessageContext(database, messages);
-    messageSubmission = createDirectMessageSubmissionService({ messages, context: { prepare: async (input) => { const prepared = await context.prepare(input); if (prepared.residentBinding !== "jerry") throw new Error("target resident is not enabled"); return prepared; } }, work, leases, resident,
+    messageSubmission = createDirectMessageSubmissionService({ messages, context: {
+      prepare: async (input) => { const prepared = await context.prepare(input); if (prepared.residentBinding !== "jerry") throw new Error("target resident is not enabled"); return prepared; },
+      recover: async (runningWork) => { const recovered = await context.recover(runningWork); if (recovered.prepared.residentBinding !== "jerry") throw new Error("target resident is not enabled"); return recovered; },
+    }, work, leases, resident,
       holderInstanceId: jerry.serverInstanceId,
+      beginWork: lifecycle.beginWork,
+      recoveryIdentity: () => ({ requestId: generateCoordinationId("request"), correlationId: generateCoordinationId("correlation") }),
       residentContext: ({ residentBinding, principalId, requestId, correlationId }) => {
         if (residentBinding !== "jerry") throw new Error("target resident is not enabled");
         return { principalId, requestId, correlationId, identity: { kind: "resident", resident: { requestId, correlationId, credential: { residentSlug: residentBinding, role: "resident", instanceId: jerry.serverInstanceId, keyVersion: jerry.keyVersion } } } };
       },
     });
   }
-  const lifecycle = createCoordinationLifecycle([{
-    name: "resident-uds-client", drain: async () => undefined, close: async () => residentAgent?.close(),
-  }, {
-    name: "coordination-database",
-    drain: async () => undefined,
-    close: async () => database.close(),
-  }]);
   const application = createCoordinationApplication({
     flags: config.flags,
     services: {
@@ -374,7 +379,19 @@ export function createCoordinationProcess(
     port: config.port,
   });
   return Object.freeze({
-    start: () => server.start(),
+    start: async () => {
+      const address = await server.start();
+      if (messageSubmission) {
+        void messageSubmission.recoverResidentWork().then((receipt) => {
+          if (receipt.discovered > 0) {
+            console.log(`[home23-coordination] resident recovery discovered=${receipt.discovered} scheduled=${receipt.scheduled} refused=${receipt.refused}`);
+          }
+        }).catch((error: unknown) => {
+          console.error("[home23-coordination] resident recovery failed:", error instanceof Error ? error.message : error);
+        });
+      }
+      return address;
+    },
     drain: () => server.drain(),
     capabilities: () => application.capabilities(),
     invokeRetention: (input: RetentionInvocation) => {

@@ -728,5 +728,42 @@ export function createWorkService(options: CreateWorkServiceOptions) {
       const row = options.database.readOne<WorkRow>(`${WORK_SELECT} WHERE id = ?`, workId);
       return row ? freezeWork(row) : null;
     },
+
+    listResidentRecoverable(kind: string, limit = 100): readonly WorkRecord[] {
+      if (typeof kind !== "string" || !/^[a-z][a-z0-9_.-]{0,63}$/.test(kind)) {
+        throw new WorkError("invalid_request", "Work kind must be a bounded identifier");
+      }
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+        throw new WorkError("invalid_request", "recoverable Work limit must be between 1 and 100");
+      }
+      return Object.freeze(options.database.readAll<WorkRow>(
+        `${WORK_SELECT} WHERE kind = ? AND (
+           (state = 'queued' AND current_attempt_id IS NULL) OR
+           state IN ('leased', 'running')
+         )
+         ORDER BY created_at ASC, id ASC LIMIT ?`,
+        kind,
+        limit,
+      ).map(freezeWork));
+    },
+
+    listSucceededMissingResult(kind: string, limit = 100): readonly WorkRecord[] {
+      if (typeof kind !== "string" || !/^[a-z][a-z0-9_.-]{0,63}$/.test(kind)) {
+        throw new WorkError("invalid_request", "Work kind must be a bounded identifier");
+      }
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+        throw new WorkError("invalid_request", "missing result Work limit must be between 1 and 100");
+      }
+      return Object.freeze(options.database.readAll<WorkRow>(
+        `${WORK_SELECT} WHERE state = 'succeeded' AND kind = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM messages result
+           WHERE result.work_id = works.id AND result.kind = 'result'
+         )
+         ORDER BY created_at ASC, id ASC LIMIT ?`,
+        kind,
+        limit,
+      ).map(freezeWork));
+    },
   });
 }

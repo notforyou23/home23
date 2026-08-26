@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,23 +15,60 @@ import { runCoordinationProcess } from "../../../src/coordination/index.js";
 import { openCoordinationDatabase } from "../../../src/coordination/db/index.js";
 import { generateCoordinationId } from "../../../src/coordination/ids/index.js";
 import { createCoordinationProcess, disabledCoordinationFeatureFlags } from "../../../src/coordination/app/index.js";
-import { createResidentCredential } from "../../../src/coordination/resident-protocol/index.js";
-import { ResidentTurnUdsServer, startResidentCoordinationHarness } from "../../../src/coordination-adapter/index.js";
+import { startResidentCoordinationHarness } from "../../../src/coordination-adapter/index.js";
 
 const authority = { approved: true, kind: "m14-bootstrap", operator: "user_owner", resident: "jerry", legacyWriterAuthoritative: true, coordinationFlagsAllFalse: true } as const;
 
 function actualAgent(root: string) {
   const history = new ConversationHistory(join(root, "conversations"), 400_000, "jerry");
-  const agent = new AgentLoop({ apiKey: "test", model: "fixture-model", provider: "openai",
+  const workspacePath = join(root, "workspace");
+  mkdirSync(workspacePath, { recursive: true });
+  const agent = new AgentLoop({ apiKey: "test", model: "fixture-local-model", provider: "ollama-local",
     registry: { getAnthropicTools: () => [], getOpenAITools: () => [], get: () => undefined, execute: async () => ({ content: "" }) } as never,
     contextManager: { getSystemPrompt: () => "fixture", getPromptSourceInfo: () => ({ loadedFiles: [] }) } as never,
-    history, toolContext: {} as never, workspacePath: root });
-  let calls = 0;
-  (agent as unknown as { run: AgentLoop["run"] }).run = async () => {
-    calls += 1;
-    return { text: "Canonical Jerry response.", model: "fixture-model", toolCallCount: 0, durationMs: 1 };
-  };
-  return { agent, history, calls: () => calls };
+    history,
+    toolContext: {
+      brainOperations: {
+        searchContext: async () => ({
+          results: [],
+          sourceEvidence: { sourceHealth: "healthy", matchOutcome: "no_match" },
+        }),
+      },
+    } as never,
+    workspacePath });
+  return { agent, history };
+}
+
+async function startLocalModelFixture() {
+  const requests: Array<{ messages?: Array<{ role?: string; content?: unknown }> }> = [];
+  const server: Server = createServer(async (request, response) => {
+    if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
+      response.writeHead(404).end();
+      return;
+    }
+    try {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      requests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")) as typeof requests[number]);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        choices: [{ message: { role: "assistant", content: "Canonical Jerry response." } }],
+      }));
+    } catch {
+      response.writeHead(500).end();
+    }
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address() as AddressInfo;
+  return Object.freeze({
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    calls: () => requests.length,
+    requests: () => Object.freeze([...requests]),
+    close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+  });
 }
 
 async function accessToken(path: string, key: string) {
@@ -61,21 +100,47 @@ test("feature-off coordination opens no database, socket, or listener", async (t
   assert.equal(existsSync(socketPath), false);
 });
 
-test("production composition authenticates one direct Message through durable Work and the real AgentLoop boundary", async (t) => {
+test("isolated production composition traverses the generated harness and unmodified AgentLoop", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "home23-production-vertical-")); const runtime = join(root, "instances", ".house", "coordination"); mkdirSync(runtime, { recursive: true });
   t.after(() => rmSync(root, { recursive: true, force: true }));
+  const modelFixture = await startLocalModelFixture();
+  t.after(() => modelFixture.close());
+  const priorEnvironment = {
+    HOME23_ROOT: process.env.HOME23_ROOT,
+    HOME23_AGENT: process.env.HOME23_AGENT,
+    LOCAL_LLM_BASE_URL: process.env.LOCAL_LLM_BASE_URL,
+  };
+  process.env.HOME23_ROOT = root;
+  process.env.HOME23_AGENT = "jerry";
+  process.env.LOCAL_LLM_BASE_URL = modelFixture.baseUrl;
+  t.after(() => {
+    for (const [name, value] of Object.entries(priorEnvironment)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
   const databasePath = join(runtime, "home23-coordination.sqlite3"), socketPath = join(root, "j.sock"), residentKey = "7".repeat(64), capabilityToken = "9".repeat(64);
   const seeded = await bootstrapJerry({ databasePath, apply: true, authority, serverInstanceId: "home23-jerry-harness", keyVersion: 1 });
   const replayedBootstrap = await bootstrapJerry({ databasePath, apply: true, authority, serverInstanceId: "home23-jerry-harness", keyVersion: 1 });
   assert.deepEqual({ botId: replayedBootstrap.botId, channelId: replayedBootstrap.channelId, conversationId: replayedBootstrap.conversationId }, { botId: seeded.botId, channelId: seeded.channelId, conversationId: seeded.conversationId });
   const token = await accessToken(databasePath, capabilityToken);
-  const { agent, history, calls } = actualAgent(root); const rootKey = Buffer.from(residentKey, "hex");
-  const credential = createResidentCredential({ residentSlug: "jerry", role: "resident", instanceId: "home23-jerry-harness", keyVersion: 1, rootKey }); rootKey.fill(0);
-  let harness = new ResidentTurnUdsServer({ socketPath, serverInstanceId: "home23-jerry-harness", credential, residentSlug: "jerry", agent, history }); await harness.start(); t.after(() => harness.close());
+  const { agent, history } = actualAgent(root);
+  const harnessEnvironment = {
+    HOME23_COORDINATION_RESIDENT_ENABLED: "true",
+    HOME23_AGENT: "jerry",
+    HOME23_COORDINATION_RESIDENT_SOCKET_PATH: socketPath,
+    HOME23_COORDINATION_RESIDENT_SERVER_INSTANCE_ID: "home23-jerry-harness",
+    HOME23_COORDINATION_RESIDENT_CLIENT_INSTANCE_ID: "home23-jerry-harness",
+    HOME23_COORDINATION_RESIDENT_KEY_VERSION: "1",
+    HOME23_COORDINATION_RESIDENT_KEY: residentKey,
+  };
+  let harness = await startResidentCoordinationHarness({ agent, history, environment: harnessEnvironment });
+  assert.ok(harness);
+  t.after(() => harness?.close());
   const flags = { ...disabledCoordinationFeatureFlags(), "coordination.process.enabled": true, "coordination.public_api.enabled": true, "coordination.resident.jerry.enabled": true };
   const config = () => ({ enabled: true, host: "127.0.0.1" as const, port: 0, databasePath, socketPath: join(runtime, "coord.sock"), capabilityToken, flags,
     residents: { jerry: { enabled: true, socketPath, serverInstanceId: "home23-jerry-harness", clientInstanceId: "home23-jerry-harness", keyVersion: 1, key: residentKey }, forrest: { enabled: false, socketPath: join(runtime, "resident-forrest.sock"), serverInstanceId: "home23-forrest-harness", clientInstanceId: "home23-forrest-harness", keyVersion: 1, key: "" } } });
-  let process = createCoordinationProcess(config()); let address = await process.start();
+  let coordinationProcess = createCoordinationProcess(config()); let address = await coordinationProcess.start();
   const capabilities = await (await fetch(`${address.origin}/api/v1/capabilities`)).json() as any;
   assert.equal(capabilities.capabilities.messageSubmission, true);
   assert.equal(capabilities.capabilities.eventReplay, true);
@@ -100,13 +165,13 @@ test("production composition authenticates one direct Message through durable Wo
   const send = () => fetch(`${address.origin}/api/v1/channels/${seeded.channelId}/messages`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "idempotency-key": "m14-production-message-0001", "x-correlation-id": correlationId }, body: JSON.stringify(body) });
   const first = await send();
   if (first.status !== 202) {
-    const failure = await first.text(); await process.drain(); const diagnostic = openCoordinationDatabase({ path: databasePath });
+    const failure = await first.text(); await coordinationProcess.drain(); const diagnostic = openCoordinationDatabase({ path: databasePath });
     const counts: Record<string, number | string> = {}; for (const table of ["messages", "works", "attempts", "leases"]) { try { counts[table] = diagnostic.readOne<{ count: number }>(`SELECT count(*) AS count FROM ${table}`)?.count ?? -1; } catch (error) { counts[table] = error instanceof Error ? error.message : String(error); } } diagnostic.close();
     assert.fail(`first send ${failure}; counts=${JSON.stringify(counts)}`);
   }
-  for (let i = 0; i < 100 && calls() === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
-  if (calls() === 0) {
-    await process.drain();
+  for (let i = 0; i < 100 && modelFixture.calls() === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+  if (modelFixture.calls() === 0) {
+    await coordinationProcess.drain();
     const diagnostic = openCoordinationDatabase({ path: databasePath });
     const work = diagnostic.readOne<Record<string, unknown>>("SELECT * FROM works LIMIT 1");
     const attempt = diagnostic.readOne<Record<string, unknown>>("SELECT * FROM attempts LIMIT 1");
@@ -114,6 +179,8 @@ test("production composition authenticates one direct Message through durable Wo
     diagnostic.close();
     assert.fail(`resident was not invoked: ${JSON.stringify({ work, attempt, lease })}`);
   }
+  const modelUserMessage = modelFixture.requests()[0]?.messages?.findLast((message) => message.role === "user");
+  assert.match(String(modelUserMessage?.content), /Jerry, answer canonically\./);
   const eventAbort = new AbortController();
   const events = await fetch(`${address.origin}/api/v1/events?after=0`, {
     headers: { authorization: `Bearer ${token}` }, signal: eventAbort.signal,
@@ -134,16 +201,16 @@ test("production composition authenticates one direct Message through durable Wo
   assert.deepEqual(transcript.messages.map((message) => message.kind), ["text", "result"]);
   assert.equal(transcript.messages[1]?.text, "Canonical Jerry response.");
   assert.ok(transcript.messages[1]?.provenance.workId?.startsWith("wrk_"));
-  const duplicate = await send(); assert.equal(duplicate.status, 202, `duplicate: ${await duplicate.text()}`); assert.equal(calls(), 1); await process.drain();
+  const duplicate = await send(); assert.equal(duplicate.status, 202, `duplicate: ${await duplicate.text()}`); assert.equal(modelFixture.calls(), 1); await coordinationProcess.drain();
   const db = openCoordinationDatabase({ path: databasePath });
   for (const table of ["works", "attempts", "leases", "terminal_receipts"] as const) assert.equal(db.readOne<{ count: number }>(`SELECT count(*) AS count FROM ${table}`)?.count, 1);
   assert.equal(db.readOne<{ count: number }>("SELECT count(*) AS count FROM messages WHERE kind='result'")?.count, 1);
   assert.ok((db.readOne<{ count: number }>("SELECT count(*) AS count FROM events WHERE correlation_id=?", correlationId)?.count ?? 0) >= 3); db.close();
-  await harness.close(); harness = new ResidentTurnUdsServer({ socketPath, serverInstanceId: "home23-jerry-harness", credential, residentSlug: "jerry", agent, history }); await harness.start();
-  process = createCoordinationProcess(config()); address = await process.start();
+  await harness.close(); harness = await startResidentCoordinationHarness({ agent, history, environment: harnessEnvironment }); assert.ok(harness);
+  coordinationProcess = createCoordinationProcess(config()); address = await coordinationProcess.start();
   const restartedCapabilities = await (await fetch(`${address.origin}/api/v1/capabilities`)).json() as any;
   assert.equal(restartedCapabilities.capabilities.messageSubmission, true);
-  assert.equal((await send()).status, 202); assert.equal(calls(), 1); await process.drain();
+  assert.equal((await send()).status, 202); assert.equal(modelFixture.calls(), 1); await coordinationProcess.drain();
 });
 
 test("bootstrap apply refuses without explicit feature-off authority evidence", async () => {

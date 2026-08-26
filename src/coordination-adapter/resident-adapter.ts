@@ -74,6 +74,44 @@ export class ResidentCoordinationAdapter {
   ) {}
 
   async execute(request: ResidentWorkRequest): Promise<ResidentRun> {
+    return this.run(request, 'start');
+  }
+
+  async reattach(request: ResidentWorkRequest): Promise<ResidentRun> {
+    return this.run(request, 'reattach');
+  }
+
+  async continueAccepted(request: ResidentWorkRequest): Promise<ResidentRun> {
+    return this.run(request, 'continueAccepted');
+  }
+
+  async recoverCompleted(request: ResidentWorkRequest): Promise<{
+    turnId: string;
+    response: Promise<import('../agent/types.js').AgentResponse>;
+  }> {
+    if (!request.instruction.trim()) throw new TypeError('resident Work instruction is required');
+    if (request.origin.kind !== 'coordination') throw new TypeError('coordination origin is required');
+    const origin = privacySafeOrigin(request.origin);
+    const binding = bindingFor(request);
+    await this.coordination.assertCompleted(binding);
+    const started = await this.agent.runWithTurn(request.chatId, request.instruction, {
+      coordinationOrigin: origin,
+      coordinationRequest: { requestId: request.requestId, correlationId: request.correlationId },
+      onDurableStart: () => this.coordination.assertCompleted(binding),
+      onEvent: () => undefined,
+    });
+    const response = (async () => {
+      const result = await started.response;
+      await this.coordination.assertCompleted(binding, digest(result.text));
+      return result;
+    })();
+    return Object.freeze({ turnId: started.turnId, response });
+  }
+
+  private async run(
+    request: ResidentWorkRequest,
+    mode: 'start' | 'continueAccepted' | 'reattach',
+  ): Promise<ResidentRun> {
     if (!request.instruction.trim()) throw new TypeError('resident Work instruction is required');
     if (request.origin.kind !== 'coordination') throw new TypeError('coordination origin is required');
     if (this.active.has(request.origin.workId)) {
@@ -99,9 +137,15 @@ export class ResidentCoordinationAdapter {
       coordinationRequest: { requestId: request.requestId, correlationId: request.correlationId },
       onDurableStart: async ({ turnId }) => {
         await this.coordination.assertCurrent(binding);
-        await this.coordination.accept(binding);
-        await this.coordination.assertCurrent(binding);
-        await this.coordination.start(binding);
+        if (mode === 'start') {
+          await this.coordination.accept(binding);
+          await this.coordination.assertCurrent(binding);
+          await this.coordination.start(binding);
+        } else if (mode === 'continueAccepted') {
+          await this.coordination.start(binding);
+        } else {
+          await this.coordination.reattach(binding);
+        }
         this.active.set(origin.workId, { chatId: request.chatId, turnId, binding, cancelling: false });
       },
       onEvent: (event) => {

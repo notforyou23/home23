@@ -24,8 +24,19 @@ export function createM11ResidentCoordinationPort(
 ): ResidentCoordinationPort {
   return Object.freeze({
     assertCurrent(binding: ResidentLeaseBinding) { leases.assertCurrent(leaseBinding(binding)); },
+    assertCompleted(binding: ResidentLeaseBinding, resultDigest?: string) {
+      leases.assertCompleted(leaseBinding(binding), resultDigest);
+    },
     accept(binding: ResidentLeaseBinding) { leases.accept(leaseBinding(binding)); },
     start(binding: ResidentLeaseBinding) { leases.start(leaseBinding(binding)); },
+    reattach(binding: ResidentLeaseBinding) {
+      const exact = leaseBinding(binding);
+      const current = leases.assertCurrent(exact);
+      if (current.work.state !== "running" || current.attempt.state !== "running" || current.lease.state !== "active") {
+        throw new Error("only an exact running resident Lease may reattach");
+      }
+      leases.heartbeat({ ...exact, extendMs: 60_000 });
+    },
     revoke(binding: ResidentLeaseBinding & { reasonCode: string }) {
       leases.revoke({ ...leaseBinding(binding), reasonCode: binding.reasonCode });
     },
