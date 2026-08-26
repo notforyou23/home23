@@ -74,22 +74,88 @@ test("Channels, lifecycle, Activity, and coordinator stay fail-closed without ex
 
 test("Activity, lifecycle, and coordinator routes invoke only injected trusted ports behind exact flags", async (t) => {
   const calls: string[] = [];
+  const botId = "bot_0198d95f-6c00-7000-8000-000000000001";
+  const mailboxId = "cnv_0198d95f-6c00-7000-8000-000000000001";
+  const activityPage = {
+    entries: [{
+      key: "work:obs_0198d95f-6c00-7000-8000-000000000703:progress",
+      eventSequence: 73, category: "progress", state: "working", label: "Working",
+      updatedAt: "2026-08-26T12:00:01.000Z",
+      channelId: "chn_0198d95f-6c00-7000-8000-000000000001",
+      actor: { principalId: botId, displayName: "Specialist" },
+      workId: "wrk_0198d95f-6c00-7000-8000-000000000704",
+      observationId: "obs_0198d95f-6c00-7000-8000-000000000703",
+      messageId: null, artifactId: null,
+      source: {
+        kind: "work_observation", id: "obs_0198d95f-6c00-7000-8000-000000000703",
+        eventType: "activity.updated", authoritySystem: "resident_turn",
+        authorityId: "resident-turn-1", sourceVersion: "1", freshness: "current",
+      },
+      terminalReason: null, terminalExplanation: null, collapsedCount: 1, compacted: false,
+      interval: {
+        firstEventSequence: 73, lastEventSequence: 73,
+        startedAt: "2026-08-26T12:00:01.000Z", endedAt: "2026-08-26T12:00:01.000Z",
+      },
+    }],
+    nextBoundary: {
+      eventSequence: 73,
+      key: "work:obs_0198d95f-6c00-7000-8000-000000000703:progress",
+    },
+    throughEventSequence: 80,
+  } as const;
+  const receipt = (requestId: string, operation: "create" | "start" | "stop" | "restart" | "archive" | "restore") => ({
+    requestId, requestDigest: "a".repeat(64),
+    correlationId: "cor_0198d95f-6c00-7000-8000-000000000700", operation,
+    residentBinding: "specialist", botId, mailboxId, authorityEpoch: 7,
+    policyDecision: {
+      policyVersion: 1, actionDigest: "action-digest", policyContextDigest: "context-digest",
+      decision: "allow", reasonCode: "allow.standing_authority",
+    },
+    outcome: "succeeded",
+    completedPhases: operation === "create"
+      ? ["authorized", "resident_created", "mailbox_bound"]
+      : ["authorized", "process_changed"],
+    processNames: ["home23-specialist"], failure: null,
+    createdAt: "2026-08-26T12:00:00.000Z",
+  } as const);
   const flags = { ...disabledCoordinationFeatureFlags(), "coordination.process.enabled": true, "coordination.public_api.enabled": true, "coordination.channels.enabled": true, "coordination.bot_lifecycle.enabled": true };
   const application = createCoordinationApplication({ flags, services: {
     auth: { validateAccessToken: async () => ({ principalId: "user_owner", deviceId: "dev_0198d95f-6c00-7000-8000-000000000700", sessionId: "ses_0198d95f-6c00-7000-8000-000000000700", scopes: ["product:read", "message:send"] }) },
-    activity: { list: async () => { calls.push("activity"); return { entries: [], nextBoundary: null, throughEventSequence: 9 }; } },
+    activity: { list: async () => { calls.push("activity"); return activityPage as any; } },
     botLifecycleApi: {
-      create: async () => { calls.push("bot.create"); return { outcome: "succeeded" } as any; },
-      control: async ({ operation }) => { calls.push(`bot.${operation}`); return { outcome: "succeeded" } as any; },
+      create: async (input) => {
+        calls.push("bot.create");
+        assert.deepEqual({
+          idempotencyKey: input.idempotencyKey, residentBinding: input.residentBinding,
+          displayName: input.displayName, purpose: input.purpose,
+          requiredCapabilities: input.requiredCapabilities,
+        }, {
+          idempotencyKey: "product-api-create-bot", residentBinding: "specialist",
+          displayName: "Specialist", purpose: "Continuing specialist",
+          requiredCapabilities: ["messages"],
+        });
+        return receipt(input.idempotencyKey, "create") as any;
+      },
+      control: async ({ operation, idempotencyKey, botId: requestedBotId }) => {
+        calls.push(`bot.${operation}`);
+        assert.equal(requestedBotId, botId);
+        return receipt(idempotencyKey, operation) as any;
+      },
     },
     channelCoordinator: { startFromMessage: async () => { calls.push("channel.coordinate"); return { accepted: true }; } },
   } });
   const server = createCoordinationHttpServer({ application, port: 0 });
   t.after(() => server.drain());
   const address = await server.start();
-  assert.equal((await fetch(`${address.origin}/api/v1/activity`, { headers: headers() })).status, 200);
-  assert.equal((await fetch(`${address.origin}/api/v1/bots`, { method: "POST", headers: headers("product-api-create-bot"), body: JSON.stringify({ residentBinding: "specialist", displayName: "Specialist", purpose: "Continuing specialist", requiredCapabilities: ["messages"] }) })).status, 201);
-  assert.equal((await fetch(`${address.origin}/api/v1/bots/bot_0198d95f-6c00-7000-8000-000000000001/start`, { method: "POST", headers: headers("product-api-start-bot") })).status, 200);
+  const activity = await fetch(`${address.origin}/api/v1/activity`, { headers: headers() });
+  assert.equal(activity.status, 200);
+  assert.deepEqual(await activity.json(), activityPage);
+  const created = await fetch(`${address.origin}/api/v1/bots`, { method: "POST", headers: headers("product-api-create-bot"), body: JSON.stringify({ residentBinding: "specialist", displayName: "Specialist", purpose: "Continuing specialist", requiredCapabilities: ["messages"] }) });
+  assert.equal(created.status, 201);
+  assert.deepEqual(await created.json(), { receipt: receipt("product-api-create-bot", "create") });
+  const started = await fetch(`${address.origin}/api/v1/bots/bot_0198d95f-6c00-7000-8000-000000000001/start`, { method: "POST", headers: headers("product-api-start-bot") });
+  assert.equal(started.status, 200);
+  assert.deepEqual(await started.json(), { receipt: receipt("product-api-start-bot", "start") });
   assert.equal((await fetch(`${address.origin}/api/v1/bots/bot_0198d95f-6c00-7000-8000-000000000001/stop`, { method: "POST", headers: headers("product-api-stop-bot") })).status, 200);
   assert.equal((await fetch(`${address.origin}/api/v1/bots/bot_0198d95f-6c00-7000-8000-000000000001/restart`, { method: "POST", headers: headers("product-api-restart-bot") })).status, 200);
   assert.equal((await fetch(`${address.origin}/api/v1/bots/bot_0198d95f-6c00-7000-8000-000000000001/archive`, { method: "POST", headers: headers("product-api-archive-bot") })).status, 200);

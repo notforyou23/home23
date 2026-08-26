@@ -235,6 +235,22 @@ test("feature, epoch, standing scope, exact action, and temporary-hand boundarie
   assert.equal(f.bots.size, 0);
 });
 
+test("invalid public create fields fail before resident or mailbox effects", async () => {
+  for (const overrides of [
+    { displayName: "x".repeat(129) },
+    { purpose: "x".repeat(513) },
+    { purpose: "bad\0purpose" },
+    { requiredCapabilities: ["Messages"] },
+    { requiredCapabilities: Array.from({ length: 65 }, (_, index) => `capability-${index}`) },
+  ]) {
+    const f = await fixture();
+    await assert.rejects(f.service.create(createRequest(overrides)), { code: "request_invalid" });
+    assert.equal(f.createCalls(), 0);
+    assert.equal(f.residents.size, 0);
+    assert.equal(f.bots.size, 0);
+  }
+});
+
 test("process manifest rejects broad or adjacent resident controls", async () => {
   const f = await fixture();
   await f.service.create(createRequest());

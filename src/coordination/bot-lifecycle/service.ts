@@ -14,6 +14,29 @@ import type {
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const PROCESS_NAME = /^[a-z0-9][a-z0-9-]{0,127}$/;
+const CAPABILITY = /^[a-z][a-z0-9._:-]{0,63}$/;
+
+function canonicalCreateFields(request: PersistentBotCreateRequest): {
+  displayName: string;
+  purpose: string;
+  requiredCapabilities: readonly string[];
+} {
+  const displayName = typeof request.displayName === "string" ? request.displayName.trim() : "";
+  const purpose = typeof request.purpose === "string" ? request.purpose.trim() : "";
+  if (
+    !SLUG.test(request.residentBinding) || !displayName || displayName.length > 128 ||
+    displayName.includes("\0") || !purpose || purpose.length > 512 || purpose.includes("\0") ||
+    !Array.isArray(request.requiredCapabilities) || request.requiredCapabilities.length > 64 ||
+    request.requiredCapabilities.some((value) =>
+      typeof value !== "string" || !CAPABILITY.test(value)
+    )
+  ) throw new BotLifecycleError("request_invalid");
+  return {
+    displayName,
+    purpose,
+    requiredCapabilities: Object.freeze([...new Set(request.requiredCapabilities)].sort()),
+  };
+}
 
 function errorCode(error: unknown): string {
   if (error && typeof error === "object" && "code" in error) {
@@ -115,10 +138,8 @@ export function createBotLifecycleService(options: CreateBotLifecycleServiceOpti
     const digest = requestFingerprint(request);
     const prior = await priorOrConflict(request.requestId, "create", request.correlationId, digest);
     if (prior) return prior;
-    if (
-      request.actorPrincipalId !== "user_owner" || !SLUG.test(request.residentBinding) ||
-      !request.displayName.trim() || !request.purpose.trim()
-    ) throw new BotLifecycleError("request_invalid");
+    if (request.actorPrincipalId !== "user_owner") throw new BotLifecycleError("request_invalid");
+    const fields = canonicalCreateFields(request);
     const { epoch, decision } = await authorize(request);
     const phases: BotLifecyclePhase[] = ["authorized"];
     let resident: ProvisionedResident | null = null;
@@ -127,9 +148,9 @@ export function createBotLifecycleService(options: CreateBotLifecycleServiceOpti
       resident = await options.provisioner.inspect(request.residentBinding);
       if (!resident) resident = await options.provisioner.create({
         residentBinding: request.residentBinding,
-        displayName: request.displayName.trim(),
-        purpose: request.purpose.trim(),
-        requiredCapabilities: [...request.requiredCapabilities],
+        displayName: fields.displayName,
+        purpose: fields.purpose,
+        requiredCapabilities: fields.requiredCapabilities,
         copyPrivateMemory: false,
       });
       if (resident.residentBinding !== request.residentBinding) {
@@ -143,9 +164,9 @@ export function createBotLifecycleService(options: CreateBotLifecycleServiceOpti
           correlationId: request.correlationId,
           actorPrincipalId: request.actorPrincipalId,
           residentBinding: request.residentBinding,
-          displayName: request.displayName.trim(),
-          purpose: request.purpose.trim(),
-          requiredCapabilities: [...request.requiredCapabilities],
+          displayName: fields.displayName,
+          purpose: fields.purpose,
+          requiredCapabilities: fields.requiredCapabilities,
         });
       } catch (error) {
         await options.provisioner.archivePartial(resident, "mailbox_bind_failed");
