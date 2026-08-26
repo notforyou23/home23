@@ -78,6 +78,11 @@ test("production composition authenticates one direct Message through durable Wo
   let process = createCoordinationProcess(config()); let address = await process.start();
   assert.equal((await fetch(`${address.origin}/api/v1/bootstrap`)).status, 401);
   const productHeaders = { authorization: `Bearer ${token}` };
+  const authorityEpochs = await (await fetch(`${address.origin}/api/v1/authority-epochs`, { headers: productHeaders })).json() as any;
+  assert.deepEqual(authorityEpochs.epochs, [{ capability: "messages", epoch: 1, mode: "legacy", writer: "legacy-conversation-writer", effectiveAtEventSequence: null, rollbackEpoch: null }]);
+  assert.ok(Number.isSafeInteger(authorityEpochs.throughEventSequence));
+  assert.match(authorityEpochs.requestId, /^req_/);
+  assert.match(authorityEpochs.correlationId, /^cor_/);
   const bots = await (await fetch(`${address.origin}/api/v1/bots`, { headers: productHeaders })).json() as { bots: Array<{ id: string }> };
   assert.deepEqual(bots.bots.map((bot) => bot.id), [seeded.botId]);
   const details = await (await fetch(`${address.origin}/api/v1/bots/${seeded.botId}/details`, { headers: productHeaders })).json() as any;

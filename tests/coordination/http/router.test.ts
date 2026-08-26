@@ -125,7 +125,7 @@ test("the server owns request IDs while preserving caller correlation through bo
   assert.deepEqual({ ...body, requestId: fixture.requestId }, fixture);
 });
 
-test("bootstrap rejects an unsupported cursor instead of silently ignoring it", async (t) => {
+test("bootstrap accepts a valid durable cursor while returning a full snapshot", async (t) => {
   let bootstrapCalls = 0;
   const application = createCoordinationApplication({
     flags: enabledShellFlags,
@@ -147,9 +147,9 @@ test("bootstrap rejects an unsupported cursor instead of silently ignoring it", 
     headers: authHeaders(),
   });
 
-  assert.equal(response.status, 400);
-  assert.equal((await response.json() as any).error.code, "request_invalid");
-  assert.equal(bootstrapCalls, 0);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json() as BootstrapResponse).throughEventSequence, fixture.throughEventSequence);
+  assert.equal(bootstrapCalls, 1);
 });
 
 test("bootstrap capability fields are clamped to what this shell advertises", async (t) => {

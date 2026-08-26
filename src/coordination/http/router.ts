@@ -112,9 +112,10 @@ export function createCoordinationRouter(input: {
     if (!application.capabilities().capabilities.bootstrap || !application.services.bootstrap) {
       throw unavailable("bootstrap");
     }
-    if (request.query.after !== undefined) {
-      throw new CoordinationHttpError("request_invalid", 400, false);
-    }
+    // Bootstrap is a full, consistent snapshot. Clients still send their
+    // durable cursor so reconnects can use the same request shape; validate it
+    // but return the complete snapshot regardless of its value.
+    if (request.query.after !== undefined) integerQuery(request.query.after, 0);
     const bootstrap = await application.services.bootstrap.getBootstrap({
       context: requireCoordinationContext(response),
     });
@@ -122,7 +123,7 @@ export function createCoordinationRouter(input: {
     response.json({
       ...bootstrap,
       capabilities: {
-        channels: false,
+        channels: advertised.capabilities.channelsRead,
         attachments: advertised.capabilities.attachments,
         search: advertised.capabilities.search,
         push: false,
@@ -136,13 +137,24 @@ export function createCoordinationRouter(input: {
     });
   }));
 
+  router.get("/api/v1/authority-epochs", productRead, asyncRoute(async (_request, response) => {
+    if (!application.services.authorityEpochs) throw unavailable("bootstrap");
+    const metadata = requireCoordinationMetadata(response);
+    response.json({
+      requestId: metadata.requestId,
+      correlationId: metadata.correlationId,
+      ...(await application.services.authorityEpochs.listCurrent()),
+    });
+  }));
+
   const unavailableRoute = (capability: CapabilityName) =>
     (_request: Request, _response: Response, next: NextFunction) =>
       next(unavailable(capability));
 
   router.get("/api/v1/bots", productRead, asyncRoute(async (_request, response) => {
     if (!application.services.bots) throw unavailable("bootstrap");
-    response.json({ bots: await application.services.bots.listVisibleBots() });
+    const metadata = requireCoordinationMetadata(response);
+    response.json({ ...metadata, bots: await application.services.bots.listVisibleBots(), nextCursor: null, throughEventSequence: 0 });
   }));
   router.get("/api/v1/bots/:botId", productRead, asyncRoute(async (request, response) => {
     if (!application.services.bots) throw unavailable("bootstrap");
@@ -203,12 +215,18 @@ export function createCoordinationRouter(input: {
   }));
   router.get("/api/v1/inbox", productRead, asyncRoute(async (_request, response) => {
     if (!application.capabilities().capabilities.conversationsRead || !application.services.unread) throw unavailable("conversationsRead");
-    response.json({ conversations: await application.services.unread.listInbox({ context: requireCoordinationContext(response) }) });
+    const metadata = requireCoordinationMetadata(response);
+    response.json({ ...metadata, conversations: await application.services.unread.listInbox({ context: requireCoordinationContext(response) }), nextCursor: null, throughEventSequence: 0 });
   }));
   router.get("/api/v1/channels/:channelId/messages", productRead, asyncRoute(async (request, response) => {
     if (!application.capabilities().capabilities.messagesRead || !application.services.messages) throw unavailable("messagesRead");
     const before = request.query.before === undefined ? undefined : integerQuery(request.query.before, 0);
-    response.json(await application.services.messages.listMessages({ context: requireCoordinationContext(response), channelId: pathParameter(request.params.channelId), ...(before === undefined ? {} : { beforeSequence: before }), limit: integerQuery(request.query.limit, 50) }));
+    const metadata = requireCoordinationMetadata(response);
+    const channelId = pathParameter(request.params.channelId);
+    const page = await application.services.messages.listMessages({ context: requireCoordinationContext(response), channelId, ...(before === undefined ? {} : { beforeSequence: before }), limit: integerQuery(request.query.limit, 50) });
+    const conversationId = page.messages[0]?.conversationId ?? (application.services.channels ? (await application.services.channels.getChannel({ context: requireCoordinationContext(response), channelId })).conversationId : null);
+    if (!conversationId) throw unavailable("messagesRead");
+    response.json({ ...metadata, channelId, conversationId, messages: page.messages, nextCursor: null, throughEventSequence: 0 });
   }));
   router.get("/api/v1/unread", productRead, asyncRoute(async (request, response) => {
     if (!application.capabilities().capabilities.unreadRead || !application.services.unread) throw unavailable("unreadRead");

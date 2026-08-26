@@ -301,7 +301,7 @@ export function createCoordinationProcess(
       const primary = await botRepository.getBotByResidentBinding("jerry");
       if (!primary) throw new Error("primary Jerry Bot binding is unavailable");
       return createBootstrapService({ repository: new SqliteBootstrapRepository(database), participantDirectory,
-        minimumClientBuild: 1, home: { id: "home_local", name: "Home23", primaryBotId: primary.id },
+        minimumClientBuild: 1, home: { id: "home_00000000-0000-7000-8000-000000000000", name: "Home23", primaryBotId: primary.id },
         connection: { mode: "loopback", displayName: "This Home23", reachable: true },
         capabilities: { channels: false, attachments: false, search: false, push: false, eventReplay: true, botLifecycle: false },
         limits: { attachmentBytes: 0, attachmentCountPerMessage: 0, jsonBodyBytes: 262_144, idempotencyKeyMinimum: 16, idempotencyKeyMaximum: 128 },
@@ -341,6 +341,23 @@ export function createCoordinationProcess(
     services: {
       auth, bootstrap, bots: botDirectory, channels, messages, unread, search,
       work, workControl, leases, events,
+      authorityEpochs: {
+        listCurrent: async () => Object.freeze({
+          epochs: Object.freeze(database.readAll<{
+            capability: string; epoch: number; mode: string; writer: string;
+            effectiveAtEventSequence: number | null; rollbackEpoch: number | null;
+          }>(`SELECT capability, epoch, mode, writer,
+                     effective_at_event_sequence AS effectiveAtEventSequence,
+                     rollback_epoch AS rollbackEpoch
+              FROM authority_epochs current
+              WHERE epoch = (SELECT MAX(newest.epoch) FROM authority_epochs newest
+                             WHERE newest.capability = current.capability)
+              ORDER BY capability`)),
+          throughEventSequence: database.readOne<{ sequence: number }>(
+            "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM events",
+          )?.sequence ?? 0,
+        }),
+      },
       ...(messageSubmission === undefined ? {} : { messageSubmission }),
       ...(dependencies.activity === undefined
         ? {}

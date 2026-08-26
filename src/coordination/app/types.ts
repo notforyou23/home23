@@ -151,6 +151,12 @@ export interface CoordinationServices {
   /** Optional internal M16 seam. Presence never advertises or activates Channels. */
   channelCoordinator?: CoordinationChannelCoordinatorPort;
   events?: SqliteEventRepository;
+  authorityEpochs?: {
+    listCurrent(): Promise<Readonly<{ epochs: readonly Readonly<{
+      capability: string; epoch: number; mode: string; writer: string;
+      effectiveAtEventSequence: number | null; rollbackEpoch: number | null;
+    }>[]; throughEventSequence: number }>>;
+  };
   /** Optional internal M28 seam. Presence never advertises or registers a public route. */
   botLifecycle?: ReturnType<typeof createBotLifecycleService>;
   botLifecycleApi?: CoordinationBotLifecyclePort;
