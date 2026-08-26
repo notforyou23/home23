@@ -9,6 +9,10 @@ import { openCoordinationDatabase } from "../db/index.js";
 import { createCoordinationHttpServer } from "../http/index.js";
 import { createCoordinationApplication } from "./application.js";
 import { createCoordinationLifecycle } from "./lifecycle.js";
+import {
+  createBotLifecycleService,
+  type CreateBotLifecycleServiceOptions,
+} from "../bot-lifecycle/index.js";
 import type { CoordinationRuntimeConfig } from "./runtime-config.js";
 import type {
   CoordinationApplication,
@@ -30,6 +34,16 @@ export interface DurableAttachmentCompositionOptions {
   maximumRequestBytes?: number;
   now?: () => Date;
 }
+
+/**
+ * Internal-only M28 activation bundle. The extra switch is intentional: a
+ * registry flag alone must never make resident creation or process control
+ * reachable. Every effectful adapter and both trusted authority boundaries
+ * must be supplied explicitly by the future owner of activation.
+ */
+export type BotLifecycleCompositionOptions = Readonly<
+  CreateBotLifecycleServiceOptions & { enabled: true }
+>;
 
 export interface CoordinationRuntimeComposition {
   application: CoordinationApplication;
@@ -73,20 +87,44 @@ function isCompleteAttachmentOptions(
  */
 export async function createCoordinationRuntimeComposition(input: {
   flags: CoordinationFeatureFlags;
-  services: Omit<CoordinationServices, "attachments">;
+  services: Omit<CoordinationServices, "attachments" | "botLifecycle">;
   attachments?: Partial<DurableAttachmentCompositionOptions>;
+  botLifecycle?: Partial<BotLifecycleCompositionOptions>;
 }): Promise<CoordinationRuntimeComposition> {
   // Runtime callers cannot bypass construction by smuggling a raw or
   // preassembled attachment value through the otherwise shared service bag.
-  const { attachments: _ignoredAttachment, ...services } =
+  const {
+    attachments: _ignoredAttachment,
+    botLifecycle: _ignoredBotLifecycle,
+    ...services
+  } =
     input.services as CoordinationServices;
+
+  const lifecycleOptions = input.botLifecycle;
+  const botLifecycle =
+    input.flags["coordination.process.enabled"] === true &&
+    input.flags["coordination.public_api.enabled"] === true &&
+    input.flags["coordination.bot_lifecycle.enabled"] === true &&
+    lifecycleOptions?.enabled === true &&
+    lifecycleOptions.authority !== undefined &&
+    lifecycleOptions.provisioner !== undefined &&
+    lifecycleOptions.mailboxBinder !== undefined &&
+    lifecycleOptions.processes !== undefined &&
+    lifecycleOptions.receipts !== undefined &&
+    typeof lifecycleOptions.canonicalWriter === "string" &&
+    lifecycleOptions.canonicalWriter.length > 0
+      ? createBotLifecycleService(lifecycleOptions as BotLifecycleCompositionOptions)
+      : undefined;
+  const composedServices = botLifecycle === undefined
+    ? services
+    : { ...services, botLifecycle };
   if (
     input.flags["coordination.process.enabled"] !== true ||
     input.flags["coordination.public_api.enabled"] !== true ||
     !isCompleteAttachmentOptions(input.attachments)
   ) {
     return Object.freeze({
-      application: createCoordinationApplication({ flags: input.flags, services }),
+      application: createCoordinationApplication({ flags: input.flags, services: composedServices }),
       lifecycle: createCoordinationLifecycle(),
     });
   }
@@ -123,7 +161,7 @@ export async function createCoordinationRuntimeComposition(input: {
     return Object.freeze({
       application: createCoordinationApplication({
         flags: input.flags,
-        services: { ...services, attachments },
+        services: { ...composedServices, attachments },
       }),
       lifecycle,
     });

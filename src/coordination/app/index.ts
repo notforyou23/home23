@@ -5,6 +5,7 @@ export {
 } from "./application.js";
 export {
   createCoordinationRuntimeComposition,
+  type BotLifecycleCompositionOptions,
   type CoordinationProcessProjectionDependencies,
   type CoordinationRuntimeComposition,
   type DurableAttachmentCompositionOptions,

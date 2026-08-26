@@ -11,6 +11,7 @@ import type { createUnreadService } from "../unread/index.js";
 import type { createWorkService } from "../work/index.js";
 import type { createChannelCoordinator } from "../channel-coordinator/index.js";
 import type { SqliteEventRepository } from "../events/index.js";
+import type { createBotLifecycleService } from "../bot-lifecycle/index.js";
 
 export type CoordinationFeatureFlags = Readonly<{
   [Flag in keyof typeof FEATURE_FLAG_REGISTRY]: boolean;
@@ -104,6 +105,8 @@ export interface CoordinationServices {
   /** Optional internal M16 seam. Presence never advertises or activates Channels. */
   channelCoordinator?: ReturnType<typeof createChannelCoordinator>;
   events?: SqliteEventRepository;
+  /** Optional internal M28 seam. Presence never advertises or registers a public route. */
+  botLifecycle?: ReturnType<typeof createBotLifecycleService>;
 }
 
 export interface CoordinationHttpLimits {
