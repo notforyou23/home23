@@ -15,7 +15,6 @@
     "tests/agent/query-notebook-credential.test.ts",
     "tests/agent/query-notifications.test.ts",
     "tests/agent/tools/agency.test.ts",
-    "tests/agent/tools/registry-boundary.test.ts",
     "tests/agent/tools/restricted-files.test.ts",
     "tests/contracts/brain-instruction-contract.test.cjs",
     "tests/contracts/client-capabilities-route.test.cjs",

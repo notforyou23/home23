@@ -88,25 +88,31 @@ test('_ensureFreshClient rebuilds when the tracked provider credential rotates',
   });
 });
 
-/** A (provider, model) pair from the real config/home.yaml — the compiler
- * resolves its provider by looking the model up there. */
-function providerFromHomeYaml() {
-  const repoRoot = path.resolve(__dirname, '../../..');
-  const yaml = require(path.join(repoRoot, 'node_modules', 'js-yaml'));
-  const home = yaml.load(fs.readFileSync(path.join(repoRoot, 'config', 'home.yaml'), 'utf8')) || {};
-  const entry = Object.entries(home.providers || {})
-    .find(([name, prov]) => name !== 'openai-codex' && (prov.defaultModels || []).length > 0);
-  assert.ok(entry, 'config/home.yaml should declare a provider with defaultModels');
-  return { providerName: entry[0], model: entry[1].defaultModels[0] };
+function fixtureProviderCompiler(DocumentCompiler, { providerName, model }) {
+  return class FixtureProviderCompiler extends DocumentCompiler {
+    _resolveProviderForModel(candidate) {
+      assert.equal(candidate, model);
+      return {
+        providerName,
+        baseUrl: 'https://api.anthropic.com',
+        apiKey: credentialsModule().resolveProviderKey(providerName) || undefined,
+      };
+    }
+  };
 }
 
-test('_buildClient tracks the provider credential it resolved from home.yaml', async () => {
+test('_buildClient tracks the credential from its resolved provider', async () => {
   await withHarness(async ({ secretsPath, workspacePath }) => {
-    const { providerName, model } = providerFromHomeYaml();
+    const providerName = 'anthropic';
+    const model = 'fixture-anthropic-model';
     writeSecrets(secretsPath, { [providerName]: 'sk-tracked-credential' });
 
     const { DocumentCompiler } = freshModules();
-    const compiler = new DocumentCompiler({ workspacePath, config: { model } });
+    const FixtureProviderCompiler = fixtureProviderCompiler(
+      DocumentCompiler,
+      { providerName, model },
+    );
+    const compiler = new FixtureProviderCompiler({ workspacePath, config: { model } });
 
     assert.equal(compiler._builtWithProvider, providerName);
     assert.equal(compiler._builtWithKey, 'sk-tracked-credential');
@@ -118,11 +124,16 @@ test('a deliberate pin is never tracked, even when it equals the current file va
     // The pin and the file agree TODAY. Without the pin guard the compiler
     // would track this and silently rebuild away from the operator's pin on
     // the next rotation — the pin has to win regardless.
-    const { providerName, model } = providerFromHomeYaml();
+    const providerName = 'anthropic';
+    const model = 'fixture-anthropic-model';
     writeSecrets(secretsPath, { [providerName]: 'sk-same-value-as-pin' });
 
     const { DocumentCompiler } = freshModules();
-    const compiler = new DocumentCompiler({
+    const FixtureProviderCompiler = fixtureProviderCompiler(
+      DocumentCompiler,
+      { providerName, model },
+    );
+    const compiler = new FixtureProviderCompiler({
       workspacePath,
       config: { model, apiKey: 'sk-same-value-as-pin' },
     });
