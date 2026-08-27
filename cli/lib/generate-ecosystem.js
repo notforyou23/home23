@@ -94,6 +94,9 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`const HARNESS_KILL_TIMEOUT_MS = 30000;`);
   lines.push(`const PM2_INHERITANCE_BLOCKLIST = ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY', 'HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY'];`);
   lines.push(`for (const key of PM2_INHERITANCE_BLOCKLIST) delete process.env[key];`);
+  lines.push(`for (const key of Object.keys(process.env)) {`);
+  lines.push(`  if (key.startsWith('HOME23_COORDINATION_')) delete process.env[key];`);
+  lines.push(`}`);
   lines.push(``);
   lines.push(`function loadYaml(filePath) {`);
   lines.push(`  if (!fs.existsSync(filePath)) return {};`);
@@ -140,6 +143,36 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`  console.warn('[ecosystem] Warning: cosmo23 encryption key not found in secrets.yaml. Run "home23 init" to generate.');`);
   lines.push(`}`);
   lines.push(`const cosmo23DbUrl = 'file:' + path.join(HOME23, 'cosmo23', '.cosmo23-config', 'database.db');`);
+  lines.push(``);
+  lines.push(`const coordinationPointerPath = path.join(HOME23, 'instances', '.house', 'coordination', 'active-release.json');`);
+  lines.push(`const coordinationDeployment = fs.existsSync(coordinationPointerPath)`);
+  lines.push(`  ? require(path.join(HOME23, 'cli', 'lib', 'coordination-active-release.cjs')).resolveActiveCoordinationRelease(HOME23)`);
+  lines.push(`  : null;`);
+  lines.push(`function residentCoordinationEnv(agentName) {`);
+  lines.push(`  if (coordinationDeployment) {`);
+  lines.push(`    const resident = coordinationDeployment.residents[agentName];`);
+  lines.push(`    if (!resident) return {};`);
+  lines.push(`    return {`);
+  lines.push(`      HOME23_COORDINATION_RESIDENT_ENABLED: 'true',`);
+  lines.push(`      HOME23_COORDINATION_RESIDENT_RUNTIME_ROOT: coordinationDeployment.releaseRoot,`);
+  lines.push(`      HOME23_COORDINATION_RESIDENT_SOCKET_PATH: resident.socketPath,`);
+  lines.push(`      HOME23_COORDINATION_RESIDENT_SERVER_INSTANCE_ID: 'home23-' + agentName + '-harness',`);
+  lines.push(`      HOME23_COORDINATION_RESIDENT_CLIENT_INSTANCE_ID: 'home23-' + agentName + '-harness',`);
+  lines.push(`      HOME23_COORDINATION_RESIDENT_KEY_VERSION: String(resident.keyVersion),`);
+  lines.push(`      HOME23_COORDINATION_RESIDENT_KEY: resident.key,`);
+  lines.push(`    };`);
+  lines.push(`  }`);
+  lines.push(`  const enabled = homeConfig.coordination?.process?.enabled === true`);
+  lines.push(`    && homeConfig.coordination?.flags?.['coordination.resident.' + agentName + '.enabled'] === true;`);
+  lines.push(`  return {`);
+  lines.push(`    HOME23_COORDINATION_RESIDENT_ENABLED: String(enabled),`);
+  lines.push(`    HOME23_COORDINATION_RESIDENT_SOCKET_PATH: path.join(coordinationSocketDir, 'resident-' + agentName + '.sock'),`);
+  lines.push(`    HOME23_COORDINATION_RESIDENT_SERVER_INSTANCE_ID: 'home23-' + agentName + '-harness',`);
+  lines.push(`    HOME23_COORDINATION_RESIDENT_CLIENT_INSTANCE_ID: 'home23-' + agentName + '-harness',`);
+  lines.push(`    HOME23_COORDINATION_RESIDENT_KEY_VERSION: String(secrets.coordination?.residents?.[agentName]?.keyVersion || 1),`);
+  lines.push(`    HOME23_COORDINATION_RESIDENT_KEY: String(secrets.coordination?.residents?.[agentName]?.key || ''),`);
+  lines.push(`  };`);
+  lines.push(`}`);
   lines.push(``);
   lines.push(`const commonEnv = {`);
   lines.push(`  HOME23_ROOT: HOME23,`);
@@ -239,9 +272,6 @@ export function generateEcosystem(home23Root, options = {}) {
     const conversationsDir = JSON.stringify(agent.paths.conversationsDir);
     const logsDir = JSON.stringify(agent.paths.logsDir);
     const mcpEnabled = agent.config.mcp?.enabled !== false;
-    const residentCoordinationEnabled = homeConfig.coordination?.process?.enabled === true
-      && homeConfig.coordination?.flags?.[`coordination.resident.${agent.name}.enabled`] === true;
-
     lines.push(``);
     lines.push(`    // ── ${agent.name} ──`);
 
@@ -343,7 +373,7 @@ export function generateEcosystem(home23Root, options = {}) {
     // No brain capability key — see the note above the dashboard app. The harness
     // reaches brain operations through the dashboard's HTTP API, never by
     // signing internal envelopes itself.
-    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}', HOME23_COORDINATION_RESIDENT_ENABLED: '${residentCoordinationEnabled ? 'true' : 'false'}', HOME23_COORDINATION_RESIDENT_SOCKET_PATH: path.join(coordinationSocketDir, 'resident-${agent.name}.sock'), HOME23_COORDINATION_RESIDENT_SERVER_INSTANCE_ID: 'home23-${agent.name}-harness', HOME23_COORDINATION_RESIDENT_CLIENT_INSTANCE_ID: 'home23-${agent.name}-harness', HOME23_COORDINATION_RESIDENT_KEY_VERSION: String(secrets.coordination?.residents?.['${agent.name}']?.keyVersion || 1), HOME23_COORDINATION_RESIDENT_KEY: String(secrets.coordination?.residents?.['${agent.name}']?.key || '') },`);
+    lines.push(`      env: { ...commonEnv, HOME23_MEMORY_AUTHORITY_ATTESTATION_KEY: memoryAuthorityAttestationKey, HOME23_AGENT: '${agent.name}', HOME23_INSTANCE_DIR: ${instanceDir}, HOME23_CONVERSATIONS_DIR: ${conversationsDir}, HOME23_LOGS_DIR: ${logsDir}, COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', BRIDGE_PORT: '${bridgePort}', HOME23_BRIDGE_PORT: '${bridgePort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}', ...residentCoordinationEnv('${agent.name}') },`);
     lines.push(`    },`);
 
     // Substrate Seed (shadow resident) — emitted ONLY when the agent's config
