@@ -15,6 +15,7 @@ import {
   CONNECTED_AGENTS_CONTRACT_PACK_SHA256,
   computeContractPackDigest,
 } from "../../../src/coordination/contracts/contract-pack.js";
+import { COORDINATION_CONTRACT_PACK_SHA256 } from "../../../src/coordination/migrations/index.js";
 import { OWNER_ID, TestMessagingDatabase, fixtureId } from "./test-fixture.js";
 
 test("M08 publishes one deterministic proposal-only M04 messaging schema delta", () => {
@@ -176,7 +177,7 @@ test("the proposal is bound to the exact accepted M02, M06, and M07 artifacts", 
   assert.equal(computeContractPackDigest(), CONNECTED_AGENTS_CONTRACT_PACK_SHA256);
   assert.equal(
     MESSAGING_SCHEMA_DELTA_PROPOSAL.requires.connectedAgentsContractPackSha256,
-    CONNECTED_AGENTS_CONTRACT_PACK_SHA256,
+    COORDINATION_CONTRACT_PACK_SHA256,
   );
   assert.equal(
     MESSAGING_SCHEMA_DELTA_PROPOSAL.requires.m06AuthSchemaDeltaSha256,

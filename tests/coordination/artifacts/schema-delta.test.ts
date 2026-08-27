@@ -11,6 +11,7 @@ import {
 } from "../../../src/coordination/contracts/contract-pack.js";
 import { COORDINATION_SPINE_MIGRATION_SQL } from "../../../src/coordination/migrations/0001-coordination-spine.js";
 import { CONNECTED_AGENTS_PRODUCT_SCHEMA_MIGRATION_SQL } from "../../../src/coordination/migrations/0002-connected-agents-product-schema.js";
+import { COORDINATION_CONTRACT_PACK_SHA256 } from "../../../src/coordination/migrations/index.js";
 
 test("M10 publishes one deterministic proposal-only M04 attachment schema handoff", async () => {
   const artifacts = await import("../../../src/coordination/artifacts/index.js").catch(
@@ -28,7 +29,7 @@ test("M10 publishes one deterministic proposal-only M04 attachment schema handof
     coordinationSchemaChecksum:
       "47c9045f580a020bce91d7ea64f572c7f88dc08532ff29b6f7601fdab23428a4",
     connectedAgentsContractVersion: 1,
-    connectedAgentsContractPackSha256: CONNECTED_AGENTS_CONTRACT_PACK_SHA256,
+    connectedAgentsContractPackSha256: COORDINATION_CONTRACT_PACK_SHA256,
     m08MessagingSchemaDeltaSha256: MESSAGING_SCHEMA_DELTA_SHA256,
   });
   assert.deepEqual(artifacts.ARTIFACT_SCHEMA_DELTA_PROPOSAL.tables, [

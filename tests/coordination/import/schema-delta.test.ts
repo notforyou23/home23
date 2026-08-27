@@ -13,6 +13,7 @@ import {
   computeContractPackDigest,
 } from "../../../src/coordination/contracts/contract-pack.js";
 import {
+  COORDINATION_CONTRACT_PACK_SHA256,
   COORDINATION_SCHEMA_CHECKSUM,
   COORDINATION_SCHEMA_VERSION,
   COORDINATION_SEARCH_ATTACHMENT_SCHEMA_DEPENDENCIES,
@@ -93,7 +94,7 @@ test("the M04 proposal remains bound to the accepted contract and materialized s
   );
   assert.equal(
     IMPORT_SCHEMA_DELTA_PROPOSAL.requires.connectedAgentsContractPackSha256,
-    CONNECTED_AGENTS_CONTRACT_PACK_SHA256,
+    COORDINATION_CONTRACT_PACK_SHA256,
   );
   assert.equal(
     IMPORT_SCHEMA_DELTA_PROPOSAL.requires.coordinationSchemaVersion,

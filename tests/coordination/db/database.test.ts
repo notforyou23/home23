@@ -7,7 +7,10 @@ import test from "node:test";
 
 import Database from "better-sqlite3";
 
-import { computeContractPackDigest } from "../../../src/coordination/contracts/contract-pack.js";
+import {
+  CONNECTED_AGENTS_CONTRACT_PACK_SHA256,
+  computeContractPackDigest,
+} from "../../../src/coordination/contracts/contract-pack.js";
 import {
   COORDINATION_CONTRACT_PACK_SHA256,
   COORDINATION_ATOMIC_IMPORT_MIGRATION_CHECKSUM,
@@ -37,7 +40,11 @@ test("a zero-byte database migrates to the current checksummed schema and reopen
   writeFileSync(path, "");
 
   const first = openCoordinationDatabase({ path, applicationVersion: "m04-test" });
-  assert.equal(computeContractPackDigest(), COORDINATION_CONTRACT_PACK_SHA256);
+  assert.equal(computeContractPackDigest(), CONNECTED_AGENTS_CONTRACT_PACK_SHA256);
+  assert.equal(
+    COORDINATION_CONTRACT_PACK_SHA256,
+    "fbc20017304aed66e579a2b95facbda6bbcf8572038f7f1c0c824423c65d6be2",
+  );
   assert.equal(first.openReceipt.startupCheck, "integrity_check");
   assert.equal(first.openReceipt.migratedFrom, 0);
   assert.equal(COORDINATION_SCHEMA_VERSION, 7);

@@ -12,6 +12,7 @@ import {
   CONNECTED_AGENTS_CONTRACT_PACK_SHA256,
   computeContractPackDigest,
 } from "../../../src/coordination/contracts/contract-pack.js";
+import { COORDINATION_CONTRACT_PACK_SHA256 } from "../../../src/coordination/migrations/index.js";
 
 test("M06 publishes a deterministic M04-owned auth schema delta without raw credential columns", () => {
   assert.equal(AUTH_SCHEMA_DELTA_PROPOSAL.packageId, "M06");
@@ -68,11 +69,11 @@ test("M06 publishes a deterministic M04-owned auth schema delta without raw cred
 });
 
 test("auth schema handoff preserves contract version 1 and its exact accepted digest", () => {
-  assert.equal(CONNECTED_AGENTS_CONTRACT_PACK_SHA256,
+  assert.equal(COORDINATION_CONTRACT_PACK_SHA256,
     "fbc20017304aed66e579a2b95facbda6bbcf8572038f7f1c0c824423c65d6be2");
   assert.equal(computeContractPackDigest(), CONNECTED_AGENTS_CONTRACT_PACK_SHA256);
   assert.equal(
     AUTH_SCHEMA_DELTA_PROPOSAL.requires.connectedAgentsContractPackSha256,
-    CONNECTED_AGENTS_CONTRACT_PACK_SHA256,
+    COORDINATION_CONTRACT_PACK_SHA256,
   );
 });

@@ -12,6 +12,7 @@ import {
 import { COORDINATION_SPINE_MIGRATION_SQL } from "../../../src/coordination/migrations/0001-coordination-spine.js";
 import { CONNECTED_AGENTS_PRODUCT_SCHEMA_MIGRATION_SQL } from "../../../src/coordination/migrations/0002-connected-agents-product-schema.js";
 import { SEARCH_ATTACHMENT_SCHEMA_MIGRATION_SQL } from "../../../src/coordination/migrations/0003-search-and-attachment-schema.js";
+import { COORDINATION_CONTRACT_PACK_SHA256 } from "../../../src/coordination/migrations/index.js";
 import { CANONICAL_SEARCH_SCHEMA_DELTA_SHA256 } from "../../../src/coordination/search/index.js";
 import {
   AT,
@@ -169,7 +170,7 @@ test("M11 publishes one deterministic proposal-only M04 work schema handoff", as
     coordinationSchemaVersion: 3,
     coordinationSchemaChecksum: "ddac2fb83bf73837f5200725697eff7d55a685f18a6c144fc33df17b75f113c2",
     connectedAgentsContractVersion: 1,
-    connectedAgentsContractPackSha256: CONNECTED_AGENTS_CONTRACT_PACK_SHA256,
+    connectedAgentsContractPackSha256: COORDINATION_CONTRACT_PACK_SHA256,
     m08MessagingSchemaDeltaSha256: MESSAGING_SCHEMA_DELTA_SHA256,
     m09CanonicalSearchSchemaDeltaSha256: CANONICAL_SEARCH_SCHEMA_DELTA_SHA256,
   });
