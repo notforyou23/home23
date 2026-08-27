@@ -231,7 +231,11 @@ export class ResidentUdsClient {
     const handshake = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         socket.destroy();
-        reject(new ResidentProtocolError("authentication_failed", "resident socket authentication timed out"));
+        reject(new ResidentProtocolError(
+          "connection_lost",
+          "resident socket authentication timed out",
+          { retryable: true },
+        ));
       }, this.#options.connectTimeoutMs ?? 2_000);
       timer.unref();
       this.#handshake = { requestId, correlationId, resolve, reject, timer };

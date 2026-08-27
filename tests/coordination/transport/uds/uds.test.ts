@@ -7,7 +7,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { createConnection } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -145,6 +145,40 @@ test("mutual authentication rejects an unknown peer, wrong instance, and wrong s
       (error: unknown) => protocolCode(error) === "authentication_failed",
     );
   }
+});
+
+test("an unanswered HELLO is retryable transport loss rather than permanent authentication failure", async (t) => {
+  const fixture = socketFixture(t);
+  mkdirSync(fixture.directory, { mode: 0o700 });
+  chmodSync(fixture.directory, 0o700);
+  const server = createServer((socket) => socket.resume());
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(fixture.socketPath, resolve);
+  });
+  t.after(() => new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  }));
+  const client = new ResidentUdsClient({
+    socketPath: fixture.socketPath,
+    serverInstanceId: "coordination-kernel-1",
+    credential: fixtureCredential(),
+    connectTimeoutMs: 50,
+  });
+  t.after(() => client.close());
+
+  await assert.rejects(
+    client.request({
+      method: "POST",
+      path: "/internal/v1/status/check",
+      payload: {},
+      deadlineAtMs: Date.now() + 2_000,
+    }),
+    (error: unknown) => error instanceof ResidentProtocolError &&
+      error.code === "connection_lost" &&
+      error.retryable === true &&
+      error.message === "resident socket authentication timed out",
+  );
 });
 
 test("version negotiation fails closed when no supported protocol overlaps", async (t) => {
