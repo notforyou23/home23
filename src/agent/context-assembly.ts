@@ -11,16 +11,19 @@
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import yaml from 'js-yaml';
 import type { AssemblyResult, EventEnvelope } from '../types.js';
 import type { EventLedger } from './event-ledger.js';
 import type { TriggerIndex } from './trigger-index.js';
 import { budgetIdentityContent } from './identity-budget.js';
-import { getAgentDir } from '../config.js';
 import { composeSeedSituation } from '../substrate/seed-context.js';
 import { composeLivedRecent } from '../substrate/lived-recent.js';
 import { composeLivedFacts } from '../substrate/lived-facts.js';
 import { semanticMatchScore, SEMANTIC_MATCH_FLOOR } from '../substrate/semantic-match.js';
+
+const require = createRequire(import.meta.url);
+const { resolveAgentInstancePaths } = require('../../shared/agent-instance-paths.cjs');
 
 /**
  * A workspace file that loads into situational awareness ONLY when its keyword
@@ -307,8 +310,16 @@ export function buildWorkerContextSection(projectRoot: string, agentName: string
     : [];
 
   const visibleWorkers = workers.filter(worker => worker.ownerAgent === agentName || worker.visibleTo.includes(agentName));
-  const brainPath = join(projectRoot, 'instances', agentName, 'brain', 'worker-runs.jsonl');
-  const recent = readJsonlTail(brainPath, 5);
+  let recent: Array<Record<string, unknown>> = [];
+  try {
+    const brainPath = join(
+      resolveAgentInstancePaths(projectRoot, agentName, { requireConfig: false }).brainDir,
+      'worker-runs.jsonl',
+    );
+    recent = readJsonlTail(brainPath, 5);
+  } catch {
+    recent = [];
+  }
   if (visibleWorkers.length === 0 && recent.length === 0) return '';
 
   const roster = visibleWorkers.length > 0
@@ -330,7 +341,15 @@ export function buildWorkerContextSection(projectRoot: string, agentName: string
 }
 
 export function buildAgencyContextSection(projectRoot: string, agentName: string): string {
-  const agencyDir = join(getAgentDir(agentName), 'brain', 'agency');
+  let agencyDir: string;
+  try {
+    agencyDir = join(
+      resolveAgentInstancePaths(projectRoot, agentName, { requireConfig: false }).brainDir,
+      'agency',
+    );
+  } catch {
+    return '';
+  }
   const statePath = join(agencyDir, 'state.json');
   const pursuitsPath = join(agencyDir, 'pursuits.jsonl');
   if (!existsSync(statePath) && !existsSync(pursuitsPath)) return '';
@@ -414,14 +433,48 @@ export function buildAgencyContextSection(projectRoot: string, agentName: string
   ].join('\n');
 }
 
-function projectRootFromWorkspace(workspacePath: string): string {
-  return process.env.HOME23_ROOT
+function managedWorkspaceContext(
+  workspacePath: string,
+): { home23Root: string; agentName: string } | null {
+  const normalizedWorkspace = resolve(workspacePath);
+  const envRoot = typeof process.env.HOME23_ROOT === 'string'
+      && process.env.HOME23_ROOT.trim() !== ''
     ? resolve(process.env.HOME23_ROOT)
-    : resolve(workspacePath, '..', '..', '..');
+    : null;
+  const envAgent = typeof process.env.HOME23_AGENT === 'string'
+      && process.env.HOME23_AGENT.trim() !== ''
+    ? process.env.HOME23_AGENT.trim()
+    : null;
+  const envInstanceDir = typeof process.env.HOME23_INSTANCE_DIR === 'string'
+      && process.env.HOME23_INSTANCE_DIR.trim() !== ''
+    ? resolve(process.env.HOME23_INSTANCE_DIR)
+    : null;
+
+  if (envRoot && envAgent) {
+    const localWorkspace = join(envRoot, 'instances', envAgent, 'workspace');
+    if (normalizedWorkspace === localWorkspace) {
+      return { home23Root: envRoot, agentName: envAgent };
+    }
+  }
+
+  if (envRoot && envAgent && envInstanceDir) {
+    const managedWorkspace = join(envInstanceDir, 'workspace');
+    if (normalizedWorkspace === managedWorkspace) {
+      return { home23Root: envRoot, agentName: envAgent };
+    }
+  }
+
+  return null;
+}
+
+function projectRootFromWorkspace(workspacePath: string): string {
+  return managedWorkspaceContext(workspacePath)?.home23Root
+    ?? resolve(workspacePath, '..', '..', '..');
 }
 
 function agentNameFromWorkspace(workspacePath: string): string {
-  return process.env.HOME23_AGENT || basename(dirname(workspacePath));
+  return managedWorkspaceContext(workspacePath)?.agentName
+    ?? basename(dirname(workspacePath));
 }
 
 // ─── Main Assembly Function ─────────────────────────────
