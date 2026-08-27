@@ -348,6 +348,12 @@ async function readCanonicalDirectory(directoryPath, { optional = false } = {}) 
 }
 
 async function listBrainOperations(home23Root, dependencies) {
+  const instancesRoot = path.join(home23Root, 'instances');
+  const instanceEntries = await readCanonicalDirectory(instancesRoot, { optional: true });
+  for (const entry of instanceEntries || []) {
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(entry.name)) continue;
+    if (entry.isSymbolicLink()) throw commandError('brain_operations_store_invalid');
+  }
   const createStoreReader = dependencies.createStoreReader
     || require('../../engine/src/dashboard/brain-operations/store-reader.js')
       .createBrainOperationStoreReader;
@@ -357,6 +363,7 @@ async function listBrainOperations(home23Root, dependencies) {
   const operations = [];
   const requestersWithPaths = discoverAgentInstancePaths(home23Root, { requireConfig: true });
   for (const requester of requestersWithPaths.sort((left, right) => left.agentName.localeCompare(right.agentName))) {
+    await readCanonicalDirectory(requester.instanceRoot, { optional: false });
     const runtimeRoot = requester.runtimeDir;
     if (await readCanonicalDirectory(runtimeRoot, { optional: true }) === null) continue;
     const operationsRoot = path.join(runtimeRoot, 'brain-operations');

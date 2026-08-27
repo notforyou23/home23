@@ -12,6 +12,11 @@ function makeRoot() {
     fs.mkdirSync(path.join(root, 'instances', agent, 'runtime', 'brain-operations'), {
       recursive: true,
     });
+    fs.writeFileSync(
+      path.join(root, 'instances', agent, 'config.yaml'),
+      `agent:\n  name: ${agent}\n`,
+      'utf8',
+    );
   }
   return root;
 }

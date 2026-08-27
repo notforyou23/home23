@@ -3,12 +3,20 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { tsImport } from 'tsx/esm/api';
 import yaml from 'js-yaml';
 
 import { createPersistentResidentProvisioner } from '../../cli/lib/bot-lifecycle-resident-adapter.js';
 import { createExactNameProcessController } from '../../cli/lib/bot-lifecycle-process-adapter.js';
-import { createBotLifecycleService, BotLifecycleError } from '../../src/coordination/bot-lifecycle/index.ts';
-import { classifyPolicy } from '../../src/coordination/policy/index.ts';
+
+const { createBotLifecycleService, BotLifecycleError } = await tsImport(
+  '../../src/coordination/bot-lifecycle/index.ts',
+  import.meta.url,
+);
+const { classifyPolicy } = await tsImport(
+  '../../src/coordination/policy/index.ts',
+  import.meta.url,
+);
 
 const NOW = '2026-08-25T16:00:00.000Z';
 
