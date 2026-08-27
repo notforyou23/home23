@@ -1,6 +1,6 @@
 # Connected Agents product API convergence
 
-The convergence composition injects the canonical SQLite-backed Bot directory, Channels, Messages, Inbox/Unread, Search, Work, Leases, events, and Jerry message submission over one coordination database. The submitted response is the actual resident `AgentLoop` result and is appended to that same transcript with Work provenance. No second product store is introduced.
+The convergence composition injects the canonical SQLite-backed Bot directory, Channels, Messages, Inbox/Unread, Search, Work, Leases, events, and per-binding Jerry/Forrest message submission over one coordination database. Each direct conversation resolves its own reviewed resident transport, holder identity, and credential context. The submitted response is the actual target resident's `AgentLoop` result and is appended to that same transcript with Work provenance. No second product store is introduced.
 
 ## M14 integration handoff
 

@@ -22,7 +22,10 @@ import { generateCoordinationId } from "../ids/index.js";
 import { createResidentCredential } from "../resident-protocol/index.js";
 import { ResidentUdsClient } from "../transport/uds/index.js";
 import { ResidentCoordinationAdapter, ResidentUdsAgentPort, createM11ResidentCoordinationPort } from "../../coordination-adapter/index.js";
-import { createDirectMessageSubmissionService } from "./direct-message.js";
+import {
+  createDirectMessageSubmissionService,
+  type DirectMessageResidentTarget,
+} from "./direct-message.js";
 import { SqliteDirectMessageContext } from "./direct-message-context.js";
 import { createCoordinationHttpServer } from "../http/index.js";
 import { createCoordinationApplication } from "./application.js";
@@ -343,41 +346,83 @@ export function createCoordinationProcess(
       }).getBootstrap(input);
     },
   };
-  let residentAgent: ResidentUdsAgentPort | undefined;
+  const residentAgents = new Map<string, ResidentUdsAgentPort>();
   const lifecycle = createCoordinationLifecycle([{
-    name: "resident-uds-client", drain: async () => undefined, close: async () => residentAgent?.close(),
+    name: "resident-uds-clients",
+    drain: async () => undefined,
+    close: async () => {
+      for (const residentAgent of residentAgents.values()) await residentAgent.close();
+    },
   }, {
     name: "coordination-database",
     drain: async () => undefined,
     close: async () => database.close(),
   }]);
   let messageSubmission: ReturnType<typeof createDirectMessageSubmissionService> | undefined;
-  if (
-    config.flags["coordination.resident.jerry.enabled"] === true &&
-    isCanonicalMessagesAuthority(currentAuthority("messages"))
-  ) {
-    const jerry = config.residents?.jerry;
-    if (!jerry) throw new Error("Jerry resident configuration is required when its feature is enabled");
-    const residentRootKey = Buffer.from(jerry.key, "hex");
-    const credential = createResidentCredential({ residentSlug: "jerry", role: "resident", instanceId: jerry.clientInstanceId, keyVersion: jerry.keyVersion, rootKey: residentRootKey });
-    residentRootKey.fill(0);
-    const client = new ResidentUdsClient({ socketPath: jerry.socketPath, serverInstanceId: jerry.serverInstanceId, credential });
-    residentAgent = new ResidentUdsAgentPort({ client, residentSlug: "jerry" });
-    const resident = new ResidentCoordinationAdapter(residentAgent, createM11ResidentCoordinationPort(leases));
-    const context = new SqliteDirectMessageContext(database, messages);
-    messageSubmission = createDirectMessageSubmissionService({ messages, context: {
-      prepare: async (input) => { const prepared = await context.prepare(input); if (prepared.residentBinding !== "jerry") throw new Error("target resident is not enabled"); return prepared; },
-      recover: async (runningWork) => { const recovered = await context.recover(runningWork); if (recovered.prepared.residentBinding !== "jerry") throw new Error("target resident is not enabled"); return recovered; },
-    }, work, leases, resident,
-      authority: { current: () => currentAuthority("messages") },
-      holderInstanceId: jerry.serverInstanceId,
-      beginWork: lifecycle.beginWork,
-      recoveryIdentity: () => ({ requestId: generateCoordinationId("request"), correlationId: generateCoordinationId("correlation") }),
-      residentContext: ({ residentBinding, principalId, requestId, correlationId }) => {
-        if (residentBinding !== "jerry") throw new Error("target resident is not enabled");
-        return { principalId, requestId, correlationId, identity: { kind: "resident", resident: { requestId, correlationId, credential: { residentSlug: residentBinding, role: "resident", instanceId: jerry.serverInstanceId, keyVersion: jerry.keyVersion } } } };
-      },
-    });
+  if (isCanonicalMessagesAuthority(currentAuthority("messages"))) {
+    const residentTargets = new Map<string, DirectMessageResidentTarget>();
+    for (const residentSlug of ["jerry", "forrest"] as const) {
+      if (config.flags[`coordination.resident.${residentSlug}.enabled`] !== true) continue;
+      const residentConfig = config.residents[residentSlug];
+      if (!residentConfig?.enabled) {
+        throw new Error(`${residentSlug} resident configuration is required when its feature is enabled`);
+      }
+      const residentRootKey = Buffer.from(residentConfig.key, "hex");
+      const credential = createResidentCredential({
+        residentSlug,
+        role: "resident",
+        instanceId: residentConfig.clientInstanceId,
+        keyVersion: residentConfig.keyVersion,
+        rootKey: residentRootKey,
+      });
+      residentRootKey.fill(0);
+      const client = new ResidentUdsClient({
+        socketPath: residentConfig.socketPath,
+        serverInstanceId: residentConfig.serverInstanceId,
+        credential,
+      });
+      const residentAgent = new ResidentUdsAgentPort({ client, residentSlug });
+      residentAgents.set(residentSlug, residentAgent);
+      residentTargets.set(residentSlug, Object.freeze({
+        resident: new ResidentCoordinationAdapter(
+          residentAgent,
+          createM11ResidentCoordinationPort(leases),
+        ),
+        holderInstanceId: residentConfig.serverInstanceId,
+        context: ({ principalId, requestId, correlationId }:
+          Parameters<DirectMessageResidentTarget["context"]>[0]) => ({
+          principalId,
+          requestId,
+          correlationId,
+          identity: {
+            kind: "resident" as const,
+            resident: {
+              requestId,
+              correlationId,
+              credential: {
+                residentSlug,
+                role: "resident" as const,
+                instanceId: residentConfig.serverInstanceId,
+                keyVersion: residentConfig.keyVersion,
+              },
+            },
+          },
+        }),
+      }));
+    }
+    if (residentTargets.size > 0) {
+      const context = new SqliteDirectMessageContext(database, messages);
+      messageSubmission = createDirectMessageSubmissionService({
+        messages,
+        context,
+        work,
+        leases,
+        resolveResident: (residentBinding) => residentTargets.get(residentBinding),
+        authority: { current: () => currentAuthority("messages") },
+        beginWork: lifecycle.beginWork,
+        recoveryIdentity: () => ({ requestId: generateCoordinationId("request"), correlationId: generateCoordinationId("correlation") }),
+      });
+    }
   }
   const application = createCoordinationApplication({
     flags: config.flags,

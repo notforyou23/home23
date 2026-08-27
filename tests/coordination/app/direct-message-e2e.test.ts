@@ -99,9 +99,19 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
   });
   const authority = { current: () => currentMessagesAuthority };
   const service = createDirectMessageSubmissionService({
-    messages, context: new SqliteDirectMessageContext(database, messages), work, leases, resident,
+    messages, context: new SqliteDirectMessageContext(database, messages), work, leases,
+    resolveResident: (residentBinding) => residentBinding === "jerry" ? {
+      resident,
+      holderInstanceId: "resident-1",
+      context: ({ principalId, requestId, correlationId }) => residentContext({
+        residentBinding,
+        principalId,
+        requestId,
+        correlationId,
+      }),
+    } : undefined,
     authority,
-    holderInstanceId: "resident-1", beginWork, residentContext,
+    beginWork,
     recoveryIdentity: () => ({
       requestId: fixtureId("request", 904), correlationId: fixtureId("correlation", 904),
     }),
@@ -192,7 +202,17 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
   const restartedService = createDirectMessageSubmissionService({
     messages, context: new SqliteDirectMessageContext(database, messages), work, leases,
     authority,
-    resident: restartedResident, holderInstanceId: "resident-1", beginWork, residentContext,
+    resolveResident: (residentBinding) => residentBinding === "jerry" ? {
+      resident: restartedResident,
+      holderInstanceId: "resident-1",
+      context: ({ principalId, requestId, correlationId }) => residentContext({
+        residentBinding,
+        principalId,
+        requestId,
+        correlationId,
+      }),
+    } : undefined,
+    beginWork,
     recoveryIdentity: () => {
       const suffix = recoveryIdentitySuffix++;
       return { requestId: fixtureId("request", suffix), correlationId: fixtureId("correlation", suffix) };

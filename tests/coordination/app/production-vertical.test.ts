@@ -15,12 +15,15 @@ import { spawnSync } from "node:child_process";
 import { AgentLoop } from "../../../src/agent/loop.js";
 import { ConversationHistory } from "../../../src/agent/history.js";
 import { createAuthService, SqliteAuthRepository } from "../../../src/coordination/auth/index.js";
+import { createBotDirectory, SqliteBotDirectoryRepository } from "../../../src/coordination/bots/index.js";
 import { bootstrapJerry, executeM14AuthorityTransition } from "../../../src/coordination/operations/index.js";
 import { runCoordinationProcess } from "../../../src/coordination/index.js";
 import { openCoordinationDatabase } from "../../../src/coordination/db/index.js";
 import { generateCoordinationId } from "../../../src/coordination/ids/index.js";
 import { createCoordinationProcess, disabledCoordinationFeatureFlags } from "../../../src/coordination/app/index.js";
 import { startResidentCoordinationHarness } from "../../../src/coordination-adapter/index.js";
+import { createChannelService, SqliteBotConversationBindingAdapter, SqliteMessagingRepository } from "../../../src/coordination/channels/index.js";
+import { M11MessageProvenanceAuthority } from "../../../src/coordination/work/index.js";
 import {
   COORDINATION_MESSAGES_WRITER,
   authorityReceiptSigningPayload,
@@ -32,9 +35,9 @@ import { FEATURE_FLAG_REGISTRY } from "../../../src/coordination/schema/contract
 
 const authority = { approved: true, kind: "m14-bootstrap", operator: "user_owner", resident: "jerry", legacyWriterAuthoritative: true, coordinationFlagsAllFalse: true } as const;
 
-function actualAgent(root: string) {
-  const history = new ConversationHistory(join(root, "conversations"), 400_000, "jerry");
-  const workspacePath = join(root, "workspace");
+function actualAgent(root: string, resident = "jerry") {
+  const history = new ConversationHistory(join(root, `conversations-${resident}`), 400_000, resident);
+  const workspacePath = join(root, `workspace-${resident}`);
   mkdirSync(workspacePath, { recursive: true });
   const agent = new AgentLoop({ apiKey: "test", model: "fixture-local-model", provider: "ollama-local",
     registry: { getAnthropicTools: () => [], getOpenAITools: () => [], get: () => undefined, execute: async () => ({ content: "" }) } as never,
@@ -62,10 +65,14 @@ async function startLocalModelFixture() {
     try {
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
-      requests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")) as typeof requests[number]);
+      const requestBody = JSON.parse(Buffer.concat(chunks).toString("utf8")) as typeof requests[number];
+      requests.push(requestBody);
+      const userContent = String(requestBody.messages?.findLast((message) => message.role === "user")?.content ?? "");
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({
-        choices: [{ message: { role: "assistant", content: "Canonical Jerry response." } }],
+        choices: [{ message: { role: "assistant", content: userContent.includes("Forrest")
+          ? "Canonical Forrest response."
+          : "Canonical Jerry response." } }],
       }));
     } catch {
       response.writeHead(500).end();
@@ -200,6 +207,87 @@ function applyAuthorityTransition(input: {
   });
 }
 
+async function bootstrapForrestFixture(input: {
+  databasePath: string;
+  serverInstanceId: string;
+  keyVersion: number;
+}) {
+  const database = openCoordinationDatabase({ path: input.databasePath });
+  try {
+    const repository = new SqliteBotDirectoryRepository(database);
+    const directory = createBotDirectory({
+      repository,
+      availabilityPolicy: { degradedAfterMs: 30_000, offlineAfterMs: 120_000 },
+    });
+    const requestId = generateCoordinationId("request");
+    const correlationId = generateCoordinationId("correlation");
+    const bot = await directory.ensurePersistentBinding({
+      residentBinding: "forrest",
+      name: "Forrest",
+      purpose: "Persistent Home23 resident",
+      continuingIdentity: true,
+      durableMailbox: true,
+      requiredCapabilities: ["messages"],
+      aliases: [{ namespace: "name", value: "Forrest" }],
+    }, { principalId: "user_owner", requestId, correlationId });
+    await directory.registerResident({
+      context: {
+        requestId,
+        correlationId,
+        credential: {
+          residentSlug: "forrest",
+          role: "resident",
+          instanceId: input.serverInstanceId,
+          keyVersion: input.keyVersion,
+        },
+      },
+      botBinding: "forrest",
+      protocolVersion: 1,
+      capabilities: ["messages"],
+    });
+    const participantDirectory = Object.freeze({
+      listVisibleBots: directory.listVisibleBots,
+      resolveAlias: directory.resolveAlias,
+      getBotByResidentBinding: (binding: string) => repository.getBotByResidentBinding(binding),
+    });
+    const messaging = new SqliteMessagingRepository(database, {
+      botConversationBinding: new SqliteBotConversationBindingAdapter(),
+      messageProvenanceAuthorization: new M11MessageProvenanceAuthority(),
+    });
+    const channels = createChannelService({
+      repository: messaging,
+      participantDirectory,
+      cursorSigningKey: Buffer.alloc(32, 2),
+    });
+    const direct = await channels.createDirectConversation({
+      context: {
+        principalId: "user_owner",
+        requestId,
+        correlationId,
+        identity: {
+          kind: "owner",
+          auth: {
+            principalId: "user_owner",
+            deviceId: generateCoordinationId("device"),
+            sessionId: generateCoordinationId("clientSession"),
+            scopes: ["product:read", "message:send"],
+          },
+        },
+      },
+      memberBotIds: [bot.id],
+      pinned: true,
+      idempotencyKey: "home23-m15-forrest-direct-bootstrap-v1",
+    });
+    return Object.freeze({
+      botId: bot.id,
+      channelId: direct.channel.id,
+      conversationId: direct.channel.conversationId,
+    });
+  } finally {
+    database.close();
+  }
+}
+
 test("feature-off resident harness returns without creating its socket", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "home23-resident-off-")); t.after(() => rmSync(root, { recursive: true, force: true }));
   const { agent, history } = actualAgent(root); const socket = join(root, "resident.sock");
@@ -215,6 +303,220 @@ test("feature-off coordination opens no database, socket, or listener", async (t
   assert.equal(existsSync(runtime), false);
   assert.equal(existsSync(databasePath), false);
   assert.equal(existsSync(socketPath), false);
+});
+
+test("production composition dispatches Jerry and Forrest to distinct resident sockets", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "home23-production-dual-resident-"));
+  const runtime = join(root, "instances", ".house", "coordination");
+  mkdirSync(runtime, { recursive: true });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const jerryModel = await startLocalModelFixture();
+  const forrestModel = await startLocalModelFixture();
+  t.after(() => Promise.all([jerryModel.close(), forrestModel.close()]));
+  const priorEnvironment = {
+    HOME23_ROOT: process.env.HOME23_ROOT,
+    HOME23_AGENT: process.env.HOME23_AGENT,
+    LOCAL_LLM_BASE_URL: process.env.LOCAL_LLM_BASE_URL,
+  };
+  process.env.HOME23_ROOT = root;
+  t.after(() => {
+    for (const [name, value] of Object.entries(priorEnvironment)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  const databasePath = join(runtime, "home23-coordination.sqlite3");
+  const jerrySocketPath = join(root, "j.sock");
+  const forrestSocketPath = join(root, "f.sock");
+  const jerryKey = "7".repeat(64);
+  const forrestKey = "8".repeat(64);
+  const capabilityToken = "9".repeat(64);
+  const jerry = await bootstrapJerry({
+    databasePath,
+    apply: true,
+    authority,
+    serverInstanceId: "home23-jerry-harness",
+    keyVersion: 1,
+  });
+  const forrest = await bootstrapForrestFixture({
+    databasePath,
+    serverInstanceId: "home23-forrest-harness",
+    keyVersion: 1,
+  });
+  const token = await accessToken(databasePath, capabilityToken);
+  const operatorKeys = generateKeyPairSync("ed25519");
+  const legacy: AuthorityEpoch = {
+    capability: "messages",
+    epoch: 1,
+    mode: "legacy",
+    writer: "legacy-conversation-writer",
+    effectiveAtEventSequence: null,
+    rollbackEpoch: null,
+  };
+  const shadow: AuthorityEpoch = { ...legacy, epoch: 2, mode: "shadow" };
+  const shadowSnapshot = authoritySnapshot(databasePath);
+  applyAuthorityTransition({
+    databasePath,
+    publicKey: operatorKeys.publicKey,
+    receipt: signedAuthorityReceipt({
+      from: legacy,
+      to: shadow,
+      channelId: jerry.channelId!,
+      snapshot: shadowSnapshot,
+      privateKey: operatorKeys.privateKey,
+      issuedAt: "2026-08-26T12:10:00.000Z",
+    }),
+  });
+  const canonicalSnapshot = authoritySnapshot(databasePath);
+  const canonical: AuthorityEpoch = {
+    capability: "messages",
+    epoch: 3,
+    mode: "canonical",
+    writer: COORDINATION_MESSAGES_WRITER,
+    effectiveAtEventSequence: canonicalSnapshot.eventSequence,
+    rollbackEpoch: 1,
+  };
+  applyAuthorityTransition({
+    databasePath,
+    publicKey: operatorKeys.publicKey,
+    receipt: signedAuthorityReceipt({
+      from: shadow,
+      to: canonical,
+      channelId: jerry.channelId!,
+      snapshot: canonicalSnapshot,
+      privateKey: operatorKeys.privateKey,
+      issuedAt: "2026-08-26T12:11:00.000Z",
+    }),
+  });
+
+  process.env.HOME23_AGENT = "jerry";
+  process.env.LOCAL_LLM_BASE_URL = jerryModel.baseUrl;
+  const jerryRuntime = actualAgent(root, "jerry");
+  process.env.HOME23_AGENT = "forrest";
+  process.env.LOCAL_LLM_BASE_URL = forrestModel.baseUrl;
+  const forrestRuntime = actualAgent(root, "forrest");
+  const residentInvocations = { jerry: 0, forrest: 0 };
+  const observedAgent = (
+    resident: "jerry" | "forrest",
+    agent: typeof jerryRuntime.agent,
+  ) => ({
+    runWithTurn: (...args: Parameters<typeof agent.runWithTurn>) => {
+      residentInvocations[resident] += 1;
+      return agent.runWithTurn(...args);
+    },
+    stop: (...args: Parameters<typeof agent.stop>) => agent.stop(...args),
+    isRunning: (...args: Parameters<typeof agent.isRunning>) => agent.isRunning(...args),
+  });
+  const residentEnvironment = (
+    slug: "jerry" | "forrest",
+    socketPath: string,
+    key: string,
+  ) => ({
+    HOME23_COORDINATION_RESIDENT_ENABLED: "true",
+    HOME23_AGENT: slug,
+    HOME23_COORDINATION_RESIDENT_SOCKET_PATH: socketPath,
+    HOME23_COORDINATION_RESIDENT_SERVER_INSTANCE_ID: `home23-${slug}-harness`,
+    HOME23_COORDINATION_RESIDENT_CLIENT_INSTANCE_ID: `home23-${slug}-harness`,
+    HOME23_COORDINATION_RESIDENT_KEY_VERSION: "1",
+    HOME23_COORDINATION_RESIDENT_KEY: key,
+  });
+  const jerryHarness = await startResidentCoordinationHarness({
+    agent: observedAgent("jerry", jerryRuntime.agent),
+    history: jerryRuntime.history,
+    environment: residentEnvironment("jerry", jerrySocketPath, jerryKey),
+  });
+  const forrestHarness = await startResidentCoordinationHarness({
+    agent: observedAgent("forrest", forrestRuntime.agent),
+    history: forrestRuntime.history,
+    environment: residentEnvironment("forrest", forrestSocketPath, forrestKey),
+  });
+  assert.ok(jerryHarness);
+  assert.ok(forrestHarness);
+  t.after(() => Promise.all([jerryHarness!.close(), forrestHarness!.close()]));
+
+  const flags = {
+    ...disabledCoordinationFeatureFlags(),
+    "coordination.process.enabled": true,
+    "coordination.public_api.enabled": true,
+    "coordination.resident.jerry.enabled": true,
+    "coordination.resident.forrest.enabled": true,
+  };
+  const coordinationProcess = createCoordinationProcess({
+    enabled: true,
+    host: "127.0.0.1",
+    port: 0,
+    databasePath,
+    socketPath: join(runtime, "coord.sock"),
+    capabilityToken,
+    flags,
+    residents: {
+      jerry: {
+        enabled: true,
+        socketPath: jerrySocketPath,
+        serverInstanceId: "home23-jerry-harness",
+        clientInstanceId: "home23-jerry-harness",
+        keyVersion: 1,
+        key: jerryKey,
+      },
+      forrest: {
+        enabled: true,
+        socketPath: forrestSocketPath,
+        serverInstanceId: "home23-forrest-harness",
+        clientInstanceId: "home23-forrest-harness",
+        keyVersion: 1,
+        key: forrestKey,
+      },
+    },
+  });
+  t.after(() => coordinationProcess.drain());
+  const address = await coordinationProcess.start();
+  const headers = { authorization: `Bearer ${token}` };
+  const capabilities = await (await fetch(`${address.origin}/api/v1/capabilities`)).json() as any;
+  assert.equal(capabilities.capabilities.messageSubmission, true);
+
+  const submit = async (channelId: string, resident: "Jerry" | "Forrest") => {
+    const response = await fetch(`${address.origin}/api/v1/channels/${channelId}/messages`, {
+      method: "POST",
+      headers: {
+        ...headers,
+        "content-type": "application/json",
+        "idempotency-key": `dual-resident-${resident.toLowerCase()}-message`,
+      },
+      body: JSON.stringify({
+        messageId: generateCoordinationId("message"),
+        clientMessageId: `dual-resident-${resident.toLowerCase()}`,
+        text: `${resident}, answer canonically.`,
+        attachmentIds: [],
+        mentions: [],
+        replyToMessageId: null,
+      }),
+    });
+    assert.equal(response.status, 202, `${resident} send: ${await response.text()}`);
+  };
+  await submit(jerry.channelId!, "Jerry");
+  await submit(forrest.channelId, "Forrest");
+
+  const requireResult = async (channelId: string, expected: string) => {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const response = await fetch(`${address.origin}/api/v1/channels/${channelId}/messages`, { headers });
+      const body = await response.json() as { messages: Array<{ kind: string; text: string }> };
+      const result = body.messages.find((message) => message.kind === "result");
+      if (result) {
+        assert.equal(result.text, expected);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.fail(`missing result for ${channelId}`);
+  };
+  await Promise.all([
+    requireResult(jerry.channelId!, "Canonical Jerry response."),
+    requireResult(forrest.channelId, "Canonical Forrest response."),
+  ]);
+  assert.deepEqual(residentInvocations, { jerry: 1, forrest: 1 },
+    "each direct conversation must traverse only its own resident socket");
+  assert.equal(jerryModel.calls() + forrestModel.calls(), 2);
 });
 
 test("isolated production composition traverses the generated harness and unmodified AgentLoop", async (t) => {

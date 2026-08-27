@@ -46,5 +46,6 @@ export {
   type DirectMessageChannelContext,
   type DirectMessageContextPort,
   type DirectMessageMessagePort,
+  type DirectMessageResidentTarget,
 } from "./direct-message.js";
 export { SqliteDirectMessageContext } from "./direct-message-context.js";

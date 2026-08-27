@@ -51,19 +51,27 @@ export interface DirectMessageMessagePort {
   }): Promise<{ messages: readonly MessageProjection[] }>;
 }
 
+export interface DirectMessageResidentTarget {
+  resident: Pick<ResidentCoordinationAdapter,
+    "execute" | "continueAccepted" | "reattach" | "recoverCompleted">;
+  holderInstanceId: string;
+  context(input: {
+    principalId: string;
+    requestId: string;
+    correlationId: string;
+  }): MessagingActorContext;
+}
+
 /** Join M08 -> M11 -> M13 -> M11 terminal -> M08 result without activating a process. */
 export function createDirectMessageSubmissionService(options: {
   messages: DirectMessageMessagePort;
   context: DirectMessageContextPort;
   work: CoordinationWorkPort;
   leases: CoordinationLeasePort;
-  resident: Pick<ResidentCoordinationAdapter,
-    "execute" | "continueAccepted" | "reattach" | "recoverCompleted">;
+  resolveResident(residentBinding: string): DirectMessageResidentTarget | undefined;
   authority: { current(): AuthorityEpoch | null };
-  holderInstanceId: string;
   beginWork(): () => void;
   recoveryIdentity(): { requestId: string; correlationId: string };
-  residentContext(input: { residentBinding: string; principalId: string; requestId: string; correlationId: string }): MessagingActorContext;
 }) {
   const inFlight = new Map<string, Promise<MessageProjection>>();
   const once = (callback: () => void) => {
@@ -79,6 +87,11 @@ export function createDirectMessageSubmissionService(options: {
       throw new MessagingError("authority_unavailable");
     }
   };
+  const residentFor = (residentBinding: string): DirectMessageResidentTarget => {
+    const target = options.resolveResident(residentBinding);
+    if (!target) throw new Error("target resident is not enabled");
+    return target;
+  };
 
   function dispatch(input: {
     work: WorkRecord; prepared: DirectMessageChannelContext; originMessageId: string;
@@ -90,6 +103,7 @@ export function createDirectMessageSubmissionService(options: {
       return existing;
     }
     const execution = (async () => {
+      const target = residentFor(input.prepared.residentBinding);
       let origin: CoordinationTurnOrigin;
       let recoveryPhase: "offered" | "accepted" | "running" | "completed" | null = null;
       if (input.recovery) {
@@ -104,7 +118,7 @@ export function createDirectMessageSubmissionService(options: {
           const offer = options.leases.offer({
             workId: recoveredWork.id,
             holderPrincipalId: input.prepared.targetPrincipalId,
-            holderInstanceId: options.holderInstanceId,
+            holderInstanceId: target.holderInstanceId,
             authorityReference: `resident:${input.prepared.residentBinding}`,
             automatic: true,
             requestId: input.requestId,
@@ -116,7 +130,7 @@ export function createDirectMessageSubmissionService(options: {
             attemptId: offer.attempt.id,
             leaseId: offer.lease.id,
             holderPrincipalId: input.prepared.targetPrincipalId,
-            holderInstanceId: options.holderInstanceId,
+            holderInstanceId: target.holderInstanceId,
             authorityReference: offer.attempt.authorityReference,
             fencingToken: offer.fencingToken,
             channelId: input.prepared.channelId,
@@ -130,7 +144,7 @@ export function createDirectMessageSubmissionService(options: {
             current.work.roundId === null &&
             current.work.targetPrincipalId === input.prepared.targetPrincipalId &&
             current.attempt.holderPrincipalId === input.prepared.targetPrincipalId &&
-            current.attempt.holderInstanceId === options.holderInstanceId &&
+            current.attempt.holderInstanceId === target.holderInstanceId &&
             current.lease.holderPrincipalId === current.attempt.holderPrincipalId &&
             current.lease.holderInstanceId === current.attempt.holderInstanceId &&
             current.lease.fencingToken === current.attempt.fencingToken &&
@@ -165,14 +179,14 @@ export function createDirectMessageSubmissionService(options: {
       } else {
         const offer = options.leases.offer({
           workId: input.work.id, holderPrincipalId: input.prepared.targetPrincipalId,
-          holderInstanceId: options.holderInstanceId,
+          holderInstanceId: target.holderInstanceId,
           authorityReference: `resident:${input.prepared.residentBinding}`, automatic: true,
           requestId: input.requestId, correlationId: input.correlationId,
         });
         origin = Object.freeze({
           kind: "coordination", workId: input.work.id, attemptId: offer.attempt.id,
           leaseId: offer.lease.id, holderPrincipalId: input.prepared.targetPrincipalId,
-          holderInstanceId: options.holderInstanceId, authorityReference: offer.attempt.authorityReference,
+          holderInstanceId: target.holderInstanceId, authorityReference: offer.attempt.authorityReference,
           fencingToken: offer.fencingToken, channelId: input.prepared.channelId,
           originMessageId: input.originMessageId, roundId: null,
         });
@@ -184,19 +198,18 @@ export function createDirectMessageSubmissionService(options: {
       };
       let agentResponse: AgentResponse;
       if (recoveryPhase === "completed") {
-        const run = await options.resident.recoverCompleted(residentRequest);
+        const run = await target.resident.recoverCompleted(residentRequest);
         agentResponse = await run.response;
       } else {
         const run = recoveryPhase === "running"
-          ? await options.resident.reattach(residentRequest)
+          ? await target.resident.reattach(residentRequest)
           : recoveryPhase === "accepted"
-            ? await options.resident.continueAccepted(residentRequest)
-            : await options.resident.execute(residentRequest);
+            ? await target.resident.continueAccepted(residentRequest)
+            : await target.resident.execute(residentRequest);
         [agentResponse] = await Promise.all([run.response, run.receipt]) as [AgentResponse, unknown];
       }
       const result = await options.messages.sendMessage({
-        context: options.residentContext({
-          residentBinding: input.prepared.residentBinding,
+        context: target.context({
           principalId: input.prepared.targetPrincipalId,
           requestId: input.requestId, correlationId: input.correlationId,
         }),
@@ -269,6 +282,10 @@ export function createDirectMessageSubmissionService(options: {
           context: input.context, channelId: input.channelId,
           originMessage: appended.message, attachmentIds: input.body.attachmentIds,
         });
+        // Refuse a disabled binding before creating durable Work or returning
+        // an accepted response. The owner Message remains the canonical record
+        // of what was submitted, but no unroutable Work may be advertised.
+        residentFor(prepared.residentBinding);
         const created = options.work.create({
           principalId: input.context.principalId, targetPrincipalId: prepared.targetPrincipalId,
           channelId: input.channelId, originMessageId: appended.message.id, roundId: null,
@@ -278,8 +295,8 @@ export function createDirectMessageSubmissionService(options: {
         });
         let response: Promise<MessageProjection>;
         if (created.work.state === "succeeded") {
-          const residentContext = options.residentContext({
-            residentBinding: prepared.residentBinding, principalId: prepared.targetPrincipalId,
+          const residentContext = residentFor(prepared.residentBinding).context({
+            principalId: prepared.targetPrincipalId,
             requestId: input.context.requestId, correlationId: input.context.correlationId,
           });
           workTransferred = true;
