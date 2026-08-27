@@ -19,7 +19,8 @@
   },
   "runtime_model": {
     "provider": "anthropic",
-    "model": "claude-opus-4-8"
+    "model": "claude-opus-4-8",
+    "reasoning_effort": "high"
   },
   "recoverable": true
 }

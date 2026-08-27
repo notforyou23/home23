@@ -6,6 +6,8 @@
  * the turn endpoints read them via HistoryStore.loadRaw().
  */
 
+import type { ReasoningEffort } from '../agent/reasoning-effort.js';
+
 export type TurnStatus =
   | 'pending'
   | 'accepted'
@@ -34,6 +36,8 @@ export interface TurnEnvelope {
   first_token_deadline_at?: string;
   model?: string;
   provider?: string;
+  /** Resolved per-turn effort passed to the provider adapter. */
+  reasoning_effort?: ReasoningEffort;
   stop_reason?: string;
   error?: string;
   error_code?: string;
@@ -88,6 +92,7 @@ export interface TurnStatusResponse {
   runtime_model: {
     provider: string | null;
     model: string | null;
+    reasoning_effort: ReasoningEffort | null;
   };
   stop_requested_at?: string | null;
   stop_reason?: string | null;

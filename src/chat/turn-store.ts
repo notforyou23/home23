@@ -9,6 +9,7 @@ import {
   isTurnEvent,
 } from './turn-types.js';
 import { enrichTerminalEnvelope } from './history-projection.js';
+import type { ReasoningEffort } from '../agent/reasoning-effort.js';
 
 /**
  * Turn lifecycle on top of the conversation JSONL.
@@ -22,6 +23,7 @@ export class TurnStore {
     activity_deadline_at?: string;
     hard_deadline_at?: string;
     first_token_deadline_at?: string;
+    reasoning_effort?: ReasoningEffort;
     coordination_origin?: import('../agent/types.js').CoordinationTurnOrigin;
   } = {}): TurnEnvelope {
     const env: TurnEnvelope = {
@@ -37,6 +39,7 @@ export class TurnStore {
       first_token_deadline_at: extras.first_token_deadline_at,
       model,
       provider,
+      reasoning_effort: extras.reasoning_effort,
       coordination_origin: extras.coordination_origin,
     };
     this.history.appendRecord(chatId, env);
@@ -188,6 +191,7 @@ export class TurnStore {
       runtime_model: {
         provider,
         model,
+        reasoning_effort: start?.reasoning_effort ?? final?.reasoning_effort ?? null,
       },
       stop_reason: final?.stop_reason ?? null,
       error_code: final?.error_code ?? (status === 'error' ? 'provider_error' : null),

@@ -130,6 +130,8 @@ test('AgentLoop Codex OAuth GPT-5.6 turn sends Responses reasoning effort', asyn
     await started.response;
     assert.deepEqual(body?.reasoning, { effort: 'xhigh', summary: 'auto' });
     assert.equal(Object.hasOwn(body ?? {}, 'reasoning_effort'), false);
+    const status = new TurnStore(history).statusForTurn('reasoning-chat', started.turnId);
+    assert.equal(status?.runtime_model.reasoning_effort, 'xhigh');
   } finally {
     globalThis.fetch = previousFetch;
     rmSync(root, { recursive: true, force: true });

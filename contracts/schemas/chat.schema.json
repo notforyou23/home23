@@ -88,6 +88,10 @@
         "ended_at": { "type": ["string", "null"] },
         "model": { "type": ["string", "null"] },
         "provider": { "type": ["string", "null"] },
+        "reasoning_effort": {
+          "type": ["string", "null"],
+          "enum": ["none", "low", "medium", "high", "xhigh", "max", null]
+        },
         "stop_reason": { "type": ["string", "null"] },
         "error": { "type": ["string", "null"] },
         "error_code": { "type": ["string", "null"] },
@@ -174,10 +178,14 @@
         "runtime_model": {
           "type": "object",
           "additionalProperties": true,
-          "required": ["provider", "model"],
+          "required": ["provider", "model", "reasoning_effort"],
           "properties": {
             "provider": { "type": ["string", "null"] },
-            "model": { "type": ["string", "null"] }
+            "model": { "type": ["string", "null"] },
+            "reasoning_effort": {
+              "type": ["string", "null"],
+              "enum": ["none", "low", "medium", "high", "xhigh", "max", null]
+            }
           }
         },
         "stop_requested_at": { "type": ["string", "null"] },

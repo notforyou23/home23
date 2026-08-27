@@ -45,6 +45,7 @@ test('TurnStore.statusForTurn combines pending envelope, last event, and active 
         started_at: '2026-06-26T14:28:00.000Z',
         model: 'claude-opus-4-8',
         provider: 'anthropic',
+        reasoning_effort: 'high',
       },
       {
         type: 'event',
@@ -75,7 +76,11 @@ test('TurnStore.statusForTurn combines pending envelope, last event, and active 
   assert.equal(status.model, 'claude-opus-4-8');
   assert.equal(status.provider, 'anthropic');
   assert.deepEqual(status.configured_default, { provider: 'anthropic', model: 'claude-opus-4-8' });
-  assert.deepEqual(status.runtime_model, { provider: 'anthropic', model: 'claude-opus-4-8' });
+  assert.deepEqual(status.runtime_model, {
+    provider: 'anthropic',
+    model: 'claude-opus-4-8',
+    reasoning_effort: 'high',
+  });
   assert.equal(status.recoverable, true);
 });
 

@@ -1020,6 +1020,7 @@ export class AgentLoop {
         activity_deadline_at,
         hard_deadline_at,
         first_token_deadline_at,
+        reasoning_effort: runtime.reasoningEffort,
         coordination_origin: opts.coordinationOrigin,
       });
       await opts.onDurableStart?.({
