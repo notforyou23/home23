@@ -727,6 +727,12 @@ test('keyword search ranks current verified evidence above earlier archive order
 });
 
 test('keyword source scan applies shared closure and correction authority with explicit fallback mode', async (t) => {
+  // Keep the two current authority events current relative to the test run.
+  // Production scoring intentionally decays current-state evidence faster than
+  // closed incidents, so fixed calendar dates eventually invert this ranking.
+  const referenceNow = Date.now();
+  const closureAt = new Date(referenceNow - 60_000).toISOString();
+  const correctionAt = new Date(referenceNow).toISOString();
   const nodes = [
     {
       id: 'alarm-old', concept: 'Current brain route status is down.', status: 'open',
@@ -735,9 +741,9 @@ test('keyword source scan applies shared closure and correction authority with e
     {
       id: 'closure-new', concept: 'Current brain route status incident is closed.',
       tag: 'goal_resolution', type: 'goal_resolution', status: 'completed',
-      asserted_at: '2026-07-14T15:00:00.000Z',
+      asserted_at: closureAt,
       metadata: {
-        incidentId: 'brain-route', resolved_at: '2026-07-14T15:00:00.000Z',
+        incidentId: 'brain-route', resolved_at: closureAt,
         closure_proof_refs: ['verifier:brain-route-live'],
         provenance: {
           schema: 'home23.node-provenance.v1', authorityClass: 'worker_receipt',
@@ -753,7 +759,7 @@ test('keyword source scan applies shared closure and correction authority with e
     },
     {
       id: 'correction-new', concept: 'Current brain route status uses manifest-v1.',
-      asserted_at: '2026-07-14T15:30:00.000Z',
+      asserted_at: correctionAt,
       metadata: {
         actor: 'jtr', correction: true, supersedes: ['claim-old'],
         provenance: {
