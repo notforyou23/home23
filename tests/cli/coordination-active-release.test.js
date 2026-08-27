@@ -61,15 +61,20 @@ function makeInstall({
   }
 
   const runtime = join(root, 'instances', '.house', 'coordination');
-  const release = join(runtime, 'releases', RELEASE_ID);
-  for (const relative of [
-    'scripts/coordination/run.mjs',
-    'dist/coordination/resident-protocol/index.js',
-    'dist/coordination-adapter/index.js',
-  ]) {
-    const target = join(release, relative);
-    mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, '// fixture\n');
+  for (const releaseId of [RELEASE_ID, PREDECESSOR_ID]) {
+    const release = join(runtime, 'releases', releaseId);
+    for (const relative of [
+      'scripts/coordination/run.mjs',
+      'dist/coordination/index.js',
+      'dist/coordination/resident-protocol/index.js',
+      'dist/coordination-adapter/index.js',
+      'package.json',
+    ]) {
+      const target = join(release, relative);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, relative === 'package.json' ? '{}\n' : '// fixture\n');
+    }
+    symlinkSync(TEST_NODE_MODULES, join(release, 'node_modules'), 'dir');
   }
   writeFileSync(join(runtime, 'runtime-secrets.json'), JSON.stringify({
     capabilityToken: 'd'.repeat(64),
@@ -189,5 +194,104 @@ test('active release rejects a credential shared by two residents', (t) => {
   assert.throws(
     () => require(join(root, 'ecosystem.config.cjs')),
     /resident keys must be distinct/,
+  );
+});
+
+test('active release proves its rollback predecessor is complete and native-loadable', (t) => {
+  const root = makeInstall();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  rmSync(join(
+    root,
+    'instances',
+    '.house',
+    'coordination',
+    'releases',
+    PREDECESSOR_ID,
+    'dist',
+    'coordination',
+    'index.js',
+  ));
+  generateEcosystem(root, { quiet: true });
+  assert.throws(
+    () => require(join(root, 'ecosystem.config.cjs')),
+    /coordination predecessor release is missing dist\/coordination\/index\.js/,
+  );
+});
+
+test('active release refuses an unusable native SQLite installation', (t) => {
+  const root = makeInstall();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  rmSync(join(
+    root,
+    'instances',
+    '.house',
+    'coordination',
+    'releases',
+    RELEASE_ID,
+    'node_modules',
+  ));
+  const resolve = require(RESOLVER).resolveActiveCoordinationRelease;
+  assert.throws(
+    () => resolve(root),
+    /active coordination release does not have a usable better-sqlite3 runtime/,
+  );
+});
+
+test('validated release pointers can roll back and move forward without changing resident authority', (t) => {
+  const root = makeInstall();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const runtime = join(root, 'instances', '.house', 'coordination');
+  const pointerPath = join(runtime, 'active-release.json');
+  const resolve = require(RESOLVER).resolveActiveCoordinationRelease;
+  const initial = resolve(root);
+
+  writeFileSync(pointerPath, JSON.stringify({
+    schemaVersion: 2,
+    releaseId: PREDECESSOR_ID,
+    predecessorReleaseId: RELEASE_ID,
+    residents: {
+      jerry: { keyVersion: 1 },
+      forrest: { keyVersion: 2 },
+    },
+  }), { mode: 0o600 });
+  const rolledBack = resolve(root);
+
+  writeFileSync(pointerPath, JSON.stringify({
+    schemaVersion: 2,
+    releaseId: RELEASE_ID,
+    predecessorReleaseId: PREDECESSOR_ID,
+    residents: {
+      jerry: { keyVersion: 1 },
+      forrest: { keyVersion: 2 },
+    },
+  }), { mode: 0o600 });
+  const movedForward = resolve(root);
+
+  assert.equal(initial.releaseId, RELEASE_ID);
+  assert.equal(initial.predecessorReleaseRoot, join(runtime, 'releases', PREDECESSOR_ID));
+  assert.equal(rolledBack.releaseId, PREDECESSOR_ID);
+  assert.equal(rolledBack.predecessorReleaseId, RELEASE_ID);
+  assert.equal(movedForward.releaseId, RELEASE_ID);
+  for (const deployment of [initial, rolledBack, movedForward]) {
+    assert.equal(deployment.residents.jerry.key, JERRY_KEY);
+    assert.equal(deployment.residents.forrest.key, FORREST_KEY);
+    assert.notEqual(deployment.residents.jerry.key, deployment.residents.forrest.key);
+  }
+});
+
+test('active and predecessor releases must be distinct', (t) => {
+  const root = makeInstall({
+    pointer: {
+      schemaVersion: 2,
+      releaseId: RELEASE_ID,
+      predecessorReleaseId: RELEASE_ID,
+      residents: { jerry: { keyVersion: 1 } },
+    },
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  generateEcosystem(root, { quiet: true });
+  assert.throws(
+    () => require(join(root, 'ecosystem.config.cjs')),
+    /predecessor release must differ from the active release/,
   );
 });

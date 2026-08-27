@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const { createRequire } = require('node:module');
 const os = require('node:os');
 const path = require('node:path');
 
@@ -13,8 +14,14 @@ const ALLOWED_RESIDENTS = Object.freeze({
 });
 const REQUIRED_RELEASE_FILES = Object.freeze([
   'scripts/coordination/run.mjs',
+  'dist/coordination/index.js',
   'dist/coordination/resident-protocol/index.js',
   'dist/coordination-adapter/index.js',
+  'package.json',
+]);
+const REQUIRED_NATIVE_SQLITE_FILES = Object.freeze([
+  'node_modules/better-sqlite3/package.json',
+  'node_modules/better-sqlite3/build/Release/better_sqlite3.node',
 ]);
 
 function readJsonFile(filePath, label, { privateFile = false } = {}) {
@@ -37,12 +44,63 @@ function readJsonFile(filePath, label, { privateFile = false } = {}) {
   return value;
 }
 
-function requireReleaseFile(releaseRoot, relativePath) {
+function requireReleaseFile(releaseRoot, relativePath, label) {
   const filePath = path.join(releaseRoot, relativePath);
-  const stat = fs.lstatSync(filePath);
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    throw new Error(`active coordination release is missing ${relativePath}`);
+  let stat;
+  try {
+    stat = fs.lstatSync(filePath);
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      throw new Error(`${label} is missing ${relativePath}`);
+    }
+    throw error;
   }
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error(`${label} is missing ${relativePath}`);
+  }
+}
+
+function requireNativeSQLite(releaseRoot, label) {
+  let database;
+  try {
+    for (const relativePath of REQUIRED_NATIVE_SQLITE_FILES) {
+      requireReleaseFile(releaseRoot, relativePath, label);
+    }
+    const releaseRequire = createRequire(path.join(releaseRoot, 'package.json'));
+    const Database = releaseRequire('better-sqlite3');
+    database = new Database(':memory:');
+    const result = String(database.pragma('quick_check', { simple: true }));
+    if (result.toLowerCase() !== 'ok') {
+      throw new Error(`unexpected quick_check result: ${result}`);
+    }
+  } catch (error) {
+    throw new Error(`${label} does not have a usable better-sqlite3 runtime`, {
+      cause: error,
+    });
+  } finally {
+    if (database?.open) database.close();
+  }
+}
+
+function requireReleaseRoot(runtimeDir, releaseId, label) {
+  const releaseRoot = path.join(runtimeDir, 'releases', releaseId);
+  let releaseStat;
+  try {
+    releaseStat = fs.lstatSync(releaseRoot);
+  } catch (error) {
+    if (error && error.code === 'ENOENT') {
+      throw new Error(`${label} directory is missing`);
+    }
+    throw error;
+  }
+  if (!releaseStat.isDirectory() || releaseStat.isSymbolicLink()) {
+    throw new Error(`${label} must be a real directory`);
+  }
+  for (const relativePath of REQUIRED_RELEASE_FILES) {
+    requireReleaseFile(releaseRoot, relativePath, label);
+  }
+  requireNativeSQLite(releaseRoot, label);
+  return releaseRoot;
 }
 
 function residentVersions(pointer) {
@@ -104,16 +162,23 @@ function resolveActiveCoordinationRelease(home23Root) {
       && !RELEASE_ID.test(String(pointer.predecessorReleaseId))) {
     throw new Error('coordination active-release pointer has an invalid predecessorReleaseId');
   }
+  if (pointer.predecessorReleaseId === pointer.releaseId) {
+    throw new Error('coordination predecessor release must differ from the active release');
+  }
   const versions = residentVersions(pointer);
 
-  const releaseRoot = path.join(runtimeDir, 'releases', pointer.releaseId);
-  const releaseStat = fs.lstatSync(releaseRoot);
-  if (!releaseStat.isDirectory() || releaseStat.isSymbolicLink()) {
-    throw new Error('active coordination release must be a real directory');
-  }
-  for (const relativePath of REQUIRED_RELEASE_FILES) {
-    requireReleaseFile(releaseRoot, relativePath);
-  }
+  const releaseRoot = requireReleaseRoot(
+    runtimeDir,
+    pointer.releaseId,
+    'active coordination release',
+  );
+  const predecessorReleaseRoot = pointer.predecessorReleaseId
+    ? requireReleaseRoot(
+      runtimeDir,
+      pointer.predecessorReleaseId,
+      'coordination predecessor release',
+    )
+    : null;
 
   const secrets = readJsonFile(
     path.join(runtimeDir, 'runtime-secrets.json'),
@@ -154,6 +219,7 @@ function resolveActiveCoordinationRelease(home23Root) {
   return Object.freeze({
     releaseId: pointer.releaseId,
     predecessorReleaseId: pointer.predecessorReleaseId ?? null,
+    predecessorReleaseRoot,
     releaseRoot,
     runtimeDir,
     socketRoot,
