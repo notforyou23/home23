@@ -143,7 +143,14 @@ test("resident result retrieval outlives individual signed request windows", asy
   let selectedRuntime: unknown;
   const largeExactResult = `exact-large-result:${"x".repeat(300_000)}`;
   const agent: Pick<AgentLoop,
-    "runWithTurn" | "stop" | "isRunning" | "getModel" | "getProvider" | "getReasoningEffort"> = {
+    "runWithTurn" | "stop" | "isRunning" | "getModel" | "getProvider" | "getReasoningEffort"> & {
+      toolContext: { modelAliases: Record<string, { provider: string; model: string; reasoningEffort: "high" }> };
+    } = {
+    toolContext: {
+      modelAliases: {
+        sol: { provider: "openai-codex", model: "gpt-5.6-sol", reasoningEffort: "high" },
+      },
+    },
     getModel: () => "gpt-5.6-terra",
     getProvider: () => "openai-codex",
     getReasoningEffort: () => "medium",
@@ -219,9 +226,6 @@ test("resident result retrieval outlives individual signed request windows", asy
     residentSlug: "jerry",
     agent,
     history,
-    modelAliases: {
-      sol: { provider: "openai-codex", model: "gpt-5.6-sol", reasoningEffort: "high" },
-    },
   });
   await server.start();
   t.after(() => server.close());

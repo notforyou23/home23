@@ -243,11 +243,59 @@ export interface ResidentTurnUdsServerOptions {
   now?:()=>number;
 }
 
+function residentModelAliases(
+  explicit: ModelAliases | undefined,
+  agent: ResidentTurnUdsServerOptions["agent"],
+): Readonly<ModelAliases> {
+  // The immutable coordination package can be loaded by the pre-existing
+  // production harness bridge, whose narrow call site predates the explicit
+  // modelAliases argument. AgentLoop retains the same configured aliases in
+  // its ToolContext. Project only the public routing fields so this
+  // compatibility path cannot expose credentials or arbitrary config data.
+  const candidate = explicit ?? (
+    agent as unknown as { toolContext?: { modelAliases?: unknown } }
+  ).toolContext?.modelAliases;
+  if (candidate === undefined) return Object.freeze({});
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    throw new TypeError("resident model aliases must be an object");
+  }
+  const aliases: ModelAliases = {};
+  for (const [alias, raw] of Object.entries(candidate)) {
+    if (!alias || alias.length > 256 || /[\0\r\n]/u.test(alias)) {
+      throw new TypeError("resident model alias is invalid");
+    }
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new TypeError(`resident model alias ${alias} is invalid`);
+    }
+    const value = raw as Record<string, unknown>;
+    if (
+      typeof value.provider !== "string" || value.provider.length === 0 ||
+      typeof value.model !== "string" || value.model.length === 0 ||
+      /[\0\r\n]/u.test(value.provider) || /[\0\r\n]/u.test(value.model) ||
+      (value.reasoningEffort !== undefined &&
+        (typeof value.reasoningEffort !== "string" ||
+          !REASONING_EFFORTS.includes(value.reasoningEffort as ReasoningEffort)))
+    ) {
+      throw new TypeError(`resident model alias ${alias} is invalid`);
+    }
+    aliases[alias] = Object.freeze({
+      provider: value.provider,
+      model: value.model,
+      ...(value.reasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: value.reasoningEffort as ReasoningEffort }),
+    });
+  }
+  return Object.freeze(aliases);
+}
+
 /** Resident-owned endpoint. It can access the AgentLoop and TurnStore, but no coordination DB. */
 export class ResidentTurnUdsServer {
   readonly #store:TurnStore; readonly #responses=new Map<string,Promise<AgentResponse>>(); readonly #server:ResidentUdsServer;
+  readonly #modelAliases:Readonly<ModelAliases>;
   constructor(private readonly options:ResidentTurnUdsServerOptions){
     this.#store=new TurnStore(options.history);
+    this.#modelAliases=residentModelAliases(options.modelAliases,options.agent);
     if(options.credential.residentSlug!==options.residentSlug)throw new TypeError("resident credential slug does not match harness");
     this.#server=new ResidentUdsServer({socketPath:options.socketPath,serverInstanceId:options.serverInstanceId,credentials:[options.credential],now:options.now,validateFence:(fence,request)=>request.method==="POST"&&request.path===START?typeof fence==="string"&&fence.length<512:true,handleRequest:(request,context)=>this.#handle(request,context.signal)});
   }
@@ -255,7 +303,7 @@ export class ResidentTurnUdsServer {
   close(){return this.#server.close();}
   async #handle(request:ResidentRequestFrame,signal:AbortSignal):Promise<JsonValue>{
     if(request.method==="GET"&&request.path===MODEL_CATALOG){
-      const aliases=this.options.modelAliases??{};
+      const aliases=this.#modelAliases;
       return {
         models:Object.entries(aliases).sort(([left],[right])=>left.localeCompare(right)).map(([alias,value])=>({
           alias,provider:value.provider,model:value.model,reasoningEffort:value.reasoningEffort??null,
@@ -280,7 +328,7 @@ export class ResidentTurnUdsServer {
       };
       if(started&&!this.options.agent.isRunning(chatId))throw new ResidentProtocolError("connection_lost","persisted resident turn requires coordinator recovery",{retryable:true});
       if(!started){
-        const modelOverride=requested.modelAlias===null?undefined:resolveModelOverride(requested.modelAlias,this.options.modelAliases);
+        const modelOverride=requested.modelAlias===null?undefined:resolveModelOverride(requested.modelAlias,this.#modelAliases);
         if(requested.modelAlias!==null&&!modelOverride){
           throw new ResidentProtocolError("request_invalid","requested resident model is unavailable");
         }
