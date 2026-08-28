@@ -239,10 +239,12 @@ function harness(input: {
         ].join("\n"),
       });
     },
-    recoverPlan: async () => exactPrepared,
+    recoverPlan: async () => Object.freeze({
+      prepared: exactPrepared,
+      turnSelection: Object.freeze({ modelAlias: null, reasoningEffort: null }),
+    }),
     listRecoveryRoundIds: () => input.recovery ? Object.freeze([ROUND_ID]) : Object.freeze([]),
     listRoundWorks: () => Object.freeze([...current.values()]),
-    responseOrder: () => responseOrder,
     hasResult: (workId) => results.has(workId),
   };
   const residentTargets = new Map<string, DirectMessageResidentTarget>();
@@ -359,6 +361,12 @@ function harness(input: {
       },
       admissionReplay: () => input.admissionReplay === undefined ? null : ({
         round: { id: ROUND_ID, state: input.admissionReplay },
+        recipients: BOT_IDS,
+        works: [...current.values()],
+        replayed: true,
+      }),
+      resumeAdmission: () => ({
+        round: { id: ROUND_ID, state: "coordinating" },
         recipients: BOT_IDS,
         works: [...current.values()],
         replayed: true,

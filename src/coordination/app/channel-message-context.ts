@@ -1,5 +1,8 @@
 import {
   ChannelCoordinatorError,
+  listRecoverableCoordinatorAdmissionRoundIds,
+  readCoordinatorAdmissionPlan,
+  type CoordinatorAdmissionPlan,
 } from "../channel-coordinator/index.js";
 import { MessagingError, type MessagingActorContext } from "../channels/index.js";
 import type { MessageProjection } from "../messages/index.js";
@@ -147,6 +150,77 @@ implements GroupChannelMessageContextPort {
     return event;
   }
 
+  private preparedFromAdmissionPlan(
+    plan: CoordinatorAdmissionPlan,
+  ): GroupChannelPreparedContext {
+    const messageIds = [...plan.manifest.messageIds];
+    if (messageIds.length === 0) throw new MessagingError("invalid_relation");
+    const placeholders = messageIds.map(() => "?").join(",");
+    const rows = this.database.readAll<RecoveryMessageRow>(
+      `SELECT m.id, m.channel_sequence AS sequence,
+              m.author_principal_id AS authorPrincipalId,
+              m.author_display_name AS authorDisplayName, m.kind,
+              CASE WHEN EXISTS (
+                SELECT 1 FROM messages tombstone
+                WHERE tombstone.tombstones_message_id = m.id
+              ) THEN NULL ELSE m.body_text END AS text,
+              m.reply_to_message_id AS replyToMessageId,
+              m.round_id AS roundId, m.work_id AS workId
+       FROM messages m
+       WHERE m.channel_id = ? AND m.id IN (${placeholders})
+       ORDER BY m.channel_sequence ASC`,
+      plan.channelId,
+      ...messageIds,
+    );
+    const boundary = rows.at(-1);
+    const event = this.eventFor(plan.originMessageId, plan.manifest.watermarks.eventSequence);
+    const tombstonedAfterSnapshot = this.database.readOne<{ count: number }>(
+      `SELECT count(*) AS count FROM messages tombstone
+       WHERE tombstone.channel_id = ?
+         AND tombstone.tombstones_message_id IN (${placeholders})
+         AND tombstone.channel_sequence > ?`,
+      plan.channelId,
+      ...messageIds,
+      plan.manifest.watermarks.channelSequence,
+    )?.count ?? 0;
+    const canonicalManifest = directMessageManifest({
+      channelId: plan.channelId,
+      messageIds: rows.map((row) => row.id),
+      attachmentIds: plan.manifest.artifactIds,
+      channelSequence: plan.manifest.watermarks.channelSequence,
+      eventSequence: plan.manifest.watermarks.eventSequence,
+    });
+    if (
+      rows.length !== messageIds.length ||
+      rows.some((row) => !messageIds.includes(row.id)) ||
+      boundary?.id !== plan.originMessageId ||
+      boundary?.sequence !== plan.manifest.watermarks.channelSequence ||
+      event.eventId !== plan.originEventId || tombstonedAfterSnapshot !== 0 ||
+      canonicalManifest.digests.context !== plan.manifest.digests.context ||
+      canonicalManifest.digests.source !== plan.manifest.digests.source
+    ) {
+      throw new MessagingError("invalid_relation");
+    }
+    const instruction = rows
+      .filter((message) => message.text !== null)
+      .map((message) => `${message.authorDisplayName}: ${message.text}`)
+      .join("\n");
+    if (!instruction) throw new MessagingError("invalid_relation");
+    return Object.freeze({
+      channelId: plan.channelId,
+      conversationId: plan.conversationId,
+      originMessageId: plan.originMessageId,
+      originEventId: plan.originEventId,
+      actorPrincipalId: plan.actorPrincipalId,
+      visibleParticipantIds: plan.visibleParticipantIds,
+      selectedTargets: plan.selectedTargets,
+      responseOrder: plan.responseOrder,
+      standingReference: plan.standingReference,
+      instruction,
+      manifest: canonicalManifest,
+    });
+  }
+
   private async snapshot(input: {
     context: MessagingActorContext;
     channelId: string;
@@ -281,7 +355,6 @@ implements GroupChannelMessageContextPort {
     if (input.plan.responseOrder !== "sequential") {
       throw new MessagingError("invalid_relation");
     }
-    const channel = this.channel(input.plan.channelId);
     const round = this.database.readOne<{ channelId: string }>(
       "SELECT channel_id AS channelId FROM rounds WHERE id = ?",
       input.roundId,
@@ -293,11 +366,7 @@ implements GroupChannelMessageContextPort {
       (candidate) => candidate.targetBotId === input.targetBotId,
     );
     if (targetIndex < 1) throw new MessagingError("invalid_relation");
-    const currentTargets = new Map(
-      this.targets(input.plan.channelId).map((target) => [target.targetBotId, target]),
-    );
-    const target = currentTargets.get(input.targetBotId);
-    if (!target) throw new MessagingError("unknown_principal");
+    const target = input.plan.selectedTargets[targetIndex]!;
 
     const precedingTargets = input.plan.selectedTargets.slice(0, targetIndex);
     const works = this.listRoundWorks(input.roundId);
@@ -391,7 +460,7 @@ implements GroupChannelMessageContextPort {
     return Object.freeze({
       ...input.plan,
       selectedTargets: Object.freeze([target]),
-      responseOrder: channel.responseOrder,
+      responseOrder: input.plan.responseOrder,
       instruction,
       manifest: directMessageManifest({
         channelId: input.plan.channelId,
@@ -411,11 +480,18 @@ implements GroupChannelMessageContextPort {
     ) {
       throw new MessagingError("invalid_relation");
     }
-    const channel = this.channel(work.channelId);
-    const target = this.targets(work.channelId).find(
+    const admission = readCoordinatorAdmissionPlan(this.database, work.roundId);
+    if (
+      admission.channelId !== work.channelId ||
+      admission.originMessageId !== work.originMessageId ||
+      admission.actorPrincipalId !== work.principalId
+    ) {
+      throw new MessagingError("invalid_relation");
+    }
+    const target = admission.selectedTargets.find(
       (candidate) => candidate.targetPrincipalId === work.targetPrincipalId,
     );
-    if (!target) throw new MessagingError("unknown_principal");
+    if (!target) throw new MessagingError("invalid_relation");
     const manifest = this.database.readOne<RecoveryManifestRow>(
       `SELECT message_refs_json AS messageRefsJson,
               artifact_refs_json AS artifactRefsJson,
@@ -516,13 +592,6 @@ implements GroupChannelMessageContextPort {
         throw new MessagingError("invalid_relation");
       }
     }
-    const origin = this.database.readOne<{ authorPrincipalId: string }>(
-      `SELECT author_principal_id AS authorPrincipalId FROM messages
-       WHERE id = ? AND channel_id = ?`,
-      work.originMessageId,
-      work.channelId,
-    );
-    if (!origin) throw new MessagingError("invalid_relation");
     const instruction = rows
       .filter((message) => message.text !== null)
       .map((message) => `${message.authorDisplayName}: ${message.text}`)
@@ -530,49 +599,24 @@ implements GroupChannelMessageContextPort {
     if (!instruction) throw new MessagingError("invalid_relation");
     return Object.freeze({
       channelId: work.channelId,
-      conversationId: channel.conversationId,
+      conversationId: admission.conversationId,
       originMessageId: work.originMessageId,
-      originEventId: event.eventId,
-      actorPrincipalId: origin.authorPrincipalId,
-      visibleParticipantIds: Object.freeze(
-        this.targets(work.channelId).map((candidate) => candidate.targetBotId),
-      ),
+      originEventId: admission.originEventId,
+      actorPrincipalId: admission.actorPrincipalId,
+      visibleParticipantIds: admission.visibleParticipantIds,
       selectedTargets: Object.freeze([target]),
-      responseOrder: channel.responseOrder,
-      standingReference:
-        `canonical-channel-membership:${work.channelId}:version:${channel.version}`,
+      responseOrder: admission.responseOrder,
+      standingReference: admission.standingReference,
       instruction,
       manifest: canonicalManifest,
     });
   }
 
-  async recoverPlan(roundId: string): Promise<GroupChannelPreparedContext> {
-    const first = this.database.readOne<WorkRecord>(
-      `${WORK_SELECT}
-       WHERE round_id = ? AND kind = 'channel.bot_turn'
-       ORDER BY created_at, id LIMIT 1`,
-      roundId,
-    );
-    if (!first || first.originMessageId === null) {
-      throw new MessagingError("invalid_relation");
-    }
-    const recovered = await this.recover(Object.freeze(first));
-    const channel = this.channel(first.channelId);
-    const mentionedBotIds = this.database.readAll<{ botId: string }>(
-      `SELECT mentioned_principal_id AS botId FROM mentions
-       WHERE message_id = ? ORDER BY mentioned_principal_id`,
-      first.originMessageId,
-    ).map((row) => row.botId);
-    const selectedTargets = this.selectedTargets(
-      first.channelId,
-      channel,
-      mentionedBotIds,
-    );
-    if (selectedTargets.length === 0) throw new MessagingError("invalid_relation");
+  async recoverPlan(roundId: string) {
+    const admission = readCoordinatorAdmissionPlan(this.database, roundId);
     return Object.freeze({
-      ...recovered,
-      selectedTargets,
-      responseOrder: channel.responseOrder,
+      prepared: this.preparedFromAdmissionPlan(admission),
+      turnSelection: admission.turnSelection,
     });
   }
 
@@ -580,16 +624,7 @@ implements GroupChannelMessageContextPort {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
       throw new TypeError("Channel recovery limit is invalid");
     }
-    return Object.freeze(this.database.readAll<{ roundId: string }>(
-      `SELECT r.id AS roundId FROM rounds r
-       WHERE r.state IN ('open', 'coordinating', 'waiting')
-         AND EXISTS (
-           SELECT 1 FROM works w
-           WHERE w.round_id = r.id AND w.kind = 'channel.bot_turn'
-         )
-       ORDER BY r.created_at, r.id LIMIT ?`,
-      limit,
-    ).map((row) => row.roundId));
+    return listRecoverableCoordinatorAdmissionRoundIds(this.database, limit);
   }
 
   listRoundWorks(roundId: string): readonly WorkRecord[] {
@@ -599,17 +634,6 @@ implements GroupChannelMessageContextPort {
        ORDER BY target_principal_id, created_at, id`,
       roundId,
     ).map((work) => Object.freeze(work)));
-  }
-
-  responseOrder(roundId: string): "parallel" | "sequential" {
-    const row = this.database.readOne<{ responseOrder: "parallel" | "sequential" }>(
-      `SELECT c.response_order AS responseOrder
-       FROM rounds r JOIN channels c ON c.id = r.channel_id
-       WHERE r.id = ? AND c.kind = 'group'`,
-      roundId,
-    );
-    if (!row) throw new MessagingError("invalid_relation");
-    return row.responseOrder;
   }
 
   hasResult(workId: string): boolean {

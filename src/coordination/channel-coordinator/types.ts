@@ -1,3 +1,4 @@
+import type { JsonValue } from "../db/index.js";
 import type { RoundRecord } from "../rounds/index.js";
 import type {
   ContextManifestInput,
@@ -26,6 +27,29 @@ export interface CoordinatorStandingScope {
   broadcastAllowed: boolean;
 }
 
+export interface CoordinatorAdmissionTarget {
+  targetBotId: string;
+  targetBotDisplayName: string;
+  targetPrincipalId: string;
+  residentBinding: string;
+}
+
+/** Immutable caller state committed with the Round before any Work exists. */
+export interface CoordinatorAdmissionPlan {
+  version: 1;
+  channelId: string;
+  conversationId: string;
+  originMessageId: string;
+  originEventId: string;
+  actorPrincipalId: string;
+  visibleParticipantIds: readonly string[];
+  selectedTargets: readonly CoordinatorAdmissionTarget[];
+  responseOrder: "parallel" | "sequential";
+  standingReference: string;
+  manifest: ContextManifestInput;
+  turnSelection: WorkTurnSelection;
+}
+
 export interface ChannelTurnTrigger {
   eventId: string;
   messageId: string;
@@ -35,6 +59,7 @@ export interface ChannelTurnTrigger {
   mentionedBotIds: readonly string[];
   /** Entire trusted recipient plan; sequential dispatch may admit one Work at a time. */
   plannedBotIds: readonly string[];
+  admissionPlan: CoordinatorAdmissionPlan;
   visibleParticipantIds: readonly string[];
   standing: CoordinatorStandingScope;
   authority: CoordinatorAuthority;
@@ -106,6 +131,7 @@ export interface CoordinatorRoundPort {
     deadlineAt: string;
     requestId: string;
     correlationId: string;
+    admissionPlan?: { readonly [key: string]: JsonValue };
   }): RoundRecord;
   beginPass(input: { roundId: string; requestId: string; correlationId: string }): RoundRecord;
   wait(input: { roundId: string; requestId: string; correlationId: string }): RoundRecord;
@@ -154,4 +180,8 @@ export interface CreateChannelCoordinatorOptions {
   enabled?: boolean;
   expectedAuthorityWriter: string;
   now?: () => Date;
+  durabilityFailpoint?: (
+    point: "after_round_created" | "after_work_created",
+    detail: Readonly<{ roundId: string; workCount: number }>,
+  ) => void;
 }

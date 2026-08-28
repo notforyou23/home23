@@ -9,7 +9,7 @@ import { MessagingError, type MessagingActorContext } from "../channels/index.js
 import type { MessageProjection, MessageTurnSelection } from "../messages/index.js";
 import type { AuthorityEpoch } from "../epochs/index.js";
 import { isCanonicalMessagesAuthority } from "../epochs/index.js";
-import type { ContextManifestInput, WorkRecord } from "../work/index.js";
+import type { ContextManifestInput, WorkRecord, WorkTurnSelection } from "../work/index.js";
 import type {
   CoordinationChannelCoordinatorPort,
   CoordinationLeasePort,
@@ -56,6 +56,11 @@ export interface GroupChannelPreparedContext {
   manifest: ContextManifestInput;
 }
 
+export interface GroupChannelRecoveredPlan {
+  prepared: GroupChannelPreparedContext;
+  turnSelection: WorkTurnSelection;
+}
+
 export interface GroupChannelMessageContextPort {
   loadOrigin(input: {
     context: MessagingActorContext;
@@ -79,16 +84,15 @@ export interface GroupChannelMessageContextPort {
     targetBotId: string;
   }): Promise<GroupChannelPreparedContext>;
   recover(work: WorkRecord): Promise<GroupChannelPreparedContext>;
-  recoverPlan(roundId: string): Promise<GroupChannelPreparedContext>;
+  recoverPlan(roundId: string): Promise<GroupChannelRecoveredPlan>;
   listRecoveryRoundIds(limit: number): readonly string[];
   listRoundWorks(roundId: string): readonly WorkRecord[];
-  responseOrder(roundId: string): "parallel" | "sequential";
   hasResult(workId: string): boolean;
 }
 
 type ChannelCoordinator = Pick<
   ReturnType<typeof createChannelCoordinator>,
-  "start" | "admissionReplay" | "reconcile"
+  "start" | "admissionReplay" | "resumeAdmission" | "reconcile"
 >;
 
 type WorkExecution = Readonly<{
@@ -170,6 +174,7 @@ export function createGroupChannelMessageService(options: {
   function startDispatch(input: {
     identity: { requestId: string; correlationId: string };
     prepared: GroupChannelPreparedContext;
+    admissionPlan: GroupChannelPreparedContext;
     plannedTargets: readonly GroupChannelResidentTarget[];
     turnSelection: MessageTurnSelection;
   }): CoordinatorDispatch {
@@ -182,6 +187,20 @@ export function createGroupChannelMessageService(options: {
       selection: "mentions",
       mentionedBotIds: input.prepared.selectedTargets.map((target) => target.targetBotId),
       plannedBotIds: input.plannedTargets.map((target) => target.targetBotId),
+      admissionPlan: {
+        version: 1,
+        channelId: input.admissionPlan.channelId,
+        conversationId: input.admissionPlan.conversationId,
+        originMessageId: input.admissionPlan.originMessageId,
+        originEventId: input.admissionPlan.originEventId,
+        actorPrincipalId: input.admissionPlan.actorPrincipalId,
+        visibleParticipantIds: input.admissionPlan.visibleParticipantIds,
+        selectedTargets: input.plannedTargets,
+        responseOrder: input.admissionPlan.responseOrder,
+        standingReference: input.admissionPlan.standingReference,
+        manifest: input.admissionPlan.manifest,
+        turnSelection: input.turnSelection,
+      },
       visibleParticipantIds: input.prepared.visibleParticipantIds,
       standing: {
         source: "trusted_policy_boundary",
@@ -540,6 +559,7 @@ export function createGroupChannelMessageService(options: {
         const dispatch = startDispatch({
           identity: input,
           prepared,
+          admissionPlan: input.plan,
           plannedTargets,
           turnSelection: input.turnSelection,
         });
@@ -633,6 +653,7 @@ export function createGroupChannelMessageService(options: {
     const dispatch = startDispatch({
       identity: input.context,
       prepared: initialPrepared,
+      admissionPlan: input.prepared,
       plannedTargets: input.prepared.selectedTargets,
       turnSelection: input.turnSelection,
     });
@@ -736,6 +757,8 @@ export function createGroupChannelMessageService(options: {
             epoch: authority.epoch,
             writer: authority.writer,
           },
+          requestId: input.context.requestId,
+          correlationId: input.context.correlationId,
         });
         if (admission) {
           return Object.freeze({
@@ -785,10 +808,23 @@ export function createGroupChannelMessageService(options: {
       let refused = 0;
       for (const roundId of roundIds) {
         try {
-          const works = options.context.listRoundWorks(roundId);
-          if (works.length === 0) throw new Error("recoverable Channel Round has no Work");
-          const plan = await options.context.recoverPlan(roundId);
-          const turnSelection = options.work.getTurnSelection(works[0]!.id);
+          const recoveredPlan = await options.context.recoverPlan(roundId);
+          const plan = recoveredPlan.prepared;
+          const turnSelection = recoveredPlan.turnSelection;
+          const identity = options.recoveryIdentity();
+          const authority = assertAuthority();
+          const admission = options.coordinator.resumeAdmission({
+            roundId,
+            authority: {
+              capability: "messages",
+              mode: "canonical",
+              epoch: authority.epoch,
+              writer: authority.writer,
+            },
+            requestId: identity.requestId,
+            correlationId: identity.correlationId,
+          });
+          const works = admission.works;
           if (works.some((work) => {
             const candidate = options.work.getTurnSelection(work.id);
             return candidate.modelAlias !== turnSelection.modelAlias ||
@@ -805,7 +841,6 @@ export function createGroupChannelMessageService(options: {
               preparedByWork.set(work.id, await options.context.recover(work));
             }
           }
-          const identity = options.recoveryIdentity();
           const endWork = once(options.beginWork());
           const response = scheduleRound({
             roundId,
@@ -813,7 +848,7 @@ export function createGroupChannelMessageService(options: {
             preparedByWork,
             plan,
             turnSelection,
-            responseOrder: options.context.responseOrder(roundId),
+            responseOrder: plan.responseOrder,
             requestId: identity.requestId,
             correlationId: identity.correlationId,
             recovery: true,

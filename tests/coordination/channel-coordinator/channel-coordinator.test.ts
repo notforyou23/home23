@@ -65,15 +65,44 @@ function harness(database: M11TestDatabase, clock: { value: Date }, start = 10_0
 function trigger(overrides: Record<string, unknown> = {}) {
   const mentionedBotIds = (overrides.mentionedBotIds as readonly string[] | undefined) ??
     [BOT_2, BOT_ID];
+  const plannedBotIds = (overrides.plannedBotIds as readonly string[] | undefined) ??
+    [...mentionedBotIds].sort();
+  const eventId = (overrides.eventId as string | undefined) ?? fixtureId("event", 1);
+  const messageId = (overrides.messageId as string | undefined) ?? MESSAGE_ID;
+  const manifest = (overrides.manifest as ReturnType<typeof manifestInput> | undefined) ??
+    manifestInput({ messageIds: [messageId] });
+  const turnSelection = (overrides.turnSelection as {
+    modelAlias: string | null;
+    reasoningEffort: null;
+  } | undefined) ?? { modelAlias: null, reasoningEffort: null };
+  const targets = plannedBotIds.map((botId) => ({
+    targetBotId: botId,
+    targetBotDisplayName: botId === BOT_ID ? "Jerry" : "Ada",
+    targetPrincipalId: botId,
+    residentBinding: botId === BOT_ID ? "jerry" : "ada",
+  }));
   return {
-    eventId: fixtureId("event", 1),
-    messageId: MESSAGE_ID,
+    eventId,
+    messageId,
     channelId: CHANNEL_ID,
     actorPrincipalId: OWNER_ID,
     selection: "mentions" as const,
     mentionedBotIds,
-    plannedBotIds: (overrides.plannedBotIds as readonly string[] | undefined) ??
-      mentionedBotIds,
+    plannedBotIds,
+    admissionPlan: {
+      version: 1 as const,
+      channelId: CHANNEL_ID,
+      conversationId: "cnv_0198d95f-6c00-7000-8000-000000000001",
+      originMessageId: messageId,
+      originEventId: eventId,
+      actorPrincipalId: OWNER_ID,
+      visibleParticipantIds: [BOT_ID, BOT_2],
+      selectedTargets: targets,
+      responseOrder: "parallel" as const,
+      standingReference: "policy:channel-owner",
+      manifest,
+      turnSelection,
+    },
     visibleParticipantIds: [BOT_ID, BOT_2],
     standing: {
       source: "trusted_policy_boundary" as const,
@@ -84,7 +113,8 @@ function trigger(overrides: Record<string, unknown> = {}) {
     },
     authority: { capability: "messages" as const, mode: "canonical" as const, epoch: 1, writer: "home23-coordination" },
     deadlineAt: DEADLINE,
-    manifest: manifestInput(),
+    manifest,
+    turnSelection,
     requestId: fixtureId("request", 800),
     correlationId: fixtureId("correlation", 800),
     ...overrides,
@@ -150,6 +180,7 @@ test("capability defaults off and recipient selection is sorted, visible, scoped
 
     const dispatch = live.coordinator.start(trigger({
       mentionedBotIds: [BOT_2, fixtureId("bot", 99), BOT_ID],
+      plannedBotIds: [BOT_2],
       visibleParticipantIds: [BOT_ID, BOT_2],
       standing: { ...trigger().standing, allowedParticipantIds: [BOT_2] },
     }));

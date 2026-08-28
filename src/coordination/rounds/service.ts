@@ -120,9 +120,14 @@ export function createRoundService(options: CreateRoundServiceOptions) {
 
   return Object.freeze({
     create(input: CreateRoundInput): RoundRecord {
+      const hasAdmissionPlan = Object.prototype.hasOwnProperty.call(input, "admissionPlan");
       assertExactKeys(
         input,
-        ["channelId", "coordinatorBotId", "maxBotTurns", "deadlineAt", "requestId", "correlationId"],
+        [
+          "channelId", "coordinatorBotId", "maxBotTurns", "deadlineAt",
+          "requestId", "correlationId",
+          ...(hasAdmissionPlan ? ["admissionPlan"] : []),
+        ],
         "invalid_request",
         "Round creation",
       );
@@ -130,6 +135,13 @@ export function createRoundService(options: CreateRoundServiceOptions) {
       const coordinatorBotId = assertId("principal", input.coordinatorBotId, "invalid_request");
       const requestId = assertId("request", input.requestId, "invalid_request");
       const correlationId = assertId("correlation", input.correlationId, "invalid_request");
+      if (
+        hasAdmissionPlan &&
+        (!input.admissionPlan || typeof input.admissionPlan !== "object" ||
+          Array.isArray(input.admissionPlan))
+      ) {
+        throw new RoundError("invalid_request", "Round admission plan must be a JSON object");
+      }
       if (!Number.isSafeInteger(input.maxBotTurns) || input.maxBotTurns < 1 || input.maxBotTurns > 8) {
         throw new RoundError("invalid_request", "maxBotTurns must be between 1 and 8");
       }
@@ -186,6 +198,7 @@ export function createRoundService(options: CreateRoundServiceOptions) {
               state: "open",
               passCount: 0,
               reasonCode: null,
+              admissionPlan: input.admissionPlan ?? null,
             },
             createdAt,
           },
