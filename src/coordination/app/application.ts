@@ -1,5 +1,8 @@
 import { FEATURE_FLAG_REGISTRY } from "../schema/contract-registry.js";
-import { isCanonicalMessagesAuthority } from "../epochs/index.js";
+import {
+  isCanonicalAttachmentsAuthority,
+  isCanonicalMessagesAuthority,
+} from "../epochs/index.js";
 import type {
   CoordinationApplication,
   CoordinationCapabilityDocument,
@@ -50,6 +53,9 @@ function capabilityDocument(input: {
   const canonicalMessagesAuthority = isCanonicalMessagesAuthority(
     input.services.authorityEpochs?.current("messages"),
   );
+  const canonicalAttachmentsAuthority = isCanonicalAttachmentsAuthority(
+    input.services.authorityEpochs?.current("attachments"),
+  );
   const messageSubmission =
     mutationsEnabled &&
     input.flags["coordination.resident.jerry.enabled"] === true &&
@@ -89,7 +95,9 @@ function capabilityDocument(input: {
       communicationEvidence:
         processEnabled && input.services.communications !== undefined,
       attachments:
-        mutationsEnabled && input.services.attachments !== undefined,
+        mutationsEnabled &&
+        canonicalAttachmentsAuthority &&
+        input.services.attachments !== undefined,
       work: processEnabled && input.services.workControl !== undefined,
       workMutation: mutationsEnabled && input.services.workControl !== undefined,
       activity:
@@ -113,15 +121,11 @@ export function createCoordinationApplication(input: {
   const limits = coordinationHttpLimits(
     input.limits ?? DEFAULT_COORDINATION_HTTP_LIMITS,
   );
-  const advertised = capabilityDocument({
-    flags,
-    services,
-    limits,
-  });
-
   return Object.freeze({
     flags,
     services,
-    capabilities: () => advertised,
+    // Authority epochs are append-only runtime state. Recompute this document
+    // so a rollback epoch removes admission without waiting for a restart.
+    capabilities: () => capabilityDocument({ flags, services, limits }),
   });
 }

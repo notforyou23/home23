@@ -243,10 +243,12 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`        HOME23_COORDINATION_APPLE_IPHONE_CUTOVER: String(coordinationFlags['coordination.apple.iphone_cutover'] === true),`);
   lines.push(`        HOME23_COORDINATION_BOT_LIFECYCLE_ENABLED: String(coordinationFlags['coordination.bot_lifecycle.enabled'] === true),`);
   lines.push(`        HOME23_COORDINATION_COMPACTION_ENABLED: String(coordinationFlags['coordination.compaction.enabled'] === true),`);
+  lines.push(`        HOME23_COORDINATION_ATTACHMENTS_ENABLED: String(coordinationConfig.attachments?.enabled === true),`);
   lines.push(`        HOME23_COORDINATION_HOST: '127.0.0.1',`);
   lines.push(`        HOME23_COORDINATION_PORT: String(coordinationConfig.publicApi?.port || 7346),`);
   lines.push(`        HOME23_COORDINATION_DB_PATH: path.join(coordinationRuntimeDir, 'home23-coordination.sqlite3'),`);
   lines.push(`        HOME23_COORDINATION_SOCKET_PATH: path.join(coordinationRuntimeDir, 'coord.sock'),`);
+  lines.push(`        HOME23_COORDINATION_ATTACHMENTS_ROOT: path.join(coordinationRuntimeDir, 'attachments'),`);
   lines.push(`        HOME23_COORDINATION_SOCKET_ROOT: coordinationSocketDir,`);
   lines.push(`        HOME23_COORDINATION_CAPABILITY_TOKEN: String(secrets.coordination?.capabilityToken || ''),`);
   for (const resident of ['JERRY', 'FORREST']) {

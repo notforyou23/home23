@@ -13,6 +13,10 @@ coordination:
     enabled: false
     host: 127.0.0.1
     port: 7346
+  # Independent admission kill switch. Canonical attachments authority is
+  # still required; this setting alone can never activate the capability.
+  attachments:
+    enabled: false
   # Registry flags are projected literally. Every value defaults false; flags
   # gate reachability only and never change a canonical authority epoch.
   flags:

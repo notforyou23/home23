@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 
 import {
+  ArtifactError,
   createDurableAttachmentService,
   LocalArtifactStore,
+  resolveArtifactActor,
   SqliteArtifactRepository,
   type ArtifactParticipantDirectory,
   type LocalArtifactStoreOptions,
@@ -38,6 +40,7 @@ import {
 import type { CoordinationRuntimeConfig } from "./runtime-config.js";
 import type {
   CoordinationApplication,
+  CoordinationAttachmentPort,
   CoordinationFeatureFlags,
   CoordinationLifecycle,
   CoordinationServices,
@@ -51,6 +54,7 @@ import {
 } from "../retention/index.js";
 import type { PolicyRequest } from "../policy/index.js";
 import {
+  isCanonicalAttachmentsAuthority,
   isCanonicalMessagesAuthority,
   type AuthorityEpoch,
 } from "../epochs/index.js";
@@ -286,26 +290,6 @@ export function createCoordinationProcess(
     resolveAlias: botDirectory.resolveAlias,
     getBotByResidentBinding: (binding: string) => botRepository.getBotByResidentBinding(binding),
   });
-  const messagingRepository = new SqliteMessagingRepository(database, {
-    botConversationBinding: new SqliteBotConversationBindingAdapter(),
-    messageProvenanceAuthorization: new M11MessageProvenanceAuthority(),
-  });
-  const channels = createChannelService({ repository: messagingRepository, participantDirectory, cursorSigningKey: channelCursorKey });
-  const messages = createMessageService({ repository: messagingRepository, participantDirectory });
-  const search = createCanonicalSearchService({
-    repository: new SqliteCanonicalSearchRepository(database),
-    participantDirectory,
-    cursorSigningKey: searchCursorKey,
-    resolveCanary: () => null,
-  });
-  channelCursorKey.fill(0);
-  searchCursorKey.fill(0);
-  const unread = createUnreadService({ repository: new SqliteUnreadRepository(database), participantDirectory });
-  const work = createWorkService({ database, generateId: generateCoordinationId });
-  const leases = createLeaseService({ database, generateId: generateCoordinationId, leaseTtlMs: 60_000 });
-  const workControl = createProductWorkControl({ database, work, leases });
-  const events = new SqliteEventRepository(database);
-  const communications = new SqliteCommunicationEventRepository(database);
   const currentAuthority = (capability: AuthorityCapability): AuthorityEpoch | null => {
     const epoch = database.readOne<AuthorityEpoch>(
       `SELECT capability, epoch, mode, writer,
@@ -335,6 +319,84 @@ export function createCoordinationProcess(
       )?.sequence ?? 0,
     }),
   });
+  const attachmentConfiguration = config.attachments;
+  const attachmentComposed =
+    config.flags["coordination.process.enabled"] === true &&
+    config.flags["coordination.public_api.enabled"] === true &&
+    attachmentConfiguration?.enabled === true &&
+    isCanonicalAttachmentsAuthority(currentAuthority("attachments"));
+  const artifactRepository = attachmentComposed
+    ? new SqliteArtifactRepository(database)
+    : undefined;
+  const messagingRepository = new SqliteMessagingRepository(database, {
+    botConversationBinding: new SqliteBotConversationBindingAdapter(),
+    messageProvenanceAuthorization: new M11MessageProvenanceAuthority(),
+    ...(artifactRepository === undefined
+      ? {}
+      : { artifactMessageLink: artifactRepository }),
+  });
+  const channels = createChannelService({ repository: messagingRepository, participantDirectory, cursorSigningKey: channelCursorKey });
+  const messages = createMessageService({
+    repository: messagingRepository,
+    participantDirectory,
+    ...(artifactRepository === undefined
+      ? {}
+      : {
+          resolveAttachmentActor: (context: Parameters<typeof resolveArtifactActor>[0]) =>
+            resolveArtifactActor(context, participantDirectory),
+        }),
+  });
+  const search = createCanonicalSearchService({
+    repository: new SqliteCanonicalSearchRepository(database),
+    participantDirectory,
+    cursorSigningKey: searchCursorKey,
+    resolveCanary: () => null,
+  });
+  channelCursorKey.fill(0);
+  searchCursorKey.fill(0);
+  const unread = createUnreadService({ repository: new SqliteUnreadRepository(database), participantDirectory });
+  const work = createWorkService({ database, generateId: generateCoordinationId });
+  const leases = createLeaseService({ database, generateId: generateCoordinationId, leaseTtlMs: 60_000 });
+  const workControl = createProductWorkControl({ database, work, leases });
+  const events = new SqliteEventRepository(database);
+  const communications = new SqliteCommunicationEventRepository(database);
+  let attachmentService: ReturnType<typeof createDurableAttachmentService> | undefined;
+  let attachmentInitialization: Promise<void> | undefined;
+  const requireAttachmentService = () => {
+    if (!attachmentService) throw new ArtifactError("storage_unavailable");
+    return attachmentService;
+  };
+  const attachments: CoordinationAttachmentPort | undefined = artifactRepository === undefined
+    ? undefined
+    : Object.freeze({
+        create: (input: Parameters<CoordinationAttachmentPort["create"]>[0]) =>
+          requireAttachmentService().create(input),
+        getMetadata: (input: Parameters<CoordinationAttachmentPort["getMetadata"]>[0]) =>
+          requireAttachmentService().getMetadata(input),
+        openDownload: (input: Parameters<CoordinationAttachmentPort["openDownload"]>[0]) =>
+          requireAttachmentService().openDownload(input),
+      });
+  const initializeAttachments = (): Promise<void> => {
+    if (!artifactRepository || !attachmentConfiguration) return Promise.resolve();
+    attachmentInitialization ??= (async () => {
+      const store = await LocalArtifactStore.open({
+        rootDirectory: attachmentConfiguration.rootDirectory,
+        repository: artifactRepository,
+        maximumBytes: attachmentConfiguration.maximumBytes,
+      });
+      attachmentService = createDurableAttachmentService({
+        database,
+        repository: artifactRepository,
+        store,
+        participantDirectory,
+        maximumRequestBytes: attachmentConfiguration.maximumBytes + 64 * 1024,
+      });
+    })();
+    return attachmentInitialization;
+  };
+  const attachmentCapabilityAvailable = () =>
+    attachments !== undefined &&
+    isCanonicalAttachmentsAuthority(currentAuthority("attachments"));
   const bootstrap = {
     getBootstrap: async (input: Parameters<ReturnType<typeof createBootstrapService>["getBootstrap"]>[0]) => {
       const primary = await botRepository.getBotByResidentBinding("jerry");
@@ -342,8 +404,18 @@ export function createCoordinationProcess(
       return createBootstrapService({ repository: new SqliteBootstrapRepository(database), participantDirectory,
         minimumClientBuild: 1, home: { id: "home_00000000-0000-7000-8000-000000000000", name: "Home23", primaryBotId: primary.id },
         connection: { mode: "loopback", displayName: "This Home23", reachable: true },
-        capabilities: { channels: false, attachments: false, search: false, push: false, eventReplay: true, botLifecycle: false },
-        limits: { attachmentBytes: 0, attachmentCountPerMessage: 0, jsonBodyBytes: 262_144, idempotencyKeyMinimum: 16, idempotencyKeyMaximum: 128 },
+        capabilities: { channels: false, attachments: attachmentCapabilityAvailable(), search: false, push: false, eventReplay: true, botLifecycle: false },
+        limits: {
+          attachmentBytes: attachmentCapabilityAvailable()
+            ? attachmentConfiguration?.maximumBytes ?? 0
+            : 0,
+          attachmentCountPerMessage: attachmentCapabilityAvailable()
+            ? attachmentConfiguration?.maximumCountPerMessage ?? 0
+            : 0,
+          jsonBodyBytes: 262_144,
+          idempotencyKeyMinimum: 16,
+          idempotencyKeyMaximum: 128,
+        },
         availabilityPolicy: { degradedAfterMs: 30_000, offlineAfterMs: 120_000 },
       }).getBootstrap(input);
     },
@@ -436,6 +508,7 @@ export function createCoordinationProcess(
       auth, bootstrap, bots: botDirectory, channels, messages, unread, search,
       work, workControl, leases, events, communications,
       authorityEpochs,
+      ...(attachments === undefined ? {} : { attachments }),
       ...(messageSubmission === undefined ? {} : { messageSubmission }),
       ...(dependencies.activity === undefined
         ? {}
@@ -453,7 +526,14 @@ export function createCoordinationProcess(
   });
   return Object.freeze({
     start: async () => {
-      const address = await server.start();
+      let address: Awaited<ReturnType<typeof server.start>>;
+      try {
+        await initializeAttachments();
+        address = await server.start();
+      } catch (error) {
+        await server.drain().catch(() => undefined);
+        throw error;
+      }
       if (messageSubmission) {
         void messageSubmission.recoverResidentWork().then((receipt) => {
           if (receipt.discovered > 0) {

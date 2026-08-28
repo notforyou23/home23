@@ -34,6 +34,22 @@ const flags = Object.freeze({
   "coordination.public_api.enabled": true,
 });
 
+const attachmentEpoch = Object.freeze({
+  capability: "attachments" as const,
+  epoch: 3,
+  mode: "canonical" as const,
+  writer: "home23-coordination",
+  effectiveAtEventSequence: 1,
+  rollbackEpoch: 1,
+});
+
+function authorityEpochs() {
+  return {
+    current: (capability: string) => capability === "attachments" ? attachmentEpoch : null,
+    listCurrent: async () => ({ epochs: [attachmentEpoch], throughEventSequence: 1 }),
+  };
+}
+
 function headers(extra: Record<string, string> = {}): Record<string, string> {
   return {
     authorization: "Bearer fixture-token",
@@ -96,7 +112,7 @@ test("complete dependency exposes authenticated metadata, multipart upload, and 
   };
   const application = createCoordinationApplication({
     flags,
-    services: { auth: auth(), attachments: service },
+    services: { auth: auth(), attachments: service, authorityEpochs: authorityEpochs() },
   });
   const server = createCoordinationHttpServer({ application, port: 0 });
   t.after(() => server.drain());
@@ -149,7 +165,7 @@ test("upload admission and M10 failures remain structured and do not invoke part
   };
   const application = createCoordinationApplication({
     flags,
-    services: { auth: auth(), attachments: service },
+    services: { auth: auth(), attachments: service, authorityEpochs: authorityEpochs() },
   });
   const server = createCoordinationHttpServer({ application, port: 0 });
   t.after(() => server.drain());

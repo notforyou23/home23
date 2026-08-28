@@ -1,11 +1,12 @@
 import type {
+  MessagingActorContext,
   MessagingParticipantDirectory,
   MessagingMutationReceipt,
   MessagingIdempotencyClaim,
   ResolvedMessagingActor,
 } from "../channels/index.js";
 import type { CoordinationTransaction } from "../db/index.js";
-import type { AttachmentSummary } from "../artifacts/index.js";
+import type { ArtifactActor, AttachmentSummary } from "../artifacts/index.js";
 import type { ReasoningEffort } from "../../agent/reasoning-effort.js";
 
 export type MessageKind = "text" | "system" | "result";
@@ -56,6 +57,8 @@ export interface AppendMessageCommit {
   message: PendingMessage;
   attachmentIds: readonly string[];
   actor: ResolvedMessagingActor;
+  /** Separately resolved attachment:write authority for this same request. */
+  artifactActor?: ArtifactActor;
   idempotency: MessagingIdempotencyClaim;
   turnSelection?: MessageTurnSelection;
 }
@@ -102,5 +105,8 @@ export interface MessageRepository {
 export interface CreateMessageServiceOptions {
   repository: MessageRepository;
   participantDirectory: MessagingParticipantDirectory;
+  resolveAttachmentActor?: (
+    context: MessagingActorContext,
+  ) => Promise<ArtifactActor>;
   now?: () => Date;
 }

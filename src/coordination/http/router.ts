@@ -415,6 +415,12 @@ export function createCoordinationRouter(input: {
               !REASONING_EFFORTS.includes(requestedEffort as ReasoningEffort)))) {
         throw new CoordinationHttpError("request_invalid", 400, false);
       }
+      if (
+        body.attachmentIds.length > 0 &&
+        !application.capabilities().capabilities.attachments
+      ) {
+        throw unavailable("attachments");
+      }
       const result = await application.services.messageSubmission.submitMessage({
         context: requireCoordinationContext(response),
         channelId: pathParameter(request.params.channelId),
@@ -497,11 +503,17 @@ export function createCoordinationRouter(input: {
   // upload/retry. With no service these paths deliberately fall through to 404.
   if (application.capabilities().capabilities.attachments && application.services.attachments) {
     const attachments = application.services.attachments;
+    const requireAttachmentCapability = () => {
+      if (!application.capabilities().capabilities.attachments) {
+        throw unavailable("attachments");
+      }
+    };
     router.post(
       "/api/v1/attachments",
       attachmentWrite,
       requireIdempotencyKey(application),
       asyncRoute(async (request, response) => {
+        requireAttachmentCapability();
         const contentType = request.get("content-type");
         if (!contentType?.toLowerCase().startsWith("multipart/form-data;")) {
           throw new CoordinationHttpError("request_invalid", 400, false);
@@ -531,6 +543,7 @@ export function createCoordinationRouter(input: {
       "/api/v1/attachments/:artifactId",
       attachmentRead,
       asyncRoute(async (request, response) => {
+        requireAttachmentCapability();
         const attachment = await attachments.getMetadata({
           context: requireCoordinationContext(response),
           artifactId: pathParameter(request.params.artifactId),
@@ -548,6 +561,7 @@ export function createCoordinationRouter(input: {
       "/api/v1/attachments/:artifactId/content",
       attachmentRead,
       asyncRoute(async (request, response) => {
+        requireAttachmentCapability();
         const rangeHeader = request.get("range");
         const download = await attachments.openDownload({
           context: requireCoordinationContext(response),

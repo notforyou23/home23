@@ -107,6 +107,20 @@ function canonicalTurnSelection(
   return Object.freeze({ ...value });
 }
 
+function sameResolvedActor(
+  left: Awaited<ReturnType<typeof resolveMessagingActor>>,
+  right: Awaited<ReturnType<typeof resolveMessagingActor>>,
+): boolean {
+  return left.principalId === right.principalId &&
+    left.kind === right.kind &&
+    left.displayName === right.displayName &&
+    left.requestId === right.requestId &&
+    left.correlationId === right.correlationId &&
+    left.residentCredential?.residentBinding === right.residentCredential?.residentBinding &&
+    left.residentCredential?.instanceId === right.residentCredential?.instanceId &&
+    left.residentCredential?.keyVersion === right.residentCredential?.keyVersion;
+}
+
 export function createMessageService(options: CreateMessageServiceOptions) {
   const { repository, participantDirectory } = options;
   const now = options.now ?? (() => new Date());
@@ -161,6 +175,12 @@ export function createMessageService(options: CreateMessageServiceOptions) {
       throw new MessagingError("request_invalid");
     }
     for (const attachmentId of attachmentIds) assertId("artifact", attachmentId);
+    const artifactActor = attachmentIds.length > 0 && options.resolveAttachmentActor
+      ? await options.resolveAttachmentActor(input.context)
+      : undefined;
+    if (artifactActor && !sameResolvedActor(actor, artifactActor)) {
+      throw new MessagingError("identity_context_mismatch");
+    }
     const replyToMessageId = canonicalNullableId("message", input.replyToMessageId);
     const tombstonesMessageId = canonicalNullableId("message", input.tombstonesMessageId);
     if (replyToMessageId && tombstonesMessageId) {
@@ -223,6 +243,7 @@ export function createMessageService(options: CreateMessageServiceOptions) {
       message,
       attachmentIds: Object.freeze(attachmentIds),
       actor,
+      ...(artifactActor === undefined ? {} : { artifactActor }),
       idempotency,
       ...(turnSelection ? { turnSelection } : {}),
     });

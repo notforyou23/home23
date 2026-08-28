@@ -1,6 +1,7 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 
+import { DEFAULT_MAXIMUM_ARTIFACT_BYTES } from "../artifacts/index.js";
 import type { CoordinationFeatureFlags } from "./types.js";
 import { disabledCoordinationFeatureFlags } from "./application.js";
 
@@ -27,6 +28,13 @@ export interface CoordinationRuntimeConfig {
   databasePath: string;
   socketPath: string;
   capabilityToken: string;
+  attachments?: Readonly<{
+    /** Independent kill switch; authority remains a separate mandatory gate. */
+    enabled: boolean;
+    rootDirectory: string;
+    maximumBytes: number;
+    maximumCountPerMessage: number;
+  }>;
   residents: Readonly<Record<"jerry" | "forrest", {
     enabled: boolean;
     socketPath: string;
@@ -135,6 +143,18 @@ export function loadCoordinationRuntimeConfig(
     "coordination.resident.jerry.enabled": enabled && parsedFlags["coordination.resident.jerry.enabled"] === true,
     "coordination.resident.forrest.enabled": enabled && parsedFlags["coordination.resident.forrest.enabled"] === true,
   };
+  const requestedAttachmentsEnabled = exactBoolean(
+    environment.HOME23_COORDINATION_ATTACHMENTS_ENABLED,
+    "HOME23_COORDINATION_ATTACHMENTS_ENABLED",
+  );
+  const attachmentsEnabled = enabled && requestedAttachmentsEnabled;
+  const attachmentRoot = confinedRuntimePath({
+    value: environment.HOME23_COORDINATION_ATTACHMENTS_ROOT ??
+      resolve(runtimeRoot, "attachments"),
+    name: "HOME23_COORDINATION_ATTACHMENTS_ROOT",
+    runtimeRoot,
+    requireParent: attachmentsEnabled,
+  });
   const residents = Object.fromEntries((["jerry", "forrest"] as const).map((slug) => {
     const upper = slug.toUpperCase();
     const residentEnabled = flags[`coordination.resident.${slug}.enabled`] === true;
@@ -157,6 +177,12 @@ export function loadCoordinationRuntimeConfig(
     databasePath,
     socketPath,
     capabilityToken,
+    attachments: Object.freeze({
+      enabled: attachmentsEnabled,
+      rootDirectory: attachmentRoot,
+      maximumBytes: DEFAULT_MAXIMUM_ARTIFACT_BYTES,
+      maximumCountPerMessage: 10,
+    }),
     residents: Object.freeze(residents),
     flags: Object.freeze(flags),
   });

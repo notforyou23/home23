@@ -25,6 +25,7 @@ import { startResidentCoordinationHarness } from "../../../src/coordination-adap
 import { createChannelService, SqliteBotConversationBindingAdapter, SqliteMessagingRepository } from "../../../src/coordination/channels/index.js";
 import { M11MessageProvenanceAuthority } from "../../../src/coordination/work/index.js";
 import {
+  COORDINATION_ATTACHMENTS_WRITER,
   COORDINATION_MESSAGES_WRITER,
   authorityReceiptSigningPayload,
   type AuthorityEpoch,
@@ -34,6 +35,9 @@ import {
 import { FEATURE_FLAG_REGISTRY } from "../../../src/coordination/schema/contract-registry.js";
 
 const authority = { approved: true, kind: "m14-bootstrap", operator: "user_owner", resident: "jerry", legacyWriterAuthoritative: true, coordinationFlagsAllFalse: true } as const;
+const verticalArtifactId = "art_0198d95f-6c00-7000-8000-000000000992";
+const verticalArtifactBytes = Buffer.from("real resident attachment reference\n", "utf8");
+const verticalArtifactSha256 = createHash("sha256").update(verticalArtifactBytes).digest("hex");
 
 function actualAgent(root: string, resident = "jerry") {
   const history = new ConversationHistory(join(root, `conversations-${resident}`), 400_000, resident);
@@ -101,6 +105,64 @@ async function accessToken(path: string, key: string) {
     device: { platform: "macos", name: "vertical", appBuild: "test" }, mutation: mutation("vertical-pairing-redeem") });
   db.close();
   return paired.accessToken;
+}
+
+function seedCanonicalAttachmentAuthority(databasePath: string) {
+  const epochs: readonly AuthorityEpoch[] = [
+    { capability: "attachments", epoch: 1, mode: "legacy", writer: "legacy-attachment-writer", effectiveAtEventSequence: null, rollbackEpoch: null },
+    { capability: "attachments", epoch: 2, mode: "shadow", writer: "legacy-attachment-writer", effectiveAtEventSequence: null, rollbackEpoch: null },
+    { capability: "attachments", epoch: 3, mode: "canonical", writer: COORDINATION_ATTACHMENTS_WRITER, effectiveAtEventSequence: 0, rollbackEpoch: 1 },
+  ];
+  const database = openCoordinationDatabase({ path: databasePath });
+  try {
+    for (const epoch of epochs) {
+      const currentSequence = database.readOne<{ sequence: number }>(
+        "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM events",
+      )?.sequence ?? 0;
+      const effectiveAtEventSequence = epoch.mode === "canonical"
+        ? currentSequence
+        : epoch.effectiveAtEventSequence;
+      const createdAt = new Date(Date.UTC(2026, 7, 27, 19, 0, epoch.epoch)).toISOString();
+      database.mutateWithEvent((transaction) => {
+        transaction.run(
+          `INSERT INTO authority_epochs (
+             capability, epoch, mode, writer, effective_at_event_sequence,
+             rollback_epoch, receipt_json, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          epoch.capability,
+          epoch.epoch,
+          epoch.mode,
+          epoch.writer,
+          effectiveAtEventSequence,
+          epoch.rollbackEpoch,
+          JSON.stringify({ kind: "isolated-production-vertical-fixture", epoch: epoch.epoch }),
+          createdAt,
+        );
+        return {
+          value: undefined,
+          event: {
+            type: "authority.epoch_changed",
+            aggregateKind: "authorityEpoch",
+            aggregateId: "authority:attachments",
+            aggregateVersion: epoch.epoch,
+            channelId: null,
+            actorPrincipalId: "user_owner",
+            requestId: generateCoordinationId("request"),
+            correlationId: generateCoordinationId("correlation"),
+            payload: {
+              capability: "attachments",
+              epoch: epoch.epoch,
+              writer: epoch.writer,
+              mode: epoch.mode,
+            },
+            createdAt,
+          },
+        };
+      });
+    }
+  } finally {
+    database.close();
+  }
 }
 
 function authoritySnapshot(databasePath: string) {
@@ -543,6 +605,7 @@ test("isolated production composition traverses the generated harness and unmodi
   const replayedBootstrap = await bootstrapJerry({ databasePath, apply: true, authority, serverInstanceId: "home23-jerry-harness", keyVersion: 1 });
   assert.deepEqual({ botId: replayedBootstrap.botId, channelId: replayedBootstrap.channelId, conversationId: replayedBootstrap.conversationId }, { botId: seeded.botId, channelId: seeded.channelId, conversationId: seeded.conversationId });
   const token = await accessToken(databasePath, capabilityToken);
+  seedCanonicalAttachmentAuthority(databasePath);
   const { agent, history } = actualAgent(root);
   const harnessEnvironment = {
     HOME23_COORDINATION_RESIDENT_ENABLED: "true",
@@ -558,15 +621,20 @@ test("isolated production composition traverses the generated harness and unmodi
   t.after(() => harness?.close());
   const flags = { ...disabledCoordinationFeatureFlags(), "coordination.process.enabled": true, "coordination.public_api.enabled": true, "coordination.resident.jerry.enabled": true };
   const config = () => ({ enabled: true, host: "127.0.0.1" as const, port: 0, databasePath, socketPath: join(runtime, "coord.sock"), capabilityToken, flags,
+    attachments: { enabled: true, rootDirectory: join(runtime, "attachments"), maximumBytes: 25 * 1024 * 1024, maximumCountPerMessage: 10 },
     residents: { jerry: { enabled: true, socketPath, serverInstanceId: "home23-jerry-harness", clientInstanceId: "home23-jerry-harness", keyVersion: 1, key: residentKey }, forrest: { enabled: false, socketPath: join(runtime, "resident-forrest.sock"), serverInstanceId: "home23-forrest-harness", clientInstanceId: "home23-forrest-harness", keyVersion: 1, key: "" } } });
   let coordinationProcess = createCoordinationProcess(config()); let address = await coordinationProcess.start();
   const capabilities = await (await fetch(`${address.origin}/api/v1/capabilities`)).json() as any;
   assert.equal(capabilities.capabilities.messageSubmission, false);
+  assert.equal(capabilities.capabilities.attachments, true);
   assert.equal(capabilities.capabilities.eventReplay, true);
   assert.equal((await fetch(`${address.origin}/api/v1/bootstrap`)).status, 401);
   const productHeaders = { authorization: `Bearer ${token}` };
   const legacyAuthorityEpochs = await (await fetch(`${address.origin}/api/v1/authority-epochs`, { headers: productHeaders })).json() as any;
-  assert.deepEqual(legacyAuthorityEpochs.epochs, [{ capability: "messages", epoch: 1, mode: "legacy", writer: "legacy-conversation-writer", effectiveAtEventSequence: null, rollbackEpoch: null }]);
+  assert.deepEqual(legacyAuthorityEpochs.epochs.find((epoch: AuthorityEpoch) => epoch.capability === "messages"), { capability: "messages", epoch: 1, mode: "legacy", writer: "legacy-conversation-writer", effectiveAtEventSequence: null, rollbackEpoch: null });
+  const attachmentAuthority = legacyAuthorityEpochs.epochs.find((epoch: AuthorityEpoch) => epoch.capability === "attachments") as AuthorityEpoch;
+  assert.deepEqual({ capability: attachmentAuthority.capability, epoch: attachmentAuthority.epoch, mode: attachmentAuthority.mode, writer: attachmentAuthority.writer, rollbackEpoch: attachmentAuthority.rollbackEpoch }, { capability: "attachments", epoch: 3, mode: "canonical", writer: COORDINATION_ATTACHMENTS_WRITER, rollbackEpoch: 1 });
+  assert.ok(Number.isSafeInteger(attachmentAuthority.effectiveAtEventSequence));
   assert.ok(Number.isSafeInteger(legacyAuthorityEpochs.throughEventSequence));
   assert.match(legacyAuthorityEpochs.requestId, /^req_/);
   assert.match(legacyAuthorityEpochs.correlationId, /^cor_/);
@@ -580,7 +648,12 @@ test("isolated production composition traverses the generated harness and unmodi
   assert.deepEqual(channels.channels.map((channel) => channel.id), [seeded.channelId]);
   const inbox = await (await fetch(`${address.origin}/api/v1/inbox`, { headers: productHeaders })).json() as { conversations: Array<{ channelId: string }> };
   assert.deepEqual(inbox.conversations.map((conversation) => conversation.channelId), [seeded.channelId]);
-  const correlationId = generateCoordinationId("correlation"); const body = { messageId: generateCoordinationId("message"), clientMessageId: "m14-client-message", text: "Jerry, answer canonically.", attachmentIds: [], mentions: [], replyToMessageId: null };
+  const form = new FormData();
+  form.set("metadata", JSON.stringify({ artifactId: verticalArtifactId, name: "resident-evidence.txt", declaredContentType: "text/plain", expectedSha256: verticalArtifactSha256 }));
+  form.set("content", new Blob([verticalArtifactBytes], { type: "text/plain" }), "resident-evidence.txt");
+  const uploaded = await fetch(`${address.origin}/api/v1/attachments`, { method: "POST", headers: { authorization: `Bearer ${token}`, "idempotency-key": "production-vertical-attachment-0001" }, body: form });
+  assert.equal(uploaded.status, 201, `attachment upload: ${await uploaded.text()}`);
+  const correlationId = generateCoordinationId("correlation"); const body = { messageId: generateCoordinationId("message"), clientMessageId: "m14-client-message", text: "Jerry, answer canonically.", attachmentIds: [verticalArtifactId], mentions: [], replyToMessageId: null };
   const send = () => fetch(`${address.origin}/api/v1/channels/${seeded.channelId}/messages`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "idempotency-key": "m14-production-message-0001", "x-correlation-id": correlationId }, body: JSON.stringify(body) });
   assert.equal((await send()).status, 503);
   assert.equal(modelFixture.calls(), 0);
@@ -648,7 +721,8 @@ test("isolated production composition traverses the generated harness and unmodi
   const canonicalCapabilities = await (await fetch(`${address.origin}/api/v1/capabilities`)).json() as any;
   assert.equal(canonicalCapabilities.capabilities.messageSubmission, true);
   const canonicalAuthorityEpochs = await (await fetch(`${address.origin}/api/v1/authority-epochs`, { headers: productHeaders })).json() as any;
-  assert.deepEqual(canonicalAuthorityEpochs.epochs, [canonical]);
+  assert.deepEqual(canonicalAuthorityEpochs.epochs.find((epoch: AuthorityEpoch) => epoch.capability === "messages"), canonical);
+  assert.deepEqual(canonicalAuthorityEpochs.epochs.find((epoch: AuthorityEpoch) => epoch.capability === "attachments"), attachmentAuthority);
   const first = await send();
   if (first.status !== 202) {
     const failure = await first.text(); await coordinationProcess.drain(); const diagnostic = openCoordinationDatabase({ path: databasePath });
@@ -683,14 +757,25 @@ test("isolated production composition traverses the generated harness and unmodi
   assert.match(eventText, /message\.appended/);
   assert.ok(eventText.includes(correlationId));
   await new Promise((resolve) => setTimeout(resolve, 500));
-  const transcript = await (await fetch(`${address.origin}/api/v1/channels/${seeded.channelId}/messages`, { headers: productHeaders })).json() as { messages: Array<{ kind: string; text: string; provenance: { workId: string | null } }> };
+  const transcript = await (await fetch(`${address.origin}/api/v1/channels/${seeded.channelId}/messages`, { headers: productHeaders })).json() as { messages: Array<{ kind: string; text: string; attachments: Array<{ id: string; name: string; contentType: string; byteCount: number; sha256: string }>; provenance: { workId: string | null } }> };
   assert.deepEqual(transcript.messages.map((message) => message.kind), ["text", "result"]);
+  assert.deepEqual(transcript.messages[0]?.attachments, [{
+    id: verticalArtifactId,
+    name: "resident-evidence.txt",
+    contentType: "text/plain",
+    byteCount: verticalArtifactBytes.length,
+    sha256: verticalArtifactSha256,
+  }]);
+  assert.deepEqual(transcript.messages[1]?.attachments, []);
   assert.equal(transcript.messages[1]?.text, "Canonical Jerry response.");
   assert.ok(transcript.messages[1]?.provenance.workId?.startsWith("wrk_"));
   const duplicate = await send(); assert.equal(duplicate.status, 202, `duplicate: ${await duplicate.text()}`); assert.equal(modelFixture.calls(), 1); await coordinationProcess.drain();
   const db = openCoordinationDatabase({ path: databasePath });
   for (const table of ["works", "attempts", "leases", "terminal_receipts"] as const) assert.equal(db.readOne<{ count: number }>(`SELECT count(*) AS count FROM ${table}`)?.count, 1);
   assert.equal(db.readOne<{ count: number }>("SELECT count(*) AS count FROM messages WHERE kind='result'")?.count, 1);
+  assert.equal(db.readOne<{ count: number }>("SELECT count(*) AS count FROM message_artifacts")?.count, 1);
+  const manifestAttachment = db.readOne<{ artifactRefsJson: string; artifactCount: number }>("SELECT artifact_refs_json AS artifactRefsJson, artifact_count AS artifactCount FROM context_manifests LIMIT 1");
+  assert.deepEqual(manifestAttachment, { artifactRefsJson: JSON.stringify([verticalArtifactId]), artifactCount: 1 });
   assert.ok((db.readOne<{ count: number }>("SELECT count(*) AS count FROM events WHERE correlation_id=?", correlationId)?.count ?? 0) >= 3); db.close();
   await harness.close(); harness = await startResidentCoordinationHarness({ agent, history, environment: harnessEnvironment }); assert.ok(harness);
   coordinationProcess = createCoordinationProcess(config()); address = await coordinationProcess.start();

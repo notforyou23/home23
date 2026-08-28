@@ -35,6 +35,8 @@ test("disabled defaults retain loopback-only paths without requiring runtime sta
   assert.equal(Object.values(config.flags).some(Boolean), false);
   assert.match(config.databasePath, /instances\/.house\/coordination\/home23-coordination\.sqlite3$/);
   assert.match(config.socketPath, /instances\/.house\/coordination\/coord\.sock$/);
+  assert.equal(config.attachments?.enabled, false);
+  assert.match(config.attachments?.rootDirectory ?? "", /instances\/.house\/coordination\/attachments$/);
 });
 
 test("enabled startup fails closed for missing secrets and runtime parents", (t) => {
@@ -84,6 +86,13 @@ test("unsafe binds, malformed flags, and escaped paths are refused", (t) => {
     }),
     /must remain inside/,
   );
+  assert.throws(
+    () => loadCoordinationRuntimeConfig({
+      ...input.environment,
+      HOME23_COORDINATION_ATTACHMENTS_ROOT: join(input.root, "outside-attachments"),
+    }),
+    /must remain inside/,
+  );
 });
 
 test("all eleven rollout flags default off and every projected boolean is strict", (t) => {
@@ -98,5 +107,19 @@ test("all eleven rollout flags default off and every projected boolean is strict
     "HOME23_COORDINATION_SEARCH_CANONICAL", "HOME23_COORDINATION_IMPORT_SHADOW_ENABLED",
     "HOME23_COORDINATION_APPLE_MAC_CUTOVER", "HOME23_COORDINATION_APPLE_IPHONE_CUTOVER",
     "HOME23_COORDINATION_BOT_LIFECYCLE_ENABLED", "HOME23_COORDINATION_COMPACTION_ENABLED",
+    "HOME23_COORDINATION_ATTACHMENTS_ENABLED",
   ]) assert.throws(() => loadCoordinationRuntimeConfig({ ...input.environment, [variable]: "1" }), /must be exactly true or false/);
+});
+
+test("attachment admission is an independent confined runtime switch", (t) => {
+  const input = fixture(true);
+  t.after(() => rmSync(input.root, { recursive: true, force: true }));
+  const config = loadCoordinationRuntimeConfig({
+    ...input.environment,
+    HOME23_COORDINATION_ATTACHMENTS_ENABLED: "true",
+  });
+  assert.equal(config.attachments?.enabled, true);
+  assert.equal(config.attachments?.maximumBytes, 25 * 1024 * 1024);
+  assert.equal(config.attachments?.maximumCountPerMessage, 10);
+  assert.match(config.attachments?.rootDirectory ?? "", /coordination\/attachments$/);
 });

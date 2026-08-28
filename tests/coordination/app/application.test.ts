@@ -23,8 +23,18 @@ const canonicalMessagesAuthority: AuthorityEpoch = Object.freeze({
   rollbackEpoch: 1,
 });
 
+const canonicalAttachmentsAuthority: AuthorityEpoch = Object.freeze({
+  capability: "attachments",
+  epoch: 3,
+  mode: "canonical",
+  writer: "home23-coordination",
+  effectiveAtEventSequence: 42,
+  rollbackEpoch: 1,
+});
+
 const authorityEpochs = (current: AuthorityEpoch | null) => ({
-  current: () => current,
+  current: (capability: string) =>
+    current?.capability === capability ? current : null,
   listCurrent: async () => ({
     epochs: current ? [current] : [],
     throughEventSequence: current?.effectiveAtEventSequence ?? 0,
@@ -168,7 +178,7 @@ test("Channel mutation requires public mutations, its flag, and the Channel serv
   assert.equal(withoutPublicMutations.capabilities().capabilities.channelMutation, false);
 });
 
-test("attachments require the public mutation flag and one complete injected service", () => {
+test("attachments require public mutation, canonical authority, and one complete service", () => {
   const attachments = {
     create: async () => { throw new Error("unused"); },
     getMetadata: async () => { throw new Error("unused"); },
@@ -189,11 +199,51 @@ test("attachments require the public mutation flag and one complete injected ser
   });
   const enabled = createCoordinationApplication({
     flags: enabledShellFlags,
+    services: {
+      auth,
+      attachments,
+      authorityEpochs: authorityEpochs(canonicalAttachmentsAuthority),
+    },
+  });
+  const missingAuthority = createCoordinationApplication({
+    flags: enabledShellFlags,
     services: { auth, attachments },
   });
 
   assert.equal(disabled.capabilities().capabilities.attachments, false);
+  assert.equal(missingAuthority.capabilities().capabilities.attachments, false);
   assert.equal(enabled.capabilities().capabilities.attachments, true);
+});
+
+test("an appended attachment rollback epoch removes admission without rebuilding the app", () => {
+  let current: AuthorityEpoch = canonicalAttachmentsAuthority;
+  const attachments = {
+    create: async () => { throw new Error("unused"); },
+    getMetadata: async () => { throw new Error("unused"); },
+    openDownload: async () => { throw new Error("unused"); },
+  };
+  const application = createCoordinationApplication({
+    flags: enabledShellFlags,
+    services: {
+      auth: { validateAccessToken: async () => { throw new Error("unused"); } },
+      attachments,
+      authorityEpochs: {
+        current: (capability) =>
+          capability === "attachments" ? current : null,
+        listCurrent: async () => ({ epochs: [current], throughEventSequence: 42 }),
+      },
+    },
+  });
+  assert.equal(application.capabilities().capabilities.attachments, true);
+  current = Object.freeze({
+    capability: "attachments",
+    epoch: 4,
+    mode: "legacy",
+    writer: "legacy-attachment-writer",
+    effectiveAtEventSequence: 42,
+    rollbackEpoch: 1,
+  });
+  assert.equal(application.capabilities().capabilities.attachments, false);
 });
 
 test("read routes without a complete event-boundary contract remain unadvertised", () => {

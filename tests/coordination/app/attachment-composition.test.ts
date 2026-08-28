@@ -35,6 +35,18 @@ const auth = {
     };
   },
 };
+const attachmentEpoch = Object.freeze({
+  capability: "attachments" as const,
+  epoch: 3,
+  mode: "canonical" as const,
+  writer: "home23-coordination",
+  effectiveAtEventSequence: 1,
+  rollbackEpoch: 1,
+});
+const authorityEpochs = {
+  current: (capability: string) => capability === "attachments" ? attachmentEpoch : null,
+  listCurrent: async () => ({ epochs: [attachmentEpoch], throughEventSequence: 1 }),
+};
 
 async function absent(path: string): Promise<boolean> {
   try { await access(path); return false; } catch { return true; }
@@ -52,14 +64,14 @@ test("raw store alone and incomplete attachment dependencies cannot activate or 
   ]) {
     const composition = await createCoordinationRuntimeComposition({
       flags: enabledFlags,
-      services: { auth },
+      services: { auth, authorityEpochs },
       attachments: attachments as never,
     });
     assert.equal(composition.application.capabilities().capabilities.attachments, false);
   }
   const smuggled = await createCoordinationRuntimeComposition({
     flags: enabledFlags,
-    services: { auth, attachments: { create() {}, getMetadata() {}, openDownload() {} } } as never,
+    services: { auth, authorityEpochs, attachments: { create() {}, getMetadata() {}, openDownload() {} } } as never,
   });
   assert.equal(smuggled.application.capabilities().capabilities.attachments, false);
   assert.equal(await absent(databasePath), true);
@@ -73,7 +85,7 @@ test("explicit complete feature-off remains unavailable and does not open durabl
   const rootDirectory = join(root, "must-not-open-artifacts");
   const composition = await createCoordinationRuntimeComposition({
     flags: enabledFlags,
-    services: { auth },
+    services: { auth, authorityEpochs },
     attachments: { enabled: false, databasePath, rootDirectory, participantDirectory: directory },
   });
   assert.equal(composition.application.capabilities().capabilities.attachments, false);
@@ -87,7 +99,7 @@ test("explicit complete feature-on advertises and routes only behind auth and sc
   const databasePath = join(root, "coordination.sqlite3");
   const composition = await createCoordinationRuntimeComposition({
     flags: enabledFlags,
-    services: { auth },
+    services: { auth, authorityEpochs },
     attachments: {
       enabled: true,
       databasePath,
@@ -132,7 +144,7 @@ test("startup failure closes the SQLite resource already owned by composition", 
   const missingParent = join(root, "missing-parent");
   await assert.rejects(createCoordinationRuntimeComposition({
     flags: enabledFlags,
-    services: { auth },
+    services: { auth, authorityEpochs },
     attachments: {
       enabled: true,
       databasePath,

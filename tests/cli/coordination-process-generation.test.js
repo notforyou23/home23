@@ -54,6 +54,7 @@ test('explicit configuration is rendered but an unsafe bind remains startup-inva
     coordination: {
       process: { enabled: true },
       publicApi: { enabled: false, host: '0.0.0.0', port: 7446 },
+      attachments: { enabled: true },
     },
   }, { coordination: { capabilityToken: 'd'.repeat(64) } });
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -61,6 +62,8 @@ test('explicit configuration is rendered but an unsafe bind remains startup-inva
     .find((candidate) => candidate.name === 'home23-coordination');
   assert.equal(app.env.HOME23_COORDINATION_ENABLED, 'true');
   assert.equal(app.env.HOME23_COORDINATION_HOST, '127.0.0.1');
+  assert.equal(app.env.HOME23_COORDINATION_ATTACHMENTS_ENABLED, 'true');
+  assert.match(app.env.HOME23_COORDINATION_ATTACHMENTS_ROOT, /instances\/.house\/coordination\/attachments$/);
   assert.equal(app.autorestart, false);
   assert.equal(app.env.HOME23_COORDINATION_PORT, '7446');
 });

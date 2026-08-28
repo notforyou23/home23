@@ -13,7 +13,11 @@ import {
   replayReceipt,
 } from "../channels/mutation.js";
 import type { MessagingEventReference } from "../channels/mutation.js";
-import type { ArtifactMessageLinkTransactionPort, AttachmentSummary } from "../artifacts/index.js";
+import type {
+  ArtifactActor,
+  ArtifactMessageLinkTransactionPort,
+  AttachmentSummary,
+} from "../artifacts/index.js";
 import type {
   AppendMessageCommit,
   AppendMessageResult,
@@ -41,6 +45,20 @@ interface MessageRow {
   workId: string | null;
   createdAt: string;
   effectiveVisibility: "visible" | "tombstoned";
+}
+
+function sameActorBinding(
+  left: AppendMessageCommit["actor"],
+  right: ArtifactActor,
+): boolean {
+  return left.principalId === right.principalId &&
+    left.kind === right.kind &&
+    left.displayName === right.displayName &&
+    left.requestId === right.requestId &&
+    left.correlationId === right.correlationId &&
+    left.residentCredential?.residentBinding === right.residentCredential?.residentBinding &&
+    left.residentCredential?.instanceId === right.residentCredential?.instanceId &&
+    left.residentCredential?.keyVersion === right.residentCredential?.keyVersion;
 }
 
 function storedTurnSelection(value: unknown): AppendMessageCommit["turnSelection"] {
@@ -113,6 +131,9 @@ export class SqliteMessageRepository implements MessageRepository {
       input.message.author.kind !== input.actor.kind ||
       input.message.author.displayName !== input.actor.displayName
     ) {
+      throw new MessagingError("identity_context_mismatch");
+    }
+    if (input.artifactActor && !sameActorBinding(input.actor, input.artifactActor)) {
       throw new MessagingError("identity_context_mismatch");
     }
     if (input.idempotency.operation !== "message.append") {
@@ -226,7 +247,7 @@ export class SqliteMessageRepository implements MessageRepository {
           messageId: input.message.id,
           channelId: input.message.channelId,
           artifactIds: attachmentIds,
-          actor: input.actor,
+          actor: input.artifactActor ?? input.actor,
           linkedAt: input.message.createdAt,
         }) ?? Object.freeze([]);
         for (const principalId of input.message.mentions) {
