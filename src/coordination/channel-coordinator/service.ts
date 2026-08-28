@@ -199,6 +199,65 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
     }
   }
 
+  function assertTerminalAdmissionComplete(
+    round: RoundRecord,
+    plan: CoordinatorAdmissionPlan,
+    works: readonly WorkRecord[],
+  ): void {
+    if (!ROUND_TERMINAL.has(round.state)) {
+      throw new ChannelCoordinatorError(
+        "illegal_state",
+        "terminal admission validation requires a terminal Round",
+      );
+    }
+    if (works.some((work) => !WORK_TERMINAL.has(work.state))) {
+      throw new ChannelCoordinatorError(
+        "illegal_state",
+        "terminal Round retains nonterminal Work",
+      );
+    }
+    if (round.state === "completed" && works.some((work) => work.state !== "succeeded")) {
+      throw new ChannelCoordinatorError(
+        "illegal_state",
+        "completed Round retains unsuccessful Work",
+      );
+    }
+    if (works.length === plan.selectedTargets.length) return;
+    if (
+      round.state === "cancelled" ||
+      (round.state === "failed" && round.terminalReason === "deadline_exceeded")
+    ) {
+      return;
+    }
+    throw new ChannelCoordinatorError(
+      "illegal_state",
+      "terminal Round is incomplete relative to its immutable admission plan",
+    );
+  }
+
+  function cancelQueuedRoundWorks(input: {
+    round: RoundRecord;
+    works: readonly WorkRecord[];
+    actorPrincipalId: string;
+    reasonCode: "round_cancelled" | "round_deadline_exceeded";
+    requestId: string;
+    correlationId: string;
+  }): readonly WorkRecord[] {
+    const timestamp = canonicalTimestamp(now());
+    for (const work of input.works.filter((candidate) => candidate.state === "queued")) {
+      options.work.cancelQueued({
+        workId: work.id,
+        actorPrincipalId: input.actorPrincipalId,
+        reasonCode: input.reasonCode,
+        sourceReference: `round:${input.round.id}`,
+        timestamp,
+        requestId: input.requestId,
+        correlationId: input.correlationId,
+      });
+    }
+    return worksForRound(input.round.id);
+  }
+
   function repairInitialAdmission(input: {
     round: RoundRecord;
     plan: CoordinatorAdmissionPlan;
@@ -208,18 +267,42 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
     let round = input.round;
     let existing = worksForRound(round.id);
     assertWorksFollowPlan(round, input.plan, existing);
+    if (ROUND_TERMINAL.has(round.state)) {
+      existing = cancelQueuedRoundWorks({
+        ...input,
+        works: existing,
+        actorPrincipalId: input.plan.actorPrincipalId,
+        reasonCode: round.terminalReason === "deadline_exceeded"
+          ? "round_deadline_exceeded"
+          : "round_cancelled",
+      });
+      assertTerminalAdmissionComplete(round, input.plan, existing);
+      return Object.freeze({ round, works: existing });
+    }
+    if (
+      now().valueOf() >= new Date(round.deadlineAt).valueOf() &&
+      (round.state === "coordinating" || round.state === "waiting")
+    ) {
+      existing = cancelQueuedRoundWorks({
+        ...input,
+        works: existing,
+        actorPrincipalId: input.plan.actorPrincipalId,
+        reasonCode: "round_deadline_exceeded",
+      });
+      if (existing.some((work) => !WORK_TERMINAL.has(work.state))) {
+        return Object.freeze({ round, works: existing });
+      }
+      round = options.rounds.reconcileDeadline({
+        roundId: round.id,
+        requestId: input.requestId,
+        correlationId: input.correlationId,
+      });
+      assertTerminalAdmissionComplete(round, input.plan, existing);
+      return Object.freeze({ round, works: existing });
+    }
     const initialTargets = input.plan.responseOrder === "parallel"
       ? input.plan.selectedTargets
       : input.plan.selectedTargets.slice(0, 1);
-    const missingInitial = initialTargets.filter((target) =>
-      !existing.some((work) => work.targetPrincipalId === target.targetPrincipalId)
-    );
-    if (missingInitial.length > 0 && ROUND_TERMINAL.has(round.state)) {
-      throw new ChannelCoordinatorError(
-        "illegal_state",
-        "terminal Round has a partial durable admission",
-      );
-    }
     if (round.state === "open") {
       round = options.rounds.beginPass({
         roundId: round.id,
@@ -227,11 +310,17 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
         correlationId: input.correlationId,
       });
     }
-    if (missingInitial.length > 0 && ROUND_TERMINAL.has(round.state)) {
-      throw new ChannelCoordinatorError(
-        "illegal_state",
-        "Round terminalized before its admission could be repaired",
-      );
+    if (ROUND_TERMINAL.has(round.state)) {
+      existing = cancelQueuedRoundWorks({
+        ...input,
+        works: existing,
+        actorPrincipalId: input.plan.actorPrincipalId,
+        reasonCode: round.terminalReason === "deadline_exceeded"
+          ? "round_deadline_exceeded"
+          : "round_cancelled",
+      });
+      assertTerminalAdmissionComplete(round, input.plan, existing);
+      return Object.freeze({ round, works: existing });
     }
     for (const target of initialTargets) {
       const alreadyInRound = existing.some(
@@ -476,11 +565,10 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
       (round.state === "coordinating" || round.state === "waiting") &&
       now().valueOf() >= new Date(round.deadlineAt).valueOf()
     ) {
-      round = options.rounds.reconcileDeadline({
-        roundId: round.id,
-        requestId: input.requestId,
-        correlationId: input.correlationId,
-      });
+      throw new ChannelCoordinatorError(
+        "illegal_state",
+        "expired Round is waiting for its admitted Work to terminalize",
+      );
     }
     if (round.channelId !== input.channelId || ROUND_TERMINAL.has(round.state)) {
       throw new ChannelCoordinatorError("illegal_state", "trigger resolves to an incompatible Round");
@@ -595,22 +683,73 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
     const round = options.rounds.get(input.roundId);
     if (!round) throw new ChannelCoordinatorError("invalid_request", "Round was not found");
     let current = round;
-    const works = worksForRound(round.id);
+    let works = worksForRound(round.id);
+    let plan: CoordinatorAdmissionPlan;
+    try {
+      plan = readCoordinatorAdmissionPlan(options.database, round.id);
+    } catch (error) {
+      throw new ChannelCoordinatorError(
+        "illegal_state",
+        `Round lacks a valid immutable admission plan: ${String(error)}`,
+      );
+    }
+    assertWorksFollowPlan(round, plan, works);
     if (ROUND_TERMINAL.has(current.state)) {
+      works = cancelQueuedRoundWorks({
+        round: current,
+        works,
+        actorPrincipalId: plan.actorPrincipalId,
+        reasonCode: current.terminalReason === "deadline_exceeded"
+          ? "round_deadline_exceeded"
+          : "round_cancelled",
+        requestId: input.requestId,
+        correlationId: input.correlationId,
+      });
+      assertTerminalAdmissionComplete(current, plan, works);
       return Object.freeze({ round: current, works, outcome: current.state as "completed" | "failed" | "cancelled", reasonCode: current.terminalReason });
     }
     if (new Date(now()).valueOf() >= new Date(current.deadlineAt).valueOf()) {
-      current = options.rounds.reconcileDeadline(input);
+      works = cancelQueuedRoundWorks({
+        round: current,
+        works,
+        actorPrincipalId: plan.actorPrincipalId,
+        reasonCode: "round_deadline_exceeded",
+        requestId: input.requestId,
+        correlationId: input.correlationId,
+      });
+      if (works.some((work) => !WORK_TERMINAL.has(work.state))) {
+        return Object.freeze({ round: current, works, outcome: "waiting", reasonCode: null });
+      }
+      current = current.state === "open"
+        ? options.rounds.beginPass({
+            roundId: current.id,
+            requestId: input.requestId,
+            correlationId: input.correlationId,
+          })
+        : options.rounds.reconcileDeadline(input);
+      assertTerminalAdmissionComplete(current, plan, works);
       return Object.freeze({ round: current, works, outcome: current.state as "failed" | "cancelled", reasonCode: current.terminalReason });
     }
     if (works.some((work) => !WORK_TERMINAL.has(work.state))) {
       if (current.state === "coordinating") current = options.rounds.wait(input);
       return Object.freeze({ round: current, works, outcome: "waiting", reasonCode: null });
     }
+    if (works.length !== plan.selectedTargets.length) {
+      throw new ChannelCoordinatorError(
+        "illegal_state",
+        "Round cannot terminalize before its immutable admission plan is complete",
+      );
+    }
     const dispositions = input.dispositions ?? {};
     const values = works.map((work) => dispositions[work.id] ?? (work.state === "succeeded" ? "completed" : "permanent_failure"));
     const failures = values.some((value) => value === "permanent_failure" || value === "retryable_failure");
     const allPass = values.length > 0 && values.every((value) => value === "passed");
+    if (!failures && works.some((work) => work.state !== "succeeded")) {
+      throw new ChannelCoordinatorError(
+        "illegal_state",
+        "successful Round disposition requires succeeded Work",
+      );
+    }
     current = options.rounds.terminalize({
       roundId: input.roundId,
       requestId: input.requestId,
@@ -618,6 +757,7 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
       status: failures ? "failed" : "completed",
       reasonCode: failures ? (values.some((value) => value === "completed" || value === "passed") ? "partial_failure" : "execution_failed") : (allPass ? "passed" : "completed"),
     });
+    assertTerminalAdmissionComplete(current, plan, works);
     return Object.freeze({ round: current, works, outcome: current.state as "completed" | "failed", reasonCode: current.terminalReason });
   }
 
@@ -625,17 +765,20 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
     assertEnabled();
     const round = options.rounds.get(input.roundId);
     if (!round) throw new ChannelCoordinatorError("invalid_request", "Round was not found");
-    const works = worksForRound(round.id);
-    const at = canonicalTimestamp(now());
-    for (const work of works.filter((candidate) => candidate.state === "queued")) {
-      options.work.cancelQueued({
-        workId: work.id,
-        actorPrincipalId: input.actorPrincipalId,
-        reasonCode: "round_cancelled",
-        sourceReference: `round:${round.id}`,
-        timestamp: at,
-        requestId: input.requestId,
-        correlationId: input.correlationId,
+    const works = cancelQueuedRoundWorks({
+      round,
+      works: worksForRound(round.id),
+      actorPrincipalId: input.actorPrincipalId,
+      reasonCode: "round_cancelled",
+      requestId: input.requestId,
+      correlationId: input.correlationId,
+    });
+    if (works.some((work) => !WORK_TERMINAL.has(work.state))) {
+      return Object.freeze({
+        round,
+        works,
+        outcome: "waiting",
+        reasonCode: "cancellation_pending",
       });
     }
     const current = options.rounds.terminalize({
@@ -645,7 +788,12 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
       requestId: input.requestId,
       correlationId: input.correlationId,
     });
-    return Object.freeze({ round: current, works: worksForRound(round.id), outcome: "cancelled", reasonCode: current.terminalReason });
+    return Object.freeze({
+      round: current,
+      works: worksForRound(round.id),
+      outcome: current.state as "failed" | "cancelled",
+      reasonCode: current.terminalReason,
+    });
   }
 
   return Object.freeze({

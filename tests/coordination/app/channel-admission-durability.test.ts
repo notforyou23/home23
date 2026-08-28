@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import {
+  ResidentCoordinationAdapter,
+  createM11ResidentCoordinationPort,
+  type ResidentAgentPort,
+} from "../../../src/coordination-adapter/index.js";
 import { SqliteGroupChannelMessageContext } from "../../../src/coordination/app/channel-message-context.js";
+import { createGroupChannelMessageService } from "../../../src/coordination/app/channel-message.js";
 import { directMessageManifest } from "../../../src/coordination/app/direct-message.js";
 import {
+  ChannelCoordinatorError,
   createChannelCoordinator,
   type ChannelTurnTrigger,
   type CoordinatorAdmissionPlan,
@@ -172,15 +179,15 @@ function harness(
   database: M11TestDatabase,
   idStart: number,
   durabilityFailpoint?: DurabilityFailpoint,
+  now: () => Date = () => new Date(AT),
 ) {
   const generateId = createFixtureIdGenerator(idStart);
-  const clock = () => new Date(AT);
-  const work = createWorkService({ database, generateId, now: clock });
-  const rounds = createRoundService({ database, generateId, now: clock });
+  const work = createWorkService({ database, generateId, now });
+  const rounds = createRoundService({ database, generateId, now });
   const leases = createLeaseService({
     database,
     generateId,
-    now: clock,
+    now,
     leaseTtlMs: 60_000,
   });
   const coordinator = createChannelCoordinator({
@@ -189,7 +196,7 @@ function harness(
     work,
     enabled: true,
     expectedAuthorityWriter: AUTHORITY.writer,
-    now: clock,
+    now,
     ...(durabilityFailpoint === undefined ? {} : { durabilityFailpoint }),
   });
   const context = new SqliteGroupChannelMessageContext(database, {
@@ -380,6 +387,174 @@ test("restart after parallel Work one repairs the missing Work once and replays 
   }
 });
 
+test("application recovery rebuilds zero-Work admission with exact caller selection", async () => {
+  const database = M11TestDatabase.temporary();
+  try {
+    prepare(database, "parallel");
+    const plan = admissionPlan(database, "parallel");
+    const crashed = harness(database, 35_000, (point) => {
+      if (point === "after_round_created") throw new Error("simulated caller loss after Round");
+    });
+    assert.throws(
+      () => crashed.coordinator.start(trigger(plan)),
+      /simulated caller loss after Round/u,
+    );
+    const durableRoundId = roundId(database);
+    assert.equal(roundWorks(database, durableRoundId).length, 0);
+    database.raw.prepare(
+      `INSERT INTO authority_epochs VALUES (
+        'messages', 2, 'canonical', 'home23-coordination', 1, 1, '{}', ?
+      )`,
+    ).run(AT);
+
+    database.reopen();
+    const restarted = harness(database, 36_000);
+    const selections: Array<Readonly<{
+      binding: string;
+      modelAlias: string | null;
+      reasoningEffort: string | null;
+    }>> = [];
+    const residentTargets = new Map(
+      plan.selectedTargets.map((target, index) => {
+        const agent: ResidentAgentPort = {
+          async modelCatalog() {
+            return {
+              models: [{
+                alias: "gpt-5.6",
+                provider: "fixture",
+                model: "gpt-5.6",
+                reasoningEffort: "max",
+              }],
+              defaultModel: "fixture-default",
+              defaultProvider: "fixture",
+              defaultReasoningEffort: "medium",
+              reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+            };
+          },
+          async runWithTurn(chatId, _text, options) {
+            selections.push(Object.freeze({
+              binding: target.residentBinding,
+              modelAlias: options.turnSelection.modelAlias,
+              reasoningEffort: options.turnSelection.reasoningEffort,
+            }));
+            const turnId = `recovered-${target.residentBinding}`;
+            await options.onDurableStart({
+              turnId,
+              chatId,
+              persistedAt: AT,
+              selection: {
+                requestedProvider: null,
+                requestedModelAlias: options.turnSelection.modelAlias,
+                requestedModel: null,
+                requestedEffort: options.turnSelection.reasoningEffort,
+                resolvedProvider: "fixture",
+                resolvedModel: "gpt-5.6",
+                resolvedEffort: "max",
+                actualProvider: "fixture",
+                actualModel: "gpt-5.6",
+                actualEffort: "max",
+              },
+            });
+            return {
+              turnId,
+              response: Promise.resolve({
+                text: "",
+                model: "gpt-5.6",
+                toolCallCount: 0,
+                durationMs: 1,
+              }),
+            };
+          },
+          stop: () => ({ stopped: true }),
+        };
+        return [target.residentBinding, {
+          resident: new ResidentCoordinationAdapter(
+            agent,
+            createM11ResidentCoordinationPort(restarted.leases),
+            () => new Date(AT),
+          ),
+          holderInstanceId: `resident-${index + 1}`,
+          models: agent,
+          context: ({ principalId, requestId, correlationId }: {
+            principalId: string;
+            requestId: string;
+            correlationId: string;
+          }) => ({
+            principalId,
+            requestId,
+            correlationId,
+            identity: {
+              kind: "resident" as const,
+              resident: {
+                requestId,
+                correlationId,
+                credential: {
+                  residentSlug: target.residentBinding,
+                  role: "resident" as const,
+                  instanceId: `resident-${index + 1}`,
+                  keyVersion: 1,
+                },
+              },
+            },
+          }),
+        }] as const;
+      }),
+    );
+    let resolveEnded!: () => void;
+    const ended = new Promise<void>((resolve) => { resolveEnded = resolve; });
+    const service = createGroupChannelMessageService({
+      messages: {
+        async sendMessage() {
+          throw new Error("an explicit pass must not fabricate a result Message");
+        },
+        async listMessages() {
+          throw new Error("durable recovery must not resnapshot mutable Messages");
+        },
+      },
+      context: restarted.context,
+      coordinator: restarted.coordinator,
+      work: restarted.work,
+      leases: restarted.leases,
+      resolveResident: (binding) => residentTargets.get(binding),
+      authority: {
+        current: () => ({
+          capability: "messages" as const,
+          epoch: 2,
+          mode: "canonical" as const,
+          writer: "home23-coordination",
+          effectiveAtEventSequence: 1,
+          rollbackEpoch: 1,
+        }),
+      },
+      recordMessage: async () => undefined,
+      beginWork: () => () => resolveEnded(),
+      recoveryIdentity: () => ({
+        requestId: fixtureId("request", 1_500),
+        correlationId: fixtureId("correlation", 1_500),
+      }),
+      now: () => new Date(AT),
+    });
+    const receipt = await service.recoverResidentWork();
+    assert.deepEqual(receipt, { discovered: 1, scheduled: 1, refused: 0 });
+    await ended;
+
+    assert.deepEqual(
+      selections.sort((left, right) => left.binding.localeCompare(right.binding)),
+      [
+        { binding: "ada", modelAlias: "gpt-5.6", reasoningEffort: "max" },
+        { binding: "jerry", modelAlias: "gpt-5.6", reasoningEffort: "max" },
+      ],
+    );
+    assert.deepEqual(
+      roundWorks(database, durableRoundId).map((work) => work.state),
+      ["succeeded", "succeeded"],
+    );
+    assert.equal(restarted.rounds.get(durableRoundId)?.state, "completed");
+  } finally {
+    database.close();
+  }
+});
+
 test("sequential restart retains the admission order and resident binding across mutable Channel drift", async () => {
   const database = M11TestDatabase.temporary();
   try {
@@ -404,7 +579,13 @@ test("sequential restart retains the admission order and resident binding across
       requestId: fixtureId("request", 804),
       correlationId: fixtureId("correlation", 804),
     });
+    assert.equal(initial.round.state, "coordinating");
     assert.deepEqual(initial.works.map((work) => work.targetPrincipalId), [BOT_ID]);
+    assert.equal(
+      (await resumed.context.recoverPlan(durableRoundId)).prepared.selectedTargets.length,
+      2,
+      "an active sequential admission intentionally retains only its first Work",
+    );
     terminalizeSucceeded(resumed, initial.works[0]!, 900);
     const resultMessageId = appendResult(database, {
       roundId: durableRoundId,
@@ -465,6 +646,233 @@ test("sequential restart retains the admission order and resident binding across
     );
     assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM rounds")?.count, 1);
     assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM works")?.count, 2);
+  } finally {
+    database.close();
+  }
+});
+
+test("successful reconcile refuses to complete a sequential prefix", () => {
+  const database = M11TestDatabase.temporary();
+  try {
+    prepare(database, "sequential");
+    const plan = admissionPlan(database, "sequential");
+    const services = harness(database, 50_000);
+    const started = services.coordinator.start(trigger(plan, { mentionedBotIds: [BOT_ID] }));
+    assert.equal(started.works.length, 1);
+    terminalizeSucceeded(services, started.works[0]!.work, 1_000);
+
+    assert.throws(
+      () => services.coordinator.reconcile({
+        roundId: started.round.id,
+        dispositions: { [started.works[0]!.work.id]: "completed" },
+        requestId: fixtureId("request", 1_010),
+        correlationId: fixtureId("correlation", 1_010),
+      }),
+      (error: unknown) => error instanceof ChannelCoordinatorError &&
+        error.code === "illegal_state" && /admission plan is complete/u.test(error.message),
+    );
+    assert.equal(services.rounds.get(started.round.id)?.state, "coordinating");
+    assert.deepEqual(
+      roundWorks(database, started.round.id).map((work) => work.targetPrincipalId),
+      [BOT_ID],
+    );
+  } finally {
+    database.close();
+  }
+});
+
+test("terminal replay rejects a falsely completed sequential prefix", () => {
+  const database = M11TestDatabase.temporary();
+  try {
+    prepare(database, "sequential");
+    const plan = admissionPlan(database, "sequential");
+    const services = harness(database, 60_000);
+    const started = services.coordinator.start(trigger(plan, { mentionedBotIds: [BOT_ID] }));
+    terminalizeSucceeded(services, started.works[0]!.work, 1_100);
+    services.rounds.terminalize({
+      roundId: started.round.id,
+      status: "completed",
+      reasonCode: "completed",
+      requestId: fixtureId("request", 1_110),
+      correlationId: fixtureId("correlation", 1_110),
+    });
+
+    database.reopen();
+    const restarted = harness(database, 61_000);
+    assert.throws(
+      () => restarted.coordinator.admissionReplay(replayIdentity(1_111)),
+      (error: unknown) => error instanceof ChannelCoordinatorError &&
+        error.code === "illegal_state" && /terminal Round is incomplete/u.test(error.message),
+    );
+    assert.equal(roundWorks(database, started.round.id).length, 1);
+  } finally {
+    database.close();
+  }
+});
+
+test("a full sequential terminal admission replays exactly without new Work", async () => {
+  const database = M11TestDatabase.temporary();
+  try {
+    prepare(database, "sequential");
+    const plan = admissionPlan(database, "sequential");
+    const services = harness(database, 70_000);
+    const first = services.coordinator.start(trigger(plan, { mentionedBotIds: [BOT_ID] }));
+    terminalizeSucceeded(services, first.works[0]!.work, 1_200);
+    appendResult(database, { roundId: first.round.id, workId: first.works[0]!.work.id });
+    const recovered = await services.context.recoverPlan(first.round.id);
+    const secondPrepared = await services.context.prepareSequentialTurn({
+      plan: recovered.prepared,
+      roundId: first.round.id,
+      targetBotId: BOT_2,
+    });
+    const second = services.coordinator.start(trigger(plan, {
+      mentionedBotIds: [BOT_2],
+      manifest: secondPrepared.manifest,
+      identitySuffix: 1_210,
+    }));
+    terminalizeSucceeded(services, second.works[0]!.work, 1_220);
+    const allWorks = roundWorks(database, first.round.id);
+    const completed = services.coordinator.reconcile({
+      roundId: first.round.id,
+      dispositions: Object.fromEntries(allWorks.map((work) => [work.id, "completed"])),
+      requestId: fixtureId("request", 1_230),
+      correlationId: fixtureId("correlation", 1_230),
+    });
+    assert.equal(completed.outcome, "completed");
+    const workIds = allWorks.map((work) => work.id);
+
+    database.reopen();
+    const restarted = harness(database, 71_000);
+    const replay = restarted.coordinator.admissionReplay(replayIdentity(1_231));
+    assert.ok(replay);
+    assert.equal(replay.round.state, "completed");
+    assert.deepEqual(replay.works.map((work) => work.id), workIds);
+    assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM works")?.count, 2);
+  } finally {
+    database.close();
+  }
+});
+
+test("deadline replay preserves legitimate zero-Work cancellation and partial failure", () => {
+  for (const scenario of ["before_work", "after_parallel_work_one"] as const) {
+    const database = M11TestDatabase.temporary();
+    try {
+      prepare(database, "parallel");
+      const plan = admissionPlan(database, "parallel");
+      let clock = new Date(AT);
+      const crashed = harness(database, scenario === "before_work" ? 80_000 : 90_000,
+        (point, detail) => {
+          if (
+            (scenario === "before_work" && point === "after_round_created") ||
+            (scenario === "after_parallel_work_one" && point === "after_work_created" &&
+              detail.workCount === 1)
+          ) {
+            throw new Error(`simulated ${scenario} process loss`);
+          }
+        },
+        () => clock,
+      );
+      assert.throws(
+        () => crashed.coordinator.start(trigger(plan)),
+        new RegExp(`simulated ${scenario} process loss`, "u"),
+      );
+      const durableRoundId = roundId(database);
+      const workCountBeforeDeadline = roundWorks(database, durableRoundId).length;
+      assert.equal(workCountBeforeDeadline, scenario === "before_work" ? 0 : 1);
+
+      clock = new Date("2026-08-25T16:11:00.000Z");
+      database.reopen();
+      const restarted = harness(database, scenario === "before_work" ? 81_000 : 91_000,
+        undefined, () => clock);
+      const replay = restarted.coordinator.admissionReplay(
+        replayIdentity(scenario === "before_work" ? 1_300 : 1_301),
+      );
+      assert.ok(replay);
+      assert.equal(replay.round.state, scenario === "before_work" ? "cancelled" : "failed");
+      assert.equal(replay.round.terminalReason, "deadline_exceeded");
+      assert.equal(replay.works.length, workCountBeforeDeadline);
+      assert.ok(
+        replay.works.every((work) => ["succeeded", "failed", "cancelled"].includes(work.state)),
+        "a terminal Round replay must contain only terminal Work",
+      );
+      if (scenario === "after_parallel_work_one") {
+        assert.equal(replay.works[0]?.state, "cancelled");
+        assert.equal(replay.works[0]?.terminalReason, "round_deadline_exceeded");
+      }
+      assert.equal(roundWorks(database, durableRoundId).length, workCountBeforeDeadline);
+    } finally {
+      database.close();
+    }
+  }
+});
+
+test("deadline waits for running Work before returning one coherent terminal replay", () => {
+  const database = M11TestDatabase.temporary();
+  try {
+    prepare(database, "sequential");
+    const plan = admissionPlan(database, "sequential");
+    let clock = new Date(AT);
+    const services = harness(database, 100_000, undefined, () => clock);
+    const started = services.coordinator.start(trigger(plan, { mentionedBotIds: [BOT_ID] }));
+    const work = started.works[0]!.work;
+    const offered = services.leases.offer({
+      workId: work.id,
+      holderPrincipalId: work.targetPrincipalId,
+      holderInstanceId: "resident-deadline",
+      authorityReference: "resident:jerry",
+      automatic: true,
+      requestId: fixtureId("request", 1_400),
+      correlationId: fixtureId("correlation", 1_400),
+    });
+    const binding = {
+      workId: work.id,
+      attemptId: offered.attempt.id,
+      leaseId: offered.lease.id,
+      holderPrincipalId: work.targetPrincipalId,
+      holderInstanceId: "resident-deadline",
+      fencingToken: offered.fencingToken,
+      requestId: fixtureId("request", 1_401),
+      correlationId: fixtureId("correlation", 1_401),
+    };
+    services.leases.accept(binding);
+    services.leases.start({
+      ...binding,
+      requestId: fixtureId("request", 1_402),
+      correlationId: fixtureId("correlation", 1_402),
+    });
+
+    clock = new Date("2026-08-25T16:11:00.000Z");
+    const pending = services.coordinator.reconcile({
+      roundId: started.round.id,
+      requestId: fixtureId("request", 1_403),
+      correlationId: fixtureId("correlation", 1_403),
+    });
+    assert.equal(pending.outcome, "waiting");
+    assert.equal(pending.round.state, "coordinating");
+    assert.equal(pending.works[0]?.state, "running");
+
+    services.leases.terminalize({
+      ...binding,
+      requestId: fixtureId("request", 1_404),
+      correlationId: fixtureId("correlation", 1_404),
+      receipt: {
+        status: "succeeded",
+        sourceReference: "resident:jerry",
+        resultDigest: "d".repeat(64),
+        artifactIds: [],
+        timestamp: clock.toISOString(),
+      },
+    });
+    const terminal = services.coordinator.reconcile({
+      roundId: started.round.id,
+      requestId: fixtureId("request", 1_405),
+      correlationId: fixtureId("correlation", 1_405),
+    });
+    assert.equal(terminal.outcome, "failed");
+    assert.equal(terminal.reasonCode, "deadline_exceeded");
+    assert.equal(terminal.works[0]?.state, "succeeded");
+    assert.ok(terminal.works.every((candidate) =>
+      ["succeeded", "failed", "cancelled"].includes(candidate.state)));
   } finally {
     database.close();
   }
