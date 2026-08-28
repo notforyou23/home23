@@ -81,6 +81,7 @@ function capabilityDocument(input: {
       channelMutation:
         mutationsEnabled &&
         input.flags["coordination.channels.enabled"] === true &&
+        canonicalMessagesAuthority &&
         input.services.channels !== undefined &&
         input.services.channelCoordinator !== undefined,
       conversationsRead: processEnabled && input.services.unread !== undefined,

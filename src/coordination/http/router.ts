@@ -290,12 +290,6 @@ export function createCoordinationRouter(input: {
       response.json({ receipt: await application.services.botLifecycleApi.control({ context: requireCoordinationContext(response), idempotencyKey: coordinationIdempotencyKey(response), botId: pathParameter(request.params.botId), operation }) });
     }));
   }
-  router.post("/api/v1/channels/:channelId/coordinate", messageSend, jsonBody, asyncRoute(async (request, response) => {
-    if (!application.flags["coordination.channels.enabled"] || !application.services.channelCoordinator) throw unavailable("channelsRead");
-    const body = jsonObjectBody(request.body);
-    if (typeof body.messageId !== "string") throw new CoordinationHttpError("request_invalid", 400, false);
-    response.status(202).json(await application.services.channelCoordinator.startFromMessage({ context: requireCoordinationContext(response), channelId: pathParameter(request.params.channelId), messageId: body.messageId }));
-  }));
   router.get("/api/v1/events", productRead, asyncRoute(async (request, response) => {
     if (!application.capabilities().capabilities.eventReplay || !application.services.events) {
       throw unavailable("eventReplay");

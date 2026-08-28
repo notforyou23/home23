@@ -59,7 +59,7 @@ export interface CoordinationActivityReadPort {
   }>>;
 }
 
-/** M16 public adapter: policy and authority facts are resolved server-side. */
+/** Internal M16 adapter: policy and authority facts are resolved server-side. */
 export interface CoordinationChannelCoordinatorPort {
   startFromMessage(input: {
     context: MessagingActorContext;

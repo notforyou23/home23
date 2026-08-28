@@ -60,7 +60,7 @@ test("loopback product API traverses canonical temp-db Bots, Channels, Messages,
   assert.equal((await unreadResponse.json() as any).unreadCount, 0);
 });
 
-test("Channels, lifecycle, Activity, and coordinator stay fail-closed without exact flags and ports", async (t) => {
+test("Channels, lifecycle, and Activity stay fail-closed without exact flags and ports", async (t) => {
   const application = createCoordinationApplication({ flags: { ...disabledCoordinationFeatureFlags(), "coordination.process.enabled": true, "coordination.public_api.enabled": true }, services: { auth: { validateAccessToken: async () => ({ principalId: "user_owner", deviceId: "dev_0198d95f-6c00-7000-8000-000000000700", sessionId: "ses_0198d95f-6c00-7000-8000-000000000700", scopes: ["product:read", "message:send"] }) } } });
   const server = createCoordinationHttpServer({ application, port: 0 });
   t.after(() => server.drain());
@@ -69,11 +69,14 @@ test("Channels, lifecycle, Activity, and coordinator stay fail-closed without ex
     fetch(`${address.origin}/api/v1/activity`, { headers: headers() }),
     fetch(`${address.origin}/api/v1/channels`, { method: "POST", headers: headers("product-api-channel-off"), body: "{}" }),
     fetch(`${address.origin}/api/v1/bots`, { method: "POST", headers: headers("product-api-lifecycle-off"), body: "{}" }),
-    fetch(`${address.origin}/api/v1/channels/chn_0198d95f-6c00-7000-8000-000000000001/coordinate`, { method: "POST", headers: headers(), body: JSON.stringify({ messageId: fixtureId("message", 1) }) }),
   ]) assert.equal((await request).status, 503);
+  assert.equal((await fetch(
+    `${address.origin}/api/v1/channels/chn_0198d95f-6c00-7000-8000-000000000001/coordinate`,
+    { method: "POST", headers: headers(), body: JSON.stringify({ messageId: fixtureId("message", 1) }) },
+  )).status, 404);
 });
 
-test("Activity, lifecycle, and coordinator routes invoke only injected trusted ports behind exact flags", async (t) => {
+test("Activity and lifecycle routes invoke only injected trusted ports behind exact flags", async (t) => {
   const calls: string[] = [];
   const botId = "bot_0198d95f-6c00-7000-8000-000000000001";
   const mailboxId = "cnv_0198d95f-6c00-7000-8000-000000000001";
@@ -154,7 +157,6 @@ test("Activity, lifecycle, and coordinator routes invoke only injected trusted p
         return receipt(idempotencyKey, operation) as any;
       },
     },
-    channelCoordinator: { startFromMessage: async () => { calls.push("channel.coordinate"); return { accepted: true }; } },
   } });
   const server = createCoordinationHttpServer({ application, port: 0 });
   t.after(() => server.drain());
@@ -172,6 +174,5 @@ test("Activity, lifecycle, and coordinator routes invoke only injected trusted p
   assert.equal((await fetch(`${address.origin}/api/v1/bots/bot_0198d95f-6c00-7000-8000-000000000001/restart`, { method: "POST", headers: headers("product-api-restart-bot") })).status, 200);
   assert.equal((await fetch(`${address.origin}/api/v1/bots/bot_0198d95f-6c00-7000-8000-000000000001/archive`, { method: "POST", headers: headers("product-api-archive-bot") })).status, 200);
   assert.equal((await fetch(`${address.origin}/api/v1/bots/bot_0198d95f-6c00-7000-8000-000000000001/restore`, { method: "POST", headers: headers("product-api-restore-bot") })).status, 200);
-  assert.equal((await fetch(`${address.origin}/api/v1/channels/chn_0198d95f-6c00-7000-8000-000000000001/coordinate`, { method: "POST", headers: headers(), body: JSON.stringify({ messageId: fixtureId("message", 1) }) })).status, 202);
-  assert.deepEqual(calls, ["activity", "bot.create", "bot.start", "bot.stop", "bot.restart", "bot.archive", "bot.restore", "channel.coordinate"]);
+  assert.deepEqual(calls, ["activity", "bot.create", "bot.start", "bot.stop", "bot.restart", "bot.archive", "bot.restore"]);
 });
