@@ -25,6 +25,7 @@ import { startResidentCoordinationHarness } from "../../../src/coordination-adap
 import { createChannelService, SqliteBotConversationBindingAdapter, SqliteMessagingRepository } from "../../../src/coordination/channels/index.js";
 import { M11MessageProvenanceAuthority } from "../../../src/coordination/work/index.js";
 import {
+  COORDINATION_ACTIVITY_WRITER,
   COORDINATION_ATTACHMENTS_WRITER,
   COORDINATION_MESSAGES_WRITER,
   authorityReceiptSigningPayload,
@@ -107,11 +108,15 @@ async function accessToken(path: string, key: string) {
   return paired.accessToken;
 }
 
-function seedCanonicalAttachmentAuthority(databasePath: string) {
+function seedCanonicalProjectionAuthority(
+  databasePath: string,
+  capability: "attachments" | "activity",
+  canonicalWriter: string,
+) {
   const epochs: readonly AuthorityEpoch[] = [
-    { capability: "attachments", epoch: 1, mode: "legacy", writer: "legacy-attachment-writer", effectiveAtEventSequence: null, rollbackEpoch: null },
-    { capability: "attachments", epoch: 2, mode: "shadow", writer: "legacy-attachment-writer", effectiveAtEventSequence: null, rollbackEpoch: null },
-    { capability: "attachments", epoch: 3, mode: "canonical", writer: COORDINATION_ATTACHMENTS_WRITER, effectiveAtEventSequence: 0, rollbackEpoch: 1 },
+    { capability, epoch: 1, mode: "legacy", writer: `legacy-${capability}-writer`, effectiveAtEventSequence: null, rollbackEpoch: null },
+    { capability, epoch: 2, mode: "shadow", writer: `legacy-${capability}-writer`, effectiveAtEventSequence: null, rollbackEpoch: null },
+    { capability, epoch: 3, mode: "canonical", writer: canonicalWriter, effectiveAtEventSequence: 0, rollbackEpoch: 1 },
   ];
   const database = openCoordinationDatabase({ path: databasePath });
   try {
@@ -143,14 +148,14 @@ function seedCanonicalAttachmentAuthority(databasePath: string) {
           event: {
             type: "authority.epoch_changed",
             aggregateKind: "authorityEpoch",
-            aggregateId: "authority:attachments",
+            aggregateId: `authority:${capability}`,
             aggregateVersion: epoch.epoch,
             channelId: null,
             actorPrincipalId: "user_owner",
             requestId: generateCoordinationId("request"),
             correlationId: generateCoordinationId("correlation"),
             payload: {
-              capability: "attachments",
+              capability,
               epoch: epoch.epoch,
               writer: epoch.writer,
               mode: epoch.mode,
@@ -430,6 +435,11 @@ test("production composition dispatches Jerry and Forrest to distinct resident s
       issuedAt: "2026-08-26T12:10:00.000Z",
     }),
   });
+  seedCanonicalProjectionAuthority(
+    databasePath,
+    "activity",
+    COORDINATION_ACTIVITY_WRITER,
+  );
   const canonicalSnapshot = authoritySnapshot(databasePath);
   const canonical: AuthorityEpoch = {
     capability: "messages",
@@ -512,6 +522,7 @@ test("production composition dispatches Jerry and Forrest to distinct resident s
     databasePath,
     socketPath: join(runtime, "coord.sock"),
     capabilityToken,
+    activity: { enabled: true },
     flags,
     residents: {
       jerry: {
@@ -770,6 +781,92 @@ test("production composition dispatches Jerry and Forrest to distinct resident s
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.deepEqual(residentInvocations, { jerry: 3, forrest: 2 });
   assert.equal(jerryModel.calls() + forrestModel.calls(), 5);
+
+  const quietMentionMessageId = generateCoordinationId("message");
+  const quietMentionSend = await fetch(
+    `${address.origin}/api/v1/channels/${quietGroup.channel.id}/messages`,
+    {
+      method: "POST",
+      headers: {
+        ...headers,
+        "content-type": "application/json",
+        "idempotency-key": "dual-resident-quiet-mention-message-0001",
+      },
+      body: JSON.stringify({
+        messageId: quietMentionMessageId,
+        clientMessageId: "dual-resident-quiet-mention-client-0001",
+        text: "@Forrest, answer this mentions-only turn.",
+        attachmentIds: [],
+        mentions: [forrest.botId],
+        replyToMessageId: null,
+      }),
+    },
+  );
+  const quietMentionAccepted = await quietMentionSend.json() as {
+    round?: { coordinatorBotId?: string };
+    works?: Array<{ targetPrincipalId: string }>;
+  };
+  assert.equal(
+    quietMentionSend.status,
+    202,
+    `quiet mention send: ${JSON.stringify(quietMentionAccepted)}`,
+  );
+  assert.equal(quietMentionAccepted.round?.coordinatorBotId, forrest.botId);
+  assert.deepEqual(
+    quietMentionAccepted.works?.map((work) => work.targetPrincipalId),
+    [forrest.botId],
+  );
+  let quietMentionResult = false;
+  for (let attempt = 0; attempt < 200 && !quietMentionResult; attempt += 1) {
+    const response = await fetch(
+      `${address.origin}/api/v1/channels/${quietGroup.channel.id}/messages`,
+      { headers },
+    );
+    const body = await response.json() as {
+      messages: Array<{ kind: string; replyToMessageId: string | null }>;
+    };
+    quietMentionResult = body.messages.some(
+      (candidate) => candidate.kind === "result" &&
+        candidate.replyToMessageId === quietMentionMessageId,
+    );
+    if (!quietMentionResult) await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(quietMentionResult, true);
+  assert.deepEqual(residentInvocations, { jerry: 3, forrest: 3 });
+  assert.equal(jerryModel.calls() + forrestModel.calls(), 6);
+
+  const activityResponse = await fetch(
+    `${address.origin}/api/v1/activity?limit=100`,
+    { headers },
+  );
+  const activityBody = await activityResponse.text();
+  assert.equal(activityResponse.status, 200, `activity: ${activityBody}`);
+  const activity = JSON.parse(activityBody) as {
+    entries: Array<{
+      category: string;
+      channelId: string | null;
+      actor: { principalId: string };
+      workId: string | null;
+      source: { kind: string; authorityId: string | null };
+    }>;
+    throughEventSequence: number;
+  };
+  assert.ok(activity.throughEventSequence > 0);
+  assert.ok(activity.entries.some((entry) =>
+    entry.channelId === group.channel.id &&
+    entry.actor.principalId === jerry.botId &&
+    entry.workId !== null
+  ));
+  assert.ok(activity.entries.some((entry) =>
+    entry.channelId === group.channel.id &&
+    entry.actor.principalId === forrest.botId &&
+    entry.workId !== null
+  ));
+  assert.equal(
+    activity.entries.some((entry) => entry.source.kind === "work_observation" &&
+      entry.source.authorityId === null),
+    false,
+  );
 });
 
 test("isolated production composition traverses the generated harness and unmodified AgentLoop", async (t) => {
@@ -796,7 +893,11 @@ test("isolated production composition traverses the generated harness and unmodi
   const replayedBootstrap = await bootstrapJerry({ databasePath, apply: true, authority, serverInstanceId: "home23-jerry-harness", keyVersion: 1 });
   assert.deepEqual({ botId: replayedBootstrap.botId, channelId: replayedBootstrap.channelId, conversationId: replayedBootstrap.conversationId }, { botId: seeded.botId, channelId: seeded.channelId, conversationId: seeded.conversationId });
   const token = await accessToken(databasePath, capabilityToken);
-  seedCanonicalAttachmentAuthority(databasePath);
+  seedCanonicalProjectionAuthority(
+    databasePath,
+    "attachments",
+    COORDINATION_ATTACHMENTS_WRITER,
+  );
   const { agent, history } = actualAgent(root);
   const harnessEnvironment = {
     HOME23_COORDINATION_RESIDENT_ENABLED: "true",

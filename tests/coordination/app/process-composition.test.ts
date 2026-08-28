@@ -7,7 +7,6 @@ import test from "node:test";
 import {
   createCoordinationProcess,
   disabledCoordinationFeatureFlags,
-  type CoordinationActivityPort,
 } from "../../../src/coordination/app/index.js";
 import { openCoordinationDatabase } from "../../../src/coordination/db/index.js";
 
@@ -51,22 +50,17 @@ test("shadow composition advertises no unfinished product capability and closes 
   reopened.close();
 });
 
-test("M16 and M18 process dependencies stay feature-off and unreachable over HTTP", async (t) => {
+test("raw M16 injection and Activity stay off without their independent activation", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "home23-coordination-projections-off-"));
   const runtime = join(root, "instances", ".house", "coordination");
   mkdirSync(runtime, { recursive: true });
   t.after(() => rmSync(root, { recursive: true, force: true }));
   let coordinatorCalls = 0;
-  let projectorCalls = 0;
   const channelCoordinator = {
     start: () => { coordinatorCalls += 1; throw new Error("must remain unreachable"); },
     recover: () => { coordinatorCalls += 1; throw new Error("must remain unreachable"); },
     reconcile: () => { coordinatorCalls += 1; throw new Error("must remain unreachable"); },
     cancel: () => { coordinatorCalls += 1; throw new Error("must remain unreachable"); },
-  };
-  const activity: CoordinationActivityPort = () => {
-    projectorCalls += 1;
-    throw new Error("must remain unreachable");
   };
   const process = createCoordinationProcess({
     enabled: true,
@@ -79,9 +73,9 @@ test("M16 and M18 process dependencies stay feature-off and unreachable over HTT
       ...disabledCoordinationFeatureFlags(),
       "coordination.process.enabled": true,
     },
+    activity: { enabled: true },
   }, {
     channelCoordinator,
-    activity,
   });
 
   assert.equal(process.capabilities().capabilities.activity, false);
@@ -94,5 +88,4 @@ test("M16 and M18 process dependencies stay feature-off and unreachable over HTT
     assert.equal(response.status, 401);
   }
   assert.equal(coordinatorCalls, 0);
-  assert.equal(projectorCalls, 0);
 });

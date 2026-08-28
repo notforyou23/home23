@@ -28,6 +28,10 @@ export interface CoordinationRuntimeConfig {
   databasePath: string;
   socketPath: string;
   capabilityToken: string;
+  activity?: Readonly<{
+    /** Independent read-surface kill switch; authority remains mandatory. */
+    enabled: boolean;
+  }>;
   attachments?: Readonly<{
     /** Independent kill switch; authority remains a separate mandatory gate. */
     enabled: boolean;
@@ -148,6 +152,11 @@ export function loadCoordinationRuntimeConfig(
     "HOME23_COORDINATION_ATTACHMENTS_ENABLED",
   );
   const attachmentsEnabled = enabled && requestedAttachmentsEnabled;
+  const requestedActivityEnabled = exactBoolean(
+    environment.HOME23_COORDINATION_ACTIVITY_ENABLED,
+    "HOME23_COORDINATION_ACTIVITY_ENABLED",
+  );
+  const activityEnabled = enabled && requestedActivityEnabled;
   const attachmentRoot = confinedRuntimePath({
     value: environment.HOME23_COORDINATION_ATTACHMENTS_ROOT ??
       resolve(runtimeRoot, "attachments"),
@@ -177,6 +186,7 @@ export function loadCoordinationRuntimeConfig(
     databasePath,
     socketPath,
     capabilityToken,
+    activity: Object.freeze({ enabled: activityEnabled }),
     attachments: Object.freeze({
       enabled: attachmentsEnabled,
       rootDirectory: attachmentRoot,

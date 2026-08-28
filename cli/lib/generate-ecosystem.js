@@ -243,6 +243,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`        HOME23_COORDINATION_APPLE_IPHONE_CUTOVER: String(coordinationFlags['coordination.apple.iphone_cutover'] === true),`);
   lines.push(`        HOME23_COORDINATION_BOT_LIFECYCLE_ENABLED: String(coordinationFlags['coordination.bot_lifecycle.enabled'] === true),`);
   lines.push(`        HOME23_COORDINATION_COMPACTION_ENABLED: String(coordinationFlags['coordination.compaction.enabled'] === true),`);
+  lines.push(`        HOME23_COORDINATION_ACTIVITY_ENABLED: String(coordinationConfig.activity?.enabled === true),`);
   lines.push(`        HOME23_COORDINATION_ATTACHMENTS_ENABLED: String(coordinationConfig.attachments?.enabled === true),`);
   lines.push(`        HOME23_COORDINATION_HOST: '127.0.0.1',`);
   lines.push(`        HOME23_COORDINATION_PORT: String(coordinationConfig.publicApi?.port || 7346),`);

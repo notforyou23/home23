@@ -159,6 +159,34 @@ test("capability defaults off and recipient selection is sorted, visible, scoped
   } finally { database.close(); }
 });
 
+test("mentions-only Channels use the first selected Bot only as Round lifecycle coordinator", () => {
+  const database = M11TestDatabase.temporary();
+  try {
+    prepare(database);
+    database.raw.prepare(
+      `UPDATE channels SET responder_mode = 'mentions_only', coordinator_bot_id = NULL
+       WHERE id = ?`,
+    ).run(CHANNEL_ID);
+    const services = harness(database, { value: new Date(AT) }, 15_000);
+    const dispatch = services.coordinator.start(trigger({ mentionedBotIds: [BOT_2] }));
+
+    assert.deepEqual(dispatch.recipients, [BOT_2]);
+    assert.equal(dispatch.round.coordinatorBotId, BOT_2);
+    assert.equal(dispatch.works.length, 1);
+    assert.equal(dispatch.works[0]?.work.targetPrincipalId, BOT_2);
+    assert.deepEqual(
+      database.readOne<{ responderMode: string; coordinatorBotId: string | null }>(
+        `SELECT responder_mode AS responderMode,
+                coordinator_bot_id AS coordinatorBotId
+         FROM channels WHERE id = ?`,
+        CHANNEL_ID,
+      ),
+      { responderMode: "mentions_only", coordinatorBotId: null },
+      "Round coordination must not rewrite the stored responder policy",
+    );
+  } finally { database.close(); }
+});
+
 test("capacity is exactly four turns per Bot and twelve per Round", () => {
   assert.doesNotThrow(() => assertChannelTurnCapacity({ roundTurns: 11, botTurns: 3 }));
   assert.throws(

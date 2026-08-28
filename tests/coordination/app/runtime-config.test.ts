@@ -36,6 +36,7 @@ test("disabled defaults retain loopback-only paths without requiring runtime sta
   assert.match(config.databasePath, /instances\/.house\/coordination\/home23-coordination\.sqlite3$/);
   assert.match(config.socketPath, /instances\/.house\/coordination\/coord\.sock$/);
   assert.equal(config.attachments?.enabled, false);
+  assert.equal(config.activity?.enabled, false);
   assert.match(config.attachments?.rootDirectory ?? "", /instances\/.house\/coordination\/attachments$/);
 });
 
@@ -107,8 +108,18 @@ test("all eleven rollout flags default off and every projected boolean is strict
     "HOME23_COORDINATION_SEARCH_CANONICAL", "HOME23_COORDINATION_IMPORT_SHADOW_ENABLED",
     "HOME23_COORDINATION_APPLE_MAC_CUTOVER", "HOME23_COORDINATION_APPLE_IPHONE_CUTOVER",
     "HOME23_COORDINATION_BOT_LIFECYCLE_ENABLED", "HOME23_COORDINATION_COMPACTION_ENABLED",
-    "HOME23_COORDINATION_ATTACHMENTS_ENABLED",
+    "HOME23_COORDINATION_ATTACHMENTS_ENABLED", "HOME23_COORDINATION_ACTIVITY_ENABLED",
   ]) assert.throws(() => loadCoordinationRuntimeConfig({ ...input.environment, [variable]: "1" }), /must be exactly true or false/);
+});
+
+test("Activity admission is an independent strict runtime switch", (t) => {
+  const input = fixture(true);
+  t.after(() => rmSync(input.root, { recursive: true, force: true }));
+  const config = loadCoordinationRuntimeConfig({
+    ...input.environment,
+    HOME23_COORDINATION_ACTIVITY_ENABLED: "true",
+  });
+  assert.equal(config.activity?.enabled, true);
 });
 
 test("attachment admission is an independent confined runtime switch", (t) => {

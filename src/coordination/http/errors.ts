@@ -7,6 +7,7 @@ import { BotLifecycleError } from "../bot-lifecycle/index.js";
 import { ChannelCoordinatorError } from "../channel-coordinator/index.js";
 import { WorkError } from "../work/index.js";
 import { LeaseError } from "../leases/index.js";
+import { ActivityReadError } from "../activity/index.js";
 
 export class CoordinationHttpError extends Error {
   readonly name = "CoordinationHttpError";
@@ -101,6 +102,15 @@ export function toCoordinationHttpFailure(error: unknown): CoordinationHttpFailu
       retryable: error.retryable,
       details: error.details,
       message: "Search request failed.",
+    };
+  }
+  if (error instanceof ActivityReadError) {
+    return {
+      code: error.code,
+      httpStatus: error.httpStatus,
+      retryable: error.retryable,
+      details: error.details,
+      message: "Activity could not be reconstructed from canonical facts.",
     };
   }
   if (error instanceof WorkError || error instanceof LeaseError) {

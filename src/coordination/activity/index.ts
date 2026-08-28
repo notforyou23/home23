@@ -1,4 +1,5 @@
 export { ActivityCursorCodec } from "./cursor.js";
+export { ActivityReadError, type ActivityReadErrorCode } from "./errors.js";
 export {
   ACTIVITY_PROGRESS_RETENTION_DAYS,
   compactActivity,

@@ -191,6 +191,32 @@ test("a canonical Work terminal observation supersedes a result-message completi
   assert.equal(result.entries[0]?.messageId, message.id);
 });
 
+test("a result authorized after Work terminal advances the merged Activity boundary", () => {
+  const completion = observation(33, "completion", {
+    channelId: fixtureId("channel", 21),
+  });
+  const message = resultMessage(34);
+  const result = projectActivity({
+    sourceWindow: sourceWindow(32, 34),
+    events: [event(34)],
+    messages: [message],
+    workObservations: [completion],
+    audience: audience(),
+  });
+
+  assert.deepEqual(result.integrity, { status: "complete" });
+  assert.equal(result.entries.length, 1);
+  assert.equal(result.entries[0]?.eventSequence, 34);
+  assert.equal(result.entries[0]?.source.kind, "work_observation");
+  assert.equal(result.entries[0]?.messageId, message.id);
+  assert.deepEqual(result.entries[0]?.interval, {
+    firstEventSequence: 33,
+    lastEventSequence: 34,
+    startedAt: message.createdAt,
+    endedAt: completion.event.createdAt,
+  });
+});
+
 test("the same authoritative source version is idempotent across distinct delivery events", () => {
   const first = observation(35, "progress", {
     sourceVersion: "resident-version-7",

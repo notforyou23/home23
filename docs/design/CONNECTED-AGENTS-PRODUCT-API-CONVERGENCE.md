@@ -8,7 +8,7 @@ At the M14 composition point, construct the existing canonical services over the
 
 The Channel coordinator public adapter must implement `startFromMessage`. It resolves the canonical Message event, membership snapshot, standing-scope facts, authority epoch/writer, deadline, and context manifest on the server. None of those authority facts may come from the HTTP body. The route accepts only `messageId`, and is reachable only when `coordination.channels.enabled` is true and the adapter is present.
 
-The Activity adapter must implement `list`, assembling the complete retained event/Message/Work-observation window and authenticated M08 audience before calling the M18 projector and paginator. A raw projector is intentionally insufficient to advertise the route.
+The Activity adapter must implement `list`, assembling the complete retained event/Message/Work-observation window and authenticated M08 audience before calling the M18 projector and paginator. A raw projector is intentionally insufficient to advertise the route. The canonical process constructs this adapter only behind the independent `coordination.activity.enabled` runtime setting, and the application advertises it only while the separate `activity` authority epoch names `home23-coordination` as canonical.
 
 Keep the listener at the canonical coordination port (default `7346`) and explicit loopback host. Do not mount these routes in the dashboard or add another database/event journal.
 
@@ -21,10 +21,10 @@ The frozen v1 contract uses recoverable archive/restore, not destructive Bot del
 1. Merge this slice after the M14 composition owner resolves only the `CoordinationServices` type conflicts.
 2. Inject canonical read ports first and verify the temp-database HTTP journey.
 3. Inject Jerry and Forrest direct-message submission after their resident flags and message authority epochs are accepted.
-4. Inject Activity and coordinator adapters, leaving `coordination.channels.enabled` off until M16 acceptance.
+4. Compose Activity and coordinator adapters, leaving `coordination.activity.enabled` and `coordination.channels.enabled` off until their independent M18/M16 acceptance; Activity additionally requires its canonical authority epoch.
 5. Inject lifecycle adapters, leaving `coordination.bot_lifecycle.enabled` off until M28 acceptance.
 
-All flags default off. Missing flags or dependencies fail closed; no injection changes an authority epoch.
+All flags and independent runtime switches default off. Missing switches, authority, or dependencies fail closed; no injection changes an authority epoch.
 
 ## Bounded product-behavior blockers
 

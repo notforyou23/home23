@@ -818,8 +818,7 @@ function reconcileTerminalResults(
     const incompatible = terminals.find(({ entry }) =>
       entry.terminalReason !== "completed" ||
       entry.channelId !== result.entry.channelId ||
-      entry.actor.principalId !== result.entry.actor.principalId ||
-      entry.eventSequence <= result.entry.eventSequence
+      entry.actor.principalId !== result.entry.actor.principalId
     );
     if (incompatible) {
       firstConflict = earlierConflict(
@@ -843,14 +842,25 @@ function reconcileTerminalResults(
       kind: "entry",
       entry: freezeEntry({
         ...terminal.entry,
+        eventSequence: Math.max(
+          result.entry.eventSequence,
+          terminal.entry.eventSequence,
+        ),
+        updatedAt: bounds.endedAt,
         actor: {
           principalId: terminal.entry.actor.principalId,
           displayName: result.entry.actor.displayName,
         },
         messageId: result.entry.messageId,
         interval: {
-          firstEventSequence: result.entry.eventSequence,
-          lastEventSequence: terminal.entry.eventSequence,
+          firstEventSequence: Math.min(
+            result.entry.eventSequence,
+            terminal.entry.eventSequence,
+          ),
+          lastEventSequence: Math.max(
+            result.entry.eventSequence,
+            terminal.entry.eventSequence,
+          ),
           ...bounds,
         },
       }),

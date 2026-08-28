@@ -2,9 +2,11 @@ export { authorityReceiptSigningPayload, unsignedAuthorityReceipt } from "./rece
 export { planAuthorityRollback } from "./rollback.js";
 export { validateAuthorityEpochTransition, validateInitialAuthorityEpoch } from "./validation.js";
 export {
+  COORDINATION_ACTIVITY_WRITER,
   COORDINATION_ATTACHMENTS_WRITER,
   COORDINATION_CANONICAL_WRITER,
   COORDINATION_MESSAGES_WRITER,
+  isCanonicalActivityAuthority,
   isCanonicalAttachmentsAuthority,
   isCanonicalMessagesAuthority,
 } from "./writers.js";

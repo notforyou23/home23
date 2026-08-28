@@ -196,7 +196,10 @@ function observationId(event: EventEnvelope): string {
 }
 
 function sourceVersion(fact: TrustedM11ActivityFact): string {
-  return `m11:${fact.sourceKind}:${fact.event.aggregate.version}:fence:${fact.fencingToken}`;
+  // Aggregate versions and fencing tokens are scoped to one Work/Attempt. Bind
+  // the version stamp to the canonical durable Event so two turns handled by
+  // the same resident cannot masquerade as one authoritative source version.
+  return `m11:${fact.sourceKind}:${fact.event.id}:v${fact.event.aggregate.version}:f${fact.fencingToken}`;
 }
 
 export function adaptTrustedM11ActivityFact(

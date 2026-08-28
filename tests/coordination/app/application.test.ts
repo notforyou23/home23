@@ -32,6 +32,15 @@ const canonicalAttachmentsAuthority: AuthorityEpoch = Object.freeze({
   rollbackEpoch: 1,
 });
 
+const canonicalActivityAuthority: AuthorityEpoch = Object.freeze({
+  capability: "activity",
+  epoch: 3,
+  mode: "canonical",
+  writer: "home23-coordination",
+  effectiveAtEventSequence: 43,
+  rollbackEpoch: 1,
+});
+
 const authorityEpochs = (current: AuthorityEpoch | null) => ({
   current: (capability: string) =>
     current?.capability === capability ? current : null,
@@ -249,6 +258,56 @@ test("an appended attachment rollback epoch removes admission without rebuilding
     rollbackEpoch: 1,
   });
   assert.equal(application.capabilities().capabilities.attachments, false);
+});
+
+test("Activity requires its complete adapter and independent canonical epoch", () => {
+  let current: AuthorityEpoch = canonicalActivityAuthority;
+  const activity = {
+    list: async () => ({
+      entries: [],
+      nextBoundary: null,
+      throughEventSequence: 43,
+    }),
+  };
+  const auth = { validateAccessToken: async () => { throw new Error("unused"); } };
+  const capability = (service: typeof activity | undefined, epoch: AuthorityEpoch | null) =>
+    createCoordinationApplication({
+      flags: enabledShellFlags,
+      services: {
+        auth,
+        ...(service === undefined ? {} : { activity: service }),
+        authorityEpochs: authorityEpochs(epoch),
+      },
+    }).capabilities().capabilities.activity;
+
+  assert.equal(capability(undefined, canonicalActivityAuthority), false);
+  assert.equal(capability(activity, null), false);
+  assert.equal(capability(activity, {
+    ...canonicalActivityAuthority,
+    writer: "label-only-writer",
+  }), false);
+
+  const application = createCoordinationApplication({
+    flags: enabledShellFlags,
+    services: {
+      auth,
+      activity,
+      authorityEpochs: {
+        current: (requested) => requested === "activity" ? current : null,
+        listCurrent: async () => ({ epochs: [current], throughEventSequence: 43 }),
+      },
+    },
+  });
+  assert.equal(application.capabilities().capabilities.activity, true);
+  current = Object.freeze({
+    capability: "activity",
+    epoch: 4,
+    mode: "legacy",
+    writer: "legacy-activity-reader",
+    effectiveAtEventSequence: 43,
+    rollbackEpoch: 1,
+  });
+  assert.equal(application.capabilities().capabilities.activity, false);
 });
 
 test("read routes without a complete event-boundary contract remain unadvertised", () => {

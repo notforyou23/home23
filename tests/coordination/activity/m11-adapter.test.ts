@@ -119,6 +119,111 @@ test("a queued Work without an Attempt preserves the explicit zero-fence seam", 
   assert.equal(adapted?.event.payload.category, "waiting");
 });
 
+test("a queued Work can hand authority to its first fenced resident Attempt", () => {
+  const outboxId = `obx_${fixtureId("event", 702).slice(4)}`;
+  const queued = fact(1, {
+    attemptId: null,
+    fencingToken: 0,
+    authorityReference: `work:${WORK}`,
+    observedState: "queued",
+    event: event(1, {
+      type: "turn.updated",
+      aggregate: { kind: "work", id: WORK, version: 1 },
+      channelId: DIRECT_CHANNEL,
+      actorPrincipalId: "user_owner",
+      payload: { workId: WORK, state: "queued" },
+    }),
+  });
+  const pending = fact(2, {
+    sourceKind: "outbox",
+    attemptId: null,
+    fencingToken: 0,
+    authorityReference: `outbox:${outboxId}`,
+    observedState: "queued",
+    event: event(2, {
+      type: "activity.updated",
+      aggregate: { kind: "outbox", id: outboxId, version: 1 },
+      channelId: null,
+      actorPrincipalId: null,
+      payload: { outboxId, workId: WORK, state: "pending" },
+    }),
+  });
+  const leased = fact(3, {
+    observedState: "leased",
+    authorityReference: "resident:jerry",
+    event: event(3, {
+      type: "turn.updated",
+      aggregate: { kind: "work", id: WORK, version: 2 },
+      channelId: DIRECT_CHANNEL,
+      actorPrincipalId: JERRY,
+      payload: {
+        workId: WORK,
+        state: "leased",
+        attemptId: ATTEMPT,
+        attemptState: "offered",
+        fencingToken: 7,
+      },
+    }),
+  });
+  const result = projectTrustedM11Activity({
+    sourceWindow: sourceWindow(0, 3),
+    events: [queued.event, pending.event, leased.event],
+    messages: [],
+    facts: [queued, pending, leased],
+    ...trustedDependencies(3),
+  });
+  assert.equal(result.kind, "projected");
+  if (result.kind !== "projected") return;
+  assert.deepEqual(result.projection.integrity, { status: "complete" });
+  assert.deepEqual(
+    result.projection.entries.map((entry) => [entry.eventSequence, entry.category]),
+    [[1, "waiting"], [2, "waiting"], [3, "started"]],
+  );
+});
+
+test("source versions remain unique across Works handled by the same resident", () => {
+  const otherWork = fixtureId("work", 703);
+  const otherAttempt = `att_${fixtureId("event", 704).slice(4)}`;
+  const first = fact(1);
+  const second = fact(2, {
+    workId: otherWork,
+    attemptId: otherAttempt,
+    event: event(2, {
+      type: "turn.updated",
+      aggregate: { kind: "work", id: otherWork, version: 1 },
+      channelId: DIRECT_CHANNEL,
+      actorPrincipalId: JERRY,
+      payload: {
+        workId: otherWork,
+        state: "running",
+        attemptId: otherAttempt,
+        attemptState: "running",
+        fencingToken: 7,
+      },
+    }),
+  });
+  const firstAdapted = adaptTrustedM11ActivityFact(first);
+  const secondAdapted = adaptTrustedM11ActivityFact(second);
+  assert.notEqual(
+    firstAdapted?.observation.sourceVersion,
+    secondAdapted?.observation.sourceVersion,
+  );
+  const result = projectTrustedM11Activity({
+    sourceWindow: sourceWindow(0, 2),
+    events: [first.event, second.event],
+    messages: [],
+    facts: [first, second],
+    ...trustedDependencies(2),
+  });
+  assert.equal(result.kind, "projected");
+  if (result.kind !== "projected") return;
+  assert.deepEqual(result.projection.integrity, { status: "complete" });
+  assert.deepEqual(
+    result.projection.entries.map((entry) => entry.workId).sort(),
+    [WORK, otherWork].sort(),
+  );
+});
+
 test("canonical event mismatches are not overwritten and canonical Work attribution stays stable", () => {
   const queued = fact(1, {
     attemptId: null,

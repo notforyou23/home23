@@ -123,6 +123,17 @@ test("Activity, lifecycle, and coordinator routes invoke only injected trusted p
   const application = createCoordinationApplication({ flags, services: {
     auth: { validateAccessToken: async () => ({ principalId: "user_owner", deviceId: "dev_0198d95f-6c00-7000-8000-000000000700", sessionId: "ses_0198d95f-6c00-7000-8000-000000000700", scopes: ["product:read", "message:send"] }) },
     activity: { list: async () => { calls.push("activity"); return activityPage as any; } },
+    authorityEpochs: {
+      current: (capability) => capability === "activity" ? {
+        capability: "activity",
+        epoch: 3,
+        mode: "canonical",
+        writer: "home23-coordination",
+        effectiveAtEventSequence: 80,
+        rollbackEpoch: 1,
+      } : null,
+      listCurrent: async () => ({ epochs: [], throughEventSequence: 80 }),
+    },
     botLifecycleApi: {
       create: async (input) => {
         calls.push("bot.create");

@@ -13,6 +13,10 @@ coordination:
     enabled: false
     host: 127.0.0.1
     port: 7346
+  # Independent read-surface kill switch. Canonical Activity authority is
+  # still required; this setting alone can never activate the capability.
+  activity:
+    enabled: false
   # Independent admission kill switch. Canonical attachments authority is
   # still required; this setting alone can never activate the capability.
   attachments:

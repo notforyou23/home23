@@ -1,5 +1,6 @@
 import { FEATURE_FLAG_REGISTRY } from "../schema/contract-registry.js";
 import {
+  isCanonicalActivityAuthority,
   isCanonicalAttachmentsAuthority,
   isCanonicalMessagesAuthority,
 } from "../epochs/index.js";
@@ -56,6 +57,9 @@ function capabilityDocument(input: {
   const canonicalAttachmentsAuthority = isCanonicalAttachmentsAuthority(
     input.services.authorityEpochs?.current("attachments"),
   );
+  const canonicalActivityAuthority = isCanonicalActivityAuthority(
+    input.services.authorityEpochs?.current("activity"),
+  );
   const messageSubmission =
     mutationsEnabled &&
     input.flags["coordination.resident.jerry.enabled"] === true &&
@@ -102,7 +106,9 @@ function capabilityDocument(input: {
       work: processEnabled && input.services.workControl !== undefined,
       workMutation: mutationsEnabled && input.services.workControl !== undefined,
       activity:
-        processEnabled && typeof input.services.activity?.list === "function",
+        processEnabled &&
+        canonicalActivityAuthority &&
+        typeof input.services.activity?.list === "function",
       botLifecycle:
         mutationsEnabled &&
         input.flags["coordination.bot_lifecycle.enabled"] === true &&

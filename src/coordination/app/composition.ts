@@ -38,6 +38,7 @@ import {
 import { SqliteDirectMessageContext } from "./direct-message-context.js";
 import { createGroupChannelMessageService } from "./channel-message.js";
 import { SqliteGroupChannelMessageContext } from "./channel-message-context.js";
+import { createSqliteActivityReadService } from "./activity-read.js";
 import {
   ChannelCoordinatorError,
   createChannelCoordinator,
@@ -135,13 +136,13 @@ export interface RetentionCompositionOptions {
 }
 
 /**
- * Internal M16/M18 dependencies accepted by the canonical process. Both are
- * absent by default and remain behind their domain capability checks; merely
- * injecting either dependency does not register or advertise a public route.
+ * Internal optional dependencies accepted by the canonical process. Activity
+ * is deliberately absent here: the process composes its complete M08/M11 read
+ * boundary itself, so callers cannot replace it with a raw projector.
  */
 export type CoordinationProcessProjectionDependencies = Readonly<Pick<
   CoordinationServices,
-  "activity" | "channelCoordinator"
+  "channelCoordinator"
 > & { retention?: RetentionCompositionOptions }>;
 
 function isCompleteAttachmentOptions(
@@ -375,6 +376,12 @@ export function createCoordinationProcess(
   const leases = createLeaseService({ database, generateId: generateCoordinationId, leaseTtlMs: 60_000 });
   const workControl = createProductWorkControl({ database, work, leases });
   const events = new SqliteEventRepository(database);
+  // The process owns this complete adapter, but an independent runtime switch
+  // still controls whether it is injected. The application additionally
+  // requires a canonical Activity epoch before advertising or serving it.
+  const activity = config.activity?.enabled === true
+    ? createSqliteActivityReadService({ database, events, messages })
+    : undefined;
   const communications = new SqliteCommunicationEventRepository(database);
   let attachmentService: ReturnType<typeof createDurableAttachmentService> | undefined;
   let attachmentInitialization: Promise<void> | undefined;
@@ -597,9 +604,7 @@ export function createCoordinationProcess(
       authorityEpochs,
       ...(attachments === undefined ? {} : { attachments }),
       ...(messageSubmission === undefined ? {} : { messageSubmission }),
-      ...(dependencies.activity === undefined
-        ? {}
-        : { activity: dependencies.activity }),
+      ...(activity === undefined ? {} : { activity }),
       ...(dependencies.channelCoordinator === undefined && composedChannelCoordinator === undefined
         ? {}
         : { channelCoordinator: dependencies.channelCoordinator ?? composedChannelCoordinator }),

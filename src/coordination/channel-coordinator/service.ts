@@ -17,6 +17,7 @@ import {
 
 interface ChannelRow {
   lifecycle: string;
+  responderMode: "mentions_only" | "mention_or_coordinator";
   coordinatorBotId: string | null;
   maxBotTurns: number;
 }
@@ -81,10 +82,14 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
     }
     assertAuthority(input);
     const channel = options.database.readOne<ChannelRow>(
-      "SELECT lifecycle, coordinator_bot_id AS coordinatorBotId, max_bot_turns AS maxBotTurns FROM channels WHERE id = ?",
+      `SELECT lifecycle, responder_mode AS responderMode,
+              coordinator_bot_id AS coordinatorBotId,
+              max_bot_turns AS maxBotTurns
+       FROM channels WHERE id = ?`,
       input.channelId,
     );
-    if (!channel || channel.lifecycle !== "active" || !channel.coordinatorBotId) {
+    if (!channel || channel.lifecycle !== "active" ||
+        (channel.responderMode === "mention_or_coordinator" && !channel.coordinatorBotId)) {
       throw new ChannelCoordinatorError("ineligible", "active coordinated Channel is required");
     }
     const message = options.database.readOne<{ authorPrincipalId: string; roundId: string | null }>(
@@ -111,6 +116,10 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
     if (recipients.length > MAX_CHANNEL_TURNS_PER_ROUND) {
       throw new ChannelCoordinatorError("round_limit", "recipient set exceeds Round turn limit");
     }
+    // mentions_only Channels intentionally have no policy coordinator. A Round
+    // still requires one lifecycle principal, so bind it deterministically to
+    // the first selected recipient without changing the Channel policy.
+    const roundCoordinatorBotId = channel.coordinatorBotId ?? recipients[0]!;
 
     const prior = options.database.readAll<{ roundId: string }>(
       `SELECT DISTINCT round_id AS roundId FROM works
@@ -143,7 +152,7 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
     if (!round) {
       round = options.rounds.create({
         channelId: input.channelId,
-        coordinatorBotId: channel.coordinatorBotId,
+        coordinatorBotId: roundCoordinatorBotId,
         maxBotTurns: Math.min(8, Math.max(1, channel.maxBotTurns)),
         deadlineAt: input.deadlineAt,
         requestId: input.requestId,
@@ -153,7 +162,8 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
     } else if (!replayedRound && round.state === "waiting") {
       round = options.rounds.beginPass({ roundId: round.id, requestId: input.requestId, correlationId: input.correlationId });
     }
-    if (round.channelId !== input.channelId || round.coordinatorBotId !== channel.coordinatorBotId || TERMINAL.has(round.state)) {
+    if (round.channelId !== input.channelId ||
+        round.coordinatorBotId !== roundCoordinatorBotId || TERMINAL.has(round.state)) {
       throw new ChannelCoordinatorError("illegal_state", "trigger resolves to an incompatible or terminal Round");
     }
 

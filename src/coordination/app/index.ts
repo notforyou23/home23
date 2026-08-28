@@ -58,3 +58,4 @@ export {
   type GroupChannelResidentTarget,
 } from "./channel-message.js";
 export { SqliteGroupChannelMessageContext } from "./channel-message-context.js";
+export { createSqliteActivityReadService } from "./activity-read.js";
