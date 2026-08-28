@@ -77,7 +77,8 @@ function capabilityDocument(input: {
       channelMutation:
         mutationsEnabled &&
         input.flags["coordination.channels.enabled"] === true &&
-        input.services.channels !== undefined,
+        input.services.channels !== undefined &&
+        input.services.channelCoordinator !== undefined,
       conversationsRead: processEnabled && input.services.unread !== undefined,
       messagesRead: processEnabled && input.services.messages !== undefined,
       unreadRead: processEnabled && input.services.unread !== undefined,

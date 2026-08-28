@@ -30,6 +30,7 @@ export type {
   WorkGeneratedIdKind,
   WorkRecord,
   WorkState,
+  WorkTurnSelection,
 } from "./types.js";
 export type {
   CreateRecoveryServiceOptions,

@@ -26,6 +26,7 @@ export type {
   CoordinationAttachmentPort,
   CoordinationAuthPort,
   CoordinationCapabilityDocument,
+  CoordinationChannelCoordinatorPort,
   CoordinationFeatureFlags,
   CoordinationHttpLimits,
   CoordinationLeasePort,
@@ -41,6 +42,7 @@ export {
   type CoordinationRuntimeConfig,
 } from "./runtime-config.js";
 export {
+  createCanonicalMessageRecorder,
   createDirectMessageSubmissionService,
   directMessageManifest,
   type DirectMessageChannelContext,
@@ -49,3 +51,10 @@ export {
   type DirectMessageResidentTarget,
 } from "./direct-message.js";
 export { SqliteDirectMessageContext } from "./direct-message-context.js";
+export {
+  createGroupChannelMessageService,
+  type GroupChannelMessageContextPort,
+  type GroupChannelPreparedContext,
+  type GroupChannelResidentTarget,
+} from "./channel-message.js";
+export { SqliteGroupChannelMessageContext } from "./channel-message-context.js";

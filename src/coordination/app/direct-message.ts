@@ -80,19 +80,10 @@ export interface DirectMessageResidentTarget {
   }): MessagingActorContext;
 }
 
-/** Join M08 -> M11 -> M13 -> M11 terminal -> M08 result without activating a process. */
-export function createDirectMessageSubmissionService(options: {
-  messages: DirectMessageMessagePort;
-  context: DirectMessageContextPort;
-  work: CoordinationWorkPort;
-  leases: CoordinationLeasePort;
-  resolveResident(residentBinding: string): DirectMessageResidentTarget | undefined;
-  authority: { current(): AuthorityEpoch | null };
-  communications?: ResidentCommunicationPort;
-  beginWork(): () => void;
-  recoveryIdentity(): { requestId: string; correlationId: string };
-}) {
-  const inFlight = new Map<string, Promise<MessageProjection>>();
+/** Idempotent, lossless communication evidence for canonical Message commits. */
+export function createCanonicalMessageRecorder(
+  communications?: ResidentCommunicationPort,
+) {
   const exactMessage = (message: MessageProjection): Record<string, JsonValue> => {
     let serialized: string | undefined;
     try { serialized = JSON.stringify(message); } catch { serialized = undefined; }
@@ -104,17 +95,17 @@ export function createDirectMessageSubmissionService(options: {
     }
     return parsed as Record<string, JsonValue>;
   };
-  const recordMessage = async (input: {
+  return async (input: {
     message: MessageProjection;
     kind: "user_message_committed" | "assistant_message_committed";
     requestId: string;
     correlationId: string;
-    turnSelection?: { modelAlias: string | null; reasoningEffort: string | null };
+    turnSelection?: MessageTurnSelection;
   }): Promise<void> => {
-    if (!options.communications) return;
+    if (!communications) return;
     const message = input.message;
     const rawMessage = exactMessage(message);
-    await options.communications.append({
+    await communications.append({
       event: {
         eventId: stableCommunicationEventId(
           `canonical-message:${message.id}:${input.kind}`,
@@ -153,6 +144,22 @@ export function createDirectMessageSubmissionService(options: {
       correlationId: input.correlationId,
     });
   };
+}
+
+/** Join M08 -> M11 -> M13 -> M11 terminal -> M08 result without activating a process. */
+export function createDirectMessageSubmissionService(options: {
+  messages: DirectMessageMessagePort;
+  context: DirectMessageContextPort;
+  work: CoordinationWorkPort;
+  leases: CoordinationLeasePort;
+  resolveResident(residentBinding: string): DirectMessageResidentTarget | undefined;
+  authority: { current(): AuthorityEpoch | null };
+  communications?: ResidentCommunicationPort;
+  beginWork(): () => void;
+  recoveryIdentity(): { requestId: string; correlationId: string };
+}) {
+  const inFlight = new Map<string, Promise<MessageProjection>>();
+  const recordMessage = createCanonicalMessageRecorder(options.communications);
   const once = (callback: () => void) => {
     let called = false;
     return () => {

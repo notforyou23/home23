@@ -1,5 +1,11 @@
 import type { RoundRecord } from "../rounds/index.js";
-import type { ContextManifestInput, CreateWorkResult, M11Database, WorkRecord } from "../work/index.js";
+import type {
+  ContextManifestInput,
+  CreateWorkResult,
+  M11Database,
+  WorkRecord,
+  WorkTurnSelection,
+} from "../work/index.js";
 
 export const MAX_CHANNEL_TURNS_PER_BOT = 4;
 export const MAX_CHANNEL_TURNS_PER_ROUND = 12;
@@ -32,6 +38,8 @@ export interface ChannelTurnTrigger {
   authority: CoordinatorAuthority;
   deadlineAt: string;
   manifest: ContextManifestInput;
+  /** Server-validated owner selection copied to every Work in this pass. */
+  turnSelection?: WorkTurnSelection;
   requestId: string;
   correlationId: string;
 }
@@ -116,6 +124,7 @@ export interface CoordinatorWorkPort {
     maxAutomaticOffers: number;
     requestId: string;
     correlationId: string;
+    turnSelection?: WorkTurnSelection;
   }): CreateWorkResult;
   cancelQueued(input: {
     workId: string;

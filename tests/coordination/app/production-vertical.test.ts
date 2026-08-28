@@ -501,6 +501,7 @@ test("production composition dispatches Jerry and Forrest to distinct resident s
     ...disabledCoordinationFeatureFlags(),
     "coordination.process.enabled": true,
     "coordination.public_api.enabled": true,
+    "coordination.channels.enabled": true,
     "coordination.resident.jerry.enabled": true,
     "coordination.resident.forrest.enabled": true,
   };
@@ -536,6 +537,7 @@ test("production composition dispatches Jerry and Forrest to distinct resident s
   const headers = { authorization: `Bearer ${token}` };
   const capabilities = await (await fetch(`${address.origin}/api/v1/capabilities`)).json() as any;
   assert.equal(capabilities.capabilities.messageSubmission, true);
+  assert.equal(capabilities.capabilities.channelMutation, true);
 
   const submit = async (channelId: string, resident: "Jerry" | "Forrest") => {
     const response = await fetch(`${address.origin}/api/v1/channels/${channelId}/messages`, {
@@ -579,6 +581,195 @@ test("production composition dispatches Jerry and Forrest to distinct resident s
   assert.deepEqual(residentInvocations, { jerry: 1, forrest: 1 },
     "each direct conversation must traverse only its own resident socket");
   assert.equal(jerryModel.calls() + forrestModel.calls(), 2);
+
+  const groupResponse = await fetch(`${address.origin}/api/v1/channels`, {
+    method: "POST",
+    headers: {
+      ...headers,
+      "content-type": "application/json",
+      "idempotency-key": "dual-resident-group-create-0001",
+    },
+    body: JSON.stringify({
+      kind: "group",
+      memberBotIds: [jerry.botId, forrest.botId],
+      title: "Jerry and Forrest",
+      purpose: "Canonical multi-resident coordination.",
+      pinned: false,
+      responderPolicy: {
+        mode: "mention_or_coordinator",
+        coordinatorBotId: jerry.botId,
+        responseOrder: "parallel",
+        maxBotTurns: 4,
+      },
+    }),
+  });
+  const groupResponseBody = await groupResponse.text();
+  assert.equal(groupResponse.status, 201, `group create: ${groupResponseBody}`);
+  const group = JSON.parse(groupResponseBody) as { channel: { id: string } };
+  const groupMessageId = generateCoordinationId("message");
+  const groupSend = await fetch(
+    `${address.origin}/api/v1/channels/${group.channel.id}/messages`,
+    {
+      method: "POST",
+      headers: {
+        ...headers,
+        "content-type": "application/json",
+        "idempotency-key": "dual-resident-group-message-0001",
+      },
+      body: JSON.stringify({
+        messageId: groupMessageId,
+        clientMessageId: "dual-resident-group-client-0001",
+        text: "@Jerry and @Forrest, each answer through your own resident.",
+        attachmentIds: [],
+        mentions: [jerry.botId, forrest.botId],
+        replyToMessageId: null,
+      }),
+    },
+  );
+  const groupAccepted = await groupSend.json() as {
+    round?: { id?: string };
+    works?: Array<{ id: string; roundId: string; targetPrincipalId: string }>;
+  };
+  assert.equal(groupSend.status, 202, `group send: ${JSON.stringify(groupAccepted)}`);
+  assert.match(groupAccepted.round?.id ?? "", /^rnd_/);
+  assert.equal(groupAccepted.works?.length, 2);
+  assert.deepEqual(
+    groupAccepted.works?.map((work) => work.targetPrincipalId).sort(),
+    [jerry.botId, forrest.botId].sort(),
+  );
+  let groupResults: Array<{
+    author: { principalId: string };
+    kind: string;
+    replyToMessageId: string | null;
+    provenance: { roundId: string | null; workId: string | null };
+  }> = [];
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const response = await fetch(
+      `${address.origin}/api/v1/channels/${group.channel.id}/messages`,
+      { headers },
+    );
+    const body = await response.json() as { messages: typeof groupResults };
+    groupResults = body.messages.filter((message) => message.kind === "result");
+    if (groupResults.length === 2) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(groupResults.length, 2);
+  assert.deepEqual(
+    groupResults.map((message) => message.author.principalId).sort(),
+    [jerry.botId, forrest.botId].sort(),
+  );
+  for (const result of groupResults) {
+    assert.equal(result.replyToMessageId, groupMessageId);
+    assert.equal(result.provenance.roundId, groupAccepted.round?.id);
+    assert.match(result.provenance.workId ?? "", /^wrk_/);
+  }
+  assert.deepEqual(residentInvocations, { jerry: 2, forrest: 2 });
+  assert.equal(jerryModel.calls() + forrestModel.calls(), 4);
+
+  const coordinatorMessageId = generateCoordinationId("message");
+  const coordinatorSend = await fetch(
+    `${address.origin}/api/v1/channels/${group.channel.id}/messages`,
+    {
+      method: "POST",
+      headers: {
+        ...headers,
+        "content-type": "application/json",
+        "idempotency-key": "dual-resident-coordinator-message-0001",
+      },
+      body: JSON.stringify({
+        messageId: coordinatorMessageId,
+        clientMessageId: "dual-resident-coordinator-client-0001",
+        text: "Coordinator, answer this unmentioned group turn.",
+        attachmentIds: [],
+        mentions: [],
+        replyToMessageId: null,
+      }),
+    },
+  );
+  const coordinatorAccepted = await coordinatorSend.json() as {
+    works?: Array<{ targetPrincipalId: string }>;
+  };
+  assert.equal(
+    coordinatorSend.status,
+    202,
+    `coordinator send: ${JSON.stringify(coordinatorAccepted)}`,
+  );
+  assert.deepEqual(
+    coordinatorAccepted.works?.map((work) => work.targetPrincipalId),
+    [jerry.botId],
+  );
+  let coordinatorResult = false;
+  for (let attempt = 0; attempt < 200 && !coordinatorResult; attempt += 1) {
+    const response = await fetch(
+      `${address.origin}/api/v1/channels/${group.channel.id}/messages`,
+      { headers },
+    );
+    const body = await response.json() as {
+      messages: Array<{ kind: string; replyToMessageId: string | null }>;
+    };
+    coordinatorResult = body.messages.some(
+      (candidate) => candidate.kind === "result" &&
+        candidate.replyToMessageId === coordinatorMessageId,
+    );
+    if (!coordinatorResult) await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(coordinatorResult, true);
+  assert.deepEqual(residentInvocations, { jerry: 3, forrest: 2 });
+  assert.equal(jerryModel.calls() + forrestModel.calls(), 5);
+
+  const quietGroupResponse = await fetch(`${address.origin}/api/v1/channels`, {
+    method: "POST",
+    headers: {
+      ...headers,
+      "content-type": "application/json",
+      "idempotency-key": "dual-resident-quiet-group-create-0001",
+    },
+    body: JSON.stringify({
+      kind: "group",
+      memberBotIds: [jerry.botId, forrest.botId],
+      title: "Mentions only",
+      purpose: "Only explicitly mentioned Bots respond.",
+      pinned: false,
+      responderPolicy: {
+        mode: "mentions_only",
+        coordinatorBotId: null,
+        responseOrder: "sequential",
+        maxBotTurns: 2,
+      },
+    }),
+  });
+  const quietGroupBody = await quietGroupResponse.text();
+  assert.equal(quietGroupResponse.status, 201, `quiet group create: ${quietGroupBody}`);
+  const quietGroup = JSON.parse(quietGroupBody) as { channel: { id: string } };
+  const quietSend = await fetch(
+    `${address.origin}/api/v1/channels/${quietGroup.channel.id}/messages`,
+    {
+      method: "POST",
+      headers: {
+        ...headers,
+        "content-type": "application/json",
+        "idempotency-key": "dual-resident-quiet-message-0001",
+      },
+      body: JSON.stringify({
+        messageId: generateCoordinationId("message"),
+        clientMessageId: "dual-resident-quiet-client-0001",
+        text: "This group post intentionally mentions nobody.",
+        attachmentIds: [],
+        mentions: [],
+        replyToMessageId: null,
+      }),
+    },
+  );
+  const quietAccepted = await quietSend.json() as {
+    round?: unknown;
+    works?: unknown[];
+  };
+  assert.equal(quietSend.status, 202, `quiet send: ${JSON.stringify(quietAccepted)}`);
+  assert.equal(quietAccepted.round, null);
+  assert.deepEqual(quietAccepted.works, []);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(residentInvocations, { jerry: 3, forrest: 2 });
+  assert.equal(jerryModel.calls() + forrestModel.calls(), 5);
 });
 
 test("isolated production composition traverses the generated harness and unmodified AgentLoop", async (t) => {

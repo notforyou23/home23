@@ -13,7 +13,12 @@ import { openCoordinationDatabase } from "../db/index.js";
 import { createAuthService, SqliteAuthRepository } from "../auth/index.js";
 import { createBotDirectory, SqliteBotDirectoryRepository } from "../bots/index.js";
 import { createBootstrapService, SqliteBootstrapRepository } from "../bootstrap/index.js";
-import { createChannelService, SqliteBotConversationBindingAdapter, SqliteMessagingRepository } from "../channels/index.js";
+import {
+  createChannelService,
+  MessagingError,
+  SqliteBotConversationBindingAdapter,
+  SqliteMessagingRepository,
+} from "../channels/index.js";
 import { SqliteEventRepository } from "../events/index.js";
 import { SqliteCommunicationEventRepository } from "../communications/index.js";
 import { createLeaseService } from "../leases/index.js";
@@ -26,10 +31,18 @@ import { createResidentCredential } from "../resident-protocol/index.js";
 import { ResidentUdsClient } from "../transport/uds/index.js";
 import { ResidentCoordinationAdapter, ResidentUdsAgentPort, createM11ResidentCoordinationPort } from "../../coordination-adapter/index.js";
 import {
+  createCanonicalMessageRecorder,
   createDirectMessageSubmissionService,
   type DirectMessageResidentTarget,
 } from "./direct-message.js";
 import { SqliteDirectMessageContext } from "./direct-message-context.js";
+import { createGroupChannelMessageService } from "./channel-message.js";
+import { SqliteGroupChannelMessageContext } from "./channel-message-context.js";
+import {
+  ChannelCoordinatorError,
+  createChannelCoordinator,
+} from "../channel-coordinator/index.js";
+import { createRoundService } from "../rounds/index.js";
 import { createCoordinationHttpServer } from "../http/index.js";
 import { createCoordinationApplication } from "./application.js";
 import { createCoordinationLifecycle } from "./lifecycle.js";
@@ -41,8 +54,10 @@ import type { CoordinationRuntimeConfig } from "./runtime-config.js";
 import type {
   CoordinationApplication,
   CoordinationAttachmentPort,
+  CoordinationChannelCoordinatorPort,
   CoordinationFeatureFlags,
   CoordinationLifecycle,
+  CoordinationMessageSubmissionPort,
   CoordinationServices,
 } from "./index.js";
 import {
@@ -56,6 +71,7 @@ import type { PolicyRequest } from "../policy/index.js";
 import {
   isCanonicalAttachmentsAuthority,
   isCanonicalMessagesAuthority,
+  COORDINATION_MESSAGES_WRITER,
   type AuthorityEpoch,
 } from "../epochs/index.js";
 import type { AuthorityCapability } from "../import/index.js";
@@ -432,7 +448,15 @@ export function createCoordinationProcess(
     drain: async () => undefined,
     close: async () => database.close(),
   }]);
-  let messageSubmission: ReturnType<typeof createDirectMessageSubmissionService> | undefined;
+  type RecoveringMessageSubmission = CoordinationMessageSubmissionPort & {
+    recoverResidentWork(): Promise<Readonly<{
+      discovered: number;
+      scheduled: number;
+      refused: number;
+    }>>;
+  };
+  let messageSubmission: RecoveringMessageSubmission | undefined;
+  let composedChannelCoordinator: CoordinationChannelCoordinatorPort | undefined;
   if (isCanonicalMessagesAuthority(currentAuthority("messages"))) {
     const residentTargets = new Map<string, DirectMessageResidentTarget>();
     for (const residentSlug of ["jerry", "forrest"] as const) {
@@ -488,17 +512,80 @@ export function createCoordinationProcess(
       }));
     }
     if (residentTargets.size > 0) {
-      const context = new SqliteDirectMessageContext(database, messages);
-      messageSubmission = createDirectMessageSubmissionService({
+      const resolveResident = (residentBinding: string) =>
+        residentTargets.get(residentBinding);
+      const directSubmission = createDirectMessageSubmissionService({
         messages,
         communications,
-        context,
+        context: new SqliteDirectMessageContext(database, messages),
         work,
         leases,
-        resolveResident: (residentBinding) => residentTargets.get(residentBinding),
+        resolveResident,
         authority: { current: () => currentAuthority("messages") },
         beginWork: lifecycle.beginWork,
         recoveryIdentity: () => ({ requestId: generateCoordinationId("request"), correlationId: generateCoordinationId("correlation") }),
+      });
+      const groupSubmission = config.flags["coordination.channels.enabled"] === true
+        ? (() => {
+            const coordinator = createChannelCoordinator({
+              database,
+              rounds: createRoundService({ database, generateId: generateCoordinationId }),
+              work,
+              enabled: true,
+              expectedAuthorityWriter: COORDINATION_MESSAGES_WRITER,
+            });
+            return createGroupChannelMessageService({
+              messages,
+              context: new SqliteGroupChannelMessageContext(database, messages),
+              coordinator,
+              work,
+              leases,
+              resolveResident,
+              authority: { current: () => currentAuthority("messages") },
+              recordMessage: createCanonicalMessageRecorder(communications),
+              beginWork: lifecycle.beginWork,
+              recoveryIdentity: () => ({
+                requestId: generateCoordinationId("request"),
+                correlationId: generateCoordinationId("correlation"),
+              }),
+            });
+          })()
+        : undefined;
+      composedChannelCoordinator = groupSubmission?.channelCoordinator;
+      messageSubmission = Object.freeze({
+        submitMessage: async (
+          input: Parameters<CoordinationMessageSubmissionPort["submitMessage"]>[0],
+        ) => {
+          const channel = database.readOne<{ kind: "direct" | "group" }>(
+            "SELECT kind FROM channels WHERE id = ? AND lifecycle = 'active'",
+            input.channelId,
+          );
+          if (!channel) throw new MessagingError("unknown_channel");
+          if (channel.kind === "group") {
+            if (!groupSubmission) {
+              throw new ChannelCoordinatorError(
+                "capability_off",
+                "Channel coordination capability is off",
+              );
+            }
+            return groupSubmission.submitMessage(input);
+          }
+          return directSubmission.submitMessage(input);
+        },
+        selectionOptions: (
+          input: Parameters<NonNullable<CoordinationMessageSubmissionPort["selectionOptions"]>>[0],
+        ) => directSubmission.selectionOptions(input),
+        recoverResidentWork: async () => {
+          const direct = await directSubmission.recoverResidentWork();
+          const group = groupSubmission === undefined
+            ? { discovered: 0, scheduled: 0, refused: 0 }
+            : await groupSubmission.recoverResidentWork();
+          return Object.freeze({
+            discovered: direct.discovered + group.discovered,
+            scheduled: direct.scheduled + group.scheduled,
+            refused: direct.refused + group.refused,
+          });
+        },
       });
     }
   }
@@ -513,9 +600,9 @@ export function createCoordinationProcess(
       ...(dependencies.activity === undefined
         ? {}
         : { activity: dependencies.activity }),
-      ...(dependencies.channelCoordinator === undefined
+      ...(dependencies.channelCoordinator === undefined && composedChannelCoordinator === undefined
         ? {}
-        : { channelCoordinator: dependencies.channelCoordinator }),
+        : { channelCoordinator: dependencies.channelCoordinator ?? composedChannelCoordinator }),
     },
   });
   const server = createCoordinationHttpServer({

@@ -203,6 +203,9 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
         maxAutomaticOffers: 2,
         requestId: input.requestId,
         correlationId: input.correlationId,
+        ...(input.turnSelection === undefined
+          ? {}
+          : { turnSelection: input.turnSelection }),
       });
     });
     const provenance = Object.freeze({

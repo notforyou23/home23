@@ -150,19 +150,20 @@ test("canonical search requires both its server flag and its injected domain ser
   assert.equal(withFlag.capabilities().capabilities.search, true);
 });
 
-test("Channel mutation requires public mutations, its flag, and the Channel service", () => {
+test("Channel mutation requires public mutations, its flag, and complete Channel coordination", () => {
   const auth = { validateAccessToken: async () => { throw new Error("unused"); } };
   const channels = {} as any;
+  const channelCoordinator = { startFromMessage: async () => ({}) };
   const withoutFlag = createCoordinationApplication({
     flags: enabledShellFlags,
-    services: { auth, channels },
+    services: { auth, channels, channelCoordinator },
   });
   const withFlag = createCoordinationApplication({
     flags: {
       ...enabledShellFlags,
       "coordination.channels.enabled": true,
     },
-    services: { auth, channels },
+    services: { auth, channels, channelCoordinator },
   });
   const withoutPublicMutations = createCoordinationApplication({
     flags: {
@@ -170,10 +171,14 @@ test("Channel mutation requires public mutations, its flag, and the Channel serv
       "coordination.public_api.enabled": false,
       "coordination.channels.enabled": true,
     },
-    services: { auth, channels },
+    services: { auth, channels, channelCoordinator },
   });
 
   assert.equal(withoutFlag.capabilities().capabilities.channelMutation, false);
+  assert.equal(createCoordinationApplication({
+    flags: { ...enabledShellFlags, "coordination.channels.enabled": true },
+    services: { auth, channels },
+  }).capabilities().capabilities.channelMutation, false);
   assert.equal(withFlag.capabilities().capabilities.channelMutation, true);
   assert.equal(withoutPublicMutations.capabilities().capabilities.channelMutation, false);
 });
