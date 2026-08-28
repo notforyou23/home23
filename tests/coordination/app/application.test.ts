@@ -65,6 +65,7 @@ test("capability advertisement stays off for every dependency that is absent", (
       messagesRead: false,
       unreadRead: false,
       messageSubmission: false,
+      modelSelection: false,
       readCursorMutation: false,
       search: false,
       eventReplay: false,
@@ -278,6 +279,41 @@ test("message submission requires the exact persisted canonical writer, not flag
     writer: "label-only-writer",
   }), false);
   assert.equal(capability(canonicalMessagesAuthority), true);
+});
+
+test("model selection is advertised only with active message submission and a catalog", () => {
+  const flags = {
+    ...enabledShellFlags,
+    "coordination.resident.jerry.enabled": true,
+  };
+  const base = {
+    auth: { validateAccessToken: async () => { throw new Error("unused"); } },
+    work: {} as any,
+    leases: {} as any,
+    authorityEpochs: authorityEpochs(canonicalMessagesAuthority),
+  };
+  const withoutCatalog = createCoordinationApplication({
+    flags,
+    services: {
+      ...base,
+      messageSubmission: { submitMessage: async () => ({}) },
+    },
+  });
+  const withCatalog = createCoordinationApplication({
+    flags,
+    services: {
+      ...base,
+      messageSubmission: {
+        submitMessage: async () => ({}),
+        selectionOptions: async () => ({}),
+      },
+    },
+  });
+
+  assert.equal(withoutCatalog.capabilities().capabilities.messageSubmission, true);
+  assert.equal(withoutCatalog.capabilities().capabilities.modelSelection, false);
+  assert.equal(withCatalog.capabilities().capabilities.messageSubmission, true);
+  assert.equal(withCatalog.capabilities().capabilities.modelSelection, true);
 });
 
 test("application construction snapshots dependencies and rejects incoherent limits", () => {

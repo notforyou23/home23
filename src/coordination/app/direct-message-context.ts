@@ -39,6 +39,28 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
     }): Promise<{ messages: readonly { id: string; sequence: number; text: string | null; author: { displayName: string } }[] }> },
   ) {}
 
+  async resolveTarget(input: Parameters<DirectMessageContextPort["resolveTarget"]>[0]) {
+    const binding = this.database.readOne<DirectBindingRow>(
+      `SELECT h.id AS conversationId, b.id AS targetBotId, b.name AS targetBotDisplayName,
+              b.principal_id AS targetPrincipalId, b.resident_binding AS residentBinding
+       FROM channels c
+       JOIN conversation_handles h ON h.channel_id = c.id
+       JOIN channel_members owner ON owner.channel_id = c.id
+         AND owner.principal_id = ? AND owner.active = 1
+       JOIN channel_members member ON member.channel_id = c.id
+         AND member.kind = 'bot' AND member.active = 1
+       JOIN bots b ON b.principal_id = member.principal_id
+       WHERE c.id = ? AND c.kind = 'direct' AND c.lifecycle = 'active'
+         AND b.lifecycle = 'active' AND b.continuing_identity = 1 AND b.durable_mailbox = 1
+         AND b.resident_protocol_version = 1
+         AND EXISTS (SELECT 1 FROM json_each(b.resident_capabilities_json) WHERE value = 'messages')`,
+      input.context.principalId,
+      input.channelId,
+    );
+    if (!binding) throw new MessagingError("unknown_channel");
+    return Object.freeze({ channelId: input.channelId, ...binding });
+  }
+
   async prepare(input: Parameters<DirectMessageContextPort["prepare"]>[0]) {
     const binding = this.database.readOne<DirectBindingRow>(
       `SELECT h.id AS conversationId, b.id AS targetBotId, b.name AS targetBotDisplayName,

@@ -20,6 +20,7 @@ test('product proxy allowlist contains product nouns and exact methods only', ()
   assert.equal(allowed('POST', '/bots/bot_123/archive'), true);
   assert.equal(allowed('POST', '/bots/bot_123/restore'), true);
   assert.equal(allowed('GET', '/communications/events'), true);
+  assert.equal(allowed('GET', '/channels/chn_123/execution-options'), true);
   assert.equal(allowed('GET', '/work/wrk_123'), true);
   assert.equal(allowed('POST', '/work/wrk_123/cancel'), true);
   assert.equal(allowed('POST', '/work/wrk_123/retry'), true);

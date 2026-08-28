@@ -85,6 +85,7 @@ test("resident start renews transient connection attempts while the harness come
       requestId: "req_0198d95f-6c00-7000-8000-0000000000e7",
       correlationId: "cor_0198d95f-6c00-7000-8000-0000000000e8",
     },
+    turnSelection: { modelAlias: null, reasoningEffort: null },
     onDurableStart: () => undefined,
     onEvent: () => undefined,
   });
@@ -123,6 +124,7 @@ test("resident port rejects a Work bound to a different resident before transpor
         requestId: "req_0198d95f-6c00-7000-8000-0000000000a7",
         correlationId: "cor_0198d95f-6c00-7000-8000-0000000000a8",
       },
+      turnSelection: { modelAlias: null, reasoningEffort: null },
       onDurableStart: () => undefined,
       onEvent: () => undefined,
     }),
@@ -138,12 +140,27 @@ test("resident result retrieval outlives individual signed request windows", asy
   const store = new TurnStore(history);
   let running = false;
   let agentStarts = 0;
+  let selectedRuntime: unknown;
   const largeExactResult = `exact-large-result:${"x".repeat(300_000)}`;
-  const agent: Pick<AgentLoop, "runWithTurn" | "stop" | "isRunning"> = {
+  const agent: Pick<AgentLoop,
+    "runWithTurn" | "stop" | "isRunning" | "getModel" | "getProvider" | "getReasoningEffort"> = {
+    getModel: () => "gpt-5.6-terra",
+    getProvider: () => "openai-codex",
+    getReasoningEffort: () => "medium",
     async runWithTurn(chatId, userText, options = {}) {
       agentStarts += 1;
+      selectedRuntime = {
+        modelOverride: options.modelOverride,
+        effort: options.effort,
+      };
       const turnId = options.turnId ?? "turn-delayed";
-      store.writeStart(chatId, turnId, "fixture-model", "fixture", {
+      store.writeStart(
+        chatId,
+        turnId,
+        options.modelOverride?.model ?? "gpt-5.6-terra",
+        options.modelOverride?.provider ?? "openai-codex",
+        {
+        reasoning_effort: options.effort ?? "medium",
         coordination_origin: options.coordinationOrigin,
       });
       running = true;
@@ -202,6 +219,9 @@ test("resident result retrieval outlives individual signed request windows", asy
     residentSlug: "jerry",
     agent,
     history,
+    modelAliases: {
+      sol: { provider: "openai-codex", model: "gpt-5.6-sol", reasoningEffort: "high" },
+    },
   });
   await server.start();
   t.after(() => server.close());
@@ -212,6 +232,13 @@ test("resident result retrieval outlives individual signed request windows", asy
   });
   t.after(() => client.close());
   const port = new ResidentUdsAgentPort({ client, residentSlug: "jerry", deadlineMs: 25 });
+  assert.deepEqual(await port.modelCatalog({ requestId: REQUEST_ID, correlationId: CORRELATION_ID }), {
+    models: [{ alias: "sol", provider: "openai-codex", model: "gpt-5.6-sol", reasoningEffort: "high" }],
+    defaultModel: "gpt-5.6-terra",
+    defaultProvider: "openai-codex",
+    defaultReasoningEffort: "medium",
+    reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+  });
   let durableStart = false;
   const coordinationOrigin = {
       kind: "coordination",
@@ -253,10 +280,31 @@ test("resident result retrieval outlives individual signed request windows", asy
     (error: unknown) => error instanceof ResidentProtocolError && error.code === "fence_invalid",
   );
   assert.equal(agentStarts, 0, "the resident harness must reject a different resident binding");
+  const unavailableOrigin = {
+    ...coordinationOrigin,
+    workId: "wrk_0198d95f-6c00-7000-8000-0000000000d3",
+    attemptId: "att_0198d95f-6c00-7000-8000-0000000000d4",
+    leaseId: "lea_0198d95f-6c00-7000-8000-0000000000d5",
+  } as const;
+  await assert.rejects(
+    port.runWithTurn("coordination:test:unavailable-model", "reject before running", {
+      coordinationOrigin: unavailableOrigin,
+      coordinationRequest: {
+        requestId: "req_0198d95f-6c00-7000-8000-0000000000d6",
+        correlationId: "cor_0198d95f-6c00-7000-8000-0000000000d7",
+      },
+      turnSelection: { modelAlias: "missing-alias", reasoningEffort: "high" },
+      onDurableStart: () => assert.fail("an unavailable model cannot start durably"),
+      onEvent: () => undefined,
+    }),
+    (error: unknown) => error instanceof ResidentProtocolError && error.code === "request_invalid",
+  );
+  assert.equal(agentStarts, 0, "an unavailable selection must not enter AgentLoop");
   const firstEvents: Array<Parameters<NonNullable<Parameters<typeof port.runWithTurn>[2]["onEvent"]>>[0]> = [];
   const started = await port.runWithTurn("coordination:test:work", "answer after a normal model delay", {
     coordinationOrigin,
     coordinationRequest: { requestId: REQUEST_ID, correlationId: CORRELATION_ID },
+    turnSelection: { modelAlias: "sol", reasoningEffort: "xhigh" },
     onDurableStart: () => { durableStart = true; },
     onEvent: (event) => { firstEvents.push(event); },
   });
@@ -281,6 +329,7 @@ test("resident result retrieval outlives individual signed request windows", asy
     {
       coordinationOrigin,
       coordinationRequest: { requestId: RESUME_REQUEST_ID, correlationId: RESUME_CORRELATION_ID },
+      turnSelection: { modelAlias: "sol", reasoningEffort: "xhigh" },
       onDurableStart: () => { resumedDurableStart = true; },
       onEvent: (event) => { resumedEvents.push(event); },
     },
@@ -347,6 +396,24 @@ test("resident result retrieval outlives individual signed request windows", asy
   assert.equal(resumedDurableStart, true);
   assert.equal(firstResult.text, "delayed resident result");
   assert.equal(resumedResult.text, "delayed resident result");
+  const exactSelection = {
+    requestedProvider: null,
+    requestedModelAlias: "sol",
+    requestedModel: null,
+    requestedEffort: "xhigh",
+    resolvedProvider: "openai-codex",
+    resolvedModel: "gpt-5.6-sol",
+    resolvedEffort: "xhigh",
+    actualProvider: "openai-codex",
+    actualModel: "gpt-5.6-sol",
+    actualEffort: "xhigh",
+  };
+  assert.deepEqual(started.selection, exactSelection);
+  assert.deepEqual(resumed.selection, exactSelection);
+  assert.deepEqual(selectedRuntime, {
+    modelOverride: { provider: "openai-codex", model: "gpt-5.6-sol", reasoningEffort: "high" },
+    effort: "xhigh",
+  });
   assert.equal(agentStarts, 1, "coordinator reattachment must not start a second resident turn");
   assert.deepEqual(firstEvents, resumedEvents, "reattachment must replay the same durable evidence");
   assert.deepEqual(firstEvents.map((event) => event.sequence), [1, 2]);
@@ -363,4 +430,34 @@ test("resident result retrieval outlives individual signed request windows", asy
     "reattachment must preserve the resident-owned terminal timestamp and identity");
   assert.equal(firstTerminal?.lastSequence, 2);
   assert.equal(firstTerminal?.status, "complete");
+
+  const completedClient = new ResidentUdsClient({
+    socketPath,
+    serverInstanceId: "home23-jerry-harness",
+    credential,
+  });
+  t.after(() => completedClient.close());
+  const completedPort = new ResidentUdsAgentPort({
+    client: completedClient,
+    residentSlug: "jerry",
+    deadlineMs: 25,
+  });
+  const completed = await completedPort.runWithTurn(
+    "coordination:test:work",
+    "answer after a normal model delay",
+    {
+      coordinationOrigin,
+      coordinationRequest: {
+        requestId: "req_0198d95f-6c00-7000-8000-0000000000f1",
+        correlationId: "cor_0198d95f-6c00-7000-8000-0000000000f2",
+      },
+      turnSelection: { modelAlias: "sol", reasoningEffort: "xhigh" },
+      onDurableStart: () => undefined,
+      onEvent: () => undefined,
+    },
+  );
+  assert.equal((await completed.response).text, "delayed resident result");
+  assert.deepEqual(completed.selection, exactSelection,
+    "a post-terminal resident reattachment must recover the exact selection proof");
+  assert.equal(agentStarts, 1);
 });

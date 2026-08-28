@@ -22,6 +22,7 @@ import type {
   M11Database,
   QueuedCancellationReceipt,
   WorkRecord,
+  WorkTurnSelection,
 } from "./types.js";
 
 interface WorkRow {
@@ -102,6 +103,50 @@ SELECT work_id AS workId, attempt_id AS attemptId, fencing_token AS fencingToken
        result_digest AS resultDigest, artifact_refs_json AS artifactRefsJson,
        receipt_digest AS receiptDigest, created_at AS createdAt
 FROM terminal_receipts`;
+
+const TURN_SELECTION_SELECT = `
+SELECT requested_model_alias AS modelAlias,
+       requested_reasoning_effort AS reasoningEffort
+FROM work_turn_selections`;
+
+const REASONING_EFFORTS = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
+
+function normalizeTurnSelection(value: WorkTurnSelection | undefined): WorkTurnSelection {
+  if (value === undefined) {
+    return Object.freeze({ modelAlias: null, reasoningEffort: null });
+  }
+  assertExactKeys(
+    value,
+    ["modelAlias", "reasoningEffort"],
+    "invalid_request",
+    "Work turn selection",
+  );
+  const modelAlias = value.modelAlias;
+  if (
+    modelAlias !== null &&
+    (typeof modelAlias !== "string" || modelAlias.length < 1 || modelAlias.length > 256 ||
+      /[\0\r\n]/u.test(modelAlias))
+  ) {
+    throw new WorkError("invalid_request", "requested model alias is invalid");
+  }
+  const reasoningEffort = value.reasoningEffort;
+  if (
+    reasoningEffort !== null &&
+    (typeof reasoningEffort !== "string" || !REASONING_EFFORTS.has(reasoningEffort))
+  ) {
+    throw new WorkError("invalid_request", "requested reasoning effort is invalid");
+  }
+  return Object.freeze({ modelAlias, reasoningEffort });
+}
+
+function readTurnSelection(database: M11Database, workId: string): WorkTurnSelection {
+  const selection = database.readOne<WorkTurnSelection>(
+    `${TURN_SELECTION_SELECT} WHERE work_id = ?`,
+    workId,
+  );
+  if (!selection) throw new Error("durable Work is missing its turn selection");
+  return Object.freeze({ ...selection });
+}
 
 function freezeWork(row: WorkRow): WorkRecord {
   return Object.freeze({ ...row });
@@ -294,13 +339,15 @@ export function createWorkService(options: CreateWorkServiceOptions) {
 
   return Object.freeze({
     create(input: CreateWorkInput): CreateWorkResult {
+      const requestKeys = [
+        "principalId", "targetPrincipalId", "channelId", "originMessageId",
+        "roundId", "kind", "idempotencyKey", "manifest", "maxAutomaticOffers",
+        "requestId", "correlationId",
+        ...(Object.prototype.hasOwnProperty.call(input, "turnSelection") ? ["turnSelection"] : []),
+      ];
       assertExactKeys(
         input,
-        [
-          "principalId", "targetPrincipalId", "channelId", "originMessageId",
-          "roundId", "kind", "idempotencyKey", "manifest", "maxAutomaticOffers",
-          "requestId", "correlationId",
-        ],
+        requestKeys,
         "invalid_request",
         "Work creation request",
       );
@@ -334,11 +381,12 @@ export function createWorkService(options: CreateWorkServiceOptions) {
         throw new WorkError("invalid_request", "automatic offer budget must be between 1 and 16");
       }
       const manifest = normalizeManifest(input.manifest);
+      const turnSelection = normalizeTurnSelection(input.turnSelection);
       if (manifest.channelId !== channelId) {
         throw new WorkError("invalid_manifest", "manifest Channel differs from Work Channel");
       }
       const idempotencyKeyDigest = sha256(input.idempotencyKey);
-      const requestDigest = sha256(canonicalJson({
+      const digestInput: Record<string, unknown> = {
         principalId,
         targetPrincipalId,
         channelId,
@@ -347,7 +395,14 @@ export function createWorkService(options: CreateWorkServiceOptions) {
         kind: input.kind,
         manifest,
         maxAutomaticOffers: input.maxAutomaticOffers,
-      }));
+      };
+      // Preserve replay compatibility for every Work created before model and
+      // effort selection existed.  Only a non-default selection extends the
+      // immutable request digest.
+      if (turnSelection.modelAlias !== null || turnSelection.reasoningEffort !== null) {
+        digestInput.turnSelection = turnSelection;
+      }
+      const requestDigest = sha256(canonicalJson(digestInput));
       const existing = options.database.readOne<WorkRow>(
         `${WORK_SELECT} WHERE principal_id = ? AND idempotency_key_digest = ?`,
         principalId,
@@ -431,6 +486,14 @@ export function createWorkService(options: CreateWorkServiceOptions) {
           input.maxAutomaticOffers,
           createdAt,
           createdAt,
+        );
+        transaction.run(
+          `INSERT INTO work_turn_selections (
+            work_id, requested_model_alias, requested_reasoning_effort
+          ) VALUES (?, ?, ?)`,
+          workId,
+          turnSelection.modelAlias,
+          turnSelection.reasoningEffort,
         );
         transaction.run(
           `INSERT INTO outbox (
@@ -727,6 +790,11 @@ export function createWorkService(options: CreateWorkServiceOptions) {
       assertCoordinationId("work", workId);
       const row = options.database.readOne<WorkRow>(`${WORK_SELECT} WHERE id = ?`, workId);
       return row ? freezeWork(row) : null;
+    },
+
+    getTurnSelection(workId: string): WorkTurnSelection {
+      assertId("work", workId, "invalid_request");
+      return readTurnSelection(options.database, workId);
     },
 
     listResidentRecoverable(kind: string, limit = 100): readonly WorkRecord[] {

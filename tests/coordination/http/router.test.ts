@@ -8,6 +8,7 @@ import {
   createCoordinationLifecycle,
   disabledCoordinationFeatureFlags,
 } from "../../../src/coordination/app/index.js";
+import type { AuthorityEpoch } from "../../../src/coordination/epochs/index.js";
 import { createCoordinationHttpServer } from "../../../src/coordination/http/index.js";
 
 const fixture = loadCanonicalFixture("bootstrap") as BootstrapResponse;
@@ -22,6 +23,26 @@ const enabledShellFlags = Object.freeze({
   "coordination.process.enabled": true,
   "coordination.public_api.enabled": true,
 });
+const canonicalMessagesAuthority: AuthorityEpoch = Object.freeze({
+  capability: "messages",
+  epoch: 3,
+  mode: "canonical",
+  writer: "home23-coordination",
+  effectiveAtEventSequence: 41,
+  rollbackEpoch: 1,
+});
+
+function submissionRequest(overrides: Record<string, unknown> = {}) {
+  return {
+    messageId: "msg_0198d95f-6c00-7000-8000-0000000000c1",
+    clientMessageId: "client-message-0001",
+    text: "hello",
+    attachmentIds: [],
+    mentions: [],
+    replyToMessageId: null,
+    ...overrides,
+  };
+}
 
 function fixtureBootstrapService() {
   return createBootstrapService({
@@ -213,11 +234,141 @@ test("known but incomplete read and stream routes fail closed after authenticati
     "/api/v1/activity",
     "/api/v1/events",
     "/api/v1/communications/events",
+    `/api/v1/channels/${channelId}/execution-options`,
   ]) {
     const response = await fetch(`${address.origin}${path}`, { headers: authHeaders() });
     assert.equal(response.status, 503, path);
     assert.equal((await response.json() as any).error.code, "capability_unavailable", path);
   }
+});
+
+test("message submission keeps legacy null selection and forwards explicit selection exactly", async (t) => {
+  const submissions: any[] = [];
+  const application = createCoordinationApplication({
+    flags: {
+      ...enabledShellFlags,
+      "coordination.resident.jerry.enabled": true,
+    },
+    services: {
+      auth: { validateAccessToken: async () => authPrincipal },
+      authorityEpochs: {
+        current: () => canonicalMessagesAuthority,
+        listCurrent: async () => ({
+          epochs: [canonicalMessagesAuthority],
+          throughEventSequence: canonicalMessagesAuthority.effectiveAtEventSequence!,
+        }),
+      },
+      work: {} as any,
+      leases: {} as any,
+      messageSubmission: {
+        submitMessage: async (input) => {
+          submissions.push(input);
+          return { accepted: true };
+        },
+        selectionOptions: async ({ channelId }) => ({
+          channelId,
+          defaultModelAlias: "openai-default",
+          models: [{ alias: "openai-default", provider: "openai", model: "gpt-5.6-sol" }],
+          reasoningEfforts: ["low", "high"],
+        }),
+      },
+    },
+  });
+  const server = createCoordinationHttpServer({ application, port: 0 });
+  t.after(() => server.drain());
+  const address = await server.start();
+  const channelId = fixture.snapshot.channels[0]!.id;
+
+  const options = await fetch(`${address.origin}/api/v1/channels/${channelId}/execution-options`, {
+    headers: authHeaders(),
+  });
+  assert.equal(options.status, 200);
+  assert.deepEqual(
+    ((await options.json()) as any).models,
+    [{ alias: "openai-default", provider: "openai", model: "gpt-5.6-sol" }],
+  );
+
+  const legacy = await fetch(`${address.origin}/api/v1/channels/${channelId}/messages`, {
+    method: "POST",
+    headers: {
+      ...authHeaders(),
+      "content-type": "application/json",
+      "idempotency-key": "fixture-message-key-legacy",
+    },
+    body: JSON.stringify(submissionRequest()),
+  });
+  assert.equal(legacy.status, 202);
+  assert.equal(submissions[0].body.modelAlias, null);
+  assert.equal(submissions[0].body.reasoningEffort, null);
+
+  const selected = await fetch(`${address.origin}/api/v1/channels/${channelId}/messages`, {
+    method: "POST",
+    headers: {
+      ...authHeaders(),
+      "content-type": "application/json",
+      "idempotency-key": "fixture-message-key-selected",
+    },
+    body: JSON.stringify(submissionRequest({
+      messageId: "msg_0198d95f-6c00-7000-8000-0000000000c2",
+      clientMessageId: "client-message-0002",
+      modelAlias: "openai-default",
+      reasoningEffort: "high",
+    })),
+  });
+  assert.equal(selected.status, 202);
+  assert.equal(submissions[1].body.modelAlias, "openai-default");
+  assert.equal(submissions[1].body.reasoningEffort, "high");
+});
+
+test("malformed execution selections fail before message submission", async (t) => {
+  let submissions = 0;
+  const application = createCoordinationApplication({
+    flags: {
+      ...enabledShellFlags,
+      "coordination.resident.jerry.enabled": true,
+    },
+    services: {
+      auth: { validateAccessToken: async () => authPrincipal },
+      authorityEpochs: {
+        current: () => canonicalMessagesAuthority,
+        listCurrent: async () => ({
+          epochs: [canonicalMessagesAuthority],
+          throughEventSequence: canonicalMessagesAuthority.effectiveAtEventSequence!,
+        }),
+      },
+      work: {} as any,
+      leases: {} as any,
+      messageSubmission: {
+        submitMessage: async () => {
+          submissions += 1;
+          return { accepted: true };
+        },
+      },
+    },
+  });
+  const server = createCoordinationHttpServer({ application, port: 0 });
+  t.after(() => server.drain());
+  const address = await server.start();
+  const channelId = fixture.snapshot.channels[0]!.id;
+
+  for (const [index, selection] of [
+    { modelAlias: "" },
+    { modelAlias: "bad\nmodel" },
+    { reasoningEffort: "extreme" },
+  ].entries()) {
+    const response = await fetch(`${address.origin}/api/v1/channels/${channelId}/messages`, {
+      method: "POST",
+      headers: {
+        ...authHeaders(),
+        "content-type": "application/json",
+        "idempotency-key": `fixture-invalid-selection-${index}`,
+      },
+      body: JSON.stringify(submissionRequest(selection)),
+    });
+    assert.equal(response.status, 400);
+    assert.equal(((await response.json()) as any).error.code, "request_invalid");
+  }
+  assert.equal(submissions, 0);
 });
 
 test("M11-backed message submission fails closed until its port is injected", async (t) => {

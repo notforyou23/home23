@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AgentResponse, CoordinationTurnOrigin } from "../../agent/types.js";
 import type {
+  ResidentAgentPort,
   ResidentCommunicationPort,
   ResidentCoordinationAdapter,
 } from "../../coordination-adapter/index.js";
@@ -10,7 +11,7 @@ import {
   stableCommunicationEventId,
 } from "../communications/index.js";
 import type { JsonValue } from "../db/index.js";
-import type { MessageProjection } from "../messages/index.js";
+import type { MessageProjection, MessageTurnSelection } from "../messages/index.js";
 import type { ContextManifestInput, WorkRecord } from "../work/index.js";
 import { isCanonicalMessagesAuthority, type AuthorityEpoch } from "../epochs/index.js";
 import type { CoordinationLeasePort, CoordinationWorkPort } from "./types.js";
@@ -34,6 +35,12 @@ export interface DirectMessageChannelContext {
 }
 
 export interface DirectMessageContextPort {
+  resolveTarget(input: {
+    context: MessagingActorContext;
+    channelId: string;
+  }): Promise<Pick<DirectMessageChannelContext,
+    "channelId" | "conversationId" | "targetBotId" | "targetBotDisplayName" |
+    "targetPrincipalId" | "residentBinding">>;
   prepare(input: {
     context: MessagingActorContext;
     channelId: string;
@@ -54,6 +61,7 @@ export interface DirectMessageMessagePort {
     attachmentIds?: readonly string[];
     replyToMessageId: string | null; tombstonesMessageId: null;
     provenance: { roundId: string | null; workId: string | null };
+    turnSelection?: MessageTurnSelection;
   }): Promise<{ outcome: "committed" | "replayed"; message: MessageProjection; receipt: { eventSequence: number } }>;
   listMessages(input: {
     context: MessagingActorContext; channelId: string; limit: number;
@@ -64,6 +72,7 @@ export interface DirectMessageResidentTarget {
   resident: Pick<ResidentCoordinationAdapter,
     "execute" | "continueAccepted" | "reattach" | "recoverCompleted">;
   holderInstanceId: string;
+  models: Pick<ResidentAgentPort, "modelCatalog">;
   context(input: {
     principalId: string;
     requestId: string;
@@ -100,6 +109,7 @@ export function createDirectMessageSubmissionService(options: {
     kind: "user_message_committed" | "assistant_message_committed";
     requestId: string;
     correlationId: string;
+    turnSelection?: { modelAlias: string | null; reasoningEffort: string | null };
   }): Promise<void> => {
     if (!options.communications) return;
     const message = input.message;
@@ -132,6 +142,10 @@ export function createDirectMessageSubmissionService(options: {
           replyToMessageId: message.replyToMessageId,
           attachments: rawMessage.attachments ?? [],
           rawMessage,
+          ...(input.turnSelection === undefined ? {} : {
+            requestedModelAlias: input.turnSelection.modelAlias,
+            requestedEffort: input.turnSelection.reasoningEffort,
+          }),
         },
         terminal: true,
       },
@@ -260,6 +274,7 @@ export function createDirectMessageSubmissionService(options: {
         chatId: `coordination:${input.prepared.channelId}:${input.work.id}`,
         instruction: input.prepared.instruction, origin,
         requestId: input.requestId, correlationId: input.correlationId,
+        turnSelection: options.work.getTurnSelection(input.work.id),
         communication: {
           conversationId: input.prepared.conversationId,
           responseMessageId: responseMessageId(input.work.id),
@@ -308,6 +323,25 @@ export function createDirectMessageSubmissionService(options: {
   }
 
   return Object.freeze({
+    async selectionOptions(input: {
+      context: MessagingActorContext;
+      channelId: string;
+    }) {
+      assertAuthority();
+      const prepared = await options.context.resolveTarget(input);
+      const target = residentFor(prepared.residentBinding);
+      const catalog = await target.models.modelCatalog({
+        requestId: input.context.requestId,
+        correlationId: input.context.correlationId,
+      });
+      return Object.freeze({
+        channelId: prepared.channelId,
+        conversationId: prepared.conversationId,
+        targetBotId: prepared.targetBotId,
+        ...catalog,
+      });
+    },
+
     async recoverResidentWork() {
       assertAuthority();
       const recoverable = [
@@ -341,14 +375,37 @@ export function createDirectMessageSubmissionService(options: {
     async submitMessage(input: {
       context: MessagingActorContext; channelId: string; idempotencyKey: string;
       body: { messageId: string; clientMessageId: string; text: string | null;
-        attachmentIds: readonly string[]; mentions: readonly string[]; replyToMessageId: string | null };
+        attachmentIds: readonly string[]; mentions: readonly string[]; replyToMessageId: string | null;
+        modelAlias: string | null; reasoningEffort: import("../../agent/reasoning-effort.js").ReasoningEffort | null };
     }) {
       assertAuthority();
+      const turnSelection = Object.freeze({
+        modelAlias: input.body.modelAlias ?? null,
+        reasoningEffort: input.body.reasoningEffort ?? null,
+      });
       const endWork = once(options.beginWork());
       let workTransferred = false;
       try {
         if (input.context.identity.kind !== "owner" || input.body.text === null) {
           throw new MessagingError("request_invalid");
+        }
+        if (turnSelection.modelAlias !== null || turnSelection.reasoningEffort !== null) {
+          const resolved = await options.context.resolveTarget({
+            context: input.context,
+            channelId: input.channelId,
+          });
+          const catalog = await residentFor(resolved.residentBinding).models.modelCatalog({
+            requestId: input.context.requestId,
+            correlationId: input.context.correlationId,
+          });
+          if (
+            (turnSelection.modelAlias !== null &&
+              !catalog.models.some((model) => model.alias === turnSelection.modelAlias)) ||
+            (turnSelection.reasoningEffort !== null &&
+              !catalog.reasoningEfforts.includes(turnSelection.reasoningEffort))
+          ) {
+            throw new MessagingError("request_invalid");
+          }
         }
         const appended = await options.messages.sendMessage({
           context: input.context, channelId: input.channelId, messageId: input.body.messageId,
@@ -357,12 +414,14 @@ export function createDirectMessageSubmissionService(options: {
           attachmentIds: input.body.attachmentIds,
           clientMessageId: input.body.clientMessageId, replyToMessageId: input.body.replyToMessageId,
           tombstonesMessageId: null, provenance: { roundId: null, workId: null },
+          turnSelection,
         });
         await recordMessage({
           message: appended.message,
           kind: "user_message_committed",
           requestId: input.context.requestId,
           correlationId: input.context.correlationId,
+          turnSelection,
         });
         const prepared = await options.context.prepare({
           context: input.context, channelId: input.channelId,
@@ -378,6 +437,7 @@ export function createDirectMessageSubmissionService(options: {
           kind: "resident_turn", idempotencyKey: input.idempotencyKey,
           manifest: prepared.manifest, maxAutomaticOffers: 1,
           requestId: input.context.requestId, correlationId: input.context.correlationId,
+          turnSelection,
         });
         let response: Promise<MessageProjection>;
         if (created.work.state === "succeeded") {

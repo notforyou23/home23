@@ -17,6 +17,7 @@ const ROUTES = [
   { method: 'GET', path: /^\/channels(?:\/[^/]+)?$/ },
   { method: 'POST', path: /^\/channels$/ },
   { method: 'GET', path: /^\/channels\/[^/]+\/messages$/ },
+  { method: 'GET', path: /^\/channels\/[^/]+\/execution-options$/ },
   { method: 'POST', path: /^\/channels\/[^/]+\/(?:messages|read|coordinate)$/ },
   { method: 'GET', path: /^\/work\/[^/]+$/ },
   { method: 'POST', path: /^\/work\/[^/]+\/(?:cancel|retry)$/ },

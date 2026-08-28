@@ -533,7 +533,11 @@ async function main(): Promise<void> {
     xai: { apiKey: resolveApiKey('xai'), baseURL: resolveBaseUrl('xai') },
     'ollama-cloud': { apiKey: resolveApiKey('ollama-cloud'), baseURL: resolveBaseUrl('ollama-cloud') },
   });
-  const residentCoordinationHarness = await startResidentCoordinationHarness({ agent, history });
+  const residentCoordinationHarness = await startResidentCoordinationHarness({
+    agent,
+    history,
+    modelAliases: MODEL_ALIASES,
+  });
 
   const CHAT_TURN_ORPHAN_MAX_AGE_MS = 10 * 60 * 1000;
   const CHAT_TURN_ORPHAN_SWEEP_MS = 60 * 1000;

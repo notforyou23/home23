@@ -14,6 +14,38 @@ export interface ResidentWorkRequest {
   requestId: string;
   correlationId: string;
   communication?: ResidentCommunicationContext;
+  turnSelection: ResidentTurnSelectionRequest;
+}
+
+export interface ResidentTurnSelectionRequest {
+  modelAlias: string | null;
+  reasoningEffort: ReasoningEffort | null;
+}
+
+export interface ResidentTurnSelectionReceipt {
+  requestedProvider: string | null;
+  requestedModelAlias: string | null;
+  requestedModel: string | null;
+  requestedEffort: ReasoningEffort | null;
+  resolvedProvider: string | null;
+  resolvedModel: string | null;
+  resolvedEffort: ReasoningEffort | null;
+  actualProvider: string | null;
+  actualModel: string | null;
+  actualEffort: ReasoningEffort | null;
+}
+
+export interface ResidentModelCatalog {
+  models: readonly Readonly<{
+    alias: string;
+    provider: string;
+    model: string;
+    reasoningEffort: ReasoningEffort | null;
+  }>[];
+  defaultModel: string;
+  defaultProvider: string;
+  defaultReasoningEffort: ReasoningEffort;
+  reasoningEfforts: readonly ReasoningEffort[];
 }
 
 export interface ResidentCommunicationContext {
@@ -81,13 +113,23 @@ export interface ResidentObservation {
 }
 
 export interface ResidentAgentPort {
+  modelCatalog(input: {
+    requestId: string;
+    correlationId: string;
+  }): Promise<ResidentModelCatalog>;
   runWithTurn(
     chatId: string,
     userText: string,
     options: {
       coordinationOrigin: CoordinationTurnOrigin;
       coordinationRequest?: { requestId: string; correlationId: string };
-      onDurableStart(start: { turnId: string; chatId: string; persistedAt: string }): void | Promise<void>;
+      turnSelection: ResidentTurnSelectionRequest;
+      onDurableStart(start: {
+        turnId: string;
+        chatId: string;
+        persistedAt: string;
+        selection?: ResidentTurnSelectionReceipt;
+      }): void | Promise<void>;
       onEvent(event: ResidentDurableEvent): void;
     },
   ): Promise<{
@@ -95,6 +137,7 @@ export interface ResidentAgentPort {
     response: Promise<AgentResponse>;
     /** Present for transports that can prove the resident's durable terminal envelope. */
     terminal?: Promise<ResidentDurableTerminal>;
+    selection?: ResidentTurnSelectionReceipt;
   }>;
   stop(chatId: string, turnId: string): { stopped: boolean } | Promise<{ stopped: boolean }>;
 }

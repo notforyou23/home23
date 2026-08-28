@@ -14,6 +14,7 @@ import { ATTACHMENT_CREATE_IDEMPOTENCY_MIGRATION_SQL } from "./0005-attachment-c
 import { WORK_LIFECYCLE_SCHEMA_MIGRATION_SQL } from "./0006-work-lifecycle-schema.js";
 import { WORK_PRODUCT_CONTROLS_MIGRATION_SQL } from "./0007-work-product-controls.js";
 import { COMMUNICATION_EVIDENCE_INDEX_MIGRATION_SQL } from "./0008-communication-evidence-indexes.js";
+import { WORK_TURN_SELECTION_MIGRATION_SQL } from "./0009-work-turn-selection.js";
 
 export {
   COORDINATION_PRODUCT_SCHEMA_DEPENDENCIES,
@@ -68,6 +69,8 @@ export const COORDINATION_WORK_PRODUCT_CONTROLS_MIGRATION_CHECKSUM =
   "0e2da9e13c9a7e67c0f3e44a89049a6314e050d9fe530cba3cdb041dc4c67b7a";
 export const COORDINATION_COMMUNICATION_EVIDENCE_MIGRATION_CHECKSUM =
   "74f89ae90cfb730d0b0ca3ee8cff8a87d994cb566f7f8285d7f501a4d5ccd068";
+export const COORDINATION_WORK_TURN_SELECTION_MIGRATION_CHECKSUM =
+  "ff938ea71ba5fbfd131586817a218f7ee14e735cac97ab49f36dbedb40ea963b";
 
 export const COORDINATION_MIGRATIONS = Object.freeze([
   defineMigration(
@@ -126,6 +129,13 @@ export const COORDINATION_MIGRATIONS = Object.freeze([
     COORDINATION_COMMUNICATION_EVIDENCE_MIGRATION_CHECKSUM,
     "2219d7ac48779fc2d80895c13d17b01eac218a90eb2db1a0b6be86eac2c65a03",
   ),
+  defineMigration(
+    9,
+    "work-turn-selection",
+    WORK_TURN_SELECTION_MIGRATION_SQL,
+    COORDINATION_WORK_TURN_SELECTION_MIGRATION_CHECKSUM,
+    "35949780e04192606ef8615198e3462e4a3d3f8e0a016749e827be4d13e6cdfc",
+  ),
 ]);
 
 export const COORDINATION_SCHEMA_VERSION =
@@ -145,7 +155,7 @@ export function computeCoordinationMigrationPlanChecksum(
 // Reviewed with the immutable migration bytes. A historical migration edit
 // must fail before any database is opened.
 export const COORDINATION_MIGRATION_PLAN_CHECKSUM =
-  "4267c84e69ecd08f2e13964b00ed2ddea32f6e941b1dc8dbb50fbde2e1ba3dd5";
+  "4e8b5a509bc73c9d2df5d592ef5abb2e6fac70cdbf94159e6b10aa655f2dbc03";
 
 if (computeCoordinationMigrationPlanChecksum() !== COORDINATION_MIGRATION_PLAN_CHECKSUM) {
   throw new Error("coordination migration bytes differ from the reviewed migration checksum");

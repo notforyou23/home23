@@ -112,6 +112,7 @@ test("an exact send retry returns the original committed Message without another
     replyToMessageId: null,
     tombstonesMessageId: null,
     provenance: { roundId: null, workId: null },
+    turnSelection: { modelAlias: "sol", reasoningEffort: "high" as const },
   };
 
   const first = await messages.sendMessage(request);
@@ -130,9 +131,24 @@ test("an exact send retry returns the original committed Message without another
   assert.equal(fixture.database.readOne<{ count: number }>(
     "SELECT count(*) AS count FROM events WHERE type = 'message.appended'",
   )?.count, 1);
+  const durableIntent = JSON.parse(fixture.database.readOne<{ resultRef: string }>(
+    `SELECT result_ref_json AS resultRef FROM idempotency_records
+     WHERE operation = 'message.append'`,
+  )!.resultRef);
+  assert.deepEqual(durableIntent.turnSelection, {
+    modelAlias: "sol",
+    reasoningEffort: "high",
+  });
 
   await assert.rejects(
     messages.sendMessage({ ...request, text: "A different body." }),
+    (error: unknown) => error instanceof MessagingError && error.code === "idempotency_conflict",
+  );
+  await assert.rejects(
+    messages.sendMessage({
+      ...request,
+      turnSelection: { modelAlias: "terra", reasoningEffort: "high" },
+    }),
     (error: unknown) => error instanceof MessagingError && error.code === "idempotency_conflict",
   );
 });

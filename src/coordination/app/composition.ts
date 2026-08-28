@@ -393,6 +393,7 @@ export function createCoordinationProcess(
           communications,
         ),
         holderInstanceId: residentConfig.serverInstanceId,
+        models: residentAgent,
         context: ({ principalId, requestId, correlationId }:
           Parameters<DirectMessageResidentTarget["context"]>[0]) => ({
           principalId,

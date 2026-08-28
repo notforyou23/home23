@@ -13,7 +13,7 @@ function setup(start = 8000) {
   const work = createWorkService({ database, generateId, now: () => new Date(AT) });
   const leases = createLeaseService({ database, generateId, now: () => new Date(AT), leaseTtlMs: 60_000 });
   const control = createProductWorkControl({ database, work, leases, now: () => new Date(AT) });
-  const queued = work.create({ principalId: OWNER_ID, targetPrincipalId: BOT_ID, channelId: CHANNEL_ID, originMessageId: MESSAGE_ID, roundId: null, kind: "resident_turn", idempotencyKey: `product-control-create-${start}`, manifest: manifestInput(), maxAutomaticOffers: 2, requestId: fixtureId("request", start), correlationId: fixtureId("correlation", start) }).work;
+  const queued = work.create({ principalId: OWNER_ID, targetPrincipalId: BOT_ID, channelId: CHANNEL_ID, originMessageId: MESSAGE_ID, roundId: null, kind: "resident_turn", idempotencyKey: `product-control-create-${start}`, manifest: manifestInput(), maxAutomaticOffers: 2, requestId: fixtureId("request", start), correlationId: fixtureId("correlation", start), turnSelection: { modelAlias: "sol", reasoningEffort: "xhigh" } }).work;
   return { database, generateId, work, leases, control, queued };
 }
 
@@ -44,6 +44,7 @@ test("terminal retry creates one linked queued Work and rejects nonterminal or f
   s.control.cancel({ context: context(100), workId: s.queued.id, idempotencyKey: "cancel-before-retry" });
   const retried = s.control.retry({ context: context(101), workId: s.queued.id, idempotencyKey: "retry-product-0001" });
   assert.equal(retried.outcome, "retried"); assert.equal(retried.work.state, "queued"); assert.equal(retried.work.retryOfWorkId, s.queued.id);
+  assert.deepEqual(s.work.getTurnSelection(retried.work.id), { modelAlias: "sol", reasoningEffort: "xhigh" });
   const replay = s.control.retry({ context: context(102), workId: s.queued.id, idempotencyKey: "retry-product-0001" });
   assert.equal(replay.work.id, retried.work.id); assert.equal(replay.replayed, true);
   assert.throws(() => s.control.retry({ context: context(103), workId: retried.work.id, idempotencyKey: "retry-invalid-0001" }), (error: unknown) => error instanceof WorkError && error.code === "illegal_state");

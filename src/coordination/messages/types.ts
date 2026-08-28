@@ -6,6 +6,7 @@ import type {
 } from "../channels/index.js";
 import type { CoordinationTransaction } from "../db/index.js";
 import type { AttachmentSummary } from "../artifacts/index.js";
+import type { ReasoningEffort } from "../../agent/reasoning-effort.js";
 
 export type MessageKind = "text" | "system" | "result";
 export type MessageVisibility = "visible" | "tombstoned";
@@ -19,6 +20,15 @@ export interface MessageAuthor {
 export interface MessageProvenance {
   roundId: string | null;
   workId: string | null;
+}
+
+/**
+ * Durable execution intent bound to an owner Message's idempotency record.
+ * It is not Message content and is omitted entirely for the legacy default.
+ */
+export interface MessageTurnSelection {
+  modelAlias: string | null;
+  reasoningEffort: ReasoningEffort | null;
 }
 
 export interface PendingMessage {
@@ -47,6 +57,7 @@ export interface AppendMessageCommit {
   attachmentIds: readonly string[];
   actor: ResolvedMessagingActor;
   idempotency: MessagingIdempotencyClaim;
+  turnSelection?: MessageTurnSelection;
 }
 
 export interface AppendMessageResult {

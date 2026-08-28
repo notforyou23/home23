@@ -19,6 +19,7 @@ import {
 import { ResumableSsePump, resolveEventResumeSequence } from "../events/index.js";
 import { encodeCommunicationEventEnvelope } from "../communications/index.js";
 import { once } from "node:events";
+import { REASONING_EFFORTS, type ReasoningEffort } from "../../agent/reasoning-effort.js";
 
 type CapabilityName = keyof CoordinationAdvertisedCapabilities;
 
@@ -368,6 +369,25 @@ export function createCoordinationRouter(input: {
     });
   }));
 
+  router.get(
+    "/api/v1/channels/:channelId/execution-options",
+    productRead,
+    asyncRoute(async (request, response) => {
+      if (
+        !application.capabilities().capabilities.modelSelection ||
+        !application.services.messageSubmission?.selectionOptions
+      ) {
+        throw unavailable("modelSelection");
+      }
+      const metadata = requireCoordinationMetadata(response);
+      const options = await application.services.messageSubmission.selectionOptions({
+        context: requireCoordinationContext(response),
+        channelId: pathParameter(request.params.channelId),
+      });
+      response.json({ ...metadata, ...options });
+    }),
+  );
+
   router.post(
     "/api/v1/channels/:channelId/messages",
     messageSend,
@@ -379,12 +399,20 @@ export function createCoordinationRouter(input: {
       }
       const body = jsonObjectBody(request.body);
       const required = ["messageId", "clientMessageId", "text", "attachmentIds", "mentions", "replyToMessageId"];
+      const modelAlias = body.modelAlias === undefined ? null : body.modelAlias;
+      const requestedEffort = body.reasoningEffort === undefined ? null : body.reasoningEffort;
       if (required.some((key) => !(key in body)) ||
           typeof body.messageId !== "string" || typeof body.clientMessageId !== "string" ||
           (typeof body.text !== "string" && body.text !== null) ||
           !Array.isArray(body.attachmentIds) || !body.attachmentIds.every((id) => typeof id === "string") ||
           !Array.isArray(body.mentions) || !body.mentions.every((id) => typeof id === "string") ||
-          (typeof body.replyToMessageId !== "string" && body.replyToMessageId !== null)) {
+          (typeof body.replyToMessageId !== "string" && body.replyToMessageId !== null) ||
+          (modelAlias !== null &&
+            (typeof modelAlias !== "string" || modelAlias.length < 1 || modelAlias.length > 256 ||
+              /[\0\r\n]/u.test(modelAlias))) ||
+          (requestedEffort !== null &&
+            (typeof requestedEffort !== "string" ||
+              !REASONING_EFFORTS.includes(requestedEffort as ReasoningEffort)))) {
         throw new CoordinationHttpError("request_invalid", 400, false);
       }
       const result = await application.services.messageSubmission.submitMessage({
@@ -398,6 +426,8 @@ export function createCoordinationRouter(input: {
           attachmentIds: body.attachmentIds,
           mentions: body.mentions,
           replyToMessageId: body.replyToMessageId,
+          modelAlias: modelAlias as string | null,
+          reasoningEffort: requestedEffort as ReasoningEffort | null,
         },
       });
       const { response: _terminalResponse, ...accepted } = result;

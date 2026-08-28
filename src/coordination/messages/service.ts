@@ -10,8 +10,10 @@ import type {
   CreateMessageServiceOptions,
   MessageKind,
   MessageProvenance,
+  MessageTurnSelection,
   PendingMessage,
 } from "./types.js";
+import { REASONING_EFFORTS } from "../../agent/reasoning-effort.js";
 
 const MAX_MESSAGE_BYTES = 65_536;
 
@@ -77,6 +79,34 @@ function canonicalProvenance(value: MessageProvenance): MessageProvenance {
   });
 }
 
+function canonicalTurnSelection(
+  value: MessageTurnSelection | undefined,
+): MessageTurnSelection | null {
+  if (value === undefined) return null;
+  if (
+    !value || typeof value !== "object" ||
+    Object.keys(value).sort().join(",") !== "modelAlias,reasoningEffort"
+  ) {
+    throw new MessagingError("request_invalid");
+  }
+  if (
+    value.modelAlias !== null &&
+    (typeof value.modelAlias !== "string" || value.modelAlias.length < 1 ||
+      value.modelAlias.length > 256 || /[\0\r\n]/u.test(value.modelAlias))
+  ) {
+    throw new MessagingError("request_invalid");
+  }
+  if (
+    value.reasoningEffort !== null &&
+    (typeof value.reasoningEffort !== "string" ||
+      !REASONING_EFFORTS.includes(value.reasoningEffort))
+  ) {
+    throw new MessagingError("request_invalid");
+  }
+  if (value.modelAlias === null && value.reasoningEffort === null) return null;
+  return Object.freeze({ ...value });
+}
+
 export function createMessageService(options: CreateMessageServiceOptions) {
   const { repository, participantDirectory } = options;
   const now = options.now ?? (() => new Date());
@@ -95,6 +125,7 @@ export function createMessageService(options: CreateMessageServiceOptions) {
     replyToMessageId: string | null;
     tombstonesMessageId: string | null;
     provenance: MessageProvenance;
+    turnSelection?: MessageTurnSelection;
   }) {
     assertId("channel", input.channelId);
     assertId("message", input.messageId);
@@ -144,6 +175,7 @@ export function createMessageService(options: CreateMessageServiceOptions) {
     }
     const clientMessageId = canonicalClientMessageId(input.clientMessageId);
     const provenance = canonicalProvenance(input.provenance);
+    const turnSelection = canonicalTurnSelection(input.turnSelection);
     const message: PendingMessage = Object.freeze({
       id: input.messageId,
       channelId: input.channelId,
@@ -161,7 +193,7 @@ export function createMessageService(options: CreateMessageServiceOptions) {
       provenance,
       createdAt: canonicalNow(now),
     });
-    const digestInput: JsonValue = {
+    const digestInput: Record<string, JsonValue> = {
       channelId: message.channelId,
       messageId: message.id,
       authorPrincipalId: message.author.principalId,
@@ -177,6 +209,10 @@ export function createMessageService(options: CreateMessageServiceOptions) {
         workId: message.provenance.workId,
       },
     };
+    // An omitted/null selection must retain the exact pre-extension digest.
+    // A real override joins the Message commit so a process crash before Work
+    // creation cannot permit a different choice on retry.
+    if (turnSelection) digestInput.turnSelection = { ...turnSelection };
     const idempotency = createMessagingIdempotencyClaim(
       "message.append",
       actor.principalId,
@@ -188,6 +224,7 @@ export function createMessageService(options: CreateMessageServiceOptions) {
       attachmentIds: Object.freeze(attachmentIds),
       actor,
       idempotency,
+      ...(turnSelection ? { turnSelection } : {}),
     });
   }
 

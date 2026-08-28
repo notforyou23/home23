@@ -43,6 +43,30 @@ interface MessageRow {
   effectiveVisibility: "visible" | "tombstoned";
 }
 
+function storedTurnSelection(value: unknown): AppendMessageCommit["turnSelection"] {
+  if (value === undefined) return undefined;
+  const selection = value as Record<string, unknown> | null;
+  if (
+    !selection || typeof selection !== "object" ||
+    (selection.modelAlias !== null && typeof selection.modelAlias !== "string") ||
+    (selection.reasoningEffort !== null && typeof selection.reasoningEffort !== "string")
+  ) {
+    throw new Error("messaging idempotency turn selection is malformed");
+  }
+  return Object.freeze({
+    modelAlias: selection.modelAlias as string | null,
+    reasoningEffort: selection.reasoningEffort as NonNullable<AppendMessageCommit["turnSelection"]>["reasoningEffort"],
+  });
+}
+
+function sameTurnSelection(
+  left: AppendMessageCommit["turnSelection"],
+  right: AppendMessageCommit["turnSelection"],
+): boolean {
+  return left?.modelAlias === right?.modelAlias &&
+    left?.reasoningEffort === right?.reasoningEffort;
+}
+
 function messageSelect(where: string, effectiveProjection = true): string {
   const text = effectiveProjection
     ? `CASE WHEN EXISTS (
@@ -224,6 +248,9 @@ export class SqliteMessageRepository implements MessageRepository {
               aggregateId: input.message.id,
               aggregateVersion: 1,
             },
+            ...(input.turnSelection ? {
+              turnSelection: { ...input.turnSelection },
+            } : {}),
           },
           createdAt: input.message.createdAt,
         });
@@ -374,8 +401,12 @@ export class SqliteMessageRepository implements MessageRepository {
       const result = JSON.parse(idempotency.resultRefJson) as {
         messageId?: unknown;
         eventReference?: unknown;
+        turnSelection?: unknown;
       };
       messageId = result.messageId;
+      if (!sameTurnSelection(storedTurnSelection(result.turnSelection), input.turnSelection)) {
+        throw new Error("messaging idempotency turn selection differs from its request");
+      }
       eventReference = parseMessagingEventReference(
         result.eventReference,
         "messaging idempotency result has no exact message event reference",

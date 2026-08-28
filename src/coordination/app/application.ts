@@ -50,6 +50,13 @@ function capabilityDocument(input: {
   const canonicalMessagesAuthority = isCanonicalMessagesAuthority(
     input.services.authorityEpochs?.current("messages"),
   );
+  const messageSubmission =
+    mutationsEnabled &&
+    input.flags["coordination.resident.jerry.enabled"] === true &&
+    canonicalMessagesAuthority &&
+    input.services.messageSubmission !== undefined &&
+    input.services.work !== undefined &&
+    input.services.leases !== undefined;
 
   return Object.freeze({
     contractVersion: 1 as const,
@@ -69,13 +76,10 @@ function capabilityDocument(input: {
       messagesRead: processEnabled && input.services.messages !== undefined,
       unreadRead: processEnabled && input.services.unread !== undefined,
       // M11's public DTOs and authority-gated receipts are not merged yet.
-      messageSubmission:
-        mutationsEnabled &&
-        input.flags["coordination.resident.jerry.enabled"] === true &&
-        canonicalMessagesAuthority &&
-        input.services.messageSubmission !== undefined &&
-        input.services.work !== undefined &&
-        input.services.leases !== undefined,
+      messageSubmission,
+      modelSelection:
+        messageSubmission &&
+        typeof input.services.messageSubmission?.selectionOptions === "function",
       readCursorMutation: mutationsEnabled && input.services.unread !== undefined,
       search:
         processEnabled &&

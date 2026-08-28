@@ -17,6 +17,7 @@ import type {
   ResidentObservation,
   ResidentRun,
   ResidentTerminalReceipt,
+  ResidentTurnSelectionReceipt,
   ResidentWorkRequest,
 } from './types.js';
 
@@ -221,6 +222,66 @@ function terminalCommunicationEvent(input: {
   });
 }
 
+function exactTurnSelection(
+  request: ResidentWorkRequest,
+  receipt: ResidentTurnSelectionReceipt | undefined,
+): ResidentTurnSelectionReceipt {
+  const requested = request.turnSelection ?? Object.freeze({
+    modelAlias: null,
+    reasoningEffort: null,
+  });
+  return receipt ?? Object.freeze({
+    requestedProvider: null,
+    requestedModelAlias: requested.modelAlias,
+    requestedModel: null,
+    requestedEffort: requested.reasoningEffort,
+    resolvedProvider: null,
+    resolvedModel: null,
+    resolvedEffort: null,
+    actualProvider: null,
+    actualModel: null,
+    actualEffort: null,
+  });
+}
+
+function selectionCommunicationEvent(input: {
+  turnId: string;
+  persistedAt: string;
+  selection: ResidentTurnSelectionReceipt;
+  context: ResidentCommunicationContext;
+  origin: CoordinationTurnOrigin;
+}): CommunicationEventInput & { eventId: string } {
+  const { selection, context, origin } = input;
+  return Object.freeze({
+    eventId: stableCommunicationEventId(
+      `resident-turn:${input.turnId}:selection`,
+      input.persistedAt,
+    ),
+    conversationId: context.conversationId,
+    channelId: origin.channelId,
+    messageId: context.responseMessageId,
+    workId: origin.workId,
+    attemptId: origin.attemptId,
+    turnId: input.turnId,
+    parentEventId: null,
+    actor: context.actor,
+    source: {
+      system: 'resident_runtime',
+      provider: selection.actualProvider,
+      model: selection.actualModel,
+      adapter: 'agent_loop',
+      sourceEventType: 'turn.selection',
+      additionalFields: {
+        reasoningEffort: selection.actualEffort,
+      },
+    },
+    kind: 'receipt',
+    occurredAt: input.persistedAt,
+    payload: exactJsonRecord(selection),
+    terminal: false,
+  });
+}
+
 function parentCommunicationEventId(
   durable: ResidentDurableEvent,
   parentEvents: Map<string, string>,
@@ -298,7 +359,25 @@ export class ResidentCoordinationAdapter {
     const started = await this.agent.runWithTurn(request.chatId, request.instruction, {
       coordinationOrigin: origin,
       coordinationRequest: { requestId: request.requestId, correlationId: request.correlationId },
-      onDurableStart: () => this.coordination.assertCompleted(binding),
+      turnSelection: request.turnSelection,
+      onDurableStart: async ({ turnId, persistedAt, selection }) => {
+        await this.coordination.assertCompleted(binding);
+        if (this.communications && request.communication) {
+          const event = selectionCommunicationEvent({
+            turnId,
+            persistedAt,
+            selection: exactTurnSelection(request, selection),
+            context: request.communication,
+            origin,
+          });
+          await this.communications.append({
+            event,
+            requestId: request.requestId,
+            correlationId: request.correlationId,
+          });
+          lastEventId = event.eventId;
+        }
+      },
       onEvent: (durable) => {
         const parentEventId = parentCommunicationEventId(durable, parentEvents);
         lastEventId = stableCommunicationEventId(
@@ -383,7 +462,8 @@ export class ResidentCoordinationAdapter {
     const started = await this.agent.runWithTurn(request.chatId, request.instruction, {
       coordinationOrigin: origin,
       coordinationRequest: { requestId: request.requestId, correlationId: request.correlationId },
-      onDurableStart: async ({ turnId }) => {
+      turnSelection: request.turnSelection,
+      onDurableStart: async ({ turnId, persistedAt, selection }) => {
         await this.coordination.assertCurrent(binding);
         if (mode === 'start') {
           await this.coordination.accept(binding);
@@ -394,7 +474,25 @@ export class ResidentCoordinationAdapter {
         } else {
           await this.coordination.reattach(binding);
         }
+        if (this.communications && request.communication) {
+          await this.coordination.assertCurrent(binding);
+        }
         this.active.set(origin.workId, { chatId: request.chatId, turnId, binding, cancelling: false });
+        if (this.communications && request.communication) {
+          const event = selectionCommunicationEvent({
+            turnId,
+            persistedAt,
+            selection: exactTurnSelection(request, selection),
+            context: request.communication,
+            origin,
+          });
+          await this.communications.append({
+            event,
+            requestId: request.requestId,
+            correlationId: request.correlationId,
+          });
+          lastEventId = event.eventId;
+        }
       },
       onEvent: (durable) => {
         const parentEventId = parentCommunicationEventId(durable, parentEvents);

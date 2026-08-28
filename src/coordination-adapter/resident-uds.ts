@@ -3,6 +3,10 @@ import type { ConversationHistory } from "../agent/history.js";
 import type { AgentEvent, AgentResponse, CoordinationTurnOrigin } from "../agent/types.js";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../agent/reasoning-effort.js";
 import type { AgentLoop } from "../agent/loop.js";
+import {
+  resolveModelOverride,
+  type ModelAliases,
+} from "../agent/model-resolution.js";
 import { TurnStore } from "../chat/turn-store.js";
 import type { TurnEvent } from "../chat/turn-types.js";
 import { ResidentProtocolError, type JsonValue, type ResidentCredential, type ResidentRequestFrame } from "../coordination/resident-protocol/index.js";
@@ -11,9 +15,13 @@ import type {
   ResidentAgentPort,
   ResidentDurableEvent,
   ResidentDurableTerminal,
+  ResidentModelCatalog,
+  ResidentTurnSelectionReceipt,
+  ResidentTurnSelectionRequest,
 } from "./types.js";
 
 const START = "/internal/v1/turns/start";
+const MODEL_CATALOG = "/internal/v1/models";
 const MAX_INSTRUCTION_BYTES = 262_144;
 const RESULT_RETRY_MS = 100;
 const MAX_REQUEST_DEADLINE_MS = 25_000;
@@ -78,6 +86,69 @@ function reasoningEffort(value: JsonValue | undefined): ReasoningEffort | null {
     throw new ResidentProtocolError("request_invalid","resident reasoning effort is invalid");
   }
   return effort as ReasoningEffort|null;
+}
+
+function turnSelection(value: JsonValue | undefined): ResidentTurnSelectionRequest {
+  if (value === undefined || value === null) {
+    return Object.freeze({ modelAlias: null, reasoningEffort: null });
+  }
+  const selection=object(value as JsonValue);
+  const modelAlias=nullableString(selection.modelAlias,"modelAlias");
+  if(modelAlias!==null&&(modelAlias.length>256||/[\0\r\n]/u.test(modelAlias))){
+    throw new ResidentProtocolError("request_invalid","resident model alias is invalid");
+  }
+  return Object.freeze({modelAlias,reasoningEffort:reasoningEffort(selection.reasoningEffort)});
+}
+
+function selectionReceipt(
+  value: JsonValue | undefined,
+  requested: ResidentTurnSelectionRequest,
+):ResidentTurnSelectionReceipt{
+  if (value === undefined || value === null) {
+    return Object.freeze({
+      requestedProvider: null,
+      requestedModelAlias: requested.modelAlias,
+      requestedModel: null,
+      requestedEffort: requested.reasoningEffort,
+      resolvedProvider: null,
+      resolvedModel: null,
+      resolvedEffort: null,
+      actualProvider: null,
+      actualModel: null,
+      actualEffort: null,
+    });
+  }
+  const selection=object(value as JsonValue);
+  return Object.freeze({
+    requestedProvider:nullableString(selection.requestedProvider,"requestedProvider"),
+    requestedModelAlias:nullableString(selection.requestedModelAlias,"requestedModelAlias"),
+    requestedModel:nullableString(selection.requestedModel,"requestedModel"),
+    requestedEffort:reasoningEffort(selection.requestedEffort),
+    resolvedProvider:nullableString(selection.resolvedProvider,"resolvedProvider"),
+    resolvedModel:nullableString(selection.resolvedModel,"resolvedModel"),
+    resolvedEffort:reasoningEffort(selection.resolvedEffort),
+    actualProvider:nullableString(selection.actualProvider,"actualProvider"),
+    actualModel:nullableString(selection.actualModel,"actualModel"),
+    actualEffort:reasoningEffort(selection.actualEffort),
+  });
+}
+
+function selectionJson(
+  requested:ResidentTurnSelectionRequest,
+  source:{provider:string|null;model:string|null;reasoningEffort:ReasoningEffort|null},
+):JsonValue{
+  return {
+    requestedProvider:null,
+    requestedModelAlias:requested.modelAlias,
+    requestedModel:null,
+    requestedEffort:requested.reasoningEffort,
+    resolvedProvider:source.provider,
+    resolvedModel:source.model,
+    resolvedEffort:source.reasoningEffort,
+    actualProvider:source.provider,
+    actualModel:source.model,
+    actualEffort:source.reasoningEffort,
+  };
 }
 
 function exactTimestamp(value: unknown, label: string): string {
@@ -167,7 +238,8 @@ function assertResidentBinding(
 
 export interface ResidentTurnUdsServerOptions {
   socketPath:string;serverInstanceId:string;credential:ResidentCredential;
-  residentSlug:string;agent:Pick<AgentLoop,"runWithTurn"|"stop"|"isRunning">;history:ConversationHistory;
+  residentSlug:string;agent:Pick<AgentLoop,"runWithTurn"|"stop"|"isRunning"|"getModel"|"getProvider"|"getReasoningEffort">;history:ConversationHistory;
+  modelAliases?:ModelAliases;
   now?:()=>number;
 }
 
@@ -182,19 +254,41 @@ export class ResidentTurnUdsServer {
   start(){return this.#server.start();}
   close(){return this.#server.close();}
   async #handle(request:ResidentRequestFrame,signal:AbortSignal):Promise<JsonValue>{
+    if(request.method==="GET"&&request.path===MODEL_CATALOG){
+      const aliases=this.options.modelAliases??{};
+      return {
+        models:Object.entries(aliases).sort(([left],[right])=>left.localeCompare(right)).map(([alias,value])=>({
+          alias,provider:value.provider,model:value.model,reasoningEffort:value.reasoningEffort??null,
+        })),
+        defaultModel:this.options.agent.getModel(),
+        defaultProvider:this.options.agent.getProvider(),
+        defaultReasoningEffort:this.options.agent.getReasoningEffort(),
+        reasoningEfforts:[...REASONING_EFFORTS],
+      };
+    }
     if(request.method==="POST"&&request.path===START){
       const p=object(request.payload);const chatId=string(p.chatId,"chatId");const instruction=string(p.instruction,"instruction");const turnId=string(p.turnId,"turnId");const provenance=origin(p.origin);
       assertResidentBinding(provenance,this.options.residentSlug,this.options.serverInstanceId);
+      const requested=turnSelection(p.turnSelection);
       if(Buffer.byteLength(instruction,"utf8")>MAX_INSTRUCTION_BYTES)throw new ResidentProtocolError("request_invalid","resident instruction is too large");
       if(turnId!==`coord-${provenance.workId}`)throw new ResidentProtocolError("fence_invalid","resident turn ID does not match its Work origin");
       if(request.fence!==residentFence(provenance)||request.correlationId!==string(p.correlationId,"correlationId"))throw new ResidentProtocolError("fence_invalid","resident turn fence or correlation does not match");
       const started=this.#store.startEnvelope(chatId,turnId);if(started&&!exactOrigin(started.coordination_origin,provenance))throw new ResidentProtocolError("fence_invalid","resident turn origin does not match durable start");
-      const final=this.#store.finalEnvelope(chatId,turnId);if(final)return{turnId,chatId,persistedAt:final.ended_at??final.started_at,recovered:true};
+      const final=this.#store.finalEnvelope(chatId,turnId);if(final)return{
+        turnId,chatId,persistedAt:final.ended_at??final.started_at,recovered:true,
+        selection:selectionJson(requested,{provider:started?.provider??null,model:started?.model??null,reasoningEffort:started?.reasoning_effort??null}),
+      };
       if(started&&!this.options.agent.isRunning(chatId))throw new ResidentProtocolError("connection_lost","persisted resident turn requires coordinator recovery",{retryable:true});
-      if(!started){const run=await this.options.agent.runWithTurn(chatId,instruction,{turnId,coordinationOrigin:provenance,onDurableStart:async()=>undefined,onEvent:()=>undefined});this.#responses.set(turnId,run.response);void run.response.finally(()=>setTimeout(()=>this.#responses.delete(turnId),60_000).unref()).catch(()=>undefined);}
+      if(!started){
+        const modelOverride=requested.modelAlias===null?undefined:resolveModelOverride(requested.modelAlias,this.options.modelAliases);
+        if(requested.modelAlias!==null&&!modelOverride){
+          throw new ResidentProtocolError("request_invalid","requested resident model is unavailable");
+        }
+        const run=await this.options.agent.runWithTurn(chatId,instruction,{turnId,coordinationOrigin:provenance,onDurableStart:async()=>undefined,onEvent:()=>undefined,...(modelOverride?{modelOverride}:{}),...(requested.reasoningEffort?{effort:requested.reasoningEffort}:{})});this.#responses.set(turnId,run.response);void run.response.finally(()=>setTimeout(()=>this.#responses.delete(turnId),60_000).unref()).catch(()=>undefined);
+      }
       const durable=this.#store.startEnvelope(chatId,turnId);if(!durable)throw new Error("AgentLoop returned before durable turn start");
       if(signal.aborted)throw new ResidentProtocolError("request_cancelled","resident start was cancelled");
-      return{turnId,chatId,persistedAt:durable.started_at,recovered:Boolean(started)};
+      return{turnId,chatId,persistedAt:durable.started_at,recovered:Boolean(started),selection:selectionJson(requested,{provider:durable.provider??null,model:durable.model??null,reasoningEffort:durable.reasoning_effort??null})};
     }
     const match=/^\/internal\/v1\/turns\/([^/]+)\/(result|stop|events)$/.exec(request.path);
     if(!match)throw new ResidentProtocolError("request_invalid","unknown resident turn operation");
@@ -272,6 +366,40 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
     this.#startTimeoutMs=positiveSafeInteger(options.startTimeoutMs??DEFAULT_START_TIMEOUT_MS,"resident start timeout");
     this.#resultTimeoutMs=positiveSafeInteger(options.resultTimeoutMs??DEFAULT_RESULT_TIMEOUT_MS,"resident result timeout");
     this.#retryDelayMs=positiveSafeInteger(options.retryDelayMs??RESULT_RETRY_MS,"resident result retry delay");
+  }
+  async modelCatalog(input:{requestId:string;correlationId:string}):Promise<ResidentModelCatalog>{
+    const now=()=>this.options.now?.()??Date.now();
+    const response=await this.options.client.request({
+      method:"GET",path:MODEL_CATALOG,payload:{},deadlineAtMs:now()+this.#requestDeadlineMs,
+      requestId:input.requestId,correlationId:input.correlationId,
+    });
+    const payload=object(response.payload);
+    if(!Array.isArray(payload.models)||!Array.isArray(payload.reasoningEfforts)){
+      throw new ResidentProtocolError("request_invalid","resident model catalog is invalid");
+    }
+    const models=payload.models.map((raw)=>{
+      const value=object(raw);
+      return Object.freeze({
+        alias:string(value.alias,"model alias"),provider:string(value.provider,"model provider"),
+        model:string(value.model,"model"),reasoningEffort:reasoningEffort(value.reasoningEffort),
+      });
+    });
+    const efforts=payload.reasoningEfforts.map((raw)=>{
+      if(typeof raw!=="string"||!REASONING_EFFORTS.includes(raw as ReasoningEffort)){
+        throw new ResidentProtocolError("request_invalid","resident reasoning effort catalog is invalid");
+      }
+      return raw as ReasoningEffort;
+    });
+    const defaultReasoningEffort=reasoningEffort(payload.defaultReasoningEffort);
+    if(defaultReasoningEffort===null){
+      throw new ResidentProtocolError("request_invalid","resident default reasoning effort is invalid");
+    }
+    return Object.freeze({
+      models:Object.freeze(models),defaultModel:string(payload.defaultModel,"defaultModel"),
+      defaultProvider:string(payload.defaultProvider,"defaultProvider"),
+      defaultReasoningEffort,
+      reasoningEfforts:Object.freeze(efforts),
+    });
   }
   async #replayEvents(input:{
     chatId:string;turnId:string;origin:CoordinationTurnOrigin;correlationId:string;
@@ -375,10 +503,11 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
       await new Promise(resolve=>setTimeout(resolve,EVENT_REPLAY_DELAY_MS));
     }
   }
-  async runWithTurn(chatId:string,userText:string,options:{coordinationOrigin:CoordinationTurnOrigin;coordinationRequest?:{requestId:string;correlationId:string};onDurableStart(start:{turnId:string;chatId:string;persistedAt:string}):void|Promise<void>;onEvent(event:ResidentDurableEvent):void}){
+  async runWithTurn(chatId:string,userText:string,options:{coordinationOrigin:CoordinationTurnOrigin;coordinationRequest?:{requestId:string;correlationId:string};turnSelection:ResidentTurnSelectionRequest;onDurableStart(start:{turnId:string;chatId:string;persistedAt:string;selection?:ResidentTurnSelectionReceipt}):void|Promise<void>;onEvent(event:ResidentDurableEvent):void}){
     if(options.coordinationOrigin.authorityReference!==`resident:${this.options.residentSlug}`)throw new TypeError("resident authority does not match the configured port");
     const request=options.coordinationRequest;if(!request)throw new Error("resident coordination request identity is required");const turnId=`coord-${options.coordinationOrigin.workId}`;const fence=residentFence(options.coordinationOrigin);const now=()=>this.options.now?.()??Date.now();
-    const payload={chatId,instruction:userText,turnId,origin:jsonOrigin(options.coordinationOrigin),correlationId:request.correlationId} as JsonValue;
+    const requested=options.turnSelection??Object.freeze({modelAlias:null,reasoningEffort:null});
+    const payload={chatId,instruction:userText,turnId,origin:jsonOrigin(options.coordinationOrigin),correlationId:request.correlationId,turnSelection:{...requested}} as JsonValue;
     const startDeadlineAt=now()+this.#startTimeoutMs;let started;let firstStartRequest=true;
     for(;;){
       const remaining=startDeadlineAt-now();
@@ -394,7 +523,7 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
         await new Promise(resolve=>setTimeout(resolve,Math.min(this.#retryDelayMs,retryRemaining)));
       }
     }
-    const s=object(started.payload);await options.onDurableStart({turnId:string(s.turnId,"turnId"),chatId:string(s.chatId,"chatId"),persistedAt:string(s.persistedAt,"persistedAt")});this.#active.set(turnId,{chatId,origin:options.coordinationOrigin,correlationId:request.correlationId});
+    const s=object(started.payload);const selection=selectionReceipt(s.selection,requested);await options.onDurableStart({turnId:string(s.turnId,"turnId"),chatId:string(s.chatId,"chatId"),persistedAt:string(s.persistedAt,"persistedAt"),selection});this.#active.set(turnId,{chatId,origin:options.coordinationOrigin,correlationId:request.correlationId});
     const result=(async()=>{
       const resultDeadlineAt=now()+this.#resultTimeoutMs;
       for(;;){
@@ -418,7 +547,7 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
       void this.stop(chatId,turnId).catch(()=>undefined);
       throw error;
     }).finally(()=>{this.#active.delete(turnId);});
-    return{turnId,response,terminal:eventReplay};
+    return{turnId,response,terminal:eventReplay,selection};
   }
   async stop(chatId:string,turnId:string){
     const active=this.#active.get(turnId);if(!active||active.chatId!==chatId)return{stopped:false};const result=await this.options.client.request({method:"POST",path:`/internal/v1/turns/${encodeURIComponent(turnId)}/stop`,payload:{chatId,origin:jsonOrigin(active.origin),correlationId:active.correlationId},deadlineAtMs:(this.options.now?.()??Date.now())+5_000,fence:residentFence(active.origin),correlationId:active.correlationId});return{stopped:object(result.payload).stopped===true};

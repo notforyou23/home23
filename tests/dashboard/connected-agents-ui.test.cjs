@@ -42,10 +42,29 @@ test('browser token is tab scoped and every product call uses the canonical faca
   const html = read('connected-agents.html');
   const js = read('connected-agents.js');
   assert.match(js, /sessionStorage\.getItem\("home23:product-token"\)/);
-  assert.doesNotMatch(js, /localStorage/);
+  assert.doesNotMatch(js, /localStorage[^\n]*product-token|product-token[^\n]*localStorage/);
   assert.match(js, /const API = "\/home23\/api\/product"/);
   assert.match(js, /headers\.authorization = `Bearer \$\{state\.token\}`/);
   assert.match(html, /Legacy dashboard/);
+});
+
+test('model and effort controls use resident options and capture exact retry identity', () => {
+  const html = read('connected-agents.html');
+  const js = read('connected-agents.js');
+  const selection = read('connected-agents-selection.js');
+  const css = read('connected-agents.css');
+  assert.match(html, /connected-agents-selection\.js/);
+  assert.match(js, /\/execution-options/);
+  assert.match(js, /composer-model/);
+  assert.match(js, /composer-effort/);
+  assert.match(js, /modelSelection/);
+  assert.match(js, /Selection\.capture/);
+  assert.match(js, /Selection\.requestFields\(record\)/);
+  assert.match(js, /Saved for this conversation and captured for each send/);
+  assert.match(selection, /home23:connected-agents:execution:/);
+  assert.match(selection, /modelAlias/);
+  assert.match(selection, /reasoningEffort/);
+  assert.match(css, /\.ca-execution-controls/);
 });
 
 test('search, keyboard, responsive navigation, and details stay conversation-first', () => {

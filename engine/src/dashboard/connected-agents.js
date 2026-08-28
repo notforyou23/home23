@@ -1,7 +1,9 @@
 (() => {
   const API = "/home23/api/product";
   const Inspector = window.ConnectedAgentsInspector;
+  const Selection = window.ConnectedAgentsSelection;
   if (!Inspector) throw new Error("Connected Agents Inspector projection is unavailable");
+  if (!Selection) throw new Error("Connected Agents execution selection is unavailable");
   const state = {
     token: sessionStorage.getItem("home23:product-token") || "",
     capabilities: null,
@@ -32,6 +34,9 @@
     presentation: Inspector.createPresentation(),
     workById: new Map(),
     workMutationKeys: new Map(),
+    executionOptions: new Map(),
+    executionSelection: new Map(),
+    executionErrors: new Map(),
   };
   const $ = (id) => document.getElementById(id);
   const esc = (v) =>
@@ -137,6 +142,52 @@
   }
   function hasEvidenceCapability() {
     return state.capabilities?.capabilities?.communicationEvidence === true;
+  }
+  function hasModelSelectionCapability() {
+    return state.capabilities?.capabilities?.modelSelection === true;
+  }
+  function preferenceStorage() {
+    try {
+      return window.localStorage;
+    } catch {
+      return null;
+    }
+  }
+  async function loadExecutionOptions(channelId, force = false) {
+    if (!hasModelSelectionCapability()) return null;
+    if (!force && state.executionOptions.has(channelId)) {
+      return state.executionOptions.get(channelId);
+    }
+    try {
+      const wire = await api(`/channels/${encodeURIComponent(channelId)}/execution-options`);
+      const options = Selection.normalizeOptions(wire, channelId);
+      state.executionOptions.set(channelId, options);
+      state.executionErrors.delete(channelId);
+      const selected = Selection.loadPreference(preferenceStorage(), channelId, options);
+      state.executionSelection.set(channelId, selected);
+      return options;
+    } catch (error) {
+      state.executionOptions.delete(channelId);
+      state.executionSelection.delete(channelId);
+      state.executionErrors.set(channelId, {
+        message: error.message || "Execution choices are unavailable.",
+        requestId: error.requestId || null,
+      });
+      return null;
+    }
+  }
+  function executionSelection(channelId) {
+    return state.executionSelection.get(channelId) || Selection.EMPTY;
+  }
+  function updateExecutionSelection(channelId) {
+    const options = state.executionOptions.get(channelId);
+    if (!options) return;
+    const selected = Selection.normalizePreference({
+      modelAlias: $("composer-model")?.value || null,
+      reasoningEffort: $("composer-effort")?.value || null,
+    }, options);
+    state.executionSelection.set(channelId, selected);
+    Selection.savePreference(preferenceStorage(), channelId, selected, options);
   }
   function resetEvidence(conversationId) {
     clearTimeout(state.evidenceTimer);
@@ -272,9 +323,13 @@
         : kind === "degraded"
           ? "Home23 is reconnecting. Messages remain visible; sending is paused."
           : "Home23 is offline.");
-    document
-      .querySelectorAll(".ca-send")
-      .forEach((b) => (b.disabled = kind !== "online"));
+    document.querySelectorAll(".ca-send, #composer-text").forEach((control) => {
+      control.disabled = kind !== "online" ||
+        state.capabilities?.capabilities?.messageSubmission !== true;
+    });
+    document.querySelectorAll(".ca-execution-select").forEach((control) => {
+      control.disabled = kind !== "online" || !state.executionOptions.has(state.selected);
+    });
   }
   async function load() {
     setConnection("loading");
@@ -415,6 +470,7 @@
       const [channelResult, transcript] = await Promise.all([
         api(`/channels/${encodeURIComponent(channelId)}`),
         api(`/channels/${encodeURIComponent(channelId)}/messages?limit=100`),
+        loadExecutionOptions(channelId),
       ]);
       const channel = channelResult.channel;
       const messages = transcript.messages || [];
@@ -469,6 +525,7 @@
     const [channelResult, transcript] = await Promise.all([
       api(`/channels/${encodeURIComponent(channelId)}`),
       api(`/channels/${encodeURIComponent(channelId)}/messages?limit=100`),
+      loadExecutionOptions(channelId),
     ]);
     if (state.selected !== channelId) return;
     const priorPane = $("messages");
@@ -519,6 +576,28 @@
       notice.textContent = "";
     }
   }
+  function executionControlsHtml(channelId) {
+    if (!hasModelSelectionCapability()) return "";
+    const options = state.executionOptions.get(channelId);
+    const error = state.executionErrors.get(channelId);
+    if (!options) {
+      return `<div class="ca-execution-controls unavailable" role="status"><span>Home defaults will be used. ${esc(error?.message || "Execution choices are loading.")}${error?.requestId ? ` · request ${esc(error.requestId)}` : ""}</span><button type="button" id="execution-options-retry">Retry choices</button></div>`;
+    }
+    const selected = executionSelection(channelId);
+    const modelOptions = options.models.map((model) =>
+      `<option value="${esc(model.alias)}"${selected.modelAlias === model.alias ? " selected" : ""}>${esc(model.alias)}</option>`).join("");
+    const effortLabel = {
+      none: "None",
+      low: "Low",
+      medium: "Medium",
+      high: "High",
+      xhigh: "Extra high",
+      max: "Max",
+    };
+    const effortOptions = options.reasoningEfforts.map((effort) =>
+      `<option value="${esc(effort)}"${selected.reasoningEffort === effort ? " selected" : ""}>${esc(effortLabel[effort] || effort)}</option>`).join("");
+    return `<div class="ca-execution-controls" aria-label="Conversation execution choices"><label><span>Model</span><select class="ca-execution-select" id="composer-model"><option value=""${selected.modelAlias === null ? " selected" : ""}>Home default · ${esc(options.defaultModel)}</option>${modelOptions}</select></label><label><span>Effort</span><select class="ca-execution-select" id="composer-effort"><option value=""${selected.reasoningEffort === null ? " selected" : ""}>Default · ${esc(effortLabel[options.defaultReasoningEffort] || options.defaultReasoningEffort)}</option>${effortOptions}</select></label><small>Saved for this conversation and captured for each send.</small></div>`;
+  }
   function renderConversation(channel, messages, options = {}) {
     const activity = inboxFor(channel.id)?.activity;
     // The current dashboard body parser cannot safely stream the canonical
@@ -552,8 +631,10 @@
         : "No turn evidence has been emitted"
       : "Turn evidence is not available from this Home23";
     const evidenceNotice = `<div class="ca-degraded" id="evidence-notice" role="status" hidden></div>`;
+    const executionControls = executionControlsHtml(channel.id);
+    const canSend = state.capabilities?.capabilities?.messageSubmission === true;
     $("conversation").innerHTML =
-      `<header class="ca-thread-head"><button class="ca-back" id="back-button" aria-label="Back to Inbox">‹</button><span class="ca-avatar ${channel.kind === "group" ? "channel" : ""}">${esc(channel.title.slice(0, 2).toUpperCase())}</span><div class="ca-thread-identity"><h2>${esc(channel.title)}</h2><p>${channel.kind === "group" ? `${members.length} Bot${members.length === 1 ? "" : "s"}` : "Direct conversation"}</p></div><div class="ca-thread-actions"><button class="ca-details-button" id="inspector-button" ${inspectorDisabled} title="${esc(evidenceTitle)}" aria-label="${esc(evidenceTitle)}">Inspector</button><button class="ca-details-button" id="details-button">Details</button></div></header>${evidenceNotice}<div class="ca-messages" id="messages" aria-live="polite">${body}</div><div class="ca-activity" id="thread-activity">${activity?.state && activity.state !== "idle" ? '<i class="ca-activity-dot"></i>' + esc(activity.label || "Active now") : ""}</div><div class="ca-composer-wrap"><form class="ca-composer" id="composer"><button class="ca-attach" type="button" id="attach-button" ${canAttach ? "" : "disabled"} aria-label="${canAttach ? "Add attachment" : "Attachments are not available"}" title="${canAttach ? "Add attachment" : "Attachments are not available"}">＋</button><textarea id="composer-text" rows="1" placeholder="Message ${esc(channel.title)}" aria-label="Message ${esc(channel.title)}" required></textarea><button class="ca-send" type="submit" aria-label="Send message">↑</button></form><input id="attachment-input" type="file" multiple hidden></div>`;
+      `<header class="ca-thread-head"><button class="ca-back" id="back-button" aria-label="Back to Inbox">‹</button><span class="ca-avatar ${channel.kind === "group" ? "channel" : ""}">${esc(channel.title.slice(0, 2).toUpperCase())}</span><div class="ca-thread-identity"><h2>${esc(channel.title)}</h2><p>${channel.kind === "group" ? `${members.length} Bot${members.length === 1 ? "" : "s"}` : "Direct conversation"}</p></div><div class="ca-thread-actions"><button class="ca-details-button" id="inspector-button" ${inspectorDisabled} title="${esc(evidenceTitle)}" aria-label="${esc(evidenceTitle)}">Inspector</button><button class="ca-details-button" id="details-button">Details</button></div></header>${evidenceNotice}<div class="ca-messages" id="messages" aria-live="polite">${body}</div><div class="ca-activity" id="thread-activity">${activity?.state && activity.state !== "idle" ? '<i class="ca-activity-dot"></i>' + esc(activity.label || "Active now") : ""}</div><div class="ca-composer-wrap">${executionControls}<form class="ca-composer" id="composer"><button class="ca-attach" type="button" id="attach-button" ${canAttach ? "" : "disabled"} aria-label="${canAttach ? "Add attachment" : "Attachments are not available"}" title="${canAttach ? "Add attachment" : "Attachments are not available"}">＋</button><textarea id="composer-text" rows="1" placeholder="${canSend ? `Message ${esc(channel.title)}` : "Sending is unavailable"}" aria-label="Message ${esc(channel.title)}" ${canSend ? "required" : "disabled"}></textarea><button class="ca-send" type="submit" aria-label="Send message" ${canSend ? "" : "disabled"}>↑</button></form><input id="attachment-input" type="file" multiple hidden></div>`;
     renderEvidenceNotice();
     $("back-button").addEventListener("click", () => {
       $("conversation").classList.remove("open");
@@ -570,6 +651,12 @@
     });
     $("details-button").addEventListener("click", () => showDetails(channel));
     $("composer").addEventListener("submit", sendMessage);
+    $("composer-model")?.addEventListener("change", () => updateExecutionSelection(channel.id));
+    $("composer-effort")?.addEventListener("change", () => updateExecutionSelection(channel.id));
+    $("execution-options-retry")?.addEventListener("click", async () => {
+      await loadExecutionOptions(channel.id, true);
+      if (state.selected === channel.id) renderConversation(channel, state.currentMessages, { scrollToBottom: false });
+    });
     $("composer-text").addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
@@ -1002,24 +1089,34 @@
     event?.preventDefault();
     if (state.connection !== "online")
       return toast("Reconnect before sending.");
+    if (state.capabilities?.capabilities?.messageSubmission !== true)
+      return toast("Sending is not available from this Home23.");
     const input = $("composer-text"),
       text = retryRecord?.text || input.value.trim();
     if (!text) return;
+    const capturedSelection = retryRecord || Selection.capture(executionSelection(state.selected));
     const record = retryRecord || {
       text,
       messageId: opaqueId("msg"),
       clientMessageId: opaqueId("client"),
       idempotencyKey: idem("web-message"),
+      modelAlias: capturedSelection.modelAlias,
+      reasoningEffort: capturedSelection.reasoningEffort,
     };
     const { messageId, clientMessageId } = record;
     const pending = document.createElement("article");
     pending.className = "ca-message owner pending";
     pending.id = `message-${messageId}`;
-    pending.innerHTML = `<div class="ca-message-meta"><span>Sending…</span></div><div>${esc(text).replace(/\n/g, "<br>")}</div>`;
+    const selectionFacts = [
+      record.modelAlias ? `model ${record.modelAlias}` : null,
+      record.reasoningEffort ? `effort ${record.reasoningEffort}` : null,
+    ].filter(Boolean).join(" · ");
+    pending.innerHTML = `<div class="ca-message-meta"><span>Sending…${selectionFacts ? ` · ${esc(selectionFacts)}` : ""}</span></div><div>${esc(text).replace(/\n/g, "<br>")}</div>`;
     $("messages").append(pending);
     $("messages").scrollTop = $("messages").scrollHeight;
     if (!retryRecord) input.value = "";
-    input.disabled = true;
+    document.querySelectorAll("#composer-text, .ca-send, .ca-execution-select")
+      .forEach((control) => { control.disabled = true; });
     state.pending.set(messageId, record);
     try {
       await api(`/channels/${encodeURIComponent(state.selected)}/messages`, {
@@ -1032,6 +1129,7 @@
           attachmentIds: [],
           mentions: mentionsFor(text),
           replyToMessageId: null,
+          ...Selection.requestFields(record),
         }),
       });
       state.pending.delete(messageId);
@@ -1058,7 +1156,15 @@
     } finally {
       const currentInput = $("composer-text");
       if (currentInput) {
-        currentInput.disabled = false;
+        const canSend = state.connection === "online" &&
+          state.capabilities?.capabilities?.messageSubmission === true;
+        currentInput.disabled = !canSend;
+        $("conversation")?.querySelectorAll(".ca-send")
+          .forEach((control) => { control.disabled = !canSend; });
+        $("conversation")?.querySelectorAll(".ca-execution-select")
+          .forEach((control) => {
+            control.disabled = !canSend || !state.executionOptions.has(state.selected);
+          });
         currentInput.focus();
       }
     }

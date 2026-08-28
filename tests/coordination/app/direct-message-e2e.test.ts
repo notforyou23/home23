@@ -62,17 +62,44 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
   });
   let residentAttachments = 0;
   const agent: ResidentAgentPort = {
+    async modelCatalog() {
+      return {
+        models: [{ alias: "sol", provider: "openai-codex", model: "gpt-5.6-sol", reasoningEffort: "high" }],
+        defaultModel: "gpt-5.6-terra",
+        defaultProvider: "openai-codex",
+        defaultReasoningEffort: "medium",
+        reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+      };
+    },
     async runWithTurn(chatId, _text, options) {
       residentAttachments += 1;
       const turnId = `coord-${options.coordinationOrigin.workId}`;
-      await options.onDurableStart({ turnId, chatId, persistedAt: AT });
+      const selected = options.turnSelection.modelAlias === "sol"
+        ? { provider: "openai-codex", model: "gpt-5.6-sol" }
+        : { provider: "openai-codex", model: "gpt-5.6-terra" };
+      const actualEffort = options.turnSelection.reasoningEffort ?? "medium";
+      await options.onDurableStart({
+        turnId, chatId, persistedAt: AT,
+        selection: {
+          requestedProvider: null,
+          requestedModelAlias: options.turnSelection.modelAlias,
+          requestedModel: null,
+          requestedEffort: options.turnSelection.reasoningEffort,
+          resolvedProvider: selected.provider,
+          resolvedModel: selected.model,
+          resolvedEffort: actualEffort,
+          actualProvider: selected.provider,
+          actualModel: selected.model,
+          actualEffort,
+        },
+      });
       options.onEvent({
         turnId,
         sequence: 1,
         occurredAt: AT,
         provider: "fixture",
         model: "test-executor",
-        reasoningEffort: "high",
+        reasoningEffort: actualEffort,
         event: { type: "status", status: "working", sourceEventType: "runtime.status" },
       });
       return { turnId, response: agentResponse };
@@ -119,6 +146,7 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
     resolveResident: (residentBinding) => residentBinding === "jerry" ? {
       resident,
       holderInstanceId: "resident-1",
+      models: agent,
       context: ({ principalId, requestId, correlationId }) => residentContext({
         residentBinding,
         principalId,
@@ -158,7 +186,10 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
       "coordination.public_api.enabled": true, "coordination.resident.jerry.enabled": true },
     services: {
       auth: { validateAccessToken: async () => owner.identity.auth },
-      messageSubmission: { submitMessage: async (input) => (submitted = await service.submitMessage(input)) },
+      messageSubmission: {
+        submitMessage: async (input) => (submitted = await service.submitMessage(input)),
+        selectionOptions: async (input) => service.selectionOptions(input),
+      },
       work, leases, events: new SqliteEventRepository(database),
       communications,
       authorityEpochs: {
@@ -170,12 +201,51 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
   const server = createCoordinationHttpServer({ application, port: 0 });
   t.after(() => server.drain());
   const address = await server.start();
+  const optionsResponse = await fetch(
+    `${address.origin}/api/v1/channels/${CHANNEL_ID}/execution-options`,
+    { headers: { authorization: "Bearer m14-test", "x-correlation-id": owner.correlationId } },
+  );
+  assert.equal(optionsResponse.status, 200);
+  assert.deepEqual(await optionsResponse.json(), {
+    requestId: optionsResponse.headers.get("x-request-id"),
+    correlationId: owner.correlationId,
+    networkEvidence: "loopback",
+    remoteAddress: "127.0.0.1",
+    channelId: CHANNEL_ID,
+    conversationId: CONVERSATION_ID,
+    targetBotId: BOT_ID,
+    models: [{ alias: "sol", provider: "openai-codex", model: "gpt-5.6-sol", reasoningEffort: "high" }],
+    defaultModel: "gpt-5.6-terra",
+    defaultProvider: "openai-codex",
+    defaultReasoningEffort: "medium",
+    reasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+  });
+  const countBeforeInvalidSelection = database.readOne<{ count: number }>(
+    "SELECT count(*) AS count FROM messages",
+  )!.count;
+  const invalidSelection = await fetch(`${address.origin}/api/v1/channels/${CHANNEL_ID}/messages`, {
+    method: "POST",
+    headers: { authorization: "Bearer m14-test", "content-type": "application/json",
+      "idempotency-key": "m14-invalid-model-selection-0001", "x-correlation-id": owner.correlationId },
+    body: JSON.stringify({ messageId: fixtureId("message", 898), clientMessageId: "client-m14-invalid-model",
+      text: "Do not append this.", attachmentIds: [], mentions: [], replyToMessageId: null,
+      modelAlias: "not-in-resident-catalog", reasoningEffort: "xhigh" }),
+  });
+  assert.equal(invalidSelection.status, 400);
+  assert.equal((await invalidSelection.json() as any).error.code, "request_invalid");
+  assert.equal(database.readOne<{ count: number }>(
+    "SELECT count(*) AS count FROM messages",
+  )!.count, countBeforeInvalidSelection);
+  assert.equal(database.readOne<{ count: number }>(
+    "SELECT count(*) AS count FROM works",
+  )!.count, 0);
   const accepted = await fetch(`${address.origin}/api/v1/channels/${CHANNEL_ID}/messages`, {
     method: "POST",
     headers: { authorization: "Bearer m14-test", "content-type": "application/json",
       "idempotency-key": "m14-direct-message-0001", "x-correlation-id": owner.correlationId },
     body: JSON.stringify({ messageId: fixtureId("message", 900), clientMessageId: "client-m14-1",
-      text: "Jerry, answer canonically.", attachmentIds: [], mentions: [], replyToMessageId: null }),
+      text: "Jerry, answer canonically.", attachmentIds: [], mentions: [], replyToMessageId: null,
+      modelAlias: "sol", reasoningEffort: "xhigh" }),
   });
   assert.equal(accepted.status, 202);
   const acceptedBody = await accepted.json() as {
@@ -205,6 +275,18 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
   assert.ok(Number.isSafeInteger(acceptedBody.throughEventSequence));
   assert.equal(acceptedBody.response, undefined, "the internal terminal promise must never cross HTTP");
   assert.equal(activeBackgroundWork, 1, "accepted resident execution must remain enrolled in lifecycle drain");
+  assert.deepEqual(work.getTurnSelection(submitted.work.id), {
+    modelAlias: "sol",
+    reasoningEffort: "xhigh",
+  });
+  assert.deepEqual(JSON.parse(database.readOne<{ resultRef: string }>(
+    `SELECT result_ref_json AS resultRef FROM idempotency_records
+     WHERE operation = 'message.append' AND principal_id = ?`,
+    OWNER_ID,
+  )!.resultRef).turnSelection, {
+    modelAlias: "sol",
+    reasoningEffort: "xhigh",
+  });
   for (let index = 0; index < 20 && database.readOne<{ state: string }>(
     "SELECT state FROM works WHERE id = ?", submitted.work.id,
   )?.state !== "running"; index += 1) await new Promise((resolve) => setTimeout(resolve, 5));
@@ -223,6 +305,7 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
     resolveResident: (residentBinding) => residentBinding === "jerry" ? {
       resident: restartedResident,
       holderInstanceId: "resident-1",
+      models: agent,
       context: ({ principalId, requestId, correlationId }) => residentContext({
         residentBinding,
         principalId,
@@ -269,21 +352,37 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
   );
   assert.deepEqual(submittedEvents.map((event) => event.kind), [
     "user_message_committed",
+    "receipt",
     "status",
     "receipt",
     "assistant_message_committed",
   ]);
   assert.equal(new Set(submittedEvents.map((event) => event.eventId)).size, submittedEvents.length,
     "concurrent restart attachment must deduplicate replayed resident evidence");
-  const [userCommitted, status, receipt, assistantCommitted] = submittedEvents;
+  const [userCommitted, selection, status, receipt, assistantCommitted] = submittedEvents;
   assert.equal(userCommitted?.actor.kind, "owner");
   assert.equal(userCommitted?.payload.text, "Jerry, answer canonically.");
   assert.equal((userCommitted?.payload.rawMessage as { clientMessageId?: string })?.clientMessageId,
     "client-m14-1");
+  assert.equal(userCommitted?.payload.requestedModelAlias, "sol");
+  assert.equal(userCommitted?.payload.requestedEffort, "xhigh");
+  assert.deepEqual(selection?.payload, {
+    requestedProvider: null,
+    requestedModelAlias: "sol",
+    requestedModel: null,
+    requestedEffort: "xhigh",
+    resolvedProvider: "openai-codex",
+    resolvedModel: "gpt-5.6-sol",
+    resolvedEffort: "xhigh",
+    actualProvider: "openai-codex",
+    actualModel: "gpt-5.6-sol",
+    actualEffort: "xhigh",
+  });
+  assert.equal(selection?.source.sourceEventType, "turn.selection");
   assert.equal(status?.payload.status, "working");
   assert.equal(status?.source.provider, "fixture");
   assert.equal(status?.source.model, "test-executor");
-  assert.equal(status?.source.reasoningEffort, "high");
+  assert.equal(status?.source.reasoningEffort, "xhigh");
   assert.equal(receipt?.parentEventId, status?.eventId);
   assert.equal(receipt?.payload.status, "succeeded");
   assert.equal(assistantCommitted?.payload.text, "Canonical Jerry response.");
@@ -310,7 +409,8 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
   const replay = await service.submitMessage({
     context: owner, channelId: CHANNEL_ID, idempotencyKey: "m14-direct-message-0001",
     body: { messageId: fixtureId("message", 900), clientMessageId: "client-m14-1",
-      text: "Jerry, answer canonically.", attachmentIds: [], mentions: [], replyToMessageId: null },
+      text: "Jerry, answer canonically.", attachmentIds: [], mentions: [], replyToMessageId: null,
+      modelAlias: "sol", reasoningEffort: "xhigh" },
   });
   assert.equal((await replay.response).id, response.id);
   assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM works")?.count, 1);

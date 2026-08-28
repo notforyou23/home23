@@ -13,7 +13,10 @@ import {
   manifestInput,
 } from "./test-fixture.js";
 
-function creationInput(manifest = manifestInput()) {
+function creationInput(
+  manifest = manifestInput(),
+  turnSelection?: { modelAlias: string | null; reasoningEffort: "none" | "low" | "medium" | "high" | "xhigh" | "max" | null },
+) {
   return {
     principalId: OWNER_ID,
     targetPrincipalId: BOT_ID,
@@ -26,6 +29,7 @@ function creationInput(manifest = manifestInput()) {
     maxAutomaticOffers: 2,
     requestId: fixtureId("request", 10),
     correlationId: fixtureId("correlation", 10),
+    ...(turnSelection === undefined ? {} : { turnSelection }),
   };
 }
 
@@ -37,20 +41,33 @@ test("Work creation and its one wake intent survive reopen and exact retry", asy
   const generateId = createFixtureIdGenerator();
   let service = createWorkService({ database, generateId, now: () => new Date(AT) });
 
-  const first = service.create(creationInput());
+  const selection = { modelAlias: "sol", reasoningEffort: "max" as const };
+  const first = service.create(creationInput(manifestInput(), selection));
   assert.equal(first.replayed, false);
   assert.equal(first.work.state, "queued");
   assert.equal(first.work.currentAttemptId, null);
   assert.equal(first.manifest.privacy, "channel_only");
   assert.equal(first.manifest.messageCount, 1);
   assert.equal(first.manifest.artifactCount, 0);
+  assert.deepEqual(service.getTurnSelection(first.work.id), selection);
+  assert.throws(
+    () => database.raw.prepare(
+      "UPDATE work_turn_selections SET requested_model_alias = 'terra' WHERE work_id = ?",
+    ).run(first.work.id),
+    /work turn selection is immutable/,
+  );
+  assert.throws(
+    () => database.raw.prepare("DELETE FROM work_turn_selections WHERE work_id = ?").run(first.work.id),
+    /work turn selection is immutable/,
+  );
 
   database.reopen();
   service = createWorkService({ database, generateId, now: () => new Date(AT) });
-  const replay = service.create(creationInput());
+  const replay = service.create(creationInput(manifestInput(), selection));
   assert.equal(replay.replayed, true);
   assert.equal(replay.work.id, first.work.id);
   assert.equal(replay.wakeOutboxId, first.wakeOutboxId);
+  assert.deepEqual(service.getTurnSelection(first.work.id), selection);
   assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM works")?.count, 1);
   assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM outbox")?.count, 1);
   assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM context_manifests")?.count, 1);
@@ -85,14 +102,50 @@ test("an idempotency retry with a different request is rejected without duplicat
     generateId: createFixtureIdGenerator(),
     now: () => new Date(AT),
   });
-  service.create(creationInput());
+  service.create(creationInput(manifestInput(), { modelAlias: "sol", reasoningEffort: "high" }));
 
   assert.throws(
-    () => service.create({ ...creationInput(), kind: "different_turn" }),
+    () => service.create({
+      ...creationInput(manifestInput(), { modelAlias: "sol", reasoningEffort: "high" }),
+      kind: "different_turn",
+    }),
     (error: unknown) => error instanceof WorkError && error.code === "idempotency_conflict",
   );
   assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM works")?.count, 1);
   assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM outbox")?.count, 1);
+  assert.throws(
+    () => service.create(creationInput(manifestInput(), {
+      modelAlias: "terra",
+      reasoningEffort: "high",
+    })),
+    (error: unknown) => error instanceof WorkError && error.code === "idempotency_conflict",
+  );
+  assert.deepEqual(service.getTurnSelection(
+    database.readOne<{ id: string }>("SELECT id FROM works")!.id,
+  ), { modelAlias: "sol", reasoningEffort: "high" });
+});
+
+test("legacy Work creation defaults to an explicit durable no-override selection", async (t) => {
+  const { createWorkService, WorkError } = await import("../../../src/coordination/work/index.js");
+  const database = M11TestDatabase.temporary();
+  t.after(() => database.close());
+  const service = createWorkService({
+    database,
+    generateId: createFixtureIdGenerator(),
+    now: () => new Date(AT),
+  });
+  const created = service.create(creationInput());
+  assert.deepEqual(service.getTurnSelection(created.work.id), {
+    modelAlias: null,
+    reasoningEffort: null,
+  });
+  assert.throws(
+    () => service.create(creationInput(manifestInput(), {
+      modelAlias: "sol\nsmuggled",
+      reasoningEffort: "high",
+    })),
+    (error: unknown) => error instanceof WorkError && error.code === "invalid_request",
+  );
 });
 
 test("context manifests reject IDs, counts, privacy, and content-bearing or locator fields", async (t) => {

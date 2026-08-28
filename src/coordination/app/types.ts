@@ -20,6 +20,7 @@ import type { createMessageService } from "../messages/index.js";
 import type { ActivityBoundary, ActivityEntry, ActivityScope } from "../activity/index.js";
 import type { AuthorityCapability } from "../import/index.js";
 import type { AuthorityEpoch } from "../epochs/index.js";
+import type { ReasoningEffort } from "../../agent/reasoning-effort.js";
 
 export type CoordinationFeatureFlags = Readonly<{
   [Flag in keyof typeof FEATURE_FLAG_REGISTRY]: boolean;
@@ -83,6 +84,8 @@ export interface CoordinationMessageSubmissionRequest {
   attachmentIds: readonly string[];
   mentions: readonly string[];
   replyToMessageId: string | null;
+  modelAlias: string | null;
+  reasoningEffort: ReasoningEffort | null;
   readonly [additionalProperty: string]: unknown;
 }
 
@@ -93,12 +96,16 @@ export interface CoordinationMessageSubmissionPort {
     idempotencyKey: string;
     body: CoordinationMessageSubmissionRequest;
   }): Promise<Readonly<Record<string, unknown> & { response?: Promise<unknown> }>>;
+  selectionOptions?(input: {
+    context: MessagingActorContext;
+    channelId: string;
+  }): Promise<Readonly<Record<string, unknown>>>;
 }
 
 /** Exact M11 durable Work boundary; public DTO/auth adaptation remains later work. */
 export type CoordinationWorkPort = Pick<
   ReturnType<typeof createWorkService>,
-  "create" | "cancelQueued" | "get" | "listResidentRecoverable" |
+  "create" | "cancelQueued" | "get" | "getTurnSelection" | "listResidentRecoverable" |
   "listSucceededMissingResult"
 >;
 
@@ -182,6 +189,7 @@ export interface CoordinationAdvertisedCapabilities {
   messagesRead: boolean;
   unreadRead: boolean;
   messageSubmission: boolean;
+  modelSelection: boolean;
   readCursorMutation: boolean;
   search: boolean;
   eventReplay: boolean;

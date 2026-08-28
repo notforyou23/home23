@@ -143,7 +143,8 @@ export function createProductWorkControl(options: {
           counts: { messages: manifest.messageCount, artifacts: manifest.artifactCount },
           watermarks: { channelSequence: manifest.channelWatermark, eventSequence: manifest.eventWatermark },
           digests: { context: manifest.contextDigest, source: manifest.sourceDigest } },
-        requestId: context.requestId, correlationId: context.correlationId });
+        requestId: context.requestId, correlationId: context.correlationId,
+        turnSelection: options.work.getTurnSelection(source.id) });
       const existing = options.database.readOne<{ sourceWorkId: string }>("SELECT source_work_id AS sourceWorkId FROM work_retry_provenance WHERE retry_work_id = ?", created.work.id);
       if (existing && existing.sourceWorkId !== source.id) throw new WorkError("idempotency_conflict", "retry key is bound to different Work");
       if (!existing) options.database.mutateWithEvent((transaction) => {

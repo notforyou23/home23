@@ -4,6 +4,7 @@ import type {
   CoordinationTransaction,
   SqliteValue,
 } from "../db/index.js";
+import type { ReasoningEffort } from "../../agent/reasoning-effort.js";
 
 export interface M11Database {
   readOne<T>(sql: string, ...parameters: SqliteValue[]): T | undefined;
@@ -71,6 +72,11 @@ export interface WorkRecord {
   terminalAt: string | null;
 }
 
+export interface WorkTurnSelection {
+  modelAlias: string | null;
+  reasoningEffort: ReasoningEffort | null;
+}
+
 export interface CreateWorkInput {
   principalId: string;
   targetPrincipalId: string;
@@ -83,6 +89,8 @@ export interface CreateWorkInput {
   maxAutomaticOffers: number;
   requestId: string;
   correlationId: string;
+  /** Omitted by pre-selection callers; omission is exactly the null/default pair. */
+  turnSelection?: WorkTurnSelection;
 }
 
 export interface CreateWorkResult {

@@ -11,6 +11,7 @@ export type {
   MessageProvenance,
   MessageProvenanceAuthorizationTransactionPort,
   MessageRepository,
+  MessageTurnSelection,
   MessageVisibility,
   PendingMessage,
 } from "./types.js";
