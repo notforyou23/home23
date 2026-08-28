@@ -161,7 +161,7 @@ test('AgentLoop Codex OAuth emits thinking events from reasoning summary SSE', a
     workspacePath: join(root, 'workspace'),
   });
   const previousFetch = globalThis.fetch;
-  const thinking: string[] = [];
+  const reasoning: Array<{ content: string; provenance: string }> = [];
 
   globalThis.fetch = (async (_url, init) => {
     const stream = new ReadableStream<Uint8Array>({
@@ -188,11 +188,14 @@ test('AgentLoop Codex OAuth emits thinking events from reasoning summary SSE', a
     const started = await agent.runWithTurn('thinking-chat', 'hello', {
       effort: 'high',
       onEvent: (event) => {
-        if (event.type === 'thinking') thinking.push(String(event.content || ''));
+        if (event.type === 'thinking') reasoning.push({
+          content: String(event.content || ''), provenance: event.provenance,
+        });
       },
     });
     await started.response;
-    assert.equal(thinking.join(''), 'Need the files.');
+    assert.equal(reasoning.map(event => event.content).join(''), 'Need the files.');
+    assert.ok(reasoning.every(event => event.provenance === 'provider_reasoning_summary'));
   } finally {
     globalThis.fetch = previousFetch;
     rmSync(root, { recursive: true, force: true });
@@ -222,7 +225,7 @@ test('AgentLoop Codex OAuth prefers full reasoning_text over summary titles', as
     workspacePath: join(root, 'workspace'),
   });
   const previousFetch = globalThis.fetch;
-  const thinking: string[] = [];
+  const reasoning: Array<{ content: string; provenance: string }> = [];
 
   globalThis.fetch = (async () => {
     const stream = new ReadableStream<Uint8Array>({
@@ -251,12 +254,18 @@ test('AgentLoop Codex OAuth prefers full reasoning_text over summary titles', as
     const started = await agent.runWithTurn('full-thinking-chat', 'hello', {
       effort: 'high',
       onEvent: (event) => {
-        if (event.type === 'thinking') thinking.push(String(event.content || ''));
+        if (event.type === 'thinking') reasoning.push({
+          content: String(event.content || ''), provenance: event.provenance,
+        });
       },
     });
     await started.response;
-    assert.match(thinking.join(''), /full live thought stream/);
-    assert.doesNotMatch(thinking.join(''), /Planning concise natural response/);
+    const full = reasoning.filter(event => event.provenance === 'provider_verbatim_reasoning')
+      .map(event => event.content).join('');
+    const summary = reasoning.filter(event => event.provenance === 'provider_reasoning_summary')
+      .map(event => event.content).join('');
+    assert.match(full, /full live thought stream/);
+    assert.match(summary, /Planning concise natural response/);
   } finally {
     globalThis.fetch = previousFetch;
     rmSync(root, { recursive: true, force: true });

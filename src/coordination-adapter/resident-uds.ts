@@ -1,10 +1,17 @@
+import { createHash } from "node:crypto";
 import type { ConversationHistory } from "../agent/history.js";
 import type { AgentEvent, AgentResponse, CoordinationTurnOrigin } from "../agent/types.js";
+import { REASONING_EFFORTS, type ReasoningEffort } from "../agent/reasoning-effort.js";
 import type { AgentLoop } from "../agent/loop.js";
 import { TurnStore } from "../chat/turn-store.js";
+import type { TurnEvent } from "../chat/turn-types.js";
 import { ResidentProtocolError, type JsonValue, type ResidentCredential, type ResidentRequestFrame } from "../coordination/resident-protocol/index.js";
 import { ResidentUdsClient, ResidentUdsServer } from "../coordination/transport/uds/index.js";
-import type { ResidentAgentPort } from "./types.js";
+import type {
+  ResidentAgentPort,
+  ResidentDurableEvent,
+  ResidentDurableTerminal,
+} from "./types.js";
 
 const START = "/internal/v1/turns/start";
 const MAX_INSTRUCTION_BYTES = 262_144;
@@ -14,6 +21,8 @@ const DEFAULT_START_TIMEOUT_MS = 60_000;
 // AgentLoop's normal hard turn limit is eight hours. A result read is a
 // renewable signed transport request, not the lifetime of the resident turn.
 const DEFAULT_RESULT_TIMEOUT_MS = (8 * 60 * 60 * 1_000) + 60_000;
+const EVENT_CHUNK_BYTES = 96 * 1024;
+const EVENT_REPLAY_DELAY_MS = 20;
 
 export function residentFence(origin: CoordinationTurnOrigin): string {
   return `${origin.workId}:${origin.attemptId}:${origin.leaseId}:${origin.fencingToken}`;
@@ -56,6 +65,80 @@ function nonnegativeSafeInteger(value: JsonValue | undefined, name: string): num
     throw new ResidentProtocolError("request_invalid", `${name} is invalid`);
   }
   return value;
+}
+
+function nullableString(value: JsonValue | undefined, label: string): string | null {
+  if (value === null) return null;
+  return string(value, label);
+}
+
+function reasoningEffort(value: JsonValue | undefined): ReasoningEffort | null {
+  const effort=nullableString(value,"reasoningEffort");
+  if(effort!==null&&!REASONING_EFFORTS.includes(effort as ReasoningEffort)){
+    throw new ResidentProtocolError("request_invalid","resident reasoning effort is invalid");
+  }
+  return effort as ReasoningEffort|null;
+}
+
+function exactTimestamp(value: unknown, label: string): string {
+  if(typeof value!=="string")throw new ResidentProtocolError("request_invalid",`${label} is invalid`);
+  const parsed=new Date(value);
+  if(Number.isNaN(parsed.valueOf())||parsed.toISOString()!==value){
+    throw new ResidentProtocolError("request_invalid",`${label} is invalid`);
+  }
+  return value;
+}
+
+const TURN_EVENT_KINDS=new Set([
+  "thinking","tool_start","tool_result","response_chunk","media",
+  "subagent_start","subagent_result","cache","status",
+]);
+
+function decodeTurnEvent(encoded:Buffer,turnId:string,sequence:number):TurnEvent{
+  let value:unknown;
+  try{value=JSON.parse(encoded.toString("utf8"));}
+  catch{throw new ResidentProtocolError("request_invalid","resident event record is malformed");}
+  if(!value||typeof value!=="object"||Array.isArray(value))throw new ResidentProtocolError("request_invalid","resident event record is invalid");
+  const record=value as Record<string,unknown>;
+  const data=record.data;
+  if(record.type!=="event"||record.turn_id!==turnId||record.seq!==sequence||
+      typeof record.kind!=="string"||!TURN_EVENT_KINDS.has(record.kind)||
+      !data||typeof data!=="object"||Array.isArray(data)||
+      (data as Record<string,unknown>).type!==record.kind){
+    throw new ResidentProtocolError("request_invalid","resident event identity is invalid");
+  }
+  exactTimestamp(record.ts,"resident event timestamp");
+  return record as unknown as TurnEvent;
+}
+
+function durableTerminal(
+  value:JsonValue|undefined,
+  source:{provider:string|null;model:string|null;reasoningEffort:ReasoningEffort|null},
+):ResidentDurableTerminal|null{
+  if(value===null)return null;
+  const terminal=object(value as JsonValue);
+  return Object.freeze({
+    status:string(terminal.status,"terminal status"),
+    lastSequence:nonnegativeSafeInteger(terminal.lastSeq,"terminal lastSeq"),
+    endedAt:exactTimestamp(terminal.endedAt,"resident terminal timestamp"),
+    errorCode:nullableString(terminal.errorCode,"terminal errorCode"),
+    errorMessage:nullableString(terminal.errorMessage,"terminal errorMessage"),
+    provider:source.provider,
+    model:source.model,
+    reasoningEffort:source.reasoningEffort,
+  });
+}
+
+function terminalPayload(store: TurnStore, chatId: string, turnId: string): JsonValue {
+  const terminal = store.finalEnvelope(chatId, turnId);
+  if (!terminal) return null;
+  return {
+    status: terminal.status,
+    lastSeq: terminal.last_seq ?? 0,
+    endedAt: terminal.ended_at ?? null,
+    errorCode: terminal.error_code ?? null,
+    errorMessage: terminal.error_message ?? terminal.error ?? null,
+  };
 }
 
 function retryableTransportWait(error: unknown): boolean {
@@ -113,13 +196,42 @@ export class ResidentTurnUdsServer {
       if(signal.aborted)throw new ResidentProtocolError("request_cancelled","resident start was cancelled");
       return{turnId,chatId,persistedAt:durable.started_at,recovered:Boolean(started)};
     }
-    const match=/^\/internal\/v1\/turns\/([^/]+)\/(result|stop)$/.exec(request.path);
+    const match=/^\/internal\/v1\/turns\/([^/]+)\/(result|stop|events)$/.exec(request.path);
     if(!match)throw new ResidentProtocolError("request_invalid","unknown resident turn operation");
     const turnId=decodeURIComponent(match[1]!);const p=object(request.payload);const chatId=string(p.chatId,"chatId");const provenance=origin(p.origin);if(request.fence!==residentFence(provenance)||request.correlationId!==string(p.correlationId,"correlationId"))throw new ResidentProtocolError("fence_invalid","resident turn fence or correlation does not match");
     assertResidentBinding(provenance,this.options.residentSlug,this.options.serverInstanceId);
     if(turnId!==`coord-${provenance.workId}`)throw new ResidentProtocolError("fence_invalid","resident turn ID does not match its Work origin");
     const durableStart=this.#store.startEnvelope(chatId,turnId);if(!durableStart||!exactOrigin(durableStart.coordination_origin,provenance))throw new ResidentProtocolError("fence_invalid","resident turn origin does not match durable start");
     if(match[2]==="stop"){return{stopped:this.options.agent.stop(chatId,turnId).stopped};}
+    if(match[2]==="events"){
+      const afterSequence=nonnegativeSafeInteger(p.afterSequence,"afterSequence");
+      const eventSequence=nonnegativeSafeInteger(p.eventSequence,"eventSequence");
+      const chunkOffset=nonnegativeSafeInteger(p.chunkOffset,"chunkOffset");
+      if(eventSequence===0&&chunkOffset!==0)throw new ResidentProtocolError("request_invalid","event chunk offset requires an event sequence");
+      const candidates=this.#store.eventsSince(chatId,turnId,eventSequence>0?eventSequence-1:afterSequence);
+      const record=eventSequence>0?candidates.find(event=>event.seq===eventSequence):candidates[0];
+      if(!record){
+        if(eventSequence>0)throw new ResidentProtocolError("request_invalid","resident event chunk sequence is unavailable");
+        return{
+          turnId,provider:durableStart.provider??null,model:durableStart.model??null,
+          reasoningEffort:durableStart.reasoning_effort??null,event:null,
+          terminal:terminalPayload(this.#store,chatId,turnId),
+        };
+      }
+      const encoded=Buffer.from(JSON.stringify(record),"utf8");
+      if(chunkOffset>encoded.length)throw new ResidentProtocolError("request_invalid","resident event chunk offset is beyond the event");
+      const nextOffset=Math.min(encoded.length,chunkOffset+EVENT_CHUNK_BYTES);
+      return{
+        turnId,provider:durableStart.provider??null,model:durableStart.model??null,
+        reasoningEffort:durableStart.reasoning_effort??null,
+        event:{
+          sequence:record.seq,offset:chunkOffset,nextOffset,totalBytes:encoded.length,
+          digest:createHash("sha256").update(encoded).digest("hex"),
+          chunkBase64:encoded.subarray(chunkOffset,nextOffset).toString("base64"),
+        },
+        terminal:terminalPayload(this.#store,chatId,turnId),
+      };
+    }
     const active=this.#responses.get(turnId);if(active){
       try {
         const response=await active;return{text:response.text,model:response.model,toolCallCount:response.toolCallCount,durationMs:response.durationMs};
@@ -161,7 +273,109 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
     this.#resultTimeoutMs=positiveSafeInteger(options.resultTimeoutMs??DEFAULT_RESULT_TIMEOUT_MS,"resident result timeout");
     this.#retryDelayMs=positiveSafeInteger(options.retryDelayMs??RESULT_RETRY_MS,"resident result retry delay");
   }
-  async runWithTurn(chatId:string,userText:string,options:{coordinationOrigin:CoordinationTurnOrigin;coordinationRequest?:{requestId:string;correlationId:string};onDurableStart(start:{turnId:string;chatId:string;persistedAt:string}):void|Promise<void>;onEvent(event:AgentEvent):void}){
+  async #replayEvents(input:{
+    chatId:string;turnId:string;origin:CoordinationTurnOrigin;correlationId:string;
+    onEvent(event:ResidentDurableEvent):void;now():number;
+  }):Promise<ResidentDurableTerminal>{
+    let afterSequence=0;
+    let eventSequence=0;
+    let chunkOffset=0;
+    let totalBytes=0;
+    let expectedDigest="";
+    const chunks:Buffer[]=[];
+    for(;;){
+      let response;
+      for(;;){
+        try{
+          response=await this.options.client.request({
+            method:"GET",
+            path:`/internal/v1/turns/${encodeURIComponent(input.turnId)}/events`,
+            payload:{
+              chatId:input.chatId,origin:jsonOrigin(input.origin),correlationId:input.correlationId,
+              afterSequence,eventSequence,chunkOffset,
+            },
+            deadlineAtMs:input.now()+this.#requestDeadlineMs,
+            fence:residentFence(input.origin),
+            correlationId:input.correlationId,
+          });
+          break;
+        }catch(caught){
+          if(!retryableTransportWait(caught))throw caught;
+          await new Promise(resolve=>setTimeout(resolve,this.#retryDelayMs));
+        }
+      }
+      const payload=object(response.payload);
+      if(string(payload.turnId,"turnId")!==input.turnId){
+        throw new ResidentProtocolError("request_invalid","resident event turn does not match");
+      }
+      const provider=nullableString(payload.provider,"provider");
+      const model=nullableString(payload.model,"model");
+      const effort=reasoningEffort(payload.reasoningEffort);
+      const terminal=durableTerminal(payload.terminal,{provider,model,reasoningEffort:effort});
+      if(payload.event===null){
+        if(eventSequence!==0||chunkOffset!==0||chunks.length!==0){
+          throw new ResidentProtocolError("request_invalid","resident event ended during chunk replay");
+        }
+        if(terminal!==null){
+          if(afterSequence!==terminal.lastSequence){
+            throw new ResidentProtocolError("request_invalid","resident terminal event sequence is not contiguous");
+          }
+          return terminal;
+        }
+        await new Promise(resolve=>setTimeout(resolve,EVENT_REPLAY_DELAY_MS));
+        continue;
+      }
+      const chunk=object(payload.event as JsonValue);
+      const sequence=nonnegativeSafeInteger(chunk.sequence,"event sequence");
+      const offset=nonnegativeSafeInteger(chunk.offset,"event chunk offset");
+      const nextOffset=nonnegativeSafeInteger(chunk.nextOffset,"event next chunk offset");
+      const eventTotalBytes=nonnegativeSafeInteger(chunk.totalBytes,"event total bytes");
+      const digest=string(chunk.digest,"event digest");
+      const chunkBase64=string(chunk.chunkBase64,"event chunk");
+      const bytes=Buffer.from(chunkBase64,"base64");
+      if(bytes.toString("base64")!==chunkBase64||nextOffset!==offset+bytes.length||
+          nextOffset>eventTotalBytes||!/^[0-9a-f]{64}$/.test(digest)){
+        throw new ResidentProtocolError("payload_digest_mismatch","resident event chunk is invalid");
+      }
+      if(eventSequence===0){
+        if(sequence!==afterSequence+1||offset!==0){
+          throw new ResidentProtocolError("request_invalid","resident event replay is not contiguous");
+        }
+        eventSequence=sequence;
+        totalBytes=eventTotalBytes;
+        expectedDigest=digest;
+      }else if(sequence!==eventSequence||offset!==chunkOffset||
+          eventTotalBytes!==totalBytes||digest!==expectedDigest){
+        throw new ResidentProtocolError("request_invalid","resident event chunk identity changed");
+      }
+      chunks.push(bytes);
+      chunkOffset=nextOffset;
+      if(chunkOffset<totalBytes)continue;
+      const encoded=Buffer.concat(chunks);
+      if(encoded.length!==totalBytes||createHash("sha256").update(encoded).digest("hex")!==expectedDigest){
+        throw new ResidentProtocolError("payload_digest_mismatch","resident event digest differs");
+      }
+      const record=decodeTurnEvent(encoded,input.turnId,eventSequence);
+      input.onEvent(Object.freeze({
+        turnId:input.turnId,
+        sequence:record.seq,
+        occurredAt:record.ts,
+        provider,
+        model,
+        reasoningEffort:effort,
+        event:Object.freeze({...(record.data as unknown as AgentEvent)}),
+      }));
+      afterSequence=eventSequence;
+      eventSequence=0;
+      chunkOffset=0;
+      totalBytes=0;
+      expectedDigest="";
+      chunks.length=0;
+      if(terminal!==null&&afterSequence===terminal.lastSequence)return terminal;
+      await new Promise(resolve=>setTimeout(resolve,EVENT_REPLAY_DELAY_MS));
+    }
+  }
+  async runWithTurn(chatId:string,userText:string,options:{coordinationOrigin:CoordinationTurnOrigin;coordinationRequest?:{requestId:string;correlationId:string};onDurableStart(start:{turnId:string;chatId:string;persistedAt:string}):void|Promise<void>;onEvent(event:ResidentDurableEvent):void}){
     if(options.coordinationOrigin.authorityReference!==`resident:${this.options.residentSlug}`)throw new TypeError("resident authority does not match the configured port");
     const request=options.coordinationRequest;if(!request)throw new Error("resident coordination request identity is required");const turnId=`coord-${options.coordinationOrigin.workId}`;const fence=residentFence(options.coordinationOrigin);const now=()=>this.options.now?.()??Date.now();
     const payload={chatId,instruction:userText,turnId,origin:jsonOrigin(options.coordinationOrigin),correlationId:request.correlationId} as JsonValue;
@@ -181,8 +395,7 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
       }
     }
     const s=object(started.payload);await options.onDurableStart({turnId:string(s.turnId,"turnId"),chatId:string(s.chatId,"chatId"),persistedAt:string(s.persistedAt,"persistedAt")});this.#active.set(turnId,{chatId,origin:options.coordinationOrigin,correlationId:request.correlationId});
-    options.onEvent({type:"status",status:"resident_durable_started"});
-    const response=(async()=>{try{
+    const result=(async()=>{
       const resultDeadlineAt=now()+this.#resultTimeoutMs;
       for(;;){
         const remaining=resultDeadlineAt-now();
@@ -196,8 +409,16 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
           await new Promise(resolve=>setTimeout(resolve,Math.min(this.#retryDelayMs,retryRemaining)));
         }
       }
-    }finally{this.#active.delete(turnId);}})();
-    return{turnId,response};
+    })();
+    const eventReplay=this.#replayEvents({
+      chatId,turnId,origin:options.coordinationOrigin,correlationId:request.correlationId,
+      onEvent:options.onEvent,now,
+    });
+    const response=Promise.all([result,eventReplay]).then(([value])=>value).catch((error)=>{
+      void this.stop(chatId,turnId).catch(()=>undefined);
+      throw error;
+    }).finally(()=>{this.#active.delete(turnId);});
+    return{turnId,response,terminal:eventReplay};
   }
   async stop(chatId:string,turnId:string){
     const active=this.#active.get(turnId);if(!active||active.chatId!==chatId)return{stopped:false};const result=await this.options.client.request({method:"POST",path:`/internal/v1/turns/${encodeURIComponent(turnId)}/stop`,payload:{chatId,origin:jsonOrigin(active.origin),correlationId:active.correlationId},deadlineAtMs:(this.options.now?.()??Date.now())+5_000,fence:residentFence(active.origin),correlationId:active.correlationId});return{stopped:object(result.payload).stopped===true};

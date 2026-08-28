@@ -22,6 +22,7 @@ const RESUME_CORRELATION_ID = "cor_0198d95f-6c00-7000-8000-0000000000d2";
 
 test("resident start renews transient connection attempts while the harness comes online", async () => {
   let startAttempts = 0;
+  let eventAttempts = 0;
   const client = {
     async request(input: { path: string }) {
       if (input.path === "/internal/v1/turns/start") {
@@ -33,6 +34,26 @@ test("resident start renews transient connection attempts while the harness come
           turnId: "coord-wrk_0198d95f-6c00-7000-8000-0000000000e1",
           chatId: "coordination:test:startup",
           persistedAt: "2026-08-26T12:00:00.000Z",
+        } };
+      }
+      if (input.path.endsWith("/events")) {
+        eventAttempts += 1;
+        if (eventAttempts === 1) {
+          throw new ResidentProtocolError("request_rate_limited", "replay pacing window", { retryable: true });
+        }
+        return { payload: {
+          turnId: "coord-wrk_0198d95f-6c00-7000-8000-0000000000e1",
+          provider: "fixture",
+          model: "fixture",
+          reasoningEffort: null,
+          event: null,
+          terminal: {
+            status: "complete",
+            lastSeq: 0,
+            endedAt: "2026-08-26T12:00:01.000Z",
+            errorCode: null,
+            errorMessage: null,
+          },
         } };
       }
       return { payload: { text: "started after retry", model: "fixture", toolCallCount: 0, durationMs: 1 } };
@@ -70,6 +91,7 @@ test("resident start renews transient connection attempts while the harness come
 
   assert.equal((await started.response).text, "started after retry");
   assert.equal(startAttempts, 3);
+  assert.equal(eventAttempts, 2, "durable event replay must renew transient signed reads");
 });
 
 test("resident port rejects a Work bound to a different resident before transport", async () => {
@@ -116,6 +138,7 @@ test("resident result retrieval outlives individual signed request windows", asy
   const store = new TurnStore(history);
   let running = false;
   let agentStarts = 0;
+  const largeExactResult = `exact-large-result:${"x".repeat(300_000)}`;
   const agent: Pick<AgentLoop, "runWithTurn" | "stop" | "isRunning"> = {
     async runWithTurn(chatId, userText, options = {}) {
       agentStarts += 1;
@@ -126,11 +149,35 @@ test("resident result retrieval outlives individual signed request windows", asy
       running = true;
       const response = new Promise<{ text: string; model: string; toolCallCount: number; durationMs: number }>((resolve) => {
         setTimeout(() => {
+          store.writeEvent(chatId, {
+            type: "event",
+            turn_id: turnId,
+            seq: 1,
+            ts: "2026-08-26T12:00:00.100Z",
+            kind: "status",
+            data: { type: "status", status: "working", sourceEventType: "runtime.status" },
+          });
+          store.writeEvent(chatId, {
+            type: "event",
+            turn_id: turnId,
+            seq: 2,
+            ts: "2026-08-26T12:00:00.200Z",
+            kind: "tool_result",
+            data: {
+              type: "tool_result",
+              tool: "fixture_tool",
+              toolCallId: "call-large-1",
+              result: "exact-large-result preview",
+              exactResult: largeExactResult,
+              success: true,
+              sourceEventType: "runtime.tool_result",
+            },
+          });
           history.append(chatId, [
             { role: "user", content: userText },
             { role: "assistant", content: "delayed resident result" },
           ]);
-          store.writeEnd(chatId, turnId, "complete", { last_seq: 0 });
+          store.writeEnd(chatId, turnId, "complete", { last_seq: 2 });
           running = false;
           resolve({ text: "delayed resident result", model: "fixture-model", toolCallCount: 0, durationMs: 350 });
         }, 350);
@@ -206,11 +253,12 @@ test("resident result retrieval outlives individual signed request windows", asy
     (error: unknown) => error instanceof ResidentProtocolError && error.code === "fence_invalid",
   );
   assert.equal(agentStarts, 0, "the resident harness must reject a different resident binding");
+  const firstEvents: Array<Parameters<NonNullable<Parameters<typeof port.runWithTurn>[2]["onEvent"]>>[0]> = [];
   const started = await port.runWithTurn("coordination:test:work", "answer after a normal model delay", {
     coordinationOrigin,
     coordinationRequest: { requestId: REQUEST_ID, correlationId: CORRELATION_ID },
     onDurableStart: () => { durableStart = true; },
-    onEvent: () => undefined,
+    onEvent: (event) => { firstEvents.push(event); },
   });
 
   assert.equal(durableStart, true);
@@ -226,6 +274,7 @@ test("resident result retrieval outlives individual signed request windows", asy
     deadlineMs: 25,
   });
   let resumedDurableStart = false;
+  const resumedEvents: typeof firstEvents = [];
   const resumed = await resumedPort.runWithTurn(
     "coordination:test:work",
     "answer after a normal model delay",
@@ -233,7 +282,7 @@ test("resident result retrieval outlives individual signed request windows", asy
       coordinationOrigin,
       coordinationRequest: { requestId: RESUME_REQUEST_ID, correlationId: RESUME_CORRELATION_ID },
       onDurableStart: () => { resumedDurableStart = true; },
-      onEvent: () => undefined,
+      onEvent: (event) => { resumedEvents.push(event); },
     },
   );
 
@@ -299,4 +348,19 @@ test("resident result retrieval outlives individual signed request windows", asy
   assert.equal(firstResult.text, "delayed resident result");
   assert.equal(resumedResult.text, "delayed resident result");
   assert.equal(agentStarts, 1, "coordinator reattachment must not start a second resident turn");
+  assert.deepEqual(firstEvents, resumedEvents, "reattachment must replay the same durable evidence");
+  assert.deepEqual(firstEvents.map((event) => event.sequence), [1, 2]);
+  assert.equal(firstEvents[0]?.event.type, "status");
+  assert.equal(firstEvents[1]?.event.type, "tool_result");
+  if (firstEvents[1]?.event.type !== "tool_result") assert.fail("large tool result required");
+  assert.equal(firstEvents[1].event.toolCallId, "call-large-1");
+  assert.equal(firstEvents[1].event.exactResult, largeExactResult,
+    "a record larger than the UDS frame limit must survive chunk replay exactly");
+  const firstTerminal = await started.terminal;
+  const resumedTerminal = await resumed.terminal;
+  assert.ok(firstTerminal);
+  assert.deepEqual(firstTerminal, resumedTerminal,
+    "reattachment must preserve the resident-owned terminal timestamp and identity");
+  assert.equal(firstTerminal?.lastSequence, 2);
+  assert.equal(firstTerminal?.status, "complete");
 });

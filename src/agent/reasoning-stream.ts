@@ -1,9 +1,9 @@
 /**
  * Live reasoning/thinking parse for Responses-API streams (Codex + xAI).
  *
- * Prefer `response.reasoning_text` (full CoT) when the API emits it.
- * Fall back to `response.reasoning_summary_text` only when no full channel
- * arrived. Do not invent thinking when neither channel is present.
+ * Retain both provider channels when emitted. The legacy visible projection
+ * prefers `response.reasoning_text` and falls back to the summary only when no
+ * full channel arrived. Neither representation invents missing reasoning.
  */
 
 export const THINKING_CHUNK_TARGET_CHARS = 96;
@@ -14,7 +14,16 @@ export type ReasoningStreamState = {
   reasoningSummary: string;
   pendingThinking: string;
   hasFullReasoning: boolean;
+  pendingEvidence: ReasoningEvidenceChunk[];
 };
+
+export interface ReasoningEvidenceChunk {
+  content: string;
+  provenance: 'provider_verbatim_reasoning' | 'provider_reasoning_summary';
+  sourceEventType: string;
+  /** Exact provider object that caused this evidence event. */
+  providerEvent: Readonly<Record<string, unknown>>;
+}
 
 export function createReasoningStreamState(): ReasoningStreamState {
   return {
@@ -22,7 +31,14 @@ export function createReasoningStreamState(): ReasoningStreamState {
     reasoningSummary: '',
     pendingThinking: '',
     hasFullReasoning: false,
+    pendingEvidence: [],
   };
+}
+
+export function takeReasoningEvidence(state: ReasoningStreamState): ReasoningEvidenceChunk[] {
+  const evidence = state.pendingEvidence;
+  state.pendingEvidence = [];
+  return evidence;
 }
 
 export function shouldFlushThinkingBuffer(content: string): boolean {
@@ -53,6 +69,27 @@ function spliceCompleted(already: string, completed: string, pending: string): {
   return { text: completed, pending };
 }
 
+function completedSuffix(already: string, completed: string): string {
+  if (!completed) return '';
+  if (!already) return completed;
+  return completed.startsWith(already) ? completed.slice(already.length) : '';
+}
+
+function recordEvidence(
+  state: ReasoningStreamState,
+  content: string,
+  provenance: ReasoningEvidenceChunk['provenance'],
+  sourceEventType: string,
+  providerEvent: Record<string, unknown>,
+): void {
+  state.pendingEvidence.push(Object.freeze({
+    content,
+    provenance,
+    sourceEventType,
+    providerEvent: Object.freeze({ ...providerEvent }),
+  }));
+}
+
 function textParts(
   parts: unknown,
   typeName: string,
@@ -77,6 +114,7 @@ export function applyReasoningStreamEvent(
 
   if (evType === 'response.reasoning_text.delta') {
     const delta = eventString(event, 'delta');
+    recordEvidence(state, delta, 'provider_verbatim_reasoning', evType, event);
     if (!state.hasFullReasoning) state.pendingThinking = '';
     state.hasFullReasoning = true;
     state.reasoningText += delta;
@@ -85,9 +123,12 @@ export function applyReasoningStreamEvent(
   }
 
   if (evType === 'response.reasoning_text.done') {
+    const completed = eventString(event, 'text');
+    recordEvidence(state, completedSuffix(state.reasoningText, completed),
+      'provider_verbatim_reasoning', evType, event);
     if (!state.hasFullReasoning) state.pendingThinking = '';
     state.hasFullReasoning = true;
-    const next = spliceCompleted(state.reasoningText, eventString(event, 'text'), state.pendingThinking);
+    const next = spliceCompleted(state.reasoningText, completed, state.pendingThinking);
     state.reasoningText = next.text;
     state.pendingThinking = next.pending;
     return 'done';
@@ -95,6 +136,7 @@ export function applyReasoningStreamEvent(
 
   if (evType === 'response.reasoning_summary_text.delta') {
     const delta = eventString(event, 'delta');
+    recordEvidence(state, delta, 'provider_reasoning_summary', evType, event);
     state.reasoningSummary += delta;
     if (state.hasFullReasoning) return null;
     state.pendingThinking += delta;
@@ -103,6 +145,8 @@ export function applyReasoningStreamEvent(
 
   if (evType === 'response.reasoning_summary_text.done') {
     const completed = eventString(event, 'text');
+    recordEvidence(state, completedSuffix(state.reasoningSummary, completed),
+      'provider_reasoning_summary', evType, event);
     if (completed) {
       if (!state.reasoningSummary) {
         if (!state.hasFullReasoning) state.pendingThinking += completed;
@@ -130,22 +174,29 @@ export function applyReasoningOutputItem(
   if (!item || item.type !== 'reasoning') return null;
 
   const full = textParts(item.content, 'reasoning_text');
+  const summary = textParts(item.summary, 'summary_text');
+  let changed = false;
   if (full) {
+    recordEvidence(state, completedSuffix(state.reasoningText, full),
+      'provider_verbatim_reasoning', 'response.output_item.done', item);
     if (!state.hasFullReasoning) state.pendingThinking = '';
     state.hasFullReasoning = true;
     const next = spliceCompleted(state.reasoningText, full, state.pendingThinking);
     state.reasoningText = next.text;
     state.pendingThinking = next.pending;
-    return 'done';
+    changed = true;
   }
 
-  if (state.hasFullReasoning) return null;
-  const summary = textParts(item.summary, 'summary_text');
-  if (!summary) return null;
-  const next = spliceCompleted(state.reasoningSummary, summary, state.pendingThinking);
-  state.reasoningSummary = next.text;
-  state.pendingThinking = next.pending;
-  return 'done';
+  if (summary) {
+    recordEvidence(state, completedSuffix(state.reasoningSummary, summary),
+      'provider_reasoning_summary', 'response.output_item.done', item);
+    const next = spliceCompleted(state.reasoningSummary, summary,
+      state.hasFullReasoning ? '' : state.pendingThinking);
+    state.reasoningSummary = next.text;
+    if (!state.hasFullReasoning) state.pendingThinking = next.pending;
+    changed = true;
+  }
+  return changed ? 'done' : null;
 }
 
 export function visibleReasoningText(state: ReasoningStreamState): string {

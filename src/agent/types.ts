@@ -120,6 +120,8 @@ export interface ToolContext {
   workerConnectorBaseUrl?: string;
   fetch?: typeof fetch;
   onEvent?: AgentEventCallback;
+  /** Stable parent tool-call identity for nested runtime activity. */
+  parentToolCallId?: string;
   conversationHistory?: { append(chatId: string, records: unknown[]): void };
   abortSignal?: AbortSignal;
   brainOperations: BrainOperationsClient;
@@ -229,17 +231,31 @@ export type AgentLoopRunner = (
 
 // ─── Agent Events (streaming) ───────────────────────────────
 
+export type ReasoningProvenance =
+  | 'provider_verbatim_reasoning'
+  | 'provider_reasoning_summary'
+  | 'agent_authored_explanation';
+
 export type AgentEvent =
-  | { type: 'thinking'; content: string }
-  | { type: 'tool_start'; tool: string; args: unknown }
+  | { type: 'thinking'; content: string; provenance: ReasoningProvenance;
+      sourceEventType: string; providerEvent?: unknown }
+  | { type: 'tool_start'; tool: string; args: unknown; toolCallId: string;
+      parentActivityId?: string; sourceEventType?: string; providerEvent?: unknown }
   | { type: 'tool_result'; tool: string; result: string; success: boolean;
-      resultHandle?: string; toolMetadata?: BrainToolEventMetadata }
-  | { type: 'response_chunk'; chunk: string }
-  | { type: 'media'; mediaType: string; path: string; caption?: string }
-  | { type: 'subagent_result'; task: string; result: string }
-  | { type: 'cache'; read: number; write: number; input: number; output: number }
+      toolCallId: string; exactResult?: string; resultHandle?: string;
+      toolMetadata?: BrainToolEventMetadata; sourceEventType?: string; providerEvent?: unknown }
+  | { type: 'response_chunk'; chunk: string; sourceEventType?: string;
+      providerEvent?: unknown }
+  | { type: 'media'; mediaType: string; path: string; caption?: string;
+      toolCallId?: string; sourceEventType?: string }
+  | { type: 'subagent_start'; subagentId: string; task: string;
+      parentToolCallId?: string; label?: string; sourceEventType?: string }
+  | { type: 'subagent_result'; subagentId: string; task: string; result: string;
+      success: boolean; parentToolCallId?: string; sourceEventType?: string }
+  | { type: 'cache'; read: number; write: number; input: number; output: number;
+      sourceEventType?: string }
   | { type: 'status'; status: string; message?: string;
-      activity_deadline_at?: string; hard_deadline_at?: string };
+      activity_deadline_at?: string; hard_deadline_at?: string; sourceEventType?: string };
 
 export type AgentEventCallback = (event: AgentEvent) => void;
 

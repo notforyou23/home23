@@ -544,21 +544,22 @@ test('xAI Grok continues a local tool call statelessly under ZDR', async () => {
   ]);
 });
 
-test('xAI Grok coalesces thinking while preserving tool/result/final-answer event order', async () => {
+test('xAI Grok preserves both reasoning channels and stable tool/result identity in order', async () => {
   const result = await runGrokZdrScenario(false);
-  assert.deepEqual(result.events, [
-    { type: 'thinking', content: 'Need the local result.' },
-    { type: 'tool_start', tool: GROK_ZDR_TOOL, args: { topic: 'zdr' } },
-    {
-      type: 'tool_result',
-      tool: GROK_ZDR_TOOL,
-      result: 'local result for ZDR',
-      success: true,
-    },
-    { type: 'thinking', content: 'Use that result.' },
-    { type: 'response_chunk', chunk: 'Final ' },
-    { type: 'response_chunk', chunk: 'answer.' },
-  ]);
+  const full = result.events.filter(event => event.type === 'thinking'
+      && event.provenance === 'provider_verbatim_reasoning')
+    .map(event => event.content).join('');
+  const summaries = result.events.filter(event => event.type === 'thinking'
+      && event.provenance === 'provider_reasoning_summary')
+    .map(event => event.content).join('');
+  assert.equal(full, 'Need the local result.Use that result.');
+  assert.equal(summaries, '**Need the local result****Use that result**');
+  const toolStart = result.events.find(event => event.type === 'tool_start')!;
+  const toolResult = result.events.find(event => event.type === 'tool_result')!;
+  assert.equal(toolStart.toolCallId, 'call-1');
+  assert.equal(toolResult.toolCallId, toolStart.toolCallId);
+  assert.equal(toolResult.exactResult, 'local result for ZDR');
+  assert.deepEqual(toolStart.args, { topic: 'zdr' });
 
   const responseChunks = result.events
     .filter(event => event.type === 'response_chunk')

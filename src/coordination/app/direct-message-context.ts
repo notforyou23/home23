@@ -7,6 +7,7 @@ import { directMessageManifest, type DirectMessageContextPort } from "./direct-m
 interface DirectBindingRow {
   conversationId: string;
   targetBotId: string;
+  targetBotDisplayName: string;
   targetPrincipalId: string;
   residentBinding: string;
 }
@@ -40,7 +41,7 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
 
   async prepare(input: Parameters<DirectMessageContextPort["prepare"]>[0]) {
     const binding = this.database.readOne<DirectBindingRow>(
-      `SELECT h.id AS conversationId, b.id AS targetBotId,
+      `SELECT h.id AS conversationId, b.id AS targetBotId, b.name AS targetBotDisplayName,
               b.principal_id AS targetPrincipalId, b.resident_binding AS residentBinding
        FROM channels c
        JOIN conversation_handles h ON h.channel_id = c.id
@@ -88,6 +89,7 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
       channelId: input.channelId,
       conversationId: binding.conversationId,
       targetBotId: binding.targetBotId,
+      targetBotDisplayName: binding.targetBotDisplayName,
       targetPrincipalId: binding.targetPrincipalId,
       residentBinding: binding.residentBinding,
       instruction: transcript,
@@ -109,7 +111,7 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
       throw new MessagingError("invalid_relation");
     }
     const binding = this.database.readOne<DirectBindingRow>(
-      `SELECT h.id AS conversationId, b.id AS targetBotId,
+      `SELECT h.id AS conversationId, b.id AS targetBotId, b.name AS targetBotDisplayName,
               b.principal_id AS targetPrincipalId, b.resident_binding AS residentBinding
        FROM channels c
        JOIN conversation_handles h ON h.channel_id = c.id
@@ -207,6 +209,7 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
         channelId: work.channelId,
         conversationId: binding.conversationId,
         targetBotId: binding.targetBotId,
+        targetBotDisplayName: binding.targetBotDisplayName,
         targetPrincipalId: binding.targetPrincipalId,
         residentBinding: binding.residentBinding,
         instruction,

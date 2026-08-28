@@ -1,4 +1,5 @@
 export { SqliteCommunicationEventRepository } from "./repository.js";
+export { stableCommunicationEventId } from "./identity.js";
 export {
   assertCommunicationEventId,
   buildCommunicationEventEnvelope,

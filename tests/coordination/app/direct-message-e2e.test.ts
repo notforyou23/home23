@@ -7,6 +7,7 @@ import { createCoordinationApplication, createDirectMessageSubmissionService, di
 import { createCoordinationHttpServer } from "../../../src/coordination/http/index.js";
 import { SqliteBotConversationBindingAdapter, SqliteMessagingRepository } from "../../../src/coordination/channels/index.js";
 import { SqliteEventRepository } from "../../../src/coordination/events/index.js";
+import { SqliteCommunicationEventRepository } from "../../../src/coordination/communications/index.js";
 import { createLeaseService, LeaseError } from "../../../src/coordination/leases/index.js";
 import { createMessageService } from "../../../src/coordination/messages/index.js";
 import { createUnreadService, SqliteUnreadRepository } from "../../../src/coordination/unread/index.js";
@@ -54,6 +55,7 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
   const generateId = createFixtureIdGenerator(30_000);
   const work = createWorkService({ database, generateId, now: () => new Date(AT) });
   const leases = createLeaseService({ database, generateId, now: () => new Date(AT), leaseTtlMs: 60_000 });
+  const communications = new SqliteCommunicationEventRepository(database);
   let resolveAgent!: (response: { text: string; model: string; toolCallCount: number; durationMs: number }) => void;
   const agentResponse = new Promise<{ text: string; model: string; toolCallCount: number; durationMs: number }>((resolve) => {
     resolveAgent = resolve;
@@ -62,14 +64,27 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
   const agent: ResidentAgentPort = {
     async runWithTurn(chatId, _text, options) {
       residentAttachments += 1;
-      const turnId = "turn-direct-e2e";
+      const turnId = `coord-${options.coordinationOrigin.workId}`;
       await options.onDurableStart({ turnId, chatId, persistedAt: AT });
-      options.onEvent({ type: "status", status: "working" });
+      options.onEvent({
+        turnId,
+        sequence: 1,
+        occurredAt: AT,
+        provider: "fixture",
+        model: "test-executor",
+        reasoningEffort: "high",
+        event: { type: "status", status: "working", sourceEventType: "runtime.status" },
+      });
       return { turnId, response: agentResponse };
     },
     stop: () => ({ stopped: true }),
   };
-  const resident = new ResidentCoordinationAdapter(agent, createM11ResidentCoordinationPort(leases), () => new Date(AT));
+  const resident = new ResidentCoordinationAdapter(
+    agent,
+    createM11ResidentCoordinationPort(leases),
+    () => new Date(AT),
+    communications,
+  );
   const owner = {
     principalId: OWNER_ID, requestId: fixtureId("request", 900), correlationId: fixtureId("correlation", 900),
     identity: { kind: "owner" as const, auth: {
@@ -100,6 +115,7 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
   const authority = { current: () => currentMessagesAuthority };
   const service = createDirectMessageSubmissionService({
     messages, context: new SqliteDirectMessageContext(database, messages), work, leases,
+    communications,
     resolveResident: (residentBinding) => residentBinding === "jerry" ? {
       resident,
       holderInstanceId: "resident-1",
@@ -144,6 +160,7 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
       auth: { validateAccessToken: async () => owner.identity.auth },
       messageSubmission: { submitMessage: async (input) => (submitted = await service.submitMessage(input)) },
       work, leases, events: new SqliteEventRepository(database),
+      communications,
       authorityEpochs: {
         current: () => canonicalMessagesAuthority,
         listCurrent: async () => ({ epochs: [canonicalMessagesAuthority], throughEventSequence: 41 }),
@@ -196,11 +213,12 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
   )?.state, "running");
 
   const restartedResident = new ResidentCoordinationAdapter(
-    agent, createM11ResidentCoordinationPort(leases), () => new Date(AT),
+    agent, createM11ResidentCoordinationPort(leases), () => new Date(AT), communications,
   );
   let recoveryIdentitySuffix = 905;
   const restartedService = createDirectMessageSubmissionService({
     messages, context: new SqliteDirectMessageContext(database, messages), work, leases,
+    communications,
     authority,
     resolveResident: (residentBinding) => residentBinding === "jerry" ? {
       resident: restartedResident,
@@ -238,6 +256,42 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
   assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM leases")?.count, 1);
   assert.equal(database.readOne<{ state: string }>("SELECT state FROM works WHERE id = ?", submitted.work.id)?.state, "succeeded");
 
+  const communicationHistory = communications.history({
+    afterSequence: 0,
+    limit: 100,
+    requestId: fixtureId("request", 901),
+    conversationId: CONVERSATION_ID,
+  });
+  assert.equal(communicationHistory.kind, "events");
+  if (communicationHistory.kind !== "events") assert.fail("communication history required");
+  const submittedEvents = communicationHistory.events.filter(
+    (event) => event.messageId === acceptedBody.message.id || event.workId === submitted.work.id,
+  );
+  assert.deepEqual(submittedEvents.map((event) => event.kind), [
+    "user_message_committed",
+    "status",
+    "receipt",
+    "assistant_message_committed",
+  ]);
+  assert.equal(new Set(submittedEvents.map((event) => event.eventId)).size, submittedEvents.length,
+    "concurrent restart attachment must deduplicate replayed resident evidence");
+  const [userCommitted, status, receipt, assistantCommitted] = submittedEvents;
+  assert.equal(userCommitted?.actor.kind, "owner");
+  assert.equal(userCommitted?.payload.text, "Jerry, answer canonically.");
+  assert.equal((userCommitted?.payload.rawMessage as { clientMessageId?: string })?.clientMessageId,
+    "client-m14-1");
+  assert.equal(status?.payload.status, "working");
+  assert.equal(status?.source.provider, "fixture");
+  assert.equal(status?.source.model, "test-executor");
+  assert.equal(status?.source.reasoningEffort, "high");
+  assert.equal(receipt?.parentEventId, status?.eventId);
+  assert.equal(receipt?.payload.status, "succeeded");
+  assert.equal(assistantCommitted?.payload.text, "Canonical Jerry response.");
+  assert.equal(assistantCommitted?.payload.replyToMessageId, acceptedBody.message.id);
+  const communicationCountBeforeReplay = database.readOne<{ count: number }>(
+    "SELECT count(*) AS count FROM events WHERE type = 'communication.recorded'",
+  )?.count;
+
   const events = new SqliteEventRepository(database).resumeAfter(1, 100, fixtureId("request", 902));
   assert.equal(events.kind, "events");
   if (events.kind === "events") {
@@ -260,6 +314,10 @@ test("authenticated direct Message follows one durable M08/M11/M13 correlation c
   });
   assert.equal((await replay.response).id, response.id);
   assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM works")?.count, 1);
+  assert.equal(database.readOne<{ count: number }>(
+    "SELECT count(*) AS count FROM events WHERE type = 'communication.recorded'",
+  )?.count, communicationCountBeforeReplay,
+  "canonical Message and resident replay must remain idempotent after process recovery");
 
   const seedRecoveryPhase = async (
     suffix: number,

@@ -55,7 +55,8 @@ export interface TurnEvent {
   turn_id: string;
   seq: number;
   ts: string;
-  kind: 'thinking' | 'tool_start' | 'tool_result' | 'response_chunk' | 'media' | 'subagent_result' | 'cache' | 'status';
+  kind: 'thinking' | 'tool_start' | 'tool_result' | 'response_chunk' | 'media'
+    | 'subagent_start' | 'subagent_result' | 'cache' | 'status';
   data: Record<string, unknown>;
 }
 

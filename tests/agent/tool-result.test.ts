@@ -17,6 +17,7 @@ test('is_error always produces an unsuccessful tool event', async () => {
   const rendered = await executeAndFormatTool({
     registry: registry as never,
     name: 'brain_query',
+    toolCallId: 'call-failure',
     input: {},
     context: {} as never,
     onEvent: event => events.push(event as unknown as Record<string, unknown>),
@@ -68,6 +69,7 @@ test('brain tool events retain bounded durable identity without private metadata
   await executeAndFormatTool({
     registry: registry as never,
     name: 'brain_query',
+    toolCallId: 'call-background',
     input: {},
     context: {} as never,
     onEvent: event => events.push(event as unknown as Record<string, unknown>),
@@ -78,8 +80,11 @@ test('brain tool events retain bounded durable identity without private metadata
   assert.deepEqual(events[0], {
     type: 'tool_result',
     tool: 'brain_query',
+    toolCallId: 'call-background',
     result: 'Started in the background',
+    exactResult: 'Started in the background',
     success: true,
+    sourceEventType: 'runtime.tool_result',
     resultHandle: 'brres_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
     toolMetadata: {
       operationId: 'brop_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -126,6 +131,7 @@ test('structured event metadata is omitted for non-brain tools and malformed ide
     await executeAndFormatTool({
       registry: registry as never,
       name,
+      toolCallId: `call-${name}`,
       input: {},
       context: {} as never,
       onEvent: event => events.push(event as unknown as Record<string, unknown>),
@@ -152,7 +158,7 @@ test('typed brain failures remain unsuccessful and retain bounded typed failure 
   }) };
   await executeAndFormatTool({
     registry: registry as never,
-    name: 'brain_query', input: {}, context: {} as never,
+    name: 'brain_query', toolCallId: 'call-typed-failure', input: {}, context: {} as never,
     onEvent: event => events.push(event as unknown as Record<string, unknown>),
     modelLimit: 4_000, eventLimit: 4_000,
   });
@@ -188,6 +194,7 @@ test('shortened brain output names truncation and the full result handle', async
   const rendered = await executeAndFormatTool({
     registry: registry as never,
     name: 'brain_query',
+    toolCallId: 'call-shortened',
     input: {},
     context: {} as never,
     modelLimit: 160,
@@ -214,6 +221,7 @@ test('display limits are strict finite safe integers and too-small recoverable m
     await assert.rejects(executeAndFormatTool({
       registry: registry as never,
       name: 'brain_query',
+      toolCallId: 'call-invalid-limit',
       input: {},
       context: {} as never,
       onEvent: () => {},
@@ -226,6 +234,7 @@ test('display limits are strict finite safe integers and too-small recoverable m
   const rendered = await executeAndFormatTool({
     registry: registry as never,
     name: 'brain_query',
+    toolCallId: 'call-valid-limit',
     input: {},
     context: {} as never,
     onEvent: () => {},

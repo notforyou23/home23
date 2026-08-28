@@ -427,6 +427,7 @@ function visibleContent(result: ToolResult, limit: number, toolName?: string): s
 export async function executeAndFormatTool(input: {
   registry: ToolRegistry;
   name: string;
+  toolCallId: string;
   input: Record<string, unknown>;
   context: ToolContext;
   onEvent?: AgentEventCallback;
@@ -440,7 +441,10 @@ export async function executeAndFormatTool(input: {
 }> {
   validateDisplayLimit(input.modelLimit);
   validateDisplayLimit(input.eventLimit);
-  const result = await input.registry.execute(input.name, input.input, input.context);
+  const result = await input.registry.execute(input.name, input.input, {
+    ...input.context,
+    parentToolCallId: input.toolCallId,
+  });
   const success = result.is_error !== true;
   const modelContent = visibleContent(result, input.modelLimit, input.name);
   const eventContent = visibleContent(result, input.eventLimit, input.name);
@@ -448,8 +452,11 @@ export async function executeAndFormatTool(input: {
   input.onEvent?.({
     type: 'tool_result',
     tool: input.name,
+    toolCallId: input.toolCallId,
     result: eventContent,
+    exactResult: result.content,
     success,
+    sourceEventType: 'runtime.tool_result',
     ...eventMetadata,
   });
   return { result, modelContent, eventContent, success };

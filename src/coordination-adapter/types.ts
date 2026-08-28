@@ -1,4 +1,6 @@
 import type { AgentEvent, AgentResponse, CoordinationTurnOrigin } from '../agent/types.js';
+import type { ReasoningEffort } from '../agent/reasoning-effort.js';
+import type { AppendCommunicationEventInput } from '../coordination/communications/index.js';
 
 export interface ResidentLeaseBinding extends Omit<CoordinationTurnOrigin, 'kind' | 'channelId' | 'originMessageId' | 'roundId'> {
   requestId: string;
@@ -11,6 +13,43 @@ export interface ResidentWorkRequest {
   origin: CoordinationTurnOrigin;
   requestId: string;
   correlationId: string;
+  communication?: ResidentCommunicationContext;
+}
+
+export interface ResidentCommunicationContext {
+  conversationId: string;
+  responseMessageId: string;
+  actor: {
+    principalId: string;
+    displayName: string;
+    kind: string;
+  };
+}
+
+export interface ResidentDurableEvent {
+  turnId: string;
+  sequence: number;
+  occurredAt: string;
+  provider: string | null;
+  model: string | null;
+  reasoningEffort: ReasoningEffort | null;
+  event: AgentEvent;
+}
+
+/** Exact resident-owned terminal metadata returned with durable event replay. */
+export interface ResidentDurableTerminal {
+  status: string;
+  lastSequence: number;
+  endedAt: string;
+  errorCode: string | null;
+  errorMessage: string | null;
+  provider: string | null;
+  model: string | null;
+  reasoningEffort: ReasoningEffort | null;
+}
+
+export interface ResidentCommunicationPort {
+  append(input: AppendCommunicationEventInput): unknown | Promise<unknown>;
 }
 
 export type ResidentTerminalStatus = 'succeeded' | 'failed' | 'cancelled';
@@ -49,9 +88,14 @@ export interface ResidentAgentPort {
       coordinationOrigin: CoordinationTurnOrigin;
       coordinationRequest?: { requestId: string; correlationId: string };
       onDurableStart(start: { turnId: string; chatId: string; persistedAt: string }): void | Promise<void>;
-      onEvent(event: AgentEvent): void;
+      onEvent(event: ResidentDurableEvent): void;
     },
-  ): Promise<{ turnId: string; response: Promise<AgentResponse> }>;
+  ): Promise<{
+    turnId: string;
+    response: Promise<AgentResponse>;
+    /** Present for transports that can prove the resident's durable terminal envelope. */
+    terminal?: Promise<ResidentDurableTerminal>;
+  }>;
   stop(chatId: string, turnId: string): { stopped: boolean } | Promise<{ stopped: boolean }>;
 }
 

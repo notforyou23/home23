@@ -76,6 +76,15 @@ export const spawnAgentTool: ToolDefinition = {
       label: headline,
       resultHandle: { type: 'subagent_chat', chatId: subChatId },
     }) ?? null;
+    const subagentId = work?.workId ?? subChatId;
+    ctx.onEvent?.({
+      type: 'subagent_start',
+      subagentId,
+      task,
+      label: headline,
+      parentToolCallId: ctx.parentToolCallId,
+      sourceEventType: 'runtime.subagent_started',
+    });
 
     const runSubAgent = async (): Promise<void> => {
       tracker.active++;
@@ -99,7 +108,11 @@ export const spawnAgentTool: ToolDefinition = {
 
         // 1. Live-stream to the parent turn if it still exists
         if (ctx.onEvent) {
-          ctx.onEvent({ type: 'subagent_result', task: task.slice(0, 200), result: result.text });
+          ctx.onEvent({
+            type: 'subagent_result', subagentId, task, result: result.text, success: true,
+            parentToolCallId: ctx.parentToolCallId,
+            sourceEventType: 'runtime.subagent_completed',
+          });
         }
 
         // 2. Terminal delivery through the async-work pipeline: root-origin
@@ -122,7 +135,11 @@ export const spawnAgentTool: ToolDefinition = {
         const text = `[Sub-agent failed] ${headline}\n\nError: ${errMsg}`;
 
         if (ctx.onEvent) {
-          ctx.onEvent({ type: 'subagent_result', task: task.slice(0, 200), result: `Error: ${errMsg}` });
+          ctx.onEvent({
+            type: 'subagent_result', subagentId, task, result: `Error: ${errMsg}`, success: false,
+            parentToolCallId: ctx.parentToolCallId,
+            sourceEventType: 'runtime.subagent_failed',
+          });
         }
         if (work && ctx.onWorkTerminal) {
           ctx.workRegistry!.complete(work.workId, 'failed', errMsg);

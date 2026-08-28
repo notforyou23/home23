@@ -9,6 +9,8 @@ import Database from "better-sqlite3";
 import {
   CommunicationEventConflictError,
   SqliteCommunicationEventRepository,
+  assertCommunicationEventId,
+  stableCommunicationEventId,
   type AppendCommunicationEventInput,
 } from "../../../src/coordination/communications/index.js";
 import {
@@ -83,6 +85,20 @@ function appendInput(
     },
   };
 }
+
+test("stable communication identity is canonical, deterministic, and source-distinct", () => {
+  const occurredAt = "2026-08-27T12:00:00.123Z";
+  const first = stableCommunicationEventId("resident-turn:turn-1:event:7", occurredAt);
+  const replay = stableCommunicationEventId("resident-turn:turn-1:event:7", occurredAt);
+  const next = stableCommunicationEventId("resident-turn:turn-1:event:8", occurredAt);
+  assert.equal(first, replay);
+  assert.notEqual(first, next);
+  assert.doesNotThrow(() => assertCommunicationEventId(first));
+  assert.match(first, /^cevt_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.throws(() => stableCommunicationEventId("", occurredAt), /key must be nonempty/);
+  assert.throws(() => stableCommunicationEventId("source", "2026-08-27T12:00:00Z"),
+    /timestamp must be UTC ISO-8601 with milliseconds/);
+});
 
 test("lossless communication evidence is globally ordered, indexed, and durable across restart", (t) => {
   const path = temporaryDatabase(t);

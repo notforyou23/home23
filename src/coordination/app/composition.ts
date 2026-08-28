@@ -389,6 +389,8 @@ export function createCoordinationProcess(
         resident: new ResidentCoordinationAdapter(
           residentAgent,
           createM11ResidentCoordinationPort(leases),
+          undefined,
+          communications,
         ),
         holderInstanceId: residentConfig.serverInstanceId,
         context: ({ principalId, requestId, correlationId }:
@@ -416,6 +418,7 @@ export function createCoordinationProcess(
       const context = new SqliteDirectMessageContext(database, messages);
       messageSubmission = createDirectMessageSubmissionService({
         messages,
+        communications,
         context,
         work,
         leases,

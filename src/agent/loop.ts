@@ -57,6 +57,7 @@ import {
   applyReasoningStreamEvent,
   createReasoningStreamState,
   shouldFlushThinkingBuffer,
+  takeReasoningEvidence,
   visibleReasoningText,
 } from './reasoning-stream.js';
 import { takeOperatorSteer } from './steer-queue.js';
@@ -1726,8 +1727,10 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               type FunctionCallItem = { call_id: string; name: string; arguments: string };
               const functionCallItems: FunctionCallItem[] = [];
               const flushThinking = (): void => {
-                if (!thinkingState.pendingThinking) return;
-                if (onEvent) onEvent({ type: 'thinking', content: thinkingState.pendingThinking });
+                const evidence = takeReasoningEvidence(thinkingState);
+                if (onEvent) {
+                  for (const item of evidence) onEvent({ type: 'thinking', ...item });
+                }
                 thinkingState.pendingThinking = '';
               };
 
@@ -1748,7 +1751,10 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   textContent += delta;
                   if (onEvent && delta) {
                     streamedAnswer = true;
-                    onEvent({ type: 'response_chunk', chunk: delta });
+                    onEvent({
+                      type: 'response_chunk', chunk: delta,
+                      sourceEventType: evType, providerEvent: event,
+                    });
                   }
                 } else if (evType === 'response.output_text.done') {
                   flushThinking();
@@ -1831,6 +1837,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 }
 
                 toolCallCount++;
+                const toolCallId = tc.id || `runtime-tool-${toolCallCount}`;
                 let input: Record<string, unknown>;
                 if (typeof tc.function.arguments === 'string') {
                   try { input = JSON.parse(tc.function.arguments); } catch { input = { raw: tc.function.arguments }; }
@@ -1842,12 +1849,16 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   ? tc.function.arguments.slice(0, 100)
                   : JSON.stringify(tc.function.arguments).slice(0, 100);
                 console.log(`[agent] Tool call #${toolCallCount}: ${tc.function.name}(${argsPreview})`);
-                if (onEvent) onEvent({ type: 'tool_start', tool: tc.function.name, args: input });
+                if (onEvent) onEvent({
+                  type: 'tool_start', tool: tc.function.name, args: input, toolCallId,
+                  sourceEventType: 'response.output_item.done', providerEvent: tc,
+                });
 
                 try {
                   const formatted = await executeAndFormatTool({
                     registry,
                     name: tc.function.name,
+                    toolCallId,
                     input,
                     context: runContext,
                     onEvent,
@@ -1857,14 +1868,21 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   const { result } = formatted;
                   if (result.media) {
                     allMedia.push(...result.media);
-                    if (onEvent) for (const m of result.media) onEvent({ type: 'media', mediaType: m.type || 'image', path: m.path, caption: m.caption });
+                    if (onEvent) for (const m of result.media) onEvent({
+                      type: 'media', mediaType: m.type || 'image', path: m.path,
+                      caption: m.caption, toolCallId, sourceEventType: 'runtime.tool_media',
+                    });
                   }
                   apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: formatted.modelContent });
                 } catch (toolErr) {
                   console.error(`[agent] Tool ${tc.function.name} threw:`, toolErr);
                   const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
                   apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: `Tool error: ${errMsg}` });
-                  if (onEvent) onEvent({ type: 'tool_result', tool: tc.function.name, result: errMsg, success: false });
+                  if (onEvent) onEvent({
+                    type: 'tool_result', tool: tc.function.name, toolCallId,
+                    result: errMsg, exactResult: errMsg, success: false,
+                    sourceEventType: 'runtime.tool_error',
+                  });
                 }
               }
 
@@ -1973,8 +1991,10 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               const serverToolNames: string[] = [];
               let terminalEvent: Record<string, unknown> | null = null;
               const flushThinking = (): void => {
-                if (!thinkingState.pendingThinking) return;
-                if (onEvent) onEvent({ type: 'thinking', content: thinkingState.pendingThinking });
+                const evidence = takeReasoningEvidence(thinkingState);
+                if (onEvent) {
+                  for (const item of evidence) onEvent({ type: 'thinking', ...item });
+                }
                 thinkingState.pendingThinking = '';
               };
 
@@ -1990,7 +2010,10 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   textContent += (event.delta as string) ?? '';
                   if (onEvent && event.delta) {
                     streamedAnswer = true;
-                    onEvent({ type: 'response_chunk', chunk: event.delta as string });
+                    onEvent({
+                      type: 'response_chunk', chunk: event.delta as string,
+                      sourceEventType: evType, providerEvent: event,
+                    });
                   }
                 } else if (evType === 'response.output_text.done') {
                   flushThinking();
@@ -2006,15 +2029,27 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                     const toolName = getXaiServerToolNameFromItem(item);
                     if (toolName) {
                       toolCallCount++;
+                      const toolCallId = typeof item?.id === 'string' && item.id
+                        ? item.id
+                        : typeof item?.call_id === 'string' && item.call_id
+                          ? item.call_id
+                          : `runtime-server-tool-${toolCallCount}`;
                       serverToolNames.push(toolName);
                       const args = item ? getXaiServerToolArgs(item) : {};
                       if (onEvent) {
-                        onEvent({ type: 'tool_start', tool: toolName, args });
+                        onEvent({
+                          type: 'tool_start', tool: toolName, args, toolCallId,
+                          sourceEventType: 'response.output_item.done', providerEvent: item,
+                        });
                         onEvent({
                           type: 'tool_result',
                           tool: toolName,
+                          toolCallId,
                           result: summarizeXaiServerToolResult(toolName, item ?? {}),
+                          exactResult: JSON.stringify(item ?? {}),
                           success: xaiServerToolSucceeded(item ?? {}),
+                          sourceEventType: 'response.output_item.done',
+                          providerEvent: item,
                         });
                       }
                     }
@@ -2098,14 +2133,19 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   continue;
                 }
                 toolCallCount++;
+                const toolCallId = tc.id || `runtime-tool-${toolCallCount}`;
                 let input: Record<string, unknown>;
                 try { input = typeof tc.function.arguments === 'string' ? JSON.parse(tc.function.arguments) : tc.function.arguments; }
                 catch { input = {}; }
-                if (onEvent) onEvent({ type: 'tool_start', tool: tc.function.name, args: input });
+                if (onEvent) onEvent({
+                  type: 'tool_start', tool: tc.function.name, args: input, toolCallId,
+                  sourceEventType: 'response.output_item.done', providerEvent: tc,
+                });
                 try {
                   const formatted = await executeAndFormatTool({
                     registry,
                     name: tc.function.name,
+                    toolCallId,
                     input,
                     context: runContext,
                     onEvent,
@@ -2113,12 +2153,12 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                     eventLimit: TOOL_EVENT_RESULT_LIMIT_CHARS,
                   });
                   const { result } = formatted;
-                  if (result.media?.length) { allMedia.push(...result.media); if (onEvent) for (const m of result.media) onEvent({ type: 'media', mediaType: m.type || 'image', path: m.path, caption: m.caption }); }
+                  if (result.media?.length) { allMedia.push(...result.media); if (onEvent) for (const m of result.media) onEvent({ type: 'media', mediaType: m.type || 'image', path: m.path, caption: m.caption, toolCallId, sourceEventType: 'runtime.tool_media' }); }
                   xaiInputItems.push({ type: 'function_call_output', call_id: tc.id, output: formatted.modelContent });
                 } catch (toolErr) {
                   const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
                   xaiInputItems.push({ type: 'function_call_output', call_id: tc.id, output: `Error: ${errMsg}` });
-                  if (onEvent) onEvent({ type: 'tool_result', tool: tc.function.name, result: errMsg, success: false });
+                  if (onEvent) onEvent({ type: 'tool_result', tool: tc.function.name, toolCallId, result: errMsg, exactResult: errMsg, success: false, sourceEventType: 'runtime.tool_error' });
                 }
               }
               const names = [...serverToolNames, ...toolCalls.map(tc => tc.function.name)];
@@ -2333,6 +2373,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               }
 
               toolCallCount++;
+              const toolCallId = tc.id || `runtime-tool-${toolCallCount}`;
               // Native Ollama returns arguments as object; OpenAI returns as string
               let input: Record<string, unknown>;
               if (typeof tc.function.arguments === 'string') {
@@ -2343,12 +2384,13 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
 
               const argsPreview = typeof tc.function.arguments === 'string' ? tc.function.arguments.slice(0, 100) : JSON.stringify(tc.function.arguments).slice(0, 100);
               console.log(`[agent] Tool call #${toolCallCount}: ${tc.function.name}(${argsPreview})`);
-              if (onEvent) onEvent({ type: 'tool_start', tool: tc.function.name, args: input });
+              if (onEvent) onEvent({ type: 'tool_start', tool: tc.function.name, args: input, toolCallId, sourceEventType: 'provider.tool_call', providerEvent: tc });
 
               try {
                 const formatted = await executeAndFormatTool({
                   registry,
                   name: tc.function.name,
+                  toolCallId,
                   input,
                   context: runContext,
                   onEvent,
@@ -2358,14 +2400,14 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 const { result } = formatted;
                 if (result.media) {
                   allMedia.push(...result.media);
-                  if (onEvent) for (const m of result.media) onEvent({ type: 'media', mediaType: m.type || 'image', path: m.path, caption: m.caption });
+                  if (onEvent) for (const m of result.media) onEvent({ type: 'media', mediaType: m.type || 'image', path: m.path, caption: m.caption, toolCallId, sourceEventType: 'runtime.tool_media' });
                 }
                 apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: formatted.modelContent });
               } catch (toolErr) {
                 console.error(`[agent] Tool ${tc.function.name} threw:`, toolErr);
                 const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
                 apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: `Tool error: ${errMsg}` });
-                if (onEvent) onEvent({ type: 'tool_result', tool: tc.function.name, result: errMsg, success: false });
+                if (onEvent) onEvent({ type: 'tool_result', tool: tc.function.name, toolCallId, result: errMsg, exactResult: errMsg, success: false, sourceEventType: 'runtime.tool_error' });
               }
             }
 
@@ -2463,7 +2505,12 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 if (block?.type === 'thinking' && block.thinking) {
                   emittedAny = true;
                   streamedThinking = true;
-                  onEvent({ type: 'thinking', content: block.thinking });
+                  onEvent({
+                    type: 'thinking', content: block.thinking,
+                    provenance: 'provider_verbatim_reasoning',
+                    sourceEventType: 'content_block_start.thinking',
+                    providerEvent: event,
+                  });
                 }
               } else if (event.type === 'content_block_delta' && onEvent) {
                 const delta = event.delta as
@@ -2472,11 +2519,20 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   | { type: 'input_json_delta'; partial_json: string };
                 if (delta.type === 'text_delta') {
                   emittedAny = true;
-                  onEvent({ type: 'response_chunk', chunk: delta.text });
+                  onEvent({
+                    type: 'response_chunk', chunk: delta.text,
+                    sourceEventType: 'content_block_delta.text_delta',
+                    providerEvent: event,
+                  });
                 } else if (delta.type === 'thinking_delta') {
                   emittedAny = true;
                   streamedThinking = true;
-                  onEvent({ type: 'thinking', content: delta.thinking });
+                  onEvent({
+                    type: 'thinking', content: delta.thinking,
+                    provenance: 'provider_verbatim_reasoning',
+                    sourceEventType: 'content_block_delta.thinking_delta',
+                    providerEvent: event,
+                  });
                 }
                 // input_json_delta accumulates tool-call arguments; surface the
                 // completed tool call at content_block_stop via finalMessage below.
@@ -2533,7 +2589,12 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             const thinking = (block as { type?: string; thinking?: string }).type === 'thinking'
               ? (block as { thinking?: string }).thinking
               : undefined;
-            if (thinking) onEvent({ type: 'thinking', content: thinking });
+            if (thinking) onEvent({
+              type: 'thinking', content: thinking,
+              provenance: 'provider_verbatim_reasoning',
+              sourceEventType: 'message.content.thinking',
+              providerEvent: block,
+            });
           }
         }
 
@@ -2570,14 +2631,16 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             }
 
             toolCallCount++;
+            const toolCallId = toolCall.id;
             console.log(`[agent] Tool call #${toolCallCount}: ${toolCall.name}(${JSON.stringify(toolCall.input).slice(0, 100)})`);
-            if (onEvent) onEvent({ type: 'tool_start', tool: toolCall.name, args: toolCall.input });
+            if (onEvent) onEvent({ type: 'tool_start', tool: toolCall.name, args: toolCall.input, toolCallId, sourceEventType: 'message.content.tool_use', providerEvent: toolCall });
 
             // Catch per-tool errors so one bad tool doesn't kill the whole turn
             try {
               const formatted = await executeAndFormatTool({
                 registry,
                 name: toolCall.name,
+                toolCallId,
                 input: toolCall.input,
                 context: runContext,
                 onEvent,
@@ -2590,7 +2653,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 allMedia.push(...result.media);
                 if (onEvent) {
                   for (const m of result.media) {
-                    onEvent({ type: 'media', mediaType: m.type || 'image', path: m.path, caption: m.caption });
+                    onEvent({ type: 'media', mediaType: m.type || 'image', path: m.path, caption: m.caption, toolCallId, sourceEventType: 'runtime.tool_media' });
                   }
                 }
               }
@@ -2610,7 +2673,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 content: `Tool error: ${errMsg}`,
                 is_error: true,
               });
-              if (onEvent) onEvent({ type: 'tool_result', tool: toolCall.name, result: errMsg, success: false });
+              if (onEvent) onEvent({ type: 'tool_result', tool: toolCall.name, toolCallId, result: errMsg, exactResult: errMsg, success: false, sourceEventType: 'runtime.tool_error' });
             }
           }
 

@@ -1,7 +1,15 @@
 import { createHash } from "node:crypto";
 import type { AgentResponse, CoordinationTurnOrigin } from "../../agent/types.js";
-import type { ResidentCoordinationAdapter } from "../../coordination-adapter/index.js";
+import type {
+  ResidentCommunicationPort,
+  ResidentCoordinationAdapter,
+} from "../../coordination-adapter/index.js";
 import { MessagingError, type MessagingActorContext } from "../channels/index.js";
+import {
+  isCommunicationJsonValue,
+  stableCommunicationEventId,
+} from "../communications/index.js";
+import type { JsonValue } from "../db/index.js";
 import type { MessageProjection } from "../messages/index.js";
 import type { ContextManifestInput, WorkRecord } from "../work/index.js";
 import { isCanonicalMessagesAuthority, type AuthorityEpoch } from "../epochs/index.js";
@@ -18,6 +26,7 @@ export interface DirectMessageChannelContext {
   channelId: string;
   conversationId: string;
   targetBotId: string;
+  targetBotDisplayName: string;
   targetPrincipalId: string;
   residentBinding: string;
   instruction: string;
@@ -70,10 +79,66 @@ export function createDirectMessageSubmissionService(options: {
   leases: CoordinationLeasePort;
   resolveResident(residentBinding: string): DirectMessageResidentTarget | undefined;
   authority: { current(): AuthorityEpoch | null };
+  communications?: ResidentCommunicationPort;
   beginWork(): () => void;
   recoveryIdentity(): { requestId: string; correlationId: string };
 }) {
   const inFlight = new Map<string, Promise<MessageProjection>>();
+  const exactMessage = (message: MessageProjection): Record<string, JsonValue> => {
+    let serialized: string | undefined;
+    try { serialized = JSON.stringify(message); } catch { serialized = undefined; }
+    if (serialized === undefined) throw new TypeError("canonical Message is not JSON serializable");
+    const parsed = JSON.parse(serialized) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) ||
+        !isCommunicationJsonValue(parsed)) {
+      throw new TypeError("canonical Message is not lossless JSON evidence");
+    }
+    return parsed as Record<string, JsonValue>;
+  };
+  const recordMessage = async (input: {
+    message: MessageProjection;
+    kind: "user_message_committed" | "assistant_message_committed";
+    requestId: string;
+    correlationId: string;
+  }): Promise<void> => {
+    if (!options.communications) return;
+    const message = input.message;
+    const rawMessage = exactMessage(message);
+    await options.communications.append({
+      event: {
+        eventId: stableCommunicationEventId(
+          `canonical-message:${message.id}:${input.kind}`,
+          message.createdAt,
+        ),
+        conversationId: message.conversationId,
+        channelId: message.channelId,
+        messageId: message.id,
+        workId: message.provenance.workId,
+        actor: {
+          principalId: message.author.principalId,
+          displayName: message.author.displayName,
+          kind: message.author.kind,
+        },
+        source: {
+          system: "core_messaging",
+          adapter: "canonical_messages",
+          sourceEventType: "message.appended",
+        },
+        kind: input.kind,
+        occurredAt: message.createdAt,
+        payload: {
+          text: message.text,
+          clientMessageId: message.clientMessageId,
+          replyToMessageId: message.replyToMessageId,
+          attachments: rawMessage.attachments ?? [],
+          rawMessage,
+        },
+        terminal: true,
+      },
+      requestId: input.requestId,
+      correlationId: input.correlationId,
+    });
+  };
   const once = (callback: () => void) => {
     let called = false;
     return () => {
@@ -195,6 +260,15 @@ export function createDirectMessageSubmissionService(options: {
         chatId: `coordination:${input.prepared.channelId}:${input.work.id}`,
         instruction: input.prepared.instruction, origin,
         requestId: input.requestId, correlationId: input.correlationId,
+        communication: {
+          conversationId: input.prepared.conversationId,
+          responseMessageId: responseMessageId(input.work.id),
+          actor: {
+            principalId: input.prepared.targetPrincipalId,
+            displayName: input.prepared.targetBotDisplayName,
+            kind: "resident_bot",
+          },
+        },
       };
       let agentResponse: AgentResponse;
       if (recoveryPhase === "completed") {
@@ -219,6 +293,12 @@ export function createDirectMessageSubmissionService(options: {
         text: agentResponse.text, mentions: [], clientMessageId: null,
         replyToMessageId: input.originMessageId, tombstonesMessageId: null,
         provenance: { roundId: null, workId: input.work.id },
+      });
+      await recordMessage({
+        message: result.message,
+        kind: "assistant_message_committed",
+        requestId: input.requestId,
+        correlationId: input.correlationId,
       });
       return result.message;
     })().finally(input.endWork);
@@ -278,6 +358,12 @@ export function createDirectMessageSubmissionService(options: {
           clientMessageId: input.body.clientMessageId, replyToMessageId: input.body.replyToMessageId,
           tombstonesMessageId: null, provenance: { roundId: null, workId: null },
         });
+        await recordMessage({
+          message: appended.message,
+          kind: "user_message_committed",
+          requestId: input.context.requestId,
+          correlationId: input.context.correlationId,
+        });
         const prepared = await options.context.prepare({
           context: input.context, channelId: input.channelId,
           originMessage: appended.message, attachmentIds: input.body.attachmentIds,
@@ -306,6 +392,12 @@ export function createDirectMessageSubmissionService(options: {
             });
             const result = page.messages.find((message) => message.provenance.workId === created.work.id);
             if (result) {
+              await recordMessage({
+                message: result,
+                kind: "assistant_message_committed",
+                requestId: input.context.requestId,
+                correlationId: input.context.correlationId,
+              });
               endWork();
               return result;
             }
