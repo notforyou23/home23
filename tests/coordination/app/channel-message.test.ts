@@ -637,3 +637,31 @@ test("exact active or terminal message replay returns stored admission without p
     assert.equal(testHarness.ended(), 0);
   }
 });
+
+test("legacy message replay without an admission starts the missing group Round once", async () => {
+  const testHarness = harness({
+    messageOutcome: "replayed",
+    initialWorkCount: 0,
+    responses: [
+      { text: "Jerry recovered the legacy admission.", model: "fixture", toolCallCount: 0, durationMs: 1 },
+      { text: "Forrest recovered the legacy admission.", model: "fixture", toolCallCount: 0, durationMs: 1 },
+    ],
+  });
+
+  const accepted = await testHarness.service.submitMessage({
+    context: testHarness.context,
+    channelId: CHANNEL_ID,
+    idempotencyKey: "legacy-group-message-without-admission-0001",
+    body: submissionBody(),
+  });
+  const terminal = await accepted.response as { outcome: string };
+
+  assert.equal(accepted.replayed, true);
+  assert.equal(testHarness.recorded.filter((entry) => entry.id === OWNER_MESSAGE_ID).length, 1,
+    "the previously committed owner Message must enter canonical communication evidence");
+  assert.equal(testHarness.coordinatorStarts(), 1);
+  assert.equal(testHarness.workCount(), 2);
+  assert.equal(testHarness.executions(), 2);
+  assert.equal(terminal.outcome, "completed");
+  assert.equal(testHarness.ended(), 1);
+});
