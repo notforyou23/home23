@@ -175,7 +175,10 @@ export class CoordinationTransaction {
   }
 }
 
-function canonicalJson(value: JsonValue, ancestors = new Set<object>()): string {
+export function canonicalCoordinationJson(
+  value: JsonValue,
+  ancestors = new Set<object>(),
+): string {
   if (value === null || typeof value === "boolean" || typeof value === "string") {
     return JSON.stringify(value);
   }
@@ -192,7 +195,7 @@ function canonicalJson(value: JsonValue, ancestors = new Set<object>()): string 
         if (!Object.hasOwn(value, index)) {
           throw new Error(`event payload contains a sparse array at index ${index}`);
         }
-        entries.push(canonicalJson(value[index] as JsonValue, ancestors));
+        entries.push(canonicalCoordinationJson(value[index] as JsonValue, ancestors));
       }
       return `[${entries.join(",")}]`;
     } finally {
@@ -213,7 +216,7 @@ function canonicalJson(value: JsonValue, ancestors = new Set<object>()): string 
       .sort()
       .map(
         (key) =>
-          `${JSON.stringify(key)}:${canonicalJson(value[key] as JsonValue, ancestors)}`,
+          `${JSON.stringify(key)}:${canonicalCoordinationJson(value[key] as JsonValue, ancestors)}`,
       );
     return `{${entries.join(",")}}`;
   } finally {
@@ -294,7 +297,7 @@ function appendEvent(
   assertEventInput(input);
   assertNextAggregateVersion(database, input);
   const id = generateCoordinationId("event");
-  const payloadJson = canonicalJson(input.payload);
+  const payloadJson = canonicalCoordinationJson(input.payload);
   const payloadDigest = createHash("sha256").update(payloadJson, "utf8").digest("hex");
   const result = database
     .prepare(

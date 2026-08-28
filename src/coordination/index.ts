@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export * from "./channel-coordinator/index.js";
+export * from "./communications/index.js";
 
 type CoordinationShutdownSignal = "SIGINT" | "SIGTERM";
 

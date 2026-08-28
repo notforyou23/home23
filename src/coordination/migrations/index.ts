@@ -13,6 +13,7 @@ import { ATOMIC_IMPORT_LEDGER_MIGRATION_SQL } from "./0004-atomic-import-ledger.
 import { ATTACHMENT_CREATE_IDEMPOTENCY_MIGRATION_SQL } from "./0005-attachment-create-idempotency.js";
 import { WORK_LIFECYCLE_SCHEMA_MIGRATION_SQL } from "./0006-work-lifecycle-schema.js";
 import { WORK_PRODUCT_CONTROLS_MIGRATION_SQL } from "./0007-work-product-controls.js";
+import { COMMUNICATION_EVIDENCE_INDEX_MIGRATION_SQL } from "./0008-communication-evidence-indexes.js";
 
 export {
   COORDINATION_PRODUCT_SCHEMA_DEPENDENCIES,
@@ -65,6 +66,8 @@ export const COORDINATION_WORK_LIFECYCLE_MIGRATION_CHECKSUM =
   "c689c752ef911d9d067a60a02f368a6860a78f37483ff53fc1c0fe43c6afde22";
 export const COORDINATION_WORK_PRODUCT_CONTROLS_MIGRATION_CHECKSUM =
   "0e2da9e13c9a7e67c0f3e44a89049a6314e050d9fe530cba3cdb041dc4c67b7a";
+export const COORDINATION_COMMUNICATION_EVIDENCE_MIGRATION_CHECKSUM =
+  "74f89ae90cfb730d0b0ca3ee8cff8a87d994cb566f7f8285d7f501a4d5ccd068";
 
 export const COORDINATION_MIGRATIONS = Object.freeze([
   defineMigration(
@@ -116,6 +119,13 @@ export const COORDINATION_MIGRATIONS = Object.freeze([
     COORDINATION_WORK_PRODUCT_CONTROLS_MIGRATION_CHECKSUM,
     "770dfe1f6d418d3958c3158c843050d90724bba4641e0018a6312da51054f9b9",
   ),
+  defineMigration(
+    8,
+    "communication-evidence-indexes",
+    COMMUNICATION_EVIDENCE_INDEX_MIGRATION_SQL,
+    COORDINATION_COMMUNICATION_EVIDENCE_MIGRATION_CHECKSUM,
+    "2219d7ac48779fc2d80895c13d17b01eac218a90eb2db1a0b6be86eac2c65a03",
+  ),
 ]);
 
 export const COORDINATION_SCHEMA_VERSION =
@@ -135,7 +145,7 @@ export function computeCoordinationMigrationPlanChecksum(
 // Reviewed with the immutable migration bytes. A historical migration edit
 // must fail before any database is opened.
 export const COORDINATION_MIGRATION_PLAN_CHECKSUM =
-  "33a4ae72fadadfd0af3923998bce799238fb2cc97f611d8ac1790ed9b1be96f5";
+  "4267c84e69ecd08f2e13964b00ed2ddea32f6e941b1dc8dbb50fbde2e1ba3dd5";
 
 if (computeCoordinationMigrationPlanChecksum() !== COORDINATION_MIGRATION_PLAN_CHECKSUM) {
   throw new Error("coordination migration bytes differ from the reviewed migration checksum");
