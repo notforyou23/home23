@@ -35,8 +35,13 @@ interface RecoveryManifestRow {
 interface RecoveryMessageRow {
   id: string;
   sequence: number;
+  authorPrincipalId: string;
   authorDisplayName: string;
+  kind: "text" | "system" | "result";
   text: string | null;
+  replyToMessageId: string | null;
+  roundId: string | null;
+  workId: string | null;
 }
 
 const WORK_SELECT = `
@@ -100,6 +105,30 @@ implements GroupChannelMessageContextPort {
        ORDER BY b.id`,
       channelId,
     ).map((row) => Object.freeze(row)));
+  }
+
+  private selectedTargets(
+    channelId: string,
+    channel: GroupChannelRow,
+    mentionedBotIds: readonly string[],
+  ): readonly GroupTargetRow[] {
+    const availableTargets = this.targets(channelId);
+    const byBot = new Map(availableTargets.map((target) => [target.targetBotId, target]));
+    const selectedBotIds = mentionedBotIds.length > 0
+      ? [...mentionedBotIds]
+      : channel.responderMode === "mention_or_coordinator" && channel.coordinatorBotId
+        ? [channel.coordinatorBotId]
+        : [];
+    return Object.freeze(selectedBotIds.map((botId) => {
+      const target = byBot.get(botId);
+      if (!target) {
+        throw new ChannelCoordinatorError(
+          "ineligible",
+          "selected Channel Bot is not a persistent message resident",
+        );
+      }
+      return target;
+    }));
   }
 
   private eventFor(messageId: string, eventSequence?: number): {
@@ -181,22 +210,11 @@ implements GroupChannelMessageContextPort {
     )?.count ?? 0;
     if (tombstonedAfterSnapshot !== 0) throw new MessagingError("invalid_relation");
     const availableTargets = this.targets(input.channelId);
-    const byBot = new Map(availableTargets.map((target) => [target.targetBotId, target]));
-    const selectedBotIds = input.originMessage.mentions.length > 0
-      ? [...input.originMessage.mentions]
-      : channel.responderMode === "mention_or_coordinator" && channel.coordinatorBotId
-        ? [channel.coordinatorBotId]
-        : [];
-    const selectedTargets = selectedBotIds.map((botId) => {
-      const target = byBot.get(botId);
-      if (!target) {
-        throw new ChannelCoordinatorError(
-          "ineligible",
-          "selected Channel Bot is not a persistent message resident",
-        );
-      }
-      return target;
-    });
+    const selectedTargets = this.selectedTargets(
+      input.channelId,
+      channel,
+      input.originMessage.mentions,
+    );
     const instruction = boundedMessages
       .filter((message) => message.text !== null)
       .map((message) => `${message.author.displayName}: ${message.text}`)
@@ -257,6 +275,134 @@ implements GroupChannelMessageContextPort {
     return this.snapshot(input);
   }
 
+  async prepareSequentialTurn(
+    input: Parameters<GroupChannelMessageContextPort["prepareSequentialTurn"]>[0],
+  ): Promise<GroupChannelPreparedContext> {
+    if (input.plan.responseOrder !== "sequential") {
+      throw new MessagingError("invalid_relation");
+    }
+    const channel = this.channel(input.plan.channelId);
+    const round = this.database.readOne<{ channelId: string }>(
+      "SELECT channel_id AS channelId FROM rounds WHERE id = ?",
+      input.roundId,
+    );
+    if (!round || round.channelId !== input.plan.channelId) {
+      throw new MessagingError("invalid_relation");
+    }
+    const targetIndex = input.plan.selectedTargets.findIndex(
+      (candidate) => candidate.targetBotId === input.targetBotId,
+    );
+    if (targetIndex < 1) throw new MessagingError("invalid_relation");
+    const currentTargets = new Map(
+      this.targets(input.plan.channelId).map((target) => [target.targetBotId, target]),
+    );
+    const target = currentTargets.get(input.targetBotId);
+    if (!target) throw new MessagingError("unknown_principal");
+
+    const precedingTargets = input.plan.selectedTargets.slice(0, targetIndex);
+    const works = this.listRoundWorks(input.roundId);
+    const byTarget = new Map<string, WorkRecord>();
+    for (const work of works) {
+      if (byTarget.has(work.targetPrincipalId)) {
+        throw new MessagingError("invalid_relation");
+      }
+      byTarget.set(work.targetPrincipalId, work);
+    }
+    if (
+      works.length !== precedingTargets.length ||
+      precedingTargets.some((candidate) => {
+        const work = byTarget.get(candidate.targetPrincipalId);
+        return !work || !["succeeded", "failed", "cancelled"].includes(work.state);
+      })
+    ) {
+      throw new MessagingError("invalid_relation");
+    }
+
+    const precedingWorkIds = precedingTargets.map((candidate) =>
+      byTarget.get(candidate.targetPrincipalId)!.id
+    );
+    const resultRows = precedingWorkIds.length === 0
+      ? []
+      : this.database.readAll<RecoveryMessageRow>(
+          `SELECT m.id, m.channel_sequence AS sequence,
+                  m.author_principal_id AS authorPrincipalId,
+                  m.author_display_name AS authorDisplayName, m.kind,
+                  CASE WHEN EXISTS (
+                    SELECT 1 FROM messages tombstone
+                    WHERE tombstone.tombstones_message_id = m.id
+                  ) THEN NULL ELSE m.body_text END AS text,
+                  m.reply_to_message_id AS replyToMessageId,
+                  m.round_id AS roundId, m.work_id AS workId
+           FROM messages m
+           WHERE m.channel_id = ? AND m.kind = 'result' AND m.round_id = ?
+             AND m.work_id IN (${precedingWorkIds.map(() => "?").join(",")})
+           ORDER BY m.channel_sequence ASC`,
+          input.plan.channelId,
+          input.roundId,
+          ...precedingWorkIds,
+        );
+    if (
+      resultRows.some((row) =>
+        row.replyToMessageId !== input.plan.originMessageId ||
+        row.roundId !== input.roundId || row.workId === null ||
+        byTarget.get(row.authorPrincipalId)?.id !== row.workId ||
+        byTarget.get(row.authorPrincipalId)?.state !== "succeeded"
+      ) ||
+      new Set(resultRows.map((row) => row.workId)).size !== resultRows.length
+    ) {
+      throw new MessagingError("invalid_relation");
+    }
+
+    const messageIds = [...input.plan.manifest.messageIds, ...resultRows.map((row) => row.id)];
+    const boundedMessageIds = messageIds.slice(-100);
+    if (!boundedMessageIds.includes(input.plan.originMessageId)) {
+      throw new MessagingError("invalid_relation");
+    }
+    const rows = this.database.readAll<RecoveryMessageRow>(
+      `SELECT m.id, m.channel_sequence AS sequence,
+              m.author_principal_id AS authorPrincipalId,
+              m.author_display_name AS authorDisplayName, m.kind,
+              CASE WHEN EXISTS (
+                SELECT 1 FROM messages tombstone
+                WHERE tombstone.tombstones_message_id = m.id
+              ) THEN NULL ELSE m.body_text END AS text,
+              m.reply_to_message_id AS replyToMessageId,
+              m.round_id AS roundId, m.work_id AS workId
+       FROM messages m
+       WHERE m.channel_id = ?
+         AND m.id IN (${boundedMessageIds.map(() => "?").join(",")})
+       ORDER BY m.channel_sequence ASC`,
+      input.plan.channelId,
+      ...boundedMessageIds,
+    );
+    const boundary = rows.at(-1);
+    if (
+      rows.length !== boundedMessageIds.length || !boundary ||
+      !rows.some((row) => row.id === input.plan.originMessageId)
+    ) {
+      throw new MessagingError("invalid_relation");
+    }
+    const boundaryEvent = this.eventFor(boundary.id);
+    const instruction = rows
+      .filter((message) => message.text !== null)
+      .map((message) => `${message.authorDisplayName}: ${message.text}`)
+      .join("\n");
+    if (!instruction) throw new MessagingError("invalid_relation");
+    return Object.freeze({
+      ...input.plan,
+      selectedTargets: Object.freeze([target]),
+      responseOrder: channel.responseOrder,
+      instruction,
+      manifest: directMessageManifest({
+        channelId: input.plan.channelId,
+        messageIds: rows.map((row) => row.id),
+        attachmentIds: input.plan.manifest.artifactIds,
+        channelSequence: boundary.sequence,
+        eventSequence: boundaryEvent.eventSequence,
+      }),
+    });
+  }
+
   async recover(work: WorkRecord): Promise<GroupChannelPreparedContext> {
     if (
       work.kind !== "channel.bot_turn" ||
@@ -304,18 +450,24 @@ implements GroupChannelMessageContextPort {
     const placeholders = messageIds.map(() => "?").join(",");
     const rows = this.database.readAll<RecoveryMessageRow>(
       `SELECT m.id, m.channel_sequence AS sequence,
-              m.author_display_name AS authorDisplayName,
+              m.author_principal_id AS authorPrincipalId,
+              m.author_display_name AS authorDisplayName, m.kind,
               CASE WHEN EXISTS (
                 SELECT 1 FROM messages tombstone
                 WHERE tombstone.tombstones_message_id = m.id
-              ) THEN NULL ELSE m.body_text END AS text
+              ) THEN NULL ELSE m.body_text END AS text,
+              m.reply_to_message_id AS replyToMessageId,
+              m.round_id AS roundId, m.work_id AS workId
        FROM messages m
        WHERE m.channel_id = ? AND m.id IN (${placeholders})
        ORDER BY m.channel_sequence ASC`,
       work.channelId,
       ...messageIds,
     );
-    const event = this.eventFor(work.originMessageId, manifest.eventWatermark);
+    const boundary = rows.at(-1);
+    const event = boundary
+      ? this.eventFor(boundary.id, manifest.eventWatermark)
+      : null;
     const tombstonedAfterSnapshot = this.database.readOne<{ count: number }>(
       `SELECT count(*) AS count FROM messages tombstone
        WHERE tombstone.channel_id = ?
@@ -335,13 +487,34 @@ implements GroupChannelMessageContextPort {
     if (
       rows.length !== messageIds.length ||
       rows.some((row) => !messageIds.includes(row.id)) ||
-      rows.at(-1)?.id !== work.originMessageId ||
-      rows.at(-1)?.sequence !== manifest.channelWatermark ||
+      !rows.some((row) => row.id === work.originMessageId) ||
+      boundary?.sequence !== manifest.channelWatermark ||
+      event === null ||
       tombstonedAfterSnapshot !== 0 ||
       canonicalManifest.digests.context !== manifest.contextDigest ||
       canonicalManifest.digests.source !== manifest.sourceDigest
     ) {
       throw new MessagingError("invalid_relation");
+    }
+    for (const row of rows.filter((candidate) => candidate.sequence >
+      rows.find((candidate) => candidate.id === work.originMessageId)!.sequence)) {
+      const sourceWork = row.workId === null
+        ? undefined
+        : this.database.readOne<{ targetPrincipalId: string; state: string }>(
+            `SELECT target_principal_id AS targetPrincipalId, state FROM works
+             WHERE id = ? AND round_id = ? AND channel_id = ?`,
+            row.workId,
+            work.roundId,
+            work.channelId,
+          );
+      if (
+        row.kind !== "result" || row.roundId !== work.roundId ||
+        row.replyToMessageId !== work.originMessageId || !sourceWork ||
+        sourceWork.targetPrincipalId !== row.authorPrincipalId ||
+        sourceWork.state !== "succeeded"
+      ) {
+        throw new MessagingError("invalid_relation");
+      }
     }
     const origin = this.database.readOne<{ authorPrincipalId: string }>(
       `SELECT author_principal_id AS authorPrincipalId FROM messages
@@ -370,6 +543,36 @@ implements GroupChannelMessageContextPort {
         `canonical-channel-membership:${work.channelId}:version:${channel.version}`,
       instruction,
       manifest: canonicalManifest,
+    });
+  }
+
+  async recoverPlan(roundId: string): Promise<GroupChannelPreparedContext> {
+    const first = this.database.readOne<WorkRecord>(
+      `${WORK_SELECT}
+       WHERE round_id = ? AND kind = 'channel.bot_turn'
+       ORDER BY created_at, id LIMIT 1`,
+      roundId,
+    );
+    if (!first || first.originMessageId === null) {
+      throw new MessagingError("invalid_relation");
+    }
+    const recovered = await this.recover(Object.freeze(first));
+    const channel = this.channel(first.channelId);
+    const mentionedBotIds = this.database.readAll<{ botId: string }>(
+      `SELECT mentioned_principal_id AS botId FROM mentions
+       WHERE message_id = ? ORDER BY mentioned_principal_id`,
+      first.originMessageId,
+    ).map((row) => row.botId);
+    const selectedTargets = this.selectedTargets(
+      first.channelId,
+      channel,
+      mentionedBotIds,
+    );
+    if (selectedTargets.length === 0) throw new MessagingError("invalid_relation");
+    return Object.freeze({
+      ...recovered,
+      selectedTargets,
+      responseOrder: channel.responseOrder,
     });
   }
 

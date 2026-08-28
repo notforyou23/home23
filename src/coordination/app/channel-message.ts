@@ -1,6 +1,7 @@
 import type { AgentResponse, CoordinationTurnOrigin } from "../../agent/types.js";
 import {
   ChannelCoordinatorError,
+  type CoordinatorDispatch,
   type CoordinatorTurnDisposition,
 } from "../channel-coordinator/index.js";
 import type { createChannelCoordinator } from "../channel-coordinator/index.js";
@@ -72,7 +73,13 @@ export interface GroupChannelMessageContextPort {
     attachmentIds: readonly string[];
     eventSequence: number;
   }): Promise<GroupChannelPreparedContext>;
+  prepareSequentialTurn(input: {
+    plan: GroupChannelPreparedContext;
+    roundId: string;
+    targetBotId: string;
+  }): Promise<GroupChannelPreparedContext>;
   recover(work: WorkRecord): Promise<GroupChannelPreparedContext>;
+  recoverPlan(roundId: string): Promise<GroupChannelPreparedContext>;
   listRecoveryRoundIds(limit: number): readonly string[];
   listRoundWorks(roundId: string): readonly WorkRecord[];
   responseOrder(roundId: string): "parallel" | "sequential";
@@ -81,7 +88,7 @@ export interface GroupChannelMessageContextPort {
 
 type ChannelCoordinator = Pick<
   ReturnType<typeof createChannelCoordinator>,
-  "start" | "reconcile"
+  "start" | "admissionReplay" | "reconcile"
 >;
 
 type WorkExecution = Readonly<{
@@ -158,6 +165,43 @@ export function createGroupChannelMessageService(options: {
     )) {
       throw new MessagingError("request_invalid");
     }
+  }
+
+  function startDispatch(input: {
+    identity: { requestId: string; correlationId: string };
+    prepared: GroupChannelPreparedContext;
+    plannedTargets: readonly GroupChannelResidentTarget[];
+    turnSelection: MessageTurnSelection;
+  }): CoordinatorDispatch {
+    const authority = assertAuthority();
+    return options.coordinator.start({
+      eventId: input.prepared.originEventId,
+      messageId: input.prepared.originMessageId,
+      channelId: input.prepared.channelId,
+      actorPrincipalId: input.prepared.actorPrincipalId,
+      selection: "mentions",
+      mentionedBotIds: input.prepared.selectedTargets.map((target) => target.targetBotId),
+      plannedBotIds: input.plannedTargets.map((target) => target.targetBotId),
+      visibleParticipantIds: input.prepared.visibleParticipantIds,
+      standing: {
+        source: "trusted_policy_boundary",
+        reference: input.prepared.standingReference,
+        channelId: input.prepared.channelId,
+        allowedParticipantIds: input.prepared.visibleParticipantIds,
+        broadcastAllowed: false,
+      },
+      authority: {
+        capability: "messages",
+        mode: "canonical",
+        epoch: authority.epoch,
+        writer: authority.writer,
+      },
+      deadlineAt: new Date(now().valueOf() + roundDeadlineMs).toISOString(),
+      manifest: input.prepared.manifest,
+      turnSelection: input.turnSelection,
+      requestId: input.identity.requestId,
+      correlationId: input.identity.correlationId,
+    });
   }
 
   function originFor(input: {
@@ -444,10 +488,84 @@ export function createGroupChannelMessageService(options: {
     ));
   }
 
+  async function executeSequentialRound(input: {
+    roundId: string;
+    plan: GroupChannelPreparedContext;
+    turnSelection: MessageTurnSelection;
+    requestId: string;
+    correlationId: string;
+    recovery: boolean;
+  }): Promise<readonly WorkExecution[]> {
+    const plannedTargets = input.plan.selectedTargets;
+    const plannedPrincipalIds = new Set(
+      plannedTargets.map((target) => target.targetPrincipalId),
+    );
+    const results: WorkExecution[] = [];
+    for (const [index, target] of plannedTargets.entries()) {
+      const existingWorks = options.context.listRoundWorks(input.roundId);
+      const existingByPrincipal = new Map(
+        existingWorks.map((work) => [work.targetPrincipalId, work]),
+      );
+      if (
+        existingWorks.length > plannedTargets.length ||
+        existingWorks.some((work) => !plannedPrincipalIds.has(work.targetPrincipalId)) ||
+        existingByPrincipal.size !== existingWorks.length ||
+        plannedTargets.slice(0, existingWorks.length).some(
+          (candidate) => !existingByPrincipal.has(candidate.targetPrincipalId),
+        )
+      ) {
+        throw new Error("sequential Channel Round has an untrusted Work plan");
+      }
+      let currentWork = existingByPrincipal.get(target.targetPrincipalId);
+      let prepared: GroupChannelPreparedContext;
+      let recovery = input.recovery;
+      if (currentWork) {
+        prepared = options.context.hasResult(currentWork.id) ||
+          currentWork.state === "failed" || currentWork.state === "cancelled"
+          ? Object.freeze({
+              ...input.plan,
+              selectedTargets: Object.freeze([target]),
+            })
+          : await options.context.recover(currentWork);
+        recovery = true;
+      } else {
+        if (index === 0) {
+          throw new Error("sequential Channel Round is missing its first durable Work");
+        }
+        prepared = await options.context.prepareSequentialTurn({
+          plan: input.plan,
+          roundId: input.roundId,
+          targetBotId: target.targetBotId,
+        });
+        const dispatch = startDispatch({
+          identity: input,
+          prepared,
+          plannedTargets,
+          turnSelection: input.turnSelection,
+        });
+        if (dispatch.round.id !== input.roundId || dispatch.works.length !== 1) {
+          throw new Error("sequential Channel dispatch did not retain its exact Round");
+        }
+        currentWork = dispatch.works[0]!.work;
+        recovery = dispatch.replayed;
+      }
+      results.push(await dispatchWork({
+        work: currentWork,
+        prepared,
+        requestId: input.requestId,
+        correlationId: input.correlationId,
+        recovery,
+      }));
+    }
+    return Object.freeze(results);
+  }
+
   function scheduleRound(input: {
     roundId: string;
     works: readonly WorkRecord[];
     preparedByWork: ReadonlyMap<string, GroupChannelPreparedContext>;
+    plan: GroupChannelPreparedContext;
+    turnSelection: MessageTurnSelection;
     responseOrder: "parallel" | "sequential";
     requestId: string;
     correlationId: string;
@@ -460,7 +578,9 @@ export function createGroupChannelMessageService(options: {
       return existing;
     }
     const execution = (async () => {
-      const results = await executeWorks(input);
+      const results = input.responseOrder === "sequential"
+        ? await executeSequentialRound(input)
+        : await executeWorks(input);
       const dispositions = Object.fromEntries(
         results.map((result) => [result.workId, result.disposition]),
       );
@@ -490,7 +610,7 @@ export function createGroupChannelMessageService(options: {
     prepared: GroupChannelPreparedContext;
     turnSelection: MessageTurnSelection;
   }): Promise<Readonly<Record<string, unknown> & { response?: Promise<unknown> }>> {
-    const authority = assertAuthority();
+    assertAuthority();
     if (input.prepared.selectedTargets.length === 0) {
       return Object.freeze({
         requestId: input.context.requestId,
@@ -504,32 +624,17 @@ export function createGroupChannelMessageService(options: {
     }
     for (const target of input.prepared.selectedTargets) residentFor(target.residentBinding);
     await assertSelection(input.prepared.selectedTargets, input.turnSelection, input.context);
-    const dispatch = options.coordinator.start({
-      eventId: input.prepared.originEventId,
-      messageId: input.prepared.originMessageId,
-      channelId: input.prepared.channelId,
-      actorPrincipalId: input.prepared.actorPrincipalId,
-      selection: "mentions",
-      mentionedBotIds: input.prepared.selectedTargets.map((target) => target.targetBotId),
-      visibleParticipantIds: input.prepared.visibleParticipantIds,
-      standing: {
-        source: "trusted_policy_boundary",
-        reference: input.prepared.standingReference,
-        channelId: input.prepared.channelId,
-        allowedParticipantIds: input.prepared.visibleParticipantIds,
-        broadcastAllowed: false,
-      },
-      authority: {
-        capability: "messages",
-        mode: "canonical",
-        epoch: authority.epoch,
-        writer: authority.writer,
-      },
-      deadlineAt: new Date(now().valueOf() + roundDeadlineMs).toISOString(),
-      manifest: input.prepared.manifest,
+    const initialPrepared = input.prepared.responseOrder === "sequential"
+      ? Object.freeze({
+          ...input.prepared,
+          selectedTargets: Object.freeze([input.prepared.selectedTargets[0]!] as const),
+        })
+      : input.prepared;
+    const dispatch = startDispatch({
+      identity: input.context,
+      prepared: initialPrepared,
+      plannedTargets: input.prepared.selectedTargets,
       turnSelection: input.turnSelection,
-      requestId: input.context.requestId,
-      correlationId: input.context.correlationId,
     });
     const preparedByWork = new Map(
       dispatch.works.map(({ work }) => [work.id, input.prepared]),
@@ -539,6 +644,8 @@ export function createGroupChannelMessageService(options: {
       roundId: dispatch.round.id,
       works: dispatch.works.map(({ work }) => work),
       preparedByWork,
+      plan: input.prepared,
+      turnSelection: input.turnSelection,
       responseOrder: input.prepared.responseOrder,
       requestId: input.context.requestId,
       correlationId: input.context.correlationId,
@@ -617,6 +724,33 @@ export function createGroupChannelMessageService(options: {
         provenance: { roundId: null, workId: null },
         turnSelection,
       });
+      if (appended.outcome === "replayed") {
+        const authority = assertAuthority();
+        const admission = options.coordinator.admissionReplay({
+          messageId: appended.message.id,
+          channelId: appended.message.channelId,
+          actorPrincipalId: appended.message.author.principalId,
+          authority: {
+            capability: "messages",
+            mode: "canonical",
+            epoch: authority.epoch,
+            writer: authority.writer,
+          },
+        });
+        if (admission) {
+          return Object.freeze({
+            requestId: input.context.requestId,
+            correlationId: input.context.correlationId,
+            channelId: appended.message.channelId,
+            conversationId: appended.message.conversationId,
+            round: admission.round,
+            works: admission.works,
+            message: appended.message,
+            replayed: true,
+            throughEventSequence: appended.receipt.eventSequence,
+          });
+        }
+      }
       await options.recordMessage({
         message: appended.message,
         kind: "user_message_committed",
@@ -652,6 +786,16 @@ export function createGroupChannelMessageService(options: {
       for (const roundId of roundIds) {
         try {
           const works = options.context.listRoundWorks(roundId);
+          if (works.length === 0) throw new Error("recoverable Channel Round has no Work");
+          const plan = await options.context.recoverPlan(roundId);
+          const turnSelection = options.work.getTurnSelection(works[0]!.id);
+          if (works.some((work) => {
+            const candidate = options.work.getTurnSelection(work.id);
+            return candidate.modelAlias !== turnSelection.modelAlias ||
+              candidate.reasoningEffort !== turnSelection.reasoningEffort;
+          })) {
+            throw new Error("Channel Round has inconsistent turn selection");
+          }
           const preparedByWork = new Map<string, GroupChannelPreparedContext>();
           for (const work of works) {
             if (
@@ -667,6 +811,8 @@ export function createGroupChannelMessageService(options: {
             roundId,
             works,
             preparedByWork,
+            plan,
+            turnSelection,
             responseOrder: options.context.responseOrder(roundId),
             requestId: identity.requestId,
             correlationId: identity.correlationId,

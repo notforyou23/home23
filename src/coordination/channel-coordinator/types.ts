@@ -33,6 +33,8 @@ export interface ChannelTurnTrigger {
   actorPrincipalId: string;
   selection: "mentions" | "broadcast";
   mentionedBotIds: readonly string[];
+  /** Entire trusted recipient plan; sequential dispatch may admit one Work at a time. */
+  plannedBotIds: readonly string[];
   visibleParticipantIds: readonly string[];
   standing: CoordinatorStandingScope;
   authority: CoordinatorAuthority;
@@ -51,6 +53,13 @@ export interface CoordinatorDispatch {
   replayed: boolean;
   provenance: CoordinatorDispatchProvenance;
   activityFacts: readonly CoordinatorActivityFact[];
+}
+
+export interface CoordinatorAdmissionReplay {
+  round: RoundRecord;
+  recipients: readonly string[];
+  works: readonly WorkRecord[];
+  replayed: true;
 }
 
 export interface CoordinatorDispatchProvenance {

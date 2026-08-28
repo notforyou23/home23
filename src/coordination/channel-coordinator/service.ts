@@ -10,6 +10,7 @@ import {
   type ChannelTurnTrigger,
   type CoordinatorDispatch,
   type CoordinatorRoundStatus,
+  type CoordinatorAdmissionReplay,
   type CoordinatorTurnDisposition,
   type CreateChannelCoordinatorOptions,
   type ReconcileRoundInput,
@@ -23,7 +24,8 @@ interface ChannelRow {
 }
 interface EligibleBotRow { id: string }
 
-const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
+const WORK_TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
+const ROUND_TERMINAL = new Set(["completed", "failed", "cancelled"]);
 
 function hash(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
@@ -45,15 +47,60 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
     }
   }
 
-  function assertAuthority(input: ChannelTurnTrigger): void {
+  function assertAuthority(authority: ChannelTurnTrigger["authority"]): void {
     const latest = options.database.readOne<{ epoch: number; mode: string; writer: string }>(
       "SELECT epoch, mode, writer FROM authority_epochs WHERE capability = 'messages' ORDER BY epoch DESC LIMIT 1",
     );
-    if (!latest || input.authority.capability !== "messages" || input.authority.mode !== "canonical" ||
-        input.authority.epoch !== latest.epoch || latest.mode !== "canonical" ||
-        input.authority.writer !== latest.writer || latest.writer !== options.expectedAuthorityWriter) {
+    if (!latest || authority.capability !== "messages" || authority.mode !== "canonical" ||
+        authority.epoch !== latest.epoch || latest.mode !== "canonical" ||
+        authority.writer !== latest.writer || latest.writer !== options.expectedAuthorityWriter) {
       throw new ChannelCoordinatorError("stale_authority", "current canonical messages authority is required");
     }
+  }
+
+  function admissionReplay(input: Pick<
+    ChannelTurnTrigger,
+    "messageId" | "channelId" | "actorPrincipalId" | "authority"
+  >): CoordinatorAdmissionReplay | null {
+    assertEnabled();
+    assertAuthority(input.authority);
+    const message = options.database.readOne<{ authorPrincipalId: string }>(
+      `SELECT author_principal_id AS authorPrincipalId FROM messages
+       WHERE id = ? AND channel_id = ? AND stored_visibility = 'visible'`,
+      input.messageId,
+      input.channelId,
+    );
+    if (!message || message.authorPrincipalId !== input.actorPrincipalId) {
+      throw new ChannelCoordinatorError("ineligible", "admission replay requires the exact visible trigger Message");
+    }
+    const prior = options.database.readAll<{ roundId: string }>(
+      `SELECT DISTINCT round_id AS roundId FROM works
+       WHERE origin_message_id = ? AND channel_id = ?
+         AND kind = 'channel.bot_turn' AND round_id IS NOT NULL`,
+      input.messageId,
+      input.channelId,
+    );
+    if (prior.length === 0) return null;
+    if (prior.length !== 1) {
+      throw new ChannelCoordinatorError("illegal_state", "message maps to multiple Rounds");
+    }
+    const round = options.rounds.get(prior[0]!.roundId);
+    if (!round || round.channelId !== input.channelId) {
+      throw new ChannelCoordinatorError("illegal_state", "message references a missing or incompatible Round");
+    }
+    const works = worksForRound(round.id);
+    if (
+      works.length === 0 ||
+      works.some((work) => work.originMessageId !== input.messageId || work.roundId !== round.id)
+    ) {
+      throw new ChannelCoordinatorError("illegal_state", "Round has no exact original Work set");
+    }
+    return Object.freeze({
+      round,
+      recipients: Object.freeze([...new Set(works.map((work) => work.targetPrincipalId))].sort()),
+      works,
+      replayed: true as const,
+    });
   }
 
   function worksForRound(roundId: string): readonly WorkRecord[] {
@@ -74,13 +121,14 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
   function start(input: ChannelTurnTrigger): CoordinatorDispatch {
     assertEnabled();
     assertBoundedIds(input.mentionedBotIds, "mentions");
+    assertBoundedIds(input.plannedBotIds, "planned recipients");
     assertBoundedIds(input.visibleParticipantIds, "visible participants");
     assertBoundedIds(input.standing.allowedParticipantIds, "standing allowlist");
     if (input.standing.source !== "trusted_policy_boundary" ||
         input.standing.channelId !== input.channelId || !input.standing.reference) {
       throw new ChannelCoordinatorError("outside_scope", "trusted standing scope does not cover Channel");
     }
-    assertAuthority(input);
+    assertAuthority(input.authority);
     const channel = options.database.readOne<ChannelRow>(
       `SELECT lifecycle, responder_mode AS responderMode,
               coordinator_bot_id AS coordinatorBotId,
@@ -113,13 +161,24 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
       input.channelId,
     );
     const recipients = selectChannelRecipients(input, eligible);
+    const plannedRecipients = selectChannelRecipients({
+      ...input,
+      selection: "mentions",
+      mentionedBotIds: input.plannedBotIds,
+    }, eligible);
+    if (recipients.some((recipient) => !plannedRecipients.includes(recipient))) {
+      throw new ChannelCoordinatorError("outside_scope", "dispatch recipient is outside the trusted Round plan");
+    }
     if (recipients.length > MAX_CHANNEL_TURNS_PER_ROUND) {
       throw new ChannelCoordinatorError("round_limit", "recipient set exceeds Round turn limit");
+    }
+    if (plannedRecipients.length > channel.maxBotTurns) {
+      throw new ChannelCoordinatorError("round_limit", "planned Bot turns exceed the configured Round limit");
     }
     // mentions_only Channels intentionally have no policy coordinator. A Round
     // still requires one lifecycle principal, so bind it deterministically to
     // the first selected recipient without changing the Channel policy.
-    const roundCoordinatorBotId = channel.coordinatorBotId ?? recipients[0]!;
+    const roundCoordinatorBotId = channel.coordinatorBotId ?? plannedRecipients[0]!;
 
     const prior = options.database.readAll<{ roundId: string }>(
       `SELECT DISTINCT round_id AS roundId FROM works
@@ -161,10 +220,22 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
       round = options.rounds.beginPass({ roundId: round.id, requestId: input.requestId, correlationId: input.correlationId });
     } else if (!replayedRound && round.state === "waiting") {
       round = options.rounds.beginPass({ roundId: round.id, requestId: input.requestId, correlationId: input.correlationId });
+    } else if (
+      (round.state === "coordinating" || round.state === "waiting") &&
+      now().valueOf() >= new Date(round.deadlineAt).valueOf()
+    ) {
+      round = options.rounds.reconcileDeadline({
+        roundId: round.id,
+        requestId: input.requestId,
+        correlationId: input.correlationId,
+      });
     }
     if (round.channelId !== input.channelId ||
-        round.coordinatorBotId !== roundCoordinatorBotId || TERMINAL.has(round.state)) {
-      throw new ChannelCoordinatorError("illegal_state", "trigger resolves to an incompatible or terminal Round");
+        round.coordinatorBotId !== roundCoordinatorBotId || ROUND_TERMINAL.has(round.state)) {
+      throw new ChannelCoordinatorError("illegal_state", "trigger resolves to an incompatible Round");
+    }
+    if (plannedRecipients.length > round.maxBotTurns) {
+      throw new ChannelCoordinatorError("round_limit", "planned Bot turns exceed the durable Round limit");
     }
 
     const existingRoundWorks = options.database.readOne<{ count: number }>(
@@ -174,6 +245,9 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
       "SELECT id FROM works WHERE round_id = ? AND target_principal_id = ? AND origin_message_id = ? AND kind = 'channel.bot_turn'",
       round!.id, botId, input.messageId,
     ));
+    if (existingRoundWorks + newRecipients.length > round.maxBotTurns) {
+      throw new ChannelCoordinatorError("round_limit", "configured Round turn limit reached");
+    }
     if (newRecipients.length > 0) {
       assertChannelTurnCapacity({ roundTurns: existingRoundWorks, botTurns: 0, additions: newRecipients.length });
     }
@@ -251,14 +325,14 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
     if (!round) throw new ChannelCoordinatorError("invalid_request", "Round was not found");
     let current = round;
     const works = worksForRound(round.id);
-    if (TERMINAL.has(current.state)) {
+    if (ROUND_TERMINAL.has(current.state)) {
       return Object.freeze({ round: current, works, outcome: current.state as "completed" | "failed" | "cancelled", reasonCode: current.terminalReason });
     }
     if (new Date(now()).valueOf() >= new Date(current.deadlineAt).valueOf()) {
       current = options.rounds.reconcileDeadline(input);
       return Object.freeze({ round: current, works, outcome: current.state as "failed" | "cancelled", reasonCode: current.terminalReason });
     }
-    if (works.some((work) => !TERMINAL.has(work.state))) {
+    if (works.some((work) => !WORK_TERMINAL.has(work.state))) {
       if (current.state === "coordinating") current = options.rounds.wait(input);
       return Object.freeze({ round: current, works, outcome: "waiting", reasonCode: null });
     }
@@ -303,5 +377,5 @@ export function createChannelCoordinator(options: CreateChannelCoordinatorOption
     return Object.freeze({ round: current, works: worksForRound(round.id), outcome: "cancelled", reasonCode: current.terminalReason });
   }
 
-  return Object.freeze({ start, recover: reconcile, reconcile, cancel });
+  return Object.freeze({ start, admissionReplay, recover: reconcile, reconcile, cancel });
 }

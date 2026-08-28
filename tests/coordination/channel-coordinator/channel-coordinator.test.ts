@@ -63,13 +63,17 @@ function harness(database: M11TestDatabase, clock: { value: Date }, start = 10_0
 }
 
 function trigger(overrides: Record<string, unknown> = {}) {
+  const mentionedBotIds = (overrides.mentionedBotIds as readonly string[] | undefined) ??
+    [BOT_2, BOT_ID];
   return {
     eventId: fixtureId("event", 1),
     messageId: MESSAGE_ID,
     channelId: CHANNEL_ID,
     actorPrincipalId: OWNER_ID,
     selection: "mentions" as const,
-    mentionedBotIds: [BOT_2, BOT_ID],
+    mentionedBotIds,
+    plannedBotIds: (overrides.plannedBotIds as readonly string[] | undefined) ??
+      mentionedBotIds,
     visibleParticipantIds: [BOT_ID, BOT_2],
     standing: {
       source: "trusted_policy_boundary" as const,
@@ -199,6 +203,41 @@ test("capacity is exactly four turns per Bot and twelve per Round", () => {
   );
 });
 
+test("configured maxBotTurns bounds durable Work count rather than only pass count", () => {
+  const database = M11TestDatabase.temporary();
+  try {
+    prepare(database);
+    database.raw.prepare("UPDATE channels SET max_bot_turns = 1 WHERE id = ?").run(CHANNEL_ID);
+    const services = harness(database, { value: new Date(AT) }, 18_000);
+    assert.throws(
+      () => services.coordinator.start(trigger({
+        mentionedBotIds: [BOT_ID],
+        plannedBotIds: [BOT_ID, BOT_2],
+      })),
+      (error: unknown) => error instanceof ChannelCoordinatorError && error.code === "round_limit",
+    );
+    assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM rounds")?.count, 0);
+    assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM works")?.count, 0);
+
+    database.raw.prepare("UPDATE channels SET max_bot_turns = 2 WHERE id = ?").run(CHANNEL_ID);
+    const first = services.coordinator.start(trigger({
+      mentionedBotIds: [BOT_ID],
+      plannedBotIds: [BOT_ID, BOT_2],
+    }));
+    const second = services.coordinator.start(trigger({
+      mentionedBotIds: [BOT_2],
+      plannedBotIds: [BOT_ID, BOT_2],
+    }));
+    assert.equal(second.round.id, first.round.id);
+    assert.equal(first.round.passCount, 1);
+    assert.equal(second.round.passCount, 1);
+    assert.equal(database.readOne<{ count: number }>(
+      "SELECT count(*) AS count FROM works WHERE round_id = ?",
+      first.round.id,
+    )?.count, 2);
+  } finally { database.close(); }
+});
+
 test("duplicate trigger and restart recover the same Round, Work, and single wake intent", () => {
   const database = M11TestDatabase.temporary();
   try {
@@ -221,6 +260,39 @@ test("duplicate trigger and restart recover the same Round, Work, and single wak
     assert.equal(recovered.outcome, "waiting");
     assert.equal(recovered.works.length, 2);
     assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM outbox WHERE kind = 'work.wake'")?.count, 2);
+    services.rounds.beginPass({
+      roundId: first.round.id,
+      requestId: fixtureId("request", 809),
+      correlationId: fixtureId("correlation", 809),
+    });
+    database.raw.prepare(
+      `UPDATE channels SET responder_mode = 'mentions_only',
+         coordinator_bot_id = NULL, response_order = 'parallel', max_bot_turns = 1
+       WHERE id = ?`,
+    ).run(CHANNEL_ID);
+    const activeAdmission = services.coordinator.admissionReplay(trigger());
+    assert.equal(activeAdmission?.round.state, "coordinating");
+    assert.deepEqual(
+      activeAdmission?.works.map((entry) => entry.id),
+      first.works.map((entry) => entry.work.id),
+    );
+
+    for (const [index, entry] of first.works.entries()) {
+      terminalize(services, entry.work.id, entry.work.targetPrincipalId, "succeeded", 820 + index);
+    }
+    services.coordinator.reconcile({
+      roundId: first.round.id,
+      requestId: fixtureId("request", 808),
+      correlationId: fixtureId("correlation", 808),
+    });
+    const terminalAdmission = services.coordinator.admissionReplay(trigger());
+    assert.equal(terminalAdmission?.replayed, true);
+    assert.equal(terminalAdmission?.round.id, first.round.id);
+    assert.deepEqual(
+      terminalAdmission?.works.map((entry) => entry.id),
+      first.works.map((entry) => entry.work.id),
+    );
+    assert.equal(database.readOne<{ count: number }>("SELECT count(*) AS count FROM works")?.count, 2);
   } finally { database.close(); }
 });
 
@@ -294,6 +366,17 @@ test("explicit pass completes, partial failure fails, and active-turn loop is re
     });
     assert.equal(partial.outcome, "failed");
     assert.equal(partial.reasonCode, "partial_failure");
+    const failedReplay = services.coordinator.admissionReplay(trigger({
+      eventId: fixtureId("event", 2),
+      messageId: secondMessage,
+      manifest: manifestInput({ messageIds: [secondMessage], counts: { messages: 1, artifacts: 0 } }),
+    }));
+    assert.equal(failedReplay?.round.id, mixed.round.id);
+    assert.equal(failedReplay?.round.state, "failed");
+    assert.deepEqual(
+      failedReplay?.works.map((work) => work.id),
+      mixed.works.map((entry) => entry.work.id),
+    );
   } finally { database.close(); }
 });
 
@@ -333,6 +416,15 @@ test("deadline and cancellation terminalize durably and cancel queued Work", () 
     assert.equal(cancelled.outcome, "cancelled");
     assert.equal(cancelled.works[0]?.state, "cancelled");
     assert.equal(cancelled.reasonCode, "owner_cancelled");
+    const cancelledReplay = services.coordinator.admissionReplay(trigger({
+      eventId: fixtureId("event", 3),
+      messageId: nextMessage,
+      mentionedBotIds: [BOT_2],
+      manifest: manifestInput({ messageIds: [nextMessage], counts: { messages: 1, artifacts: 0 } }),
+    }));
+    assert.equal(cancelledReplay?.round.id, cancellable.round.id);
+    assert.equal(cancelledReplay?.round.state, "cancelled");
+    assert.deepEqual(cancelledReplay?.works.map((work) => work.id), [cancellable.works[0]!.work.id]);
     } catch (error) {
       throw new Error(`${stage}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }

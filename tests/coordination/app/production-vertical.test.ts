@@ -12,6 +12,7 @@ import {
   type KeyObject,
 } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import Database from "better-sqlite3";
 import { AgentLoop } from "../../../src/agent/loop.js";
 import { ConversationHistory } from "../../../src/agent/history.js";
 import { createAuthService, SqliteAuthRepository } from "../../../src/coordination/auth/index.js";
@@ -677,6 +678,49 @@ test("production composition dispatches Jerry and Forrest to distinct resident s
   assert.deepEqual(residentInvocations, { jerry: 2, forrest: 2 });
   assert.equal(jerryModel.calls() + forrestModel.calls(), 4);
 
+  const terminalReplay = await fetch(
+    `${address.origin}/api/v1/channels/${group.channel.id}/messages`,
+    {
+      method: "POST",
+      headers: {
+        ...headers,
+        "content-type": "application/json",
+        "idempotency-key": "dual-resident-group-message-0001",
+      },
+      body: JSON.stringify({
+        messageId: groupMessageId,
+        clientMessageId: "dual-resident-group-client-0001",
+        text: "@Jerry and @Forrest, each answer through your own resident.",
+        attachmentIds: [],
+        mentions: [jerry.botId, forrest.botId],
+        replyToMessageId: null,
+      }),
+    },
+  );
+  const terminalReplayBody = await terminalReplay.json() as {
+    round?: { id?: string };
+    works?: Array<{ id: string }>;
+    replayed?: boolean;
+  };
+  assert.equal(terminalReplay.status, 202, `terminal replay: ${JSON.stringify(terminalReplayBody)}`);
+  assert.equal(terminalReplayBody.round?.id, groupAccepted.round?.id);
+  assert.deepEqual(
+    terminalReplayBody.works?.map((work) => work.id).sort(),
+    groupAccepted.works?.map((work) => work.id).sort(),
+  );
+  assert.equal(terminalReplayBody.replayed, true);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(residentInvocations, { jerry: 2, forrest: 2 },
+    "lost-response replay must not execute either resident twice");
+  const replayedMessages = await (await fetch(
+    `${address.origin}/api/v1/channels/${group.channel.id}/messages`,
+    { headers },
+  )).json() as { messages: Array<{ id: string; replyToMessageId: string | null }> };
+  assert.equal(replayedMessages.messages.filter((message) => message.id === groupMessageId).length, 1);
+  assert.equal(replayedMessages.messages.filter(
+    (message) => message.replyToMessageId === groupMessageId,
+  ).length, 2);
+
   const coordinatorMessageId = generateCoordinationId("message");
   const coordinatorSend = await fetch(
     `${address.origin}/api/v1/channels/${group.channel.id}/messages`,
@@ -835,6 +879,88 @@ test("production composition dispatches Jerry and Forrest to distinct resident s
   assert.deepEqual(residentInvocations, { jerry: 3, forrest: 3 });
   assert.equal(jerryModel.calls() + forrestModel.calls(), 6);
 
+  const sequentialCreate = await fetch(`${address.origin}/api/v1/channels`, {
+    method: "POST",
+    headers: {
+      ...headers,
+      "content-type": "application/json",
+      "idempotency-key": "dual-resident-sequential-group-create-0001",
+    },
+    body: JSON.stringify({
+      kind: "group",
+      memberBotIds: [jerry.botId, forrest.botId],
+      title: "Sequential residents",
+      purpose: "Each later Bot receives the preceding committed result.",
+      pinned: false,
+      responderPolicy: {
+        mode: "mentions_only",
+        coordinatorBotId: null,
+        responseOrder: "sequential",
+        maxBotTurns: 2,
+      },
+    }),
+  });
+  const sequentialCreateBody = await sequentialCreate.text();
+  assert.equal(sequentialCreate.status, 201, `sequential create: ${sequentialCreateBody}`);
+  const sequentialChannel = JSON.parse(sequentialCreateBody) as { channel: { id: string } };
+  const sequentialMessageId = generateCoordinationId("message");
+  const sequentialSend = await fetch(
+    `${address.origin}/api/v1/channels/${sequentialChannel.channel.id}/messages`,
+    {
+      method: "POST",
+      headers: {
+        ...headers,
+        "content-type": "application/json",
+        "idempotency-key": "dual-resident-sequential-message-0001",
+      },
+      body: JSON.stringify({
+        messageId: sequentialMessageId,
+        clientMessageId: "dual-resident-sequential-client-0001",
+        text: "Give one compact response, then let the next member continue.",
+        attachmentIds: [],
+        mentions: [jerry.botId, forrest.botId],
+        replyToMessageId: null,
+      }),
+    },
+  );
+  const sequentialAccepted = await sequentialSend.json() as {
+    round?: { id: string };
+    works?: Array<{ id: string; targetPrincipalId: string }>;
+  };
+  assert.equal(sequentialSend.status, 202, `sequential send: ${JSON.stringify(sequentialAccepted)}`);
+  assert.equal(sequentialAccepted.works?.length, 1,
+    "only the first sequential Work may be admitted against the initial manifest");
+  let sequentialResults: Array<{
+    id: string;
+    text: string | null;
+    author: { principalId: string };
+    provenance: { workId: string | null };
+  }> = [];
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const response = await fetch(
+      `${address.origin}/api/v1/channels/${sequentialChannel.channel.id}/messages`,
+      { headers },
+    );
+    const body = await response.json() as { messages: typeof sequentialResults };
+    sequentialResults = body.messages.filter((message) => message.provenance.workId !== null);
+    if (sequentialResults.length === 2) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(sequentialResults.length, 2);
+  const firstSequentialWorkId = sequentialAccepted.works?.[0]?.id;
+  const firstSequentialResult = sequentialResults.find(
+    (message) => message.provenance.workId === firstSequentialWorkId,
+  );
+  assert.ok(firstSequentialResult?.text);
+  const secondTarget = firstSequentialResult.author.principalId === jerry.botId
+    ? "forrest"
+    : "jerry";
+  const secondRequests = secondTarget === "jerry" ? jerryModel.requests() : forrestModel.requests();
+  assert.match(
+    JSON.stringify(secondRequests.at(-1)),
+    new RegExp(firstSequentialResult.text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    "the later resident request must contain the preceding canonical result",
+  );
   const activityResponse = await fetch(
     `${address.origin}/api/v1/activity?limit=100`,
     { headers },
@@ -867,6 +993,31 @@ test("production composition dispatches Jerry and Forrest to distinct resident s
       entry.source.authorityId === null),
     false,
   );
+
+  await coordinationProcess.drain();
+  const sequentialDatabase = new Database(databasePath, {
+    readonly: true,
+    fileMustExist: true,
+  });
+  try {
+    const workManifests = sequentialDatabase.prepare(
+      `SELECT w.id AS workId, manifest.message_refs_json AS messageRefsJson
+       FROM works w JOIN context_manifests manifest ON manifest.id = w.context_manifest_id
+       WHERE w.round_id = ? ORDER BY w.created_at, w.id`,
+    ).all(sequentialAccepted.round!.id) as Array<{
+      workId: string;
+      messageRefsJson: string;
+    }>;
+    assert.equal(workManifests.length, 2);
+    const secondManifest = workManifests.find((entry) => entry.workId !== firstSequentialWorkId);
+    assert.ok(secondManifest);
+    assert.ok(
+      (JSON.parse(secondManifest.messageRefsJson) as string[]).includes(firstSequentialResult.id),
+      "the later Work must durably bind the preceding result in its immutable manifest",
+    );
+  } finally {
+    sequentialDatabase.close();
+  }
 });
 
 test("isolated production composition traverses the generated harness and unmodified AgentLoop", async (t) => {
