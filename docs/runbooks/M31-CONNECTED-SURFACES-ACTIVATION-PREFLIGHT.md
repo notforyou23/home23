@@ -32,3 +32,50 @@ An optional `--out <new-path>` writes a new receipt with exclusive-create semant
 This package cannot satisfy M31 activation. Before each real flag/epoch change, the authorized operator must independently confirm M26/M27 direct-message stability over the agreed observation window, accepted backend/client packages, no P0/P1, live canonical watermarks and drift, and the capability-specific live canary. The operator must rehearse the independent kill switch and approve the exact epoch transition. No next capability advances without acceptance of the prior live receipt.
 
 If a live canary fails, preserve text direct messaging and use the narrowest applicable rollback from the master plan: stop admission for that capability, stop new work, preserve safe reads for diagnosis, drain/revoke and reconcile positive truth if applicable, disable only its surface, and create a new epoch only when write authority changes. Process stop or snapshot restore are last-resort actions under separate operator authority.
+
+## Attachment authority operation
+
+The attachment integration has a separate fail-closed authority command. It is
+not invoked by the fixture preflight and it never flips the independent
+`coordination.attachments.enabled` setting. Use it only against the exact
+reviewed database named by an explicit operator authorization. A canary or
+isolated-candidate authorization does not authorize a production database.
+
+Before any apply, keep attachment admission false and drain the exact
+coordination process that owns the database. The product-writer lock refuses a
+second writer if that process is still running. A new database first receives
+only the feature-off epoch-1 baseline:
+
+```bash
+npm run coordination:m31:attachments-authority -- \
+  --database <COORDINATION_DB> \
+  --evidence <FEATURE_OFF_BASELINE_EVIDENCE_JSON> \
+  --initialize
+
+npm run coordination:m31:attachments-authority -- \
+  --database <COORDINATION_DB> \
+  --evidence <FEATURE_OFF_BASELINE_EVIDENCE_JSON> \
+  --initialize --apply \
+  --confirm APPLY_FEATURE_OFF_M31_ATTACHMENTS_BASELINE
+```
+
+Shadow, canonical, and rollback epochs each require their own exact signed
+attachment receipt, the complete registered flag state, stable Jerry direct
+messaging flags, zero attachment admission during the epoch change, and an
+explicit apply confirmation:
+
+```bash
+npm run coordination:m31:attachments-authority -- \
+  --database <COORDINATION_DB> \
+  --evidence <SIGNED_ATTACHMENT_AUTHORITY_EVIDENCE_JSON>
+
+npm run coordination:m31:attachments-authority -- \
+  --database <COORDINATION_DB> \
+  --evidence <SIGNED_ATTACHMENT_AUTHORITY_EVIDENCE_JSON> \
+  --apply --confirm APPLY_SIGNED_M31_ATTACHMENTS_AUTHORITY
+```
+
+Enable attachment admission only after the canonical epoch apply, exact
+candidate restart, and capability check. To roll back, disable admission first,
+drain, append the signed legacy rollback epoch, and restart. Referenced bytes
+and metadata remain intact; direct messaging stays enabled throughout.
