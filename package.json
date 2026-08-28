@@ -12,7 +12,7 @@
   "scripts": {
     "build": "tsc",
     "pretest": "node --test --test-concurrency=1 tests/scripts/brain-acceptance-common.test.cjs && npm run test:brain-acceptance-runtime",
-    "posttest": "npm run test:coordination && node --import tsx --test --test-concurrency=1 tests/agent/install-cron-jobs.test.ts tests/commands/handler.test.ts tests/dashboard/connected-agents-ui.test.cjs tests/engine/dashboard/connected-agents-proxy.test.cjs",
+    "posttest": "npm run test:coordination && node --import tsx --test --test-concurrency=1 tests/agent/install-cron-jobs.test.ts tests/commands/handler.test.ts tests/dashboard/connected-agents-inspector.test.cjs tests/dashboard/connected-agents-ui.test.cjs tests/engine/dashboard/connected-agents-proxy.test.cjs",
     "test:brain-acceptance-runtime": "node --test --test-concurrency=1 tests/scripts/live-brain-tools-authority.test.cjs tests/scripts/isolated-brain-fixture.test.cjs tests/scripts/isolated-brain-cli.test.cjs",
     "test:coordination": "node scripts/run-coordination-tests.mjs",
     "brain:audit-provenance": "node scripts/audit-brain-provenance.cjs",

@@ -19,6 +19,11 @@ test('product proxy allowlist contains product nouns and exact methods only', ()
   assert.equal(allowed('POST', '/bots/bot_123/restart'), true);
   assert.equal(allowed('POST', '/bots/bot_123/archive'), true);
   assert.equal(allowed('POST', '/bots/bot_123/restore'), true);
+  assert.equal(allowed('GET', '/communications/events'), true);
+  assert.equal(allowed('GET', '/work/wrk_123'), true);
+  assert.equal(allowed('POST', '/work/wrk_123/cancel'), true);
+  assert.equal(allowed('POST', '/work/wrk_123/retry'), true);
+  assert.equal(allowed('DELETE', '/work/wrk_123'), false);
   assert.equal(allowed('GET', '/rounds'), false);
   assert.equal(allowed('GET', '/workers'), false);
   assert.equal(allowed('DELETE', '/bots/bot_123'), false);
@@ -56,4 +61,42 @@ test('proxy reports upstream failure without simulating success', async (t) => {
   const response = await fetch(`${fixture.origin}/home23/api/product/inbox`, { headers:{authorization:'Bearer token'} });
   assert.equal(response.status, 503);
   assert.equal((await response.json()).error.code, 'coordination_unavailable');
+});
+
+test('proxy preserves the communication cursor query and fails visibly at its byte boundary', async (t) => {
+  let observed;
+  const fixture = await serverFor(async (url) => {
+    observed = url;
+    return new Response(JSON.stringify({ events: [{ payload: 'x'.repeat(300) }] }), {
+      headers: { 'content-type': 'application/json' },
+    });
+  });
+  t.after(() => fixture.server.close());
+  // This fixture uses the normal limit first to prove canonical routing.
+  const response = await fetch(
+    `${fixture.origin}/home23/api/product/communications/events?after=7&limit=25&conversationId=cnv_1`,
+    { headers: { authorization: 'Bearer token' } },
+  );
+  assert.equal(response.status, 200);
+  assert.equal(observed, 'http://127.0.0.1:7346/api/v1/communications/events?after=7&limit=25&conversationId=cnv_1');
+
+  const small = express();
+  small.use(express.json({ limit: '32kb' }));
+  small.use('/home23/api/product', createConnectedAgentsProxy({
+    maxResponseBytes: 64,
+    fetchImpl: async () => new Response(JSON.stringify({ exact: 'x'.repeat(100) }), {
+      headers: { 'content-type': 'application/json' },
+    }),
+  }));
+  const server = http.createServer(small).listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const rejected = await fetch(
+    `http://127.0.0.1:${server.address().port}/home23/api/product/communications/events?after=0&limit=1`,
+    { headers: { authorization: 'Bearer token' } },
+  );
+  assert.equal(rejected.status, 503);
+  const body = await rejected.json();
+  assert.equal(body.error.code, 'coordination_response_too_large');
+  assert.equal(body.error.retryable, false);
 });

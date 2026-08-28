@@ -1,5 +1,7 @@
 (() => {
   const API = "/home23/api/product";
+  const Inspector = window.ConnectedAgentsInspector;
+  if (!Inspector) throw new Error("Connected Agents Inspector projection is unavailable");
   const state = {
     token: sessionStorage.getItem("home23:product-token") || "",
     capabilities: null,
@@ -13,6 +15,23 @@
     pending: new Map(),
     provisioning: [],
     refreshTimer: null,
+    currentChannel: null,
+    currentMessages: [],
+    evidence: new Inspector.EvidenceStore(),
+    evidenceConversationId: null,
+    evidenceCursor: 0,
+    evidenceGap: null,
+    evidenceError: null,
+    evidenceGeneration: 0,
+    evidenceSyncing: false,
+    evidenceTimer: null,
+    inspectorVisible: false,
+    inspectorFilter: "all",
+    inspectorScrollTop: 0,
+    expandedEvidence: new Set(),
+    presentation: Inspector.createPresentation(),
+    workById: new Map(),
+    workMutationKeys: new Map(),
   };
   const $ = (id) => document.getElementById(id);
   const esc = (v) =>
@@ -69,6 +88,8 @@
       error.code = data.error?.code;
       error.status = response.status;
       error.requestId = data.error?.requestId;
+      error.details = data.error?.details;
+      error.retryable = data.error?.retryable;
       throw error;
     }
     return data;
@@ -113,6 +134,121 @@
       }
       return 0;
     });
+  }
+  function hasEvidenceCapability() {
+    return state.capabilities?.capabilities?.communicationEvidence === true;
+  }
+  function resetEvidence(conversationId) {
+    clearTimeout(state.evidenceTimer);
+    state.evidence = new Inspector.EvidenceStore();
+    state.evidenceConversationId = conversationId;
+    state.evidenceCursor = 0;
+    state.evidenceGap = null;
+    state.evidenceError = null;
+    state.evidenceGeneration += 1;
+    state.workById.clear();
+    state.presentation = Inspector.minimize(state.presentation);
+    state.inspectorVisible = false;
+    closeInspectorPane(false);
+  }
+  async function syncEvidence(conversationId) {
+    if (!hasEvidenceCapability() || !conversationId || state.evidenceSyncing) return 0;
+    if (state.evidenceConversationId !== conversationId) resetEvidence(conversationId);
+    const generation = state.evidenceGeneration;
+    state.evidenceSyncing = true;
+    state.evidenceError = null;
+    const inserted = [];
+    let resetHandled = false;
+    let pageCount = 0;
+    try {
+      for (;;) {
+        if (generation !== state.evidenceGeneration) return 0;
+        if (++pageCount > 1_000) {
+          throw new Error("Communication evidence paging exceeded its safety boundary.");
+        }
+        let page;
+        try {
+          page = await api(
+            `/communications/events?after=${state.evidenceCursor}&limit=25&conversationId=${encodeURIComponent(conversationId)}`,
+          );
+        } catch (error) {
+          if (
+            error.status !== 409 ||
+            error.code !== "cursor_expired" ||
+            resetHandled ||
+            !error.details?.bootstrapRequired
+          ) {
+            throw error;
+          }
+          resetHandled = true;
+          state.evidence = new Inspector.EvidenceStore();
+          state.evidenceGap = Inspector.cursorReset(
+            error.details,
+            state.evidenceCursor,
+          );
+          state.evidenceCursor = state.evidenceGap.resumeAfterSequence;
+          continue;
+        }
+        if (generation !== state.evidenceGeneration) return 0;
+        const nextCursor = Inspector.advanceHistoryCursor(
+          state.evidenceCursor,
+          page,
+          conversationId,
+        );
+        for (const event of page.events || []) {
+          const result = state.evidence.ingest(event);
+          if (result === "inserted") inserted.push(event);
+        }
+        state.evidenceCursor = nextCursor;
+        if (!page.hasMore) break;
+      }
+      if (!state.presentation.liveTurnId) {
+        state.presentation = Inspector.setLiveTurn(
+          state.presentation,
+          state.evidence.liveTurn()?.turnId || null,
+        );
+      }
+      for (const event of inserted) {
+        state.presentation = Inspector.observeEvent(state.presentation, event);
+      }
+      state.presentation = Inspector.setLiveTurn(
+        state.presentation,
+        state.evidence.liveTurn()?.turnId || null,
+      );
+      return inserted.length;
+    } catch (error) {
+      state.evidenceError = {
+        code: error.code || "communication_evidence_unavailable",
+        message: error.message || "Communication evidence is unavailable.",
+        requestId: error.requestId || null,
+      };
+      renderEvidenceNotice();
+      throw error;
+    } finally {
+      state.evidenceSyncing = false;
+      renderEvidenceNotice();
+    }
+  }
+  function scheduleEvidenceRefresh() {
+    clearTimeout(state.evidenceTimer);
+    if (!state.selected || !hasEvidenceCapability()) return;
+    const delay = state.evidence.liveTurn() ? 1_200 : 5_000;
+    state.evidenceTimer = setTimeout(async () => {
+      if (document.hidden) {
+        scheduleEvidenceRefresh();
+        return;
+      }
+      const selected = state.selected;
+      const conversationId = state.evidenceConversationId;
+      try {
+        const count = await syncEvidence(conversationId);
+        if (selected === state.selected && count > 0) await refreshSelectedQuietly();
+        else if (state.inspectorVisible) renderInspector();
+      } catch {
+        if (state.inspectorVisible) renderInspector();
+      }
+      scheduleEvidenceRefresh();
+    }, delay);
   }
   function setConnection(kind, message) {
     state.connection = kind;
@@ -178,13 +314,18 @@
       const jerry =
         state.bots.find((b) => b.id === primaryBotId()) ||
         state.bots.find((b) => b.name?.toLowerCase() === "jerry");
+      const requestedChannel = new URLSearchParams(location.search).get("channel");
       const first =
-        new URLSearchParams(location.search).get("channel") ||
+        requestedChannel ||
         current ||
         (matchMedia("(min-width: 681px)").matches
           ? directChannel(jerry)?.id || ordered(state.inbox)[0]?.channelId
           : null);
-      if (first) await openConversation(first);
+      if (first) {
+        await openConversation(first, null, {
+          historyMode: requestedChannel ? "none" : "replace",
+        });
+      }
     } catch (error) {
       setConnection(
         error.status === 401 ? "revoked" : "degraded",
@@ -263,33 +404,57 @@
       .forEach((el) =>
         el.addEventListener("click", () =>
           el.dataset.channel
-            ? openConversation(el.dataset.channel)
+            ? openConversation(el.dataset.channel, null, { historyMode: "push" })
             : toast("This Bot’s conversation is still provisioning."),
         ),
       );
     renderChannelMembers();
   }
-  async function openConversation(channelId, focusMessageId = null) {
+  async function openConversation(channelId, focusMessageId = null, options = {}) {
     try {
       const [channelResult, transcript] = await Promise.all([
         api(`/channels/${encodeURIComponent(channelId)}`),
         api(`/channels/${encodeURIComponent(channelId)}/messages?limit=100`),
       ]);
+      const channel = channelResult.channel;
+      const messages = transcript.messages || [];
       state.selected = channelId;
-      const destination = new URL(location.href);
-      destination.searchParams.set("channel", channelId);
-      history.replaceState(null, "", destination);
+      state.currentChannel = channel;
+      state.currentMessages = messages;
+      if (state.evidenceConversationId !== channel.conversationId) {
+        resetEvidence(channel.conversationId);
+      }
+      if (options.historyMode !== "none") {
+        const destination = new URL(location.href);
+        destination.searchParams.set("channel", channelId);
+        destination.searchParams.delete("turn");
+        destination.searchParams.delete("event");
+        const method = options.historyMode === "push" ? "pushState" : "replaceState";
+        history[method](null, "", destination);
+      }
       renderRoster();
-      renderConversation(channelResult.channel, transcript.messages || []);
+      renderConversation(channel, messages);
       $("conversation").classList.add("open");
       $("conversation").focus({ preventScroll: true });
+      if (hasEvidenceCapability()) {
+        try {
+          await syncEvidence(channel.conversationId);
+        } catch {
+          // Transcript remains usable; its Inspector displays the exact evidence failure.
+        }
+        if (state.selected === channelId) {
+          renderConversation(channel, messages);
+          applyInspectorURLState();
+          scheduleEvidenceRefresh();
+        }
+      }
       if (focusMessageId)
         document
           .getElementById(`message-${CSS.escape(focusMessageId)}`)
           ?.scrollIntoView({ block: "center" });
       const latest = Math.max(
         0,
-        ...(transcript.messages || []).map((m) => m.sequence || 0),
+        ...messages.map((m) => m.sequence || 0),
       );
       if (latest && state.capabilities.capabilities?.readCursorMutation)
         markRead(channelId, latest);
@@ -306,27 +471,102 @@
       api(`/channels/${encodeURIComponent(channelId)}/messages?limit=100`),
     ]);
     if (state.selected !== channelId) return;
+    const priorPane = $("messages");
+    const nearBottom = priorPane
+      ? priorPane.scrollHeight - priorPane.scrollTop - priorPane.clientHeight < 100
+      : true;
     const focused = document.activeElement?.id === "composer-text",
       draft = focused ? $("composer-text")?.value : "";
-    renderConversation(channelResult.channel, transcript.messages || []);
+    state.currentChannel = channelResult.channel;
+    state.currentMessages = transcript.messages || [];
+    renderConversation(state.currentChannel, state.currentMessages, {
+      scrollToBottom: nearBottom,
+    });
     if (focused && $("composer-text")) {
       $("composer-text").value = draft;
       $("composer-text").focus();
     }
   }
-  function renderConversation(channel, messages) {
+  function quickGlanceHtml(turn) {
+    const glance = turn.quickGlance;
+    const needsReview = glance.hasAttention || Boolean(state.evidenceGap);
+    const status = (glance.status || (turn.terminal ? "complete" : "active"))
+      .replaceAll("_", " ");
+    const cue = needsReview ? "!" : turn.terminal ? "✓" : "●";
+    const action = needsReview ? "Review turn issue" : "Open turn inspector";
+    const facts = [
+      `${glance.eventCount} event${glance.eventCount === 1 ? "" : "s"}`,
+      glance.model,
+      glance.effort ? `effort ${glance.effort}` : null,
+      glance.toolCallCount ? `${glance.toolCallCount} tool${glance.toolCallCount === 1 ? "" : "s"}` : null,
+      glance.agentAndWorkerCount
+        ? `${glance.agentAndWorkerCount} agent${glance.agentAndWorkerCount === 1 ? "" : "s"}`
+        : null,
+    ].filter(Boolean);
+    return `<button class="ca-turn-glance${needsReview ? " attention" : ""}" type="button" data-turn-id="${esc(turn.turnId)}" aria-label="${esc(action)}; ${esc(status)}; ${glance.eventCount} events"><span class="ca-glance-cue" aria-hidden="true">${cue}</span><strong>${esc(status[0]?.toUpperCase() + status.slice(1))}</strong><span>${facts.map(esc).join(" · ")}</span><span aria-hidden="true">›</span></button>`;
+  }
+  function renderEvidenceNotice() {
+    const notice = $("evidence-notice");
+    if (!notice) return;
+    if (state.evidenceError) {
+      notice.hidden = false;
+      notice.textContent = `Turn evidence unavailable: ${state.evidenceError.message}${state.evidenceError.requestId ? ` · request ${state.evidenceError.requestId}` : ""}`;
+    } else if (state.evidenceGap) {
+      notice.hidden = false;
+      notice.textContent = `Turn evidence history has a ${state.evidenceGap.reason.replaceAll("_", " ")} gap. Retained events are exact; open Inspector for the boundary.`;
+    } else {
+      notice.hidden = true;
+      notice.textContent = "";
+    }
+  }
+  function renderConversation(channel, messages, options = {}) {
     const activity = inboxFor(channel.id)?.activity;
     // The current dashboard body parser cannot safely stream the canonical
     // multipart upload. Keep this unavailable instead of simulating support.
     const canAttach = false;
     const members = channel.members?.filter((m) => m.kind === "bot") || [];
+    const turns = state.evidence.turns();
+    const linkedTurnIDs = new Set();
+    const messageContent = messages
+      .map((message) => {
+        const matching = turns.filter((turn) => turn.messageIds.includes(message.id));
+        matching.forEach((turn) => linkedTurnIDs.add(turn.turnId));
+        return messageHtml(message, matching);
+      })
+      .join("");
+    const unlinkedTurns = turns.filter((turn) => !linkedTurnIDs.has(turn.turnId));
+    const responseActivity = unlinkedTurns
+      .map(
+        (turn) =>
+          `<section class="ca-response-placeholder"><p>${turn.terminal ? "Response evidence is retained, but no matching assistant message is in this page." : "Response active. The final answer will appear in the calm transcript when committed."}</p>${quickGlanceHtml(turn)}</section>`,
+      )
+      .join("");
+    const body =
+      messageContent || responseActivity
+        ? `${messageContent}${responseActivity}`
+        : '<div class="ca-welcome"><h2>Start the conversation.</h2><p>This durable thread will be here when you return.</p></div>';
+    const inspectorDisabled = turns.length ? "" : "disabled";
+    const evidenceTitle = hasEvidenceCapability()
+      ? turns.length
+        ? "Open turn inspector"
+        : "No turn evidence has been emitted"
+      : "Turn evidence is not available from this Home23";
+    const evidenceNotice = `<div class="ca-degraded" id="evidence-notice" role="status" hidden></div>`;
     $("conversation").innerHTML =
-      `<header class="ca-thread-head"><button class="ca-back" id="back-button" aria-label="Back to Inbox">‹</button><span class="ca-avatar ${channel.kind === "group" ? "channel" : ""}">${esc(channel.title.slice(0, 2).toUpperCase())}</span><div class="ca-thread-identity"><h2>${esc(channel.title)}</h2><p>${channel.kind === "group" ? `${members.length} Bot${members.length === 1 ? "" : "s"}` : "Direct conversation"}</p></div><button class="ca-details-button" id="details-button">Details</button></header><div class="ca-messages" id="messages" aria-live="polite">${messages.length ? messages.map(messageHtml).join("") : '<div class="ca-welcome"><h2>Start the conversation.</h2><p>This durable thread will be here when you return.</p></div>'}</div><div class="ca-activity" id="thread-activity">${activity?.state && activity.state !== "idle" ? '<i class="ca-activity-dot"></i>' + esc(activity.label || "Active now") : ""}</div><div class="ca-composer-wrap"><form class="ca-composer" id="composer"><button class="ca-attach" type="button" id="attach-button" ${canAttach ? "" : "disabled"} aria-label="${canAttach ? "Add attachment" : "Attachments are not available"}" title="${canAttach ? "Add attachment" : "Attachments are not available"}">＋</button><textarea id="composer-text" rows="1" placeholder="Message ${esc(channel.title)}" aria-label="Message ${esc(channel.title)}" required></textarea><button class="ca-send" type="submit" aria-label="Send message">↑</button></form><input id="attachment-input" type="file" multiple hidden></div>`;
+      `<header class="ca-thread-head"><button class="ca-back" id="back-button" aria-label="Back to Inbox">‹</button><span class="ca-avatar ${channel.kind === "group" ? "channel" : ""}">${esc(channel.title.slice(0, 2).toUpperCase())}</span><div class="ca-thread-identity"><h2>${esc(channel.title)}</h2><p>${channel.kind === "group" ? `${members.length} Bot${members.length === 1 ? "" : "s"}` : "Direct conversation"}</p></div><div class="ca-thread-actions"><button class="ca-details-button" id="inspector-button" ${inspectorDisabled} title="${esc(evidenceTitle)}" aria-label="${esc(evidenceTitle)}">Inspector</button><button class="ca-details-button" id="details-button">Details</button></div></header>${evidenceNotice}<div class="ca-messages" id="messages" aria-live="polite">${body}</div><div class="ca-activity" id="thread-activity">${activity?.state && activity.state !== "idle" ? '<i class="ca-activity-dot"></i>' + esc(activity.label || "Active now") : ""}</div><div class="ca-composer-wrap"><form class="ca-composer" id="composer"><button class="ca-attach" type="button" id="attach-button" ${canAttach ? "" : "disabled"} aria-label="${canAttach ? "Add attachment" : "Attachments are not available"}" title="${canAttach ? "Add attachment" : "Attachments are not available"}">＋</button><textarea id="composer-text" rows="1" placeholder="Message ${esc(channel.title)}" aria-label="Message ${esc(channel.title)}" required></textarea><button class="ca-send" type="submit" aria-label="Send message">↑</button></form><input id="attachment-input" type="file" multiple hidden></div>`;
+    renderEvidenceNotice();
     $("back-button").addEventListener("click", () => {
       $("conversation").classList.remove("open");
       const destination = new URL(location.href);
       destination.searchParams.delete("channel");
-      history.replaceState(null, "", destination);
+      destination.searchParams.delete("turn");
+      destination.searchParams.delete("event");
+      history.pushState(null, "", destination);
+      closeInspectorPane(false);
+    });
+    $("inspector-button").addEventListener("click", () => {
+      const turn = state.evidence.liveTurn() || turns.at(-1);
+      if (turn) openInspector(turn.turnId, !turn.terminal);
     });
     $("details-button").addEventListener("click", () => showDetails(channel));
     $("composer").addEventListener("submit", sendMessage);
@@ -342,10 +582,17 @@
     $("attachment-input").addEventListener("change", () =>
       toast("Attachment upload requires the active attachment capability."),
     );
+    document.querySelectorAll(".ca-turn-glance[data-turn-id]").forEach((button) =>
+      button.addEventListener("click", () => {
+        const turn = state.evidence.turn(button.dataset.turnId);
+        if (turn) openInspector(turn.turnId, !turn.terminal);
+      }),
+    );
     const pane = $("messages");
-    pane.scrollTop = pane.scrollHeight;
+    if (options.scrollToBottom !== false) pane.scrollTop = pane.scrollHeight;
+    if (state.inspectorVisible) renderInspector();
   }
-  function messageHtml(m) {
+  function messageHtml(m, turns = []) {
     const owner = m.author?.kind === "owner";
     const attachments = (m.attachments || [])
       .map(
@@ -353,7 +600,395 @@
           `<div class="ca-attachment"><span class="ca-avatar channel">↗</span><span><b>${esc(a.name || "Attachment")}</b><span>${esc(a.contentType || "File")}${a.byteCount ? ` · ${Math.ceil(a.byteCount / 1024)} KB` : ""}</span></span></div>`,
       )
       .join("");
-    return `<article class="ca-message ${owner ? "owner" : "bot"}" id="message-${esc(m.id)}"><div class="ca-message-meta">${owner ? "" : `<strong>${esc(m.author?.displayName || "Bot")}</strong>`}<time>${esc(fmtTime(m.createdAt))}</time>${m.visibility === "tombstoned" ? "<span>Removed</span>" : ""}</div><div>${esc(m.text || "").replace(/\n/g, "<br>")}</div>${attachments}</article>`;
+    const glances = owner ? "" : turns.map(quickGlanceHtml).join("");
+    return `<article class="ca-message ${owner ? "owner" : "bot"}" id="message-${esc(m.id)}"><div class="ca-message-meta">${owner ? "" : `<strong>${esc(m.author?.displayName || "Bot")}</strong>`}<time>${esc(fmtTime(m.createdAt))}</time>${m.visibility === "tombstoned" ? "<span>Removed</span>" : ""}</div><div>${esc(m.text || "").replace(/\n/g, "<br>")}</div>${attachments}</article>${glances}`;
+  }
+  function inspectorURL(turnId = null, eventId = null) {
+    const destination = new URL(location.href);
+    if (state.selected) destination.searchParams.set("channel", state.selected);
+    if (turnId) destination.searchParams.set("turn", turnId);
+    else destination.searchParams.delete("turn");
+    if (turnId && eventId) destination.searchParams.set("event", eventId);
+    else destination.searchParams.delete("event");
+    return destination;
+  }
+  function applyInspectorURLState() {
+    const query = new URLSearchParams(location.search);
+    const turnId = query.get("turn");
+    if (!turnId) {
+      if (state.inspectorVisible) closeInspectorPane(false);
+      return;
+    }
+    const turn = state.evidence.turn(turnId);
+    if (!turn) return;
+    const requestedEvent = query.get("event");
+    const eventId = turn.events.some((event) => event.eventId === requestedEvent)
+      ? requestedEvent
+      : null;
+    openInspector(turnId, false, eventId, { historyMode: "none" });
+  }
+  function openInspector(turnId, live = false, eventId = null, options = {}) {
+    const turn = state.evidence.turn(turnId);
+    if (!turn) return;
+    if (state.presentation.selectedTurnId !== turnId) {
+      state.inspectorScrollTop = 0;
+      state.expandedEvidence.clear();
+    }
+    if (!$("details-pane").hidden) closeDetails();
+    state.presentation = live && !turn.terminal
+      ? Inspector.openLive(state.presentation, turnId)
+      : Inspector.openTurn(state.presentation, turnId, eventId);
+    if (eventId) {
+      const event = turn.events.find((candidate) => candidate.eventId === eventId);
+      if (event) {
+        state.presentation = Inspector.markViewedThrough(
+          state.presentation,
+          event.eventSequence,
+        );
+      }
+    }
+    state.inspectorVisible = true;
+    $("inspector-pane").hidden = false;
+    $("app").classList.remove("details-open");
+    $("app").classList.add("inspector-open");
+    if (options.historyMode !== "none") {
+      const method = options.historyMode === "replace" ? "replaceState" : "pushState";
+      history[method](
+        null,
+        "",
+        inspectorURL(turnId, state.presentation.selectedEventId),
+      );
+    }
+    renderInspector();
+  }
+  function closeInspectorPane(updateHistory = true) {
+    const pane = $("inspector-pane");
+    if (!pane) return;
+    pane.hidden = true;
+    $("app").classList.remove("inspector-open");
+    state.inspectorVisible = false;
+    state.presentation = Inspector.minimize(state.presentation);
+    if (updateHistory) history.pushState(null, "", inspectorURL());
+    $("inspector-button")?.focus();
+  }
+  function selectionValue(provider, model, effort) {
+    return [
+      provider ? `provider ${provider}` : null,
+      model ? `model ${model}` : null,
+      effort ? `effort ${effort}` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ") || "Not emitted";
+  }
+  function exactDisclosure(label, event, valueKind) {
+    if (valueKind !== "event" && event.payload?.[valueKind] === undefined) return "";
+    const expansionKey = `${event.eventId}:${valueKind}`;
+    return `<details class="ca-exact-disclosure" data-evidence-review data-expansion-key="${esc(expansionKey)}"${state.expandedEvidence.has(expansionKey) ? " open" : ""}><summary>${esc(label)}</summary><pre class="ca-exact-value"><code>${esc(
+      valueKind === "event"
+        ? Inspector.exactJSON(event)
+        : Inspector.exactJSON(event.payload[valueKind]),
+    )}</code></pre><button type="button" data-copy-event="${esc(event.eventId)}" data-copy-kind="${esc(valueKind)}">Copy exact value</button></details>`;
+  }
+  function evidenceEventHtml(event, turn, index, total) {
+    const selected = state.presentation.selectedEventId === event.eventId;
+    const summary = Inspector.eventSummary(event);
+    const source = [
+      event.actor?.displayName || "Unknown actor",
+      event.source?.system,
+      event.source?.provider,
+      event.source?.model,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const cue = event.kind === "failure"
+      ? "!"
+      : event.kind === "receipt"
+        ? "✓"
+        : event.kind === "reasoning"
+          ? "R"
+          : event.kind.startsWith("tool_call_")
+            ? "T"
+            : "•";
+    return `<article class="ca-inspector-event${selected ? " selected" : ""}${event.kind === "failure" ? " failure" : ""}" style="--event-depth:${Inspector.eventDepth(event, turn.events)}" id="inspector-event-${esc(event.eventId)}"><button type="button" class="ca-inspector-event-title" data-select-event="${esc(event.eventId)}" aria-label="Select exact event ${index + 1} of ${total}"><span aria-hidden="true">${cue}</span><span><strong>${esc(Inspector.eventLabel(event))}</strong>${summary ? `<small>${esc(summary)}</small>` : ""}<small>${esc(source)}</small><small>Event ${index + 1} of ${total} · #${esc(event.eventSequence)} · ${esc(event.occurredAt)}</small></span></button>${exactDisclosure("Show full arguments", event, "arguments")}${exactDisclosure("Show full result", event, "result")}${exactDisclosure("Show full event", event, "event")}</article>`;
+  }
+  function workControlsHtml(turn) {
+    const workId = [...turn.workIds].sort().at(-1);
+    if (!workId) return "";
+    if (state.capabilities?.capabilities?.work !== true) {
+      return `<section class="ca-inspector-card ca-inspector-controls"><h3>Response controls</h3><p><code>${esc(workId)}</code></p><p class="ca-evidence-unavailable">This Home23 did not advertise authenticated Work inspection.</p></section>`;
+    }
+    const record = state.workById.get(workId);
+    const work = record?.work;
+    const stateLabel = work?.state || (record?.loading ? "Loading…" : "Unavailable");
+    const error = record?.error;
+    const canMutate = state.capabilities?.capabilities?.workMutation === true;
+    const retry = record?.mutation?.outcome === "retried" ? record.mutation.work : null;
+    return `<section class="ca-inspector-card ca-inspector-controls"><h3>Response controls</h3><p><code>${esc(workId)}</code></p><p>State: <strong>${esc(stateLabel)}</strong></p>${retry ? `<p>Retry queued as <code>${esc(retry.id)}</code>.</p>` : ""}${error ? `<p class="ca-inspector-error">${esc(error.message)}${error.requestId ? ` · request ${esc(error.requestId)}` : ""}</p>` : ""}<div class="ca-inspector-actions">${work?.cancelAvailable ? `<button class="danger" type="button" data-work-operation="cancel" data-work-id="${esc(workId)}" ${canMutate ? "" : "disabled"}>Cancel response</button>` : ""}${work?.state === "stopping" ? "<span>Cancellation requested</span>" : ""}${work?.retryAvailable && !retry ? `<button type="button" data-work-operation="retry" data-work-id="${esc(workId)}" ${canMutate ? "" : "disabled"}>Retry response</button>` : ""}</div></section>`;
+  }
+  function modeControlsHtml(turn) {
+    const presentation = state.presentation;
+    const mode = {
+      quick_glance: "Quick glance",
+      selected_turn_detail: "Selected-turn detail",
+      live_control_room: "Live control room",
+    }[presentation.mode];
+    let action = "";
+    if (presentation.liveTurnId === turn.turnId) {
+      action = presentation.followsLive
+        ? "<span>● Follow live</span>"
+        : `<button type="button" id="jump-live">${presentation.unseenEventCount ? `New events (${presentation.unseenEventCount})` : "Jump to live turn"}</button>`;
+    } else if (presentation.liveTurnId) {
+      action = '<button type="button" id="jump-live">Another turn is live</button>';
+    }
+    return `<section class="ca-inspector-card ca-inspector-mode"><span><strong>${esc(mode)}</strong>${presentation.unseenEventCount ? ` <span class="unseen">· ${presentation.unseenEventCount} unseen</span>` : ""}</span>${action}</section>`;
+  }
+  function renderInspector() {
+    if (!state.inspectorVisible) return;
+    const pane = $("inspector-pane");
+    const previousScrollTop = $("inspector-scroll")?.scrollTop ?? state.inspectorScrollTop;
+    const turn = state.evidence.turn(state.presentation.selectedTurnId);
+    if (!turn) {
+      pane.innerHTML = '<div class="ca-inspector-head"><h2>Turn inspector</h2><button class="ca-close" id="close-inspector" aria-label="Close inspector">×</button></div><div class="ca-inspector-scroll"><section class="ca-inspector-card ca-inspector-error"><h3>Evidence unavailable</h3><p>The selected turn is no longer present in the retained communication history.</p></section></div>';
+      $("close-inspector").addEventListener("click", () => closeInspectorPane());
+      return;
+    }
+    const glance = turn.quickGlance;
+    const receipt = Inspector.selectionReceipt(turn);
+    const status = (glance.status || (turn.terminal ? "complete" : "active"))
+      .replaceAll("_", " ");
+    const filter = state.inspectorFilter;
+    const events = turn.events.filter((event) => Inspector.includesFilter(event, filter));
+    const filterOptions = [
+      ["all", "All events"],
+      ["reasoning", "Reasoning"],
+      ["tools", "Tool calls"],
+      ["agents", "Agents and background work"],
+      ["progress", "Progress"],
+      ["errors", "Errors"],
+      ["artifacts", "Artifacts and media"],
+      ["usage", "Usage and cache"],
+      ["receipts", "Receipts"],
+    ]
+      .map(
+        ([value, label]) =>
+          `<option value="${value}"${filter === value ? " selected" : ""}>${label}</option>`,
+      )
+      .join("");
+    const conflicts = state.evidence.integrityConflicts.filter(
+      (conflict) =>
+        conflict.existing.turnId === turn.turnId ||
+        conflict.incoming.turnId === turn.turnId,
+    );
+    const gap = state.evidenceGap
+      ? `<section class="ca-inspector-card ca-inspector-gap"><h3>! Evidence history gap</h3><p>Core could not replay a contiguous evidence prefix. Retained events remain exact, but this turn inspector must not be treated as complete across the gap.</p><p><code>Reason: ${esc(state.evidenceGap.reason)}; requested after ${esc(state.evidenceGap.requestedAfterSequence)}; retention floor ${esc(state.evidenceGap.retentionFloorSequence)}</code></p></section>`
+      : "";
+    const evidenceError = state.evidenceError
+      ? `<section class="ca-inspector-card ca-inspector-error"><h3>! Evidence refresh unavailable</h3><p>${esc(state.evidenceError.message)}</p>${state.evidenceError.requestId ? `<p><code>Request ${esc(state.evidenceError.requestId)}</code></p>` : ""}</section>`
+      : "";
+    const conflictNotice = conflicts.length
+      ? `<section class="ca-inspector-card ca-inspector-error"><h3>! Evidence identity conflict</h3><p>${conflicts.length} replayed event identit${conflicts.length === 1 ? "y has" : "ies have"} conflicting exact values. Both versions are retained in the full evidence export.</p></section>`
+      : "";
+    pane.innerHTML = `<div class="ca-inspector-head"><div><h2>Turn inspector</h2><p>${esc(state.currentChannel?.title || "Conversation")}</p></div><div class="ca-inspector-head-actions"><button type="button" id="export-full" title="Export full evidence">Full export</button><button type="button" id="export-compact" title="Export compact conversation">Compact export</button><button class="ca-close" id="close-inspector" aria-label="Close inspector">×</button></div></div><div class="ca-inspector-scroll" id="inspector-scroll"><section class="ca-inspector-card"><div class="ca-inspector-status"><strong>${glance.hasAttention ? "! " : turn.terminal ? "✓ " : "● "}${esc(status[0]?.toUpperCase() + status.slice(1))}</strong><span>${glance.eventCount} events</span></div><div class="ca-inspector-pills">${glance.model ? `<span class="ca-inspector-pill">Model: ${esc(glance.model)}</span>` : ""}${glance.effort ? `<span class="ca-inspector-pill">Effort: ${esc(glance.effort)}</span>` : ""}<span class="ca-inspector-pill">Tools: ${glance.toolCallCount}</span><span class="ca-inspector-pill">Agents: ${glance.agentAndWorkerCount}</span></div><p><code>Turn ${esc(turn.turnId)}</code></p><p><code>${esc(turn.events[0]?.occurredAt || "")} – ${esc(turn.events.at(-1)?.occurredAt || "")}</code></p></section>${gap}${evidenceError}${conflictNotice}${workControlsHtml(turn)}<section class="ca-inspector-card"><h3>Selection receipt</h3><dl class="ca-inspector-receipt"><dt>Actor</dt><dd>${esc(receipt.actor)}</dd><dt>Active attempt</dt><dd>${esc(receipt.attemptId || "Not emitted")}</dd><dt>Requested</dt><dd>${esc(selectionValue(receipt.requestedProvider, receipt.requestedModel, receipt.requestedEffort))}</dd><dt>Resolved</dt><dd>${esc(selectionValue(receipt.resolvedProvider, receipt.resolvedModel, receipt.resolvedEffort))}</dd><dt>Actual</dt><dd>${esc(selectionValue(receipt.actualProvider, receipt.actualModel, receipt.actualEffort))}</dd></dl></section>${modeControlsHtml(turn)}<div class="ca-inspector-filter"><label for="inspector-filter">Evidence</label><select id="inspector-filter" aria-label="Evidence section">${filterOptions}</select></div><div id="inspector-events">${events.length ? events.map((event, index) => evidenceEventHtml(event, turn, index, events.length)).join("") : '<section class="ca-inspector-card ca-evidence-unavailable">No events match this evidence section.</section>'}</div></div>`;
+    $("close-inspector").addEventListener("click", () => closeInspectorPane());
+    $("export-full").addEventListener("click", () =>
+      downloadText(
+        `home23-turn-${safeFilePart(turn.turnId)}-evidence.json`,
+        state.evidence.exportFullEvidence(turn.turnId),
+        "application/json",
+      ),
+    );
+    $("export-compact").addEventListener("click", () =>
+      downloadText(
+        `home23-${safeFilePart(state.currentChannel?.title || "conversation")}.md`,
+        Inspector.compactConversation(state.currentChannel, state.currentMessages),
+        "text/markdown",
+      ),
+    );
+    $("inspector-filter").addEventListener("change", (event) => {
+      state.inspectorFilter = event.target.value;
+      state.presentation = Inspector.pauseFollowing(state.presentation);
+      renderInspector();
+    });
+    $("jump-live")?.addEventListener("click", () => {
+      state.presentation = Inspector.jumpToLive(state.presentation);
+      const live = state.evidence.turn(state.presentation.selectedTurnId);
+      if (live?.quickGlance.latestEventSequence) {
+        state.presentation = Inspector.markViewedThrough(
+          state.presentation,
+          live.quickGlance.latestEventSequence,
+        );
+      }
+      history.pushState(
+        null,
+        "",
+        inspectorURL(state.presentation.selectedTurnId),
+      );
+      renderInspector();
+    });
+    pane.querySelectorAll("[data-select-event]").forEach((button) =>
+      button.addEventListener("click", () => {
+        const event = turn.events.find(
+          (candidate) => candidate.eventId === button.dataset.selectEvent,
+        );
+        if (!event) return;
+        state.presentation = Inspector.openTurn(
+          state.presentation,
+          turn.turnId,
+          event.eventId,
+        );
+        state.presentation = Inspector.markViewedThrough(
+          state.presentation,
+          event.eventSequence,
+        );
+        history.pushState(null, "", inspectorURL(turn.turnId, event.eventId));
+        renderInspector();
+      }),
+    );
+    pane.querySelectorAll("details[data-evidence-review]").forEach((details) =>
+      details.querySelector("summary")?.addEventListener("click", () => {
+        if (!details.open) {
+          state.expandedEvidence.add(details.dataset.expansionKey);
+          state.presentation = Inspector.pauseFollowing(state.presentation);
+        } else {
+          state.expandedEvidence.delete(details.dataset.expansionKey);
+        }
+      }),
+    );
+    pane.querySelectorAll("[data-copy-event]").forEach((button) =>
+      button.addEventListener("click", async () => {
+        const event = turn.events.find(
+          (candidate) => candidate.eventId === button.dataset.copyEvent,
+        );
+        if (!event) return;
+        const kind = button.dataset.copyKind;
+        const value = kind === "event" ? event : event.payload?.[kind];
+        await copyText(Inspector.exactJSON(value));
+        state.presentation = Inspector.pauseFollowing(state.presentation);
+        toast("Exact value copied");
+      }),
+    );
+    pane.querySelectorAll("[data-work-operation]").forEach((button) =>
+      button.addEventListener("click", () =>
+        mutateWork(button.dataset.workId, button.dataset.workOperation),
+      ),
+    );
+    const scroll = $("inspector-scroll");
+    scroll.addEventListener("scroll", () => {
+      const awayFromLive =
+        scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight > 80;
+      if (awayFromLive && state.presentation.followsLive) {
+        state.presentation = Inspector.pauseFollowing(state.presentation);
+      }
+      state.inspectorScrollTop = scroll.scrollTop;
+    }, { passive: true });
+    if (state.presentation.followsLive) scroll.scrollTop = scroll.scrollHeight;
+    else if (state.presentation.selectedEventId) {
+      document
+        .getElementById(`inspector-event-${CSS.escape(state.presentation.selectedEventId)}`)
+        ?.scrollIntoView({ block: "center" });
+    } else scroll.scrollTop = previousScrollTop;
+    state.inspectorScrollTop = scroll.scrollTop;
+    const workId = [...turn.workIds].sort().at(-1);
+    if (
+      workId &&
+      state.capabilities?.capabilities?.work === true &&
+      !state.workById.has(workId)
+    ) loadWork(workId);
+  }
+  async function loadWork(workId) {
+    state.workById.set(workId, { loading: true, work: null, error: null });
+    if (state.inspectorVisible) renderInspector();
+    try {
+      const result = await api(`/work/${encodeURIComponent(workId)}`);
+      state.workById.set(workId, { loading: false, work: result.work, error: null });
+    } catch (error) {
+      state.workById.set(workId, {
+        loading: false,
+        work: null,
+        error: { message: error.message, requestId: error.requestId || null },
+      });
+    }
+    if (
+      state.inspectorVisible &&
+      state.evidence.turn(state.presentation.selectedTurnId)?.workIds.includes(workId)
+    ) {
+      renderInspector();
+    }
+  }
+  async function mutateWork(workId, operation) {
+    const current = state.workById.get(workId);
+    state.workById.set(workId, { ...current, loading: true, error: null });
+    renderInspector();
+    const mutationKey = `${workId}:${operation}`;
+    if (!state.workMutationKeys.has(mutationKey)) {
+      state.workMutationKeys.set(mutationKey, idem(`web-work-${operation}`));
+    }
+    try {
+      const result = await api(
+        `/work/${encodeURIComponent(workId)}/${encodeURIComponent(operation)}`,
+        {
+          method: "POST",
+          headers: { "idempotency-key": state.workMutationKeys.get(mutationKey) },
+        },
+      );
+      const retainedWork = operation === "retry" ? current?.work || null : result.work;
+      state.workById.set(workId, {
+        loading: false,
+        work: retainedWork,
+        mutation: result,
+        error: null,
+      });
+      if (result.work?.id && result.work.id !== workId) {
+        state.workById.set(result.work.id, {
+          loading: false,
+          work: result.work,
+          error: null,
+        });
+      }
+      toast(operation === "cancel" ? "Cancellation requested" : "Response retry queued");
+      await syncEvidence(state.evidenceConversationId).catch(() => {});
+      await refreshSelectedQuietly();
+    } catch (error) {
+      state.workById.set(workId, {
+        loading: false,
+        work: current?.work || null,
+        mutation: current?.mutation,
+        error: { message: error.message, requestId: error.requestId || null },
+      });
+      renderInspector();
+    }
+  }
+  function safeFilePart(value) {
+    return String(value).replace(/[^a-z0-9._-]+/gi, "-").slice(0, 80) || "export";
+  }
+  function downloadText(name, content, type) {
+    const url = URL.createObjectURL(new Blob([content], { type: `${type};charset=utf-8` }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+  async function copyText(value) {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(value);
+        return;
+      } catch {
+        // Fall through to the local selection path when Clipboard permission is absent.
+      }
+    }
+    const field = document.createElement("textarea");
+    field.value = value;
+    field.setAttribute("readonly", "");
+    field.style.position = "fixed";
+    field.style.opacity = "0";
+    document.body.append(field);
+    field.select();
+    document.execCommand("copy");
+    field.remove();
   }
   function renderConversationFailure(error) {
     $("conversation").innerHTML =
@@ -363,28 +998,33 @@
       () => state.selected && openConversation(state.selected),
     );
   }
-  async function sendMessage(event) {
-    event.preventDefault();
+  async function sendMessage(event, retryRecord = null) {
+    event?.preventDefault();
     if (state.connection !== "online")
       return toast("Reconnect before sending.");
     const input = $("composer-text"),
-      text = input.value.trim();
+      text = retryRecord?.text || input.value.trim();
     if (!text) return;
-    const messageId = opaqueId("msg"),
-      clientMessageId = opaqueId("client");
+    const record = retryRecord || {
+      text,
+      messageId: opaqueId("msg"),
+      clientMessageId: opaqueId("client"),
+      idempotencyKey: idem("web-message"),
+    };
+    const { messageId, clientMessageId } = record;
     const pending = document.createElement("article");
     pending.className = "ca-message owner pending";
     pending.id = `message-${messageId}`;
     pending.innerHTML = `<div class="ca-message-meta"><span>Sending…</span></div><div>${esc(text).replace(/\n/g, "<br>")}</div>`;
     $("messages").append(pending);
     $("messages").scrollTop = $("messages").scrollHeight;
-    input.value = "";
+    if (!retryRecord) input.value = "";
     input.disabled = true;
-    state.pending.set(messageId, { text, clientMessageId });
+    state.pending.set(messageId, record);
     try {
       await api(`/channels/${encodeURIComponent(state.selected)}/messages`, {
         method: "POST",
-        headers: { "idempotency-key": idem("web-message") },
+        headers: { "idempotency-key": record.idempotencyKey },
         body: JSON.stringify({
           messageId,
           clientMessageId,
@@ -396,23 +1036,31 @@
       });
       state.pending.delete(messageId);
       await refreshInbox();
-      await openConversation(state.selected);
+      await refreshSelectedQuietly();
+      await syncEvidence(state.evidenceConversationId).catch(() => {});
+      scheduleEvidenceRefresh();
     } catch (error) {
       pending.className = "ca-message owner failed";
       pending.querySelector(".ca-message-meta").innerHTML =
-        `<span>Not sent · ${esc(error.message)}</span>`;
+        `<span>Not sent · ${esc(error.message)}${error.requestId ? ` · request ${esc(error.requestId)}` : ""}</span>`;
       const retry = document.createElement("button");
       retry.type = "button";
       retry.textContent = "Retry";
       retry.addEventListener("click", () => {
-        input.value = text;
+        if (state.connection !== "online") {
+          toast("Reconnect before retrying.");
+          return;
+        }
         pending.remove();
-        $("composer").requestSubmit();
+        sendMessage(null, record);
       });
       pending.append(retry);
     } finally {
-      input.disabled = false;
-      input.focus();
+      const currentInput = $("composer-text");
+      if (currentInput) {
+        currentInput.disabled = false;
+        currentInput.focus();
+      }
     }
   }
   function mentionsFor(text) {
@@ -441,6 +1089,7 @@
   }
 
   function showDetails(channel) {
+    if (state.inspectorVisible) closeInspectorPane();
     const bot = state.bots.find(
       (b) => b.conversationId === channel.conversationId,
     );
@@ -722,6 +1371,10 @@
   $("forget-token").addEventListener("click", () => {
     state.token = "";
     sessionStorage.removeItem("home23:product-token");
+    state.selected = null;
+    state.currentChannel = null;
+    state.currentMessages = [];
+    resetEvidence(null);
     closeDialog("connection-dialog");
     load();
   });
@@ -736,6 +1389,34 @@
       event.preventDefault();
       openDialog("search-dialog");
       $("search-input").focus();
+    }
+    if (
+      event.altKey &&
+      (event.metaKey || event.ctrlKey) &&
+      event.key.toLowerCase() === "i"
+    ) {
+      event.preventDefault();
+      if (state.inspectorVisible) closeInspectorPane();
+      else {
+        const turn = state.evidence.liveTurn() || state.evidence.turns().at(-1);
+        if (turn) openInspector(turn.turnId, !turn.terminal);
+      }
+    }
+    if (
+      event.altKey &&
+      (event.metaKey || event.ctrlKey) &&
+      event.key.toLowerCase() === "l"
+    ) {
+      const live = state.evidence.liveTurn();
+      if (live) {
+        event.preventDefault();
+        openInspector(live.turnId, true);
+      }
+    }
+    if (event.key === "Escape" && state.inspectorVisible) {
+      event.preventDefault();
+      closeInspectorPane();
+      return;
     }
     if (
       event.key === "Escape" &&
@@ -758,7 +1439,28 @@
     if (!document.hidden) {
       clearTimeout(state.refreshTimer);
       scheduleRefresh();
+      scheduleEvidenceRefresh();
     }
+  });
+  window.addEventListener("popstate", async () => {
+    const query = new URLSearchParams(location.search);
+    const channelId = query.get("channel");
+    if (channelId && channelId !== state.selected) {
+      await openConversation(channelId, null, { historyMode: "none" });
+      return;
+    }
+    if (!channelId) {
+      state.selected = null;
+      state.currentChannel = null;
+      state.currentMessages = [];
+      resetEvidence(null);
+      $("conversation").classList.remove("open");
+      $("conversation").innerHTML =
+        '<div class="ca-welcome"><div class="ca-house-mark">H23</div><h2>Your conversations live here.</h2><p>Choose Jerry, Forrest, another Bot, or a Channel.</p></div>';
+      renderRoster();
+      return;
+    }
+    applyInspectorURLState();
   });
   load();
 })();

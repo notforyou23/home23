@@ -1,7 +1,10 @@
 const express = require('express');
 
 const DEFAULT_ORIGIN = 'http://127.0.0.1:7346';
-const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+// Communication pages can contain exact provider/runtime payloads. Keep the
+// dashboard hop bounded, but large enough for a deliberately small evidence
+// page without truncating or rewriting any event.
+const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 
 const ROUTES = [
   { method: 'GET', path: /^\/capabilities$/ },
@@ -10,10 +13,13 @@ const ROUTES = [
   { method: 'POST', path: /^\/bots$/ },
   { method: 'POST', path: /^\/bots\/[^/]+\/(?:start|stop|restart|archive|restore)$/ },
   { method: 'GET', path: /^\/(?:inbox|conversations|unread|activity|search)$/ },
+  { method: 'GET', path: /^\/communications\/events$/ },
   { method: 'GET', path: /^\/channels(?:\/[^/]+)?$/ },
   { method: 'POST', path: /^\/channels$/ },
   { method: 'GET', path: /^\/channels\/[^/]+\/messages$/ },
   { method: 'POST', path: /^\/channels\/[^/]+\/(?:messages|read|coordinate)$/ },
+  { method: 'GET', path: /^\/work\/[^/]+$/ },
+  { method: 'POST', path: /^\/work\/[^/]+\/(?:cancel|retry)$/ },
 ];
 
 function coordinationOrigin(value = process.env.HOME23_COORDINATION_ORIGIN || DEFAULT_ORIGIN) {
@@ -37,6 +43,7 @@ function validBearer(value) {
 function createConnectedAgentsProxy(options = {}) {
   const origin = coordinationOrigin(options.origin);
   const fetchImpl = options.fetchImpl || fetch;
+  const maxResponseBytes = options.maxResponseBytes || MAX_RESPONSE_BYTES;
   const router = express.Router();
 
   router.use(async (req, res) => {
@@ -67,9 +74,9 @@ function createConnectedAgentsProxy(options = {}) {
         method: req.method, headers, body, signal: controller.signal, redirect: 'manual',
       });
       const length = Number(upstream.headers.get('content-length') || 0);
-      if (length > MAX_RESPONSE_BYTES) throw new Error('coordination_proxy_response_too_large');
+      if (length > maxResponseBytes) throw new Error('coordination_proxy_response_too_large');
       const bytes = Buffer.from(await upstream.arrayBuffer());
-      if (bytes.length > MAX_RESPONSE_BYTES) throw new Error('coordination_proxy_response_too_large');
+      if (bytes.length > maxResponseBytes) throw new Error('coordination_proxy_response_too_large');
       res.status(upstream.status);
       for (const name of ['content-type', 'x-request-id', 'x-correlation-id']) {
         const value = upstream.headers.get(name);
@@ -78,8 +85,16 @@ function createConnectedAgentsProxy(options = {}) {
       res.set('Cache-Control', 'no-store');
       return res.send(bytes);
     } catch (error) {
-      const code = error?.name === 'AbortError' ? 'coordination_timeout' : 'coordination_unavailable';
-      return res.status(503).json({ error: { code, message: 'Connected Agents is unavailable.', retryable: true } });
+      const oversized = error?.message === 'coordination_proxy_response_too_large';
+      const code = oversized
+        ? 'coordination_response_too_large'
+        : error?.name === 'AbortError'
+          ? 'coordination_timeout'
+          : 'coordination_unavailable';
+      const message = oversized
+        ? 'The exact response exceeded this dashboard safety boundary. Request a smaller evidence page.'
+        : 'Connected Agents is unavailable.';
+      return res.status(503).json({ error: { code, message, retryable: !oversized } });
     } finally {
       clearTimeout(timeout);
     }
