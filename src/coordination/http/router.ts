@@ -17,6 +17,7 @@ import {
   requireIdempotencyKey,
 } from "./middleware.js";
 import { ResumableSsePump, resolveEventResumeSequence } from "../events/index.js";
+import { encodeCommunicationEventEnvelope } from "../communications/index.js";
 import { once } from "node:events";
 
 type CapabilityName = keyof CoordinationAdvertisedCapabilities;
@@ -339,6 +340,32 @@ export function createCoordinationRouter(input: {
       await pump.heartbeatIfDue();
     }
     if (!response.writableEnded && !response.destroyed) response.end();
+  }));
+
+  router.get("/api/v1/communications/events", productRead, asyncRoute(async (request, response) => {
+    if (
+      !application.capabilities().capabilities.communicationEvidence ||
+      !application.services.communications
+    ) {
+      throw unavailable("communicationEvidence");
+    }
+    const metadata = requireCoordinationMetadata(response);
+    const result = application.services.communications.history({
+      afterSequence: integerQuery(request.query.after, 0),
+      limit: integerQuery(request.query.limit, 100),
+      requestId: metadata.requestId,
+      ...(request.query.conversationId === undefined
+        ? {}
+        : { conversationId: pathParameter(request.query.conversationId as string) }),
+    });
+    if (result.kind === "reset") {
+      response.status(409).json({ error: result.error });
+      return;
+    }
+    response.json({
+      ...result,
+      events: result.events.map(encodeCommunicationEventEnvelope),
+    });
   }));
 
   router.post(

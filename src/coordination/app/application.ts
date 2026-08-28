@@ -82,6 +82,8 @@ function capabilityDocument(input: {
         input.flags["coordination.search.canonical"] === true &&
         input.services.search !== undefined,
       eventReplay: processEnabled && input.services.events !== undefined,
+      communicationEvidence:
+        processEnabled && input.services.communications !== undefined,
       attachments:
         mutationsEnabled && input.services.attachments !== undefined,
       work: processEnabled && input.services.workControl !== undefined,

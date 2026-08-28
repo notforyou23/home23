@@ -13,6 +13,7 @@ import { createBotDirectory, SqliteBotDirectoryRepository } from "../bots/index.
 import { createBootstrapService, SqliteBootstrapRepository } from "../bootstrap/index.js";
 import { createChannelService, SqliteBotConversationBindingAdapter, SqliteMessagingRepository } from "../channels/index.js";
 import { SqliteEventRepository } from "../events/index.js";
+import { SqliteCommunicationEventRepository } from "../communications/index.js";
 import { createLeaseService } from "../leases/index.js";
 import { createMessageService } from "../messages/index.js";
 import { createCanonicalSearchService, SqliteCanonicalSearchRepository } from "../search/index.js";
@@ -304,6 +305,7 @@ export function createCoordinationProcess(
   const leases = createLeaseService({ database, generateId: generateCoordinationId, leaseTtlMs: 60_000 });
   const workControl = createProductWorkControl({ database, work, leases });
   const events = new SqliteEventRepository(database);
+  const communications = new SqliteCommunicationEventRepository(database);
   const currentAuthority = (capability: AuthorityCapability): AuthorityEpoch | null => {
     const epoch = database.readOne<AuthorityEpoch>(
       `SELECT capability, epoch, mode, writer,
@@ -428,7 +430,7 @@ export function createCoordinationProcess(
     flags: config.flags,
     services: {
       auth, bootstrap, bots: botDirectory, channels, messages, unread, search,
-      work, workControl, leases, events,
+      work, workControl, leases, events, communications,
       authorityEpochs,
       ...(messageSubmission === undefined ? {} : { messageSubmission }),
       ...(dependencies.activity === undefined

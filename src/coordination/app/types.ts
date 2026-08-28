@@ -12,6 +12,7 @@ import type { createWorkService } from "../work/index.js";
 import type { ProductWorkControlPort } from "../work/index.js";
 import type { createChannelCoordinator } from "../channel-coordinator/index.js";
 import type { SqliteEventRepository } from "../events/index.js";
+import type { SqliteCommunicationEventRepository } from "../communications/index.js";
 import type { BotLifecycleReceipt, createBotLifecycleService } from "../bot-lifecycle/index.js";
 import type { createBotDirectory } from "../bots/index.js";
 import type { createChannelService } from "../channels/index.js";
@@ -154,6 +155,7 @@ export interface CoordinationServices {
   /** Optional internal M16 seam. Presence never advertises or activates Channels. */
   channelCoordinator?: CoordinationChannelCoordinatorPort;
   events?: SqliteEventRepository;
+  communications?: SqliteCommunicationEventRepository;
   authorityEpochs?: {
     current(capability: AuthorityCapability): AuthorityEpoch | null;
     listCurrent(): Promise<Readonly<{ epochs: readonly Readonly<{
@@ -183,6 +185,7 @@ export interface CoordinationAdvertisedCapabilities {
   readCursorMutation: boolean;
   search: boolean;
   eventReplay: boolean;
+  communicationEvidence: boolean;
   attachments: boolean;
   work: boolean;
   workMutation: boolean;

@@ -212,6 +212,7 @@ test("known but incomplete read and stream routes fail closed after authenticati
     "/api/v1/unread",
     "/api/v1/activity",
     "/api/v1/events",
+    "/api/v1/communications/events",
   ]) {
     const response = await fetch(`${address.origin}${path}`, { headers: authHeaders() });
     assert.equal(response.status, 503, path);

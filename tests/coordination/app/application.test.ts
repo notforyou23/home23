@@ -68,6 +68,7 @@ test("capability advertisement stays off for every dependency that is absent", (
       readCursorMutation: false,
       search: false,
       eventReplay: false,
+      communicationEvidence: false,
       attachments: false,
       work: false,
       workMutation: false,
