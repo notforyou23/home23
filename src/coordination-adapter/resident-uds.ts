@@ -374,6 +374,11 @@ export class ResidentTurnUdsServer {
         terminal:terminalPayload(this.#store,chatId,turnId),
       };
     }
+    const final=this.#store.finalEnvelope(chatId,turnId);
+    if(final){
+      if(final.status!=="complete"||typeof final.assistant_content!=="string")throw new ResidentProtocolError("internal_error",final.error_message??final.error??`resident turn ended ${final.status}`);
+      return{text:final.assistant_content,model:final.model??"recovered",toolCallCount:0,durationMs:0,recovered:true};
+    }
     const active=this.#responses.get(turnId);if(active){
       try {
         const response=await active;return{text:response.text,model:response.model,toolCallCount:response.toolCallCount,durationMs:response.durationMs};
@@ -383,9 +388,7 @@ export class ResidentTurnUdsServer {
         throw error;
       }
     }
-    const final=this.#store.finalEnvelope(chatId,turnId);if(!final)throw new ResidentProtocolError("connection_lost","resident result is not terminal",{retryable:true});
-    if(final.status!=="complete"||typeof final.assistant_content!=="string")throw new ResidentProtocolError("internal_error",final.error_message??final.error??`resident turn ended ${final.status}`);
-    return{text:final.assistant_content,model:final.model??"recovered",toolCallCount:0,durationMs:0,recovered:true};
+    throw new ResidentProtocolError("connection_lost","resident result is not terminal",{retryable:true});
   }
 }
 

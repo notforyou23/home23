@@ -133,6 +133,104 @@ test("resident port rejects a Work bound to a different resident before transpor
   assert.equal(requests, 0);
 });
 
+test("a durable stopped turn outranks its unresolved in-memory response", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "home23-resident-stopped-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const history = new ConversationHistory(join(root, "conversations"), 400_000, "jerry");
+  const store = new TurnStore(history);
+  const chatId = "coordination:test:stopped";
+  const origin = {
+    kind: "coordination",
+    workId: "wrk_0198d95f-6c00-7000-8000-000000000101",
+    attemptId: "att_0198d95f-6c00-7000-8000-000000000102",
+    leaseId: "lea_0198d95f-6c00-7000-8000-000000000103",
+    holderPrincipalId: "bot_0198d95f-6c00-7000-8000-000000000104",
+    holderInstanceId: "home23-jerry-harness",
+    authorityReference: "resident:jerry",
+    fencingToken: 1,
+    channelId: "chn_0198d95f-6c00-7000-8000-000000000105",
+    originMessageId: "msg_0198d95f-6c00-7000-8000-000000000106",
+    roundId: "rnd_0198d95f-6c00-7000-8000-000000000107",
+  } as const;
+  const turnId = `coord-${origin.workId}`;
+  const agent: Pick<AgentLoop,
+    "runWithTurn" | "stop" | "isRunning" | "getModel" | "getProvider" | "getReasoningEffort"> = {
+    getModel: () => "fixture-model",
+    getProvider: () => "fixture-provider",
+    getReasoningEffort: () => "medium",
+    async runWithTurn(startChatId, _instruction, options = {}) {
+      store.writeStart(startChatId, options.turnId ?? turnId, "fixture-model", "fixture-provider", {
+        coordination_origin: options.coordinationOrigin,
+      });
+      return {
+        turnId: options.turnId ?? turnId,
+        response: new Promise(() => undefined),
+      };
+    },
+    stop: () => ({ stopped: false, chatIds: [] }),
+    isRunning: () => true,
+  };
+  const credential = createResidentCredential({
+    rootKey: Buffer.alloc(32, 0x57),
+    residentSlug: "jerry",
+    role: "resident",
+    instanceId: "home23-jerry-harness",
+    keyVersion: 1,
+  });
+  const socketPath = join(root, "resident.sock");
+  const server = new ResidentTurnUdsServer({
+    socketPath,
+    serverInstanceId: "home23-jerry-harness",
+    credential,
+    residentSlug: "jerry",
+    agent,
+    history,
+  });
+  await server.start();
+  t.after(() => server.close());
+  const client = new ResidentUdsClient({
+    socketPath,
+    serverInstanceId: "home23-jerry-harness",
+    credential,
+  });
+  t.after(() => client.close());
+  await client.request({
+    method: "POST",
+    path: "/internal/v1/turns/start",
+    payload: {
+      chatId,
+      instruction: "this response remains unresolved in memory",
+      turnId,
+      origin,
+      correlationId: CORRELATION_ID,
+      turnSelection: { modelAlias: null, reasoningEffort: null },
+    },
+    deadlineAtMs: Date.now() + 1_000,
+    fence: residentFence(origin),
+    correlationId: CORRELATION_ID,
+  });
+  store.writeEnd(chatId, turnId, "stopped", {
+    last_seq: 0,
+    stop_reason: "owner_stop",
+  });
+
+  await assert.rejects(
+    client.request({
+      method: "GET",
+      path: `/internal/v1/turns/${encodeURIComponent(turnId)}/result`,
+      payload: { chatId, origin, correlationId: CORRELATION_ID },
+      deadlineAtMs: Date.now() + 1_000,
+      fence: residentFence(origin),
+      correlationId: CORRELATION_ID,
+    }),
+    (error: unknown) =>
+      error instanceof ResidentProtocolError &&
+      error.code === "internal_error" &&
+      error.retryable === false &&
+      /ended stopped/.test(error.message),
+  );
+});
+
 test("resident result retrieval outlives individual signed request windows", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "home23-resident-result-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
