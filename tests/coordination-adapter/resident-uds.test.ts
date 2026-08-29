@@ -133,7 +133,7 @@ test("resident port rejects a Work bound to a different resident before transpor
   assert.equal(requests, 0);
 });
 
-test("a durable stopped turn outranks its unresolved in-memory response", async (t) => {
+test("a durable stopped turn with a legacy terminal sequence completes recovery", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "home23-resident-stopped-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const history = new ConversationHistory(join(root, "conversations"), 400_000, "jerry");
@@ -209,7 +209,17 @@ test("a durable stopped turn outranks its unresolved in-memory response", async 
     fence: residentFence(origin),
     correlationId: CORRELATION_ID,
   });
+  store.writeEvent(chatId, {
+    type: "event",
+    turn_id: turnId,
+    seq: 1,
+    ts: "2026-08-26T12:00:00.100Z",
+    kind: "status",
+    data: { type: "status", status: "working", sourceEventType: "runtime.status" },
+  });
   store.writeEnd(chatId, turnId, "stopped", {
+    // Legacy stopped journals could omit last_seq; the old protocol fallback
+    // exposed that as zero even when durable events existed.
     last_seq: 0,
     stop_reason: "owner_stop",
   });
@@ -229,6 +239,44 @@ test("a durable stopped turn outranks its unresolved in-memory response", async 
       error.retryable === false &&
       /ended stopped/.test(error.message),
   );
+
+  const port = new ResidentUdsAgentPort({
+    client,
+    residentSlug: "jerry",
+    deadlineMs: 100,
+    resultTimeoutMs: 1_000,
+    retryDelayMs: 1,
+  });
+  const replayedEvents: number[] = [];
+  const recovered = await port.runWithTurn(chatId, "recover the stopped turn", {
+    coordinationOrigin: origin,
+    coordinationRequest: {
+      requestId: RESUME_REQUEST_ID,
+      correlationId: RESUME_CORRELATION_ID,
+    },
+    turnSelection: { modelAlias: null, reasoningEffort: null },
+    onDurableStart: () => undefined,
+    onEvent: (event) => { replayedEvents.push(event.sequence); },
+  });
+  await assert.rejects(
+    recovered.response,
+    (error: unknown) =>
+      error instanceof ResidentProtocolError &&
+      error.code === "internal_error" &&
+      error.retryable === false &&
+      /ended stopped/.test(error.message),
+  );
+  assert.deepEqual(replayedEvents, [1]);
+  assert.deepEqual(await recovered.terminal, {
+    status: "stopped",
+    lastSequence: 1,
+    endedAt: store.finalEnvelope(chatId, turnId)?.ended_at,
+    errorCode: null,
+    errorMessage: null,
+    provider: "fixture-provider",
+    model: "fixture-model",
+    reasoningEffort: null,
+  });
 });
 
 test("resident result retrieval outlives individual signed request windows", async (t) => {

@@ -203,9 +203,17 @@ function durableTerminal(
 function terminalPayload(store: TurnStore, chatId: string, turnId: string): JsonValue {
   const terminal = store.finalEnvelope(chatId, turnId);
   if (!terminal) return null;
+  const lastSequence = store.eventsSince(chatId, turnId, -1).reduce(
+    (maximum, event) => Math.max(maximum, event.seq),
+    0,
+  );
   return {
     status: terminal.status,
-    lastSeq: terminal.last_seq ?? 0,
+    // Older resident journals can contain a terminal envelope without
+    // last_seq (or with its historical zero fallback). The durable event
+    // journal is the authority for the replay boundary; reporting the stale
+    // envelope value would leave a recovered coordinator waiting forever.
+    lastSeq: lastSequence,
     endedAt: terminal.ended_at ?? null,
     errorCode: terminal.error_code ?? null,
     errorMessage: terminal.error_message ?? terminal.error ?? null,
