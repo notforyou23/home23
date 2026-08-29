@@ -97,7 +97,32 @@ function communicationKind(event: AgentEvent): string {
   }
 }
 
-function communicationPayload(durable: ResidentDurableEvent): Record<string, JsonValue> {
+function durableCommunicationEventId(durable: ResidentDurableEvent): string {
+  return stableCommunicationEventId(
+    `resident-turn:${durable.turnId}:event:${durable.sequence}`,
+    durable.occurredAt,
+  );
+}
+
+function communicationToolCallId(
+  durable: ResidentDurableEvent,
+  parentEventId: string | null,
+): string {
+  const event = durable.event;
+  if (event.type !== 'tool_start' && event.type !== 'tool_result') {
+    throw new TypeError('tool call identity requires a tool event');
+  }
+  if (typeof event.toolCallId === 'string' && event.toolCallId.length > 0) {
+    return event.toolCallId;
+  }
+  if (event.type === 'tool_result' && parentEventId) return parentEventId;
+  return durableCommunicationEventId(durable);
+}
+
+function communicationPayload(
+  durable: ResidentDurableEvent,
+  parentEventId: string | null,
+): Record<string, JsonValue> {
   const event = exactJsonRecord(durable.event);
   const common: Record<string, JsonValue> = {
     residentSequence: durable.sequence,
@@ -108,10 +133,12 @@ function communicationPayload(durable: ResidentDurableEvent): Record<string, Jso
       return { ...common, text: durable.event.content,
         ...(event.providerEvent === undefined ? {} : { providerEvent: event.providerEvent }) };
     case 'tool_start':
-      return { ...common, toolCallId: durable.event.toolCallId, tool: durable.event.tool,
+      return { ...common, toolCallId: communicationToolCallId(durable, parentEventId),
+        tool: durable.event.tool,
         arguments: event.args ?? null };
     case 'tool_result':
-      return { ...common, toolCallId: durable.event.toolCallId, tool: durable.event.tool,
+      return { ...common, toolCallId: communicationToolCallId(durable, parentEventId),
+        tool: durable.event.tool,
         result: durable.event.exactResult ?? durable.event.result,
         preview: durable.event.result, success: durable.event.success };
     case 'response_chunk':
@@ -145,10 +172,7 @@ function communicationEvent(input: {
   const providerOrigin = event.type === 'thinking' || event.type === 'response_chunk'
     || event.type === 'tool_start';
   return Object.freeze({
-    eventId: stableCommunicationEventId(
-      `resident-turn:${durable.turnId}:event:${durable.sequence}`,
-      durable.occurredAt,
-    ),
+    eventId: durableCommunicationEventId(durable),
     conversationId: context.conversationId,
     channelId: origin.channelId,
     messageId: context.responseMessageId,
@@ -171,7 +195,7 @@ function communicationEvent(input: {
     kind: communicationKind(event),
     provenance: event.type === 'thinking' ? event.provenance : null,
     occurredAt: durable.occurredAt,
-    payload: communicationPayload(durable),
+    payload: communicationPayload(durable, input.parentEventId),
     terminal: event.type === 'tool_result' || event.type === 'subagent_result',
   });
 }
@@ -286,13 +310,15 @@ function parentCommunicationEventId(
   durable: ResidentDurableEvent,
   parentEvents: Map<string, string>,
 ): string | null {
-  const eventId = stableCommunicationEventId(
-    `resident-turn:${durable.turnId}:event:${durable.sequence}`,
-    durable.occurredAt,
-  );
+  const eventId = durableCommunicationEventId(durable);
   const event = durable.event;
+  const toolKey = event.type === 'tool_start' || event.type === 'tool_result'
+    ? `tool:${typeof event.toolCallId === 'string' && event.toolCallId.length > 0
+      ? event.toolCallId
+      : `legacy:${event.tool}`}`
+    : null;
   const parentKey = event.type === 'tool_result'
-    ? `tool:${event.toolCallId}`
+    ? toolKey
     : event.type === 'media' && event.toolCallId
       ? `tool:${event.toolCallId}`
       : event.type === 'subagent_start' && event.parentToolCallId
@@ -304,8 +330,13 @@ function parentCommunicationEventId(
             : null;
   const parentEventId = parentKey ? parentEvents.get(parentKey) ?? null : null;
   if (event.type === 'tool_start') {
-    parentEvents.set(`tool:${event.toolCallId}`, eventId);
-    parentEvents.set(`activity:${event.toolCallId}`, eventId);
+    parentEvents.set(toolKey!, eventId);
+    parentEvents.set(
+      `activity:${typeof event.toolCallId === 'string' && event.toolCallId.length > 0
+        ? event.toolCallId
+        : `legacy:${event.tool}`}`,
+      eventId,
+    );
   }
   if (event.type === 'subagent_start') {
     parentEvents.set(`subagent:${event.subagentId}`, eventId);

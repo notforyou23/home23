@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ResidentCoordinationAdapter, residentRecoveryTruth } from '../../src/coordination-adapter/index.js';
 import { ConversationHistory } from '../../src/agent/history.js';
+import type { AgentEvent } from '../../src/agent/types.js';
 import { TurnStore } from '../../src/chat/turn-store.js';
 import { SqliteCommunicationEventRepository } from '../../src/coordination/communications/index.js';
 import {
@@ -254,7 +255,7 @@ test('successful resident completion emits exact positive terminal truth and bou
   assert.deepEqual(Object.keys(h.observations[0] as object).sort(), ['at', 'evidenceDigest', 'kind', 'outcomeCode']);
 });
 
-test('resident evidence maps losslessly with stable identities, nesting, and replay idempotency', async (t) => {
+test('resident evidence maps losslessly with legacy tool identities and replay idempotency', async (t) => {
   const database = M11TestDatabase.temporary();
   t.after(() => database.close());
   const communications = new SqliteCommunicationEventRepository(database);
@@ -345,6 +346,18 @@ test('resident evidence maps losslessly with stable identities, nesting, and rep
     {
       turnId: 'coord-work-777', sequence: 9, occurredAt: '2026-08-25T16:00:00.009Z',
       provider: 'openai-codex', model: 'gpt-5.6', reasoningEffort: 'high' as const,
+      event: { type: 'tool_start' as const, tool: 'legacy-shell',
+        args: { command: 'legacy call without an id' } } as unknown as AgentEvent,
+    },
+    {
+      turnId: 'coord-work-777', sequence: 10, occurredAt: '2026-08-25T16:00:00.010Z',
+      provider: 'openai-codex', model: 'gpt-5.6', reasoningEffort: 'high' as const,
+      event: { type: 'tool_result' as const, tool: 'legacy-shell',
+        result: 'legacy exact result', success: true } as unknown as AgentEvent,
+    },
+    {
+      turnId: 'coord-work-777', sequence: 11, occurredAt: '2026-08-25T16:00:00.011Z',
+      provider: 'openai-codex', model: 'gpt-5.6', reasoningEffort: 'high' as const,
       event: { type: 'response_chunk' as const, chunk: 'final exact delta',
         sourceEventType: 'response.output_text.delta',
         providerEvent: { type: 'response.output_text.delta', delta: 'final exact delta' } },
@@ -369,7 +382,7 @@ test('resident evidence maps losslessly with stable identities, nesting, and rep
         turnId: 'coord-work-777',
         response: Promise.resolve({ text: 'final exact delta', model: 'gpt-5.6', toolCallCount: 2, durationMs: 9 }),
         terminal: Promise.resolve({
-          status: 'complete', lastSequence: 9, endedAt: '2026-08-25T16:00:00.010Z',
+          status: 'complete', lastSequence: 11, endedAt: '2026-08-25T16:00:00.012Z',
           errorCode: null, errorMessage: null, provider: 'openai-codex', model: 'gpt-5.6',
           reasoningEffort: 'high',
         }),
@@ -403,9 +416,10 @@ test('resident evidence maps losslessly with stable identities, nesting, and rep
   assert.deepEqual(history.events.map((event) => event.kind), [
     'receipt', 'reasoning', 'reasoning', 'tool_call_started', 'tool_call_completed',
     'tool_call_started', 'subagent_started', 'subagent_completed',
-    'tool_call_completed', 'assistant_response_delta', 'receipt',
+    'tool_call_completed', 'tool_call_started', 'tool_call_completed',
+    'assistant_response_delta', 'receipt',
   ]);
-  assert.equal(history.events.length, 11, 'reattachment must not duplicate evidence');
+  assert.equal(history.events.length, 13, 'reattachment must not duplicate evidence');
   assert.deepEqual(history.events[0]?.payload, {
     requestedProvider: null, requestedModelAlias: 'sol', requestedModel: null, requestedEffort: 'high',
     resolvedProvider: 'openai-codex', resolvedModel: 'gpt-5.6', resolvedEffort: 'high',
@@ -425,10 +439,13 @@ test('resident evidence maps losslessly with stable identities, nesting, and rep
   assert.equal(history.events[6]?.parentEventId, history.events[5]?.eventId);
   assert.equal(history.events[7]?.parentEventId, history.events[6]?.eventId);
   assert.equal(history.events[8]?.parentEventId, history.events[5]?.eventId);
+  assert.equal(history.events[9]?.payload.toolCallId, history.events[9]?.eventId);
+  assert.equal(history.events[10]?.payload.toolCallId, history.events[9]?.eventId);
   assert.equal(history.events[10]?.parentEventId, history.events[9]?.eventId);
-  assert.equal(history.events[10]?.occurredAt, '2026-08-25T16:00:00.010Z');
-  assert.equal(history.events[10]?.source.reasoningEffort, 'high');
-  assert.equal((history.events[10]?.payload.residentTerminal as { lastSequence?: number })?.lastSequence, 9);
+  assert.equal(history.events[12]?.parentEventId, history.events[11]?.eventId);
+  assert.equal(history.events[12]?.occurredAt, '2026-08-25T16:00:00.012Z');
+  assert.equal(history.events[12]?.source.reasoningEffort, 'high');
+  assert.equal((history.events[12]?.payload.residentTerminal as { lastSequence?: number })?.lastSequence, 11);
   assert.equal(new Set(history.events.map((event) => event.eventId)).size, history.events.length);
 });
 
