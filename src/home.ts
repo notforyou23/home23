@@ -97,6 +97,7 @@ import {
 } from './routes/query-notifications.js';
 import { ConversationMetadataStore } from './chat/conversation-metadata.js';
 import { createChatHistoryHandler, createChatListHandler, createChatMetadataHandler } from './routes/chat-history.js';
+import { createLegacyBridgeAuthMiddleware } from './routes/legacy-bridge-auth.js';
 import { createRealtimeSessionHandler, createRealtimeSessionTextParser } from './routes/chat-realtime.js';
 import { resolveQueryNotebookBridgeToken } from './query-notebook-credential-config.js';
 import { syncSharedSkillsRegistry } from './skills/runtime.js';
@@ -1300,6 +1301,14 @@ async function main(): Promise<void> {
       pusher: apnsPusher,
     }),
   );
+  const coordinationOrigin = process.env.HOME23_COORDINATION_ENABLED === 'true'
+    ? `http://127.0.0.1:${process.env.HOME23_COORDINATION_PORT ?? '7346'}`
+    : undefined;
+  const legacyBridgeAuth = createLegacyBridgeAuthMiddleware({
+    staticToken: bridgeToken || undefined,
+    coordinationOrigin,
+  });
+  bridgeApp.use(['/api/chat', '/api/device/register', '/api/device/registry'], legacyBridgeAuth);
   bridgeApp.use(express.json({ limit: '90mb' }));
 
   const bridgeConfig = {

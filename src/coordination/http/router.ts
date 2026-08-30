@@ -114,7 +114,7 @@ export function createCoordinationRouter(input: {
     asyncRoute(async (request,response)=>{if(!application.capabilities().pairingAvailable||!application.services.auth.issuePairing)throw unavailable("bootstrap");const body=jsonObjectBody(request.body);if(typeof body.deviceName!=="string")throw new CoordinationHttpError("request_invalid",400,false);const metadata=requireCoordinationMetadata(response);const result=await application.services.auth.issuePairing({deviceName:body.deviceName,operator:metadata.networkEvidence,mutation:{idempotencyKey:coordinationIdempotencyKey(response),requestId:metadata.requestId,correlationId:metadata.correlationId}});response.status(201).json(result);}),
   );
   router.post("/api/v1/pairing/sessions/:pairingSessionId/redeem",requireIdempotencyKey(application),jsonBody,
-    asyncRoute(async(request,response)=>{if(!application.capabilities().pairingAvailable||!application.services.auth.redeemPairing)throw unavailable("bootstrap");const body=jsonObjectBody(request.body);const device=body.device as Record<string,unknown>|undefined;if(typeof body.pairingCode!=="string"||!device||(device.platform!=="macos"&&device.platform!=="ios")||typeof device.name!=="string"||typeof device.appBuild!=="string")throw new CoordinationHttpError("request_invalid",400,false);const metadata=requireCoordinationMetadata(response);response.json(await application.services.auth.redeemPairing({pairingSessionId:pathParameter(request.params.pairingSessionId),pairingCode:body.pairingCode,network:metadata.networkEvidence,device:{platform:device.platform,name:device.name,appBuild:device.appBuild},mutation:{idempotencyKey:coordinationIdempotencyKey(response),requestId:metadata.requestId,correlationId:metadata.correlationId}}));}),
+    asyncRoute(async(request,response)=>{if(!application.capabilities().pairingAvailable||!application.services.auth.redeemPairing)throw unavailable("bootstrap");const body=jsonObjectBody(request.body);const device=body.device as Record<string,unknown>|undefined;if(typeof body.pairingCode!=="string"||!device||(device.platform!=="macos"&&device.platform!=="ios")||typeof device.name!=="string"||typeof device.appBuild!=="string"||(body.credentialProfile!==undefined&&body.credentialProfile!=="product"&&body.credentialProfile!=="legacy_bridge"))throw new CoordinationHttpError("request_invalid",400,false);const metadata=requireCoordinationMetadata(response);response.json(await application.services.auth.redeemPairing({pairingSessionId:pathParameter(request.params.pairingSessionId),pairingCode:body.pairingCode,network:metadata.networkEvidence,device:{platform:device.platform,name:device.name,appBuild:device.appBuild},credentialProfile:body.credentialProfile as "product"|"legacy_bridge"|undefined,mutation:{idempotencyKey:coordinationIdempotencyKey(response),requestId:metadata.requestId,correlationId:metadata.correlationId}}));}),
   );
   router.post("/api/v1/sessions/refresh",requireIdempotencyKey(application),jsonBody,
     asyncRoute(async(request,response)=>{if(!application.services.auth.refreshSession)throw unavailable("bootstrap");const body=jsonObjectBody(request.body);if(typeof body.refreshToken!=="string")throw new CoordinationHttpError("request_invalid",400,false);const metadata=requireCoordinationMetadata(response);response.json(await application.services.auth.refreshSession({refreshToken:body.refreshToken,network:metadata.networkEvidence,mutation:{idempotencyKey:coordinationIdempotencyKey(response),requestId:metadata.requestId,correlationId:metadata.correlationId}}));}),
@@ -127,6 +127,21 @@ export function createCoordinationRouter(input: {
   const messageSend = requireCoordinationAuth(application, ["message:send"]);
   const attachmentRead = requireCoordinationAuth(application, ["product:read"]);
   const attachmentWrite = requireCoordinationAuth(application, ["attachment:write"]);
+  const legacyBridgeAccess = requireCoordinationAuth(application, ["legacy-bridge:access"]);
+
+  router.get("/api/v1/legacy-bridge/session", legacyBridgeAccess,
+    asyncRoute(async (_request, response) => {
+      const context = requireCoordinationContext(response);
+      if (context.identity.kind !== "owner") throw new CoordinationHttpError("unauthorized", 401, false);
+      response.json({
+        ok: true,
+        principalId: context.principalId,
+        deviceId: context.identity.auth.deviceId,
+        sessionId: context.identity.auth.sessionId,
+        scopes: context.identity.auth.scopes,
+      });
+    }),
+  );
 
   router.get("/api/v1/bootstrap", productRead, asyncRoute(async (request, response) => {
     if (!application.capabilities().capabilities.bootstrap || !application.services.bootstrap) {

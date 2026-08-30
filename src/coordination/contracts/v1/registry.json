@@ -135,6 +135,7 @@
     "redeemPairingSession": {"method": "POST", "path": "/api/v1/pairing/sessions/{pairingSessionId}/redeem", "authorityCapability": null},
     "refreshSession": {"method": "POST", "path": "/api/v1/sessions/refresh", "authorityCapability": null},
     "deleteCurrentSession": {"method": "DELETE", "path": "/api/v1/sessions/current", "authorityCapability": null},
+    "validateLegacyBridgeSession": {"method": "GET", "path": "/api/v1/legacy-bridge/session", "authorityCapability": null},
     "getBootstrap": {"method": "GET", "path": "/api/v1/bootstrap", "authorityCapability": null},
     "listBots": {"method": "GET", "path": "/api/v1/bots", "authorityCapability": "roster"},
     "createBot": {"method": "POST", "path": "/api/v1/bots", "authorityCapability": "bot_lifecycle"},

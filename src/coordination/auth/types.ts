@@ -8,10 +8,19 @@ export const AUTH_TOKEN_LIFETIMES = Object.freeze({
   refreshFamilyMs: 30 * 24 * 60 * 60 * 1000,
 });
 
-export const HOUSE_AUTH_SCOPES = Object.freeze([
+export const PRODUCT_AUTH_SCOPES = Object.freeze([
   "product:read",
   "message:send",
   "attachment:write",
+] as const);
+
+export const LEGACY_BRIDGE_AUTH_SCOPES = Object.freeze([
+  "legacy-bridge:access",
+] as const);
+
+export const HOUSE_AUTH_SCOPES = Object.freeze([
+  ...PRODUCT_AUTH_SCOPES,
+  ...LEGACY_BRIDGE_AUTH_SCOPES,
 ] as const);
 
 export type HouseAuthScope = (typeof HOUSE_AUTH_SCOPES)[number];

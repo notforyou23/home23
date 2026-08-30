@@ -53,6 +53,43 @@ test("a local operator issues one pairing code and a VPN client redeems it", asy
   assert.equal(audit.every((entry) => /^cor_/.test(entry.correlationId ?? "")), true);
 });
 
+test("legacy bridge pairing issues only the revocable legacy bridge scope and preserves it across rotation", async () => {
+  const repository = new TestAuthRepository();
+  let now = new Date("2026-08-25T12:00:00.000Z");
+  const service = createAuthService({ repository, keyMaterial: Buffer.alloc(32, 0x61), now: () => now });
+  const issued = await service.issuePairing({
+    deviceName: "Production Home23",
+    operator: { authenticated: true, network: "loopback" },
+    mutation: mutation("legacy-issue"),
+  });
+  const paired = await service.redeemPairing({
+    pairingSessionId: issued.pairingSession.id,
+    pairingCode: issued.pairingCode,
+    network: "vpn",
+    device: { platform: "ios", name: "Production Home23", appBuild: "1.10 (30)" },
+    credentialProfile: "legacy_bridge",
+    mutation: mutation("legacy-redeem"),
+  });
+  assert.deepEqual(paired.clientSession.scopes, ["legacy-bridge:access"]);
+  await assert.rejects(service.validateAccessToken({
+    accessToken: paired.accessToken, network: "vpn", requiredScopes: ["product:read"],
+  }), { reasonCode: "access_scope_denied" });
+  assert.equal((await service.validateAccessToken({
+    accessToken: paired.accessToken, network: "vpn", requiredScopes: ["legacy-bridge:access"],
+  })).sessionId, paired.clientSession.id);
+  now = new Date("2026-08-25T12:05:00.000Z");
+  const rotated = await service.refreshSession({
+    refreshToken: paired.refreshToken, network: "vpn", mutation: mutation("legacy-refresh"),
+  });
+  assert.deepEqual(rotated.clientSession.scopes, ["legacy-bridge:access"]);
+  await assert.rejects(service.validateAccessToken({
+    accessToken: paired.accessToken, network: "vpn", requiredScopes: ["legacy-bridge:access"],
+  }), { reasonCode: "session_inactive" });
+  assert.equal((await service.validateAccessToken({
+    accessToken: rotated.accessToken, network: "vpn", requiredScopes: ["legacy-bridge:access"],
+  })).sessionId, rotated.clientSession.id);
+});
+
 test("a redeemed pairing code is refused on its second use", async () => {
   const repository = new TestAuthRepository();
   const audit: AuthAuditRecord[] = [];

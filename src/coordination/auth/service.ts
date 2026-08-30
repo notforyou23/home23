@@ -27,6 +27,8 @@ import { assertCoordinationId, generateCoordinationId } from "../ids/index.js";
 import {
   AUTH_TOKEN_LIFETIMES,
   HOUSE_AUTH_SCOPES,
+  LEGACY_BRIDGE_AUTH_SCOPES,
+  PRODUCT_AUTH_SCOPES,
   OWNER_PRINCIPAL_ID,
   type AuthAuditRecord,
   type AuthAuditSink,
@@ -448,6 +450,7 @@ export function createAuthService(options: CreateAuthServiceOptions) {
     pairingCode: string;
     network: unknown;
     device: { platform: DevicePlatform; name: string; appBuild: string };
+    credentialProfile?: "product" | "legacy_bridge";
     mutation: AuthMutationContext;
   }): Promise<PairingSuccessResult> {
     const at = canonicalNow(now);
@@ -475,10 +478,15 @@ export function createAuthService(options: CreateAuthServiceOptions) {
     ) {
       throw new AuthError("request_invalid");
     }
+    const credentialProfile = input.credentialProfile ?? "product";
+    if (credentialProfile !== "product" && credentialProfile !== "legacy_bridge") {
+      throw new AuthError("request_invalid");
+    }
     const idempotency = claim("pairing.redeem", input.mutation, {
       pairingSessionId: input.pairingSessionId,
       pairingCode: input.pairingCode,
       device: { platform: input.device.platform, name: deviceName, appBuild },
+      credentialProfile,
     }, at);
     const existing = await resolveIdempotency(idempotency);
     const credentialContext = `${idempotency.operation}\0${input.mutation.idempotencyKey}\0${input.pairingSessionId}`;
@@ -542,7 +550,9 @@ export function createAuthService(options: CreateAuthServiceOptions) {
     };
     const session: ClientSessionRecord = {
       id: makeId("clientSession"), deviceId: device.id, principalId: OWNER_PRINCIPAL_ID,
-      familyId, state: "active", scopes: HOUSE_AUTH_SCOPES,
+      familyId, state: "active", scopes: credentialProfile === "legacy_bridge"
+        ? LEGACY_BRIDGE_AUTH_SCOPES
+        : PRODUCT_AUTH_SCOPES,
       accessExpiresAt, refreshExpiresAt, createdAt: at.toISOString(),
     };
     const refreshToken: RefreshTokenRecord = {
