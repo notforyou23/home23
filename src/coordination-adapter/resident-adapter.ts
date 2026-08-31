@@ -150,8 +150,14 @@ function communicationPayload(
       return { ...common, subagentId: durable.event.subagentId, task: durable.event.task,
         label: durable.event.label ?? null, parentToolCallId: durable.event.parentToolCallId ?? null };
     case 'subagent_result':
-      return { ...common, subagentId: durable.event.subagentId, task: durable.event.task,
-        result: durable.event.result, success: durable.event.success,
+      return { ...common,
+        ...(typeof durable.event.subagentId === 'string' && durable.event.subagentId.length > 0
+          ? { subagentId: durable.event.subagentId }
+          : {}),
+        task: durable.event.task, result: durable.event.result,
+        ...(typeof durable.event.success === 'boolean'
+          ? { success: durable.event.success }
+          : {}),
         parentToolCallId: durable.event.parentToolCallId ?? null };
     case 'cache':
       return { ...common, read: durable.event.read, write: durable.event.write,
@@ -324,6 +330,7 @@ function parentCommunicationEventId(
       : event.type === 'subagent_start' && event.parentToolCallId
         ? `tool:${event.parentToolCallId}`
         : event.type === 'subagent_result'
+            && typeof event.subagentId === 'string' && event.subagentId.length > 0
           ? `subagent:${event.subagentId}`
           : event.type === 'tool_start' && event.parentActivityId
             ? `activity:${event.parentActivityId}`
@@ -338,7 +345,8 @@ function parentCommunicationEventId(
       eventId,
     );
   }
-  if (event.type === 'subagent_start') {
+  if (event.type === 'subagent_start'
+      && typeof event.subagentId === 'string' && event.subagentId.length > 0) {
     parentEvents.set(`subagent:${event.subagentId}`, eventId);
     parentEvents.set(`activity:${event.subagentId}`, eventId);
   }

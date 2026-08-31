@@ -8,7 +8,11 @@ import { ResidentCoordinationAdapter, residentRecoveryTruth } from '../../src/co
 import { ConversationHistory } from '../../src/agent/history.js';
 import type { AgentEvent } from '../../src/agent/types.js';
 import { TurnStore } from '../../src/chat/turn-store.js';
-import { SqliteCommunicationEventRepository } from '../../src/coordination/communications/index.js';
+import {
+  SqliteCommunicationEventRepository,
+  validateCommunicationEventInput,
+  type CommunicationEventInput,
+} from '../../src/coordination/communications/index.js';
 import {
   AT,
   BOT_ID,
@@ -455,6 +459,97 @@ test('resident evidence maps losslessly with legacy tool identities and replay i
   assert.equal(history.events[12]?.source.reasoningEffort, 'high');
   assert.equal((history.events[12]?.payload.residentTerminal as { lastSequence?: number })?.lastSequence, 11);
   assert.equal(new Set(history.events.map((event) => event.eventId)).size, history.events.length);
+});
+
+test('legacy subagent result without runtime ids replays losslessly through terminalization', async () => {
+  const appended: CommunicationEventInput[] = [];
+  let terminalizations = 0;
+  const agent: ResidentAgentPort = {
+    modelCatalog: async () => ({
+      models: [], defaultModel: 'fixture-model', defaultProvider: 'fixture',
+      defaultReasoningEffort: 'high', reasoningEfforts: ['high'],
+    }),
+    async runWithTurn(chatId, _text, options) {
+      await options.onDurableStart({
+        turnId: 'turn-legacy-subagent-result', chatId, persistedAt: AT,
+      });
+      options.onEvent({
+        turnId: 'turn-legacy-subagent-result', sequence: 137,
+        occurredAt: '2026-08-31T02:48:36.865Z',
+        provider: 'fixture', model: 'fixture-model', reasoningEffort: 'high',
+        event: {
+          type: 'subagent_result',
+          task: 'Audit the connected-agents implementation.',
+          result: 'Exact legacy result.',
+        } as unknown as AgentEvent,
+      });
+      return {
+        turnId: 'turn-legacy-subagent-result',
+        response: Promise.resolve({
+          text: 'Exact legacy result.', model: 'fixture-model', toolCallCount: 1, durationMs: 1,
+        }),
+        terminal: Promise.resolve({
+          status: 'stopped', lastSequence: 157, endedAt: '2026-08-31T02:48:36.866Z',
+          errorCode: null, errorMessage: null, provider: 'fixture', model: 'fixture-model',
+          reasoningEffort: 'high',
+        }),
+      };
+    },
+    stop: () => ({ stopped: true }),
+  };
+  const coordination: ResidentCoordinationPort = {
+    assertCurrent: () => undefined,
+    assertCompleted: () => undefined,
+    accept: () => undefined,
+    start: () => undefined,
+    reattach: () => undefined,
+    revoke: () => undefined,
+    terminalize: () => { terminalizations += 1; },
+  };
+  const input = request();
+  input.requestId = fixtureId('request', 780);
+  input.correlationId = fixtureId('correlation', 780);
+  input.origin = {
+    ...input.origin,
+    workId: fixtureId('work', 780),
+    attemptId: fixtureId('attempt', 780),
+    leaseId: fixtureId('lease', 780),
+    holderPrincipalId: BOT_ID,
+    channelId: CHANNEL_ID,
+    originMessageId: fixtureId('message', 779),
+  };
+  input.communication = {
+    conversationId: 'cnv_0198d95f-6c00-7000-8000-000000000780',
+    responseMessageId: fixtureId('message', 780),
+    actor: { principalId: BOT_ID, displayName: 'Jerry', kind: 'resident_bot' },
+  };
+  const adapter = new ResidentCoordinationAdapter(
+    agent,
+    coordination,
+    () => new Date('2026-08-31T02:48:36.866Z'),
+    {
+      append({ event }) {
+        validateCommunicationEventInput(event);
+        appended.push(event);
+      },
+    },
+  );
+
+  const run = await adapter.reattach(input);
+  await Promise.all([run.response, run.receipt]);
+
+  const legacy = appended.find((event) => event.kind === 'subagent_completed');
+  assert.ok(legacy);
+  assert.equal(legacy.parentEventId, null);
+  assert.deepEqual(legacy.payload.rawEvent, {
+    type: 'subagent_result',
+    task: 'Audit the connected-agents implementation.',
+    result: 'Exact legacy result.',
+  });
+  assert.equal(Object.hasOwn(legacy.payload, 'subagentId'), false);
+  assert.equal(Object.hasOwn(legacy.payload, 'success'), false);
+  assert.equal(terminalizations, 1);
+  assert.equal(appended.at(-1)?.kind, 'receipt');
 });
 
 test('coordination cancellation maps revoke then exact resident turn stop then cancelled receipt', async () => {
