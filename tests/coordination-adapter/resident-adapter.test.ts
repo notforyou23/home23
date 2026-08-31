@@ -63,6 +63,7 @@ function harness(options: { staleAfter?: number; deferred?: boolean } = {}) {
   });
   let capturedText = '';
   let capturedOrigin: unknown;
+  let externallyCancelled = false;
   const agent: ResidentAgentPort = {
     async runWithTurn(_chatId, text, opts) {
       capturedText = text;
@@ -91,7 +92,13 @@ function harness(options: { staleAfter?: number; deferred?: boolean } = {}) {
     assertCurrent() {
       checks += 1;
       calls.push('fence');
+      if (externallyCancelled) throw new Error('stale_fence');
       if (options.staleAfter && checks >= options.staleAfter) throw new Error('stale_fence');
+    },
+    cancellationState() {
+      return externallyCancelled
+        ? { timestamp: '2026-08-25T12:00:59.000Z' }
+        : null;
     },
     assertCompleted(_binding, resultDigest) { calls.push(`completed:${resultDigest ?? 'pending'}`); },
     accept() { calls.push('accept'); },
@@ -114,6 +121,7 @@ function harness(options: { staleAfter?: number; deferred?: boolean } = {}) {
     observations,
     receipts,
     resolveResponse,
+    cancelExternally: () => { externallyCancelled = true; },
     captured: () => ({ text: capturedText, origin: capturedOrigin }),
   };
 }
@@ -458,6 +466,18 @@ test('coordination cancellation maps revoke then exact resident turn stop then c
   assert.ok(h.calls.indexOf('revoke') < h.calls.indexOf('stop:turn-resident-1'));
   assert.equal(h.receipts[0]?.status, 'cancelled');
   assert.equal(h.receipts[0]?.resultDigest, null);
+});
+
+test('an externally revoked cancellation settles as cancelled without accepting stale success', async () => {
+  const h = harness({ deferred: true });
+  const run = await h.adapter.execute(request());
+  h.cancelExternally();
+  h.resolveResponse({ text: 'must not commit', model: 'test', toolCallCount: 0, durationMs: 1 });
+  await run.response;
+  await run.receipt;
+  assert.equal(h.receipts[0]?.status, 'cancelled');
+  assert.equal(h.receipts[0]?.resultDigest, null);
+  assert.equal(h.receipts[0]?.timestamp, '2026-08-25T12:00:59.000Z');
 });
 
 test('persisted coordination provenance survives restart and orphaning without private self state', () => {

@@ -96,6 +96,8 @@ export interface ResidentTerminalReceipt {
 
 export interface ResidentCoordinationPort {
   assertCurrent(binding: ResidentLeaseBinding): void | Promise<void>;
+  cancellationState?(binding: ResidentLeaseBinding):
+    { timestamp: string } | null | Promise<{ timestamp: string } | null>;
   assertCompleted(binding: ResidentLeaseBinding, resultDigest?: string): void | Promise<void>;
   accept(binding: ResidentLeaseBinding): void | Promise<void>;
   start(binding: ResidentLeaseBinding): void | Promise<void>;

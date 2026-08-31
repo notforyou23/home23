@@ -620,6 +620,10 @@ export function createCoordinationProcess(
     start: async () => {
       let address: Awaited<ReturnType<typeof server.start>>;
       try {
+        workControl.recoverCancellations({
+          requestId: generateCoordinationId("request"),
+          correlationId: generateCoordinationId("correlation"),
+        });
         await initializeAttachments();
         address = await server.start();
       } catch (error) {

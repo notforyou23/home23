@@ -13,9 +13,11 @@ interface ExecutionRow {
   leaseId: string;
   holderPrincipalId: string;
   holderInstanceId: string;
+  authorityReference: string;
   fencingToken: number;
   attemptState: string;
   leaseState: string;
+  leaseEndedAt: string | null;
 }
 
 export interface ProductWorkProjection {
@@ -40,6 +42,10 @@ export interface ProductWorkControlPort {
   get(input: { context: MessagingActorContext; workId: string }): ProductWorkProjection;
   cancel(input: { context: MessagingActorContext; workId: string; idempotencyKey: string }): ProductWorkMutationResult;
   retry(input: { context: MessagingActorContext; workId: string; idempotencyKey: string }): ProductWorkMutationResult;
+  recoverCancellations(input: { requestId: string; correlationId: string }): {
+    discovered: number;
+    completed: number;
+  };
 }
 
 function execution(database: M11Database, workId: string): ExecutionRow | undefined {
@@ -47,8 +53,9 @@ function execution(database: M11Database, workId: string): ExecutionRow | undefi
     `SELECT a.id AS attemptId, l.id AS leaseId,
             a.holder_principal_id AS holderPrincipalId,
             a.holder_instance_id AS holderInstanceId,
+            a.authority_reference AS authorityReference,
             a.fencing_token AS fencingToken, a.state AS attemptState,
-            l.state AS leaseState
+            l.state AS leaseState, l.ended_at AS leaseEndedAt
        FROM works w JOIN attempts a ON a.id = w.current_attempt_id
        JOIN leases l ON l.attempt_id = a.id WHERE w.id = ?`,
     workId,
@@ -96,12 +103,62 @@ export function createProductWorkControl(options: {
     assertAccess(options.database, work, context);
     return work;
   };
+  const completeCancellation = (
+    work: WorkRecord,
+    identity: Pick<MessagingActorContext, "requestId" | "correlationId">,
+  ): WorkRecord => {
+    const current = execution(options.database, work.id);
+    if (
+      !current || current.attemptState !== "cancel_requested" ||
+      current.leaseState !== "revoked" || current.leaseEndedAt === null
+    ) {
+      throw new LeaseError("stale_fence", "cancelled execution fence is unavailable");
+    }
+    return options.leases.terminalize({
+      workId: work.id,
+      attemptId: current.attemptId,
+      leaseId: current.leaseId,
+      holderPrincipalId: current.holderPrincipalId,
+      holderInstanceId: current.holderInstanceId,
+      fencingToken: current.fencingToken,
+      requestId: identity.requestId,
+      correlationId: identity.correlationId,
+      receipt: {
+        status: "cancelled",
+        sourceReference: current.authorityReference,
+        resultDigest: null,
+        artifactIds: [],
+        timestamp: current.leaseEndedAt,
+      },
+    }).work;
+  };
   const service: ProductWorkControlPort = {
+    recoverCancellations(identity) {
+      let discovered = 0;
+      let completed = 0;
+      for (;;) {
+        const pending = options.database.readAll<{ id: string }>(
+          "SELECT id FROM works WHERE state = 'cancelling' ORDER BY created_at, id LIMIT 100",
+        );
+        if (pending.length === 0) break;
+        discovered += pending.length;
+        for (const row of pending) {
+          const work = options.work.get(row.id);
+          if (!work || work.state !== "cancelling") continue;
+          completeCancellation(work, identity);
+          completed += 1;
+        }
+      }
+      return Object.freeze({ discovered, completed });
+    },
     get({ context, workId }) { return projection(options.database, load(workId, context)); },
     cancel({ context, workId, idempotencyKey }) {
       const work = load(workId, context);
       if (work.state === "cancelled") return { outcome: "cancelled", replayed: true, work: projection(options.database, work) };
-      if (work.state === "cancelling") return { outcome: "cancellation_requested", replayed: true, work: projection(options.database, work) };
+      if (work.state === "cancelling") {
+        const cancelled = completeCancellation(work, context);
+        return { outcome: "cancelled", replayed: true, work: projection(options.database, cancelled) };
+      }
       if (work.state === "queued" && work.currentAttemptId === null) {
         const result = options.work.cancelQueued({ workId, actorPrincipalId: context.principalId,
           reasonCode: "product_cancelled", sourceReference: "product:conversation",
@@ -115,10 +172,12 @@ export function createProductWorkControl(options: {
         holderPrincipalId: current.holderPrincipalId, holderInstanceId: current.holderInstanceId,
         fencingToken: current.fencingToken, reasonCode: "product_cancelled",
         requestId: context.requestId, correlationId: context.correlationId });
-      return { outcome: "cancellation_requested", replayed: false, work: projection(options.database, result.work) };
+      const cancelled = completeCancellation(result.work, context);
+      return { outcome: "cancelled", replayed: false, work: projection(options.database, cancelled) };
     },
     retry({ context, workId, idempotencyKey }) {
       let source = load(workId, context);
+      if (source.state === "cancelling") source = completeCancellation(source, context);
       const expired = source.state === "queued" && source.currentAttemptId === null && options.database.readOne<{ state: string }>(
         "SELECT state FROM attempts WHERE work_id = ? ORDER BY ordinal DESC LIMIT 1", source.id,
       )?.state === "expired";

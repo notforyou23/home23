@@ -27,16 +27,41 @@ test("queued cancellation is durable, compact, and replay-safe across service re
   assert.equal(replay.replayed, true); assert.equal(s.database.readOne<{count:number}>("SELECT count(*) AS count FROM terminal_receipts WHERE work_id = ?", s.queued.id)?.count, 1);
 });
 
-test("running cancellation revokes the current fence and resident acknowledgement terminalizes", (t) => {
+test("running cancellation revokes the current fence and completes cancellation", (t) => {
   const s = setup(9000); t.after(() => s.database.close());
   const offer = s.leases.offer({ workId: s.queued.id, holderPrincipalId: BOT_ID, holderInstanceId: "resident-1", authorityReference: `resident:${BOT_ID}:resident-1`, automatic: true, requestId: fixtureId("request", 90), correlationId: fixtureId("correlation", 90) });
   const binding = { workId: s.queued.id, attemptId: offer.attempt.id, leaseId: offer.lease.id, holderPrincipalId: BOT_ID, holderInstanceId: "resident-1", fencingToken: offer.fencingToken, requestId: fixtureId("request", 91), correlationId: fixtureId("correlation", 91) };
   s.leases.accept(binding); s.leases.start(binding);
   const stopped = s.control.cancel({ context: context(92), workId: s.queued.id, idempotencyKey: "cancel-running-0001" });
-  assert.equal(stopped.outcome, "cancellation_requested"); assert.equal(stopped.work.state, "stopping");
+  assert.equal(stopped.outcome, "cancelled"); assert.equal(stopped.work.state, "cancelled");
   assert.equal(s.control.cancel({ context: context(93), workId: s.queued.id, idempotencyKey: "cancel-running-0001" }).replayed, true);
-  const done = s.leases.terminalize({ ...binding, requestId: fixtureId("request", 94), receipt: { status: "cancelled", sourceReference: `resident:${BOT_ID}:resident-1`, resultDigest: null, artifactIds: [], timestamp: AT } });
-  assert.equal(done.work.state, "cancelled");
+  assert.equal(s.database.readOne<{count:number}>("SELECT count(*) AS count FROM terminal_receipts WHERE work_id = ?", s.queued.id)?.count, 1);
+  assert.equal(s.database.readOne<{state:string}>("SELECT state FROM attempts WHERE id = ?", binding.attemptId)?.state, "cancelled");
+  assert.equal(s.database.readOne<{state:string}>("SELECT state FROM leases WHERE id = ?", binding.leaseId)?.state, "revoked");
+});
+
+test("restart recovery completes an already-revoked cancellation before retry", (t) => {
+  const s = setup(9500); t.after(() => s.database.close());
+  const offer = s.leases.offer({ workId: s.queued.id, holderPrincipalId: BOT_ID, holderInstanceId: "resident-1", authorityReference: `resident:${BOT_ID}:resident-1`, automatic: true, requestId: fixtureId("request", 95), correlationId: fixtureId("correlation", 95) });
+  const binding = { workId: s.queued.id, attemptId: offer.attempt.id, leaseId: offer.lease.id, holderPrincipalId: BOT_ID, holderInstanceId: "resident-1", fencingToken: offer.fencingToken, requestId: fixtureId("request", 96), correlationId: fixtureId("correlation", 96) };
+  s.leases.accept(binding); s.leases.start(binding);
+  s.leases.revoke({ ...binding, reasonCode: "product_cancelled" });
+  s.database.reopen();
+
+  const restartedWork = createWorkService({ database: s.database, generateId: s.generateId });
+  const restartedLeases = createLeaseService({ database: s.database, generateId: s.generateId, leaseTtlMs: 60_000 });
+  const restarted = createProductWorkControl({ database: s.database, work: restartedWork, leases: restartedLeases });
+  assert.deepEqual(restarted.recoverCancellations({ requestId: fixtureId("request", 97), correlationId: fixtureId("correlation", 97) }), {
+    discovered: 1,
+    completed: 1,
+  });
+  const recovered = restarted.cancel({ context: context(97), workId: s.queued.id, idempotencyKey: "cancel-running-recovery-0001" });
+  assert.equal(recovered.outcome, "cancelled");
+  assert.equal(recovered.work.state, "cancelled");
+  const retried = restarted.retry({ context: context(98), workId: s.queued.id, idempotencyKey: "retry-after-cancel-recovery-0001" });
+  assert.equal(retried.outcome, "retried");
+  assert.equal(retried.work.retryOfWorkId, s.queued.id);
+  assert.equal(s.database.readOne<{count:number}>("SELECT count(*) AS count FROM terminal_receipts WHERE work_id = ?", s.queued.id)?.count, 1);
 });
 
 test("terminal retry creates one linked queued Work and rejects nonterminal or foreign scope", (t) => {

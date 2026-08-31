@@ -1,4 +1,4 @@
-import type { createLeaseService } from "../coordination/leases/index.js";
+import { LeaseError, type createLeaseService } from "../coordination/leases/index.js";
 import type {
   ResidentCoordinationPort,
   ResidentLeaseBinding,
@@ -23,7 +23,27 @@ export function createM11ResidentCoordinationPort(
   leases: ReturnType<typeof createLeaseService>,
 ): ResidentCoordinationPort {
   return Object.freeze({
-    assertCurrent(binding: ResidentLeaseBinding) { leases.assertCurrent(leaseBinding(binding)); },
+    assertCurrent(binding: ResidentLeaseBinding) {
+      const current = leases.assertCurrent(leaseBinding(binding));
+      const executable =
+        (current.work.state === "leased" && current.attempt.state === "offered" && current.lease.state === "offered") ||
+        (current.work.state === "leased" && current.attempt.state === "accepted" && current.lease.state === "active") ||
+        (current.work.state === "running" && current.attempt.state === "running" && current.lease.state === "active");
+      if (!executable) throw new LeaseError("stale_fence", "resident Lease is no longer executable");
+    },
+    cancellationState(binding: ResidentLeaseBinding) {
+      const current = leases.assertCurrent(leaseBinding(binding));
+      const cancellationRequested =
+        current.work.state === "cancelling" &&
+        current.attempt.state === "cancel_requested" &&
+        current.lease.state === "revoked";
+      const cancellationCompleted =
+        current.work.state === "cancelled" &&
+        current.attempt.state === "cancelled" &&
+        current.lease.state === "revoked";
+      if ((!cancellationRequested && !cancellationCompleted) || current.lease.endedAt === null) return null;
+      return Object.freeze({ timestamp: current.lease.endedAt });
+    },
     assertCompleted(binding: ResidentLeaseBinding, resultDigest?: string) {
       leases.assertCompleted(leaseBinding(binding), resultDigest);
     },

@@ -479,6 +479,20 @@ export class ResidentCoordinationAdapter {
     const parentEvents = new Map<string, string>();
     let lastEventId: string | null = null;
     let callbackChain = Promise.resolve();
+    const cancellationState = async (): Promise<{ timestamp: string } | null> => {
+      const durable = await this.coordination.cancellationState?.(binding) ?? null;
+      if (durable) return durable;
+      return this.active.get(origin.workId)?.cancelling === true
+        ? { timestamp: this.now().toISOString() }
+        : null;
+    };
+    const settleCallbacks = async (): Promise<void> => {
+      try {
+        await callbackChain;
+      } catch (error) {
+        if (!(await cancellationState())) throw error;
+      }
+    };
     const fenceCallback = (callback: () => void | Promise<void>): void => {
       callbackChain = callbackChain.then(async () => {
         await this.coordination.assertCurrent(binding);
@@ -558,21 +572,23 @@ export class ResidentCoordinationAdapter {
         try {
           const response = await started.response;
           durableTerminal = started.terminal ? await started.terminal : null;
-          await callbackChain;
-          const cancelled = this.active.get(origin.workId)?.cancelling === true;
+          await settleCallbacks();
+          const cancellation = await cancellationState();
+          const cancelled = cancellation !== null;
           terminal = Object.freeze({
             status: cancelled ? 'cancelled' : 'succeeded',
             sourceReference: origin.authorityReference,
             resultDigest: cancelled ? null : digest(response.text),
             artifactIds: Object.freeze([]),
-            timestamp: durableTerminal?.endedAt ?? this.now().toISOString(),
+            timestamp: cancellation?.timestamp ?? durableTerminal?.endedAt ?? this.now().toISOString(),
           });
         } catch (error) {
           if (started.terminal) {
             try { durableTerminal = await started.terminal; } catch { durableTerminal = null; }
           }
-          await callbackChain;
-          const cancelled = this.active.get(origin.workId)?.cancelling === true;
+          await settleCallbacks();
+          const cancellation = await cancellationState();
+          const cancelled = cancellation !== null;
           terminal = Object.freeze({
             status: cancelled ? 'cancelled' : 'failed',
             sourceReference: origin.authorityReference,
@@ -581,10 +597,14 @@ export class ResidentCoordinationAdapter {
               (error instanceof Error ? error.message : String(error)),
             ),
             artifactIds: Object.freeze([]),
-            timestamp: durableTerminal?.endedAt ?? this.now().toISOString(),
+            timestamp: cancellation?.timestamp ?? durableTerminal?.endedAt ?? this.now().toISOString(),
           });
         }
-        await this.coordination.assertCurrent(binding);
+        if (terminal.status === 'cancelled') {
+          if (!(await cancellationState())) throw new Error('resident cancellation is not current');
+        } else {
+          await this.coordination.assertCurrent(binding);
+        }
         if (this.communications && request.communication) {
           await this.communications.append({
             event: terminalCommunicationEvent({
@@ -598,7 +618,11 @@ export class ResidentCoordinationAdapter {
             requestId: request.requestId,
             correlationId: request.correlationId,
           });
-          await this.coordination.assertCurrent(binding);
+          if (terminal.status === 'cancelled') {
+            if (!(await cancellationState())) throw new Error('resident cancellation is not current');
+          } else {
+            await this.coordination.assertCurrent(binding);
+          }
         }
         return await this.coordination.terminalize({ ...binding, receipt: terminal });
       } finally {
