@@ -58,7 +58,12 @@ function controlRequest(
   };
 }
 
-function fixture(options: { failBind?: boolean; enabled?: boolean } = {}) {
+function fixture(options: {
+  failBind?: boolean;
+  enabled?: boolean;
+  bindProjection?: (bot: BotProjection) => BotProjection;
+  transitionProjection?: (bot: BotProjection) => BotProjection;
+} = {}) {
   const bots = new Map<string, BotProjection>();
   const receipts = new Map<string, BotLifecycleReceipt>();
   const bindCalls: string[] = [];
@@ -92,8 +97,9 @@ function fixture(options: { failBind?: boolean; enabled?: boolean } = {}) {
           createdAt: NOW,
           updatedAt: NOW,
         };
-        bots.set(bot.id, bot);
-        return bot;
+        const projected = options.bindProjection?.(bot) ?? bot;
+        bots.set(projected.id, projected);
+        return projected;
       },
       getByBotId: async (id) => bots.get(id) ?? null,
       transitionLifecycle: async (input) => {
@@ -106,8 +112,9 @@ function fixture(options: { failBind?: boolean; enabled?: boolean } = {}) {
           version: current.version + 1,
           updatedAt: input.changedAt,
         };
-        bots.set(input.botId, updated);
-        return updated;
+        const projected = options.transitionProjection?.(updated) ?? updated;
+        bots.set(input.botId, projected);
+        return projected;
       },
     },
     receipts: {
@@ -170,6 +177,71 @@ test("archive and restore retain the exact Bot and mailbox identity without proc
   assert.equal(f.bots.get("bot_fixture")?.lifecycle, "active");
   assert.deepEqual(f.transitionCalls, ["active->archived", "archived->active"]);
   assert.deepEqual(f.forbiddenEffects, []);
+});
+
+test("Jerry and Forrest are centrally protected from archive and restore", async () => {
+  for (const [residentBinding, lifecycle, operation] of [
+    ["jerry", "active", "archive"],
+    ["forrest", "archived", "restore"],
+  ] as const) {
+    const f = fixture();
+    f.bots.set("bot_fixture", {
+      id: "bot_fixture",
+      principalId: "bot_fixture",
+      name: residentBinding === "jerry" ? "Jerry" : "Forrest",
+      purpose: "Permanent house resident",
+      lifecycle,
+      availability: "offline",
+      conversationId: "conversation_fixture",
+      residentBinding,
+      version: 1,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    await assert.rejects(
+      f.service.control(controlRequest(operation, `request_protect_${residentBinding}`)),
+      { code: "permanent_resident_protected" },
+    );
+    assert.deepEqual(f.transitionCalls, []);
+  }
+});
+
+test("create refuses an incoherent or non-active Bot projection", async () => {
+  for (const bindProjection of [
+    (bot: BotProjection): BotProjection => ({ ...bot, lifecycle: "provisioning" }),
+    (bot: BotProjection): BotProjection => ({ ...bot, principalId: "bot_other" }),
+    (bot: BotProjection): BotProjection => ({ ...bot, conversationId: null }),
+    (bot: BotProjection): BotProjection => ({ ...bot, residentBinding: "jerry" }),
+  ]) {
+    const f = fixture({ bindProjection });
+    await assert.rejects(f.service.create(createRequest()), (error: unknown) => {
+      assert.ok(error instanceof BotLifecycleError);
+      assert.equal(error.code, "operation_failed");
+      assert.equal((error.receipt as BotLifecycleReceipt).failure?.code, "invalid_durable_binding");
+      return true;
+    });
+  }
+});
+
+test("archive refuses a transition projection that changes lifecycle or durable identity", async () => {
+  for (const transitionProjection of [
+    (bot: BotProjection): BotProjection => ({ ...bot, lifecycle: "active" }),
+    (bot: BotProjection): BotProjection => ({ ...bot, principalId: "bot_other" }),
+    (bot: BotProjection): BotProjection => ({ ...bot, conversationId: "conversation_other" }),
+    (bot: BotProjection): BotProjection => ({ ...bot, residentBinding: "bot-other" }),
+  ]) {
+    const f = fixture({ transitionProjection });
+    await f.service.create(createRequest());
+    await assert.rejects(
+      f.service.control(controlRequest("archive", `request_bad_transition_${f.transitionCalls.length}`)),
+      (error: unknown) => {
+        assert.ok(error instanceof BotLifecycleError);
+        assert.equal(error.code, "operation_failed");
+        assert.equal((error.receipt as BotLifecycleReceipt).failure?.code, "invalid_durable_binding");
+        return true;
+      },
+    );
+  }
 });
 
 test("daemon controls fail closed even when an internal caller bypasses TypeScript", async () => {

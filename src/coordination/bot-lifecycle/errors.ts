@@ -5,8 +5,8 @@ export type BotLifecycleErrorCode =
   | "standing_authority_denied"
   | "request_invalid"
   | "bot_not_found"
-  | "resident_not_found"
-  | "process_manifest_invalid"
+  | "invalid_durable_binding"
+  | "permanent_resident_protected"
   | "request_id_conflict"
   | "operation_failed";
 

@@ -16,7 +16,9 @@ async function serverFor(fetchImpl) {
 
 test('product proxy allowlist contains product nouns and exact methods only', () => {
   assert.equal(allowed('GET', '/inbox'), true);
-  assert.equal(allowed('POST', '/bots/bot_123/restart'), true);
+  assert.equal(allowed('POST', '/bots/bot_123/start'), false);
+  assert.equal(allowed('POST', '/bots/bot_123/stop'), false);
+  assert.equal(allowed('POST', '/bots/bot_123/restart'), false);
   assert.equal(allowed('POST', '/bots/bot_123/archive'), true);
   assert.equal(allowed('POST', '/bots/bot_123/restore'), true);
   assert.equal(allowed('GET', '/communications/events'), true);

@@ -11,7 +11,7 @@ const ROUTES = [
   { method: 'GET', path: /^\/bootstrap$/ },
   { method: 'GET', path: /^\/bots(?:\/[^/]+)?$/ },
   { method: 'POST', path: /^\/bots$/ },
-  { method: 'POST', path: /^\/bots\/[^/]+\/(?:start|stop|restart|archive|restore)$/ },
+  { method: 'POST', path: /^\/bots\/[^/]+\/(?:archive|restore)$/ },
   { method: 'GET', path: /^\/(?:inbox|conversations|unread|activity|search)$/ },
   { method: 'GET', path: /^\/communications\/events$/ },
   { method: 'GET', path: /^\/channels(?:\/[^/]+)?$/ },

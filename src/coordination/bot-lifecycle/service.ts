@@ -12,6 +12,7 @@ import type {
 } from "./types.js";
 
 const SAFE_BINDING_CHARACTER = /[a-z0-9]/;
+const PERMANENT_RESIDENT_BINDINGS = new Set(["jerry", "forrest"]);
 
 function canonicalCreateFields(request: PersistentBotCreateRequest): {
   displayName: string;
@@ -76,6 +77,36 @@ function validDate(now: () => Date): string {
     throw new BotLifecycleError("request_invalid", "Lifecycle clock is invalid");
   }
   return value.toISOString();
+}
+
+function assertCoherentBot(
+  bot: BotProjection,
+  expected: {
+    lifecycle: "active" | "archived";
+    residentBinding?: string;
+    displayName?: string;
+    purpose?: string;
+    principalId?: string;
+    botId?: string;
+    mailboxId?: string;
+  },
+): void {
+  if (
+    typeof bot.id !== "string" || !bot.id ||
+    bot.principalId !== (expected.principalId ?? bot.id) ||
+    (expected.botId !== undefined && bot.id !== expected.botId) ||
+    typeof bot.conversationId !== "string" || !bot.conversationId ||
+    (expected.mailboxId !== undefined && bot.conversationId !== expected.mailboxId) ||
+    typeof bot.residentBinding !== "string" || !bot.residentBinding ||
+    (expected.residentBinding !== undefined && bot.residentBinding !== expected.residentBinding) ||
+    bot.lifecycle !== expected.lifecycle ||
+    (expected.displayName !== undefined && bot.name !== expected.displayName) ||
+    (expected.purpose !== undefined && bot.purpose !== expected.purpose)
+  ) {
+    throw Object.assign(new Error("Bot binder returned an incoherent durable identity"), {
+      code: "invalid_durable_binding",
+    });
+  }
 }
 
 export function createBotLifecycleService(options: CreateBotLifecycleServiceOptions) {
@@ -159,11 +190,12 @@ export function createBotLifecycleService(options: CreateBotLifecycleServiceOpti
         displayName: fields.displayName,
         purpose: fields.purpose,
       });
-      if (!bot.conversationId || bot.residentBinding !== residentBinding) {
-        throw Object.assign(new Error("invalid durable Bot binding"), {
-          code: "invalid_durable_binding",
-        });
-      }
+      assertCoherentBot(bot, {
+        lifecycle: "active",
+        residentBinding,
+        displayName: fields.displayName,
+        purpose: fields.purpose,
+      });
       phases.push("mailbox_bound");
       return save({
         requestId: request.requestId,
@@ -214,6 +246,17 @@ export function createBotLifecycleService(options: CreateBotLifecycleServiceOpti
     const { epoch, decision } = await authorize(request, request.botId);
     const bot = await options.mailboxBinder.getByBotId(request.botId);
     if (!bot || !bot.conversationId) throw new BotLifecycleError("bot_not_found");
+    try {
+      assertCoherentBot(bot, { lifecycle: bot.lifecycle === "archived" ? "archived" : "active" });
+    } catch {
+      throw new BotLifecycleError("invalid_durable_binding");
+    }
+    if (PERMANENT_RESIDENT_BINDINGS.has(bot.residentBinding)) {
+      throw new BotLifecycleError(
+        "permanent_resident_protected",
+        "Permanent house residents cannot be archived or restored",
+      );
+    }
     const lifecycleTarget = request.operation === "archive" ? "archived" : "active";
     const completedPhase = request.operation === "archive" ? "mailbox_archived" : "mailbox_restored";
     if (bot.lifecycle === lifecycleTarget) {
@@ -247,14 +290,13 @@ export function createBotLifecycleService(options: CreateBotLifecycleServiceOpti
         actorPrincipalId: request.actorPrincipalId,
         changedAt,
       });
-      if (
-        transitioned.id !== bot.id || transitioned.conversationId !== bot.conversationId ||
-        transitioned.residentBinding !== bot.residentBinding
-      ) {
-        throw Object.assign(new Error("lifecycle transition changed durable identity"), {
-          code: "invalid_durable_binding",
-        });
-      }
+      assertCoherentBot(transitioned, {
+        lifecycle: lifecycleTarget,
+        residentBinding: bot.residentBinding,
+        principalId: bot.principalId,
+        botId: bot.id,
+        mailboxId: bot.conversationId,
+      });
     } catch (error) {
       const receipt = await save({
         requestId: request.requestId,

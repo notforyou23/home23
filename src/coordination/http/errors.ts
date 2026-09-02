@@ -83,7 +83,7 @@ export function toCoordinationHttpFailure(error: unknown): CoordinationHttpFailu
     };
   }
   if (error instanceof BotLifecycleError) {
-    const status = error.code === "bot_not_found" || error.code === "resident_not_found" ? 404
+    const status = error.code === "bot_not_found" ? 404
       : error.code === "standing_authority_denied" ? 403
       : error.code === "capability_disabled" || error.code === "authority_unavailable" ? 503
       : error.code === "request_invalid" ? 400 : 409;

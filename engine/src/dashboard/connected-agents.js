@@ -15,7 +15,6 @@
     searchScope: "all",
     connection: "loading",
     pending: new Map(),
-    provisioning: [],
     refreshTimer: null,
     currentChannel: null,
     currentMessages: [],
@@ -356,9 +355,6 @@
       state.channels = channels.channels || [];
       state.inbox = inbox.conversations || [];
       state.bootstrap = boot;
-      state.provisioning = state.provisioning.filter(
-        (p) => !state.bots.some((b) => b.residentBinding === p.residentBinding),
-      );
       setConnection("online");
       renderRoster();
       scheduleRefresh();
@@ -437,17 +433,10 @@
         title: channel.title,
         purpose: channel.purpose,
       }));
-    const provisioning = state.provisioning
-      .map(
-        (p) =>
-          `<div class="ca-row ca-provisioning" aria-label="${esc(p.name)} is provisioning"><span class="ca-avatar">${esc(p.name.slice(0, 2).toUpperCase())}</span><span class="ca-row-main"><span class="ca-row-name">${esc(p.name)}</span><span class="ca-row-preview">Getting ready…</span></span><i class="ca-activity-dot"></i></div>`,
-      )
-      .join("");
     $("bots-list").innerHTML =
-      provisioning +
-        ordered(botRows)
-          .map((x) => row(x, "bot", x.bot))
-          .join("") || '<div class="ca-empty-row">No Bots are available.</div>';
+      ordered(botRows)
+        .map((x) => row(x, "bot", x.bot))
+        .join("") || '<div class="ca-empty-row">No Bots are available.</div>';
     $("channels-list").innerHTML =
       ordered(channelRows)
         .map((x) => row(x, "channel"))
@@ -460,7 +449,7 @@
         el.addEventListener("click", () =>
           el.dataset.channel
             ? openConversation(el.dataset.channel, null, { historyMode: "push" })
-            : toast("This Bot’s conversation is still provisioning."),
+            : toast("This Bot’s conversation is unavailable."),
         ),
       );
     renderChannelMembers();
@@ -1207,8 +1196,18 @@
             "Bot",
       )
       .join(", ");
+    const isPermanentResident = bot && ["jerry", "forrest"].includes(bot.residentBinding);
+    const lifecycleOperation = bot && !isPermanentResident
+      ? bot.lifecycle === "archived" ? "restore" : "archive"
+      : null;
+    const lifecycleCopy = isPermanentResident
+      ? "Jerry and Forrest remain available as permanent house residents."
+      : "Archiving keeps this Bot’s identity, conversation, and history.";
+    const lifecycleControls = lifecycleOperation && state.capabilities.capabilities?.botLifecycle
+      ? `<div class="ca-detail-actions"><button data-control="${lifecycleOperation}">${lifecycleOperation === "archive" ? "Archive Bot" : "Restore Bot"}</button></div>`
+      : "";
     $("details-pane").innerHTML =
-      `<div class="ca-details-head"><h2>Details</h2><button class="ca-close" id="close-details" aria-label="Close details">×</button></div><div class="ca-avatar ca-detail-avatar ${channel.kind === "group" ? "channel" : ""}">${esc(channel.title.slice(0, 2).toUpperCase())}</div><div class="ca-detail-center"><h2>${esc(channel.title)}</h2><p>${esc(channel.purpose || bot?.purpose || "No purpose added.")}</p></div><div class="ca-detail-list"><div class="ca-detail-row"><span>Kind</span>${channel.kind === "group" ? "Channel" : "Bot conversation"}</div>${channel.kind === "group" ? `<div class="ca-detail-row"><span>Members</span>${esc(people || "You")}</div>` : `<div class="ca-detail-row"><span>Availability</span>${esc(availability(bot))}</div><div class="ca-detail-row"><span>Default execution</span>On this Mac</div>`}<div class="ca-detail-row"><span>Notifications</span>Normal</div><div class="ca-detail-row"><span>Routines</span>Schedule details are not available in this web version.</div><div class="ca-detail-row"><span>Isolation</span>Verified isolated execution is not available.</div><div class="ca-detail-row"><span>Archive</span>The Core API preserves archived Bots; archived inventory and restore controls are not yet available in this web view.</div></div>${bot && state.capabilities.capabilities?.botLifecycle ? `<div class="ca-detail-actions"><button data-control="start">Start</button><button data-control="stop">Stop</button><button data-control="restart">Restart</button></div>` : ""}<div class="ca-detail-actions"><a href="/home23/legacy">Advanced diagnostics</a></div>`;
+      `<div class="ca-details-head"><h2>Details</h2><button class="ca-close" id="close-details" aria-label="Close details">×</button></div><div class="ca-avatar ca-detail-avatar ${channel.kind === "group" ? "channel" : ""}">${esc(channel.title.slice(0, 2).toUpperCase())}</div><div class="ca-detail-center"><h2>${esc(channel.title)}</h2><p>${esc(channel.purpose || bot?.purpose || "No purpose added.")}</p></div><div class="ca-detail-list"><div class="ca-detail-row"><span>Kind</span>${channel.kind === "group" ? "Channel" : "Bot conversation"}</div>${channel.kind === "group" ? `<div class="ca-detail-row"><span>Members</span>${esc(people || "You")}</div>` : `<div class="ca-detail-row"><span>Availability</span>${esc(availability(bot))}</div><div class="ca-detail-row"><span>Default execution</span>On this Mac</div>`}<div class="ca-detail-row"><span>Notifications</span>Normal</div><div class="ca-detail-row"><span>Routines</span>Schedule details are not available in this web version.</div><div class="ca-detail-row"><span>Isolation</span>Verified isolated execution is not available.</div>${bot ? `<div class="ca-detail-row"><span>Archive</span>${esc(lifecycleCopy)}</div>` : ""}</div>${lifecycleControls}<div class="ca-detail-actions"><a href="/home23/legacy">Advanced diagnostics</a></div>`;
     $("details-pane").hidden = false;
     $("app").classList.add("details-open");
     $("close-details").addEventListener("click", closeDetails);
@@ -1231,7 +1230,7 @@
         method: "POST",
         headers: { "idempotency-key": idem(`web-${operation}`) },
       });
-      toast(`${operation[0].toUpperCase() + operation.slice(1)} requested`);
+      toast(operation === "archive" ? "Bot archived" : "Bot restored");
       await load();
     } catch (error) {
       toast(error.message);
@@ -1264,15 +1263,8 @@
     const errorEl = $("bot-form-error");
     errorEl.textContent = "";
     const name = $("bot-name").value.trim(),
-      purpose = $("bot-purpose").value.trim(),
-      residentBinding = name
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-|-$/g, "")
-        .slice(0, 63);
-    if (!residentBinding)
-      return (errorEl.textContent =
-        "Choose a name containing letters or numbers.");
+      purpose = $("bot-purpose").value.trim();
+    if (!name) return (errorEl.textContent = "Choose a Bot name.");
     const submit = event.submitter;
     submit.disabled = true;
     submit.textContent = "Creating…";
@@ -1281,17 +1273,13 @@
         method: "POST",
         headers: { "idempotency-key": idem("web-create-bot") },
         body: JSON.stringify({
-          displayName: name,
-          residentBinding,
+          name,
           purpose,
-          requiredCapabilities: ["messages"],
         }),
       });
-      state.provisioning.push({ name, residentBinding });
       closeDialog("bot-dialog");
-      toast(`${name} is provisioning`);
+      toast(`${name} created`);
       event.target.reset();
-      renderRoster();
       await load();
     } catch (error) {
       errorEl.textContent = `${error.message} Your draft has been kept.`;
