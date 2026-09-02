@@ -437,6 +437,7 @@ export class ResidentCoordinationAdapter {
       coordinationRequest: { requestId: request.requestId, correlationId: request.correlationId },
       turnSelection: request.turnSelection,
       attachments: request.attachments,
+      completedRecovery: true,
       onDurableStart: async ({ turnId, persistedAt, selection }) => {
         await this.coordination.assertCompleted(binding);
         if (this.communications && request.communication) {

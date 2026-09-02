@@ -799,9 +799,15 @@ export class ResidentTurnUdsServer {
         terminal:terminalPayload(this.#store,chatId,turnId),
       };
     }
+    if(p.completedRecovery!==undefined&&p.completedRecovery!==true){
+      throw new ResidentProtocolError("request_invalid","completed recovery mode is invalid");
+    }
     const final=this.#store.finalEnvelope(chatId,turnId);
     if(final){
       if(final.status!=="complete"||typeof final.assistant_content!=="string")throw new ResidentProtocolError("internal_error",final.error_message??final.error??`resident turn ended ${final.status}`);
+      if(p.completedRecovery===true){
+        return{text:final.assistant_content,model:final.model??"recovered",toolCallCount:0,durationMs:0,recovered:true};
+      }
       const media=await residentGeneratedImages(
         this.#store.eventsSince(chatId,turnId,-1)
           .filter((event)=>event.kind==="media")
@@ -809,6 +815,9 @@ export class ResidentTurnUdsServer {
         this.#generatedImagesRoot,
       );
       return{text:final.assistant_content,model:final.model??"recovered",toolCallCount:0,durationMs:0,recovered:true,...(media.length>0?{media:generatedImagesJson(media)}:{})};
+    }
+    if(p.completedRecovery!==undefined){
+      throw new ResidentProtocolError("request_invalid","completed recovery requires a terminal resident turn");
     }
     const active=this.#responses.get(turnId);if(active){
       try {
@@ -989,7 +998,7 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
       await new Promise(resolve=>setTimeout(resolve,EVENT_REPLAY_DELAY_MS));
     }
   }
-  async runWithTurn(chatId:string,userText:string,options:{coordinationOrigin:CoordinationTurnOrigin;coordinationRequest?:{requestId:string;correlationId:string};turnSelection:ResidentTurnSelectionRequest;attachments?:readonly ResidentInputAttachment[];onDurableStart(start:{turnId:string;chatId:string;persistedAt:string;selection?:ResidentTurnSelectionReceipt}):void|Promise<void>;onEvent(event:ResidentDurableEvent):void}){
+  async runWithTurn(chatId:string,userText:string,options:{coordinationOrigin:CoordinationTurnOrigin;coordinationRequest?:{requestId:string;correlationId:string};turnSelection:ResidentTurnSelectionRequest;attachments?:readonly ResidentInputAttachment[];completedRecovery?:true;onDurableStart(start:{turnId:string;chatId:string;persistedAt:string;selection?:ResidentTurnSelectionReceipt}):void|Promise<void>;onEvent(event:ResidentDurableEvent):void}){
     if(options.coordinationOrigin.authorityReference!==`resident:${this.options.residentSlug}`)throw new TypeError("resident authority does not match the configured port");
     const request=options.coordinationRequest;if(!request)throw new Error("resident coordination request identity is required");const turnId=`coord-${options.coordinationOrigin.workId}`;const fence=residentFence(options.coordinationOrigin);const now=()=>this.options.now?.()??Date.now();
     const requested=options.turnSelection??Object.freeze({modelAlias:null,reasoningEffort:null});
@@ -1009,14 +1018,14 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
         await new Promise(resolve=>setTimeout(resolve,Math.min(this.#retryDelayMs,retryRemaining)));
       }
     }
-    const s=object(started.payload);const selection=selectionReceipt(s.selection,requested);await options.onDurableStart({turnId:string(s.turnId,"turnId"),chatId:string(s.chatId,"chatId"),persistedAt:string(s.persistedAt,"persistedAt"),selection});this.#active.set(turnId,{chatId,origin:options.coordinationOrigin,correlationId:request.correlationId});
+    const s=object(started.payload);const selection=selectionReceipt(s.selection,requested);const completedRecovery=options.completedRecovery===true&&s.recovered===true;await options.onDurableStart({turnId:string(s.turnId,"turnId"),chatId:string(s.chatId,"chatId"),persistedAt:string(s.persistedAt,"persistedAt"),selection});this.#active.set(turnId,{chatId,origin:options.coordinationOrigin,correlationId:request.correlationId});
     const result=(async()=>{
       const resultDeadlineAt=now()+this.#resultTimeoutMs;
       for(;;){
         const remaining=resultDeadlineAt-now();
         if(remaining<1)throw new ResidentProtocolError("deadline_exceeded","resident result did not become terminal before its overall deadline");
         try{
-          const result=await this.options.client.request({method:"GET",path:`/internal/v1/turns/${encodeURIComponent(turnId)}/result`,payload:{chatId,origin:jsonOrigin(options.coordinationOrigin),correlationId:request.correlationId},deadlineAtMs:now()+Math.min(this.#requestDeadlineMs,remaining),fence,correlationId:request.correlationId});const value=object(result.payload);const media=parseResidentGeneratedImages(value.media);return{text:string(value.text,"text"),model:string(value.model,"model"),toolCallCount:nonnegativeSafeInteger(value.toolCallCount,"toolCallCount"),durationMs:nonnegativeSafeInteger(value.durationMs,"durationMs"),...(media.length>0?{media}:{})};
+          const result=await this.options.client.request({method:"GET",path:`/internal/v1/turns/${encodeURIComponent(turnId)}/result`,payload:{chatId,origin:jsonOrigin(options.coordinationOrigin),correlationId:request.correlationId,...(completedRecovery?{completedRecovery:true}:{})},deadlineAtMs:now()+Math.min(this.#requestDeadlineMs,remaining),fence,correlationId:request.correlationId});const value=object(result.payload);const media=parseResidentGeneratedImages(value.media);return{text:string(value.text,"text"),model:string(value.model,"model"),toolCallCount:nonnegativeSafeInteger(value.toolCallCount,"toolCallCount"),durationMs:nonnegativeSafeInteger(value.durationMs,"durationMs"),...(media.length>0?{media}:{})};
         }catch(caught){
           if(!retryableTransportWait(caught))throw caught;
           const retryRemaining=resultDeadlineAt-now();

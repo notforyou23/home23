@@ -852,7 +852,7 @@ function normalizeReceipt(input: TerminalReceiptInput) {
     status: input.status,
     sourceReference,
     resultDigest,
-    artifactIds: Object.freeze([...artifactIds].sort()),
+    artifactIds: Object.freeze([...artifactIds]),
     createdAt: input.timestamp,
   });
 }

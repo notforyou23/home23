@@ -247,13 +247,17 @@ test("the exact current fence commits one immutable terminal receipt and termina
   leases.start(binding(work.id, offer, 53));
   database.reopen();
   leases = createLeaseService({ database, generateId, now: () => new Date(AT), leaseTtlMs: 60_000 });
+  const artifactIds = [
+    "art_0198d95f-6c00-7000-8000-000000000052",
+    "art_0198d95f-6c00-7000-8000-000000000051",
+  ];
   const input = {
     ...binding(work.id, offer, 54),
     receipt: {
       status: "succeeded" as const,
       sourceReference: AUTHORITY_REFERENCE,
       resultDigest: "c".repeat(64),
-      artifactIds: [] as string[],
+      artifactIds,
       timestamp: AT,
     },
   };
@@ -263,6 +267,7 @@ test("the exact current fence commits one immutable terminal receipt and termina
   assert.equal(completed.attempt.state, "succeeded");
   assert.equal(completed.lease.state, "released");
   assert.equal(completed.receipt.status, "succeeded");
+  assert.deepEqual(completed.receipt.artifactIds, artifactIds);
   assert.match(completed.receipt.receiptDigest, /^[a-f0-9]{64}$/);
   assert.equal(
     database.readOne<{ count: number }>(
@@ -276,6 +281,7 @@ test("the exact current fence commits one immutable terminal receipt and termina
   leases = createLeaseService({ database, generateId, now: () => new Date(AT), leaseTtlMs: 60_000 });
   const replay = leases.terminalize(input);
   assert.equal(replay.replayed, true);
+  assert.deepEqual(replay.receipt.artifactIds, artifactIds);
   assert.equal(replay.receipt.receiptDigest, completed.receipt.receiptDigest);
   assert.throws(
     () => leases.terminalize({

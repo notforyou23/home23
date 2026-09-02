@@ -148,6 +148,7 @@ export interface ResidentAgentPort {
       coordinationRequest?: { requestId: string; correlationId: string };
       turnSelection: ResidentTurnSelectionRequest;
       attachments?: readonly ResidentInputAttachment[];
+      completedRecovery?: true;
       onDurableStart(start: {
         turnId: string;
         chatId: string;

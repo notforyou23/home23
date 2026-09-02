@@ -544,6 +544,27 @@ test("resident UDS returns verified generated-image descriptors live and after r
     );
   }
   residentWorkspacePath = workspacePath;
+
+  rmSync(imagePath);
+  const receiptRecovery = await restarted.port.runWithTurn(
+    "coordination:test:generated-image",
+    "make an image",
+    {
+      coordinationOrigin: origin,
+      coordinationRequest: {
+        requestId: "req_0198d95f-6c00-7000-8000-0000000002f5",
+        correlationId: "cor_0198d95f-6c00-7000-8000-0000000002f6",
+      },
+      turnSelection: { modelAlias: null, reasoningEffort: null },
+      completedRecovery: true,
+      onDurableStart: () => undefined,
+      onEvent: () => undefined,
+    },
+  );
+  const recoveredWithoutStaging = await receiptRecovery.response;
+  assert.equal(recoveredWithoutStaging.text, "generated image ready");
+  assert.equal(recoveredWithoutStaging.media, undefined);
+  assert.equal(starts, 1, "completed recovery must use the existing resident turn");
 });
 
 test("a durable stopped turn with a legacy terminal sequence completes recovery", async (t) => {

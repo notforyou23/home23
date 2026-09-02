@@ -72,11 +72,13 @@ function harness(options: {
   });
   let capturedText = '';
   let capturedOrigin: unknown;
+  let capturedCompletedRecovery = false;
   let externallyCancelled = false;
   const agent: ResidentAgentPort = {
     async runWithTurn(_chatId, text, opts) {
       capturedText = text;
       capturedOrigin = opts.coordinationOrigin;
+      capturedCompletedRecovery = opts.completedRecovery === true;
       calls.push('durable');
       await opts.onDurableStart({ turnId: 'turn-resident-1', chatId: request().chatId, persistedAt: '2026-08-25T12:00:00.000Z' });
       opts.onEvent({
@@ -144,7 +146,7 @@ function harness(options: {
     receipts,
     resolveResponse,
     cancelExternally: () => { externallyCancelled = true; },
-    captured: () => ({ text: capturedText, origin: capturedOrigin }),
+    captured: () => ({ text: capturedText, origin: capturedOrigin, completedRecovery: capturedCompletedRecovery }),
   };
 }
 
@@ -185,6 +187,7 @@ test('completed resident recovery verifies the immutable result digest without a
   assert.ok(h.calls.includes('completed:pending'));
   assert.ok(h.calls.includes(`completed:${sha256('exact result')}`));
   assert.equal(h.calls.some((call) => call.startsWith('terminal:')), false);
+  assert.equal(h.captured().completedRecovery, true);
 });
 
 test('a Work cannot acquire a second resident turn while its fenced turn is active', async () => {
