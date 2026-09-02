@@ -295,11 +295,16 @@ export function createCoordinationRouter(input: {
   router.post("/api/v1/bots", messageSend, requireIdempotencyKey(application), jsonBody, asyncRoute(async (request, response) => {
     if (!application.capabilities().capabilities.botLifecycle || !application.services.botLifecycleApi) throw unavailable("botLifecycle");
     const body = jsonObjectBody(request.body);
-    if (typeof body.residentBinding !== "string" || typeof body.displayName !== "string" || typeof body.purpose !== "string" || !Array.isArray(body.requiredCapabilities) || !body.requiredCapabilities.every((item) => typeof item === "string")) throw new CoordinationHttpError("request_invalid", 400, false);
-    const receipt = await application.services.botLifecycleApi.create({ context: requireCoordinationContext(response), idempotencyKey: coordinationIdempotencyKey(response), residentBinding: body.residentBinding, displayName: body.displayName, purpose: body.purpose, requiredCapabilities: body.requiredCapabilities });
+    // `displayName` remains a compatibility spelling for older Apple builds.
+    // Legacy residentBinding/requiredCapabilities fields are ignored: Core
+    // derives the logical binding and the execution boundary owns policy.
+    if (body.name !== undefined && typeof body.name !== "string") throw new CoordinationHttpError("request_invalid", 400, false);
+    const displayName = body.name ?? body.displayName;
+    if (typeof displayName !== "string" || typeof body.purpose !== "string") throw new CoordinationHttpError("request_invalid", 400, false);
+    const receipt = await application.services.botLifecycleApi.create({ context: requireCoordinationContext(response), idempotencyKey: coordinationIdempotencyKey(response), displayName, purpose: body.purpose });
     response.status(201).json({ receipt });
   }));
-  for (const operation of ["start", "stop", "restart", "archive", "restore"] as const) {
+  for (const operation of ["archive", "restore"] as const) {
     router.post(`/api/v1/bots/:botId/${operation}`, messageSend, requireIdempotencyKey(application), asyncRoute(async (request, response) => {
       if (!application.capabilities().capabilities.botLifecycle || !application.services.botLifecycleApi) throw unavailable("botLifecycle");
       response.json({ receipt: await application.services.botLifecycleApi.control({ context: requireCoordinationContext(response), idempotencyKey: coordinationIdempotencyKey(response), botId: pathParameter(request.params.botId), operation }) });

@@ -51,6 +51,7 @@ import { createCoordinationApplication } from "./application.js";
 import { createCoordinationLifecycle } from "./lifecycle.js";
 import {
   createBotLifecycleService,
+  derivePersistentBotBinding,
   type CreateBotLifecycleServiceOptions,
 } from "../bot-lifecycle/index.js";
 import type { CoordinationRuntimeConfig } from "./runtime-config.js";
@@ -94,16 +95,16 @@ export interface DurableAttachmentCompositionOptions {
 }
 
 /**
- * Internal-only M28 activation bundle. The extra switch is intentional: a
- * registry flag alone must never make resident creation or process control
- * reachable. Every effectful adapter and both trusted authority boundaries
- * must be supplied explicitly by the future owner of activation.
+ * Internal-only lifecycle activation bundle. The extra switch is intentional:
+ * a registry flag alone must never make durable Bot creation reachable. The
+ * supplied binder owns only canonical identity/mailbox/channel writes; it has
+ * no resident-provisioning or process-control dependency.
  */
 export type BotLifecycleCompositionOptions = Readonly<
   CreateBotLifecycleServiceOptions & {
     enabled: true;
     resolveHttpPolicy(input: {
-      operation: "create" | "start" | "stop" | "restart" | "archive" | "restore";
+      operation: "create" | "archive" | "restore";
       target: string;
     }): PolicyRequest;
   }
@@ -187,9 +188,7 @@ export async function createCoordinationRuntimeComposition(input: {
     input.flags["coordination.bot_lifecycle.enabled"] === true &&
     lifecycleOptions?.enabled === true &&
     lifecycleOptions.authority !== undefined &&
-    lifecycleOptions.provisioner !== undefined &&
     lifecycleOptions.mailboxBinder !== undefined &&
-    lifecycleOptions.processes !== undefined &&
     lifecycleOptions.receipts !== undefined &&
     typeof lifecycleOptions.resolveHttpPolicy === "function" &&
     typeof lifecycleOptions.canonicalWriter === "string" &&
@@ -204,11 +203,16 @@ export async function createCoordinationRuntimeComposition(input: {
           const api = Object.freeze({
             create: async (request: any) => service.create({
               requestId: request.idempotencyKey, correlationId: request.context.correlationId,
-              actorPrincipalId: "user_owner", residentBinding: request.residentBinding,
-              displayName: request.displayName, purpose: request.purpose,
-              requiredCapabilities: request.requiredCapabilities,
+              actorPrincipalId: "user_owner", displayName: request.displayName,
+              purpose: request.purpose,
               policy: lifecycleOptions.resolveHttpPolicy!(
-                { operation: "create", target: request.residentBinding },
+                {
+                  operation: "create",
+                  target: derivePersistentBotBinding({
+                    requestId: request.idempotencyKey,
+                    displayName: request.displayName,
+                  }),
+                },
               ),
               expectedAuthorityEpoch: await epoch(),
             }),

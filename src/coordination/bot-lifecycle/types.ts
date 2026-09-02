@@ -2,23 +2,19 @@ import type { BotProjection } from "../bots/index.js";
 import type { AuthorityEpoch } from "../epochs/index.js";
 import type { PolicyDecision, PolicyRequest } from "../policy/index.js";
 
-export type BotLifecycleOperation = "create" | "start" | "stop" | "restart" | "archive" | "restore";
+export type BotLifecycleOperation = "create" | "archive" | "restore";
 export type BotLifecyclePhase =
   | "authorized"
-  | "resident_created"
   | "mailbox_bound"
   | "mailbox_archived"
-  | "mailbox_restored"
-  | "process_changed";
+  | "mailbox_restored";
 
 export interface PersistentBotCreateRequest {
   readonly requestId: string;
   readonly correlationId: string;
   readonly actorPrincipalId: "user_owner";
-  readonly residentBinding: string;
   readonly displayName: string;
   readonly purpose: string;
-  readonly requiredCapabilities: readonly string[];
   /** Must be resolved at the trusted policy boundary, never from model output. */
   readonly policy: PolicyRequest;
   readonly expectedAuthorityEpoch: number;
@@ -29,47 +25,27 @@ export interface PersistentBotControlRequest {
   readonly correlationId: string;
   readonly actorPrincipalId: "user_owner";
   readonly botId: string;
-  readonly operation: Exclude<BotLifecycleOperation, "create">;
+  readonly operation: "archive" | "restore";
   readonly policy: PolicyRequest;
   readonly expectedAuthorityEpoch: number;
 }
 
-export interface ResidentCreateSpec {
-  readonly residentBinding: string;
-  readonly displayName: string;
-  readonly purpose: string;
-  readonly requiredCapabilities: readonly string[];
-  readonly copyPrivateMemory: false;
-}
-
-export interface ProvisionedResident {
-  readonly kind: "persistent_resident";
-  readonly residentBinding: string;
-  readonly instancePath: string;
-  /** Exact names emitted by the generated ecosystem manifest. */
-  readonly processNames: readonly string[];
-}
-
-export interface ResidentProvisioner {
-  /** Adapter for the existing CLI create contract. It must use an installation root supplied out of band. */
-  create(spec: ResidentCreateSpec): Promise<ProvisionedResident>;
-  inspect(residentBinding: string): Promise<ProvisionedResident | null>;
-  /** Recoverable cleanup only: archive/quarantine; never recursively destroy the resident. */
-  archivePartial(resident: ProvisionedResident, reason: string): Promise<void>;
-}
-
+/**
+ * Canonical directory/channel boundary for a lightweight Bot. Implementations
+ * create a durable principal, profile, private mailbox, direct conversation,
+ * and membership. They must not provision or control an OS process.
+ */
 export interface PersistentMailboxBinder {
-  bindAfterResidentCreated(input: {
+  bindDurableBot(input: {
     requestId: string;
     correlationId: string;
     actorPrincipalId: "user_owner";
     residentBinding: string;
     displayName: string;
     purpose: string;
-    requiredCapabilities: readonly string[];
   }): Promise<BotProjection>;
   getByBotId(botId: string): Promise<BotProjection | null>;
-  /** Atomic canonical directory transition. It must not remove transcript, aliases, or resident files. */
+  /** Atomic canonical transition; transcript, mailbox, aliases, and Bot ID remain intact. */
   transitionLifecycle(input: {
     botId: string;
     from: "active" | "archived";
@@ -79,12 +55,6 @@ export interface PersistentMailboxBinder {
     actorPrincipalId: "user_owner";
     changedAt: string;
   }): Promise<BotProjection>;
-}
-
-export interface ExactNameProcessController {
-  startExact(names: readonly string[]): Promise<void>;
-  stopExact(names: readonly string[]): Promise<void>;
-  restartExact(names: readonly string[]): Promise<void>;
 }
 
 export interface BotLifecycleAuthority {
@@ -98,6 +68,7 @@ export interface BotLifecycleReceipt {
   readonly requestDigest: string;
   readonly correlationId: string;
   readonly operation: BotLifecycleOperation;
+  /** Compatibility projection only. This is derived by Core, never selected by a client. */
   readonly residentBinding: string | null;
   readonly botId: string | null;
   readonly mailboxId: string | null;
@@ -105,11 +76,9 @@ export interface BotLifecycleReceipt {
   readonly policyDecision: PolicyDecision;
   readonly outcome: "succeeded" | "failed";
   readonly completedPhases: readonly BotLifecyclePhase[];
-  readonly processNames: readonly string[];
   readonly failure: null | {
-    readonly phase: "resident_create" | "mailbox_bind" | "process_change" | "mailbox_transition";
+    readonly phase: "mailbox_bind" | "mailbox_transition";
     readonly code: string;
-    readonly partialResidentArchived: boolean;
   };
   readonly createdAt: string;
 }
@@ -121,9 +90,7 @@ export interface BotLifecycleReceiptStore {
 
 export interface CreateBotLifecycleServiceOptions {
   readonly authority: BotLifecycleAuthority;
-  readonly provisioner: ResidentProvisioner;
   readonly mailboxBinder: PersistentMailboxBinder;
-  readonly processes: ExactNameProcessController;
   readonly receipts: BotLifecycleReceiptStore;
   readonly canonicalWriter: string;
   readonly now?: () => Date;

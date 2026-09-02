@@ -76,7 +76,7 @@ test("Channels, lifecycle, and Activity stay fail-closed without exact flags and
   )).status, 404);
 });
 
-test("Activity and lifecycle routes invoke only injected trusted ports behind exact flags", async (t) => {
+test("Activity and lightweight Bot lifecycle routes expose create, archive, and restore only", async (t) => {
   const calls: string[] = [];
   const botId = "bot_0198d95f-6c00-7000-8000-000000000001";
   const mailboxId = "cnv_0198d95f-6c00-7000-8000-000000000001";
@@ -107,7 +107,7 @@ test("Activity and lifecycle routes invoke only injected trusted ports behind ex
     },
     throughEventSequence: 80,
   } as const;
-  const receipt = (requestId: string, operation: "create" | "start" | "stop" | "restart" | "archive" | "restore") => ({
+  const receipt = (requestId: string, operation: "create" | "archive" | "restore") => ({
     requestId, requestDigest: "a".repeat(64),
     correlationId: "cor_0198d95f-6c00-7000-8000-000000000700", operation,
     residentBinding: "specialist", botId, mailboxId, authorityEpoch: 7,
@@ -117,9 +117,9 @@ test("Activity and lifecycle routes invoke only injected trusted ports behind ex
     },
     outcome: "succeeded",
     completedPhases: operation === "create"
-      ? ["authorized", "resident_created", "mailbox_bound"]
-      : ["authorized", "process_changed"],
-    processNames: ["home23-specialist"], failure: null,
+      ? ["authorized", "mailbox_bound"]
+      : ["authorized", operation === "archive" ? "mailbox_archived" : "mailbox_restored"],
+    failure: null,
     createdAt: "2026-08-26T12:00:00.000Z",
   } as const);
   const flags = { ...disabledCoordinationFeatureFlags(), "coordination.process.enabled": true, "coordination.public_api.enabled": true, "coordination.channels.enabled": true, "coordination.bot_lifecycle.enabled": true };
@@ -140,15 +140,21 @@ test("Activity and lifecycle routes invoke only injected trusted ports behind ex
     botLifecycleApi: {
       create: async (input) => {
         calls.push("bot.create");
-        assert.deepEqual({
-          idempotencyKey: input.idempotencyKey, residentBinding: input.residentBinding,
-          displayName: input.displayName, purpose: input.purpose,
-          requiredCapabilities: input.requiredCapabilities,
-        }, {
-          idempotencyKey: "product-api-create-bot", residentBinding: "specialist",
-          displayName: "Specialist", purpose: "Continuing specialist",
-          requiredCapabilities: ["messages"],
-        });
+        if (input.idempotencyKey === "product-api-create-bot") {
+          assert.deepEqual({ displayName: input.displayName, purpose: input.purpose }, {
+            displayName: "Specialist", purpose: "Continuing specialist",
+          });
+        } else {
+          assert.deepEqual({
+            idempotencyKey: input.idempotencyKey,
+            displayName: input.displayName,
+            purpose: input.purpose,
+          }, {
+            idempotencyKey: "product-api-create-legacy-bot",
+            displayName: "Legacy Specialist",
+            purpose: "Older client compatibility",
+          });
+        }
         return receipt(input.idempotencyKey, "create") as any;
       },
       control: async ({ operation, idempotencyKey, botId: requestedBotId }) => {
@@ -164,15 +170,19 @@ test("Activity and lifecycle routes invoke only injected trusted ports behind ex
   const activity = await fetch(`${address.origin}/api/v1/activity`, { headers: headers() });
   assert.equal(activity.status, 200);
   assert.deepEqual(await activity.json(), activityPage);
-  const created = await fetch(`${address.origin}/api/v1/bots`, { method: "POST", headers: headers("product-api-create-bot"), body: JSON.stringify({ residentBinding: "specialist", displayName: "Specialist", purpose: "Continuing specialist", requiredCapabilities: ["messages"] }) });
+  const created = await fetch(`${address.origin}/api/v1/bots`, { method: "POST", headers: headers("product-api-create-bot"), body: JSON.stringify({ name: "Specialist", purpose: "Continuing specialist", residentBinding: "jerry", requiredCapabilities: ["process-control"] }) });
   assert.equal(created.status, 201);
   assert.deepEqual(await created.json(), { receipt: receipt("product-api-create-bot", "create") });
-  const started = await fetch(`${address.origin}/api/v1/bots/bot_0198d95f-6c00-7000-8000-000000000001/start`, { method: "POST", headers: headers("product-api-start-bot") });
-  assert.equal(started.status, 200);
-  assert.deepEqual(await started.json(), { receipt: receipt("product-api-start-bot", "start") });
-  assert.equal((await fetch(`${address.origin}/api/v1/bots/bot_0198d95f-6c00-7000-8000-000000000001/stop`, { method: "POST", headers: headers("product-api-stop-bot") })).status, 200);
-  assert.equal((await fetch(`${address.origin}/api/v1/bots/bot_0198d95f-6c00-7000-8000-000000000001/restart`, { method: "POST", headers: headers("product-api-restart-bot") })).status, 200);
+  const legacyCreated = await fetch(`${address.origin}/api/v1/bots`, { method: "POST", headers: headers("product-api-create-legacy-bot"), body: JSON.stringify({ displayName: "Legacy Specialist", purpose: "Older client compatibility", residentBinding: "forrest", requiredCapabilities: ["process-control"] }) });
+  assert.equal(legacyCreated.status, 201);
   assert.equal((await fetch(`${address.origin}/api/v1/bots/bot_0198d95f-6c00-7000-8000-000000000001/archive`, { method: "POST", headers: headers("product-api-archive-bot") })).status, 200);
   assert.equal((await fetch(`${address.origin}/api/v1/bots/bot_0198d95f-6c00-7000-8000-000000000001/restore`, { method: "POST", headers: headers("product-api-restore-bot") })).status, 200);
-  assert.deepEqual(calls, ["activity", "bot.create", "bot.start", "bot.stop", "bot.restart", "bot.archive", "bot.restore"]);
+  for (const operation of ["start", "stop", "restart"]) {
+    const response = await fetch(`${address.origin}/api/v1/bots/${botId}/${operation}`, {
+      method: "POST",
+      headers: headers(`product-api-${operation}-bot`),
+    });
+    assert.equal(response.status, 404);
+  }
+  assert.deepEqual(calls, ["activity", "bot.create", "bot.create", "bot.archive", "bot.restore"]);
 });

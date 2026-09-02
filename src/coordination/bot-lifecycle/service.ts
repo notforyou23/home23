@@ -9,33 +9,53 @@ import type {
   CreateBotLifecycleServiceOptions,
   PersistentBotControlRequest,
   PersistentBotCreateRequest,
-  ProvisionedResident,
 } from "./types.js";
 
-const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/;
-const PROCESS_NAME = /^[a-z0-9][a-z0-9-]{0,127}$/;
-const CAPABILITY = /^[a-z][a-z0-9._:-]{0,63}$/;
+const SAFE_BINDING_CHARACTER = /[a-z0-9]/;
 
 function canonicalCreateFields(request: PersistentBotCreateRequest): {
   displayName: string;
   purpose: string;
-  requiredCapabilities: readonly string[];
 } {
   const displayName = typeof request.displayName === "string" ? request.displayName.trim() : "";
   const purpose = typeof request.purpose === "string" ? request.purpose.trim() : "";
   if (
-    !SLUG.test(request.residentBinding) || !displayName || displayName.length > 128 ||
-    displayName.includes("\0") || !purpose || purpose.length > 512 || purpose.includes("\0") ||
-    !Array.isArray(request.requiredCapabilities) || request.requiredCapabilities.length > 64 ||
-    request.requiredCapabilities.some((value) =>
-      typeof value !== "string" || !CAPABILITY.test(value)
-    )
+    !displayName || displayName.length > 128 || displayName.includes("\0") ||
+    !purpose || purpose.length > 512 || purpose.includes("\0")
   ) throw new BotLifecycleError("request_invalid");
-  return {
-    displayName,
-    purpose,
-    requiredCapabilities: Object.freeze([...new Set(request.requiredCapabilities)].sort()),
-  };
+  return { displayName, purpose };
+}
+
+/**
+ * Storage still requires a resident_binding value. For lightweight Bots it is
+ * a logical compatibility slug only, derived inside Core from the canonical
+ * name and idempotency key. It is never a daemon/process/instance identity.
+ */
+export function derivePersistentBotBinding(input: {
+  requestId: string;
+  displayName: string;
+}): string {
+  const displayName = input.displayName.trim();
+  if (!displayName || displayName.includes("\0") || typeof input.requestId !== "string" || !input.requestId) {
+    throw new BotLifecycleError("request_invalid");
+  }
+  const folded = displayName.normalize("NFKD").toLowerCase();
+  let base = "";
+  let separator = false;
+  for (const character of folded) {
+    if (/\p{Mark}/u.test(character)) continue;
+    if (SAFE_BINDING_CHARACTER.test(character)) {
+      if (separator && base) base += "-";
+      base += character;
+      separator = false;
+    } else if (base) {
+      separator = true;
+    }
+  }
+  base = base.replace(/-+$/u, "") || "bot";
+  const suffix = createHash("sha256").update(input.requestId, "utf8").digest("hex").slice(0, 16);
+  base = base.slice(0, 42).replace(/-+$/u, "") || "bot";
+  return `bot-${base}-${suffix}`;
 }
 
 function errorCode(error: unknown): string {
@@ -48,23 +68,6 @@ function errorCode(error: unknown): string {
 
 function requestFingerprint(value: object): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
-
-function validProcessManifest(resident: ProvisionedResident): readonly string[] {
-  const prefix = `home23-${resident.residentBinding}`;
-  if (
-    resident.kind !== "persistent_resident" ||
-    !Array.isArray(resident.processNames) ||
-    resident.processNames.length === 0 ||
-    resident.processNames.length > 16
-  ) throw new BotLifecycleError("process_manifest_invalid");
-  const names = [...new Set(resident.processNames)];
-  if (names.length !== resident.processNames.length || names.some((name) =>
-    typeof name !== "string" ||
-    !PROCESS_NAME.test(name) ||
-    (name !== prefix && !name.startsWith(`${prefix}-`))
-  )) throw new BotLifecycleError("process_manifest_invalid");
-  return Object.freeze(names);
 }
 
 function validDate(now: () => Date): string {
@@ -80,6 +83,7 @@ export function createBotLifecycleService(options: CreateBotLifecycleServiceOpti
 
   async function authorize(
     request: PersistentBotCreateRequest | PersistentBotControlRequest,
+    target: string,
   ) {
     if (!options.authority.enabled()) throw new BotLifecycleError("capability_disabled");
     const epoch = await options.authority.currentEpoch();
@@ -93,11 +97,10 @@ export function createBotLifecycleService(options: CreateBotLifecycleServiceOpti
     const expectedOperation = "operation" in request
       ? `bot_lifecycle.${request.operation}`
       : "bot_lifecycle.create";
-    const expectedTarget = "operation" in request ? request.botId : request.residentBinding;
     if (
       request.policy?.action?.actorPrincipalId !== request.actorPrincipalId ||
       request.policy?.action?.operation !== expectedOperation ||
-      request.policy?.action?.target !== expectedTarget ||
+      request.policy?.action?.target !== target ||
       request.policy.contextAccess?.kind !== "none"
     ) throw new BotLifecycleError("standing_authority_denied", "Exact lifecycle action mismatch");
     const decision = options.authority.decide(request.policy);
@@ -140,158 +143,150 @@ export function createBotLifecycleService(options: CreateBotLifecycleServiceOpti
     if (prior) return prior;
     if (request.actorPrincipalId !== "user_owner") throw new BotLifecycleError("request_invalid");
     const fields = canonicalCreateFields(request);
-    const { epoch, decision } = await authorize(request);
+    const residentBinding = derivePersistentBotBinding({
+      requestId: request.requestId,
+      displayName: fields.displayName,
+    });
+    const { epoch, decision } = await authorize(request, residentBinding);
     const phases: BotLifecyclePhase[] = ["authorized"];
-    let resident: ProvisionedResident | null = null;
     let bot: BotProjection | null = null;
     try {
-      resident = await options.provisioner.inspect(request.residentBinding);
-      if (!resident) resident = await options.provisioner.create({
-        residentBinding: request.residentBinding,
+      bot = await options.mailboxBinder.bindDurableBot({
+        requestId: request.requestId,
+        correlationId: request.correlationId,
+        actorPrincipalId: request.actorPrincipalId,
+        residentBinding,
         displayName: fields.displayName,
         purpose: fields.purpose,
-        requiredCapabilities: fields.requiredCapabilities,
-        copyPrivateMemory: false,
       });
-      if (resident.residentBinding !== request.residentBinding) {
-        throw new BotLifecycleError("request_invalid", "Provisioner returned the wrong resident");
-      }
-      const processNames = validProcessManifest(resident);
-      phases.push("resident_created");
-      try {
-        bot = await options.mailboxBinder.bindAfterResidentCreated({
-          requestId: request.requestId,
-          correlationId: request.correlationId,
-          actorPrincipalId: request.actorPrincipalId,
-          residentBinding: request.residentBinding,
-          displayName: fields.displayName,
-          purpose: fields.purpose,
-          requiredCapabilities: fields.requiredCapabilities,
+      if (!bot.conversationId || bot.residentBinding !== residentBinding) {
+        throw Object.assign(new Error("invalid durable Bot binding"), {
+          code: "invalid_durable_binding",
         });
-      } catch (error) {
-        await options.provisioner.archivePartial(resident, "mailbox_bind_failed");
-        const receipt = await save({
-          requestId: request.requestId, requestDigest: digest, correlationId: request.correlationId,
-          operation: "create", residentBinding: request.residentBinding,
-          botId: null, mailboxId: null, authorityEpoch: epoch.epoch,
-          policyDecision: decision, outcome: "failed", completedPhases: phases,
-          processNames, failure: { phase: "mailbox_bind", code: errorCode(error), partialResidentArchived: true },
-          createdAt: validDate(now),
-        });
-        throw new BotLifecycleError("operation_failed", "Mailbox binding failed", receipt);
-      }
-      if (!bot.conversationId || bot.residentBinding !== request.residentBinding) {
-        await options.provisioner.archivePartial(resident, "mailbox_binding_invalid");
-        const receipt = await save({
-          requestId: request.requestId, requestDigest: digest, correlationId: request.correlationId,
-          operation: "create", residentBinding: request.residentBinding,
-          botId: bot.id, mailboxId: bot.conversationId, authorityEpoch: epoch.epoch,
-          policyDecision: decision, outcome: "failed", completedPhases: phases,
-          processNames, failure: { phase: "mailbox_bind", code: "invalid_durable_binding", partialResidentArchived: true },
-          createdAt: validDate(now),
-        });
-        throw new BotLifecycleError("operation_failed", "Mailbox binder did not return a durable binding", receipt);
       }
       phases.push("mailbox_bound");
       return save({
-        requestId: request.requestId, requestDigest: digest, correlationId: request.correlationId,
-        operation: "create", residentBinding: request.residentBinding,
-        botId: bot.id, mailboxId: bot.conversationId, authorityEpoch: epoch.epoch,
-        policyDecision: decision, outcome: "succeeded", completedPhases: phases,
-        processNames, failure: null, createdAt: validDate(now),
+        requestId: request.requestId,
+        requestDigest: digest,
+        correlationId: request.correlationId,
+        operation: "create",
+        residentBinding,
+        botId: bot.id,
+        mailboxId: bot.conversationId,
+        authorityEpoch: epoch.epoch,
+        policyDecision: decision,
+        outcome: "succeeded",
+        completedPhases: phases,
+        failure: null,
+        createdAt: validDate(now),
       });
     } catch (error) {
       if (error instanceof BotLifecycleError) throw error;
       const receipt = await save({
-        requestId: request.requestId, requestDigest: digest, correlationId: request.correlationId,
-        operation: "create", residentBinding: request.residentBinding,
-        botId: bot?.id ?? null, mailboxId: bot?.conversationId ?? null,
-        authorityEpoch: epoch.epoch, policyDecision: decision, outcome: "failed",
-        completedPhases: phases, processNames: resident?.processNames ?? [],
-        failure: { phase: "resident_create", code: errorCode(error), partialResidentArchived: false },
+        requestId: request.requestId,
+        requestDigest: digest,
+        correlationId: request.correlationId,
+        operation: "create",
+        residentBinding,
+        botId: bot?.id ?? null,
+        mailboxId: bot?.conversationId ?? null,
+        authorityEpoch: epoch.epoch,
+        policyDecision: decision,
+        outcome: "failed",
+        completedPhases: phases,
+        failure: { phase: "mailbox_bind", code: errorCode(error) },
         createdAt: validDate(now),
       });
-      throw new BotLifecycleError("operation_failed", "Resident creation failed", receipt);
+      throw new BotLifecycleError("operation_failed", "Durable Bot binding failed", receipt);
     }
   }
 
   async function control(request: PersistentBotControlRequest): Promise<BotLifecycleReceipt> {
+    if (request.operation !== "archive" && request.operation !== "restore") {
+      throw new BotLifecycleError("request_invalid");
+    }
     const digest = requestFingerprint(request);
     const prior = await priorOrConflict(request.requestId, request.operation, request.correlationId, digest);
     if (prior) return prior;
     if (request.actorPrincipalId !== "user_owner" || !request.botId) {
       throw new BotLifecycleError("request_invalid");
     }
-    const { epoch, decision } = await authorize(request);
+    const { epoch, decision } = await authorize(request, request.botId);
     const bot = await options.mailboxBinder.getByBotId(request.botId);
     if (!bot || !bot.conversationId) throw new BotLifecycleError("bot_not_found");
-    const lifecycleTarget = request.operation === "archive" ? "archived" :
-      request.operation === "restore" ? "active" : null;
-    if (lifecycleTarget !== null && bot.lifecycle === lifecycleTarget) {
+    const lifecycleTarget = request.operation === "archive" ? "archived" : "active";
+    const completedPhase = request.operation === "archive" ? "mailbox_archived" : "mailbox_restored";
+    if (bot.lifecycle === lifecycleTarget) {
       return save({
-        requestId: request.requestId, requestDigest: digest, correlationId: request.correlationId,
-        operation: request.operation, residentBinding: bot.residentBinding,
-        botId: bot.id, mailboxId: bot.conversationId, authorityEpoch: epoch.epoch,
-        policyDecision: decision, outcome: "succeeded", completedPhases: ["authorized"],
-        processNames: [], failure: null, createdAt: validDate(now),
-      });
-    }
-    if (lifecycleTarget !== null && !(["active", "archived"] as const).includes(bot.lifecycle as "active" | "archived")) {
-      throw new BotLifecycleError("request_invalid", "Bot lifecycle cannot be transitioned");
-    }
-    const resident = await options.provisioner.inspect(bot.residentBinding);
-    if (!resident) throw new BotLifecycleError("resident_not_found");
-    const processNames = validProcessManifest(resident);
-    try {
-      if (request.operation === "start" || request.operation === "restore") await options.processes.startExact(processNames);
-      else if (request.operation === "stop" || request.operation === "archive") await options.processes.stopExact(processNames);
-      else await options.processes.restartExact(processNames);
-    } catch (error) {
-      const receipt = await save({
-        requestId: request.requestId, requestDigest: digest, correlationId: request.correlationId,
-        operation: request.operation, residentBinding: bot.residentBinding,
-        botId: bot.id, mailboxId: bot.conversationId, authorityEpoch: epoch.epoch,
-        policyDecision: decision, outcome: "failed", completedPhases: ["authorized"],
-        processNames, failure: { phase: "process_change", code: errorCode(error), partialResidentArchived: false },
+        requestId: request.requestId,
+        requestDigest: digest,
+        correlationId: request.correlationId,
+        operation: request.operation,
+        residentBinding: bot.residentBinding,
+        botId: bot.id,
+        mailboxId: bot.conversationId,
+        authorityEpoch: epoch.epoch,
+        policyDecision: decision,
+        outcome: "succeeded",
+        completedPhases: ["authorized"],
+        failure: null,
         createdAt: validDate(now),
       });
-      throw new BotLifecycleError("operation_failed", "Exact process operation failed", receipt);
+    }
+    if (!(bot.lifecycle === "active" || bot.lifecycle === "archived")) {
+      throw new BotLifecycleError("request_invalid", "Bot lifecycle cannot be transitioned");
     }
     const changedAt = validDate(now);
-    if (lifecycleTarget !== null) {
-      try {
-        await options.mailboxBinder.transitionLifecycle({
-          botId: bot.id,
-          from: request.operation === "archive" ? "active" : "archived",
-          to: lifecycleTarget,
-          requestId: request.requestId,
-          correlationId: request.correlationId,
-          actorPrincipalId: request.actorPrincipalId,
-          changedAt,
+    try {
+      const transitioned = await options.mailboxBinder.transitionLifecycle({
+        botId: bot.id,
+        from: request.operation === "archive" ? "active" : "archived",
+        to: lifecycleTarget,
+        requestId: request.requestId,
+        correlationId: request.correlationId,
+        actorPrincipalId: request.actorPrincipalId,
+        changedAt,
+      });
+      if (
+        transitioned.id !== bot.id || transitioned.conversationId !== bot.conversationId ||
+        transitioned.residentBinding !== bot.residentBinding
+      ) {
+        throw Object.assign(new Error("lifecycle transition changed durable identity"), {
+          code: "invalid_durable_binding",
         });
-      } catch (error) {
-        const receipt = await save({
-          requestId: request.requestId, requestDigest: digest, correlationId: request.correlationId,
-          operation: request.operation, residentBinding: bot.residentBinding,
-          botId: bot.id, mailboxId: bot.conversationId, authorityEpoch: epoch.epoch,
-          policyDecision: decision, outcome: "failed", completedPhases: ["authorized", "process_changed"],
-          processNames, failure: { phase: "mailbox_transition", code: errorCode(error), partialResidentArchived: false },
-          createdAt: changedAt,
-        });
-        throw new BotLifecycleError("operation_failed", "Mailbox lifecycle transition failed", receipt);
       }
+    } catch (error) {
+      const receipt = await save({
+        requestId: request.requestId,
+        requestDigest: digest,
+        correlationId: request.correlationId,
+        operation: request.operation,
+        residentBinding: bot.residentBinding,
+        botId: bot.id,
+        mailboxId: bot.conversationId,
+        authorityEpoch: epoch.epoch,
+        policyDecision: decision,
+        outcome: "failed",
+        completedPhases: ["authorized"],
+        failure: { phase: "mailbox_transition", code: errorCode(error) },
+        createdAt: changedAt,
+      });
+      throw new BotLifecycleError("operation_failed", "Mailbox lifecycle transition failed", receipt);
     }
     return save({
-      requestId: request.requestId, requestDigest: digest, correlationId: request.correlationId,
-      operation: request.operation, residentBinding: bot.residentBinding,
-      botId: bot.id, mailboxId: bot.conversationId, authorityEpoch: epoch.epoch,
-      policyDecision: decision, outcome: "succeeded",
-      completedPhases: lifecycleTarget === "archived"
-        ? ["authorized", "process_changed", "mailbox_archived"]
-        : lifecycleTarget === "active"
-          ? ["authorized", "process_changed", "mailbox_restored"]
-          : ["authorized", "process_changed"],
-      processNames, failure: null, createdAt: changedAt,
+      requestId: request.requestId,
+      requestDigest: digest,
+      correlationId: request.correlationId,
+      operation: request.operation,
+      residentBinding: bot.residentBinding,
+      botId: bot.id,
+      mailboxId: bot.conversationId,
+      authorityEpoch: epoch.epoch,
+      policyDecision: decision,
+      outcome: "succeeded",
+      completedPhases: ["authorized", completedPhase],
+      failure: null,
+      createdAt: changedAt,
     });
   }
 

@@ -1,5 +1,5 @@
 export { BotLifecycleError, type BotLifecycleErrorCode } from "./errors.js";
-export { createBotLifecycleService } from "./service.js";
+export { createBotLifecycleService, derivePersistentBotBinding } from "./service.js";
 export type {
   BotLifecycleAuthority,
   BotLifecycleOperation,
@@ -7,11 +7,7 @@ export type {
   BotLifecycleReceipt,
   BotLifecycleReceiptStore,
   CreateBotLifecycleServiceOptions,
-  ExactNameProcessController,
   PersistentBotControlRequest,
   PersistentBotCreateRequest,
   PersistentMailboxBinder,
-  ProvisionedResident,
-  ResidentCreateSpec,
-  ResidentProvisioner,
 } from "./types.js";

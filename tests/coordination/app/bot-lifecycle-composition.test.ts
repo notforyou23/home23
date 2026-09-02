@@ -7,10 +7,8 @@ import {
   type BotLifecycleCompositionOptions,
 } from "../../../src/coordination/app/index.js";
 import { classifyPolicy, type PolicyRequest } from "../../../src/coordination/policy/index.js";
-import type {
-  BotLifecycleReceipt,
-  ProvisionedResident,
-} from "../../../src/coordination/bot-lifecycle/index.js";
+import type { BotLifecycleReceipt } from "../../../src/coordination/bot-lifecycle/index.js";
+import type { BotProjection } from "../../../src/coordination/bots/index.js";
 
 const auth = { validateAccessToken: async () => { throw new Error("unused"); } };
 const enabledFlags = Object.freeze({
@@ -20,16 +18,13 @@ const enabledFlags = Object.freeze({
   "coordination.bot_lifecycle.enabled": true,
 });
 
-function policy(operation: string, target: string, scope: "within" | "outside" = "within"): PolicyRequest {
+function policy(operation: string, target: string): PolicyRequest {
   return {
     action: { actorPrincipalId: "user_owner", operation, target, parameters: {} },
     factSource: { kind: "trusted_policy_boundary", reference: "fixture:canonical-standing-scope" },
     standing: {
-      scope,
-      delegation: "within",
-      budget: "within",
-      audience: "within",
-      allowlist: "within",
+      scope: "within", delegation: "within", budget: "within",
+      audience: "within", allowlist: "within",
     },
     impactClasses: [],
     contextAccess: { kind: "none" },
@@ -38,12 +33,15 @@ function policy(operation: string, target: string, scope: "within" | "outside" =
 
 function fixture() {
   const receipts = new Map<string, BotLifecycleReceipt>();
-  const residents = new Map<string, ProvisionedResident>();
-  const processCalls: Array<{ operation: string; names: readonly string[] }> = [];
-  const createSpecs: unknown[] = [];
+  const bots = new Map<string, BotProjection>();
+  const bindings: string[] = [];
+  const policyTargets: string[] = [];
   const options: BotLifecycleCompositionOptions = {
     enabled: true,
-    resolveHttpPolicy: ({ operation, target }) => policy(`bot_lifecycle.${operation}`, target),
+    resolveHttpPolicy: ({ operation, target }) => {
+      policyTargets.push(target);
+      return policy(`bot_lifecycle.${operation}`, target);
+    },
     canonicalWriter: "home23-core",
     authority: {
       enabled: () => true,
@@ -53,35 +51,32 @@ function fixture() {
       }),
       decide: (request) => classifyPolicy(request, new Date("2026-08-25T12:00:00.000Z")),
     },
-    provisioner: {
-      inspect: async (binding) => residents.get(binding) ?? null,
-      create: async (spec) => {
-        createSpecs.push(spec);
-        const resident = Object.freeze({
-          kind: "persistent_resident" as const,
-          residentBinding: spec.residentBinding,
-          instancePath: `/fixture/instances/${spec.residentBinding}`,
-          processNames: Object.freeze([`home23-${spec.residentBinding}`]),
-        });
-        residents.set(spec.residentBinding, resident);
-        return resident;
-      },
-      archivePartial: async () => undefined,
-    },
     mailboxBinder: {
-      bindAfterResidentCreated: async (input) => ({
-        id: "bot_fixture", principalId: "bot_fixture", displayName: input.displayName,
-        purpose: input.purpose, requiredCapabilities: input.requiredCapabilities,
-        residentBinding: input.residentBinding, conversationId: "conversation_fixture",
-        status: "active", createdAt: "2026-08-25T12:00:00.000Z",
-        updatedAt: "2026-08-25T12:00:00.000Z", archivedAt: null,
-      }),
-      getByBotId: async () => null,
-    },
-    processes: {
-      startExact: async (names) => { processCalls.push({ operation: "start", names }); },
-      stopExact: async (names) => { processCalls.push({ operation: "stop", names }); },
-      restartExact: async (names) => { processCalls.push({ operation: "restart", names }); },
+      bindDurableBot: async (input) => {
+        bindings.push(input.residentBinding);
+        const bot: BotProjection = {
+          id: "bot_fixture",
+          principalId: "bot_fixture",
+          name: input.displayName,
+          purpose: input.purpose,
+          residentBinding: input.residentBinding,
+          conversationId: "conversation_fixture",
+          lifecycle: "active",
+          availability: "offline",
+          version: 1,
+          createdAt: "2026-08-25T12:00:00.000Z",
+          updatedAt: "2026-08-25T12:00:00.000Z",
+        };
+        bots.set(bot.id, bot);
+        return bot;
+      },
+      getByBotId: async (id) => bots.get(id) ?? null,
+      transitionLifecycle: async (input) => {
+        const bot = bots.get(input.botId)!;
+        const updated = { ...bot, lifecycle: input.to, updatedAt: input.changedAt };
+        bots.set(input.botId, updated);
+        return updated;
+      },
     },
     receipts: {
       get: async (requestId) => receipts.get(requestId) ?? null,
@@ -94,19 +89,10 @@ function fixture() {
     },
     now: () => new Date("2026-08-25T12:00:00.000Z"),
   };
-  return { options, receipts, processCalls, createSpecs };
+  return { options, receipts, bindings, policyTargets };
 }
 
-function request(policyRequest = policy("bot_lifecycle.create", "helper")) {
-  return {
-    requestId: "request_fixture", correlationId: "correlation_fixture",
-    actorPrincipalId: "user_owner" as const, residentBinding: "helper",
-    displayName: "Helper", purpose: "Bounded help", requiredCapabilities: ["research"],
-    policy: policyRequest, expectedAuthorityEpoch: 7,
-  };
-}
-
-test("M28 stays absent and unadvertised unless every explicit activation condition is present", async () => {
+test("lifecycle stays absent unless every explicit activation condition is present", async () => {
   const f = fixture();
   for (const input of [
     { flags: disabledCoordinationFeatureFlags(), botLifecycle: f.options },
@@ -114,70 +100,40 @@ test("M28 stays absent and unadvertised unless every explicit activation conditi
     { flags: enabledFlags, botLifecycle: undefined },
   ]) {
     const composition = await createCoordinationRuntimeComposition({
-      flags: input.flags, services: { auth }, botLifecycle: input.botLifecycle as never,
+      flags: input.flags,
+      services: { auth },
+      botLifecycle: input.botLifecycle as never,
     });
     assert.equal(composition.application.services.botLifecycle, undefined);
     assert.equal(composition.application.capabilities().capabilities.botLifecycle, false);
   }
-  assert.equal(f.createSpecs.length, 0);
-  assert.equal(f.processCalls.length, 0);
+  assert.deepEqual(f.bindings, []);
 });
 
-test("raw service smuggling is rejected and explicit composition exposes the trusted API adapter", async () => {
+test("explicit composition derives the stable compatibility binding inside Core", async () => {
   const f = fixture();
-  const smuggled = await createCoordinationRuntimeComposition({
+  const composition = await createCoordinationRuntimeComposition({
+    flags: enabledFlags,
+    services: { auth },
+    botLifecycle: f.options,
+  });
+  const receipt = await composition.application.services.botLifecycleApi!.create({
+    context: { correlationId: "correlation_fixture" } as never,
+    idempotencyKey: "apple-create-specialist-0001",
+    displayName: "Ada's Böt",
+    purpose: "Bounded help",
+  });
+  assert.match(receipt.residentBinding!, /^bot-ada-s-bot-[a-f0-9]{16}$/);
+  assert.deepEqual(f.policyTargets, [receipt.residentBinding]);
+  assert.deepEqual(f.bindings, [receipt.residentBinding]);
+  assert.equal("processNames" in receipt, false);
+});
+
+test("raw lifecycle service smuggling remains rejected", async () => {
+  const composition = await createCoordinationRuntimeComposition({
     flags: enabledFlags,
     services: { auth, botLifecycle: { create() {}, control() {} } } as never,
   });
-  assert.equal(smuggled.application.services.botLifecycle, undefined);
-
-  const composition = await createCoordinationRuntimeComposition({
-    flags: enabledFlags, services: { auth }, botLifecycle: f.options,
-  });
-  assert.ok(composition.application.services.botLifecycle);
-  assert.equal(composition.application.capabilities().capabilities.botLifecycle, true);
-  assert.ok(composition.application.services.botLifecycleApi);
-});
-
-test("composed M28 denies noncanonical standing scope and exact-action mismatches before effects", async () => {
-  const f = fixture();
-  const composition = await createCoordinationRuntimeComposition({
-    flags: enabledFlags, services: { auth }, botLifecycle: f.options,
-  });
-  const service = composition.application.services.botLifecycle!;
-  await assert.rejects(service.create(request(policy("bot_lifecycle.create", "helper", "outside"))), {
-    code: "standing_authority_denied",
-  });
-  await assert.rejects(service.create(request(policy("bot_lifecycle.start", "helper"))), {
-    code: "standing_authority_denied",
-  });
-  await assert.rejects(service.create(request(policy("bot_lifecycle.create", "different-target"))), {
-    code: "standing_authority_denied",
-  });
-  assert.equal(f.createSpecs.length, 0);
-  assert.equal(f.processCalls.length, 0);
-});
-
-test("composed M28 rejects temporary hands, is idempotent, and never requests private-memory copying", async () => {
-  const f = fixture();
-  f.options.provisioner.inspect = async (binding) => binding === "temporary-hand" ? ({
-    kind: "temporary_hand" as never, residentBinding: binding,
-    instancePath: "/fixture/temporary", processNames: ["home23-temporary-hand"],
-  }) : null;
-  const composition = await createCoordinationRuntimeComposition({
-    flags: enabledFlags, services: { auth }, botLifecycle: f.options,
-  });
-  const service = composition.application.services.botLifecycle!;
-  await assert.rejects(service.create({
-    ...request(policy("bot_lifecycle.create", "temporary-hand")),
-    requestId: "request_temporary", residentBinding: "temporary-hand",
-  }), { code: "process_manifest_invalid" });
-
-  const first = await service.create(request());
-  const replay = await service.create(request());
-  assert.strictEqual(replay, first);
-  assert.equal(f.receipts.size, 1);
-  assert.equal(f.createSpecs.length, 1);
-  assert.equal((f.createSpecs[0] as { copyPrivateMemory: unknown }).copyPrivateMemory, false);
-  assert.equal(JSON.stringify(first).includes("private"), false);
+  assert.equal(composition.application.services.botLifecycle, undefined);
+  assert.equal(composition.application.services.botLifecycleApi, undefined);
 });
