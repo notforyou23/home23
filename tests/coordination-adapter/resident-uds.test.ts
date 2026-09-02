@@ -290,7 +290,7 @@ test("resident UDS verifies canonical attachment bytes and gives AgentLoop image
   assert.equal(starts, 1, "invalid attachment paths must fail before AgentLoop starts");
 });
 
-test("resident UDS returns verified generated-image descriptors live and after restart", async (t) => {
+test("resident UDS verifies generated images and completed recovery never reruns missing turns", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "home23-resident-generated-image-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspacePath = join(root, "workspace");
@@ -545,6 +545,48 @@ test("resident UDS returns verified generated-image descriptors live and after r
   }
   residentWorkspacePath = workspacePath;
 
+  const assertIncompleteRecoveryIsReadOnly = async (
+    suffix: "e" | "f",
+    durableStart: boolean,
+  ) => {
+    const incompleteOrigin = {
+      ...origin,
+      workId: `wrk_0198d95f-6c00-7000-8000-0000000002${suffix}1`,
+      attemptId: `att_0198d95f-6c00-7000-8000-0000000002${suffix}2`,
+      leaseId: `lea_0198d95f-6c00-7000-8000-0000000002${suffix}3`,
+      originMessageId: `msg_0198d95f-6c00-7000-8000-0000000002${suffix}4`,
+    } as const;
+    const incompleteChatId = `coordination:test:completed-recovery-${suffix}`;
+    if (durableStart) {
+      store.writeStart(
+        incompleteChatId,
+        `coord-${incompleteOrigin.workId}`,
+        "fixture-model",
+        "fixture-provider",
+        { coordination_origin: incompleteOrigin },
+      );
+    }
+    let durableStartCallbacks = 0;
+    await assert.rejects(
+      restarted.port.runWithTurn(incompleteChatId, "must not execute", {
+        coordinationOrigin: incompleteOrigin,
+        coordinationRequest: {
+          requestId: `req_0198d95f-6c00-7000-8000-0000000002${suffix}5`,
+          correlationId: `cor_0198d95f-6c00-7000-8000-0000000002${suffix}6`,
+        },
+        turnSelection: { modelAlias: null, reasoningEffort: null },
+        completedRecovery: true,
+        onDurableStart: () => { durableStartCallbacks += 1; },
+        onEvent: () => undefined,
+      }),
+      (error: unknown) => error instanceof ResidentProtocolError && error.code === "request_invalid",
+    );
+    assert.equal(durableStartCallbacks, 0, "refused completed recovery must not announce a durable start");
+    assert.equal(starts, 1, "refused completed recovery must not invoke AgentLoop");
+  };
+  await assertIncompleteRecoveryIsReadOnly("e", false);
+  await assertIncompleteRecoveryIsReadOnly("f", true);
+
   rmSync(imagePath);
   const receiptRecovery = await restarted.port.runWithTurn(
     "coordination:test:generated-image",
@@ -552,8 +594,8 @@ test("resident UDS returns verified generated-image descriptors live and after r
     {
       coordinationOrigin: origin,
       coordinationRequest: {
-        requestId: "req_0198d95f-6c00-7000-8000-0000000002f5",
-        correlationId: "cor_0198d95f-6c00-7000-8000-0000000002f6",
+        requestId: "req_0198d95f-6c00-7000-8000-0000000002a7",
+        correlationId: "cor_0198d95f-6c00-7000-8000-0000000002a8",
       },
       turnSelection: { modelAlias: null, reasoningEffort: null },
       completedRecovery: true,

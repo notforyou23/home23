@@ -28,6 +28,7 @@ import type {
 } from "./types.js";
 
 const START = "/internal/v1/turns/start";
+const COMPLETED_RECOVERY_START = "/internal/v1/turns/recover-completed";
 const MODEL_CATALOG = "/internal/v1/models";
 const MAX_INSTRUCTION_BYTES = 262_144;
 const RESULT_RETRY_MS = 100;
@@ -721,7 +722,7 @@ export class ResidentTurnUdsServer {
       ? join(resolve(workspacePath),"media","generated-images")
       : undefined;
     if(options.credential.residentSlug!==options.residentSlug)throw new TypeError("resident credential slug does not match harness");
-    this.#server=new ResidentUdsServer({socketPath:options.socketPath,serverInstanceId:options.serverInstanceId,credentials:[options.credential],now:options.now,validateFence:(fence,request)=>request.method==="POST"&&request.path===START?typeof fence==="string"&&fence.length<512:true,handleRequest:(request,context)=>this.#handle(request,context.signal)});
+    this.#server=new ResidentUdsServer({socketPath:options.socketPath,serverInstanceId:options.serverInstanceId,credentials:[options.credential],now:options.now,validateFence:(fence,request)=>request.method==="POST"&&(request.path===START||request.path===COMPLETED_RECOVERY_START)?typeof fence==="string"&&fence.length<512:true,handleRequest:(request,context)=>this.#handle(request,context.signal)});
   }
   start(){return this.#server.start();}
   close(){return this.#server.close();}
@@ -737,6 +738,30 @@ export class ResidentTurnUdsServer {
         defaultProvider:this.options.agent.getProvider(),
         defaultReasoningEffort:this.options.agent.getReasoningEffort(),
         reasoningEfforts:[...REASONING_EFFORTS],
+      };
+    }
+    if(request.method==="POST"&&request.path===COMPLETED_RECOVERY_START){
+      const p=object(request.payload);const chatId=string(p.chatId,"chatId");const turnId=string(p.turnId,"turnId");const provenance=origin(p.origin);
+      assertResidentBinding(provenance,this.options.residentSlug,this.options.serverInstanceId);
+      const requested=turnSelection(p.turnSelection);
+      if(turnId!==`coord-${provenance.workId}`)throw new ResidentProtocolError("fence_invalid","resident turn ID does not match its Work origin");
+      if(request.fence!==residentFence(provenance)||request.correlationId!==string(p.correlationId,"correlationId"))throw new ResidentProtocolError("fence_invalid","resident turn fence or correlation does not match");
+      const started=this.#store.startEnvelope(chatId,turnId);
+      if(!started){
+        throw new ResidentProtocolError("request_invalid","completed recovery requires an exact durable resident start");
+      }
+      if(started.chat_id!==chatId||!exactOrigin(started.coordination_origin,provenance)){
+        throw new ResidentProtocolError("fence_invalid","resident turn origin does not match durable start");
+      }
+      const final=this.#store.finalEnvelope(chatId,turnId);
+      if(!final||final.chat_id!==chatId||final.status!=="complete"||typeof final.assistant_content!=="string"){
+        throw new ResidentProtocolError("request_invalid","completed recovery requires an exact complete resident turn");
+      }
+      if(signal.aborted)throw new ResidentProtocolError("request_cancelled","resident completed recovery was cancelled");
+      return{
+        turnId,chatId,persistedAt:exactTimestamp(final.ended_at??started.started_at,"resident completed recovery timestamp"),
+        recovered:true,completedRecovery:true,
+        selection:selectionJson(requested,{provider:started.provider??null,model:started.model??null,reasoningEffort:started.reasoning_effort??null}),
       };
     }
     if(request.method==="POST"&&request.path===START){
@@ -1002,13 +1027,18 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
     if(options.coordinationOrigin.authorityReference!==`resident:${this.options.residentSlug}`)throw new TypeError("resident authority does not match the configured port");
     const request=options.coordinationRequest;if(!request)throw new Error("resident coordination request identity is required");const turnId=`coord-${options.coordinationOrigin.workId}`;const fence=residentFence(options.coordinationOrigin);const now=()=>this.options.now?.()??Date.now();
     const requested=options.turnSelection??Object.freeze({modelAlias:null,reasoningEffort:null});
-    const attachments=(options.attachments??[]).map((attachment)=>({...attachment}));const payload={chatId,instruction:userText,attachments,turnId,origin:jsonOrigin(options.coordinationOrigin),correlationId:request.correlationId,turnSelection:{...requested}} as JsonValue;
+    const completedRecovery=options.completedRecovery===true;
+    const attachments=(options.attachments??[]).map((attachment)=>({...attachment}));
+    const payload=(completedRecovery
+      ? {chatId,turnId,origin:jsonOrigin(options.coordinationOrigin),correlationId:request.correlationId,turnSelection:{...requested}}
+      : {chatId,instruction:userText,attachments,turnId,origin:jsonOrigin(options.coordinationOrigin),correlationId:request.correlationId,turnSelection:{...requested}}) as JsonValue;
+    const startPath=completedRecovery?COMPLETED_RECOVERY_START:START;
     const startDeadlineAt=now()+this.#startTimeoutMs;let started;let firstStartRequest=true;
     for(;;){
       const remaining=startDeadlineAt-now();
       if(remaining<1)throw new ResidentProtocolError("deadline_exceeded","resident turn did not durably start before its overall deadline");
       try{
-        started=await this.options.client.request({method:"POST",path:START,payload,deadlineAtMs:now()+Math.min(this.#requestDeadlineMs,remaining),fence,correlationId:request.correlationId,...(firstStartRequest?{requestId:request.requestId}:{})});
+        started=await this.options.client.request({method:"POST",path:startPath,payload,deadlineAtMs:now()+Math.min(this.#requestDeadlineMs,remaining),fence,correlationId:request.correlationId,...(firstStartRequest?{requestId:request.requestId}:{})});
         break;
       }catch(caught){
         if(!retryableTransportWait(caught))throw caught;
@@ -1018,7 +1048,11 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
         await new Promise(resolve=>setTimeout(resolve,Math.min(this.#retryDelayMs,retryRemaining)));
       }
     }
-    const s=object(started.payload);const selection=selectionReceipt(s.selection,requested);const completedRecovery=options.completedRecovery===true&&s.recovered===true;await options.onDurableStart({turnId:string(s.turnId,"turnId"),chatId:string(s.chatId,"chatId"),persistedAt:string(s.persistedAt,"persistedAt"),selection});this.#active.set(turnId,{chatId,origin:options.coordinationOrigin,correlationId:request.correlationId});
+    const s=object(started.payload);const selection=selectionReceipt(s.selection,requested);const startedTurnId=string(s.turnId,"turnId");const startedChatId=string(s.chatId,"chatId");
+    if(completedRecovery&&(startedTurnId!==turnId||startedChatId!==chatId||s.recovered!==true||s.completedRecovery!==true)){
+      throw new ResidentProtocolError("request_invalid","resident completed recovery acknowledgement does not match");
+    }
+    await options.onDurableStart({turnId:startedTurnId,chatId:startedChatId,persistedAt:string(s.persistedAt,"persistedAt"),selection});this.#active.set(turnId,{chatId,origin:options.coordinationOrigin,correlationId:request.correlationId});
     const result=(async()=>{
       const resultDeadlineAt=now()+this.#resultTimeoutMs;
       for(;;){
