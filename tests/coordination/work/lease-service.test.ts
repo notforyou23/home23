@@ -1,7 +1,25 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
 
-import { createWorkService } from "../../../src/coordination/work/index.js";
+import {
+  LocalArtifactStore,
+  SqliteArtifactRepository,
+  resolveArtifactActor,
+} from "../../../src/coordination/artifacts/index.js";
+import {
+  SqliteBotConversationBindingAdapter,
+  SqliteMessagingRepository,
+} from "../../../src/coordination/channels/index.js";
+import { createMessageService } from "../../../src/coordination/messages/index.js";
+import {
+  createWorkService,
+  M11MessageProvenanceAuthority,
+} from "../../../src/coordination/work/index.js";
 import {
   AT,
   BOT_ID,
@@ -231,13 +249,89 @@ test("exhausted queued Work cancels exactly once after reopen without inventing 
   );
 });
 
-test("the exact current fence commits one immutable terminal receipt and terminal outbox atomically", async (t) => {
+test("a successful terminal receipt holds ordered artifacts across 24h recovery until Message link", async (t) => {
   const { LeaseError, createLeaseService } = await import("../../../src/coordination/leases/index.js");
   const database = M11TestDatabase.temporary();
   t.after(() => database.close());
+  const rootDirectory = await mkdtemp(join(tmpdir(), "home23-terminal-artifact-hold-"));
+  t.after(() => rm(rootDirectory, { recursive: true, force: true }));
+  const conversationId = "cnv_0198d95f-6c00-7000-8000-000000000050";
+  database.raw.prepare("INSERT INTO conversation_handles (id, channel_id, created_at) VALUES (?, ?, ?)")
+    .run(conversationId, CHANNEL_ID, AT);
+  database.raw.prepare(
+    `UPDATE bots SET conversation_id = ?, required_capabilities_json = ?,
+                     resident_capabilities_json = ? WHERE id = ?`,
+  ).run(
+    conversationId,
+    JSON.stringify(["attachments", "messages"]),
+    JSON.stringify(["attachments", "messages"]),
+    BOT_ID,
+  );
+  const botRecord = Object.freeze({
+    id: BOT_ID, principalId: BOT_ID, name: "Jerry", purpose: "Persistent resident",
+    lifecycle: "active" as const, conversationId, residentBinding: "jerry",
+    continuingIdentity: true, durableMailbox: true,
+    requiredCapabilities: Object.freeze(["attachments", "messages"]),
+    activeInstanceId: HOLDER_INSTANCE_ID, activeKeyVersion: 1, residentProtocolVersion: 1,
+    residentCapabilities: Object.freeze(["attachments", "messages"]), residentRegisteredAt: AT,
+    lastHeartbeatAt: AT, reportedAvailability: "available" as const,
+    availability: "available" as const, version: 1, createdAt: AT, updatedAt: AT,
+  });
+  const directory = {
+    listVisibleBots: async () => [botRecord],
+    resolveAlias: async (namespace: string, value: string) =>
+      namespace === "resident" && value === "jerry" ? botRecord : null,
+    getBotByResidentBinding: async (value: string) => value === "jerry" ? botRecord : null,
+  };
+  const residentContext = (suffix: number) => {
+    const requestId = fixtureId("request", suffix);
+    const correlationId = fixtureId("correlation", suffix);
+    return {
+      principalId: BOT_ID,
+      requestId,
+      correlationId,
+      identity: { kind: "resident" as const, resident: {
+        requestId,
+        correlationId,
+        credential: {
+          residentSlug: "jerry", role: "resident" as const,
+          instanceId: HOLDER_INSTANCE_ID, keyVersion: 1,
+        },
+      } },
+    };
+  };
+  let clock = new Date(AT);
+  const artifactRepository = new SqliteArtifactRepository(database);
+  const store = await LocalArtifactStore.open({
+    rootDirectory,
+    repository: artifactRepository,
+    now: () => clock,
+    quarantineId: () => "terminal-receipt-hold",
+  });
+  const artifactActor = await resolveArtifactActor(residentContext(49), directory);
+  const imageBytes = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const imageDigest = createHash("sha256").update(imageBytes).digest("hex");
+  const artifactIds = [
+    "art_0198d95f-6c00-7000-8000-000000000052",
+    "art_0198d95f-6c00-7000-8000-000000000051",
+  ];
+  const unacceptedArtifactId = "art_0198d95f-6c00-7000-8000-000000000055";
+  for (const [index, artifactId] of [...artifactIds, unacceptedArtifactId].entries()) {
+    await store.ingest({
+      artifactId,
+      actor: artifactActor,
+      originalName: `answer-${index}.png`,
+      declaredContentType: "image/png",
+      expectedSha256: imageDigest,
+      content: Readable.from([imageBytes]),
+    });
+  }
   const generateId = createFixtureIdGenerator(3_000);
   const work = createQueuedWork(database, generateId, 50);
-  let leases = createLeaseService({ database, generateId, now: () => new Date(AT), leaseTtlMs: 60_000 });
+  let leases = createLeaseService({ database, generateId, now: () => clock, leaseTtlMs: 60_000 });
   const offer = leases.offer({
     workId: work.id, holderPrincipalId: BOT_ID, holderInstanceId: HOLDER_INSTANCE_ID,
     authorityReference: AUTHORITY_REFERENCE, automatic: false,
@@ -246,11 +340,7 @@ test("the exact current fence commits one immutable terminal receipt and termina
   leases.accept(binding(work.id, offer, 52));
   leases.start(binding(work.id, offer, 53));
   database.reopen();
-  leases = createLeaseService({ database, generateId, now: () => new Date(AT), leaseTtlMs: 60_000 });
-  const artifactIds = [
-    "art_0198d95f-6c00-7000-8000-000000000052",
-    "art_0198d95f-6c00-7000-8000-000000000051",
-  ];
+  leases = createLeaseService({ database, generateId, now: () => clock, leaseTtlMs: 60_000 });
   const input = {
     ...binding(work.id, offer, 54),
     receipt: {
@@ -276,13 +366,58 @@ test("the exact current fence commits one immutable terminal receipt and termina
     )?.count,
     2,
   );
+  assert.deepEqual(database.readAll<{ id: string; expiresAt: string | null }>(
+    `SELECT id, expires_at AS expiresAt FROM artifacts
+     WHERE id IN (?, ?, ?) ORDER BY id`,
+    ...artifactIds,
+    unacceptedArtifactId,
+  ), [
+    { id: artifactIds[1], expiresAt: null },
+    { id: artifactIds[0], expiresAt: null },
+    { id: unacceptedArtifactId, expiresAt: "2026-08-26T16:00:00.000Z" },
+  ]);
 
   database.reopen();
-  leases = createLeaseService({ database, generateId, now: () => new Date(AT), leaseTtlMs: 60_000 });
+  clock = new Date("2026-08-27T16:00:00.000Z");
+  leases = createLeaseService({ database, generateId, now: () => clock, leaseTtlMs: 60_000 });
   const replay = leases.terminalize(input);
   assert.equal(replay.replayed, true);
   assert.deepEqual(replay.receipt.artifactIds, artifactIds);
   assert.equal(replay.receipt.receiptDigest, completed.receipt.receiptDigest);
+  assert.deepEqual(
+    (await store.expireDueDrafts({ actor: artifactActor })).expiredArtifactIds,
+    [unacceptedArtifactId],
+  );
+  const messages = createMessageService({
+    repository: new SqliteMessagingRepository(database, {
+      botConversationBinding: new SqliteBotConversationBindingAdapter(),
+      messageProvenanceAuthorization: new M11MessageProvenanceAuthority(),
+      artifactMessageLink: artifactRepository,
+    }),
+    participantDirectory: directory,
+    resolveAttachmentActor: (context) => resolveArtifactActor(context, directory),
+    now: () => clock,
+  });
+  const result = await messages.sendMessage({
+    context: residentContext(56),
+    channelId: CHANNEL_ID,
+    messageId: fixtureId("message", 56),
+    authorPrincipalId: BOT_ID,
+    idempotencyKey: "terminal-held-artifact-result",
+    kind: "result",
+    text: null,
+    mentions: [],
+    attachmentIds: artifactIds,
+    clientMessageId: null,
+    replyToMessageId: MESSAGE_ID,
+    tombstonesMessageId: null,
+    provenance: { roundId: null, workId: work.id },
+  });
+  assert.deepEqual(result.message.attachments.map((attachment) => attachment.id), artifactIds);
+  const download = await store.openDownload({ artifactId: artifactIds[0], actor: artifactActor });
+  const chunks: Buffer[] = [];
+  for await (const chunk of download.content) chunks.push(Buffer.from(chunk));
+  assert.deepEqual(Buffer.concat(chunks), imageBytes);
   assert.throws(
     () => leases.terminalize({
       ...input,

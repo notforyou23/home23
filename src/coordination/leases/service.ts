@@ -729,6 +729,25 @@ export function createLeaseService(options: CreateLeaseServiceOptions) {
         workId: current.work.id,
       }));
       options.database.mutateWithEvent((transaction) => {
+        // The successful receipt is the durable acceptance boundary. Hold its
+        // exact promoted drafts in this same transaction so recovery can link
+        // them to the result Message after an arbitrarily long outage.
+        if (normalized.status === "succeeded") {
+          for (const artifactId of normalized.artifactIds) {
+            const held = transaction.run(
+              `UPDATE artifacts SET expires_at = NULL
+               WHERE id = ? AND owner_principal_id = ? AND state = 'ready'
+                 AND (expires_at IS NULL OR expires_at > ?)`,
+              artifactId, current.work.targetPrincipalId, normalized.createdAt,
+            );
+            if (held.changes !== 1) {
+              throw new LeaseError(
+                "invalid_request",
+                "successful terminal artifacts must be live promoted artifacts owned by the Work target",
+              );
+            }
+          }
+        }
         transaction.run(
           `INSERT INTO terminal_receipts (
             work_id, attempt_id, fencing_token, terminal_status, source_reference,
