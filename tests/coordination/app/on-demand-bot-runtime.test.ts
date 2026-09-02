@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import { createServer, type Server } from "node:http";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -44,29 +42,55 @@ const authority = Object.freeze({
 });
 
 async function startModelFixture() {
+  const baseUrl = "http://home23-on-demand-model.test/v1";
+  const originalFetch = globalThis.fetch;
   const requests: Array<{ messages?: Array<{ role?: string; content?: unknown }> }> = [];
-  const server: Server = createServer(async (request, response) => {
-    if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
-      response.writeHead(404).end();
-      return;
+  let activeRequests = 0;
+  let maximumActiveRequests = 0;
+  const contentText = (content: unknown): string => {
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content.map((block) =>
+      block && typeof block === "object" && "text" in block &&
+        typeof (block as { text?: unknown }).text === "string"
+        ? (block as { text: string }).text
+        : ""
+    ).join("");
+  };
+  globalThis.fetch = (async (request: string | URL | Request, init?: RequestInit) => {
+    const url = typeof request === "string"
+      ? request
+      : request instanceof URL
+        ? request.href
+        : request.url;
+    if (url !== `${baseUrl}/chat/completions`) return originalFetch(request, init);
+    assert.equal(init?.method, "POST");
+    assert.equal(typeof init?.body, "string");
+    const body = JSON.parse(init.body as string) as
+      { messages?: Array<{ role?: string; content?: unknown }> };
+    requests.push(body);
+    activeRequests += 1;
+    maximumActiveRequests = Math.max(maximumActiveRequests, activeRequests);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      const current = [...(body.messages ?? [])].reverse()
+        .find((message) => message.role === "user");
+      const prompt = contentText(current?.content);
+      const answer = prompt === "Lens, give me the concise answer."
+        ? "Lens answered from its own durable context."
+        : `Lens answer for: ${prompt}`;
+      return new Response(JSON.stringify({
+        choices: [{ message: { role: "assistant", content: answer } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    } finally {
+      activeRequests -= 1;
     }
-    const chunks: Buffer[] = [];
-    for await (const chunk of request) chunks.push(Buffer.from(chunk));
-    requests.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({
-      choices: [{ message: { role: "assistant", content: "Lens answered from its own durable context." } }],
-    }));
-  });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
+  }) as typeof fetch;
   return {
-    baseUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
+    baseUrl,
     requests,
-    close: () => new Promise<void>((resolve, reject) =>
-      server.close((error) => error ? reject(error) : resolve())),
+    maximumActiveRequests: () => maximumActiveRequests,
+    close: () => { globalThis.fetch = originalFetch; },
   };
 }
 
@@ -190,16 +214,21 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
   const firstService = makeService();
   const selection = await firstService.selectionOptions({ context: owner, channelId: CHANNEL_ID });
   assert.equal(selection.defaultModel, "fixture-local-model");
+  assert.deepEqual(selection.capabilities, ["messages"]);
   assert.equal(existsSync(join(botsRoot, BOT_ID)), false,
     "catalog lookup must not wake or instantiate the Bot");
-  const submitted = await firstService.submitMessage({
+  const send = (
+    service: ReturnType<typeof makeService>,
+    suffix: number,
+    text: string,
+  ) => service.submitMessage({
     context: owner,
     channelId: CHANNEL_ID,
-    idempotencyKey: "on-demand-lens-message-0001",
+    idempotencyKey: `on-demand-lens-message-${String(suffix).padStart(4, "0")}`,
     body: {
-      messageId: fixtureId("message", 970),
-      clientMessageId: "client-on-demand-lens-1",
-      text: "Lens, give me the concise answer.",
+      messageId: fixtureId("message", 970 + suffix - 1),
+      clientMessageId: `client-on-demand-lens-${suffix}`,
+      text,
       attachmentIds: [],
       mentions: [],
       replyToMessageId: null,
@@ -207,6 +236,8 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
       reasoningEffort: null,
     },
   });
+  const firstPrompt = "Lens, give me the concise answer.";
+  const submitted = await send(firstService, 1, firstPrompt);
   await assert.rejects(submitted.response, /fixture result commit interruption/);
   assert.equal(submitted.work.kind, "bot_turn");
   assert.equal(model.requests.length, 1);
@@ -217,6 +248,19 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
     "SELECT authority_reference AS authority FROM attempts WHERE work_id = ?",
     submitted.work.id,
   )?.authority, `bot:${BOT_ID}`);
+  await assert.rejects(
+    botRepository.transitionLifecycle({
+      botId: BOT_ID,
+      from: "active",
+      to: "archived",
+      actorPrincipalId: "user_owner",
+      requestId: fixtureId("request", 975),
+      correlationId: fixtureId("correlation", 975),
+      changedAt: "2026-08-25T16:01:00.000Z",
+    }),
+    (error: unknown) => (error as { code?: string }).code === "bot_has_unsettled_work",
+  );
+  assert.equal((await botRepository.getBotById(BOT_ID))?.lifecycle, "active");
 
   const restartedService = makeService();
   const recovery = await restartedService.recoverResidentWork();
@@ -236,6 +280,76 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
   assert.equal(results[0]?.text, "Lens answered from its own durable context.");
   assert.equal(results[0]?.author.kind, "bot");
 
+  const occurrences = (value: string, needle: string) => value.split(needle).length - 1;
+  const firstRequest = JSON.stringify(model.requests[0]);
+  assert.equal(occurrences(firstRequest, "not exposed"), 1);
+  assert.equal(occurrences(firstRequest, firstPrompt), 1);
+
+  const secondPrompt = "What did I ask you first?";
+  const second = await send(restartedService, 2, secondPrompt);
+  const secondResult = await second.response;
+  assert.equal(secondResult.text, `Lens answer for: ${secondPrompt}`);
+  assert.equal(model.requests.length, 2);
+  const secondRequest = JSON.stringify(model.requests[1]);
+  for (const prior of [
+    "not exposed",
+    firstPrompt,
+    "Lens answered from its own durable context.",
+    secondPrompt,
+  ]) {
+    assert.equal(occurrences(secondRequest, prior), 1,
+      `Bot-local durable history must contain ${JSON.stringify(prior)} exactly once`);
+  }
+
+  const thirdPrompt = "Concurrent question alpha";
+  const fourthPrompt = "Concurrent question beta";
+  const [third, fourth] = await Promise.all([
+    send(restartedService, 3, thirdPrompt),
+    send(restartedService, 4, fourthPrompt),
+  ]);
+  const [thirdResult, fourthResult] = await Promise.all([third.response, fourth.response]);
+  assert.equal(thirdResult.text, `Lens answer for: ${thirdPrompt}`);
+  assert.equal(fourthResult.text, `Lens answer for: ${fourthPrompt}`);
+  assert.equal(model.requests.length, 4);
+  assert.equal(model.maximumActiveRequests(), 1,
+    "one Bot/channel history must never execute overlapping model turns");
+  assert.equal(activeWork, 0);
+
+  const evidence = communications.history({
+    afterSequence: 0,
+    limit: 1_000,
+    requestId: fixtureId("request", 976),
+    conversationId: CONVERSATION_ID,
+  });
+  assert.equal(evidence.kind, "events");
+  if (evidence.kind !== "events") return;
+  const runtimeEvidence = evidence.events.filter((event) =>
+    event.workId === submitted.work.id && event.source.adapter === "agent_loop"
+  );
+  assert.ok(runtimeEvidence.length > 0);
+  assert.ok(runtimeEvidence.every((event) => event.actor.kind === "specialist_bot"));
+  const evidenceText = JSON.stringify(runtimeEvidence);
+  for (const botTerm of ["bot_runtime", "botSequence", "botStatus", "botTerminal"]) {
+    assert.equal(evidenceText.includes(botTerm), true, `missing ${botTerm} evidence`);
+  }
+  for (const residentTerm of [
+    "resident_runtime", "residentSequence", "residentStatus", "residentTerminal",
+  ]) {
+    assert.equal(evidenceText.includes(residentTerm), false,
+      `processless Bot evidence leaked resident term ${residentTerm}`);
+  }
+
+  const archived = await botRepository.transitionLifecycle({
+    botId: BOT_ID,
+    from: "active",
+    to: "archived",
+    actorPrincipalId: "user_owner",
+    requestId: fixtureId("request", 977),
+    correlationId: fixtureId("correlation", 977),
+    changedAt: "2026-08-25T16:02:00.000Z",
+  });
+  assert.equal(archived.lifecycle, "archived");
+
   const botRoot = join(botsRoot, BOT_ID);
   const identity = readFileSync(join(botRoot, "workspace", "IDENTITY.md"), "utf8");
   assert.match(identity, /You are Lens/);
@@ -245,6 +359,16 @@ test("a lifecycle-created Bot answers on demand from its own durable namespace a
   assert.equal(requestText.includes(PRIVATE_RESIDENT_SENTINEL), false);
   const historyFiles = readdirSync(join(botRoot, "state", "history"));
   assert.equal(historyFiles.length, 1);
-  assert.match(readFileSync(join(botRoot, "state", "history", historyFiles[0]!), "utf8"),
-    /Lens answered from its own durable context/);
+  const durableHistory = readFileSync(join(botRoot, "state", "history", historyFiles[0]!), "utf8");
+  assert.match(durableHistory, /Lens answered from its own durable context/);
+  const durableMessages = durableHistory.trim().split("\n")
+    .map((line) => JSON.parse(line) as { role?: string; content?: unknown })
+    .filter((record) => record.role === "user" || record.role === "assistant");
+  const durableUserTexts = durableMessages
+    .filter((record) => record.role === "user")
+    .map((record) => record.content);
+  for (const phrase of ["not exposed", firstPrompt, secondPrompt, thirdPrompt, fourthPrompt]) {
+    assert.equal(durableUserTexts.filter((content) => content === phrase).length, 1,
+      `durable Bot history duplicated ${JSON.stringify(phrase)}`);
+  }
 });

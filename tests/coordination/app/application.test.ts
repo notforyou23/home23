@@ -400,11 +400,8 @@ test("unfinished M11 ports cannot activate message or Work capabilities", () => 
   assert.equal(application.capabilities().capabilities.workMutation, false);
 });
 
-test("message submission for a Forrest-only resident requires the exact persisted canonical writer", () => {
-  const flags = {
-    ...enabledShellFlags,
-    "coordination.resident.forrest.enabled": true,
-  };
+test("message submission for a processless Bot requires the exact persisted canonical writer", () => {
+  const flags = enabledShellFlags;
   const base = {
     auth: { validateAccessToken: async () => { throw new Error("unused"); } },
     messageSubmission: { submitMessage: async () => ({}) },

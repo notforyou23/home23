@@ -48,7 +48,7 @@ export interface ResidentTurnSelectionReceipt {
 }
 
 export interface ResidentModelCatalog {
-  capabilities: typeof HOUSE_RESIDENT_CAPABILITIES;
+  capabilities: readonly (typeof HOUSE_RESIDENT_CAPABILITIES)[number][];
   models: readonly Readonly<{
     alias: string;
     provider: string;
@@ -95,6 +95,15 @@ export interface ResidentDurableTerminal {
 
 export interface ResidentCommunicationPort {
   append(input: AppendCommunicationEventInput): unknown | Promise<unknown>;
+}
+
+/** Inspector/evidence vocabulary for one execution kind. */
+export interface CoordinationExecutionEvidenceTaxonomy {
+  eventIdPrefix: "resident-turn" | "bot-turn";
+  runtimeSystem: "resident_runtime" | "bot_runtime";
+  sequenceField: "residentSequence" | "botSequence";
+  terminalStatusField: "residentStatus" | "botStatus";
+  terminalPayloadField: "residentTerminal" | "botTerminal";
 }
 
 export type ResidentTerminalStatus = 'succeeded' | 'failed' | 'cancelled';

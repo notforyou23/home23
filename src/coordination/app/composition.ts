@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { dirname, resolve } from "node:path";
 
 import {
   ArtifactError,
@@ -593,7 +592,7 @@ export function createCoordinationProcess(
       const resolveResident = (residentBinding: string) =>
         residentTargets.get(residentBinding);
       const onDemandBots = createOnDemandBotRuntime({
-        botsRootDirectory: resolve(dirname(config.databasePath), "bots"),
+        botsRootDirectory: config.botRootDirectory,
         bots: { getBotById: (botId) => botRepository.getBotById(botId) },
         leases,
         communications,

@@ -219,6 +219,9 @@ export function adaptTrustedM11ActivityFact(
   if (["succeeded", "failed", "cancelled"].includes(fact.observedState) && !terminal) return null;
   const kind = category(fact);
   const version = sourceVersion(fact);
+  const authoritySystem = fact.authorityReference.startsWith("bot:")
+    ? "bot_turn" as const
+    : "resident_turn" as const;
   const event: EventEnvelope = Object.freeze({
     ...fact.event,
     type: "activity.updated",
@@ -246,7 +249,7 @@ export function adaptTrustedM11ActivityFact(
     }),
     observation: Object.freeze({
       id,
-      authoritySystem: "resident_turn" as const,
+      authoritySystem,
       authorityId: fact.authorityReference,
       sourceVersion: version,
       observedState: fact.observedState,

@@ -34,6 +34,7 @@ test("disabled defaults retain loopback-only paths without requiring runtime sta
   assert.equal(config.host, "127.0.0.1");
   assert.equal(Object.values(config.flags).some(Boolean), false);
   assert.match(config.databasePath, /instances\/.house\/coordination\/home23-coordination\.sqlite3$/);
+  assert.equal(config.botRootDirectory, join(input.root, "instances", ".house", "bots"));
   assert.match(config.socketPath, /instances\/.house\/coordination\/coord\.sock$/);
   assert.equal(config.attachments?.enabled, false);
   assert.equal(config.activity?.enabled, false);

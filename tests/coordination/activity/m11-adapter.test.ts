@@ -119,6 +119,25 @@ test("a queued Work without an Attempt preserves the explicit zero-fence seam", 
   assert.equal(adapted?.event.payload.category, "waiting");
 });
 
+test("processless Bot Work keeps bot_turn authority vocabulary through Activity", () => {
+  const botAuthority = `bot:${fixtureId("bot", 705)}`;
+  const specialist = fact(1, { authorityReference: botAuthority });
+  const adapted = adaptTrustedM11ActivityFact(specialist);
+  assert.equal(adapted?.observation.authoritySystem, "bot_turn");
+  const result = projectTrustedM11Activity({
+    sourceWindow: sourceWindow(0, 1),
+    events: [specialist.event],
+    messages: [],
+    facts: [specialist],
+    ...trustedDependencies(1),
+  });
+  assert.equal(result.kind, "projected");
+  if (result.kind === "projected") {
+    assert.equal(result.projection.entries[0]?.source.authoritySystem, "bot_turn");
+    assert.equal(result.projection.entries[0]?.source.authorityId, botAuthority);
+  }
+});
+
 test("a queued Work can hand authority to its first fenced resident Attempt", () => {
   const outboxId = `obx_${fixtureId("event", 702).slice(4)}`;
   const queued = fact(1, {

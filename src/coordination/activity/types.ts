@@ -53,7 +53,7 @@ export interface ActivityActor {
 /** Exact locked work-observation fields; arbitrary diagnostic bags are omitted. */
 export interface ActivityWorkObservation {
   id: string;
-  authoritySystem: "resident_turn";
+  authoritySystem: "resident_turn" | "bot_turn";
   authorityId: string;
   sourceVersion: string;
   observedState: ActivityObservedState;
@@ -95,7 +95,7 @@ export interface ActivitySourceStamp {
   kind: "event" | "work_observation";
   id: string;
   eventType: string | null;
-  authoritySystem: "resident_turn" | null;
+  authoritySystem: "resident_turn" | "bot_turn" | null;
   authorityId: string | null;
   sourceVersion: string | null;
   freshness: ActivityFreshness | null;

@@ -13,6 +13,7 @@ import type {
   ActivitySourceStamp,
   ActivityState,
   ActivityTerminalReason,
+  ActivityWorkObservation,
   ActivityWorkObservationInput,
   ProjectActivityInput,
 } from "./types.js";
@@ -25,6 +26,9 @@ const FRESHNESS = new Set<ActivityFreshness>([
 ]);
 const OBSERVED_STATES = new Set<ActivityObservedState>([
   "queued", "leased", "running", "cancelling", "succeeded", "failed", "cancelled",
+]);
+const AUTHORITY_SYSTEMS = new Set<ActivityWorkObservation["authoritySystem"]>([
+  "resident_turn", "bot_turn",
 ]);
 const STATE_BY_CATEGORY: Readonly<Record<ActivityCategory, readonly ActivityObservedState[]>> = {
   started: ["leased", "running"],
@@ -268,7 +272,9 @@ function normalizeWorkInput(value: unknown): NormalizedWorkInput | null {
     !validId("channel", binding.channelId) || !validId("principal", binding.actorPrincipalId) ||
     binding.workId !== event.aggregate.id || binding.channelId !== event.channelId ||
     binding.actorPrincipalId !== event.actorPrincipalId ||
-    !validId("workObservation", observation.id) || observation.authoritySystem !== "resident_turn" ||
+    !validId("workObservation", observation.id) ||
+    typeof observation.authoritySystem !== "string" ||
+    !AUTHORITY_SYSTEMS.has(observation.authoritySystem as ActivityWorkObservation["authoritySystem"]) ||
     typeof observation.authorityId !== "string" || !SAFE_REFERENCE.test(observation.authorityId) ||
     typeof observation.sourceVersion !== "string" || !SAFE_REFERENCE.test(observation.sourceVersion) ||
     typeof observation.observedState !== "string" ||
@@ -312,7 +318,7 @@ function normalizeWorkInput(value: unknown): NormalizedWorkInput | null {
     },
     observation: {
       id: observation.id,
-      authoritySystem: "resident_turn",
+      authoritySystem: observation.authoritySystem as ActivityWorkObservation["authoritySystem"],
       authorityId: observation.authorityId,
       sourceVersion: observation.sourceVersion,
       observedState,

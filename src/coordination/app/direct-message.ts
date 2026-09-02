@@ -5,7 +5,9 @@ import type {
   ResidentCommunicationPort,
   ResidentCoordinationAdapter,
   ResidentInputAttachment,
+  ResidentRun,
   ResidentTerminalReceipt,
+  ResidentWorkRequest,
 } from "../../coordination-adapter/index.js";
 import { MessagingError, type MessagingActorContext } from "../channels/index.js";
 import {
@@ -33,8 +35,17 @@ export interface DirectMessageChannelContext {
   targetPrincipalId: string;
   residentBinding: string;
   instruction: string;
+  historyBackfill: readonly DirectMessageHistoryEntry[];
   attachments: readonly ResidentInputAttachment[];
   manifest: ContextManifestInput;
+}
+
+export interface DirectMessageHistoryEntry {
+  messageId: string;
+  sequence: number;
+  role: "user" | "assistant";
+  text: string;
+  createdAt: string;
 }
 
 export interface DirectMessageContextPort {
@@ -87,10 +98,20 @@ export type DirectMessageTargetDescriptor = Pick<DirectMessageChannelContext,
   "channelId" | "conversationId" | "targetBotId" | "targetBotDisplayName" |
   "targetPrincipalId" | "residentBinding">;
 
+export type DirectMessageExecutionRequest = ResidentWorkRequest & Readonly<{
+  historyBackfill: readonly DirectMessageHistoryEntry[];
+}>;
+
+export interface DirectMessageExecutionPort {
+  execute(input: DirectMessageExecutionRequest): Promise<ResidentRun>;
+  continueAccepted(input: DirectMessageExecutionRequest): Promise<ResidentRun>;
+  reattach(input: DirectMessageExecutionRequest): Promise<ResidentRun>;
+  recoverCompleted(input: DirectMessageExecutionRequest): Promise<ResidentRun>;
+}
+
 /** Exact execution authority for either a permanent resident or an on-demand Bot. */
 export interface DirectMessageExecutionTarget {
-  execution: Pick<ResidentCoordinationAdapter,
-    "execute" | "continueAccepted" | "reattach" | "recoverCompleted">;
+  execution: DirectMessageExecutionPort;
   holderInstanceId: string;
   models: Pick<ResidentAgentPort, "modelCatalog">;
   context(input: {
@@ -101,6 +122,7 @@ export interface DirectMessageExecutionTarget {
   workKind: "resident_turn" | "bot_turn";
   authorityReference: string;
   actorKind: "resident_bot" | "specialist_bot";
+  acceptsAttachments?(attachments: readonly ResidentInputAttachment[]): boolean;
 }
 
 /** Idempotent, lossless communication evidence for canonical Message commits. */
@@ -320,6 +342,7 @@ export function createDirectMessageSubmissionService(options: {
       const executionRequest = {
         chatId: `coordination:${input.prepared.channelId}:${input.work.id}`,
         instruction: input.prepared.instruction, origin,
+        historyBackfill: input.prepared.historyBackfill,
         attachments: input.prepared.attachments,
         requestId: input.requestId, correlationId: input.correlationId,
         turnSelection: options.work.getTurnSelection(input.work.id),
@@ -416,6 +439,9 @@ export function createDirectMessageSubmissionService(options: {
           if (target.workKind !== work.kind) {
             throw new Error("direct-message Work target kind changed");
           }
+          if (target.acceptsAttachments?.(recovered.prepared.attachments) === false) {
+            throw new Error("direct-message Work contains unsupported attachments");
+          }
           const identity = options.recoveryIdentity();
           const endWork = once(options.beginWork());
           dispatch({
@@ -499,6 +525,9 @@ export function createDirectMessageSubmissionService(options: {
         // an accepted response. The owner Message remains the canonical record
         // of what was submitted, but no unroutable Work may be advertised.
         const target = await executionTargetFor(prepared);
+        if (target.acceptsAttachments?.(prepared.attachments) === false) {
+          throw new MessagingError("request_invalid");
+        }
         const created = options.work.create({
           principalId: input.context.principalId, targetPrincipalId: prepared.targetPrincipalId,
           channelId: input.channelId, originMessageId: appended.message.id, roundId: null,

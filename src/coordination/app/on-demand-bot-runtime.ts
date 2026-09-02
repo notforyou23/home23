@@ -22,7 +22,7 @@ import {
 import { createSeededToolRegistry } from "../../agent/tools/index.js";
 import type { AgentEvent, AgentResponse, ToolContext } from "../../agent/types.js";
 import { resolveProviderKey } from "../../agent/provider-credentials.js";
-import { loadConfig } from "../../config.js";
+import { loadHomeConfig } from "../../config.js";
 import { TurnStore } from "../../chat/turn-store.js";
 import { isTurnEnvelope, type TurnEnvelope } from "../../chat/turn-types.js";
 import type {
@@ -30,6 +30,7 @@ import type {
   ResidentDurableEvent,
   ResidentDurableTerminal,
   ResidentInputAttachment,
+  ResidentRun,
 } from "../../coordination-adapter/index.js";
 import type {
   ResidentModelCatalog,
@@ -37,20 +38,23 @@ import type {
   ResidentTurnSelectionRequest,
 } from "../../coordination-adapter/types.js";
 import {
+  BOT_TURN_EVIDENCE_TAXONOMY,
   ResidentCoordinationAdapter,
   createM11ResidentCoordinationPort,
   type ResidentCommunicationPort,
 } from "../../coordination-adapter/index.js";
 import type { BotDirectoryRecord } from "../bots/index.js";
-import { HOUSE_RESIDENT_CAPABILITIES } from "../house-resident-capabilities.js";
 import { assertCoordinationId } from "../ids/index.js";
 import type { CoordinationLeasePort } from "./types.js";
 import type {
   DirectMessageExecutionTarget,
+  DirectMessageExecutionRequest,
+  DirectMessageHistoryEntry,
   DirectMessageTargetDescriptor,
 } from "./direct-message.js";
 
 const PERMANENT_RESIDENTS = new Set(["jerry", "forrest"]);
+const ON_DEMAND_BOT_CAPABILITIES = Object.freeze(["messages"] as const);
 const TURN_PREFIX = "coord-";
 
 export interface OnDemandBotModelConfiguration {
@@ -91,10 +95,7 @@ function providerDefinition(
 }
 
 function defaultModelConfiguration(): OnDemandBotModelConfiguration {
-  // This deliberately reads only Home-level model/provider defaults. The
-  // synthetic name has no resident instance config and cannot load Jerry or
-  // Forrest identity, workspace, history, or brain state.
-  const config = loadConfig("__home23_core_on_demand__");
+  const config = loadHomeConfig();
   const defaultModel = config.chat.defaultModel ?? config.chat.model;
   const defaultProvider = config.chat.defaultProvider ?? config.chat.provider;
   const providers = config.providers as Record<string, unknown> | undefined;
@@ -148,21 +149,6 @@ function exactOrigin(
     left.roundId === right.roundId;
 }
 
-function attachmentInstruction(
-  instruction: string,
-  attachments: readonly ResidentInputAttachment[],
-): string {
-  if (attachments.length === 0) return instruction;
-  const manifest = attachments.map((attachment, index) =>
-    `${index + 1}. name=${JSON.stringify(attachment.name)} ` +
-    `type=${attachment.contentType} bytes=${attachment.byteCount} ` +
-    `sha256=${attachment.sha256} path=${JSON.stringify(attachment.path)}`
-  ).join("\n");
-  return `${instruction.trim() ? `${instruction}\n\n` : ""}` +
-    `[Canonical user attachments]\n${manifest}\n` +
-    "Use the attached image bytes when relevant; other files are identified by their verified local paths.";
-}
-
 function terminalFrom(
   store: TurnStore,
   chatId: string,
@@ -208,7 +194,7 @@ function selectionReceipt(
 
 function modelCatalog(config: OnDemandBotModelConfiguration): ResidentModelCatalog {
   return Object.freeze({
-    capabilities: HOUSE_RESIDENT_CAPABILITIES,
+    capabilities: ON_DEMAND_BOT_CAPABILITIES,
     models: Object.freeze(Object.entries(config.modelAliases)
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([alias, value]) => Object.freeze({
@@ -243,6 +229,32 @@ class OnDemandBotAgentPort implements ResidentAgentPort {
 
   private chatId(channelId: string): string {
     return `on-demand:${this.bot.id}:${channelId}`;
+  }
+
+  backfillCanonicalHistory(
+    channelId: string,
+    entries: readonly DirectMessageHistoryEntry[],
+  ): void {
+    const chatId = this.chatId(channelId);
+    if (this.history.load(chatId).some((record) => "role" in record)) return;
+    let priorSequence = 0;
+    for (const entry of entries) {
+      assertCoordinationId("message", entry.messageId);
+      if (
+        !Number.isSafeInteger(entry.sequence) || entry.sequence <= priorSequence ||
+        (entry.role !== "user" && entry.role !== "assistant") ||
+        typeof entry.text !== "string" || Number.isNaN(new Date(entry.createdAt).valueOf())
+      ) {
+        throw new Error("canonical Bot history backfill is invalid");
+      }
+      priorSequence = entry.sequence;
+    }
+    if (entries.length === 0) return;
+    this.history.append(chatId, entries.map((entry) => ({
+      role: entry.role,
+      content: entry.text,
+      ts: entry.createdAt,
+    })));
   }
 
   private turnIds(chatId: string, workId: string): string[] {
@@ -322,6 +334,9 @@ class OnDemandBotAgentPort implements ResidentAgentPort {
     options: Parameters<ResidentAgentPort["runWithTurn"]>[2],
   ) {
     const origin = options.coordinationOrigin;
+    if ((options.attachments?.length ?? 0) > 0) {
+      throw new Error("processless Bot attachments are unsupported");
+    }
     if (
       origin.authorityReference !== `bot:${this.bot.id}` ||
       origin.holderPrincipalId !== this.bot.principalId
@@ -375,23 +390,13 @@ class OnDemandBotAgentPort implements ResidentAgentPort {
     const turnId = priorTurnIds.length === 0
       ? `${TURN_PREFIX}${origin.workId}`
       : `${TURN_PREFIX}${origin.workId}-recovery-${priorTurnIds.length}`;
-    const attachments = options.attachments ?? [];
-    const media = attachments
-      .filter((attachment) => attachment.contentType.startsWith("image/"))
-      .map((attachment) => ({
-        type: "image" as const,
-        path: attachment.path,
-        mimeType: attachment.contentType,
-        fileName: attachment.name,
-      }));
     let sequence = 0;
     const started = await this.agent.runWithTurn(
       chatId,
-      attachmentInstruction(userText, attachments),
+      userText,
       {
         turnId,
         coordinationOrigin: origin,
-        ...(media.length > 0 ? { media } : {}),
         ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
         ...(requested.reasoningEffort ? { effort: requested.reasoningEffort } : {}),
         onDurableStart: async (start) => options.onDurableStart({
@@ -536,9 +541,12 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
       if (cached?.version === bot.version) return cached.target;
 
       const config = modelConfiguration();
-      let adapter: ResidentCoordinationAdapter | null = null;
-      const executionAdapter = (): ResidentCoordinationAdapter => {
-        if (adapter) return adapter;
+      let executionRuntime: {
+        adapter: ResidentCoordinationAdapter;
+        port: OnDemandBotAgentPort;
+      } | null = null;
+      const requireExecutionRuntime = () => {
+        if (executionRuntime) return executionRuntime;
         const botRoot = ensureBotRoot(options.botsRootDirectory, bot.id);
         const workspacePath = ensurePrivateDirectory(botRoot, "workspace");
         const statePath = ensurePrivateDirectory(botRoot, "state");
@@ -603,25 +611,52 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
         });
         if (config.providerMap) agent.setProviderMap(config.providerMap);
         const port = new OnDemandBotAgentPort(bot, agent, history, config);
-        adapter = new ResidentCoordinationAdapter(
+        const adapter = new ResidentCoordinationAdapter(
           port,
           createM11ResidentCoordinationPort(options.leases),
           undefined,
           options.communications,
+          undefined,
+          BOT_TURN_EVIDENCE_TAXONOMY,
         );
-        return adapter;
+        executionRuntime = { adapter, port };
+        return executionRuntime;
+      };
+      const serial = new Map<string, Promise<void>>();
+      const serialize = async (
+        operation: "execute" | "continueAccepted" | "reattach" | "recoverCompleted",
+        input: DirectMessageExecutionRequest,
+      ): Promise<ResidentRun> => {
+        const key = input.origin.channelId;
+        const prior = serial.get(key) ?? Promise.resolve();
+        const start = prior.catch(() => undefined).then(async () => {
+          const runtime = requireExecutionRuntime();
+          runtime.port.backfillCanonicalHistory(key, input.historyBackfill);
+          return runtime.adapter[operation](input);
+        });
+        // Preserve the adapter's immediate-run contract for live progress while
+        // keeping the next turn behind this turn's complete durable lifecycle.
+        const tail = start.then(
+          async (started) => {
+            await Promise.allSettled([started.response, started.receipt]);
+          },
+          () => undefined,
+        );
+        serial.set(key, tail);
+        void tail.then(() => {
+          if (serial.get(key) === tail) serial.delete(key);
+        });
+        return start;
       };
       const holderInstanceId = `home23-core-on-demand:${bot.id}`;
       const target: DirectMessageExecutionTarget = Object.freeze({
         execution: Object.freeze({
-          execute: (input: Parameters<ResidentCoordinationAdapter["execute"]>[0]) =>
-            executionAdapter().execute(input),
-          continueAccepted: (input: Parameters<ResidentCoordinationAdapter["continueAccepted"]>[0]) =>
-            executionAdapter().continueAccepted(input),
-          reattach: (input: Parameters<ResidentCoordinationAdapter["reattach"]>[0]) =>
-            executionAdapter().reattach(input),
-          recoverCompleted: (input: Parameters<ResidentCoordinationAdapter["recoverCompleted"]>[0]) =>
-            executionAdapter().recoverCompleted(input),
+          execute: (input: DirectMessageExecutionRequest) => serialize("execute", input),
+          continueAccepted: (input: DirectMessageExecutionRequest) =>
+            serialize("continueAccepted", input),
+          reattach: (input: DirectMessageExecutionRequest) => serialize("reattach", input),
+          recoverCompleted: (input: DirectMessageExecutionRequest) =>
+            serialize("recoverCompleted", input),
         }),
         holderInstanceId,
         models: Object.freeze({ modelCatalog: async () => modelCatalog(config) }),
@@ -641,6 +676,8 @@ export function createOnDemandBotRuntime(options: OnDemandBotRuntimeOptions) {
         workKind: "bot_turn",
         authorityReference: `bot:${bot.id}`,
         actorKind: "specialist_bot",
+        acceptsAttachments: (attachments: readonly ResidentInputAttachment[]) =>
+          attachments.length === 0,
       });
       targets.set(bot.id, { version: bot.version, target });
       return target;

@@ -4,7 +4,11 @@ import type { AttachmentSummary } from "../artifacts/index.js";
 import type { ResidentInputAttachment } from "../../coordination-adapter/index.js";
 import type { M11Database } from "../work/index.js";
 import type { WorkRecord } from "../work/index.js";
-import { directMessageManifest, type DirectMessageContextPort } from "./direct-message.js";
+import {
+  directMessageManifest,
+  type DirectMessageContextPort,
+  type DirectMessageHistoryEntry,
+} from "./direct-message.js";
 
 interface DirectBindingRow {
   conversationId: string;
@@ -28,8 +32,10 @@ interface RecoveryManifestRow {
 interface RecoveryMessageRow {
   id: string;
   sequence: number;
+  authorPrincipalId: string;
   authorDisplayName: string;
   text: string | null;
+  createdAt: string;
 }
 
 type AttachmentMaterializer = (
@@ -78,7 +84,8 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
       id: string;
       sequence: number;
       text: string | null;
-      author: { displayName: string };
+      createdAt: string;
+      author: { principalId: string; displayName: string };
       attachments: readonly AttachmentSummary[];
     }[] }> },
     private readonly materializeAttachments?: AttachmentMaterializer,
@@ -172,10 +179,24 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
       input.originMessage.sequence,
     )?.count ?? 0;
     if (tombstonedAfterSnapshot !== 0) throw new MessagingError("invalid_relation");
-    const transcript = boundedMessages
-      .filter((message) => message.text !== null)
-      .map((message) => `${message.author.displayName}: ${message.text}`)
-      .join("\n");
+    const processless = binding.residentBinding.startsWith("bot-");
+    const transcript = boundedMessages.filter((message) => message.text !== null);
+    const instruction = processless
+      ? projectedOrigin.text ?? ""
+      : transcript.map((message) => `${message.author.displayName}: ${message.text}`).join("\n");
+    const historyBackfill: readonly DirectMessageHistoryEntry[] = processless
+      ? Object.freeze(transcript
+          .filter((message) => message.id !== input.originMessage.id)
+          .map((message) => Object.freeze({
+            messageId: message.id,
+            sequence: message.sequence,
+            role: message.author.principalId === binding.targetPrincipalId
+              ? "assistant" as const
+              : "user" as const,
+            text: message.text!,
+            createdAt: message.createdAt,
+          })))
+      : Object.freeze([]);
     return Object.freeze({
       channelId: input.channelId,
       conversationId: binding.conversationId,
@@ -183,7 +204,8 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
       targetBotDisplayName: binding.targetBotDisplayName,
       targetPrincipalId: binding.targetPrincipalId,
       residentBinding: binding.residentBinding,
-      instruction: transcript,
+      instruction,
+      historyBackfill,
       attachments,
       manifest: directMessageManifest({
         channelId: input.channelId,
@@ -255,10 +277,12 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
     const placeholders = messageIds.map(() => "?").join(",");
     const rows = this.database.readAll<RecoveryMessageRow>(
       `SELECT m.id, m.channel_sequence AS sequence,
+              m.author_principal_id AS authorPrincipalId,
               m.author_display_name AS authorDisplayName,
               CASE WHEN EXISTS (
                 SELECT 1 FROM messages tombstone WHERE tombstone.tombstones_message_id = m.id
-              ) THEN NULL ELSE m.body_text END AS text
+              ) THEN NULL ELSE m.body_text END AS text,
+              m.created_at AS createdAt
        FROM messages m
        WHERE m.channel_id = ? AND m.id IN (${placeholders})
        ORDER BY m.channel_sequence ASC`,
@@ -316,10 +340,25 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
       throw new MessagingError("invalid_relation");
     }
     const attachments = await this.materialize(attachmentRows);
-    const instruction = rows
-      .filter((message) => message.text !== null)
-      .map((message) => `${message.authorDisplayName}: ${message.text}`)
-      .join("\n");
+    const processless = binding.residentBinding.startsWith("bot-");
+    const transcript = rows.filter((message) => message.text !== null);
+    const origin = rows.at(-1)!;
+    const instruction = processless
+      ? origin.text ?? ""
+      : transcript.map((message) => `${message.authorDisplayName}: ${message.text}`).join("\n");
+    const historyBackfill: readonly DirectMessageHistoryEntry[] = processless
+      ? Object.freeze(transcript
+          .filter((message) => message.id !== work.originMessageId)
+          .map((message) => Object.freeze({
+            messageId: message.id,
+            sequence: message.sequence,
+            role: message.authorPrincipalId === binding.targetPrincipalId
+              ? "assistant" as const
+              : "user" as const,
+            text: message.text!,
+            createdAt: message.createdAt,
+          })))
+      : Object.freeze([]);
     if (!instruction && attachments.length === 0) throw new MessagingError("invalid_relation");
     return Object.freeze({
       prepared: Object.freeze({
@@ -330,6 +369,7 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
         targetPrincipalId: binding.targetPrincipalId,
         residentBinding: binding.residentBinding,
         instruction,
+        historyBackfill,
         attachments,
         manifest: canonicalManifest,
       }),

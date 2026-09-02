@@ -47,6 +47,17 @@ export class SqliteBotDirectoryRepository implements BotDirectoryRepository {
       if(!row)throw Object.assign(new Error("bot_not_found"),{code:"bot_not_found"});
       if(row.lifecycle===input.to)return{value:bot(row),event:event(tx,input,input.botId,input.changedAt,`already_${input.to}`)};
       if(row.lifecycle!==input.from)throw Object.assign(new Error("lifecycle_conflict"),{code:"lifecycle_conflict"});
+      if(input.to==="archived"&&tx.readOne(
+        `SELECT id FROM works pending
+         WHERE pending.target_principal_id=? AND pending.kind='bot_turn'
+           AND (pending.state IN ('queued','leased','running') OR (
+             pending.state='succeeded' AND NOT EXISTS (
+               SELECT 1 FROM messages result
+               WHERE result.work_id=pending.id AND result.kind='result'
+             )
+           ))
+         LIMIT 1`,row.principalId,
+      ))throw Object.assign(new Error("bot_has_unsettled_work"),{code:"bot_has_unsettled_work"});
       tx.run("UPDATE bots SET lifecycle=?,active_instance_id=NULL,active_key_version=NULL,resident_protocol_version=NULL,resident_capabilities_json='[]',resident_registered_at=NULL,last_heartbeat_at=NULL,reported_availability=NULL,version=version+1,updated_at=? WHERE id=? AND lifecycle=?",input.to,input.changedAt,input.botId,input.from);
       const updated=tx.readOne<BotRow>(`${BOT} WHERE id=?`,input.botId)!;
       return{value:bot(updated),event:{...event(tx,input,input.botId,input.changedAt,input.to),payload:{outcome:input.to,lifecycle:input.to,conversationId:updated.conversationId,residentBinding:updated.residentBinding}}};

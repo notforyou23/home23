@@ -133,6 +133,15 @@ export function loadConfig(agentName: string): HomeConfig {
   return typedConfig;
 }
 
+/** Home-wide defaults and secrets only; never resolves or reads an agent instance. */
+export function loadHomeConfig(): HomeConfig {
+  const homeConfig = loadYaml(join(HOME23_ROOT, 'config', 'home.yaml'));
+  const secrets = loadYaml(join(HOME23_ROOT, 'config', 'secrets.yaml'));
+  const config = deepMerge(homeConfig, secrets) as unknown as HomeConfig;
+  validateReasoningEffortConfig(config);
+  return config;
+}
+
 export function getHome23Root(): string {
   return HOME23_ROOT;
 }

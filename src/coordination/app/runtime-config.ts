@@ -26,6 +26,8 @@ export interface CoordinationRuntimeConfig {
   host: "127.0.0.1" | "::1";
   port: number;
   databasePath: string;
+  /** Core-owned private state for deliberately created processless Bots. */
+  botRootDirectory: string;
   socketPath: string;
   capabilityToken: string;
   activity?: Readonly<{
@@ -97,6 +99,7 @@ export function loadCoordinationRuntimeConfig(
     throw new Error("HOME23_ROOT must be an absolute path");
   }
   const runtimeRoot = resolve(home23Root, "instances", ".house", "coordination");
+  const botRootDirectory = resolve(home23Root, "instances", ".house", "bots");
   const socketRoot = resolve(environment.HOME23_COORDINATION_SOCKET_ROOT ?? runtimeRoot);
   if (!isAbsolute(socketRoot) || socketRoot === "/" || socketRoot.includes("\0")) throw new Error("HOME23_COORDINATION_SOCKET_ROOT must be an absolute dedicated directory");
   const host = environment.HOME23_COORDINATION_HOST ?? "127.0.0.1";
@@ -184,6 +187,7 @@ export function loadCoordinationRuntimeConfig(
     host,
     port,
     databasePath,
+    botRootDirectory,
     socketPath,
     capabilityToken,
     activity: Object.freeze({ enabled: activityEnabled }),

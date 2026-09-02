@@ -11,6 +11,7 @@ import type {
   ResidentArtifactPromotionPort,
   ResidentCommunicationContext,
   ResidentCommunicationPort,
+  CoordinationExecutionEvidenceTaxonomy,
   ResidentCoordinationPort,
   ResidentDurableEvent,
   ResidentDurableTerminal,
@@ -23,6 +24,20 @@ import type {
 } from './types.js';
 
 const MAX_OBSERVATIONS = 32;
+const RESIDENT_TURN_EVIDENCE_TAXONOMY: CoordinationExecutionEvidenceTaxonomy = Object.freeze({
+  eventIdPrefix: 'resident-turn',
+  runtimeSystem: 'resident_runtime',
+  sequenceField: 'residentSequence',
+  terminalStatusField: 'residentStatus',
+  terminalPayloadField: 'residentTerminal',
+});
+export const BOT_TURN_EVIDENCE_TAXONOMY: CoordinationExecutionEvidenceTaxonomy = Object.freeze({
+  eventIdPrefix: 'bot-turn',
+  runtimeSystem: 'bot_runtime',
+  sequenceField: 'botSequence',
+  terminalStatusField: 'botStatus',
+  terminalPayloadField: 'botTerminal',
+});
 
 function immutableTerminalReceipt(
   value: unknown,
@@ -131,9 +146,12 @@ function communicationKind(event: AgentEvent): string {
   }
 }
 
-function durableCommunicationEventId(durable: ResidentDurableEvent): string {
+function durableCommunicationEventId(
+  durable: ResidentDurableEvent,
+  taxonomy: CoordinationExecutionEvidenceTaxonomy,
+): string {
   return stableCommunicationEventId(
-    `resident-turn:${durable.turnId}:event:${durable.sequence}`,
+    `${taxonomy.eventIdPrefix}:${durable.turnId}:event:${durable.sequence}`,
     durable.occurredAt,
   );
 }
@@ -141,6 +159,7 @@ function durableCommunicationEventId(durable: ResidentDurableEvent): string {
 function communicationToolCallId(
   durable: ResidentDurableEvent,
   parentEventId: string | null,
+  taxonomy: CoordinationExecutionEvidenceTaxonomy,
 ): string {
   const event = durable.event;
   if (event.type !== 'tool_start' && event.type !== 'tool_result') {
@@ -150,16 +169,17 @@ function communicationToolCallId(
     return event.toolCallId;
   }
   if (event.type === 'tool_result' && parentEventId) return parentEventId;
-  return durableCommunicationEventId(durable);
+  return durableCommunicationEventId(durable, taxonomy);
 }
 
 function communicationPayload(
   durable: ResidentDurableEvent,
   parentEventId: string | null,
+  taxonomy: CoordinationExecutionEvidenceTaxonomy,
 ): Record<string, JsonValue> {
   const event = exactJsonRecord(durable.event);
   const common: Record<string, JsonValue> = {
-    residentSequence: durable.sequence,
+    [taxonomy.sequenceField]: durable.sequence,
     rawEvent: event,
   };
   switch (durable.event.type) {
@@ -167,11 +187,11 @@ function communicationPayload(
       return { ...common, text: durable.event.content,
         ...(event.providerEvent === undefined ? {} : { providerEvent: event.providerEvent }) };
     case 'tool_start':
-      return { ...common, toolCallId: communicationToolCallId(durable, parentEventId),
+      return { ...common, toolCallId: communicationToolCallId(durable, parentEventId, taxonomy),
         tool: durable.event.tool,
         arguments: event.args ?? null };
     case 'tool_result':
-      return { ...common, toolCallId: communicationToolCallId(durable, parentEventId),
+      return { ...common, toolCallId: communicationToolCallId(durable, parentEventId, taxonomy),
         tool: durable.event.tool,
         result: durable.event.exactResult ?? durable.event.result,
         preview: durable.event.result, success: durable.event.success };
@@ -209,13 +229,14 @@ function communicationEvent(input: {
   context: ResidentCommunicationContext;
   origin: CoordinationTurnOrigin;
   parentEventId: string | null;
+  taxonomy: CoordinationExecutionEvidenceTaxonomy;
 }): CommunicationEventInput {
-  const { durable, context, origin } = input;
+  const { durable, context, origin, taxonomy } = input;
   const event = durable.event;
   const providerOrigin = event.type === 'thinking' || event.type === 'response_chunk'
     || event.type === 'tool_start';
   return Object.freeze({
-    eventId: durableCommunicationEventId(durable),
+    eventId: durableCommunicationEventId(durable, taxonomy),
     conversationId: context.conversationId,
     channelId: origin.channelId,
     messageId: context.responseMessageId,
@@ -225,20 +246,20 @@ function communicationEvent(input: {
     parentEventId: input.parentEventId,
     actor: context.actor,
     source: {
-      system: providerOrigin ? 'provider' : 'resident_runtime',
+      system: providerOrigin ? 'provider' : taxonomy.runtimeSystem,
       provider: durable.provider,
       model: durable.model,
       adapter: 'agent_loop',
       sourceEventType: event.sourceEventType ?? `agent.${event.type}`,
       additionalFields: {
         reasoningEffort: durable.reasoningEffort,
-        residentSequence: durable.sequence,
+        [taxonomy.sequenceField]: durable.sequence,
       },
     },
     kind: communicationKind(event),
     provenance: event.type === 'thinking' ? event.provenance : null,
     occurredAt: durable.occurredAt,
-    payload: communicationPayload(durable, input.parentEventId),
+    payload: communicationPayload(durable, input.parentEventId, taxonomy),
     terminal: event.type === 'tool_result' || event.type === 'subagent_result',
   });
 }
@@ -250,11 +271,12 @@ function terminalCommunicationEvent(input: {
   context: ResidentCommunicationContext;
   origin: CoordinationTurnOrigin;
   parentEventId: string | null;
+  taxonomy: CoordinationExecutionEvidenceTaxonomy;
 }): CommunicationEventInput {
-  const { durableTerminal, receipt, context, origin } = input;
+  const { durableTerminal, receipt, context, origin, taxonomy } = input;
   return Object.freeze({
     eventId: stableCommunicationEventId(
-      `resident-turn:${input.turnId}:terminal`,
+      `${taxonomy.eventIdPrefix}:${input.turnId}:terminal`,
       receipt.timestamp,
     ),
     conversationId: context.conversationId,
@@ -266,14 +288,14 @@ function terminalCommunicationEvent(input: {
     parentEventId: input.parentEventId,
     actor: context.actor,
     source: {
-      system: 'resident_runtime',
+      system: taxonomy.runtimeSystem,
       provider: durableTerminal?.provider ?? null,
       model: durableTerminal?.model ?? null,
       adapter: 'agent_loop',
       sourceEventType: 'turn.terminal',
       additionalFields: {
         reasoningEffort: durableTerminal?.reasoningEffort ?? null,
-        residentStatus: durableTerminal?.status ?? null,
+        [taxonomy.terminalStatusField]: durableTerminal?.status ?? null,
       },
     },
     kind: receipt.status === 'failed' ? 'failure' : 'receipt',
@@ -283,7 +305,7 @@ function terminalCommunicationEvent(input: {
       sourceReference: receipt.sourceReference,
       resultDigest: receipt.resultDigest,
       artifactIds: [...receipt.artifactIds],
-      residentTerminal: durableTerminal === null ? null : exactJsonRecord(durableTerminal),
+      [taxonomy.terminalPayloadField]: durableTerminal === null ? null : exactJsonRecord(durableTerminal),
     },
     terminal: true,
   });
@@ -317,11 +339,12 @@ function selectionCommunicationEvent(input: {
   selection: ResidentTurnSelectionReceipt;
   context: ResidentCommunicationContext;
   origin: CoordinationTurnOrigin;
+  taxonomy: CoordinationExecutionEvidenceTaxonomy;
 }): CommunicationEventInput & { eventId: string } {
-  const { selection, context, origin } = input;
+  const { selection, context, origin, taxonomy } = input;
   return Object.freeze({
     eventId: stableCommunicationEventId(
-      `resident-turn:${input.turnId}:selection`,
+      `${taxonomy.eventIdPrefix}:${input.turnId}:selection`,
       input.persistedAt,
     ),
     conversationId: context.conversationId,
@@ -333,7 +356,7 @@ function selectionCommunicationEvent(input: {
     parentEventId: null,
     actor: context.actor,
     source: {
-      system: 'resident_runtime',
+      system: taxonomy.runtimeSystem,
       provider: selection.actualProvider,
       model: selection.actualModel,
       adapter: 'agent_loop',
@@ -352,8 +375,9 @@ function selectionCommunicationEvent(input: {
 function parentCommunicationEventId(
   durable: ResidentDurableEvent,
   parentEvents: Map<string, string>,
+  taxonomy: CoordinationExecutionEvidenceTaxonomy,
 ): string | null {
-  const eventId = durableCommunicationEventId(durable);
+  const eventId = durableCommunicationEventId(durable, taxonomy);
   const event = durable.event;
   const toolKey = event.type === 'tool_start' || event.type === 'tool_result'
     ? `tool:${typeof event.toolCallId === 'string' && event.toolCallId.length > 0
@@ -404,6 +428,8 @@ export class ResidentCoordinationAdapter {
     private readonly now: () => Date = () => new Date(),
     private readonly communications?: ResidentCommunicationPort,
     private readonly artifactPromotion?: ResidentArtifactPromotionPort,
+    private readonly evidenceTaxonomy: CoordinationExecutionEvidenceTaxonomy =
+      RESIDENT_TURN_EVIDENCE_TAXONOMY,
   ) {}
 
   async execute(request: ResidentWorkRequest): Promise<ResidentRun> {
@@ -447,6 +473,7 @@ export class ResidentCoordinationAdapter {
             selection: exactTurnSelection(request, selection),
             context: request.communication,
             origin,
+            taxonomy: this.evidenceTaxonomy,
           });
           await this.communications.append({
             event,
@@ -457,17 +484,19 @@ export class ResidentCoordinationAdapter {
         }
       },
       onEvent: (durable) => {
-        const parentEventId = parentCommunicationEventId(durable, parentEvents);
-        lastEventId = stableCommunicationEventId(
-          `resident-turn:${durable.turnId}:event:${durable.sequence}`,
-          durable.occurredAt,
+        const parentEventId = parentCommunicationEventId(
+          durable,
+          parentEvents,
+          this.evidenceTaxonomy,
         );
+        lastEventId = durableCommunicationEventId(durable, this.evidenceTaxonomy);
         if (!this.communications || !request.communication) return;
         replayChain = replayChain.then(async () => {
           await this.coordination.assertCompleted(binding);
           await this.communications!.append({
             event: communicationEvent({
               durable, context: request.communication!, origin, parentEventId,
+              taxonomy: this.evidenceTaxonomy,
             }),
             requestId: request.requestId,
             correlationId: request.correlationId,
@@ -497,6 +526,7 @@ export class ResidentCoordinationAdapter {
             context: request.communication,
             origin,
             parentEventId: lastEventId,
+            taxonomy: this.evidenceTaxonomy,
           }),
           requestId: request.requestId,
           correlationId: request.correlationId,
@@ -584,6 +614,7 @@ export class ResidentCoordinationAdapter {
             selection: exactTurnSelection(request, selection),
             context: request.communication,
             origin,
+            taxonomy: this.evidenceTaxonomy,
           });
           await this.communications.append({
             event,
@@ -594,11 +625,12 @@ export class ResidentCoordinationAdapter {
         }
       },
       onEvent: (durable) => {
-        const parentEventId = parentCommunicationEventId(durable, parentEvents);
-        lastEventId = stableCommunicationEventId(
-          `resident-turn:${durable.turnId}:event:${durable.sequence}`,
-          durable.occurredAt,
+        const parentEventId = parentCommunicationEventId(
+          durable,
+          parentEvents,
+          this.evidenceTaxonomy,
         );
+        lastEventId = durableCommunicationEventId(durable, this.evidenceTaxonomy);
         const shouldObserve = Boolean(this.coordination.observe) && observations < MAX_OBSERVATIONS;
         if (shouldObserve) observations += 1;
         if (!this.communications && !shouldObserve) return;
@@ -607,6 +639,7 @@ export class ResidentCoordinationAdapter {
             await this.communications.append({
               event: communicationEvent({
                 durable, context: request.communication, origin, parentEventId,
+                taxonomy: this.evidenceTaxonomy,
               }),
               requestId: request.requestId,
               correlationId: request.correlationId,
@@ -687,6 +720,7 @@ export class ResidentCoordinationAdapter {
               context: request.communication,
               origin,
               parentEventId: lastEventId,
+              taxonomy: this.evidenceTaxonomy,
             }),
             requestId: request.requestId,
             correlationId: request.correlationId,

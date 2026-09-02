@@ -1,4 +1,7 @@
-export { ResidentCoordinationAdapter } from './resident-adapter.js';
+export {
+  BOT_TURN_EVIDENCE_TAXONOMY,
+  ResidentCoordinationAdapter,
+} from './resident-adapter.js';
 export { ResidentTurnUdsServer, ResidentUdsAgentPort, residentFence } from './resident-uds.js';
 export { startResidentCoordinationHarness } from './harness-runtime.js';
 export { createM11ResidentCoordinationPort } from './m11-port.js';
@@ -8,6 +11,7 @@ export type {
   ResidentArtifactPromotionPort,
   ResidentCommunicationContext,
   ResidentCommunicationPort,
+  CoordinationExecutionEvidenceTaxonomy,
   ResidentCoordinationPort,
   ResidentDurableEvent,
   ResidentDurableTerminal,
