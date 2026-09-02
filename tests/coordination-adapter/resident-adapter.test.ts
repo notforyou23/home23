@@ -54,7 +54,12 @@ function request(): ResidentWorkRequest {
   };
 }
 
-function harness(options: { staleAfter?: number; deferred?: boolean } = {}) {
+function harness(options: {
+  staleAfter?: number;
+  deferred?: boolean;
+  response?: any;
+  promotedArtifactIds?: readonly string[];
+} = {}) {
   const calls: string[] = [];
   const observations: unknown[] = [];
   const receipts: ResidentTerminalReceipt[] = [];
@@ -83,7 +88,9 @@ function harness(options: { staleAfter?: number; deferred?: boolean } = {}) {
         reasoningEffort: 'high',
         event: { type: 'status', status: 'working', sourceEventType: 'runtime.status' },
       });
-      if (!options.deferred) resolveResponse({ text: 'exact result', model: 'test', toolCallCount: 0, durationMs: 1 });
+      if (!options.deferred) resolveResponse(options.response ?? {
+        text: 'exact result', model: 'test', toolCallCount: 0, durationMs: 1,
+      });
       return { turnId: 'turn-resident-1', response };
     },
     stop(_chatId, turnId) {
@@ -120,7 +127,18 @@ function harness(options: { staleAfter?: number; deferred?: boolean } = {}) {
     },
   };
   return {
-    adapter: new ResidentCoordinationAdapter(agent, coordination, () => new Date('2026-08-25T12:01:00.000Z')),
+    adapter: new ResidentCoordinationAdapter(
+      agent,
+      coordination,
+      () => new Date('2026-08-25T12:01:00.000Z'),
+      undefined,
+      options.promotedArtifactIds === undefined ? undefined : {
+        promote: async () => {
+          calls.push('promote');
+          return options.promotedArtifactIds!;
+        },
+      },
+    ),
     calls,
     observations,
     receipts,
@@ -265,6 +283,52 @@ test('successful resident completion emits exact positive terminal truth and bou
   });
   assert.equal(h.observations.length, 1);
   assert.deepEqual(Object.keys(h.observations[0] as object).sort(), ['at', 'evidenceDigest', 'kind', 'outcomeCode']);
+});
+
+test('successful resident generated media is promoted before its immutable terminal receipt', async () => {
+  const artifactId = 'art_0198d95f-6c00-7000-8000-0000000007a1';
+  const h = harness({
+    response: {
+      text: '',
+      model: 'test',
+      toolCallCount: 1,
+      durationMs: 1,
+      media: [{
+        type: 'image',
+        generatedBy: 'generate_image',
+        path: '/resident/workspace/media/generated-images/answer.png',
+        mimeType: 'image/png',
+        fileName: 'answer.png',
+        byteCount: 68,
+        sha256: 'a'.repeat(64),
+      }],
+    },
+    promotedArtifactIds: [artifactId],
+  });
+  const run = await h.adapter.execute(request());
+  const receipt = await run.receipt;
+  assert.deepEqual(receipt.artifactIds, [artifactId]);
+  assert.ok(h.calls.indexOf('promote') < h.calls.indexOf('terminal:succeeded'));
+});
+
+test('non-generated resident image media does not require canonical artifact promotion', async () => {
+  const h = harness({
+    response: {
+      text: 'I inspected the page.',
+      model: 'test',
+      toolCallCount: 1,
+      durationMs: 1,
+      media: [{
+        type: 'image',
+        path: '/resident/workspace/browser/screenshot.png',
+        mimeType: 'image/png',
+      }],
+    },
+  });
+  const run = await h.adapter.execute(request());
+  const receipt = await run.receipt;
+  assert.deepEqual(receipt.artifactIds, []);
+  assert.equal(h.calls.includes('promote'), false);
 });
 
 test('resident evidence maps losslessly with legacy tool identities and replay idempotency', async (t) => {

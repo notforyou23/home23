@@ -3,6 +3,7 @@ export { createLeaseService } from "./service.js";
 export type {
   AttemptRecord,
   AttemptState,
+  CompletedLeaseMutationResult,
   CreateLeaseServiceOptions,
   HeartbeatLeaseInput,
   LeaseBindingInput,

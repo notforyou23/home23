@@ -108,6 +108,10 @@ export interface LeaseMutationResult {
   lease: LeaseRecord;
 }
 
+export interface CompletedLeaseMutationResult extends LeaseMutationResult {
+  receipt: TerminalReceiptRecord;
+}
+
 export interface OfferLeaseResult extends LeaseMutationResult {
   fencingToken: number;
 }

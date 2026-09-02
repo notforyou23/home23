@@ -8,6 +8,7 @@ import {
 import type { JsonValue } from '../coordination/db/index.js';
 import type {
   ResidentAgentPort,
+  ResidentArtifactPromotionPort,
   ResidentCommunicationContext,
   ResidentCommunicationPort,
   ResidentCoordinationPort,
@@ -22,6 +23,39 @@ import type {
 } from './types.js';
 
 const MAX_OBSERVATIONS = 32;
+
+function immutableTerminalReceipt(
+  value: unknown,
+  fallback: ResidentTerminalReceipt,
+): ResidentTerminalReceipt {
+  if (value === undefined) return Object.freeze({ ...fallback, artifactIds: Object.freeze([...fallback.artifactIds]) });
+  const raw = value && typeof value === 'object' && 'receipt' in value
+    ? (value as { receipt: unknown }).receipt
+    : value;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new TypeError('coordination terminal receipt is malformed');
+  }
+  const receipt = raw as Record<string, unknown>;
+  if (
+    !['succeeded', 'failed', 'cancelled'].includes(String(receipt.status)) ||
+    typeof receipt.sourceReference !== 'string' ||
+    (receipt.resultDigest !== null &&
+      (typeof receipt.resultDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(receipt.resultDigest))) ||
+    !Array.isArray(receipt.artifactIds) ||
+    !receipt.artifactIds.every((id) => typeof id === 'string') ||
+    typeof receipt.timestamp !== 'string' ||
+    Number.isNaN(new Date(receipt.timestamp).valueOf())
+  ) {
+    throw new TypeError('coordination terminal receipt is malformed');
+  }
+  return Object.freeze({
+    status: receipt.status as ResidentTerminalReceipt['status'],
+    sourceReference: receipt.sourceReference,
+    resultDigest: receipt.resultDigest as string | null,
+    artifactIds: Object.freeze([...(receipt.artifactIds as string[])]),
+    timestamp: receipt.timestamp,
+  });
+}
 
 function digest(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -145,7 +179,10 @@ function communicationPayload(
       return { ...common, delta: durable.event.chunk };
     case 'media':
       return { ...common, mediaType: durable.event.mediaType, path: durable.event.path,
-        caption: durable.event.caption ?? null, toolCallId: durable.event.toolCallId ?? null };
+        caption: durable.event.caption ?? null, toolCallId: durable.event.toolCallId ?? null,
+        generatedBy: durable.event.generatedBy ?? null,
+        mimeType: durable.event.mimeType ?? null, fileName: durable.event.fileName ?? null,
+        byteCount: durable.event.byteCount ?? null, sha256: durable.event.sha256 ?? null };
     case 'subagent_start':
       return { ...common, subagentId: durable.event.subagentId, task: durable.event.task,
         label: durable.event.label ?? null, parentToolCallId: durable.event.parentToolCallId ?? null };
@@ -366,6 +403,7 @@ export class ResidentCoordinationAdapter {
     private readonly coordination: ResidentCoordinationPort,
     private readonly now: () => Date = () => new Date(),
     private readonly communications?: ResidentCommunicationPort,
+    private readonly artifactPromotion?: ResidentArtifactPromotionPort,
   ) {}
 
   async execute(request: ResidentWorkRequest): Promise<ResidentRun> {
@@ -380,10 +418,7 @@ export class ResidentCoordinationAdapter {
     return this.run(request, 'continueAccepted');
   }
 
-  async recoverCompleted(request: ResidentWorkRequest): Promise<{
-    turnId: string;
-    response: Promise<import('../agent/types.js').AgentResponse>;
-  }> {
+  async recoverCompleted(request: ResidentWorkRequest): Promise<ResidentRun> {
     if (!request.instruction.trim() && (request.attachments?.length ?? 0) === 0) {
       throw new TypeError('resident Work instruction or attachment is required');
     }
@@ -393,7 +428,7 @@ export class ResidentCoordinationAdapter {
     }
     const origin = privacySafeOrigin(request.origin);
     const binding = bindingFor(request);
-    await this.coordination.assertCompleted(binding);
+    const assertedReceipt = await this.coordination.assertCompleted(binding);
     const parentEvents = new Map<string, string>();
     let lastEventId: string | null = null;
     let replayChain = Promise.resolve();
@@ -440,19 +475,19 @@ export class ResidentCoordinationAdapter {
         void replayChain.catch(() => undefined);
       },
     });
-    const response = (async () => {
+    const completion = (async () => {
       const result = await started.response;
       await replayChain;
-      await this.coordination.assertCompleted(binding, digest(result.text));
+      const verifiedReceipt = await this.coordination.assertCompleted(binding, digest(result.text));
+      const receipt = immutableTerminalReceipt(verifiedReceipt ?? assertedReceipt, {
+        status: 'succeeded',
+        sourceReference: origin.authorityReference,
+        resultDigest: digest(result.text),
+        artifactIds: Object.freeze([]),
+        timestamp: this.now().toISOString(),
+      });
       if (this.communications && request.communication) {
         const durableTerminal = started.terminal ? await started.terminal : null;
-        const receipt: ResidentTerminalReceipt = Object.freeze({
-          status: 'succeeded',
-          sourceReference: origin.authorityReference,
-          resultDigest: digest(result.text),
-          artifactIds: Object.freeze([]),
-          timestamp: durableTerminal?.endedAt ?? this.now().toISOString(),
-        });
         await this.communications.append({
           event: terminalCommunicationEvent({
             turnId: started.turnId,
@@ -467,9 +502,13 @@ export class ResidentCoordinationAdapter {
         });
         await this.coordination.assertCompleted(binding, digest(result.text));
       }
-      return result;
+      return Object.freeze({ result, receipt });
     })();
-    return Object.freeze({ turnId: started.turnId, response });
+    return Object.freeze({
+      turnId: started.turnId,
+      response: completion.then(({ result }) => result),
+      receipt: completion.then(({ receipt }) => receipt),
+    });
   }
 
   private async run(
@@ -579,7 +618,7 @@ export class ResidentCoordinationAdapter {
       },
     });
 
-    const receipt = (async (): Promise<unknown> => {
+    const receipt = (async (): Promise<ResidentTerminalReceipt> => {
       try {
         let terminal: ResidentTerminalReceipt;
         let durableTerminal: ResidentDurableTerminal | null = null;
@@ -587,13 +626,32 @@ export class ResidentCoordinationAdapter {
           const response = await started.response;
           durableTerminal = started.terminal ? await started.terminal : null;
           await settleCallbacks();
-          const cancellation = await cancellationState();
+          let cancellation = await cancellationState();
+          let artifactIds: readonly string[] = Object.freeze([]);
+          if (cancellation === null) {
+            await this.coordination.assertCurrent(binding);
+            const media = (response.media ?? []).filter(
+              (candidate) => candidate.generatedBy === 'generate_image',
+            );
+            if (media.length > 0) {
+              if (!this.artifactPromotion) {
+                throw new Error('resident generated media requires canonical attachments');
+              }
+              artifactIds = Object.freeze([...(await this.artifactPromotion.promote({
+                binding,
+                media,
+              }))]);
+              await this.coordination.assertCurrent(binding);
+              cancellation = await cancellationState();
+              if (cancellation !== null) artifactIds = Object.freeze([]);
+            }
+          }
           const cancelled = cancellation !== null;
           terminal = Object.freeze({
             status: cancelled ? 'cancelled' : 'succeeded',
             sourceReference: origin.authorityReference,
             resultDigest: cancelled ? null : digest(response.text),
-            artifactIds: Object.freeze([]),
+            artifactIds: cancelled ? Object.freeze([]) : artifactIds,
             timestamp: cancellation?.timestamp ?? durableTerminal?.endedAt ?? this.now().toISOString(),
           });
         } catch (error) {
@@ -638,7 +696,8 @@ export class ResidentCoordinationAdapter {
             await this.coordination.assertCurrent(binding);
           }
         }
-        return await this.coordination.terminalize({ ...binding, receipt: terminal });
+        const stored = await this.coordination.terminalize({ ...binding, receipt: terminal });
+        return immutableTerminalReceipt(stored, terminal);
       } finally {
         this.active.delete(origin.workId);
       }

@@ -45,7 +45,14 @@ export function createM11ResidentCoordinationPort(
       return Object.freeze({ timestamp: current.lease.endedAt });
     },
     assertCompleted(binding: ResidentLeaseBinding, resultDigest?: string) {
-      leases.assertCompleted(leaseBinding(binding), resultDigest);
+      const completed = leases.assertCompleted(leaseBinding(binding), resultDigest);
+      return Object.freeze({
+        status: completed.receipt.status,
+        sourceReference: completed.receipt.sourceReference,
+        resultDigest: completed.receipt.resultDigest,
+        artifactIds: Object.freeze([...completed.receipt.artifactIds]),
+        timestamp: completed.receipt.createdAt,
+      });
     },
     accept(binding: ResidentLeaseBinding) { leases.accept(leaseBinding(binding)); },
     start(binding: ResidentLeaseBinding) { leases.start(leaseBinding(binding)); },
@@ -61,7 +68,14 @@ export function createM11ResidentCoordinationPort(
       leases.revoke({ ...leaseBinding(binding), reasonCode: binding.reasonCode });
     },
     terminalize(input: ResidentLeaseBinding & { receipt: ResidentTerminalReceipt }) {
-      return leases.terminalize({ ...leaseBinding(input), receipt: input.receipt });
+      const terminal = leases.terminalize({ ...leaseBinding(input), receipt: input.receipt });
+      return Object.freeze({
+        status: terminal.receipt.status,
+        sourceReference: terminal.receipt.sourceReference,
+        resultDigest: terminal.receipt.resultDigest,
+        artifactIds: Object.freeze([...terminal.receipt.artifactIds]),
+        timestamp: terminal.receipt.createdAt,
+      });
     },
   });
 }

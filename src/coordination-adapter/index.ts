@@ -5,6 +5,7 @@ export { createM11ResidentCoordinationPort } from './m11-port.js';
 export { residentRecoveryTruth, type ResidentRecoveryTruth } from './recovery.js';
 export type {
   ResidentAgentPort,
+  ResidentArtifactPromotionPort,
   ResidentCommunicationContext,
   ResidentCommunicationPort,
   ResidentCoordinationPort,

@@ -5,6 +5,7 @@ import type {
   ResidentCommunicationPort,
   ResidentCoordinationAdapter,
   ResidentInputAttachment,
+  ResidentTerminalReceipt,
 } from "../../coordination-adapter/index.js";
 import { MessagingError, type MessagingActorContext } from "../channels/index.js";
 import {
@@ -296,16 +297,24 @@ export function createDirectMessageSubmissionService(options: {
         },
       };
       let agentResponse: AgentResponse;
+      let terminalReceipt: ResidentTerminalReceipt;
       if (recoveryPhase === "completed") {
         const run = await target.resident.recoverCompleted(residentRequest);
-        agentResponse = await run.response;
+        [agentResponse, terminalReceipt] = await Promise.all([run.response, run.receipt]);
       } else {
         const run = recoveryPhase === "running"
           ? await target.resident.reattach(residentRequest)
           : recoveryPhase === "accepted"
             ? await target.resident.continueAccepted(residentRequest)
             : await target.resident.execute(residentRequest);
-        [agentResponse] = await Promise.all([run.response, run.receipt]) as [AgentResponse, unknown];
+        [agentResponse, terminalReceipt] = await Promise.all([run.response, run.receipt]);
+      }
+      if (terminalReceipt.status !== "succeeded") {
+        throw new Error(`resident Work ended ${terminalReceipt.status}`);
+      }
+      const resultText = agentResponse.text.trim() ? agentResponse.text : null;
+      if (resultText === null && terminalReceipt.artifactIds.length === 0) {
+        throw new Error("successful resident Work produced no answer");
       }
       const result = await options.messages.sendMessage({
         context: target.context({
@@ -315,7 +324,8 @@ export function createDirectMessageSubmissionService(options: {
         channelId: input.prepared.channelId, messageId: responseMessageId(input.work.id),
         authorPrincipalId: input.prepared.targetPrincipalId,
         idempotencyKey: `work-result:${input.work.id}`, kind: "result",
-        text: agentResponse.text, mentions: [], clientMessageId: null,
+        text: resultText, mentions: [], clientMessageId: null,
+        attachmentIds: terminalReceipt.artifactIds,
         replyToMessageId: input.originMessageId, tombstonesMessageId: null,
         provenance: { roundId: null, workId: input.work.id },
       });

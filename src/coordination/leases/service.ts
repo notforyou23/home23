@@ -14,6 +14,7 @@ import type { M11Database, WorkRecord } from "../work/types.js";
 import { LeaseError, type LeaseErrorCode } from "./errors.js";
 import type {
   AttemptRecord,
+  CompletedLeaseMutationResult,
   CreateLeaseServiceOptions,
   HeartbeatLeaseInput,
   LeaseBindingInput,
@@ -303,7 +304,7 @@ export function createLeaseService(options: CreateLeaseServiceOptions) {
       return boundRows(input);
     },
 
-    assertCompleted(input: LeaseBindingInput, resultDigest?: string): LeaseMutationResult {
+    assertCompleted(input: LeaseBindingInput, resultDigest?: string): CompletedLeaseMutationResult {
       const current = boundRows(input);
       const receipt = options.database.readOne<ReceiptRow>(
         `${RECEIPT_SELECT} WHERE work_id = ?`,
@@ -317,7 +318,7 @@ export function createLeaseService(options: CreateLeaseServiceOptions) {
         receipt.sourceReference === current.attempt.authorityReference &&
         (resultDigest === undefined || receipt.resultDigest === resultDigest);
       if (!exact) throw new LeaseError("terminal_conflict", "completed resident result does not match terminal truth");
-      return current;
+      return Object.freeze({ ...current, receipt: freezeReceipt(receipt!) });
     },
 
     current(workIdInput: string): LeaseMutationResult {

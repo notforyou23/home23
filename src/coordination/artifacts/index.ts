@@ -15,6 +15,7 @@ export { ArtifactError, type ArtifactErrorCode } from "./errors.js";
 export { resolveArtifactActor, resolveArtifactReader } from "./access.js";
 export { SqliteArtifactRepository } from "./repository.js";
 export { createDurableAttachmentService } from "./service.js";
+export { createResidentArtifactPromotionPort } from "./resident-promotion.js";
 export {
   ARTIFACT_SCHEMA_DELTA_CANONICAL_JSON,
   ARTIFACT_SCHEMA_DELTA_PROPOSAL,

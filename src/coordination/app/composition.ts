@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   ArtifactError,
   createDurableAttachmentService,
+  createResidentArtifactPromotionPort,
   LocalArtifactStore,
   resolveArtifactActor,
   SqliteArtifactRepository,
@@ -490,34 +491,48 @@ export function createCoordinationProcess(
       });
       const residentAgent = new ResidentUdsAgentPort({ client, residentSlug });
       residentAgents.set(residentSlug, residentAgent);
+      const residentContext = ({ principalId, requestId, correlationId }:
+        Parameters<DirectMessageResidentTarget["context"]>[0]) => ({
+        principalId,
+        requestId,
+        correlationId,
+        identity: {
+          kind: "resident" as const,
+          resident: {
+            requestId,
+            correlationId,
+            credential: {
+              residentSlug,
+              role: "resident" as const,
+              instanceId: residentConfig.serverInstanceId,
+              keyVersion: residentConfig.keyVersion,
+            },
+          },
+        },
+      });
+      const artifactPromotion = artifactRepository === undefined
+        ? undefined
+        : createResidentArtifactPromotionPort({
+            database,
+            store: () => attachmentStore,
+            participantDirectory,
+            context: (binding) => residentContext({
+              principalId: binding.holderPrincipalId,
+              requestId: binding.requestId,
+              correlationId: binding.correlationId,
+            }),
+          });
       residentTargets.set(residentSlug, Object.freeze({
         resident: new ResidentCoordinationAdapter(
           residentAgent,
           createM11ResidentCoordinationPort(leases),
           undefined,
           communications,
+          artifactPromotion,
         ),
         holderInstanceId: residentConfig.serverInstanceId,
         models: residentAgent,
-        context: ({ principalId, requestId, correlationId }:
-          Parameters<DirectMessageResidentTarget["context"]>[0]) => ({
-          principalId,
-          requestId,
-          correlationId,
-          identity: {
-            kind: "resident" as const,
-            resident: {
-              requestId,
-              correlationId,
-              credential: {
-                residentSlug,
-                role: "resident" as const,
-                instanceId: residentConfig.serverInstanceId,
-                keyVersion: residentConfig.keyVersion,
-              },
-            },
-          },
-        }),
+        context: residentContext,
       }));
     }
     if (residentTargets.size > 0) {

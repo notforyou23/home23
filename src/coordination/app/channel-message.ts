@@ -1,4 +1,5 @@
 import type { AgentResponse, CoordinationTurnOrigin } from "../../agent/types.js";
+import type { ResidentTerminalReceipt } from "../../coordination-adapter/index.js";
 import {
   ChannelCoordinatorError,
   type CoordinatorDispatch,
@@ -392,9 +393,10 @@ export function createGroupChannelMessageService(options: {
         },
       };
       let agentResponse: AgentResponse;
+      let terminalReceipt: ResidentTerminalReceipt;
       if (recoveryPhase === "completed") {
         const run = await target.resident.recoverCompleted(residentRequest);
-        agentResponse = await run.response;
+        [agentResponse, terminalReceipt] = await Promise.all([run.response, run.receipt]);
       } else {
         const run = recoveryPhase === "running"
           ? await target.resident.reattach(residentRequest)
@@ -405,8 +407,13 @@ export function createGroupChannelMessageService(options: {
         if (receipt.status === "rejected") throw receipt.reason;
         if (response.status === "rejected") throw response.reason;
         agentResponse = response.value;
+        terminalReceipt = receipt.value;
       }
-      if (!agentResponse.text.trim()) {
+      if (terminalReceipt.status !== "succeeded") {
+        throw new Error(`resident Work ended ${terminalReceipt.status}`);
+      }
+      const resultText = agentResponse.text.trim() ? agentResponse.text : null;
+      if (resultText === null && terminalReceipt.artifactIds.length === 0) {
         return Object.freeze({
           workId: currentWork.id,
           disposition: "passed",
@@ -424,7 +431,8 @@ export function createGroupChannelMessageService(options: {
         authorPrincipalId: targetContext.targetPrincipalId,
         idempotencyKey: `work-result:${currentWork.id}`,
         kind: "result",
-        text: agentResponse.text,
+        text: resultText,
+        attachmentIds: terminalReceipt.artifactIds,
         mentions: [],
         clientMessageId: null,
         replyToMessageId: input.prepared.originMessageId,

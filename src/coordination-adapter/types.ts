@@ -105,11 +105,19 @@ export interface ResidentTerminalReceipt {
   timestamp: string;
 }
 
+export interface ResidentArtifactPromotionPort {
+  promote(input: Readonly<{
+    binding: ResidentLeaseBinding;
+    media: NonNullable<AgentResponse['media']>;
+  }>): Promise<readonly string[]>;
+}
+
 export interface ResidentCoordinationPort {
   assertCurrent(binding: ResidentLeaseBinding): void | Promise<void>;
   cancellationState?(binding: ResidentLeaseBinding):
     { timestamp: string } | null | Promise<{ timestamp: string } | null>;
-  assertCompleted(binding: ResidentLeaseBinding, resultDigest?: string): void | Promise<void>;
+  assertCompleted(binding: ResidentLeaseBinding, resultDigest?: string):
+    ResidentTerminalReceipt | void | Promise<ResidentTerminalReceipt | void>;
   accept(binding: ResidentLeaseBinding): void | Promise<void>;
   start(binding: ResidentLeaseBinding): void | Promise<void>;
   reattach(binding: ResidentLeaseBinding): void | Promise<void>;
@@ -159,5 +167,5 @@ export interface ResidentAgentPort {
 export interface ResidentRun {
   turnId: string;
   response: Promise<AgentResponse>;
-  receipt: Promise<unknown>;
+  receipt: Promise<ResidentTerminalReceipt>;
 }

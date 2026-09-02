@@ -61,7 +61,9 @@ function canonicalBody(
   attachmentCount: number,
 ): string | null {
   if (value === null) {
-    if (kind === "system" || (kind === "text" && attachmentCount > 0)) return null;
+    if (kind === "system" || ((kind === "text" || kind === "result") && attachmentCount > 0)) {
+      return null;
+    }
     throw new MessagingError("request_invalid");
   }
   if (

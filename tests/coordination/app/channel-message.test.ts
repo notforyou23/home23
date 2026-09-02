@@ -264,8 +264,26 @@ function harness(input: {
         ? Promise.reject(input.responses[index])
         : Promise.resolve(input.responses[index] as AgentResponse);
       const receipt = response.then(
-        () => { finish(); },
-        () => { finish(); },
+        () => {
+          finish();
+          return Object.freeze({
+            status: "succeeded" as const,
+            sourceReference: `resident:${target.residentBinding}`,
+            resultDigest: "a".repeat(64),
+            artifactIds: Object.freeze([]),
+            timestamp: "2026-08-28T12:00:00.000Z",
+          });
+        },
+        () => {
+          finish();
+          return Object.freeze({
+            status: "failed" as const,
+            sourceReference: `resident:${target.residentBinding}`,
+            resultDigest: "b".repeat(64),
+            artifactIds: Object.freeze([]),
+            timestamp: "2026-08-28T12:00:00.000Z",
+          });
+        },
       );
       return Promise.resolve({ turnId: `turn-${index}`, response, receipt });
     };
@@ -279,7 +297,17 @@ function harness(input: {
           const response = input.responses[index] instanceof Error
             ? Promise.reject(input.responses[index])
             : Promise.resolve(input.responses[index] as AgentResponse);
-          return { turnId: `recovered-${index}`, response };
+          return {
+            turnId: `recovered-${index}`,
+            response,
+            receipt: Promise.resolve(Object.freeze({
+              status: "succeeded" as const,
+              sourceReference: `resident:${target.residentBinding}`,
+              resultDigest: "a".repeat(64),
+              artifactIds: Object.freeze([]),
+              timestamp: "2026-08-28T12:00:00.000Z",
+            })),
+          };
         },
       } as never,
       holderInstanceId: `resident-${index}`,
