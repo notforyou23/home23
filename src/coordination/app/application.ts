@@ -62,7 +62,8 @@ function capabilityDocument(input: {
   );
   const messageSubmission =
     mutationsEnabled &&
-    input.flags["coordination.resident.jerry.enabled"] === true &&
+    (input.flags["coordination.resident.jerry.enabled"] === true ||
+      input.flags["coordination.resident.forrest.enabled"] === true) &&
     canonicalMessagesAuthority &&
     input.services.messageSubmission !== undefined &&
     input.services.work !== undefined &&
