@@ -39,7 +39,8 @@ export type CoordinationUnreadPort = Pick<
 >;
 
 export type CoordinationBotDirectoryPort = Pick<
-  ReturnType<typeof createBotDirectory>, "listVisibleBots"
+  ReturnType<typeof createBotDirectory>,
+  "listVisibleBots" | "listLifecycleBots" | "getLifecycleBot"
 >;
 export type CoordinationChannelPort = ReturnType<typeof createChannelService>;
 export type CoordinationMessagePort = Pick<

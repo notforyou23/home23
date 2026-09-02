@@ -436,6 +436,8 @@ export async function createMessagingFixture() {
   const directory = Object.freeze({
     ensurePersistentBinding: directoryService.ensurePersistentBinding,
     listVisibleBots: directoryService.listVisibleBots,
+    listLifecycleBots: directoryService.listLifecycleBots,
+    getLifecycleBot: directoryService.getLifecycleBot,
     resolveAlias: directoryService.resolveAlias,
     registerResident: directoryService.registerResident,
     heartbeatResident: directoryService.heartbeatResident,

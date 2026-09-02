@@ -263,6 +263,39 @@ test("unbound temporary hands and nonpersistent definitions never enter the rost
   assert.equal(repository.bots.size, 2);
 });
 
+test("lifecycle inventory retains archived Bots without admitting them to active surfaces", async () => {
+  const repository = new TestBotDirectoryRepository();
+  const clock = { now: new Date("2026-08-25T13:30:00.000Z") };
+  const directory = service(repository, clock);
+  const [jerry, forrest] = await seedVisibleRoster(directory);
+  const stored = repository.bots.get(forrest.id)!;
+  repository.bots.set(forrest.id, {
+    ...stored,
+    lifecycle: "archived",
+    activeInstanceId: null,
+    activeKeyVersion: null,
+    residentProtocolVersion: null,
+    residentCapabilities: [],
+    residentRegisteredAt: null,
+    lastHeartbeatAt: null,
+    reportedAvailability: null,
+    version: stored.version + 1,
+    updatedAt: "2026-08-25T13:30:01.000Z",
+  });
+
+  assert.deepEqual((await directory.listVisibleBots()).map((bot) => bot.id), [jerry.id]);
+  assert.deepEqual(
+    (await directory.listLifecycleBots()).map((bot) => [bot.id, bot.lifecycle]),
+    [[forrest.id, "archived"], [jerry.id, "active"]],
+  );
+  const archived = await directory.getLifecycleBot(forrest.id);
+  assert.equal(archived?.principalId, forrest.principalId);
+  assert.equal(archived?.conversationId, forrest.conversationId);
+  assert.equal(archived?.residentBinding, forrest.residentBinding);
+  assert.equal(archived?.availability, "offline");
+  assert.equal(await directory.resolveAlias("resident", "forrest"), null);
+});
+
 test("stale heartbeats degrade then take a Bot offline without identity or mailbox churn", async () => {
   const repository = new TestBotDirectoryRepository();
   const clock = { now: new Date("2026-08-25T14:00:00.000Z") };

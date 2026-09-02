@@ -38,9 +38,26 @@ test("loopback product API traverses canonical temp-db Bots, Channels, Messages,
   t.after(() => server.drain());
   const address = await server.start();
 
+  fixture.database.raw.prepare(
+    "UPDATE bots SET lifecycle = 'archived', updated_at = ? WHERE id = ?",
+  ).run("2026-08-25T12:00:01.000Z", fixture.bots.records.id);
+
   const bots = await fetch(`${address.origin}/api/v1/bots`, { headers: headers() });
   assert.equal(bots.status, 200);
-  assert.deepEqual((await bots.json() as any).bots.map((bot: any) => bot.name), ["Forrest", "Jerry", "Records"]);
+  const lifecycleInventory = (await bots.json() as any).bots;
+  assert.deepEqual(lifecycleInventory.map((bot: any) => [bot.name, bot.lifecycle]), [
+    ["Forrest", "active"],
+    ["Jerry", "active"],
+    ["Records", "archived"],
+  ]);
+  assert.deepEqual((await fixture.directory.listVisibleBots()).map((bot) => bot.name), ["Forrest", "Jerry"]);
+  const archived = await fetch(`${address.origin}/api/v1/bots/${fixture.bots.records.id}`, { headers: headers() });
+  assert.equal(archived.status, 200);
+  assert.equal((await archived.json() as any).bot.lifecycle, "archived");
+  const reloaded = await fetch(`${address.origin}/api/v1/bots`, { headers: headers() });
+  assert.equal((await reloaded.json() as any).bots.some(
+    (bot: any) => bot.id === fixture.bots.records.id && bot.lifecycle === "archived",
+  ), true);
 
   const created = await fetch(`${address.origin}/api/v1/channels`, { method: "POST", headers: headers("product-api-channel-0001"), body: JSON.stringify({ kind: "direct", memberBotIds: [fixture.bots.jerry.id], title: "Jerry", purpose: "Durable direct conversation.", pinned: true, responderPolicy: { mode: "mention_or_coordinator", coordinatorBotId: fixture.bots.jerry.id, responseOrder: "sequential", maxBotTurns: 1 } }) });
   assert.equal(created.status, 201);

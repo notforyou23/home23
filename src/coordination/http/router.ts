@@ -189,12 +189,12 @@ export function createCoordinationRouter(input: {
   router.get("/api/v1/bots", productRead, asyncRoute(async (_request, response) => {
     if (!application.services.bots) throw unavailable("bootstrap");
     const metadata = requireCoordinationMetadata(response);
-    response.json({ ...metadata, bots: await application.services.bots.listVisibleBots(), nextCursor: null, throughEventSequence: 0 });
+    response.json({ ...metadata, bots: await application.services.bots.listLifecycleBots(), nextCursor: null, throughEventSequence: 0 });
   }));
   router.get("/api/v1/bots/:botId", productRead, asyncRoute(async (request, response) => {
     if (!application.services.bots) throw unavailable("bootstrap");
     const botId = pathParameter(request.params.botId);
-    const bot = (await application.services.bots.listVisibleBots()).find((item) => item.id === botId);
+    const bot = await application.services.bots.getLifecycleBot(botId);
     if (!bot) throw new CoordinationHttpError("bot_not_found", 404, false);
     response.json({ bot });
   }));

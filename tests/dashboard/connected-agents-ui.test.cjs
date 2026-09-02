@@ -20,6 +20,10 @@ test('Connected Agents is a product surface with explicit Legacy rollback', () =
   assert.match(js, /readCursorMutation/);
   assert.match(js, /botLifecycle/);
   assert.match(js, /data-control="\$\{lifecycleOperation\}"/);
+  assert.match(js, /bot\.lifecycle === "active"/);
+  assert.match(js, /bot\.lifecycle === "archived"/);
+  assert.match(js, /data-restore-bot/);
+  assert.match(js, /controlBot\(button\.dataset\.restoreBot, "restore"\)/);
   assert.match(js, /"jerry", "forrest"/);
   assert.doesNotMatch(js, /data-control="(?:start|stop|restart)"/);
   assert.doesNotMatch(js, /state\.provisioning|residentBinding,\s*purpose|requiredCapabilities:\s*\["messages"\]|is provisioning|Getting ready/);

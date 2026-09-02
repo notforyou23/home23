@@ -412,7 +412,7 @@
     return `<button class="ca-row${selected ? " active" : ""}" data-channel="${esc(item.channelId || "")}" data-kind="${kind}" aria-current="${selected ? "page" : "false"}"><span class="ca-avatar ${kind === "channel" ? "channel" : ""} ${primary ? "primary" : ""}" style="--row-accent:${esc(bot?.accent || "var(--accent)")}">${esc((item.title || "?").slice(0, 2).toUpperCase())}</span><span class="ca-row-main"><span class="ca-row-line"><span class="ca-row-name">${esc(item.title)}</span>${primary ? '<span class="ca-primary-label">Primary</span>' : ""}</span><span class="ca-row-preview">${esc(active ? item.activity.label || "Active now" : item.latestMessage?.preview || bot?.purpose || item.purpose || "No messages yet")}</span></span><span class="ca-row-side"><time>${esc(fmtTime(item.latestMessage?.createdAt || item.updatedAt))}</time>${count ? `<b class="ca-unread" aria-label="${count} unread">${count}</b>` : active ? '<i class="ca-activity-dot" aria-label="Active"></i>' : ""}</span></button>`;
   }
   function renderRoster() {
-    const botRows = state.bots.map((bot) => {
+    const botRows = state.bots.filter((bot) => bot.lifecycle === "active").map((bot) => {
       const channel = directChannel(bot),
         summary = inboxFor(channel?.id);
       return {
@@ -424,6 +424,11 @@
         bot,
       };
     });
+    const archivedBots = ordered(
+      state.bots
+        .filter((bot) => bot.lifecycle === "archived")
+        .map((bot) => ({ ...bot, title: bot.name })),
+    );
     const channelRows = state.channels
       .filter((c) => c.kind === "group")
       .map((channel) => ({
@@ -433,10 +438,15 @@
         title: channel.title,
         purpose: channel.purpose,
       }));
+    const activeBotMarkup = ordered(botRows)
+      .map((x) => row(x, "bot", x.bot))
+      .join("");
+    const archivedBotMarkup = archivedBots.length
+      ? `<details class="ca-archived-bots"><summary>Archived Bots (${archivedBots.length})</summary>${archivedBots.map((bot) => `<div class="ca-row ca-archived-row"><span class="ca-avatar">${esc(bot.name.slice(0, 2).toUpperCase())}</span><span class="ca-row-main"><span class="ca-row-name">${esc(bot.name)}</span><span class="ca-row-preview">Identity and history retained</span></span><button class="ca-details-button" type="button" data-restore-bot="${esc(bot.id)}" ${state.capabilities?.capabilities?.botLifecycle ? "" : "disabled"}>Restore</button></div>`).join("")}</details>`
+      : "";
     $("bots-list").innerHTML =
-      ordered(botRows)
-        .map((x) => row(x, "bot", x.bot))
-        .join("") || '<div class="ca-empty-row">No Bots are available.</div>';
+      (activeBotMarkup || '<div class="ca-empty-row">No active Bots are available.</div>') +
+      archivedBotMarkup;
     $("channels-list").innerHTML =
       ordered(channelRows)
         .map((x) => row(x, "channel"))
@@ -452,6 +462,11 @@
             : toast("This Bot’s conversation is unavailable."),
         ),
       );
+    document.querySelectorAll("[data-restore-bot]").forEach((button) =>
+      button.addEventListener("click", () =>
+        controlBot(button.dataset.restoreBot, "restore"),
+      ),
+    );
     renderChannelMembers();
   }
   async function openConversation(channelId, focusMessageId = null, options = {}) {
@@ -1252,6 +1267,7 @@
   function renderChannelMembers() {
     $("channel-members").innerHTML =
       state.bots
+        .filter((b) => b.lifecycle === "active")
         .map(
           (b, i) =>
             `<label class="ca-member"><input type="checkbox" value="${esc(b.id)}" ${i < 2 ? "checked" : ""}><span>${esc(b.name)}</span></label>`,
@@ -1337,7 +1353,7 @@
     const q = query.toLowerCase(),
       results = [];
     if (["all", "bots"].includes(scope))
-      for (const b of state.bots)
+      for (const b of state.bots.filter((bot) => bot.lifecycle === "active"))
         if (`${b.name} ${b.purpose}`.toLowerCase().includes(q)) {
           const c = directChannel(b);
           results.push({

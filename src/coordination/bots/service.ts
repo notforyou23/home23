@@ -185,7 +185,15 @@ function availabilityAt(
 
 function isVisible(record: BotDirectoryRecord): boolean {
   return (
-    record.lifecycle !== "archived" &&
+    record.lifecycle === "active" &&
+    record.continuingIdentity === true &&
+    record.durableMailbox === true
+  );
+}
+
+function isLifecycleReadable(record: BotDirectoryRecord): boolean {
+  return (
+    (record.lifecycle === "active" || record.lifecycle === "archived") &&
     record.continuingIdentity === true &&
     record.durableMailbox === true
   );
@@ -395,6 +403,26 @@ export function createBotDirectory(options: CreateBotDirectoryOptions) {
     );
   }
 
+  async function listLifecycleBots(): Promise<readonly BotProjection[]> {
+    const at = canonicalNow(now);
+    const records = await repository.listPersistentBots();
+    return Object.freeze(
+      records
+        .filter(isLifecycleReadable)
+        .map((record) => projectBot(record, at, availabilityPolicy))
+        .sort((left, right) =>
+          left.name < right.name ? -1 : left.name > right.name ? 1 :
+            left.id < right.id ? -1 : left.id > right.id ? 1 : 0
+        ),
+    );
+  }
+
+  async function getLifecycleBot(botId: string): Promise<BotProjection | null> {
+    const record = await repository.getBotById(botId);
+    if (!record || !isLifecycleReadable(record)) return null;
+    return projectBot(record, canonicalNow(now), availabilityPolicy);
+  }
+
   async function resolveAlias(
     namespace: string,
     value: string,
@@ -541,6 +569,8 @@ export function createBotDirectory(options: CreateBotDirectoryOptions) {
   return Object.freeze({
     ensurePersistentBinding,
     listVisibleBots,
+    listLifecycleBots,
+    getLifecycleBot,
     resolveAlias,
     registerResident,
     heartbeatResident,
