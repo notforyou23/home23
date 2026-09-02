@@ -55,6 +55,7 @@ const MAX_GENERATED_IMAGE_CAPTION_BYTES = 2_048;
 
 type ResidentGeneratedImage = Readonly<{
   type: "image";
+  generatedBy: "generate_image";
   path: string;
   mimeType: string;
   fileName: string;
@@ -270,7 +271,7 @@ function generatedImageCandidates(value: unknown): Record<string, unknown>[] {
     }
     const descriptor = raw as Record<string, unknown>;
     const mediaType = descriptor.type === "media" ? descriptor.mediaType : (descriptor.type ?? descriptor.mediaType);
-    if (mediaType !== "image") continue;
+    if (mediaType !== "image" || descriptor.generatedBy !== "generate_image") continue;
     images.push(descriptor);
   }
   if (images.length > MAX_RESIDENT_ATTACHMENTS) {
@@ -386,6 +387,7 @@ async function residentGeneratedImages(
       seen.add(canonicalPath);
       images.push(Object.freeze({
         type: "image",
+        generatedBy: "generate_image",
         path: canonicalPath,
         mimeType,
         fileName,
@@ -406,6 +408,7 @@ async function residentGeneratedImages(
 function generatedImagesJson(images: readonly ResidentGeneratedImage[]): JsonValue {
   return images.map((image) => ({
     type: image.type,
+    generatedBy: image.generatedBy,
     path: image.path,
     mimeType: image.mimeType,
     fileName: image.fileName,
@@ -422,7 +425,7 @@ function parseResidentGeneratedImages(value: JsonValue | undefined): MediaAttach
   }
   const images = value.map((raw) => {
     const image = object(raw);
-    if (image.type !== "image") {
+    if (image.type !== "image" || image.generatedBy !== "generate_image") {
       throw new ResidentProtocolError("request_invalid", "resident generated image type is invalid");
     }
     const path = string(image.path, "generated image path");
@@ -449,6 +452,7 @@ function parseResidentGeneratedImages(value: JsonValue | undefined): MediaAttach
     }
     return Object.freeze({
       type: "image" as const,
+      generatedBy: "generate_image" as const,
       path,
       mimeType,
       fileName,

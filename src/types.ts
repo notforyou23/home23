@@ -31,6 +31,7 @@ export interface OutgoingResponse {
 export interface MediaAttachment {
   type: 'image' | 'voice' | 'document';
   path: string;
+  generatedBy?: 'generate_image';
   mimeType?: string;
   fileName?: string;
   byteCount?: number;

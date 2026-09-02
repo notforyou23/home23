@@ -3,8 +3,19 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
-import { closeSync, constants as fsConstants, fsyncSync, mkdirSync, openSync, unlinkSync, writeFileSync } from 'node:fs';
-import { extname, join } from 'node:path';
+import {
+  closeSync,
+  constants as fsConstants,
+  fsyncSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { extname, join, resolve } from 'node:path';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { loadConfig } from '../../config.js';
 import { resolveProviderKey } from '../provider-credentials.js';
@@ -183,6 +194,38 @@ function exactImageFormat(buf: Buffer): { mimeType: string; extension: string } 
   throw new Error('Image provider returned an unsupported image format.');
 }
 
+function canonicalGeneratedImageDirectory(workspacePath: string): string {
+  const workspace = resolve(workspacePath);
+  const workspaceEntry = lstatSync(workspace);
+  const canonicalWorkspace = realpathSync(workspace);
+  const allowedMacSystemAlias = workspace.startsWith('/var/') && canonicalWorkspace === `/private${workspace}`;
+  if (
+    !workspaceEntry.isDirectory() ||
+    workspaceEntry.isSymbolicLink() ||
+    (canonicalWorkspace !== workspace && !allowedMacSystemAlias)
+  ) {
+    throw new Error('Generated-image workspace must be a real directory.');
+  }
+
+  const ensureDirectChild = (parent: string, name: string): string => {
+    const child = join(parent, name);
+    try {
+      mkdirSync(child, { recursive: false, mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+    const entry = lstatSync(child);
+    const canonical = realpathSync(child);
+    if (!entry.isDirectory() || entry.isSymbolicLink() || canonical !== child) {
+      throw new Error('Generated-image directory must remain inside the resident workspace.');
+    }
+    return canonical;
+  };
+
+  const mediaDirectory = ensureDirectChild(canonicalWorkspace, 'media');
+  return ensureDirectChild(mediaDirectory, 'generated-images');
+}
+
 function writeImageArtifact(
   ctx: ToolContext,
   cfg: ImageGeneratorConfig,
@@ -192,78 +235,105 @@ function writeImageArtifact(
 ): ImageArtifactInfo {
   const createdAt = new Date().toISOString();
   const safeProvider = cfg.provider.replace(/[^a-z0-9_-]/gi, '-').toLowerCase();
-  const artifactDir = join(ctx.workspacePath, 'media', 'generated-images');
-  mkdirSync(artifactDir, { recursive: true });
+  const artifactDir = canonicalGeneratedImageDirectory(ctx.workspacePath);
   const stamp = createdAt.replace(/[:.]/g, '-');
   const format = exactImageFormat(buf);
   const sha256 = createHash('sha256').update(buf).digest('hex');
   let fileName = '';
   let filePath = '';
   let receiptPath = '';
+  let createdImagePath = '';
+  let createdReceiptPath = '';
   let imageFd: number | undefined;
   let receiptFd: number | undefined;
   const createFlags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW;
-  for (let attempt = 0; attempt < 10; attempt++) {
-    const stem = `${stamp}-${safeProvider}-${randomBytes(6).toString('hex')}`;
-    fileName = `${stem}${format.extension}`;
-    filePath = join(artifactDir, fileName);
-    receiptPath = join(artifactDir, `${stem}.json`);
-    try {
-      imageFd = openSync(filePath, createFlags, 0o600);
+  const directoryFd = openSync(
+    artifactDir,
+    fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+  );
+  const directoryEntry = fstatSync(directoryFd);
+  let complete = false;
+  try {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const stem = `${stamp}-${safeProvider}-${randomBytes(6).toString('hex')}`;
+      fileName = `${stem}${format.extension}`;
+      filePath = join(artifactDir, fileName);
+      receiptPath = join(artifactDir, `${stem}.json`);
       try {
-        receiptFd = openSync(receiptPath, createFlags, 0o600);
+        imageFd = openSync(filePath, createFlags, 0o600);
+        createdImagePath = filePath;
+        try {
+          receiptFd = openSync(receiptPath, createFlags, 0o600);
+          createdReceiptPath = receiptPath;
+        } catch (error) {
+          closeSync(imageFd);
+          imageFd = undefined;
+          unlinkSync(createdImagePath);
+          createdImagePath = '';
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
+          throw error;
+        }
+        break;
       } catch (error) {
-        closeSync(imageFd);
-        imageFd = undefined;
-        unlinkSync(filePath);
         if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
         throw error;
       }
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
-      throw error;
     }
-  }
-  if (imageFd === undefined || receiptFd === undefined) {
-    throw new Error('Could not reserve a unique generated-image artifact name.');
-  }
-  const receipt: ImageArtifactInfo & Record<string, unknown> = {
-    ...extra,
-    provider: cfg.provider,
-    model: cfg.model,
-    prompt,
-    path: filePath,
-    receiptPath,
-    mimeType: format.mimeType,
-    fileName,
-    byteCount: buf.length,
-    sha256,
-    bytes: buf.length,
-    createdAt,
-  };
-  let complete = false;
-  try {
+    if (imageFd === undefined || receiptFd === undefined) {
+      throw new Error('Could not reserve a unique generated-image artifact name.');
+    }
+    const receipt: ImageArtifactInfo & Record<string, unknown> = {
+      ...extra,
+      provider: cfg.provider,
+      model: cfg.model,
+      prompt,
+      path: filePath,
+      receiptPath,
+      mimeType: format.mimeType,
+      fileName,
+      byteCount: buf.length,
+      sha256,
+      bytes: buf.length,
+      createdAt,
+    };
     writeFileSync(imageFd, buf);
     fsyncSync(imageFd);
     writeFileSync(receiptFd, JSON.stringify(receipt, null, 2));
     fsyncSync(receiptFd);
-    complete = true;
-  } finally {
-    closeSync(imageFd);
-    closeSync(receiptFd);
-    if (!complete) {
-      try { unlinkSync(filePath); } catch { /* best-effort rollback of our exclusive file */ }
-      try { unlinkSync(receiptPath); } catch { /* best-effort rollback of our exclusive file */ }
+    const currentDirectory = lstatSync(artifactDir);
+    if (
+      !currentDirectory.isDirectory() ||
+      currentDirectory.isSymbolicLink() ||
+      currentDirectory.dev !== directoryEntry.dev ||
+      currentDirectory.ino !== directoryEntry.ino ||
+      realpathSync(artifactDir) !== artifactDir
+    ) {
+      throw new Error('Generated-image directory changed during artifact creation.');
     }
+    fsyncSync(directoryFd);
+    complete = true;
+    return receipt;
+  } finally {
+    if (imageFd !== undefined) closeSync(imageFd);
+    if (receiptFd !== undefined) closeSync(receiptFd);
+    if (!complete) {
+      if (createdImagePath) {
+        try { unlinkSync(createdImagePath); } catch { /* best-effort rollback of our exclusive file */ }
+      }
+      if (createdReceiptPath) {
+        try { unlinkSync(createdReceiptPath); } catch { /* best-effort rollback of our exclusive file */ }
+      }
+      try { fsyncSync(directoryFd); } catch { /* best-effort durability of rollback */ }
+    }
+    closeSync(directoryFd);
   }
-  return receipt;
 }
 
 function generatedImageMedia(info: ImageArtifactInfo, prompt: string): NonNullable<ToolResult['media']>[number] {
   return {
     type: 'image',
     path: info.path,
+    generatedBy: 'generate_image',
     mimeType: info.mimeType,
     fileName: info.fileName,
     byteCount: info.byteCount,

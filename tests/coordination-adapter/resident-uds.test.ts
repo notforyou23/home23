@@ -294,6 +294,7 @@ test("resident UDS returns verified generated-image descriptors live and after r
   const root = mkdtempSync(join(tmpdir(), "home23-resident-generated-image-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const workspacePath = join(root, "workspace");
+  let residentWorkspacePath = workspacePath;
   const generatedImagesRoot = join(workspacePath, "media", "generated-images");
   mkdirSync(generatedImagesRoot, { recursive: true });
   const bytes = Buffer.from(
@@ -303,6 +304,9 @@ test("resident UDS returns verified generated-image descriptors live and after r
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   const imagePath = join(generatedImagesRoot, "answer.png");
   writeFileSync(imagePath, bytes, { mode: 0o400 });
+  const browserScreenshotPath = join(root, "turn-temp", "web-screenshot.png");
+  mkdirSync(join(root, "turn-temp"), { recursive: true });
+  writeFileSync(browserScreenshotPath, bytes, { mode: 0o400 });
 
   const history = new ConversationHistory(join(root, "conversations"), 400_000, "jerry");
   const store = new TurnStore(history);
@@ -314,7 +318,7 @@ test("resident UDS returns verified generated-image descriptors live and after r
     getModel: () => "fixture-model",
     getProvider: () => "fixture-provider",
     getReasoningEffort: () => "medium",
-    getWorkspacePath: () => workspacePath,
+    getWorkspacePath: () => residentWorkspacePath,
     async runWithTurn(chatId, instruction, options = {}) {
       starts += 1;
       const turnId = options.turnId!;
@@ -326,7 +330,12 @@ test("resident UDS returns verified generated-image descriptors live and after r
         model: string;
         toolCallCount: number;
         durationMs: number;
-        media: Array<{ type: "image"; path: string; caption: string }>;
+        media: Array<{
+          type: "image";
+          path: string;
+          caption: string;
+          generatedBy?: "generate_image";
+        }>;
       }>((resolve) => {
         setTimeout(() => {
           store.writeEvent(chatId, {
@@ -338,6 +347,7 @@ test("resident UDS returns verified generated-image descriptors live and after r
             data: {
               type: "media",
               mediaType: "image",
+              generatedBy: "generate_image",
               path: imagePath,
               mimeType: "image/png",
               fileName: "answer.png",
@@ -347,11 +357,29 @@ test("resident UDS returns verified generated-image descriptors live and after r
               sourceEventType: "runtime.tool_media",
             },
           });
+          store.writeEvent(chatId, {
+            type: "event",
+            turn_id: turnId,
+            seq: 2,
+            ts: "2026-08-26T12:00:00.110Z",
+            kind: "media",
+            data: {
+              type: "media",
+              mediaType: "image",
+              path: browserScreenshotPath,
+              mimeType: "image/png",
+              fileName: "web-screenshot.png",
+              byteCount: bytes.length,
+              sha256,
+              caption: "browser screenshot",
+              sourceEventType: "runtime.tool_media",
+            },
+          });
           history.append(chatId, [
             { role: "user", content: instruction },
             { role: "assistant", content: "generated image ready" },
           ]);
-          store.writeEnd(chatId, turnId, "complete", { last_seq: 1 });
+          store.writeEnd(chatId, turnId, "complete", { last_seq: 2 });
           resolve({
             text: "generated image ready",
             model: "fixture-model",
@@ -359,7 +387,19 @@ test("resident UDS returns verified generated-image descriptors live and after r
             durationMs: 20,
             // Exercise the resident-side basename, MIME, size, and hash reconstruction
             // used when an older generator returns only its durable path.
-            media: [{ type: "image", path: imagePath, caption: "a generated answer" }],
+            media: [
+              {
+                type: "image",
+                generatedBy: "generate_image",
+                path: imagePath,
+                caption: "a generated answer",
+              },
+              {
+                type: "image",
+                path: browserScreenshotPath,
+                caption: "browser screenshot",
+              },
+            ],
           });
         }, 20);
       });
@@ -391,6 +431,7 @@ test("resident UDS returns verified generated-image descriptors live and after r
   } as const;
   const expectedMedia = [{
     type: "image",
+    generatedBy: "generate_image",
     path: realpathSync(imagePath),
     mimeType: "image/png",
     fileName: "answer.png",
@@ -446,8 +487,20 @@ test("resident UDS returns verified generated-image descriptors live and after r
   writeFileSync(outsidePath, bytes, { mode: 0o400 });
   const symlinkPath = join(generatedImagesRoot, "linked.png");
   symlinkSync(imagePath, symlinkPath);
-  for (const [index, rejectedPath] of [outsidePath, symlinkPath].entries()) {
-    const suffix = index === 0 ? "b" : "c";
+  const escapedGeneratedRoot = join(root, "escaped-generated-images");
+  mkdirSync(escapedGeneratedRoot, { recursive: true });
+  const escapedImagePath = join(escapedGeneratedRoot, "escaped.png");
+  writeFileSync(escapedImagePath, bytes, { mode: 0o400 });
+  const symlinkedWorkspacePath = join(root, "symlinked-workspace");
+  mkdirSync(join(symlinkedWorkspacePath, "media"), { recursive: true });
+  symlinkSync(escapedGeneratedRoot, join(symlinkedWorkspacePath, "media", "generated-images"));
+  const rejectedCases = [
+    { suffix: "b", path: outsidePath, workspace: workspacePath },
+    { suffix: "c", path: symlinkPath, workspace: workspacePath },
+    { suffix: "d", path: escapedImagePath, workspace: symlinkedWorkspacePath },
+  ] as const;
+  for (const { suffix, path: rejectedPath, workspace } of rejectedCases) {
+    residentWorkspacePath = workspace;
     const rejectedOrigin = {
       ...origin,
       workId: `wrk_0198d95f-6c00-7000-8000-0000000002${suffix}1`,
@@ -466,7 +519,12 @@ test("resident UDS returns verified generated-image descriptors live and after r
       seq: 1,
       ts: "2026-08-26T12:00:00.100Z",
       kind: "media",
-      data: { type: "media", mediaType: "image", path: rejectedPath },
+      data: {
+        type: "media",
+        mediaType: "image",
+        generatedBy: "generate_image",
+        path: rejectedPath,
+      },
     });
     history.append(rejectedChatId, [{ role: "assistant", content: "must not escape" }]);
     store.writeEnd(rejectedChatId, rejectedTurnId, "complete", { last_seq: 1 });
@@ -485,6 +543,7 @@ test("resident UDS returns verified generated-image descriptors live and after r
       (error: unknown) => error instanceof ResidentProtocolError && error.code === "request_invalid",
     );
   }
+  residentWorkspacePath = workspacePath;
 });
 
 test("a durable stopped turn with a legacy terminal sequence completes recovery", async (t) => {

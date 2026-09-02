@@ -94,6 +94,7 @@ function toolMediaEvent(media: MediaAttachment, toolCallId: string): AgentEvent 
     type: 'media',
     mediaType: media.type || 'image',
     path: media.path,
+    generatedBy: media.generatedBy,
     caption: media.caption,
     mimeType: media.mimeType,
     fileName: media.fileName,
