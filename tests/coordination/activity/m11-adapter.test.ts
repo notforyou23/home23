@@ -48,6 +48,7 @@ function fact(sequence: number, overrides: Partial<TrustedM11ActivityFact> = {})
     event: durable,
     sourceKind: "work_attempt",
     workId: WORK,
+    workKind: "resident_turn",
     channelId: DIRECT_CHANNEL,
     actorPrincipalId: JERRY,
     attemptId: ATTEMPT,
@@ -121,7 +122,7 @@ test("a queued Work without an Attempt preserves the explicit zero-fence seam", 
 
 test("processless Bot Work keeps bot_turn authority vocabulary through Activity", () => {
   const botAuthority = `bot:${fixtureId("bot", 705)}`;
-  const specialist = fact(1, { authorityReference: botAuthority });
+  const specialist = fact(1, { workKind: "bot_turn", authorityReference: botAuthority });
   const adapted = adaptTrustedM11ActivityFact(specialist);
   assert.equal(adapted?.observation.authoritySystem, "bot_turn");
   const result = projectTrustedM11Activity({
@@ -136,6 +137,7 @@ test("processless Bot Work keeps bot_turn authority vocabulary through Activity"
     assert.equal(result.projection.entries[0]?.source.authoritySystem, "bot_turn");
     assert.equal(result.projection.entries[0]?.source.authorityId, botAuthority);
   }
+  assert.equal(adaptTrustedM11ActivityFact(fact(2, { workKind: "unknown_turn" })), null);
 });
 
 test("a queued Work can hand authority to its first fenced resident Attempt", () => {

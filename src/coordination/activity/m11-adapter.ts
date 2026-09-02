@@ -23,6 +23,8 @@ export interface TrustedM11ActivityFact {
   event: EventEnvelope;
   sourceKind: M11ActivitySourceKind;
   workId: string;
+  /** Immutable canonical Work.kind; execution vocabulary must not be inferred from an authority label. */
+  workKind: string;
   channelId: string;
   actorPrincipalId: string;
   attemptId: string | null;
@@ -202,12 +204,25 @@ function sourceVersion(fact: TrustedM11ActivityFact): string {
   return `m11:${fact.sourceKind}:${fact.event.id}:v${fact.event.aggregate.version}:f${fact.fencingToken}`;
 }
 
+function authoritySystemForWorkKind(
+  workKind: string,
+): ActivityWorkObservationInput["observation"]["authoritySystem"] | null {
+  if (workKind === "bot_turn") return "bot_turn";
+  // Group turns are still executed by a permanent UDS resident; their Work
+  // kind describes Channel orchestration, not a processless Bot runtime.
+  if (workKind === "resident_turn" || workKind === "channel.bot_turn") {
+    return "resident_turn";
+  }
+  return null;
+}
+
 export function adaptTrustedM11ActivityFact(
   fact: TrustedM11ActivityFact,
 ): ActivityWorkObservationInput | null {
   if (!isRecord(fact) || !isRecord(fact.event) || !paired(fact.event, fact) ||
     fact.event.durability !== "durable" ||
     (fact.sourceKind !== "outbox" && fact.event.channelId !== fact.channelId) ||
+    typeof fact.workKind !== "string" || !/^[a-z][a-z0-9_.-]{0,63}$/.test(fact.workKind) ||
     !SAFE_REFERENCE.test(fact.authorityReference) ||
     !Number.isSafeInteger(fact.fencingToken) || fact.fencingToken < 0) return null;
   if (fact.artifactId !== null &&
@@ -219,9 +234,8 @@ export function adaptTrustedM11ActivityFact(
   if (["succeeded", "failed", "cancelled"].includes(fact.observedState) && !terminal) return null;
   const kind = category(fact);
   const version = sourceVersion(fact);
-  const authoritySystem = fact.authorityReference.startsWith("bot:")
-    ? "bot_turn" as const
-    : "resident_turn" as const;
+  const authoritySystem = authoritySystemForWorkKind(fact.workKind);
+  if (authoritySystem === null) return null;
   const event: EventEnvelope = Object.freeze({
     ...fact.event,
     type: "activity.updated",

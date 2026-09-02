@@ -26,6 +26,7 @@ interface WorkFactRow {
   targetPrincipalId: string;
   channelId: string;
   roundId: string | null;
+  kind: string;
   state: ActivityObservedState;
   updatedAt: string;
 }
@@ -294,7 +295,7 @@ export function createSqliteActivityReadService(options: {
   function work(workId: string): WorkFactRow {
     const row = options.database.readOne<WorkFactRow>(
       `SELECT id, target_principal_id AS targetPrincipalId,
-              channel_id AS channelId, round_id AS roundId, state,
+              channel_id AS channelId, round_id AS roundId, kind, state,
               updated_at AS updatedAt
        FROM works WHERE id = ?`,
       workId,
@@ -344,6 +345,7 @@ export function createSqliteActivityReadService(options: {
       event,
       sourceKind: "work_attempt",
       workId: retainedWork.id,
+      workKind: retainedWork.kind,
       channelId: retainedWork.channelId,
       actorPrincipalId: retainedWork.targetPrincipalId,
       attemptId,
@@ -367,8 +369,8 @@ export function createSqliteActivityReadService(options: {
     );
     const retainedWork = round === undefined
       ? undefined
-      : options.database.readOne<{ id: string }>(
-      `SELECT id FROM works
+      : options.database.readOne<Pick<WorkFactRow, "id" | "kind">>(
+      `SELECT id, kind FROM works
        WHERE round_id = ? AND target_principal_id = ?
        ORDER BY created_at, id LIMIT 1`,
       event.aggregate.id,
@@ -395,6 +397,7 @@ export function createSqliteActivityReadService(options: {
       event,
       sourceKind: "round",
       workId: retainedWork.id,
+      workKind: retainedWork.kind,
       channelId: round.channelId,
       actorPrincipalId: round.coordinatorBotId,
       attemptId: null,
@@ -434,6 +437,7 @@ export function createSqliteActivityReadService(options: {
       event,
       sourceKind: "outbox",
       workId: retainedWork.id,
+      workKind: retainedWork.kind,
       channelId: retainedWork.channelId,
       actorPrincipalId: retainedWork.targetPrincipalId,
       attemptId: null,
@@ -485,6 +489,7 @@ export function createSqliteActivityReadService(options: {
       event,
       sourceKind: "recovery",
       workId: retainedWork.id,
+      workKind: retainedWork.kind,
       channelId: retainedWork.channelId,
       actorPrincipalId: retainedWork.targetPrincipalId,
       attemptId: observation.attemptId,

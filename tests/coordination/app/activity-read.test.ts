@@ -114,6 +114,7 @@ test("a rejected fence stays stale attention after the retained Work later succe
           targetPrincipalId: JERRY,
           channelId: DIRECT_CHANNEL,
           roundId: null,
+          kind: "resident_turn",
           state: "succeeded",
           updatedAt: "2026-08-28T01:05:00.000Z",
         };
@@ -156,4 +157,90 @@ test("a rejected fence stays stale attention after the retained Work later succe
   assert.equal(page.entries[0]?.state, "attention");
   assert.equal(page.entries[0]?.terminalReason, null);
   assert.equal(page.entries[0]?.source.freshness, "stale");
+});
+
+test("Activity derives queued and Outbox Bot authority from immutable Work kind while residents stay resident", async () => {
+  const cases = [
+    { source: "work", workKind: "bot_turn", expected: "bot_turn" },
+    { source: "outbox", workKind: "bot_turn", expected: "bot_turn" },
+    { source: "work", workKind: "resident_turn", expected: "resident_turn" },
+    { source: "work", workKind: "channel.bot_turn", expected: "resident_turn" },
+  ] as const;
+
+  for (const [index, current] of cases.entries()) {
+    const workId = fixtureId("work", 920 + index);
+    const outboxId = `obx_${fixtureId("event", 930 + index).slice(4)}`;
+    const durableEvent = Object.freeze({
+      id: fixtureId("event", 920 + index),
+      sequence: 1,
+      schemaVersion: 1,
+      type: current.source === "work" ? "turn.updated" : "activity.updated",
+      durability: "durable" as const,
+      aggregate: Object.freeze(current.source === "work"
+        ? { kind: "work", id: workId, version: 1 }
+        : { kind: "outbox", id: outboxId, version: 1 }),
+      channelId: DIRECT_CHANNEL,
+      actorPrincipalId: JERRY,
+      requestId: fixtureId("request", 920 + index),
+      correlationId: fixtureId("correlation", 920 + index),
+      createdAt: `2026-08-28T02:00:0${index}.000Z`,
+      payload: Object.freeze(current.source === "work"
+        ? { workId, state: "queued" }
+        : { outboxId, workId, state: "pending" }),
+    });
+    const database = {
+      readOne: (sql: string) => {
+        if (sql.includes("sqlite_sequence")) {
+          return { currentSequence: 1, retainedFloor: 1, retainedCount: 1 };
+        }
+        if (sql.includes("FROM outbox WHERE id")) {
+          return { id: outboxId, workId, kind: "work.wake", updatedAt: durableEvent.createdAt };
+        }
+        if (sql.includes("FROM works WHERE id")) {
+          return {
+            id: workId,
+            targetPrincipalId: JERRY,
+            channelId: DIRECT_CHANNEL,
+            roundId: null,
+            kind: current.workKind,
+            state: "queued",
+            updatedAt: durableEvent.createdAt,
+          };
+        }
+        throw new Error(`unexpected readOne: ${sql}`);
+      },
+      readAll: (sql: string) => {
+        if (!sql.includes("FROM channel_members viewer")) {
+          throw new Error(`unexpected readAll: ${sql}`);
+        }
+        return [
+          { channelId: DIRECT_CHANNEL, memberPrincipalId: "user_owner" },
+          { channelId: DIRECT_CHANNEL, memberPrincipalId: JERRY },
+        ];
+      },
+    } as unknown as M11Database;
+    const activity = createSqliteActivityReadService({
+      database,
+      events: {
+        resumeAfter: () => ({
+          kind: "events",
+          events: [durableEvent],
+          throughSequence: 1,
+          currentSequence: 1,
+          retentionFloorSequence: 1,
+          hasMore: false,
+        }),
+      } as never,
+      messages: { listMessages: async () => { throw new Error("no Message facts expected"); } },
+    });
+
+    const page = await activity.list({
+      context: ownerContext(["product:read"]),
+      scope: { kind: "all" },
+      after: null,
+      limit: 50,
+    });
+    assert.equal(page.entries.length, 1);
+    assert.equal(page.entries[0]?.source.authoritySystem, current.expected);
+  }
 });
