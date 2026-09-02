@@ -50,6 +50,8 @@ export interface SubAgentTracker {
   queue: Array<{ task: string; chatId: string; resolve: () => void }>;
 }
 
+export type SubAgentExecutionMode = 'joined' | 'detached';
+
 export interface TurnRuntimeContext {
   turnId: string;
   abortController: AbortController;

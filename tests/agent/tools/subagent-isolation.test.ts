@@ -5,6 +5,7 @@ import type { ToolContext, AgentResponse } from '../../../src/agent/types.js';
 
 interface Captured {
   ctx: ToolContext | null;
+  tools: unknown[];
   options: unknown;
   loopCalls: number;
   appends: Array<{ chatId: string; records: unknown[] }>;
@@ -15,6 +16,7 @@ function makeCtx(parentChatId: string): { ctx: ToolContext; captured: Captured }
   let resolveDelivered!: () => void;
   const captured: Captured = {
     ctx: null,
+    tools: [],
     options: undefined,
     loopCalls: 0,
     appends: [],
@@ -42,9 +44,10 @@ function makeCtx(parentChatId: string): { ctx: ToolContext; captured: Captured }
     subAgentTracker: { active: 0, maxConcurrent: 3, queue: [] },
     chatId: parentChatId,
     telegramAdapter: null,
-    runAgentLoop: async (_sys: string, _msg: string, _tools: unknown[], subCtx: ToolContext, options?: unknown) => {
+    runAgentLoop: async (_sys: string, _msg: string, tools: unknown[], subCtx: ToolContext, options?: unknown) => {
       captured.loopCalls++;
       captured.ctx = subCtx;
+      captured.tools = tools;
       captured.options = options;
       return response;
     },
@@ -82,7 +85,7 @@ test('spawn_agent isolates the sub-agent under a subagent: chat id while deliver
 
 test('spawn_agent isolated:false preserves the legacy shared-chat behavior', async () => {
   const { ctx, captured } = makeCtx('parent-chat');
-  const result = await spawnAgentTool.execute({ task: 'quick check', isolated: false }, ctx);
+  const result = await spawnAgentTool.execute({ task: 'quick check', mode: 'detached', isolated: false }, ctx);
   assert.match(result.content, /Sub-agent spawned/);
 
   await captured.delivered;
@@ -226,4 +229,156 @@ test('spawn_agent failure completes the work record as failed', async () => {
   await spawnAgentTool.execute({ task: 'will fail' }, ctx);
   await terminalFired;
   assert.deepEqual(completed, [{ status: 'failed', error: 'boom' }]);
+});
+
+test('joined specialist waits, stays isolated and restricted, then returns its exact result once', async () => {
+  const { ctx, captured } = makeCtx('ios_parent');
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let settled = false;
+  const events: Array<{ type: string; result?: string; success?: boolean }> = [];
+  const completed: Array<{ status: string; error?: string }> = [];
+  let terminalCalls = 0;
+  const media = [{ type: 'image' as const, path: '/tmp/result.png' }];
+
+  (ctx as { onEvent?: unknown }).onEvent = (event: { type: string; result?: string; success?: boolean }) => {
+    events.push(event);
+  };
+  (ctx as { workRegistry?: unknown }).workRegistry = {
+    create: () => ({ workId: 'aw_joined', originChatId: 'ios_parent' }),
+    complete: (_id: string, status: string, error?: string) => {
+      completed.push({ status, ...(error ? { error } : {}) });
+      return {};
+    },
+  };
+  (ctx as { onWorkTerminal?: unknown }).onWorkTerminal = () => { terminalCalls++; };
+  (ctx as { runAgentLoop?: unknown }).runAgentLoop = async (
+    _sys: string,
+    _msg: string,
+    tools: unknown[],
+    subCtx: ToolContext,
+    options?: unknown,
+  ) => {
+    captured.loopCalls++;
+    captured.ctx = subCtx;
+    captured.tools = tools;
+    captured.options = options;
+    await gate;
+    return { text: 'verbatim specialist result', media, model: 'test', toolCallCount: 0, durationMs: 1 };
+  };
+
+  const pending = spawnAgentTool.execute({ task: 'inspect this', mode: 'joined' }, ctx)
+    .finally(() => { settled = true; });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, 'joined tool call remains open while the specialist works');
+  release();
+  const result = await pending;
+
+  assert.equal(result.content, 'verbatim specialist result');
+  assert.deepEqual(result.media, media);
+  assert.match(captured.ctx!.chatId, /^subagent:ios_parent:[0-9a-f]{4}$/);
+  assert.deepEqual(captured.tools, []);
+  const registry = (captured.options as { registry: { size: number; get(name: string): unknown } }).registry;
+  assert.equal(registry.size, 0, 'an empty grant remains an explicit empty registry');
+  assert.equal(registry.get('shell'), undefined);
+  assert.deepEqual(events.map((event) => event.type), ['subagent_start', 'subagent_result']);
+  assert.deepEqual(events.at(-1), {
+    type: 'subagent_result',
+    subagentId: 'aw_joined',
+    task: 'inspect this',
+    result: 'verbatim specialist result',
+    success: true,
+    parentToolCallId: undefined,
+    sourceEventType: 'runtime.subagent_completed',
+  });
+  assert.deepEqual(completed, [{ status: 'completed' }]);
+  assert.equal(terminalCalls, 0, 'joined results never enter detached delivery');
+  assert.equal(captured.appends.length, 0, 'joined results never append a second assistant message');
+  assert.equal(ctx.subAgentTracker.active, 0);
+});
+
+test('joined specialist receives only its explicit capability groups', async () => {
+  const { ctx, captured } = makeCtx('parent-chat');
+  const result = await spawnAgentTool.execute({
+    task: 'read the source',
+    mode: 'joined',
+    tool_grants: ['files'],
+  }, ctx);
+
+  assert.equal(result.content, 'sub result');
+  const names = captured.tools.map((tool) => (tool as { name: string }).name);
+  assert.deepEqual(names, ['read_file', 'write_file', 'edit_file', 'list_files', 'search_files']);
+  const registry = (captured.options as { registry: { size: number; get(name: string): unknown } }).registry;
+  assert.equal(registry.size, 5);
+  assert.ok(registry.get('read_file'));
+  assert.equal(registry.get('shell'), undefined);
+  assert.equal(registry.get('spawn_agent'), undefined);
+});
+
+test('joined specialist reports failure without detached or history delivery', async () => {
+  const { ctx, captured } = makeCtx('parent-chat');
+  const events: Array<{ type: string; success?: boolean; result?: string }> = [];
+  const completed: Array<{ status: string; error?: string }> = [];
+  let terminalCalls = 0;
+  (ctx as { onEvent?: unknown }).onEvent = (event: { type: string; success?: boolean; result?: string }) => events.push(event);
+  (ctx as { runAgentLoop?: unknown }).runAgentLoop = async () => { throw new Error('specialist broke'); };
+  (ctx as { workRegistry?: unknown }).workRegistry = {
+    create: () => ({ workId: 'aw_failed_joined', originChatId: 'parent-chat' }),
+    complete: (_id: string, status: string, error?: string) => { completed.push({ status, error }); return {}; },
+  };
+  (ctx as { onWorkTerminal?: unknown }).onWorkTerminal = () => { terminalCalls++; };
+
+  const result = await spawnAgentTool.execute({ task: 'fail honestly', mode: 'joined' }, ctx);
+
+  assert.equal(result.is_error, true);
+  assert.equal(result.content, 'Sub-agent failed: specialist broke');
+  assert.deepEqual(events.map((event) => event.type), ['subagent_start', 'subagent_result']);
+  assert.equal(events.at(-1)?.success, false);
+  assert.equal(events.at(-1)?.result, 'Error: specialist broke');
+  assert.deepEqual(completed, [{ status: 'failed', error: 'specialist broke' }]);
+  assert.equal(terminalCalls, 0);
+  assert.equal(captured.appends.length, 0);
+});
+
+test('joined specialist propagates parent cancellation to its exact child work', async () => {
+  const { ctx, captured } = makeCtx('parent-chat');
+  const controller = new AbortController();
+  const cancelledWork: string[] = [];
+  const completed: Array<{ status: string; error?: string }> = [];
+  const events: Array<{ type: string; success?: boolean; result?: string }> = [];
+  let rejectRun!: (error: Error) => void;
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+
+  (ctx as { abortSignal?: AbortSignal }).abortSignal = controller.signal;
+  (ctx as { onEvent?: unknown }).onEvent = (event: { type: string; success?: boolean; result?: string }) => events.push(event);
+  (ctx as { workRegistry?: unknown }).workRegistry = {
+    create: () => ({ workId: 'aw_cancel_joined', originChatId: 'parent-chat' }),
+    complete: (_id: string, status: string, error?: string) => { completed.push({ status, error }); return {}; },
+  };
+  (ctx as { requestWorkCancel?: unknown }).requestWorkCancel = (workId: string) => {
+    cancelledWork.push(workId);
+    const error = Object.assign(new Error('operator_stop'), { code: 'operator_stop' });
+    rejectRun(error);
+    return { status: 'accepted', work: {} };
+  };
+  (ctx as { runAgentLoop?: unknown }).runAgentLoop = async () => new Promise((_resolve, reject) => {
+    rejectRun = reject;
+    markStarted();
+  });
+
+  const pending = spawnAgentTool.execute({ task: 'stop with parent', mode: 'joined' }, ctx);
+  await started;
+  controller.abort(Object.assign(new Error('operator_stop'), { code: 'operator_stop' }));
+  const result = await pending;
+
+  assert.equal(result.is_error, true);
+  assert.equal(result.content, 'Sub-agent cancelled: operator_stop');
+  assert.deepEqual(cancelledWork, ['aw_cancel_joined']);
+  assert.deepEqual(completed, [{ status: 'cancelled', error: 'operator_stop' }]);
+  assert.deepEqual(events.map((event) => event.type), ['subagent_start', 'subagent_result']);
+  assert.equal(events.at(-1)?.success, false);
+  assert.equal(events.at(-1)?.result, 'Cancelled: operator_stop');
+  assert.equal(captured.appends.length, 0);
+  assert.equal(ctx.subAgentTracker.active, 0);
 });
