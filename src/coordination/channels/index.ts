@@ -41,6 +41,7 @@ export type {
   MessagingMutationReceipt,
   MessagingParticipantDirectory,
   MessagingResidentAuthority,
+  OnDemandBotMessagingIdentity,
   OwnerMessagingIdentity,
   RequiredMessagingScope,
   ResolvedMessagingActor,

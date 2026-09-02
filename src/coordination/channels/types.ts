@@ -56,11 +56,20 @@ export interface ResidentMessagingIdentity {
   resident: AuthenticatedResidentContext;
 }
 
+/** Core-only identity used while a processless Bot handles its own mailbox. */
+export interface OnDemandBotMessagingIdentity {
+  kind: "on_demand_bot";
+  bot: {
+    botId: string;
+    residentBinding: string;
+  };
+}
+
 export interface MessagingActorContext {
   principalId: string;
   requestId: string;
   correlationId: string;
-  identity: OwnerMessagingIdentity | ResidentMessagingIdentity;
+  identity: OwnerMessagingIdentity | ResidentMessagingIdentity | OnDemandBotMessagingIdentity;
 }
 
 export interface MessagingParticipantDirectory extends MessagingResidentAuthority {

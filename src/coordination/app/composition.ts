@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { dirname, resolve } from "node:path";
 
 import {
   ArtifactError,
@@ -38,6 +39,7 @@ import {
   type DirectMessageResidentTarget,
 } from "./direct-message.js";
 import { SqliteDirectMessageContext } from "./direct-message-context.js";
+import { createOnDemandBotRuntime } from "./on-demand-bot-runtime.js";
 import { createGroupChannelMessageService } from "./channel-message.js";
 import { SqliteGroupChannelMessageContext } from "./channel-message-context.js";
 import { createSqliteActivityReadService } from "./activity-read.js";
@@ -587,9 +589,15 @@ export function createCoordinationProcess(
         context: residentContext,
       }));
     }
-    if (residentTargets.size > 0) {
+    {
       const resolveResident = (residentBinding: string) =>
         residentTargets.get(residentBinding);
+      const onDemandBots = createOnDemandBotRuntime({
+        botsRootDirectory: resolve(dirname(config.databasePath), "bots"),
+        bots: { getBotById: (botId) => botRepository.getBotById(botId) },
+        leases,
+        communications,
+      });
       const directSubmission = createDirectMessageSubmissionService({
         messages,
         communications,
@@ -615,6 +623,7 @@ export function createCoordinationProcess(
         work,
         leases,
         resolveResident,
+        resolveExecutionTarget: onDemandBots.resolve,
         authority: { current: () => currentAuthority("messages") },
         beginWork: lifecycle.beginWork,
         recoveryIdentity: () => ({ requestId: generateCoordinationId("request"), correlationId: generateCoordinationId("correlation") }),
@@ -726,10 +735,10 @@ export function createCoordinationProcess(
       if (messageSubmission) {
         void messageSubmission.recoverResidentWork().then((receipt) => {
           if (receipt.discovered > 0) {
-            console.log(`[home23-coordination] resident recovery discovered=${receipt.discovered} scheduled=${receipt.scheduled} refused=${receipt.refused}`);
+            console.log(`[home23-coordination] direct-message recovery discovered=${receipt.discovered} scheduled=${receipt.scheduled} refused=${receipt.refused}`);
           }
         }).catch((error: unknown) => {
-          console.error("[home23-coordination] resident recovery failed:", error instanceof Error ? error.message : error);
+          console.error("[home23-coordination] direct-message recovery failed:", error instanceof Error ? error.message : error);
         });
       }
       return address;

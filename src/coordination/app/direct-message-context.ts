@@ -36,6 +36,31 @@ type AttachmentMaterializer = (
   attachments: readonly AttachmentSummary[],
 ) => Promise<readonly ResidentInputAttachment[]>;
 
+// Jerry and Forrest are permanent UDS residents. Every other lifecycle-created
+// Bot is deliberately processless and is eligible for Core-owned on-demand
+// execution only while its canonical mailbox identity remains active.
+const ROUTABLE_DIRECT_TARGET_SQL = `
+  AND (
+    (
+      b.resident_binding IN ('jerry', 'forrest')
+      AND b.resident_protocol_version = 1
+      AND EXISTS (
+        SELECT 1 FROM json_each(b.resident_capabilities_json) WHERE value = 'messages'
+      )
+    ) OR (
+      b.resident_binding NOT IN ('jerry', 'forrest')
+      AND b.resident_binding LIKE 'bot-%'
+      AND EXISTS (
+        SELECT 1 FROM json_each(b.required_capabilities_json) WHERE value = 'messages'
+      )
+      AND b.active_instance_id IS NULL
+      AND b.active_key_version IS NULL
+      AND b.resident_protocol_version IS NULL
+      AND b.resident_registered_at IS NULL
+      AND json_array_length(b.resident_capabilities_json) = 0
+    )
+  )`;
+
 function exactAttachmentIDs(
   left: readonly string[],
   right: readonly string[],
@@ -93,8 +118,7 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
        JOIN bots b ON b.principal_id = member.principal_id
        WHERE c.id = ? AND c.kind = 'direct' AND c.lifecycle = 'active'
          AND b.lifecycle = 'active' AND b.continuing_identity = 1 AND b.durable_mailbox = 1
-         AND b.resident_protocol_version = 1
-         AND EXISTS (SELECT 1 FROM json_each(b.resident_capabilities_json) WHERE value = 'messages')`,
+         ${ROUTABLE_DIRECT_TARGET_SQL}`,
       input.context.principalId,
       input.channelId,
     );
@@ -112,8 +136,7 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
        JOIN bots b ON b.principal_id = member.principal_id
        WHERE c.id = ? AND c.kind = 'direct' AND c.lifecycle = 'active'
          AND b.lifecycle = 'active' AND b.continuing_identity = 1 AND b.durable_mailbox = 1
-         AND b.resident_protocol_version = 1
-         AND EXISTS (SELECT 1 FROM json_each(b.resident_capabilities_json) WHERE value = 'messages')`,
+         ${ROUTABLE_DIRECT_TARGET_SQL}`,
       input.channelId,
     );
     if (!binding) throw new MessagingError("unknown_channel");
@@ -174,7 +197,8 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
 
   async recover(work: WorkRecord) {
     if (
-      !["queued", "leased", "running", "succeeded"].includes(work.state) || work.kind !== "resident_turn" ||
+      !["queued", "leased", "running", "succeeded"].includes(work.state) ||
+      !["resident_turn", "bot_turn"].includes(work.kind) ||
       work.originMessageId === null || work.roundId !== null
     ) {
       throw new MessagingError("invalid_relation");
@@ -188,12 +212,18 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
        JOIN bots b ON b.principal_id = member.principal_id
        WHERE c.id = ? AND c.kind = 'direct' AND c.lifecycle = 'active'
          AND b.id = ? AND b.lifecycle = 'active' AND b.continuing_identity = 1
-         AND b.durable_mailbox = 1 AND b.resident_protocol_version = 1
-         AND EXISTS (SELECT 1 FROM json_each(b.resident_capabilities_json) WHERE value = 'messages')`,
+         AND b.durable_mailbox = 1
+         ${ROUTABLE_DIRECT_TARGET_SQL}`,
       work.channelId,
       work.targetPrincipalId,
     );
-    if (!binding || binding.targetPrincipalId !== work.targetPrincipalId) {
+    const expectedKind = binding?.residentBinding === "jerry" || binding?.residentBinding === "forrest"
+      ? "resident_turn"
+      : "bot_turn";
+    if (
+      !binding || binding.targetPrincipalId !== work.targetPrincipalId ||
+      work.kind !== expectedKind
+    ) {
       throw new MessagingError("unknown_channel");
     }
     const manifest = this.database.readOne<RecoveryManifestRow>(

@@ -49,8 +49,15 @@ export {
   type DirectMessageContextPort,
   type DirectMessageMessagePort,
   type DirectMessageResidentTarget,
+  type DirectMessageExecutionTarget,
+  type DirectMessageTargetDescriptor,
 } from "./direct-message.js";
 export { SqliteDirectMessageContext } from "./direct-message-context.js";
+export {
+  createOnDemandBotRuntime,
+  type OnDemandBotModelConfiguration,
+  type OnDemandBotRuntimeOptions,
+} from "./on-demand-bot-runtime.js";
 export {
   createGroupChannelMessageService,
   type GroupChannelMessageContextPort,
