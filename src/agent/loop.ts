@@ -1112,7 +1112,10 @@ export class AgentLoop {
             : endEnv);
           turnBus.close(chatId, turnId);
         }
-        if (this.pusher) {
+        // Coordination turns use a synthetic resident chat id and do not own
+        // the canonical product Message yet. Their notification is emitted by
+        // the post-commit Connected Agents path, never this legacy hook.
+        if (this.pusher && !opts.coordinationOrigin) {
           this.pusher.notifyTurnComplete({
             chatId,
             turnId,
