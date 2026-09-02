@@ -15,6 +15,7 @@ import { TurnStore } from "../chat/turn-store.js";
 import type { TurnEvent } from "../chat/turn-types.js";
 import { ResidentProtocolError, type JsonValue, type ResidentCredential, type ResidentRequestFrame } from "../coordination/resident-protocol/index.js";
 import { assertCoordinationId } from "../coordination/ids/index.js";
+import { HOUSE_RESIDENT_CAPABILITIES } from "../coordination/house-resident-capabilities.js";
 import { ResidentUdsClient, ResidentUdsServer } from "../coordination/transport/uds/index.js";
 import type {
   ResidentAgentPort,
@@ -52,6 +53,11 @@ const GENERATED_IMAGE_CONTENT_TYPES = new Set([
   "image/png",
 ]);
 const MAX_GENERATED_IMAGE_CAPTION_BYTES = 2_048;
+
+function exactHouseResidentCapabilities(value: unknown): boolean {
+  return Array.isArray(value) && value.length === HOUSE_RESIDENT_CAPABILITIES.length &&
+    HOUSE_RESIDENT_CAPABILITIES.every((capability) => value.includes(capability));
+}
 
 type ResidentGeneratedImage = Readonly<{
   type: "image";
@@ -723,6 +729,7 @@ export class ResidentTurnUdsServer {
     if(request.method==="GET"&&request.path===MODEL_CATALOG){
       const aliases=this.#modelAliases;
       return {
+        capabilities:[...HOUSE_RESIDENT_CAPABILITIES],
         models:Object.entries(aliases).sort(([left],[right])=>left.localeCompare(right)).map(([alias,value])=>({
           alias,provider:value.provider,model:value.model,reasoningEffort:value.reasoningEffort??null,
         })),
@@ -851,7 +858,8 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
       requestId:input.requestId,correlationId:input.correlationId,
     });
     const payload=object(response.payload);
-    if(!Array.isArray(payload.models)||!Array.isArray(payload.reasoningEfforts)){
+    if(!Array.isArray(payload.models)||!Array.isArray(payload.reasoningEfforts)||
+      !exactHouseResidentCapabilities(payload.capabilities)){
       throw new ResidentProtocolError("request_invalid","resident model catalog is invalid");
     }
     const models=payload.models.map((raw)=>{
@@ -872,6 +880,7 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
       throw new ResidentProtocolError("request_invalid","resident default reasoning effort is invalid");
     }
     return Object.freeze({
+      capabilities:HOUSE_RESIDENT_CAPABILITIES,
       models:Object.freeze(models),defaultModel:string(payload.defaultModel,"defaultModel"),
       defaultProvider:string(payload.defaultProvider,"defaultProvider"),
       defaultReasoningEffort,

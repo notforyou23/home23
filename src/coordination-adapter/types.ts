@@ -1,6 +1,7 @@
 import type { AgentEvent, AgentResponse, CoordinationTurnOrigin } from '../agent/types.js';
 import type { ReasoningEffort } from '../agent/reasoning-effort.js';
 import type { AppendCommunicationEventInput } from '../coordination/communications/index.js';
+import type { HOUSE_RESIDENT_CAPABILITIES } from '../coordination/house-resident-capabilities.js';
 
 export interface ResidentLeaseBinding extends Omit<CoordinationTurnOrigin, 'kind' | 'channelId' | 'originMessageId' | 'roundId'> {
   requestId: string;
@@ -47,6 +48,7 @@ export interface ResidentTurnSelectionReceipt {
 }
 
 export interface ResidentModelCatalog {
+  capabilities: typeof HOUSE_RESIDENT_CAPABILITIES;
   models: readonly Readonly<{
     alias: string;
     provider: string;

@@ -474,6 +474,10 @@ test("production composition dispatches Jerry and Forrest to distinct resident s
     resident: "jerry" | "forrest",
     agent: typeof jerryRuntime.agent,
   ) => ({
+    getModel: () => agent.getModel(),
+    getProvider: () => agent.getProvider(),
+    getReasoningEffort: () => agent.getReasoningEffort(),
+    getWorkspacePath: () => agent.getWorkspacePath(),
     runWithTurn: (...args: Parameters<typeof agent.runWithTurn>) => {
       residentInvocations[resident] += 1;
       return agent.runWithTurn(...args);
@@ -1000,6 +1004,20 @@ test("production composition dispatches Jerry and Forrest to distinct resident s
     fileMustExist: true,
   });
   try {
+    const residents = sequentialDatabase.prepare(
+      `SELECT resident_binding AS residentBinding,
+              required_capabilities_json AS requiredCapabilities,
+              resident_capabilities_json AS residentCapabilities,
+              reported_availability AS availability
+       FROM bots WHERE resident_binding IN ('jerry','forrest')
+       ORDER BY CASE resident_binding WHEN 'jerry' THEN 0 ELSE 1 END`,
+    ).all() as Array<Record<string, string>>;
+    assert.deepEqual(residents, [
+      { residentBinding: "jerry", requiredCapabilities: '["attachments","messages"]',
+        residentCapabilities: '["attachments","messages"]', availability: "available" },
+      { residentBinding: "forrest", requiredCapabilities: '["messages"]',
+        residentCapabilities: '["attachments","messages"]', availability: "available" },
+    ], "authenticated catalog contact attests runtime capabilities without owner-policy mutation");
     const workManifests = sequentialDatabase.prepare(
       `SELECT w.id AS workId, manifest.message_refs_json AS messageRefsJson
        FROM works w JOIN context_manifests manifest ON manifest.id = w.context_manifest_id

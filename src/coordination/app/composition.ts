@@ -12,7 +12,7 @@ import {
 } from "../artifacts/index.js";
 import { openCoordinationDatabase } from "../db/index.js";
 import { createAuthService, SqliteAuthRepository } from "../auth/index.js";
-import { createBotDirectory, SqliteBotDirectoryRepository } from "../bots/index.js";
+import { BotDirectoryError, createBotDirectory, SqliteBotDirectoryRepository } from "../bots/index.js";
 import { createBootstrapService, SqliteBootstrapRepository } from "../bootstrap/index.js";
 import {
   createChannelService,
@@ -28,6 +28,7 @@ import { createCanonicalSearchService, SqliteCanonicalSearchRepository } from ".
 import { createUnreadService, SqliteUnreadRepository } from "../unread/index.js";
 import { createProductWorkControl, createWorkService, M11MessageProvenanceAuthority } from "../work/index.js";
 import { generateCoordinationId } from "../ids/index.js";
+import { HOUSE_RESIDENT_CAPABILITIES } from "../house-resident-capabilities.js";
 import { createResidentCredential } from "../resident-protocol/index.js";
 import { ResidentUdsClient } from "../transport/uds/index.js";
 import { ResidentCoordinationAdapter, ResidentUdsAgentPort, createM11ResidentCoordinationPort } from "../../coordination-adapter/index.js";
@@ -447,6 +448,7 @@ export function createCoordinationProcess(
     },
   };
   const residentAgents = new Map<string, ResidentUdsAgentPort>();
+  const residentInitializers: Array<readonly [string, () => Promise<void>]> = [];
   const lifecycle = createCoordinationLifecycle([{
     name: "resident-uds-clients",
     drain: async () => undefined,
@@ -491,6 +493,52 @@ export function createCoordinationProcess(
       });
       const residentAgent = new ResidentUdsAgentPort({ client, residentSlug });
       residentAgents.set(residentSlug, residentAgent);
+      const residentCredentialContext = (requestId: string, correlationId: string) => ({
+        requestId,
+        correlationId,
+        credential: {
+          residentSlug,
+          role: "resident" as const,
+          instanceId: residentConfig.serverInstanceId,
+          keyVersion: residentConfig.keyVersion,
+        },
+      });
+      const attestedModelCatalog = async (identity: {
+        requestId: string;
+        correlationId: string;
+      }) => {
+        const { requestId, correlationId } = identity;
+        const catalog = await residentAgent.modelCatalog({ requestId, correlationId });
+        const context = residentCredentialContext(requestId, correlationId);
+        const current = await botRepository.getBotByResidentBinding(residentSlug);
+        if (!current) throw new Error(`${residentSlug} resident binding is unavailable`);
+        const sameCapabilities = current.residentCapabilities.length === catalog.capabilities.length &&
+          catalog.capabilities.every((capability) => current.residentCapabilities.includes(capability));
+        const register = () => botDirectory.registerResident({
+          context,
+          botBinding: residentSlug,
+          protocolVersion: 1,
+          capabilities: catalog.capabilities,
+        });
+        if (current.activeInstanceId !== residentConfig.serverInstanceId ||
+            current.activeKeyVersion !== residentConfig.keyVersion || !sameCapabilities) {
+          await register();
+        }
+        try {
+          await botDirectory.heartbeatResident({ context, availability: "available" });
+        } catch (error) {
+          if (!(error instanceof BotDirectoryError) || error.code !== "registration_stale") throw error;
+          await register();
+          await botDirectory.heartbeatResident({ context, availability: "available" });
+        }
+        return catalog;
+      };
+      residentInitializers.push([residentSlug, async () => {
+        await attestedModelCatalog({
+          requestId: generateCoordinationId("request"),
+          correlationId: generateCoordinationId("correlation"),
+        });
+      }]);
       const residentContext = ({ principalId, requestId, correlationId }:
         Parameters<DirectMessageResidentTarget["context"]>[0]) => ({
         principalId,
@@ -531,7 +579,7 @@ export function createCoordinationProcess(
           artifactPromotion,
         ),
         holderInstanceId: residentConfig.serverInstanceId,
-        models: residentAgent,
+        models: { modelCatalog: attestedModelCatalog },
         context: residentContext,
       }));
     }
@@ -664,6 +712,12 @@ export function createCoordinationProcess(
       } catch (error) {
         await server.drain().catch(() => undefined);
         throw error;
+      }
+      for (const [residentSlug, initialize] of residentInitializers) {
+        void initialize().catch((error: unknown) => {
+          console.error(`[home23-coordination] ${residentSlug} resident initialization failed:`,
+            error instanceof Error ? error.message : error);
+        });
       }
       if (messageSubmission) {
         void messageSubmission.recoverResidentWork().then((receipt) => {

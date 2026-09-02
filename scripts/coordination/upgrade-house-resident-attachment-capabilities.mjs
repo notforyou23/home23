@@ -28,21 +28,25 @@ if (
 const databasePath = value("--database");
 if (!databasePath) throw new Error("--database is required");
 const apply = args.includes("--apply");
+const authority = apply ? Object.freeze({
+  approved: true,
+  kind: "house-resident-attachment-capability-upgrade",
+  operator: "user_owner",
+  residents: Object.freeze(["jerry", "forrest"]),
+}) : undefined;
 
-let evidence = {};
+let expected;
 if (apply) {
   const evidencePath = value("--evidence");
   if (!evidencePath) throw new Error("--apply requires --evidence");
-  evidence = JSON.parse(readFileSync(resolve(evidencePath), "utf8"));
+  expected = JSON.parse(readFileSync(resolve(evidencePath), "utf8"));
 }
 
 const receipt = upgradeHouseResidentAttachmentCapabilities({
   databasePath: resolve(databasePath),
   apply,
-  authority: evidence.authority,
-  expectedResidents: evidence.expectedResidents,
-  requestId: evidence.requestId,
-  correlationId: evidence.correlationId,
+  authority,
+  expected,
   confirmation: value("--confirm") ===
       HOUSE_RESIDENT_ATTACHMENT_CAPABILITY_CONFIRMATION
     ? HOUSE_RESIDENT_ATTACHMENT_CAPABILITY_CONFIRMATION

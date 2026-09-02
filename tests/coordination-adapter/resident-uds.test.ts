@@ -796,6 +796,7 @@ test("resident result retrieval outlives individual signed request windows", asy
   t.after(() => client.close());
   const port = new ResidentUdsAgentPort({ client, residentSlug: "jerry", deadlineMs: 25 });
   assert.deepEqual(await port.modelCatalog({ requestId: REQUEST_ID, correlationId: CORRELATION_ID }), {
+    capabilities: ["attachments", "messages"],
     models: [{ alias: "sol", provider: "openai-codex", model: "gpt-5.6-sol", reasoningEffort: "high" }],
     defaultModel: "gpt-5.6-terra",
     defaultProvider: "openai-codex",
