@@ -98,6 +98,8 @@ export interface ToolContext {
   subAgentTracker: SubAgentTracker;
   /** Configured short names accepted by model-selecting tools. */
   modelAliases?: ModelAliases;
+  /** Configured resident definitions from which restricted hand grants are selected. */
+  restrictedToolSource?: Pick<ToolRegistry, 'get'>;
   chatId: string;
   /** Actual channel/user turn data, set by the loop rather than tool input. */
   authenticatedUserMessage?: {
@@ -170,6 +172,7 @@ export interface WorkRegistryRef {
     originChatId: string;
     originTurnId?: string;
     parentWorkId?: string;
+    deliveryMode?: 'detached' | 'inline';
     label: string;
     resultHandle:
       | { type: 'coding_job'; jobId: string }
@@ -179,6 +182,7 @@ export interface WorkRegistryRef {
   get(workId: string): AsyncWorkRecord | undefined;
   list(filter?: { originChatId?: string; active?: boolean; limit?: number }): AsyncWorkRecord[];
   complete(workId: string, status: 'completed' | 'failed' | 'cancelled' | 'interrupted', error?: string): unknown;
+  completeInline(workId: string, status: 'completed' | 'failed' | 'cancelled' | 'interrupted', error?: string): unknown;
 }
 
 /** Minimal interface to the ACP coding bridge — avoids importing the full class */

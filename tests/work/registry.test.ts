@@ -55,6 +55,49 @@ test('complete is terminal-once and maps cancel intent', (t) => {
   assert.equal(again.status, 'cancelled'); // terminal-once: second transition ignored
 });
 
+test('inline terminal states atomically count as delivered and never enter boot delivery', (t) => {
+  const reg = makeRegistry(t);
+  const success = reg.create({
+    kind: 'subagent', originChatId: '123', deliveryMode: 'inline', label: 'success',
+    resultHandle: { type: 'subagent_chat', chatId: `subagent:123:${'a'.repeat(32)}` },
+  });
+  const failure = reg.create({
+    kind: 'subagent', originChatId: '123', deliveryMode: 'inline', label: 'failure',
+    resultHandle: { type: 'subagent_chat', chatId: `subagent:123:${'b'.repeat(32)}` },
+  });
+  const cancel = reg.create({
+    kind: 'subagent', originChatId: '123', deliveryMode: 'inline', label: 'cancel',
+    resultHandle: { type: 'subagent_chat', chatId: `subagent:123:${'c'.repeat(32)}` },
+  });
+
+  const succeeded = reg.completeInline(success.workId, 'completed');
+  const failed = reg.completeInline(failure.workId, 'failed', 'boom');
+  reg.requestCancel(cancel.workId);
+  const cancelled = reg.completeInline(cancel.workId, 'failed', 'operator_stop');
+
+  for (const record of [succeeded, failed, cancelled]) {
+    assert.ok(record.finishedAt);
+    assert.equal(record.deliveredAt, record.finishedAt);
+  }
+  assert.deepEqual([succeeded.status, failed.status, cancelled.status], ['completed', 'failed', 'cancelled']);
+  const recovered = reg.reconcileOnBoot({ jobs: [] });
+  assert.deepEqual(recovered.needsDelivery, []);
+});
+
+test('boot interruption of an inline hand is terminal and never detached-delivered', (t) => {
+  const reg = makeRegistry(t);
+  const running = reg.create({
+    kind: 'subagent', originChatId: 'ios_parent', deliveryMode: 'inline', label: 'lost inline hand',
+    resultHandle: { type: 'subagent_chat', chatId: `subagent:ios_parent:${'d'.repeat(32)}` },
+  });
+
+  const recovered = reg.reconcileOnBoot({ jobs: [] });
+  const interrupted = reg.get(running.workId)!;
+  assert.equal(interrupted.status, 'interrupted');
+  assert.equal(interrupted.deliveredAt, interrupted.finishedAt);
+  assert.deepEqual(recovered.needsDelivery, []);
+});
+
 test('noteProgress throttles writes', (t) => {
   const reg = makeRegistry(t);
   const rec = reg.create({ kind: 'coding', originChatId: '123', label: 'x', resultHandle: { type: 'coding_job', jobId: 'cj_p_1' } });

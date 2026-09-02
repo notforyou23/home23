@@ -18,7 +18,11 @@ import { generateImageTool, generateMusicTool, ttsTool } from './media.js';
 import { cronScheduleTool, cronListTool, cronRunTool, cronDeleteTool, cronEnableTool, cronDisableTool, cronUpdateTool } from './cron.js';
 import { selfUpdateTool, selfReadTool } from './identity.js';
 import { spawnAgentTool } from './subagent.js';
-import { SUBAGENT_TOOL_GRANTS, type SubAgentToolGrant } from './subagent-grants.js';
+import {
+  SUBAGENT_TOOL_GRANTS,
+  SUBAGENT_TOOL_NAMES,
+  type SubAgentToolGrant,
+} from './subagent-grants.js';
 import { workCancelTool, workListTool, workStatusTool } from './work.js';
 import { promoteToMemoryTool } from './promote.js';
 import { relationshipTools } from './relationship.js';
@@ -209,7 +213,7 @@ export { SUBAGENT_TOOL_GRANTS, type SubAgentToolGrant } from './subagent-grants.
 
 export function resolveSubAgentTools(
   grants: readonly string[],
-  opts: { web?: WebToolsConfig } = {},
+  source?: Pick<ToolRegistry, 'get'>,
 ): ToolDefinition[] {
   const unknown = grants.filter((grant) => !SUBAGENT_TOOL_GRANTS.includes(grant as SubAgentToolGrant));
   if (unknown.length > 0) {
@@ -217,10 +221,17 @@ export function resolveSubAgentTools(
   }
 
   const selected = new Set(grants as readonly SubAgentToolGrant[]);
+  if (selected.size > 0 && !source) {
+    throw new Error('Configured sub-agent tool source is unavailable');
+  }
   const tools: ToolDefinition[] = [];
   for (const grant of SUBAGENT_TOOL_GRANTS) {
     if (!selected.has(grant)) continue;
-    tools.push(...WORKER_TOOL_GRANT_GROUPS[grant](opts));
+    for (const name of SUBAGENT_TOOL_NAMES[grant]) {
+      const tool = source!.get(name);
+      if (!tool) throw new Error(`Configured sub-agent tool is unavailable: ${name}`);
+      tools.push(tool);
+    }
   }
   return tools;
 }

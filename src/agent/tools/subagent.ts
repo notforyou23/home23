@@ -18,6 +18,9 @@ import { resolveModelOverride } from '../model-resolution.js';
 import { parseReasoningEffort, REASONING_EFFORTS, type ReasoningEffort } from '../reasoning-effort.js';
 import { SUBAGENT_TOOL_GRANTS } from './subagent-grants.js';
 
+/** Leaves room for the loop's 4,000-character tool-result framing. */
+export const JOINED_RESULT_MAX_CHARS = 3_000;
+
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   return String(error);
@@ -92,6 +95,15 @@ export const spawnAgentTool: ToolDefinition = {
       return { content: 'Sub-agent spawning not available (agent loop runner not configured).', is_error: true };
     }
 
+    let systemPrompt: string;
+    try {
+      // Resolve before creating Work or emitting start evidence. A prompt-source
+      // failure means no specialist run began.
+      systemPrompt = ctx.contextManager.getSystemPrompt();
+    } catch (error) {
+      return { content: `Unable to prepare sub-agent context: ${errorMessage(error)}`, is_error: true };
+    }
+
     let joinedTools: ToolDefinition[] = [];
     let joinedRegistry: import('./index.js').ToolRegistry | undefined;
     if (mode === 'joined') {
@@ -105,7 +117,7 @@ export const spawnAgentTool: ToolDefinition = {
       try {
         // Delayed to avoid the index -> subagent registration cycle during module initialization.
         const { createSeededToolRegistry, resolveSubAgentTools } = await import('./index.js');
-        joinedTools = resolveSubAgentTools(rawGrants as string[]);
+        joinedTools = resolveSubAgentTools(rawGrants as string[], ctx.restrictedToolSource);
         // This override is mandatory even when joinedTools is empty. Omitting it
         // would make the loop fall back to the resident's unrestricted registry.
         joinedRegistry = createSeededToolRegistry(joinedTools);
@@ -119,7 +131,7 @@ export const spawnAgentTool: ToolDefinition = {
     const tracker = ctx.subAgentTracker;
     const headline = label ?? task.slice(0, 100);
     const subChatId = isolated
-      ? `subagent:${ctx.chatId}:${randomBytes(2).toString('hex')}`
+      ? `subagent:${ctx.chatId}:${randomBytes(mode === 'joined' ? 16 : 2).toString('hex')}`
       : ctx.chatId;
 
     if (tracker.active >= tracker.maxConcurrent) {
@@ -133,6 +145,7 @@ export const spawnAgentTool: ToolDefinition = {
       originChatId: ctx.chatId,
       originTurnId: ctx.turnRuntime?.turnId,
       parentWorkId: ctx.parentWorkId,
+      deliveryMode: mode === 'joined' ? 'inline' : 'detached',
       label: headline,
       resultHandle: { type: 'subagent_chat', chatId: subChatId },
     }) ?? null;
@@ -151,7 +164,6 @@ export const spawnAgentTool: ToolDefinition = {
       chatId: subChatId,
       parentWorkId: work?.workId ?? ctx.parentWorkId,
     };
-    const systemPrompt = ctx.contextManager.getSystemPrompt();
     const commonOptions = {
       ...(modelOverride ? { modelOverride } : {}),
       ...(effort ? { effort } : {}),
@@ -167,21 +179,34 @@ export const spawnAgentTool: ToolDefinition = {
       ctx.abortSignal?.addEventListener('abort', cancelJoined, { once: true });
       try {
         ctx.abortSignal?.throwIfAborted();
+        const joinedTask = [
+          task,
+          '',
+          '[Joined specialist output contract]',
+          `Return one self-contained, concise synthesis no longer than ${JOINED_RESULT_MAX_CHARS} characters.`,
+          'Do not dump raw logs or evidence; preserve only the facts the resident needs for its current answer.',
+        ].join('\n');
         const result = await ctx.runAgentLoop(
           systemPrompt,
-          task,
+          joinedTask,
           joinedTools,
           subCtx,
           { ...commonOptions, registry: joinedRegistry! },
         );
         ctx.abortSignal?.throwIfAborted();
+        if (result.text.length > JOINED_RESULT_MAX_CHARS) {
+          throw Object.assign(
+            new Error(`joined specialist result exceeded ${JOINED_RESULT_MAX_CHARS} characters`),
+            { code: 'joined_result_too_large' },
+          );
+        }
 
         ctx.onEvent?.({
           type: 'subagent_result', subagentId, task, result: result.text, success: true,
           parentToolCallId: ctx.parentToolCallId,
           sourceEventType: 'runtime.subagent_completed',
         });
-        if (work) ctx.workRegistry!.complete(work.workId, 'completed');
+        if (work) ctx.workRegistry!.completeInline(work.workId, 'completed');
         return {
           content: result.text,
           ...(result.media && result.media.length > 0 ? { media: result.media } : {}),
@@ -198,7 +223,7 @@ export const spawnAgentTool: ToolDefinition = {
           parentToolCallId: ctx.parentToolCallId,
           sourceEventType: cancelled ? 'runtime.subagent_cancelled' : 'runtime.subagent_failed',
         });
-        if (work) ctx.workRegistry!.complete(work.workId, cancelled ? 'cancelled' : 'failed', message);
+        if (work) ctx.workRegistry!.completeInline(work.workId, cancelled ? 'cancelled' : 'failed', message);
         return {
           content: cancelled ? `Sub-agent cancelled: ${message}` : `Sub-agent failed: ${message}`,
           is_error: true,

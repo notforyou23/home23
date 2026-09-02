@@ -1,10 +1,10 @@
 /**
  * Async Work contract (Step 31).
  *
- * One durable record shape for detached work — coding jobs, sub-agents, and
+ * One durable record shape for delegated work — coding jobs, sub-agents, and
  * cron agent-turns. The record is the routing authority: originChatId is
  * always the ROOT human/channel conversation (never a `subagent:` chat), so
- * completion delivery can never strand a result in a hidden sub-chat.
+ * detached completion delivery can never strand a result in a hidden sub-chat.
  * Cron agent-turns use the isolated `cron-<jobId>` chat as origin.
  */
 import { randomBytes } from 'node:crypto';
@@ -46,6 +46,8 @@ export interface AsyncWorkRecord {
   originChatId: string;           // ROOT conversation (resolveRootChatId applied)
   originTurnId?: string;          // turn that launched the work, when known
   parentWorkId?: string;          // set when launched from inside another work item
+  /** Inline work returns through its parent tool call and must never be recovery-delivered. */
+  deliveryMode?: 'detached' | 'inline';
   label: string;
   status: AsyncWorkStatus;
   startedAt: string;              // ISO
@@ -54,7 +56,7 @@ export interface AsyncWorkRecord {
   progressSummary?: string;
   resultHandle: WorkResultHandle;
   verification: VerificationStatus;
-  /** Set once the receipt/report reached the origin conversation. Recovery re-delivers when absent. */
+  /** Set once detached delivery lands, or atomically at inline terminal commit. */
   deliveredAt?: string;
   error?: string;
 }
@@ -63,9 +65,9 @@ export function newWorkId(): string {
   return `aw_${Date.now().toString(36)}_${randomBytes(2).toString('hex')}`;
 }
 
-const SUBAGENT_CHAT_RE = /^subagent:(.*):[0-9a-f]{4}$/;
+const SUBAGENT_CHAT_RE = /^subagent:(.*):(?:[0-9a-f]{4}|[0-9a-f]{32})$/;
 
-/** Unwrap `subagent:<parent>:<hex>` layers (bounded) to the root conversation id. */
+/** Unwrap legacy detached and high-entropy joined subagent layers (bounded). */
 export function resolveRootChatId(chatId: string): string {
   let current = chatId;
   for (let i = 0; i < 10; i++) {

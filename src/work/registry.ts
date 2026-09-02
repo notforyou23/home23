@@ -26,6 +26,7 @@ export interface CreateWorkInput {
   originChatId: string;
   originTurnId?: string;
   parentWorkId?: string;
+  deliveryMode?: 'detached' | 'inline';
   label: string;
   resultHandle: WorkResultHandle;
 }
@@ -69,6 +70,7 @@ export class WorkRegistry {
       originChatId: resolveRootChatId(input.originChatId),
       originTurnId: input.originTurnId,
       parentWorkId: input.parentWorkId,
+      deliveryMode: input.deliveryMode ?? 'detached',
       label: input.label,
       status: 'running',
       startedAt: now,
@@ -113,15 +115,35 @@ export class WorkRegistry {
    * unchanged — recovery and live listeners can race safely.
    */
   complete(workId: string, status: AsyncWorkStatus, error?: string): AsyncWorkRecord {
+    return this.completeTerminal(workId, status, error, false);
+  }
+
+  /**
+   * Terminalize foreground work and mark its result delivered in one durable
+   * store write. Boot reconciliation must never replay this result through the
+   * detached completion pipeline.
+   */
+  completeInline(workId: string, status: AsyncWorkStatus, error?: string): AsyncWorkRecord {
+    return this.completeTerminal(workId, status, error, true);
+  }
+
+  private completeTerminal(
+    workId: string,
+    status: AsyncWorkStatus,
+    error: string | undefined,
+    deliveredInline: boolean,
+  ): AsyncWorkRecord {
     const current = this.store.read(workId);
     if (!current) throw new Error(`unknown work id: ${workId}`);
     if (TERMINAL_WORK_STATUSES.has(current.status)) return current;
     const mapped: AsyncWorkStatus =
       status === 'failed' && this.cancelRequested.has(workId) ? 'cancelled' : status;
     this.cancelRequested.delete(workId);
+    const finishedAt = new Date().toISOString();
     const done = this.store.update(workId, {
       status: mapped,
-      finishedAt: new Date().toISOString(),
+      finishedAt,
+      ...(deliveredInline ? { deliveredAt: finishedAt } : {}),
       ...(error ? { error } : {}),
     })!;
     this.notify(done, 'terminal');
@@ -160,7 +182,9 @@ export class WorkRegistry {
     for (const rec of this.store.list()) {
       if (TERMINAL_WORK_STATUSES.has(rec.status)) continue;
       if (rec.kind === 'subagent') {
-        interrupted.push(this.complete(rec.workId, 'interrupted', 'harness restarted while sub-agent was running'));
+        interrupted.push(rec.deliveryMode === 'inline'
+          ? this.completeInline(rec.workId, 'interrupted', 'harness restarted while sub-agent was running')
+          : this.complete(rec.workId, 'interrupted', 'harness restarted while sub-agent was running'));
         continue;
       }
       if (rec.kind === 'cron') {
@@ -191,7 +215,7 @@ export class WorkRegistry {
     }
 
     const needsDelivery = this.store.list().filter(
-      r => TERMINAL_WORK_STATUSES.has(r.status) && !r.deliveredAt,
+      r => TERMINAL_WORK_STATUSES.has(r.status) && r.deliveryMode !== 'inline' && !r.deliveredAt,
     );
     return { needsDelivery, interrupted, backfilled };
   }

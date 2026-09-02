@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { spawnAgentTool } from '../../../src/agent/tools/subagent.js';
-import type { ToolContext, AgentResponse } from '../../../src/agent/types.js';
+import {
+  JOINED_RESULT_MAX_CHARS,
+  spawnAgentTool,
+} from '../../../src/agent/tools/subagent.js';
+import { createSeededToolRegistry } from '../../../src/agent/tools/index.js';
+import { executeAndFormatTool } from '../../../src/agent/tool-result.js';
+import type { ToolContext, AgentResponse, ToolDefinition } from '../../../src/agent/types.js';
 
 interface Captured {
   ctx: ToolContext | null;
+  message: string;
   tools: unknown[];
   options: unknown;
   loopCalls: number;
@@ -16,6 +22,7 @@ function makeCtx(parentChatId: string): { ctx: ToolContext; captured: Captured }
   let resolveDelivered!: () => void;
   const captured: Captured = {
     ctx: null,
+    message: '',
     tools: [],
     options: undefined,
     loopCalls: 0,
@@ -44,9 +51,10 @@ function makeCtx(parentChatId: string): { ctx: ToolContext; captured: Captured }
     subAgentTracker: { active: 0, maxConcurrent: 3, queue: [] },
     chatId: parentChatId,
     telegramAdapter: null,
-    runAgentLoop: async (_sys: string, _msg: string, tools: unknown[], subCtx: ToolContext, options?: unknown) => {
+    runAgentLoop: async (_sys: string, message: string, tools: unknown[], subCtx: ToolContext, options?: unknown) => {
       captured.loopCalls++;
       captured.ctx = subCtx;
+      captured.message = message;
       captured.tools = tools;
       captured.options = options;
       return response;
@@ -246,7 +254,7 @@ test('joined specialist waits, stays isolated and restricted, then returns its e
   };
   (ctx as { workRegistry?: unknown }).workRegistry = {
     create: () => ({ workId: 'aw_joined', originChatId: 'ios_parent' }),
-    complete: (_id: string, status: string, error?: string) => {
+    completeInline: (_id: string, status: string, error?: string) => {
       completed.push({ status, ...(error ? { error } : {}) });
       return {};
     },
@@ -254,13 +262,14 @@ test('joined specialist waits, stays isolated and restricted, then returns its e
   (ctx as { onWorkTerminal?: unknown }).onWorkTerminal = () => { terminalCalls++; };
   (ctx as { runAgentLoop?: unknown }).runAgentLoop = async (
     _sys: string,
-    _msg: string,
+    message: string,
     tools: unknown[],
     subCtx: ToolContext,
     options?: unknown,
   ) => {
     captured.loopCalls++;
     captured.ctx = subCtx;
+    captured.message = message;
     captured.tools = tools;
     captured.options = options;
     await gate;
@@ -276,7 +285,8 @@ test('joined specialist waits, stays isolated and restricted, then returns its e
 
   assert.equal(result.content, 'verbatim specialist result');
   assert.deepEqual(result.media, media);
-  assert.match(captured.ctx!.chatId, /^subagent:ios_parent:[0-9a-f]{4}$/);
+  assert.match(captured.ctx!.chatId, /^subagent:ios_parent:[0-9a-f]{32}$/);
+  assert.match(captured.message, /no longer than 3000 characters/);
   assert.deepEqual(captured.tools, []);
   const registry = (captured.options as { registry: { size: number; get(name: string): unknown } }).registry;
   assert.equal(registry.size, 0, 'an empty grant remains an explicit empty registry');
@@ -299,6 +309,16 @@ test('joined specialist waits, stays isolated and restricted, then returns its e
 
 test('joined specialist receives only its explicit capability groups', async () => {
   const { ctx, captured } = makeCtx('parent-chat');
+  const configuredFiles = new Map<string, ToolDefinition>();
+  for (const name of ['read_file', 'write_file', 'edit_file', 'list_files', 'search_files']) {
+    configuredFiles.set(name, {
+      name,
+      description: `configured ${name}`,
+      input_schema: { type: 'object' },
+      execute: async () => ({ content: name }),
+    });
+  }
+  ctx.restrictedToolSource = { get: (name) => configuredFiles.get(name) };
   const result = await spawnAgentTool.execute({
     task: 'read the source',
     mode: 'joined',
@@ -324,7 +344,7 @@ test('joined specialist reports failure without detached or history delivery', a
   (ctx as { runAgentLoop?: unknown }).runAgentLoop = async () => { throw new Error('specialist broke'); };
   (ctx as { workRegistry?: unknown }).workRegistry = {
     create: () => ({ workId: 'aw_failed_joined', originChatId: 'parent-chat' }),
-    complete: (_id: string, status: string, error?: string) => { completed.push({ status, error }); return {}; },
+    completeInline: (_id: string, status: string, error?: string) => { completed.push({ status, error }); return {}; },
   };
   (ctx as { onWorkTerminal?: unknown }).onWorkTerminal = () => { terminalCalls++; };
 
@@ -354,7 +374,7 @@ test('joined specialist propagates parent cancellation to its exact child work',
   (ctx as { onEvent?: unknown }).onEvent = (event: { type: string; success?: boolean; result?: string }) => events.push(event);
   (ctx as { workRegistry?: unknown }).workRegistry = {
     create: () => ({ workId: 'aw_cancel_joined', originChatId: 'parent-chat' }),
-    complete: (_id: string, status: string, error?: string) => { completed.push({ status, error }); return {}; },
+    completeInline: (_id: string, status: string, error?: string) => { completed.push({ status, error }); return {}; },
   };
   (ctx as { requestWorkCancel?: unknown }).requestWorkCancel = (workId: string) => {
     cancelledWork.push(workId);
@@ -381,4 +401,99 @@ test('joined specialist propagates parent cancellation to its exact child work',
   assert.equal(events.at(-1)?.result, 'Cancelled: operator_stop');
   assert.equal(captured.appends.length, 0);
   assert.equal(ctx.subAgentTracker.active, 0);
+});
+
+test('joined web grant reuses the exact configured resident web definitions', async () => {
+  const { ctx, captured } = makeCtx('parent-chat');
+  const configuredBrowse: ToolDefinition = {
+    name: 'web_browse', description: 'configured browse', input_schema: {},
+    execute: async () => ({ content: 'browse' }),
+  };
+  const configuredSearch: ToolDefinition = {
+    name: 'web_search', description: 'configured private search', input_schema: {},
+    execute: async () => ({ content: 'search' }),
+  };
+  const configured = new Map([
+    ['web_browse', configuredBrowse],
+    ['web_search', configuredSearch],
+  ]);
+  ctx.restrictedToolSource = { get: (name) => configured.get(name) };
+
+  const result = await spawnAgentTool.execute({
+    task: 'research one fact', mode: 'joined', tool_grants: ['web'],
+  }, ctx);
+
+  assert.equal(result.content, 'sub result');
+  assert.deepEqual(captured.tools, [configuredBrowse, configuredSearch]);
+});
+
+test('joined result remains complete through the real parent display boundary', async () => {
+  const { ctx, captured } = makeCtx('parent-chat');
+  const exact = 'z'.repeat(JOINED_RESULT_MAX_CHARS);
+  (ctx as { runAgentLoop?: unknown }).runAgentLoop = async (
+    _sys: string,
+    message: string,
+    tools: unknown[],
+    subCtx: ToolContext,
+    options?: unknown,
+  ) => {
+    captured.message = message;
+    captured.tools = tools;
+    captured.ctx = subCtx;
+    captured.options = options;
+    return { text: exact, model: 'test', toolCallCount: 0, durationMs: 1 };
+  };
+  const rendered = await executeAndFormatTool({
+    registry: createSeededToolRegistry([spawnAgentTool]),
+    name: 'spawn_agent',
+    toolCallId: 'call-joined',
+    input: { task: 'concise answer', mode: 'joined' },
+    context: ctx,
+    modelLimit: 4_000,
+    eventLimit: 4_000,
+  });
+
+  assert.equal(rendered.result.content, exact);
+  assert.equal(rendered.modelContent, exact);
+  assert.equal(rendered.eventContent, exact);
+  assert.doesNotMatch(rendered.modelContent, /OUTPUT TRUNCATED/);
+
+  (ctx as { runAgentLoop?: unknown }).runAgentLoop = async () => ({
+    text: 'z'.repeat(JOINED_RESULT_MAX_CHARS + 1),
+    model: 'test', toolCallCount: 0, durationMs: 1,
+  });
+  const oversized = await executeAndFormatTool({
+    registry: createSeededToolRegistry([spawnAgentTool]),
+    name: 'spawn_agent',
+    toolCallId: 'call-joined-oversized',
+    input: { task: 'concise answer', mode: 'joined' },
+    context: ctx,
+    modelLimit: 4_000,
+    eventLimit: 4_000,
+  });
+  assert.equal(oversized.success, false);
+  assert.equal(oversized.result.is_error, true);
+  assert.match(oversized.modelContent, /exceeded 3000 characters/);
+  assert.doesNotMatch(oversized.modelContent, /OUTPUT TRUNCATED/);
+});
+
+test('prompt construction failure creates no Work or start event in either mode', async () => {
+  for (const mode of ['joined', 'detached'] as const) {
+    const { ctx, captured } = makeCtx('parent-chat');
+    let creates = 0;
+    const events: unknown[] = [];
+    ctx.contextManager.getSystemPrompt = () => { throw new Error('identity unavailable'); };
+    (ctx as { workRegistry?: unknown }).workRegistry = {
+      create: () => { creates++; return { workId: 'should-not-exist', originChatId: 'parent-chat' }; },
+    };
+    (ctx as { onEvent?: unknown }).onEvent = (event: unknown) => events.push(event);
+
+    const result = await spawnAgentTool.execute({ task: 'never starts', mode }, ctx);
+
+    assert.equal(result.is_error, true);
+    assert.match(result.content, /Unable to prepare sub-agent context/);
+    assert.equal(creates, 0);
+    assert.deepEqual(events, []);
+    assert.equal(captured.loopCalls, 0);
+  }
 });

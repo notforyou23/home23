@@ -17,15 +17,18 @@ test('resolveRootChatId returns non-subagent ids unchanged', () => {
 test('resolveRootChatId unwraps one subagent layer', () => {
   assert.equal(resolveRootChatId('subagent:ios_abc_jerry_x_ff00:ab12'), 'ios_abc_jerry_x_ff00');
   assert.equal(resolveRootChatId('subagent:123456789:ab12'), '123456789');
+  assert.equal(resolveRootChatId(`subagent:ios_abc_jerry_x_ff00:${'a'.repeat(32)}`), 'ios_abc_jerry_x_ff00');
 });
 
 test('resolveRootChatId unwraps nested subagent layers', () => {
   assert.equal(resolveRootChatId('subagent:subagent:123456789:ab12:cd34'), '123456789');
+  assert.equal(resolveRootChatId(`subagent:subagent:123456789:ab12:${'b'.repeat(32)}`), '123456789');
 });
 
 test('resolveRootChatId leaves malformed subagent ids alone', () => {
   assert.equal(resolveRootChatId('subagent:'), 'subagent:');
   assert.equal(resolveRootChatId('subagent:x'), 'subagent:x');
+  assert.equal(resolveRootChatId(`subagent:123:${'c'.repeat(16)}`), `subagent:123:${'c'.repeat(16)}`);
 });
 
 test('newWorkId shape', () => {

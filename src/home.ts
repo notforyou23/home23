@@ -387,6 +387,7 @@ async function main(): Promise<void> {
     contextManager,
     subAgentTracker,
     modelAliases: MODEL_ALIASES,
+    restrictedToolSource: registry,
     chatId: '',
     telegramAdapter: null,   // wired after adapter creation
     runAgentLoop: null,       // wired after agent creation
