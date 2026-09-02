@@ -55,9 +55,13 @@ function canonicalClientMessageId(value: string | null): string | null {
   return value;
 }
 
-function canonicalBody(kind: MessageKind, value: string | null): string | null {
+function canonicalBody(
+  kind: MessageKind,
+  value: string | null,
+  attachmentCount: number,
+): string | null {
   if (value === null) {
-    if (kind === "system") return null;
+    if (kind === "system" || (kind === "text" && attachmentCount > 0)) return null;
     throw new MessagingError("request_invalid");
   }
   if (
@@ -186,7 +190,7 @@ export function createMessageService(options: CreateMessageServiceOptions) {
     if (replyToMessageId && tombstonesMessageId) {
       throw new MessagingError("invalid_relation");
     }
-    const text = canonicalBody(input.kind, input.text);
+    const text = canonicalBody(input.kind, input.text, attachmentIds.length);
     if (
       tombstonesMessageId &&
       (input.kind !== "system" || text !== null || mentions.length > 0)

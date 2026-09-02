@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -131,6 +132,162 @@ test("resident port rejects a Work bound to a different resident before transpor
     /resident authority does not match/,
   );
   assert.equal(requests, 0);
+});
+
+test("resident UDS verifies canonical attachment bytes and gives AgentLoop image vision plus file path", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "home23-resident-attachment-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const attachmentRoot = join(root, "attachments");
+  const bytes = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const path = join(
+    attachmentRoot,
+    "objects",
+    "sha256",
+    sha256.slice(0, 2),
+    sha256.slice(2, 4),
+    sha256,
+  );
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, bytes, { mode: 0o400 });
+
+  const history = new ConversationHistory(join(root, "conversations"), 400_000, "jerry");
+  const store = new TurnStore(history);
+  let capturedInstruction = "";
+  let capturedMedia: Array<{ type: string; path: string; mimeType?: string; fileName?: string }> = [];
+  let starts = 0;
+  const agent: Pick<AgentLoop,
+    "runWithTurn" | "stop" | "isRunning" | "getModel" | "getProvider" | "getReasoningEffort"> = {
+    getModel: () => "fixture-model",
+    getProvider: () => "fixture-provider",
+    getReasoningEffort: () => "medium",
+    async runWithTurn(chatId, instruction, options = {}) {
+      starts += 1;
+      capturedInstruction = instruction;
+      capturedMedia = options.media ?? [];
+      const turnId = options.turnId!;
+      store.writeStart(chatId, turnId, "fixture-model", "fixture-provider", {
+        coordination_origin: options.coordinationOrigin,
+      });
+      const response = new Promise<{
+        text: string;
+        model: string;
+        toolCallCount: number;
+        durationMs: number;
+      }>((resolve) => {
+        setTimeout(() => {
+          history.append(chatId, [
+            { role: "user", content: instruction },
+            { role: "assistant", content: "saw canonical image" },
+          ]);
+          store.writeEnd(chatId, turnId, "complete", { last_seq: 0 });
+          resolve({
+            text: "saw canonical image",
+            model: "fixture-model",
+            toolCallCount: 0,
+            durationMs: 1,
+          });
+        }, 10);
+      });
+      return {
+        turnId,
+        response,
+      };
+    },
+    stop: () => ({ stopped: false, chatIds: [] }),
+    isRunning: () => false,
+  };
+  const credential = createResidentCredential({
+    rootKey: Buffer.alloc(32, 0x58),
+    residentSlug: "jerry",
+    role: "resident",
+    instanceId: "home23-jerry-harness",
+    keyVersion: 1,
+  });
+  const socketPath = join(root, "resident.sock");
+  const server = new ResidentTurnUdsServer({
+    socketPath,
+    serverInstanceId: "home23-jerry-harness",
+    credential,
+    residentSlug: "jerry",
+    agent,
+    history,
+    attachmentRoot,
+  });
+  await server.start();
+  t.after(() => server.close());
+  const client = new ResidentUdsClient({
+    socketPath,
+    serverInstanceId: "home23-jerry-harness",
+    credential,
+  });
+  t.after(() => client.close());
+  const port = new ResidentUdsAgentPort({ client, residentSlug: "jerry" });
+  const origin = {
+    kind: "coordination",
+    workId: "wrk_0198d95f-6c00-7000-8000-0000000001a1",
+    attemptId: "att_0198d95f-6c00-7000-8000-0000000001a2",
+    leaseId: "lea_0198d95f-6c00-7000-8000-0000000001a3",
+    holderPrincipalId: "bot_0198d95f-6c00-7000-8000-0000000001a4",
+    holderInstanceId: "home23-jerry-harness",
+    authorityReference: "resident:jerry",
+    fencingToken: 1,
+    channelId: "chn_0198d95f-6c00-7000-8000-0000000001a5",
+    originMessageId: "msg_0198d95f-6c00-7000-8000-0000000001a6",
+    roundId: null,
+  } as const;
+  const attachment = {
+    artifactId: "art_0198d95f-6c00-7000-8000-0000000001a7",
+    name: "photo.png",
+    contentType: "image/png",
+    byteCount: bytes.length,
+    sha256,
+    path,
+  } as const;
+  const run = await port.runWithTurn("coordination:test:attachment", "", {
+    coordinationOrigin: origin,
+    coordinationRequest: { requestId: REQUEST_ID, correlationId: CORRELATION_ID },
+    turnSelection: { modelAlias: null, reasoningEffort: null },
+    attachments: [attachment],
+    onDurableStart: () => undefined,
+    onEvent: () => undefined,
+  });
+  assert.equal((await run.response).text, "saw canonical image");
+  assert.match(capturedInstruction, /\[Canonical user attachments\]/);
+  assert.match(capturedInstruction, /photo\.png/);
+  assert.match(capturedInstruction, new RegExp(sha256));
+  assert.deepEqual(capturedMedia, [{
+    type: "image",
+    path: realpathSync(path),
+    mimeType: "image/png",
+    fileName: "photo.png",
+  }]);
+  assert.deepEqual(readFileSync(capturedMedia[0]!.path), bytes);
+  assert.equal(starts, 1);
+
+  const outsidePath = join(root, "outside.png");
+  writeFileSync(outsidePath, bytes, { mode: 0o400 });
+  await assert.rejects(
+    port.runWithTurn("coordination:test:attachment-invalid", "inspect", {
+      coordinationOrigin: {
+        ...origin,
+        workId: "wrk_0198d95f-6c00-7000-8000-0000000001b1",
+        attemptId: "att_0198d95f-6c00-7000-8000-0000000001b2",
+        leaseId: "lea_0198d95f-6c00-7000-8000-0000000001b3",
+        originMessageId: "msg_0198d95f-6c00-7000-8000-0000000001b4",
+      },
+      coordinationRequest: { requestId: RESUME_REQUEST_ID, correlationId: RESUME_CORRELATION_ID },
+      turnSelection: { modelAlias: null, reasoningEffort: null },
+      attachments: [{ ...attachment, path: outsidePath }],
+      onDurableStart: () => undefined,
+      onEvent: () => undefined,
+    }),
+    (error: unknown) => error instanceof ResidentProtocolError && error.code === "request_invalid",
+  );
+  assert.equal(starts, 1, "invalid attachment paths must fail before AgentLoop starts");
 });
 
 test("a durable stopped turn with a legacy terminal sequence completes recovery", async (t) => {

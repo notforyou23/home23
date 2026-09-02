@@ -28,6 +28,8 @@ import type {
   ArtifactMetadataRepository,
   ArtifactProjection,
   ArtifactRecoveryReport,
+  AttachmentSummary,
+  LocalArtifactReference,
   LocalArtifactStoreOptions,
   ReadyArtifactRecord,
   StagingArtifactRecord,
@@ -1294,6 +1296,51 @@ export class LocalArtifactStore {
       range,
       content,
     });
+  }
+
+  /**
+   * Resolve a canonical Message attachment to its sealed local object. The
+   * caller owns Message/Work authorization; this method owns path confinement
+   * and byte/digest verification. Public clients never receive this path.
+   */
+  async verifiedLocalReference(
+    attachment: AttachmentSummary,
+  ): Promise<LocalArtifactReference> {
+    try {
+      assertCoordinationId("artifact", attachment.id);
+    } catch {
+      throw new ArtifactError("storage_integrity");
+    }
+    if (
+      typeof attachment.name !== "string" ||
+      attachment.name.length < 1 ||
+      attachment.name.length > 255 ||
+      typeof attachment.contentType !== "string" ||
+      !supportedContentTypes.has(attachment.contentType) ||
+      !Number.isSafeInteger(attachment.byteCount) ||
+      attachment.byteCount < 0 ||
+      attachment.byteCount > this.maximumBytes
+    ) {
+      throw new ArtifactError("storage_integrity");
+    }
+    assertSha256(attachment.sha256);
+    const path = await this.canonicalPath(attachment.sha256, false);
+    let handle: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      await verifyDownloadHandle(
+        handle,
+        path,
+        attachment.sha256,
+        attachment.byteCount,
+      );
+    } catch (error) {
+      if (error instanceof ArtifactError) throw error;
+      throw new ArtifactError("storage_integrity");
+    } finally {
+      await handle?.close().catch(() => undefined);
+    }
+    return Object.freeze({ ...attachment, path });
   }
 
   collectGarbage(input: {

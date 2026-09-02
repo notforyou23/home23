@@ -384,7 +384,9 @@ export class ResidentCoordinationAdapter {
     turnId: string;
     response: Promise<import('../agent/types.js').AgentResponse>;
   }> {
-    if (!request.instruction.trim()) throw new TypeError('resident Work instruction is required');
+    if (!request.instruction.trim() && (request.attachments?.length ?? 0) === 0) {
+      throw new TypeError('resident Work instruction or attachment is required');
+    }
     if (request.origin.kind !== 'coordination') throw new TypeError('coordination origin is required');
     if (this.communications && !request.communication) {
       throw new TypeError('resident communication context is required');
@@ -399,6 +401,7 @@ export class ResidentCoordinationAdapter {
       coordinationOrigin: origin,
       coordinationRequest: { requestId: request.requestId, correlationId: request.correlationId },
       turnSelection: request.turnSelection,
+      attachments: request.attachments,
       onDurableStart: async ({ turnId, persistedAt, selection }) => {
         await this.coordination.assertCompleted(binding);
         if (this.communications && request.communication) {
@@ -473,7 +476,9 @@ export class ResidentCoordinationAdapter {
     request: ResidentWorkRequest,
     mode: 'start' | 'continueAccepted' | 'reattach',
   ): Promise<ResidentRun> {
-    if (!request.instruction.trim()) throw new TypeError('resident Work instruction is required');
+    if (!request.instruction.trim() && (request.attachments?.length ?? 0) === 0) {
+      throw new TypeError('resident Work instruction or attachment is required');
+    }
     if (request.origin.kind !== 'coordination') throw new TypeError('coordination origin is required');
     if (this.communications && !request.communication) {
       throw new TypeError('resident communication context is required');
@@ -516,6 +521,7 @@ export class ResidentCoordinationAdapter {
       coordinationOrigin: origin,
       coordinationRequest: { requestId: request.requestId, correlationId: request.correlationId },
       turnSelection: request.turnSelection,
+      attachments: request.attachments,
       onDurableStart: async ({ turnId, persistedAt, selection }) => {
         await this.coordination.assertCurrent(binding);
         if (mode === 'start') {

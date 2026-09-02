@@ -39,6 +39,7 @@ export type {
   ArtifactServiceDatabase,
   ArtifactState,
   AttachmentSummary,
+  LocalArtifactReference,
   LocalArtifactStoreOptions,
   ReadyArtifactRecord,
   StagingArtifactRecord,

@@ -1,6 +1,7 @@
 import type { ConversationHistory } from "../agent/history.js";
 import type { AgentLoop } from "../agent/loop.js";
 import type { ModelAliases } from "../agent/model-resolution.js";
+import { resolve } from "node:path";
 import { createResidentCredential } from "../coordination/resident-protocol/index.js";
 import { ResidentTurnUdsServer } from "./resident-uds.js";
 
@@ -16,7 +17,8 @@ export async function startResidentCoordinationHarness(input:{agent:Pick<AgentLo
   if(![serverInstanceId,clientInstanceId].every(v=>/^[A-Za-z0-9._:-]{1,128}$/.test(v)))throw new Error("resident coordination instance IDs are invalid");
   const rawVersion=env.HOME23_COORDINATION_RESIDENT_KEY_VERSION??"";if(!/^[1-9][0-9]*$/.test(rawVersion))throw new Error("HOME23_COORDINATION_RESIDENT_KEY_VERSION must be positive");
   const key=env.HOME23_COORDINATION_RESIDENT_KEY??"";if(!KEY.test(key))throw new Error("HOME23_COORDINATION_RESIDENT_KEY must contain exactly 32 bytes of hex");
+  const home23Root=env.HOME23_ROOT;const attachmentRoot=env.HOME23_COORDINATION_ATTACHMENTS_ROOT??(home23Root?resolve(home23Root,"instances",".house","coordination","attachments"):undefined);
   const rootKey=Buffer.from(key,"hex");const credential=createResidentCredential({residentSlug:slug,role:"resident",instanceId:clientInstanceId,keyVersion:Number(rawVersion),rootKey});rootKey.fill(0);
-  const server=new ResidentTurnUdsServer({socketPath,serverInstanceId,credential,residentSlug:slug,agent:input.agent,history:input.history,modelAliases:input.modelAliases??{}});
+  const server=new ResidentTurnUdsServer({socketPath,serverInstanceId,credential,residentSlug:slug,agent:input.agent,history:input.history,modelAliases:input.modelAliases??{},...(attachmentRoot?{attachmentRoot}:{})});
   await server.start();return server;
 }

@@ -1,5 +1,7 @@
 import type { MessagingActorContext } from "../channels/index.js";
 import { MessagingError } from "../channels/index.js";
+import type { AttachmentSummary } from "../artifacts/index.js";
+import type { ResidentInputAttachment } from "../../coordination-adapter/index.js";
 import type { M11Database } from "../work/index.js";
 import type { WorkRecord } from "../work/index.js";
 import { directMessageManifest, type DirectMessageContextPort } from "./direct-message.js";
@@ -30,14 +32,53 @@ interface RecoveryMessageRow {
   text: string | null;
 }
 
+type AttachmentMaterializer = (
+  attachments: readonly AttachmentSummary[],
+) => Promise<readonly ResidentInputAttachment[]>;
+
+function exactAttachmentIDs(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
 /** Read-only M04/M07 context assembler; it never reads resident-private state. */
 export class SqliteDirectMessageContext implements DirectMessageContextPort {
   constructor(
     private readonly database: M11Database,
     private readonly messages: { listMessages(input: {
       context: MessagingActorContext; channelId: string; limit: number;
-    }): Promise<{ messages: readonly { id: string; sequence: number; text: string | null; author: { displayName: string } }[] }> },
+    }): Promise<{ messages: readonly {
+      id: string;
+      sequence: number;
+      text: string | null;
+      author: { displayName: string };
+      attachments: readonly AttachmentSummary[];
+    }[] }> },
+    private readonly materializeAttachments?: AttachmentMaterializer,
   ) {}
+
+  private async materialize(
+    attachments: readonly AttachmentSummary[],
+  ): Promise<readonly ResidentInputAttachment[]> {
+    if (attachments.length === 0) return Object.freeze([]);
+    if (!this.materializeAttachments) throw new MessagingError("invalid_relation");
+    const materialized = await this.materializeAttachments(attachments);
+    if (
+      materialized.length !== attachments.length ||
+      materialized.some((value, index) =>
+        value.artifactId !== attachments[index]?.id ||
+        value.name !== attachments[index]?.name ||
+        value.contentType !== attachments[index]?.contentType ||
+        value.byteCount !== attachments[index]?.byteCount ||
+        value.sha256 !== attachments[index]?.sha256
+      )
+    ) {
+      throw new MessagingError("invalid_relation");
+    }
+    return Object.freeze(materialized.map((value) => Object.freeze({ ...value })));
+  }
 
   async resolveTarget(input: Parameters<DirectMessageContextPort["resolveTarget"]>[0]) {
     const binding = this.database.readOne<DirectBindingRow>(
@@ -80,10 +121,15 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
     const projectedOrigin = page.messages.find((message) => message.id === input.originMessage.id);
     if (
       !projectedOrigin || projectedOrigin.sequence !== input.originMessage.sequence ||
-      projectedOrigin.text !== input.originMessage.text
+      projectedOrigin.text !== input.originMessage.text ||
+      !exactAttachmentIDs(
+        projectedOrigin.attachments.map((attachment) => attachment.id),
+        input.attachmentIds,
+      )
     ) {
       throw new MessagingError("invalid_relation");
     }
+    const attachments = await this.materialize(projectedOrigin.attachments);
     const eventSequence = this.database.readOne<{ sequence: number }>(
       `SELECT sequence FROM events
        WHERE aggregate_kind = 'message' AND aggregate_id = ? AND type = 'message.appended'
@@ -115,6 +161,7 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
       targetPrincipalId: binding.targetPrincipalId,
       residentBinding: binding.residentBinding,
       instruction: transcript,
+      attachments,
       manifest: directMessageManifest({
         channelId: input.channelId,
         messageIds: boundedMessageIds,
@@ -221,11 +268,29 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
     ) {
       throw new MessagingError("invalid_relation");
     }
+    const attachmentRows = this.database.readAll<AttachmentSummary>(
+      `SELECT artifact.id, artifact.original_name AS name,
+              artifact.detected_content_type AS contentType,
+              artifact.byte_count AS byteCount, artifact.sha256
+       FROM message_artifacts link
+       JOIN artifacts artifact ON artifact.id = link.artifact_id
+       WHERE link.message_id = ? AND link.channel_id = ? AND artifact.state = 'ready'
+       ORDER BY link.ordinal ASC`,
+      work.originMessageId,
+      work.channelId,
+    );
+    if (!exactAttachmentIDs(
+      [...attachmentRows.map((attachment) => attachment.id)].sort(),
+      [...artifactIds].sort(),
+    )) {
+      throw new MessagingError("invalid_relation");
+    }
+    const attachments = await this.materialize(attachmentRows);
     const instruction = rows
       .filter((message) => message.text !== null)
       .map((message) => `${message.authorDisplayName}: ${message.text}`)
       .join("\n");
-    if (!instruction) throw new MessagingError("invalid_relation");
+    if (!instruction && attachments.length === 0) throw new MessagingError("invalid_relation");
     return Object.freeze({
       prepared: Object.freeze({
         channelId: work.channelId,
@@ -235,6 +300,7 @@ export class SqliteDirectMessageContext implements DirectMessageContextPort {
         targetPrincipalId: binding.targetPrincipalId,
         residentBinding: binding.residentBinding,
         instruction,
+        attachments,
         manifest: canonicalManifest,
       }),
       originMessageId: work.originMessageId,

@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
+import { lstat, open, realpath } from "node:fs/promises";
+import { isAbsolute, join, resolve } from "node:path";
 import type { ConversationHistory } from "../agent/history.js";
 import type { AgentEvent, AgentResponse, CoordinationTurnOrigin } from "../agent/types.js";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../agent/reasoning-effort.js";
@@ -10,11 +13,13 @@ import {
 import { TurnStore } from "../chat/turn-store.js";
 import type { TurnEvent } from "../chat/turn-types.js";
 import { ResidentProtocolError, type JsonValue, type ResidentCredential, type ResidentRequestFrame } from "../coordination/resident-protocol/index.js";
+import { assertCoordinationId } from "../coordination/ids/index.js";
 import { ResidentUdsClient, ResidentUdsServer } from "../coordination/transport/uds/index.js";
 import type {
   ResidentAgentPort,
   ResidentDurableEvent,
   ResidentDurableTerminal,
+  ResidentInputAttachment,
   ResidentModelCatalog,
   ResidentTurnSelectionReceipt,
   ResidentTurnSelectionRequest,
@@ -31,6 +36,15 @@ const DEFAULT_START_TIMEOUT_MS = 60_000;
 const DEFAULT_RESULT_TIMEOUT_MS = (8 * 60 * 60 * 1_000) + 60_000;
 const EVENT_CHUNK_BYTES = 96 * 1024;
 const EVENT_REPLAY_DELAY_MS = 20;
+const MAX_RESIDENT_ATTACHMENTS = 10;
+const MAX_RESIDENT_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const RESIDENT_ATTACHMENT_CONTENT_TYPES = new Set([
+  "application/pdf",
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "text/plain",
+]);
 
 export function residentFence(origin: CoordinationTurnOrigin): string {
   return `${origin.workId}:${origin.attemptId}:${origin.leaseId}:${origin.fencingToken}`;
@@ -42,6 +56,12 @@ function object(value: JsonValue): Record<string, JsonValue> {
 }
 function string(value: JsonValue | undefined, label: string): string {
   if (typeof value !== "string" || value.length === 0 || value.includes("\0")) throw new ResidentProtocolError("request_invalid", `${label} is invalid`);
+  return value;
+}
+function text(value: JsonValue | undefined, label: string): string {
+  if (typeof value !== "string" || value.includes("\0")) {
+    throw new ResidentProtocolError("request_invalid", `${label} is invalid`);
+  }
   return value;
 }
 function origin(value: JsonValue | undefined): CoordinationTurnOrigin {
@@ -73,6 +93,138 @@ function nonnegativeSafeInteger(value: JsonValue | undefined, name: string): num
     throw new ResidentProtocolError("request_invalid", `${name} is invalid`);
   }
   return value;
+}
+
+async function residentAttachments(
+  value: JsonValue | undefined,
+  configuredRoot: string | undefined,
+): Promise<readonly ResidentInputAttachment[]> {
+  if (value === undefined || value === null) return Object.freeze([]);
+  if (!Array.isArray(value) || value.length > MAX_RESIDENT_ATTACHMENTS) {
+    throw new ResidentProtocolError("request_invalid", "resident attachments are invalid");
+  }
+  if (value.length === 0) return Object.freeze([]);
+  if (!configuredRoot || !isAbsolute(configuredRoot) || configuredRoot.includes("\0")) {
+    throw new ResidentProtocolError("request_invalid", "resident attachment root is unavailable");
+  }
+  const root = resolve(configuredRoot);
+  let canonicalRoot: string;
+  try {
+    const rootEntry = await lstat(root);
+    canonicalRoot = await realpath(root);
+    const allowedMacSystemAlias = root.startsWith("/var/") && canonicalRoot === `/private${root}`;
+    if (
+      !rootEntry.isDirectory() ||
+      rootEntry.isSymbolicLink() ||
+      (canonicalRoot !== root && !allowedMacSystemAlias)
+    ) {
+      throw new Error("invalid root");
+    }
+  } catch {
+    throw new ResidentProtocolError("request_invalid", "resident attachment root is unavailable");
+  }
+
+  const seen = new Set<string>();
+  const result: ResidentInputAttachment[] = [];
+  for (const raw of value) {
+    const attachment = object(raw);
+    const artifactId = string(attachment.artifactId, "attachment artifactId");
+    const name = string(attachment.name, "attachment name");
+    const contentType = string(attachment.contentType, "attachment contentType");
+    const byteCount = nonnegativeSafeInteger(attachment.byteCount, "attachment byteCount");
+    const sha256 = string(attachment.sha256, "attachment sha256");
+    const path = string(attachment.path, "attachment path");
+    try {
+      assertCoordinationId("artifact", artifactId);
+    } catch {
+      throw new ResidentProtocolError("request_invalid", "resident attachment metadata is invalid");
+    }
+    if (
+      seen.has(artifactId) ||
+      name.length > 255 ||
+      name.normalize("NFC") !== name ||
+      name === "." ||
+      name === ".." ||
+      /^[A-Za-z]:/u.test(name) ||
+      /[\0-\x1f\x7f/\\]/u.test(name) ||
+      !RESIDENT_ATTACHMENT_CONTENT_TYPES.has(contentType) ||
+      byteCount > MAX_RESIDENT_ATTACHMENT_BYTES ||
+      !/^[a-f0-9]{64}$/u.test(sha256) ||
+      !isAbsolute(path)
+    ) {
+      throw new ResidentProtocolError("request_invalid", "resident attachment metadata is invalid");
+    }
+    const expectedPath = join(
+      canonicalRoot,
+      "objects",
+      "sha256",
+      sha256.slice(0, 2),
+      sha256.slice(2, 4),
+      sha256,
+    );
+    let handle: Awaited<ReturnType<typeof open>> | undefined;
+    let canonicalPath: string;
+    try {
+      const [entry, resolvedPath] = await Promise.all([lstat(path), realpath(path)]);
+      canonicalPath = resolvedPath;
+      if (
+        canonicalPath !== expectedPath ||
+        !entry.isFile() ||
+        entry.isSymbolicLink()
+      ) {
+        throw new Error("invalid attachment path");
+      }
+      handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size !== byteCount) throw new Error("invalid attachment size");
+      const hash = createHash("sha256");
+      const buffer = Buffer.allocUnsafe(64 * 1024);
+      let offset = 0;
+      while (offset < stat.size) {
+        const read = await handle.read(
+          buffer,
+          0,
+          Math.min(buffer.length, stat.size - offset),
+          offset,
+        );
+        if (read.bytesRead === 0) break;
+        hash.update(buffer.subarray(0, read.bytesRead));
+        offset += read.bytesRead;
+      }
+      if (offset !== stat.size || hash.digest("hex") !== sha256) {
+        throw new Error("invalid attachment digest");
+      }
+    } catch {
+      throw new ResidentProtocolError("request_invalid", "resident attachment bytes are invalid");
+    } finally {
+      await handle?.close().catch(() => undefined);
+    }
+    seen.add(artifactId);
+    result.push(Object.freeze({
+      artifactId,
+      name,
+      contentType,
+      byteCount,
+      sha256,
+      path: canonicalPath,
+    }));
+  }
+  return Object.freeze(result);
+}
+
+function instructionWithAttachments(
+  instruction: string,
+  attachments: readonly ResidentInputAttachment[],
+): string {
+  if (attachments.length === 0) return instruction;
+  const manifest = attachments.map((attachment, index) =>
+    `${index + 1}. name=${JSON.stringify(attachment.name)} ` +
+    `type=${attachment.contentType} bytes=${attachment.byteCount} ` +
+    `sha256=${attachment.sha256} path=${JSON.stringify(attachment.path)}`
+  ).join("\n");
+  const prefix = instruction.trim().length > 0 ? `${instruction}\n\n` : "";
+  return `${prefix}[Canonical user attachments]\n${manifest}\n` +
+    "Inspect these exact local files when the request depends on them. Image bytes are also attached for vision.";
 }
 
 function nullableString(value: JsonValue | undefined, label: string): string | null {
@@ -248,6 +400,7 @@ export interface ResidentTurnUdsServerOptions {
   socketPath:string;serverInstanceId:string;credential:ResidentCredential;
   residentSlug:string;agent:Pick<AgentLoop,"runWithTurn"|"stop"|"isRunning"|"getModel"|"getProvider"|"getReasoningEffort">;history:ConversationHistory;
   modelAliases?:ModelAliases;
+  attachmentRoot?:string;
   now?:()=>number;
 }
 
@@ -323,7 +476,7 @@ export class ResidentTurnUdsServer {
       };
     }
     if(request.method==="POST"&&request.path===START){
-      const p=object(request.payload);const chatId=string(p.chatId,"chatId");const instruction=string(p.instruction,"instruction");const turnId=string(p.turnId,"turnId");const provenance=origin(p.origin);
+      const p=object(request.payload);const chatId=string(p.chatId,"chatId");const rawInstruction=text(p.instruction,"instruction");const attachments=await residentAttachments(p.attachments,this.options.attachmentRoot);const instruction=instructionWithAttachments(rawInstruction,attachments);if(!instruction.trim())throw new ResidentProtocolError("request_invalid","resident instruction or attachment is required");const turnId=string(p.turnId,"turnId");const provenance=origin(p.origin);
       assertResidentBinding(provenance,this.options.residentSlug,this.options.serverInstanceId);
       const requested=turnSelection(p.turnSelection);
       if(Buffer.byteLength(instruction,"utf8")>MAX_INSTRUCTION_BYTES)throw new ResidentProtocolError("request_invalid","resident instruction is too large");
@@ -340,7 +493,7 @@ export class ResidentTurnUdsServer {
         if(requested.modelAlias!==null&&!modelOverride){
           throw new ResidentProtocolError("request_invalid","requested resident model is unavailable");
         }
-        const run=await this.options.agent.runWithTurn(chatId,instruction,{turnId,coordinationOrigin:provenance,onDurableStart:async()=>undefined,onEvent:()=>undefined,...(modelOverride?{modelOverride}:{}),...(requested.reasoningEffort?{effort:requested.reasoningEffort}:{})});this.#responses.set(turnId,run.response);void run.response.finally(()=>setTimeout(()=>this.#responses.delete(turnId),60_000).unref()).catch(()=>undefined);
+        const media=attachments.filter((attachment)=>attachment.contentType.startsWith("image/")).map((attachment)=>({type:"image" as const,path:attachment.path,mimeType:attachment.contentType,fileName:attachment.name}));const run=await this.options.agent.runWithTurn(chatId,instruction,{turnId,coordinationOrigin:provenance,onDurableStart:async()=>undefined,onEvent:()=>undefined,...(media.length>0?{media}:{}),...(modelOverride?{modelOverride}:{}),...(requested.reasoningEffort?{effort:requested.reasoningEffort}:{})});this.#responses.set(turnId,run.response);void run.response.finally(()=>setTimeout(()=>this.#responses.delete(turnId),60_000).unref()).catch(()=>undefined);
       }
       const durable=this.#store.startEnvelope(chatId,turnId);if(!durable)throw new Error("AgentLoop returned before durable turn start");
       if(signal.aborted)throw new ResidentProtocolError("request_cancelled","resident start was cancelled");
@@ -562,11 +715,11 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
       await new Promise(resolve=>setTimeout(resolve,EVENT_REPLAY_DELAY_MS));
     }
   }
-  async runWithTurn(chatId:string,userText:string,options:{coordinationOrigin:CoordinationTurnOrigin;coordinationRequest?:{requestId:string;correlationId:string};turnSelection:ResidentTurnSelectionRequest;onDurableStart(start:{turnId:string;chatId:string;persistedAt:string;selection?:ResidentTurnSelectionReceipt}):void|Promise<void>;onEvent(event:ResidentDurableEvent):void}){
+  async runWithTurn(chatId:string,userText:string,options:{coordinationOrigin:CoordinationTurnOrigin;coordinationRequest?:{requestId:string;correlationId:string};turnSelection:ResidentTurnSelectionRequest;attachments?:readonly ResidentInputAttachment[];onDurableStart(start:{turnId:string;chatId:string;persistedAt:string;selection?:ResidentTurnSelectionReceipt}):void|Promise<void>;onEvent(event:ResidentDurableEvent):void}){
     if(options.coordinationOrigin.authorityReference!==`resident:${this.options.residentSlug}`)throw new TypeError("resident authority does not match the configured port");
     const request=options.coordinationRequest;if(!request)throw new Error("resident coordination request identity is required");const turnId=`coord-${options.coordinationOrigin.workId}`;const fence=residentFence(options.coordinationOrigin);const now=()=>this.options.now?.()??Date.now();
     const requested=options.turnSelection??Object.freeze({modelAlias:null,reasoningEffort:null});
-    const payload={chatId,instruction:userText,turnId,origin:jsonOrigin(options.coordinationOrigin),correlationId:request.correlationId,turnSelection:{...requested}} as JsonValue;
+    const attachments=(options.attachments??[]).map((attachment)=>({...attachment}));const payload={chatId,instruction:userText,attachments,turnId,origin:jsonOrigin(options.coordinationOrigin),correlationId:request.correlationId,turnSelection:{...requested}} as JsonValue;
     const startDeadlineAt=now()+this.#startTimeoutMs;let started;let firstStartRequest=true;
     for(;;){
       const remaining=startDeadlineAt-now();

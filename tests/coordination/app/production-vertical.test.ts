@@ -1051,6 +1051,7 @@ test("isolated production composition traverses the generated harness and unmodi
   );
   const { agent, history } = actualAgent(root);
   const harnessEnvironment = {
+    HOME23_ROOT: root,
     HOME23_COORDINATION_RESIDENT_ENABLED: "true",
     HOME23_AGENT: "jerry",
     HOME23_COORDINATION_RESIDENT_SOCKET_PATH: socketPath,
@@ -1096,7 +1097,7 @@ test("isolated production composition traverses the generated harness and unmodi
   form.set("content", new Blob([verticalArtifactBytes], { type: "text/plain" }), "resident-evidence.txt");
   const uploaded = await fetch(`${address.origin}/api/v1/attachments`, { method: "POST", headers: { authorization: `Bearer ${token}`, "idempotency-key": "production-vertical-attachment-0001" }, body: form });
   assert.equal(uploaded.status, 201, `attachment upload: ${await uploaded.text()}`);
-  const correlationId = generateCoordinationId("correlation"); const body = { messageId: generateCoordinationId("message"), clientMessageId: "m14-client-message", text: "Jerry, answer canonically.", attachmentIds: [verticalArtifactId], mentions: [], replyToMessageId: null };
+  const correlationId = generateCoordinationId("correlation"); const body = { messageId: generateCoordinationId("message"), clientMessageId: "m14-client-message", text: null, attachmentIds: [verticalArtifactId], mentions: [], replyToMessageId: null };
   const send = () => fetch(`${address.origin}/api/v1/channels/${seeded.channelId}/messages`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "idempotency-key": "m14-production-message-0001", "x-correlation-id": correlationId }, body: JSON.stringify(body) });
   assert.equal((await send()).status, 503);
   assert.equal(modelFixture.calls(), 0);
@@ -1183,7 +1184,15 @@ test("isolated production composition traverses the generated harness and unmodi
     assert.fail(`resident was not invoked: ${JSON.stringify({ work, attempt, lease })}`);
   }
   const modelUserMessage = modelFixture.requests()[0]?.messages?.findLast((message) => message.role === "user");
-  assert.match(String(modelUserMessage?.content), /Jerry, answer canonically\./);
+  const residentAttachmentInstruction = String(modelUserMessage?.content);
+  assert.match(residentAttachmentInstruction, /\[Canonical user attachments\]/);
+  assert.match(residentAttachmentInstruction, /resident-evidence\.txt/);
+  assert.match(residentAttachmentInstruction, new RegExp(verticalArtifactSha256));
+  assert.match(
+    residentAttachmentInstruction,
+    /instances\/\.house\/coordination\/attachments\/objects\/sha256\//,
+    "the resident must receive the verified local object path, not only an artifact ID",
+  );
   const eventAbort = new AbortController();
   const events = await fetch(`${address.origin}/api/v1/events?after=0`, {
     headers: { authorization: `Bearer ${token}` }, signal: eventAbort.signal,
@@ -1200,8 +1209,9 @@ test("isolated production composition traverses the generated harness and unmodi
   assert.match(eventText, /message\.appended/);
   assert.ok(eventText.includes(correlationId));
   await new Promise((resolve) => setTimeout(resolve, 500));
-  const transcript = await (await fetch(`${address.origin}/api/v1/channels/${seeded.channelId}/messages`, { headers: productHeaders })).json() as { messages: Array<{ kind: string; text: string; attachments: Array<{ id: string; name: string; contentType: string; byteCount: number; sha256: string }>; provenance: { workId: string | null } }> };
+  const transcript = await (await fetch(`${address.origin}/api/v1/channels/${seeded.channelId}/messages`, { headers: productHeaders })).json() as { messages: Array<{ kind: string; text: string | null; attachments: Array<{ id: string; name: string; contentType: string; byteCount: number; sha256: string }>; provenance: { workId: string | null } }> };
   assert.deepEqual(transcript.messages.map((message) => message.kind), ["text", "result"]);
+  assert.equal(transcript.messages[0]?.text, null);
   assert.deepEqual(transcript.messages[0]?.attachments, [{
     id: verticalArtifactId,
     name: "resident-evidence.txt",

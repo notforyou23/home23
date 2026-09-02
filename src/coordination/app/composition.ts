@@ -384,6 +384,7 @@ export function createCoordinationProcess(
     : undefined;
   const communications = new SqliteCommunicationEventRepository(database);
   let attachmentService: ReturnType<typeof createDurableAttachmentService> | undefined;
+  let attachmentStore: LocalArtifactStore | undefined;
   let attachmentInitialization: Promise<void> | undefined;
   const requireAttachmentService = () => {
     if (!attachmentService) throw new ArtifactError("storage_unavailable");
@@ -407,6 +408,7 @@ export function createCoordinationProcess(
         repository: artifactRepository,
         maximumBytes: attachmentConfiguration.maximumBytes,
       });
+      attachmentStore = store;
       attachmentService = createDurableAttachmentService({
         database,
         repository: artifactRepository,
@@ -524,7 +526,25 @@ export function createCoordinationProcess(
       const directSubmission = createDirectMessageSubmissionService({
         messages,
         communications,
-        context: new SqliteDirectMessageContext(database, messages),
+        context: new SqliteDirectMessageContext(
+          database,
+          messages,
+          async (attachmentSummaries) => {
+            const store = attachmentStore;
+            if (!store) throw new MessagingError("invalid_relation");
+            return Object.freeze(await Promise.all(attachmentSummaries.map(async (summary) => {
+              const reference = await store.verifiedLocalReference(summary);
+              return Object.freeze({
+                artifactId: reference.id,
+                name: reference.name,
+                contentType: reference.contentType,
+                byteCount: reference.byteCount,
+                sha256: reference.sha256,
+                path: reference.path,
+              });
+            })));
+          },
+        ),
         work,
         leases,
         resolveResident,

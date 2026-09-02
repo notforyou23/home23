@@ -95,6 +95,16 @@ export interface AttachmentSummary {
 }
 
 /**
+ * Internal, verified reference to one immutable content-addressed object.
+ * This is never part of a public attachment DTO; it exists only so the local
+ * resident bridge can hand AgentLoop a path whose bytes were checked against
+ * the canonical Message attachment metadata.
+ */
+export interface LocalArtifactReference extends AttachmentSummary {
+  path: string;
+}
+
+/**
  * M08 integration seam. Its Message append owner calls this inside the same
  * M04 transaction after inserting the immutable Message and before returning
  * the Message event/idempotency receipt.

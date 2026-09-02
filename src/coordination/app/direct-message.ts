@@ -4,6 +4,7 @@ import type {
   ResidentAgentPort,
   ResidentCommunicationPort,
   ResidentCoordinationAdapter,
+  ResidentInputAttachment,
 } from "../../coordination-adapter/index.js";
 import { MessagingError, type MessagingActorContext } from "../channels/index.js";
 import {
@@ -31,6 +32,7 @@ export interface DirectMessageChannelContext {
   targetPrincipalId: string;
   residentBinding: string;
   instruction: string;
+  attachments: readonly ResidentInputAttachment[];
   manifest: ContextManifestInput;
 }
 
@@ -57,7 +59,7 @@ export interface DirectMessageMessagePort {
   sendMessage(input: {
     context: MessagingActorContext; channelId: string; messageId: string;
     authorPrincipalId: string; idempotencyKey: string; kind: "text" | "result";
-    text: string; mentions: readonly string[]; clientMessageId: string | null;
+    text: string | null; mentions: readonly string[]; clientMessageId: string | null;
     attachmentIds?: readonly string[];
     replyToMessageId: string | null; tombstonesMessageId: null;
     provenance: { roundId: string | null; workId: string | null };
@@ -280,6 +282,7 @@ export function createDirectMessageSubmissionService(options: {
       const residentRequest = {
         chatId: `coordination:${input.prepared.channelId}:${input.work.id}`,
         instruction: input.prepared.instruction, origin,
+        attachments: input.prepared.attachments,
         requestId: input.requestId, correlationId: input.correlationId,
         turnSelection: options.work.getTurnSelection(input.work.id),
         communication: {
@@ -393,7 +396,10 @@ export function createDirectMessageSubmissionService(options: {
       const endWork = once(options.beginWork());
       let workTransferred = false;
       try {
-        if (input.context.identity.kind !== "owner" || input.body.text === null) {
+        if (
+          input.context.identity.kind !== "owner" ||
+          (input.body.text === null && input.body.attachmentIds.length === 0)
+        ) {
           throw new MessagingError("request_invalid");
         }
         if (turnSelection.modelAlias !== null || turnSelection.reasoningEffort !== null) {

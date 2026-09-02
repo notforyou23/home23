@@ -10,6 +10,7 @@ export type {
   ResidentCoordinationPort,
   ResidentDurableEvent,
   ResidentDurableTerminal,
+  ResidentInputAttachment,
   ResidentLeaseBinding,
   ResidentObservation,
   ResidentRun,

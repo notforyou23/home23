@@ -10,11 +10,22 @@ export interface ResidentLeaseBinding extends Omit<CoordinationTurnOrigin, 'kind
 export interface ResidentWorkRequest {
   chatId: string;
   instruction: string;
+  attachments?: readonly ResidentInputAttachment[];
   origin: CoordinationTurnOrigin;
   requestId: string;
   correlationId: string;
   communication?: ResidentCommunicationContext;
   turnSelection: ResidentTurnSelectionRequest;
+}
+
+/** Private coordinator-to-resident attachment reference. Never crosses HTTP. */
+export interface ResidentInputAttachment {
+  artifactId: string;
+  name: string;
+  contentType: string;
+  byteCount: number;
+  sha256: string;
+  path: string;
 }
 
 export interface ResidentTurnSelectionRequest {
@@ -126,6 +137,7 @@ export interface ResidentAgentPort {
       coordinationOrigin: CoordinationTurnOrigin;
       coordinationRequest?: { requestId: string; correlationId: string };
       turnSelection: ResidentTurnSelectionRequest;
+      attachments?: readonly ResidentInputAttachment[];
       onDurableStart(start: {
         turnId: string;
         chatId: string;
