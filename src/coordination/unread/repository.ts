@@ -299,6 +299,14 @@ export class SqliteUnreadRepository implements UnreadRepository {
                    AND result.kind = 'result'
                    AND result.work_id = works.id
                )
+               AND NOT EXISTS (
+                 SELECT 1 FROM works later
+                 WHERE later.channel_id = works.channel_id
+                   AND (
+                     later.created_at > works.created_at OR
+                     (later.created_at = works.created_at AND later.id > works.id)
+                   )
+               )
              ORDER BY terminal_at DESC, id DESC LIMIT 1`,
             channel.id,
           ) ?? null);

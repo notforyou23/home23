@@ -312,3 +312,55 @@ test("Inbox ordering and unread are derived exactly from committed Channel and M
     committedUnread,
   );
 });
+
+test("Inbox clears an old failed Work after a newer successful Work", async (t) => {
+  const fixture = await createMessagingFixture();
+  t.after(fixture.close);
+  fixture.database.raw.exec(`CREATE TABLE works (
+    id TEXT PRIMARY KEY,
+    channel_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    terminal_at TEXT
+  ) STRICT;`);
+  const channels = createChannelService({
+    repository: fixture.repository,
+    participantDirectory: fixture.directory,
+    cursorSigningKey: Buffer.alloc(32, 0x23),
+    now: () => fixture.clock.value,
+  });
+  const unread = createUnreadService({
+    repository: fixture.repository,
+    participantDirectory: fixture.directory,
+    now: () => fixture.clock.value,
+  });
+  const direct = await channels.createDirectConversation({
+    context: ownerContext(541),
+    memberBotIds: [fixture.bots.jerry.principalId],
+    pinned: false,
+    idempotencyKey: channelKey(541),
+  });
+  const insertTerminalWork = (
+    suffix: number,
+    state: "failed" | "succeeded",
+    createdAt: string,
+  ) => {
+    fixture.database.raw.prepare(
+      "INSERT INTO works (id, channel_id, state, created_at, terminal_at) VALUES (?, ?, ?, ?, ?)",
+    ).run(
+      fixtureId("work", suffix),
+      direct.channel.id,
+      state,
+      createdAt,
+      createdAt,
+    );
+  };
+
+  insertTerminalWork(542, "failed", "2026-08-25T12:10:00.000Z");
+  let inbox = await unread.listInbox({ context: ownerContext(543, ["product:read"]) });
+  assert.equal(inbox[0]?.activity.state, "attention");
+
+  insertTerminalWork(544, "succeeded", "2026-08-25T12:11:00.000Z");
+  inbox = await unread.listInbox({ context: ownerContext(545, ["product:read"]) });
+  assert.deepEqual(inbox[0]?.activity, { state: "idle", label: null, workId: null });
+});
