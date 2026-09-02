@@ -52,7 +52,7 @@ export const spawnAgentTool: ToolDefinition = {
       mode: {
         type: 'string',
         enum: ['joined', 'detached'],
-        description: 'joined waits for a result needed in this answer; detached continues in the background (default detached)',
+        description: 'joined waits for a result needed in this answer; detached continues in the background. Canonical Connected Agents conversations default to joined and do not permit detached delivery; other chats default to detached.',
       },
       tool_grants: {
         type: 'array',
@@ -73,7 +73,16 @@ export const spawnAgentTool: ToolDefinition = {
     if (rawMode !== undefined && rawMode !== 'joined' && rawMode !== 'detached') {
       return { content: 'spawn_agent mode must be "joined" or "detached".', is_error: true };
     }
-    const mode: SubAgentExecutionMode = rawMode === 'joined' ? 'joined' : 'detached';
+    const isCanonicalCoordinationChat = ctx.chatId.startsWith('coordination:');
+    if (isCanonicalCoordinationChat && rawMode === 'detached') {
+      return {
+        content: 'Detached specialists are unavailable in Connected Agents conversations; use joined mode so the result returns through the current canonical answer.',
+        is_error: true,
+      };
+    }
+    const mode: SubAgentExecutionMode = rawMode === 'joined' || (rawMode === undefined && isCanonicalCoordinationChat)
+      ? 'joined'
+      : 'detached';
     const isolated = mode === 'joined' || input.isolated !== false;
     const model = typeof input.model === 'string' && input.model ? input.model : undefined;
     const modelOverride = model ? resolveModelOverride(model, ctx.modelAliases) : undefined;

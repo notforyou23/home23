@@ -70,7 +70,7 @@ function makeCtx(parentChatId: string): { ctx: ToolContext; captured: Captured }
   return { ctx, captured };
 }
 
-test('spawn_agent isolates the sub-agent under a subagent: chat id while delivery targets the parent', async () => {
+test('noncanonical spawn_agent without a mode remains detached', async () => {
   const { ctx, captured } = makeCtx('parent-chat');
   const result = await spawnAgentTool.execute({ task: 'audit the scheduler' }, ctx);
   assert.match(result.content, /Sub-agent spawned/);
@@ -89,6 +89,43 @@ test('spawn_agent isolates the sub-agent under a subagent: chat id while deliver
   assert.equal(record.role, 'assistant');
   assert.match(record.content, /Sub-agent complete/);
   assert.match(record.content, /sub result/);
+});
+
+test('canonical Connected Agents spawn_agent without a mode joins the current answer', async () => {
+  const { ctx, captured } = makeCtx('coordination:cnv_jerry:work_123');
+
+  const result = await spawnAgentTool.execute({ task: 'inspect one detail' }, ctx);
+
+  assert.equal(result.content, 'sub result');
+  assert.equal(result.is_error, undefined);
+  assert.equal(captured.loopCalls, 1);
+  assert.match(captured.ctx!.chatId, /^subagent:coordination:cnv_jerry:work_123:[0-9a-f]{32}$/);
+  assert.match(captured.message, /Joined specialist output contract/);
+  assert.equal(captured.appends.length, 0, 'joined result returns inline instead of creating a transcript receipt');
+});
+
+test('canonical Connected Agents spawn_agent rejects explicit detached mode', async () => {
+  const { ctx, captured } = makeCtx('coordination:cnv_forrest:work_456');
+  let workCreates = 0;
+  let terminalCalls = 0;
+  (ctx as { workRegistry?: unknown }).workRegistry = {
+    create: () => {
+      workCreates++;
+      return { workId: 'aw_forbidden', originChatId: ctx.chatId };
+    },
+  };
+  (ctx as { onWorkTerminal?: unknown }).onWorkTerminal = () => { terminalCalls++; };
+
+  const result = await spawnAgentTool.execute({ task: 'background this', mode: 'detached' }, ctx);
+
+  assert.equal(result.is_error, true);
+  assert.match(result.content, /Detached specialists are unavailable in Connected Agents conversations/);
+  assert.equal(captured.loopCalls, 0);
+  assert.equal(captured.ctx, null);
+  assert.equal(captured.appends.length, 0);
+  assert.equal(workCreates, 0, 'rejection creates no detached Work receipt');
+  assert.equal(terminalCalls, 0, 'rejection schedules no detached delivery');
+  assert.equal(ctx.subAgentTracker.active, 0);
 });
 
 test('spawn_agent isolated:false preserves the legacy shared-chat behavior', async () => {
