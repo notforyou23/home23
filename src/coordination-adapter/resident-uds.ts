@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve, sep } from "node:path";
 import type { ConversationHistory } from "../agent/history.js";
 import type { AgentEvent, AgentResponse, CoordinationTurnOrigin } from "../agent/types.js";
+import type { MediaAttachment } from "../types.js";
 import { REASONING_EFFORTS, type ReasoningEffort } from "../agent/reasoning-effort.js";
 import type { AgentLoop } from "../agent/loop.js";
 import {
@@ -45,6 +46,22 @@ const RESIDENT_ATTACHMENT_CONTENT_TYPES = new Set([
   "image/png",
   "text/plain",
 ]);
+const GENERATED_IMAGE_CONTENT_TYPES = new Set([
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+]);
+const MAX_GENERATED_IMAGE_CAPTION_BYTES = 2_048;
+
+type ResidentGeneratedImage = Readonly<{
+  type: "image";
+  path: string;
+  mimeType: string;
+  fileName: string;
+  byteCount: number;
+  sha256: string;
+  caption?: string;
+}>;
 
 export function residentFence(origin: CoordinationTurnOrigin): string {
   return `${origin.workId}:${origin.attemptId}:${origin.leaseId}:${origin.fencingToken}`;
@@ -210,6 +227,237 @@ async function residentAttachments(
     }));
   }
   return Object.freeze(result);
+}
+
+function safeGeneratedImageFileName(value: unknown, fallback: string): string {
+  const fileName = value === undefined ? fallback : value;
+  if (
+    typeof fileName !== "string" ||
+    fileName.length === 0 ||
+    fileName.length > 255 ||
+    fileName.normalize("NFC") !== fileName ||
+    fileName === "." ||
+    fileName === ".." ||
+    /^[A-Za-z]:/u.test(fileName) ||
+    /[\0-\x1f\x7f/\\]/u.test(fileName)
+  ) {
+    throw new ResidentProtocolError("request_invalid", "resident generated image filename is invalid");
+  }
+  return fileName;
+}
+
+function exactImageMime(header: Buffer): string | null {
+  if (header.length >= 8 && header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return "image/png";
+  }
+  if (header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff) {
+    return "image/jpeg";
+  }
+  const signature = header.subarray(0, 6).toString("ascii");
+  if (signature === "GIF87a" || signature === "GIF89a") return "image/gif";
+  return null;
+}
+
+function generatedImageCandidates(value: unknown): Record<string, unknown>[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new ResidentProtocolError("request_invalid", "resident generated image descriptors are invalid");
+  }
+  const images: Record<string, unknown>[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new ResidentProtocolError("request_invalid", "resident generated image descriptor is invalid");
+    }
+    const descriptor = raw as Record<string, unknown>;
+    const mediaType = descriptor.type === "media" ? descriptor.mediaType : (descriptor.type ?? descriptor.mediaType);
+    if (mediaType !== "image") continue;
+    images.push(descriptor);
+  }
+  if (images.length > MAX_RESIDENT_ATTACHMENTS) {
+    throw new ResidentProtocolError("request_invalid", "resident generated image limit exceeded");
+  }
+  return images;
+}
+
+async function residentGeneratedImages(
+  value: unknown,
+  configuredRoot: string | undefined,
+): Promise<readonly ResidentGeneratedImage[]> {
+  const candidates = generatedImageCandidates(value);
+  if (candidates.length === 0) return Object.freeze([]);
+  if (!configuredRoot || !isAbsolute(configuredRoot) || configuredRoot.includes("\0")) {
+    throw new ResidentProtocolError("request_invalid", "resident generated image root is unavailable");
+  }
+
+  const root = resolve(configuredRoot);
+  let canonicalRoot: string;
+  try {
+    const rootEntry = await lstat(root);
+    canonicalRoot = await realpath(root);
+    const allowedMacSystemAlias = root.startsWith("/var/") && canonicalRoot === `/private${root}`;
+    if (
+      !rootEntry.isDirectory() ||
+      rootEntry.isSymbolicLink() ||
+      (canonicalRoot !== root && !allowedMacSystemAlias)
+    ) {
+      throw new Error("invalid root");
+    }
+  } catch {
+    throw new ResidentProtocolError("request_invalid", "resident generated image root is unavailable");
+  }
+
+  const pathPrefix = canonicalRoot.endsWith(sep) ? canonicalRoot : `${canonicalRoot}${sep}`;
+  const seen = new Set<string>();
+  const images: ResidentGeneratedImage[] = [];
+  for (const candidate of candidates) {
+    const path = candidate.path;
+    if (typeof path !== "string" || path.length === 0 || path.length > 4_096 || path.includes("\0") || !isAbsolute(path)) {
+      throw new ResidentProtocolError("request_invalid", "resident generated image path is invalid");
+    }
+
+    let handle: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      const [entry, canonicalPath] = await Promise.all([lstat(path), realpath(path)]);
+      if (
+        !canonicalPath.startsWith(pathPrefix) ||
+        !entry.isFile() ||
+        entry.isSymbolicLink() ||
+        seen.has(canonicalPath)
+      ) {
+        throw new Error("invalid generated image path");
+      }
+      handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      const stat = await handle.stat();
+      if (
+        !stat.isFile() ||
+        stat.dev !== entry.dev ||
+        stat.ino !== entry.ino ||
+        stat.size < 1 ||
+        stat.size > MAX_RESIDENT_ATTACHMENT_BYTES
+      ) {
+        throw new Error("invalid generated image file");
+      }
+
+      if (candidate.byteCount !== undefined && (
+        typeof candidate.byteCount !== "number" ||
+        !Number.isSafeInteger(candidate.byteCount) ||
+        candidate.byteCount !== stat.size
+      )) {
+        throw new Error("generated image size differs");
+      }
+
+      const hash = createHash("sha256");
+      const buffer = Buffer.allocUnsafe(64 * 1024);
+      let header = Buffer.alloc(0);
+      let offset = 0;
+      while (offset < stat.size) {
+        const read = await handle.read(buffer, 0, Math.min(buffer.length, stat.size - offset), offset);
+        if (read.bytesRead === 0) break;
+        const bytes = buffer.subarray(0, read.bytesRead);
+        if (header.length < 8) header = Buffer.concat([header, bytes.subarray(0, 8 - header.length)]);
+        hash.update(bytes);
+        offset += read.bytesRead;
+      }
+      const sha256 = hash.digest("hex");
+      if (offset !== stat.size || (candidate.sha256 !== undefined && candidate.sha256 !== sha256)) {
+        throw new Error("generated image digest differs");
+      }
+
+      const mimeType = exactImageMime(header);
+      if (
+        !mimeType ||
+        !GENERATED_IMAGE_CONTENT_TYPES.has(mimeType) ||
+        (candidate.mimeType !== undefined && candidate.mimeType !== mimeType)
+      ) {
+        throw new Error("generated image MIME differs");
+      }
+      const fileName = safeGeneratedImageFileName(candidate.fileName, basename(canonicalPath));
+      if (fileName !== basename(canonicalPath)) {
+        throw new Error("generated image filename differs");
+      }
+      const caption = candidate.caption;
+      if (caption !== undefined && (
+        typeof caption !== "string" ||
+        caption.includes("\0") ||
+        Buffer.byteLength(caption, "utf8") > MAX_GENERATED_IMAGE_CAPTION_BYTES
+      )) {
+        throw new Error("generated image caption is invalid");
+      }
+      seen.add(canonicalPath);
+      images.push(Object.freeze({
+        type: "image",
+        path: canonicalPath,
+        mimeType,
+        fileName,
+        byteCount: stat.size,
+        sha256,
+        ...(typeof caption === "string" ? { caption } : {}),
+      }));
+    } catch (error) {
+      if (error instanceof ResidentProtocolError) throw error;
+      throw new ResidentProtocolError("request_invalid", "resident generated image bytes are invalid");
+    } finally {
+      await handle?.close().catch(() => undefined);
+    }
+  }
+  return Object.freeze(images);
+}
+
+function generatedImagesJson(images: readonly ResidentGeneratedImage[]): JsonValue {
+  return images.map((image) => ({
+    type: image.type,
+    path: image.path,
+    mimeType: image.mimeType,
+    fileName: image.fileName,
+    byteCount: image.byteCount,
+    sha256: image.sha256,
+    ...(image.caption === undefined ? {} : { caption: image.caption }),
+  }));
+}
+
+function parseResidentGeneratedImages(value: JsonValue | undefined): MediaAttachment[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > MAX_RESIDENT_ATTACHMENTS) {
+    throw new ResidentProtocolError("request_invalid", "resident generated image response is invalid");
+  }
+  const images = value.map((raw) => {
+    const image = object(raw);
+    if (image.type !== "image") {
+      throw new ResidentProtocolError("request_invalid", "resident generated image type is invalid");
+    }
+    const path = string(image.path, "generated image path");
+    const mimeType = string(image.mimeType, "generated image MIME");
+    const fileName = safeGeneratedImageFileName(image.fileName, basename(path));
+    const byteCount = nonnegativeSafeInteger(image.byteCount, "generated image byteCount");
+    const sha256 = string(image.sha256, "generated image sha256");
+    const caption = image.caption;
+    if (
+      !isAbsolute(path) ||
+      path.length > 4_096 ||
+      basename(path) !== fileName ||
+      !GENERATED_IMAGE_CONTENT_TYPES.has(mimeType) ||
+      byteCount < 1 ||
+      byteCount > MAX_RESIDENT_ATTACHMENT_BYTES ||
+      !/^[a-f0-9]{64}$/u.test(sha256) ||
+      (caption !== undefined && (
+        typeof caption !== "string" ||
+        caption.includes("\0") ||
+        Buffer.byteLength(caption, "utf8") > MAX_GENERATED_IMAGE_CAPTION_BYTES
+      ))
+    ) {
+      throw new ResidentProtocolError("request_invalid", "resident generated image response is invalid");
+    }
+    return Object.freeze({
+      type: "image" as const,
+      path,
+      mimeType,
+      fileName,
+      byteCount,
+      sha256,
+      ...(typeof caption === "string" ? { caption } : {}),
+    });
+  });
+  return images;
 }
 
 function instructionWithAttachments(
@@ -398,7 +646,7 @@ function assertResidentBinding(
 
 export interface ResidentTurnUdsServerOptions {
   socketPath:string;serverInstanceId:string;credential:ResidentCredential;
-  residentSlug:string;agent:Pick<AgentLoop,"runWithTurn"|"stop"|"isRunning"|"getModel"|"getProvider"|"getReasoningEffort">;history:ConversationHistory;
+  residentSlug:string;agent:Pick<AgentLoop,"runWithTurn"|"stop"|"isRunning"|"getModel"|"getProvider"|"getReasoningEffort"> & { getWorkspacePath?: () => string };history:ConversationHistory;
   modelAliases?:ModelAliases;
   attachmentRoot?:string;
   now?:()=>number;
@@ -454,9 +702,14 @@ function residentModelAliases(
 export class ResidentTurnUdsServer {
   readonly #store:TurnStore; readonly #responses=new Map<string,Promise<AgentResponse>>(); readonly #server:ResidentUdsServer;
   readonly #modelAliases:Readonly<ModelAliases>;
+  readonly #generatedImagesRoot:string|undefined;
   constructor(private readonly options:ResidentTurnUdsServerOptions){
     this.#store=new TurnStore(options.history);
     this.#modelAliases=residentModelAliases(options.modelAliases,options.agent);
+    const workspacePath=options.agent.getWorkspacePath?.();
+    this.#generatedImagesRoot=typeof workspacePath==="string"&&isAbsolute(workspacePath)&&!workspacePath.includes("\0")
+      ? join(resolve(workspacePath),"media","generated-images")
+      : undefined;
     if(options.credential.residentSlug!==options.residentSlug)throw new TypeError("resident credential slug does not match harness");
     this.#server=new ResidentUdsServer({socketPath:options.socketPath,serverInstanceId:options.serverInstanceId,credentials:[options.credential],now:options.now,validateFence:(fence,request)=>request.method==="POST"&&request.path===START?typeof fence==="string"&&fence.length<512:true,handleRequest:(request,context)=>this.#handle(request,context.signal)});
   }
@@ -538,11 +791,19 @@ export class ResidentTurnUdsServer {
     const final=this.#store.finalEnvelope(chatId,turnId);
     if(final){
       if(final.status!=="complete"||typeof final.assistant_content!=="string")throw new ResidentProtocolError("internal_error",final.error_message??final.error??`resident turn ended ${final.status}`);
-      return{text:final.assistant_content,model:final.model??"recovered",toolCallCount:0,durationMs:0,recovered:true};
+      const media=await residentGeneratedImages(
+        this.#store.eventsSince(chatId,turnId,-1)
+          .filter((event)=>event.kind==="media")
+          .map((event)=>event.data),
+        this.#generatedImagesRoot,
+      );
+      return{text:final.assistant_content,model:final.model??"recovered",toolCallCount:0,durationMs:0,recovered:true,...(media.length>0?{media:generatedImagesJson(media)}:{})};
     }
     const active=this.#responses.get(turnId);if(active){
       try {
-        const response=await active;return{text:response.text,model:response.model,toolCallCount:response.toolCallCount,durationMs:response.durationMs};
+        const response=await active;
+        const media=await residentGeneratedImages(response.media,this.#generatedImagesRoot);
+        return{text:response.text,model:response.model,toolCallCount:response.toolCallCount,durationMs:response.durationMs,...(media.length>0?{media:generatedImagesJson(media)}:{})};
       } catch (error) {
         const terminal=this.#store.finalEnvelope(chatId,turnId);
         if(terminal&&terminal.status!=="complete")throw new ResidentProtocolError("internal_error",terminal.error_message??terminal.error??`resident turn ended ${terminal.status}`);
@@ -742,7 +1003,7 @@ export class ResidentUdsAgentPort implements ResidentAgentPort {
         const remaining=resultDeadlineAt-now();
         if(remaining<1)throw new ResidentProtocolError("deadline_exceeded","resident result did not become terminal before its overall deadline");
         try{
-          const result=await this.options.client.request({method:"GET",path:`/internal/v1/turns/${encodeURIComponent(turnId)}/result`,payload:{chatId,origin:jsonOrigin(options.coordinationOrigin),correlationId:request.correlationId},deadlineAtMs:now()+Math.min(this.#requestDeadlineMs,remaining),fence,correlationId:request.correlationId});const value=object(result.payload);return{text:string(value.text,"text"),model:string(value.model,"model"),toolCallCount:nonnegativeSafeInteger(value.toolCallCount,"toolCallCount"),durationMs:nonnegativeSafeInteger(value.durationMs,"durationMs")};
+          const result=await this.options.client.request({method:"GET",path:`/internal/v1/turns/${encodeURIComponent(turnId)}/result`,payload:{chatId,origin:jsonOrigin(options.coordinationOrigin),correlationId:request.correlationId},deadlineAtMs:now()+Math.min(this.#requestDeadlineMs,remaining),fence,correlationId:request.correlationId});const value=object(result.payload);const media=parseResidentGeneratedImages(value.media);return{text:string(value.text,"text"),model:string(value.model,"model"),toolCallCount:nonnegativeSafeInteger(value.toolCallCount,"toolCallCount"),durationMs:nonnegativeSafeInteger(value.durationMs,"durationMs"),...(media.length>0?{media}:{})};
         }catch(caught){
           if(!retryableTransportWait(caught))throw caught;
           const retryRemaining=resultDeadlineAt-now();

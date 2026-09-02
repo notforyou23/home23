@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -288,6 +288,203 @@ test("resident UDS verifies canonical attachment bytes and gives AgentLoop image
     (error: unknown) => error instanceof ResidentProtocolError && error.code === "request_invalid",
   );
   assert.equal(starts, 1, "invalid attachment paths must fail before AgentLoop starts");
+});
+
+test("resident UDS returns verified generated-image descriptors live and after restart", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "home23-resident-generated-image-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const workspacePath = join(root, "workspace");
+  const generatedImagesRoot = join(workspacePath, "media", "generated-images");
+  mkdirSync(generatedImagesRoot, { recursive: true });
+  const bytes = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const imagePath = join(generatedImagesRoot, "answer.png");
+  writeFileSync(imagePath, bytes, { mode: 0o400 });
+
+  const history = new ConversationHistory(join(root, "conversations"), 400_000, "jerry");
+  const store = new TurnStore(history);
+  let starts = 0;
+  const agent: Pick<AgentLoop,
+    "runWithTurn" | "stop" | "isRunning" | "getModel" | "getProvider" | "getReasoningEffort"> & {
+      getWorkspacePath(): string;
+    } = {
+    getModel: () => "fixture-model",
+    getProvider: () => "fixture-provider",
+    getReasoningEffort: () => "medium",
+    getWorkspacePath: () => workspacePath,
+    async runWithTurn(chatId, instruction, options = {}) {
+      starts += 1;
+      const turnId = options.turnId!;
+      store.writeStart(chatId, turnId, "fixture-model", "fixture-provider", {
+        coordination_origin: options.coordinationOrigin,
+      });
+      const response = new Promise<{
+        text: string;
+        model: string;
+        toolCallCount: number;
+        durationMs: number;
+        media: Array<{ type: "image"; path: string; caption: string }>;
+      }>((resolve) => {
+        setTimeout(() => {
+          store.writeEvent(chatId, {
+            type: "event",
+            turn_id: turnId,
+            seq: 1,
+            ts: "2026-08-26T12:00:00.100Z",
+            kind: "media",
+            data: {
+              type: "media",
+              mediaType: "image",
+              path: imagePath,
+              mimeType: "image/png",
+              fileName: "answer.png",
+              byteCount: bytes.length,
+              sha256,
+              caption: "a generated answer",
+              sourceEventType: "runtime.tool_media",
+            },
+          });
+          history.append(chatId, [
+            { role: "user", content: instruction },
+            { role: "assistant", content: "generated image ready" },
+          ]);
+          store.writeEnd(chatId, turnId, "complete", { last_seq: 1 });
+          resolve({
+            text: "generated image ready",
+            model: "fixture-model",
+            toolCallCount: 1,
+            durationMs: 20,
+            // Exercise the resident-side basename, MIME, size, and hash reconstruction
+            // used when an older generator returns only its durable path.
+            media: [{ type: "image", path: imagePath, caption: "a generated answer" }],
+          });
+        }, 20);
+      });
+      return { turnId, response };
+    },
+    stop: () => ({ stopped: false, chatIds: [] }),
+    isRunning: () => false,
+  };
+  const credential = createResidentCredential({
+    rootKey: Buffer.alloc(32, 0x59),
+    residentSlug: "jerry",
+    role: "resident",
+    instanceId: "home23-jerry-harness",
+    keyVersion: 1,
+  });
+  const socketPath = join(root, "resident.sock");
+  const origin = {
+    kind: "coordination",
+    workId: "wrk_0198d95f-6c00-7000-8000-0000000002a1",
+    attemptId: "att_0198d95f-6c00-7000-8000-0000000002a2",
+    leaseId: "lea_0198d95f-6c00-7000-8000-0000000002a3",
+    holderPrincipalId: "bot_0198d95f-6c00-7000-8000-0000000002a4",
+    holderInstanceId: "home23-jerry-harness",
+    authorityReference: "resident:jerry",
+    fencingToken: 1,
+    channelId: "chn_0198d95f-6c00-7000-8000-0000000002a5",
+    originMessageId: "msg_0198d95f-6c00-7000-8000-0000000002a6",
+    roundId: null,
+  } as const;
+  const expectedMedia = [{
+    type: "image",
+    path: realpathSync(imagePath),
+    mimeType: "image/png",
+    fileName: "answer.png",
+    byteCount: bytes.length,
+    sha256,
+    caption: "a generated answer",
+  }];
+
+  const startServer = async () => {
+    const server = new ResidentTurnUdsServer({
+      socketPath,
+      serverInstanceId: "home23-jerry-harness",
+      credential,
+      residentSlug: "jerry",
+      agent,
+      history,
+    });
+    await server.start();
+    const client = new ResidentUdsClient({
+      socketPath,
+      serverInstanceId: "home23-jerry-harness",
+      credential,
+    });
+    return { server, client, port: new ResidentUdsAgentPort({ client, residentSlug: "jerry" }) };
+  };
+
+  const first = await startServer();
+  const live = await first.port.runWithTurn("coordination:test:generated-image", "make an image", {
+    coordinationOrigin: origin,
+    coordinationRequest: { requestId: REQUEST_ID, correlationId: CORRELATION_ID },
+    turnSelection: { modelAlias: null, reasoningEffort: null },
+    onDurableStart: () => undefined,
+    onEvent: () => undefined,
+  });
+  assert.deepEqual((await live.response).media, expectedMedia);
+  await first.client.close();
+  await first.server.close();
+
+  const restarted = await startServer();
+  t.after(() => restarted.client.close());
+  t.after(() => restarted.server.close());
+  const recovered = await restarted.port.runWithTurn("coordination:test:generated-image", "make an image", {
+    coordinationOrigin: origin,
+    coordinationRequest: { requestId: RESUME_REQUEST_ID, correlationId: RESUME_CORRELATION_ID },
+    turnSelection: { modelAlias: null, reasoningEffort: null },
+    onDurableStart: () => undefined,
+    onEvent: () => undefined,
+  });
+  assert.deepEqual((await recovered.response).media, expectedMedia);
+  assert.equal(starts, 1, "post-restart recovery must not rerun the resident turn");
+
+  const outsidePath = join(root, "outside.png");
+  writeFileSync(outsidePath, bytes, { mode: 0o400 });
+  const symlinkPath = join(generatedImagesRoot, "linked.png");
+  symlinkSync(imagePath, symlinkPath);
+  for (const [index, rejectedPath] of [outsidePath, symlinkPath].entries()) {
+    const suffix = index === 0 ? "b" : "c";
+    const rejectedOrigin = {
+      ...origin,
+      workId: `wrk_0198d95f-6c00-7000-8000-0000000002${suffix}1`,
+      attemptId: `att_0198d95f-6c00-7000-8000-0000000002${suffix}2`,
+      leaseId: `lea_0198d95f-6c00-7000-8000-0000000002${suffix}3`,
+      originMessageId: `msg_0198d95f-6c00-7000-8000-0000000002${suffix}4`,
+    } as const;
+    const rejectedTurnId = `coord-${rejectedOrigin.workId}`;
+    const rejectedChatId = `coordination:test:generated-image-${suffix}`;
+    store.writeStart(rejectedChatId, rejectedTurnId, "fixture-model", "fixture-provider", {
+      coordination_origin: rejectedOrigin,
+    });
+    store.writeEvent(rejectedChatId, {
+      type: "event",
+      turn_id: rejectedTurnId,
+      seq: 1,
+      ts: "2026-08-26T12:00:00.100Z",
+      kind: "media",
+      data: { type: "media", mediaType: "image", path: rejectedPath },
+    });
+    history.append(rejectedChatId, [{ role: "assistant", content: "must not escape" }]);
+    store.writeEnd(rejectedChatId, rejectedTurnId, "complete", { last_seq: 1 });
+    const rejected = await restarted.port.runWithTurn(rejectedChatId, "recover", {
+      coordinationOrigin: rejectedOrigin,
+      coordinationRequest: {
+        requestId: `req_0198d95f-6c00-7000-8000-0000000002${suffix}5`,
+        correlationId: `cor_0198d95f-6c00-7000-8000-0000000002${suffix}6`,
+      },
+      turnSelection: { modelAlias: null, reasoningEffort: null },
+      onDurableStart: () => undefined,
+      onEvent: () => undefined,
+    });
+    await assert.rejects(
+      rejected.response,
+      (error: unknown) => error instanceof ResidentProtocolError && error.code === "request_invalid",
+    );
+  }
 });
 
 test("a durable stopped turn with a legacy terminal sequence completes recovery", async (t) => {

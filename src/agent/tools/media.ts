@@ -2,7 +2,8 @@
  * Media tools — image generation, music generation, and text-to-speech.
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { closeSync, constants as fsConstants, fsyncSync, mkdirSync, openSync, unlinkSync, writeFileSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { loadConfig } from '../../config.js';
@@ -161,9 +162,26 @@ type ImageArtifactInfo = {
   path: string;
   receiptPath: string;
   mimeType: string;
+  fileName: string;
+  byteCount: number;
+  sha256: string;
   bytes: number;
   createdAt: string;
 };
+
+function exactImageFormat(buf: Buffer): { mimeType: string; extension: string } {
+  if (buf.length >= 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return { mimeType: 'image/png', extension: '.png' };
+  }
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return { mimeType: 'image/jpeg', extension: '.jpg' };
+  }
+  const signature = buf.subarray(0, 6).toString('ascii');
+  if (signature === 'GIF87a' || signature === 'GIF89a') {
+    return { mimeType: 'image/gif', extension: '.gif' };
+  }
+  throw new Error('Image provider returned an unsupported image format.');
+}
 
 function writeImageArtifact(
   ctx: ToolContext,
@@ -177,22 +195,81 @@ function writeImageArtifact(
   const artifactDir = join(ctx.workspacePath, 'media', 'generated-images');
   mkdirSync(artifactDir, { recursive: true });
   const stamp = createdAt.replace(/[:.]/g, '-');
-  const filePath = join(artifactDir, `${stamp}-${safeProvider}.png`);
-  const receiptPath = filePath.replace(/\.png$/, '.json');
-  writeFileSync(filePath, buf);
+  const format = exactImageFormat(buf);
+  const sha256 = createHash('sha256').update(buf).digest('hex');
+  let fileName = '';
+  let filePath = '';
+  let receiptPath = '';
+  let imageFd: number | undefined;
+  let receiptFd: number | undefined;
+  const createFlags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const stem = `${stamp}-${safeProvider}-${randomBytes(6).toString('hex')}`;
+    fileName = `${stem}${format.extension}`;
+    filePath = join(artifactDir, fileName);
+    receiptPath = join(artifactDir, `${stem}.json`);
+    try {
+      imageFd = openSync(filePath, createFlags, 0o600);
+      try {
+        receiptFd = openSync(receiptPath, createFlags, 0o600);
+      } catch (error) {
+        closeSync(imageFd);
+        imageFd = undefined;
+        unlinkSync(filePath);
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
+        throw error;
+      }
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') continue;
+      throw error;
+    }
+  }
+  if (imageFd === undefined || receiptFd === undefined) {
+    throw new Error('Could not reserve a unique generated-image artifact name.');
+  }
   const receipt: ImageArtifactInfo & Record<string, unknown> = {
+    ...extra,
     provider: cfg.provider,
     model: cfg.model,
     prompt,
     path: filePath,
     receiptPath,
-    mimeType: 'image/png',
+    mimeType: format.mimeType,
+    fileName,
+    byteCount: buf.length,
+    sha256,
     bytes: buf.length,
     createdAt,
-    ...extra,
   };
-  writeFileSync(receiptPath, JSON.stringify(receipt, null, 2));
+  let complete = false;
+  try {
+    writeFileSync(imageFd, buf);
+    fsyncSync(imageFd);
+    writeFileSync(receiptFd, JSON.stringify(receipt, null, 2));
+    fsyncSync(receiptFd);
+    complete = true;
+  } finally {
+    closeSync(imageFd);
+    closeSync(receiptFd);
+    if (!complete) {
+      try { unlinkSync(filePath); } catch { /* best-effort rollback of our exclusive file */ }
+      try { unlinkSync(receiptPath); } catch { /* best-effort rollback of our exclusive file */ }
+    }
+  }
   return receipt;
+}
+
+function generatedImageMedia(info: ImageArtifactInfo, prompt: string): NonNullable<ToolResult['media']>[number] {
+  return {
+    type: 'image',
+    path: info.path,
+    mimeType: info.mimeType,
+    fileName: info.fileName,
+    byteCount: info.byteCount,
+    sha256: info.sha256,
+    caption: prompt.slice(0, 200),
+  };
 }
 
 function imageResultContent(info: ImageArtifactInfo, details = ''): string {
@@ -248,7 +325,7 @@ async function generateMiniMaxImage(
 
   return {
     content: imageResultContent(artifact, aspect ? ` (${aspect})` : ''),
-    media: [{ type: 'image', path: artifact.path, mimeType: artifact.mimeType, caption: prompt.slice(0, 200) }],
+    media: [generatedImageMedia(artifact, prompt)],
   };
 }
 
@@ -305,7 +382,7 @@ async function generateOpenAIImage(
 
   return {
     content: imageResultContent(artifact, details),
-    media: [{ type: 'image', path: artifact.path, mimeType: artifact.mimeType, caption: prompt.slice(0, 200) }],
+    media: [generatedImageMedia(artifact, prompt)],
   };
 }
 
@@ -358,7 +435,7 @@ async function generateXAIImage(
 
   return {
     content: imageResultContent(artifact, aspect ? ` (${aspect})` : ''),
-    media: [{ type: 'image', path: artifact.path, mimeType: artifact.mimeType, caption: prompt.slice(0, 200) }],
+    media: [generatedImageMedia(artifact, prompt)],
   };
 }
 

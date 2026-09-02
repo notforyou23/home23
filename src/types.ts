@@ -33,6 +33,8 @@ export interface MediaAttachment {
   path: string;
   mimeType?: string;
   fileName?: string;
+  byteCount?: number;
+  sha256?: string;
   caption?: string;
   url?: string;
 }

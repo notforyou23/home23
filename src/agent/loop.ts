@@ -16,6 +16,7 @@ import type { ToolRegistry } from './tools/index.js';
 import type { ContextManager } from './context.js';
 import { ConversationHistory, type StoredMessage, type ContentBlock, type HistoryRecord, type SessionBoundary } from './history.js';
 import type {
+  AgentEvent,
   AgentEventCallback,
   AgentResponse,
   ToolContext,
@@ -86,6 +87,21 @@ function isCodexReasoningRejected(errText: string): boolean {
 function stringifyContent(content: string | ContentBlock[]): string {
   if (typeof content === 'string') return content;
   return content.map(block => JSON.stringify(block)).join('\n');
+}
+
+function toolMediaEvent(media: MediaAttachment, toolCallId: string): AgentEvent {
+  return {
+    type: 'media',
+    mediaType: media.type || 'image',
+    path: media.path,
+    caption: media.caption,
+    mimeType: media.mimeType,
+    fileName: media.fileName,
+    byteCount: media.byteCount,
+    sha256: media.sha256,
+    toolCallId,
+    sourceEventType: 'runtime.tool_media',
+  };
 }
 
 function toolRoundHistoryEntry(names: string[], receipts: string[]): StoredMessage {
@@ -707,6 +723,11 @@ export class AgentLoop {
   getReasoningEffort(): ReasoningEffort {
     return this.currentModelReasoningEffort
       ?? resolveConfiguredReasoningEffort(this.model, this.reasoningEffort, this.modelReasoningEfforts);
+  }
+
+  /** Absolute durable workspace used for resident-owned generated artifacts. */
+  getWorkspacePath(): string {
+    return this.workspacePath;
   }
 
   /** Stop an active run. Returns true if a run was aborted. */
@@ -1868,10 +1889,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   const { result } = formatted;
                   if (result.media) {
                     allMedia.push(...result.media);
-                    if (onEvent) for (const m of result.media) onEvent({
-                      type: 'media', mediaType: m.type || 'image', path: m.path,
-                      caption: m.caption, toolCallId, sourceEventType: 'runtime.tool_media',
-                    });
+                    if (onEvent) for (const m of result.media) onEvent(toolMediaEvent(m, toolCallId));
                   }
                   apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: formatted.modelContent });
                 } catch (toolErr) {
@@ -2153,7 +2171,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                     eventLimit: TOOL_EVENT_RESULT_LIMIT_CHARS,
                   });
                   const { result } = formatted;
-                  if (result.media?.length) { allMedia.push(...result.media); if (onEvent) for (const m of result.media) onEvent({ type: 'media', mediaType: m.type || 'image', path: m.path, caption: m.caption, toolCallId, sourceEventType: 'runtime.tool_media' }); }
+                  if (result.media?.length) { allMedia.push(...result.media); if (onEvent) for (const m of result.media) onEvent(toolMediaEvent(m, toolCallId)); }
                   xaiInputItems.push({ type: 'function_call_output', call_id: tc.id, output: formatted.modelContent });
                 } catch (toolErr) {
                   const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
@@ -2400,7 +2418,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 const { result } = formatted;
                 if (result.media) {
                   allMedia.push(...result.media);
-                  if (onEvent) for (const m of result.media) onEvent({ type: 'media', mediaType: m.type || 'image', path: m.path, caption: m.caption, toolCallId, sourceEventType: 'runtime.tool_media' });
+                  if (onEvent) for (const m of result.media) onEvent(toolMediaEvent(m, toolCallId));
                 }
                 apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: formatted.modelContent });
               } catch (toolErr) {
@@ -2653,7 +2671,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 allMedia.push(...result.media);
                 if (onEvent) {
                   for (const m of result.media) {
-                    onEvent({ type: 'media', mediaType: m.type || 'image', path: m.path, caption: m.caption, toolCallId, sourceEventType: 'runtime.tool_media' });
+                    onEvent(toolMediaEvent(m, toolCallId));
                   }
                 }
               }
