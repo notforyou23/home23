@@ -221,6 +221,22 @@ export function executeBotLifecycleAuthorityTransition(
     applicationVersion: "home23-coordination-bot-lifecycle-authority",
   });
   try {
+    const destination = database.readOne<{
+      eventSequence: number;
+      messageCount: number;
+    }>(`
+      SELECT
+        (SELECT COALESCE(MAX(sequence), 0) FROM events) AS eventSequence,
+        (SELECT count(*) FROM messages) AS messageCount
+    `);
+    if (
+      destination?.eventSequence !== input.receipt.destinationWatermark.eventSequence ||
+      destination?.messageCount !== input.receipt.destinationWatermark.messageCount
+    ) {
+      throw new Error(
+        "bot lifecycle authority destination watermark no longer matches the database",
+      );
+    }
     const history = database.readAll<AuthorityEpoch>(
       `SELECT capability, epoch, mode, writer,
               effective_at_event_sequence AS effectiveAtEventSequence,
