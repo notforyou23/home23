@@ -119,6 +119,7 @@ test('canonical coordination origin uses only the exact completion callback', as
     attemptId: 'att_1', leaseId: 'lse_1', fencingToken: 1,
     targetPrincipalId: 'bot_jerry', residentBinding: 'jerry',
     residentInstanceId: 'resident-jerry-1', authorityReference: 'resident:jerry',
+    terminalEvidence: '[Sub-agent complete] hidden evidence',
     terminalText: 'Here is the result you asked for.',
     artifacts: [{ type: 'document', path: '/tmp/result.txt', mimeType: 'text/plain' }],
   });

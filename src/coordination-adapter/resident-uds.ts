@@ -785,7 +785,8 @@ export class ResidentTurnUdsServer {
       originMessageId:input.originMessageId,targetPrincipalId:input.targetPrincipalId,
       attemptId:input.attemptId,leaseId:input.leaseId,fencingToken:input.fencingToken,
       residentBinding:input.residentBinding,residentInstanceId:input.residentInstanceId,
-      authorityReference:input.authorityReference,terminalText:input.terminalText,
+      authorityReference:input.authorityReference,terminalEvidence:input.terminalEvidence,
+      terminalText:input.terminalText,
       artifacts:returnedArtifactsJson(artifacts),
     };
     let retryDelayMs=100;

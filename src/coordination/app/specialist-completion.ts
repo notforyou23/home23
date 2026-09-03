@@ -6,7 +6,10 @@ import type {
   ResidentCommunicationPort,
   ResidentLeaseBinding,
 } from "../../coordination-adapter/index.js";
-import type { CoordinationCompletionCommit } from "../../work/receipt-delivery.js";
+import {
+  COORDINATION_TERMINAL_EVIDENCE_MAX_BYTES,
+  type CoordinationCompletionCommit,
+} from "../../work/receipt-delivery.js";
 import { ArtifactError } from "../artifacts/index.js";
 import { assertCoordinationId } from "../ids/index.js";
 import { ResidentProtocolError, type JsonValue } from "../resident-protocol/index.js";
@@ -109,6 +112,13 @@ function nullableText(value: JsonValue | undefined): string | null {
   return value;
 }
 
+function exactTerminalEvidence(value: JsonValue | undefined): string {
+  if (typeof value !== "string" || value.length === 0) {
+    invalid("terminalEvidence is invalid");
+  }
+  return value;
+}
+
 function exactTimestamp(value: JsonValue | undefined): string {
   const timestamp = exactString(value, "finishedAt");
   const parsed = new Date(timestamp);
@@ -166,7 +176,7 @@ export function parseCoordinationCompletionCommit(
     "finishedAt", "channelId", "conversationId", "originMessageId",
     "attemptId", "leaseId", "fencingToken", "targetPrincipalId",
     "residentBinding", "residentInstanceId",
-    "authorityReference", "terminalText", "artifacts",
+    "authorityReference", "terminalEvidence", "terminalText", "artifacts",
   ], "coordination completion");
   const parentWorkId = exactId("work", value.parentWorkId);
   const channelId = exactId("channel", value.channelId);
@@ -187,6 +197,10 @@ export function parseCoordinationCompletionCommit(
     invalid("status is invalid");
   }
   const terminalText = nullableText(value.terminalText);
+  const terminalEvidence = exactTerminalEvidence(value.terminalEvidence);
+  if (Buffer.byteLength(terminalEvidence, "utf8") > COORDINATION_TERMINAL_EVIDENCE_MAX_BYTES) {
+    invalid("terminalEvidence is too large");
+  }
   const fencingToken = value.fencingToken;
   if (typeof fencingToken !== "number" || !Number.isSafeInteger(fencingToken) || fencingToken < 1) {
     invalid("fencingToken is invalid");
@@ -216,6 +230,7 @@ export function parseCoordinationCompletionCommit(
     residentBinding: exactString(value.residentBinding, "residentBinding"),
     residentInstanceId: exactString(value.residentInstanceId, "residentInstanceId"),
     authorityReference: exactString(value.authorityReference, "authorityReference"),
+    terminalEvidence,
     terminalText,
     artifacts,
   });
@@ -424,6 +439,7 @@ export function createSpecialistCompletionConsumer(
             childKind: input.childKind,
             childResultHandle: { ...input.childResultHandle },
             status: input.status,
+            terminalEvidence: input.terminalEvidence,
             terminalText: input.terminalText,
             artifacts: terminalArtifacts(input),
           },

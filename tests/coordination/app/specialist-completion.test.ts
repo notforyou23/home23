@@ -81,6 +81,7 @@ function payload(overrides: Record<string, JsonValue> = {}): JsonValue {
     residentBinding: "jerry",
     residentInstanceId: "home23-jerry-harness",
     authorityReference: "resident:jerry",
+    terminalEvidence: "[Sub-agent complete] specialist\n\nThe specialist found the clean answer.",
     terminalText: "The specialist found the clean answer.",
     artifacts: [],
     ...overrides,
@@ -240,15 +241,22 @@ test("specialist completion rejects the stale spawning Attempt", async () => {
 
 test("failed specialist completion records Inspector evidence without a Message", async () => {
   const state = fixture();
-  const result = await state.consume(payload({ status: "failed", terminalText: null }), request) as Record<string, JsonValue>;
+  const result = await state.consume(payload({
+    status: "failed",
+    terminalEvidence: "[Sub-agent failed] specialist\n\nError: provider unavailable",
+    terminalText: null,
+  }), request) as Record<string, JsonValue>;
   assert.equal(result.messageId, null);
   assert.equal(state.sent.length, 0);
   assert.equal(state.recorded.length, 0);
   assert.equal(state.terminalEvents.length, 1);
-  const terminal = state.terminalEvents[0] as { event: { kind: string; messageId: null; payload: { status: string } } };
+  const terminal = state.terminalEvents[0] as {
+    event: { kind: string; messageId: null; payload: { status: string; terminalEvidence: string } };
+  };
   assert.equal(terminal.event.kind, "failure");
   assert.equal(terminal.event.messageId, null);
   assert.equal(terminal.event.payload.status, "failed");
+  assert.match(terminal.event.payload.terminalEvidence, /provider unavailable/);
 });
 
 test("specialist completion retries the same canonical Message idempotently", async () => {

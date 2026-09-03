@@ -16,6 +16,7 @@ import {
 } from './types.js';
 
 export type WorkDeliveryRoute = 'none' | 'telegram' | 'ios' | 'coordination';
+export const COORDINATION_TERMINAL_EVIDENCE_MAX_BYTES = 65_536;
 
 export interface CoordinationCompletionCommit {
   parentWorkId: string;
@@ -34,6 +35,8 @@ export interface CoordinationCompletionCommit {
   residentBinding: string;
   residentInstanceId: string;
   authorityReference: string;
+  /** Bounded diagnostic evidence for Inspector only; never canonical Message text. */
+  terminalEvidence: string;
   terminalText: string | null;
   artifacts: readonly MediaAttachment[];
 }
@@ -105,6 +108,15 @@ function terminalResult(
     : result;
 }
 
+function boundedTerminalEvidence(value: string): string {
+  const evidence = value || '[terminal evidence unavailable]';
+  const bytes = Buffer.from(evidence, 'utf8');
+  if (bytes.byteLength <= COORDINATION_TERMINAL_EVIDENCE_MAX_BYTES) return evidence;
+  const suffix = Buffer.from('\n[terminal evidence truncated]', 'utf8');
+  const prefixBytes = COORDINATION_TERMINAL_EVIDENCE_MAX_BYTES - suffix.byteLength - 3;
+  return bytes.subarray(0, prefixBytes).toString('utf8') + suffix.toString('utf8');
+}
+
 export function coordinationCompletionCommit(
   work: AsyncWorkRecord,
   result: string | AsyncWorkTerminalResult,
@@ -133,6 +145,7 @@ export function coordinationCompletionCommit(
     residentBinding: destination.residentBinding,
     residentInstanceId: destination.residentInstanceId,
     authorityReference: destination.authorityReference,
+    terminalEvidence: boundedTerminalEvidence(terminal.receiptText),
     terminalText: terminal.resultText,
     artifacts,
   });

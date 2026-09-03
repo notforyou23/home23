@@ -80,6 +80,7 @@ test("resident completion sender retries transient coordinator loss before ackno
     residentBinding: "jerry",
     residentInstanceId: "home23-jerry-harness",
     authorityReference: "resident:jerry",
+    terminalEvidence: "[Sub-agent complete] done",
     terminalText: "done",
     artifacts: Object.freeze([]),
   };
