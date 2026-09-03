@@ -159,6 +159,7 @@ export function createCanonicalMessageRecorder(
         conversationId: message.conversationId,
         channelId: message.channelId,
         messageId: message.id,
+        createdAt: message.createdAt,
         ...(message.provenance.workId === null
           ? {}
           : { workId: message.provenance.workId }),

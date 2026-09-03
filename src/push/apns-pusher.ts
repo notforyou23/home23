@@ -1,5 +1,8 @@
 import type { ApnsClient } from './apns-client.js';
-import type { ConnectedAgentsDeliveryStore } from './connected-agents-delivery-store.js';
+import type {
+  ConnectedAgentsDeliveryPosition,
+  ConnectedAgentsDeliveryStore,
+} from './connected-agents-delivery-store.js';
 import type { DeviceRegistry } from './device-registry.js';
 import type {
   DeviceRegistration,
@@ -30,6 +33,22 @@ export interface QueryTerminalNotificationReceipt {
   pending: string[];
 }
 
+export interface ConnectedAgentsMessageNotification {
+  conversationId: string;
+  channelId: string;
+  messageId: string;
+  createdAt: string;
+  workId?: string;
+  agent?: string;
+  displayName?: string;
+}
+
+interface ConnectedAgentsQueuedDelivery {
+  input: ConnectedAgentsMessageNotification;
+  resolve(): void;
+  reject(error: unknown): void;
+}
+
 interface ApnsPusherOptions {
   queryTimeoutMs?: number;
   queryMaxConcurrency?: number;
@@ -51,6 +70,10 @@ export class ApnsPusher {
   private readonly connectedAgentsMaximumAttempts: number;
   private readonly connectedAgentsRetryDelaysMs: readonly number[];
   private readonly connectedAgentsDeliveries = new Map<string, Promise<void>>();
+  private readonly connectedAgentsQueue: ConnectedAgentsQueuedDelivery[] = [];
+  private readonly connectedAgentsDrainWaiters: Array<() => void> = [];
+  private connectedAgentsQueueRunning = false;
+  private connectedAgentsQueueBlocked: unknown;
 
   constructor(
     private client: ApnsClient,
@@ -103,6 +126,75 @@ export class ApnsPusher {
       });
     this.connectedAgentsDeliveries.set(key, delivery);
     return delivery;
+  }
+
+  private connectedAgentsPosition(
+    input: ConnectedAgentsMessageNotification,
+  ): ConnectedAgentsDeliveryPosition {
+    return Object.freeze({
+      created_at: input.createdAt,
+      message_id: input.messageId,
+    });
+  }
+
+  private scheduleConnectedAgentsDelivery(
+    input: ConnectedAgentsMessageNotification,
+  ): Promise<void> {
+    const delivery = new Promise<void>((resolve, reject) => {
+      this.connectedAgentsQueue.push({ input: { ...input }, resolve, reject });
+    });
+    if (!this.connectedAgentsQueueRunning) {
+      this.connectedAgentsQueueRunning = true;
+      setImmediate(() => { void this.runConnectedAgentsQueue(); });
+    }
+    return delivery;
+  }
+
+  private async runConnectedAgentsQueue(): Promise<void> {
+    while (this.connectedAgentsQueue.length > 0) {
+      const queued = this.connectedAgentsQueue.shift()!;
+      if (this.connectedAgentsQueueBlocked !== undefined) {
+        queued.reject(this.connectedAgentsQueueBlocked);
+        continue;
+      }
+      try {
+        await this.processConnectedAgentsMessage(queued.input);
+        queued.resolve();
+      } catch (error) {
+        // A storage/infrastructure failure must not allow a later Message to
+        // advance the durable checkpoint past this gap. Restart reconciliation
+        // will retry from the last completed canonical Message.
+        this.connectedAgentsQueueBlocked = error;
+        queued.reject(error);
+      }
+    }
+    this.connectedAgentsQueueRunning = false;
+    this.connectedAgentsDrainWaiters.splice(0).forEach(resolve => resolve());
+  }
+
+  private async processConnectedAgentsMessage(
+    input: ConnectedAgentsMessageNotification,
+  ): Promise<void> {
+    const store = this.connectedAgentsDeliveryStore;
+    if (!store) throw new Error('connected_agents_delivery_store_unavailable');
+    const position = this.connectedAgentsPosition(input);
+    store.initializeCheckpoint(null);
+    if (!store.isAfterCheckpoint(position)) return;
+    const devices = this.registry.lookupConnectedAgentsDevices()
+      .filter((device) => this.connectedAgentsRegistrationIsCurrent(device));
+    const outcomes = await Promise.allSettled(
+      devices.map(device => this.connectedAgentsDelivery(input, device)),
+    );
+    const failures = outcomes.filter(
+      (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
+    );
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures.map(failure => failure.reason),
+        'connected_agents_notification_delivery_failed',
+      );
+    }
+    store.advanceCheckpoint(position);
   }
 
   private async deliverConnectedAgentsMessage(
@@ -212,29 +304,29 @@ export class ApnsPusher {
    * Wake devices for a canonical assistant Message that is already durable.
    * The notification is intentionally content-free; the Message API is truth.
    */
-  async notifyConnectedAgentsMessage(input: {
-    conversationId: string;
-    channelId: string;
-    messageId: string;
-    workId?: string;
-    agent?: string;
-    displayName?: string;
-  }): Promise<void> {
-    const devices = this.registry.lookupConnectedAgentsDevices()
-      .filter((device) => this.connectedAgentsRegistrationIsCurrent(device));
-    if (devices.length === 0) return;
-    const outcomes = await Promise.allSettled(
-      devices.map(device => this.connectedAgentsDelivery(input, device)),
-    );
-    const failures = outcomes.filter(
-      (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
-    );
-    if (failures.length > 0) {
-      throw new AggregateError(
-        failures.map(failure => failure.reason),
-        'connected_agents_notification_delivery_failed',
-      );
+  notifyConnectedAgentsMessage(input: ConnectedAgentsMessageNotification): Promise<void> {
+    return this.scheduleConnectedAgentsDelivery(input);
+  }
+
+  /** Queue a canonical startup snapshot before accepting later live deliveries. */
+  reconcileConnectedAgentsMessages(
+    messages: readonly ConnectedAgentsMessageNotification[],
+  ): Promise<void> {
+    const ordered = [...messages].sort((left, right) =>
+      left.createdAt.localeCompare(right.createdAt)
+      || left.messageId.localeCompare(right.messageId));
+    const deliveries = ordered.map(message => this.scheduleConnectedAgentsDelivery(message));
+    return Promise.all(deliveries).then(() => undefined);
+  }
+
+  /** Graceful shutdown waits only for already-queued durable delivery work. */
+  drainConnectedAgentsDeliveries(): Promise<void> {
+    if (!this.connectedAgentsQueueRunning && this.connectedAgentsQueue.length === 0) {
+      return Promise.resolve();
     }
+    return new Promise<void>((resolve) => {
+      this.connectedAgentsDrainWaiters.push(resolve);
+    });
   }
 
   private async withQuerySendSlot<T>(task: () => Promise<T>): Promise<T> {

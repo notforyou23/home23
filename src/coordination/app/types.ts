@@ -93,6 +93,7 @@ export interface CoordinationDeviceNotificationPort {
     conversationId: string;
     channelId: string;
     messageId: string;
+    createdAt: string;
     workId?: string;
     agent?: string;
     displayName?: string;

@@ -148,6 +148,7 @@ test("canonical push registers the authenticated device and wakes on the durable
     requestId: `req_${suffix}`,
     correlationId: `cor_${suffix}`,
   });
+  assert.equal(deliveryCount, 0, "durable Message recording must return before receipt I/O begins");
   await delivery;
   assert.deepEqual(deliveredPayload, {
     aps: {
@@ -262,12 +263,42 @@ test("canonical push durably retries and duplicate recovery repairs a missing de
     conversationId: message.conversationId,
     channelId: message.channelId,
     messageId: message.id,
+    createdAt: message.createdAt,
     workId: message.provenance.workId!,
     displayName: message.author.displayName,
   });
   assert.equal(attempts, 3, "durable success must suppress restart replay");
 
-  const invalidMessageId = "msg_0198d95f-6c00-7000-8000-000000000912";
+  const pendingMessageId = "msg_0198d95f-6c00-7000-8000-000000000913";
+  store.begin({
+    messageId: pendingMessageId,
+    deviceId: `dev_${suffix}`,
+    bundleId: "com.regina6.home23.canary",
+    maximumAttempts: 3,
+  });
+  await restartedPusher.reconcileConnectedAgentsMessages([
+    {
+      conversationId: message.conversationId,
+      channelId: message.channelId,
+      messageId: "msg_0198d95f-6c00-7000-8000-000000000914",
+      createdAt: "2026-09-02T12:00:03.000Z",
+      displayName: message.author.displayName,
+    },
+    {
+      conversationId: message.conversationId,
+      channelId: message.channelId,
+      messageId: pendingMessageId,
+      createdAt: "2026-09-02T12:00:02.000Z",
+      displayName: message.author.displayName,
+    },
+  ]);
+  assert.equal(attempts, 5, "startup recovery must resume pending and missing receipts in order");
+  assert.deepEqual(reopened.checkpoint(), {
+    created_at: "2026-09-02T12:00:03.000Z",
+    message_id: "msg_0198d95f-6c00-7000-8000-000000000914",
+  });
+
+  const invalidMessageId = "msg_0198d95f-6c00-7000-8000-000000000915";
   const invalidPusher = new ApnsPusher({
     send: async () => ({ status: 410 }),
   } as any, registry, "Home23", {
@@ -278,6 +309,7 @@ test("canonical push durably retries and duplicate recovery repairs a missing de
     conversationId: message.conversationId,
     channelId: message.channelId,
     messageId: invalidMessageId,
+    createdAt: "2026-09-02T12:00:04.000Z",
     displayName: message.author.displayName,
   });
   assert.equal(reopened.snapshot().find(

@@ -85,7 +85,10 @@ import {
 } from "../epochs/index.js";
 import type { AuthorityCapability } from "../import/index.js";
 import { ApnsClient } from "../../push/apns-client.js";
-import { ApnsPusher } from "../../push/apns-pusher.js";
+import {
+  ApnsPusher,
+  type ConnectedAgentsMessageNotification,
+} from "../../push/apns-pusher.js";
 import { ConnectedAgentsDeliveryStore } from "../../push/connected-agents-delivery-store.js";
 import { ConnectedAgentsNotificationService } from "../../push/connected-agents.js";
 import { DeviceRegistry } from "../../push/device-registry.js";
@@ -467,30 +470,122 @@ export function createCoordinationProcess(
   const notificationRegistry = notificationConfiguration?.enabled === true
     ? new DeviceRegistry(notificationConfiguration.registryPath)
     : undefined;
-  const deviceNotifications = notificationClient && notificationRegistry
+  const connectedAgentsDeliveryStore = notificationConfiguration?.enabled === true
+    ? new ConnectedAgentsDeliveryStore(
+        `${notificationConfiguration.registryPath}.connected-agents-delivery-receipts`,
+      )
+    : undefined;
+  const notificationPusher = notificationClient && notificationRegistry && connectedAgentsDeliveryStore
+    ? new ApnsPusher(notificationClient, notificationRegistry, "Home23", {
+        connectedAgentsDeliveryStore,
+        connectedAgentsRegistrationIsCurrent: (registration) => {
+          if (!registration.coordination_device_id ||
+              !registration.coordination_session_id) return false;
+          return database.readOne<{ current: number }>(
+            `SELECT 1 AS current
+             FROM client_sessions session
+             JOIN devices device ON device.id = session.device_id
+             WHERE session.id = ? AND session.device_id = ?
+               AND session.state = 'active' AND device.status = 'active'`,
+            registration.coordination_session_id,
+            registration.coordination_device_id,
+          )?.current === 1;
+        },
+      })
+    : undefined;
+  const deviceNotifications = notificationPusher && notificationRegistry
     ? new ConnectedAgentsNotificationService(
         notificationRegistry,
-        new ApnsPusher(notificationClient, notificationRegistry, "Home23", {
-          connectedAgentsDeliveryStore: new ConnectedAgentsDeliveryStore(
-            `${notificationConfiguration!.registryPath}.connected-agents-delivery-receipts`,
-          ),
-          connectedAgentsRegistrationIsCurrent: (registration) => {
-            if (!registration.coordination_device_id ||
-                !registration.coordination_session_id) return false;
-            return database.readOne<{ current: number }>(
-              `SELECT 1 AS current
-               FROM client_sessions session
-               JOIN devices device ON device.id = session.device_id
-               WHERE session.id = ? AND session.device_id = ?
-                 AND session.state = 'active' AND device.status = 'active'`,
-              registration.coordination_session_id,
-              registration.coordination_device_id,
-            )?.current === 1;
-          },
-        }),
+        notificationPusher,
         notificationConfiguration!.apns.bundle_id,
       )
     : undefined;
+  const prepareConnectedAgentsNotificationRecovery = ():
+  readonly ConnectedAgentsMessageNotification[] => {
+    if (!connectedAgentsDeliveryStore || !notificationPusher) return Object.freeze([]);
+    let checkpoint = connectedAgentsDeliveryStore.checkpoint();
+    if (checkpoint === undefined) {
+      const latest = database.readOne<{
+        messageId: string;
+        createdAt: string;
+      }>(
+        `SELECT m.id AS messageId, m.created_at AS createdAt
+         FROM messages m
+         WHERE m.author_kind = 'bot' AND m.kind = 'result'
+         ORDER BY m.created_at DESC, m.id DESC LIMIT 1`,
+      );
+      let baseline = latest
+        ? { created_at: latest.createdAt, message_id: latest.messageId }
+        : null;
+      // A pre-checkpoint receipt means a prior process already began the new
+      // delivery protocol. Start immediately before its earliest Message so a
+      // release upgrade resumes it without waking on unrelated old history.
+      const receiptMessageIds = [...new Set(
+        connectedAgentsDeliveryStore.snapshot().map(receipt => receipt.message_id),
+      )];
+      if (receiptMessageIds.length > 0) {
+        const earliest = database.readOne<{ messageId: string; createdAt: string }>(
+          `SELECT id AS messageId, created_at AS createdAt FROM messages
+           WHERE id IN (${receiptMessageIds.map(() => "?").join(",")})
+             AND author_kind = 'bot' AND kind = 'result'
+           ORDER BY created_at ASC, id ASC LIMIT 1`,
+          ...receiptMessageIds,
+        );
+        if (earliest) {
+          const predecessor = database.readOne<{ messageId: string; createdAt: string }>(
+            `SELECT id AS messageId, created_at AS createdAt FROM messages
+             WHERE author_kind = 'bot' AND kind = 'result'
+               AND (created_at < ? OR (created_at = ? AND id < ?))
+             ORDER BY created_at DESC, id DESC LIMIT 1`,
+            earliest.createdAt,
+            earliest.createdAt,
+            earliest.messageId,
+          );
+          baseline = predecessor
+            ? { created_at: predecessor.createdAt, message_id: predecessor.messageId }
+            : null;
+        }
+      }
+      checkpoint = connectedAgentsDeliveryStore.initializeCheckpoint(baseline);
+    }
+    const parameters: Array<string> = [];
+    const afterCheckpoint = checkpoint === null
+      ? ""
+      : ` AND (m.created_at > ? OR (m.created_at = ? AND m.id > ?))`;
+    if (checkpoint !== null) {
+      parameters.push(checkpoint.created_at, checkpoint.created_at, checkpoint.message_id);
+    }
+    const rows = database.readAll<{
+      conversationId: string;
+      channelId: string;
+      messageId: string;
+      createdAt: string;
+      workId: string | null;
+      displayName: string;
+    }>(
+      `SELECT h.id AS conversationId, m.channel_id AS channelId,
+              m.id AS messageId, m.created_at AS createdAt,
+              m.work_id AS workId, m.author_display_name AS displayName
+       FROM messages m
+       JOIN conversation_handles h ON h.channel_id = m.channel_id
+       WHERE m.author_kind = 'bot' AND m.kind = 'result'
+         AND m.stored_visibility = 'visible'
+         AND NOT EXISTS (
+           SELECT 1 FROM messages tombstone
+           WHERE tombstone.tombstones_message_id = m.id
+         )${afterCheckpoint}
+       ORDER BY m.created_at ASC, m.id ASC`,
+      ...parameters,
+    );
+    return Object.freeze(rows.map(row => Object.freeze({
+      conversationId: row.conversationId,
+      channelId: row.channelId,
+      messageId: row.messageId,
+      createdAt: row.createdAt,
+      ...(row.workId === null ? {} : { workId: row.workId }),
+      displayName: row.displayName,
+    })));
+  };
   const notificationCapabilityAvailable = () => deviceNotifications !== undefined;
   let attachmentService: ReturnType<typeof createDurableAttachmentService> | undefined;
   let attachmentStore: LocalArtifactStore | undefined;
@@ -597,8 +692,13 @@ export function createCoordinationProcess(
     },
   }, ...(notificationClient === undefined ? [] : [{
     name: "connected-agents-apns",
-    drain: async () => undefined,
-    close: async () => notificationClient.close(),
+    drain: async () => {
+      await notificationPusher?.drainConnectedAgentsDeliveries();
+    },
+    close: async () => {
+      await notificationPusher?.drainConnectedAgentsDeliveries();
+      notificationClient.close();
+    },
   }]), {
     name: "coordination-database",
     drain: async () => undefined,
@@ -888,12 +988,14 @@ export function createCoordinationProcess(
   return Object.freeze({
     start: async () => {
       let address: Awaited<ReturnType<typeof server.start>>;
+      let notificationRecovery: readonly ConnectedAgentsMessageNotification[] = [];
       try {
         workControl.recoverCancellations({
           requestId: generateCoordinationId("request"),
           correlationId: generateCoordinationId("correlation"),
         });
         await initializeAttachments();
+        notificationRecovery = prepareConnectedAgentsNotificationRecovery();
         address = await server.start();
       } catch (error) {
         await server.drain().catch(() => undefined);
@@ -906,6 +1008,15 @@ export function createCoordinationProcess(
           RESIDENT_ATTESTATION_INTERVAL_MS,
         );
         residentAttestationTimer.unref?.();
+      }
+      if (notificationPusher && notificationRecovery.length > 0) {
+        void notificationPusher.reconcileConnectedAgentsMessages(notificationRecovery)
+          .catch((error: unknown) => {
+            console.error(
+              "[home23-coordination] Connected Agents notification recovery failed:",
+              error instanceof Error ? error.message : error,
+            );
+          });
       }
       if (messageSubmission) {
         void messageSubmission.recoverResidentWork().then((receipt) => {
