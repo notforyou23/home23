@@ -72,10 +72,30 @@ export async function handleWorkCompletion(
   try {
     const current = deps.registry.get(work.workId) ?? work;
     if (current.deliveredAt) return;
-    const receiptText = typeof result === 'string' ? result : result.receiptText;
+    let durableResult = result;
+    if (current.originChatId.startsWith('coordination:')) {
+      if (current.terminalResult) {
+        durableResult = current.terminalResult;
+      } else if (typeof result !== 'string') {
+        // Compatibility for a terminal record written by an older producer:
+        // persist the exact result before the first transport attempt.
+        deps.registry.update(current.workId, { terminalResult: result });
+        durableResult = result;
+      } else {
+        // A diagnostic receipt is never a canonical assistant answer.
+        durableResult = {
+          receiptText: result,
+          resultText: null,
+          artifacts: Object.freeze([]),
+        };
+      }
+    }
+    const receiptText = typeof durableResult === 'string'
+      ? durableResult
+      : durableResult.receiptText;
 
     if (current.originChatId.startsWith('coordination:')) {
-      const route = await deliverWorkReceipt(current, result, deps.sinks);
+      const route = await deliverWorkReceipt(current, durableResult, deps.sinks);
       // Missing or invalid producer wiring is recoverable. Leave deliveredAt
       // empty so boot reconciliation can retry after the bridge is restored.
       if (route !== 'coordination') return;

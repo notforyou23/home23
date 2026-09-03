@@ -8,6 +8,7 @@ import {
   resolveArtifactActor,
   SqliteArtifactRepository,
   type ArtifactParticipantDirectory,
+  type AttachmentSummary,
   type LocalArtifactStoreOptions,
 } from "../artifacts/index.js";
 import { openCoordinationDatabase } from "../db/index.js";
@@ -29,8 +30,8 @@ import { createUnreadService, SqliteUnreadRepository } from "../unread/index.js"
 import { createProductWorkControl, createWorkService, M11MessageProvenanceAuthority } from "../work/index.js";
 import { generateCoordinationId } from "../ids/index.js";
 import { HOUSE_RESIDENT_CAPABILITIES } from "../house-resident-capabilities.js";
-import { createResidentCredential } from "../resident-protocol/index.js";
-import { ResidentUdsClient } from "../transport/uds/index.js";
+import { createResidentCredential, ResidentProtocolError, type ResidentCredential } from "../resident-protocol/index.js";
+import { ResidentUdsClient, ResidentUdsServer } from "../transport/uds/index.js";
 import { ResidentCoordinationAdapter, ResidentUdsAgentPort, createM11ResidentCoordinationPort } from "../../coordination-adapter/index.js";
 import {
   createCanonicalMessageRecorder,
@@ -41,6 +42,12 @@ import { SqliteDirectMessageContext } from "./direct-message-context.js";
 import { createOnDemandBotRuntime } from "./on-demand-bot-runtime.js";
 import { createGroupChannelMessageService } from "./channel-message.js";
 import { SqliteGroupChannelMessageContext } from "./channel-message-context.js";
+import {
+  COORDINATION_COMPLETION_PATH,
+  COORDINATION_UDS_SERVER_INSTANCE_ID,
+  createSpecialistCompletionConsumer,
+  type SpecialistCompletionResidentTarget,
+} from "./specialist-completion.js";
 import { createSqliteActivityReadService } from "./activity-read.js";
 import {
   ChannelCoordinatorError,
@@ -650,6 +657,9 @@ export function createCoordinationProcess(
     },
   };
   const residentAgents = new Map<string, ResidentUdsAgentPort>();
+  const completionCredentials: ResidentCredential[] = [];
+  const completionTargets = new Map<string, SpecialistCompletionResidentTarget>();
+  let completionIngress: ResidentUdsServer | undefined;
   const residentInitializers: Array<readonly [string, () => Promise<void>]> = [];
   const residentAttestationFailures = new Set<string>();
   let residentAttestationTimer: NodeJS.Timeout | undefined;
@@ -681,6 +691,10 @@ export function createCoordinationProcess(
     await residentAttestationRun;
   };
   const lifecycle = createCoordinationLifecycle([{
+    name: "coordination-completion-ingress",
+    drain: async () => completionIngress?.close(),
+    close: async () => completionIngress?.close(),
+  }, {
     name: "resident-attestation",
     drain: stopResidentAttestations,
     close: stopResidentAttestations,
@@ -713,6 +727,8 @@ export function createCoordinationProcess(
   };
   let messageSubmission: RecoveringMessageSubmission | undefined;
   let composedChannelCoordinator: CoordinationChannelCoordinatorPort | undefined;
+  let directMessageContext: SqliteDirectMessageContext | undefined;
+  let groupMessageContext: SqliteGroupChannelMessageContext | undefined;
   if (isCanonicalMessagesAuthority(currentAuthority("messages"))) {
     const residentTargets = new Map<string, DirectMessageResidentTarget>();
     for (const residentSlug of ["jerry", "forrest"] as const) {
@@ -730,6 +746,7 @@ export function createCoordinationProcess(
         rootKey: residentRootKey,
       });
       residentRootKey.fill(0);
+      completionCredentials.push(credential);
       const client = new ResidentUdsClient({
         socketPath: residentConfig.socketPath,
         serverInstanceId: residentConfig.serverInstanceId,
@@ -814,6 +831,13 @@ export function createCoordinationProcess(
               correlationId: binding.correlationId,
             }),
           });
+      completionTargets.set(residentSlug, Object.freeze({
+        serverInstanceId: residentConfig.serverInstanceId,
+        clientInstanceId: residentConfig.clientInstanceId,
+        keyVersion: residentConfig.keyVersion,
+        context: residentContext,
+        ...(artifactPromotion === undefined ? {} : { artifactPromotion }),
+      }));
       residentTargets.set(residentSlug, Object.freeze({
         resident: new ResidentCoordinationAdapter(
           residentAgent,
@@ -855,29 +879,33 @@ export function createCoordinationProcess(
               inputAttachmentRoot: attachmentConfiguration!.rootDirectory,
             }),
       });
+      const materializeAttachments = async (
+        attachmentSummaries: readonly AttachmentSummary[],
+      ) => {
+        const store = attachmentStore;
+        if (!store) throw new MessagingError("invalid_relation");
+        return Object.freeze(await Promise.all(attachmentSummaries.map(async (summary) => {
+          const reference = await store.verifiedLocalReference(summary);
+          return Object.freeze({
+            artifactId: reference.id,
+            name: reference.name,
+            contentType: reference.contentType,
+            byteCount: reference.byteCount,
+            sha256: reference.sha256,
+            path: reference.path,
+          });
+        })));
+      };
+      directMessageContext = new SqliteDirectMessageContext(
+        database,
+        messages,
+        materializeAttachments,
+      );
       const directSubmission = createDirectMessageSubmissionService({
         messages,
         communications,
         ...(deviceNotifications === undefined ? {} : { notifications: deviceNotifications }),
-        context: new SqliteDirectMessageContext(
-          database,
-          messages,
-          async (attachmentSummaries) => {
-            const store = attachmentStore;
-            if (!store) throw new MessagingError("invalid_relation");
-            return Object.freeze(await Promise.all(attachmentSummaries.map(async (summary) => {
-              const reference = await store.verifiedLocalReference(summary);
-              return Object.freeze({
-                artifactId: reference.id,
-                name: reference.name,
-                contentType: reference.contentType,
-                byteCount: reference.byteCount,
-                sha256: reference.sha256,
-                path: reference.path,
-              });
-            })));
-          },
-        ),
+        context: directMessageContext,
         work,
         leases,
         resolveResident,
@@ -888,6 +916,11 @@ export function createCoordinationProcess(
       });
       const groupSubmission = config.flags["coordination.channels.enabled"] === true
         ? (() => {
+            groupMessageContext = new SqliteGroupChannelMessageContext(
+              database,
+              messages,
+              materializeAttachments,
+            );
             const coordinator = createChannelCoordinator({
               database,
               rounds: createRoundService({ database, generateId: generateCoordinationId }),
@@ -897,7 +930,7 @@ export function createCoordinationProcess(
             });
             return createGroupChannelMessageService({
               messages,
-              context: new SqliteGroupChannelMessageContext(database, messages),
+              context: groupMessageContext,
               coordinator,
               work,
               leases,
@@ -960,6 +993,36 @@ export function createCoordinationProcess(
       });
     }
   }
+  if (messageSubmission && directMessageContext && completionCredentials.length > 0) {
+    const consumeCompletion = createSpecialistCompletionConsumer({
+      work,
+      leases,
+      messages,
+      directContext: directMessageContext,
+      ...(groupMessageContext === undefined ? {} : { groupContext: groupMessageContext }),
+      resolveResident: (residentBinding) => completionTargets.get(residentBinding),
+      assertAuthority: () => {
+        if (!isCanonicalMessagesAuthority(currentAuthority("messages"))) {
+          throw new MessagingError("authority_unavailable");
+        }
+      },
+      recordMessage: createCanonicalMessageRecorder(communications, deviceNotifications),
+      beginWork: lifecycle.beginWork,
+    });
+    completionIngress = new ResidentUdsServer({
+      socketPath: config.socketPath,
+      serverInstanceId: COORDINATION_UDS_SERVER_INSTANCE_ID,
+      credentials: completionCredentials,
+      validateFence: (fence, request) =>
+        request.method === "POST" && request.path === COORDINATION_COMPLETION_PATH && fence === null,
+      handleRequest: (request, context) => {
+        if (request.method !== "POST" || request.path !== COORDINATION_COMPLETION_PATH) {
+          throw new ResidentProtocolError("request_invalid", "unknown coordination operation");
+        }
+        return consumeCompletion(request.payload, context);
+      },
+    });
+  }
   const application = createCoordinationApplication({
     flags: config.flags,
     services: {
@@ -995,6 +1058,7 @@ export function createCoordinationProcess(
           correlationId: generateCoordinationId("correlation"),
         });
         await initializeAttachments();
+        await completionIngress?.start();
         notificationRecovery = prepareConnectedAgentsNotificationRecovery();
         address = await server.start();
       } catch (error) {

@@ -155,6 +155,8 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`    return {`);
   lines.push(`      HOME23_COORDINATION_RESIDENT_ENABLED: 'true',`);
   lines.push(`      HOME23_COORDINATION_RESIDENT_RUNTIME_ROOT: coordinationDeployment.releaseRoot,`);
+  lines.push(`      HOME23_COORDINATION_SOCKET_PATH: path.join(coordinationDeployment.runtimeDir, 'coord.sock'),`);
+  lines.push(`      HOME23_COORDINATION_SERVER_INSTANCE_ID: 'home23-coordination',`);
   lines.push(`      HOME23_COORDINATION_RESIDENT_SOCKET_PATH: resident.socketPath,`);
   lines.push(`      HOME23_COORDINATION_RESIDENT_SERVER_INSTANCE_ID: 'home23-' + agentName + '-harness',`);
   lines.push(`      HOME23_COORDINATION_RESIDENT_CLIENT_INSTANCE_ID: 'home23-' + agentName + '-harness',`);
@@ -166,6 +168,8 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`    && homeConfig.coordination?.flags?.['coordination.resident.' + agentName + '.enabled'] === true;`);
   lines.push(`  return {`);
   lines.push(`    HOME23_COORDINATION_RESIDENT_ENABLED: String(enabled),`);
+  lines.push(`    HOME23_COORDINATION_SOCKET_PATH: path.join(coordinationRuntimeDir, 'coord.sock'),`);
+  lines.push(`    HOME23_COORDINATION_SERVER_INSTANCE_ID: 'home23-coordination',`);
   lines.push(`    HOME23_COORDINATION_RESIDENT_SOCKET_PATH: path.join(coordinationSocketDir, 'resident-' + agentName + '.sock'),`);
   lines.push(`    HOME23_COORDINATION_RESIDENT_SERVER_INSTANCE_ID: 'home23-' + agentName + '-harness',`);
   lines.push(`    HOME23_COORDINATION_RESIDENT_CLIENT_INSTANCE_ID: 'home23-' + agentName + '-harness',`);

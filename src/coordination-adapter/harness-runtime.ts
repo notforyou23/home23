@@ -3,6 +3,7 @@ import type { AgentLoop } from "../agent/loop.js";
 import type { ModelAliases } from "../agent/model-resolution.js";
 import { resolve } from "node:path";
 import { createResidentCredential } from "../coordination/resident-protocol/index.js";
+import { ResidentUdsClient } from "../coordination/transport/uds/index.js";
 import { ResidentTurnUdsServer } from "./resident-uds.js";
 
 const KEY=/^[a-f0-9]{64}$/i;
@@ -19,6 +20,13 @@ export async function startResidentCoordinationHarness(input:{agent:Pick<AgentLo
   const key=env.HOME23_COORDINATION_RESIDENT_KEY??"";if(!KEY.test(key))throw new Error("HOME23_COORDINATION_RESIDENT_KEY must contain exactly 32 bytes of hex");
   const home23Root=env.HOME23_ROOT;const attachmentRoot=env.HOME23_COORDINATION_ATTACHMENTS_ROOT??(home23Root?resolve(home23Root,"instances",".house","coordination","attachments"):undefined);
   const rootKey=Buffer.from(key,"hex");const credential=createResidentCredential({residentSlug:slug,role:"resident",instanceId:clientInstanceId,keyVersion:Number(rawVersion),rootKey});rootKey.fill(0);
-  const server=new ResidentTurnUdsServer({socketPath,serverInstanceId,credential,residentSlug:slug,agent:input.agent,history:input.history,modelAliases:input.modelAliases??{},...(attachmentRoot?{attachmentRoot}:{})});
+  const coordinatorSocketPath=env.HOME23_COORDINATION_SOCKET_PATH;
+  const coordinatorServerInstanceId=env.HOME23_COORDINATION_SERVER_INSTANCE_ID??"home23-coordination";
+  if(coordinatorSocketPath!==undefined&&(!coordinatorSocketPath.startsWith("/")||coordinatorSocketPath.includes("\0")))throw new Error("HOME23_COORDINATION_SOCKET_PATH must be absolute");
+  if(!/^[A-Za-z0-9._:-]{1,128}$/.test(coordinatorServerInstanceId))throw new Error("HOME23_COORDINATION_SERVER_INSTANCE_ID is invalid");
+  const completionClient=coordinatorSocketPath
+    ? new ResidentUdsClient({socketPath:coordinatorSocketPath,serverInstanceId:coordinatorServerInstanceId,credential})
+    : undefined;
+  const server=new ResidentTurnUdsServer({socketPath,serverInstanceId,credential,residentSlug:slug,agent:input.agent,history:input.history,modelAliases:input.modelAliases??{},...(attachmentRoot?{attachmentRoot}:{}),...(completionClient?{coordinationCompletionClient:completionClient}:{})});
   await server.start();return server;
 }

@@ -288,12 +288,13 @@ export const spawnAgentTool: ToolDefinition = {
         });
 
         if (work && ctx.onWorkTerminal) {
-          ctx.workRegistry!.complete(work.workId, 'completed');
-          ctx.onWorkTerminal(work.workId, {
+          const terminalResult = {
             receiptText: text,
             resultText: result.text.trim() ? result.text : null,
             ...(result.media && result.media.length > 0 ? { artifacts: result.media } : {}),
-          });
+          };
+          ctx.workRegistry!.complete(work.workId, 'completed', undefined, terminalResult);
+          ctx.onWorkTerminal(work.workId, terminalResult);
         } else if (ctx.conversationHistory) {
           ctx.conversationHistory.append(ctx.chatId, [{
             role: 'assistant' as const,
@@ -311,12 +312,13 @@ export const spawnAgentTool: ToolDefinition = {
           sourceEventType: 'runtime.subagent_failed',
         });
         if (work && ctx.onWorkTerminal) {
-          ctx.workRegistry!.complete(work.workId, 'failed', message);
-          ctx.onWorkTerminal(work.workId, {
+          const terminalResult = {
             receiptText: text,
             resultText: null,
             artifacts: Object.freeze([]),
-          });
+          };
+          ctx.workRegistry!.complete(work.workId, 'failed', message, terminalResult);
+          ctx.onWorkTerminal(work.workId, terminalResult);
         } else if (ctx.conversationHistory) {
           ctx.conversationHistory.append(ctx.chatId, [{
             role: 'assistant' as const,

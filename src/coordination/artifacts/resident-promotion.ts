@@ -121,10 +121,11 @@ function exactArtifact(value: MediaAttachment): ExactResidentArtifact {
 
 function stableKey(
   binding: ResidentLeaseBinding,
+  resultIdentity: string | undefined,
   ordinal: number,
   artifact: ExactResidentArtifact,
 ): string {
-  return [
+  const values = [
     binding.workId,
     binding.holderPrincipalId,
     String(ordinal),
@@ -132,7 +133,9 @@ function stableKey(
     artifact.name,
     artifact.contentType,
     String(artifact.byteCount),
-  ].join("\0");
+  ];
+  if (resultIdentity !== undefined) values.splice(2, 0, resultIdentity);
+  return values.join("\0");
 }
 
 async function *fileChunks(handle: FileHandle, expectedBytes: number): AsyncGenerator<Uint8Array> {
@@ -230,9 +233,10 @@ export function createResidentArtifactPromotionPort(input: {
   };
 
   return Object.freeze({
-    async promote({ binding, media }: {
+    async promote({ binding, media, resultIdentity }: {
       binding: ResidentLeaseBinding;
       media: MediaAttachment[];
+      resultIdentity?: string;
     }) {
       if (!Array.isArray(media) || media.length < 1 || media.length > MAX_RESIDENT_ARTIFACTS) {
         throw new ArtifactError("storage_conflict");
@@ -255,16 +259,33 @@ export function createResidentArtifactPromotionPort(input: {
       const artifactIds: string[] = [];
       for (const [ordinal, raw] of media.entries()) {
         const artifact = exactArtifact(raw);
-        const identity = stableKey(binding, ordinal, artifact);
+        if (resultIdentity !== undefined && (
+          !/^aw_[a-z0-9]+_[a-f0-9]{4}$/u.test(resultIdentity) ||
+          resultIdentity.includes("\0")
+        )) {
+          throw new ArtifactError("storage_conflict");
+        }
+        const identity = stableKey(binding, resultIdentity, ordinal, artifact);
         const artifactId = formatStableUuidV7(identity, work.createdAt);
-        const keyDigest = sha256(
-          "home23-resident-artifact-idempotency-key-v1\0",
-          binding.workId,
-          "\0",
-          binding.holderPrincipalId,
-          "\0",
-          String(ordinal),
-        );
+        const keyDigest = resultIdentity === undefined
+          ? sha256(
+              "home23-resident-artifact-idempotency-key-v1\0",
+              binding.workId,
+              "\0",
+              binding.holderPrincipalId,
+              "\0",
+              String(ordinal),
+            )
+          : sha256(
+              "home23-resident-artifact-idempotency-key-v1\0",
+              binding.workId,
+              "\0",
+              binding.holderPrincipalId,
+              "\0",
+              resultIdentity,
+              "\0",
+              String(ordinal),
+            );
         const requestDigest = sha256("home23-resident-artifact-request-v1\0", identity);
         let handle: FileHandle | undefined;
         try {

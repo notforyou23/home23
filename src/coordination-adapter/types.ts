@@ -125,6 +125,8 @@ export interface ResidentArtifactPromotionPort {
   promote(input: Readonly<{
     binding: ResidentLeaseBinding;
     media: NonNullable<AgentResponse['media']>;
+    /** Separates additional terminal results from the parent turn's artifacts. */
+    resultIdentity?: string;
   }>): Promise<readonly string[]>;
 }
 

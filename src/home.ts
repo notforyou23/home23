@@ -1073,6 +1073,10 @@ async function main(): Promise<void> {
           .catch((err) => console.warn(`[work] iOS push failed: ${err instanceof Error ? err.message : String(err)}`));
       };
     }
+    if (residentCoordinationHarness) {
+      sinks.commitCoordinationCompletion = (input) =>
+        residentCoordinationHarness.commitCoordinationCompletion(input);
+    }
     return sinks;
   };
 
@@ -1170,18 +1174,26 @@ async function main(): Promise<void> {
       console.log(`[work] boot reconcile: ${reconciled.interrupted.length} interrupted, ${reconciled.backfilled.length} backfilled, ${reconciled.needsDelivery.length} to deliver`);
     }
     for (const work of reconciled.needsDelivery) {
-      let text = `[Async work ${work.status}] ${work.label}\n(work ${work.workId})`;
+      let terminal: string | import('./work/types.js').AsyncWorkTerminalResult =
+        work.terminalResult ?? {
+          receiptText: `[Async work ${work.status}] ${work.label}\n(work ${work.workId})`,
+          resultText: null,
+          artifacts: Object.freeze([]),
+        };
       if (work.resultHandle.type === 'coding_job' && codingBridge) {
         const job = codingBridge.getJob(work.resultHandle.jobId);
         const receipt = codingBridge.getReceipt(work.resultHandle.jobId);
-        if (job) text = codingReceiptText(work, job, receipt);
+        if (job) terminal = codingReceiptText(work, job, receipt);
       }
       if (work.status === 'interrupted') {
-        text = `[Async work interrupted] ${work.label} — the harness restarted while this was running.` +
+        const receiptText = `[Async work interrupted] ${work.label} — the harness restarted while this was running.` +
           (work.resultHandle.type === 'coding_job' ? ` Job ${work.resultHandle.jobId} may be resumable via coding_continue.` : '') +
           `\n(work ${work.workId})`;
+        terminal = work.originChatId.startsWith('coordination:')
+          ? { receiptText, resultText: null, artifacts: Object.freeze([]) }
+          : receiptText;
       }
-      void handleWorkCompletion(work, text, completionDeps());
+      void handleWorkCompletion(work, terminal, completionDeps());
     }
   } catch (err) {
     console.warn(`[work] boot reconcile failed: ${err instanceof Error ? err.message : String(err)}`);

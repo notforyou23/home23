@@ -83,6 +83,12 @@ export interface AsyncWorkRecord {
   progressSummary?: string;
   resultHandle: WorkResultHandle;
   verification: VerificationStatus;
+  /**
+   * Exact terminal payload persisted before detached delivery is attempted.
+   * Canonical coordination recovery must use this value; it must never
+   * reconstruct visible chat text from a diagnostic receipt.
+   */
+  terminalResult?: AsyncWorkTerminalResult;
   /** Set once detached delivery lands, or atomically at inline terminal commit. */
   deliveredAt?: string;
   error?: string;

@@ -13,6 +13,7 @@ import {
   type AsyncWorkKind,
   type AsyncWorkRecord,
   type AsyncWorkStatus,
+  type AsyncWorkTerminalResult,
   type CoordinationWorkDestination,
   type WorkResultHandle,
 } from './types.js';
@@ -117,8 +118,13 @@ export class WorkRegistry {
    * Terminal transition, exactly once. A second call returns the record
    * unchanged — recovery and live listeners can race safely.
    */
-  complete(workId: string, status: AsyncWorkStatus, error?: string): AsyncWorkRecord {
-    return this.completeTerminal(workId, status, error, false);
+  complete(
+    workId: string,
+    status: AsyncWorkStatus,
+    error?: string,
+    terminalResult?: AsyncWorkTerminalResult,
+  ): AsyncWorkRecord {
+    return this.completeTerminal(workId, status, error, false, terminalResult);
   }
 
   /**
@@ -135,6 +141,7 @@ export class WorkRegistry {
     status: AsyncWorkStatus,
     error: string | undefined,
     deliveredInline: boolean,
+    terminalResult?: AsyncWorkTerminalResult,
   ): AsyncWorkRecord {
     const current = this.store.read(workId);
     if (!current) throw new Error(`unknown work id: ${workId}`);
@@ -143,9 +150,29 @@ export class WorkRegistry {
       status === 'failed' && this.cancelRequested.has(workId) ? 'cancelled' : status;
     this.cancelRequested.delete(workId);
     const finishedAt = new Date().toISOString();
+    const durableTerminal = current.coordinationDestination
+      ? mapped === 'completed'
+        ? terminalResult
+        : {
+            receiptText: terminalResult?.receiptText ??
+              `[Async work ${mapped}] ${current.label}${error ? `\n\nError: ${error}` : ''}\n(work ${current.workId})`,
+            resultText: null,
+            artifacts: Object.freeze([]),
+          }
+      : terminalResult;
     const done = this.store.update(workId, {
       status: mapped,
       finishedAt,
+      ...(durableTerminal
+        ? {
+            terminalResult: Object.freeze({
+              receiptText: durableTerminal.receiptText,
+              resultText: durableTerminal.resultText,
+              artifacts: Object.freeze((durableTerminal.artifacts ?? []).map((artifact) =>
+                Object.freeze({ ...artifact }))),
+            }),
+          }
+        : {}),
       ...(deliveredInline ? { deliveredAt: finishedAt } : {}),
       ...(error ? { error } : {}),
     })!;

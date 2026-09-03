@@ -10,6 +10,7 @@ import type {
   CoordinationTurnOrigin,
 } from "../agent/types.js";
 import type { MediaAttachment } from "../types.js";
+import type { CoordinationCompletionCommit } from "../work/receipt-delivery.js";
 import {
   detectReturnedArtifactContentType,
   isReturnedArtifactContentType,
@@ -43,6 +44,7 @@ import type {
 const START = "/internal/v1/turns/start";
 const COMPLETED_RECOVERY_START = "/internal/v1/turns/recover-completed";
 const MODEL_CATALOG = "/internal/v1/models";
+const COORDINATION_COMPLETION = "/internal/v1/coordination-completions";
 const MAX_INSTRUCTION_BYTES = 262_144;
 const RESULT_RETRY_MS = 100;
 const MAX_REQUEST_DEADLINE_MS = 25_000;
@@ -688,6 +690,8 @@ export interface ResidentTurnUdsServerOptions {
   residentSlug:string;agent:Pick<AgentLoop,"runWithTurn"|"stop"|"isRunning"|"getModel"|"getProvider"|"getReasoningEffort"> & { getWorkspacePath?: () => string };history:ConversationHistory;
   modelAliases?:ModelAliases;
   attachmentRoot?:string;
+  /** Reverse, resident-authenticated connection to the canonical coordinator. */
+  coordinationCompletionClient?:ResidentUdsClient;
   now?:()=>number;
 }
 
@@ -742,6 +746,7 @@ export class ResidentTurnUdsServer {
   readonly #store:TurnStore; readonly #responses=new Map<string,Promise<AgentResponse>>(); readonly #server:ResidentUdsServer;
   readonly #modelAliases:Readonly<ModelAliases>;
   readonly #returnedArtifactRoots:readonly {path:string;generatedImageOnly:boolean}[];
+  readonly #completionAbort=new AbortController();
   constructor(private readonly options:ResidentTurnUdsServerOptions){
     this.#store=new TurnStore(options.history);
     this.#modelAliases=residentModelAliases(options.modelAliases,options.agent);
@@ -756,7 +761,67 @@ export class ResidentTurnUdsServer {
     this.#server=new ResidentUdsServer({socketPath:options.socketPath,serverInstanceId:options.serverInstanceId,credentials:[options.credential],now:options.now,validateFence:(fence,request)=>request.method==="POST"&&(request.path===START||request.path===COMPLETED_RECOVERY_START)?typeof fence==="string"&&fence.length<512:true,handleRequest:(request,context)=>this.#handle(request,context.signal)});
   }
   start(){return this.#server.start();}
-  close(){return this.#server.close();}
+  async close(){
+    this.#completionAbort.abort(new ResidentProtocolError("request_cancelled","resident harness is closing"));
+    const results=await Promise.allSettled([
+      this.#server.close(),
+      this.options.coordinationCompletionClient?.close()??Promise.resolve(),
+    ]);
+    const failed=results.find((result):result is PromiseRejectedResult=>result.status==="rejected");
+    if(failed)throw failed.reason;
+  }
+  /** Awaited by the durable async-work pipeline before it stamps deliveredAt. */
+  async commitCoordinationCompletion(input:CoordinationCompletionCommit):Promise<void>{
+    const client=this.options.coordinationCompletionClient;
+    if(!client)throw new ResidentProtocolError("connection_lost","coordination completion transport is unavailable",{retryable:true});
+    if(input.residentBinding!==this.options.residentSlug||input.residentInstanceId!==this.options.serverInstanceId){
+      throw new ResidentProtocolError("fence_invalid","coordination completion belongs to a different resident");
+    }
+    const artifacts=await residentReturnedArtifacts(input.artifacts,this.#returnedArtifactRoots);
+    const payload:JsonValue={
+      parentWorkId:input.parentWorkId,childWorkId:input.childWorkId,childKind:input.childKind,
+      childResultHandle:{...input.childResultHandle},status:input.status,finishedAt:input.finishedAt,
+      channelId:input.channelId,conversationId:input.conversationId,
+      originMessageId:input.originMessageId,targetPrincipalId:input.targetPrincipalId,
+      residentBinding:input.residentBinding,residentInstanceId:input.residentInstanceId,
+      authorityReference:input.authorityReference,terminalText:input.terminalText,
+      artifacts:returnedArtifactsJson(artifacts),
+    };
+    let retryDelayMs=100;
+    for(;;){
+      this.#completionAbort.signal.throwIfAborted();
+      try{
+        const now=this.options.now?.()??Date.now();
+        const response=await client.request({
+          method:"POST",path:COORDINATION_COMPLETION,payload,
+          deadlineAtMs:now+MAX_REQUEST_DEADLINE_MS,
+          signal:this.#completionAbort.signal,
+        });
+        const acknowledgement=object(response.payload);
+        if(acknowledgement.accepted!==true||acknowledgement.childWorkId!==input.childWorkId){
+          throw new ResidentProtocolError("request_invalid","coordination completion acknowledgement differs");
+        }
+        return;
+      }catch(error){
+        const retryable=error instanceof ResidentProtocolError&&(
+          error.retryable||error.code==="connection_lost"||error.code==="deadline_exceeded"||
+          error.code==="server_busy"||error.code==="request_rate_limited"
+        );
+        if(!retryable||this.#completionAbort.signal.aborted)throw error;
+        await new Promise<void>((resolve,reject)=>{
+          const onAbort=()=>{
+            clearTimeout(timer);reject(this.#completionAbort.signal.reason);
+          };
+          const timer=setTimeout(()=>{
+            this.#completionAbort.signal.removeEventListener("abort",onAbort);
+            resolve();
+          },retryDelayMs);timer.unref();
+          this.#completionAbort.signal.addEventListener("abort",onAbort,{once:true});
+        });
+        retryDelayMs=Math.min(retryDelayMs*2,5_000);
+      }
+    }
+  }
   async #handle(request:ResidentRequestFrame,signal:AbortSignal):Promise<JsonValue>{
     if(request.method==="GET"&&request.path===MODEL_CATALOG){
       const aliases=this.#modelAliases;

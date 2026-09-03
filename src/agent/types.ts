@@ -197,7 +197,12 @@ export interface WorkRegistryRef {
   }): { workId: string; originChatId: string };
   get(workId: string): AsyncWorkRecord | undefined;
   list(filter?: { originChatId?: string; active?: boolean; limit?: number }): AsyncWorkRecord[];
-  complete(workId: string, status: 'completed' | 'failed' | 'cancelled' | 'interrupted', error?: string): unknown;
+  complete(
+    workId: string,
+    status: 'completed' | 'failed' | 'cancelled' | 'interrupted',
+    error?: string,
+    terminalResult?: AsyncWorkTerminalResult,
+  ): unknown;
   completeInline(workId: string, status: 'completed' | 'failed' | 'cancelled' | 'interrupted', error?: string): unknown;
 }
 

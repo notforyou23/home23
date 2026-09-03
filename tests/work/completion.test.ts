@@ -123,13 +123,21 @@ test('canonical specialist result is committed without synthetic history and onl
       authorityReference: 'resident:jerry',
     },
   });
-  const done = registry.complete(rec.workId, 'completed');
-  await handleWorkCompletion(done, {
+  const terminal = {
     receiptText: '[Sub-agent complete] hidden', resultText: 'Canonical answer.',
-  }, deps);
+  };
+  const done = registry.complete(rec.workId, 'completed', undefined, terminal);
+  assert.deepEqual(registry.get(rec.workId)!.terminalResult, {
+    ...terminal,
+    artifacts: [],
+  });
+  // Recovery may only have a generic receipt in hand; the stored terminal
+  // payload remains the canonical delivery source.
+  await handleWorkCompletion(done, '[Async work completed] generic receipt', deps);
   assert.equal(calls.history.length, 0);
   assert.equal(calls.push.length, 0);
   assert.equal(commits.length, 1);
+  assert.equal((commits[0] as { terminalText: string }).terminalText, 'Canonical answer.');
   assert.ok(registry.get(rec.workId)!.deliveredAt);
 });
 

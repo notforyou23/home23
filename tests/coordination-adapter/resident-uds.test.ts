@@ -15,11 +15,80 @@ import {
 } from "../../src/coordination-adapter/index.js";
 import { createResidentCredential, ResidentProtocolError } from "../../src/coordination/resident-protocol/index.js";
 import { ResidentUdsClient } from "../../src/coordination/transport/uds/index.js";
+import type { CoordinationCompletionCommit } from "../../src/work/receipt-delivery.js";
 
 const REQUEST_ID = "req_0198d95f-6c00-7000-8000-0000000000c1";
 const CORRELATION_ID = "cor_0198d95f-6c00-7000-8000-0000000000c2";
 const RESUME_REQUEST_ID = "req_0198d95f-6c00-7000-8000-0000000000d1";
 const RESUME_CORRELATION_ID = "cor_0198d95f-6c00-7000-8000-0000000000d2";
+
+test("resident completion sender retries transient coordinator loss before acknowledging delivery", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "home23-resident-completion-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  let requests = 0;
+  let closed = 0;
+  const completionClient = {
+    async request() {
+      requests += 1;
+      if (requests < 3) {
+        throw new ResidentProtocolError("connection_lost", "coordinator restarting", { retryable: true });
+      }
+      return { payload: { accepted: true, childWorkId: "aw_mf0abcd_1a2b" } };
+    },
+    async close() { closed += 1; },
+  } as unknown as ResidentUdsClient;
+  const credential = createResidentCredential({
+    rootKey: Buffer.alloc(32, 0x41),
+    residentSlug: "jerry",
+    role: "resident",
+    instanceId: "home23-jerry-harness",
+    keyVersion: 1,
+  });
+  const history = new ConversationHistory(join(root, "conversations"), 400_000, "jerry");
+  const agent: Pick<AgentLoop,
+    "runWithTurn" | "stop" | "isRunning" | "getModel" | "getProvider" | "getReasoningEffort"> = {
+    getModel: () => "fixture-model",
+    getProvider: () => "fixture-provider",
+    getReasoningEffort: () => "medium",
+    runWithTurn: async () => { throw new Error("turn execution is not expected"); },
+    stop: () => ({ stopped: false, chatIds: [] }),
+    isRunning: () => false,
+  };
+  const server = new ResidentTurnUdsServer({
+    socketPath: join(root, "resident.sock"),
+    serverInstanceId: "home23-jerry-harness",
+    credential,
+    residentSlug: "jerry",
+    agent,
+    history,
+    coordinationCompletionClient: completionClient,
+  });
+  const commit: CoordinationCompletionCommit = {
+    parentWorkId: "wrk_0198d95f-6c00-7000-8000-0000000000e1",
+    childWorkId: "aw_mf0abcd_1a2b",
+    childKind: "subagent",
+    childResultHandle: {
+      type: "subagent_chat",
+      chatId: "subagent:coordination:fixture:1a2b",
+    },
+    status: "completed",
+    finishedAt: "2026-09-03T12:00:00.000Z",
+    channelId: "chn_0198d95f-6c00-7000-8000-0000000000e2",
+    conversationId: "cnv_0198d95f-6c00-7000-8000-0000000000e3",
+    originMessageId: "msg_0198d95f-6c00-7000-8000-0000000000e4",
+    targetPrincipalId: "bot_0198d95f-6c00-7000-8000-0000000000e5",
+    residentBinding: "jerry",
+    residentInstanceId: "home23-jerry-harness",
+    authorityReference: "resident:jerry",
+    terminalText: "done",
+    artifacts: Object.freeze([]),
+  };
+
+  await server.commitCoordinationCompletion(commit);
+  assert.equal(requests, 3);
+  await server.close();
+  assert.equal(closed, 1);
+});
 
 test("resident start renews transient connection attempts while the harness comes online", async () => {
   let startAttempts = 0;
