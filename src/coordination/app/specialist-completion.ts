@@ -19,7 +19,7 @@ import {
   CommunicationEventConflictError,
   stableCommunicationEventId,
 } from "../communications/index.js";
-import { LeaseError } from "../leases/index.js";
+import { LeaseError, type LeaseBindingInput } from "../leases/index.js";
 import type { MessageProjection } from "../messages/index.js";
 import type { WorkRecord } from "../work/index.js";
 import type { DirectMessageContextPort, DirectMessageMessagePort } from "./direct-message.js";
@@ -45,7 +45,7 @@ export interface SpecialistCompletionResidentTarget {
 export interface SpecialistCompletionConsumerOptions {
   work: { get(workId: string): WorkRecord | null };
   leases: {
-    assertCompleted(binding: ResidentLeaseBinding): Readonly<{
+    assertCompleted(binding: LeaseBindingInput): Readonly<{
       work: WorkRecord;
       attempt: Readonly<{
         id: string;
@@ -353,18 +353,17 @@ export function createSpecialistCompletionConsumer(
         }
         throw new ResidentProtocolError("fence_invalid", "specialist completion parent Work did not succeed");
       }
-      const binding: ResidentLeaseBinding = Object.freeze({
+      const leaseBinding: LeaseBindingInput = Object.freeze({
         workId: parent.id,
         attemptId: input.attemptId,
         leaseId: input.leaseId,
         holderPrincipalId: input.targetPrincipalId,
         holderInstanceId: input.residentInstanceId,
-        authorityReference: input.authorityReference,
         fencingToken: input.fencingToken,
         requestId: request.requestId,
         correlationId: request.correlationId,
       });
-      const completed = options.leases.assertCompleted(binding);
+      const completed = options.leases.assertCompleted(leaseBinding);
       if (
         completed.work.id !== parent.id || completed.work.currentAttemptId !== input.attemptId ||
         completed.attempt.id !== input.attemptId || completed.lease.id !== input.leaseId ||
@@ -375,6 +374,10 @@ export function createSpecialistCompletionConsumer(
       ) {
         throw new ResidentProtocolError("fence_invalid", "specialist completion lease differs");
       }
+      const binding: ResidentLeaseBinding = Object.freeze({
+        ...leaseBinding,
+        authorityReference: input.authorityReference,
+      });
 
       let targetDisplayName: string;
       if (parent.kind === "resident_turn") {

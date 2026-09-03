@@ -94,10 +94,12 @@ function fixture() {
   const recorded: MessageProjection[] = [];
   const terminalEvents: unknown[] = [];
   let released = 0;
+  const validatedLeaseBindings: Record<string, unknown>[] = [];
   const options: SpecialistCompletionConsumerOptions = {
     work: { get: (workId) => workId === parentWorkId ? parentWork : null },
     leases: {
       assertCompleted: (binding) => {
+        validatedLeaseBindings.push(binding);
         if (
           binding.attemptId !== `att_${suffix}` || binding.leaseId !== `lse_${suffix}` ||
           binding.fencingToken !== 1
@@ -108,7 +110,7 @@ function fixture() {
             id: binding.attemptId,
             holderPrincipalId: binding.holderPrincipalId,
             holderInstanceId: binding.holderInstanceId,
-            authorityReference: binding.authorityReference,
+            authorityReference: "resident:jerry",
             fencingToken: binding.fencingToken,
           },
           lease: { id: binding.leaseId },
@@ -199,6 +201,7 @@ function fixture() {
   };
   return {
     consume: createSpecialistCompletionConsumer(options), sent, recorded, terminalEvents,
+    validatedLeaseBindings,
     released: () => released,
   };
 }
@@ -237,6 +240,18 @@ test("specialist completion rejects the stale spawning Attempt", async () => {
   );
   assert.equal(state.sent.length, 0);
   assert.equal(state.terminalEvents.length, 0);
+});
+
+test("specialist completion validates the exact Core Lease binding shape", async () => {
+  const state = fixture();
+  await state.consume(payload(), request);
+  assert.deepEqual(
+    Object.keys(state.validatedLeaseBindings[0]!).sort(),
+    [
+      "attemptId", "correlationId", "fencingToken", "holderInstanceId",
+      "holderPrincipalId", "leaseId", "requestId", "workId",
+    ],
+  );
 });
 
 test("failed specialist completion records Inspector evidence without a Message", async () => {
