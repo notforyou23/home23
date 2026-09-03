@@ -17,7 +17,7 @@
 
 **Lane 5 (continuity office)** — isolated, unwired. 24/24.
 
-**Lane 4** — Canary review clean; fixture regen against `2828398f…` in flight.
+**Lane 4 (Canary)** — first-slice isolated proofs Approved (`1cfa30d8-6cf6-49ff-b86b-821cbe2f1ef3`). Consumes pack `2828398f…` at Canary `b8963271`. Pair with this branch `0452343a`. No device install.
 
 ## Not wired yet
 
