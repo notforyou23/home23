@@ -1,0 +1,62 @@
+{
+  "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+  "correlationId": "cor_0198d95f-6c00-7000-8000-0000000000a2",
+  "resume": "strictly_after",
+  "clientCursor": {"throughSequence": 132},
+  "events": [
+    {
+      "id": "evt_0198d95f-6c00-7000-8000-0000000000e3",
+      "sequence": 133,
+      "schemaVersion": 1,
+      "type": "message.appended",
+      "durability": "durable",
+      "aggregate": {"kind": "message", "id": "msg_0198d95f-6c00-7000-8000-0000000000c3", "version": 1},
+      "channelId": "chn_0198d95f-6c00-7000-8000-000000000021",
+      "actorPrincipalId": "bot_0198d95f-6c00-7000-8000-000000000011",
+      "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+      "correlationId": "cor_0198d95f-6c00-7000-8000-0000000000a2",
+      "createdAt": "2026-08-24T16:10:45.000Z",
+      "payload": {
+        "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000031",
+        "messageId": "msg_0198d95f-6c00-7000-8000-0000000000c3",
+        "channelSequence": 5
+      }
+    },
+    {
+      "id": "evt_0198d95f-6c00-7000-8000-0000000000e4",
+      "sequence": 134,
+      "schemaVersion": 1,
+      "type": "message.appended",
+      "durability": "durable",
+      "aggregate": {"kind": "message", "id": "msg_0198d95f-6c00-7000-8000-0000000000c4", "version": 1},
+      "channelId": "chn_0198d95f-6c00-7000-8000-000000000021",
+      "actorPrincipalId": "bot_0198d95f-6c00-7000-8000-000000000011",
+      "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+      "correlationId": "cor_0198d95f-6c00-7000-8000-0000000000a2",
+      "createdAt": "2026-08-24T16:18:00.000Z",
+      "payload": {
+        "conversationId": "cnv_0198d95f-6c00-7000-8000-000000000031",
+        "messageId": "msg_0198d95f-6c00-7000-8000-0000000000c4",
+        "channelSequence": 6
+      }
+    }
+  ],
+  "reconnect": {
+    "afterSequence": 132,
+    "returnedSequences": [133, 134],
+    "loss": false,
+    "duplication": false
+  },
+  "duplicate": {"presentedSequence": 132, "decision": "duplicate"},
+  "gap": {
+    "error": {
+      "code": "cursor_expired",
+      "message": "The event cursor is no longer resumable. Bootstrap is required.",
+      "retryable": true,
+      "requestId": "req_0198d95f-6c00-7000-8000-0000000000a1",
+      "details": {"bootstrapRequired": true, "requestedAfterSequence": 12, "retentionFloorSequence": 100, "currentSequence": 134}
+    }
+  },
+  "staleOverwrite": "prohibited",
+  "throughEventSequence": 134
+}

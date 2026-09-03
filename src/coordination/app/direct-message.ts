@@ -18,6 +18,7 @@ import type { JsonValue } from "../db/index.js";
 import type { MessageProjection, MessageTurnSelection } from "../messages/index.js";
 import type { ContextManifestInput, WorkRecord } from "../work/index.js";
 import { isCanonicalMessagesAuthority, type AuthorityEpoch } from "../epochs/index.js";
+import { workResultIdempotencyKey } from "../contracts/resident-presence.js";
 import type {
   CoordinationDeviceNotificationPort,
   CoordinationLeasePort,
@@ -417,7 +418,7 @@ export function createDirectMessageSubmissionService(options: {
         }),
         channelId: input.prepared.channelId, messageId: responseMessageId(input.work.id),
         authorPrincipalId: input.prepared.targetPrincipalId,
-        idempotencyKey: `work-result:${input.work.id}`, kind: "result",
+        idempotencyKey: workResultIdempotencyKey(input.work.id), kind: "result",
         text: resultText, mentions: [], clientMessageId: null,
         attachmentIds: terminalReceipt.artifactIds,
         replyToMessageId: input.originMessageId, tombstonesMessageId: null,
