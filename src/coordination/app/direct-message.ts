@@ -175,7 +175,7 @@ export function createCanonicalMessageRecorder(
       return;
     }
     const rawMessage = exactMessage(message);
-    await communications.append({
+    const recorded = await communications.append({
       event: {
         eventId: stableCommunicationEventId(
           `canonical-message:${message.id}:${input.kind}`,
@@ -213,7 +213,7 @@ export function createCanonicalMessageRecorder(
       requestId: input.requestId,
       correlationId: input.correlationId,
     });
-    notify();
+    if (recorded.outcome === "inserted") notify();
   };
 }
 

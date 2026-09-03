@@ -25,10 +25,12 @@ test("canonical push registers the authenticated device and wakes on the durable
     now: () => new Date("2026-09-02T12:00:00.000Z"),
   });
   let deliveredPayload: PushPayload | undefined;
+  let deliveryCount = 0;
   let noteDelivery: (() => void) | undefined;
   const delivery = new Promise<void>((resolve) => { noteDelivery = resolve; });
   const pusher = new ApnsPusher({
     send: async (_token: string, payload: PushPayload) => {
+      deliveryCount += 1;
       deliveredPayload = payload;
       noteDelivery?.();
       return { status: 200 };
@@ -129,7 +131,14 @@ test("canonical push registers the authenticated device and wakes on the durable
     attachments: [],
     visibility: "visible",
   };
-  await createCanonicalMessageRecorder(undefined, notifications)({
+  let communicationAppendCount = 0;
+  const recordMessage = createCanonicalMessageRecorder({
+    append: async () => ({
+      outcome: communicationAppendCount++ === 0 ? "inserted" : "duplicate",
+      event: {},
+    }),
+  } as any, notifications);
+  await recordMessage({
     message,
     kind: "assistant_message_committed",
     requestId: `req_${suffix}`,
@@ -151,4 +160,13 @@ test("canonical push registers the authenticated device and wakes on the durable
   });
   assert.equal(JSON.stringify(deliveredPayload).includes("private answer"), false);
   assert.equal(JSON.stringify(deliveredPayload).includes("receipt"), false);
+
+  await recordMessage({
+    message,
+    kind: "assistant_message_committed",
+    requestId: `req_${suffix}`,
+    correlationId: `cor_${suffix}`,
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(deliveryCount, 1, "replayed message evidence must not duplicate notifications");
 });
