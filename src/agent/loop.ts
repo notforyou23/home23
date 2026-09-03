@@ -31,6 +31,8 @@ import type { CompactionManager } from './compaction.js';
 import type { MediaAttachment } from '../types.js';
 import { getCodexCredentials, getCodexHeaders } from './codex-auth.js';
 import { assembleContext } from './context-assembly.js';
+import { isSpeakingConversationRun, isForegroundConversation } from './foreground-admission.js';
+import { collectForegroundTurnContext } from './foreground-work-view.js';
 import {
   isRetrievalEvalTurn,
   retrievalEvalDisclosure,
@@ -377,6 +379,7 @@ export class AgentLoop {
   private compaction: CompactionManager | null;
   private cacheDiagnostics?: CacheDiagnosticsConfig;
   private activeRuns = new Map<string, Map<string, AbortController>>();
+  private speakingRuns = new Map<string, Set<string>>();
   private activeTurnIds = new Map<string, Set<string>>();
   private authenticatedUserTurns = new Map<string, { chatId: string; userText: string }>();
   private terminalTurnOverrides = new Map<string, TerminalTurnOutcome>();
@@ -813,7 +816,12 @@ export class AgentLoop {
     if (!this.terminalTurnOverrides.has(key)) this.terminalTurnOverrides.set(key, override);
   }
 
-  private registerActiveRun(chatId: string, turnId: string, ac: AbortController): void {
+  private registerActiveRun(
+    chatId: string,
+    turnId: string,
+    ac: AbortController,
+    opts: { speaking?: boolean } = {},
+  ): void {
     let runs = this.activeRuns.get(chatId);
     if (!runs) {
       runs = new Map();
@@ -826,6 +834,14 @@ export class AgentLoop {
       this.activeTurnIds.set(chatId, turnIds);
     }
     turnIds.add(turnId);
+    if (opts.speaking !== false) {
+      let speaking = this.speakingRuns.get(chatId);
+      if (!speaking) {
+        speaking = new Set();
+        this.speakingRuns.set(chatId, speaking);
+      }
+      speaking.add(turnId);
+    }
   }
 
   private unregisterActiveRun(chatId: string, turnId: string, ac: AbortController): void {
@@ -836,6 +852,9 @@ export class AgentLoop {
     const turnIds = this.activeTurnIds.get(chatId);
     turnIds?.delete(turnId);
     if (turnIds?.size === 0) this.activeTurnIds.delete(chatId);
+    const speaking = this.speakingRuns.get(chatId);
+    speaking?.delete(turnId);
+    if (speaking?.size === 0) this.speakingRuns.delete(chatId);
   }
 
   private isExactRunActive(chatId: string, turnId: string, ac: AbortController): boolean {
@@ -858,9 +877,12 @@ export class AgentLoop {
     if (onEvent) onEvent({ type: 'status', status: 'operator_steer', message: text });
   }
 
-  /** Check if the agent is currently running for a given chatId. */
+  /**
+   * Conversation speaking lock. Coordination / Work turns do not set this.
+   * Abort still finds those turns via stop(chatId, turnId).
+   */
   isRunning(chatId: string): boolean {
-    return (this.activeRuns.get(chatId)?.size ?? 0) > 0;
+    return (this.speakingRuns.get(chatId)?.size ?? 0) > 0;
   }
 
   /** List all active run chatIds. */
@@ -1046,7 +1068,12 @@ export class AgentLoop {
           });
         }
       }, firstTokenTimeoutMs);
-      this.registerActiveRun(chatId, turnId, ac);
+      this.registerActiveRun(chatId, turnId, ac, {
+        speaking: isSpeakingConversationRun({
+          chatId,
+          coordinationOrigin: opts.coordinationOrigin,
+        }),
+      });
       this.turnStore.writeStart(chatId, turnId, model, provider, {
         deadline_at,
         activity_deadline_at,
@@ -1203,7 +1230,12 @@ export class AgentLoop {
     // Abort controller for this run — checked between iterations, passed to API calls
     const ac = turnRuntime?.abortController ?? new AbortController();
     const activeTurnId = turnRuntime?.turnId ?? `raw:${newTurnId()}`;
-    this.registerActiveRun(chatId, activeTurnId, ac);
+    this.registerActiveRun(chatId, activeTurnId, ac, {
+      speaking: isSpeakingConversationRun({
+        chatId,
+        coordinationOrigin: turnRuntime?.coordinationOrigin,
+      }),
+    });
 
     // Per-run context copy — avoids races between concurrent turns and makes
     // situational-awareness reads use the exact turn client and abort signal.
@@ -1401,6 +1433,17 @@ export class AgentLoop {
 
         if (assembly.block) {
           rawSystemPrompt += `\n\n${assembly.block}`;
+        }
+
+        if (isForegroundConversation({
+          chatId,
+          coordinationOrigin: turnRuntime?.coordinationOrigin,
+        })) {
+          rawSystemPrompt += `\n\n${collectForegroundTurnContext({
+            chatId,
+            workRegistry: this.toolContext.workRegistry ?? null,
+            relationshipLedger: this.relationshipLedger,
+          })}`;
         }
 
         let relationshipCount = 0;

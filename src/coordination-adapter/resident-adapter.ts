@@ -774,4 +774,12 @@ export class ResidentCoordinationAdapter {
     active.cancelling = true;
     return (await this.agent.stop(active.chatId, active.turnId)).stopped;
   }
+
+  /**
+   * In-flight Work ids only. Not a second Work registry — callers that need
+   * status must use the existing Work projection.
+   */
+  listActiveWorkIds(): readonly string[] {
+    return Object.freeze([...this.active.keys()]);
+  }
 }
