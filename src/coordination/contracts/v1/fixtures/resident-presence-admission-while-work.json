@@ -69,5 +69,13 @@
     "status": "running",
     "version": 3
   },
+  "foregroundWork": {
+    "id": "wrk_0198d95f-6c00-7000-8000-0000000000d5",
+    "originMessageId": "msg_0198d95f-6c00-7000-8000-0000000000c2",
+    "targetPrincipalId": "bot_0198d95f-6c00-7000-8000-000000000011",
+    "roundId": null,
+    "status": "queued",
+    "version": 1
+  },
   "throughEventSequence": 132
 }

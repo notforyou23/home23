@@ -347,10 +347,10 @@
         {"$ref": "#/$defs/fixtureHeader"},
         {
           "type": "object",
-          "required": ["residentBinding", "parityResidentBindings", "channelId", "conversationId", "accountableResidentPrincipalId", "activeWork", "attempt", "lease", "originMessage", "admittedMessage", "workAfterAdmission", "throughEventSequence"],
+          "required": ["residentBinding", "parityResidentBindings", "channelId", "conversationId", "accountableResidentPrincipalId", "activeWork", "attempt", "lease", "originMessage", "admittedMessage", "workAfterAdmission", "foregroundWork", "throughEventSequence"],
           "properties": {
             "residentBinding": {"const": "jerry"},
-            "parityResidentBindings": {"type": "array", "minItems": 2, "items": {"enum": ["jerry", "forrest"]}},
+            "parityResidentBindings": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"enum": ["jerry", "forrest"]}},
             "channelId": {"$ref": "#/$defs/channelId"},
             "conversationId": {"$ref": "#/$defs/conversationId"},
             "accountableResidentPrincipalId": {"$ref": "#/$defs/botId"},
@@ -360,6 +360,7 @@
             "originMessage": {"$ref": "#/$defs/message"},
             "admittedMessage": {"$ref": "#/$defs/message"},
             "workAfterAdmission": {"type": "object", "required": ["id", "status", "version"], "properties": {"id": {"$ref": "#/$defs/workId"}, "status": {"type": "string"}, "version": {"type": "integer", "minimum": 1}}, "additionalProperties": true},
+            "foregroundWork": {"$ref": "#/$defs/residentPresenceWorkIdentity"},
             "throughEventSequence": {"$ref": "#/$defs/eventSequence"}
           },
           "additionalProperties": true

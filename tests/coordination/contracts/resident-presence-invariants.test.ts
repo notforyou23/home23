@@ -25,6 +25,9 @@ const ORIGIN_MESSAGE = "msg_0198d95f-6c00-7000-8000-0000000000c1";
 const ADMITTED_MESSAGE = "msg_0198d95f-6c00-7000-8000-0000000000c2";
 const RESULT_MESSAGE = "msg_0198d95f-6c00-7000-8000-0000000000c4";
 const WORK_ID = "wrk_0198d95f-6c00-7000-8000-0000000000d1";
+const FOREGROUND_WORK_ID = "wrk_0198d95f-6c00-7000-8000-0000000000d5";
+const OBSERVATION_ID = "obs_0198d95f-6c00-7000-8000-0000000000d9";
+const RESULT_EVENT_ID = "evt_0198d95f-6c00-7000-8000-0000000000e4";
 
 interface AdmissionFixture {
   residentBinding: string;
@@ -53,6 +56,14 @@ interface AdmissionFixture {
     provenance: { roundId: string | null; workId: string | null };
   };
   workAfterAdmission: { id: string; status: string; version: number };
+  foregroundWork: {
+    id: string;
+    originMessageId: string;
+    targetPrincipalId: string;
+    roundId: string | null;
+    status: string;
+    version: number;
+  };
 }
 
 interface OneResultFixture {
@@ -102,7 +113,10 @@ interface CursorFixture {
 
 interface ProjectionFixture {
   conversation: { messages: Array<{ id: string; kind: string }>; excludes: string[] };
-  activity: { entries: Array<{ workId: string }>; excludes: string[] };
+  activity: {
+    entries: Array<{ key: string; workId: string; observationId: string | null }>;
+    excludes: string[];
+  };
   forensics: {
     canonicalEvents: Array<{ sequence: number; type: string }>;
     communicationEvents: Array<{ kind: string }>;
@@ -145,6 +159,12 @@ test("a user Message is accepted while resident Work stays running", () => {
   assert.equal(fixture.workAfterAdmission.id, WORK_ID);
   assert.equal(fixture.workAfterAdmission.status, "running");
   assert.equal(fixture.workAfterAdmission.version, fixture.activeWork.version);
+
+  assert.equal(fixture.foregroundWork.id, FOREGROUND_WORK_ID);
+  assert.equal(fixture.foregroundWork.originMessageId, ADMITTED_MESSAGE);
+  assert.equal(fixture.foregroundWork.targetPrincipalId, JERRY);
+  assert.equal(fixture.foregroundWork.roundId, null);
+  assert.notEqual(fixture.foregroundWork.id, fixture.activeWork.id);
 });
 
 test("one terminal Work result is presented once under work-result idempotency", () => {
@@ -215,7 +235,18 @@ test("Conversation, Activity, and Forensics stay separate projections", () => {
     "communicationEvidence",
   ]);
   assert.ok(fixture.activity.entries.every((entry) => entry.workId === WORK_ID));
+  assert.deepEqual(fixture.activity.entries.map((entry) => entry.key), [
+    `work:${OBSERVATION_ID}:progress`,
+    `event:${RESULT_EVENT_ID}:completion`,
+  ]);
+  assert.equal(fixture.activity.entries[0]?.observationId, OBSERVATION_ID);
+  assert.equal(fixture.activity.entries[1]?.observationId, null);
   assert.deepEqual(fixture.activity.excludes, ["messageBodiesAsAuthority"]);
+  const calendarAnswer = fixture.conversation.messages.find((message) => message.id === "msg_0198d95f-6c00-7000-8000-0000000000c3");
+  assert.equal(
+    (calendarAnswer as { provenance?: { workId?: string } } | undefined)?.provenance?.workId,
+    FOREGROUND_WORK_ID,
+  );
   assert.ok(fixture.forensics.canonicalEvents.length >= 1);
   assert.ok(fixture.forensics.communicationEvents.some((event) => event.kind === "user_message_committed"));
   assert.ok(fixture.forensics.communicationEvents.some((event) => event.kind === "assistant_message_committed"));
