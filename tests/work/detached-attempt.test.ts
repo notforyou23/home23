@@ -40,25 +40,63 @@ function makeLock() {
 }
 
 function makeResults() {
-  const messages: Array<{ key: string; text: string | null; workId: string }> = [];
+  const messages: Array<{
+    key: string;
+    text: string | null;
+    workId: string;
+    artifactIds: readonly string[];
+  }> = [];
   return {
     messages,
     async commit(input: {
       workId: string;
       text: string | null;
+      artifactIds?: readonly string[];
       idempotencyKey: string;
     }) {
       const existing = messages.find((row) => row.key === input.idempotencyKey);
       if (existing) {
         return { messageId: `msg_${input.workId.slice(4)}`, replayed: true };
       }
-      messages.push({ key: input.idempotencyKey, text: input.text, workId: input.workId });
+      messages.push({
+        key: input.idempotencyKey,
+        text: input.text,
+        workId: input.workId,
+        artifactIds: [...(input.artifactIds ?? [])],
+      });
       return { messageId: `msg_${input.workId.slice(4)}`, replayed: false };
     },
   };
 }
 
-async function setup(t: { after(fn: () => void): void }) {
+function seedReadyArtifact(
+  database: M11TestDatabase,
+  artifactId: string,
+  originalName: string,
+) {
+  database.raw.prepare(
+    `INSERT INTO artifacts (
+      id, owner_principal_id, state, original_name, declared_content_type,
+      detected_content_type, byte_count, sha256, storage_kind, created_at,
+      expires_at, failed_at, deleted_at, version
+    ) VALUES (?, ?, 'ready', ?, 'text/plain', 'text/plain', 12, ?,
+              'content_addressed', ?, NULL, NULL, NULL, 1)`,
+  ).run(
+    artifactId,
+    BOT_ID,
+    originalName,
+    'c'.repeat(64),
+    AT,
+  );
+}
+
+async function setup(
+  t: { after(fn: () => void): void },
+  options: {
+    runner?: Parameters<typeof createDetachedAttemptPath>[0]['runner'];
+    resolveArtifactIds?: Parameters<typeof createDetachedAttemptPath>[0]['resolveArtifactIds'];
+  } = {},
+) {
   const dir = mkdtempSync(join(tmpdir(), 'detached-attempt-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const database = M11TestDatabase.temporary();
@@ -75,6 +113,7 @@ async function setup(t: { after(fn: () => void): void }) {
   const lock = makeLock();
   const results = makeResults();
   const seenLocks: Array<{ conversation: boolean; attempt: boolean }> = [];
+  let runnerRuns = 0;
   const path = createDetachedAttemptPath({
     registry,
     work,
@@ -82,8 +121,10 @@ async function setup(t: { after(fn: () => void): void }) {
     lock,
     results,
     now: () => new Date(AT),
-    runner: {
+    resolveArtifactIds: options.resolveArtifactIds,
+    runner: options.runner ?? {
       async run(input) {
+        runnerRuns += 1;
         seenLocks.push({
           conversation: conversationRunLockHeld(input.conversationChatId, lock.isRunning),
           attempt: lock.isRunning(input.attemptChatId),
@@ -94,7 +135,18 @@ async function setup(t: { after(fn: () => void): void }) {
       },
     },
   });
-  return { path, lock, results, registry, seenLocks, generateId };
+  return {
+    path,
+    lock,
+    results,
+    registry,
+    seenLocks,
+    generateId,
+    work,
+    leases,
+    database,
+    runnerRuns: () => runnerRuns,
+  };
 }
 
 function dispatchInput(
@@ -199,26 +251,144 @@ test('delegated office still returns one Jerry result on the same Work identity'
   assert.equal(results.messages[0].key, `work-result:${handle.workId}`);
 });
 
-test('cancel stays on the existing Work identity', async (t) => {
-  const { path, registry, generateId } = await setup(t);
-  const handle = path.dispatch(dispatchInput(generateId, {
+test('second dispatch of a terminal Work replays the result and does not start a new Attempt', async (t) => {
+  const ctx = await setup(t);
+  const first = ctx.path.dispatch(dispatchInput(ctx.generateId, {
     idempotencyKey: 'detached-attempt-key-03',
     requestId: fixtureId('request', 42),
     correlationId: fixtureId('correlation', 42),
   }));
-  const stopped: string[] = [];
-  const outcome = path.requestCancel({
-    registry,
-    cancelCodingJob: async () => undefined,
-    stopChat: (chatId) => {
-      stopped.push(chatId);
-      return true;
+  const settled = await first.settled;
+  assert.equal(settled.status, 'completed');
+  assert.equal(ctx.results.messages.length, 1);
+  assert.equal(ctx.runnerRuns(), 1);
+  assert.equal(ctx.work.get(first.workId)?.state, 'succeeded');
+
+  const second = ctx.path.dispatch(dispatchInput(ctx.generateId, {
+    idempotencyKey: 'detached-attempt-key-03',
+    requestId: fixtureId('request', 43),
+    correlationId: fixtureId('correlation', 43),
+  }));
+  const replayed = await second.settled;
+  assert.equal(second.workId, first.workId);
+  assert.equal(second.harnessWorkId, first.harnessWorkId);
+  assert.equal(replayed.replayed, true);
+  assert.equal(replayed.messageId, settled.messageId);
+  assert.equal(replayed.text, 'Canonical Jerry result.');
+  assert.equal(ctx.results.messages.length, 1);
+  assert.equal(ctx.runnerRuns(), 1);
+  assert.equal(ctx.registry.list({}).filter((row) => row.parentWorkId === first.workId).length, 1);
+
+  let restartRuns = 0;
+  const restarted = createDetachedAttemptPath({
+    registry: ctx.registry,
+    work: ctx.work,
+    leases: ctx.leases,
+    lock: ctx.lock,
+    results: ctx.results,
+    now: () => new Date(AT),
+    runner: {
+      async run() {
+        restartRuns += 1;
+        return { text: 'A second Attempt must not run.' };
+      },
     },
+  });
+  const third = restarted.dispatch(dispatchInput(ctx.generateId, {
+    idempotencyKey: 'detached-attempt-key-03',
+    requestId: fixtureId('request', 44),
+    correlationId: fixtureId('correlation', 44),
+  }));
+  const fromDisk = await third.settled;
+  assert.equal(third.workId, first.workId);
+  assert.equal(fromDisk.replayed, true);
+  assert.equal(fromDisk.messageId, settled.messageId);
+  assert.equal(fromDisk.text, 'Canonical Jerry result.');
+  assert.equal(ctx.results.messages.length, 1);
+  assert.equal(restartRuns, 0);
+  assert.equal(ctx.work.get(first.workId)?.state, 'succeeded');
+});
+
+test('artifact-only success still writes one replayable result Message', async (t) => {
+  const artifactId = 'art_0198d95f-6c00-7000-8000-000000000b01';
+  const ctx = await setup(t, {
+    runner: {
+      async run() {
+        return {
+          text: '',
+          artifacts: [{
+            type: 'document',
+            path: artifactId,
+            fileName: 'answer.txt',
+          }],
+        };
+      },
+    },
+  });
+  seedReadyArtifact(ctx.database, artifactId, 'answer.txt');
+  const handle = ctx.path.dispatch(dispatchInput(ctx.generateId, {
+    idempotencyKey: 'detached-attempt-key-04',
+    requestId: fixtureId('request', 45),
+    correlationId: fixtureId('correlation', 45),
+  }));
+  const result = await handle.settled;
+  assert.equal(result.status, 'completed');
+  assert.ok(result.text && result.text.includes('answer.txt'));
+  assert.deepEqual([...result.artifactIds], [artifactId]);
+  assert.equal(ctx.results.messages.length, 1);
+  assert.ok(ctx.results.messages[0].text && ctx.results.messages[0].text.includes('answer.txt'));
+  assert.deepEqual([...ctx.results.messages[0].artifactIds], [artifactId]);
+  assert.ok(result.messageId);
+
+  const harness = ctx.registry.get(handle.harnessWorkId)!;
+  assert.equal(harness.terminalResult?.artifacts?.length, 1);
+  assert.equal(harness.terminalResult?.artifacts?.[0].path, artifactId);
+
+  const replayed = await ctx.path.dispatch(dispatchInput(ctx.generateId, {
+    idempotencyKey: 'detached-attempt-key-04',
+    requestId: fixtureId('request', 46),
+    correlationId: fixtureId('correlation', 46),
+  })).settled;
+  assert.equal(replayed.replayed, true);
+  assert.equal(replayed.messageId, result.messageId);
+  assert.deepEqual([...replayed.artifactIds], [artifactId]);
+  assert.equal(ctx.results.messages.length, 1);
+});
+
+test('requestCancel revokes the lease and terminalizes Work as cancelled', async (t) => {
+  let release!: () => void;
+  let started!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const startedAt = new Promise<void>((resolve) => { started = resolve; });
+  const ctx = await setup(t, {
+    runner: {
+      async run() {
+        started();
+        await gate;
+        return { text: 'cancelled runners must not succeed the Work' };
+      },
+    },
+  });
+  const handle = ctx.path.dispatch(dispatchInput(ctx.generateId, {
+    idempotencyKey: 'detached-attempt-key-05',
+    requestId: fixtureId('request', 47),
+    correlationId: fixtureId('correlation', 47),
+  }));
+  await startedAt;
+  const outcome = ctx.path.requestCancel({
+    registry: ctx.registry,
+    cancelCodingJob: async () => undefined,
+    stopChat: () => true,
   }, handle.harnessWorkId);
-  assert.ok(outcome.status === 'accepted' || outcome.status === 'already_terminal');
-  assert.equal(
-    outcome.status === 'not_found' ? '' : outcome.work.workId,
-    handle.harnessWorkId,
-  );
-  await handle.settled;
+  assert.equal(outcome.status, 'accepted');
+  assert.equal(ctx.work.get(handle.workId)?.state, 'cancelling');
+  assert.equal(ctx.leases.current(handle.workId).attempt.state, 'cancel_requested');
+  release();
+  const result = await handle.settled;
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.messageId, null);
+  assert.equal(ctx.results.messages.length, 0);
+  assert.equal(ctx.work.get(handle.workId)?.state, 'cancelled');
+  assert.equal(ctx.leases.current(handle.workId).attempt.state, 'cancelled');
+  assert.equal(ctx.registry.get(handle.harnessWorkId)?.status, 'cancelled');
 });
