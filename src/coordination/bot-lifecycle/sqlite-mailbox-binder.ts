@@ -503,10 +503,17 @@ export class SqlitePersistentMailboxBinder implements PersistentMailboxBinder {
         `SELECT id FROM works pending
          WHERE pending.target_principal_id = ?
            AND pending.kind IN ('bot_turn', 'channel.bot_turn')
-           AND (pending.state IN ('queued', 'leased', 'running') OR (
+           AND (pending.state IN ('queued', 'leased', 'running', 'cancelling') OR (
              pending.state = 'succeeded' AND NOT EXISTS (
                SELECT 1 FROM messages result
-               WHERE result.work_id = pending.id AND result.kind = 'result'
+               WHERE result.id = 'msg_' || substr(pending.id, 5)
+                 AND result.work_id = pending.id AND result.kind = 'result'
+             ) AND (
+               pending.kind = 'bot_turn' OR NOT EXISTS (
+                 SELECT 1 FROM rounds settled_round
+                 WHERE settled_round.id = pending.round_id
+                   AND settled_round.state IN ('completed', 'failed', 'cancelled')
+               )
              )
            )) LIMIT 1`,
         row.principalId,

@@ -25,6 +25,8 @@ export interface TrustedM11ActivityFact {
   workId: string;
   /** Immutable canonical Work.kind; execution vocabulary must not be inferred from an authority label. */
   workKind: string;
+  /** Canonical target identity classification assembled at the trusted M11 read boundary. */
+  executionAuthoritySystem: "resident_turn" | "bot_turn";
   channelId: string;
   actorPrincipalId: string;
   attemptId: string | null;
@@ -204,15 +206,15 @@ function sourceVersion(fact: TrustedM11ActivityFact): string {
   return `m11:${fact.sourceKind}:${fact.event.id}:v${fact.event.aggregate.version}:f${fact.fencingToken}`;
 }
 
-function authoritySystemForWorkKind(
+function exactAuthoritySystem(
   workKind: string,
+  executionAuthoritySystem: TrustedM11ActivityFact["executionAuthoritySystem"],
 ): ActivityWorkObservationInput["observation"]["authoritySystem"] | null {
-  if (workKind === "bot_turn") return "bot_turn";
-  // Group turns are still executed by a permanent UDS resident; their Work
-  // kind describes Channel orchestration, not a processless Bot runtime.
-  if (workKind === "resident_turn" || workKind === "channel.bot_turn") {
-    return "resident_turn";
-  }
+  if (workKind === "bot_turn" && executionAuthoritySystem === "bot_turn") return "bot_turn";
+  if (workKind === "resident_turn" && executionAuthoritySystem === "resident_turn") return "resident_turn";
+  // A Channel Work kind describes orchestration. Its immutable target Bot
+  // binding determines whether Core or a permanent resident executes it.
+  if (workKind === "channel.bot_turn") return executionAuthoritySystem;
   return null;
 }
 
@@ -223,6 +225,8 @@ export function adaptTrustedM11ActivityFact(
     fact.event.durability !== "durable" ||
     (fact.sourceKind !== "outbox" && fact.event.channelId !== fact.channelId) ||
     typeof fact.workKind !== "string" || !/^[a-z][a-z0-9_.-]{0,63}$/.test(fact.workKind) ||
+    (fact.executionAuthoritySystem !== "resident_turn" &&
+      fact.executionAuthoritySystem !== "bot_turn") ||
     !SAFE_REFERENCE.test(fact.authorityReference) ||
     !Number.isSafeInteger(fact.fencingToken) || fact.fencingToken < 0) return null;
   if (fact.artifactId !== null &&
@@ -234,7 +238,10 @@ export function adaptTrustedM11ActivityFact(
   if (["succeeded", "failed", "cancelled"].includes(fact.observedState) && !terminal) return null;
   const kind = category(fact);
   const version = sourceVersion(fact);
-  const authoritySystem = authoritySystemForWorkKind(fact.workKind);
+  const authoritySystem = exactAuthoritySystem(
+    fact.workKind,
+    fact.executionAuthoritySystem,
+  );
   if (authoritySystem === null) return null;
   const event: EventEnvelope = Object.freeze({
     ...fact.event,

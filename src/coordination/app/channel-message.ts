@@ -1,5 +1,8 @@
 import type { AgentResponse, CoordinationTurnOrigin } from "../../agent/types.js";
-import type { ResidentTerminalReceipt } from "../../coordination-adapter/index.js";
+import type {
+  ResidentInputAttachment,
+  ResidentTerminalReceipt,
+} from "../../coordination-adapter/index.js";
 import {
   ChannelCoordinatorError,
   type CoordinatorDispatch,
@@ -19,6 +22,7 @@ import type {
 } from "./types.js";
 import type {
   DirectMessageExecutionTarget,
+  DirectMessageHistoryEntry,
   DirectMessageMessagePort,
   DirectMessageResidentTarget,
   DirectMessageTargetDescriptor,
@@ -45,6 +49,15 @@ export interface GroupChannelResidentTarget {
   residentBinding: string;
 }
 
+export interface GroupChannelTranscriptEntry {
+  messageId: string;
+  sequence: number;
+  authorPrincipalId: string;
+  authorDisplayName: string;
+  text: string;
+  createdAt: string;
+}
+
 export interface GroupChannelPreparedContext {
   channelId: string;
   conversationId: string;
@@ -56,6 +69,8 @@ export interface GroupChannelPreparedContext {
   responseOrder: "parallel" | "sequential";
   standingReference: string;
   instruction: string;
+  transcript: readonly GroupChannelTranscriptEntry[];
+  attachments: readonly ResidentInputAttachment[];
   manifest: ContextManifestInput;
 }
 
@@ -187,6 +202,11 @@ export function createGroupChannelMessageService(options: {
     const targets = await Promise.all(prepared.selectedTargets.map((target) =>
       executionTargetFor(prepared, target)
     ));
+    if (targets.some((target) =>
+      target.acceptsAttachments?.(prepared.attachments) === false
+    )) {
+      throw new MessagingError("request_invalid");
+    }
     if (selection.modelAlias === null && selection.reasoningEffort === null) return;
     const catalogs = await Promise.all(targets.map((target) =>
       target.models.modelCatalog(identity)
@@ -199,6 +219,50 @@ export function createGroupChannelMessageService(options: {
     )) {
       throw new MessagingError("request_invalid");
     }
+  }
+
+  function requestContent(
+    prepared: GroupChannelPreparedContext,
+    targetContext: GroupChannelResidentTarget,
+    target: DirectMessageExecutionTarget,
+  ): {
+    instruction: string;
+    historyBackfill: readonly DirectMessageHistoryEntry[];
+  } {
+    if (target.workKind !== "bot_turn") {
+      return Object.freeze({
+        instruction: prepared.instruction,
+        historyBackfill: Object.freeze([]),
+      });
+    }
+    let lastTargetIndex = -1;
+    for (const [index, entry] of prepared.transcript.entries()) {
+      if (entry.authorPrincipalId === targetContext.targetPrincipalId) {
+        lastTargetIndex = index;
+      }
+    }
+    const historyBackfill = prepared.transcript
+      .slice(0, lastTargetIndex + 1)
+      .map((entry) => Object.freeze({
+        messageId: entry.messageId,
+        sequence: entry.sequence,
+        role: entry.authorPrincipalId === targetContext.targetPrincipalId
+          ? "assistant" as const
+          : "user" as const,
+        text: entry.text,
+        createdAt: entry.createdAt,
+      }));
+    const instruction = prepared.transcript
+      .slice(lastTargetIndex + 1)
+      .map((entry) => `${entry.authorDisplayName}: ${entry.text}`)
+      .join("\n");
+    if (!instruction && prepared.attachments.length === 0) {
+      throw new MessagingError("invalid_relation");
+    }
+    return Object.freeze({
+      instruction,
+      historyBackfill: Object.freeze(historyBackfill),
+    });
   }
 
   function startDispatch(input: {
@@ -367,6 +431,10 @@ export function createGroupChannelMessageService(options: {
       );
       if (!targetContext) throw new Error("Channel Work target is outside recovered context");
       const target = await executionTargetFor(input.prepared, targetContext);
+      if (target.acceptsAttachments?.(input.prepared.attachments) === false) {
+        throw new MessagingError("request_invalid");
+      }
+      const content = requestContent(input.prepared, targetContext, target);
       let origin: CoordinationTurnOrigin;
       let recoveryPhase: "offered" | "accepted" | "running" | "completed" | null = null;
       if (input.recovery) {
@@ -405,9 +473,9 @@ export function createGroupChannelMessageService(options: {
       }
       const residentRequest = {
         chatId: `coordination:${input.prepared.channelId}:${currentWork.id}`,
-        instruction: input.prepared.instruction,
-        historyBackfill: Object.freeze([]),
-        attachments: Object.freeze([]),
+        instruction: content.instruction,
+        historyBackfill: content.historyBackfill,
+        attachments: input.prepared.attachments,
         origin,
         requestId: input.requestId,
         correlationId: input.correlationId,
@@ -759,7 +827,10 @@ export function createGroupChannelMessageService(options: {
       body: CoordinationMessageSubmissionRequest;
     }) {
       assertAuthority();
-      if (input.context.identity.kind !== "owner" || input.body.text === null) {
+      if (
+        input.context.identity.kind !== "owner" ||
+        (input.body.text === null && input.body.attachmentIds.length === 0)
+      ) {
         throw new MessagingError("request_invalid");
       }
       const turnSelection = Object.freeze({

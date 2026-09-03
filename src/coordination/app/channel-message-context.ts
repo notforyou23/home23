@@ -4,6 +4,8 @@ import {
   readCoordinatorAdmissionPlan,
   type CoordinatorAdmissionPlan,
 } from "../channel-coordinator/index.js";
+import type { AttachmentSummary } from "../artifacts/index.js";
+import type { ResidentInputAttachment } from "../../coordination-adapter/index.js";
 import { MessagingError, type MessagingActorContext } from "../channels/index.js";
 import type { MessageProjection } from "../messages/index.js";
 import type { M11Database, WorkRecord } from "../work/index.js";
@@ -12,6 +14,7 @@ import type {
   GroupChannelMessageContextPort,
   GroupChannelPreparedContext,
   GroupChannelResidentTarget,
+  GroupChannelTranscriptEntry,
 } from "./channel-message.js";
 
 interface GroupChannelRow {
@@ -45,6 +48,35 @@ interface RecoveryMessageRow {
   replyToMessageId: string | null;
   roundId: string | null;
   workId: string | null;
+  createdAt: string;
+}
+
+type AttachmentMaterializer = (
+  attachments: readonly AttachmentSummary[],
+) => Promise<readonly ResidentInputAttachment[]>;
+
+function exactAttachmentIDs(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+function transcript(
+  rows: readonly {
+    id: string;
+    sequence: number;
+    authorPrincipalId: string;
+    authorDisplayName: string;
+    text: string | null;
+    createdAt: string;
+  }[],
+): readonly GroupChannelTranscriptEntry[] {
+  return Object.freeze(rows.flatMap((row) => row.text === null ? [] : [Object.freeze({
+    messageId: row.id,
+    sequence: row.sequence,
+    authorPrincipalId: row.authorPrincipalId,
+    authorDisplayName: row.authorDisplayName,
+    text: row.text,
+    createdAt: row.createdAt,
+  })]));
 }
 
 const WORK_SELECT = `
@@ -71,7 +103,54 @@ implements GroupChannelMessageContextPort {
       beforeSequence?: number;
       limit: number;
     }): Promise<{ messages: readonly MessageProjection[] }> },
+    private readonly materializeAttachments?: AttachmentMaterializer,
   ) {}
+
+  private async materialize(
+    attachments: readonly AttachmentSummary[],
+  ): Promise<readonly ResidentInputAttachment[]> {
+    if (attachments.length === 0) return Object.freeze([]);
+    if (!this.materializeAttachments) throw new MessagingError("invalid_relation");
+    const materialized = await this.materializeAttachments(attachments);
+    if (
+      materialized.length !== attachments.length ||
+      materialized.some((value, index) =>
+        value.artifactId !== attachments[index]?.id ||
+        value.name !== attachments[index]?.name ||
+        value.contentType !== attachments[index]?.contentType ||
+        value.byteCount !== attachments[index]?.byteCount ||
+        value.sha256 !== attachments[index]?.sha256
+      )
+    ) {
+      throw new MessagingError("invalid_relation");
+    }
+    return Object.freeze(materialized.map((value) => Object.freeze({ ...value })));
+  }
+
+  private async storedAttachments(
+    messageId: string,
+    channelId: string,
+    artifactIds: readonly string[],
+  ): Promise<readonly ResidentInputAttachment[]> {
+    const rows = this.database.readAll<AttachmentSummary>(
+      `SELECT artifact.id, artifact.original_name AS name,
+              artifact.detected_content_type AS contentType,
+              artifact.byte_count AS byteCount, artifact.sha256
+       FROM message_artifacts link
+       JOIN artifacts artifact ON artifact.id = link.artifact_id
+       WHERE link.message_id = ? AND link.channel_id = ? AND artifact.state = 'ready'
+       ORDER BY link.ordinal ASC`,
+      messageId,
+      channelId,
+    );
+    if (!exactAttachmentIDs(
+      [...rows.map((attachment) => attachment.id)].sort(),
+      [...artifactIds].sort(),
+    )) {
+      throw new MessagingError("invalid_relation");
+    }
+    return this.materialize(rows);
+  }
 
   private channel(channelId: string, principalId?: string): GroupChannelRow {
     const row = this.database.readOne<GroupChannelRow>(
@@ -165,9 +244,9 @@ implements GroupChannelMessageContextPort {
     return event;
   }
 
-  private preparedFromAdmissionPlan(
+  private async preparedFromAdmissionPlan(
     plan: CoordinatorAdmissionPlan,
-  ): GroupChannelPreparedContext {
+  ): Promise<GroupChannelPreparedContext> {
     const messageIds = [...plan.manifest.messageIds];
     if (messageIds.length === 0) throw new MessagingError("invalid_relation");
     const placeholders = messageIds.map(() => "?").join(",");
@@ -180,7 +259,8 @@ implements GroupChannelMessageContextPort {
                 WHERE tombstone.tombstones_message_id = m.id
               ) THEN NULL ELSE m.body_text END AS text,
               m.reply_to_message_id AS replyToMessageId,
-              m.round_id AS roundId, m.work_id AS workId
+              m.round_id AS roundId, m.work_id AS workId,
+              m.created_at AS createdAt
        FROM messages m
        WHERE m.channel_id = ? AND m.id IN (${placeholders})
        ORDER BY m.channel_sequence ASC`,
@@ -220,7 +300,14 @@ implements GroupChannelMessageContextPort {
       .filter((message) => message.text !== null)
       .map((message) => `${message.authorDisplayName}: ${message.text}`)
       .join("\n");
-    if (!instruction) throw new MessagingError("invalid_relation");
+    const attachments = await this.storedAttachments(
+      plan.originMessageId,
+      plan.channelId,
+      plan.manifest.artifactIds,
+    );
+    if (!instruction && attachments.length === 0) {
+      throw new MessagingError("invalid_relation");
+    }
     return Object.freeze({
       channelId: plan.channelId,
       conversationId: plan.conversationId,
@@ -232,6 +319,8 @@ implements GroupChannelMessageContextPort {
       responseOrder: plan.responseOrder,
       standingReference: plan.standingReference,
       instruction,
+      transcript: transcript(rows),
+      attachments,
       manifest: canonicalManifest,
     });
   }
@@ -248,8 +337,7 @@ implements GroupChannelMessageContextPort {
       input.context.principalId !== "user_owner" ||
       input.originMessage.author.kind !== "owner" ||
       input.originMessage.author.principalId !== input.context.principalId ||
-      input.originMessage.channelId !== input.channelId ||
-      input.originMessage.text === null
+      input.originMessage.channelId !== input.channelId
     ) {
       throw new MessagingError("invalid_relation");
     }
@@ -308,7 +396,10 @@ implements GroupChannelMessageContextPort {
       .filter((message) => message.text !== null)
       .map((message) => `${message.author.displayName}: ${message.text}`)
       .join("\n");
-    if (!instruction) throw new MessagingError("invalid_relation");
+    const attachments = await this.materialize(projectedOrigin.attachments);
+    if (!instruction && attachments.length === 0) {
+      throw new MessagingError("invalid_relation");
+    }
     return Object.freeze({
       channelId: input.channelId,
       conversationId: channel.conversationId,
@@ -323,6 +414,15 @@ implements GroupChannelMessageContextPort {
       standingReference:
         `canonical-channel-membership:${input.channelId}:version:${channel.version}`,
       instruction,
+      transcript: transcript(boundedMessages.map((message) => ({
+        id: message.id,
+        sequence: message.sequence,
+        authorPrincipalId: message.author.principalId,
+        authorDisplayName: message.author.displayName,
+        text: message.text,
+        createdAt: message.createdAt,
+      }))),
+      attachments,
       manifest: directMessageManifest({
         channelId: input.channelId,
         messageIds: boundedMessageIds,
@@ -416,7 +516,8 @@ implements GroupChannelMessageContextPort {
                     WHERE tombstone.tombstones_message_id = m.id
                   ) THEN NULL ELSE m.body_text END AS text,
                   m.reply_to_message_id AS replyToMessageId,
-                  m.round_id AS roundId, m.work_id AS workId
+                  m.round_id AS roundId, m.work_id AS workId,
+                  m.created_at AS createdAt
            FROM messages m
            WHERE m.channel_id = ? AND m.kind = 'result' AND m.round_id = ?
              AND m.work_id IN (${precedingWorkIds.map(() => "?").join(",")})
@@ -451,7 +552,8 @@ implements GroupChannelMessageContextPort {
                 WHERE tombstone.tombstones_message_id = m.id
               ) THEN NULL ELSE m.body_text END AS text,
               m.reply_to_message_id AS replyToMessageId,
-              m.round_id AS roundId, m.work_id AS workId
+              m.round_id AS roundId, m.work_id AS workId,
+              m.created_at AS createdAt
        FROM messages m
        WHERE m.channel_id = ?
          AND m.id IN (${boundedMessageIds.map(() => "?").join(",")})
@@ -471,12 +573,15 @@ implements GroupChannelMessageContextPort {
       .filter((message) => message.text !== null)
       .map((message) => `${message.authorDisplayName}: ${message.text}`)
       .join("\n");
-    if (!instruction) throw new MessagingError("invalid_relation");
+    if (!instruction && input.plan.attachments.length === 0) {
+      throw new MessagingError("invalid_relation");
+    }
     return Object.freeze({
       ...input.plan,
       selectedTargets: Object.freeze([target]),
       responseOrder: input.plan.responseOrder,
       instruction,
+      transcript: transcript(rows),
       manifest: directMessageManifest({
         channelId: input.plan.channelId,
         messageIds: rows.map((row) => row.id),
@@ -548,7 +653,8 @@ implements GroupChannelMessageContextPort {
                 WHERE tombstone.tombstones_message_id = m.id
               ) THEN NULL ELSE m.body_text END AS text,
               m.reply_to_message_id AS replyToMessageId,
-              m.round_id AS roundId, m.work_id AS workId
+              m.round_id AS roundId, m.work_id AS workId,
+              m.created_at AS createdAt
        FROM messages m
        WHERE m.channel_id = ? AND m.id IN (${placeholders})
        ORDER BY m.channel_sequence ASC`,
@@ -611,7 +717,14 @@ implements GroupChannelMessageContextPort {
       .filter((message) => message.text !== null)
       .map((message) => `${message.authorDisplayName}: ${message.text}`)
       .join("\n");
-    if (!instruction) throw new MessagingError("invalid_relation");
+    const attachments = await this.storedAttachments(
+      work.originMessageId,
+      work.channelId,
+      artifactIds,
+    );
+    if (!instruction && attachments.length === 0) {
+      throw new MessagingError("invalid_relation");
+    }
     return Object.freeze({
       channelId: work.channelId,
       conversationId: admission.conversationId,
@@ -623,6 +736,8 @@ implements GroupChannelMessageContextPort {
       responseOrder: admission.responseOrder,
       standingReference: admission.standingReference,
       instruction,
+      transcript: transcript(rows),
+      attachments,
       manifest: canonicalManifest,
     });
   }
@@ -630,7 +745,7 @@ implements GroupChannelMessageContextPort {
   async recoverPlan(roundId: string) {
     const admission = readCoordinatorAdmissionPlan(this.database, roundId);
     return Object.freeze({
-      prepared: this.preparedFromAdmissionPlan(admission),
+      prepared: await this.preparedFromAdmissionPlan(admission),
       turnSelection: admission.turnSelection,
     });
   }
@@ -652,12 +767,15 @@ implements GroupChannelMessageContextPort {
   }
 
   hasResult(workId: string): boolean {
+    if (!workId.startsWith("wrk_")) return false;
+    const primaryMessageId = `msg_${workId.slice(4)}`;
     const count = this.database.readOne<{ count: number }>(
       `SELECT count(*) AS count FROM messages
-       WHERE work_id = ? AND kind = 'result' AND stored_visibility = 'visible'`,
+       WHERE id = ? AND work_id = ? AND kind = 'result'
+         AND stored_visibility = 'visible'`,
+      primaryMessageId,
       workId,
     )?.count ?? 0;
-    if (count > 1) throw new Error("Channel Work has multiple canonical results");
     return count === 1;
   }
 }

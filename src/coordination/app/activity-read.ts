@@ -27,9 +27,14 @@ interface WorkFactRow {
   channelId: string;
   roundId: string | null;
   kind: string;
+  executionAuthoritySystem: "resident_turn" | "bot_turn";
   state: ActivityObservedState;
   updatedAt: string;
 }
+
+type RawWorkFactRow = Omit<WorkFactRow, "executionAuthoritySystem"> & {
+  executionAuthoritySystem: WorkFactRow["executionAuthoritySystem"] | null;
+};
 
 interface AttemptFactRow {
   id: string;
@@ -293,16 +298,34 @@ export function createSqliteActivityReadService(options: {
   }
 
   function work(workId: string): WorkFactRow {
-    const row = options.database.readOne<WorkFactRow>(
-      `SELECT id, target_principal_id AS targetPrincipalId,
-              channel_id AS channelId, round_id AS roundId, kind, state,
-              updated_at AS updatedAt
-       FROM works WHERE id = ?`,
+    const row = options.database.readOne<RawWorkFactRow>(
+      `SELECT w.id, w.target_principal_id AS targetPrincipalId,
+              w.channel_id AS channelId, w.round_id AS roundId,
+              w.kind, w.state, w.updated_at AS updatedAt,
+              CASE
+                WHEN w.kind = 'bot_turn' THEN 'bot_turn'
+                WHEN w.kind = 'resident_turn' THEN 'resident_turn'
+                WHEN w.kind = 'channel.bot_turn' AND EXISTS (
+                  SELECT 1 FROM bots target
+                  WHERE target.principal_id = w.target_principal_id
+                    AND target.resident_binding LIKE 'bot-%'
+                ) THEN 'bot_turn'
+                WHEN w.kind = 'channel.bot_turn' THEN 'resident_turn'
+                ELSE NULL
+              END AS executionAuthoritySystem
+       FROM works w WHERE w.id = ?`,
       workId,
     );
     if (!row) throw new Error(`Activity Work fact ${workId} is unavailable`);
+    if (
+      row.executionAuthoritySystem !== "resident_turn" &&
+      row.executionAuthoritySystem !== "bot_turn"
+    ) {
+      throw new Error(`Activity Work ${workId} has no execution authority`);
+    }
     return Object.freeze({
       ...row,
+      executionAuthoritySystem: row.executionAuthoritySystem,
       state: safeCurrentState(row.state, `Activity Work ${workId}`),
     });
   }
@@ -346,6 +369,7 @@ export function createSqliteActivityReadService(options: {
       sourceKind: "work_attempt",
       workId: retainedWork.id,
       workKind: retainedWork.kind,
+      executionAuthoritySystem: retainedWork.executionAuthoritySystem,
       channelId: retainedWork.channelId,
       actorPrincipalId: retainedWork.targetPrincipalId,
       attemptId,
@@ -367,15 +391,18 @@ export function createSqliteActivityReadService(options: {
        FROM rounds WHERE id = ?`,
       event.aggregate.id,
     );
-    const retainedWork = round === undefined
+    const retainedWorkReference = round === undefined
       ? undefined
-      : options.database.readOne<Pick<WorkFactRow, "id" | "kind">>(
-      `SELECT id, kind FROM works
+      : options.database.readOne<Pick<WorkFactRow, "id">>(
+      `SELECT id FROM works
        WHERE round_id = ? AND target_principal_id = ?
        ORDER BY created_at, id LIMIT 1`,
       event.aggregate.id,
       round.coordinatorBotId,
     );
+    const retainedWork = retainedWorkReference === undefined
+      ? undefined
+      : work(retainedWorkReference.id);
     // A Round coordinator may not be one of the selected responders. M18's
     // Work-observation identity cannot truthfully bind that Round-only event
     // to another Bot's Work, so leave it as a non-Activity turn event.
@@ -398,6 +425,7 @@ export function createSqliteActivityReadService(options: {
       sourceKind: "round",
       workId: retainedWork.id,
       workKind: retainedWork.kind,
+      executionAuthoritySystem: retainedWork.executionAuthoritySystem,
       channelId: round.channelId,
       actorPrincipalId: round.coordinatorBotId,
       attemptId: null,
@@ -438,6 +466,7 @@ export function createSqliteActivityReadService(options: {
       sourceKind: "outbox",
       workId: retainedWork.id,
       workKind: retainedWork.kind,
+      executionAuthoritySystem: retainedWork.executionAuthoritySystem,
       channelId: retainedWork.channelId,
       actorPrincipalId: retainedWork.targetPrincipalId,
       attemptId: null,
@@ -490,6 +519,7 @@ export function createSqliteActivityReadService(options: {
       sourceKind: "recovery",
       workId: retainedWork.id,
       workKind: retainedWork.kind,
+      executionAuthoritySystem: retainedWork.executionAuthoritySystem,
       channelId: retainedWork.channelId,
       actorPrincipalId: retainedWork.targetPrincipalId,
       attemptId: observation.attemptId,

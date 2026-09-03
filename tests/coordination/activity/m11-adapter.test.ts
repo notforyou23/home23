@@ -49,6 +49,7 @@ function fact(sequence: number, overrides: Partial<TrustedM11ActivityFact> = {})
     sourceKind: "work_attempt",
     workId: WORK,
     workKind: "resident_turn",
+    executionAuthoritySystem: "resident_turn",
     channelId: DIRECT_CHANNEL,
     actorPrincipalId: JERRY,
     attemptId: ATTEMPT,
@@ -122,7 +123,11 @@ test("a queued Work without an Attempt preserves the explicit zero-fence seam", 
 
 test("processless Bot Work keeps bot_turn authority vocabulary through Activity", () => {
   const botAuthority = `bot:${fixtureId("bot", 705)}`;
-  const specialist = fact(1, { workKind: "bot_turn", authorityReference: botAuthority });
+  const specialist = fact(1, {
+    workKind: "bot_turn",
+    executionAuthoritySystem: "bot_turn",
+    authorityReference: botAuthority,
+  });
   const adapted = adaptTrustedM11ActivityFact(specialist);
   assert.equal(adapted?.observation.authoritySystem, "bot_turn");
   const result = projectTrustedM11Activity({
@@ -138,6 +143,21 @@ test("processless Bot Work keeps bot_turn authority vocabulary through Activity"
     assert.equal(result.projection.entries[0]?.source.authorityId, botAuthority);
   }
   assert.equal(adaptTrustedM11ActivityFact(fact(2, { workKind: "unknown_turn" })), null);
+  assert.equal(adaptTrustedM11ActivityFact(fact(3, {
+    workKind: "bot_turn",
+    executionAuthoritySystem: "resident_turn",
+  })), null);
+});
+
+test("Channel Work retains the processless Bot authority classification", () => {
+  const botAuthority = `bot:${fixtureId("bot", 706)}`;
+  const adapted = adaptTrustedM11ActivityFact(fact(1, {
+    workKind: "channel.bot_turn",
+    executionAuthoritySystem: "bot_turn",
+    authorityReference: botAuthority,
+  }));
+  assert.equal(adapted?.observation.authoritySystem, "bot_turn");
+  assert.equal(adapted?.observation.authorityId, botAuthority);
 });
 
 test("a queued Work can hand authority to its first fenced resident Attempt", () => {

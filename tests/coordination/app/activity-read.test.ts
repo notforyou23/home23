@@ -108,13 +108,14 @@ test("a rejected fence stays stale attention after the retained Work later succe
           createdAt: durableEvent.createdAt,
         };
       }
-      if (sql.includes("FROM works WHERE id")) {
+      if (sql.includes("FROM works")) {
         return {
           id: workId,
           targetPrincipalId: JERRY,
           channelId: DIRECT_CHANNEL,
           roundId: null,
           kind: "resident_turn",
+          executionAuthoritySystem: "resident_turn",
           state: "succeeded",
           updatedAt: "2026-08-28T01:05:00.000Z",
         };
@@ -165,6 +166,7 @@ test("Activity derives queued and Outbox Bot authority from immutable Work kind 
     { source: "outbox", workKind: "bot_turn", expected: "bot_turn" },
     { source: "work", workKind: "resident_turn", expected: "resident_turn" },
     { source: "work", workKind: "channel.bot_turn", expected: "resident_turn" },
+    { source: "work", workKind: "channel.bot_turn", expected: "bot_turn" },
   ] as const;
 
   for (const [index, current] of cases.entries()) {
@@ -196,13 +198,14 @@ test("Activity derives queued and Outbox Bot authority from immutable Work kind 
         if (sql.includes("FROM outbox WHERE id")) {
           return { id: outboxId, workId, kind: "work.wake", updatedAt: durableEvent.createdAt };
         }
-        if (sql.includes("FROM works WHERE id")) {
+        if (sql.includes("FROM works")) {
           return {
             id: workId,
             targetPrincipalId: JERRY,
             channelId: DIRECT_CHANNEL,
             roundId: null,
             kind: current.workKind,
+            executionAuthoritySystem: current.expected,
             state: "queued",
             updatedAt: durableEvent.createdAt,
           };

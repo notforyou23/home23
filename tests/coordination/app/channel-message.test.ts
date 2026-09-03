@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { AgentResponse } from "../../../src/agent/types.js";
+import type { ResidentInputAttachment } from "../../../src/coordination-adapter/index.js";
 import { createGroupChannelMessageService } from "../../../src/coordination/app/channel-message.js";
 import type {
   GroupChannelMessageContextPort,
   GroupChannelPreparedContext,
   GroupChannelResidentTarget,
+  GroupChannelTranscriptEntry,
 } from "../../../src/coordination/app/channel-message.js";
 import type {
+  DirectMessageExecutionRequest,
   DirectMessageExecutionTarget,
   DirectMessageResidentTarget,
 } from "../../../src/coordination/app/direct-message.js";
@@ -21,6 +24,9 @@ import type { WorkRecord } from "../../../src/coordination/work/index.js";
 const CHANNEL_ID = generateCoordinationId("channel");
 const CONVERSATION_ID = generateCoordinationId("conversation");
 const OWNER_MESSAGE_ID = generateCoordinationId("message");
+const PRIOR_OWNER_MESSAGE_ID = generateCoordinationId("message");
+const PRIOR_LENS_MESSAGE_ID = generateCoordinationId("message");
+const PRIOR_JERRY_MESSAGE_ID = generateCoordinationId("message");
 const ROUND_ID = generateCoordinationId("round");
 const BOT_IDS = [generateCoordinationId("bot"), generateCoordinationId("bot")];
 const WORK_IDS = [generateCoordinationId("work"), generateCoordinationId("work")];
@@ -108,6 +114,15 @@ function work(index: number, state: WorkRecord["state"] = "queued"): WorkRecord 
 function prepared(
   targets: readonly GroupChannelResidentTarget[],
   responseOrder: "parallel" | "sequential" = "parallel",
+  transcript: readonly GroupChannelTranscriptEntry[] = Object.freeze([{
+    messageId: OWNER_MESSAGE_ID,
+    sequence: 1,
+    authorPrincipalId: "user_owner",
+    authorDisplayName: "Owner",
+    text: "@Jerry and @Forrest, respond or pass.",
+    createdAt: "2026-08-28T12:00:00.000Z",
+  }]),
+  attachments: readonly ResidentInputAttachment[] = Object.freeze([]),
 ): GroupChannelPreparedContext {
   return Object.freeze({
     channelId: CHANNEL_ID,
@@ -120,6 +135,8 @@ function prepared(
     responseOrder,
     standingReference: `canonical-channel-membership:${CHANNEL_ID}:version:2`,
     instruction: "Owner: @Jerry and @Forrest, respond or pass.",
+    transcript,
+    attachments,
     manifest: Object.freeze({
       privacy: "channel_only",
       channelId: CHANNEL_ID,
@@ -142,6 +159,8 @@ function harness(input: {
   messageOutcome?: "committed" | "replayed";
   admissionReplay?: "coordinating" | "waiting" | "completed" | "failed" | "cancelled";
   onDemandTargetIndex?: number;
+  preparedTranscript?: readonly GroupChannelTranscriptEntry[];
+  preparedAttachments?: readonly ResidentInputAttachment[];
 }) {
   const targets = BOT_IDS.map((botId, index) => Object.freeze({
     targetBotId: botId,
@@ -170,7 +189,7 @@ function harness(input: {
   let executions = 0;
   let coordinatorStarts = 0;
   let coordinatorReconciles = 0;
-  const residentInstructions: string[] = [];
+  const residentRequests: DirectMessageExecutionRequest[] = [];
   let ended = 0;
   let resolveEnded!: () => void;
   const endedPromise = new Promise<void>((resolve) => { resolveEnded = resolve; });
@@ -183,7 +202,12 @@ function harness(input: {
     text: "@Jerry and @Forrest, respond or pass.",
     sequence: 1,
   });
-  const exactPrepared = prepared(targets, responseOrder);
+  const exactPrepared = prepared(
+    targets,
+    responseOrder,
+    input.preparedTranscript,
+    input.preparedAttachments,
+  );
   for (const index of input.initialResultIndexes ?? []) {
     const response = input.responses[index];
     if (response instanceof Error || response === undefined || !response.text.trim()) {
@@ -267,9 +291,9 @@ function harness(input: {
         currentAttemptId: generateCoordinationId("attempt"),
       }));
     };
-    const run = (request: { instruction?: string }) => {
+    const run = (request: DirectMessageExecutionRequest) => {
       executions += 1;
-      residentInstructions.push(request.instruction ?? "");
+      residentRequests.push(request);
       const response = input.responses[index] instanceof Error
         ? Promise.reject(input.responses[index])
         : Promise.resolve(input.responses[index] as AgentResponse);
@@ -358,6 +382,7 @@ function harness(input: {
         workKind: "bot_turn",
         authorityReference: `bot:${target.targetBotId}`,
         actorKind: "specialist_bot",
+        acceptsAttachments: () => true,
       }));
     } else {
       residentTargets.set(target.residentBinding, residentTarget);
@@ -509,7 +534,10 @@ function harness(input: {
     recorded,
     dispositions,
     executions: () => executions,
-    residentInstructions: () => Object.freeze([...residentInstructions]),
+    residentInstructions: () => Object.freeze(
+      residentRequests.map((request) => request.instruction),
+    ),
+    residentRequests: () => Object.freeze([...residentRequests]),
     offeredAuthorities: () => Object.freeze([...offeredAuthorities]),
     workCount: () => current.size,
     coordinatorStarts: () => coordinatorStarts,
@@ -554,11 +582,54 @@ test("group Channel records an explicit pass without fabricating Bot speech", as
 });
 
 test("group Channel executes a processless Bot under its own authority", async () => {
+  const attachment = Object.freeze({
+    artifactId: generateCoordinationId("artifact"),
+    name: "owner-note.txt",
+    contentType: "text/plain",
+    byteCount: 12,
+    sha256: "d".repeat(64),
+    path: "/verified/owner-note.txt",
+  });
   const testHarness = harness({
     onDemandTargetIndex: 1,
     responses: [
       { text: "Jerry answered.", model: "fixture", toolCallCount: 0, durationMs: 1 },
       { text: "Lens answered on demand.", model: "fixture", toolCallCount: 0, durationMs: 1 },
+    ],
+    preparedAttachments: [attachment],
+    preparedTranscript: [
+      {
+        messageId: PRIOR_OWNER_MESSAGE_ID,
+        sequence: 1,
+        authorPrincipalId: "user_owner",
+        authorDisplayName: "Owner",
+        text: "Earlier question.",
+        createdAt: "2026-08-28T11:58:00.000Z",
+      },
+      {
+        messageId: PRIOR_LENS_MESSAGE_ID,
+        sequence: 2,
+        authorPrincipalId: BOT_IDS[1]!,
+        authorDisplayName: "Lens",
+        text: "Earlier answer.",
+        createdAt: "2026-08-28T11:58:30.000Z",
+      },
+      {
+        messageId: PRIOR_JERRY_MESSAGE_ID,
+        sequence: 3,
+        authorPrincipalId: BOT_IDS[0]!,
+        authorDisplayName: "Jerry",
+        text: "Intervening context.",
+        createdAt: "2026-08-28T11:59:00.000Z",
+      },
+      {
+        messageId: OWNER_MESSAGE_ID,
+        sequence: 4,
+        authorPrincipalId: "user_owner",
+        authorDisplayName: "Owner",
+        text: "@Jerry and @Forrest, respond or pass.",
+        createdAt: "2026-08-28T12:00:00.000Z",
+      },
     ],
   });
   const accepted = await testHarness.service.submitMessage({
@@ -571,6 +642,22 @@ test("group Channel executes a processless Bot under its own authority", async (
 
   assert.equal(terminal.outcome, "completed");
   assert.ok(testHarness.offeredAuthorities().includes(`bot:${BOT_IDS[1]}`));
+  const processlessRequest = testHarness.residentRequests().find(
+    (request) => request.origin.holderPrincipalId === BOT_IDS[1],
+  );
+  assert.ok(processlessRequest);
+  assert.equal(
+    processlessRequest.instruction,
+    "Jerry: Intervening context.\nOwner: @Jerry and @Forrest, respond or pass.",
+  );
+  assert.deepEqual(
+    processlessRequest.historyBackfill.map((entry) => ({ role: entry.role, text: entry.text })),
+    [
+      { role: "user", text: "Earlier question." },
+      { role: "assistant", text: "Earlier answer." },
+    ],
+  );
+  assert.deepEqual(processlessRequest.attachments, [attachment]);
   assert.equal(
     testHarness.sent.find((entry) => entry.message.author.principalId === BOT_IDS[1])?.message.text,
     "Lens answered on demand.",

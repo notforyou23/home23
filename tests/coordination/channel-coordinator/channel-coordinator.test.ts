@@ -3,6 +3,7 @@ import test from "node:test";
 import { createHash } from "node:crypto";
 
 import { assertChannelTurnCapacity, createChannelCoordinator, ChannelCoordinatorError } from "../../../src/coordination/channel-coordinator/index.js";
+import { SqliteBotDirectoryRepository } from "../../../src/coordination/bots/index.js";
 import { createLeaseService, LeaseError } from "../../../src/coordination/leases/index.js";
 import { createRoundService } from "../../../src/coordination/rounds/index.js";
 import { createWorkService } from "../../../src/coordination/work/index.js";
@@ -409,6 +410,154 @@ test("explicit pass completes, partial failure fails, and active-turn loop is re
       mixed.works.map((entry) => entry.work.id),
     );
   } finally { database.close(); }
+});
+
+test("processless Bot archive blocks cancelling Work and waits for a passed Round to settle", async () => {
+  {
+    const database = M11TestDatabase.temporary();
+    try {
+      prepare(database);
+      database.raw.prepare(
+        `UPDATE bots SET resident_binding = 'bot-ada-processless',
+           active_instance_id = NULL, active_key_version = NULL,
+           resident_protocol_version = NULL, resident_capabilities_json = '[]',
+           resident_registered_at = NULL, last_heartbeat_at = NULL,
+           reported_availability = NULL
+         WHERE id = ?`,
+      ).run(BOT_2);
+      const services = harness(database, { value: new Date(AT) }, 52_000);
+      const dispatch = services.coordinator.start(trigger({
+        mentionedBotIds: [BOT_2],
+        plannedBotIds: [BOT_2],
+      }));
+      const offered = services.leases.offer({
+        workId: dispatch.works[0]!.work.id,
+        holderPrincipalId: BOT_2,
+        holderInstanceId: "on-demand-ada",
+        authorityReference: `bot:${BOT_2}`,
+        automatic: true,
+        requestId: fixtureId("request", 850),
+        correlationId: fixtureId("correlation", 850),
+      });
+      const binding = {
+        workId: offered.work.id,
+        attemptId: offered.attempt.id,
+        leaseId: offered.lease.id,
+        holderPrincipalId: BOT_2,
+        holderInstanceId: "on-demand-ada",
+        fencingToken: offered.fencingToken,
+        requestId: fixtureId("request", 851),
+        correlationId: fixtureId("correlation", 851),
+      };
+      services.leases.accept(binding);
+      services.leases.start(binding);
+      services.leases.revoke({ ...binding, reasonCode: "operator_cancel" });
+      const bots = new SqliteBotDirectoryRepository(database);
+      await assert.rejects(
+        bots.transitionLifecycle({
+          botId: BOT_2,
+          from: "active",
+          to: "archived",
+          actorPrincipalId: OWNER_ID,
+          requestId: fixtureId("request", 852),
+          correlationId: fixtureId("correlation", 852),
+          changedAt: AT,
+        }),
+        (error: unknown) => (error as { code?: string }).code === "bot_has_unsettled_work",
+      );
+    } finally {
+      database.close();
+    }
+  }
+
+  {
+    const database = M11TestDatabase.temporary();
+    try {
+      prepare(database);
+      database.raw.prepare(
+        `UPDATE bots SET resident_binding = 'bot-ada-processless',
+           active_instance_id = NULL, active_key_version = NULL,
+           resident_protocol_version = NULL, resident_capabilities_json = '[]',
+           resident_registered_at = NULL, last_heartbeat_at = NULL,
+           reported_availability = NULL
+         WHERE id = ?`,
+      ).run(BOT_2);
+      const services = harness(database, { value: new Date(AT) }, 53_000);
+      const dispatch = services.coordinator.start(trigger({
+        mentionedBotIds: [BOT_2],
+        plannedBotIds: [BOT_2],
+      }));
+      const workId = dispatch.works[0]!.work.id;
+      terminalize(services, workId, BOT_2, "succeeded", 860);
+      database.raw.prepare(
+        `INSERT INTO messages (
+           id, channel_id, channel_sequence, author_principal_id, author_kind,
+           author_display_name, kind, body_text, stored_visibility,
+           client_message_id, reply_to_message_id, tombstones_message_id,
+           round_id, work_id, created_at
+         ) VALUES (?, ?, 2, ?, 'bot', 'Ada', 'result', 'Specialist follow-up.',
+                   'visible', NULL, ?, NULL, ?, ?, ?)`,
+      ).run(
+        fixtureId("message", 864),
+        CHANNEL_ID,
+        BOT_2,
+        MESSAGE_ID,
+        dispatch.round.id,
+        workId,
+        AT,
+      );
+      database.raw.prepare(
+        `INSERT INTO events (
+           id, schema_version, type, durability, aggregate_kind, aggregate_id,
+           aggregate_version, channel_id, actor_principal_id, request_id,
+           correlation_id, payload_json, payload_digest, created_at
+         ) VALUES (?, 1, 'message.appended', 'durable', 'message', ?, 1, ?, ?,
+                   ?, ?, '{}', ?, ?)`,
+      ).run(
+        fixtureId("event", 864),
+        fixtureId("message", 864),
+        CHANNEL_ID,
+        BOT_2,
+        fixtureId("request", 864),
+        fixtureId("correlation", 864),
+        createHash("sha256").update("{}", "utf8").digest("hex"),
+        AT,
+      );
+      const bots = new SqliteBotDirectoryRepository(database);
+      await assert.rejects(
+        bots.transitionLifecycle({
+          botId: BOT_2,
+          from: "active",
+          to: "archived",
+          actorPrincipalId: OWNER_ID,
+          requestId: fixtureId("request", 861),
+          correlationId: fixtureId("correlation", 861),
+          changedAt: AT,
+        }),
+        (error: unknown) => (error as { code?: string }).code === "bot_has_unsettled_work",
+        "a resultless succeeded Channel Work is unsettled until its Round records the pass",
+      );
+      const settled = services.coordinator.reconcile({
+        roundId: dispatch.round.id,
+        dispositions: { [workId]: "passed" },
+        requestId: fixtureId("request", 862),
+        correlationId: fixtureId("correlation", 862),
+      });
+      assert.equal(settled.reasonCode, "passed");
+      const archived = await bots.transitionLifecycle({
+        botId: BOT_2,
+        from: "active",
+        to: "archived",
+        actorPrincipalId: OWNER_ID,
+        requestId: fixtureId("request", 863),
+        correlationId: fixtureId("correlation", 863),
+        changedAt: AT,
+      });
+      assert.equal(archived.lifecycle, "archived");
+    } finally {
+      database.close();
+    }
+  }
 });
 
 test("deadline and cancellation terminalize durably and cancel queued Work", () => {
