@@ -566,6 +566,31 @@ test('early iterator return quiesces large JSONL streams before closing their ha
   }
 });
 
+test('closing the source releases descriptors from iterators that were never finalized', async (t) => {
+  const fixture = await createManifestFixture({
+    nodes: [{ id: 1, concept: 'a', cluster: 1 }, { id: 2, concept: 'b', cluster: 1 }],
+    edges: [{ source: 1, target: 2, weight: 0.5 }],
+    delta: [],
+    currentRevision: 2,
+    summary: { nodeCount: 2, edgeCount: 1, clusterCount: 1 },
+  });
+  t.after(() => fsp.rm(fixture.dir, { recursive: true, force: true }));
+  const nodesPath = path.join(fixture.dir, 'memory-nodes.base-2.jsonl.gz');
+
+  const source = await openMemorySource(fixture.dir);
+  // A consumer that starts iterating and walks away without finalising the
+  // iterator: the source still owns the descriptor it opened on its behalf.
+  const iterator = source.iterateNodes()[Symbol.asyncIterator]();
+  assert.equal((await iterator.next()).done, false);
+  const whileIterating = await countOpenDescriptorsFor(nodesPath);
+  if (whileIterating !== null) assert.ok(whileIterating > 0);
+
+  await source.close();
+
+  const afterClose = await countOpenDescriptorsFor(nodesPath);
+  if (afterClose !== null) assert.equal(afterClose, 0);
+});
+
 test('early iterator return leaves a borrowed source handle open for its owner', async () => {
   const dir = await tempDir();
   const filePath = path.join(dir, 'borrowed.jsonl');

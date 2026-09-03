@@ -383,6 +383,50 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
   };
   let sourceHealth = legacyProjection ? SOURCE_HEALTH.DEGRADED : SOURCE_HEALTH.HEALTHY;
   const markUnavailable = () => { sourceHealth = SOURCE_HEALTH.UNAVAILABLE; };
+  // The source owns every descriptor its iterators open on a consumer's
+  // behalf. A consumer that abandons an iterator without finalising it would
+  // otherwise strand that descriptor until garbage collection, which Node
+  // treats as a fatal ERR_INVALID_STATE rather than a warning. close() is the
+  // teardown boundary, so it has to finalise those iterators too.
+  const liveIterators = new Set();
+  const trackIterated = (createIterator) => function iterate(...args) {
+    const iterator = createIterator(...args)[Symbol.asyncIterator]();
+    liveIterators.add(iterator);
+    const forget = () => liveIterators.delete(iterator);
+    return {
+      [Symbol.asyncIterator]() { return this; },
+      async next(...rest) {
+        let result;
+        try {
+          result = await iterator.next(...rest);
+        } catch (error) {
+          forget();
+          throw error;
+        }
+        if (result.done) forget();
+        return result;
+      },
+      async return(value) {
+        forget();
+        return iterator.return ? iterator.return(value) : { value, done: true };
+      },
+      async throw(error) {
+        forget();
+        if (iterator.throw) return iterator.throw(error);
+        throw error;
+      },
+    };
+  };
+  const finalizeLiveIterators = async () => {
+    const pending = [...liveIterators];
+    liveIterators.clear();
+    for (const iterator of pending) {
+      try {
+        await iterator.return?.();
+      } catch { /* teardown must not mask the caller's own failure */ }
+    }
+  };
+
   const iterateBaseNodes = async function* iterateBaseNodes() {
     try {
       for await (const record of readJsonl(path.join(canonicalRoot, manifest.activeBase.nodes.file), {
@@ -484,8 +528,8 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
         }),
       });
     },
-    iterateNodes: iterateBaseNodes,
-    iterateEdges: iterateBaseEdges,
+    iterateNodes: trackIterated(iterateBaseNodes),
+    iterateEdges: trackIterated(iterateBaseEdges),
     async summarize() {
       return {
         nodes: descriptor.summary.nodeCount,
@@ -638,18 +682,23 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
     async compareAndSwap() { throw memorySourceError('invalid_request', 'writer not available'); },
     async release() { await this.close(); },
     async close() {
-      let overlayError = null;
+      let firstError = null;
+      try {
+        await finalizeLiveIterators();
+      } catch (error) {
+        firstError = error;
+      }
       try {
         await overlay.close();
       } catch (error) {
-        overlayError = error;
+        if (firstError === null) firstError = error;
       }
       try {
         await closeOpenedFiles(openedFiles);
       } catch (error) {
-        if (overlayError === null) throw error;
+        if (firstError === null) firstError = error;
       }
-      if (overlayError !== null) throw overlayError;
+      if (firstError !== null) throw firstError;
     },
   };
   Object.defineProperty(source, 'evidence', { get() { return source.getEvidence(); } });
