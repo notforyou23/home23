@@ -20,7 +20,20 @@ export interface ForegroundDetachRequest {
   reason: string;
   chatId: string;
   turnId?: string;
+  channelId?: string;
+  conversationId?: string;
+  originMessageId?: string;
+  principalId?: string;
+  targetPrincipalId?: string;
+  residentBinding?: string;
+  residentInstanceId?: string;
+  authorityReference?: string;
+  instruction?: string;
 }
+
+export type ForegroundDetachOutcome =
+  | { created: true; handle: { workId: string } }
+  | { created: false; missing: string[] };
 
 export interface ForegroundToolDecision {
   action: ForegroundToolAction;
@@ -57,10 +70,58 @@ export function classifyForegroundTool(name: string): Exclude<ForegroundToolActi
   return 'permit';
 }
 
+function copyExistingDetachFacts(
+  ctx: Pick<ToolContext, 'chatId' | 'authenticatedUserMessage'> & {
+    turnRuntime?: TurnRuntimeContext | null;
+    channelId?: string;
+    conversationId?: string;
+    originMessageId?: string;
+    principalId?: string;
+    targetPrincipalId?: string;
+    residentBinding?: string;
+    residentInstanceId?: string;
+    authorityReference?: string;
+  },
+): Pick<
+  ForegroundDetachRequest,
+  | 'channelId'
+  | 'conversationId'
+  | 'originMessageId'
+  | 'principalId'
+  | 'targetPrincipalId'
+  | 'residentBinding'
+  | 'residentInstanceId'
+  | 'authorityReference'
+  | 'instruction'
+> {
+  const instruction = ctx.authenticatedUserMessage?.text;
+  return {
+    ...(ctx.channelId ? { channelId: ctx.channelId } : {}),
+    ...(ctx.conversationId ? { conversationId: ctx.conversationId } : {}),
+    ...(ctx.originMessageId ? { originMessageId: ctx.originMessageId } : {}),
+    ...(ctx.principalId ? { principalId: ctx.principalId } : {}),
+    ...(ctx.targetPrincipalId ? { targetPrincipalId: ctx.targetPrincipalId } : {}),
+    ...(ctx.residentBinding ? { residentBinding: ctx.residentBinding } : {}),
+    ...(ctx.residentInstanceId ? { residentInstanceId: ctx.residentInstanceId } : {}),
+    ...(ctx.authorityReference ? { authorityReference: ctx.authorityReference } : {}),
+    ...(instruction ? { instruction } : {}),
+  };
+}
+
 export function applyForegroundToolPolicy(
   name: string,
   input: Record<string, unknown>,
-  ctx: Pick<ToolContext, 'chatId'> & { turnRuntime?: TurnRuntimeContext | null },
+  ctx: Pick<ToolContext, 'chatId' | 'authenticatedUserMessage'> & {
+    turnRuntime?: TurnRuntimeContext | null;
+    channelId?: string;
+    conversationId?: string;
+    originMessageId?: string;
+    principalId?: string;
+    targetPrincipalId?: string;
+    residentBinding?: string;
+    residentInstanceId?: string;
+    authorityReference?: string;
+  },
 ): ForegroundToolDecision {
   const foreground = isForegroundConversation({
     chatId: ctx.chatId,
@@ -81,6 +142,7 @@ export function applyForegroundToolPolicy(
       reason: `${name} can materially delay conversation and must become durable Work before execution`,
       chatId: ctx.chatId,
       turnId: ctx.turnRuntime?.turnId,
+      ...copyExistingDetachFacts(ctx),
     };
     return {
       action: 'require_work',
@@ -127,11 +189,30 @@ export function applyForegroundToolPolicy(
   return { action: 'permit', tool: name, input };
 }
 
-export function foregroundDetachRefusal(decision: ForegroundToolDecision): string {
+function isDetachOutcome(value: unknown): value is ForegroundDetachOutcome {
+  return Boolean(value) && typeof value === 'object' && 'created' in (value as object);
+}
+
+export function foregroundDetachRefusal(
+  decision: ForegroundToolDecision,
+  outcome?: ForegroundDetachOutcome | void,
+): string {
+  if (isDetachOutcome(outcome) && outcome.created) {
+    return [
+      `Foreground policy: ${decision.tool} was not started.`,
+      decision.reason ?? 'This operation must become durable Work before execution.',
+      `Work ${outcome.handle.workId} was created and is running off this conversation.`,
+      'Use work_list only to inspect Work that is already active.',
+    ].join(' ');
+  }
+  const missing = isDetachOutcome(outcome) && !outcome.created && outcome.missing.length > 0
+    ? `missing: ${outcome.missing.join(', ')}.`
+    : 'required coordination facts or ports are missing.';
   return [
     `Foreground policy: ${decision.tool} was not started.`,
     decision.reason ?? 'This operation must become durable Work before execution.',
-    'Detach is not wired yet; do not claim this assignment exists as Work.',
+    `Detach did not create Work; ${missing}`,
+    'Do not claim this assignment exists as Work.',
     'Use work_list only to inspect Work that is already active.',
   ].join(' ');
 }

@@ -62,8 +62,8 @@ test('executeAndFormatTool refuses worker_run in the foreground and records the 
   assert.equal(rendered.success, false);
   assert.match(rendered.result.content, /was not started/);
   assert.match(rendered.result.content, /must become durable Work/);
-  assert.match(rendered.result.content, /Detach is not wired yet/);
-  assert.match(rendered.result.content, /do not claim this assignment exists as Work/);
+  assert.match(rendered.result.content, /[Dd]o not claim this assignment exists as Work/);
+  assert.doesNotMatch(rendered.result.content, /Detach is not wired yet/);
   assert.match(rendered.result.content, /already active/);
   assert.doesNotMatch(rendered.result.content, /being treated as background Work/);
   assert.equal((requests[0] as { tool: string }).tool, 'worker_run');

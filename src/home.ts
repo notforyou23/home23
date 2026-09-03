@@ -50,6 +50,16 @@ import { ACPBridge, normalizeBridgeConfig } from './acp/bridge.js';
 import type { CodingJobRecord, CodingJobReceipt } from './acp/types.js';
 import { WorkStore } from './work/work-store.js';
 import { WorkRegistry } from './work/registry.js';
+import {
+  createDetachedAttemptPath,
+  type DetachedAttemptPathDeps,
+} from './work/detached-attempt.js';
+import {
+  createForegroundDetachLock,
+  createResidentAttemptRunner,
+  dispatchForegroundDetach,
+  tryOpenForegroundDetachPorts,
+} from './work/foreground-detach.js';
 import { requestAsyncWorkCancel } from './work/cancel.js';
 import { handleWorkCompletion, type CompletionDeps } from './work/completion.js';
 import type { ReceiptSinks } from './work/receipt-delivery.js';
@@ -1042,6 +1052,41 @@ async function main(): Promise<void> {
   const workStore = new WorkStore(join(INSTANCE_DIR, 'async-work'));
   const workRegistry = new WorkRegistry({ store: workStore, agent: AGENT_NAME });
   toolContext.workRegistry = workRegistry;
+
+  const foregroundDetachLock = createForegroundDetachLock(agent);
+  const foregroundDetachRunner = createResidentAttemptRunner(agent);
+  const liveForegroundDetach = tryOpenForegroundDetachPorts(process.env);
+  const foregroundDetachPath = liveForegroundDetach
+    ? createDetachedAttemptPath({
+        registry: workRegistry,
+        work: liveForegroundDetach.work,
+        leases: liveForegroundDetach.leases,
+        runner: foregroundDetachRunner,
+        results: liveForegroundDetach.results,
+        lock: foregroundDetachLock,
+      } satisfies DetachedAttemptPathDeps)
+    : null;
+  toolContext.onForegroundDetachRequired = (request) => {
+    if (!liveForegroundDetach || !foregroundDetachPath) {
+      return dispatchForegroundDetach({
+        request,
+        context: toolContext,
+        ports: null,
+        pathDeps: null,
+      });
+    }
+    return dispatchForegroundDetach({
+      request,
+      context: toolContext,
+      ports: liveForegroundDetach,
+      pathDeps: {
+        registry: workRegistry,
+        lock: foregroundDetachLock,
+        runner: foregroundDetachRunner,
+      },
+      path: foregroundDetachPath,
+    });
+  };
 
   const asyncWorkRaw = (config as { asyncWork?: { review?: { coding?: boolean; subagent?: boolean; cron?: boolean }; reviewIdleTimeoutMs?: number } }).asyncWork ?? {};
   const workReview = {
@@ -2119,6 +2164,12 @@ async function main(): Promise<void> {
       await residentCoordinationHarness?.close();
     } catch (err) {
       console.error('[home] Error closing resident coordination socket:', err);
+    }
+
+    try {
+      liveForegroundDetach?.close();
+    } catch (err) {
+      console.error('[home] Error closing foreground detach coordination ports:', err);
     }
 
     try {

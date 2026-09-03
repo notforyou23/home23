@@ -116,6 +116,15 @@ export interface ToolContext {
   /** Configured resident definitions from which restricted hand grants are selected. */
   restrictedToolSource?: Pick<ToolRegistry, 'get'>;
   chatId: string;
+  /** Existing coordination facts when the caller already has them. Never minted here. */
+  channelId?: string;
+  conversationId?: string;
+  originMessageId?: string;
+  principalId?: string;
+  targetPrincipalId?: string;
+  residentBinding?: string;
+  residentInstanceId?: string;
+  authorityReference?: string;
   /** Actual channel/user turn data, set by the loop rather than tool input. */
   authenticatedUserMessage?: {
     chatId: string;
@@ -136,7 +145,9 @@ export interface ToolContext {
   /** Terminal async-work hook installed by home.ts — runs the completion pipeline. */
   onWorkTerminal?: (workId: string, result: string | AsyncWorkTerminalResult) => void;
   /** Foreground policy: a long tool was refused and needs durable Work (Lane 2). */
-  onForegroundDetachRequired?: (request: import('./foreground-tool-policy.js').ForegroundDetachRequest) => void;
+  onForegroundDetachRequired?: (
+    request: import('./foreground-tool-policy.js').ForegroundDetachRequest,
+  ) => import('./foreground-tool-policy.js').ForegroundDetachOutcome | void;
   runAgentLoop: AgentLoopRunner | null;
   workerConnectorBaseUrl?: string;
   fetch?: typeof fetch;

@@ -444,9 +444,11 @@ export async function executeAndFormatTool(input: {
   validateDisplayLimit(input.eventLimit);
   const decision = applyForegroundToolPolicy(input.name, input.input, input.context);
   if (decision.action === 'require_work') {
-    if (decision.request) input.context.onForegroundDetachRequired?.(decision.request);
+    const outcome = decision.request
+      ? input.context.onForegroundDetachRequired?.(decision.request)
+      : undefined;
     const refused: ToolResult = {
-      content: foregroundDetachRefusal(decision),
+      content: foregroundDetachRefusal(decision, outcome),
       is_error: true,
     };
     input.onEvent?.({
