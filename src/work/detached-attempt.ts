@@ -7,6 +7,7 @@
  */
 import { createHash, randomBytes } from 'node:crypto';
 
+import { generateCoordinationId } from '../coordination/ids/index.js';
 import type {
   ContextManifestInput,
   CreateWorkInput as CanonicalCreateWorkInput,
@@ -41,6 +42,8 @@ import {
 const ARTIFACT_ID_RE =
   /^art_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TERMINAL_CANONICAL_STATES = new Set(['succeeded', 'failed', 'cancelled']);
+const CANCEL_IN_PROGRESS_WORK = new Set(['cancelling', 'cancelled']);
+const CANCEL_IN_PROGRESS_ATTEMPT = new Set(['cancel_requested', 'cancelled']);
 
 function honestArtifactSummary(label: string, artifacts: readonly MediaAttachment[]): string {
   const names = artifacts.map((artifact) =>
@@ -136,6 +139,7 @@ export interface DetachedAttemptLeasePort {
     work: WorkRecord;
     attempt: {
       id: string;
+      state: string;
       holderPrincipalId: string;
       holderInstanceId: string;
       authorityReference: string;
@@ -290,8 +294,59 @@ export function createDetachedAttemptPath(deps: DetachedAttemptPathDeps) {
     return result;
   }
 
+  function currentLease(workId: string): ReturnType<DetachedAttemptLeasePort['current']> | undefined {
+    try {
+      return deps.leases.current(workId);
+    } catch {
+      return undefined;
+    }
+  }
+
+  function bindingFromCurrent(
+    workId: string,
+    requestId: string,
+    correlationId: string,
+  ): LeaseBindingInput | undefined {
+    const current = currentLease(workId);
+    if (!current) return undefined;
+    return {
+      workId,
+      attemptId: current.attempt.id,
+      leaseId: current.lease.id,
+      holderPrincipalId: current.attempt.holderPrincipalId,
+      holderInstanceId: current.attempt.holderInstanceId,
+      fencingToken: current.attempt.fencingToken,
+      requestId,
+      correlationId,
+    };
+  }
+
+  function hasDurableCancel(workId: string): boolean {
+    const work = deps.work.get(workId);
+    if (work && CANCEL_IN_PROGRESS_WORK.has(work.state)) return true;
+    const attemptState = currentLease(workId)?.attempt.state;
+    return Boolean(attemptState && CANCEL_IN_PROGRESS_ATTEMPT.has(attemptState));
+  }
+
   function wasCancelled(harnessWorkId: string, workId: string): boolean {
-    return cancelRequested.has(harnessWorkId) || cancelRequested.has(workId);
+    return cancelRequested.has(harnessWorkId)
+      || cancelRequested.has(workId)
+      || hasDurableCancel(workId);
+  }
+
+  function cancelledReceipt(input: DetachedAttemptDispatchInput): TerminalizeInput['receipt'] {
+    return {
+      status: 'cancelled',
+      sourceReference: input.authorityReference,
+      resultDigest: null,
+      artifactIds: [],
+      timestamp: canonicalTimestamp(now()),
+    };
+  }
+
+  function rememberCancel(workId: string, harnessWorkId?: string): void {
+    cancelRequested.add(workId);
+    if (harnessWorkId) cancelRequested.add(harnessWorkId);
   }
 
   function mapCanonicalStatus(state: string | undefined): DetachedAttemptResult['status'] | undefined {
@@ -394,6 +449,81 @@ export function createDetachedAttemptPath(deps: DetachedAttemptPathDeps) {
     };
   }
 
+  async function finishCancelled(
+    input: DetachedAttemptDispatchInput,
+    workId: string,
+    harness: AsyncWorkRecord | undefined,
+    binding: LeaseBindingInput,
+  ): Promise<DetachedAttemptResult> {
+    const cached = completedByWork.get(workId)
+      ?? (harness ? completed.get(harness.workId) : undefined);
+    if (cached?.status === 'cancelled') return cached;
+
+    rememberCancel(workId, harness?.workId);
+
+    if (harness && !TERMINAL_WORK_STATUSES.has(harness.status)) {
+      deps.registry.complete(harness.workId, 'cancelled', undefined, Object.freeze({
+        receiptText: `[Async work cancelled] ${harness.label}\n(work ${harness.workId})`,
+        resultText: null,
+        artifacts: Object.freeze([]),
+      }));
+    }
+
+    const latest = deps.work.get(workId);
+    if (latest && latest.state !== 'cancelled') {
+      try {
+        deps.leases.terminalize({
+          ...binding,
+          receipt: cancelledReceipt(input),
+        });
+      } catch (error) {
+        if (deps.work.get(workId)?.state !== 'cancelled') throw error;
+      }
+    }
+
+    return cacheResult(Object.freeze({
+      workId,
+      harnessWorkId: harness?.workId ?? cached?.harnessWorkId ?? `cancel:${workId}`,
+      messageId: null,
+      replayed: latest?.state === 'cancelled',
+      text: null,
+      artifactIds: Object.freeze([]),
+      status: 'cancelled' as const,
+    }));
+  }
+
+  function cancelInProgressHandle(
+    input: DetachedAttemptDispatchInput,
+    authority: Readonly<DetachedDispatchAuthority>,
+    workId: string,
+    harness: AsyncWorkRecord | undefined,
+  ): DetachedAttemptHandle {
+    const binding = bindingFromCurrent(workId, input.requestId, input.correlationId);
+    if (!binding) {
+      throw new Error('durable cancel is missing the current Lane 3 lease binding');
+    }
+    rememberCancel(workId, harness?.workId);
+    const dest = harness?.coordinationDestination;
+    const attemptChatId = harness?.resultHandle.type === 'subagent_chat'
+      ? harness.resultHandle.chatId
+      : attemptChatFor(input.office, input.channelId, workId);
+    const handle: DetachedAttemptHandle = {
+      workId,
+      harnessWorkId: harness?.workId ?? `cancel:${workId}`,
+      attemptId: dest?.attemptId ?? binding.attemptId,
+      leaseId: dest?.leaseId ?? binding.leaseId,
+      fencingToken: dest?.fencingToken ?? binding.fencingToken,
+      attemptChatId,
+      conversationChatId: input.conversationChatId,
+      office: input.office,
+      authority,
+      settled: finishCancelled(input, workId, harness, binding)
+        .finally(() => inflight.delete(workId)),
+    };
+    inflight.set(workId, handle);
+    return handle;
+  }
+
   async function settle(
     input: DetachedAttemptDispatchInput,
     authority: Readonly<DetachedDispatchAuthority>,
@@ -411,40 +541,48 @@ export function createDetachedAttemptPath(deps: DetachedAttemptPathDeps) {
     let artifactIds: string[] = [];
     let media: MediaAttachment[] = [];
 
-    try {
-      deps.lock.markActive(attemptChatId);
-      try {
-        const ran = await deps.runner.run({
-          attemptChatId,
-          conversationChatId: input.conversationChatId,
-          office: input.office,
-          instruction: input.instruction,
-          authority,
-          destination,
-          onProgress: (summary) => deps.registry.noteProgress(harness.workId, summary),
-          onEvidence: (note) => {
-            deps.registry.appendEvidence(harness.workId, note);
-          },
-        });
-        media = [...(ran.artifacts ?? [])];
-        artifactIds = await resolveIds(media, binding);
-        const trimmed = ran.text.trim();
-        if (!trimmed && media.length === 0 && artifactIds.length === 0) {
-          throw new Error('successful detached Attempt produced no answer');
-        }
-        text = trimmed || honestArtifactSummary(harness.label, persistableArtifacts(media, artifactIds));
-        receiptText = `[Attempt complete] ${harness.label}`;
-        status = 'completed';
-      } finally {
-        deps.lock.clear(attemptChatId);
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      receiptText = `[Async work failed] ${harness.label}\n\nError: ${message}\n(work ${harness.workId})`;
-      status = 'failed';
+    if (wasCancelled(harness.workId, binding.workId)) {
+      status = 'cancelled';
       text = null;
       artifactIds = [];
       media = [];
+      receiptText = `[Async work cancelled] ${harness.label}\n(work ${harness.workId})`;
+    } else {
+      try {
+        deps.lock.markActive(attemptChatId);
+        try {
+          const ran = await deps.runner.run({
+            attemptChatId,
+            conversationChatId: input.conversationChatId,
+            office: input.office,
+            instruction: input.instruction,
+            authority,
+            destination,
+            onProgress: (summary) => deps.registry.noteProgress(harness.workId, summary),
+            onEvidence: (note) => {
+              deps.registry.appendEvidence(harness.workId, note);
+            },
+          });
+          media = [...(ran.artifacts ?? [])];
+          artifactIds = await resolveIds(media, binding);
+          const trimmed = ran.text.trim();
+          if (!trimmed && media.length === 0 && artifactIds.length === 0) {
+            throw new Error('successful detached Attempt produced no answer');
+          }
+          text = trimmed || honestArtifactSummary(harness.label, persistableArtifacts(media, artifactIds));
+          receiptText = `[Attempt complete] ${harness.label}`;
+          status = 'completed';
+        } finally {
+          deps.lock.clear(attemptChatId);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        receiptText = `[Async work failed] ${harness.label}\n\nError: ${message}\n(work ${harness.workId})`;
+        status = 'failed';
+        text = null;
+        artifactIds = [];
+        media = [];
+      }
     }
 
     if (wasCancelled(harness.workId, binding.workId)) {
@@ -539,6 +677,9 @@ export function createDetachedAttemptPath(deps: DetachedAttemptPathDeps) {
       || (existingHarness && TERMINAL_WORK_STATUSES.has(existingHarness.status))
     ) {
       return replayHandle(input, authority, workId, existingHarness);
+    }
+    if (hasDurableCancel(workId) || wasCancelled(existingHarness?.workId ?? workId, workId)) {
+      return cancelInProgressHandle(input, authority, workId, existingHarness);
     }
 
     let binding: LeaseBindingInput;
@@ -659,7 +800,14 @@ export function createDetachedAttemptPath(deps: DetachedAttemptPathDeps) {
       }
       cancelRequested.add(harnessWorkId);
       if (harness.parentWorkId) cancelRequested.add(harness.parentWorkId);
-      const stored = bindings.get(harnessWorkId);
+      const stored = bindings.get(harnessWorkId)
+        ?? (harness.parentWorkId
+          ? bindingFromCurrent(
+            harness.parentWorkId,
+            generateCoordinationId('request'),
+            generateCoordinationId('correlation'),
+          )
+          : undefined);
       if (stored) {
         try {
           deps.leases.revoke({ ...stored, reasonCode: 'operator_cancel' });
